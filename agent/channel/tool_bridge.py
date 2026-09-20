@@ -38,6 +38,8 @@ from core.tool_schema import extract_tool_params, get_first_line
 from .channel_types import ChannelCapability
 from .context import get_current_channel
 
+EntityRegistry.register_group_order("channel_ops", 60)
+
 # capability 值 → 实际业务方法名（处理与 BaseChannel 协议方法同名冲突）
 CAPABILITY_METHOD_ALIAS: Dict[str, str] = {
     "forward_message": "forward_msg",

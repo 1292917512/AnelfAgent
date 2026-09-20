@@ -16,10 +16,11 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from acfunsdk.exceptions import NotInCar
 
+from agent.channel.poll_cursor import PollCursorStore
 from core.log import log
 
 from .parser import dedup_key, notification_to_message
-from .state import PollCursorStore
+from .state import poll_state_path
 
 if TYPE_CHECKING:
     from .adapter import AcfunChannel
@@ -34,7 +35,7 @@ class NotificationPoller:
     def __init__(self, channel: "AcfunChannel") -> None:
         self._channel = channel
         self._task: Optional[asyncio.Task] = None
-        self._cursors = PollCursorStore()
+        self._cursors = PollCursorStore(poll_state_path(), channel="AcFun")
         self.last_poll_at: float = 0.0
         self.last_error: str = ""
         self.dispatch_count: int = 0
@@ -121,19 +122,13 @@ class NotificationPoller:
                 log(f"AcFun: 通知拉取失败 kind={kind}: {exc}", "WARNING", tag="通道")
                 continue
             keys = [dedup_key(kind, item) for item in items]
-            if not self._cursors.is_seeded(kind):
-                for key in keys:
-                    self._cursors.mark(kind, key)
-                self._cursors.mark_seeded(kind)
+            pending_keys = self._cursors.collect_pending(kind, keys)
+            if pending_keys is None:
                 log(f"AcFun: 通知游标已播种 kind={kind}（{len(keys)} 条历史不派发）", "DEBUG", tag="通道")
                 continue
-            # 列表为最新在前，反转为最旧先派发保持时序
-            pending = [
-                (key, item) for key, item in zip(keys, items, strict=False)
-                if not self._cursors.is_seen(kind, key)
-            ]
-            for key, item in reversed(pending):
-                self._cursors.mark(kind, key)
+            by_key = dict(zip(keys, items, strict=False))
+            for key in pending_keys:
+                item = by_key[key]
                 if not self._whitelist_allows(item):
                     continue
                 # 点赞通知降噪：未开启触发时仅计数，不写入会话历史

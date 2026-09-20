@@ -157,3 +157,45 @@ export interface ApiTypeInfo {
   group: "common" | "other";
   default_base_url: string;
 }
+
+export interface LocalModelAsset {
+  id: string;
+  name: string;
+  filename: string;
+  version: string;
+  license: string;
+  description: string;
+  url: string;
+  path: string;
+  size_bytes: number;
+  runtime_ready: boolean;
+  pip_requires: string;
+  status: "ready" | "missing" | "downloading" | "verifying" | "error";
+  phase?: "connecting" | "fetching";
+  received?: number;
+  total?: number;
+  error?: string;
+}
+
+export interface LocalModelsStatus {
+  models: LocalModelAsset[];
+  dir: string;
+  runtime: { installed: boolean; version: string };
+}
+
+export interface ProviderKeyField {
+  key: string;
+  label?: string;
+  value: string;
+  configured: boolean;
+  secret: boolean;
+}
+
+export interface ProviderKeyEntry {
+  name: string;
+  domain: string;
+  title: string;
+  description: string;
+  fields: ProviderKeyField[];
+  unregistered?: boolean;
+}

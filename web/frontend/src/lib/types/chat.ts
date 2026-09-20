@@ -13,6 +13,17 @@ export interface ChatMeta {
 
 // ── 聊天消息与分桶状态（chat-store） ──
 
+export interface ToolSummaryEntry {
+  call: string;
+  result: string;
+}
+
+/** 工具执行摘要的结构化数据（后端历史清洗随 kind=tool_summary 消息附带） */
+export interface ToolSummaryData {
+  count: number;
+  entries: ToolSummaryEntry[];
+}
+
 export interface ChatMessage {
   role: string;
   content: string;
@@ -27,6 +38,8 @@ export interface ChatMessage {
   caption?: string;
   /** 结构化消息种类：tool_summary=工具执行摘要卡片 / system_notice=系统提示细条 */
   kind?: "tool_summary" | "system_notice";
+  /** kind=tool_summary 时的结构化摘要条目 */
+  summary?: ToolSummaryData;
   /** 语音形态：transcript=实时通话的用户转写 / spoken=已同步语音播出（AI 回复） */
   voice?: "transcript" | "spoken";
   /** 警示色调（发送超时/失败等 system_notice 用） */
@@ -289,4 +302,6 @@ export interface ChatHistoryMessage {
   /** epoch 秒（后端 ts_ns 换算），时间线合排用 */
   ts?: number;
   kind?: "tool_summary" | "system_notice";
+  /** kind=tool_summary 时的结构化摘要条目 */
+  summary?: ToolSummaryData;
 }

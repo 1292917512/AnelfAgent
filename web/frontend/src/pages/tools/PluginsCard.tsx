@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui";
-import type { PluginInfo } from "./types";
+import type { PluginInfo } from "@/lib/types";
 
 /** 已加载插件列表 */
 export function PluginsCard({ plugins }: { plugins: PluginInfo[] }) {

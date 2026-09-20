@@ -40,6 +40,10 @@ from core.event_bus import (
     EVENT_DELEGATION_PROGRESS,
     EVENT_DELEGATION_RESOLVED,
     EVENT_DELEGATION_STARTED,
+    EVENT_THINKING_LLM_END,
+    EVENT_THINKING_REPLY_ROUND,
+    EVENT_THINKING_TOOL_END,
+    EVENT_THINKING_TOOL_START,
     event_bus,
 )
 from core.log import bind_log_actor, log, reset_log_actor
@@ -160,12 +164,9 @@ class DelegationManager:
         当前委托 ID 即可把子代理的内部活动归属到对应委托卡片、写入对应
         委托的进度流与用量桶。
         """
-        from core.event_bus import (
-            EVENT_THINKING_LLM_END,
-            EVENT_THINKING_REPLY_ROUND,
-            EVENT_THINKING_TOOL_END,
-            EVENT_THINKING_TOOL_START,
-        )
+        # 重复构造（测试/重初始化）时先摘除旧实例的订阅：
+        # 处理器是捕获 self 的闭包，不摘除会逐次累积且永不释放
+        event_bus.off_by_owner("delegation")
 
         async def _on_round(payload: Dict[str, Any]) -> None:
             iteration = int(payload.get("iteration", 0))
@@ -722,13 +723,12 @@ class DelegationManager:
 
         # 进度流与账本收尾（终态事实：取消/失败同样闭合）
         if result is not None:
-            status = (
-                "已取消" if result.cancelled
-                else ("成功" if result.success else "失败")
+            status = journal.terminal_status(
+                success=result.success, cancelled=result.cancelled,
             )
             tail = (result.output if result.success else result.error) or ""
             journal.append_progress(
-                delegation_id, f"委托结束（{status}）: {tail[:400]}",
+                delegation_id, f"委托结束（{journal.terminal_label(status)}）: {tail[:400]}",
             )
             journal.append_ledger(
                 journal.LEDGER_CLOSED, delegation_id, status=status,
@@ -1018,7 +1018,7 @@ class DelegationManager:
                 role=normalize_role(role),
             )
 
-        status = "已取消" if result.cancelled else ("成功" if result.success else "失败")
+        status = journal.terminal_status(success=result.success, cancelled=result.cancelled)
         summary = (result.output if result.success else result.error) or ""
 
         try:
@@ -1053,7 +1053,7 @@ class DelegationManager:
             log(f"后台委托事件发射失败: {delegation_id}: {exc}", "WARNING", tag="委托")
 
         note = (
-            f"[后台委托完成] id={delegation_id} 状态={status}\n"
+            f"[后台委托完成] id={delegation_id} 状态={journal.terminal_label(status)}\n"
             f"目标: {goal[:200]}\n结果: {summary[:_SUMMARY_NOTICE_MAX_CHARS]}"
         )
         if getattr(result, "completed_reason", "completed") == "budget_exhausted":

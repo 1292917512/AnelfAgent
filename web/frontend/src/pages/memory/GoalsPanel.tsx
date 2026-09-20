@@ -2,23 +2,10 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { memoryApi } from "@/lib/api";
-import type { GoalStep } from "@/lib/types";
+import type { GoalData, GoalStep } from "@/lib/types";
 import { Card } from "@/components/common/Card";
 import { cn } from "@/lib/utils";
 import { Trash2, RefreshCw, Plus, Pencil, X, Target, CheckCircle2, Circle, Clock, XCircle, Info } from "lucide-react";
-
-interface GoalData {
-  goal_id: string;
-  title: string;
-  description: string;
-  status: "active" | "completed" | "cancelled";
-  recurring?: boolean;
-  steps: GoalStep[];
-  due_time?: string;
-  created_at: string;
-  updated_at: string;
-  memory_id?: number;
-}
 
 type GoalFilter = "all" | "active";
 
@@ -49,7 +36,7 @@ export function GoalsPanel() {
 
   const enterEdit = (goal: GoalData) => {
     setEditTitle(goal.title);
-    setEditDesc(goal.description);
+    setEditDesc(goal.description ?? "");
     setEditDueTime(goal.due_time || "");
     setEditRecurring(goal.recurring || false);
     setEditing(true);

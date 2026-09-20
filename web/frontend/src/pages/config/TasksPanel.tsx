@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { tasksApi, type TaskConfig, type TaskExecutionRecord } from "@/lib/api";
+import { tasksApi } from "@/lib/api";
+import type { TaskConfig, TaskExecutionRecord } from "@/lib/types";
 import { Card } from "@/components/common/Card";
 import { cn, formatAge, formatDurationMs } from "@/lib/utils";
 import { Play, Trash2, Pencil, Plus, Save, X, ChevronDown, ChevronUp } from "lucide-react";

@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { Check, Code, Columns2, Copy, Download, Eye, Paperclip, Quote } from "lucide-react";
-import type { WorkspaceFile, WorkspaceFileKind } from "@/lib/api";
+import type { WorkspaceFile, WorkspaceFileKind } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui";
 import type { ViewMode } from "./fileEditorUtils";

@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from entities._sdk import ToolOp
+from entities._ops import ToolOp
 from entities.ssh import ops_state
 from entities.ssh.manager import STATUS_CONNECTED
 

@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Download, MonitorX } from "lucide-react";
 import type Mpegts from "mpegts.js";
-import { workspaceApi, workspaceVideoSupport, type WorkspaceRoot } from "@/lib/api";
+import { workspaceApi } from "@/lib/api";
+import type { WorkspaceRoot } from "@/lib/types";
+import { workspaceVideoSupport } from "@/lib/workspace-kind";
 
 interface VideoPreviewProps {
   path: string;

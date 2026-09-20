@@ -33,12 +33,9 @@
 
 from __future__ import annotations
 
-import functools
 import inspect
 import json
-import time
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Tuple, TypeVar
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, TypeVar
 
 from core.entity import EntityRegistry
 from core.log import log
@@ -90,7 +87,6 @@ __all__ = [
     "get_session_llm_params", "canonical_efforts",
     "activate_tool_group_now", "notify_tool_set_changed",
     "tool_error", "error_from_exception", "ErrorCause",
-    "ToolOp", "track_ops",
 ]
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -440,18 +436,7 @@ def register_entity_llm_hook(
     name: str,
     event: str,
     handler: Callable[..., Any],
-    *,
-    context: str = "none",
-    owner: str = "",
-    description: str = "",
-    tool_tags: Optional[List[str]] = None,
-    allow_output_tools: bool = False,
-    max_iterations: int = 6,
-    model: str = "",
-    max_concurrent: int = 1,
-    cooldown_seconds: float = 0.0,
-    debounce_seconds: float = 0.0,
-    priority: int = 50,
+    **spec_overrides: Any,
 ) -> bool:
     """实体注册一个 LLM 钩子（达到事件条件即并行拉起一段 LLM 工作，不卡主思考）。
 
@@ -465,23 +450,16 @@ def register_entity_llm_hook(
             llm_end 为高频事件（每次 LLM 调用后触发），强制最小冷却 20s，
             声明更小值也会被钳到下限。
         handler: 执行体，签名 async (ctx: HookContext) -> Optional[str]；
-            ctx.messages 为按 context 档位构建的上下文快照，ctx.payload 为事件数据，
-            ctx.tool_tags/max_iterations/allow_output_tools/model 为下方同名声明参数的
-            带入（执行 LLM 工作时透传给 reflect，声明即单一事实源）。
-        context: 上下文档位 none/lean/transcript（默认 none）。
-        owner: 注册归属（缺省取调用方实体模块名，便于卸载批量清理）。
-        description: 人类可读描述（Web 面板展示）。
-        tool_tags: reflect 工具选择器（默认复用回复级装配）。
-        allow_output_tools: 是否放开外发工具（默认禁止）。
-        max_iterations: reflect 轮次预算。
-        model: 执行模型 ID（空 = 默认主模型）。
-        max_concurrent: 该钩子并发上限。
-        cooldown_seconds: per-scope 最小触发间隔。
-        debounce_seconds: 同 scope 高频合并窗口（取最后快照）。
-        priority: 同事件多钩子拉起顺序（值大先拉起，执行仍并行）。
+            ctx.messages 为按 context 档位构建的上下文快照，ctx.payload 为事件数据。
+        spec_overrides: LLMHookSpec 治理字段直转（context/tool_tags/
+            allow_output_tools/max_iterations/model/max_concurrent/
+            cooldown_seconds/debounce_seconds/priority/description/when/
+            owner），未列键由 spec 构造器拒绝（注册失败返回 False）。
+            context 接受字符串档位（none/lean/transcript），tool_tags 接受 list；
+            owner 缺省取调用方实体模块名（热拔卸载按 owner 批量清理）。
 
     Returns:
-        注册是否成功（事件非法/钩子面不可用/已存在同名被覆盖前失败返回 False）。
+        注册是否成功（事件非法/钩子面不可用/参数非法返回 False）。
     """
     try:
         from agent.hooks_llm import HookContextMode, HookRegistry, LLMHookSpec
@@ -490,25 +468,29 @@ def register_entity_llm_hook(
             LLM_END_MIN_COOLDOWN_SECONDS,
         )
 
+        owner = spec_overrides.pop("owner", "")
         if not owner:
-            # owner 推断：handler 定义在 entities.<name>[.子模块] 时取 <name>
-            # （热拔卸载按 owner 批量清理的归属键）；非 entities 模块退化为 entity
+            # owner 推断：handler 定义在 entities.<name>[.子模块] 时取 <name>；
+            # 非 entities 模块退化为 entity
             module = getattr(handler, "__module__", "") or ""
             parts = module.split(".")
             owner = parts[1] if len(parts) >= 2 and parts[0] == "entities" and parts[1] else "entity"
-        cooldown = max(0.0, cooldown_seconds)
+        context = spec_overrides.pop("context", HookContextMode.NONE)
+        if isinstance(context, str):
+            context = HookContextMode(context)
+        cooldown = max(0.0, float(spec_overrides.pop("cooldown_seconds", 0.0)))
         if event == HOOK_EVENT_LLM_END:
             cooldown = max(cooldown, LLM_END_MIN_COOLDOWN_SECONDS)
         spec = LLMHookSpec(
             name=name, event=event, handler=handler,
-            context=HookContextMode(context),
-            tool_tags=tuple(tool_tags or ()), allow_output_tools=allow_output_tools,
-            max_iterations=max_iterations, model=model,
-            max_concurrent=max(1, max_concurrent),
+            context=context,
+            tool_tags=tuple(spec_overrides.pop("tool_tags", ())),
+            max_concurrent=max(1, int(spec_overrides.pop("max_concurrent", 1))),
             cooldown_seconds=cooldown,
-            debounce_seconds=max(0.0, debounce_seconds),
-            priority=priority, owner=str(owner), description=description,
+            debounce_seconds=max(0.0, float(spec_overrides.pop("debounce_seconds", 0.0))),
+            owner=str(owner),
             source="entity",
+            **spec_overrides,
         )
         HookRegistry.register(spec)
         return True
@@ -966,8 +948,8 @@ def save_config_value(key: str, value: Any) -> None:
     from core.config import ConfigManager
 
     try:
-        from agent.config import MIND_SYNC_FIELDS
-        mind_fields = frozenset((*MIND_SYNC_FIELDS, "tool_system_rules"))
+        from agent.config import MIND_CONFIG_FIELDS
+        mind_fields = frozenset(MIND_CONFIG_FIELDS)
     except Exception:
         mind_fields = frozenset()
     if key in mind_fields:
@@ -1013,147 +995,6 @@ def canonical_efforts() -> List[str]:
     """获取思考等级规范词汇表（update_model_config 等校验用）。"""
     from agent.llm.reasoning import CANONICAL_EFFORTS
     return list(CANONICAL_EFFORTS)
-
-
-# ------------------------------------------------------------------
-# 操作态势回报（实体动态上下文的数据源）
-# ------------------------------------------------------------------
-
-
-@dataclass
-class ToolOp:
-    """一次工具执行的操作事实（track_ops 回报给实体态势追踪器的记录）。
-
-    Attributes:
-        scope: 执行所在会话 scope（思维会话外为 "_global"）。
-        tool: 工具名（被装饰函数名）。
-        target: 展示用目标文本（多目标经 " → " 连接，截断 100 字符）。
-        targets: 原始目标参数值（供追踪器提取目录等结构化信息）。
-        arguments: 全部绑定参数（供追踪器读取附加参数，如 SSH 连接名）。
-        ok: 成败判定（见 track_ops）。
-        note: 失败备注（错误消息或退出码，截断 120 字符）。
-        duration_ms: 工具执行耗时（毫秒）。
-    """
-
-    scope: str
-    tool: str
-    target: str
-    targets: Tuple[str, ...]
-    arguments: Dict[str, Any]
-    ok: bool
-    note: str
-    duration_ms: int
-
-
-def _classify_tool_result(result: Any) -> Tuple[bool, str]:
-    """按统一错误契约判定工具结果成败。
-
-    含 error 键 = 失败（备注取错误消息）；含 ok 键取其布尔（失败时
-    备注取 returncode/exit_code）；非 JSON 文本（如 read_file 内容）= 成功。
-    """
-    if not isinstance(result, str):
-        return True, ""
-    text = result.lstrip()
-    if not text.startswith("{"):
-        return True, ""
-    try:
-        data = json.loads(text)
-    except ValueError:
-        return True, ""
-    if not isinstance(data, dict):
-        return True, ""
-    if data.get("error"):
-        return False, str(data["error"])[:120]
-    ok = bool(data.get("ok", True))
-    note = ""
-    if not ok:
-        for key in ("returncode", "exit_code"):
-            code = data.get(key)
-            if code is not None:
-                note = f"退出码 {code}"
-                break
-    return ok, note
-
-
-def track_ops(
-    sink: Callable[[ToolOp], None],
-    *target_params: str,
-) -> Callable[[F], F]:
-    """装饰器：工具执行后把操作事实回报给实体的态势追踪器。
-
-    态势追踪器据此向 volatile 层注入"本会话正在操作什么"的实时上下文
-    （如 filesystem/ops_context、ssh/ops_state），本装饰器只做事实采集。
-
-    Args:
-        sink: 追踪器入口，接收 ToolOp；异常仅记 DEBUG，绝不影响工具主流程。
-        target_params: 构成操作目标的参数名（如 file_path / command），
-            其值拼接为展示文本并随 ToolOp.targets 传递原始值。
-
-    成败判定：抛异常 = 失败（原样重抛）；其余按 _classify_tool_result。
-    同步/异步工具均适用（包装器保种类，iscoroutinefunction 判定不受影响）。
-    """
-
-    def decorator(func: F) -> F:
-        tool_name = func.__name__
-        try:
-            sig = inspect.signature(func)
-        except (TypeError, ValueError):
-            sig = None
-
-        def _report(args: tuple, kwargs: dict, result: Any,
-                    exc: Optional[BaseException], started: float) -> None:
-            try:
-                arguments: Dict[str, Any] = {}
-                if sig is not None:
-                    arguments = dict(sig.bind_partial(*args, **kwargs).arguments)
-                targets = tuple(
-                    str(arguments[p]) for p in target_params
-                    if arguments.get(p) not in (None, "")
-                )
-                target = " → ".join(targets)
-                if len(target) > 100:
-                    target = target[:97] + "..."
-                if exc is not None:
-                    ok, note = False, f"{type(exc).__name__}: {exc}"[:120]
-                else:
-                    ok, note = _classify_tool_result(result)
-                sink(ToolOp(
-                    scope=get_current_scope(), tool=tool_name, target=target,
-                    targets=targets, arguments=arguments, ok=ok, note=note,
-                    duration_ms=int((time.monotonic() - started) * 1000),
-                ))
-            except Exception as report_exc:
-                log(f"操作态势回报失败（已忽略）: {tool_name} - {report_exc}",
-                    "DEBUG", tag="OpsTrack")
-
-        if inspect.iscoroutinefunction(func):
-            @functools.wraps(func)
-            async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-                started = time.monotonic()
-                try:
-                    result = await func(*args, **kwargs)
-                except BaseException as exc:
-                    _report(args, kwargs, None, exc, started)
-                    raise
-                _report(args, kwargs, result, None, started)
-                return result
-
-            return async_wrapper  # type: ignore[return-value]
-
-        @functools.wraps(func)
-        def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
-            started = time.monotonic()
-            try:
-                result = func(*args, **kwargs)
-            except BaseException as exc:
-                _report(args, kwargs, None, exc, started)
-                raise
-            _report(args, kwargs, result, None, started)
-            return result
-
-        return sync_wrapper  # type: ignore[return-value]
-
-    return decorator
 
 
 # ------------------------------------------------------------------
@@ -1330,7 +1171,6 @@ def entity_manifest(
     if nav is not None:
         manifest["nav"] = nav
     EntityRegistry.register_group_manifest(group, manifest)
-    # 实体自声明排序权重：覆盖默认权重表（core/entity.py _DEFAULT_GROUP_ORDER 兜底）
     EntityRegistry.register_group_order(group, order)
 
 
@@ -1358,8 +1198,6 @@ def entity_config(
         configs: 配置 schema 字典 {group: {key: {description, default, ...}}}。
         config_dir: 配置文件所在目录（默认自动推导为调用方所在目录）。
     """
-    import inspect
-    import json
     import os
 
     from core.config import ConfigManager, register_configs_safe

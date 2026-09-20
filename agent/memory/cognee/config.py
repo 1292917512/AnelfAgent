@@ -21,6 +21,12 @@ MODEL_SOURCES = (MODEL_SOURCE_AUTO, MODEL_SOURCE_MODEL, MODEL_SOURCE_CUSTOM)
 # ""=auto 跟随模型 supports_reasoning，off=强制关闭思考，其余为思考预算档位
 REASONING_EFFORTS = ("",) + CANONICAL_EFFORTS
 
+# cognee 库支持的 provider 词汇（custom = 自填 endpoint 的 OpenAI 兼容端点）
+COGNEE_CHAT_PROVIDERS = ("openai", "anthropic", "gemini", "ollama", "custom", "azure", "mistral", "bedrock")
+COGNEE_EMBED_PROVIDERS = ("openai", "ollama", "azure", "fastembed")
+# instructor 结构化输出模式（"" = 跟随库默认）
+COGNEE_INSTRUCTOR_MODES = ("", "json_mode", "json_schema_mode", "tools", "anthropic_tools", "mistral_tools")
+
 
 @dataclass(slots=True)
 class CogneeChatModelConfig:
@@ -29,7 +35,7 @@ class CogneeChatModelConfig:
     source: str = MODEL_SOURCE_AUTO
     # source=model：LLMManager 中的 chat 模型 id
     model_id: str = ""
-    # source=custom：cognee provider（openai/anthropic/gemini/ollama/custom/azure/mistral/bedrock）
+    # source=custom：cognee provider（词汇见 COGNEE_CHAT_PROVIDERS）
     provider: str = "openai"
     model: str = ""
     api_key: str = ""

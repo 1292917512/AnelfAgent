@@ -11,7 +11,8 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { workspaceApi, type WorkspaceRoot, type WorkspaceSearchHit } from "@/lib/api";
+import { workspaceApi } from "@/lib/api";
+import type { WorkspaceRoot, WorkspaceSearchHit } from "@/lib/types";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { useFileTreeStore } from "./file-tree-store";
 import { fileIcon } from "./file-tree-utils";

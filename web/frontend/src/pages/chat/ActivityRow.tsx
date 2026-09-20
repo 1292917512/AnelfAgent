@@ -5,9 +5,10 @@
  * 设计为瞬时指示器（处理期间显示），不向聊天历史写入任何条目，
  * 符合 Anelf「记忆模式、条目受限」的对话窗口约束。
  */
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useChatStore } from "@/stores/chat-store";
+import { useNow } from "@/hooks/useNow";
 import { useThinkingStore } from "@/stores/thinking-store";
 
 function pickVerb(verbs: string[], seed: number) {
@@ -19,16 +20,9 @@ export function ActivityRow() {
   const sendingSince = useChatStore((s) => s.buckets[s.activeChatId]?.sendingSince ?? null);
   const activeSession = useThinkingStore((s) => s.activeSession);
 
-  const [elapsed, setElapsed] = useState(0);
   const [verbSeed] = useState(() => Math.floor(Math.random() * 1000));
-
-  useEffect(() => {
-    if (!sendingSince) return;
-    const tick = () => setElapsed(Math.floor((Date.now() - sendingSince) / 1000));
-    tick();
-    const timer = setInterval(tick, 1000);
-    return () => clearInterval(timer);
-  }, [sendingSince]);
+  const now = useNow(!!sendingSince);
+  const elapsed = sendingSince ? Math.floor((now - sendingSince) / 1000) : 0;
 
   // 当前运行中的工具节点（thinking SSE 实时事件，可能未启用则为空）
   const currentTool = useMemo(() => {

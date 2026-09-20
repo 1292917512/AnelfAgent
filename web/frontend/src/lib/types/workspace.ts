@@ -99,3 +99,9 @@ export interface SkillLibraryHealth {
   patch_churn: { name: string; patch_count: number }[];
   trigger_collisions: Record<string, string[]>;
 }
+
+export type WorkspaceRoot = "workspace" | "project";
+
+export type WorkspaceFileKind = "markdown" | "html" | "csv" | "pdf" | "docx" | "xlsx";
+
+/** 按文件名判断富格式预览类型，不命中返回 null */

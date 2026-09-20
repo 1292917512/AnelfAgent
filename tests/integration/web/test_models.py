@@ -7,12 +7,14 @@ from pydantic import ValidationError
 
 from agent.llm.llm_client import LLMClientConfig
 from services.model import ModelService
+
+_serialize_model_config = ModelService().serialize_model_config
+
 from web.routers.models import (
     CreateModelReq,
     CreateProviderReq,
     UpdateModelReq,
     _normalize_model_params,
-    _serialize_model_config,
 )
 
 

@@ -338,5 +338,11 @@
       "excluded": "该路径命中排除规则，未重建",
       "missing": "来源中未找到该单元"
     }
+  },
+  "voiceConfig": {
+    "voice_silence_ms": "静音判段阈值（毫秒）",
+    "voice_min_utterance_ms": "有效语音最短时长（毫秒）",
+    "voice_max_utterance_s": "单段语音最长时长（秒）",
+    "voice_vad_floor_min": "端点检测噪声地板下限（RMS）"
   }
 }

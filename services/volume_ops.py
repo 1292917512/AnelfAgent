@@ -34,7 +34,8 @@ from core.file_utils import walk_files
 from core.log import log
 from core.storage_volume import VolumeCapability, VolumeKind, get_volume_registry
 from services.data_migration import validate_target_dir
-from services.database import _SHADOW_PATTERNS, ensure_volume_modules, online_sqlite_backup
+from services.database import ensure_volume_modules, online_sqlite_backup
+from services.db_common import SHADOW_PATTERNS
 
 # 备份产物在备份目录内的固定名（manifest.json 同目录）
 _SQLITE_ARTIFACT = "volume.sqlite3"
@@ -129,7 +130,7 @@ def _cognee_coordinator_alive() -> bool:
     from agent.memory.cognee.runtime import get_cognee_coordinator
 
     coordinator = get_cognee_coordinator()
-    return coordinator is not None and bool(coordinator._task and not coordinator._task.done())
+    return coordinator is not None and coordinator.is_running
 
 
 async def _cognee_quiescence(job: Callable[[], Any]) -> Any:
@@ -601,7 +602,7 @@ async def _run_relocate(volume_id: str, target_dir: Path, state: Dict[str, Any])
 
 def _is_derived_table(name: str) -> bool:
     """派生表过滤：FTS5/vec0 影子表（由存储侧建表逻辑重建）。"""
-    return any(pat in name for pat in _SHADOW_PATTERNS)
+    return any(pat in name for pat in SHADOW_PATTERNS)
 
 
 def export_sql(

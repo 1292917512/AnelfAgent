@@ -279,27 +279,42 @@ class TestCredentialStore:
 
 class TestPollCursorStore:
     def test_seed_mark_persist(self, data_dir):
-        store = state.PollCursorStore()
+        from agent.channel.poll_cursor import PollCursorStore
+
+        path = str(data_dir / "poll_state.json")
+        store = PollCursorStore(path, channel="AcFun")
         store.load()
         assert store.is_seeded("reply") is False
-        store.mark("reply", "k1")
-        store.mark_seeded("reply")
+        # 首次轮询只播种不派发
+        assert store.collect_pending("reply", ["k1"]) is None
         store.save()
-        store2 = state.PollCursorStore()
+        store2 = PollCursorStore(path, channel="AcFun")
         store2.load()
         assert store2.is_seeded("reply") is True
         assert store2.is_seen("reply", "k1") is True
         assert store2.is_seen("reply", "k2") is False
 
+    def test_collect_pending_oldest_first(self, data_dir):
+        from agent.channel.poll_cursor import PollCursorStore
+
+        store = PollCursorStore(str(data_dir / "poll_state.json"), channel="AcFun")
+        assert store.collect_pending("reply", ["n1", "n2"]) is None  # 播种
+        # 输入最新在前 → 未见键最旧先派发
+        assert store.collect_pending("reply", ["n3", "n2", "n4"]) == ["n4", "n3"]
+
     def test_bounded_eviction(self, data_dir):
-        store = state.PollCursorStore()
-        for i in range(state._MAX_SEEN_PER_KIND + 20):
+        from agent.channel.poll_cursor import PollCursorStore
+
+        store = PollCursorStore(str(data_dir / "poll_state.json"), channel="AcFun")
+        for i in range(220):
             store.mark("like", f"k{i}")
         assert store.is_seen("like", "k0") is False  # 最旧的被淘汰
-        assert store.is_seen("like", f"k{state._MAX_SEEN_PER_KIND + 19}") is True
+        assert store.is_seen("like", "k219") is True
 
     def test_save_skips_when_clean(self, data_dir):
-        store = state.PollCursorStore()
+        from agent.channel.poll_cursor import PollCursorStore
+
+        store = PollCursorStore(str(data_dir / "poll_state.json"), channel="AcFun")
         store.save()  # 无变更不落盘
         assert not (data_dir / "poll_state.json").exists()
 
@@ -664,7 +679,7 @@ class TestQrLoginManager:
     async def test_poll_expired_session(self, qr_manager, monkeypatch):
         _FakeAsyncClient.queue.append(_FakeResp(_start_payload()))
         sid = (await qr_manager.start())["session_id"]
-        session = qr_manager._sessions[sid]
+        session = qr_manager._store.get(sid)
         session.created_at -= 9999
         result = await qr_manager.poll(sid)
         assert result["status"] == "timeout"

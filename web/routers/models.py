@@ -97,19 +97,6 @@ def _normalize_model_params(req: BaseModel) -> Dict[str, Any]:
     return params
 
 
-def _serialize_model_config(config: Dict[str, Any]) -> Dict[str, Any]:
-    """将内部模型格式转换为公开 API 格式。"""
-    result = dict(config)
-    result.setdefault("request_params", {})
-    result.setdefault("extra_headers", {})
-    result.setdefault("chat_protocol", "chat_completions")
-    result.setdefault("builtin_tools", [])
-    legacy_extra = result.pop("extra_params", {})
-    extra_body = dict(legacy_extra)
-    extra_body.update(result.get("extra_body", {}))
-    result["extra_body"] = extra_body
-    return result
-
 # ── 供应商 ───────────────────────────────────────────────────────────
 
 
@@ -167,7 +154,7 @@ async def remove_provider(pid: str) -> Dict[str, str]:
 @router.get("/providers/{pid}/models")
 async def provider_models(pid: str) -> List[Dict[str, Any]]:
     return [
-        _serialize_model_config(model)
+        _svc.serialize_model_config(model)
         for model in _svc.list_provider_models(pid)
     ]
 
@@ -460,17 +447,11 @@ async def probe_capabilities(req: ProbeReq) -> Dict[str, Any]:
 
 # ── LiteLLM 模型价格表 ───────────────────────────────────────────────
 
-_COST_MAP_URL = (
-    "https://raw.githubusercontent.com/BerriAI/litellm/main"
-    "/model_prices_and_context_window.json"
-)
-
 
 @router.get("/cost-map/info")
 async def get_cost_map_info() -> Dict[str, Any]:
     """返回当前内存中 LiteLLM 模型价格表的信息。"""
-    import litellm
-    return {"model_count": len(litellm.model_cost)}
+    return _svc.cost_map_info()
 
 
 class CostMapUpdateReq(BaseModel):
@@ -480,25 +461,8 @@ class CostMapUpdateReq(BaseModel):
 @router.post("/cost-map/update")
 async def update_cost_map(req: CostMapUpdateReq) -> Dict[str, Any]:
     """从 GitHub 拉取最新 LiteLLM 模型价格表并合并（保留自定义注册模型），支持代理。"""
-    import httpx
-    import litellm
-
-    proxy: Optional[str] = None
-    if req.proxy_url:
-        url = req.proxy_url.strip()
-        if not url.startswith(("http://", "https://", "socks5://")):
-            url = f"http://{url}"
-        proxy = url
-
     try:
-        async with httpx.AsyncClient(proxy=proxy, timeout=30.0) as client:
-            response = await client.get(_COST_MAP_URL)
-            response.raise_for_status()
-            data: Dict[str, Any] = response.json()
-            # register_model 逐条合并并失效 litellm 内部缓存，
-            # 整表替换会丢弃自定义模型注册且绕过缓存失效
-            litellm.register_model(data)
-            return {"status": "ok", "model_count": len(litellm.model_cost)}
+        return await _svc.update_cost_map(req.proxy_url)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"更新失败: {e}") from e
 
@@ -565,7 +529,7 @@ async def get_model(model_id: str) -> Dict[str, Any]:
     cfg = _svc.get_model_config(model_id)
     if cfg is None:
         raise HTTPException(404, f"模型 '{model_id}' 不存在")
-    return _serialize_model_config(cfg)
+    return _svc.serialize_model_config(cfg)
 
 
 @router.put("/{model_id}")

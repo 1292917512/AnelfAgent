@@ -2,7 +2,8 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { CheckCheck, ChevronLeft, ChevronRight, RefreshCw, Trash2 } from "lucide-react";
-import { faceApi, type FaceEvent } from "@/lib/api";
+import { faceApi } from "@/lib/api";
+import type { FaceEvent } from "@/lib/types";
 import { Badge, Button, EmptyState, Input, Spinner, Switch, toast } from "@/components/ui";
 import { formatNs, onImgError } from "./format";
 

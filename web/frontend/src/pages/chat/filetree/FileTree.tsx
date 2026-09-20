@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Tree, type TreeApi } from "react-arborist";
 import { Loader2 } from "lucide-react";
 import { useIsMobile } from "@/lib/use-media-query";
-import type { WorkspaceNode, WorkspaceRoot } from "@/lib/api";
+import type { WorkspaceNode, WorkspaceRoot } from "@/lib/types";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { ConfirmDialog } from "@/components/ui";
 import { useFileTreeStore } from "./file-tree-store";

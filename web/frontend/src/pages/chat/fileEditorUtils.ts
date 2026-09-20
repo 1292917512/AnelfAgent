@@ -6,7 +6,8 @@ import { markdown } from "@codemirror/lang-markdown";
 import { yaml } from "@codemirror/lang-yaml";
 import { html } from "@codemirror/lang-html";
 import { css } from "@codemirror/lang-css";
-import { workspaceFileKind, type WorkspaceFile } from "@/lib/api";
+import type { WorkspaceFile } from "@/lib/types";
+import { workspaceFileKind } from "@/lib/workspace-kind";
 
 /** 按扩展名映射 CodeMirror 语言包 */
 export function langExtension(path: string): Extension[] {

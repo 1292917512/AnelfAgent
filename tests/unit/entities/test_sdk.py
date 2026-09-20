@@ -180,28 +180,19 @@ class TestEntityManifestOrder:
 
     def test_unregistered_group_sorts_last(self) -> None:
         """未注册权重的分组按字母序排在已注册分组之后。"""
+        import agent.memory.tools  # noqa: F401
         from core.entity import EntityRegistry
 
         assert EntityRegistry.group_sort_key("memory") < EntityRegistry.group_sort_key("_zzz_never")
         key = EntityRegistry.group_sort_key("_zzz_never")
         assert key == (1000, "_zzz_never")
 
-    def test_default_table_bands_keep_similar_groups_adjacent(self) -> None:
-        """默认权重表分段：同类分组同段相邻（记忆/规划/能力/运维/管理/界面）。"""
-        from core.entity import _DEFAULT_GROUP_ORDER
+    def test_agent_group_declares_order_on_import(self) -> None:
+        """工具组排序权重由各归属模块导入时自声明（core 不内置业务分组表）。"""
+        import agent.memory.tools  # noqa: F401
+        from core.entity import EntityRegistry
 
-        bands = [
-            {"output", "thinking"},
-            {"memory", "graph", "notes"},
-            {"planning", "skills", "delegation"},
-            {"retrieval", "minimax", "os", "environment", "ssh", "sticker", "share", "audio", "vault", "vision"},
-            {"model_control", "ollama", "logs", "devops"},
-            {"channel_ops", "entity", "mcp_manage", "plugins"},
-            {"ui", "session"},
-        ]
-        weights = [{_DEFAULT_GROUP_ORDER[g] for g in band} for band in bands]
-        for lower, upper in zip(weights, weights[1:], strict=False):
-            assert max(lower) < min(upper)
+        assert EntityRegistry.group_sort_key("memory") == (10, "memory")
 
 
 class TestTtsVoiceBridges:

@@ -1,19 +1,6 @@
 /** 音频页类型别名：统一从 lib/api 的音频类型再导出（面板内部引用保持简短名）。 */
 
-import type {
-  AudioConsolidateResult,
-  AudioIdentifyCandidate,
-  AudioIdentifyResult,
-  AudioRecording,
-  AudioRecordingListResult,
-  AudioSegment,
-  AudioSegmentListResult,
-  AudioSimilarityMapResult,
-  AudioSpeaker,
-  AudioSpeakerDetail,
-  AudioSpeakerListResult,
-  AudioSpeakerUpdatePayload,
-} from "@/lib/api";
+import type { AudioConsolidateResult, AudioIdentifyCandidate, AudioIdentifyResult, AudioRecording, AudioRecordingListResult, AudioSegment, AudioSegmentListResult, AudioSimilarityMapResult, AudioSpeaker, AudioSpeakerDetail, AudioSpeakerListResult, AudioSpeakerUpdatePayload } from "@/lib/types";
 
 export type Speaker = AudioSpeaker;
 export type SpeakerListItem = AudioSpeaker;

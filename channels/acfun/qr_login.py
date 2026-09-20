@@ -7,9 +7,6 @@
    result=0 已确认（响应带新 qrLoginSignature）/ 100400002 已扫码待确认 / 其他 失效
 3. 确认后 ``GET .../qr/acceptResult``（token + 新签名）→ result=0 时从 Set-Cookie 采集会话
    cookie（plain dict 形式，与 acfunsdk cookie 注入路径同构）
-
-状态机词汇与微信扫码一致：wait / scaned / confirmed / timeout / error，前端可直接复用
-微信扫码组件的轮询心智。
 """
 
 from __future__ import annotations
@@ -21,6 +18,15 @@ from typing import Any, Dict, Optional
 
 import httpx
 
+from agent.channel.qr_login import (
+    QR_CONFIRMED,
+    QR_ERROR,
+    QR_SCANED,
+    QR_TERMINAL_STATUSES,
+    QR_TIMEOUT,
+    QrSessionStore,
+    qr_result,
+)
 from core.log import log
 
 _QR_BASE = "https://scan.acfun.cn/rest/pc-direct/qr"
@@ -45,29 +51,20 @@ class QrSession:
     signature: str
     image_data: str
     created_at: float = field(default_factory=time.time)
-    status: str = "wait"        # wait / scaned / confirmed / timeout / error
+    status: str = "wait"
     error: str = ""
     cookies: Dict[str, str] = field(default_factory=dict)
-
-    @property
-    def expired(self) -> bool:
-        return time.time() - self.created_at > _SESSION_TTL
 
 
 class AcfunQrLoginManager:
     """扫码登录会话管理器（模块级单例，见 get_qr_manager）。"""
 
     def __init__(self) -> None:
-        self._sessions: Dict[str, QrSession] = {}
-
-    def _gc(self) -> None:
-        dead = [sid for sid, s in self._sessions.items() if s.expired]
-        for sid in dead:
-            self._sessions.pop(sid, None)
+        self._store = QrSessionStore(_SESSION_TTL)
 
     async def start(self) -> Dict[str, Any]:
         """拉取登录二维码 → {session_id, qr_png(data URL), expire_seconds}。"""
-        self._gc()
+        self._store.gc()
         async with httpx.AsyncClient(headers=_HEADERS, timeout=15.0) as client:
             resp = await client.get(f"{_QR_BASE}/start", params={"type": "WEB_LOGIN"})
             data = resp.json()
@@ -79,7 +76,7 @@ class AcfunQrLoginManager:
             signature=str(data["qrLoginSignature"]),
             image_data=str(data.get("imageData") or ""),
         )
-        self._sessions[session.session_id] = session
+        self._store.add(session.session_id, session)
         return {
             "session_id": session.session_id,
             "qr_png": f"data:image/png;base64,{session.image_data}",
@@ -88,15 +85,15 @@ class AcfunQrLoginManager:
 
     async def poll(self, session_id: str) -> Dict[str, Any]:
         """推进一次扫码状态检查；确认后采集 cookie 并附 credential 返回。"""
-        session = self._sessions.get(session_id)
+        session = self._store.get(session_id)
         if session is None:
-            return {"status": "error", "error": "会话不存在或已过期，请重新获取二维码"}
-        if session.status in ("confirmed", "timeout", "error"):
-            return self._result(session)
-        if session.expired:
-            session.status = "timeout"
+            return {"status": QR_ERROR, "error": "会话不存在或已过期，请重新获取二维码"}
+        if session.status in QR_TERMINAL_STATUSES:
+            return qr_result(session)
+        if self._store.is_expired(session):
+            session.status = QR_TIMEOUT
             session.error = "二维码已过期，请重新获取"
-            return self._result(session)
+            return qr_result(session)
 
         try:
             async with httpx.AsyncClient(headers=_HEADERS, timeout=_SCAN_TIMEOUT) as client:
@@ -106,29 +103,29 @@ class AcfunQrLoginManager:
                 })
                 data = resp.json()
         except (httpx.TimeoutException, httpx.ConnectError):
-            return self._result(session)  # 长轮询超时/网络抖动 → 维持当前状态
+            return qr_result(session)  # 长轮询超时/网络抖动 → 维持当前状态
         except Exception as exc:
             log(f"AcFun扫码: scanResult 异常: {exc}", "DEBUG", tag="通道")
-            return self._result(session)
+            return qr_result(session)
 
         result = data.get("result")
         if result == _RESULT_SCANNED:
-            session.status = "scaned"
-            return self._result(session)
+            session.status = QR_SCANED
+            return qr_result(session)
         if result == _RESULT_CONFIRMED:
             new_signature = str(data.get("qrLoginSignature") or session.signature)
             cookies = await self._accept(session.token, new_signature)
             if cookies is None:
-                session.status = "error"
+                session.status = QR_ERROR
                 session.error = "确认登录失败，请重试"
-                return self._result(session)
+                return qr_result(session)
             session.cookies = cookies
-            session.status = "confirmed"
-            return self._result(session, credential={"cookies": cookies})
+            session.status = QR_CONFIRMED
+            return qr_result(session, credential={"cookies": cookies})
         # result==21 签名错误 / 其他（二维码过期等）
-        session.status = "timeout"
+        session.status = QR_TIMEOUT
         session.error = str(data.get("error_msg") or "二维码已过期，请重新获取")
-        return self._result(session)
+        return qr_result(session)
 
     async def _accept(self, token: str, signature: str) -> Optional[Dict[str, str]]:
         """确认登录并采集会话 cookie（Set-Cookie 原文解析，与 acfunsdk cookie 注入同构）。"""
@@ -159,15 +156,7 @@ class AcfunQrLoginManager:
             return None
 
     async def discard(self, session_id: str) -> None:
-        self._sessions.pop(session_id, None)
-
-    def _result(self, session: QrSession, credential: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        out: Dict[str, Any] = {"status": session.status}
-        if session.error:
-            out["error"] = session.error
-        if credential:
-            out["credential"] = credential
-        return out
+        self._store.discard(session_id)
 
 
 _QR_MANAGER: Optional[AcfunQrLoginManager] = None

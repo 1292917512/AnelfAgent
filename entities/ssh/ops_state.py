@@ -32,7 +32,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from core.config import get_config, get_config_bool, get_config_int
 from core.log import log
-from entities._sdk import ToolOp, track_ops
+from entities._ops import ToolOp, track_ops
 
 from .manager import STATUS_CONNECTED, get_ssh_manager
 from .store import get_ssh_store

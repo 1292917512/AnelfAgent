@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { audioApi, type AudioStatus } from "@/lib/api";
+import { audioApi } from "@/lib/api";
+import type { AudioStatus } from "@/lib/types";
 import {
   Badge, Button, ConfirmDialog, Input, LoadingBlock, toast,
 } from "@/components/ui";

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -18,17 +17,13 @@ from core.path import upload_url_for
 from services import ChatService, UiService
 from services.chat import UPLOAD_DIR as _UPLOAD_DIR
 from services.chat import classify_file_type as _classify_file
+from services.chat import clean_message_for_display, normalize_web_scope_id
 from web.routers._errors import server_error
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 _chat_svc = ChatService()
 _ui_svc = UiService()
-
-# 消息内容内部标签（[tag:xxx]）剥离正则，历史清洗与会话标题共用；
-# 键为单词字符（与 tag_label 生成一致），值禁止跨 [、] 与换行，
-# 防止多行正文（执行摘要等）被错误配对吞掉
-_TAG_PREFIX_RE = re.compile(r"\[(?:\w+):([^\[\]\n]*)\]")
 
 _FILE_TYPES = {"image", "audio", "video", "file"}
 
@@ -193,48 +188,6 @@ async def send_message(req: SendMessageRequest) -> SendMessageResponse:
         return SendMessageResponse(ok=False, error=str(e))
 
 
-def _clean_message(msg: Dict[str, Any]) -> Dict[str, Any]:
-    """清理消息中的内部标签，返回干净的前端展示数据。
-
-    清洗顺序：元数据标签（time/uid 等）与功能性标签（media_file 等）整段删除
-    ——保留值只会拼出乱码前缀；其余 [k:v] 标签保留值（兼容旧语义）。
-
-    kind 标记供前端结构化渲染：
-    - tool_summary：[已执行操作摘要] 工具执行记录 → 折叠工具卡片
-    - system_notice：[系统]/[执行步骤] 等系统元消息 → 居中细条
-    """
-    from core.tags import strip_functional_tags, strip_message_meta_tags
-
-    content = str(msg.get("content", ""))
-    content = strip_message_meta_tags(content)
-    content = strip_functional_tags(content)
-    # kind 判定先于通用标签剥离：结构化前缀一旦识别即锁定，
-    # 避免正文中的类标签片段干扰后续清洗导致前缀丢失
-    head = content.strip()
-    kind: Optional[str] = None
-    if head.startswith("[已执行操作摘要]"):
-        kind = "tool_summary"
-    elif head.startswith(("[系统]", "[执行步骤]")):
-        kind = "system_notice"
-    content = _TAG_PREFIX_RE.sub(r"\1", content).strip()
-    result: Dict[str, Any] = {
-        "role": msg.get("role", ""),
-        "content": content,
-    }
-    if kind:
-        result["kind"] = kind
-    if "id" in msg:
-        result["id"] = msg["id"]
-    ts_ns = msg.get("ts_ns")
-    if ts_ns and isinstance(ts_ns, (int, float)) and ts_ns > 0:
-        import datetime
-        ts = ts_ns / 1e9 if ts_ns > 1e15 else ts_ns
-        # ts：epoch 秒（前端时间线合排 plan/delegation 卡片用，须与消息同源）
-        result["ts"] = ts
-        result["timestamp"] = datetime.datetime.fromtimestamp(ts).strftime("%H:%M:%S")
-    return result
-
-
 @router.get("/history")
 async def get_history(
     scope_id: str = Query("webui:web_user", description="基础 scope（不含 adapter 前缀时自动补 webui:）"),
@@ -242,20 +195,10 @@ async def get_history(
     limit: int = Query(50, ge=1, le=500),
     before_id: Optional[int] = Query(None, description="分页游标：仅取 id 早于该值的消息"),
 ) -> List[Dict[str, Any]]:
-    base_scope = _normalize_web_scope_id(scope_id)
+    base_scope = normalize_web_scope_id(scope_id)
     effective_scope = f"{base_scope}#{chat_id}" if chat_id else base_scope
     raw = await _chat_svc.load_history(scope_id=effective_scope, limit=limit, before_id=before_id)
-    return [_clean_message(m) for m in raw]
-
-
-def _normalize_web_scope_id(scope_id: str) -> str:
-    """webui 历史查询的 scope_id 归一化：裸 user_id 自动补 adapter 前缀（兼容旧前端）。"""
-    sid = (scope_id or "").strip()
-    if not sid:
-        return "webui:web_user"
-    if ":" in sid.split("#", 1)[0]:
-        return sid
-    return f"webui:{sid}"
+    return [clean_message_for_display(m) for m in raw]
 
 
 @router.get("/chats")
@@ -263,34 +206,10 @@ async def list_chats(
     user_id: str = Query("web_user"),
 ) -> Dict[str, Any]:
     """列出该用户在 webui 频道下出现过的所有 chat_id（基于 conversation_messages 表去重）。"""
-    from services._runtime import get_runtime
-    rt = get_runtime()
-    if rt is None:
-        return {"chats": []}
     try:
-        sessions = await rt.data_center.sqlite.list_user_chat_sessions(
-            _normalize_web_scope_id(user_id)
-        )
+        return {"chats": await _chat_svc.list_chats(user_id)}
     except Exception as exc:
         raise server_error("查询会话列表", exc) from exc
-    chats: List[Dict[str, Any]] = []
-    for s in sessions:
-        sid = s["scope_id"]
-        # scope_id 形如 "webui:web_user" 或 "webui:web_user#abc123"
-        chat_id = sid.split("#", 1)[1] if "#" in sid else "default"
-        title = "新会话"
-        raw_content = s.get("last_user_content")
-        if raw_content is not None:
-            # 最近一条用户消息作为标题（与历史清洗同规则：元数据/功能标签整段剥离）
-            title = _clean_message({"content": str(raw_content)})["content"][:40] or "(空消息)"
-        chats.append({
-            "chat_id": chat_id,
-            "scope_id": sid,
-            "title": title,
-            "last_ts": s["last_ts"],
-            "message_count": s["message_count"],
-        })
-    return {"chats": chats}
 
 
 @router.get("/bot-name")

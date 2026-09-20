@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
+from core.config import mask_secret
 from core.log import log
 from core.path import ConfigPaths
 from services import (
@@ -20,7 +21,6 @@ from services import (
 from services.heartbeat import HeartbeatServiceError
 from services.task import TaskServiceError, TaskStorageError
 from web.routers._errors import server_error
-from web.routers.schemas import MindConfigUpdate
 
 router = APIRouter(prefix="/config", tags=["config"])
 
@@ -116,23 +116,15 @@ async def get_config_snapshot() -> Dict[str, Any]:
     return snapshot
 
 
-def _mask_key(key: str) -> str:
-    if key and len(key) > 8:
-        return key[:4] + "****" + key[-4:]
-    return "****" if key else ""
-
-
 def _mask_llm_secrets(data: Dict[str, Any]) -> Dict[str, Any]:
-    """遮蔽 LLM 配置中的 API Key（兼容新旧格式）。"""
+    """遮蔽 LLM 配置中的 API Key（providers/clients 两种布局）。"""
     masked = dict(data)
-    # 新格式：providers 列表
     for prov in masked.get("providers", []):
         if isinstance(prov, dict) and "api_key" in prov:
-            prov["api_key"] = _mask_key(prov["api_key"])
-    # 旧格式兼容
+            prov["api_key"] = mask_secret(str(prov["api_key"]))
     for client in masked.get("clients", []):
         if isinstance(client, dict) and "api_key" in client:
-            client["api_key"] = _mask_key(client["api_key"])
+            client["api_key"] = mask_secret(str(client["api_key"]))
     return masked
 
 
@@ -140,9 +132,8 @@ def _mask_app_secrets(data: Dict[str, Any]) -> Dict[str, Any]:
     """遮蔽应用配置中的敏感字段。"""
     masked = dict(data)
     for k in _APP_SECRET_FIELDS:
-        if k in masked and masked[k] and len(str(masked[k])) > 8:
-            v = str(masked[k])
-            masked[k] = v[:4] + "****" + v[-4:]
+        if masked.get(k):
+            masked[k] = mask_secret(str(masked[k]))
     return masked
 
 
@@ -171,10 +162,12 @@ async def get_mind_config() -> Dict[str, Any]:
 
 
 @router.put("/mind")
-async def save_mind_config(data: MindConfigUpdate) -> Dict[str, str]:
-    """保存 Mind 配置（代理到 AgentStatusService）。"""
-    params = {k: v for k, v in data.model_dump().items() if v is not None}
-    _status_svc.save_mind_config(params)
+async def save_mind_config(data: Dict[str, Any]) -> Dict[str, str]:
+    """保存 Mind 配置（字段集由 MindConfig 反射校验，未知字段 400）。"""
+    try:
+        _status_svc.save_mind_config({k: v for k, v in data.items() if v is not None})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
     return {"status": "ok"}
 
 

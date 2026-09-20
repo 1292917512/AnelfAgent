@@ -73,6 +73,44 @@ def format_triple(edge: Dict[str, Any]) -> str:
     return f"{s_name} ─[{mid}]→ {o_name}"
 
 
+def entity_node_keys(
+    tag_list: Optional[List[str]],
+    entity_scope: str = "",
+    *,
+    adapter: str = "",
+) -> List[str]:
+    """实体标签 → 图谱节点 key（裸 id 补频道前缀，与图谱节点 key 对齐）。
+
+    频道前缀来源优先级：标签值自带 > entity_scope 的 adapter > adapter 参数
+    （思维会话当前频道）。无实体标签时 entity_scope 本身兜底为唯一节点。
+    """
+    from ..store.tag_intel import ENTITY_PREFIXES
+
+    scope_key = ""
+    scope_adapter = ""
+    if entity_scope and "_" in entity_scope:
+        scope_prefix, scope_value = entity_scope.split("_", 1)
+        if scope_value:
+            scope_key = f"{scope_prefix}:{scope_value}"
+            scope_adapter = scope_value.split(":", 1)[0] if ":" in scope_value else ""
+    fallback_adapter = scope_adapter or adapter
+
+    keys: List[str] = []
+    for tag in tag_list or []:
+        if not tag.startswith(ENTITY_PREFIXES):
+            continue
+        prefix, value = tag.split(":", 1)
+        value = value.strip()
+        if value and ":" not in value.split("#", 1)[0] and fallback_adapter:
+            value = f"{fallback_adapter}:{value}"
+        key = f"{prefix}:{value}"
+        if key not in keys:
+            keys.append(key)
+    if not keys and scope_key:
+        keys.append(scope_key)
+    return keys
+
+
 class GraphStore:
     """关系图谱存储：节点/边 CRUD + 邻域/路径查询 + cognee 投影入队。"""
 

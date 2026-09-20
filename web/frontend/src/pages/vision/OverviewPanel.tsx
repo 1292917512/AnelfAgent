@@ -2,35 +2,10 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { visionApi } from "@/lib/api";
+import type { VisionSourceStatus } from "@/lib/types";
+import { formatAge } from "@/lib/utils";
 import { Badge, Button, LoadingBlock, Switch, toast } from "@/components/ui";
 import { Camera, Eye, MonitorPlay, Play, Radio, Square } from "lucide-react";
-
-interface SourceStatus {
-  last_capture_at?: number | null;
-  last_error?: string;
-  capture_count?: number;
-}
-
-interface VisionStatus {
-  watching: string[];
-  sources: Record<string, SourceStatus>;
-  latest?: { path: string; source: string; captured_at: number } | null;
-  last_change_at?: number | null;
-  injection?: {
-    provider: string;
-    active: boolean;
-    last_text_inject_at?: number | null;
-    last_media_inject?: { at: number; source: string; path: string } | null;
-  };
-}
-
-function formatAgo(ts: number | null | undefined, empty: string): string {
-  if (!ts) return empty;
-  const ago = Math.max(0, Math.round(Date.now() / 1000 - ts));
-  if (ago < 60) return `${ago}s`;
-  if (ago < 3600) return `${Math.round(ago / 60)}min`;
-  return `${Math.round(ago / 3600)}h`;
-}
 
 /** 视觉总览：视觉源清单 + 监视开关 + 最新画面预览 */
 export function VisionOverviewPanel() {
@@ -40,7 +15,7 @@ export function VisionOverviewPanel() {
 
   const { data: status, isLoading } = useQuery({
     queryKey: ["visionStatus"],
-    queryFn: () => visionApi.status().then((r) => r.data as VisionStatus),
+    queryFn: () => visionApi.status().then((r) => r.data),
     refetchInterval: 5000,
   });
   const { data: sources } = useQuery({
@@ -79,12 +54,12 @@ export function VisionOverviewPanel() {
         {injection?.last_media_inject && (
           <span className="text-muted">
             {t("injection.lastMedia")}: {injection.last_media_inject.source} ·{" "}
-            {formatAgo(injection.last_media_inject.at, "-")}
+            {(injection.last_media_inject.at ? formatAge(injection.last_media_inject.at) : "-")}
           </span>
         )}
         {injection?.last_text_inject_at ? (
           <span className="text-muted">
-            {t("injection.lastText")}: {formatAgo(injection.last_text_inject_at, "-")}
+            {t("injection.lastText")}: {(injection.last_text_inject_at ? formatAge(injection.last_text_inject_at) : "-")}
           </span>
         ) : null}
       </div>
@@ -96,7 +71,7 @@ export function VisionOverviewPanel() {
           <span className="text-sm font-semibold text-heading">{t("latestFrame")}</span>
           <span className="ml-auto text-xs text-muted">
             {status.latest
-              ? `${status.latest.source} · ${formatAgo(status.latest.captured_at, "-")}`
+              ? `${status.latest.source} · ${(status.latest.captured_at ? formatAge(status.latest.captured_at) : "-")}`
               : t("noFrame")}
           </span>
           <Button size="sm" variant="ghost" onClick={() => setPreviewTick(Date.now())}>
@@ -122,7 +97,7 @@ export function VisionOverviewPanel() {
         </div>
         <div className="space-y-1.5">
           {(sources ?? []).map((src) => {
-            const st: SourceStatus = status.sources?.[src.key] ?? {};
+            const st: VisionSourceStatus = status.sources?.[src.key] ?? {};
             const active = watching.has(src.key);
             const enabled = src.enabled !== false;
             return (
@@ -148,7 +123,7 @@ export function VisionOverviewPanel() {
                     {src.description}
                     {st.capture_count ? ` · ${t("captures", { count: st.capture_count })}` : ""}
                     {st.last_capture_at
-                      ? ` · ${t("lastCapture")} ${formatAgo(st.last_capture_at, "-")}`
+                      ? ` · ${t("lastCapture")} ${(st.last_capture_at ? formatAge(st.last_capture_at) : "-")}`
                       : ""}
                     {st.last_error ? ` · ⚠ ${st.last_error}` : ""}
                   </div>

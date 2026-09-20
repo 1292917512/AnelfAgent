@@ -273,6 +273,7 @@ def create_bootstrap() -> FlowMachine:
         import agent.audio.worker  # noqa: F401
         import agent.channel.manage_tools  # noqa: F401
         import agent.channel.output_tools  # noqa: F401
+        import agent.memory.conversation_tools  # noqa: F401
         import agent.memory.graph.tools  # noqa: F401
         import agent.memory.tools  # noqa: F401
         import agent.model_assets  # noqa: F401

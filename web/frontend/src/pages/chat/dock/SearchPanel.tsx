@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Brain, FileText, MessagesSquare, ScrollText, Search } from "lucide-react";
-import { searchApi, type GlobalSearchResult } from "@/lib/api";
+import { searchApi } from "@/lib/api";
+import type { GlobalSearchResult } from "@/lib/types";
 import { Input } from "@/components/ui";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 

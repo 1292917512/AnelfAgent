@@ -23,3 +23,8 @@ export * from "./chat";
 export * from "./thinking";
 export * from "./system";
 export * from "./lifecycle";
+export * from "./vision";
+export * from "./audio";
+export * from "./hooks";
+export * from "./retrieval";
+export * from "./tools";

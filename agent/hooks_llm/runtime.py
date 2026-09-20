@@ -64,6 +64,11 @@ class HookRuntime:
     def executor(self) -> HookExecutor:
         return self._executor
 
+    @property
+    def started(self) -> bool:
+        """事件订阅是否已装配。"""
+        return self._started
+
     def start(self) -> None:
         """装配事件订阅（幂等）。"""
         if self._started:

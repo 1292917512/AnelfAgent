@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
+from core.entity import EntityRegistry
 from core.latebind import LateBinding
 from core.log import log
 from core.tags import strip_message_meta_tags
@@ -20,6 +21,8 @@ from core.tool_errors import ErrorCause, error_from_exception
 from entities._sdk import deferred_tool, get_current_scope
 
 from .outbound_guard import guard_empty_conversation, guard_outbound, note_outbound
+
+EntityRegistry.register_group_order("output", 0)
 
 if TYPE_CHECKING:
     from agent.storage.data_center import ConversationData

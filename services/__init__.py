@@ -16,6 +16,7 @@ from services.memory import MemoryService
 from services.model import ModelService
 from services.persona import PersonaService
 from services.responses import ResponsesService
+from services.search import SearchService
 from services.status import AgentStatusService
 from services.sticker import StickerService
 from services.system import SystemService
@@ -23,6 +24,7 @@ from services.tag import TagService
 from services.task import TaskService
 from services.tool import ToolService
 from services.ui import UiService
+from services.workspace import WorkspaceService
 
 __all__ = [
     "is_ready",
@@ -44,6 +46,7 @@ __all__ = [
     "ModelService",
     "PersonaService",
     "ResponsesService",
+    "SearchService",
     "AgentStatusService",
     "StickerService",
     "SystemService",
@@ -51,4 +54,5 @@ __all__ = [
     "TaskService",
     "ToolService",
     "UiService",
+    "WorkspaceService",
 ]

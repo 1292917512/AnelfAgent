@@ -1,6 +1,7 @@
-import { useState, useEffect } from "react";
+import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { useNow } from "@/hooks/useNow";
 import { statusApi, toolsApi } from "@/lib/api";
 import { StatCard } from "@/components/common/StatCard";
 import { Card } from "@/components/common/Card";
@@ -42,17 +43,8 @@ function formatUptime(seconds: number, t: (key: string) => string): string {
 function useUptime() {
   const startedAt = useAppStore((s) => s.startedAt);
   const { t } = useTranslation("dashboard");
-  const [display, setDisplay] = useState("—");
-
-  useEffect(() => {
-    if (startedAt === null) { setDisplay("—"); return; }
-    const tick = () => setDisplay(formatUptime(Date.now() / 1000 - startedAt, t));
-    tick();
-    const id = setInterval(tick, 1000);
-    return () => clearInterval(id);
-  }, [startedAt, t]);
-
-  return display;
+  const now = useNow(startedAt !== null);
+  return startedAt === null ? "—" : formatUptime(now / 1000 - startedAt, t);
 }
 
 export function OverviewPanel() {

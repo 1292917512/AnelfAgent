@@ -7,7 +7,8 @@ import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { ArrowDown, ArrowUp, Save } from "lucide-react";
-import { configMetaApi, type CapabilityStatus } from "@/lib/api";
+import { configMetaApi } from "@/lib/api";
+import type { CapabilityStatus } from "@/lib/types";
 import { Card } from "@/components/common/Card";
 import { StatusDot } from "@/components/common/StatusDot";
 

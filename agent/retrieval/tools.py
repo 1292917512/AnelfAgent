@@ -20,8 +20,11 @@ from __future__ import annotations
 import json
 from typing import Optional
 
+from core.entity import EntityRegistry
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
 from entities._sdk import deferred_tool
+
+EntityRegistry.register_group_order("retrieval", 30)
 
 _group = "retrieval"
 

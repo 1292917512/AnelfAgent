@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { RotateCcw } from "lucide-react";
-import type { ConfigMetaItem } from "@/lib/api";
+import type { ConfigMetaItem } from "@/lib/types";
 import { Drawer } from "@/components/common/Drawer";
 import { Badge } from "@/components/ui";
 import { useConfigSave } from "./useConfigSave";

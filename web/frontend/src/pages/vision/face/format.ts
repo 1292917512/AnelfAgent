@@ -2,24 +2,7 @@
 
 import type { SyntheticEvent } from "react";
 
-/** 纳秒时间戳 → 本地日期时间串（无效值返回占位符）。 */
-export function formatNs(ns: number): string {
-  if (!ns) return "-";
-  const d = new Date(ns / 1_000_000);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
-    `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
-/** 纳秒时间戳 → 相对时间（如 3min / 2h / 1d）。 */
-export function formatAgoNs(ns: number): string {
-  if (!ns) return "-";
-  const ago = Math.max(0, Math.round(Date.now() - ns / 1_000_000) / 1000);
-  if (ago < 60) return `${Math.round(ago)}s`;
-  if (ago < 3600) return `${Math.round(ago / 60)}min`;
-  if (ago < 86400) return `${Math.round(ago / 3600)}h`;
-  return `${Math.round(ago / 86400)}d`;
-}
+export { formatNs, formatAgoNs } from "@/lib/utils";
 
 /** 文件名提取（去掉目录前缀）。 */
 export function basename(path: string): string {

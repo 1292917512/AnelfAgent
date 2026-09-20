@@ -1,4 +1,5 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
+import { useNow } from "@/hooks/useNow";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { approvalsApi } from "@/lib/api";
@@ -27,17 +28,6 @@ const RISK_VARIANT: Record<string, BadgeVariant> = {
   high: "danger",
   critical: "danger",
 };
-
-/** 每秒刷新一次的当前时间，用于倒计时 */
-function useNow(enabled: boolean) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!enabled) return;
-    const id = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, [enabled]);
-  return now;
-}
 
 export function PendingApprovalsList() {
   const { t } = useTranslation("approvals");

@@ -186,7 +186,7 @@ class LoopbackCallbackServer:
         outer = self
 
         class _Handler(BaseHTTPRequestHandler):
-            def do_GET(self) -> None:  # noqa: N802（http.server 约定）
+            def do_GET(self) -> None:  # noqa: N802
                 from urllib.parse import parse_qs, urlparse
                 query = parse_qs(urlparse(self.path).query)
                 code = (query.get("code") or [""])[0]
@@ -271,14 +271,6 @@ def make_oauth_provider(srv) -> Optional[Any]:
         with _pending_lock:
             _pending[srv.name] = {"url": authorize_url, "started_at": time.time()}
         log(f"MCP server '{srv.name}' 需要 OAuth 授权: {authorize_url}", "WARNING", tag=_TAG)
-        try:
-            from core.async_helper import spawn
-            from core.event_bus import event_bus
-            spawn(event_bus.emit("mcp_auth_required", {
-                "server": srv.name, "url": authorize_url,
-            }), name="mcp-auth-required")
-        except RuntimeError:
-            pass
         # 有桌面环境时直接拉起浏览器（headless 场景静默失败，链接已登记）
         try:
             webbrowser.open(authorize_url)

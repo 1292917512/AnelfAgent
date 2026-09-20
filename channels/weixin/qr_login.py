@@ -14,6 +14,14 @@ import time
 import uuid
 from typing import Any, Dict, Optional
 
+from agent.channel.qr_login import (
+    QR_CONFIRMED,
+    QR_ERROR,
+    QR_SCANED,
+    QR_TIMEOUT,
+    QR_WAIT,
+    QrSessionStore,
+)
 from core.log import log
 
 from .ilink_client import (
@@ -83,21 +91,13 @@ class QrLoginSession:
         # 微信必须扫完整 liteapp URL，而不是裸 hex token
         return self.qrcode_url if self.qrcode_url else self.qrcode_value
 
-    @property
-    def expired(self) -> bool:
-        return time.monotonic() - self.created_at > QR_SESSION_TTL_SECONDS
 
 
 class QrLoginManager:
     """管理进行中的扫码会话（模块级单例，WebUI 路由调用）。"""
 
     def __init__(self) -> None:
-        self._sessions: Dict[str, QrLoginSession] = {}
-
-    def _gc(self) -> None:
-        stale = [sid for sid, s in self._sessions.items() if s.expired and s.status != "confirmed"]
-        for sid in stale:
-            self._sessions.pop(sid, None)
+        self._store = QrSessionStore(QR_SESSION_TTL_SECONDS, clock=time.monotonic)
 
     async def start(self, *, bot_type: str = "3") -> Dict[str, Any]:
         """拉取二维码，返回 {session_id, qr_png, qr_url}。"""
@@ -105,7 +105,7 @@ class QrLoginManager:
             raise RuntimeError("aiohttp is required for Weixin QR login")
         import aiohttp
 
-        self._gc()
+        self._store.gc(keep_status={QR_CONFIRMED})
         http_session = aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector())
         try:
             qr_resp = await _api_get(
@@ -125,7 +125,7 @@ class QrLoginManager:
             raise RuntimeError("二维码响应缺少 qrcode 字段")
 
         session = QrLoginSession(http_session, qrcode_value, qrcode_url, bot_type)
-        self._sessions[session.id] = session
+        self._store.add(session.id, session)
         return {
             "session_id": session.id,
             "qr_png": _qr_png_data_url(session.scan_data),
@@ -140,20 +140,20 @@ class QrLoginManager:
         - confirmed：带 account_id，凭据已落盘
         - timeout/error：流程结束
         """
-        session = self._sessions.get(session_id)
+        session = self._store.get(session_id)
         if session is None:
-            return {"status": "error", "error": "会话不存在或已过期，请重新获取二维码"}
-        if session.status == "confirmed":
+            return {"status": QR_ERROR, "error": "会话不存在或已过期，请重新获取二维码"}
+        if session.status == QR_CONFIRMED:
             return {
                 "status": "confirmed",
                 "account_id": (session.credential or {}).get("account_id", ""),
             }
-        if session.status in {"timeout", "error"}:
+        if session.status in {QR_TIMEOUT, QR_ERROR}:
             return {"status": session.status, "error": session.error}
-        if session.expired:
-            session.status = "timeout"
+        if self._store.is_expired(session):
+            session.status = QR_TIMEOUT
             await self._close(session)
-            return {"status": "timeout", "error": "二维码已超时，请重新获取"}
+            return {"status": QR_TIMEOUT, "error": "二维码已超时，请重新获取"}
 
         try:
             status_resp = await _api_get(
@@ -170,7 +170,7 @@ class QrLoginManager:
 
         status = str(status_resp.get("status") or "wait")
         if status == "scaned":
-            session.status = "scaned"
+            session.status = QR_SCANED
         elif status == "scaned_but_redirect":
             redirect_host = str(status_resp.get("redirect_host") or "")
             if redirect_host:
@@ -178,10 +178,10 @@ class QrLoginManager:
         elif status == "expired":
             session.refresh_count += 1
             if session.refresh_count > QR_MAX_REFRESH:
-                session.status = "error"
+                session.status = QR_ERROR
                 session.error = "二维码多次过期，请重新获取"
                 await self._close(session)
-                return {"status": "error", "error": session.error}
+                return {"status": QR_ERROR, "error": session.error}
             # 自动刷新二维码并在本次响应中带回新图
             try:
                 qr_resp = await _api_get(
@@ -192,7 +192,7 @@ class QrLoginManager:
                 )
                 session.qrcode_value = str(qr_resp.get("qrcode") or "")
                 session.qrcode_url = str(qr_resp.get("qrcode_img_content") or "")
-                session.status = "wait"
+                session.status = QR_WAIT
                 return {
                     "status": "wait",
                     "qr_png": _qr_png_data_url(session.scan_data),
@@ -200,20 +200,20 @@ class QrLoginManager:
                     "refreshed": True,
                 }
             except Exception as exc:
-                session.status = "error"
+                session.status = QR_ERROR
                 session.error = f"二维码刷新失败: {exc}"
                 await self._close(session)
-                return {"status": "error", "error": session.error}
+                return {"status": QR_ERROR, "error": session.error}
         elif status == "confirmed":
             account_id = str(status_resp.get("ilink_bot_id") or "")
             token = str(status_resp.get("bot_token") or "")
             base_url = str(status_resp.get("baseurl") or ILINK_BASE_URL)
             user_id = str(status_resp.get("ilink_user_id") or "")
             if not account_id or not token:
-                session.status = "error"
+                session.status = QR_ERROR
                 session.error = "扫码确认成功但凭据不完整"
                 await self._close(session)
-                return {"status": "error", "error": session.error}
+                return {"status": QR_ERROR, "error": session.error}
             save_weixin_account(
                 account_id=account_id,
                 token=token,
@@ -226,10 +226,10 @@ class QrLoginManager:
                 "base_url": base_url,
                 "user_id": user_id,
             }
-            session.status = "confirmed"
+            session.status = QR_CONFIRMED
             log(f"微信: WebUI 扫码登录成功 account={account_id[:8]}", tag="通道")
             await self._close(session)
-            return {"status": "confirmed", "account_id": account_id, "credential": session.credential}
+            return {"status": QR_CONFIRMED, "account_id": account_id, "credential": session.credential}
 
         return {"status": session.status}
 
@@ -241,7 +241,8 @@ class QrLoginManager:
             log("_close 异常已忽略", "DEBUG")
 
     async def discard(self, session_id: str) -> None:
-        session = self._sessions.pop(session_id, None)
+        session = self._store.get(session_id)
+        self._store.discard(session_id)
         if session:
             await self._close(session)
 

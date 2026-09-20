@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { skillsApi, type SkillItem } from "@/lib/api";
+import { skillsApi } from "@/lib/api";
+import type { SkillItem } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Button, EmptyState, Input, Textarea } from "@/components/ui";
 import { Plus, Trash2, Pin, PinOff, Archive, ArchiveRestore, Save, X, GraduationCap, GitMerge, Activity, Boxes, CircleDashed, RefreshCw, Zap } from "lucide-react";

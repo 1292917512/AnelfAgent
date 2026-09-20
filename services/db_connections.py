@@ -25,6 +25,7 @@ from core.config import expand_env_refs
 from core.file_utils import atomic_write_text
 from core.log import log
 from core.path import ConfigPaths
+from services.db_common import DatabaseError, serialize_value
 
 _ENGINES = ("postgresql", "mysql")
 _DEFAULT_PORTS = {"postgresql": 5432, "mysql": 3306}
@@ -63,7 +64,6 @@ class DbConnection(BaseModel):
 
 
 def _validate_conn_data(data: Dict[str, Any]) -> None:
-    from services.database import DatabaseError
 
     engine = data.get("engine", "")
     if engine not in _ENGINES:
@@ -79,7 +79,6 @@ def _validate_conn_data(data: Dict[str, Any]) -> None:
 
 def _validate_readonly_sql(sql: str) -> str:
     """外部源只读语句校验：单语句 + 首关键字白名单 + 自动补 LIMIT。"""
-    from services.database import DatabaseError
 
     text = sql.strip().rstrip(";").strip()
     if not text:
@@ -167,8 +166,7 @@ class ExternalAdapter:
     async def table_schema(self, table: str) -> Dict[str, Any]:
         columns = await self._list_columns(table)
         if not columns:
-            from services.database import DatabaseError
-            raise DatabaseError(f"表不存在或无列: {table}", status_code=404)
+                    raise DatabaseError(f"表不存在或无列: {table}", status_code=404)
         return {
             "table": table,
             "type": "table",
@@ -189,12 +187,10 @@ class ExternalAdapter:
         filter_col: Optional[str] = None,
         filter_text: Optional[str] = None,
     ) -> Dict[str, Any]:
-        from services.database import _serialize_value
 
         columns = await self._list_columns(table)
         if not columns:
-            from services.database import DatabaseError
-            raise DatabaseError(f"表不存在或无列: {table}", status_code=404)
+                    raise DatabaseError(f"表不存在或无列: {table}", status_code=404)
         col_names = [c["name"] for c in columns]
         valid = set(col_names)
 
@@ -202,16 +198,14 @@ class ExternalAdapter:
         params: List[Any] = []
         if filter_col and filter_text:
             if filter_col not in valid:
-                from services.database import DatabaseError
-                raise DatabaseError(f"未知列: {filter_col}", status_code=400)
+                            raise DatabaseError(f"未知列: {filter_col}", status_code=400)
             where_sql = f"WHERE CAST({self._quote(filter_col)} AS {self._text_cast}) LIKE {self._placeholder(1)}"
             params.append(f"%{filter_text}%")
 
         order_sql = ""
         if sort:
             if sort not in valid:
-                from services.database import DatabaseError
-                raise DatabaseError(f"未知列: {sort}", status_code=400)
+                            raise DatabaseError(f"未知列: {sort}", status_code=400)
             direction = "DESC" if order.lower() == "desc" else "ASC"
             order_sql = f"ORDER BY {self._quote(sort)} {direction}"
 
@@ -231,7 +225,7 @@ class ExternalAdapter:
         items = [
             {
                 "__rowid__": offset + idx + 1,
-                "values": {name: _serialize_value(row[i], name) for i, name in enumerate(col_names)},
+                "values": {name: serialize_value(row[i], name) for i, name in enumerate(col_names)},
             }
             for idx, row in enumerate(rows)
         ]
@@ -247,7 +241,6 @@ class ExternalAdapter:
         }
 
     async def run_query(self, sql: str) -> Dict[str, Any]:
-        from services.database import DatabaseError, _serialize_value
 
         safe_sql = _validate_readonly_sql(sql)
         started = time.time()
@@ -260,7 +253,7 @@ class ExternalAdapter:
         except Exception as exc:
             raise DatabaseError(f"查询失败: {exc}", status_code=400) from exc
         result_rows = [
-            {name: _serialize_value(row[i], name) for i, name in enumerate(columns)}
+            {name: serialize_value(row[i], name) for i, name in enumerate(columns)}
             for row in rows[:_QUERY_MAX_ROWS]
         ]
         return {
@@ -793,8 +786,7 @@ class ConnectionStore:
         return [c.to_public_dict() for c in self._items.values()]
 
     def get(self, conn_id: str) -> DbConnection:
-        from services.database import DatabaseError
-
+    
         conn = self._items.get(conn_id)
         if conn is None:
             raise DatabaseError(f"外部连接不存在: {conn_id}", status_code=404)
@@ -855,8 +847,7 @@ class ConnectionStore:
 
     async def test(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """测试连接（支持未保存的草稿配置）。"""
-        from services.database import DatabaseError
-
+    
         _validate_conn_data(data)
         draft = DbConnection(**{k: v for k, v in data.items() if k != "id"})
         # 草稿的脱敏密码 → 尝试沿用已保存的同 id 连接密码

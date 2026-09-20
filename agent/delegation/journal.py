@@ -37,6 +37,31 @@ TRANSCRIPT_MAX_BYTES = 262_144
 LEDGER_STARTED = "started"
 LEDGER_CLOSED = "closed"
 
+# 委托终态码（账本 status 字段与 /delegations/history 对外契约）
+STATUS_SUCCESS = "success"
+STATUS_FAILED = "failed"
+STATUS_CANCELLED = "cancelled"
+STATUS_LOST = "lost"
+
+_TERMINAL_LABELS = {
+    STATUS_SUCCESS: "成功",
+    STATUS_FAILED: "失败",
+    STATUS_CANCELLED: "已取消",
+    STATUS_LOST: "中断",
+}
+
+
+def terminal_status(*, success: bool, cancelled: bool) -> str:
+    """由执行结果推导委托终态码。"""
+    if cancelled:
+        return STATUS_CANCELLED
+    return STATUS_SUCCESS if success else STATUS_FAILED
+
+
+def terminal_label(status: str) -> str:
+    """终态码的人类可读标签（进度流与通知文案用）。"""
+    return _TERMINAL_LABELS.get(status, status)
+
 
 def delegation_dir() -> Path:
     return Path(ConfigPaths.DELEGATION_DIR)
@@ -256,7 +281,7 @@ def unclosed_delegations() -> List[Dict[str, Any]]:
         if record.get("event") != LEDGER_STARTED:
             continue
         unclosed.append(record)
-        append_ledger(LEDGER_CLOSED, did, status="lost")
+        append_ledger(LEDGER_CLOSED, did, status=STATUS_LOST)
     return unclosed
 
 

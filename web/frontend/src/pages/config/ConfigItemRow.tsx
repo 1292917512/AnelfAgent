@@ -1,6 +1,6 @@
 import { Check, Loader2, RotateCcw } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import type { ConfigMetaItem } from "@/lib/api";
+import type { ConfigMetaItem } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { useConfigSave } from "./useConfigSave";
 import { NumberField, PasswordField, RangeField, SelectField, SwitchField, TextField } from "./fields";

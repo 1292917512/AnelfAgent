@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { heartbeatApi, tasksApi, type HeartbeatConfig, type TaskSchedule, type TaskConfig } from "@/lib/api";
+import { heartbeatApi, tasksApi } from "@/lib/api";
+import type { HeartbeatConfig, TaskSchedule, TaskConfig } from "@/lib/types";
 import { Card } from "@/components/common/Card";
 import { Save, Plus } from "lucide-react";
 import { Button, Input, Switch } from "@/components/ui";

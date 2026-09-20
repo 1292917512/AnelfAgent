@@ -18,13 +18,16 @@ from pydantic import ValidationError
 
 from agent.llm.llm_client import API_TYPES, LLMClientConfig, ModelType
 from agent.llm.protocol import CHAT_PROTOCOLS
+from services import ModelService
+
+_serialize_model_config = ModelService().serialize_model_config
+
 from web.routers.models import (
     CreateModelReq,
     CreateProviderReq,
     UpdateModelReq,
     UpdateProviderReq,
     _normalize_model_params,
-    _serialize_model_config,
 )
 
 # ---------------------------------------------------------------------------

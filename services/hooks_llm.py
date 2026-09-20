@@ -41,7 +41,7 @@ class HooksLlmService:
             })
         return {
             "enabled": get_config_bool("hooks_llm_enabled", True),
-            "runtime_started": bool(runtime and runtime._started),
+            "runtime_started": bool(runtime and runtime.started),
             "events": sorted(HOOK_EVENTS),
             "hooks": hooks,
             "governance": {

@@ -9,7 +9,7 @@ import {
   FileText,
   FileVideo,
 } from "lucide-react";
-import type { WorkspaceNode } from "@/lib/api";
+import type { WorkspaceNode } from "@/lib/types";
 
 /** 取父目录路径（顶层返回 ""） */
 export function parentPath(path: string): string {

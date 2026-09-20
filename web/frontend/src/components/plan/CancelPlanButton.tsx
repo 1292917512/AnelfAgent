@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { chatApi, warnApiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 export function CancelPlanButton({
@@ -19,15 +20,7 @@ export function CancelPlanButton({
     setBusy(true);
     try {
       onCancel(t("status.cancelledByUser"));
-      try {
-        await fetch("/api/chat/cancel-plan", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ chat_id: chatId, plan_id: planId }),
-        });
-      } catch {
-        // 后端接口未实现时静默失败（前端已 optimistic 标记）
-      }
+      await chatApi.cancelPlan(chatId, planId).catch(warnApiError);
     } finally {
       setBusy(false);
     }

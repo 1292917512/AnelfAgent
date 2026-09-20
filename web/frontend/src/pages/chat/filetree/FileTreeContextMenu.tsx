@@ -15,7 +15,8 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { workspaceApi, type WorkspaceNode, type WorkspaceRoot } from "@/lib/api";
+import { workspaceApi } from "@/lib/api";
+import type { WorkspaceNode, WorkspaceRoot } from "@/lib/types";
 import { toast } from "@/stores/toast-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { useFileTreeStore } from "./file-tree-store";

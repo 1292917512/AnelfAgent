@@ -25,7 +25,8 @@ from typing import List, Optional, Tuple
 
 from core.config import get_config, get_config_bool, get_config_int, register_configs_safe
 from core.log import log
-from entities._sdk import ToolOp, context_provider, track_ops
+from entities._ops import ToolOp, track_ops
+from entities._sdk import context_provider
 
 from . import shell_state
 

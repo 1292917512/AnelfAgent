@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import i18n from "@/i18n";
-import { apiErrorMessage, workspaceApi, type WorkspaceNode, type WorkspaceRoot } from "@/lib/api";
+import { apiErrorMessage, workspaceApi } from "@/lib/api";
+import type { WorkspaceNode, WorkspaceRoot } from "@/lib/types";
 import { toast } from "@/stores/toast-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { findNode, joinPath, parentPath, replaceChildren, uniqueName } from "./file-tree-utils";

@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { ChevronDown, ChevronRight, FileAudio, Folder, RefreshCw, Trash2 } from "lucide-react";
 import { audiosyncApi } from "./api";
 import { audioApi } from "@/lib/api";
-import type { AudioRecording as Recording } from "@/lib/api";
+import type { AudioRecording as Recording } from "@/lib/types";
 import { Badge, Button, ConfirmDialog, EmptyState, Spinner, toast } from "@/components/ui";
 import { formatNs, formatOffset } from "./format";
 

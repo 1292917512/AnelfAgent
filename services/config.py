@@ -2,24 +2,20 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 
 class ConfigService:
     """配置服务（Web 侧入口）。"""
 
-    _mind_fields_cache: Optional[frozenset] = None
-
-    @classmethod
-    def mind_fields(cls) -> frozenset:
+    @staticmethod
+    def mind_fields() -> frozenset:
         """MindConfig 字段集合（保存时路由到 save_mind_config 以保证双轨同步）。"""
-        if cls._mind_fields_cache is None:
-            try:
-                from agent.config import MIND_SYNC_FIELDS
-                cls._mind_fields_cache = frozenset((*MIND_SYNC_FIELDS, "tool_system_rules"))
-            except Exception:
-                cls._mind_fields_cache = frozenset()
-        return cls._mind_fields_cache
+        try:
+            from agent.config import MIND_CONFIG_FIELDS
+            return frozenset(MIND_CONFIG_FIELDS)
+        except Exception:
+            return frozenset()
 
     @staticmethod
     def save_mind_value(key: str, value: Any) -> None:

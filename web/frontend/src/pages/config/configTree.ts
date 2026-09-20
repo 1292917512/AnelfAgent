@@ -1,4 +1,4 @@
-import type { ConfigMetaGroup, ConfigMetaItem } from "@/lib/api";
+import type { ConfigMetaGroup, ConfigMetaItem } from "@/lib/types";
 
 export interface ConfigSectionNode {
   /** 完整分组 key（module/section） */

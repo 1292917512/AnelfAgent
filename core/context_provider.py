@@ -287,7 +287,7 @@ class ContextProviderRegistry:
         try:
             metas = [
                 meta for meta in cls.get_all()
-                if cls._is_active(meta) and cls._match_scope(meta.scope_filter, scope)
+                if cls.is_active(meta) and cls._match_scope(meta.scope_filter, scope)
             ]
             results = await asyncio.gather(
                 *(cls._safe_provide(meta, scope) for meta in metas)
@@ -433,7 +433,7 @@ class ContextProviderRegistry:
             return None
 
     @classmethod
-    def _is_active(cls, meta: ProviderMeta) -> bool:
+    def is_active(cls, meta: ProviderMeta) -> bool:
         """provider 是否处于注入活动状态。
 
         两道门控（均热读取，配置/启停变更即时生效）：
@@ -554,7 +554,7 @@ class ContextProviderRegistry:
                 "scope_filter": meta.scope_filter,
                 "group": meta.group,
                 "inject_key": meta.inject_key,
-                "active": cls._is_active(meta),
+                "active": cls.is_active(meta),
                 "description": meta.description,
                 "tokens": 0,
                 "bytes": 0,

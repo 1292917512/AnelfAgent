@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import type { ConfigMetaItem } from "@/lib/api";
+import type { ConfigMetaItem } from "@/lib/types";
 import { Check, Loader2, RotateCcw } from "lucide-react";
 import { ModelSelect } from "@/components/models/ModelSelect";
 import { ReasoningEffortOptions } from "@/components/common/ReasoningEffortSelect";

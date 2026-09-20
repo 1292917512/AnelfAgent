@@ -9,7 +9,8 @@ import { Button, Input, LoadingBlock } from "@/components/ui";
 import { ToolGroupCard } from "./ToolGroupCard";
 import { ToolEditModal } from "./ToolEditModal";
 import { PluginsCard } from "./PluginsCard";
-import type { EditState, PluginInfo, ToolGroup, ToolItem } from "./types";
+import type { PluginInfo, ToolGroup, ToolItem } from "@/lib/types";
+import type { EditState } from "./types";
 
 /** 工具列表面板：搜索 + 标签筛选 + 分组手风琴 + 插件 */
 export function ToolsListPanel() {

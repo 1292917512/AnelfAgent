@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
-import time
-from collections import OrderedDict
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 import lark_oapi as lark
 
+from agent.channel.dedup import MessageDedup
 from agent.channel.schemas import (
     AdapterChannel,
     AdapterMessage,
@@ -33,18 +32,12 @@ from .types import FeishuMention
 # 消息去重（LRU）
 # ------------------------------------------------------------------
 
-_DEDUP_MAX = 2000
-_seen_message_ids: OrderedDict[str, float] = OrderedDict()
+_dedup = MessageDedup(ttl_seconds=None, max_size=2000)
 
 
 def _is_duplicate(message_id: str) -> bool:
     """基于 message_id 的内存去重。"""
-    if message_id in _seen_message_ids:
-        return True
-    _seen_message_ids[message_id] = time.time()
-    while len(_seen_message_ids) > _DEDUP_MAX:
-        _seen_message_ids.popitem(last=False)
-    return False
+    return _dedup.is_duplicate(message_id)
 
 
 # ------------------------------------------------------------------

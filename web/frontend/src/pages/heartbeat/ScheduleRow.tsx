@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { RotateCcw, Trash2 } from "lucide-react";
-import type { TaskConfig, TaskSchedule } from "@/lib/api";
+import type { TaskConfig, TaskSchedule } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Input, Select } from "@/components/ui";
 import { ModelSelect } from "@/components/models/ModelSelect";

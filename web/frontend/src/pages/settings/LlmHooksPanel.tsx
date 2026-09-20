@@ -1,7 +1,8 @@
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import { Zap } from "lucide-react";
-import { hooksLlmApi, type LlmHookItem } from "@/lib/api";
+import { hooksLlmApi } from "@/lib/api";
+import type { LlmHookItem } from "@/lib/types";
 import { Card } from "@/components/common/Card";
 import { Badge, EmptyState, LoadingBlock } from "@/components/ui";
 

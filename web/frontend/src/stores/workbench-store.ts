@@ -1,5 +1,6 @@
 import { create } from "zustand";
-import { uiApi, type WorkspaceRoot } from "@/lib/api";
+import { uiApi } from "@/lib/api";
+import type { WorkspaceRoot } from "@/lib/types";
 
 export type DockTab = "status" | "trace" | "tasks" | "search" | "settings";
 const DOCK_TABS: DockTab[] = ["status", "trace", "tasks", "search", "settings"];

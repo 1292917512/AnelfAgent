@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { localModelsApi, providerKeysApi, type ProviderKeyEntry } from "@/lib/api";
+import { localModelsApi, providerKeysApi } from "@/lib/api";
+import type { ProviderKeyEntry } from "@/lib/types";
 import { Badge, Button, Input, toast } from "@/components/ui";
 import { KeyRound, Package } from "lucide-react";
 

@@ -18,10 +18,6 @@ import { useCopyFeedback } from "@/hooks/useCopyFeedback";
 type ModelKind = "chat" | "embedding";
 type KindConfig = CogneeChatModelConfig | CogneeEmbeddingModelConfig;
 
-const CHAT_PROVIDERS = ["openai", "anthropic", "gemini", "ollama", "custom", "azure", "mistral", "bedrock"];
-const EMBED_PROVIDERS = ["openai", "ollama", "azure", "fastembed"];
-const INSTRUCTOR_MODES = ["json_mode", "json_schema_mode", "tools", "anthropic_tools", "mistral_tools"];
-const REASONING_EFFORTS: CogneeReasoningEffort[] = ["", "off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 function Field({ label, desc, children }: { label: string; desc?: string; children: React.ReactNode }) {
   return (
@@ -77,7 +73,9 @@ export function ModelConfigCard({ kind }: { kind: ModelKind }) {
   };
 
   const selectedModel = (priorities[kind] || []).find((item) => item.id === form.model_id);
-  const providers = kind === "chat" ? CHAT_PROVIDERS : EMBED_PROVIDERS;
+  const providers = config?.options
+    ? (kind === "chat" ? config.options.chat_providers : config.options.embed_providers)
+    : [];
   const sourceDesc: Record<CogneeModelSource, string> = {
     auto: t("cognee.sourceAutoDesc"),
     model: t("cognee.sourceModelDesc"),
@@ -190,7 +188,7 @@ export function ModelConfigCard({ kind }: { kind: ModelKind }) {
                 onChange={(e) => update({ instructor_mode: e.target.value })}
               >
                 <option value="">{t("cognee.instructorModeAuto")}</option>
-                {INSTRUCTOR_MODES.map((m) => (
+                {(config?.options.instructor_modes ?? []).filter(Boolean).map((m) => (
                   <option key={m} value={m}>{m}</option>
                 ))}
               </Select>
@@ -208,7 +206,7 @@ export function ModelConfigCard({ kind }: { kind: ModelKind }) {
                 value={(form as CogneeChatModelConfig).reasoning_effort ?? ""}
                 onChange={(e) => update({ reasoning_effort: e.target.value as CogneeReasoningEffort })}
               >
-                {REASONING_EFFORTS.map((effort) => (
+                {(config?.options.reasoning_efforts ?? []).map((effort) => (
                   <option key={effort || "auto"} value={effort}>
                     {t(`cognee.reasoning_${effort || "auto"}`)}
                   </option>

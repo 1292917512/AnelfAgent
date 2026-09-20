@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from core.config import MASK_TOKEN, is_masked_secret, mask_secret
 from services._runtime import get_runtime
 
 if TYPE_CHECKING:
@@ -11,8 +12,6 @@ if TYPE_CHECKING:
 
 
 class ModelService:
-    _API_KEY_MASK = "****"
-
     # ------------------------------------------------------------------
     # 协议类型 / 思考档位（agent.llm 单一权威的 services 侧出口）
     # ------------------------------------------------------------------
@@ -58,19 +57,6 @@ class ModelService:
         from agent.llm import get_llm_manager
         return get_llm_manager()
 
-    @classmethod
-    def _mask_api_key(cls, api_key: str) -> str:
-        """返回不可用于鉴权的密钥掩码。"""
-        if not api_key:
-            return ""
-        if len(api_key) <= 8:
-            return cls._API_KEY_MASK
-        return f"{api_key[:4]}{cls._API_KEY_MASK}{api_key[-4:]}"
-
-    @classmethod
-    def _is_masked_api_key(cls, api_key: str) -> bool:
-        return cls._API_KEY_MASK in api_key
-
     # ------------------------------------------------------------------
     # 供应商
     # ------------------------------------------------------------------
@@ -78,7 +64,7 @@ class ModelService:
     def list_providers(self) -> List[Dict[str, Any]]:
         providers = self._manager().list_providers()
         return [
-            {**provider, "api_key": self._mask_api_key(str(provider.get("api_key", "")))}
+            {**provider, "api_key": mask_secret(str(provider.get("api_key", "")))}
             for provider in providers
         ]
 
@@ -87,7 +73,7 @@ class ModelService:
         if prov is None:
             return None
         result = prov.to_dict()
-        result["api_key"] = self._mask_api_key(str(result.get("api_key", "")))
+        result["api_key"] = mask_secret(str(result.get("api_key", "")))
         return result
 
     def add_provider(self, pid: str, **kwargs: Any) -> bool:
@@ -100,13 +86,13 @@ class ModelService:
 
     def update_provider(self, pid: str, **kwargs: Any) -> bool:
         api_key = kwargs.get("api_key")
-        if isinstance(api_key, str) and (not api_key or self._is_masked_api_key(api_key)):
+        if isinstance(api_key, str) and (not api_key or is_masked_secret(api_key)):
             kwargs.pop("api_key")
         return self._manager().update_provider(pid, **kwargs)
 
     def resolve_provider_api_key(self, provider_id: str, api_key: str) -> str:
         """将界面提交的空值或掩码解析为供应商当前密钥。"""
-        if api_key and not self._is_masked_api_key(api_key):
+        if api_key and not is_masked_secret(api_key):
             return api_key
         provider = self._manager().get_provider(provider_id)
         return provider.api_key if provider is not None else ""
@@ -120,7 +106,7 @@ class ModelService:
             if api_key:
                 secrets.append(api_key)
         for secret in secrets:
-            message = message.replace(secret, self._API_KEY_MASK)
+            message = message.replace(secret, MASK_TOKEN)
         return message
 
     def remove_provider(self, pid: str) -> bool:
@@ -141,7 +127,7 @@ class ModelService:
         d = cfg.to_model_dict()
         d["provider_id"] = cfg.provider_id
         d["base_url"] = cfg.base_url
-        d["api_key"] = self._mask_api_key(cfg.api_key)
+        d["api_key"] = mask_secret(cfg.api_key)
         d["api_type"] = cfg.api_type
         d["enabled"] = cfg.enabled
         return d
@@ -164,6 +150,56 @@ class ModelService:
 
     def rename_model(self, old_id: str, new_id: str) -> bool:
         return self._manager().rename_model(old_id, new_id)
+
+    @staticmethod
+    def serialize_model_config(config: Dict[str, Any]) -> Dict[str, Any]:
+        """将内部模型格式转换为公开 API 格式（legacy extra_params 并入 extra_body）。"""
+        result = dict(config)
+        result.setdefault("request_params", {})
+        result.setdefault("extra_headers", {})
+        result.setdefault("chat_protocol", "chat_completions")
+        result.setdefault("builtin_tools", [])
+        legacy_extra = result.pop("extra_params", {})
+        extra_body = dict(legacy_extra)
+        extra_body.update(result.get("extra_body", {}))
+        result["extra_body"] = extra_body
+        return result
+
+    # ------------------------------------------------------------------
+    # LiteLLM 模型价格表
+    # ------------------------------------------------------------------
+
+    _COST_MAP_URL = (
+        "https://raw.githubusercontent.com/BerriAI/litellm/main"
+        "/model_prices_and_context_window.json"
+    )
+
+    @staticmethod
+    def cost_map_info() -> Dict[str, Any]:
+        """返回当前内存中 LiteLLM 模型价格表的信息。"""
+        import litellm
+        return {"model_count": len(litellm.model_cost)}
+
+    async def update_cost_map(self, proxy_url: str = "") -> Dict[str, Any]:
+        """从 GitHub 拉取最新 LiteLLM 模型价格表并合并（保留自定义注册模型），支持代理。"""
+        import httpx
+        import litellm
+
+        proxy: Optional[str] = None
+        if proxy_url:
+            url = proxy_url.strip()
+            if not url.startswith(("http://", "https://", "socks5://")):
+                url = f"http://{url}"
+            proxy = url
+
+        async with httpx.AsyncClient(proxy=proxy, timeout=30.0) as client:
+            response = await client.get(self._COST_MAP_URL)
+            response.raise_for_status()
+            data: Dict[str, Any] = response.json()
+            # register_model 逐条合并并失效 litellm 内部缓存，
+            # 整表替换会丢弃自定义模型注册且绕过缓存失效
+            litellm.register_model(data)
+            return {"status": "ok", "model_count": len(litellm.model_cost)}
 
     # ------------------------------------------------------------------
     # 优先级

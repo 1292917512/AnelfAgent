@@ -6,8 +6,8 @@ import time
 
 import pytest
 
-import entities._sdk as sdk
-from entities._sdk import ToolOp
+import entities._ops as sdk
+from entities._ops import ToolOp
 from entities.filesystem import ops_context, shell_state
 
 _SCOPE = "user_test:1"

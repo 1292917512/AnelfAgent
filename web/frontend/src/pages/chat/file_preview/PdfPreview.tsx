@@ -1,4 +1,5 @@
-import { workspaceApi, type WorkspaceRoot } from "@/lib/api";
+import { workspaceApi } from "@/lib/api";
+import type { WorkspaceRoot } from "@/lib/types";
 
 interface PdfPreviewProps {
   path: string;

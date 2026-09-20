@@ -17,10 +17,13 @@ from typing import Optional
 
 from agent.delegation.delegation_manager import DelegationManager
 from agent.delegation.sub_agent import current_depth, max_spawn_depth
+from core.entity import EntityRegistry
 from core.latebind import LateBinding
 from core.log import log
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
 from entities._sdk import deferred_tool
+
+EntityRegistry.register_group_order("delegation", 22)
 
 #: 委托管理器端口（bootstrap 经 agent.runtime.wiring 施绑）
 delegation_manager_port: LateBinding[DelegationManager] = LateBinding("delegation.manager")

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -248,92 +247,35 @@ class MemoryService:
     ) -> Dict[str, Any]:
         """召回测试（记忆/cognee 界面诊断面板）：与真实召回同管线的无副作用执行。
 
-        编排检索规划（retriever.plan_retrieval）→ 多计划查询联邦检索 →
-        共识融合（retriever.merge_consensus）→ 关系/遗忘层；不记访问、
-        不触发异步深探。诊断编排放服务层，retriever 保持纯检索。
+        编排在 agent 层（retriever.diagnostic_recall）：检索规划 → 多计划查询
+        联邦检索 → 共识融合 → 关系/遗忘层；不记访问、不触发异步深探。
+        本方法只做 API 响应形状的映射。
         """
-        import time as _time
-
         rt = require_runtime()
         retriever = rt.mind.retriever
-        store = rt.mind.memory_store
-        if retriever is None or store is None:
+        if retriever is None or rt.mind.memory_store is None:
             return {"error": "记忆系统未初始化"}
 
-        from agent.memory.cognee.config import load_cognee_config
-        from agent.memory.cognee.fusion import datasets_for_scope, federated_search
-        from agent.memory.cognee.runtime import get_cognee_client
-        from agent.memory.memory_types import MemorySearchResult
-        from agent.memory.store.tag_intel import ENTITY_PREFIXES
-
-        timings: Dict[str, Any] = {}
-        total_start = _time.perf_counter()
-        tag_list = [t for t in (tags or []) if t.strip()]
-        deep = depth.strip().lower() == "deep"
-        cognee_config = load_cognee_config()
-        if search_types:
-            import dataclasses
-            cognee_config = dataclasses.replace(
-                cognee_config,
-                search_types=[s.strip().upper() for s in search_types if s.strip()],
-            )
-        datasets = datasets_for_scope(cognee_config, entity_scope, tag_list or None)
-
-        # 1) 检索规划（含实体→图谱节点解析）
-        t0 = _time.perf_counter()
-        plan = await retriever.plan_retrieval(query)
-        timings["plan_ms"] = round((_time.perf_counter() - t0) * 1000, 1)
-
-        # 2) 多计划查询并行联邦检索 + 共识融合（与被动召回同口径）
-        t0 = _time.perf_counter()
-        planned_queries = [q for q in plan.queries[:3] if q and len(q.strip()) >= 4] or [query]
-        query_vec = await rt.mind.embedder.embed_query(query) if query else None
-
-        async def _lane(q: str, targeted: bool) -> List[MemorySearchResult]:
-            vec = query_vec if q == query else await rt.mind.embedder.embed_query(q)
-            return await federated_search(
-                store.search_unified(
-                    query=q, query_vec=vec, query_tags=tag_list or None,
-                    limit=limit * cognee_config.recall_pool_multiplier,
-                ),
-                query=q, client=get_cognee_client(), config=cognee_config,
-                limit=limit, entity_scope=entity_scope,
-                query_tags=tag_list or None, deep=deep,
-                node_names=plan.node_labels if targeted else None,
-            )
-
-        lanes = await asyncio.gather(*(
-            _lane(q, i == 0) for i, q in enumerate(planned_queries)
-        ))
-        results = retriever.merge_consensus(list(lanes), limit=limit * 2)
-        timings["search_ms"] = round((_time.perf_counter() - t0) * 1000, 1)
-
-        # 3) 关系邻域 + 遗忘层（并行，与 recall 工具同口径）
-        node_keys = list(plan.node_keys)
-        for tag in tag_list:
-            if tag.startswith(ENTITY_PREFIXES) and tag not in node_keys:
-                node_keys.append(tag)
-        forgotten_task = asyncio.create_task(
-            store.search_forgotten(query, query_vec, limit=3),
+        outcome = await retriever.diagnostic_recall(
+            query,
+            tag_list=tags,
+            entity_scope=entity_scope,
+            limit=limit,
+            deep=depth.strip().lower() == "deep",
+            search_types=search_types,
         )
-        relations: List[str] = []
-        if node_keys:
-            try:
-                from agent.memory.graph import format_triple
-                edges = await store.graph.edges_for_scopes(node_keys[:6], limit=10)
-                relations = [format_triple(e) for e in edges]
-            except Exception:
-                relations = []
-        forgotten = await forgotten_task
-        timings["total_ms"] = round((_time.perf_counter() - total_start) * 1000, 1)
+        if outcome is None:
+            return {"error": "记忆系统未初始化"}
 
+        cognee_config = outcome["cognee_config"]
+        deep = outcome["deep"]
         return {
-            "plan": plan.model_dump(),
+            "plan": outcome["plan"].model_dump(),
             "depth": "deep" if deep else "shallow",
             "cognee": {
                 "enabled": cognee_config.enabled,
                 "recall_enabled": cognee_config.recall_enabled,
-                "datasets": datasets,
+                "datasets": outcome["datasets"],
                 "search_types": (cognee_config.deep_search_types if deep else cognee_config.search_types),
             },
             "items": [{
@@ -346,10 +288,10 @@ class MemoryService:
                 "dataset": r.dataset_name,
                 "path": r.path or "",
                 "provenance": r.provenance,
-            } for r in results],
-            "relations": relations,
-            "forgotten": forgotten,
-            "timings": timings,
+            } for r in outcome["results"]],
+            "relations": outcome["relations"],
+            "forgotten": outcome["forgotten"],
+            "timings": outcome["timings"],
         }
 
     async def merge_ltm(self, ids: List[int], content: str) -> Dict[str, Any]:
@@ -790,9 +732,28 @@ class MemoryService:
         }
 
     @staticmethod
+    @staticmethod
+    def _cognee_config_response(config: Any) -> Dict[str, Any]:
+        """cognee 配置响应：配置值 + 前端下拉词汇（名单单一权威在后端）。"""
+        from agent.memory.cognee.config import (
+            COGNEE_CHAT_PROVIDERS,
+            COGNEE_EMBED_PROVIDERS,
+            COGNEE_INSTRUCTOR_MODES,
+            REASONING_EFFORTS,
+        )
+        return {
+            **config.to_dict(),
+            "options": {
+                "chat_providers": list(COGNEE_CHAT_PROVIDERS),
+                "embed_providers": list(COGNEE_EMBED_PROVIDERS),
+                "instructor_modes": list(COGNEE_INSTRUCTOR_MODES),
+                "reasoning_efforts": list(REASONING_EFFORTS),
+            },
+        }
+
     def get_cognee_config() -> Dict[str, Any]:
         from agent.memory.cognee.config import load_cognee_config
-        return load_cognee_config().to_dict()
+        return MemoryService._cognee_config_response(load_cognee_config())
 
     @staticmethod
     async def save_cognee_config(values: Dict[str, Any]) -> Dict[str, Any]:
@@ -819,7 +780,7 @@ class MemoryService:
         coordinator = get_cognee_coordinator()
         if coordinator:
             await coordinator.reconfigure(config)
-        return config.to_dict()
+        return MemoryService._cognee_config_response(config)
 
     @staticmethod
     async def retry_cognee_sync() -> int:

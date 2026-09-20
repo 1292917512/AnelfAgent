@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { faceApi, type FaceStatus } from "@/lib/api";
+import { faceApi } from "@/lib/api";
+import type { FaceStatus } from "@/lib/types";
 import { Badge, Button, LoadingBlock, toast } from "@/components/ui";
 import { ScanFace, ServerCog, Users, Activity, Database } from "lucide-react";
 import { PersonsView } from "./PersonsView";

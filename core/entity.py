@@ -485,39 +485,6 @@ _JSON_ERROR_PREVIEW_LEN = 200
 # 实体目录中未注册排序权重分组的兜底权重（按字母序排在已注册分组之后）
 _UNREGISTERED_GROUP_WEIGHT = 1000
 
-# 默认分组排序权重表（数字越小越靠前），按类别分段让同类分组相邻：
-#   0-9 输出与思维 / 10-19 记忆 / 20-29 规划与执行 / 30-49 能力与感知
-#   50-59 模型与运维 / 60-69 管理与集成 / 70-79 界面与会话
-# 本表仅为兜底：实体经 entity_manifest(order=...) 自声明权重（_sdk 接线
-# register_group_order）后覆盖本表；未注册权重的分组按字母序排在末尾。
-_DEFAULT_GROUP_ORDER: Dict[str, int] = {
-    # 输出与思维
-    "output": 0, "thinking": 1,
-    # 记忆
-    "memory": 10, "graph": 11, "notes": 12,
-    # 规划与执行
-    "planning": 20, "skills": 21, "delegation": 22,
-    # 能力与感知
-    "retrieval": 30, "minimax": 31, "dashscope": 32, "os": 33, "environment": 34, "ssh": 35,
-    "sticker": 36, "share": 37, "audio": 38, "vault": 39, "vision": 40,
-    # 模型与运维
-    "model_control": 50, "ollama": 51, "logs": 52, "devops": 53,
-    # 管理与集成
-    "channel_ops": 60, "entity": 61, "mcp_manage": 62, "plugins": 63,
-    # 界面与会话
-    "ui": 70, "session": 71,
-}
-
-
-def register_default_group_orders() -> None:
-    """按 _DEFAULT_GROUP_ORDER 注册默认分组排序权重。
-
-    业务模块可在注册工具分组后调用 EntityRegistry.register_group_order()
-    覆盖任意分组的权重。
-    """
-    for group, weight in _DEFAULT_GROUP_ORDER.items():
-        EntityRegistry.register_group_order(group, weight)
-
 
 # ======================================================================
 # EntityRegistry —— 中央注册枢纽
@@ -1304,8 +1271,7 @@ class EntityRegistry:
     def unregister_group(cls, group: str) -> int:
         """注销分组内全部实体并清理分组元数据，返回移除的实体数。
 
-        展示清单（manifest）随分组一并清除；排序权重回落到默认表
-        （默认表未收录的分组直接删除权重，热插拔回收后不留残留）。
+        展示清单（manifest）与排序权重随分组一并清除（热插拔回收后不留残留）。
         """
         names = list(cls._groups.get(group, []))
         count = 0
@@ -1315,11 +1281,7 @@ class EntityRegistry:
         cls._groups.pop(group, None)
         cls._group_descriptions.pop(group, None)
         cls._group_manifests.pop(group, None)
-        default_weight = _DEFAULT_GROUP_ORDER.get(group)
-        if default_weight is None:
-            cls._group_order_weights.pop(group, None)
-        elif cls._group_order_weights.get(group) != default_weight:
-            cls._group_order_weights[group] = default_weight
+        cls._group_order_weights.pop(group, None)
         cls._catalog_cache = None
         if count:
             log(f"🧹 分组已注销: {group} ({count} 个实体)", "DEBUG")
@@ -1546,7 +1508,3 @@ def _serialize_result(result: Any) -> str:
         return json.dumps(result, ensure_ascii=False, default=str)
     except (TypeError, ValueError):
         return str(result)
-
-
-# 注册默认分组排序权重（业务模块可经 register_group_order 覆盖）
-register_default_group_orders()

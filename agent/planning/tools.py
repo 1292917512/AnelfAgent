@@ -29,9 +29,12 @@ from agent.memory.memory_store import MemoryStore
 from agent.memory.memory_types import GOAL_SOURCE, MemoryEntry, MemoryType
 from agent.planning import situation, tracker
 from agent.planning.tracker import GOAL_KIND, planning_store_port
+from core.entity import EntityRegistry
 from core.log import log
 from core.tool_errors import ErrorCause, tool_error
 from entities._sdk import deferred_tool
+
+EntityRegistry.register_group_order("planning", 20)
 
 _GROUP = "planning"
 

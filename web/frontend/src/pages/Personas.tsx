@@ -2,18 +2,12 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { personasApi } from "@/lib/api";
-import type { PersonaData } from "@/lib/types";
+import type { PersonaData, PersonaItem } from "@/lib/types";
 import { Card } from "@/components/common/Card";
 import { PageContainer } from "@/components/common/PageContainer";
 import { cn } from "@/lib/utils";
 import { Button, Input, Textarea } from "@/components/ui";
 import { Plus, Trash2, Star, Save } from "lucide-react";
-
-interface PersonaItem {
-  key: string;
-  name: string;
-  description?: string;
-}
 
 export default function Personas() {
   const { t } = useTranslation(["personas", "common"]);

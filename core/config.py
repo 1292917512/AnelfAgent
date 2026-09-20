@@ -71,13 +71,22 @@ def load_json_config(path: Union[str, Path], default: Any = None) -> Any:
         return default
 
 
+# 掩码占位符：GET 展示与 PUT「提交掩码 = 未改动」判定的统一记号
+MASK_TOKEN = "****"
+
+
 def mask_secret(value: str) -> str:
     """敏感配置值掩码：长度 > 8 保留头尾各 4 位，否则全遮蔽。空值原样返回。"""
     if not value:
         return value
     if len(value) <= 8:
-        return "****"
-    return f"{value[:4]}****{value[-4:]}"
+        return MASK_TOKEN
+    return f"{value[:4]}{MASK_TOKEN}{value[-4:]}"
+
+
+def is_masked_secret(value: str) -> bool:
+    """判断值是否为掩码（提交掩码占位符 = 用户未改动，保留现值）。"""
+    return MASK_TOKEN in value
 
 
 class ConfigStore:

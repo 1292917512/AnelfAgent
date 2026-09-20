@@ -109,42 +109,14 @@ class AgentStatusService:
     def get_mind_config(self) -> Optional[Dict[str, Any]]:
         """读取当前 Mind 配置。"""
         try:
-            from agent.config import get_config_provider
+            from agent.config import MIND_CONFIG_FIELDS, get_config_provider
             mc = get_config_provider().mind
-            return {
-                "heartbeat_interval": mc.heartbeat_interval,
-                "meta_decision_temperature": mc.meta_decision_temperature,
-                "conversation_analysis_threshold": mc.conversation_analysis_threshold,
-                "max_tool_iterations": mc.max_tool_iterations,
-                "log_ai_output": mc.log_ai_output,
-                "send_interim_text": mc.send_interim_text,
-                "vector_search_batch_size": mc.vector_search_batch_size,
-                "memory_recall_top_k": mc.memory_recall_top_k,
-                "memory_recall_min_score": mc.memory_recall_min_score,
-                "memory_time_decay_days": mc.memory_time_decay_days,
-                "memory_warn_threshold": mc.memory_warn_threshold,
-                "memory_max_per_type": mc.memory_max_per_type,
-                "heartbeat_max_entries": mc.heartbeat_max_entries,
-                "auto_consolidate_enabled": mc.auto_consolidate_enabled,
-                "notes_events_retention_days": mc.notes_events_retention_days,
-                "notes_events_distill_enabled": mc.notes_events_distill_enabled,
-                "short_term_memory_size": mc.short_term_memory_size,
-                "tool_recall_top_n": mc.tool_recall_top_n,
-                "llm_timeout": mc.llm_timeout,
-                "llm_max_retries": mc.llm_max_retries,
-                "tool_system_rules": mc.tool_system_rules if hasattr(mc, "tool_system_rules") else [],
-                "cross_channel_enabled": mc.cross_channel_enabled,
-                "cross_channel_window_minutes": mc.cross_channel_window_minutes,
-                "cross_channel_recall_min_score": mc.cross_channel_recall_min_score,
-                "cross_channel_recall_max_results": mc.cross_channel_recall_max_results,
-                "cross_channel_recall_scan_limit": mc.cross_channel_recall_scan_limit,
-                "cross_channel_narrative_max_items": mc.cross_channel_narrative_max_items,
-            }
+            return {key: getattr(mc, key) for key in MIND_CONFIG_FIELDS}
         except Exception as e:
             log(f"获取 Mind 配置失败: {e}", "DEBUG")
             return None
 
     def save_mind_config(self, params: Dict[str, Any]) -> None:
-        """保存 Mind 配置参数。"""
+        """保存 Mind 配置参数（未知字段抛 ValueError）。"""
         from agent.config import get_config_provider
         get_config_provider().save_mind_config(**params)

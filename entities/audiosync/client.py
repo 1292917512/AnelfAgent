@@ -42,7 +42,7 @@ async def _ensure_wav(audio_path: str) -> tuple[str, bool]:
     return await ensure_16k_mono_wav(audio_path)
 
 
-def _endpoint_config() -> str:
+def endpoint_config() -> str:
     """服务地址（凭据中心单源；配置/编辑经组件凭据面板/AI 工具/文件）。"""
     from entities._sdk import get_provider_key
 
@@ -50,7 +50,7 @@ def _endpoint_config() -> str:
 
 
 def _endpoint() -> str:
-    endpoint = _endpoint_config()
+    endpoint = endpoint_config()
     if not endpoint:
         raise FunAsrNotConfigured(
             "未配置 FunASR 服务地址（组件凭据 funasr），"
@@ -60,7 +60,7 @@ def _endpoint() -> str:
 
 def is_configured() -> bool:
     """FunASR 服务是否已配置（工具 check_fn 门控用）。"""
-    return bool(_endpoint_config())
+    return bool(endpoint_config())
 
 
 _PROBE_TTL_OK = 30.0
@@ -77,7 +77,7 @@ async def probe_available() -> bool:
     global _probe_cache
     import time
 
-    endpoint = _endpoint_config()
+    endpoint = endpoint_config()
     if not endpoint:
         return False
     now = time.monotonic()

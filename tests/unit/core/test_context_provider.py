@@ -189,7 +189,7 @@ class TestInjectKeyGating:
         """配置项未设置时默认放行（开关是退出机制而非准入门槛）。"""
         self._register()
         meta = ContextProviderRegistry.get_all()[0]
-        assert ContextProviderRegistry._is_active(meta) is True
+        assert ContextProviderRegistry.is_active(meta) is True
 
     def test_status_exposes_inject_key_and_active(self) -> None:
         """Web 面板可观测 provider 的注入开关键与活动状态。"""

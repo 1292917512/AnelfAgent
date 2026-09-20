@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Query, Request
 from sse_starlette.sse import EventSourceResponse
 
+from core.log import log
 from services import AgentStatusService, is_ready
 
 router = APIRouter(prefix="/status", tags=["status"])
@@ -65,23 +66,6 @@ async def get_startup() -> Dict[str, Any]:
 async def get_event_stats() -> Dict[str, Any]:
     stats = _status_svc.get_event_stats()
     return {"stats": stats or {}}
-
-
-@router.get("/mind-config")
-async def get_mind_config() -> Dict[str, Any]:
-    config = _status_svc.get_mind_config()
-    return {"config": config or {}}
-
-
-from core.log import log
-from web.routers.schemas import MindConfigUpdate
-
-
-@router.put("/mind-config")
-async def save_mind_config(data: MindConfigUpdate) -> Dict[str, str]:
-    params = {k: v for k, v in data.model_dump().items() if v is not None}
-    _status_svc.save_mind_config(params)
-    return {"status": "ok"}
 
 
 @router.get("/pfc")

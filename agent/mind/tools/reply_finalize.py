@@ -7,7 +7,8 @@ finish_think/complete_reply 收尾，入口与循环同层避免双向依赖）�
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Dict, List, Optional
+import re
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from core.event_bus import EVENT_AFTER_REPLY, event_bus
 
@@ -18,6 +19,36 @@ _HISTORY_TAIL_LINES = 5
 # 完整摘要的字符上限（环形缓冲与事件 payload 消费；保头保尾 + 中间省略）
 _EXEC_SUMMARY_MAX_CHARS = 16000
 _EXEC_SUMMARY_HEADER = "[已执行操作摘要]"
+# 摘要行格式（生成与解析同模块维护，展示层不自行猜测格式）
+_SUMMARY_LINE_RE = re.compile(r"^#\d+\s+(?P<call>.*)\s*→\s*(?P<result>.*)$")
+_SUMMARY_COUNT_RE = re.compile(r"共执行\s*(\d+)\s*次")
+
+
+def parse_execution_summary(content: str) -> Optional[Dict[str, Any]]:
+    """把执行摘要解析为结构化条目（非执行摘要消息返回 None）。
+
+    call 段贪婪匹配到行内最后一个 →：工具参数（如 memorize 正文）可能自带 →，
+    生成端的分隔符是行末 result 前那一个。
+    """
+    text = (content or "").strip()
+    if not text.startswith(_EXEC_SUMMARY_HEADER):
+        return None
+    lines = text.splitlines()
+    entries: List[Dict[str, str]] = []
+    for line in lines[1:]:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        m = _SUMMARY_LINE_RE.match(stripped)
+        if m:
+            entries.append({"call": m["call"].strip(), "result": m["result"].strip()})
+        else:
+            entries.append({"call": stripped, "result": ""})
+    count_match = _SUMMARY_COUNT_RE.search(lines[0])
+    return {
+        "count": int(count_match.group(1)) if count_match else len(entries),
+        "entries": entries,
+    }
 
 
 def _compact_summary_for_history(summary: str) -> str:

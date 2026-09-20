@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
-import { workspaceApi, type WorkspaceRoot } from "@/lib/api";
+import { workspaceApi } from "@/lib/api";
+import type { WorkspaceRoot } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { PreviewFrame, wrapPreviewDocument } from "./PreviewFrame";
 

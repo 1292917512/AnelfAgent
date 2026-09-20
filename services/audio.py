@@ -118,7 +118,7 @@ class AudioServiceFacade:
             if meta.group == "audio":
                 return {
                     "provider": meta.name,
-                    "active": ContextProviderRegistry._is_active(meta),
+                    "active": ContextProviderRegistry.is_active(meta),
                 }
         return {"provider": "", "active": False}
 
@@ -494,7 +494,7 @@ class AudioServiceFacade:
             funasr.reset_probe_cache()
         reachable = await funasr.probe_available()
         return {
-            "configured": bool(funasr._endpoint_config()),
+            "configured": bool(funasr.endpoint_config()),
             "reachable": reachable,
-            "endpoint": funasr._endpoint_config(),
+            "endpoint": funasr.endpoint_config(),
         }

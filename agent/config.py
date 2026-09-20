@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
+from dataclasses import fields as dataclass_fields
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -305,32 +306,6 @@ _NETWORK_CONFIGS = {
     },
 }
 
-_MIND_SYNC_FIELDS: tuple[str, ...] = (
-    "heartbeat_interval", "heartbeat_busy_defer_seconds",
-    "meta_decision_temperature",
-    "conversation_analysis_threshold", "max_tool_iterations",
-    "log_ai_output", "send_interim_text", "force_tool_use",
-    "background_wait_timeout", "background_wait_budget",
-    "text_without_tool_limit",
-    "vector_search_batch_size", "memory_recall_top_k",
-    "memory_recall_min_score", "memory_time_decay_days",
-    "memory_warn_threshold", "memory_max_per_type",
-    "heartbeat_max_entries", "auto_consolidate_enabled",
-    "notes_events_retention_days", "notes_events_distill_enabled",
-    "short_term_memory_size", "tool_recall_top_n",
-    "llm_timeout", "llm_max_retries",
-    "conv_recall_scan_limit", "conv_recall_backfill_batch",
-    "conv_recall_min_score", "conv_recall_max_results",
-    "cross_channel_enabled", "cross_channel_window_minutes",
-    "cross_channel_recall_min_score", "cross_channel_recall_max_results",
-    "cross_channel_recall_scan_limit", "cross_channel_narrative_max_items",
-    "memory_state_past_days", "memory_episode_past_days",
-    "memory_temporal_expired_weight",
-)
-
-# 公开别名：供 web 层等外部模块引用（私有名 _MIND_SYNC_FIELDS 保留内部使用）
-MIND_SYNC_FIELDS: tuple[str, ...] = _MIND_SYNC_FIELDS
-
 _ENV_MAPPING: Dict[str, str] = {
     "ANELF_LLM_STREAM_ENABLED": "llm_stream_enabled",
     "ANELF_PERSONAS_DIR": "personas_dir",
@@ -423,6 +398,10 @@ class BotConfig:
     max_conversation_size: int = 30
 
 
+# MindConfig 全部字段名（定义顺序）：持久化、配置面同步与 Web 读写面的统一字段清单
+MIND_CONFIG_FIELDS: tuple[str, ...] = tuple(f.name for f in dataclass_fields(MindConfig))
+
+
 class BotConfigProvider:
     """
     集中配置提供器。
@@ -469,9 +448,9 @@ class BotConfigProvider:
                 setattr(self._config, attr, type(current)(val))
 
         mc = self._config.mind
-        for attr in _MIND_SYNC_FIELDS:
+        for attr in MIND_CONFIG_FIELDS:
             val = ConfigManager.get(attr)
-            if val is not None and hasattr(mc, attr):
+            if val is not None:
                 current = getattr(mc, attr)
                 try:
                     setattr(mc, attr, type(current)(val))
@@ -513,7 +492,7 @@ class BotConfigProvider:
         try:
             data = json.loads(p.read_text("utf-8"))
             mc = self._config.mind
-            for k in (*_MIND_SYNC_FIELDS, "tool_system_rules"):
+            for k in MIND_CONFIG_FIELDS:
                 if k in data:
                     val = data[k]
                     current = getattr(mc, k)
@@ -533,28 +512,30 @@ class BotConfigProvider:
         try:
             from core.config import ConfigManager
             mc = self._config.mind
-            for k in _MIND_SYNC_FIELDS:
-                if hasattr(mc, k):
-                    ConfigManager.set(k, getattr(mc, k))
+            for k in MIND_CONFIG_FIELDS:
+                ConfigManager.set(k, getattr(mc, k))
         except Exception as e:
             log(f"Mind 配置同步到 ConfigManager 失败: {e}", "DEBUG")
 
     def save_mind_config(self, **overrides: Any) -> None:
-        """保存 Mind 配置。"""
+        """保存 Mind 配置（未知字段拒绝）。"""
+        unknown = sorted(set(overrides) - set(MIND_CONFIG_FIELDS))
+        if unknown:
+            raise ValueError(
+                f"未知 Mind 配置字段: {', '.join(unknown)}（合法字段见 MindConfig）"
+            )
         mc = self._config.mind
         for k, v in overrides.items():
-            if hasattr(mc, k):
-                current = getattr(mc, k)
-                if isinstance(current, (list, dict)):
-                    setattr(mc, k, v)
-                elif isinstance(current, str):
-                    setattr(mc, k, str(v))
-                else:
-                    setattr(mc, k, type(current)(v))
+            current = getattr(mc, k)
+            if isinstance(current, (list, dict)):
+                setattr(mc, k, v)
+            elif isinstance(current, str):
+                setattr(mc, k, str(v))
+            else:
+                setattr(mc, k, type(current)(v))
         p = Path(self.mind_config_path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        data = {key: getattr(mc, key) for key in _MIND_SYNC_FIELDS}
-        data["tool_system_rules"] = mc.tool_system_rules
+        data = {key: getattr(mc, key) for key in MIND_CONFIG_FIELDS}
         p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         self._sync_mind_to_config_manager()
         log(f"Mind 配置已保存: {p}")

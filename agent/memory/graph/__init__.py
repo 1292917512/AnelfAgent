@@ -12,6 +12,7 @@ from .store import (
     EDGE_ORIGINS,
     NODE_TYPES,
     GraphStore,
+    entity_node_keys,
     format_triple,
     parse_node_key,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "EDGE_ORIGINS",
     "NODE_TYPES",
     "GraphStore",
+    "entity_node_keys",
     "format_triple",
     "parse_node_key",
 ]

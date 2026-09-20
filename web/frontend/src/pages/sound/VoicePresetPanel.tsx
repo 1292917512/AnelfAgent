@@ -2,7 +2,8 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { audioApi, type VoicePresetEntry } from "@/lib/api";
+import { audioApi } from "@/lib/api";
+import type { VoicePresetEntry } from "@/lib/types";
 import { Badge, Button, EmptyState, Input, LoadingBlock, Modal, Select, Textarea, toast } from "@/components/ui";
 import { Card } from "@/components/common/Card";
 import { AudioWaveform, Pencil, Plus, Trash2 } from "lucide-react";

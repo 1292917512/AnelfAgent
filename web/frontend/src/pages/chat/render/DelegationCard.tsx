@@ -7,9 +7,10 @@
  */
 import { useTranslation } from "react-i18next";
 import { Bot, CheckCircle2, ChevronDown, ChevronRight, CircleSlash, Loader2, XCircle, Zap } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { chatApi } from "@/lib/api";
+import { useNow } from "@/hooks/useNow";
 import { useDelegationStore } from "@/stores/delegation-store";
 import type { DelegationNode } from "@/lib/types";
 
@@ -24,12 +25,7 @@ export function DelegationCard({ node }: Props) {
 
   const running = node.status === "running";
   // 运行中每秒钟刷新耗时（避免渲染期直接调用 Date.now）
-  const [now, setNow] = useState(() => Date.now() / 1000);
-  useEffect(() => {
-    if (!running) return;
-    const timer = setInterval(() => setNow(Date.now() / 1000), 1000);
-    return () => clearInterval(timer);
-  }, [running]);
+  const now = useNow(running) / 1000;
   const durationSec = Math.round((node.resolved_at ?? now) - node.started_at);
 
   const handleCancel = async () => {

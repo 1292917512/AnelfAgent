@@ -6,7 +6,7 @@
  * 最近执行：账本折叠历史，点击查看最终进度日志。
  * 操作反馈经后端既有闭环送达 AI（SteerInbox / 注册表完成通知）。
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
@@ -22,6 +22,7 @@ import {
   Zap,
 } from "lucide-react";
 import { apiErrorMessage, delegationApi } from "@/lib/api";
+import { useNow } from "@/hooks/useNow";
 import { Card } from "@/components/common/Card";
 import { Drawer } from "@/components/common/Drawer";
 import { Button, Modal, Select, Textarea, toast } from "@/components/ui";
@@ -49,19 +50,19 @@ function formatTokens(n: number): string {
 
 type StatusTone = "ok" | "danger" | "muted" | "warn";
 
-function historyStatusTone(status: string): StatusTone {
-  if (status === "成功") return "ok";
-  if (status === "失败") return "danger";
-  if (status === "已取消") return "muted";
-  return "warn"; // lost（进程中断）等
-}
+const STATUS_TONES: Record<DelegationHistoryItem["status"], StatusTone> = {
+  success: "ok",
+  failed: "danger",
+  cancelled: "muted",
+  lost: "warn",
+};
 
-function historyStatusKey(status: string): string {
-  if (status === "成功") return "statusSuccess";
-  if (status === "失败") return "statusFailed";
-  if (status === "已取消") return "statusCancelled";
-  return "statusLost";
-}
+const STATUS_KEYS: Record<DelegationHistoryItem["status"], string> = {
+  success: "statusSuccess",
+  failed: "statusFailed",
+  cancelled: "statusCancelled",
+  lost: "statusLost",
+};
 
 const TONE_CLASSES: Record<StatusTone, string> = {
   ok: "bg-green-100 dark:bg-green-900/40 text-green-600 dark:text-green-300",
@@ -220,14 +221,15 @@ function RunningRow({
 
 function HistoryRow({ item, onShowProgress }: { item: DelegationHistoryItem; onShowProgress: () => void }) {
   const { t } = useTranslation("plan");
-  const tone = historyStatusTone(item.status);
+  const tone = STATUS_TONES[item.status] ?? "muted";
+  const statusKey = STATUS_KEYS[item.status];
   const adapter = item.adapter_key || scopeAdapter(item.scope);
   return (
     <button
       onClick={onShowProgress}
       className="w-full flex items-center gap-2 px-3 py-1.5 rounded-sm bg-elevated border border-border hover:bg-hover transition-colors text-left"
     >
-      <StatusChip tone={tone} label={t(`delegation.panel.${historyStatusKey(item.status)}`)} />
+      <StatusChip tone={tone} label={statusKey ? t(`delegation.panel.${statusKey}`) : item.status} />
       <span className="text-xs text-foreground flex-1 min-w-0 truncate">{item.goal || t("delegation.untitled")}</span>
       {item.agent && <span className="text-[10px] text-accent truncate">@{item.agent}</span>}
       {adapter && <span className="text-[10px] px-1 py-0.5 rounded bg-accent-subtle text-accent">{adapter}</span>}
@@ -259,16 +261,11 @@ export function DelegationsPanel() {
     refetchInterval: 10000,
   });
 
-  const running = overview?.running ?? [];
+  const running = useMemo(() => overview?.running ?? [], [overview]);
   const historyItems = history?.items ?? [];
 
   // 运行中时每秒钟刷新耗时显示（数据本身 3s 轮询，漂移量本地补齐）
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (running.length === 0) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [running.length]);
+  const now = useNow(running.length > 0);
   const extraSeconds = running.length > 0 ? Math.max(0, (now - dataUpdatedAt) / 1000) : 0;
 
   // 已停止的委托从"取消中"集合清理

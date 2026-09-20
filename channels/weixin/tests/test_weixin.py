@@ -7,10 +7,10 @@ import json
 
 import pytest
 
+from agent.channel.dedup import MessageDedup
 from channels.weixin import ilink_client as ilink
 from channels.weixin.state import (
     ContextTokenStore,
-    MessageDeduplicator,
     TypingTicketCache,
 )
 
@@ -177,13 +177,13 @@ class TestFormatMessage:
 
 class TestDedup:
     def test_duplicate_within_ttl(self):
-        dedup = MessageDeduplicator(ttl_seconds=300)
+        dedup = MessageDedup(ttl_seconds=300)
         assert not dedup.is_duplicate("m1")
         assert dedup.is_duplicate("m1")
         assert not dedup.is_duplicate("m2")
 
     def test_expire(self):
-        dedup = MessageDeduplicator(ttl_seconds=-1)  # 立即过期
+        dedup = MessageDedup(ttl_seconds=-1)  # 立即过期
         assert not dedup.is_duplicate("m1")
         assert not dedup.is_duplicate("m1")
 
@@ -663,7 +663,7 @@ class TestQrLoginManager:
             [{"status": "scaned_but_redirect", "redirect_host": "sz.weixin.qq.com"}],
         )
         start = await mgr.start()
-        session = mgr._sessions[start["session_id"]]
+        session = mgr._store.get(start["session_id"])
         await mgr.poll(start["session_id"])
         assert session.current_base_url == "https://sz.weixin.qq.com"
 

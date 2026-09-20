@@ -13,7 +13,7 @@ import pytest
 from fastapi import HTTPException, UploadFile
 
 from core.config import ConfigManager
-from web.routers import workspace as ws_mod
+from services import workspace as ws_mod
 from web.routers.workspace import MoveRequest, get_tree, move_entry, upload_file
 
 

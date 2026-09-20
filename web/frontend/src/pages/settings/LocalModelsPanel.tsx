@@ -1,14 +1,10 @@
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { localModelsApi, type LocalModelAsset } from "@/lib/api";
+import { localModelsApi } from "@/lib/api";
+import type { LocalModelAsset } from "@/lib/types";
 import { Badge, Button, LoadingBlock } from "@/components/ui";
 import { Card } from "@/components/common/Card";
-
-function formatSize(bytes: number): string {
-  if (!bytes) return "-";
-  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-  return `${(bytes / 1024).toFixed(0)} KB`;
-}
+import { formatSize } from "@/lib/utils";
 
 function statusBadge(model: LocalModelAsset, t: (k: string) => string) {
   if (model.status === "ready") return <Badge variant="ok">{t("localModels.statusReady")}</Badge>;
@@ -78,8 +74,8 @@ function ModelRow({ model, busy }: { model: LocalModelAsset; busy: boolean }) {
               : connecting
                 ? t("localModels.phaseConnecting")
                 : progress === null
-                  ? formatSize(model.received ?? 0)
-                  : `${formatSize(model.received ?? 0)} / ${formatSize(model.total ?? 0)} (${progress}%)`}
+                  ? (model.received ?? 0) > 0 ? formatSize(model.received ?? 0) : "-"
+                  : `${model.received ? formatSize(model.received) : "-"} / ${model.total ? formatSize(model.total) : "-"} (${progress}%)`}
           </div>
         </div>
       )}
@@ -89,7 +85,7 @@ function ModelRow({ model, busy }: { model: LocalModelAsset; busy: boolean }) {
       <div className="flex items-center gap-4 text-xs text-muted">
         <span className="font-mono">{model.filename}</span>
         <span>{model.license}</span>
-        <span>{model.size_bytes > 0 ? formatSize(model.size_bytes) : ""}</span>
+        <span>{model.size_bytes > 0 ? formatSize(model.size_bytes) : "-"}</span>
       </div>
     </div>
   );

@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { audioApi, configMetaApi, type AudioStatus } from "@/lib/api";
+import { audioApi, configMetaApi } from "@/lib/api";
+import type { AudioStatus } from "@/lib/types";
 import { Input, LoadingBlock, toast } from "@/components/ui";
 import { Mic } from "lucide-react";
 
@@ -12,16 +13,16 @@ interface VoiceRow {
   value: number;
 }
 
-const VOICE_LABELS: Record<string, { zh: string; en: string; unit: string }> = {
-  voice_silence_ms: { zh: "静音判段阈值（毫秒）", en: "Silence endpoint threshold (ms)", unit: "ms" },
-  voice_min_utterance_ms: { zh: "有效语音最短时长（毫秒）", en: "Min utterance length (ms)", unit: "ms" },
-  voice_max_utterance_s: { zh: "单段语音最长时长（秒）", en: "Max utterance length (s)", unit: "s" },
-  voice_vad_floor_min: { zh: "端点检测噪声地板下限（RMS）", en: "VAD noise floor min (RMS)", unit: "" },
+const VOICE_UNITS: Record<string, string> = {
+  voice_silence_ms: "ms",
+  voice_min_utterance_ms: "ms",
+  voice_max_utterance_s: "s",
+  voice_vad_floor_min: "",
 };
 
 /** 语音会话：VAD/成段参数热编辑（agent/voice 核心语音系统的配置面） */
 export function VoiceSessionPanel() {
-  const { t, i18n } = useTranslation("sound");
+  const { t } = useTranslation("sound");
   const queryClient = useQueryClient();
   const [rows, setRows] = useState<VoiceRow[]>([]);
 
@@ -32,16 +33,15 @@ export function VoiceSessionPanel() {
 
   useEffect(() => {
     if (!status) return;
-    const lang = i18n.language.startsWith("zh") ? "zh" : "en";
     setRows(
       Object.entries(status.voice_config ?? {}).map(([key, value]) => ({
         key,
-        label: VOICE_LABELS[key]?.[lang] ?? key,
-        unit: VOICE_LABELS[key]?.unit ?? "",
+        label: t(`voiceConfig.${key}`, { defaultValue: key }),
+        unit: VOICE_UNITS[key] ?? "",
         value: Number(value),
       })),
     );
-  }, [status, i18n.language]);
+  }, [status, t]);
 
   const saveMut = useMutation({
     mutationFn: ({ key, value }: { key: string; value: number }) => configMetaApi.save(key, value),

@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from core.entity import EntityRegistry
+
+EntityRegistry.register_group_order("os", 33)
+
 
 def register_lifecycle() -> None:
     """后台子进程看护入 Lifecycle：启动清扫孤儿进程组，关停终止在册子进程。

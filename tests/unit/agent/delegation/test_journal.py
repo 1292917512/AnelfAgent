@@ -70,7 +70,7 @@ class TestLedger:
     def test_unclosed_detection_and_close(self) -> None:
         journal.append_ledger(journal.LEDGER_STARTED, "d1", goal="任务一", scope="user_qq:1")
         journal.append_ledger(journal.LEDGER_STARTED, "d2", goal="任务二", scope="user_qq:2")
-        journal.append_ledger(journal.LEDGER_CLOSED, "d2", status="成功")
+        journal.append_ledger(journal.LEDGER_CLOSED, "d2", status=journal.STATUS_SUCCESS)
         unclosed = journal.unclosed_delegations()
         assert [r["id"] for r in unclosed] == ["d1"]
         # 扫描即闭合：再次扫描为空（at-most-once）
@@ -78,7 +78,7 @@ class TestLedger:
 
     def test_repeated_events_last_wins(self) -> None:
         journal.append_ledger(journal.LEDGER_STARTED, "d1", goal="g")
-        journal.append_ledger(journal.LEDGER_CLOSED, "d1", status="成功")
+        journal.append_ledger(journal.LEDGER_CLOSED, "d1", status=journal.STATUS_SUCCESS)
         journal.append_ledger(journal.LEDGER_STARTED, "d1", goal="g2")
         assert [r["id"] for r in journal.unclosed_delegations()] == ["d1"]
 
@@ -150,14 +150,14 @@ class TestHistory:
         _write_ledger([
             {"event": "started", "id": "d1", "ts": 100.0, "goal": "任务一",
              "scope": "user_qq:1", "agent": "", "model": "m1", "adapter_key": "qq"},
-            {"event": "closed", "id": "d1", "ts": 130.0, "status": "成功"},
+            {"event": "closed", "id": "d1", "ts": 130.0, "status": journal.STATUS_SUCCESS},
             {"event": "started", "id": "d2", "ts": 140.0, "goal": "任务二", "scope": "user_qq:2"},
         ])
         items = journal.recent_history()
         # 未闭合（运行中/未扫描）的不入历史
         assert [i["delegation_id"] for i in items] == ["d1"]
         item = items[0]
-        assert item["goal"] == "任务一" and item["status"] == "成功"
+        assert item["goal"] == "任务一" and item["status"] == journal.STATUS_SUCCESS
         assert item["model"] == "m1" and item["adapter_key"] == "qq"
         assert item["scope"] == "user_qq:1"
         assert item["started_at"] == 100.0 and item["finished_at"] == 130.0

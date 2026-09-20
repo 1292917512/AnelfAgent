@@ -1,3 +1,10 @@
+/** GET /personas/ 的人设列表条目 */
+export interface PersonaItem {
+  key: string;
+  name: string;
+  description?: string;
+}
+
 export interface PersonaData {
   name?: string;
   personality?: string[];
@@ -54,6 +61,15 @@ export interface CogneeConfig {
   search_types: string[];
   chat: CogneeChatModelConfig;
   embedding: CogneeEmbeddingModelConfig;
+  /** 后端下发的下拉词汇（名单单一权威在后端 cognee 配置） */
+  options: CogneeConfigOptions;
+}
+
+export interface CogneeConfigOptions {
+  chat_providers: string[];
+  embed_providers: string[];
+  instructor_modes: string[];
+  reasoning_efforts: CogneeReasoningEffort[];
 }
 
 export interface CogneeResolvedInfo {
@@ -199,6 +215,7 @@ export interface GoalData {
   recurring?: boolean;
   created_at: string;
   updated_at: string;
+  memory_id?: number;
 }
 
 export interface EntityProfile {

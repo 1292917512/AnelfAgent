@@ -2,44 +2,11 @@ import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FolderOpen, FolderPlus, Pencil, Play, Plus } from "lucide-react";
-import { tasksApi, type TaskConfig } from "@/lib/api";
-import { Button, Input, Select, Switch, Textarea } from "@/components/ui";
+import { tasksApi } from "@/lib/api";
+import type { TaskConfig } from "@/lib/types";
+import { Button, Input, Switch } from "@/components/ui";
 import { Drawer } from "@/components/common/Drawer";
-
-interface TaskFormState {
-  name: string;
-  display_name: string;
-  folder: string;
-  description: string;
-  scope: string;
-  prompt: string;
-  enabled: boolean;
-  importance: number;
-}
-
-const EMPTY_FORM: TaskFormState = {
-  name: "",
-  display_name: "",
-  folder: "",
-  description: "",
-  scope: "global",
-  prompt: "",
-  enabled: true,
-  importance: 0.5,
-};
-
-function taskToForm(task: TaskConfig): TaskFormState {
-  return {
-    name: task.name,
-    display_name: task.display_name || "",
-    folder: task.folder || "",
-    description: task.description || "",
-    scope: task.scope || "global",
-    prompt: task.prompt || "",
-    enabled: task.enabled,
-    importance: task.importance ?? 0.5,
-  };
-}
+import { EMPTY_TASK, TaskFormFields } from "@/pages/config/TaskForm";
 
 /** 任务面板：按文件夹分组 + 启停/触发/编辑/新建 */
 export function DockTasksPanel() {
@@ -47,7 +14,7 @@ export function DockTasksPanel() {
   const queryClient = useQueryClient();
   const [editorOpen, setEditorOpen] = useState(false);
   const [editing, setEditing] = useState<TaskConfig | null>(null);
-  const [form, setForm] = useState<TaskFormState>(EMPTY_FORM);
+  const [draft, setDraft] = useState<TaskConfig>({ ...EMPTY_TASK });
 
   const { data: tasks } = useQuery({
     queryKey: ["tasks"],
@@ -55,6 +22,9 @@ export function DockTasksPanel() {
   });
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["tasks"] });
+
+  const set = (key: keyof TaskConfig, value: unknown) =>
+    setDraft((prev) => ({ ...prev, [key]: value }));
 
   const toggleMut = useMutation({
     mutationFn: (task: TaskConfig) => tasksApi.update(task.name, { enabled: !task.enabled }, task.folder || ""),
@@ -66,20 +36,11 @@ export function DockTasksPanel() {
   const saveMut = useMutation({
     mutationFn: async () => {
       const payload: TaskConfig = {
-        ...(editing ?? ({} as TaskConfig)),
-        name: form.name.trim(),
-        display_name: form.display_name.trim() || form.name.trim(),
-        description: form.description,
-        scope: form.scope,
-        enabled: form.enabled,
-        memory_type: editing?.memory_type || "semantic",
-        importance: form.importance,
-        tags: editing?.tags || [],
-        source: editing?.source || form.name.trim(),
-        null_keywords: editing?.null_keywords || [],
-        tool_tags: editing?.tool_tags || [],
-        prompt: form.prompt,
-        folder: form.folder.trim().replace(/^\/+|\/+$/g, ""),
+        ...draft,
+        name: draft.name.trim(),
+        display_name: draft.display_name.trim() || draft.name.trim(),
+        source: draft.source || draft.name.trim(),
+        folder: (draft.folder ?? "").trim().replace(/^\/+|\/+$/g, ""),
       };
       if (editing) {
         return tasksApi.update(editing.name, payload, editing.folder || "");
@@ -105,12 +66,12 @@ export function DockTasksPanel() {
 
   const openCreate = () => {
     setEditing(null);
-    setForm(EMPTY_FORM);
+    setDraft({ ...EMPTY_TASK });
     setEditorOpen(true);
   };
   const openEdit = (task: TaskConfig) => {
     setEditing(task);
-    setForm(taskToForm(task));
+    setDraft({ ...task });
     setEditorOpen(true);
   };
 
@@ -172,7 +133,7 @@ export function DockTasksPanel() {
         )}
       </div>
 
-      {/* 编辑/新建抽屉 */}
+      {/* 编辑/新建抽屉（字段与配置中心同一实现，folder 为 dock 分组维度） */}
       <Drawer
         open={editorOpen}
         onClose={() => setEditorOpen(false)}
@@ -186,7 +147,7 @@ export function DockTasksPanel() {
               variant="primary"
               size="sm"
               onClick={() => saveMut.mutate()}
-              disabled={saveMut.isPending || !form.name.trim() || !form.prompt.trim()}
+              disabled={saveMut.isPending || !draft.name.trim() || !draft.prompt.trim()}
             >
               {t("tasks.save")}
             </Button>
@@ -195,61 +156,14 @@ export function DockTasksPanel() {
       >
         <div className="space-y-3">
           <label className="block space-y-1">
-            <span className="text-xs text-muted">{t("tasks.fieldName")}</span>
-            <Input
-              value={form.name}
-              disabled={!!editing}
-              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-            />
-          </label>
-          <label className="block space-y-1">
-            <span className="text-xs text-muted">{t("tasks.fieldDisplayName")}</span>
-            <Input
-              value={form.display_name}
-              onChange={(e) => setForm((f) => ({ ...f, display_name: e.target.value }))}
-            />
-          </label>
-          <label className="block space-y-1">
             <span className="text-xs text-muted">{t("tasks.fieldFolder")}</span>
             <Input
-              value={form.folder}
+              value={draft.folder ?? ""}
               placeholder="dev/backend"
-              onChange={(e) => setForm((f) => ({ ...f, folder: e.target.value }))}
+              onChange={(e) => set("folder", e.target.value)}
             />
           </label>
-          <label className="block space-y-1">
-            <span className="text-xs text-muted">{t("tasks.fieldDescription")}</span>
-            <Input
-              value={form.description}
-              onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
-            />
-          </label>
-          <label className="block space-y-1">
-            <span className="text-xs text-muted">{t("tasks.fieldScope")}</span>
-            <Select
-              value={form.scope}
-              onChange={(e) => setForm((f) => ({ ...f, scope: e.target.value }))}
-            >
-              <option value="global">global</option>
-              <option value="entity">entity</option>
-              <option value="any">any</option>
-            </Select>
-          </label>
-          <label className="block space-y-1">
-            <span className="text-xs text-muted">{t("tasks.fieldPrompt")}</span>
-            <Textarea
-              rows={8}
-              value={form.prompt}
-              onChange={(e) => setForm((f) => ({ ...f, prompt: e.target.value }))}
-            />
-          </label>
-          <label className="flex items-center gap-2">
-            <Switch
-              checked={form.enabled}
-              onChange={(v) => setForm((f) => ({ ...f, enabled: v }))}
-            />
-            <span className="text-xs text-muted">{t("tasks.fieldEnabled")}</span>
-          </label>
+          <TaskFormFields task={draft} set={set} isCreate={!editing} />
           {saveMut.isError && (
             <p className="text-[11px] text-danger">{t("tasks.saveFailed")}</p>
           )}

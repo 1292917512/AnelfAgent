@@ -102,8 +102,8 @@ export interface DelegationHistoryItem {
   agent?: string;
   model?: string;
   adapter_key: string;
-  /** 终态：成功/失败/已取消/lost（进程中断） */
-  status: string;
+  /** 终态码：success/failed/cancelled/lost（进程中断） */
+  status: "success" | "failed" | "cancelled" | "lost";
   started_at: number;
   finished_at: number;
   duration_seconds: number;

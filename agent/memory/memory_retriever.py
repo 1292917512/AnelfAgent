@@ -687,6 +687,105 @@ class MemoryRetriever:
         results.sort(key=lambda r: r.score, reverse=True)
         return results[:limit]
 
+    async def diagnostic_recall(
+        self,
+        query: str,
+        *,
+        tag_list: Optional[List[str]] = None,
+        entity_scope: str = "",
+        limit: int = 8,
+        deep: bool = False,
+        search_types: Optional[List[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """召回诊断：与真实召回同管线（规划 → 多查询联邦检索 → 共识融合 →
+        关系邻域 + 遗忘层）的无副作用执行。
+
+        不记访问、不触发异步深探；Web 召回测试面板经此复用，
+        诊断编排与真实召回单一实现、不再两处维护。
+        """
+        import time as _time
+
+        from .cognee.fusion import datasets_for_scope, federated_search
+        from .cognee.runtime import get_cognee_client
+        from .graph import entity_node_keys, format_triple
+
+        if self._store is None:
+            return None
+
+        timings: Dict[str, Any] = {}
+        total_start = _time.perf_counter()
+        tags = [t for t in (tag_list or []) if t.strip()]
+        cognee_config = self._cognee_config()
+        if search_types:
+            import dataclasses
+            cognee_config = dataclasses.replace(
+                cognee_config,
+                search_types=[s.strip().upper() for s in search_types if s.strip()],
+            )
+        datasets = datasets_for_scope(cognee_config, entity_scope, tags or None)
+
+        # 1) 检索规划（含实体→图谱节点解析）
+        t0 = _time.perf_counter()
+        plan = await self.plan_retrieval(query)
+        timings["plan_ms"] = round((_time.perf_counter() - t0) * 1000, 1)
+
+        # 2) 多计划查询并行联邦检索 + 共识融合（与被动召回同口径：
+        # 查询提及识别出的实体/话题标签参与全部 lane 加权）
+        t0 = _time.perf_counter()
+        planned_queries = [q for q in plan.queries[:3] if q and len(q.strip()) >= 4] or [query]
+        mention_tags = await self._store.extract_query_mentions(query) if query else []
+        query_tags = list(dict.fromkeys(tags + mention_tags)) or None
+        query_vec = await self._embedder.embed_query(query) if query else None
+        pool_limit = limit * cognee_config.recall_pool_multiplier * (2 if deep else 1)
+
+        async def _lane(q: str, targeted: bool) -> List[MemorySearchResult]:
+            vec = query_vec if q == query else await self._embedder.embed_query(q)
+            return await federated_search(
+                self._store.search_unified(
+                    query=q, query_vec=vec, query_tags=query_tags,
+                    limit=pool_limit,
+                ),
+                query=q, client=get_cognee_client(), config=cognee_config,
+                limit=limit, entity_scope=entity_scope,
+                query_tags=query_tags, deep=deep,
+                node_names=plan.node_labels if targeted else None,
+            )
+
+        lanes = await asyncio.gather(*(
+            _lane(q, i == 0) for i, q in enumerate(planned_queries)
+        ))
+        results = self.merge_consensus(list(lanes), limit=limit * 2)
+        timings["search_ms"] = round((_time.perf_counter() - t0) * 1000, 1)
+
+        # 3) 关系邻域 + 遗忘层（并行，与 recall 工具同口径）
+        node_keys = list(plan.node_keys)
+        for key in entity_node_keys(tags, entity_scope):
+            if key not in node_keys:
+                node_keys.append(key)
+        forgotten_task = asyncio.create_task(
+            self._store.search_forgotten(query, query_vec, limit=3),
+        )
+        relations: List[str] = []
+        if node_keys:
+            try:
+                edges = await self._store.graph.edges_for_scopes(node_keys[:6], limit=10)
+                relations = [format_triple(e) for e in edges]
+            except Exception:
+                relations = []
+        forgotten = await forgotten_task
+        timings["total_ms"] = round((_time.perf_counter() - total_start) * 1000, 1)
+
+        return {
+            "plan": plan,
+            "deep": deep,
+            "cognee_config": cognee_config,
+            "datasets": datasets,
+            "results": results,
+            "relations": relations,
+            "forgotten": forgotten,
+            "timings": timings,
+        }
+
     # 时间引用词：检测到这些词时提升事件记忆与近期记忆权重
     _TIME_REFERENCE_WORDS = (
         "昨天", "前天", "上次", "之前", "最近", "刚才", "上周", "上周",

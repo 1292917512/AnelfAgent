@@ -16,10 +16,13 @@ from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 from agent.skills import sources as skill_sources
 from agent.skills.skill_matcher import SkillMatcher
 from agent.skills.skill_store import SkillStore
+from core.entity import EntityRegistry
 from core.latebind import LateBinding
 from core.log import log
 from core.tool_errors import ErrorCause, tool_error
 from entities._sdk import deferred_tool
+
+EntityRegistry.register_group_order("skills", 21)
 
 
 class SkillToolDeps(NamedTuple):

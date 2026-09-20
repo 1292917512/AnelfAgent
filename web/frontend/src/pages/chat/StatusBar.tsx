@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+
 import { useTranslation } from "react-i18next";
 import { Activity, AlertCircle, ChevronRight, Wrench, Brain, MessageSquare, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useThinkingStore, type TraceNode } from "@/stores/thinking-store";
+import { useNow } from "@/hooks/useNow";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { useThinkingBootstrap } from "./useThinkingBootstrap";
 
@@ -33,13 +34,8 @@ export function StatusBar() {
   const setActiveTab = useWorkbenchStore((s) => s.setActiveTab);
 
   // 每秒刷新耗时显示
-  const [, setTick] = useState(0);
   const hasRunning = activeSession?.nodes.some((n) => n.status === "running") ?? false;
-  useEffect(() => {
-    if (!hasRunning) return;
-    const timer = setInterval(() => setTick((v) => v + 1), 1000);
-    return () => clearInterval(timer);
-  }, [hasRunning]);
+  useNow(hasRunning);
 
   if (!enabled || !activeSession || activeSession.ended) return null;
 

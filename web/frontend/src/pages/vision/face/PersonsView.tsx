@@ -4,7 +4,8 @@ import { useTranslation } from "react-i18next";
 import {
   Focus, GitMerge, Link2, Plus, RefreshCw, ScanSearch, Trash2, UserCheck,
 } from "lucide-react";
-import { faceApi, type FacePerson } from "@/lib/api";
+import { faceApi } from "@/lib/api";
+import type { FacePerson } from "@/lib/types";
 import { Card } from "@/components/common/Card";
 import {
   Badge, Button, ConfirmDialog, EmptyState, Input, Modal, Select, Spinner, Switch, toast,

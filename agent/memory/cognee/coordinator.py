@@ -53,6 +53,11 @@ class CogneeCoordinator:
         self.last_compact_at = 0.0
         self.last_compact_summary = ""
 
+    @property
+    def is_running(self) -> bool:
+        """同步 worker 是否在运行。"""
+        return self._task is not None and not self._task.done()
+
     def _build_breaker(self) -> WriteBreaker:
         return WriteBreaker(
             self.config.write_breaker_threshold_mb,

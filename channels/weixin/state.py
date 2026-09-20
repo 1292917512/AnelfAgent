@@ -188,39 +188,3 @@ class TypingTicketCache:
 
     def set(self, user_id: str, ticket: str) -> None:
         self._cache[user_id] = (ticket, time.time())
-
-
-# ======================================================================
-# 消息去重
-# ======================================================================
-
-class MessageDeduplicator:
-    """TTL 去重器（消息 ID + 内容指纹二级去重）。"""
-
-    def __init__(self, ttl_seconds: int = 300, max_size: int = 2000):
-        self._ttl_seconds = ttl_seconds
-        self._max_size = max_size
-        self._seen: Dict[str, float] = {}
-
-    def is_duplicate(self, key: str) -> bool:
-        now = time.time()
-        self._evict(now)
-        if key in self._seen:
-            return True
-        self._seen[key] = now
-        return False
-
-    def _evict(self, now: float) -> None:
-        if len(self._seen) < self._max_size:
-            expired = [k for k, ts in self._seen.items() if now - ts > self._ttl_seconds]
-            for k in expired:
-                del self._seen[k]
-            return
-        # 超限：先清过期，仍超限则保留最新的一半
-        expired = [k for k, ts in self._seen.items() if now - ts > self._ttl_seconds]
-        for k in expired:
-            del self._seen[k]
-        if len(self._seen) >= self._max_size:
-            ordered = sorted(self._seen.items(), key=lambda kv: kv[1])
-            for k, _ in ordered[: len(ordered) // 2]:
-                del self._seen[k]

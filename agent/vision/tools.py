@@ -12,12 +12,15 @@ from __future__ import annotations
 
 import json
 
+from core.entity import EntityRegistry
 from core.tool_errors import ErrorCause
 from entities._sdk import deferred_tool, tool_error
 
 from .buffer import get_vision_buffer
 from .framework import all_sources, get_source, is_enabled, set_enabled
 from .watcher import get_vision_watcher
+
+EntityRegistry.register_group_order("vision", 40)
 
 
 def _frame_result(path: str, note: str, changed: bool) -> str:

@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from core.config import ConfigManager, get_config_bool
+from core.entity import EntityRegistry
 from core.log import log
 from entities._sdk import (
     KIND_ASR,
@@ -30,6 +31,8 @@ from entities._sdk import (
 from . import matcher
 from .store import get_audio_store, parse_time_ns
 from .vectors import cosine, sample_weight, unit_rows, weighted_centroid
+
+EntityRegistry.register_group_order("audio", 38)
 
 _group = "audio"
 _LOG_TAG = "音频"

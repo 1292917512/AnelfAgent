@@ -1,8 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 import { approvalsApi, statusApi, mcpApi, adaptersApi } from "@/lib/api";
+import { useNow } from "@/hooks/useNow";
 import type { LogEntry, MCPServer, AdapterInfo } from "@/lib/types";
 import { Card } from "@/components/common/Card";
 import { Badge } from "@/components/ui/Badge";
@@ -81,13 +82,8 @@ export function AttentionPanel() {
 
   // 到期倒计时基准：渲染期禁调 Date.now（React Compiler 规则），经 1s tick 驱动；
   // 无待批准请求时不计时（此时倒计时不被消费）
-  const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
   const pendingTotal = (pendingData?.pending?.length ?? 0);
-  useEffect(() => {
-    if (pendingTotal === 0) return;
-    const id = setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 1000);
-    return () => clearInterval(id);
-  }, [pendingTotal]);
+  const nowSec = Math.floor(useNow(pendingTotal > 0) / 1000);
 
   const items: AttentionItem[] = [];
 

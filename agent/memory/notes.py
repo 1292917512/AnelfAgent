@@ -21,11 +21,14 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from core.entity import EntityRegistry
 from core.log import log
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
 from entities._sdk import activate_group, deferred_tool
 
 from .memory_utils import list_workspace_md_files
+
+EntityRegistry.register_group_order("notes", 12)
 
 _workspace_dir: Optional[Path] = None
 _file_lock = asyncio.Lock()

@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from agent.channel.base import BaseChannel, ChannelMetadata
 from agent.channel.channel_types import ChannelCapability, ChannelStatus
+from agent.channel.dedup import MessageDedup
 from agent.channel.schemas import (
     AdapterChannel,
     AdapterMessage,
@@ -48,7 +49,6 @@ from . import ilink_client as ilink
 from .config import WeixinConfig
 from .state import (
     ContextTokenStore,
-    MessageDeduplicator,
     TypingTicketCache,
     load_sync_buf,
     load_weixin_account,
@@ -91,7 +91,7 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
         self._running = False
         self._token_store = ContextTokenStore()
         self._typing_cache = TypingTicketCache()
-        self._dedup = MessageDeduplicator(ttl_seconds=ilink.MESSAGE_DEDUP_TTL_SECONDS)
+        self._dedup = MessageDedup(ttl_seconds=ilink.MESSAGE_DEDUP_TTL_SECONDS)
         self._send_text_gate = asyncio.Lock()
         self._rate_limit_circuit_until = 0.0
         self._rate_limit_events: List[float] = []

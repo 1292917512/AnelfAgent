@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { ChevronDown, ExternalLink, Package, Pencil, ToggleLeft, ToggleRight, Wrench } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { ToolGroup, ToolItem } from "./types";
+import type { ToolGroup, ToolItem } from "@/lib/types";
 
 /** 工具分组卡片：手风琴 + 工具行 */
 export function ToolGroupCard({

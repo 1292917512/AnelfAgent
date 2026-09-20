@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import CodeMirror from "@uiw/react-codemirror";
-import {
-  workspaceApi, workspaceFileKind, workspaceMediaKind,
-  type WorkspaceFileKind,
-} from "@/lib/api";
+import { workspaceApi } from "@/lib/api";
+import type { WorkspaceFileKind } from "@/lib/types";
+import { workspaceFileKind, workspaceMediaKind } from "@/lib/workspace-kind";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";

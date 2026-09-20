@@ -223,7 +223,7 @@ channel_tag = Tag(
 session_id_tag = Tag(tag_name="session_id", tag_name_desc="会话 ID（同一频道会话上下文标识）")
 message_id_tag = Tag(
     tag_name="message_id",
-    tag_name_desc="当前这条消息的平台 ID，可用 lookup_message(message_id=xxx) 精确取回（含窗口外）",
+    tag_name_desc="当前这条消息的平台 ID（可据此精确取回原文及前后文，含窗口外）",
 )
 to_me_tag = Tag(
     tag_name="to_me",
@@ -251,11 +251,11 @@ media_type_tag = Tag(
 media_path_tag = Tag(
     tag_name="media_path",
     tag_name_desc="媒体文件的本地路径或 URL；为「未下载」时表示文件未落地，"
-                  "可配合 media_file_id 用 qq_download_file 或直接用 URL 调 web_download 按需下载",
+                  "可配合 media_file_id 按需下载到本地后再分析",
 )
 media_file_id_tag = Tag(
     tag_name="media_file_id",
-    tag_name_desc="平台文件 ID（如 QQ 文件），可传给 qq_download_file 按需下载到本地后再分析",
+    tag_name_desc="平台文件 ID，可据此按需下载到本地后再分析",
 )
 
 # 交互标签（描述即定义，见上方上下文标签块的说明）
@@ -266,22 +266,22 @@ at_uid_tag = Tag(
 reply_to_tag = Tag(
     tag_name="reply_to",
     tag_name_desc="引用回复指向的消息 ID；标签后常紧跟被引用消息的短预览（约 200 字），"
-                  "预览不够或需要原文/前后文时调用 lookup_message(message_id=xxx)",
+                  "预览不够或需要原文/前后文时，可按该消息 ID 精确取回",
 )
 forward_tag = Tag(tag_name="forward", tag_name_desc="转发消息的来源（原始发送者、频道名或消息 ID）")
 speaker_scope_tag = Tag(
     tag_name="speaker_scope",
     tag_name_desc="语音消息经声纹识别后，说话人绑定的实体 scope"
-                  "（如 user:qq:456）——听到的是谁，按此召回该实体的画像与记忆",
+                  "（格式 user:{频道}:{uid}）——听到的是谁，按此召回该实体的画像与记忆",
 )
 face_scope_tag = Tag(
     tag_name="face_scope",
     tag_name_desc="画面经人脸识别后，在场人物绑定的实体 scope"
-                  "（如 user:qq:456）——看到的是谁，按此召回该实体的画像与记忆",
+                  "（格式 user:{频道}:{uid}）——看到的是谁，按此召回该实体的画像与记忆",
 )
 
 # 富文本内容标签
-json_card_tag = Tag(tag_name="json_card", tag_name_desc="JSON 卡片消息（QQ 分享链接、小程序卡片等），格式 [json_card:摘要文本]")
+json_card_tag = Tag(tag_name="json_card", tag_name_desc="JSON 卡片消息（分享链接、小程序卡片等），格式 [json_card:摘要文本]")
 
 # 推送标签（实体主动推送给 AI 的系统通知，区别于用户消息）
 push_tag = Tag(

@@ -97,11 +97,16 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
     # ------------------------------------------------------------------
 
     def _subscribe_stream_events(self) -> None:
-        from core.event_bus import EVENT_AFTER_REPLY, event_bus
+        from core.event_bus import (
+            EVENT_AFTER_REPLY,
+            EVENT_THINKING_TOOL_END,
+            EVENT_THINKING_TOOL_START,
+            event_bus,
+        )
         from core.stream_events import EVENT_ASSISTANT_DELTA
         event_bus.on(EVENT_ASSISTANT_DELTA, self._on_assistant_delta, owner="channel:webui")
-        event_bus.on("thinking_tool_start", self._on_tool_start, owner="channel:webui")
-        event_bus.on("thinking_tool_end", self._on_tool_end, owner="channel:webui")
+        event_bus.on(EVENT_THINKING_TOOL_START, self._on_tool_start, owner="channel:webui")
+        event_bus.on(EVENT_THINKING_TOOL_END, self._on_tool_end, owner="channel:webui")
         event_bus.on(EVENT_AFTER_REPLY, self._on_after_reply, owner="channel:webui")
         from core.stream_events import EVENT_CONTEXT_USAGE, EVENT_FILE_DIFF
         event_bus.on(EVENT_FILE_DIFF, self._on_file_diff, owner="channel:webui")

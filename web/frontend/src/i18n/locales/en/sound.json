@@ -338,5 +338,11 @@
       "excluded": "Path matches exclusion rules; not rebuilt",
       "missing": "Unit not found in sources"
     }
+  },
+  "voiceConfig": {
+    "voice_silence_ms": "Silence endpoint threshold (ms)",
+    "voice_min_utterance_ms": "Min utterance length (ms)",
+    "voice_max_utterance_s": "Max utterance length (s)",
+    "voice_vad_floor_min": "VAD noise floor min (RMS)"
   }
 }

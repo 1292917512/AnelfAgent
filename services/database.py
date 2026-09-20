@@ -17,7 +17,6 @@ Agent 挂掉时也可用于排查/维护）：
 
 from __future__ import annotations
 
-import array
 import asyncio
 import json
 import os
@@ -29,6 +28,13 @@ from typing import Any, Dict, List, Optional, Tuple
 import aiosqlite
 
 from core.log import log
+from services.db_common import (
+    CELL_TEXT_MAX,
+    SHADOW_PATTERNS,
+    DatabaseError,
+    looks_like_embedding_column,
+    serialize_value,
+)
 
 # ----------------------------------------------------------------------
 # 常量
@@ -36,20 +42,6 @@ from core.log import log
 
 _QUERY_MAX_ROWS = 500
 _QUERY_TIMEOUT_SECONDS = 10.0
-_CELL_TEXT_MAX = 500  # 浏览时单元格文本截断长度（全文走单行详情接口）
-
-# FTS5 / vec0 影子表（内部维护，默认不出现在表清单）
-_SHADOW_PATTERNS = (
-    "_fts_data",
-    "_fts_idx",
-    "_fts_docsize",
-    "_fts_config",
-    "_fts_content",
-    "_vec_chunks",
-    "_vec_rowids",
-    "_vec_vector_chunks",
-    "_vec_info",
-)
 
 # 只读查询允许的首关键字
 _QUERY_ALLOWED_KEYWORDS = ("select", "with", "explain", "pragma")
@@ -59,14 +51,6 @@ _OPTIMIZE_ACTIONS = ("checkpoint", "vacuum", "analyze")
 _WAL_WARN_BYTES = 32 * 1024 * 1024  # WAL 超过 32MB 建议 checkpoint
 _FRAGMENT_WARN_RATIO = 0.2  # 空闲页占比超过 20% 建议 VACUUM
 _FRAGMENT_MIN_PAGES = 100  # 小库不报碎片化（无意义）
-
-
-class DatabaseError(RuntimeError):
-    """数据库管理操作错误（router 转成 HTTPException）。"""
-
-    def __init__(self, message: str, *, status_code: int = 400):
-        super().__init__(message)
-        self.status_code = status_code
 
 
 # ----------------------------------------------------------------------
@@ -152,60 +136,9 @@ def _database_registry() -> Dict[str, Dict[str, str]]:
 # 值序列化（智能展示：blob / 向量 / JSON / 时间戳 / 长文本）
 # ----------------------------------------------------------------------
 
-def _looks_like_embedding_column(column: str) -> bool:
-    name = column.lower()
-    return "embedding" in name or name.endswith("_vec") or "vector" in name
-
-
-def _serialize_value(value: Any, column: str) -> Any:
-    """把 SQLite 值转成 JSON 可序列化的智能结构。"""
-    if value is None:
-        return None
-    if isinstance(value, bytes):
-        info: Dict[str, Any] = {"__type__": "blob", "bytes": len(value)}
-        # float32 小端向量（embedding_blob / embedding 列）
-        if len(value) >= 4 and len(value) % 4 == 0 and _looks_like_embedding_column(column):
-            try:
-                arr = array.array("f")
-                arr.frombytes(value[: 4 * 4])  # 预览前 4 维
-                info["__type__"] = "vec"
-                info["dims"] = len(value) // 4
-                info["preview"] = [round(float(x), 4) for x in arr]
-            except Exception:
-                log("_serialize_value 异常已忽略", "DEBUG")
-        return info
-    if isinstance(value, (int, float)):
-        # *_ns 纳秒时间戳列 → 附可读时间
-        if column.endswith("_ns") and isinstance(value, int) and value > 10**15:
-            return {
-                "__type__": "ts",
-                "value": value,
-                "text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(value / 1e9)),
-            }
-        return value
-    text = str(value)
-    stripped = text.strip()
-    if stripped.startswith(("{", "[")):
-        try:
-            parsed = json.loads(stripped)
-            out: Dict[str, Any] = {
-                "__type__": "json",
-                "value": parsed,
-                "raw": text if len(text) <= _CELL_TEXT_MAX else text[:_CELL_TEXT_MAX],
-            }
-            if len(text) > _CELL_TEXT_MAX:
-                out["truncated"] = True
-            return out
-        except (ValueError, TypeError):
-            log("_serialize_value 异常已忽略", "DEBUG")
-    if len(text) > _CELL_TEXT_MAX:
-        return {"__type__": "text", "text": text[:_CELL_TEXT_MAX], "truncated": True}
-    return text
-
-
 def _full_value(value: Any, column: str) -> Any:
     """单行详情用：不截断的序列化。"""
-    if isinstance(value, str) and len(value) > _CELL_TEXT_MAX:
+    if isinstance(value, str) and len(value) > CELL_TEXT_MAX:
         stripped = value.strip()
         if stripped.startswith(("{", "[")):
             try:
@@ -213,7 +146,7 @@ def _full_value(value: Any, column: str) -> Any:
             except (ValueError, TypeError):
                 log("_full_value 异常已忽略", "DEBUG")
         return {"__type__": "text", "text": value}
-    return _serialize_value(value, column)
+    return serialize_value(value, column)
 
 
 # ----------------------------------------------------------------------
@@ -287,7 +220,7 @@ class DatabaseService:
 
     @staticmethod
     def _is_shadow_table(name: str) -> bool:
-        return any(pat in name for pat in _SHADOW_PATTERNS)
+        return any(pat in name for pat in SHADOW_PATTERNS)
 
     async def _table_meta(self, conn: aiosqlite.Connection, table: str) -> Dict[str, Any]:
         """校验表存在并返回 {type, readonly, ddl}。"""
@@ -510,7 +443,7 @@ class DatabaseService:
             rows.append(
                 {
                     "__rowid__": r["__rowid__"],
-                    "values": {name: _serialize_value(r[name], name) for name in col_names},
+                    "values": {name: serialize_value(r[name], name) for name in col_names},
                 }
             )
         pages = (total + page_size - 1) // page_size if total else 0
@@ -561,7 +494,7 @@ class DatabaseService:
         SqliteBackend.update_conversation_message 的语义：
         内容变更后旧向量失效，置 NULL 等待后台 EmbeddingWorker 重建。
         """
-        embedding_cols = [c["name"] for c in columns if _looks_like_embedding_column(c["name"])]
+        embedding_cols = [c["name"] for c in columns if looks_like_embedding_column(c["name"])]
         if not embedding_cols:
             return None
         content_like = {"content", "text", "description", "personality"}
@@ -678,7 +611,7 @@ class DatabaseService:
             rows = await cursor.fetchmany(_QUERY_MAX_ROWS)
             col_names = [d[0] for d in cursor.description] if cursor.description else []
             return col_names, [
-                {name: _serialize_value(r[name], name) for name in col_names} for r in rows
+                {name: serialize_value(r[name], name) for name in col_names} for r in rows
             ]
 
         try:

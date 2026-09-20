@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import type { ConfigMetaItem } from "@/lib/api";
+import type { ConfigMetaItem } from "@/lib/types";
 import { ConfigItemRow } from "./ConfigItemRow";
 
 interface ConfigSectionProps {

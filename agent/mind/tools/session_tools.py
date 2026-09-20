@@ -14,11 +14,14 @@ import time
 from typing import Any, Dict, List
 
 from agent.messages import parse_entity_scope
+from core.entity import EntityRegistry
 from core.log import log
 from core.tool_errors import ErrorCause, tool_error
 from entities._sdk import deferred_tool
 
 from .ports import mind_port
+
+EntityRegistry.register_group_order("session", 71)
 
 
 def _current_scope() -> str:

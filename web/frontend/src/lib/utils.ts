@@ -33,3 +33,18 @@ export function formatAge(epochSeconds: number): string {
   if (delta < 86400) return `${Math.floor(delta / 3600)}h`;
   return `${Math.floor(delta / 86400)}d`;
 }
+
+/** 纳秒时间戳 → 本地日期时间串（无效值返回占位符） */
+export function formatNs(ns: number): string {
+  if (!ns) return "-";
+  const d = new Date(ns / 1_000_000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+    `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** 纳秒时间戳 → 距今时长（formatAge 的 ns 变体） */
+export function formatAgoNs(ns: number): string {
+  if (!ns) return "-";
+  return formatAge(ns / 1_000_000_000);
+}

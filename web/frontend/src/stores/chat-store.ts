@@ -235,6 +235,7 @@ export const useChatStore = create<ChatState>((set, get) => {
               ts: m.ts,
               id: m.id,
               kind: m.kind,
+              summary: m.summary,
             })),
             earliestId: list[0]?.id,
             hasMore: list.length >= HISTORY_PAGE_SIZE,
@@ -274,6 +275,7 @@ export const useChatStore = create<ChatState>((set, get) => {
               ts: m.ts,
               id: m.id,
               kind: m.kind,
+              summary: m.summary,
             })),
             ...b.messages,
           ],
@@ -346,6 +348,7 @@ export const useChatStore = create<ChatState>((set, get) => {
             ts: m.ts,
             id: m.id,
             kind: m.kind,
+            summary: m.summary,
           }));
           const localEarlier = refreshed.length
             ? b.messages.filter((m) => isNewer(m.id))

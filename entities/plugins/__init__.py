@@ -7,3 +7,7 @@
 核心引擎在 ``core/plugins``（清单解析 / 注册表 / 负载获取 / 编排门面），
 本实体经钩子把激活动作接入 Anelf 运行时。
 """
+
+from core.entity import EntityRegistry
+
+EntityRegistry.register_group_order("plugins", 63)

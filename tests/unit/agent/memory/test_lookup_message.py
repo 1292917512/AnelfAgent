@@ -6,7 +6,7 @@ import json
 import time
 from unittest.mock import patch
 
-from agent.memory import tools as memory_tools
+from agent.memory import conversation_tools as memory_tools
 from agent.storage.sqlite_backend import SqliteBackend
 from core.tags import tag_label
 

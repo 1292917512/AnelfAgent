@@ -52,7 +52,7 @@ class VisionServiceFacade:
                     extra = instance.injection_status()
                 return {
                     "provider": meta.name,
-                    "active": ContextProviderRegistry._is_active(meta),
+                    "active": ContextProviderRegistry.is_active(meta),
                     **extra,
                 }
         return {"provider": "", "active": False}
