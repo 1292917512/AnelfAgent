@@ -11,11 +11,17 @@
 全部 TTS 播报经会话的播报车道串行化（回复优先于主动播报，见
 agent/realtime/arbiter.py），barge-in 后旧轮增量不再送 TTS（文本照常
 在聊天记录呈现）。
+
+同文去重：回复正文经增量流送 TTS 的同时，其 send_message 出口又会
+命中"通话中消息自动播报"——同一文本两条独立 TTS 路径各播一遍。
+speak_to_scope 因此对命中当前回复流已播文本的播报按同文跳过
+（_pending 累积回复流文本，判定见 _dedup_key）。
 """
 
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from agent.realtime.arbiter import (
@@ -42,13 +48,20 @@ def _grace_seconds() -> float:
     return max(0.0, get_config_float("realtime_reconnect_grace_seconds", 5.0))
 
 
+def _dedup_key(text: str) -> str:
+    """同文判定的归一化键：去空白与标点并小写——回复流逐句增量与
+    send_message 全文之间的标点/分段差异不影响包含判定。"""
+    return re.sub(r"[^\w]+", "", text).lower()
+
+
 class RealtimeEngine:
     """实时语音引擎（进程内单例，经 get_realtime_engine 获取）。"""
 
     def __init__(self) -> None:
         self._sessions: Dict[str, RealtimeSession] = {}
         self._pending: Dict[str, Dict[str, Any]] = {}
-        """scope → 等待回复的会话与思维轮标记（TTS 增量的准入与结算归因）。"""
+        """scope → 等待回复的会话与思维轮标记（TTS 增量的准入与结算归因；
+        streamed_text 累积当前回复流已播文本，供主动播报同文去重）。"""
         self._settle_tasks: Dict[str, asyncio.Task] = {}
         """scope → 回复结算宽限任务（归因失败的延迟结算；新增量/新轮取消）。"""
         self._by_user: Dict[str, str] = {}
@@ -681,6 +694,7 @@ class RealtimeEngine:
         self._pending[scope] = {
             "session": session, "turn_id": turn_id,
             "mind_turn": None, "settled_turn": None, "superseded": False,
+            "streamed_text": "",
         }
         delivery = session.delivery
         content = transcript
@@ -774,8 +788,10 @@ class RealtimeEngine:
 
         状态感知：用户说话中不插播（消息以文字送达，返回 spoken=False）；
         车道忙则依序排队（回复在播时不被打断，主动消息之间按序全播）。
-        文字消息本身已由频道层送达，这里只负责"同时说出来"——实际播出
-        完成时经车道回调广播 voice_spoken（取消/失败不标记）。
+        与当前回复流同文的播报跳过——回复正文已随增量流送 TTS，其
+        send_message 出口再播全文即成重复播放。文字消息本身已由频道层
+        送达，这里只负责"同时说出来"——实际播出完成时经车道回调广播
+        voice_spoken（取消/失败/同文跳过不标记）。
         """
         session = self.session_for_scope(scope)
         if session is None or session.closed or not text.strip():
@@ -787,6 +803,16 @@ class RealtimeEngine:
 
         resolved = voice.strip() or realtime_voice()
         body = text.strip()
+        pending = self._pending.get(self._scope_of(session))
+        if pending and not pending.get("superseded"):
+            active_turn = pending.get("mind_turn")
+            if active_turn is not None and pending.get("settled_turn") != active_turn:
+                body_key = _dedup_key(body)
+                if len(body_key) >= 2 \
+                        and body_key in _dedup_key(pending.get("streamed_text", "")):
+                    log(f"主动播报与回复流同文，跳过重复播报 [{self._scope_of(session)}]",
+                        "DEBUG", tag=_LOG_TAG)
+                    return {"spoken": False, "reason": "reply-stream"}
         turn_id = session.turn_id
         appending = session.lane.active is not None or session.playback.pending_finals > 0
         if session.state is not SessionState.SPEAKING:
@@ -837,6 +863,11 @@ class RealtimeEngine:
         pending = self._pending.get(scope)
         if not pending or pending.get("superseded"):
             return
+        if payload.get("reset"):
+            # 流式失败回退重试：已下发增量作废、全量文本随后重发，
+            # 已播文本累积同步清空（与同文去重的比较基准保持一致）
+            pending["streamed_text"] = ""
+            return
         delta = str(payload.get("delta", ""))
         if not delta or payload.get("reasoning"):
             return
@@ -851,6 +882,7 @@ class RealtimeEngine:
             self._cancel_settle_fallback(scope)
             pending["settled_turn"] = None
             pending["mind_turn"] = mind_turn
+            pending["streamed_text"] = ""
             from agent.tts import TtsPipeline, realtime_voice
             pipeline = TtsPipeline(
                 voice=realtime_voice(),
@@ -873,6 +905,7 @@ class RealtimeEngine:
         elif pending["mind_turn"] != mind_turn:
             # 新一轮思维轮（如工具调用后的续写）：并入同一语音回复流
             pending["mind_turn"] = mind_turn
+        pending["streamed_text"] += delta
         if session.tts_pipeline is not None:
             session.tts_pipeline.feed(delta)
 

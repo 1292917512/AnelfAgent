@@ -675,6 +675,67 @@ class TestSpeakArbitration:
         finally:
             await engine.stop("c-s2")
 
+    async def test_speak_same_text_as_reply_stream_skipped(self, app) -> None:
+        """回复正文已随增量流送 TTS → 其 send_message 出口的同文播报跳过（不重复播放）。"""
+        engine = RealtimeEngine()
+        sink = FakeSink()
+        session = await engine.start("c-d1", _delivery(), sink.as_sink(), RATE)
+        try:
+            await engine.user_turn(session, "今天天气怎么样")
+            await engine._on_delta({"scope": "user_webui:u1", "delta": "今天晴，", "turn_id": "t1"})
+            await engine._on_delta({"scope": "user_webui:u1", "delta": "适合出门。", "turn_id": "t1"})
+            await _wait_for(lambda: session.lane.active is not None
+                            and session.lane.active.source == "reply")
+            # 同一回复全文经 send_message 出口到达（标点差异不影响同文判定）
+            out = await engine.speak_to_scope("user_webui:u1", "今天晴适合出门")
+            assert out["spoken"] is False and out["reason"] == "reply-stream"
+            assert session.lane.active is not None and session.lane.active.source == "reply"
+            await engine._on_after_reply({"scope": "user_webui:u1", "turn_id": "t1"})
+            await _wait_for(lambda: session_lane_idle(engine, "c-d1"))
+            # 只有回复流的一次自然收束——没有第二条 TTS 播报
+            dones = [p for name, p in sink.events if name == "audio_done"
+                     and not p.get("interrupted")]
+            assert len(dones) == 1
+        finally:
+            await engine.stop("c-d1")
+
+    async def test_speak_different_text_still_spoken(self, app) -> None:
+        """回复流进行中，与回复不同文的主动消息照常播报。"""
+        engine = RealtimeEngine()
+        sink = FakeSink()
+        session = await engine.start("c-d2", _delivery(), sink.as_sink(), RATE)
+        try:
+            await engine.user_turn(session, "今天天气怎么样")
+            await engine._on_delta({"scope": "user_webui:u1", "delta": "今天晴", "turn_id": "t1"})
+            out = await engine.speak_to_scope("user_webui:u1", "提醒：晚饭订好了")
+            assert out["spoken"] is True
+            await engine._on_after_reply({"scope": "user_webui:u1", "turn_id": "t1"})
+            await _wait_for(lambda: session_lane_idle(engine, "c-d2"))
+            dones = [p for name, p in sink.events if name == "audio_done"
+                     and not p.get("interrupted")]
+            assert len(dones) == 2  # 回复 + 主动消息各播一次
+        finally:
+            await engine.stop("c-d2")
+
+    async def test_speak_same_text_after_settle_spoken(self, app) -> None:
+        """回复结算后同文去重窗口关闭：其后的主动消息即使与旧回复同文也照播。"""
+        engine = RealtimeEngine()
+        sink = FakeSink()
+        session = await engine.start("c-d3", _delivery(), sink.as_sink(), RATE)
+        try:
+            await engine.user_turn(session, "今天天气怎么样")
+            await engine._on_delta({"scope": "user_webui:u1", "delta": "今天晴", "turn_id": "t1"})
+            await engine._on_after_reply({"scope": "user_webui:u1", "turn_id": "t1"})
+            await _wait_for(lambda: session_lane_idle(engine, "c-d3"))
+            out = await engine.speak_to_scope("user_webui:u1", "今天晴")
+            assert out["spoken"] is True
+            await _wait_for(lambda: session_lane_idle(engine, "c-d3"))
+            dones = [p for name, p in sink.events if name == "audio_done"
+                     and not p.get("interrupted")]
+            assert len(dones) == 2
+        finally:
+            await engine.stop("c-d3")
+
     async def test_late_after_reply_keeps_new_turn(self, app, monkeypatch) -> None:
         """旧轮迟到的完成事件归因不上 → 宽限观察，不误杀新一轮语音流。"""
         import agent.realtime.engine as engine_mod
