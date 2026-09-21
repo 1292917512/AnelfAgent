@@ -28,6 +28,7 @@ export interface FaceEngineHealth {
   dim: number;
   device: string;
   version: string;
+  loaded?: boolean | null;
 }
 
 export interface FaceStatus {

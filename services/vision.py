@@ -206,6 +206,11 @@ class FaceServiceFacade:
     async def stats(self) -> Dict[str, Any]:
         return await get_face_store().stats()
 
+    @staticmethod
+    async def engine_unload() -> Dict[str, Any]:
+        """识别引擎模型层显存释放（进程常驻，下次推理自动重载）。"""
+        return await face_engine.unload()
+
     # ------------------------------------------------------------------
     # 人物身份
     # ------------------------------------------------------------------

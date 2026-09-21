@@ -77,7 +77,12 @@
       "model": "模型",
       "dim": "向量维度",
       "device": "推理设备",
-      "modelNote": "人脸库（人物档案/样本/绑定/事件）存储在 Agent 侧；引擎只负责提取向量。"
+      "modelNote": "人脸库（人物档案/样本/绑定/事件）存储在 Agent 侧；引擎只负责提取向量。",
+      "loaded": "模型已加载",
+      "released": "模型已释放",
+      "release": "释放显存",
+      "unloaded": "显存已释放，下次推理自动重载",
+      "unloadFailed": "释放失败"
     },
     "stats": {
       "title": "库统计",

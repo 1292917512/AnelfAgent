@@ -16,6 +16,8 @@ import type {
   AudioStatus,
   CapabilityStatus,
   FunasrStatus,
+  GpuStatus,
+  GpuUnloadResult,
   VoicePresetEntry,
   VoicePresetOverview,
   VoicePresetPayload,
@@ -27,6 +29,9 @@ export const audioApi = {
   capabilities: () => api.get<CapabilityStatus>("/audio/capabilities"),
   funasrStatus: (refresh = false) =>
     api.get<FunasrStatus>("/audio/funasr/status", { params: refresh ? { refresh: true } : {} }),
+  gpuStatus: () => api.get<GpuStatus>("/audio/funasr/gpu"),
+  gpuUnload: (targets?: string[]) =>
+    api.post<GpuUnloadResult>("/audio/funasr/gpu/unload", { targets: targets ?? [] }),
   analyze: (path: string) => api.post("/audio/analyze", { path }),
   // 声纹身份
   speakers: (params?: { status?: string; keyword?: string; limit?: number; offset?: number }) =>

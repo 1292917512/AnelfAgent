@@ -16,6 +16,8 @@ from services.audio import (
     AudioServiceFacade,
     ConfirmRequest,
     EnrollRequest,
+    FunAsrError,
+    FunAsrNotConfigured,
     IdentifyCandidate,
     ImportRequest,
     ListenError,
@@ -113,6 +115,33 @@ async def assign_voice(req: VoiceAssignRequest) -> Dict[str, Any]:
 async def funasr_status(refresh: bool = False) -> Dict[str, Any]:
     """FunASR 转写服务状态（配置在位 + 真实可达；refresh 重置探测缓存）。"""
     return await _audio.funasr_status(refresh=refresh)
+
+
+@router.get("/funasr/gpu")
+async def funasr_gpu_status() -> Dict[str, Any]:
+    """GPU worker 模型加载状态（moss/asr/diarize/embedder）。"""
+    try:
+        return await _audio.gpu_status()
+    except FunAsrNotConfigured as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except FunAsrError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+class GpuUnloadRequest(BaseModel):
+    targets: List[str] = []
+    """释放目标（moss/asr/diarize/embedder）；空 = 全部。"""
+
+
+@router.post("/funasr/gpu/unload")
+async def funasr_gpu_unload(req: GpuUnloadRequest) -> Dict[str, Any]:
+    """释放 GPU 模型显存（进程常驻不死，下次推理自动重载）。"""
+    try:
+        return await _audio.gpu_unload(req.targets or None)
+    except FunAsrNotConfigured as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except FunAsrError as exc:
+        raise HTTPException(502, str(exc)) from exc
 
 
 class AnalyzeRequest(BaseModel):

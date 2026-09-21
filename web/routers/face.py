@@ -57,6 +57,17 @@ async def status(refresh: bool = False) -> Dict[str, Any]:
     return await _face.status(refresh=refresh)
 
 
+@router.post("/engine/unload")
+async def engine_unload() -> Dict[str, Any]:
+    """识别引擎模型层显存释放（进程常驻，下次推理自动重载）。"""
+    try:
+        return await _face.engine_unload()
+    except FaceEngineNotConfigured as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except FaceEngineError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
 @router.get("/stats")
 async def stats() -> Dict[str, Any]:
     """人脸库总览统计。"""

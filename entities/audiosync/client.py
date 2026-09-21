@@ -12,6 +12,14 @@
     abs_* 为 epoch 毫秒绝对时间（source_time + 段内偏移），缺省时由调用方
     按录制基准时间 + 段内偏移自行换算（旧契约完全兼容）。
 
+    GET {endpoint}/gpu/status
+    响应：各 worker 的模型加载状态（moss 含 model/device/vram_gb，
+    embedder 仅 loaded）；服务未实现该接口时返回 404。
+
+    POST {endpoint}/gpu/unload   body: {"targets": ["moss", ...]}（可选）
+    模型层显存释放（进程常驻不死，下次推理自动重载）；targets 缺省全部
+    （moss/asr/diarize/embedder），响应按目标返回释放前后显存或错误说明。
+
 endpoint 与超时经声音系统配置 funasr_endpoint / funasr_timeout 调整；
 未配置 endpoint 时所有方法抛 FunAsrNotConfigured，由调用方转为友好错误。
 """
@@ -98,6 +106,64 @@ def reset_probe_cache() -> None:
     """清空探测缓存（测试/配置变更后用）。"""
     global _probe_cache
     _probe_cache = (0.0, False)
+
+
+_GPU_STATUS_TIMEOUT = 10.0
+_GPU_UNLOAD_TIMEOUT = 60.0
+
+
+async def gpu_status() -> Dict[str, Any]:
+    """GPU worker 模型加载状态（模型层启停面板展示）。
+
+    Raises:
+        FunAsrNotConfigured: endpoint 未配置。
+        FunAsrError: 服务不可达或未实现该接口。
+    """
+    endpoint = _endpoint()
+    try:
+        async with httpx.AsyncClient(
+                timeout=_GPU_STATUS_TIMEOUT, trust_env=False) as client:
+            resp = await client.get(f"{endpoint}/gpu/status")
+    except httpx.HTTPError as exc:
+        raise FunAsrError(f"GPU 状态查询不可达: {exc}") from exc
+    if resp.status_code != 200:
+        raise FunAsrError(
+            f"GPU 状态查询返回 {resp.status_code}: {resp.text[:200]}")
+    try:
+        return resp.json()
+    except ValueError as exc:
+        raise FunAsrError(f"GPU 状态响应非 JSON: {exc}") from exc
+
+
+async def gpu_unload(targets: Optional[List[str]] = None) -> Dict[str, Any]:
+    """释放 GPU 模型显存（进程常驻，下次推理自动重载）。
+
+    Args:
+        targets: 释放目标（moss/asr/diarize/embedder）；缺省全部。
+
+    Returns:
+        按目标的结果 {"<target>": {"ok", "vram_gb_before", "vram_gb_after"}
+        | {"error": "..."}}
+
+    Raises:
+        FunAsrNotConfigured: endpoint 未配置。
+        FunAsrError: 网络/状态码错误。
+    """
+    endpoint = _endpoint()
+    body: Optional[Dict[str, Any]] = (
+        {"targets": [t for t in targets if t]} if targets else None)
+    try:
+        async with httpx.AsyncClient(
+                timeout=_GPU_UNLOAD_TIMEOUT, trust_env=False) as client:
+            resp = await client.post(f"{endpoint}/gpu/unload", json=body)
+    except httpx.HTTPError as exc:
+        raise FunAsrError(f"GPU 释放不可达: {exc}") from exc
+    if resp.status_code != 200:
+        raise FunAsrError(f"GPU 释放返回 {resp.status_code}: {resp.text[:200]}")
+    try:
+        return resp.json()
+    except ValueError as exc:
+        raise FunAsrError(f"GPU 释放响应非 JSON: {exc}") from exc
 
 
 async def transcribe(audio_path: str, source_time: str = "") -> List[Dict[str, Any]]:

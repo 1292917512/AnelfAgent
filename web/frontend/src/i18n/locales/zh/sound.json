@@ -306,6 +306,24 @@
     "goConfigure": "去 模型页 → 组件凭据 配置地址",
     "modelNote": "声纹向量由该服务端提取（模型与维度由服务端决定，如 SenseVoice 服务用 cam++ 192 维）；换模型在服务端进行，此处只需地址"
   },
+  "gpu": {
+    "title": "GPU 模型显存",
+    "hint": "模型层启停：释放后进程常驻不死，下次语音/人脸推理自动重载——跑大模型前一键腾显存",
+    "unloadAll": "全部释放",
+    "release": "释放",
+    "loaded": "已加载",
+    "released": "已释放",
+    "unloaded": "显存已释放，下次推理自动重载",
+    "unsupported": "服务未支持模型层启停（升级 voicehub 后可用）",
+    "unloadAllTitle": "释放全部 GPU 模型",
+    "unloadAllConfirm": "将释放 moss / asr / diarize / embedder 全部模型显存。进程不死，下次推理自动重载。",
+    "worker": {
+      "moss": "MOSS 转写",
+      "asr": "SenseVoice 转写",
+      "diarize": "说话人分离",
+      "embedder": "声纹嵌入 (cam++)"
+    }
+  },
   "channels": {
     "mic": "麦克风",
     "phone": "电话",

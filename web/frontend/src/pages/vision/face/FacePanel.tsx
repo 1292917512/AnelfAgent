@@ -66,6 +66,18 @@ function OverviewView() {
     },
   });
 
+  const engineUnload = useMutation({
+    mutationFn: () => faceApi.engineUnload().then((r) => r.data),
+    onSuccess: () => {
+      toast.success(t("face.engine.unloaded"));
+      queryClient.invalidateQueries({ queryKey: ["faceStatus"] });
+    },
+    onError: (e: unknown) => {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      toast.error(detail || t("face.engine.unloadFailed"));
+    },
+  });
+
   if (isLoading || !status) return <LoadingBlock label={t("common:loading")} />;
 
   const { engine, stats, thresholds } = status;
@@ -83,9 +95,25 @@ function OverviewView() {
               ? t("face.engine.reachable")
               : engine.configured ? t("face.engine.unreachable") : t("face.engine.notConfigured")}
           </Badge>
+          {health?.loaded != null && (
+            <Badge variant={health.loaded ? "ok" : "neutral"}>
+              {health.loaded ? t("face.engine.loaded") : t("face.engine.released")}
+            </Badge>
+          )}
+          {health?.loaded && (
+            <Button
+              size="sm"
+              variant="secondary"
+              className="ml-auto"
+              loading={engineUnload.isPending}
+              onClick={() => engineUnload.mutate()}
+            >
+              {t("face.engine.release")}
+            </Button>
+          )}
           <Button
             size="sm"
-            className="ml-auto"
+            className={health?.loaded ? "" : "ml-auto"}
             loading={recheck.isPending}
             onClick={() => recheck.mutate()}
           >

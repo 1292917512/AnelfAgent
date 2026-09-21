@@ -77,7 +77,12 @@
       "model": "Model",
       "dim": "Dim",
       "device": "Device",
-      "modelNote": "The face library (persons/samples/bindings/events) lives on the Agent side; the engine only extracts vectors."
+      "modelNote": "The face library (persons/samples/bindings/events) lives on the Agent side; the engine only extracts vectors.",
+      "loaded": "Model loaded",
+      "released": "Model released",
+      "release": "Release VRAM",
+      "unloaded": "VRAM released; auto-reloads on next inference",
+      "unloadFailed": "Release failed"
     },
     "stats": {
       "title": "Library",

@@ -2,12 +2,16 @@
 
 对接契约（用户自部署的 FaceEngine 服务实现，参考 deploy/face_server/）：
     GET  {endpoint}/health
-      → {"status":"ok","model":"buffalo_l","dim":512,"device":"cuda","version":"1.0"}
+      → {"status":"ok","model":"buffalo_l","dim":512,"device":"cuda",
+         "loaded":true,"version":"1.0"}
+      loaded 为模型加载态（模型层启停：释放后 false，下次推理自动重载）。
     POST {endpoint}/extract
       multipart: file（图片）+ 可选 min_det_score / max_faces
       → {"width":…,"height":…,"faces":[{"bbox":[x,y,w,h],"det_score":0.92,
           "pose":{"pitch":…,"yaw":…,"roll":…},"vector":[512 floats]}]}
       faces 按 det_score 降序，vector 为 L2 归一化（余弦=点积）。
+    POST {endpoint}/unload
+      → 模型层显存释放（进程常驻不死，下次推理自动重载）。
     错误响应统一 {"error":{"code","message"}}，码表：
       INVALID_IMAGE(400) / IMAGE_TOO_LARGE(413) / MODEL_NOT_READY(503)
       / ENGINE_ERROR(500)
@@ -129,9 +133,32 @@ async def health(refresh: bool = False) -> Optional[EngineHealth]:
             dim=int(data.get("dim", 0) or 0),
             device=str(data.get("device", "")),
             version=str(data.get("version", "")),
+            loaded=bool(data["loaded"]) if "loaded" in data else None,
         )
     except Exception:
         return None
+
+
+async def unload() -> Dict[str, Any]:
+    """模型层显存释放（进程常驻，下次推理自动重载）。
+
+    Raises:
+        FaceEngineNotConfigured: endpoint 未配置。
+        FaceEngineError: 网络/状态码错误。
+    """
+    endpoint = _endpoint()
+    try:
+        async with _client(timeout=30.0) as client:
+            resp = await client.post(f"{endpoint}/unload")
+    except httpx.HTTPError as exc:
+        raise FaceEngineError(f"人脸引擎释放不可达: {exc}") from exc
+    if resp.status_code != 200:
+        raise _parse_error(resp)
+    try:
+        return resp.json()
+    except ValueError as exc:
+        raise FaceEngineError(f"人脸引擎释放响应非 JSON: {exc}",
+                              code="BAD_RESPONSE", retryable=False) from exc
 
 
 def _client(timeout: float) -> httpx.AsyncClient:

@@ -306,6 +306,24 @@
     "goConfigure": "Configure in Models → Provider Keys",
     "modelNote": "Voiceprint vectors are extracted by this service (model & dims decided server-side, e.g. SenseVoice service uses cam++ 192-d); swap models on the server, only the address is configured here"
   },
+  "gpu": {
+    "title": "GPU model memory",
+    "hint": "Model-level start/stop: process stays alive after release; models auto-reload on the next voice/face inference — free VRAM before running large models",
+    "unloadAll": "Release all",
+    "release": "Release",
+    "loaded": "Loaded",
+    "released": "Released",
+    "unloaded": "VRAM released; auto-reloads on next inference",
+    "unsupported": "Service does not support model-level start/stop (upgrade voicehub)",
+    "unloadAllTitle": "Release all GPU models",
+    "unloadAllConfirm": "Releases all models (moss / asr / diarize / embedder). Processes stay alive; models auto-reload on next inference.",
+    "worker": {
+      "moss": "MOSS transcribe",
+      "asr": "SenseVoice ASR",
+      "diarize": "Speaker diarization",
+      "embedder": "Voiceprint embedder (cam++)"
+    }
+  },
   "channels": {
     "mic": "Mic",
     "phone": "Phone",

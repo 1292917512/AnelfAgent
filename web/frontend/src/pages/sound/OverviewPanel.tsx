@@ -2,14 +2,17 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { audioApi } from "@/lib/api";
-import type { AudioStatus } from "@/lib/types";
+import type { AudioStatus, GpuStatus } from "@/lib/types";
 import {
   Badge, Button, ConfirmDialog, Input, LoadingBlock, toast,
 } from "@/components/ui";
 import {
   AudioLines, CheckCircle2, Database, FileAudio, FolderSync, Mic, Phone,
-  Radio, ServerCog, XCircle,
+  Radio, ServerCog, XCircle, Zap,
 } from "lucide-react";
+
+/** GPU worker 展示顺序（voicehub /gpu/status 的四个语音组件） */
+const GPU_WORKERS = ["moss", "asr", "diarize", "embedder"] as const;
 
 /** 音频总览：提供者链状态 + FunASR 服务 + 音频库统计 + 上下文注入情况 + 文件解析入库 */
 export function AudioOverviewPanel() {
@@ -32,6 +35,32 @@ export function AudioOverviewPanel() {
       queryClient.setQueryData(["funasrStatus"], data);
       toast[data.reachable ? "success" : "error"](
         data.reachable ? t("funasr.reachable") : t("funasr.unreachable"));
+    },
+  });
+
+  const gpuQuery = useQuery({
+    queryKey: ["funasrGpu"],
+    queryFn: () => audioApi.gpuStatus().then((r) => r.data as GpuStatus),
+    enabled: Boolean(funasr?.reachable),
+    refetchInterval: 15_000,
+    retry: false,
+  });
+  const [unloadAllOpen, setUnloadAllOpen] = useState(false);
+  const gpuUnload = useMutation({
+    mutationFn: (targets?: string[]) => audioApi.gpuUnload(targets).then((r) => r.data),
+    onSuccess: (data) => {
+      setUnloadAllOpen(false);
+      const failed = Object.entries(data).filter(([, v]) => v.error);
+      if (failed.length) {
+        toast.error(failed.map(([k, v]) => `${k}: ${v.error}`).join("; "));
+      } else {
+        toast.success(t("gpu.unloaded"));
+      }
+      queryClient.invalidateQueries({ queryKey: ["funasrGpu"] });
+    },
+    onError: (e: unknown) => {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      toast.error(detail || t("messages.opFailed"));
     },
   });
 
@@ -169,6 +198,59 @@ export function AudioOverviewPanel() {
         <p className="text-[11px] text-muted">{t("funasr.modelNote")}</p>
       </div>
 
+      {/* GPU 模型显存（voicehub 模型层启停；释放后下次推理自动重载） */}
+      <div className="rounded-md border border-border bg-card p-4 space-y-2">
+        <div className="flex items-center gap-2">
+          <Zap size={15} className="text-accent" />
+          <span className="text-sm font-semibold text-heading">{t("gpu.title")}</span>
+          <Button
+            size="sm"
+            variant="secondary"
+            className="ml-auto"
+            disabled={gpuQuery.isError || gpuUnload.isPending}
+            onClick={() => setUnloadAllOpen(true)}
+          >
+            {t("gpu.unloadAll")}
+          </Button>
+        </div>
+        <p className="text-xs text-muted">{t("gpu.hint")}</p>
+        {gpuQuery.isError ? (
+          <p className="text-xs text-muted">{t("gpu.unsupported")}</p>
+        ) : (
+          <div className="space-y-1.5">
+            {GPU_WORKERS.map((key) => {
+              const worker = gpuQuery.data?.[key];
+              const loaded = Boolean(worker?.loaded);
+              return (
+                <div key={key} className="flex items-center gap-3 rounded-md bg-elevated px-3 py-2">
+                  <span className="text-sm text-foreground">{t(`gpu.worker.${key}`)}</span>
+                  {worker?.model && (
+                    <span className="text-[11px] text-muted font-mono">{worker.model}</span>
+                  )}
+                  {typeof worker?.vram_gb === "number" && worker.vram_gb > 0 && (
+                    <span className="text-[11px] text-muted">{worker.vram_gb.toFixed(1)} GB</span>
+                  )}
+                  <Badge variant={loaded ? "ok" : "neutral"}>
+                    {loaded ? t("gpu.loaded") : t("gpu.released")}
+                  </Badge>
+                  {loaded && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="ml-auto"
+                      loading={gpuUnload.isPending}
+                      onClick={() => gpuUnload.mutate([key])}
+                    >
+                      {t("gpu.release")}
+                    </Button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
       {/* TTS 提供者链 */}
       <div className="rounded-md border border-border bg-card p-4 space-y-2">
         <div className="flex items-center gap-2">
@@ -282,6 +364,16 @@ export function AudioOverviewPanel() {
           )}
         </div>
       </div>
+
+      <ConfirmDialog
+        open={unloadAllOpen}
+        onClose={() => setUnloadAllOpen(false)}
+        onConfirm={() => gpuUnload.mutate(undefined)}
+        title={t("gpu.unloadAllTitle")}
+        message={t("gpu.unloadAllConfirm")}
+        danger
+        loading={gpuUnload.isPending}
+      />
 
       <ConfirmDialog
         open={rebuildTarget !== null}

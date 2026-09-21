@@ -44,13 +44,14 @@ class ExtractResult(BaseModel):
 
 
 class EngineHealth(BaseModel):
-    """引擎 /health 应答（可观测性：模型归属/向量维度/推理设备）。"""
+    """引擎 /health 应答（可观测性：模型归属/向量维度/推理设备/加载态）。"""
 
     status: str = ""
     model: str = ""
     dim: int = 0
     device: str = ""
     version: str = ""
+    loaded: Optional[bool] = None
 
 
 class FaceHit(BaseModel):

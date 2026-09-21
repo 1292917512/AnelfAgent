@@ -31,6 +31,7 @@ export const faceApi = {
   status: (refresh = false) =>
     api.get<FaceStatus>("/face/status", { params: refresh ? { refresh: true } : {} }),
   stats: () => api.get<FaceStats>("/face/stats"),
+  engineUnload: () => api.post<Record<string, unknown>>("/face/engine/unload"),
   imageUrl: (path: string) => `/api/face/image?path=${encodeURIComponent(path)}`,
   // 人物身份
   persons: (params?: { status?: string; keyword?: string; limit?: number; offset?: number }) =>
