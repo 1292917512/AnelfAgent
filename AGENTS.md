@@ -646,6 +646,19 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 
 > Model Experience：① AI 无新增工具 schema（呈现/分类/降权全在管线内）；② token 影响：discipline/freshness 两块按需注入（无指令/无重复话题零字节）；③ 缓存影响：discipline 在稳定前缀区（低频变化），freshness 在尾部动态区；④ 反馈回路让"她记错了"第一次有了纠正通道——用户否认即负向证据，14 天 sub_zero 归档倒计时通电
 
+#### GPU 模型层启停：显存释放面板（第三十八轮新增）
+
+voicehub（:10096）与 face 服务（:10097）升级为模型层启停——进程常驻不死、模型显存可释放、下次推理自动重载（跑大模型前一键腾显存）。本轮把服务面接进 Web，跑图铁律从此有界面入口。
+
+| 机制 | 位置 | 说明 |
+|------|------|------|
+| GPU 状态/释放客户端 | `entities/audiosync/client.py::gpu_status/gpu_unload` | GET /gpu/status 聚合四组件加载态（moss 带 model/device/vram_gb）；POST /gpu/unload 走 JSON body {"targets":[...]}（缺省全部 moss/asr/diarize/embedder）——**必须走 body**：query 形态传无效 targets 会被静默当作全部卸载 |
+| 声音页 GPU 卡 | `web/routers/audio.py`（GET /funasr/gpu、POST /funasr/gpu/unload）+ OverviewPanel | 四 worker 行（加载徽章/model/显存/单组件释放）+ 全部释放（ConfirmDialog）；查询仅在 funasr reachable 时启用（15s 轮询），旧版服务报"未支持模型层启停" |
+| face 引擎释放 | `agent/vision/face/engine.py::unload` + `EngineHealth.loaded` + POST /face/engine/unload + FacePanel | /health 的 loaded 字段解析（None=老服务未上报）；人脸页引擎卡显示模型加载态 + 释放按钮（face 独立服务，不在 voicehub 四组件内，单独释放） |
+| 归因纪律 | `services/audio.py` 再导出 FunAsrError/FunAsrNotConfigured；`services/vision.py::engine_unload` 门面 | web 层错误映射一致：未配置→503、服务失败→502 |
+
+> Model Experience：① 释放自愈——进程不死、模型懒重载，释放操作无数据风险；② AI 暂无对应工具（面板操作即可；后续若要 AI 在跑大模型前自动腾显存，可在 audio 工具组补 gpu_release）
+
 #### 千问实时语音方言：native 三方言补齐（第三十八轮新增）
 
 百炼 qwen-audio-3.0 系列（asr-flash / tts-plus / realtime-plus）中，asr/tts 早已在提供者链（dashscope SDK 组件，asr.py/tts.py），唯独 realtime 一体化通道无方言——native 模式只有 OpenAI/Gemini。本轮按既有方言插槽补第三方言，协议事件模型与 OpenAI Realtime 同构（DashScope `/api-ws/v1/realtime`）。
