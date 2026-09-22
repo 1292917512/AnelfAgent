@@ -457,6 +457,23 @@ class MemoryConnectionManager:
             "CREATE INDEX IF NOT EXISTS idx_ge_object ON graph_edges(object_id);"
         )
 
+        # ---- 治理议程豁免（AI 裁决「误报/真实扇出/设计使然」后登记，检测器不再生产该项） ----
+        # 闭环「事实归系统」的最后一环：裁决结论落库，build_agenda 塑形时剔除，
+        # 根治常驻误报导致的逐拍复核流水；签名口径见 GraphStore 豁免方法注释
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS graph_curation_exemptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT NOT NULL,
+                signature TEXT NOT NULL,
+                reason TEXT NOT NULL DEFAULT '',
+                actor TEXT NOT NULL DEFAULT '',
+                active INTEGER NOT NULL DEFAULT 1,
+                created_ns INTEGER NOT NULL,
+                revoked_ns INTEGER NOT NULL DEFAULT 0,
+                UNIQUE (kind, signature)
+            );
+        """)
+
         await self._init_vec_index(db)
 
         await db.commit()

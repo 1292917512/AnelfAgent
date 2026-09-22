@@ -29,7 +29,12 @@ if TYPE_CHECKING:
 
 
 async def build_agenda(graph: "GraphStore") -> Dict[str, Any]:
-    """产出图谱治理议程（纯事实，无策略）；构建失败返回空议程。"""
+    """产出图谱治理议程（纯事实，无策略）；构建失败返回空议程。
+
+    AI 裁决「误报/真实扇出/设计使然」并登记豁免（graph_curation_exempt）
+    的议程项在此塑形时剔除——裁决结论落库，常驻误报不再逐拍重现，
+    心跳摘要横幅与每日复核轮随之收敛。生效豁免清单随议程返回供复核。
+    """
     stale_days = get_config_int("graph_curation_stale_days", 60)
     try:
         facts = await graph.curation_facts(
@@ -38,22 +43,35 @@ async def build_agenda(graph: "GraphStore") -> Dict[str, Any]:
             ambiguity_min_strength=get_config_float("graph_curation_ambiguity_min_strength", 0.5),
             hub_degree=get_config_int("graph_curation_hub_degree", 30),
         )
+        exemptions = await graph.list_exemptions()
     except Exception as exc:
         log(f"图谱治理议程构建失败: {exc}", "DEBUG", tag="记忆")
         return {}
+
+    exempted = {
+        (str(e["kind"]), str(e["signature"])) for e in exemptions
+    }
+
+    def _filtered(kind: str, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return [
+            item for item in items
+            if (kind, graph.exemption_signature(kind, item)) not in exempted
+        ]
+
     return {
-        "weak_edges": [_edge_item(edge) for edge in facts["weak_edges"]],
-        "stale_edges": [_edge_item(edge) for edge in facts["stale_edges"]],
+        "weak_edges": [_edge_item(edge) for edge in _filtered("weak_edge", facts["weak_edges"])],
+        "stale_edges": [_edge_item(edge) for edge in _filtered("stale_edge", facts["stale_edges"])],
         "ambiguous_groups": [
             {
                 "subject": group["subject_label"] or group["subject_key"],
                 "predicate": group["predicate"],
                 "edges": [_edge_item(edge) for edge in group["edges"]],
             }
-            for group in facts["ambiguous_groups"]
+            for group in _filtered("ambiguous_group", facts["ambiguous_groups"])
         ],
-        "duplicate_nodes": facts["duplicate_nodes"],
-        "hub_nodes": facts["hub_nodes"],
+        "duplicate_nodes": _filtered("duplicate_node", facts["duplicate_nodes"]),
+        "hub_nodes": _filtered("hub_node", facts["hub_nodes"]),
+        "exemptions": exemptions,
     }
 
 

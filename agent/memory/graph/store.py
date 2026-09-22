@@ -1034,6 +1034,80 @@ class GraphStore:
         return facts
 
     # ------------------------------------------------------------------
+    # 治理议程豁免（裁决结论落库：登记后检测器不再生产该议程项）
+    # ------------------------------------------------------------------
+
+    _EXEMPTION_KINDS = frozenset((
+        "weak_edge", "stale_edge", "ambiguous_group", "duplicate_node", "hub_node",
+    ))
+
+    @staticmethod
+    def exemption_signature(kind: str, item: Dict[str, Any]) -> str:
+        """议程项的豁免签名（kind 与口径一一对应）：
+        weak_edge/stale_edge=边 id；ambiguous_group=主语 key|谓词；
+        duplicate_node=排序节点 key 以 | 连接；hub_node=节点 key。
+        """
+        if kind in ("weak_edge", "stale_edge"):
+            return str(item.get("id", ""))
+        if kind == "ambiguous_group":
+            return f"{item.get('subject_key') or item.get('subject', '')}|{item.get('predicate', '')}"
+        if kind == "duplicate_node":
+            return "|".join(sorted(str(k) for k in item.get("nodes", [])))
+        if kind == "hub_node":
+            return str(item.get("node", ""))
+        return ""
+
+    async def set_exemption(
+        self, kind: str, signature: str, reason: str = "", actor: str = "",
+    ) -> Dict[str, Any]:
+        """登记议程豁免（同 kind+signature 重复登记更新理由并复活）。"""
+        if kind not in self._EXEMPTION_KINDS:
+            raise ValueError(f"未知豁免类型: {kind}（可选 {sorted(self._EXEMPTION_KINDS)}）")
+        signature = (signature or "").strip()
+        if not signature:
+            raise ValueError("豁免签名不能为空")
+        db = await self._conn.get_db()
+        now_ns = time.time_ns()
+        async with self._conn.tx(db):
+            await db.execute(
+                "INSERT INTO graph_curation_exemptions "
+                "(kind, signature, reason, actor, active, created_ns, revoked_ns) "
+                "VALUES (?, ?, ?, ?, 1, ?, 0) "
+                "ON CONFLICT(kind, signature) DO UPDATE SET "
+                "reason=excluded.reason, actor=excluded.actor, active=1, revoked_ns=0",
+                (kind, signature, (reason or "")[:200], (actor or "")[:40], now_ns),
+            )
+        return {"kind": kind, "signature": signature, "active": True}
+
+    async def revoke_exemption(self, kind: str, signature: str) -> bool:
+        """撤销议程豁免（标记失效，议程恢复生产该项）。"""
+        db = await self._conn.get_db()
+        async with self._conn.tx(db):
+            cursor = await db.execute(
+                "UPDATE graph_curation_exemptions SET active=0, revoked_ns=? "
+                "WHERE kind=? AND signature=? AND active=1",
+                (time.time_ns(), kind, (signature or "").strip()),
+            )
+        return (cursor.rowcount or 0) > 0
+
+    async def list_exemptions(self, *, active_only: bool = True) -> list[Dict[str, Any]]:
+        """豁免清单（默认仅生效中；议程展示与豁免复核用）。"""
+        db = await self._conn.get_db()
+        where = "WHERE active=1" if active_only else ""
+        cursor = await db.execute(
+            "SELECT kind, signature, reason, actor, created_ns FROM graph_curation_exemptions "
+            f"{where} ORDER BY id DESC LIMIT 200",
+        )
+        return [
+            {
+                "kind": str(r["kind"]), "signature": str(r["signature"]),
+                "reason": str(r["reason"]), "actor": str(r["actor"]),
+                "created": r["created_ns"] / 1e9,
+            }
+            for r in await cursor.fetchall()
+        ]
+
+    # ------------------------------------------------------------------
     # cognee 投影
     # ------------------------------------------------------------------
 

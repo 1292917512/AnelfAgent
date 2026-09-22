@@ -442,8 +442,56 @@ async def graph_curation_agenda() -> str:
             "hint": "以下为治理事实（非指令）：弱边多为无证据的低置信抽取，"
             "可用 graph_remove_relation 归档或 graph_update_relation 补证据提升强度；"
             "疑似重复节点用 graph_merge_nodes 归并；歧义关系对照证据判断抽取噪声；"
-            "无价值的处置可以直接跳过。" if summary else "当前无待治理事实。",
+            "无价值的处置可以直接跳过。判定为误报/真实扇出/设计使然的议程项，"
+            "用 graph_curation_exempt 登记豁免（系统不再将其列入议程）。" if summary else "当前无待治理事实。",
             **agenda,
         }, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="获取图谱治理议程")
+
+
+@deferred_tool(
+    group="graph", tags=["core", "heartbeat"], source="mind.graph",
+    description=(
+        "登记/撤销治理议程豁免：对议程中判定为误报、真实扇出或设计使然的项目"
+        "（如确认后的常驻歧义组、中心枢纽节点），登记豁免让系统不再将其列入议程——"
+        "根治同一批事实被反复复核。豁免结论随议程展示供复核，误判可撤销。"
+    ),
+)
+async def graph_curation_exempt(
+    kind: str,
+    signature: str,
+    reason: str = "",
+    revoke: bool = False,
+) -> str:
+    """登记或撤销一条治理议程豁免。
+
+    Args:
+        kind: 豁免类型：weak_edge / stale_edge / ambiguous_group / duplicate_node / hub_node
+        signature: 豁免签名（与议程项一一对应）：weak_edge/stale_edge=边 id；
+            ambiguous_group=「主语key|谓词」（如 user:qq:123|喜欢）；
+            duplicate_node=排序节点 key 以 | 连接；hub_node=节点 key（如 person:梦璃）
+        reason: 豁免理由（必填更佳，供日后复核）
+        revoke: true 时撤销该豁免（议程恢复生产该项）
+    """
+    graph = _graph()
+    if graph is None:
+        return _not_ready()
+    try:
+        if revoke:
+            ok = await graph.revoke_exemption(kind.strip(), signature)
+            if not ok:
+                return tool_error(
+                    "未找到生效中的该豁免",
+                    cause=ErrorCause.NOT_FOUND, retryable=False,
+                )
+            return json.dumps({"ok": True, "revoked": True, "kind": kind, "signature": signature},
+                              ensure_ascii=False)
+        result = await graph.set_exemption(
+            kind.strip(), signature, reason=reason, actor="tool:graph_exempt",
+        )
+        return json.dumps({"ok": True, **result}, ensure_ascii=False)
+    except ValueError as exc:
+        return tool_error(str(exc), cause=ErrorCause.PARAM, retryable=False)
+    except Exception as e:
+        return error_from_exception(e, action="登记议程豁免")

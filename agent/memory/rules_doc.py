@@ -23,10 +23,7 @@ from core.path import ConfigPaths
 
 DEFAULT_RULES = (
     "[记忆体系铁律]\n"
-    "记忆与便签的读写一律经专用工具（memorize/recall/notes 组/graph_*），禁止用 shell（cat/tail/grep/sed 等）"
-    "或 filesystem 工具直接访问——shell 触碰便签树会被工具层直接拦截。memory/xxx.md 是便签索引键"
-    "（锚定数据目录），不是 shell 相对路径（shell 工作目录是 workspace），当路径用必然失败；"
-    "读便签用 read_memory_file（大文件用 offset/limit/tail_lines 分段）。\n"
+    "记忆与便签的读写一律经专用工具（memorize/recall/notes 组/graph_*），禁止用 shell（cat/tail/grep/sed 等）或 filesystem 工具直接访问——shell 触碰便签树会被工具层直接拦截。memory/xxx.md 是便签索引键（锚定数据目录），不是 shell 相对路径（shell 工作目录是 workspace），当路径用必然失败；读便签用 read_memory_file（大文件用 offset/limit/tail_lines 分段）。\n"
     "写入路由（一条信息只进一个系统，禁止双写；他处需要时用指针 mem:ID / 技能名引用）：\n"
     "- memorize/recall =「什么事」：事实 type:fact、事件 type:event、反思 type:reflection、永久规则 type:permanent\n"
     "- 实体画像（get/update_entity_profile）=「谁」：单个实体的性格/偏好/互动风格，一人一份覆盖更新\n"
@@ -63,6 +60,7 @@ DEFAULT_RULES = (
     "- 新事实/事件 → memorize（打 type:/user:/group:/topic:），必要时更新便签索引\n"
     "- 工具出错 → recall_tool_errors；整理记忆 → view_memory_outline 看结构再写\n"
     "- 记忆状态与来历 → get_memory：活跃条目含变更史（谁改的、从什么改成什么）；已并入他条的 id 自动带去向；已归档的可恢复、已物删的余梗概\n"
+    "- 图谱治理 → graph_curation_agenda：处置经图谱工具执行；判定误报/真实扇出/设计使然的项用 graph_curation_exempt 登记豁免（落库即唯一沉淀，系统不再列入议程）；处置摘要进心跳日志，禁止在便签维护治理流水/状态档\n"
     "落盘诚实：verdict 是最终裁决，仅 stored/updated/merged 算真正记住；skipped_duplicate 或 error 时如实说明，禁止谎称「已记住」、禁止原样重试\n"
     "检索纪律：recall 等检索类工具每轮合计 ≤3 次；浅召回无果再加 deep，不连环检索碰运气\n"
     "实体协同：各实体实时注入自身操作态势与能力状态（尾部动态区），顺势而为，无需主动探测\n"

@@ -857,6 +857,9 @@ class HeartbeatEngine:
         "knowledge.md": 500,
         "reflections.md": 500,
         "entities.md": 1000,
+        # 治理状态档是历史流水形态——议程以 build_agenda 实时计算为唯一显示源，
+        # 豁免结论落 graph_curation_exemptions 库，便签不再承载治理内容
+        "graph-curation.md": 100,
     }
 
     async def _write_memory_status(

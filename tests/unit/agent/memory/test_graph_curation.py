@@ -63,3 +63,75 @@ async def test_agenda_hub_threshold(store, monkeypatch) -> None:
 async def test_empty_agenda_summary_is_blank(store) -> None:
     agenda = await build_agenda(store.graph)
     assert agenda_summary(agenda) == ""
+
+
+@pytest.mark.asyncio
+async def test_exemption_filters_agenda_item(store) -> None:
+    """登记豁免后对应议程项被过滤，summary 横幅随之消失。"""
+    await store.graph.add_relation(
+        "user:qq:1", "住在", "topic:北京", strength=0.8, evidence="明确说过",
+    )
+    await store.graph.add_relation(
+        "user:qq:1", "住在", "topic:上海", strength=0.8, evidence="另一次说过",
+    )
+    agenda = await build_agenda(store.graph)
+    assert len(agenda["ambiguous_groups"]) == 1
+    assert "歧义 1" in agenda_summary(agenda)
+
+    group = agenda["ambiguous_groups"][0]
+    signature = store.graph.exemption_signature(
+        "ambiguous_group",
+        {"subject_key": "user:qq:1", "predicate": group["predicate"]},
+    )
+    assert signature == "user:qq:1|住在"
+    await store.graph.set_exemption(
+        "ambiguous_group", signature, reason="真实扇出维持", actor="test",
+    )
+
+    agenda = await build_agenda(store.graph)
+    assert agenda["ambiguous_groups"] == []
+    assert "歧义" not in agenda_summary(agenda)
+    # 豁免清单随议程返回供复核
+    assert any(
+        e["signature"] == signature and e["kind"] == "ambiguous_group"
+        for e in agenda["exemptions"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_exemption_revoke_restores_agenda(store) -> None:
+    await store.graph.add_relation(
+        "user:qq:1", "住在", "topic:北京", strength=0.8, evidence="明确说过",
+    )
+    await store.graph.add_relation(
+        "user:qq:1", "住在", "topic:上海", strength=0.8, evidence="另一次说过",
+    )
+    await store.graph.set_exemption("ambiguous_group", "user:qq:1|住在", actor="test")
+    assert (await build_agenda(store.graph))["ambiguous_groups"] == []
+
+    assert await store.graph.revoke_exemption("ambiguous_group", "user:qq:1|住在")
+    agenda = await build_agenda(store.graph)
+    assert len(agenda["ambiguous_groups"]) == 1
+    # 撤销后重登记（复活）再次过滤
+    await store.graph.set_exemption("ambiguous_group", "user:qq:1|住在", actor="test")
+    assert (await build_agenda(store.graph))["ambiguous_groups"] == []
+
+
+@pytest.mark.asyncio
+async def test_exemption_hub_signature_and_kind_validation(store) -> None:
+    await store.graph.upsert_node("person:梦璃", label="梦璃")
+    for i in range(35):
+        await store.graph.add_relation(
+            "person:梦璃", f"关系{i}", f"topic:话题{i}", strength=0.7,
+        )
+    agenda = await build_agenda(store.graph)
+    assert any(h["node"] == "person:梦璃" for h in agenda["hub_nodes"])
+
+    await store.graph.set_exemption("hub_node", "person:梦璃", reason="设计使然中心节点", actor="test")
+    agenda = await build_agenda(store.graph)
+    assert not any(h["node"] == "person:梦璃" for h in agenda["hub_nodes"])
+
+    with pytest.raises(ValueError):
+        await store.graph.set_exemption("not_a_kind", "x")
+    with pytest.raises(ValueError):
+        await store.graph.set_exemption("hub_node", "")
