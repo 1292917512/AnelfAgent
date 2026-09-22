@@ -123,7 +123,7 @@ async def update_profile_content(
         old_entries = await store.list_recent(limit=5, memory_type=MemoryType.ENTITY, source=source)
         for old_entry in old_entries:
             if old_entry.id:
-                await store.delete(old_entry.id)
+                await store.delete(old_entry.id, actor="reflection")
         entry = MemoryEntry(
             memory_type=MemoryType.ENTITY,
             content=content,
@@ -132,7 +132,7 @@ async def update_profile_content(
             importance=PROFILE_MEMORY_IMPORTANCE,
             timestamp=time.time(),
         )
-        await store.add(entry)
+        await store.add(entry, actor="reflection")
         from .embedding import wake_embedding_worker
         wake_embedding_worker()
     except Exception as exc:

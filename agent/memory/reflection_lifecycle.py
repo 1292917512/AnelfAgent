@@ -247,7 +247,7 @@ async def advance_reflections(store: MemoryStore) -> LifecycleReport:
             if score <= archive_threshold:
                 evidence.tick_sub_zero(entry.metadata, today=today)
                 if evidence.get_evidence(entry.metadata)["sub_zero_days"] >= archive_days:
-                    await store.archive_memory(entry.id, "反思证据分长期为负")
+                    await store.archive_memory(entry.id, "反思证据分长期为负", actor="reflection_lifecycle")
                     report.archived += 1
                     continue
             else:
@@ -255,7 +255,7 @@ async def advance_reflections(store: MemoryStore) -> LifecycleReport:
 
             # 状态推进（冷却闸门内只落证据不动状态）
             if now < lc[_F_NEXT_ELIGIBLE]:
-                await store.update(entry)
+                await store.update(entry, actor="reflection_lifecycle")
                 continue
             report.evaluated += 1
 
@@ -271,7 +271,7 @@ async def advance_reflections(store: MemoryStore) -> LifecycleReport:
                     report.denied += 1
                 # retry/blocked：lc 已由 _try_promote 推进
             _put_lifecycle(entry, lc)
-            await store.update(entry)
+            await store.update(entry, actor="reflection_lifecycle")
         except Exception as exc:
             report.errors.append(f"#{entry.id} 推进失败: {exc}")
             log(f"反思 #{entry.id} 生命周期推进失败: {exc}", "WARNING", tag=_LOG_TAG)
@@ -453,7 +453,7 @@ async def load_verification_block(
         lc[_F_FEEDBACK] = ""
         _put_lifecycle(entry, lc)
         try:
-            await store.update(entry)
+            await store.update(entry, actor="reflection_lifecycle")
         except Exception as exc:
             log(f"待验证认知呈现登记失败 #{entry.id}: {exc}", "DEBUG", tag=_LOG_TAG)
             continue
@@ -591,7 +591,7 @@ async def classify_reflection_feedback(
             verdict = "ignored"
         record_user_feedback(entry, verdict)
         try:
-            await store.update(entry)
+            await store.update(entry, actor="reflection_lifecycle")
             applied += 1
         except Exception as exc:
             log(f"反馈回流写入失败 #{entry.id}: {exc}", "DEBUG", tag=_LOG_TAG)

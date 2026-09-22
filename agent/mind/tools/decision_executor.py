@@ -251,6 +251,7 @@ async def execute_remember(mind: Mind, decision: Decision) -> None:
             updated = await apply_update(
                 store, int(verdict["target_id"]),
                 str(verdict.get("content") or content), tags,
+                actor="decision_executor",
             )
             if updated is not None:
                 wake_embedding_worker()
@@ -260,11 +261,13 @@ async def execute_remember(mind: Mind, decision: Decision) -> None:
             # 目标已不存在等异常：回退为正常写入
         if action == "merge" and verdict.get("target_ids"):
             merge_ids = [int(i) for i in verdict["target_ids"]]
-            new_id = await store.merge_memories(merge_ids, str(verdict.get("content") or content))
-            if new_id:
+            keep_id = await store.merge_memories(
+                merge_ids, str(verdict.get("content") or content), actor="decision_executor",
+            )
+            if keep_id:
                 wake_embedding_worker()
-                log(f"AI 主动记忆裁决: 合并 {len(merge_ids)} 条为新记忆 #{new_id}", tag="思维")
-                _hb_append(f"主动记忆裁决: 已合并为记忆 #{new_id} - {content[:60]}")
+                log(f"AI 主动记忆裁决: 合并 {len(merge_ids)} 条为记忆 #{keep_id}", tag="思维")
+                _hb_append(f"主动记忆裁决: 已合并为记忆 #{keep_id} - {content[:60]}")
                 return
 
         entry = MemoryEntry(
@@ -273,7 +276,7 @@ async def execute_remember(mind: Mind, decision: Decision) -> None:
             importance=0.7,
             tags=tags,
         )
-        mid = await store.add(entry)
+        mid = await store.add(entry, actor="decision_executor")
         wake_embedding_worker()
         log(f"AI 主动记忆: 已记住 #{mid}: {content[:80]}", tag="思维")
         _hb_append(f"主动记忆裁决: 已记住 #{mid} - {content[:60]}")

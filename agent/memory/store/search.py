@@ -104,6 +104,10 @@ class SearchEngine:
         """从查询文本识别已知实体/话题提及，返回对应标签。"""
         return await self._tag_intel.extract_mentions(query, limit=limit)
 
+    async def tag_merge_candidates(self, *, limit: int = 20) -> list[Dict[str, Any]]:
+        """标签归并候选（确定性事实生产；归并决策归 AI）。"""
+        return await self._tag_intel.merge_candidates(limit=limit)
+
     async def search_by_tags(
         self,
         tags: list[str],

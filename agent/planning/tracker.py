@@ -278,7 +278,7 @@ async def submit_plan(
                     "kind": PLAN_KIND, "scope": scope,
                 },
             )
-            await store.add(entry)
+            await store.add(entry, actor="planning")
         except Exception as exc:
             log(f"plan 持久化失败（不影响执行）: {exc}", "WARNING", tag="规划")
         else:
@@ -470,7 +470,7 @@ async def remove_goal(entry: MemoryEntry) -> bool:
     store = _bound_store()
     if store is None or not entry.id:
         return False
-    await store.delete(entry.id)
+    await store.delete(entry.id, actor="planning")
     from agent.planning import situation
     situation.invalidate()
     scope = current_scope()

@@ -23,7 +23,7 @@ import aiosqlite
 from core.entity import BaseEntity, EntityType
 from core.log import log
 
-from .memory_types import MemoryEntry, MemorySearchResult, MemoryType
+from .memory_types import GOAL_SOURCE, MemoryEntry, MemorySearchResult, MemoryType
 from .memory_utils import cosine_similarity, pack_embedding
 from .store._shared import (
     MEM_COLUMNS as _MEM_COLUMNS,
@@ -36,6 +36,8 @@ from .store._shared import (
 )
 from .store._shared import (
     entry_projection_payload,
+    merged_redirect_target,
+    parse_metadata_json,
     row_to_entry,
 )
 from .store._shared import (
@@ -240,7 +242,7 @@ class MemoryStore(BaseEntity):
     # CRUD
     # ------------------------------------------------------------------
 
-    async def add(self, entry: MemoryEntry) -> int:
+    async def add(self, entry: MemoryEntry, *, actor: str = "") -> int:
         """添加一条记忆，返回 id。
 
         migrated=1：新记忆诞生于现行体系，无需参与旧版 MD 转储迁移
@@ -271,6 +273,7 @@ class MemoryStore(BaseEntity):
             row_id = cursor.lastrowid or 0
             await self._conn.vec_upsert_memory(db, row_id, blob)
             await self._conn.fts_upsert_memory(db, row_id, entry.content)
+            await self._record_audit(db, row_id, "add", entry.content[:80], actor=actor)
             await self._cognee.enqueue_sync(
                 db,
                 row_id,
@@ -299,11 +302,12 @@ class MemoryStore(BaseEntity):
                     db, memory_id, "upsert", entry_projection_payload(entry, memory_id),
                 )
 
-    async def update(self, entry: MemoryEntry, *, clear_embedding: bool = False) -> bool:
+    async def update(self, entry: MemoryEntry, *, clear_embedding: bool = False, actor: str = "") -> bool:
         """原地更新一条记忆的内容、标签等字段（保留原 id 和时间戳）。
 
         embedding 语义：entry.embedding 非空时写入新向量；clear_embedding=True 时
         显式清空（内容已变更，待后台 worker 重建）；其余情况不触碰 embedding_blob。
+        审计 detail 记被替换的旧内容（新值即条目现值，旧值才是失落的一方）。
         """
         if not entry.id:
             return False
@@ -327,6 +331,10 @@ class MemoryStore(BaseEntity):
             embedding_touched = True
         params.append(entry.id)
         async with self._tx(db):
+            old_cursor = await db.execute(
+                "SELECT content FROM memories WHERE id=?", (entry.id,),
+            )
+            old_row = await old_cursor.fetchone()
             cursor = await db.execute(
                 f"UPDATE memories SET {set_clause} WHERE id=?",
                 params,
@@ -335,7 +343,10 @@ class MemoryStore(BaseEntity):
                 if embedding_touched:
                     await self._conn.vec_upsert_memory(db, entry.id or 0, blob)
                 await self._conn.fts_upsert_memory(db, entry.id or 0, entry.content)
-                await self._record_audit(db, entry.id or 0, "update", entry.content[:80])
+                old_content = str(old_row["content"]) if old_row else ""
+                await self._record_audit(
+                    db, entry.id or 0, "update", old_content[:120], actor=actor,
+                )
                 await self._cognee.enqueue_sync(
                     db,
                     entry.id,
@@ -347,25 +358,25 @@ class MemoryStore(BaseEntity):
             log(f"📝 记忆更新 [{entry.memory_type.value}] id={entry.id}: {entry.content[:50]}", tag="思维")
         return updated
 
-    async def delete(self, memory_id: int) -> bool:
+    async def delete(self, memory_id: int, *, actor: str = "") -> bool:
         db = await self._get_db()
         async with self._tx(db):
             cursor = await db.execute("DELETE FROM memories WHERE id=?", (memory_id,))
             if (cursor.rowcount or 0) > 0:
                 await self._conn.vec_delete_memories(db, [memory_id])
                 await self._conn.fts_delete_memories(db, [memory_id])
-                await self._record_audit(db, memory_id, "delete")
+                await self._record_audit(db, memory_id, "delete", actor=actor)
                 await self._cognee.enqueue_sync(db, memory_id, "delete")
         return (cursor.rowcount or 0) > 0
 
-    async def archive_memory(self, memory_id: int, reason: str = "manual_forget") -> bool:
+    async def archive_memory(self, memory_id: int, reason: str = "manual_forget", *, actor: str = "") -> bool:
         """软删除：将记忆移入归档表（不参与召回，可 restore_memory 恢复）。"""
         entry = await self.get(memory_id)
         if entry is None:
             return False
         db = await self._get_db()
         async with self._tx(db):
-            await self._archive_entry(entry, reason)
+            await self._archive_entry(entry, reason, actor=actor)
         return True
 
     async def clear(
@@ -407,12 +418,18 @@ class MemoryStore(BaseEntity):
     @staticmethod
     async def _record_audit(
         db: aiosqlite.Connection, memory_id: int, action: str, detail: str = "",
+        *, actor: str = "",
     ) -> None:
-        """追加一条记忆审计事件（失败不影响主流程）。"""
+        """追加一条记忆审计事件（失败不影响主流程）。
+
+        actor 标识触发子系统（tool:*/auto_capture/consolidator/web 等），
+        任何变更可回答"谁改的"；detail 语义随 action：add=新内容摘要、
+        update=被替换的旧内容摘要、archive/merge=原因或去向。
+        """
         try:
             await db.execute(
-                "INSERT INTO memory_audit(memory_id, action, detail, ts_ns) VALUES(?,?,?,?)",
-                (memory_id, action, detail[:200], int(time.time() * 1e9)),
+                "INSERT INTO memory_audit(memory_id, action, detail, actor, ts_ns) VALUES(?,?,?,?,?)",
+                (memory_id, action, detail[:200], actor[:40], int(time.time() * 1e9)),
             )
         except Exception as exc:
             log(f"记忆审计写入失败: {exc}", "DEBUG")
@@ -432,19 +449,20 @@ class MemoryStore(BaseEntity):
         db = await self._get_db()
         if memory_id:
             cursor = await db.execute(
-                "SELECT memory_id, action, detail, ts_ns FROM memory_audit "
+                "SELECT memory_id, action, detail, actor, ts_ns FROM memory_audit "
                 "WHERE memory_id=? ORDER BY id DESC LIMIT ?",
                 (memory_id, limit),
             )
         else:
             cursor = await db.execute(
-                "SELECT memory_id, action, detail, ts_ns FROM memory_audit "
+                "SELECT memory_id, action, detail, actor, ts_ns FROM memory_audit "
                 "ORDER BY id DESC LIMIT ?",
                 (limit,),
             )
         return [
-            {"memory_id": r["memory_id"], "action": r["action"],
-             "detail": r["detail"], "timestamp": r["ts_ns"] / 1e9}
+            {"memory_id": r["memory_id"], "action": r["action"], "detail": r["detail"],
+             "actor": r["actor"] if "actor" in r.keys() else "",
+             "timestamp": r["ts_ns"] / 1e9}
             for r in await cursor.fetchall()
         ]
 
@@ -606,7 +624,7 @@ class MemoryStore(BaseEntity):
         """
         return _compute_effective_score(entry, now)
 
-    async def _archive_entry(self, entry: MemoryEntry, reason: str) -> None:
+    async def _archive_entry(self, entry: MemoryEntry, reason: str, *, actor: str = "") -> None:
         """将记忆移入归档表（软遗忘：不参与召回，可恢复，向量随档保留）。"""
         if entry.id is None:
             return
@@ -631,10 +649,10 @@ class MemoryStore(BaseEntity):
         await db.execute("DELETE FROM memories WHERE id = ?", (entry.id,))
         await self._conn.vec_delete_memories(db, [entry.id])
         await self._conn.fts_delete_memories(db, [entry.id])
-        await self._record_audit(db, entry.id, "archive", reason)
+        await self._record_audit(db, entry.id, "archive", reason, actor=actor)
         await self._cognee.enqueue_sync(db, entry.id, "delete")
 
-    async def restore_memory(self, memory_id: int) -> bool:
+    async def restore_memory(self, memory_id: int, *, actor: str = "") -> bool:
         """从归档恢复记忆（回到活跃记忆库，向量与最近访问时间原样回填）。"""
         db = await self._get_db()
         cursor = await db.execute(
@@ -663,7 +681,7 @@ class MemoryStore(BaseEntity):
             await self._conn.vec_upsert_memory(db, memory_id, blob)
             await self._conn.fts_upsert_memory(db, memory_id, row["content"])
             await db.execute("DELETE FROM memories_archive WHERE id = ?", (memory_id,))
-            await self._record_audit(db, memory_id, "restore", "从归档恢复")
+            await self._record_audit(db, memory_id, "restore", "从归档恢复", actor=actor)
             # 归档时入队了 delete，恢复必须补 upsert，否则 cognee 侧残留已删除状态
             entry = await self.get(memory_id)
             if entry:
@@ -730,7 +748,7 @@ class MemoryStore(BaseEntity):
         db = await self._get_db()
         cutoff_ns = int((time.time() - older_than_days * 86400) * 1e9)
         cursor = await db.execute(
-            "SELECT id, type, content, source, tags_json, archived_at_ns, archive_reason "
+            "SELECT id, type, content, source, tags_json, metadata_json, archived_at_ns, archive_reason "
             "FROM memories_archive WHERE archived_at_ns < ? "
             "ORDER BY archived_at_ns LIMIT ?",
             (cutoff_ns, limit),
@@ -746,13 +764,14 @@ class MemoryStore(BaseEntity):
             await db.executemany(
                 "INSERT INTO memories_tombstone "
                 "(memory_id, type, gist, source, tags_json, purge_reason, "
-                "archived_at_ns, purged_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "archived_at_ns, purged_at_ns, redirect_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (
                         int(r["id"]), r["type"],
                         str(r["content"])[:_TOMBSTONE_GIST_CHARS],
                         r["source"], r["tags_json"], r["archive_reason"],
                         int(r["archived_at_ns"]), now_ns,
+                        merged_redirect_target(parse_metadata_json(r["metadata_json"])),
                     )
                     for r in rows
                 ],
@@ -1002,31 +1021,172 @@ class MemoryStore(BaseEntity):
         pairs.sort(key=lambda p: p[2], reverse=True)
         return pairs[:limit]
 
-    async def merge_pair(
-            self,
-            keep_id: int,
-            drop_id: int,
-    ) -> bool:
-        """合并记忆对：保留 keep，drop 的 tags/访问次数并入后删除。"""
-        db = await self._get_db()
+    async def merge_into_keep(
+        self,
+        keep_id: int,
+        drop_ids: list[int],
+        *,
+        new_content: Optional[str] = None,
+        actor: str = "",
+    ) -> Optional[int]:
+        """合并记忆：keep 原地演进，drop 软标记重定向（importance=0 + merged_into）。
+
+        keep 继承 drop 的标签并集、访问计数与最高重要性；new_content 非空且与
+        现值不同时内容一并演进（语义合并），否则保持原文（高相似对内容等价语义）。
+        drop 不物理删除——importance 置 0 退出全部召回与联想通道（各检索路径
+        均带 importance>0 过滤），metadata 记 merged_into 供 resolve 重定向，
+        随后进入既有归档/物删生命周期。protected（PERMANENT/宪法级）、ENTITY
+        画像与规划条目由系统独占维护，不可作 drop（混入时剔除并继续合并其余）。
+        返回 keep id；keep 不存在或无合法 drop 返回 None。
+        """
         keep = await self.get(keep_id)
-        drop = await self.get(drop_id)
-        if keep is None or drop is None:
-            return False
-        merged_tags = list(dict.fromkeys(keep.tags + drop.tags))
+        if keep is None or keep.id is None:
+            return None
+        from .evidence import is_protected
+
+        if (
+            is_protected(keep)
+            or keep.memory_type is MemoryType.ENTITY
+            or keep.source == GOAL_SOURCE
+        ):
+            log(f"记忆合并拒绝以系统独占条目 #{keep_id} 为存活方", "DEBUG", tag="记忆")
+            return None
+        drops: list[MemoryEntry] = []
+        for did in dict.fromkeys(drop_ids):
+            if did == keep_id:
+                continue
+            entry = await self.get(did)
+            if entry is None or entry.id is None:
+                continue
+            if (
+                is_protected(entry)
+                or entry.memory_type is MemoryType.ENTITY
+                or entry.source == GOAL_SOURCE
+            ):
+                log(f"记忆合并跳过系统独占条目 #{did}", "DEBUG", tag="记忆")
+                continue
+            drops.append(entry)
+        if not drops:
+            return None
+
+        keep.tags = list(dict.fromkeys(keep.tags + [t for d in drops for t in d.tags]))
+        keep.importance = max([keep.importance, *[d.importance for d in drops]])
+        keep.access_count += sum(d.access_count for d in drops)
+        keep.metadata["merged_from"] = list(dict.fromkeys(
+            [i for i in keep.metadata.get("merged_from", []) if isinstance(i, int)]
+            + [d.id for d in drops if d.id is not None]
+        ))
+        content_changed = bool(new_content) and new_content != keep.content
+        if content_changed:
+            keep.content = str(new_content)
+            keep.embedding = None
+
+        db = await self._get_db()
         async with self._tx(db):
             await db.execute(
-                "UPDATE memories SET tags_json = ?, access_count = access_count + ?, "
-                "importance = MAX(importance, ?) WHERE id = ?",
-                (json.dumps(merged_tags, ensure_ascii=False), drop.access_count,
-                 drop.importance, keep_id),
+                "UPDATE memories SET content=?, importance=?, metadata_json=?, tags_json=?, "
+                "access_count=?, version=version+1"
+                + (", embedding_blob=NULL" if content_changed else "")
+                + " WHERE id=?",
+                (
+                    keep.content, keep.importance,
+                    json.dumps(keep.metadata, ensure_ascii=False),
+                    json.dumps(keep.tags, ensure_ascii=False),
+                    keep.access_count, keep.id,
+                ),
             )
-            await db.execute("DELETE FROM memories WHERE id = ?", (drop_id,))
-            await self._conn.vec_delete_memories(db, [drop_id])
-            await self._conn.fts_delete_memories(db, [drop_id])
-            await self._record_audit(db, drop_id, "merge", f"并入 #{keep_id}")
-            await self._cognee.enqueue_sync(db, drop_id, "delete")
-        return True
+            if content_changed:
+                await self._conn.vec_upsert_memory(db, keep.id, None)
+            await self._conn.fts_upsert_memory(db, keep.id, keep.content)
+            await self._record_audit(
+                db, keep.id, "merge",
+                f"吸收 {[d.id for d in drops]}" + ("，内容合成演进" if content_changed else ""),
+                actor=actor,
+            )
+            await self._cognee.enqueue_sync(
+                db, keep.id, "upsert", entry_projection_payload(keep, keep.id),
+            )
+            for d in drops:
+                drop_id = d.id or 0
+                d.metadata["merged_into"] = keep.id
+                await db.execute(
+                    "UPDATE memories SET importance=0, metadata_json=? WHERE id=?",
+                    (json.dumps(d.metadata, ensure_ascii=False), drop_id),
+                )
+                await self._record_audit(
+                    db, drop_id, "merge", f"并入 #{keep.id}", actor=actor,
+                )
+                # drop 退出 cognee 检索面：其内容已由 keep 的投影承载
+                await self._cognee.enqueue_sync(db, drop_id, "delete")
+        log(f"🔗 记忆合并: {[d.id for d in drops]} → keep id={keep.id}", tag="思维")
+        return keep.id
+
+    async def resolve(self, memory_id: int) -> Dict[str, Any]:
+        """mem:ID 分层解析：active / merged / archived / tombstone / missing。
+
+        指针稳定性语义：合并不消灭 id——被并入条目软标记 merged_into，沿链
+        （限 3 跳防环）解析到最终落地条目；归档完整可恢复；物删留墓碑 gist
+        与 redirect_to 去向。返回 {"status", "entry"|"row", "chain"}：
+        chain 非空表示经过重定向（按并入顺序的被合并 id 列表）。
+        """
+        chain: list[int] = []
+        current_id = memory_id
+        entry: Optional[MemoryEntry] = None
+        for _ in range(3):
+            entry = await self.get(current_id)
+            if entry is None:
+                break
+            target = merged_redirect_target(entry.metadata)
+            if target is None:
+                return {"status": "active", "entry": entry, "chain": chain}
+            chain.append(current_id)
+            current_id = target
+        else:
+            return {"status": "merged", "entry": None, "chain": chain}
+
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT id, type, content, tags_json, archived_at_ns, archive_reason "
+            "FROM memories_archive WHERE id=?",
+            (current_id,),
+        )
+        row = await cursor.fetchone()
+        if row:
+            return {
+                "status": "archived",
+                "row": {
+                    "id": int(row["id"]), "type": str(row["type"]),
+                    "content": str(row["content"]),
+                    "tags": json.loads(row["tags_json"] or "[]"),
+                    "reason": str(row["archive_reason"]),
+                    "archived_at": row["archived_at_ns"] / 1e9,
+                },
+                "chain": chain,
+            }
+        cursor = await db.execute(
+            "SELECT memory_id, type, gist, tags_json, purge_reason, purged_at_ns, redirect_to "
+            "FROM memories_tombstone WHERE memory_id=? ORDER BY purged_at_ns DESC LIMIT 1",
+            (current_id,),
+        )
+        row = await cursor.fetchone()
+        if row:
+            return {
+                "status": "tombstone",
+                "row": {
+                    "memory_id": int(row["memory_id"]), "type": str(row["type"]),
+                    "gist": str(row["gist"]),
+                    "tags": json.loads(row["tags_json"] or "[]"),
+                    "reason": str(row["purge_reason"]),
+                    "purged_at": row["purged_at_ns"] / 1e9,
+                    "redirect_to": (
+                        int(row["redirect_to"])
+                        if "redirect_to" in row.keys() and row["redirect_to"] is not None
+                        else None
+                    ),
+                },
+                "chain": chain,
+            }
+        return {"status": "missing", "chain": chain}
 
     # ------------------------------------------------------------------
     # 查询
@@ -1106,6 +1266,10 @@ class MemoryStore(BaseEntity):
     ) -> list[str]:
         """从查询文本识别已知实体/话题提及，返回对应标签。"""
         return await self._search.extract_query_mentions(query, limit=limit)
+
+    async def tag_merge_candidates(self, *, limit: int = 20) -> list[Dict[str, Any]]:
+        """标签归并候选（写法变体/包含关系对；事实归系统，归并决策归 AI）。"""
+        return await self._search.tag_merge_candidates(limit=limit)
 
     async def expand_tag_seeds(
         self,
@@ -1287,66 +1451,36 @@ class MemoryStore(BaseEntity):
         rows = await cursor.fetchall()
         return {r["type"]: r["cnt"] for r in rows}
 
-    async def merge_memories(self, ids: list[int], merged_content: str, merged_type: Optional[MemoryType] = None) -> int:
-        """将多条记忆合并为一条新记忆，旧记忆标记 importance=0（不删除）。返回新记忆 id。"""
-        if not ids or not merged_content:
+    async def merge_memories(self, ids: list[int], merged_content: str, *, actor: str = "") -> int:
+        """将多条记忆合并为一条：有效分最高者原地演进为合并文本，其余软标记并入。
+
+        合并不消灭 id：keep 保留原 id 与全部外部指针（便签 mem:ID / 图谱溯源），
+        drop 的 mem:ID 经 resolve 重定向到 keep。返回 keep id；
+        可合并条目不足两条或无合法 drop 返回 0。
+        """
+        if not ids or not merged_content.strip():
             return 0
+        from .evidence import is_protected
 
-        db = await self._get_db()
-
-        # 获取原记忆信息用于继承标签和类型
-        placeholders = ",".join("?" for _ in ids)
-        cursor = await db.execute(
-            f"SELECT {_MEM_COLUMNS} FROM memories WHERE id IN ({placeholders})",
-            ids,
-        )
-        rows = list(await cursor.fetchall())
-        if not rows:
+        mergeable: list[MemoryEntry] = []
+        for i in dict.fromkeys(ids):
+            entry = await self.get(i)
+            if (
+                entry is not None and entry.id is not None
+                and not is_protected(entry)
+                and entry.memory_type is not MemoryType.ENTITY
+                and entry.source != GOAL_SOURCE
+            ):
+                mergeable.append(entry)
+        if len(mergeable) < 2:
             return 0
-
-        # 合并标签（取并集）
-        all_tags: set[str] = set()
-        best_type = merged_type or MemoryType(rows[0]["type"])
-        max_importance = 0.0
-        for r in rows:
-            try:
-                tags = json.loads(r["tags_json"]) if r["tags_json"] else []
-                all_tags.update(tags)
-            except (json.JSONDecodeError, TypeError):
-                pass
-            max_importance = max(max_importance, r["importance"])
-
-        # 将旧记忆标记为已合并（importance=0）；记录原重要性用于失败补偿
-        old_importance = {int(r["id"]): float(r["importance"]) for r in rows}
-        async with self._tx(db):
-            await db.execute(
-                f"UPDATE memories SET importance = 0 WHERE id IN ({placeholders})",
-                ids,
-            )
-
-        # 创建合并后的新记忆（标签取并集，出处经 metadata.merged_from 追溯）
-        merged_tags = sorted(all_tags)
-        entry = MemoryEntry(
-            memory_type=best_type,
-            content=merged_content,
-            source="merge",
-            tags=merged_tags,
-            importance=max_importance,
-            metadata={"merged_from": ids},
+        keep = max(mergeable, key=lambda e: self.compute_effective_score(e))
+        drop_ids = [e.id for e in mergeable if e.id != keep.id and e.id is not None]
+        result = await self.merge_into_keep(
+            keep.id or 0, drop_ids,
+            new_content=merged_content.strip(), actor=actor,
         )
-        try:
-            new_id = await self.add(entry)
-        except Exception:
-            # 补偿：新记忆写入失败时恢复旧记忆重要性，
-            # 避免旧记忆被全部检索路径过滤造成数据"假丢失"
-            async with self._tx(db):
-                for old_id, imp in old_importance.items():
-                    await db.execute(
-                        "UPDATE memories SET importance=? WHERE id=?", (imp, old_id),
-                    )
-            raise
-        log(f"🔗 记忆合并: {ids} → id={new_id}", tag="思维")
-        return new_id
+        return result or 0
 
     async def cleanup_low_importance(self, threshold: float = 0.05, max_age_hours: float = 24 * 90) -> int:
         """清理极低重要性老记忆：移入归档（软删除，可 restore），而非物理删除。

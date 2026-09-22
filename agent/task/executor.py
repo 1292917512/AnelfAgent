@@ -338,6 +338,7 @@ class TaskExecutor:
             updated = await apply_update(
                 store, int(verdict["target_id"]),
                 str(verdict.get("content") or content), result.tags,
+                actor=f"task:{result.task_name}",
             )
             if updated is not None:
                 await apply_evidence_signals(
@@ -349,15 +350,16 @@ class TaskExecutor:
                 return
         if action == "merge" and verdict.get("target_ids"):
             merge_ids = [int(i) for i in verdict["target_ids"]]
-            new_id = await store.merge_memories(
+            keep_id = await store.merge_memories(
                 merge_ids, str(verdict.get("content") or content),
+                actor=f"task:{result.task_name}",
             )
-            if new_id:
+            if keep_id:
                 await apply_evidence_signals(
-                    store, action, content, candidates, target_ids=[new_id],
+                    store, action, content, candidates, target_ids=[keep_id],
                 )
                 wake_embedding_worker()
-                log(f"任务结果合并 {len(merge_ids)} 条为记忆 #{new_id}: [{result.task_name}]",
+                log(f"任务结果合并 {len(merge_ids)} 条为记忆 #{keep_id}: [{result.task_name}]",
                     tag="任务")
                 return
 
@@ -370,7 +372,7 @@ class TaskExecutor:
         )
         from agent.memory.reflection_lifecycle import seed_reflection
         seed_reflection(entry)
-        await store.add(entry)
+        await store.add(entry, actor=f"task:{result.task_name}")
         wake_embedding_worker()
         log(f"任务结果已存储: [{result.task_name}] {result.source}", tag="任务")
 

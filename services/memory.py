@@ -96,12 +96,19 @@ class MemoryService:
             return None
         return await store.get(mem_id)
 
+    async def list_audit(self, mem_id: int, limit: int = 50) -> List[Dict[str, Any]]:
+        rt = require_runtime()
+        store = rt.mind.memory_store
+        if not store:
+            return []
+        return await store.list_audit(memory_id=mem_id, limit=limit)
+
     async def delete_ltm(self, mem_id: int) -> bool:
         rt = require_runtime()
         store = rt.mind.memory_store
         if not store:
             return False
-        return await store.delete(mem_id)
+        return await store.delete(mem_id, actor="web")
 
     async def update_ltm(self, mem_id: int, content: str, importance: float = 0.5, tags: Optional[List[str]] = None) -> bool:
         rt = require_runtime()
@@ -152,7 +159,7 @@ class MemoryService:
         from agent.memory.memory_types import MemoryEntry, MemoryType
         mt = _parse_memory_type(memory_type) or MemoryType.SEMANTIC
         entry = MemoryEntry(content=content, memory_type=mt, importance=importance, source="webui", tags=tags or [])
-        return await store.add(entry)
+        return await store.add(entry, actor="web")
 
     async def clear_ltm(self, memory_type: Optional[str] = None) -> int:
         rt = require_runtime()
@@ -299,10 +306,10 @@ class MemoryService:
         store = rt.mind.memory_store
         if not store:
             return {"error": "记忆系统未初始化"}
-        new_id = await store.merge_memories(ids, content)
-        if not new_id:
+        keep_id = await store.merge_memories(ids, content, actor="web")
+        if not keep_id:
             return {"error": "合并失败"}
-        return {"ok": True, "new_id": new_id, "merged_from": ids}
+        return {"ok": True, "keep_id": keep_id, "merged_from": [i for i in ids if i != keep_id]}
 
     # ==================================================================
     # 会话记录
@@ -904,7 +911,7 @@ class MemoryService:
             importance=0.8,
             metadata={"goal_id": goal["goal_id"], "status": "active", "kind": GOAL_KIND},
         )
-        entry_id = await store.add(entry)
+        entry_id = await store.add(entry, actor="web")
         goal["memory_id"] = entry_id
         return goal
 
@@ -952,7 +959,7 @@ class MemoryService:
             elif status in ("completed", "cancelled"):
                 # 终态即清（与 AI 工具面同步语义）：不保留终态条目，直接删除
                 if target_entry.id:
-                    await store.delete(target_entry.id)
+                    await store.delete(target_entry.id, actor="web")
                 target_goal["status"] = status
                 target_goal["memory_id"] = target_entry.id
                 return target_goal
@@ -970,7 +977,7 @@ class MemoryService:
                 and all(s.get("status") in ("completed", "skipped") for s in steps)
             ):
                 if target_entry.id:
-                    await store.delete(target_entry.id)
+                    await store.delete(target_entry.id, actor="web")
                 target_goal["memory_id"] = target_entry.id
                 return target_goal
         target_goal["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -987,11 +994,11 @@ class MemoryService:
             },
         )
         # 先写入新条目成功后再删旧条目，add 失败时目标不丢失
-        new_id = await store.add(new_entry)
+        new_id = await store.add(new_entry, actor="web")
         if not new_id:
             return None
         if target_entry.id:
-            await store.delete(target_entry.id)
+            await store.delete(target_entry.id, actor="web")
         target_goal["memory_id"] = new_id
         return target_goal
 
@@ -1003,6 +1010,6 @@ class MemoryService:
             return False
         for entry, goal in await self._goal_entries(store):
             if goal.get("goal_id") == goal_id and entry.id:
-                await store.delete(entry.id)
+                await store.delete(entry.id, actor="web")
                 return True
         return False

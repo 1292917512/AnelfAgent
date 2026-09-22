@@ -168,7 +168,9 @@ class MemoryConsolidator:
                     >= self._store.compute_effective_score(b)
                 ) else (b, a)
                 if keep.id is not None and drop.id is not None:
-                    if await self._store.merge_pair(keep.id, drop.id):
+                    if await self._store.merge_into_keep(
+                        keep.id, [drop.id], actor="consolidator",
+                    ):
                         report.merged_count += 1
                         log(f"记忆合并: #{drop.id} -> #{keep.id} (相似度 {sim:.2f})", "DEBUG", tag="记忆")
         except Exception as exc:

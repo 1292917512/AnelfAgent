@@ -931,6 +931,21 @@ class HeartbeatEngine:
                         )
             except Exception:
                 pass
+            # 标签归并议程：确定性候选（写法变体/包含关系），事实归系统、决策归 AI
+            # （无候选零占用；明细与全量经 memory_index 查看）
+            try:
+                merge_candidates = await store.tag_merge_candidates(limit=5)
+                if merge_candidates:
+                    preview = "；".join(
+                        f"{c['from']}→{c['into']}（{c['reason']}）"
+                        for c in merge_candidates[:3]
+                    )
+                    lines.append(
+                        f"- 标签归并候选 {len(merge_candidates)} 对：{preview}"
+                        "——确认后经 update_memory 归并（明细经 memory_index 查看）"
+                    )
+            except Exception:
+                pass
             for fname, cap in self._NOTES_CAPACITY.items():
                 fpath = notes_mod.get_memory_dir() / fname
                 if fpath.exists():
@@ -1114,15 +1129,17 @@ class HeartbeatEngine:
                 updated = await apply_update(
                     store, int(decision["target_id"]),
                     str(decision.get("content") or content), tags,
+                    actor="heartbeat_distill",
                 )
                 if updated is not None:
                     return
             if action == "merge" and decision.get("target_ids"):
-                new_id = await store.merge_memories(
+                keep_id = await store.merge_memories(
                     [int(i) for i in decision["target_ids"]],
                     str(decision.get("content") or content),
+                    actor="heartbeat_distill",
                 )
-                if new_id:
+                if keep_id:
                     return
         except Exception as exc:
             log(f"事件归档去重裁决失败，直接写入: {exc}", "DEBUG", tag="心跳")
@@ -1135,7 +1152,7 @@ class HeartbeatEngine:
             # 日期便签归档天然是一次性事件：带上时间语义让超期后按过去时转述
             metadata={"temporal_scope": "episode", "activity_date": note_date},
         )
-        await store.add(entry)
+        await store.add(entry, actor="heartbeat_distill")
         from agent.memory.embedding import wake_embedding_worker
         wake_embedding_worker()
 
@@ -1226,7 +1243,7 @@ class HeartbeatEngine:
             )
             for old in old_entries:
                 if old.id:
-                    await self.mind.memory_store.delete(old.id)
+                    await self.mind.memory_store.delete(old.id, actor="heartbeat_profile")
 
             entry = MemoryEntry(
                 memory_type=MemoryType.ENTITY,
@@ -1235,7 +1252,7 @@ class HeartbeatEngine:
                 tags=[scope_tag],
                 importance=PROFILE_MEMORY_IMPORTANCE,
             )
-            await self.mind.memory_store.add(entry)
+            await self.mind.memory_store.add(entry, actor="heartbeat_profile")
             from agent.memory.embedding import wake_embedding_worker
             wake_embedding_worker()
 

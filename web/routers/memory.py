@@ -232,6 +232,13 @@ async def apply_ltm_evidence(mem_id: int, req: EvidenceLTMRequest) -> Dict[str, 
     return result
 
 
+@router.get("/ltm/{mem_id}/audit")
+@_runtime_fallback(_FALLBACK_LIST)
+async def list_ltm_audit(mem_id: int, limit: int = Query(50, ge=1, le=200)) -> List[Dict[str, Any]]:
+    """记忆的审计事件流（谁、何时、做了什么变更；update 事件的 detail 为被替换的旧内容）。"""
+    return await _mem_svc.list_audit(mem_id, limit=limit)
+
+
 class MergeLTMRequest(BaseModel):
     ids: list[int]
     content: str

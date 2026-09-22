@@ -105,6 +105,7 @@ async def memorize(
     importance: float = 0.7,
     sensitivity: str = "normal",
     temporal_scope: str = "",
+    linked_to: str = "",
 ) -> str:
     """将一条关键信息存入长期记忆。
 
@@ -121,6 +122,9 @@ async def memorize(
         temporal_scope: 时间语义，仅事件/状态类填写：state=持续状态（如"在上海出差"，
             超期自动按过去时转述并降权）/ episode=一次性事件 / pattern=反复模式（默认）。
             稳定事实（fact）不填
+        linked_to: 关联记忆 ID，逗号分隔（可选，最多 5 条）。仅挂「本条纠正/补充/
+            依赖哪条既有记忆」的具体关系（如纠错教训挂被纠正的旧条目）——recall 命中
+            关联方时会一跳带出本条；同主题关联是标签共现的职责，不要用 linked_to
 
     Returns:
         JSON 字符串。verdict 为落盘裁决：stored（新写入）/ updated（更新既有记忆）/
@@ -167,6 +171,7 @@ async def memorize(
         temporal_scope = (temporal_scope or "").strip().lower()
         if temporal_scope not in ("state", "episode", "pattern"):
             temporal_scope = ""
+        link_ids = await _parse_linked_to(store, linked_to)
 
         # 第一级：规则判重（子串/字面高相似，零成本快速拦截）
         if await store.has_similar_content(content):
@@ -195,11 +200,18 @@ async def memorize(
             updated = await apply_update(
                 store, int(decision["target_id"]),
                 str(decision.get("content") or content), tag_list,
+                actor="tool:memorize",
             )
             if updated is not None:
+                dirty = False
                 if sensitivity != "normal":
                     updated.metadata["sensitivity"] = sensitivity
-                    await store.update(updated)
+                    dirty = True
+                if link_ids:
+                    _merge_linked_to(updated.metadata, link_ids)
+                    dirty = True
+                if dirty:
+                    await store.update(updated, actor="tool:memorize")
                 from .dedup import apply_evidence_signals
                 await apply_evidence_signals(
                     store, action, content, candidates,
@@ -215,15 +227,22 @@ async def memorize(
         if action == "merge" and decision.get("target_ids"):
             merge_ids = [int(i) for i in decision["target_ids"]]
             merged_content = str(decision.get("content") or content)
-            new_id = await store.merge_memories(merge_ids, merged_content)
-            if new_id:
+            keep_id = await store.merge_memories(
+                merge_ids, merged_content, actor="tool:memorize",
+            )
+            if keep_id:
+                if link_ids:
+                    keep_entry = await store.get(keep_id)
+                    if keep_entry is not None:
+                        _merge_linked_to(keep_entry.metadata, link_ids)
+                        await store.update(keep_entry, actor="tool:memorize")
                 from .dedup import apply_evidence_signals
                 await apply_evidence_signals(
-                    store, action, content, candidates, target_ids=[new_id],
+                    store, action, content, candidates, target_ids=[keep_id],
                 )
                 wake_embedding_worker()
                 return json.dumps({
-                    "ok": True, "id": new_id, "action": "merged", "verdict": "merged",
+                    "ok": True, "id": keep_id, "action": "merged", "verdict": "merged",
                     "message": f"已与 {len(merge_ids)} 条既有记忆合并为一条",
                     "merged_from": merge_ids,
                 }, ensure_ascii=False)
@@ -237,6 +256,7 @@ async def memorize(
             metadata=({
                 **({"sensitivity": sensitivity} if sensitivity != "normal" else {}),
                 **({"temporal_scope": temporal_scope} if temporal_scope else {}),
+                **({"linked_to": link_ids} if link_ids else {}),
             }),
         )
         from .reflection_lifecycle import seed_reflection
@@ -244,7 +264,7 @@ async def memorize(
 
         # 近重复提示须在写入前计算（写入后新标签已进入统计，会被误判为既有标签）
         hints = await _tag_near_duplicate_hints(tag_list)
-        mid = await store.add(entry)
+        mid = await store.add(entry, actor="tool:memorize")
         wake_embedding_worker()
         result: Dict[str, Any] = {"ok": True, "id": mid, "verdict": "stored", "tags": tag_list}
         if hints:
@@ -263,6 +283,31 @@ def _normalize_tags(tags: str) -> list[str]:
         if tag and tag not in out:
             out.append(tag)
     return out
+
+
+_LINKED_TO_CAP = 5
+
+
+async def _parse_linked_to(store: Any, linked_to: str) -> list[int]:
+    """解析 linked_to 参数为合法记忆 id 列表（存在性校验，上限 _LINKED_TO_CAP）。"""
+    ids: list[int] = []
+    for s in (linked_to or "").replace("，", ",").split(","):
+        s = s.strip().lstrip("#")
+        if s.isdigit() and int(s) not in ids:
+            ids.append(int(s))
+    valid: list[int] = []
+    for i in ids[:_LINKED_TO_CAP]:
+        if await store.get(i) is not None:
+            valid.append(i)
+    return valid
+
+
+def _merge_linked_to(metadata: Dict[str, Any], ids: list[int]) -> None:
+    """把 linked_to 目标 id 合入条目 metadata（追加去重，上限 _LINKED_TO_CAP）。"""
+    if not ids:
+        return
+    existing = [i for i in metadata.get("linked_to", []) if isinstance(i, int)]
+    metadata["linked_to"] = list(dict.fromkeys(existing + ids))[:_LINKED_TO_CAP]
 
 
 async def _tag_near_duplicate_hints(tag_list: list[str]) -> list[str]:
@@ -317,7 +362,7 @@ async def _upsert_permanent(content: str, tag_list: list[str], importance: float
         target.importance = importance
         # 内容已变更，清空旧向量，由后台 worker 重新生成
         target.embedding = None
-        await store.update(target, clear_embedding=True)
+        await store.update(target, clear_embedding=True, actor="tool:memorize")
         wake_embedding_worker()
         return json.dumps({
             "ok": True, "id": target.id, "action": "updated", "verdict": "updated",
@@ -330,7 +375,7 @@ async def _upsert_permanent(content: str, tag_list: list[str], importance: float
         tags=tag_list,
         importance=importance,
     )
-    mid = await store.add(entry)
+    mid = await store.add(entry, actor="tool:memorize")
     wake_embedding_worker()
     return json.dumps({
         "ok": True, "id": mid, "action": "created", "verdict": "stored", "tags": tag_list,
@@ -537,35 +582,67 @@ async def _recall_associations(
         *,
         max_related: int = 3,
 ) -> list[Dict[str, Any]]:
-    """沿主结果的标签网络联想关联记忆（一跳扩展）。"""
+    """沿主结果的关联网络联想相关记忆（linked_to 显式链接优先，标签共现补充）。"""
     deps = _deps()
     if deps is None or not results:
         return []
     store = deps.store
+
+    out: list[Dict[str, Any]] = []
+    seen = set(existing_mem_ids)
+    # linked_to 一跳带出：主结果条目显式声明的「纠正/补充/依赖」目标——
+    # 强于统计联想的语义关联（纠错记忆挂在被纠正条目上，命中即带出），优先占位
+    for mid in existing_mem_ids[:5]:
+        if len(out) >= max_related:
+            break
+        source_entry = await store.get(mid)
+        if source_entry is None:
+            continue
+        for lid in [i for i in source_entry.metadata.get("linked_to", []) if isinstance(i, int)]:
+            if len(out) >= max_related:
+                break
+            if lid in seen:
+                continue
+            target = await store.get(lid)
+            if target is None or target.importance <= 0 or target.id is None:
+                continue
+            seen.add(lid)
+            out.append({
+                "id": f"mem:{target.id}",
+                "source": "memory",
+                "content": target.content[:300],
+                "type": target.memory_type.value,
+                "tags": target.tags,
+                "score": 0.9,
+                "related": True,
+                "hop": "link",
+                "linked_from": mid,
+            })
+
     assoc_tags: list[str] = []
     for r in results:
         for tag in r.tags:
             if tag.startswith(ASSOC_PREFIXES) and tag not in assoc_tags:
                 assoc_tags.append(tag)
-    if not assoc_tags:
-        return []
-    # 种子三层扩展（图谱邻居 + 标签共现）
-    assoc_tags = await store.expand_tag_seeds(assoc_tags)
-    related = await store.search_associative(
-        assoc_tags, exclude_ids=set(existing_mem_ids), limit=max_related,
-    )
-    return [
-        {
-            "id": f"mem:{entry.id}",
-            "source": "memory",
-            "content": entry.content[:300],
-            "type": entry.memory_type.value,
-            "tags": entry.tags,
-            "score": round(score, 3),
-            "related": True,
-        }
-        for entry, score in related
-    ]
+    if assoc_tags and len(out) < max_related:
+        # 种子三层扩展（图谱邻居 + 标签共现）
+        assoc_tags = await store.expand_tag_seeds(assoc_tags)
+        related = await store.search_associative(
+            assoc_tags, exclude_ids=seen, limit=max_related - len(out),
+        )
+        out.extend([
+            {
+                "id": f"mem:{entry.id}",
+                "source": "memory",
+                "content": entry.content[:300],
+                "type": entry.memory_type.value,
+                "tags": entry.tags,
+                "score": round(score, 3),
+                "related": True,
+            }
+            for entry, score in related
+        ])
+    return out
 
 
 async def _recall_associations_deep(
@@ -656,10 +733,16 @@ async def memory_index(tag: str = "") -> str:
             tag_counts = await store.list_tags()
             total = await store.count()
             index_status = await store.get_index_status()
+            merge_candidates = await store.tag_merge_candidates(limit=20)
             return json.dumps({
                 "total_memories": total,
                 "tags": tag_counts,
                 "index": index_status,
+                **({
+                    "tag_merge_candidates": merge_candidates,
+                    "tag_merge_hint": "标签归并候选（事实归系统、决策归你）：逐对确认后"
+                    "经 update_memory 把 from 标签的记忆改挂 into 标签；确认全部处理后标签空间收敛",
+                } if merge_candidates else {}),
             }, ensure_ascii=False)
 
         entries = await store.search_by_tags([tag], limit=20)
@@ -676,7 +759,8 @@ async def memory_index(tag: str = "") -> str:
 
 @deferred_tool(
     group="memory", tags=["core", "heartbeat"], source="mind.memory",
-    description="按 ID 获取一条记忆的完整内容、标签、类型和重要性。用于在修改前先确认记忆的当前状态。",
+    description="按 ID 获取一条记忆的完整内容、标签、变更史与合并去向。"
+    "被合并的 id 自动重定向到存活条目；归档/物删的 id 返回分层语义。用于在修改前先确认记忆的当前状态。",
 )
 async def get_memory(memory_id: int) -> str:
     """按 ID 获取一条记忆的完整信息。
@@ -688,10 +772,46 @@ async def get_memory(memory_id: int) -> str:
         deps = _deps()
         if deps is None:
             return _store_not_ready()
-        entry = await deps.store.get(memory_id)
-        if not entry:
+        store = deps.store
+        resolution = await store.resolve(memory_id)
+        status = resolution["status"]
+        chain: list[int] = list(resolution.get("chain") or [])
+        if status == "missing":
             return tool_error(f"记忆 {memory_id} 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
-        return json.dumps({
+        if status == "archived":
+            row = resolution["row"]
+            return json.dumps({
+                "ok": True, "status": "archived", "id": row["id"],
+                "content": row["content"][:300], "type": row["type"], "tags": row["tags"],
+                "archived_at": time.strftime("%Y-%m-%d", time.localtime(row["archived_at"])),
+                "reason": row["reason"],
+                **({"redirect_chain": chain} if chain else {}),
+                "hint": "已归档（不参与召回）；可 restore_memory 恢复到活跃记忆库",
+            }, ensure_ascii=False)
+        if status == "tombstone":
+            row = resolution["row"]
+            redirect = row.get("redirect_to")
+            return json.dumps({
+                "ok": True, "status": "tombstone", "id": row["memory_id"],
+                "gist": row["gist"], "type": row["type"], "tags": row["tags"],
+                "purged_at": time.strftime("%Y-%m-%d", time.localtime(row["purged_at"])),
+                **({"redirect_chain": chain} if chain else {}),
+                **({"redirect_to": redirect} if redirect else {}),
+                "hint": (
+                    f"原文已物理删除仅余梗概；内容已并入 #{redirect}，可 get_memory 查看"
+                    if redirect
+                    else "原文已物理删除仅余梗概；如需找回请基于梗概重新 memorize"
+                ),
+            }, ensure_ascii=False)
+        entry = resolution.get("entry")
+        if entry is None:
+            return tool_error(
+                f"记忆 {memory_id} 的并入链过深（{' → '.join(map(str, chain))}），无法解析到存活条目",
+                cause=ErrorCause.NOT_FOUND, retryable=False,
+                hint="请对链上较新的 id 调用",
+            )
+        result: Dict[str, Any] = {
+            "ok": True, "status": "active",
             "id": entry.id,
             "type": entry.memory_type.value,
             "content": entry.content,
@@ -701,9 +821,69 @@ async def get_memory(memory_id: int) -> str:
             "access_count": entry.access_count,
             "version": entry.version,
             "sensitivity": entry.metadata.get("sensitivity", "normal"),
-        }, ensure_ascii=False)
+        }
+        if chain:
+            result["redirect_chain"] = chain
+            result["note"] = f"#{chain[0]} 已并入本条（合并谱系），本条为其存活条目"
+        linked = [i for i in entry.metadata.get("linked_to", []) if isinstance(i, int)]
+        if linked:
+            result["linked_to"] = linked
+        merged_from = [i for i in entry.metadata.get("merged_from", []) if isinstance(i, int)]
+        if merged_from:
+            result["merged_from"] = merged_from
+        audit = await store.list_audit(memory_id=entry.id, limit=5)
+        if audit:
+            result["audit"] = [
+                {
+                    "action": a["action"], "actor": a.get("actor") or "",
+                    "time": time.strftime("%m-%d %H:%M", time.localtime(a["timestamp"])),
+                    **({"detail": a["detail"][:60]} if a["detail"] else {}),
+                }
+                for a in audit
+            ]
+        return json.dumps(result, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="读取记忆")
+
+
+async def _resolve_active_for_mutation(
+    store: Any, memory_id: int, action: str,
+) -> tuple[Optional[Any], Optional[str]]:
+    """变更类操作的 id 预检：仅活跃条目可变更，其余状态返回引导错误。
+
+    被合并的僵尸条目（importance=0 + merged_into）直接改写会让变更落在
+    已退出召回的尸体上——引导到存活条目；归档先恢复；墓碑与缺失如实告知。
+    """
+    resolution = await store.resolve(memory_id)
+    status = resolution["status"]
+    if status == "active":
+        return resolution["entry"], None
+    chain = list(resolution.get("chain") or [])
+    if status == "merged":
+        keep = resolution.get("entry")
+        if keep is not None:
+            return None, tool_error(
+                f"记忆 {memory_id} 已并入 #{keep.id}（合并谱系），本身已退出召回",
+                cause=ErrorCause.STATE, retryable=False,
+                hint=f"请对 #{keep.id} 进行{action}",
+            )
+        return None, tool_error(
+            f"记忆 {memory_id} 的并入链过深（{' → '.join(map(str, chain))}），无法解析",
+            cause=ErrorCause.NOT_FOUND, retryable=False,
+        )
+    if status == "archived":
+        return None, tool_error(
+            f"记忆 {memory_id} 已归档（{resolution['row']['reason']}）",
+            cause=ErrorCause.STATE, retryable=False,
+            hint=f"先 restore_memory 恢复，再进行{action}",
+        )
+    if status == "tombstone":
+        return None, tool_error(
+            f"记忆 {memory_id} 已物理删除，仅余梗概",
+            cause=ErrorCause.NOT_FOUND, retryable=False,
+            hint="如需保留内容请基于梗概重新 memorize",
+        )
+    return None, tool_error(f"记忆 {memory_id} 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
 
 
 @deferred_tool(
@@ -734,9 +914,10 @@ async def update_memory(
         if deps is None:
             return _store_not_ready()
 
-        entry = await deps.store.get(memory_id)
-        if not entry:
-            return tool_error(f"记忆 {memory_id} 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
+        entry, err = await _resolve_active_for_mutation(deps.store, memory_id, "更新")
+        if err:
+            return err
+        assert entry is not None
 
         changed: list[str] = []
         content_changed = False
@@ -774,7 +955,7 @@ async def update_memory(
         if content_changed:
             entry.embedding = None
 
-        ok = await deps.store.update(entry, clear_embedding=content_changed)
+        ok = await deps.store.update(entry, clear_embedding=content_changed, actor="tool:update_memory")
         if ok and content_changed:
             wake_embedding_worker()
         return json.dumps({
@@ -800,14 +981,16 @@ async def forget(memory_id: int) -> str:
         deps = _deps()
         if deps is None:
             return _store_not_ready()
-        entry = await deps.store.get(memory_id)
+        entry, err = await _resolve_active_for_mutation(deps.store, memory_id, "遗忘")
+        if err:
+            return err
         if entry is not None and HUB_TAG in entry.tags:
             return tool_error(
                 "主标签记忆（main:hub）是系统常驻的索引中枢，禁止归档",
                 cause=ErrorCause.PERMISSION, retryable=False,
                 hint="需要更新其内容时，用 memorize 携带 type:permanent + main:hub 标签整段覆写",
             )
-        ok = await deps.store.archive_memory(memory_id, reason="manual_forget")
+        ok = await deps.store.archive_memory(memory_id, reason="manual_forget", actor="tool:forget")
         return json.dumps({
             "ok": ok,
             "message": f"记忆 {memory_id} {'已遗忘（归档，可恢复）' if ok else '不存在'}",
@@ -831,7 +1014,7 @@ async def restore_memory(memory_id: int) -> str:
         deps = _deps()
         if deps is None:
             return _store_not_ready()
-        ok = await deps.store.restore_memory(memory_id)
+        ok = await deps.store.restore_memory(memory_id, actor="tool:restore")
         if not ok:
             return tool_error(
                 f"归档中不存在记忆 #{memory_id}",
@@ -1083,7 +1266,7 @@ async def memory_deep_search(page: int = 1, page_size: int = 20, memory_type: st
     description="将多条记忆合并为一条。旧记忆不会删除但会被标记为低优先级。用于整理和压缩过多的同类记忆。",
 )
 async def merge_memories(memory_ids: str, merged_content: str) -> str:
-    """将多条记忆合并为一条新记忆。
+    """将多条记忆合并为一条（有效分最高者原地存活，其余并入并保留重定向）。
 
     Args:
         memory_ids: 要合并的记忆 ID 列表，逗号分隔（如 1,5,12）
@@ -1104,20 +1287,20 @@ async def merge_memories(memory_ids: str, merged_content: str) -> str:
         if not merged_content.strip():
             return tool_error("合并内容不能为空", cause=ErrorCause.PARAM, retryable=False)
 
-        new_id = await deps.store.merge_memories(ids, merged_content)
-        if not new_id:
+        keep_id = await deps.store.merge_memories(ids, merged_content, actor="tool:merge")
+        if not keep_id:
             return tool_error(
-                "合并失败：指定的记忆不存在",
+                "合并失败：可合并的记忆不足（不存在，或为永久记忆/画像/规划等系统独占条目）",
                 cause=ErrorCause.NOT_FOUND, retryable=False,
-                hint="先用 memory_deep_search 确认要合并的记忆 ID 是否存在",
+                hint="先用 get_memory 确认要合并的记忆状态；系统独占条目不参与合并",
             )
 
         wake_embedding_worker()
 
         return json.dumps({
-            "ok": True, "new_id": new_id,
-            "merged_from": ids,
-            "message": f"已将 {len(ids)} 条记忆合并为 id={new_id}",
+            "ok": True, "keep_id": keep_id,
+            "merged_from": [i for i in ids if i != keep_id],
+            "message": f"已合并为一条（存活 id={keep_id}，其余 id 已重定向到本条）",
         }, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="合并记忆")
@@ -1408,7 +1591,7 @@ async def delete_entity_profile(scope_type: str, scope_id: str) -> str:
             )
             for entry in old_entries:
                 if entry.id:
-                    await deps.store.delete(entry.id)
+                    await deps.store.delete(entry.id, actor="tool:entity_profile")
 
         return json.dumps({
             "ok": True,
@@ -1482,7 +1665,7 @@ async def update_entity_profile(scope_type: str, scope_id: str, personality: str
             )
             for old_entry in old_entries:
                 if old_entry.id:
-                    await deps.store.delete(old_entry.id)
+                    await deps.store.delete(old_entry.id, actor="tool:entity_profile")
             entry = MemoryEntry(
                 memory_type=MemoryType.ENTITY,
                 content=personality.strip(),
@@ -1490,7 +1673,7 @@ async def update_entity_profile(scope_type: str, scope_id: str, personality: str
                 tags=[scope_tag],
                 importance=PROFILE_MEMORY_IMPORTANCE,
             )
-            await deps.store.add(entry)
+            await deps.store.add(entry, actor="tool:entity_profile")
             wake_embedding_worker()
 
         target_desc = f"{p_type}:{p_id}"

@@ -537,6 +537,7 @@ class AutoCapturePipeline:
                     updated = await apply_update(
                         store, int(decision["target_id"]),
                         str(decision.get("content") or item["content"]), tags,
+                        actor="auto_capture",
                     )
                     if updated is not None:
                         await apply_evidence_signals(
@@ -547,14 +548,15 @@ class AutoCapturePipeline:
                         continue
                 if action == "merge" and decision.get("target_ids"):
                     merge_ids = [int(i) for i in decision["target_ids"]]
-                    new_id = await store.merge_memories(
+                    keep_id = await store.merge_memories(
                         merge_ids,
                         str(decision.get("content") or item["content"]),
+                        actor="auto_capture",
                     )
-                    if new_id:
+                    if keep_id:
                         await apply_evidence_signals(
                             store, action, item["content"], candidates,
-                            target_ids=[new_id],
+                            target_ids=[keep_id],
                         )
                         stored += 1
                         continue
@@ -576,7 +578,7 @@ class AutoCapturePipeline:
                     importance=item["importance"],
                     metadata=metadata,
                 )
-                await store.add(entry)
+                await store.add(entry, actor="auto_capture")
                 stored += 1
             except Exception as exc:
                 log(f"自动捕获写入失败 [{scope_key}]: {exc}", "DEBUG", tag="记忆")

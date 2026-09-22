@@ -86,7 +86,7 @@ def _normalize_node_key(node_key: str) -> str:
 
 
 def _edge_json(edge: Dict[str, Any]) -> Dict[str, Any]:
-    """边的 AI 友好序列化：结构化字段 + 紧凑三元组文本。"""
+    """边的 AI 友好序列化：结构化字段 + 紧凑三元组文本 + 溯源记忆 id。"""
     return {
         "id": edge["id"],
         "triple": format_triple(edge),
@@ -96,6 +96,8 @@ def _edge_json(edge: Dict[str, Any]) -> Dict[str, Any]:
         "symmetric": edge["symmetric"],
         "strength": edge["strength"],
         "evidence": edge["evidence"],
+        **({"source_memory_id": edge["source_memory_id"]}
+           if edge.get("source_memory_id") else {}),
         "origin": edge["origin"],
         "archived": edge["archived"],
     }
@@ -131,7 +133,8 @@ async def graph_add_relation(
         symmetric: 是否对称关系（朋友/同事等为 true；喜欢/属于等为 false）
         strength: 关系强度 0-1（反映置信度，默认 0.7）
         evidence: 证据摘要（从哪段对话/哪条记忆得出，必填更佳，便于日后核实）
-        source_memory_id: 溯源的记忆 id（可选，0 表示无）
+        source_memory_id: 溯源的记忆 id（可选，0 表示无）。关系从某条记忆得出时必传——
+            形成图谱→记忆双向溯源（后续 get_memory 可回查关系出处）；对话直出的关系留 0
     """
     graph = _graph()
     if graph is None:

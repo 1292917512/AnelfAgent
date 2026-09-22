@@ -68,7 +68,7 @@ async def ensure_hub(store: "MemoryStore") -> bool:
             tags=list(HUB_TAGS),
             importance=1.0,
         )
-        await store.add(entry)
+        await store.add(entry, actor="system")
         from .embedding import wake_embedding_worker
         wake_embedding_worker()
         log("主标签记忆骨架已创建", "INFO", tag="记忆")

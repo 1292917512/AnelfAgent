@@ -160,10 +160,20 @@ class TestSimilarMerge:
         assert pairs[0][2] > 0.92
 
         keep, drop = (a_id, b_id) if pairs[0][0].id == a_id else (b_id, a_id)
-        assert await store.merge_pair(keep, drop)
-        assert await store.get(drop) is None
+        assert await store.merge_into_keep(keep, [drop], actor="test")
+        # drop 软标记不物理删除：importance=0 且谱系指向 keep
+        dropped = await store.get(drop)
+        assert dropped is not None
+        assert dropped.importance == 0
+        assert dropped.metadata["merged_into"] == keep
         merged = await store.get(keep)
         assert set(merged.tags) == {"topic:x", "topic:y"}
+        assert merged.metadata["merged_from"] == [drop]
+        # drop 的 mem:ID 经 resolve 重定向到 keep
+        resolution = await store.resolve(drop)
+        assert resolution["status"] == "active"
+        assert resolution["entry"].id == keep
+        assert resolution["chain"] == [drop]
 
 
 class TestRelaxImportance:

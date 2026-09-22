@@ -15,7 +15,7 @@ import asyncio
 import json
 import math
 import time
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from .connection import MemoryConnectionManager
 
@@ -176,3 +176,65 @@ class TagIntelligence:
                 if len(hits) >= limit:
                     break
         return hits
+
+    async def merge_candidates(self, *, limit: int = 20) -> List[Dict[str, Any]]:
+        """标签归并候选（确定性事实生产；归并决策归 AI，经 update_memory 执行）。
+
+        两类高置信候选，宁缺毋滥：
+        - 写法变体：NFKC/小写/空白归一后相同的 topic:/goal: 标签组
+          （如全角字符或多余空格产生的孪生标签），归并到高频形态；
+        - 包含关系对：topic: 名互为子串且双方 df>=2（与 memorize 写入时
+          的近重复提示同口径，作用于存量），归并到高频一方。
+        """
+        await self._ensure_fresh()
+        out: List[Dict[str, Any]] = []
+        seen: set[frozenset[str]] = set()
+
+        groups: Dict[str, List[str]] = {}
+        for tag in self._df:
+            if tag.startswith(("topic:", "goal:")):
+                groups.setdefault(_normalize_tag_form(tag), []).append(tag)
+        for tags in groups.values():
+            if len(tags) < 2:
+                continue
+            canonical = max(tags, key=lambda t: self._df.get(t, 0))
+            for t in tags:
+                if t == canonical:
+                    continue
+                key = frozenset((t, canonical))
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append({
+                    "from": t, "into": canonical, "reason": "写法变体",
+                    "from_count": self._df.get(t, 0), "into_count": self._df.get(canonical, 0),
+                })
+
+        topics = sorted(
+            (t for t in self._df if t.startswith("topic:") and self._df.get(t, 0) >= 2),
+            key=lambda t: -self._df.get(t, 0),
+        )
+        for i, a in enumerate(topics):
+            na = a[len("topic:"):]
+            for b in topics[i + 1:]:
+                nb = b[len("topic:"):]
+                if not na or not nb or (na not in nb and nb not in na):
+                    continue
+                into, from_ = (a, b) if self._df.get(a, 0) >= self._df.get(b, 0) else (b, a)
+                key = frozenset((from_, into))
+                if key in seen or from_ == into:
+                    continue
+                seen.add(key)
+                out.append({
+                    "from": from_, "into": into, "reason": "名称包含关系",
+                    "from_count": self._df.get(from_, 0), "into_count": self._df.get(into, 0),
+                })
+        out.sort(key=lambda c: -(c["from_count"] + c["into_count"]))
+        return out[:limit]
+
+
+def _normalize_tag_form(tag: str) -> str:
+    """标签形态归一（NFKC + 小写 + 去空白）——写法变体的判定口径。"""
+    import re
+    import unicodedata
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", tag).casefold())

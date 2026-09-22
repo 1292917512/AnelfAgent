@@ -144,7 +144,7 @@ async def create_goal(title: str, description: str = "", steps: str = "", recurr
         # （自动推进/会话收敛）不触碰；无 scope——目标是跨会话的全局对象
         metadata={"goal_id": goal["goal_id"], "status": "active", "kind": GOAL_KIND},
     )
-    entry_id = await store.add(entry)
+    entry_id = await store.add(entry, actor="planning")
     situation.invalidate()
     goal["memory_id"] = entry_id
     return json.dumps({"success": True, "goal": goal}, ensure_ascii=False)

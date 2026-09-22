@@ -232,6 +232,8 @@ class MemoryConnectionManager:
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_tomb_purged ON memories_tombstone(purged_at_ns);"
         )
+        # 物删条目的合并去向（merged_into 谱系）：墓碑除"曾经知道什么"外保留"搬到了哪里"
+        await self._ensure_column(db, "memories_tombstone", "redirect_to", "INTEGER")
 
         # ---- 文件索引表 ----
         await db.execute("""
@@ -304,7 +306,7 @@ class MemoryConnectionManager:
 
         await self._migrate_fts_indexes(db)
 
-        # ---- 记忆审计（update/delete/archive/merge 事件流，只追加） ----
+        # ---- 记忆审计（add/update/delete/archive/merge 事件流，只追加） ----
         await db.execute("""
             CREATE TABLE IF NOT EXISTS memory_audit (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -314,6 +316,8 @@ class MemoryConnectionManager:
                 ts_ns INTEGER NOT NULL
             );
         """)
+        # 触发方标识（tool:*/auto_capture/consolidator/web 等），变更可归属
+        await self._ensure_column(db, "memory_audit", "actor", "TEXT NOT NULL DEFAULT ''")
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_audit_mid ON memory_audit(memory_id);"
         )

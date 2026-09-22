@@ -236,6 +236,28 @@ def entry_projection_payload(entry: MemoryEntry, memory_id: int) -> Dict[str, An
     }
 
 
+def merged_redirect_target(metadata: Any) -> Optional[int]:
+    """从条目 metadata 提取合并去向（merged_into 谱系），无合法去向返回 None。"""
+    if not isinstance(metadata, dict):
+        return None
+    try:
+        target = int(metadata.get("merged_into") or 0)
+    except (TypeError, ValueError):
+        return None
+    return target or None
+
+
+def parse_metadata_json(raw: Any) -> Dict[str, Any]:
+    """容错解析 metadata_json 列（非法 JSON/空值归一为空字典）。"""
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 # 参与投影内容指纹的字段：投影文档的直接输入，不含 importance——
 # importance 召回强化/松弛回归高频漂移但与图谱抽取无关，纳入会让
 # 指纹跳过失效（24h 内 211 次此类"更新"曾把写盘配额打爆）
