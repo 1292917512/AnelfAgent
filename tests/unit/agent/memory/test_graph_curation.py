@@ -135,3 +135,29 @@ async def test_exemption_hub_signature_and_kind_validation(store) -> None:
         await store.graph.set_exemption("not_a_kind", "x")
     with pytest.raises(ValueError):
         await store.graph.set_exemption("hub_node", "")
+
+
+@pytest.mark.asyncio
+async def test_agenda_items_carry_exempt_signature(store) -> None:
+    """议程项附带系统计算的豁免签名（AI 原样回传，签名构造零歧义）。"""
+    await store.graph.add_relation(
+        "user:qq:1", "认识", "user:qq:2", strength=0.3, origin="heartbeat_extract",
+    )
+    await store.graph.add_relation(
+        "user:qq:1", "住在", "topic:北京", strength=0.8, evidence="明确说过",
+    )
+    await store.graph.add_relation(
+        "user:qq:1", "住在", "topic:上海", strength=0.8, evidence="另一次说过",
+    )
+    agenda = await build_agenda(store.graph)
+
+    weak = agenda["weak_edges"][0]
+    assert weak["exempt_signature"] == str(weak["id"])
+    group = agenda["ambiguous_groups"][0]
+    assert group["exempt_signature"] == "user:qq:1|住在"
+
+    # 回传签名即生效（AI 无需接触 subject_key 构造细节）
+    await store.graph.set_exemption(
+        "ambiguous_group", group["exempt_signature"], actor="test",
+    )
+    assert (await build_agenda(store.graph))["ambiguous_groups"] == []

@@ -58,19 +58,37 @@ async def build_agenda(graph: "GraphStore") -> Dict[str, Any]:
             if (kind, graph.exemption_signature(kind, item)) not in exempted
         ]
 
+    def _with_signature(kind: str, item: Dict[str, Any]) -> Dict[str, Any]:
+        """议程项附带系统计算的豁免签名——AI 处置时原样回传
+        graph_curation_exempt 的 signature 参数，签名构造零歧义。"""
+        return {**item, "exempt_signature": graph.exemption_signature(kind, item)}
+
     return {
-        "weak_edges": [_edge_item(edge) for edge in _filtered("weak_edge", facts["weak_edges"])],
-        "stale_edges": [_edge_item(edge) for edge in _filtered("stale_edge", facts["stale_edges"])],
+        "weak_edges": [
+            _with_signature("weak_edge", _edge_item(edge))
+            for edge in _filtered("weak_edge", facts["weak_edges"])
+        ],
+        "stale_edges": [
+            _with_signature("stale_edge", _edge_item(edge))
+            for edge in _filtered("stale_edge", facts["stale_edges"])
+        ],
         "ambiguous_groups": [
-            {
+            _with_signature("ambiguous_group", {
                 "subject": group["subject_label"] or group["subject_key"],
                 "predicate": group["predicate"],
                 "edges": [_edge_item(edge) for edge in group["edges"]],
-            }
+                "subject_key": group["subject_key"],
+            })
             for group in _filtered("ambiguous_group", facts["ambiguous_groups"])
         ],
-        "duplicate_nodes": _filtered("duplicate_node", facts["duplicate_nodes"]),
-        "hub_nodes": _filtered("hub_node", facts["hub_nodes"]),
+        "duplicate_nodes": [
+            _with_signature("duplicate_node", item)
+            for item in _filtered("duplicate_node", facts["duplicate_nodes"])
+        ],
+        "hub_nodes": [
+            _with_signature("hub_node", item)
+            for item in _filtered("hub_node", facts["hub_nodes"])
+        ],
         "exemptions": exemptions,
     }
 
