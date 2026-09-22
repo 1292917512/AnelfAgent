@@ -739,7 +739,6 @@ class MemoryService:
         }
 
     @staticmethod
-    @staticmethod
     def _cognee_config_response(config: Any) -> Dict[str, Any]:
         """cognee 配置响应：配置值 + 前端下拉词汇（名单单一权威在后端）。"""
         from agent.memory.cognee.config import (
@@ -758,6 +757,7 @@ class MemoryService:
             },
         }
 
+    @staticmethod
     def get_cognee_config() -> Dict[str, Any]:
         from agent.memory.cognee.config import load_cognee_config
         return MemoryService._cognee_config_response(load_cognee_config())
