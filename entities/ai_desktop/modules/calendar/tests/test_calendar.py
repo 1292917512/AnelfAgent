@@ -146,7 +146,11 @@ class TestRender:
         for name in today_festivals:
             assert f"{name}（节日）" not in text.split("今天：")[0] or True
 
-    def test_render_none_when_empty(self) -> None:
+    def test_render_none_when_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # 节日数据随真实日期变化（中秋等进入本周窗口会让 render 非空）——
+        # 「空」的语义是「无日程」，断言须隔离节日数据层
+        from entities.ai_desktop.modules.datetime import festivals
+        monkeypatch.setattr(festivals, "festivals_on", lambda day: [])
         assert CalendarModule().render() is None
 
     def test_detail_structure(self) -> None:
