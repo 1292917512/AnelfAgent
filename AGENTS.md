@@ -752,6 +752,21 @@ voicehub（:10096）与 face 服务（:10097）升级为模型层启停——进
 
 > Model Experience：① AI 视角：通话里听到熟人→标注即实体归属；样本攒多了 speaker_refine 一下声纹更准（漂移接近 1 说明已稳定）；两个人实为一人→speaker_merge（合并即精化）；② token 影响：注入多一行绑定清单（有声纹绑定时）；③ 缓存影响：无 schema 变化外的重建；④ 稳定性：既有库 ALTER 补列幂等，空池精化 422 结构化报错
 
+#### 图谱治理闭环：议程豁免机制（第三十五轮新增）
+
+根治常驻误报导致的逐拍复核流水：`build_agenda` 每拍实时计算，已裁决「真实扇出/设计使然」的常驻议程项（歧义组/枢纽）无沉淀之处，检测器下一拍继续报——每日 graph_curation 任务反复复核同一批事实，结论只能写便签自证（graph_curation_log.md 涨至 753KB 并进 chunks 索引污染召回面）。补全「事实归系统、决策归 AI」的最后一环：**裁决结论也归系统**。
+
+| 机制 | 位置 | 说明 |
+|------|------|------|
+| 豁免表 | `graph_curation_exemptions`（kind+signature 唯一） | 五类 kind（weak_edge/stale_edge/ambiguous_group/duplicate_node/hub_node）× 签名口径（边 id / 主语key\|谓词 / 节点key / 排序节点key组）；重复登记更新理由并复活，撤销标记 active=0 可恢复 |
+| 议程过滤 | `build_agenda`（curation.py）塑形时剔除生效豁免 | 心跳摘要横幅随豁免自然消失（「歧义 N」不再每日重现），AI 不再起无效复核轮；豁免清单随议程返回（graph_curation_agenda 截断展示前 20 + total） |
+| 签名系统产出 | 议程项附 `exempt_signature` 字段 | AI 处置时原样回传 graph_curation_exempt 的 signature——签名构造零歧义（否则 AI 拿展示 label 拼 key 签名会静默不匹配） |
+| 工具面 | `graph_curation_exempt(kind, signature, reason, revoke)`（graph 组 core/heartbeat） | 登记/撤销；kind 工具层与 store 层双校验 |
+| 任务 prompt | `config/tasks/graph_curation.json`（gitignored 随盘生效） | 豁免登记为唯一正当「议程清零」路径；禁止在便签维护治理流水/状态档，处置摘要进心跳日志一行；铁律查询路由补图谱治理条（双源同文） |
+| 容量护栏 | `_NOTES_CAPACITY` 纳入 graph-curation.md（100 行） | 超标在 memory-status 区块报警 |
+
+> Model Experience：① AI 视角——graph_curation_agenda 的常驻误报项豁免后永久消失（误判可 revoke），每轮只见真增量；exempt_signature 原样回传零构造；② token 影响——议程瘦身（豁免项不再逐拍输出）+ 豁免清单截断；③ 缓存影响——纯工具通道与心跳日志，不触碰 prompt 前缀层；④ 注意：运行中服务为旧代码，豁免机制需重启生效（任务 prompt 文件热读，新旧不一致窗口内 AI 调 graph_curation_exempt 会 not_found——重启后自愈）。
+
 #### 记忆系统索引完整性：合并统一 + mem:ID 重定向 + 谱系审计（第三十四轮新增）
 
 以「一条信息只进一个系统，他处需要时用指针 mem:ID 引用」的铁律为标尺，把记忆 id 升级为稳定、可重定向、可追溯的索引锚点；设计对照 mem0 v2.1（其 history 审计表与 UUID→整数序号防幻觉两处机制移植，ADD-only 哲学不采用——本系统以墓碑可恢复性保留写入期裁决）。

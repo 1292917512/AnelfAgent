@@ -418,6 +418,9 @@ def _parse_tool_calls(raw_tool_calls: Any) -> list[ToolCall]:
             id=str(tc_id),
             name=name,
             arguments=args_str,
-            raw=raw_dict,
+            # raw 必须是规范形态（含 id）：think_loop 用 raw 拼装 assistant 历史
+            # 消息的 tool_calls 字段，缺 id 会破坏与 tool 响应的配对（端点用
+            # <name>:<index> 重建内部 ID 后报错）
+            raw=ToolCall.wire_raw(str(tc_id), name, args_str),
         ))
     return result

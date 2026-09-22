@@ -788,7 +788,11 @@ async def _handle_security_leak(
         ctx.execution_steps.append(f"→ 第{state.iteration + 1}轮: 连续安全泄露，强制结束")
         await _finish_round(ctx, state, deliver_pending=False)
         return _StageOutcome.BREAK
-    ctx.tool_chain.append({"role": "system", "content": _PROMPT_SECURITY_LEAK})
+    # 本轮 tool_calls 因安全原因一并丢弃，显式告知 LLM 避免下轮误以为已执行
+    prompt = _PROMPT_SECURITY_LEAK
+    if tool_calls:
+        prompt += "本轮的工具调用请求因安全检测一并被丢弃，请在下轮重新发起。"
+    ctx.tool_chain.append({"role": "system", "content": prompt})
     ctx.execution_steps.append(f"→ 第{state.iteration + 1}轮: 安全泄露已拦截并纠正")
     state.iteration += 1
     return _StageOutcome.CONTINUE
@@ -1145,13 +1149,13 @@ async def execute_tool_calls(
         pipeline = ToolResultPipeline(mind, guardrail)
     pipeline.begin_turn()
 
+    # 配对铁律：assistant 与其全部 tool 响应必须原子落链
     assistant_msg: Dict[str, Any] = {
         "role": "assistant",
         "content": _strip_think_blocks(result.content or ""),
         "tool_calls": [tc.raw for tc in tool_calls],
     }
     preserve_reasoning_fields(assistant_msg, result, tool_turn=True)
-    tool_chain.append(assistant_msg)
 
     # 守卫执行前检查：已知必败/无进展的调用直接返回合成结果，不执行真实工具
     # 模式级禁用工具（内部任务禁外发等）同样在此拦截：schema 保留在数组中
@@ -1181,7 +1185,7 @@ async def execute_tool_calls(
         return await execute_one_tool(mind, tc, iteration, anything)
 
     # 并发安全分级：连续只读调用并行（上限 10），写操作严格串行。
-    # 无论哪条路径，tool 消息都按 tool_calls 原始顺序追加，保证配对完整。
+    # 无论哪条路径，tool 消息都按 tool_calls 原始顺序累积，保证配对完整。
     semaphore = asyncio.Semaphore(_MAX_TOOL_CONCURRENCY)
 
     async def _run_guarded(tc: ToolCall):
@@ -1193,12 +1197,14 @@ async def execute_tool_calls(
             except BaseException as e:
                 return e
 
+    # 局部累积本批次的工具结果与多模态注入消息
+    batch_msgs: List[Dict] = []
     for is_parallel, batch in _partition_tool_calls(tool_calls):
         if is_parallel and len(batch) > 1:
             outputs = await asyncio.gather(*[_run_guarded(tc) for tc in batch])
         else:
             outputs = [await _run_guarded(tc) for tc in batch]
-        # 先按序追加全部 tool 结果，再统一注入多模态图片：
+        # 先按序累积全部 tool 结果，再统一注入多模态图片：
         # 逐条交错注入会在并行批次中形成 tool(A)→user(图)→tool(B)，
         # 破坏 Anthropic tool_result 邻接性导致会话级 400
         final_outputs: List[str] = []
@@ -1215,14 +1221,18 @@ async def execute_tool_calls(
             except Exception as e:
                 # 配对铁律：结果加工失败也要保证 tool 消息落链
                 final_output = error_from_exception(e, action=f"工具 {tc.name} 结果加工")
-            tool_chain.append({"role": "tool", "tool_call_id": tc.id, "content": final_output})
+            batch_msgs.append({"role": "tool", "tool_call_id": tc.id, "content": final_output})
             final_outputs.append(final_output)
         for final_output in final_outputs:
-            # 多模态工具结果：候选图片注入上下文，让视觉模型直接看到（如表情包检索）
+            # 多模态工具结果：候选图片注入上下文，让视觉模型直接看到
             try:
-                await _append_multimodal_result(mind, tool_chain, final_output)
+                await _append_multimodal_result(mind, batch_msgs, final_output)
             except Exception as exc:
                 log(f"多模态工具结果展开失败（不影响主流程）: {exc}", "DEBUG", tag="思维")
+
+    # 原子落链
+    tool_chain.append(assistant_msg)
+    tool_chain.extend(batch_msgs)
     log_tool_round(iteration, tool_calls)
 
 

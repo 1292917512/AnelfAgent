@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional, Set
 
 import httpx
 import litellm
@@ -217,6 +217,8 @@ class LLMClient(BaseEntity):
         self._learned_output_cap: Optional[int] = None
         # 从端点 400 报错中学习到的「不支持强制 tool_choice」（本次运行内有效）
         self._learned_no_forced_tool_choice: bool = False
+        # 从端点 400 报错中学习到的「本端点不接受的参数」集合（本次运行内有效）
+        self._learned_dropped_params: Set[str] = set()
         # chat_completions 不支持的内置工具类型已告警标记（每客户端只告警一次）
         self._builtin_chat_warned: bool = False
         # auto 协议下学到「端点未实现 /responses」（404），本次运行内回退
@@ -288,6 +290,7 @@ class LLMClient(BaseEntity):
             params.update(options)
         if self.config.api_type == API_TYPE_ANTHROPIC:
             params.pop("top_p", None)
+        self._drop_learned_params(params)
         return params
 
     def _anthropic_proxy_lease(self) -> "_ProxyEnvLease | None":
@@ -376,6 +379,47 @@ class LLMClient(BaseEntity):
         cap = int(m.group(1))
         return cap if cap > 0 else None
 
+    # ------------------------------------------------------------------
+    # 端点参数自适应学习
+    # ------------------------------------------------------------------
+
+    # (参数名, 错误模式正则)：命中即把参数从 kwargs 移除并缓存学习结果
+    _DROP_PARAM_RULES: tuple = (
+        ("temperature",
+         r"invalid\s+temperature|temperature[^a-z]{0,16}(?:not\s+support|only[^a-z]{0,24}allowed|unsupported)"),
+        ("top_p",
+         r"invalid\s+top_p|top_p[^a-z]{0,16}(?:not\s+support|unsupported)"),
+    )
+
+    def _learn_param_rejection(self, exc: Exception, kwargs: Dict[str, Any]) -> bool:
+        """从端点 400 报错学习「本端点不接受某参数」，命中即把参数从 kwargs 移除并缓存。"""
+        if getattr(exc, "status_code", None) != 400 and not isinstance(
+            exc, litellm.BadRequestError
+        ):
+            return False
+        msg = str(exc).lower()
+        for param, pattern in self._DROP_PARAM_RULES:
+            if param not in kwargs or kwargs.get(param) is None:
+                continue
+            if not re.search(pattern, msg):
+                continue
+            rejected_value = kwargs.pop(param)
+            self._learned_dropped_params.add(param)
+            info(
+                f"LLMClient [{self.config.name}] 端点拒绝参数 {param}"
+                f"（请求值 {rejected_value!r}），已移除并重试，本次运行内缓存",
+                tag="模型",
+            )
+            return True
+        return False
+
+    def _drop_learned_params(self, kwargs: Dict[str, Any]) -> None:
+        """构造请求末尾的预防性过滤：已学习被拒参数不再下发。"""
+        if not self._learned_dropped_params:
+            return
+        for param in self._learned_dropped_params:
+            kwargs.pop(param, None)
+
     def _learn_output_cap(self, exc: Exception, kwargs: Dict[str, Any], key: str) -> bool:
         """从端点 400 报错学习输出上限并钳制 kwargs[key]，命中返回 True 以重试。
 
@@ -399,10 +443,10 @@ class LLMClient(BaseEntity):
     async def _start_completion(self, kwargs: Dict[str, Any]) -> Any:
         """发起 litellm.acompletion：端点报错自适应学习后重试。
 
-        两类可学习报错：强制 tool_choice 被拒（降级 auto）、max_tokens
-        超限（解析端点上限并钳制）。学习结果本次运行内缓存，同模型后续
-        请求直接规避，实现新模型零配置自适应。每类修复各自收敛
-        （auto/上限单调下降），循环不会无限重试。
+        三类可学习报错：强制 tool_choice 被拒（降级 auto）、max_tokens
+        超限（解析端点上限并钳制）、temperature/top_p 被拒（移除）。
+        学习结果本次运行内缓存，同模型后续请求直接规避，实现新模型零配置
+        自适应。每类修复各自收敛，循环不会无限重试。
         """
         while True:
             try:
@@ -413,15 +457,12 @@ class LLMClient(BaseEntity):
                     continue
                 if self._learn_output_cap(exc, kwargs, "max_tokens"):
                     continue
+                if self._learn_param_rejection(exc, kwargs):
+                    continue
                 raise
 
     def _learn_tool_choice_rejection(self, exc: Exception, kwargs: Dict[str, Any]) -> bool:
-        """从端点 400 报错学习「不支持强制 tool_choice」。
-
-        部分端点（如阿里 anthropic 网关的 thinking 模式）拒绝 required /
-        object 形式的 tool_choice，配置项 supports_forced_tool_choice 无法
-        预判所有端点行为，按报错自适应并缓存，后续请求预防性降级。
-        """
+        """从端点 400 报错学习「不支持强制 tool_choice」，命中即降级为 auto 并缓存。"""
         tool_choice = kwargs.get("tool_choice")
         if tool_choice is None or tool_choice in ("auto", "none"):
             return False
@@ -934,6 +975,7 @@ class LLMClient(BaseEntity):
             "top_p": params.get("top_p"),
             "max_output_tokens": max_output_tokens,
         }
+        self._drop_learned_params(create_kwargs)
         if effort:
             create_kwargs["extra"] = {"reasoning": {"effort": to_litellm_effort(effort)}}
         from agent.llm.prompt_cache import session_cache_key
@@ -983,6 +1025,8 @@ class LLMClient(BaseEntity):
                     continue
                 if self._learn_output_cap(exc, create_kwargs, "max_output_tokens"):
                     continue
+                if self._learn_param_rejection(exc, create_kwargs):
+                    continue
                 raise
 
     async def _chat_via_responses(
@@ -1014,7 +1058,7 @@ class LLMClient(BaseEntity):
         from agent.llm.responses.client import parse_responses_payload
 
         stream_kwargs = self._build_responses_kwargs(messages, options, tools, tool_choice)
-        # 端点报错自适应（tool_choice 降级 / max_output_tokens 钳制）：
+        # 端点报错自适应（tool_choice 降级 / max_output_tokens 钳制 / 参数移除）：
         # 仅在未产出任何增量时允许换参重试，防重复下发
         emitted = False
         while True:
@@ -1054,6 +1098,8 @@ class LLMClient(BaseEntity):
                     stream_kwargs["tool_choice"] = "auto"
                     continue
                 if self._learn_output_cap(exc, stream_kwargs, "max_output_tokens"):
+                    continue
+                if self._learn_param_rejection(exc, stream_kwargs):
                     continue
                 raise
 

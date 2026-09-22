@@ -412,6 +412,116 @@ async def test_chat_bridges_to_responses_when_configured() -> None:
     assert kwargs["input"] == "hi"
 
 
+# ==================================================================
+# Responses 路径端点参数学习（temperature/top_p 等被拒参数移除）
+# ==================================================================
+
+@pytest.mark.asyncio
+async def test_responses_create_learns_temperature_rejection() -> None:
+    """非流式：temperature 被端点拒绝 → 移除重试并缓存学习结果。"""
+    import litellm
+
+    client = _responses_client()
+    ok = ResponseResult(id="r1", status="completed", model="k3", output_text="ok")
+    client.responses_create = AsyncMock(side_effect=[  # type: ignore[method-assign]
+        litellm.BadRequestError(
+            message="invalid temperature: only 1 is allowed for this model",
+            model="k3", llm_provider="openai",
+        ),
+        ok,
+    ])
+    result = await client.chat(
+        [{"role": "user", "content": "hi"}], options={"temperature": 0.7},
+    )
+    assert result.content == "ok"
+    assert "temperature" in client._learned_dropped_params
+    second_kwargs: dict[str, Any] = client.responses_create.await_args_list[1].kwargs  # type: ignore[attr-defined]
+    assert "temperature" not in second_kwargs
+
+    client.responses_create = AsyncMock(return_value=ok)  # type: ignore[method-assign]
+    await client.chat([{"role": "user", "content": "hi"}], options={"temperature": 0.5})
+    third_kwargs: dict[str, Any] = client.responses_create.await_args.kwargs  # type: ignore[attr-defined]
+    assert "temperature" not in third_kwargs
+
+
+@pytest.mark.asyncio
+async def test_responses_create_learns_top_p_rejection() -> None:
+    """非流式：top_p 被端点拒绝 → 移除重试并缓存学习结果。"""
+    import litellm
+
+    client = _responses_client()
+    ok = ResponseResult(id="r1", status="completed", model="k3", output_text="ok")
+    client.responses_create = AsyncMock(side_effect=[  # type: ignore[method-assign]
+        litellm.BadRequestError(
+            message="invalid top_p: not supported by this endpoint",
+            model="k3", llm_provider="openai",
+        ),
+        ok,
+    ])
+    result = await client.chat(
+        [{"role": "user", "content": "hi"}], options={"top_p": 0.9},
+    )
+    assert result.content == "ok"
+    assert "top_p" in client._learned_dropped_params
+    second_kwargs: dict[str, Any] = client.responses_create.await_args_list[1].kwargs  # type: ignore[attr-defined]
+    assert "top_p" not in second_kwargs
+
+
+@pytest.mark.asyncio
+async def test_responses_stream_learns_temperature_rejection() -> None:
+    """流式：temperature 被拒 → 移除重试并缓存学习结果。"""
+    import litellm
+
+    client = _responses_client()
+
+    async def _fail_stream(**kwargs: Any) -> Any:
+        raise litellm.BadRequestError(
+            message="invalid temperature: only 1 is allowed for this model",
+            model="k3", llm_provider="openai",
+        )
+        yield  # pragma: no cover
+
+    async def _ok_stream(**kwargs: Any) -> Any:
+        assert "temperature" not in kwargs
+        yield normalize_stream_event({
+            "type": "response.completed",
+            "response": {"id": "r1", "status": "completed", "output": []},
+        })
+
+    calls = {"n": 0}
+
+    def _stream_factory(**kwargs: Any) -> Any:
+        calls["n"] += 1
+        return _fail_stream(**kwargs) if calls["n"] == 1 else _ok_stream(**kwargs)
+
+    client.responses_stream = _stream_factory  # type: ignore[method-assign]
+    deltas = [
+        d
+        async for d in client.chat_stream(
+            [{"role": "user", "content": "hi"}],
+            options={"temperature": 0.7},
+        )
+    ]
+    assert calls["n"] == 2
+    assert "temperature" in client._learned_dropped_params
+    assert deltas[-1].finish_reason == "stop"
+
+
+@pytest.mark.asyncio
+async def test_responses_temperature_rejection_does_not_mask_other_errors() -> None:
+    """参数学习只命中模式匹配的报错；其它 400 仍正常抛。"""
+    import litellm
+
+    client = _responses_client()
+    client.responses_create = AsyncMock(side_effect=litellm.BadRequestError(  # type: ignore[method-assign]
+        message="unrelated request error",
+        model="k3", llm_provider="openai",
+    ))
+    with pytest.raises(litellm.BadRequestError, match="unrelated"):
+        await client.chat([{"role": "user", "content": "hi"}], options={"temperature": 0.7})
+    assert "temperature" not in client._learned_dropped_params
+
+
 def test_messages_multimodal_parts_converted() -> None:
     """chat 格式 content block 应转换为 Responses 部件格式。"""
     _, payload = messages_to_responses_input([

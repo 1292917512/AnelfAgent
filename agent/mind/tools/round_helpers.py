@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Protocol, Set
 
-from agent.mind.message_schema import is_genuine_user_message, preserve_reasoning_fields
+from agent.mind.message_schema import is_genuine_user_message
 from agent.mind.tools.result_parse import extract_error_text, parse_tool_result_json
 from agent.mind.tools.result_pipeline import ToolResultPipeline
 from agent.mind.tools.vision import apply_vision
@@ -863,15 +863,14 @@ def _handle_length_recovery(
     if getattr(result, "finish_reason", "") != "length":
         return _StageOutcome.PROCEED
 
+    partial_text = _strip_think_blocks(result.content or "").strip()
+
     if state.max_output_recoveries < _MAX_OUTPUT_RECOVERY_LIMIT:
         state.max_output_recoveries += 1
         log(f"输出被 max_tokens 截断，注入续写提示 (第 {state.max_output_recoveries} 次)",
             "WARNING", tag="思维")
-        partial_text = _strip_think_blocks(result.content or "").strip()
-        if partial_text or result.tool_calls:
-            truncated_msg: Dict[str, Any] = {"role": "assistant", "content": partial_text}
-            preserve_reasoning_fields(truncated_msg, result)
-            ctx.tool_chain.append(truncated_msg)
+        if partial_text:
+            ctx.tool_chain.append({"role": "assistant", "content": partial_text})
         ctx.tool_chain.append({"role": "system", "content": _PROMPT_MAX_OUTPUT_CONTINUE,
                                "_source": {"origin": "length_recovery"}})
         ctx.execution_steps.append(f"→ 第{state.iteration + 1}轮: 输出截断，已注入续写提示")
@@ -880,11 +879,8 @@ def _handle_length_recovery(
 
     # 恢复次数耗尽：跳过本轮 tool_calls（参数可能不完整，执行会出错）
     log("输出截断恢复次数耗尽，跳过本轮 tool_calls 并结束", "WARNING", tag="思维")
-    partial_text = _strip_think_blocks(result.content or "").strip()
     if partial_text:
-        truncated_msg = {"role": "assistant", "content": partial_text}
-        preserve_reasoning_fields(truncated_msg, result)
-        ctx.tool_chain.append(truncated_msg)
+        ctx.tool_chain.append({"role": "assistant", "content": partial_text})
     ctx.tool_chain.append({
         "role": "system",
         "content": "[系统] 输出多次被截断，本轮工具调用参数可能不完整，已跳过执行。"

@@ -132,6 +132,24 @@ def test_parse_tool_calls_skips_missing_function() -> None:
     assert LLMClient._parse_tool_calls([malformed]) == []
 
 
+def test_parse_tool_calls_raw_always_carries_id() -> None:
+    """上游端点缺 id 时本地合成 fallback id，且 raw 必须含规范 id 供 assistant 消息配对。"""
+    # 对象形态（缺 id）
+    obj_tc = SimpleNamespace(
+        id=None,
+        function=SimpleNamespace(name="read_memory_file", arguments="{}"),
+    )
+    # dict 形态（缺 id）
+    dict_tc = {"type": "function", "function": {"name": "view_memory_outline", "arguments": "{}"}}
+    result = LLMClient._parse_tool_calls([obj_tc, dict_tc])
+    assert len(result) == 2
+    for tc in result:
+        assert tc.id, "fallback id 应被合成"
+        assert tc.raw.get("id") == tc.id, f"raw 缺规范 id: {tc.raw}"
+        assert tc.raw.get("type") == "function"
+        assert tc.raw.get("function", {}).get("name") == tc.name
+
+
 @pytest.mark.asyncio
 async def test_unconfigured_client_fails_before_network() -> None:
     client = LLMClient(LLMClientConfig(model="", base_url=""))
@@ -205,6 +223,108 @@ async def test_unrelated_bad_request_is_not_learned(
     with pytest.raises(litellm.BadRequestError):
         await client._start_completion(kwargs)
     assert not client._learned_no_forced_tool_choice
+
+
+# ==================================================================
+# 端点参数学习（temperature/top_p 等被拒参数移除）
+# ==================================================================
+
+@pytest.mark.asyncio
+async def test_temperature_rejection_learned_and_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """temperature 被拒 → 移除重试并缓存，后续请求预防性跳过。"""
+    import litellm
+
+    client = LLMClient(LLMClientConfig(
+        model="k3", api_type="openai", temperature=0.7,
+    ))
+
+    calls = {"n": 0, "kwargs": []}
+
+    async def fake_acompletion(**kwargs: Any) -> Any:
+        calls["n"] += 1
+        calls["kwargs"].append(dict(kwargs))
+        if calls["n"] == 1:
+            raise litellm.BadRequestError(
+                "invalid temperature: only 1 is allowed for this model",
+                model="k3", llm_provider="openai",
+            )
+        return SimpleNamespace(choices=[])
+
+    monkeypatch.setattr("agent.llm.llm_client.litellm.acompletion", fake_acompletion)
+
+    kwargs = {"model": "k3", "messages": [], "temperature": 0.7}
+    await client._start_completion(kwargs)
+    assert calls["n"] == 2
+    assert "temperature" not in calls["kwargs"][1]
+    assert "temperature" in client._learned_dropped_params
+
+    params = client._gen_params({"temperature": 0.5})
+    assert "temperature" not in params
+
+
+@pytest.mark.asyncio
+async def test_top_p_rejection_learned_and_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """top_p 被拒 → 移除重试并缓存。"""
+    import litellm
+
+    client = LLMClient(LLMClientConfig(
+        model="k3", api_type="openai", top_p=0.9,
+    ))
+
+    calls = {"n": 0}
+
+    async def fake_acompletion(**kwargs: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise litellm.BadRequestError(
+                "invalid top_p: not supported by this endpoint",
+                model="k3", llm_provider="openai",
+            )
+        return SimpleNamespace(choices=[])
+
+    monkeypatch.setattr("agent.llm.llm_client.litellm.acompletion", fake_acompletion)
+
+    kwargs = {"model": "k3", "messages": [], "top_p": 0.9}
+    await client._start_completion(kwargs)
+    assert calls["n"] == 2
+    assert "top_p" in client._learned_dropped_params
+
+
+@pytest.mark.asyncio
+async def test_unrelated_param_rejection_is_not_learned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """参数学习只命中模式匹配的报错；其它 400 仍正常抛、不缓存。"""
+    import litellm
+
+    client = LLMClient(LLMClientConfig(
+        model="k3", api_type="openai", temperature=0.7,
+    ))
+
+    async def fake_acompletion(**kwargs: Any) -> Any:
+        raise litellm.BadRequestError(
+            "some unrelated request error",
+            model="k3", llm_provider="openai",
+        )
+
+    monkeypatch.setattr("agent.llm.llm_client.litellm.acompletion", fake_acompletion)
+
+    kwargs = {"model": "k3", "messages": [], "temperature": 0.7}
+    with pytest.raises(litellm.BadRequestError):
+        await client._start_completion(kwargs)
+    assert "temperature" not in client._learned_dropped_params
+
+
+def test_drop_learned_params_no_op_when_empty() -> None:
+    """空学习集合时预防性过滤零开销、kwargs 不变。"""
+    client = LLMClient(LLMClientConfig(model="m", api_type="openai"))
+    kwargs = {"temperature": 0.7, "top_p": 0.9}
+    client._drop_learned_params(kwargs)
+    assert kwargs == {"temperature": 0.7, "top_p": 0.9}
 
 
 @pytest.mark.asyncio
