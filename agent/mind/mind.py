@@ -305,6 +305,10 @@ class Mind:
             count = activate_group("session", "会话管理 — 多频道/多会话的发现与切换")
             if count:
                 log(f"会话管理工具已注册 ({count} 个)", "DEBUG", tag="思维")
+        if "judge" not in EntityRegistry.get_all_names():
+            count = activate_group("judgment", "判断 — 结构化选择/评分/是非评判")
+            if count:
+                log(f"判断工具已注册 ({count} 个)", "DEBUG", tag="思维")
 
     def _resolve_adapter_key(self) -> str:
         """获取当前回复的 adapter_key（从待处理任务推断的回退路径）。"""

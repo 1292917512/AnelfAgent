@@ -316,11 +316,11 @@ class TestDashScopeVideoAdapter:
     def test_create_text_to_video(self) -> None:
         adapter = DashScopeVideoAdapter()
         req = adapter.build_create_request(
-            "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+            "https://example-workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
             _params(model="happyhorse-1.1-t2v", resolution="720P", ratio="16:9", duration=5),
         )
         assert req.url == (
-            "https://token-plan.cn-beijing.maas.aliyuncs.com"
+            "https://example-workspace.cn-beijing.maas.aliyuncs.com"
             "/api/v1/services/aigc/video-generation/video-synthesis"
         )
         assert req.method == "POST"
@@ -397,7 +397,7 @@ class TestDashScopeVideoAdapter:
 
     def test_host_rule(self) -> None:
         adapter = resolve_video_adapter(
-            "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+            "https://example-workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
             model="happyhorse-1.1-t2v",
         )
         assert adapter.name == "dashscope"

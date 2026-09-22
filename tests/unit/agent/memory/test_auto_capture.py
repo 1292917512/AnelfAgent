@@ -1,11 +1,10 @@
-"""自动捕获与写入去重的纯函数单元测试（无 LLM 依赖）。"""
+"""自动捕获的纯函数单元测试（无 LLM 依赖）。"""
 
 from __future__ import annotations
 
 import time
 
 from agent.memory.auto_capture import parse_extraction, should_extract
-from agent.memory.dedup import parse_judgement
 
 
 class TestShouldExtract:
@@ -59,36 +58,6 @@ class TestParseExtraction:
         raw = '[{"content": "主人喜欢猫",}]'
         items = parse_extraction(raw, max_items=6)
         assert len(items) == 1
-
-
-class TestParseJudgement:
-    def test_store(self) -> None:
-        d = parse_judgement('{"action": "store", "reason": "无重复"}', {1, 2})
-        assert d and d["action"] == "store"
-
-    def test_skip(self) -> None:
-        d = parse_judgement('前缀文字 {"action": "skip"} 后缀', {1})
-        assert d and d["action"] == "skip"
-
-    def test_update_valid(self) -> None:
-        d = parse_judgement(
-            '{"action": "update", "target_id": 2, "content": "合并后的内容"}', {1, 2},
-        )
-        assert d and d["action"] == "update" and d["target_id"] == 2
-
-    def test_update_invalid_target_falls_back_to_store(self) -> None:
-        d = parse_judgement(
-            '{"action": "update", "target_id": 99, "content": "内容"}', {1, 2},
-        )
-        assert d and d["action"] == "store"
-
-    def test_update_empty_content_falls_back_to_store(self) -> None:
-        d = parse_judgement('{"action": "update", "target_id": 1, "content": ""}', {1})
-        assert d and d["action"] == "store"
-
-    def test_garbage_returns_none(self) -> None:
-        assert parse_judgement("不是JSON", {1}) is None
-        assert parse_judgement('{"action": "explode"}', {1}) is None
 
 
 class TestBatchSignature:

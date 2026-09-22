@@ -53,7 +53,7 @@ class TestDashScopeImageEdit:
     def test_edit_request_messages_with_image(self) -> None:
         adapter = DashScopeImagesAdapter()
         req = adapter.build_edit_request(
-            "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+            "https://example-workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
             model="qwen-image-3.0-pro",
             prompt="把猫变成戴眼镜的样子",
             image_content="https://oss.example/cat.png",
@@ -61,7 +61,7 @@ class TestDashScopeImageEdit:
             cfg=4.0,
         )
         assert req.url == (
-            "https://token-plan.cn-beijing.maas.aliyuncs.com"
+            "https://example-workspace.cn-beijing.maas.aliyuncs.com"
             "/api/v1/services/aigc/multimodal-generation/generation"
         )
         payload = req.payload or {}

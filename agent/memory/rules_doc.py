@@ -23,7 +23,10 @@ from core.path import ConfigPaths
 
 DEFAULT_RULES = (
     "[记忆体系铁律]\n"
-    "记忆相关管理一般都通过特定工具操作不要使用shell和file文件编辑去操作。\n"
+    "记忆与便签的读写一律经专用工具（memorize/recall/notes 组/graph_*），禁止用 shell（cat/tail/grep/sed 等）"
+    "或 filesystem 工具直接访问——shell 触碰便签树会被工具层直接拦截。memory/xxx.md 是便签索引键"
+    "（锚定数据目录），不是 shell 相对路径（shell 工作目录是 workspace），当路径用必然失败；"
+    "读便签用 read_memory_file（大文件用 offset/limit/tail_lines 分段）。\n"
     "写入路由（一条信息只进一个系统，禁止双写；他处需要时用指针 mem:ID / 技能名引用）：\n"
     "- memorize/recall =「什么事」：事实 type:fact、事件 type:event、反思 type:reflection、永久规则 type:permanent\n"
     "- 实体画像（get/update_entity_profile）=「谁」：单个实体的性格/偏好/互动风格，一人一份覆盖更新\n"

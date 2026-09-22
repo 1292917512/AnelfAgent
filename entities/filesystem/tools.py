@@ -6,10 +6,12 @@
 edit_file/read_file/write_file 的编辑安全语义：
 read-before-write、mtime 过期检查、弯引号容忍匹配、行尾往返。
 
-Model Experience（run_shell_command 失败归因 notes）:
-- 模型看到什么：命令失败且命中归因模式时，结果 notes 附带事实陈述——
-  记忆索引键的真实位置，或解释器为 uv venv 且不含 pip（无操作建议）
-- token 影响：仅失败时 +50~150 字符，属 tool_chain 尾部动态区
+Model Experience（run_shell_command 便签键空间守卫 + 失败归因 notes）:
+- 模型看到什么：命令 token 触碰记忆便签树（便签索引键误作相对路径，或路径解析
+  进便签树）时执行前直接拒绝，返回 guard=memory_notes 结构化错误与 notes 工具
+  路由指引（不消耗一次执行）；其余失败命令命中归因模式时，结果 notes 附带事实
+  陈述（键空间归属、解释器为 uv venv 且不含 pip，无操作建议）
+- token 影响：拦截/失败时 +50~200 字符，属 tool_chain 尾部动态区
 - 缓存影响：不触碰任何前缀层（notes 在工具结果内，volatile 语义）
 
 Model Experience（写操作成功结果 location 标注）:
@@ -38,7 +40,7 @@ from entities._sdk import (
     tool,
     tool_error,
 )
-from entities.filesystem import edit_utils, file_state
+from entities.filesystem import edit_utils, file_state, notes_guard
 from entities.filesystem.ops_context import track_fs_op
 
 # 顶部导入：shell_background 的配置注册（entity/os 组）随模块加载生效，
@@ -144,7 +146,8 @@ _SHELL_PROMPT = """在系统 shell 中执行命令并返回输出。
   不受强制超时——超过预期时长（默认 1800 秒）系统会提醒你并附最新进度，是否终止由你决定
   （terminate_background_task）。
 
-工具偏好（不要用 shell 做这些事）: 搜索用 search_files，读取用 read_file，编辑用 edit_file，写入用 write_file。
+工具偏好（不要用 shell 做这些事）: 搜索用 search_files，读取用 read_file，编辑用 edit_file，写入用 write_file；
+记忆便签（memory/*.md）读写一律用 notes 组工具（read_memory_file / list_memory_files 等），shell 访问会被直接拦截。
 
 注意事项:
 - 操作数据库（sqlite3 等）前先查表结构（.schema / PRAGMA table_info），禁止臆测表名和列名。
@@ -233,7 +236,7 @@ def read_file(file_path: str, offset: int = 0, limit: int = 0, encoding: str = "
         if not os.path.isfile(fp):
             return tool_error(f"文件不存在: {file_path}", cause=ErrorCause.NOT_FOUND,
                               retryable=False, resolved=fp,
-                              hint=_memory_note_hint(file_path, fp))
+                              hint=notes_guard.memory_note_hint(file_path, fp))
         # Binary files: return metadata instead of trying to decode
         bin_exts = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".ico",
                     ".mp3", ".wav", ".ogg", ".flac", ".m4a", ".opus", ".amr",
@@ -363,7 +366,7 @@ def read_file(file_path: str, offset: int = 0, limit: int = 0, encoding: str = "
         }, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="读取文件",
-                                    hint=_memory_note_hint(file_path))
+                                    hint=notes_guard.memory_note_hint(file_path))
 
 
 @tool(name="write_file", group="os", description=_WRITE_FILE_PROMPT)
@@ -380,7 +383,7 @@ def write_file(file_path: str, content: str) -> str:
         fp = safe_path(file_path)
         exists = os.path.exists(fp)
         if not exists:
-            guard = _memory_key_create_guard(file_path)
+            guard = notes_guard.key_create_guard(file_path)
             if guard:
                 return guard
         if exists:
@@ -428,7 +431,7 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
         fp = safe_path(file_path)
     except Exception as e:
         return error_from_exception(e, action="解析文件路径",
-                                    hint=_memory_note_hint(file_path))
+                                    hint=notes_guard.memory_note_hint(file_path))
 
     def _err(message: str, code: int, cause: Optional[ErrorCause] = None,
              hint: Optional[str] = None) -> str:
@@ -444,7 +447,7 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
     if not exists:
         if old_string == "":
             # 空 old_string + 文件不存在 = 创建新文件
-            guard = _memory_key_create_guard(file_path)
+            guard = notes_guard.key_create_guard(file_path)
             if guard:
                 return guard
             try:
@@ -458,7 +461,7 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
         suggestion = _suggest_similar_path(fp)
         return _err(f"文件不存在: {file_path}。{suggestion}", 4,
                     cause=ErrorCause.NOT_FOUND,
-                    hint=_memory_note_hint(file_path, fp))
+                    hint=notes_guard.memory_note_hint(file_path, fp))
 
     if old_string == "":
         return _err("文件已存在，不能用空 old_string 创建。如需整体覆盖请使用 write_file，"
@@ -595,7 +598,7 @@ def append_file(path: str, content: str) -> str:
             existing, encoding, eol = _read_text_with_metadata(fp)
             _write_text_with_metadata(fp, existing + content, encoding, eol)
         else:
-            guard = _memory_key_create_guard(path)
+            guard = notes_guard.key_create_guard(path)
             if guard:
                 return guard
             _write_text_with_metadata(fp, content, "utf-8", "LF")
@@ -879,80 +882,8 @@ def _redundant_workspace_prefix(command: str) -> Optional[str]:
     return None
 
 
-# 形如记忆索引键的相对路径（memory/*.md）：recall 结果 file 来源的标注形态，
-# 相对数据目录父目录而非 Shell 工作目录
-_MEMORY_KEY_RE = re.compile(r"^memory/[\w./\-]+\.md$")
-
 # Python 缺失模块错误（No module named xxx / ModuleNotFoundError: No module named 'xxx'）
 _MISSING_MODULE_RE = re.compile(r"No module named '?[\w.]+'?")
-
-
-def _memory_key_token(command: str) -> Optional[str]:
-    """返回命令中形如记忆索引键（memory/*.md）的相对路径 token。
-
-    仅用于失败归因提示，不做拦截；无命中返回 None。
-    """
-    try:
-        tokens = shlex.split(command, posix=True)
-    except ValueError:
-        tokens = command.split()
-    for token in tokens:
-        if _MEMORY_KEY_RE.match(token):
-            return token
-    return None
-
-
-def _memory_key_note(key: str) -> str:
-    """记忆索引键误用为 Shell 相对路径的归因提示（事实陈述：键空间与真实位置）。"""
-    from core.path import ConfigPaths
-    root = os.path.dirname(os.path.abspath(ConfigPaths.MEMORY_DIR))
-    real = os.path.join(root, key)
-    base = f"注意: {key} 是记忆索引键（相对数据目录 {root}，非 Shell 相对路径）"
-    if os.path.isfile(real):
-        return f"{base}，实际文件在 {real}"
-    return base
-
-
-def _memory_note_hint(file_path: str, resolved: Optional[str] = None) -> Optional[str]:
-    """识别指向记忆便签文件的路径，返回改用 notes 组工具的引导；未命中返回 None。
-
-    精确命中才提示（不打扰 workspace 普通文件与其他路径）：
-    - 绝对/解析后路径落在记忆便签根目录内的 .md 文件；或
-    - 相对路径形如记忆索引键（memory/*.md）且对应便签真实存在。
-    """
-    from core.path import ConfigPaths
-    mem_root = os.path.realpath(ConfigPaths.MEMORY_DIR)
-    notes_ws = os.path.dirname(mem_root)
-    for p in (resolved, file_path):
-        if not p or not os.path.isabs(p):
-            continue
-        real = os.path.realpath(p)
-        if real.startswith(mem_root + os.sep) and real.endswith(".md"):
-            key = os.path.relpath(real, notes_ws)
-            return (f"{file_path} 指向记忆便签文件（键 {key}），filesystem 组工具锚定 workspace 无法访问；"
-                    f"请改用 notes 组工具（read_memory_file / patch_memory_file 等）")
-    key = file_path.replace("\\", "/")
-    if _MEMORY_KEY_RE.match(key) and os.path.isfile(os.path.join(notes_ws, key)):
-        return (f"{key} 是记忆便签索引键（实际文件在 {os.path.join(notes_ws, key)}），"
-                f"非 workspace 相对路径；请改用 notes 组工具（read_memory_file / patch_memory_file 等）")
-    return None
-
-
-def _memory_key_create_guard(file_path: str) -> Optional[str]:
-    """拦截以记忆索引键形态（memory/*.md）经 filesystem 工具新建文件的误用。
-
-    便签键空间锚定数据目录，filesystem 工具锚定 workspace——该形态的新建几乎必然
-    是想用 notes 组工具写便签，直接创建会在 workspace 下产生错位的 memory/ 目录。
-    命中返回错误 JSON，未命中返回 None。
-    """
-    key = file_path.replace("\\", "/")
-    if not _MEMORY_KEY_RE.match(key):
-        return None
-    return tool_error(
-        f"{key} 是记忆便签索引键形态，filesystem 组工具锚定 workspace，在此创建会与便签错位。",
-        cause=ErrorCause.PARAM, retryable=False,
-        hint="新建/修改记忆便签请用 notes 组工具（write_memory_file / append_memory_file）",
-    )
 
 
 def _missing_module_hint(stdout: str, stderr: str) -> Optional[str]:
@@ -1014,6 +945,12 @@ def run_shell_command(command: str, timeout: int = 0, run_in_background: bool = 
                 )
 
         cwd = shell_state.get_cwd(ws_root, sandbox=_SANDBOX)
+
+        # 便签键空间守卫：键误用（注定 ENOENT）与便签树直接路径访问在执行前拦截，
+        # 返回 notes 工具路由指引，不消耗一次执行（前台/后台同纪律）
+        violation = notes_guard.find_shell_violation(command, cwd)
+        if violation:
+            return notes_guard.shell_violation_error(violation)
 
         if run_in_background:
             # 0 = 自动：后台缺省预期时长由 launch_background 读
@@ -1077,10 +1014,11 @@ def run_shell_command(command: str, timeout: int = 0, run_in_background: bool = 
                     f"注意: 工作目录已是 workspace 根目录，{redundant} 的 {prefix} 前缀多余"
                     f"（指向不存在的嵌套路径），直接写 {stripped.rstrip('/') or '.'} 即可"
                 )
-            # 记忆索引键误用为 Shell 相对路径：cwd 下不存在才归因（存在则失败另有原因）
-            key = _memory_key_token(command)
+            # 便签索引键形态但两处都不存在：附键空间事实归因（cwd 下存在则失败另有
+            # 原因；便签树内存在的键已在执行前被 notes_guard 拦截，不会到这里）
+            key = notes_guard.find_key_token(command)
             if key and not os.path.exists(os.path.join(str(payload["cwd"]), key)):
-                notes.append(_memory_key_note(key))
+                notes.append(notes_guard.key_space_note(key))
             module_hint = _missing_module_hint(stdout, stderr)
             if module_hint:
                 notes.append(module_hint)

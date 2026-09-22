@@ -372,6 +372,7 @@ def create_bootstrap() -> FlowMachine:
         # delegate_tool 漏导入会导致 activate_group("delegation") 弹出空组、
         # delegation 整组永不注册（activate_group 对空组连组名都不登记）
         import agent.delegation.delegate_tool  # noqa: F401
+        import agent.judgment.tools  # noqa: F401
         from agent.mind import Mind
         from agent.mind.tools import (  # noqa: F401
             execution_log,

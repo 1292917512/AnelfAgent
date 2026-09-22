@@ -44,6 +44,7 @@ description: "AnelfAgent 项目指令 — 开发规范与架构速查（对所�
 | `agent/task/` | 独立任务系统（定义 / 注册表 / 执行器） | 纯内容定义，不含调度逻辑 |
 | `agent/heartbeat/` | 心跳调度（引擎 / 配置 / 日志 / 内置维护） | 管理何时执行任务，持久化计数器 |
 | `agent/planning/` | 自主规划（目标 CRUD / 执行追踪 / 终态即清，存续决策归 AI） | 依赖 memory |
+| `agent/judgment/` | 结构化判断（Choice/Score/Noul 三原语；TypeSafe Jev 原生通道 + 普通模型回退，双通道同构输出） | 配置走 `judgment/core` 组；引擎无构造期依赖（配置现读 + 惰性 LLMManager） |
 | `channels/` | 频道适配器（目录自动发现 + 热插拔 sync_channels） | 继承 BaseChannel，display_order 自声明排序 |
 | `entities/` | 工具实体（目录自动发现 + 热插拔 sync_entities） | 通过 `@tool`/`entity()` 注册，通过 `_sdk.py` 桥接 LLM |
 | `services/` | 业务封装层（model/chat/task/heartbeat/approval/context/config/sticker/system/ui/filesystem/mcp 等；mcp 为 entities.mcp 薄门面） | 供 Web API 调用，不依赖 web |
@@ -322,6 +323,31 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 合并结果经两道门控过滤（`core/tool_gate.py` + `agent/mind/tool_activation.py`）：
 1. **check_fn 门控**：工具声明的前置条件检查（30s TTL 缓存 + 60s 瞬态故障宽限），不通过则不出现在 schema
 2. **沉睡/激活**：`allow_sleep=True` + `sleep_brief` 的工具默认沉睡（目录中仅展示 brief），AI 调用 `activate_tool_group` 唤醒，按 scope 隔离、按轮次消耗
+
+#### 判断能力（agent/judgment，Jev 接入）
+
+结构化评判三原语（Choice 选项 / Score 评分 / Noul 是非）的统一通道：**类型契约**在
+`agent/judgment/types.py`（pydantic 判别联合，置信度公式 (n·p−1)/(n−1) 双通道共用）；
+**双通道引擎** `engine.py`（配置每次调用现读，天然热更）：有 `judgment_api_key` 走
+`client.py` TypeSafe 原生 HTTP（POST /v1/systemone，答案严格校验），未配置或失败时降级
+`bridge.py` 普通聊天模型（严格 JSON 提示词 + 容错解析 + 本地合成概率/置信度，单题失败
+不拖垮整批记入 missing）。**AI 调用面**是 mind 核心工具 `judge`（group="judgment"，
+tags=["always"]，questions 数组的 items schema 经 `deferred_tool(schema_extra=)` 声明——
+签名推导只到顶层类型）；judge 的 **上下文三档供给**（context_mode）：none（默认，只评判
+显式传入的 state）/ conversation（注入当前会话最近消息）/ full（窗口全量 + 折叠摘要，
+慎用档）；state 与非 none 模式互斥（同传报 PARAM）。注入实现：`ToolActivationManager.
+current_scope` + `fetch_conversation` 直读（无折叠/水位副作用），护栏
+`judgment_context_messages` / `judgment_context_max_chars` / `judgment_full_max_chars`；
+非会话 scope 或空历史返回 PARAM 错误引导显式传 state。**AI 自配置面**是统一配置组 `judgment/core`
+（update_entity_config 直查组名）；**Web 面**是模型页「判断 (Jev)」页签（读配置面 +
+`GET/POST /api/judgment/status|test`，写路径只有 /api/config/meta 一条）。登记点仅两处：
+bootstrap 导入清单 + `Mind._register_core_tools` 激活（无 wiring 端口）。刻意不进
+llm_clients.json/ModelType——该体系全部模型被假设可走 litellm 对话/媒体协议，判断模型
+不满足该假设。**首个内部接入点**：记忆写入判重（`agent/memory/dedup.py::judge_write`）
+——判断段（关系四选一 novel/covered/evolution/fragments + update 目标选择 + merge 逐候选
+是非）经引擎一次调用并行评判，仅 update/merge 再经 light_llm 合成合并文本（store/skip
+占写入绝大多数，热路径零 LLM 调用）；关系/目标置信度低于 `memory_dedup_min_confidence`
+（默认 0.25）或任何判断/合成失败一律保守退回直接写入（去重永不阻塞写入路径的语义不变）。
 
 #### 上下文组装（Prompt 分层缓存）
 
@@ -725,6 +751,22 @@ voicehub（:10096）与 face 服务（:10097）升级为模型层启停——进
 | 声纹定位 | 设计定位 | 声纹是"听过的声音"的记忆：样本池=带信道标注的经历采样、锚=加权聚合的长期身份、entity_scope=与实体记忆的关联边；AI 闭环=识别（voice_identify）→ 关联（speaker_bind）→ 重建（speaker_refine）→ 合并（speaker_merge） |
 
 > Model Experience：① AI 视角：通话里听到熟人→标注即实体归属；样本攒多了 speaker_refine 一下声纹更准（漂移接近 1 说明已稳定）；两个人实为一人→speaker_merge（合并即精化）；② token 影响：注入多一行绑定清单（有声纹绑定时）；③ 缓存影响：无 schema 变化外的重建；④ 稳定性：既有库 ALTER 补列幂等，空池精化 422 结构化报错
+
+#### 记忆系统索引完整性：合并统一 + mem:ID 重定向 + 谱系审计（第三十四轮新增）
+
+以「一条信息只进一个系统，他处需要时用指针 mem:ID 引用」的铁律为标尺，把记忆 id 升级为稳定、可重定向、可追溯的索引锚点；设计对照 mem0 v2.1（其 history 审计表与 UUID→整数序号防幻觉两处机制移植，ADD-only 哲学不采用——本系统以墓碑可恢复性保留写入期裁决）。
+
+| 机制 | 位置 | 说明 |
+|------|------|------|
+| 合并语义统一 | `memory_store.merge_into_keep`（唯一底层） | 原双路径（consolidator `merge_pair` 物理删 / dedup `merge_memories` 新建条目）合一：keep（有效分最高者）原地演进（标签并集/访问累加/max 重要性/可选合成内容，version+1），drop 软标记 importance=0 + `metadata.merged_into` 退出全部召回（各检索路径本带 importance>0 过滤）后入既有归档/物删生命周期。protected（PERMANENT/宪法级）/ENTITY 画像/规划条目双向准入（不可作 keep 也不可作 drop）。`merge_memories` 签名不变（返回 keep id），7 个调用点零适配 |
+| mem:ID 分层解析 | `memory_store.resolve` + `get_memory`/`update_memory`/`forget` 工具 | 五态：active（含重定向落地）/ merged（链过深）/ archived（可恢复）/ tombstone（gist + redirect_to）/ missing——被合并的旧 id 沿 `merged_into` 链（限 3 跳防环）解析到存活条目，便签与图谱中的 mem:ID 永不失效；变更类操作遇非活跃条目显式引导（防改僵尸）。墓碑表加 `redirect_to` 列（purge 时从 merged_into 写入） |
+| 谱系审计 | `memory_audit` 加 `actor` 列 + `list_audit` | 全变更路径（add/update/delete/archive/merge/restore）带触发方归因（tool:*/auto_capture/consolidator/heartbeat_*/task:*/web/planning/reflection*）；update 事件 detail 改记被替换的旧内容（新值即条目现值）。出口：get_memory 附最近 5 条事件、`GET /ltm/{id}/audit`；30 天保留不变（长期谱系走 metadata merged_from/into，审计只管短期回放，职责不混） |
+| 条目级语义链接 | memorize `linked_to` 参数 + recall 联想带出 | 「本条纠正/补充/依赖哪条」的显式声明（上限 5，存在性校验）——操作纠错记忆落地：纠错教训挂被纠正条目，recall 命中关联方时 related 一跳带出（hop="link" 优先于标签共现占位）。与标签共现职责切分：具体关系用 linked_to，同主题关联靠标签 |
+| 写入裁决防幻觉 | `dedup.judge_write` 候选序号化 | 判断模型只看 1..N 序号（真实 id 已达 5 位数，转述易抄错，抄错即目标校验失败退化为新增重复），裁决返回前映射回真实 id（mem0 UUID→整数同款机制） |
+| 标签归并议程 | `tag_intel.merge_candidates` + consolidator/心跳 memory-status 区块 + `memory_index` 输出 | 确定性候选两类：写法变体（NFKC/小写/空白归一同形）与 topic 包含关系对（df≥2，归并高频方）——事实归系统、决策归 AI（经 update_memory 执行），无候选零注入。僵尸条目（importance=0）不进统计 |
+| 图谱溯源双向 | `_edge_json` 输出 `source_memory_id` + graph_add_relation 参数纪律 | 图谱→记忆方向机读指针补齐（此前仅有给人看的 evidence 文本）；关系从记忆得出时必传，对话直出留 0（心跳抽取源是对话材料，不硬挂） |
+
+> Model Experience：① AI 视角——get_memory 任何 id 都有明确答案（存活全文/并入去向/可恢复归档/墓碑梗概），mem:ID 可放心长期引用；recall 的 related 出现 hop="link" 的纠错关联；memory_index 周期性出现归并候选；铁律（config/memory_rules.md 与 rules_doc DEFAULT_RULES 双源同文）新增指针稳定性段与 linked_to/归并议程/source_memory_id 三处纪律；② token 影响——get_memory +审计 5 行、recall related 至多 3 条不变、memory-status 区块无候选零占用；③ 缓存影响——均在工具返回与尾部动态区，stable 层仅铁律一次性重建后恢复冻结。
 
 #### 音色预设制：AI 与 Web 共用的音色库（第三十三轮新增）
 

@@ -38,9 +38,11 @@
     "storage": "Storage & Backup",
     "vision": "Vision",
     "other": "Other",
-    "model": "Models"
+    "model": "Models",
+    "judgment": "Judgment"
   },
   "sections": {
+    "judgment/core": "Judgment Core",
     "mind/core": "Core",
     "mind/llm": "LLM Calls",
     "mind/interrupt": "Interrupt",

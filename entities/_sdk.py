@@ -197,6 +197,7 @@ def deferred_tool(
     sleep_brief: str = "",
     concurrency_safe: bool = False,
     risk: str = "",
+    schema_extra: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Callable[[F], F]:
     """延迟注册装饰器：装饰时仅收集元数据，activate_group() 时批量注册。
 
@@ -212,11 +213,19 @@ def deferred_tool(
             框架层已保证并发安全，标注者只需确保工具体自身只读无共享写状态）
         risk: 风险等级标记（如 CRITICAL），无显式权限规则覆盖时由审批
             元数据层兜底升级为 ask（见 agent.approval.rules.tool_meta_risk_rule）
+        schema_extra: 参数级额外 JSON Schema 字段（{参数名: {...}}，如
+            items/minItems），签名推导只到顶层类型，复杂数组/对象参数
+            的完整 wire schema 经此声明
     """
     def decorator(func: F) -> F:
         tool_name = name or func.__name__
         tool_desc = description or get_first_line(func.__doc__) or tool_name
         params = extract_tool_params(func)
+        if schema_extra:
+            for p in params:
+                extra = schema_extra.get(p.name)
+                if extra:
+                    p.schema_extra = {**(p.schema_extra or {}), **extra}
 
         meta = {}
         if timeout is not None:

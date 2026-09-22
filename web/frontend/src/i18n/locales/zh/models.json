@@ -3,7 +3,27 @@
     "config": "模型配置",
     "priorities": "模型管理",
     "subagents": "子代理",
+    "judgment": "判断 (Jev)",
     "providerKeys": "组件凭据"
+  },
+  "judgment": {
+    "channelStatus": "判断通道",
+    "channel": {
+      "typesafe": "TypeSafe 原生",
+      "llm_fallback": "普通模型回退",
+      "disabled": "已停用",
+      "unavailable": "未配置"
+    },
+    "keyConfigured": "密钥已配置",
+    "testChannel": "测试通道",
+    "testFailed": "测试失败",
+    "sourceTypesafe": "TypeSafe 原生",
+    "sourceFallback": "普通模型回退",
+    "tokens": "tokens {{input}}/{{output}}",
+    "missing": "以下问题未获得答案：{{ids}}",
+    "defaultChain": "默认聊天模型链",
+    "timeout": "超时 {{seconds}}s",
+    "advanced": "高级配置（{{count}}）"
   },
   "disabled": "已停用",
   "enableHint": "启用（停用后不参与任务执行）",

@@ -5,8 +5,9 @@ Agent 每次对话时自动读取注入到上下文，并可通过工具随时�
 
 Model Experience（read_memory_file 常驻 always）:
 - 模型看到什么：所有会话的 tools 数组常驻 read_memory_file（recall 的 file 来源
-  标注可直接作为其 file_path，描述中已说明行号后缀剥离规则）
-- token 影响：schema 常驻增加约 +80 token（随 tools 前缀缓存命中）
+  标注可直接作为其 file_path，描述中已说明行号后缀剥离规则；支持 offset/limit
+  窗口分段与 tail_lines 取尾部，超大文件全量读取被拒时模型有明确的分段出路）
+- token 影响：schema 常驻增加约 +140 token（随 tools 前缀缓存命中）
 - 缓存影响：升级部署后 tools 数组变化一次属预期，此后字节稳定不破前缀
 """
 
@@ -432,6 +433,34 @@ def _with_line_numbers(content: str, start: int = 1) -> str:
     end = start + len(lines) - 1
     width = max(len(str(end)), 1)
     return "\n".join(f"{start + i:{width}d} | {line}" for i, line in enumerate(lines))
+
+
+# 读取预算：全量读取字符上限（超出引导分段读取）；分段窗口行数/字符双上限
+# （便签存在单行数千字符的台账条目，仅行数上限兜不住窗口体积）
+_FULL_READ_MAX_CHARS = 200_000
+_WINDOW_MAX_LINES = 500
+_WINDOW_MAX_CHARS = 100_000
+
+
+def _apply_window_budget(window: List[str], keep_tail: bool) -> tuple[List[str], int]:
+    """窗口预算收敛（行数/字符双上限），返回（收敛后的行, 裁掉的行数）。
+
+    offset 窗口保留起点侧，tail 窗口保留最新侧。
+    """
+    dropped = 0
+    excess = len(window) - _WINDOW_MAX_LINES
+    if excess > 0:
+        if keep_tail:
+            del window[:excess]
+        else:
+            del window[len(window) - excess:]
+        dropped = excess
+    chars = sum(len(line) + 1 for line in window)
+    while window and chars > _WINDOW_MAX_CHARS:
+        line = window.pop(0) if keep_tail else window.pop()
+        chars -= len(line) + 1
+        dropped += 1
+    return window, dropped
 
 
 def list_all_memory_files() -> list[Dict[str, str]]:
@@ -922,6 +951,7 @@ def register_notes_tools(workspace_dir: Optional[Path] = None) -> None:
     group="notes", tags=["always", "core", "heartbeat"], source="mind.notes",
     description=(
         "读取主便签记忆（memory/memory.md）的全部内容。"
+        "主便签超过全量上限时会被拒绝，改经 read_memory_file 分段读取。"
         "返回两个字段：content（原始内容，用于 write_notes/patch_memory_file 的写回）"
         "和 view（带行号的显示内容，用于 edit_memory_lines 定位行号）。"
         "对文件做精确修改时，old_text 和写回内容必须来自 content 字段，不要包含 view 中的行号前缀。"
@@ -935,6 +965,13 @@ async def read_notes() -> str:
             return json.dumps(
                 {"content": "", "message": "便签为空，还没有记录任何内容"},
                 ensure_ascii=False,
+            )
+        if len(content) > _FULL_READ_MAX_CHARS:
+            return tool_error(
+                f"主便签共 {len(content)} 字符，超过全量读取上限（{_FULL_READ_MAX_CHARS} 字符）",
+                cause=ErrorCause.PARAM, retryable=False,
+                hint='用 read_memory_file(file_path="memory/memory.md", ...) 经 offset/limit '
+                     "或 tail_lines 分段读取；局部修改用 patch_memory_file / edit_memory_lines",
             )
         return json.dumps(
             {"content": content, "view": _with_line_numbers(content)},
@@ -1000,25 +1037,87 @@ async def list_memory_files() -> str:
         "读取指定记忆文件的内容（memory/reflections.md、memory/entities.md 等）。"
         "recall 结果中 file 来源标注的路径去掉行号后缀（如 memory/heartbeat.md:1-20 → "
         "memory/heartbeat.md）即可直接作为 file_path，读取该条记忆的完整上下文。"
+        "默认全量读取；文件超过全量上限会被拒绝，此时用 offset/limit 按行号窗口分段读取，"
+        "或用 tail_lines 取末尾 N 行（看日志/台账尾部用它），两种分段方式互斥。"
         "返回两个字段：content（原始内容，用于 write_memory_file/patch_memory_file 的写回）"
-        "和 view（带行号的显示内容，用于 edit_memory_lines 定位行号）。"
+        "和 view（带行号的显示内容，用于 edit_memory_lines 定位行号，窗口读取时为真实行号）。"
         "对文件做精确修改时，old_text 和写回内容必须来自 content 字段，不要包含 view 中的行号前缀。"
     ),
 )
-async def _tool_read_memory_file(file_path: str) -> str:
-    """读取指定记忆文件的内容。
+async def _tool_read_memory_file(
+    file_path: str, offset: int = 0, limit: int = 0, tail_lines: int = 0
+) -> str:
+    """读取指定记忆文件的内容（默认全量；offset/limit 窗口分段；tail_lines 取尾部）。
 
     Args:
         file_path: 文件路径，如 memory/memory.md、memory/reflections.md
+        offset: 起始行号（从 1 开始），0 表示从头读取
+        limit: 最多读取行数，0 表示读到文件尾（窗口超读取预算时保留起点侧）
+        tail_lines: 读取末尾 N 行（与 offset/limit 互斥；窗口超读取预算时保留最新侧）
     """
+    try:
+        offset, limit, tail_lines = int(offset), int(limit), int(tail_lines)
+    except (TypeError, ValueError):
+        return tool_error("offset/limit/tail_lines 必须是整数", cause=ErrorCause.PARAM, retryable=False)
+    if offset < 0 or limit < 0 or tail_lines < 0:
+        return tool_error("offset/limit/tail_lines 不能为负数", cause=ErrorCause.PARAM, retryable=False)
+    if tail_lines and (offset or limit):
+        return tool_error(
+            "tail_lines 与 offset/limit 互斥，只能选一种分段方式",
+            cause=ErrorCause.PARAM, retryable=False,
+        )
     try:
         content = read_memory_file(file_path)
         if not content:
             return json.dumps({"content": "", "message": f"{file_path} 为空或不存在"}, ensure_ascii=False)
-        return json.dumps(
-            {"path": file_path, "content": content, "view": _with_line_numbers(content)},
-            ensure_ascii=False,
-        )
+        lines = content.splitlines()
+        total = len(lines)
+        if not (offset or limit or tail_lines):
+            if len(content) > _FULL_READ_MAX_CHARS:
+                return tool_error(
+                    f"{file_path} 共 {total} 行 / {len(content)} 字符，"
+                    f"超过全量读取上限（{_FULL_READ_MAX_CHARS} 字符）",
+                    cause=ErrorCause.PARAM, retryable=False,
+                    hint="用 offset/limit 分段读取，或 tail_lines 取尾部（如 tail_lines=50）",
+                    total_lines=total,
+                )
+            return json.dumps(
+                {"path": file_path, "total_lines": total,
+                 "content": content, "view": _with_line_numbers(content)},
+                ensure_ascii=False,
+            )
+        keep_tail = tail_lines > 0
+        if keep_tail:
+            start = max(1, total - tail_lines + 1)
+            window = lines[start - 1:]
+        else:
+            start = offset or 1
+            if start > total:
+                return tool_error(
+                    f"offset {start} 超出文件范围（共 {total} 行）",
+                    cause=ErrorCause.PARAM, retryable=False, total_lines=total,
+                )
+            end = total if limit == 0 else min(total, start - 1 + limit)
+            window = lines[start - 1:end]
+        window, dropped = _apply_window_budget(window, keep_tail)
+        if not window:
+            return tool_error(
+                "目标行单行长度超过窗口读取预算，无法用行窗口读取",
+                cause=ErrorCause.PARAM, retryable=False,
+            )
+        if keep_tail:
+            start += dropped
+        payload: Dict[str, Any] = {
+            "path": file_path, "total_lines": total,
+            "offset": start, "limit": len(window),
+            "content": "\n".join(window),
+            "view": _with_line_numbers("\n".join(window), start),
+        }
+        if dropped:
+            payload["note"] = (
+                f"窗口超出读取预算，已裁掉 {dropped} 行（保留{'最新' if keep_tail else '起点'}侧）"
+            )
+        return json.dumps(payload, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="读取记忆文件")
 

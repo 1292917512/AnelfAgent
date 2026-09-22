@@ -26,5 +26,6 @@ export * from "./lifecycle";
 export * from "./vision";
 export * from "./audio";
 export * from "./hooks";
+export * from "./judgment";
 export * from "./retrieval";
 export * from "./tools";

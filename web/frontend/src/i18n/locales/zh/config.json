@@ -38,9 +38,11 @@
     "storage": "存储与备份",
     "vision": "视觉",
     "other": "其他",
-    "model": "模型"
+    "model": "模型",
+    "judgment": "判断"
   },
   "sections": {
+    "judgment/core": "判断核心",
     "mind/core": "核心",
     "mind/llm": "LLM 调用",
     "mind/interrupt": "中断控制",

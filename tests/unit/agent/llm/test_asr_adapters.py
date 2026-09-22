@@ -11,7 +11,7 @@ from agent.llm.asr_adapters import (
 )
 
 _AUDIO = b"\x00\x01\x02\x03"
-_DASHSCOPE_BASE = "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+_DASHSCOPE_BASE = "https://example-workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
 
 
 class TestOpenAIAsrAdapter:
@@ -46,7 +46,7 @@ class TestDashScopeAsrAdapter:
             file_name="a.wav", mime_type="audio/wav",
         )
         assert req.url == (
-            "https://token-plan.cn-beijing.maas.aliyuncs.com"
+            "https://example-workspace.cn-beijing.maas.aliyuncs.com"
             "/api/v1/services/aigc/multimodal-generation/generation"
         )
         assert req.files is None

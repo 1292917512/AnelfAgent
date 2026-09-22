@@ -3,7 +3,27 @@
     "config": "Model Config",
     "priorities": "Model Management",
     "subagents": "Sub-agents",
+    "judgment": "Judgment (Jev)",
     "providerKeys": "Provider Keys"
+  },
+  "judgment": {
+    "channelStatus": "Judgment Channel",
+    "channel": {
+      "typesafe": "TypeSafe Native",
+      "llm_fallback": "LLM Fallback",
+      "disabled": "Disabled",
+      "unavailable": "Not Configured"
+    },
+    "keyConfigured": "Key configured",
+    "testChannel": "Test Channel",
+    "testFailed": "Test failed",
+    "sourceTypesafe": "TypeSafe native",
+    "sourceFallback": "LLM fallback",
+    "tokens": "tokens {{input}}/{{output}}",
+    "missing": "No answer for: {{ids}}",
+    "defaultChain": "default chat chain",
+    "timeout": "timeout {{seconds}}s",
+    "advanced": "Advanced ({{count}})"
   },
   "disabled": "Disabled",
   "enableHint": "Enabled (disabled models are excluded from task execution)",

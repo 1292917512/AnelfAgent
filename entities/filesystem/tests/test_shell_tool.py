@@ -113,35 +113,52 @@ class TestRedundantWorkspacePrefixHelper:
 
 
 class TestMemoryKeyNote:
-    """记忆索引键（memory/*.md）误用为 Shell 相对路径的归因提示（纯事实陈述）。"""
+    """便签索引键（memory/*.md）触碰 shell：事前拦截（键误用/便签树直访）+ 事后键空间归因。"""
 
-    def test_note_with_real_file(self, workspace, monkeypatch):
+    @staticmethod
+    def _notes_root(workspace, monkeypatch, files=()):
         from core import path as core_path
 
         data_dir = workspace / "dataroot" / "memory"
         data_dir.mkdir(parents=True)
-        (data_dir / "heartbeat.md").write_text("hb\n", encoding="utf-8")
+        for name in files:
+            (data_dir / name).write_text("hb\n", encoding="utf-8")
         monkeypatch.setitem(core_path._PATH_OVERRIDES, "MEMORY_DIR", str(data_dir))
+        return data_dir
 
-        result = _run("cat memory/heartbeat.md")
-        assert result["ok"] is False
-        notes = result.get("notes", [])
-        assert any("记忆索引键" in n and str(data_dir / "heartbeat.md") in n for n in notes)
+    def test_key_misuse_blocked_before_execution(self, workspace, monkeypatch):
+        """便签树内存在的键在执行前拦截（事故命令 tail -n 50 memory/xxx.md 同款）。"""
+        self._notes_root(workspace, monkeypatch, files=["heartbeat.md"])
+        result = _run("tail -n 50 memory/heartbeat.md")
+        assert result["guard"] == "memory_notes"
+        assert result["cause"] == "param" and result["retryable"] is False
+        assert "read_memory_file" in result["hint"]
+        assert "stdout" not in result  # 未消耗一次执行
+
+    def test_absolute_path_into_notes_root_blocked(self, workspace, monkeypatch):
+        data_dir = self._notes_root(workspace, monkeypatch, files=["heartbeat.md"])
+        result = _run(f"cat {data_dir / 'heartbeat.md'}")
+        assert result["guard"] == "memory_notes"
+
+    def test_background_command_blocked_too(self, workspace, monkeypatch):
+        self._notes_root(workspace, monkeypatch, files=["heartbeat.md"])
+        result = json.loads(
+            tools.run_shell_command("tail memory/heartbeat.md", run_in_background=True)
+        )
+        assert result["guard"] == "memory_notes"
 
     def test_note_without_real_file_still_states_namespace(self, workspace, monkeypatch):
-        from core import path as core_path
-
-        monkeypatch.setitem(core_path._PATH_OVERRIDES, "MEMORY_DIR", str(workspace / "dataroot" / "memory"))
+        self._notes_root(workspace, monkeypatch)
         result = _run("cat memory/gone.md")
         assert result["ok"] is False
-        assert any("记忆索引键" in n for n in result.get("notes", []))
+        assert any("便签索引键" in n for n in result.get("notes", []))
 
     def test_no_note_when_file_exists_in_cwd(self, workspace):
         (workspace / "memory").mkdir()
         (workspace / "memory" / "local.md").write_text("x\n", encoding="utf-8")
         result = _run("cat memory/local.md no_such_file")
         assert result["ok"] is False
-        assert not any("记忆索引键" in n for n in result.get("notes", []))
+        assert not any("便签索引键" in n for n in result.get("notes", []))
 
 
 class TestMissingModuleHint:

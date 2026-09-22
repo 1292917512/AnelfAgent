@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date
 from pathlib import Path
 
@@ -393,3 +394,99 @@ class TestRulesDoc:
         rules_doc.load_rules()
         rules_file.write_text("手工编辑的内容", encoding="utf-8")
         assert rules_doc.load_rules() == "手工编辑的内容"
+
+
+# ==================================================================
+# read_memory_file 窗口分段 / tail 读取 / 全量读取护栏
+# ==================================================================
+
+
+class TestReadMemoryFileWindow:
+    """read_memory_file 工具：窗口分段 / tail 读取 / 全量读取护栏。"""
+
+    @staticmethod
+    def _write(md: Path, name: str, lines: list[str]) -> str:
+        (md / name).write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return f"memory/{name}"
+
+    async def test_full_read_small_file(self, memory_dir: Path) -> None:
+        key = self._write(memory_dir, "a.md", ["l1", "l2", "l3"])
+        result = json.loads(await notes._tool_read_memory_file(key))
+        assert result["content"] == "l1\nl2\nl3\n"
+        assert result["total_lines"] == 3
+        assert result["view"].splitlines()[0] == "1 | l1"
+
+    async def test_tail_lines_returns_newest_with_real_numbers(self, memory_dir: Path) -> None:
+        key = self._write(memory_dir, "a.md", [f"l{i}" for i in range(1, 11)])
+        result = json.loads(await notes._tool_read_memory_file(key, tail_lines=3))
+        assert (result["offset"], result["limit"], result["total_lines"]) == (8, 3, 10)
+        assert result["content"] == "l8\nl9\nl10"
+        assert result["view"].splitlines()[0].strip() == "8 | l8"  # 行号按最大行号宽度右对齐
+
+    async def test_offset_limit_window(self, memory_dir: Path) -> None:
+        key = self._write(memory_dir, "a.md", [f"l{i}" for i in range(1, 11)])
+        result = json.loads(await notes._tool_read_memory_file(key, offset=3, limit=2))
+        assert (result["offset"], result["limit"]) == (3, 2)
+        assert result["content"] == "l3\nl4"
+        assert result["view"].splitlines()[0] == "3 | l3"
+
+    async def test_offset_without_limit_reads_to_end(self, memory_dir: Path) -> None:
+        key = self._write(memory_dir, "a.md", [f"l{i}" for i in range(1, 6)])
+        result = json.loads(await notes._tool_read_memory_file(key, offset=4))
+        assert result["content"] == "l4\nl5"
+
+    async def test_offset_beyond_eof_param_error(self, memory_dir: Path) -> None:
+        key = self._write(memory_dir, "a.md", ["l1"])
+        result = json.loads(await notes._tool_read_memory_file(key, offset=9))
+        assert result["cause"] == "param" and result["total_lines"] == 1
+
+    async def test_tail_exclusive_with_offset(self, memory_dir: Path) -> None:
+        key = self._write(memory_dir, "a.md", ["l1", "l2"])
+        result = json.loads(await notes._tool_read_memory_file(key, offset=1, tail_lines=1))
+        assert result["cause"] == "param"
+
+    async def test_negative_params_rejected(self, memory_dir: Path) -> None:
+        key = self._write(memory_dir, "a.md", ["l1"])
+        result = json.loads(await notes._tool_read_memory_file(key, limit=-1))
+        assert result["cause"] == "param"
+
+    async def test_missing_file_message(self, memory_dir: Path) -> None:
+        result = json.loads(await notes._tool_read_memory_file("memory/none.md"))
+        assert "为空或不存在" in result["message"]
+
+    async def test_oversize_full_read_rejected_with_guidance(
+        self, memory_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        key = self._write(memory_dir, "a.md", [f"l{i}" for i in range(1, 6)])
+        monkeypatch.setattr(notes, "_FULL_READ_MAX_CHARS", 10)
+        result = json.loads(await notes._tool_read_memory_file(key))
+        assert result["cause"] == "param"
+        assert "tail_lines" in result["hint"] and result["total_lines"] == 5
+        # 同文件窗口读取不受全量护栏影响
+        windowed = json.loads(await notes._tool_read_memory_file(key, tail_lines=2))
+        assert windowed["content"] == "l4\nl5"
+
+    async def test_window_line_budget_keeps_start_side(
+        self, memory_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        key = self._write(memory_dir, "a.md", [f"l{i}" for i in range(1, 11)])
+        monkeypatch.setattr(notes, "_WINDOW_MAX_LINES", 3)
+        result = json.loads(await notes._tool_read_memory_file(key, offset=1))
+        assert result["content"] == "l1\nl2\nl3" and "note" in result
+
+    async def test_window_line_budget_tail_keeps_newest(
+        self, memory_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        key = self._write(memory_dir, "a.md", [f"l{i}" for i in range(1, 11)])
+        monkeypatch.setattr(notes, "_WINDOW_MAX_LINES", 3)
+        result = json.loads(await notes._tool_read_memory_file(key, tail_lines=10))
+        assert result["content"] == "l8\nl9\nl10"
+        assert result["offset"] == 8 and "note" in result
+
+    async def test_read_notes_oversize_guided_to_partial(
+        self, memory_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (memory_dir / "memory.md").write_text("x" * 100, encoding="utf-8")
+        monkeypatch.setattr(notes, "_FULL_READ_MAX_CHARS", 10)
+        result = json.loads(await notes.read_notes())
+        assert result["cause"] == "param" and "read_memory_file" in result["hint"]
