@@ -1,82 +1,79 @@
 /**
- * ChatDropZone — 工作区/项目文件拖放区。
+ * ChatDropZone — 工作区/项目文件拖放区（react-dnd drop target）。
  *
- * 把「拖到对话框注入文件」从输入框局部行为扩展为整片对话中栏：
- * 拖拽进入本区域即显示高亮遮罩，放开统一走 attachWorkspaceFile。
- * 数据源兼容两种：文件树 payload（WORKSPACE_FILE_MIME，含 root）与
- * 编辑器/预览拖出的同构 payload；外部文件（FileList）不在本区消费。
+ * 把「拖到对话框注入文件」注册为与文件树同 dragType 的 useDrop target——
+ * react-dnd 的 HTML5 backend 在「没有注册 target 命中」时给禁止光标并
+ * cancel 浏览器默认 drop，所以 DOM drop 监听收不到；注册成 target 后，
+ * react-dnd 在 drop 时把树节点 item 直接交给本组件。
+ * 外部文件（FileList）拖入不在 react-dnd 语义内，仍走 DOM drop → addFiles。
  */
 
-import { useCallback, useRef, useState, type DragEvent, type ReactNode } from "react";
+import { useCallback, type DragEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { FileUp } from "lucide-react";
+import { DndProvider, useDrop } from "react-dnd";
 import { useChatStore } from "@/stores/chat-store";
 import {
-  consumeWorkspaceDragPayload,
-  hasWorkspaceFileDrag,
-} from "./workspace-drag";
+  TREE_NODE_DRAG_TYPE,
+  activeTreeRoot,
+  sharedDndManager,
+  type TreeNodeDragItem,
+} from "./tree-dnd";
 import { cn } from "@/lib/utils";
 
-
-
+/** 与文件树共享 manager 的 DndProvider（useDrop 必须挂在 provider 下） */
 export function ChatDropZone({ children, className }: { children: ReactNode; className?: string }) {
+  return (
+    <DndProvider manager={sharedDndManager}>
+      <ChatDropZoneInner className={className}>{children}</ChatDropZoneInner>
+    </DndProvider>
+  );
+}
+
+function ChatDropZoneInner({ children, className }: { children: ReactNode; className?: string }) {
   const { t } = useTranslation("chat");
-  const [active, setActive] = useState(false);
-  // 进入/离开的嵌套计数（dragenter/dragleave 在子元素间交替触发）
-  const depthRef = useRef(0);
   const attachWorkspaceFile = useChatStore((s) => s.attachWorkspaceFile);
   const attachWorkspaceDir = useChatStore((s) => s.attachWorkspaceDir);
   const addFiles = useChatStore((s) => s.addFiles);
 
-  const onDragEnter = useCallback((e: DragEvent) => {
+  // react-dnd target：树节点（含目录）落进对话区
+  const [{ isOver }, dropRef] = useDrop(() => ({
+    accept: TREE_NODE_DRAG_TYPE,
+    drop: (item: TreeNodeDragItem) => {
+      const root = activeTreeRoot();
+      if (item.data.type === "dir") {
+        attachWorkspaceDir(item.data.path, item.data.name, root);
+      } else {
+        attachWorkspaceFile(item.data.path, item.data.name, root);
+      }
+    },
+    collect: (monitor) => ({ isOver: monitor.isOver({ shallow: true }) }),
+  }), [attachWorkspaceFile, attachWorkspaceDir]);
+
+  // 外部文件（FileList）：DOM drop（react-dnd 不管非树 item 的浏览器默认行为）
+  const onDrop = useCallback((e: DragEvent) => {
     e.preventDefault();
-    if (!hasWorkspaceFileDrag()) return; // 外部文件拖入：可放但不显示「附加文件」遮罩
-    depthRef.current += 1;
-    setActive(true);
-  }, []);
-
-  const onDragLeave = useCallback(() => {
-    depthRef.current = Math.max(0, depthRef.current - 1);
-    if (depthRef.current === 0) setActive(false);
-  }, []);
-
-  // dragover 无条件 preventDefault——drop 只在被 preventDefault 的元素上生效，
-  // 而 hasWorkspaceFileDrag 的模块变量判定与 React 渲染闭包存在时序脱节
-  // （dragstart 原生监听器设 payload 的时机不一定赶得上本次 dragover 的判定）。
-  // 放开时由 consumeWorkspaceDragPayload 分流：有 payload 走工作区引用，
-  // 没有则交给子级（输入框 addFiles 等）处理，不挡路。
+    if (e.dataTransfer.files.length > 0) void addFiles(e.dataTransfer.files);
+  }, [addFiles]);
   const onDragOver = useCallback((e: DragEvent) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = "copy";
   }, []);
 
-  // 对话区唯一的 drop 收口：工作区 payload → 引用附件；外部文件 → 上传附件
-  const onDrop = useCallback((e: DragEvent) => {
-    depthRef.current = 0;
-    setActive(false);
-    e.preventDefault();
-    const payload = consumeWorkspaceDragPayload();
-    if (payload) {
-      if (payload.is_dir) {
-        attachWorkspaceDir(payload.path, payload.name, payload.root);
-      } else {
-        attachWorkspaceFile(payload.path, payload.name, payload.root);
-      }
-      return;
-    }
-    if (e.dataTransfer.files.length > 0) void addFiles(e.dataTransfer.files);
-  }, [attachWorkspaceFile, attachWorkspaceDir, addFiles]);
+  // react-dnd connector 与本地 ref 合并（connector 接收 DOM 节点）
+  const setContainerRef = useCallback((el: HTMLDivElement | null) => {
+    dropRef(el);
+  }, [dropRef]);
 
   return (
     <div
+      ref={setContainerRef}
       className={cn("relative", className)}
-      onDragEnter={onDragEnter}
-      onDragLeave={onDragLeave}
-      onDragOver={onDragOver}
       onDrop={onDrop}
+      onDragOver={onDragOver}
     >
       {children}
-      {active && (
+      {isOver && (
         <div
           aria-hidden
           className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-lg border-2 border-dashed border-accent/60 bg-accent/10"

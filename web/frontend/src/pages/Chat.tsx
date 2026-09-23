@@ -13,7 +13,6 @@ import { ModelSelect } from "@/components/models/ModelSelect";
 import { MessageList } from "./chat/MessageList";
 import { ChatInput } from "./chat/ChatInput";
 import { ChatDropZone } from "./chat/ChatDropZone";
-import { DragDiagBadge } from "./chat/DragDiagBadge";
 import { StatusBar } from "./chat/StatusBar";
 import { ActivityBar } from "./chat/ActivityBar";
 import { Dock, LeftDock } from "./chat/Dock";
@@ -159,7 +158,6 @@ export default function Chat() {
         {!centerHidden && center}
         <Dock />
         <UiCommandHost />
-        <DragDiagBadge />
       </div>
     );
   }
@@ -210,7 +208,6 @@ export default function Chat() {
 
       {/* AI 界面命令宿主 */}
       <UiCommandHost />
-      <DragDiagBadge />
     </div>
   );
 }

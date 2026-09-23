@@ -8,7 +8,6 @@ import { workspaceMediaKind, isPreviewableBinary } from "@/lib/workspace-kind";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { useFileTreeStore } from "./file-tree-store";
 import { fileIcon } from "./file-tree-utils";
-import { dragDataAttrs } from "../workspace-drag";
 
 /** FileTree 向节点行下发的上下文（react-arborist 行渲染器不支持自定义 props） */
 export interface FileTreeContextValue {
@@ -96,7 +95,6 @@ export function FileTreeNode(props: NodeRendererProps<WorkspaceNode>) {
     <div
       ref={dragHandle}
       style={style}
-      {...dragDataAttrs({ path: data.path, name: data.name, root, is_dir: isDir })}
       className={cn(
         "flex items-center gap-1 px-1.5 rounded text-xs select-none transition-colors cursor-pointer",
         node.isSelected || isActive ? "bg-accent-subtle text-accent" : "text-foreground hover:bg-hover",
