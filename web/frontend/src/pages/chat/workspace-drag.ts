@@ -29,9 +29,10 @@ export function consumeWorkspaceDragPayload(): WorkspaceDragPayload | null {
   return p;
 }
 
-/** 拖拽中（dragenter/dragover）判定：types 含工作区 MIME 或 payload 已在手 */
-export function hasWorkspaceFileDrag(dt: DataTransfer | null): boolean {
-  if (_payload !== null) return true;
-  if (!dt) return false;
-  return Array.from(dt.types).includes(WORKSPACE_FILE_MIME);
+/** 拖拽中（dragenter/dragover）判定：payload 在手即认为是工作区文件树拖拽。
+ * 不再依赖 dataTransfer.types——真人拖放下 types 内容因浏览器/React 委托而异，
+ * payload 模块变量才是唯一可靠信号。
+ */
+export function hasWorkspaceFileDrag(_dt?: DataTransfer | null): boolean {
+  return _payload !== null;
 }

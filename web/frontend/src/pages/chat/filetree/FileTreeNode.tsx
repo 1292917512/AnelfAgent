@@ -64,7 +64,7 @@ export function FileTreeRow({ innerRef, attrs, children }: RowRendererProps<Work
 
 /** 文件树节点行（react-arborist 虚拟化渲染）：图标 / 重命名编辑 / 选择高亮 / 拖放 */
 export function FileTreeNode(props: NodeRendererProps<WorkspaceNode>) {
-  const { node, style, dragHandle } = props;
+  const { node, style } = props;
   const { root, onContextMenu } = useFileTreeContext();
   const isMobile = useIsMobile();
   const openFiles = useWorkbenchStore((s) => s.openFiles);
@@ -92,9 +92,24 @@ export function FileTreeNode(props: NodeRendererProps<WorkspaceNode>) {
     }
   };
 
+  // 原生 DOM dragstart：绕开 React 事件系统与 arborist 在树容器层对 dragstart
+  // 的拦截——React 的 onDragStart 在真人拖放下收不到，原生监听器稳定触发
+  const rowRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = rowRef.current;
+    if (!el) return;
+    const onNativeDragStart = (e: globalThis.DragEvent) => {
+      setWorkspaceDragPayload({ path: data.path, name: data.name, root, is_dir: isDir });
+      e.dataTransfer?.setData(WORKSPACE_FILE_MIME, "1");
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = "copyMove";
+    };
+    el.addEventListener("dragstart", onNativeDragStart);
+    return () => el.removeEventListener("dragstart", onNativeDragStart);
+  }, [data.path, data.name, root, isDir]);
+
   return (
     <div
-      ref={dragHandle}
+      ref={rowRef}
       draggable
       style={style}
       className={cn(
@@ -110,14 +125,6 @@ export function FileTreeNode(props: NodeRendererProps<WorkspaceNode>) {
         e.stopPropagation();
         node.select();
         onContextMenu(e, data);
-      }}
-      onDragStart={(e) => {
-        // 拖拽注入对话：payload 写模块变量（真人拖放下 React 事件委托 +
-        // arborist 预处理会让 dataTransfer.setData 时机不确定），落下端直读；
-        // dataTransfer 仅作「来自工作区文件树」的拖拽标记
-        setWorkspaceDragPayload({ path: data.path, name: data.name, root, is_dir: isDir });
-        e.dataTransfer.setData(WORKSPACE_FILE_MIME, "1");
-        e.dataTransfer.effectAllowed = "copyMove";
       }}
       title={data.path}
     >

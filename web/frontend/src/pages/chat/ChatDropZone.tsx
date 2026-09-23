@@ -28,7 +28,7 @@ export function ChatDropZone({ children, className }: { children: ReactNode; cla
   const attachWorkspaceDir = useChatStore((s) => s.attachWorkspaceDir);
 
   const onDragEnter = useCallback((e: DragEvent) => {
-    if (!hasWorkspaceFileDrag(e.dataTransfer)) return;
+    if (!hasWorkspaceFileDrag()) return;
     e.preventDefault();
     depthRef.current += 1;
     setActive(true);
@@ -40,7 +40,7 @@ export function ChatDropZone({ children, className }: { children: ReactNode; cla
   }, []);
 
   const onDragOver = useCallback((e: DragEvent) => {
-    if (hasWorkspaceFileDrag(e.dataTransfer)) {
+    if (hasWorkspaceFileDrag()) {
       e.preventDefault();
       e.dataTransfer.dropEffect = "copy";
     }
