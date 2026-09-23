@@ -18,8 +18,11 @@ function MentionChip({ mention, index }: { mention: FileMention; index: number }
       onClick={(e) => {
         e.preventDefault();
         e.stopPropagation();
-        openFile(mention.path);
-        setFileTreeFocus(mention.path);
+        // 链接里的 project: 前缀解析所属根（工作区无前缀）
+        const isProject = mention.path.startsWith("project:");
+        const realPath = isProject ? mention.path.slice("project:".length) : mention.path;
+        openFile(realPath, isProject ? "project" : "workspace");
+        setFileTreeFocus(realPath);
       }}
       className="mx-0.5 inline-flex items-center gap-1 rounded border border-border bg-elevated px-1.5 py-0 align-baseline font-mono text-[12px] text-accent hover:bg-accent/10 transition-colors"
     >

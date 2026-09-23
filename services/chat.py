@@ -95,6 +95,14 @@ def classify_file_type(ext: str) -> str:
     return "file"
 
 
+def _file_ref_descs(resolved_files: List[tuple]) -> str:
+    """内联附件引用标记（与结构化 media_path 同源）：dir→[dir:绝对路径]、
+    file→[file:绝对路径]，AI 照抄路径即可调用 read_file/list_directory。"""
+    return " ".join(
+        f"[{'dir' if is_dir else 'file'}:{fp}]" for fp, is_dir in resolved_files
+    )
+
+
 def resolve_media_path(file_path: str) -> str:
     """解析媒体路径：统一三根（project:/dir: 前缀 → 对应根沙箱 / 绝对与已存在
     路径 / 工作区相对路径）。项目根与工作区、目录与文件行为一致——都存在
@@ -232,10 +240,17 @@ class ChatService:
                     image_contents.append(ImageContent(data=img))
 
         media_segments: Optional[List[Any]] = None
+        resolved_files: List[tuple] = []  # (绝对路径, 是否目录)
         if files:
             media_segments = []
-            for file_path in files:
-                file_path = resolve_media_path(file_path)
+            for raw_path in files:
+                is_dir = raw_path.startswith("dir:") or (
+                    raw_path.startswith("project:dir:"))
+                file_path = resolve_media_path(raw_path)
+                if not is_dir:
+                    import os as _os
+                    is_dir = _os.path.isdir(file_path)
+                resolved_files.append((file_path, is_dir))
                 ext = Path(file_path).suffix.lower()
                 ftype = classify_file_type(ext)
                 seg_type_map = {
@@ -258,10 +273,10 @@ class ChatService:
                     media_segments.append(seg)
 
         text = message
-        if files:
-            file_descs = [f"[{classify_file_type(Path(fp).suffix.lower())}:{fp}]" for fp in files]
-            if file_descs:
-                text = text + "\n" + " ".join(file_descs) if text else " ".join(file_descs)
+        if resolved_files:
+            # 内联标记与结构化通道同源（绝对路径），AI 照抄路径即可调用工具
+            file_descs = _file_ref_descs(resolved_files)
+            text = text + "\n" + file_descs if text else file_descs
 
         # 工作区上下文注入（打开文件/选区/标签页 → 消息前缀块；历史清洗剥离）
         from entities.ui.tools import get_ui_state_snapshot

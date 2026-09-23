@@ -258,6 +258,16 @@ media_file_id_tag = Tag(
     tag_name_desc="平台文件 ID，可据此按需下载到本地后再分析",
 )
 
+# 附件引用标签（用户拖入对话的工作区/项目文件与目录锚点）
+file_ref_tag = Tag(
+    tag_name="file",
+    tag_name_desc="文件附件引用，格式 [file:绝对路径]；用 read_file 读取内容",
+)
+dir_ref_tag = Tag(
+    tag_name="dir",
+    tag_name_desc="目录附件引用，格式 [dir:绝对路径]；用 list_directory(recursive=True) 展开结构",
+)
+
 # 交互标签（描述即定义，见上方上下文标签块的说明）
 at_uid_tag = Tag(
     tag_name="at_uid",

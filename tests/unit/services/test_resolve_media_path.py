@@ -55,3 +55,17 @@ class TestResolveMediaPath:
         )
         monkeypatch.setattr(os.path, "exists", lambda p: p == "/abs/workspace/notes/a.md")
         assert resolve_media_path("notes/a.md") == "/abs/workspace/notes/a.md"
+
+
+class TestFileRefDescs:
+    def test_dir_and_file_markers(self):
+        from services.chat import _file_ref_descs
+        descs = _file_ref_descs([
+            ("/abs/project/src", True),
+            ("/abs/workspace/notes/a.md", False),
+        ])
+        assert descs == "[dir:/abs/project/src] [file:/abs/workspace/notes/a.md]"
+
+    def test_file_only(self):
+        from services.chat import _file_ref_descs
+        assert _file_ref_descs([("/abs/x.png", False)]) == "[file:/abs/x.png]"

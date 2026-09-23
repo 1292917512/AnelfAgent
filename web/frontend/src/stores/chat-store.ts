@@ -455,12 +455,10 @@ export const useChatStore = create<ChatState>((set, get) => {
       if (text.trim()) displayParts.push(text.trim());
       for (const pf of pendingFiles) {
         if (pf.root) {
-          // 工作区/项目引用：根标签 + 名称（气泡侧 mention 渲染为可点击 chip）；
-          // 目录带「目录」语义，AI 经 list_directory 展开
-          const tag = pf.root === "project" ? "项目" : "工作区";
-          displayParts.push(pf.type === "dir"
-            ? `[${tag}目录:${pf.file.name}]`
-            : `[${tag}:${pf.file.name}]`);
+          // 工作区/项目引用：mention 链接形态（气泡经 MentionMarkdown 渲染为可点击 chip；
+          // project 前缀供 workbench.openFile 解析所属根）
+          const refPath = pf.root === "project" ? `project:${pf.path}` : pf.path;
+          displayParts.push(`[${pf.file.name}](./${refPath})`);
         } else if (pf.type === "image" && pf.preview) {
           displayParts.push(`![image](${pf.preview})`);
         } else {
