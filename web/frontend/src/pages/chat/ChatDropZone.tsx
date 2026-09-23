@@ -26,10 +26,11 @@ export function ChatDropZone({ children, className }: { children: ReactNode; cla
   const depthRef = useRef(0);
   const attachWorkspaceFile = useChatStore((s) => s.attachWorkspaceFile);
   const attachWorkspaceDir = useChatStore((s) => s.attachWorkspaceDir);
+  const addFiles = useChatStore((s) => s.addFiles);
 
   const onDragEnter = useCallback((e: DragEvent) => {
-    if (!hasWorkspaceFileDrag()) return;
     e.preventDefault();
+    if (!hasWorkspaceFileDrag()) return; // 外部文件拖入：可放但不显示「附加文件」遮罩
     depthRef.current += 1;
     setActive(true);
   }, []);
@@ -49,22 +50,22 @@ export function ChatDropZone({ children, className }: { children: ReactNode; cla
     e.dataTransfer.dropEffect = "copy";
   }, []);
 
+  // 对话区唯一的 drop 收口：工作区 payload → 引用附件；外部文件 → 上传附件
   const onDrop = useCallback((e: DragEvent) => {
     depthRef.current = 0;
     setActive(false);
+    e.preventDefault();
     const payload = consumeWorkspaceDragPayload();
-    if (!payload) {
-      // 非工作区拖拽（外部文件等）：不拦截，让事件落到输入框的 addFiles
+    if (payload) {
+      if (payload.is_dir) {
+        attachWorkspaceDir(payload.path, payload.name, payload.root);
+      } else {
+        attachWorkspaceFile(payload.path, payload.name, payload.root);
+      }
       return;
     }
-    e.preventDefault();
-    e.stopPropagation();
-    if (payload.is_dir) {
-      attachWorkspaceDir(payload.path, payload.name, payload.root);
-    } else {
-      attachWorkspaceFile(payload.path, payload.name, payload.root);
-    }
-  }, [attachWorkspaceFile, attachWorkspaceDir]);
+    if (e.dataTransfer.files.length > 0) void addFiles(e.dataTransfer.files);
+  }, [attachWorkspaceFile, attachWorkspaceDir, addFiles]);
 
   return (
     <div

@@ -3,7 +3,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { consumeWorkspaceDragPayload } from "./workspace-drag";
+import { peekWorkspaceDragPayload } from "./workspace-drag";
 
 interface DragDiagState {
   lastDragStart: string;
@@ -22,7 +22,7 @@ export function DragDiagBadge() {
     };
     const onDrop = (e: Event) => {
       const de = e as DragEvent;
-      const p = consumeWorkspaceDragPayload();
+      const p = peekWorkspaceDragPayload(); // 只看不拿——消费权在 ChatDropZone
       const t = (de.target as HTMLElement)?.getAttribute?.("title") || (de.target as HTMLElement)?.tagName || "?";
       setState((s) => ({
         ...s,

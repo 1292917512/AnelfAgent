@@ -8,7 +8,7 @@ import { workspaceMediaKind, isPreviewableBinary } from "@/lib/workspace-kind";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { useFileTreeStore } from "./file-tree-store";
 import { fileIcon } from "./file-tree-utils";
-import { WORKSPACE_FILE_MIME, setWorkspaceDragPayload } from "../workspace-drag";
+import { dragDataAttrs } from "../workspace-drag";
 
 /** FileTree 向节点行下发的上下文（react-arborist 行渲染器不支持自定义 props） */
 export interface FileTreeContextValue {
@@ -64,7 +64,7 @@ export function FileTreeRow({ innerRef, attrs, children }: RowRendererProps<Work
 
 /** 文件树节点行（react-arborist 虚拟化渲染）：图标 / 重命名编辑 / 选择高亮 / 拖放 */
 export function FileTreeNode(props: NodeRendererProps<WorkspaceNode>) {
-  const { node, style } = props;
+  const { node, style, dragHandle } = props;
   const { root, onContextMenu } = useFileTreeContext();
   const isMobile = useIsMobile();
   const openFiles = useWorkbenchStore((s) => s.openFiles);
@@ -92,26 +92,11 @@ export function FileTreeNode(props: NodeRendererProps<WorkspaceNode>) {
     }
   };
 
-  // 原生 DOM dragstart：绕开 React 事件系统与 arborist 在树容器层对 dragstart
-  // 的拦截——React 的 onDragStart 在真人拖放下收不到，原生监听器稳定触发
-  const rowRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const el = rowRef.current;
-    if (!el) return;
-    const onNativeDragStart = (e: globalThis.DragEvent) => {
-      setWorkspaceDragPayload({ path: data.path, name: data.name, root, is_dir: isDir });
-      e.dataTransfer?.setData(WORKSPACE_FILE_MIME, "1");
-      if (e.dataTransfer) e.dataTransfer.effectAllowed = "copyMove";
-    };
-    el.addEventListener("dragstart", onNativeDragStart);
-    return () => el.removeEventListener("dragstart", onNativeDragStart);
-  }, [data.path, data.name, root, isDir]);
-
   return (
     <div
-      ref={rowRef}
-      draggable
+      ref={dragHandle}
       style={style}
+      {...dragDataAttrs({ path: data.path, name: data.name, root, is_dir: isDir })}
       className={cn(
         "flex items-center gap-1 px-1.5 rounded text-xs select-none transition-colors cursor-pointer",
         node.isSelected || isActive ? "bg-accent-subtle text-accent" : "text-foreground hover:bg-hover",

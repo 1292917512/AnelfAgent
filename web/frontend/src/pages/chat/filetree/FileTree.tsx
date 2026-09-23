@@ -10,6 +10,7 @@ import { useFileTreeStore } from "./file-tree-store";
 import { treeChildren } from "./file-tree-utils";
 import { useElementSize } from "./use-element-size";
 import { FileTreeContext, FileTreeNode, FileTreeRow } from "./FileTreeNode";
+import { initWorkspaceDragSource } from "../workspace-drag";
 import { FileTreeDragPreview } from "./FileTreeDragPreview";
 import { FileTreeContextMenu, type MenuState } from "./FileTreeContextMenu";
 
@@ -25,6 +26,8 @@ interface Props {
 export function FileTree({ root, onUpload }: Props) {
   const { t } = useTranslation("workbench");
   const isMobile = useIsMobile();
+  // 注册「拖到对话区」的 document 级 dragstart 监听（幂等；树内移动仍由 react-dnd 处理）
+  useEffect(() => { initWorkspaceDragSource(); }, []);
   const treeRef = useRef<TreeApi<WorkspaceNode>>(null);
   const { ref: boxRef, size } = useElementSize<HTMLDivElement>();
   const tree = useFileTreeStore((s) => s.trees[root]);

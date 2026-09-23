@@ -6,7 +6,6 @@ import { useChatStore } from "@/stores/chat-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import type { PendingFile, WorkspaceSearchHit } from "@/lib/types";
 import { RealtimeCallPanel, RealtimeCallProvider, RealtimeCallToggle } from "./RealtimeCallBar";
-import { consumeWorkspaceDragPayload } from "./workspace-drag";
 import { detectMention, useMentionSearch } from "./mention/useMention";
 import { MentionPanel } from "./mention/MentionPanel";
 import { mentionMarkdown } from "./mention/mentionMarkdown";
@@ -92,8 +91,6 @@ export function ChatInput() {
   const sending = useChatStore((s) => s.buckets[s.activeChatId]?.sending ?? false);
   const addFiles = useChatStore((s) => s.addFiles);
   const removeFile = useChatStore((s) => s.removeFile);
-  const attachWorkspaceFile = useChatStore((s) => s.attachWorkspaceFile);
-  const attachWorkspaceDir = useChatStore((s) => s.attachWorkspaceDir);
   const send = useChatStore((s) => s.send);
   const interrupt = useChatStore((s) => s.interrupt);
 
@@ -176,19 +173,6 @@ export function ChatInput() {
     }
   };
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    // 工作区文件树拖入（ChatDropZone 统一托管，此处仅兜底直投输入框的场景）：
-    // payload 走模块变量（真人拖放下 dataTransfer.setData 时机不确定）
-    const payload = consumeWorkspaceDragPayload();
-    if (payload) {
-      if (payload.is_dir) attachWorkspaceDir(payload.path, payload.name, payload.root);
-      else attachWorkspaceFile(payload.path, payload.name, payload.root);
-      return;
-    }
-    addFiles(e.dataTransfer.files);
-  }, [addFiles, attachWorkspaceFile, attachWorkspaceDir]);
-
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     const items = e.clipboardData.items;
     const files: File[] = [];
@@ -236,11 +220,7 @@ export function ChatInput() {
       <RealtimeCallPanel />
 
       {/* 输入卡片 */}
-      <div
-        className="relative border border-input rounded-lg bg-card focus-within:border-ring transition-colors"
-        onDrop={handleDrop}
-        onDragOver={(e) => e.preventDefault()}
-      >
+      <div className="relative border border-input rounded-lg bg-card focus-within:border-ring transition-colors">
         {mention && (
           <MentionPanel
             items={mentionItems}
