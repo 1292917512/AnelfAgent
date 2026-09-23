@@ -1,0 +1,51 @@
+{
+  "title": "Workflows",
+  "subtitle": "Recoverable multi-step orchestration: resume, revision import, gated retries",
+  "start": {
+    "title": "Start workflow (JSON spec)",
+    "resumeOf": "Revision source run_id (optional: completed steps with identical input are imported)",
+    "submit": "Start"
+  },
+  "list": {
+    "title": "Recent runs",
+    "loading": "Loading…",
+    "empty": "No workflow runs yet",
+    "elapsed": "running {sec}s"
+  },
+  "detail": {
+    "loading": "Loading run detail…",
+    "empty": "Select a run to view details",
+    "steps": "Steps",
+    "rounds": "{count} rounds",
+    "noSteps": "No step records yet",
+    "timeline": "Event timeline",
+    "noEvents": "No events yet"
+  },
+  "status": {
+    "running": "Running",
+    "completed": "Completed",
+    "failed": "Failed",
+    "stopped": "Stopped"
+  },
+  "stopReason": {
+    "user": "stopped by user",
+    "interrupted": "interrupted"
+  },
+  "nodeStatus": {
+    "running": "running",
+    "completed": "completed",
+    "failed": "failed"
+  },
+  "action": {
+    "stop": "Stop",
+    "resume": "Resume",
+    "revise": "Revise & restart"
+  },
+  "toast": {
+    "started": "Workflow \"{name}\" started",
+    "stopped": "Stop signal sent",
+    "resumed": "Workflow resumed",
+    "revisionHint": "Revision source {id} filled — edit the spec and start to import completed steps",
+    "requestFailed": "Request failed"
+  }
+}

@@ -8,7 +8,7 @@
 [![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
 [![uv](https://img.shields.io/badge/package%20manager-uv-DE5FE9.svg)](https://github.com/astral-sh/uv)
 
-AnelfAgent 是面向个人与团队的开源 AI 智能体运行时：内置自主决策引擎、混合语义记忆、技能自学习、子代理调度、MCP 工具桥接与多平台通道适配，覆盖文本、图像、语音、视频、音乐多模态生成，并提供现代化 WebUI 完成配置、对话与运维全生命周期管理。
+AnelfAgent 是面向个人与团队的开源 AI 智能体运行时：内置自主决策引擎、混合语义记忆、技能自学习、子代理调度、可恢复工作流、MCP 工具桥接与多平台通道适配，覆盖文本、图像、语音、视频、音乐多模态生成，并提供现代化 WebUI 完成配置、对话与运维全生命周期管理。
 
 > 本仓库为 **0.3 稳定基线**：架构与能力已趋于定型，适合自托管部署与二次扩展。
 
@@ -142,6 +142,13 @@ Embedding + FTS5 + 标签匹配 + 时间衰减的混合评分；记忆类型覆�
 
 - **技能闭环**：对话后经 LLM 钩子面后台评审 → `workspace/skills/SKILL.md` 沉淀 → 语义匹配注入 → 心跳策展（降级 / 归档）
 - **子代理**：`delegate_task` 支持并行 fan-out、后台模式与独立迭代预算，按档案选模；`follow_up_agent` 以完整 transcript 无损续跑；进度流 / 用量归集 / Web 面板全链路可观测
+
+### 工作流（可恢复编排）
+
+- **声明式 DAG**：`workflow_start` 以 JSON 规格（ask 子代理步 / tool 工具步 + depends_on）启动后台工作流，依赖结果自动注入下游、层内并发
+- **journal 断点恢复**：每步准入即落账（SQLite），停止/崩溃后 `workflow_resume` 续跑——已完成步骤经输入指纹校验直接复用（不重付费）；`resume_of` 修订重启导入父运行一致成果，规格分歧自然级联重跑
+- **门控重跑**：tool 步可带 gate（结果字段判定期望值），不满足时先委托子代理按失败上下文修复再重跑（有界轮次）——「模型生成、代码把关」
+- **全链路可观测**：步骤轮次 / 事件时间线 / Web「工作流」页（启动 / 停止 / 续跑 / 修订）
 
 ### LLM 钩子面
 
@@ -303,6 +310,7 @@ agent.planning → agent.memory
 | `agent/memory/` | 混合语义记忆（`store/` 存储层）+ 便签 + 可选 Cognee |
 | `agent/skills/` | 技能存储 / 匹配 / 后台评审 / 策展 |
 | `agent/delegation/` | 子代理调度（档案 / 并行 fan-out / 续跑 / 运行日志） |
+| `agent/workflow/` | 工作流引擎（journal 断点恢复 / 修订导入 / 门控重跑的 DAG 编排） |
 | `agent/hooks_llm/` | LLM 钩子面（事件驱动的异步 LLM 工作注册原语；评审/任务事件/实体钩子并行拉起） |
 | `agent/approval/` | 统一权限与批准门 |
 | `agent/security/` | 会话令牌 / 威胁扫描 |

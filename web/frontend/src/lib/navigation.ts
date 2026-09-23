@@ -20,6 +20,7 @@ export const NAVIGATION: NavItem[] = [
   { path: "/personas", label: "personas", icon: "UserCircle", group: "group_core" },
   { path: "/memory", label: "memory", icon: "Brain", group: "group_core" },
   { path: "/tasks", label: "tasks", icon: "ListChecks", group: "group_core" },
+  { path: "/workflow", label: "workflow", icon: "Waypoints", group: "group_core" },
   { path: "/heartbeat", label: "heartbeat", icon: "HeartPulse", group: "group_core" },
   { path: "/vision", label: "vision", icon: "Eye", group: "group_core" },
   { path: "/sound", label: "sound", icon: "AudioLines", group: "group_core" },

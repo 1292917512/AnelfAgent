@@ -84,6 +84,10 @@ def wire_runtime(
     auto_capture_port.set(mind.auto_capture_pipeline)
     skill_tools_port.set(SkillToolDeps(mind.skill_store, mind.skill_matcher))
 
+    # 工作流引擎（journal 化 DAG 编排；workflow_* 工具组消费）
+    from agent.workflow.tools import workflow_engine_port
+    workflow_engine_port.set(mind.workflow_engine)
+
     # LLM 钩子面运行时（组合根实例化后分发；事件装配由调用方在施绑后 start）
     from agent.hooks_llm import hooks_llm_runtime_port
     hooks_llm_runtime_port.set(hooks_llm_runtime)

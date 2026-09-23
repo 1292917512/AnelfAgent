@@ -444,6 +444,11 @@ def create_bootstrap() -> FlowMachine:
             "hooks_llm", hooks_llm_runtime,
             cleanup=hooks_llm_runtime.drain,
         )
+        # 工作流 journal 连接随关停回收（run 终态已落 SQLite，无 drain 语义）
+        Lifecycle.register(
+            "workflow_engine", mind.workflow_engine,
+            cleanup=mind.workflow_engine.aclose,
+        )
 
         log(
             f"AgentRuntime 已组装: chat={llm_data['llm'].config.name} "
@@ -703,6 +708,9 @@ def create_bootstrap() -> FlowMachine:
             recovered = await recover_interrupted_replies(mind, crash_context)
             # 委托崩溃恢复同范式：账本未闭合条目 → 中断元消息（独立于回复检查点）
             await recover_interrupted_delegations(mind)
+            # 工作流崩溃收敛同范式：running 残留 → stopped(interrupted)，可续跑
+            from agent.workflow.recovery import recover_interrupted_workflows
+            await recover_interrupted_workflows(mind)
             # 恢复流程已执行（无论是否有检查点要处理），崩溃上下文不再保留：
             # 提前标记会让恢复失败时上下文永久丢失
             if crash_context:

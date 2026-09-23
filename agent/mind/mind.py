@@ -288,6 +288,13 @@ class Mind:
         count = activate_group("delegation", "子代理 - 复杂任务拆分委托与并行执行")
         log(f"🤖 子代理工具已注册 ({count} 个)", tag="委托")
 
+        # 工作流引擎（journal 化 DAG 编排；workflow_* 工具经 wiring 端口消费本实例）
+        import agent.workflow.tools  # noqa: F401  （deferred 工具注册）
+        from agent.workflow.engine import WorkflowEngine
+        self.workflow_engine = WorkflowEngine(self)
+        count = activate_group("workflow", "工作流 - 可恢复的多步骤编排（断点续跑/门控重跑）")
+        log(f"🧩 工作流工具已注册 ({count} 个)", tag="工作流")
+
         # 记忆自动捕获管线（心跳 tick / 关停兜底 / 压缩前抢跑共用单例）
         from agent.memory.auto_capture import AutoCapturePipeline
         self.auto_capture_pipeline = AutoCapturePipeline(self)

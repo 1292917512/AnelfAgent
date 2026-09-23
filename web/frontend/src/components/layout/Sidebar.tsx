@@ -36,6 +36,7 @@ import {
   Tags,
   UserCircle,
   Workflow,
+  Waypoints,
   Wrench,
   type LucideIcon,
 } from "lucide-react";
@@ -56,6 +57,7 @@ export const ICON_MAP: Record<string, LucideIcon> = {
   HeartPulse,
   ListChecks,
   Workflow,
+  Waypoints,
   Tags,
   GraduationCap,
   SlidersHorizontal,

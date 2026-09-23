@@ -35,6 +35,7 @@ from web.routers.tags import router as tags_router
 from web.routers.thinking import router as thinking_router
 from web.routers.tools import router as tools_router
 from web.routers.vision import router as vision_router
+from web.routers.workflow import router as workflow_router
 from web.routers.workspace import router as workspace_router
 
 api_router = APIRouter(prefix="/api")
@@ -73,3 +74,4 @@ api_router.include_router(stickers_router)
 api_router.include_router(database_router)
 api_router.include_router(delegation_router)
 api_router.include_router(retrieval_router)
+api_router.include_router(workflow_router)

@@ -1,0 +1,51 @@
+{
+  "title": "工作流",
+  "subtitle": "可恢复的多步骤编排：断点续跑、修订导入、门控重跑",
+  "start": {
+    "title": "启动工作流（JSON 规格）",
+    "resumeOf": "修订源 run_id（可选：输入一致的已完成步骤直接导入）",
+    "submit": "启动"
+  },
+  "list": {
+    "title": "最近运行",
+    "loading": "加载中…",
+    "empty": "暂无工作流运行",
+    "elapsed": "已运行 {sec} 秒"
+  },
+  "detail": {
+    "loading": "加载运行详情…",
+    "empty": "选择左侧运行查看详情",
+    "steps": "步骤",
+    "rounds": "{count} 轮",
+    "noSteps": "尚无步骤记录",
+    "timeline": "事件时间线",
+    "noEvents": "暂无事件"
+  },
+  "status": {
+    "running": "运行中",
+    "completed": "已完成",
+    "failed": "失败",
+    "stopped": "已停止"
+  },
+  "stopReason": {
+    "user": "手动停止",
+    "interrupted": "进程中断"
+  },
+  "nodeStatus": {
+    "running": "执行中",
+    "completed": "完成",
+    "failed": "失败"
+  },
+  "action": {
+    "stop": "停止",
+    "resume": "续跑",
+    "revise": "修订重启"
+  },
+  "toast": {
+    "started": "工作流「{name}」已启动",
+    "stopped": "停止信号已发出",
+    "resumed": "工作流已续跑",
+    "revisionHint": "已填入修订源 {id}，编辑规格后启动即可导入已完成步骤",
+    "requestFailed": "请求失败"
+  }
+}

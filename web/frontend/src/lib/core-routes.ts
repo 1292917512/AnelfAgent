@@ -38,6 +38,7 @@ export const CORE_ROUTES: CoreRoute[] = [
   { path: "tasks", page: "Tasks" },
   { path: "heartbeat", page: "Heartbeat" },
   { path: "thinking", page: "Thinking" },
+  { path: "workflow", page: "Workflow" },
   { path: "settings", page: "Settings" },
 ];
 

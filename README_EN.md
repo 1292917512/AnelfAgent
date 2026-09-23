@@ -8,7 +8,7 @@
 [![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
 [![uv](https://img.shields.io/badge/package%20manager-uv-DE5FE9.svg)](https://github.com/astral-sh/uv)
 
-AnelfAgent is an open-source AI agent runtime for individuals and teams. It ships with an autonomous decision engine, hybrid semantic memory, self-learning skills, sub-agent delegation, MCP tool bridging, and multi-platform channel adapters. It covers multimodal generation across text, image, speech, video, and music, and provides a modern WebUI for the full lifecycle of configuration, conversation, and operations.
+AnelfAgent is an open-source AI agent runtime for individuals and teams. It ships with an autonomous decision engine, hybrid semantic memory, self-learning skills, sub-agent delegation, recoverable workflows, MCP tool bridging, and multi-platform channel adapters. It covers multimodal generation across text, image, speech, video, and music, and provides a modern WebUI for the full lifecycle of configuration, conversation, and operations.
 
 > This repository is the **0.3 stable baseline**: the architecture and capabilities are well established, suitable for self-hosted deployment and downstream extension.
 
@@ -142,6 +142,13 @@ Optionally enable **Cognee** knowledge-graph projection and federated recall (`c
 
 - **Skill loop**: post-conversation background review via the LLM hooks plane → distilled into `workspace/skills/SKILL.md` → semantic-match injection → heartbeat curation (downgrade / archive)
 - **Sub-agents**: `delegate_task` supports parallel fan-out, background mode and independent iteration budgets with profile-based model selection; `follow_up_agent` resumes losslessly from the full transcript; progress streams / usage attribution / a Web panel provide end-to-end observability
+
+### Workflows (recoverable orchestration)
+
+- **Declarative DAG**: `workflow_start` launches a background workflow from a JSON spec (ask sub-agent steps / tool steps + depends_on); upstream results are injected into downstream context, layers run concurrently
+- **Journal-based recovery**: every step is admitted to a SQLite journal before dispatch; after a stop or crash, `workflow_resume` replays it — completed steps are reused verbatim after input-fingerprint verification (no re-spend); `resume_of` starts a revised run importing the parent's matching results, with divergence cascading into re-runs
+- **Gated retries**: tool steps may carry a gate (expected value on a result field); on failure a sub-agent repairs against the failure context and the step re-runs within bounded rounds — "model generates, code gates"
+- **Full observability**: step rounds / event timeline / Web "Workflows" page (start / stop / resume / revise)
 
 ### LLM Hooks Plane
 
@@ -303,6 +310,7 @@ Enforced mechanically by import-linter (`uv run lint-imports`, CI red/green gate
 | `agent/memory/` | Hybrid semantic memory (`store/` layer) + notes + optional Cognee |
 | `agent/skills/` | Skill storage / matching / background review / curation |
 | `agent/delegation/` | Sub-agent scheduling (profiles / parallel fan-out / resume / run journal) |
+| `agent/workflow/` | Workflow engine (journal-backed DAG: resume, revision import, gated retries) |
 | `agent/hooks_llm/` | LLM hooks plane (event-driven async LLM work registration primitive; review / task events / entity hooks launched in parallel) |
 | `agent/approval/` | Unified permissions and approval gates |
 | `agent/security/` | Session tokens / threat scanning |

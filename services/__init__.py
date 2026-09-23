@@ -24,6 +24,7 @@ from services.tag import TagService
 from services.task import TaskService
 from services.tool import ToolService
 from services.ui import UiService
+from services.workflow import WorkflowService
 from services.workspace import WorkspaceService
 
 __all__ = [
@@ -55,4 +56,5 @@ __all__ = [
     "ToolService",
     "UiService",
     "WorkspaceService",
+    "WorkflowService",
 ]
