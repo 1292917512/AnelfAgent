@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { FileText, Image as ImageIcon, Loader2, Music, Paperclip, Send, Square, Video, X } from "lucide-react";
+import { FileText, Folder, Image as ImageIcon, Loader2, Music, Paperclip, Send, Square, Video, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui";
 import { useChatStore } from "@/stores/chat-store";
@@ -28,7 +28,8 @@ function PendingFileItem({ pf, onRemove }: { pf: PendingFile; onRemove: () => vo
   const { t } = useTranslation("chat");
   // 工作区/项目引用：chip 卡片（一眼看清引用了哪个根的哪个文件）
   if (pf.root) {
-    const Icon = FILE_TYPE_ICONS[pf.type] || FileText;
+    const isDir = pf.type === "dir";
+    const Icon = isDir ? Folder : (FILE_TYPE_ICONS[pf.type] || FileText);
     return (
       <div
         title={pf.path ?? pf.file.name}
@@ -39,6 +40,7 @@ function PendingFileItem({ pf, onRemove }: { pf: PendingFile; onRemove: () => vo
           <div className="text-xs text-foreground truncate max-w-[160px]">{pf.file.name}</div>
           <div className="text-[10px] text-muted">
             {pf.root === "project" ? t("rootProject") : t("rootWorkspace")}
+            {isDir ? ` · ${t("rootDir")}` : ""}
           </div>
         </div>
         <button
@@ -91,6 +93,7 @@ export function ChatInput() {
   const addFiles = useChatStore((s) => s.addFiles);
   const removeFile = useChatStore((s) => s.removeFile);
   const attachWorkspaceFile = useChatStore((s) => s.attachWorkspaceFile);
+  const attachWorkspaceDir = useChatStore((s) => s.attachWorkspaceDir);
   const send = useChatStore((s) => s.send);
   const interrupt = useChatStore((s) => s.interrupt);
 
@@ -179,17 +182,19 @@ export function ChatInput() {
     const wsData = e.dataTransfer.getData(WORKSPACE_FILE_MIME);
     if (wsData) {
       try {
-        const { path, name, root } = JSON.parse(wsData) as {
+        const { path, name, root, is_dir } = JSON.parse(wsData) as {
           path: string;
           name: string;
           root?: "workspace" | "project";
+          is_dir?: boolean;
         };
-        attachWorkspaceFile(path, name, root ?? "workspace");
+        if (is_dir) attachWorkspaceDir(path, name, root ?? "workspace");
+        else attachWorkspaceFile(path, name, root ?? "workspace");
         return;
       } catch { /* 数据异常时按普通文件处理 */ }
     }
     addFiles(e.dataTransfer.files);
-  }, [addFiles, attachWorkspaceFile]);
+  }, [addFiles, attachWorkspaceFile, attachWorkspaceDir]);
 
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     const items = e.clipboardData.items;

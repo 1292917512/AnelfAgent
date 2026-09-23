@@ -96,30 +96,29 @@ def classify_file_type(ext: str) -> str:
 
 
 def resolve_media_path(file_path: str) -> str:
-    """解析媒体路径：统一三根（project: 前缀 → 项目根沙箱 / 绝对与已存在路径 /
-    工作区相对路径）。项目根与工作区行为一致——都存在沙箱解析，不存在裸猜。"""
+    """解析媒体路径：统一三根（project:/dir: 前缀 → 对应根沙箱 / 绝对与已存在
+    路径 / 工作区相对路径）。项目根与工作区、目录与文件行为一致——都存在
+    沙箱解析，不存在裸猜。dir: 只是语义标记（该路径是目录锚点），解析同文件。
+    """
     if not file_path or file_path.startswith(("http://", "https://", "/api/")):
         return file_path
+    raw = file_path
+    root = "workspace"
     if file_path.startswith("project:"):
-        rel = file_path[len("project:"):]
-        try:
-            from services.workspace import WorkspaceService
-            resolved = WorkspaceService().resolve(rel, "project")
-            if os.path.exists(resolved):
-                return resolved
-        except Exception:
-            log("resolve_media_path 项目根解析失败已忽略", "DEBUG")
-        return file_path
+        root = "project"
+        file_path = file_path[len("project:"):]
+    if file_path.startswith("dir:"):  # 目录锚点语义标记（解析同文件，剥掉）
+        file_path = file_path[len("dir:"):]
     if os.path.isabs(file_path) or os.path.exists(file_path):
         return file_path
     try:
-        from services.filesystem import safe_workspace_path
-        resolved = safe_workspace_path(file_path)
+        from services.workspace import WorkspaceService
+        resolved = WorkspaceService().resolve(file_path, root)
         if os.path.exists(resolved):
             return resolved
     except Exception:
-        log("resolve_media_path 异常已忽略", "DEBUG")
-    return file_path
+        log("resolve_media_path 解析失败已忽略", "DEBUG")
+    return raw
 
 
 class ChatService:

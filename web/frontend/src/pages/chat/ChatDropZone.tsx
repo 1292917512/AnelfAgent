@@ -26,6 +26,7 @@ export function ChatDropZone({ children, className }: { children: ReactNode; cla
   // 进入/离开的嵌套计数（dragenter/dragleave 在子元素间交替触发）
   const depthRef = useRef(0);
   const attachWorkspaceFile = useChatStore((s) => s.attachWorkspaceFile);
+  const attachWorkspaceDir = useChatStore((s) => s.attachWorkspaceDir);
 
   const onDragEnter = useCallback((e: DragEvent) => {
     if (!hasWorkspaceFileDrag(e.dataTransfer)) return;
@@ -54,14 +55,19 @@ export function ChatDropZone({ children, className }: { children: ReactNode; cla
     e.preventDefault();
     e.stopPropagation();
     try {
-      const { path, name, root } = JSON.parse(wsData) as {
+      const { path, name, root, is_dir } = JSON.parse(wsData) as {
         path: string;
         name: string;
         root?: "workspace" | "project";
+        is_dir?: boolean;
       };
-      attachWorkspaceFile(path, name, root ?? "workspace");
+      if (is_dir) {
+        attachWorkspaceDir(path, name, root ?? "workspace");
+      } else {
+        attachWorkspaceFile(path, name, root ?? "workspace");
+      }
     } catch { /* 数据异常忽略 */ }
-  }, [attachWorkspaceFile]);
+  }, [attachWorkspaceFile, attachWorkspaceDir]);
 
   return (
     <div

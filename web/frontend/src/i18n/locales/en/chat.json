@@ -86,5 +86,6 @@
   "dropToAttach": "Drop to attach file",
   "rootWorkspace": "Workspace",
   "rootProject": "Project",
-  "removeAttachment": "Remove attachment"
+  "removeAttachment": "Remove attachment",
+  "rootDir": "Folder"
 }

@@ -86,5 +86,6 @@
   "dropToAttach": "松开以附加文件",
   "rootWorkspace": "工作区",
   "rootProject": "项目",
-  "removeAttachment": "移除附件"
+  "removeAttachment": "移除附件",
+  "rootDir": "目录"
 }

@@ -111,12 +111,11 @@ export function FileTreeNode(props: NodeRendererProps<WorkspaceNode>) {
         onContextMenu(e, data);
       }}
       onDragStart={(e) => {
-        // 拖拽注入对话：文件（工作区/项目根均可用；目录不可拖入对话，
-        // 目录拖动保留给树内移动）——与库内移动拖拽共用同一次拖动，数据类型互不干扰
-        if (isDir) return;
+        // 拖拽注入对话：文件与目录（工作区/项目根均可）都可用；
+        // 目录拖动保留给树内移动拖拽共用同一次拖动，数据类型互不干扰
         e.dataTransfer.setData(
           WORKSPACE_FILE_MIME,
-          JSON.stringify({ path: data.path, name: data.name, root }),
+          JSON.stringify({ path: data.path, name: data.name, root, is_dir: isDir }),
         );
         e.dataTransfer.effectAllowed = "copyMove";
       }}

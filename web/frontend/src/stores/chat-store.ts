@@ -71,7 +71,10 @@ interface ChatState {
   clearMessages: () => void;
   addFiles: (files: FileList | null) => Promise<void>;
   attachWorkspaceFile: (path: string, name: string, root?: "workspace" | "project") => void;
+  attachWorkspaceDir: (path: string, name: string, root?: "workspace" | "project") => void;
   removeFile: (idx: number) => void;
+  /** 撤回一条排队消息并回灌草稿（仅本地撤回展示，后端若已受理则结果仍会到达） */
+  recallQueued: (cid: string) => string | null;
   send: (text: string, userName: string) => Promise<boolean>;
   interrupt: () => Promise<void>;
 }
@@ -403,6 +406,21 @@ export const useChatStore = create<ChatState>((set, get) => {
       }));
     },
 
+    // 目录引用：不读内容，作为目录锚点附加（AI 经 list_directory 展开）
+    attachWorkspaceDir: (path, name, root = "workspace") => {
+      const chatId = get().activeChatId;
+      const stub = new File([], name);
+      updateBucket(chatId, (b) => ({
+        pendingFiles: [...b.pendingFiles, {
+          file: stub,
+          type: "dir",
+          uploading: false,
+          path,
+          root,
+        }],
+      }));
+    },
+
     removeFile: (idx) => {
       const chatId = get().activeChatId;
       updateBucket(chatId, (b) => {
@@ -411,6 +429,17 @@ export const useChatStore = create<ChatState>((set, get) => {
         if (f?.preview?.startsWith("blob:")) URL.revokeObjectURL(f.preview);
         return { pendingFiles: b.pendingFiles.filter((_, i) => i !== idx) };
       });
+    },
+
+    recallQueued: (cid) => {
+      const chatId = get().activeChatId;
+      const bucket = get().buckets[chatId];
+      const target = bucket?.messages.find((m) => m.cid === cid && m.queued);
+      if (!target) return null;
+      updateBucket(chatId, (b) => ({
+        messages: b.messages.filter((m) => m.cid !== cid),
+      }));
+      return target.content;
     },
 
     send: async (text, userName) => {
@@ -426,9 +455,12 @@ export const useChatStore = create<ChatState>((set, get) => {
       if (text.trim()) displayParts.push(text.trim());
       for (const pf of pendingFiles) {
         if (pf.root) {
-          // 工作区/项目引用：根标签 + 文件名（气泡侧 mention 渲染为可点击 chip）
+          // 工作区/项目引用：根标签 + 名称（气泡侧 mention 渲染为可点击 chip）；
+          // 目录带「目录」语义，AI 经 list_directory 展开
           const tag = pf.root === "project" ? "项目" : "工作区";
-          displayParts.push(`[${tag}:${pf.file.name}]`);
+          displayParts.push(pf.type === "dir"
+            ? `[${tag}目录:${pf.file.name}]`
+            : `[${tag}:${pf.file.name}]`);
         } else if (pf.type === "image" && pf.preview) {
           displayParts.push(`![image](${pf.preview})`);
         } else {

@@ -2,8 +2,6 @@
 
 import os
 
-import pytest
-
 from services.chat import resolve_media_path
 
 
@@ -33,10 +31,27 @@ class TestResolveMediaPath:
         f.write_text("x")
         assert resolve_media_path(str(f)) == str(f)
 
+    def test_dir_prefix_parses_as_workspace(self, monkeypatch):
+        monkeypatch.setattr(
+            "services.workspace.WorkspaceService.resolve",
+            lambda self, path, root: f"/abs/workspace/{path}" if root == "workspace" else "/nonexist",
+        )
+        monkeypatch.setattr(os.path, "exists", lambda p: p == "/abs/workspace/docs")
+        assert resolve_media_path("dir:docs") == "/abs/workspace/docs"
+
+    def test_project_dir_prefix_parses(self, monkeypatch):
+        resolved = "/abs/project/src"
+        monkeypatch.setattr(
+            "services.workspace.WorkspaceService.resolve",
+            lambda self, path, root: resolved if (path == "src" and root == "project") else "/nonexist",
+        )
+        monkeypatch.setattr(os.path, "exists", lambda p: p == resolved)
+        assert resolve_media_path("project:dir:src") == resolved
+
     def test_workspace_relative_resolves(self, monkeypatch):
         monkeypatch.setattr(
-            "services.filesystem.safe_workspace_path",
-            lambda rel: "/abs/workspace/" + rel,
+            "services.workspace.WorkspaceService.resolve",
+            lambda self, path, root: f"/abs/workspace/{path}" if root == "workspace" else "/nonexist",
         )
         monkeypatch.setattr(os.path, "exists", lambda p: p == "/abs/workspace/notes/a.md")
         assert resolve_media_path("notes/a.md") == "/abs/workspace/notes/a.md"
