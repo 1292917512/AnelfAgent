@@ -25,6 +25,8 @@ export function StreamingArea() {
   const readonlyRuns = streaming.tools.filter((t) => READONLY_TOOLS.has(t.name));
   const otherTools = streaming.tools.filter((t) => !READONLY_TOOLS.has(t.name));
   const collapseReadonly = readonlyRuns.length >= 3 && !expanded;
+  // 流式文本截到最后一个换行（无换行则整段暂不渲染，等成句）
+  const streamingText = streaming.text.slice(0, streaming.text.lastIndexOf("\n") + 1);
 
   return (
     <div className="flex justify-start">
@@ -77,7 +79,10 @@ export function StreamingArea() {
             )}
             {streaming.text && (
               <>
-                <Markdown content={streaming.text} />
+                {/* 流式只渲染到最后一个换行：半行 markdown（未成对的 ` 等）可能随
+                    后续字符改变语义，渲染它会造成闪烁/错排（Codex markdown_stream 的
+                    commit_complete_source 思路）；剩余半行由下一个 delta 补齐 */}
+                <Markdown content={streamingText} />
                 <span className="inline-block w-1.5 h-4 bg-primary/70 animate-pulse-subtle align-text-bottom" />
               </>
             )}

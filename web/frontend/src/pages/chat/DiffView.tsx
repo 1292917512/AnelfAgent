@@ -7,8 +7,56 @@
  * - `+/-` 符号列与内容列定宽对齐，内容换行时续行保持 gutter 缩进。
  */
 import { useState } from "react";
-import { FileDiff, ChevronDown, ChevronRight } from "lucide-react";
+import { FileDiff, ChevronDown, ChevronRight, ArrowRight, FileWarning } from "lucide-react";
 import { cn } from "@/lib/utils";
+
+/** 单个文件改动行头信息（rename/二进制/普通编辑的统一入口） */
+interface DiffEntryMeta {
+  path: string;
+  move_from?: string;
+  binary?: boolean;
+}
+
+function FileHeader({ meta, additions, removals, open, onToggle }: {
+  meta: DiffEntryMeta;
+  additions: number;
+  removals: number;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const isRename = Boolean(meta.move_from);
+  const fromName = isRename ? (meta.move_from!.split("/").pop() ?? meta.move_from!) : null;
+  const toName = meta.path.split("/").pop() ?? meta.path;
+  return (
+    <button
+      onClick={onToggle}
+      className="flex items-center gap-2 w-full px-2.5 py-1.5 text-left hover:bg-muted/60 transition-colors"
+    >
+      {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+      {meta.binary
+        ? <FileWarning className="h-3.5 w-3.5 text-amber-500" />
+        : <FileDiff className="h-3.5 w-3.5 text-primary" />}
+      {isRename ? (
+        <span className="font-mono text-foreground/80 truncate flex items-center gap-1">
+          <span className="text-muted">{fromName}</span>
+          <ArrowRight className="h-3 w-3 text-muted shrink-0" />
+          <span>{toName}</span>
+        </span>
+      ) : (
+        <span className="font-mono text-foreground/80 truncate">{toName}</span>
+      )}
+      {!isRename && !meta.binary && (
+        <>
+          <span className="shrink-0 text-green-600">+{additions}</span>
+          <span className="shrink-0 text-red-500">-{removals}</span>
+        </>
+      )}
+      {meta.binary && (
+        <span className="shrink-0 text-amber-600 dark:text-amber-400 text-[11px]">binary</span>
+      )}
+    </button>
+  );
+}
 
 interface DiffLine {
   kind: "add" | "del" | "context" | "hunk";
@@ -94,29 +142,35 @@ export function DiffView({
   diff,
   additions,
   removals,
+  move_from,
+  binary,
 }: {
   path: string;
   diff: string;
   additions: number;
   removals: number;
+  move_from?: string;
+  binary?: boolean;
 }) {
   const [open, setOpen] = useState(true);
   const lines = parseUnifiedDiff(diff);
-  const fileName = path.split("/").pop() ?? path;
 
   return (
     <div className="rounded border border-border/60 bg-muted/40 text-xs overflow-hidden">
-      <button
-        onClick={() => setOpen(!open)}
-        className="flex items-center gap-2 w-full px-2.5 py-1.5 text-left hover:bg-muted/60 transition-colors"
-      >
-        {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-        <FileDiff className="h-3.5 w-3.5 text-primary" />
-        <span className="font-mono text-foreground/80 truncate">{fileName}</span>
-        <span className="shrink-0 text-green-600">+{additions}</span>
-        <span className="shrink-0 text-red-500">-{removals}</span>
-      </button>
-      {open && (
+      <FileHeader
+        meta={{ path, move_from, binary }}
+        additions={additions}
+        removals={removals}
+        open={open}
+        onToggle={() => setOpen(!open)}
+      />
+      {open && binary && (
+        <div className="border-t border-border/40 px-3 py-2 text-muted text-[11px]">
+          {/* 二进制改动：无 unified diff，占位说明（Codex 此处反而没做） */}
+          二进制文件已改动（无法按行展示差异）
+        </div>
+      )}
+      {open && !binary && lines.length > 0 && (
         <div className="border-t border-border/40 overflow-x-auto max-h-64 overflow-y-auto">
           <table className="w-full font-mono border-collapse">
             <tbody>

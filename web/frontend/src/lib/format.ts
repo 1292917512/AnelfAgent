@@ -27,3 +27,23 @@ export function formatTokensCompact(n: number): string {
   }
   return String(n);
 }
+
+/** 分级时间戳（Codex separators 移植）：今天只显示时分、今年省略年份、跨年完整。
+ * 输入为 epoch 秒；输出为本地化紧凑字符串（避免每天翻历史都重复「2026-09-23」）。
+ */
+export function formatRelativeTimestamp(epochSec: number, now: Date = new Date()): string {
+  const d = new Date(epochSec * 1000);
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const hm = `${hh}:${mm}`;
+
+  const startOfDay = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate());
+  const sameDay = startOfDay(d).getTime() === startOfDay(now).getTime();
+  if (sameDay) return hm;
+
+  const sameYear = d.getFullYear() === now.getFullYear();
+  const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const mon = monthNames[d.getMonth()];
+  if (sameYear) return `${mon} ${d.getDate()} ${hm}`;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${hm}`;
+}

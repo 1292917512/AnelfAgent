@@ -1,8 +1,10 @@
 import { memo, useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import { Loader2, Mic, Volume2 } from "lucide-react";
+import { Loader2, Mic, Undo2, Volume2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { formatRelativeTimestamp } from "@/lib/format";
 import { useChatStore } from "@/stores/chat-store";
+import { useWorkbenchStore } from "@/stores/workbench-store";
 import { usePlanStore } from "@/stores/plan-store";
 import { useDelegationStore } from "@/stores/delegation-store";
 import { MediaBubble } from "./render/MediaBubble";
@@ -27,7 +29,15 @@ type TimelineEntry =
 /** 单条消息气泡（memo：流式 delta 更新时历史消息行不重渲染） */
 const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMessage }) {
   const { t } = useTranslation("chat");
+  const recallQueued = useChatStore((s) => s.recallQueued);
+  const setDraft = useWorkbenchStore((s) => s.setDraft);
   const isUser = msg.role === "user";
+
+  const onRecall = () => {
+    if (!msg.cid) return;
+    const content = recallQueued(msg.cid);
+    if (content != null) setDraft(content);
+  };
 
   // 结构化消息：工具执行摘要卡片 / 系统提示细条（居中，不占气泡位）。
   // kind 与 summary 由后端历史清洗返回（摘要缺结构化条目时退居系统细条）
@@ -60,7 +70,18 @@ const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMessage }) {
             )}
           >
             {msg.queued && (
-              <div className="text-[10px] text-muted mb-1">{t("queued")}</div>
+              <div className="flex items-center gap-2 text-[10px] text-muted mb-1">
+                <span>{t("queued")}</span>
+                <button
+                  type="button"
+                  onClick={onRecall}
+                  className="inline-flex items-center gap-0.5 text-accent hover:underline"
+                  title={t("recallToEdit")}
+                >
+                  <Undo2 size={9} />
+                  {t("recall")}
+                </button>
+              </div>
             )}
             {msg.voice && (
               <div className="flex items-center gap-1 text-[10px] text-muted mb-1">
@@ -84,15 +105,16 @@ const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMessage }) {
             )}
           </div>
         )}
-        {msg.timestamp && (
+        {(msg.timestamp || msg.ts) && (
           <div
             className={cn(
               "text-[11px] text-muted mt-0.5 px-1 transition-opacity",
               // 时间戳 hover 浮现：默认淡显，悬停/聚焦该行时加深
               "opacity-60 group-hover/msg:opacity-100 group-focus-within/msg:opacity-100",
             )}
+            title={msg.timestamp}
           >
-            {msg.timestamp}
+            {msg.ts ? formatRelativeTimestamp(msg.ts) : msg.timestamp}
           </div>
         )}
       </div>

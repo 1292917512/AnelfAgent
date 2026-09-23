@@ -49,7 +49,14 @@ function ChangeRow({ entry }: { entry: ChatStreamingDiff }) {
       </button>
       {open && (
         <div className="border-t border-border/40">
-          <DiffView path={entry.path} diff={entry.diff} additions={entry.additions} removals={entry.removals} />
+          <DiffView
+            path={entry.path}
+            diff={entry.diff}
+            additions={entry.additions}
+            removals={entry.removals}
+            move_from={entry.move_from}
+            binary={entry.binary}
+          />
         </div>
       )}
     </div>

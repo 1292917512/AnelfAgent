@@ -77,6 +77,10 @@ export interface ChatStreamingDiff {
   diff: string;
   additions: number;
   removals: number;
+  /** rename/move 的源路径（A → B 形态；普通编辑缺省） */
+  move_from?: string;
+  /** 二进制文件改动（无 unified diff，显示占位卡） */
+  binary?: boolean;
 }
 
 export interface ChatStreaming {
@@ -199,6 +203,8 @@ export interface SseFileDiffEvent extends SseEventBase {
   diff: string;
   additions: number;
   removals: number;
+  move_from?: string;
+  binary?: boolean;
 }
 
 export type SseContextUsageEvent = ContextUsage;

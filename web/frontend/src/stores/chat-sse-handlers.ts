@@ -322,6 +322,8 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
         diff: data.diff,
         additions: data.additions,
         removals: data.removals,
+        move_from: data.move_from,
+        binary: data.binary,
       };
       // 聚合进改动集 store（消息时间线的「本轮改动」数据源）+ 编辑器联动刷新信号
       if (turnId) useChangesStore.getState().recordDiff(turnId, entry);

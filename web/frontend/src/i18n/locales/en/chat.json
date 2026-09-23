@@ -87,5 +87,7 @@
   "rootWorkspace": "Workspace",
   "rootProject": "Project",
   "removeAttachment": "Remove attachment",
-  "rootDir": "Folder"
+  "rootDir": "Folder",
+  "recall": "Recall",
+  "recallToEdit": "Recall and edit"
 }

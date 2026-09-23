@@ -529,12 +529,14 @@ def _emit_file_diff(fp: str, old_content: str, new_content: str,
         from core.stream_events import EVENT_FILE_DIFF
         from entities._sdk import get_current_scope
         diff = edit_utils.unified_diff(os.path.basename(fp), old_content, new_content)
+        from entities.filesystem.scan import looks_binary
         payload = {
             "scope": get_current_scope(),
             "path": fp,
             "diff": diff,
             "additions": additions,
             "removals": removals,
+            "binary": looks_binary(fp),
         }
         try:
             loop = asyncio.get_running_loop()
@@ -549,6 +551,37 @@ def _emit_file_diff(fp: str, old_content: str, new_content: str,
                     lambda: asyncio.ensure_future(event_bus.emit(EVENT_FILE_DIFF, payload)))
     except Exception:
         pass  # 展示事件失败不影响编辑主流程
+
+
+def _emit_rename_diff(src: str, dst: str) -> None:
+    """rename 的 diff 事件（A → B 语义，无增删行；前端按 rename 形态渲染）。"""
+    try:
+        import asyncio
+
+        from core.event_bus import event_bus
+        from core.stream_events import EVENT_FILE_DIFF
+        from entities._sdk import get_current_scope
+        payload = {
+            "scope": get_current_scope(),
+            "path": dst,
+            "move_from": src,
+            "diff": "",
+            "additions": 0,
+            "removals": 0,
+            "binary": False,
+        }
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(event_bus.emit(EVENT_FILE_DIFF, payload))
+        except RuntimeError:
+            from entities._sdk import get_background_registry
+            registry = get_background_registry()
+            loop = getattr(registry, "_loop", None) if registry else None
+            if loop and loop.is_running():
+                loop.call_soon_threadsafe(
+                    lambda: asyncio.ensure_future(event_bus.emit(EVENT_FILE_DIFF, payload)))
+    except Exception:
+        pass
 
 
 def _shell_write_check_enabled() -> bool:
@@ -744,6 +777,8 @@ def move_file(src: str, dst: str) -> str:
                               retryable=False)
         os.makedirs(os.path.dirname(dst_fp) or ".", exist_ok=True)
         shutil.move(src_fp, dst_fp)
+        # rename 也以 diff 事件呈现（A → B 形态，无增删行），改动集面板可回看
+        _emit_rename_diff(src_fp, dst_fp)
         return json.dumps({"ok": True, "src": src_fp, "dst": dst_fp,
                            "location": _location_of(dst_fp)}, ensure_ascii=False)
     except Exception as e:

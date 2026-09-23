@@ -87,5 +87,7 @@
   "rootWorkspace": "工作区",
   "rootProject": "项目",
   "removeAttachment": "移除附件",
-  "rootDir": "目录"
+  "rootDir": "目录",
+  "recall": "撤回",
+  "recallToEdit": "撤回并重新编辑"
 }
