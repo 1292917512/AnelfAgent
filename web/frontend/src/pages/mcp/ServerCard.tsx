@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Loader2, MoonStar, Pencil, Pin, Power, Trash2 } from "lucide-react";
+import { KeyRound, Loader2, MoonStar, Pencil, Pin, Power, Trash2 } from "lucide-react";
 import { apiErrorMessage, mcpApi } from "@/lib/api";
 import type { MCPServer } from "@/lib/types";
 import { StatusDot } from "@/components/common/StatusDot";
@@ -15,10 +15,32 @@ interface ServerCardProps {
   onDelete: (server: MCPServer) => void;
 }
 
-/** 单个 MCP 服务器卡片：状态、操作（连接/断开、编辑、删除）、工具列表 */
+/** 单个 MCP 服务器卡片：状态、操作（连接/断开、OAuth 授权、编辑、删除）、工具列表 */
 export function ServerCard({ server, oauth, onEdit, onDelete }: ServerCardProps) {
   const { t } = useTranslation("mcp");
   const queryClient = useQueryClient();
+
+  const authorizeMutation = useMutation({
+    mutationFn: () => mcpApi.oauthAuthorize(server.name).then((r) => r.data),
+    onSuccess: (data) => {
+      if (data.success && data.url) {
+        window.open(data.url, "_blank", "noreferrer");
+        toast.success(data.message || t("oauthStarted"));
+      } else {
+        toast.error(data.message || t("toast.requestFailed"));
+      }
+    },
+    onError: (err) => {
+      toast.error(apiErrorMessage(err, t("toast.requestFailed")));
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["mcpOauthStatus"] });
+      queryClient.invalidateQueries({ queryKey: ["mcpServers"] });
+    },
+  });
+
+  const oauthCapable = server.transport !== "stdio";
+  const showAuthorize = oauthCapable && !oauth?.authorized && !oauth?.pending_url;
 
   const toggleMutation = useMutation({
     mutationFn: () => mcpApi.toggle(server.name).then((r) => r.data),
@@ -122,6 +144,20 @@ export function ServerCard({ server, oauth, onEdit, onDelete }: ServerCardProps)
         </div>
 
         <div className="flex items-center gap-1 shrink-0">
+          {showAuthorize && (
+            <button
+              onClick={() => authorizeMutation.mutate()}
+              disabled={authorizeMutation.isPending}
+              title={t("oauthAuthorizeHint")}
+              className="p-1.5 rounded text-muted hover:text-accent transition-colors disabled:cursor-wait"
+            >
+              {authorizeMutation.isPending ? (
+                <Loader2 size={16} className="animate-spin text-warn" />
+              ) : (
+                <KeyRound size={16} />
+              )}
+            </button>
+          )}
           <button
             onClick={() => stayAwakeMutation.mutate(!server.stay_awake)}
             disabled={stayAwakeMutation.isPending}

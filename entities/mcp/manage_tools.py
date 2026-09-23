@@ -188,7 +188,19 @@ def register_mcp_tools() -> None:
         name="mcp_auth_status",
         func=_tool_mcp_auth_status,
         description="查询 MCP server 的 OAuth 授权状态：待授权链接（需发给用户打开完成授权）、"
-        "是否已有凭据。连接需要授权的 server 前先查询。",
+        "是否已有凭据、refresh token 与过期时间。连接需要授权的 server 前先查询。",
+        group="mcp_manage",
+        params=[
+            ToolParam(name="server_name", description="MCP 服务器名称", type="string", required=True),
+        ],
+        source="mcp", tags=["core"],
+    )
+
+    EntityRegistry.register_tool(
+        name="mcp_auth_start",
+        func=_tool_mcp_auth_start,
+        description="主动发起 MCP server 的 OAuth 授权：生成授权链接并返回，请把链接发给用户"
+        "在浏览器完成授权；授权完成后服务自动连接。适合连接卡在待授权状态时主动触发。",
         group="mcp_manage",
         params=[
             ToolParam(name="server_name", description="MCP 服务器名称", type="string", required=True),
@@ -486,17 +498,24 @@ async def _tool_mcp_auth_status(server_name: str) -> str:
     """查询 OAuth 授权状态（凭据存在性 + 待授权链接）。"""
     import asyncio
 
-    from entities.mcp.oauth import has_credentials, pending_auth
+    from entities.mcp.oauth import credential_snapshot, pending_auth
 
     pending = await asyncio.to_thread(pending_auth, server_name)
     entry = pending.get(server_name) or {}
-    return _safe_json({
-        "server": server_name,
-        "authorized": await asyncio.to_thread(has_credentials, server_name),
-        "pending_url": entry.get("url", ""),
-        "hint": "把 pending_url 发给用户，请其在浏览器中打开完成授权；授权完成后服务会自动继续连接"
-                if entry.get("url") else "",
-    })
+    snapshot = await asyncio.to_thread(credential_snapshot, server_name)
+    payload = {"server": server_name, **snapshot, "pending_url": entry.get("url", "")}
+    if entry.get("url"):
+        payload["hint"] = "把 pending_url 发给用户，请其在浏览器中打开完成授权；授权完成后服务会自动继续连接"
+    return _safe_json(payload)
+
+
+@mcp_tool_call(require_bridge=True)
+async def _tool_mcp_auth_start(server_name: str, bridge: MCPBridge) -> str:
+    """主动发起 OAuth 授权（返回授权链接，回调在后台等待）。"""
+    import asyncio
+
+    result = await asyncio.to_thread(bridge.authorize_server, server_name)
+    return json.dumps(result, ensure_ascii=False)
 
 
 @mcp_tool_call(require_bridge=False)

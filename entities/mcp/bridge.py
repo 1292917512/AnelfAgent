@@ -227,6 +227,61 @@ class MCPBridge:
             self._cleanup_server_entities(name)
             self._set_last_error(name, "")
 
+    def authorize_server(self, name: str) -> Dict[str, Any]:
+        """主动发起 OAuth 授权（同步返回授权 URL，回调等待在后台完成）。
+
+        已有新鲜待授权登记时直接复用其 URL（单一在飞授权事务，避免并发
+        事务互相覆盖 pending 链接）；授权完成后台按启用状态自动重连。
+        """
+        from entities.mcp import oauth as mcp_oauth
+
+        with self._lock:
+            srv = next((s for s in self.config.servers if s.name == name), None)
+        if srv is None:
+            return {"success": False, "message": f"服务器 '{name}' 不存在"}
+        if not mcp_oauth.oauth_eligible(srv):
+            return {"success": False, "message": f"服务器 '{name}' 不适用 OAuth（stdio 传输或已禁用）"}
+
+        pending = mcp_oauth.pending_auth(name).get(name)
+        if pending:
+            return {"success": True, "url": pending["url"],
+                    "message": "授权已在进行中，请打开链接完成授权"}
+
+        try:
+            session = self._run_coro(mcp_oauth.prepare_authorization(srv), timeout=45)
+        except Exception as exc:
+            detail = extract_exception_detail(exc)
+            self._set_last_error(name, f"OAuth 授权发起失败: {detail}")
+            return {"success": False, "message": f"OAuth 授权发起失败: {detail}"}
+
+        # 回调等待放后台（用户在浏览器操作，分钟级）；授权成功后重连
+        self._loop.call_soon_threadsafe(self._spawn_auth_completion, session, name)
+        return {"success": True, "url": session.authorize_url,
+                "message": "授权链接已生成，请在浏览器完成授权；完成后将自动连接"}
+
+    def _spawn_auth_completion(self, session: Any, name: str) -> None:
+        import asyncio
+        asyncio.ensure_future(self._finish_authorization(session, name))
+
+    async def _finish_authorization(self, session: Any, name: str) -> None:
+        """授权事务收尾：成功后断开持旧凭据的连接并重连（在 bridge 循环内执行）。"""
+        from entities.mcp import oauth as mcp_oauth
+
+        if not await mcp_oauth.finish_authorization(session):
+            return
+        try:
+            with self._lock:
+                srv = next((s for s in self.config.servers if s.name == name), None)
+                connected = name in self._sessions or name in self._stop_events
+            if srv is None or not srv.enabled:
+                return
+            if connected:
+                await self._signal_stop(name)
+                self._cleanup_server_entities(name)
+            await self._async_connect_server_by_name(name)
+        except Exception as exc:
+            log(f"MCP '{name}' OAuth 授权后重连失败: {exc}", "WARNING")
+
     def reload_config(self) -> Dict[str, Any]:
         """热重载配置：重读磁盘配置，diff 增删改，自动连接/断开变更的 server。
 

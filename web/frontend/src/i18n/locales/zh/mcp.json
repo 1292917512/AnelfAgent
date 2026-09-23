@@ -72,5 +72,8 @@
   "enabling": "启用中...",
   "disabling": "禁用中...",
   "enable": "启用（并尝试连接）",
-  "disable": "禁用（重启后不再自动连接）"
+  "disable": "禁用（重启后不再自动连接）",
+  "oauthAuthorize": "发起授权",
+  "oauthAuthorizeHint": "生成 OAuth 授权链接并在浏览器打开完成",
+  "oauthStarted": "授权链接已生成，请在浏览器完成授权；完成后将自动连接"
 }

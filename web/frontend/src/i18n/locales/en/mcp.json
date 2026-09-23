@@ -72,5 +72,8 @@
   "enabling": "Enabling...",
   "disabling": "Disabling...",
   "enable": "Enable (and connect)",
-  "disable": "Disable (no auto-connect on restart)"
+  "disable": "Disable (no auto-connect on restart)",
+  "oauthAuthorize": "Authorize",
+  "oauthAuthorizeHint": "Generate an OAuth authorization link and complete it in the browser",
+  "oauthStarted": "Authorization link generated — complete it in the browser; the server will reconnect automatically"
 }

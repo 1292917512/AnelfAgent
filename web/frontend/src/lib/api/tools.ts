@@ -82,7 +82,24 @@ export const mcpApi = {
   tools: (name: string) =>
     api.get<MCPToolInfo[]>(`/mcp/${encodeURIComponent(name)}/tools`),
   oauthStatus: () =>
-    api.get<Record<string, { authorized: boolean; pending_url: string }>>("/mcp/oauth-status"),
+    api.get<
+      Record<
+        string,
+        {
+          authorized: boolean;
+          has_refresh_token?: boolean;
+          static_client?: boolean;
+          expires_at?: number | null;
+          pending_url: string;
+        }
+      >
+    >("/mcp/oauth-status"),
+  oauthAuthorize: (name: string) =>
+    api.post<{ success: boolean; url?: string; message?: string }>(
+      `/mcp/${encodeURIComponent(name)}/oauth`,
+      null,
+      { timeout: 60000 },
+    ),
   oauthLogout: (name: string) =>
     api.delete<{ server: string; removed: boolean }>(`/mcp/${encodeURIComponent(name)}/oauth`),
 };

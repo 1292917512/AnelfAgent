@@ -177,28 +177,33 @@ class MCPService(MCPServerStore):
     # ------------------------------------------------------------------
 
     async def oauth_status(self, name: str = "") -> Dict[str, Any]:
-        """OAuth 状态：单 server 或全部（凭据存在性 + 待授权链接）。"""
+        """OAuth 状态：单 server 或全部（凭据快照 + 待授权链接）。"""
         import asyncio as _asyncio
 
-        from entities.mcp.oauth import has_credentials, pending_auth
+        from entities.mcp.oauth import credential_snapshot, pending_auth
 
         pending = await _asyncio.to_thread(pending_auth)
         if name:
             entry = pending.get(name) or {}
-            return {
-                "server": name,
-                "authorized": await _asyncio.to_thread(has_credentials, name),
-                "pending_url": entry.get("url", ""),
-            }
+            snapshot = await _asyncio.to_thread(credential_snapshot, name)
+            return {"server": name, **snapshot, "pending_url": entry.get("url", "")}
         result: Dict[str, Any] = {}
         for srv in self.list_servers():
             srv_name = srv.get("name", "")
+            if self._infer_transport(srv) == "stdio":
+                continue  # stdio 无 OAuth 面
             entry = pending.get(srv_name) or {}
-            result[srv_name] = {
-                "authorized": await _asyncio.to_thread(has_credentials, srv_name),
-                "pending_url": entry.get("url", ""),
-            }
+            snapshot = await _asyncio.to_thread(credential_snapshot, srv_name)
+            result[srv_name] = {**snapshot, "pending_url": entry.get("url", "")}
         return result
+
+    def authorize_server(self, name: str) -> Dict[str, Any]:
+        """主动发起 OAuth 授权（返回授权 URL；回调等待后台完成，成功自动重连）。"""
+        from entities.mcp.bridge import get_mcp_bridge
+        bridge = get_mcp_bridge()
+        if not bridge:
+            return {"success": False, "message": "MCP Bridge 未初始化"}
+        return bridge.authorize_server(name)
 
     async def oauth_logout(self, name: str) -> Dict[str, Any]:
         """清除 OAuth 凭据（下次连接重新授权）。"""

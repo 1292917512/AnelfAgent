@@ -7,12 +7,23 @@
     },
     "example-stdio": {
       "command": "npx",
-      "args": ["-y", "@example/mcp-server"],
+      "args": [
+        "-y",
+        "@example/mcp-server"
+      ],
       "env": {
         "API_KEY": "your-api-key-here"
       },
       "transport": "stdio",
       "enabled": false
+    },
+    "example-http": {
+      "url": "https://mcp.example.com/mcp",
+      "transport": "streamable_http",
+      "enabled": false,
+      "oauth": {
+        "scopes": "read write"
+      }
     }
   }
 }

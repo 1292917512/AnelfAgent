@@ -142,8 +142,17 @@ async def get_server_tools(name: str) -> List[Dict[str, Any]]:
 
 @router.get("/{name}/oauth")
 async def oauth_status(name: str) -> Dict[str, Any]:
-    """OAuth 授权状态：是否已有凭据 + 待授权链接（供前端展示授权入口）。"""
+    """OAuth 授权状态：凭据快照 + 待授权链接（供前端展示授权入口）。"""
     return await _mcp_svc.oauth_status(name)
+
+
+@router.post("/{name}/oauth")
+async def oauth_authorize(name: str) -> Dict[str, Any]:
+    """主动发起 OAuth 授权：返回授权 URL，回调在后台等待，成功后自动重连。"""
+    try:
+        return await asyncio.shield(asyncio.to_thread(_mcp_svc.authorize_server, name))
+    except asyncio.CancelledError:
+        raise HTTPException(503, "操作被中断，请重试") from None
 
 
 @router.delete("/{name}/oauth")
