@@ -95,6 +95,7 @@ export function FileTreeNode(props: NodeRendererProps<WorkspaceNode>) {
   return (
     <div
       ref={dragHandle}
+      draggable
       style={style}
       className={cn(
         "flex items-center gap-1 px-1.5 rounded text-xs select-none transition-colors cursor-pointer",
@@ -112,7 +113,8 @@ export function FileTreeNode(props: NodeRendererProps<WorkspaceNode>) {
       }}
       onDragStart={(e) => {
         // 拖拽注入对话：文件与目录（工作区/项目根均可）都可用；
-        // 目录拖动保留给树内移动拖拽共用同一次拖动，数据类型互不干扰
+        // 目录拖动保留给树内移动拖拽共用同一次拖动，数据类型互不干扰。
+        // 显式 draggable——树内移动由 arborist 托管，拖到对话区是独立链路
         e.dataTransfer.setData(
           WORKSPACE_FILE_MIME,
           JSON.stringify({ path: data.path, name: data.name, root, is_dir: isDir }),
