@@ -54,8 +54,12 @@ export function ChatDropZone({ children, className }: { children: ReactNode; cla
     e.preventDefault();
     e.stopPropagation();
     try {
-      const { path, name } = JSON.parse(wsData) as { path: string; name: string };
-      attachWorkspaceFile(path, name);
+      const { path, name, root } = JSON.parse(wsData) as {
+        path: string;
+        name: string;
+        root?: "workspace" | "project";
+      };
+      attachWorkspaceFile(path, name, root ?? "workspace");
     } catch { /* 数据异常忽略 */ }
   }, [attachWorkspaceFile]);
 

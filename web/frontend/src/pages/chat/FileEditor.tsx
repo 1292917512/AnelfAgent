@@ -189,9 +189,9 @@ export function FileEditor() {
   /** 将文件作为附件挂到对话输入框 */
   const attachToChat = useCallback(() => {
     if (!cur) return;
-    attachWorkspaceFile(cur.file.path, cur.file.name);
+    attachWorkspaceFile(cur.file.path, cur.file.name, curRoot);
     toast.success(t("editor.attach"));
-  }, [cur, attachWorkspaceFile, t]);
+  }, [cur, curRoot, attachWorkspaceFile, t]);
 
   /** 将文件内容以代码块形式引用到对话输入框 */
   const quoteToChat = useCallback(() => {

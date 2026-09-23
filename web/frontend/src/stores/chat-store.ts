@@ -70,7 +70,7 @@ interface ChatState {
   refreshAfterReconnect: (chatId?: string) => Promise<void>;
   clearMessages: () => void;
   addFiles: (files: FileList | null) => Promise<void>;
-  attachWorkspaceFile: (path: string, name: string) => void;
+  attachWorkspaceFile: (path: string, name: string, root?: "workspace" | "project") => void;
   removeFile: (idx: number) => void;
   send: (text: string, userName: string) => Promise<boolean>;
   interrupt: () => Promise<void>;
@@ -387,7 +387,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       await uploadPendingFiles(chatId, newFiles, { updateBucket });
     },
 
-    attachWorkspaceFile: (path, name) => {
+    attachWorkspaceFile: (path, name, root = "workspace") => {
       const chatId = get().activeChatId;
       const type = classifyFile(name);
       const stub = new File([], name);
@@ -397,7 +397,8 @@ export const useChatStore = create<ChatState>((set, get) => {
           type,
           uploading: false,
           path,
-          preview: type === "image" ? workspaceApi.rawUrl(path) : undefined,
+          root,
+          preview: type === "image" ? workspaceApi.rawUrl(path, false, root) : undefined,
         }],
       }));
     },
@@ -416,13 +417,19 @@ export const useChatStore = create<ChatState>((set, get) => {
       const chatId = get().activeChatId;
       const bucket = get().buckets[chatId] ?? emptyBucket();
       const pendingFiles = bucket.pendingFiles;
-      const uploadedPaths = pendingFiles.filter((f) => f.path).map((f) => f.path!);
+      const uploadedPaths = pendingFiles
+        .filter((f) => f.path)
+        .map((f) => (f.root === "project" ? `project:${f.path}` : f.path!));
       if (!text.trim() && !uploadedPaths.length) return false;
 
       const displayParts: string[] = [];
       if (text.trim()) displayParts.push(text.trim());
       for (const pf of pendingFiles) {
-        if (pf.type === "image" && pf.preview) {
+        if (pf.root) {
+          // 工作区/项目引用：根标签 + 文件名（气泡侧 mention 渲染为可点击 chip）
+          const tag = pf.root === "project" ? "项目" : "工作区";
+          displayParts.push(`[${tag}:${pf.file.name}]`);
+        } else if (pf.type === "image" && pf.preview) {
           displayParts.push(`![image](${pf.preview})`);
         } else {
           displayParts.push(`[${pf.type}: ${pf.file.name}]`);

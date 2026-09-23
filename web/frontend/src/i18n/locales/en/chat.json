@@ -83,5 +83,8 @@
     "title": "{{count}} file(s) changed this turn",
     "hint": "expand diff / open file"
   },
-  "dropToAttach": "Drop to attach file"
+  "dropToAttach": "Drop to attach file",
+  "rootWorkspace": "Workspace",
+  "rootProject": "Project",
+  "removeAttachment": "Remove attachment"
 }

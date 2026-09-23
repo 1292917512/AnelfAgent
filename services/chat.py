@@ -96,8 +96,19 @@ def classify_file_type(ext: str) -> str:
 
 
 def resolve_media_path(file_path: str) -> str:
-    """解析媒体路径：相对路径优先按当前路径，其次按工作区根目录解析。"""
+    """解析媒体路径：统一三根（project: 前缀 → 项目根沙箱 / 绝对与已存在路径 /
+    工作区相对路径）。项目根与工作区行为一致——都存在沙箱解析，不存在裸猜。"""
     if not file_path or file_path.startswith(("http://", "https://", "/api/")):
+        return file_path
+    if file_path.startswith("project:"):
+        rel = file_path[len("project:"):]
+        try:
+            from services.workspace import WorkspaceService
+            resolved = WorkspaceService().resolve(rel, "project")
+            if os.path.exists(resolved):
+                return resolved
+        except Exception:
+            log("resolve_media_path 项目根解析失败已忽略", "DEBUG")
         return file_path
     if os.path.isabs(file_path) or os.path.exists(file_path):
         return file_path

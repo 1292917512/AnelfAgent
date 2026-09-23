@@ -57,7 +57,10 @@ export interface PendingFile {
   preview?: string;
   type: string;
   uploading: boolean;
+  /** 工作区/项目内文件的路径（相对所属根）；外部上传文件为后端绝对路径 */
   path?: string;
+  /** 所属根（workspace / project）；外部上传文件缺省 */
+  root?: "workspace" | "project";
 }
 
 export interface ChatStreamingTool {

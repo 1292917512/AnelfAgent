@@ -83,5 +83,8 @@
     "title": "本轮改动 {{count}} 个文件",
     "hint": "点击展开 diff / open 打开文件"
   },
-  "dropToAttach": "松开以附加文件"
+  "dropToAttach": "松开以附加文件",
+  "rootWorkspace": "工作区",
+  "rootProject": "项目",
+  "removeAttachment": "移除附件"
 }
