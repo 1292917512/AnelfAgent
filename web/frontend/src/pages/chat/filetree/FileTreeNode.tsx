@@ -8,7 +8,7 @@ import { workspaceMediaKind, isPreviewableBinary } from "@/lib/workspace-kind";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { useFileTreeStore } from "./file-tree-store";
 import { fileIcon } from "./file-tree-utils";
-import { WORKSPACE_FILE_MIME } from "../ChatInput";
+import { WORKSPACE_FILE_MIME, setWorkspaceDragPayload } from "../workspace-drag";
 
 /** FileTree 向节点行下发的上下文（react-arborist 行渲染器不支持自定义 props） */
 export interface FileTreeContextValue {
@@ -112,13 +112,11 @@ export function FileTreeNode(props: NodeRendererProps<WorkspaceNode>) {
         onContextMenu(e, data);
       }}
       onDragStart={(e) => {
-        // 拖拽注入对话：文件与目录（工作区/项目根均可）都可用；
-        // 目录拖动保留给树内移动拖拽共用同一次拖动，数据类型互不干扰。
-        // 显式 draggable——树内移动由 arborist 托管，拖到对话区是独立链路
-        e.dataTransfer.setData(
-          WORKSPACE_FILE_MIME,
-          JSON.stringify({ path: data.path, name: data.name, root, is_dir: isDir }),
-        );
+        // 拖拽注入对话：payload 写模块变量（真人拖放下 React 事件委托 +
+        // arborist 预处理会让 dataTransfer.setData 时机不确定），落下端直读；
+        // dataTransfer 仅作「来自工作区文件树」的拖拽标记
+        setWorkspaceDragPayload({ path: data.path, name: data.name, root, is_dir: isDir });
+        e.dataTransfer.setData(WORKSPACE_FILE_MIME, "1");
         e.dataTransfer.effectAllowed = "copyMove";
       }}
       title={data.path}

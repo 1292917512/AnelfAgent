@@ -11,14 +11,13 @@ import { useCallback, useRef, useState, type DragEvent, type ReactNode } from "r
 import { useTranslation } from "react-i18next";
 import { FileUp } from "lucide-react";
 import { useChatStore } from "@/stores/chat-store";
-import { WORKSPACE_FILE_MIME } from "@/pages/chat/ChatInput";
+import {
+  consumeWorkspaceDragPayload,
+  hasWorkspaceFileDrag,
+} from "./workspace-drag";
 import { cn } from "@/lib/utils";
 
-/** 判定本次拖拽是否携带工作区文件 payload（types 需在拖拽早期即可读） */
-export function hasWorkspaceFileDrag(dt: DataTransfer | null): boolean {
-  if (!dt) return false;
-  return Array.from(dt.types).includes(WORKSPACE_FILE_MIME);
-}
+
 
 export function ChatDropZone({ children, className }: { children: ReactNode; className?: string }) {
   const { t } = useTranslation("chat");
@@ -50,23 +49,15 @@ export function ChatDropZone({ children, className }: { children: ReactNode; cla
   const onDrop = useCallback((e: DragEvent) => {
     depthRef.current = 0;
     setActive(false);
-    const wsData = e.dataTransfer.getData(WORKSPACE_FILE_MIME);
-    if (!wsData) return;
+    const payload = consumeWorkspaceDragPayload();
+    if (!payload) return;
     e.preventDefault();
     e.stopPropagation();
-    try {
-      const { path, name, root, is_dir } = JSON.parse(wsData) as {
-        path: string;
-        name: string;
-        root?: "workspace" | "project";
-        is_dir?: boolean;
-      };
-      if (is_dir) {
-        attachWorkspaceDir(path, name, root ?? "workspace");
-      } else {
-        attachWorkspaceFile(path, name, root ?? "workspace");
-      }
-    } catch { /* 数据异常忽略 */ }
+    if (payload.is_dir) {
+      attachWorkspaceDir(payload.path, payload.name, payload.root);
+    } else {
+      attachWorkspaceFile(payload.path, payload.name, payload.root);
+    }
   }, [attachWorkspaceFile, attachWorkspaceDir]);
 
   return (

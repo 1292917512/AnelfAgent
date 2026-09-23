@@ -6,6 +6,7 @@ import { useChatStore } from "@/stores/chat-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import type { PendingFile, WorkspaceSearchHit } from "@/lib/types";
 import { RealtimeCallPanel, RealtimeCallProvider, RealtimeCallToggle } from "./RealtimeCallBar";
+import { consumeWorkspaceDragPayload } from "./workspace-drag";
 import { detectMention, useMentionSearch } from "./mention/useMention";
 import { MentionPanel } from "./mention/MentionPanel";
 import { mentionMarkdown } from "./mention/mentionMarkdown";
@@ -17,8 +18,7 @@ const FILE_TYPE_ICONS: Record<string, typeof FileText> = {
   file: FileText,
 };
 
-/** 工作区文件拖拽的自定义 MIME 类型 */
-export const WORKSPACE_FILE_MIME = "application/x-workspace-file";
+
 
 /** 大段粘贴转占位符的字符阈值（Codex 式：全文暂存，文本框只留占位符） */
 const PASTE_PLACEHOLDER_MIN_CHARS = 400;
@@ -178,20 +178,13 @@ export function ChatInput() {
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
-    // 工作区文件树拖入（ChatDropZone 统一托管，此处仅兜底直投输入框的场景）
-    const wsData = e.dataTransfer.getData(WORKSPACE_FILE_MIME);
-    if (wsData) {
-      try {
-        const { path, name, root, is_dir } = JSON.parse(wsData) as {
-          path: string;
-          name: string;
-          root?: "workspace" | "project";
-          is_dir?: boolean;
-        };
-        if (is_dir) attachWorkspaceDir(path, name, root ?? "workspace");
-        else attachWorkspaceFile(path, name, root ?? "workspace");
-        return;
-      } catch { /* 数据异常时按普通文件处理 */ }
+    // 工作区文件树拖入（ChatDropZone 统一托管，此处仅兜底直投输入框的场景）：
+    // payload 走模块变量（真人拖放下 dataTransfer.setData 时机不确定）
+    const payload = consumeWorkspaceDragPayload();
+    if (payload) {
+      if (payload.is_dir) attachWorkspaceDir(payload.path, payload.name, payload.root);
+      else attachWorkspaceFile(payload.path, payload.name, payload.root);
+      return;
     }
     addFiles(e.dataTransfer.files);
   }, [addFiles, attachWorkspaceFile, attachWorkspaceDir]);
