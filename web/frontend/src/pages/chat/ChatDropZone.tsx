@@ -39,18 +39,24 @@ export function ChatDropZone({ children, className }: { children: ReactNode; cla
     if (depthRef.current === 0) setActive(false);
   }, []);
 
+  // dragover 无条件 preventDefault——drop 只在被 preventDefault 的元素上生效，
+  // 而 hasWorkspaceFileDrag 的模块变量判定与 React 渲染闭包存在时序脱节
+  // （dragstart 原生监听器设 payload 的时机不一定赶得上本次 dragover 的判定）。
+  // 放开时由 consumeWorkspaceDragPayload 分流：有 payload 走工作区引用，
+  // 没有则交给子级（输入框 addFiles 等）处理，不挡路。
   const onDragOver = useCallback((e: DragEvent) => {
-    if (hasWorkspaceFileDrag()) {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = "copy";
-    }
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
   }, []);
 
   const onDrop = useCallback((e: DragEvent) => {
     depthRef.current = 0;
     setActive(false);
     const payload = consumeWorkspaceDragPayload();
-    if (!payload) return;
+    if (!payload) {
+      // 非工作区拖拽（外部文件等）：不拦截，让事件落到输入框的 addFiles
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
     if (payload.is_dir) {
