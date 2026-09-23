@@ -13,6 +13,7 @@ import { ModelSelect } from "@/components/models/ModelSelect";
 import { MessageList } from "./chat/MessageList";
 import { ChatInput } from "./chat/ChatInput";
 import { ChatDropZone } from "./chat/ChatDropZone";
+import { DragDiagBadge } from "./chat/DragDiagBadge";
 import { StatusBar } from "./chat/StatusBar";
 import { ActivityBar } from "./chat/ActivityBar";
 import { Dock, LeftDock } from "./chat/Dock";
@@ -63,7 +64,9 @@ export default function Chat() {
   const dockOpen = useWorkbenchStore((s) => s.dockOpen);
   const toggleLeft = useWorkbenchStore((s) => s.toggleLeft);
   const toggleDock = useWorkbenchStore((s) => s.toggleDock);
-  const hasOpenFiles = useWorkbenchStore((s) => s.openFiles.length > 0);
+  // 编辑器面板可见：有打开文件且面板展开（收起 filePanelOpen=false 时不占位，
+  // 否则 Panel 仍渲染但 FileEditor return null 出现空白区域）
+  const hasOpenFiles = useWorkbenchStore((s) => s.openFiles.length > 0 && s.filePanelOpen);
   const filePanelExpanded = useWorkbenchStore((s) => s.filePanelExpanded);
 
   // 初始布局只读一次（后续拖拽经 onLayoutChanged 回写）
@@ -156,6 +159,7 @@ export default function Chat() {
         {!centerHidden && center}
         <Dock />
         <UiCommandHost />
+        <DragDiagBadge />
       </div>
     );
   }
@@ -206,6 +210,7 @@ export default function Chat() {
 
       {/* AI 界面命令宿主 */}
       <UiCommandHost />
+      <DragDiagBadge />
     </div>
   );
 }
