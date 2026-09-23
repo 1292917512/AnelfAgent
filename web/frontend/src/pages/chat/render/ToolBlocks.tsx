@@ -3,6 +3,7 @@
  */
 import { useState } from "react";
 import { Loader2, Check, X } from "lucide-react";
+import { formatElapsedCompact } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { ChatStreamingTool } from "@/lib/types";
 
@@ -43,7 +44,7 @@ export function ToolBlock({ tool }: { tool: ChatStreamingTool }) {
         <ToolStatusIcon status={tool.status} />
         <span className="font-mono text-foreground/80 truncate">{toolTitle(tool.name, tool.arguments)}</span>
         {tool.duration_ms != null && tool.status !== "running" && (
-          <span className="text-muted shrink-0">{(tool.duration_ms / 1000).toFixed(1)}s</span>
+          <span className="text-muted shrink-0 font-mono">{formatElapsedCompact(tool.duration_ms)}</span>
         )}
       </button>
       {open && tool.result_preview && (

@@ -74,5 +74,13 @@
   "voice": {
     "transcript": "Voice transcript",
     "spoken": "Spoken aloud"
+  },
+  "mention": {
+    "searching": "Searching workspace files…",
+    "empty": "No matching files"
+  },
+  "changes": {
+    "title": "{{count}} file(s) changed this turn",
+    "hint": "expand diff / open file"
   }
 }

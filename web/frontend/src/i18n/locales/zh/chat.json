@@ -51,7 +51,7 @@
   "toolSummary": "已执行 {{count}} 项操作",
   "toolCalls": "{{count}} 次工具调用",
   "toolCallsFailed": "含失败",
-  "expand": "展开全文",
+  "expand": "展开",
   "collapse": "收起",
   "loadEarlier": "加载更早消息",
   "call": {
@@ -74,5 +74,13 @@
   "voice": {
     "transcript": "语音转写",
     "spoken": "已语音播出"
+  },
+  "mention": {
+    "searching": "搜索工作区文件…",
+    "empty": "没有匹配的文件"
+  },
+  "changes": {
+    "title": "本轮改动 {{count}} 个文件",
+    "hint": "点击展开 diff / open 打开文件"
   }
 }

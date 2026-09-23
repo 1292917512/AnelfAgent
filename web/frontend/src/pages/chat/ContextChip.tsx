@@ -9,6 +9,7 @@ import { useTranslation } from "react-i18next";
 import { useChatStore } from "@/stores/chat-store";
 import { useThinkingStore } from "@/stores/thinking-store";
 import { cn } from "@/lib/utils";
+import { formatTokensCompact } from "@/lib/format";
 
 export function ContextChip() {
   const { t } = useTranslation("chat");
@@ -22,8 +23,8 @@ export function ContextChip() {
   return (
     <span
       title={t("contextUsage.title", {
-        tokens: usage.tokens,
-        threshold: usage.threshold,
+        tokens: formatTokensCompact(usage.tokens),
+        threshold: formatTokensCompact(usage.threshold),
       })}
       className={cn(
         "text-xs font-mono px-2 py-1 rounded-full border shrink-0",

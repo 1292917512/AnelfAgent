@@ -1,20 +1,23 @@
 /**
- * DiffView — unified diff 渲染（红绿增删 + 行号）。
+ * DiffView — unified diff 渲染（行号槽深半档 + ⋮ hunk 分隔 + 符号对齐）。
  *
- * 过程性展示：edit_file 的 diff 经 file_diff 事件到达，
- * 只在流式过程区显示，不落对话历史。
+ * 排版规则移植自 Codex diff_render：
+ * - 行号槽（gutter）底色比行底色深半档，保证行号在 pastel 底色上可读；
+ * - hunk 之间用 `⋮` 省略行分隔（而非 `@@` 头直出）；
+ * - `+/-` 符号列与内容列定宽对齐，内容换行时续行保持 gutter 缩进。
  */
 import { useState } from "react";
 import { FileDiff, ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface DiffLine {
-  kind: "add" | "del" | "context" | "meta";
+  kind: "add" | "del" | "context" | "hunk";
   text: string;
   oldNo?: number;
   newNo?: number;
 }
 
+/** 解析 unified diff 为渲染行（meta/hunk 头转 hunk 分隔行） */
 function parseUnifiedDiff(diff: string): DiffLine[] {
   const lines: DiffLine[] = [];
   let oldNo = 0;
@@ -25,7 +28,7 @@ function parseUnifiedDiff(diff: string): DiffLine[] {
     if (hunk) {
       oldNo = parseInt(hunk[1] ?? "0", 10);
       newNo = parseInt(hunk[2] ?? "0", 10);
-      lines.push({ kind: "meta", text: raw });
+      lines.push({ kind: "hunk", text: "⋮" });
       continue;
     }
     if (raw.startsWith("+")) {
@@ -37,6 +40,53 @@ function parseUnifiedDiff(diff: string): DiffLine[] {
     }
   }
   return lines;
+}
+
+/** gutter（行号槽）与内容行的配色：gutter 底色比行底色深半档 */
+const ROW_BG: Record<string, string> = {
+  add: "bg-green-500/10",
+  del: "bg-red-500/10",
+  context: "",
+  hunk: "bg-muted/40",
+};
+const GUTTER_BG: Record<string, string> = {
+  add: "bg-green-500/20",
+  del: "bg-red-500/20",
+  context: "bg-muted/30",
+  hunk: "bg-muted/60",
+};
+const TEXT_CLS: Record<string, string> = {
+  add: "text-green-700 dark:text-green-300",
+  del: "text-red-600 dark:text-red-300",
+  context: "text-foreground/80",
+  hunk: "text-muted",
+};
+
+function DiffRow({ line }: { line: DiffLine }) {
+  if (line.kind === "hunk") {
+    return (
+      <tr>
+        <td colSpan={3} className={cn("select-none px-2 py-0.5 text-center", GUTTER_BG.hunk, TEXT_CLS.hunk)}>
+          ⋮
+        </td>
+      </tr>
+    );
+  }
+  return (
+    <tr className={ROW_BG[line.kind]}>
+      {/* gutter：行号槽底色深半档，右对齐等宽 */}
+      <td className={cn("select-none w-10 px-1.5 text-right font-mono text-muted/70 align-top", GUTTER_BG[line.kind])}>
+        {line.oldNo ?? ""}
+      </td>
+      <td className={cn("select-none w-10 px-1.5 text-right font-mono text-muted/70 align-top", GUTTER_BG[line.kind])}>
+        {line.newNo ?? ""}
+      </td>
+      <td className={cn("px-2 whitespace-pre-wrap break-all", TEXT_CLS[line.kind])}>
+        {line.kind === "add" ? "+ " : line.kind === "del" ? "- " : "  "}
+        {line.text}
+      </td>
+    </tr>
+  );
 }
 
 export function DiffView({
@@ -68,34 +118,10 @@ export function DiffView({
       </button>
       {open && (
         <div className="border-t border-border/40 overflow-x-auto max-h-64 overflow-y-auto">
-          <table className="w-full font-mono">
+          <table className="w-full font-mono border-collapse">
             <tbody>
               {lines.map((line, i) => (
-                <tr
-                  key={i}
-                  className={cn(
-                    line.kind === "add" && "bg-green-500/10",
-                    line.kind === "del" && "bg-red-500/10",
-                    line.kind === "meta" && "bg-primary/5 text-muted",
-                  )}
-                >
-                  <td className="w-10 select-none px-1.5 text-right text-muted/60 align-top">
-                    {line.oldNo ?? ""}
-                  </td>
-                  <td className="w-10 select-none px-1.5 text-right text-muted/60 align-top">
-                    {line.newNo ?? ""}
-                  </td>
-                  <td
-                    className={cn(
-                      "px-2 whitespace-pre-wrap break-all",
-                      line.kind === "add" && "text-green-700 dark:text-green-300",
-                      line.kind === "del" && "text-red-600 dark:text-red-300",
-                    )}
-                  >
-                    {line.kind === "add" ? "+ " : line.kind === "del" ? "- " : "  "}
-                    {line.text}
-                  </td>
-                </tr>
+                <DiffRow key={i} line={line} />
               ))}
             </tbody>
           </table>

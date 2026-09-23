@@ -256,6 +256,31 @@ body {
   50% { opacity: 0.7; }
 }
 
+
+/* shimmer 扫光文字（运行态文案的注意力引导；reduced-motion 由组件降级为静态色） */
+.anelf-shimmer-text {
+  background: linear-gradient(
+    90deg,
+    var(--muted) 0%,
+    var(--muted) 40%,
+    var(--text-strong) 50%,
+    var(--muted) 60%,
+    var(--muted) 100%
+  );
+  background-size: 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: anelf-shimmer 2.4s linear infinite;
+}
+@keyframes anelf-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .anelf-shimmer-text { animation: none; background: none; color: var(--muted); }
+}
+
 /* ReactFlow theme integration */
 .thinking-flow .react-flow__pane {
   cursor: grab;

@@ -12,7 +12,9 @@ import { ShareCard } from "@entities/share/panels/ShareCard";
 import { SystemNotice } from "./render/SystemNotice";
 import { ToolSummaryCard } from "./render/ToolSummaryCard";
 import { ToolCallsCard } from "./render/ToolCallsCard";
-import { CollapsibleMarkdown } from "./render/CollapsibleMarkdown";
+import { ChangesCard } from "./render/ChangesCard";
+import { MentionMarkdown } from "./render/MentionMarkdown";
+import { CollapsibleUserMessage } from "./render/CollapsibleUserMessage";
 import { ActivityRow } from "./ActivityRow";
 import { StreamingArea } from "./StreamingArea";
 import type { ChatMessage, DelegationNode, PlanRecord } from "@/lib/types";
@@ -37,11 +39,15 @@ const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMessage }) {
   }
 
   return (
-    <div className={cn("flex", isUser ? "justify-end" : "justify-start")}>
+    <div className={cn("flex group/msg", isUser ? "justify-end" : "justify-start")}>
       <div className={cn("max-w-[85%] sm:max-w-[80%]", isUser ? "text-right" : "text-left")}>
         {/* 本轮工具调用记录（固化卡片，默认折叠） */}
         {!isUser && msg.toolCalls && msg.toolCalls.length > 0 && (
           <ToolCallsCard tools={msg.toolCalls} />
+        )}
+        {/* 本轮文件改动集（固化卡片，默认折叠） */}
+        {!isUser && msg.changes && msg.changes.length > 0 && (
+          <ChangesCard changes={msg.changes} />
         )}
         {msg.media_type && <MediaBubble msg={msg} />}
         {!isUser && msg.share && <ShareCard share={msg.share} />}
@@ -63,14 +69,31 @@ const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMessage }) {
                   : <><Volume2 size={10} />{t("voice.spoken")}</>}
               </div>
             )}
-            <CollapsibleMarkdown
-              content={msg.content}
-              fadeClass={isUser ? "from-accent-subtle" : "from-secondary"}
-            />
+            {isUser ? (
+              <CollapsibleUserMessage>
+                <MentionMarkdown
+                  content={msg.content}
+                  fadeClass="from-accent-subtle"
+                />
+              </CollapsibleUserMessage>
+            ) : (
+              <MentionMarkdown
+                content={msg.content}
+                fadeClass="from-secondary"
+              />
+            )}
           </div>
         )}
         {msg.timestamp && (
-          <div className="text-[11px] text-muted mt-0.5 px-1">{msg.timestamp}</div>
+          <div
+            className={cn(
+              "text-[11px] text-muted mt-0.5 px-1 transition-opacity",
+              // 时间戳 hover 浮现：默认淡显，悬停/聚焦该行时加深
+              "opacity-60 group-hover/msg:opacity-100 group-focus-within/msg:opacity-100",
+            )}
+          >
+            {msg.timestamp}
+          </div>
         )}
       </div>
     </div>
