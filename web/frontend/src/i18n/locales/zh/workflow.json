@@ -19,7 +19,8 @@
     "rounds": "{count} 轮",
     "noSteps": "尚无步骤记录",
     "timeline": "事件时间线",
-    "noEvents": "暂无事件"
+    "noEvents": "暂无事件",
+    "loadFailed": "加载失败，该运行可能已被清理或不存在"
   },
   "status": {
     "running": "运行中",

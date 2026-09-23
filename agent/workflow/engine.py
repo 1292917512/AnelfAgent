@@ -717,7 +717,9 @@ class WorkflowEngine:
     async def list_runs(self, limit: int = 30) -> List[Dict[str, Any]]:
         runs = await self._journal.list_runs(limit)
         for item in runs:
-            item["running"] = item["id"] in self._runs
+            # journal 行键为 id；对外契约统一 run_id（与 _run_summary/start/resume 一致）
+            item["run_id"] = item.pop("id")
+            item["running"] = item["run_id"] in self._runs
         return runs
 
     async def run_detail(self, run_id: str) -> Dict[str, Any]:

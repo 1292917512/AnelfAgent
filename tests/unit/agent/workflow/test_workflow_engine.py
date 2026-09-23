@@ -281,7 +281,7 @@ class TestAmendImport:
                 {"key": "a", "kind": "ask", "goal": "新目标"},  # 输入分歧 → 重跑
             ],
         }, resume_of=first["run_id"])
-        await wait_run_terminal(engine.journal, (await engine.list_runs(1))[0]["id"])
+        await wait_run_terminal(engine.journal, (await engine.list_runs(1))[0]["run_id"])
         goals = [c["goal"] for c in fake_manager.calls]
         assert goals == ["旧目标", "新目标"]
 

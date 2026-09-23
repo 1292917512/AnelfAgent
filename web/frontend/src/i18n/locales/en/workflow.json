@@ -19,7 +19,8 @@
     "rounds": "{count} rounds",
     "noSteps": "No step records yet",
     "timeline": "Event timeline",
-    "noEvents": "No events yet"
+    "noEvents": "No events yet",
+    "loadFailed": "Failed to load — the run may have been cleaned up or no longer exists"
   },
   "status": {
     "running": "Running",

@@ -42,11 +42,13 @@ export function RunsPanel({
     ? runs.find((r) => r.run_id === selected.run_id) ?? selected
     : null;
   const polling = !!activeRun?.running;
+  const detailRunId = activeRun?.run_id;
 
-  const { data: detail } = useQuery({
-    queryKey: ["workflowRunDetail", activeRun?.run_id],
-    queryFn: () => workflowApi.runDetail(activeRun!.run_id).then((r) => r.data),
-    enabled: !!activeRun,
+  const { data: detail, isLoading: detailLoading, isError: detailError } = useQuery({
+    queryKey: ["workflowRunDetail", detailRunId],
+    // run_id 缺失（列表契约异常）时不发请求——防止拿 "undefined" 去请求详情
+    queryFn: () => workflowApi.runDetail(detailRunId!).then((r) => r.data),
+    enabled: Boolean(detailRunId),
     refetchInterval: polling ? 4000 : false,
   });
 
@@ -227,14 +229,18 @@ export function RunsPanel({
                 )}
               </div>
             </div>
-            {detail ? (
+            {detailError ? (
+              <div className="text-xs text-danger py-8 text-center">
+                {t("detail.loadFailed")}
+              </div>
+            ) : detail ? (
               <RunDetail detail={detail} />
-            ) : (
+            ) : detailLoading ? (
               <div className="text-xs text-muted py-8 text-center">
                 <Loader2 size={16} className="animate-spin inline mr-2" />
                 {t("detail.loading")}
               </div>
-            )}
+            ) : null}
           </>
         ) : (
           <div className="rounded-lg border border-dashed border-border py-16 text-center text-sm text-muted">
