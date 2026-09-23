@@ -46,6 +46,8 @@ export interface ChatMessage {
   tone?: "warn";
   /** 本轮工具调用记录（reply 到达时从流式区固化，渲染为消息内折叠卡片） */
   toolCalls?: ChatStreamingTool[];
+  /** 本轮文件改动集（turn_end 时聚合沉淀；渲染为可折叠改动卡片） */
+  changes?: ChatStreamingDiff[];
   /** 分享卡片信息（share SSE 事件到达时挂载，渲染为 ShareCard） */
   share?: ChatShareInfo;
 }
@@ -136,6 +138,17 @@ export interface UiStateReport {
   open_file: string | null;
   has_draft: boolean;
   pending_asks: number;
+  /** 工作区上下文注入数据源（发送时渲染为消息前缀块） */
+  active_file?: string | null;
+  selection?: EditorSelectionPayload | null;
+  open_tabs?: { label: string; path: string }[];
+}
+
+/** 编辑器选区上报负载（与后端 services/workspace_context 的渲染契约一致） */
+export interface EditorSelectionPayload {
+  path: string;
+  ranges: { start_line: number; end_line: number }[];
+  content: string;
 }
 
 // ── SSE 事件 data 类型（/api/chat/stream） ──

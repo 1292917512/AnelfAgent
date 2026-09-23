@@ -39,6 +39,8 @@ description: "AnelfAgent 项目指令 — 开发规范与架构速查（对所�
 | `agent/memory/` | 语义记忆（FTS5 + Embedding 混合检索 / 便签 / 文件索引） | 不依赖 mind |
 | `agent/skills/` | 技能自学习（事实索引 / 匹配 / 后台评审 / 策展；事实归系统、决策归 AI） | 文件存储在 `workspace/skills/` |
 | `agent/delegation/` | 子代理调度（档案 schema / 并行 fan-out / 续跑 / 双档转向 / 运行日志） | 经 `mind.reflect()` 隔离执行 |
+| `agent/workflow/` | 工作流引擎（journal 化 DAG：断点续跑 / 修订导入 / 门控重跑，第三十九轮） | ask 步复用 DelegationManager，tool 步走统一审批门 |
+| `services/workspace_context.py` | 工作区上下文注入（第四十轮） | 发送时把打开文件/选区/标签页渲染为消息前缀块；历史按分隔符清洗用户原文 |
 | `agent/hooks_llm/` | LLM 钩子面（事件驱动的异步 LLM 工作统一注册原语；技能评审/任务事件触发/实体钩子经此并行拉起） | 与心跳/任务平行；经 `mind.reflect()` 隔离执行，治理复用 |
 | `agent/security/` | 安全防护（会话令牌 / 威胁扫描） | 脱敏核心在 `core/sanitizer.py` |
 | `agent/task/` | 独立任务系统（定义 / 注册表 / 执行器） | 纯内容定义，不含调度逻辑 |
@@ -142,7 +144,7 @@ ConfigPaths.UPLOAD_DIR          # workspace/uploads
   `network/proxy`、`entity/ssh`），展示名走前端 i18n `config.json` 的 `modules.*` / `sections.*`；
   频道配置走 `adapter/<id>` 组，与其他组同一注册体系（值存频道目录文件，见下「频道配置统一接入」）
 - **ConfigItem 展示元数据**：`advanced`（高级项，UI 折叠；`*_enabled` 主开关等保持基础项）、
-  `value_type: "range"` + `min`/`max`/`step`（滑条+数字复合控件）、`unit`（单位展示）、
+  `value_type: "range"` + `min`/`max`/`step`（滑条+数字复合控件）、`value_type: MODEL`（模型名配置项渲染统一 ModelSelect 下拉，空默认值即允许「跟随默认」）、`unit`（单位展示）、
   `tag`（条件显示标记，如频道 ws_mode 的 forward/reverse 卡片过滤）；
   `password` 类型 GET 掩码返回（`mask_secret`），PUT 提交掩码占位符保留现值
 - 保存时经 `ConfigItem.coerce_value` 类型强转 + `clamp` 边界收敛（Web PUT 与 AI
@@ -402,7 +404,7 @@ llm_clients.json/ModelType——该体系全部模型被假设可走 litellm 对
 | 技能治理决策协议 | `agent/skills/`（skill_index 事实层 + tools 决策协议） | 事实归系统、决策归 AI：create/update 在事实层检测到显著信号（语义相近≥`skills_similar_threshold` / 触发词碰撞≥`skills_trigger_collision_limit` / 容量水位 / 无实质变化）时**不拒绝**，返回 needs_decision 诊断报告，AI 带 decision 回执重呼写入（rationale 落盘问责）或改走 merge/放弃；评审上下文由 SkillIndex 供给（语义相近 top10 + 库健康摘要）；use/match 信号分离（检索注入不刷活动时间，get_skill 计数不刷活动，策展重力因此可触发）；检索端近重复折叠（≥`skills_match_redundancy` 折叠并入合并信号）；merge_skills 可逆合并（源 ARCHIVED 带 merged_into）；重力含试用期快筛（零参与 14 天降级）与 stale 软保留（仍被检索到不归档）。向量生命周期：缓存键 = 模型名 + 文本 hash（模型切换即全库失效重嵌，防跨模型余弦混算）；交互路径预算化补算（`skills_embed_budget`，advisory 收紧 8），心跳 `warm()` 批量预热；死键清理时机 = 嵌入完成后（warm/embed_now）+ 删除时（service 直调），列表重建不清理（防误杀待嵌入键）；Web 经 `services._runtime` 拿 Mind 侧索引展示 embedded 状态与覆盖统计，CRUD 后 embed_now 即时重嵌；Mind 构造时重绑定工具依赖避免双向量缓存。向量构建状态机（Web 可观测/可操作/可配置）：`build_state()` 暴露 idle/warming/rebuilding + 进度 + 上次重建记录；`skills_warm_batch_size`（心跳每拍批量）/ `skills_rebuild_batch_size`（全量重建批量）可调；Web 经 `POST /skills/vectors/rebuild` 手动触发重建（幂等，进行中返回当前进度）；每个技能行内 `POST /skills/{name}/embed` 单技能生成/重新生成（不等全库重建）。向量持久化：`skill_vectors.sqlite3`（主库同目录独立文件，短连接 schema 自治，pack_embedding float32 BLOB）——嵌入即 upsert，首次访问懒加载恢复（模型+文本 hash 双因子校验，失配行清除并标记重建），**重启零重嵌**；模型切换内存与 DB 同步清空 |
 | 思考等级配置驱动下发 | `agent/llm/reasoning.py`（契约引擎）+ `llm_client._apply_thinking_payload` + 模型配置 `thinking` 字段 | **全代码库对模型名零特判**：每个模型在 `llm_clients.json` 里声明思考契约（`{"param": 目标字段, "map": 档位映射, "on": 开启值, "off": 关闭值}`），LLMClient 只做"读契约填值"，不认识任何模型名/供应商。档位能力不写代码——模型该用哪档由配置 `reasoning_effort` 决定，发了端点不认的档由端点自己报错（参考 cursor-byok）。下发载体按 api_type 区分（litellm 行为差异）：openai 兼容通道 extra_body 由 SDK 展开进请求体顶层；anthropic 兼容通道直发 body 不展开 extra_body、未收录模型顶层字段又被能力表卡住，故填顶层字段 + allowed_openai_params 白名单放行。无契约模型走通用 reasoning_effort 透传。effort 为空时开关型契约（无 map）用 on 值默认开启。litellm 暗坑：未收录模型顶层 reasoning_effort 可能被 drop_params 静默丢弃，必须走 extra_body/白名单透传。**Responses 路径（chat_protocol=responses/auto）不使用 thinking 契约**——effort 统一映射为 Responses 的 `reasoning.effort` 下发（`_build_responses_kwargs`），契约仅作用于 chat_completions 通道 |
 | 对话协议路由（chat_protocol） | `agent/llm/protocol.py`（能力矩阵）+ `agent/llm/responses/router.py`（native/bridge 路由）+ `llm_client._should_fallback_from_responses`（auto 回退） | 三值语义：`responses` = **绝对走官方 /responses 接口**（openai/azure 一律 native 直连，不支持是配置错误、404 原样上抛；anthropic 等无官方端点的 api_type 经 litellm bridge 桥接）；`auto` = openai/azure 优先 native Responses，端点未实现（404，经 classifier NOT_FOUND 判定）时记客户端级标记 `_responses_native_blocked` 并回退 chat_completions（本进程内后续直连，流式路径已产出增量则禁止回退）；`chat_completions` = 传统通道。base_url 以 `/responses`、`/chat/completions` 结尾时 URL 推断优先于配置（`resolved_chat_protocol`）。bridge 的唯一正当用途 = 非 openai 系 api_type 的 Responses 暴露（含本项目自身 /v1/responses 服务面） |
-| 晚绑定端口 | `core/latebind.py`（原语）+ `agent/runtime/wiring.py`（唯一施绑点） | 进程级类型化晚绑定：端口由消费方所在层声明（`LateBinding[T]`，名称全局唯一、`[None]` 施绑合法——bound 标志即事实），`wire_runtime()` 在 assemble 尾部统一施绑（mind 工具组 / 思维子系统实例（compressor·delegation·auto_capture·skills deps）/ 记忆存储族（memory·graph·planning）/ 会话数据（output·fold）/ embedding worker / cognee 可选后端 / sticker worker / agent→entities 函数桥（workspace 路径·结果落盘·文件状态缓存·图片索引投递）+ prewarm/scope_usage 回调；多依赖端口以 NamedTuple 承载如 `MemoryToolDeps`/`SkillToolDeps`/`WorkspacePathFns`），check_health 经 `assert_wired()` 把漏接线暴露为启动红字；未施绑 `get()` 抛 WireError，可选消费以 bound 守卫保持旧 None 语义。准入：仅限 import 时工具注册拿不到构造参数 / 循环初始化 / 跨层桥三种成因，`set()` 只许组合根调用；DI 容器与装饰器注册表方案均已否决（解析图无消费场景；RuntimePorts 无法跨 entities/agent 分层定型） |
+| 晚绑定端口 | `core/latebind.py`（原语）+ `agent/runtime/wiring.py`（唯一施绑点） | 进程级类型化晚绑定：端口由消费方所在层声明（`LateBinding[T]`，名称全局唯一、`[None]` 施绑合法——bound 标志即事实），`wire_runtime()` 在 assemble 尾部统一施绑（mind 工具组 / 思维子系统实例（compressor·delegation·workflow·auto_capture·skills deps）/ 记忆存储族（memory·graph·planning）/ 会话数据（output·fold）/ embedding worker / cognee 可选后端 / sticker worker / agent→entities 函数桥（workspace 路径·结果落盘·文件状态缓存·图片索引投递）+ prewarm/scope_usage 回调；多依赖端口以 NamedTuple 承载如 `MemoryToolDeps`/`SkillToolDeps`/`WorkspacePathFns`），check_health 经 `assert_wired()` 把漏接线暴露为启动红字；未施绑 `get()` 抛 WireError，可选消费以 bound 守卫保持旧 None 语义。准入：仅限 import 时工具注册拿不到构造参数 / 循环初始化 / 跨层桥三种成因，`set()` 只许组合根调用；DI 容器与装饰器注册表方案均已否决（解析图无消费场景；RuntimePorts 无法跨 entities/agent 分层定型） |
 
 #### MCP 工具面细节（第四轮新增；已拆分为 entities/mcp/ 模块群：bridge.py=连接生命周期核心，config.py=配置注册/沉睡策略/MCPServerStore 配置域，manage_tools.py=管理工具，transport.py=传输工厂+env 白名单，schema.py=参数 schema 解析/名整形，render.py=结果渲染，retry.py=重连预算）
 
@@ -518,7 +520,7 @@ llm_clients.json/ModelType——该体系全部模型被假设可走 litellm 对
 | 机制 | 位置 | 说明 |
 |------|------|------|
 | 内部调用流式空闲超时 | `llm_manager.chat_with_fallback(stream=True)` → `_chat_candidate_stream` + `agent/llm/stream_aggregate.py`（StreamAggregator） | 内部辅助调用（折叠/压缩摘要）可切流式通道：**每 chunk 独立空闲超时**（= 客户端 timeout 配置，思考增量/正文增量都算活动），思考/输出中不设墙钟，完全静默才判死；deadline 仅在尝试开始前/重试决策时检查，不限制单次流总时长。流式失败同样进错误分类/退避/回退链（整次重发）；聚合含 TTFT 与 usage（stream_options.include_usage 同口径记账）。对齐主对话 `llm_invoker._llm_chat_stream_once` 的既有空闲语义 |
-| 摘要专用模型与思考档 | `mind.summarize_text` + 配置 `conversation_summary_model` / `conversation_summary_reasoning_effort`（cache/prompt 组，prompt_layers 注册） | 折叠/压缩摘要可指定更轻量模型与低思考档（内部小任务无需深度思考，省时省 token）：模型经 `get_enabled_client` 解析（不存在/停用 WARNING 回落默认），effort 走 per-call options（`_resolve_effort` 优先级：调用方 > 模型配置；模型不支持思考自动忽略；空 = 跟随模型配置），失败仍走默认回退链韧性不降级。compressor 前缀复用路径刻意不动（KV 命中是其核心设计）。Web 配置中心特判复合行（`pages/config/SummaryModelRow.tsx`：ModelSelect + ReasoningEffortSelect） |
+| 摘要专用模型与思考档 | `mind.summarize_text` + 配置 `conversation_summary_model` / `conversation_summary_reasoning_effort`（cache/prompt 组，prompt_layers 注册） | 折叠/压缩摘要可指定更轻量模型与低思考档（内部小任务无需深度思考，省时省 token）：模型经 `get_enabled_client` 解析（不存在/停用 WARNING 回落默认），effort 走 per-call options（`_resolve_effort` 优先级：调用方 > 模型配置；模型不支持思考自动忽略；空 = 跟随模型配置），失败仍走默认回退链韧性不降级。compressor 前缀复用路径刻意不动（KV 命中是其核心设计）。配置中心展示：模型项经 `value_type: MODEL` 声明渲染统一模型下拉（无前端特判行），思考档走 ENUM 下拉 |
 | 折叠看门狗分段化 | `conversation_fold.py`（删除 `_FOLD_WATCHDOG=300` 整体墙钟） | 修复"看门狗以 CancelledError 取消整个折叠 → 绕过 drop_on_failure 丢批降级 → 水位线不推进 → 60s 退避后重试 → 无限循环空烧上游"的卡死模式（2026-08 实证：供应商挂死时 300s 看门狗必然早于 270s×N 的链路自身最坏耗时开火）。分段设防：DB 读/写段各 60s 短护栏（`_DB_OP_TIMEOUT`，兜 sqlite 锁等待悬挂占用 scope 锁）；摘要段总护栏 `conversation_summary_llm_timeout`（默认 900s，兜"无限流"病理）——**超时以普通 TimeoutError（Exception 子类）进入既有丢批路径推进水位线**，一次失败即收敛。流式空闲语义见上行 |
 
 #### embedding 成本治理（第八轮新增）
@@ -672,6 +674,48 @@ llm_clients.json/ModelType——该体系全部模型被假设可走 litellm 对
 
 > Model Experience：① AI 无新增工具 schema（呈现/分类/降权全在管线内）；② token 影响：discipline/freshness 两块按需注入（无指令/无重复话题零字节）；③ 缓存影响：discipline 在稳定前缀区（低频变化），freshness 在尾部动态区；④ 反馈回路让"她记错了"第一次有了纠正通道——用户否认即负向证据，14 天 sub_zero 归档倒计时通电
 
+#### 消息流展示细节打磨（第四十一轮新增）
+
+对齐 ZCode（消息流美学）与 Codex（diff 美学、状态行生命周期、噪音控制）的可移植交互细节，不动 Anelf 的设计令牌地基（双主题 + 语义色已完整），只补「质感层」。
+
+| 机制 | 位置 | 说明 |
+|------|------|------|
+| 运行态 shimmer | `components/common/Shimmer.tsx` + `styles/globals.css .anelf-shimmer-text` + `ActivityBar` | ZCode animated-gradient-text 移植：300% 渐变 + background-clip:text 扫光；深浅主题各一组变量；reduced-motion 经 matchMedia 降级为静态 muted。活动条同时加紧凑耗时 |
+| 紧凑耗时 / 数字压缩 | `lib/format.ts`（formatElapsedCompact / formatTokensCompact） | Codex fmt_elapsed_compact（0s→59s→1m 05s→1h 02m）与 format_tokens_compact（1.2K/3.4M/5.6B，<10 留一位小数）；ContextChip 与 ToolBlock 耗时统一走这两个 |
+| diff 美学 | `chat/DiffView.tsx` 重写 | Codex diff_render 排版：行号槽底色比行底色深半档（gutter 可辨）、hunk 间 `⋮` 省略行分隔（非 @@ 头直出）、+/- 符号列与内容列定宽对齐、亮暗主题各一套语义色 |
+| 长用户消息折叠 | `render/CollapsibleUserMessage.tsx` + MessageList | ZCode ConversationUserInputBody 移植：>120px 折叠 + 底部 mask 渐隐 + 悬浮展开钮；ResizeObserver+rAF 合并测量、max-height 过渡（reduced-motion 瞬时）、aria-expanded |
+| 时间戳 hover 浮现 | MessageList | ZCode 行级 hover 浮现 + focus-within 兜底（键盘可达）；默认淡显 opacity-60，悬停/聚焦加深 |
+
+> 取舍：不换设计令牌（Anelf 的 @theme 双体系已完整，text-ui-* 刻度与 color-mix 三级灰属于「换地基」级别，当前收益不抵改造成本）；审批弹窗的阴影/圆角层级维持 Anelf 令牌。噪音控制照抄 Codex：空值不占行、<60s 不显示耗时的思路体现在 formatElapsedCompact 的紧凑格式与 ContextChip 的条件缓存角标
+#### 工作区对话联动：@提及 / 上下文注入 / 改动集 / 审批语义化（第四十轮新增）
+
+对照 ZCode（mention/chip 体系、预览面板）与 Codex（路径插入哲学、IDE 上下文前缀、改动聚合、审批按工具分发）把工作区与对话打通。底座（文件树/CodeMirror/预览）原本就齐，本轮补的是「联动层」。
+
+| 机制 | 位置 | 说明 |
+|------|------|------|
+| @提及 | `chat/mention/{mentionMarkdown,useMention,MentionPanel}` + `ChatInput` | 输入框 `@` 触发 workspace 文件模糊搜索（200ms 防抖 + 陈旧结果丢弃）；选中写 `[name](./path)` markdown 链接（Codex 式路径信号，不预读内容，AI 用 read_file 自取）；`./` 前缀防渲染器误当协议。气泡侧 `MentionMarkdown` 把链接段还原为可点击文件 chip（点击打开编辑器+聚焦树）。键盘上下/Enter/Tab/Esc 导航 |
+| 粘贴占位符 | `ChatInput.handlePaste` | 大段文本（≥400 字符）转 `[Pasted Content N chars]` 占位符 + 全文作为 txt 附件（Codex 式：占位符即附件引用，不占输入框） |
+| 工作区上下文注入 | `services/workspace_context.py` + `services/chat.send_web_message` + `workbench-store`（selection 上报）+ `FileEditor.onUpdate`（CodeMirror 选区） | 发送时把「当前文件/选中代码（行列+内容）/打开标签页」渲染为固定前缀块注入；格式与回放清洗同一约定（`REQUEST_DELIMITER` 分隔符，历史渲染 rsplit 取用户原文不重复刷屏）；预算照抄 Codex（选区 40k/标签 100/合计 20k 字符，超出 `[N omitted]`）。注入放消息动态区不触碰前缀缓存；失败降级不阻塞发送 |
+| 改动集面板 | `stores/changes-store.ts` + `render/ChangesCard.tsx` + sse-handlers（file_diff 聚合/turn_end 沉淀） | `EVENT_FILE_DIFF` 按 turn 累积为「本轮改动 N 个文件」可折叠卡片沉淀进消息历史（原仅流式闪现 slice(-3)）；点击单文件展开 diff、「open」跳编辑器。webui 桥接补 scope 透传（原丢失导致 diff 不路由会话） |
+| 编辑器联动刷新 | `FileEditor` 订阅 `changes-store.fileVersions` | AI 改文件后已打开标签自动刷新磁盘内容（有未保存草稿时不覆盖，不丢用户编辑） |
+| 审批语义化 | `components/ApprovalPreview.tsx` + `ApprovalDialog` | 审批弹窗按工具类型分发渲染：edit/write 出极简 diff（old/new 行红绿）、shell 出命令全文+cwd、delete/create 出受影响路径列表；识别不出走通用参数兜底（Codex apply_patch_header 的「受影响路径全列」思路） |
+
+> Model Experience：① AI 无新增工具——@提及只是路径信号，内容仍走 read_file；② 上下文注入在消息动态区（每轮字节变）不触碰 stable 前缀缓存；③ 改动集沉淀让 AI 的编辑从「过程闪现」变成「可回看的账目」；④ 审批从「确认框」变成「看懂在改什么」——edit 直接看到红绿行
+#### 工作流引擎与 MCP OAuth 全链路（第三十九轮新增）
+
+对标 ZCode 动态工作流（journal 断点恢复）与 MCP OAuth 两阶段设计的移植落地（对照档 `projects/zcode-vs-anelf-comparison.md` 前两项）。
+
+| 机制 | 位置 | 说明 |
+|------|------|------|
+| 工作流规格 | `agent/workflow/spec.py` | 声明式 DAG：步骤 kind=ask（goal/agent_name/continue_from 续聊）/ tool（tool/args/gate 门控）；校验一次性收集全部错误（key 唯一、依赖已知、无环、gate 仅 tool、continue_from 指向 ask 且构成隐式依赖边）；canonical JSON + sha256 指纹 |
+| journal | `agent/workflow/journal.py`（`<data_dir>/workflow.sqlite3`，WAL） | 断点恢复唯一事实源，三表：run（**终态一笔写**——status 与 stop_reason/failure/result/finished_at 同笔 UPDATE，resume 开账同笔清结算袋）、node（step_key×ordinal，**准入先落 running**，重试/门控轮次各占一档；latest_nodes 为重放事实源，importable_nodes 为修订导入源）、event（写锁内 max+1 单调序；run-settled 必为最后一条）。retention 按天清理终态 run |
+| 编排引擎 | `agent/workflow/engine.py::WorkflowEngine`（Mind 持有，经 `workflow_engine_port` 施绑） | graphlib 分层 + 层内并发（workflow_max_parallel_steps 闸门）；**缓存结算**——同 run 续跑时 completed 行经 input_hash 防御性比对后直接复用（不重付费）、running 行重派、failed 复现；**修订导入**——start(resume_of=父) 把父 run 输入一致的 completed 成果入账，规格分歧自然级联重跑；**门控重跑**——tool 步 gate 不满足时先委托子代理按失败上下文修复（独立 repair 节点行）再重跑（有界轮次），缓存/导入路径同样复验门控；**取消二分**——用户停止转化为步骤 cancelled 结局（节点行保持 running 供续跑重派）、run 结算 stopped(user) 可续跑；进程关停 CancelledError 上抛留待启动收敛。执行面零新机制：ask=DelegationManager.delegate（预登记 delegation_id 供停止级联与续聊 transcript）、tool=统一审批门（channel=None 的 Guardian 路径）+ EntityRegistry.execute_tool |
+| 可见性 | BackgroundTaskRegistry 登记（kind=workflow，killer→stop）+ AI 工具组 `workflow`（workflow_start/status/stop/resume）+ `services/workflow.py` + `/api/workflow/runs*` + 前端「工作流」页（`pages/Workflow.tsx`：启动表单/运行列表/步骤折叠轮次/事件时间线，4s 轮询） | 完成通知自动路由（轮内会合/轮外新 REPLY）；启动工具返回 run_id 供续跑 |
+| 崩溃收敛 | `agent/workflow/recovery.py`（bootstrap recover_interrupted 节点） | running 残留 → stopped(interrupted)（不合成步骤结局、不重派）；**只收敛上一进程遗留**——跳过引擎在飞表中的 run 与引擎构造之后创建的 run（恢复任务与 Web/工具启动并发执行，晚到的恢复不得误伤新工作流）；start/resume 开账-派发段持 `_lifecycle_lock`（并发续跑同一 run 只生效一次）。归属会话注入中断元消息引导 workflow_resume/修订重启（at-most-once）；日志带 run 清单与续跑指引 |
+| MCP OAuth 重写 | `entities/mcp/oauth.py`（自研 `McpOAuthProvider(httpx.Auth)`，替换 SDK 托管） | 两阶段：运行期（401 **先刷新**、确定性失败才交互授权；403 insufficient_scope 并集 scope step-up 重授权；每 server 单飞锁 + 最近刷新窗口合并——AS 不回 expires_in 时防轮转撞车；错误分类 invalid_grant 清 token 留 client / 静态客户端 invalid_client 判配置错误 / 网络 5xx fail-soft 保留凭据）+ 交互事务（RFC9728 路径插入形+根回落 → RFC8414 OIDC 回落 + **issuer 校验拒绝** → RFC7591 **每次授权重新注册**（redirect 端口随事务变化，旧注册会锁死）→ PKCE S256 + state（不匹配继续等待）；注册客户端随 token 持久化仅供刷新；回调服务先监听后取端口）。**OAuth 进入门控（WWW-Authenticate Bearer）**：401 只有服务器明确发 `WWW-Authenticate: Bearer` 挑战才进入刷新/授权流；**无凭据首轮裸发**（不在请求发出前预拉起授权事务——无凭据的首次连接必须先把请求发出去让服务器裁决，预授权会让静态凭据服务器首连就误报「未声明 OAuth」）——带静态凭据（key 在 URL/headers，如 amap）的服务器 401 是凭据问题，不做任何 OAuth 动作，连接按普通失败重连；**well-known 发现**候选全 404 或 200+非元数据文档（网关型业务 JSON/HTML——如 amap 对一切路径回 `{"info":"INVALID_USER_KEY"}`）→ 返回 None 拒绝发明端点；AS 元数据缺失的遗留形态只推导 authorize/token 缺省端点，**不发明注册端点**（无 DCR 文档证据即报「不支持 DCR，请静态配置 oauth.client_id」）；DCR 200 无 client_id 的错误带响应体预览。WebUI 主动授权：`bridge.authorize_server`（URL 即返、回调后台等待、成功自动重连）+ `POST /mcp/{name}/oauth` + ServerCard 授权按钮 + `mcp_auth_start` 工具 |
+
+> Model Experience：① 新增 workflow 工具组 4 工具（恒可见，always 标签）；② 工作流后台执行完成自动通知（注册表路由），长编排不再占住一轮工具调用；③ MCP OAuth 对 AI 透明——待授权链接仍经 mcp_auth_status/pending_auth 呈现，新增 mcp_auth_start 主动触发；④ 断点续跑语义：续跑/修订只重付费分歧步骤，事件流 cached 标记可审计
+
 #### GPU 模型层启停：显存释放面板（第三十八轮新增）
 
 voicehub（:10096）与 face 服务（:10097）升级为模型层启停——进程常驻不死、模型显存可释放、下次推理自动重载（跑大模型前一键腾显存）。本轮把服务面接进 Web，跑图铁律从此有界面入口。
@@ -806,7 +850,7 @@ voicehub（:10096）与 face 服务（:10097）升级为模型层启停——进
 | 声纹识别并行 | `engine._on_speech_end` | 声纹只读识别与 ASR 定稿并行执行（二者都只依赖本段音频快照，互不依赖）——定稿→思维启动的关键路径收敛为一段网络往返（此前串行定稿→声纹→入轮） |
 | 首句快速断句 | `agent/tts/sentences.py`（首句窗口 6~36 字） | 首句未产出前在软切点提前断句——TTS 首请求不等第一个完整句，开声延迟从整句缩到首个分句；窗口内无软切点不硬切（短应答/无标点串回落常规规则，等句末或超长软切） |
 | 抢占清场 | `playback.drop_pending` + `engine._on_delta` 提交回复时 | 回复抢占在播主动播报时清空其未播帧（含收束帧，不放过打断哨兵——非打断语义），回复音频紧跟当前已下发帧直落；pending_finals 计数同步收敛（speak_to_scope 的 appending 判据不受影响） |
-| 召回预算与规划并行 | `memory_retriever` recall 路径 | 检索规划（轻 LLM）与多路检索**并行**：原查询 lane 先行（复用预计算 query_vec 零 embed），规划慢/超预算只损失多查询增强、不再挤占检索预算（2026-09 回归：规划串行在最前，主模型 low 档仍 9s，把检索挤到 1s 致总超时空手回退）；计划 lanes 在规划完成后增量追加（同串跳过、首条异于原查询的带实体定向）。规划段独立预算 `memory_plan_budget_seconds`（0 = 占 `memory_recall_timeout_seconds` 总超时四成份额派生，收敛至多总超时减 1s；超预算回退原查询单发），规划+提及+多路检索全程一个 wait_for——被动召回墙钟真正有界（对通话首响与文字回复同效） |
+| 召回预算与规划并行 | `memory_retriever` recall 路径 | 检索规划（轻 LLM）与多路检索**并行**：原查询 lane 先行（复用预计算 query_vec 零 embed），规划慢/超预算只损失多查询增强、不再挤占检索预算（2026-09 回归：规划串行在最前，主模型 low 档仍 9s，把检索挤到 1s 致总超时空手回退）；计划 lanes 在规划完成后增量追加（同串跳过、首条异于原查询的带实体定向）。规划段独立预算 `memory_plan_budget_seconds`（0 = 占 `memory_recall_timeout_seconds` 总超时四成份额派生，收敛至多总超时减 1s；超预算回退原查询单发，外层另留 +1s 失控兜底）；总时限经 `asyncio.wait` **非破坏式收尾**：到点只收割已落地 lane（挂死/慢路取消丢弃，已落地的基础/焦点/计划 lane 照常融合返回），全空才回退近期记忆——超时不再丢弃整轮召回（对通话首响与文字回复同效） |
 
 > Model Experience：① 通话首响四段提速：声纹并行（省一次网络往返）+ 首句快断（开声提前约一个分句）+ 抢占清场（回复不被主动播报残余帧拖住）+ 召回预算（规划不再无限前置）；工具轮不再长时间静默（先应声训诫 + send_message 自动播出）；② 音色一致性：声音页一处配置全链路生效；③ token 影响：无新增工具 schema，通话注入上限 120→220（仅通话中占用）；④ 缓存影响：通话注入文案变化触发一次前缀重建（此后稳定）
 

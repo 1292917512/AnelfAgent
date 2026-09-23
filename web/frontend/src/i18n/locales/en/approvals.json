@@ -55,15 +55,10 @@
   },
   "matchedRule": "Matched Rule",
   "popup": {
-    "title": "AI requests tool execution",
-    "tool": "Tool",
-    "args": "Arguments",
-    "allowOnce": "Allow once",
-    "allowSession": "Don't ask again (session)",
-    "allowAlways": "Always allow",
-    "deny": "Deny",
-    "feedbackPlaceholder": "Feedback (optional, sent to AI)",
-    "more": "{{count}} more pending requests"
+    "previewEdit": "Edit file: {{path}}",
+    "previewShell": "Will execute",
+    "previewDelete": "Will delete",
+    "previewCreate": "Will create"
   },
   "rules": {
     "add": "Add Rule",

@@ -12,6 +12,7 @@ import { useTranslation } from "react-i18next";
 import { ShieldAlert, Check, X, Timer, Repeat, Infinity as InfinityIcon } from "lucide-react";
 import { approvalsApi } from "@/lib/api";
 import { useApprovalPopupStore } from "@/stores/approval-popup-store";
+import { ApprovalPreview } from "./ApprovalPreview";
 import { cn } from "@/lib/utils";
 
 const RISK_STYLE: Record<string, string> = {
@@ -82,14 +83,20 @@ export function ApprovalDialog() {
             <div className="text-xs text-muted mb-1">{t("popup.tool")}</div>
             <div className="font-mono text-sm text-foreground">{current.tool_name}</div>
           </div>
-          {current.tool_args && (
-            <div>
-              <div className="text-xs text-muted mb-1">{t("popup.args")}</div>
-              <pre className="max-h-40 overflow-auto rounded bg-muted p-2 text-xs text-foreground whitespace-pre-wrap break-all">
-                {current.tool_args}
-              </pre>
-            </div>
-          )}
+          {current.tool_args && (() => {
+            const semantic = (
+              <ApprovalPreview toolName={current.tool_name} toolArgs={current.tool_args} />
+            );
+            if (semantic) return semantic;
+            return (
+              <div>
+                <div className="text-xs text-muted mb-1">{t("popup.args")}</div>
+                <pre className="max-h-40 overflow-auto rounded bg-muted p-2 text-xs text-foreground whitespace-pre-wrap break-all">
+                  {current.tool_args}
+                </pre>
+              </div>
+            );
+          })()}
           {current.reason && (
             <div className="text-xs text-muted">{current.reason}</div>
           )}

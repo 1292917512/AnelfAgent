@@ -271,8 +271,6 @@ class MemoryService:
             deep=depth.strip().lower() == "deep",
             search_types=search_types,
         )
-        if outcome is None:
-            return {"error": "记忆系统未初始化"}
 
         cognee_config = outcome["cognee_config"]
         deep = outcome["deep"]

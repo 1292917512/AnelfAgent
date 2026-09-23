@@ -1,10 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { FileText, Image as ImageIcon, Loader2, Music, Paperclip, Send, Square, Video, X } from "lucide-react";
 import { Button } from "@/components/ui";
 import { useChatStore } from "@/stores/chat-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
+import type { WorkspaceSearchHit } from "@/lib/types";
 import { RealtimeCallPanel, RealtimeCallProvider, RealtimeCallToggle } from "./RealtimeCallBar";
+import { detectMention, useMentionSearch } from "./mention/useMention";
+import { MentionPanel } from "./mention/MentionPanel";
+import { mentionMarkdown } from "./mention/mentionMarkdown";
 
 const FILE_TYPE_ICONS: Record<string, typeof FileText> = {
   image: ImageIcon,
@@ -16,7 +20,10 @@ const FILE_TYPE_ICONS: Record<string, typeof FileText> = {
 /** 工作区文件拖拽的自定义 MIME 类型 */
 export const WORKSPACE_FILE_MIME = "application/x-workspace-file";
 
-/** 对话输入区：文本 + 附件 + 草稿注入 + 工作区文件拖入 */
+/** 大段粘贴转占位符的字符阈值（Codex 式：全文暂存，文本框只留占位符） */
+const PASTE_PLACEHOLDER_MIN_CHARS = 400;
+
+/** 对话输入区：文本 + 附件 + 草稿注入 + 工作区文件拖入 + @提及 */
 export function ChatInput() {
   const { t } = useTranslation("chat");
   const [input, setInput] = useState("");
@@ -33,6 +40,27 @@ export function ChatInput() {
 
   const draftSeq = useWorkbenchStore((s) => s.draftSeq);
   const consumeDraft = useWorkbenchStore((s) => s.consumeDraft);
+
+  // ── @提及 ──────────────────────────────────────────────────
+  const [cursor, setCursor] = useState(0);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const mention = useMemo(() => detectMention(input, cursor), [input, cursor]);
+  const { items: mentionItems, loading: mentionLoading } = useMentionSearch(
+    mention?.query ?? "", mention !== null,
+  );
+  useEffect(() => { setActiveIndex(0); }, [mention?.query]);
+
+  const pickMention = useCallback((hit: WorkspaceSearchHit) => {
+    if (!mention) return;
+    const link = mentionMarkdown(hit.name, hit.path);
+    const next = input.slice(0, mention.start) + link + input.slice(cursor);
+    setInput(next);
+    const pos = mention.start + link.length;
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.setSelectionRange(pos, pos);
+    });
+  }, [input, mention, cursor]);
 
   // AI ui_compose 草稿注入
   useEffect(() => {
@@ -61,6 +89,30 @@ export function ChatInput() {
   }, [input, send, t]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // 提及面板打开时优先消化导航键
+    if (mention && mentionItems.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setActiveIndex((i) => (i + 1) % mentionItems.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setActiveIndex((i) => (i - 1 + mentionItems.length) % mentionItems.length);
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        pickMention(mentionItems[activeIndex]!);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setCursor(-1); // 退出提及态（detectMention 命中不到负光标）
+        setInput((v) => v); // 触发重算
+        return;
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       handleSend();
@@ -94,8 +146,23 @@ export function ChatInput() {
       const dt = new DataTransfer();
       files.forEach((f) => dt.items.add(f));
       addFiles(dt.files);
+      return;
     }
-  }, [addFiles]);
+    // 大段纯文本：插入占位符，全文作为附件（Codex 式 [Pasted Content N chars]）
+    const text = e.clipboardData.getData("text/plain");
+    if (text && text.length >= PASTE_PLACEHOLDER_MIN_CHARS) {
+      e.preventDefault();
+      const blob = new Blob([text], { type: "text/plain" });
+      const file = new File([blob], "pasted.txt", { type: "text/plain" });
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      addFiles(dt.files);
+      const el = inputRef.current;
+      const at = el?.selectionStart ?? input.length;
+      const placeholder = `[Pasted Content ${text.length} chars]`;
+      setInput(input.slice(0, at) + placeholder + input.slice(el?.selectionEnd ?? at));
+    }
+  }, [addFiles, input]);
 
   return (
     <RealtimeCallProvider>
@@ -137,16 +204,29 @@ export function ChatInput() {
 
       {/* 输入卡片 */}
       <div
-        className="border border-input rounded-lg bg-card focus-within:border-ring transition-colors"
+        className="relative border border-input rounded-lg bg-card focus-within:border-ring transition-colors"
         onDrop={handleDrop}
         onDragOver={(e) => e.preventDefault()}
       >
+        {mention && (
+          <MentionPanel
+            items={mentionItems}
+            loading={mentionLoading}
+            activeIndex={activeIndex}
+            onPick={pickMention}
+            onHover={setActiveIndex}
+          />
+        )}
         <textarea
           ref={inputRef}
           value={input}
-          onChange={(e) => setInput(e.target.value)}
+          onChange={(e) => {
+            setInput(e.target.value);
+            setCursor(e.target.selectionStart ?? e.target.value.length);
+          }}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
+          onSelect={(e) => setCursor((e.target as HTMLTextAreaElement).selectionStart)}
           placeholder={t("placeholder")}
           rows={1}
           className="w-full resize-none bg-transparent p-3 text-sm text-foreground placeholder:text-muted outline-none max-h-[180px]"

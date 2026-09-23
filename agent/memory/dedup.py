@@ -411,6 +411,7 @@ _DEDUP_CONFIGS = {
         "memory_light_model": {
             "description": "轻量内部调用的专用模型 ID（检索规划、合并文本合成、自动捕获提取等 light_llm 通道）：指定更快的已配置模型可显著降低回复关键路径上的规划延迟（不存在/停用回落默认主模型，失败仍走回退链）；空 = 默认主模型",
             "default": "",
+            "value_type": ConfigValueType.MODEL,
             "advanced": True,
         },
         "memory_judge_reasoning_effort": {

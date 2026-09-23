@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Switch } from "@/components/ui";
+import { ModelSelect } from "@/components/models/ModelSelect";
 import { cn } from "@/lib/utils";
 
 /**
@@ -26,6 +27,7 @@ export function SelectField({
   disabled,
   onCommit,
 }: CommonProps & { value: string; options: string[]; onCommit: (v: string) => void }) {
+  const { t } = useTranslation("config");
   return (
     <select
       value={value}
@@ -34,9 +36,34 @@ export function SelectField({
       className="bg-bg border border-input rounded-md px-2.5 py-1.5 text-sm text-foreground outline-none focus:border-ring disabled:opacity-50"
     >
       {options.map((opt) => (
-        <option key={opt} value={opt}>{opt}</option>
+        <option key={opt} value={opt}>{opt === "" ? t("enumEmptyOption") : opt}</option>
       ))}
     </select>
+  );
+}
+
+/**
+ * 模型选择控件（MODEL 类型）：复用统一 ModelSelect（已启用 chat 模型下拉 +
+ * 能力图标），选择即提交。空默认值允许选「跟随默认」（提交空串）。
+ */
+export function ModelField({
+  value,
+  allowEmpty,
+  disabled,
+  onCommit,
+}: CommonProps & { value: string; allowEmpty: boolean; onCommit: (v: string) => void }) {
+  return (
+    <ModelSelect
+      modelType="chat"
+      value={value}
+      allowEmpty={allowEmpty}
+      allowPin={false}
+      showDefaultWhenEmpty={false}
+      compact
+      className="w-44"
+      onChange={onCommit}
+      disabled={disabled}
+    />
   );
 }
 

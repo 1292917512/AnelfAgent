@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import CodeMirror from "@uiw/react-codemirror";
+import type { ViewUpdate } from "@codemirror/view";
 import { workspaceApi } from "@/lib/api";
 import type { WorkspaceFileKind } from "@/lib/types";
 import { workspaceFileKind, workspaceMediaKind } from "@/lib/workspace-kind";
@@ -8,6 +9,7 @@ import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { useChatStore } from "@/stores/chat-store";
+import { useChangesStore } from "@/stores/changes-store";
 import { ConfirmDialog, toast } from "@/components/ui";
 import { useIsMobile } from "@/lib/use-media-query";
 import { FileEditorTabs } from "./FileEditorTabs";
@@ -83,6 +85,26 @@ export function FileEditor() {
       setLoadError(true);
     }).finally(() => setLoading(false));
   }, [openFilePath, fileRoot]);
+
+  // AI 编辑联动：已打开文件被外部改动（fileVersions 版本号变化）时刷新磁盘内容。
+  // 有未保存草稿时不覆盖（不丢用户编辑），仅在无脏改动时静默跟进。
+  const fileVersions = useChangesStore((s) => s.fileVersions);
+  const curVersion = openFilePath ? fileVersions[openFilePath] ?? 0 : 0;
+  useEffect(() => {
+    if (!openFilePath || curVersion === 0) return;
+    const tab = tabsRef.current.get(openFilePath);
+    if (!tab) return;
+    if (tab.draft !== tab.file.content) return; // 有未保存修改，不覆盖
+    workspaceApi.read(openFilePath, fileRoot(openFilePath)).then((r) => {
+      setTabs((m) => {
+        const cur2 = m.get(openFilePath);
+        if (!cur2 || cur2.draft !== cur2.file.content) return m; // 读期间用户又改了，放弃
+        return new Map(m).set(openFilePath, { file: r.data, draft: r.data.content });
+      });
+    }).catch(() => { /* 读取失败忽略（文件可能已删） */ });
+    // 只随版本号变化触发；fileRoot/tabsRef 为稳定引用
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [curVersion]);
 
   // 清理已关闭标签的缓存（保留未关闭标签的未保存草稿）
   useEffect(() => {
@@ -188,6 +210,30 @@ export function FileEditor() {
     }).catch(() => { /* 剪贴板不可用时忽略 */ });
   }, [cur]);
 
+  /** 编辑器选区变化 → 写入工作台状态（ui_state 上报的数据源） */
+  const reportSelection = useCallback((path: string, vu: ViewUpdate) => {
+    const setSelection = useWorkbenchStore.getState().setSelection;
+    const sel = vu.state.selection.main;
+    if (sel.empty) {
+      setSelection(null);
+      return;
+    }
+    const doc = vu.state.doc;
+    const startLine = doc.lineAt(sel.from).number;
+    const endLine = doc.lineAt(sel.to).number;
+    const content = vu.state.sliceDoc(sel.from, sel.to);
+    setSelection({
+      path,
+      ranges: [{ start_line: startLine, end_line: endLine }],
+      content,
+    });
+  }, []);
+
+  // 面板收起时清空选区（关闭编辑器即无「当前选区」语义）
+  useEffect(() => {
+    if (!filePanelOpen) useWorkbenchStore.getState().setSelection(null);
+  }, [filePanelOpen]);
+
   // 面板收起时不渲染但保持挂载，标签缓存与未保存草稿不丢失
   if (!filePanelOpen || !openFilePath) return null;
 
@@ -195,6 +241,7 @@ export function FileEditor() {
     <CodeMirror
       value={cur.draft}
       onChange={updateDraft}
+      onUpdate={(vu) => reportSelection(cur.file.path, vu)}
       extensions={langExtension(cur.file.path)}
       theme={theme}
       height="100%"

@@ -135,6 +135,7 @@ class ConfigValueType(Enum):
     ENUM = "enum"  # 枚举选择
     COLOR = "color"  # 颜色值
     RANGE = "range"  # 数值范围
+    MODEL = "model"  # 模型选择器（值为字符串模型 ID，前端渲染模型下拉）
 
 
 @dataclass
@@ -157,7 +158,7 @@ class ConfigItem:
     unit: str = ""  # 单位展示（秒/%/条/分钟…）
     tag: str = ""  # 条件显示标记（如频道 ws_mode 的 forward/reverse，仅供 UI 分组过滤）
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.value_type == ConfigValueType.AUTO or self.value_type == "auto":
             self.value_type = self._detect_type(self.default_value)
 
@@ -246,7 +247,7 @@ class ConfigRegistry:
     _lock = threading.RLock()
 
     @classmethod
-    def register(cls, item: ConfigItem):
+    def register(cls, item: ConfigItem) -> None:
         """注册配置项（重复注册更新定义，分组索引不累积重复 key）"""
         with cls._lock:
             cls._registry[item.key] = item

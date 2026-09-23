@@ -35,6 +35,7 @@ import { useApprovalPopupStore } from "./approval-popup-store";
 import { useDelegationStore } from "./delegation-store";
 import { usePlanStore } from "./plan-store";
 import { useWorkbenchStore } from "./workbench-store";
+import { useChangesStore } from "./changes-store";
 import { clearSendWatchdog, touchSendWatchdog, nextCid, DEFAULT_CHAT_ID } from "./chat-shared";
 
 export interface ChatSseContext {
@@ -53,9 +54,13 @@ export function routeChatId(data: SseEventBase): string {
  * 把流式区的工具调用记录固化到正式消息上（reply/media 到达时调用）。
  * 工具卡片随消息持久展示（默认折叠），刷新后由历史 [已执行操作摘要] 卡片接续。
  */
-function solidifyToolCalls(b: ChatBucket): { toolCalls?: ChatStreamingTool[]; streaming: null } {
+function solidifyToolCalls(b: ChatBucket): { toolCalls?: ChatStreamingTool[]; streaming: null; turnId?: string } {
   const tools = b.streaming?.tools;
-  return { toolCalls: tools && tools.length ? [...tools] : undefined, streaming: null };
+  return {
+    toolCalls: tools && tools.length ? [...tools] : undefined,
+    streaming: null,
+    turnId: b.streaming?.turnId,
+  };
 }
 
 function dispatchUiCommand(data: UiCommandPayload) {
@@ -129,9 +134,11 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
       const chatId = routeChatId(data);
       const isBackground = chatId !== ctx.getActiveChatId();
       updateBucket(chatId, (b) => {
-        const { toolCalls, streaming } = solidifyToolCalls(b);
+        const { toolCalls, streaming, turnId } = solidifyToolCalls(b);
         const msg: ChatMessage = { role: "assistant", content: data.content, cid: nextCid(), ts: Date.now() / 1000 };
         if (toolCalls) msg.toolCalls = toolCalls;
+        const changes = turnId ? useChangesStore.getState().settleTurn(turnId) : [];
+        if (changes.length) msg.changes = changes;
         return {
           messages: [
             ...b.messages.map((m) => (m.queued ? { ...m, queued: undefined } : m)),
@@ -309,20 +316,24 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
       const data = JSON.parse(e.data) as SseFileDiffEvent;
       touchSendWatchdog();
       const chatId = routeChatId(data);
+      const turnId = data.turn_id ?? "";
+      const entry = {
+        path: data.path,
+        diff: data.diff,
+        additions: data.additions,
+        removals: data.removals,
+      };
+      // 聚合进改动集 store（消息时间线的「本轮改动」数据源）+ 编辑器联动刷新信号
+      if (turnId) useChangesStore.getState().recordDiff(turnId, entry);
+      useChangesStore.getState().bumpFileVersion(data.path);
       updateBucket(chatId, (b) => {
-        const turnId = data.turn_id ?? "";
         const cur = b.streaming && b.streaming.turnId === turnId
           ? b.streaming
           : { turnId, text: "", reasoning: "", tools: [], diffs: [] };
         return {
           streaming: {
             ...cur,
-            diffs: [...cur.diffs, {
-              path: data.path,
-              diff: data.diff,
-              additions: data.additions,
-              removals: data.removals,
-            }].slice(-3),
+            diffs: [...cur.diffs, entry],
           },
         };
       });

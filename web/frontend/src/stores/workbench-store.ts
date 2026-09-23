@@ -23,6 +23,19 @@ export interface UiAsk {
 const MAX_NOTIFICATIONS = 20;
 const MAX_ASKS = 20;
 
+export interface EditorSelectionRange {
+  start_line: number;
+  end_line: number;
+}
+
+export interface EditorSelection {
+  /** 选区所在文件（工作区相对路径） */
+  path: string;
+  ranges: EditorSelectionRange[];
+  /** 选区内容（后端注入时按预算截断） */
+  content: string;
+}
+
 interface WorkbenchState {
   /** 左侧文件树栏 */
   leftOpen: boolean;
@@ -41,6 +54,8 @@ interface WorkbenchState {
   filePanelExpanded: boolean;
   /** 文件树定位路径（open_panel files 时展开） */
   fileTreeFocus: string | null;
+  /** 编辑器当前选区（FileEditor 上报；无选区/面板收起时为 null） */
+  selection: EditorSelection | null;
   /** 搜索面板预填关键词 */
   searchSeed: string;
   /** 注入输入框的草稿（consumeDraft 消费） */
@@ -69,6 +84,7 @@ interface WorkbenchState {
   /** 切换编辑器全屏展开 */
   toggleFilePanelExpanded: () => void;
   setFileTreeFocus: (path: string | null) => void;
+  setSelection: (sel: EditorSelection | null) => void;
   setSearchSeed: (q: string) => void;
   setDraft: (text: string) => void;
   consumeDraft: () => string | null;
@@ -88,6 +104,7 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   filePanelOpen: false,
   filePanelExpanded: false,
   fileTreeFocus: null,
+  selection: null,
   searchSeed: "",
   draft: null,
   draftSeq: 0,
@@ -177,6 +194,7 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   collapseFilePanel: () => set({ filePanelOpen: false }),
   toggleFilePanelExpanded: () => set((s) => ({ filePanelExpanded: !s.filePanelExpanded, filePanelOpen: true })),
   setFileTreeFocus: (path) => set({ fileTreeFocus: path }),
+  setSelection: (sel) => set({ selection: sel }),
   setSearchSeed: (q) => set({ searchSeed: q }),
 
   setDraft: (text) => set((s) => ({ draft: text, draftSeq: s.draftSeq + 1 })),
@@ -211,6 +229,13 @@ export function startUiStateReporting(): () => void {
         open_file: state.openFilePath,
         has_draft: state.draft !== null,
         pending_asks: state.asks.length,
+        // 工作区上下文注入数据源（发送时渲染为消息前缀块）
+        active_file: state.openFilePath,
+        selection: state.selection,
+        open_tabs: state.openFiles.map((p) => ({
+          label: p.split("/").pop() ?? p,
+          path: p,
+        })),
       }).catch(() => { /* 上报失败忽略 */ });
     }, 800);
   });

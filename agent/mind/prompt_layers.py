@@ -289,6 +289,7 @@ _PROMPT_CACHE_CONFIGS = {
         "conversation_summary_model": {
             "description": "折叠/压缩摘要专用模型 ID：为内部摘要任务指定更轻量的已配置模型（失败仍走默认回退链）；空 = 默认主模型",
             "default": "",
+            "value_type": ConfigValueType.MODEL,
         },
         "conversation_summary_reasoning_effort": {
             "description": "摘要专用思考等级：折叠/压缩摘要通常无需深度思考，可指定低档省时省 token（模型不支持思考时自动忽略）；空 = 跟随模型自身配置",

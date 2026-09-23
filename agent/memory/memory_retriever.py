@@ -194,6 +194,9 @@ class MemoryRetriever:
         except Exception:
             pass
         plan_budget = _plan_budget_seconds(recall_timeout)
+        # 召回墙钟锚点：总时限从召回入口起算（规划/检索并行共享）
+        loop = asyncio.get_running_loop()
+        t0 = loop.time()
 
         plan = RetrievalPlan(queries=[query] if query else [])
         mention_tags: List[str] = []
@@ -262,7 +265,14 @@ class MemoryRetriever:
                 asyncio.ensure_future(_focus_search())
                 if focus_query and focus_query != query else None)
 
-            plan = await plan_task
+            try:
+                # 外兜底比 plan_retrieval 内预算宽 1s：内部超时正常自收口，
+                # 此层仅防规划自身失控（内部机制失效/被替换）
+                plan = await asyncio.wait_for(plan_task, timeout=plan_budget + 1.0)
+            except asyncio.TimeoutError:
+                log(f"💾 检索规划超时（{plan_budget:.1f}s），回退原查询",
+                    "WARNING", tag="思维")
+                plan = RetrievalPlan(queries=[query] if query else [])
             # 计划 lanes：同串已由基础 lane 覆盖（query_vec 复用零开销），
             # 跳过；首条异于原查询的计划查询带实体定向（首条即原查询时
             # 本轮放弃定向，node_keys 邻域仍供深探）
@@ -276,22 +286,44 @@ class MemoryRetriever:
                 targeted_used = True
             # 共识段在前（merge_consensus 按前 N 条 lane 计数），基础与
             # 焦点 lane 只参与合并竞争
-            lanes = list(await asyncio.gather(
+            all_lanes: List[asyncio.Future] = [
                 *plan_lane_tasks, base_task,
-                *([] if focus_task is None else [focus_task])))
+                *([] if focus_task is None else [focus_task])]
+            # 非破坏式收尾：到点只收割已落地 lane（asyncio.wait 不取消在途
+            # 任务，取消动作显式做），慢路/挂死路不再拖垮或丢弃整轮召回
+            _done, pending = await asyncio.wait(
+                all_lanes, timeout=max(0.5, recall_timeout - (loop.time() - t0)))
+            lanes: List[List[MemorySearchResult]] = []
+            n_plan_landed = 0
+            for i, t in enumerate(all_lanes):
+                if t in pending:
+                    continue
+                exc = t.exception()
+                if exc is not None:
+                    log(f"召回检索 lane 失败: {exc}", "DEBUG", tag="思维")
+                    continue
+                lanes.append(t.result())
+                if i < len(plan_lane_tasks):
+                    n_plan_landed += 1
+            if pending:
+                for t in pending:
+                    t.cancel()
+                if lanes:
+                    log(f"💾 被动召回部分超时（{recall_timeout}s）："
+                        f"{len(lanes)}/{len(all_lanes)} 路检索完成，取已落地结果",
+                        "DEBUG", tag="思维")
+                else:
+                    log(f"💾 被动召回超时（{recall_timeout}s），回退近期记忆",
+                        "WARNING", tag="思维")
+                    try:
+                        from . import metrics
+                        metrics.incr("recall.timeout")
+                    except Exception:
+                        pass
             return self.merge_consensus(
-                lanes, limit=k * 2, consensus_lanes=len(plan_lane_tasks))
+                lanes, limit=k * 2, consensus_lanes=n_plan_landed)
 
-        try:
-            results = await asyncio.wait_for(_planned_recall(), timeout=recall_timeout)
-        except asyncio.TimeoutError:
-            log(f"💾 被动召回超时（{recall_timeout}s），回退近期记忆", "WARNING", tag="思维")
-            try:
-                from . import metrics
-                metrics.incr("recall.timeout")
-            except Exception:
-                pass
-            results = []
+        results = await _planned_recall()
         entity_msgs = await profiles_task
 
         # 时间感知：检测到时间引用词时，提升事件记忆与近期记忆权重
@@ -696,7 +728,7 @@ class MemoryRetriever:
         limit: int = 8,
         deep: bool = False,
         search_types: Optional[List[str]] = None,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         """召回诊断：与真实召回同管线（规划 → 多查询联邦检索 → 共识融合 →
         关系邻域 + 遗忘层）的无副作用执行。
 
@@ -708,9 +740,6 @@ class MemoryRetriever:
         from .cognee.fusion import datasets_for_scope, federated_search
         from .cognee.runtime import get_cognee_client
         from .graph import entity_node_keys, format_triple
-
-        if self._store is None:
-            return None
 
         timings: Dict[str, Any] = {}
         total_start = _time.perf_counter()

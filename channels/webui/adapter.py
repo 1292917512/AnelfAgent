@@ -208,7 +208,8 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         })
 
     async def _on_file_diff(self, payload: dict) -> None:
-        await self._broadcast("file_diff", {
+        await self._broadcast_scoped("file_diff", {
+            "scope": payload.get("scope", ""),
             "path": payload.get("path", ""),
             "diff": payload.get("diff", ""),
             "additions": payload.get("additions", 0),

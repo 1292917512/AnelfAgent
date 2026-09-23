@@ -49,6 +49,9 @@ def clean_message_for_display(msg: Dict[str, Any]) -> Dict[str, Any]:
     content = str(msg.get("content", ""))
     content = strip_message_meta_tags(content)
     content = strip_functional_tags(content)
+    # 工作区上下文注入块剥离（注入文本不在历史里重复刷屏，只留用户原文）
+    from services.workspace_context import strip_workspace_context
+    content = strip_workspace_context(content)
     # kind 判定先于通用标签剥离：结构化前缀一旦识别即锁定，
     # 避免正文中的类标签片段干扰后续清洗导致前缀丢失
     head = content.strip()
@@ -249,6 +252,14 @@ class ChatService:
             file_descs = [f"[{classify_file_type(Path(fp).suffix.lower())}:{fp}]" for fp in files]
             if file_descs:
                 text = text + "\n" + " ".join(file_descs) if text else " ".join(file_descs)
+
+        # 工作区上下文注入（打开文件/选区/标签页 → 消息前缀块；历史清洗剥离）
+        from entities.ui.tools import get_ui_state_snapshot
+        from services.workspace_context import inject_workspace_context
+        try:
+            text = inject_workspace_context(text, get_ui_state_snapshot())
+        except Exception:
+            pass  # 注入失败不阻塞发送
 
         await self.send_message(
             text,

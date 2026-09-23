@@ -55,15 +55,10 @@
   },
   "matchedRule": "命中规则",
   "popup": {
-    "title": "AI 请求执行工具",
-    "tool": "工具",
-    "args": "参数",
-    "allowOnce": "允许一次",
-    "allowSession": "本会话不再询问",
-    "allowAlways": "永久允许",
-    "deny": "拒绝",
-    "feedbackPlaceholder": "附言（可选，将告知 AI）",
-    "more": "还有 {{count}} 个待处理请求"
+    "previewEdit": "编辑文件：{{path}}",
+    "previewShell": "将执行命令",
+    "previewDelete": "将删除",
+    "previewCreate": "将创建"
   },
   "rules": {
     "add": "添加规则",

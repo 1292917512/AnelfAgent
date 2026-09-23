@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import type { ConfigMetaItem } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { useConfigSave } from "./useConfigSave";
-import { NumberField, PasswordField, RangeField, SelectField, SwitchField, TextField } from "./fields";
+import { NumberField, ModelField, PasswordField, RangeField, SelectField, SwitchField, TextField } from "./fields";
 
 interface ConfigItemRowProps {
   item: ConfigMetaItem;
@@ -38,6 +38,16 @@ export function ConfigItemRow({ item, highlight, onOpenDetail }: ConfigItemRowPr
           max={item.max}
           step={item.step ?? 1}
           unit={item.unit || undefined}
+          disabled={disabled}
+          onCommit={save}
+        />
+      );
+    }
+    if (item.type === "model") {
+      return (
+        <ModelField
+          value={value == null ? "" : String(value)}
+          allowEmpty={item.default === "" || item.default === null}
           disabled={disabled}
           onCommit={save}
         />

@@ -282,6 +282,40 @@ async def test_plan_slowness_doesnt_starve_search(store, monkeypatch) -> None:
     assert "火锅" in _recall_text(memory_msgs)
 
 
+@pytest.mark.asyncio
+async def test_recall_partial_timeout_harvests_landed_lanes(store, monkeypatch) -> None:
+    """总时限到点只收割已落地 lane：挂死的检索路被取消，不拖垮也不丢弃整轮召回。"""
+    from agent.memory.memory_retriever import MemoryRetriever
+    from agent.memory.memory_types import MemoryEntry, MemoryType, RetrievalPlan
+
+    await store.add(MemoryEntry(
+        memory_type=MemoryType.SEMANTIC, content="阿辰喜欢火锅，每周都要去吃一次",
+    ))
+
+    real_search = store.search_unified
+
+    async def _hang_search(query, **kwargs):
+        if str(query).startswith("挂死"):
+            await asyncio.sleep(30)
+        return await real_search(query, **kwargs)
+
+    monkeypatch.setattr(store, "search_unified", _hang_search)
+
+    async def _plan(self, query: str, *, timeout: float | None = None) -> RetrievalPlan:
+        return RetrievalPlan(queries=["挂死的检索词组一二三四"])
+
+    monkeypatch.setattr(MemoryRetriever, "plan_retrieval", _plan)
+    monkeypatch.setattr(
+        "core.config.get_config_float",
+        lambda key, default: 1.5 if key == "memory_recall_timeout_seconds" else default,
+    )
+    retriever = MemoryRetriever(store, _NullEmbedder())
+    conversation = [{"role": "user", "content": "阿辰喜欢吃什么呀，我记得之前聊过"}]
+    _profile, memory_msgs = await retriever.recall_split(conversation)
+    # 基础 lane 已落地被收割（挂死的计划 lane 被取消，不回退近期记忆）
+    assert "火锅" in _recall_text(memory_msgs)
+
+
 def test_record_broadcasts_when_scope_unknown() -> None:
     """记账无 scope 时广播：进行中回复的账本也能感知（防隔离漏去重）。"""
     from agent.memory.memory_types import MemorySearchResult
