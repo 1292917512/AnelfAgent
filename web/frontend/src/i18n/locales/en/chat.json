@@ -82,5 +82,6 @@
   "changes": {
     "title": "{{count}} file(s) changed this turn",
     "hint": "expand diff / open file"
-  }
+  },
+  "dropToAttach": "Drop to attach file"
 }

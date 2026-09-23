@@ -82,5 +82,6 @@
   "changes": {
     "title": "本轮改动 {{count}} 个文件",
     "hint": "点击展开 diff / open 打开文件"
-  }
+  },
+  "dropToAttach": "松开以附加文件"
 }

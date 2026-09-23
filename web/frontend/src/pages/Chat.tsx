@@ -12,6 +12,7 @@ import { Button } from "@/components/ui";
 import { ModelSelect } from "@/components/models/ModelSelect";
 import { MessageList } from "./chat/MessageList";
 import { ChatInput } from "./chat/ChatInput";
+import { ChatDropZone } from "./chat/ChatDropZone";
 import { StatusBar } from "./chat/StatusBar";
 import { ActivityBar } from "./chat/ActivityBar";
 import { Dock, LeftDock } from "./chat/Dock";
@@ -91,7 +92,8 @@ export default function Chat() {
   // 中栏：对话流（编辑器全屏且有打开文件时让位隐藏，文件树/Dock 保留）
   const centerHidden = filePanelExpanded && hasOpenFiles;
   const center = (
-    <div className="flex-1 flex flex-col min-w-0 h-full p-3 md:p-4 relative">
+    <ChatDropZone className="flex-1 flex flex-col min-w-0 h-full">
+      <div className="flex-1 flex flex-col min-w-0 h-full p-3 md:p-4 relative">
       {/* 头部 */}
       <div className="flex items-center justify-between gap-2 mb-3 shrink-0">
         <div className="flex items-center gap-1 min-w-0">
@@ -137,7 +139,8 @@ export default function Chat() {
 
       {/* 对话窗口内嵌入式悬浮计划窗（absolute，相对中栏容器定位，可拖拽） */}
       <PlanPanel />
-    </div>
+      </div>
+    </ChatDropZone>
   );
 
   // 移动端：三栏全部退化为抽屉（Dock/LeftDock/FileEditor 内部自行处理）
