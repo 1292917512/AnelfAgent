@@ -1,15 +1,28 @@
 /** mention 感知的 Markdown 渲染：把 `[name](./path)` 链接段拆出渲染为可点击文件 chip，其余段落走原 Markdown 管线。 */
 
 import { memo, type ReactNode } from "react";
-import { FileText } from "lucide-react";
+import { FileText, Folder } from "lucide-react";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { CollapsibleMarkdown } from "./CollapsibleMarkdown";
 import { splitMentions, type FileMention } from "../mention/mentionMarkdown";
 
-/** 单个文件引用 chip（点击打开编辑器并聚焦） */
+/** 解析 mention 路径前缀（project: 所属根 / dir: 目录标记），返回真实路径与归属 */
+function resolveMentionPath(raw: string): { path: string; root: "workspace" | "project"; isDir: boolean } {
+  let rest = raw;
+  const root = rest.startsWith("project:") ? "project" : "workspace";
+  if (root === "project") rest = rest.slice("project:".length);
+  const isDir = rest.startsWith("dir:");
+  if (isDir) rest = rest.slice("dir:".length);
+  return { path: rest, root, isDir };
+}
+
+/** 单个引用 chip：文件点打开编辑器，目录聚焦左侧文件树对应目录 */
 function MentionChip({ mention, index }: { mention: FileMention; index: number }) {
   const openFile = useWorkbenchStore((s) => s.openFile);
   const setFileTreeFocus = useWorkbenchStore((s) => s.setFileTreeFocus);
+  const toggleLeft = useWorkbenchStore((s) => s.toggleLeft);
+  const leftOpen = useWorkbenchStore((s) => s.leftOpen);
+  const { path, root, isDir } = resolveMentionPath(mention.path);
   return (
     <button
       key={index}
@@ -18,15 +31,18 @@ function MentionChip({ mention, index }: { mention: FileMention; index: number }
       onClick={(e) => {
         e.preventDefault();
         e.stopPropagation();
-        // 链接里的 project: 前缀解析所属根（工作区无前缀）
-        const isProject = mention.path.startsWith("project:");
-        const realPath = isProject ? mention.path.slice("project:".length) : mention.path;
-        openFile(realPath, isProject ? "project" : "workspace");
-        setFileTreeFocus(realPath);
+        if (isDir) {
+          // 目录：打开左栏并聚焦对应目录（不开编辑器）
+          if (!leftOpen) toggleLeft();
+          setFileTreeFocus(path);
+        } else {
+          openFile(path, root);
+          setFileTreeFocus(path);
+        }
       }}
       className="mx-0.5 inline-flex items-center gap-1 rounded border border-border bg-elevated px-1.5 py-0 align-baseline font-mono text-[12px] text-accent hover:bg-accent/10 transition-colors"
     >
-      <FileText size={11} />
+      {isDir ? <Folder size={11} /> : <FileText size={11} />}
       <span className="max-w-[180px] truncate">{mention.name}</span>
     </button>
   );
