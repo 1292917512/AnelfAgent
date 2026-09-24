@@ -184,7 +184,11 @@ class WorkspaceService:
         if is_dir:
             node["has_children"] = _dir_has_visible_children(abs_path)
             if depth > 0 and node["has_children"]:
-                node["children"] = self._list_dir(abs_path, depth=depth - 1, budget=budget, stats=stats, root=root)
+                ch = self._list_dir(abs_path, depth=depth - 1, budget=budget, stats=stats, root=root)
+                # 空列表不挂 children 键：has_children=True 且 children=[] 是配额截断
+                # 产物（第二层耗尽），缺席表示「有子项、未展开」，由前端懒加载补齐
+                if ch:
+                    node["children"] = ch
         else:
             node["size"] = st.st_size
             node["binary"] = is_binary(abs_path)

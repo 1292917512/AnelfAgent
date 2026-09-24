@@ -169,7 +169,7 @@ export function FileTree({ root, onUpload }: Props) {
             }
             onToggle={(id) => {
               const node = treeRef.current?.get(id);
-              if (node?.data.type === "dir" && node.data.children === undefined) {
+              if (node?.data.type === "dir" && !node.data.children?.length && node.data.has_children !== false) {
                 void store.loadChildren(root, id);
               }
             }}

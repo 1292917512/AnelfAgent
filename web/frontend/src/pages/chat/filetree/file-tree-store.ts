@@ -67,7 +67,7 @@ export const useFileTreeStore = create<FileTreeState>((set, get) => ({
     if (tree.loading || (tree.children !== null && !force)) return;
     set((s) => ({ trees: { ...s.trees, [root]: { ...s.trees[root], loading: true, error: false } } }));
     try {
-      const res = await workspaceApi.tree("", 2, root);
+      const res = await workspaceApi.tree("", 1, root);
       set((s) => ({
         trees: { ...s.trees, [root]: { children: res.data.children, truncated: res.data.truncated, loading: false, error: false } },
       }));
@@ -80,7 +80,8 @@ export const useFileTreeStore = create<FileTreeState>((set, get) => ({
     const key = dirKey(root, path);
     if (get().loadingDirs[key]) return;
     const node = findNode(get().trees[root].children ?? [], path);
-    if (!force && node?.children !== undefined) return;
+    // 有内容或确认空目录才跳过；has_children 标记有子项但 children 缺席/被截空时按需拉
+    if (!force && node && (node.children?.length || node.has_children === false)) return;
     set((s) => ({ loadingDirs: { ...s.loadingDirs, [key]: true } }));
     try {
       const res = await workspaceApi.tree(path, 1, root);
