@@ -210,6 +210,9 @@ class Mind:
         self.session_llm_params: dict = {}
 
         self._reflecting: bool = False
+        # 进行中的 reflect 调用深度（并发子代理/任务/反思共用唯一入口，
+        # phase 空闲判定的活跃事实源之一，asyncio 单线程计数无竞态）
+        self._reflect_depth: int = 0
         self._cycle_lock = asyncio.Lock()
         self._heartbeat_running: bool = False
         # 自动续轮退避计数（周期内无实质进展时递增，防紧凑重试烧 token）
@@ -355,62 +358,81 @@ class Mind:
             except RuntimeError:
                 pass
 
+    def _reset_phase_if_idle(self) -> None:
+        """无活跃思维工作时把阶段归零 IDLE（phase 的唯一复位点）。
+
+        活跃事实源三元组：回复会话（_active_scopes）/ 进行中 reflect
+        （_reflect_depth）/ 自主循环（_cycle_lock）——任一存活即不动，
+        由该工作自己的完成边界再次调用本方法兜底归零。
+        """
+        if self.phase is MindPhase.IDLE:
+            return
+        if self._active_scopes or self._reflect_depth > 0 or self._cycle_lock.locked():
+            return
+        self._set_phase(MindPhase.IDLE)
+
     # ==================================================================
     # 消息感知入口
     # ==================================================================
 
     async def accept_feel(self, anything: Everything) -> None:
         """接收外部消息：到达即写入对话历史（保证时序）；仅在 trigger_mind 时加入 PFC 任务队列。"""
-        # 思维循环运行中不覆盖当前阶段，避免 UI 阶段抖动
-        if not self._active_scopes and not self._cycle_lock.locked():
-            self._set_phase(MindPhase.ACCEPTING)
-        preview = str(anything)[:80] if anything else ""
-        log(f"感知输入: {preview}", tag="思维")
-        await self.add_conversation(anything)
-
-        # 用户话题指令抽取（ban-topic）：所有用户消息必经点，纯正则零 LLM，
-        # 失败不影响消息主流程
         try:
-            from agent.messages import CharType
-            if getattr(anything, "char_type", None) in (None, CharType.USER):
-                from agent.memory.user_directives import observe_message
-                await observe_message(
-                    anything.entity_scope, anything.get_text_content() or "",
-                )
-        except Exception:
-            pass
+            # 思维工作运行中不覆盖当前阶段，避免 UI 阶段抖动
+            if (not self._active_scopes and not self._cycle_lock.locked()
+                    and self._reflect_depth == 0):
+                self._set_phase(MindPhase.ACCEPTING)
+            preview = str(anything)[:80] if anything else ""
+            log(f"感知输入: {preview}", tag="思维")
+            await self.add_conversation(anything)
 
-        # 中断指令优先：整条消息精确匹配中断关键词且该 scope 正在回复时，
-        # 请求中断进行中的会话，而非作为新消息入队（用户意图是"刹车"而非对话）
-        scope = anything.entity_scope
-        if (
-            is_interrupt_enabled()
-            and scope in self._active_scopes
-            and match_interrupt_keyword(anything.get_text_content() or "")
-        ):
-            self.interrupts.request(scope, reason="用户发送中断指令")
-            log(f"识别到中断指令，已请求中断: {scope}", tag="中断")
-            return
+            # 用户话题指令抽取（ban-topic）：所有用户消息必经点，纯正则零 LLM，
+            # 失败不影响消息主流程
+            try:
+                from agent.messages import CharType
+                if getattr(anything, "char_type", None) in (None, CharType.USER):
+                    from agent.memory.user_directives import observe_message
+                    await observe_message(
+                        anything.entity_scope, anything.get_text_content() or "",
+                    )
+            except Exception:
+                pass
 
-        should_enqueue = self.should_enqueue_external_message(anything)
-        if (
-            not should_enqueue
-            and bool(getattr(anything, "trigger_mind", True))
-            and self._reflecting
-            and isinstance(anything, EverythingGroup)
-            and not bool(getattr(anything, "to_me", False))
-        ):
-            log(f"反思中忽略非 @ 群消息: {anything.entity_scope}", "DEBUG", tag="思维")
-        if should_enqueue:
-            # 真实外部事件：重置自动续轮退避 + 后台任务唤醒预算（真人参与
-            # 后自动唤醒链路重新合法）
-            self._auto_cycle_retry = 0
-            self.wake_budget.reset(scope)
-            # /name 技能手势：真实外部消息正文以 /技能名 开头 → 确定性触发
-            # （防伪造：仅此路径检测，工具结果/子代理输出里的 "/x" 不构成手势）
-            self._detect_skill_gesture(anything, scope)
-            await self.pfc.add_task(anything)
-            self._update_channel_snapshot(anything)
+            # 中断指令优先：整条消息精确匹配中断关键词且该 scope 正在回复时，
+            # 请求中断进行中的会话，而非作为新消息入队（用户意图是"刹车"而非对话）
+            scope = anything.entity_scope
+            if (
+                is_interrupt_enabled()
+                and scope in self._active_scopes
+                and match_interrupt_keyword(anything.get_text_content() or "")
+            ):
+                self.interrupts.request(scope, reason="用户发送中断指令")
+                log(f"识别到中断指令，已请求中断: {scope}", tag="中断")
+                return
+
+            should_enqueue = self.should_enqueue_external_message(anything)
+            if (
+                not should_enqueue
+                and bool(getattr(anything, "trigger_mind", True))
+                and self._reflecting
+                and isinstance(anything, EverythingGroup)
+                and not bool(getattr(anything, "to_me", False))
+            ):
+                log(f"反思中忽略非 @ 群消息: {anything.entity_scope}", "DEBUG", tag="思维")
+            if should_enqueue:
+                # 真实外部事件：重置自动续轮退避 + 后台任务唤醒预算（真人参与
+                # 后自动唤醒链路重新合法）
+                self._auto_cycle_retry = 0
+                self.wake_budget.reset(scope)
+                # /name 技能手势：真实外部消息正文以 /技能名 开头 → 确定性触发
+                # （防伪造：仅此路径检测，工具结果/子代理输出里的 "/x" 不构成手势）
+                self._detect_skill_gesture(anything, scope)
+                await self.pfc.add_task(anything)
+                self._update_channel_snapshot(anything)
+        finally:
+            # 感知处理完成边界：未入队/中断/异常路径不会有后续周期覆盖
+            # ACCEPTING；已入队时周期未抢锁则先归零、周期启动再覆盖
+            self._reset_phase_if_idle()
 
     def _detect_skill_gesture(self, anything: Everything, scope: str) -> None:
         """检测 /name 技能手势并登记待注入（recollection 消费后清空）。"""
@@ -588,15 +610,23 @@ class Mind:
 
     async def execute_mind(self, *, is_heartbeat: bool = False) -> None:
         """触发自主循环。通过 _cycle_lock 防止多个循环并发执行。"""
-        async with self._cycle_lock:
-            await self._autonomous_cycle(is_heartbeat=is_heartbeat)
+        try:
+            async with self._cycle_lock:
+                await self._autonomous_cycle(is_heartbeat=is_heartbeat)
+        finally:
+            # 周期工作完成边界：锁已释放，无派生活跃（后台回复/反思）时归零；
+            # 周期异常穿透（assistant 捕获续跑）同样收口，不留 DECIDING 卡死
+            self._reset_phase_if_idle()
 
     async def try_execute_mind(self) -> None:
         """尝试触发自主循环；已有循环在执行时直接跳过（用于 fire-and-forget 场景）。"""
         if self._cycle_lock.locked():
             return
-        async with self._cycle_lock:
-            await self._autonomous_cycle()
+        try:
+            async with self._cycle_lock:
+                await self._autonomous_cycle()
+        finally:
+            self._reset_phase_if_idle()
 
     # ==================================================================
     # 自主循环：态势收集 → 元决策 → 分发执行
@@ -710,8 +740,13 @@ class Mind:
         """
         self.note_activity()
         completion: Dict[str, Any] = {}
-        await _tl_reply(self, anything, images, adapter_key=adapter_key,
-                        completion=completion)
+        try:
+            await _tl_reply(self, anything, images, adapter_key=adapter_key,
+                            completion=completion)
+        finally:
+            # 回复工作完成边界：execute_reply 路径此时尚未注销 scope（不收口），
+            # PROACTIVE 直调路径无登记（无其他活跃即归零）
+            self._reset_phase_if_idle()
 
     def _collect_pending_images(self, scope: str = "") -> List[ImageContent]:
         return _tl_collect_images(self, scope=scope)
@@ -1006,61 +1041,68 @@ class Mind:
         # __init__ 置 0 后全仓库无写入点，hours_since_reflect 恒返回 999.0
         # 哨兵，元决策被"距上次反思 999h"误导而反复建议反思（饱和假象根因）。
         self._last_reflect_time = time.time()
-        mc = self._get_mind_config()
-        safety_limit = max_iterations or mc.max_tool_iterations
-        blocked_tools = self._build_reflect_blocklist(allow_output_tools)
-        if extra_blocked_tools:
-            blocked_tools = blocked_tools | set(extra_blocked_tools)
+        # 进行中思考计数：phase 空闲判定的活跃事实源（并发 reflect 时仅最后
+        # 一个收尾的调用触发归零），异常也必须复位
+        self._reflect_depth += 1
+        try:
+            mc = self._get_mind_config()
+            safety_limit = max_iterations or mc.max_tool_iterations
+            blocked_tools = self._build_reflect_blocklist(allow_output_tools)
+            if extra_blocked_tools:
+                blocked_tools = blocked_tools | set(extra_blocked_tools)
 
-        # 每次反思会话使用唯一 scope：并行子代理/心跳 reflect 的 plan 与
-        # 工具激活状态按 scope 隔离，共享字面量会互相串扰
-        reflect_scope = f"reflect:{uuid.uuid4().hex[:8]}"
-        # 工具目录选择：无显式选择器（心跳任务/元决策等默认反思）时复用回复级
-        # 装配——回复的追加式冻结数组是全进程单一工具族，reflect 独立装配会
-        # 形成第二个等大工具族，两族交替即整段缓存重写（实测 reply/reflect
-        # 工具数已趋同 106~126，"精简"前提不再成立）；带选择器的子代理档案
-        # 仍走精简目录（真实精简 + 一次性 scope 无结转价值）。
-        # 可见性与权限分离：禁用工具不从数组移除，由 think_loop 执行侧拦截
-        # （合成错误结果，模型自我纠正）
-        from core.config import get_config_bool
-        share_reply_tools = get_config_bool("reflect_share_reply_tools", True)
-        if tool_tags or not share_reply_tools:
-            extra_selectors = tool_tags if tool_tags else ["heartbeat"]
-            active_tools = await self.pfc.get_reflect_tool_schemas(
-                adapter_key, scope=reflect_scope, selectors=extra_selectors,
-            )
-        else:
-            extra_selectors = []
-            active_tools = await self.pfc.get_active_tool_schemas(
-                adapter_key, scope=reflect_scope,
-            )
+            # 每次反思会话使用唯一 scope：并行子代理/心跳 reflect 的 plan 与
+            # 工具激活状态按 scope 隔离，共享字面量会互相串扰
+            reflect_scope = f"reflect:{uuid.uuid4().hex[:8]}"
+            # 工具目录选择：无显式选择器（心跳任务/元决策等默认反思）时复用回复级
+            # 装配——回复的追加式冻结数组是全进程单一工具族，reflect 独立装配会
+            # 形成第二个等大工具族，两族交替即整段缓存重写（实测 reply/reflect
+            # 工具数已趋同 106~126，"精简"前提不再成立）；带选择器的子代理档案
+            # 仍走精简目录（真实精简 + 一次性 scope 无结转价值）。
+            # 可见性与权限分离：禁用工具不从数组移除，由 think_loop 执行侧拦截
+            # （合成错误结果，模型自我纠正）
+            from core.config import get_config_bool
+            share_reply_tools = get_config_bool("reflect_share_reply_tools", True)
+            if tool_tags or not share_reply_tools:
+                extra_selectors = tool_tags if tool_tags else ["heartbeat"]
+                active_tools = await self.pfc.get_reflect_tool_schemas(
+                    adapter_key, scope=reflect_scope, selectors=extra_selectors,
+                )
+            else:
+                extra_selectors = []
+                active_tools = await self.pfc.get_active_tool_schemas(
+                    adapter_key, scope=reflect_scope,
+                )
 
-        collected_text: List[str] = []
-        execution_steps: List[str] = []
-        output_policy = "放开外发" if allow_output_tools else "禁用外发"
-        log(f"反思循环开始: {len(active_tools)} 个工具可用, 策略={output_policy}, 上限 {safety_limit} 轮", tag="思维")
+            collected_text: List[str] = []
+            execution_steps: List[str] = []
+            output_policy = "放开外发" if allow_output_tools else "禁用外发"
+            log(f"反思循环开始: {len(active_tools)} 个工具可用, 策略={output_policy}, 上限 {safety_limit} 轮", tag="思维")
 
-        from agent.mind.think_session import think_session
-        with think_session(self, reflect_scope, with_token=False):
-            await self._think_loop(
-                mode=ThinkMode.REFLECT,
-                tool_chain=[],
-                execution_steps=execution_steps,
-                start_time=time.time(),
-                safety_limit=safety_limit,
-                collected_text=collected_text,
-                active_tools=active_tools,
-                anything=None,
-                base_messages=messages,
-                options=options,
-                blocked_tools=blocked_tools,
-                completion=completion,
-                reflect_tool_selectors=extra_selectors,
-            )
+            from agent.mind.think_session import think_session
+            with think_session(self, reflect_scope, with_token=False):
+                await self._think_loop(
+                    mode=ThinkMode.REFLECT,
+                    tool_chain=[],
+                    execution_steps=execution_steps,
+                    start_time=time.time(),
+                    safety_limit=safety_limit,
+                    collected_text=collected_text,
+                    active_tools=active_tools,
+                    anything=None,
+                    base_messages=messages,
+                    options=options,
+                    blocked_tools=blocked_tools,
+                    completion=completion,
+                    reflect_tool_selectors=extra_selectors,
+                )
 
-        total = "\n".join(collected_text)
-        log(f"反思循环结束: 产出 {len(total)} 字", tag="思维")
-        return total
+            total = "\n".join(collected_text)
+            log(f"反思循环结束: 产出 {len(total)} 字", tag="思维")
+            return total
+        finally:
+            self._reflect_depth -= 1
+            self._reset_phase_if_idle()
 
     async def execute_task(self, task_name: str) -> Optional[str]:
         """按名称执行指定任务，返回任务产出文本或 None。"""

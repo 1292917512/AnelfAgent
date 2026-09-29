@@ -67,6 +67,7 @@ config/voice_presets.json
 config/webui.json
 config/permission_rules.json
 config/db_connections.json
+config/user_directives.json
 config/memory_rules.md
 config/introspection.json
 config/introspection.json.bak

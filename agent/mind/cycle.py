@@ -111,13 +111,16 @@ async def _cycle_body(mind: "Mind", end_payload: Dict[str, Any], *, is_heartbeat
             )
             return
 
+    # 完整决策周期开始：DECIDING 覆盖态势收集 + 元决策全程（收集可能涉及
+    # 记忆/目标查询耗时可观，期间不应显示 idle）；no_pending 早退由周期
+    # 完成边界（execute_mind finally）统一归零
+    mind._set_phase(MindPhase.DECIDING)
     situation = await mind._gather_situation(is_heartbeat=is_heartbeat)
 
     if not situation.has_pending and not is_heartbeat:
         end_payload["reason"] = "no_pending"
         return
 
-    mind._set_phase(MindPhase.DECIDING)
     task_count = len(situation.pending_tasks)
     msg_count = len(situation.pending_messages)
     log(f"态势收集: {msg_count} 条消息, {task_count} 个任务", tag="思维")
@@ -176,8 +179,6 @@ async def _execute_decisions_and_finalize(
     会话结束信息写入 end_payload，由 _autonomous_cycle 的 finally 统一发射，
     确保异常路径下会话也能按 id 关闭。
     """
-    mind._set_phase(MindPhase.DECIDING)
-
     await event_bus.emit(EVENT_THINKING_DECISION, {
         "decisions": [
             {"type": d.type.value, "target": d.target, "reason": d.reason, "priority": d.priority}
@@ -328,6 +329,11 @@ async def _gather_situation(mind: "Mind", *, is_heartbeat: bool = False) -> Situ
     if heartbeat_log:
         heartbeat_log = _strip_decision_echo(heartbeat_log)
 
+    # 出站事实（其他思维链近期已向各会话投递的内容）：元决策不经 think_loop
+    # 的 provider 收集，态势里显式携带（渲染零 I/O，无事实返回空串不呈现）
+    from agent.channel.outbound_guard import render_outbound_facts
+    outbound_facts = render_outbound_facts("_global")
+
     return SituationContext(
         pending_messages=pending,
         pending_tasks=general_tasks,
@@ -339,6 +345,7 @@ async def _gather_situation(mind: "Mind", *, is_heartbeat: bool = False) -> Situ
         connected_channels=connected_channels,
         active_goals=active_goals,
         heartbeat_log=heartbeat_log,
+        outbound_facts=outbound_facts,
     )
 
 

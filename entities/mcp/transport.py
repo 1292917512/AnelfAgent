@@ -7,8 +7,9 @@ MCP server），配置 mcp_stdio_passthrough_env=True 时恢复全量透传。
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, AsyncIterator, Dict, Optional
 
 from entities.mcp.config import MCPServerConfig
 
@@ -86,13 +87,24 @@ def _create_transport(srv: MCPServerConfig) -> Any:
         ))
 
     if transport == "streamable_http":
-        from mcp.client.streamable_http import streamablehttp_client
-        return streamablehttp_client(
-            url=srv.url,
+        # mcp 2.x：headers/timeout/auth 全部经 http_client 传入，且外部
+        # 提供的 client 由调用方自持生命周期——组合 CM 确保随传输一起关闭。
+        # timeout 映射与 2.x sse_client 内部一致（连接/写/池 = timeout，读 = sse_read_timeout）
+        import httpx2
+        from mcp.client.streamable_http import streamable_http_client
+        http_client = httpx2.AsyncClient(
             headers=srv.headers or None,
-            timeout=srv.timeout,
+            timeout=httpx2.Timeout(srv.timeout, read=srv.sse_read_timeout),
             auth=_oauth_provider(srv),
         )
+
+        @asynccontextmanager
+        async def _owned_streamable_http() -> AsyncIterator[Any]:
+            async with http_client:
+                async with streamable_http_client(url=srv.url, http_client=http_client) as streams:
+                    yield streams
+
+        return _owned_streamable_http()
 
     if transport == "sse":
         from mcp.client.sse import sse_client

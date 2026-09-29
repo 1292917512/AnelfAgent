@@ -60,6 +60,7 @@
     "memory/notes": "便签",
     "memory/limits": "记忆限额",
     "memory/cross_channel": "跨频道感知",
+    "memory/anti_repeat": "话题新鲜度",
     "context/compression": "上下文压缩",
     "context/audit": "上下文审计",
     "cache/prompt": "Prompt 缓存",
@@ -81,7 +82,7 @@
     "storage/backup": "存储卷备份",
     "model/describe": "媒体描述",
     "task/history": "执行历史",
-    "channel/outbound": "出站哨兵",
+    "channel/outbound": "出站事实面",
     "heartbeat/maintenance": "心跳维护",
     "retrieval": "检索",
     "vision/face": "人脸识别"

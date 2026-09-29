@@ -237,7 +237,8 @@ async def test_sync_skips_when_no_session(bridge: MCPBridge) -> None:
 
 def _tool_list_changed_note() -> object:
     from mcp import types
-    return types.ServerNotification(root=types.ToolListChangedNotification())
+    # mcp 2.x 通知是裸叶子实例（ServerNotification 为 union 别名不可实例化）
+    return types.ToolListChangedNotification()
 
 
 @pytest.mark.asyncio
@@ -286,9 +287,14 @@ async def test_message_handler_config_disabled(
 
 
 def test_is_tool_list_changed_rejects_others(bridge: MCPBridge) -> None:
-    """非通知对象不误判（duck 兜底）。"""
+    """非通知对象不误判（duck 兜底）；1.x RootModel 包装形态仍识别。"""
+    from mcp import types
+
     assert bridge._is_tool_list_changed(SimpleNotificationStub()) is False
     assert bridge._is_tool_list_changed(_tool_list_changed_note()) is True
+    assert bridge._is_tool_list_changed(
+        SimpleNamespace(root=types.ToolListChangedNotification()),
+    ) is True
 
 
 class SimpleNotificationStub:

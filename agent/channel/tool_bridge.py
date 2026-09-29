@@ -50,6 +50,13 @@ _MANUAL_CAPABILITIES = {"send_text", "send_photo", "send_voice", "send_file"}
 # 不适合暴露为 LLM 工具的能力
 _SKIP_CAPABILITIES = {"streaming", "inline_keyboard", "reply_to"}
 
+# 会话投递类能力：经工具桥暴露时统一走 execute_send_action 管道（出站事实面 +
+# 历史固化一次到位），与手写 output 工具同一纪律。_MANUAL 四项不在桥接面。
+_OUTBOUND_CAPABILITIES = {
+    "send_video", "send_audio", "send_location", "send_animation",
+    "send_contact", "send_poll", "forward_message",
+}
+
 # 方法名 → capability 值（别名反查）
 _CAP_BY_METHOD: Dict[str, str] = {
     CAPABILITY_METHOD_ALIAS.get(c.value, c.value): c.value for c in ChannelCapability
@@ -69,6 +76,10 @@ class ChannelToolMeta:
     extra_tags: List[str] = field(default_factory=list)
     group: Optional[str] = None
     """工具分组覆盖（缺省 channel_ops）"""
+    outbound: bool = False
+    """会话投递类工具：handler 走统一发送管道（出站事实面 + 历史固化）。
+    仅给向会话投递消息的工具声明（转发/合并转发/戳一戳等）；内容平台互动
+    （评论/弹幕/动态）不是会话投递，不声明。"""
 
 
 def channel_tool(
@@ -77,6 +88,7 @@ def channel_tool(
     sensitive: bool = False,
     extra_tags: Optional[List[str]] = None,
     group: Optional[str] = None,
+    outbound: bool = False,
 ) -> Callable:
     """标记频道适配器方法为 AI 可见工具（仅打标记，注册在频道注册时发生）。
 
@@ -86,12 +98,13 @@ def channel_tool(
         sensitive: 是否敏感操作（受 channel_tools_allow_sensitive 配置门控）
         extra_tags: 附加 tag（channel_id / capability tag 自动添加）
         group: 工具分组覆盖（缺省 channel_ops）
+        outbound: 是否会话投递类工具（走统一发送管道，见 ChannelToolMeta.outbound）
     """
     def decorator(func: Callable) -> Callable:
         setattr(func, _CHANNEL_TOOL_ATTR, ChannelToolMeta(
             name=name, description=description,
             sensitive=sensitive, extra_tags=list(extra_tags or []),
-            group=group,
+            group=group, outbound=outbound,
         ))
         return func
     return decorator
@@ -309,7 +322,7 @@ def _register_specific_tool(channel_id: str, bound: Callable, meta: ChannelToolM
 
     ok = EntityRegistry.register_tool(
         name=tool_name,
-        func=_make_specific_handler(channel_id, tool_name, bound),
+        func=_make_specific_handler(channel_id, tool_name, bound, meta),
         description=description,
         group=meta.group or "channel_ops",
         params=_normalize_target_params(extract_tool_params(bound)),
@@ -326,16 +339,70 @@ def _register_specific_tool(channel_id: str, bound: Callable, meta: ChannelToolM
     return ok
 
 
-def _make_specific_handler(channel_id: str, tool_name: str, bound: Callable) -> Callable:
-    """特有工具薄封装：目标解析（chat_id/channel_type）+ 运行时开关守卫 + 结果规范化。"""
+def _disabled_payload(channel_id: str, tool_name: str) -> str:
+    return json.dumps({
+        "success": False,
+        "error": f"接口 {tool_name} 已在频道 '{channel_id}' 上被管理员禁用",
+        "cause": ErrorCause.STATE.value,
+        "channel_id": channel_id,
+    }, ensure_ascii=False)
+
+
+async def _run_outbound(
+    channel_id: str, tool_name: str, fn: Callable, kwargs: Dict[str, Any],
+) -> str:
+    """会话投递类工具的统一出口：目标解析 → execute_send_action 管道。
+
+    与手写 output 工具同一纪律：出站事实面判定、历史固化、失败归因全部
+    经管道完成，频道工具本体只负责实际投递。kwargs 为 LLM 入参（target_id
+    形态，未经 _prepare_call）；内容摘要按常见文本参数提取供事实面判定。
+    """
+    from .output_tools import execute_send_action
+
+    target_id = str(kwargs.get("target_id") or kwargs.get("chat_id") or "")
+    if not target_id:
+        return json.dumps({
+            "success": False,
+            "error": f"{tool_name} 缺少 target_id（目标会话）参数",
+            "cause": ErrorCause.PARAM.value,
+            "channel_id": channel_id,
+        }, ensure_ascii=False)
+    content = str(kwargs.get("content") or kwargs.get("text") or "")
+
+    async def _invoke(ch: Any, resolved_target_id: str, channel_type: str) -> Any:
+        call_kwargs = _prepare_call(fn, dict(kwargs), channel_id)
+        raw = fn(**call_kwargs)
+        if inspect.isawaitable(raw):
+            raw = await raw
+        return raw
+
+    result = await execute_send_action(
+        channel_id=channel_id,
+        target_id=target_id,
+        operation=tool_name,
+        invoke=_invoke,
+        outbound_preview=content[:80] if content else tool_name,
+        record_content=content,
+    )
+    return result
+
+
+def _make_specific_handler(channel_id: str, tool_name: str, bound: Callable, meta: ChannelToolMeta) -> Callable:
+    """特有工具薄封装：目标解析（chat_id/channel_type）+ 运行时开关守卫 + 结果规范化。
+
+    会话投递类（meta.outbound）经统一发送管道执行，其余直调绑定方法。
+    """
     async def _handler(**kwargs: Any) -> str:
         if not is_channel_tool_enabled(channel_id, tool_name):
-            return json.dumps({
-                "success": False,
-                "error": f"接口 {tool_name} 已在频道 '{channel_id}' 上被管理员禁用",
-                "cause": ErrorCause.STATE.value,
-                "channel_id": channel_id,
-            }, ensure_ascii=False)
+            return _disabled_payload(channel_id, tool_name)
+        if meta.outbound:
+            try:
+                return await _run_outbound(channel_id, tool_name, bound, kwargs)
+            except Exception as exc:
+                payload = json.loads(error_from_exception(exc, action=f"执行 {tool_name}"))
+                payload["success"] = False
+                payload["channel_id"] = channel_id
+                return json.dumps(payload, ensure_ascii=False)
         try:
             raw = bound(**_prepare_call(bound, kwargs, channel_id))
             if inspect.isawaitable(raw):
@@ -462,14 +529,17 @@ def _make_common_handler(cap_value: str, method_name: str) -> Callable:
             }, ensure_ascii=False)
 
         if not is_channel_tool_enabled(channel_id, cap_value):
-            return json.dumps({
-                "success": False,
-                "error": f"接口 {cap_value} 已在频道 '{channel_id}' 上被管理员禁用",
-                "cause": ErrorCause.STATE.value,
-                "channel_id": channel_id,
-            }, ensure_ascii=False)
+            return _disabled_payload(channel_id, cap_value)
 
         fn = supporter[0]
+        if cap_value in _OUTBOUND_CAPABILITIES:
+            try:
+                return await _run_outbound(channel_id, cap_value, fn, kwargs)
+            except Exception as exc:
+                payload = json.loads(error_from_exception(exc, action=f"执行 {cap_value}"))
+                payload["success"] = False
+                payload["channel_id"] = channel_id
+                return json.dumps(payload, ensure_ascii=False)
         call_kwargs = _prepare_call(fn, kwargs, channel_id)
         try:
             raw = fn(**call_kwargs)

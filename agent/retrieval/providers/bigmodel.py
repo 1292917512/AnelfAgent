@@ -65,7 +65,10 @@ def _parse_json_text(text: str) -> Any:
 
 def _payload_from_result(result: Any) -> Any:
     """从 MCP 调用结果提取负载：structuredContent 优先，文本 JSON 次之，纯文本原样返回。"""
-    structured = getattr(result, "structuredContent", None)
+    # mcp 2.x 字段为 snake_case，1.x 为 camelCase
+    structured = getattr(
+        result, "structured_content", getattr(result, "structuredContent", None),
+    )
     if isinstance(structured, (dict, list)):
         return structured
     text = _result_text(result)
@@ -77,18 +80,23 @@ async def _call_mcp(
     server_path: str, tool: str, args: Dict[str, Any], api_key: str, timeout: float,
 ) -> Any:
     """短会话调用智谱 MCP 工具（initialize → call），返回解析后的负载。"""
+    import httpx2
     from mcp import ClientSession
-    from mcp.client.streamable_http import streamablehttp_client
+    from mcp.client.streamable_http import streamable_http_client
 
-    async with streamablehttp_client(
-        f"{_MCP_BASE}/{server_path}/mcp",
+    # mcp 2.x：headers/timeout 经 http_client 传入（读超时 = 工具调用预算），
+    # 外部 client 自持生命周期；yield 为二元组（get_session_id 已收进 SDK）
+    async with httpx2.AsyncClient(
         headers={"Authorization": f"Bearer {api_key}"},
-        timeout=_CONNECT_TIMEOUT, sse_read_timeout=timeout,
-    ) as (read_stream, write_stream, _get_session_id):
-        async with ClientSession(read_stream, write_stream) as session:
-            await session.initialize()
-            result = await session.call_tool(tool, args)
-    if result.isError:
+        timeout=httpx2.Timeout(_CONNECT_TIMEOUT, read=timeout),
+    ) as http_client:
+        async with streamable_http_client(
+            f"{_MCP_BASE}/{server_path}/mcp", http_client=http_client,
+        ) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                result = await session.call_tool(tool, args)
+    if getattr(result, "is_error", None) or getattr(result, "isError", False):
         raise RuntimeError(_result_text(result) or f"智谱 MCP {tool} 返回错误")
     return _payload_from_result(result)
 

@@ -8,6 +8,9 @@ export interface AdapterInfo {
   ws_connected?: boolean;
   online?: boolean;
   self_id?: string;
+  bot_name?: string;
+  bot_open_id?: string;
+  app_id_tail?: string;
   capabilities: string[];
 }
 

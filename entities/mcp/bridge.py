@@ -562,7 +562,7 @@ class MCPBridge:
         if not hasattr(result, "content"):
             return str(result)
         # 远端 isError 标记恢复为结构化错误信号，供守卫/拦截机制识别
-        if getattr(result, "isError", False):
+        if getattr(result, "is_error", None) or getattr(result, "isError", False):
             text = _extract_text_blocks(result)
             return tool_error(
                 f"MCP 工具 '{tool_name}' 执行失败: {text or '远端未返回详情'}",
@@ -920,14 +920,18 @@ class MCPBridge:
 
     @staticmethod
     def _is_tool_list_changed(message: Any) -> bool:
-        """判定消息是否为 server 的工具列表变更通知。"""
+        """判定消息是否为 server 的工具列表变更通知。
+
+        mcp 2.x 通知是裸叶子实例（ServerNotification 为 union 别名不可
+        实例化），1.x 是 RootModel 包装（叶子在 ``message.root``）。
+        """
         try:
             from mcp import types
         except Exception:
             return False
-        return isinstance(message, types.ServerNotification) and isinstance(
-            message.root, types.ToolListChangedNotification,
-        )
+        if isinstance(message, types.ToolListChangedNotification):
+            return True
+        return isinstance(getattr(message, "root", None), types.ToolListChangedNotification)
 
     def _spawn_tool_sync(self, server_name: str) -> None:
         """防抖到期：在 bridge 循环上启动同步任务（call_later 回调）。"""

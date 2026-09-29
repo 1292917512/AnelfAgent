@@ -12,8 +12,9 @@ Model Experience:
 
 from __future__ import annotations
 
+import asyncio
 import time
-from typing import List, Optional
+from typing import AsyncGenerator, List, Optional
 
 from agent.llm.types import ChatResult, ChatStreamDelta, ToolCall, UsageInfo
 
@@ -59,3 +60,41 @@ class StreamAggregator:
             model=model,
             ttft_ms=ttft_ms,
         )
+
+
+async def aggregate_with_idle_timeout(
+    stream_gen: AsyncGenerator[ChatStreamDelta, None],
+    *,
+    idle_timeout: float,
+    model: str = "",
+    label: str = "",
+    ceiling_mult: int = 20,
+) -> ChatResult:
+    """以每 chunk 空闲超时消费流式增量并聚合为 ChatResult。
+
+    空闲窗口内完全无响应才判死；思考/正文增量都算活动——深度思考模型的
+    长思考阶段随增量持续回传，不受整窗读超时约束。
+    总时长天花板 = 空闲窗口 × ceiling_mult：防端点以"周期性吐字节"的方式
+    吊流（每 chunk 都有活动但永不结束），此时空闲超时失效、上层回退链不推进。
+    """
+    aggregator = StreamAggregator()
+    loop = asyncio.get_running_loop()
+    overall_deadline = loop.time() + idle_timeout * ceiling_mult
+    who = f" [{label}]" if label else ""
+    try:
+        while True:
+            if loop.time() > overall_deadline:
+                raise asyncio.TimeoutError(f"LLM{who} 流式总时长超限")
+            try:
+                delta = await asyncio.wait_for(
+                    stream_gen.__anext__(), timeout=idle_timeout,
+                )
+            except StopAsyncIteration:
+                break
+            aggregator.feed(delta)
+    finally:
+        try:
+            await stream_gen.aclose()
+        except Exception:
+            pass  # 生成器已在取消中收尾或关闭失败，底层流由 chat_stream finally 兜底
+    return aggregator.build(model=model)

@@ -179,21 +179,17 @@ def target_from_scope(scope: str, adapter_key: str = "") -> Optional[ReplyTarget
 async def deliver_text(target: ReplyTarget, content: str) -> bool:
     """把纯文本回复投递到目标会话，成功返回 True。
 
-    复用 output_tools 的发送管道（频道校验 → 目标解析 → 发送 → 结果解析），
-    成功后以 assistant 角色写入对话历史（与 send_message 工具一致）。
+    复用 output_tools 的发送管道（频道校验 → 目标解析 → 发送 → 历史固化），
+    assistant 角色历史由管道统一固化（record_content）。
     """
-    from agent.channel.output_tools import _record_sent_reply, execute_send_action
+    from agent.channel.output_tools import execute_send_action
 
     # 剥离 LLM 可能模仿历史格式带入的元数据标签（[message_id:xxx] 等）
     content = strip_message_meta_tags(content or "").strip()
     if not content:
         return False
 
-    resolved: dict = {}
-
     async def _invoke(ch, resolved_target_id: str, channel_type: str):
-        resolved["target_id"] = resolved_target_id
-        resolved["channel_type"] = channel_type
         kwargs: dict = {"channel_type": channel_type}
         if target.reply_to:
             kwargs["reply_to"] = target.reply_to
@@ -209,6 +205,8 @@ async def deliver_text(target: ReplyTarget, content: str) -> bool:
             invoke=_invoke,
             success_suffix=f" ({len(content)}字, 纯文本投递)",
             outbound_preview=content[:80],
+            record_content=content,
+            session_id=target.session_id,
         )
     except Exception as exc:
         log(f"纯文本投递异常: {exc}", "WARNING", tag="通道")
@@ -225,12 +223,4 @@ async def deliver_text(target: ReplyTarget, content: str) -> bool:
             "WARNING", tag="通道",
         )
         return False
-
-    await _record_sent_reply(
-        resolved.get("target_id", target.target_id),
-        content,
-        resolved.get("channel_type", target.channel_type),
-        session_id=target.session_id,
-        adapter_key=target.channel_id,
-    )
     return True

@@ -334,3 +334,50 @@ class TestRetrievalService:
         assert out["proxy"] == "http://127.0.0.1:7890"
         assert out["ssrf_protection"] is False
         assert svc.settings()["proxy"] == "http://127.0.0.1:7890"
+
+
+class TestBigModelMcpResultShapes:
+    """智谱 MCP 结果形态适配回归：mcp 2.x 字段为 snake_case（1.x camelCase）。
+
+    回归自依赖升级 mcp 2.x 后 ``result.isError`` 属性访问 AttributeError——
+    检索/读取/仓库文档三能力全灭；structured_content 同步漏适配静默失效。
+    """
+
+    def test_payload_prefers_structured_content(self) -> None:
+        from mcp.types import CallToolResult, TextContent
+
+        from agent.retrieval.providers.bigmodel import _payload_from_result
+
+        result = CallToolResult(
+            content=[TextContent(type="text", text=json.dumps({"echo": 1}))],
+            structured_content={"search_result": [{"title": "t", "link": "u"}]},
+        )
+        payload = _payload_from_result(result)
+        assert payload == {"search_result": [{"title": "t", "link": "u"}]}
+
+    def test_payload_falls_back_to_text_json(self) -> None:
+        from mcp.types import CallToolResult, TextContent
+
+        from agent.retrieval.providers.bigmodel import _payload_from_result, _result_text
+
+        result = CallToolResult(
+            content=[TextContent(type="text", text=json.dumps('{"answer": "嵌套"}'))],
+        )
+        assert _payload_from_result(result) == {"answer": "嵌套"}
+        assert _result_text(result) == json.dumps('{"answer": "嵌套"}')
+
+    def test_payload_supports_legacy_camel_case(self) -> None:
+        from agent.retrieval.providers.bigmodel import _payload_from_result
+
+        class LegacyResult:
+            structuredContent = {"legacy": True}
+            content: list = []
+
+        assert _payload_from_result(LegacyResult()) == {"legacy": True}
+
+    def test_calltoolresult_error_field_name(self) -> None:
+        """安装版 mcp 的错误标记字段必须可被 is_error/isError 任一形态取到。"""
+        from mcp.types import CallToolResult
+
+        result = CallToolResult(content=[], is_error=True)
+        assert getattr(result, "is_error", None) or getattr(result, "isError", False)

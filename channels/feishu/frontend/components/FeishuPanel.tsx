@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils";
 import type { ChannelTestHealthResult } from "@/lib/types/channels";
 import type { FeishuTestSendResult } from "../types";
 import {
-  Activity, ExternalLink, Loader2, Send, Wifi, WifiOff,
+  Activity, ExternalLink, Loader2, Send, UserRound, Wifi, WifiOff,
 } from "lucide-react";
 
 export default function FeishuPanel() {
@@ -86,6 +86,23 @@ export default function FeishuPanel() {
           {probing ? t("panel.probing") : t("panel.probe")}
         </button>
       </div>
+
+      {/* 账号身份卡片 */}
+      {(adapter?.bot_name || adapter?.app_id_tail) && (
+        <div className="flex items-center gap-2 flex-wrap text-xs rounded border border-border bg-secondary/30 px-2.5 py-2">
+          <UserRound size={12} className="text-muted" />
+          <span className="font-medium">{adapter?.bot_name}</span>
+          {adapter?.app_id_tail && (
+            <span className="text-muted font-mono">App …{adapter.app_id_tail}</span>
+          )}
+          {adapter?.bot_open_id && (
+            <span className="text-muted font-mono truncate max-w-[16rem]" title={adapter.bot_open_id}>
+              {adapter.bot_open_id}
+            </span>
+          )}
+          <span className="ml-auto text-muted">{t("panel.switchHint")}</span>
+        </div>
+      )}
 
       {/* 探测结果 */}
       {health && (

@@ -40,9 +40,10 @@ dependencies = [
     # 飞书 / Lark
     "lark-oapi>=1.5.0",
     # Cognee 知识图谱记忆后端（默认安装，uv sync 自动拉取）。
-    # 1.5.4 锁 litellm<1.97 与本项目 litellm 1.100 不兼容，停在 1.5.3
-    #（1.5.4 为无 API 变更的补丁版，无升级收益）
-    "cognee==1.5.3",
+    # cognee 1.5.4+ 声明 litellm<1.97，该上界仅针对 py3.10 上 litellm
+    # 类型构建破坏（BerriAI/litellm#38202），本项目 py3.12 不受影响，
+    # 经下方 override-dependencies 与 litellm 1.100.1 共存。
+    "cognee==1.6.0",
     "sqlite-vec>=0.1.9",
     "tiktoken>=0.12.0",
     "jieba>=0.42.1",
@@ -85,6 +86,15 @@ dependencies = [
 [[tool.uv.index]]
 url = "https://pypi.tuna.tsinghua.edu.cn/simple/"
 default = true
+
+[tool.uv]
+# 两处 override 均为绕过 cognee 的矩阵保守钉（本项目实测组合不受其影响）：
+# 1. litellm：cognee 的 <1.97 上界只挡 py3.10 的 litellm 类型构建破坏
+#   （BerriAI/litellm#38202），本项目 py3.12 不在破坏面内；
+# 2. onnxruntime：cognee 的 <=1.23.2 上界是其 fastembed 测试矩阵钉
+#   （fastembed 0.8.0 自身在 py3.12 允许 >=1.17），本项目 cognee 恒走
+#   API 嵌入不经 fastembed 推理，onnxruntime 只服务语音栈。
+override-dependencies = ["litellm==1.100.1", "onnxruntime>=1.30"]
 
 [dependency-groups]
 dev = [

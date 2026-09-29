@@ -51,15 +51,16 @@ class TestOverlap:
         recent = ["今天的股市行情不太妙，注意风险"]
         assert repeat_score(draft, recent) < 0.2
 
-    def test_gate_uses_recent_window(self):
-        """闸门只与前景窗口（最近 5 条）比对：老消息重复不算复读。"""
+    def test_window_selection_is_caller_responsibility(self):
+        """repeat_score 对调用方给定的整个窗口取最大重叠：窗口选择（按时间/条数）
+        由调用方（出站事实面的近期窗口）负责，函数本身不切片。"""
         draft = "记得多喝水，早点休息，注意身体"
         old_duplicate = "记得多喝水，早点休息，注意身体"
         fresh = ["周末的露营计划", "新出的电影上映", "股市行情不妙", "猫咪又拆家了", "健身后的酸痛"]
-        # 重复消息被 5 条新消息挤出窗口 → 低分放行
-        assert repeat_score(draft, [old_duplicate] + fresh) < 0.5
-        # 重复消息在窗口内 → 高分拦截
-        assert repeat_score(draft, fresh[:4] + [old_duplicate]) > 0.5
+        # 调用方把重复消息切出窗口 → 低分
+        assert repeat_score(draft, fresh) < 0.5
+        # 调用方窗口内包含重复消息 → 高分
+        assert repeat_score(draft, fresh + [old_duplicate]) > 0.5
 
     def test_empty_inputs(self):
         assert repeat_score("", ["任何"]) == 0.0

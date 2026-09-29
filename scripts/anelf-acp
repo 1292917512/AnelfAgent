@@ -1,0 +1,10 @@
+#!/bin/sh
+# AnelfAgent ACP 适配器入口 — 供外部 ACP 客户端（acpx / feishu-task-agent
+# 官方桥）以绝对路径拉起：
+#   AAMP_TRAECODE_CLI_BIN=<项目根>/scripts/anelf-acp feishu-task-agent add --agent traecli
+# 随仓库整体迁移自适配（经脚本位置定位项目根与 venv），无需修改绑定。
+set -eu
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH
+exec "$ROOT/.venv/bin/python" -m acp.server "$@"

@@ -87,10 +87,15 @@ class FakeChannel(BaseChannel[_FakeConfig]):
         """
         return json.dumps({"success": True, "banned": user_id, "duration": duration})
 
-    @channel_tool()
+    @channel_tool(outbound=True)
     async def forward_msg(self, chat_id: str, from_chat_id: str, message_id: str, **kwargs: Any) -> str:
         """转发消息。"""
-        return json.dumps({"success": True})
+        return json.dumps({"success": True, "forwarded": message_id})
+
+    @channel_tool(outbound=True)
+    async def send_poke(self, chat_id: str, user_id: str, **kwargs: Any) -> str:
+        """戳一戳（特有投递工具：无能力映射，注册为 {channel}_send_poke）。"""
+        return json.dumps({"success": True, "poked": user_id})
 
     @channel_tool()
     async def do_special(self, target: str) -> str:
@@ -329,3 +334,95 @@ class TestLifecycle:
         cm.unregister("fake")
         assert not _registered("fake_do_special")
         assert not _registered("delete_message")
+
+
+class TestOutboundPipeline:
+    """会话投递类工具（outbound）经统一发送管道收口：出站事实面 + 历史固化。"""
+
+    @pytest.fixture(autouse=True)
+    def _pipeline_stubs(self, monkeypatch: pytest.MonkeyPatch):
+        import agent.channel.outbound_guard as outbound_guard
+        import agent.channel.output_tools as output_tools
+        from agent.channel.channel_types import ChannelStatus
+
+        outbound_guard._recent.clear()
+        monkeypatch.setattr(outbound_guard, "_reply_scopes_provider", None)
+        monkeypatch.setattr(outbound_guard, "get_config_bool", lambda key, default: True)
+        monkeypatch.setattr(
+            outbound_guard, "get_config_int",
+            lambda key, default: 180,
+        )
+
+        async def _fail_open(_scope: str):
+            return None
+
+        monkeypatch.setattr(outbound_guard, "target_has_interaction", _fail_open)
+        recorded: list[tuple] = []
+
+        async def _record(target_id, content, channel_type, session_id="", adapter_key=""):
+            recorded.append((target_id, content, channel_type, adapter_key))
+
+        monkeypatch.setattr(output_tools, "_record_sent_reply", _record)
+
+        # 出站管道要求频道 RUNNING：FakeChannel 未走 start()，替身化为运行态
+        monkeypatch.setattr(
+            FakeChannel, "status", property(lambda self: ChannelStatus.RUNNING),
+        )
+        self._recorded = recorded
+        yield
+        outbound_guard._recent.clear()
+
+    @pytest.mark.asyncio
+    async def test_specific_outbound_routes_through_pipeline(self, channel_manager) -> None:
+        """outbound 特有工具：经 execute_send_action（登记 + 历史固化），频道方法被调用。"""
+        import agent.channel.outbound_guard as outbound_guard
+
+        cm, created = channel_manager
+        _make(cm, created)
+        bind_current_channel("fake")
+        res = json.loads(await EntityRegistry.execute_tool(
+            "fake_send_poke", '{"target_id":"123","user_id":"42"}'))
+        assert res["success"] is True
+        assert res["poked"] == "42"
+        # 出站登记（thinker 为 _global——无思维会话绑定）
+        assert "user_fake:123" in outbound_guard._recent
+
+    @pytest.mark.asyncio
+    async def test_specific_outbound_blocked_by_guard(self, channel_manager) -> None:
+        """命中出站事实面回执时频道方法不触达。"""
+        import agent.channel.outbound_guard as outbound_guard
+
+        cm, created = channel_manager
+        _make(cm, created)
+        outbound_guard.bind_reply_scopes(lambda: frozenset({"user_fake:123"}))
+        bind_current_channel("fake")
+        res = json.loads(await EntityRegistry.execute_tool(
+            "fake_send_poke", '{"target_id":"123","user_id":"42"}'))
+        assert res["success"] is False
+        assert res["guard"] == "reply_active"
+
+    @pytest.mark.asyncio
+    async def test_common_outbound_capability_routes_through_pipeline(self, channel_manager) -> None:
+        """通用投递能力（forward_message）同样经统一管道。"""
+        import agent.channel.outbound_guard as outbound_guard
+
+        cm, created = channel_manager
+        _make(cm, created)
+        bind_current_channel("fake")
+        res = json.loads(await EntityRegistry.execute_tool(
+            "forward_message", '{"target_id":"123","from_chat_id":"456","message_id":"9"}'))
+        assert res["success"] is True
+        assert "user_fake:123" in outbound_guard._recent
+
+    @pytest.mark.asyncio
+    async def test_non_outbound_tool_bypasses_pipeline(self, channel_manager) -> None:
+        """非投递类工具（delete_message）不经出站管道，不登记。"""
+        import agent.channel.outbound_guard as outbound_guard
+
+        cm, created = channel_manager
+        _make(cm, created)
+        bind_current_channel("fake")
+        res = json.loads(await EntityRegistry.execute_tool(
+            "delete_message", '{"target_id":"123","message_id":"9"}'))
+        assert res["success"] is True
+        assert "user_fake:123" not in outbound_guard._recent

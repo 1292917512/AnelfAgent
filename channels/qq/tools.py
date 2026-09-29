@@ -617,7 +617,7 @@ class QQToolsMixin:
         async def _call_api_data(self, action: str, params: Dict[str, Any]) -> Optional[Any]: ...
         async def _call_api_raw(self, action: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]: ...
 
-    @channel_tool(description="转发单条消息到指定会话")
+    @channel_tool(description="转发单条消息到指定会话", outbound=True)
     async def forward_msg(self, chat_id: str, from_chat_id: str, message_id: str, **kwargs: Any) -> str:
         channel_type = kwargs.get("channel_type", "private")
         try:
@@ -673,7 +673,7 @@ class QQToolsMixin:
             "message_id": message_id,
         }, ensure_ascii=False)
 
-    @channel_tool()
+    @channel_tool(outbound=True)
     async def send_poke(self, chat_id: str, user_id: str, **kwargs: Any) -> str:
         """向指定用户发送戳一戳互动。群聊中 chat_id 为群号，私聊中 chat_id 与 user_id 相同。"""
         try:
@@ -707,7 +707,7 @@ class QQToolsMixin:
                 return _err("戳一戳功能当前不可用（NapCat 版本不兼容，请检查 QQ 版本或升级 NapCat）")
             return _err(f"戳一戳失败: {error_msg}")
 
-    @channel_tool()
+    @channel_tool(outbound=True)
     async def send_forward_msg(self, chat_id: str, content: str, **kwargs: Any) -> str:
         """将长文本以合并转发消息形式发送，自动按段落拆分。"""
         channel_type = kwargs.get("channel_type")

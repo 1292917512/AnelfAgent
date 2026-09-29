@@ -45,16 +45,37 @@ class TestKnownChatRegistry:
         assert loaded[_P2P_CHAT]["type"] == "p2p"
 
     def test_unchanged_seen_does_not_rewrite(self, channel: FeishuChannel, tmp_path) -> None:
+        from pathlib import Path
         channel._on_chat_seen(_P2P_CHAT, "p2p", _PEER)
-        path = tmp_path / "known_chats.json"
+        path = Path(feishu_state._known_chats_path(""))
         mtime = path.stat().st_mtime_ns
         channel._on_chat_seen(_P2P_CHAT, "p2p", _PEER)
         assert path.stat().st_mtime_ns == mtime
 
     def test_corrupt_state_file_loads_empty(self, tmp_path, monkeypatch) -> None:
         monkeypatch.setattr(feishu_state, "feishu_data_dir", lambda: str(tmp_path))
-        (tmp_path / "known_chats.json").write_text("{not json", encoding="utf-8")
+        (tmp_path / feishu_state._known_chats_path("")).write_text("{not json", encoding="utf-8")
         assert feishu_state.load_known_chats() == {}
+
+    def test_registry_isolated_per_app(self, tmp_path, monkeypatch) -> None:
+        """按 app 分域：换 app 后不携带旧 app 的 chat 映射。"""
+        monkeypatch.setattr(feishu_state, "feishu_data_dir", lambda: str(tmp_path))
+        feishu_state.save_known_chats({_P2P_CHAT: {"type": "p2p", "peer_open_id": _PEER}}, "cli_app_a")
+        assert feishu_state.load_known_chats("cli_app_a")[_P2P_CHAT]["peer_open_id"] == _PEER
+        assert feishu_state.load_known_chats("cli_app_b") == {}
+
+    def test_legacy_single_file_migrated_once(self, tmp_path, monkeypatch) -> None:
+        """存量单文件迁移：首个加载的 app 接管，原文件消费。"""
+        monkeypatch.setattr(feishu_state, "feishu_data_dir", lambda: str(tmp_path))
+        (tmp_path / "known_chats.json").write_text(
+            '{"updated_at": 1, "chats": {"oc_legacy": {"type": "p2p"}}}', encoding="utf-8"
+        )
+        loaded = feishu_state.load_known_chats("cli_app_a")
+        assert "oc_legacy" in loaded
+        assert not (tmp_path / "known_chats.json").exists()
+        # 二次加载走分域文件，且不再影响其他 app
+        assert "oc_legacy" in feishu_state.load_known_chats("cli_app_a")
+        assert feishu_state.load_known_chats("cli_app_b") == {}
 
 
 class TestIsKnownGroup:

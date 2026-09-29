@@ -250,11 +250,14 @@ async def execute_send_action(
         enrich: Optional[Callable[[dict, bool], None]] = None,
         success_suffix: str = "",
         outbound_preview: str = "",
+        record_content: str = "",
+        session_id: str = "",
 ) -> str:
-    """统一发送执行管道：校验 -> 目标解析 -> 出站哨兵 -> 调用频道 -> 结果解析 -> 日志。
+    """统一发送执行管道：校验 → 目标解析 → 出站事实面 → 调用频道 → 历史固化 → 日志。
 
-    outbound_preview 为本次发送内容的短摘要（供出站哨兵的近期窗口判定与
-    拒绝回执展示），空串时哨兵记录退化为操作名。
+    outbound_preview 为本次发送内容的短摘要（供出站事实面的近期窗口与等价
+    判定、回执展示），空串时退化为操作名；record_content 非空时发送成功以
+    assistant 角色固化对话历史（全管道统一在此固化，调用方不再各自记录）。
     """
     ch, err = _validate_channel(channel_id)
     if err:
@@ -275,18 +278,6 @@ async def execute_send_action(
         rejection = await guard_empty_conversation(target_scope, thinker)
         if rejection:
             return rejection
-        # 复读闸门：主动任务上下文（reflect:）的发送与近期回复高度重叠时拒发；
-        # 用户触发的回复周期不设闸（问什么答什么是用户的选择）
-        if thinker.startswith("reflect:"):
-            try:
-                from agent.memory.anti_repeat import check_repeat_gate
-                suppression = await check_repeat_gate(
-                    target_scope, outbound_preview or operation,
-                )
-                if suppression:
-                    return suppression
-            except Exception as exc:
-                log(f"复读闸门检查失败（放行）: {exc}", "DEBUG", tag="通道")
         raw = await invoke(ch, resolved_target_id, channel_type)
         parsed, ok = _check_send_result(raw, channel_id, target_id)
         _attach_target_resolution_meta(
@@ -300,6 +291,11 @@ async def execute_send_action(
 
         if ok:
             note_outbound(target_scope, thinker, outbound_preview or operation)
+            if record_content:
+                await _record_sent_reply(
+                    resolved_target_id, record_content, channel_type,
+                    session_id=session_id, adapter_key=channel_id,
+                )
             log(f"{operation}已发送: [{channel_id}] -> {target_id}{success_suffix}", tag="通道")
         else:
             log(f"{operation}发送失败: [{channel_id}] -> {target_id}: {parsed.get('error', '?')}", "WARNING", tag="通道")
@@ -402,19 +398,16 @@ async def send_message(
         enrich=_enrich,
         success_suffix=f" ({len(content)}字)",
         outbound_preview=content[:80],
+        record_content=content,
     )
 
-    # 发送成功后将 AI 回复记录到对话历史（assistant 角色）
+    # 通话自动语音路由：该会话正在实时通话中时，消息同时 TTS 播给电话
     spoken_note = ""
     try:
         if json.loads(result).get("success") is not False:
-            await _record_sent_reply(
-                resolved_target, content, resolved_channel_type, adapter_key=channel_id
-            )
-            # 通话自动语音路由：该会话正在实时通话中时，消息同时 TTS 播给电话
             spoken_note = await _speak_if_on_call(channel_id, resolved_target, content)
     except (json.JSONDecodeError, TypeError):
-        log("_enrich 异常已忽略", "DEBUG")
+        log("_speak_if_on_call 判定异常已忽略", "DEBUG")
     if spoken_note:
         try:
             parsed_result = json.loads(result)
@@ -478,6 +471,7 @@ async def send_photo(channel_id: str, target_id: str, photo: str, caption: str =
         invoke=_invoke,
         enrich=_enrich,
         outbound_preview=caption or "图片",
+        record_content=caption or "[图片]",
     )
 
 
@@ -505,6 +499,7 @@ async def send_voice(channel_id: str, target_id: str, voice: str) -> str:
         invoke=_invoke,
         enrich=_enrich,
         outbound_preview="语音",
+        record_content="[语音]",
     )
 
 
@@ -535,4 +530,5 @@ async def send_file(channel_id: str, target_id: str, file_path: str, caption: st
         invoke=_invoke,
         enrich=_enrich,
         outbound_preview=caption or "文件",
+        record_content=caption or "[文件]",
     )

@@ -88,7 +88,9 @@ async def _render_call_result(result: Any) -> str:
     if placeholders:
         text = (text + "\n" if text else "") + "\n".join(placeholders)
 
-    structured = getattr(result, "structuredContent", None)
+    structured = getattr(
+        result, "structured_content", getattr(result, "structuredContent", None),
+    )
     if not text and isinstance(structured, dict) and structured:
         return json.dumps(structured, ensure_ascii=False)
 

@@ -156,6 +156,28 @@ async def _invoke_llm_unified(
     # 角色归一（头部提示词分层保持 system 供 Anthropic 前缀缓存，中途注入
     # 转 user 保留位置语义）+ 尾部 assistant prefill 修复
     messages = normalize_for_send(messages)
+
+    # 配对自检（诊断用，命中即 WARNING）：assistant(tool_calls) 缺 tool 响应的 id
+    _orphan_ids = []
+    for _i, _m in enumerate(messages):
+        if _m.get("role") == "assistant" and _m.get("tool_calls"):
+            _ids = [tc.get("id") for tc in _m["tool_calls"] if isinstance(tc, dict)]
+            _results = {
+                m2.get("tool_call_id") for m2 in messages[_i+1:]
+                if m2.get("role") == "tool"
+            }
+            for _tid in _ids:
+                if _tid and _tid not in _results:
+                    _orphan_ids.append(_tid)
+    if _orphan_ids:
+        log(f"配对自检失败：assistant tool_calls 缺响应 {_orphan_ids}", "WARNING", tag="思维")
+        # 打印最近 5 条消息形态
+        for _m in messages[-8:]:
+            _role = _m.get("role")
+            _tc = _m.get("tool_calls")
+            _tcid = _m.get("tool_call_id")
+            log(f"  [{_role}] tool_calls={len(_tc) if _tc else 0} tool_call_id={_tcid!r}", "WARNING", tag="思维")
+
     log(f"调用 LLM: {model_name} msgs={len(messages)}", tag="思维")
     tool_names = [t.get("function", {}).get("name", "") for t in (tools or [])]
     await event_bus.emit(EVENT_THINKING_LLM_START, {

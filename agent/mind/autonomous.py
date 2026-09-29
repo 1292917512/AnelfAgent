@@ -115,6 +115,7 @@ class SituationContext:
     connected_channels: List[str] = field(default_factory=list)
     active_goals: List[str] = field(default_factory=list)
     heartbeat_log: str = ""
+    outbound_facts: str = ""
 
     @property
     def has_pending(self) -> bool:
@@ -195,6 +196,9 @@ class SituationContext:
             lines.append("[历史心跳]")
             lines.append(self.heartbeat_log)
 
+        if self.outbound_facts:
+            lines.append(self.outbound_facts)
+
         return "\n".join(lines)
 
 
@@ -221,6 +225,9 @@ META_DECISION_SYSTEM = """你是决策核心。分析当前态势，调用 decid
 - 同一 scope 的多条消息只需一个 reply，不要重复
 - target 必须原样使用态势中的会话 scope（如 user_qq:123 / group_qq:456），
   不要自行改写、缩写或去掉频道前缀
+- 上下文中的「出站事实」块列出其他思维周期刚向各会话投递的内容（含跨会话
+  投递）与在飞回复——已送达的事项不要再决策 proactive/tool_action 重投，
+  在飞会话不要代答
 - plan 与 self_task 的分工：plan 产生/推进长期目标（goal 会持续追踪），
   self_task 是一次性具体待办（做完即止）；待处理任务（self_task）需要你选择 tool_action 来执行
 - 可以连续调用多个 decide 来表达多个决策

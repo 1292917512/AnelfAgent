@@ -471,7 +471,13 @@ class LLMClient(BaseEntity):
         ):
             return False
         msg = str(exc).lower()
-        if "tool_choice" not in msg or "not support" not in msg:
+        if "tool_choice" not in msg:
+            return False
+        # 命中形态：not support / incompatible with / not allowed / invalid
+        if not re.search(
+            r"not\s+support|incompatible|not\s+allow|invalid\s+tool_choice|tool_choice[^a-z]{0,16}invalid",
+            msg,
+        ):
             return False
         self._learned_no_forced_tool_choice = True
         info(
@@ -1248,7 +1254,19 @@ class LLMClient(BaseEntity):
             prompt, images, flat_url=self.config.use_flat_image_url,
         )
         messages: list[dict] = [{"role": "user", "content": content}]
-        result = await self.chat(messages, options={"max_tokens": self._describe_output_budget()})
+        # 流式通道 + 每 chunk 空闲超时：深度思考模型在重型识别（QA 复核类
+        # prompt）下的思考阶段随增量持续回传，长思考不受整窗读超时约束——
+        # 非流式下同一调用会在固定 timeout 处间歇性撞死并拖慢整条候选链
+        from agent.llm.stream_aggregate import aggregate_with_idle_timeout
+        stream_gen = self.chat_stream(
+            messages, options={"max_tokens": self._describe_output_budget()},
+        )
+        result = await aggregate_with_idle_timeout(
+            stream_gen, idle_timeout=self.config.timeout or 120.0,
+            model=self.config.model, label=self.config.name,
+        )
+        if result.finish_reason == "error":
+            raise RuntimeError("视觉模型返回了无有效 choices/message 的响应")
         text = (result.content or "").strip()
         if not text:
             # 空结果视为调用失败，让上层回退到下一个视觉模型

@@ -151,27 +151,47 @@ def ensure_tool_result_pairing(messages: List[Dict]) -> List[Dict]:
     - assistant 的 tool_calls 缺少对应 role=tool 结果 → 合成错误结果
       （执行被中断/取消），避免提供商 400
     - 无对应 tool_calls 的孤儿 role=tool 消息 → 剔除
+    - tool_call_id 为空字符串的条目 → 合成临时 id 并补齐配对
+      （端点对缺 id 的 tool_call 会重建 <name>:<index> 内部 ID，
+      与本地 tool_call_id 不匹配导致 400）
     """
-    # 收集全部 tool_call id 与已有结果 id
+    # 收集全部 tool_call id 与已有结果 id；空 id 的 tool_call 替换为合成 id
     call_ids: List[str] = []
     result_ids: set = set()
+    synth_seq = 0
+    normalized: List[Dict] = []
     for msg in messages:
         if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            fixed_tcs: List[Dict] = []
             for tc in msg["tool_calls"]:
-                tc_id = tc.get("id") if isinstance(tc, dict) else None
-                if tc_id:
-                    call_ids.append(tc_id)
-        elif msg.get("role") == "tool":
+                if not isinstance(tc, dict):
+                    fixed_tcs.append(tc)
+                    continue
+                tc_id = tc.get("id")
+                if not tc_id:
+                    synth_seq += 1
+                    tc_id = f"tc_synth_{synth_seq}"
+                    tc = {**tc, "id": tc_id}
+                fixed_tcs.append(tc)
+                call_ids.append(tc_id)
+            normalized.append({**msg, "tool_calls": fixed_tcs})
+            continue
+        if msg.get("role") == "tool":
             tc_id = msg.get("tool_call_id")
             if tc_id:
                 result_ids.add(tc_id)
+        normalized.append(msg)
 
     call_id_set = set(call_ids)
-    # 1. 剔除孤儿 tool 结果
+    # 1. 剔除孤儿 tool 结果（含 tool_call_id 为空/缺失的——它们无法配对任何
+    # tool_call，发送给端点会被 litellm 转换层静默丢弃（call_id 空 → skip），
+    # 导致端点看到 function_call 缺响应而 400）
     cleaned = [
-        msg for msg in messages
-        if not (msg.get("role") == "tool" and msg.get("tool_call_id")
-                and msg["tool_call_id"] not in call_id_set)
+        msg for msg in normalized
+        if not (
+            msg.get("role") == "tool"
+            and (not msg.get("tool_call_id") or msg["tool_call_id"] not in call_id_set)
+        )
     ]
 
     # 2. 为缺失结果的 tool_calls 合成错误结果（紧跟对应 assistant 消息之后）

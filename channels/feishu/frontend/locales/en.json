@@ -7,6 +7,7 @@
     "unhealthy": "Connection issue",
     "latency": "{{ms}}ms latency",
     "notRunning": "Channel not running",
+    "switchHint": "Switch account: edit App ID / App Secret in the config center — saving reconnects automatically",
     "guideTitle": "Setup guide",
     "guideSteps": [
       "Create a custom app on the Feishu Open Platform and get the App ID / App Secret",

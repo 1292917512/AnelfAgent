@@ -1,4 +1,7 @@
-"""MCP OAuth 2.1 授权 — 自研 httpx.Auth 提供者（发现/注册/PKCE/刷新全链路）。
+"""MCP OAuth 2.1 授权 — 自研 httpx2.Auth 提供者（发现/注册/PKCE/刷新全链路）。
+
+mcp 2.x 起 HTTP 传输底座为 httpx2（授权流对象随传输走 httpx2），
+授权服务器自身的 REST 调用仍用独立 httpx 客户端。
 
 两阶段结构：
 
@@ -44,6 +47,7 @@ from typing import Any, Dict, Optional, Tuple
 from urllib.parse import quote, urlencode, urlparse, urlsplit, urlunsplit
 
 import httpx
+import httpx2
 from mcp.shared.auth import OAuthMetadata, OAuthToken, ProtectedResourceMetadata
 from pydantic import ValidationError
 
@@ -669,14 +673,14 @@ class AuthorizationSession:
 
 
 # ==================================================================
-# 运行期提供者（httpx.Auth）
+# 运行期提供者（httpx2.Auth，随 mcp 2.x HTTP 传输底座）
 # ==================================================================
 
 _BEARER_CHALLENGE_RE = re.compile(r"^\s*Bearer(\s|$)", re.IGNORECASE)
 _SCOPE_PARAM_RE = re.compile(r'scope="([^"]*)"')
 
 
-def _is_bearer_challenge(response: httpx.Response) -> bool:
+def _is_bearer_challenge(response: httpx2.Response) -> bool:
     """401 是否携带 WWW-Authenticate: Bearer 挑战。
 
     只有服务器明确发 Bearer 挑战才说明支持 OAuth 授权码流程（RFC 9728）；
@@ -685,7 +689,7 @@ def _is_bearer_challenge(response: httpx.Response) -> bool:
     return bool(_BEARER_CHALLENGE_RE.match(response.headers.get(_WWW_AUTH_HEADER, "")))
 
 
-def _www_authenticate_scopes(response: httpx.Response) -> str:
+def _www_authenticate_scopes(response: httpx2.Response) -> str:
     """403 insufficient_scope 挑战里要求的 scope（WWW-Authenticate 的 scope 参数）。"""
     value = response.headers.get(_WWW_AUTH_HEADER, "")
     if "insufficient_scope" not in value.lower():
@@ -694,7 +698,7 @@ def _www_authenticate_scopes(response: httpx.Response) -> str:
     return matched.group(1) if matched else ""
 
 
-class McpOAuthProvider(httpx.Auth):
+class McpOAuthProvider(httpx2.Auth):
     """挂在 MCP HTTP 传输上的 OAuth 凭据提供者。
 
     每实例一把 asyncio.Lock（单飞）：同 server 的并发请求在取凭据阶段
@@ -710,7 +714,7 @@ class McpOAuthProvider(httpx.Auth):
         # 以此在窗口内视作新鲜（单飞合并——并发的后来者直接用赢家结果）
         self._last_refresh_at = 0.0
 
-    async def async_auth_flow(self, request: httpx.Request):
+    async def async_auth_flow(self, request: httpx2.Request):
         token = await self._access_token()
         if token:
             request.headers["Authorization"] = f"Bearer {token}"

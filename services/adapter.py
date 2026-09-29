@@ -54,6 +54,10 @@ class AdapterService:
                 item["online"] = info["online"]
             if "self_id" in info:
                 item["self_id"] = info["self_id"]
+            # 账号身份字段（飞书：Bot 名 / open_id / app_id 尾号，切换账号可观测）
+            for identity_field in ("bot_name", "bot_open_id", "app_id_tail"):
+                if identity_field in info:
+                    item[identity_field] = info[identity_field]
             item["capabilities"] = info.get("capabilities", [])
             result.append(item)
             seen_keys.add(key)

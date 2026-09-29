@@ -1,13 +1,15 @@
 """HTTP API 频道 — 内嵌 uvicorn 的通用 HTTP 通信接口。
 
 继承 BaseChannel，声明 SEND_TEXT 能力。
-启动后自动监听 HTTP 端口，外部系统通过 POST /api/chat 发送消息并同步获取回复。
+启动后自动监听 HTTP 端口：POST /api/chat 同步问答（async_mode 立即返回），
+GET /api/chat/stream 订阅该用户的回复流式帧（delta / tool_call / reply / turn_end）。
 """
 
 from __future__ import annotations
 
 import asyncio
 import hmac
+import json
 import time
 import uuid
 from typing import Any, Dict, List, Optional, Set
@@ -52,6 +54,8 @@ class ChatRequest(BaseModel):
     to_me: bool = True
     images: List[ImageItem] = Field(default_factory=list)
     request_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
+    # 立即返回不等待回复（回复经 /api/chat/stream 流式帧投递）
+    async_mode: bool = False
 
 
 class ChatResponse(BaseModel):
@@ -59,6 +63,16 @@ class ChatResponse(BaseModel):
     status: str = "ok"
     reply: str = ""
     error: str = ""
+
+
+class _StreamSub:
+    """单个 SSE 订阅者（scope 前缀过滤 + 帧队列）。"""
+
+    __slots__ = ("prefix", "queue")
+
+    def __init__(self, prefix: str) -> None:
+        self.prefix = prefix
+        self.queue: asyncio.Queue[str] = asyncio.Queue()
 
 
 # ------------------------------------------------------------------
@@ -83,6 +97,7 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
         self._pending_replies: Dict[str, asyncio.Future[str]] = {}
         self._server: Optional[Any] = None
         self._server_task: Optional[asyncio.Task[None]] = None
+        self._stream_subs: List[_StreamSub] = []
         super().__init__()
 
     channel_id = "http_api"
@@ -109,6 +124,7 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
         config = uvicorn.Config(app, host=host, port=port, log_level="warning")
         self._server = uvicorn.Server(config)
         self._server_task = asyncio.create_task(self._server.serve())
+        self._subscribe_stream_events()
         self._status = ChannelStatus.RUNNING
         log(f"HTTP API 频道已启动: http://{host}:{port}（认证: {'token' if self.config.api_token else '仅回环'}）")
 
@@ -121,6 +137,11 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
             except (asyncio.TimeoutError, asyncio.CancelledError, KeyboardInterrupt):
                 log("stop 异常已忽略", "DEBUG")
             self._server_task = None
+        from core.event_bus import event_bus
+        event_bus.off_by_owner("channel:http_api")
+        for sub in self._stream_subs:
+            sub.queue.put_nowait("")  # 唤醒流生成器退出
+        self._stream_subs.clear()
         for fut in self._pending_replies.values():
             if not fut.done():
                 fut.cancel()
@@ -128,12 +149,92 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
         self._status = ChannelStatus.STOPPED
         log("HTTP API 频道已停止")
 
+    # ------------------------------------------------------------------
+    # 流式过程事件订阅（内核事件 → SSE 帧；机器消费面，不进对话历史）
+    # ------------------------------------------------------------------
+
+    def _subscribe_stream_events(self) -> None:
+        """订阅思维流式事件并转发给匹配的 SSE 订阅者（同 webui 频道的事件面）。"""
+        from core.event_bus import (
+            EVENT_AFTER_REPLY,
+            EVENT_THINKING_TOOL_END,
+            EVENT_THINKING_TOOL_START,
+            event_bus,
+        )
+        from core.stream_events import EVENT_ASSISTANT_DELTA
+        event_bus.on(EVENT_ASSISTANT_DELTA, self._on_assistant_delta, owner="channel:http_api")
+        event_bus.on(EVENT_THINKING_TOOL_START, self._on_tool_start, owner="channel:http_api")
+        event_bus.on(EVENT_THINKING_TOOL_END, self._on_tool_end, owner="channel:http_api")
+        event_bus.on(EVENT_AFTER_REPLY, self._on_after_reply, owner="channel:http_api")
+
+    def _push_frame(self, frame: Dict[str, Any], scope: str) -> None:
+        """按 scope 前缀过滤推送帧到订阅者队列（无订阅者零开销）。"""
+        if not self._stream_subs or not scope:
+            return
+        data = json.dumps(frame, ensure_ascii=False)
+        for sub in self._stream_subs:
+            if scope == sub.prefix or scope.startswith(sub.prefix + "#"):
+                sub.queue.put_nowait(data)
+
+    async def _on_assistant_delta(self, payload: dict) -> None:
+        self._push_frame({
+            "type": "delta",
+            "scope": str(payload.get("scope", "")),
+            "turn_id": str(payload.get("turn_id", "")),
+            "delta": str(payload.get("delta", "")),
+            "reasoning": bool(payload.get("reasoning")),
+        }, str(payload.get("scope", "")))
+
+    async def _on_tool_start(self, payload: dict) -> None:
+        self._push_frame({
+            "type": "tool_call",
+            "scope": str(payload.get("scope", "")),
+            "call_id": str(payload.get("tool_id", "")),
+            "name": str(payload.get("tool_name", "")),
+            "status": "running",
+            "arguments": payload.get("arguments_preview", ""),
+        }, str(payload.get("scope", "")))
+
+    async def _on_tool_end(self, payload: dict) -> None:
+        self._push_frame({
+            "type": "tool_call",
+            "scope": str(payload.get("scope", "")),
+            "call_id": str(payload.get("tool_id", "")),
+            "name": str(payload.get("tool_name", "")),
+            "status": "done" if payload.get("success") else "error",
+            "result_preview": payload.get("result_preview", "") or payload.get("error", ""),
+            "duration_ms": payload.get("duration_ms", 0),
+        }, str(payload.get("scope", "")))
+
+    async def _on_after_reply(self, payload: dict) -> None:
+        self._push_frame({
+            "type": "turn_end",
+            "scope": str(payload.get("scope", "")),
+            "error": bool(payload.get("error")),
+        }, str(payload.get("scope", "")))
+
     async def send_text(self, chat_id: str, text: str, **kwargs: Any) -> str:
-        """回复 HTTP API 调用方。"""
+        """回复 HTTP API 调用方（pending future 或流式订阅者二选一）。"""
         fut = self._pending_replies.pop(chat_id, None)
         if fut and not fut.done():
             fut.set_result(text)
             return _ok({"chat_id": chat_id})
+        # async 模式：无 pending future 时经 SSE reply 帧投递最终文本
+        delivered = False
+        candidates = (
+            f"user_{self.channel_id}:{chat_id}",
+            f"group_{self.channel_id}:{chat_id}",
+        )
+        data = json.dumps({"type": "reply", "content": text}, ensure_ascii=False)
+        for sub in list(self._stream_subs):
+            if any(
+                p == sub.prefix or p.startswith(sub.prefix + "#") or sub.prefix.startswith(p + "#")
+                for p in candidates
+            ):
+                sub.queue.put_nowait(data)
+                delivered = True
+        if delivered:
+            return _ok({"chat_id": chat_id, "delivery": "stream"})
         return _err(f"无待回复请求: chat_id={chat_id}")
 
     # ------------------------------------------------------------------
@@ -184,9 +285,9 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
                 )
             agent_app = get_agent_app()
             reply_key = req.user_id if not req.group_id else req.group_id
-            fut = adapter._expect_reply(reply_key)
             session_id = req.session_id or (req.group_id if req.group_id else req.user_id)
             message_id = req.message_id or req.request_id
+            fut = None if req.async_mode else adapter._expect_reply(reply_key)
 
             images: List[ImageContent] = []
             for img in req.images:
@@ -208,6 +309,11 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
                 reply_to_id=req.reply_to_id,
             )
 
+            # async 模式：投递完成即返回，最终回复经 /api/chat/stream 的
+            # reply / turn_end 帧投递（长任务不受 reply_timeout 约束）
+            if fut is None:
+                return ChatResponse(request_id=req.request_id, status="accepted")
+
             try:
                 reply = await asyncio.wait_for(fut, timeout=timeout)
             except asyncio.TimeoutError:
@@ -219,6 +325,33 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
                 )
 
             return ChatResponse(request_id=req.request_id, reply=reply)
+
+        @fastapi_app.get("/api/chat/stream")
+        async def chat_stream(user_id: str, request: Request):
+            """SSE 流端点：推送该 user 的 delta / tool_call / reply / turn_end 帧。"""
+            from sse_starlette.sse import EventSourceResponse
+
+            sub = _StreamSub(f"user_{adapter.channel_id}:{user_id}")
+            adapter._stream_subs.append(sub)
+
+            async def event_generator():
+                try:
+                    while True:
+                        if await request.is_disconnected():
+                            break
+                        try:
+                            data = await asyncio.wait_for(sub.queue.get(), timeout=30.0)
+                        except asyncio.TimeoutError:
+                            yield {"event": "ping", "data": ""}
+                            continue
+                        if not data:  # 频道关停唤醒信号
+                            break
+                        yield {"event": "message", "data": data}
+                finally:
+                    if sub in adapter._stream_subs:
+                        adapter._stream_subs.remove(sub)
+
+            return EventSourceResponse(event_generator())
 
         @fastapi_app.get("/health")
         async def health() -> Dict[str, str]:

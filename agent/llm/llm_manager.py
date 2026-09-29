@@ -897,33 +897,15 @@ class LLMManager(BaseEntity):
         总时长天花板 = 空闲窗口 × 20：防端点以"周期性吐字节"的方式吊流
         （每 chunk 都有活动但永不结束），此时空闲超时失效、回退链不推进。
         """
-        from agent.llm.stream_aggregate import StreamAggregator
+        from agent.llm.stream_aggregate import aggregate_with_idle_timeout
 
-        aggregator = StreamAggregator()
         stream_gen = client.chat_stream(
             messages, options=options, tools=tools, tool_choice=tool_choice,
         )
-        idle_timeout = timeout
-        overall_deadline = asyncio.get_running_loop().time() + idle_timeout * 20
-        try:
-            while True:
-                if asyncio.get_running_loop().time() > overall_deadline:
-                    raise asyncio.TimeoutError(
-                        f"LLM [{client.config.name}] 流式总时长超限"
-                    )
-                try:
-                    delta = await asyncio.wait_for(
-                        stream_gen.__anext__(), timeout=idle_timeout,
-                    )
-                except StopAsyncIteration:
-                    break
-                aggregator.feed(delta)
-        finally:
-            try:
-                await stream_gen.aclose()
-            except Exception:
-                pass  # 生成器已在取消中收尾或关闭失败，底层流由 chat_stream finally 兜底
-        result = aggregator.build(model=client.config.model)
+        result = await aggregate_with_idle_timeout(
+            stream_gen, idle_timeout=timeout,
+            model=client.config.model, label=client.config.name,
+        )
         if result.finish_reason == "error":
             raise RuntimeError("LLM 返回了无有效 choices/message 的响应")
         return result

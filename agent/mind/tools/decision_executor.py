@@ -148,7 +148,7 @@ async def execute_reply(mind: Mind, decision: Decision) -> None:
                 log(f"回复检查点清除失败（已忽略）: {exc}", "DEBUG", tag="思维")
         if not mind._active_scopes:
             mind._reply_idle_event.set()
-            mind._set_phase(MindPhase.IDLE)
+        mind._reset_phase_if_idle()
 
 
 async def execute_reflect(mind: Mind, decision: Optional[Decision] = None, *, skip_interval: bool = False) -> int:
@@ -304,6 +304,13 @@ async def execute_proactive(mind: Mind, decision: Decision) -> None:
         _hb_append(f"主动消息放弃: 目标 '{target}' 从未有过对话（空会话），不主动打扰 - {decision.content[:40]}")
         return
 
+    # 回复所有权：与 execute_reply 同一登记协议——PROACTIVE 也是该会话的
+    # 回复周期所有者（出站事实面据此放行本会话投递、拦截他链代答）
+    scope = mind._resolve_entity_scope(anything)
+    if scope in mind._active_scopes:
+        log(f"PROACTIVE 跳过（会话回复在飞）: {scope}", "DEBUG", tag="思维")
+        return
+
     proactive_prompt = (
         f"你要主动联系 {target}。\n"
         f"原因：{decision.reason or '主动关心'}\n"
@@ -315,10 +322,32 @@ async def execute_proactive(mind: Mind, decision: Decision) -> None:
         scope=anything.entity_scope,
     )
 
-    # adapter_key 按调用链显式传递（并行多 scope 回复时共享字段会串台）
     adapter_key = getattr(anything, "adapter_key", "") if anything else ""
     log(f"AI 主动消息: target={target}", tag="思维")
-    await mind.reply(anything, adapter_key=adapter_key)
+    mind._reply_activated_at[scope] = time.time()
+    mind._active_scopes.add(scope)
+    mind._reply_idle_event.clear()
+    checkpoint_registered = False
+    try:
+        try:
+            await mind.conversation_data.router.sqlite.record_reply_checkpoint(
+                scope, adapter_key=adapter_key or "", phase="proactive",
+            )
+            checkpoint_registered = True
+        except Exception as exc:
+            log(f"主动消息检查点登记失败（不影响执行）: {exc}", "DEBUG", tag="思维")
+        await mind.reply(anything, adapter_key=adapter_key)
+    finally:
+        mind._active_scopes.discard(scope)
+        mind._reply_activated_at.pop(scope, None)
+        if checkpoint_registered:
+            try:
+                await mind.conversation_data.router.sqlite.clear_reply_checkpoint(scope)
+            except Exception as exc:
+                log(f"主动消息检查点清除失败（已忽略）: {exc}", "DEBUG", tag="思维")
+        if not mind._active_scopes:
+            mind._reply_idle_event.set()
+        mind._reset_phase_if_idle()
 
 
 async def execute_tool_action(mind: Mind, decision: Decision) -> None:
@@ -350,7 +379,12 @@ async def execute_tool_action(mind: Mind, decision: Decision) -> None:
                         f"工具操作结果未投递: 目标 '{decision.target}' 为空会话 - {content[:40]}"
                     )
                 else:
-                    await mind.channel_manager.reply(anything, output)
+                    # 经统一发送管道投递（出站事实面 + 历史固化 + 投递过滤），
+                    # 不再绕过频道直发
+                    from agent.channel.reply_route import deliver_text, target_from_anything
+                    target_rt = target_from_anything(anything)
+                    if target_rt is not None:
+                        await deliver_text(target_rt, output)
     except Exception as exc:
         _hb_append(f"工具操作失败: {content[:40]} - {exc}")
         log(f"AI 自主工具操作失败: {exc}", "WARNING", tag="思维")

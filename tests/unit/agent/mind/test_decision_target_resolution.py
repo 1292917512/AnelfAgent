@@ -201,13 +201,30 @@ class TestProactiveEmptyConversation:
         monkeypatch.setattr(
             "agent.channel.outbound_guard.target_has_interaction", _interacted)
 
+        import asyncio
+
         mind = SimpleNamespace(
             pfc=WorkMemory(SimpleNamespace()),  # type: ignore[arg-type]
             _active_scopes=set(),
+            _reply_activated_at={},
+            _reply_idle_event=asyncio.Event(),
+            _resolve_entity_scope=lambda _a: _CANONICAL,
+            _reset_phase_if_idle=lambda: None,
+            conversation_data=SimpleNamespace(
+                router=SimpleNamespace(
+                    sqlite=SimpleNamespace(
+                        record_reply_checkpoint=AsyncMock(),
+                        clear_reply_checkpoint=AsyncMock(),
+                    ),
+                ),
+            ),
             reply=AsyncMock(),
         )
         await de.execute_proactive(mind, _decision(target=_CANONICAL, content="在吗"))
         assert mind.reply.await_count == 1
+        # 所有权登记在 finally 中注销，不残留
+        assert mind._active_scopes == set()
+        assert mind._reply_activated_at == {}
 
     async def test_query_failure_fails_open(self, monkeypatch) -> None:
         """空会话判定不可知（runtime 未就绪）按非空处理，不误伤正常决策。"""

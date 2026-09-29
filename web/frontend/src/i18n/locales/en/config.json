@@ -60,6 +60,7 @@
     "memory/notes": "Notes",
     "memory/limits": "Limits",
     "memory/cross_channel": "Cross-Channel",
+    "memory/anti_repeat": "Topic Freshness",
     "context/compression": "Compression",
     "context/audit": "Context Audit",
     "cache/prompt": "Prompt Cache",
@@ -81,7 +82,7 @@
     "storage/backup": "Volume Backup",
     "model/describe": "Media Describe",
     "task/history": "Execution History",
-    "channel/outbound": "Outbound Guard",
+    "channel/outbound": "Outbound Facts",
     "heartbeat/maintenance": "Heartbeat Maintenance",
     "retrieval": "Retrieval",
     "vision/face": "Face Recognition"

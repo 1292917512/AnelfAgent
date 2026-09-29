@@ -232,6 +232,73 @@ class TestPairingRepair:
         ids = [m["tool_call_id"] for m in out if m["role"] == "tool"]
         assert sorted(ids) == ["a", "b", "c"]
 
+    def test_empty_tool_call_id_synthesized_and_paired(self):
+        """tool_call id 为空字符串时合成 tc_synth_N 并补齐配对。"""
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "", "type": "function", "function": {"name": "send_message", "arguments": "{}"}},
+                    {"id": "", "type": "function", "function": {"name": "present_plan", "arguments": "{}"}},
+                ],
+            },
+        ]
+        out = ensure_tool_result_pairing(messages)
+        # assistant 的 tool_calls 已被重写为合成 id
+        assistant_msg = next(m for m in out if m.get("role") == "assistant")
+        synth_ids = [tc["id"] for tc in assistant_msg["tool_calls"]]
+        assert all(sid.startswith("tc_synth_") for sid in synth_ids)
+        assert len(set(synth_ids)) == 2  # 各自独立
+        # 每个合成 id 都有对应 tool 响应
+        tool_ids = [m["tool_call_id"] for m in out if m["role"] == "tool"]
+        assert sorted(tool_ids) == sorted(synth_ids)
+
+    def test_empty_tool_call_id_orphan_tool_dropped(self):
+        """tool_call_id 为空字符串的孤儿 tool 消息被剔除（端点对空 call_id 静默丢弃会导致 400）。"""
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "", "type": "function", "function": {"name": "send_message", "arguments": "{}"}},
+                ],
+            },
+            # 空 tool_call_id 的孤儿 tool 消息（无法配对任何 tool_call）
+            {"role": "tool", "tool_call_id": "", "content": "orphan"},
+            {"role": "user", "content": "继续"},
+        ]
+        out = ensure_tool_result_pairing(messages)
+        # 空 tool_call_id 的孤儿被剔除
+        tool_msgs = [m for m in out if m["role"] == "tool"]
+        assert all(m.get("tool_call_id") for m in tool_msgs), "空 tool_call_id 应被剔除"
+        # assistant 的 tool_calls 已被替换为合成 id 并配对
+        assistant_msg = next(m for m in out if m.get("role") == "assistant")
+        synth_id = assistant_msg["tool_calls"][0]["id"]
+        assert synth_id.startswith("tc_synth_")
+        assert any(m.get("tool_call_id") == synth_id for m in tool_msgs)
+
+    def test_none_tool_call_id_also_synthesized(self):
+        """tool_call id 为 None（缺失）时同样合成并配对。"""
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"type": "function", "function": {"name": "send_message", "arguments": "{}"}},
+                ],
+            },
+        ]
+        out = ensure_tool_result_pairing(messages)
+        assistant_msg = next(m for m in out if m.get("role") == "assistant")
+        assert assistant_msg["tool_calls"][0]["id"].startswith("tc_synth_")
+        tool_msgs = [m for m in out if m["role"] == "tool"]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0]["tool_call_id"] == assistant_msg["tool_calls"][0]["id"]
+
 
 class TestNormalizeForSendPairing:
     def test_pairing_repaired_before_send(self):

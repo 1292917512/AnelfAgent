@@ -37,6 +37,12 @@ from .users import UserNameCache
 
 _AT_RE = re.compile(r'\[at_uid:([^\]]+)\]')
 
+# 变更后需要重建连接的配置字段（凭证 / 域 / 接入模式）
+_RECONNECT_FIELDS = {
+    "app_id", "app_secret", "domain",
+    "encrypt_key", "verification_token", "connection_mode",
+}
+
 
 class FeishuChannel(BaseChannel[FeishuConfig]):
     """飞书频道（支持 WebSocket 长连接 / Webhook 双模式）。"""
@@ -74,6 +80,8 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
         self._webhook_runner: Optional[Any] = None
         # WS 线程的事件循环（stop 时用于远程断开连接）
         self._ws_loop: Optional[asyncio.AbstractEventLoop] = None
+        # 凭证热切换的去抖重连定时器
+        self._reconnect_timer: Optional[asyncio.TimerHandle] = None
         super().__init__()
 
     # ------------------------------------------------------------------
@@ -117,6 +125,10 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
             info["bot_name"] = self._bot_info.app_name
         if self._bot_info.open_id:
             info["bot_open_id"] = self._bot_info.open_id
+        app_id = str(self.config.app_id or "")
+        if app_id:
+            info["app_id"] = app_id
+            info["app_id_tail"] = app_id[-6:] if len(app_id) > 6 else app_id
         info["detail"] = (
             f"{self._bot_info.app_name} 在线" if online
             else ("连接失败" if self._start_error else "未连接")
@@ -124,6 +136,54 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
         if self._start_error:
             info["error"] = self._start_error
         return info
+
+    # ------------------------------------------------------------------
+    # 配置热更：凭证变更即自动重连（切换账号无需重启频道/进程）
+    # ------------------------------------------------------------------
+
+    def _on_config_changed(self, key: str, value: Any) -> None:
+        """配置变更回调：物化后按需触发凭证热切换重连。"""
+        super()._on_config_changed(key, value)
+        field = key[len(self._config_key_prefix):] if key.startswith(self._config_key_prefix) else key
+        if field in _RECONNECT_FIELDS and self._status == ChannelStatus.RUNNING:
+            self._schedule_reconnect()
+
+    def _schedule_reconnect(self) -> None:
+        """线程安全地调度去抖重连（Web 配置与文件监听两个来源线程共用）。"""
+        loop = self._main_loop
+        if loop is None or loop.is_closed():
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+        if loop is None or loop.is_closed():
+            log("飞书: 凭证变更但无可用事件循环，请手动重启频道使新凭证生效", "WARNING", tag="通道")
+            return
+        loop.call_soon_threadsafe(self._schedule_reconnect_on_loop, loop)
+
+    def _schedule_reconnect_on_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """主循环上去抖合并（app_id/secret 连续保存只触发一次重连）。"""
+        if self._reconnect_timer is not None:
+            self._reconnect_timer.cancel()
+            self._reconnect_timer = None
+        self._reconnect_timer = loop.call_later(1.0, self._reconnect_now)
+
+    def _reconnect_now(self) -> None:
+        self._reconnect_timer = None
+        if self._status != ChannelStatus.RUNNING:
+            return
+        log("飞书: 检测到凭证/连接配置变更，自动重连生效", tag="通道")
+        asyncio.ensure_future(self._reconnect())
+
+    async def _reconnect(self) -> None:
+        """stop → start 完成凭证热切换（失败置 ERROR 并保留新配置待手动重启）。"""
+        try:
+            await self.stop()
+            await self.start()
+            log("飞书: 凭证热切换完成", tag="通道")
+        except Exception as exc:
+            self._status = ChannelStatus.ERROR
+            log(f"飞书: 凭证热切换重连失败: {exc}", "ERROR", tag="通道")
 
     # ------------------------------------------------------------------
     # 生命周期
@@ -137,9 +197,10 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
             self._status = ChannelStatus.ERROR
             return
 
-        # 恢复持久化的已知会话注册表（scope 归一与群/私分类的事实源）
+        # 恢复持久化的已知会话注册表（scope 归一与群/私分类的事实源；
+        # 按 app_id 分域，切换账号不携带旧 app 的 chat_id ↔ open_id 映射）
         from .state import load_known_chats
-        self._known_chats.update(load_known_chats())
+        self._known_chats.update(load_known_chats(app_id))
 
         domain_str: str = self.config.domain
         domain = lark.FEISHU_DOMAIN if domain_str == "feishu" else lark.LARK_DOMAIN
@@ -182,6 +243,14 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
 
     async def stop(self) -> None:
         self._status = ChannelStatus.STOPPED
+        # 取消未触发的凭证热切换重连
+        if self._reconnect_timer is not None:
+            self._reconnect_timer.cancel()
+            self._reconnect_timer = None
+        # 清运行期缓存：昵称缓存含权限缺失闩锁（换 app 后权限面可能不同），
+        # 内存已知会话随之失效（start 按 app 分域重载）
+        self._user_names = UserNameCache()
+        self._known_chats.clear()
         # 停止 WebSocket 客户端：先在 WS 线程的 loop 上断开连接，再停 loop 让线程退出
         if self._ws_client:
             ws_loop = self._ws_loop
@@ -239,7 +308,7 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
             changed = True
         if changed:
             from .state import save_known_chats
-            save_known_chats(self._known_chats)
+            save_known_chats(self._known_chats, str(self.config.app_id or ""))
 
     def _on_chat_seen(self, chat_id: str, chat_type: str, sender_open_id: str = "") -> None:
         """入站消息时登记已知会话（list_known_chats / scope 归一数据源）。"""
@@ -319,19 +388,27 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
             .register_p2_im_message_receive_v1(msg_handler) \
             .build()
 
-        # 对未注册的事件类型静默处理，避免 SDK 抛 EventException 产生 ERROR 日志
-        _orig_dispatch = event_handler.do_without_validation
+        # 对未注册的事件类型静默处理，避免 SDK 抛 EventException 产生 ERROR 日志。
+        # 必须同时挂私有 `_do_without_validation`：WS 传输层（ws/client.py）调用
+        # 的是私有方法，公开 do_without_validation 仅 Webhook/外部调用方触达。
+        def _wrap_silent_dispatch(attr: str) -> None:
+            orig = getattr(event_handler, attr, None)
+            if orig is None:
+                return
 
-        def _safe_dispatch(payload: bytes) -> object:
-            try:
-                return _orig_dispatch(payload)
-            except Exception as exc:
-                if "processor not found" in str(exc):
-                    log(f"飞书: 忽略未订阅的事件类型 ({exc})", "DEBUG")
-                    return None
-                raise
+            def _safe_dispatch(payload: bytes) -> object:
+                try:
+                    return orig(payload)
+                except Exception as exc:
+                    if "processor not found" in str(exc):
+                        log(f"飞书: 忽略未订阅的事件类型 ({exc})", "DEBUG")
+                        return None
+                    raise
 
-        event_handler.do_without_validation = _safe_dispatch
+            setattr(event_handler, attr, _safe_dispatch)
+
+        _wrap_silent_dispatch("_do_without_validation")
+        _wrap_silent_dispatch("do_without_validation")
 
         self._ws_client = lark.ws.Client(
             app_id, app_secret,

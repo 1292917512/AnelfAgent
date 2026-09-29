@@ -7,6 +7,7 @@
     "unhealthy": "连接异常",
     "latency": "延迟 {{ms}}ms",
     "notRunning": "频道未运行",
+    "switchHint": "切换账号：在配置中心修改 App ID / App Secret 保存即自动重连生效",
     "guideTitle": "接入指引",
     "guideSteps": [
       "在飞书开放平台创建企业自建应用，获取 App ID / App Secret",
