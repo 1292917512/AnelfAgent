@@ -12,7 +12,10 @@ SOUND_CAPABILITY_GUIDE: Dict[str, Dict[str, Any]] = {
     "asr": {
         "tools": ["voice_to_text"],
         "summary": "语音/音频文件转写为文字",
-        "key_params": {"audio_source": "音频本地路径或 URL（必填）"},
+        "key_params": {
+            "audio_source": "音频本地路径或 URL（必填）",
+            "ingest": "true 时同时入音源库（声纹识别建档，可检索可回听）",
+        },
         "example": 'voice_to_text(audio_source="workspace/uploads/voice/xxx.ogg")',
         "notes": "按声音能力链路由（本地组件优先，云端 asr 模型链兜底）",
     },

@@ -4,21 +4,14 @@
 MOSS 失败自动回退旧链：pyannote 分离(:10098) → SenseVoice ASR(:10099)。
 低质量段 vector=None；分离失败回退单段。声纹匹配(is_miaomiao/unknown 门控)在 Agent 侧（持有说话人库）。
 """
-import os
-import shutil
-import subprocess
-import sys
-import tempfile
-import threading
-import time
-
+import os, sys, time, tempfile, subprocess, threading, shutil, gc
 os.environ["PATH"] = r"D:\ServicesCenter\tools\ffmpeg\bin;" + r"D:\ServicesCenter\tools\ffmpeg-shared\bin;" + os.environ.get("PATH", "")
-import httpx
+import numpy as np
 import soundfile as sf
-import uvicorn
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse
-
+import httpx
+import uvicorn
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from embedder import Embedder
 
@@ -27,6 +20,7 @@ MOSS_URL = "http://127.0.0.1:10100/transcribe_diarize"
 MOSS_HEALTH = "http://127.0.0.1:10100/health"
 DIARIZE_URL = "http://127.0.0.1:10098/diarize"
 ASR_URL = "http://127.0.0.1:10099/asr"
+GPU_TARGETS = {"moss": "http://127.0.0.1:10100", "asr": "http://127.0.0.1:10099", "diarize": "http://127.0.0.1:10098"}
 ERES_ONNX = r"D:\ServicesCenter\voicehub\models\onnx\eres2netv2.onnx"
 CAMP_ONNX = r"D:\ServicesCenter\voicehub\models\onnx\campplus.onnx"
 
@@ -193,6 +187,47 @@ async def transcribe(file: UploadFile = File(...), source_time: str = Form("")):
         return JSONResponse({"error": str(e)[-2000:]}, status_code=500)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+@app.get("/gpu/status")
+def gpu_status():
+    """聚合各 GPU worker 的模型加载状态（供前端启停面板展示）。"""
+    out = {"embedder": {"loaded": _embedder is not None}}
+    for name, base in GPU_TARGETS.items():
+        try:
+            r = httpx.get(base + "/health", timeout=5, trust_env=False)
+            out[name] = r.json() if r.status_code == 200 else {"error": "http %d" % r.status_code}
+        except Exception as e:
+            out[name] = {"error": str(e)[:120]}
+    return out
+
+
+@app.post("/gpu/unload")
+async def gpu_unload(req: Request):
+    """统一释放显存：targets 缺省全部（moss/asr/diarize/embedder）。进程常驻，下次推理自动重载。"""
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    targets = body.get("targets") or ["moss", "asr", "diarize", "embedder"]
+    results = {}
+    global _embedder
+    for name in targets:
+        if name == "embedder":
+            _embedder = None
+            gc.collect()
+            results[name] = {"ok": True}
+            continue
+        base = GPU_TARGETS.get(name)
+        if not base:
+            results[name] = {"error": "unknown target"}
+            continue
+        try:
+            r = httpx.post(base + "/unload", timeout=60, trust_env=False)
+            results[name] = r.json() if r.status_code == 200 else {"error": "http %d" % r.status_code}
+        except Exception as e:
+            results[name] = {"error": str(e)[:120]}
+    return JSONResponse(results)
 
 
 if __name__ == "__main__":

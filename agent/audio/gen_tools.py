@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.audio.capabilities import SOUND_CAPABILITIES, get_sound_router
 from agent.utils import workspace as ws
+from core.config import get_config_bool
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
 from entities._sdk import deferred_tool
 
@@ -45,13 +46,15 @@ def _check_provider(provider: str) -> Optional[str]:
 # ==================================================================
 
 @deferred_tool(name="voice_to_text", group=_group, tags=["always", "media:voice", "media:audio"], timeout=300.0)
-async def voice_to_text(audio_source: str = "", **kwargs: str) -> str:
+async def voice_to_text(audio_source: str = "", ingest: bool = False, **kwargs: str) -> str:
     """将语音/音频文件转写为文字（ASR 语音识别）。支持本地文件路径或 URL。
 
     经声音 ASR 优先级链转写（本地组件优先，云端 asr 模型链兜底）。
 
     Args:
         audio_source: 音频文件的本地路径（如 workspace/uploads/voice/xxx.ogg）或 URL
+        ingest: true 时同时入音源库（逐段声纹识别/建档，话语可被 transcript_search
+            检索、可回听）；频道语音等值得留存的内容开启
     """
     if not audio_source:
         audio_source = kwargs.get("path", "") or kwargs.get("file_path", "") or kwargs.get("url", "")
@@ -84,7 +87,59 @@ async def voice_to_text(audio_source: str = "", **kwargs: str) -> str:
     except Exception as e:
         return error_from_exception(e, action="语音识别")
     text = "\n".join(s.get("text", "").strip() for s in segments if s.get("text", "").strip())
-    return _dumps({"success": True, "text": text, "segments": len(segments)})
+    out: Dict[str, Any] = {"success": True, "text": text, "segments": len(segments)}
+    if ingest:
+        out["ingest"] = await _ingest_transcribed(resolved, segments)
+    return _dumps(out)
+
+
+def _current_channel_source() -> str:
+    """当前会话的频道标识（入库 device_source）；无会话上下文时回落 'chat'。"""
+    try:
+        from agent.messages.everything import parse_entity_scope
+        from agent.mind.tool_activation import ToolActivationManager
+        _scope_type, adapter, _base_id, _session_id = parse_entity_scope(
+            ToolActivationManager.current_scope())
+        return adapter or "chat"
+    except Exception:
+        return "chat"
+
+
+async def _ingest_transcribed(
+    source_path: str, segments: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """转写结果入音源库（声纹识别/建档 → 落库），返回入库摘要。"""
+    if not get_config_bool("audio_ai_enabled", True):
+        return {"ingested": 0, "skipped": 0,
+                "error": "音频核心能力已停用（audio_ai_enabled=false），未入库"}
+    from agent.audio.ingest import ingest_payload
+    from agent.audio.schemas import IngestPayload, SegmentIn
+    result = await ingest_payload(IngestPayload(
+        source_file=source_path,
+        device_source=_current_channel_source(),
+        segments=[SegmentIn(
+            start_ms=int(s.get("start_ms", 0)),
+            end_ms=int(s.get("end_ms", 0)),
+            text=str(s.get("text", "")),
+            vector=s.get("vector"),
+            abs_start_ms=s.get("abs_start_ms"),
+            abs_end_ms=s.get("abs_end_ms"),
+        ) for s in segments],
+    ))
+    speakers: Dict[int, Dict[str, Any]] = {}
+    for item in result.results:
+        if item.speaker_id is not None and item.speaker_id not in speakers:
+            speakers[item.speaker_id] = {
+                "speaker_id": item.speaker_id,
+                "speaker_key": item.speaker_key,
+                "name": item.speaker_name,
+                "is_new_speaker": item.is_new_speaker,
+            }
+    return {
+        "ingested": result.ingested,
+        "skipped": result.skipped,
+        "speakers": list(speakers.values())[:10],
+    }
 
 
 # ==================================================================

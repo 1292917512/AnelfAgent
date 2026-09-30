@@ -78,7 +78,7 @@ class MediaPipeline:
                 dl = f'web_download(url="{url}"' + (
                     f', filename="{file_name}"' if file_name else "") + ")"
                 if seg_type in ("voice", "audio"):
-                    hint = f'识别: voice_to_text(url="{url}") 或下载: {dl}'
+                    hint = f'识别: voice_to_text(url="{url}")（留存入音源库加 ingest=true） 或下载: {dl}'
                 else:
                     hint = f"下载: {dl}"
             else:

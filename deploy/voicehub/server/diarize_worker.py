@@ -5,18 +5,18 @@
 pyannote.audio.core.io 明确支持 {"waveform": Tensor(ch,time), "sample_rate": int}。
 非 wav 格式（m4a/mp3/ogg）先用 ffmpeg CLI 转 16k mono wav。
 """
+import gc
 import os
 import subprocess
 import tempfile
-
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
-import soundfile as sf
 import torch
-import uvicorn
+import soundfile as sf
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pyannote.audio import Pipeline
+import uvicorn
 
 app = FastAPI()
 _pipe = None
@@ -63,7 +63,22 @@ def load_waveform(path):
 
 @app.get("/health")
 def health():
-    return {"ok": True, "cuda": torch.cuda.is_available(), "pipeline": _pipe is not None}
+    return {"ok": True, "cuda": torch.cuda.is_available(), "pipeline": _pipe is not None, "loaded": _pipe is not None}
+
+
+@app.post("/unload")
+def unload():
+    """释放模型显存（进程常驻；下次推理自动重载）。"""
+    global _pipe
+    before = round(torch.cuda.memory_allocated() / 1024**3, 2) if torch.cuda.is_available() else 0.0
+    _pipe = None
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    after = round(torch.cuda.memory_allocated() / 1024**3, 2) if torch.cuda.is_available() else 0.0
+    return {"ok": True, "vram_gb_before": before, "vram_gb_after": after}
+
+
 
 
 @app.post("/diarize")

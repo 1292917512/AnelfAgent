@@ -1,15 +1,15 @@
 """SenseVoice-Small ASR worker（逐 turn 转写，含情绪/事件标签）。端口 10099。"""
 import os
-
 os.environ["MODELSCOPE_CACHE"] = r"D:\ServicesCenter\voicehub\models\_cache"
 import re
-
-import soundfile as sf
+import gc
 import torch
-import uvicorn
+import numpy as np
+import soundfile as sf
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from funasr import AutoModel
+import uvicorn
 
 app = FastAPI()
 _sv = None
@@ -44,7 +44,22 @@ def parse_tags(raw):
 
 @app.get("/health")
 def health():
-    return {"ok": True, "cuda": torch.cuda.is_available()}
+    return {"ok": True, "cuda": torch.cuda.is_available(), "loaded": _sv is not None}
+
+
+@app.post("/unload")
+def unload():
+    """释放模型显存（进程常驻；下次推理自动重载）。"""
+    global _sv
+    before = round(torch.cuda.memory_allocated() / 1024**3, 2) if torch.cuda.is_available() else 0.0
+    _sv = None
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    after = round(torch.cuda.memory_allocated() / 1024**3, 2) if torch.cuda.is_available() else 0.0
+    return {"ok": True, "vram_gb_before": before, "vram_gb_after": after}
+
+
 
 
 @app.post("/asr")

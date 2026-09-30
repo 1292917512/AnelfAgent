@@ -126,6 +126,70 @@ class TestVoiceToText:
         assert "error" in out
         assert out.get("cause") == "config"
 
+    async def test_ingest_stores_transcription(
+            self, monkeypatch: pytest.MonkeyPatch, tmp_path, mem_config) -> None:
+        audio = tmp_path / "a.ogg"
+        audio.write_bytes(b"fake")
+        monkeypatch.setattr(gen_tools.ws, "resolve_workspace_path", lambda p: str(audio))
+
+        class _Svc:
+            async def transcribe(self, path: str) -> list:
+                return [{"start_ms": 0, "end_ms": 3000, "text": "你好",
+                         "vector": [0.1, 0.2]}]
+
+        import agent.audio.service as svc_mod
+        monkeypatch.setattr(svc_mod, "get_audio_service", lambda: _Svc())
+
+        import agent.audio.ingest as ingest_mod
+        from agent.audio.schemas import IngestResult, IngestResultItem
+        captured: Dict[str, Any] = {}
+
+        async def _fake_ingest(payload, *, store=None):
+            captured["payload"] = payload
+            return IngestResult(ingested=1, skipped=0, results=[IngestResultItem(
+                segment_id=7, speaker_id=3, speaker_key="spk_3", speaker_name="张三",
+                similarity=0.9, is_new_speaker=False)])
+
+        monkeypatch.setattr(ingest_mod, "ingest_payload", _fake_ingest)
+
+        out = json.loads(await voice_to_text(audio_source="workspace/a.ogg", ingest=True))
+        assert out["success"] is True
+        assert out["text"] == "你好"
+        assert out["ingest"]["ingested"] == 1
+        assert out["ingest"]["speakers"][0]["name"] == "张三"
+        assert captured["payload"].device_source == "chat"
+        assert captured["payload"].segments[0].vector == [0.1, 0.2]
+        assert captured["payload"].segments[0].end_ms == 3000
+
+    async def test_ingest_blocked_when_audio_core_disabled(
+            self, monkeypatch: pytest.MonkeyPatch, tmp_path, mem_config) -> None:
+        mem_config["audio_ai_enabled"] = False
+        audio = tmp_path / "a.ogg"
+        audio.write_bytes(b"fake")
+        monkeypatch.setattr(gen_tools.ws, "resolve_workspace_path", lambda p: str(audio))
+
+        class _Svc:
+            async def transcribe(self, path: str) -> list:
+                return [{"text": "你好"}]
+
+        import agent.audio.service as svc_mod
+        monkeypatch.setattr(svc_mod, "get_audio_service", lambda: _Svc())
+
+        out = json.loads(await voice_to_text(audio_source="workspace/a.ogg", ingest=True))
+        assert out["success"] is True
+        assert out["text"] == "你好"
+        assert out["ingest"]["ingested"] == 0
+        assert "error" in out["ingest"]
+
+    async def test_current_channel_source_from_scope(self) -> None:
+        from agent.mind.tool_activation import bind_scope, reset_scope
+        assert gen_tools._current_channel_source() == "chat"
+        token = bind_scope("user_qq:123")
+        try:
+            assert gen_tools._current_channel_source() == "qq"
+        finally:
+            reset_scope(token)
+
 
 class TestVoicePresetTool:
     @pytest.fixture(autouse=True)

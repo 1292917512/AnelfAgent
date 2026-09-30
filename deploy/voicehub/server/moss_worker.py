@@ -4,21 +4,17 @@
 契约: POST /transcribe_diarize {"wav": "<16k mono wav path>"}
   -> {"segments": [{"start": float, "end": float, "speaker": "S01", "text": "..."}], "process_time_s": float}
 """
-import os
-import re
-import time
-import traceback
-
+import os, sys, re, time, gc
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 # NSSM 服务环境无用户 PATH：显式挂 ffmpeg（load_audio 解码依赖）
 os.environ["PATH"] = r"D:\ServicesCenter\tools\ffmpeg\bin;" + r"D:\ServicesCenter\tools\ffmpeg-shared\bin;" + os.environ.get("PATH", "")
 
 import torch
-import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+import uvicorn
 
 MODEL_PATH = r"D:\ServicesCenter\voicehub\models\moss"
 PROMPT = (
@@ -66,10 +62,26 @@ class Req(BaseModel):
     wav: str
 
 
+
+@app.post("/unload")
+def unload():
+    global _model, _proc
+    """释放模型显存（进程常驻；下次推理自动重载）。"""
+    global _model
+    before = round(torch.cuda.memory_allocated() / 1024**3, 2) if torch.cuda.is_available() else 0.0
+    _model = None
+    _proc = None
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    after = round(torch.cuda.memory_allocated() / 1024**3, 2) if torch.cuda.is_available() else 0.0
+    return {"ok": True, "vram_gb_before": before, "vram_gb_after": after}
+
 @app.get("/health")
 def health():
     return {
         "ok": _model is not None,
+        "loaded": _model is not None,
         "model": "MOSS-Transcribe-Diarize-0.9B",
         "device": "cuda" if (_model is not None and next(_model.parameters()).is_cuda) else "cpu",
         "vram_gb": round(torch.cuda.memory_allocated() / 1024**3, 2) if torch.cuda.is_available() else 0,
@@ -107,7 +119,7 @@ def transcribe_diarize(req: Req):
             "process_time_s": round(time.time() - t0, 2),
         }
     except Exception as e:
-        traceback.print_exc()
+        import traceback; traceback.print_exc()
         return JSONResponse({"error": str(e)[-2000:]}, status_code=500)
 
 
