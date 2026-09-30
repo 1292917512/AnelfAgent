@@ -9,14 +9,15 @@ import gc
 import os
 import subprocess
 import tempfile
+
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
-import torch
 import soundfile as sf
+import torch
+import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pyannote.audio import Pipeline
-import uvicorn
 
 app = FastAPI()
 _pipe = None
