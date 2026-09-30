@@ -117,7 +117,9 @@ def resolve_media_path(file_path: str) -> str:
         file_path = file_path[len("project:"):]
     if file_path.startswith("dir:"):  # 目录锚点语义标记（解析同文件，剥掉）
         file_path = file_path[len("dir:"):]
-    if os.path.isabs(file_path) or os.path.exists(file_path):
+    # 仅绝对路径直接透传；相对路径的存在性判定以进程 cwd 为根是错误语义
+    # （cwd=项目根时，项目根下同名条目会把工作区相对路径劫持成裸相对串）
+    if os.path.isabs(file_path):
         return file_path
     try:
         from services.workspace import WorkspaceService
@@ -242,15 +244,17 @@ class ChatService:
         media_segments: Optional[List[Any]] = None
         resolved_files: List[tuple] = []  # (绝对路径, 是否目录)
         if files:
-            media_segments = []
             for raw_path in files:
-                is_dir = raw_path.startswith("dir:") or (
-                    raw_path.startswith("project:dir:"))
                 file_path = resolve_media_path(raw_path)
-                if not is_dir:
-                    import os as _os
-                    is_dir = _os.path.isdir(file_path)
+                is_dir = os.path.isdir(file_path)
                 resolved_files.append((file_path, is_dir))
+                if is_dir:
+                    # 目录是路径锚点（内联 [dir:绝对路径] 标记，AI 经
+                    # list_directory 展开），不进媒体文件管道——SegmentType
+                    # 无目录类型，塞进去会以 [media_type:file] 呈现制造歧义
+                    continue
+                if media_segments is None:
+                    media_segments = []
                 ext = Path(file_path).suffix.lower()
                 ftype = classify_file_type(ext)
                 seg_type_map = {
@@ -271,6 +275,8 @@ class ChatService:
                     image_contents.append(ImageContent(data=file_path, is_url=False))
                 else:
                     media_segments.append(seg)
+            if not media_segments:
+                media_segments = None
 
         text = message
         if resolved_files:

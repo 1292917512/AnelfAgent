@@ -69,3 +69,28 @@ class TestFileRefDescs:
     def test_file_only(self):
         from services.chat import _file_ref_descs
         assert _file_ref_descs([("/abs/x.png", False)]) == "[file:/abs/x.png]"
+
+
+class TestRelativePathNotCwdHijacked:
+    """相对路径的存在性判定不得以进程 cwd 为根（项目根下同名条目会劫持工作区相对路径）。"""
+
+    def test_relative_resolved_to_workspace_even_if_cwd_has_same_name(self, monkeypatch, tmp_path):
+        # cwd（项目根）下存在同名目录 tmp —— 仍须解析到工作区绝对路径
+        import os
+        resolved = "/abs/workspace/tmp"
+        monkeypatch.setattr(
+            "services.workspace.WorkspaceService.resolve",
+            lambda self, path, root: resolved if root == "workspace" else "/nonexist",
+        )
+        monkeypatch.setattr(os.path, "exists", lambda p: p == resolved)
+        assert resolve_media_path("tmp") == resolved
+
+    def test_project_prefix_routes_to_project_root(self, monkeypatch):
+        import os
+        resolved = "/abs/project/tmp"
+        monkeypatch.setattr(
+            "services.workspace.WorkspaceService.resolve",
+            lambda self, path, root: resolved if (path == "tmp" and root == "project") else "/nonexist",
+        )
+        monkeypatch.setattr(os.path, "exists", lambda p: p == resolved)
+        assert resolve_media_path("project:tmp") == resolved
