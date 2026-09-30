@@ -94,6 +94,8 @@ config/knowledge/
 config/projects/
 # Root-level personal project workspace (renders / models / scripts)
 /projects/
+# config/ 下临时调试 / 实测台笔记
+config/tmp/
 
 # === Root-level ComfyUI workflow templates (personal downloads) ===
 /*_template.json
