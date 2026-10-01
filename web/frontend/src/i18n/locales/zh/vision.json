@@ -197,6 +197,8 @@
       "refineInitial": "首次建立",
       "consolidateSuccess": "整理完成：合并 {{clusters}} 簇，影响 {{count}} 个档案",
       "markReadSuccess": "已全部标记已读"
-    }
+    },
+    "matchCount": "{{count}}次",
+    "facesCount": "{{count}} 脸"
   }
 }

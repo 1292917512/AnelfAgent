@@ -27,7 +27,6 @@ export const personasApi = {
 
 export const configApi = {
   webui: () => api.get("/config/webui"),
-  navigation: () => api.get("/config/webui/navigation"),
   theme: () => api.get("/config/webui/theme"),
   snapshot: () => api.get<ConfigValues>("/config/snapshot"),
   getApp: () => api.get<ConfigValues>("/config/app"),

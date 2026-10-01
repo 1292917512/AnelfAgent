@@ -213,7 +213,7 @@ class TestResolve:
         assert drop is not None
         db = await store._get_db()
         async with store._tx(db):
-            await store._archive_entry(drop, "merged_cleanup")
+            await store._archive_entry(db, drop, "merged_cleanup")
         await db.execute(
             "UPDATE memories_archive SET archived_at_ns=? WHERE id=?",
             (int((time.time() - 200 * 86400) * 1e9), a_id),

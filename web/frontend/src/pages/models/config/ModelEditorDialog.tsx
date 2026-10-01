@@ -288,9 +288,48 @@ export function ModelEditorDialog({
     }
   };
 
+  /** 按顶层逗号切分（括号深度与字符串感知）：dict 形态的 JSON 必含逗号，
+   *  朴素 split(",") 会把 {"type":"x","y":1} 切成碎片再报 invalidJson */
+  const splitTopLevelTokens = (text: string): string[] => {
+    const tokens: string[] = [];
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    let current = "";
+    for (const ch of text) {
+      if (escaped) {
+        current += ch;
+        escaped = false;
+        continue;
+      }
+      if (ch === "\\" && inString) {
+        current += ch;
+        escaped = true;
+        continue;
+      }
+      if (ch === '"') {
+        inString = !inString;
+        current += ch;
+        continue;
+      }
+      if (!inString) {
+        if (ch === "{" || ch === "[") depth += 1;
+        else if (ch === "}" || ch === "]") depth -= 1;
+        else if (ch === "," && depth === 0) {
+          tokens.push(current);
+          current = "";
+          continue;
+        }
+      }
+      current += ch;
+    }
+    tokens.push(current);
+    return tokens.map((s) => s.trim()).filter(Boolean);
+  };
+
   /** 解析内置工具文本：非法 JSON 片段报错并返回 null */
   const parseBuiltinTools = (): Array<string | JsonObject> | null => {
-    const tokens = builtinToolsText.split(",").map((s) => s.trim()).filter(Boolean);
+    const tokens = splitTopLevelTokens(builtinToolsText);
     const items: Array<string | JsonObject> = [];
     for (const token of tokens) {
       if (token.startsWith("{")) {

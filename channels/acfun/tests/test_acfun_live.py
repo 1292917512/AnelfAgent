@@ -617,6 +617,8 @@ class TestLiveContextProvider:
 class LiveToolHost(AcfunToolsMixin):
     """工具宿主替身：真实 LiveSessionManager + 假频道。"""
 
+    channel_id = "acfun"  # LiveHotReloadMixin 契约（persist_live_config 写统一配置的键前缀）
+
     def __init__(self, **cfg: Any) -> None:
         self.channel = make_manager_channel(**cfg)
         self.live_manager = LiveSessionManager(self.channel)

@@ -13,6 +13,7 @@
 import { create } from "zustand";
 import { usePlanStore } from "./plan-store";
 import { useDelegationStore } from "./delegation-store";
+import { useWorkbenchStore } from "./workbench-store";
 import { chatApi, workspaceApi } from "@/lib/api";
 import i18n from "@/i18n";
 import type { ChatBucket, ChatHistoryMessage, ChatMeta, ContextUsage, PendingFile } from "@/lib/types";
@@ -297,7 +298,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         const r = await chatApi.interrupt(chatId === DEFAULT_CHAT_ID ? undefined : chatId);
         // 无进行中的回复/子代理：本地直接复位发送态，避免空等 turn_end
         if (r.data?.status === "idle") {
-          clearSendWatchdog();
+          clearSendWatchdog(chatId);
           updateBucket(chatId, () => ({ sending: false, sendingSince: null, streaming: null }));
         }
       } catch { /* 中断失败时由看门狗兜底复位 */ }
@@ -446,6 +447,24 @@ export const useChatStore = create<ChatState>((set, get) => {
       const chatId = get().activeChatId;
       const bucket = get().buckets[chatId] ?? emptyBucket();
       const pendingFiles = bucket.pendingFiles;
+      // 上传中/上传失败的附件必须拦下发送——静默丢弃会在消息里留下
+      // [file: name] 占位但 AI 永远收不到文件，且泄漏 blob: 预览 URL
+      if (pendingFiles.some((f) => f.uploading)) {
+        useWorkbenchStore.getState().pushNotification({
+          id: nextCid(), title: "",
+          content: i18n.t("attachmentUploading", { ns: "chat" }),
+          level: "warning", ts: Date.now() / 1000,
+        });
+        return false;
+      }
+      if (pendingFiles.some((f) => !f.path && !f.root)) {
+        useWorkbenchStore.getState().pushNotification({
+          id: nextCid(), title: "",
+          content: i18n.t("attachmentFailed", { ns: "chat" }),
+          level: "warning", ts: Date.now() / 1000,
+        });
+        return false;
+      }
       const uploadedPaths = pendingFiles
         .filter((f) => f.path)
         .map((f) => (f.root === "project" ? `project:${f.path}` : f.path!));
@@ -508,7 +527,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         );
         return true;
       } catch {
-        clearSendWatchdog();
+        clearSendWatchdog(chatId);
         updateBucket(chatId, (b) => ({
           sending: false,
           sendingSince: null,

@@ -162,6 +162,8 @@ def reload_entity(name: str) -> bool:
     兄弟子模块（providers/router 等）一并从 sys.modules 摘除，re-import 时
     全部以新代码加载（包自身与 tools 模块保留以走 importlib.reload 原地刷新，
     避免父包重导入的循环副作用）；路由摘除后由事件通知 web 层重挂载。
+    失败时保留的模块一并摘除——旧工具已注销，陈旧字节码留在 sys.modules
+    会让下轮重试拿到旧代码而非修复后的源码。
     """
     for tool_name in _entity_tool_names(name):
         EntityRegistry.unregister(tool_name)
@@ -178,6 +180,8 @@ def reload_entity(name: str) -> bool:
         else:
             importlib.import_module(module_path)
     except Exception as e:
+        for stale in keep:
+            sys.modules.pop(stale, None)
         log(f"实体热重载失败: {name} - {e}", "WARNING", tag=_TAG)
         return False
     _record_diff(name, before)
@@ -258,6 +262,9 @@ async def _sync_entities_locked(reload_existing: bool) -> Dict[str, Any]:
                 _emit(EVENT_MODULE_ADDED, name)
             else:
                 failed.append(name)
+                # 重载失败时旧工具已注销：移出已知集合，下轮同步按新增目录重试
+                # （与频道侧失败目录移出已知集合的自愈语义对称）
+                _loaded_modules.discard(name)
 
     if added or reloaded:
         try:

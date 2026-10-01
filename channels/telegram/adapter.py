@@ -1,7 +1,7 @@
 """Telegram Bot 频道 —— 基于 python-telegram-bot 的模块化适配器。
 
 继承 BaseChannel，声明完整能力集，每个能力方法自动注册为 EntityRegistry 工具。
-支持长轮询和 Webhook 两种模式，在独立线程中运行自己的 asyncio 事件循环。
+长轮询模式，在独立线程中运行自己的 asyncio 事件循环。
 """
 
 from __future__ import annotations

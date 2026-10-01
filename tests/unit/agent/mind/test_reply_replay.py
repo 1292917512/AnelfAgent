@@ -4,7 +4,7 @@
 think_loop 回放并断言三件套——
   1. sent_messages 布局（_layer 序列 / 消息数 / 角色序列）
   2. 工具调用序列（名称 + 顺序，经 fake tool_executor 捕获）
-  3. 最终出站文本（deliver_text mock 捕获）
+  3. 出站行为（deliver_text mock：end_reply 静默收束不投递）
 
 任何改动 think_loop / 上下文组装 / 出站路由的 PR，若改变了模型可见行为，
 这里的断言会红——迫使作者在 PR 里解释"行为为什么该变"。
@@ -57,10 +57,8 @@ class TestScenarioPureText:
         assert round1[-1].get("_layer") == "exec_context"
         # 无业务工具执行（仅 end_reply 收敛）
         assert mind.executed_tools == ["end_reply"]
-        # 出站文本（轮末保底投递独白）
-        deliver_mock.assert_awaited()
-        assert deliver_mock.await_args.args[0] == "你好呀～" or \
-            "你好呀～" in str(deliver_mock.await_args.args)
+        # end_reply 静默收束：暂存独白不投递
+        deliver_mock.assert_not_awaited()
 
 
 class TestScenarioSingleTool:
@@ -82,8 +80,8 @@ class TestScenarioSingleTool:
         # 第 2 轮上下文含第 1 轮的 assistant + tool 结果（工具链并入）
         roles2 = [m.get("role") for m in mind.sent_messages[1]]
         assert "tool" in roles2
-        # 出站文本
-        assert deliver_mock.await_count == 1
+        # end_reply 静默收束：暂存独白不投递
+        deliver_mock.assert_not_awaited()
 
 
 class TestScenarioMultiToolChain:
@@ -103,5 +101,5 @@ class TestScenarioMultiToolChain:
         assert len(mind.sent_messages) == 4
         # 工具序列按轮次顺序执行
         assert mind.executed_tools == ["recall", "get_conversation", "end_reply"]
-        # 最终出站
-        assert deliver_mock.await_count == 1
+        # end_reply 静默收束：暂存独白不投递
+        deliver_mock.assert_not_awaited()

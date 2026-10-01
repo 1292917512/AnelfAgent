@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 
 import pytest
 
+from channels._shared.text import split_text
 from channels.acfun import parser, send, state
 from channels.acfun.poller import NotificationPoller
 from channels.acfun.tools import AcfunToolsMixin, _acfun_error, _to_bool, _to_int
@@ -193,18 +194,18 @@ class TestParseChatTarget:
 
 class TestSplitText:
     def test_short_text_single_chunk(self):
-        assert send._split_text("你好", 1000) == ["你好"]
+        assert split_text("你好", 1000) == ["你好"]
 
     def test_long_text_split_on_newline(self):
         text = ("段落一\n" * 200).strip()
-        chunks = send._split_text(text, 200)
+        chunks = split_text(text, 200)
         assert len(chunks) > 1
         assert all(len(c) <= 200 for c in chunks[:-1])
 
     def test_chunk_cap_truncates(self):
         text = "x" * 10000
-        chunks = send._split_text(text, 1000)
-        assert len(chunks) == send._MAX_CHUNKS
+        chunks = split_text(text, 1000)
+        assert len(chunks) == 5  # 分段上限（防长文拆成评论刷屏）
         assert chunks[-1].endswith("...")
 
 
@@ -301,6 +302,17 @@ class TestPollCursorStore:
         assert store.collect_pending("reply", ["n1", "n2"]) is None  # 播种
         # 输入最新在前 → 未见键最旧先派发
         assert store.collect_pending("reply", ["n3", "n2", "n4"]) == ["n4", "n3"]
+
+    def test_collect_pending_no_premark_at_least_once(self, data_dir):
+        """派发失败未 mark 的键下轮必须重出（collect_pending 不预登记）。"""
+        from agent.channel.poll_cursor import PollCursorStore
+
+        store = PollCursorStore(str(data_dir / "poll_state.json"), channel="AcFun")
+        store.collect_pending("reply", ["n1"])  # 播种
+        assert store.collect_pending("reply", ["n3", "n2"]) == ["n2", "n3"]
+        # n2 派发成功标记；n3 失败未标记 → 下轮只有 n3 重出
+        store.mark("reply", "n2")
+        assert store.collect_pending("reply", ["n4", "n3", "n2"]) == ["n3", "n4"]
 
     def test_bounded_eviction(self, data_dir):
         from agent.channel.poll_cursor import PollCursorStore

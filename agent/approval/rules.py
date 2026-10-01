@@ -29,8 +29,16 @@ from core.path import ConfigPaths
 
 from .policy import ApprovalPolicySet, RiskLevel, match_path_pattern, matchable_arg_candidates
 
-RULES_PATH = ConfigPaths.PERMISSION_RULES
-LEGACY_PATH = ConfigPaths.APPROVAL_POLICIES
+
+def rules_path() -> str:
+    """权限规则文件路径（运行时解析：ConfigPaths 动态跟随目录配置，
+    def 默认参数在定义时冻结会让测试隔离写穿真实配置）。"""
+    return ConfigPaths.PERMISSION_RULES
+
+
+def legacy_path() -> str:
+    """旧审批策略文件路径（运行时解析，同 rules_path）。"""
+    return ConfigPaths.APPROVAL_POLICIES
 
 # 命令执行类工具：参数 glob 的比对对象是命令字符串
 COMMAND_TOOLS = frozenset({"run_shell_command", "python_exec"})
@@ -289,7 +297,7 @@ class PermissionRuleSet(BaseModel):
 _last_good_rules: Optional["PermissionRuleSet"] = None
 
 
-def load_rules(path: str = RULES_PATH) -> PermissionRuleSet:
+def load_rules(path: Optional[str] = None) -> PermissionRuleSet:
     """加载规则集（自动识别新旧格式）；文件不存在时尝试转换旧 approval_policies.json。
 
     解析失败时 fail-closed：保留内存中上一次成功加载的规则集；若从未成功
@@ -297,9 +305,10 @@ def load_rules(path: str = RULES_PATH) -> PermissionRuleSet:
     导致权限被静默放开。
     """
     global _last_good_rules
-    if os.path.exists(path):
+    resolved = path or rules_path()
+    if os.path.exists(resolved):
         try:
-            with open(path, encoding="utf-8") as f:
+            with open(resolved, encoding="utf-8") as f:
                 data = json.load(f)
             if "rules" in data:
                 rule_set = PermissionRuleSet.from_file_dict(data)
@@ -307,12 +316,12 @@ def load_rules(path: str = RULES_PATH) -> PermissionRuleSet:
                 return rule_set
             if "policies" in data:
                 # 旧格式：ApprovalPolicySet 自动转换
-                policy_set = ApprovalPolicySet.load_from_file(path)
+                policy_set = ApprovalPolicySet.load_from_file(resolved)
                 converted = from_legacy_policyset(policy_set)
                 log(f"已从旧审批策略转换 {len(converted.rules)} 条权限规则", tag="权限")
                 _last_good_rules = converted
                 return converted
-            log(f"权限规则文件格式未知: {path}，使用空规则集", "WARNING", tag="权限")
+            log(f"权限规则文件格式未知: {resolved}，使用空规则集", "WARNING", tag="权限")
             return PermissionRuleSet()
         except Exception as exc:
             if _last_good_rules is not None:
@@ -339,11 +348,12 @@ def default_rules() -> PermissionRuleSet:
     return PermissionRuleSet(rules=[])
 
 
-def load_legacy_rules(path: str = LEGACY_PATH) -> Optional[PermissionRuleSet]:
+def load_legacy_rules(path: Optional[str] = None) -> Optional[PermissionRuleSet]:
     """把旧 ApprovalPolicySet 转换为统一规则集。"""
-    if not os.path.exists(path):
+    resolved = path or legacy_path()
+    if not os.path.exists(resolved):
         return None
-    policy_set = ApprovalPolicySet.load_from_file(path)
+    policy_set = ApprovalPolicySet.load_from_file(resolved)
     return from_legacy_policyset(policy_set)
 
 
@@ -382,15 +392,16 @@ def from_legacy_policyset(policy_set: ApprovalPolicySet) -> PermissionRuleSet:
     return PermissionRuleSet(rules=rules, default_effect=default_effect)
 
 
-def save_rules(rule_set: PermissionRuleSet, path: str = RULES_PATH) -> None:
+def save_rules(rule_set: PermissionRuleSet, path: Optional[str] = None) -> None:
     """保存规则集到文件（tmp 文件 + os.replace 原子写，避免中断产生截断文件）。"""
-    dir_name = os.path.dirname(path) or "."
+    resolved = path or rules_path()
+    dir_name = os.path.dirname(resolved) or "."
     os.makedirs(dir_name, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=dir_name, prefix=".permission_rules.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(rule_set.to_file_dict(), f, indent=2, ensure_ascii=False)
-        os.replace(tmp_path, path)
+        os.replace(tmp_path, resolved)
     except Exception:
         try:
             os.unlink(tmp_path)

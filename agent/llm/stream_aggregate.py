@@ -28,6 +28,8 @@ class StreamAggregator:
         self._tool_calls: List[ToolCall] = []
         self._usage: Optional[UsageInfo] = None
         self._finish_reason: str = ""
+        self._thinking_blocks: Optional[List[dict]] = None
+        self._reasoning_details: Optional[List[dict]] = None
         self._started = time.monotonic()
         self._first_delta_at: Optional[float] = None
 
@@ -45,6 +47,10 @@ class StreamAggregator:
             self._usage = delta.usage
         if delta.finish_reason:
             self._finish_reason = delta.finish_reason
+        if delta.thinking_blocks:
+            self._thinking_blocks = delta.thinking_blocks
+        if delta.reasoning_details:
+            self._reasoning_details = delta.reasoning_details
 
     def build(self, model: str = "") -> ChatResult:
         """产出聚合结果（raw 为 None：流式路径无原始响应体）。"""
@@ -59,6 +65,8 @@ class StreamAggregator:
             usage=self._usage,
             model=model,
             ttft_ms=ttft_ms,
+            thinking_blocks=self._thinking_blocks,
+            reasoning_details=self._reasoning_details,
         )
 
 

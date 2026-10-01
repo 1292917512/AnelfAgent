@@ -6,8 +6,8 @@
 import type { ChatBucket, ChatMessage, ChatMeta } from "@/lib/types";
 
 export const DEFAULT_CHAT_ID = "default";
-export const LOCAL_STORAGE_ACTIVE_KEY = "anelf:activeChatId";
-export const LOCAL_STORAGE_CHATS_KEY = "anelf:chats";
+const LOCAL_STORAGE_ACTIVE_KEY = "anelf:activeChatId";
+const LOCAL_STORAGE_CHATS_KEY = "anelf:chats";
 
 let _cidSeq = 0;
 export const nextCid = () => `c-${++_cidSeq}`;
@@ -61,37 +61,45 @@ export function genChatId(): string {
 // ── 发送看门狗：120s 完全无输出（delta/tool_call/reply…）则复位发送态 ──
 // 语义是停滞判定而非总时长上限：回合内任何活动都重置计时，持续有输出的
 // 长回合不会触发；仅在彻底静默超过窗口时判定挂死。
+// 按 chatId 独立计时：多会话并发发送互不覆盖（单例实现会让后发的会话
+// 顶掉先发会话的兜底，其输入框永久停在"发送中"）。
 
-let _sendWatchdog: ReturnType<typeof setTimeout> | null = null;
-let _pendingTimeout: { chatId: string; onTimeout: (chatId: string) => void } | null = null;
+type WatchdogEntry = { timer: ReturnType<typeof setTimeout>; onTimeout: (chatId: string) => void };
+const _watchdogs = new Map<string, WatchdogEntry>();
 const SEND_TIMEOUT_MS = 120_000;
 
-function _scheduleSendWatchdog() {
-  if (_sendWatchdog) clearTimeout(_sendWatchdog);
-  _sendWatchdog = setTimeout(() => {
-    _sendWatchdog = null;
-    const pending = _pendingTimeout;
-    _pendingTimeout = null;
-    pending?.onTimeout(pending.chatId);
-  }, SEND_TIMEOUT_MS);
-}
-
-export function clearSendWatchdog() {
-  if (_sendWatchdog) {
-    clearTimeout(_sendWatchdog);
-    _sendWatchdog = null;
+/** 清理看门狗：传 chatId 清该会话，不传清全部（SSE 断开等全局收束场景） */
+export function clearSendWatchdog(chatId?: string) {
+  if (chatId === undefined) {
+    for (const entry of _watchdogs.values()) clearTimeout(entry.timer);
+    _watchdogs.clear();
+    return;
   }
-  _pendingTimeout = null;
+  const entry = _watchdogs.get(chatId);
+  if (entry) {
+    clearTimeout(entry.timer);
+    _watchdogs.delete(chatId);
+  }
 }
 
 export function armSendWatchdog(chatId: string, onTimeout: (chatId: string) => void) {
-  _pendingTimeout = { chatId, onTimeout };
-  _scheduleSendWatchdog();
+  clearSendWatchdog(chatId);
+  const timer = setTimeout(() => {
+    _watchdogs.delete(chatId);
+    onTimeout(chatId);
+  }, SEND_TIMEOUT_MS);
+  _watchdogs.set(chatId, { timer, onTimeout });
 }
 
-/** 回合内有输出活动（delta/tool_call/file_diff）时重置停滞计时 */
-export function touchSendWatchdog() {
-  if (_pendingTimeout) _scheduleSendWatchdog();
+/** 回合内有输出活动（delta/tool_call/file_diff）时重置该会话的停滞计时 */
+export function touchSendWatchdog(chatId: string) {
+  const entry = _watchdogs.get(chatId);
+  if (!entry) return;
+  clearTimeout(entry.timer);
+  entry.timer = setTimeout(() => {
+    _watchdogs.delete(chatId);
+    entry.onTimeout(chatId);
+  }, SEND_TIMEOUT_MS);
 }
 
 // ── blob: URL 生命周期 ──

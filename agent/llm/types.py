@@ -254,6 +254,10 @@ class ChatStreamDelta:
     finish_reason: str = ""
     reasoning_content: str = ""
     usage: Optional[UsageInfo] = None
+    # 思考块/推理详情的最终装配结果，仅随 finish 片段携带一次
+    # （流式无 raw 响应体，聚合方据此回填 ChatResult 供历史回传）
+    thinking_blocks: Optional[list[dict[str, Any]]] = None
+    reasoning_details: Optional[list[dict[str, Any]]] = None
 
 
 @dataclass(slots=True)
@@ -269,6 +273,10 @@ class ChatResult:
     # 首 token 时间（毫秒，流式路径填充。区分"模型排队慢"与"输出生成长"
     # 两个独立的延迟来源）。非流式为 None。
     ttft_ms: Optional[float] = None
+    # 思考块/推理详情（流式路径由聚合层装配回填；非流式从 raw 读取，
+    # preserve_reasoning_fields 双源消费挂到历史消息供下轮回传）
+    thinking_blocks: Optional[list[dict[str, Any]]] = None
+    reasoning_details: Optional[list[dict[str, Any]]] = None
 
 
 @dataclass(slots=True)

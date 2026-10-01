@@ -8,9 +8,5 @@
   "stream_mode": "off",
   "parse_mode": "html",
   "link_preview": true,
-  "text_limit": 4096,
-  "webhook_enabled": false,
-  "webhook_url": "",
-  "webhook_secret": "",
-  "webhook_port": 8443
+  "text_limit": 4096
 }

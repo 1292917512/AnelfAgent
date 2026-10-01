@@ -130,7 +130,7 @@ def _fake_mind(reflect_return: str = "", reflect_exc: Exception | None = None) -
     else:
         reflect.return_value = reflect_return
     return SimpleNamespace(
-        pfc=SimpleNamespace(get_tool_use_total=lambda: 0),
+        pfc=SimpleNamespace(),
         get_recollection=AsyncMock(return_value=[]),
         reflect=reflect,
         memory_store=None,

@@ -63,6 +63,7 @@ async def test_prewarm_strips_layer_tags(monkeypatch) -> None:
     mind.pfc = MagicMock()
     mind.pfc.build_llm_context = _build_context
     mind.pfc.get_active_tool_schemas = AsyncMock(return_value=[])
+    mind._get_mind_config.return_value.llm_timeout = 60
     mind.llm = _fake_llm_client(sent)
 
     # 绑定真实的 prewarm_scope_cache 实现到替身实例

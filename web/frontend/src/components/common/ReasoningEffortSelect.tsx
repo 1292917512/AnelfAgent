@@ -3,7 +3,7 @@ import i18n from "@/i18n";
 import type { ReasoningEffort } from "@/lib/types";
 
 /** reasoning effort 的 7 个等级（与后端 ReasoningEffort 一一对应） */
-export const REASONING_EFFORT_VALUES = [
+const REASONING_EFFORT_VALUES = [
   "off",
   "minimal",
   "low",

@@ -57,12 +57,12 @@ def create_application(args: argparse.Namespace) -> Application:
     async def init_approval_rules() -> None:
         """加载权限规则并启动热更新监听。"""
         from agent.approval import get_approval_gate
-        from agent.approval.rules import LEGACY_PATH, RULES_PATH
+        from agent.approval.rules import legacy_path, rules_path
         from agent.channel.config_watcher import get_config_watcher
 
         gate = get_approval_gate()
         watcher = get_config_watcher()
-        for path in (RULES_PATH, LEGACY_PATH):
+        for path in (rules_path(), legacy_path()):
             if os.path.exists(path):
                 gate.reload_rules(path)
                 watcher.watch(path, lambda p=path: gate.reload_rules(p))

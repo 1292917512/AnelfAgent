@@ -75,6 +75,7 @@ from agent.mind.tools.decision_executor import (
     resolve_reply_target as _de_resolve_target,
 )
 from agent.mind.tools.media_pipeline import MediaPipeline
+from agent.mind.tools.round_helpers import _OUTPUT_TOOL_NAMES
 from agent.mind.tools.think_loop import (
     ThinkMode,
 )
@@ -123,8 +124,9 @@ from entities._sdk import activate_group, deferred_tool
     name=_END_REPLY_TOOL_NAME,
     group="thinking", tags=["always"], source="mind.core",
     description=(
-        "结束本轮操作。任务已全部完成或无需继续时调用；参数留空即可（reason 仅内部日志，不发给用户）。"
-        "回复用户请在结束前调用 send_message。"
+        "结束本轮操作。任务已全部完成或无需继续时调用；调用即静默收束——"
+        "同批正文不会投递给用户（回复请先调用 send_message 送达）；"
+        "参数留空即可（reason 仅内部日志，不发给用户）。"
         "若同批或同轮存在失败工具，结束将不生效并反馈失败原因，修正后需重新调用。"
     ),
 )
@@ -982,10 +984,15 @@ class Mind:
             f"msgs={len(messages)} tools={len(tools or [])}",
             "DEBUG", tag="缓存",
         )
-        async for _delta in llm_client.chat_stream(
-            messages, options={"max_tokens": 1}, tools=tools or None,
-        ):
-            pass
+        # 预热是 1-token 轻调用但总时长必须有界：detached task 无引用无取消，
+        # 端点挂起/吊流会泄漏孤儿任务并长期占用缓存亲和小连接池
+        async def _consume() -> None:
+            async for _delta in llm_client.chat_stream(
+                messages, options={"max_tokens": 1}, tools=tools or None,
+            ):
+                pass
+
+        await asyncio.wait_for(_consume(), timeout=self._get_mind_config().llm_timeout * 20)
 
     # reflect（子代理/心跳）不得操作频道调度类工具。
     # present_plan/update_goal 已放行：tracker 对非用户 scope（reflect 等）
@@ -994,9 +1001,9 @@ class Mind:
     _REFLECT_ALWAYS_BLOCKED = frozenset({
         "list_channels", "schedule_reply",
     })
-    _REFLECT_OUTPUT_TOOLS = frozenset({
-        "send_message", "send_photo", "send_voice", "send_file",
-    })
+    # 输出工具集合的单一权威在 round_helpers._OUTPUT_TOOL_NAMES（回合结果判定
+    # 同源）——双份定义会在增删输出工具时漂移
+    _REFLECT_OUTPUT_TOOLS = _OUTPUT_TOOL_NAMES
 
     @classmethod
     def _build_reflect_blocklist(cls, allow_output_tools: bool) -> Set[str]:

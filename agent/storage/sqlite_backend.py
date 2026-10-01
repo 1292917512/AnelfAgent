@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from pathlib import Path
-from typing import Optional
+from typing import AsyncIterator, Optional
 
 import aiosqlite
 
@@ -43,8 +44,9 @@ class SqliteBackend:
         self._scope_migrate_retry_after = 0.0
         self._conn_lock = asyncio.Lock()
         self._scope_migrate_attempts = 0
-        # 多步写串行锁：单连接上批量写循环（如 embedding 回填）期间，
-        # 其他协程的 commit 会把半成品批次一并落盘；持锁后多步写互斥
+        # 写串行锁：单连接所有写共享一个事务上下文——无锁时一条路径的
+        # commit/rollback 会连坐其他路径的半成品（迁移 rollback 吞在途消息、
+        # 并发 commit 截断多语句删除）。所有写路径统一经 _write_tx 持锁
         self._write_lock = asyncio.Lock()
         self._last_health_check = 0.0
         self._register_embedding_backlog()
@@ -288,6 +290,17 @@ class SqliteBackend:
     async def _ensure_init(self) -> None:
         await self._get_db()
 
+    @contextlib.asynccontextmanager
+    async def _write_tx(self) -> AsyncIterator[aiosqlite.Connection]:
+        """写事务：取连接后持写锁，串行化共享连接上的全部写路径。
+
+        锁必须在 _get_db 之外获取——_get_db 内部的 scope 迁移自身持锁，
+        顺序颠倒（先持锁再取连接）会让迁移在同一协程二次取锁死锁。
+        """
+        db = await self._get_db()
+        async with self._write_lock:
+            yield db
+
     # ------------------------------------------------------------------
     # 会话记录
     # ------------------------------------------------------------------
@@ -303,13 +316,13 @@ class SqliteBackend:
         adapter_key: str = "",
         trigger_mind: bool = True,
     ) -> None:
-        db = await self._get_db()
         ts_ns = ts_ns or time.time_ns()
-        await db.execute(
-            "INSERT INTO conversation_messages(scope_type, scope_id, role, content, ts_ns, adapter_key, trigger_mind) VALUES(?,?,?,?,?,?,?)",
-            (scope_type, scope_id, role, content, int(ts_ns), adapter_key or "", 1 if trigger_mind else 0),
-        )
-        await db.commit()
+        async with self._write_tx() as db:
+            await db.execute(
+                "INSERT INTO conversation_messages(scope_type, scope_id, role, content, ts_ns, adapter_key, trigger_mind) VALUES(?,?,?,?,?,?,?)",
+                (scope_type, scope_id, role, content, int(ts_ns), adapter_key or "", 1 if trigger_mind else 0),
+            )
+            await db.commit()
 
     async def conversation_has_duplicate(
         self,
@@ -479,29 +492,29 @@ class SqliteBackend:
     ) -> None:
         """写入/更新对话摘要行（摘要 + 各成员 scope 水位线 + 折叠/丢弃计数）。"""
         import json as _json
-        db = await self._get_db()
-        await db.execute(
-            """
-            INSERT INTO conversation_summary(
-                scope_type, scope_id, summary, watermarks_json, watermark_ids_json,
-                folded_count, dropped_count, updated_ts_ns
-            ) VALUES(?,?,?,?,?,?,?,?)
-            ON CONFLICT(scope_type, scope_id) DO UPDATE SET
-              summary=excluded.summary,
-              watermarks_json=excluded.watermarks_json,
-              watermark_ids_json=excluded.watermark_ids_json,
-              folded_count=excluded.folded_count,
-              dropped_count=excluded.dropped_count,
-              updated_ts_ns=excluded.updated_ts_ns
-            """,
-            (
-                scope_type, scope_id, summary,
-                _json.dumps(watermarks, ensure_ascii=False),
-                _json.dumps(watermark_ids or {}, ensure_ascii=False),
-                int(folded_count), int(dropped_count), time.time_ns(),
-            ),
-        )
-        await db.commit()
+        async with self._write_tx() as db:
+            await db.execute(
+                """
+                INSERT INTO conversation_summary(
+                    scope_type, scope_id, summary, watermarks_json, watermark_ids_json,
+                    folded_count, dropped_count, updated_ts_ns
+                ) VALUES(?,?,?,?,?,?,?,?)
+                ON CONFLICT(scope_type, scope_id) DO UPDATE SET
+                  summary=excluded.summary,
+                  watermarks_json=excluded.watermarks_json,
+                  watermark_ids_json=excluded.watermark_ids_json,
+                  folded_count=excluded.folded_count,
+                  dropped_count=excluded.dropped_count,
+                  updated_ts_ns=excluded.updated_ts_ns
+                """,
+                (
+                    scope_type, scope_id, summary,
+                    _json.dumps(watermarks, ensure_ascii=False),
+                    _json.dumps(watermark_ids or {}, ensure_ascii=False),
+                    int(folded_count), int(dropped_count), time.time_ns(),
+                ),
+            )
+            await db.commit()
 
     @staticmethod
     def _watermark_where(
@@ -662,21 +675,21 @@ class SqliteBackend:
         conv_num: int = 0,
         conv_update_num: int = 0,
     ) -> None:
-        db = await self._get_db()
         now = time.time_ns()
-        await db.execute(
-            """
-            INSERT INTO entity_profile(scope_type, scope_id, personality, updated_ts_ns, conv_num, conv_update_num)
-            VALUES(?,?,?,?,?,?)
-            ON CONFLICT(scope_type, scope_id) DO UPDATE SET
-              personality=excluded.personality,
-              updated_ts_ns=excluded.updated_ts_ns,
-              conv_num=excluded.conv_num,
-              conv_update_num=excluded.conv_update_num
-            """,
-            (scope_type, scope_id, personality, int(now), conv_num, conv_update_num),
-        )
-        await db.commit()
+        async with self._write_tx() as db:
+            await db.execute(
+                """
+                INSERT INTO entity_profile(scope_type, scope_id, personality, updated_ts_ns, conv_num, conv_update_num)
+                VALUES(?,?,?,?,?,?)
+                ON CONFLICT(scope_type, scope_id) DO UPDATE SET
+                  personality=excluded.personality,
+                  updated_ts_ns=excluded.updated_ts_ns,
+                  conv_num=excluded.conv_num,
+                  conv_update_num=excluded.conv_update_num
+                """,
+                (scope_type, scope_id, personality, int(now), conv_num, conv_update_num),
+            )
+            await db.commit()
 
     async def save_entity_counters(
         self,
@@ -687,13 +700,13 @@ class SqliteBackend:
         conv_update_num: int,
     ) -> None:
         """仅更新对话计数（不覆盖 personality），若记录不存在则跳过。"""
-        db = await self._get_db()
-        await db.execute(
-            "UPDATE entity_profile SET conv_num=?, conv_update_num=? "
-            "WHERE scope_type=? AND scope_id=?",
-            (conv_num, conv_update_num, scope_type, scope_id),
-        )
-        await db.commit()
+        async with self._write_tx() as db:
+            await db.execute(
+                "UPDATE entity_profile SET conv_num=?, conv_update_num=? "
+                "WHERE scope_type=? AND scope_id=?",
+                (conv_num, conv_update_num, scope_type, scope_id),
+            )
+            await db.commit()
 
     async def save_entity_counters_batch(
         self, records: list[tuple[str, str, int, int]]
@@ -704,14 +717,14 @@ class SqliteBackend:
         """
         if not records:
             return 0
-        db = await self._get_db()
-        await db.executemany(
-            "UPDATE entity_profile SET conv_num=?, conv_update_num=? "
-            "WHERE scope_type=? AND scope_id=?",
-            [(conv_num, conv_update_num, scope_type, scope_id)
-             for scope_type, scope_id, conv_num, conv_update_num in records],
-        )
-        await db.commit()
+        async with self._write_tx() as db:
+            await db.executemany(
+                "UPDATE entity_profile SET conv_num=?, conv_update_num=? "
+                "WHERE scope_type=? AND scope_id=?",
+                [(conv_num, conv_update_num, scope_type, scope_id)
+                 for scope_type, scope_id, conv_num, conv_update_num in records],
+            )
+            await db.commit()
         return len(records)
 
     # ------------------------------------------------------------------
@@ -720,24 +733,24 @@ class SqliteBackend:
 
     async def add_pending_task(self, *, scope: str, kind: str, payload_json: str) -> int:
         """写入一条待办，返回行 id。"""
-        db = await self._get_db()
-        cursor = await db.execute(
-            "INSERT INTO pending_tasks(scope, kind, payload_json, ts_ns) VALUES(?,?,?,?)",
-            (scope, kind, payload_json, time.time_ns()),
-        )
-        await db.commit()
-        return int(cursor.lastrowid or 0)
+        async with self._write_tx() as db:
+            cursor = await db.execute(
+                "INSERT INTO pending_tasks(scope, kind, payload_json, ts_ns) VALUES(?,?,?,?)",
+                (scope, kind, payload_json, time.time_ns()),
+            )
+            await db.commit()
+            return int(cursor.lastrowid or 0)
 
     async def delete_pending_task_by_key(self, task_key: str) -> None:
         """按 payload 中的 task_key 删除已消费的待办（PFC 侧以 uuid 关联）。"""
         if not task_key:
             return
-        db = await self._get_db()
-        await db.execute(
-            "DELETE FROM pending_tasks WHERE json_extract(payload_json, '$.task_key')=?",
-            (task_key,),
-        )
-        await db.commit()
+        async with self._write_tx() as db:
+            await db.execute(
+                "DELETE FROM pending_tasks WHERE json_extract(payload_json, '$.task_key')=?",
+                (task_key,),
+            )
+            await db.commit()
 
     async def load_pending_tasks(self) -> list[dict]:
         """加载全部未消费待办（启动 replay 用），按入库时间升序。"""
@@ -762,21 +775,21 @@ class SqliteBackend:
         """登记/更新某 scope 的进行中回复检查点（INSERT OR REPLACE）。"""
         if not scope_key:
             return
-        db = await self._get_db()
-        await db.execute(
-            "INSERT OR REPLACE INTO reply_checkpoints"
-            "(scope_key, adapter_key, phase, iteration, started_ns) VALUES(?,?,?,?,?)",
-            (scope_key, adapter_key, phase, iteration, time.time_ns()),
-        )
-        await db.commit()
+        async with self._write_tx() as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO reply_checkpoints"
+                "(scope_key, adapter_key, phase, iteration, started_ns) VALUES(?,?,?,?,?)",
+                (scope_key, adapter_key, phase, iteration, time.time_ns()),
+            )
+            await db.commit()
 
     async def clear_reply_checkpoint(self, scope_key: str) -> None:
         """回复正常/协作中断结束时清除检查点。"""
         if not scope_key:
             return
-        db = await self._get_db()
-        await db.execute("DELETE FROM reply_checkpoints WHERE scope_key=?", (scope_key,))
-        await db.commit()
+        async with self._write_tx() as db:
+            await db.execute("DELETE FROM reply_checkpoints WHERE scope_key=?", (scope_key,))
+            await db.commit()
 
     async def load_reply_checkpoints(self) -> list[dict]:
         """加载全部检查点。启动时调用——此时无任何进行中回复，存在的行
@@ -805,8 +818,7 @@ class SqliteBackend:
         """
         if not scope_key:
             return
-        db = await self._get_db()
-        async with self._write_lock:
+        async with self._write_tx() as db:
             await db.execute(
                 """
                 INSERT INTO scope_usage(scope_key, turns, llm_calls, prompt_tokens,
@@ -870,8 +882,7 @@ class SqliteBackend:
         values = [record.get(c, "") for c in cols]
         values[0] = int(record.get("ts_ns") or time.time_ns())
         values[1] = str(values[1] or "")
-        db = await self._get_db()
-        async with self._write_lock:
+        async with self._write_tx() as db:
             await db.execute(
                 f"INSERT INTO approval_audit({', '.join(cols)}) "
                 f"VALUES({', '.join('?' for _ in cols)})",
@@ -1199,13 +1210,13 @@ class SqliteBackend:
 
     async def clear_conversation_embeddings(self) -> int:
         """清空全部对话消息向量（切换 embedding 模型后由后台 worker 重建）。"""
-        db = await self._get_db()
-        cursor = await db.execute(
-            "UPDATE conversation_messages SET embedding_blob=NULL "
-            "WHERE embedding_blob IS NOT NULL"
-        )
-        await db.commit()
-        return cursor.rowcount
+        async with self._write_tx() as db:
+            cursor = await db.execute(
+                "UPDATE conversation_messages SET embedding_blob=NULL "
+                "WHERE embedding_blob IS NOT NULL"
+            )
+            await db.commit()
+            return cursor.rowcount
 
     async def backfill_conversation_embeddings(
         self,
@@ -1372,9 +1383,9 @@ class SqliteBackend:
 
     async def delete_conversation_by_id(self, row_id: int) -> None:
         """按 id 删除单条会话记录。"""
-        db = await self._get_db()
-        await db.execute("DELETE FROM conversation_messages WHERE id=?", (row_id,))
-        await db.commit()
+        async with self._write_tx() as db:
+            await db.execute("DELETE FROM conversation_messages WHERE id=?", (row_id,))
+            await db.commit()
 
     async def update_conversation_message(self, row_id: int, new_content: str) -> bool:
         """更新单条会话消息内容（存储层正式 API）。
@@ -1385,30 +1396,30 @@ class SqliteBackend:
         Returns:
             True 表示命中并更新了消息；False 表示 row_id 不存在。
         """
-        db = await self._get_db()
-        cursor = await db.execute(
-            "UPDATE conversation_messages SET content=?, embedding_blob=NULL WHERE id=?",
-            (new_content, row_id),
-        )
-        if cursor.rowcount == 0:
-            # 未命中也要提交：UPDATE 已隐式开启事务，挂着不交会污染
-            # 共享连接上的后续操作（如迁移的 VACUUM INTO 会因事务中报错）
+        async with self._write_tx() as db:
+            cursor = await db.execute(
+                "UPDATE conversation_messages SET content=?, embedding_blob=NULL WHERE id=?",
+                (new_content, row_id),
+            )
+            if cursor.rowcount == 0:
+                # 未命中也要提交：UPDATE 已隐式开启事务，挂着不交会污染
+                # 共享连接上的后续操作（如迁移的 VACUUM INTO 会因事务中报错）
+                await db.commit()
+                return False
             await db.commit()
-            return False
-        await db.commit()
         from agent.memory.embedding import wake_embedding_worker
         wake_embedding_worker()
         return True
 
     async def clear_conversation(self, *, scope_type: str, scope_id: str) -> int:
         """清空指定 scope 的全部会话记录，返回删除数量。"""
-        db = await self._get_db()
-        cursor = await db.execute(
-            "DELETE FROM conversation_messages WHERE scope_type=? AND scope_id=?",
-            (scope_type, scope_id),
-        )
-        await db.commit()
-        return cursor.rowcount
+        async with self._write_tx() as db:
+            cursor = await db.execute(
+                "DELETE FROM conversation_messages WHERE scope_type=? AND scope_id=?",
+                (scope_type, scope_id),
+            )
+            await db.commit()
+            return cursor.rowcount
 
     async def sweep_empty_conversations(self, *, min_age_seconds: int = 3600) -> dict:
         """清除空会话（从未有过 user 角色消息的会话）的消息/摘要/回复检查点。
@@ -1432,38 +1443,41 @@ class SqliteBackend:
         if not empty_scopes:
             return report
 
-        cursor = await db.execute(
-            """
-            DELETE FROM conversation_summary WHERE NOT EXISTS (
-              SELECT 1 FROM conversation_messages m
-              WHERE m.scope_type=conversation_summary.scope_type
-                AND m.scope_id=conversation_summary.scope_id AND m.role='user'
+        # 多语句删除 + 单次 commit 整体持锁：并发写路径的 commit 不会把
+        # 半成品批次（先删摘要后删消息的中间态）提前落盘
+        async with self._write_lock:
+            cursor = await db.execute(
+                """
+                DELETE FROM conversation_summary WHERE NOT EXISTS (
+                  SELECT 1 FROM conversation_messages m
+                  WHERE m.scope_type=conversation_summary.scope_type
+                    AND m.scope_id=conversation_summary.scope_id AND m.role='user'
+                )
+                """
             )
-            """
-        )
-        report["summaries"] = cursor.rowcount or 0
-        cursor = await db.execute(
-            """
-            DELETE FROM reply_checkpoints WHERE NOT EXISTS (
-              SELECT 1 FROM conversation_messages m
-              WHERE m.scope_type || '_' || m.scope_id = reply_checkpoints.scope_key
-                AND m.role='user'
+            report["summaries"] = cursor.rowcount or 0
+            cursor = await db.execute(
+                """
+                DELETE FROM reply_checkpoints WHERE NOT EXISTS (
+                  SELECT 1 FROM conversation_messages m
+                  WHERE m.scope_type || '_' || m.scope_id = reply_checkpoints.scope_key
+                    AND m.role='user'
+                )
+                """
             )
-            """
-        )
-        report["checkpoints"] = cursor.rowcount or 0
-        cursor = await db.execute(
-            """
-            DELETE FROM conversation_messages WHERE ts_ns < ? AND NOT EXISTS (
-              SELECT 1 FROM conversation_messages u
-              WHERE u.scope_type=conversation_messages.scope_type
-                AND u.scope_id=conversation_messages.scope_id AND u.role='user'
+            report["checkpoints"] = cursor.rowcount or 0
+            cursor = await db.execute(
+                """
+                DELETE FROM conversation_messages WHERE ts_ns < ? AND NOT EXISTS (
+                  SELECT 1 FROM conversation_messages u
+                  WHERE u.scope_type=conversation_messages.scope_type
+                    AND u.scope_id=conversation_messages.scope_id AND u.role='user'
+                )
+                """,
+                (cutoff_ns,),
             )
-            """,
-            (cutoff_ns,),
-        )
-        report["messages"] = cursor.rowcount or 0
-        await db.commit()
+            report["messages"] = cursor.rowcount or 0
+            await db.commit()
         return report
 
     async def list_entity_profiles(self) -> list[dict]:
@@ -1484,12 +1498,12 @@ class SqliteBackend:
 
     async def delete_entity_profile(self, *, scope_type: str, scope_id: str) -> None:
         """删除指定实体画像。"""
-        db = await self._get_db()
-        await db.execute(
-            "DELETE FROM entity_profile WHERE scope_type=? AND scope_id=?",
-            (scope_type, scope_id),
-        )
-        await db.commit()
+        async with self._write_tx() as db:
+            await db.execute(
+                "DELETE FROM entity_profile WHERE scope_type=? AND scope_id=?",
+                (scope_type, scope_id),
+            )
+            await db.commit()
 
     # ------------------------------------------------------------------
     # 实体别名（跨平台身份关联）
@@ -1519,30 +1533,30 @@ class SqliteBackend:
         primary_scope_id: str,
     ) -> None:
         """设置别名映射（source → primary）。"""
-        db = await self._get_db()
         now = time.time_ns()
-        await db.execute(
-            """
-            INSERT INTO entity_alias(scope_type, scope_id, primary_scope_type, primary_scope_id, created_ts_ns)
-            VALUES(?,?,?,?,?)
-            ON CONFLICT(scope_type, scope_id) DO UPDATE SET
-              primary_scope_type=excluded.primary_scope_type,
-              primary_scope_id=excluded.primary_scope_id,
-              created_ts_ns=excluded.created_ts_ns
-            """,
-            (scope_type, scope_id, primary_scope_type, primary_scope_id, int(now)),
-        )
-        await db.commit()
+        async with self._write_tx() as db:
+            await db.execute(
+                """
+                INSERT INTO entity_alias(scope_type, scope_id, primary_scope_type, primary_scope_id, created_ts_ns)
+                VALUES(?,?,?,?,?)
+                ON CONFLICT(scope_type, scope_id) DO UPDATE SET
+                  primary_scope_type=excluded.primary_scope_type,
+                  primary_scope_id=excluded.primary_scope_id,
+                  created_ts_ns=excluded.created_ts_ns
+                """,
+                (scope_type, scope_id, primary_scope_type, primary_scope_id, int(now)),
+            )
+            await db.commit()
 
     async def remove_alias(self, *, scope_type: str, scope_id: str) -> bool:
         """移除别名，返回是否有记录被删除。"""
-        db = await self._get_db()
-        cursor = await db.execute(
-            "DELETE FROM entity_alias WHERE scope_type=? AND scope_id=?",
-            (scope_type, scope_id),
-        )
-        await db.commit()
-        return cursor.rowcount > 0
+        async with self._write_tx() as db:
+            cursor = await db.execute(
+                "DELETE FROM entity_alias WHERE scope_type=? AND scope_id=?",
+                (scope_type, scope_id),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
 
     async def list_aliases(self) -> list[dict]:
         """列出所有别名关系。"""

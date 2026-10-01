@@ -48,6 +48,10 @@ def load_waveform(path):
         r = subprocess.run([FFMPEG, "-y", "-i", path, "-ar", "16000", "-ac", "1", "-f", "wav", tmp],
                            capture_output=True)
         if r.returncode != 0:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
             raise RuntimeError("ffmpeg convert failed: %s" % r.stderr.decode(errors="replace")[-500:])
         src = tmp
     audio, sr = sf.read(src, dtype="float32")

@@ -84,7 +84,7 @@ __all__ = [
     "extract_document_text", "supported_doc_exts",
     "set_default_model", "get_active_llm_client", "get_llm_client_class",
     "get_llm_manager", "save_config_value",
-    "get_session_llm_params", "canonical_efforts",
+    "get_session_llm_params", "canonical_efforts", "valid_api_types",
     "activate_tool_group_now", "notify_tool_set_changed",
     "tool_error", "error_from_exception", "ErrorCause",
 ]
@@ -1004,6 +1004,12 @@ def canonical_efforts() -> List[str]:
     """获取思考等级规范词汇表（update_model_config 等校验用）。"""
     from agent.llm.reasoning import CANONICAL_EFFORTS
     return list(CANONICAL_EFFORTS)
+
+
+def valid_api_types() -> List[str]:
+    """获取支持的供应商 api_type 列表（add_provider 等校验用）。"""
+    from agent.llm.config import API_TYPES
+    return list(API_TYPES)
 
 
 # ------------------------------------------------------------------

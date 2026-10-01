@@ -19,6 +19,7 @@ from services import (
     TaskService,
 )
 from services.heartbeat import HeartbeatServiceError
+from services.mcp import mask_servers_file
 from services.task import TaskServiceError, TaskStorageError
 from web.routers._errors import server_error
 
@@ -61,14 +62,11 @@ async def get_webui_config() -> Dict[str, Any]:
     """返回 WebUI 配置（品牌、主题、配置索引）。
 
     侧边栏导航为前端代码常量（`web/frontend/src/lib/navigation.ts`），不在此返回。
+    auth 段（管理密码/api_keys）永不下发浏览器——前端仅消费 branding 等展示字段。
     """
-    return _load_webui_config()
-
-
-@router.get("/webui/navigation")
-async def get_navigation() -> Dict[str, Any]:
-    """历史端点：导航已代码化，返回空数组保持向后兼容。"""
-    return {"navigation": []}
+    cfg = _load_webui_config()
+    cfg.pop("auth", None)
+    return cfg
 
 
 @router.get("/webui/theme")
@@ -108,6 +106,8 @@ async def get_config_snapshot() -> Dict[str, Any]:
                 data = _mask_llm_secrets(data)
             elif key == "app":
                 data = _mask_app_secrets(data)
+            elif key == "mcp":
+                data = mask_servers_file(data)
             snapshot[key] = data
         except Exception as e:
             log(f"配置快照读取失败 ({key}): {e}", "DEBUG")

@@ -220,12 +220,18 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
             fut.set_result(text)
             return _ok({"chat_id": chat_id})
         # async 模式：无 pending future 时经 SSE reply 帧投递最终文本
-        delivered = False
+        if self._deliver_to_subscribers(chat_id, {"type": "reply", "content": text}):
+            return _ok({"chat_id": chat_id, "delivery": "stream"})
+        return _err(f"无待回复请求: chat_id={chat_id}")
+
+    def _deliver_to_subscribers(self, chat_id: str, payload: Dict[str, Any]) -> bool:
+        """向匹配该 chat 的 SSE 订阅者推送一帧，返回是否有订阅者送达。"""
         candidates = (
             f"user_{self.channel_id}:{chat_id}",
             f"group_{self.channel_id}:{chat_id}",
         )
-        data = json.dumps({"type": "reply", "content": text}, ensure_ascii=False)
+        data = json.dumps(payload, ensure_ascii=False)
+        delivered = False
         for sub in list(self._stream_subs):
             if any(
                 p == sub.prefix or p.startswith(sub.prefix + "#") or sub.prefix.startswith(p + "#")
@@ -233,9 +239,7 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
             ):
                 sub.queue.put_nowait(data)
                 delivered = True
-        if delivered:
-            return _ok({"chat_id": chat_id, "delivery": "stream"})
-        return _err(f"无待回复请求: chat_id={chat_id}")
+        return delivered
 
     # ------------------------------------------------------------------
     # 内部
@@ -365,17 +369,21 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
     # ------------------------------------------------------------------
 
     async def forward_message(self, request: SendRequest) -> SendResponse:
-        """统一发送入口：通过 pending future 返回响应。"""
+        """通知/主动消息入口：经 SSE 订阅者投递，不消费同步模式的待回复 future。
+
+        同步模式的 pending future 由回复路径（send_text）独占——审批提示等
+        通知若解析掉 future，HTTP 调用方会把提示文本当作最终答复，真实回复
+        无处投递。无订阅者时通知按 fire-and-forget 处理（审批决策在 WebUI
+        面板进行，不依赖本频道的提示可达性），记 WARNING 留痕。
+        """
         try:
             chat_id = request.channel.channel_id
-            fut = self._pending_replies.pop(chat_id, None)
-            if not fut or fut.done():
-                return SendResponse(success=False, error=f"无待回复请求: chat_id={chat_id}")
-
-            # 拼接所有 text segment
             text_parts = [seg.content for seg in request.segments if seg.type.value == "text"]
             full_text = "\n".join(text_parts) if text_parts else ""
-            fut.set_result(full_text)
+            if not full_text:
+                return SendResponse(success=False, error="空消息")
+            if not self._deliver_to_subscribers(chat_id, {"type": "reply", "content": full_text}):
+                log(f"http_api 通知无 SSE 订阅者，已丢弃: chat_id={chat_id}", "WARNING")
             return SendResponse(success=True, message_id=f"http-{int(time.time() * 1000)}")
         except Exception as exc:
             return SendResponse(success=False, error=str(exc))

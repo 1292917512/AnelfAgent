@@ -403,12 +403,20 @@ async def _llm_chat_stream_once(
     tool_calls: List[Any] = []
     usage = None
     finish_reason = ""
+    thinking_blocks: Optional[List[dict]] = None
+    reasoning_details: Optional[List[dict]] = None
     ttft_ms: Optional[float] = None
     started = time.monotonic()
     stream_iter = mind.llm.chat_stream(
         messages, options=final_options, tools=tools, tool_choice=tool_choice,
     ).__aiter__()
+    # 总时长天花板（与管理器流式路径 ceiling_mult=20 同口径）：防端点
+    # 以"周期性吐字节"方式吊流——每 chunk 都有活动、空闲超时永不触发
+    loop = asyncio.get_running_loop()
+    overall_deadline = loop.time() + mc.llm_timeout * 20
     while True:
+        if loop.time() > overall_deadline:
+            raise asyncio.TimeoutError("LLM 流式总时长超限")
         try:
             # 每个 chunk 独立计时（停滞流保护）。3.11+ 用 asyncio.timeout
             # （无 per-chunk Task 创建开销）；3.10 回退 wait_for
@@ -435,6 +443,10 @@ async def _llm_chat_stream_once(
             usage = delta.usage
         if delta.finish_reason:
             finish_reason = delta.finish_reason
+        if delta.thinking_blocks:
+            thinking_blocks = delta.thinking_blocks
+        if delta.reasoning_details:
+            reasoning_details = delta.reasoning_details
     content = "".join(content_parts)
     if content:
         from core.tags import rm_unless_text
@@ -447,4 +459,6 @@ async def _llm_chat_stream_once(
         usage=usage,
         model=mind.llm.config.model,
         ttft_ms=ttft_ms,
+        thinking_blocks=thinking_blocks,
+        reasoning_details=reasoning_details,
     )

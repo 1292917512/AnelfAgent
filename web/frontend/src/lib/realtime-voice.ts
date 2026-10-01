@@ -6,6 +6,8 @@
  * （rt_state/rt_partial/rt_final/audio_done/delta/reply/status）。
  */
 
+import i18n from "@/i18n";
+
 export type RtState = "listening" | "thinking" | "speaking";
 
 export interface RtEvent {
@@ -140,10 +142,20 @@ export class RealtimeVoiceClient {
       void this.reconnect();
     };
 
-    await new Promise<void>((resolve, reject) => {
-      ws.onopen = () => resolve();
-      ws.onerror = () => reject(new Error("语音通道连接失败"));
-    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        ws.onopen = () => resolve();
+        ws.onerror = () => reject(new Error(i18n.t("voiceConnectFailed", { ns: "chat" })));
+      });
+    } catch (err) {
+      // 连接失败必须释放已获取的麦克风（与 ack 失败路径同纪律），
+      // 否则设备占用常亮、重连循环每轮再漏一次
+      this.stopCapture();
+      ws.close();
+      this.ws = null;
+      this.wantActive = false;
+      throw err;
+    }
     ws.send(JSON.stringify({
       action: "voice_start",
       mode: "realtime",
@@ -184,7 +196,7 @@ export class RealtimeVoiceClient {
 
   private waitForAck(ws: WebSocket): Promise<string | null> {
     return new Promise((resolve) => {
-      const timer = setTimeout(() => resolve("语音服务无响应（超时）"), 8000);
+      const timer = setTimeout(() => resolve(i18n.t("voiceServiceTimeout", { ns: "chat" })), 8000);
       const prev = ws.onmessage;
       ws.onmessage = (ev) => {
         if (!(ev.data instanceof ArrayBuffer)) {
@@ -193,13 +205,13 @@ export class RealtimeVoiceClient {
             if (msg.type === "voice_ack") {
               clearTimeout(timer);
               ws.onmessage = prev;
-              resolve(msg.active === false ? "语音会话开启失败" : null);
+              resolve(msg.active === false ? i18n.t("voiceStartFailed", { ns: "chat" }) : null);
               return;
             }
             if (msg.type === "status") {
               clearTimeout(timer);
               ws.onmessage = prev;
-              resolve(String(msg.message?.details ?? "语音会话被拒绝"));
+              resolve(String(msg.message?.details ?? i18n.t("voiceRejected", { ns: "chat" })));
               return;
             }
           } catch { /* 非 JSON 帧交给主处理器 */ }
@@ -266,10 +278,10 @@ export class RealtimeVoiceClient {
         this.cb.onFinal?.(String(msg.content ?? ""), "assistant");
         break;
       case "rt_error":
-        this.cb.onError?.(String(msg.message ?? "语音通道异常"));
+        this.cb.onError?.(String(msg.message ?? i18n.t("voiceChannelError", { ns: "chat" })));
         break;
       case "status":
-        this.cb.onError?.(String((msg.message as { details?: string })?.details ?? "通道错误"));
+        this.cb.onError?.(String((msg.message as { details?: string })?.details ?? i18n.t("voiceError", { ns: "chat" })));
         break;
     }
   }

@@ -286,6 +286,11 @@ class MemoryStore(BaseEntity):
 
     async def get(self, memory_id: int) -> Optional[MemoryEntry]:
         db = await self._get_db()
+        return await self._fetch_entry(db, memory_id)
+
+    @staticmethod
+    async def _fetch_entry(db: aiosqlite.Connection, memory_id: int) -> Optional[MemoryEntry]:
+        """在已持有的连接上读取单条记忆（tx 内嵌套读取专用，不重新取连接）。"""
         cursor = await db.execute(f"SELECT {_MEM_COLUMNS} FROM memories WHERE id=?", (memory_id,))
         row = await cursor.fetchone()
         if not row:
@@ -296,7 +301,7 @@ class MemoryStore(BaseEntity):
         db = await self._get_db()
         async with self._tx(db):
             await db.execute("UPDATE memories SET importance=? WHERE id=?", (importance, memory_id))
-            entry = await self.get(memory_id)
+            entry = await self._fetch_entry(db, memory_id)
             if entry:
                 await self._cognee.enqueue_sync(
                     db, memory_id, "upsert", entry_projection_payload(entry, memory_id),
@@ -376,7 +381,7 @@ class MemoryStore(BaseEntity):
             return False
         db = await self._get_db()
         async with self._tx(db):
-            await self._archive_entry(entry, reason, actor=actor)
+            await self._archive_entry(db, entry, reason, actor=actor)
         return True
 
     async def clear(
@@ -624,11 +629,16 @@ class MemoryStore(BaseEntity):
         """
         return _compute_effective_score(entry, now)
 
-    async def _archive_entry(self, entry: MemoryEntry, reason: str, *, actor: str = "") -> None:
-        """将记忆移入归档表（软遗忘：不参与召回，可恢复，向量随档保留）。"""
+    async def _archive_entry(
+        self, db: aiosqlite.Connection, entry: MemoryEntry, reason: str, *, actor: str = "",
+    ) -> None:
+        """将记忆移入归档表（软遗忘：不参与召回，可恢复，向量随档保留）。
+
+        db 由调用方（tx 持有者）传入——tx 内嵌套 _get_db 在连接重建分支会
+        二次获取 write_lock（不可重入），同一协程自锁死。
+        """
         if entry.id is None:
             return
-        db = await self._get_db()
         await db.execute(
             "INSERT OR REPLACE INTO memories_archive "
             "(id, type, content, source, importance, ts_ns, metadata_json, "
@@ -683,7 +693,7 @@ class MemoryStore(BaseEntity):
             await db.execute("DELETE FROM memories_archive WHERE id = ?", (memory_id,))
             await self._record_audit(db, memory_id, "restore", "从归档恢复", actor=actor)
             # 归档时入队了 delete，恢复必须补 upsert，否则 cognee 侧残留已删除状态
-            entry = await self.get(memory_id)
+            entry = await self._fetch_entry(db, memory_id)
             if entry:
                 await self._cognee.enqueue_sync(
                     db, memory_id, "upsert",
@@ -874,7 +884,7 @@ class MemoryStore(BaseEntity):
         # 复用第一轮已取出的行，不再逐条 get()
         async with self._tx(db):
             for entry, score in to_archive:
-                await self._archive_entry(entry, f"低有效分遗忘 (score={round(score, 4)})")
+                await self._archive_entry(db, entry, f"低有效分遗忘 (score={round(score, 4)})")
         return {"forgotten": forgotten, "count": len(forgotten)}
 
     async def enforce_type_limits(
@@ -912,7 +922,7 @@ class MemoryStore(BaseEntity):
             async with self._tx(db):
                 for entry in entries[:excess]:
                     if entry.id is not None:
-                        await self._archive_entry(entry, "类型上限清理")
+                        await self._archive_entry(db, entry, "类型上限清理")
             removed[mem_type] = excess
 
         return removed
@@ -1497,7 +1507,7 @@ class MemoryStore(BaseEntity):
         entries = [row_to_entry(row) for row in await ids_cursor.fetchall()]
         async with self._tx(db):
             for entry in entries:
-                await self._archive_entry(entry, "极低重要性清理")
+                await self._archive_entry(db, entry, "极低重要性清理")
         return len(entries)
 
     # ------------------------------------------------------------------

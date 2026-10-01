@@ -21,19 +21,11 @@ from agent.audio import (
 from agent.audio.listen import ListenError  # noqa: F401  # 门面再导出（web 层归因用）
 from agent.audio.schemas import (  # noqa: F401  # 门面再导出（web 层请求模型）
     ConfirmRequest,
-    EnrollRequest,
-    IdentifyCandidate,
-    ImportRequest,
     MarkReadRequest,
     MergeRequest,
-    SegmentAddRequest,
-    SegmentMergeRequest,
-    SegmentSplitRequest,
     SegmentUpdateRequest,
     SpeakerBindRequest,
     SpeakerUpdateRequest,
-    TranscriptReplaceRequest,
-    VectorIdentifyRequest,
 )
 from core.config import ConfigManager
 from core.log import log
@@ -268,25 +260,6 @@ class AudioServiceFacade:
         """声纹重建（样本池重立锚）；样本池为空 raise ValueError（路由转 422）。"""
         return await matcher.refine(get_audio_store(), speaker_id)
 
-    async def enroll_speaker(self, req: Any) -> Dict[str, Any]:
-        return await matcher.enroll(
-            get_audio_store(), req.name, req.vector, role=req.role,
-            notes=req.notes, device_source=req.device_source,
-            entity_scope=getattr(req, "entity_scope", ""))
-
-    async def import_speakers(self, req: Any) -> Dict[str, Any]:
-        store = get_audio_store()
-        imported: List[Dict[str, Any]] = []
-        for item in req.items:
-            speaker = await matcher.enroll(
-                store, item.name, item.vectors[0], role=item.role, notes=item.notes,
-                source="import")
-            for vec in item.vectors[1:]:
-                await store.add_sample(int(speaker["id"]), vec, source="import")
-            imported.append({"id": speaker["id"], "speaker_key": speaker["speaker_key"],
-                             "name": speaker["name"], "samples": len(item.vectors)})
-        return {"imported": imported, "total": len(imported)}
-
     async def enroll_audio(self, filename: str, content: bytes, name: str,
                            role: str = "", notes: str = "") -> Dict[str, Any]:
         segments = await self.transcribe_upload(filename, content)
@@ -328,9 +301,6 @@ class AudioServiceFacade:
     # ------------------------------------------------------------------
     # 声纹识别
     # ------------------------------------------------------------------
-
-    async def identify_vector(self, vector: List[float], top_k: int) -> List[Dict[str, Any]]:
-        return await matcher.match_vector(get_audio_store(), vector, top_k=top_k)
 
     async def identify_audio(self, filename: str, content: bytes, *,
                              ingest: bool, source_time: str = "") -> Dict[str, Any]:
@@ -404,47 +374,6 @@ class AudioServiceFacade:
             return await store.update_segment_speaker(segment_id, req.speaker_id)
         return await store.get_segment(segment_id)
 
-    async def replace_transcripts(self, req: Any) -> Dict[str, Any]:
-        from agent.audio.store import parse_time_ns
-        return await get_audio_store().replace_in_transcripts(
-            req.find, req.replace,
-            speaker_id=req.speaker_id,
-            from_ns=parse_time_ns(req.time_from),
-            to_ns=parse_time_ns(req.time_to),
-            limit=req.limit, dry_run=req.dry_run)
-
-    async def merge_segments(self, req: Any) -> Optional[Dict[str, Any]]:
-        return await get_audio_store().merge_segments(
-            req.ids, transcript=req.transcript, speaker_id=req.speaker_id)
-
-    async def split_segment(self, segment_id: int, req: Any) -> Optional[Dict[str, Any]]:
-        fields_set = req.model_fields_set
-        return await get_audio_store().split_segment(
-            segment_id, req.at_ms,
-            text_first=req.text_first, text_second=req.text_second,
-            speaker_second_id=req.speaker_second_id,
-            speaker_second_set="speaker_second_id" in fields_set)
-
-    async def add_segment(self, req: Any) -> Dict[str, Any]:
-        import time as _time
-        store = get_audio_store()
-        ts_ns = req.ts * 1_000_000_000 if req.ts else 0
-        if req.recording_path:
-            recording = await store.get_recording(req.recording_path)
-            if not recording:
-                raise FileNotFoundError("录制单元不存在")
-            if not ts_ns:
-                ts_ns = int(recording["started_ns"]) + req.start_ms * 1_000_000
-        if not ts_ns:
-            ts_ns = _time.time_ns()
-        segment_id = await store.add_segment(
-            recording_path=req.recording_path,
-            source_file="manual", device_source="web",
-            start_ms=req.start_ms, end_ms=max(req.end_ms, req.start_ms),
-            part_start_ms=req.part_start_ms,
-            speaker_id=req.speaker_id, transcript=req.text.strip(), ts_ns=ts_ns)
-        return {"segment": await store.get_segment(segment_id)}
-
     async def delete_segment(self, segment_id: int) -> bool:
         return await get_audio_store().delete_segment(segment_id)
 
@@ -462,14 +391,6 @@ class AudioServiceFacade:
             recording_path=recording_path,
             from_ns=parse_time_ns(time_from), to_ns=parse_time_ns(time_to),
             unread_only=unread_only)
-
-    async def listen_segment(self, segment_id: int, apply: bool) -> Dict[str, Any]:
-        from agent.audio.listen import listen_segment
-        return await listen_segment(get_audio_store(), segment_id, apply=apply)
-
-    # ------------------------------------------------------------------
-    # 录制单元与统计
-    # ------------------------------------------------------------------
 
     async def list_recordings(self, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
         return await get_audio_store().list_recordings(limit=min(limit, 200), offset=offset)

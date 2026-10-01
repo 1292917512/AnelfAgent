@@ -103,11 +103,6 @@ async def post_ui_state(req: UiStateRequest) -> Dict[str, str]:
     return {"status": "ok"}
 
 
-@router.get("/ui-state")
-async def get_ui_state() -> Dict[str, Any]:
-    return {"state": _ui_svc.get_ui_state_snapshot()}
-
-
 class SendMessageRequest(BaseModel):
     message: str
     user_id: str = "web_user"

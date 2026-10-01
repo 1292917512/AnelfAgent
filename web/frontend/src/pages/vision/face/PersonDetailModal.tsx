@@ -148,7 +148,7 @@ export function PersonDetailModal({ personId, onClose }: Props) {
                     )}
                     <span className="text-muted">{formatNs(ev.ts_ns)}</span>
                     <Badge variant="neutral">{ev.source || "-"}</Badge>
-                    <span className="ml-auto text-muted">{ev.faces_count} 脸</span>
+                    <span className="ml-auto text-muted">{t("face.facesCount", { count: ev.faces_count })}</span>
                   </div>
                 ))}
               </div>

@@ -59,10 +59,13 @@ class PollCursorStore:
         seed_key: Optional[str] = None,
         newest_first: bool = True,
     ) -> Optional[List[str]]:
-        """登记并返回未见键；首次轮询（seed 未播种）全部播种并返回 None（历史不派发）。
+        """返回未见键；首次轮询（seed 未播种）全部播种并返回 None（历史不派发）。
 
         seed_key 覆盖播种单元（默认 kind，私信会话按 类别:对端 前缀逐会话播种）。
         newest_first=True 表示输入列表最新在前，返回未见键时反转为最旧先派发。
+
+        本方法不登记已见——消费方须在每条**派发成功或有意跳过**后调 mark()：
+        先标记后派发时，中途异常会把未派发的条目标成已见（进程内静默丢失）。
         """
         seed = seed_key or kind
         if seed not in self._seeded:
@@ -72,10 +75,7 @@ class PollCursorStore:
             self._dirty = True
             return None
         ordered = reversed(keys) if newest_first else keys
-        pending = [key for key in ordered if key not in self._seen.get(kind, [])]
-        for key in pending:
-            self.mark(kind, key)
-        return pending
+        return [key for key in ordered if key not in self._seen.get(kind, [])]
 
     def is_seeded(self, seed: str) -> bool:
         """播种单元（类别或 类别:对端 前缀）是否已完成首次播种。"""

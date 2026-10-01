@@ -188,10 +188,6 @@ _TOOL_GATE_CONFIGS = {
             "advanced": True,
             "unit": "秒",
         },
-        "tool_gate_sleep_enabled": {
-            "description": "是否启用工具沉睡/激活模式",
-            "default": True,
-        },
         "tool_gate_default_active_rounds": {
             "description": "工具分组激活后的默认持续轮数",
             "default": 3,
@@ -213,8 +209,3 @@ register_configs_safe(_TOOL_GATE_CONFIGS)
 def is_gate_enabled() -> bool:
     """工具门控总开关。"""
     return get_config_bool("tool_gate_enabled", True)
-
-
-def is_sleep_enabled() -> bool:
-    """工具沉睡/激活模式开关。"""
-    return get_config_bool("tool_gate_sleep_enabled", True)

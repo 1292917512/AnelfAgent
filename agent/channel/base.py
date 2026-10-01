@@ -46,7 +46,6 @@ from typing import (
     Dict,
     Generic,
     List,
-    Literal,
     Optional,
     Set,
     Tuple,
@@ -111,34 +110,16 @@ class ChannelConfig(BaseModel):
     enabled: bool = Field(default=True, description="启用频道")
 
     # ---- 交互 ----
-    session_enable_at: bool = Field(default=True, description="启用 @用户 功能")
-    show_processing_emoji: bool = Field(default=True, description="显示处理中表情反馈")
     typing_indicator: bool = Field(default=True, description="显示打字中状态")
 
     # ---- 命令 ----
     command_prefix: str = Field(default="/", description="命令前缀")
     command_enabled: bool = Field(default=True, description="启用命令系统")
-    command_unauthorized_output: bool = Field(default=True, description="权限不足提示")
-    command_enhanced_output: bool = Field(default=False, description="命令增强输出")
-    command_enhanced_output_min_length: int = Field(default=200, description="增强输出触发字数")
 
     # ---- 消息 ----
     message_max_length: int = Field(default=4000, description="单条消息最大长度，超出自动分段")
-    reply_to_source: bool = Field(default=True, description="回复时引用源消息")
-
-    # ---- 批准机制 ----
-    approval_timeout_seconds: float = Field(default=60.0, description="批准请求超时时间")
-    approval_default_action: Literal["deny", "allow", "ask"] = Field(
-        default="ask", description="批准默认动作（超时未响应时）",
-    )
-
-    # ---- 重连策略 ----
-    reconnect_max_retries: int = Field(default=5, description="最大重连次数")
-    reconnect_backoff_seconds: float = Field(default=2.0, description="重连基础退避")
-    reconnect_backoff_max_seconds: float = Field(default=60.0, description="重连最大退避")
 
     # ---- 健康探针 ----
-    health_check_interval_seconds: float = Field(default=60.0, description="健康探针周期")
     health_check_timeout_seconds: float = Field(default=5.0, description="健康探针超时")
 
     # ---- 平台特有扩展位 ----

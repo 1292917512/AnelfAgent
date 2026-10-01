@@ -25,7 +25,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     from web.server import create_app
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(task_service, "_TASKS_DIR", Path("tasks"))
+    monkeypatch.setattr(task_service, "_tasks_dir", lambda: Path("tasks"))
     return TestClient(create_app())
 
 

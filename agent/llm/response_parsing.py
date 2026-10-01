@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, AsyncGenerator, Dict, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from agent.llm.types import (
     ChatResult,
@@ -146,16 +146,87 @@ def _merge_sink(usage: Optional[UsageInfo], sink: Optional[Dict[str, Any]]) -> O
     )
 
 
+class _ThinkingAccumulator:
+    """流式 thinking_blocks / reasoning_details 装配器。
+
+    合并语义对齐 litellm stream_chunk_builder：thinking 文本片段累积、
+    signature 到达即闭合一个块；redacted_thinking 整块附加。流式路径没有
+    raw 响应体，聚合结果随 finish 片段带出，供历史消息回传（Anthropic
+    交错思考 + tool_use 缺签名块会被端点 400 拒绝）。
+    """
+
+    def __init__(self) -> None:
+        self._blocks: List[Dict[str, Any]] = []
+        self._text_parts: List[str] = []
+        self._signature: Optional[str] = None
+        self._rd_latest: Dict[int, Dict[str, Any]] = {}
+
+    def feed(self, delta: Any) -> None:
+        for block in getattr(delta, "thinking_blocks", None) or []:
+            btype = block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
+            if btype == "redacted_thinking":
+                self._flush_block()
+                data = block.get("data") if isinstance(block, dict) else getattr(block, "data", None)
+                if data:
+                    self._blocks.append({"type": "redacted_thinking", "data": data})
+                continue
+            text = block.get("thinking") if isinstance(block, dict) else getattr(block, "thinking", None)
+            if text:
+                self._text_parts.append(str(text))
+            signature = block.get("signature") if isinstance(block, dict) else getattr(block, "signature", None)
+            if signature:
+                self._signature = str(signature)
+                self._flush_block()
+        # reasoning_details 每块的 text 是累积形态，同位置后者覆盖前者即终态
+        for pos, detail in enumerate(getattr(delta, "reasoning_details", None) or []):
+            item = self._detail_to_dict(detail)
+            if item is not None:
+                self._rd_latest[pos] = item
+
+    @staticmethod
+    def _detail_to_dict(detail: Any) -> Optional[Dict[str, Any]]:
+        if isinstance(detail, dict):
+            return dict(detail)
+        text = getattr(detail, "text", None)
+        if text is None:
+            return None
+        item: Dict[str, Any] = {"text": text}
+        for key in ("type", "signature", "format", "index", "id"):
+            val = getattr(detail, key, None)
+            if val is not None:
+                item[key] = val
+        return item
+
+    def _flush_block(self) -> None:
+        if self._text_parts and self._signature:
+            self._blocks.append({
+                "type": "thinking",
+                "thinking": "".join(self._text_parts),
+                "signature": self._signature,
+            })
+        self._text_parts = []
+        self._signature = None
+
+    def thinking_blocks(self) -> Optional[List[Dict[str, Any]]]:
+        self._flush_block()
+        return list(self._blocks) or None
+
+    def reasoning_details(self) -> Optional[List[Dict[str, Any]]]:
+        if not self._rd_latest:
+            return None
+        return [self._rd_latest[pos] for pos in sorted(self._rd_latest)]
+
+
 async def _iter_stream(
     stream: Any,
-    reasoning_buf: str,
     tc_bufs: Dict[int, Dict[str, str]],
     usage_sink: Optional[Dict[str, int]] = None,
-) -> AsyncGenerator[tuple[ChatStreamDelta, str], None]:
+) -> AsyncGenerator[ChatStreamDelta, None]:
     """解析 LiteLLM 流，并保留跨 chunk 的工具与推理缓冲。"""
     # reasoning_details 逐块累积缓冲（块间独立：第二个 detail 块的文本
     # 长度与第一块无关，共享单一缓冲会把短块整块跳过、推理静默丢失）
     rd_bufs: Dict[int, str] = {}
+    thinking_acc = _ThinkingAccumulator()
     async for chunk in stream:
         choices = getattr(chunk, "choices", None) or []
         if not choices:
@@ -163,7 +234,7 @@ async def _iter_stream(
                 _usage_from_object(getattr(chunk, "usage", None)), usage_sink,
             )
             if stream_usage:
-                yield ChatStreamDelta(usage=stream_usage), reasoning_buf
+                yield ChatStreamDelta(usage=stream_usage)
             continue
         choice = choices[0]
         delta = getattr(choice, "delta", None)
@@ -174,9 +245,14 @@ async def _iter_stream(
             if finish in ("tool_calls", "stop") and tc_bufs:
                 completed = _complete_tool_buffers(tc_bufs)
                 tc_bufs.clear()
-                yield ChatStreamDelta(tool_calls=completed, finish_reason="tool_calls"), reasoning_buf
+                yield ChatStreamDelta(
+                    tool_calls=completed, finish_reason="tool_calls",
+                    thinking_blocks=thinking_acc.thinking_blocks(),
+                    reasoning_details=thinking_acc.reasoning_details(),
+                )
             continue
         content = getattr(delta, "content", None) or ""
+        thinking_acc.feed(delta)
         reasoning = ""
         rc = getattr(delta, "reasoning_content", None)
         if isinstance(rc, str) and rc:
@@ -235,7 +311,9 @@ async def _iter_stream(
             finish_reason=finish,
             reasoning_content=reasoning,
             usage=chunk_usage,
-        ), reasoning_buf
+            thinking_blocks=thinking_acc.thinking_blocks() if finish else None,
+            reasoning_details=thinking_acc.reasoning_details() if finish else None,
+        )
 
 def _normalize_tc_index(raw: Any, fallback: int) -> int:
     """将流式 tool_call 的 index 归一化为 int，非法值回退为 fallback。"""

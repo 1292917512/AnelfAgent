@@ -17,8 +17,8 @@ from agent.heartbeat import log as hb_log
 @pytest.fixture(autouse=True)
 def _isolate(monkeypatch: pytest.MonkeyPatch, tmp_path) -> List[str]:
     captured: List[str] = []
-    # LOG_PATH 指向不存在的临时文件：读写分支与真实环境解耦，测试互不残留
-    monkeypatch.setattr(hb_log, "LOG_PATH", tmp_path / "heartbeat.md")
+    # _log_path 指向不存在的临时文件：读写分支与真实环境解耦，测试互不残留
+    monkeypatch.setattr(hb_log, "_log_path", lambda: tmp_path / "heartbeat.md")
     monkeypatch.setattr(hb_log, "_atomic_write", lambda path, content: captured.append(content))
     monkeypatch.setattr(hb_log, "log", lambda msg, *args, **kwargs: captured.append(msg))
     return captured

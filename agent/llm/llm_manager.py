@@ -15,7 +15,7 @@ import threading
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional
 
 import litellm
 
@@ -96,6 +96,17 @@ class ProviderConfig:
         )
 
 
+class _ParsedConfig(NamedTuple):
+    """llm_clients.json 的结构化解析结果（启动全量应用与热重载 reconcile 共用）。"""
+
+    providers: Dict[str, ProviderConfig]
+    provider_order: List[str]
+    model_configs: Dict[str, LLMClientConfig]
+    type_priorities: Dict[str, List[str]]
+    default_chat: str
+    sub_agents: Dict[str, SubAgentProfile]
+
+
 class LLMManager(BaseEntity):
     """管理多个供应商和 LLMClient 实例。
 
@@ -119,8 +130,15 @@ class LLMManager(BaseEntity):
         # 子代理统一注册表：内置难度档 + 自定义档案（_apply_config 填充；
         # 空配置首存时 save_config 也依赖此初始值）
         self._sub_agents: Dict[str, SubAgentProfile] = {}
+        # 热重载串行化（ConfigWatcher 轮询与 Web/AI 显式 reload 可能并发触发）
+        self._reload_lock = threading.Lock()
         self._load_config()
         super().__init__()
+
+    @property
+    def config_path(self) -> str:
+        """配置文件路径（ConfigWatcher 注册监听用）。"""
+        return str(self._config_path)
 
     # ------------------------------------------------------------------
     # 配置持久化
@@ -157,6 +175,9 @@ class LLMManager(BaseEntity):
                 )
             except OSError:
                 error(f"加载 LLM 配置失败: {exc}（损坏文件备份失败）", tag="模型")
+            # 损坏文件按空配置运行（不写盘）：合成内置难度档等注册表初始结构，
+            # 否则本次运行期难度档解析静默回退默认模型、内置档失去重名保护
+            self._apply_config({})
 
     @staticmethod
     def _close_stale_clients(clients: List[LLMClient]) -> None:
@@ -175,25 +196,27 @@ class LLMManager(BaseEntity):
         except RuntimeError:
             log("_close_stale_clients 异常已忽略", "DEBUG")
 
-    def _apply_config(self, data: Dict[str, Any]) -> None:
-        # 重建客户端前关闭旧客户端持有的代理连接池，避免连接泄漏
-        self._close_stale_clients(list(self._clients.values()))
-        self._providers.clear()
-        self._provider_order.clear()
-        self._clients.clear()
-        self._type_priorities.clear()
-        self._default_chat = data.get("default_chat", "")
+    @staticmethod
+    def _parse_config_data(data: Dict[str, Any]) -> _ParsedConfig:
+        """把 llm_clients.json 的原始 JSON 解析为结构化配置（纯解析，不触碰运行状态）。
 
+        启动全量应用与热重载 reconcile 共用同一解析入口，保证两条路径语义一致。
+        单个无效供应商跳过并告警；类型优先级过滤到存在的模型并补全遗漏成员；
+        子代理注册表播种内置难度档、迁移 legacy delegation_tiers。
+        """
+        providers: Dict[str, ProviderConfig] = {}
+        provider_order: List[str] = []
+        model_configs: Dict[str, LLMClientConfig] = {}
         for pdata in data.get("providers", []):
             try:
                 prov = ProviderConfig.from_dict(pdata)
-                self._providers[prov.id] = prov
-                self._provider_order.append(prov.id)
+                providers[prov.id] = prov
+                provider_order.append(prov.id)
                 for mdata in pdata.get("models", []):
                     mid = mdata.get("id", mdata.get("name", ""))
                     if not mid:
                         continue
-                    cfg = LLMClientConfig(
+                    model_configs[mid] = LLMClientConfig(
                         name=mid,
                         base_url=prov.base_url,
                         api_key=prov.api_key,
@@ -207,6 +230,7 @@ class LLMManager(BaseEntity):
                         timeout=mdata.get("timeout", DEFAULT_TIMEOUT),
                         proxy_url=prov.proxy_url,
                         supports_vision=mdata.get("supports_vision", False),
+                        supports_video=mdata.get("supports_video", False),
                         supports_tools=mdata.get("supports_tools", True),
                         supports_forced_tool_choice=mdata.get("supports_forced_tool_choice", True),
                         vision_format=mdata.get("vision_format", "base64"),
@@ -224,23 +248,23 @@ class LLMManager(BaseEntity):
                         request_params=mdata.get("request_params", {}),
                         extra_body=mdata.get("extra_body", {}),
                         extra_params=mdata.get("extra_params", {}),
+                        extra_headers=mdata.get("extra_headers", {}),
                         chat_protocol=mdata.get("chat_protocol", "chat_completions"),
                         builtin_tools=mdata.get("builtin_tools", []),
                         media_protocol=mdata.get("media_protocol", prov.media_protocol),
                         enabled=mdata.get("enabled", True),
                     )
-                    self._clients[mid] = LLMClient(config=cfg)
             except Exception as exc:
                 warning(f"跳过无效供应商配置 {pdata.get('id', '?')}: {exc}", tag="模型")
 
-        self._type_priorities = {
-            k: [mid for mid in v if mid in self._clients]
+        type_priorities: Dict[str, List[str]] = {
+            k: [mid for mid in v if mid in model_configs]
             for k, v in data.get("type_priorities", {}).items()
         }
         # 子代理统一注册表：内置难度档（easy/medium/hard）始终在前且必然存在；
         # 自定义档案按文件顺序追加。加载容忍引用缺失模型（保留条目防数据丢失，
         # 缺失/停用由 resolve 池走查回退，list 输出标记）
-        self._sub_agents = {
+        sub_agents: Dict[str, SubAgentProfile] = {
             name: SubAgentProfile(
                 name=name, tier=tier,
                 description=DIFFICULTY_DESCRIPTIONS[tier],
@@ -254,8 +278,8 @@ class LLMManager(BaseEntity):
             name = str(raw_name)
             if name in BUILTIN_AGENT_NAMES:
                 # 内置难度档：models 列表，描述缺省保留默认
-                profile = self._sub_agents[name]
-                profile.models = self._clean_pool(item.get("models"))
+                profile = sub_agents[name]
+                profile.models = LLMManager._clean_pool(item.get("models"))
                 if item.get("description"):
                     profile.description = str(item["description"])
                 seen_builtin.add(name)
@@ -263,14 +287,14 @@ class LLMManager(BaseEntity):
             if not valid_sub_agent_name(name):
                 warning(f"子代理档案名称非法，已跳过: {name!r}", tag="模型")
                 continue
-            models = self._clean_pool(item.get("models"))
+            models = LLMManager._clean_pool(item.get("models"))
             if not models:
                 # 兼容旧版单模型字段 model_id
                 legacy_single = str(item.get("model_id", "") or "")
                 models = [legacy_single] if legacy_single else []
             if not models:
                 continue
-            self._sub_agents[name] = SubAgentProfile(
+            sub_agents[name] = SubAgentProfile(
                 name=name, models=models,
                 description=str(item.get("description", "") or ""),
                 facets=AgentFacets.from_dict(item),
@@ -285,28 +309,43 @@ class LLMManager(BaseEntity):
             builtin_name = DIFFICULTY_AGENTS.get(tier)
             if builtin_name is None or builtin_name in seen_builtin or not isinstance(mids, list):
                 continue
-            self._sub_agents[builtin_name].models = [
+            sub_agents[builtin_name].models = [
                 mid for mid in mids
-                if isinstance(mid, str) and mid in self._clients
+                if isinstance(mid, str) and mid in model_configs
             ]
-        self._ensure_priorities_complete()
-        self._register_unknown_models()
-
-    def _ensure_priorities_complete(self) -> None:
-        """确保所有模型都出现在对应类型的优先级列表中。
-
-        supports_vision=True 的 chat 模型会自动加入 vision 优先级列表，
-        vision 列表独立于 chat 列表，供视觉任务使用。
-        """
-        for mid, client in self._clients.items():
-            for mt in client.config.model_types:
-                plist = self._type_priorities.setdefault(mt, [])
+        # 优先级补全：所有模型出现在对应类型的列表中；
+        # supports_vision 的 chat 模型额外进入独立的 vision 列表（供视觉任务使用）
+        for mid, cfg in model_configs.items():
+            for mt in cfg.model_types:
+                plist = type_priorities.setdefault(mt, [])
                 if mid not in plist:
                     plist.append(mid)
-            if client.config.supports_vision and "chat" in client.config.model_types:
-                vision_list = self._type_priorities.setdefault("vision", [])
+            if cfg.supports_vision and "chat" in cfg.model_types:
+                vision_list = type_priorities.setdefault("vision", [])
                 if mid not in vision_list:
                     vision_list.append(mid)
+        return _ParsedConfig(
+            providers=providers,
+            provider_order=provider_order,
+            model_configs=model_configs,
+            type_priorities=type_priorities,
+            default_chat=data.get("default_chat", ""),
+            sub_agents=sub_agents,
+        )
+
+    def _apply_config(self, data: Dict[str, Any]) -> None:
+        parsed = self._parse_config_data(data)
+        # 重建客户端前关闭旧客户端持有的代理连接池，避免连接泄漏
+        self._close_stale_clients(list(self._clients.values()))
+        self._providers = parsed.providers
+        self._provider_order = parsed.provider_order
+        self._clients = {
+            mid: LLMClient(config=cfg) for mid, cfg in parsed.model_configs.items()
+        }
+        self._type_priorities = parsed.type_priorities
+        self._default_chat = parsed.default_chat
+        self._sub_agents = parsed.sub_agents
+        self._register_unknown_models()
 
     def _register_unknown_models(self) -> None:
         """将 litellm 未收录的自定义模型注册到模型信息表，使 get_model_info 可查。
@@ -421,6 +460,134 @@ class LLMManager(BaseEntity):
                 if dm:
                     _restore(model, dm, "api_key")
         return out
+
+    # ------------------------------------------------------------------
+    # 热重载（手改配置文件 → reconcile 精准应用，见 reload_from_disk）
+    # ------------------------------------------------------------------
+
+    def reload_from_disk(self) -> Dict[str, Any]:
+        """从磁盘重载配置并 reconcile 应用变更（热更新手改的 llm_clients.json）。
+
+        逐条 diff 精准应用：配置不变的模型客户端对象零触碰（保留运行时学习状态与
+        连接池）；变化的经 update_config 原地变异（对象身份不变，持有引用不失效）；
+        新增构造、删除弹出并修正默认模型。文件是真相源，本方法不写盘。
+        解析失败保留当前运行配置（不改名备份——用户可能正在编辑中）。
+        """
+        with self._reload_lock:
+            return self._reload_from_disk_locked()
+
+    def _reload_from_disk_locked(self) -> Dict[str, Any]:
+        summary: Dict[str, Any] = {
+            "ok": False,
+            "providers": {"added": [], "removed": [], "changed": []},
+            "models": {"added": [], "removed": [], "changed": []},
+            "default_chat": self._default_chat,
+            "switched": False,
+        }
+        if not self._config_path.exists():
+            summary["error"] = f"配置文件不存在: {self._config_path}"
+            return summary
+        try:
+            from core.config import expand_env_refs
+            data = expand_env_refs(json.loads(self._config_path.read_text(encoding="utf-8")))
+            parsed = self._parse_config_data(data)
+        except Exception as exc:
+            summary["error"] = f"配置解析失败: {exc}"
+            error(f"热重载 LLM 配置失败（保留当前运行配置）: {exc}", tag="模型")
+            return summary
+
+        # 供应商 reconcile：注册表增删改；连接字段变化经模型 reconcile 的
+        # 有效配置 diff 自然传播（解析结果已合并供应商级字段），无需单独处理
+        for pid in list(self._providers):
+            if pid in parsed.providers:
+                continue
+            for mid in [m for m, c in self._clients.items() if c.config.provider_id == pid]:
+                self._remove_model_internal(mid)
+                summary["models"]["removed"].append(mid)
+            del self._providers[pid]
+            if pid in self._provider_order:
+                self._provider_order.remove(pid)
+            summary["providers"]["removed"].append(pid)
+        for pid in parsed.provider_order:
+            desired_prov = parsed.providers[pid]
+            existing_prov = self._providers.get(pid)
+            if existing_prov is None:
+                self._providers[pid] = desired_prov
+                self._provider_order.append(pid)
+                summary["providers"]["added"].append(pid)
+            elif existing_prov != desired_prov:
+                self._providers[pid] = desired_prov
+                summary["providers"]["changed"].append(pid)
+
+        # 模型 reconcile：删除 → 新增 → 变化原地更新（顺序无关，三路独立）
+        for mid in list(self._clients):
+            if mid not in parsed.model_configs:
+                self._remove_model_internal(mid)
+                summary["models"]["removed"].append(mid)
+        for mid, desired in parsed.model_configs.items():
+            existing = self._clients.get(mid)
+            if existing is None:
+                self._clients[mid] = LLMClient(config=desired)
+                summary["models"]["added"].append(mid)
+                continue
+            if existing.config == desired:
+                continue
+            diff = {
+                key: getattr(desired, key)
+                for key in desired.__dataclass_fields__
+                if getattr(existing.config, key) != getattr(desired, key)
+            }
+            existing.update_config(**diff)
+            summary["models"]["changed"].append(mid)
+
+        # 优先级 / 默认 / 子代理注册表按文件应用
+        self._type_priorities = parsed.type_priorities
+        self._sub_agents = parsed.sub_agents
+        default_changed = parsed.default_chat != self._default_chat
+        self._default_chat = parsed.default_chat
+        summary["default_chat"] = self._default_chat
+
+        self._register_unknown_models()
+        summary["ok"] = True
+        summary["switched"] = self._resync_runtime_client(default_changed)
+        self._load_error = ""
+        changed_total = (
+            sum(len(v) for v in summary["providers"].values())
+            + sum(len(v) for v in summary["models"].values())
+        )
+        if changed_total or default_changed:
+            info(
+                f"LLM 配置已热重载：供应商 +{len(summary['providers']['added'])}"
+                f"/-{len(summary['providers']['removed'])}/~{len(summary['providers']['changed'])}，"
+                f"模型 +{len(summary['models']['added'])}/-{len(summary['models']['removed'])}"
+                f"/~{len(summary['models']['changed'])}"
+                f"{'，默认模型已切换' if summary['switched'] else ''}",
+                tag="模型",
+            )
+        return summary
+
+    def _resync_runtime_client(self, default_changed: bool) -> bool:
+        """热重载后校正运行时活跃客户端：活跃模型消失/停用或默认变更时切换到当前默认。
+
+        配置原地更新（update_config）的客户端引用仍有效，无需切换。
+        """
+        try:
+            from agent.runtime.singleton import get_runtime
+            rt = get_runtime()
+            if rt is None or getattr(rt, "mind", None) is None or not self._clients:
+                return False
+            current = getattr(rt.mind.llm, "config", None)
+            current_name = current.name if current is not None else ""
+            current_client = self._clients.get(current_name)
+            active_gone = current_client is None or not current_client.config.enabled
+            if not default_changed and not active_gone:
+                return False
+            rt.switch_llm(self.get_default())
+            info(f"热重载后默认客户端已切换为: {self.get_default().config.name}", tag="模型")
+            return True
+        except Exception:
+            log("_resync_runtime_client 异常已忽略", "DEBUG", tag="模型")
+            return False
 
     # ------------------------------------------------------------------
     # 按类型/能力查找（按 type_priorities 顺序）

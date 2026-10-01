@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next";
 const MAX_ROWS = 1000;
 
 /** 解析 CSV/TSV 文本为二维数组（RFC 4180 引号转义状态机） */
-export function parseDelimited(text: string, delimiter: string): string[][] {
+function parseDelimited(text: string, delimiter: string): string[][] {
   const rows: string[][] = [];
   let row: string[] = [];
   let field = "";

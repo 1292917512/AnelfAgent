@@ -95,18 +95,23 @@ class TaskExecutor:
             )
 
         try:
-            tool_hits_before = self.mind.pfc.get_tool_use_total()
+            # 本任务的工具调用计数经 completion 消息链归因——全局计数器会被
+            # 并发的在途回复/钩子/其他后台任务污染，误判无产出任务为成功
+            completion: Dict[str, Any] = {}
             content = await self._execute_llm(
                 task, entity, temperature, effective_model, effective_effort,
-                extra_note=extra_note,
+                extra_note=extra_note, completion=completion,
             )
-            tool_hits_after = self.mind.pfc.get_tool_use_total()
+            tool_calls_made = sum(
+                1 for m in completion.get("messages", [])
+                if isinstance(m, dict) and m.get("role") == "tool"
+            )
             synthesized_tool_result = False
             if not content:
-                if tool_hits_after > tool_hits_before:
+                if tool_calls_made > 0:
                     synthesized_tool_result = True
                     content = (
-                        f"任务 [{task.name}] 已执行 {tool_hits_after - tool_hits_before} 次工具调用，"
+                        f"任务 [{task.name}] 已执行 {tool_calls_made} 次工具调用，"
                         "无文本产出（工具副作用已完成）"
                     )
                     log(f"任务 [{task.name}] 工具执行完成（无文本产出）", tag="任务")
@@ -201,6 +206,7 @@ class TaskExecutor:
         reasoning_effort: str = "",
         *,
         extra_note: str = "",
+        completion: Optional[Dict[str, Any]] = None,
     ) -> str:
         """构建消息 -> LLM reflect -> 清洗输出。"""
         conversation_list: List[Dict] = []
@@ -243,6 +249,7 @@ class TaskExecutor:
             options=options,
             tool_tags=task.tool_tags or None,
             allow_output_tools=task.allow_output_tools,
+            completion=completion,
         )
         cleaned = _clean_llm_output(raw)
         if not task.handoff:

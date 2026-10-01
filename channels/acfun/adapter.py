@@ -18,7 +18,6 @@ Model Experience 三行声明：
 
 from __future__ import annotations
 
-import asyncio
 import time
 from typing import Any, Dict, List, Optional, Set
 
@@ -34,6 +33,7 @@ from agent.channel.schemas import (
     SendRequest,
     SendResponse,
 )
+from channels._shared.live import LiveHotReloadMixin
 from core.log import log
 
 from .client import AcfunClient
@@ -52,7 +52,7 @@ _SELF_INFO_TTL = 300.0  # 自身资料缓存（秒）
 _HEALTH_PROBE_TTL = 60.0  # 健康探针最小间隔（秒）
 
 
-class AcfunChannel(AcfunToolsMixin, BaseChannel[AcfunConfig]):
+class AcfunChannel(AcfunToolsMixin, LiveHotReloadMixin, BaseChannel[AcfunConfig]):
     """AcFun 频道（acfunsdk HTTP 客户端 + 通知轮询）。"""
 
     _entity_description = "AcFun 频道（acfunsdk）"
@@ -123,42 +123,6 @@ class AcfunChannel(AcfunToolsMixin, BaseChannel[AcfunConfig]):
         self._self_info = None
         log("AcFun: 频道已停止", tag="通道")
 
-    def _on_config_changed(self, key: str, value: Any) -> None:
-        """配置变更监听走 reload_config 统一入口（含直播 diff 应用）。"""
-        self.reload_config()
-
-    def reload_config(self) -> bool:
-        """热重载配置：diff 直播模式与观察列表并即时应用（Web 表单/AI 工具热切换入口）。"""
-        prev_mode = self.config.live_mode
-        prev_rooms = self.live_manager.watched
-        ok = super().reload_config()
-        if not ok:
-            return False
-        if self.config.live_mode != prev_mode or (
-            self.config.live_mode and self._parse_rooms() != prev_rooms
-        ):
-            self._schedule_live_apply()
-        return True
-
-    def _parse_rooms(self) -> List[str]:
-        raw = str(self.config.live_watch_rooms or "")
-        return [x.strip() for x in raw.split(",") if x.strip().isdigit()]
-
-    def _schedule_live_apply(self) -> None:
-        """在事件循环内异步应用直播配置变更（无循环环境静默跳过）。"""
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-
-        async def _apply() -> None:
-            if bool(self.config.live_mode) != self.live_manager.mode_enabled:
-                await self.live_manager.set_mode(bool(self.config.live_mode))
-            elif self.config.live_mode:
-                await self.live_manager.sync_rooms()
-
-        loop.create_task(_apply(), name="acfun-live-apply")
-
     async def live_enter_params_async(self, uid: str) -> Optional[Dict[str, Any]]:
         """连接层的进房参数回调（HTTP 调用经线程移出事件循环）。"""
         if not self.client.is_logined:
@@ -169,33 +133,9 @@ class AcfunChannel(AcfunToolsMixin, BaseChannel[AcfunConfig]):
             log(f"AcFun直播: 进房参数获取失败 live:{uid}: {exc}", "WARNING", tag="通道")
             return None
 
-    def persist_live_config(self, *, live_mode: Optional[bool] = None,
-                            rooms: Optional[List[str]] = None) -> None:
-        """直播模式/观察列表变更后写回统一配置（AI 工具与 Web 直播 API 同源的持久化入口）。"""
-        from agent.channel.config import set_channel_config
-
-        try:
-            updates: Dict[str, Any] = {}
-            if live_mode is not None:
-                updates["live_mode"] = live_mode
-            if rooms is not None:
-                updates["live_watch_rooms"] = ",".join(rooms)
-            if updates:
-                set_channel_config("acfun", **updates)
-        except Exception as exc:
-            log(f"AcFun直播: 配置持久化失败（运行时变更仍已生效）: {exc}", "DEBUG", tag="通道")
-
-    def on_login_expired(self) -> None:
-        """登录态失效（轮询检测到）：置 ERROR 交频道守护退避重启，detail 引导重新登录。"""
-        self._status = ChannelStatus.ERROR
-        log("AcFun: 登录态失效，频道置 ERROR（请重新登录）", "WARNING", tag="通道")
-
     # ------------------------------------------------------------------
     # 发送
     # ------------------------------------------------------------------
-
-    def live_danmaku_cooldown_seconds(self) -> int:
-        return max(int(self.config.live_danmaku_cooldown_seconds), 0)
 
     async def forward_message(self, request: SendRequest) -> SendResponse:
         return await self._forward_via_segment_map(request)
@@ -213,10 +153,6 @@ class AcfunChannel(AcfunToolsMixin, BaseChannel[AcfunConfig]):
     ) -> str:
         """发送文本：按 chat_id 前缀路由（comment:/live:/user: 见 send.py）。"""
         return await send_channel_text(self, chat_id, text, reply_to=reply_to)
-
-    def is_known_group(self, target_id: str) -> bool:
-        """评论区/直播间目标按群语义（供回复路由 channel_type 推断）。"""
-        return target_id.startswith(("comment:", "live:"))
 
     # ------------------------------------------------------------------
     # 信息查询

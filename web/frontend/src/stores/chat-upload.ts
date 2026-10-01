@@ -9,8 +9,8 @@ import type { ChatBucket, PendingFile } from "@/lib/types";
 import { useWorkbenchStore } from "./workbench-store";
 import { nextCid } from "./chat-shared";
 
-export const MAX_FILES = 9;
-export const MAX_FILE_SIZE = 50 * 1024 * 1024;
+const MAX_FILES = 9;
+const MAX_FILE_SIZE = 50 * 1024 * 1024;
 
 export function classifyFile(name: string): string {
   const ext = name.split(".").pop()?.toLowerCase() || "";

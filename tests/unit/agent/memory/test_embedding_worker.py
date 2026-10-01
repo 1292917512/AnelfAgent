@@ -151,10 +151,12 @@ class TestPurgeArchivedMemories:
     async def test_purge_only_expired(self, store: MemoryStore) -> None:
         old_id = await store.add(_entry("远古记忆"))
         new_id = await store.add(_entry("近期记忆"))
+        db = await store._get_db()
         for mid in (old_id, new_id):
             entry = await store.get(mid)
             assert entry is not None
-            await store._archive_entry(entry, "test")
+            async with store._tx(db):
+                await store._archive_entry(db, entry, "test")
         await self._archive(store, old_id, archived_days_ago=120)
         await self._archive(store, new_id, archived_days_ago=10)
 
@@ -168,7 +170,9 @@ class TestPurgeArchivedMemories:
         mid = await store.add(_entry("归档记忆"))
         entry = await store.get(mid)
         assert entry is not None
-        await store._archive_entry(entry, "test")
+        db = await store._get_db()
+        async with store._tx(db):
+            await store._archive_entry(db, entry, "test")
         await self._archive(store, mid, archived_days_ago=365)
 
         assert await store.purge_archived_memories(older_than_days=0) == 0

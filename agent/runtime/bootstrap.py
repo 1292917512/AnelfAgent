@@ -93,6 +93,10 @@ def create_bootstrap() -> FlowMachine:
         from core.lifecycle import Lifecycle
         manager = get_llm_manager()
         Lifecycle.register("llm_manager", manager, cleanup=manager.close)
+        # 手改 llm_clients.json 热重载：mtime 轮询触发 reconcile（进程内写入
+        # 也会 bump mtime，reconcile diff 为空即 no-op，与频道配置同纪律）
+        from agent.channel.config_watcher import get_config_watcher
+        get_config_watcher().watch(manager.config_path, manager.reload_from_disk)
         llm = manager.get_default()
         log(f"LLM 默认客户端: {llm.config.name} ({llm.config.model})")
         return {"manager": manager, "llm": llm}
@@ -360,6 +364,18 @@ def create_bootstrap() -> FlowMachine:
         """
         from entities import discover_entity_lifecycles
         await discover_entity_lifecycles()
+
+    @machine.node(skip_on_error=True, depends_on=[])
+    async def init_approval():
+        """审批管理器：过期会话清理任务经 Lifecycle 托管（随关停 drain 回收）。"""
+        from agent.approval import get_approval_manager
+        from core.lifecycle import Lifecycle
+        manager = get_approval_manager()
+        Lifecycle.register(
+            "approval_manager", manager,
+            on_start=manager.start_cleanup_task,
+            cleanup=manager.stop_cleanup_task,
+        )
 
     @machine.node(
         skip_on_error=False,

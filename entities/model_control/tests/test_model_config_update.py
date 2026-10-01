@@ -123,7 +123,7 @@ class TestUpdateModelConfigTool:
             "agent.llm.get_llm_manager",
             lambda: LLMManager(str(config_file)),
         )
-        for field in ("api_key", "base_url", "model", "model_types"):
+        for field in ("api_key", "base_url", "model_types"):
             result = json.loads(mc_tools.update_model_config("m1", field, "x"))
             assert result["ok"] is False
             assert "不允许修改" in result["error"]

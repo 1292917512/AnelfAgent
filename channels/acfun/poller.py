@@ -10,13 +10,12 @@ like/gift/system 按频道配置决定记录或触发。
 
 from __future__ import annotations
 
-import asyncio
 import time
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from acfunsdk.exceptions import NotInCar
 
-from agent.channel.poll_cursor import PollCursorStore
+from channels._shared.poller import _STOP, BaseNotificationPoller
 from core.log import log
 
 from .parser import dedup_key, notification_to_message
@@ -25,41 +24,18 @@ from .state import poll_state_path
 if TYPE_CHECKING:
     from .adapter import AcfunChannel
 
-_MIN_INTERVAL = 15
-_MAX_BACKOFF = 300
-
-
-class NotificationPoller:
-    """AcFun 通知中心轮询器（后台任务，随频道 start/stop 生命周期）。"""
+class NotificationPoller(BaseNotificationPoller):
+    """AcFun 通知中心轮询器（骨架在 channels._shared.poller）。"""
 
     def __init__(self, channel: "AcfunChannel") -> None:
-        self._channel = channel
-        self._task: Optional[asyncio.Task] = None
-        self._cursors = PollCursorStore(poll_state_path(), channel="AcFun")
-        self.last_poll_at: float = 0.0
-        self.last_error: str = ""
-        self.dispatch_count: int = 0
-        self.like_count: int = 0  # 点赞通知只计数（不进历史，防噪音刷屏）
+        super().__init__(channel, channel_name="AcFun", cursor_path=poll_state_path())
 
-    @property
-    def running(self) -> bool:
-        return self._task is not None and not self._task.done()
-
-    async def start(self) -> None:
-        if self.running:
-            return
-        self._cursors.load()
-        self._task = asyncio.create_task(self._loop(), name="acfun-notify-poller")
-
-    async def stop(self) -> None:
-        if self._task is None:
-            return
-        self._task.cancel()
-        try:
-            await self._task
-        except (asyncio.CancelledError, Exception):
-            pass
-        self._task = None
+    async def _handle_loop_error(self, exc: Exception, interval: int) -> Optional[str]:
+        if isinstance(exc, NotInCar):
+            log("AcFun: 登录态失效，轮询停止", "WARNING", tag="通道")
+            self._channel.on_login_expired()
+            return _STOP
+        return None
 
     # ------------------------------------------------------------------
 
@@ -73,34 +49,6 @@ class NotificationPoller:
         if cfg.notify_system:
             kinds.extend(["notice", "system"])
         return kinds
-
-    def _whitelist_allows(self, item: Dict[str, Any]) -> bool:
-        cfg = self._channel.config
-        if not cfg.whitelist_enabled:
-            return True
-        allowed = {x.strip() for x in cfg.user_whitelist.split(",") if x.strip()}
-        return str(item.get("uid") or "") in allowed
-
-    async def _loop(self) -> None:
-        failures = 0
-        while True:
-            interval = max(int(self._channel.config.poll_interval_seconds), _MIN_INTERVAL)
-            try:
-                await self._poll_once()
-                failures = 0
-                await asyncio.sleep(interval)
-            except asyncio.CancelledError:
-                raise
-            except NotInCar:
-                log("AcFun: 登录态失效，轮询停止", "WARNING", tag="通道")
-                self._channel.on_login_expired()
-                return
-            except Exception as exc:
-                failures += 1
-                self.last_error = str(exc)
-                backoff = min(interval * (2 ** failures), _MAX_BACKOFF)
-                log(f"AcFun: 通知轮询异常（{failures} 次连失败，{backoff}s 后重试）: {exc}", "WARNING", tag="通道")
-                await asyncio.sleep(backoff)
 
     async def _poll_once(self) -> None:
         client = self._channel.client
@@ -128,22 +76,31 @@ class NotificationPoller:
                 continue
             by_key = dict(zip(keys, items, strict=False))
             for key in pending_keys:
+                # 逐条隔离 + 成功才标记已见：单条派发失败不阻塞其余条目，
+                # 失败条目保持未见、下轮重派（at-least-once）
                 item = by_key[key]
-                if not self._whitelist_allows(item):
-                    continue
-                # 点赞通知降噪：未开启触发时仅计数，不写入会话历史
-                if kind == "like" and not cfg.like_trigger_mind:
-                    self.like_count += 1
-                    continue
-                message = notification_to_message(
-                    kind, item,
-                    like_trigger_mind=cfg.like_trigger_mind,
-                    gift_trigger_mind=cfg.gift_trigger_mind,
-                )
-                if message is None:
-                    continue
-                await self._channel.on_message(message)
-                self.dispatch_count += 1
+                try:
+                    if not self._whitelist_allows(item.get("uid")):
+                        self._cursors.mark(kind, key)
+                        continue
+                    # 点赞通知降噪：未开启触发时仅计数，不写入会话历史
+                    if kind == "like" and not cfg.like_trigger_mind:
+                        self.like_count += 1
+                        self._cursors.mark(kind, key)
+                        continue
+                    message = notification_to_message(
+                        kind, item,
+                        like_trigger_mind=cfg.like_trigger_mind,
+                        gift_trigger_mind=cfg.gift_trigger_mind,
+                    )
+                    if message is None:
+                        self._cursors.mark(kind, key)
+                        continue
+                    await self._channel.on_message(message)
+                    self._cursors.mark(kind, key)
+                    self.dispatch_count += 1
+                except Exception as exc:
+                    log(f"AcFun: 通知派发失败（下轮重派）kind={kind}: {exc}", "WARNING", tag="通道")
         if kind_failures and kind_failures == len(kinds):
             raise RuntimeError(f"全部通知类别拉取失败: {self.last_error}")
         self._cursors.save()

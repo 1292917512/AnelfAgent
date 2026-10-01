@@ -83,20 +83,6 @@ class SystemService:
         return {"ok": ok, "message": msg}
 
     @staticmethod
-    async def set_git_proxy(http_proxy: str, https_proxy: str) -> Dict[str, Any]:
-        """设置 Git 代理。"""
-        from entities.system.git_service import set_proxy
-        ok, msg = await asyncio.to_thread(set_proxy, http_proxy, https_proxy)
-        return {"ok": ok, "message": msg}
-
-    @staticmethod
-    async def unset_git_proxy() -> Dict[str, Any]:
-        """移除 Git 代理。"""
-        from entities.system.git_service import unset_proxy
-        ok, msg = await asyncio.to_thread(unset_proxy)
-        return {"ok": ok, "message": msg}
-
-    @staticmethod
     async def test_github_connectivity() -> Dict[str, Any]:
         """测试 GitHub 连通性。"""
         from entities.system.git_service import test_github_connectivity

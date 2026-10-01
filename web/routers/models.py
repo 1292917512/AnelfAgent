@@ -178,30 +178,6 @@ async def fetch_remote_models(pid: str) -> Dict[str, Any]:
         ) from e
 
 
-class FetchRemoteReq(BaseModel):
-    base_url: str
-    api_key: str = ""
-
-
-@router.post("/remote-models")
-async def fetch_remote_models_generic(req: FetchRemoteReq) -> Dict[str, Any]:
-    """通过指定 URL 拉取远程可用模型列表。"""
-    try:
-        models = await _svc.fetch_remote_models(req.base_url, req.api_key)
-        existing = set(_svc.get_all_model_ids())
-        for m in models:
-            m["already_added"] = m["id"] in existing
-        return {"models": models}
-    except ValueError as e:
-        # 非法 base_url（_validate_remote_url）属于客户端输入错误
-        raise HTTPException(400, str(e)) from e
-    except Exception as e:
-        raise HTTPException(
-            502,
-            f"获取远程模型列表失败: {_svc.sanitize_error(e, req.api_key)}",
-        ) from e
-
-
 class ModelInfoReq(BaseModel):
     model: str
     api_type: ApiType = "openai"
@@ -316,6 +292,15 @@ async def set_default(req: SetDefaultReq) -> Dict[str, str]:
     if not ok:
         raise HTTPException(400, f"模型 '{req.model_id}' 不存在、已停用或不支持工具调用，无法设为默认对话模型")
     return {"status": "ok"}
+
+
+@router.post("/reload")
+async def reload_models() -> Dict[str, Any]:
+    """从磁盘热重载模型配置（手改 llm_clients.json 后无需重启即可生效）。"""
+    summary = _svc.reload_from_disk()
+    if not summary.get("ok"):
+        raise HTTPException(400, summary.get("error", "模型配置重载失败"))
+    return summary
 
 
 # ── 子代理统一注册表（内置难度档 + 自定义档案） ──────────────────────

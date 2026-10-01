@@ -294,8 +294,8 @@ _PROMPT_REPLY_GUIDE = (
     "可并行的独立工具同一轮一并发起。\n"
     "2. 回复用户一律调用 send_message：中途进度、阶段性结论随时可发，"
     "不结束本轮，发完继续干活，不必等全部完成。\n"
-    "3. 完成/无需回复 → 直接调用 end_reply（参数留空），或整条仅输出 [SILENT]；"
-    "禁止纯文本投递"
+    "3. 完成/无需回复 → 调用 end_reply（参数留空）静默收束："
+    "同批正文不会投递给用户，回复必须经 send_message 发出。"
 )
 
 # 查资料等非输出工具后：结果仅自己可见；未完成则继续调工具，完成后再回用户
@@ -688,12 +688,13 @@ def _append_assistant_msg(
 
 
 async def _deliver_pending_text(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> None:
-    """轮末统一投递点：把未经输出工具送达的最后一段文本保底投递给用户。
+    """轮末统一投递点：把未经输出工具送达的最后一段独白保底投递给用户。
 
-    纯文本在循环内只是独白（不终局、不中途投递）；轮结束时若仍有未送达
-    文本，过滤沉默标记/伪造工具调用/上下文复述后投递一次。本轮已通过
-    输出工具成功送达过则不再投递——收尾独白不外发，用户只收到 send_message
-    的内容。
+    纯文本在循环内只是独白（不终局、不中途投递）；强制收尾（独白掐断/守卫
+    中止/安全上限等）时若仍有未送达文本，过滤沉默标记/伪造工具调用/上下文
+    复述后投递一次。end_reply/[SILENT] 是静默收束——同批正文与暂存独白在
+    各自收束分支直接丢弃，不经此投递。本轮已通过输出工具成功送达过则不再
+    投递——收尾独白不外发，用户只收到 send_message 的内容。
     """
     text = state.pending_text
     state.pending_text = ""
@@ -743,8 +744,9 @@ async def _finish_round(
 ) -> None:
     """正常结束的统一收尾：轮末投递 + plan 收敛（全模式）+ REPLY 摘要入库/完成事件。
 
-    - 轮末投递：独白/附带正文经 _deliver_pending_text 保底投递一次；
-      安全泄露强制结束传 deliver_pending=False（泄露文本绝不外发）。
+    - 轮末投递：暂存独白经 _deliver_pending_text 保底投递一次；静默收束
+      （end_reply/[SILENT]）与安全泄露强制结束传 deliver_pending=False
+      （收束即终局不投递 / 泄露文本绝不外发）。
     - plan 收敛：REPLY / REFLECT 正常结束都执行，scope 取自 ContextVar
     （``ctx.current_scope``），tracker 只处理当前 scope 的 active plan，无 plan 零成本。
     收敛成功后置位 ``state.plan_finalized``，think_loop 的 finally 不再重复收敛。
@@ -760,6 +762,11 @@ async def _finish_round(
     except Exception:
         pass  # 收敛失败不影响主流程，finally 兜底重试
     if ctx.mode == ThinkMode.REPLY and ctx.anything:
+        # 正常结束的唯一收口点：消息链已是终态，先写入 completion 再发完成事件
+        # （complete_reply 读取该字段组装 EVENT_AFTER_REPLY 的 messages 快照；
+        # think_loop finally 的写入面向 SubAgent 续跑场景，时机晚于本路径）
+        if ctx.completion is not None:
+            ctx.completion["messages"] = ctx.base_messages + ctx.tool_chain
         await finish_think(
             ctx.mind, ctx.anything, ctx.execution_steps, state.iteration + 1, ctx.tool_chain,
             completion=ctx.completion, turn_id=ctx.turn_id,
@@ -831,11 +838,12 @@ async def _handle_text_only_round(
             await _finish_round(ctx, state)
             return _StageOutcome.BREAK
     elif ctx.mode == ThinkMode.REPLY and should_suppress(raw_text):
-        # [SILENT] 精确匹配 / 幻觉沉默旁白：AI 决定不回复，不投递，直接结束本轮
+        # [SILENT] 精确匹配 / 幻觉沉默旁白：AI 决定不回复，暂存独白一并丢弃，直接结束本轮
         log(f"AI 选择沉默（{raw_text[:30]}），结束本轮", "DEBUG", tag="思维")
         _append_assistant_msg(tool_chain, result, raw_text)
         execution_steps.append(f"→ 第{state.iteration + 1}轮: AI 选择沉默，结束")
-        await _finish_round(ctx, state)
+        state.pending_text = ""
+        await _finish_round(ctx, state, deliver_pending=False)
         return _StageOutcome.BREAK
     else:
         state.consecutive_empty_calls = 0
@@ -863,7 +871,8 @@ async def _handle_text_only_round(
             execution_steps.append(
                 f"→ 第{state.iteration + 1}轮: 文本形态 end_reply，按结束处理"
             )
-            await _finish_round(ctx, state)
+            state.pending_text = ""
+            await _finish_round(ctx, state, deliver_pending=False)
             return _StageOutcome.BREAK
         _append_assistant_msg(tool_chain, result, raw_text)
         ctx.collected_text.append(raw_text)
@@ -929,7 +938,7 @@ async def _handle_text_only_round(
             tool_chain.append({"role": "system", "content": _PROMPT_CONTINUE})
             execution_steps.append(f"→ 第{state.iteration + 1}轮: {ctx.mode_label}中")
         else:
-            # REPLY：纯文本 = 独白，不终局不投递；暂存为未送达文本，轮末统一投递。
+            # REPLY：纯文本 = 独白，不终局不投递；暂存为未送达文本，强制收尾时统一投递。
             # 连续独白达到上限说明模型一直不调用工具——掐断，经 _finish_round 投递收尾
             state.pending_text = raw_text
             state.consecutive_text_rounds += 1
@@ -1079,18 +1088,23 @@ async def _handle_tool_round(
                 )
                 state.iteration += 1
                 return _StageOutcome.CONTINUE
-        # end_reply 同批的 assistant 正文：REPLY = 尚未投递的尾部文本，
-        # 纳入轮末统一投递点；REFLECT = 与收束信号同轮发表的结论——
-        # 收束信号不是工作工具，其同批文本即最终连续文本段，纳入产出
+        # end_reply 即静默收束：REPLY 下同批正文与暂存独白一律不投递
+        # （回复走 send_message，结束备注写 reason 仅内部日志）；REFLECT 下
+        # 收束信号不是工作工具，同批文本即最终连续文本段，纳入产出
         end_text = _strip_think_blocks(result.content or "").strip()
-        if end_text:
-            if ctx.mode == ThinkMode.REPLY:
-                state.pending_text = end_text
-            else:
-                ctx.collected_text.append(end_text)
+        if ctx.mode == ThinkMode.REPLY:
+            dropped_chars = len(end_text) + len(state.pending_text)
+            state.pending_text = ""
+            if dropped_chars:
+                execution_steps.append(
+                    f"→ 第{state.iteration + 1}轮: end_reply 静默收束，"
+                    f"{dropped_chars} 字未投递文本已丢弃"
+                )
+        elif end_text:
+            ctx.collected_text.append(end_text)
         log(f"AI 主动结束{ctx.mode_label} (轮次 {state.iteration + 1})", tag="思维")
         # Plan 收敛由 finish_think 统一处理（所有正常结束路径的必经之地）
-        await _finish_round(ctx, state)
+        await _finish_round(ctx, state, deliver_pending=False)
         return _StageOutcome.BREAK
 
     # 每轮工具批次结束：程序级自动推进 plan 步骤（兜底，REPLY/REFLECT 通用）。

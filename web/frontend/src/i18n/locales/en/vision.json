@@ -197,6 +197,8 @@
       "refineInitial": "initial",
       "consolidateSuccess": "Consolidated: {{clusters}} cluster(s), {{count}} profile(s)",
       "markReadSuccess": "All marked read"
-    }
+    },
+    "matchCount": "{{count}}×",
+    "facesCount": "{{count}} faces"
   }
 }

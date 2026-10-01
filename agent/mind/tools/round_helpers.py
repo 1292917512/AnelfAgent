@@ -92,8 +92,8 @@ class _ThinkRoundState:
     # 独白计数：REPLY 模式连续纯文本（无工具调用）轮数，达到
     # text_without_tool_limit 掐断本轮（纯文本非终局，独白不结束循环）
     consecutive_text_rounds: int = 0
-    # 未送达文本：独白/附带正文暂存，轮末经统一投递点保底投递一次；
-    # 输出类工具成功送达后被取代清空
+    # 未送达文本：独白暂存，强制收尾时经统一投递点保底投递一次
+    # （end_reply/[SILENT] 静默收束不投递）；输出类工具成功送达后被取代清空
     pending_text: str = ""
     # 本轮回复已有输出类工具成功送达：置位后轮末纯文本不再兜底投递
     # （收尾独白不外发，与输出契约「禁止纯文本投递」一致）
@@ -1183,6 +1183,10 @@ async def _request_tool_approval(
     # 审批上下文默认值（except 分支审计也要用；频道信息在 try 内补充）
     chat_id = tool_scope
     user_id = "agent"
+    scope = tool_scope
+    if not scope:
+        from agent.mind.tool_activation import ToolActivationManager
+        scope = ToolActivationManager.current_scope()
     try:
         from agent.approval import ApprovalDecision, get_approval_gate
 
@@ -1225,10 +1229,6 @@ async def _request_tool_approval(
         # 中断唤醒：等待人工决策期间用户中断即收束
         abort_check = None
         interrupts = getattr(mind, "interrupts", None) if mind is not None else None
-        scope = tool_scope
-        if not scope:
-            from agent.mind.tool_activation import ToolActivationManager
-            scope = ToolActivationManager.current_scope()
         if interrupts is not None and scope:
             abort_check = lambda: interrupts.is_requested(scope)  # noqa: E731
 

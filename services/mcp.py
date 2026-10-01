@@ -21,6 +21,24 @@ def _mask_display(text: str) -> str:
     return sanitize_text(text)
 
 
+def mask_servers_file(data: Dict[str, Any]) -> Dict[str, Any]:
+    """整个 mcp_servers.json 的脱敏副本：env/headers 占位 + URL 内嵌密钥遮盖。"""
+    servers = data.get("mcpServers")
+    if not isinstance(servers, dict):
+        return data
+    masked_servers: Dict[str, Any] = {}
+    for name, cfg in servers.items():
+        if not isinstance(cfg, dict):
+            masked_servers[name] = cfg
+            continue
+        masked = MCPServerStore.mask_secrets(cfg)
+        url = masked.get("url")
+        if isinstance(url, str):
+            masked["url"] = _mask_display(url)
+        masked_servers[name] = masked
+    return {**data, "mcpServers": masked_servers}
+
+
 def _reload_bridge() -> None:
     """触发 MCP Bridge 配置热重载（静默失败）。"""
     try:

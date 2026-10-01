@@ -12,7 +12,7 @@ export function basename(path: string): string {
 }
 
 /** 缩略图加载失败（源文件已清理等）时的内联占位图（灰底人像剪影）。 */
-export const IMG_FALLBACK =
+const IMG_FALLBACK =
   "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E" +
   "%3Crect width='64' height='64' fill='%231e2228'/%3E" +
   "%3Ccircle cx='32' cy='25' r='10' fill='%233a4048'/%3E" +

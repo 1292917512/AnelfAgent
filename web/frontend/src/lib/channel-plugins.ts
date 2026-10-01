@@ -72,11 +72,6 @@ export async function initChannelPlugins(): Promise<void> {
   }
 }
 
-/** 获取频道插件清单（无插件或插件加载失败返回 undefined）。 */
-export function getChannelPlugin(channelKey: string): ChannelPlugin | undefined {
-  return plugins.get(channelKey);
-}
-
 /** 频道是否应从频道列表/测试面板隐藏。 */
 export function isChannelHidden(channelKey: string): boolean {
   return plugins.get(channelKey)?.hiddenInChannelList === true;

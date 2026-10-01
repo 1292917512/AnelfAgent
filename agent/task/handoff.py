@@ -77,6 +77,18 @@ def save_handoff(task_name: str, text: str) -> bool:
         return False
 
 
+def delete_handoff(task_name: str) -> bool:
+    """删除任务的交接文件（任务删除时随历史一并清理）。返回是否有文件被删。"""
+    try:
+        path = _handoff_path(task_name)
+        if path.is_file():
+            path.unlink()
+            return True
+    except Exception as exc:
+        log(f"handoff 清理失败: {task_name} {exc}", "WARNING", tag="任务")
+    return False
+
+
 def extract_handoff(output: str) -> Tuple[str, Optional[str]]:
     """从任务输出中分离 (干净输出, handoff 文本或 None)。
 

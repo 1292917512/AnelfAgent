@@ -121,9 +121,10 @@ async def gather_dedup_candidates(
         except Exception as exc:
             log(f"去重候选向量召回失败: {exc}", "DEBUG", tag="记忆")
 
-    candidates = list(merged.values())[:limit]
-    candidates.sort(key=lambda e: e.timestamp, reverse=True)
-    return candidates
+    # 先排序后截断：FTS 路在前、向量路在后的插入序与相关性无关，
+    # 先截断会按插入序任意丢弃更新的候选
+    candidates = sorted(merged.values(), key=lambda e: e.timestamp, reverse=True)
+    return candidates[:limit]
 
 
 # ---------------------------------------------------------------------------

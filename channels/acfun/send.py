@@ -13,6 +13,8 @@ import time
 from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
 from agent.channel.channel_types import _err, _ok
+from channels._shared.live import danmaku_cooldown_error
+from channels._shared.text import split_text
 
 if TYPE_CHECKING:
     from .adapter import AcfunChannel
@@ -20,8 +22,6 @@ if TYPE_CHECKING:
 
 _TARGET_RE = re.compile(r"^(comment|live|user):(.+)$")
 _COMMENT_RE = re.compile(r"^(\d+):(\w+)$")
-_MAX_CHUNKS = 5  # 评论分段上限（防长文拆成评论刷屏）
-
 _TARGET_USAGE = (
     "无法识别的 AcFun 会话目标。支持：comment:{rtype}:{rid}（评论区，rtype 1 番剧/2 视频/3 文章/10 动态）、"
     "live:{uid}（直播间弹幕）；AcFun 私信出站暂不支持"
@@ -47,21 +47,6 @@ def parse_chat_target(chat_id: str) -> Optional[Tuple[str, str]]:
     return kind, rest
 
 
-def _split_text(text: str, max_length: int) -> list:
-    """按最大长度分段（优先换行边界），超限段数截断并追加省略标记。"""
-    limit = max(max_length, 50)
-    chunks: list = []
-    remaining = text
-    while len(remaining) > limit and len(chunks) < _MAX_CHUNKS - 1:
-        cut = remaining.rfind("\n", 0, limit)
-        if cut < limit // 2:
-            cut = limit
-        chunks.append(remaining[:cut].rstrip())
-        remaining = remaining[cut:].lstrip("\n")
-    chunks.append(remaining if len(remaining) <= limit else remaining[: limit - 3] + "...")
-    return [c for c in chunks if c]
-
-
 async def send_channel_text(
     channel: "AcfunChannel",
     chat_id: str,
@@ -85,7 +70,7 @@ async def send_channel_text(
     if kind == "user":
         return _err("AcFun 私信出站暂不支持（acfunsdk 未实现），请改用评论回复（comment: 目标）")
 
-    chunks = _split_text(text, channel.config.message_max_length)
+    chunks = split_text(text, channel.config.message_max_length)
 
     if kind == "comment":
         comment_match = _COMMENT_RE.match(rest)
@@ -122,8 +107,9 @@ async def send_live_danmaku_gated(
     """直播间弹幕发送（冷却门控）：供频道 send_text 路径与 send_live_danmaku 工具共用。"""
     if not client.is_logined:
         return _err("AcFun 未登录，请先在频道页完成账号登录")
-    if cooldown_seconds and time.time() - last_sent.get(uid, 0.0) < cooldown_seconds:
-        return _err(f"直播间 {uid} 弹幕冷却中（{cooldown_seconds}s 内已发送），请稍后再发")
+    cooldown_err = danmaku_cooldown_error(last_sent, uid, cooldown_seconds)
+    if cooldown_err:
+        return _err(cooldown_err)
     try:
         for chunk in chunks:
             ok = await client.run(client.push_live_danmaku, uid, chunk)

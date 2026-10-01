@@ -69,9 +69,8 @@ class Req(BaseModel):
 
 @app.post("/unload")
 def unload():
-    global _model, _proc
     """释放模型显存（进程常驻；下次推理自动重载）。"""
-    global _model
+    global _model, _proc
     before = round(torch.cuda.memory_allocated() / 1024**3, 2) if torch.cuda.is_available() else 0.0
     _model = None
     _proc = None

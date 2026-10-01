@@ -11,6 +11,9 @@ import {
   Badge, Button, ConfirmDialog, EmptyState, Input, Modal, Select, Spinner, Switch, toast,
 } from "@/components/ui";
 import { formatNs } from "./format";
+import {
+  ConfirmIdentityModal, EnrollIdentityModal, MergeIdentityModal,
+} from "@/components/identity/modals";
 import { PersonDetailModal } from "./PersonDetailModal";
 
 /** 人物列表：状态/关键字过滤 + 注册/识别/确认/编辑/绑定/合并/删除。 */
@@ -21,18 +24,12 @@ export function PersonsView() {
   const [keyword, setKeyword] = useState("");
   const [detailId, setDetailId] = useState<number | null>(null);
   const [confirmTarget, setConfirmTarget] = useState<FacePerson | null>(null);
-  const [confirmName, setConfirmName] = useState("");
-  const [confirmRole, setConfirmRole] = useState("");
   const [mergeSource, setMergeSource] = useState<FacePerson | null>(null);
-  const [mergeTargetId, setMergeTargetId] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<FacePerson | null>(null);
   const [bindTarget, setBindTarget] = useState<FacePerson | null>(null);
   const [bindScope, setBindScope] = useState("");
   const [enrollOpen, setEnrollOpen] = useState(false);
-  const [enrollName, setEnrollName] = useState("");
-  const [enrollRole, setEnrollRole] = useState("");
   const [enrollScope, setEnrollScope] = useState("");
-  const [enrollFile, setEnrollFile] = useState<File | null>(null);
   const [identifyOpen, setIdentifyOpen] = useState(false);
   const [identifyFile, setIdentifyFile] = useState<File | null>(null);
   const [identifyIngest, setIdentifyIngest] = useState(true);
@@ -58,20 +55,21 @@ export function PersonsView() {
   };
 
   const confirmMutation = useMutation({
-    mutationFn: () => faceApi.confirmPerson(confirmTarget!.id, confirmName, confirmRole),
+    mutationFn: ({ id, name, role }: { id: number; name: string; role: string }) =>
+      faceApi.confirmPerson(id, name, role),
     onSuccess: () => {
       toast.success(t("face.messages.confirmSuccess"));
-      setConfirmTarget(null); setConfirmName(""); setConfirmRole("");
+      setConfirmTarget(null);
       invalidate();
     },
     onError,
   });
 
   const mergeMutation = useMutation({
-    mutationFn: () => faceApi.mergePersons(mergeSource!.id, Number(mergeTargetId)),
+    mutationFn: (targetId: number) => faceApi.mergePersons(mergeSource!.id, targetId),
     onSuccess: () => {
       toast.success(t("face.messages.mergeSuccess"));
-      setMergeSource(null); setMergeTargetId("");
+      setMergeSource(null);
       invalidate();
     },
     onError,
@@ -98,12 +96,11 @@ export function PersonsView() {
   });
 
   const enrollMutation = useMutation({
-    mutationFn: () => faceApi.enrollImage(enrollFile!, enrollName,
-      { role: enrollRole, entityScope: enrollScope }),
+    mutationFn: ({ name, role, file }: { name: string; role: string; file: File }) =>
+      faceApi.enrollImage(file, name, { role, entityScope: enrollScope }),
     onSuccess: () => {
       toast.success(t("face.messages.enrollSuccess"));
-      setEnrollOpen(false); setEnrollName(""); setEnrollRole("");
-      setEnrollScope(""); setEnrollFile(null);
+      setEnrollOpen(false); setEnrollScope("");
       invalidate();
     },
     onError,
@@ -198,7 +195,7 @@ export function PersonsView() {
           </Button>
           {p.status === "pending" && (
             <Button size="sm" variant="secondary"
-              onClick={() => { setConfirmTarget(p); setConfirmName(""); setConfirmRole(""); }}>
+              onClick={() => setConfirmTarget(p)}>
               <UserCheck size={13} className="mr-1" />
               {t("face.actions.confirm")}
             </Button>
@@ -208,7 +205,7 @@ export function PersonsView() {
             <Link2 size={13} />
           </Button>
           <Button size="sm" variant="ghost"
-            onClick={() => { setMergeSource(p); setMergeTargetId(""); }}>
+            onClick={() => setMergeSource(p)}>
             <GitMerge size={13} />
           </Button>
           <Button size="sm" variant="ghost" disabled={refineMut.isPending}
@@ -296,26 +293,19 @@ export function PersonsView() {
       )}
 
       {/* 确认临时人物 */}
-      <Modal open={confirmTarget !== null} onClose={() => setConfirmTarget(null)}
-        title={t("face.modals.confirmTitle", { key: confirmTarget?.person_key ?? "" })}
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => setConfirmTarget(null)}>
-              {t("common:cancel")}
-            </Button>
-            <Button loading={confirmMutation.isPending} disabled={!confirmName.trim()}
-              onClick={() => confirmMutation.mutate()}>
-              {t("face.actions.confirm")}
-            </Button>
-          </>
-        }>
-        <div className="space-y-3">
-          <Input placeholder={t("face.fields.name")} value={confirmName}
-            onChange={(e) => setConfirmName(e.target.value)} />
-          <Input placeholder={t("face.fields.rolePlaceholder")} value={confirmRole}
-            onChange={(e) => setConfirmRole(e.target.value)} />
-        </div>
-      </Modal>
+      <ConfirmIdentityModal
+        open={confirmTarget !== null}
+        onClose={() => setConfirmTarget(null)}
+        pending={confirmMutation.isPending}
+        onSubmit={(name, role) =>
+          confirmMutation.mutate({ id: confirmTarget!.id, name, role })}
+        labels={{
+          title: t("face.modals.confirmTitle", { key: confirmTarget?.person_key ?? "" }),
+          namePlaceholder: t("face.fields.name"),
+          rolePlaceholder: t("face.fields.rolePlaceholder"),
+          confirmLabel: t("face.actions.confirm"),
+        }}
+      />
 
       {/* 实体绑定 */}
       <Modal open={bindTarget !== null} onClose={() => setBindTarget(null)}
@@ -338,61 +328,38 @@ export function PersonsView() {
       </Modal>
 
       {/* 身份合并 */}
-      <Modal open={mergeSource !== null} onClose={() => setMergeSource(null)}
-        title={t("face.modals.mergeTitle", { key: mergeSource?.person_key ?? "" })}
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => setMergeSource(null)}>
-              {t("common:cancel")}
-            </Button>
-            <Button variant="danger" loading={mergeMutation.isPending}
-              disabled={!mergeTargetId} onClick={() => mergeMutation.mutate()}>
-              {t("face.actions.merge")}
-            </Button>
-          </>
-        }>
-        <div className="space-y-3 text-sm">
-          <p className="text-muted">{t("face.modals.mergeHint")}</p>
-          <Select className="w-full" value={mergeTargetId}
-            onChange={(e) => setMergeTargetId(e.target.value)}>
-            <option value="">{t("face.modals.mergeTarget")}</option>
-            {mergeCandidates.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name || p.person_key}（{t(`face.status.${p.status}`)}）
-              </option>
-            ))}
-          </Select>
-        </div>
-      </Modal>
+      <MergeIdentityModal
+        source={mergeSource}
+        candidates={mergeCandidates}
+        getOptionLabel={(p) => `${p.name || p.person_key}（${t(`face.status.${p.status}`)}）`}
+        onClose={() => setMergeSource(null)}
+        onSubmit={(targetId) => mergeMutation.mutate(targetId)}
+        pending={mergeMutation.isPending}
+        labels={{
+          title: t("face.modals.mergeTitle", { key: mergeSource?.person_key ?? "" }),
+          hint: t("face.modals.mergeHint"),
+          targetPlaceholder: t("face.modals.mergeTarget"),
+          mergeLabel: t("face.actions.merge"),
+        }}
+      />
 
       {/* 图片注册 */}
-      <Modal open={enrollOpen} onClose={() => setEnrollOpen(false)}
-        title={t("face.modals.enrollTitle")}
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => setEnrollOpen(false)}>
-              {t("common:cancel")}
-            </Button>
-            <Button loading={enrollMutation.isPending}
-              disabled={!enrollName.trim() || !enrollFile}
-              onClick={() => enrollMutation.mutate()}>
-              {t("face.actions.enroll")}
-            </Button>
-          </>
-        }>
-        <div className="space-y-3">
-          <Input placeholder={t("face.fields.name")} value={enrollName}
-            onChange={(e) => setEnrollName(e.target.value)} />
-          <Input placeholder={t("face.fields.rolePlaceholder")} value={enrollRole}
-            onChange={(e) => setEnrollRole(e.target.value)} />
-          <Input className="font-mono" placeholder={t("face.fields.scopePlaceholder")}
-            value={enrollScope} onChange={(e) => setEnrollScope(e.target.value)} />
-          <input type="file" accept="image/*"
-            className="text-sm text-muted file:mr-3 file:rounded-md file:border file:border-border file:bg-elevated file:px-3 file:py-1.5 file:text-sm file:text-foreground"
-            onChange={(e) => setEnrollFile(e.target.files?.[0] ?? null)} />
-          <p className="text-xs text-muted">{t("face.modals.enrollHint")}</p>
-        </div>
-      </Modal>
+      <EnrollIdentityModal
+        open={enrollOpen}
+        onClose={() => setEnrollOpen(false)}
+        pending={enrollMutation.isPending}
+        onSubmit={(name, role, file) => enrollMutation.mutate({ name, role, file })}
+        accept="image/*"
+        scope={{ value: enrollScope, onChange: setEnrollScope }}
+        labels={{
+          title: t("face.modals.enrollTitle"),
+          namePlaceholder: t("face.fields.name"),
+          rolePlaceholder: t("face.fields.rolePlaceholder"),
+          scopePlaceholder: t("face.fields.scopePlaceholder"),
+          hint: t("face.modals.enrollHint"),
+          enrollLabel: t("face.actions.enroll"),
+        }}
+      />
 
       {/* 上传识别 */}
       <Modal open={identifyOpen} onClose={() => setIdentifyOpen(false)}
@@ -501,7 +468,7 @@ export function PersonsView() {
                 <div className="flex flex-wrap gap-1.5">
                   {consolidatePreview.data.data.insignificant.map((p) => (
                     <Badge key={p.id} variant="warn">
-                      {p.name || p.person_key} ({p.match_count}次)
+                      {p.name || p.person_key} ({t("face.matchCount", { count: p.match_count })})
                     </Badge>
                   ))}
                 </div>

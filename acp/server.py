@@ -66,6 +66,7 @@ class AcpServer:
     ) -> None:
         self._daemon = daemon or DaemonClient()
         self._sessions: Dict[str, _Session] = {}
+        self._prompt_tasks: Dict[str, "asyncio.Task[None]"] = {}
         self._out: TextIO = out or sys.stdout
         self._err: TextIO = err or sys.stderr
 
@@ -115,6 +116,12 @@ class AcpServer:
             except Exception as exc:  # noqa: BLE001 — 分发层兜底，单条消息异常不终止服务
                 if "id" in message:
                     self._respond_error(message["id"], _ERR_INTERNAL, f"internal error: {exc}")
+        # stdin 关闭：取消在途 prompt 轮次，守护进程链路随事件循环关停
+        pending = list(self._prompt_tasks.values())
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     # ------------------------------------------------------------------
     # 分发
@@ -135,7 +142,7 @@ class AcpServer:
         elif method == "session/prompt":
             if not is_request:
                 return
-            await self._session_prompt(request_id, message.get("params") or {})
+            self._spawn_prompt(request_id, message.get("params") or {})
         elif method == "session/cancel":
             self._session_cancel(message.get("params") or {})
             if is_request:
@@ -173,6 +180,27 @@ class AcpServer:
         if session_id and session_id not in self._sessions:
             self._sessions[session_id] = _Session(session_id)
         return {}
+
+    def _spawn_prompt(self, request_id: Any, params: Dict[str, Any]) -> None:
+        """prompt 轮次派生为并发任务：分发循环保持响应（session/cancel 即时生效）。
+
+        内联 await 整轮执行时，cancel 消息排在 prompt 后面永远无法处理。
+        同会话已有进行中 prompt 拒绝新的（turn 边界唯一）；任务完成按会话键
+        自清。stdio 写帧 write+flush 之间无 await，多任务交错输出帧级原子。
+        """
+        session_id = str(params.get("sessionId") or "")
+        running = self._prompt_tasks.get(session_id)
+        if running is not None and not running.done():
+            self._respond_error(request_id, _ERR_INTERNAL, f"prompt already in progress: {session_id}")
+            return
+        # 取消标记在受理时刻复位（而非任务首行）：任务尚未被调度时到达的
+        # cancel 仍须生效——在任务内复位会把先到的 cancel 抹掉
+        session = self._sessions.get(session_id)
+        if session is not None:
+            session.cancel_event.clear()
+        task = asyncio.ensure_future(self._session_prompt(request_id, params))
+        self._prompt_tasks[session_id] = task
+        task.add_done_callback(lambda _t, key=session_id: self._prompt_tasks.pop(key, None))
 
     async def _session_prompt(self, request_id: Any, params: Dict[str, Any]) -> None:
         session_id = str(params.get("sessionId") or "")
@@ -222,7 +250,6 @@ class AcpServer:
 
         delta 增量合帧流出；未流出过正文增量时由 reply 帧补发最终文本。
         """
-        session.cancel_event.clear()
         emitted_any = False
         emitted_message_text = False
         reply_text: Optional[str] = None

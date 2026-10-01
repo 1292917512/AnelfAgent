@@ -161,10 +161,6 @@ class ApprovalGate:
         """旧接口：获取策略集（由统一规则近似转换，仅供旧 API 展示）。"""
         return from_legacy_policyset_to_policies(self._rule_set)
 
-    def reload_policies(self, path: str) -> None:
-        """旧接口：从文件重载（自动识别新旧格式）。"""
-        self.reload_rules(path)
-
     # ------------------------------------------------------------------
     # 批准请求
     # ------------------------------------------------------------------

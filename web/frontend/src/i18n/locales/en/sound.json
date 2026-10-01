@@ -362,5 +362,6 @@
     "voice_min_utterance_ms": "Min utterance length (ms)",
     "voice_max_utterance_s": "Max utterance length (s)",
     "voice_vad_floor_min": "VAD noise floor min (RMS)"
-  }
+  },
+  "matchSummary": "{{count}}×/{{seconds}}s"
 }

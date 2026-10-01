@@ -11,11 +11,8 @@ from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from core.tracer import thinking_tracer
-from services import ContextService
 
 router = APIRouter(prefix="/thinking", tags=["thinking"])
-
-_context_svc = ContextService()
 
 
 @router.get("/status")
@@ -83,30 +80,3 @@ async def thinking_stream(request: Request) -> EventSourceResponse:
 
     return EventSourceResponse(event_generator())
 
-
-# ------------------------------------------------------------------
-# 上下文快照（一次性捕获下一次 LLM 调用的完整上下文）
-# ------------------------------------------------------------------
-
-
-@router.post("/snapshot/arm")
-async def arm_snapshot() -> Dict[str, Any]:
-    """布防：等待下一次 LLM 调用时捕获完整上下文。"""
-    await _context_svc.arm()
-    return {"armed": True}
-
-
-@router.get("/snapshot")
-async def get_snapshot() -> Dict[str, Any]:
-    """获取已捕获的上下文快照（含分类后的 sections）。"""
-    snapshot = _context_svc.get_snapshot()
-    if snapshot is None:
-        return {"status": _context_svc.get_status(), "snapshot": None}
-    return {"status": _context_svc.get_status(), "snapshot": snapshot}
-
-
-@router.post("/snapshot/clear")
-async def clear_snapshot() -> Dict[str, Any]:
-    """清除快照 + 解除布防。"""
-    _context_svc.clear()
-    return {"armed": False, "has_snapshot": False}

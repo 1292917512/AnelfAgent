@@ -395,11 +395,13 @@ async def delete_task(name: str) -> str:
         schedule_removed = cfg.remove_schedule(name)
         if schedule_removed:
             cfg.save()
-        # 清理执行历史（防同名重建后残留记录误导）
+        # 清理执行历史与交接文件（防同名重建后残留记录/旧交接误导）
+        from .handoff import delete_handoff
         from .history import clear_history
         history_cleared = clear_history(name)
+        handoff_cleared = delete_handoff(name)
         _reload_engine()
-        log(f"🛠 AI 删除任务: {name}（调度绑定移除: {schedule_removed}，历史清理: {history_cleared}）", tag="任务")
+        log(f"🛠 AI 删除任务: {name}（调度绑定移除: {schedule_removed}，历史清理: {history_cleared}，交接清理: {handoff_cleared}）", tag="任务")
         return json.dumps({
             "ok": True, "task": name, "schedule_removed": schedule_removed,
         }, ensure_ascii=False)

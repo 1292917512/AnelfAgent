@@ -1,10 +1,13 @@
-"""模型控制实体 — 列出/切换/参数调整/优先级控制 + 子代理统一注册表 + Ollama 本地模型管理。
+"""模型控制实体 — 列出/切换/参数调整/优先级控制 + 供应商/模型注册 + 子代理统一注册表 + Ollama 本地模型管理。
 
 AI 通过这些工具可以自主完成：
 - 查看所有可用模型及其能力（含运行时学习到的端点限制）
 - 热切换当前思考模型（立即生效，同时持久化）
 - 临时调整当前会话的模型参数（temperature、max_tokens）
 - 持久化修复模型配置（update_model_config，固化端点行为问题的修复）
+- 新增/修改/删除供应商（add_provider/update_provider/remove_provider，连接与密钥信息）
+- 注册/删除模型（add_model/remove_model，注册后即可被 switch_model/delegate_task 选用）
+- 手改配置文件后主动热重载（reload_model_config；文件监听也会自动触发）
 - 查看/修改模型优先级顺序
 - 子代理统一注册表增删改查：内置难度档（easy/medium/hard，delegate_task 的
   difficulty 参数是其语法糖）与自定义档案同套 CRUD，候选池有序可含降级链
@@ -20,9 +23,11 @@ Model Experience:
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from typing import TYPE_CHECKING, Any
 
+from core.config import expand_env_refs, is_masked_secret, mask_secret
 from entities._sdk import ErrorCause, entity, error_from_exception, tool, tool_error
 
 if TYPE_CHECKING:
@@ -57,6 +62,18 @@ def list_models() -> str:
             "current_default": default_name,
             "model_summary": summary,
             "priorities": priorities,
+            # 供应商摘要（密钥掩码），供 add_model/update_provider 发现 provider_id
+            "providers": [
+                {
+                    "id": p["id"],
+                    "name": p["name"],
+                    "base_url": p["base_url"],
+                    "api_type": p["api_type"],
+                    "api_key": mask_secret(str(p.get("api_key", ""))),
+                    "model_count": p.get("model_count", 0),
+                }
+                for p in manager.list_providers()
+            ],
         }
         # 运行时学习到的端点限制（仅列出存在问题的模型）
         issues = _collect_runtime_issues(manager)
@@ -203,8 +220,8 @@ def clear_session_params() -> str:
         return error_from_exception(e, action="清除会话参数")
 
 
-# AI 可持久化修改的模型配置字段（保守白名单：仅端点行为与能力声明类参数，
-# 连接/密钥字段 api_key/base_url/model 等不开放）
+# AI 可持久化修改的模型配置字段（保守白名单：端点行为、能力声明与启用状态类参数，
+# 连接/密钥字段 api_key/base_url 等不开放——供应商级变更走 add/update_provider）
 _UPDATABLE_FIELDS = {
     "timeout": float,
     "max_tokens": int,
@@ -215,14 +232,17 @@ _UPDATABLE_FIELDS = {
     "supports_video": bool,
     "supports_tools": bool,
     "reasoning_effort": str,
+    "enabled": bool,
+    "model": str,
 }
 
 
 @tool(name="update_model_config", group="model_control", tags=["core"],
       description="持久化修改指定模型的配置参数"
                   "（timeout/max_tokens/context_window/supports_forced_tool_choice/supports_reasoning"
-                  "/supports_vision/supports_video/supports_tools/reasoning_effort），"
-                  "用于固化端点行为与能力声明（如 list_models 中 runtime_issues 提示的问题），重启后仍生效")
+                  "/supports_vision/supports_video/supports_tools/reasoning_effort/enabled/model），"
+                  "用于固化端点行为与能力声明（如 list_models 中 runtime_issues 提示的问题）、"
+                  "停用/启用模型或修正底层模型名，重启后仍生效")
 def update_model_config(model_name: str, field: str, value: str) -> str:
     """持久化修改模型配置并写入配置文件，立即生效。
 
@@ -230,8 +250,8 @@ def update_model_config(model_name: str, field: str, value: str) -> str:
         model_name: 模型名称（通过 list_models 查看）
         field: 配置字段，可选值: timeout（秒）、max_tokens、context_window、
             supports_forced_tool_choice / supports_reasoning / supports_vision /
-            supports_video / supports_tools（布尔）、
-            reasoning_effort（low/medium/high 或空串清除）
+            supports_video / supports_tools / enabled（布尔）、
+            reasoning_effort（low/medium/high 或空串清除）、model（底层模型名）
         value: 新值（按字段类型解析）
     """
     try:
@@ -284,12 +304,17 @@ def _parse_field_value(field: str, value: str) -> tuple[Any, str]:
             return False, ""
         return None, f"字段 {field} 需要布尔值（true/false），收到: {value!r}"
     if ptype is str:
-        from entities._sdk import canonical_efforts
-        efforts = canonical_efforts()
-        lowered = text.lower()
-        if lowered in efforts or not lowered:
-            return lowered, ""
-        return None, f"字段 {field} 可选值: {sorted(efforts)} 或空串清除，收到: {value!r}"
+        if field == "reasoning_effort":
+            from entities._sdk import canonical_efforts
+            efforts = canonical_efforts()
+            lowered = text.lower()
+            if lowered in efforts or not lowered:
+                return lowered, ""
+            return None, f"字段 {field} 可选值: {sorted(efforts)} 或空串清除，收到: {value!r}"
+        # 其余字符串字段（model 等）：任意非空字符串
+        if not text:
+            return None, f"字段 {field} 需要非空字符串"
+        return text, ""
     try:
         parsed = ptype(text)
     except (TypeError, ValueError):
@@ -351,6 +376,336 @@ def set_model_priority(model_type: str, model_ids: str) -> str:
         }, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="设置模型优先级")
+
+
+# ==================================================================
+# 供应商 / 模型注册工具（全生命周期，热生效 + 原子落盘；CRITICAL 走审批面）
+# ==================================================================
+
+_ENV_REF_PATTERN = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$")
+
+
+def _resolve_secret_input(value: str) -> tuple[str, bool]:
+    """解析密钥入参：完整的 ${ENV_VAR} 引用展开为环境变量值并标记为引用，其余原样返回。"""
+    text = value.strip()
+    if _ENV_REF_PATTERN.match(text):
+        return str(expand_env_refs(text)), True
+    return value, False
+
+
+def _provider_brief(manager: "LLMManager", pid: str) -> dict:
+    """供应商脱敏摘要（工具返回用，绝不回显明文密钥）。"""
+    prov = manager.get_provider(pid)
+    if prov is None:
+        return {}
+    d = prov.to_dict()
+    d["api_key"] = mask_secret(str(d.get("api_key", "")))
+    d["model_count"] = len(manager.get_provider_models(pid))
+    return d
+
+
+@tool(name="add_provider", group="model_control", tags=["core"], risk="CRITICAL",
+      description="新增模型供应商（base_url/api_key/api_type 等连接信息），持久化并立即热生效。"
+                  "api_key 支持 ${ENV_VAR} 引用语法（密钥外置到环境变量，配置文件只存引用）")
+def add_provider(provider_id: str, base_url: str, api_key: str = "", api_type: str = "openai",
+                 name: str = "", proxy_url: str = "", media_protocol: str = "") -> str:
+    """新增供应商并持久化，立即生效（无需重启）。
+
+    Args:
+        provider_id: 供应商 ID（唯一标识，如 prismml）
+        base_url: API 地址（如 https://api.openai.com/v1）
+        api_key: API 密钥；支持 "${ENV_VAR}" 引用（推荐，避免明文落盘）；空 = 无密钥（本地服务）
+        api_type: 接口协议类型（非法值会报错并列出可选值）
+        name: 显示名（可选，默认同 provider_id）
+        proxy_url: 代理地址（可选）
+        media_protocol: 媒体协议适配器名（可选，空 = 按 host 自动匹配）
+    """
+    try:
+        from entities._sdk import get_llm_manager, valid_api_types
+        manager = get_llm_manager()
+
+        pid = provider_id.strip()
+        if not pid:
+            return tool_error("provider_id 不能为空", cause=ErrorCause.PARAM, retryable=False)
+        if manager.get_provider(pid) is not None:
+            return tool_error(f"供应商 '{pid}' 已存在，修改连接信息请用 update_provider",
+                              cause=ErrorCause.PARAM, retryable=False)
+        if api_type not in valid_api_types():
+            return tool_error(f"不支持的 api_type: {api_type!r}，可选值: {valid_api_types()}",
+                              cause=ErrorCause.PARAM, retryable=False)
+
+        resolved_key, is_ref = _resolve_secret_input(api_key)
+        warnings: list[str] = []
+        if is_ref and not resolved_key:
+            warnings.append(f"环境变量引用 {api_key.strip()} 当前未设置（展开为空），"
+                            "设置该环境变量后重载配置或重启生效")
+
+        if is_ref:
+            # 两步写盘保留引用语法：先以引用串建档落盘，再写入展开值——
+            # save_config 的引用恢复机制比对后磁盘保留 ${VAR}、内存持有真值
+            manager.create_provider(pid, name=name, base_url=base_url, api_key=api_key.strip(),
+                                    api_type=api_type, proxy_url=proxy_url,
+                                    media_protocol=media_protocol)
+            manager.save_config()
+            manager.update_provider(pid, api_key=resolved_key)
+        else:
+            manager.create_provider(pid, name=name, base_url=base_url, api_key=resolved_key,
+                                    api_type=api_type, proxy_url=proxy_url,
+                                    media_protocol=media_protocol)
+            manager.save_config()
+
+        result: dict = {
+            "ok": True,
+            "message": f"供应商 '{pid}' 已创建并立即生效",
+            "provider": _provider_brief(manager, pid),
+            "next": f"用 add_model(provider_id='{pid}', ...) 注册模型后即可切换使用",
+        }
+        if warnings:
+            result["warnings"] = warnings
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as e:
+        return error_from_exception(e, action=f"新增供应商 '{provider_id}'")
+
+
+@tool(name="update_provider", group="model_control", tags=["core"], risk="CRITICAL",
+      description="修改供应商连接信息（换密钥/base_url/协议/代理等），空参数保持不变，"
+                  "密钥与地址修改立即传播到该供应商下所有模型，持久化生效")
+def update_provider(provider_id: str, base_url: str = "", api_key: str = "", api_type: str = "",
+                    name: str = "", proxy_url: str = "", media_protocol: str = "") -> str:
+    """修改供应商配置并持久化，立即生效。
+
+    Args:
+        provider_id: 供应商 ID（list_models 的 providers 列表查看）
+        base_url: 新 API 地址（空 = 不变）
+        api_key: 新密钥（空或掩码值 = 不变；支持 "${ENV_VAR}" 引用）
+        api_type: 新协议类型（空 = 不变）
+        name: 新显示名（空 = 不变）
+        proxy_url: 新代理地址（空 = 不变）
+        media_protocol: 新媒体协议适配器名（空 = 不变）
+    """
+    try:
+        from entities._sdk import get_llm_manager, valid_api_types
+        manager = get_llm_manager()
+
+        pid = provider_id.strip()
+        if manager.get_provider(pid) is None:
+            return tool_error(f"供应商 '{pid}' 不存在，请用 list_models 查看 providers 列表",
+                              cause=ErrorCause.PARAM, retryable=False)
+        if api_type and api_type not in valid_api_types():
+            return tool_error(f"不支持的 api_type: {api_type!r}，可选值: {valid_api_types()}",
+                              cause=ErrorCause.PARAM, retryable=False)
+
+        updates: dict[str, str] = {}
+        for field, value in (("base_url", base_url), ("api_type", api_type), ("name", name),
+                             ("proxy_url", proxy_url), ("media_protocol", media_protocol)):
+            if value:
+                updates[field] = value
+
+        changed: list[str] = []
+        warnings: list[str] = []
+        if api_key and not is_masked_secret(api_key):
+            resolved_key, is_ref = _resolve_secret_input(api_key)
+            if is_ref:
+                # 两步写盘保留引用语法（同 add_provider）
+                manager.update_provider(pid, api_key=api_key.strip())
+                manager.update_provider(pid, api_key=resolved_key)
+                if not resolved_key:
+                    warnings.append(f"环境变量引用 {api_key.strip()} 当前未设置（展开为空）")
+            else:
+                updates["api_key"] = resolved_key
+            changed.append("api_key")
+        if updates:
+            manager.update_provider(pid, **updates)
+            changed.extend(k for k in updates if k != "api_key")
+
+        if not changed:
+            return json.dumps({
+                "ok": True,
+                "message": "未修改任何字段（空参数保持不变）",
+                "provider": _provider_brief(manager, pid),
+            }, ensure_ascii=False)
+        result: dict = {
+            "ok": True,
+            "message": f"供应商 '{pid}' 已更新并立即生效（{', '.join(changed)}）",
+            "changed": changed,
+            "provider": _provider_brief(manager, pid),
+        }
+        if warnings:
+            result["warnings"] = warnings
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as e:
+        return error_from_exception(e, action=f"更新供应商 '{provider_id}'")
+
+
+@tool(name="remove_provider", group="model_control", tags=["core"], risk="CRITICAL",
+      description="删除供应商及其下所有模型（级联删除），持久化并立即生效")
+def remove_provider(provider_id: str) -> str:
+    """删除供应商并级联删除其下全部模型。
+
+    Args:
+        provider_id: 供应商 ID（list_models 的 providers 列表查看）
+    """
+    try:
+        from entities._sdk import get_llm_manager
+        manager = get_llm_manager()
+
+        pid = provider_id.strip()
+        if manager.get_provider(pid) is None:
+            return tool_error(f"供应商 '{pid}' 不存在", cause=ErrorCause.PARAM, retryable=False)
+        removed_models = [m["id"] for m in manager.get_provider_models(pid)]
+        removed_default = manager.default_name in removed_models
+        manager.remove_provider(pid)
+        result: dict = {
+            "ok": True,
+            "message": f"供应商 '{pid}' 及其 {len(removed_models)} 个模型已删除",
+            "removed_models": removed_models,
+        }
+        if removed_default:
+            result["note"] = f"原默认模型已随供应商删除，当前默认: {manager.default_name or '(无)'}"
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as e:
+        return error_from_exception(e, action=f"删除供应商 '{provider_id}'")
+
+
+@tool(name="add_model", group="model_control", tags=["core"], risk="CRITICAL",
+      description="在指定供应商下注册新模型（能力声明/协议/思考档等），持久化并立即热生效，"
+                  "注册后即可被 switch_model / delegate_task / set_model_priority 选用")
+def add_model(provider_id: str, model_id: str, model: str = "", model_types: str = "chat",
+              supports_tools: bool = True, supports_vision: bool = False,
+              supports_video: bool = False, supports_reasoning: bool = False,
+              reasoning_effort: str = "", temperature: float = -1.0, max_tokens: int = -1,
+              timeout: float = -1.0, context_window: int = 0, chat_protocol: str = "",
+              enabled: bool = True) -> str:
+    """注册新模型到指定供应商下并持久化，立即生效（无需重启）。
+
+    Args:
+        provider_id: 目标供应商 ID（list_models 的 providers 列表查看）
+        model_id: 模型 ID（系统内唯一标识，如 glm-flash）
+        model: 底层 API 模型名（空 = 同 model_id；供应商侧名称与 ID 不同时填写）
+        model_types: 模型类型，逗号分隔（chat/vision/embedding/rerank/image_gen/asr/tts 等）
+        supports_tools: 是否支持工具调用（chat 模型默认 True）
+        supports_vision: 是否支持图片理解
+        supports_video: 是否支持视频理解
+        supports_reasoning: 是否支持思考模式
+        reasoning_effort: 默认思考档位（low/medium/high/max，空 = 不主动下发）
+        temperature: 采样温度 0~2（传 -1 = 不下发，由端点默认决定）
+        max_tokens: 输出预算上限（传 -1 = 不限制）
+        timeout: 请求超时秒数（传 -1 = 默认 120）
+        context_window: 上下文窗口 token 数（0 = 未知，按 litellm 模型表/默认推断）
+        chat_protocol: 对话协议（chat_completions/responses/auto，空 = chat_completions）
+        enabled: 是否启用（False = 注册但停用，不参与任何自动选择）
+    """
+    try:
+        from entities._sdk import canonical_efforts, get_llm_manager
+        manager = get_llm_manager()
+
+        pid = provider_id.strip()
+        if manager.get_provider(pid) is None:
+            provider_ids = [p["id"] for p in manager.list_providers()]
+            return tool_error(f"供应商 '{pid}' 不存在（现有: {provider_ids}），先用 add_provider 创建",
+                              cause=ErrorCause.PARAM, retryable=False)
+        mid = model_id.strip()
+        if not mid:
+            return tool_error("model_id 不能为空", cause=ErrorCause.PARAM, retryable=False)
+        if manager.get_client(mid) is not None:
+            return tool_error(f"模型 '{mid}' 已存在，修改参数请用 update_model_config",
+                              cause=ErrorCause.PARAM, retryable=False)
+        if reasoning_effort and reasoning_effort.lower() not in canonical_efforts():
+            return tool_error(
+                f"无效的 reasoning_effort: {reasoning_effort!r}，可选值: {sorted(canonical_efforts())}",
+                cause=ErrorCause.PARAM, retryable=False)
+
+        kwargs: dict[str, Any] = {
+            "model": model.strip() or mid,
+            "model_types": [s.strip() for s in model_types.split(",") if s.strip()],
+            "supports_tools": supports_tools,
+            "supports_vision": supports_vision,
+            "supports_video": supports_video,
+            "supports_reasoning": supports_reasoning,
+            "enabled": enabled,
+        }
+        if reasoning_effort:
+            kwargs["reasoning_effort"] = reasoning_effort.lower()
+        if temperature >= 0:
+            kwargs["temperature"] = temperature
+        if max_tokens > 0:
+            kwargs["max_tokens"] = max_tokens
+        if timeout > 0:
+            kwargs["timeout"] = timeout
+        if context_window > 0:
+            kwargs["context_window"] = context_window
+        if chat_protocol:
+            kwargs["chat_protocol"] = chat_protocol
+
+        try:
+            client = manager.create_model(pid, mid, **kwargs)
+        except ValueError as exc:
+            return tool_error(f"模型参数无效: {exc}", cause=ErrorCause.PARAM, retryable=False)
+        if client is None:
+            return tool_error(f"模型 '{mid}' 创建失败", cause=ErrorCause.INTERNAL, retryable=False)
+        manager.save_config()
+
+        became_default = manager.default_name == mid
+        result: dict = {
+            "ok": True,
+            "message": f"模型 '{mid}' 已注册并立即生效",
+            "model_id": mid,
+            "provider_id": pid,
+            "model": kwargs["model"],
+            "model_types": kwargs["model_types"],
+        }
+        if became_default:
+            result["note"] = "当前无默认对话模型，该模型已自动成为默认"
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as e:
+        return error_from_exception(e, action=f"注册模型 '{model_id}'")
+
+
+@tool(name="remove_model", group="model_control", tags=["core"], risk="CRITICAL",
+      description="删除指定模型（从配置与优先级列表移除），持久化并立即生效")
+def remove_model(model_id: str) -> str:
+    """删除模型并持久化。
+
+    Args:
+        model_id: 模型 ID（list_models 查看）
+    """
+    try:
+        from entities._sdk import get_llm_manager
+        manager = get_llm_manager()
+
+        mid = model_id.strip()
+        if manager.get_client(mid) is None:
+            return tool_error(f"模型 '{mid}' 不存在，请用 list_models 查看可用名称",
+                              cause=ErrorCause.PARAM, retryable=False)
+        was_default = manager.default_name == mid
+        manager.remove_model(mid)
+        result: dict = {"ok": True, "message": f"模型 '{mid}' 已删除"}
+        if was_default:
+            result["note"] = f"删除的是默认对话模型，当前默认已切换为: {manager.default_name or '(无)'}"
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as e:
+        return error_from_exception(e, action=f"删除模型 '{model_id}'")
+
+
+@tool(name="reload_model_config", group="model_control", tags=["core"],
+      description="手动编辑模型配置文件（llm_clients.json）后立即热重载生效（无需重启），"
+                  "返回供应商/模型的增删改摘要；文件监听也会自动触发，本工具提供确定性立即生效路径")
+def reload_model_config() -> str:
+    """从磁盘重新加载模型配置并 reconcile 应用变更。
+
+    配置不变的模型保持运行时状态（端点学习结果、连接池）；变化的配置原地更新；
+    新增/删除即时生效。JSON 语法错误时保留当前运行配置。
+    """
+    try:
+        from entities._sdk import get_llm_manager
+        summary = get_llm_manager().reload_from_disk()
+        if not summary.get("ok"):
+            return tool_error(summary.get("error", "配置重载失败"),
+                              cause=ErrorCause.PARAM, retryable=False,
+                              hint="修正 llm_clients.json 的 JSON 语法后重试")
+        return json.dumps(summary, ensure_ascii=False)
+    except Exception as e:
+        return error_from_exception(e, action="热重载模型配置")
 
 
 # ==================================================================

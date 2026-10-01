@@ -1,15 +1,16 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, ChevronRight, Plus, Server, Trash2 } from "lucide-react";
-import { providersApi } from "@/lib/api";
+import axios from "axios";
+import { ChevronDown, ChevronRight, Plus, RefreshCw, Server, Trash2 } from "lucide-react";
+import { modelsApi, providersApi } from "@/lib/api";
 import type { ProviderConfig } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { Button, EmptyState } from "@/components/ui";
+import { Button, EmptyState, toast } from "@/components/ui";
 import { ProviderForm } from "./config/ProviderForm";
 import { ProviderDetail } from "./config/ProviderDetail";
 
-/** 模型配置面板：供应商列表（手风琴）+ 新建供应商 */
+/** 模型配置面板：供应商列表（手风琴）+ 新建供应商 + 磁盘热重载 */
 export function ConfigPanel() {
   const { t } = useTranslation("models");
   const qc = useQueryClient();
@@ -26,13 +27,41 @@ export function ConfigPanel() {
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["providers"] }); setExpandedProvider(null); },
   });
 
+  const reloadMut = useMutation({
+    mutationFn: () => modelsApi.reload().then((r) => r.data),
+    onSuccess: (summary) => {
+      qc.invalidateQueries({ queryKey: ["providers"] });
+      const pa = summary.providers.added.length, pr = summary.providers.removed.length, pc = summary.providers.changed.length;
+      const ma = summary.models.added.length, mr = summary.models.removed.length, mc = summary.models.changed.length;
+      if (pa + pr + pc + ma + mr + mc === 0) {
+        toast.info(t("reloadNoChange"));
+      } else {
+        toast.success(t("reloadResult", { pa, pr, pc, ma, mr, mc }));
+      }
+    },
+    onError: (err) => {
+      const detail = axios.isAxiosError(err) ? err.response?.data?.detail : null;
+      toast.error(`${t("reloadFailed")}: ${typeof detail === "string" ? detail : String(err)}`);
+    },
+  });
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h3 className="text-base font-semibold text-heading">{t("providersAndModels")}</h3>
-        <Button variant="primary" onClick={() => setShowNewProvider(!showNewProvider)}>
-          <Plus size={16} /> {t("addProvider")}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="ghost"
+            onClick={() => reloadMut.mutate()}
+            disabled={reloadMut.isPending}
+            title={t("reloadFromDiskHint")}
+          >
+            <RefreshCw size={16} className={reloadMut.isPending ? "animate-spin" : undefined} /> {t("reloadFromDisk")}
+          </Button>
+          <Button variant="primary" onClick={() => setShowNewProvider(!showNewProvider)}>
+            <Plus size={16} /> {t("addProvider")}
+          </Button>
+        </div>
       </div>
 
       {showNewProvider && <ProviderForm onClose={() => setShowNewProvider(false)} />}

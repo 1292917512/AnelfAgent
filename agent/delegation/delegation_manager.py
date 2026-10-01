@@ -682,11 +682,18 @@ class DelegationManager:
                 result = await run_task
             except asyncio.CancelledError:
                 # 用户取消：转化为取消结果返回（父级思维循环不受 CancelledError 冲击）；
-                # 非用户取消（如服务关闭）继续向上传播
+                # 非用户取消（工作流超时/停止、服务关停）继续向上传播——但先闭合账本：
+                # 未闭合的 STARTED 会被下次启动的崩溃恢复误报为「进程中断」，
+                # 只有真正的崩溃（无机会执行到这里）才应保持未闭合
                 if delegation_id in self._cancel_marks:
                     log(f"委托已被用户取消: {delegation_id} -> {goal[:60]}", tag="委托")
                     result = _cancelled_result(goal, role=role, task_index=task_index)
                 else:
+                    journal.append_progress(delegation_id, "委托被运行时取消（超时/停止/关停）")
+                    journal.append_ledger(
+                        journal.LEDGER_CLOSED, delegation_id,
+                        status=journal.terminal_status(success=False, cancelled=True),
+                    )
                     raise
             finally:
                 self._cancel_marks.discard(delegation_id)

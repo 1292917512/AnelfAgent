@@ -15,22 +15,13 @@ from services.audio import (
     AudioNotConfigured,
     AudioServiceFacade,
     ConfirmRequest,
-    EnrollRequest,
     FunAsrError,
     FunAsrNotConfigured,
-    IdentifyCandidate,
-    ImportRequest,
-    ListenError,
     MarkReadRequest,
     MergeRequest,
-    SegmentAddRequest,
-    SegmentMergeRequest,
-    SegmentSplitRequest,
     SegmentUpdateRequest,
     SpeakerBindRequest,
     SpeakerUpdateRequest,
-    TranscriptReplaceRequest,
-    VectorIdentifyRequest,
 )
 
 router = APIRouter(prefix="/audio", tags=["audio"])
@@ -171,18 +162,6 @@ async def list_speakers(
                                       limit=limit, offset=offset)
 
 
-@router.post("/speakers")
-async def enroll_speaker(req: EnrollRequest) -> Dict[str, Any]:
-    """注册正式说话人（向量直传）。"""
-    return await _audio.enroll_speaker(req)
-
-
-@router.post("/speakers/import")
-async def import_speakers(req: ImportRequest) -> Dict[str, Any]:
-    """冷启动批量导入：已知说话人的多条声纹样本一次建库。"""
-    return await _audio.import_speakers(req)
-
-
 @router.post("/speakers/merge")
 async def merge_speakers(req: MergeRequest) -> Dict[str, Any]:
     """身份合并：source_id 并入 target_id。"""
@@ -287,12 +266,6 @@ async def delete_sample(sample_id: int) -> Dict[str, Any]:
 # ── 声纹识别 ──────────────────────────────────────────────────────
 
 
-@router.post("/identify", response_model=List[IdentifyCandidate])
-async def identify_vector(req: VectorIdentifyRequest) -> List[Dict[str, Any]]:
-    """向量级识别：输入 192 维声纹向量，返回 TopK 候选及相似度。"""
-    return await _audio.identify_vector(req.vector, req.top_k)
-
-
 @router.post("/identify/audio")
 async def identify_audio(
     file: UploadFile = File(...),
@@ -365,65 +338,9 @@ async def update_segment(segment_id: int, req: SegmentUpdateRequest) -> Dict[str
     return {"segment": updated}
 
 
-@router.post("/segments/replace")
-async def replace_transcripts(req: TranscriptReplaceRequest) -> Dict[str, Any]:
-    """批量查找替换转写文本（人名/术语纠错；dry_run 预览影响面）。"""
-    if req.speaker_id is not None and not await _audio.speaker_detail(req.speaker_id):
-        raise HTTPException(status_code=404, detail="目标说话人不存在")
-    return await _audio.replace_transcripts(req)
 
 
-@router.post("/segments/merge")
-async def merge_segments(req: SegmentMergeRequest) -> Dict[str, Any]:
-    """合并多个相邻片段为一条（转写碎片归并，限同一录制单元内）。"""
-    if req.speaker_id is not None and not await _audio.speaker_detail(req.speaker_id):
-        raise HTTPException(status_code=404, detail="目标说话人不存在")
-    try:
-        merged = await _audio.merge_segments(req)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if not merged:
-        raise HTTPException(status_code=404, detail="片段不存在或数量不足")
-    return {"segment": merged}
 
-
-@router.post("/segments/listen")
-async def listen_segment_endpoint(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
-    """回听片段源音源：切片重转 + 比对（apply=true 时订正文本/归属）。"""
-    segment_id = int(payload.get("segment_id", 0))
-    if not segment_id:
-        raise HTTPException(status_code=400, detail="segment_id 必填")
-    try:
-        return await _audio.listen_segment(segment_id, bool(payload.get("apply", False)))
-    except ListenError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-
-@router.post("/segments/{segment_id}/split")
-async def split_segment(segment_id: int, req: SegmentSplitRequest) -> Dict[str, Any]:
-    """拆段：把片段在 at_ms 拆为两段（次段归属可指定或置未知）。"""
-    fields_set = req.model_fields_set
-    if "speaker_second_id" in fields_set and req.speaker_second_id is not None \
-            and not await _audio.speaker_detail(req.speaker_second_id):
-        raise HTTPException(status_code=404, detail="次段目标说话人不存在")
-    try:
-        result = await _audio.split_segment(segment_id, req)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if not result:
-        raise HTTPException(status_code=404, detail="片段不存在")
-    return result
-
-
-@router.post("/segments")
-async def add_segment(req: SegmentAddRequest) -> Dict[str, Any]:
-    """手动新增段落（补充遗漏/记录回听内容）。"""
-    if req.speaker_id is not None and not await _audio.speaker_detail(req.speaker_id):
-        raise HTTPException(status_code=404, detail="目标说话人不存在")
-    try:
-        return await _audio.add_segment(req)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.delete("/segments/{segment_id}")

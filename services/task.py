@@ -18,7 +18,10 @@ from core.path import ConfigPaths
 from services._parsing import to_bool as _to_bool
 from services._runtime import get_runtime
 
-_TASKS_DIR = Path(ConfigPaths.TASKS_DIR)
+
+def _tasks_dir() -> Path:
+    """任务定义目录（运行时解析：ConfigPaths 动态跟随目录配置/测试隔离）。"""
+    return Path(ConfigPaths.TASKS_DIR)
 
 _TASK_DEFAULTS: Dict[str, Any] = {
     "display_name": "", "description": "", "scope": "global",
@@ -50,7 +53,7 @@ class TaskStorageError(Exception):
 
 
 def _ensure_tasks_dir() -> None:
-    _TASKS_DIR.mkdir(parents=True, exist_ok=True)
+    _tasks_dir().mkdir(parents=True, exist_ok=True)
 
 
 def _sanitize_folder(folder: str) -> str:
@@ -67,9 +70,9 @@ def _sanitize_folder(folder: str) -> str:
 def _task_path(name: str, folder: str = "") -> Path:
     if "/" in name or "\\" in name or name in {".", ".."}:
         raise TaskServiceError("非法的任务名称", status_code=400)
-    base = _TASKS_DIR / folder if folder else _TASKS_DIR
+    base = _tasks_dir() / folder if folder else _tasks_dir()
     resolved = base.resolve()
-    if not resolved.is_relative_to(_TASKS_DIR.resolve()):
+    if not resolved.is_relative_to(_tasks_dir().resolve()):
         raise TaskServiceError("非法的任务文件夹路径", status_code=400)
     return resolved / f"{name}.json"
 
@@ -80,7 +83,7 @@ def _task_folder_of(json_file: Path) -> str:
     _task_path 返回的是已 resolve 的绝对路径，而 rglob 给出相对路径，
     统一 resolve 后再做 relative_to，避免绝对/相对混用抛 ValueError。
     """
-    folder = json_file.parent.resolve().relative_to(_TASKS_DIR.resolve()).as_posix()
+    folder = json_file.parent.resolve().relative_to(_tasks_dir().resolve()).as_posix()
     return "" if folder == "." else folder
 
 
@@ -172,7 +175,7 @@ class TaskService:
 
         _ensure_tasks_dir()
         tasks: List[Dict[str, Any]] = []
-        for json_file in sorted(_TASKS_DIR.rglob("*.json")):
+        for json_file in sorted(_tasks_dir().rglob("*.json")):
             # 跳过任务运行数据文件（如 <name>.handoff.json），与 TaskRegistry.reload 同口径
             if json_file.name.endswith(".handoff.json"):
                 continue
@@ -337,9 +340,11 @@ class TaskService:
 
     @staticmethod
     def _clear_task_history(name: str) -> None:
-        """任务删除后清理执行历史（防同名重建后残留记录误导）。"""
+        """任务删除后清理执行历史与交接文件（防同名重建后残留记录/旧交接误导）。"""
         from agent.task import history as task_history
+        from agent.task.handoff import delete_handoff
         task_history.clear_history(name)
+        delete_handoff(name)
 
     def trigger_task(self, name: str, folder: str = "") -> None:
         """手动触发执行指定任务，在后台异步执行。

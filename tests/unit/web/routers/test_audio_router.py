@@ -39,13 +39,13 @@ def client():
 
 class TestSpeakerApi:
     async def test_crud_flow(self, client: TestClient) -> None:
-        # 注册
-        resp = client.post("/api/audio/speakers", json={
-            "name": "张三", "vector": vec(0), "role": "家人",
-        })
-        assert resp.status_code == 200
-        speaker = resp.json()
-        assert speaker["speaker_key"].startswith("spk_")
+        # 注册走 AI 工具同路径（matcher.enroll_samples；向量直传 HTTP 端点已裁撤）
+        from agent.audio import get_audio_store
+        store = get_audio_store()
+        enrolled = await matcher.enroll_samples(
+            store, "张三", [([1.0] + [0.0] * 191, 1000)], role="家人",
+        )
+        speaker = {"id": enrolled["speaker"]["id"]}
 
         # 列表 / 详情
         resp = client.get("/api/audio/speakers", params={"keyword": "张三"})
@@ -58,12 +58,6 @@ class TestSpeakerApi:
         resp = client.patch(
             f"/api/audio/speakers/{speaker['id']}", json={"threshold": 0.8})
         assert resp.json()["speaker"]["threshold"] == 0.8
-
-        # 向量识别（完全同向量 → 命中）
-        resp = client.post("/api/audio/identify", json={"vector": vec(0)})
-        candidates = resp.json()
-        assert candidates[0]["matched"] is True
-        assert candidates[0]["name"] == "张三"
 
         # 删除
         resp = client.delete(f"/api/audio/speakers/{speaker['id']}")
@@ -278,9 +272,10 @@ class TestVoicePresetApi:
 
 class TestSpeakerRefineApi:
     async def test_refine_flow(self, client: TestClient, _isolate_audio_library) -> None:
-        resp = client.post("/api/audio/speakers", json={
-            "name": "张三", "vector": vec(4)})
-        speaker_id = resp.json()["id"]
+        from agent.audio import get_audio_store, matcher
+        store = get_audio_store()
+        enrolled = await matcher.enroll_samples(store, "张三", [(vec(4), 1000)])
+        speaker_id = enrolled["speaker"]["id"]
         resp = client.post(f"/api/audio/speakers/{speaker_id}/refine")
         assert resp.status_code == 200
         assert resp.json()["samples"] == 1

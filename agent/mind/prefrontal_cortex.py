@@ -183,9 +183,6 @@ class PrefrontalCortex:
     def record_tool_use(self, tool_name: str) -> None:
         self.tool_assembly.record_tool_use(tool_name)
 
-    def get_tool_use_total(self) -> int:
-        return self.tool_assembly.get_tool_use_total()
-
     def get_hot_tool_names(self) -> list[str]:
         return self.tool_assembly.get_hot_tool_names()
 

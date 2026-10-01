@@ -1188,7 +1188,6 @@ class LLMClient(BaseEntity):
         kwargs = self._build_kwargs(messages, options, tools, tool_choice, stream=True)
         kwargs["stream_options"] = {"include_usage": True}
         stream: Any = None
-        reasoning_buf = ""
         tc_bufs: Dict[int, Dict[str, str]] = {}
         last_finish = ""
         try:
@@ -1197,19 +1196,17 @@ class LLMClient(BaseEntity):
                 async with lease:
                     stream = await self._start_completion(kwargs)
                     sink = _rp.install_usage_tap(stream)
-                    async for item in self._iter_stream(stream, reasoning_buf, tc_bufs, sink):
-                        reasoning_buf = item[1]
-                        if item[0].finish_reason:
-                            last_finish = item[0].finish_reason
-                        yield item[0]
+                    async for delta in self._iter_stream(stream, tc_bufs, sink):
+                        if delta.finish_reason:
+                            last_finish = delta.finish_reason
+                        yield delta
             else:
                 stream = await self._start_completion(kwargs)
                 sink = _rp.install_usage_tap(stream)
-                async for item in self._iter_stream(stream, reasoning_buf, tc_bufs, sink):
-                    reasoning_buf = item[1]
-                    if item[0].finish_reason:
-                        last_finish = item[0].finish_reason
-                    yield item[0]
+                async for delta in self._iter_stream(stream, tc_bufs, sink):
+                    if delta.finish_reason:
+                        last_finish = delta.finish_reason
+                    yield delta
         finally:
             if stream is not None:
                 close_fn = getattr(stream, "aclose", None)
@@ -1603,9 +1600,11 @@ class LLMClient(BaseEntity):
             except RuntimeError:
                 pass
         # 端点学习状态随配置重置：换模型/换端点后旧限制（max_tokens 上限、
-        # 强制 tool_choice 不支持）不应继续钳制新配置
+        # 强制 tool_choice 不支持、参数拒收、Responses 回退）不应继续钳制新配置
         self._learned_output_cap = None
         self._learned_no_forced_tool_choice = False
+        self._learned_dropped_params.clear()
+        self._responses_native_blocked = False
         info(f"LLMClient [{self.config.name}] 配置已更新", tag="模型")
 
     def __repr__(self) -> str:

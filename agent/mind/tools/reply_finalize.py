@@ -240,7 +240,7 @@ async def complete_reply(
 ) -> None:
     """清理回复状态并发出完成事件。
 
-    AI 的最终输出已由投递路径（send_message / 纯文本自动投递 / end_reply 附带正文）以
+    AI 的最终输出已由投递路径（send_message / 纯文本自动投递）以
     assistant 角色写入对话历史，此处不再重复记录。
 
     EVENT_AFTER_REPLY.execution_summary 是 SkillReviewer 的唯一评审材料来源。

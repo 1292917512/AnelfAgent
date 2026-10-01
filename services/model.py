@@ -151,6 +151,10 @@ class ModelService:
     def rename_model(self, old_id: str, new_id: str) -> bool:
         return self._manager().rename_model(old_id, new_id)
 
+    def reload_from_disk(self) -> Dict[str, Any]:
+        """从磁盘热重载模型配置（手改 llm_clients.json 后 reconcile 生效，无需重启）。"""
+        return self._manager().reload_from_disk()
+
     @staticmethod
     def serialize_model_config(config: Dict[str, Any]) -> Dict[str, Any]:
         """将内部模型格式转换为公开 API 格式（legacy extra_params 并入 extra_body）。"""

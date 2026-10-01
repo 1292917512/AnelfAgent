@@ -89,5 +89,13 @@
   "removeAttachment": "移除附件",
   "rootDir": "目录",
   "recall": "撤回",
-  "recallToEdit": "撤回并重新编辑"
+  "recallToEdit": "撤回并重新编辑",
+  "attachmentUploading": "附件仍在上传中，请稍候再发送",
+  "attachmentFailed": "有附件上传失败，请先移除再发送",
+  "voiceConnectFailed": "语音通道连接失败",
+  "voiceServiceTimeout": "语音服务无响应（超时）",
+  "voiceStartFailed": "语音会话开启失败",
+  "voiceRejected": "语音会话被拒绝",
+  "voiceChannelError": "语音通道异常",
+  "voiceError": "通道错误"
 }

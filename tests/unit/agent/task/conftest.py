@@ -19,6 +19,6 @@ def _isolate_task_and_heartbeat_paths(tmp_path, monkeypatch: pytest.MonkeyPatch)
     # save/load 均动态解析 ConfigPaths.HEARTBEAT_CONFIG，经元类 override 整体重定向
     monkeypatch.setattr(ConfigPaths, "HEARTBEAT_CONFIG", str(tmp_path / "heartbeat.json"))
     monkeypatch.setattr(hb_config, "_instance", None)
-    monkeypatch.setattr(hb_log, "LOG_PATH", tmp_path / "heartbeat.md")
+    monkeypatch.setattr(hb_log, "_log_path", lambda: tmp_path / "heartbeat.md")
     yield
     monkeypatch.setattr(hb_config, "_instance", None)

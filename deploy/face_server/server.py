@@ -169,7 +169,11 @@ async def extract(
     if not engine.ready:
         return _error("MODEL_NOT_READY", "识别模型仍在加载，请稍后重试", 503)
 
-    data = await file.read()
+    content_length = file.size if getattr(file, "size", None) is not None else 0
+    if content_length and content_length > MAX_UPLOAD_BYTES:
+        return _error("IMAGE_TOO_LARGE",
+                      f"图片超过 {MAX_UPLOAD_BYTES // (1024 * 1024)}MB 上限", 413)
+    data = await file.read(MAX_UPLOAD_BYTES + 1)
     if not data:
         return _error("INVALID_IMAGE", "上传内容为空", 400)
     if len(data) > MAX_UPLOAD_BYTES:

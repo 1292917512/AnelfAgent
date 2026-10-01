@@ -75,7 +75,19 @@ export const modelsApi = {
   costMapInfo: () => api.get<{ model_count: number }>("/models/cost-map/info"),
   updateCostMap: (proxyUrl = "") =>
     api.post<{ status: string; model_count: number }>("/models/cost-map/update", { proxy_url: proxyUrl }),
+  /** 从磁盘热重载模型配置（手改 llm_clients.json 后无需重启生效） */
+  reload: () => api.post<ReloadSummary>("/models/reload"),
 };
+
+/** POST /models/reload 的 reconcile 摘要 */
+export interface ReloadSummary {
+  ok: boolean;
+  providers: { added: string[]; removed: string[]; changed: string[] };
+  models: { added: string[]; removed: string[]; changed: string[] };
+  default_chat: string;
+  switched: boolean;
+  error?: string;
+}
 
 // 子代理统一注册表（内置难度档 + 自定义档案）
 

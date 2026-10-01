@@ -130,8 +130,8 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
   es.addEventListener("reply", (e) => {
     try {
       const data = JSON.parse(e.data) as SseReplyEvent;
-      clearSendWatchdog();
       const chatId = routeChatId(data);
+      clearSendWatchdog(chatId);
       const isBackground = chatId !== ctx.getActiveChatId();
       updateBucket(chatId, (b) => {
         const { toolCalls, streaming, turnId } = solidifyToolCalls(b);
@@ -154,10 +154,10 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
   });
 
   es.addEventListener("turn_end", (e) => {
-    clearSendWatchdog();
     try {
       const data = (e.data ? JSON.parse(e.data) : {}) as SseTurnEndEvent;
       const chatId = routeChatId(data);
+      clearSendWatchdog(chatId);
       updateBucket(chatId, () => ({
         sending: false,
         sendingSince: null,
@@ -174,8 +174,8 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
   es.addEventListener("media", (e) => {
     try {
       const data = JSON.parse(e.data) as SseMediaEvent;
-      clearSendWatchdog();
       const chatId = routeChatId(data);
+      clearSendWatchdog(chatId);
       const isBackground = chatId !== ctx.getActiveChatId();
       updateBucket(chatId, (b) => {
         const { toolCalls, streaming } = solidifyToolCalls(b);
@@ -262,8 +262,8 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
   es.addEventListener("delta", (e) => {
     try {
       const data = JSON.parse(e.data) as SseDeltaEvent;
-      touchSendWatchdog();
       const chatId = routeChatId(data);
+      touchSendWatchdog(chatId);
       updateBucket(chatId, (b) => {
         const cur = b.streaming && b.streaming.turnId === data.turn_id
           ? b.streaming
@@ -287,8 +287,8 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
   es.addEventListener("tool_call", (e) => {
     try {
       const data = JSON.parse(e.data) as SseToolCallEvent;
-      touchSendWatchdog();
       const chatId = routeChatId(data);
+      touchSendWatchdog(chatId);
       updateBucket(chatId, (b) => {
         const turnId = data.turn_id ?? "";
         const cur = b.streaming && b.streaming.turnId === turnId
@@ -314,8 +314,8 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
   es.addEventListener("file_diff", (e) => {
     try {
       const data = JSON.parse(e.data) as SseFileDiffEvent;
-      touchSendWatchdog();
       const chatId = routeChatId(data);
+      touchSendWatchdog(chatId);
       const turnId = data.turn_id ?? "";
       const entry = {
         path: data.path,

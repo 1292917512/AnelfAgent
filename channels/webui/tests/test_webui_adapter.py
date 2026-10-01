@@ -65,8 +65,22 @@ class TestMediaFrameUrl:
 
     async def test_send_photo_uses_rewritten_url(self, channel, captured):
         from core.path import ConfigPaths
+        realtime_hub.subscribe(client_kind="web")
         await channel.send_photo("c1", f"{ConfigPaths.UPLOAD_DIR}/image/x.png")
         assert captured[0]["url"] == "/api/chat/files/image/x.png"
+
+    async def test_media_sends_fail_without_clients(self, channel, captured):
+        """媒体与文本同一语义：无在线客户端时如实失败（不虚报已送达）。"""
+        for send in (
+            lambda: channel.send_photo("c1", "/tmp/x.png"),
+            lambda: channel.send_voice("c1", "/tmp/x.wav"),
+            lambda: channel.send_audio("c1", "/tmp/x.mp3"),
+            lambda: channel.send_video("c1", "/tmp/x.mp4"),
+            lambda: channel.send_file("c1", "/tmp/x.zip"),
+        ):
+            result = json.loads(await send())
+            assert result["success"] is False
+        assert captured == []
 
 
 class TestOnlineGate:

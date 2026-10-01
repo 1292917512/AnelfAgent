@@ -9,6 +9,9 @@ import {
   Badge, Button, ConfirmDialog, EmptyState, Input, Modal, Select, Spinner, Switch, toast,
 } from "@/components/ui";
 import { formatDuration, formatNs } from "./format";
+import {
+  ConfirmIdentityModal, EnrollIdentityModal, MergeIdentityModal,
+} from "@/components/identity/modals";
 import { SpeakerDetailModal } from "./SpeakerDetailModal";
 import { SimilarityMapModal } from "./SimilarityMapModal";
 
@@ -20,15 +23,9 @@ export function SpeakersPanel() {
   const [keyword, setKeyword] = useState("");
   const [detailId, setDetailId] = useState<number | null>(null);
   const [confirmTarget, setConfirmTarget] = useState<SpeakerListItem | null>(null);
-  const [confirmName, setConfirmName] = useState("");
-  const [confirmRole, setConfirmRole] = useState("");
   const [mergeSource, setMergeSource] = useState<SpeakerListItem | null>(null);
-  const [mergeTargetId, setMergeTargetId] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<SpeakerListItem | null>(null);
   const [enrollOpen, setEnrollOpen] = useState(false);
-  const [enrollName, setEnrollName] = useState("");
-  const [enrollRole, setEnrollRole] = useState("");
-  const [enrollFile, setEnrollFile] = useState<File | null>(null);
   const [pruneOpen, setPruneOpen] = useState(false);
   const [consolidateOpen, setConsolidateOpen] = useState(false);
   const [pruneInsignificant, setPruneInsignificant] = useState(true);
@@ -50,23 +47,21 @@ export function SpeakersPanel() {
   };
 
   const confirmMutation = useMutation({
-    mutationFn: () => audioApi.confirmSpeaker(confirmTarget!.id, confirmName, confirmRole),
+    mutationFn: ({ id, name, role }: { id: number; name: string; role: string }) =>
+      audioApi.confirmSpeaker(id, name, role),
     onSuccess: () => {
       toast.success(t("messages.confirmSuccess"));
       setConfirmTarget(null);
-      setConfirmName("");
-      setConfirmRole("");
       invalidate();
     },
     onError,
   });
 
   const mergeMutation = useMutation({
-    mutationFn: () => audioApi.mergeSpeakers(mergeSource!.id, Number(mergeTargetId)),
+    mutationFn: (targetId: number) => audioApi.mergeSpeakers(mergeSource!.id, targetId),
     onSuccess: () => {
       toast.success(t("messages.mergeSuccess"));
       setMergeSource(null);
-      setMergeTargetId("");
       invalidate();
     },
     onError,
@@ -83,13 +78,11 @@ export function SpeakersPanel() {
   });
 
   const enrollMutation = useMutation({
-    mutationFn: () => audioApi.enrollAudio(enrollFile!, enrollName, enrollRole),
+    mutationFn: ({ name, role, file }: { name: string; role: string; file: File }) =>
+      audioApi.enrollAudio(file, name, role),
     onSuccess: (r) => {
       toast.success(t("messages.enrollSuccess", { count: r.data.samples_enrolled }));
       setEnrollOpen(false);
-      setEnrollName("");
-      setEnrollRole("");
-      setEnrollFile(null);
       invalidate();
     },
     onError,
@@ -178,7 +171,7 @@ export function SpeakersPanel() {
           {s.status === "pending" && (
             <Button
               size="sm" variant="secondary"
-              onClick={() => { setConfirmTarget(s); setConfirmName(""); setConfirmRole(""); }}
+              onClick={() => setConfirmTarget(s)}
             >
               <UserCheck size={13} className="mr-1" />
               {t("actions.confirm")}
@@ -189,7 +182,7 @@ export function SpeakersPanel() {
           </Button>
           <Button
             size="sm" variant="ghost"
-            onClick={() => { setMergeSource(s); setMergeTargetId(""); }}
+            onClick={() => setMergeSource(s)}
           >
             <GitMerge size={13} />
           </Button>
@@ -297,117 +290,51 @@ export function SpeakersPanel() {
       <SimilarityMapModal open={simmapOpen} onClose={() => setSimmapOpen(false)} />
 
       {/* 确认临时说话人 */}
-      <Modal
+      <ConfirmIdentityModal
         open={confirmTarget !== null}
         onClose={() => setConfirmTarget(null)}
-        title={t("modals.confirmTitle", { key: confirmTarget?.speaker_key ?? "" })}
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => setConfirmTarget(null)}>
-              {t("common:cancel")}
-            </Button>
-            <Button
-              loading={confirmMutation.isPending}
-              disabled={!confirmName.trim()}
-              onClick={() => confirmMutation.mutate()}
-            >
-              {t("actions.confirm")}
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-3">
-          <Input
-            placeholder={t("fields.name")}
-            value={confirmName}
-            onChange={(e) => setConfirmName(e.target.value)}
-          />
-          <Input
-            placeholder={t("fields.rolePlaceholder")}
-            value={confirmRole}
-            onChange={(e) => setConfirmRole(e.target.value)}
-          />
-        </div>
-      </Modal>
+        pending={confirmMutation.isPending}
+        onSubmit={(name, role) =>
+          confirmMutation.mutate({ id: confirmTarget!.id, name, role })}
+        labels={{
+          title: t("modals.confirmTitle", { key: confirmTarget?.speaker_key ?? "" }),
+          namePlaceholder: t("fields.name"),
+          rolePlaceholder: t("fields.rolePlaceholder"),
+          confirmLabel: t("actions.confirm"),
+        }}
+      />
 
       {/* 身份合并 */}
-      <Modal
-        open={mergeSource !== null}
+      <MergeIdentityModal
+        source={mergeSource}
+        candidates={mergeCandidates}
+        getOptionLabel={(s) => `${s.name || s.speaker_key}（${t(`status.${s.status}`)}）`}
         onClose={() => setMergeSource(null)}
-        title={t("modals.mergeTitle", { key: mergeSource?.speaker_key ?? "" })}
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => setMergeSource(null)}>
-              {t("common:cancel")}
-            </Button>
-            <Button
-              variant="danger"
-              loading={mergeMutation.isPending}
-              disabled={!mergeTargetId}
-              onClick={() => mergeMutation.mutate()}
-            >
-              {t("actions.merge")}
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-3 text-sm">
-          <p className="text-muted">{t("modals.mergeHint")}</p>
-          <Select
-            className="w-full"
-            value={mergeTargetId}
-            onChange={(e) => setMergeTargetId(e.target.value)}
-          >
-            <option value="">{t("modals.mergeTarget")}</option>
-            {mergeCandidates.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name || s.speaker_key}（{t(`status.${s.status}`)}）
-              </option>
-            ))}
-          </Select>
-        </div>
-      </Modal>
+        onSubmit={(targetId) => mergeMutation.mutate(targetId)}
+        pending={mergeMutation.isPending}
+        labels={{
+          title: t("modals.mergeTitle", { key: mergeSource?.speaker_key ?? "" }),
+          hint: t("modals.mergeHint"),
+          targetPlaceholder: t("modals.mergeTarget"),
+          mergeLabel: t("actions.merge"),
+        }}
+      />
 
       {/* 音频注册 */}
-      <Modal
+      <EnrollIdentityModal
         open={enrollOpen}
         onClose={() => setEnrollOpen(false)}
-        title={t("modals.enrollTitle")}
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => setEnrollOpen(false)}>
-              {t("common:cancel")}
-            </Button>
-            <Button
-              loading={enrollMutation.isPending}
-              disabled={!enrollName.trim() || !enrollFile}
-              onClick={() => enrollMutation.mutate()}
-            >
-              {t("actions.enroll")}
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-3">
-          <Input
-            placeholder={t("fields.name")}
-            value={enrollName}
-            onChange={(e) => setEnrollName(e.target.value)}
-          />
-          <Input
-            placeholder={t("fields.rolePlaceholder")}
-            value={enrollRole}
-            onChange={(e) => setEnrollRole(e.target.value)}
-          />
-          <input
-            type="file"
-            accept="audio/*,.wav,.mp3,.m4a,.flac,.ogg"
-            className="text-sm text-muted file:mr-3 file:rounded-md file:border file:border-border file:bg-elevated file:px-3 file:py-1.5 file:text-sm file:text-foreground"
-            onChange={(e) => setEnrollFile(e.target.files?.[0] ?? null)}
-          />
-          <p className="text-xs text-muted">{t("modals.enrollHint")}</p>
-        </div>
-      </Modal>
+        pending={enrollMutation.isPending}
+        onSubmit={(name, role, file) => enrollMutation.mutate({ name, role, file })}
+        accept="audio/*,.wav,.mp3,.m4a,.flac,.ogg"
+        labels={{
+          title: t("modals.enrollTitle"),
+          namePlaceholder: t("fields.name"),
+          rolePlaceholder: t("fields.rolePlaceholder"),
+          hint: t("modals.enrollHint"),
+          enrollLabel: t("actions.enroll"),
+        }}
+      />
 
       <ConfirmDialog
         open={deleteTarget !== null}
@@ -499,7 +426,7 @@ export function SpeakersPanel() {
                   {consolidatePreview.data.data.insignificant.map((s) => (
                     <Badge key={s.id} variant="warn">
                       {s.name || s.speaker_key}
-                      {" "}({s.match_count}次/{Math.round(s.total_audio_ms / 1000)}s)
+                      {" "}({t("matchSummary", { count: s.match_count, seconds: Math.round(s.total_audio_ms / 1000) })})
                     </Badge>
                   ))}
                 </div>

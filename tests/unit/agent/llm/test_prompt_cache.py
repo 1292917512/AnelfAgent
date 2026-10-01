@@ -349,7 +349,7 @@ class TestStreamUsageTap:
         sink = install_usage_tap(wrapper)
         assert sink is not None
         usages = []
-        async for delta, _buf in _iter_stream(wrapper, "", {}, sink):
+        async for delta in _iter_stream(wrapper, {}, sink):
             if delta.usage:
                 usages.append(delta.usage)
         assert usages, "应有 usage delta"
@@ -387,7 +387,7 @@ class TestStreamUsageTap:
         wrapper = _FakeWrapper()
         sink = install_usage_tap(wrapper)
         usages = []
-        async for delta, _buf in _iter_stream(wrapper, "", {}, sink):
+        async for delta in _iter_stream(wrapper, {}, sink):
             if delta.usage:
                 usages.append(delta.usage)
         assert usages and usages[-1].cache_observable is False

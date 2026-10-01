@@ -89,5 +89,13 @@
   "removeAttachment": "Remove attachment",
   "rootDir": "Folder",
   "recall": "Recall",
-  "recallToEdit": "Recall and edit"
+  "recallToEdit": "Recall and edit",
+  "attachmentUploading": "Attachments are still uploading. Please wait before sending.",
+  "attachmentFailed": "Some attachments failed to upload. Remove them before sending.",
+  "voiceConnectFailed": "Voice channel connection failed",
+  "voiceServiceTimeout": "Voice service not responding (timeout)",
+  "voiceStartFailed": "Failed to start voice session",
+  "voiceRejected": "Voice session rejected",
+  "voiceChannelError": "Voice channel error",
+  "voiceError": "Channel error"
 }

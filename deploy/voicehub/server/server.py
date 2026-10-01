@@ -128,14 +128,16 @@ def health():
 
 
 @app.post("/transcribe")
-async def transcribe(file: UploadFile = File(...), source_time: str = Form("")):
+def transcribe(file: UploadFile = File(...), source_time: str = Form("")):
+    # 同步 def：全程阻塞工作（ffmpeg/soundfile/同步 httpx/ONNX 推理）经 FastAPI
+    # 线程池执行，async 写法会把事件循环冻结整个转写周期（含 /health 无响应）
     t0 = time.time()
     tmpdir = tempfile.mkdtemp(prefix="vh_")
     ext = os.path.splitext(file.filename or "")[1] or ".wav"
     src = os.path.join(tmpdir, "input" + ext)
     wav = os.path.join(tmpdir, "audio.wav")
     try:
-        data = await file.read()
+        data = file.file.read()
         with open(src, "wb") as f:
             f.write(data)
         if not to_wav16k(src, wav):

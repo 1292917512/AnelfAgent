@@ -4,6 +4,12 @@
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT" || exit 1
 
+# 守护循环身份登记：restart.sh 先停守护再停 python（缺此登记时守护无
+# 感知，会在 python 被杀后立刻重新拉起、与新实例竞态互杀）
+mkdir -p "$ROOT/logs"
+echo $$ > "$ROOT/logs/anelf_guardian.pid"
+trap 'rm -f "$ROOT/logs/anelf_guardian.pid"' EXIT
+
 echo ""
 echo "  ┌─────────────────────────────────────┐"
 echo "  │          AnelfAgent                  │"

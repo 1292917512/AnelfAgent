@@ -467,12 +467,18 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
                 # 3 秒后检查连接状态（start() 内部先发 HTTP 请求再建 WS）
                 loop.call_later(3, _check_connection_status)
                 self._ws_client.start()
+                if self._status == ChannelStatus.RUNNING:
+                    # start() 在运行中正常返回 = 连接被 SDK 放弃（stop 路径状态已是 STOPPED）
+                    self._start_error = "WebSocket 连接已断开（SDK start() 返回）"
+                    self._status = ChannelStatus.ERROR
                 log("飞书 WS 线程：start() 正常退出", "DEBUG")
         except Exception as exc:
             if self._status == ChannelStatus.STOPPED:
                 log(f"飞书 WS 线程：收到停止请求，退出 ({exc})", "DEBUG")
             else:
                 self._start_error = str(exc)
+                # WS 线程死亡即频道失能：置 ERROR 让看门狗与健康检查看到真实状态
+                self._status = ChannelStatus.ERROR
                 log(f"飞书 WebSocket 异常退出: {exc}", "ERROR")
         finally:
             self._ready.set()
@@ -838,7 +844,15 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
             return HealthStatus(healthy=False, detail="client not initialized", last_error="not_initialized")
         try:
             started = time.time()
-            # 简单 ping：检查 client 是否存活
+            # WS 模式探活：线程死亡即频道失能（_status 由 WS 线程退出路径置 ERROR）
+            if self._ws_client is not None:
+                thread = self._thread
+                if thread is None or not thread.is_alive():
+                    return HealthStatus(
+                        healthy=False,
+                        detail=f"WebSocket 线程已退出: {self._start_error or '未知原因'}",
+                        last_error=self._start_error or "ws_thread_dead",
+                    )
             if self._bot_info and self._bot_info.open_id:
                 return HealthStatus(
                     healthy=True,

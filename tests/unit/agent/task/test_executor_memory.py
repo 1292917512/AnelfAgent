@@ -12,7 +12,7 @@ from agent.task.model import TaskDefinition, TaskResult
 
 def _mind_with_store(store: SimpleNamespace, reflect_return: str = "产出") -> SimpleNamespace:
     return SimpleNamespace(
-        pfc=SimpleNamespace(get_tool_use_total=lambda: 0),
+        pfc=SimpleNamespace(),
         get_recollection=AsyncMock(return_value=[]),
         reflect=AsyncMock(return_value=reflect_return),
         memory_store=store,

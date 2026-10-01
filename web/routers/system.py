@@ -67,21 +67,6 @@ async def set_git_config(req: GitConfigUpdate) -> Dict[str, Any]:
     return await _system_svc.set_git_config(req.key, req.value)
 
 
-class GitProxyRequest(BaseModel):
-    http_proxy: str = ""
-    https_proxy: str = ""
-
-
-@router.post("/git/proxy")
-async def set_git_proxy(req: GitProxyRequest) -> Dict[str, Any]:
-    return await _system_svc.set_git_proxy(req.http_proxy, req.https_proxy)
-
-
-@router.delete("/git/proxy")
-async def unset_git_proxy() -> Dict[str, Any]:
-    return await _system_svc.unset_git_proxy()
-
-
 @router.post("/git/test")
 async def test_github() -> Dict[str, Any]:
     return await _system_svc.test_github_connectivity()

@@ -184,7 +184,7 @@ class TestEngineHeartbeatStatus:
 class TestGetHeartbeatLogTool:
     async def test_reads_recent_entries(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
         import agent.heartbeat.log as hb_log
-        monkeypatch.setattr(hb_log, "LOG_PATH", tmp_path / "heartbeat.md")
+        monkeypatch.setattr(hb_log, "_log_path", lambda: tmp_path / "heartbeat.md")
         hb_log.write_log(task_names=["demo"], exec_results=["REPLY 成功"])
 
         from agent.memory.tools import get_heartbeat_log
@@ -195,7 +195,7 @@ class TestGetHeartbeatLogTool:
 
     async def test_empty_log_returns_message(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
         import agent.heartbeat.log as hb_log
-        monkeypatch.setattr(hb_log, "LOG_PATH", tmp_path / "heartbeat.md")
+        monkeypatch.setattr(hb_log, "_log_path", lambda: tmp_path / "heartbeat.md")
 
         from agent.memory.tools import get_heartbeat_log
         data = json.loads(await get_heartbeat_log())

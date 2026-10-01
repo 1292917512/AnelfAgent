@@ -61,25 +61,6 @@ class IngestResult(BaseModel):
     results: List[IngestResultItem]
 
 
-class IdentifyCandidate(BaseModel):
-    """识别候选说话人（三判据评分：锚/信道模板/最佳样本 + 分离度）。"""
-
-    id: int
-    speaker_key: str
-    name: str
-    role: str
-    status: str
-    threshold: float
-    similarity: float
-    matched: bool
-    channel: str = ""
-    anchor_similarity: float = 0.0
-    sample_similarity: float = 0.0
-    channel_similarity: Optional[float] = None
-    separation: Optional[float] = None
-    entity_scope: str = ""
-
-
 class SpeakerUpdateRequest(BaseModel):
     """说话人档案编辑（全部可选，仅更新出现的字段）。"""
 
@@ -111,17 +92,6 @@ class MergeRequest(BaseModel):
     target_id: int
 
 
-class EnrollRequest(BaseModel):
-    """注册正式说话人（向量直传或经音频端点）。"""
-
-    name: str = Field(min_length=1)
-    vector: List[float] = Field(min_length=1)
-    role: str = ""
-    notes: str = ""
-    device_source: str = ""
-    entity_scope: str = ""
-
-
 class ImportItem(BaseModel):
     """冷启动批量导入项。"""
 
@@ -129,19 +99,6 @@ class ImportItem(BaseModel):
     vectors: List[List[float]] = Field(min_length=1, description="同一说话人的多条声纹样本")
     role: str = ""
     notes: str = ""
-
-
-class ImportRequest(BaseModel):
-    """冷启动批量导入载荷。"""
-
-    items: List[ImportItem] = Field(min_length=1)
-
-
-class VectorIdentifyRequest(BaseModel):
-    """向量级识别请求（上游自行提向量时）。"""
-
-    vector: List[float] = Field(min_length=1)
-    top_k: int = Field(default=5, ge=1, le=20)
 
 
 class MarkReadRequest(BaseModel):
@@ -157,46 +114,3 @@ class SegmentUpdateRequest(BaseModel):
     speaker_id: Optional[int] = Field(default=None, description="目标说话人 id，null = 标记未知")
     transcript: Optional[str] = Field(default=None, description="修订后的转写文本")
 
-
-class TranscriptReplaceRequest(BaseModel):
-    """批量查找替换转写文本。"""
-
-    find: str = Field(min_length=1)
-    replace: str = Field(default="")
-    speaker_id: Optional[int] = None
-    time_from: str = ""
-    time_to: str = ""
-    limit: int = Field(default=500, ge=1, le=2000)
-    dry_run: bool = False
-
-
-class SegmentMergeRequest(BaseModel):
-    """合并多个相邻片段为一条。"""
-
-    ids: List[int] = Field(min_length=2)
-    transcript: Optional[str] = Field(
-        default=None, description="自定义合并文本，缺省按序拼接")
-    speaker_id: Optional[int] = Field(
-        default=None, description="指定归属说话人，缺省取首条归属")
-
-
-class SegmentSplitRequest(BaseModel):
-    """拆段请求。"""
-
-    at_ms: int = Field(description="切点（批内毫秒，须在片段区间内）")
-    text_first: Optional[str] = None
-    text_second: Optional[str] = None
-    speaker_second_id: Optional[int] = Field(
-        default=None, description="次段归属；未提供字段时继承原归属")
-
-
-class SegmentAddRequest(BaseModel):
-    """手动新增段落。"""
-
-    text: str = Field(min_length=1)
-    speaker_id: Optional[int] = None
-    ts: Optional[int] = Field(default=None, description="绝对时间（epoch 秒），缺省取录制基准+偏移")
-    recording_path: str = ""
-    start_ms: int = Field(default=0, ge=0)
-    end_ms: int = Field(default=0, ge=0)
-    part_start_ms: int = Field(default=0, ge=0)

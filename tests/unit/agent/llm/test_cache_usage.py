@@ -312,7 +312,7 @@ class TestStreamUsageChunk:
                 yield c
 
         collected = []
-        async for delta, _buf in _iter_stream(fake_stream(), "", {}):
+        async for delta in _iter_stream(fake_stream(), {}):
             collected.append(delta)
 
         final_usage = [d.usage for d in collected if d.usage is not None]

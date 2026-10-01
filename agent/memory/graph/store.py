@@ -497,6 +497,10 @@ class GraphStore:
 
     async def get_relation(self, edge_id: int) -> Optional[Dict[str, Any]]:
         db = await self._conn.get_db()
+        return await self._fetch_relation(db, edge_id)
+
+    async def _fetch_relation(self, db: Any, edge_id: int) -> Optional[Dict[str, Any]]:
+        """在已持有的连接上读取单条边（tx 内嵌套读取专用，不重新取连接）。"""
         cursor = await db.execute(
             f"{self._EDGE_SELECT} WHERE e.id=?", (edge_id,)
         )
@@ -532,7 +536,7 @@ class GraphStore:
             return await self.get_relation(edge_id)
         db = await self._conn.get_db()
         async with self._conn.tx(db):
-            existing = await self.get_relation(edge_id)
+            existing = await self._fetch_relation(db, edge_id)
             if not existing:
                 return None
             sets.append("updated_ns=?")
@@ -553,7 +557,7 @@ class GraphStore:
     async def set_relation_archived(self, edge_id: int, archived: bool) -> bool:
         db = await self._conn.get_db()
         async with self._conn.tx(db):
-            existing = await self.get_relation(edge_id)
+            existing = await self._fetch_relation(db, edge_id)
             if not existing or existing["archived"] == archived:
                 return False
             await db.execute(

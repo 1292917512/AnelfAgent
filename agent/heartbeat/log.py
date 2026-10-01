@@ -14,7 +14,11 @@ from typing import List, Optional
 from core.log import log
 from core.path import ConfigPaths
 
-LOG_PATH = Path(ConfigPaths.HEARTBEAT_LOG)
+
+def _log_path() -> Path:
+    """心跳日志路径（运行时解析：ConfigPaths 元类动态跟随目录配置/测试隔离，
+    模块级常量在 import 时冻结会把测试写入真实配置）。"""
+    return Path(ConfigPaths.HEARTBEAT_LOG)
 
 # 进程内锁：防止并发 tick 交错写入（notes.consolidate_heartbeat 共用同一把锁）
 _WRITE_LOCK = threading.Lock()
@@ -42,10 +46,10 @@ def _atomic_write(path: Path, content: str) -> None:
 
 def load_recent(count: int = 3) -> str:
     """加载最近 N 条心跳日志块。"""
-    if not LOG_PATH.exists():
+    if not _log_path().exists():
         return ""
     try:
-        text = LOG_PATH.read_text("utf-8")
+        text = _log_path().read_text("utf-8")
         blocks = [b for b in text.split("\n### ") if b.strip()]
         recent = blocks[-count:] if len(blocks) > count else blocks
         return "\n### ".join(recent)
@@ -78,12 +82,12 @@ def append_entry(text: str) -> None:
     """向最后一条心跳日志追加一行内容。日志文件不存在时创建，避免条目静默丢失。"""
     try:
         with _WRITE_LOCK:
-            if LOG_PATH.exists():
-                content = LOG_PATH.read_text("utf-8")
+            if _log_path().exists():
+                content = _log_path().read_text("utf-8")
             else:
                 ts = _time.strftime("%Y-%m-%d %H:%M:%S")
                 content = f"# 心跳日志\n\n### {ts} 心跳"
-            _atomic_write(LOG_PATH, content.rstrip() + f"\n- {text}\n")
+            _atomic_write(_log_path(), content.rstrip() + f"\n- {text}\n")
         _audit_writer(text)
     except Exception as e:
         log(f"心跳日志追加失败: {e}", "DEBUG")
@@ -109,7 +113,7 @@ def write_log(
 
     try:
         with _WRITE_LOCK:
-            existing = LOG_PATH.read_text("utf-8") if LOG_PATH.exists() else ""
+            existing = _log_path().read_text("utf-8") if _log_path().exists() else ""
             text = (
                 existing.rstrip() + "\n\n" + entry
                 if existing.strip()
@@ -121,7 +125,7 @@ def write_log(
             if len(blocks) > max_n + 1:
                 text = blocks[0] + "\n### " + "\n### ".join(blocks[-max_n:])
 
-            _atomic_write(LOG_PATH, text)
+            _atomic_write(_log_path(), text)
         _audit_writer(f"心跳条目: {', '.join(task_names or [])} 消息={pending_messages} 目标={active_goals}")
     except Exception as e:
         log(f"心跳日志写入失败: {e}", "DEBUG")

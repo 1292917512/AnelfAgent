@@ -266,7 +266,7 @@ def is_genuine_user_message(msg: Dict) -> bool:
 
 def preserve_reasoning_fields(msg: Dict[str, Any], result: "ChatResult",
                               tool_turn: bool = False) -> None:
-    """从 ChatResult.raw 中提取推理字段到 assistant 消息，维持多轮思维链。
+    """从 ChatResult 提取推理字段到 assistant 消息，维持多轮思维链。
 
     litellm 统一返回 OpenAI 格式，按协议覆盖两种载体：
     - reasoning_details：OpenRouter 风格，litellm 请求侧原样回传。
@@ -276,23 +276,27 @@ def preserve_reasoning_fields(msg: Dict[str, Any], result: "ChatResult",
     - thinking_blocks：Anthropic 协议 thinking 块（含 signature/redacted），
       litellm 请求侧据此重构 thinking 块（交错思考 + tool_use 场景必需）。
       签名块语义微妙，保持无条件保留（不随本参数收紧，单独评估）
-    均以响应实际存在为条件，不返回推理字段的模型行为不变。
+    双源取值：流式聚合字段（thinking_blocks/reasoning_details）优先，
+    非流式回退 raw 响应体——两载体行为一致。均以响应实际存在为条件，
+    不返回推理字段的模型行为不变。
     """
-    if not result.raw or not result.reasoning_content:
+    if not result.reasoning_content:
         return
-    try:
-        choices = result.raw.get("choices")
-        if not choices or not isinstance(choices, list):
-            return
-        message = choices[0].get("message", {})
-        if not isinstance(message, dict):
-            return
-        if tool_turn:
-            rd = message.get("reasoning_details")
-            if rd:
-                msg["reasoning_details"] = rd
-        tb = message.get("thinking_blocks")
-        if tb:
-            msg["thinking_blocks"] = tb
-    except (IndexError, AttributeError, TypeError):
-        pass
+    rd = result.reasoning_details
+    tb = result.thinking_blocks
+    if (rd is None or tb is None) and result.raw:
+        try:
+            choices = result.raw.get("choices")
+            if choices and isinstance(choices, list):
+                message = choices[0].get("message", {})
+                if isinstance(message, dict):
+                    if rd is None:
+                        rd = message.get("reasoning_details")
+                    if tb is None:
+                        tb = message.get("thinking_blocks")
+        except (IndexError, AttributeError, TypeError):
+            pass
+    if tool_turn and rd:
+        msg["reasoning_details"] = rd
+    if tb:
+        msg["thinking_blocks"] = tb

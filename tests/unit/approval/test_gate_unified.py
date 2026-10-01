@@ -171,10 +171,7 @@ class TestGateDecisions:
         assert ch2.prompts == []
 
     async def test_remember_always_persists(self, tmp_path, monkeypatch):
-        import agent.approval.rules as rules_mod
-        rules_file = tmp_path / "rules.json"
-        monkeypatch.setattr(rules_mod, "RULES_PATH", str(rules_file))
-        # save_rules 使用默认参数路径 → 打补丁到 gate 内部调用
+        # save_rules 打补丁到 gate 内部调用（默认路径为运行时解析，无需文件隔离）
         saved: List[PermissionRuleSet] = []
         monkeypatch.setattr("agent.approval.gate.save_rules", lambda rs: saved.append(rs))
 

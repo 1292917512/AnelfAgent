@@ -92,9 +92,6 @@ class ToolAssembly:
         self._tool_recall[tool_name] = prev + 1
         log(f"工具命中: {tool_name} ({prev} -> {prev + 1})", "DEBUG", tag="PFC")
 
-    def get_tool_use_total(self) -> int:
-        """返回累计工具命中总次数。"""
-        return sum(self._tool_recall.values())
 
     def get_hot_tool_names(self) -> list[str]:
         """返回 top-N 热工具名（按命中次数选取，按名称排序返回保证字节序稳定）。"""

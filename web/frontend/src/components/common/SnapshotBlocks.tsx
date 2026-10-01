@@ -11,7 +11,7 @@ import type { SnapshotMessage, SnapshotSection, SnapshotPrefixBreak } from "@/li
 import { useCopyFeedback } from "@/hooks/useCopyFeedback";
 import { ChevronDown, ChevronRight, Copy, Check, Zap } from "lucide-react";
 
-export const LAYER_COLORS: Record<string, string> = {
+const LAYER_COLORS: Record<string, string> = {
   stable: "border-l-violet-500",
   context: "border-l-blue-500",
   summary: "border-l-indigo-500",
@@ -26,7 +26,7 @@ export const LAYER_COLORS: Record<string, string> = {
   exec_context: "border-l-teal-500",
 };
 
-export const LAYER_BAR_COLORS: Record<string, string> = {
+const LAYER_BAR_COLORS: Record<string, string> = {
   stable: "bg-violet-500",
   context: "bg-blue-500",
   summary: "bg-indigo-500",

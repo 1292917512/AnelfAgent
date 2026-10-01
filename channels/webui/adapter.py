@@ -243,17 +243,26 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         from core import realtime_hub
         return realtime_hub.subscriber_count(client_kind="web") > 0
 
-    async def send_text(self, chat_id: str, text: str, **kwargs: Any) -> str:
-        text = _clean_outbound(text)
-        if not text:
-            return json.dumps({"success": True}, ensure_ascii=False)
+    def _offline_error(self) -> str | None:
+        """无在线客户端时返回失败 JSON。
+
+        无订阅者时广播等于丢消息：如实返回失败，调用方（deliver_text）
+        会记录投递失败而非把回复标记为已送达。文本与媒体同一语义。
+        """
         if not self._has_online_clients():
-            # 无订阅者时广播等于丢消息：如实返回失败，调用方（deliver_text）
-            # 会记录投递失败而非把回复标记为已送达
             return json.dumps(
                 {"success": False, "error": "无在线 WebUI 客户端（SSE 未连接）"},
                 ensure_ascii=False,
             )
+        return None
+
+    async def send_text(self, chat_id: str, text: str, **kwargs: Any) -> str:
+        text = _clean_outbound(text)
+        if not text:
+            return json.dumps({"success": True}, ensure_ascii=False)
+        offline = self._offline_error()
+        if offline is not None:
+            return offline
         await self._broadcast("reply", {
             "content": text,
             "media_type": "text",
@@ -262,6 +271,9 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         return json.dumps({"success": True}, ensure_ascii=False)
 
     async def send_photo(self, chat_id: str, photo: str, caption: str = "", **kwargs: Any) -> str:
+        offline = self._offline_error()
+        if offline is not None:
+            return offline
         await self._broadcast("media", {
             "media_type": "image",
             "url": _media_frame_url(photo),
@@ -271,6 +283,9 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         return json.dumps({"success": True}, ensure_ascii=False)
 
     async def send_voice(self, chat_id: str, voice: str, **kwargs: Any) -> str:
+        offline = self._offline_error()
+        if offline is not None:
+            return offline
         await self._broadcast("media", {
             "media_type": "voice",
             "url": _media_frame_url(voice),
@@ -279,6 +294,9 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         return json.dumps({"success": True}, ensure_ascii=False)
 
     async def send_audio(self, chat_id: str, audio: str, caption: str = "", **kwargs: Any) -> str:
+        offline = self._offline_error()
+        if offline is not None:
+            return offline
         await self._broadcast("media", {
             "media_type": "audio",
             "url": _media_frame_url(audio),
@@ -288,6 +306,9 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         return json.dumps({"success": True}, ensure_ascii=False)
 
     async def send_video(self, chat_id: str, video: str, caption: str = "", **kwargs: Any) -> str:
+        offline = self._offline_error()
+        if offline is not None:
+            return offline
         await self._broadcast("media", {
             "media_type": "video",
             "url": _media_frame_url(video),
@@ -297,6 +318,9 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         return json.dumps({"success": True}, ensure_ascii=False)
 
     async def send_file(self, chat_id: str, file_path: str, caption: str = "", **kwargs: Any) -> str:
+        offline = self._offline_error()
+        if offline is not None:
+            return offline
         await self._broadcast("media", {
             "media_type": "file",
             "url": _media_frame_url(file_path),

@@ -12,7 +12,7 @@ export const READONLY_TOOLS = new Set([
   "web_fetch", "web_search", "extract_page_links", "recall",
 ]);
 
-export function ToolStatusIcon({ status }: { status: string }) {
+function ToolStatusIcon({ status }: { status: string }) {
   if (status === "running") return <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />;
   if (status === "done") return <Check className="h-3.5 w-3.5 text-green-500" />;
   return <X className="h-3.5 w-3.5 text-red-500" />;

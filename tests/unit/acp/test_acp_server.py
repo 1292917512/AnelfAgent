@@ -114,6 +114,21 @@ class TestSessionLifecycle:
         assert _messages(out)[0]["error"]["code"] == -32601
 
 
+def _dispatch_and_drain(server: AcpServer, message: Dict[str, Any]) -> None:
+    """单事件循环内分发并等待 prompt 轮次结束。
+
+    session/prompt 已并发化（dispatch 只 spawn 任务），测试须在同一事件
+    循环内 drain——跨 asyncio.run 的 future 绑定已关闭的 loop。
+    """
+    async def _go() -> None:
+        await server._dispatch(message)
+        pending = list(server._prompt_tasks.values())
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    asyncio.run(_go())
+
+
 class TestPromptFlow:
     def test_full_turn_streams_updates_and_end_turn(self) -> None:
         daemon = _FakeDaemon(frames=[
@@ -128,10 +143,10 @@ class TestPromptFlow:
         asyncio.run(server._dispatch({"jsonrpc": "2.0", "id": 1, "method": "session/new", "params": {}}))
         session_id = _messages(out)[0]["result"]["sessionId"]
 
-        asyncio.run(server._dispatch({
+        _dispatch_and_drain(server, {
             "jsonrpc": "2.0", "id": 2, "method": "session/prompt",
             "params": {"sessionId": session_id, "prompt": [{"type": "text", "text": "处理这个任务"}]},
-        }))
+        })
 
         msgs = _messages(out)
         # 消息投递到达守护进程，user 键按会话派生
@@ -158,14 +173,37 @@ class TestPromptFlow:
         server, out = _make_server(daemon)
         asyncio.run(server._dispatch({"jsonrpc": "2.0", "id": 1, "method": "session/new", "params": {}}))
         session_id = _messages(out)[0]["result"]["sessionId"]
-        asyncio.run(server._dispatch({
+        _dispatch_and_drain(server, {
             "jsonrpc": "2.0", "id": 2, "method": "session/prompt",
             "params": {"sessionId": session_id, "prompt": [{"type": "text", "text": "任务"}]},
-        }))
+        })
         updates = [m for m in _messages(out) if m.get("method") == "session/update"]
         chunks = [u for u in updates if u["params"]["update"]["sessionUpdate"] == "agent_message_chunk"]
         assert len(chunks) == 1
         assert chunks[0]["params"]["update"]["content"]["text"] == "最终答复"
+
+    def test_concurrent_prompt_same_session_rejected(self) -> None:
+        """同会话已有进行中 prompt 时，新 prompt 立即报错（turn 边界唯一）。"""
+        daemon = _HangingDaemon()
+        server, out = _make_server(daemon)
+        asyncio.run(server._dispatch({"jsonrpc": "2.0", "id": 1, "method": "session/new", "params": {}}))
+        session_id = _messages(out)[0]["result"]["sessionId"]
+
+        async def scenario() -> None:
+            await server._dispatch({
+                "jsonrpc": "2.0", "id": 2, "method": "session/prompt",
+                "params": {"sessionId": session_id, "prompt": [{"type": "text", "text": "长任务"}]},
+            })
+            await server._dispatch({
+                "jsonrpc": "2.0", "id": 3, "method": "session/prompt",
+                "params": {"sessionId": session_id, "prompt": [{"type": "text", "text": "插队"}]},
+            })
+            server._session_cancel({"sessionId": session_id})
+            await asyncio.gather(*list(server._prompt_tasks.values()), return_exceptions=True)
+
+        asyncio.run(scenario())
+        rejected = [m for m in _messages(out) if m.get("id") == 3][0]
+        assert "already in progress" in rejected["error"]["message"]
 
     def test_cancel_returns_cancelled_stop_reason(self) -> None:
         daemon = _HangingDaemon()
@@ -174,13 +212,13 @@ class TestPromptFlow:
         session_id = _messages(out)[0]["result"]["sessionId"]
 
         async def scenario() -> None:
-            prompt_task = asyncio.create_task(server._dispatch({
+            await server._dispatch({
                 "jsonrpc": "2.0", "id": 2, "method": "session/prompt",
                 "params": {"sessionId": session_id, "prompt": [{"type": "text", "text": "长任务"}]},
-            }))
+            })
             await asyncio.sleep(0.05)
             server._session_cancel({"sessionId": session_id})
-            await prompt_task
+            await asyncio.gather(*list(server._prompt_tasks.values()), return_exceptions=True)
 
         asyncio.run(scenario())
         final = _messages(out)[-1]
@@ -195,30 +233,30 @@ class TestPromptFlow:
         server, out = _make_server(_BrokenDaemon())
         asyncio.run(server._dispatch({"jsonrpc": "2.0", "id": 1, "method": "session/new", "params": {}}))
         session_id = _messages(out)[0]["result"]["sessionId"]
-        asyncio.run(server._dispatch({
+        _dispatch_and_drain(server, {
             "jsonrpc": "2.0", "id": 2, "method": "session/prompt",
             "params": {"sessionId": session_id, "prompt": [{"type": "text", "text": "任务"}]},
-        }))
+        })
         error = _messages(out)[-1]["error"]
         assert error["code"] == -32603
         assert "connection refused" in error["message"]
 
     def test_unknown_session_rejected(self) -> None:
         server, out = _make_server(_FakeDaemon())
-        asyncio.run(server._dispatch({
+        _dispatch_and_drain(server, {
             "jsonrpc": "2.0", "id": 1, "method": "session/prompt",
             "params": {"sessionId": "nope", "prompt": [{"type": "text", "text": "x"}]},
-        }))
+        })
         assert _messages(out)[-1]["error"]["code"] == -32603
 
     def test_empty_prompt_rejected(self) -> None:
         server, out = _make_server(_FakeDaemon())
         asyncio.run(server._dispatch({"jsonrpc": "2.0", "id": 1, "method": "session/new", "params": {}}))
         session_id = _messages(out)[0]["result"]["sessionId"]
-        asyncio.run(server._dispatch({
+        _dispatch_and_drain(server, {
             "jsonrpc": "2.0", "id": 2, "method": "session/prompt",
             "params": {"sessionId": session_id, "prompt": []},
-        }))
+        })
         assert _messages(out)[-1]["error"]["code"] == -32603
 
 

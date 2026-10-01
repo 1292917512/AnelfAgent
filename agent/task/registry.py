@@ -12,8 +12,6 @@ from core.path import ConfigPaths
 
 from .model import TaskDefinition
 
-_TASKS_DIR = Path(ConfigPaths.TASKS_DIR)
-
 # 任务文件写锁：AI 工具（agent/task/tools.py）与 Web API（web/routers/config.py）
 # 同进程并发 CRUD 的 read-modify-write 互斥，防后写者覆盖先写者的字段
 task_files_lock = asyncio.Lock()
@@ -23,7 +21,7 @@ class TaskRegistry:
     """任务注册表：管理所有 JSON 定义的任务。"""
 
     def __init__(self, tasks_dir: Optional[Path] = None) -> None:
-        self._dir = tasks_dir or _TASKS_DIR
+        self._dir = tasks_dir or Path(ConfigPaths.TASKS_DIR)
         self._tasks: Dict[str, TaskDefinition] = {}
         # 任务名 → 定义文件路径（子目录任务的回写定位，随 reload 重建）
         self._paths: Dict[str, Path] = {}

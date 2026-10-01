@@ -32,13 +32,6 @@ class TelegramConfig(ChannelConfig):
     parse_mode: Literal["html", "plain"] = Field(default="html", description="消息格式化模式")
     link_preview: bool = Field(default=True, description="是否启用链接预览")
     text_limit: int = Field(default=4096, description="单条消息字符限制")
-    webhook_enabled: bool = Field(
-        default=False, description="是否使用 Webhook 模式（否则使用长轮询）")
-    webhook_url: str = Field(default="", description="Webhook 公开 URL")
-    webhook_secret: str = Field(
-        default="", description="Webhook Secret Token",
-        json_schema_extra={"value_type": "password"})
-    webhook_port: int = Field(default=8443, description="Webhook 监听端口")
 
 
 CONFIG_MODEL = TelegramConfig

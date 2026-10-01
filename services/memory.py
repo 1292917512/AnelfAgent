@@ -96,13 +96,6 @@ class MemoryService:
             return None
         return await store.get(mem_id)
 
-    async def list_audit(self, mem_id: int, limit: int = 50) -> List[Dict[str, Any]]:
-        rt = require_runtime()
-        store = rt.mind.memory_store
-        if not store:
-            return []
-        return await store.list_audit(memory_id=mem_id, limit=limit)
-
     async def delete_ltm(self, mem_id: int) -> bool:
         rt = require_runtime()
         store = rt.mind.memory_store
