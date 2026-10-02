@@ -152,6 +152,9 @@ entities/smart_home/providers/xiaomi/.mi.token
 /*.ps1
 /*.psm1
 
+# === ZCode editor generated ignore (auto-synced with .gitignore by ZCode CLI) ===
+/.zcodeignore
+
 # === Misc ===
 /.other
 # === Bilibili channel (personal, vendored SDK) ===

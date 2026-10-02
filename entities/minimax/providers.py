@@ -304,6 +304,7 @@ class MiniMaxTtsProvider:
                 "POST", url, headers=client._json_headers(), json=payload,
             ) as resp:
                 resp.raise_for_status()
+                produced = False
                 async for line in resp.aiter_lines():
                     line = line.strip()
                     if not line.startswith("data:"):
@@ -312,6 +313,12 @@ class MiniMaxTtsProvider:
                         data = json.loads(line[5:].strip())
                     except json.JSONDecodeError:
                         continue
+                    # 终止帧（extra_info 用量汇总）携带整句全量音频备份——
+                    # 增量流已产出过音频时不产出，否则整句被播放两遍；
+                    # 增量流为空时它是唯一音频来源（极短文本），照常产出
+                    if data.get("extra_info") and produced:
+                        break
                     audio_hex = (data.get("data") or {}).get("audio", "")
                     if audio_hex:
+                        produced = True
                         yield bytes.fromhex(audio_hex)

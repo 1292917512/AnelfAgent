@@ -38,6 +38,9 @@ from core.log import log
 
 _LOG_TAG = "实时语音"
 
+# ASR 喂帧队列的定稿哨兵（保序：commit 必在全部已入队帧之后处理）
+_ASR_COMMIT = object()
+
 # 回复完成事件归因失败时的宽限观察窗：期间有新增量则并入同一语音流，
 # 无则强制结算（有界失败恢复——绝不因归因不上而让回复"说不停"）
 _SETTLE_GRACE_SECONDS = 1.5
@@ -472,28 +475,76 @@ class RealtimeEngine:
             "DEBUG", tag=_LOG_TAG)
 
     async def _open_asr(self, session: RealtimeSession) -> Any:
-        """开启流式 ASR 会话；无流式提供者退化为整段缓冲（定稿时整段转写）。"""
+        """开启流式 ASR 会话；无流式提供者退化为整段缓冲（定稿时整段转写）。
+
+        每代会话配一条新队列与一个新消费任务（队列/任务随代际轮换）：
+        上一轮积压帧与 COMMIT 哨兵永远属于上一轮，新旧消费者互不竞争——
+        跨轮抢哨兵会把新会话提前定稿、把上轮结果路由进下轮（幻影串轮）。
+        """
         from agent.audio import get_audio_registry
         from agent.audio.streaming import KIND_ASR_STREAM
         provider = await get_audio_registry().resolve(KIND_ASR_STREAM)
-        if provider is not None:
-            return provider.open_session(session.sample_rate)
-        return None  # pcm_buffer 兜底路径
+        if provider is None:
+            return None  # pcm_buffer 兜底路径
+        try:
+            asr = provider.open_session(session.sample_rate)
+        except Exception as exc:
+            # 会话开启失败（凭据/连接竞态）：降级整段缓冲转写，不炸帧泵
+            log(f"流式 ASR 会话开启失败（降级整段兜底）: {exc}", "DEBUG", tag=_LOG_TAG)
+            return None
+        session.asr_queue = asyncio.Queue()
+        consumer = asyncio.create_task(
+            self._asr_consume(session, asr, session.asr_queue),
+            name=f"rt.asr.{session.owner}")
+        session.asr_consumers.add(consumer)
+        consumer.add_done_callback(session.asr_consumers.discard)
+        session.asr_consumer = consumer
+        return asr
 
     async def _feed_asr(self, session: RealtimeSession, pcm: bytes) -> None:
-        """语音帧送 ASR：partial 事件转发展示，原始音频留存兜底。"""
+        """语音帧送 ASR：入队零阻塞（网络转写在消费任务执行），原始音频留存兜底。"""
         session.pcm_buffer.extend(pcm)
         if session.asr_session is not None:
+            session.asr_queue.put_nowait(pcm)
+
+    async def _asr_consume(
+        self,
+        session: RealtimeSession,
+        asr: Any,
+        queue: "asyncio.Queue",
+    ) -> None:
+        """ASR 消费任务：按序喂帧（partial 转发展示），commit 哨兵触发定稿并回传。
+
+        帧泵只入队（_feed_asr），本任务独占本代 ASR 会话的网络调用——滚动窗
+        转写 1.4s/帧的耗时不再阻塞麦克风帧路由。会话与队列在启动时绑定
+        （代际引用），绝不读 session 的当前代字段（跨轮抢哨兵的根因）。
+        """
+        while True:
+            item = await queue.get()
+            if isinstance(item, tuple) and item[0] is _ASR_COMMIT:
+                fut = item[1]
+                try:
+                    events = await asr.commit()
+                except Exception as exc:
+                    if not fut.done():
+                        fut.set_exception(exc)
+                    return
+                if not fut.done():
+                    fut.set_result(events)
+                return
             try:
-                events = await session.asr_session.accept_pcm(pcm, session.sample_rate)
+                events = await asr.accept_pcm(item, session.sample_rate)
             except Exception as exc:
                 log(f"流式 ASR 帧处理失败: {exc}", "DEBUG", tag=_LOG_TAG)
-                return
+                continue
             for event in events:
                 if event.kind == "partial" and event.text:
-                    await session.sink.send_event("rt_partial", {
-                        "text": event.text, "turn_id": session.turn_id,
-                    })
+                    try:
+                        await session.sink.send_event("rt_partial", {
+                            "text": event.text, "turn_id": session.turn_id,
+                        })
+                    except Exception:
+                        pass  # 下行断连不杀消费任务（哨兵仍须被处理）
 
     async def _on_speech_end(self, session: RealtimeSession) -> None:
         """语音收束：ASR 定稿 → 用户轮次（打断确认窗口内收束的按回声丢弃）。
@@ -524,7 +575,12 @@ class RealtimeEngine:
         segments: List[Dict[str, Any]] = []
         if asr is not None:
             try:
-                events = await asr.commit()
+                # commit 经本代喂帧队列保序（定稿必在全部已喂帧之后）；
+                # 收束在后台任务里，有界等待防 ASR 侧挂死
+                loop = asyncio.get_running_loop()
+                fut = loop.create_future()
+                session.asr_queue.put_nowait((_ASR_COMMIT, fut))
+                events = await asyncio.wait_for(fut, timeout=20.0)
             except Exception as exc:
                 log(f"流式 ASR 定稿失败（降级整段）: {exc}", "DEBUG", tag=_LOG_TAG)
                 events = []
@@ -827,10 +883,12 @@ class RealtimeEngine:
             return asyncio.create_task(
                 self._produce(session, u, pipeline), name=f"rt.speak.{session.owner}")
 
-        session.lane.submit(
+        u = session.lane.submit(
             turn_id=turn_id, priority=PRIORITY_SPEAK, source="speak",
             starter=_starter, on_spoken=self._make_spoken_notifier(session, body),
         )
+        log(f"主动播报开管 [{self._scope_of(session)}] #{u.uid} turn={turn_id}: "
+            f"{body[:30]!r}", "DEBUG", tag=_LOG_TAG)
         return {"spoken": True, "appending": appending, "turn_id": turn_id}
 
     def _make_spoken_notifier(
@@ -894,10 +952,13 @@ class RealtimeEngine:
                     self._produce(session, u, pipeline), name=f"rt.tts.{session.owner}")
 
             active = session.lane.active
-            session.lane.submit(
+            u = session.lane.submit(
                 turn_id=session.turn_id, priority=PRIORITY_REPLY, source="reply",
                 starter=_starter,
             )
+            log(f"回复语音流开管 [{scope}] #{u.uid} turn={session.turn_id} "
+                f"mind_turn={mind_turn}（在播主动播报={'有' if active else '无'}）",
+                "DEBUG", tag=_LOG_TAG)
             if active is not None and active.priority > PRIORITY_REPLY:
                 # 抢占了在播主动播报：未播音频不再排空，回复即时开声
                 session.playback.drop_pending()
@@ -940,6 +1001,9 @@ class RealtimeEngine:
         """结算回复语音流：管线收尾（生产循环自然收束）或空轮直接回收听。"""
         self._cancel_settle_fallback(scope)
         pending["settled_turn"] = pending.get("mind_turn")
+        log(f"回复语音流结算 [{scope}] mind_turn={pending['settled_turn']} "
+            f"pipeline={'有' if session.tts_pipeline is not None else '无'}",
+            "DEBUG", tag=_LOG_TAG)
         if session.tts_pipeline is not None:
             session.tts_pipeline.finish()
         elif session.state is SessionState.THINKING:

@@ -19,6 +19,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Optional, Protocol, runtime_checkable
 
 import numpy as np
@@ -276,14 +279,29 @@ class SmartTurnRuntime:
 
 
 _runtime: Optional[SmartTurnRuntime] = None
-_runtime_failed = False
+_runtime_retry_after = 0.0
+
+
+_eval_pool: Optional["ThreadPoolExecutor"] = None
+
+
+def _eval_executor() -> "ThreadPoolExecutor":
+    """语义裁决专用单线程池（在途评估天然串行，跨会话也互不堆积）。"""
+    global _eval_pool
+    if _eval_pool is None:
+        from concurrent.futures import ThreadPoolExecutor
+        _eval_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="smart-turn-eval")
+    return _eval_pool
 
 
 def _get_smart_turn() -> Optional[SmartTurnRuntime]:
     """语义端点运行时单例（模型未就绪/加载失败返回 None）。"""
-    global _runtime, _runtime_failed
-    if _runtime_failed or _runtime is not None:
+    global _runtime, _runtime_retry_after
+    if _runtime is not None:
         return _runtime
+    # 加载失败冷却 60s 后允许重试（一次性资源抖动不再永久禁用语义端点）
+    if time.monotonic() < _runtime_retry_after:
+        return None
     from agent.model_assets import get_model_asset_manager
 
     path = get_model_asset_manager().resolve("smart_turn")
@@ -293,17 +311,17 @@ def _get_smart_turn() -> Optional[SmartTurnRuntime]:
         _runtime = SmartTurnRuntime(path)
         log("语义端点模型已加载（smart_turn）", "DEBUG", tag=_LOG_TAG)
     except Exception as exc:
-        _runtime_failed = True
-        log(f"语义端点模型加载失败（本次运行不再尝试）: {exc}", "WARNING", tag=_LOG_TAG)
+        _runtime_retry_after = time.monotonic() + 60.0
+        log(f"语义端点模型加载失败（60s 后重试）: {exc}", "WARNING", tag=_LOG_TAG)
         return None
     return _runtime
 
 
 def reset_smart_turn_runtime() -> None:
     """清空运行时缓存（模型更新/测试后重建）。"""
-    global _runtime, _runtime_failed
+    global _runtime, _runtime_retry_after
     _runtime = None
-    _runtime_failed = False
+    _runtime_retry_after = 0.0
 
 
 class SmartTurnTurnDetector:
@@ -328,6 +346,7 @@ class SmartTurnTurnDetector:
         self._in_speech = False
         self._consecutive_errors = 0
         self._degraded = False
+        self._eval_future: Optional["Future[bool]"] = None
 
     @property
     def in_speech(self) -> bool:
@@ -339,20 +358,56 @@ class SmartTurnTurnDetector:
         self._silence_ms = 0.0
         self._last_eval_ms = 0.0
         self._in_speech = False
+        self._eval_future = None
 
     def _append(self, pcm: bytes) -> None:
         samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
         self._audio = np.concatenate((self._audio, samples))[-SmartTurnRuntime.MAX_SAMPLES:]
 
-    def _evaluate(self) -> Optional[bool]:
-        """语义裁决：True=收束 / False=继续等 / None=模型不可用。"""
+    def _schedule_eval(self) -> None:
+        """提交一次语义裁决到专用线程（在途不重复提交；快照音频防竞争）。
+
+        模型推理（尾部 8s mel 提取 + ONNX）从帧路径移到独立线程——同步
+        推理挂在 accept_pcm 上会直接卡住麦克风帧泵与 ASR 喂帧
+        （候选期每 250ms 一次数十 ms 的 CPU 推理；对齐 N.E.K.O 的
+        独立推理泳道）。结果由 _poll_eval 在后续帧上收割，收束延迟
+        至多滞后一个帧间隔。
+        """
+        if self._eval_future is not None:
+            return
         runtime = _get_smart_turn()
         if runtime is None or self._audio.size == 0:
-            return None
-        try:
-            prob = runtime.predict(self._audio)
-            self._consecutive_errors = 0
+            return
+        snapshot = self._audio.copy()
+
+        def _run() -> bool:
+            prob = runtime.predict(snapshot)
             return prob >= get_config_float("voice_smart_turn_threshold", 0.5)
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # 同步调用方（无事件循环即无帧泵可护，如单测/脚本）：
+            # 就地求值后走同一收割路径，语义不变
+            fut: "Future[bool]" = Future()
+            try:
+                fut.set_result(_run())
+            except Exception as exc:
+                fut.set_exception(exc)
+            self._eval_future = fut
+            return
+        self._eval_future = _eval_executor().submit(_run)
+
+    def _poll_eval(self) -> Optional[bool]:
+        """收割语义裁决：True=收束 / False=继续等 / None=未就绪或模型不可用。"""
+        future = self._eval_future
+        if future is None or not future.done():
+            return None
+        self._eval_future = None
+        try:
+            result = future.result()
+            self._consecutive_errors = 0
+            return result
         except Exception as exc:
             self._consecutive_errors += 1
             log(f"语义端点推理失败({self._consecutive_errors}): {exc}",
@@ -377,11 +432,12 @@ class SmartTurnTurnDetector:
             if self._degraded or self._silence_ms >= get_config_int(
                     "voice_smart_turn_max_silence_ms", 3000):
                 return self._end()
+            if self._poll_eval() is True:
+                return self._end()
             interval = get_config_int("voice_smart_turn_eval_interval_ms", 250)
             if self._silence_ms - self._last_eval_ms >= interval:
                 self._last_eval_ms = self._silence_ms
-                if self._evaluate() is True:
-                    return self._end()
+                self._schedule_eval()
             return TurnEvent.NONE
         if event == TurnEvent.SPEECH_START:
             self._in_speech = True
@@ -393,8 +449,8 @@ class SmartTurnTurnDetector:
             self._candidate = True
             self._silence_ms = 0.0
             self._last_eval_ms = 0.0
-            if self._evaluate() is True:
-                return self._end()
+            self._eval_future = None
+            self._schedule_eval()
             return TurnEvent.NONE
         return event
 
@@ -463,7 +519,8 @@ def detector_status() -> dict:
     mgr = get_model_asset_manager()
     ort_ready = runtime_ready(mgr.asset("silero_vad"))
     silero_ready = ort_ready and mgr.resolve("silero_vad") is not None
-    smart_ready = ort_ready and mgr.resolve("smart_turn") is not None and not _runtime_failed
+    smart_ready = ort_ready and mgr.resolve("smart_turn") is not None \
+        and time.monotonic() >= _runtime_retry_after
 
     effective, base = "energy", "energy"
     if kind in ("auto", "smart_turn") and smart_ready:

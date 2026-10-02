@@ -53,7 +53,11 @@ class MiniMaxWsTtsProvider:
         voice_id = voice or "male-qn-qingse"
 
         factory = self._ws_factory or websockets.connect
-        ws = await factory(_WS_URL, additional_headers=client._auth_headers())
+        ws = await factory(
+            _WS_URL, additional_headers=client._auth_headers(),
+            # 公网直连端点：环境代理（SOCKS 缺 python-socks）会拦截 WS 升级
+            proxy=None, close_timeout=1.0,
+        )
         try:
             await ws.send(json.dumps({
                 "event": "task_start",

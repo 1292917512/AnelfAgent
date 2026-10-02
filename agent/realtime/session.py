@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import enum
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional, Set
 
 from agent.realtime.arbiter import SpeakLane
 from agent.realtime.playback import PcmResampler, PlaybackQueue
@@ -67,6 +67,14 @@ class RealtimeSession:
     playback: PlaybackQueue = field(default_factory=PlaybackQueue)
     asr_session: Any = None
     """流式 ASR 会话（引擎在首个语音帧开启；无流式提供者时退化为整段缓冲）。"""
+    asr_queue: asyncio.Queue = field(default_factory=asyncio.Queue)
+    """ASR 喂帧队列——帧泵只入队零阻塞，网络转写在消费任务中执行
+    （滚动窗转写单帧 1.4s > 60ms 帧间隔，泵上直接 await 会永久积压）。"""
+    asr_consumer: Optional[asyncio.Task] = None
+    """当前代 ASR 消费任务（诊断/展示用；生命周期管理走 asr_consumers）。"""
+    asr_consumers: "Set[asyncio.Task]" = field(default_factory=set)
+    """全部在产 ASR 消费任务（随代际轮换：旧任务处理完自己那代哨兵后
+    自行退出；close 时统一取消，防无哨兵路径的任务泄漏）。"""
     pcm_buffer: bytearray = field(default_factory=bytearray)
     """整段 ASR 兜底缓冲 / 流式会话的原始音频留存。"""
     _native_client: Any = None
@@ -163,7 +171,8 @@ class RealtimeSession:
         """会话收尾：车道有界结算 + 取消全部任务（幂等）。"""
         self.closed = True
         await self.lane.settle(timeout=2.0)
-        tasks = [t for t in (self.writer_task, self.barge_in_task, self.finalize_task)
+        tasks = [t for t in (self.writer_task, self.barge_in_task, self.finalize_task,
+                             *self.asr_consumers)
                  if t is not None and not t.done()]
         for task in tasks:
             task.cancel()

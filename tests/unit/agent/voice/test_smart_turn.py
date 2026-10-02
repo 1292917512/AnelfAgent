@@ -111,6 +111,10 @@ class TestSemanticFusion:
 
     def test_runtime_missing_degrades_to_base(self, monkeypatch) -> None:
         monkeypatch.setattr(td, "_runtime", None)
+        # 显式无模型（本机模型文件存在，单例缓存置空不足以阻止重新加载）
+        from agent.model_assets import get_model_asset_manager
+        monkeypatch.setattr(
+            get_model_asset_manager(), "resolve", lambda asset_id: None)
         base = FakeBase(speech_ms=120, silence_ms=800)
         det = _armed(SmartTurnTurnDetector(base, RATE), base)
         events = [det.accept_pcm(FRAME) for _ in range(80)]  # 无模型

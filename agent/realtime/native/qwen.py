@@ -73,6 +73,10 @@ class QwenRealtimeClient:
         self._ws = await factory(
             url,
             additional_headers={"Authorization": f"Bearer {self._api_key}"},
+            # 百炼公网直连可达：环境代理（SOCKS 缺 python-socks）会拦截 WS 升级
+            proxy=None,
+            # 收拢握手有界（远端不回 CLOSE 时默认 10s 会卡会话收尾）
+            close_timeout=1.0,
         )
         await self._send({
             "type": "session.update",

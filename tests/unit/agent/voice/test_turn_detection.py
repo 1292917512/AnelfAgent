@@ -195,7 +195,7 @@ class TestFactory:
         from agent.model_assets import get_model_asset_manager
 
         monkeypatch.setattr(td, "_runtime", None)
-        monkeypatch.setattr(td, "_runtime_failed", False)
+        monkeypatch.setattr(td, "_runtime_retry_after", 0.0)
         monkeypatch.setattr(
             get_model_asset_manager(), "resolve", lambda asset_id: None)
         ConfigManager_set("voice_turn_detector", "smart_turn")
@@ -210,7 +210,7 @@ class TestDetectorStatus:
         from agent.model_assets import get_model_asset_manager
 
         mgr = get_model_asset_manager()
-        monkeypatch.setattr(td, "_runtime_failed", False)
+        monkeypatch.setattr(td, "_runtime_retry_after", 0.0)
         monkeypatch.setattr(
             mgr, "resolve",
             lambda asset_id: {
@@ -228,7 +228,7 @@ class TestDetectorStatus:
     def test_status_energy_when_no_models(self, monkeypatch) -> None:
         from agent.model_assets import get_model_asset_manager
 
-        monkeypatch.setattr(td, "_runtime_failed", False)
+        monkeypatch.setattr(td, "_runtime_retry_after", 0.0)
         monkeypatch.setattr(
             get_model_asset_manager(), "resolve", lambda asset_id: None)
         monkeypatch.setattr(
@@ -241,7 +241,7 @@ class TestDetectorStatus:
         from agent.model_assets import get_model_asset_manager
 
         mgr = get_model_asset_manager()
-        monkeypatch.setattr(td, "_runtime_failed", False)
+        monkeypatch.setattr(td, "_runtime_retry_after", 0.0)
         monkeypatch.setattr(
             mgr, "resolve",
             lambda asset_id: "/m/silero.onnx" if asset_id == "silero_vad" else None)

@@ -213,6 +213,70 @@ class TestCascadeFlow:
         await engine.accept_pcm("ghost", pcm_tone(20))  # 不抛错即正确
 
 
+class TestAsrPumpDecoupling:
+    async def test_slow_asr_does_not_block_frame_pump(self, app) -> None:
+        """ASR 网络转写慢于帧间隔时帧泵零阻塞；定稿经队列保序（全帧先于 commit）。
+
+        回归自滚动窗转写阻塞级联：单帧转写 1.4s > 60ms 帧间隔时，
+        泵上直接 await 会让静音帧排队数分钟、收束永不到达。
+        """
+        import time
+
+        class SlowAsrSession:
+            def __init__(self) -> None:
+                self.pcm = bytearray()
+
+            async def accept_pcm(self, pcm, sample_rate):
+                await asyncio.sleep(0.15)  # 模拟滚动窗 HTTP 转写延迟
+                self.pcm.extend(pcm)
+                return []
+
+            async def commit(self):
+                from agent.audio.streaming import AsrEvent
+                return [AsrEvent(kind="final", text="完整定稿", segments=[])]
+
+            async def close(self):
+                return []
+
+        class SlowProvider(FakeStreamAsrProvider):
+            name = "slow_stream"
+            priority = 0  # 压过 fake_stream
+
+            def __init__(self) -> None:
+                self.session = SlowAsrSession()
+
+            def open_session(self, sample_rate=16000):
+                return self.session
+
+        from agent.audio import get_audio_registry
+        provider = SlowProvider()
+        get_audio_registry().register(provider)
+
+        engine = RealtimeEngine()
+        sink = FakeSink()
+        await engine.start("c1", _delivery(), sink.as_sink(), RATE)
+        try:
+            for _ in range(50):
+                await engine.accept_pcm("c1", pcm_silence(20))
+            t0 = time.monotonic()
+            for _ in range(30):
+                await engine.accept_pcm("c1", pcm_tone(20))
+            pump_ms = (time.monotonic() - t0) * 1000
+            # 30 帧 × 0.15s 若在泵上串行 ≥4.5s；解耦后入队零阻塞
+            assert pump_ms < 2000, f"帧泵被 ASR 阻塞: {pump_ms:.0f}ms"
+            for _ in range(80):
+                await engine.accept_pcm("c1", pcm_silence(20))
+            await _wait_for(
+                lambda: any(e[0] == "rt_final" for e in sink.events), timeout=20)
+            final = next(e for e in sink.events if e[0] == "rt_final")
+            assert final[1]["text"] == "完整定稿"
+            # 全部语音帧按序进了 ASR 会话（定稿未截断、未丢帧；
+            # 收束前的轮内静音帧同属本轮，故取下限断言）
+            assert len(provider.session.pcm) >= 30 * RATE * 2 * 20 // 1000
+        finally:
+            await engine.stop("c1")
+
+
 class TestReadinessAndTurns:
     async def test_start_rejected_without_asr(self, app) -> None:
         """无 ASR 提供者：cascade 启动显式拒绝（不再静默失败）。"""

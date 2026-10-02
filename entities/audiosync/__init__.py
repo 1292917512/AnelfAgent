@@ -158,6 +158,10 @@ from .funasr_stream import register_streaming_provider as _register_stream  # no
 
 _register_stream()  # 流式 ASR 组件接入核心注册表
 
+from .qwen_asr_stream import register_qwen_streaming_provider as _register_qwen_stream  # noqa: E402
+
+_register_qwen_stream()  # Qwen 实时流式 ASR 组件接入核心注册表（asr_stream 链优先级最高）
+
 
 from entities._sdk import register_provider_key  # noqa: E402
 

@@ -38,11 +38,13 @@ class TestAddProvider:
             "prismml", "https://api.prismml.example/v1", api_key="test-fixture-mock-key-001",
         ))
         assert result["ok"] is True
-        assert "sk-live-secret-123" not in json.dumps(result, ensure_ascii=False)
-        assert result["provider"]["api_key"] != "sk-live-secret-123"
+        # 明文密钥绝不回显：返回值任何字段不含原始密钥
+        assert "test-fixture-mock-key-001" not in json.dumps(result, ensure_ascii=False)
+        assert result["provider"]["api_key"] != "test-fixture-mock-key-001"
         disk = _disk(cfg)
         assert disk["providers"][0]["id"] == "prismml"
-        assert disk["providers"][0]["api_key"] == "sk-live-secret-123"
+        # 非 ${ENV_VAR} 引用的明文密钥原样落盘（引用语法另有专项测试覆盖）
+        assert disk["providers"][0]["api_key"] == "test-fixture-mock-key-001"
         assert manager.get_provider("prismml") is not None
 
     def test_duplicate_rejected(self, env) -> None:  # type: ignore[no-untyped-def]

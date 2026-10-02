@@ -50,6 +50,19 @@ register_configs_safe({
             "description": "是否允许打断（播放/思考中开口即停当前轮重新收听）",
             "default": True,
         },
+        "realtime_qwen_asr_enabled": {
+            "description": "级联模式的流式 ASR 优先走千问实时转写（"
+                           "qwen3-asr-flash-realtime WS 长连接）；关闭或端点凭据"
+                           "缺失时回退 FunASR 滚动窗",
+            "default": True,
+        },
+        "realtime_qwen_asr_ws_base": {
+            "description": "千问实时转写 WS 端点（默认百炼官方；token-plan 等套餐"
+                           "端点填 wss://<host>/api-ws/v1/realtime，凭据自动匹配 "
+                           "llm_clients 同 host 供应商的 key）",
+            "default": "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
+            "advanced": True,
+        },
         "realtime_speaker_annotate": {
             "description": "语音轮次是否附说话人标注（声纹只读识别，标记谁在说话，"
                            "识别与应对方式由 AI 自行决定）",
