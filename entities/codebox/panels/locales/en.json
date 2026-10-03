@@ -1,0 +1,13 @@
+{
+  "_registry": {
+    "groups": {
+      "code": "Code Orchestration"
+    },
+    "configSections": {
+      "entity/codebox": "Code Orchestration"
+    }
+  },
+  "status": {
+    "description": "The model orchestrates other tools inside one-shot subprocesses via run_python (sleeping group, activated on demand)"
+  }
+}

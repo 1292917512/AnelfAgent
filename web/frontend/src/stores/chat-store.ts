@@ -78,6 +78,12 @@ interface ChatState {
   recallQueued: (cid: string) => string | null;
   send: (text: string, userName: string) => Promise<boolean>;
   interrupt: () => Promise<void>;
+  /** 加载该会话生效中的换向折叠段 */
+  loadFolds: (chatId?: string) => Promise<void>;
+  /** 从某条消息换向：其后消息折叠出上下文（返回是否成功） */
+  foldFrom: (messageId: number) => Promise<boolean>;
+  /** 恢复折叠段：消息重新进入上下文 */
+  unfoldFold: (foldId: number) => Promise<boolean>;
 }
 
 export const useChatStore = create<ChatState>((set, get) => {
@@ -247,6 +253,8 @@ export const useChatStore = create<ChatState>((set, get) => {
         }
       } catch { /* ignore */ }
       updateBucket(targetChatId, () => ({ historyLoaded: true }));
+      // 换向折叠段（折叠 chip 数据源；失败不阻塞历史展示）
+      void get().loadFolds(targetChatId);
       // 恢复运行中的子代理卡片（刷新页面后 SSE 不会重发 started 事件）
       try {
         const r = await chatApi.delegations(
@@ -302,6 +310,50 @@ export const useChatStore = create<ChatState>((set, get) => {
           updateBucket(chatId, () => ({ sending: false, sendingSince: null, streaming: null }));
         }
       } catch { /* 中断失败时由看门狗兜底复位 */ }
+    },
+
+    loadFolds: async (chatId) => {
+      const targetChatId = chatId ?? get().activeChatId;
+      try {
+        const r = await chatApi.folds(
+          "web_user", targetChatId === DEFAULT_CHAT_ID ? undefined : targetChatId,
+        );
+        updateBucket(targetChatId, () => ({ folds: r.data?.folds ?? [] }));
+      } catch { /* ignore */ }
+    },
+
+    foldFrom: async (messageId) => {
+      const targetChatId = get().activeChatId;
+      try {
+        await chatApi.fold(
+          messageId, "web_user", targetChatId === DEFAULT_CHAT_ID ? undefined : targetChatId,
+        );
+        await get().loadFolds(targetChatId);
+        return true;
+      } catch {
+        useWorkbenchStore.getState().pushNotification({
+          id: nextCid(), title: "",
+          content: i18n.t("fold.foldFailed", { ns: "chat" }),
+          level: "warning", ts: Date.now() / 1000,
+        });
+        return false;
+      }
+    },
+
+    unfoldFold: async (foldId) => {
+      const targetChatId = get().activeChatId;
+      try {
+        await chatApi.unfold(foldId);
+        await get().loadFolds(targetChatId);
+        return true;
+      } catch {
+        useWorkbenchStore.getState().pushNotification({
+          id: nextCid(), title: "",
+          content: i18n.t("fold.restoreFailed", { ns: "chat" }),
+          level: "warning", ts: Date.now() / 1000,
+        });
+        return false;
+      }
     },
 
     startSSE: () => {

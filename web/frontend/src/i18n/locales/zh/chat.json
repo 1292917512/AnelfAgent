@@ -97,5 +97,17 @@
   "voiceStartFailed": "语音会话开启失败",
   "voiceRejected": "语音会话被拒绝",
   "voiceChannelError": "语音通道异常",
-  "voiceError": "通道错误"
+  "voiceError": "通道错误",
+  "fold": {
+    "fromHere": "从此处换向（折叠其后的消息）",
+    "confirmTitle": "从此处换向",
+    "confirmMessage": "此消息之后的全部消息将被折叠出 AI 上下文（会生成弃置路径摘要），消息本体保留、可随时恢复。确定换向？",
+    "confirm": "换向",
+    "foldedMessages": "已折叠 {{count}} 条消息",
+    "expand": "展开",
+    "collapse": "收起",
+    "restore": "恢复",
+    "foldFailed": "换向折叠失败",
+    "restoreFailed": "恢复失败"
+  }
 }

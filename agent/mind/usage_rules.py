@@ -43,3 +43,15 @@ BACKGROUND_TASK_HINT = (
     "- 想查进度 → 调用 check_background_tasks\n"
     "- 想等结果 → 告知用户后调用 end_reply 结束本轮，完成时你会被自动唤醒"
 )
+
+CODE_ORCHESTRATION_RULES = (
+    "# 代码编排（code 分组，默认沉睡）\n"
+    "需要循环/条件/异常处理来组合多个工具时（批量文件、多步流水线、反复试探），"
+    "先 activate_tool_group(group=\"code\") 激活，再用 run_python 一次完成——"
+    "不要把同样的调用模式手动重复十几轮。\n"
+    "- 脚本里用 tools.<工具名>(参数=值) 同步调用，失败抛 ToolError 可 try/except；"
+    "print 的文本就是返回给你的结果\n"
+    "- 脚本不能回复用户（send_message 等不可用）：回复在脚本外组织，持久化用便签/文件\n"
+    "- 纯计算、不调用工具的短脚本直接用 python_exec，不必激活 code 分组；"
+    "本阶段用完可 deactivate_tool_group(group=\"code\") 关闭"
+)

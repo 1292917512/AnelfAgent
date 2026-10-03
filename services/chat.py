@@ -335,6 +335,90 @@ class ChatService:
             return {"status": "idle"}
         return {"status": "ok", "interrupted": interrupted, "cancelled_delegations": cancelled}
 
+    # ------------------------------------------------------------------
+    # 换向折叠（web 域会话分支：弃置路径折叠出上下文，DB 保留可恢复）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _render_fold_material(rows: List[Dict[str, Any]]) -> str:
+        """渲染摘要素材：role 前缀 + 内部标签剥离 + 单条/总量截断。"""
+        parts: List[str] = []
+        total = 0
+        for row in rows:
+            text = _TAG_PREFIX_RE.sub("", str(row.get("content") or "")).strip()
+            if not text:
+                continue
+            text = text[:300]
+            if total + len(text) > 6000:
+                parts.append("…（后续消息略）")
+                break
+            parts.append(f"{row.get('role', '?')}: {text}")
+            total += len(text)
+        return "\n".join(parts)
+
+    async def fold_conversation(self, *, scope_id: str, from_message_id: int) -> Dict[str, Any]:
+        """换向折叠：from_message_id 之后的全部消息折叠出上下文。
+
+        折叠段以 id 区间落库（from 不含、to 含），装配上下文时原位替换为
+        一条含摘要的标记消息；消息本体不删，随时可经 restore_conversation_fold
+        恢复。ValueError 抛出让路由层映射 400（参数/状态不满足）。
+        """
+        rt = get_runtime()
+        if rt is None or not is_ready():
+            raise RuntimeError("服务尚未就绪")
+        scope = normalize_web_scope_id(scope_id)
+        sqlite = rt.data_center.sqlite
+        rows = await sqlite.fetch_conversation_from_id("user", scope, from_message_id)
+        if not rows or rows[0]["id"] != int(from_message_id):
+            raise ValueError(f"消息 {from_message_id} 在该会话中不存在")
+        foldable = rows[1:]
+        if not foldable:
+            raise ValueError("该消息之后没有可折叠的消息")
+        for f in await sqlite.list_conversation_folds("user", scope):
+            if f["from_msg_id"] == from_message_id:
+                raise ValueError(f"该处已有生效中的折叠 #{f['id']}")
+            if f["from_msg_id"] < from_message_id <= f["to_msg_id"]:
+                raise ValueError(f"该消息已在折叠段 #{f['id']} 内，请先恢复该折叠")
+
+        summary = ""
+        material = self._render_fold_material(foldable)
+        if material:
+            prompt = (
+                f"以下对话片段（{len(foldable)} 条消息）是用户决定放弃的方向"
+                "（用户从更早的一条消息处换了思路）。用不超过 120 字概括："
+                "当时在尝试什么、进行到哪一步。只输出概括本身，不要评价。\n\n" + material
+            )
+            try:
+                summary = (await rt.mind.summarize_text(prompt)).strip()
+            except Exception as exc:
+                log(f"换向折叠摘要生成失败，降级确定性摘要: {exc}", "DEBUG", tag="聊天")
+        if not summary:
+            first = _TAG_PREFIX_RE.sub("", str(foldable[0].get("content") or "")).strip()
+            summary = f"共 {len(foldable)} 条消息；起始：{first[:80] or '（无文本）'}"
+
+        fold_id = await sqlite.create_conversation_fold(
+            scope_type="user", scope_id=scope,
+            from_msg_id=int(from_message_id), to_msg_id=foldable[-1]["id"],
+            summary=summary, folded_count=len(foldable),
+        )
+        log(f"会话 {scope} 换向折叠 #{fold_id}：{len(foldable)} 条消息", tag="聊天")
+        return {"fold_id": fold_id, "folded_count": len(foldable), "summary": summary}
+
+    async def restore_conversation_fold(self, fold_id: int) -> bool:
+        """恢复折叠段：消息重新进入上下文。"""
+        rt = get_runtime()
+        if rt is None or not is_ready():
+            raise RuntimeError("服务尚未就绪")
+        return await rt.data_center.sqlite.deactivate_conversation_fold(fold_id)
+
+    async def list_conversation_folds(self, *, scope_id: str) -> List[Dict[str, Any]]:
+        """列出该会话生效中的折叠段（前端折叠 chip 渲染数据源）。"""
+        rt = get_runtime()
+        if rt is None or not is_ready():
+            return []
+        scope = normalize_web_scope_id(scope_id)
+        return await rt.data_center.sqlite.list_conversation_folds("user", scope)
+
     def list_delegations(self, chat_id: str) -> List[Dict[str, Any]]:
         """列出该会话运行中的子代理委托。"""
         from services.delegation import DelegationService

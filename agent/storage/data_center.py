@@ -240,7 +240,8 @@ class ConversationData:
         )
         sqlite = self.router.sqlite
         if not is_summary_enabled():
-            return await sqlite.fetch_conversation_multi(scopes=scopes, limit=self.max_size)
+            rows = await sqlite.fetch_conversation_multi(scopes=scopes, limit=self.max_size)
+            return await self._apply_redirect_folds(scope_type, scope_id, rows)
 
         from agent.storage.scope_migrate import resolve_summary_scope
         sum_type, sum_id = await resolve_summary_scope(sqlite, scope_type, scope_id)
@@ -258,6 +259,9 @@ class ConversationData:
             scopes=scopes, watermarks=watermarks, limit=grace + 1,
             watermark_ids=watermark_ids,
         )
+        # 换向折叠过滤先于折叠调度判定：已隐藏的消息段不再产生折叠压力，
+        # 调度计数与窗口内容保持同一口径
+        rows = await self._apply_redirect_folds(scope_type, scope_id, rows)
         # 折叠调度判定必须用截断前的行数：若先截断到 M 再判定，
         # 积压一旦超过宽限（折叠在途/失败/重启期间消息继续到达），
         # 截断后恒 < trigger 永不调度——水位线停滞、窗口逐条滑动、
@@ -270,6 +274,46 @@ class ConversationData:
                 self, scope_type, scope_id, scopes, watermarks, watermark_ids,
             )
         return rows
+
+    async def _apply_redirect_folds(
+        self, scope_type: str, scope_id: str, rows: list[dict]
+    ) -> list[dict]:
+        """换向折叠过滤：生效中的折叠段消息不进上下文（DB 保留可检索/恢复）。
+
+        段首原位插入一条 system 标记消息（含弃置路径摘要），AI 据此知道用户
+        换过方向；检索工具（recall_conversation 等）不经此路径，不受影响。
+        折叠段以消息 id 区间表达（from 不含、to 含），多 scope 合并读取时
+        同样成立（id 为全表自增）。
+        """
+        folds = await self.router.sqlite.list_conversation_folds(scope_type, scope_id)
+        if not folds:
+            return rows
+        result: list[dict] = []
+        marked: set = set()
+        prev_ts = 0
+        for row in rows:
+            msg_id = int(row.get("id", 0) or 0)
+            fold = next(
+                (f for f in folds if f["from_msg_id"] < msg_id <= f["to_msg_id"]),
+                None,
+            )
+            if fold is None:
+                result.append(row)
+                prev_ts = int(row.get("ts_ns", 0) or 0)
+                continue
+            if fold["id"] not in marked:
+                marked.add(fold["id"])
+                result.append({
+                    "id": fold["from_msg_id"],
+                    "role": "system",
+                    "content": (
+                        f"[换向折叠] 用户从此处换了方向：其后 {fold['folded_count']} 条消息"
+                        f"已折叠（不再回放进上下文，可在数据库查看/恢复）。"
+                        f"弃置路径摘要：{fold['summary'] or '（无）'}"
+                    ),
+                    "ts_ns": prev_ts,
+                })
+        return result
 
     async def get_conversation_summary(self, anything: Everything) -> Optional[dict]:
         """读取该 scope 的对话摘要行（{summary, watermarks, folded_count}），未生成返回 None。"""

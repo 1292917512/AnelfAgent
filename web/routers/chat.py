@@ -196,6 +196,55 @@ async def get_history(
     return [clean_message_for_display(m) for m in raw]
 
 
+class FoldRequest(BaseModel):
+    from_message_id: int
+    scope_id: str = "webui:web_user"
+    chat_id: Optional[str] = None
+
+
+class UnfoldRequest(BaseModel):
+    fold_id: int
+
+
+def _fold_scope(scope_id: str, chat_id: Optional[str]) -> str:
+    """fold 系列端点的 scope 拼接（与 /history 同一规则）。"""
+    base_scope = normalize_web_scope_id(scope_id)
+    return f"{base_scope}#{chat_id}" if chat_id else base_scope
+
+
+@router.post("/fold")
+async def fold_conversation(req: FoldRequest) -> Dict[str, Any]:
+    """换向折叠：from_message_id 之后的消息折叠出上下文（DB 保留可恢复）。"""
+    try:
+        return await _chat_svc.fold_conversation(
+            scope_id=_fold_scope(req.scope_id, req.chat_id),
+            from_message_id=req.from_message_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/unfold")
+async def unfold_conversation(req: UnfoldRequest) -> Dict[str, Any]:
+    """恢复折叠段：消息重新进入上下文。"""
+    ok = await _chat_svc.restore_conversation_fold(req.fold_id)
+    if not ok:
+        raise HTTPException(404, "折叠不存在或已恢复")
+    return {"ok": True}
+
+
+@router.get("/folds")
+async def list_folds(
+    scope_id: str = Query("webui:web_user"),
+    chat_id: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    """列出该会话生效中的折叠段（前端折叠 chip 数据源）。"""
+    folds = await _chat_svc.list_conversation_folds(
+        scope_id=_fold_scope(scope_id, chat_id)
+    )
+    return {"folds": folds}
+
+
 @router.get("/chats")
 async def list_chats(
     user_id: str = Query("web_user"),

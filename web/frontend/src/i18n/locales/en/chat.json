@@ -97,5 +97,17 @@
   "voiceStartFailed": "Failed to start voice session",
   "voiceRejected": "Voice session rejected",
   "voiceChannelError": "Voice channel error",
-  "voiceError": "Channel error"
+  "voiceError": "Channel error",
+  "fold": {
+    "fromHere": "Branch from here (fold later messages)",
+    "confirmTitle": "Branch from here",
+    "confirmMessage": "All messages after this one will be folded out of the AI context (a summary of the abandoned path will be generated). They stay in the database and can be restored anytime. Continue?",
+    "confirm": "Branch",
+    "foldedMessages": "{{count}} messages folded",
+    "expand": "Expand",
+    "collapse": "Collapse",
+    "restore": "Restore",
+    "foldFailed": "Failed to fold messages",
+    "restoreFailed": "Failed to restore fold"
+  }
 }

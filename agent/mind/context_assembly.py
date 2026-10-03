@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional
 
 from agent.mind.usage_rules import (
     BACKGROUND_TASK_HINT,
+    CODE_ORCHESTRATION_RULES,
     PARALLEL_CALL_HINT,
     PLAN_USAGE_RULES,
     TOOL_USAGE_RULES,
@@ -50,6 +51,18 @@ def _delegation_enabled() -> bool:
     """子代理委托是否启用（后台任务规范提示的注入条件）。"""
     from core.config import get_config_bool
     return get_config_bool("delegation_enabled", True)
+
+
+def _codebox_enabled() -> bool:
+    """代码编排实体是否启用（代码编排路由纪律的注入条件）。"""
+    from core.config import get_config_bool
+    return get_config_bool("codebox_enabled", True)
+
+
+def _tool_activation_sticky() -> bool:
+    """工具分组粘性激活开关（exec_context 激活态展示口径：常驻/剩余轮数）。"""
+    from core.config import get_config_bool
+    return get_config_bool("tool_activation_sticky", True)
 
 
 def _tail_injection_enabled() -> bool:
@@ -278,6 +291,11 @@ class ContextAssembly:
         if _delegation_enabled():
             lines.append("")
             lines.append(BACKGROUND_TASK_HINT)
+
+        # 代码编排路由纪律：实体启用时注入（配置在进程期恒定，stable 层字节稳定）
+        if _codebox_enabled():
+            lines.append("")
+            lines.append(CODE_ORCHESTRATION_RULES)
 
         return [{"role": "system", "content": "\n".join(lines)}]
 
@@ -870,18 +888,24 @@ class ContextAssembly:
         if cache_hint:
             lines.append(cache_hint)
 
-        # 沉睡分组激活状态（剩余最后一轮时提示续期）
+        # 沉睡分组激活状态（粘性模式轮数不递减，显示常驻；非粘性剩余最后一轮时提示续期）
         from agent.mind.tool_activation import tool_activation
         active_groups = tool_activation.active_groups()
         if active_groups:
-            group_desc = ", ".join(f"{g}(剩余{r}轮)" for g, r in sorted(active_groups.items()))
-            lines.append(f"[已激活工具分组] {group_desc}")
-            expiring = [g for g, r in active_groups.items() if r <= 1]
-            if expiring:
-                lines.append(
-                    f"⚠️ 分组 {', '.join(expiring)} 即将回到沉睡，"
-                    "如下轮仍需使用请立即调用 activate_tool_group 续期。"
+            if _tool_activation_sticky():
+                group_desc = ", ".join(
+                    f"{g}(常驻，deactivate_tool_group 可关闭)" for g in sorted(active_groups)
                 )
+                lines.append(f"[已激活工具分组] {group_desc}")
+            else:
+                group_desc = ", ".join(f"{g}(剩余{r}轮)" for g, r in sorted(active_groups.items()))
+                lines.append(f"[已激活工具分组] {group_desc}")
+                expiring = [g for g, r in active_groups.items() if r <= 1]
+                if expiring:
+                    lines.append(
+                        f"⚠️ 分组 {', '.join(expiring)} 即将回到沉睡，"
+                        "如下轮仍需使用请立即调用 activate_tool_group 续期。"
+                    )
 
         # 频道信息
         if adapter_key and self._channel_manager:

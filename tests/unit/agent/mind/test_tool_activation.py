@@ -118,3 +118,47 @@ class TestActivateToolGroupTool:
         finally:
             EntityRegistry.unregister("act_sleepy")
             tool_activation.clear_scope("scope_tool_test")
+
+
+class TestDeactivateToolGroup:
+    def test_deactivate_manager_roundtrip(self, manager: ToolActivationManager) -> None:
+        manager.activate("code", rounds=3, scope="s1")
+        assert manager.deactivate("code", "s1") is True
+        assert not manager.is_active("code", "s1")
+        assert manager.deactivate("code", "s1") is False  # 幂等：未激活返回 False
+        # scope 容器清空后其余 scope 互不影响
+        manager.activate("code", scope="s2")
+        assert manager.is_active("code", "s2")
+
+    async def test_deactivate_tool_not_active(self) -> None:
+        from agent.mind.tool_activation import _deactivate_tool_group_tool
+        token = bind_scope("scope_deact_test")
+        try:
+            result = json.loads(_deactivate_tool_group_tool(group="ghost_group"))
+            assert "error" in result
+            assert "active_groups" in result
+        finally:
+            reset_scope(token)
+
+    async def test_deactivate_tool_roundtrip(self) -> None:
+        from agent.mind.tool_activation import (
+            _activate_tool_group_tool,
+            _deactivate_tool_group_tool,
+        )
+        from core.entity import EntityRegistry
+
+        EntityRegistry.register_tool(
+            name="deact_sleepy", func=lambda: "s", group="deact_sleepg",
+            allow_sleep=True, sleep_brief="简介",
+        )
+        try:
+            token = bind_scope("scope_deact_rt")
+            result = json.loads(_activate_tool_group_tool(group="deact_sleepg"))
+            assert result["ok"] is True
+            result = json.loads(_deactivate_tool_group_tool(group="deact_sleepg"))
+            assert result["ok"] is True
+            assert not tool_activation.is_active("deact_sleepg", "scope_deact_rt")
+            reset_scope(token)
+        finally:
+            EntityRegistry.unregister("deact_sleepy")
+            tool_activation.clear_scope("scope_deact_rt")

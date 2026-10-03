@@ -1,12 +1,13 @@
-import { memo, useEffect, useMemo, useRef } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Loader2, Mic, Undo2, Volume2 } from "lucide-react";
+import { GitFork, Loader2, Mic, Undo2, Volume2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatRelativeTimestamp } from "@/lib/format";
 import { useChatStore } from "@/stores/chat-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { usePlanStore } from "@/stores/plan-store";
 import { useDelegationStore } from "@/stores/delegation-store";
+import { ConfirmDialog } from "@/components/ui/Modal";
 import { MediaBubble } from "./render/MediaBubble";
 import { PlanCard } from "./render/PlanCard";
 import { DelegationCard } from "./render/DelegationCard";
@@ -17,26 +18,44 @@ import { ToolCallsCard } from "./render/ToolCallsCard";
 import { ChangesCard } from "./render/ChangesCard";
 import { MentionMarkdown } from "./render/MentionMarkdown";
 import { CollapsibleUserMessage } from "./render/CollapsibleUserMessage";
+import { FoldChip } from "./render/FoldChip";
 import { ActivityRow } from "./ActivityRow";
 import { StreamingArea } from "./StreamingArea";
-import type { ChatMessage, DelegationNode, PlanRecord } from "@/lib/types";
+import type { ChatMessage, ConversationFold, DelegationNode, PlanRecord } from "@/lib/types";
 
 type TimelineEntry =
   | { kind: "message"; ts: number; key: string; data: ChatMessage }
+  | { kind: "fold"; ts: number; key: string; data: { fold: ConversationFold; messages: ChatMessage[] } }
   | { kind: "plan"; ts: number; key: string; data: PlanRecord }
   | { kind: "delegation"; ts: number; key: string; data: DelegationNode };
 
 /** 单条消息气泡（memo：流式 delta 更新时历史消息行不重渲染） */
-const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMessage }) {
+const MessageRow = memo(function MessageRow({ msg, foldPivot }: { msg: ChatMessage; foldPivot?: boolean }) {
   const { t } = useTranslation("chat");
   const recallQueued = useChatStore((s) => s.recallQueued);
+  const foldFrom = useChatStore((s) => s.foldFrom);
   const setDraft = useWorkbenchStore((s) => s.setDraft);
   const isUser = msg.role === "user";
+  const [confirmFold, setConfirmFold] = useState(false);
+  const [foldBusy, setFoldBusy] = useState(false);
+  // 换向入口：仅 DB 已落库的用户消息可作折叠起点（本地排队/系统消息无 id）
+  const canFold = isUser && msg.id != null && !msg.queued && !foldPivot;
 
   const onRecall = () => {
     if (!msg.cid) return;
     const content = recallQueued(msg.cid);
     if (content != null) setDraft(content);
+  };
+
+  const onFoldConfirm = async () => {
+    if (msg.id == null) return;
+    setFoldBusy(true);
+    try {
+      await foldFrom(msg.id);
+    } finally {
+      setFoldBusy(false);
+      setConfirmFold(false);
+    }
   };
 
   // 结构化消息：工具执行摘要卡片 / 系统提示细条（居中，不占气泡位）。
@@ -108,16 +127,36 @@ const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMessage }) {
         {(msg.timestamp || msg.ts) && (
           <div
             className={cn(
-              "text-[11px] text-muted mt-0.5 px-1 transition-opacity",
+              "text-[11px] text-muted mt-0.5 px-1 transition-opacity flex items-center gap-1.5",
+              isUser ? "justify-end" : "justify-start",
               // 时间戳 hover 浮现：默认淡显，悬停/聚焦该行时加深
               "opacity-60 group-hover/msg:opacity-100 group-focus-within/msg:opacity-100",
             )}
             title={msg.timestamp}
           >
-            {msg.ts ? formatRelativeTimestamp(msg.ts) : msg.timestamp}
+            {canFold && (
+              <button
+                type="button"
+                onClick={() => setConfirmFold(true)}
+                className="opacity-0 group-hover/msg:opacity-100 transition-opacity text-muted hover:text-accent"
+                title={t("fold.fromHere")}
+              >
+                <GitFork size={11} />
+              </button>
+            )}
+            <span>{msg.ts ? formatRelativeTimestamp(msg.ts) : msg.timestamp}</span>
           </div>
         )}
       </div>
+      <ConfirmDialog
+        open={confirmFold}
+        onClose={() => setConfirmFold(false)}
+        onConfirm={() => void onFoldConfirm()}
+        title={t("fold.confirmTitle")}
+        message={t("fold.confirmMessage")}
+        confirmText={t("fold.confirm")}
+        loading={foldBusy}
+      />
     </div>
   );
 });
@@ -158,6 +197,9 @@ export function MessageList() {
   // 悬浮窗可见时计划由浮窗唯一展示，聊天流不重复渲染；关闭浮窗后回落到聊天流
   const panelHidden = usePlanStore((s) => s.panelHidden);
   const chatDelegations = useDelegationStore((s) => s.delegations[activeChatId]);
+  const folds = useChatStore((s) => s.buckets[s.activeChatId]?.folds);
+  // 折叠起点消息集合（这些消息不再提供「从此换向」入口，避免同位置重复折叠）
+  const foldPivotIds = useMemo(() => new Set((folds ?? []).map((f) => f.from_msg_id)), [folds]);
 
   // 把 messages / plans / delegations 按时间序合并到同一条时间线（输入不变时复用结果）。
   // 排序键统一用 epoch 秒：历史消息由后端 ts_ns 换算返回，本地/SSE 消息打到达时刻，
@@ -165,11 +207,40 @@ export function MessageList() {
   // 与 epoch 数量级不一致导致 plan/delegation 卡片永远排在最底部
   const timeline = useMemo<TimelineEntry[]>(() => {
     const entries: TimelineEntry[] = [];
+    // 换向折叠：msg id → 所属折叠段（from 不含、to 含；无 id 的本地消息永不折叠）
+    const coveredBy = new Map<number, ConversationFold>();
+    for (const f of folds ?? []) {
+      for (const m of messages ?? []) {
+        if (m.id != null && m.id > f.from_msg_id && m.id <= f.to_msg_id) {
+          coveredBy.set(m.id, f);
+        }
+      }
+    }
     // 无 ts 的旧数据继承前一条的 ts，保持消息间相对顺序（sort 稳定，同键保序）
     let lastMsgTs = 0;
+    let collecting: { fold: ConversationFold; messages: ChatMessage[] } | null = null;
+    const flushFold = () => {
+      if (!collecting) return;
+      entries.push({
+        kind: "fold",
+        ts: collecting.messages[0]?.ts ?? lastMsgTs,
+        key: `fold-${collecting.fold.id}`,
+        data: collecting,
+      });
+      collecting = null;
+    };
     for (const m of messages ?? []) {
       const ts = m.ts ?? lastMsgTs;
       lastMsgTs = ts;
+      const fold = m.id != null ? coveredBy.get(m.id) : undefined;
+      if (fold) {
+        // 同一折叠段连续收拢；跨段（理论上不交叠）先结算上一段
+        if (collecting && collecting.fold.id !== fold.id) flushFold();
+        if (!collecting) collecting = { fold, messages: [] };
+        collecting.messages.push(m);
+        continue;
+      }
+      flushFold();
       entries.push({
         kind: "message",
         ts,
@@ -177,6 +248,7 @@ export function MessageList() {
         data: m,
       });
     }
+    flushFold();
     if (panelHidden) {
       for (const p of Object.values(chatPlans ?? {})) {
         entries.push({
@@ -197,7 +269,7 @@ export function MessageList() {
     }
     entries.sort((a, b) => a.ts - b.ts);
     return entries;
-  }, [messages, chatPlans, panelHidden, chatDelegations]);
+  }, [messages, folds, chatPlans, panelHidden, chatDelegations]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -272,7 +344,16 @@ export function MessageList() {
         if (entry.kind === "delegation") {
           return <DelegationCard key={entry.key} node={entry.data} />;
         }
-        return <MessageRow key={entry.key} msg={entry.data} />;
+        if (entry.kind === "fold") {
+          return <FoldChip key={entry.key} fold={entry.data.fold} messages={entry.data.messages} />;
+        }
+        return (
+          <MessageRow
+            key={entry.key}
+            msg={entry.data}
+            foldPivot={entry.data.id != null && foldPivotIds.has(entry.data.id)}
+          />
+        );
       })}
       <StreamingArea />
       {sending && <ActivityRow />}

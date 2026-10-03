@@ -55,6 +55,19 @@ export const chatApi = {
         ...(beforeId ? { before_id: beforeId } : {}),
       },
     }),
+  /** 换向折叠：fromMessageId 之后的消息折叠出上下文（DB 保留可恢复） */
+  fold: (fromMessageId: number, scopeId = "web_user", chatId?: string) =>
+    api.post<{ fold_id: number; folded_count: number; summary: string }>("/chat/fold", {
+      from_message_id: fromMessageId,
+      scope_id: scopeId,
+      ...(chatId ? { chat_id: chatId } : {}),
+    }),
+  unfold: (foldId: number) =>
+    api.post<{ ok: boolean }>("/chat/unfold", { fold_id: foldId }),
+  folds: (scopeId = "web_user", chatId?: string) =>
+    api.get<{ folds: import("@/lib/types").ConversationFold[] }>(`/chat/folds`, {
+      params: { scope_id: scopeId, ...(chatId ? { chat_id: chatId } : {}) },
+    }),
   chats: (userId = "web_user") =>
     api.get<{ chats: Array<{ chat_id: string; scope_id: string; title: string; last_ts: number; message_count: number }> }>(
       "/chat/chats", { params: { user_id: userId } },

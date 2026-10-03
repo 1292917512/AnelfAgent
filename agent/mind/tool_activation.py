@@ -102,6 +102,23 @@ class ToolActivationManager:
         scope = scope or self.current_scope()
         return self._scope_rounds.get(scope, {}).get(group, 0) > 0
 
+    def deactivate(self, group: str, scope: str = "") -> bool:
+        """关闭激活分组（双向阀），返回是否确实处于激活。
+
+        关闭会重构 tools 数组（位于请求最前），其后全部缓存前缀重写一次——
+        仅当确认本阶段不再使用该分组时关闭；频繁开关比常驻更伤缓存。
+        """
+        scope = scope or self.current_scope()
+        groups = self._scope_rounds.get(scope)
+        if not groups or group not in groups:
+            return False
+        del groups[group]
+        if not groups:
+            self._scope_rounds.pop(scope, None)
+        self._version += 1
+        log(f"工具分组已关闭: [{group}] scope={scope}", tag="门控")
+        return True
+
     def rounds_left(self, group: str, scope: str = "") -> int:
         """分组在当前 scope 下的剩余激活轮数（0 = 沉睡）。"""
         scope = scope or self.current_scope()
@@ -215,4 +232,33 @@ def _activate_tool_group_tool(group: str, rounds: int = 0) -> str:
         "hint": f"分组已激活，持续 {final_rounds} 轮对话。以下是该分组的工具摘要，"
                 f"完整 schema 将从下一轮开始自动出现在工具列表中。",
         "tools": tools_summary,
+    }, ensure_ascii=False)
+
+
+@deferred_tool(
+    name="deactivate_tool_group",
+    group="thinking", tags=["always"], source="mind.core",
+    description="关闭一个已激活的工具分组，其工具将从后续轮次的工具列表移除。"
+    "当某个已激活分组本阶段不再使用时调用（双向切换）；"
+    "不确定还会不会用就保持激活，频繁开关比重构一次工具列表更伤缓存。",
+)
+def _deactivate_tool_group_tool(group: str) -> str:
+    """关闭已激活的工具分组。
+
+    Args:
+        group: 要关闭的工具分组名（[已激活工具分组] 中列出的分组）
+    """
+    if not tool_activation.is_active(group):
+        active = ", ".join(sorted(tool_activation.active_groups().keys())) or "（无）"
+        return json.dumps({
+            "error": f"分组 '{group}' 当前未激活。",
+            "active_groups": active,
+            "hint": "只有 [已激活工具分组] 中列出的分组可以关闭。",
+        }, ensure_ascii=False)
+    tool_activation.deactivate(group)
+    return json.dumps({
+        "ok": True,
+        "group": group,
+        "hint": "分组已回到沉睡，相关工具将从下一轮的工具列表移除；"
+                "需要时可用 activate_tool_group 重新激活。",
     }, ensure_ascii=False)

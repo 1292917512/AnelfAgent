@@ -267,6 +267,28 @@ class SqliteBackend:
                         "ALTER TABLE conversation_summary "
                         "ADD COLUMN watermark_ids_json TEXT NOT NULL DEFAULT '{}'"
                     )
+                # 换向折叠：用户从某条消息换方向后，其后的消息段标记为折叠——
+                # 装配上下文时过滤（可检索不回放），DB 保留可恢复；
+                # active=0 即恢复（消息重新进入上下文）
+                await db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS conversation_folds (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      scope_type TEXT NOT NULL,
+                      scope_id TEXT NOT NULL,
+                      from_msg_id INTEGER NOT NULL,
+                      to_msg_id INTEGER NOT NULL,
+                      summary TEXT NOT NULL DEFAULT '',
+                      folded_count INTEGER NOT NULL DEFAULT 0,
+                      active INTEGER NOT NULL DEFAULT 1,
+                      created_ns INTEGER NOT NULL
+                    );
+                    """
+                )
+                await db.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_conversation_folds_scope "
+                    "ON conversation_folds(scope_type, scope_id, active);"
+                )
                 await db.commit()
                 self._initialized = True
 
@@ -515,6 +537,85 @@ class SqliteBackend:
                 ),
             )
             await db.commit()
+
+    # ------------------------------------------------------------------
+    # 换向折叠（conversation_folds）
+    # ------------------------------------------------------------------
+
+    async def create_conversation_fold(
+        self,
+        *,
+        scope_type: str,
+        scope_id: str,
+        from_msg_id: int,
+        to_msg_id: int,
+        summary: str,
+        folded_count: int,
+    ) -> int:
+        """登记一次换向折叠（from_msg_id 之后、to_msg_id 及之前的消息段），返回 fold id。"""
+        async with self._write_tx() as db:
+            cursor = await db.execute(
+                """
+                INSERT INTO conversation_folds(
+                    scope_type, scope_id, from_msg_id, to_msg_id,
+                    summary, folded_count, active, created_ns
+                ) VALUES(?,?,?,?,?,?,1,?)
+                """,
+                (scope_type, scope_id, int(from_msg_id), int(to_msg_id),
+                 summary, int(folded_count), time.time_ns()),
+            )
+            await db.commit()
+            return int(cursor.lastrowid or 0)
+
+    async def list_conversation_folds(
+        self, scope_type: str, scope_id: str, *, active_only: bool = True
+    ) -> list[dict]:
+        """列出某 scope 的折叠段（默认仅生效中的；按创建顺序升序）。"""
+        db = await self._get_db()
+        where = "WHERE scope_type=? AND scope_id=?"
+        params: list = [scope_type, scope_id]
+        if active_only:
+            where += " AND active=1"
+        cursor = await db.execute(
+            f"""
+            SELECT id, from_msg_id, to_msg_id, summary, folded_count, active, created_ns
+            FROM conversation_folds {where} ORDER BY id ASC
+            """,
+            params,
+        )
+        return [
+            {
+                "id": int(r[0]), "from_msg_id": int(r[1]), "to_msg_id": int(r[2]),
+                "summary": r[3] or "", "folded_count": int(r[4] or 0),
+                "active": bool(r[5]), "created_ns": int(r[6] or 0),
+            }
+            for r in await cursor.fetchall()
+        ]
+
+    async def deactivate_conversation_fold(self, fold_id: int) -> bool:
+        """恢复折叠段（active=0，消息重新进入上下文），返回是否有行被更新。"""
+        async with self._write_tx() as db:
+            cursor = await db.execute(
+                "UPDATE conversation_folds SET active=0 WHERE id=? AND active=1",
+                (int(fold_id),),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def fetch_conversation_from_id(
+        self, scope_type: str, scope_id: str, from_id: int, *, limit: int = 2000
+    ) -> list[dict]:
+        """取 scope 内 id >= from_id 的消息（升序；换向折叠的范围确定与摘要素材）。"""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT id, role, content, ts_ns FROM conversation_messages "
+            "WHERE scope_type=? AND scope_id=? AND id >= ? ORDER BY id ASC LIMIT ?",
+            (scope_type, scope_id, int(from_id), int(limit)),
+        )
+        return [
+            {"id": int(r[0]), "role": r[1], "content": r[2], "ts_ns": int(r[3] or 0)}
+            for r in await cursor.fetchall()
+        ]
 
     @staticmethod
     def _watermark_where(

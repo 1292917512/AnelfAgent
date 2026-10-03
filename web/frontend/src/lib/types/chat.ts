@@ -106,6 +106,18 @@ export interface ChatBucket {
   hasMore?: boolean;
   /** "加载更早"请求进行中 */
   loadingEarlier?: boolean;
+  /** 生效中的换向折叠段（折叠 chip 渲染数据源） */
+  folds?: ConversationFold[];
+}
+
+/** 换向折叠段（/chat/folds 返回）：from_msg_id（不含）到 to_msg_id（含）的消息被折叠出上下文 */
+export interface ConversationFold {
+  id: number;
+  from_msg_id: number;
+  to_msg_id: number;
+  summary: string;
+  folded_count: number;
+  created_ns: number;
 }
 
 export interface ContextUsage {
