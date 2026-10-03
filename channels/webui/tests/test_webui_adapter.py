@@ -133,3 +133,48 @@ class TestChatIdResolution:
 
     def test_empty_when_no_hint(self):
         assert WebUIChannel._resolve_chat_id("scope", {}) == ""
+
+
+class TestFileDiffFrame:
+    """file_diff 出帧契约：路径统一为工作区相对（前端树/编辑器/改动集的共同键）。"""
+
+    @pytest.fixture
+    def ws_root(self, tmp_path):
+        root = tmp_path / "ws"
+        root.mkdir()
+        from core.config import ConfigManager
+        ConfigManager.set("workspace_root", str(root))
+        return root
+
+    async def test_absolute_path_relativized(self, channel, captured, ws_root):
+        await channel._on_file_diff({
+            "scope": "s", "path": str(ws_root / "notes" / "a.md"),
+            "diff": "d", "additions": 2, "removals": 1,
+        })
+        assert captured[0]["path"] == "notes/a.md"
+        assert captured[0]["additions"] == 2
+        assert captured[0]["move_from"] is None
+
+    async def test_move_from_relativized(self, channel, captured, ws_root):
+        await channel._on_file_diff({
+            "scope": "s", "path": str(ws_root / "b.md"),
+            "move_from": str(ws_root / "sub" / "a.md"),
+            "diff": "", "additions": 0, "removals": 0,
+        })
+        assert captured[0]["path"] == "b.md"
+        assert captured[0]["move_from"] == "sub/a.md"
+
+    async def test_outside_workspace_kept_absolute(self, channel, captured, ws_root, tmp_path):
+        outside = str(tmp_path / "elsewhere" / "x.md")
+        await channel._on_file_diff({
+            "scope": "s", "path": outside, "diff": "d", "additions": 1, "removals": 0,
+        })
+        assert captured[0]["path"] == outside
+
+    async def test_relative_path_passthrough(self, channel, captured, ws_root):
+        await channel._on_file_diff({
+            "scope": "s", "path": "already/rel.md", "diff": "d",
+            "additions": 1, "removals": 0, "binary": True,
+        })
+        assert captured[0]["path"] == "already/rel.md"
+        assert captured[0]["binary"] is True

@@ -90,16 +90,28 @@ export function NodeDetail({ node, onClose }: Props) {
           );
         })()}
 
-        {node.type === "llm_call" && typeof node.data.reasoning_preview === "string" && node.data.reasoning_preview && (
-          <div>
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-strong mb-1.5">
-              {t("reasoningContent")}
+        {node.type === "llm_call" && (() => {
+          // 优先思考全文（有界截断），退回 800 字预览（旧会话/未开启全文采集的节点）
+          const reasoning = typeof node.data.reasoning_content === "string" && node.data.reasoning_content
+            ? node.data.reasoning_content
+            : typeof node.data.reasoning_preview === "string" ? node.data.reasoning_preview : "";
+          if (!reasoning) return null;
+          return (
+            <div>
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-strong mb-1.5">
+                {t("reasoningContent")}
+                {node.data.reasoning_truncated === true && (
+                  <span className="ml-2 normal-case text-amber-600 dark:text-amber-400">
+                    {t("reasoningTruncated", { defaultValue: "已截断" })}
+                  </span>
+                )}
+              </div>
+              <div className="rounded-sm bg-purple-500/5 border border-purple-500/30 p-2.5 text-xs text-foreground whitespace-pre-wrap leading-relaxed max-h-96 overflow-y-auto">
+                {reasoning}
+              </div>
             </div>
-            <div className="rounded-sm bg-purple-500/5 border border-purple-500/30 p-2.5 text-xs text-foreground whitespace-pre-wrap leading-relaxed max-h-64 overflow-y-auto">
-              {node.data.reasoning_preview}
-            </div>
-          </div>
-        )}
+          );
+        })()}
 
         {node.data && Object.keys(node.data).length > 0 && (
           <div>

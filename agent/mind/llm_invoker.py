@@ -29,6 +29,10 @@ if TYPE_CHECKING:
 # asyncio.timeout 需 3.11+（无 per-chunk Task 创建开销）；3.10 回退 wait_for
 _HAS_ASYNCIO_TIMEOUT = sys.version_info >= (3, 11)
 
+# 思维链展示的思考全文字符上限：超长思考（如长链推理）截断驻留，
+# 防止单节点把 tracer 内存会话与 SSE 广播撑爆
+_REASONING_TRACE_MAX = 8000
+
 
 def get_model_context_length(mind: "Mind") -> int:
     """获取当前模型的上下文窗口（tokens，带缓存；0 表示未知）。
@@ -292,6 +296,10 @@ async def _invoke_llm_unified(
         "tool_calls": [tc.name for tc in result.tool_calls] if result.tool_calls else [],
         "has_reasoning": bool(result.reasoning_content),
         "reasoning_preview": (result.reasoning_content or "")[:800],
+        # 思考全文（有界截断）：仅供思维链面板展示——驻留 tracer 内存会话
+        # （max_sessions 滚动销毁），不落库、不注入 LLM 上下文
+        "reasoning_content": (result.reasoning_content or "")[:_REASONING_TRACE_MAX] or None,
+        "reasoning_truncated": len(result.reasoning_content or "") > _REASONING_TRACE_MAX,
         "usage": usage_data,
         "usage_percent": usage_percent,
         "max_tokens": max_ctx,

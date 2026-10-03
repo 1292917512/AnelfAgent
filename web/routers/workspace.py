@@ -128,7 +128,14 @@ async def delete_file(path: str = Query(...), root: str = Query("workspace")) ->
 
 
 @router.get("/search")
-async def search_files(q: str = Query(..., min_length=1), limit: int = Query(30, ge=1, le=100)) -> Dict[str, Any]:
-    """搜索工作区：文件名匹配 + 文本内容匹配。"""
+async def search_files(
+    q: str = Query(..., min_length=1),
+    limit: int = Query(30, ge=1, le=100),
+    root: str = Query("workspace"),
+) -> Dict[str, Any]:
+    """搜索指定根：文件名匹配 + 文本内容匹配（root=project 时搜索项目根）。"""
     # os.walk + 逐文件读取为同步阻塞 I/O，移入线程避免卡住事件循环
-    return await asyncio.to_thread(_svc.search_files, q, limit)
+    try:
+        return await asyncio.to_thread(_svc.search_files, q, limit, root)
+    except WorkspaceError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail) from e

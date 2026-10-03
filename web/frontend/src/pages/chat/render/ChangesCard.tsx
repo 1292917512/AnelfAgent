@@ -6,7 +6,11 @@ import { ChevronDown, ChevronRight, FileDiff } from "lucide-react";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import type { ChatStreamingDiff } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { fileIcon } from "../filetree/file-tree-utils";
 import { DiffView } from "../DiffView";
+
+/** 折叠头部最多平铺的文件 chip 数，溢出收敛为 +N（ZCode changes-group 形态） */
+const MAX_HEADER_CHIPS = 3;
 
 /** 单个文件改动行（可点击跳编辑器） */
 function ChangeRow({ entry }: { entry: ChatStreamingDiff }) {
@@ -63,7 +67,7 @@ function ChangeRow({ entry }: { entry: ChatStreamingDiff }) {
   );
 }
 
-/** 本轮改动集卡片（消息内默认折叠，标题为改动文件计数） */
+/** 本轮改动集卡片（消息内默认折叠，标题为改动文件计数 + 平铺文件 chips） */
 export function ChangesCard({ changes }: { changes: ChatStreamingDiff[] }) {
   const { t } = useTranslation("chat");
   const [open, setOpen] = useState(false);
@@ -76,12 +80,32 @@ export function ChangesCard({ changes }: { changes: ChatStreamingDiff[] }) {
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted/40 transition-colors"
       >
-        {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-        <FileDiff className="h-3.5 w-3.5 text-primary" />
-        <span className="text-xs font-medium text-heading">
+        {open ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
+        <FileDiff className="h-3.5 w-3.5 text-primary shrink-0" />
+        <span className="text-xs font-medium text-heading shrink-0">
           {t("changes.title", { count: changes.length })}
         </span>
-        <span className={cn("ml-auto text-[11px] text-muted")}>
+        {/* 平铺文件 chips（溢出 +N）：折叠态也能一眼看到改了哪些文件 */}
+        <span className="flex items-center gap-1 min-w-0 overflow-hidden">
+          {changes.slice(0, MAX_HEADER_CHIPS).map((entry, i) => {
+            const name = entry.path.split("/").pop() ?? entry.path;
+            const { Icon, className } = fileIcon(name);
+            return (
+              <span
+                key={`${entry.path}-${i}`}
+                title={entry.path}
+                className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-muted text-[10px] text-muted min-w-0"
+              >
+                <Icon size={10} className={cn("shrink-0", className)} />
+                <span className="truncate max-w-24">{name}</span>
+              </span>
+            );
+          })}
+          {changes.length > MAX_HEADER_CHIPS && (
+            <span className="text-[10px] text-muted shrink-0">+{changes.length - MAX_HEADER_CHIPS}</span>
+          )}
+        </span>
+        <span className={cn("ml-auto text-[11px] text-muted shrink-0")}>
           {t("changes.hint")}
         </span>
       </button>

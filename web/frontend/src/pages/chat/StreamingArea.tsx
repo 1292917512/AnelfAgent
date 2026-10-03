@@ -10,6 +10,7 @@ import { useTranslation } from "react-i18next";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useChatStore } from "@/stores/chat-store";
 import { Markdown } from "./render/Markdown";
+import { ThinkingBlock } from "./render/ThinkingBlock";
 import { DiffView } from "./DiffView";
 import { READONLY_TOOLS, ToolBlock } from "./render/ToolBlocks";
 
@@ -69,23 +70,19 @@ export function StreamingArea() {
           <DiffView key={`${d.path}-${i}`} path={d.path} diff={d.diff} additions={d.additions} removals={d.removals} />
         ))}
 
+        {/* 思考过程（可折叠全文本；正文到达后自动收敛，turn 结束消失） */}
+        {streaming.reasoning && (
+          <ThinkingBlock reasoning={streaming.reasoning} active={!streaming.text} />
+        )}
+
         {/* 流式文本气泡（尾随兄弟，正式回复到达时替换） */}
-        {(streaming.text || streaming.reasoning) && (
+        {streaming.text && (
           <div className="bg-secondary rounded-lg px-4 py-2.5 text-sm leading-relaxed">
-            {streaming.reasoning && !streaming.text && (
-              <div className="text-xs text-muted italic mb-1 whitespace-pre-wrap">
-                {streaming.reasoning.slice(-300)}
-              </div>
-            )}
-            {streaming.text && (
-              <>
-                {/* 流式只渲染到最后一个换行：半行 markdown（未成对的 ` 等）可能随
-                    后续字符改变语义，渲染它会造成闪烁/错排（Codex markdown_stream 的
-                    commit_complete_source 思路）；剩余半行由下一个 delta 补齐 */}
-                <Markdown content={streamingText} />
-                <span className="inline-block w-1.5 h-4 bg-primary/70 animate-pulse-subtle align-text-bottom" />
-              </>
-            )}
+            {/* 流式只渲染到最后一个换行：半行 markdown（未成对的 ` 等）可能随
+                后续字符改变语义，渲染它会造成闪烁/错排（Codex markdown_stream 的
+                commit_complete_source 思路）；剩余半行由下一个 delta 补齐 */}
+            <Markdown content={streamingText} />
+            <span className="inline-block w-1.5 h-4 bg-primary/70 animate-pulse-subtle align-text-bottom" />
           </div>
         )}
       </div>

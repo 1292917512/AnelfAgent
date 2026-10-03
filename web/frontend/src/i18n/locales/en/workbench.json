@@ -9,7 +9,8 @@
     "settings": "Settings"
   },
   "statusbar": {
-    "errors": "{{count}} errors"
+    "errors": "{{count}} errors",
+    "working": "Working "
   },
   "status": {
     "sseConnected": "Thinking stream connected",
@@ -33,7 +34,14 @@
     "disabled": "Thinking trace is disabled, enable it in Settings",
     "empty": "No thinking data yet",
     "sessionInfo": "{{count}} nodes",
-    "ended": "ended"
+    "ended": "ended",
+    "reasoning": "Reasoning",
+    "reasoningTruncated": "Truncated",
+    "kindChat": "Chat",
+    "kindHeartbeat": "Heartbeat",
+    "kindIntrospection": "Introspection",
+    "kindDelegation": "Subagent",
+    "pickSession": "Pick a session"
   },
   "tasks": {
     "count": "{{count}} tasks",
@@ -111,7 +119,11 @@
     "deleteFailed": "Delete failed",
     "uploadFailed": "Upload failed",
     "deleteTitle": "Delete confirmation",
-    "deleteConfirm": "Delete \"{{name}}\"? This cannot be undone."
+    "deleteConfirm": "Delete \"{{name}}\"? This cannot be undone.",
+    "noChanges": "No changes",
+    "changedOnly": "Changes only",
+    "changedOnlyHint": "Showing changes only ({{count}} files)",
+    "attachToChat": "Attach to chat"
   },
   "editor": {
     "save": "Save",

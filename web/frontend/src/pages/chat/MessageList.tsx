@@ -15,6 +15,7 @@ import { ShareCard } from "@entities/share/panels/ShareCard";
 import { SystemNotice } from "./render/SystemNotice";
 import { ToolSummaryCard } from "./render/ToolSummaryCard";
 import { ToolCallsCard } from "./render/ToolCallsCard";
+import { ThinkingBlock } from "./render/ThinkingBlock";
 import { ChangesCard } from "./render/ChangesCard";
 import { MentionMarkdown } from "./render/MentionMarkdown";
 import { CollapsibleUserMessage } from "./render/CollapsibleUserMessage";
@@ -70,6 +71,12 @@ const MessageRow = memo(function MessageRow({ msg, foldPivot }: { msg: ChatMessa
   return (
     <div className={cn("flex group/msg", isUser ? "justify-end" : "justify-start")}>
       <div className={cn("max-w-[85%] sm:max-w-[80%]", isUser ? "text-right" : "text-left")}>
+        {/* 本轮思考过程（内存态固化，默认折叠；仅保留最近几轮，刷新即消失） */}
+        {!isUser && msg.thinking && (
+          <div className="mb-1.5">
+            <ThinkingBlock reasoning={msg.thinking} active={false} />
+          </div>
+        )}
         {/* 本轮工具调用记录（固化卡片，默认折叠） */}
         {!isUser && msg.toolCalls && msg.toolCalls.length > 0 && (
           <ToolCallsCard tools={msg.toolCalls} />

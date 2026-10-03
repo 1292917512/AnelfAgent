@@ -65,13 +65,25 @@ interface DiffLine {
   newNo?: number;
 }
 
-/** 解析 unified diff 为渲染行（meta/hunk 头转 hunk 分隔行） */
+/** 解析 unified diff 为渲染行（meta/hunk 头转 hunk 分隔行；`\ No newline` 标记跳过不占行号） */
 function parseUnifiedDiff(diff: string): DiffLine[] {
   const lines: DiffLine[] = [];
   let oldNo = 0;
   let newNo = 0;
-  for (const raw of diff.split("\n")) {
+  const raws = diff.split("\n");
+  for (let i = 0; i < raws.length; i++) {
+    const raw = raws[i]!;
     if (raw.startsWith("---") || raw.startsWith("+++")) continue;
+    // "\ No newline at end of file" 是前一行 +/- 的附属标记，不是内容行：
+    // 计入 context 会虚增新旧行号（其后全部行号偏移）
+    if (raw.startsWith("\\")) continue;
+    // 末尾换行 split 出的空串不是内容行（幻影行）
+    if (raw === "" && i === raws.length - 1) continue;
+    // 生成侧的截断标记原样展示（不能按 context 切首字符）
+    if (raw.startsWith("...")) {
+      lines.push({ kind: "hunk", text: raw });
+      continue;
+    }
     const hunk = raw.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
     if (hunk) {
       oldNo = parseInt(hunk[1] ?? "0", 10);

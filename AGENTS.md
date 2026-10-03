@@ -680,6 +680,26 @@ llm_clients.json/ModelType——该体系全部模型被假设可走 litellm 对
 
 > Model Experience：① AI 无新增工具 schema（呈现/分类/降权全在管线内）；② token 影响：discipline/freshness 两块按需注入（无指令/无重复话题零字节）；③ 缓存影响：discipline 在稳定前缀区（低频变化），freshness 在尾部动态区；④ 反馈回路让"她记错了"第一次有了纠正通道——用户否认即负向证据，14 天 sub_zero 归档倒计时通电
 
+#### 工作区展示页重构：树的活性 / 思考链入思维链 / 表现层对齐 ZCode（第四十五轮新增）
+
+对照 ZCode（`packages/ui`）与 Codex（`codex-rs`）的工作区表现层重构（对照档 `projects/anelf-workspace-presentation-analysis.md`）。设计原则：能力已齐的只补表现，数据链断的顺既有机制接通，不做兼容层不打补丁。
+
+| 机制 | 位置 | 说明 |
+|------|------|------|
+| 树的活性（变更装饰） | `stores/tree-changes-store.ts`（新）+ `FileTreeNode` 徽章/闪现 + `FileTree` 自动局部刷新 + `FileTreePanel` 只看变更过滤 | file_diff SSE → 树装饰 store（path→+a/-r 累计，200 条 FIFO 滚动销毁；与 changes-store 分工：后者面向「一轮回复」消息卡片、turn 结束清空，本 store 面向「工作区当前状态」、turn 结束不消退）。文件行尾 +a/-r（tabular-nums）、目录聚合子树变更计数、变更节点 1.2s 高亮闪现（reduced-motion 降级）、已加载目录防抖 600ms 局部刷新（累积批次合并，上限 8 目录/批——防抖窗口内新批次不再丢弃旧批次）、工具栏「只看变更」过滤（变更路径前缀判定，未加载目录也正确保留）。**AI 编辑只落 workspace 根，project 根一律不装饰不联动（防同名路径误标），切根强制复位过滤态** |
+| 树手感 | `file-tree-utils.ts::compactChains/chainTailPath/filterChangedTree`（纯函数）+ FileTree 派生渲染 | 单子目录链压缩（a/b/c 折一行，节点 id 取最深路径——懒加载/右键/拖拽语义自动指向最深目录；reveal/onToggle 经 chainTailPath 翻译「打开中间目录」→「打开链尾」，懒加载后链条延伸跟随展开新链尾）；吸顶面包屑（首个可见行的滚出视口祖先，点击回跳）；滚动渐隐 mask（onScroll 直写 CSS 变量，零 React 重渲染）。store 始终保存真实树结构，压缩/过滤仅为渲染期 useMemo 派生 |
+| 思考进思维链（不落上下文） | `llm_invoker.py` LLM_END 载荷 + `render/ThinkingBlock.tsx`（新）+ TracePanel/NodeDetail 全文展示 | 思考全文（8000 字符有界截断 + truncated 标记）随 LLM_END 事件进 tracer 内存会话（max_sessions 滚动销毁、无订阅者零开销语义不变）——**不落 conversation_messages（表无此列）、不进 LLM 上下文**，满足「开启才有、没开前端不采集、最近几轮驻留往前销毁」。流式区 ThinkingBlock：思考中展开跟随滚动（Shimmer 引导），正文到达自动折叠一行摘要，页脚链思维面板；**reply/media/turn_end 时随消息固化（纯前端内存态，pruneThinking 仅留最近 5 轮往前销毁，刷新即消失）**——「思考完就看不到了」修正；TracePanel/NodeDetail 展示全文+截断标记 |
+| 思维链面板可用性 | `thinking-store.handleSessionStart` + `TracePanel` 会话切换器 | **心跳/内省永不自动抢占面板**（高频后台会话经 autoFollow 把用户正看的对话链路顶掉——「开启思维链捕捉不到了」的结构性根因）；TracePanel 加会话切换器（最近 20 条，类型徽标 对话/心跳/内省/子代理 + 时刻 + 节点数），历史会话经 REST 拉全量节点（切换竞态守卫：已再次切走则丢弃响应） |
+| turn 工作记录不丢 | `chat-sse-handlers` turn_end 兜底固化 + ToolCallsCard 总耗时 | reply 未到达（异常/静默收尾）时 turn_end 不再直接丢弃流式区——合成仅卡片消息承接工具/改动/思考（正常流程 reply 已固化、streaming 为 null 直接复位不重复）；ToolCallsCard 头部加本轮工具总耗时（tabular-nums），上几轮干了啥、花了多久折叠态一眼可见 |
+| 流式累积器归并（浏览器实测抓出的根因） | `chat-sse-handlers.mergeStreaming` | **tool_call/file_diff 帧后端不带 turn_id**（恒 ""），前端按「turn_id 不同即换新累积器」把已累积的 reasoning/text 整体清空——思考固化恒为空、工具被拆成多张单卡的根因。改为归并：turn_id 缺失或一致即复用，仅非空新 turn_id 开新累积器；改动集聚合改用归并后的真实 turnId（原先用帧内空串永远漏聚合，改动集卡片从未出现）；file_diff 帧同样归并。reply 后到达的 TOOL_END 回填最后一条消息卡片的工具状态（running→done），不再新开累积器；end_reply 等流程标记工具展示侧过滤 |
+| 回复跨会话串台修复（浏览器实测抓出的存量 bug） | `output_tools.inherit_current_session` + execute_send_action + send_message/photo/voice/file._invoke + tool_bridge | 实测：非默认会话（#chat_id）里 AI 回复的**气泡出现在默认会话、持久化进默认 scope**——send_* 工具只传 channel/target，从不带 session_id，而流式帧（delta/tool_call）带 entity_scope 后缀路由正确，形成「过程在对的会话、正文串到默认会话」。修复：发送管道未显式带 session 时从当前思维 scope 继承（仅目标基准一致才继承，发给他人不挂本会话后缀）——持久化 scope、出站哨兵 target_scope、SSE 帧 chat_id 三处对齐；tool_bridge 对声明 session_id 的频道方法同样注入。测试 6 例（继承判定 4 + 管道持久化 2，并入 test_send_guard_integration） |
+| 状态胶囊 | `StatusCapsule.tsx`（新，取代 StatusBar） | 对话区右上角浮动（pointer-events-none 外层）：思维链会话态（当前节点+错误计数+耗时，点击进面板）> 对话工作态（「工作中 Xs」计时，思维链未开启时的兜底感知）> 空闲零占位；计时 tabular-nums 防抖动 |
+| 引用标注 | `FileEditor.quoteToChat` | 有选区引选区（`[name:L3-L7](./path)` mention 头 + 代码块，气泡侧 MentionMarkdown 零成本渲染 chip），无选区引全文带路径标注；project 根带 `project:` 前缀 |
+| 契约补全 | `adapter._on_file_diff` + `workspace.search_files` + `DiffView` 解析 | **file_diff 路径契约断裂修复（深度验证发现的 9-23 存量 bug）**：工具层 safe_path 产出规范化**绝对路径**，而前端树/编辑器/改动集全部以工作区相对路径为键——不相对化则树装饰、编辑器联动刷新、改动集跳转三类消费全部静默失配；统一在 adapter 出帧处相对化（`_relativize_workspace`，区内转 posix 相对、区外审批编辑保留绝对；entities.filesystem.paths.get_workspace_root 取根，channels→entities 不违层）。同时透传 move_from/binary（此前前端类型有字段但后端从不发）；rename 局部刷新同时覆盖源父目录（防旧文件滞留）。`/workspace/search` 支持 root 参数（project 根搜索解禁，复用 resolve_root 沙箱惯例）。**DiffView 解析修正**：`\ No newline at end of file` 标记此前被当 context 行计数（其后行号全部偏移）、末尾空串幻影行、生成侧截断标记被切首字符——三处解析修正 |
+| 工具行文件 chip | `render/ToolBlocks.tsx` | ZCode 式可点击文件路径：工具参数带工作区**相对**路径时标题渲染为 accent 链接（点击跳编辑器）；绝对路径不可点——前端没有工作区绝对根，无法可靠归一，避免与树内相对路径形成同文件双标签 |
+
+> Model Experience：① 思考全文不进 LLM 上下文（tracer 内存会话与对话历史是两条独立的线，历史仍是唯一上下文源）；② 树装饰数据流 = file_diff SSE 单源三消费（changes-store 消息卡片 / tree-changes-store 树装饰 / FileEditor 版本刷新），无新事件；③ 前端分层保持 stores ← pages 单向（tree-changes-store 归 stores 层）；④ 全量 pytest 5141 过、tsc/eslint/build 绿。深度验证修掉的存量 bug：防抖丢批、ChangesCard 重复 key、file_diff 绝对路径契约、rename 旧文件滞留、DiffView 行号偏移
+
 #### CI 两红修复：实体审批桥与凭据依赖测试（第四十四轮新增）
 
 CI（run #122）lint 与 tests(all) 双腿挂点复查与修复（提交 `263ae7e`）：

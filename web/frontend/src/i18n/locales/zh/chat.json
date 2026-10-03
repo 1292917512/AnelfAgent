@@ -32,7 +32,10 @@
   "stream": {
     "readonlyCollapsed": "已调用 {{count}} 个只读工具，点击展开",
     "collapse": "收起",
-    "connectionLost": "实时连接已断开，正在重连（期间的消息将在恢复后自动补齐）…"
+    "connectionLost": "实时连接已断开，正在重连（期间的消息将在恢复后自动补齐）…",
+    "thinking": "正在思考…",
+    "thinkingDone": "思考",
+    "viewInTrace": "在思维链中查看"
   },
   "fileLimit": "最多附加 {{max}} 个文件",
   "fileTooLarge": "文件 {{name}} 超过 {{max}}MB 大小上限",
@@ -65,6 +68,7 @@
     "micInsecure": "当前页面非安全上下文，浏览器禁止取麦克风：用 http://127.0.0.1:8092 / localhost 或 https 访问",
     "hangup": "挂断",
     "stateListening": "收听中",
+    "stateFinalizing": "转写中",
     "stateThinking": "思考中",
     "stateSpeaking": "说话中",
     "micLevel": "输入电平",

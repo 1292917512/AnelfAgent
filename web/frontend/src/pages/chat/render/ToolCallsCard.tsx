@@ -8,6 +8,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, ChevronRight, Wrench } from "lucide-react";
 import type { ChatStreamingTool } from "@/lib/types";
+import { formatElapsedCompact } from "@/lib/format";
 import { ToolBlock, toolTitle } from "./ToolBlocks";
 
 export function ToolCallsCard({ tools }: { tools: ChatStreamingTool[] }) {
@@ -18,6 +19,8 @@ export function ToolCallsCard({ tools }: { tools: ChatStreamingTool[] }) {
   const names = [...new Set(tools.map((tool) => toolTitle(tool.name, tool.arguments)))];
   const preview = names.slice(0, 3).join("、");
   const failed = tools.some((tool) => tool.status === "error");
+  // 本轮工具总耗时（上几轮干了啥、花了多久，折叠态一眼可见）
+  const totalMs = tools.reduce((acc, tool) => acc + (tool.duration_ms ?? 0), 0);
 
   return (
     <div className="rounded-lg border border-border/60 bg-muted/30 text-xs overflow-hidden mb-1.5">
@@ -27,6 +30,9 @@ export function ToolCallsCard({ tools }: { tools: ChatStreamingTool[] }) {
       >
         <Wrench size={12} className="shrink-0" />
         <span className="shrink-0">{t("toolCalls", { count: tools.length })}</span>
+        {totalMs > 0 && (
+          <span className="shrink-0 font-mono tabular-nums text-muted/80">{formatElapsedCompact(totalMs)}</span>
+        )}
         <span className="flex-1 min-w-0 truncate text-muted/80">
           {preview}{names.length > 3 ? " …" : ""}
         </span>

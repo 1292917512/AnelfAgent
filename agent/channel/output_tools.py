@@ -32,6 +32,27 @@ if TYPE_CHECKING:
 conversation_data_port: LateBinding["ConversationData"] = LateBinding("channel.output")
 
 
+def inherit_current_session(adapter_key: str, resolved_target_id: str) -> str:
+    """发送调用未显式带 session 时，从当前思维 scope 继承子会话后缀。
+
+    AI 调 send_* 工具只给 channel/target（webui + web_user），不带多会话
+    chat_id——不继承则回复持久化进默认 scope、SSE 帧路由到默认会话窗口
+    （非默认会话中回复串台到默认窗口）。仅当目标基准与当前会话一致时
+    继承（给他人发消息绝不挂本会话后缀）。
+    """
+    try:
+        from agent.messages import parse_entity_scope
+        thinker = get_current_scope()
+        if not thinker:
+            return ""
+        _scope_type, adapter, base_id, session_id = parse_entity_scope(thinker)
+    except Exception:
+        return ""
+    if not session_id or adapter != adapter_key or base_id != str(resolved_target_id):
+        return ""
+    return session_id
+
+
 def _resolve_conversation_scope(
     adapter_key: str, target_id: str, channel_type: str, session_id: str = "",
 ) -> tuple[str, str]:
@@ -265,8 +286,11 @@ async def execute_send_action(
 
     try:
         resolved_target_id, channel_type = _resolve_send_target(channel_id, target_id)
+        # 未显式带 session 时从当前思维 scope 继承（多会话窗口路由 + 持久化对齐）
+        if not session_id:
+            session_id = inherit_current_session(channel_id, resolved_target_id)
         scope_type, scope_id = _resolve_conversation_scope(
-            channel_id, resolved_target_id, channel_type,
+            channel_id, resolved_target_id, channel_type, session_id,
         )
         target_scope = f"{scope_type}_{scope_id}"
         thinker = get_current_scope()
@@ -383,6 +407,10 @@ async def send_message(
         kwargs: dict[str, Any] = {"channel_type": channel_type}
         if reply_to_message_id:
             kwargs["reply_to"] = reply_to_message_id
+        # 多会话窗口路由（webui chat_id）：未显式带 session 时继承当前会话
+        session = inherit_current_session(channel_id, resolved_target_id)
+        if session:
+            kwargs["session_id"] = session
         return await ch.send_text(resolved_target_id, content, **kwargs)
 
     def _enrich(parsed: dict, _: bool) -> None:
@@ -455,7 +483,11 @@ async def send_photo(channel_id: str, target_id: str, photo: str, caption: str =
         caption: 图片说明文字
     """
     async def _invoke(ch: Any, resolved_target_id: str, channel_type: str) -> Any:
-        return await ch.send_photo(resolved_target_id, photo, caption=caption, channel_type=channel_type)
+        kwargs: dict[str, Any] = {"caption": caption, "channel_type": channel_type}
+        session = inherit_current_session(channel_id, resolved_target_id)
+        if session:
+            kwargs["session_id"] = session
+        return await ch.send_photo(resolved_target_id, photo, **kwargs)
 
     def _enrich(parsed: dict, ok: bool) -> None:
         parsed["media_path"] = photo
@@ -485,7 +517,11 @@ async def send_voice(channel_id: str, target_id: str, voice: str) -> str:
         voice: 语音文件路径
     """
     async def _invoke(ch: Any, resolved_target_id: str, channel_type: str) -> Any:
-        return await ch.send_voice(resolved_target_id, voice, channel_type=channel_type)
+        kwargs: dict[str, Any] = {"channel_type": channel_type}
+        session = inherit_current_session(channel_id, resolved_target_id)
+        if session:
+            kwargs["session_id"] = session
+        return await ch.send_voice(resolved_target_id, voice, **kwargs)
 
     def _enrich(parsed: dict, ok: bool) -> None:
         parsed["media_path"] = voice
@@ -514,7 +550,11 @@ async def send_file(channel_id: str, target_id: str, file_path: str, caption: st
         caption: 文件说明文字
     """
     async def _invoke(ch: Any, resolved_target_id: str, channel_type: str) -> Any:
-        return await ch.send_file(resolved_target_id, file_path, caption=caption, channel_type=channel_type)
+        kwargs: dict[str, Any] = {"caption": caption, "channel_type": channel_type}
+        session = inherit_current_session(channel_id, resolved_target_id)
+        if session:
+            kwargs["session_id"] = session
+        return await ch.send_file(resolved_target_id, file_path, **kwargs)
 
     def _enrich(parsed: dict, ok: bool) -> None:
         parsed["media_path"] = file_path

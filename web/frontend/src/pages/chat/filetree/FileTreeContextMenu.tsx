@@ -8,6 +8,7 @@ import {
   FolderPlus,
   FolderSync,
   ListCollapse,
+  Paperclip,
   Pencil,
   RefreshCw,
   Trash2,
@@ -18,6 +19,7 @@ import { cn } from "@/lib/utils";
 import { workspaceApi } from "@/lib/api";
 import type { WorkspaceNode, WorkspaceRoot } from "@/lib/types";
 import { toast } from "@/stores/toast-store";
+import { useChatStore } from "@/stores/chat-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { useFileTreeStore } from "./file-tree-store";
 import { parentPath } from "./file-tree-utils";
@@ -110,6 +112,15 @@ export function FileTreeContextMenu({ menu, root, containerRef, onClose, onDelet
     void navigator.clipboard.writeText(node.path).then(() => toast.success(t("files.copied")));
   };
 
+  /** 附加到对话（触屏/键盘路径，与拖拽注入同效果）：文件为引用附件，目录为上下文锚点 */
+  const attachToChat = () => {
+    onClose();
+    if (!node) return;
+    const chat = useChatStore.getState();
+    if (node.type === "dir") chat.attachWorkspaceDir(node.path, node.name, root);
+    else chat.attachWorkspaceFile(node.path, node.name, root);
+  };
+
   const items: MenuItem[] = node === null
     ? [
         { key: "new-file", label: t("files.newFile"), icon: FilePlus2, onClick: () => void createEntry("file") },
@@ -120,6 +131,7 @@ export function FileTreeContextMenu({ menu, root, containerRef, onClose, onDelet
       ]
     : node.type === "dir"
       ? [
+          { key: "attach", label: t("files.attachToChat"), icon: Paperclip, onClick: attachToChat },
           { key: "new-file", label: t("files.newFile"), icon: FilePlus2, onClick: () => void createEntry("file") },
           { key: "new-folder", label: t("files.newFolder"), icon: FolderPlus, onClick: () => void createEntry("folder") },
           { key: "upload", label: t("files.uploadHere"), icon: Upload, onClick: () => { onClose(); onUpload(node.path); } },
@@ -130,7 +142,8 @@ export function FileTreeContextMenu({ menu, root, containerRef, onClose, onDelet
         ]
       : [
           { key: "open", label: t("files.open"), icon: FilePlus2, onClick: () => { onClose(); useWorkbenchStore.getState().openFile(node.path, root); } },
-          { key: "rename", label: t("files.rename"), icon: Pencil, onClick: () => { onClose(); store.requestEdit(root, node.path); } },
+          { key: "attach", label: t("files.attachToChat"), icon: Paperclip, onClick: attachToChat },
+          { key: "rename", label: t("files.rename"), icon: Pencil, dividerBefore: true, onClick: () => { onClose(); store.requestEdit(root, node.path); } },
           {
             key: "download",
             label: t("editor.download"),

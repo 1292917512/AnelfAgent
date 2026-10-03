@@ -14,7 +14,7 @@ from fastapi import HTTPException, UploadFile
 
 from core.config import ConfigManager
 from services import workspace as ws_mod
-from web.routers.workspace import MoveRequest, get_tree, move_entry, upload_file
+from web.routers.workspace import MoveRequest, get_tree, move_entry, search_files, upload_file
 
 
 @pytest.fixture
@@ -172,3 +172,29 @@ class TestUpload:
         with pytest.raises(HTTPException) as exc_info:
             await upload_file(file=upload, dir="", root="workspace")
         assert exc_info.value.status_code == 400
+
+
+class TestSearchFiles:
+    """/workspace/search：文件名 + 内容匹配，root=project 时搜索项目根。"""
+
+    async def test_name_and_content_hits(self, ws) -> None:
+        (ws / "notes.md").write_text("包含关鍵词 anelf 的笔记")
+        (ws / "other.txt").write_text("无关内容")
+        result = await search_files(q="anelf", limit=30, root="workspace")
+        hits = {h["path"]: h["match"] for h in result["files"]}
+        assert hits["notes.md"] == "content"
+
+    async def test_name_hit(self, ws) -> None:
+        (ws / "anelf-report.txt").write_text("x")
+        result = await search_files(q="anelf", limit=30, root="workspace")
+        assert any(h["path"] == "anelf-report.txt" and h["match"] == "name" for h in result["files"])
+
+    async def test_project_root(self, ws, tmp_path, monkeypatch) -> None:
+        proot = tmp_path / "proj"
+        (proot / "pkg").mkdir(parents=True)
+        (proot / "pkg" / "mod.py").write_text("raise SystemExit  # anelf-marker")
+        monkeypatch.setattr(ws_mod, "project_root", lambda: str(proot))
+        result = await search_files(q="anelf-marker", limit=30, root="project")
+        assert any(h["path"] == "pkg/mod.py" for h in result["files"])
+        # 项目根命中不应混入工作区文件
+        assert all(not h["path"].startswith("sub") for h in result["files"])

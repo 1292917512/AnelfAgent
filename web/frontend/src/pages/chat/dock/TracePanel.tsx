@@ -5,7 +5,8 @@ import {
   Circle, Loader2, MessageSquare, Wrench, Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useThinkingStore, type TraceNode } from "@/stores/thinking-store";
+import { thinkingApi } from "@/lib/api";
+import { useThinkingStore, type SessionSummary, type TraceNode } from "@/stores/thinking-store";
 import { useThinkingBootstrap } from "../useThinkingBootstrap";
 
 const TYPE_ICONS: Record<string, typeof Activity> = {
@@ -45,21 +46,27 @@ function dataSummary(node: TraceNode): string {
 }
 
 function NodeRow({ node, depth }: { node: TraceNode; depth: number }) {
+  const { t } = useTranslation("workbench");
   const [expanded, setExpanded] = useState(false);
   const Icon = TYPE_ICONS[node.type] ?? Activity;
   const summary = dataSummary(node);
+  // LLM 节点的思考全文（有界截断驻留，tracer 内存会话滚动销毁）
+  const reasoning = typeof node.data?.reasoning_content === "string" ? node.data.reasoning_content : "";
+  const reasoningTruncated = node.data?.reasoning_truncated === true;
+  const expandable = Boolean(summary) || Boolean(reasoning);
 
   return (
     <div>
       <button
-        onClick={() => setExpanded((v) => !v)}
+        onClick={() => expandable && setExpanded((v) => !v)}
         className={cn(
-          "flex items-center gap-1.5 w-full px-2 py-1 rounded text-left hover:bg-hover transition-colors",
+          "flex items-center gap-1.5 w-full px-2 py-1 rounded text-left transition-colors",
+          expandable && "hover:bg-hover",
           node.status === "error" && "bg-danger-subtle",
         )}
         style={{ paddingLeft: `${8 + depth * 14}px` }}
       >
-        {summary
+        {expandable
           ? expanded ? <ChevronDown size={11} className="text-muted shrink-0" /> : <ChevronRight size={11} className="text-muted shrink-0" />
           : <span className="w-[11px] shrink-0" />}
         <StatusIcon status={node.status} />
@@ -73,31 +80,75 @@ function NodeRow({ node, depth }: { node: TraceNode; depth: number }) {
           </span>
         )}
       </button>
-      {expanded && summary && (
+      {expanded && (
         <div
-          className="mx-2 mb-1 px-2 py-1.5 rounded bg-elevated border border-border text-[10px] text-muted break-all"
+          className="mx-2 mb-1 space-y-1"
           style={{ marginLeft: `${8 + depth * 14 + 11}px` }}
         >
-          {summary}
+          {summary && (
+            <div className="px-2 py-1.5 rounded bg-elevated border border-border text-[10px] text-muted break-all">
+              {summary}
+            </div>
+          )}
+          {reasoning && (
+            <div className="rounded bg-elevated border border-border overflow-hidden">
+              <div className="px-2 py-1 border-b border-border/50 text-[9px] text-muted flex items-center justify-between">
+                <span>{t("trace.reasoning")}</span>
+                {reasoningTruncated && (
+                  <span className="text-amber-600 dark:text-amber-400">{t("trace.reasoningTruncated")}</span>
+                )}
+              </div>
+              <div className="max-h-64 overflow-y-auto px-2 py-1.5 text-[10px] text-muted whitespace-pre-wrap break-words leading-relaxed">
+                {reasoning}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
   );
 }
 
-/** 迷你思维时间线：活跃会话节点的紧凑列表（错误高亮，点击展开摘要） */
+/** 会话类型徽标文案键（workbench trace.kind.*） */
+function sessionKindKey(s: SessionSummary): string {
+  if (s.is_delegation) return "trace.kindDelegation";
+  if (s.is_introspection) return "trace.kindIntrospection";
+  if (s.is_heartbeat) return "trace.kindHeartbeat";
+  return "trace.kindChat";
+}
+
+function sessionOptionLabel(s: SessionSummary, kindText: string): string {
+  const time = new Date(s.start_time * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const tail = s.ended ? "" : " …";
+  return `${kindText} ${time} · ${s.node_count}${tail}`;
+}
+
+/** 迷你思维时间线：会话切换 + 活跃会话节点的紧凑列表（错误高亮，点击展开摘要/思考） */
 export function TracePanel() {
   const { t } = useTranslation("workbench");
   useThinkingBootstrap();
+  const sessions = useThinkingStore((s) => s.sessions);
+  const activeSessionId = useThinkingStore((s) => s.activeSessionId);
   const activeSession = useThinkingStore((s) => s.activeSession);
   const enabled = useThinkingStore((s) => s.enabled);
 
   if (!enabled) {
     return <p className="p-3 text-xs text-muted">{t("trace.disabled")}</p>;
   }
-  if (!activeSession || activeSession.nodes.length === 0) {
-    return <p className="p-3 text-xs text-muted">{t("trace.empty")}</p>;
-  }
+
+  /** 切换会话：历史会话经 REST 拉全量节点（活跃会话随后仍由 SSE 增量驱动） */
+  const switchSession = (id: string) => {
+    if (!id || id === activeSessionId) return;
+    useThinkingStore.getState().setActiveSessionId(id);
+    thinkingApi.session(id).then((r) => {
+      // 切换竞态：用户可能已再次切走，仅当仍选中该会话时落地
+      if (r.data && !r.data.error && useThinkingStore.getState().activeSessionId === id) {
+        useThinkingStore.getState().setActiveSession(r.data);
+      }
+    }).catch(() => {});
+  };
+
+  const nodes = activeSession?.nodes ?? [];
 
   // 计算嵌套深度
   const depthOf = (node: TraceNode, all: TraceNode[]): number => {
@@ -111,14 +162,30 @@ export function TracePanel() {
     return depth;
   };
 
-  const nodes = activeSession.nodes;
-
   return (
     <div className="flex flex-col h-full">
+      {/* 会话切换器：心跳/内省不会自动顶号，看历史后台会话从这里进 */}
+      {sessions.length > 0 && (
+        <div className="px-2 py-1.5 border-b border-border shrink-0">
+          <select
+            value={activeSessionId ?? ""}
+            onChange={(e) => switchSession(e.target.value)}
+            className="w-full px-1.5 py-1 text-[11px] bg-card border border-border rounded outline-none focus:border-accent text-foreground"
+          >
+            {activeSessionId === null && <option value="">{t("trace.pickSession")}</option>}
+            {sessions.slice(0, 20).map((s) => (
+              <option key={s.id} value={s.id}>
+                {sessionOptionLabel(s, t(sessionKindKey(s)))}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
       <div className="px-3 py-2 border-b border-border flex items-center justify-between shrink-0">
         <span className="text-[11px] text-muted">
-          {t("trace.sessionInfo", { count: nodes.length })}
-          {activeSession.ended && ` · ${t("trace.ended")}`}
+          {activeSession
+            ? t("trace.sessionInfo", { count: nodes.length }) + (activeSession.ended ? ` · ${t("trace.ended")}` : "")
+            : t("trace.empty")}
         </span>
       </div>
       <div className="flex-1 overflow-y-auto py-1">

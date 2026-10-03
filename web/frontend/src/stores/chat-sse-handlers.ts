@@ -7,6 +7,7 @@
 import type {
   ChatBucket,
   ChatMessage,
+  ChatStreaming,
   ChatStreamingTool,
   ContextUsage,
   DelegationNode,
@@ -36,6 +37,7 @@ import { useDelegationStore } from "./delegation-store";
 import { usePlanStore } from "./plan-store";
 import { useWorkbenchStore } from "./workbench-store";
 import { useChangesStore } from "./changes-store";
+import { useTreeChangesStore } from "@/stores/tree-changes-store";
 import { clearSendWatchdog, touchSendWatchdog, nextCid, DEFAULT_CHAT_ID } from "./chat-shared";
 
 export interface ChatSseContext {
@@ -51,16 +53,54 @@ export function routeChatId(data: SseEventBase): string {
 }
 
 /**
- * 把流式区的工具调用记录固化到正式消息上（reply/media 到达时调用）。
- * 工具卡片随消息持久展示（默认折叠），刷新后由历史 [已执行操作摘要] 卡片接续。
+ * 流式累积器归并：incoming turn_id 缺失（tool_call/file_diff 帧后端不带 turn_id）
+ * 或与当前一致时复用当前累积器；仅当非空新 turn_id 到达才开新累积器。
+ * 此前 tool_call 帧 turn_id 恒为 ""，不等于 delta 帧的真实 turn_id——每个工具帧
+ * 都把已累积的 reasoning/text 整体清空（思考固化恒为空、工具被拆成多张单卡）。
  */
-function solidifyToolCalls(b: ChatBucket): { toolCalls?: ChatStreamingTool[]; streaming: null; turnId?: string } {
-  const tools = b.streaming?.tools;
+function mergeStreaming(cur: ChatStreaming | null, turnId: string): ChatStreaming {
+  if (cur && (!turnId || cur.turnId === turnId)) return cur;
+  return { turnId: turnId || cur?.turnId || "", text: "", reasoning: "", tools: [], diffs: [] };
+}
+
+/** 展示侧过滤的流程标记工具（end_reply 是收尾机制不是操作，入卡只会制造噪音） */
+const META_TOOLS_HIDDEN = new Set(["end_reply"]);
+
+/**
+ * 把流式区的本轮工作记录（工具/思考）固化到正式消息上（reply/media/turn_end 到达时调用）。
+ * 工具卡片随消息持久展示（默认折叠），刷新后由历史 [已执行操作摘要] 卡片接续；
+ * 思考为纯内存态：不落库、不进 LLM 上下文，仅保留最近几轮（见 pruneThinking）。
+ */
+function solidifyStreaming(b: ChatBucket): {
+  toolCalls?: ChatStreamingTool[];
+  thinking?: string;
+  turnId?: string;
+} {
+  const s = b.streaming;
   return {
-    toolCalls: tools && tools.length ? [...tools] : undefined,
-    streaming: null,
-    turnId: b.streaming?.turnId,
+    toolCalls: s && s.tools.length ? [...s.tools] : undefined,
+    thinking: s?.reasoning || undefined,
+    turnId: s?.turnId,
   };
+}
+
+/** 思考驻留上限：仅最近 N 轮保留（往前销毁；纯内存态，刷新即消失） */
+const MAX_THINKING_MESSAGES = 5;
+
+/** 思考驻留裁剪：仅保留最近 N 条带 thinking 的消息，更早的销毁（无裁剪时原数组透传） */
+function pruneThinking(messages: ChatMessage[]): ChatMessage[] {
+  let kept = 0;
+  let pruned: ChatMessage[] | null = null;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (!m.thinking) continue;
+    kept += 1;
+    if (kept > MAX_THINKING_MESSAGES) {
+      pruned ??= [...messages];
+      pruned[i] = { ...m, thinking: undefined };
+    }
+  }
+  return pruned ?? messages;
 }
 
 function dispatchUiCommand(data: UiCommandPayload) {
@@ -134,19 +174,20 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
       clearSendWatchdog(chatId);
       const isBackground = chatId !== ctx.getActiveChatId();
       updateBucket(chatId, (b) => {
-        const { toolCalls, streaming, turnId } = solidifyToolCalls(b);
+        const { toolCalls, thinking, turnId } = solidifyStreaming(b);
         const msg: ChatMessage = { role: "assistant", content: data.content, cid: nextCid(), ts: Date.now() / 1000 };
         if (toolCalls) msg.toolCalls = toolCalls;
+        if (thinking) msg.thinking = thinking;
         const changes = turnId ? useChangesStore.getState().settleTurn(turnId) : [];
         if (changes.length) msg.changes = changes;
         return {
-          messages: [
+          messages: pruneThinking([
             ...b.messages.map((m) => (m.queued ? { ...m, queued: undefined } : m)),
             msg,
-          ],
+          ]),
           sending: false,
           sendingSince: null,
-          streaming,
+          streaming: null,
           unread: isBackground ? b.unread + 1 : b.unread,
         };
       });
@@ -158,11 +199,26 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
       const data = (e.data ? JSON.parse(e.data) : {}) as SseTurnEndEvent;
       const chatId = routeChatId(data);
       clearSendWatchdog(chatId);
-      updateBucket(chatId, () => ({
-        sending: false,
-        sendingSince: null,
-        streaming: null,
-      }));
+      updateBucket(chatId, (b) => {
+        // 兜底固化：reply 未到达（异常/静默收尾）时流式区的工具/改动/思考不丢弃，
+        // 合成一条仅卡片的消息承接（正常流程 reply 已固化，streaming 为 null 直接复位）
+        const s = b.streaming;
+        if (s && (s.tools.length > 0 || s.reasoning || s.diffs.length > 0)) {
+          const { toolCalls, thinking, turnId } = solidifyStreaming(b);
+          const changes = turnId ? useChangesStore.getState().settleTurn(turnId) : [];
+          const msg: ChatMessage = { role: "assistant", content: "", cid: nextCid(), ts: Date.now() / 1000 };
+          if (toolCalls) msg.toolCalls = toolCalls;
+          if (thinking) msg.thinking = thinking;
+          if (changes.length) msg.changes = changes;
+          return {
+            messages: pruneThinking([...b.messages, msg]),
+            sending: false,
+            sendingSince: null,
+            streaming: null,
+          };
+        }
+        return { sending: false, sendingSince: null, streaming: null };
+      });
     } catch {
       // 无 chat_id：对所有 sending bucket 复位（兜底）
       ctx.forEachBucket((cid) => {
@@ -178,7 +234,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
       clearSendWatchdog(chatId);
       const isBackground = chatId !== ctx.getActiveChatId();
       updateBucket(chatId, (b) => {
-        const { toolCalls, streaming } = solidifyToolCalls(b);
+        const { toolCalls, thinking } = solidifyStreaming(b);
         const msg: ChatMessage = {
           role: "assistant",
           content: data.caption || "",
@@ -189,14 +245,15 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
           caption: data.caption,
         };
         if (toolCalls) msg.toolCalls = toolCalls;
+        if (thinking) msg.thinking = thinking;
         return {
-          messages: [
+          messages: pruneThinking([
             ...b.messages.map((m) => (m.queued ? { ...m, queued: undefined } : m)),
             msg,
-          ],
+          ]),
           sending: false,
           sendingSince: null,
-          streaming,
+          streaming: null,
           unread: isBackground ? b.unread + 1 : b.unread,
         };
       });
@@ -265,9 +322,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
       const chatId = routeChatId(data);
       touchSendWatchdog(chatId);
       updateBucket(chatId, (b) => {
-        const cur = b.streaming && b.streaming.turnId === data.turn_id
-          ? b.streaming
-          : { turnId: data.turn_id, text: "", reasoning: "", tools: [], diffs: [] };
+        const cur = mergeStreaming(b.streaming, data.turn_id);
         if (data.reset) {
           // 流式回退重试：清空已渲染增量，等待全量文本重新到达
           return { streaming: { ...cur, text: "", reasoning: "" } };
@@ -289,22 +344,35 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
       const data = JSON.parse(e.data) as SseToolCallEvent;
       const chatId = routeChatId(data);
       touchSendWatchdog(chatId);
+      // 流程标记工具不进展示累积（end_reply 等；否则 reply 后会再造一张噪音卡）
+      if (META_TOOLS_HIDDEN.has(data.name)) return;
+      const frame = {
+        call_id: data.call_id,
+        name: data.name,
+        status: data.status,
+        arguments: data.arguments,
+        result_preview: data.result_preview,
+        duration_ms: data.duration_ms,
+      };
       updateBucket(chatId, (b) => {
-        const turnId = data.turn_id ?? "";
-        const cur = b.streaming && b.streaming.turnId === turnId
-          ? b.streaming
-          : { turnId, text: "", reasoning: "", tools: [], diffs: [] };
+        // reply 已固化后到达的 TOOL_END（典型：send_message 的结果帧）：
+        // 回填最后一条消息卡片里对应工具的状态，而不是新开累积器
+        // （否则 turn_end 兜底会再造一张重复卡，且卡片里的工具永远停在 running）
+        if (!b.streaming) {
+          const last = b.messages[b.messages.length - 1];
+          const idx = last?.toolCalls?.findIndex((t) => t.call_id === data.call_id) ?? -1;
+          if (last && idx >= 0) {
+            const toolCalls = [...last.toolCalls!];
+            toolCalls[idx] = { ...toolCalls[idx]!, ...frame };
+            const messages = [...b.messages];
+            messages[messages.length - 1] = { ...last, toolCalls };
+            return { messages };
+          }
+        }
+        const cur = mergeStreaming(b.streaming, data.turn_id ?? "");
         const idx = cur.tools.findIndex((t) => t.call_id === data.call_id);
         const tools = [...cur.tools];
-        const frame = {
-          call_id: data.call_id,
-          name: data.name,
-          status: data.status,
-          arguments: data.arguments,
-          result_preview: data.result_preview,
-          duration_ms: data.duration_ms,
-        };
-        if (idx >= 0) tools[idx] = { ...tools[idx], ...frame };
+        if (idx >= 0) tools[idx] = { ...tools[idx]!, ...frame };
         else tools.push(frame);
         return { streaming: { ...cur, tools } };
       });
@@ -316,7 +384,6 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
       const data = JSON.parse(e.data) as SseFileDiffEvent;
       const chatId = routeChatId(data);
       touchSendWatchdog(chatId);
-      const turnId = data.turn_id ?? "";
       const entry = {
         path: data.path,
         diff: data.diff,
@@ -325,13 +392,14 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
         move_from: data.move_from,
         binary: data.binary,
       };
-      // 聚合进改动集 store（消息时间线的「本轮改动」数据源）+ 编辑器联动刷新信号
-      if (turnId) useChangesStore.getState().recordDiff(turnId, entry);
-      useChangesStore.getState().bumpFileVersion(data.path);
       updateBucket(chatId, (b) => {
-        const cur = b.streaming && b.streaming.turnId === turnId
-          ? b.streaming
-          : { turnId, text: "", reasoning: "", tools: [], diffs: [] };
+        const cur = mergeStreaming(b.streaming, data.turn_id ?? "");
+        // 改动集聚合必须用归并后的真实 turnId：file_diff 帧后端不带 turn_id，
+        // 直接拿帧里的空串会漏聚合（改动集卡片从未出现的原因之一）
+        if (cur.turnId) useChangesStore.getState().recordDiff(cur.turnId, entry);
+        useChangesStore.getState().bumpFileVersion(data.path);
+        // 树变更装饰（徽章/闪现/目录局部刷新的数据源）
+        useTreeChangesStore.getState().record(entry);
         return {
           streaming: {
             ...cur,

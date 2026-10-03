@@ -371,6 +371,15 @@ async def _run_outbound(
 
     async def _invoke(ch: Any, resolved_target_id: str, channel_type: str) -> Any:
         call_kwargs = _prepare_call(fn, dict(kwargs), channel_id)
+        # 多会话窗口路由：fn 声明 session_id 且 LLM 未给时继承当前会话
+        from .output_tools import inherit_current_session
+        session = inherit_current_session(channel_id, resolved_target_id)
+        if session and "session_id" not in call_kwargs:
+            try:
+                if "session_id" in inspect.signature(fn).parameters:
+                    call_kwargs["session_id"] = session
+            except (TypeError, ValueError):
+                pass
         raw = fn(**call_kwargs)
         if inspect.isawaitable(raw):
             raw = await raw

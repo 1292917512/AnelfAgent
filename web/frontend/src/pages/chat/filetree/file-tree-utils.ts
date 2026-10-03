@@ -67,6 +67,70 @@ export function isExpandableDir(node: WorkspaceNode): boolean {
   return node.type === "dir" && (node.children !== undefined || node.has_children === true);
 }
 
+/**
+ * 单子目录链压缩（compacted folders）：a/b/c 折成一行。
+ *
+ * 仅当目录已加载且恰有唯一子目录时合并：节点取最深目录的路径（懒加载/
+ * 右键/拖拽语义全部指向最深目录），显示名合并为 "a/b/c"。未加载的目录
+ * 不合并（展开后数据到位自然延伸链条）。
+ */
+export function compactChains(nodes: WorkspaceNode[]): WorkspaceNode[] {
+  return nodes.map((node) => {
+    if (node.type !== "dir") return node;
+    let cur = node;
+    const names = [node.name];
+    let children = node.children;
+    while (children?.length === 1 && children[0]?.type === "dir") {
+      const child = children[0];
+      names.push(child.name);
+      cur = child;
+      children = child.children;
+    }
+    if (cur === node) {
+      // 无链合并，但子级内部可能有链
+      return node.children ? { ...node, children: compactChains(node.children) } : node;
+    }
+    return {
+      ...cur,
+      name: names.join("/"),
+      children: children ? compactChains(children) : children,
+    };
+  });
+}
+
+/**
+ * 目录链的链尾路径：沿「唯一子目录」下潜到最深（与 compactChains 的合并
+ * 规则一致）。展示树中链节点的 id 即链尾路径——reveal/懒加载展开时
+ * 据此把「打开中间目录」翻译成「打开链尾节点」。
+ */
+export function chainTailPath(node: WorkspaceNode): string {
+  let cur = node;
+  while (cur.children?.length === 1 && cur.children[0]?.type === "dir") {
+    cur = cur.children[0];
+  }
+  return cur.path;
+}
+
+/**
+ * 「只看变更」过滤：保留有改动的文件与其祖先目录。
+ * 目录的命中判定以变更路径前缀为准（未加载的目录也能正确保留）。
+ */
+export function filterChangedTree(
+  nodes: WorkspaceNode[],
+  changed: Record<string, unknown>,
+): WorkspaceNode[] {
+  const dirHasChange = (p: string) => Object.keys(changed).some((k) => k.startsWith(p + "/"));
+  const walk = (list: WorkspaceNode[]): WorkspaceNode[] =>
+    list.flatMap((n) => {
+      if (n.type === "dir") {
+        if (!dirHasChange(n.path)) return [];
+        return [{ ...n, children: n.children ? walk(n.children) : n.children }];
+      }
+      return changed[n.path] !== undefined ? [n] : [];
+    });
+  return walk(nodes);
+}
+
 /** react-arborist childrenAccessor：不可展开的目录返回 null（渲染为叶子，无箭头） */
 export function treeChildren(node: WorkspaceNode): readonly WorkspaceNode[] | null {
   if (node.type !== "dir") return null;

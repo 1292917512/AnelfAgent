@@ -80,5 +80,6 @@
   },
   "contextTab": "Context",
   "planStepsCount": "{{count}} steps",
-  "delegationSession": "Sub-agent"
+  "delegationSession": "Sub-agent",
+  "reasoningTruncated": "Truncated"
 }

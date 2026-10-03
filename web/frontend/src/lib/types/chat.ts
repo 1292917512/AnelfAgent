@@ -48,6 +48,9 @@ export interface ChatMessage {
   toolCalls?: ChatStreamingTool[];
   /** 本轮文件改动集（turn_end 时聚合沉淀；渲染为可折叠改动卡片） */
   changes?: ChatStreamingDiff[];
+  /** 本轮思考过程（reply 到达时从流式区固化）。纯内存态：不落库、不进
+   * LLM 上下文，仅保留最近几轮（往前销毁），刷新即消失 */
+  thinking?: string;
   /** 分享卡片信息（share SSE 事件到达时挂载，渲染为 ShareCard） */
   share?: ChatShareInfo;
 }

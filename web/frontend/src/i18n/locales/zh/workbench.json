@@ -9,7 +9,8 @@
     "settings": "设置"
   },
   "statusbar": {
-    "errors": "{{count}} 个错误"
+    "errors": "{{count}} 个错误",
+    "working": "工作中 "
   },
   "status": {
     "sseConnected": "思维链实时连接中",
@@ -33,7 +34,14 @@
     "disabled": "思维链追踪未启用，可在设置面板开启",
     "empty": "暂无思维链路数据",
     "sessionInfo": "{{count}} 个节点",
-    "ended": "已结束"
+    "ended": "已结束",
+    "reasoning": "思考过程",
+    "reasoningTruncated": "已截断",
+    "kindChat": "对话",
+    "kindHeartbeat": "心跳",
+    "kindIntrospection": "内省",
+    "kindDelegation": "子代理",
+    "pickSession": "选择会话"
   },
   "tasks": {
     "count": "{{count}} 个任务",
@@ -111,7 +119,11 @@
     "deleteFailed": "删除失败",
     "uploadFailed": "上传失败",
     "deleteTitle": "删除确认",
-    "deleteConfirm": "确定删除「{{name}}」吗？此操作不可恢复。"
+    "deleteConfirm": "确定删除「{{name}}」吗？此操作不可恢复。",
+    "noChanges": "暂无变更",
+    "changedOnly": "只看变更",
+    "changedOnlyHint": "仅显示变更（{{count}} 个文件）",
+    "attachToChat": "附加到对话"
   },
   "editor": {
     "save": "保存",

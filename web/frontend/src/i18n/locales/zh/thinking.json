@@ -80,5 +80,6 @@
   },
   "contextTab": "上下文管理",
   "planStepsCount": "{{count}} 步",
-  "delegationSession": "子代理"
+  "delegationSession": "子代理",
+  "reasoningTruncated": "已截断"
 }

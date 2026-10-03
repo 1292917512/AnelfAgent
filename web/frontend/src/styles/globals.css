@@ -256,6 +256,30 @@ body {
   50% { opacity: 0.7; }
 }
 
+/* 文件树节点变更闪现：AI 改动落到树上时的一次性高亮（accent 底色渐隐） */
+@keyframes tree-node-flash {
+  0% { background-color: var(--accent-subtle); }
+  100% { background-color: transparent; }
+}
+.anelf-tree-node-flash {
+  animation: tree-node-flash 1.2s ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .anelf-tree-node-flash { animation: none; }
+}
+
+/* 文件树滚动渐隐：上下边缘的淡出 mask，由 FileTree 滚动回调直写 CSS 变量
+   （--tree-fade-top/bottom），不经过 React 重渲染 */
+.anelf-tree-mask {
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--tree-fade-top, 0px),
+    #000 calc(100% - var(--tree-fade-bottom, 0px)),
+    transparent 100%
+  );
+}
+
 
 /* shimmer 扫光文字（运行态文案的注意力引导；reduced-motion 由组件降级为静态色） */
 .anelf-shimmer-text {

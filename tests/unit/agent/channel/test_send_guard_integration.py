@@ -283,3 +283,61 @@ class TestEmptyConversationGuard:
         payload = json.loads(result)
         assert payload["success"] is True
         assert ch.sent == ["回复正文"]
+
+
+class TestSessionInheritance:
+    """多会话窗口路由：发送管道未显式带 session 时从当前思维 scope 继承。
+
+    AI 调 send_* 只给 channel/target（webui + web_user）——不继承则回复
+    持久化进默认 scope、SSE 帧路由到默认会话窗口（非默认会话回复串台）。
+    """
+
+    def test_inherit_when_adapter_and_base_match(self):
+        token = bind_scope("user_webui:web_user#chat9")
+        try:
+            assert output_tools.inherit_current_session("webui", "web_user") == "chat9"
+        finally:
+            reset_scope(token)
+
+    def test_no_inherit_when_base_differs(self):
+        token = bind_scope("user_webui:web_user#chat9")
+        try:
+            assert output_tools.inherit_current_session("webui", "someone_else") == ""
+        finally:
+            reset_scope(token)
+
+    def test_no_inherit_without_session_in_scope(self):
+        token = bind_scope("user_webui:web_user")
+        try:
+            assert output_tools.inherit_current_session("webui", "web_user") == ""
+        finally:
+            reset_scope(token)
+
+    def test_no_inherit_without_scope(self):
+        assert output_tools.inherit_current_session("webui", "web_user") == ""
+
+    async def test_send_action_inherits_session_to_persistence(self, monkeypatch):
+        recorded: dict = {}
+
+        async def _record(_tid, _content, _ct, session_id: str = "", adapter_key: str = ""):
+            recorded["session_id"] = session_id
+
+        monkeypatch.setattr(output_tools, "_record_sent_reply", _record)
+        token = bind_scope("user_qq:1292917512#chat9")
+        try:
+            result, _ch = await _send("hi", record_content="hi")
+        finally:
+            reset_scope(token)
+        assert json.loads(result)["success"] is not False
+        assert recorded["session_id"] == "chat9"
+
+    async def test_send_action_no_session_without_bound_scope(self, monkeypatch):
+        recorded: dict = {}
+
+        async def _record(_tid, _content, _ct, session_id: str = "", adapter_key: str = ""):
+            recorded["session_id"] = session_id
+
+        monkeypatch.setattr(output_tools, "_record_sent_reply", _record)
+        result, _ch = await _send("hi", record_content="hi")
+        assert json.loads(result)["success"] is not False
+        assert recorded["session_id"] == ""

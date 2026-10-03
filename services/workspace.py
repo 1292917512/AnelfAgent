@@ -335,20 +335,20 @@ class WorkspaceService:
     # 搜索
     # ------------------------------------------------------------------
 
-    def search_files(self, q: str, limit: int = _SEARCH_MAX_RESULTS) -> Dict[str, Any]:
-        """在工作区内执行文件名 + 内容搜索（同步实现，调用方负责 to_thread）。"""
+    def search_files(self, q: str, limit: int = _SEARCH_MAX_RESULTS, root: str = "workspace") -> Dict[str, Any]:
+        """在指定根内执行文件名 + 内容搜索（同步实现，调用方负责 to_thread）。"""
         query = q.lower()
-        root = self.workspace_root()
+        base = self.resolve_root(root)
         name_hits: List[Dict[str, Any]] = []
         content_hits: List[Dict[str, Any]] = []
 
-        for dirpath, dirnames, filenames in os.walk(root):
+        for dirpath, dirnames, filenames in os.walk(base):
             dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS and not d.startswith(".")]
             for fname in filenames:
                 if fname.startswith("."):
                     continue
                 fp = os.path.join(dirpath, fname)
-                rel = self.rel(fp)
+                rel = self.rel(fp, root=base)
                 if query in fname.lower():
                     name_hits.append({"path": rel, "name": fname, "match": "name"})
                     if len(name_hits) >= limit:

@@ -32,7 +32,10 @@
   "stream": {
     "readonlyCollapsed": "{{count}} read-only tool calls, click to expand",
     "collapse": "Collapse",
-    "connectionLost": "Live connection lost, reconnecting (missed messages will be restored)…"
+    "connectionLost": "Live connection lost, reconnecting (missed messages will be restored)…",
+    "thinking": "Thinking…",
+    "thinkingDone": "Thought",
+    "viewInTrace": "View in trace"
   },
   "fileLimit": "You can attach up to {{max}} files",
   "fileTooLarge": "File {{name}} exceeds the {{max}}MB size limit",
@@ -65,6 +68,7 @@
     "micInsecure": "Page is not a secure context: use http://127.0.0.1:8092 / localhost or https",
     "hangup": "Hang up",
     "stateListening": "Listening",
+    "stateFinalizing": "Transcribing",
     "stateThinking": "Thinking",
     "stateSpeaking": "Speaking",
     "micLevel": "Input level",

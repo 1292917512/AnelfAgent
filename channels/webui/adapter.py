@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from typing import Any, Set
 
@@ -207,13 +208,34 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
             "cache_hit_rate": payload.get("cache_hit_rate", 0.0),
         })
 
+    @staticmethod
+    def _relativize_workspace(p: str) -> str:
+        """file_diff 路径契约统一：工作区内绝对路径转相对（posix），区外原样保留。
+
+        工具层（entities/filesystem safe_path）产出规范化绝对路径，而前端
+        文件树/编辑器/改动集全部以工作区相对路径为键——不统一则三类消费
+        （树装饰/编辑器联动刷新/改动集跳转）全部静默失配。
+        """
+        if not p or not os.path.isabs(p):
+            return p
+        try:
+            from entities.filesystem.paths import get_workspace_root
+            rel = os.path.relpath(p, get_workspace_root())
+        except Exception:
+            return p
+        if rel == "." or rel.startswith(".."):
+            return p
+        return rel.replace(os.sep, "/")
+
     async def _on_file_diff(self, payload: dict) -> None:
         await self._broadcast_scoped("file_diff", {
             "scope": payload.get("scope", ""),
-            "path": payload.get("path", ""),
+            "path": self._relativize_workspace(payload.get("path", "")),
             "diff": payload.get("diff", ""),
             "additions": payload.get("additions", 0),
             "removals": payload.get("removals", 0),
+            "move_from": self._relativize_workspace(payload.get("move_from") or "") or None,
+            "binary": payload.get("binary", False),
         })
 
     async def _on_tool_end(self, payload: dict) -> None:

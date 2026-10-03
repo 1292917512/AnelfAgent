@@ -30,8 +30,8 @@ export const workspaceApi = {
       headers: { "Content-Type": "multipart/form-data" },
     });
   },
-  search: (q: string, limit = 30) =>
-    api.get<{ query: string; files: WorkspaceSearchHit[] }>("/workspace/search", { params: { q, limit } }),
+  search: (q: string, limit = 30, root: WorkspaceRoot = "workspace") =>
+    api.get<{ query: string; files: WorkspaceSearchHit[] }>("/workspace/search", { params: { q, limit, root } }),
   /** 原始字节服务 URL（图片/音视频预览；inline 供 iframe 内联渲染，如 PDF） */
   rawUrl: (path: string, inline = false, root: WorkspaceRoot = "workspace") =>
     `/api/workspace/raw?path=${encodeURIComponent(path)}&root=${root}${inline ? "&inline=1" : ""}`,

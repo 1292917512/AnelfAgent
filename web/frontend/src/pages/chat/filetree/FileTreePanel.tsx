@@ -4,6 +4,7 @@ import {
   FilePlus2,
   FolderPlus,
   ListCollapse,
+  ListFilter,
   Loader2,
   RefreshCw,
   Search,
@@ -16,6 +17,7 @@ import type { WorkspaceRoot, WorkspaceSearchHit } from "@/lib/types";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { useFileTreeStore } from "./file-tree-store";
 import { fileIcon } from "./file-tree-utils";
+import { hasTreeChanges, useTreeChangesStore } from "@/stores/tree-changes-store";
 import { FileTree } from "./FileTree";
 
 /** 工具栏图标按钮 */
@@ -42,7 +44,7 @@ function ToolButton({
   );
 }
 
-/** 文件搜索结果列表（仅工作区根支持） */
+/** 文件搜索结果列表（按当前根搜索，点击结果打开文件并回树定位） */
 function SearchResults({ root, onDone }: { root: WorkspaceRoot; onDone: () => void }) {
   const { t } = useTranslation("workbench");
   const [query, setQuery] = useState("");
@@ -60,13 +62,13 @@ function SearchResults({ root, onDone }: { root: WorkspaceRoot; onDone: () => vo
     setSearching(true);
     const timer = setTimeout(() => {
       workspaceApi
-        .search(q)
+        .search(q, 30, root)
         .then((r) => setHits(r.data.files))
         .catch(() => setHits([]))
         .finally(() => setSearching(false));
     }, 300);
     return () => clearTimeout(timer);
-  }, [query]);
+  }, [query, root]);
 
   return (
     <div className="flex flex-col h-full">
@@ -121,19 +123,21 @@ function SearchResults({ root, onDone }: { root: WorkspaceRoot; onDone: () => vo
   );
 }
 
-/** 左侧文件树面板：根切换 + 操作工具栏 + 搜索 + 虚拟化懒加载树 */
+/** 左侧文件树面板：根切换 + 操作工具栏 + 搜索 + 变更过滤 + 虚拟化懒加载树 */
 export function FileTreePanel() {
   const { t } = useTranslation("workbench");
   const [root, setRoot] = useState<WorkspaceRoot>("workspace");
   const [searchMode, setSearchMode] = useState(false);
+  const [changedOnly, setChangedOnly] = useState(false);
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const uploadDirRef = useRef("");
   const truncated = useFileTreeStore((s) => s.trees[root].truncated);
+  const changeEntries = useTreeChangesStore((s) => s.entries);
   const store = useFileTreeStore.getState();
 
-  // 切换根时退出搜索（后端搜索仅支持工作区）
+  // 变更过滤只对 workspace 根有意义：切根时复位（按钮在 project 根禁用，防止卡在开态）
   useEffect(() => {
-    if (root !== "workspace") setSearchMode(false);
+    if (root !== "workspace") setChangedOnly(false);
   }, [root]);
 
   const createEntry = async (kind: "file" | "folder") => {
@@ -195,9 +199,22 @@ export function FileTreePanel() {
           <ToolButton title={t("files.collapseAll")} onClick={() => store.collapseAll()}>
             <ListCollapse size={14} />
           </ToolButton>
+          {/* 只看变更：AI 编辑只落在工作区根；无变更时禁用 */}
+          <button
+            title={t("files.changedOnly")}
+            disabled={root !== "workspace" || !hasTreeChanges(changeEntries)}
+            onClick={() => setChangedOnly((v) => !v)}
+            className={cn(
+              "p-1.5 rounded transition-colors disabled:opacity-40 disabled:hover:bg-transparent",
+              changedOnly
+                ? "text-accent bg-accent-subtle"
+                : "text-muted hover:text-foreground hover:bg-hover disabled:hover:text-muted",
+            )}
+          >
+            <ListFilter size={14} />
+          </button>
           <ToolButton
             title={t("files.search")}
-            disabled={root !== "workspace"}
             onClick={() => setSearchMode((v) => !v)}
           >
             {searchMode ? <X size={14} /> : <Search size={14} />}
@@ -208,11 +225,15 @@ export function FileTreePanel() {
       {searchMode ? (
         <SearchResults root={root} onDone={() => setSearchMode(false)} />
       ) : (
-        <FileTree root={root} onUpload={pickUpload} />
+        <FileTree root={root} onUpload={pickUpload} changedOnly={changedOnly} />
       )}
 
       <div className="px-3 py-1.5 border-t border-border text-[10px] text-muted shrink-0 truncate">
-        {truncated ? t("files.truncated") : t("files.dragHint")}
+        {changedOnly
+          ? t("files.changedOnlyHint", { count: Object.keys(changeEntries).length })
+          : truncated
+            ? t("files.truncated")
+            : t("files.dragHint")}
       </div>
 
       <input

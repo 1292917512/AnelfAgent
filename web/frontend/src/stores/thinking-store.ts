@@ -176,7 +176,10 @@ export const useThinkingStore = create<ThinkingState>((set, get) => ({
     set((state) => {
       const sessions = [session, ...state.sessions].slice(0, MAX_SESSIONS);
       const newSession: ThinkingSession = { ...session, nodes: [node], available_tools: [] };
-      if (state.autoFollow) {
+      // 跟随策略：心跳/内省永不抢占面板（高频后台会话会把用户正看的
+      // 对话链路顶掉——「捕捉不到了」的根因）；只看历史心跳可经会话切换器
+      const isBackgroundKind = Boolean(session.is_heartbeat || session.is_introspection);
+      if (state.autoFollow && !isBackgroundKind) {
         return { sessions, activeSessionId: session.id, activeSession: newSession };
       }
       return { sessions };

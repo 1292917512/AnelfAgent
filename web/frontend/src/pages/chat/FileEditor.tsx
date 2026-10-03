@@ -193,13 +193,20 @@ export function FileEditor() {
     toast.success(t("editor.attach"));
   }, [cur, curRoot, attachWorkspaceFile, t]);
 
-  /** 将文件内容以代码块形式引用到对话输入框 */
+  /** 引用到对话：有选区引选区（带路径+行号标注），无选区引全文（带路径标注）。
+   * 标注用 mention 链接格式，气泡侧 MentionMarkdown 直接渲染成可点击 chip。 */
   const quoteToChat = useCallback(() => {
     if (!cur || cur.file.binary) return;
     const ext = cur.file.path.split(".").pop()?.toLowerCase() || "";
-    setInputDraft("```" + ext + "\n" + cur.draft + "\n```");
+    const sel = useWorkbenchStore.getState().selection;
+    const range = sel && sel.path === cur.file.path && sel.content ? (sel.ranges[0] ?? null) : null;
+    // project 根的 mention 路径带 project: 前缀（MentionMarkdown 解析所属根）
+    const refPath = curRoot === "project" ? `project:${cur.file.path}` : cur.file.path;
+    const label = range ? `${cur.file.name}:L${range.start_line}-L${range.end_line}` : cur.file.name;
+    const body = range ? sel!.content : cur.draft;
+    setInputDraft(`[${label}](./${refPath})\n\`\`\`${ext}\n${body}\n\`\`\``);
     toast.success(t("editor.quote"));
-  }, [cur, setInputDraft, t]);
+  }, [cur, curRoot, setInputDraft, t]);
 
   const copyContent = useCallback(() => {
     if (!cur || cur.file.binary) return;
