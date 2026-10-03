@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Any, Dict, Optional, Set
+from typing import TYPE_CHECKING, Any, Dict, Optional, Set, Tuple
 
 import aiohttp
 from aiohttp import web
@@ -211,6 +211,10 @@ class OneBotV11Channel(QQToolsMixin, BaseChannel[QQConfig]):
     async def _call_api_data(self, action: str, params: Dict[str, Any]) -> Optional[Any]:
         """调用 API 并返回 data 字段，失败返回 None。"""
         return await self._transport.call_api_data(action, params)
+
+    async def _call_api_detail(self, action: str, params: Dict[str, Any]) -> Tuple[Optional[Any], str]:
+        """调用 API 并返回 (data, 失败原因)，供工具层组装带原因的错误提示。"""
+        return await self._transport.call_api_data_detail(action, params)
 
     async def _call_api_raw(self, action: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """调用 API 并返回完整响应（HTTP 优先，降级 WS）。"""

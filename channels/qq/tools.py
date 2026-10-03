@@ -553,9 +553,10 @@ def _build_tool(spec: _Tool) -> Callable[..., Any]:
                 return _err(_err_text(spec.err, raw))
             return _ok({name: raw[name] for name in spec.ok_echo})
 
-        data = await self._call_api_data(spec.action, api_params)
+        data, detail = await self._call_api_detail(spec.action, api_params)
         if data is None:
-            return _err(_err_text(spec.err, raw))
+            base = _err_text(spec.err, raw)
+            return _err(f"{base}: {detail}" if detail else base)
 
         if spec.mode == "raw":
             return _ok_raw(data)
@@ -604,8 +605,8 @@ def _build_tool(spec: _Tool) -> Callable[..., Any]:
 class QQToolsMixin:
     """QQ 频道工具层：表驱动 OneBot API 工具 + 特殊工具手写实现。
 
-    依赖频道实例提供 ``_call_api`` / ``_call_api_data`` / ``_call_api_raw`` /
-    ``_cfg`` / ``channel_id`` / ``_self_id``，由频道类经多继承装配。
+    依赖频道实例提供 ``_call_api`` / ``_call_api_data`` / ``_call_api_detail`` /
+    ``_call_api_raw`` / ``_cfg`` / ``channel_id`` / ``_self_id``，由频道类经多继承装配。
     """
 
     if TYPE_CHECKING:

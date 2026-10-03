@@ -680,6 +680,17 @@ llm_clients.json/ModelType——该体系全部模型被假设可走 litellm 对
 
 > Model Experience：① AI 无新增工具 schema（呈现/分类/降权全在管线内）；② token 影响：discipline/freshness 两块按需注入（无指令/无重复话题零字节）；③ 缓存影响：discipline 在稳定前缀区（低频变化），freshness 在尾部动态区；④ 反馈回路让"她记错了"第一次有了纠正通道——用户否认即负向证据，14 天 sub_zero 归档倒计时通电
 
+#### CI 两红修复：实体审批桥与凭据依赖测试（第四十四轮新增）
+
+CI（run #122）lint 与 tests(all) 双腿挂点复查与修复（提交 `263ae7e`）：
+
+| 教训 | 位置 | 说明 |
+|------|------|------|
+| 分层契约的版本差异 | `entities/_sdk.py::request_tool_approval` + `entities/codebox/sandbox.py` | codebox 初版在 sandbox 内直接 `from agent.approval.gate import ...`——本地 import-linter **2.14 不检**（惰性 in-function import 漏网），CI 重解析到 **2.15（grimp 3.17）检出违层**。修复按 `get_llm_manager` 同款模式：实体访问 agent 一律收编 `_sdk` 惰性桥（契约 `entities._sdk -> agent.**` 唯一豁免）。**纪律：实体里写 `from agent.` 前必须想到 _sdk 桥，且以新版 import-linter 验证** |
+| 凭据依赖测试 | `tests/unit/entities/audiosync/test_qwen_asr_stream.py` | `test_per_session_independent_connections` 调 `open_session` 走真实凭据解析（组件凭据/llm_clients/env），本机有 dashscope 凭据所以绿、CI 无凭据必 RuntimeError——**凡触达凭据解析链的测试必须桩 `_resolve_api_key` 层**（同文件其它用例构造 `_QwenAsrConnection("test-key")` 直绕，无此问题） |
+
+> CI 调试方法论：仓库已公开，`actions/runs` API + check-runs annotations 无需登录即可读失败用例（ci.yml 的 ::error 注解设计）；容器复现要防 OrbStack 代理注入（小写 http_proxy 污染 proxy 相关测试）与 slim 镜像缺 git 的假象
+
 #### 代码编排模式 / 工具组双向阀 / 换向折叠（第四十三轮新增）
 
 对照 pi（codemode/会话分支）按 Anelf 既有机制重做设计（对照档 `projects/pi-vs-anelf-comparison.md`），不搬外壳：模式=沉睡分组，分支=web 域读侧过滤。

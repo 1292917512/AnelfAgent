@@ -6,7 +6,7 @@ import asyncio
 import hmac
 import json
 import uuid
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 import aiohttp
 from aiohttp import web
@@ -19,6 +19,12 @@ from .parser import parse_event_async
 
 if TYPE_CHECKING:
     from .adapter import OneBotV11Channel
+
+
+def _api_failure_text(result: Dict[str, Any]) -> str:
+    """从 OneBot 失败响应提取原因文本（retcode + wording/message）。"""
+    wording = result.get("wording") or result.get("message") or ""
+    return f"retcode={result.get('retcode')}" + (f" {wording}" if wording else "")
 
 
 class QQTransport:
@@ -289,10 +295,25 @@ class QQTransport:
 
     async def call_api_data(self, action: str, params: Dict[str, Any]) -> Optional[Any]:
         """调用 API 并返回 data 字段，失败返回 None。"""
+        data, _ = await self.call_api_data_detail(action, params)
+        return data
+
+    async def call_api_data_detail(
+        self, action: str, params: Dict[str, Any]
+    ) -> Tuple[Optional[Any], str]:
+        """调用 API 并返回 (data, 失败原因)；成功原因为空串。
+
+        retcode 非 0 时提取 wording/message 并记 WARNING；传输层失败
+        （无响应）由底层记日志，此处返回通用原因。
+        """
         result = await self.call_api_raw(action, params)
         if result and result.get("retcode") == 0:
-            return result.get("data")
-        return None
+            return result.get("data"), ""
+        if result:
+            detail = _api_failure_text(result)
+            log(f"OneBot v11 API 失败: {action} -> {detail}", "WARNING")
+            return None, detail
+        return None, "API 无响应（连接断开或超时，详见日志）"
 
     async def call_api_raw(self, action: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """调用 API 并返回完整响应（HTTP 优先，降级 WS）。"""
