@@ -144,6 +144,16 @@ class TestDecorateMessages:
         twice = decorate_messages(once, anthropic=True)
         assert count_breakpoints(twice) == 3
 
+    def test_tail_anchor_off_skips_chain_tail(self) -> None:
+        """一次性调用（tail_anchor=False）：层锚点保留吃缓存读，链尾增量
+        锚点省略——它写入的条目没有任何后续请求会读（纯写入费）。"""
+        msgs = decorate_messages(_layered_messages(), anthropic=True, tail_anchor=False)
+        bp = [m for m in msgs if m.get("cache_control")]
+        assert len(bp) == 2
+        assert bp[0]["content"] == "工具目录"    # stable 层末
+        assert bp[1]["content"] == "历史2"       # conversation 末
+        assert all(m["content"] != "结果" for m in bp)  # 链尾无断点
+
     def test_unlayered_aux_call_marks_last_message(self) -> None:
         """无层标签的辅助调用（折叠/评审）：末消息锚点兜底。"""
         msgs = [{"role": "user", "content": "评审这段对话"}]

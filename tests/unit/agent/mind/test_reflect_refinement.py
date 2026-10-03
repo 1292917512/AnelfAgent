@@ -282,6 +282,35 @@ class TestAfterBoundary:
             )
         assert mind.llm_calls == 3
 
+    async def test_after_message_intercepts_end_reply(self) -> None:
+        """end_reply 收束边界同样消费 after 档：追加指令注入续跑，
+        而非随收束清箱静默丢弃（回归：此前 end_reply 路径不 drain）。"""
+        from agent.delegation.steer import SteerInbox, bind_steer_drain
+
+        inbox = SteerInbox()
+        inbox.push("da", "补充：顺便统计总数", mode="after")
+        mind = _reflect_mind([
+            end_reply_result(),
+            # after 注入续跑后：再 3 轮纯文本按常规收束
+            text_result("补充后的完整结论。"),
+            text_result("补充后的完整结论。"),
+            text_result("补充后的完整结论。"),
+        ])
+        collected: list = []
+        chain: list = []
+        with bind_steer_drain(lambda mode: inbox.drain("da", mode)):
+            await run_think_loop(
+                mind, mode=ThinkMode.REFLECT, base_messages=_base(),
+                collected_text=collected, chain=chain,
+            )
+        assert mind.llm_calls == 4  # end_reply 未立即收束
+        assert any(
+            m.get("role") == "user" and "追加指令" in str(m.get("content"))
+            for m in chain
+        )
+        assert "补充后的完整结论。" in "".join(collected)
+        assert not inbox.drain("da", "after")  # 收束时箱已空，无静默丢弃
+
 
 class TestCompletionMessages:
     """completion 容器带出最终消息链（transcript 持久化数据源）。"""

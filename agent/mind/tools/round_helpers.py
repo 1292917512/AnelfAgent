@@ -565,6 +565,13 @@ def _maybe_reset_guardrail_for_interjection(guardrail, new_msgs: List[Dict]) -> 
     return False
 
 
+# 单轮并入上限：消息洪峰（群聊刷屏/离线堆积/连发长文）分批并入，避免一轮
+# 塞进无界内容挤爆上下文；超出部分不推进水位，后续轮次/下一周期接续。
+# 对齐 steer 档的有界纪律（8 条/4000 字）：主会话插话不应比委托转向更宽。
+_MAX_MERGED_MESSAGES = 20
+_MAX_MERGED_CHARS = 20000
+
+
 async def _merge_new_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> None:
     """并入循环期间到达的新用户消息（含携带媒体），更新工具集与并入水位。"""
     from core.sanitizer import clean_surrogates, has_surrogates
@@ -577,7 +584,19 @@ async def _merge_new_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> No
     )
     if not new_msgs:
         return
+    # 有界并入：首条强制并入保证进度；达到条数/字符上限即停，留存消息
+    # 不推进水位（下轮再取），且保留待处理队列条目（循环结束另起周期接续）
+    merged: List[Dict] = []
+    merged_chars = 0
     for m in new_msgs:
+        content_len = len(m["content"]) if isinstance(m.get("content"), str) else 0
+        if merged and (len(merged) >= _MAX_MERGED_MESSAGES
+                       or merged_chars + content_len > _MAX_MERGED_CHARS):
+            break
+        merged.append(m)
+        merged_chars += content_len
+    deferred = len(new_msgs) - len(merged)
+    for m in merged:
         content = m["content"]
         # 孤代理字符在并入入口清洗一次（发送边界的全量扫描是兜底；
         # 入口清洗同时保证 FTS/embedding/摘要链路拿到干净文本）
@@ -586,13 +605,14 @@ async def _merge_new_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> No
         ctx.tool_chain.append({"role": "user", "content": content})
     # 用户插话重置守卫链：用户新消息改变了语境，
     # 跨插话的"重复调用"不再构成死循环
-    if _maybe_reset_guardrail_for_interjection(ctx.guardrail, new_msgs):
+    if _maybe_reset_guardrail_for_interjection(ctx.guardrail, merged):
         log("用户插话，重置工具守卫链", "DEBUG", tag="守卫")
-    state.last_merged_ts = new_msgs[-1]["ts_ns"]
-    if new_msgs[-1].get("id"):
-        state.last_merged_id = int(new_msgs[-1]["id"])
-    # 消费掉对应的待处理队列条目，避免该消息之后另起独立周期
-    _consume_pending_for_scope(mind, ctx.anything)
+    state.last_merged_ts = merged[-1]["ts_ns"]
+    if merged[-1].get("id"):
+        state.last_merged_id = int(merged[-1]["id"])
+    # 全部并入才消费待处理队列条目；有留存时保留，避免留存消息无人回复
+    if not deferred:
+        _consume_pending_for_scope(mind, ctx.anything)
     # 新消息携带的媒体：激活对应媒体工具并重建工具集供后续轮次使用
     # （媒体标签已随内容并入上下文，待处理媒体不留存到后续周期）
     try:
@@ -609,8 +629,11 @@ async def _merge_new_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> No
         ctx.active_tools = await mind.pfc.get_active_tool_schemas(
             ctx.adapter_key, scope=mind._resolve_entity_scope(ctx.anything),
         )
-    log(f"并入 {len(new_msgs)} 条循环期间新消息到当前上下文", tag="思维")
-    ctx.execution_steps.append(f"→ 第{state.iteration + 1}轮前: 并入 {len(new_msgs)} 条新消息")
+    deferred_note = f"，{deferred} 条留存下轮接续" if deferred else ""
+    log(f"并入 {len(merged)} 条循环期间新消息到当前上下文{deferred_note}", tag="思维")
+    ctx.execution_steps.append(
+        f"→ 第{state.iteration + 1}轮前: 并入 {len(merged)} 条新消息{deferred_note}"
+    )
 
 
 async def _merge_pushes(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> None:

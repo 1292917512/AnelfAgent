@@ -125,7 +125,22 @@ class TestLoopbackCallback:
             task = asyncio.ensure_future(server.wait_callback(timeout=10))
             await asyncio.sleep(0.1)
             urllib.request.urlopen(url, timeout=5).read()
-            assert await task == "abc"
+            assert await task == ("abc", None)
+        finally:
+            server.close()
+
+    async def test_callback_captures_iss(self, oauth_env):
+        """iss 参数随回调透传（RFC 9207 校验的输入）；缺失时为 None。"""
+        server = oauth.LoopbackCallbackServer()
+        server.start()
+        try:
+            server.expect_state("xyz")
+            url = (f"http://127.0.0.1:{server.port}/callback"
+                   "?code=abc&state=xyz&iss=https%3A%2F%2Fas.example.com")
+            task = asyncio.ensure_future(server.wait_callback(timeout=10))
+            await asyncio.sleep(0.1)
+            urllib.request.urlopen(url, timeout=5).read()
+            assert await task == ("abc", "https://as.example.com")
         finally:
             server.close()
 
@@ -144,7 +159,7 @@ class TestLoopbackCallback:
             assert not task.done()
             urllib.request.urlopen(
                 f"http://127.0.0.1:{server.port}/callback?code=ok&state=good", timeout=5).read()
-            assert await task == "ok"
+            assert await task == ("ok", None)
         finally:
             server.close()
 
@@ -364,6 +379,77 @@ class TestDiscovery:
         with pytest.raises(oauth.OAuthConfigurationError):
             await oauth._discover_server_meta("https://mcp.example.com/mcp")
 
+    async def test_metadata_url_override_skips_discovery(self, oauth_env, monkeypatch):
+        """配置 auth_server_metadata_url：跳过 well-known 链直接使用该文档，
+        其 issuer 按文档声明采信（服务器 advertise 错/无元数据时的逃生门）。"""
+        requested = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requested.append(request.url.path)
+            if request.url.path == "/custom/as-meta.json":
+                return _json_response(200, {
+                    "issuer": "https://real-as.example.com",
+                    "authorization_endpoint": "https://real-as.example.com/authorize",
+                    "token_endpoint": "https://real-as.example.com/token",
+                    "authorization_response_iss_parameter_supported": True,
+                })
+            return _json_response(404, {})
+
+        install_mock_http(monkeypatch, handler)
+        meta = await oauth._discover_server_meta(
+            "https://mcp.example.com/mcp",
+            {"auth_server_metadata_url": "https://mcp.example.com/custom/as-meta.json"})
+        assert meta["issuer"] == "https://real-as.example.com"
+        assert meta["authorization_response_iss_parameter_supported"] is True
+        assert meta["registration_endpoint"] is None  # 覆盖文档未声明则不发明
+        assert "/custom/as-meta.json" in requested
+        assert not any("oauth-authorization-server" in p or "openid-configuration" in p
+                       for p in requested)
+
+    async def test_metadata_url_override_invalid_doc_fails_loud(self, oauth_env, monkeypatch):
+        """显式配置的元数据文档无效：配置错误响亮失败，不静默回落发现链。"""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/custom/as-meta.json":
+                return _json_response(200, {"status": "0", "info": "INVALID_USER_KEY"})
+            return _json_response(404, {})
+
+        install_mock_http(monkeypatch, handler)
+        with pytest.raises(oauth.OAuthConfigurationError) as err:
+            await oauth._discover_server_meta(
+                "https://mcp.example.com/mcp",
+                {"auth_server_metadata_url": "https://mcp.example.com/custom/as-meta.json"})
+        assert "元数据文档无效" in str(err.value)
+
+    async def test_override_bypasses_cached_server_meta(self, oauth_env, monkeypatch):
+        """持久化的旧 server_meta 在显式覆盖配置下不再复用：以配置文档为准。"""
+        oauth._write_entry("srv", {"server_meta": {
+            "issuer": "https://stale-as.example.com",
+            "authorization_endpoint": "https://stale-as.example.com/authorize",
+            "token_endpoint": "https://stale-as.example.com/token",
+        }})
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/custom/as-meta.json":
+                return _json_response(200, {
+                    "issuer": "https://fresh-as.example.com",
+                    "authorization_endpoint": "https://fresh-as.example.com/authorize",
+                    "token_endpoint": "https://fresh-as.example.com/token",
+                })
+            return _json_response(404, {})
+
+        install_mock_http(monkeypatch, handler)
+        monkeypatch.setattr(oauth, "webbrowser", types.SimpleNamespace(open=lambda url: None))
+        session = oauth.AuthorizationSession(
+            "srv", "https://mcp.example.com/mcp",
+            {"client_id": "cid",
+             "auth_server_metadata_url": "https://mcp.example.com/custom/as-meta.json"})
+        try:
+            await session.prepare()
+            assert session._server_meta["issuer"] == "https://fresh-as.example.com"
+            assert "fresh-as.example.com/authorize?" in session.authorize_url
+        finally:
+            await session.aclose()
+
 
 # ------------------------------------------------------------------
 # 刷新分类（invalid_grant / invalid_client / 临时故障 / 成功）
@@ -566,7 +652,7 @@ class TestBearerGate:
 
     async def test_prepare_rejects_missing_registration_endpoint(self, oauth_env, monkeypatch):
         """PRM 存在但 AS 元数据缺失：不发明注册端点，报 DCR 不支持。"""
-        async def fake_discover(url):
+        async def fake_discover(url, oauth_cfg=None):
             return {
                 "issuer": "https://as.example.com",
                 "authorization_endpoint": "https://as.example.com/authorize",
@@ -779,3 +865,100 @@ class TestAuthorizationSession:
         assert oauth.pending_auth("srv")
         await session.aclose()
         assert oauth.pending_auth("srv") == {}
+
+
+# ------------------------------------------------------------------
+# 授权响应 iss 校验（RFC 9207）
+# ------------------------------------------------------------------
+
+class TestAuthorizationResponseIss:
+    async def _prepared_session(self, oauth_env, monkeypatch,
+                                meta_extra=None, token_calls=None):
+        meta = {
+            "issuer": "https://as.example.com",
+            "authorization_endpoint": "https://as.example.com/authorize",
+            "token_endpoint": "https://as.example.com/token",
+            **(meta_extra or {}),
+        }
+        oauth._write_entry("srv", {"server_meta": meta})
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if token_calls is not None:
+                token_calls.append(request.url.path)
+            return _json_response(200, {"access_token": "new", "token_type": "Bearer"})
+
+        install_mock_http(monkeypatch, handler)
+        monkeypatch.setattr(oauth, "webbrowser", types.SimpleNamespace(open=lambda url: None))
+        session = oauth.AuthorizationSession(
+            "srv", "https://mcp.example.com/mcp", {"client_id": "cid"})
+        await session.prepare()
+        return session
+
+    async def _fire_callback(self, session, query: str):
+        import urllib.parse
+        parsed = urllib.parse.urlparse(session.authorize_url)
+        state = dict(urllib.parse.parse_qsl(parsed.query))["state"]
+        task = asyncio.ensure_future(session.wait_and_exchange())
+        await asyncio.sleep(0.1)
+        urllib.request.urlopen(
+            f"http://127.0.0.1:{session._callback.port}/callback?state={state}&{query}",
+            timeout=5).read()
+        return task
+
+    async def test_mismatched_iss_rejected_before_exchange(self, oauth_env, monkeypatch):
+        """回调 iss 指向另一个授权服务器：换 token 前拒绝（code 绝不外送）。"""
+        token_calls = []
+        session = await self._prepared_session(oauth_env, monkeypatch,
+                                               token_calls=token_calls)
+        try:
+            task = await self._fire_callback(
+                session, "code=c&iss=https%3A%2F%2Fevil.example.com")
+            with pytest.raises(PermissionError) as err:
+                await task
+            assert "RFC 9207" in str(err.value)
+            assert token_calls == []  # 未发起换 token
+            assert oauth.pending_auth("srv") == {}  # 待授权登记已清
+        finally:
+            await session.aclose()
+
+    async def test_supported_but_missing_iss_rejected(self, oauth_env, monkeypatch):
+        """元数据声明支持 iss 参数而回调缺失：同样拒绝（防降级剥离）。"""
+        token_calls = []
+        session = await self._prepared_session(
+            oauth_env, monkeypatch,
+            meta_extra={"authorization_response_iss_parameter_supported": True},
+            token_calls=token_calls)
+        try:
+            task = await self._fire_callback(session, "code=c")
+            with pytest.raises(PermissionError):
+                await task
+            assert token_calls == []
+        finally:
+            await session.aclose()
+
+    async def test_matching_iss_exchanges(self, oauth_env, monkeypatch):
+        """iss 与发现的 issuer 一致：正常换 token。"""
+        token_calls = []
+        session = await self._prepared_session(oauth_env, monkeypatch,
+                                               token_calls=token_calls)
+        try:
+            task = await self._fire_callback(
+                session, "code=c&iss=https%3A%2F%2Fas.example.com")
+            tokens = await task
+            assert tokens.access_token == "new"
+            assert token_calls == ["/token"]
+        finally:
+            await session.aclose()
+
+    async def test_no_iss_no_support_passes(self, oauth_env, monkeypatch):
+        """服务器未声明支持且回调无 iss：不校验（兼容非 RFC 9207 服务器）。"""
+        token_calls = []
+        session = await self._prepared_session(oauth_env, monkeypatch,
+                                               token_calls=token_calls)
+        try:
+            task = await self._fire_callback(session, "code=c")
+            tokens = await task
+            assert tokens.access_token == "new"
+            assert token_calls == ["/token"]
+        finally:
+            await session.aclose()

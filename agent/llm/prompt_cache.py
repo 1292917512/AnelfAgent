@@ -160,13 +160,17 @@ def apply_tools_breakpoint(
     return [*tools[:-1], {**tools[-1], "cache_control": marker or cache_marker(api_type)}]
 
 
-def _select_anchor_targets(messages: List[Dict]) -> List[Dict]:
+def _select_anchor_targets(messages: List[Dict], *, tail_anchor: bool = True) -> List[Dict]:
     """按声明式锚点表选出断点目标消息（≤ MAX_BREAKPOINTS 个）。
 
     布局：stable/context 层末消息（覆盖整层前缀）→ 历史末消息
     （conversation 末尾，无历史回退 summary；配置可关）→ 链尾
     （无 _layer 标签的末消息 = think_loop 逐轮追加的工具链；
     随链增长前移，下轮命中本轮增量缓存）。
+
+    tail_anchor=False 用于一次性调用（前缀+尾部指令不会再被原样重发，
+    如压缩摘要）：层锚点保留以命中既有缓存读，链尾增量锚点省略——
+    它写入的缓存条目没有任何后续请求会读，是纯写入费。
     """
     targets: List[Dict] = []
 
@@ -192,20 +196,24 @@ def _select_anchor_targets(messages: List[Dict]) -> List[Dict]:
             targets.append(target)
     # 链尾锚点：无 _layer 的末消息（管线构建的消息全部带标签，
     # 无标签即 think_loop 追加的工具链/并入的新消息）
-    chain_tail = _last_of(lambda m: m.get("_layer") is None)
-    if chain_tail is not None:
-        targets.append(chain_tail)
+    if tail_anchor:
+        chain_tail = _last_of(lambda m: m.get("_layer") is None)
+        if chain_tail is not None:
+            targets.append(chain_tail)
     return targets[:MAX_BREAKPOINTS]
 
 
 def decorate_messages(
     messages: List[Dict], *, anthropic: bool, api_type: str = "", idle_seconds: float = 0.0,
+    tail_anchor: bool = True,
 ) -> List[Dict]:
     """消息缓存断点装饰的唯一入口（发送边界调用，copy-on-write，零拷贝优先）。
 
     - 非 Anthropic 线：消息带断点时返回剥离副本（防御），否则原样返回
     - Anthropic 线：先剥离既有断点（幂等），再按锚点表重放置 ≤4 个
     - idle_seconds：本 scope 距上次请求的闲置秒数，驱动自适应 TTL（cache_marker）
+    - tail_anchor：是否打链尾增量锚点；一次性调用（压缩摘要等）传 False
+      避免写入永不命中的缓存条目
 
     tools 数组断点不归此管（llm_client 传输层按预算门控补位）。
     入参消息与调用方上下文共享 dict，本函数绝不原地改写。
@@ -215,7 +223,7 @@ def decorate_messages(
             return messages
         return strip_cache_control_copy(messages)
 
-    targets = _select_anchor_targets(messages)
+    targets = _select_anchor_targets(messages, tail_anchor=tail_anchor)
     target_ids = {id(m) for m in targets}
     decorated: List[Dict] = []
     for msg in messages:

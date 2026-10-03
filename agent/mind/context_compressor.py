@@ -1026,13 +1026,17 @@ class ContextCompressor:
             ),
         }
         # tool_choice="none"：tools 数组随前缀保留（缺它前缀从第 0 字节就不匹配），
-        # 但禁止摘要模型发起工具调用；指令文案亦明确要求只输出摘要
+        # 但禁止摘要模型发起工具调用；指令文案亦明确要求只输出摘要。
+        # cache_tail_anchor=False：前缀+指令是一次性请求（下一发主对话已是压缩后
+        # 的新上下文），链尾增量断点写入的缓存条目永不会被读——层锚点保留照常吃
+        # 缓存读，只省掉这笔纯写入费。
         result = await invoke(
             prefix_messages + [directive],
             tools,
             None,
             tool_choice="none",
             purpose="compress",
+            cache_tail_anchor=False,
         )
         text = (getattr(result, "content", "") or "").strip()
         if text:

@@ -839,16 +839,19 @@ class Mind:
             stream: bool = False,
             on_delta: Optional[Any] = None,
             purpose: str = "reply",
+            cache_tail_anchor: bool = True,
     ) -> ChatResult:
         """统一 LLM 调用（带重试、模型回退和事件追踪，委托 llm_invoker 模块）。
 
         purpose 标记调用用途（reply/reflect 等），缓存命中统计按用途分桶，
         避免无共享前缀的辅助调用污染主对话命中率口径。
+        cache_tail_anchor=False 用于一次性调用（压缩摘要等）：省略链尾
+        增量断点，避免写入永不命中的缓存条目。
         """
         return await _llm_invoker._invoke_llm_unified(
             self, messages, tools, anything,
             tool_choice=tool_choice, options=options, stream=stream, on_delta=on_delta,
-            purpose=purpose,
+            purpose=purpose, cache_tail_anchor=cache_tail_anchor,
         )
 
     def _merge_llm_options(self, options: Optional[dict]) -> dict:

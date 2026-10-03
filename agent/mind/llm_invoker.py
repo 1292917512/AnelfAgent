@@ -88,11 +88,14 @@ async def _invoke_llm_unified(
         stream: bool = False,
         on_delta: Optional[Any] = None,
         purpose: str = "reply",
+        cache_tail_anchor: bool = True,
 ) -> ChatResult:
     """统一 LLM 调用（带重试、模型回退和事件追踪）。
 
     stream=True 时优先走主客户端流式（增量经 on_delta 上报），
     流式失败自动回退非流式重试路径（行为与非流式完全一致）。
+    cache_tail_anchor=False 声明本调用是一次性的（前缀+尾部不会再被
+    原样重发），缓存装饰省略链尾增量锚点以免写入永不命中的条目。
     """
     model_name = mind.llm.config.model if isinstance(mind.llm, LLMClient) else "unknown"
 
@@ -150,6 +153,7 @@ async def _invoke_llm_unified(
         getattr(_llm_cfg, "api_type", "") or "",
     ), api_type=getattr(_llm_cfg, "api_type", "") or "",
         idle_seconds=observe_scope_idle(_guard_scope),
+        tail_anchor=cache_tail_anchor,
     )
 
     # 发送边界统一规整（message_schema.normalize_for_send）：

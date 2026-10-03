@@ -1088,6 +1088,12 @@ async def _handle_tool_round(
                 )
                 state.iteration += 1
                 return _StageOutcome.CONTINUE
+        # 收束边界：子代理本要结束时收到的追加指示（after 档）优先于收束——
+        # 注入续跑而非随收束清箱丢弃（对齐 pi followUp 档：仅在即将停止时投递）
+        if merge_after_messages(ctx, state):
+            state.reflect_text_rounds = 0
+            state.iteration += 1
+            return _StageOutcome.CONTINUE
         # end_reply 即静默收束：REPLY 下同批正文与暂存独白一律不投递
         # （回复走 send_message，结束备注写 reason 仅内部日志）；REFLECT 下
         # 收束信号不是工作工具，同批文本即最终连续文本段，纳入产出

@@ -270,6 +270,7 @@ class LoopbackCallbackServer:
                 code = (query.get("code") or [""])[0]
                 state = (query.get("state") or [None])[0]
                 error = (query.get("error") or [""])[0]
+                iss = (query.get("iss") or [""])[0] or None
                 if not error and not code:
                     error = "access_denied"
                 if not error and (outer._expected_state is None
@@ -280,7 +281,7 @@ class LoopbackCallbackServer:
                     self.end_headers()
                     self.wfile.write("state mismatch".encode("utf-8"))
                     return
-                outer._result = {"code": code or None, "error": error or None}
+                outer._result = {"code": code or None, "error": error or None, "iss": iss}
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.end_headers()
@@ -304,8 +305,12 @@ class LoopbackCallbackServer:
         """登记本轮授权的 state（授权 URL 构造后、用户点击前调用）。"""
         self._expected_state = state
 
-    async def wait_callback(self, timeout: float = _CALLBACK_TIMEOUT) -> str:
-        """等待授权回调并返回授权码（state 已在回调线程校验）；超时/拒绝抛异常。"""
+    async def wait_callback(self, timeout: float = _CALLBACK_TIMEOUT) -> Tuple[str, Optional[str]]:
+        """等待授权回调并返回 (授权码, iss)（state 已在回调线程校验）；超时/拒绝抛异常。
+
+        iss 为 RFC 9207 授权响应参数（可能为 None）：换 token 前必须用它与
+        发现的授权服务器 issuer 比对，防止把别的 AS 签发的 code 送出去。
+        """
         loop = asyncio.get_running_loop()
         ok = await loop.run_in_executor(None, self._done.wait, timeout)
         if not ok:
@@ -315,7 +320,8 @@ class LoopbackCallbackServer:
             raise PermissionError(f"OAuth 授权被拒绝: {result['error']}")
         if not result.get("code"):
             raise ValueError("OAuth 回调缺少授权码")
-        return str(result["code"])
+        iss = result.get("iss")
+        return str(result["code"]), (str(iss) if iss else None)
 
     def close(self) -> None:
         if self._server is not None:
@@ -380,15 +386,22 @@ def _issuer_matches(claimed: Any, base_url: str) -> bool:
     return str(claimed).rstrip("/") == base_url.rstrip("/")
 
 
-async def _discover_server_meta(server_url: str) -> Optional[Dict[str, Any]]:
+async def _discover_server_meta(server_url: str,
+                                oauth_cfg: Optional[Dict[str, Any]] = None
+                                ) -> Optional[Dict[str, Any]]:
     """发现授权服务器元数据，返回标准化 server_meta；未声明 OAuth 返回 None。
 
     server_meta = {issuer, authorization_endpoint, token_endpoint,
-    registration_endpoint, resource}。解析失败的候选文档按不可用处理
-    （候选链继续）；issuer 校验不过的元数据整体拒绝（RFC 8414 §3.3），
-    绝不把 code 发给另一个端点。**PRM 与 AS 元数据文档均未找到 → None**：
-    非 OAuth 服务器的 401 是静态凭据问题，发明 /register 端点只会打出
-    莫名其妙的注册错误（网关对一切路径回 200+业务 JSON）。
+    registration_endpoint, resource,
+    authorization_response_iss_parameter_supported}。解析失败的候选文档按
+    不可用处理（候选链继续）；issuer 校验不过的元数据整体拒绝
+    （RFC 8414 §3.3），绝不把 code 发给另一个端点。**PRM 与 AS 元数据文档
+    均未找到 → None**：非 OAuth 服务器的 401 是静态凭据问题，发明 /register
+    端点只会打出莫名其妙的注册错误（网关对一切路径回 200+业务 JSON）。
+
+    配置 oauth.auth_server_metadata_url 时跳过 AS 发现链、直接使用该文档
+    （服务器 advertise 错误/缺失元数据时的逃生门）；显式配置的文档取不到
+    或无效是配置错误，响亮失败而非静默回落。其 issuer 按文档声明采信。
     """
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, follow_redirects=True) as http:
         # 1) 保护资源元数据（RFC 9728）：定位授权服务器 + resource（RFC 8707）
@@ -415,30 +428,45 @@ async def _discover_server_meta(server_url: str) -> Optional[Dict[str, Any]]:
             prm_found = True
             break
 
-        # 2) 授权服务器元数据（RFC 8414，OIDC 回落）：先 PRM 指定的 AS，
+        # 2) 授权服务器元数据：显式覆盖（oauth.auth_server_metadata_url）直接
+        #    取该文档；否则走 RFC 8414 + OIDC 发现链——先 PRM 指定的 AS，
         #    再回落 server 同源根（两类候选都试）
-        server_origin = _origin(server_url)
-        bases = [auth_server]
-        if auth_server != server_origin:
-            bases.append(server_origin)
+        override_url = _metadata_url_override(oauth_cfg)
         metadata: Optional[OAuthMetadata] = None
         mismatched: Optional[str] = None
-        for base in bases:
-            for url in _well_known_candidates(base, "oauth-authorization-server") + \
-                    _well_known_candidates(base, "openid-configuration"):
-                data = await _get_json(http, url)
-                if data is None:
-                    continue
-                try:
-                    candidate = OAuthMetadata.model_validate(data)
-                except ValidationError:
-                    continue
-                if _issuer_matches(candidate.issuer, base):
-                    metadata = candidate
+        if override_url:
+            data = await _get_json(http, override_url)
+            if data is None:
+                raise OAuthConfigurationError(
+                    f"配置的授权服务器元数据文档不可用: {override_url}"
+                )
+            try:
+                metadata = OAuthMetadata.model_validate(data)
+            except ValidationError as exc:
+                raise OAuthConfigurationError(
+                    f"配置的授权服务器元数据文档无效 ({override_url}): {exc}"
+                ) from exc
+        else:
+            server_origin = _origin(server_url)
+            bases = [auth_server]
+            if auth_server != server_origin:
+                bases.append(server_origin)
+            for base in bases:
+                for url in _well_known_candidates(base, "oauth-authorization-server") + \
+                        _well_known_candidates(base, "openid-configuration"):
+                    data = await _get_json(http, url)
+                    if data is None:
+                        continue
+                    try:
+                        candidate = OAuthMetadata.model_validate(data)
+                    except ValidationError:
+                        continue
+                    if _issuer_matches(candidate.issuer, base):
+                        metadata = candidate
+                        break
+                    mismatched = str(candidate.issuer)
+                if metadata is not None:
                     break
-                mismatched = str(candidate.issuer)
-            if metadata is not None:
-                break
 
     if mismatched is not None and metadata is None:
         raise OAuthConfigurationError(
@@ -452,14 +480,17 @@ async def _discover_server_meta(server_url: str) -> Optional[Dict[str, Any]]:
         if metadata.code_challenge_methods_supported is not None \
                 and "S256" not in metadata.code_challenge_methods_supported:
             raise OAuthConfigurationError("授权服务器不支持 PKCE S256")
+        issuer = str(metadata.issuer).rstrip("/")
         return {
-            "issuer": str(metadata.issuer).rstrip("/"),
-            "authorization_endpoint": str(metadata.authorization_endpoint or f"{auth_server}/authorize"),
-            "token_endpoint": str(metadata.token_endpoint or f"{auth_server}/token"),
+            "issuer": issuer,
+            "authorization_endpoint": str(metadata.authorization_endpoint or f"{issuer}/authorize"),
+            "token_endpoint": str(metadata.token_endpoint or f"{issuer}/token"),
             "registration_endpoint": (
                 str(metadata.registration_endpoint) if metadata.registration_endpoint
-                else f"{auth_server}/register"
+                else (None if override_url else f"{issuer}/register")
             ),
+            "authorization_response_iss_parameter_supported":
+                bool(metadata.authorization_response_iss_parameter_supported),
             "resource": resource,
         }
     # PRM 存在但 AS 元数据文档缺失（RFC 8414 遗留形态）：
@@ -484,6 +515,20 @@ def _static_client(oauth_cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
     secret = str(oauth_cfg.get("client_secret") or "").strip()
     return {"client_id": client_id, **({"client_secret": secret} if secret else {})}
+
+
+def _metadata_url_override(oauth_cfg: Optional[Dict[str, Any]]) -> str:
+    """显式配置的 AS 元数据文档 URL（oauth.auth_server_metadata_url）。
+
+    服务器 advertise 错误/缺失授权服务器元数据时的逃生门：配置后跳过
+    well-known 发现链直接使用该文档，且不再复用持久化的旧 server_meta。
+    """
+    if not oauth_cfg:
+        return ""
+    return str(
+        oauth_cfg.get("auth_server_metadata_url")
+        or oauth_cfg.get("authServerMetadataUrl") or ""
+    ).strip()
 
 
 def _configured_scopes(oauth_cfg: Dict[str, Any]) -> str:
@@ -539,8 +584,10 @@ class AuthorizationSession:
         self._http = httpx.AsyncClient(timeout=_HTTP_TIMEOUT, follow_redirects=True)
         entry = _load_entry(self._server)
         self._server_meta = entry.get("server_meta")
-        if not isinstance(self._server_meta, dict) or not self._server_meta.get("issuer"):
-            self._server_meta = await _discover_server_meta(self._server_url)
+        # 显式配置元数据覆盖时禁用持久化的旧 server_meta：以配置文档为准重新发现
+        if not isinstance(self._server_meta, dict) or not self._server_meta.get("issuer") \
+                or _metadata_url_override(self._oauth_cfg):
+            self._server_meta = await _discover_server_meta(self._server_url, self._oauth_cfg)
         if self._server_meta is None:
             raise OAuthConfigurationError(
                 "服务器未声明 OAuth 支持（无保护资源/授权服务器元数据文档）；"
@@ -628,7 +675,18 @@ class AuthorizationSession:
 
         assert self._callback is not None and self._client is not None
         try:
-            code = await self._callback.wait_callback(_CALLBACK_TIMEOUT)
+            code, iss = await self._callback.wait_callback(_CALLBACK_TIMEOUT)
+            # RFC 9207：回调带 iss 或服务器声明支持 iss 参数时，iss 必须与发现的
+            # issuer 一致——不匹配的 code 属于另一个授权服务器，绝不送去换 token
+            meta = self._server_meta or {}
+            expected = str(meta.get("issuer") or "")
+            if expected and (iss is not None
+                             or meta.get("authorization_response_iss_parameter_supported")):
+                if (iss or "").rstrip("/") != expected.rstrip("/"):
+                    raise PermissionError(
+                        f"OAuth issuer 校验失败（RFC 9207）：期望 {expected}，"
+                        f"回调声明 {iss or '（缺失）'}，拒绝使用该授权码"
+                    )
             tokens = await self._exchange_code(code)
         except Exception:
             clear_pending_auth(self._server)
