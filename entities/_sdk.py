@@ -272,6 +272,24 @@ def get_llm_manager() -> Any:
     return _get()
 
 
+async def request_tool_approval(
+    tool_name: str, tool_args: Dict[str, Any], reason: str,
+    chat_id: str, user_id: str,
+) -> bool:
+    """实体编排面（脚本子调用/后台任务等非对话上下文）请求审批门判定。
+
+    channel 固定为 None（无人可问路径：Guardian 评审/规则引擎裁决）——
+    实体编排面没有可呈现审批弹窗的频道上下文。调用方负责异常兜底
+    （fail-open 纪律参照 workflow 引擎 _dispatch_tool）。
+    """
+    from agent.approval.gate import ApprovalDecision, get_approval_gate
+    decision = await get_approval_gate().request_approval(
+        tool_name=tool_name, tool_args=tool_args, reason=reason,
+        channel=None, chat_id=chat_id, user_id=user_id,
+    )
+    return decision is ApprovalDecision.APPROVED
+
+
 
 def get_current_scope() -> str:
     """获取当前对话 scope（延迟导入 agent.mind，未绑定时返回 "_global"）。

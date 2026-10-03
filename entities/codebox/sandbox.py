@@ -99,16 +99,15 @@ async def _dispatch(tool_name: str, args: Dict[str, Any], result_cap: int) -> Di
         }
 
     try:
-        from agent.approval.gate import ApprovalDecision, get_approval_gate
-        decision = await get_approval_gate().request_approval(
-            tool_name=tool_name, tool_args=args,
-            reason=f"代码编排脚本调用 {tool_name}",
-            channel=None, chat_id="codebox", user_id="codebox",
+        from entities._sdk import request_tool_approval
+        approved = await request_tool_approval(
+            tool_name, args, f"代码编排脚本调用 {tool_name}",
+            chat_id="codebox", user_id="codebox",
         )
-        if decision is not ApprovalDecision.APPROVED:
+        if not approved:
             _finish(False)
             return {"ok": False,
-                    "error": f"审批未通过（{decision.value}）：{tool_name}；"
+                    "error": f"审批未通过：{tool_name}；"
                              "可在脚本外单独调用该工具，或调整审批策略后重试",
                     "ledger": ledger}
     except Exception as exc:  # 审批门自身故障不阻断执行（与 workflow 引擎同纪律）

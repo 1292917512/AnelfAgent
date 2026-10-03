@@ -172,6 +172,12 @@ class TestProviderGating:
 
         import websockets
         monkeypatch.setattr(websockets, "connect", _connect)
+        # 凭据解析桩：open_session 会真查组件凭据/llm_clients/环境变量，
+        # 不桩在无凭据环境（CI）必 RuntimeError
+        monkeypatch.setattr(
+            "entities.audiosync.qwen_asr_stream._resolve_api_key",
+            lambda _ws_base: "test-key",
+        )
         provider = QwenRealtimeAsrProvider()
         s1 = provider.open_session(16000)
         s2 = provider.open_session(16000)
