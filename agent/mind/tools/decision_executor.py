@@ -361,6 +361,14 @@ async def execute_tool_action(mind: Mind, decision: Decision) -> None:
         f"原因：{decision.reason or '自主决策'}\n"
         "请使用合适的工具完成操作，完成后调用 end_reply。"
     )
+    if decision.target:
+        # 投递契约告知：target 非空时反思产出会原样投递（下方 deliver_text），
+        # 零产出即不投递——否则反思不知道文字会外发，把内部核对结论发给用户
+        action_prompt += (
+            f"\n你的最终文本产出会原样投递给 {decision.target}："
+            "需要告知对方时才输出正文；例行核对无异常、无需打扰对方时"
+            "不要输出任何正文，直接 end_reply（零产出即不投递）。"
+        )
     messages = (
             mind.char.get_personality_msg()
             + [{"role": "user", "content": action_prompt}]

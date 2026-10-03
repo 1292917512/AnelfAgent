@@ -206,6 +206,10 @@ entity_scope 含频道 adapter 维度，跨频道同号实体（如 QQ uid 与 W
 PFC `known_scopes()`（待回复队列 + 路由登记）唯一解析回填，无匹配或歧义时 REPLY 回退
 `pop_next_reply_target`、PROACTIVE 放弃告警——畸形 target 不再拼出影子会话
 （2026-09-14~16 内部触发轮操作摘要落 `qq:qq:`/裸 id 影子 scope 事故的根因收口）。
+tool_action 的 target 语义是「操作结果投递目标」而非「操作上下文」：填了即会把反思产出
+经统一管道投递到该会话（decide schema 与 META_DECISION_SYSTEM 均已明示，自查/核对类操作不得填）；
+`execute_tool_action` 的 action_prompt 在 target 非空时告知反思投递契约——需要告知对方才输出正文，
+零产出即不投递（内部核对结论不再外发，2026-10-03 skill_review 例行核查结论两轮误投私聊的根因收口）。
 记忆标签同构：`user:{adapter}:{uid}`。存量数据由
 `agent/storage/scope_migrate.py` 启动时自动迁移（`legacy_adapter_default` 配置归属频道，默认 qq）；
 别名实体的跨频道历史合并由 `alias_merge_history` 配置（默认开）。
@@ -675,6 +679,33 @@ llm_clients.json/ModelType——该体系全部模型被假设可走 litellm 对
 | importance 校准 | `auto_capture._EXTRACT_PROMPT` 校准表 + memorize 工具描述 + `self_profile.PROFILE_MEMORY_IMPORTANCE` | 提取侧锚点表（0.9+ 身份级/明确"记住这个"，0.8 长期偏好与承诺，0.7 阶段动态，0.6 线索，0.5 弱线索不预过滤）结合实体记忆——主体是已识别的人时身份/关系级从高档；画像 ENTITY 镜像 importance 统一 0.8→0.9（身份级事实，四处写入点共用单点常量），种子阶梯 initial_reinforcement 的精度由此对齐 |
 
 > Model Experience：① AI 无新增工具 schema（呈现/分类/降权全在管线内）；② token 影响：discipline/freshness 两块按需注入（无指令/无重复话题零字节）；③ 缓存影响：discipline 在稳定前缀区（低频变化），freshness 在尾部动态区；④ 反馈回路让"她记错了"第一次有了纠正通道——用户否认即负向证据，14 天 sub_zero 归档倒计时通电
+
+#### 代码编排模式 / 工具组双向阀 / 换向折叠（第四十三轮新增）
+
+对照 pi（codemode/会话分支）按 Anelf 既有机制重做设计（对照档 `projects/pi-vs-anelf-comparison.md`），不搬外壳：模式=沉睡分组，分支=web 域读侧过滤。
+
+| 机制 | 位置 | 说明 |
+|------|------|------|
+| 代码编排实体 | `entities/codebox/`（__init__/tools/sandbox/runner/tests + panels/locales） | 沉睡分组 `code`（order 27），单工具 `run_python`：一次性子进程跑模型写的 Python（cwd=workspace，子进程自设 rlimit 内存/CPU——否决录 #4 信任模型：不做 OS 级沙箱，墙钟超时父侧强杀）；stdin/stdout JSON 行协议桥接注册表工具（runner.py 纯 stdlib 按路径直执，零仓库导入）；每次子调用过统一审批门（channel=None 语义，fail-open 纪律同 workflow 引擎）+ `EntityRegistry.execute_tool`；输出/编排/交互类工具脚本内不可用（send_message/end_reply/delegate/ui_ask/run_python 自身等，排除即「脚本不能回复用户」）；子调用结果头尾截断（脚本可用 offset/limit 自行分页精读，不落盘）；未知工具近似名建议经注册表既有链路透传。成功结果=调用账目头行+打印输出，失败=统一 tool_error JSON |
+| 模式双向阀 | `agent/mind/tool_activation.py`（manager.deactivate + `deactivate_tool_group` 工具） | activate 从单向阀变双向：AI 用完沉睡分组可显式关闭（关闭重构 tools 数组，缓存前缀重写一次，工具描述里写明「不确定还会用就保持激活」防抖动）；全体沉睡分组受益，非 code 专属 |
+| 模式提示词 | `usage_rules.CODE_ORCHESTRATION_RULES`（stable 层，codebox_enabled 条件注入）+ exec_context | 路由纪律三条：多步组合用 run_python 一次完成 / 纯计算用 python_exec / 用完可关闭；「当前状态」呈现完全复用既有通道（stable 目录[可沉睡]+exec_context[已激活工具分组]），不新造注入面；sticky 开启时激活态从误导性「剩余N轮」修正为「常驻，deactivate_tool_group 可关闭」（非粘性口径不变） |
+| 换向折叠（web 域会话分支） | `conversation_folds` 表 + `data_center._apply_redirect_folds` + `services/chat.py` fold 三方法 + `/chat/fold|unfold|folds` + 前端 | 用户从某条消息换方向：其后消息段（id 区间，from 不含 to 含）装配时过滤出上下文，原位插入含摘要的 system 标记（摘要走 `mind.summarize_text`，失败降级确定性摘要永不阻塞）；DB 保留可检索（recall 工具不受影响）可恢复（active=0 即回）；过滤在 `_fetch_window_rows` 统一收口（装配/压缩/折叠调度计数同口径）；前端用户消息 hover「从此换向」+ 折叠段收拢为 FoldChip（展开仅本地查看/恢复即回放）+ i18n 双语 |
+
+> Model Experience：① run_python 在沉睡分组（默认不进 schema），激活/关闭/当前状态全走既有目录+exec_context 通道，无新注入面；② 脚本无 store()——持久化走便签/文件既有通道（不造冗余机制）；③ run_python 自身走常规审批，内层每次调用独立过审批门；④ 换向折叠对 AI 的呈现只有一条原位标记+摘要，弃置路径细节不进上下文但 recall 可检索；⑤ 折叠调度计数与窗口内容同一过滤口径（已隐藏段不再产生折叠压力）
+
+#### pi 对照深度优化：OAuth RFC 9207 / 压缩缓存写 / 收束转向 / 并入上限（第四十二轮新增）
+
+对照 pi（earendil-works/pi v1.0.0）逐项验证后落地（对照档 `projects/pi-vs-anelf-comparison.md`）；每条先在 Anelf 代码核实差距真实存在再动手，验证后推翻两项预判（压缩文件清单已有、消息重启恢复大体存在），否决一项（WebUI client id 幂等——前端无自动重试/重发，场景不存在）。
+
+| 机制 | 位置 | 说明 |
+|------|------|------|
+| 授权响应 iss 校验（RFC 9207） | `entities/mcp/oauth.py`（回调捕获 + `wait_and_exchange` 换码前校验） | 回调解析 `iss` 随 code 返回；响应带 iss 或服务器元数据声明 `authorization_response_iss_parameter_supported` 时，iss 必须与发现的 issuer 一致（容忍尾斜杠）——不匹配的 code 属于另一个授权服务器，换 token 前拒绝（防混淆代理）；server_meta 持久化该声明位 |
+| AS 元数据 URL 覆盖 | `oauth.auth_server_metadata_url` 配置键 + `_discover_server_meta` | 服务器 advertise 错误/缺失元数据时的逃生门（amap 事故的制度化）：跳过 well-known 发现链直接使用配置文档（issuer 按文档采信，未声明注册端点则不发明）；显式配置取不到/无效响亮失败不静默回落；配置后不再复用持久化旧 server_meta |
+| 压缩调用免尾锚点 | `prompt_cache.decorate_messages(tail_anchor=)` / `_invoke_llm_unified(cache_tail_anchor=)` / 压缩器传 False | 一次性调用（前缀+摘要指令不会再被原样重发）省略链尾增量断点——该断点写入的缓存条目永无读者（纯写入费）；层锚点保留照常吃缓存读。默认 True 不影响 reply/reflect 的增量缓存设计 |
+| after 档收束边界补全 | `think_loop` end_reply 分支 | 子代理经 end_reply 收束同样先消费 after 档追加指令（此前仅 REFLECT 连续文本上限分支消费，end_reply 路径的 after 消息随清箱静默丢弃）；有追加即注入续跑（对齐 pi followUp 档：仅在即将停止时投递），无追加走原收束 |
+| 新消息并入上限 | `round_helpers._merge_new_messages`（20 条/20000 字符每轮） | 消息洪峰（群聊刷屏/离线堆积）分批并入：首条强制并入保证进度（不拆分用户原话）；超出部分不推进水位（下轮接续）且保留待处理队列条目（循环结束另起周期，留存消息必有人回复）——对齐 steer 档有界纪律（8 条/4000 字），主会话插话不再比委托转向更宽 |
+
+> Model Experience：① 改动对 AI 全透明（无新工具/无 schema 变化）；② 压缩缓存写消除后，Anthropic 线每次压缩省一笔全前缀 × 1.25x 的一次性写入费，缓存读不受影响；③ 并入上限只在洪峰时显现（execution_steps 留「留存下轮接续」痕），日常单条消息路径字节不变
 
 #### 消息流展示细节打磨（第四十一轮新增）
 
@@ -1205,7 +1236,7 @@ LLM 前缀缓存命中率是本项目的核心成本/性能指标。缓存工程
 
 1. **事件溯源架构（Model-visible ⟺ Logged，append-only 事件日志 + 纯函数投影）**：dsh 用它让"前缀缓存稳定"成为涌现性质、resume/fork/replay 免费。否决理由：AnelfAgent 的心跳/便签/多通道/记忆召回带来高动态性，全量事件溯源成本远超收益。已吸收其结论（崩溃尾部修复 `crash_recovery.py`、PrefixGuard 观测），不搬实现。**重审条件**：若未来收敛为单会话低动态模型。
 2. **exec_context 跨轮去重**：dsh runtime-context"值不变不写入"。否决理由：AnelfAgent 的 exec_context 含 `elapsed:.2f` 时间戳与轮次号，每轮字节必变，去重无命中空间。
-3. **Code Mode（run_code 折叠工具目录为生成 SDK）**：dsh 用它压缩模型侧 tool-catalog 体积。否决理由：IM 场景工具调用短平快，引入新执行面（代码生成 + 子 dispatch）复杂度不划算。
+3. **Code Mode（run_code 折叠工具目录为生成 SDK）**：dsh 用它压缩模型侧 tool-catalog 体积。否决理由：IM 场景工具调用短平快，引入新执行面（代码生成 + 子 dispatch）复杂度不划算。**重审补注（第四十三轮）**：本条否决的是「折叠目录体积」动机；「模型可编程控制流」（脚本内循环/条件组合多个工具）是另一动机且已以 `entities/codebox` 落地——脚本只做编排不做目录折叠，工具目录体系不变。
 4. **os 级沙箱（sandbox-exec/bwrap/landlock/Windows ACL）**：否决理由：个人助理跑在自有机器、为单一用户服务，`shell_guard` 应用层预检 + 统一审批规则引擎（allow/ask/deny + 参数 glob）是更匹配的信任模型。
 5. **数字错误 code 体系**：dsh `HarnessError.code` 数字契约。否决理由：`ErrorCause` 字符串枚举（`core/tool_errors.py`）+ edit_file 的 context 数字 code 已够用，双体系并行是负担；已对齐其"按 cause 路由、不解析 message"的核心纪律（工具超时/异常统一走 `tool_error`/`error_from_exception`）。
 6. **write_file/edit_file 自动建基线（refresh 放宽 read-before-write）**：曾拟在缓存缺失时自动读入文件解除"尚未读取"拒绝。否决理由：会架空 read-before-write 防盲写语义（已有测试 `test_existing_file_requires_read` 锁定严格门）；最终仅 append_file 与 write_file 保持严格门，`file_state` 不提供自动放宽。
