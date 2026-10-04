@@ -66,7 +66,8 @@ def _gate() -> str:
 def ssh_list() -> str:
     """列出所有 SSH 连接配置及其实时状态（含默认连接标记）。
 
-    执行远程操作前建议先调用本工具了解可用连接。
+    花名册已常态注入上下文 [SSH 远程连接]，本工具提供完整 JSON 明细
+    （连接时间/最近使用时间等）。
     """
     if error := _gate():
         return error
@@ -83,6 +84,10 @@ def ssh_list() -> str:
 @track_ssh_op("command")
 async def ssh_exec(command: str, name: str = "", timeout: int = 0, work_dir: str = "") -> str:
     """在 SSH 连接上执行命令，返回结构化结果（exit_code/stdout/stderr/work_dir）。
+
+    环境感知：可用连接、登录用户@主机、缺省执行目标与在线连接的当前远程
+    目录实时注入上下文 [SSH 远程连接]，调用前优先参考而非猜测连接名与
+    远端路径。
 
     连接未建立时自动建连；目标不可达时 TCP 探测秒级失败并返回精确原因；
     命令开始前连接失效会自动重连重试一次；命令执行中连接断开（对端

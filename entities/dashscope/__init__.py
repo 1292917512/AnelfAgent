@@ -33,8 +33,8 @@ entity_manifest(
 register_configs_safe({
     "entity/dashscope": {
         "dashscope_stream_asr_model": {
-            "description": "流式识别模型（实时通话）：fun-asr-realtime / qwen-audio-3.0-asr-flash-streaming",
-            "default": "fun-asr-realtime",
+            "description": "流式识别模型（实时通话）：qwen-audio-3.0-asr-flash-streaming / fun-asr-realtime",
+            "default": "qwen-audio-3.0-asr-flash-streaming",
         },
         "dashscope_stream_asr_priority": {
             "description": "流式识别提供者在 asr_stream 链中的优先级（小值优先；本地 FunASR 默认 10）",
@@ -42,8 +42,8 @@ register_configs_safe({
             "advanced": True,
         },
         "dashscope_asr_model": {
-            "description": "非流式识别模型（音频转写，Recognition 家族）：fun-asr-realtime 等",
-            "default": "fun-asr-realtime",
+            "description": "非流式识别模型（音频转写，多模态生成端点）：qwen-audio-3.0-asr-flash 等",
+            "default": "qwen-audio-3.0-asr-flash",
         },
         "dashscope_asr_priority": {
             "description": "非流式识别提供者在 asr 链中的优先级（小值优先；本地 FunASR 默认 10）",

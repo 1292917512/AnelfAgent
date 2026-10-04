@@ -569,6 +569,57 @@ class TestWorkDirTracking:
         assert manager._connections["web"].work_dir == ""
 
 
+class TestChdirBanner:
+    """sshd 登录目录缺失横幅：从 stderr 剥离并记为连接状态（防掩盖真实错误）。"""
+
+    _BANNER = "Could not chdir to home directory /home/u1: No such file or directory\n"
+
+    async def test_banner_stripped_and_recorded(
+        self, manager: SshConnectionManager,
+    ) -> None:
+        fake = FakeConn([FakeResult(1, "", self._BANNER + "mkdir: 无法创建目录")])
+        with patch("entities.ssh.manager.asyncssh.connect", AsyncMock(return_value=fake)):
+            result = await manager.execute("mkdir /x")
+        assert result["stderr"] == "mkdir: 无法创建目录"
+        snapshot = manager.get_snapshot("web")
+        assert snapshot is not None
+        assert snapshot["home_missing"] == "/home/u1"
+
+    async def test_absent_banner_clears_flag(self, manager: SshConnectionManager) -> None:
+        """横幅消失（远端已修复登录目录）→ 状态自愈清除。"""
+        fake = FakeConn([
+            FakeResult(0, "", self._BANNER),
+            FakeResult(0, "ok", ""),
+        ])
+        with patch("entities.ssh.manager.asyncssh.connect", AsyncMock(return_value=fake)):
+            first = await manager.execute("true")
+            await manager.execute("true")
+        assert first["stderr"] == ""
+        snapshot = manager.get_snapshot("web")
+        assert snapshot is not None
+        assert snapshot["home_missing"] == ""
+
+    async def test_no_banner_untouched(self, manager: SshConnectionManager) -> None:
+        fake = FakeConn([FakeResult(1, "", "boom")])
+        with patch("entities.ssh.manager.asyncssh.connect", AsyncMock(return_value=fake)):
+            result = await manager.execute("bad")
+        assert result["stderr"] == "boom"
+        snapshot = manager.get_snapshot("web")
+        assert snapshot is not None
+        assert snapshot["home_missing"] == ""
+
+    async def test_reconnect_resets_flag(self, manager: SshConnectionManager) -> None:
+        fake = FakeConn([FakeResult(0, "", self._BANNER)])
+        with patch("entities.ssh.manager.asyncssh.connect", AsyncMock(return_value=fake)):
+            await manager.execute("true")
+        assert (manager.get_snapshot("web") or {})["home_missing"] == "/home/u1"
+        await manager.disconnect("web")
+        fresh = FakeConn([])
+        with patch("entities.ssh.manager.asyncssh.connect", AsyncMock(return_value=fresh)):
+            await manager.connect("web")
+        assert (manager.get_snapshot("web") or {})["home_missing"] == ""
+
+
 class TestRunCapture:
     async def test_returns_stdout_when_connected(
         self, manager: SshConnectionManager,

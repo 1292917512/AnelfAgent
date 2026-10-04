@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from core.log import log
 
@@ -138,6 +138,54 @@ def _shed_oldest_droppable(sub: Subscriber) -> bool:
     for item in kept:
         try:
             sub.queue.put_nowait(item)
+        except asyncio.QueueFull:
+            break
+    return shed
+
+
+def offer_latest(
+    queue: "asyncio.Queue[Dict[str, Any]]",
+    item: Dict[str, Any],
+    is_droppable: "Callable[[Dict[str, Any]], bool]",
+) -> None:
+    """有界队列保最新入队（实时帧直挂订阅队列的通道用，如语音 sink）。
+
+    队列满时先丢最旧的可丢帧（is_droppable 命中者，如音频帧/partial）腾位；
+    一帧可丢的都没有（极端堆积）才丢最旧帧——关键事件帧不可静默消失，
+    否则前端会永远停在旧状态。
+    """
+    while True:
+        try:
+            queue.put_nowait(item)
+            return
+        except asyncio.QueueFull:
+            pass
+        if not _shed_oldest_matching(queue, is_droppable):
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+
+
+def _shed_oldest_matching(
+    queue: "asyncio.Queue[Dict[str, Any]]",
+    is_droppable: "Callable[[Dict[str, Any]], bool]",
+) -> bool:
+    """从队首起丢弃一帧 is_droppable 命中的帧腾位，返回是否腾出空位。"""
+    kept: List[Dict[str, Any]] = []
+    shed = False
+    while True:
+        try:
+            item = queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+        if not shed and is_droppable(item):
+            shed = True
+            continue
+        kept.append(item)
+    for item in kept:
+        try:
+            queue.put_nowait(item)
         except asyncio.QueueFull:
             break
     return shed

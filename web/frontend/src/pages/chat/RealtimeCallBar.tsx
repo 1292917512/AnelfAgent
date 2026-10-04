@@ -21,6 +21,8 @@ interface CallState {
   active: boolean;
   connecting: boolean;
   state: RtState;
+  /** 语音收束进入定稿（转写进行中）：收听中状态下展示「转写中」 */
+  finalizing: boolean;
   partial: string;
   level: number;
   volume: number;
@@ -38,6 +40,7 @@ export function RealtimeCallProvider({ children }: { children: React.ReactNode }
   const [active, setActive] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [state, setState] = useState<RtState>("listening");
+  const [finalizing, setFinalizing] = useState(false);
   const [partial, setPartial] = useState("");
   const [level, setLevel] = useState(0);
   const [volume, setVolume] = useState(1);
@@ -50,20 +53,33 @@ export function RealtimeCallProvider({ children }: { children: React.ReactNode }
     setActive(false);
     setPartial("");
     setState("listening");
+    setFinalizing(false);
     setLevel(0);
   };
 
   const start = async () => {
     setConnecting(true);
     const client = new RealtimeVoiceClient({
-      onState: (s) => setState(s),
+      onState: (s) => {
+        setState(s);
+        if (s !== "listening") setFinalizing(false);
+      },
       onLevel: (l) => setLevel(l),
       onPartial: (text) => setPartial(text),
-      onFinal: () => setPartial(""),
-      onError: (msg) => toast.error(msg),
+      onFinalizing: () => setFinalizing(true),
+      onFinal: () => {
+        setPartial("");
+        setFinalizing(false);
+      },
+      onError: (msg, lvl) => {
+        setFinalizing(false);
+        if (lvl === "info") toast.info(msg);
+        else toast.error(msg);
+      },
       onClose: () => {
         setActive(false);
         setPartial("");
+        setFinalizing(false);
         setLevel(0);
       },
     }, {
@@ -92,7 +108,7 @@ export function RealtimeCallProvider({ children }: { children: React.ReactNode }
 
   return (
     <CallCtx.Provider value={{
-      active, connecting, state, partial, level, volume, start, stop,
+      active, connecting, state, finalizing, partial, level, volume, start, stop,
       setVolume: (v: number) => {
         setVolume(v);
         clientRef.current?.setOutputVolume(v);
@@ -130,7 +146,11 @@ export function RealtimeCallPanel() {
     <div className="mb-2 rounded-lg border border-border bg-elevated px-3 py-2 space-y-1.5">
       <div className="flex items-center gap-2 flex-wrap">
         <span className={`w-2 h-2 rounded-full animate-pulse ${STATE_COLOR[call.state]}`} />
-        <span className="text-xs font-medium text-foreground">{t(STATE_LABEL[call.state])}</span>
+        <span className="text-xs font-medium text-foreground">
+          {call.finalizing && call.state === "listening"
+            ? t("call.stateFinalizing")
+            : t(STATE_LABEL[call.state])}
+        </span>
         <div className="flex items-center gap-[2px] h-3" title={t("call.micLevel")}>
           {[0.15, 0.35, 0.55, 0.75, 0.92].map((th) => (
             <span

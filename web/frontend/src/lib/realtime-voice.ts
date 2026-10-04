@@ -19,10 +19,12 @@ export interface RealtimeVoiceCallbacks {
   onState?: (state: RtState, turnId: number) => void;
   onPartial?: (text: string) => void;
   onFinal?: (text: string, role?: string) => void;
+  /** 语音收束进入定稿（转写进行中，直至 rt_final/rt_error） */
+  onFinalizing?: () => void;
   /** 上行输入电平（0..1，麦克风 RMS；约每帧回调一次） */
   onLevel?: (level: number) => void;
   onAudioDone?: (turnId: number, interrupted: boolean) => void;
-  onError?: (message: string) => void;
+  onError?: (message: string, level?: string) => void;
   onClose?: () => void;
 }
 
@@ -267,6 +269,9 @@ export class RealtimeVoiceClient {
       case "rt_partial":
         this.cb.onPartial?.(String(msg.text ?? ""));
         break;
+      case "rt_finalizing":
+        this.cb.onFinalizing?.();
+        break;
       case "rt_final":
         this.cb.onFinal?.(String(msg.text ?? ""), msg.role ? String(msg.role) : undefined);
         break;
@@ -278,7 +283,9 @@ export class RealtimeVoiceClient {
         this.cb.onFinal?.(String(msg.content ?? ""), "assistant");
         break;
       case "rt_error":
-        this.cb.onError?.(String(msg.message ?? i18n.t("voiceChannelError", { ns: "chat" })));
+        this.cb.onError?.(
+          String(msg.message ?? i18n.t("voiceChannelError", { ns: "chat" })),
+          msg.level ? String(msg.level) : undefined);
         break;
       case "status":
         this.cb.onError?.(String((msg.message as { details?: string })?.details ?? i18n.t("voiceError", { ns: "chat" })));

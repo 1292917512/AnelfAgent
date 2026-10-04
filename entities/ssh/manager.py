@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shlex
 import socket
 import time
@@ -45,6 +46,10 @@ _SESSION_OPEN_EXCS = (asyncssh.ConnectionLost, asyncssh.DisconnectError, asyncio
 # 远程工作目录捕获标记（内嵌 stdout，提取后剥离，不展示给调用方）
 _PWD_MARKER_BEGIN = "__ANELF_PWD_BEGIN__"
 _PWD_MARKER_END = "__ANELF_PWD_END__"
+
+# sshd 登录目录缺失横幅：远端登录用户无 home 时每条命令的 stderr 开头
+# 重复出现，掩盖真实错误归因——剥离并记为连接的 home_missing 状态
+_CHDIR_BANNER_RE = re.compile(r"^Could not chdir to home directory (\S+): [^\n]*\n?")
 
 
 def compose_exec_command(command: str, work_dir: str, track_pwd: bool) -> str:
@@ -211,6 +216,8 @@ class ManagedConnection:
         self.last_used_at: int = 0
         # 持久远程工作目录（pwd 捕获维护，cd 对后续命令生效；空 = 未跟踪）
         self.work_dir: str = ""
+        # 远端登录目录缺失路径（sshd chdir 横幅检出；空 = 正常或未知）
+        self.home_missing: str = ""
 
     def snapshot(self, profile: Optional[Dict[str, Any]] = None, is_default: bool = False) -> Dict[str, Any]:
         """生成状态快照（供 API / 上下文注入，不含凭据）。"""
@@ -226,6 +233,7 @@ class ManagedConnection:
             "last_used_at": self.last_used_at,
             "is_default": is_default,
             "work_dir": self.work_dir,
+            "home_missing": self.home_missing,
         }
 
 
@@ -362,6 +370,7 @@ class SshConnectionManager:
             managed.status = STATUS_CONNECTED
             managed.connected_at = int(time.time() * 1000)
             managed.last_used_at = managed.connected_at
+            managed.home_missing = ""
             _broadcast_status(self, name, "status")
             log(f"SSH 已连接: {name} ({profile.get('username')}@{profile.get('host')}:{profile.get('port')})", tag="SSH")
             return managed.snapshot(profile, self._store.get_default_name() == name)
@@ -545,6 +554,13 @@ class SshConnectionManager:
         managed.last_used_at = int(time.time() * 1000)
         stdout = _decode_remote_text(result.stdout)
         stderr = _decode_remote_text(result.stderr)
+        banner = _CHDIR_BANNER_RE.match(stderr)
+        if banner:
+            managed.home_missing = banner.group(1)
+            stderr = stderr[banner.end():]
+        elif managed.home_missing:
+            # 每条命令都是新会话：横幅消失即登录目录已修复
+            managed.home_missing = ""
         exit_code = result.returncode if result.returncode is not None else -1
         if track_pwd:
             # 先提取捕获标记再截断（标记在 stdout 尾部，截断会误切）

@@ -49,6 +49,12 @@ ERR_SERVER_ERROR = "SERVER_ERROR"
 _desktop_slot: Dict[str, Any] = {}
 
 
+def _is_droppable_frame(item: Dict[str, Any]) -> bool:
+    """语音会话下行帧的可丢判定：音频帧与 partial 是实时展示帧（丢旧保新
+    无状态损失）；状态/定稿/错误帧不可丢（丢了前端永远停在旧状态）。"""
+    return bool(item.get("__audio__")) or item.get("event") == "rt_partial"
+
+
 def _status(code: str, details: str, request_id: Optional[str] = None) -> Dict[str, Any]:
     frame: Dict[str, Any] = {"type": "status", "message": {"code": code, "details": details}}
     if request_id:
@@ -266,23 +272,16 @@ async def _dispatch(
                     # 下行泵，音频帧以 __audio__ 标记转二进制帧）
                     from services.voice import RealtimeSink
 
+                    # 下行帧统一经枢纽的保最新原语：队列满时先丢可丢帧
+                    # （音频帧/partial）腾位，状态/定稿帧不静默消失
                     async def _send_audio(pcm: bytes, rate: int) -> None:
-                        while True:
-                            try:
-                                sub.queue.put_nowait(
-                                    {"__audio__": True, "pcm": pcm, "rate": rate})
-                                return
-                            except asyncio.QueueFull:
-                                try:
-                                    sub.queue.get_nowait()  # 丢最旧帧保最新
-                                except asyncio.QueueEmpty:
-                                    pass
+                        realtime_hub.offer_latest(
+                            sub.queue, {"__audio__": True, "pcm": pcm, "rate": rate},
+                            _is_droppable_frame)
 
                     async def _send_event(name: str, payload: Dict[str, Any]) -> None:
-                        try:
-                            sub.queue.put_nowait({"event": name, **payload})
-                        except asyncio.QueueFull:
-                            pass
+                        realtime_hub.offer_latest(
+                            sub.queue, {"event": name, **payload}, _is_droppable_frame)
 
                     await get_voice_service().start_realtime(
                         conn_id,

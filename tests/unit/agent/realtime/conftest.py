@@ -36,6 +36,33 @@ def energy_detector():
     ConfigManager.set("voice_turn_detector", "auto")
 
 
+@pytest.fixture(autouse=True)
+def no_recording_retention():
+    """轮次录音留存默认关：测试不落真实 WAV 到 workspace。"""
+    from core.config import ConfigManager
+
+    ConfigManager.set("realtime_keep_recordings", False)
+    yield
+    ConfigManager.set("realtime_keep_recordings", True)
+
+
+@pytest.fixture(autouse=True)
+def ingest_spy(monkeypatch):
+    """入库替身：实时引擎的轮末 ingest 不触真实音频库（SQLite/声纹），
+    仅记录载荷供断言（测试隔离；需要断言入库行为时读本 fixture 的 calls）。"""
+    from agent.audio import service as audio_service_mod
+    from agent.audio.schemas import IngestResult
+
+    calls: list = []
+
+    async def _spy(self, payload, *, store=None):
+        calls.append(payload)
+        return IngestResult(ingested=len(payload.segments), skipped=0, results=[])
+
+    monkeypatch.setattr(audio_service_mod.AudioService, "ingest_payload", _spy)
+    yield calls
+
+
 @pytest.fixture
 def app(monkeypatch):
     fake = FakeApp()

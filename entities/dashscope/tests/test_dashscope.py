@@ -210,6 +210,12 @@ class TestAsr:
         import entities._sdk as sdk_bridge
         monkeypatch.setattr(sdk_bridge, "ensure_16k_mono_wav", _passthrough)
 
+        async def _fake_call(model: str, key: str, audio: bytes) -> str:
+            return "你好"
+
+        import entities.dashscope.asr as asr_mod
+        monkeypatch.setattr(asr_mod, "_call_multimodal", _fake_call)
+
         wav = tmp_path / "a.wav"
         import wave
         with wave.open(str(wav), "wb") as wf:
@@ -220,7 +226,34 @@ class TestAsr:
         provider = [p for p in get_audio_registry().list("asr")
                     if p.name == "dashscope"][0]
         segments = await provider.transcribe(str(wav))
-        assert segments == [{"start_ms": 0, "end_ms": 900, "text": "你好"}]
+        # 多模态端点无端点时间戳：单段 [0, 音频时长]
+        assert segments == [{"start_ms": 0, "end_ms": 100, "text": "你好"}]
+
+    async def test_nonstream_rejects_oversized_audio(
+            self, fake_sdk, api_key, tmp_path, monkeypatch) -> None:
+        """超内联上限的音频明确报错（链式降级到下一提供者，而非沉默失败）。"""
+        from agent.audio import get_audio_registry
+
+        async def _passthrough(path: str):
+            return path, False
+
+        import entities._sdk as sdk_bridge
+        monkeypatch.setattr(sdk_bridge, "ensure_16k_mono_wav", _passthrough)
+
+        import entities.dashscope.asr as asr_mod
+        monkeypatch.setattr(asr_mod, "_MAX_INLINE_BYTES", 100)
+
+        wav = tmp_path / "big.wav"
+        import wave
+        with wave.open(str(wav), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(b"\x00" * 3200)
+        provider = [p for p in get_audio_registry().list("asr")
+                    if p.name == "dashscope"][0]
+        with pytest.raises(RuntimeError, match="内联上限"):
+            await provider.transcribe(str(wav))
 
 
 class TestVoiceMgmt:

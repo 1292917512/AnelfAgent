@@ -130,6 +130,19 @@ register_configs_safe({
             "advanced": True,
             "unit": "dB",
         },
+        "audiosync_stream_step_ms": {
+            "description": "流式部分转写的节奏（每隔该时长对窗口尾部点一次转写；"
+                           "上一拍未归自动跳过，不积压）",
+            "default": 600,
+            "advanced": True,
+            "unit": "毫秒",
+        },
+        "audiosync_stream_window_ms": {
+            "description": "流式部分转写的滚动窗口时长（每次取语音尾部该长度送转写）",
+            "default": 4000,
+            "advanced": True,
+            "unit": "毫秒",
+        },
     }
 })
 

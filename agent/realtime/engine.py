@@ -567,10 +567,15 @@ class RealtimeEngine:
             session.pcm_buffer.extend(tail)
         buffered = bytes(session.pcm_buffer)
         session.pcm_buffer.clear()
+        audio_ms = len(buffered) * 1000 // max(1, session.sample_rate * 2)
+        real_speech = audio_ms >= get_config_int("voice_min_utterance_ms", 300)
+        if real_speech:
+            # 转写中间态：定稿期间前端可区分「收听中」与「转写中」
+            await session.sink.send_event("rt_finalizing", {"turn_id": session.turn_id})
         # 声纹识别与 ASR 定稿并行（都只依赖本段音频，互不依赖）——
         # 思维启动的关键路径收敛为一段网络往返
         speaker_task = asyncio.create_task(
-            self._identify_speaker(buffered, session.sample_rate))
+            self._speaker_facts(buffered, session.sample_rate))
         transcript = ""
         segments: List[Dict[str, Any]] = []
         if asr is not None:
@@ -593,19 +598,37 @@ class RealtimeEngine:
                 buffered, session.sample_rate)
         transcript = transcript.strip()
         if not transcript:
-            # 未识别到有效语音：显式收帧（客户端清部分转写），状态保持收听
+            # 未识别到有效语音：显式收帧（客户端清部分转写），状态保持收听；
+            # 真实语音时长却定稿为空是异常——落日志并告知用户重说
             speaker_task.cancel()
+            log(f"语音轮定稿为空（丢弃）: turn={session.turn_id} audio_ms={audio_ms}",
+                "WARNING" if real_speech else "DEBUG", tag=_LOG_TAG)
             await session.sink.send_event("rt_final", {
                 "text": "", "turn_id": session.turn_id, "discarded": True,
             })
+            if real_speech:
+                await session.sink.send_event("rt_error", {
+                    "level": "info",
+                    "message": "这段没听清，请再说一遍",
+                })
             return
         # 说话人只读识别（仅有效语音轮；标注谁在说话，应对由 AI 决定）
-        speaker = await speaker_task
+        facts = await speaker_task
+        speaker = (facts or {}).get("briefing")
+        # 流式 ASR 不带分段时合成单段（定稿文本即本段全部内容）——
+        # 实时轮次不因提供方差异而中断音源库入库
+        if not segments:
+            segments = [{"start_ms": 0, "end_ms": audio_ms, "text": transcript}]
         await session.sink.send_event("rt_final", {
             "text": transcript, "turn_id": session.turn_id,
         })
         await self._broadcast_transcript(session, transcript)
-        await self.user_turn(session, transcript, segments, speaker)
+        recording_path = await self._keep_recording(session, buffered)
+        await self.user_turn(
+            session, transcript, segments, speaker,
+            speaker_vector=(facts or {}).get("vector"),
+            recording_path=recording_path,
+        )
 
     @staticmethod
     async def _broadcast_transcript(session: RealtimeSession, text: str) -> None:
@@ -624,18 +647,20 @@ class RealtimeEngine:
         except Exception:
             pass
 
-    async def _identify_speaker(
+    async def _speaker_facts(
         self, pcm: bytes, sample_rate: int,
     ) -> Optional[Dict[str, Any]]:
-        """声纹只读识别：返回本段说话人简报（命中已知人）或 None。
+        """提取本段整段声纹向量；标注开启时附带命中简报。
 
-        仅做向量提取与匹配查询，不建档不累积样本（入库由轮次末尾的
-        ingest 统一负责）；无声纹提供者/库中无人/识别失败均返回 None
-        （标注缺失不阻塞语音轮）。
+        向量供轮末 ingest 回填分段（流式 ASR 不产出向量时声纹建档不断档）；
+        简报（realtime_speaker_annotate 开启时）供思维消息标注谁在说话。
+        仅做向量提取与匹配查询，建档/样本累积由 ingest 统一负责；
+        无声纹提供者/库中无人/识别失败均降级为 None 字段（不阻塞语音轮）。
         """
         from core.config import get_config_bool
-        if not pcm or not get_config_bool("realtime_speaker_annotate", True):
+        if not pcm:
             return None
+        annotate = get_config_bool("realtime_speaker_annotate", True)
         wav_path = ""
         try:
             from agent.audio import get_audio_store
@@ -647,6 +672,8 @@ class RealtimeEngine:
             vector = await get_audio_service().speaker_embed(wav_path)
             if not vector:
                 return None
+            if not annotate:
+                return {"vector": vector, "briefing": None}
             candidates = await match_vector(
                 get_audio_store(), vector, channel=normalize_channel("realtime"))
         except Exception as exc:
@@ -662,12 +689,12 @@ class RealtimeEngine:
                     pass
         best = candidates[0] if candidates else None
         if not best or not best.get("matched"):
-            return {"name": "", "similarity": 0.0, "entity_scope": ""}
-        return {
+            return {"vector": vector, "briefing": {"name": "", "similarity": 0.0, "entity_scope": ""}}
+        return {"vector": vector, "briefing": {
             "name": str(best.get("name") or best.get("speaker_key") or ""),
             "similarity": round(float(best.get("similarity", 0.0)), 2),
             "entity_scope": str(best.get("entity_scope") or ""),
-        }
+        }}
 
     async def _pcm_temp_wav(self, pcm: bytes, sample_rate: int) -> str:
         """PCM 写临时 WAV（声纹提取需要文件输入；用后即删）。"""
@@ -688,6 +715,12 @@ class RealtimeEngine:
 
         wav_path = await asyncio.to_thread(_write)
         return wav_path
+
+    async def _keep_recording(self, session: RealtimeSession, pcm: bytes) -> str:
+        """轮次录音留存（配置关闭/失败返回空串，收束与入库不受阻）。"""
+        from agent.realtime.recordings import save_turn_recording
+        return await save_turn_recording(
+            session.owner, session.turn_id, pcm, session.sample_rate)
 
     async def _whole_transcribe(
         self, pcm: bytes, sample_rate: int,
@@ -737,11 +770,16 @@ class RealtimeEngine:
         transcript: str,
         segments: Optional[List[Dict[str, Any]]] = None,
         speaker: Optional[Dict[str, Any]] = None,
+        *,
+        speaker_vector: Optional[List[float]] = None,
+        recording_path: str = "",
     ) -> None:
         """一段定稿语音 → 用户消息经统一入口进思维，等待增量回复喂 TTS。
 
         speaker 非空时消息附说话人标注（谁在说话的事实陈述，识别建档
-        与应对方式均由 AI 与音频库自行决定，不做门控）。
+        与应对方式均由 AI 与音频库自行决定，不做门控）。speaker_vector
+        为本轮整段声纹（分段自带向量缺失时回填入库，供声纹建档）；
+        recording_path 非空时本轮入库片段归属该录制单元（可回听订正）。
         """
         turn_id = session.turn_id
         await session.set_state(SessionState.THINKING)
@@ -787,18 +825,30 @@ class RealtimeEngine:
         # 音频解析产物入核心库（fail-open，不影响对话）
         if segments:
             try:
-                from agent.audio import get_audio_service
+                from agent.audio import get_audio_service, get_audio_store
                 from agent.audio.schemas import IngestPayload, SegmentIn
                 await get_audio_service().ingest_payload(IngestPayload(
-                    source_file=f"realtime:{session.owner}",
+                    source_file=recording_path or f"realtime:{session.owner}",
+                    recording_path=recording_path,
                     device_source="realtime",
                     segments=[SegmentIn(
                         start_ms=int(s.get("start_ms", 0)),
                         end_ms=int(s.get("end_ms", 0)),
                         text=str(s.get("text", "")),
-                        vector=s.get("vector"),
+                        vector=s.get("vector") or speaker_vector,
                     ) for s in segments],
                 ))
+                if recording_path:
+                    # 登记录制单元与文件清单（回听/订正的定位依据）
+                    duration_s = round(
+                        max(int(s.get("end_ms", 0)) for s in segments) / 1000, 2)
+                    store = get_audio_store()
+                    await store.mark_recording(
+                        recording_path, kind="realtime", file_count=1,
+                        status="done", segments=len(segments))
+                    await store.set_recording_files(
+                        recording_path,
+                        [{"path": recording_path, "duration_s": duration_s}])
             except Exception:
                 pass
 

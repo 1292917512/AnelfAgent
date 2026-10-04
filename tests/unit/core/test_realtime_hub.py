@@ -111,3 +111,48 @@ class TestBackpressure:
         realtime_hub.publish({"event": "reply", "content": "R"})
         assert dead_sub.dead
         assert [e["content"] for e in _drain(live_sub)] == ["R"]
+
+
+class TestOfferLatest:
+    """直挂队列通道（语音 sink）的保最新入队原语。"""
+
+    @staticmethod
+    def _droppable(item: dict) -> bool:
+        return bool(item.get("__audio__")) or item.get("event") == "rt_partial"
+
+    def test_sheds_oldest_droppable_to_make_room(self):
+        """队列满时优先丢最旧可丢帧（partial/音频），关键帧全部保留。"""
+        q: asyncio.Queue[dict] = asyncio.Queue(maxsize=4)
+        q.put_nowait({"event": "rt_state", "state": "listening"})
+        q.put_nowait({"event": "rt_partial", "text": "一"})
+        q.put_nowait({"__audio__": True, "pcm": b"a"})
+        q.put_nowait({"event": "rt_partial", "text": "二"})
+        realtime_hub.offer_latest(
+            q, {"event": "rt_final", "text": "定稿"}, self._droppable)
+        events = []
+        while not q.empty():
+            events.append(q.get_nowait())
+        names = [e.get("event") or "audio" for e in events]
+        # 最旧的一帧 partial 被丢，rt_state 与最新 rt_final 都在
+        assert names == ["rt_state", "audio", "rt_partial", "rt_final"]
+
+    def test_drops_oldest_when_all_critical(self):
+        """极端堆积（无可丢帧）：丢最旧保最新，新帧绝不静默消失。"""
+        q: asyncio.Queue[dict] = asyncio.Queue(maxsize=2)
+        q.put_nowait({"event": "rt_state", "state": "listening"})
+        q.put_nowait({"event": "rt_final", "text": "旧"})
+        realtime_hub.offer_latest(
+            q, {"event": "rt_final", "text": "新"}, self._droppable)
+        assert q.get_nowait()["text"] == "旧"
+        assert q.get_nowait()["text"] == "新"
+
+    def test_audio_frame_sheds_itself_first(self):
+        """音频帧满时优先丢最旧音频帧（实时流丢旧无感）。"""
+        q: asyncio.Queue[dict] = asyncio.Queue(maxsize=2)
+        q.put_nowait({"__audio__": True, "pcm": b"old"})
+        q.put_nowait({"event": "rt_state", "state": "speaking"})
+        realtime_hub.offer_latest(
+            q, {"__audio__": True, "pcm": b"new"}, self._droppable)
+        items = [q.get_nowait(), q.get_nowait()]
+        assert items[0]["event"] == "rt_state"
+        assert items[1]["pcm"] == b"new"

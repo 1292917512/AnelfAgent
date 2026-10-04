@@ -68,6 +68,15 @@ register_configs_safe({
                            "识别与应对方式由 AI 自行决定）",
             "default": True,
         },
+        "realtime_keep_recordings": {
+            "description": "是否留存轮次录音（workspace/uploads/realtime/ 按日分目录；"
+                           "留存后实时片段在音源库可回听/订正/重转写）",
+            "default": True,
+        },
+        "realtime_recording_retention_days": {
+            "description": "轮次录音保留天数（到期随下次留存惰性清理，0 = 不清理）",
+            "default": 7, "unit": "天", "min": 0, "max": 365, "advanced": True,
+        },
         "realtime_context_inject": {
             "description": "通话期间向 AI 注入通话状态与应答节奏训诫（先应声再干活）",
             "default": True,
