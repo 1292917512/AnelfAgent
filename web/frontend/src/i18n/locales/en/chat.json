@@ -73,7 +73,13 @@
     "stateSpeaking": "Speaking",
     "micLevel": "Input level",
     "volume": "Output volume",
-    "hint": "Messages are answered by voice in real time; speak again to interrupt anytime"
+    "hint": "Messages are answered by voice in real time; speak again to interrupt anytime",
+    "modeFree": "Free",
+    "modePtt": "PTT",
+    "stateStandby": "Standby",
+    "pttHold": "Hold to talk",
+    "pttRelease": "Release to send",
+    "hintPtt": "Hold the button to talk, release to send; press during playback to interrupt"
   },
   "voice": {
     "transcript": "Voice transcript",

@@ -12,10 +12,11 @@
 """
 
 from agent.realtime.engine import RealtimeEngine, get_realtime_engine
-from agent.realtime.session import RealtimeSession, RealtimeSink, SessionState
+from agent.realtime.session import CallMode, RealtimeSession, RealtimeSink, SessionState
 from core.config import register_configs_safe
 
 __all__ = [
+    "CallMode",
     "RealtimeEngine",
     "RealtimeSession",
     "RealtimeSink",
@@ -67,6 +68,20 @@ register_configs_safe({
             "description": "语音轮次是否附说话人标注（声纹只读识别，标记谁在说话，"
                            "识别与应对方式由 AI 自行决定）",
             "default": True,
+        },
+        "realtime_echo_filter_enabled": {
+            "description": "回声内容过滤：用户轮转写被近期 AI 播报文本高度覆盖时判定为"
+                           "扬声器回声丢弃（防 AI 被自己的声音激发出回声轮）",
+            "default": True,
+        },
+        "realtime_echo_filter_seconds": {
+            "description": "回声比对的播报回溯窗口（只与该窗口内播出的文本比对）",
+            "default": 45.0, "unit": "秒", "min": 5.0, "max": 180.0, "advanced": True,
+        },
+        "realtime_echo_filter_threshold": {
+            "description": "回声覆盖度阈值（转写被播报文本覆盖的比例，容错少量转写错字；"
+                           "调低更激进、调高更保守）",
+            "default": 0.8, "min": 0.5, "max": 1.0, "advanced": True,
         },
         "realtime_keep_recordings": {
             "description": "是否留存轮次录音（workspace/uploads/realtime/ 按日分目录；"

@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Headphones, Loader2, Mic, PhoneOff, Volume2 } from "lucide-react";
-import { RealtimeVoiceClient, type RtState } from "@/lib/realtime-voice";
+import { RealtimeVoiceClient, type CallMode, type RtState } from "@/lib/realtime-voice";
 import { useChatStore } from "@/stores/chat-store";
 import { toast } from "@/components/ui";
 
@@ -17,18 +17,25 @@ const STATE_COLOR: Record<RtState, string> = {
   speaking: "bg-accent",
 };
 
+const MODE_STORAGE_KEY = "realtime_call_mode";
+
 interface CallState {
   active: boolean;
   connecting: boolean;
   state: RtState;
   /** 语音收束进入定稿（转写进行中）：收听中状态下展示「转写中」 */
   finalizing: boolean;
+  callMode: CallMode;
+  pttPressed: boolean;
   partial: string;
   level: number;
   volume: number;
   start: () => Promise<void>;
   stop: () => void;
   setVolume: (v: number) => void;
+  setCallMode: (m: CallMode) => void;
+  pressPtt: () => void;
+  releasePtt: () => void;
 }
 
 const CallCtx = createContext<CallState | null>(null);
@@ -41,6 +48,11 @@ export function RealtimeCallProvider({ children }: { children: React.ReactNode }
   const [connecting, setConnecting] = useState(false);
   const [state, setState] = useState<RtState>("listening");
   const [finalizing, setFinalizing] = useState(false);
+  const [callMode, setCallModeState] = useState<CallMode>(() => {
+    const saved = localStorage.getItem(MODE_STORAGE_KEY);
+    return saved === "ptt" ? "ptt" : "free";
+  });
+  const [pttPressed, setPttPressed] = useState(false);
   const [partial, setPartial] = useState("");
   const [level, setLevel] = useState(0);
   const [volume, setVolume] = useState(1);
@@ -54,7 +66,24 @@ export function RealtimeCallProvider({ children }: { children: React.ReactNode }
     setPartial("");
     setState("listening");
     setFinalizing(false);
+    setPttPressed(false);
     setLevel(0);
+  };
+
+  const setCallMode = (m: CallMode) => {
+    setCallModeState(m);
+    localStorage.setItem(MODE_STORAGE_KEY, m);
+    clientRef.current?.setCallMode(m);
+  };
+
+  const pressPtt = () => {
+    setPttPressed(true);
+    clientRef.current?.pttDown();
+  };
+
+  const releasePtt = () => {
+    setPttPressed(false);
+    clientRef.current?.pttUp();
   };
 
   const start = async () => {
@@ -80,10 +109,12 @@ export function RealtimeCallProvider({ children }: { children: React.ReactNode }
         setActive(false);
         setPartial("");
         setFinalizing(false);
+        setPttPressed(false);
         setLevel(0);
       },
     }, {
       chatId: chatId === "default" ? "" : chatId,
+      callMode,
     });
     try {
       await client.start();
@@ -108,11 +139,13 @@ export function RealtimeCallProvider({ children }: { children: React.ReactNode }
 
   return (
     <CallCtx.Provider value={{
-      active, connecting, state, finalizing, partial, level, volume, start, stop,
+      active, connecting, state, finalizing, callMode, pttPressed, partial,
+      level, volume, start, stop,
       setVolume: (v: number) => {
         setVolume(v);
         clientRef.current?.setOutputVolume(v);
       },
+      setCallMode, pressPtt, releasePtt,
     }}>
       {children}
     </CallCtx.Provider>
@@ -137,20 +170,21 @@ export function RealtimeCallToggle() {
   );
 }
 
-/** 通话状态条（仅通话中渲染于输入卡上方）：状态/转写/电平/音量/挂断。 */
+/** 通话状态条（仅通话中渲染于输入卡上方）：状态/转写/电平/模式/音量/挂断。 */
 export function RealtimeCallPanel() {
   const { t } = useTranslation("chat");
   const call = useCall();
   if (!call || !call.active) return null;
+  const statusLabel = call.finalizing && call.state === "listening"
+    ? t("call.stateFinalizing")
+    : call.state === "listening" && call.callMode === "ptt" && !call.pttPressed
+      ? t("call.stateStandby")
+      : t(STATE_LABEL[call.state]);
   return (
     <div className="mb-2 rounded-lg border border-border bg-elevated px-3 py-2 space-y-1.5">
       <div className="flex items-center gap-2 flex-wrap">
         <span className={`w-2 h-2 rounded-full animate-pulse ${STATE_COLOR[call.state]}`} />
-        <span className="text-xs font-medium text-foreground">
-          {call.finalizing && call.state === "listening"
-            ? t("call.stateFinalizing")
-            : t(STATE_LABEL[call.state])}
-        </span>
+        <span className="text-xs font-medium text-foreground">{statusLabel}</span>
         <div className="flex items-center gap-[2px] h-3" title={t("call.micLevel")}>
           {[0.15, 0.35, 0.55, 0.75, 0.92].map((th) => (
             <span
@@ -165,6 +199,20 @@ export function RealtimeCallPanel() {
           <span className="text-xs text-muted truncate max-w-[40%] animate-pulse">{call.partial}</span>
         )}
         <div className="ml-auto flex items-center gap-2">
+          <div className="flex items-center rounded-md border border-border overflow-hidden" role="group">
+            {(["free", "ptt"] as const).map((m) => (
+              <button
+                key={m}
+                onClick={() => call.setCallMode(m)}
+                className={`px-2 py-0.5 text-[11px] transition-colors ${
+                  call.callMode === m
+                    ? "bg-accent text-white"
+                    : "text-muted hover:text-accent hover:bg-hover"}`}
+              >
+                {t(m === "free" ? "call.modeFree" : "call.modePtt")}
+              </button>
+            ))}
+          </div>
           <div className="flex items-center gap-1" title={t("call.volume")}>
             <Volume2 size={13} className="text-muted" />
             <input
@@ -182,9 +230,29 @@ export function RealtimeCallPanel() {
           </button>
         </div>
       </div>
+      {call.callMode === "ptt" && (
+        <button
+          onPointerDown={(e) => {
+            e.preventDefault();
+            call.pressPtt();
+          }}
+          onPointerUp={call.releasePtt}
+          onPointerLeave={call.releasePtt}
+          onPointerCancel={call.releasePtt}
+          onContextMenu={(e) => e.preventDefault()}
+          className={`w-full flex items-center justify-center gap-2 py-2 rounded-md text-sm
+                     font-medium transition-colors touch-none select-none ${
+                       call.pttPressed
+                         ? "bg-accent text-white"
+                         : "bg-hover text-foreground hover:bg-accent/80 hover:text-white"}`}
+        >
+          <Mic size={15} />
+          {call.pttPressed ? t("call.pttRelease") : t("call.pttHold")}
+        </button>
+      )}
       <div className="flex items-center gap-1 text-[10px] text-muted">
         <Mic size={10} />
-        {t("call.hint")}
+        {t(call.callMode === "ptt" ? "call.hintPtt" : "call.hint")}
       </div>
     </div>
   );

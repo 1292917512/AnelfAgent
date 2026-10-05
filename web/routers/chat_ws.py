@@ -265,9 +265,16 @@ async def _dispatch(
                     ERR_INVALID_PAYLOAD, f"暂不支持的 input_type: {input_type}", request_id,
                 ))
                 return
-            from services.voice import VoiceLeaseBusy, get_voice_service
+            from services.voice import CallMode, VoiceLeaseBusy, get_voice_service
             try:
                 if str(frame.get("mode", "")) == "realtime":
+                    raw_call_mode = str(frame.get("call_mode", "free") or "free")
+                    if raw_call_mode not in ("free", "ptt"):
+                        await websocket.send_json(_status(
+                            ERR_INVALID_PAYLOAD,
+                            f"非法通话模式: {raw_call_mode}（可选 free/ptt）", request_id,
+                        ))
+                        return
                     # 实时对话：sink 直接挂在本连接的订阅队列上（JSON 事件走
                     # 下行泵，音频帧以 __audio__ 标记转二进制帧）
                     from services.voice import RealtimeSink
@@ -291,6 +298,7 @@ async def _dispatch(
                         user_id=str(frame.get("user_id") or user_id),
                         user_name=str(frame.get("user_name") or user_name),
                         chat_id=str(frame.get("chat_id") or chat_id),
+                        call_mode=CallMode(raw_call_mode),
                     )
                 else:
                     await get_voice_service().start(
@@ -304,6 +312,25 @@ async def _dispatch(
                 await websocket.send_json(_status(ERR_VOICE_SESSION_BUSY, str(exc), request_id))
                 return
             await ack("voice_ack", ok=True, active=True)
+
+        elif action == "call_mode":
+            # 通话中切换自由/点按模式
+            raw_mode = str(frame.get("call_mode", "") or "")
+            if raw_mode not in ("free", "ptt"):
+                await websocket.send_json(_status(
+                    ERR_INVALID_PAYLOAD,
+                    f"非法通话模式: {raw_mode}（可选 free/ptt）", request_id,
+                ))
+                return
+            from services.voice import CallMode, get_voice_service
+            await get_voice_service().set_call_mode(conn_id, CallMode(raw_mode))
+            await ack("call_mode_ack", ok=True, call_mode=raw_mode)
+
+        elif action == "ptt_state":
+            # 点按通话按键：active=True 按下开始收音，False 松开收束
+            from services.voice import get_voice_service
+            await get_voice_service().ptt_event(conn_id, bool(frame.get("active")))
+            await ack("ptt_state_ack", ok=True)
 
         elif action in ("voice_end", "end_session"):
             from services.voice import get_voice_service

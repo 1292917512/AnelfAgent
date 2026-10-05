@@ -18,8 +18,9 @@ from __future__ import annotations
 
 import asyncio
 import enum
+from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Dict, Optional, Set
+from typing import Any, Awaitable, Callable, Deque, Dict, Optional, Set, Tuple
 
 from agent.realtime.arbiter import SpeakLane
 from agent.realtime.playback import PcmResampler, PlaybackQueue
@@ -48,6 +49,15 @@ class SessionState(enum.Enum):
     LISTENING = "listening"
     THINKING = "thinking"
     SPEAKING = "speaking"
+
+
+class CallMode(str, enum.Enum):
+    """通话模式：轮次边界的裁决者（管线其余环节两模式共享）。"""
+
+    FREE = "free"
+    """自由通话：端点检测裁决轮次边界（常开麦全双工）。"""
+    PTT = "ptt"
+    """点按通话：按键信号裁决轮次边界（按下收音、松开收束，端点检测旁路）。"""
 
 
 @dataclass
@@ -86,11 +96,17 @@ class RealtimeSession:
     """语音收束处理任务（ASR 定稿/声纹/用户轮入库离线化，不阻塞麦克风帧流）。"""
     lane: SpeakLane = field(default_factory=SpeakLane)
     """播报车道：全部 TTS 播报的串行化与归因（生产任务由车道持有）。"""
+    call_mode: CallMode = CallMode.FREE
+    """通话模式（自由/点按；引擎在 start/set_call_mode 时改写）。"""
+    ptt_active: bool = False
+    """PTT 按键按下中（收音门控；仅 call_mode=ptt 时有意义）。"""
     tts_pipeline: Any = None
     """当前回复轮的 TTS 管线（引擎驱动；增量文本入口）。"""
     writer_task: Optional[asyncio.Task] = None
     last_say_error: str = ""
     """最近一次主动语音的失败原因（无失败为空；realtime_status 暴露给 AI 确认）。"""
+    spoken_recent: Deque[Tuple[float, str]] = field(default_factory=deque)
+    """近期已送 TTS 的文本（monotonic 时间戳, 归一化文本）——回声比对事实源。"""
     closed: bool = False
 
     def __post_init__(self) -> None:

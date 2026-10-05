@@ -84,3 +84,25 @@ class TestExtraTimezones:
         extras = module.detail()["extra_zones"]
         assert extras[0]["valid"] is True
         assert "datetime" in extras[0]
+
+
+class TestNextHolidayAlreadyStarted:
+    """假期中段不把连休/补假残段误报成倒计时（2026-10-04 注入错位 bug 回归）。"""
+
+    def test_gap_day_no_countdown(self) -> None:
+        # 国庆周内的自然周日 10-04：10-05 是「国庆节（补假）」，正日 10-01 已开始
+        assert festivals.next_holiday(date(2026, 10, 4), 14) is None
+
+    def test_holiday_first_day_no_self_countdown(self) -> None:
+        # 假期首日：旧实现会把次日连休误报成「距国庆节还有 1 天」
+        assert festivals.next_holiday(date(2026, 10, 1), 14) is None
+
+    def test_day_before_holiday_still_counts(self) -> None:
+        assert festivals.next_holiday(date(2026, 9, 30), 7) == (
+            date(2026, 10, 1), "国庆节",
+        )
+
+    def test_long_window_finds_next_real_holiday(self) -> None:
+        assert festivals.next_holiday(date(2026, 10, 4), 100) == (
+            date(2027, 1, 1), "元旦",
+        )

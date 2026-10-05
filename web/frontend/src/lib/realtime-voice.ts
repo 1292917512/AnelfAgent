@@ -10,6 +10,9 @@ import i18n from "@/i18n";
 
 export type RtState = "listening" | "thinking" | "speaking";
 
+/** 通话模式：free=自由通话（端点检测裁决轮次）/ ptt=点按通话（按住说话） */
+export type CallMode = "free" | "ptt";
+
 export interface RtEvent {
   type: string;
   [key: string]: unknown;
@@ -92,6 +95,8 @@ export interface RealtimeVoiceOptions {
   userId?: string;
   userName?: string;
   chatId?: string;
+  /** 通话模式（默认 free）；ptt 模式下仅在按住期发送音频帧 */
+  callMode?: CallMode;
 }
 
 export class RealtimeVoiceClient {
@@ -105,14 +110,22 @@ export class RealtimeVoiceClient {
   private active = false;
   private wantActive = false;
   /** 通话意图（用户未挂断）：意外断连时据此自动重连（服务端宽限窗内重挂续命） */
+  private mode: CallMode;
+  private pttPressed = false;
 
   constructor(
     private cb: RealtimeVoiceCallbacks,
     private opts: RealtimeVoiceOptions = {},
-  ) {}
+  ) {
+    this.mode = opts.callMode ?? "free";
+  }
 
   get isActive(): boolean {
     return this.active;
+  }
+
+  get callMode(): CallMode {
+    return this.mode;
   }
 
   async start(): Promise<void> {
@@ -166,6 +179,7 @@ export class RealtimeVoiceClient {
       user_id: this.opts.userId,
       user_name: this.opts.userName,
       chat_id: this.opts.chatId,
+      call_mode: this.mode,
     }));
     // 握手：等待 voice_ack（拒绝/错误帧即启动失败，不进入通话态）
     const error = await this.waitForAck(ws);
@@ -231,7 +245,9 @@ export class RealtimeVoiceClient {
     const source = this.captureCtx.createMediaStreamSource(this.stream);
     const node = new AudioWorkletNode(this.captureCtx, "pcm-capture");
     node.port.onmessage = (ev: MessageEvent<Float32Array>) => {
-      if (this.ws?.readyState === WebSocket.OPEN) {
+      // 发送门控：ptt 模式仅在按住期上行（采集与电平条不间断；轨道同步静音
+      // 双保险——未按下时浏览器侧也不产生真实音频输入）
+      if (this.shouldSendAudio() && this.ws?.readyState === WebSocket.OPEN) {
         this.ws.send(encodeFrame(floatToPcm16(ev.data), CAPTURE_RATE));
       }
       const samples = ev.data ?? new Float32Array(0);
@@ -241,6 +257,47 @@ export class RealtimeVoiceClient {
     };
     source.connect(node);
     node.connect(this.captureCtx.destination);
+    this.applyTrackGate();
+  }
+
+  private shouldSendAudio(): boolean {
+    return this.mode === "free" || this.pttPressed;
+  }
+
+  private applyTrackGate(): void {
+    const enabled = this.shouldSendAudio();
+    this.stream?.getAudioTracks().forEach((t) => { t.enabled = enabled; });
+  }
+
+  /** 通话中切换模式（同步服务端 + 本地门控） */
+  setCallMode(mode: CallMode): void {
+    if (mode === this.mode) return;
+    if (this.pttPressed) this.pttUp();
+    this.mode = mode;
+    this.applyTrackGate();
+    if (this.active && this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ action: "call_mode", call_mode: mode }));
+    }
+  }
+
+  /** PTT 按下（开始收音） */
+  pttDown(): void {
+    if (this.mode !== "ptt" || this.pttPressed) return;
+    this.pttPressed = true;
+    this.applyTrackGate();
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ action: "ptt_state", active: true }));
+    }
+  }
+
+  /** PTT 松开（收束发送） */
+  pttUp(): void {
+    if (!this.pttPressed) return;
+    this.pttPressed = false;
+    this.applyTrackGate();
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ action: "ptt_state", active: false }));
+    }
   }
 
   private stopCapture(): void {
@@ -326,6 +383,7 @@ export class RealtimeVoiceClient {
   stop(): void {
     this.active = false;
     this.wantActive = false;
+    this.pttPressed = false;
     try {
       this.ws?.send(JSON.stringify({ action: "voice_end" }));
     } catch {

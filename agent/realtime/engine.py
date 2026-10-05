@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from agent.realtime.arbiter import (
@@ -30,7 +31,7 @@ from agent.realtime.arbiter import (
     Utterance,
 )
 from agent.realtime.playback import PlaybackFrame
-from agent.realtime.session import RealtimeSession, RealtimeSink, SessionState
+from agent.realtime.session import CallMode, RealtimeSession, RealtimeSink, SessionState
 from agent.voice.session import VoiceDelivery, VoiceLeaseBusy
 from agent.voice.turn_detection import TurnEvent
 from core.config import get_config_bool, get_config_float, get_config_int
@@ -55,6 +56,30 @@ def _dedup_key(text: str) -> str:
     """同文判定的归一化键：去空白与标点并小写——回复流逐句增量与
     send_message 全文之间的标点/分段差异不影响包含判定。"""
     return re.sub(r"[^\w]+", "", text).lower()
+
+
+# 回声比对的最小归一字符数：更短的感叹/应答（嗯/对/好）天然高重合，不过滤
+_ECHO_MIN_CHARS = 3
+# 已播文本的保留上限（秒；匹配窗口由配置 realtime_echo_filter_seconds 决定）
+_SPOKEN_CAP_SECONDS = 180.0
+
+
+def _normalize_echo_text(text: str) -> str:
+    """回声比对归一：去空白/标点/下划线并小写（转写标点差异不影响判定）。"""
+    return re.sub(r"[\W_]+", "", text.lower())
+
+
+def _echo_containment(probe: str, spoken: str) -> float:
+    """转写被已播文本覆盖的比例（0..1，有序子序列匹配，容错少量转写错字）。"""
+    import difflib
+    blocks = difflib.SequenceMatcher(None, probe, spoken).get_matching_blocks()
+    return sum(b.size for b in blocks) / max(1, len(probe))
+
+
+def _is_noise_transcript(text: str) -> bool:
+    """纯标点/空白转写判定（复用入库管线的噪音段语义：环境碎响误转）。"""
+    from agent.audio.ingest import is_noise_text
+    return is_noise_text(text)
 
 
 class RealtimeEngine:
@@ -87,11 +112,13 @@ class RealtimeEngine:
         delivery: VoiceDelivery,
         sink: RealtimeSink,
         sample_rate: int = 16000,
+        call_mode: CallMode = CallMode.FREE,
     ) -> RealtimeSession:
         """开启实时语音会话（同 owner 已有会话则显式拒绝）。
 
         同一用户已有会话时走重挂：断线重连/换端接续同一通话（轮次、播放
-        队列、挂起回复原样保留，播放写任务换到新连接），不再整段重建。
+        队列、挂起回复原样保留，播放写任务换到新连接），不再整段重建；
+        通话模式以本次呼叫的选择为准（前端是用户意图载体）。
         """
         if owner in self._sessions:
             raise VoiceLeaseBusy(f"已有进行中的实时语音会话（owner={owner}）")
@@ -106,6 +133,7 @@ class RealtimeEngine:
             if session is not None and not session.closed \
                     and session.sample_rate == sample_rate:
                 await self._reattach(session, owner=owner, delivery=delivery, sink=sink)
+                await self.set_call_mode(owner, call_mode)
                 return session
             # 会话已亡/采样率变了（检测器与预处理链按率构建）：旧账清掉走全新会话
             if session is not None:
@@ -116,7 +144,8 @@ class RealtimeEngine:
         if mode != "native":
             await self._check_cascade_ready(sink)
         session = RealtimeSession(
-            owner=owner, delivery=delivery, sample_rate=sample_rate, sink=sink)
+            owner=owner, delivery=delivery, sample_rate=sample_rate, sink=sink,
+            call_mode=call_mode)
         session.start_writer(get_config_int("realtime_playback_rate", 48000))
         self._sessions[owner] = session
         self._by_user[identity] = owner
@@ -388,6 +417,13 @@ class RealtimeEngine:
                     return
             await native.send_audio(pcm)
             return
+        if session.call_mode is CallMode.PTT:
+            await self._route_ptt_frame(session, pcm)
+            return
+        await self._route_cascade_frame(session, pcm)
+
+    async def _route_cascade_frame(self, session: RealtimeSession, pcm: bytes) -> None:
+        """自由通话帧路由：预处理 → 端点检测 → 按事件开收轮次 → 喂 ASR。"""
         pcm = session.preprocessor.feed(pcm)
         if not pcm:
             return  # 预处理链内部缓冲未凑满一帧
@@ -398,6 +434,55 @@ class RealtimeEngine:
             await self._feed_asr(session, pcm)
         if event is TurnEvent.SPEECH_END:
             self._spawn_finalize(session)
+
+    async def _route_ptt_frame(self, session: RealtimeSession, pcm: bytes) -> None:
+        """点按通话帧路由：仅按下期收音（预处理 → 喂 ASR；端点检测旁路，
+        按住期间的停顿不截断）。"""
+        if not session.ptt_active:
+            return  # 未按下：帧直接丢弃（服务端门控，与客户端发送门控双保险）
+        pcm = session.preprocessor.feed(pcm)
+        if not pcm:
+            return
+        await self._feed_asr(session, pcm)
+
+    async def set_call_mode(self, owner: str, mode: CallMode) -> None:
+        """通话中切换模式：自由→点按收束在说的轮次；点按→自由按松开处理。"""
+        session = self._sessions.get(owner)
+        if session is None or session.closed or session.call_mode is mode:
+            return
+        if mode is CallMode.PTT:
+            session.call_mode = mode
+            session.ptt_active = False
+            if session.detector.in_speech:
+                # 自由轮进行中：按当前帧收束，检测器复位防状态滞留
+                session.detector.reset()
+                self._spawn_finalize(session)
+        else:
+            was_active = session.ptt_active
+            session.call_mode = mode
+            session.ptt_active = False
+            if was_active:
+                self._spawn_finalize(session)
+
+    async def ptt_press(self, owner: str) -> None:
+        """点按按下：开始收音（播放/思考中按下=立即打断拿发言权，按钮即确认）。"""
+        session = self._sessions.get(owner)
+        if session is None or session.closed \
+                or session.call_mode is not CallMode.PTT or session.ptt_active:
+            return
+        if session.state is not SessionState.LISTENING:
+            await self._barge_in(session)
+        session.ptt_active = True
+        await self._begin_user_turn(session)
+
+    async def ptt_release(self, owner: str) -> None:
+        """点按松开：收束定稿。"""
+        session = self._sessions.get(owner)
+        if session is None or session.closed \
+                or session.call_mode is not CallMode.PTT or not session.ptt_active:
+            return
+        session.ptt_active = False
+        self._spawn_finalize(session)
 
     def _spawn_finalize(self, session: RealtimeSession) -> None:
         """语音收束离线化：定稿/声纹/入轮在后台任务执行，麦克风帧流不阻塞。
@@ -424,7 +509,7 @@ class RealtimeEngine:
             _run(), name=f"rt.finalize.{session.owner}")
 
     async def _on_speech_start(self, session: RealtimeSession) -> None:
-        """语音起始：新用户轮开始（turn_id+1）；播放/思考中的打断确认。
+        """自由模式语音起始：非收听态走打断确认窗，收听态直接开轮。
 
         回声防护：她说话/思考中听到的语音不立即打断——先持续观察
         realtime_barge_in_onset_ms，仍是语音才打断（扬声器回声多为
@@ -435,6 +520,11 @@ class RealtimeEngine:
                 return
             self._arm_barge_in_check(session)
             return
+        await self._begin_user_turn(session)
+
+    async def _begin_user_turn(self, session: RealtimeSession) -> None:
+        """开启用户轮次（轮次令牌 +1 并开流式 ASR）：自由模式检测器起始、
+        打断确认、点按按下三个轮次入口的统一出口。"""
         session.next_turn()
         if session.asr_session is None:
             session.asr_session = await self._open_asr(session)
@@ -451,9 +541,7 @@ class RealtimeEngine:
                 if session.closed or not session.detector.in_speech:
                     return
                 await self._barge_in(session)
-                session.next_turn()
-                if session.asr_session is None:
-                    session.asr_session = await self._open_asr(session)
+                await self._begin_user_turn(session)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -470,6 +558,8 @@ class RealtimeEngine:
         if pending and pending.get("session") is session:
             pending["superseded"] = True
             self._pending[scope] = pending
+            # 被打断的回复已播部分同样进回声事实源（残段也可能被录回）
+            self._note_spoken(session, str(pending.get("streamed_text", "")))
         await session.interrupt()
         log(f"barge-in: owner={session.owner} → turn {session.turn_id}",
             "DEBUG", tag=_LOG_TAG)
@@ -597,20 +687,46 @@ class RealtimeEngine:
             transcript, segments = await self._whole_transcribe(
                 buffered, session.sample_rate)
         transcript = transcript.strip()
-        if not transcript:
+        noise_only = bool(transcript) and _is_noise_transcript(transcript)
+        if not transcript or noise_only:
             # 未识别到有效语音：显式收帧（客户端清部分转写），状态保持收听；
-            # 真实语音时长却定稿为空是异常——落日志并告知用户重说
+            # 真实语音时长却定稿为空是异常——落日志并告知用户重说；
+            # 纯标点段属环境碎响误转：静默收帧不提示
             speaker_task.cancel()
-            log(f"语音轮定稿为空（丢弃）: turn={session.turn_id} audio_ms={audio_ms}",
-                "WARNING" if real_speech else "DEBUG", tag=_LOG_TAG)
+            if noise_only:
+                log(f"语音轮为纯标点段（丢弃）: turn={session.turn_id}",
+                    "DEBUG", tag=_LOG_TAG)
+            else:
+                log(f"语音轮定稿为空（丢弃）: turn={session.turn_id} audio_ms={audio_ms}",
+                    "WARNING" if real_speech else "DEBUG", tag=_LOG_TAG)
             await session.sink.send_event("rt_final", {
                 "text": "", "turn_id": session.turn_id, "discarded": True,
             })
-            if real_speech:
+            if real_speech and not noise_only:
                 await session.sink.send_event("rt_error", {
                     "level": "info",
                     "message": "这段没听清，请再说一遍",
                 })
+            return
+        if self._looks_like_echo(session, transcript):
+            # 扬声器回声：转写被近期已播文本高度覆盖（自己的声音被录回，
+            # 投递会激发出"AI 回应自己"的回声轮）
+            speaker_task.cancel()
+            log(f"语音轮疑似回声（丢弃）: turn={session.turn_id} "
+                f"text={transcript[:30]!r}", "DEBUG", tag=_LOG_TAG)
+            await session.sink.send_event("rt_final", {
+                "text": "", "turn_id": session.turn_id, "discarded": True,
+            })
+            return
+        if not real_speech:
+            # 低于最短有效语音时长：误触发丢弃（voice_min_utterance_ms 的
+            # 语义贯通到实时链路，点按误触与碎响短段不骚扰思维）
+            speaker_task.cancel()
+            log(f"语音轮低于最短时长（丢弃）: turn={session.turn_id} "
+                f"audio_ms={audio_ms} text={transcript[:20]!r}", "DEBUG", tag=_LOG_TAG)
+            await session.sink.send_event("rt_final", {
+                "text": "", "turn_id": session.turn_id, "discarded": True,
+            })
             return
         # 说话人只读识别（仅有效语音轮；标注谁在说话，应对由 AI 决定）
         facts = await speaker_task
@@ -721,6 +837,44 @@ class RealtimeEngine:
         from agent.realtime.recordings import save_turn_recording
         return await save_turn_recording(
             session.owner, session.turn_id, pcm, session.sample_rate)
+
+    @staticmethod
+    def _note_spoken(session: RealtimeSession, text: str) -> None:
+        """登记已送 TTS 的文本（回声比对的事实源；按时间窗滚动保留）。"""
+        spoken = _normalize_echo_text(text)
+        if not spoken:
+            return
+        now = time.monotonic()
+        recent = session.spoken_recent
+        while recent and now - recent[0][0] > _SPOKEN_CAP_SECONDS:
+            recent.popleft()
+        recent.append((now, spoken))
+
+    def _looks_like_echo(self, session: RealtimeSession, transcript: str) -> bool:
+        """回声判定：转写被近期已播文本高度覆盖（自己的声音被麦克风录回）。"""
+        if not get_config_bool("realtime_echo_filter_enabled", True):
+            return False
+        probe = _normalize_echo_text(transcript)
+        if len(probe) < _ECHO_MIN_CHARS:
+            return False
+        window = get_config_float("realtime_echo_filter_seconds", 45.0)
+        threshold = get_config_float("realtime_echo_filter_threshold", 0.8)
+        now = time.monotonic()
+        for ts, spoken in session.spoken_recent:
+            if now - ts > window:
+                continue
+            if probe in spoken:
+                return True
+            if _echo_containment(probe, spoken) >= threshold:
+                return True
+        # 在播回复流（未结算）：增量文本同步参与比对——回声定稿往往
+        # 早于本流结算点，只看已登记文本会漏掉正在播放的内容
+        pending = self._pending.get(self._scope_of(session))
+        if pending and pending.get("mind_turn") and not pending.get("superseded"):
+            live = _normalize_echo_text(str(pending.get("streamed_text", "")))
+            if live and (probe in live or _echo_containment(probe, live) >= threshold):
+                return True
+        return False
 
     async def _whole_transcribe(
         self, pcm: bytes, sample_rate: int,
@@ -937,6 +1091,7 @@ class RealtimeEngine:
             turn_id=turn_id, priority=PRIORITY_SPEAK, source="speak",
             starter=_starter, on_spoken=self._make_spoken_notifier(session, body),
         )
+        self._note_spoken(session, body)
         log(f"主动播报开管 [{self._scope_of(session)}] #{u.uid} turn={turn_id}: "
             f"{body[:30]!r}", "DEBUG", tag=_LOG_TAG)
         return {"spoken": True, "appending": appending, "turn_id": turn_id}
@@ -1054,6 +1209,7 @@ class RealtimeEngine:
         log(f"回复语音流结算 [{scope}] mind_turn={pending['settled_turn']} "
             f"pipeline={'有' if session.tts_pipeline is not None else '无'}",
             "DEBUG", tag=_LOG_TAG)
+        self._note_spoken(session, str(pending.get("streamed_text", "")))
         if session.tts_pipeline is not None:
             session.tts_pipeline.finish()
         elif session.state is SessionState.THINKING:

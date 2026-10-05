@@ -68,14 +68,32 @@ def festivals_on(day: date) -> List[str]:
     return names
 
 
+def holiday_start(year: int, main: str) -> Optional[date]:
+    """某主节名在该年法定表中的最早日期（补假/连休日与正日归并为同一起点）。"""
+    starts = [
+        day for day, raw in country_holidays_cn(year).items()
+        if str(raw).startswith(main)
+    ]
+    return min(starts) if starts else None
+
+
 def next_holiday(today: date, days: int) -> Optional[Tuple[date, str]]:
-    """未来 days 天内最近的法定假日（跨去重连续假日的主名）。"""
+    """未来 days 天内最近的尚未开始的法定假日主名。
+
+    主名当年正日 ≤ today 视为「已开启」，其连休/补假残段不再预告——否则
+    假期中段会误报倒计时（2026-10-04 bug：报「距国庆节还有 1 天（10-05）」，
+    实际国庆 10-01 已开始）。跨年查次年表时正日即起点，不受影响。
+    """
     for offset in range(1, days + 1):
         day = date.fromordinal(today.toordinal() + offset)
         raw = country_holidays_cn(day.year).get(day)
         if not raw:
             continue
         main = main_name(str(raw))
-        if main:
-            return day, main
+        if not main:
+            continue
+        start = holiday_start(day.year, main)
+        if start is not None and start <= today:
+            continue
+        return day, main
     return None

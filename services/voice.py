@@ -13,11 +13,11 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from agent.realtime import RealtimeSink, get_realtime_engine
+from agent.realtime import CallMode, RealtimeSink, get_realtime_engine
 from agent.voice import VoiceDelivery, VoiceLeaseBusy, get_voice_manager
 from core.audio_frames import AudioFrame
 
-__all__ = ["RealtimeSink", "VoiceLeaseBusy", "VoiceService", "get_voice_service"]
+__all__ = ["CallMode", "RealtimeSink", "VoiceLeaseBusy", "VoiceService", "get_voice_service"]
 
 
 class VoiceService:
@@ -83,6 +83,7 @@ class VoiceService:
         user_name: str = "用户",
         chat_id: str = "",
         adapter_key: str = "webui",
+        call_mode: CallMode = CallMode.FREE,
     ) -> None:
         """开启实时语音会话（租约冲突抛 VoiceLeaseBusy；sink 由连接层提供）。
 
@@ -98,7 +99,19 @@ class VoiceService:
             ),
             sink=sink,
             sample_rate=sample_rate,
+            call_mode=call_mode,
         )
+
+    async def set_call_mode(self, connection_id: str, mode: CallMode) -> None:
+        """通话中切换自由/点按模式（无会话静默忽略）。"""
+        await get_realtime_engine().set_call_mode(connection_id, mode)
+
+    async def ptt_event(self, connection_id: str, active: bool) -> None:
+        """点按通话按键事件（active=True 按下开始收音，False 松开收束）。"""
+        if active:
+            await get_realtime_engine().ptt_press(connection_id)
+        else:
+            await get_realtime_engine().ptt_release(connection_id)
 
 
 _voice_service: Optional[VoiceService] = None
