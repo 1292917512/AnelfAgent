@@ -63,6 +63,9 @@ _ECHO_MIN_CHARS = 3
 # 已播文本的保留上限（秒；匹配窗口由配置 realtime_echo_filter_seconds 决定）
 _SPOKEN_CAP_SECONDS = 180.0
 
+# 前滚缓存时长（毫秒）：onset 确认需要的前导语音随确认回补，首音节不被吞
+_PRE_ROLL_MS = 300
+
 
 def _normalize_echo_text(text: str) -> str:
     """回声比对归一：去空白/标点/下划线并小写（转写标点差异不影响判定）。"""
@@ -80,6 +83,25 @@ def _is_noise_transcript(text: str) -> bool:
     """纯标点/空白转写判定（复用入库管线的噪音段语义：环境碎响误转）。"""
     from agent.audio.ingest import is_noise_text
     return is_noise_text(text)
+
+
+async def _pcm_to_temp_wav(pcm: bytes, sample_rate: int, prefix: str) -> str:
+    """PCM16 写临时 WAV（声纹提取/整段 ASR 的文件输入形态；调用方负责删除）。"""
+    import os
+    import tempfile
+    import wave
+
+    def _write() -> str:
+        fd, path = tempfile.mkstemp(prefix=prefix, suffix=".wav")
+        with os.fdopen(fd, "wb") as f:
+            with wave.open(f, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(sample_rate)
+                wf.writeframes(pcm)
+        return path
+
+    return await asyncio.to_thread(_write)
 
 
 class RealtimeEngine:
@@ -432,6 +454,15 @@ class RealtimeEngine:
             await self._on_speech_start(session)
         if session.detector.in_speech or session.asr_session is not None:
             await self._feed_asr(session, pcm)
+        elif session.state is SessionState.LISTENING:
+            # 未入段的收听态帧留前滚痕：onset 确认后随 _begin_user_turn 回补
+            session.pre_roll.append(pcm)
+            cap = session.sample_rate * 2 * _PRE_ROLL_MS // 1000
+            total = sum(len(f) for f in session.pre_roll)
+            while total > cap and session.pre_roll:
+                total -= len(session.pre_roll.popleft())
+        elif session.pre_roll:
+            session.pre_roll.clear()  # 非收听态的留痕无消费方（防陈旧前滚串轮）
         if event is TurnEvent.SPEECH_END:
             self._spawn_finalize(session)
 
@@ -450,6 +481,7 @@ class RealtimeEngine:
         session = self._sessions.get(owner)
         if session is None or session.closed or session.call_mode is mode:
             return
+        session.pre_roll.clear()  # 前滚帧只服务当前模式的轮次起始（防陈旧留痕串轮）
         if mode is CallMode.PTT:
             session.call_mode = mode
             session.ptt_active = False
@@ -485,11 +517,31 @@ class RealtimeEngine:
         self._spawn_finalize(session)
 
     def _spawn_finalize(self, session: RealtimeSession) -> None:
-        """语音收束离线化：定稿/声纹/入轮在后台任务执行，麦克风帧流不阻塞。
+        """语音收束离线化：同步摘下本轮 ASR 代际与音频，定稿/声纹/入轮后台执行。
 
-        串行链：等上一段收束处理落地（上限 10s）再处理本段，防止两段
-        连续语音的定稿与用户轮乱序。
+        摘下是帧泵内的同步动作（零等待）：此后到达的新语音起始必开新一代
+        ASR（见 _begin_user_turn），上一代的帧、COMMIT 哨兵与定稿结果永不
+        跨代串流。后台任务串行链：等上一段收束处理落地（上限 10s）再处理
+        本段，防止两段连续语音的定稿与用户轮乱序。
         """
+        if session.barge_in_task is not None and not session.barge_in_task.done():
+            # 打断确认窗口内就收束了——短促碎响（扬声器回声），丢弃不成轮
+            session.barge_in_task.cancel()
+            session.barge_in_task = None
+            session.pcm_buffer.clear()
+            return
+        asr = session.asr_session
+        session.asr_session = None
+        asr_queue = session.asr_queue
+        # 冲刷预处理链的滞留样本（整段兜底与声纹识别吃到完整音频）
+        tail = session.preprocessor.flush()
+        if tail:
+            session.pcm_buffer.extend(tail)
+        buffered = bytes(session.pcm_buffer)
+        session.pcm_buffer.clear()
+        if asr is None and not buffered:
+            return  # 无语音内容的空收束（检测器抖动/点按误触），不排队不占轮
+        turn_id = session.turn_id
         prev = session.finalize_task
 
         async def _run() -> None:
@@ -499,14 +551,27 @@ class RealtimeEngine:
                 except Exception:
                     pass
             if session.closed:
+                await self._close_asr(asr)
                 return
             try:
-                await self._on_speech_end(session)
+                await self._on_speech_end(
+                    session, asr=asr, asr_queue=asr_queue,
+                    buffered=buffered, turn_id=turn_id)
             except Exception as exc:
                 log(f"语音收束处理异常: {exc}", "WARNING", tag=_LOG_TAG)
 
         session.finalize_task = asyncio.create_task(
             _run(), name=f"rt.finalize.{session.owner}")
+
+    @staticmethod
+    async def _close_asr(asr: Any) -> None:
+        """收口一代 ASR 会话：开/闭全程归引擎所有，不依赖提供方自闭合。"""
+        if asr is None:
+            return
+        try:
+            await asr.close()
+        except Exception:
+            pass
 
     async def _on_speech_start(self, session: RealtimeSession) -> None:
         """自由模式语音起始：非收听态走打断确认窗，收听态直接开轮。
@@ -524,10 +589,20 @@ class RealtimeEngine:
 
     async def _begin_user_turn(self, session: RealtimeSession) -> None:
         """开启用户轮次（轮次令牌 +1 并开流式 ASR）：自由模式检测器起始、
-        打断确认、点按按下三个轮次入口的统一出口。"""
+        打断确认、点按按下三个轮次入口的统一出口。
+
+        起始确认前的前滚帧随开轮回补（pcm_buffer 与新一代 ASR 同序：
+        先回补帧后本帧），onset 确认吃掉的前导语音回到转写输入。
+        """
         session.next_turn()
+        pre_roll = b"".join(session.pre_roll)
+        session.pre_roll.clear()
+        if pre_roll:
+            session.pcm_buffer.extend(pre_roll)
         if session.asr_session is None:
             session.asr_session = await self._open_asr(session)
+        if pre_roll and session.asr_session is not None:
+            session.asr_queue.put_nowait(pre_roll)
 
     def _arm_barge_in_check(self, session: RealtimeSession) -> None:
         """排定打断确认（在途确认不重复排；确认窗口内收束由 _on_speech_end 取消）。"""
@@ -636,115 +711,109 @@ class RealtimeEngine:
                     except Exception:
                         pass  # 下行断连不杀消费任务（哨兵仍须被处理）
 
-    async def _on_speech_end(self, session: RealtimeSession) -> None:
-        """语音收束：ASR 定稿 → 用户轮次（打断确认窗口内收束的按回声丢弃）。
+    async def _on_speech_end(
+        self,
+        session: RealtimeSession,
+        *,
+        asr: Any,
+        asr_queue: "asyncio.Queue",
+        buffered: bytes,
+        turn_id: int,
+    ) -> None:
+        """一段收束语音的定稿与入轮（后台收束任务中执行）。
 
-        在后台收束任务中执行（见 _spawn_finalize）：先就地摘下 ASR 会话
-        并快照音频缓冲（同步、零等待），后续网络调用期间到达的新语音帧
-        进入新一轮（不再喂给已定稿的会话，不混入本轮缓冲）。
+        只消费 _spawn_finalize 同步摘下的代际产物（ASR 会话/喂帧队列/音频/
+        轮次号）——执行期间到达的新语音帧属于新一代，与本轮零串扰。
         """
-        if session.barge_in_task is not None and not session.barge_in_task.done():
-            # 打断确认窗口内就收束了——短促碎响（扬声器回声），丢弃不成轮
-            session.barge_in_task.cancel()
-            session.barge_in_task = None
-            session.pcm_buffer.clear()
-            return
-        asr = session.asr_session
-        session.asr_session = None
-        # 冲刷预处理链的滞留样本（整段兜底与声纹识别吃到完整音频）
-        tail = session.preprocessor.flush()
-        if tail:
-            session.pcm_buffer.extend(tail)
-        buffered = bytes(session.pcm_buffer)
-        session.pcm_buffer.clear()
-        audio_ms = len(buffered) * 1000 // max(1, session.sample_rate * 2)
-        real_speech = audio_ms >= get_config_int("voice_min_utterance_ms", 300)
-        if real_speech:
-            # 转写中间态：定稿期间前端可区分「收听中」与「转写中」
-            await session.sink.send_event("rt_finalizing", {"turn_id": session.turn_id})
-        # 声纹识别与 ASR 定稿并行（都只依赖本段音频，互不依赖）——
-        # 思维启动的关键路径收敛为一段网络往返
         speaker_task = asyncio.create_task(
             self._speaker_facts(buffered, session.sample_rate))
-        transcript = ""
-        segments: List[Dict[str, Any]] = []
-        if asr is not None:
-            try:
-                # commit 经本代喂帧队列保序（定稿必在全部已喂帧之后）；
-                # 收束在后台任务里，有界等待防 ASR 侧挂死
-                loop = asyncio.get_running_loop()
-                fut = loop.create_future()
-                session.asr_queue.put_nowait((_ASR_COMMIT, fut))
-                events = await asyncio.wait_for(fut, timeout=20.0)
-            except Exception as exc:
-                log(f"流式 ASR 定稿失败（降级整段）: {exc}", "DEBUG", tag=_LOG_TAG)
-                events = []
-            for event in events:
-                if event.kind == "final":
-                    transcript = event.text
-                    segments = event.segments
-        if not transcript and buffered:
-            transcript, segments = await self._whole_transcribe(
-                buffered, session.sample_rate)
-        transcript = transcript.strip()
-        noise_only = bool(transcript) and _is_noise_transcript(transcript)
-        if not transcript or noise_only:
-            # 未识别到有效语音：显式收帧（客户端清部分转写），状态保持收听；
-            # 真实语音时长却定稿为空是异常——落日志并告知用户重说；
-            # 纯标点段属环境碎响误转：静默收帧不提示
-            speaker_task.cancel()
-            if noise_only:
-                log(f"语音轮为纯标点段（丢弃）: turn={session.turn_id}",
-                    "DEBUG", tag=_LOG_TAG)
-            else:
-                log(f"语音轮定稿为空（丢弃）: turn={session.turn_id} audio_ms={audio_ms}",
-                    "WARNING" if real_speech else "DEBUG", tag=_LOG_TAG)
-            await session.sink.send_event("rt_final", {
-                "text": "", "turn_id": session.turn_id, "discarded": True,
-            })
-            if real_speech and not noise_only:
-                await session.sink.send_event("rt_error", {
-                    "level": "info",
-                    "message": "这段没听清，请再说一遍",
+        try:
+            audio_ms = len(buffered) * 1000 // max(1, session.sample_rate * 2)
+            real_speech = audio_ms >= get_config_int("voice_min_utterance_ms", 300)
+            if real_speech:
+                # 转写中间态：定稿期间前端可区分「收听中」与「转写中」
+                await session.sink.send_event("rt_finalizing", {"turn_id": turn_id})
+            transcript = ""
+            segments: List[Dict[str, Any]] = []
+            if asr is not None:
+                try:
+                    # commit 经本代喂帧队列保序（定稿必在全部已喂帧之后）；
+                    # 有界等待防 ASR 侧挂死
+                    loop = asyncio.get_running_loop()
+                    fut = loop.create_future()
+                    asr_queue.put_nowait((_ASR_COMMIT, fut))
+                    events = await asyncio.wait_for(fut, timeout=20.0)
+                except Exception as exc:
+                    log(f"流式 ASR 定稿失败（降级整段）: {exc}", "DEBUG", tag=_LOG_TAG)
+                    events = []
+                for event in events:
+                    if event.kind == "final":
+                        transcript = event.text
+                        segments = event.segments
+            if not transcript and buffered:
+                transcript, segments = await self._whole_transcribe(
+                    buffered, session.sample_rate)
+            transcript = transcript.strip()
+            noise_only = bool(transcript) and _is_noise_transcript(transcript)
+            if not transcript or noise_only:
+                # 未识别到有效语音：显式收帧（客户端清部分转写），状态保持收听；
+                # 真实语音时长却定稿为空是异常——落日志并告知用户重说；
+                # 纯标点段属环境碎响误转：静默收帧不提示
+                if noise_only:
+                    log(f"语音轮为纯标点段（丢弃）: turn={turn_id}",
+                        "DEBUG", tag=_LOG_TAG)
+                else:
+                    log(f"语音轮定稿为空（丢弃）: turn={turn_id} audio_ms={audio_ms}",
+                        "WARNING" if real_speech else "DEBUG", tag=_LOG_TAG)
+                await session.sink.send_event("rt_final", {
+                    "text": "", "turn_id": turn_id, "discarded": True,
                 })
-            return
-        if self._looks_like_echo(session, transcript):
-            # 扬声器回声：转写被近期已播文本高度覆盖（自己的声音被录回，
-            # 投递会激发出"AI 回应自己"的回声轮）
-            speaker_task.cancel()
-            log(f"语音轮疑似回声（丢弃）: turn={session.turn_id} "
-                f"text={transcript[:30]!r}", "DEBUG", tag=_LOG_TAG)
+                if real_speech and not noise_only:
+                    await session.sink.send_event("rt_error", {
+                        "level": "info",
+                        "message": "这段没听清，请再说一遍",
+                    })
+                return
+            if self._looks_like_echo(session, transcript):
+                # 扬声器回声：转写被近期已播文本高度覆盖（自己的声音被录回，
+                # 投递会激发出"AI 回应自己"的回声轮）
+                log(f"语音轮疑似回声（丢弃）: turn={turn_id} "
+                    f"text={transcript[:30]!r}", "DEBUG", tag=_LOG_TAG)
+                await session.sink.send_event("rt_final", {
+                    "text": "", "turn_id": turn_id, "discarded": True,
+                })
+                return
+            if not real_speech:
+                # 低于最短有效语音时长：误触发丢弃（voice_min_utterance_ms 的
+                # 语义贯通到实时链路，点按误触与碎响短段不骚扰思维）
+                log(f"语音轮低于最短时长（丢弃）: turn={turn_id} "
+                    f"audio_ms={audio_ms} text={transcript[:20]!r}", "DEBUG", tag=_LOG_TAG)
+                await session.sink.send_event("rt_final", {
+                    "text": "", "turn_id": turn_id, "discarded": True,
+                })
+                return
+            # 说话人只读识别（仅有效语音轮；标注谁在说话，应对由 AI 决定）
+            facts = await speaker_task
+            speaker = (facts or {}).get("briefing")
+            # 流式 ASR 不带分段时合成单段（定稿文本即本段全部内容）——
+            # 实时轮次不因提供方差异而中断音源库入库
+            if not segments:
+                segments = [{"start_ms": 0, "end_ms": audio_ms, "text": transcript}]
             await session.sink.send_event("rt_final", {
-                "text": "", "turn_id": session.turn_id, "discarded": True,
+                "text": transcript, "turn_id": turn_id,
             })
-            return
-        if not real_speech:
-            # 低于最短有效语音时长：误触发丢弃（voice_min_utterance_ms 的
-            # 语义贯通到实时链路，点按误触与碎响短段不骚扰思维）
-            speaker_task.cancel()
-            log(f"语音轮低于最短时长（丢弃）: turn={session.turn_id} "
-                f"audio_ms={audio_ms} text={transcript[:20]!r}", "DEBUG", tag=_LOG_TAG)
-            await session.sink.send_event("rt_final", {
-                "text": "", "turn_id": session.turn_id, "discarded": True,
-            })
-            return
-        # 说话人只读识别（仅有效语音轮；标注谁在说话，应对由 AI 决定）
-        facts = await speaker_task
-        speaker = (facts or {}).get("briefing")
-        # 流式 ASR 不带分段时合成单段（定稿文本即本段全部内容）——
-        # 实时轮次不因提供方差异而中断音源库入库
-        if not segments:
-            segments = [{"start_ms": 0, "end_ms": audio_ms, "text": transcript}]
-        await session.sink.send_event("rt_final", {
-            "text": transcript, "turn_id": session.turn_id,
-        })
-        await self._broadcast_transcript(session, transcript)
-        recording_path = await self._keep_recording(session, buffered)
-        await self.user_turn(
-            session, transcript, segments, speaker,
-            speaker_vector=(facts or {}).get("vector"),
-            recording_path=recording_path,
-        )
+            await self._broadcast_transcript(session, transcript)
+            recording_path = await self._keep_recording(session, turn_id, buffered)
+            await self.user_turn(
+                session, transcript, segments, speaker,
+                speaker_vector=(facts or {}).get("vector"),
+                recording_path=recording_path,
+                turn_id=turn_id,
+            )
+        finally:
+            if not speaker_task.done():
+                speaker_task.cancel()
+            await self._close_asr(asr)
 
     @staticmethod
     async def _broadcast_transcript(session: RealtimeSession, text: str) -> None:
@@ -784,7 +853,7 @@ class RealtimeEngine:
             from agent.audio.matcher import match_vector
             from agent.audio.service import get_audio_service
 
-            wav_path = await self._pcm_temp_wav(pcm, sample_rate)
+            wav_path = await _pcm_to_temp_wav(pcm, sample_rate, "rt_spk_")
             vector = await get_audio_service().speaker_embed(wav_path)
             if not vector:
                 return None
@@ -812,31 +881,13 @@ class RealtimeEngine:
             "entity_scope": str(best.get("entity_scope") or ""),
         }}
 
-    async def _pcm_temp_wav(self, pcm: bytes, sample_rate: int) -> str:
-        """PCM 写临时 WAV（声纹提取需要文件输入；用后即删）。"""
-        import asyncio
-        import os
-        import tempfile
-        import wave
-
-        def _write() -> str:
-            fd, path = tempfile.mkstemp(prefix="rt_spk_", suffix=".wav")
-            with os.fdopen(fd, "wb") as f:
-                with wave.open(f, "wb") as wf:
-                    wf.setnchannels(1)
-                    wf.setsampwidth(2)
-                    wf.setframerate(sample_rate)
-                    wf.writeframes(pcm)
-            return path
-
-        wav_path = await asyncio.to_thread(_write)
-        return wav_path
-
-    async def _keep_recording(self, session: RealtimeSession, pcm: bytes) -> str:
+    async def _keep_recording(
+        self, session: RealtimeSession, turn_id: int, pcm: bytes,
+    ) -> str:
         """轮次录音留存（配置关闭/失败返回空串，收束与入库不受阻）。"""
         from agent.realtime.recordings import save_turn_recording
         return await save_turn_recording(
-            session.owner, session.turn_id, pcm, session.sample_rate)
+            session.owner, turn_id, pcm, session.sample_rate)
 
     @staticmethod
     def _note_spoken(session: RealtimeSession, text: str) -> None:
@@ -880,23 +931,10 @@ class RealtimeEngine:
         self, pcm: bytes, sample_rate: int,
     ) -> tuple[str, List[Dict[str, Any]]]:
         """整段 ASR 兜底（无流式提供者时）：PCM → 临时 WAV → 整段转写。"""
-        import asyncio
         import os
-        import tempfile
-        import wave
-
-        def _write() -> str:
-            fd, path = tempfile.mkstemp(prefix="rt_asr_", suffix=".wav")
-            with os.fdopen(fd, "wb") as f:
-                with wave.open(f, "wb") as wf:
-                    wf.setnchannels(1)
-                    wf.setsampwidth(2)
-                    wf.setframerate(sample_rate)
-                    wf.writeframes(pcm)
-            return path
 
         try:
-            wav_path = await asyncio.to_thread(_write)
+            wav_path = await _pcm_to_temp_wav(pcm, sample_rate, "rt_asr_")
         except Exception as exc:
             log(f"整段 ASR 临时文件失败: {exc}", "DEBUG", tag=_LOG_TAG)
             return "", []
@@ -927,15 +965,17 @@ class RealtimeEngine:
         *,
         speaker_vector: Optional[List[float]] = None,
         recording_path: str = "",
+        turn_id: int = 0,
     ) -> None:
         """一段定稿语音 → 用户消息经统一入口进思维，等待增量回复喂 TTS。
 
         speaker 非空时消息附说话人标注（谁在说话的事实陈述，识别建档
         与应对方式均由 AI 与音频库自行决定，不做门控）。speaker_vector
         为本轮整段声纹（分段自带向量缺失时回填入库，供声纹建档）；
-        recording_path 非空时本轮入库片段归属该录制单元（可回听订正）。
+        recording_path 非空时本轮入库片段归属该录制单元（可回听订正）；
+        turn_id 为定稿摘轮时的轮次号（0 = 读会话当前轮次）。
         """
-        turn_id = session.turn_id
+        turn_id = turn_id or session.turn_id
         await session.set_state(SessionState.THINKING)
         scope = self._scope_of(session)
         self._cancel_settle_fallback(scope)

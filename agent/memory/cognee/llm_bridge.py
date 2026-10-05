@@ -49,6 +49,11 @@ _API_TYPE_TO_COGNEE_PROVIDER = {
 # cognee embedding 引擎的显式分支；其余 provider 统一走 LiteLLMEmbeddingEngine
 _COGNEE_NATIVE_EMBED_PROVIDERS = frozenset({"openai", "ollama", "azure"})
 
+# 嵌入输入上限帽（tokens），同时决定摄入切片粒度与嵌入截断点。cognee 未配置时
+# 默认 4096——细切一半会与存量按 8191 粒度嵌入的数据产生混合粒度；取 8191
+# 保持摄入粒度一致。上限更低的模型由 cognee 按 min(帽, 模型限) 自动下调
+_EMBEDDING_INPUT_CAP_TOKENS = 8191
+
 _ANTHROPIC_OFFICIAL_ENDPOINT = "https://api.anthropic.com"
 
 # 模型 extra_body 透传时的保留键（与 cognee/instructor 自身参数冲突，丢弃）
@@ -346,6 +351,7 @@ def resolve_embedding_llm_config(
             "embedding_model": emb_cfg.model,
             "embedding_api_key": emb_cfg.api_key or None,
             "embedding_endpoint": emb_cfg.endpoint,
+            "embedding_max_completion_tokens": _EMBEDDING_INPUT_CAP_TOKENS,
         }
         if emb_cfg.dimensions > 0:
             payload["embedding_dimensions"] = emb_cfg.dimensions
@@ -375,6 +381,7 @@ def _embed_payload_from_client(client: Any, dimensions: int = 0) -> dict[str, An
         "embedding_model": cfg.litellm_embed_model,
         "embedding_api_key": cfg.api_key or None,
         "embedding_endpoint": _cognee_compatible_endpoint(cfg.base_url),
+        "embedding_max_completion_tokens": _EMBEDDING_INPUT_CAP_TOKENS,
     }
     dims = dimensions or getattr(client, "dimensions", 0) or 0
     if isinstance(dims, int) and dims > 0:

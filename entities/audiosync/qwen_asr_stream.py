@@ -1,8 +1,10 @@
 """Qwen 实时流式 ASR — 百炼 qwen3-asr-flash-realtime WebSocket 连接。
 
 协议（与 OpenAI Realtime 同构，对齐 N.E.K.O asr_client/workers/qwen.py 的接线）：
-- 连接：wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=qwen3-asr-flash-realtime，
-  Bearer 鉴权（组件凭据中心 dashscope 条目 / 环境变量 DASHSCOPE_API_KEY）；
+- 连接：wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=qwen3-asr-flash-realtime
+  （realtime_qwen_asr_ws_base 可切 token-plan 等兼容端点），Bearer 鉴权——凭据
+  按端点归属解析：llm_clients 同 host 供应商的 key → 组件凭据 dashscope →
+  环境变量 DASHSCOPE_API_KEY；
 - 会话初始化（连接级一次）：modalities=["text"]、input_audio_format=pcm、
   sample_rate=16000、input_audio_transcription={}、turn_detection=None
   （manual 提交——轮次边界由本地端点检测器单一裁决，不做双 VAD 冲突）；
@@ -148,6 +150,9 @@ class _QwenAsrConnection:
 
     async def close(self) -> None:
         self._closed = True
+        owner = self._owner
+        if owner is not None:
+            owner._on_error("连接关闭")  # 唤醒在途 commit 等待（无等待时仅留痕）
         if self._reader_task is not None and not self._reader_task.done():
             self._reader_task.cancel()
         if self._ws is not None:

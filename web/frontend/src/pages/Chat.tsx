@@ -12,6 +12,7 @@ import { Button } from "@/components/ui";
 import { ModelSelect } from "@/components/models/ModelSelect";
 import { MessageList } from "./chat/MessageList";
 import { ChatInput } from "./chat/ChatInput";
+import { RealtimeCallProvider } from "./chat/RealtimeCallBar";
 import { ChatDropZone } from "./chat/ChatDropZone";
 import { StatusCapsule } from "./chat/StatusCapsule";
 import { ActivityBar } from "./chat/ActivityBar";
@@ -150,6 +151,7 @@ export default function Chat() {
   // 移动端：三栏全部退化为抽屉（Dock/LeftDock/FileEditor 内部自行处理）
   if (isMobile) {
     return (
+      <RealtimeCallProvider>
       <div className="relative flex h-full min-h-0 -m-3 md:-m-6">
         <LeftDock />
         {hasOpenFiles && (
@@ -161,11 +163,13 @@ export default function Chat() {
         <Dock />
         <UiCommandHost />
       </div>
+      </RealtimeCallProvider>
     );
   }
 
-  // 桌面端：可拖拽调宽的三栏（宽度持久化到 localStorage，双击手柄复位）
+  // 桌面端：可拖拽调宽的三栏（宽度持久化到 localStorage，双击复位）
   return (
+    <RealtimeCallProvider>
     <div className="relative h-full min-h-0 -m-3 md:-m-6">
       <Group
         orientation="horizontal"
@@ -211,5 +215,6 @@ export default function Chat() {
       {/* AI 界面命令宿主 */}
       <UiCommandHost />
     </div>
+    </RealtimeCallProvider>
   );
 }

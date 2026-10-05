@@ -353,6 +353,16 @@ def test_embedding_auto_uses_manager_client() -> None:
     assert payload["embedding_provider"] == "openai"
     assert payload["embedding_model"] == "openai/Qwen3-Embedding-8B"
     assert payload["embedding_dimensions"] == 1024
+    assert payload["embedding_max_completion_tokens"] == 8191
+
+
+def test_embedding_custom_includes_input_cap() -> None:
+    cfg = CogneeEmbeddingModelConfig(
+        source="custom", model="text-embedding-v4", provider="openai",
+    ).normalized()
+    payload = resolve_embedding_llm_config(cfg, _manager())
+    assert payload is not None
+    assert payload["embedding_max_completion_tokens"] == 8191
 
 
 def test_embedding_custom_requires_model() -> None:

@@ -9,7 +9,7 @@ dependencies = [
     # 精确锁定：litellm 流式 usage 处理对本项目是脆弱契约（1.100 曾对未收录
     # 模型伪造流式 usage），版本变动必须同步运行缓存健康门验证后再放行：
     #   LLM_CACHE_E2E=1 uv run pytest tests/integration/test_llm_cache_hit_e2e.py
-    "litellm==1.100.1",
+    "litellm==1.104.0",
     "aiosqlite>=0.21.0",
     # 声纹向量代数（agent/audio/vectors.py 直接依赖）
     "numpy>=1.26.0",
@@ -42,8 +42,8 @@ dependencies = [
     # Cognee 知识图谱记忆后端（默认安装，uv sync 自动拉取）。
     # cognee 1.5.4+ 声明 litellm<1.97，该上界仅针对 py3.10 上 litellm
     # 类型构建破坏（BerriAI/litellm#38202），本项目 py3.12 不受影响，
-    # 经下方 override-dependencies 与 litellm 1.100.1 共存。
-    "cognee==1.6.0",
+    # 经下方 override-dependencies 与 litellm 1.104.0 共存。
+    "cognee==1.6.2",
     "sqlite-vec>=0.1.9",
     "tiktoken>=0.12.0",
     "jieba>=0.42.1",
@@ -94,7 +94,7 @@ default = true
 # 2. onnxruntime：cognee 的 <=1.23.2 上界是其 fastembed 测试矩阵钉
 #   （fastembed 0.8.0 自身在 py3.12 允许 >=1.17），本项目 cognee 恒走
 #   API 嵌入不经 fastembed 推理，onnxruntime 只服务语音栈。
-override-dependencies = ["litellm==1.100.1", "onnxruntime>=1.30"]
+override-dependencies = ["litellm==1.104.0", "onnxruntime>=1.30"]
 
 [dependency-groups]
 dev = [

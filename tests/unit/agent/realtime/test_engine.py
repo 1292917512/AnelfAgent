@@ -957,3 +957,152 @@ class TestSessionReattach:
         await engine.start("conn-h", _delivery(), FakeSink().as_sink(), RATE)
         await engine.stop("conn-h")  # 显式挂断立即收线（无宽限）
         assert not engine._sessions and not engine._grace_tasks
+
+
+class _TrackedAsrSession:
+    """带代际编号与生命周期探针的 ASR 会话（跨代竞态断言用）。"""
+
+    def __init__(self, gen: int) -> None:
+        self.gen = gen
+        self.pcm = bytearray()
+        self.commits = 0
+        self.closed = False
+
+    async def accept_pcm(self, pcm, sample_rate):
+        self.pcm.extend(pcm)
+        return []
+
+    async def commit(self):
+        from agent.audio.streaming import AsrEvent
+        self.commits += 1
+        return [AsrEvent(kind="final", text=f"第{self.gen}轮", segments=[])]
+
+    async def close(self):
+        self.closed = True
+        return []
+
+
+class _GenProvider(FakeStreamAsrProvider):
+    """每代开新会话并留档的提供者（压过默认 fake_stream）。"""
+
+    name = "gen_stream"
+    priority = 0
+
+    def __init__(self) -> None:
+        self.sessions: list[_TrackedAsrSession] = []
+
+    def open_session(self, sample_rate: int = 16000):
+        session = _TrackedAsrSession(len(self.sessions) + 1)
+        self.sessions.append(session)
+        return session
+
+
+class TestGenerationSafety:
+    """ASR 代际安全：摘轮同步、哨兵不跨代、会话随轮收口、前滚回补。"""
+
+    async def test_detach_is_synchronous_at_speech_end(self, app) -> None:
+        """SPEECH_END 帧返回时本代已同步摘下（asr_session=None、缓冲已快照）——
+        新一轮起始必开新一代，帧与 COMMIT 哨兵永不跨代串流。"""
+        from agent.audio import get_audio_registry
+        provider = _GenProvider()
+        get_audio_registry().register(provider)
+
+        engine = RealtimeEngine()
+        sink = FakeSink()
+        session = await engine.start("c1", _delivery(), sink.as_sink(), RATE)
+        try:
+            for _ in range(50):
+                await engine.accept_pcm("c1", pcm_silence(20))
+            for _ in range(50):
+                await engine.accept_pcm("c1", pcm_tone(20))
+            assert session.asr_session is not None  # 语音段内：ASR 已开代
+            for _ in range(60):
+                await engine.accept_pcm("c1", pcm_silence(20))
+            # 帧泵链无让渡点：若摘下在后台任务里，此刻会话必然还挂着
+            assert session.asr_session is None
+            assert not session.pcm_buffer
+            # 摘走的会话照常完成定稿并被引擎收口（close 所有权归引擎）
+            await _wait_for(lambda: any(e[0] == "rt_final" for e in sink.events))
+            final = next(e for e in sink.events if e[0] == "rt_final")
+            assert final[1]["text"] == "第1轮"
+            await _wait_for(lambda: provider.sessions[0].closed)
+            assert provider.sessions[0].commits == 1
+        finally:
+            await engine.stop("c1")
+
+    async def test_commit_sentinel_stays_in_own_generation(self, app) -> None:
+        """上轮收束与下轮起始紧贴：两代 ASR 各自恰好定稿一次、定稿按轮序
+        到达——哨兵跨代会把新代提前定稿、旧代结果串进新轮（幻影串轮回归）。"""
+        from agent.audio import get_audio_registry
+        provider = _GenProvider()
+        get_audio_registry().register(provider)
+
+        engine = RealtimeEngine()
+        sink = FakeSink()
+        session = await engine.start("c1", _delivery(), sink.as_sink(), RATE)
+        try:
+            for _ in range(50):
+                await engine.accept_pcm("c1", pcm_silence(20))
+            for _ in range(50):
+                await engine.accept_pcm("c1", pcm_tone(20))
+            assert session.asr_session is not None  # 语音段内：ASR 已开代
+            for _ in range(60):
+                await engine.accept_pcm("c1", pcm_silence(20))
+            assert session.asr_session is None  # 轮 1 已同步摘下
+            # 轮 2 立即起始（轮 1 后台定稿未必已跑）：必开新一代
+            for _ in range(50):
+                await engine.accept_pcm("c1", pcm_tone(20))
+            assert len(provider.sessions) == 2
+            for _ in range(60):
+                await engine.accept_pcm("c1", pcm_silence(20))
+            await _wait_for(lambda: len([
+                e for e in sink.events if e[0] == "rt_final" and e[1]["text"]]) >= 2)
+            finals = [e[1]["text"] for e in sink.events
+                      if e[0] == "rt_final" and e[1]["text"]]
+            assert finals[:2] == ["第1轮", "第2轮"]
+            gen1, gen2 = provider.sessions
+            assert gen1.commits == 1 and gen2.commits == 1
+            await _wait_for(lambda: gen1.closed and gen2.closed)
+            # 思维收到的两条用户消息与轮序一致（定稿路由正确）
+            await _wait_for(lambda: len(app.messages) == 2)
+            assert [m["content"] for m in app.messages] == ["第1轮", "第2轮"]
+        finally:
+            await engine.stop("c1")
+
+    async def test_empty_finalize_skipped(self, app) -> None:
+        """无语音内容的空收束（检测器抖动）：不排队不产事件不占轮。"""
+        engine = RealtimeEngine()
+        sink = FakeSink()
+        session = await engine.start("c1", _delivery(), sink.as_sink(), RATE)
+        try:
+            before = list(sink.events)
+            engine._spawn_finalize(session)
+            assert session.finalize_task is None
+            assert sink.events == before
+        finally:
+            await engine.stop("c1")
+
+    async def test_pre_roll_refills_onset_frames(self, app) -> None:
+        """onset 确认吃掉的前导帧随开轮回补：ASR 收到的音频不少于实际
+        语音帧总量（不回补则首 ~120ms 语音永远缺席，首音节被吞）。"""
+        from agent.audio import get_audio_registry
+        provider = _GenProvider()
+        get_audio_registry().register(provider)
+
+        engine = RealtimeEngine()
+        sink = FakeSink()
+        await engine.start("c1", _delivery(), sink.as_sink(), RATE)
+        try:
+            for _ in range(50):
+                await engine.accept_pcm("c1", pcm_silence(20))
+            for _ in range(50):
+                await engine.accept_pcm("c1", pcm_tone(20))
+            for _ in range(60):
+                await engine.accept_pcm("c1", pcm_silence(20))
+            await _wait_for(lambda: provider.sessions[0].commits == 1)
+            frame_bytes = RATE * 2 * 20 // 1000  # 20ms/帧
+            # 50 帧语音全量 + onset 前导回补 > 纯语音总量；
+            # 无回补时 ASR 只能收到 onset 确认后的 ~44 帧
+            assert len(provider.sessions[0].pcm) > 50 * frame_bytes
+        finally:
+            await engine.stop("c1")

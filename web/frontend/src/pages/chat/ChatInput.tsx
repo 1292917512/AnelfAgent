@@ -5,7 +5,7 @@ import { Button } from "@/components/ui";
 import { useChatStore } from "@/stores/chat-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import type { PendingFile, WorkspaceSearchHit } from "@/lib/types";
-import { RealtimeCallPanel, RealtimeCallProvider, RealtimeCallToggle } from "./RealtimeCallBar";
+import { RealtimeCallPanel, RealtimeCallToggle } from "./RealtimeCallBar";
 import { detectMention, useMentionSearch } from "./mention/useMention";
 import { MentionPanel } from "./mention/MentionPanel";
 import { mentionMarkdown } from "./mention/mentionMarkdown";
@@ -205,7 +205,6 @@ export function ChatInput() {
   }, [addFiles, input]);
 
   return (
-    <RealtimeCallProvider>
     <div className="shrink-0">
       {/* 待发送附件（工作区/项目引用 chip + 上传缩略图） */}
       {pendingFiles.length > 0 && (
@@ -282,6 +281,5 @@ export function ChatInput() {
         </div>
       </div>
     </div>
-    </RealtimeCallProvider>
   );
 }

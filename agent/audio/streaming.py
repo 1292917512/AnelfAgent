@@ -9,8 +9,8 @@ providers.py 的注册表（kind=KIND_ASR_STREAM，独立优先级链）。
 - partial：部分转写（随语音推进不断更新，仅用于展示/预判，不驱动回复）；
 - final：一次端点收束的定稿转写（驱动回复的输入）。
 
-会话生命周期：open_session() → accept_pcm() 逐帧喂入 → close() 收尾
-（未收束的缓冲以 final 事件吐出）。
+会话生命周期：open_session() → accept_pcm() 逐帧喂入 → commit() 定稿
+（本地端点收束时调用一次，缓冲冲刷为 final 事件）→ close() 收尾。
 """
 
 from __future__ import annotations
@@ -40,8 +40,12 @@ class StreamingAsrSession(Protocol):
         """喂入一帧 PCM16，返回本帧产出的事件（可为空列表）。"""
         ...
 
+    async def commit(self) -> List[AsrEvent]:
+        """本地端点收束触发定稿：缓冲冲刷为 final 事件（无内容为空列表）。"""
+        ...
+
     async def close(self) -> List[AsrEvent]:
-        """会话收尾：未收束缓冲以 final 事件吐出。"""
+        """会话收尾（释放连接/在途任务；commit 之后调用须为幂等快路径）。"""
         ...
 
 

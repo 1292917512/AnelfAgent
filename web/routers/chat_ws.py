@@ -339,6 +339,11 @@ async def _dispatch(
 
         else:
             await websocket.send_json(_status(ERR_UNKNOWN_ACTION, f"未知 action: {action}", request_id))
+    except WebSocketDisconnect:
+        raise  # 正常断链（如 voice_end 的 ack 与客户端 close 竞速）：走上行泵断连收尾
     except Exception as exc:
         log(f"action 处理异常: {action} - {exc}", "DEBUG", tag=_LOG_TAG)
-        await websocket.send_json(_status(ERR_SERVER_ERROR, str(exc), request_id))
+        try:
+            await websocket.send_json(_status(ERR_SERVER_ERROR, str(exc), request_id))
+        except Exception:
+            pass  # 连接已在关闭途中，错误帧无处投递

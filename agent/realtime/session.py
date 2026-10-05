@@ -87,6 +87,10 @@ class RealtimeSession:
     自行退出；close 时统一取消，防无哨兵路径的任务泄漏）。"""
     pcm_buffer: bytearray = field(default_factory=bytearray)
     """整段 ASR 兜底缓冲 / 流式会话的原始音频留存。"""
+    pre_roll: Deque[bytes] = field(default_factory=deque)
+    """起始确认前的前滚帧（收听态的最近 ~300ms）：VAD onset 确认需要
+    前导语音，确认前的帧不回补会吃掉首音节——确认入段时回补进
+    ASR 与整段缓冲（pre-roll，对齐流式 VAD 通行实践）。"""
     _native_client: Any = None
     _native_resampler: Any = None
     _native_pump_task: Optional[asyncio.Task] = None
@@ -181,6 +185,7 @@ class RealtimeSession:
         self.playback.clear()
         self.detector.reset()
         self.preprocessor.reset()
+        self.pre_roll.clear()
         await self.set_state(SessionState.LISTENING)
 
     async def close(self) -> None:

@@ -553,6 +553,59 @@ def test_messages_single_user_still_folded() -> None:
     assert payload == "hi"
 
 
+def test_assistant_text_precedes_function_calls() -> None:
+    """带正文的 assistant 工具调用回放：文本块必须先于 function_call 条目。
+
+    端点要求 function_call_output 紧邻其 function_call 之后；文本块夹在
+    function_call 与 output 之间会被判为缺失响应（400）。
+    """
+    _, payload = messages_to_responses_input([
+        {"role": "user", "content": "查一下"},
+        {
+            "role": "assistant",
+            "content": "我来查",
+            "tool_calls": [
+                {"id": "a1", "type": "function",
+                 "function": {"name": "get_conversation", "arguments": "{}"}},
+                {"id": "b2", "type": "function",
+                 "function": {"name": "recall", "arguments": "{}"}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "a1", "content": "r1"},
+        {"role": "tool", "tool_call_id": "b2", "content": "r2"},
+    ])
+    assert isinstance(payload, list)
+    types = [item.get("type", "message") for item in payload]
+    assert types == [
+        "message", "message", "function_call", "function_call",
+        "function_call_output", "function_call_output",
+    ]
+    assert payload[1]["role"] == "assistant"
+    # function_call 之后不得再出现任何 message 条目（紧邻性）
+    last_call = max(i for i, t in enumerate(types) if t == "function_call")
+    assert all(t == "function_call_output" for t in types[last_call + 1:])
+
+
+def test_assistant_tool_calls_without_text_emit_no_message() -> None:
+    """无正文的 assistant 工具调用不产生 message 条目（保持 calls→outputs 紧邻）。"""
+    _, payload = messages_to_responses_input([
+        {"role": "user", "content": "查一下"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": "a1", "type": "function",
+                 "function": {"name": "get_conversation", "arguments": "{}"}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "a1", "content": "r1"},
+    ])
+    assert isinstance(payload, list)
+    assert [item.get("type", "message") for item in payload] == [
+        "message", "function_call", "function_call_output",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_chat_stream_via_responses() -> None:
     """chat_protocol=responses 时 chat_stream 应走 Responses 事件流。"""

@@ -254,6 +254,18 @@ def messages_to_responses_input(
             continue
 
         if role == "assistant" and message.get("tool_calls"):
+            # 文本块先于 function_call 回放（端点原生输出序）：function_call_output
+            # 必须紧邻其 function_call 之后，中间夹文本块会被端点判为缺失响应
+            if content:
+                input_items.append({
+                    "type": "message",
+                    "role": "assistant",
+                    "content": (
+                        [{"type": "output_text", "text": content}]
+                        if isinstance(content, str)
+                        else _convert_content_parts(content, role)
+                    ),
+                })
             for tool_call in message.get("tool_calls") or []:
                 if not isinstance(tool_call, dict):
                     continue
@@ -264,16 +276,6 @@ def messages_to_responses_input(
                     "call_id": tool_call.get("id") or "",
                     "name": function.get("name") or "",
                     "arguments": function.get("arguments") or "",
-                })
-            if content:
-                input_items.append({
-                    "type": "message",
-                    "role": "assistant",
-                    "content": (
-                        [{"type": "output_text", "text": content}]
-                        if isinstance(content, str)
-                        else _convert_content_parts(content, role)
-                    ),
                 })
             continue
 
