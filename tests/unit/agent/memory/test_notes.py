@@ -358,6 +358,90 @@ class TestStatusBlockTagOverview:
         text = (memory_dir / "memory.md").read_text(encoding="utf-8")
         assert "存在膨胀" in text and "memory_index" in text
 
+    async def test_merge_candidates_preview_lists_all(
+        self, memory_dir: Path, store,
+    ) -> None:
+        """预览全量列出候选（上限 5 对），不再截断前 3 致标题对数与列表不符。"""
+        from types import SimpleNamespace
+
+        from agent.heartbeat.engine import HeartbeatEngine
+
+        candidates = [
+            {"from": f"topic:来源{i}", "into": f"topic:归并{i}", "reason": "名称包含关系"}
+            for i in range(5)
+        ]
+
+        async def _candidates(limit: int = 5):
+            return candidates[:limit]
+
+        engine = HeartbeatEngine.__new__(HeartbeatEngine)
+        engine.mind = SimpleNamespace(
+            memory_store=SimpleNamespace(
+                get_type_counts=store.get_type_counts,
+                count_archived=store.count_archived,
+                list_tags=store.list_tags,
+                tag_merge_candidates=_candidates,
+            )
+        )
+        await engine._write_memory_status()
+        text = (memory_dir / "memory.md").read_text(encoding="utf-8")
+        assert "归并候选 5 对" in text
+        for i in range(5):
+            assert f"topic:来源{i}→topic:归并{i}" in text
+
+
+class TestStatusBlockNotesCapacity:
+    """便签容量监督：行数+字节双口径，覆盖经验/治理大档。"""
+
+    @staticmethod
+    def _engine(store):
+        from types import SimpleNamespace
+
+        from agent.heartbeat.engine import HeartbeatEngine
+
+        engine = HeartbeatEngine.__new__(HeartbeatEngine)
+        engine.mind = SimpleNamespace(memory_store=store)
+        return engine
+
+    async def test_line_overflow_warns(self, memory_dir: Path, store) -> None:
+        (memory_dir / "knowledge.md").write_text(
+            "\n".join(["行"] * 501), encoding="utf-8",
+        )
+        await self._engine(store)._write_memory_status()
+        text = (memory_dir / "memory.md").read_text(encoding="utf-8")
+        assert "便签超标" in text and "knowledge.md" in text and "501 行" in text
+
+    async def test_byte_overflow_warns_despite_lines_under_cap(
+        self, memory_dir: Path, store,
+    ) -> None:
+        """行数达标但字节超标（单行巨长化）同样被咬住——提醒来自字节口径。"""
+        long_line = "密" * 1024  # UTF-8 三字节/字，1 行 ≈ 3KB
+        (memory_dir / "tool_knowledge.md").write_text(
+            "\n".join([long_line] * 6), encoding="utf-8",  # 6 行 ≈ 18KB > 15KB
+        )
+        await self._engine(store)._write_memory_status()
+        text = (memory_dir / "memory.md").read_text(encoding="utf-8")
+        assert "便签超标" in text
+        line = next(ln for ln in text.splitlines() if "tool_knowledge.md" in ln)
+        assert "6 行/" in line and "≤100 行/15KB" in line
+
+    async def test_within_capacity_quiet(self, memory_dir: Path, store) -> None:
+        (memory_dir / "knowledge.md").write_text("# 少量\n内容\n", encoding="utf-8")
+        await self._engine(store)._write_memory_status()
+        text = (memory_dir / "memory.md").read_text(encoding="utf-8")
+        assert "便签超标" not in text
+
+    async def test_graph_curation_no_longer_supervised(
+        self, memory_dir: Path, store,
+    ) -> None:
+        """治理流水档已终态（议程实时计算、豁免落库），死条目出册不再占用监督面。"""
+        (memory_dir / "graph-curation.md").write_text(
+            "\n".join(["流水"] * 200), encoding="utf-8",
+        )
+        await self._engine(store)._write_memory_status()
+        text = (memory_dir / "memory.md").read_text(encoding="utf-8")
+        assert "便签超标" not in text
+
 
 # ==================================================================
 # 记忆体系铁律文档（config/memory_rules.md）

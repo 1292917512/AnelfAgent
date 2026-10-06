@@ -852,14 +852,15 @@ class HeartbeatEngine:
             log(f"记忆阈值预警: {len(warnings)} 条", tag="心跳")
         return warnings
 
-    # 便签容量建议（行数），与主便签指南中的容量建议保持一致
+    # 便签容量红线（行数, 字节）：宽于主便签指南的软目标，触发即明确超标。
+    # 行数防条目膨胀；字节防「单行巨长化」规避行数口径（速查条行内堆案例）。
     _NOTES_CAPACITY = {
-        "knowledge.md": 500,
-        "reflections.md": 500,
-        "entities.md": 1000,
-        # 治理状态档是历史流水形态——议程以 build_agenda 实时计算为唯一显示源，
-        # 豁免结论落 graph_curation_exemptions 库，便签不再承载治理内容
-        "graph-curation.md": 100,
+        "knowledge.md": (500, 40 * 1024),
+        "reflections.md": (500, 40 * 1024),
+        "entities.md": (1000, 40 * 1024),
+        "tool_knowledge.md": (100, 15 * 1024),
+        "skill-governance.md": (80, 12 * 1024),
+        "memory-governance-baseline.md": (100, 15 * 1024),
     }
 
     async def _write_memory_status(
@@ -935,13 +936,13 @@ class HeartbeatEngine:
             except Exception:
                 pass
             # 标签归并议程：确定性候选（写法变体/包含关系），事实归系统、决策归 AI
-            # （无候选零占用；明细与全量经 memory_index 查看）
+            # （无候选零占用；候选上限 5 对全量列出，更多明细经 memory_index 查看）
             try:
                 merge_candidates = await store.tag_merge_candidates(limit=5)
                 if merge_candidates:
                     preview = "；".join(
                         f"{c['from']}→{c['into']}（{c['reason']}）"
-                        for c in merge_candidates[:3]
+                        for c in merge_candidates
                     )
                     lines.append(
                         f"- 标签归并候选 {len(merge_candidates)} 对：{preview}"
@@ -949,13 +950,18 @@ class HeartbeatEngine:
                     )
             except Exception:
                 pass
-            for fname, cap in self._NOTES_CAPACITY.items():
+            for fname, (line_cap, byte_cap) in self._NOTES_CAPACITY.items():
                 fpath = notes_mod.get_memory_dir() / fname
-                if fpath.exists():
-                    with fpath.open(encoding="utf-8") as fp:
-                        line_count = sum(1 for _ in fp)
-                    if line_count > cap:
-                        lines.append(f"- ⚠️ 便签超标：{fname} {line_count} 行（建议 ≤{cap}），需提炼压缩")
+                if not fpath.exists():
+                    continue
+                with fpath.open(encoding="utf-8") as fp:
+                    line_count = sum(1 for _ in fp)
+                byte_size = fpath.stat().st_size
+                if line_count > line_cap or byte_size > byte_cap:
+                    lines.append(
+                        f"- ⚠️ 便签超标：{fname} {line_count} 行/{byte_size / 1024:.1f}KB"
+                        f"（建议 ≤{line_cap} 行/{byte_cap // 1024}KB），需提炼压缩"
+                    )
             await notes_mod.update_memory_status_block_async("\n".join(lines))
         except Exception as exc:
             log(f"记忆状态区块写入失败: {exc}", "DEBUG", tag="心跳")
