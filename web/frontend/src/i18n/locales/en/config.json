@@ -68,6 +68,8 @@
     "security/core": "Protection",
     "security/approval": "Approvals",
     "skills/core": "Skills",
+    "skills/catalog": "Skill Catalog",
+    "skills/match": "Skill Matching",
     "delegation/core": "Delegation",
     "channel/supervision": "Supervision",
     "network/proxy": "Proxy",

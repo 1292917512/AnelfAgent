@@ -552,6 +552,22 @@ class SkillStore:
             self._write_ledger(skill)
             return skill
 
+    def restore(self, name: str) -> Optional[Skill]:
+        """恢复归档/闲置技能为 ACTIVE（恢复即一次活动，刷新活动时钟）。
+
+        恢复必须 touch：不刷新活动时间的话，重力会在下一个策展周期
+        按原闲置计时立即把技能打回 stale/archived。merged_into 去向
+        保留作历史追溯，不在恢复时清除。
+        """
+        with self._lock:
+            skill = self.get(name)
+            if skill is None:
+                return None
+            skill.state = SkillState.ACTIVE
+            skill.touch()
+            self._write_ledger(skill, bump=True)
+            return skill
+
 
 # ------------------------------------------------------------------
 # 默认实例

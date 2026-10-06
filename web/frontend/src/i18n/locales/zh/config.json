@@ -68,6 +68,8 @@
     "security/core": "安全防护",
     "security/approval": "审批权限",
     "skills/core": "技能",
+    "skills/catalog": "技能目录",
+    "skills/match": "技能匹配",
     "delegation/core": "子代理",
     "channel/supervision": "频道看门狗",
     "network/proxy": "代理",

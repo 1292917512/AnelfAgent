@@ -146,12 +146,6 @@ _CURATOR_CONFIGS = {
             "description": "是否启用对话后后台技能评审",
             "default": True,
         },
-        "skills_match_top_k": {
-            "description": "技能匹配注入的最大数量",
-            "default": 3,
-            "advanced": True,
-            "unit": "个",
-        },
         "skills_stale_after_days": {
             "description": "技能无真实活动降级为 stale 的天数（检索注入不算活动）",
             "default": 30,
@@ -174,12 +168,6 @@ _CURATOR_CONFIGS = {
             "description": "写入诊断的语义相近阈值：拟议技能与现有技能相似度超过该值时"
                            "返回决策请求（呈现事实由 AI 裁决，不拒绝写入）",
             "default": 0.83,
-            "advanced": True,
-        },
-        "skills_match_redundancy": {
-            "description": "检索注入的近重复折叠阈值：候选与已入选技能相似度超过该值时折叠"
-                           "（保留得分更高者，折叠记入合并信号）",
-            "default": 0.9,
             "advanced": True,
         },
         "skills_merge_similarity": {

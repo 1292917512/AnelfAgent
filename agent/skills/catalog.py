@@ -1,11 +1,14 @@
-"""技能目录 — 在役技能的全量紧凑清单，进 stable 工具块。
+"""技能目录 — 全部可用技能（active + stale）的紧凑清单，进 stable 工具块。
 
-目录让模型每轮都能看到全部在役技能（名称 + 单行描述），技能寻址不依赖
+目录让模型每轮都能看到全部可用技能（名称 + 单行描述），技能寻址不依赖
 匹配器命中——匹配注入只做"当前相关"的定向放大，不做可见性门控。
+已归档技能不在目录（保持库容卫生），经匹配命中/搜索发现后可用
+restore_skill 恢复回可用集。
 
 字节稳定（前缀缓存友好）：按入库时间排序，新技能只在尾部追加，既有行
-不移动；库内容版本不变时目录文本字节不变（计数类账本更新不改变版本）。
-预算超限时逐级降级（截断描述 → 仅名称 + 省略计数），任何库容下可注入。
+不移动；库内容版本不变时目录文本字节不变（计数类账本更新不改变版本，
+状态迁移只翻转单行的「闲置」后缀）。预算超限时逐级降级
+（截断描述 → 仅名称 + 省略计数），任何库容下可注入。
 """
 from __future__ import annotations
 
@@ -15,9 +18,10 @@ from typing import Dict, List, Tuple
 from agent.skills.skill_store import Skill, SkillState, SkillStore
 
 _HEADER = (
-    "[技能库目录] 当前全部在役技能（按入库时间排序）。"
-    "与当前任务相关时先用 get_skill 读取其完整内容再按步骤执行；"
-    "不相关则忽略，不要逐条翻读。"
+    "[技能库目录] 全部可用技能（按入库时间排序，「闲置」=长期未用但可正常调用）。"
+    "与当前任务相关时先用 get_skill 读取完整内容再按步骤执行，不相关则忽略、"
+    "不要逐条翻读；用户可经 /技能名 显式调用；已归档技能不在此列，"
+    "匹配命中后可用 restore_skill 恢复。"
 )
 
 _cache_lock = threading.Lock()
@@ -31,11 +35,17 @@ def _catalog_enabled() -> bool:
 
 
 def _line(skill: Skill, desc_chars: int) -> str:
-    """单条目录行：技能名 + 单行描述（超长截断）。"""
+    """单条目录行：技能名 + 单行描述（超长截断）+ 闲置后缀。"""
     desc = skill.description.strip().replace("\n", " ")
-    if len(desc) > desc_chars:
-        desc = desc[:desc_chars - 1] + "…"
-    return f"- {skill.name}: {desc}" if desc else f"- {skill.name}"
+    if desc and desc_chars > 0:
+        if len(desc) > desc_chars:
+            desc = desc[:desc_chars - 1] + "…"
+        text = f"- {skill.name}: {desc}"
+    else:
+        text = f"- {skill.name}"
+    if skill.state is SkillState.STALE:
+        text += "（闲置）"
+    return text
 
 
 def _omission_line(count: int) -> str:
@@ -46,8 +56,8 @@ def _render(skills: List[Skill]) -> str:
     """渲染目录正文：预算内尽量保留描述，超限逐级降级。"""
     from core.config import get_config_int
 
-    max_chars = get_config_int("skills_catalog_max_chars", 4000)
-    desc_chars = get_config_int("skills_catalog_desc_chars", 72)
+    max_chars = get_config_int("skills_catalog_max_chars", 16000)
+    desc_chars = get_config_int("skills_catalog_desc_chars", 160)
 
     def fits(lines: List[str]) -> bool:
         return len(_HEADER) + 1 + sum(len(line) + 1 for line in lines) <= max_chars
@@ -57,11 +67,11 @@ def _render(skills: List[Skill]) -> str:
     if fits(full):
         return "\n".join(full)
 
-    brief = [_line(s, max(12, desc_chars // 3)) for s in ordered]
+    brief = [_line(s, max(48, desc_chars // 2)) for s in ordered]
     if fits(brief):
         return "\n".join(brief)
 
-    names = [f"- {s.name}" for s in ordered]
+    names = [_line(s, 0) for s in ordered]
     kept = len(names)
     while kept > 0 and not fits(names[:kept] + [_omission_line(len(names) - kept)]):
         kept -= 1
@@ -80,7 +90,8 @@ def catalog_section(store: SkillStore) -> str:
         entry = _cache.get(id(store))
         if entry and entry[0] is store and entry[1] == version:
             return entry[2]
-    skills = [s for s in store.list_skills() if s.state == SkillState.ACTIVE]
+    # list_skills 默认排除归档：目录 = 全部可用技能（active + stale）
+    skills = store.list_skills()
     text = f"{_HEADER}\n{_render(skills)}" if skills else ""
     with _cache_lock:
         _cache[id(store)] = (store, version, text)
@@ -100,18 +111,19 @@ from core.config import register_configs_safe  # noqa: E402
 
 register_configs_safe({"skills/catalog": {
     "skills_catalog_enabled": {
-        "description": "在稳定上下文注入全量在役技能目录（技能寻址不依赖匹配命中）",
+        "description": "在稳定上下文注入全部可用技能目录（技能寻址不依赖匹配命中）",
         "default": True,
     },
     "skills_catalog_max_chars": {
         "description": "技能目录注入的最大字符数（超限逐级降级：截断描述 → 仅名称）",
-        "default": 4000,
+        "default": 16000,
         "advanced": True,
         "unit": "字符",
     },
     "skills_catalog_desc_chars": {
-        "description": "技能目录单行描述的最大字符数",
-        "default": 72,
+        "description": "技能目录单行描述的最大字符数（描述是模型判断相关性的路由依据，"
+                       "过短会导致技能存在但被忽略）",
+        "default": 160,
         "advanced": True,
         "unit": "字符",
     },

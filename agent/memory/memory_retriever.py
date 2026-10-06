@@ -131,6 +131,7 @@ class MemoryRetriever:
         related_scopes: Optional[List[str]] = None,
         query_vec: Optional[List[float]] = None,
         fire_probe: bool = False,
+        plan_out: Optional[Dict[str, Any]] = None,
     ) -> Tuple[List[Dict], List[Dict]]:
         """召回相关记忆，画像与检索结果分开返回 (profile_msgs, memory_msgs)。
 
@@ -142,7 +143,34 @@ class MemoryRetriever:
         related_scopes 用于群聊场景下加载活跃成员的画像。
         query_vec 为调用方预计算的查询向量（三条召回路径共享一次 embedding），
         为 None 时内部按需自行计算。
+        plan_out 非 None 时，返回前把本次召回最终采用的计划查询写入
+        plan_out["queries"]（LLM 规划的多查询；规划失败/平凡轮早退时为
+        基查询或空）——技能匹配等旁路召回复用同一规划，不重复支付规划调用。
         """
+        plan_box: List[Optional[RetrievalPlan]] = [None]
+        try:
+            return await self._recall_split(
+                conversation, top_k=top_k, entity_scope=entity_scope,
+                related_scopes=related_scopes, query_vec=query_vec,
+                fire_probe=fire_probe, plan_box=plan_box,
+            )
+        finally:
+            if plan_out is not None:
+                plan = plan_box[0]
+                plan_out["queries"] = list(plan.queries) if plan is not None else []
+
+    async def _recall_split(
+        self,
+        conversation: List[Dict],
+        *,
+        top_k: Optional[int] = None,
+        entity_scope: str = "",
+        related_scopes: Optional[List[str]] = None,
+        query_vec: Optional[List[float]] = None,
+        fire_probe: bool = False,
+        plan_box: Optional[List[Optional[RetrievalPlan]]] = None,
+    ) -> Tuple[List[Dict], List[Dict]]:
+        """recall_split 实现体（plan_box 带出最终计划，供包装层落笔 plan_out）。"""
         try:
             from agent.config import get_mind_config
             mind_config = get_mind_config()
@@ -324,6 +352,8 @@ class MemoryRetriever:
                 lanes, limit=k * 2, consensus_lanes=n_plan_landed)
 
         results = await _planned_recall()
+        if plan_box is not None:
+            plan_box[0] = plan
         entity_msgs = await profiles_task
 
         # 时间感知：检测到时间引用词时，提升事件记忆与近期记忆权重

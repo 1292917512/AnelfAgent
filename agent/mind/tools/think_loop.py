@@ -1217,16 +1217,16 @@ async def execute_tool_calls(
             except BaseException as e:
                 return e
 
-    # 局部累积本批次的工具结果与多模态注入消息
+    # 局部累积本批次的工具结果与多模态注入消息：
+    # tool 结果必须整体连续（Anthropic tool_result 邻接、Responses 端点要求
+    # output 紧邻 function_call），多模态 user 消息只落在全部结果之后的尾部
     batch_msgs: List[Dict] = []
+    multimodal_msgs: List[Dict] = []
     for is_parallel, batch in _partition_tool_calls(tool_calls):
         if is_parallel and len(batch) > 1:
             outputs = await asyncio.gather(*[_run_guarded(tc) for tc in batch])
         else:
             outputs = [await _run_guarded(tc) for tc in batch]
-        # 先按序累积全部 tool 结果，再统一注入多模态图片：
-        # 逐条交错注入会在并行批次中形成 tool(A)→user(图)→tool(B)，
-        # 破坏 Anthropic tool_result 邻接性导致会话级 400
         final_outputs: List[str] = []
         for tc, output in zip(batch, outputs, strict=False):
             if isinstance(output, BaseException):
@@ -1246,13 +1246,14 @@ async def execute_tool_calls(
         for final_output in final_outputs:
             # 多模态工具结果：候选图片注入上下文，让视觉模型直接看到
             try:
-                await _append_multimodal_result(mind, batch_msgs, final_output)
+                await _append_multimodal_result(mind, multimodal_msgs, final_output)
             except Exception as exc:
                 log(f"多模态工具结果展开失败（不影响主流程）: {exc}", "DEBUG", tag="思维")
 
     # 原子落链
     tool_chain.append(assistant_msg)
     tool_chain.extend(batch_msgs)
+    tool_chain.extend(multimodal_msgs)
     log_tool_round(iteration, tool_calls)
 
 

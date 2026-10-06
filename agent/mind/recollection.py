@@ -7,7 +7,7 @@ Mind 类持有一行薄委托，调用方签名零变化。
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from agent.memory.memory_retriever import MemoryRetriever
 from agent.memory.notes import (
@@ -62,10 +62,11 @@ async def get_recollection(
     # 查询提取与 embedding 每轮只做一次，三条召回路径（语义/跨频道/技能）共享
     # （embed_query 内部自带超时与降级，永不阻塞对话路径）；精简模式不召回，跳过
     query_vec: Optional[List[float]] = None
+    base_query = ""
     if not lean:
-        query = MemoryRetriever._extract_query(tail) if tail else ""
-        if query:
-            query_vec = await mind.embedder.embed_query(query)
+        base_query = MemoryRetriever._extract_query(tail) if tail else ""
+        if base_query:
+            query_vec = await mind.embedder.embed_query(base_query)
 
     # 相关实体 scope（画像注入与关系网络注入共用同一份参与人集合）
     scope_source = conversation_list[-30:] if len(conversation_list) > 30 else conversation_list
@@ -75,12 +76,16 @@ async def get_recollection(
             if s not in related_scopes:
                 related_scopes.insert(0, s)
 
+    # 记忆召回带出的检索计划容器（recall_split 经 plan_out 落笔）：
+    # 技能匹配复用同一规划做查询车道，不重复支付规划调用
+    plan_holder: Dict[str, Any] = {}
+
     async def _recall_memory() -> Tuple[List[Dict], List[Dict]]:
         if not mind.retriever:
             return [], []
         profile_msgs, recall_msgs = await mind.retriever.recall_split(
             tail, entity_scope=entity_scope, related_scopes=related_scopes,
-            query_vec=query_vec, fire_probe=not lean,
+            query_vec=query_vec, fire_probe=not lean, plan_out=plan_holder,
         )
         log(f"语义召回: {len(recall_msgs)} 条, 画像: {len(profile_msgs)} 条", tag="思维")
         return profile_msgs, recall_msgs
@@ -127,12 +132,18 @@ async def get_recollection(
             pin_msgs = await mind.retriever._format_unified_results(pinned) if pinned else []
         permanent_text = str(pin_msgs[0]["content"]) if pin_msgs else ""
     else:
-        # 四条召回路径互相独立（各自读 DB/检索，无共享状态），并行执行
-        (profile_msgs, memory_msgs), relation_msgs, (cross_recall_msgs, recalled_scopes), skill_msgs = await asyncio.gather(
+        # 三条召回路径互相独立（各自读 DB/检索，无共享状态），并行执行；
+        # 技能匹配排在记忆召回之后：复用其检索计划做查询车道（规划查询刚被
+        # 召回车道嵌入过，Embedder 查询缓存命中，技能侧嵌入近乎零成本），
+        # 排序只为拿到计划，不把技能匹配放上关键路径
+        (profile_msgs, memory_msgs), relation_msgs, (cross_recall_msgs, recalled_scopes) = await asyncio.gather(
             _recall_memory(),
             _load_relations(),
             mind._recall_cross_channel(tail, current_adapter, entity_scope, query_vec=query_vec),
-            mind._match_skills(tail, query_vec=query_vec, scope=entity_scope),
+        )
+        skill_msgs = await mind._match_skills(
+            base_query, query_vec=query_vec, scope=entity_scope,
+            planned_queries=plan_holder.get("queries"),
         )
 
         # 自我画像（agent:self）随画像层注入：置于画像块首位
@@ -247,53 +258,65 @@ async def get_recollection(
 
 async def _match_skills(
         mind: "Mind",
-        tail: List[Dict],
+        base_query: str,
         *,
         query_vec: Optional[List[float]] = None,
         scope: str = "",
+        planned_queries: Optional[List[str]] = None,
 ) -> List[Dict]:
     """匹配当前对话相关的技能（并记录使用次数），返回注入消息列表。
 
+    查询车道 = 对话尾部基查询（与记忆召回同源的 _extract_query 提取，
+    query_vec 与之对应）+ 记忆召回规划产出的互补查询（刚被召回车道嵌入过，
+    命中 Embedder 查询缓存，近乎零成本）。
+
     scope 非空时先消费 /name 用户手势：登记过的技能名绕过评分确定性注入
-    （确定性触发），不存在的名字经短期记忆提示
-    模型可回应用户。
+    （确定性触发）；手势对闲置技能照常注入，对已归档技能自动恢复后注入
+    （用户显式点名是最强恢复信号）；不存在的名字经短期记忆提示模型回应用户。
     """
-    if not mind._skills_enabled() or not tail:
+    if not mind._skills_enabled():
         return []
     try:
+        from agent.skills.skill_store import SkillState
+
         forced: List = []
         gesture_names = mind._pending_skill_gestures.pop(scope, []) if scope else []
-        if gesture_names:
-            from agent.skills.skill_store import SkillState
-            for name in gesture_names:
-                skill = mind.skill_store.get(name)
-                if skill is not None and skill.state == SkillState.ACTIVE:
-                    if skill.user_invocable:
-                        forced.append(skill)
-                        log(f"技能手势命中: /{name}（确定性注入，跳过评分）", tag="技能")
-                    else:
-                        log(f"技能 /{name} 已关闭用户手势调用（user_invocable=false）", "DEBUG", tag="技能")
-                else:
-                    # 不存在：写短期记忆提示，模型可回应用户而非沉默忽略
-                    try:
-                        mind.pfc.add_temporary({
-                            "role": "system",
-                            "content": f"[系统] 用户请求的技能 /{name} 不存在或未启用，"
-                                       f"可用技能可用 list_skills 查看。请向用户说明。",
-                        }, scope=scope)
-                    except Exception:
-                        pass
-                    log(f"技能手势未命中: /{name}（不存在或非 active）", "DEBUG", tag="技能")
+        for name in gesture_names:
+            skill = mind.skill_store.get(name)
+            if skill is None:
+                # 不存在：写短期记忆提示，模型可回应用户而非沉默忽略
+                try:
+                    mind.pfc.add_temporary({
+                        "role": "system",
+                        "content": f"[系统] 用户请求的技能 /{name} 不存在或未启用，"
+                                   f"可用技能可用 list_skills 查看。请向用户说明。",
+                    }, scope=scope)
+                except Exception:
+                    pass
+                log(f"技能手势未命中: /{name}（不存在）", "DEBUG", tag="技能")
+                continue
+            if not skill.user_invocable:
+                log(f"技能 /{name} 已关闭用户手势调用（user_invocable=false）", "DEBUG", tag="技能")
+                continue
+            if skill.state is SkillState.ARCHIVED:
+                skill = mind.skill_store.restore(name) or skill
+                log(f"技能手势命中: /{name}（已归档，自动恢复）", tag="技能")
+            else:
+                log(f"技能手势命中: /{name}（确定性注入，跳过评分）", tag="技能")
+            forced.append(skill)
 
-        query_texts = [
-            m.get("content", "") for m in tail
-            if isinstance(m.get("content"), str)
-        ]
+        lanes = [base_query] if base_query.strip() else []
+        for q in (planned_queries or []):
+            q = q.strip()
+            if q and q != base_query and q not in lanes:
+                lanes.append(q)
+            if len(lanes) >= 3:
+                break
         from core.config import get_config_int
         top_k = get_config_int("skills_match_top_k", 3)
         matched_skills = await mind.skill_matcher.match(
-            query_texts, top_k=top_k, query_vec=query_vec,
-        )
+            lanes, top_k=top_k, query_vec=query_vec,
+        ) if lanes else []
         # 手势命中优先置顶（不与评分结果去重冲突：按名剔除重复）
         forced_names: set = set()
         if forced:
@@ -302,16 +325,17 @@ async def _match_skills(
             matched_skills = [(s, 1.0) for s in forced] + matched_skills
         if not matched_skills:
             return []
-        # 渐进披露：stable 工具块已含全量在役目录，此处只注入与当前任务
+        # 渐进披露：stable 工具块已含全部可用技能目录，此处只注入与当前任务
         # 相关度最高的少数技能作定向放大；正文经 get_skill 按需自取，
         # 手势命中（用户显式调用 /name）直接注入全文（超长截断）
         inject_max = get_config_int("skills_inject_max_chars", 8000)
-        desc_max = get_config_int("skills_catalog_desc_chars", 72)
+        desc_max = get_config_int("skills_catalog_desc_chars", 160)
         skill_lines = [
-            "[相关技能] 以下技能与当前任务相关度最高（全量在役清单见系统层技能库目录）。"
+            "[相关技能] 以下技能与当前任务相关度最高（全部可用技能见系统层技能库目录）。"
             "决定使用某个技能时，先用 get_skill 读取其完整内容再按步骤执行；"
             "不适用则忽略。",
         ]
+        archived_hit = False
         for skill, _score in matched_skills:
             # 信号分离：手势命中 = 真实使用（计数 + 刷新活动）；评分命中 = 检索注入
             # （只计匹配，不刷新活动——被匹配不等于被消费，不能阻断闲置降级）
@@ -333,10 +357,19 @@ async def _match_skills(
                 mind.skill_store.record_match(skill.name)
                 triggers = "、".join(skill.trigger_patterns[:6])
                 desc = skill.description.replace("\n", " ")[:desc_max]
-                entry = f"## {skill.name} — {desc}"
+                if skill.state is SkillState.ARCHIVED:
+                    archived_hit = True
+                    entry = f"## {skill.name}【已归档】 — {desc}"
+                else:
+                    entry = f"## {skill.name} — {desc}"
                 if triggers:
                     entry += f"\n触发词: {triggers}"
                 skill_lines.append(entry)
+        if archived_hit:
+            skill_lines.append(
+                "已归档技能是历史沉淀的方法（长期未用移出目录，不代表失效）；"
+                "确认适用时先 restore_skill 恢复，再用 get_skill 读取完整内容。"
+            )
         log(f"技能注入: {', '.join(s.name for s, _ in matched_skills)}", "DEBUG", tag="技能")
         return [{
             "role": "system",

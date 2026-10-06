@@ -269,6 +269,27 @@ class TestSkillStore:
         store.set_pinned("s1", True)
         assert store.get("s1").pinned is True
 
+    def test_restore(self, store: SkillStore) -> None:
+        """恢复：归档/闲置 → ACTIVE 且刷新活动时钟（否则重力立即打回）。"""
+        store.create("s1", "d", "c")
+        store.set_state("s1", SkillState.ARCHIVED)
+        stale_activity = time.time() - 200 * 86400
+        archived = store.get("s1")
+        assert archived is not None
+        archived.last_activity_at = stale_activity
+        store.save(archived)
+        version_before = store.version
+
+        restored = store.restore("s1")
+        assert restored is not None and restored.state == SkillState.ACTIVE
+        assert restored.last_activity_at > stale_activity  # 活动时钟已刷新
+        assert store.version > version_before  # 可匹配集变化，内容版本递增
+
+        # stale 同样可恢复；不存在返回 None
+        store.set_state("s1", SkillState.STALE)
+        assert store.restore("s1").state == SkillState.ACTIVE
+        assert store.restore("ghost") is None
+
 
 class TestLedgerSeparation:
     """账本分离：计数更新只改 .meta.json，定义文件与内容版本字节稳定。"""
@@ -320,17 +341,31 @@ class TestSkillCatalog:
         text = catalog_section(store)
         assert "[技能库目录]" in text
         assert text.index("- first:") < text.index("- second:")
-        assert "archived-one" not in text  # 目录只含在役技能
+        assert "archived-one" not in text  # 归档技能不进目录
+
+    def test_stale_listed_with_marker(self, store: SkillStore) -> None:
+        """闲置技能留在目录（仍可正常调用），带「闲置」后缀标注。"""
+        from agent.skills.catalog import catalog_section
+
+        store.create("active-one", "在役技能", "c")
+        store.create("stale-one", "闲置技能", "c")
+        store.set_state("stale-one", SkillState.STALE)
+
+        text = catalog_section(store)
+        assert "- stale-one: 闲置技能（闲置）" in text
+        assert "- active-one: 在役技能" in text
 
     def test_append_only_bytes_stable(self, store: SkillStore) -> None:
         """新技能只在尾部追加；计数类更新不改变目录字节。"""
         from agent.skills.catalog import catalog_section
 
         store.create("a-skill", "描述", "c")
+        store.set_state("a-skill", SkillState.STALE)
         before = catalog_section(store)
+        time.sleep(0.01)
         store.create("b-skill", "描述", "c")
         after = catalog_section(store)
-        assert after.startswith(before)  # 既有行不动，新行追加
+        assert after.startswith(before)  # 既有行（含闲置行）不动，新行尾部追加
         store.record_match("a-skill")
         store.record_use("b-skill")
         assert catalog_section(store) == after  # 计数不进目录
@@ -381,11 +416,53 @@ class TestSkillMatcher:
         matched = await matcher.match(["完全无关的内容 xyz"])
         assert matched == []
 
-    async def test_archived_not_matched(self, store: SkillStore) -> None:
+    async def test_archived_matched_with_penalty(self, store: SkillStore) -> None:
+        """归档旁路：归档技能仍参与匹配（方法保留召回价值），得分按系数降权。"""
+        store.create("active-one", "d", "c", ["调研"])
+        store.create("archived-one", "d", "c", ["调研"])
+        store.set_state("archived-one", SkillState.ARCHIVED)
+        matcher = SkillMatcher(store)
+        matched = await matcher.match(["调研"])
+        by_name = {s.name: score for s, score in matched}
+        assert "archived-one" in by_name and "active-one" in by_name
+        # 同原始分（同触发词命中），归档命中 = 在役 × 0.8 惩罚系数
+        assert by_name["archived-one"] == pytest.approx(by_name["active-one"] * 0.8)
+
+    async def test_archived_excluded_when_disabled(self, store: SkillStore, monkeypatch) -> None:
+        """skills_match_include_archived=False 时归档技能退出匹配面。"""
+        from core import config as config_mod
+
         store.create("s1", "d", "c", ["调研"])
         store.set_state("s1", SkillState.ARCHIVED)
+        monkeypatch.setattr(
+            config_mod, "get_config_bool",
+            lambda key, default=False: False if key == "skills_match_include_archived" else default,
+        )
         matcher = SkillMatcher(store)
         assert await matcher.match(["调研"]) == []
+
+    async def test_name_token_keyword_match(self, store: SkillStore) -> None:
+        """名称 token 关键词路：无 trigger_patterns 的技能也能被名称分词命中。"""
+        store.create("comfyui-portrait-flow", "人像出图流程", "内容")
+        matcher = SkillMatcher(store)
+        # 双 token 命中（2/3 × 0.4 ≈ 0.27 ≥ 阈值）→ 匹配
+        matched = await matcher.match(["用 comfyui 跑一下 portrait 流程"])
+        assert matched and matched[0][0].name == "comfyui-portrait-flow"
+
+    async def test_single_name_token_below_threshold(self, store: SkillStore) -> None:
+        """单 token 命中（1/3 × 0.4 ≈ 0.13 < 阈值）不单独触发注入——防泛词泛化。"""
+        store.create("comfyui-portrait-flow", "人像出图流程", "内容")
+        matcher = SkillMatcher(store)
+        assert await matcher.match(["随口提到 comfyui 而已"]) == []
+
+    async def test_multi_query_lanes_max_merge(self, store: SkillStore) -> None:
+        """多查询车道：仅第二条车道命中的技能按最高分合并入选。"""
+        store.create("web-research", "网络调研", "内容", ["调研"])
+        store.create("code-review", "代码审查", "内容", ["审查"])
+        matcher = SkillMatcher(store)
+        assert await matcher.match(["完全无关的内容"]) == []
+        matched = await matcher.match(["完全无关的内容", "帮我审查一下这个改动"])
+        assert [s.name for s, _ in matched] == ["code-review"]
 
     async def test_top_k(self, store: SkillStore) -> None:
         for i in range(5):
@@ -909,6 +986,23 @@ class TestSkillTools:
         assert result["ok"] and result["archived_sources"] == ["src-a"]
         assert store.get("target-b").content == "合并后内容"
         assert store.get("src-a").state == SkillState.ARCHIVED
+
+    async def test_restore_skill_tool(self, store: SkillStore, monkeypatch) -> None:
+        """restore_skill：归档技能恢复为可用；已在役幂等；不存在报 NOT_FOUND。"""
+        await self._patch_tools(store, monkeypatch)
+        from agent.skills import tools as skill_tools
+
+        store.create("s1", "d", "c")
+        store.set_state("s1", SkillState.ARCHIVED)
+        result = json.loads(skill_tools.restore_skill("s1"))
+        assert result["ok"] and result["previous_state"] == "archived"
+        assert store.get("s1").state == SkillState.ACTIVE
+
+        again = json.loads(skill_tools.restore_skill("s1"))
+        assert again["ok"] and "已是可用状态" in again["message"]
+
+        missing = json.loads(skill_tools.restore_skill("ghost"))
+        assert missing["cause"] == "not_found"
 
     async def test_library_health_tool(self, store: SkillStore, monkeypatch) -> None:
         await self._patch_tools(store, monkeypatch)

@@ -1139,13 +1139,17 @@ class Mind:
 
     async def _match_skills(
             self,
-            tail: List[Dict],
+            base_query: str,
             *,
             query_vec: Optional[List[float]] = None,
             scope: str = "",
+            planned_queries: Optional[List[str]] = None,
     ) -> List[Dict]:
         """匹配当前对话相关的技能（委托 recollection 模块）。"""
-        return await _recollection._match_skills(self, tail, query_vec=query_vec, scope=scope)
+        return await _recollection._match_skills(
+            self, base_query, query_vec=query_vec, scope=scope,
+            planned_queries=planned_queries,
+        )
 
     async def _build_layered_prompts(
             self,

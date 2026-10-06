@@ -110,7 +110,11 @@ class SkillIndex:
         self._cluster_cache: Optional[Tuple[Tuple[float, int, int, str], List[List[Skill]]]] = None
 
     def _all_skills(self) -> List[Skill]:
-        """全量技能列表（含归档，store.version 键控缓存）。"""
+        """全量技能列表（含归档，store.version 键控缓存）。
+
+        匹配面 = 全量技能：归档技能仍参与语义匹配（带惩罚系数与状态标注），
+        向量维护（预热/重建/覆盖统计）因此也覆盖全量，归档不等于失养。
+        """
         version = self._store.version
         if self._list_cache and self._list_cache[0] == version:
             return self._list_cache[1]
@@ -118,9 +122,17 @@ class SkillIndex:
         self._list_cache = (version, skills)
         return skills
 
-    def _matchable_skills(self) -> List[Skill]:
-        """可匹配技能（ACTIVE/STALE，基于缓存列表过滤）。"""
+    def _live_skills(self) -> List[Skill]:
+        """在役技能（ACTIVE/STALE，基于缓存列表过滤）：合并聚类与容量水位的口径。"""
         return [s for s in self._all_skills() if s.state != SkillState.ARCHIVED]
+
+    def match_surface(self, *, include_archived: bool) -> List[Skill]:
+        """匹配面技能列表（全量含归档 / 仅在役，共享版本缓存）。
+
+        匹配器与向量预热/重建的统一口径：归档技能仍参与语义匹配，
+        其向量维护因此与在役技能同等对待。
+        """
+        return self._all_skills() if include_archived else self._live_skills()
 
     # ------------------------------------------------------------------
     # 向量持久化（SQLite：重启零重嵌恢复）
@@ -343,7 +355,7 @@ class SkillIndex:
           pending   — 已标记待重建但尚未开始（等待心跳接管）
         """
         self._refresh_model()
-        skills = self._matchable_skills()
+        skills = self._all_skills()
         self._ensure_db_loaded()
         embedded = sum(1 for s in skills if self.is_embedded(s))
         total = len(skills)
@@ -435,8 +447,9 @@ class SkillIndex:
         return self.cached_vector(skill) is not None
 
     def embedding_stats(self) -> Dict[str, Any]:
-        """向量覆盖统计（可匹配技能的已嵌入数/总数，供健康报告与 Web 展示）。
+        """向量覆盖统计（全量技能的已嵌入数/总数，供健康报告与 Web 展示）。
 
+        匹配面 = 全量技能（归档仍参与匹配），覆盖口径与之一致。
         完整构建状态见 build_state()；此处保持向后兼容的紧凑口径。
         """
         state = self.build_state()
@@ -522,7 +535,7 @@ class SkillIndex:
         if embedder is None or not getattr(embedder, "available", False):
             return 0
         uncached: List[Skill] = []
-        for skill in self._matchable_skills():
+        for skill in self._all_skills():
             if self.cached_vector(skill) is None:
                 uncached.append(skill)
                 if len(uncached) >= limit:
@@ -565,7 +578,7 @@ class SkillIndex:
             self._rebuild_pending = False
             batch_size = batch_size or _cfg_int("skills_rebuild_batch_size", 32)
             # 进度追踪：总数在开始时快照，逐批更新 done
-            skills = self._matchable_skills()
+            skills = self._all_skills()
             self._build_progress = {"done": 0, "total": len(skills)}
             try:
                 total = 0
@@ -621,17 +634,21 @@ class SkillIndex:
             exclude: str = "",
             min_similarity: float = 0.0,
             budget: int | None = None,
+            include_archived: bool = False,
     ) -> List[Tuple[Skill, float]]:
         """与给定文本/向量最相似的技能（按相似度降序）。
 
         exclude 用于更新场景排除技能自身；Embedder 不可用时返回空。
         技能向量经预算化补算（冷缓存时部分技能本轮不参与语义比对）。
+        include_archived=True 时归档技能也参与比对（写入诊断场景：
+        让 AI 看见"相近技能已归档"，引导 restore + update 而非重复新建）。
         """
         if vec is None:
             vec = await self.text_vector(text)
         if vec is None:
             return []
-        candidates = [s for s in self._matchable_skills() if s.name != exclude]
+        pool = self._all_skills() if include_archived else self._live_skills()
+        candidates = [s for s in pool if s.name != exclude]
         vectors = await self.ensure_vectors(candidates, budget=budget)
         scored: List[Tuple[Skill, float]] = []
         for skill in candidates:
@@ -664,7 +681,7 @@ class SkillIndex:
         ):
             return self._cluster_cache[1]
         named = [
-            (s, v) for s in self._matchable_skills()
+            (s, v) for s in self._live_skills()
             if (v := self.cached_vector(s)) is not None
         ]
         parent = {s.name: s.name for s, _ in named}
@@ -726,7 +743,9 @@ class SkillIndex:
             if self._store.exists(normalized):
                 facts["existing_same_name"] = normalized
 
-        # 语义相近技能（查重核心事实；向量文本用拟议的 name+desc+patterns）
+        # 语义相近技能（查重核心事实；向量文本用拟议的 name+desc+patterns）。
+        # 归档技能一并比对：发现"相近技能已归档"时引导 restore + update，
+        # 而不是在不知情下重复新建
         prospective = Skill(
             name=normalized, description=description,
             trigger_patterns=patterns, content=content,
@@ -737,11 +756,13 @@ class SkillIndex:
                 vec=vec, top_k=5, exclude=normalized,
                 min_similarity=_cfg_float("skills_similar_threshold", 0.83),
                 budget=8,  # 写入路径预算收紧：默认 16 是检索路的稳态预算
+                include_archived=True,
             )
             if similar:
                 facts["similar_skills"] = [
                     {"name": s.name, "similarity": round(sim, 3),
-                     "description": s.description, "use_count": s.use_count}
+                     "description": s.description, "use_count": s.use_count,
+                     "state": s.state.value}
                     for s, sim in similar
                 ]
 
@@ -758,7 +779,7 @@ class SkillIndex:
                 facts["trigger_collisions"] = collisions
 
         # 容量水位（参考值而非上限：超水位作为事实呈现，治理决策归 AI/策展）
-        active = len(self._matchable_skills())
+        active = len(self._live_skills())
         capacity = _cfg_int("skills_capacity_reference", 100)
         if active >= capacity:
             facts["capacity"] = {"active": active, "reference": capacity}
@@ -771,9 +792,13 @@ class SkillIndex:
         return facts
 
     def _trigger_owners(self, exclude: str = "") -> Dict[str, List[str]]:
-        """触发词 → 持有该词的技能名集合（碰撞检测的底层数据）。"""
+        """触发词 → 持有该词的技能名集合（碰撞检测的底层数据）。
+
+        全量技能口径：归档技能持有的词仍真实参与匹配竞争，
+        碰撞报告不把它当作消失。
+        """
         owners: Dict[str, List[str]] = {}
-        for skill in self._matchable_skills():
+        for skill in self._all_skills():
             if skill.name == exclude:
                 continue
             for pattern in skill.trigger_patterns:

@@ -15,7 +15,7 @@ from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 from agent.skills import sources as skill_sources
 from agent.skills.skill_matcher import SkillMatcher
-from agent.skills.skill_store import SkillStore
+from agent.skills.skill_store import SkillState, SkillStore
 from core.entity import EntityRegistry
 from core.latebind import LateBinding
 from core.log import log
@@ -288,6 +288,7 @@ async def search_skills(query: str, top_k: int = 5, scope: str = "local", catego
                 "name": skill.name,
                 "description": skill.description,
                 "trigger_patterns": skill.trigger_patterns,
+                "state": skill.state.value,
                 "use_count": skill.use_count,
                 "score": round(score, 3),
             }
@@ -440,6 +441,41 @@ def install_external_skill(slug: str, namespace: str = "", source: str = "") -> 
         "ok": True, "name": slug, "source": chosen.key, "path": result.path,
         "loaded": skill is not None,
         "message": f"技能 '{slug}' 已从 {chosen.display_name} 安装，可被 search_skills 检索与自动匹配",
+    }, ensure_ascii=False)
+
+
+@deferred_tool(
+    group="skills", tags=["always"], source="mind.skills",
+    description="恢复已归档/闲置的技能为可用状态（active）。匹配注入或搜索发现已归档技能"
+                "仍然适用时使用；恢复后用 get_skill 读取完整内容再按步骤执行。",
+)
+def restore_skill(name: str) -> str:
+    """恢复技能。
+
+    Args:
+        name: 要恢复的技能名
+    """
+    deps = _deps()
+    if deps is None:
+        return _not_ready()
+    existing = deps.store.get(name)
+    if existing is None:
+        return tool_error(f"技能 '{name}' 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
+    if existing.state is SkillState.ACTIVE:
+        return json.dumps({
+            "ok": True, "name": existing.name, "state": SkillState.ACTIVE.value,
+            "message": f"技能 '{existing.name}' 已是可用状态",
+        }, ensure_ascii=False)
+    previous = existing.state.value
+    skill = deps.store.restore(name)
+    if skill is None:  # pragma: no cover - get 刚命中，防御性兜底
+        return _not_ready()
+    log(f"技能已恢复: {skill.name}（{previous} → active）", tag="技能")
+    return json.dumps({
+        "ok": True, "name": skill.name, "state": SkillState.ACTIVE.value,
+        "previous_state": previous,
+        "message": f"技能 '{skill.name}' 已恢复为可用状态（原状态 {previous}），"
+                   f"用 get_skill 读取完整内容",
     }, ensure_ascii=False)
 
 

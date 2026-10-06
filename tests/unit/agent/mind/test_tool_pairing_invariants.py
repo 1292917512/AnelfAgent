@@ -126,6 +126,34 @@ class TestAtomicChainAppend:
         assert [m["role"] for m in tool_chain] == ["assistant", "tool"]
         assert "炸了" in tool_chain[1]["content"]
 
+    async def test_multimodal_msgs_after_all_tool_results(self, mock_mind, monkeypatch):
+        """多模态注入消息落在全部 tool 结果之后：tool 结果跨串行分批整体连续。
+
+        混合分批（如 recognize_image + run_shell_command 两个串行批）下，
+        图片 user 消息若插进两个 tool 结果之间，会破坏 Anthropic tool_result
+        邻接与 Responses 端点的 output 紧邻校验（会话级 400）。
+        """
+
+        async def fake_execute(mind, tc, iteration, anything=None):
+            if tc.name == "recognize_image":
+                return json.dumps({"_multimodal": True, "text": "t", "images": ["x.png"]})
+            return json.dumps({"tool": tc.name})
+
+        async def fake_append(mind, target, output):
+            if '"_multimodal"' in output:
+                target.append({"role": "user", "content": [{"type": "text", "text": "img"}]})
+
+        monkeypatch.setattr(tl, "execute_one_tool", fake_execute)
+        monkeypatch.setattr(tl, "_append_multimodal_result", fake_append)
+
+        tool_chain: List[dict] = []
+        result = SimpleNamespace(content="")
+        calls = [_tc("recognize_image", "a"), _tc("run_shell_command", "b")]
+        await tl.execute_tool_calls(mock_mind, tool_chain, result, calls, 1)
+        assert [m["role"] for m in tool_chain] == ["assistant", "tool", "tool", "user"]
+        assert tool_chain[1]["tool_call_id"] == "a"
+        assert tool_chain[2]["tool_call_id"] == "b"
+
 
 class TestLengthRecoveryPairing:
     """_handle_length_recovery 配对不变量：跳过 tool_calls 时 assistant 仅以纯文本入链。"""
