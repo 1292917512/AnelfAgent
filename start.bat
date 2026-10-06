@@ -6,9 +6,7 @@ set "ROOT=%~dp0"
 cd /d "%ROOT%"
 
 echo.
-echo  ┌─────────────────────────────────────┐
-echo  │          AnelfAgent                  │
-echo  └─────────────────────────────────────┘
+echo   AnelfAgent
 echo.
 
 :: 检测 uv（优先） 或 python
@@ -19,14 +17,14 @@ if %ERRORLEVEL% EQU 0 (
 
     echo  [环境]   正在同步 Python 依赖...
     uv sync --quiet
-    if %ERRORLEVEL% EQU 0 (
-        echo  [环境]   Python 依赖已就绪
-    ) else (
+    if errorlevel 1 (
         echo  [警告]   uv sync 失败，将使用当前环境继续
+    ) else (
+        echo  [环境]   Python 依赖已就绪
     )
 ) else (
     where python >nul 2>&1
-    if %ERRORLEVEL% NEQ 0 (
+    if errorlevel 1 (
         echo  [错误] 未找到 uv 或 python，请先安装运行环境
         echo         uv 安装: https://github.com/astral-sh/uv
         pause
@@ -36,16 +34,25 @@ if %ERRORLEVEL% EQU 0 (
     for /f "tokens=*" %%v in ('python --version 2^>^&1') do echo  [运行器] %%v
 )
 
-:: 同步前端依赖
+:: 同步前端依赖（npm 是批处理脚本，必须 call；否则执行权被接管、本脚本不再继续）
 where npm >nul 2>&1
 if %ERRORLEVEL% EQU 0 (
     if exist "%ROOT%web\frontend\package.json" (
         echo  [环境]   正在同步前端依赖...
-        npm install --prefix "%ROOT%web\frontend" --silent >nul 2>&1
-        if %ERRORLEVEL% EQU 0 (
-            echo  [环境]   前端依赖已就绪
-        ) else (
+        call npm install --prefix "%ROOT%web\frontend" --silent >nul 2>&1
+        if errorlevel 1 (
             echo  [警告]   npm install 失败，前端功能可能异常
+        ) else (
+            echo  [环境]   前端依赖已就绪
+            if not exist "%ROOT%web\frontend\dist\index.html" (
+                echo  [环境]   首次运行，正在构建前端...
+                call npm run build --prefix "%ROOT%web\frontend" >nul 2>&1
+                if exist "%ROOT%web\frontend\dist\index.html" (
+                    echo  [环境]   前端构建完成
+                ) else (
+                    echo  [警告]   前端构建失败，WebUI 将显示降级提示页
+                )
+            )
         )
     )
 )
@@ -54,7 +61,7 @@ echo  [目录] %ROOT%
 echo.
 echo  WebUI 地址: http://127.0.0.1:8092/webui/
 echo  按 Ctrl+C 停止服务
-echo  ─────────────────────────────────────────
+echo  ------------------------------------------
 echo.
 
 :: ── 崩溃守护 ─────────────────────────────────────────────────────────
