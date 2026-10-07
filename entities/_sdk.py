@@ -86,10 +86,21 @@ __all__ = [
     "get_llm_manager", "save_config_value",
     "get_session_llm_params", "canonical_efforts", "valid_api_types",
     "activate_tool_group_now", "notify_tool_set_changed",
+    "call_mcp_server_tool",
     "tool_error", "error_from_exception", "ErrorCause",
 ]
 
 F = TypeVar("F", bound=Callable[..., Any])
+
+
+async def call_mcp_server_tool(server_name: str, tool_name: str, arguments: Dict[str, Any]) -> str:
+    """供适配器按服务名访问 MCP 能力，复用桥接层的超时与重连。"""
+    from entities.mcp.bridge import get_mcp_bridge
+
+    bridge = get_mcp_bridge()
+    if bridge is None:
+        return tool_error("MCP 桥尚未初始化", cause=ErrorCause.NOT_FOUND, retryable=True)
+    return await bridge.call_server_tool(server_name, tool_name, arguments)
 
 
 def coerce_bool_arg(value: Any, default: bool) -> bool:

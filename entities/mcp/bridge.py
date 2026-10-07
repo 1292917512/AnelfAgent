@@ -390,6 +390,20 @@ class MCPBridge:
             })
         return servers
 
+    async def call_server_tool(self, server_name: str, tool_name: str, arguments: Dict[str, Any]) -> str:
+        """按服务与原始工具名调用，避免注册名冲突时误调其他服务。"""
+        with self._lock:
+            registered_name = next((
+                name for name, owner in self._tool_server_map.items()
+                if owner == server_name and self._tool_original_names.get(name, name) == tool_name
+            ), None)
+        if registered_name is None:
+            return tool_error(
+                f"MCP 服务 {server_name} 未注册工具 {tool_name}",
+                cause=ErrorCause.NOT_FOUND, retryable=True,
+            )
+        return await self._call_bound_tool(server_name, tool_name, arguments)
+
     async def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> str:
         """代理执行 MCP tool call（调度到 MCP 事件循环执行）。"""
         with self._lock:
@@ -402,14 +416,18 @@ class MCPBridge:
                 cause=ErrorCause.NOT_FOUND, retryable=False,
                 hint="可先调用 list_mcp_servers 查看已连接服务及其工具",
             )
+        return await self._call_bound_tool(server_name, original_name, arguments)
+
+    async def _call_bound_tool(self, server_name: str, tool_name: str, arguments: Dict[str, Any]) -> str:
+        """将已经绑定服务的调用调度到桥接事件循环，不重新解析注册名。"""
         try:
             import asyncio
             loop = asyncio.get_running_loop()
             if loop is self._loop:
-                return await self._do_call_tool(server_name, original_name, arguments)
+                return await self._do_call_tool(server_name, tool_name, arguments)
             else:
                 future = asyncio.run_coroutine_threadsafe(
-                    self._do_call_tool(server_name, original_name, arguments),
+                    self._do_call_tool(server_name, tool_name, arguments),
                     self._loop,
                 )
                 return await asyncio.wrap_future(future)
