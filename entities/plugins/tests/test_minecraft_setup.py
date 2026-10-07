@@ -48,6 +48,10 @@ def test_setup_preserves_connection_and_player_settings(
     monkeypatch.setattr(setup_minecraft, "node_runtime", lambda *args: (Path("node"), Path("npm-cli.js")))
     monkeypatch.setattr(setup_minecraft.subprocess, "run", Mock())
     monkeypatch.setattr(setup_minecraft, "ensure_worker_profile", lambda: "exists")
+    monkeypatch.setattr(setup_minecraft, "patch_executor_view_distance", lambda payload: "patched")
+    monkeypatch.setattr(setup_minecraft, "patch_executor_chat_discipline", lambda payload: "patched")
+    monkeypatch.setattr(setup_minecraft, "patch_pathfinder_think_timeout", lambda payload: "patched")
+    monkeypatch.setattr(setup_minecraft, "patch_craft_count_semantics", lambda payload: "patched")
     args = argparse.Namespace(
         host=None,
         port=54322,
@@ -110,16 +114,16 @@ class _FakeLLMManager:
 def test_ensure_worker_profile_creates_pool_with_available_fast_models(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fake = _FakeLLMManager(chat_models=["glm-4.5-air", "minimax-m2", "gpt-4o"])
+    fake = _FakeLLMManager(chat_models=["minimax-m3", "minimax-m2", "glm-4.5-air"])
     monkeypatch.setattr("agent.llm.llm_manager.get_llm_manager", lambda: fake)
 
     assert setup_minecraft.ensure_worker_profile() == "created"
 
     profile = fake.created["mc-worker"]
-    assert profile["model_id"] == "glm-4.5-air"
+    assert profile["model_id"] == "minimax-m3"
     assert profile["tool_tags"] == ["mcp:minecraft"]
     assert profile["output_schema"]["required"] == ["done"]
-    assert fake.created["mc-worker"]["models"] == ["glm-4.5-air", "minimax-m2"]
+    assert fake.created["mc-worker"]["models"] == ["minimax-m3", "minimax-m2"]
 
 
 def test_ensure_worker_profile_falls_back_to_default_model(
@@ -152,3 +156,108 @@ def test_ensure_worker_profile_keeps_existing_profile(
 
     assert setup_minecraft.ensure_worker_profile() == "exists"
     assert fake.created["mc-worker"]["model_id"] == "custom"
+
+
+def _write_fake_lifecycle(tmp_path, source: str):
+    target = tmp_path / "node_modules" / "awesome-mineflayer-mcp" / "dist" / "tools"
+    target.mkdir(parents=True)
+    (target / "lifecycle.js").write_text(source, encoding="utf-8")
+    return tmp_path
+
+
+def test_patch_view_distance_applies_default(tmp_path) -> None:
+    payload = _write_fake_lifecycle(
+        tmp_path, f"const x = {setup_minecraft._VIEW_DISTANCE_ORIGINAL}\n"
+    )
+    assert setup_minecraft.patch_executor_view_distance(payload) == "patched"
+    text = (payload / "node_modules" / "awesome-mineflayer-mcp" / "dist" / "tools" / "lifecycle.js").read_text(encoding="utf-8")
+    assert setup_minecraft._VIEW_DISTANCE_PATCHED in text
+    # 幂等：再打一次不重复替换
+    assert setup_minecraft.patch_executor_view_distance(payload) == "exists"
+
+
+def test_patch_view_distance_fails_on_version_drift(tmp_path) -> None:
+    payload = _write_fake_lifecycle(tmp_path, "viewDistance: z.string(),\n")
+    with pytest.raises(RuntimeError, match="viewDistance"):
+        setup_minecraft.patch_executor_view_distance(payload)
+
+
+def _write_fake_chat(tmp_path, source: str):
+    target = tmp_path / "node_modules" / "awesome-mineflayer-mcp" / "dist" / "tools"
+    target.mkdir(parents=True)
+    (target / "chat.js").write_text(source, encoding="utf-8")
+    return tmp_path
+
+
+def test_patch_chat_discipline_applies_turn_limit(tmp_path) -> None:
+    payload = _write_fake_chat(tmp_path, f"const x = {setup_minecraft._CHAT_DESC_ORIGINAL}\n")
+    assert setup_minecraft.patch_executor_chat_discipline(payload) == "patched"
+    text = (payload / "node_modules" / "awesome-mineflayer-mcp" / "dist" / "tools" / "chat.js").read_text(encoding="utf-8")
+    assert setup_minecraft._CHAT_DESC_PATCHED in text
+    assert "never call it more than twice in a row" in text
+    # 幂等：再打一次不重复替换
+    assert setup_minecraft.patch_executor_chat_discipline(payload) == "exists"
+
+
+def test_patch_chat_discipline_migrates_v1_to_v2(tmp_path) -> None:
+    """v1 措辞有结构性漏洞（工具调用各成一轮，"每回合"无从计数），已打 v1 的环境升级到 v2。"""
+    payload = _write_fake_chat(tmp_path, f"const x = {setup_minecraft._CHAT_DESC_PATCHED_V1}\n")
+    assert setup_minecraft.patch_executor_chat_discipline(payload) == "patched"
+    text = (payload / "node_modules" / "awesome-mineflayer-mcp" / "dist" / "tools" / "chat.js").read_text(encoding="utf-8")
+    assert setup_minecraft._CHAT_DESC_PATCHED in text
+    assert setup_minecraft._CHAT_DESC_PATCHED_V1 not in text
+
+
+def test_patch_chat_discipline_repairs_broken_v2(tmp_path) -> None:
+    """v2 初版内嵌引号未转义（JS 字符串被截断、服务启动 SyntaxError），破损文件就地修复。"""
+    broken = setup_minecraft._CHAT_DESC_PATCHED.replace(" (separate items with a semicolon)", setup_minecraft._CHAT_DESC_BROKEN_V2)
+    payload = _write_fake_chat(tmp_path, f"const x = {broken}\n")
+    assert setup_minecraft.patch_executor_chat_discipline(payload) == "repaired"
+    text = (payload / "node_modules" / "awesome-mineflayer-mcp" / "dist" / "tools" / "chat.js").read_text(encoding="utf-8")
+    assert setup_minecraft._CHAT_DESC_PATCHED in text
+    assert setup_minecraft._CHAT_DESC_BROKEN_V2 not in text
+
+
+def test_patch_chat_discipline_fails_on_version_drift(tmp_path) -> None:
+    payload = _write_fake_chat(tmp_path, 'description: "Chat with the server.",\n')
+    with pytest.raises(RuntimeError, match="chat"):
+        setup_minecraft.patch_executor_chat_discipline(payload)
+
+
+def _write_fake_package_file(tmp_path: Path, package: str, rel: str, source: str):
+    target = tmp_path / "node_modules" / package / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(source, encoding="utf-8")
+    return tmp_path
+
+
+def test_patch_think_timeout_extends_search_budget(tmp_path) -> None:
+    payload = _write_fake_package_file(
+        tmp_path, "mineflayer-pathfinder", "index.js", f"{setup_minecraft._PATHFINDER_TIMEOUT_ORIGINAL}\n"
+    )
+    assert setup_minecraft.patch_pathfinder_think_timeout(payload) == "patched"
+    text = (payload / "node_modules" / "mineflayer-pathfinder" / "index.js").read_text(encoding="utf-8")
+    assert setup_minecraft._PATHFINDER_TIMEOUT_PATCHED in text
+    assert setup_minecraft.patch_pathfinder_think_timeout(payload) == "exists"
+
+
+def test_patch_think_timeout_fails_on_version_drift(tmp_path) -> None:
+    payload = _write_fake_package_file(tmp_path, "mineflayer-pathfinder", "index.js", "bot.pathfinder.thinkTimeout = 9999\n")
+    with pytest.raises(RuntimeError, match="thinkTimeout"):
+        setup_minecraft.patch_pathfinder_think_timeout(payload)
+
+
+def test_patch_craft_count_explains_operation_semantics(tmp_path) -> None:
+    payload = _write_fake_package_file(
+        tmp_path, "awesome-mineflayer-mcp", "dist/tools/crafting.js", f"const x = {setup_minecraft._CRAFT_COUNT_DESC_ORIGINAL}\n"
+    )
+    assert setup_minecraft.patch_craft_count_semantics(payload) == "patched"
+    text = (payload / "node_modules" / "awesome-mineflayer-mcp" / "dist" / "tools" / "crafting.js").read_text(encoding="utf-8")
+    assert "operations" in text
+    assert setup_minecraft.patch_craft_count_semantics(payload) == "exists"
+
+
+def test_patch_craft_count_fails_on_version_drift(tmp_path) -> None:
+    payload = _write_fake_package_file(tmp_path, "awesome-mineflayer-mcp", "dist/tools/crafting.js", "count: z.number(),\n")
+    with pytest.raises(RuntimeError, match="craft count"):
+        setup_minecraft.patch_craft_count_semantics(payload)

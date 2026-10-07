@@ -24,13 +24,17 @@ _PLUGIN_NAME = "minecraft-companion"
 
 _WORKER_PROFILE_NAME = "mc-worker"
 # 模型池引用 llm_clients.json 模型条目的 id（客户端 ID），不是供应商模型名
-_WORKER_MODEL_POOL = ("glm-4.5-air", "minimax-m2")
+_WORKER_MODEL_POOL = ("minimax-m3", "minimax-m2")
 _WORKER_DESCRIPTION = "Minecraft 执行代理：反射式完成游戏内动作序列，给沟通者打下手"
 _WORKER_INSTRUCTIONS = (
     "你是 Minecraft 执行代理。只使用 minecraft MCP 工具完成指定动作序列。"
     "反射式执行：不规划、不解释、不闲聊、不询问玩家，每轮直接调用下一个工具；"
     "相互独立的工具调用在一次响应里并列发出；禁止一切记忆/备忘/笔记类操作。"
     "工具未注入时先 activate_tool_group(\"mcp:minecraft\")。"
+    "工具名只许用注入列表里的真实名字：需要确认时先调 list_entity_methods({\"group\": \"mcp:minecraft\"})，"
+    "严禁凭印象臆造工具名（如 get_player/get_entities 之类不存在的名字）。"
+    "动作失败时换一条路重试一次（如 collect_block 寻路超时→先 goto 到目标旁开阔地→用 dig 直接挖触手可及的方块），"
+    "同一条路失败两次就放弃并在 failure 里写明原因，不要反复撞同一堵墙。"
     "完成后只返回结构化结果：做了什么、获得什么、失败原因。"
 )
 _WORKER_TOOL_TAGS = ["mcp:minecraft"]
@@ -187,6 +191,10 @@ def setup(args: argparse.Namespace) -> Path:
         env=env,
         check=True,
     )
+    view_distance_state = patch_executor_view_distance(payload)
+    chat_discipline_state = patch_executor_chat_discipline(payload)
+    think_timeout_state = patch_pathfinder_think_timeout(payload)
+    craft_count_state = patch_craft_count_semantics(payload)
     servers = store.load_config().get("mcpServers", {})
     names = [name for name in record.mcp_servers if servers.get(name, {}).get("plugin") == _PLUGIN_NAME]
     if len(names) != 1:
@@ -206,7 +214,7 @@ def setup(args: argparse.Namespace) -> Path:
             "AWESOME_MINEFLAYER_MCP_HOME": str(workspace / "minecraft" / "state" / args.world_id),
         }
     )
-    store.update_server_config(server_name, {"command": str(node), "enabled": True, "env": values})
+    store.update_server_config(server_name, {"command": str(node), "enabled": True, "priority": "below_normal", "env": values})
     set_channel_config(
         "minecraft",
         enabled=True,
@@ -223,6 +231,10 @@ def setup(args: argparse.Namespace) -> Path:
                 "minecraft_version": args.version,
                 "node": str(node),
                 "worker_profile": ensure_worker_profile(),
+                "view_distance_patch": view_distance_state,
+                "chat_discipline_patch": chat_discipline_state,
+                "think_timeout_patch": think_timeout_state,
+                "craft_count_patch": craft_count_state,
             },
             ensure_ascii=False,
             indent=2,
@@ -232,7 +244,126 @@ def setup(args: argparse.Namespace) -> Path:
     return payload
 
 
+_VIEW_DISTANCE_ORIGINAL = 'viewDistance: z.enum(["far", "normal", "short", "tiny"]).optional(),'
+_VIEW_DISTANCE_PATCHED = 'viewDistance: z.enum(["far", "normal", "short", "tiny"]).optional().default("short"),'
+
+_CHAT_DESC_ORIGINAL = 'description: "Send a public chat message to the server. To run a slash command use `run_command` instead.",'
+_CHAT_DESC_PATCHED_V1 = (
+    'description: "Send a public chat message to the server. To run a slash command use `run_command` instead.'
+    ' One call sends one line; make at most 2 chat calls per assistant turn — merge longer content into'
+    ' fewer lines or continue in the next turn. Flooding the chat HUD freezes and annoys the host player.",'
+)
+# v2 初版在内嵌 " ; " 处未转义引号，直接把 JS 字符串截断——MCP 服务启动即 SyntaxError。
+# 修复版彻底改用无引号措辞，并保留对破损文件的识别修复。
+_CHAT_DESC_BROKEN_V2 = ' (separate items with " ; ")'
+_CHAT_DESC_PATCHED = (
+    'description: "Send a public chat message to the server. To run a slash command use `run_command` instead.'
+    ' EVERY call to this tool is a separate chat message: never call it more than twice in a row — combine'
+    ' points into one message (separate items with a semicolon). Long reports belong in the web/private chat,'
+    ' not the game chat. Flooding the chat HUD freezes and annoys the host player.",'
+)
+
+_PATHFINDER_TIMEOUT_ORIGINAL = "bot.pathfinder.thinkTimeout = 5000 // ms"
+_PATHFINDER_TIMEOUT_PATCHED = "bot.pathfinder.thinkTimeout = 30000 // ms (patched: 密林/长距离寻路 5 秒预算必超时)"
+
+_CRAFT_COUNT_DESC_ORIGINAL = 'count: z.number().int().min(1).optional().describe("How many times to craft (default 1)"),'
+_CRAFT_COUNT_DESC_PATCHED = (
+    'count: z.number().int().min(1).optional().describe("How many craft operations to perform (default 1) —'
+    ' each operation consumes one full set of ingredients, e.g. count=4 oak_planks consumes 4 oak logs and'
+    ' yields 16 planks. Pass operations needed, not the desired result amount: count=36 planks requires 36'
+    ' logs and fails with missing ingredient when the inventory is short."),'
+)
+
+
+def patch_executor_view_distance(payload: Path) -> str:
+    """给执行器 connect_bot 的 viewDistance 打默认值补丁（安装后幂等执行）。
+
+    bot 进服接收的区块量由视距决定，默认 far（12 区块 = 625 列）会让主机
+    在进服瞬间冻结数秒；AI 调 connect_bot 可能漏传视距，默认值才是可靠防线。
+    执行器是第三方包，补丁为精确字符串替换：版本漂移导致模式失配时硬失败，
+    提示核对而非静默跳过。
+    """
+    target = payload / "node_modules" / "awesome-mineflayer-mcp" / "dist" / "tools" / "lifecycle.js"
+    source = target.read_text(encoding="utf-8")
+    if _VIEW_DISTANCE_PATCHED in source:
+        return "exists"
+    if _VIEW_DISTANCE_ORIGINAL not in source:
+        raise RuntimeError(
+            f"无法定位 viewDistance 模式，awesome-mineflayer-mcp 可能已升级: {target}"
+        )
+    target.write_text(source.replace(_VIEW_DISTANCE_ORIGINAL, _VIEW_DISTANCE_PATCHED), encoding="utf-8")
+    return "patched"
+
+
+def patch_executor_chat_discipline(payload: Path) -> str:
+    """给执行器 chat 工具描述打刷屏纪律补丁（安装后幂等执行）。
+
+    实机日志：模型一轮内连发 10 条 chat 逐行刷屏——SKILL 里的回合条数上限
+    是注入层软约束，模型照样违反；工具描述是模型每次调用前必读的前台文本，
+    把纪律写进描述才是可靠防线（与 viewDistance 默认值补丁同一思路）。
+    版本漂移导致模式失配时硬失败，提示核对而非静默跳过。
+    """
+    target = payload / "node_modules" / "awesome-mineflayer-mcp" / "dist" / "tools" / "chat.js"
+    source = target.read_text(encoding="utf-8")
+    if _CHAT_DESC_PATCHED in source:
+        return "exists"
+    if _CHAT_DESC_BROKEN_V2 in source:
+        # v2 初版内嵌引号未转义导致 SyntaxError，就地修复为无引号措辞
+        target.write_text(source.replace(_CHAT_DESC_BROKEN_V2, " (separate items with a semicolon)"), encoding="utf-8")
+        return "repaired"
+    if _CHAT_DESC_PATCHED_V1 in source:
+        target.write_text(source.replace(_CHAT_DESC_PATCHED_V1, _CHAT_DESC_PATCHED), encoding="utf-8")
+        return "patched"
+    if _CHAT_DESC_ORIGINAL not in source:
+        raise RuntimeError(
+            f"无法定位 chat 描述模式，awesome-mineflayer-mcp 可能已升级: {target}"
+        )
+    target.write_text(source.replace(_CHAT_DESC_ORIGINAL, _CHAT_DESC_PATCHED), encoding="utf-8")
+    return "patched"
+
+
+def patch_pathfinder_think_timeout(payload: Path) -> str:
+    """给 mineflayer-pathfinder 默认寻路预算打补丁（安装后幂等执行）。
+
+    实机日志：密林/树冠下 collect_block 五秒内必报 "Took to long to decide
+    path to goal"（A* 全路径预算默认 5000ms 耗尽）。延长至 30 秒：每刻思考
+    预算（tickTimeout 40ms）不变，主机 CPU 负载无变化，只是给长路径更多
+    思考时间。版本漂移导致模式失配时硬失败。
+    """
+    target = payload / "node_modules" / "mineflayer-pathfinder" / "index.js"
+    source = target.read_text(encoding="utf-8")
+    if _PATHFINDER_TIMEOUT_PATCHED in source:
+        return "exists"
+    if _PATHFINDER_TIMEOUT_ORIGINAL not in source:
+        raise RuntimeError(
+            f"无法定位 thinkTimeout 模式，mineflayer-pathfinder 可能已升级: {target}"
+        )
+    target.write_text(source.replace(_PATHFINDER_TIMEOUT_ORIGINAL, _PATHFINDER_TIMEOUT_PATCHED), encoding="utf-8")
+    return "patched"
+
+
+def patch_craft_count_semantics(payload: Path) -> str:
+    """给 craft_item 的 count 语义打描述补丁（安装后幂等执行）。
+
+    实机日志：模型把 count 当"目标产物数量"传（oak_planks count=36），
+    而执行器语义是"合成操作次数"——每次操作消耗一份完整材料，36 次需
+    36 根原木，材料不足即 missing ingredient。模型每次调用前必读工具
+    描述，把语义写进描述才是可靠防线。版本漂移硬失败。
+    """
+    target = payload / "node_modules" / "awesome-mineflayer-mcp" / "dist" / "tools" / "crafting.js"
+    source = target.read_text(encoding="utf-8")
+    if _CRAFT_COUNT_DESC_PATCHED in source:
+        return "exists"
+    if _CRAFT_COUNT_DESC_ORIGINAL not in source:
+        raise RuntimeError(
+            f"无法定位 craft count 描述模式，awesome-mineflayer-mcp 可能已升级: {target}"
+        )
+    target.write_text(source.replace(_CRAFT_COUNT_DESC_ORIGINAL, _CRAFT_COUNT_DESC_PATCHED), encoding="utf-8")
+    return "patched"
+
+
 def _validate_options(args: argparse.Namespace) -> None:
+
     """校验合并已有配置后的连接参数，安装前拒绝非法目标。"""
     if not 1 <= int(args.port) <= 65535:
         raise ValueError("端口必须在 1 到 65535 之间")
