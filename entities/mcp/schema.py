@@ -60,7 +60,7 @@ def _parse_mcp_tool(mcp_tool: Any) -> tuple[str, List[ToolParam]]:
     """
     name = mcp_tool.name
     params: List[ToolParam] = []
-    input_schema = getattr(mcp_tool, "inputSchema", None) or {}
+    input_schema = getattr(mcp_tool, "input_schema", None) or getattr(mcp_tool, "inputSchema", None) or {}
     if isinstance(input_schema, dict):
         properties = input_schema.get("properties", {})
         required_list = input_schema.get("required", [])

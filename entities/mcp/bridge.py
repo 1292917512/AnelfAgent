@@ -1101,7 +1101,8 @@ class MCPBridge:
             # 远端语义由服务器声明，本地桥接层按 request-id 多路复用天然容忍并发；
             # 写操作保持串行。注册时读入 meta，重连重注册字节不变。
             tool_meta = dict(meta or {})
-            if getattr(getattr(t, "annotations", None), "readOnlyHint", False):
+            annotations = getattr(t, "annotations", None)
+            if getattr(annotations, "read_only_hint", getattr(annotations, "readOnlyHint", False)):
                 tool_meta["concurrency_safe"] = True
 
             async def _proxy(_name: str = reg_name, **kwargs: Any) -> str:

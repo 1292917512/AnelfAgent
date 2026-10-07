@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Generator
 
 import pytest
+from mcp.types import Tool
 
 from core.entity import EntityRegistry
 from entities.mcp.bridge import MCPBridge
@@ -40,6 +41,18 @@ def _tool(name: str, *, read_only: bool = False, description: str = "d",
 
 
 class TestReadOnlyParallelMapping:
+    def test_sdk_tool_retains_parameters_and_read_only_hint(self, bridge: MCPBridge) -> None:
+        tool = Tool.model_validate({
+            "name": "probe_read", "annotations": {"readOnlyHint": True},
+            "inputSchema": {"type": "object", "properties": {"entityId": {"type": "integer"}},
+                            "required": ["entityId"]},
+        })
+        bridge._register_tool_entries(_PROBE_SERVER, [tool])
+        registered = EntityRegistry.get("probe_read")
+        assert registered is not None
+        assert [(p.name, p.type, p.required) for p in registered.meta["params"]] == [("entityId", "integer", True)]
+        assert registered.meta.get("concurrency_safe") is True
+
     def test_read_only_hint_maps_to_concurrency_safe(self, bridge: MCPBridge) -> None:
         """服务器声明 readOnlyHint 的工具注册为可并行（meta 透传）。"""
         tools = [
