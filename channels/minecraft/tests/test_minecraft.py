@@ -522,3 +522,120 @@ async def test_reflex_announce_targets_world_channel(
     request = outbound.call_args.args[0]
     assert request.channel.channel_id == "local"
     assert request.channel.channel_type == ChannelType.GROUP
+
+
+async def test_stay_command_stops_movement_but_not_tasks(
+    channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    call = AsyncMock(side_effect=[{"ok": True}, {"ok": True}])
+    outbound = AsyncMock()
+    inbound = AsyncMock()
+    monkeypatch.setattr(channel, "_call", call)
+    monkeypatch.setattr(channel, "forward_message", outbound)
+    monkeypatch.setattr(channel, "on_message", inbound)
+    await channel._dispatch_event(chat_event(1, "待着"))
+
+    assert [c.args[0] for c in call.await_args_list] == ["stop_pathfinding", "clear_control_states"]
+    assert not any(c.args[0] == "cancel_task" for c in call.await_args_list)
+    text = outbound.call_args.args[0].segments[0].content
+    assert "待着" in text
+    assert inbound.call_args.args[0].trigger_mind is False
+
+
+async def test_sethome_then_home_goes_to_saved_position(
+    channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    call = AsyncMock(side_effect=[{"position": {"x": 10.0, "y": 64.0, "z": -3.0}}, {"ok": True}])
+    outbound = AsyncMock()
+    inbound = AsyncMock()
+    monkeypatch.setattr(channel, "_call", call)
+    monkeypatch.setattr(channel, "forward_message", outbound)
+    monkeypatch.setattr(channel, "on_message", inbound)
+    await channel._dispatch_event(chat_event(1, "!sethome"))
+    assert channel._home == {"x": 10.0, "y": 64.0, "z": -3.0}
+
+    outbound.reset_mock()
+    call.side_effect = [{"ok": True}]
+    await channel._dispatch_event(chat_event(2, "!home"))
+    await _drain_background(channel)
+    goto = [c for c in call.await_args_list if c.args[0] == "goto"][0]
+    assert goto.args[1]["x"] == 10.0 and goto.args[1]["z"] == -3.0
+
+
+async def test_home_without_sethome_tells_player(
+    channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    call = AsyncMock()
+    outbound = AsyncMock()
+    inbound = AsyncMock()
+    monkeypatch.setattr(channel, "_call", call)
+    monkeypatch.setattr(channel, "forward_message", outbound)
+    monkeypatch.setattr(channel, "on_message", inbound)
+    await channel._dispatch_event(chat_event(1, "回家"))
+
+    call.assert_not_awaited()
+    assert "还没设家" in outbound.call_args.args[0].segments[0].content
+
+
+async def test_give_command_tosses_matched_item(
+    channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    player = {"id": 3, "position": {"x": 0, "y": 64, "z": 0}}
+    inventory = {"items": [{"name": "oak_log", "count": 12}, {"name": "torch", "count": 5}]}
+    call = AsyncMock(side_effect=[player, inventory, {"ok": True}])
+    outbound = AsyncMock()
+    inbound = AsyncMock()
+    monkeypatch.setattr(channel, "_call", call)
+    monkeypatch.setattr(channel, "forward_message", outbound)
+    monkeypatch.setattr(channel, "on_message", inbound)
+    await channel._dispatch_event(chat_event(1, "!give oak_log 10"))
+
+    toss = [c for c in call.await_args_list if c.args[0] == "toss_item"][0]
+    assert toss.args[1] == {"item": "oak_log", "count": 10}
+    assert "10 个" in outbound.call_args.args[0].segments[0].content
+
+
+async def test_give_clamps_to_available_count(
+    channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    player = {"id": 3, "position": {"x": 0, "y": 64, "z": 0}}
+    inventory = {"items": [{"name": "oak_log", "count": 3}]}
+    call = AsyncMock(side_effect=[player, inventory, {"ok": True}])
+    outbound = AsyncMock()
+    inbound = AsyncMock()
+    monkeypatch.setattr(channel, "_call", call)
+    monkeypatch.setattr(channel, "forward_message", outbound)
+    monkeypatch.setattr(channel, "on_message", inbound)
+    await channel._dispatch_event(chat_event(1, "!give oak_log 99"))
+
+    toss = [c for c in call.await_args_list if c.args[0] == "toss_item"][0]
+    assert toss.args[1]["count"] == 3
+
+
+async def test_give_unknown_item_reports_missing(
+    channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    player = {"id": 3, "position": {"x": 0, "y": 64, "z": 0}}
+    inventory = {"items": [{"name": "dirt", "count": 64}]}
+    call = AsyncMock(side_effect=[player, inventory])
+    outbound = AsyncMock()
+    inbound = AsyncMock()
+    monkeypatch.setattr(channel, "_call", call)
+    monkeypatch.setattr(channel, "forward_message", outbound)
+    monkeypatch.setattr(channel, "on_message", inbound)
+    await channel._dispatch_event(chat_event(1, "!give diamond 1"))
+
+    assert not any(c.args[0] == "toss_item" for c in call.await_args_list)
+    assert "没有" in outbound.call_args.args[0].segments[0].content
+
+
+async def test_give_requires_nearby_player(channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch) -> None:
+    call = AsyncMock(return_value={"found": False})
+    outbound = AsyncMock()
+    inbound = AsyncMock()
+    monkeypatch.setattr(channel, "_call", call)
+    monkeypatch.setattr(channel, "forward_message", outbound)
+    monkeypatch.setattr(channel, "on_message", inbound)
+    await channel._dispatch_event(chat_event(1, "!give oak_log 1"))
+
+    assert "太远" in outbound.call_args.args[0].segments[0].content

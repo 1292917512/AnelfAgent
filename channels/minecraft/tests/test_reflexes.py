@@ -21,9 +21,14 @@ class FakeClock:
 class Recorder:
     """记录 MCP 调用并按需返回脚本化响应。"""
 
-    def __init__(self, entities: list[dict[str, Any]] | None = None) -> None:
+    def __init__(
+        self,
+        entities: list[dict[str, Any]] | None = None,
+        inventory_items: list[dict[str, Any]] | None = None,
+    ) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.entities = entities or []
+        self.inventory_items = inventory_items or []
         self.announced: list[str] = []
         self.fail_tools: set[str] = set()
 
@@ -33,6 +38,8 @@ class Recorder:
             raise RuntimeError(f"{tool} 失败")
         if tool == "list_entities":
             return {"count": len(self.entities), "entities": self.entities}
+        if tool == "get_inventory":
+            return {"items": self.inventory_items}
         return {"ok": True}
 
     async def announce(self, text: str) -> None:
@@ -195,7 +202,8 @@ async def test_no_goal_means_never_stuck(recorder: Recorder) -> None:
         clock.advance(1.0)
         await engine.tick(state(), pathfinder(active=False), dt=1.0)
 
-    assert recorder.calls == []
+    action_tools = {tool for tool, _ in recorder.calls} - {"list_entities", "get_inventory"}
+    assert action_tools == set()
 
 
 async def test_flee_supersedes_stuck(recorder: Recorder) -> None:
@@ -299,3 +307,138 @@ async def test_announce_failure_does_not_break_engine(recorder: Recorder) -> Non
     await engine.tick(state(health=15.0), pathfinder(), dt=1.0)
 
     assert recorder.tools("flee_from")  # 播报失败不影响逃跑动作
+
+
+def night_state(health: float = 20.0, x: float = 100.0, z: float = 100.0) -> dict[str, Any]:
+    return {
+        "health": health,
+        "position": {"x": x, "y": 64.0, "z": z},
+        "onGround": True,
+        "time": {"isDay": False},
+    }
+
+
+async def test_death_triggers_respawn_once_per_episode(recorder: Recorder) -> None:
+    clock = FakeClock()
+    engine = make_engine(recorder, clock)
+
+    await engine.tick({"health": None, "position": None}, pathfinder(), dt=1.0)
+    await engine.tick({"health": None, "position": None}, pathfinder(), dt=1.0)
+
+    assert len(recorder.tools("respawn")) == 1
+    assert recorder.announced == [reflexes._DEATH_ANNOUNCE]
+
+    await engine.tick(state(health=20.0), pathfinder(), dt=1.0)  # 复活收口
+    clock.advance(30.0)
+    await engine.tick({"health": None, "position": None}, pathfinder(), dt=1.0)
+
+    assert len(recorder.tools("respawn")) == 2  # 新死亡 episode 再重生
+
+
+async def test_night_torch_placed_at_feet(recorder: Recorder) -> None:
+    clock = FakeClock()
+    recorder.inventory_items = [{"name": "torch", "count": 12}]
+    engine = make_engine(recorder, clock)
+    await engine.tick(night_state(), pathfinder(active=False), dt=1.0)
+
+    placed = recorder.tools("place_block")
+    assert len(placed) == 1
+    assert placed[0]["referenceX"] == 100.0
+    assert placed[0]["referenceY"] == 63.0  # 脚下方块为参照
+    assert placed[0]["faceVector"] == {"x": 0, "y": 1, "z": 0}
+    assert placed[0]["itemName"] == "torch"
+
+
+async def test_daytime_never_places_torch(recorder: Recorder) -> None:
+    clock = FakeClock()
+    recorder.inventory_items = [{"name": "torch", "count": 12}]
+    engine = make_engine(recorder, clock)
+    day = {**night_state(), "time": {"isDay": True}}
+
+    for _ in range(3):
+        clock.advance(reflexes._TORCH_CHECK_INTERVAL)
+        await engine.tick(day, pathfinder(active=False), dt=reflexes._TORCH_CHECK_INTERVAL)
+
+    assert recorder.tools("place_block") == []
+    assert recorder.tools("get_inventory") == []  # 白天连背包都不查
+
+
+async def test_no_torch_in_inventory_silently_skips(recorder: Recorder) -> None:
+    clock = FakeClock()
+    recorder.inventory_items = [{"name": "dirt", "count": 5}]
+    engine = make_engine(recorder, clock)
+    await engine.tick(night_state(), pathfinder(active=False), dt=1.0)
+
+    assert recorder.tools("place_block") == []
+
+
+async def test_torch_cooldown_limits_placement(recorder: Recorder) -> None:
+    clock = FakeClock()
+    recorder.inventory_items = [{"name": "torch", "count": 64}]
+    engine = make_engine(recorder, clock)
+    await engine.tick(night_state(), pathfinder(active=False), dt=1.0)
+
+    clock.advance(reflexes._TORCH_CHECK_INTERVAL)  # 30s < 60s 冷却
+    await engine.tick(night_state(), pathfinder(active=False), dt=reflexes._TORCH_CHECK_INTERVAL)
+
+    assert len(recorder.tools("place_block")) == 1  # 冷却期内不重复插
+
+
+async def test_busy_goal_suppresses_idle_reflexes(recorder: Recorder) -> None:
+    clock = FakeClock()
+    recorder.inventory_items = [{"name": "torch", "count": 12}]
+    recorder.entities = [{"name": "item", "position": {"x": 101, "y": 64, "z": 100}, "distance": 1.0}]
+    engine = make_engine(recorder, clock)
+
+    for _ in range(3):
+        clock.advance(reflexes._TORCH_CHECK_INTERVAL)
+        await engine.tick(night_state(), pathfinder(active=True), dt=reflexes._TORCH_CHECK_INTERVAL)
+
+    assert recorder.tools("place_block") == []
+    assert recorder.tools("goto") == []
+
+
+async def test_nearby_drop_triggers_pickup(recorder: Recorder) -> None:
+    clock = FakeClock()
+    recorder.entities = [
+        {"name": "item", "position": {"x": 103, "y": 64, "z": 100}, "distance": 3.0},
+        {"name": "item", "position": {"x": 101, "y": 64, "z": 100}, "distance": 1.0},
+    ]
+    engine = make_engine(recorder, clock)
+    await engine.tick(night_state(), pathfinder(active=False), dt=1.0)
+
+    gotos = recorder.tools("goto")
+    assert len(gotos) == 1
+    assert gotos[0]["x"] == 101.0  # 最近的掉落物
+    assert gotos[0]["range"] == 1
+
+
+async def test_pickup_guard_prevents_overlap(recorder: Recorder) -> None:
+    clock = FakeClock()
+    drop = {"name": "item", "position": {"x": 101, "y": 64, "z": 100}, "distance": 1.0}
+    recorder.entities = [drop]
+    engine = make_engine(recorder, clock)
+    await engine.tick(night_state(), pathfinder(active=False), dt=1.0)
+
+    clock.advance(reflexes._PICKUP_CHECK_INTERVAL)
+    await engine.tick(night_state(), pathfinder(active=False), dt=reflexes._PICKUP_CHECK_INTERVAL)
+
+    assert len(recorder.tools("goto")) == 1  # _picking 期间不并发捡拾
+
+
+async def test_unstuck_never_cancels_active_escape(recorder: Recorder) -> None:
+    """逃逸宽限期内卡死自救不得取消进行中的 flee 目标（防把 bot 钉在怪脸上）。"""
+    clock = FakeClock()
+    zombie = {"name": "zombie", "position": {"x": 105, "y": 64, "z": 100}, "distance": 5.0}
+    recorder.entities = [zombie]
+    engine = make_engine(recorder, clock)
+    await engine.tick(state(health=20.0), pathfinder(active=True), dt=1.0)
+
+    health = 20.0
+    for _ in range(12):  # 持续掉血 + 位置冻结（被围），远超 8 秒卡死线
+        clock.advance(1.0)
+        health -= 1.0
+        await engine.tick(state(health=health), pathfinder(active=True), dt=1.0)
+
+    assert recorder.tools("flee_from")
+    assert recorder.tools("stop_pathfinding") == []

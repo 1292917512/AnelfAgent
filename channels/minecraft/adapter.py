@@ -55,6 +55,7 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
         self._background: set[asyncio.Task[Any]] = set()
         self._reflex_task: asyncio.Task[None] | None = None
         self._reflex_stop: asyncio.Event | None = None
+        self._home: dict[str, Any] | None = None
         self._last_success: float | None = None
         self._last_error = ""
 
@@ -97,7 +98,7 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
         if self._reflex_task is not None and not self._reflex_task.done():
             return
         self._reflex_stop = asyncio.Event()
-        engine = ReflexEngine(self._call, self._announce_reflex)
+        engine = ReflexEngine(self._call, self._announce_reflex, spawn=self._spawn_background)
         self._reflex_task = asyncio.create_task(
             engine.run(self.get_config().reflex_interval_seconds, self._reflex_stop),
             name="channel.minecraft.reflexes",
@@ -211,7 +212,7 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
         )
         command = self._resolve_command(content)
         if addressed and command is not None:
-            await self._run_command(command, chat.username, channel)
+            await self._run_command(command[0], command[1], chat.username, channel)
             # 指令已由频道直执行完毕；消息降级为 history-only 入队，
             # 唤醒思维循环会让 AI 再跑一遍动作（双重执行 + 白烧十几次模型调用）。
             await self.on_message(message.model_copy(update={"trigger_mind": False}))
@@ -223,6 +224,7 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
     # 1) `!` 前缀 + 别名（!stop / !come / !follow，兼容习惯输入）
     # 2) 自然短句整句匹配（“过来”“跟着我”“停下”，不用打符号）——整句精确
     #    相等才触发，且短语都很短，所以“别过来”“过来帮我看看”不会被误触。
+    # 带参数的指令（!give）只走 `!` 前缀，不做整句匹配。
     _COMMAND_ALIASES = {
         "!stop": "stop",
         "!停": "stop",
@@ -231,33 +233,53 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
         "!follow": "follow",
         "!跟我": "follow",
         "!跟着我": "follow",
+        "!stay": "stay",
+        "!待着": "stay",
+        "!sethome": "sethome",
+        "!设家": "sethome",
+        "!home": "home",
+        "!gohome": "home",
+        "!回家": "home",
+        "!give": "give",
+        "!给": "give",
+        "!给我": "give",
     }
     _PHRASE_COMMANDS: tuple[tuple[str, frozenset[str]], ...] = (
         ("stop", frozenset({"停", "停下", "别动", "站住", "stop"})),
         ("come", frozenset({"过来", "过来一下", "来我这", "到我这边来", "过来玩", "come"})),
         ("follow", frozenset({"跟我", "跟着我", "跟我走", "跟着我走", "follow"})),
+        ("stay", frozenset({"待着", "待着别动", "在这待着", "stay"})),
+        ("home", frozenset({"回家", "go home"})),
     )
 
-    def _resolve_command(self, content: str) -> str | None:
-        token = content.split()[0].casefold()
+    def _resolve_command(self, content: str) -> tuple[str, str] | None:
+        parts = content.split(None, 1)
+        token = parts[0].casefold()
         if token.startswith("!"):
-            return self._COMMAND_ALIASES.get(token)
+            command = self._COMMAND_ALIASES.get(token)
+            if command is None:
+                return None
+            return (command, parts[1].strip() if len(parts) > 1 else "")
         text = content.strip().strip("！!。~～…").casefold()
         if len(text) > 8:
             return None
         for command, phrases in self._PHRASE_COMMANDS:
             if text in phrases:
-                return command
+                return (command, "")
         return None
 
-    async def _run_command(self, command: str, username: str, channel: AdapterChannel) -> None:
-        handler = {
-            "stop": self._cmd_stop,
-            "come": self._cmd_come,
-            "follow": self._cmd_follow,
-        }[command]
+    async def _run_command(self, command: str, args: str, username: str, channel: AdapterChannel) -> None:
+        handlers: dict[str, Any] = {
+            "stop": lambda: self._cmd_stop(username, channel),
+            "come": lambda: self._cmd_come(username, channel),
+            "follow": lambda: self._cmd_follow(username, channel),
+            "stay": lambda: self._cmd_stay(username, channel),
+            "sethome": lambda: self._cmd_sethome(username, channel),
+            "home": lambda: self._cmd_home(username, channel),
+            "give": lambda: self._cmd_give(args, username, channel),
+        }
         try:
-            text = await handler(username, channel)
+            text = await handlers[command]()
         except Exception as exc:
             log(f"Minecraft 快捷指令 {command} 执行异常: {exc}", "WARNING", tag="Minecraft")
             text = "指令没执行成，我可能没连上游戏……你再用话说一遍呗。"
@@ -292,10 +314,61 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
         await asyncio.wait_for(self._call("follow_entity", {"entityId": entity["id"], "range": 2}), timeout=5)
         return "跟着你了，走哪跟哪～（!stop 让我停下）"
 
-    async def _find_player(self, username: str) -> dict[str, Any] | None:
+    async def _cmd_stay(self, username: str, channel: AdapterChannel) -> str:
+        """待着：只停移动，不取消采集等手上的任务（与 !stop 全停不同）。"""
+        failures: list[str] = []
+        for name in ("stop_pathfinding", "clear_control_states"):
+            try:
+                await asyncio.wait_for(self._call(name, {}), timeout=3)
+            except Exception as exc:
+                failures.append(name)
+                log(f"Minecraft 待着指令 {name} 失败: {exc}", "WARNING", tag="Minecraft")
+        return "好，我待着不动。" if not failures else "我尽量待着……（有控制没清掉，再喊我一次）"
+
+    async def _cmd_sethome(self, username: str, channel: AdapterChannel) -> str:
+        state = await asyncio.wait_for(self._call("get_state", {}), timeout=5)
+        position = state.get("position") or {}
+        if not all(k in position for k in ("x", "y", "z")):
+            return "我现在读不到位置，等连稳了再设家。"
+        self._home = {k: position[k] for k in ("x", "y", "z")}
+        return (
+            f"家设好了（{int(position['x'])}, {int(position['y'])}, {int(position['z'])}），"
+            "喊 !home 我就回去。"
+        )
+
+    async def _cmd_home(self, username: str, channel: AdapterChannel) -> str:
+        if self._home is None:
+            return "还没设家呢——站在你想让我回的位置喊 !sethome。"
+        self._spawn_background(self._goto_and_report(channel, dict(self._home)))
+        return "往家走！"
+
+    async def _cmd_give(self, args: str, username: str, channel: AdapterChannel) -> str:
+        parts = args.split()
+        if not parts:
+            return "要给什么？!give <物品名> [数量]，比如 !give oak_log 10"
+        wanted = parts[0].casefold().removeprefix("minecraft:")
+        count = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
+        entity = await self._find_player(username, max_distance=6)
+        if entity is None:
+            return "你离我太远了——走到我旁边我再给你。"
+        inventory = await asyncio.wait_for(self._call("get_inventory", {}), timeout=5)
+        matched: tuple[str, int] | None = None
+        for item in inventory.get("items") or []:
+            name = str(item.get("name") or "").casefold().removeprefix("minecraft:")
+            if name == wanted:
+                matched = (str(item["name"]), int(item.get("count") or 0))
+                break
+        if matched is None:
+            return f"我背包里没有 {parts[0]}……你问我背包里有啥我就报给你。"
+        item_name, available = matched
+        give = min(count, available)
+        await asyncio.wait_for(self._call("toss_item", {"item": item_name, "count": give}), timeout=5)
+        return f"给你 {give} 个{item_name}，接着！"
+
+    async def _find_player(self, username: str, max_distance: int = 64) -> dict[str, Any] | None:
         """按游戏名找玩家实体；找不到（太远/不同维度/不在线）返回 None。"""
         result = await asyncio.wait_for(
-            self._call("find_nearest_entity", {"username": username, "type": "player", "maxDistance": 64}),
+            self._call("find_nearest_entity", {"username": username, "type": "player", "maxDistance": max_distance}),
             timeout=5,
         )
         return None if result.get("found") is False else result

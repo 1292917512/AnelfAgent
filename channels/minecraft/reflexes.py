@@ -7,13 +7,18 @@
 MCP 只读快照判定、确定性工具动作执行。
 
 规则优先级（高优先可打断低优先，同级不叠加）：
-1. 受伤逃逸：血量下降或低于阈值 → 逃离最近敌对生物（没有就离开原位）
-2. 卡死自救：寻路目标激活但位置冻结超过 stuck_seconds → 停寻路 + 起跳，
+1. 死亡重生：血量读取不到（已死）→ respawn + 播报，复活 episode 自动收口
+2. 受伤逃逸：血量下降 → 逃离最近敌对生物（没有就离开原位），逃逸后
+   给宽限期，卡死自救不许取消进行中的逃离
+3. 卡死自救：寻路目标激活但位置冻结超过 stuck_seconds → 停寻路 + 起跳，
    仍冻结则报告玩家（跟随等常驻目标由执行器自行重挂，不代管）
+4. 夜间插火把：天黑 + 无任务在身 + 背包有火把 → 脚边插一根（限频）
+5. 就近捡拾：无任务在身 + 脚边有掉落物 → 走过去捡起（只捡自己脚边的，
+   不远征、不碰玩家远处的物资）
 
-仲裁纪律：反射只动寻路与控制键，不碰背包/挖掘/建造工具，与工人
-（mc-worker）的工具循环互不重叠；每次反射都在游戏内播报，沟通者
-从聊天事件自然得知上下文。
+仲裁纪律：反射只动寻路与控制键，不碰背包/挖掘/建造工具（插火把除外，
+place_block 是反射的自有动作），与工人（mc-worker）的工具循环互不重叠；
+每次需要玩家知情的反射都在游戏内播报，沟通者从聊天事件自然得知上下文。
 """
 
 from __future__ import annotations
@@ -44,19 +49,36 @@ _THREAT_SCAN_DISTANCE = 12.0
 _STUCK_SECONDS = 8
 _STUCK_MOVE_EPSILON = 0.15
 _STUCK_GRACE_SECONDS = 3.0
+_ESCAPE_GRACE_SECONDS = 10.0
 _ANNOUNCE_COOLDOWN_SECONDS = 20.0
+
+# 慢反射（限频，避免每拍都查）：插火把与捡掉落物的最小间隔
+_TORCH_CHECK_INTERVAL = 30.0
+_TORCH_COOLDOWN = 60.0
+_PICKUP_CHECK_INTERVAL = 15.0
+_PICKUP_COOLDOWN = 30.0
+_PICKUP_SCAN_DISTANCE = 5.0
+_PICKUP_GOTO_TIMEOUT_MS = 8000
+
 _ESCAPE_ANNOUNCE = "疼疼疼——我先撤一下！"
 _STUCK_ANNOUNCE = "我好像被卡住了……先挣扎两下，不行你拉我一把。"
+_DEATH_ANNOUNCE = "我死了……马上重生回来，等我！"
+
+# 可插的火把类物品名（与背包物品名小写精确匹配）
+_TORCH_NAMES = frozenset({"torch", "soul_torch", "redstone_torch"})
 
 MCPToolCall = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 Announce = Callable[[str], Awaitable[None]]
 Clock = Callable[[], float]
+Spawn = Callable[[Awaitable[None]], None]
 
 
 class ReflexEngine:
     """按固定间隔观察快照并触发反射动作的独立循环。
 
     tick() 与快照获取分离：单元测试直接喂快照，run() 负责真实 MCP 轮询。
+    spawn 钩子把长动作（捡掉落物的 goto）挂到后台任务，不阻塞观察循环；
+    缺省（None）时退化为同步执行，仅供测试。
     """
 
     def __init__(
@@ -65,15 +87,21 @@ class ReflexEngine:
         announce: Announce,
         *,
         clock: Clock = time.monotonic,
+        spawn: Spawn | None = None,
     ) -> None:
         self._call = call
         self._announce = announce
         self._clock = clock
+        self._spawn = spawn
         self._prev_health: float | None = None
         self._prev_position: tuple[float, float, float] | None = None
         self._frozen_for = 0.0
         self._grace_until = 0.0
         self._announced_at: dict[str, float] = {}
+        self._dead = False
+        self._next_torch_check = 0.0
+        self._next_pickup_check = 0.0
+        self._picking = False
 
     async def run(self, interval_seconds: float, stop: asyncio.Event) -> None:
         """轮询快照直到 stop；单个周期异常只记日志，反射循环永不退出。"""
@@ -110,10 +138,18 @@ class ReflexEngine:
         health = _as_float(state.get("health"))
         position = _as_position(state.get("position"))
         try:
+            if health is None:
+                # 血量读不到 = 已死（或维度切换首帧）：死亡重生优先于一切
+                await self._respawn()
+                return
+            self._dead = False
             if self._should_flee(health):
                 await self._flee(state)
             elif not self._in_grace() and self._is_stuck(pathfinder, position, dt):
                 await self._unstuck()
+            elif not _goal_active(pathfinder):
+                await self._maybe_place_torch(state)
+                await self._maybe_pickup()
         finally:
             if health is not None:
                 self._prev_health = health
@@ -128,15 +164,7 @@ class ReflexEngine:
     def _is_stuck(
         self, pathfinder: dict[str, Any], position: tuple[float, float, float] | None, dt: float
     ) -> bool:
-        # 执行器 pathfinder_status 的真实返回键是 goal；goalSet/isMoving 只是
-        # 版本差异兜底（isMoving 在撞墙卡死时仍可能为 true，不能单独作为依据）
-        goal_active = bool(
-            pathfinder.get("goal")
-            or pathfinder.get("goalSet")
-            or pathfinder.get("goal_set")
-            or pathfinder.get("isMoving")
-        )
-        if not goal_active or position is None or self._prev_position is None:
+        if not _goal_active(pathfinder) or position is None or self._prev_position is None:
             self._frozen_for = 0.0
             return False
         moved = max(
@@ -174,6 +202,9 @@ class ReflexEngine:
                     "distance": _FLEE_DISTANCE,
                 },
             )
+        # 逃逸宽限期：卡死自救不许取消正在进行的逃离（撞墙被围时寻路
+        # 天然冻结，但停掉 flee 目标等于把 bot 钉在敌对生物脸上）
+        self._grace_until = self._clock() + _ESCAPE_GRACE_SECONDS
         await self._announce_once("escape", _ESCAPE_ANNOUNCE)
 
     async def _unstuck(self) -> None:
@@ -189,6 +220,92 @@ class ReflexEngine:
             await self._call("set_control_state", {"control": "jump", "state": False})
         await self._announce_once("stuck", _STUCK_ANNOUNCE)
 
+    async def _respawn(self) -> None:
+        """死亡 episode 内重生一次并播报；复活后 episode 自动收口。"""
+        if self._dead:
+            return
+        self._dead = True
+        self._frozen_for = 0.0
+        with contextlib.suppress(Exception):
+            await self._call("respawn", {})
+        await self._announce_once("death", _DEATH_ANNOUNCE)
+
+    async def _maybe_place_torch(self, state: dict[str, Any]) -> None:
+        """天黑且无任务在身时脚边插一根火把（限频；无火把则静默跳过）。"""
+        now = self._clock()
+        if now < self._next_torch_check:
+            return
+        self._next_torch_check = now + _TORCH_CHECK_INTERVAL
+        if (state.get("time") or {}).get("isDay") is not False:
+            return  # 白天或时间未知都不插
+        position = _as_position(state.get("position"))
+        if position is None or state.get("onGround") is False:
+            return
+        try:
+            inventory = await self._call("get_inventory", {})
+        except Exception as exc:
+            log(f"Minecraft 反射层查背包失败: {exc}", "WARNING", tag="Minecraft")
+            return
+        torch = _find_torch(inventory.get("items") or [])
+        if torch is None:
+            return
+        self._next_torch_check = now + _TORCH_COOLDOWN
+        with contextlib.suppress(Exception):
+            await self._call(
+                "place_block",
+                {
+                    "referenceX": position[0],
+                    "referenceY": position[1] - 1,
+                    "referenceZ": position[2],
+                    "faceVector": {"x": 0, "y": 1, "z": 0},
+                    "itemName": torch,
+                },
+            )
+
+    async def _maybe_pickup(self) -> None:
+        """无任务在身时捡起脚边掉落物（只捡自己 5 格内的，不远征）。"""
+        now = self._clock()
+        if self._picking or now < self._next_pickup_check:
+            return
+        self._next_pickup_check = now + _PICKUP_CHECK_INTERVAL
+        try:
+            drops = await self._call(
+                "list_entities",
+                {"name": "item", "maxDistance": _PICKUP_SCAN_DISTANCE, "limit": 3},
+            )
+        except Exception as exc:
+            log(f"Minecraft 反射层扫描掉落物失败: {exc}", "WARNING", tag="Minecraft")
+            return
+        nearest = _nearest_drop(drops.get("entities") or [])
+        if nearest is None:
+            return
+        self._next_pickup_check = now + _PICKUP_COOLDOWN
+        position = _as_position(nearest.get("position"))
+        if position is None:
+            return
+        self._picking = True
+        if self._spawn is not None:
+            self._spawn(self._goto_drop(position))
+        else:
+            await self._goto_drop(position)
+
+    async def _goto_drop(self, position: tuple[float, float, float]) -> None:
+        try:
+            with contextlib.suppress(Exception):
+                await self._call(
+                    "goto",
+                    {
+                        "goalType": "near",
+                        "x": position[0],
+                        "y": position[1],
+                        "z": position[2],
+                        "range": 1,
+                        "timeout": _PICKUP_GOTO_TIMEOUT_MS,
+                    },
+                )
+        finally:
+            self._picking = False
+
     def _in_grace(self) -> bool:
         return self._clock() < self._grace_until
 
@@ -200,6 +317,36 @@ class ReflexEngine:
         self._announced_at[key] = now
         with contextlib.suppress(Exception):
             await self._announce(text)
+
+
+def _goal_active(pathfinder: dict[str, Any]) -> bool:
+    """执行器 pathfinder_status 快照里是否有活跃寻路目标。
+
+    真实返回键是 goal；goalSet/isMoving 只是版本差异兜底（isMoving 在撞墙
+    卡死时仍可能为 true，不能单独作为依据）。
+    """
+    return bool(
+        pathfinder.get("goal")
+        or pathfinder.get("goalSet")
+        or pathfinder.get("goal_set")
+        or pathfinder.get("isMoving")
+    )
+
+
+def _find_torch(items: list[dict[str, Any]]) -> str | None:
+    """背包物品里找可插的火把，返回物品名（供 place_block itemName）。"""
+    for item in items:
+        name = str(item.get("name") or "").casefold()
+        if name in _TORCH_NAMES:
+            return str(item["name"])
+    return None
+
+
+def _nearest_drop(entities: list[dict[str, Any]]) -> dict[str, Any] | None:
+    drops = [e for e in entities if str(e.get("name") or "").casefold() == "item"]
+    if not drops:
+        return None
+    return min(drops, key=lambda e: _as_float(e.get("distance")) or float("inf"))
 
 
 def _nearest_hostile(entities: list[dict[str, Any]]) -> dict[str, Any] | None:
