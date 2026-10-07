@@ -31,6 +31,7 @@ from core.log import log
 from entities._sdk import call_mcp_server_tool
 
 from . import discovery as _discovery  # noqa: F401  导入即注册全局发现工具
+from .autoconnect import _CONNECT_STATE, AutoConnector
 from .config import MinecraftConfig
 from .protocol import ConnectionStatus, EventBatch, GameEvent, PlayerChat, split_chat
 from .reflexes import ReflexEngine
@@ -55,6 +56,12 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
         self._background: set[asyncio.Task[Any]] = set()
         self._reflex_task: asyncio.Task[None] | None = None
         self._reflex_stop: asyncio.Event | None = None
+        self._auto = AutoConnector(
+            self._call,
+            self._discover_worlds,
+            self._announce_join,
+            bot_username=lambda: self.get_config().bot_username,
+        )
         self._home: dict[str, Any] | None = None
         self._marks: dict[str, dict[str, Any]] = {}
         self._last_success: float | None = None
@@ -74,6 +81,7 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        await self._auto.stop()
         reflex, self._reflex_task = self._reflex_task, None
         if self._reflex_stop is not None:
             self._reflex_stop.set()
@@ -124,6 +132,14 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             text,
         )
 
+    async def _discover_worlds(self) -> list[_discovery.LanWorld]:
+        """组播监听是阻塞套接字循环，放线程池跑，不占用事件循环。"""
+        return await asyncio.to_thread(_discovery.listen_lan_announcements, 3.0)
+
+    async def _announce_join(self, text: str) -> None:
+        """自动进服成功后的到场播报（世界频道）；失败静默，由日志兜底。"""
+        await self._announce_reflex(text)
+
     async def _call(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         raw = await call_mcp_server_tool(self.get_config().mcp_server, tool_name, arguments)
         data: object = json.loads(raw)
@@ -147,7 +163,22 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
                     log(f"Minecraft 聊天桥等待执行器: {detail}", "WARNING", tag="Minecraft")
                 self._last_error = detail
             self._sync_reflexes()
+            await self._auto_tick()
             await asyncio.sleep(self.get_config().poll_interval_seconds)
+
+    async def _auto_tick(self) -> None:
+        """按配置开关喂自动进服器；关闭时只复位其内部状态。"""
+        cfg = self.get_config()
+        state = self._connection.state if self._connection is not None else None
+        if cfg.auto_connect:
+            try:
+                await self._auto.tick(state)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log(f"Minecraft 自动进服观察失败: {exc}", "WARNING", tag="Minecraft")
+        elif state == _CONNECT_STATE:
+            await self._auto.tick(state)
 
     async def _poll_once(self) -> None:
         cfg = self.get_config()

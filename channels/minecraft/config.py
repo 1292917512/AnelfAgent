@@ -39,6 +39,10 @@ class MinecraftConfig(ChannelConfig):
         description="生存反射观察间隔",
         json_schema_extra={"unit": "s", "min": 0.5, "max": 10, "advanced": True},
     )
+    auto_connect: bool = Field(
+        default=False,
+        description="发现局域网世界且 bot 未连接时自动进服待命（进服会短暂占用游戏，发生在开世界时而非对话中途）",
+    )
 
 
 CONFIG_MODEL = MinecraftConfig
