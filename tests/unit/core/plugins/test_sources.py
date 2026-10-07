@@ -1,6 +1,26 @@
 """插件负载获取测试：git 环境隔离与代理注入。"""
 
+from pathlib import Path
+
+import pytest
+
 from core.plugins import sources
+from core.plugins.manifest import PluginError
+
+
+@pytest.mark.parametrize("url", [
+    "https://example.test/owner/demo.git",
+    "git@example.test:owner/demo.git",
+    "file:///C:/plugins/demo.git",
+    r"file://C:\plugins\demo.git",
+])
+def test_repo_directory_is_basename(url: str) -> None:
+    assert sources._repo_dir_name(url) == "demo"
+
+
+def test_git_subdirectory_cannot_escape(tmp_path: Path) -> None:
+    with pytest.raises(PluginError, match="越出仓库"):
+        sources.fetch_git("https://example.test/demo.git", "", tmp_path, subdir="../../outside")
 
 
 class TestGitEnv:
