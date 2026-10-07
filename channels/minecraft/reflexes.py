@@ -102,6 +102,7 @@ class ReflexEngine:
         self._next_torch_check = 0.0
         self._next_pickup_check = 0.0
         self._picking = False
+        self._autoeat_enabled = False
 
     async def run(self, interval_seconds: float, stop: asyncio.Event) -> None:
         """轮询快照直到 stop；单个周期异常只记日志，反射循环永不退出。"""
@@ -110,6 +111,12 @@ class ReflexEngine:
             try:
                 conn = await self._call("get_connection_status", {})
                 if conn.get("status") == "connected":
+                    if not self._autoeat_enabled:
+                        # 连接建立即开自动进食（防饿死是生存闭环的一部分）；
+                        # 断线复位，重连后自动补上
+                        self._autoeat_enabled = True
+                        with contextlib.suppress(Exception):
+                            await self._call("autoeat_set_enabled", {"enabled": True})
                     state = await self._call("get_state", {})
                     pathfinder = await self._call("pathfinder_status", {})
                     now = self._clock()
@@ -118,6 +125,7 @@ class ReflexEngine:
                     last_observed = now
                 else:
                     self._reset()
+                    self._autoeat_enabled = False
                     last_observed = None
             except asyncio.CancelledError:
                 raise

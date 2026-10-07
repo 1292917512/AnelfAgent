@@ -639,3 +639,77 @@ async def test_give_requires_nearby_player(channel: MinecraftChannel, monkeypatc
     await channel._dispatch_event(chat_event(1, "!give oak_log 1"))
 
     assert "太远" in outbound.call_args.args[0].segments[0].content
+
+
+async def test_mark_then_go_uses_saved_position(
+    channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    position = {"position": {"x": 55.0, "y": 40.0, "z": -12.0}}
+    call = AsyncMock(side_effect=[position, {"ok": True}])
+    outbound = AsyncMock()
+    inbound = AsyncMock()
+    monkeypatch.setattr(channel, "_call", call)
+    monkeypatch.setattr(channel, "forward_message", outbound)
+    monkeypatch.setattr(channel, "on_message", inbound)
+    await channel._dispatch_event(chat_event(1, "!mark 矿洞口"))
+    assert "矿洞口" in channel._marks
+    reply = outbound.call_args.args[0].segments[0].content
+    assert "(55, 40, -12)" in reply
+
+    outbound.reset_mock()
+    call.side_effect = [{"ok": True}]
+    await channel._dispatch_event(chat_event(2, "!去 矿洞口"))
+    immediate = outbound.call_args.args[0].segments[0].content
+    assert "矿洞口" in immediate  # 先回执，后台寻路
+    await _drain_background(channel)
+    goto = [c for c in call.await_args_list if c.args[0] == "goto"][0]
+    assert goto.args[1]["x"] == 55.0 and goto.args[1]["z"] == -12.0
+
+
+async def test_go_unknown_name_lists_known_marks(
+    channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    channel._marks["pit"] = {"name": "矿洞口", "pos": {"x": 1, "y": 64, "z": 1}}
+    call = AsyncMock()
+    outbound = AsyncMock()
+    inbound = AsyncMock()
+    monkeypatch.setattr(channel, "_call", call)
+    monkeypatch.setattr(channel, "forward_message", outbound)
+    monkeypatch.setattr(channel, "on_message", inbound)
+    await channel._dispatch_event(chat_event(1, "!去 温泉"))
+
+    call.assert_not_awaited()
+    text = outbound.call_args.args[0].segments[0].content
+    assert "矿洞口" in text
+
+
+async def test_mark_rejects_bad_names(channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch) -> None:
+    call = AsyncMock()
+    outbound = AsyncMock()
+    inbound = AsyncMock()
+    monkeypatch.setattr(channel, "_call", call)
+    monkeypatch.setattr(channel, "forward_message", outbound)
+    monkeypatch.setattr(channel, "on_message", inbound)
+    await channel._dispatch_event(chat_event(1, "!mark 有 空格"))
+    await channel._dispatch_event(chat_event(2, "!mark "))
+
+    call.assert_not_awaited()
+    assert channel._marks == {}
+    assert "地名" in outbound.call_args.args[0].segments[0].content
+
+
+async def test_marks_lists_saved_locations(channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch) -> None:
+    channel._marks = {
+        "pit": {"name": "矿洞口", "pos": {"x": 1, "y": 64, "z": 1}},
+        "lake": {"name": "湖边", "pos": {"x": 9, "y": 63, "z": -4}},
+    }
+    call = AsyncMock()
+    outbound = AsyncMock()
+    inbound = AsyncMock()
+    monkeypatch.setattr(channel, "_call", call)
+    monkeypatch.setattr(channel, "forward_message", outbound)
+    monkeypatch.setattr(channel, "on_message", inbound)
+    await channel._dispatch_event(chat_event(1, "!marks"))
+
+    text = outbound.call_args.args[0].segments[0].content
+    assert "矿洞口" in text and "湖边" in text

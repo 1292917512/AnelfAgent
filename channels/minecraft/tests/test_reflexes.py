@@ -442,3 +442,36 @@ async def test_unstuck_never_cancels_active_escape(recorder: Recorder) -> None:
 
     assert recorder.tools("flee_from")
     assert recorder.tools("stop_pathfinding") == []
+
+
+async def test_autoeat_enabled_once_on_connect(recorder: Recorder) -> None:
+    clock = FakeClock()
+    engine = make_engine(recorder, clock)
+    stop = reflexes.asyncio.Event()
+    frames: list[dict[str, Any]] = [
+        {"status": "connected"},
+        {"ok": True, "health": 20.0, "position": {"x": 0, "y": 64, "z": 0}},
+        {"goal": False},
+        {"status": "connected"},
+        {"ok": True, "health": 20.0, "position": {"x": 0, "y": 64, "z": 0}},
+        {"goal": False},
+        {"status": "disconnected"},
+        {"status": "connected"},
+        {"ok": True, "health": 20.0, "position": {"x": 0, "y": 64, "z": 0}},
+        {"goal": False},
+    ]
+
+    async def scripted_call(tool: str, args: dict[str, Any]) -> dict[str, Any]:
+        if tool in {"get_connection_status", "get_state", "pathfinder_status"}:
+            return frames.pop(0) if frames else {"status": "disconnected"}
+        return await recorder.call(tool, args)
+
+    engine._call = scripted_call  # type: ignore[method-assign]
+    task = reflexes.asyncio.create_task(engine.run(0.001, stop))
+    await reflexes.asyncio.sleep(0.05)
+    stop.set()
+    await task
+
+    enables = recorder.tools("autoeat_set_enabled")
+    assert len(enables) == 2  # 首次连接 + 断线重连后各一次
+    assert all(c["enabled"] is True for c in enables)

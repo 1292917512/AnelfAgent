@@ -56,6 +56,7 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
         self._reflex_task: asyncio.Task[None] | None = None
         self._reflex_stop: asyncio.Event | None = None
         self._home: dict[str, Any] | None = None
+        self._marks: dict[str, dict[str, Any]] = {}
         self._last_success: float | None = None
         self._last_error = ""
 
@@ -243,6 +244,14 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
         "!give": "give",
         "!给": "give",
         "!给我": "give",
+        "!mark": "mark",
+        "!标记": "mark",
+        "!记住这": "mark",
+        "!记住这里": "mark",
+        "!go": "go",
+        "!去": "go",
+        "!marks": "marks",
+        "!地名": "marks",
     }
     _PHRASE_COMMANDS: tuple[tuple[str, frozenset[str]], ...] = (
         ("stop", frozenset({"停", "停下", "别动", "站住", "stop"})),
@@ -277,6 +286,9 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             "sethome": lambda: self._cmd_sethome(username, channel),
             "home": lambda: self._cmd_home(username, channel),
             "give": lambda: self._cmd_give(args, username, channel),
+            "mark": lambda: self._cmd_mark(args),
+            "go": lambda: self._cmd_go(args, channel),
+            "marks": lambda: self._cmd_marks(),
         }
         try:
             text = await handlers[command]()
@@ -364,6 +376,39 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
         give = min(count, available)
         await asyncio.wait_for(self._call("toss_item", {"item": item_name, "count": give}), timeout=5)
         return f"给你 {give} 个{item_name}，接着！"
+
+    async def _cmd_mark(self, args: str) -> str:
+        """!mark <名字>：把 bot 当前位置记为地名（地名记忆，零模型调用）。"""
+        name = args.strip()
+        if not re.fullmatch(r"[^\s！!]{1,16}", name):
+            return "地名要 1~16 个字符、不带空格和感叹号，比如 !mark 矿洞口"
+        state = await asyncio.wait_for(self._call("get_state", {}), timeout=5)
+        position = state.get("position") or {}
+        if not all(k in position for k in ("x", "y", "z")):
+            return "我现在读不到位置，等连稳了再记。"
+        self._marks[name.casefold()] = {"name": name, "pos": {k: position[k] for k in ("x", "y", "z")}}
+        return f"记住啦：『{name}』= ({int(position['x'])}, {int(position['y'])}, {int(position['z'])})。喊 !去 {name} 我就到。"
+
+    async def _cmd_go(self, args: str, channel: AdapterChannel) -> str:
+        """!go <名字>：走到记住的地名。"""
+        name = args.strip()
+        mark = self._marks.get(name.casefold())
+        if mark is None:
+            known = "、".join(m["name"] for m in self._marks.values())
+            if known:
+                return f"我没记住过『{name}』。记住过：{known}"
+            return "还没记住任何地方——站在目标位置喊 !mark 名字"
+        self._spawn_background(self._goto_and_report(channel, dict(mark["pos"])))
+        return f"去『{mark['name']}』！"
+
+    async def _cmd_marks(self) -> str:
+        if not self._marks:
+            return "还没记住任何地方——站在目标位置喊 !mark 名字"
+        lines = [
+            f"『{m['name']}』({int(m['pos']['x'])}, {int(m['pos']['y'])}, {int(m['pos']['z'])})"
+            for m in self._marks.values()
+        ]
+        return "记住的地方：" + "、".join(lines)
 
     async def _find_player(self, username: str, max_distance: int = 64) -> dict[str, Any] | None:
         """按游戏名找玩家实体；找不到（太远/不同维度/不在线）返回 None。"""
