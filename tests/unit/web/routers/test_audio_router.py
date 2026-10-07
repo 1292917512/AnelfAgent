@@ -154,7 +154,7 @@ class TestSegmentApi:
         assert resp.status_code == 200
         body = resp.json()
         assert body["speakers"] == 1
-        assert body["match_threshold"] == 0.75
+        assert body["match_threshold"] == 0.65
         # 声纹维度实测自库内最新样本（模型身份可观测）
         assert body["voiceprint_dims"] == 192
 

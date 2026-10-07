@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from agent.task.handoff import extract_handoff, load_handoff, save_handoff
+from agent.task.handoff import extract_handoff, load_handoff, prune_orphans, save_handoff
 from agent.task.model import TaskDefinition
 
 
@@ -78,6 +78,35 @@ class TestHandoffPersistence:
         monkeypatch.setattr(path_mod.ConfigPaths, "TASKS_DIR", str(tmp_path), raising=False)
         save_handoff("big", "x" * 5000)
         assert len(load_handoff("big")) == 300
+
+
+class TestPruneOrphanHandoffs:
+    """对账清理：无对应任务文件的交接文件被清除（心跳引擎构造/reload 调用）。"""
+
+    def test_prunes_orphan_keeps_alive(self, tmp_path, monkeypatch) -> None:
+        from core import path as path_mod
+        monkeypatch.setattr(path_mod.ConfigPaths, "TASKS_DIR", str(tmp_path), raising=False)
+        save_handoff("alive_task", "进度 A")
+        save_handoff("gone_task", "进度 B")
+
+        pruned = prune_orphans({"alive_task"})
+
+        assert pruned == ["gone_task"]
+        assert load_handoff("alive_task") == "进度 A"
+        assert load_handoff("gone_task") == ""
+
+    def test_no_orphans_returns_empty(self, tmp_path, monkeypatch) -> None:
+        from core import path as path_mod
+        monkeypatch.setattr(path_mod.ConfigPaths, "TASKS_DIR", str(tmp_path), raising=False)
+        save_handoff("alive_task", "进度 A")
+        assert prune_orphans({"alive_task"}) == []
+        assert load_handoff("alive_task") == "进度 A"
+
+    def test_missing_dir_noop(self, tmp_path, monkeypatch) -> None:
+        from core import path as path_mod
+        monkeypatch.setattr(
+            path_mod.ConfigPaths, "TASKS_DIR", str(tmp_path / "none"), raising=False)
+        assert prune_orphans(set()) == []
 
 
 class TestTaskDefinitionHandoff:

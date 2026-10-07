@@ -121,6 +121,8 @@ class _ThinkRoundState:
     plan_finalized: bool = False
     # 本次会话是否被协作式中断终止（决定 finally 收敛 outcome）
     interrupted: bool = False
+    # 中止时存在"已启动未完成"的工具调用（收束元消息提示可能已部分执行）
+    partial_tool_abort: bool = False
     # 结束原因（completed/budget_exhausted；interrupted 经 state.interrupted 推断）
     completion_reason: str = "completed"
 
@@ -153,6 +155,10 @@ class _ThinkLoopCtx:
     pipeline: ToolResultPipeline
     turn_id: str
     delta_emitter: Callable[[str, bool], Awaitable[None]]
+    # scope 中断唤醒事件（在途 LLM 流/工具批与之中断竞争；无中断注册表时 None）
+    abort_event: Any = None
+    # 主回复工具日志（REPLY 模式逐调用落账，崩溃尾部账本；其余模式 None）
+    journal: Any = None
     # 结束原因输出容器（调用方传入；None = 不收集）——置于全默认字段区
     completion: Optional[Dict] = None
     # 模式级禁用工具（内部任务禁外发 / leaf 禁委托）：执行侧拦截返回合成错误，
@@ -281,6 +287,19 @@ async def _prepare_think_context(
     # 中断注册表（协作式刹车信号；替身 Mind 可能不具备，容忍缺省）
     interrupts = getattr(mind, "interrupts", None)
 
+    # 在途等待点的中断唤醒事件：与请求登记同生命周期的注册表实例
+    abort_event = (
+        interrupts.event(current_scope)
+        if interrupts is not None and current_scope else None
+    )
+
+    # 主回复工具日志：仅 REPLY（与 reply_checkpoints 的 phase=reply 同域）；
+    # 子代理续跑有 delegation transcript，反思无外发副作用
+    journal = None
+    if mode == ThinkMode.REPLY and current_scope:
+        from agent.mind.tools.reply_journal import build_reply_journal
+        journal = build_reply_journal(mind, current_scope)
+
     # 流式过程事件：turn_id 标识本轮思维会话
     turn_id = uuid.uuid4().hex[:8]
 
@@ -306,6 +325,8 @@ async def _prepare_think_context(
         pipeline=pipeline,
         turn_id=turn_id,
         delta_emitter=_make_delta_emitter(current_scope, turn_id),
+        abort_event=abort_event,
+        journal=journal,
         blocked_tools=frozenset(blocked_tools or ()),
         reflect_tool_selectors=tuple(reflect_tool_selectors or ()),
     )

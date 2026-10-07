@@ -11,10 +11,11 @@ import sys
 import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from agent.llm import ChatResult
+from agent.llm import ChatResult, LLMCallAborted
 from agent.llm.llm_client import LLMClient
 from agent.mind import context_audit
 from agent.mind.message_schema import normalize_for_send
+from core.async_helper import suppress_task
 from core.event_bus import (
     EVENT_THINKING_LLM_END,
     EVENT_THINKING_LLM_START,
@@ -93,6 +94,8 @@ async def _invoke_llm_unified(
         on_delta: Optional[Any] = None,
         purpose: str = "reply",
         cache_tail_anchor: bool = True,
+        abort_event: Optional[asyncio.Event] = None,
+        on_tool_call_ready: Optional[Any] = None,
 ) -> ChatResult:
     """统一 LLM 调用（带重试、模型回退和事件追踪）。
 
@@ -201,7 +204,11 @@ async def _invoke_llm_unified(
                 result = await mind._llm_chat_stream_once(
                     messages, tools,
                     tool_choice=tool_choice, options=options, on_delta=on_delta,
+                    on_tool_call_ready=on_tool_call_ready, abort_event=abort_event,
                 )
+            except LLMCallAborted:
+                # 中断不是故障：不回退非流式（重试会让用户刹车失效并重复计费）
+                raise
             except Exception as stream_exc:
                 log(f"流式调用失败，回退非流式: {stream_exc}", "DEBUG", tag="思维")
                 # 已下发的增量文本在重试全量文本到达后会重复显示，先通知通道重置
@@ -211,11 +218,19 @@ async def _invoke_llm_unified(
                         await reset_fn()
                     except Exception:
                         pass  # 重置通知失败不影响回退
-                result = await mind._llm_chat_with_retry(
-                    messages, tools, tool_choice=tool_choice, options=options,
+                result = await _race_abort(
+                    mind._llm_chat_with_retry(
+                        messages, tools, tool_choice=tool_choice, options=options,
+                    ),
+                    abort_event,
                 )
         else:
-            result = await mind._llm_chat_with_retry(messages, tools, tool_choice=tool_choice, options=options)
+            result = await _race_abort(
+                mind._llm_chat_with_retry(
+                    messages, tools, tool_choice=tool_choice, options=options,
+                ),
+                abort_event,
+            )
     except Exception as exc:
         # 关闭链路中的 LLM 节点，避免一直停留在执行中
         await event_bus.emit(EVENT_THINKING_LLM_END, {
@@ -338,6 +353,34 @@ def _merge_llm_options(mind: "Mind", options: Optional[dict]) -> dict:
     return merged_options
 
 
+async def _close_agen(agen: Any) -> None:
+    """关闭异步生成器（流式中止时释放底层连接；不支持 aclose 则静默跳过）。"""
+    close_fn = getattr(agen, "aclose", None)
+    if close_fn is None:
+        return
+    try:
+        await close_fn()
+    except (asyncio.CancelledError, Exception):
+        pass
+
+
+async def _race_abort(aw: Any, abort_event: Optional[asyncio.Event]) -> Any:
+    """await 一个可等待对象并与中断事件竞争；事件先到则取消在途操作并抛 LLMCallAborted。"""
+    if abort_event is None:
+        return await aw
+    task = asyncio.ensure_future(aw)
+    abort_task = asyncio.ensure_future(abort_event.wait())
+    done, _ = await asyncio.wait(
+        {task, abort_task}, return_when=asyncio.FIRST_COMPLETED,
+    )
+    if abort_task in done and task not in done:
+        task.cancel()
+        await suppress_task(task)
+        raise LLMCallAborted("中断事件到达，LLM 调用已取消")
+    abort_task.cancel()
+    return task.result()
+
+
 async def _llm_chat_with_retry(
         mind: "Mind",
         messages: List[Dict],
@@ -395,11 +438,16 @@ async def _llm_chat_stream_once(
         tool_choice: Optional[str] = None,
         options: Optional[dict] = None,
         on_delta: Optional[Any] = None,
+        on_tool_call_ready: Optional[Any] = None,
+        abort_event: Optional[asyncio.Event] = None,
 ) -> ChatResult:
     """主客户端单次流式调用，增量经 on_delta 上报，聚合为 ChatResult 返回。
 
     多频道语义约束：流式只产生过程事件，回复出口仍是 send_message/end_reply。
-    失败由调用方回退到 _llm_chat_with_retry（完整降级链），本函数不重试。
+    失败由调用方回退到 _llm_chat_with_retry（完整降级链），本函数不重试；
+    abort_event 置位是唯一例外——中断不是故障，关闭流后抛 LLMCallAborted，
+    调用方不得走任何重试/回退。on_tool_call_ready 接收流中已完整的工具调用
+    （early_tool_calls），执行层据此在流继续生成时提前分发。
     """
     if not isinstance(mind.llm, LLMClient):
         raise RuntimeError("当前 LLM 客户端不支持流式调用")
@@ -426,39 +474,70 @@ async def _llm_chat_stream_once(
     # 以"周期性吐字节"方式吊流——每 chunk 都有活动、空闲超时永不触发
     loop = asyncio.get_running_loop()
     overall_deadline = loop.time() + mc.llm_timeout * 20
-    while True:
-        if loop.time() > overall_deadline:
-            raise asyncio.TimeoutError("LLM 流式总时长超限")
-        try:
-            # 每个 chunk 独立计时（停滞流保护）。3.11+ 用 asyncio.timeout
-            # （无 per-chunk Task 创建开销）；3.10 回退 wait_for
+    # 中断等待任务全程复用（Event.wait 幂等）：abort 到达即取消当前 chunk
+    # 任务并关闭生成器，复用避免每个 chunk 建一个等待任务
+    abort_task = (
+        asyncio.ensure_future(abort_event.wait()) if abort_event is not None else None
+    )
+
+    async def _next_delta() -> Any:
+        """取下一个 chunk：per-chunk 停滞计时，abort_event 存在时与之竞争。"""
+        if abort_task is None:
+            # 3.11+ 用 asyncio.timeout（无 per-chunk Task 创建开销）；3.10 回退 wait_for
             if _HAS_ASYNCIO_TIMEOUT:
                 async with asyncio.timeout(mc.llm_timeout):
-                    delta = await stream_iter.__anext__()
-            else:
-                delta = await asyncio.wait_for(stream_iter.__anext__(), timeout=mc.llm_timeout)
-        except StopAsyncIteration:
-            break
-        if ttft_ms is None:
-            ttft_ms = (time.monotonic() - started) * 1000
-        if delta.content:
-            content_parts.append(delta.content)
-            if on_delta is not None:
-                await on_delta(delta.content, False)
-        if delta.reasoning_content:
-            reasoning_parts.append(delta.reasoning_content)
-            if on_delta is not None:
-                await on_delta(delta.reasoning_content, True)
-        if delta.tool_calls:
-            tool_calls.extend(delta.tool_calls)
-        if delta.usage is not None:
-            usage = delta.usage
-        if delta.finish_reason:
-            finish_reason = delta.finish_reason
-        if delta.thinking_blocks:
-            thinking_blocks = delta.thinking_blocks
-        if delta.reasoning_details:
-            reasoning_details = delta.reasoning_details
+                    return await stream_iter.__anext__()
+            return await asyncio.wait_for(stream_iter.__anext__(), timeout=mc.llm_timeout)
+        chunk_task = asyncio.ensure_future(stream_iter.__anext__())
+        done, _ = await asyncio.wait(
+            {chunk_task, abort_task},
+            timeout=mc.llm_timeout,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if not done:
+            chunk_task.cancel()
+            raise asyncio.TimeoutError()
+        if abort_task in done and chunk_task not in done:
+            chunk_task.cancel()
+            await suppress_task(chunk_task)
+            await _close_agen(stream_iter)
+            raise LLMCallAborted("中断事件到达，流式调用已中止")
+        return chunk_task.result()
+
+    try:
+        while True:
+            if loop.time() > overall_deadline:
+                raise asyncio.TimeoutError("LLM 流式总时长超限")
+            try:
+                delta = await _next_delta()
+            except StopAsyncIteration:
+                break
+            if ttft_ms is None:
+                ttft_ms = (time.monotonic() - started) * 1000
+            if delta.early_tool_calls and on_tool_call_ready is not None:
+                for call in delta.early_tool_calls:
+                    on_tool_call_ready(call)
+            if delta.content:
+                content_parts.append(delta.content)
+                if on_delta is not None:
+                    await on_delta(delta.content, False)
+            if delta.reasoning_content:
+                reasoning_parts.append(delta.reasoning_content)
+                if on_delta is not None:
+                    await on_delta(delta.reasoning_content, True)
+            if delta.tool_calls:
+                tool_calls.extend(delta.tool_calls)
+            if delta.usage is not None:
+                usage = delta.usage
+            if delta.finish_reason:
+                finish_reason = delta.finish_reason
+            if delta.thinking_blocks:
+                thinking_blocks = delta.thinking_blocks
+            if delta.reasoning_details:
+                reasoning_details = delta.reasoning_details
+    finally:
+        if abort_task is not None:
+            abort_task.cancel()
     content = "".join(content_parts)
     if content:
         from core.tags import rm_unless_text

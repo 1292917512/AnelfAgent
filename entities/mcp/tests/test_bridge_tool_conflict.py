@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from typing import Generator
 
 import pytest
+from helpers.mcp_fakes import make_tool, make_tool_list
 
 from core.entity import EntityRegistry
 from entities.mcp.bridge import MCPBridge
@@ -62,7 +63,7 @@ def test_conflicting_tool_registered_with_prefix(bridge: MCPBridge) -> None:
     """MCP 工具与内置工具同名时，应加 server 前缀注册，内置工具保留。"""
     _register_internal_probe()
 
-    fake_tools = [SimpleNamespace(name=_PROBE, description="minimax 搜索", inputSchema={})]
+    fake_tools = [make_tool(_PROBE, description="minimax 搜索")]
     registered = bridge._register_tool_entries(_PROBE_SERVER_A, fake_tools)
 
     assert registered == [f"{_PROBE_SERVER_A}__{_PROBE}"]
@@ -84,7 +85,7 @@ def test_cleanup_does_not_remove_internal_tool(bridge: MCPBridge) -> None:
     """清理 MCP server 实体时，不得注销被占用名的内置工具。"""
     _register_internal_probe()
 
-    fake_tools = [SimpleNamespace(name=_PROBE, description="minimax 搜索", inputSchema={})]
+    fake_tools = [make_tool(_PROBE, description="minimax 搜索")]
     bridge._register_tool_entries(_PROBE_SERVER_A, fake_tools)
 
     bridge._cleanup_server_entities(_PROBE_SERVER_A)
@@ -99,7 +100,7 @@ def test_cleanup_does_not_remove_internal_tool(bridge: MCPBridge) -> None:
 
 def test_non_conflicting_tool_keeps_original_name(bridge: MCPBridge) -> None:
     """无冲突时 MCP 工具按原名注册，不记录原始名映射。"""
-    fake_tools = [SimpleNamespace(name=_PROBE_FETCH, description="抓取", inputSchema={})]
+    fake_tools = [make_tool(_PROBE_FETCH, description="抓取")]
     registered = bridge._register_tool_entries(_PROBE_SERVER_B, fake_tools)
 
     assert registered == [_PROBE_FETCH]
@@ -111,7 +112,7 @@ def test_call_tool_uses_original_name(bridge: MCPBridge) -> None:
     """重命名工具调用时应还原为 MCP 原始工具名。"""
     _register_internal_probe()
 
-    fake_tools = [SimpleNamespace(name=_PROBE, description="minimax 搜索", inputSchema={})]
+    fake_tools = [make_tool(_PROBE, description="minimax 搜索")]
     bridge._register_tool_entries(_PROBE_SERVER_A, fake_tools)
 
     called: list[tuple[str, str]] = []
@@ -135,7 +136,7 @@ def test_call_tool_uses_original_name(bridge: MCPBridge) -> None:
 def test_override_by_internal_yields_prefixed_mcp_tool(bridge: MCPBridge) -> None:
     """重名仲裁（启动顺序：MCP 先注册）：内置工具后注册覆盖原名时，
     MCP 工具经覆盖监听让位为 {server}__{name} 前缀名，两侧都可用。"""
-    fake_tools = [SimpleNamespace(name=_PROBE, description="mcp 搜索", inputSchema={})]
+    fake_tools = [make_tool(_PROBE, description="mcp 搜索")]
     assert bridge._register_tool_entries(_PROBE_SERVER_B, fake_tools) == [_PROBE]
 
     _register_internal_probe()  # 内置覆盖原名
@@ -154,7 +155,7 @@ def test_cleanup_preserves_name_overtaken_by_internal(bridge: MCPBridge) -> None
     """事故回归（2026-09 send_message 丢失）：MCP 先占原名 → 内置工具覆盖 →
     server 清理/重载不得注销覆盖者；MCP 重新注册时应让位为前缀名。"""
     # 1. MCP 先以原名注册（无冲突）
-    fake_tools = [SimpleNamespace(name=_PROBE, description="mcp 搜索", inputSchema={})]
+    fake_tools = [make_tool(_PROBE, description="mcp 搜索")]
     assert bridge._register_tool_entries(_PROBE_SERVER_B, fake_tools) == [_PROBE]
     assert EntityRegistry.get(_PROBE).source == "mcp"  # type: ignore[union-attr]
 
@@ -179,12 +180,9 @@ def test_register_server_tools_async_wrapper(bridge: MCPBridge) -> None:
     """异步入口 _register_server_tools：list_tools → 注册 → 记录工具清单。"""
     _register_internal_probe()
 
-    class _FakeToolsResult:
-        tools = [SimpleNamespace(name=_PROBE, description="minimax 搜索", inputSchema={})]
-
     class _FakeSession:
-        async def list_tools(self) -> _FakeToolsResult:
-            return _FakeToolsResult()
+        async def list_tools(self) -> object:
+            return make_tool_list([make_tool(_PROBE, description="minimax 搜索")])
 
     srv = SimpleNamespace(name=_PROBE_SERVER_A, transport="stdio", command="uvx", url="")
 

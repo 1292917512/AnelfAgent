@@ -23,6 +23,7 @@ def _engine_with_sqlite(
         engine_mod, "TaskRegistry",
         lambda: SimpleNamespace(
             get=lambda _n: None, task_file_exists=lambda _n: False, list_all=lambda: [],
+            file_stems=lambda: set(), is_dir_available=lambda: True,
         ),
     )
     from agent.heartbeat.config import HeartbeatConfig

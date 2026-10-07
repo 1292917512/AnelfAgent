@@ -502,3 +502,99 @@ async def test_context_carries_exec_params_from_spec():
         "tool_tags": ("skills",), "max_iterations": 9,
         "allow_output_tools": True, "model": "light",
     }
+
+
+# ==================================================================
+# 产出路由（route_output）
+# ==================================================================
+
+class _RecordingRegistry:
+    """后台任务注册表替身：登记 register/complete 调用参数。"""
+
+    def __init__(self) -> None:
+        self.completions: List[Dict[str, Any]] = []
+
+    def register(self, scope: str, kind: str, description: str) -> str:
+        return "tid-1"
+
+    def complete(self, task_id, success, summary, *, claimed=None):
+        self.completions.append({
+            "task_id": task_id, "success": success,
+            "summary": summary, "claimed": claimed,
+        })
+        return False
+
+
+def _make_executor_with_registry(registry: _RecordingRegistry) -> HookExecutor:
+    return HookExecutor(SimpleNamespace(background_tasks=registry), pool_size=1)
+
+
+async def test_route_output_default_goes_unclaimed_path():
+    """默认 route_output=True：产出经 unclaimed→wake_budget 通道唤醒主思维
+    （claimed=None 按等待者判定）。"""
+    registry = _RecordingRegistry()
+
+    async def _h(ctx: HookContext) -> Optional[str]:
+        return "钩子报告"
+
+    executor = _make_executor_with_registry(registry)
+    executor.dispatch(
+        "after_reply",
+        [LLMHookSpec(name="r", event="after_reply", handler=_h)],
+        {"scope": "user_q:1"},
+    )
+    await _drain(executor)
+    assert registry.completions == [{
+        "task_id": "tid-1", "success": True, "summary": "钩子报告", "claimed": None,
+    }]
+
+
+async def test_route_output_false_records_without_wake():
+    """route_output=False（内部治理类钩子）：完成记录保留（claimed=True），
+    跳过 unclaimed 唤醒——评审报告类产出不叫醒主思维回复周期。"""
+    registry = _RecordingRegistry()
+
+    async def _h(ctx: HookContext) -> Optional[str]:
+        return "评审报告"
+
+    executor = _make_executor_with_registry(registry)
+    executor.dispatch(
+        "after_reply",
+        [LLMHookSpec(name="r", event="after_reply", handler=_h, route_output=False)],
+        {"scope": "user_q:1"},
+    )
+    await _drain(executor)
+    assert registry.completions == [{
+        "task_id": "tid-1", "success": True, "summary": "评审报告", "claimed": True,
+    }]
+
+
+async def test_empty_output_never_registers():
+    """空产出不登记不路由（既有语义不变）。"""
+    registry = _RecordingRegistry()
+
+    async def _h(ctx: HookContext) -> Optional[str]:
+        return ""
+
+    executor = _make_executor_with_registry(registry)
+    executor.dispatch(
+        "after_reply",
+        [LLMHookSpec(name="r", event="after_reply", handler=_h, route_output=False)],
+        {"scope": "user_q:1"},
+    )
+    await _drain(executor)
+    assert registry.completions == []
+
+
+def test_llm_hook_decorator_route_output():
+    @llm_hook("no_route", event="after_reply", route_output=False)
+    async def _h(ctx: HookContext) -> Optional[str]:
+        return None
+
+    assert HookRegistry.get("no_route").route_output is False  # type: ignore[union-attr]
+
+    @llm_hook("default_route", event="after_reply")
+    async def _h2(ctx: HookContext) -> Optional[str]:
+        return None
+
+    assert HookRegistry.get("default_route").route_output is True  # type: ignore[union-attr]

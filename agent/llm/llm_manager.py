@@ -918,24 +918,37 @@ class LLMManager(BaseEntity):
         candidate: LLMClient,
         messages: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
-        """按候选供应商适配消息：非 Anthropic 候选剥离缓存断点副本。
+        """按候选供应商适配消息：非 Anthropic 候选剥离 Anthropic 专属字段副本。
 
-        断点由主模型（Anthropic 线）注入；回退到 OpenAI 兼容端点时
-        泄露的 cache_control 可能被严格校验拒绝。无断点或非回退场景
-        原样返回（零拷贝）。
+        缓存断点由主模型（Anthropic 线）注入、签名思考块（thinking_blocks）
+        随 assistant 消息保留，二者都是 Anthropic 协议字段；回退到 OpenAI 兼容
+        端点时泄露可能被严格校验拒绝。reasoning_details 是 OpenRouter 风格
+        字段，对非 Anthropic 候选保留。无 Anthropic 字段或非回退场景原样
+        返回（零拷贝）。
         """
         from agent.llm.prompt_cache import count_breakpoints, strip_cache_control_copy
 
         if candidate.config.api_type == API_TYPE_ANTHROPIC:
             return messages
-        if count_breakpoints(messages) == 0:
+        has_breakpoints = count_breakpoints(messages) > 0
+        has_thinking = any("thinking_blocks" in m for m in messages)
+        if not has_breakpoints and not has_thinking:
             return messages
         info(
             f"回退候选 {candidate.config.name} 非 Anthropic 线，"
-            "已剥离缓存断点（Anthropic 专属字段）",
+            "已剥离 Anthropic 专属字段（缓存断点/签名思考块）",
             tag="模型",
         )
-        return strip_cache_control_copy(messages)
+        stripped: List[Dict[str, Any]] = (
+            strip_cache_control_copy(messages) if has_breakpoints else messages
+        )
+        if has_thinking:
+            stripped = [
+                {k: v for k, v in msg.items() if k != "thinking_blocks"}
+                if "thinking_blocks" in msg else msg
+                for msg in stripped
+            ]
+        return stripped
 
     async def _chat_candidate(
         self,

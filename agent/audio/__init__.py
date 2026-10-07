@@ -54,8 +54,11 @@ register_configs_safe({
             "default": True,
         },
         "audio_match_threshold": {
-            "description": "声纹匹配阈值（相似度 ≥ 阈值判为已知人）",
-            "default": 0.75,
+            "description": "声纹匹配阈值（相似度 ≥ 阈值判为已知人）。实测标定"
+                           "（12 档案 75 样本）：真人样本对自身锚 mean 0.81 / "
+                           "p25 0.77，不同人锚对 ≤0.55——0.65 落在分离带中段；"
+                           "过高会碎片化（同人反复新建档案），误认由分离度门兜底",
+            "default": 0.65,
             "advanced": True,
             "value_type": "range",
             "min": 0,
@@ -75,8 +78,9 @@ register_configs_safe({
         },
         "audio_merge_threshold": {
             "description": "合并阈值：离线整理时质心相似度 ≥ 此值的临时说话人"
-                           "建议合并（比匹配阈值宽松）",
-            "default": 0.70,
+                           "建议合并（比匹配阈值宽松——同人分裂档案的跨信道锚"
+                           "相似度可低至 0.65 档，须低于匹配阈值才能被收拢）",
+            "default": 0.60,
             "advanced": True,
             "value_type": "range",
             "min": 0,

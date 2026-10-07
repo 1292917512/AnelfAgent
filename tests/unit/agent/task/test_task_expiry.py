@@ -338,3 +338,127 @@ class TestMemoryTypeParsing:
         """不在任务产出允许集合内的类型显式报错（注册表逐文件容错暴露 WARNING）。"""
         with pytest.raises(ValueError, match="memory_type"):
             TaskDefinition.from_dict({"name": "t", "memory_type": bad})
+
+
+# ==================================================================
+# 过期任务自动删除（_delete_expired_tasks + 禁用存量调度摘除）
+# ==================================================================
+
+def _make_expiry_engine(tasks_dir, config, monkeypatch):
+    from agent.heartbeat.config import HeartbeatConfig
+    from agent.heartbeat.engine import HeartbeatEngine
+    from agent.task.registry import TaskRegistry
+
+    monkeypatch.setattr(
+        "agent.heartbeat.engine.TaskRegistry", lambda: TaskRegistry(tasks_dir))
+    monkeypatch.setattr("agent.heartbeat.engine.get_heartbeat_config", lambda: config)
+    monkeypatch.setattr(HeartbeatConfig, "save", lambda self, path=None: None)
+    return HeartbeatEngine(SimpleNamespace())
+
+
+def _write_task(tasks_dir, name: str, *, enabled: bool, expires_at: str) -> None:
+    (tasks_dir / f"{name}.json").write_text(json.dumps({
+        "name": name, "prompt": "p", "enabled": enabled, "expires_at": expires_at,
+    }), "utf-8")
+
+
+class TestEngineDeleteExpired:
+    """一次性/限期任务生命周期出口：宽限期届满整体删除（文件+调度+历史+交接）。"""
+
+    async def test_beyond_grace_deleted_full_cleanup(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import agent.task.history as task_history
+        from agent.heartbeat.config import HeartbeatConfig, ScheduleMode, TaskSchedule
+        from agent.task import handoff as task_handoff
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        _write_task(tasks_dir, "old", enabled=False, expires_at=_past(7))
+        _write_task(tasks_dir, "fresh", enabled=True, expires_at=_future(7))
+        config = HeartbeatConfig(task_schedules=[
+            TaskSchedule(task_name="old", mode=ScheduleMode.SCHEDULED, schedule_times=["10:00"]),
+            TaskSchedule(task_name="fresh", mode=ScheduleMode.SCHEDULED, schedule_times=["11:00"]),
+        ])
+        task_history.record_execution(
+            "old", started_at=1.0, duration_ms=10, status="success", trigger="scheduled")
+        task_handoff.save_handoff("old", "旧交接")
+        engine = _make_expiry_engine(tasks_dir, config, monkeypatch)
+
+        await engine._delete_expired_tasks()
+
+        assert not (tasks_dir / "old.json").exists()
+        assert engine.task_registry.get("old") is None
+        assert config.get_schedule("old") is None
+        assert task_history.get_history("old") == []
+        assert task_handoff.load_handoff("old") == ""
+        # 未到期任务不受影响
+        assert engine.task_registry.get("fresh") is not None
+        assert config.get_schedule("fresh") is not None
+
+    async def test_within_grace_kept(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from agent.heartbeat.config import HeartbeatConfig
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        _write_task(tasks_dir, "recent", enabled=False, expires_at=_past(1))
+        engine = _make_expiry_engine(tasks_dir, HeartbeatConfig(), monkeypatch)
+
+        await engine._delete_expired_tasks()
+
+        assert (tasks_dir / "recent.json").exists()
+        assert engine.task_registry.get("recent") is not None
+
+    async def test_grace_zero_deletes_at_expiry(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from agent.heartbeat.config import HeartbeatConfig
+        from core.config import ConfigManager
+
+        ConfigManager.set("task_expired_delete_grace_seconds", 0)
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        _write_task(tasks_dir, "recent", enabled=False, expires_at=_past(1))
+        engine = _make_expiry_engine(tasks_dir, HeartbeatConfig(), monkeypatch)
+
+        await engine._delete_expired_tasks()
+
+        assert engine.task_registry.get("recent") is None
+
+    async def test_delete_disabled_by_config(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from agent.heartbeat.config import HeartbeatConfig
+        from core.config import ConfigManager
+
+        ConfigManager.set("task_expired_delete_enabled", False)
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        _write_task(tasks_dir, "old", enabled=False, expires_at=_past(30))
+        engine = _make_expiry_engine(tasks_dir, HeartbeatConfig(), monkeypatch)
+
+        await engine._delete_expired_tasks()
+
+        assert engine.task_registry.get("old") is not None
+
+    async def test_manually_disabled_expired_schedule_stripped(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """手动禁用先于过期的存量任务：停用扫描同样摘除其调度（僵尸卡片根因）。"""
+        from agent.heartbeat.config import HeartbeatConfig, ScheduleMode, TaskSchedule
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        _write_task(tasks_dir, "zombie", enabled=False, expires_at=_past(1))
+        config = HeartbeatConfig(task_schedules=[
+            TaskSchedule(task_name="zombie", mode=ScheduleMode.SCHEDULED, schedule_times=["10:00"]),
+        ])
+        engine = _make_expiry_engine(tasks_dir, config, monkeypatch)
+
+        await engine._disable_expired_tasks()
+
+        assert config.get_schedule("zombie") is None
+        # 宽限期内文件保留（改期恢复窗口），删除归 _delete_expired_tasks
+        assert engine.task_registry.get("zombie") is not None

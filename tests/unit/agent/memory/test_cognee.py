@@ -111,12 +111,9 @@ async def test_list_datasets_degrades_when_database_not_created(monkeypatch, tmp
     assert await client.list_datasets() == []
 
 
-def test_wal_recovery_patch_defaults_to_tolerant(monkeypatch) -> None:
+def test_wal_recovery_patch_defaults_to_tolerant() -> None:
     """WAL 容错补丁：默认注入 throw_on_wal_replay_failure=False 且幂等。"""
-    import sys
-    from types import ModuleType
-
-    from agent.memory.cognee.client import _patch_ladybug_wal_recovery
+    from agent.memory.cognee.ladybug_guard import _patch_wal_recovery
 
     class _FakeDatabase:
         def __init__(self, database_path=None, **kwargs) -> None:
@@ -125,20 +122,11 @@ def test_wal_recovery_patch_defaults_to_tolerant(monkeypatch) -> None:
                 "throw_on_wal_replay_failure", True,
             )
 
-    fake_adapter = ModuleType("cognee.infrastructure.databases.graph.ladybug.adapter")
-    fake_adapter.Database = _FakeDatabase  # type: ignore[attr-defined]
-    fake_package = ModuleType("cognee.infrastructure.databases.graph.ladybug")
-    fake_package.adapter = fake_adapter  # type: ignore[attr-defined]
-    monkeypatch.setitem(
-        sys.modules, "cognee.infrastructure.databases.graph.ladybug", fake_package,
-    )
-    monkeypatch.setitem(
-        sys.modules, "cognee.infrastructure.databases.graph.ladybug.adapter",
-        fake_adapter,
-    )
+    class _FakeAdapterModule:
+        Database = _FakeDatabase
 
-    _patch_ladybug_wal_recovery()
-    patched = fake_adapter.Database  # type: ignore[attr-defined]
+    _patch_wal_recovery(_FakeAdapterModule)
+    patched = _FakeAdapterModule.Database
 
     assert patched is not _FakeDatabase
     assert getattr(patched, "_anel_wal_tolerant", False)
@@ -148,8 +136,8 @@ def test_wal_recovery_patch_defaults_to_tolerant(monkeypatch) -> None:
     assert explicit.throw_on_wal_replay_failure is True
 
     # 幂等：重复调用不再二次包装
-    _patch_ladybug_wal_recovery()
-    assert fake_adapter.Database is patched  # type: ignore[attr-defined]
+    _patch_wal_recovery(_FakeAdapterModule)
+    assert _FakeAdapterModule.Database is patched
 
 
 def test_client_exposes_documented_public_boundary() -> None:

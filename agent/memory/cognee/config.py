@@ -128,6 +128,11 @@ class CogneeConfig:
     write_breaker_threshold_mb: float = 500.0
     write_breaker_window_seconds: float = 300.0
     write_breaker_cooldown_seconds: float = 1800.0
+    # 失控看门狗：门闸被持有超阈值（native 查询失控的唯一可靠信号）即请求
+    # 守护重启——ladybug 的 timeout/interrupt 中止路径对卡死扫描不可靠
+    # （会升级为 SIGSEGV），进程级重启是唯一安全语义
+    native_watchdog_enabled: bool = True
+    native_watchdog_restart_seconds: float = 600.0
     native_weight: float = 1.0
     # cognee 与原生同权：融合去重时来源优先级已保证原生结果胜出（memory >
     # file > cognee_chunk > cognee_graph），权重不再额外压制——图谱投影
@@ -144,8 +149,11 @@ class CogneeConfig:
     # 扩展；SUMMARIES：实体摘要卡。均为 LLM 参与通道，只经显式深检发生。
     deep_search_types: list[str] = field(
         default_factory=lambda: [
-            "CHUNKS", "CHUNKS_LEXICAL", "GRAPH_COMPLETION",
-            "GRAPH_COMPLETION_CONTEXT_EXTENSION", "SUMMARIES",
+            "CHUNKS",
+            "CHUNKS_LEXICAL",
+            "GRAPH_COMPLETION",
+            "GRAPH_COMPLETION_CONTEXT_EXTENSION",
+            "SUMMARIES",
         ],
     )
     chat: CogneeChatModelConfig = field(default_factory=CogneeChatModelConfig)
@@ -170,6 +178,7 @@ class CogneeConfig:
         self.write_breaker_threshold_mb = max(1.0, float(self.write_breaker_threshold_mb))
         self.write_breaker_window_seconds = max(10.0, float(self.write_breaker_window_seconds))
         self.write_breaker_cooldown_seconds = max(60.0, float(self.write_breaker_cooldown_seconds))
+        self.native_watchdog_restart_seconds = max(120.0, float(self.native_watchdog_restart_seconds))
         self.native_weight = max(0.0, float(self.native_weight))
         self.cognee_weight = max(0.0, float(self.cognee_weight))
         self.rrf_k = max(1, int(self.rrf_k))
@@ -286,15 +295,17 @@ def _cognee_location_writer(path: Optional[str]) -> None:
 def _register_volume() -> None:
     from core.storage_volume import VolumeDescriptor, VolumeKind, register_volume
 
-    register_volume(VolumeDescriptor(
-        volume_id="cognee",
-        name="Cognee 关系库",
-        description="Cognee 知识图谱投影（lbug 图/lance 向量/元数据；大小为整个 cognee 数据目录）",
-        kind=VolumeKind.COGNEE_TREE,
-        default_path=_default_cognee_data_root,
-        location_reader=_cognee_location_reader,
-        location_writer=_cognee_location_writer,
-    ))
+    register_volume(
+        VolumeDescriptor(
+            volume_id="cognee",
+            name="Cognee 关系库",
+            description="Cognee 知识图谱投影（lbug 图/lance 向量/元数据；大小为整个 cognee 数据目录）",
+            kind=VolumeKind.COGNEE_TREE,
+            default_path=_default_cognee_data_root,
+            location_reader=_cognee_location_reader,
+            location_writer=_cognee_location_writer,
+        )
+    )
 
 
 _register_volume()

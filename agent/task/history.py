@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import threading
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Set
 
 from core.config import get_config_int, register_configs_safe
 from core.file_utils import atomic_write_text
@@ -187,6 +187,29 @@ def clear_history(task_name: str) -> bool:
     except Exception as exc:
         log(f"任务执行历史清理失败 [{task_name}]: {exc}", "WARNING", tag="任务")
         return False
+
+
+def prune_orphans(valid_names: Set[str]) -> List[str]:
+    """对账清除无对应任务文件的历史条目，返回被清除的任务名（无残留返回空）。
+
+    正式删除路径（delete_task 工具 / Web API）已即时 clear_history；本函数
+    兜住绕过正式路径的删除（手工/脚本直删定义文件），由心跳引擎构造与
+    reload 时对账调用。valid_names 须来自注册表正常枚举——空集语义是
+    "全部清理"，调用方负责在目录不可枚举时跳过（防误清）。
+    """
+    try:
+        with _LOCK:
+            data = _load_all()
+            stale = [name for name in data if name not in valid_names]
+            if not stale:
+                return []
+            for name in stale:
+                del data[name]
+            _save_all(data)
+        return stale
+    except Exception as exc:
+        log(f"任务执行历史对账清理失败: {exc}", "WARNING", tag="任务")
+        return []
 
 
 def format_duration_ms(duration_ms: int) -> str:

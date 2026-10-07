@@ -156,3 +156,64 @@ class TestCrashContext:
             crash_report, "CRASH_STATE_PATH", tmp_path / "absent.json",
         )
         assert collect_crash_context() == ""
+
+
+class TestReplyToolJournal:
+    """主回复工具日志：回合存取/渲染截断、崩溃恢复注入操作清单。"""
+
+    async def test_journal_roundtrip_and_render(self, conv_data) -> None:
+        from agent.mind.tools.reply_journal import ReplyToolJournal
+
+        sqlite = conv_data.router.sqlite
+        journal = ReplyToolJournal(sqlite, "user_qq:123")
+        await journal.record("read_file", '{"path": "a.txt"}', "文件内容", status="ok")
+        await journal.record("send_message", '{"text": "hi"}', '{"error": "x"}', status="error")
+        rows = await sqlite.load_reply_tool_journal("user_qq:123")
+        assert [r["tool_name"] for r in rows] == ["read_file", "send_message"]
+        assert rows[0]["status"] == "ok" and rows[1]["status"] == "error"
+
+        text = await journal.render()
+        assert "read_file" in text
+        assert "send_message" in text and "error" in text
+
+        await journal.clear()
+        assert await sqlite.load_reply_tool_journal("user_qq:123") == []
+        assert await journal.render() == ""
+
+    async def test_recover_injects_journal_ops(self, conv_data) -> None:
+        """崩溃残留的账本行随中断元消息注入，模型看到"上次执行到哪"。"""
+        sqlite = conv_data.router.sqlite
+        await sqlite.append_reply_tool_row(
+            "user_qq:123", "send_message", '{"text": "hi"}', '{"ok": true}', "ok",
+        )
+        await sqlite.append_reply_tool_row(
+            "user_qq:123", "run_command", '{"cmd": "ls"}', '{"error": "timeout"}', "error",
+        )
+        await sqlite.record_reply_checkpoint("user_qq:123", adapter_key="qq")
+        recovered = await recover_interrupted_replies(_mind(conv_data))
+        assert recovered == 1
+        msgs = await sqlite.fetch_conversation(scope_type="user", scope_id="qq:123", limit=10)
+        ops_msgs = [m for m in msgs if "中断前本轮已执行的操作" in m["content"]]
+        assert len(ops_msgs) == 1
+        assert "send_message" in ops_msgs[0]["content"]
+        assert "run_command" in ops_msgs[0]["content"] and "error" in ops_msgs[0]["content"]
+        # 注入后账本随检查点一并清除
+        assert await sqlite.load_reply_tool_journal("user_qq:123") == []
+        assert await sqlite.load_reply_checkpoints() == []
+
+    async def test_render_caps_at_max_rows(self, conv_data) -> None:
+        from agent.mind.tools.reply_journal import ReplyToolJournal
+
+        sqlite = conv_data.router.sqlite
+        journal = ReplyToolJournal(sqlite, "user_qq:1")
+        for i in range(15):
+            await journal.record("read_file", f'{{"i": {i}}}', "ok", status="ok")
+        text = await journal.render()
+        assert "另有 3 个操作未列出" in text
+        assert text.count("read_file") == 12
+
+    async def test_build_journal_none_without_storage(self) -> None:
+        from agent.mind.tools.reply_journal import build_reply_journal
+
+        assert build_reply_journal(SimpleNamespace(), "s") is None
+        assert build_reply_journal(SimpleNamespace(conversation_data=None), "") is None

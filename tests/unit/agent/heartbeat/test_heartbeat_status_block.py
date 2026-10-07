@@ -42,6 +42,12 @@ class _FakeRegistry:
     def task_file_exists(self, name: str) -> bool:
         return name in self._tasks
 
+    def file_stems(self) -> set[str]:
+        return set(self._tasks)
+
+    def is_dir_available(self) -> bool:
+        return True
+
     def list_all(self):
         return list(self._tasks.values())
 

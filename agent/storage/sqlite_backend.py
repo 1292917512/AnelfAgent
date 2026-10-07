@@ -204,6 +204,26 @@ class SqliteBackend:
                     );
                     """
                 )
+                # 主回复工具日志（崩溃尾部账本）：REPLY 模式逐调用追加，
+                # 收束清除；崩溃残留的行随检查点恢复一并渲染注入——
+                # 模型据此知道上次执行到哪，不再对已发生的副作用盲试
+                await db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS reply_tool_journal (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      scope_key TEXT NOT NULL,
+                      tool_name TEXT NOT NULL,
+                      arguments TEXT NOT NULL DEFAULT '',
+                      result_head TEXT NOT NULL DEFAULT '',
+                      status TEXT NOT NULL DEFAULT 'ok',
+                      recorded_ns INTEGER NOT NULL
+                    );
+                    """
+                )
+                await db.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_reply_tool_journal_scope "
+                    "ON reply_tool_journal(scope_key, id)"
+                )
                 # 会话级用量统计（增量累加账本）：per-scope 累计 LLM 调用与 token
                 # 用量，complete_reply / 每 N 次调用经 upsert_scope_usage 累加写入
                 await db.execute(
@@ -908,6 +928,48 @@ class SqliteBackend:
         ]
 
     # ------------------------------------------------------------------
+    # 主回复工具日志（崩溃尾部账本，见 agent/mind/tools/reply_journal）
+    # ------------------------------------------------------------------
+
+    async def append_reply_tool_row(
+            self, scope_key: str, tool_name: str,
+            arguments: str, result_head: str, status: str,
+    ) -> None:
+        """追加一行已执行工具记录（按 id 单调有序，恢复时按序渲染）。"""
+        if not scope_key:
+            return
+        async with self._write_tx() as db:
+            await db.execute(
+                "INSERT INTO reply_tool_journal"
+                "(scope_key, tool_name, arguments, result_head, status, recorded_ns) "
+                "VALUES(?,?,?,?,?,?)",
+                (scope_key, tool_name, arguments, result_head, status, time.time_ns()),
+            )
+            await db.commit()
+
+    async def load_reply_tool_journal(self, scope_key: str) -> list[dict]:
+        """加载某 scope 的工具日志行（id 升序 = 执行序）。"""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT tool_name, arguments, result_head, status "
+            "FROM reply_tool_journal WHERE scope_key=? ORDER BY id ASC",
+            (scope_key,),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {"tool_name": r[0], "arguments": r[1], "result_head": r[2], "status": r[3]}
+            for r in rows
+        ]
+
+    async def clear_reply_tool_journal(self, scope_key: str) -> None:
+        """回复正常/协作中断结束时清除该 scope 的日志行。"""
+        if not scope_key:
+            return
+        async with self._write_tx() as db:
+            await db.execute("DELETE FROM reply_tool_journal WHERE scope_key=?", (scope_key,))
+            await db.commit()
+
+    # ------------------------------------------------------------------
     # 会话级用量统计（增量累加账本）
     # ------------------------------------------------------------------
 
@@ -1567,6 +1629,16 @@ class SqliteBackend:
                 """
             )
             report["checkpoints"] = cursor.rowcount or 0
+            cursor = await db.execute(
+                """
+                DELETE FROM reply_tool_journal WHERE NOT EXISTS (
+                  SELECT 1 FROM conversation_messages m
+                  WHERE m.scope_type || '_' || m.scope_id = reply_tool_journal.scope_key
+                    AND m.role='user'
+                )
+                """
+            )
+            report["reply_tool_journal"] = cursor.rowcount or 0
             cursor = await db.execute(
                 """
                 DELETE FROM conversation_messages WHERE ts_ns < ? AND NOT EXISTS (

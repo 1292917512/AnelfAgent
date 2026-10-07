@@ -573,6 +573,7 @@ class AuthorizationSession:
         self._server_meta: Optional[Dict[str, Any]] = None
         self._pkce_verifier = ""
         self._state = ""
+        self._scopes = ""
         self.authorize_url = ""
 
     @property
@@ -612,6 +613,7 @@ class AuthorizationSession:
         self._callback.expect_state(self._state)
 
         scopes = _union_scopes(_configured_scopes(self._oauth_cfg), extra_scopes)
+        self._scopes = scopes
         params: Dict[str, str] = {
             "response_type": "code",
             "client_id": self._client["client_id"],
@@ -691,6 +693,10 @@ class AuthorizationSession:
         except Exception:
             clear_pending_auth(self._server)
             raise
+        if not tokens.scope and self._scopes:
+            # AS 省略 scope 视同授予请求值（RFC 6749 §6）：回填——缺失会让
+            # 后续 step-up 的并集计算丢掉本次已授范围
+            tokens = tokens.model_copy(update={"scope": self._scopes})
         _save_tokens(
             self._server, tokens,
             client_info=self._client, server_meta=self._server_meta,
@@ -846,7 +852,7 @@ class McpOAuthProvider(httpx2.Auth):
             return (await self._run_authorization()).access_token
 
     async def _refresh(self, entry: Dict[str, Any], tokens):
-        """刷新 access token；确定性失败返回 None（凭据已清理）。"""
+        """刷新 access token（AS 未回的 refresh_token/scope 沿用旧值）；确定性失败返回 None（凭据已清理）。"""
         meta = entry.get("server_meta") or {}
         client = entry.get("client_info") if isinstance(entry.get("client_info"), dict) else None
         data: Dict[str, str] = {"grant_type": "refresh_token"}
@@ -867,9 +873,15 @@ class McpOAuthProvider(httpx2.Auth):
 
         if response.status_code == 200:
             fresh = OAuthToken.model_validate(response.json())
+            # AS 未回的字段沿用旧值：refresh_token（部分 AS 不轮转）与 scope
+            #（RFC 6749 §6 省略即维持原授权——丢了 step-up 并集会缩权）
+            carry: Dict[str, str] = {}
             if not fresh.refresh_token and tokens.refresh_token:
-                # 部分 AS 不轮转 refresh token：沿用旧值
-                fresh = fresh.model_copy(update={"refresh_token": tokens.refresh_token})
+                carry["refresh_token"] = tokens.refresh_token
+            if not fresh.scope and tokens.scope:
+                carry["scope"] = tokens.scope
+            if carry:
+                fresh = fresh.model_copy(update=carry)
             _save_tokens(self._server, fresh)
             log(f"OAuth token 已刷新: {self._server}", tag=_TAG)
             return fresh

@@ -63,6 +63,10 @@ class LLMHookSpec:
     """reflect 工具选择器（空 = 复用回复级装配）。"""
     allow_output_tools: bool = False
     """是否放开外发工具（默认禁止，内部派生语义）。"""
+    route_output: bool = True
+    """产出路由：True=登记后台任务完成并经 unclaimed→wake_budget 通道唤醒
+    主思维跟进处理；False=仅留完成记录（claimed 语义）供观测、不唤醒——
+    内部治理类钩子（产出是自省报告、无需主思维跟进）用 False。"""
     max_iterations: int = 6
     """reflect 轮次预算。"""
     model: str = ""
@@ -196,6 +200,7 @@ def llm_hook(
     when: Optional[HookWhen] = None,
     tool_tags: Optional[List[str]] = None,
     allow_output_tools: bool = False,
+    route_output: bool = True,
     max_iterations: int = 6,
     model: str = "",
     max_concurrent: int = 1,
@@ -227,6 +232,7 @@ def llm_hook(
         spec = LLMHookSpec(
             name=name, event=event, handler=fn, context=mode, when=when,
             tool_tags=tuple(tool_tags or ()), allow_output_tools=allow_output_tools,
+            route_output=route_output,
             max_iterations=max_iterations, model=model,
             max_concurrent=max(1, max_concurrent),
             cooldown_seconds=max(0.0, cooldown_seconds),

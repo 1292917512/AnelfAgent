@@ -122,6 +122,7 @@
     "debounce": "Debounce",
     "toolTags": "Tools",
     "outputAllowed": "Output allowed",
+    "outputNotRouted": "Output not routed",
     "owner": "Owner",
     "hint": "Hooks are registered by code (@llm_hook), tasks (trigger_event) and entities; toggle and governance via the hooks_llm group in Config.",
     "source": {

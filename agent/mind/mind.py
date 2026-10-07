@@ -840,6 +840,8 @@ class Mind:
             on_delta: Optional[Any] = None,
             purpose: str = "reply",
             cache_tail_anchor: bool = True,
+            abort_event: Optional[asyncio.Event] = None,
+            on_tool_call_ready: Optional[Any] = None,
     ) -> ChatResult:
         """统一 LLM 调用（带重试、模型回退和事件追踪，委托 llm_invoker 模块）。
 
@@ -847,11 +849,15 @@ class Mind:
         避免无共享前缀的辅助调用污染主对话命中率口径。
         cache_tail_anchor=False 用于一次性调用（压缩摘要等）：省略链尾
         增量断点，避免写入永不命中的缓存条目。
+        abort_event 置位时在途调用被取消并抛 LLMCallAborted（用户中断，
+        不进重试/回退）；on_tool_call_ready 接收流中已完整的工具调用供
+        执行层提前分发。
         """
         return await _llm_invoker._invoke_llm_unified(
             self, messages, tools, anything,
             tool_choice=tool_choice, options=options, stream=stream, on_delta=on_delta,
             purpose=purpose, cache_tail_anchor=cache_tail_anchor,
+            abort_event=abort_event, on_tool_call_ready=on_tool_call_ready,
         )
 
     def _merge_llm_options(self, options: Optional[dict]) -> dict:
@@ -879,10 +885,14 @@ class Mind:
             tool_choice: Optional[str] = None,
             options: Optional[dict] = None,
             on_delta: Optional[Any] = None,
+            on_tool_call_ready: Optional[Any] = None,
+            abort_event: Optional[asyncio.Event] = None,
     ) -> ChatResult:
         """主客户端单次流式调用（委托 llm_invoker 模块）。"""
         return await _llm_invoker._llm_chat_stream_once(
-            self, messages, tools, tool_choice=tool_choice, options=options, on_delta=on_delta,
+            self, messages, tools, tool_choice=tool_choice, options=options,
+            on_delta=on_delta, on_tool_call_ready=on_tool_call_ready,
+            abort_event=abort_event,
         )
 
     async def llm_chat(self, request_messages: List[Dict], options: Optional[dict] = None) -> ChatResult:

@@ -337,7 +337,7 @@ class TestRetrievalService:
 
 
 class TestBigModelMcpResultShapes:
-    """智谱 MCP 结果形态适配回归：mcp 2.x 字段为 snake_case（1.x camelCase）。
+    """智谱 MCP 结果形态回归：以真实 CallToolResult（wire 别名解析）驱动。
 
     回归自依赖升级 mcp 2.x 后 ``result.isError`` 属性访问 AttributeError——
     检索/读取/仓库文档三能力全灭；structured_content 同步漏适配静默失效。
@@ -366,18 +366,9 @@ class TestBigModelMcpResultShapes:
         assert _payload_from_result(result) == {"answer": "嵌套"}
         assert _result_text(result) == json.dumps('{"answer": "嵌套"}')
 
-    def test_payload_supports_legacy_camel_case(self) -> None:
-        from agent.retrieval.providers.bigmodel import _payload_from_result
-
-        class LegacyResult:
-            structuredContent = {"legacy": True}
-            content: list = []
-
-        assert _payload_from_result(LegacyResult()) == {"legacy": True}
-
-    def test_calltoolresult_error_field_name(self) -> None:
-        """安装版 mcp 的错误标记字段必须可被 is_error/isError 任一形态取到。"""
+    def test_calltoolresult_wire_alias_surface(self) -> None:
+        """安装版 mcp 的 wire 别名（camelCase）经 model_validate 映射为 snake_case 字段。"""
         from mcp.types import CallToolResult
 
-        result = CallToolResult(content=[], is_error=True)
-        assert getattr(result, "is_error", None) or getattr(result, "isError", False)
+        result = CallToolResult.model_validate({"content": [], "isError": True})
+        assert result.is_error is True

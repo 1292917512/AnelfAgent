@@ -215,7 +215,8 @@ class _WaitMind(FakeMind):
         self._queue: List = []
 
     async def _invoke_llm_unified(self, messages, tools, anything=None, *, tool_choice=None, options=None,
-        stream=False, on_delta=None, purpose="reply"):
+        stream=False, on_delta=None, purpose="reply", cache_tail_anchor=True,
+        abort_event=None, on_tool_call_ready=None):
         self.llm_calls += 1
         if self.llm_calls == 1:
             return text_result(self._wait_text)
@@ -354,11 +355,11 @@ class TestReflectGuards:
         original = mind._invoke_llm_unified
 
         async def spy(messages, tools, anything=None, *, tool_choice=None, options=None,
-                      stream=False, on_delta=None, purpose="reply"):
+                      stream=False, on_delta=None, purpose="reply", **kwargs):
             seen.append(messages[-1]["content"])
             return await original(
                 messages, tools, anything, tool_choice=tool_choice, options=options,
-                stream=stream, on_delta=on_delta, purpose=purpose,
+                stream=stream, on_delta=on_delta, purpose=purpose, **kwargs,
             )
 
         mind._invoke_llm_unified = spy

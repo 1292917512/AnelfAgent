@@ -13,7 +13,7 @@
   降级为临时说话人待确认，而不是冒险认亲（防投毒优先于防分裂）。
 
 阈值语义：
-- 全局阈值 audio_match_threshold（默认 0.75）；说话人 threshold 非空时覆盖
+- 全局阈值 audio_match_threshold（默认 0.65）；说话人 threshold 非空时覆盖
 - 相似度 ≥ 阈值，且分离度门启用时 z 分值 ≥ audio_match_separation
   → 已知人；否则新人（自动建临时说话人 spk_tmp_XXXX，待确认）
 """
@@ -40,8 +40,8 @@ _COHORT_TOP_K = 100
 
 
 def global_threshold() -> float:
-    """全局匹配阈值（audio_match_threshold，默认 0.75）。"""
-    return get_config_float("audio_match_threshold", 0.75)
+    """全局匹配阈值（audio_match_threshold，默认 0.65）。"""
+    return get_config_float("audio_match_threshold", 0.65)
 
 
 def separation_floor() -> float:
@@ -410,7 +410,7 @@ async def compare(
             "samples": [cent_a[channel][1], cent_b[channel][1]],
         }
 
-    merge_floor = get_config_float("audio_merge_threshold", 0.70)
+    merge_floor = get_config_float("audio_merge_threshold", 0.60)
     scores = [s for s in (anchor_sim, best_sample,
                           *(c["similarity"] for c in channels.values()))
               if s is not None]

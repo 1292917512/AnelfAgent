@@ -373,7 +373,7 @@ async def update_task(
 
 @deferred_tool(
     group="planning", tags=["planning", "heartbeat"], source="mind.task",
-    description="删除一个任务定义（同时移除其心跳调度绑定）。仅确认任务彻底废弃时使用。",
+    description="删除一个任务定义（同时移除其心跳调度绑定、执行历史与交接文件）。仅确认任务彻底废弃时使用。",
 )
 async def delete_task(name: str) -> str:
     """删除任务定义。

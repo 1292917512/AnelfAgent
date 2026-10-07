@@ -118,6 +118,11 @@ def wire_runtime(
     cognee_client_port.set(cognee_client)
     cognee_coordinator_port.set(cognee_coordinator)
 
+    # ladybug 失控看门狗的重启通道（agent 侧声明端口，entities.devops 实现施绑）
+    from agent.memory.cognee.ladybug_guard import native_restart_port
+    from entities.devops.service import request_restart
+    native_restart_port.set(request_restart)
+
     # 图片索引 worker（entities 层端口，agent 组合根施绑）
     image_index_worker_port.set(image_index_worker)
 

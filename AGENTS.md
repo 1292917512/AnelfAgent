@@ -261,6 +261,14 @@ tick() 单次心跳：
   4. 持久化计数器到 config/heartbeat.json
 ```
 
+**任务过期生命周期**（tick 维护段两级处理）：`_disable_expired_tasks` 过期即停
+（enabled=false 写回 + 摘除调度；手动禁用先于过期的存量同样摘除——过期调度
+必然失效，留着即成任务页僵尸卡片；定义文件保留供改期恢复）→
+`_delete_expired_tasks` 宽限期届满整体删除（定义文件+调度+执行历史+交接，
+一次性/限期任务的生命周期出口；宽限期 `task_expired_delete_grace_seconds`
+默认 3 天、0=过期即删，`task_expired_delete_enabled` 主开关，均在
+heartbeat/maintenance 组）。
+
 四种触发模式：heartbeat（每 N 次心跳）/ scheduled（每天指定时间）/
 idle（连续 N 次心跳无思考活动后，全局仅一条）/ manual（仅手动）。
 
@@ -286,6 +294,10 @@ resolveEveryOccurrence）：每个调度时刻取最近一个已到期 occurrenc
 自动恢复；`HeartbeatConfig.set_schedule` 重绑时继承同名条目 beat_count（定义
 调整不抹进度），tick 收尾按任务名现取条目复位计数（不写执行前缓存的引用），
 无调度任务的失败/放弃台账随 `_prune_stale_runtime_state` 对账清理。
+任务文件消失（含绕过 delete_task 工具/Web API 的直删）的孤儿调度、执行历史
+（task_history.json）与交接文件（*.handoff.json）随引擎构造与 reload 对账清理
+（`_prune_orphan_schedules` / `_prune_orphan_task_artifacts`；目录不可枚举的
+异常态跳过对账防误清，文件仍在但加载失败按存活保留）。
 
 **idle 空闲调度**：计数维度是"距上次思考的连续空闲心跳数"——`mind.last_activity_ts`
 锚点（`reply()`/`reflect()` 入口刷新，覆盖对话/任务/子代理/反思，**含 idle 任务自身**；
@@ -404,7 +416,7 @@ llm_clients.json/ModelType——该体系全部模型被假设可走 litellm 对
 | 待回复队列毒丸防护 | `agent/messages/everything.py::is_conversation_scope`（单点判据）+ `scheduler.enqueue_scope_reply`/`add_reminder`（校验）+ `decision_executor.pop_next_reply_target`（就地清除）+ `work_memory.consume_scope_task`（双队列消费） | 回归自 2026-09-12 事故：日历提醒在无会话上下文（心跳任务内建日程）落 scope=`_global`，到期经 enqueue_scope_reply 直入 pending_user，回复路径解析不了只能跳过，自主循环 0 退避无限空转（fast-path 刷屏、日志 8GB）。三层防线：①源头——`add_reminder` 拒绝持久化不可路由 scope 的提醒（ValueError；`_sdk.add_persistent_reminder` 桥接如实记日志返回空串，事件降级为不提醒）；②入口——`enqueue_scope_reply` 拒绝非会话 scope 入队（退化为全局短期记忆桶，对齐 PushHub 兜底）；③兜底——回复消费点对解析失败或缺频道前缀的队列条目就地清除 + WARNING，任何坏条目最多空转一轮即收敛。`consume_scope_task` 双队列都查（不按前缀路由），对落错队列的条目同样健壮 |
 | 单实例守卫与重启保底 | `core/instance_guard.py` + `entities/devops/service.py` 重启看门狗 + `restart.sh` | 实例守卫：启动写 `logs/anelf.pid`（项目目录天然按检出副本隔离实例身份），PID 文件指向的活进程经 cmdline 校验（本项目 launch.py）判定为残留实例时 SIGTERM→10s 宽限→SIGKILL 清场接管端口，cmdline 不匹配只警告不误杀（防 PID 复用）；僵尸进程经 psutil status 判定视为已死。重启看门狗：restart_app 排定关停后 90s 进程仍存活（优雅关停卡死）→ 无条件 `os._exit(42)` 保底，守护脚本必然接管；等空闲路径在关停请求发出后才布防（防等空闲误触发）。restart.sh 优先 PID 文件精准终止，pkill 兜底模式收紧到 `$ROOT/.*launch`（旧版 `python.*launch` 会误杀其他项目）。修复 2026-09 实证：8/29 残留进程占面板端口 10 天，restart_app 协作式重启对其无管辖权 |
 | 崩溃守护与通报 | `start.sh`/`start.bat` 守护循环 + `core/crash_report.py` + `crash_recovery` | 致命信号退出（SIGSEGV 等，退出码 128+n；SIGKILL/SIGTERM 不重启）自动退避重启（5×次数秒，上限 60s），崩溃状态落盘 `logs/crash_state.json`，连续 5 次崩溃停止拉起防崩溃循环（稳定运行 ≥600s 后崩溃重置计数）；重启后 crash_recovery 消费崩溃状态并关联 macOS DiagnosticReports（.ips）生成崩溃上下文——有回复检查点则随中断元消息注入对应会话，无检查点则经 PushHub 写全局通知并唤醒一轮思维（重启报到技能接管向主人报平安）；状态标记 reported 只通报一次。AI 详情查询走 devops `get_crash_report` 工具 / 面板 `/crash-info` |
-| ladybug native 串行门 | `agent/memory/cognee/client.py` `_apply_native_gate` | 进程级线程锁串行所有 ladybug native 执行：锁包在提交到线程池的查询任务上（execute + 结果消费全程），由执行线程持有——wait_for 超时取消协程不会提前放锁，孤儿 native 查询跑完才放行下一条；`_drop_native_resources` 同锁保护，拆除句柄前等在途执行结束。修复 2026-08 SIGSEGV（NodeTableScanState::scanNext 空指针，孤儿查询与后续查询/拆除并发使用同一 connection） |
+| ladybug native 监督 | `agent/memory/cognee/ladybug_guard.py`（cognee 图后端适配层：门闸/循环安全/看门狗/WAL 容错四位一体，`install()` 由 CogneeClient 首次导入后幂等调用；重启通道 `native_restart_port` 经 wiring 施绑 `entities.devops.request_restart`） | ①**并发门闸**：进程级线程锁串行所有 native 执行（execute+结果消费全程），执行线程持锁——wait_for 取消协程不提前放锁，孤儿查询跑完才放行下一条；`_drop_native_resources` 同锁互斥。②**循环安全拆除**：`close`/`delete_graph` 包装为先 `to_thread` 预拆除再调原方法（原同步拆除成 no-op），门闸等待永不落在事件循环线程；同步拆除本体在事件循环线程上有界获取（预算=restart 阈值），超时抛错而非冻结全局。③**失控看门狗**：纯线程实现（循环冻死也能工作），持有门闸超 `native_watchdog_restart_seconds`（默认 600，下限 120）经端口请求守护重启（未施绑/被拒降级 CRITICAL 告警，看门狗绝不直接退进程）；每轮持有只升级一次。**刻意不做 native 中止**：ladybug 的 `set_query_timeout`/`interrupt` 对卡死扫描不可靠（中止动作自身升级为 SIGSEGV），隔离+重启是唯一安全语义。④**WAL 容错**：`throw_on_wal_replay_failure=False` 打开图库，损坏回放到最后提交点。配置在 cognee.json。治理起点：2026-08 SIGSEGV（孤儿查询并发同一 connection）、2026-10-07 全进程冻结 6.5h（失控查询持锁+循环上同步拆除）与同晚三连 SIGSEGV（native 超时中止卡死扫描时自崩） |
 | 技能治理决策协议 | `agent/skills/`（catalog 可见层 + skill_index 事实层 + skill_matcher 放大层 + tools 决策协议） | **召回双层**：①目录（catalog.py）——全部可用技能（active+stale，stale 行带「闲置」后缀）的 名称+单行描述 进 stable 工具块，按 (created_at, name) 排序保持 append-only 字节稳定，预算 `skills_catalog_max_chars`/`skills_catalog_desc_chars`（默认 16000/160，配置组 skills/catalog）逐级降级（半描述下限 48 → 纯名称+省略计数）——技能寻址不依赖匹配命中，描述长度是模型路由依据（对齐 codex/pi/dsh「目录即召回」范式）；②匹配器（放大层）——匹配面 = 全量技能含归档（归档命中 ×`skills_match_archived_factor` 降权、注入标注【已归档】并附 restore 指引，`skills_match_include_archived` 可关；归档是库容卫生而非删除，方法保留召回价值），混合评分 = 关键词（trigger_patterns ×2 加成与技能名 kebab 分词 token 命中率取 max，名称 token 零维护自给、单 token 命中天然低于阈值防泛化）×`skills_match_keyword_weight` + 语义余弦互补权重，阈值 `skills_match_min_score`，多查询车道（对话尾部基查询 + 记忆召回规划产出的互补查询——经 `recall_split(plan_out=)` 复用同一 LLM 检索规划，规划查询命中 Embedder 查询缓存零成本）按技能取 max 合并，近重复折叠（≥`skills_match_redundancy`）并入合并信号；阈值/权重/系数/top_k 全在 `skills/match` 配置组。**恢复通道**：`restore_skill` 工具 + `SkillStore.restore()`（置 ACTIVE 并刷新活动时钟，防重力立即打回）；写入诊断的语义相近比对含归档技能（facts 带 state，引导 restore+update 而非重复新建）。事实归系统、决策归 AI：create/update 在事实层检测到显著信号（语义相近≥`skills_similar_threshold` / 触发词碰撞≥`skills_trigger_collision_limit` / 容量水位 / 无实质变化）时**不拒绝**，返回 needs_decision 诊断报告，AI 带 decision 回执重呼写入（rationale 落盘问责）或改走 merge/放弃；评审上下文由 SkillIndex 供给（语义相近 top10 + 库健康摘要）；use/match 信号分离（检索注入不刷活动时间，get_skill 计数不刷活动，策展重力因此可触发）；merge_skills 可逆合并（源 ARCHIVED 带 merged_into）；重力含试用期快筛（零参与 14 天降级）与 stale 软保留（仍被检索到不归档）。向量生命周期：覆盖口径 = 匹配面（全量技能含归档，归档向量不失养）；缓存键 = 模型名 + 文本 hash（模型切换即全库失效重嵌，防跨模型余弦混算）；交互路径预算化补算（`skills_embed_budget`，advisory 收紧 8），心跳 `warm()` 批量预热；死键清理时机 = 嵌入完成后（warm/embed_now）+ 删除时（service 直调），列表重建不清理（防误杀待嵌入键）；Web 经 `services._runtime` 拿 Mind 侧索引展示 embedded 状态与覆盖统计，CRUD 后 embed_now 即时重嵌；Mind 构造时重绑定工具依赖避免双向量缓存。向量构建状态机（Web 可观测/可操作/可配置）：`build_state()` 暴露 idle/warming/rebuilding + 进度 + 上次重建记录；`skills_warm_batch_size`（心跳每拍批量）/ `skills_rebuild_batch_size`（全量重建批量）可调；Web 经 `POST /skills/vectors/rebuild` 手动触发重建（幂等，进行中返回当前进度）；每个技能行内 `POST /skills/{name}/embed` 单技能生成/重新生成（不等全库重建）。向量持久化：`skill_vectors.sqlite3`（主库同目录独立文件，短连接 schema 自治，pack_embedding float32 BLOB）——嵌入即 upsert，首次访问懒加载恢复（模型+文本 hash 双因子校验，失配行清除并标记重建），**重启零重嵌**；模型切换内存与 DB 同步清空 |
 | 思考等级配置驱动下发 | `agent/llm/reasoning.py`（契约引擎）+ `llm_client._apply_thinking_payload` + 模型配置 `thinking` 字段 | **全代码库对模型名零特判**：每个模型在 `llm_clients.json` 里声明思考契约（`{"param": 目标字段, "map": 档位映射, "on": 开启值, "off": 关闭值}`），LLMClient 只做"读契约填值"，不认识任何模型名/供应商。档位能力不写代码——模型该用哪档由配置 `reasoning_effort` 决定，发了端点不认的档由端点自己报错（参考 cursor-byok）。下发载体按 api_type 区分（litellm 行为差异）：openai 兼容通道 extra_body 由 SDK 展开进请求体顶层；anthropic 兼容通道直发 body 不展开 extra_body、未收录模型顶层字段又被能力表卡住，故填顶层字段 + allowed_openai_params 白名单放行。无契约模型走通用 reasoning_effort 透传。effort 为空时开关型契约（无 map）用 on 值默认开启。litellm 暗坑：未收录模型顶层 reasoning_effort 可能被 drop_params 静默丢弃，必须走 extra_body/白名单透传。**Responses 路径（chat_protocol=responses/auto）不使用 thinking 契约**——effort 统一映射为 Responses 的 `reasoning.effort` 下发（`_build_responses_kwargs`），契约仅作用于 chat_completions 通道 |
 | 对话协议路由（chat_protocol） | `agent/llm/protocol.py`（能力矩阵）+ `agent/llm/responses/router.py`（native/bridge 路由）+ `llm_client._should_fallback_from_responses`（auto 回退） | 三值语义：`responses` = **绝对走官方 /responses 接口**（openai/azure 一律 native 直连，不支持是配置错误、404 原样上抛；anthropic 等无官方端点的 api_type 经 litellm bridge 桥接）；`auto` = openai/azure 优先 native Responses，端点未实现（404，经 classifier NOT_FOUND 判定）时记客户端级标记 `_responses_native_blocked` 并回退 chat_completions（本进程内后续直连，流式路径已产出增量则禁止回退）；`chat_completions` = 传统通道。base_url 以 `/responses`、`/chat/completions` 结尾时 URL 推断优先于配置（`resolved_chat_protocol`）。bridge 的唯一正当用途 = 非 openai 系 api_type 的 Responses 暴露（含本项目自身 /v1/responses 服务面） |
@@ -425,7 +437,7 @@ llm_clients.json/ModelType——该体系全部模型被假设可走 litellm 对
 | 连接存活探测 | `bridge._wait_with_liveness`（lifecycle 等待段） | stdio 子进程退出/网络静默断开时 SDK 不通知等待方，纯 `stop_event.wait()` 会让死连接永远显示"已连接"（状态虚报）。按 `mcp_liveness_ping_seconds`（entity/mcp 组，默认 60，0=关闭）周期 `send_ping`（10s 超时），失败抛 ConnectionError 进既有断线分支——enabled 走自动重连、disabled/已删除退出清理，connected 状态一个周期内收敛为真实死活；`_try_reconnect` 带 enabled 守卫，禁用 server 调用失败只报错不复活拉起 |
 | Web 启停切换语义 | `services.mcp.toggle_server`（`PUT /mcp/{name}/toggle`） | 以配置文件 enabled 为准而非连接状态：已启用（无论是否连上）→ 禁用并断开（重启不再自动连接）；已禁用 → 启用 + 热重载连接，连不上保持启用落盘并如实回报 last_error（重启自动重试）。此前按连接状态判断，已启用但目标不可用的 server 在前端只能反复尝试连接、永远无法禁用 |
 | 装配重建触发器贯通 | `think_loop` 工具集版本元组 | 版本元组新增 `EntityRegistry.version()`（注意是 classmethod 调用而非属性）——热同步/reload/重载/WebUI 开关等注册表增删后，**回复进行中**的下一轮即重建 active_tools（此前仅 (assembly, activation) 双版本，粘性激活的常驻服务要等下一个版本事件）；每个新回复本就重新装配。重建经追加式冻结保持前缀字节稳定 |
-| mcp 2.x 适配 | `bridge._is_tool_list_changed` + `transport._create_transport` + `oauth.McpOAuthProvider` + `retrieval/providers/bigmodel._call_mcp` | mcp 1.28→2.2 全量适配：① 通知形态——`types.ServerNotification` 变 union 别名、通知为裸叶子实例，检测改双形态（叶子 isinstance 优先，1.x `message.root` duck 兜底）；② streamable_http——`streamablehttp_client` 改名 `streamable_http_client`，headers/timeout/auth 全部经 `httpx2.AsyncClient` 传入且外部 client 生命周期自持（组合 CM），timeout 映射对齐 SDK 语义（连接/写/池 = timeout，读 = sse_read_timeout），yield 由三元组变二元组（get_session_id 收进 SDK）；③ OAuth——`McpOAuthProvider` 基类 httpx.Auth→httpx2.Auth（httpx2 `_build_auth` 做 isinstance 校验，原版对象必拒），授权服务器 REST 调用仍走独立 httpx 客户端；④ sse/stdio 签名未变；`ClientSession.message_handler` 参数存续（热同步机制无恙） |
+| mcp 2.x 适配 | `bridge._is_tool_list_changed` + `transport._create_transport` + `oauth.McpOAuthProvider` + `retrieval/providers/bigmodel._call_mcp` | mcp>=2.2 为唯一支持版本（pyproject 下限钉住）：SDK 字段一律 snake_case 直读——`input_schema`/`is_error`/`structured_content`/`read_only_hint`/`mime_type`（camelCase 仅是 wire 别名，构造经 `model_validate` 解析后不存在同名属性，getattr 兜底静默失效曾致全工具参数丢失，禁止回退双形态）；通知为裸叶子实例 isinstance 判定（`ServerNotification` union 别名不可实例化）；streamable_http——headers/timeout/auth 全部经 `httpx2.AsyncClient` 传入且外部 client 生命周期自持（组合 CM），timeout 映射对齐 SDK 语义（连接/写/池 = timeout，读 = sse_read_timeout），yield 为二元组（get_session_id 收进 SDK）；OAuth——`McpOAuthProvider` 基类 httpx2.Auth（httpx2 `_build_auth` 做 isinstance 校验，原版对象必拒），授权服务器 REST 调用仍走独立 httpx 客户端；`ClientSession.message_handler` 直注（热同步拦截）；测试构造一律真实 `mcp.types` 模型（`tests/helpers/mcp_fakes.py`），禁用 SimpleNamespace 字段 mock |
 
 #### 审计 / 扫描 / 限流退避 / 用量归属 / TTFT（第五轮新增）
 
@@ -505,8 +517,8 @@ llm_clients.json/ModelType——该体系全部模型被假设可走 litellm 对
 | 钩子注册表与装饰器 | `agent/hooks_llm/spec.py`（`LLMHookSpec` / `HookContextMode` / `HookContext` / `HookRegistry`（event 多值索引，priority 排序）/ `@llm_hook`） | 声明式注册：event（白名单 after_reply/context_pressure/delegation_resolved/llm_end）+ 上下文档位（none/lean/transcript）+ `when` 条件门控（不满足零开销跳过）+ 治理参数（max_concurrent/cooldown/debounce/priority/model/tool_tags）+ owner/source 归属。**llm_end 是高频事件**（每次 LLM 调用后触发，一次多轮回复十余次）：装饰器与 _sdk 桥都强制最小冷却 `LLM_END_MIN_COOLDOWN_SECONDS`（20s，声明更小值也钳到下限），防"每轮 LLM 后都拉起 LLM 工作"的成本失控。同名覆盖幂等，按 owner 批量注销（模块/实体卸载清理） |
 | llm_end 快照源 | `agent/mind/llm_invoker.py`（EVENT_THINKING_LLM_END payload 增 `messages`）+ `core/tracer.py::_on_llm_end`（节点 data 剔除 messages） | llm_invoker 发射 LLM_END 时附带**本次调用实际发送的消息链**（已规整）——钩子消费「LLM 刚用完的那份上下文」，无需现场抓取；scope 由 executor 从思维 ContextVar（`ToolActivationManager.current_scope`）推（payload 不带）。tracer 节点 data 剔除 messages：逐轮一份完整上下文驻留内存并经 SSE 广播到思维面板是不可接受的副作用，诊断字段（model/usage/duration/tool_calls…）全保留 |
 | 上下文快照与护栏 | `agent/hooks_llm/snapshot.py`（`freeze_messages` / `cap_snapshot_chars` / `prepare_hook_messages`） | 快照 = 浅拷贝列表 + 逐条 dict 浅拷贝（冻结引用，主对话后续 mutate 不污染）；发送边界经 `normalize_for_send` 剥 `_layer/_source`（与主对话同口径）。transcript 受 `hooks_llm_transcript_enabled` 门控（关闭降级无快照）与 `hooks_llm_transcript_max_chars` 字符护栏（超限保头 70% 尾 30% 截断） |
-| 并行执行与治理 | `agent/hooks_llm/executor.py`（`HookExecutor.dispatch`（后台调度立即返回 + `_RecursionGuard` 防递归）+ `_spawn`（冷却锚点同步记录 + task 登记 `_running`）+ per-hook/per-scope cooldown/debounce + 全局池 semaphore）+ `runtime.py`（事件装配 + `hooks_llm_runtime_port`）+ `configs.py`（`hooks_llm/*` 组） | 治理件全复用：**异步扩员**——dispatch 同步调度、钩子在独立 task 执行，emit 方（complete_reply/llm_invoker）不被钩子 LLM 阻塞；防递归（钩子执行树 ContextVar 标 origin，跨 create_task 仍拦截其派生事件，防自我激励）；并发（全局池默认 2 + per-hook 默认 1）；频控（**cooldown 锚点在调度受理时同步记录**——连续同步触发不漏判，per-hook 信号量天然串行覆盖池排队；**debounce 用 call_later 句柄 + 最新快照槽**——未触发句柄取消是确定性的，合并为一次取最后快照是结构保证）；观测（`bind_log_actor`/`bind_usage_scope`）；路由（`BackgroundTaskRegistry` 完成走既有 unclaimed→wake_budget 通道）。runtime 经 LateBinding 由 bootstrap 实例化、wiring 施绑后 `start()` 订阅事件（低 priority + owner=hooks_llm），并注册为 Lifecycle 组件——**关停 drain**（`runtime.drain`：先 stop 停订阅切断新触发，再等运行中的钩子自然收尾、超时才取消，对齐全局"进水口先停、思考后收"drain 语义，进行中的评审不被硬取消写一半） |
-| 技能后台评审迁移 | `agent/skills/background_review.py`（`SkillReviewer` 经钩子面注册 `skill_review` 钩子） | 评审留在技能系统内部，钩子面是执行载体：event=after_reply + context=transcript + when=无错且有快照 + tool_tags=["skills"] + 6 轮上限。评审材料从「执行摘要」升级为「完整 transcript + 四问框架」——工具结果细节不再被摘要蒸馏丢弃，任务方法/排障经验类技能的沉淀判断材料更完整；防抖（per-hook 并发=1）与库健康/相近候选供给不变 |
+| 并行执行与治理 | `agent/hooks_llm/executor.py`（`HookExecutor.dispatch`（后台调度立即返回 + `_RecursionGuard` 防递归）+ `_spawn`（冷却锚点同步记录 + task 登记 `_running`）+ per-hook/per-scope cooldown/debounce + 全局池 semaphore）+ `runtime.py`（事件装配 + `hooks_llm_runtime_port`）+ `configs.py`（`hooks_llm/*` 组） | 治理件全复用：**异步扩员**——dispatch 同步调度、钩子在独立 task 执行，emit 方（complete_reply/llm_invoker）不被钩子 LLM 阻塞；防递归（钩子执行树 ContextVar 标 origin，跨 create_task 仍拦截其派生事件，防自我激励）；并发（全局池默认 2 + per-hook 默认 1）；频控（**cooldown 锚点在调度受理时同步记录**——连续同步触发不漏判，per-hook 信号量天然串行覆盖池排队；**debounce 用 call_later 句柄 + 最新快照槽**——未触发句柄取消是确定性的，合并为一次取最后快照是结构保证）；观测（`bind_log_actor`/`bind_usage_scope`）；路由（`BackgroundTaskRegistry` 完成登记：spec `route_output` 默认 True 走既有 unclaimed→wake_budget 通道唤醒主思维跟进；False 的内部治理类钩子以 claimed 完成——记录保留供观测、不唤醒回复周期）。runtime 经 LateBinding 由 bootstrap 实例化、wiring 施绑后 `start()` 订阅事件（低 priority + owner=hooks_llm），并注册为 Lifecycle 组件——**关停 drain**（`runtime.drain`：先 stop 停订阅切断新触发，再等运行中的钩子自然收尾、超时才取消，对齐全局"进水口先停、思考后收"drain 语义，进行中的评审不被硬取消写一半） |
+| 技能后台评审迁移 | `agent/skills/background_review.py`（`SkillReviewer` 经钩子面注册 `skill_review` 钩子） | 评审留在技能系统内部，钩子面是执行载体：event=after_reply + context=transcript + when=无错且有快照 + tool_tags=["skills"] + route_output=False（评审报告是内部自省产出，只留完成记录、不唤醒主回复周期）+ 6 轮上限。评审材料从「执行摘要」升级为「完整 transcript + 四问框架」——工具结果细节不再被摘要蒸馏丢弃，任务方法/排障经验类技能的沉淀判断材料更完整；防抖（per-hook 并发=1）与库健康/相近候选供给不变 |
 | 任务事件触发 | `agent/task/model.py`（`trigger_event` 字段 + 序列化）+ `agent/task/event_trigger.py`（`sync_task_event_hooks` reconcile 装配，owner=task.events）+ `agent/heartbeat/engine.py::_sync_event_triggers`（构造/reload 调用）+ `agent/task/tools.py`（create/update/list 暴露） | 任务的第五种触发方式（与 heartbeat/scheduled/idle/manual 正交）：时间调度管"何时跑"，事件触发管"发生了什么之后跑"。带 trigger_event 的任务经钩子面注册 `task_event:<name>` 钩子（context=none 不继承触发会话上下文），命中后调 `HeartbeatEngine.run_task`——复用 `_task_inflight` 同任务去重与执行历史落盘；不进 heartbeat.json 调度。reconcile 语义：任务 CRUD 经 reload 即时重建、无孤儿钩子。AI 经 create_task/update_task 配置 |
 | 实体桥接 | `entities/_sdk.py::register_entity_llm_hook`（`**spec_overrides` 直转 LLMHookSpec，治理字段新增无需改桥签名；延迟 import，try/except 返回 bool） | 实体经 _sdk 桥注册钩子（owner 缺省取实体模块名），达到事件条件即并行拉起、不卡主思考；entities→agent 唯一豁免通道同 push_notify 模板 |
 | Web 观测与配置 | `services/hooks_llm.py` + `web/routers/hooks_llm.py`（`GET /api/hooks-llm` 只读总览）+ 前端 `pages/settings/LlmHooksPanel.tsx`（设置页「LLM 钩子」Tab）+ `pages/config/TaskForm.tsx`（trigger_event 编辑） | 面板列出全部已注册钩子（事件/档位/来源/治理参数/归属）与治理配置；钩子的开关与治理参数经统一配置面 `hooks_llm/*` 组（`/api/config/meta`、AI `get/update_entity_config`）热调，Web 不另设写路径。任务 UI 可编辑 trigger_event |
@@ -541,7 +553,7 @@ llm_clients.json/ModelType——该体系全部模型被假设可走 litellm 对
 | 批量对齐与缓存容量 | `embedding/worker._batch_size` + `engine.max_batch_size` + `embed_query_cache_size`（默认 256） | worker 批次取 min(配置, 客户端 embedding_max_batch)，避免 llm_client 内部拆批（32 → 20+12 两次请求）；查询向量缓存容量可配（TTL 另由 `embed_query_cache_ttl_seconds` 控制） |
 | embedding 用量账本 | `agent/memory/embedding/usage.py` + `GET /status/usage` 的 `embedding` 段 | 引擎级埋点（查询/批量/多模态全覆盖）：日级 calls/texts/chars，内存累加 + 防抖落盘 `<data_dir>/embedding_usage.json`（保留 90 天，worker close 落盘）。cognee 自带引擎不在此口径（token 数以供应商控制台为准） |
 | cognee 向量索引清理 | `scripts/dedupe_cognee_vector_index.py` | 一次性治理脚本（幂等，应用运行中可执行，冲突自动重试）：EdgeType_relationship_name/Entity_name/EntityType_name 按 text 精确去重 + 存量 goal 投影注入 delete 退场；tombstone 由 cognee 自动压缩回收 |
-| cognee 1.5.3 → 1.6.0 | `pyproject.toml` | litellm/onnxruntime 上界经 override 绕过（均 cognee 矩阵保守钉，见上「cognee 版本注记」）；ladybug 0.19.0 不变（native 串行门与 WAL 容错补丁锚点 `_submit_to_executor_locked`/`_drop_native_resources`/`Database` 均存续）；集成面（recall/add/cognify/datasets/prune/SearchType/DataItem）逐项实测；新依赖 enola-cli/fastembed；同轮全量浮动 mcp 1.28.1→2.2.0、lancedb 0.34→0.39、starlette 1.7 等（见 MCP 表「mcp 2.x 适配」）；1.6.0 行为变化——数据集名解析失败由静默变报错（fusion 批次逐条跳过可吸收）、升级首启跑元数据迁移 |
+| cognee 1.5.3 → 1.6.0 | `pyproject.toml` | litellm/onnxruntime 上界经 override 绕过（均 cognee 矩阵保守钉，见上「cognee 版本注记」）；ladybug 0.19.0 不变（native 监督补丁锚点 `_submit_to_executor_locked`/`_drop_native_resources`/`close`/`delete_graph`/`Database` 均存续）；集成面（recall/add/cognify/datasets/prune/SearchType/DataItem）逐项实测；新依赖 enola-cli/fastembed；同轮全量浮动 mcp 1.28.1→2.2.0、lancedb 0.34→0.39、starlette 1.7 等（见 MCP 表「mcp 2.x 适配」）；1.6.0 行为变化——数据集名解析失败由静默变报错（fusion 批次逐条跳过可吸收）、升级首启跑元数据迁移 |
 
 #### 实体操作态势注入（第九轮新增）
 
@@ -680,6 +692,17 @@ llm_clients.json/ModelType——该体系全部模型被假设可走 litellm 对
 
 > Model Experience：① AI 无新增工具 schema（呈现/分类/降权全在管线内）；② token 影响：discipline/freshness 两块按需注入（无指令/无重复话题零字节）；③ 缓存影响：discipline 在稳定前缀区（低频变化），freshness 在尾部动态区；④ 反馈回路让"她记错了"第一次有了纠正通道——用户否认即负向证据，14 天 sub_zero 归档倒计时通电
 
+#### pi 第四轮微硬化：回退候选思考块剥离 / OAuth scope 沿用回填（第四十七轮新增）
+
+对照 pi 底层栈全展开核验（对照档 `projects/pi-vs-anelf-comparison.md` §3.6——pi-ai/pi-agent/durable/chord/protocol 全精读，24 候选仅 2 真差距）的两处微硬化（提交 `f7a7706`）：
+
+| 机制 | 位置 | 说明 |
+|------|------|------|
+| 回退候选剥离 thinking_blocks | `llm_manager._messages_for_candidate` | Anthropic 线产生的协议专属字段随消息保留（缓存断点+签名思考块），回退到 OpenAI 兼容端点时泄露可能被严格校验拒绝；适配点从「只剥缓存断点」扩为「Anthropic 专属字段全剥」，零拷贝快径覆盖双字段（无字段原样返回、非破坏副本、无字段消息共享）。**reasoning_details 是 OpenRouter 风格字段不在剥离列**（DeepSeek 工具轮回放必需） |
+| OAuth scope 沿用与回填 | `oauth.py` `_refresh` + `wait_and_exchange` + `AuthorizationSession._scopes` | RFC 6749 §6：AS 可在 refresh/换码响应省略 scope（视同维持原授权），此前 `_save_tokens` 全量覆盖把已授 scope 抹成 None——再次 step-up 的并集计算（config ∪ 已授 ∪ challenged）丢掉上一轮争取的范围。refresh 响应缺 scope 沿用旧值（与不轮转 refresh_token 沿用合并为单次 model_copy）；换码响应缺 scope 回填授权请求值（prepare 存 `self._scopes`） |
+
+> Model Experience：无新工具/新注入面，回退链消息适配仍是单点（`_messages_for_candidate`）。测试：候选适配 5 例（anthropic 直通/洁净零拷贝/剥思考块非破坏/断点+思考块双剥/reasoning_details 保留）+ OAuth 3 例（refresh 沿用/响应显式 scope 优先/换码回填）；全量 5284 过、mypy core 三平台、lint-imports 6 kept。核验关闭项（不再重复评估）：截断工具调用投毒（Anelf 两级续写更强）、edit_file 四级模糊匹配（平局偏优）、tiktoken+usage 锚（领先 pi chars/3.5）、MCP 刷新单飞（等效）、中断规范化与崩溃账本（codex 四轮已覆盖）；否决：durationMs 持久化（与思考链内存驻留设计冲突）、per-model 分账（记入统一路由验收标准）、CIMD（需公网 URL）；挂起：MCP 按根覆盖→多项目根需求、headless 粘贴式登录→anelf serve 条目
+
 #### 工作区展示页重构：树的活性 / 思考链入思维链 / 表现层对齐 ZCode（第四十五轮新增）
 
 对照 ZCode（`packages/ui`）与 Codex（`codex-rs`）的工作区表现层重构（对照档 `projects/anelf-workspace-presentation-analysis.md`）。设计原则：能力已齐的只补表现，数据链断的顺既有机制接通，不做兼容层不打补丁。
@@ -780,6 +803,19 @@ CI（run #122）lint 与 tests(all) 双腿挂点复查与修复（提交 `263ae7
 
 > Model Experience：① 新增 workflow 工具组 4 工具（恒可见，always 标签）；② 工作流后台执行完成自动通知（注册表路由），长编排不再占住一轮工具调用；③ MCP OAuth 对 AI 透明——待授权链接仍经 mcp_auth_status/pending_auth 呈现，新增 mcp_auth_start 主动触发；④ 断点续跑语义：续跑/修订只重付费分歧步骤，事件流 cached 标记可审计
 
+#### 声纹阈值实测标定与口头纠正纪律（第三十八轮新增）
+
+真实库实测（12 档案 / 75 样本 / 192 维 cam++）：真人样本对自身锚 mean 0.81 / p25 0.77 / p5 0.59，不同人锚对 ≤0.55；分数最高的"伪对"全部是同人分裂档案（跨信道锚 0.65-0.69 档），承龙 QQ 与承龙-WebUI 同人锚 <0.55。结论：主要矛盾是碎片化不是误认——原匹配阈值 0.75 高于约四分之一真样本，碎片档案到处 spawning。
+
+| 机制 | 位置 | 说明 |
+|------|------|------|
+| 匹配阈值 0.75→0.65 | `agent/audio/__init__.py` + `matcher.py` 回退默认 + 描述注实测依据 | 0.65 落在分离带中段（真人 p25 0.77 / 不同人 ≤0.55）；误认由分离度门（AS-Norm z≥2.0）第二判据兜底 |
+| 合并阈值 0.70→0.60 | 同上 | 原 0.70 在匹配降到 0.65 后反而比匹配严——同人分裂对（0.647/0.688）连合并建议都进不了，违背"比匹配阈值宽松"的设计意图；0.60 既能收拢碎片仍高于真冒认带 |
+| 运行态热更 | 配置中心 API（config/meta/{key}） | 运行中进程 ConfigManager.set 即时生效（直接改文件会被内存快照回写覆盖，配置一律走 API/界面） |
+| 口头纠正纪律 | `config/memory_rules.md`（用户侧配置，不进 git） | 写入侧冲突本就由 dedup 语义裁决的 evolution 路径自动合并（verdict=updated/merged），无需另建提示机制（避免冗余）；补的只是教学行：用户说"记错了"时 recall 定位 → update_memory 原地修正 / forget 归档，禁止新旧矛盾并存 |
+
+> Model Experience：① 阈值语义对 AI 透明（speaker_compare 判读按全局阈值相对化，无 schema 变化）；② 后续治理：碎片档案经相似度图+合并收拢（阈值放宽后 consolidate 聚类可覆盖 0.60-0.65 档碎片对）；③ ERes2NetV2 升级判定不做——4-5 真人规模分离带绰绰有余，触发条件=治理后碎片化仍复发或说话人上几十人（届时经录制重建通道整体重嵌入）
+
 #### GPU 模型层启停：显存释放面板（第三十八轮新增）
 
 voicehub（:10096）与 face 服务（:10097）升级为模型层启停——进程常驻不死、模型显存可释放、下次推理自动重载（跑大模型前一键腾显存）。本轮把服务面接进 Web，跑图铁律从此有界面入口。
@@ -871,7 +907,7 @@ voicehub（:10096）与 face 服务（:10097）升级为模型层启停——进
 | 签名系统产出 | 议程项附 `exempt_signature` 字段 | AI 处置时原样回传 graph_curation_exempt 的 signature——签名构造零歧义（否则 AI 拿展示 label 拼 key 签名会静默不匹配） |
 | 工具面 | `graph_curation_exempt(kind, signature, reason, revoke)`（graph 组 core/heartbeat） | 登记/撤销；kind 工具层与 store 层双校验 |
 | 任务 prompt | `config/tasks/graph_curation.json`（gitignored 随盘生效） | 豁免登记为唯一正当「议程清零」路径；禁止在便签维护治理流水/状态档，处置摘要进心跳日志一行；铁律查询路由补图谱治理条（双源同文） |
-| 容量护栏 | `_NOTES_CAPACITY` 纳入 graph-curation.md（100 行） | 超标在 memory-status 区块报警 |
+| 容量护栏 | `_NOTES_CAPACITY`（行数, 字节）双口径六档在册（第四十六轮演进） | 行数防条目膨胀、字节防「单行巨长化」规避行数口径（速查条行内堆案例单行至 1.5KB+）；knowledge/reflections/entities + tool_knowledge/skill-governance/memory-governance-baseline 在册，graph-curation.md 死条目出册（档已删、治理议程实时计算、豁免落库）；超标在 memory-status 区块报警（实况与红线双口径并列），压缩处置权归 AI |
 
 > Model Experience：① AI 视角——graph_curation_agenda 的常驻误报项豁免后永久消失（误判可 revoke），每轮只见真增量；exempt_signature 原样回传零构造；② token 影响——议程瘦身（豁免项不再逐拍输出）+ 豁免清单截断；③ 缓存影响——纯工具通道与心跳日志，不触碰 prompt 前缀层；④ 注意：运行中服务为旧代码，豁免机制需重启生效（任务 prompt 文件热读，新旧不一致窗口内 AI 调 graph_curation_exempt 会 not_found——重启后自愈）。
 
@@ -886,7 +922,7 @@ voicehub（:10096）与 face 服务（:10097）升级为模型层启停——进
 | 谱系审计 | `memory_audit` 加 `actor` 列 + `list_audit` | 全变更路径（add/update/delete/archive/merge/restore）带触发方归因（tool:*/auto_capture/consolidator/heartbeat_*/task:*/web/planning/reflection*）；update 事件 detail 改记被替换的旧内容（新值即条目现值）。出口：get_memory 附最近 5 条事件、`GET /ltm/{id}/audit`；30 天保留不变（长期谱系走 metadata merged_from/into，审计只管短期回放，职责不混） |
 | 条目级语义链接 | memorize `linked_to` 参数 + recall 联想带出 | 「本条纠正/补充/依赖哪条」的显式声明（上限 5，存在性校验）——操作纠错记忆落地：纠错教训挂被纠正条目，recall 命中关联方时 related 一跳带出（hop="link" 优先于标签共现占位）。与标签共现职责切分：具体关系用 linked_to，同主题关联靠标签 |
 | 写入裁决防幻觉 | `dedup.judge_write` 候选序号化 | 判断模型只看 1..N 序号（真实 id 已达 5 位数，转述易抄错，抄错即目标校验失败退化为新增重复），裁决返回前映射回真实 id（mem0 UUID→整数同款机制） |
-| 标签归并议程 | `tag_intel.merge_candidates` + consolidator/心跳 memory-status 区块 + `memory_index` 输出 | 确定性候选两类：写法变体（NFKC/小写/空白归一同形）与 topic 包含关系对（df≥2，归并高频方）——事实归系统、决策归 AI（经 update_memory 执行），无候选零注入。僵尸条目（importance=0）不进统计 |
+| 标签归并议程 | `tag_intel.merge_candidates` + consolidator/心跳 memory-status 区块 + `memory_index` 输出 | 确定性候选两类：写法变体（NFKC/小写/空白归一同形）与 topic 包含关系对（df≥2，归并高频方）——事实归系统、决策归 AI（经 update_memory 执行），无候选零注入；状态区块预览上限 5 对全量列出（第四十六轮去 [:3] 截断，标题对数与列表一致）。僵尸条目（importance=0）不进统计 |
 | 图谱溯源双向 | `_edge_json` 输出 `source_memory_id` + graph_add_relation 参数纪律 | 图谱→记忆方向机读指针补齐（此前仅有给人看的 evidence 文本）；关系从记忆得出时必传，对话直出留 0（心跳抽取源是对话材料，不硬挂） |
 
 > Model Experience：① AI 视角——get_memory 任何 id 都有明确答案（存活全文/并入去向/可恢复归档/墓碑梗概），mem:ID 可放心长期引用；recall 的 related 出现 hop="link" 的纠错关联；memory_index 周期性出现归并候选；铁律（config/memory_rules.md 与 rules_doc DEFAULT_RULES 双源同文）新增指针稳定性段与 linked_to/归并议程/source_memory_id 三处纪律；② token 影响——get_memory +审计 5 行、recall related 至多 3 条不变、memory-status 区块无候选零占用；③ 缓存影响——均在工具返回与尾部动态区，stable 层仅铁律一次性重建后恢复冻结。

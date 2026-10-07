@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from agent.llm.config import API_TYPE_ANTHROPIC
 from agent.llm.llm_client import LLMClient, LLMClientConfig, LLMNotConfiguredError
 from agent.llm.llm_manager import LLMManager
 from agent.llm.types import ChatResult
@@ -469,3 +470,53 @@ async def test_record_usage_disabled_skips(
         record_usage=False,
     )
     assert recorded == []
+
+
+class TestMessagesForCandidate:
+    """回退候选消息适配：非 Anthropic 候选剥离 Anthropic 专属字段（非破坏+零拷贝）。"""
+
+    @staticmethod
+    def _anthropic(name: str = "claude") -> LLMClient:
+        return LLMClient(LLMClientConfig(
+            name=name, model=f"{name}-model", provider_id=name,
+            api_type=API_TYPE_ANTHROPIC,
+        ))
+
+    def test_anthropic_candidate_passes_through(self) -> None:
+        messages = [{"role": "assistant", "content": "a",
+                     "thinking_blocks": [{"type": "thinking", "signature": "s"}]}]
+        assert LLMManager._messages_for_candidate(self._anthropic(), messages) is messages
+
+    def test_openai_candidate_zero_copy_when_clean(self) -> None:
+        messages = [{"role": "user", "content": "hi"}]
+        assert LLMManager._messages_for_candidate(_client("openai"), messages) is messages
+
+    def test_openai_candidate_strips_thinking_blocks(self) -> None:
+        plain = {"role": "user", "content": "hi"}
+        with_thinking = {"role": "assistant", "content": "a",
+                         "thinking_blocks": [{"type": "thinking", "signature": "s"}]}
+        result = LLMManager._messages_for_candidate(
+            _client("openai"), [plain, with_thinking])
+        assert "thinking_blocks" not in result[1]
+        assert "thinking_blocks" in with_thinking  # 原消息非破坏
+        assert result[0] is plain  # 无字段消息零拷贝共享
+
+    def test_openai_candidate_strips_breakpoints_and_thinking(self) -> None:
+        messages = [
+            {"role": "system", "content": "s", "cache_control": {"type": "ephemeral"}},
+            {"role": "assistant", "content": "a",
+             "thinking_blocks": [{"type": "thinking", "signature": "s"}]},
+        ]
+        result = LLMManager._messages_for_candidate(_client("openai"), messages)
+        assert "cache_control" not in result[0]
+        assert "thinking_blocks" not in result[1]
+
+    def test_reasoning_details_preserved_for_openai_candidate(self) -> None:
+        # reasoning_details 是 OpenRouter 风格字段，非 Anthropic 专属，保留
+        details = [{"type": "reasoning.text", "text": "t"}]
+        messages = [{"role": "assistant", "content": "a",
+                     "thinking_blocks": [{"type": "thinking", "signature": "s"}],
+                     "reasoning_details": details}]
+        result = LLMManager._messages_for_candidate(_client("openai"), messages)
+        assert "thinking_blocks" not in result[0]
+        assert result[0]["reasoning_details"] == details

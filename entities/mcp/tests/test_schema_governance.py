@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Generator
 
 import pytest
-from mcp.types import Tool
+from helpers.mcp_fakes import make_tool
 
 from core.entity import EntityRegistry
 from entities.mcp.bridge import MCPBridge
@@ -31,33 +30,12 @@ def bridge() -> Generator[MCPBridge, None, None]:
     EntityRegistry.unregister(f"mcp:{_PROBE_SERVER}")
 
 
-def _tool(name: str, *, read_only: bool = False, description: str = "d",
-          input_schema: dict | None = None) -> SimpleNamespace:
-    annotations = SimpleNamespace(readOnlyHint=read_only) if read_only else None
-    return SimpleNamespace(
-        name=name, description=description,
-        inputSchema=input_schema or {}, annotations=annotations,
-    )
-
-
 class TestReadOnlyParallelMapping:
-    def test_sdk_tool_retains_parameters_and_read_only_hint(self, bridge: MCPBridge) -> None:
-        tool = Tool.model_validate({
-            "name": "probe_read", "annotations": {"readOnlyHint": True},
-            "inputSchema": {"type": "object", "properties": {"entityId": {"type": "integer"}},
-                            "required": ["entityId"]},
-        })
-        bridge._register_tool_entries(_PROBE_SERVER, [tool])
-        registered = EntityRegistry.get("probe_read")
-        assert registered is not None
-        assert [(p.name, p.type, p.required) for p in registered.meta["params"]] == [("entityId", "integer", True)]
-        assert registered.meta.get("concurrency_safe") is True
-
     def test_read_only_hint_maps_to_concurrency_safe(self, bridge: MCPBridge) -> None:
         """服务器声明 readOnlyHint 的工具注册为可并行（meta 透传）。"""
         tools = [
-            _tool("probe_read", read_only=True),
-            _tool("probe_write"),
+            make_tool("probe_read", read_only=True),
+            make_tool("probe_write"),
         ]
         bridge._register_tool_entries(_PROBE_SERVER, tools)
 
@@ -69,7 +47,7 @@ class TestReadOnlyParallelMapping:
 
     def test_no_annotations_defaults_serial(self, bridge: MCPBridge) -> None:
         """无 annotations 的工具（旧版 server）保持串行（fail-closed）。"""
-        tools = [SimpleNamespace(name="probe_write", description="d", inputSchema={})]
+        tools = [make_tool("probe_write")]
         bridge._register_tool_entries(_PROBE_SERVER, tools)
         tool = EntityRegistry.get("probe_write")
         assert tool is not None
@@ -80,7 +58,7 @@ class TestSchemaSizeGovernance:
     def test_tool_description_clipped(self, bridge: MCPBridge) -> None:
         """超长工具描述注册时截断，字节此后稳定。"""
         fat = "长" * (_MAX_TOOL_DESC_CHARS + 500)
-        bridge._register_tool_entries(_PROBE_SERVER, [_tool("probe_fat", description=fat)])
+        bridge._register_tool_entries(_PROBE_SERVER, [make_tool("probe_fat", description=fat)])
         registered = EntityRegistry.get("probe_fat")
         assert registered is not None
         assert len(registered.description) == _MAX_TOOL_DESC_CHARS
@@ -92,7 +70,7 @@ class TestSchemaSizeGovernance:
                 "q": {"type": "string", "description": "查" * (_MAX_PARAM_DESC_CHARS + 100)},
             },
         }
-        _, params = _parse_mcp_tool(_tool("probe_fat", input_schema=schema))
+        _, params = _parse_mcp_tool(make_tool("probe_fat", input_schema=schema))
         assert len(params[0].description) == _MAX_PARAM_DESC_CHARS
         assert params[0].description.endswith("…")
 
@@ -103,7 +81,7 @@ class TestSchemaSizeGovernance:
                 "mode": {"type": "string", "enum": [f"option-{i}" for i in range(500)]},
             },
         }
-        _, params = _parse_mcp_tool(_tool("probe_fat", input_schema=schema))
+        _, params = _parse_mcp_tool(make_tool("probe_fat", input_schema=schema))
         assert params[0].type == "string"
         assert params[0].schema_extra is None
 
@@ -113,7 +91,7 @@ class TestSchemaSizeGovernance:
                 "limit": {"type": "integer", "default": 10, "minimum": 1},
             },
         }
-        _, params = _parse_mcp_tool(_tool("probe_fat", input_schema=schema))
+        _, params = _parse_mcp_tool(make_tool("probe_fat", input_schema=schema))
         assert params[0].schema_extra == {"default": 10, "minimum": 1}
 
     def test_clip_description_passthrough(self) -> None:

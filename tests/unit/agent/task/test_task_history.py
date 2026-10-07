@@ -99,6 +99,34 @@ class TestHistoryStore:
         assert raw["t7"][0]["started_at"] == 42.0
 
 
+class TestPruneOrphans:
+    """对账清理：无对应任务文件的历史条目被清除（心跳引擎构造/reload 调用）。"""
+
+    def test_prunes_stale_keeps_valid(self) -> None:
+        _record("alive", 100.0)
+        _record("gone", 200.0)
+
+        pruned = task_history.prune_orphans({"alive"})
+
+        assert pruned == ["gone"]
+        assert task_history.get_history("gone") == []
+        assert len(task_history.get_history("alive")) == 1
+
+    def test_no_stale_returns_empty(self) -> None:
+        _record("alive", 100.0)
+        assert task_history.prune_orphans({"alive", "other"}) == []
+
+    def test_empty_history_noop(self) -> None:
+        assert task_history.prune_orphans({"alive"}) == []
+
+    def test_empty_valid_set_wipes_all(self) -> None:
+        """空存活集语义 = 全部清理（调用方负责在目录不可枚举时跳过，见引擎守卫）。"""
+        _record("a", 1.0)
+        _record("b", 2.0)
+        assert task_history.prune_orphans(set()) == ["a", "b"]
+        assert task_history.get_summary() == {}
+
+
 class TestLastGoodRuns:
     """调度槽位去重的事实源：只认 success/no_output，返回最近一次非失败的时间戳。"""
 

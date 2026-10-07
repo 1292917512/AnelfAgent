@@ -2,7 +2,7 @@
 
 覆盖 entities.mcp.bridge 第四轮优化的五组行为：
 1. CallToolResult 内容块分派（图片落盘 + _multimodal 约定、audio/resource 占位、
-   structuredContent 兜底）；
+   structured_content 兜底）；
 2. ToolListChangedNotification 拦截 → 防抖 → 增量重同步；
 3. 注册工具携带 call_timeout（修复 60s 全局默认先于 bridge 超时掐断的错配）；
 4. 参数 schema 保真（anyOf 解引用 / default / items）与注册名整形（64 字符上限）；
@@ -18,6 +18,18 @@ from types import SimpleNamespace
 from typing import Generator, List
 
 import pytest
+from helpers.mcp_fakes import make_result, make_tool, make_tool_list
+from mcp import types
+from mcp.types import (
+    AudioContent,
+    BlobResourceContents,
+    EmbeddedResource,
+    ImageContent,
+    ResourceLink,
+    TextContent,
+    TextResourceContents,
+    Tool,
+)
 
 import entities.mcp.bridge as bridge_mod
 import entities.mcp.render as render_mod
@@ -56,26 +68,20 @@ def _png_bytes() -> bytes:
     )
 
 
-def _result(*blocks, structured=None, is_error=False) -> SimpleNamespace:
-    return SimpleNamespace(
-        content=list(blocks), structuredContent=structured, isError=is_error,
-    )
-
-
-def _img_block(data_b64: str = "", mime: str = "image/png") -> SimpleNamespace:
+def _img_block(data_b64: str = "", mime: str = "image/png") -> ImageContent:
     if not data_b64:
         data_b64 = base64.b64encode(_png_bytes()).decode()
-    return SimpleNamespace(type="image", data=data_b64, mimeType=mime)
+    return ImageContent(type="image", data=data_b64, mimeType=mime)
 
 
-def _text_block(text: str) -> SimpleNamespace:
-    return SimpleNamespace(type="text", text=text)
+def _text_block(text: str) -> TextContent:
+    return TextContent(type="text", text=text)
 
 
 @pytest.mark.asyncio
 async def test_image_saved_and_multimodal(bridge: MCPBridge, upload_dir: str) -> None:
     """image 块应落盘并经 _multimodal 约定返回，base64 原文不进结果。"""
-    out = await _render_call_result(_result(_text_block("截图完成"), _img_block()))
+    out = await _render_call_result(make_result(_text_block("截图完成"), _img_block()))
 
     parsed = json.loads(out)
     assert parsed["_multimodal"] is True
@@ -88,28 +94,37 @@ async def test_image_saved_and_multimodal(bridge: MCPBridge, upload_dir: str) ->
 
 
 @pytest.mark.asyncio
+async def test_image_mime_preserved(bridge: MCPBridge, upload_dir: str) -> None:
+    """image 块的 mime_type 决定落盘扩展名（jpeg → .jpg）。"""
+    out = await _render_call_result(make_result(_img_block(mime="image/jpeg")))
+
+    parsed = json.loads(out)
+    assert parsed["images"][0].endswith(".jpg")
+
+
+@pytest.mark.asyncio
 async def test_text_blocks_joined_plain(bridge: MCPBridge) -> None:
     """纯文本块按序拼接为普通文本，不包 JSON（与旧版行为一致）。"""
-    out = await _render_call_result(_result(_text_block("第一段"), _text_block("第二段")))
+    out = await _render_call_result(make_result(_text_block("第一段"), _text_block("第二段")))
     assert out == "第一段\n第二段"
 
 
 @pytest.mark.asyncio
 async def test_audio_and_resource_placeholders(bridge: MCPBridge) -> None:
     """audio/resource_link/embedded resource 以短占位呈现，不灌二进制。"""
-    audio = SimpleNamespace(type="audio", data="AAAA" * 1024, mimeType="audio/wav")
-    link = SimpleNamespace(type="resource_link", uri="file:///tmp/report.md")
-    embedded_text = SimpleNamespace(
+    audio = AudioContent(type="audio", data="AAAA" * 1024, mimeType="audio/wav")
+    link = ResourceLink(type="resource_link", name="report", uri="file:///tmp/report.md")
+    embedded_text = EmbeddedResource(
         type="resource",
-        resource=SimpleNamespace(uri="file:///tmp/note.txt", text="资源正文", blob=None),
+        resource=TextResourceContents(uri="file:///tmp/note.txt", text="资源正文"),
     )
-    embedded_blob = SimpleNamespace(
+    embedded_blob = EmbeddedResource(
         type="resource",
-        resource=SimpleNamespace(uri="file:///tmp/data.bin", text=None, blob="QUJD" * 512),
+        resource=BlobResourceContents(uri="file:///tmp/data.bin", blob="QUJD" * 512),
     )
 
     out = await _render_call_result(
-        _result(_text_block("ok"), audio, link, embedded_text, embedded_blob),
+        make_result(_text_block("ok"), audio, link, embedded_text, embedded_blob),
     )
 
     assert "audio/wav" in out and "已丢弃" in out
@@ -121,20 +136,20 @@ async def test_audio_and_resource_placeholders(bridge: MCPBridge) -> None:
 
 @pytest.mark.asyncio
 async def test_structured_content_fallback(bridge: MCPBridge) -> None:
-    """无任何文本时 structuredContent 兜底输出 JSON。"""
+    """无任何文本时 structured_content 兜底输出 JSON。"""
     out = await _render_call_result(
-        _result(structured={"rows": 3, "ok": True}),
+        make_result(structured={"rows": 3, "ok": True}),
     )
     assert json.loads(out) == {"rows": 3, "ok": True}
 
 
 @pytest.mark.asyncio
 async def test_is_error_returns_tool_error(bridge: MCPBridge) -> None:
-    """远端 isError 标记恢复为结构化错误信号（cause=internal）。"""
+    """远端 is_error 标记恢复为结构化错误信号（cause=internal）。"""
 
     class _ErrorSession:
-        async def call_tool(self, name: str, arguments: dict) -> SimpleNamespace:
-            return _result(_text_block("参数非法"), is_error=True)
+        async def call_tool(self, name: str, arguments: dict) -> object:
+            return make_result(_text_block("参数非法"), is_error=True)
 
     bridge._sessions["test-srv"] = _ErrorSession()
     bridge._find_server_config = lambda name: SimpleNamespace(call_timeout=5.0)  # type: ignore[method-assign]
@@ -154,7 +169,7 @@ async def test_image_passthrough_disabled(
     monkeypatch.setattr(
         "core.config.get_config_bool", lambda k, d=False: False if k == "mcp_image_passthrough" else d,
     )
-    out = await _render_call_result(_result(_img_block()))
+    out = await _render_call_result(make_result(_img_block()))
 
     assert "_multimodal" not in out
     assert "未注入" in out
@@ -166,7 +181,7 @@ async def test_image_passthrough_disabled(
 async def test_image_count_cap(bridge: MCPBridge, upload_dir: str) -> None:
     """单次结果最多注入 4 张图片，超出的以数量说明。"""
     blocks = [_img_block() for _ in range(6)]
-    out = await _render_call_result(_result(*blocks))
+    out = await _render_call_result(make_result(*blocks))
 
     parsed = json.loads(out)
     assert len(parsed["images"]) == 4
@@ -177,7 +192,7 @@ async def test_image_count_cap(bridge: MCPBridge, upload_dir: str) -> None:
 async def test_image_corrupt_data_placeholder(bridge: MCPBridge, upload_dir: str) -> None:
     """解码失败的图片以占位说明，不抛异常。"""
     out = await _render_call_result(
-        _result(_img_block(data_b64="!!!非法base64!!!")),
+        make_result(_img_block(data_b64="!!!非法base64!!!")),
     )
     assert "image/png" in out and "解码失败" in out
 
@@ -189,11 +204,11 @@ async def test_image_corrupt_data_placeholder(bridge: MCPBridge, upload_dir: str
 class _FakeListSession:
     """按脚本返回 tools/list 结果的假会话。"""
 
-    def __init__(self, tools: List[SimpleNamespace]) -> None:
+    def __init__(self, tools: List[Tool]) -> None:
         self._tools = tools
 
-    async def list_tools(self) -> SimpleNamespace:
-        return SimpleNamespace(tools=list(self._tools))
+    async def list_tools(self) -> object:
+        return make_tool_list(list(self._tools))
 
 
 @pytest.mark.asyncio
@@ -204,12 +219,12 @@ async def test_sync_adds_and_removes_tools(bridge: MCPBridge) -> None:
         call_timeout=30.0,
     )
     await bridge._register_server_tools(srv, _FakeListSession([
-        SimpleNamespace(name="old_tool", description="旧的", inputSchema={}),
-        SimpleNamespace(name="keep_tool", description="保留", inputSchema={}),
+        make_tool("old_tool", description="旧的"),
+        make_tool("keep_tool", description="保留"),
     ]))
     bridge._sessions["test-srv"] = _FakeListSession([
-        SimpleNamespace(name="keep_tool", description="保留", inputSchema={}),
-        SimpleNamespace(name="new_tool", description="新增", inputSchema={}),
+        make_tool("keep_tool", description="保留"),
+        make_tool("new_tool", description="新增"),
     ])
 
     await bridge._sync_server_tools("test-srv")
@@ -236,8 +251,6 @@ async def test_sync_skips_when_no_session(bridge: MCPBridge) -> None:
 
 
 def _tool_list_changed_note() -> object:
-    from mcp import types
-    # mcp 2.x 通知是裸叶子实例（ServerNotification 为 union 别名不可实例化）
     return types.ToolListChangedNotification()
 
 
@@ -287,14 +300,9 @@ async def test_message_handler_config_disabled(
 
 
 def test_is_tool_list_changed_rejects_others(bridge: MCPBridge) -> None:
-    """非通知对象不误判（duck 兜底）；1.x RootModel 包装形态仍识别。"""
-    from mcp import types
-
+    """仅裸叶子通知实例命中，其他消息不误判。"""
     assert bridge._is_tool_list_changed(SimpleNotificationStub()) is False
     assert bridge._is_tool_list_changed(_tool_list_changed_note()) is True
-    assert bridge._is_tool_list_changed(
-        SimpleNamespace(root=types.ToolListChangedNotification()),
-    ) is True
 
 
 class SimpleNotificationStub:
@@ -307,7 +315,7 @@ class SimpleNotificationStub:
 
 def test_register_entries_carries_timeout(bridge: MCPBridge) -> None:
     """显式 call_timeout 透传为工具执行超时 meta。"""
-    tools = [SimpleNamespace(name="slow_query", description="慢查询", inputSchema={})]
+    tools = [make_tool("slow_query", description="慢查询")]
     bridge._register_tool_entries("test-srv", tools, call_timeout=123)
 
     entity = EntityRegistry.get("slow_query")
@@ -317,7 +325,7 @@ def test_register_entries_carries_timeout(bridge: MCPBridge) -> None:
 
 def test_register_entries_without_timeout_keeps_default(bridge: MCPBridge) -> None:
     """不传 call_timeout 时不写 timeout meta（保持全局默认行为）。"""
-    tools = [SimpleNamespace(name="fast_tool", description="快", inputSchema={})]
+    tools = [make_tool("fast_tool", description="快")]
     bridge._register_tool_entries("test-srv", tools)
 
     entity = EntityRegistry.get("fast_tool")
@@ -332,7 +340,7 @@ def test_register_server_tools_passes_call_timeout(bridge: MCPBridge) -> None:
         call_timeout=77,
     )
     asyncio.run(bridge._register_server_tools(srv, _FakeListSession([
-        SimpleNamespace(name="tool_a", description="a", inputSchema={}),
+        make_tool("tool_a", description="a"),
     ])))
 
     entity = EntityRegistry.get("tool_a")
@@ -346,11 +354,14 @@ def test_register_server_tools_passes_call_timeout(bridge: MCPBridge) -> None:
 # ------------------------------------------------------------------
 
 def test_parse_param_anyof_default_items() -> None:
-    """anyOf 可选参数解引用取非 null 分支；default/items 进 schema_extra。"""
-    tool = SimpleNamespace(
-        name="t",
-        description="",
-        inputSchema={
+    """anyOf 可选参数解引用取非 null 分支；default/items 进 schema_extra。
+
+    以 wire 报文形态构造真实 Tool（model_validate 走别名解析），
+    字段名漂移在本测试直接暴露。
+    """
+    tool = make_tool(
+        "t",
+        input_schema={
             "type": "object",
             "properties": {
                 "limit": {
@@ -377,9 +388,7 @@ def test_parse_param_anyof_default_items() -> None:
 
 def test_parse_param_non_dict_schema_safe() -> None:
     """properties 值非 dict 时安全跳过（不抛异常）。"""
-    tool = SimpleNamespace(
-        name="t", description="", inputSchema={"properties": {"bad": "not-a-dict"}},
-    )
+    tool = make_tool("t", input_schema={"properties": {"bad": "not-a-dict"}})
     _name, params = _parse_mcp_tool(tool)
     assert len(params) == 1
     assert params[0].name == "bad"
@@ -389,7 +398,7 @@ def test_parse_param_non_dict_schema_safe() -> None:
 def test_tool_name_length_guard(bridge: MCPBridge) -> None:
     """超长注册名截断 + 短哈希后缀，原始名映射兜底。"""
     long_name = "a" * 80
-    tools = [SimpleNamespace(name=long_name, description="", inputSchema={})]
+    tools = [make_tool(long_name)]
     registered = bridge._register_tool_entries("test-srv", tools)
 
     reg = registered[0]
@@ -401,7 +410,7 @@ def test_tool_name_length_guard(bridge: MCPBridge) -> None:
 
 def test_tool_name_illegal_chars_sanitized(bridge: MCPBridge) -> None:
     """非法字符（如 server 名带点号）替换为下划线，原始名兜底。"""
-    tools = [SimpleNamespace(name="query.v2", description="", inputSchema={})]
+    tools = [make_tool("query.v2")]
     # 先占用 query_v2 使冲突前缀路径也参与整形
     EntityRegistry.register_tool(
         name="query_v2", func=lambda **kw: "", description="占位",
@@ -435,9 +444,9 @@ async def test_do_call_timeout_structured(bridge: MCPBridge) -> None:
     """bridge 层超时返回 cause=timeout + code=TOOL_TIMEOUT。"""
 
     class _SlowSession:
-        async def call_tool(self, name: str, arguments: dict) -> SimpleNamespace:
+        async def call_tool(self, name: str, arguments: dict) -> object:
             await asyncio.sleep(0.3)
-            return SimpleNamespace(content=[], isError=False)
+            return make_result()
 
     bridge._sessions["test-srv"] = _SlowSession()
     bridge._find_server_config = lambda name: SimpleNamespace(call_timeout=0.05)  # type: ignore[method-assign]
@@ -504,7 +513,7 @@ async def test_sync_visible_to_tool_assembly(bridge: MCPBridge) -> None:
         call_timeout=30.0,
     )
     await bridge._register_server_tools(srv, _FakeListSession([
-        SimpleNamespace(name="v1_tool", description="v1", inputSchema={}),
+        make_tool("v1_tool", description="v1"),
     ]))
     tool_activation.activate("mcp:test-srv", scope="s-sync")
     try:
@@ -512,7 +521,7 @@ async def test_sync_visible_to_tool_assembly(bridge: MCPBridge) -> None:
 
         # server 端工具变更：v1_tool 移除、v2_tool 新增
         bridge._sessions["test-srv"] = _FakeListSession([
-            SimpleNamespace(name="v2_tool", description="v2", inputSchema={}),
+            make_tool("v2_tool", description="v2"),
         ])
         version_before = EntityRegistry.version()
         await bridge._sync_server_tools("test-srv")

@@ -227,6 +227,9 @@ async def _iter_stream(
     # 长度与第一块无关，共享单一缓冲会把短块整块跳过、推理静默丢失）
     rd_bufs: Dict[int, str] = {}
     thinking_acc = _ThinkingAccumulator()
+    # 已作为 early_tool_calls 发射过的缓冲 index：提前发射不消费缓冲
+    # （最终批次仍含全量供对账），去重靠该集合
+    emitted_early: set[int] = set()
     async for chunk in stream:
         choices = getattr(chunk, "choices", None) or []
         if not choices:
@@ -267,12 +270,14 @@ async def _iter_stream(
                     reasoning += text[len(prev):]
                     rd_bufs[pos] = text
 
+        early_ready: list[ToolCall] = []
         for tc_chunk in getattr(delta, "tool_calls", None) or []:
             # 部分 provider 会把 index 返回为字符串，统一强转 int，
             # 避免混合类型 key 在 sorted() 时炸 TypeError
             idx = _normalize_tc_index(
                 getattr(tc_chunk, "index", None), len(tc_bufs)
             )
+            is_new_index = idx not in tc_bufs
             buf = tc_bufs.setdefault(idx, {"id": "", "name": "", "arguments": ""})
             tc_id = getattr(tc_chunk, "id", None)
             if tc_id:
@@ -284,6 +289,18 @@ async def _iter_stream(
                 arguments = getattr(func, "arguments", None)
                 if arguments:
                     buf["arguments"] += str(arguments)
+            # 新更高 index 出现 = 模型已推进到下一个调用，低位缓冲可证明
+            # 完整（参数通过 JSON 校验者）→ 随本 chunk 提前发射，供执行层
+            # 在流继续生成时就分发。协议不保证片段永不回补低位 index，
+            # 故只发射校验通过者；最终批次仍含全量，执行层按 id 对账兜底
+            if is_new_index:
+                for lower_idx in sorted(i for i in tc_bufs if i < idx):
+                    if lower_idx in emitted_early:
+                        continue
+                    call = _early_complete_call(tc_bufs[lower_idx])
+                    if call is not None:
+                        emitted_early.add(lower_idx)
+                        early_ready.append(call)
 
         completed_tools = (
             _complete_tool_buffers(tc_bufs)
@@ -308,6 +325,7 @@ async def _iter_stream(
         yield ChatStreamDelta(
             content=content,
             tool_calls=completed_tools,
+            early_tool_calls=early_ready,
             finish_reason=finish,
             reasoning_content=reasoning,
             usage=chunk_usage,
@@ -323,6 +341,27 @@ def _normalize_tc_index(raw: Any, fallback: int) -> int:
         return int(raw)
     except (TypeError, ValueError):
         return fallback
+
+def _early_complete_call(buf: Dict[str, str]) -> Optional[ToolCall]:
+    """缓冲是否可提前发射：id/name 齐备且 arguments 是完整 JSON。
+
+    "更高 index 已出现"只证明模型推进到了下一个调用，参数本身必须
+    自证完整（能解析即闭合）——协议不保证低位片段永不回补，无法解析
+    的缓冲留给最终批次。空参数（""）与"参数未到"不可区分，保守不发射。
+    """
+    if not buf["id"] or not buf["name"] or not buf["arguments"]:
+        return None
+    try:
+        json.loads(buf["arguments"])
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return ToolCall(
+        id=buf["id"],
+        name=buf["name"],
+        arguments=buf["arguments"],
+        raw=ToolCall.wire_raw(buf["id"], buf["name"], buf["arguments"]),
+    )
+
 
 def _complete_tool_buffers(
     tc_bufs: Dict[int, Dict[str, str]],

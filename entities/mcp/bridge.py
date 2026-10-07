@@ -25,16 +25,16 @@
       ]
     }
 
-依赖：mcp（pip install mcp）
-若未安装 mcp SDK，本模块不会导致 import 崩溃，只会在实际调用时报错。
+依赖：mcp>=2.2（pyproject 硬依赖，SDK 字段一律 snake_case 直读）。
 """
 
 from __future__ import annotations
 
-import inspect
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
+
+from mcp import types
 
 from core.entity import EntityMetadata, EntityRegistry, EntityType
 from core.log import log
@@ -579,8 +579,8 @@ class MCPBridge:
 
         if not hasattr(result, "content"):
             return str(result)
-        # 远端 isError 标记恢复为结构化错误信号，供守卫/拦截机制识别
-        if getattr(result, "is_error", None) or getattr(result, "isError", False):
+        # 远端 is_error 标记恢复为结构化错误信号，供守卫/拦截机制识别
+        if result.is_error:
             text = _extract_text_blocks(result)
             return tool_error(
                 f"MCP 工具 '{tool_name}' 执行失败: {text or '远端未返回详情'}",
@@ -877,19 +877,11 @@ class MCPBridge:
                 raise ConnectionError(f"存活探测失败: {exc}") from exc
 
     def _session_kwargs(self, server_name: str) -> Dict[str, Any]:
-        """构造 ClientSession 关键字参数。
-
-        message_handler（拦截工具列表变更通知）仅在新版 mcp SDK 存在该
-        参数时注入——旧版 SDK 无此参数时退回仅 roots 回调，保证兼容。
-        """
-        kwargs: Dict[str, Any] = {"list_roots_callback": _list_roots_callback}
-        try:
-            from mcp import ClientSession
-            if "message_handler" in inspect.signature(ClientSession.__init__).parameters:
-                kwargs["message_handler"] = self._make_message_handler(server_name)
-        except Exception:
-            log("ClientSession 不支持 message_handler，跳过工具列表热同步", "DEBUG", tag="MCP")
-        return kwargs
+        """构造 ClientSession 关键字参数（message_handler 拦截工具列表变更通知）。"""
+        return {
+            "list_roots_callback": _list_roots_callback,
+            "message_handler": self._make_message_handler(server_name),
+        }
 
     def _make_message_handler(self, server_name: str) -> Callable[[Any], Any]:
         """构造注入 ClientSession 的消息处理器（运行在 bridge 事件循环）。
@@ -938,18 +930,9 @@ class MCPBridge:
 
     @staticmethod
     def _is_tool_list_changed(message: Any) -> bool:
-        """判定消息是否为 server 的工具列表变更通知。
-
-        mcp 2.x 通知是裸叶子实例（ServerNotification 为 union 别名不可
-        实例化），1.x 是 RootModel 包装（叶子在 ``message.root``）。
-        """
-        try:
-            from mcp import types
-        except Exception:
-            return False
-        if isinstance(message, types.ToolListChangedNotification):
-            return True
-        return isinstance(getattr(message, "root", None), types.ToolListChangedNotification)
+        """判定消息是否为 server 的工具列表变更通知（裸叶子实例，
+        ServerNotification 为 union 别名不可实例化）。"""
+        return isinstance(message, types.ToolListChangedNotification)
 
     def _spawn_tool_sync(self, server_name: str) -> None:
         """防抖到期：在 bridge 循环上启动同步任务（call_later 回调）。"""
@@ -1079,7 +1062,7 @@ class MCPBridge:
     def _register_tool_entries(
         self,
         server_name: str,
-        tools: List[Any],
+        tools: List[types.Tool],
         call_timeout: Optional[float] = None,
     ) -> List[str]:
         """将 server 的工具批量注册到 EntityRegistry，返回注册名列表。
@@ -1119,8 +1102,7 @@ class MCPBridge:
             # 远端语义由服务器声明，本地桥接层按 request-id 多路复用天然容忍并发；
             # 写操作保持串行。注册时读入 meta，重连重注册字节不变。
             tool_meta = dict(meta or {})
-            annotations = getattr(t, "annotations", None)
-            if getattr(annotations, "read_only_hint", getattr(annotations, "readOnlyHint", False)):
+            if t.annotations and t.annotations.read_only_hint:
                 tool_meta["concurrency_safe"] = True
 
             async def _proxy(_name: str = reg_name, **kwargs: Any) -> str:
@@ -1129,7 +1111,7 @@ class MCPBridge:
             EntityRegistry.register_tool(
                 name=reg_name,
                 func=_proxy,
-                description=clip_description(getattr(t, "description", "") or t_name),
+                description=clip_description(t.description or t_name),
                 group=f"mcp:{server_name}",
                 params=t_params,
                 tags=["mcp", server_name],

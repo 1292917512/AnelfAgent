@@ -37,6 +37,7 @@ class HooksLlmService:
                 "debounce_seconds": spec.debounce_seconds,
                 "model": spec.model,
                 "allow_output_tools": spec.allow_output_tools,
+                "route_output": spec.route_output,
                 "tool_tags": list(spec.tool_tags),
             })
         return {

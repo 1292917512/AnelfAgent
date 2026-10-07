@@ -503,6 +503,47 @@ class TestRefresh:
         fresh = await provider._refresh(oauth._load_entry("srv"), tokens)
         assert fresh.refresh_token == "old-ref"
 
+    async def test_missing_scope_keeps_old_scope(self, oauth_env, monkeypatch):
+        """refresh 响应省略 scope（RFC 6749 §6 视同维持原授权）：沿用旧值。"""
+        entry = _entry_with_tokens(
+            refresh="old-ref", expires_in=None,
+            server_meta={"issuer": "https://as", "token_endpoint": "https://as/token"},
+        )
+        entry["tokens"]["scope"] = "read write"
+        entry["expires_at"] = time.time() - 10
+        oauth._write_entry("srv", entry)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _json_response(200, {"access_token": "fresh", "token_type": "Bearer"})
+
+        install_mock_http(monkeypatch, handler)
+        provider = _provider()
+        tokens = oauth._entry_tokens(oauth._load_entry("srv"))
+        fresh = await provider._refresh(oauth._load_entry("srv"), tokens)
+        assert fresh.scope == "read write"
+        saved = oauth._entry_tokens(oauth._load_entry("srv"))
+        assert saved.scope == "read write"
+
+    async def test_response_scope_replaces_old(self, oauth_env, monkeypatch):
+        """refresh 响应显式带回 scope：以响应为准（AS 可能增删授权范围）。"""
+        entry = _entry_with_tokens(
+            refresh="old-ref", expires_in=None,
+            server_meta={"issuer": "https://as", "token_endpoint": "https://as/token"},
+        )
+        entry["tokens"]["scope"] = "read"
+        entry["expires_at"] = time.time() - 10
+        oauth._write_entry("srv", entry)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _json_response(200, {"access_token": "fresh", "token_type": "Bearer",
+                                        "scope": "read write"})
+
+        install_mock_http(monkeypatch, handler)
+        provider = _provider()
+        tokens = oauth._entry_tokens(oauth._load_entry("srv"))
+        fresh = await provider._refresh(oauth._load_entry("srv"), tokens)
+        assert fresh.scope == "read write"
+
     async def test_invalid_grant_clears_tokens_keeps_client(self, oauth_env, monkeypatch):
         entry = _entry_with_tokens(
             server_meta={"issuer": "https://as", "token_endpoint": "https://as/token"},
@@ -820,6 +861,40 @@ class TestAuthorizationSession:
         assert saved["tokens"]["access_token"] == "new"
         assert saved["client_info"]["client_id"] == "static-cid"
         assert oauth.pending_auth("srv") == {}
+
+    async def test_exchange_backfills_requested_scope(self, oauth_env, monkeypatch):
+        """token 响应省略 scope：回填授权请求值——否则再次 step-up 并集丢已授范围。"""
+        meta = {
+            "issuer": "https://as.example.com",
+            "authorization_endpoint": "https://as.example.com/authorize",
+            "token_endpoint": "https://as.example.com/token",
+            "resource": "https://mcp.example.com",
+        }
+        oauth._write_entry("srv", {"server_meta": meta})
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _json_response(200, {"access_token": "new", "token_type": "Bearer",
+                                        "refresh_token": "r1", "expires_in": 3600})
+
+        install_mock_http(monkeypatch, handler)
+        monkeypatch.setattr(oauth, "webbrowser", types.SimpleNamespace(open=lambda url: None))
+
+        session = oauth.AuthorizationSession(
+            "srv", "https://mcp.example.com/mcp",
+            {"client_id": "static-cid", "scopes": "read write"})
+        await session.prepare()
+        import urllib.parse
+        parsed = urllib.parse.urlparse(session.authorize_url)
+        params = dict(urllib.parse.parse_qsl(parsed.query))
+        callback_port = session._callback.port
+        code_task = asyncio.ensure_future(session.wait_and_exchange())
+        await asyncio.sleep(0.1)
+        urllib.request.urlopen(
+            f"http://127.0.0.1:{callback_port}/callback?code=the-code&state={params['state']}",
+            timeout=5).read()
+        tokens = await code_task
+        assert tokens.scope == "read write"
+        assert oauth._load_entry("srv")["tokens"]["scope"] == "read write"
 
     async def test_dcr_registers_fresh_client(self, oauth_env, monkeypatch):
         meta = {

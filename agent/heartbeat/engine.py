@@ -66,6 +66,27 @@ _SWEEP_CONFIGS = {
             "step": 3600,
             "unit": "秒",
         },
+        "task_expired_delete_enabled": {
+            "description": (
+                "过期任务自动删除：超过 expires_at 宽限期的任务整体删除"
+                "（定义文件+调度+执行历史+交接），一次性/限期任务的生命周期出口，"
+                "防任务页堆积僵尸卡片"
+            ),
+            "default": True,
+        },
+        "task_expired_delete_grace_seconds": {
+            "description": (
+                "过期任务自动删除的宽限期（秒）：过期后保留该时长供改期恢复，"
+                "届满随心跳维护删除，0 = 过期即删"
+            ),
+            "default": 259200,
+            "value_type": ConfigValueType.RANGE,
+            "min": 0,
+            "max": 2592000,
+            "step": 86400,
+            "unit": "秒",
+            "advanced": True,
+        },
     },
 }
 
@@ -160,11 +181,15 @@ class HeartbeatEngine:
         self._last_empty_sweep: float = 0.0
         self._prune_orphan_schedules()
         self._prune_stale_runtime_state()
+        self._prune_orphan_task_artifacts()
         # 任务事件触发装配（带 trigger_event 的任务经 LLM 钩子面注册；reconcile 幂等）
         self._sync_event_triggers()
 
     def _prune_orphan_schedules(self) -> None:
         """清理任务文件已删除的孤儿调度（任务文件仍在但加载失败的不动，保留 WARN 提示）。"""
+        if not self.task_registry.is_dir_available():
+            # 目录不可枚举时注册表为空是异常态，跳过对账防误清全部调度
+            return
         orphans = [
             s.task_name for s in self.config.task_schedules
             if self.task_registry.get(s.task_name) is None
@@ -178,6 +203,26 @@ class HeartbeatEngine:
         self.config.save()
         log(f"已清理 {len(orphans)} 个孤儿心跳调度: {orphans}", tag="心跳")
 
+    def _prune_orphan_task_artifacts(self) -> None:
+        """清理任务文件已删除的运行数据残留（执行历史 / 交接文件）。
+
+        正式删除路径（delete_task 工具 / Web API）已即时清理；本对账兜住
+        绕过正式路径的删除（手工/脚本直删定义文件），与孤儿调度清理同节奏。
+        """
+        if not self.task_registry.is_dir_available():
+            return
+        from agent.task import handoff as task_handoff
+        alive = self.task_registry.file_stems() | {
+            t.name for t in self.task_registry.list_all()
+        }
+        pruned_history = task_history.prune_orphans(alive)
+        pruned_handoffs = task_handoff.prune_orphans(alive)
+        if pruned_history or pruned_handoffs:
+            log(
+                f"已清理任务运行数据残留: 历史 {pruned_history}，交接 {pruned_handoffs}",
+                tag="心跳",
+            )
+
     def _prune_stale_runtime_state(self) -> None:
         """清理无对应调度的运行态台账（失败计数 / 放弃日期）。
 
@@ -190,33 +235,76 @@ class HeartbeatEngine:
                 ledger.pop(name, None)
 
     async def _disable_expired_tasks(self) -> None:
-        """停用过期任务：超过 expires_at 的任务自动 enabled=false 并移除调度绑定。
+        """停用过期任务并摘除其调度绑定。
 
-        定义文件保留（可经 update_task 改期恢复）；停用写回任务文件持久生效，
-        后续 tick 的 enabled 检查天然不再选取。
+        超过 expires_at 的启用中任务自动 enabled=false（停用写回持久生效，
+        后续 tick 的 enabled 检查天然不再选取）；手动禁用先于过期的存量
+        任务同样摘除调度——过期任务的调度必然失效，留着即成僵尸卡片。
+        定义文件保留（可经 update_task 改期恢复），宽限期届满后由
+        _delete_expired_tasks 删除。
         """
         now = time.time()
+        save_needed = False
         for task in self.task_registry.list_all():
-            if not task.enabled or not task.is_expired(now):
+            if not task.is_expired(now):
                 continue
-            ok = await self.task_registry.update_task_fields(task.name, {
-                "enabled": False,
-                "updated_at": now,
-            })
-            if not ok:
-                log(f"过期任务 [{task.name}] 停用写回失败，本次跳过", "WARNING", tag="心跳")
-                continue
+            if task.enabled:
+                ok = await self.task_registry.update_task_fields(task.name, {
+                    "enabled": False,
+                    "updated_at": now,
+                })
+                if not ok:
+                    log(f"过期任务 [{task.name}] 停用写回失败，本次跳过", "WARNING", tag="心跳")
+                    continue
+                log(
+                    f"任务 [{task.name}] 已过生效截止（{task.expires_at}），已自动停用",
+                    tag="心跳",
+                )
+                hb_log.append_entry(
+                    f"任务过期自动停用: {task.name}（截止 {task.expires_at}，可改期恢复）"
+                )
             schedule_removed = self.config.remove_schedule(task.name)
-            if schedule_removed:
-                self.config.save()
+            save_needed = save_needed or schedule_removed
+        if save_needed:
+            self.config.save()
+
+    async def _delete_expired_tasks(self) -> None:
+        """删除超过宽限期的已过期任务（定义文件 + 调度 + 执行历史 + 交接全清）。
+
+        一次性/限期任务的生命周期出口：过期任务经 _disable_expired_tasks
+        即时停用，宽限期（task_expired_delete_grace_seconds，默认 3 天）内
+        仍可改期恢复；届满视为废弃随本扫描彻底删除。
+        task_expired_delete_enabled=false 时整段关闭。
+        """
+        from core.config import get_config_bool, get_config_int
+        if not get_config_bool("task_expired_delete_enabled", True):
+            return
+        grace = max(0, get_config_int("task_expired_delete_grace_seconds", 259200))
+        now = time.time()
+        # is_expired(now - grace) ⇔ expires_at + grace < now：宽限期已届满
+        save_needed = False
+        for task in self.task_registry.list_all():
+            if not task.is_expired(now - grace):
+                continue
+            name = task.name
+            if not await self.task_registry.delete_file(name):
+                continue
+            schedule_removed = self.config.remove_schedule(name)
+            save_needed = save_needed or schedule_removed
+            task_history.clear_history(name)
+            from agent.task import handoff as task_handoff
+            task_handoff.delete_handoff(name)
+            self._warned_missing_tasks.discard(name)
             log(
-                f"任务 [{task.name}] 已过生效截止（{task.expires_at}），"
-                f"已自动停用（调度移除: {schedule_removed}）",
+                f"任务 [{name}] 过期超宽限期（截止 {task.expires_at}），已自动删除"
+                f"（调度移除: {schedule_removed}）",
                 tag="心跳",
             )
             hb_log.append_entry(
-                f"任务过期自动停用: {task.name}（截止 {task.expires_at}，可改期恢复）"
+                f"任务过期自动删除: {name}（截止 {task.expires_at}，宽限期已过）"
             )
+        if save_needed:
+            self.config.save()
 
     @property
     def total_ticks(self) -> int:
@@ -231,6 +319,7 @@ class HeartbeatEngine:
         self._seed_declared_schedules()
         self._prune_orphan_schedules()
         self._prune_stale_runtime_state()
+        self._prune_orphan_task_artifacts()
         self._sync_event_triggers()
         # 态势区块即时刷新：任务/调度 CRUD 走 reload 热更，不必等下个心跳拍
         try:
@@ -302,6 +391,7 @@ class HeartbeatEngine:
 
         await self._run_maintenance()
         await self._disable_expired_tasks()
+        await self._delete_expired_tasks()
 
         # 到期定时提醒触发（持久化提醒，含停机期间错过的补触发）
         try:
@@ -852,14 +942,15 @@ class HeartbeatEngine:
             log(f"记忆阈值预警: {len(warnings)} 条", tag="心跳")
         return warnings
 
-    # 便签容量建议（行数），与主便签指南中的容量建议保持一致
+    # 便签容量红线（行数, 字节）：宽于主便签指南的软目标，触发即明确超标。
+    # 行数防条目膨胀；字节防「单行巨长化」规避行数口径（速查条行内堆案例）。
     _NOTES_CAPACITY = {
-        "knowledge.md": 500,
-        "reflections.md": 500,
-        "entities.md": 1000,
-        # 治理状态档是历史流水形态——议程以 build_agenda 实时计算为唯一显示源，
-        # 豁免结论落 graph_curation_exemptions 库，便签不再承载治理内容
-        "graph-curation.md": 100,
+        "knowledge.md": (500, 40 * 1024),
+        "reflections.md": (500, 40 * 1024),
+        "entities.md": (1000, 40 * 1024),
+        "tool_knowledge.md": (100, 15 * 1024),
+        "skill-governance.md": (80, 12 * 1024),
+        "memory-governance-baseline.md": (100, 15 * 1024),
     }
 
     async def _write_memory_status(
@@ -935,13 +1026,13 @@ class HeartbeatEngine:
             except Exception:
                 pass
             # 标签归并议程：确定性候选（写法变体/包含关系），事实归系统、决策归 AI
-            # （无候选零占用；明细与全量经 memory_index 查看）
+            # （无候选零占用；候选上限 5 对全量列出，更多明细经 memory_index 查看）
             try:
                 merge_candidates = await store.tag_merge_candidates(limit=5)
                 if merge_candidates:
                     preview = "；".join(
                         f"{c['from']}→{c['into']}（{c['reason']}）"
-                        for c in merge_candidates[:3]
+                        for c in merge_candidates
                     )
                     lines.append(
                         f"- 标签归并候选 {len(merge_candidates)} 对：{preview}"
@@ -949,13 +1040,18 @@ class HeartbeatEngine:
                     )
             except Exception:
                 pass
-            for fname, cap in self._NOTES_CAPACITY.items():
+            for fname, (line_cap, byte_cap) in self._NOTES_CAPACITY.items():
                 fpath = notes_mod.get_memory_dir() / fname
-                if fpath.exists():
-                    with fpath.open(encoding="utf-8") as fp:
-                        line_count = sum(1 for _ in fp)
-                    if line_count > cap:
-                        lines.append(f"- ⚠️ 便签超标：{fname} {line_count} 行（建议 ≤{cap}），需提炼压缩")
+                if not fpath.exists():
+                    continue
+                with fpath.open(encoding="utf-8") as fp:
+                    line_count = sum(1 for _ in fp)
+                byte_size = fpath.stat().st_size
+                if line_count > line_cap or byte_size > byte_cap:
+                    lines.append(
+                        f"- ⚠️ 便签超标：{fname} {line_count} 行/{byte_size / 1024:.1f}KB"
+                        f"（建议 ≤{line_cap} 行/{byte_cap // 1024}KB），需提炼压缩"
+                    )
             await notes_mod.update_memory_status_block_async("\n".join(lines))
         except Exception as exc:
             log(f"记忆状态区块写入失败: {exc}", "DEBUG", tag="心跳")
