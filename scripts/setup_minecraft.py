@@ -22,6 +22,63 @@ if str(_REPO) not in sys.path:
 
 _PLUGIN_NAME = "minecraft-companion"
 
+_WORKER_PROFILE_NAME = "mc-worker"
+# 模型池引用 llm_clients.json 模型条目的 id（客户端 ID），不是供应商模型名
+_WORKER_MODEL_POOL = ("glm-4.5-air", "minimax-m2")
+_WORKER_DESCRIPTION = "Minecraft 执行代理：反射式完成游戏内动作序列，给沟通者打下手"
+_WORKER_INSTRUCTIONS = (
+    "你是 Minecraft 执行代理。只使用 minecraft MCP 工具完成指定动作序列。"
+    "反射式执行：不规划、不解释、不闲聊、不询问玩家，每轮直接调用下一个工具；"
+    "相互独立的工具调用在一次响应里并列发出；禁止一切记忆/备忘/笔记类操作。"
+    "工具未注入时先 activate_tool_group(\"mcp:minecraft\")。"
+    "完成后只返回结构化结果：做了什么、获得什么、失败原因。"
+)
+_WORKER_TOOL_TAGS = ["mcp:minecraft"]
+_WORKER_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "done": {"type": "boolean"},
+        "actions": {"type": "array", "items": {"type": "string"}},
+        "gained": {"type": "array", "items": {"type": "string"}},
+        "failure": {"type": "string"},
+    },
+    "required": ["done"],
+}
+
+
+def ensure_worker_profile() -> str:
+    """确保 mc-worker 子代理档案存在；已存在则不改动（保留用户自定义）。"""
+    from agent.llm.llm_manager import get_llm_manager
+
+    manager = get_llm_manager()
+    if manager.get_sub_agent_profile(_WORKER_PROFILE_NAME) is not None:
+        return "exists"
+    pool = [
+        mid for mid in _WORKER_MODEL_POOL
+        if manager._validate_sub_agent_model(mid) is None
+    ]
+    if not pool:
+        default = manager.default_name
+        if default and manager._validate_sub_agent_model(default) is None:
+            pool = [default]
+    if not pool:
+        print("警告：没有可用聊天模型，跳过 mc-worker 子代理档案注册；请配置模型后手动创建。")
+        return "skipped"
+    ok, message = manager.create_sub_agent(
+        name=_WORKER_PROFILE_NAME,
+        model_id=pool[0],
+        description=_WORKER_DESCRIPTION,
+        instructions=_WORKER_INSTRUCTIONS,
+        tool_tags=_WORKER_TOOL_TAGS,
+        output_schema=_WORKER_OUTPUT_SCHEMA,
+    )
+    if not ok:
+        print(f"警告：mc-worker 子代理档案创建失败：{message}")
+        return "failed"
+    if len(pool) > 1:
+        manager.update_sub_agent(_WORKER_PROFILE_NAME, models=pool)
+    return "created"
+
 
 def download_node(runtime: Path) -> Path:
     """下载并校验 Windows x64 便携 Node 22，所有文件留在工作区。"""
@@ -160,7 +217,13 @@ def setup(args: argparse.Namespace) -> Path:
     )
     print(
         json.dumps(
-            {"plugin": str(payload), "mcp_server": server_name, "minecraft_version": args.version, "node": str(node)},
+            {
+                "plugin": str(payload),
+                "mcp_server": server_name,
+                "minecraft_version": args.version,
+                "node": str(node),
+                "worker_profile": ensure_worker_profile(),
+            },
             ensure_ascii=False,
             indent=2,
         )
