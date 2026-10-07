@@ -128,14 +128,10 @@ class CogneeConfig:
     write_breaker_threshold_mb: float = 500.0
     write_breaker_window_seconds: float = 300.0
     write_breaker_cooldown_seconds: float = 1800.0
-    # 单条 native 图查询超时：逐查询下发到 ladybug 连接，失控查询由
-    # native 层自行中断（协程级 wait_for 取消不到线程池里的 native 执行）
-    native_query_timeout_seconds: float = 300.0
-    # 失控看门狗（native 超时失效时的兜底）：interrupt 阶梯先尝试官方
-    # 跨线程取消，restart 阶梯再请求守护重启——门闸锁被永久持有会饿死
-    # 全部图操作，进程重启是唯一出口
+    # 失控看门狗：门闸被持有超阈值（native 查询失控的唯一可靠信号）即请求
+    # 守护重启——ladybug 的 timeout/interrupt 中止路径对卡死扫描不可靠
+    # （会升级为 SIGSEGV），进程级重启是唯一安全语义
     native_watchdog_enabled: bool = True
-    native_watchdog_interrupt_seconds: float = 360.0
     native_watchdog_restart_seconds: float = 600.0
     native_weight: float = 1.0
     # cognee 与原生同权：融合去重时来源优先级已保证原生结果胜出（memory >
@@ -182,15 +178,7 @@ class CogneeConfig:
         self.write_breaker_threshold_mb = max(1.0, float(self.write_breaker_threshold_mb))
         self.write_breaker_window_seconds = max(10.0, float(self.write_breaker_window_seconds))
         self.write_breaker_cooldown_seconds = max(60.0, float(self.write_breaker_cooldown_seconds))
-        self.native_query_timeout_seconds = max(10.0, float(self.native_query_timeout_seconds))
-        self.native_watchdog_interrupt_seconds = max(
-            self.native_query_timeout_seconds + 30.0,
-            float(self.native_watchdog_interrupt_seconds),
-        )
-        self.native_watchdog_restart_seconds = max(
-            self.native_watchdog_interrupt_seconds + 60.0,
-            float(self.native_watchdog_restart_seconds),
-        )
+        self.native_watchdog_restart_seconds = max(120.0, float(self.native_watchdog_restart_seconds))
         self.native_weight = max(0.0, float(self.native_weight))
         self.cognee_weight = max(0.0, float(self.cognee_weight))
         self.rrf_k = max(1, int(self.rrf_k))

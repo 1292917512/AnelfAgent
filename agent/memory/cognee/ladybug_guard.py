@@ -1,7 +1,7 @@
 """ladybug native 执行监督：cognee 图后端的进程内适配层。
 
 cognee 的 LadybugAdapter 按通用嵌入场景设计，在宿主单进程常驻架构下
-需要的五层保障由本模块以幂等补丁统一收口：
+需要的四层保障由本模块以幂等补丁统一收口：
 
 1. **并发门闸**：ladybug/Kuzu 的 pybind connection 非线程安全，
    ``_submit_to_executor_locked`` 提交到线程池的 native 任务（execute + 结果
@@ -9,22 +9,19 @@ cognee 的 LadybugAdapter 按通用嵌入场景设计，在宿主单进程常驻
    只能中止 Python 协程，native 查询仍在线程池中运行；锁由执行线程持有，
    native 真正跑完才释放，孤儿查询与后续查询不会并发使用同一 connection。
    ``_drop_native_resources`` 取同一把锁，拆除句柄前必然等在途执行结束。
-2. **查询超时**：cognee 从不使用 ladybug 自带的连接级超时。门闸在每条
-   查询执行前把 ``native_query_timeout_seconds`` 下发到连接（在锁内设置，
-   不与在途执行并发触碰 native 句柄），失控查询由 native 层自行中断。
-   逐查询下发使配置热更即生效，且覆盖任何时刻重建的连接。
-3. **循环安全拆除**：本地模式的 ``close()``/``delete_graph()`` 在调用线程
+2. **循环安全拆除**：本地模式的 ``close()``/``delete_graph()`` 在调用线程
    同步拆除资源，发生在事件循环上时门闸等待会冻结整个进程。包装为先把
    拆除经 ``asyncio.to_thread`` 挪到 worker 线程再调原方法（原方法内部的
    同步拆除因句柄已置空自然成为空操作）；同步拆除本体在事件循环线程上
    改为有界获取，超时抛错而非无限冻结。
-4. **失控看门狗**：native 超时与 interrupt 都对死循环无效时的最后兜底。
-   纯线程实现（事件循环冻死也能工作）：持有门闸超 interrupt 阶梯先调
-   ``connection.interrupt()``（官方跨线程取消），超 restart 阶梯经晚绑定
-   端口请求守护重启——门闸被永久持有会饿死全部图操作，进程重启是唯一
-   出口。端口未施绑或重启被拒时降级为 CRITICAL 告警，看门狗自身绝不
-   直接退出进程。
-5. **WAL 容错**：以 ``throw_on_wal_replay_failure=False`` 打开图库——
+3. **失控看门狗**：纯线程实现（事件循环冻死也能工作）。持有门闸超
+   ``native_watchdog_restart_seconds`` 经晚绑定端口请求守护重启——门闸被
+   永久持有会饿死全部图操作，进程重启是唯一出口。端口未施绑或重启被拒
+   时降级为 CRITICAL 告警，看门狗自身绝不直接退出进程。
+   设计约束：ladybug 的 ``set_query_timeout``/``interrupt`` 中止路径对
+   卡死的扫描算子不可靠（中止动作自身会升级为 SIGSEGV），本模块刻意不做
+   native 中止——隔离 + 进程级重启是唯一安全语义。
+4. **WAL 容错**：以 ``throw_on_wal_replay_failure=False`` 打开图库——
    checkpoint 中途进程被杀时冻结 WAL 尾部的半条记录不再阻塞打开，
    回放到损坏点前最后一个已提交事务；WAL 完好时行为不变。
 
@@ -64,13 +61,11 @@ _WAL_TOLERANT_ATTR = "_anel_wal_tolerant"
 class _GateHold:
     """门闸当前持有记录（锁独占，持有者天然单槽）。"""
 
-    __slots__ = ("kind", "connection", "started_ns", "interrupted", "restart_fired")
+    __slots__ = ("kind", "started_ns", "restart_fired")
 
-    def __init__(self, kind: str, connection: Any) -> None:
+    def __init__(self, kind: str) -> None:
         self.kind = kind
-        self.connection = connection
         self.started_ns = time.monotonic_ns()
-        self.interrupted = False
         self.restart_fired = False
 
 
@@ -83,9 +78,9 @@ class _GuardState:
         self.hold_lock = threading.Lock()
         self.hold: Optional[_GateHold] = None
 
-    def begin_hold(self, kind: str, connection: Any) -> None:
+    def begin_hold(self, kind: str) -> None:
         with self.hold_lock:
-            self.hold = _GateHold(kind, connection)
+            self.hold = _GateHold(kind)
 
     def end_hold(self) -> None:
         with self.hold_lock:
@@ -105,28 +100,15 @@ def _on_event_loop_thread() -> bool:
     return True
 
 
-def _apply_query_timeout(state: _GuardState, connection: Any) -> None:
-    """把配置的超时下发到连接（门闸内调用，失败不阻塞查询）。"""
-    if connection is None or not hasattr(connection, "set_query_timeout"):
-        return
-    timeout_ms = int(state.get_config().native_query_timeout_seconds * 1000)
-    try:
-        connection.set_query_timeout(timeout_ms)
-    except Exception as exc:
-        log(f"ladybug 查询超时下发失败（本查询不带超时）: {exc}", "DEBUG", tag="记忆")
-
-
 def _wrap_submit(state: _GuardState, original_submit: Callable[..., Any]) -> Callable[..., Any]:
-    """提交路径包装：native 执行全程持门闸，执行前下发查询超时。"""
+    """提交路径包装：native 执行全程持门闸，持有台账供看门狗消费。"""
 
     @functools.wraps(original_submit)
     def gated_submit(self: Any, fn: Any, *args: Any) -> Any:
         @functools.wraps(fn)
         def guarded(*call_args: Any, **call_kwargs: Any) -> Any:
-            connection = call_args[0] if call_args else None
             with state.gate:
-                _apply_query_timeout(state, connection)
-                state.begin_hold("query", connection)
+                state.begin_hold("query")
                 try:
                     return fn(*call_args, **call_kwargs)
                 finally:
@@ -151,14 +133,14 @@ def _wrap_drop(state: _GuardState, original_drop: Callable[..., Any]) -> Callabl
                     f"ladybug native 门闸被持有超 {budget:.0f}s，事件循环上的同步拆除已中止（查失控看门狗日志）"
                 )
             try:
-                state.begin_hold("drop", None)
+                state.begin_hold("drop")
                 original_drop(self)
             finally:
                 state.end_hold()
                 state.gate.release()
             return
         with state.gate:
-            state.begin_hold("drop", None)
+            state.begin_hold("drop")
             try:
                 original_drop(self)
             finally:
@@ -182,24 +164,10 @@ def _wrap_async_teardown(original: Callable[..., Any]) -> Callable[..., Any]:
     return teardown
 
 
-def _try_interrupt(hold: _GateHold, age_seconds: float) -> None:
-    """interrupt 阶梯：官方跨线程取消，对正常慢查询无影响。"""
-    try:
-        hold.connection.interrupt()
-        log(
-            f"ladybug native {hold.kind} 已持续 {age_seconds:.0f}s，已下发 interrupt",
-            "WARNING",
-            tag="记忆",
-        )
-    except Exception as exc:
-        log(f"ladybug interrupt 下发失败（等待 restart 阶梯）: {exc}", "WARNING", tag="记忆")
-
-
 def _escalate_restart(hold: _GateHold, age_seconds: float) -> None:
-    """restart 阶梯：interrupt 无效的失控执行，进程重启是唯一出口。"""
+    """restart 阶梯：门闸被失控执行永久持有，进程重启是唯一出口。"""
     log(
-        f"ladybug native {hold.kind} 失控（已持续 {age_seconds:.0f}s，interrupt 无效），"
-        "门闸被永久持有将饿死全部图操作，请求守护重启",
+        f"ladybug native {hold.kind} 失控（门闸已持有 {age_seconds:.0f}s），继续持有将饿死全部图操作，请求守护重启",
         "CRITICAL",
         tag="记忆",
     )
@@ -234,11 +202,6 @@ def _watchdog_check(state: _GuardState) -> None:
     if age_seconds > config.native_watchdog_restart_seconds and not hold.restart_fired:
         hold.restart_fired = True
         _escalate_restart(hold, age_seconds)
-    elif (
-        age_seconds > config.native_watchdog_interrupt_seconds and not hold.interrupted and hold.connection is not None
-    ):
-        hold.interrupted = True
-        _try_interrupt(hold, age_seconds)
 
 
 def _watchdog_loop(state: _GuardState, interval: float) -> None:
@@ -327,5 +290,5 @@ def install(get_config: Callable[[], CogneeConfig]) -> bool:
     except Exception as exc:
         log(f"ladybug WAL 容错补丁失败（不影响主流程）: {exc}", "WARNING", tag="记忆")
     if applied:
-        log("ladybug native 监督已就位（门闸串行 + 查询超时 + 循环安全拆除 + 失控看门狗）", "DEBUG", tag="记忆")
+        log("ladybug native 监督已就位（门闸串行 + 循环安全拆除 + 失控看门狗）", "DEBUG", tag="记忆")
     return applied

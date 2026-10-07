@@ -1,9 +1,9 @@
 """ladybug native 监督（agent.memory.cognee.ladybug_guard）单元测试。
 
 核心不变量：native 执行串行（wait_for 取消的孤儿查询不占锁让位）；
-查询超时逐条下发到连接；close/delete_graph 的门闸等待不在事件循环上；
-失控持有经 interrupt→restart 阶梯升级且每轮只升级一次；事件循环上的
-同步拆除有界（超时抛错而非冻结）。
+close/delete_graph 的门闸等待不在事件循环上；失控持有经 restart 阶梯
+升级且每轮只升级一次；事件循环上的同步拆除有界（超时抛错而非冻结）。
+刻意不做 native 中止（set_query_timeout/interrupt 对卡死扫描不可靠）。
 """
 
 from __future__ import annotations
@@ -23,20 +23,6 @@ from agent.memory.cognee.ladybug_guard import (
     _watchdog_check,
     native_restart_port,
 )
-
-
-class _FakeConnection:
-    """ladybug Connection 替身：记录超时下发与 interrupt 次数。"""
-
-    def __init__(self) -> None:
-        self.timeout_ms: Optional[int] = None
-        self.interrupt_calls = 0
-
-    def set_query_timeout(self, timeout_in_ms: int) -> None:
-        self.timeout_ms = int(timeout_in_ms)
-
-    def interrupt(self) -> None:
-        self.interrupt_calls += 1
 
 
 class _FakeAdapterBase:
@@ -65,12 +51,8 @@ class _FakeAdapterBase:
 
 
 def _config(**overrides: Any) -> CogneeConfig:
-    """小阈值测试配置（跳过 normalized 以便快进；排序钳制由独立用例覆盖）。"""
-    values: dict[str, Any] = dict(
-        native_query_timeout_seconds=10.0,
-        native_watchdog_interrupt_seconds=0.05,
-        native_watchdog_restart_seconds=0.2,
-    )
+    """小阈值测试配置（跳过 normalized 以便快进；钳制由独立用例覆盖）。"""
+    values: dict[str, Any] = dict(native_watchdog_restart_seconds=0.2)
     values.update(overrides)
     return CogneeConfig(**values)
 
@@ -173,38 +155,6 @@ class TestGate:
         assert order == ["orphan_done", "next_done"]
 
 
-class TestQueryTimeout:
-    def test_timeout_pushed_before_execute(self) -> None:
-        """每条查询在门闸内先把配置超时下发到连接，再执行。"""
-        config = _config(native_query_timeout_seconds=7.5)
-        adapter = _make_adapter_cls(config)()
-        connection = _FakeConnection()
-        order: list[str] = []
-
-        original_set = connection.set_query_timeout
-
-        def recording_set(ms: int) -> None:
-            order.append("timeout")
-            original_set(ms)
-
-        connection.set_query_timeout = recording_set  # type: ignore[method-assign]
-
-        def query(conn: Any) -> str:
-            order.append("run")
-            assert conn.timeout_ms == 7500
-            return "ok"
-
-        future = adapter._submit_to_executor_locked(query, connection)
-        assert future.result(timeout=5) == "ok"
-        assert order == ["timeout", "run"]
-
-    def test_missing_connection_capability_is_fail_open(self) -> None:
-        """连接不支持 set_query_timeout 时查询照常执行。"""
-        adapter = _make_adapter_cls()()
-        future = adapter._submit_to_executor_locked(lambda conn: "ok", object())
-        assert future.result(timeout=5) == "ok"
-
-
 class TestLoopSafeTeardown:
     async def test_close_waits_off_event_loop(self) -> None:
         """close 的门闸等待发生在 worker 线程，事件循环保持响应。"""
@@ -245,60 +195,22 @@ class TestLoopSafeTeardown:
 
 
 class TestWatchdog:
-    def test_interrupt_ladder_fires_once(self) -> None:
-        config = _config(native_watchdog_interrupt_seconds=0.05, native_watchdog_restart_seconds=100.0)
-        cls = _make_adapter_cls(config)
-        adapter = cls()
-        connection = _FakeConnection()
-
-        release = threading.Event()
-        started = threading.Event()
-
-        def run(conn: Any) -> None:
-            started.set()
-            release.wait(timeout=10)
-
-        adapter._submit_to_executor_locked(run, connection)
-        assert started.wait(timeout=5)
-        time.sleep(0.1)  # 越过 interrupt 阶梯
-        state = cls._anel_guard_state
-        try:
-            _watchdog_check(state)
-            assert connection.interrupt_calls == 1
-            _watchdog_check(state)  # 同一轮持有不重复 interrupt
-            assert connection.interrupt_calls == 1
-        finally:
-            release.set()
-
     def test_restart_ladder_via_port(self) -> None:
-        config = _config(native_watchdog_interrupt_seconds=0.05, native_watchdog_restart_seconds=0.15)
+        """门闸久持超阈值：经重启端口升级一次，同轮持有不重复升级。"""
+        config = _config(native_watchdog_restart_seconds=0.1)
         cls = _make_adapter_cls(config)
         adapter = cls()
-        connection = _FakeConnection()
         calls: list[dict[str, Any]] = []
 
         def fake_request(**kwargs: Any) -> dict[str, Any]:
             calls.append(kwargs)
             return {"ok": True, "restarting": True}
 
-        release = threading.Event()
-        started = threading.Event()
-
-        def run(conn: Any) -> None:
-            started.set()
-            release.wait(timeout=10)
-
-        adapter._submit_to_executor_locked(run, connection)
-        assert started.wait(timeout=5)
+        _started, release = _hold_gate(adapter)
         state = cls._anel_guard_state
         native_restart_port.set(fake_request)
         try:
-            time.sleep(0.1)  # 先越过 interrupt 阶梯
-            _watchdog_check(state)
-            assert connection.interrupt_calls == 1
-            assert calls == []
-
-            time.sleep(0.15)  # 再越过 restart 阶梯
+            time.sleep(0.15)  # 越过 restart 阈值
             _watchdog_check(state)
             assert len(calls) == 1
             assert calls[0]["source"] == "cognee_native_watchdog"
@@ -310,24 +222,23 @@ class TestWatchdog:
             release.set()
 
     def test_watchdog_disabled_takes_no_action(self) -> None:
-        config = _config(native_watchdog_enabled=False)
+        config = _config(native_watchdog_enabled=False, native_watchdog_restart_seconds=0.1)
         cls = _make_adapter_cls(config)
         adapter = cls()
-        connection = _FakeConnection()
-        release = threading.Event()
-        started = threading.Event()
+        calls: list[dict[str, Any]] = []
 
-        def run(conn: Any) -> None:
-            started.set()
-            release.wait(timeout=10)
+        def fake_request(**kwargs: Any) -> dict[str, Any]:
+            calls.append(kwargs)
+            return {"ok": True}
 
-        adapter._submit_to_executor_locked(run, connection)
-        assert started.wait(timeout=5)
+        _started, release = _hold_gate(adapter)
+        native_restart_port.set(fake_request)
         try:
-            time.sleep(0.3)  # 越过全部阶梯
+            time.sleep(0.15)  # 越过阈值
             _watchdog_check(cls._anel_guard_state)
-            assert connection.interrupt_calls == 0
+            assert calls == []
         finally:
+            native_restart_port.unbind()
             release.set()
 
     def test_restart_without_bound_port_is_log_only(self) -> None:
@@ -335,16 +246,7 @@ class TestWatchdog:
         config = _config(native_watchdog_restart_seconds=0.1)
         cls = _make_adapter_cls(config)
         adapter = cls()
-        connection = _FakeConnection()
-        release = threading.Event()
-        started = threading.Event()
-
-        def run(conn: Any) -> None:
-            started.set()
-            release.wait(timeout=10)
-
-        adapter._submit_to_executor_locked(run, connection)
-        assert started.wait(timeout=5)
+        _started, release = _hold_gate(adapter)
         was_bound = native_restart_port.bound
         if was_bound:
             saved = native_restart_port.get()
@@ -359,6 +261,14 @@ class TestWatchdog:
             if was_bound:
                 native_restart_port.set(saved)
             release.set()
+
+    def test_hold_released_resets_escalation(self) -> None:
+        """持有正常结束后台账清空，看门狗无动作。"""
+        cls = _make_adapter_cls(_config(native_watchdog_restart_seconds=0.1))
+        adapter = cls()
+        future = adapter._submit_to_executor_locked(lambda: 1)
+        assert future.result(timeout=5) == 1
+        assert cls._anel_guard_state.current_hold() is None
 
     async def test_loop_thread_drop_is_bounded(self) -> None:
         """事件循环线程上的同步拆除有界：门闸久持时抛错而非冻结。"""
@@ -419,15 +329,6 @@ class TestWalRecovery:
 
 
 class TestConfigNormalization:
-    def test_watchdog_ladder_ordering_is_clamped(self) -> None:
-        config = CogneeConfig(
-            native_query_timeout_seconds=300.0,
-            native_watchdog_interrupt_seconds=10.0,
-            native_watchdog_restart_seconds=20.0,
-        ).normalized()
-        assert config.native_watchdog_interrupt_seconds == 330.0
-        assert config.native_watchdog_restart_seconds == 390.0
-
-    def test_query_timeout_floor(self) -> None:
-        config = CogneeConfig(native_query_timeout_seconds=1.0).normalized()
-        assert config.native_query_timeout_seconds == 10.0
+    def test_watchdog_restart_threshold_floor(self) -> None:
+        config = CogneeConfig(native_watchdog_restart_seconds=5.0).normalized()
+        assert config.native_watchdog_restart_seconds == 120.0
