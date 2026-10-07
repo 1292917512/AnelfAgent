@@ -203,11 +203,12 @@ def parse_manifest(root: Path) -> PluginManifest:
 
 
 def load_plugin_mcp_servers(root: Path, manifest: PluginManifest) -> Dict[str, Dict[str, Any]]:
-    """读取插件声明的 MCP server 配置（内联优先，其次引用的 JSON 文件）。"""
+    """读取 MCP 配置，并将 ${PLUGIN_ROOT} 替换为已安装插件的绝对路径。"""
     if manifest.mcp_servers_inline:
-        return {
+        servers = {
             str(k): v for k, v in manifest.mcp_servers_inline.items() if isinstance(v, dict)
         }
+        return _resolve_mcp_roots(root, servers)
     if not manifest.mcp_servers_file:
         return {}
     mcp_path = root / manifest.mcp_servers_file
@@ -218,7 +219,23 @@ def load_plugin_mcp_servers(root: Path, manifest: PluginManifest) -> Dict[str, D
     servers = data.get("mcpServers", data) if isinstance(data, dict) else {}
     if not isinstance(servers, dict):
         raise PluginError(f"插件 MCP 配置必须是对象: {mcp_path}")
-    return {str(k): v for k, v in servers.items() if isinstance(v, dict)}
+    return _resolve_mcp_roots(root, {str(k): v for k, v in servers.items() if isinstance(v, dict)})
+
+
+def _resolve_mcp_roots(root: Path, servers: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """递归展开插件根占位符，保留其他环境变量引用供配置层解析。"""
+    plugin_root = str(root.resolve())
+
+    def resolve(value: Any) -> Any:
+        if isinstance(value, str):
+            return value.replace("${PLUGIN_ROOT}", plugin_root)
+        if isinstance(value, list):
+            return [resolve(item) for item in value]
+        if isinstance(value, dict):
+            return {key: resolve(item) for key, item in value.items()}
+        return value
+
+    return {name: {key: resolve(value) for key, value in cfg.items()} for name, cfg in servers.items()}
 
 
 @dataclass
