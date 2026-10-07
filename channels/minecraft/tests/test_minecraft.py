@@ -466,3 +466,59 @@ async def test_command_message_is_history_only(channel: MinecraftChannel, monkey
     msg = inbound.call_args.args[0]
     assert msg.is_to_me and msg.trigger_mind is False
     await _drain_background(channel)
+
+
+async def test_reflexes_start_with_channel_and_stop_cleanly(
+    channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    call = AsyncMock(side_effect=[{"status": "disconnected"}])
+    monkeypatch.setattr(channel, "_call", call)
+
+    await channel.start()
+    assert channel._reflex_task is not None and not channel._reflex_task.done()
+
+    await channel.stop()
+    assert channel._reflex_task is None
+    assert channel._poll_task is None
+
+
+async def test_reflexes_disabled_by_config(channel: MinecraftChannel) -> None:
+    channel.get_config().reflexes_enabled = False
+
+    await channel.start()
+
+    assert channel._reflex_task is None
+    await channel.stop()
+
+
+async def test_reflexes_sync_to_config_toggle(
+    channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    call = AsyncMock(side_effect=[{"status": "disconnected"}])
+    monkeypatch.setattr(channel, "_call", call)
+    channel.get_config().reflexes_enabled = False
+
+    await channel.start()
+    assert channel._reflex_task is None
+
+    channel.get_config().reflexes_enabled = True
+    channel._sync_reflexes()
+    assert channel._reflex_task is not None and not channel._reflex_task.done()
+
+    channel.get_config().reflexes_enabled = False
+    channel._sync_reflexes()
+    assert channel._reflex_task is None or channel._reflex_task.done()
+    await channel.stop()
+
+
+async def test_reflex_announce_targets_world_channel(
+    channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outbound = AsyncMock()
+    monkeypatch.setattr(channel, "forward_message", outbound)
+
+    await channel._announce_reflex("疼疼疼——我先撤一下！")
+
+    request = outbound.call_args.args[0]
+    assert request.channel.channel_id == "local"
+    assert request.channel.channel_type == ChannelType.GROUP

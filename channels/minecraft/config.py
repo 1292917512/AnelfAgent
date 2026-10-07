@@ -28,6 +28,17 @@ class MinecraftConfig(ChannelConfig):
         description="游戏聊天事件轮询间隔",
         json_schema_extra={"unit": "s", "min": 0.25, "max": 30, "advanced": True},
     )
+    reflexes_enabled: bool = Field(
+        default=True,
+        description="生存反射（受伤逃跑/卡死自救）：确定性零模型调用，遇到异常可关闭排查",
+    )
+    reflex_interval_seconds: float = Field(
+        default=1.0,
+        ge=0.5,
+        le=10,
+        description="生存反射观察间隔",
+        json_schema_extra={"unit": "s", "min": 0.5, "max": 10, "advanced": True},
+    )
 
 
 CONFIG_MODEL = MinecraftConfig

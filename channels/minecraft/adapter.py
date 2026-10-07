@@ -33,6 +33,7 @@ from entities._sdk import call_mcp_server_tool
 from . import discovery as _discovery  # noqa: F401  导入即注册全局发现工具
 from .config import MinecraftConfig
 from .protocol import ConnectionStatus, EventBatch, GameEvent, PlayerChat, split_chat
+from .reflexes import ReflexEngine
 
 
 class MinecraftChannel(BaseChannel[MinecraftConfig]):
@@ -52,6 +53,8 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
         self._server_entity: EntityMetadata | None = None
         self._connection: ConnectionStatus | None = None
         self._background: set[asyncio.Task[Any]] = set()
+        self._reflex_task: asyncio.Task[None] | None = None
+        self._reflex_stop: asyncio.Event | None = None
         self._last_success: float | None = None
         self._last_error = ""
 
@@ -61,6 +64,7 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
         self._status = ChannelStatus.RUNNING
         self._cursor = None
         self._poll_task = asyncio.create_task(self._poll_loop(), name="channel.minecraft.events")
+        self._sync_reflexes()
 
     async def stop(self) -> None:
         task, self._poll_task = self._poll_task, None
@@ -68,12 +72,55 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        reflex, self._reflex_task = self._reflex_task, None
+        if self._reflex_stop is not None:
+            self._reflex_stop.set()
+        if reflex is not None:
+            reflex.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await reflex
         for bg in list(self._background):
             bg.cancel()
         for bg in list(self._background):
             with contextlib.suppress(asyncio.CancelledError):
                 await bg
         self._status = ChannelStatus.STOPPED
+
+    def _sync_reflexes(self) -> None:
+        """按配置热开关反射循环（配置中心改动经轮询周期生效）。"""
+        if self.get_config().reflexes_enabled:
+            self._start_reflexes()
+        else:
+            self._stop_reflexes()
+
+    def _start_reflexes(self) -> None:
+        if self._reflex_task is not None and not self._reflex_task.done():
+            return
+        self._reflex_stop = asyncio.Event()
+        engine = ReflexEngine(self._call, self._announce_reflex)
+        self._reflex_task = asyncio.create_task(
+            engine.run(self.get_config().reflex_interval_seconds, self._reflex_stop),
+            name="channel.minecraft.reflexes",
+        )
+
+    def _stop_reflexes(self) -> None:
+        if self._reflex_stop is not None:
+            self._reflex_stop.set()
+        task, self._reflex_task = self._reflex_task, None
+        if task is not None:
+            task.cancel()
+
+    async def _announce_reflex(self, text: str) -> None:
+        """反射事件播报到世界公共频道，沟通者从聊天事件自然得知上下文。"""
+        cfg = self.get_config()
+        await self._send_text(
+            AdapterChannel(
+                channel_id=cfg.server_id,
+                channel_type=ChannelType.GROUP,
+                channel_name=f"Minecraft {cfg.server_id}",
+            ),
+            text,
+        )
 
     async def _call(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         raw = await call_mcp_server_tool(self.get_config().mcp_server, tool_name, arguments)
@@ -97,6 +144,7 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
                 if detail != self._last_error:
                     log(f"Minecraft 聊天桥等待执行器: {detail}", "WARNING", tag="Minecraft")
                 self._last_error = detail
+            self._sync_reflexes()
             await asyncio.sleep(self.get_config().poll_interval_seconds)
 
     async def _poll_once(self) -> None:
