@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "minecraft": {
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/node_modules/awesome-mineflayer-mcp/dist/index.js"],
+      "enabled": false,
+      "call_timeout": 75,
+      "env": {
+        "AWESOME_MINEFLAYER_MCP_HOME": "${PLUGIN_ROOT}/state",
+        "MCP_AUTO_CONNECT": "false",
+        "MCP_DEFAULT_USERNAME": "AnelfBot",
+        "MCP_DEFAULT_AUTH": "offline",
+        "MCP_DEFAULT_VERSION": "26.1",
+        "MCP_ALLOWED_HOSTS": "127.0.0.1,localhost",
+        "MCP_DISABLE_GROUPS": "creative,raw,settings,vision,waypoints,villager,enchanting,furnace,fishing,vehicles,containers,combat,beds",
+        "MCP_CHAT_MIN_INTERVAL_MS": "500",
+        "MCP_CHARACTER_LIMIT": "65536"
+      }
+    }
+  }
+}
