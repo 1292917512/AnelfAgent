@@ -261,7 +261,7 @@ requires-dist = [
     { name = "loguru", specifier = ">=0.7.0" },
     { name = "lxml", specifier = ">=5.0.0" },
     { name = "markdownify", specifier = ">=0.14.1" },
-    { name = "mcp", specifier = ">=1.0.0" },
+    { name = "mcp", specifier = ">=2.2.0" },
     { name = "miservice", extras = ["aiohttp"], specifier = ">=3.0.1" },
     { name = "mss", specifier = ">=10.2.0" },
     { name = "numpy", specifier = ">=1.26.0" },

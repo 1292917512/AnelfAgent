@@ -479,7 +479,7 @@ def register_entity_llm_hook(
         handler: 执行体，签名 async (ctx: HookContext) -> Optional[str]；
             ctx.messages 为按 context 档位构建的上下文快照，ctx.payload 为事件数据。
         spec_overrides: LLMHookSpec 治理字段直转（context/tool_tags/
-            allow_output_tools/max_iterations/model/max_concurrent/
+            allow_output_tools/route_output/max_iterations/model/max_concurrent/
             cooldown_seconds/debounce_seconds/priority/description/when/
             owner），未列键由 spec 构造器拒绝（注册失败返回 False）。
             context 接受字符串档位（none/lean/transcript），tool_tags 接受 list；

@@ -221,7 +221,8 @@ class _MergeMind(FakeMind):
         return f"user_{anything.uid}" if anything else ""
 
     async def _invoke_llm_unified(self, messages, tools, anything=None, *, tool_choice=None, options=None,
-        stream=False, on_delta=None, purpose="reply"):
+        stream=False, on_delta=None, purpose="reply", cache_tail_anchor=True,
+        abort_event=None, on_tool_call_ready=None):
         self.llm_calls += 1
         self.sent_messages.append(list(messages))
         return SimpleNamespace(

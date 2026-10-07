@@ -18,6 +18,8 @@ import json
 import os
 from typing import Any, Dict, List, Tuple
 
+from mcp.types import CallToolResult, TextContent
+
 from agent.retrieval.providers.base import (
     SOURCE_CONFIG,
     SOURCE_ENV,
@@ -40,13 +42,9 @@ _RESULT_LIST_KEYS = ("search_result", "results", "organic", "items", "data", "li
 _TEXT_KEYS = ("content", "answer", "text", "result")
 
 
-def _result_text(result: Any) -> str:
+def _result_text(result: CallToolResult) -> str:
     """拼接 MCP 结果的文本块。"""
-    parts = [
-        str(getattr(block, "text", ""))
-        for block in (getattr(result, "content", None) or [])
-        if getattr(block, "type", "") == "text"
-    ]
+    parts = [block.text for block in result.content if isinstance(block, TextContent)]
     return "\n".join(p for p in parts if p)
 
 
@@ -63,14 +61,10 @@ def _parse_json_text(text: str) -> Any:
     return None
 
 
-def _payload_from_result(result: Any) -> Any:
-    """从 MCP 调用结果提取负载：structuredContent 优先，文本 JSON 次之，纯文本原样返回。"""
-    # mcp 2.x 字段为 snake_case，1.x 为 camelCase
-    structured = getattr(
-        result, "structured_content", getattr(result, "structuredContent", None),
-    )
-    if isinstance(structured, (dict, list)):
-        return structured
+def _payload_from_result(result: CallToolResult) -> Any:
+    """从 MCP 调用结果提取负载：structured_content 优先，文本 JSON 次之，纯文本原样返回。"""
+    if result.structured_content is not None:
+        return result.structured_content
     text = _result_text(result)
     parsed = _parse_json_text(text)
     return parsed if parsed is not None else text
@@ -96,7 +90,7 @@ async def _call_mcp(
             async with ClientSession(read_stream, write_stream) as session:
                 await session.initialize()
                 result = await session.call_tool(tool, args)
-    if getattr(result, "is_error", None) or getattr(result, "isError", False):
+    if result.is_error:
         raise RuntimeError(_result_text(result) or f"智谱 MCP {tool} 返回错误")
     return _payload_from_result(result)
 

@@ -1060,8 +1060,11 @@ class LLMClient(BaseEntity):
         文本/思考增量即时下发；工具调用与 usage 随终态事件
         （response.completed）一并输出，与 chat_completions 流式契约一致
         （工具调用仅在完整后下发，避免残缺 JSON arguments）。
+        例外是 output_item.done 的完整 function_call item：作为
+        early_tool_calls 即时下发，供执行层在流继续生成时提前分发
+        （最终批次仍含全量，执行层按 id 对账）。
         """
-        from agent.llm.responses.client import parse_responses_payload
+        from agent.llm.responses.client import _tool_call_from_item, parse_responses_payload
 
         stream_kwargs = self._build_responses_kwargs(messages, options, tools, tool_choice)
         # 端点报错自适应（tool_choice 降级 / max_output_tokens 钳制 / 参数移除）：
@@ -1083,6 +1086,18 @@ class LLMClient(BaseEntity):
                         if reasoning:
                             emitted = True
                             yield ChatStreamDelta(reasoning_content=reasoning)
+                    elif event.type == "response.output_item.done":
+                        # item 完成边界：function_call 到达即完整（item.done
+                        # 携带闭合的 arguments），不等 response.completed。
+                        # 提前分发可能已启动执行，计入 emitted 禁止换参重试
+                        item = event.data.get("item")
+                        call = (
+                            _tool_call_from_item(item)
+                            if isinstance(item, dict) else None
+                        )
+                        if call is not None:
+                            emitted = True
+                            yield ChatStreamDelta(early_tool_calls=[call])
                     elif event.type in ("response.completed", "response.incomplete"):
                         result = parse_responses_payload(event.data.get("response") or event.data)
                         chat_result = result.to_chat_result()

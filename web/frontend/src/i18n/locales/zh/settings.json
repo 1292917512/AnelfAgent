@@ -122,6 +122,7 @@
     "debounce": "防抖",
     "toolTags": "工具",
     "outputAllowed": "允许外发",
+    "outputNotRouted": "产出不唤醒",
     "owner": "归属",
     "hint": "钩子由代码（@llm_hook）、任务（trigger_event）与实体注册；开关与治理参数经配置中心 hooks_llm 组热调。",
     "source": {

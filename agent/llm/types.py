@@ -225,6 +225,15 @@ class UsageInfo:
         return min(1.0, self.cache_read_input_tokens / total)
 
 
+class LLMCallAborted(Exception):
+    """LLM 调用被中断事件终止（用户刹车，非故障）。
+
+    由 abort_event 竞争胜出时抛出：流式路径已关闭底层流，非流式路径
+    已取消在途请求。调用方（think_loop）据此走协作中断收束，不进入
+    超时/溢出等故障恢复分支，也不触发非流式回退。
+    """
+
+
 @dataclass(slots=True)
 class ToolCall:
     id: str
@@ -251,6 +260,10 @@ class ChatStreamDelta:
     """流式输出的单个片段。"""
     content: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
+    # 流中已可证明完整的工具调用（更高 index 出现 + arguments 通过 JSON
+    # 校验）：执行层可提前分发。缓冲不删除——最终 tool_calls 批次仍含
+    # 全量，执行层按 id 对账，参数漂移即弃用提前结果
+    early_tool_calls: list[ToolCall] = field(default_factory=list)
     finish_reason: str = ""
     reasoning_content: str = ""
     usage: Optional[UsageInfo] = None

@@ -278,7 +278,8 @@ class HookExecutor:
         """产出路由：登记后台任务完成（走既有 unclaimed → wake_budget 通道）。
 
         仅当钩子产出非空且宿主有后台任务注册表时登记；登记失败仅记日志，
-        绝不影响主对话。
+        绝不影响主对话。route_output=False 的钩子（内部治理类，产出仅供
+        观测）以 claimed 完成——记录保留、跳过 unclaimed 唤醒。
         """
         if not output:
             return
@@ -290,7 +291,10 @@ class HookExecutor:
                 ctx.scope or "_global", "llm_hook",
                 f"{spec.name}: {spec.event}",
             )
-            registry.complete(task_id, True, str(output)[:1500])
+            registry.complete(
+                task_id, True, str(output)[:1500],
+                claimed=None if spec.route_output else True,
+            )
         except Exception as exc:
             log(f"钩子 {spec.name} 结果登记失败: {exc}", "DEBUG", tag="钩子")
 

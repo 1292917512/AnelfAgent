@@ -77,6 +77,8 @@ async def recover_interrupted_replies(mind, crash_context: str = "") -> int:
 
 
 async def _do_recover(mind, crash_context: str = "") -> int:
+    from agent.mind.tools.reply_journal import ReplyToolJournal
+
     router = mind.conversation_data.router
     sqlite = router.sqlite
     rows = await sqlite.load_reply_checkpoints()
@@ -97,14 +99,19 @@ async def _do_recover(mind, crash_context: str = "") -> int:
         if not scope_type:
             log(f"残留检查点 scope 非法，直接清除: {scope_key}", "DEBUG", tag="启动")
             await sqlite.clear_reply_checkpoint(scope_key)
+            await sqlite.clear_reply_tool_journal(scope_key)
             continue
         # entity_scope = "{scope_type}_{scope_id}" → scope_id 为首个下划线后的剩余部分
         scope_id = scope_key[len(scope_type) + 1:]
+        # 工具日志：崩溃残留的执行账本，把"上次执行到哪"并入元消息
+        journal = ReplyToolJournal(sqlite, scope_key)
+        ops = await journal.render()
+        full_notice = f"{notice}\n{ops}" if ops else notice
         try:
             await router.append(
                 StorageDomain.CONVERSATION,
                 scope_type=scope_type, scope_id=scope_id,
-                role="system", content=notice,
+                role="system", content=full_notice,
                 adapter_key=row.get("adapter_key", "") or "",
                 trigger_mind=False,
             )
@@ -113,6 +120,7 @@ async def _do_recover(mind, crash_context: str = "") -> int:
             log(f"中断元消息注入失败（保留检查点待重试）: {scope_key} ({exc})",
                 "WARNING", tag="启动")
             continue
+        await journal.clear()
         await sqlite.clear_reply_checkpoint(scope_key)
         recovered += 1
     if recovered:

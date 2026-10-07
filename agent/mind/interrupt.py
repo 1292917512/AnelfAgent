@@ -6,6 +6,10 @@
 - 协作式而非抢占式：think_loop 在每轮 LLM 调用前检查一次信号，
   命中则安全收束（不发半截消息、不写残缺工具链、历史留中断元消息），
   而不是强行 cancel 协程留下不一致状态。
+- 在途等待点可唤醒：request() 同时置位 scope 级 asyncio.Event，
+  正在消费 LLM 流/执行工具批次的 await 点与该事件竞争，中断到达即
+  干净撤离（关闭流、未开始的调用合成占位结果），收束仍走统一路径。
+  事件随请求登记/消费而生灭——未消费的请求才有事件，消费即换新。
 - scope 粒度：中断只影响目标对话，其他 scope 的回复/反思不受影响。
 - 触发源：
   1. 用户指令：accept_feel 识别到精确匹配的中断关键词（"停止"/"stop" 等，
@@ -15,6 +19,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional
@@ -35,26 +40,48 @@ class InterruptRegistry:
 
     def __init__(self) -> None:
         self._requests: Dict[str, InterruptRequest] = {}
+        self._events: Dict[str, asyncio.Event] = {}
 
     def request(self, scope: str, reason: str = "") -> None:
         """请求中断指定 scope 的进行中会话（幂等：重复请求只更新时间）。"""
         if not scope:
             return
         self._requests[scope] = InterruptRequest(reason=reason, requested_at=time.time())
+        # 事件登记与请求同生命周期：等待方经 event() 拿到的实例在请求被
+        # 消费前保持可唤醒；重复请求只更新时间不重置事件
+        self.event(scope).set()
         log(f"中断请求已登记: scope={scope} reason={reason or '未说明'}", tag="中断")
+
+    def event(self, scope: str) -> asyncio.Event:
+        """该 scope 的中断唤醒事件（登记/消费之间保持同一实例）。
+
+        无未消费请求时返回未置位的新事件——等待方随后等待的是
+        "下一次中断"，与请求语义一致。
+        """
+        evt = self._events.get(scope)
+        if evt is None:
+            evt = asyncio.Event()
+            self._events[scope] = evt
+        return evt
 
     def is_requested(self, scope: str) -> bool:
         """该 scope 是否存在未消费的中断请求。"""
         return scope in self._requests
 
     def consume(self, scope: str) -> Optional[str]:
-        """消费中断请求（收束时调用），返回原因；无请求返回 None。"""
+        """消费中断请求（收束时调用），返回原因；无请求返回 None。
+
+        事件随之移除：下一次 event() 返回全新未置位实例，残留的置位
+        状态不会误杀下一轮回复的在途等待。
+        """
+        self._events.pop(scope, None)
         req = self._requests.pop(scope, None)
         return req.reason if req else None
 
     def clear(self, scope: str) -> None:
         """会话开始时清理历史请求，避免旧信号误杀新会话。"""
         self._requests.pop(scope, None)
+        self._events.pop(scope, None)
 
     def clear_before(self, scope: str, cutoff: float) -> None:
         """只清理 cutoff 之前的历史请求（保留回复启动窗口内的新中断）。
@@ -66,6 +93,7 @@ class InterruptRegistry:
         req = self._requests.get(scope)
         if req is not None and req.requested_at < cutoff:
             self._requests.pop(scope, None)
+            self._events.pop(scope, None)
 
     def pending_scopes(self) -> List[str]:
         """当前存在未消费请求的 scope 列表（可观测性用）。"""

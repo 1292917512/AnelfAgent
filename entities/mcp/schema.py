@@ -17,6 +17,8 @@ import json
 import re
 from typing import Any, Dict, List, Tuple
 
+from mcp.types import Tool
+
 from core.entity import ToolParam
 from core.log import log
 
@@ -50,7 +52,7 @@ def clip_description(text: str, limit: int = _MAX_TOOL_DESC_CHARS) -> str:
     return text[:limit - 1] + "…"
 
 
-def _parse_mcp_tool(mcp_tool: Any) -> tuple[str, List[ToolParam]]:
+def _parse_mcp_tool(mcp_tool: Tool) -> tuple[str, List[ToolParam]]:
     """解析 MCP Tool 对象为名称和参数列表。
 
     参数 schema 保真：type 缺失的联合类型写法（anyOf/oneOf，MCP server
@@ -60,24 +62,26 @@ def _parse_mcp_tool(mcp_tool: Any) -> tuple[str, List[ToolParam]]:
     """
     name = mcp_tool.name
     params: List[ToolParam] = []
-    input_schema = getattr(mcp_tool, "inputSchema", None) or {}
-    if isinstance(input_schema, dict):
-        properties = input_schema.get("properties", {})
-        required_list = input_schema.get("required", [])
-        for p_name, p_schema in properties.items():
-            if not isinstance(p_schema, dict):
-                params.append(ToolParam(name=p_name, required=p_name in required_list))
-                continue
-            p_type, schema_extra = _parse_param_schema(p_schema)
-            params.append(ToolParam(
-                name=p_name,
-                description=clip_description(
-                    p_schema.get("description", ""), _MAX_PARAM_DESC_CHARS),
-                type=p_type,
-                required=p_name in required_list,
-                enum=p_schema.get("enum"),
-                schema_extra=schema_extra or None,
-            ))
+    properties = mcp_tool.input_schema.get("properties", {})
+    if not isinstance(properties, dict):
+        return name, params
+    required_list = mcp_tool.input_schema.get("required", [])
+    if not isinstance(required_list, list):
+        required_list = []
+    for p_name, p_schema in properties.items():
+        if not isinstance(p_schema, dict):
+            params.append(ToolParam(name=p_name, required=p_name in required_list))
+            continue
+        p_type, schema_extra = _parse_param_schema(p_schema)
+        params.append(ToolParam(
+            name=p_name,
+            description=clip_description(
+                p_schema.get("description", ""), _MAX_PARAM_DESC_CHARS),
+            type=p_type,
+            required=p_name in required_list,
+            enum=p_schema.get("enum"),
+            schema_extra=schema_extra or None,
+        ))
     return name, params
 
 

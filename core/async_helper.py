@@ -61,6 +61,20 @@ def spawn(coro: Coroutine[Any, Any, Any], *, name: str = "") -> asyncio.Task:
     return task
 
 
+async def suppress_task(task: asyncio.Task) -> None:
+    """等待已请求取消的任务终结并吞掉终态（清理路径专用）。
+
+    只吞任务自身的取消/异常；若等待期间本协程被取消，CancelError
+    照常向上传播。用于中断竞争胜出后收尸在途任务。
+    """
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        pass
+
+
 def _register_shutdown_hook() -> None:
     """将共享线程池的清理回调注册到 Lifecycle。"""
     try:

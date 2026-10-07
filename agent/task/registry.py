@@ -64,6 +64,15 @@ class TaskRegistry:
         """任务定义文件是否仍在磁盘上（含解析失败的文件，按文件名匹配）。"""
         return name in self._file_stems
 
+    def file_stems(self) -> set[str]:
+        """磁盘上全部任务文件名（stem）集合副本（含解析失败的文件）。"""
+        return set(self._file_stems)
+
+    def is_dir_available(self) -> bool:
+        """任务目录是否可枚举（缺失时为 False——对账清理据此区分"目录异常"
+        与"用户删光全部任务"，前者必须跳过防误清）。"""
+        return self._dir.is_dir()
+
     def list_all(self) -> List[TaskDefinition]:
         return list(self._tasks.values())
 
@@ -88,6 +97,26 @@ class TaskRegistry:
             }
             for t in self._tasks.values()
         ]
+
+    async def delete_file(self, name: str) -> bool:
+        """删除任务定义文件并同步内存态（task_files_lock 互斥）。
+
+        供引擎过期清理等系统内部路径使用；AI 工具 / Web API 的删除
+        走各自既有流程（含调度/历史/交接清理）。
+        """
+        path = self._paths.get(name)
+        if path is None:
+            return False
+        async with task_files_lock:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:
+                log(f"任务文件删除失败 [{path.name}]: {exc}", "WARNING", tag="任务")
+                return False
+        self._tasks.pop(name, None)
+        self._paths.pop(name, None)
+        self._file_stems.discard(path.stem)
+        return True
 
     async def update_task_fields(self, name: str, fields: Dict[str, Any]) -> bool:
         """更新任务定义文件的指定字段并同步内存态（task_files_lock 互斥，原子写）。

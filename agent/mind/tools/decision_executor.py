@@ -115,6 +115,11 @@ async def execute_reply(mind: Mind, decision: Decision) -> None:
             phase="reply",
         )
         _checkpoint_registered = True
+        # 开新账：上次异常退出可能留下未随检查点一并清除的残行
+        from agent.mind.tools.reply_journal import build_reply_journal
+        stale_journal = build_reply_journal(mind, scope)
+        if stale_journal is not None:
+            await stale_journal.clear()
     except Exception as exc:
         log(f"回复检查点登记失败（不影响回复）: {exc}", "DEBUG", tag="思维")
     try:
@@ -140,6 +145,16 @@ async def execute_reply(mind: Mind, decision: Decision) -> None:
         mind._active_scopes.discard(scope)
         mind._reply_activated_at.pop(scope, None)
         if _checkpoint_registered:
+            # 工具日志先于检查点清除（同生命周期）：间隙崩溃时检查点仍在、
+            # 账本已空——恢复注入无操作清单是正确状态，反之会留孤儿行。
+            # 协作中断/正常收束都不是崩溃，已执行内容已由执行摘要入库
+            try:
+                from agent.mind.tools.reply_journal import build_reply_journal
+                journal = build_reply_journal(mind, scope)
+                if journal is not None:
+                    await journal.clear()
+            except Exception as exc:
+                log(f"工具日志清除失败（已忽略）: {exc}", "DEBUG", tag="思维")
             # 清除检查点（正常结束/协作中断/异常都算收束）。关停取消场景
             # 若清除未完成，残留行下次启动注入"被中断"提示——语义上同样成立
             try:

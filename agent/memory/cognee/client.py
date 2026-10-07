@@ -12,6 +12,7 @@ from uuid import UUID
 
 from core.log import log
 
+from . import ladybug_guard
 from .config import CogneeConfig
 from .llm_bridge import (
     anthropic_env_bridge,
@@ -107,8 +108,7 @@ class CogneeClient:
         # cognee 的 setup_logging() 接管了 stdlib root logger，
         # 限制其 handler 级别以避免 pipeline 状态持续刷屏
         _quieten_cognee_logger()
-        _patch_ladybug_concurrency()
-        _patch_ladybug_wal_recovery()
+        ladybug_guard.install(lambda: self.config)
         return self._module
 
     async def _configure(self, module: Any) -> None:
@@ -149,6 +149,7 @@ class CogneeClient:
         """
         try:
             import litellm
+
             litellm.drop_params = True
         except Exception as exc:
             log(f"litellm drop_params 设置失败（不影响主流程）: {exc}", "DEBUG", tag="记忆")
@@ -176,9 +177,7 @@ class CogneeClient:
                 return await asyncio.wait_for(result, timeout=limit)
             except asyncio.TimeoutError:
                 # 裸 TimeoutError 的 str() 为空，必须带操作上下文否则无法定位
-                raise RuntimeError(
-                    f"Cognee 调用 {dotted_name} 超时（>{limit:.0f}s）"
-                ) from None
+                raise RuntimeError(f"Cognee 调用 {dotted_name} 超时（>{limit:.0f}s）") from None
         return result
 
     # v2 memory-oriented API
@@ -326,6 +325,7 @@ class CogneeClient:
             if not availability.ready:
                 raise RuntimeError(availability.reason or "Cognee 未就绪")
         from .storage import compact_lance_tree
+
         return await asyncio.to_thread(
             compact_lance_tree,
             Path(self.config.absolute_data_root) / "system" / "databases",
@@ -409,102 +409,6 @@ def _quieten_cognee_logger() -> None:
     _logging.getLogger("cognee").setLevel(_logging.WARNING)
 
 
-def _patch_ladybug_concurrency() -> None:
-    """以进程级线程锁串行所有 ladybug native 执行（防 pybind 层段错误）。
-
-    ladybug/Kuzu 的 pybind connection 非线程安全，两个补丁点：
-
-    1. ``_submit_to_executor_locked``：提交到线程池的 native 任务（execute +
-       结果消费全程）包上全局线程锁。关键在于 asyncio.wait_for 超时场景——
-       取消只能中止 Python 协程，native 查询仍在线程池中运行；旧版 asyncio.Lock
-       随协程解锁，下一条查询会与孤儿查询并发使用同一 connection，直接
-       Segmentation fault（2026-08 实测：NodeTableScanState::scanNext 空指针）。
-       线程锁由执行线程持有，native 真正跑完才释放，孤儿查询天然安全，
-       且跨事件循环/跨 adapter 实例生效（threading.Lock 无循环绑定）。
-    2. ``_drop_native_resources``：释放句柄前先取同一把锁，保证 delete_graph /
-       close 拆除资源时没有 native 执行在途——基于 open_connections 计数的
-       drain 看不到被取消协程遗留的孤儿 native 执行，曾导致扫描中途句柄被拆。
-
-    图查询不是吞吐瓶颈，串行代价可接受，换进程不崩溃。幂等：重复导入只包一次。
-    """
-    try:
-        from cognee.infrastructure.databases.graph.ladybug import adapter as ladybug_adapter
-    except Exception as exc:
-        log(f"ladybug 并发补丁跳过（不影响主流程）: {exc}", "DEBUG", tag="记忆")
-        return
-    if _apply_native_gate(ladybug_adapter.LadybugAdapter):
-        log("ladybug native 执行已串行走线程锁（孤儿查询安全）", "DEBUG", tag="记忆")
-
-
-def _apply_native_gate(adapter_cls: type) -> bool:
-    """给 LadybugAdapter 类安装 native 执行串行门（幂等，返回是否本次安装）。"""
-    if getattr(adapter_cls, "_anel_native_gate", False):
-        return False
-    import functools
-    import threading
-
-    gate = threading.Lock()
-
-    # cognee 私有方法挂载：补丁点为第三方内部实现，类型系统不可见
-    original_submit = adapter_cls._submit_to_executor_locked  # type: ignore[attr-defined]
-
-    @functools.wraps(original_submit)
-    def gated_submit(self: Any, fn: Any, *args: Any) -> Any:
-        @functools.wraps(fn)
-        def guarded(*call_args: Any, **call_kwargs: Any) -> Any:
-            with gate:
-                return fn(*call_args, **call_kwargs)
-
-        return original_submit(self, guarded, *args)
-
-    original_drop = adapter_cls._drop_native_resources  # type: ignore[attr-defined]
-
-    @functools.wraps(original_drop)
-    def gated_drop(self: Any) -> None:
-        # 等待在途 native 执行（含孤儿）结束后再释放句柄；
-        # 极端情况下会短暂阻塞调用线程，优于拆掉正在扫描的连接导致段错误
-        with gate:
-            original_drop(self)
-
-    adapter_cls._submit_to_executor_locked = gated_submit  # type: ignore[attr-defined]
-    adapter_cls._drop_native_resources = gated_drop  # type: ignore[attr-defined]
-    adapter_cls._anel_native_gate = True  # type: ignore[attr-defined]
-    return True
-
-
-def _patch_ladybug_wal_recovery() -> None:
-    """让 cognee 以容错模式打开 ladybug 库（WAL 损坏时恢复而非抛错）。
-
-    checkpoint 进行到一半进程被杀时，冻结 WAL（.wal.checkpoint）尾部留下半条
-    记录，打开回放读到非法记录类型触发 wal_record.cpp 的 UNREACHABLE_CODE
-    断言。cognee 自带兜底只删活动 WAL（<db>.wal），覆盖不到冻结 WAL，该
-    数据集图库从此永久无法打开。throw_on_wal_replay_failure=False 是 ladybug
-    官方恢复语义：回放到损坏点前最后一个已提交事务，仅丢失被中断的事务，
-    比 cognee 删整个 WAL 的兜底损失更小；WAL 完好时行为完全不变。
-    幂等：重复导入只包一次。
-    """
-    try:
-        from cognee.infrastructure.databases.graph.ladybug import adapter as ladybug_adapter
-    except Exception as exc:
-        log(f"ladybug WAL 恢复补丁跳过（不影响主流程）: {exc}", "DEBUG", tag="记忆")
-        return
-    original = ladybug_adapter.Database
-    if getattr(original, "_anel_wal_tolerant", False):
-        return
-
-    class _WalTolerantDatabase(original):  # type: ignore[valid-type, misc]
-        """默认容错回放的 Database 包装（保留显式传参覆盖）。"""
-
-        _anel_wal_tolerant = True
-
-        def __init__(self, database_path: Any = None, **kwargs: Any) -> None:
-            kwargs.setdefault("throw_on_wal_replay_failure", False)
-            super().__init__(database_path, **kwargs)
-
-    ladybug_adapter.Database = _WalTolerantDatabase
-    log("ladybug 已启用 WAL 容错恢复（损坏时回放到最后提交点）", "DEBUG", tag="记忆")
-
-
 def _normalize_recall(raw_results: Any) -> list[CogneeRecallItem]:
     if raw_results is None:
         return []
@@ -532,22 +436,21 @@ def _normalize_recall(raw_results: Any) -> list[CogneeRecallItem]:
         if not content.strip():
             continue
         metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
-        raw_id = (
-            metadata.get("chunk_id")
-            or data.get("id")
-            or data.get("qa_id")
-            or f"result-{index}"
-        )
+        raw_id = metadata.get("chunk_id") or data.get("id") or data.get("qa_id") or f"result-{index}"
         score_value = data.get("score", 0.0)
         score = float(score_value) if isinstance(score_value, (int, float)) else 0.0
-        normalized.append(CogneeRecallItem(
-            id=f"cognee:{raw_id}",
-            content=content,
-            score=score,
-            source="cognee_chunk" if "chunk" in source_value.lower() or metadata.get("chunk_id") else "cognee_graph",
-            dataset_id=str(data.get("dataset_id", "")),
-            dataset_name=str(data.get("dataset_name", "")),
-            metadata=metadata,
-            raw=data,
-        ))
+        normalized.append(
+            CogneeRecallItem(
+                id=f"cognee:{raw_id}",
+                content=content,
+                score=score,
+                source="cognee_chunk"
+                if "chunk" in source_value.lower() or metadata.get("chunk_id")
+                else "cognee_graph",
+                dataset_id=str(data.get("dataset_id", "")),
+                dataset_name=str(data.get("dataset_name", "")),
+                metadata=metadata,
+                raw=data,
+            )
+        )
     return normalized

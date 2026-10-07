@@ -1,6 +1,6 @@
 # AnelfAgent
 
-**v0.3** · A unified agent framework — Autonomous Reasoning · Semantic Memory · Tool Orchestration · Multimodal Generation · Multi-Channel Communication
+**v0.3** · A unified agent framework — Autonomous Reasoning · Semantic Memory · Tool Orchestration · Multimodal Generation · Realtime Voice · Multi-Channel Communication
 
 [简体中文](README.md) | **English**
 
@@ -8,70 +8,101 @@
 [![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
 [![uv](https://img.shields.io/badge/package%20manager-uv-DE5FE9.svg)](https://github.com/astral-sh/uv)
 
-AnelfAgent is an open-source AI agent runtime for individuals and teams. It ships with an autonomous decision engine, hybrid semantic memory, self-learning skills, sub-agent delegation, recoverable workflows, MCP tool bridging, and multi-platform channel adapters. It covers multimodal generation across text, image, speech, video, and music, and provides a modern WebUI for the full lifecycle of configuration, conversation, and operations.
+AnelfAgent is an open-source, self-hosted AI agent runtime. Give it one LLM API key and it becomes an assistant that **remembers things long-term, teaches itself skills, works proactively, and lives inside multiple chat platforms at once**. It ships with an autonomous decision engine, hybrid semantic memory, self-learning skills, sub-agent delegation, recoverable workflows, MCP tool bridging, and multi-platform channel adapters. It covers text, image, speech, video, and music, and comes with a modern WebUI for configuration, conversation, and operations.
 
-> This repository is the **0.3 stable baseline**: the architecture and capabilities are well established, suitable for self-hosted deployment and downstream extension.
+> This repository is the **0.3 stable baseline**: the architecture and capabilities are well established, ready for self-hosted deployment and downstream extension.
 
 ---
 
-## Why AnelfAgent
+## Quick Start
 
-| Capability | Description |
+> Goal: **a running agent in 5 minutes**. All you need is Python, Node.js, and one LLM API key.
+
+### 1. Requirements
+
+| Dependency | Version | Notes |
+|---|---|---|
+| Python | **3.11 – 3.12** | Main runtime |
+| Node.js | **20** (recommended, see `.nvmrc`) | Builds the WebUI frontend; optional — without it everything runs except the web interface |
+| [uv](https://github.com/astral-sh/uv) | latest | Python package manager (strongly recommended; the start script uses it automatically) |
+
+### 2. Clone & Configure
+
+```bash
+git clone https://github.com/1292917512/AnelfAgent.git
+cd AnelfAgent
+
+# Create the three core config files from templates
+cp config/llm_clients.example.json config/llm_clients.json
+cp config/app_config.example.json config/app_config.json
+cp config/mcp_servers.example.json config/mcp_servers.json
+```
+
+Open `config/llm_clients.json` and fill in your API key under any provider (OpenAI / Anthropic / DeepSeek / Zhipu — 100+ providers supported through litellm). **One working chat model plus one embedding model is enough to start**; everything else can be configured later from the WebUI.
+
+> You can also skip editing JSON entirely: start with it empty, log into the WebUI, and add models from the "Models" page with a few clicks (hot-reload, no restart).
+
+### 3. Build the Frontend & Launch
+
+```bash
+# Build the WebUI (one-time; rebuild after frontend code updates)
+cd web/frontend && npm install && npm run build && cd ../..
+
+# Launch (the start script syncs Python dependencies automatically)
+./start.sh                 # macOS / Linux
+start.bat                  # Windows
+```
+
+### 4. Open the WebUI
+
+Visit: **http://127.0.0.1:8092/webui/**
+
+From the WebUI you can chat with the AI, add/switch models, enable channels, schedule heartbeat tasks, inspect memory and skills, and manage approvals — **almost everything is point-and-click with hot-reload on save**.
+
+### Daily Operations
+
+```bash
+./restart.sh               # One-shot background restart (after config/code changes)
+Ctrl + C                   # Stop (when running in the foreground via start.sh)
+uv run python launch.py --no-webui   # Agent core only, no web interface
+```
+
+- `start.sh` includes a **crash guardian**: crashes are auto-restarted, giving up after 5 consecutive crashes
+- Single-instance guard: a second launch automatically cleans up the stale process holding the port — no double-running
+- For boot autostart / background daemon: use `restart.sh` (nohup), or wrap it in systemd / pm2 yourself
+
+### Connect Your First Chat Channel
+
+Go to the "Channels" page in the WebUI and follow the prompts. The fastest to try are **WeChat** (QR-code login, no public endpoint needed) and **QQ** (via NapCat). See the "Multi-Platform Channels" section below for per-platform notes.
+
+---
+
+## What Can It Do?
+
+In one sentence: **a 7×24 online AI that remembers, learns skills, and gets things done on its own**.
+
+| Scenario | Description |
 |---|---|
-| **Entity-Driven** | Tools / models / channels / MCP / storage are all registered in the `EntityRegistry`, with two-level capability discovery |
-| **Tag Routing** | `[key:value]` tags run through message metadata and tool injection, so the AI always gets a "just enough" toolset |
-| **Two-Layer Thinking** | Meta-decision picks the action type → `think_loop` executes multi-round tool orchestration |
-| **Robust Guardrails** | Tool guardrails / classified retries / candidate-chain fallback / context compression / result budgets / session tokens / threat scanning — programmatic safety nets |
-| **Augmented Memory** | SQLite + FTS5 + Embedding hybrid recall, with optional Cognee knowledge-graph federation |
-| **Multimodal Generation** | Unified adapters for image / speech / video / music (OpenAI · MiniMax · SiliconFlow · DashScope, etc.) |
-| **Continuous Evolution** | Self-learning skill loop + heartbeat task scheduling + goal planning |
-| **Secure & Controllable** | Unified permission engine (allow / ask / deny) + channel-based approval + WebUI auth + automatic secret redaction |
-| **Self-Ops** | SSH remote management / memory backup / project updates / file sharing — the AI can manage its own deployment |
-| **Multi-Channel** | QQ / Feishu (Lark) / WeChat / Telegram / Bilibili / Acfun / WebUI / HTTP / CLI + an OpenAI-compatible Responses API |
+| 💬 Chat assistant | Lives in QQ / WeChat / Feishu / Telegram / Bilibili / AcFun / WebUI — one brain across all platforms |
+| 🧠 Long-term memory | Semantic memory + knowledge graph: your preferences, facts, and relationships, remembered and sharpened over time |
+| 🌱 Self-improvement | Distills "skills" (troubleshooting know-how, task playbooks) from conversations and reuses them next time |
+| 🛠 Real work | Files, shell commands, web search, desktop control, smart home, server administration — executed safely via approvals |
+| ⏰ Proactivity | Heartbeat scheduling: timed reminders, recurring tasks, idle-time self-reflection — no prompt needed |
+| 🎨 Multimodal | Image, speech, video, and music generation; sticker search; image understanding; speech transcription |
+| 📞 Realtime voice | Full-duplex call engine: listen while speaking, barge-in anytime, voiceprints tell *who* is talking |
+| 👀 Vision | Screenshots / screen-watching (continuous region monitoring), face recognition, desktop control (see-and-click) |
+| 🤝 Delegation | Fan one task out to parallel sub-agents and aggregate results; resumable runs and mid-run steering |
+| 🔄 Workflows | Declarative DAG orchestration with journaled crash recovery — finished steps are never re-paid |
+| 🔌 Open | MCP tool bridging, OpenAI-compatible Responses API, plugin marketplace, webhook/HTTP channels |
 
 ---
 
 ## Core Capabilities
 
-### Entity Registration & Tool Gating
-
-Every capability is registered as an entity, organized by groups and tags; the AI discovers tools through a catalog → group two-level flow.
-
-```python
-from entities._sdk import tool, entity
-
-entity("weather", "Weather lookup — real-time weather information")
-
-@tool(name="get_weather", group="weather", tags=["web"])
-async def get_weather(city: str) -> str:
-    """Get real-time weather for a city.
-
-    Args:
-        city: City name
-    """
-    return json.dumps({"city": city, "weather": "sunny", "temp": 25})
-```
-
-After **PFC multi-source merging**, two gating passes keep the schema lean:
-
-| Source | Description |
-|---|---|
-| `always` | Always-on tools (`end_reply` / `send_message`, etc.) |
-| `mcp:*` | MCP server tools |
-| `channel` | Capability match of the current channel |
-| `tag_match` | Activated by message tags (e.g. `media:image`) |
-| `hot_recall` | Top-N frequently used tools |
-| `discovered` / `activated` | Dynamic discovery and sleeping-group wake-up |
-
-- **check_fn gating**: environment precondition checks (TTL cache + transient-failure grace); tools that fail the check never enter the schema
-- **Sleep / activate**: `allow_sleep` tools only show a brief by default; the AI calls `activate_tool_group` to wake them on demand
-
 ### Autonomous Mind
 
 ```
-Message queued → PFC gathers situation → meta-decision → execution
-  → memory recall / skill injection → think_loop (multi-round LLM + tools)
-  → end_reply → done
+Message queued → situation gathered (messages/tasks/memory/goals) → meta-decision → think_loop (multi-round tools) → done
 ```
 
 | Decision Type | Purpose |
@@ -83,188 +114,153 @@ Message queued → PFC gathers situation → meta-decision → execution
 | `TOOL_ACTION` | Autonomous tool operations |
 | `PLAN` | Goal planning |
 
-System prompts are layered by change frequency to hit Anthropic / OpenAI **prefix caching**:
+System prompts are layered by change frequency (stable → summary → history → context → volatile → provider) and kept byte-stable to hit Anthropic / OpenAI **prefix caching**, cutting long-conversation cost significantly.
 
-```
-stable (persona + tool prompts, frozen within a conversation)
-  → context (notes, low-frequency)
-  → volatile (recall + skills + security markers, per turn)
-```
+### Entity Registry & Tool Gating
 
-### Robustness & Security
+Every capability (tools / models / channels / MCP / storage) is registered in the `EntityRegistry`. The AI discovers tools through a two-level catalog → group flow and always receives a "just enough" toolset:
 
-| Mechanism | Role |
+| Source | Description |
 |---|---|
-| Tool guardrails | Exact-failure repeats / consecutive failures / no-progress loops → warn / block / halt |
-| Error classification + adaptive retry | Rate limits, timeouts, context overflow and more drive backoff and model fallback |
-| Candidate-chain fallback (resilience) | `chat_with_fallback` advances along candidate model chains; context overflow fails fast and larger-window candidates are tried directly, avoiding redundant compression |
-| Model capability probing | Empirically tests tools / vision support and auto-corrects model capability profiles |
-| Context compression | Overflow detection → keep head & tail + LLM summary, sustaining long conversations |
-| Result budgets | Dynamically truncates tool results based on model window (per-item / per-round ratios) |
-| Session tokens | One-time tokens mark trusted history, preventing injection forgery |
-| Threat scanning + redaction | Intercepts tool results / memory writes; API keys, tokens and passwords are automatically masked |
-| **Unified permission engine** | `tool_name(arg-glob)` + allow / ask / deny, global and per-channel scopes; high-risk operations require human approval via channel or WebUI |
+| `always` | Always-on tools (`end_reply` / `send_message`, etc.) |
+| `mcp:*` | MCP server tools |
+| `channel` | Capability match of the current channel |
+| `tag_match` | Activated by message tags (e.g. `media:image`) |
+| `hot_recall` | Top-N frequently used tools |
+| `discovered` / `activated` | Dynamic discovery and sleeping-group wake-up |
 
-### Model Management (LLMManager)
-
-- **Two-level structure**: Provider → Model, organized by capability type (chat / tools / vision / embedding …)
-- **Enable switches**: disabled models are automatically excluded from selection / fallback / execution paths, with persisted state
-- **Sub-agent profiles** (`sub_agents`): name → ordered model candidate pool + execution facets (dedicated instructions / tool selectors / structured output contracts); built-in difficulty tiers 1–3 are pure model-pool syntactic sugar, with automatic downgrade when a tier is unavailable
-- **Config-driven thinking contracts**: each model declares its reasoning parameter mapping in config (the `thinking` field) — zero model-name special-casing in code
-- **Proxy support**: `HTTP(S)_PROXY` environment leases + deep-copyable proxy clients
-- **Protocol adaptation**: both Chat Completions and Responses protocols (`agent/llm/responses`), unified through litellm
-
-### Multimodal Generation
-
-Unified adapters hide platform differences; the AI produces multimedia content directly through the `media` / `minimax` tools:
-
-| Modality | Adapter | Platforms |
-|---|---|---|
-| Image | `ImageGenAdapter` | OpenAI · DashScope · SiliconFlow · MiniMax |
-| Speech | `SpeechAdapter` | OpenAI · MiniMax (incl. voice cloning) |
-| Video | `VideoGenAdapter` | OpenAI · MiniMax (V1 / V2, async task polling) |
-| Music | `MusicAdapter` | MiniMax |
-
-The companion **sticker entity** (`sticker`) supports collecting / searching / sending stickers, text-to-image and image-to-image search; candidates are injected via the multimodal convention so vision models can "see with their own eyes" before choosing.
+- **check_fn gating**: environment precondition checks (TTL cache + transient-failure grace); failing tools never enter the schema
+- **Sleep / activate**: `allow_sleep` tools show only a brief by default; the AI calls `activate_tool_group` to wake them on demand
 
 ### Hybrid Semantic Memory
 
-Hybrid scoring over Embedding + FTS5 + tag matching + time decay; memory types cover entity profiles, knowledge, events, and permanent memories, plus Markdown notes. The storage layer is split into `memory/store/` (connection / retrieval / file index / queue), decoupled from upper domain logic.
+Hybrid scoring over Embedding + FTS5 + tag matching + time decay. Optional **Cognee** knowledge-graph projection and federated recall — with automatic degradation on failure and SQLite always the authoritative store.
 
-- **Memory rules document**: write routing / tag discipline / query routing consolidated into a single system-level prompt document (`config/memory_rules.md`), editable from the WebUI memory page
-- **Main-tag memory** (`main:hub`): a permanent memory pinned at the top of every reply cycle, maintained by the AI as a whole and self-healed by heartbeat
-- **Forgetting governance**: importance relaxation + retrieval-practice effect + archive / tombstone fallback recall (restorable via `restore_memory`)
-- **Graph governance**: edge-strength decay / weak-edge forgetting + an AI curation agenda (facts belong to the system, decisions belong to the AI)
+- **LLM retrieval planning**: a light model plans multiple complementary queries for the first-pass recall; an async deep probe streams in extra findings while the AI thinks; a three-key ledger guarantees each fact appears at most once per reply
+- **Memory rules document**: write routing / tag discipline / query routing consolidated into one system-level prompt document, editable from the WebUI memory page
+- **Forgetting governance**: importance relaxation + retrieval practice effect + archive/tombstone fallback recall (restorable); graph edge decay + an AI curation agenda (facts from the system, decisions from the AI)
+- **Write-time dedup**: a structured judgment engine classifies each write as novel / covered / evolution / fragments — the hot path makes zero extra LLM calls for most writes
 
-Optionally enable **Cognee** knowledge-graph projection and federated recall (`config/cognee.json` / WebUI memory settings), coexisting with the authoritative SQLite store and degrading gracefully on failure.
+### Self-Learning Skills
 
-### Self-Learning Skills & Sub-Agents
+After each conversation, an LLM hook reviews the transcript in the background and distills skills into `workspace/skills/SKILL.md`; a two-layer recall (catalog + semantic matching) injects them when relevant; heartbeat curation demotes / archives / merges stale ones. Skills accumulate, and the agent gets better with use. Typing `/skill-name` invokes a skill deterministically.
 
-- **Skill loop**: post-conversation background review via the LLM hooks plane → distilled into `workspace/skills/SKILL.md` → semantic-match injection → heartbeat curation (downgrade / archive)
-- **Sub-agents**: `delegate_task` supports parallel fan-out, background mode and independent iteration budgets with profile-based model selection; `follow_up_agent` resumes losslessly from the full transcript; progress streams / usage attribution / a Web panel provide end-to-end observability
+### Sub-Agents & Workflows
 
-### Workflows (recoverable orchestration)
-
-- **Declarative DAG**: `workflow_start` launches a background workflow from a JSON spec (ask sub-agent steps / tool steps + depends_on); upstream results are injected into downstream context, layers run concurrently
-- **Journal-based recovery**: every step is admitted to a SQLite journal before dispatch; after a stop or crash, `workflow_resume` replays it — completed steps are reused verbatim after input-fingerprint verification (no re-spend); `resume_of` starts a revised run importing the parent's matching results, with divergence cascading into re-runs
-- **Gated retries**: tool steps may carry a gate (expected value on a result field); on failure a sub-agent repairs against the failure context and the step re-runs within bounded rounds — "model generates, code gates"
-- **Full observability**: step rounds / event timeline / Web "Workflows" page (start / stop / resume / revise)
-
-### LLM Hooks Plane
-
-A unified registration primitive for "deriving context-carrying asynchronous LLM work at LLM thinking boundaries", parallel to the heartbeat / task system: multiple hooks can attach to the same event (`after_reply` / `delegation_resolved` / `llm_end` …) and run concurrently, each with independent governance (concurrency / cooldown / debounce). Skill background review, task event triggers, and entity hooks are all built on it.
+- **Sub-agents**: `delegate_task` supports parallel fan-out, background mode, and independent iteration budgets, with profile-based model selection (built-in easy/medium/hard tiers); `follow_up_agent` resumes a run losslessly from its full transcript; progress streams, usage attribution, and a Web panel give end-to-end observability; `send_to_agent` steers mid-run (at step boundaries) or appends after completion
+- **Workflows**: declare a DAG in JSON (ask sub-agent steps / tool steps + dependencies); journaled crash recovery (finished steps reused via input fingerprints — never re-paid), revision imports from parent runs, and gated re-runs (fix-then-retry when a step result misses expectations)
 
 ### Heartbeat & Tasks
 
-Task content (`config/tasks/*.json`) is separated from scheduling (`config/heartbeat.json`):
+Task content (`config/tasks/*.json`) is separated from scheduling, with five orthogonal triggers:
 
-| Trigger Mode | Description |
+| Trigger | Description |
 |---|---|
-| `heartbeat` | Runs every N heartbeats |
-| `scheduled` | At specified times each day (per-slot independent dedup) |
-| `idle` | Fires after N consecutive beats without thinking activity (exactly one globally) |
+| `heartbeat` | Every N heartbeats |
+| `scheduled` | Fixed times each day (per-slot dedup) |
+| `idle` | After sustained inactivity (one global slot, e.g. self-reflection) |
 | `manual` | Manual / AI-initiated only |
-| `trigger_event` | Event-triggered (via the LLM hooks plane, orthogonal to scheduling) |
+| `trigger_event` | Fired by events (via the LLM hook surface) |
 
-Each heartbeat also runs built-in maintenance: entity profiling, memory health checks, skill curation, log compaction, idle conversation folding, and more.
+Each heartbeat also runs built-in maintenance: memory health checks, skill curation, log compaction, idle-conversation folding, graph governance agenda, and more.
 
-### Plugins & Hot-Plug
+### Realtime Voice & Vision
 
-- **Plugin system** (`entities/plugins`): a plugin is a directory package of manifest + skills/ + .mcp.json + tools.py, with marketplace subscriptions (local directory or git repo); the AI can install / upgrade / remove plugins autonomously
-- **Module hot-plug**: adding or removing entity / channel directories is reconciled automatically via directory watching (new directories register instantly, removed ones are fully torn down); manual hot-sync is also available from the WebUI
+- **Realtime call engine** (`agent/realtime`): full-duplex sessions, smart turn detection (smart_turn), barge-in, echo handling; qwen realtime ASR preferred with FunASR fallback
+- **Full voice stack** (`agent/audio` · `voice` · `tts`): ASR transcription, streaming TTS (MiniMax / CosyVoice / Qwen-TTS / edge-tts), and **voiceprint recognition** — the agent can tell *who* is speaking across channels
+- **Vision framework** (`agent/vision` + the `screen` entity): screenshots / screen-watching (continuous region monitoring), face recognition (optional [`deploy/face_server`](deploy/face_server) sidecar), and desktop control via `desktop_act` (see-and-click mouse/keyboard)
+- **Multimodal generation**: unified adapters for image / speech / video / music (OpenAI · MiniMax · SiliconFlow · DashScope, etc.)
 
-### Self-Ops & External Data
+### Model Management (LLMManager)
 
-| Entity / Service | Capability |
+- **Two-level structure**: Provider → Model, organized by capability (chat / tools / vision / embedding …); disabled models are removed from every path
+- **Candidate-chain fallback**: `chat_with_fallback` advances along candidate models; context overflow fails fast to a larger-window candidate
+- **Config-driven thinking contracts**: each model declares its reasoning-parameter mapping in config — zero model-name special-casing in code
+- **Dual protocols**: Chat Completions and Responses (auto-falls back on 404 in `auto` mode), unified through litellm
+- **Hot reload**: hand-edited `llm_clients.json` takes effect via three paths (file watcher / Web / AI tools); unchanged clients are never touched
+- **Structured judgment** (`agent/judgment`): a unified Choice / Score / Noul judging channel with optional TypeSafe Jev integration and plain-model fallback
+
+### Security & Permissions
+
+| Mechanism | Role |
 |---|---|
-| **SSH remote management** | Connection management / command execution / file transfer, persistent remote working-directory tracking, default connections and a WebUI panel |
-| **DevOps** | Sync memory to a private GitHub repo / pull project updates / restart the app (with restart handoff messages) |
-| **File sharing** | Generate externally downloadable links for workspace files and manage their lifecycle |
-| **External SQL sources** | Read-only PostgreSQL / MySQL connection registry (`config/db_connections.json`), browsable and queryable from the WebUI data page |
-| **Storage volumes** | All persistent data is registered as storage volumes (8 volumes), supporting online hot backup / restore / migration / SQL export-import, operated visually from the Web data page |
-| **Data directory migration** | Online hot-backup copy + verification + `data_root` switching |
+| Unified permission engine | `tool_name(arg-glob)` + allow / ask / deny, at global and per-channel scope; high-risk operations approved via channel message or the WebUI |
+| CRITICAL risk backstop | `@tool(risk="CRITICAL")` automatically escalates to approval, with a guardian pre-review |
+| Approval audit | All non-default decisions are persisted; trust counters survive restarts |
+| Tool guardrails | Exact-failure repeats / consecutive failures / no-progress loops → warn / block / halt |
+| Session tokens + threat scanning | One-time tokens mark trusted history; injection-pattern scanning guards tool results and memory writes |
+| Automatic redaction | API keys / tokens / passwords are masked in tool results and logs |
+| WebUI auth | `auth.password` in `config/webui.json` (empty = no login); with `auth.strict=true` and no password, a 32-char admin password is generated for you; Bearer API keys for programmatic access |
 
-### Multi-Channel Adapters
+### LLM Hook Surface
 
-Directory auto-discovery; a new channel only needs `channels/{name}/adapter.py` + `channel_config.json`:
-
-| Platform | Highlights |
-|---|---|
-| **QQ** | OneBot v11 + NapCat (direct connection) |
-| **Feishu (Lark)** | WebSocket event-driven |
-| **WeChat** | iLink Bot API, scan-to-login, no public webhook required (see [`channels/weixin/README.md`](channels/weixin/README.md)) |
-| **Telegram** | Bot API long polling |
-| **Bilibili / Acfun** | Danmaku and private-message integration |
-| **WebUI** | SSE push; three-pane conversation workbench (file tree / conversation flow / Dock) |
-| **HTTP API** | Synchronous request-response |
-| **CLI** | Terminal debugging |
-| **Responses API** | OpenAI-compatible gateway (`/v1/responses`) — serve AnelfAgent itself as a model endpoint |
-
-The WebUI workbench supports the AI **driving the interface in reverse** (`ui_notify` / `ui_ask` / `ui_open_panel` etc. → SSE `ui_command`).
+A unified registration primitive for "deriving context-aware async LLM work at LLM thinking boundaries": multiple hooks can attach to the same event (`after_reply` / `delegation_resolved` / `llm_end` …) and run in parallel, each independently governed (concurrency / cooldown / debounce / recursion guard). Background skill review, task event triggers, and entity hooks are all built on it.
 
 ### MCP Bridging
 
-Supports stdio / SSE / Streamable HTTP; background async connections, tools auto-registered as entities with hot reload; tool-list change notifications are hot-synced, and image results are persisted to disk and injected into vision models.
+stdio / SSE / Streamable HTTP; background async connections with tools auto-registered as entities and hot-reloadable; tool-list change notifications sync incrementally; image results are persisted and injected into vision models (screenshot-style MCP servers are literally *seen*); liveness probing, reconnect budgets, and OAuth included.
 
----
+### Plugins & Hot-Swapping
 
-## Tech Stack
+- **Plugin system** (`entities/plugins`): a plugin is a directory package with a manifest + skills/ + .mcp.json + tools.py; marketplace subscriptions (local directory or git repo); the AI can install / upgrade / remove plugins itself
+- **Module hot-swap**: adding or removing entity/channel directories is reconciled automatically via directory watching (instant registration, complete teardown), with a manual hot-sync button in the WebUI
 
-| Category | Technology |
+### Self-Ops & Data
+
+| Capability | Description |
 |---|---|
-| Runtime | Python 3.11–3.12 · [uv](https://github.com/astral-sh/uv) · FastAPI · Uvicorn · Pydantic v2 |
-| LLM | litellm (100+ unified providers) · Chat Completions / Responses dual protocols |
-| Storage | aiosqlite (WAL) · FTS5 · Embedding (sqlite-vec) · optional Cognee |
-| External data | asyncpg (PostgreSQL) · aiomysql (MySQL) · asyncssh (SSH) |
-| Document parsing | pypdf · python-docx · tiktoken |
-| Protocol | MCP SDK |
-| Frontend | React 18 · TypeScript · Vite 6 · Tailwind CSS 4 · Zustand · TanStack Query |
-| i18n | react-i18next (Chinese / English) |
+| SSH remote management | Connections / commands / file transfer — the AI can administer its own deployment |
+| DevOps | Project code updates / frontend builds / app restarts (with restart handoff notes) |
+| Storage volumes | All persistent data registered as 8 volumes with online hot backup / restore / migration / SQL export-import, visualized in the WebUI |
+| External SQL sources | PostgreSQL / MySQL connection registry, browsable from the WebUI |
+| File sharing | Generate public download links for workspace files and manage their lifecycle |
 
 ---
 
-## Quick Start
+## Multi-Platform Channels
 
-### Requirements
+Channels auto-discover from directories and hot-swap; adding one only takes `channels/{name}/adapter.py` + config:
 
-- Python **3.11 ~ 3.12**
-- Node.js **18+** (for building the frontend)
-- [uv](https://github.com/astral-sh/uv) (recommended)
+| Platform | Notes |
+|---|---|
+| **QQ** | OneBot v11 + NapCat (direct connection) |
+| **WeChat** | iLink Bot API, QR-code login, no public webhook needed (see [`channels/weixin/README.md`](channels/weixin/README.md)) |
+| **Feishu (Lark)** | WebSocket event-driven; plus a standalone Feishu task-delegation ACP integration ([`acp/`](acp) + `scripts/anelf-acp`, see [`docs/feishu-task-binding.md`](docs/feishu-task-binding.md)) |
+| **Telegram** | Bot API long polling / webhook |
+| **Bilibili / AcFun** | Danmaku and private messages |
+| **WebUI** | Built-in three-pane workbench (file tree / conversation / dock), SSE push, AI-driven UI commands |
+| **HTTP API** | Synchronous request-response |
+| **CLI** | Terminal debugging |
+| **Responses API** | Expose AnelfAgent itself as an OpenAI-compatible model service (`/v1/responses`) |
 
-### Install & Run
+---
 
-```bash
-git clone https://github.com/1292917512/AnelfAgent.git
-cd AnelfAgent
+## Built-In Tools (entities/)
 
-# Create configs from templates and fill in your API keys
-cp config/llm_clients.example.json config/llm_clients.json
-cp config/app_config.example.json config/app_config.json
-cp config/mcp_servers.example.json config/mcp_servers.json
-
-# Install dependencies
-uv sync
-
-# Build the frontend (optional; the API runs fine without it)
-cd web/frontend && npm install && npm run build && cd ../..
-
-# Start
-./start.sh                 # macOS / Linux
-start.bat                  # Windows
-uv run python launch.py    # run directly
-uv run python launch.py --no-webui   # agent only, no WebUI
-```
-
-Then open: **http://127.0.0.1:8092/webui/**
-
-### Connect a Channel (example)
-
-```bash
-# WeChat: WebUI → Channel Management → scan to log in (recommended)
-# or: uv run python scripts/weixin_setup.py
-```
-
-Environment variables can override config values via `ANELF_<KEY>`; secrets can be externalized with the `${ENV_VAR}` reference syntax.
+| Entity | Description |
+|---|---|
+| `filesystem` | Operating system — file read/write, directory management, shell commands, Python execution (sandboxed) |
+| `codebox` | Code orchestration — loop/branch over other tools inside Python scripts, for batch multi-step tasks |
+| `operation` | Desktop control (`desktop_act`) and MCP operation registration/semantic execution |
+| `screen` | Screen source — screenshots / screen-watching for the vision framework |
+| `smart_home` | Smart home — Home Assistant integration, pluggable domains (lights / AC / curtains …) |
+| `minimax` | MiniMax — image understanding/generation, speech synthesis/voice management, web search, streaming TTS |
+| `dashscope` | Alibaba DashScope — streaming/batch ASR, CosyVoice/Qwen-TTS, voice cloning |
+| `audiosync` | Audio source sync — external audio (directories/pushes) into the core audio library |
+| `sticker` | Stickers & image perception — collect/semantic-search/send stickers, text-to-image and image-to-image search |
+| `vault` | Password book — encrypted credential store / TOTP authenticator / fuzzy search / leak checkup |
+| `ssh` | SSH remote management — connections / commands / file transfer |
+| `devops` | Ops management — app restarts / frontend builds / project updates |
+| `share` | Share & push — file downloads / media rendering / URL pushes via public links |
+| `ui` | UI interaction — notifications / modal questions / panel switching / draft injection |
+| `ai_desktop` | AI desktop — pluggable ambient context (time / holidays / weather / calendar / quotas) |
+| `dify` | Connect existing Dify instances: app & workflow DSL management, invocation, MCP bridging |
+| `sillytavern` | SillyTavern management: process lifecycle / git updates / character cards |
+| `plugins` | Plugin install / upgrade / removal and marketplace subscriptions |
+| `mcp` | MCP server bridging (dynamic registration) |
+| `model_control` | Model switching / parameter tuning / local Ollama management |
+| `entity_query` | Two-level entity catalog discovery |
+| `system` | Environment info — system / Git / log queries |
 
 ---
 
@@ -280,25 +276,17 @@ Environment variables can override config values via `ANELF_<KEY>`; secrets can 
                                               ▼                  ▼                  ▼
                                         ┌──────────┐     ┌────────────┐     ┌────────────┐
                                         │ Channels │     │  Entities  │     │    MCP     │
-                                        │ Adapters │     │   Tools    │     │   Bridge   │
+                                        │ adapters │     │   tools    │     │  bridging  │
                                         └──────────┘     └────────────┘     └────────────┘
 ```
 
-**Dependency direction (strictly one-way):**
+**Dependency direction (strictly one-way, enforced by import-linter):**
 
 ```
 web/frontend → web/routers → services → agent → core/
-entities → entities._sdk → core.entity
-channels/ → agent.channel → core.entity
-
-agent.mind → agent.memory / heartbeat / task / planning
-agent.heartbeat → agent.task + memory + mind (scheduled execution)
-agent.planning → agent.memory
-
-Forbidden: agent → web | core → agent | services → web | entities → agent (bridged via _sdk)
+entities → entities._sdk → core.entity        channels/ → agent.channel → core.entity
+Forbidden: agent → web | core → business layers | services → web | entities → agent (bridged via _sdk)
 ```
-
-Enforced mechanically by import-linter (`uv run lint-imports`, CI red/green gate).
 
 ### Directory Responsibilities
 
@@ -306,66 +294,56 @@ Enforced mechanically by import-linter (`uv run lint-imports`, CI red/green gate
 |---|---|
 | `core/` | EntityRegistry / config (`ConfigPaths` dynamic paths) / lifecycle / tags / events / gating / redaction / logging / storage-volume registry |
 | `agent/mind/` | Thinking loop / PFC / prompt layering / guardrails / compression / thinking sessions |
-| `agent/llm/` | LLM client & manager / classified retries / resilient fallback / capability probing / multimodal adapters / Responses protocol |
-| `agent/memory/` | Hybrid semantic memory (`store/` layer) + notes + optional Cognee |
-| `agent/skills/` | Skill storage / matching / background review / curation |
-| `agent/delegation/` | Sub-agent scheduling (profiles / parallel fan-out / resume / run journal) |
-| `agent/workflow/` | Workflow engine (journal-backed DAG: resume, revision import, gated retries) |
-| `agent/hooks_llm/` | LLM hooks plane (event-driven async LLM work registration primitive; review / task events / entity hooks launched in parallel) |
-| `agent/approval/` | Unified permissions and approval gates |
-| `agent/security/` | Session tokens / threat scanning |
+| `agent/llm/` | LLM clients & manager / classified retries / resilient fallback / capability probing / multimodal adapters / Responses protocol |
+| `agent/memory/` | Hybrid semantic memory + notes + optional Cognee knowledge graph |
+| `agent/skills/` · `delegation/` · `workflow/` | Self-learning skills / sub-agent scheduling / journaled workflow engine |
+| `agent/hooks_llm/` · `hooks/` | LLM hook surface (async, parallel) / user shell hooks (synchronous gatekeepers) |
 | `agent/heartbeat/` · `task/` · `planning/` | Heartbeat scheduling / task definitions / goal planning |
-| `agent/messages/` | Conversation scope building & parsing / persona presets |
-| `agent/channel/` · `runtime/` · `storage/` | Channel management / startup assembly / storage routing & migration |
-| `channels/` | Channel adapters (directory auto-discovery + hot-plug) |
-| `entities/` | Tool entities (directory auto-discovery + hot-plug, registered via `_sdk`) |
-| `services/` | Business facades for the Web API |
-| `web/` | FastAPI routers + React frontend |
-| `config/` | JSON configs · SQLite data · personas · task definitions |
-| `tests/` | Layered pytest suites (`unit/` + `integration/`; entity/channel unit tests live in each module's `<module>/tests/` and move with the module) |
+| `agent/realtime/` · `voice/` · `tts/` · `audio/` | Realtime call engine / voice sessions / TTS pipeline / audio capability registries (ASR · voiceprint) |
+| `agent/vision/` | Vision framework (screenshots / screen-watching / faces / desktop-control sources) |
+| `agent/judgment/` · `retrieval/` | Structured judgment (Jev) / web-retrieval providers |
+| `agent/approval/` · `security/` | Unified permission & approval gate / session tokens / threat scanning |
+| `channels/` | Channel adapters (directory auto-discovery + hot-swap) |
+| `entities/` | Tool entities (directory auto-discovery + hot-swap, registered via `_sdk`) |
+| `services/` · `web/` | Business service layer / FastAPI routers + React frontend |
+| `acp/` | Feishu task-delegation ACP integration (standalone top-level package) |
+| `deploy/` | Reference sidecar services (`face_server` face recognition / `voicehub` voice hub) |
+| `config/` | JSON config · SQLite data · personas · task definitions |
+| `tests/` | Layered pytest suites (entity/channel unit tests live inside each module's `<module>/tests/`) |
 
-### Built-in Entities (entities/)
-
-| Entity | Description |
-|---|---|
-| `filesystem` | File read/write / directory tree / search (sandboxed) |
-| `web` | Search / scraping / web content extraction |
-| `media` | Image recognition / speech transcription & synthesis, and other multimedia processing |
-| `minimax` | MiniMax speech / image / voice cloning |
-| `sticker` | Sticker collection / search / sending, text-to-image and image-to-image search |
-| `ui` | UI interaction (`ui_notify` / `ui_ask` / `ui_open_panel`, etc.) |
-| `ssh` | SSH connection management / command execution / file transfer |
-| `devops` | Memory backup / project updates / app restart |
-| `share` | File-sharing link management |
-| `vault` | Password vault — encrypted credentials / TOTP authenticator / fuzzy search / breach check |
-| `voiceprint` | Voiceprint library — speaker recognition & profile management, semantic search over transcripts |
-| `ai_desktop` | AI desktop — pluggable injection of environment info such as time / holidays / weather / calendar / subscription quotas |
-| `dify` | Connect to an existing Dify instance: app & workflow DSL management, run invocation, MCP bridging |
-| `sillytavern` | Manage a local SillyTavern instance: process lifecycle / git updates / character-card management |
-| `plugins` | Plugin install / upgrade / removal and marketplace subscriptions |
-| `mcp` | MCP server bridging (dynamically registered) |
-| `entity_query` | Two-level entity catalog discovery |
-| `model_control` | Model switching / parameter tuning / Ollama management |
-| `system` | System info / Python environment / Git / log queries |
-
-### Project Layout (summary)
+### Project Layout (Summary)
 
 ```
 AnelfAgent/
-├── launch.py                 # Entry point
-├── core/                     # Foundation framework (zero business dependencies)
-├── agent/
-│   ├── mind/                 # Thinking loop / PFC / prompt layering / guardrails / compression / sessions
-│   ├── llm/                  # LLM management / resilient fallback / probing / multimodal adapters / Responses
-│   ├── memory/               # Hybrid semantic memory (store/) + notes + Cognee
-│   ├── skills/ · delegation/ · hooks_llm/ · approval/ · security/
-│   ├── heartbeat/ · task/ · planning/ · messages/
-│   ├── channel/ · runtime/ · storage/
-├── channels/                 # qq / feishu / weixin / telegram / bilibili / acfun / webui / http_api / cli
-├── entities/                 # filesystem / web / media / vault / voiceprint / ai_desktop / dify / plugins / mcp / ...
-├── services/ · web/ · config/ · scripts/ · tests/
-└── workspace/                # Runtime workspace (uploads / skills, generated locally)
+├── launch.py                 # Entry point (thin composition root)
+├── start.sh / start.bat      # Start scripts (with crash guardian)
+├── restart.sh                # One-shot background restart
+├── core/                     # Base framework (zero business dependencies)
+├── agent/                    # Agent core (no web dependency)
+├── channels/                 # qq / weixin / feishu / telegram / bilibili / acfun / webui / http_api / cli
+├── entities/                 # filesystem / codebox / smart_home / minimax / vault / ssh / mcp / ...
+├── services/ · web/          # Business services · Web API + React frontend
+├── acp/ · deploy/ · scripts/ # Feishu ACP · sidecar references · ops scripts
+├── config/                   # Config & data (templates are *.example.json)
+└── workspace/                # Runtime workspace (skills / uploads, generated locally)
 ```
+
+---
+
+## Configuration
+
+| File | Contents | Hot-Reload |
+|---|---|---|
+| `config/llm_clients.json` | Model providers and models | ✅ (file watcher / Web / AI tools) |
+| `config/app_config.json` | Main config (memory / heartbeat / network — hundreds of keys) | Mostly hot-applied when saved from the WebUI config center |
+| `config/mcp_servers.json` | MCP server list | ✅ |
+| `config/webui.json` | WebUI port / auth / branding | Port changes need a restart |
+| `channels/<id>/channel_config.json` | Per-channel config | ✅ |
+| `config/tasks/*.json` + `config/heartbeat.json` | Task definitions + scheduling | ✅ |
+
+- **Env overrides**: `ANELF_<KEY>` overrides same-named keys in `app_config.json`; secrets can be externalized with the `${ENV_VAR}` reference syntax
+- **Relocation**: `ANELF_CONFIG_DIR` / `ANELF_DATA_DIR` move the config and data directories out of the project tree
+- **Config center**: the WebUI `/config` page is fully data-driven — newly registered backend keys appear automatically and hot-apply on save
 
 ---
 
@@ -373,7 +351,7 @@ AnelfAgent/
 
 ### Adding a Tool
 
-Create a directory under `entities/` and implement `tools.py`; the framework discovers it automatically:
+Create a directory under `entities/` with a `tools.py`; the framework auto-discovers it:
 
 ```python
 # entities/weather/tools.py
@@ -382,14 +360,7 @@ import json
 
 entity("weather", "Weather lookup — real-time weather information")
 
-@tool(
-    name="get_weather",
-    group="weather",
-    tags=["web"],
-    # Optional: gating and sleep
-    # check_fn=lambda: True,
-    # allow_sleep=True, sleep_brief="Weather lookup",
-)
+@tool(name="get_weather", group="weather", tags=["web"])
 async def get_weather(city: str) -> str:
     """Get real-time weather for a city.
 
@@ -399,85 +370,79 @@ async def get_weather(city: str) -> str:
     return json.dumps({"city": city, "weather": "sunny", "temp": 25})
 ```
 
-Conventions: return `str` (JSON), full type annotations + Google-style docstrings, catch exceptions internally, and route errors through `core.tool_errors` (imported via `_sdk` in entities).
-
-When adding a new **group key**, also update: backend registration, `i18n/locales/{zh,en}/tools.json`, and the group ordering in `core/entity.py` (an entity can override it via `entity_manifest(order=)`).
-
-### Adding a Heartbeat Task
-
-Create a task JSON under `config/tasks/`, then bind a schedule on the WebUI heartbeat page; you can also set `trigger_event` to make the task event-triggered.
+Conventions: return `str` (JSON), full type annotations + Google docstrings, and route errors through `core.tool_errors`.
 
 ### Adding a Channel
 
-Provide under `channels/{name}/`:
+Provide under `channels/{name}/`: `adapter.py` (subclass `BaseChannel`) + `config.py` (expose a `CONFIG_MODEL` pydantic model) + `channel_config.json` + `__init__.py` (export `CHANNEL_CLASS`).
 
-- `adapter.py` — subclass `BaseChannel`, implementing `channel_id` / `display_name` / `capabilities` / `start` / `stop` / `send_text`
-- `config.py` — expose `CONFIG_MODEL` (the pydantic model is the single source of config declaration)
-- `channel_config.json` (use `.example.json` as a template)
-- `__init__.py` — export `CHANNEL_CLASS`
+### Adding a Heartbeat Task
 
-### Permission Rules
+Create a task JSON under `config/tasks/` and bind a schedule on the WebUI heartbeat page; or set `trigger_event` to fire the task from events.
 
-Current format: `config/permission_rules.json` (preferred); legacy `approval_policies.json` is auto-converted on load. Rules support hot reload. High-risk tools can be set to `ask`, confirmed via channel messages or the WebUI approval page.
-
-### Packages & Testing
+### Packages & Tests
 
 ```bash
-uv sync                          # Install dependencies (incl. Cognee)
-uv run pytest                    # Full test run (unit + credential-free integration)
-uv run pytest tests/unit         # Layered unit tests (core/agent/services/web, fast)
-uv run pytest entities/minimax/tests # Single-module tests (entity/channel tests live in each module's tests/)
-uv run pytest -m integration     # Integration tests only (credential-required cases skip automatically)
+uv sync                          # Install dependencies
+uv run pytest                    # Full suite (unit + credential-free integration)
+uv run pytest tests/unit         # Layered unit tests
 uv run ruff check .              # Lint
-uv run lint-imports              # Dependency-direction contract check
-uv run mypy core/                # Type checking (strict core layer)
-uv add <package>                 # Add a dependency (do NOT pip install into the uv venv)
-
-scripts/check.sh                 # Local CI mirror gate: one-shot verification identical to CI (run before push)
-scripts/check.sh --fast          # Static gates only (ruff + lint-imports + mypy, three platforms)
+uv run lint-imports              # Dependency-direction contracts
+uv run mypy core/                # Type check (strict core layer)
+scripts/check.sh                 # Local CI mirror gate (run before pushing)
 ```
 
-CI (GitHub Actions, `.github/workflows/ci.yml`): on push/PR, changes are first classified by path — the `lint` job runs repo-wide static gates (ruff → import-linter → mypy core on three platforms), the `tests` job fans out into a dynamic per-module matrix (entity/channel changes only run that module's `tests/` suite; core changes trigger the full matrix), and the `frontend` job runs `npm run lint` + `npm run build`. Documentation-only commits are skipped entirely.
+CI (GitHub Actions): a repo-wide lint gate + module-matrix test legs + frontend build; doc-only commits are skipped entirely.
 
-For deeper architectural conventions see [`AGENTS.md`](AGENTS.md) at the repo root (workspace instructions for editors / agents, not a runtime dependency).
+For deeper architectural conventions see [`AGENTS.md`](AGENTS.md) (workspace instructions injected for editors/agents, not a runtime dependency).
+
+---
+
+## Tech Stack
+
+| Category | Technologies |
+|---|---|
+| Runtime | Python 3.11–3.12 · [uv](https://github.com/astral-sh/uv) · FastAPI · Uvicorn · Pydantic v2 |
+| LLM | litellm (100+ providers unified) · Chat Completions / Responses dual protocols |
+| Storage | aiosqlite (WAL) · FTS5 · sqlite-vec · optional Cognee knowledge graph |
+| Voice | FunASR / qwen realtime ASR · MiniMax / CosyVoice / Qwen-TTS / edge-tts · silero VAD / smart_turn |
+| External data | asyncpg (PostgreSQL) · aiomysql (MySQL) · asyncssh (SSH) · Home Assistant |
+| Protocols | MCP SDK · OneBot v11 · iLink · lark-oapi |
+| Frontend | React 18 · TypeScript · Vite 6 · Tailwind CSS 4 · Zustand · TanStack Query · react-i18next (zh/en) |
 
 ---
 
 ## Sensitive Data Management
 
-Personal configuration is separated from framework code via `.gitignore`: API keys, tokens, memory databases, heartbeat counters, channel secrets, etc. never enter the repository — only `*.example.json` templates are kept. Config values support the `${ENV_VAR}` reference syntax to externalize secrets into environment variables.
+Personal config is separated from framework code via `.gitignore`: API keys, tokens, memory stores, and channel secrets never enter the repository — only `*.example.json` templates are committed. Config values support the `${ENV_VAR}` reference syntax to externalize secrets into environment variables.
 
-Backing up personal data (API configs / heartbeat & tasks / memory data / channel secrets / personas) is the user's own responsibility (e.g. periodic NAS backups, or exports via the storage-volume panel).
+Backing up personal data (API config / memory data / channel secrets / personas) is the user's own responsibility (e.g. scheduled NAS backups, or exports from the storage-volume panel).
 
 ---
 
-## Open Source & Acknowledgments
+## Open Source & Acknowledgements
 
-Released under the **[MIT License](LICENSE)** — stars, issues and PRs are welcome.
+Released under the **[MIT License](LICENSE)** — stars, issues, and PRs are welcome.
 
 **Repository**: https://github.com/1292917512/AnelfAgent
 
-AnelfAgent's multi-platform capabilities build upon these excellent open-source projects:
-
-| Project | Purpose | License |
+| Project | Used For | License |
 |---|---|---|
 | [litellm](https://github.com/BerriAI/litellm) | Unified LLM API | MIT |
 | [NapCatQQ](https://github.com/NapNeko/NapCatQQ) | QQ OneBot v11 protocol endpoint | Mixed |
 | [lark-oapi](https://github.com/larksuite/oapi-sdk-python) | Feishu / Lark SDK | MIT |
 | [FastAPI](https://github.com/fastapi/fastapi) / [MCP](https://modelcontextprotocol.io/) | Web & tool protocols | MIT |
 
-Special thanks to [Nekro Agent](https://github.com/KroMiose/nekro-agent) and [N.E.K.O](https://github.com/Project-N-E-K-O/N.E.K.O) for the reference and inspiration.
+Special thanks to [Nekro Agent](https://github.com/KroMiose/nekro-agent) and [N.E.K.O](https://github.com/Project-N-E-K-O/N.E.K.O) for inspiration.
 
-> **License note**: AnelfAgent communicates with NapCatQQ over OneBot v11 WebSocket and does not include or modify NapCat source code. The WeChat channel integrates with Tencent's iLink Bot API, with protocol implementation informed by community adapter practices.
+> **Protocol note**: AnelfAgent talks to NapCatQQ over OneBot v11 WebSocket; it neither contains nor modifies NapCat source code. The WeChat channel integrates Tencent's iLink Bot API, with protocol implementation referencing community adapter practices.
 
 ### Contributing
 
 1. Fork the repository and create a feature branch
-2. Follow the dependency-direction and type-annotation conventions (see `AGENTS.md`)
-3. Add or update `tests/` for behavioral changes
-4. Submit a clear PR explaining motivation and verification
-
-Bug reports, design discussions and feature proposals are welcome in Issues.
+2. Keep the dependency direction and type-annotation conventions (see `AGENTS.md`)
+3. Add or update `tests/` for behavior changes
+4. Write a clear PR describing motivation and verification
 
 ---
 

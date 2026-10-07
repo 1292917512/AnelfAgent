@@ -126,6 +126,7 @@ class SkillReviewer:
         @llm_hook(
             _HOOK_NAME, event="after_reply", context="transcript",
             when=_when, tool_tags=["skills"], allow_output_tools=False,
+            route_output=False,
             max_iterations=6, max_concurrent=1,
             owner=_HOOK_OWNER, source="code",
             description="每轮对话后评审执行过程，自主决策技能沉淀/合并/治理",

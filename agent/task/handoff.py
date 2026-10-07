@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Set, Tuple
 
 from core.config import get_config_int
 from core.file_utils import atomic_write_text
@@ -34,10 +34,13 @@ from core.path import ConfigPaths
 _HANDOFF_RE = re.compile(r"^[ \t]*#[ \t]*HANDOFF\b[^\n]*\n?", re.IGNORECASE | re.MULTILINE)
 
 
-def _handoff_path(task_name: str) -> Path:
+def _safe_stem(task_name: str) -> str:
     # 任务名即文件名安全化（TaskDefinition.name 限于安全字符，仍做防御）
-    safe = re.sub(r"[^A-Za-z0-9_\u4e00-\u9fff-]", "_", task_name)[:80] or "_"
-    return Path(ConfigPaths.TASKS_DIR) / f"{safe}.handoff.json"
+    return re.sub(r"[^A-Za-z0-9_\u4e00-\u9fff-]", "_", task_name)[:80] or "_"
+
+
+def _handoff_path(task_name: str) -> Path:
+    return Path(ConfigPaths.TASKS_DIR) / f"{_safe_stem(task_name)}.handoff.json"
 
 
 def _max_chars() -> int:
@@ -87,6 +90,33 @@ def delete_handoff(task_name: str) -> bool:
     except Exception as exc:
         log(f"handoff 清理失败: {task_name} {exc}", "WARNING", tag="任务")
     return False
+
+
+def prune_orphans(valid_names: Set[str]) -> List[str]:
+    """对账清除无对应任务文件的交接文件，返回被清除的安全名（无残留返回空）。
+
+    与 history.prune_orphans 同节奏（心跳引擎构造/reload 对账调用）。
+    valid_names 须来自注册表正常枚举——空集语义是"全部清理"，
+    调用方负责在目录不可枚举时跳过（防误清）。
+    """
+    pruned: List[str] = []
+    try:
+        tasks_dir = Path(ConfigPaths.TASKS_DIR)
+        if not tasks_dir.is_dir():
+            return []
+        alive_stems = {_safe_stem(name) for name in valid_names}
+        for file in sorted(tasks_dir.glob("*.handoff.json")):
+            stem = file.name[: -len(".handoff.json")]
+            if stem in alive_stems:
+                continue
+            try:
+                file.unlink()
+                pruned.append(stem)
+            except OSError as exc:
+                log(f"孤儿 handoff 清理失败 [{file.name}]: {exc}", "WARNING", tag="任务")
+    except Exception as exc:
+        log(f"handoff 对账清理失败: {exc}", "WARNING", tag="任务")
+    return pruned
 
 
 def extract_handoff(output: str) -> Tuple[str, Optional[str]]:

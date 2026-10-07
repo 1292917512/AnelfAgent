@@ -43,6 +43,12 @@ class _FakeRegistry:
     def task_file_exists(self, name: str) -> bool:
         return name in self._file_stems
 
+    def file_stems(self) -> set[str]:
+        return set(self._file_stems)
+
+    def is_dir_available(self) -> bool:
+        return True
+
     def list_all(self):
         return list(self._tasks.values())
 
@@ -145,6 +151,46 @@ class TestOrphanSchedulePrune:
         engine, _ = _make_engine(schedules, {"a": _task("a")}, monkeypatch, save_calls=save_calls)
         assert [s.task_name for s in engine.config.task_schedules] == ["a"]
         assert save_calls == []
+
+
+class TestOrphanArtifactPrune:
+    """任务运行数据残留对账（_prune_orphan_task_artifacts）：兜住绕过正式删除路径
+    （delete_task 工具 / Web API）的直删文件——执行历史与交接文件随引擎构造清理。"""
+
+    def test_prunes_history_and_handoff_on_construct(self, monkeypatch, tmp_path) -> None:
+        import agent.task.history as task_history
+        from agent.task import handoff as task_handoff
+
+        # conftest 已把 TASKS_DIR / TASK_HISTORY 重定向到 tmp_path 下
+        task_history.record_execution(
+            "gone", started_at=100.0, duration_ms=10, status="success", trigger="manual")
+        task_history.record_execution(
+            "alive", started_at=200.0, duration_ms=10, status="success", trigger="manual")
+        task_handoff.save_handoff("gone", "旧交接")
+        task_handoff.save_handoff("alive", "新交接")
+
+        _make_engine(
+            [], {"alive": _task("alive")}, monkeypatch,
+            file_stems=frozenset({"alive"}),
+        )
+
+        assert task_history.get_history("gone") == []
+        assert len(task_history.get_history("alive")) == 1
+        assert task_handoff.load_handoff("gone") == ""
+        assert task_handoff.load_handoff("alive") == "新交接"
+
+    def test_dir_unavailable_skips_prune(self, monkeypatch) -> None:
+        """任务目录不可枚举（异常态）时跳过对账，防把全部运行数据误判为残留清除。"""
+        import agent.task.history as task_history
+
+        task_history.record_execution(
+            "gone", started_at=100.0, duration_ms=10, status="success", trigger="manual")
+        engine = HeartbeatEngine.__new__(HeartbeatEngine)
+        engine.task_registry = SimpleNamespace(is_dir_available=lambda: False)  # type: ignore[assignment]
+
+        engine._prune_orphan_task_artifacts()
+
+        assert len(task_history.get_history("gone")) == 1
 
 
 class TestIdleScheduling:

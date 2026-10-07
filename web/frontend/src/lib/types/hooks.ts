@@ -28,6 +28,7 @@ export interface LlmHookItem {
   debounce_seconds: number;
   model: string;
   allow_output_tools: boolean;
+  route_output: boolean;
   tool_tags: string[];
 }
 

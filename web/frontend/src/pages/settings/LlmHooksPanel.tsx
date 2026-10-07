@@ -91,6 +91,7 @@ function HookRow({ hook }: { hook: LlmHookItem }) {
           <span>{t("llmHooks.toolTags")}: {hook.tool_tags.join(", ")}</span>
         )}
         {hook.allow_output_tools && <span>{t("llmHooks.outputAllowed")}</span>}
+        {!hook.route_output && <span>{t("llmHooks.outputNotRouted")}</span>}
         <span className="ml-auto">{t("llmHooks.owner")}: {hook.owner}</span>
       </div>
     </li>
