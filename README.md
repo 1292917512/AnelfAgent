@@ -170,6 +170,8 @@ Embedding + FTS5 + 标签匹配 + 时间衰减的混合评分；记忆类型覆�
 
 ### 插件与热插拔
 
+- **Minecraft 陪玩**：复用开源 Mineflayer MCP，支持 Java 26.1 游戏操作与游戏内聊天。
+  安装与使用见 [`plugins/minecraft/README.md`](plugins/minecraft/README.md)。
 - **插件系统**（`entities/plugins`）：插件 = 清单 + skills/ + .mcp.json + tools.py 的目录包，支持市场订阅（本地目录或 git 仓库），AI 可自主安装 / 升级 / 移除
 - **模块热插拔**：实体 / 频道目录增删经目录监听自动对账（新增即时注册、删除完整拆除），Web 端亦可手动热同步
 

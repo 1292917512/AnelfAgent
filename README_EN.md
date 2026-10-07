@@ -170,6 +170,8 @@ Each heartbeat also runs built-in maintenance: entity profiling, memory health c
 
 ### Plugins & Hot-Plug
 
+- **Minecraft companion**: reuses the open-source Mineflayer MCP runtime for Java 26.1 actions and in-game chat.
+  See [`plugins/minecraft/README.md`](plugins/minecraft/README.md) for setup.
 - **Plugin system** (`entities/plugins`): a plugin is a directory package of manifest + skills/ + .mcp.json + tools.py, with marketplace subscriptions (local directory or git repo); the AI can install / upgrade / remove plugins autonomously
 - **Module hot-plug**: adding or removing entity / channel directories is reconciled automatically via directory watching (new directories register instantly, removed ones are fully torn down); manual hot-sync is also available from the WebUI
 
