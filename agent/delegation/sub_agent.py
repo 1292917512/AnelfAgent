@@ -358,6 +358,9 @@ class SubAgent:
             )
         finally:
             # 委托执行结束（无论成败/超时）：清箱防残留指令误入后续同名委托
+            from core.tool_context import forget_control_delegate
+
+            forget_control_delegate(self.delegation_id)
             if self.delegation_id:
                 steer_inbox.clear(self.delegation_id)
             _delegate_depth.reset(token)

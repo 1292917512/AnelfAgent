@@ -1100,7 +1100,9 @@ class Mind:
             log(f"反思循环开始: {len(active_tools)} 个工具可用, 策略={output_policy}, 上限 {safety_limit} 轮", tag="思维")
 
             from agent.mind.think_session import think_session
-            with think_session(self, reflect_scope, with_token=False):
+            from core.tool_context import tool_request
+
+            with think_session(self, reflect_scope, with_token=False), tool_request(reflect_scope, inherit=True):
                 await self._think_loop(
                     mode=ThinkMode.REFLECT,
                     tool_chain=[],

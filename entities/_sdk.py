@@ -315,6 +315,14 @@ def get_current_scope() -> str:
         return "_global"
 
 
+def get_mcp_control_metadata(server: str, tool_name: str) -> Dict[str, Any] | None:
+    """把宿主生成的请求归属带入受控 MCP；不让模型填写来源或停止代次。"""
+    from agent.delegation.sub_agent import current_delegation_id
+    from core.tool_context import control_metadata
+
+    return control_metadata(server, tool_name, current_delegation_id())
+
+
 def get_owner_scope() -> str:
     """获取后台任务的归属会话 scope（延迟导入 agent.mind，失败返回 "_global"）。
 

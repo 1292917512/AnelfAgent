@@ -230,7 +230,9 @@ async def reply_loop(
     if not adapter_key:
         adapter_key = mind._resolve_adapter_key()
     scope = mind._resolve_entity_scope(anything) if anything else ""
-    with think_session(mind, scope):
+    from core.tool_context import tool_request
+
+    with think_session(mind, scope), tool_request(scope, str(getattr(anything, "uid", "") or "")):
         # 会话开始清理历史中断信号，避免上一轮遗留请求误杀新会话；
         # 只清激活时刻之前的——启动窗口内用户发的"停止"是合法中断
         _interrupts = getattr(mind, "interrupts", None)

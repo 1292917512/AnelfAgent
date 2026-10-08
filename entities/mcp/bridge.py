@@ -528,9 +528,21 @@ class MCPBridge:
         timeout = srv.call_timeout if srv else _DEFAULT_CALL_TIMEOUT
 
         log(f"MCP call: {tool_name}({arguments})", "DEBUG", tag="mcp")
+        from core.tool_context import refresh_control_metadata
+        from entities._sdk import get_mcp_control_metadata
+
+        metadata = get_mcp_control_metadata(server_name, tool_name)
+
+        async def invoke(active_session: Any) -> Any:
+            if metadata is None:
+                return await active_session.call_tool(tool_name, arguments=arguments)
+            return await active_session.call_tool(
+                tool_name, arguments=arguments, meta=refresh_control_metadata(server_name, metadata),
+            )
+
         try:
             result = await asyncio.wait_for(
-                session.call_tool(tool_name, arguments=arguments),
+                invoke(session),
                 timeout=timeout,
             )
         except asyncio.TimeoutError:
@@ -567,7 +579,7 @@ class MCPBridge:
                 )
             try:
                 result = await asyncio.wait_for(
-                    session.call_tool(tool_name, arguments=arguments),
+                    invoke(session),
                     timeout=timeout,
                 )
             except asyncio.TimeoutError:
