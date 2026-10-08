@@ -39,7 +39,6 @@ from agent.mind.tools.round_helpers import (
     _END_REPLY_TOOL_NAME,
     _MAX_TOOL_CONCURRENCY,
     _OUTPUT_TOOL_NAMES,
-    _PLAN_MANAGEMENT_TOOL_NAMES,
     ThinkMode,
     _cache_status_hint,
     _check_tool_results_all_errors,
@@ -408,15 +407,13 @@ async def think_loop(
             # transcript 供 follow_up 续跑。中断路径消息不完整，同样带出
             # （是否可续跑由 messages 是否存在决定，收束路径恒有值）。
             ctx.completion["messages"] = ctx.base_messages + ctx.tool_chain
-        # plan 全退出路径唯一收敛点：正常结束已由 _finish_round 收敛（finalized
-        # 置位）；中断 / 安全上限等异常退出在此收敛——中断 → cancelled，其余 →
-        # completed。无 active plan 时 finalize_plan 零成本，幂等安全。
+        # 正常结束由 _finish_round 收敛；未走正常出口的中断、异常和预算耗尽只可取消。
         if not state.plan_finalized:
             try:
                 from agent.planning import tracker as _plan_tracker
                 await _plan_tracker.finalize_plan(
                     ctx.current_scope,
-                    "cancelled" if state.interrupted else "completed",
+                    "cancelled",
                 )
             except Exception:
                 pass  # 收敛失败不影响主流程
@@ -1000,7 +997,7 @@ async def _handle_tool_round(
         *,
         early_runner: Optional["_EarlyToolRunner"] = None,
 ) -> _StageOutcome:
-    """工具执行轮：执行工具批次、全错升级、end_reply 结束拦截与 plan 自动推进。"""
+    """工具执行轮：执行工具批次、全错升级与 end_reply 结束拦截。"""
     from agent.mind.autonomous import MindPhase
 
     mind = ctx.mind
@@ -1150,18 +1147,6 @@ async def _handle_tool_round(
         # Plan 收敛由 finish_think 统一处理（所有正常结束路径的必经之地）
         await _finish_round(ctx, state, deliver_pending=False)
         return _StageOutcome.BREAK
-
-    # 每轮工具批次结束：程序级自动推进 plan 步骤（兜底，REPLY/REFLECT 通用）。
-    # 仅当本轮调用了**非 plan 管理工具**（实际干活的工具）才推进——
-    # present_plan 当轮不推进（工作还没开始），update_goal 当轮不推进
-    # （AI 已精确标记，无需兜底）。tracker 内部按 scope 过滤 + 无 active plan
-    # 时快速返回，成本可忽略。
-    if called - _PLAN_MANAGEMENT_TOOL_NAMES:
-        try:
-            from agent.planning import tracker as _plan_tracker
-            await _plan_tracker.advance_plan_step(ctx.current_scope)
-        except Exception:
-            pass  # 自动推进失败不影响主流程
 
     state.iteration += 1
     return _StageOutcome.CONTINUE

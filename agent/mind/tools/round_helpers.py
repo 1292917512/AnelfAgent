@@ -1122,24 +1122,16 @@ def _collect_round_failures(tool_chain: List[Dict], tool_calls: List["ToolCall"]
 
 
 # ------------------------------------------------------------------
-# Plan 程序级自动进度（不依赖 AI 调 update_goal）
+# Plan 显式进度与终态收敛
 #
-# 设计原则：进度由程序从执行流自动推断，AI 不需要
-# 主动汇报；AI 调 update_goal 只是"可选的精确标记"，不是必要条件。
+# 步骤进度由 update_goal 按结果显式更新，不从调用次数推断。
 #
 # 全部状态机与事件发射统一由 ``agent.planning.tracker`` 实现：
 # - present_plan 工具 → tracker.submit_plan（公告 + 首步 in_progress）
-# - 每轮工具批次后 → tracker.advance_plan_step（粗粒度兜底）
+# - update_goal → 明确标记已完成步骤
 # - finish_think → tracker.finalize_plan（收敛终态，诚实语义）
 # - cancel-plan 路由 → tracker.cancel_plan
 # ------------------------------------------------------------------
-
-# 计划管理工具：调用它们不算"执行了一步"，不触发自动推进。
-# 否则 present_plan 当轮 step 0 就被误标完成（进度超前 bug）。
-_PLAN_MANAGEMENT_TOOL_NAMES = frozenset({
-    "present_plan", "update_goal", "create_goal", "list_goals", "get_goal", "delete_goal",
-})
-
 
 def _round_output_sent_successfully(
         tool_chain: List[Dict], tool_calls: List["ToolCall"],

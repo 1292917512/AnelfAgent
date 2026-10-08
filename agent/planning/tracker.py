@@ -3,10 +3,9 @@
 规划存储（source=goal）承载两种生命周期，以 ``metadata.kind`` 判别，
 互不越界：
 
-- ``PLAN_KIND``（present_plan 会话计划）：程序从执行流自动推断进度——
-  提交即首步 in_progress，每轮工具批次后推进，think_loop 退出时收敛
-  终态（诚实语义：正常结束 in_progress → completed；中断/取消 → skipped；
-  pending 一律 → skipped，不假装完成）。生命周期与会话绑定。
+- ``PLAN_KIND``（present_plan 会话计划）：提交即首步 in_progress，步骤由
+  update_goal 依据执行结果明确更新。会话结束只收束状态，不从工具调用
+  次数推断完成；未确认的步骤标记 skipped，整体 cancelled。
 - ``GOAL_KIND``（create_goal 持久目标）：跨会话的长期目标，进度由 AI
   经 update_goal 手动推进，任何自动推进路径不得触碰；删除只发生在
   AI 显式操作（update_goal 终态即删 / 全部步骤完成后自动收口 /
@@ -15,12 +14,12 @@
 
 本模块是 plan 状态机与事件发射的**唯一入口**，消费者：
 - ``agent/planning/tools.py``：present_plan / goal CRUD 工具
-- ``agent/mind/tools/think_loop.py``：每轮自动推进 + 会话结束收敛
+- ``agent/mind/tools/think_loop.py``：会话结束收敛
 - ``web/routers/chat.py``：cancel-plan 路由
 
 三层进度机制（仅作用于 PLAN_KIND）：
 1. ``submit_plan``：present_plan 工具内调用，公告计划 + 首步 in_progress
-2. ``advance_plan_step``：每轮工具批次后推进当前步骤（粗粒度兜底）
+2. ``update_goal``：根据执行结果明确更新步骤
 3. ``finalize_plan``：think_loop 全退出路径的唯一收敛入口
 """
 
@@ -44,16 +43,10 @@ from core.event_bus import (
 from core.latebind import LateBinding
 from core.log import log
 
-#: 会话执行计划的 metadata.kind（present_plan 生命周期：程序推断进度）
+#: 会话执行计划的 metadata.kind
 PLAN_KIND = "present_plan"
 #: 持久目标的 metadata.kind（create_goal 生命周期：AI 手动推进）
 GOAL_KIND = "goal"
-
-# 计划管理工具：调用它们不算"执行了一步"，不触发自动推进。
-# 否则 present_plan 当轮 step 0 就被误标完成（进度超前 bug）。
-PLAN_MANAGEMENT_TOOL_NAMES = frozenset({
-    "present_plan", "update_goal", "create_goal", "list_goals", "get_goal", "delete_goal",
-})
 
 #: MemoryStore 端口（planning 工具组与 tracker 共用；工具 import 时注册、
 #: 拿不到 MemoryStore 构造参数，由 agent.runtime.wiring 统一施绑）
@@ -171,7 +164,7 @@ async def _persist(entry: MemoryEntry, goal: Dict[str, Any]) -> None:
     goal["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
     entry.content = json.dumps(goal, ensure_ascii=False)
     await store.update(entry, clear_embedding=True)
-    # 状态机全部推进路径（advance/finalize/cancel/update_goal）的实际落库点：
+    # 状态机全部推进路径（finalize/cancel/update_goal）的实际落库点：
     # 去抖短路（语义未变）不失效，快照与存储严格同步
     from agent.planning import situation
     situation.invalidate()
@@ -300,60 +293,21 @@ async def submit_plan(
     return plan_id
 
 
-async def advance_plan_step(scope: str) -> None:
-    """每轮实际工具批次后推进当前步骤（粗粒度兜底）。
-
-    把当前 in_progress 步骤标记 completed，推进下一 pending 为 in_progress。
-    仅处理当前 scope 的 active plan；无 active plan 时快速返回。
-    """
-    if _bound_store() is None or current_scope() != scope:
-        return
-    try:
-        entry, goal = await _find_active_plan(scope)
-        if entry is None or goal is None:
-            return
-        steps = goal.get("steps", [])
-        for i, s in enumerate(steps):
-            if s.get("status") != "in_progress":
-                continue
-            s["status"] = "completed"
-            next_idx = i + 1
-            has_next = (
-                next_idx < len(steps)
-                and steps[next_idx].get("status") == "pending"
-            )
-            if has_next:
-                steps[next_idx]["status"] = "in_progress"
-            await _persist(entry, goal)
-            plan_id = goal.get("goal_id", "")
-            await _emit_step(scope, plan_id, i, "completed", note="自动推进")
-            if has_next:
-                await _emit_step(scope, plan_id, next_idx, "in_progress", note="自动推进")
-            return
-    except Exception:
-        pass  # 自动推进失败不影响主流程
-
-
 async def _converge_steps(
     scope: str, plan_id: str, steps: List[Dict[str, Any]], outcome: str,
 ) -> bool:
     """把未完成步骤按 outcome 收敛到终态并逐步发射事件。
 
-    - completed：in_progress → completed（当前正在做的视为做完），pending → skipped
-    - cancelled：in_progress / pending 统一 → skipped（中断的步骤不假装完成）
+    未确认完成的 in_progress / pending 统一 → skipped，已明确标记的步骤保留。
 
     Returns:
         是否有步骤变更。
     """
-    note = "会话结束自动收束" if outcome == "completed" else "会话中断，步骤未执行"
+    note = "会话结束，步骤未确认完成" if outcome == "completed" else "会话中断，步骤未确认完成"
     changed = False
     for s in steps:
         st = s.get("status")
-        if st == "in_progress":
-            s["status"] = "completed" if outcome == "completed" else "skipped"
-            changed = True
-            await _emit_step(scope, plan_id, s.get("index", 0), s["status"], note=note)
-        elif st == "pending":
+        if st in ("in_progress", "pending"):
             s["status"] = "skipped"
             changed = True
             await _emit_step(scope, plan_id, s.get("index", 0), "skipped", note=note)
@@ -363,8 +317,8 @@ async def _converge_steps(
 async def finalize_plan(scope: str, outcome: str = "completed") -> None:
     """会话结束时收敛 active plan 到终态（全退出路径唯一收敛入口）。
 
-    - outcome="completed"（正常结束）：in_progress → completed，pending → skipped，
-      plan → completed
+    - outcome="completed"（正常结束）：只有全部步骤已明确 completed 才完成计划；
+      否则未确认步骤 skipped，plan → cancelled
     - outcome="cancelled"（中断 / 安全上限等异常结束）：in_progress / pending →
       skipped，plan → cancelled
     无 active plan 时零成本返回；状态机幂等，可在 finally 中安全调用。
@@ -376,7 +330,10 @@ async def finalize_plan(scope: str, outcome: str = "completed") -> None:
         if entry is None or goal is None:
             return
         plan_id = goal.get("goal_id", "")
-        changed = await _converge_steps(scope, plan_id, goal.get("steps", []), outcome)
+        steps = goal.get("steps", [])
+        if outcome == "completed" and (not steps or any(s.get("status") != "completed" for s in steps)):
+            outcome = "cancelled"
+        changed = await _converge_steps(scope, plan_id, steps, outcome)
         if changed or goal.get("status") != outcome:
             goal["status"] = outcome
             # 终态 plan 重要性下调（与 update_goal 收敛路径一致），不再污染语义召回

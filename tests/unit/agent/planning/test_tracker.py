@@ -1,7 +1,7 @@
 """tracker plan 收敛测试：finalize_plan 双 outcome / cancel_plan 步骤收敛 / 生命周期隔离。
 
 覆盖「全退出路径收敛」语义：
-- completed：in_progress → completed，pending → skipped，plan → completed
+- completed：仅已确认的步骤保持完成，未完成计划收束为 cancelled
 - cancelled：in_progress / pending → skipped，plan → cancelled
 - cancel_plan 取消时步骤同步收敛，前端不残留 in_progress
 
@@ -42,8 +42,22 @@ async def _teardown(store) -> None:
 
 
 class TestFinalizePlan:
-    async def test_completed_convergence(self, tmp_path):
-        """正常收敛：in_progress→completed，pending→skipped，plan→completed。"""
+    async def test_explicitly_completed_steps_remain_completed(self, tmp_path):
+        store, tracker = await _setup(tmp_path)
+        try:
+            steps = tracker.parse_steps("制作|核验")
+            for step in steps:
+                step.update(status="completed", note="已查询实际产物")
+            plan_id = await tracker.submit_plan(SCOPE, "目标", steps)
+            await tracker.finalize_plan(SCOPE)
+            _, goal = await tracker.find_goal_by_id(plan_id)
+            assert goal["status"] == "completed"
+            assert [s["status"] for s in goal["steps"]] == ["completed", "completed"]
+        finally:
+            await _teardown(store)
+
+    async def test_unconfirmed_steps_do_not_become_completed(self, tmp_path):
+        """正常结束也不能把仍在执行的步骤伪装成已完成。"""
         store, tracker = await _setup(tmp_path)
         try:
             plan_id = await tracker.submit_plan(
@@ -54,9 +68,9 @@ class TestFinalizePlan:
             # 收敛后不再是 active plan
             assert await tracker.get_active_plan(SCOPE) is None
             _, goal = await tracker.find_goal_by_id(plan_id)
-            assert goal["status"] == "completed"
+            assert goal["status"] == "cancelled"
             assert [s["status"] for s in goal["steps"]] == [
-                "completed", "skipped", "skipped",
+                "skipped", "skipped", "skipped",
             ]
         finally:
             await _teardown(store)
@@ -109,7 +123,7 @@ class TestFinalizePlan:
             await tracker.finalize_plan(SCOPE)
             await tracker.finalize_plan(SCOPE)
             await asyncio.sleep(0.05)
-            assert len([c for c in captured if c["goal_status"] == "completed"]) == 1
+            assert len([c for c in captured if c["goal_status"] == "cancelled"]) == 1
         finally:
             event_bus.off_by_owner("test.tracker")
             await _teardown(store)
@@ -135,12 +149,10 @@ class TestLifecycleIsolation:
         finally:
             await _teardown(store)
 
-    async def test_advance_never_touches_goals(self, tmp_path):
-        """每轮自动推进不触碰目标步骤——update_goal 推进一步后，
-        后续轮次的工具批次不得把 in_progress 步骤连带标完成。"""
+    async def test_finalize_preserves_explicit_goal_progress(self, tmp_path):
+        """会话收束保留持久目标通过 update_goal 明确更新的进度。"""
         store, tracker = await _setup(tmp_path)
         try:
-            from agent.mind.tool_activation import bind_scope, reset_scope
             from agent.planning import tools as planning_tools
             raw = await planning_tools.create_goal("夜间目标", steps="a|b|c")
             goal_id = json.loads(raw)["goal"]["goal_id"]
@@ -148,11 +160,7 @@ class TestLifecycleIsolation:
                 goal_id, step_index=0, step_status="completed",
             )
 
-            token = bind_scope(SCOPE)
-            try:
-                await tracker.advance_plan_step(SCOPE)
-            finally:
-                reset_scope(token)
+            await tracker.finalize_plan(SCOPE)
 
             _, goal = await tracker.find_goal_by_id(goal_id)
             # step0 completed（AI 标记）+ step1 in_progress（update_goal 自动推进），
@@ -177,7 +185,7 @@ class TestLifecycleIsolation:
 
             await tracker.finalize_plan(SCOPE, "completed")
             _, goal = await tracker.find_goal_by_id(plan_id)
-            assert goal["status"] == "completed"
+            assert goal["status"] == "cancelled"
         finally:
             await _teardown(store)
 
@@ -196,7 +204,7 @@ class TestLifecycleIsolation:
             # 计划已收敛，且不因目标存在而被 get_active_plan 误复用
             assert await tracker.get_active_plan(SCOPE) is None
             _, plan = await tracker.find_goal_by_id(plan_id)
-            assert plan["status"] == "completed"
+            assert plan["status"] == "cancelled"
         finally:
             await _teardown(store)
 
