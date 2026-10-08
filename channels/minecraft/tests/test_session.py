@@ -102,11 +102,11 @@ async def test_stop_cancels_local_actions_and_workers_before_resuming_chat(monke
     try:
         await channel._cmd_stop("Alice", AdapterChannel(channel_id="local", channel_type=ChannelType.GROUP))
         assert order == ["local_cancelled", "workers_cancelled", "cancel_task", "stop_pathfinding", "clear_control_states", "cancel_collect"]
-        channel._sync_reflexes()
-        assert channel._reflex_task is None
+        assert channel._survival._config_task is None
         assert not channel._background
+        calls_after_stop = len(order)
         await channel._dispatch_event(GameEvent(seq=1, ts=1000, type="chat", data={"username": "Alice", "message": "接着玩"}))
-        assert channel._actions_paused, "chat alone must not restart autonomous actions"
+        assert len(order) == calls_after_stop, "chat alone must not restart autonomous actions"
     finally:
         await channel.stop()
         EntityRegistry.unregister(channel.get_entity_name())

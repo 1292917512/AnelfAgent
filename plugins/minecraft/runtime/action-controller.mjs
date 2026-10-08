@@ -8,6 +8,7 @@ import { ToolError } from '../util/errors.js'
 import { RuntimeMetrics } from './anelf-metrics.mjs'
 import { ActionContext } from './anelf-action-context.mjs'
 import { attachAutonomousActions } from './anelf-autonomous.mjs'
+import { SurvivalController } from './anelf-survival.mjs'
 
 /** @typedef {import('mineflayer').Bot} Bot */
 /** @typedef {import('./action-locks.js').CancelReason} CancelReason */
@@ -42,6 +43,7 @@ export class ActionController extends ActionLocks {
     this.paused = null
     this.autonomousEnabled = true
     this.metrics = new RuntimeMetrics()
+    this.survival = new SurvivalController(this)
   }
 
   get current () { return this.action?.name ?? null }
@@ -56,9 +58,13 @@ export class ActionController extends ActionLocks {
     if (bot.autoEat) attachPlugins()
     else bot.once('inject_allowed', attachPlugins)
     this.metrics.attach(bot)
+    this.survival.attach(bot)
     const interrupt = () => {
       if (this.bot !== bot) return
-      if (this.action) this.action.outcome = 'interrupted'
+      if (this.action) {
+        this.requests.revoke(this.action.origin)
+        this.action.outcome = 'interrupted'
+      }
       this.cancelAll('shutdown')
     }
     bot.on('death', interrupt)

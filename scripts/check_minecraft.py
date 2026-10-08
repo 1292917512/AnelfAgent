@@ -47,6 +47,8 @@ _REQUIRED_TOOLS = {
     "pause_action",
     "resume_action",
     "get_runtime_metrics",
+    "configure_survival",
+    "get_survival_status",
 } | COMPANION_GAME_TOOLS
 _REQUIRED_PARAMS = {
     "follow_entity": {"entityId", "range"},
@@ -54,6 +56,7 @@ _REQUIRED_PARAMS = {
     "whisper": {"username", "message"},
     "get_events": {"since", "types", "limit"},
     "mine_resources": {"direction", "depth", "minY", "length", "item", "count"},
+    "configure_survival": {"enabled", "intervalMs"},
 }
 
 
@@ -86,6 +89,8 @@ async def check(server_name: str) -> None:
                     await session.call_tool("get_events", arguments={"types": ["__anelf_cursor__"], "limit": 1}),
                 )
             )
+            if status.survival is None:
+                raise ValueError("执行器连接状态缺少本地生存能力声明")
             print(
                 json.dumps(
                     {
@@ -96,6 +101,7 @@ async def check(server_name: str) -> None:
                         "required_parameters": "passed",
                         "bot_status": status.state,
                         "event_cursor": events.next_since,
+                        "survival_version": status.survival.version,
                     },
                     ensure_ascii=False,
                     indent=2,

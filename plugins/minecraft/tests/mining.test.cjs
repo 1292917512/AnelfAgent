@@ -392,14 +392,18 @@ test('actual MCP server registers mining schemas and completes a protocol handsh
     await server.connect(remote)
     await client.connect(local)
     const { tools } = await client.listTools()
-    for (const name of ['mine_resources', 'mining_status', 'resume_mining', 'return_from_mine', 'pause_action', 'resume_action', 'action_status', 'get_runtime_metrics']) {
+    for (const name of ['mine_resources', 'mining_status', 'resume_mining', 'return_from_mine', 'pause_action', 'resume_action', 'action_status', 'get_runtime_metrics', 'configure_survival', 'get_survival_status']) {
       assert.ok(tools.some(t => t.name === name), name)
     }
     const schema = tools.find(t => t.name === 'mine_resources').inputSchema
     assert.deepEqual(Object.keys(schema.properties), ['direction', 'depth', 'minY', 'length', 'item', 'count'])
     const status = await client.callTool({ name: 'get_connection_status', arguments: {} })
     assert.equal(status.isError, undefined)
-    for (const name of ['action_status', 'get_runtime_metrics']) {
+    assert.equal(JSON.parse(status.content[0].text).survival.version, 1)
+    const configured = await client.callTool({ name: 'configure_survival', arguments: { enabled: true, intervalMs: 500 } })
+    assert.equal(configured.isError, undefined)
+    assert.equal(JSON.parse(configured.content[0].text).enabled, true)
+    for (const name of ['action_status', 'get_runtime_metrics', 'get_survival_status']) {
       const observation = await client.callTool({ name, arguments: {} })
       assert.equal(observation.isError, undefined)
     }

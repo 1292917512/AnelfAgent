@@ -44,7 +44,7 @@ export function attachAutonomousActions (bot, locks) {
     let nextCheck = 0
     const changed = () => { dirty = true }
     const tick = () => {
-      if (!dirty || Date.now() < nextCheck || locks.action || locks.paused || !locks.autonomousEnabled) return
+      if (!dirty || Date.now() < nextCheck || locks.action || locks.paused || !locks.autonomousEnabled || !locks.survival.enabled) return
       nextCheck = Date.now() + 5000
       dirty = false
       void armor.equipAll().catch(() => { dirty = true })

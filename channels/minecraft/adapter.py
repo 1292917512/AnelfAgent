@@ -31,14 +31,14 @@ from agent.channel.schemas import (
 from agent.messages import build_entity_scope
 from core.entity import EntityMetadata, EntityRegistry
 from core.log import log
-from core.tool_context import is_control_current, register_control, tool_request
+from core.tool_context import register_control, tool_request
 from entities._sdk import call_mcp_server_tool
 
 from . import discovery as _discovery  # noqa: F401  导入即注册全局发现工具
 from .autoconnect import _CONNECT_STATE, AutoConnector
 from .config import MinecraftConfig
-from .protocol import ActionProgress, ConnectionStatus, EventBatch, GameEvent, MineProgress, PlayerChat, split_chat
-from .reflexes import ReflexEngine
+from .protocol import ConnectionStatus, EventBatch, GameEvent, MineProgress, PlayerChat, split_chat
+from .reflexes import SurvivalBridge
 from .reply_policy import companion_policy
 from .session import record_game_event, stop_companion_work
 
@@ -69,9 +69,9 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
         self._background: set[asyncio.Task[Any]] = set()
         self._commands: set[asyncio.Task[None]] = set()
         self._command_lock = asyncio.Lock()
-        self._reflex_task: asyncio.Task[None] | None = None
-        self._reflex_stop: asyncio.Event | None = None
-        self._actions_paused = False
+        self._survival = SurvivalBridge(
+            lambda name, args: self._call(name, args), lambda text: self._announce_reflex(text),
+        )
         self._mine_announcements: dict[tuple[str, str], None] = {}
         self._auto = AutoConnector(
             self._call,
@@ -87,7 +87,6 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
     async def start(self) -> None:
         if self._poll_task is not None and not self._poll_task.done():
             return
-        self._actions_paused = False
         cfg = self.get_config()
         register_control(cfg.mcp_server, cfg.server_id, frozenset({
             "cancel_task", "stop_pathfinding", "cancel_collect", "clear_control_states", "pause_action", "disconnect_bot",
@@ -95,24 +94,17 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
         self._status = ChannelStatus.RUNNING
         self._cursor = None
         self._poll_task = asyncio.create_task(self._poll_loop(), name="channel.minecraft.events")
-        self._sync_reflexes()
+        self._survival.start()
 
     async def stop(self) -> None:
         running = self._status == ChannelStatus.RUNNING
-        self._actions_paused = True
         task, self._poll_task = self._poll_task, None
         if task is not None:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         await self._auto.stop()
-        reflex, self._reflex_task = self._reflex_task, None
-        if self._reflex_stop is not None:
-            self._reflex_stop.set()
-        if reflex is not None:
-            reflex.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await reflex
+        await self._survival.stop()
         pending = list(self._background | self._commands)
         for bg in pending:
             bg.cancel()
@@ -137,32 +129,6 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             except Exception as exc:
                 log(f"Minecraft 正常下线未完成: {exc}", "WARNING", tag="Minecraft")
         self._status = ChannelStatus.STOPPED
-
-    def _sync_reflexes(self) -> None:
-        """按配置热开关反射循环（配置中心改动经轮询周期生效）。"""
-        if self.get_config().reflexes_enabled and not self._actions_paused:
-            self._start_reflexes()
-        else:
-            self._stop_reflexes()
-
-    def _start_reflexes(self) -> None:
-        if self._reflex_task is not None and not self._reflex_task.done():
-            return
-        self._reflex_stop = asyncio.Event()
-        engine = ReflexEngine(self._call, self._announce_reflex, spawn=self._spawn_background)
-        cfg = self.get_config()
-        with tool_request(build_entity_scope("group", "minecraft", cfg.server_id), "@reflex"):
-            self._reflex_task = asyncio.create_task(
-                engine.run(cfg.reflex_interval_seconds, self._reflex_stop),
-                name="channel.minecraft.reflexes",
-            )
-
-    def _stop_reflexes(self) -> None:
-        if self._reflex_stop is not None:
-            self._reflex_stop.set()
-        task, self._reflex_task = self._reflex_task, None
-        if task is not None:
-            task.cancel()
 
     async def _announce_reflex(self, text: str) -> None:
         """反射事实追加会话历史，再播报到世界公共频道。"""
@@ -221,7 +187,6 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
                 if detail != self._last_error:
                     log(f"Minecraft 聊天桥等待执行器: {detail}", "WARNING", tag="Minecraft")
                 self._last_error = detail
-            self._sync_reflexes()
             await self._auto_tick()
             await asyncio.sleep(self.get_config().poll_interval_seconds)
 
@@ -246,8 +211,13 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             self._server_entity = entity
             self._cursor = None
         self._connection = ConnectionStatus.model_validate(await self._call("get_connection_status", {}))
+        self._survival.sync(
+            self._connection.survival, enabled=cfg.reflexes_enabled,
+            interval_seconds=cfg.reflex_interval_seconds,
+            scope=build_entity_scope("group", "minecraft", cfg.server_id),
+        )
         args: dict[str, Any] = {
-            "types": ["__anelf_cursor__"] if self._cursor is None else ["chat", "whisper", "mine_progress", "action_progress"],
+            "types": ["__anelf_cursor__"] if self._cursor is None else ["chat", "whisper", "mine_progress", "survival_progress"],
             "limit": 32,
         }
         if self._cursor is not None:
@@ -266,16 +236,8 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
         self._cursor = batch.next_since
 
     async def _dispatch_event(self, event: GameEvent, *, enqueue_commands: bool = False) -> None:
-        if event.type == "action_progress":
-            try:
-                action = ActionProgress.model_validate(event.data)
-            except ValidationError:
-                return
-            origin, cfg = action.origin, self.get_config()
-            if (action.phase == "running" and origin is not None and origin.actor != "@reflex"
-                    and origin.world_id == cfg.server_id
-                    and is_control_current(cfg.mcp_server, origin.producer, origin.epoch)):
-                self._actions_paused = False
+        if event.type == "survival_progress":
+            self._survival.event(event.data)
             return
         if event.type == "mine_progress":
             try:
@@ -292,7 +254,10 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
                     self._mine_announcements[key] = None
                     if len(self._mine_announcements) > 128:
                         self._mine_announcements.pop(next(iter(self._mine_announcements)))
-                await self._announce_reflex(announcement)
+                if enqueue_commands:
+                    self._survival.announce(announcement)
+                else:
+                    await self._announce_reflex(announcement)
             return
         if event.type not in {"chat", "whisper"}:
             return
@@ -330,8 +295,6 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             trigger_mind=addressed,
         )
         command = self._resolve_command(content)
-        if addressed and command is not None and command[0] in {"come", "follow", "home", "go"}:
-            self._actions_paused = False
         if addressed and command is not None:
             log(f"MC_COMMAND seq={event.seq} command={command[0]} received_at={time.time():.3f}", "DEBUG", tag="Minecraft")
             if enqueue_commands and command[0] not in {"stop", "stay", "pause"}:
@@ -470,13 +433,9 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             log(f"Minecraft 指令回执发送失败: {response.error}", "WARNING", tag="Minecraft")
 
     async def _cmd_stop(self, username: str, channel: AdapterChannel, *, pause: bool = False) -> str:
-        self._actions_paused = True
         failures: list[str] = []
         current = asyncio.current_task()
         tasks = [task for task in self._background | self._commands if task is not current]
-        if self._reflex_task is not None:
-            tasks.append(self._reflex_task)
-        self._stop_reflexes()
         for task in tasks:
             task.cancel()
         # Interrupt workers before sending the stop, without awaiting their history writes.
@@ -529,7 +488,6 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
         except Exception as exc:
             log(f"Minecraft 恢复被拒绝: {exc}", "INFO", tag="Minecraft")
             return "暂时不能恢复：任务可能仍在收尾，或位置、路线、资源已不满足条件；我没有重新开工。"
-        self._actions_paused = False
         return "已重新检查并恢复任务。"
 
     async def _cmd_come(self, username: str, channel: AdapterChannel) -> str:

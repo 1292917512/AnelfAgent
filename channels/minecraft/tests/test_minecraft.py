@@ -12,7 +12,6 @@ from agent.channel.schemas import AdapterChannel, ChannelType, SegmentType, Send
 from channels.minecraft.adapter import MinecraftChannel
 from channels.minecraft.config import MinecraftConfig
 from channels.minecraft.protocol import ConnectionStatus, GameEvent, split_chat
-from core import tool_context
 from core.entity import EntityRegistry
 
 
@@ -43,18 +42,11 @@ async def test_pause_resume_bypass_model(channel: MinecraftChannel, monkeypatch:
     assert not inbound.await_args.args[0].trigger_mind
 
 
-async def test_old_action_events_and_chat_cannot_resume_stopped_reflexes(channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(tool_context, "_controls", {})
-    tool_context.register_control("minecraft", "local", frozenset({"stop"}))
-    with tool_context.tool_request(actor="Alice"):
-        old = tool_context.control_metadata("minecraft", "dig")["anelf/action"]
-    with tool_context.tool_request(actor="Alice"):
-        new = tool_context.control_metadata("minecraft", "stop")["anelf/action"]
-    channel._actions_paused = True
-    await channel._dispatch_event(GameEvent(seq=1, ts=1000, type="action_progress", data={"phase": "running", "origin": old}))
-    assert channel._actions_paused
-    await channel._dispatch_event(GameEvent(seq=2, ts=1000, type="action_progress", data={"phase": "running", "origin": new}))
-    assert not channel._actions_paused
+async def test_action_events_cannot_change_executor_survival_settings(channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch) -> None:
+    call = AsyncMock()
+    monkeypatch.setattr(channel, "_call", call)
+    await channel._dispatch_event(GameEvent(seq=1, ts=1000, type="action_progress", data={"phase": "running"}))
+    call.assert_not_awaited()
 
 
 async def test_duplicate_mining_terminal_is_announced_once_per_action(channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -113,6 +105,32 @@ async def test_malformed_mining_event_is_ignored(
     monkeypatch.setattr(channel, "_announce_reflex", announce)
     await channel._dispatch_event(GameEvent(seq=1, ts=1000, type="mine_progress", data={"phase": "completed"}))
     announce.assert_not_awaited()
+
+
+async def test_slow_mining_announcement_does_not_delay_stop_dispatch(
+    channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered = asyncio.Event()
+
+    async def announce(text: str) -> None:
+        entered.set()
+        await asyncio.Event().wait()
+
+    call = AsyncMock(return_value={"ok": True, "stopped": True})
+    monkeypatch.setattr(channel, "_call", call)
+    monkeypatch.setattr(channel, "_announce_reflex", announce)
+    monkeypatch.setattr(channel, "_send_text", AsyncMock())
+    monkeypatch.setattr(channel, "on_message", AsyncMock())
+    monkeypatch.setattr("channels.minecraft.adapter.stop_companion_work", AsyncMock())
+    try:
+        await channel._dispatch_event(GameEvent(seq=1, ts=1000, type="mine_progress", data={
+            "id": "mine", "phase": "blocked", "steps": 2, "dug": 3, "item": "cobblestone", "gained": 0, "returned": False,
+        }), enqueue_commands=True)
+        await entered.wait()
+        await asyncio.wait_for(channel._dispatch_event(chat_event(2, "!stop"), enqueue_commands=True), 0.5)
+        call.assert_awaited_once_with("cancel_task", {})
+    finally:
+        await channel._survival.stop()
 
 
 async def test_public_mention_routes_as_group(channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -563,10 +581,10 @@ async def test_reflexes_start_with_channel_and_stop_cleanly(
     monkeypatch.setattr(channel, "_call", call)
 
     await channel.start()
-    assert channel._reflex_task is not None and not channel._reflex_task.done()
+    assert channel._survival._notice_task is not None and not channel._survival._notice_task.done()
 
     await channel.stop()
-    assert channel._reflex_task is None
+    assert channel._survival._notice_task is None
     assert channel._poll_task is None
 
 
@@ -575,7 +593,7 @@ async def test_reflexes_disabled_by_config(channel: MinecraftChannel) -> None:
 
     await channel.start()
 
-    assert channel._reflex_task is None
+    assert channel._survival._config_task is None
     await channel.stop()
 
 
@@ -591,7 +609,7 @@ async def test_shutdown_cancels_workers_before_graceful_disconnect(
     async def call(tool_name: str, args: dict[str, object]) -> dict[str, object]:
         assert tool_name == "disconnect_bot"
         assert "force" not in args
-        assert channel._poll_task is None and channel._reflex_task is None
+        assert channel._poll_task is None and channel._survival._notice_task is None
         order.append("disconnect")
         return {"status": "disconnected", "inventory": {"restored": True}}
 
@@ -634,21 +652,34 @@ async def test_shutdown_still_disconnects_if_worker_cancellation_fails(
 async def test_reflexes_sync_to_config_toggle(
     channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    call = AsyncMock(side_effect=[{"status": "disconnected"}])
+    settings = {"version": 1, "runtimeId": "session1", "enabled": False, "intervalMs": 250}
+    calls: list[str] = []
+
+    async def invoke(name: str, args: dict) -> dict:
+        calls.append(name)
+        if name == "get_connection_status":
+            return {"status": "online", "survival": dict(settings)}
+        if name == "configure_survival":
+            settings.update(args)
+            return dict(settings)
+        assert name == "get_events"
+        return {"events": [], "nextSince": 1}
+
+    call = AsyncMock(side_effect=invoke)
     monkeypatch.setattr(channel, "_call", call)
-    channel.get_config().reflexes_enabled = False
-
-    await channel.start()
-    assert channel._reflex_task is None
-
-    channel.get_config().reflexes_enabled = True
-    channel._sync_reflexes()
-    assert channel._reflex_task is not None and not channel._reflex_task.done()
-
-    channel.get_config().reflexes_enabled = False
-    channel._sync_reflexes()
-    assert channel._reflex_task is None or channel._reflex_task.done()
-    await channel.stop()
+    try:
+        await channel._poll_once()
+        assert channel._survival._config_task is not None
+        await channel._survival._config_task
+        await channel._poll_once()
+        assert calls == ["get_connection_status", "get_events", "configure_survival", "get_connection_status", "get_events"]
+        channel.get_config().reflexes_enabled = False
+        channel._survival._retry_at = 0
+        await channel._poll_once()
+        await channel._survival._config_task
+        assert settings["enabled"] is False
+    finally:
+        await channel._survival.stop()
 
 
 async def test_reflex_announce_targets_world_channel(
@@ -676,7 +707,6 @@ async def test_stay_cancels_work_and_disables_idle_actions(
     await channel._dispatch_event(chat_event(1, "待着"))
 
     assert [c.args[0] for c in call.await_args_list] == ["cancel_task"]
-    assert channel._actions_paused
     text = outbound.call_args.args[0].segments[0].content
     assert "待着" in text
     assert inbound.call_args.args[0].trigger_mind is False

@@ -1,7 +1,7 @@
-"""安装单机器人动作控制器及有界运行指标。
+"""安装单机器人动作控制、生存观察及有界运行指标。
 
-Model Experience: 动作控制权和真实取消状态可查询，原停止工具返回 stopped。
-Token effect: 两个只读 schema 增加数百 token，指标不自动注入上下文。
+Model Experience: 动作控制权、真实取消状态与本地生存状态可查询，原停止工具返回 stopped。
+Token effect: 诊断与配置 schema 增加少量 token，指标不自动注入上下文。
 Cache effect: 工具列表仅安装时变化，实时状态留在结果和事件尾部。
 """
 
@@ -73,6 +73,8 @@ _MODULES = {
     "placement-hints.mjs": "tools/anelf-placement-hints.mjs",
     "action-context.mjs": "bot/anelf-action-context.mjs",
     "autonomous-actions.mjs": "bot/anelf-autonomous.mjs",
+    "survival-controller.mjs": "bot/anelf-survival.mjs",
+    "survival-observation.mjs": "bot/anelf-survival-observation.mjs",
 }
 
 

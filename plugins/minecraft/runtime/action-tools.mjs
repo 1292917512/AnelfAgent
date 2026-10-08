@@ -1,5 +1,5 @@
 // @ts-check
-/** Model Experience: actions expose ownership and actual stopping status; two read-only diagnostics.
+/** Model Experience: actions expose ownership, actual stopping and local survival status.
  * Token effect: a few hundred schema tokens; bounded snapshots are only returned on request.
  * Cache effect: schemas change on installation; timing and progress stay in results/events.
  */
@@ -12,7 +12,7 @@ import { workbenchPlacementHints } from './anelf-placement-hints.mjs'
 /** @typedef {import('../context.js').ToolContext} Context */
 /** @typedef {import('./registry.js').Registrar} Registrar */
 const stops = new Set(['cancel_task', 'stop_pathfinding', 'cancel_collect', 'clear_control_states'])
-const passive = new Set(['chat', 'whisper', 'wait_for_ticks', 'wait_for_message', 'autoeat_set_enabled', 'autoeat_configure', 'autoeat_cancel'])
+const passive = new Set(['chat', 'whisper', 'wait_for_ticks', 'wait_for_message', 'autoeat_set_enabled', 'autoeat_configure', 'autoeat_cancel', 'configure_survival'])
 const persistent = new Set(['set_goal', 'follow_entity', 'flee_from'])
 
 /** @param {Context} ctx @returns {ActionController} */
@@ -34,6 +34,13 @@ async function stop (locks, reflex = false) {
 
 /** @param {Registrar} reg */
 export function registerActions (reg) {
+  reg({ name: 'configure_survival', group: 'state', inputSchema: {
+    enabled: z.boolean(), intervalMs: z.number().int().min(100).max(10000).default(250),
+  }, description: 'Configure local survival observations; health/death/breath events are immediate. Does not resume stopped or paused work. Normal companion settings are synchronized by the Minecraft channel.',
+  handler: (args, ctx) => controller(ctx).survival.configure(args) })
+  reg({ name: 'get_survival_status', group: 'state', inputSchema: {}, annotations: { readOnlyHint: true },
+    description: 'Read local survival settings, known life state, last observed danger and bounded rescue result. Unknown health is not death; interrupted work never resumes automatically.',
+    handler: (_args, ctx) => controller(ctx).survival.status() })
   reg({ name: 'pause_action', group: 'state', inputSchema: {},
     description: 'Pause mining at a verified corridor step or pause persistent movement. pausing is not yet paused. Atomic inventory actions are cancelled and drained instead of replayed; supported=false means they cannot resume.',
     handler: (_args, ctx) => controller(ctx).pause() })
@@ -58,6 +65,11 @@ export function wrapActionTools (def) {
   const wrapped = { ...def, description, handler: async (args, ctx) => {
     const locks = controller(ctx)
     return locks.metrics.measure(def.name, async () => {
+      if (def.name === 'get_connection_status') {
+        const result = await original(args, ctx)
+        if (result && typeof result === 'object') return { ...result, survival: locks.survival.status() }
+        return result
+      }
       if (!def.annotations?.readOnlyHint && !['chat', 'whisper', 'wait_for_ticks', 'wait_for_message'].includes(def.name)) locks.requests.assertCurrent()
       const reflex = locks.requests.current()?.actor === '@reflex'
       if (reflex && !def.annotations?.readOnlyHint && !passive.has(def.name) &&

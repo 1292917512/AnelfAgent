@@ -7,12 +7,43 @@ from pydantic import BaseModel, Field
 ONLINE_STATE = "online"
 
 
+class SurvivalStatus(BaseModel):
+    """执行器自持有的本地反射设置与会话标识。"""
+
+    version: Literal[1]
+    runtime_id: str = Field(alias="runtimeId", min_length=1)
+    enabled: bool
+    interval_ms: int = Field(alias="intervalMs", ge=100, le=10000)
+
+
 class ConnectionStatus(BaseModel):
     """机器人连接状态中的频道所需字段。"""
 
     state: str = Field(alias="status")
     username: str | None = None
     version: str | None = None
+    survival: SurvivalStatus | None = None
+
+
+class SurvivalProgress(BaseModel):
+    """本地观察与自救事实；移动结束不等于危险已经解除。"""
+
+    id: str = Field(min_length=1)
+    runtime_id: str = Field(alias="runtimeId", min_length=1)
+    kind: Literal["death", "danger", "drowning", "burning", "trapped", "hurt", "hostile", "stuck"]
+    phase: Literal["dead", "respawned", "started", "moved", "clear", "blocked", "held", "cancelled"]
+
+    def announcement(self) -> str | None:
+        cause = {"drowning": "头部入水", "burning": "着火或接触火/熔岩", "trapped": "头部被方块挡住",
+                 "hurt": "掉血", "hostile": "敌对生物逼近", "stuck": "移动卡住"}.get(self.kind, "危险")
+        return {
+            "dead": "服务器已确认我死亡，等待重生；原任务已中断。",
+            "respawned": "我已经重生，原任务保持停止。",
+            "started": f"检测到{cause}，我已中断原动作，正在本地自救。",
+            "clear": "当前危险迹象已消失，我没有恢复之前的任务。",
+            "blocked": f"检测到{cause}，本地自救受阻；我不会盲挖或继续原任务。",
+            "held": f"检测到{cause}；目前处于停止或暂停状态，没有自动移动。",
+        }.get(self.phase)
 
 
 class GameEvent(BaseModel):

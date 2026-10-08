@@ -30,14 +30,14 @@ class MinecraftConfig(ChannelConfig):
     )
     reflexes_enabled: bool = Field(
         default=True,
-        description="生存反射（受伤逃跑/卡死自救）：确定性零模型调用，遇到异常可关闭排查",
+        description="执行器本地生存反应（受伤避险、上浮、脱困、进食）：零模型调用，手动停止后禁止自动移动",
     )
     reflex_interval_seconds: float = Field(
-        default=1.0,
-        ge=0.5,
+        default=0.25,
+        ge=0.1,
         le=10,
-        description="生存反射观察间隔",
-        json_schema_extra={"unit": "s", "min": 0.5, "max": 10, "advanced": True},
+        description="执行器本地观察间隔；生命与氧气事件即时检查，不依赖聊天轮询",
+        json_schema_extra={"unit": "s", "min": 0.1, "max": 10, "advanced": True},
     )
     auto_connect: bool = Field(
         default=False,
