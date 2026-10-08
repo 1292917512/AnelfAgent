@@ -15,6 +15,7 @@ from channels.minecraft import session
 from channels.minecraft.adapter import MinecraftChannel
 from channels.minecraft.config import MinecraftConfig
 from channels.minecraft.protocol import ConnectionStatus, GameEvent
+from core import tool_context
 from core.entity import EntityRegistry
 
 
@@ -37,6 +38,10 @@ async def test_stop_cancels_world_workers_and_reminders(
     mind.delegation_manager = manager
     monkeypatch.setattr("agent.runtime.singleton.get_runtime", lambda: SimpleNamespace(mind=mind))
     scopes = ["group_minecraft:local", "user_minecraft:local/Alice", "user_webui:web_user#game", "group_minecraft:other"]
+    monkeypatch.setattr(tool_context, "_controls", {})
+    tool_context.register_control("minecraft", "local", frozenset({"cancel_task"}))
+    with tool_context.tool_request(scopes[2], "Alice"):
+        tool_context.control_metadata("minecraft", "get_state", "2")
     release = asyncio.Event()
     actions: list[str] = []
 
@@ -46,7 +51,7 @@ async def test_stop_cancels_world_workers_and_reminders(
 
     tasks = [asyncio.create_task(worker(scope)) for scope in scopes]
     for i, (scope, task) in enumerate(zip(scopes, tasks, strict=True)):
-        manager._running[str(i)] = {"scope": scope, "task": task, "agent": "mc-worker" if i == 2 else ""}
+        manager._running[str(i)] = {"scope": scope, "task": task, "agent": "mc-worker"}
     for scope in scopes:
         await scheduler.add_reminder("继续游戏", 9999999999, scope)
     try:
@@ -68,7 +73,7 @@ async def test_stop_cancels_world_workers_and_reminders(
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
-async def test_stop_drains_local_actions_before_remote_stop(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_stop_cancels_local_actions_and_workers_before_resuming_chat(monkeypatch: pytest.MonkeyPatch) -> None:
     channel = MinecraftChannel()
     monkeypatch.setattr(channel, "get_config", lambda: MinecraftConfig(enabled=True))
     channel._connection = ConnectionStatus(status="online", username="AnelfBot")
@@ -86,7 +91,7 @@ async def test_stop_drains_local_actions_before_remote_stop(monkeypatch: pytest.
         order.append(name)
         return {"ok": True}
 
-    async def stop_work(world_id: str) -> None:
+    async def stop_work(world_id: str, *, server: str) -> None:
         order.append("workers_cancelled")
 
     monkeypatch.setattr("channels.minecraft.adapter.stop_companion_work", stop_work)
@@ -96,12 +101,12 @@ async def test_stop_drains_local_actions_before_remote_stop(monkeypatch: pytest.
     await started.wait()
     try:
         await channel._cmd_stop("Alice", AdapterChannel(channel_id="local", channel_type=ChannelType.GROUP))
-        assert order == ["workers_cancelled", "local_cancelled", "cancel_task", "stop_pathfinding", "clear_control_states", "cancel_collect"]
+        assert order == ["local_cancelled", "workers_cancelled", "cancel_task", "stop_pathfinding", "clear_control_states", "cancel_collect"]
         channel._sync_reflexes()
         assert channel._reflex_task is None
         assert not channel._background
         await channel._dispatch_event(GameEvent(seq=1, ts=1000, type="chat", data={"username": "Alice", "message": "接着玩"}))
-        assert not channel._actions_paused
+        assert channel._actions_paused, "chat alone must not restart autonomous actions"
     finally:
         await channel.stop()
         EntityRegistry.unregister(channel.get_entity_name())

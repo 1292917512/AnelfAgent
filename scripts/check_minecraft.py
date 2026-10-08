@@ -15,6 +15,7 @@ if str(_REPO) not in sys.path:
 from mcp import ClientSession
 
 from channels.minecraft.protocol import ConnectionStatus, EventBatch
+from channels.minecraft.reply_policy import COMPANION_GAME_TOOLS
 from core.log import set_log_level
 from entities.mcp.config import load_mcp_config
 from entities.mcp.render import _render_call_result
@@ -38,12 +39,21 @@ _REQUIRED_TOOLS = {
     "chat",
     "whisper",
     "get_events",
-}
+    "mine_resources",
+    "mining_status",
+    "resume_mining",
+    "return_from_mine",
+    "action_status",
+    "pause_action",
+    "resume_action",
+    "get_runtime_metrics",
+} | COMPANION_GAME_TOOLS
 _REQUIRED_PARAMS = {
     "follow_entity": {"entityId", "range"},
     "chat": {"message"},
     "whisper": {"username", "message"},
     "get_events": {"since", "types", "limit"},
+    "mine_resources": {"direction", "depth", "minY", "length", "item", "count"},
 }
 
 

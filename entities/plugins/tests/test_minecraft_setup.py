@@ -9,7 +9,14 @@ import pytest
 
 from core.plugins.manager import PluginManager
 from entities.mcp.config import MCPServerStore
-from scripts import setup_minecraft
+from scripts import (
+    minecraft_actions,
+    minecraft_crafting,
+    minecraft_digging,
+    minecraft_mining,
+    minecraft_placement,
+    setup_minecraft,
+)
 
 
 def test_installed_minecraft_retains_runtime_settings_on_restart(
@@ -84,6 +91,11 @@ def test_setup_preserves_connection_and_player_settings(
     monkeypatch.setattr(setup_minecraft, "patch_executor_chat_discipline", lambda payload: "patched")
     monkeypatch.setattr(setup_minecraft, "patch_pathfinder_think_timeout", lambda payload: "patched")
     monkeypatch.setattr(setup_minecraft, "patch_craft_count_semantics", lambda payload: "patched")
+    monkeypatch.setattr(setup_minecraft, "patch_crafting", lambda payload: "patched")
+    monkeypatch.setattr(setup_minecraft, "patch_placement", lambda payload: "patched")
+    monkeypatch.setattr(setup_minecraft, "patch_digging", lambda payload: "patched")
+    monkeypatch.setattr(setup_minecraft, "patch_mining", lambda payload: "patched")
+    monkeypatch.setattr(setup_minecraft, "patch_actions", lambda payload: "patched")
     args = argparse.Namespace(
         host=None,
         port=54322,
@@ -293,3 +305,171 @@ def test_patch_craft_count_fails_on_version_drift(tmp_path) -> None:
     payload = _write_fake_package_file(tmp_path, "awesome-mineflayer-mcp", "dist/tools/crafting.js", "count: z.number(),\n")
     with pytest.raises(RuntimeError, match="craft count"):
         setup_minecraft.patch_craft_count_semantics(payload)
+
+
+def _crafting_payload(root: Path) -> list[Path]:
+    fixtures = {
+        "mineflayer/lib/plugins/inventory.js": (
+            minecraft_crafting._WAIT_ORIGINAL + "\n  async function syncWindow (window) {"
+            + minecraft_crafting._OVERFLOW_ORIGINAL + minecraft_crafting._TOSS_ORIGINAL
+        ),
+        "mineflayer/lib/plugins/craft.js": "\n".join((
+            minecraft_crafting._FINISH_ORIGINAL, minecraft_crafting._CATCH_ORIGINAL, minecraft_crafting._CRAFT_ORIGINAL,
+            *(original for original, _ in minecraft_crafting._CRAFT_CHECKPOINTS),
+        )),
+        "awesome-mineflayer-mcp/dist/bot/state.js": minecraft_crafting._STATE_ORIGINAL,
+        "awesome-mineflayer-mcp/dist/tools/crafting.js": "\n".join((
+            minecraft_crafting._PREFLIGHT_ORIGINAL,
+            minecraft_crafting._COUNT_ORIGINAL,
+            minecraft_crafting._ERROR_ORIGINAL,
+        )),
+        "awesome-mineflayer-mcp/dist/bot/manager.js": "\n".join((
+            minecraft_crafting._MANAGER_IMPORT_ORIGINAL, minecraft_crafting._DISCONNECT_ORIGINAL,
+            minecraft_crafting._REQUIRE_BOT_ORIGINAL,
+            minecraft_crafting._DISCONNECT_RESULT_ORIGINAL, minecraft_crafting._SHUTDOWN_ORIGINAL,
+        )),
+        "awesome-mineflayer-mcp/dist/index.js": "\n".join((
+            minecraft_crafting._EXIT_ORIGINAL, minecraft_crafting._AWAIT_EXIT_ORIGINAL, minecraft_crafting._EOF_ORIGINAL,
+        )),
+    }
+    paths = []
+    for name, source in fixtures.items():
+        target = root / "node_modules" / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(source, encoding="utf-8")
+        paths.append(target)
+    return paths
+
+
+def test_crafting_patch_is_idempotent(tmp_path: Path) -> None:
+    paths = _crafting_payload(tmp_path)
+    assert minecraft_crafting.patch_crafting(tmp_path) == "patched"
+    helper = tmp_path / "node_modules/mineflayer/lib/anelf_inventory.js"
+    assert helper.read_text(encoding="utf-8") == minecraft_crafting._HELPER.read_text(encoding="utf-8")
+    expected = [path.read_bytes() for path in paths]
+    assert minecraft_crafting.patch_crafting(tmp_path) == "exists"
+    assert [path.read_bytes() for path in paths] == expected
+
+
+@pytest.mark.parametrize("mismatch", ["missing", "ambiguous"])
+def test_crafting_patch_validates_all_files_before_writing(tmp_path: Path, mismatch: str) -> None:
+    paths = _crafting_payload(tmp_path)
+    source = paths[-1].read_text(encoding="utf-8")
+    needle = minecraft_crafting._AWAIT_EXIT_ORIGINAL
+    paths[-1].write_text(source.replace(needle, "" if mismatch == "missing" else needle * 2), encoding="utf-8")
+    before = [path.read_bytes() for path in paths]
+    with pytest.raises(RuntimeError, match="合成补丁位置"):
+        minecraft_crafting.patch_crafting(tmp_path)
+    assert [path.read_bytes() for path in paths] == before
+    assert not (tmp_path / "node_modules/mineflayer/lib/anelf_inventory.js").exists()
+
+
+def test_crafting_patch_requires_window_sync_interface(tmp_path: Path) -> None:
+    paths = _crafting_payload(tmp_path)
+    paths[0].write_text(minecraft_crafting._WAIT_ORIGINAL, encoding="utf-8")
+    with pytest.raises(RuntimeError, match="合成窗口同步接口"):
+        minecraft_crafting.patch_crafting(tmp_path)
+
+
+def test_placement_patch_is_idempotent(tmp_path: Path) -> None:
+    source = minecraft_placement._DESCRIPTION_ORIGINAL + "\n" + minecraft_placement._HANDLER_ORIGINAL
+    _write_fake_package_file(tmp_path, "awesome-mineflayer-mcp", "dist/tools/digging.js", source)
+    assert minecraft_placement.patch_placement(tmp_path) == "patched"
+    target = tmp_path / "node_modules/awesome-mineflayer-mcp/dist/tools/digging.js"
+    expected = target.read_bytes()
+    assert minecraft_placement.patch_placement(tmp_path) == "exists"
+    assert target.read_bytes() == expected
+
+
+@pytest.mark.parametrize("handler", ["", minecraft_placement._HANDLER_ORIGINAL * 2])
+def test_placement_patch_refuses_missing_or_ambiguous_handler(tmp_path: Path, handler: str) -> None:
+    source = minecraft_placement._DESCRIPTION_ORIGINAL + "\n" + handler
+    _write_fake_package_file(tmp_path, "awesome-mineflayer-mcp", "dist/tools/digging.js", source)
+    target = tmp_path / "node_modules/awesome-mineflayer-mcp/dist/tools/digging.js"
+    before = target.read_bytes()
+    with pytest.raises(RuntimeError, match="放置补丁位置"):
+        minecraft_placement.patch_placement(tmp_path)
+    assert target.read_bytes() == before
+
+
+def _digging_payload(root: Path) -> list[Path]:
+    paths: list[Path] = []
+    for relative, replacements in minecraft_digging._PATCHES.items():
+        target = root / "node_modules" / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("\n".join(original for original, _ in replacements), encoding="utf-8")
+        paths.append(target)
+    return paths
+
+
+def test_digging_patch_is_idempotent(tmp_path: Path) -> None:
+    paths = _digging_payload(tmp_path)
+    assert minecraft_digging.patch_digging(tmp_path) == "patched"
+    expected = [path.read_bytes() for path in paths]
+    assert minecraft_digging.patch_digging(tmp_path) == "exists"
+    assert [path.read_bytes() for path in paths] == expected
+
+
+@pytest.mark.parametrize("mismatch", ["missing", "ambiguous"])
+def test_digging_patch_validates_all_files_before_writing(tmp_path: Path, mismatch: str) -> None:
+    paths = _digging_payload(tmp_path)
+    source = paths[-1].read_text(encoding="utf-8")
+    needle = minecraft_digging._HANDLER_ORIGINAL
+    paths[-1].write_text(source.replace(needle, "" if mismatch == "missing" else needle * 2), encoding="utf-8")
+    before = [path.read_bytes() for path in paths]
+    with pytest.raises(RuntimeError, match="挖掘补丁位置"):
+        minecraft_digging.patch_digging(tmp_path)
+    assert [path.read_bytes() for path in paths] == before
+
+
+@pytest.mark.parametrize("drift", [False, True])
+def test_mining_patch_installs_idempotently_or_rejects_all_on_drift(tmp_path: Path, drift: bool) -> None:
+    paths: list[Path] = []
+    for relative, replacements in minecraft_mining._PATCHES.items():
+        target = tmp_path / "node_modules" / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("\n".join(original for original, _ in replacements), encoding="utf-8")
+        paths.append(target)
+    if drift:
+        paths[-1].write_text("upstream changed", encoding="utf-8")
+        before = [p.read_bytes() for p in paths]
+        with pytest.raises(RuntimeError, match="矿洞补丁位置"):
+            minecraft_mining.patch_mining(tmp_path)
+        assert [p.read_bytes() for p in paths] == before
+        assert not (tmp_path / "node_modules/mineflayer/lib/anelf_mining").exists()
+    else:
+        assert minecraft_mining.patch_mining(tmp_path) == "patched"
+        assert minecraft_mining.patch_mining(tmp_path) == "exists"
+        helper = tmp_path / "node_modules/mineflayer/lib/anelf_mining/mining-task.cjs"
+        assert helper.read_text(encoding="utf-8") == (minecraft_mining._RUNTIME / "mining-task.cjs").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("drift", [False, True])
+def test_actions_patch_validates_before_writing_and_preserves_mining_idempotency(tmp_path: Path, drift: bool) -> None:
+    for module in (minecraft_mining, minecraft_actions):
+        for relative, replacements in module._PATCHES.items():
+            target = tmp_path / "node_modules" / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            source = target.read_text(encoding="utf-8") if target.exists() else ""
+            for original, _ in replacements:
+                # Some action anchors are introduced by the mining patch itself.
+                introduced_by_mining = module is minecraft_actions and any(
+                    original in patched for patches in minecraft_mining._PATCHES.values() for _, patched in patches
+                )
+                if original not in source and not introduced_by_mining:
+                    source += original + "\n"
+            target.write_text(source, encoding="utf-8")
+    minecraft_mining.patch_mining(tmp_path)
+    if drift:
+        (tmp_path / "node_modules/awesome-mineflayer-mcp/dist/bot/manager.js").write_text("drift", encoding="utf-8")
+    paths = list((tmp_path / "node_modules").rglob("*.js"))
+    before = {path: path.read_bytes() for path in paths}
+    if drift:
+        with pytest.raises(RuntimeError, match="动作控制补丁"):
+            minecraft_actions.patch_actions(tmp_path)
+        assert {path: path.read_bytes() for path in paths} == before
+        assert not (tmp_path / "node_modules/awesome-mineflayer-mcp/dist/bot/anelf-actions.mjs").exists()
+    else:
+        assert minecraft_actions.patch_actions(tmp_path) == "patched"
+        assert minecraft_mining.patch_mining(tmp_path) == "exists"
+        assert minecraft_actions.patch_actions(tmp_path) == "exists"

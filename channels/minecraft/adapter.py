@@ -7,12 +7,14 @@ import contextlib
 import json
 import re
 import time
+from contextvars import ContextVar
 from typing import Any
 
 from pydantic import ValidationError
 
 from agent.channel.base import BaseChannel, ChannelMetadata
 from agent.channel.channel_types import ChannelCapability, ChannelStatus
+from agent.channel.reply_policy import ReplyPolicy
 from agent.channel.schemas import (
     AdapterChannel,
     AdapterMessage,
@@ -26,16 +28,21 @@ from agent.channel.schemas import (
     SendResponse,
     SendSegment,
 )
+from agent.messages import build_entity_scope
 from core.entity import EntityMetadata, EntityRegistry
 from core.log import log
+from core.tool_context import is_control_current, register_control, tool_request
 from entities._sdk import call_mcp_server_tool
 
 from . import discovery as _discovery  # noqa: F401  导入即注册全局发现工具
 from .autoconnect import _CONNECT_STATE, AutoConnector
 from .config import MinecraftConfig
-from .protocol import ConnectionStatus, EventBatch, GameEvent, PlayerChat, split_chat
+from .protocol import ActionProgress, ConnectionStatus, EventBatch, GameEvent, MineProgress, PlayerChat, split_chat
 from .reflexes import ReflexEngine
+from .reply_policy import companion_policy
 from .session import record_game_event, stop_companion_work
+
+_COMMAND_SEQ: ContextVar[int | None] = ContextVar("minecraft_command_seq", default=None)
 
 
 class MinecraftChannel(BaseChannel[MinecraftConfig]):
@@ -48,6 +55,11 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
     metadata = ChannelMetadata(name="Minecraft", description="Java 游戏聊天与陪玩，执行器使用 Mineflayer MCP")
     _Configs = MinecraftConfig
 
+    @property
+    def reply_policy(self) -> ReplyPolicy:
+        """游戏消息直接回复，稳定注入当前执行器工具与派工规则。"""
+        return companion_policy(self.get_config().mcp_server)
+
     def __init__(self) -> None:
         super().__init__()
         self._poll_task: asyncio.Task[None] | None = None
@@ -55,9 +67,12 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
         self._server_entity: EntityMetadata | None = None
         self._connection: ConnectionStatus | None = None
         self._background: set[asyncio.Task[Any]] = set()
+        self._commands: set[asyncio.Task[None]] = set()
+        self._command_lock = asyncio.Lock()
         self._reflex_task: asyncio.Task[None] | None = None
         self._reflex_stop: asyncio.Event | None = None
         self._actions_paused = False
+        self._mine_announcements: dict[tuple[str, str], None] = {}
         self._auto = AutoConnector(
             self._call,
             self._discover_worlds,
@@ -72,12 +87,19 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
     async def start(self) -> None:
         if self._poll_task is not None and not self._poll_task.done():
             return
+        self._actions_paused = False
+        cfg = self.get_config()
+        register_control(cfg.mcp_server, cfg.server_id, frozenset({
+            "cancel_task", "stop_pathfinding", "cancel_collect", "clear_control_states", "pause_action", "disconnect_bot",
+        }))
         self._status = ChannelStatus.RUNNING
         self._cursor = None
         self._poll_task = asyncio.create_task(self._poll_loop(), name="channel.minecraft.events")
         self._sync_reflexes()
 
     async def stop(self) -> None:
+        running = self._status == ChannelStatus.RUNNING
+        self._actions_paused = True
         task, self._poll_task = self._poll_task, None
         if task is not None:
             task.cancel()
@@ -91,11 +113,29 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             reflex.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await reflex
-        for bg in list(self._background):
+        pending = list(self._background | self._commands)
+        for bg in pending:
             bg.cancel()
-        for bg in list(self._background):
+        for bg in pending:
             with contextlib.suppress(asyncio.CancelledError):
                 await bg
+        if running:
+            try:
+                await asyncio.wait_for(
+                    stop_companion_work(self.get_config().server_id, server=self.get_config().mcp_server,
+                                        reason="Minecraft 频道关闭，陪玩任务停止"), timeout=3,
+                )
+            except Exception as exc:
+                log(f"Minecraft 关停取消陪玩任务失败: {exc}", "WARNING", tag="Minecraft")
+            try:
+                result = await asyncio.wait_for(
+                    self._call("disconnect_bot", {"reason": "Minecraft channel stopping"}), timeout=8,
+                )
+                inventory = result.get("inventory")
+                if isinstance(inventory, dict) and inventory.get("restored") is False:
+                    log(f"Minecraft 下线前背包未完全收尾: {inventory.get('reason')}", "WARNING", tag="Minecraft")
+            except Exception as exc:
+                log(f"Minecraft 正常下线未完成: {exc}", "WARNING", tag="Minecraft")
         self._status = ChannelStatus.STOPPED
 
     def _sync_reflexes(self) -> None:
@@ -110,10 +150,12 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             return
         self._reflex_stop = asyncio.Event()
         engine = ReflexEngine(self._call, self._announce_reflex, spawn=self._spawn_background)
-        self._reflex_task = asyncio.create_task(
-            engine.run(self.get_config().reflex_interval_seconds, self._reflex_stop),
-            name="channel.minecraft.reflexes",
-        )
+        cfg = self.get_config()
+        with tool_request(build_entity_scope("group", "minecraft", cfg.server_id), "@reflex"):
+            self._reflex_task = asyncio.create_task(
+                engine.run(cfg.reflex_interval_seconds, self._reflex_stop),
+                name="channel.minecraft.reflexes",
+            )
 
     def _stop_reflexes(self) -> None:
         if self._reflex_stop is not None:
@@ -144,13 +186,27 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
         await self._announce_reflex(text)
 
     async def _call(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        raw = await call_mcp_server_tool(self.get_config().mcp_server, tool_name, arguments)
-        data: object = json.loads(raw)
-        if not isinstance(data, dict):
-            raise ValueError("Minecraft MCP 返回了非对象结果")
-        if data.get("error") or data.get("success") is False:
-            raise RuntimeError(str(data.get("error") or data))
-        return data
+        started = time.perf_counter()
+        outcome = "interrupted"
+        try:
+            raw = await call_mcp_server_tool(self.get_config().mcp_server, tool_name, arguments)
+            data: object = json.loads(raw)
+            if not isinstance(data, dict):
+                raise ValueError("Minecraft MCP 返回了非对象结果")
+            if data.get("error") or data.get("success") is False:
+                raise RuntimeError(str(data.get("error") or data))
+            outcome = "ok"
+            return data
+        except Exception:
+            outcome = "error"
+            raise
+        finally:
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            if _COMMAND_SEQ.get() is not None or elapsed_ms >= 1000 or outcome != "ok":
+                log(
+                    f"MC_RPC seq={_COMMAND_SEQ.get()} tool={tool_name} outcome={outcome} elapsed_ms={elapsed_ms:.1f}",
+                    "DEBUG", tag="Minecraft",
+                )
 
     async def _poll_loop(self) -> None:
         while True:
@@ -191,7 +247,7 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             self._cursor = None
         self._connection = ConnectionStatus.model_validate(await self._call("get_connection_status", {}))
         args: dict[str, Any] = {
-            "types": ["__anelf_cursor__"] if self._cursor is None else ["chat", "whisper"],
+            "types": ["__anelf_cursor__"] if self._cursor is None else ["chat", "whisper", "mine_progress", "action_progress"],
             "limit": 32,
         }
         if self._cursor is not None:
@@ -205,11 +261,39 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
         for event in batch.events:
             if event.seq <= self._cursor:
                 continue
-            await self._dispatch_event(event)
+            await self._dispatch_event(event, enqueue_commands=True)
             self._cursor = event.seq
         self._cursor = batch.next_since
 
-    async def _dispatch_event(self, event: GameEvent) -> None:
+    async def _dispatch_event(self, event: GameEvent, *, enqueue_commands: bool = False) -> None:
+        if event.type == "action_progress":
+            try:
+                action = ActionProgress.model_validate(event.data)
+            except ValidationError:
+                return
+            origin, cfg = action.origin, self.get_config()
+            if (action.phase == "running" and origin is not None and origin.actor != "@reflex"
+                    and origin.world_id == cfg.server_id
+                    and is_control_current(cfg.mcp_server, origin.producer, origin.epoch)):
+                self._actions_paused = False
+            return
+        if event.type == "mine_progress":
+            try:
+                progress = MineProgress.model_validate(event.data)
+            except ValidationError:
+                log(f"Minecraft 忽略非法矿洞进度事件: seq={event.seq}", "WARNING", tag="Minecraft")
+                return
+            announcement = progress.announcement()
+            if announcement:
+                key = (progress.action_id or progress.id, progress.phase)
+                if key[0]:
+                    if key in self._mine_announcements:
+                        return
+                    self._mine_announcements[key] = None
+                    if len(self._mine_announcements) > 128:
+                        self._mine_announcements.pop(next(iter(self._mine_announcements)))
+                await self._announce_reflex(announcement)
+            return
         if event.type not in {"chat", "whisper"}:
             return
         try:
@@ -246,17 +330,26 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             trigger_mind=addressed,
         )
         command = self._resolve_command(content)
-        if addressed and (command is None or command[0] not in {"stop", "stay"}):
+        if addressed and command is not None and command[0] in {"come", "follow", "home", "go"}:
             self._actions_paused = False
         if addressed and command is not None:
-            await self._run_command(command[0], command[1], chat.username, channel)
-            # 指令已由频道直执行完毕；消息降级为 history-only 入队，
+            log(f"MC_COMMAND seq={event.seq} command={command[0]} received_at={time.time():.3f}", "DEBUG", tag="Minecraft")
+            if enqueue_commands and command[0] not in {"stop", "stay", "pause"}:
+                task = asyncio.create_task(
+                    self._queued_command(command[0], command[1], chat.username, channel, event.seq),
+                    name=f"channel.minecraft.command.{event.seq}",
+                )
+                self._commands.add(task)
+                task.add_done_callback(self._commands.discard)
+            else:
+                await self._run_command(command[0], command[1], chat.username, channel, event.seq)
+            # 指令由频道直接执行或排队；消息降级为 history-only 入队，
             # 唤醒思维循环会让 AI 再跑一遍动作（双重执行 + 白烧十几次模型调用）。
             await self.on_message(message.model_copy(update={"trigger_mind": False}))
             return
         await self.on_message(message)
 
-    # 快捷指令：确定性直执行（零模型调用，毫秒级响应），设计参考 mindcraft
+    # 快捷指令：确定性直执行（零模型调用），设计参考 mindcraft
     # 的 !command 面。两种触发方式：
     # 1) `!` 前缀 + 别名（!stop / !come / !follow，兼容习惯输入）
     # 2) 自然短句整句匹配（“过来”“跟着我”“停下”，不用打符号）——整句精确
@@ -264,6 +357,10 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
     # 带参数的指令（!give）只走 `!` 前缀，不做整句匹配。
     _COMMAND_ALIASES = {
         "!stop": "stop",
+        "!pause": "pause",
+        "!暂停": "pause",
+        "!resume": "resume",
+        "!继续": "resume",
         "!停": "stop",
         "!come": "come",
         "!过来": "come",
@@ -291,6 +388,8 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
     }
     _PHRASE_COMMANDS: tuple[tuple[str, frozenset[str]], ...] = (
         ("stop", frozenset({"停", "停下", "别动", "站住", "stop"})),
+        ("pause", frozenset({"暂停", "暂停一下", "pause"})),
+        ("resume", frozenset({"继续任务", "恢复任务", "resume"})),
         ("come", frozenset({"过来", "过来一下", "来我这", "到我这边来", "过来玩", "come"})),
         ("follow", frozenset({"跟我", "跟着我", "跟我走", "跟着我走", "follow"})),
         ("stay", frozenset({"待着", "待着别动", "在这待着", "stay"})),
@@ -313,9 +412,29 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
                 return (command, "")
         return None
 
-    async def _run_command(self, command: str, args: str, username: str, channel: AdapterChannel) -> None:
+    async def _queued_command(
+        self, command: str, args: str, username: str, channel: AdapterChannel, seq: int,
+    ) -> None:
+        """普通快捷指令依次执行；事件轮询与停止指令不等待这把锁。"""
+        async with self._command_lock:
+            await self._run_command(command, args, username, channel, seq)
+
+    async def _run_command(
+        self, command: str, args: str, username: str, channel: AdapterChannel, seq: int | None = None,
+    ) -> None:
+        """快捷指令及其后台动作共享请求归属，后续停止可使其失效。"""
+        scope = build_entity_scope("user" if channel.channel_type == ChannelType.PRIVATE else "group",
+                                   "minecraft", channel.channel_id)
+        with tool_request(scope, username):
+            await self._execute_command(command, args, username, channel, seq)
+
+    async def _execute_command(
+        self, command: str, args: str, username: str, channel: AdapterChannel, seq: int | None = None,
+    ) -> None:
         handlers: dict[str, Any] = {
             "stop": lambda: self._cmd_stop(username, channel),
+            "pause": lambda: self._cmd_stop(username, channel, pause=True),
+            "resume": lambda: self._cmd_resume(),
             "come": lambda: self._cmd_come(username, channel),
             "follow": lambda: self._cmd_follow(username, channel),
             "stay": lambda: self._cmd_stay(username, channel),
@@ -326,12 +445,18 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             "go": lambda: self._cmd_go(args, channel),
             "marks": lambda: self._cmd_marks(),
         }
+        token = _COMMAND_SEQ.set(seq)
+        started = time.perf_counter()
         try:
-            text = await handlers[command]()
-        except Exception as exc:
-            log(f"Minecraft 快捷指令 {command} 执行异常: {exc}", "WARNING", tag="Minecraft")
-            text = "指令没执行成，我可能没连上游戏……你再用话说一遍呗。"
-        await self._send_text(channel, text)
+            try:
+                text = await handlers[command]()
+            except Exception as exc:
+                log(f"Minecraft 快捷指令 {command} 执行异常: {exc}", "WARNING", tag="Minecraft")
+                text = "指令没执行成，我可能没连上游戏……你再用话说一遍呗。"
+            await self._send_text(channel, text)
+        finally:
+            log(f"MC_COMMAND seq={seq} command={command} finished_ms={(time.perf_counter() - started) * 1000:.1f}", "DEBUG", tag="Minecraft")
+            _COMMAND_SEQ.reset(token)
 
     async def _send_text(self, channel: AdapterChannel, text: str) -> None:
         response = await self.forward_message(
@@ -344,24 +469,68 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
         if not response.success:
             log(f"Minecraft 指令回执发送失败: {response.error}", "WARNING", tag="Minecraft")
 
-    async def _cmd_stop(self, username: str, channel: AdapterChannel) -> str:
+    async def _cmd_stop(self, username: str, channel: AdapterChannel, *, pause: bool = False) -> str:
         self._actions_paused = True
         failures: list[str] = []
-        try:
-            await stop_companion_work(self.get_config().server_id)
-        except Exception as exc:
-            failures.append("companion_work")
-            log(f"Minecraft 停止陪玩任务失败: {exc}", "WARNING", tag="Minecraft")
-        tasks = list(self._background)
+        current = asyncio.current_task()
+        tasks = [task for task in self._background | self._commands if task is not current]
         if self._reflex_task is not None:
             tasks.append(self._reflex_task)
         self._stop_reflexes()
         for task in tasks:
             task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        failures.extend(await self._cancel_actions())
-        return "停止请求已处理，部分动作未能确认停止。" if failures else "已停止当前动作。"
+        # Interrupt workers before sending the stop, without awaiting their history writes.
+        worker_stop = asyncio.create_task(stop_companion_work(
+            self.get_config().server_id, server=self.get_config().mcp_server,
+        ))
+        pause_result: dict[str, Any] = {}
+
+        async def control_action() -> list[str]:
+            if not pause:
+                return await self._cancel_actions()
+            try:
+                pause_result.update(await asyncio.wait_for(self._call("pause_action", {}), timeout=3))
+                return []
+            except Exception as exc:
+                log(f"Minecraft 暂停未确认: {exc}", "WARNING", tag="Minecraft")
+                return ["pause_action"]
+
+        remote_stop = asyncio.create_task(control_action())
+        try:
+            failures.extend(await remote_stop)
+            if tasks:
+                _, pending = await asyncio.wait(tasks, timeout=1)
+                if pending:
+                    failures.append("local_cleanup")
+            try:
+                await asyncio.wait_for(worker_stop, timeout=3)
+            except Exception as exc:
+                failures.append("companion_work")
+                log(f"Minecraft 停止陪玩任务失败: {exc}", "WARNING", tag="Minecraft")
+        finally:
+            for stop_task in (worker_stop, remote_stop):
+                if not stop_task.done():
+                    stop_task.cancel()
+            await asyncio.gather(worker_stop, remote_stop, return_exceptions=True)
+        if failures:
+            return "控制请求已处理，部分动作未能确认停止，仍需等待收尾。"
+        if pause:
+            if not pause_result.get("supported"):
+                return "当前没有可恢复的任务；正在执行的原子动作已请求安全停止，不会自动重做。"
+            if pause_result.get("active"):
+                return "正在完成当前安全步骤，随后暂停；可查进度，暂停完成后喊 !resume 继续。"
+            return "已暂停，进度保留；喊 !resume 重新检查条件后继续，!stop 则取消。"
+        return "已停止当前动作。"
+
+    async def _cmd_resume(self) -> str:
+        """仅恢复执行器确认的暂停检查点，不重新拉起旧 worker。"""
+        try:
+            await self._call("resume_action", {})
+        except Exception as exc:
+            log(f"Minecraft 恢复被拒绝: {exc}", "INFO", tag="Minecraft")
+            return "暂时不能恢复：任务可能仍在收尾，或位置、路线、资源已不满足条件；我没有重新开工。"
+        self._actions_paused = False
+        return "已重新检查并恢复任务。"
 
     async def _cmd_come(self, username: str, channel: AdapterChannel) -> str:
         entity = await self._find_player(username)
@@ -378,15 +547,9 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
         return "跟着你了，走哪跟哪～（!stop 让我停下）"
 
     async def _cmd_stay(self, username: str, channel: AdapterChannel) -> str:
-        """待着：只停移动，不取消采集等手上的任务（与 !stop 全停不同）。"""
-        failures: list[str] = []
-        for name in ("stop_pathfinding", "clear_control_states"):
-            try:
-                await asyncio.wait_for(self._call(name, {}), timeout=3)
-            except Exception as exc:
-                failures.append(name)
-                log(f"Minecraft 待着指令 {name} 失败: {exc}", "WARNING", tag="Minecraft")
-        return "好，我待着不动。" if not failures else "我尽量待着……（有控制没清掉，再喊我一次）"
+        """停止当前工作并待命，避免任务或空闲反射再次拉起移动。"""
+        result = await self._cmd_stop(username, channel)
+        return "已停下当前工作，在这里待着。" if result == "已停止当前动作。" else result + "等收尾完成后待着。"
 
     async def _cmd_sethome(self, username: str, channel: AdapterChannel) -> str:
         state = await asyncio.wait_for(self._call("get_state", {}), timeout=5)
@@ -495,11 +658,13 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             await self._send_text(channel, "我走不过去，好像被卡住了……你用 !stop 让我停下再想想办法。")
 
     async def _cancel_actions(self) -> list[str]:
-        """分别尝试取消与释放控制，一个工具失败或超时不阻断其他停止操作。"""
+        """优先使用统一停止事实；旧执行器或工具错误时继续尝试兼容停止。"""
         failures: list[str] = []
         for name in ("cancel_task", "stop_pathfinding", "clear_control_states", "cancel_collect"):
             try:
-                await asyncio.wait_for(self._call(name, {}), timeout=3)
+                result = await asyncio.wait_for(self._call(name, {}), timeout=3)
+                if name == "cancel_task" and isinstance(result.get("stopped"), bool):
+                    return [] if result["stopped"] else ["action_cleanup"]
             except Exception as exc:
                 failures.append(name)
                 log(f"Minecraft 停止工具 {name} 失败: {exc}", "WARNING", tag="Minecraft")

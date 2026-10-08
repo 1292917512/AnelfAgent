@@ -343,7 +343,8 @@ def _goal_active(pathfinder: dict[str, Any]) -> bool:
     卡死时仍可能为 true，不能单独作为依据）。
     """
     return bool(
-        pathfinder.get("goal")
+        pathfinder.get("activeAction")
+        or pathfinder.get("goal")
         or pathfinder.get("goalSet")
         or pathfinder.get("goal_set")
         or pathfinder.get("isMoving")

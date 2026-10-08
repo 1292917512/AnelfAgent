@@ -1,15 +1,18 @@
 """游戏聊天的路由、增量事件与动作取消回归。"""
 
+import asyncio
 import time
 from collections.abc import Iterator
 from unittest.mock import AsyncMock
 
 import pytest
 
+from agent.channel.channel_types import ChannelStatus
 from agent.channel.schemas import AdapterChannel, ChannelType, SegmentType, SendRequest, SendSegment
 from channels.minecraft.adapter import MinecraftChannel
 from channels.minecraft.config import MinecraftConfig
 from channels.minecraft.protocol import ConnectionStatus, GameEvent, split_chat
+from core import tool_context
 from core.entity import EntityRegistry
 
 
@@ -25,6 +28,91 @@ def channel(monkeypatch: pytest.MonkeyPatch) -> Iterator[MinecraftChannel]:
 
 def chat_event(seq: int, message: str, *, username: str = "Alice", kind: str = "chat") -> GameEvent:
     return GameEvent(seq=seq, ts=1000, type=kind, data={"username": username, "message": message})
+
+
+@pytest.mark.parametrize("message,tool", [("!pause", "pause_action"), ("暂停一下", "pause_action"), ("!resume", "resume_action")])
+async def test_pause_resume_bypass_model(channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch, message: str, tool: str) -> None:
+    call = AsyncMock(return_value={"ok": True, "supported": True, "active": False})
+    inbound = AsyncMock()
+    monkeypatch.setattr(channel, "_call", call)
+    monkeypatch.setattr(channel, "_send_text", AsyncMock())
+    monkeypatch.setattr(channel, "on_message", inbound)
+    monkeypatch.setattr("channels.minecraft.adapter.stop_companion_work", AsyncMock())
+    await channel._dispatch_event(chat_event(1, message))
+    assert any(args.args[0] == tool for args in call.await_args_list)
+    assert not inbound.await_args.args[0].trigger_mind
+
+
+async def test_old_action_events_and_chat_cannot_resume_stopped_reflexes(channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(tool_context, "_controls", {})
+    tool_context.register_control("minecraft", "local", frozenset({"stop"}))
+    with tool_context.tool_request(actor="Alice"):
+        old = tool_context.control_metadata("minecraft", "dig")["anelf/action"]
+    with tool_context.tool_request(actor="Alice"):
+        new = tool_context.control_metadata("minecraft", "stop")["anelf/action"]
+    channel._actions_paused = True
+    await channel._dispatch_event(GameEvent(seq=1, ts=1000, type="action_progress", data={"phase": "running", "origin": old}))
+    assert channel._actions_paused
+    await channel._dispatch_event(GameEvent(seq=2, ts=1000, type="action_progress", data={"phase": "running", "origin": new}))
+    assert not channel._actions_paused
+
+
+async def test_duplicate_mining_terminal_is_announced_once_per_action(channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch) -> None:
+    announce = AsyncMock()
+    monkeypatch.setattr(channel, "_announce_reflex", announce)
+    data = {"id": "mine", "actionId": "action1", "phase": "paused", "steps": 1, "dug": 2,
+            "item": "cobblestone", "gained": 2, "returned": False}
+    for seq in (1, 2):
+        await channel._dispatch_event(GameEvent(seq=seq, ts=1000, type="mine_progress", data=data))
+    assert announce.await_count == 1
+    await channel._dispatch_event(GameEvent(seq=3, ts=1000, type="mine_progress", data={**data, "actionId": "action2"}))
+    assert announce.await_count == 2
+
+
+def test_reply_policy_uses_configured_server_and_requires_delegation(channel: MinecraftChannel) -> None:
+    channel.get_config().mcp_server = "game-test"
+    policy = channel.reply_policy
+    assert policy.direct_reply
+    assert policy.tool_groups == ("mcp:game-test",)
+    assert "mc-worker" in policy.instructions and "background=true" in policy.instructions
+    assert "背包增量" in policy.instructions
+
+
+@pytest.mark.parametrize("phase", ["running", "returning"])
+async def test_mining_intermediate_events_do_not_chat(
+    channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch, phase: str,
+) -> None:
+    announce = AsyncMock()
+    monkeypatch.setattr(channel, "_announce_reflex", announce)
+    await channel._dispatch_event(GameEvent(seq=1, ts=1000, type="mine_progress", data={
+        "phase": phase, "steps": 2, "dug": 3, "item": "cobblestone", "gained": 1, "returned": False,
+    }))
+    announce.assert_not_awaited()
+
+
+async def test_mining_terminal_reports_inventory_and_return_facts(
+    channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    announce, inbound = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(channel, "_announce_reflex", announce)
+    monkeypatch.setattr(channel, "on_message", inbound)
+    await channel._dispatch_event(GameEvent(seq=1, ts=1000, type="mine_progress", data={
+        "phase": "blocked", "steps": 2, "dug": 3, "item": "cobblestone", "gained": 0, "returned": False,
+    }))
+    text = announce.call_args.args[0]
+    assert "遇到障碍" in text
+    assert "确认挖掉 3" in text and "背包净增加 0" in text
+    assert "尚未确认回到入口" in text
+    inbound.assert_not_awaited()
+
+
+async def test_malformed_mining_event_is_ignored(
+    channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    announce = AsyncMock()
+    monkeypatch.setattr(channel, "_announce_reflex", announce)
+    await channel._dispatch_event(GameEvent(seq=1, ts=1000, type="mine_progress", data={"phase": "completed"}))
+    announce.assert_not_awaited()
 
 
 async def test_public_mention_routes_as_group(channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -491,6 +579,58 @@ async def test_reflexes_disabled_by_config(channel: MinecraftChannel) -> None:
     await channel.stop()
 
 
+async def test_shutdown_cancels_workers_before_graceful_disconnect(
+    channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    order: list[str] = []
+
+    async def stop_work(world_id: str, *, server: str, reason: str) -> None:
+        assert world_id == "local" and "频道关闭" in reason
+        order.append("workers")
+
+    async def call(tool_name: str, args: dict[str, object]) -> dict[str, object]:
+        assert tool_name == "disconnect_bot"
+        assert "force" not in args
+        assert channel._poll_task is None and channel._reflex_task is None
+        order.append("disconnect")
+        return {"status": "disconnected", "inventory": {"restored": True}}
+
+    channel._status = ChannelStatus.RUNNING
+    monkeypatch.setattr("channels.minecraft.adapter.stop_companion_work", stop_work)
+    monkeypatch.setattr(channel, "_call", call)
+    await channel.stop()
+    await channel.stop()
+    assert order == ["workers", "disconnect"]
+    assert channel._status == ChannelStatus.STOPPED
+
+
+async def test_shutdown_reports_incomplete_inventory_recovery(
+    channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import Mock
+
+    channel._status = ChannelStatus.RUNNING
+    monkeypatch.setattr("channels.minecraft.adapter.stop_companion_work", AsyncMock())
+    monkeypatch.setattr(channel, "_call", AsyncMock(return_value={"inventory": {"restored": False, "reason": "Inventory full"}}))
+    logger = Mock()
+    monkeypatch.setattr("channels.minecraft.adapter.log", logger)
+    await channel.stop()
+    assert any("Inventory full" in call.args[0] for call in logger.call_args_list)
+    assert channel._status == ChannelStatus.STOPPED
+
+
+async def test_shutdown_still_disconnects_if_worker_cancellation_fails(
+    channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    channel._status = ChannelStatus.RUNNING
+    monkeypatch.setattr("channels.minecraft.adapter.stop_companion_work", AsyncMock(side_effect=RuntimeError("worker busy")))
+    call = AsyncMock(side_effect=RuntimeError("executor unavailable"))
+    monkeypatch.setattr(channel, "_call", call)
+    await channel.stop()
+    call.assert_awaited_once()
+    assert channel._status == ChannelStatus.STOPPED
+
+
 async def test_reflexes_sync_to_config_toggle(
     channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -524,10 +664,10 @@ async def test_reflex_announce_targets_world_channel(
     assert request.channel.channel_type == ChannelType.GROUP
 
 
-async def test_stay_command_stops_movement_but_not_tasks(
+async def test_stay_cancels_work_and_disables_idle_actions(
     channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    call = AsyncMock(side_effect=[{"ok": True}, {"ok": True}])
+    call = AsyncMock(return_value={"ok": True, "stopped": True})
     outbound = AsyncMock()
     inbound = AsyncMock()
     monkeypatch.setattr(channel, "_call", call)
@@ -535,11 +675,74 @@ async def test_stay_command_stops_movement_but_not_tasks(
     monkeypatch.setattr(channel, "on_message", inbound)
     await channel._dispatch_event(chat_event(1, "待着"))
 
-    assert [c.args[0] for c in call.await_args_list] == ["stop_pathfinding", "clear_control_states"]
-    assert not any(c.args[0] == "cancel_task" for c in call.await_args_list)
+    assert [c.args[0] for c in call.await_args_list] == ["cancel_task"]
+    assert channel._actions_paused
     text = outbound.call_args.args[0].segments[0].content
     assert "待着" in text
     assert inbound.call_args.args[0].trigger_mind is False
+
+
+async def test_stop_pending_cleanup_is_not_reported_as_stopped(
+    channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(channel, "_call", AsyncMock(return_value={"ok": True, "stopped": False}))
+    monkeypatch.setattr("channels.minecraft.adapter.stop_companion_work", AsyncMock())
+    result = await channel._cmd_stop("Alice", AdapterChannel(channel_id="local", channel_type=ChannelType.GROUP))
+    assert "未能确认停止" in result
+
+
+async def test_polling_stop_overtakes_a_command_waiting_for_player_lookup(
+    channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered, stopped = asyncio.Event(), asyncio.Event()
+    calls: list[str] = []
+
+    async def call(name: str, args: dict) -> dict:
+        calls.append(name)
+        if name == "find_nearest_entity":
+            entered.set()
+            await asyncio.Future()
+        if name == "cancel_task":
+            stopped.set()
+            return {"ok": True, "stopped": True}
+        return {}
+
+    monkeypatch.setattr(channel, "_call", call)
+    monkeypatch.setattr(channel, "_send_text", AsyncMock())
+    monkeypatch.setattr(channel, "on_message", AsyncMock())
+    monkeypatch.setattr("channels.minecraft.adapter.stop_companion_work", AsyncMock())
+    await channel._dispatch_event(chat_event(1, "!follow"), enqueue_commands=True)
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    await asyncio.wait_for(channel._dispatch_event(chat_event(2, "!stop"), enqueue_commands=True), timeout=1)
+    assert stopped.is_set()
+    assert "follow_entity" not in calls
+    assert not channel._commands
+
+
+async def test_stop_reaches_executor_before_slow_bookkeeping(
+    channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    physical, interrupted, finish_history = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def call(name: str, args: dict) -> dict:
+        assert name == "cancel_task"
+        assert interrupted.is_set(), "workers must not submit another action after the stop"
+        physical.set()
+        return {"ok": True, "stopped": True}
+
+    async def bookkeeping(world_id: str, *, server: str) -> None:
+        interrupted.set()
+        await finish_history.wait()
+
+    monkeypatch.setattr(channel, "_call", call)
+    monkeypatch.setattr("channels.minecraft.adapter.stop_companion_work", bookkeeping)
+    stopping = asyncio.create_task(channel._cmd_stop("Alice", AdapterChannel(channel_id="local", channel_type=ChannelType.GROUP)))
+    try:
+        await asyncio.wait_for(physical.wait(), timeout=1)
+        assert not stopping.done(), "slow history must not delay physical stop"
+    finally:
+        finish_history.set()
+        await stopping
 
 
 async def test_sethome_then_home_goes_to_saved_position(

@@ -71,6 +71,17 @@ def pathfinder(active: bool = True) -> dict[str, Any]:
     return {"goal": active, "isMoving": active}
 
 
+async def test_background_mining_is_not_idle_even_between_path_goals(recorder: Recorder) -> None:
+    clock = FakeClock()
+    recorder.entities = [{"name": "item", "distance": 1, "position": {"x": 101, "y": 64, "z": 100}}]
+    recorder.inventory_items = [{"name": "torch", "count": 32}]
+    engine = make_engine(recorder, clock)
+    for _ in range(20):
+        await engine.tick(state(), {"goal": None, "isMoving": False, "activeAction": "mine_resources"}, dt=1.0)
+        clock.advance(1)
+    assert recorder.calls == []
+
+
 async def test_first_tick_only_builds_baseline(recorder: Recorder) -> None:
     clock = FakeClock()
     engine = make_engine(recorder, clock)

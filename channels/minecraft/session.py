@@ -9,6 +9,7 @@ from agent.messages import build_entity_scope, parse_entity_scope
 from agent.mind.tools.scheduler import _append_one_shot_history, remove_scope_reminders
 from core.log import log
 from core.tags import tag_label
+from core.tool_context import consume_control_delegates
 
 
 def _belongs_to_world(scope: str, world_id: str) -> bool:
@@ -19,8 +20,8 @@ def _belongs_to_world(scope: str, world_id: str) -> bool:
     )
 
 
-async def stop_companion_work(world_id: str) -> None:
-    """中断本世界会话及命名陪玩工人，清理所属会话的待回复与续跑提醒。"""
+async def stop_companion_work(world_id: str, *, server: str = "minecraft", reason: str = "玩家已停止陪玩任务") -> None:
+    """中断本世界会话及实际调用过本执行器的委托，清理待回复与续跑提醒。"""
     from agent.runtime.singleton import get_runtime
 
     runtime = get_runtime()
@@ -30,14 +31,17 @@ async def stop_companion_work(world_id: str) -> None:
     scopes = {build_entity_scope("group", "minecraft", world_id)}
     scopes.update(scope for scope in mind.pfc.known_scopes() if _belongs_to_world(scope, world_id))
     manager = mind.delegation_manager
-    worker_scopes = manager.cancel_agent("mc-worker")
+    worker_scopes = {
+        scope for delegation_id, scope in consume_control_delegates(server).items()
+        if manager.cancel(delegation_id) and scope
+    }
     for scope in scopes | worker_scopes:
-        mind.interrupt(scope, reason="玩家要求停止 Minecraft 陪玩任务")
+        mind.interrupt(scope, reason=reason)
         mind.pfc.consume_scope_task(scope)
     for scope in scopes:
         manager.cancel_scope(scope)
     await remove_scope_reminders(scopes | worker_scopes)
-    note = "玩家已停止陪玩任务；此前任务已取消，等待玩家的新指令，不再续跑。"
+    note = f"{reason}；此前任务已取消，等待玩家的新指令，不再续跑。"
     for scope in scopes | worker_scopes:
         adapter = parse_entity_scope(scope)[1]
         if not await _append_one_shot_history(

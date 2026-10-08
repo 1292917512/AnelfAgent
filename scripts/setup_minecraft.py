@@ -20,6 +20,12 @@ _REPO = Path(__file__).resolve().parent.parent
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
+from scripts.minecraft_actions import patch_actions
+from scripts.minecraft_crafting import patch_crafting
+from scripts.minecraft_digging import patch_digging
+from scripts.minecraft_mining import patch_mining
+from scripts.minecraft_placement import patch_placement
+
 _PLUGIN_NAME = "minecraft-companion"
 
 _WORKER_PROFILE_NAME = "mc-worker"
@@ -28,13 +34,21 @@ _WORKER_MODEL_POOL = ("minimax-m3", "minimax-m2")
 _WORKER_DESCRIPTION = "Minecraft 执行代理：反射式完成游戏内动作序列，给沟通者打下手"
 _WORKER_INSTRUCTIONS = (
     "你是 Minecraft 执行代理。只使用 minecraft MCP 工具完成指定动作序列。"
+    "调用及委托文字中的工具名都以实际目录为准：get_inventory/get_state/get_block_at/place_block/craft_item，"
+    "不要添加 mcp__minecraft__ 前缀；委托写错名称时使用目录中的正确名称，不照抄错误名称。"
     "反射式执行：不规划、不解释、不闲聊、不询问玩家，每轮直接调用下一个工具；"
     "相互独立的工具调用在一次响应里并列发出；禁止一切记忆/备忘/笔记类操作。"
     "工具未注入时先 activate_tool_group(\"mcp:minecraft\")。"
     "工具名只许用注入列表里的真实名字：需要确认时先调 list_entity_methods({\"group\": \"mcp:minecraft\"})，"
     "严禁凭印象臆造工具名（如 get_player/get_entities 之类不存在的名字）。"
+    "控制同一机器人的动作串行执行；BUSY 时查 action_status，不并发重试。"
+    "cancel_task 的 stopped=false 表示还在收尾，不得说已停止或继续派活。"
     "动作失败时换一条路重试一次（如 collect_block 寻路超时→先 goto 到目标旁开阔地→用 dig 直接挖触手可及的方块），"
     "同一条路失败两次就放弃并在 failure 里写明原因，不要反复撞同一堵墙。"
+    "合成 count 是操作次数，按缺少产量除以每次产量向上取整；木棍一次产出4根。"
+    "合成失败先查 get_inventory 的实际产物和 crafting 光标/材料格状态，停止后续配方；"
+    "按任务上下文中的恢复规则归还残留材料，无法确认状态时暂停，不编造缺料原因。"
+    "挖掘只选可见可达的方块；dig 成功仅代表服务器确认方块消失，采集所得必须按背包增量核验。"
     "完成后只返回结构化结果：做了什么、获得什么、失败原因。"
 )
 _WORKER_TOOL_TAGS = ["mcp:minecraft"]
@@ -195,6 +209,11 @@ def setup(args: argparse.Namespace) -> Path:
     chat_discipline_state = patch_executor_chat_discipline(payload)
     think_timeout_state = patch_pathfinder_think_timeout(payload)
     craft_count_state = patch_craft_count_semantics(payload)
+    crafting_state = patch_crafting(payload)
+    placement_state = patch_placement(payload)
+    digging_state = patch_digging(payload)
+    mining_state = patch_mining(payload)
+    actions_state = patch_actions(payload)
     servers = store.load_config().get("mcpServers", {})
     names = [name for name in record.mcp_servers if servers.get(name, {}).get("plugin") == _PLUGIN_NAME]
     if len(names) != 1:
@@ -235,6 +254,11 @@ def setup(args: argparse.Namespace) -> Path:
                 "chat_discipline_patch": chat_discipline_state,
                 "think_timeout_patch": think_timeout_state,
                 "craft_count_patch": craft_count_state,
+                "crafting_patch": crafting_state,
+                "placement_patch": placement_state,
+                "digging_patch": digging_state,
+                "mining_patch": mining_state,
+                "actions_patch": actions_state,
             },
             ensure_ascii=False,
             indent=2,
@@ -327,8 +351,8 @@ def patch_pathfinder_think_timeout(payload: Path) -> str:
 
     实机日志：密林/树冠下 collect_block 五秒内必报 "Took to long to decide
     path to goal"（A* 全路径预算默认 5000ms 耗尽）。延长至 30 秒：每刻思考
-    预算（tickTimeout 40ms）不变，主机 CPU 负载无变化，只是给长路径更多
-    思考时间。版本漂移导致模式失配时硬失败。
+    预算（tickTimeout 40ms）不变，但全程计算和等待可能增加，需结合运行指标
+    评估。版本漂移导致模式失配时硬失败。
     """
     target = payload / "node_modules" / "mineflayer-pathfinder" / "index.js"
     source = target.read_text(encoding="utf-8")
