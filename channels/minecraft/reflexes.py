@@ -30,6 +30,8 @@ from typing import Any, Awaitable, Callable
 
 from core.log import log
 
+from .protocol import ONLINE_STATE
+
 # 敌对生物名（Java 版常见全集；匹配 list_entities 返回的 name，小写比较）
 _HOSTILE_NAMES = frozenset(
     {
@@ -110,13 +112,13 @@ class ReflexEngine:
         while not stop.is_set():
             try:
                 conn = await self._call("get_connection_status", {})
-                if conn.get("status") == "connected":
+                if conn.get("status") == ONLINE_STATE:
                     if not self._autoeat_enabled:
                         # 连接建立即开自动进食（防饿死是生存闭环的一部分）；
                         # 断线复位，重连后自动补上
-                        self._autoeat_enabled = True
                         with contextlib.suppress(Exception):
                             await self._call("autoeat_set_enabled", {"enabled": True})
+                            self._autoeat_enabled = True
                     state = await self._call("get_state", {})
                     pathfinder = await self._call("pathfinder_status", {})
                     now = self._clock()
@@ -172,7 +174,14 @@ class ReflexEngine:
     def _is_stuck(
         self, pathfinder: dict[str, Any], position: tuple[float, float, float] | None, dt: float
     ) -> bool:
-        if not _goal_active(pathfinder) or position is None or self._prev_position is None:
+        if (
+            not _goal_active(pathfinder)
+            or pathfinder.get("isMoving") is not True
+            or pathfinder.get("isMining") is True
+            or pathfinder.get("isBuilding") is True
+            or position is None
+            or self._prev_position is None
+        ):
             self._frozen_for = 0.0
             return False
         moved = max(

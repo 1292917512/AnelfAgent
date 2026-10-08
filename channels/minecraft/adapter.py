@@ -35,6 +35,7 @@ from .autoconnect import _CONNECT_STATE, AutoConnector
 from .config import MinecraftConfig
 from .protocol import ConnectionStatus, EventBatch, GameEvent, PlayerChat, split_chat
 from .reflexes import ReflexEngine
+from .session import record_game_event, stop_companion_work
 
 
 class MinecraftChannel(BaseChannel[MinecraftConfig]):
@@ -56,6 +57,7 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
         self._background: set[asyncio.Task[Any]] = set()
         self._reflex_task: asyncio.Task[None] | None = None
         self._reflex_stop: asyncio.Event | None = None
+        self._actions_paused = False
         self._auto = AutoConnector(
             self._call,
             self._discover_worlds,
@@ -98,7 +100,7 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
 
     def _sync_reflexes(self) -> None:
         """按配置热开关反射循环（配置中心改动经轮询周期生效）。"""
-        if self.get_config().reflexes_enabled:
+        if self.get_config().reflexes_enabled and not self._actions_paused:
             self._start_reflexes()
         else:
             self._stop_reflexes()
@@ -121,8 +123,9 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             task.cancel()
 
     async def _announce_reflex(self, text: str) -> None:
-        """反射事件播报到世界公共频道，沟通者从聊天事件自然得知上下文。"""
+        """反射事实追加会话历史，再播报到世界公共频道。"""
         cfg = self.get_config()
+        await record_game_event(cfg.server_id, text)
         await self._send_text(
             AdapterChannel(
                 channel_id=cfg.server_id,
@@ -243,6 +246,8 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             trigger_mind=addressed,
         )
         command = self._resolve_command(content)
+        if addressed and (command is None or command[0] not in {"stop", "stay"}):
+            self._actions_paused = False
         if addressed and command is not None:
             await self._run_command(command[0], command[1], chat.username, channel)
             # 指令已由频道直执行完毕；消息降级为 history-only 入队，
@@ -340,7 +345,22 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             log(f"Minecraft 指令回执发送失败: {response.error}", "WARNING", tag="Minecraft")
 
     async def _cmd_stop(self, username: str, channel: AdapterChannel) -> str:
-        failures = await self._cancel_actions()
+        self._actions_paused = True
+        failures: list[str] = []
+        try:
+            await stop_companion_work(self.get_config().server_id)
+        except Exception as exc:
+            failures.append("companion_work")
+            log(f"Minecraft 停止陪玩任务失败: {exc}", "WARNING", tag="Minecraft")
+        tasks = list(self._background)
+        if self._reflex_task is not None:
+            tasks.append(self._reflex_task)
+        self._stop_reflexes()
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        failures.extend(await self._cancel_actions())
         return "停止请求已处理，部分动作未能确认停止。" if failures else "已停止当前动作。"
 
     async def _cmd_come(self, username: str, channel: AdapterChannel) -> str:

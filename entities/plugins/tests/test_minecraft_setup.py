@@ -12,6 +12,38 @@ from entities.mcp.config import MCPServerStore
 from scripts import setup_minecraft
 
 
+def test_installed_minecraft_retains_runtime_settings_on_restart(
+    manager: PluginManager, plugin_env: Any,
+) -> None:
+    from core.plugins.store import plugin_payload_dir
+    from entities.plugins.activation import activate_plugin
+
+    record = manager.install_from_source(str(setup_minecraft._REPO / "plugins" / "minecraft"))
+    store = MCPServerStore()
+    name = record.mcp_servers[0]
+    settings: dict[str, Any] = {
+        "command": "C:/portable/node.exe", "enabled": True, "priority": "below_normal", "stay_awake": True,
+        "env": {
+            "MCP_DEFAULT_HOST": "192.168.1.10", "MCP_DEFAULT_PORT": "54321",
+            "MCP_DEFAULT_AUTH": "microsoft", "AWESOME_MINEFLAYER_MCP_HOME": "C:/persistent/minecraft",
+        },
+    }
+    store.update_server_config(name, settings)
+    for _ in range(2):
+        record = activate_plugin(record, plugin_payload_dir(record.name))
+        current = store.get_server_config(name)
+        assert current is not None
+        for key in ("command", "enabled", "priority", "stay_awake"):
+            assert current[key] == settings[key]
+        for key, value in settings["env"].items():
+            assert current["env"][key] == value
+        assert current["env"]["MCP_AUTO_CONNECT"] == "false"
+    store.set_server_enabled(name, False)
+    activate_plugin(record, plugin_payload_dir(record.name))
+    current = store.get_server_config(name)
+    assert current is not None and current["enabled"] is False
+
+
 @pytest.mark.parametrize("upgrade", [False, True])
 def test_setup_preserves_connection_and_player_settings(
     manager: PluginManager,

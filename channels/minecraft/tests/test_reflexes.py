@@ -206,6 +206,21 @@ async def test_no_goal_means_never_stuck(recorder: Recorder) -> None:
     assert action_tools == set()
 
 
+@pytest.mark.parametrize("activity", [
+    {"goal": True, "isMoving": False, "isMining": False, "isBuilding": False},
+    {"goal": True, "isMoving": True, "isMining": True, "isBuilding": False},
+    {"goal": True, "isMoving": True, "isMining": False, "isBuilding": True},
+])
+async def test_waiting_follow_and_terrain_work_are_not_stuck(
+    recorder: Recorder, activity: dict[str, bool],
+) -> None:
+    engine = make_engine(recorder, FakeClock())
+    for _ in range(reflexes._STUCK_SECONDS * 3):
+        await engine.tick(state(), activity, dt=1)
+    assert recorder.tools("stop_pathfinding") == []
+    assert recorder.tools("goto") == []
+
+
 async def test_flee_supersedes_stuck(recorder: Recorder) -> None:
     clock = FakeClock()
     engine = make_engine(recorder, clock)
@@ -265,14 +280,14 @@ async def test_run_loop_disconnect_resets_baseline(recorder: Recorder) -> None:
     engine = make_engine(recorder, clock)
     stop = reflexes.asyncio.Event()
     frames: list[dict[str, Any]] = [
-        {"status": "connected"},
+        {"status": "online"},
         {"ok": True, "health": 20.0, "position": {"x": 0, "y": 64, "z": 0}},
         {"goal": True, "isMoving": True},
         {"status": "disconnected"},
-        {"status": "connected"},
+        {"status": "online"},
         {"ok": True, "health": 10.0, "position": {"x": 0, "y": 64, "z": 0}},
         {"goal": True, "isMoving": True},
-        {"status": "connected"},
+        {"status": "online"},
         {"ok": True, "health": 5.0, "position": {"x": 0, "y": 64, "z": 0}},
         {"goal": True, "isMoving": True},
     ]
@@ -449,14 +464,14 @@ async def test_autoeat_enabled_once_on_connect(recorder: Recorder) -> None:
     engine = make_engine(recorder, clock)
     stop = reflexes.asyncio.Event()
     frames: list[dict[str, Any]] = [
-        {"status": "connected"},
+        {"status": "online"},
         {"ok": True, "health": 20.0, "position": {"x": 0, "y": 64, "z": 0}},
         {"goal": False},
-        {"status": "connected"},
+        {"status": "online"},
         {"ok": True, "health": 20.0, "position": {"x": 0, "y": 64, "z": 0}},
         {"goal": False},
         {"status": "disconnected"},
-        {"status": "connected"},
+        {"status": "online"},
         {"ok": True, "health": 20.0, "position": {"x": 0, "y": 64, "z": 0}},
         {"goal": False},
     ]

@@ -4,6 +4,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+ONLINE_STATE = "online"
+
 
 class ConnectionStatus(BaseModel):
     """机器人连接状态中的频道所需字段。"""

@@ -27,6 +27,7 @@ from typing import Any, Awaitable, Callable
 from core.log import log
 
 from .discovery import LanWorld
+from .protocol import ONLINE_STATE
 
 MCPToolCall = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 Discover = Callable[[], Awaitable[list[LanWorld]]]
@@ -42,7 +43,7 @@ _DISCOVERY_TIMEOUT_SECONDS = 15.0
 _JOIN_ANNOUNCE = "我来了！"
 
 # get_connection_status 的 status 字段取值：disconnected/connecting/online/reconnecting
-_CONNECT_STATE = "online"
+_CONNECT_STATE = ONLINE_STATE
 # connect_bot 在已有在线 bot 时报错的标记，等同“已进服”
 _ALREADY_CONNECTED = "ALREADY_CONNECTED"
 

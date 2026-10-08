@@ -266,6 +266,14 @@ def _activate_mcp_servers(plugin_name: str, payload_dir: Path, manifest) -> List
         cfg["plugin"] = plugin_name
         try:
             if final_name in owned:
+                # 重启重激活沿用运行配置；升级会先去激活，再按新清单创建。
+                existing = raw[final_name]
+                for field in ("env", "headers"):
+                    defaults = cfg.get(field, {})
+                    overrides = existing.get(field, {})
+                    if isinstance(defaults, dict) and isinstance(overrides, dict) and (defaults or overrides):
+                        cfg[field] = {**defaults, **overrides}
+                cfg = {**cfg, **{key: value for key, value in existing.items() if key not in {"env", "headers"}}}
                 store.update_server_config(final_name, cfg, replace=True, reload=False)
                 owned.discard(final_name)
             else:
