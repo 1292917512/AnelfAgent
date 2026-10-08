@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import pytest
 from helpers.think_loop_fakes import (
     FakeMind,
     FakePfc,
@@ -145,7 +146,148 @@ class TestEndReplyOutputPreservation:
         assert any("中间独白" in s for s in steps)
 
 
+class TestRequiredOutput:
+    async def test_empty_end_recovers_summary_from_existing_results(self) -> None:
+        summary = '{"summary":"已核验木镐增加一把"}'
+        mind = _reflect_mind([
+            tool_result("", ["craft_item"]), end_reply_result(), text_result(summary),
+        ])
+        collected: list = []
+        chain: list = []
+        await run_think_loop(
+            mind, mode=ThinkMode.REFLECT, require_output=True,
+            collected_text=collected, chain=chain,
+        )
+        assert collected == [summary]
+        assert mind.executed_tools.count("craft_item") == 1
+        assert mind.llm_calls == 3
+        assert any(m.get("_source", {}).get("origin") == "output_recovery" for m in chain)
+
+    async def test_recovery_blocks_streaming_and_batch_tools(self, monkeypatch) -> None:
+        from agent.mind.tools.think_loop import _EarlyToolRunner
+
+        summary = "已有操作结果已核验，未再操作。"
+        mind = _reflect_mind([
+            end_reply_result(), tool_result(summary, ["get_inventory", "craft_item", "end_reply"]),
+        ])
+        original_invoke = mind._invoke_llm_unified
+
+        async def invoke(*args, **kwargs):
+            result = await original_invoke(*args, **kwargs)
+            callback = kwargs.get("on_tool_call_ready")
+            if mind.llm_calls == 2 and callback is not None:
+                for tc in result.tool_calls:
+                    callback(tc)
+            return result
+
+        monkeypatch.setattr(mind, "_invoke_llm_unified", invoke)
+        monkeypatch.setattr(_EarlyToolRunner, "_is_readonly", lambda self, name: True)
+        collected: list = []
+        chain: list = []
+        await run_think_loop(
+            mind, mode=ThinkMode.REFLECT, require_output=True,
+            collected_text=collected, chain=chain,
+        )
+        assert collected == [summary]
+        assert "get_inventory" not in mind.executed_tools
+        assert "craft_item" not in mind.executed_tools
+        assert mind.llm_calls == 2
+        assert sum(m.get("role") == "tool" for m in chain) == 4
+
+    @pytest.mark.parametrize("empty_result", [end_reply_result(), text_result("")])
+    async def test_recovery_only_gets_one_round(self, empty_result) -> None:
+        mind = _reflect_mind([end_reply_result(), empty_result])
+        collected: list = []
+        await run_think_loop(
+            mind, mode=ThinkMode.REFLECT, require_output=True, collected_text=collected,
+        )
+        assert mind.llm_calls == 2
+        assert not collected
+
+    async def test_recovery_cannot_exceed_original_budget(self) -> None:
+        mind = _reflect_mind([end_reply_result()])
+        completion: dict = {}
+        await run_think_loop(
+            mind, mode=ThinkMode.REFLECT, require_output=True,
+            safety_limit=1, completion=completion,
+        )
+        assert mind.llm_calls == 1
+        assert completion["reason"] == "budget_exhausted"
+
+    async def test_optional_reflection_can_still_end_silently(self) -> None:
+        mind = _reflect_mind([end_reply_result()])
+        await run_think_loop(mind, mode=ThinkMode.REFLECT)
+        assert mind.llm_calls == 1
+
+    async def test_recovery_allows_text_in_force_tool_mode(self) -> None:
+        mind = FakeMind(
+            rounds=[end_reply_result(), text_result("已确认结果")], default_text=None,
+            config_overrides={"force_tool_use": True},
+        )
+        await run_think_loop(
+            mind, mode=ThinkMode.REFLECT, require_output=True,
+            tools=[{"type": "function", "function": {"name": "end_reply", "parameters": {}}}],
+        )
+        assert mind.tool_choices == ["required", None]
+
+    @pytest.mark.parametrize("steer_mode", ["steer", "after"])
+    async def test_new_instructions_can_resume_work(self, monkeypatch, steer_mode) -> None:
+        from agent.delegation.steer import SteerInbox, bind_steer_drain
+
+        inbox = SteerInbox()
+        mind = _reflect_mind([
+            end_reply_result(), text_result("第一阶段总结"),
+            tool_result("", ["get_state"]), tool_result("补充查询已核验", ["end_reply"]),
+        ])
+        original_invoke = mind._invoke_llm_unified
+
+        async def invoke(*args, **kwargs):
+            result = await original_invoke(*args, **kwargs)
+            trigger_round = 1 if steer_mode == "steer" else 2
+            if mind.llm_calls == trigger_round:
+                inbox.push("summary-test", "请再查询当前状态", mode=steer_mode)
+            return result
+
+        monkeypatch.setattr(mind, "_invoke_llm_unified", invoke)
+        with bind_steer_drain(lambda mode: inbox.drain("summary-test", mode)):
+            await run_think_loop(mind, mode=ThinkMode.REFLECT, require_output=True)
+        assert mind.executed_tools.count("get_state") == 1
+        assert mind.llm_calls == 4
+
+
 class TestCompletionReason:
+    async def test_reply_budget_reports_unfinished_instead_of_pending_promise(self, anything, deliver_mock) -> None:
+        mind = FakeMind(rounds=[text_result("我马上去制作，做好告诉你。")], default_text=None)
+        completion: dict = {}
+        await run_think_loop(
+            mind, mode=ThinkMode.REPLY, anything=anything, base_messages=_base(),
+            safety_limit=1, completion=completion,
+        )
+        assert completion["reason"] == "budget_exhausted"
+        deliver_mock.assert_awaited_once()
+        notice = deliver_mock.await_args.args[1]
+        assert "尚未确认整个任务完成" in notice
+        assert "马上去制作" not in notice
+
+    async def test_tool_rounds_cannot_complete_plan_and_budget_cancels(self, store) -> None:
+        from agent.mind.tool_activation import bind_scope, reset_scope
+        from agent.planning import tracker
+
+        scope = "reflect:plan-evidence"
+        tracker.planning_store_port.set(store)
+        token = bind_scope(scope)
+        try:
+            plan_id = await tracker.submit_plan(scope, "制作木镐", tracker.parse_steps("查背包|放工作台|合成"))
+            mind = _reflect_mind([tool_result("", ["recall"]) for _ in range(3)])
+            await run_think_loop(mind, mode=ThinkMode.REFLECT, safety_limit=3, base_messages=_base())
+            _, goal = await tracker.find_goal_by_id(plan_id)
+            assert goal is not None
+            assert goal["status"] == "cancelled"
+            assert [step["status"] for step in goal["steps"]] == ["skipped"] * 3
+        finally:
+            reset_scope(token)
+            tracker.planning_store_port.unbind()
+
     async def test_normal_completion(self) -> None:
         mind = _reflect_mind([text_result("完成") for _ in range(3)])
         completion: dict = {}
@@ -199,6 +341,8 @@ class TestSubAgentCompletion:
         result = await SubAgent(_EmptyMind(), "任务").run()
         assert result.success is False
         assert result.completed_reason == "no_output"
+        assert "可能已执行" in result.error
+        assert "先只读核验" in result.error
 
 
 class TestAggregateReason:

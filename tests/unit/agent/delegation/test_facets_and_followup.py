@@ -39,6 +39,7 @@ class TestFacetsConsumption:
         await agent.run()
         kwargs = mind.reflect.call_args.kwargs
         assert kwargs["tool_tags"] == ["heartbeat", "web"]
+        assert kwargs["require_output"] is True
         assert "run_shell_command" in kwargs["extra_blocked_tools"]
 
     async def test_no_facets_default_selectors(self) -> None:

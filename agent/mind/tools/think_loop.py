@@ -155,7 +155,7 @@ async def _collect_provider_messages(mind: "Mind", scope: str) -> List[Dict]:
                     "_layer": "provider",
                     "_source": {"origin": "context_provider"},
                 })
-        if images:
+        if images and config is not None:
             from agent.mind.tools.vision import build_provider_media_message
             media_msg = await build_provider_media_message(images, config)
             if media_msg is not None:
@@ -371,6 +371,7 @@ async def think_loop(
         blocked_tools: Optional[Set[str]] = None,
         completion: Optional[Dict] = None,
         reflect_tool_selectors: Optional[List[str]] = None,
+        require_output: bool = False,
 ) -> None:
     """统一思维循环：对话和反思共享同一流程。
 
@@ -391,6 +392,7 @@ async def think_loop(
         collected_text, active_tools, anything, base_messages,
         options, adapter_key, blocked_tools, completion,
         reflect_tool_selectors=reflect_tool_selectors,
+        require_output=require_output,
     )
 
     # 工具数组顺序由 ToolAssembly 跨回复追加式冻结（见 tool_assembly），
@@ -530,7 +532,7 @@ async def _run_think_rounds(
             cache_hint=_cache_status_hint(state),
         )
         # 纯工具模式（可选）且有可用工具时，API 级强制工具选择
-        require_tools = bool(ctx.active_tools) and ctx.pure_tool_mode
+        require_tools = bool(ctx.active_tools) and ctx.pure_tool_mode and not ctx.summary_only
         # 输出方式说明随执行上下文每轮注入
         exec_context["content"] += "\n" + (
             _PROMPT_REPLY_GUIDE if mode == ThinkMode.REPLY
@@ -552,6 +554,8 @@ async def _run_think_rounds(
             mind, anything, state.iteration,
             blocked_tools=ctx.blocked_tools, guardrail=ctx.guardrail,
         )
+        if ctx.summary_only:
+            early_runner.abandon()
         # 超时/上下文超限已在 _invoke_llm_round 内注入恢复提示或紧急压缩
         result = await _invoke_llm_round(
             ctx, state, llm_messages, require_tools, early_runner=early_runner,
@@ -587,7 +591,9 @@ async def _run_think_rounds(
         if outcome is _StageOutcome.CONTINUE:
             continue
 
-        if not tool_calls:
+        if ctx.summary_only:
+            outcome = await _handle_summary_round(ctx, state, result, tool_calls)
+        elif not tool_calls:
             outcome = await _handle_text_only_round(ctx, state, result)
         else:
             outcome = await _handle_tool_round(
@@ -598,9 +604,14 @@ async def _run_think_rounds(
 
     # 达到安全上限：产出可能只是中途状态，标记结束原因供调用方决策
     state.completion_reason = "budget_exhausted"
+    if ctx.completion is not None:
+        ctx.completion["reason"] = state.completion_reason
     log(f"达到安全上限 ({safety_limit} 轮)，强制结束", "WARNING", tag="思维")
     if mode == ThinkMode.REPLY and anything:
-        await _deliver_pending_text(ctx, state)
+        state.pending_text = ""
+        target = target_from_anything(anything, ctx.adapter_key)
+        if target is not None:
+            await deliver_text(target, "本轮处理已达到执行上限，尚未确认整个任务完成。已启动的后台任务仍以实际状态为准。")
         await finish_think(mind, anything, execution_steps, safety_limit, ctx.tool_chain,
                            completion=ctx.completion, turn_id=ctx.turn_id)
 
@@ -608,6 +619,32 @@ async def _run_think_rounds(
 # ==================================================================
 # 阶段函数
 # ==================================================================
+
+async def _handle_summary_round(
+        ctx: _ThinkLoopCtx,
+        state: _ThinkRoundState,
+        result: ChatResult,
+        tool_calls: List[ToolCall],
+) -> _StageOutcome:
+    """补交最终总结：本轮全部工具只返回拒绝结果，正文收集后立即收束。"""
+    if tool_calls:
+        await execute_tool_calls(
+            ctx.mind, ctx.tool_chain, result, tool_calls, state.iteration, ctx.anything,
+            guardrail=ctx.guardrail, pipeline=ctx.pipeline,
+            blocked_tools=ctx.blocked_tools | {tc.name for tc in tool_calls},
+            abort_event=ctx.abort_event,
+        )
+    else:
+        _append_assistant_msg(ctx.tool_chain, result, result.content or "")
+    text = _strip_think_blocks(result.content or "").strip()
+    if text:
+        ctx.collected_text.append(text)
+    if merge_after_messages(ctx, state):
+        state.iteration += 1
+        return _StageOutcome.CONTINUE
+    await _finish_round(ctx, state)
+    return _StageOutcome.BREAK
+
 
 async def _handle_interrupt(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> bool:
     """循环顶部的协作式中断检查；已中断则安全收束并返回 True。
@@ -1135,6 +1172,20 @@ async def _handle_tool_round(
         # （回复走 send_message，结束备注写 reason 仅内部日志）；REFLECT 下
         # 收束信号不是工作工具，同批文本即最终连续文本段，纳入产出
         end_text = _strip_think_blocks(result.content or "").strip()
+        if ctx.mode == ThinkMode.REFLECT and ctx.require_output and not end_text and not ctx.collected_text:
+            ctx.summary_only = True
+            tool_chain.append({
+                "role": "system",
+                "content": (
+                    "你已请求结束，但尚未提交最终总结。下一轮只根据已有工具结果补交总结，"
+                    "有输出契约则提交对应 JSON。所有工具调用均已禁用，不能继续或重做操作；"
+                    "未验证的事项如实标为未确认，不得推测成功。直接输出总结正文，不能只调用 end_reply。"
+                ),
+                "_source": {"origin": "output_recovery"},
+            })
+            execution_steps.append(f"→ 第{state.iteration + 1}轮: 缺少最终总结，补交一轮（禁用操作）")
+            state.iteration += 1
+            return _StageOutcome.CONTINUE
         if ctx.mode == ThinkMode.REPLY:
             dropped_chars = len(end_text) + len(state.pending_text)
             state.pending_text = ""
@@ -1529,7 +1580,8 @@ def _record_tool_result_failure(mind: Mind, tc: ToolCall, result: str) -> None:
     记入错误台账供反思；AI 自身试错（param/not_found/user_cancel）不入表，
     保持 recall_tool_errors 的信噪比。fire-and-forget：落库失败不影响结果。
     """
-    if not mind.memory_store or not result:
+    store = mind.memory_store
+    if store is None or not result:
         return
     text = result.strip()
     if not text.startswith("{"):
@@ -1549,7 +1601,7 @@ def _record_tool_result_failure(mind: Mind, tc: ToolCall, result: str) -> None:
 
     async def _record() -> None:
         try:
-            await mind.memory_store.record_tool_error(
+            await store.record_tool_error(
                 tool_name=tc.name,
                 error_type=cause,
                 error_msg=str(payload.get("error", ""))[:300],
