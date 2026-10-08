@@ -5,7 +5,7 @@ import { performance } from 'node:perf_hooks'
 import { setTimeout as delay } from 'node:timers/promises'
 import pathfinder from 'mineflayer-pathfinder'
 import { Vec3 } from 'vec3'
-import { clear, escapeCandidates, observeSurvival, occupied, safeStanding, surfaceVisible } from './anelf-survival-observation.mjs'
+import { clear, escapeCandidates, observeSurvival, occupied, safeStanding, safeSwimCorridor, shoreCandidates, surfaceVisible } from './anelf-survival-observation.mjs'
 
 /** @typedef {import('mineflayer').Bot & {isAlive?:boolean}} Bot */
 /** @typedef {import('./anelf-actions.mjs').ActionController} Controller */
@@ -207,7 +207,43 @@ export class SurvivalController {
         if (performance.now() >= deadline) throw new Error('Surfacing time limit reached.')
         await delay(100, undefined, { signal })
       }
+      signal.throwIfAborted()
+      if (bot.entity.onGround && safeStanding(bot, bot.entity.position.floored())) return
+      for (const point of shoreCandidates(bot)) {
+        signal.throwIfAborted()
+        if (!safeSwimCorridor(bot, point)) continue
+        await this.swimToShore(bot, point, signal)
+        if (!safeStanding(bot, bot.entity.position.floored()) || observeSurvival(bot).headWater) {
+          throw new Error('Shore arrival did not confirm safe standing space.')
+        }
+        return
+      }
+      throw new Error('Reached air but no verified shore route within eight blocks; still in water, not recovered.')
     } finally { bot.setControlState('jump', false) }
+  }
+
+  /** Mineflayer supplies buoyancy; a bounded, rechecked straight corridor avoids unsupported water ascent nodes.
+   * @param {Bot} bot @param {Vec3} point @param {AbortSignal} signal
+   */
+  async swimToShore (bot, point, signal) {
+    const end = point.offset(0.5, 0, 0.5), deadline = performance.now() + 8000
+    try {
+      while (true) {
+        signal.throwIfAborted()
+        if (!safeSwimCorridor(bot, point)) throw new Error('The verified swimming corridor changed; movement stopped.')
+        if (performance.now() >= deadline) throw new Error('Shore swimming time limit reached.')
+        const p = bot.entity.position
+        if (Math.hypot(p.x - end.x, p.z - end.z) < 0.45 && p.y >= point.y - 0.05 && safeStanding(bot, p.floored())) break
+        await bot.lookAt(new Vec3(end.x, p.y + 1.62, end.z), true)
+        signal.throwIfAborted()
+        bot.setControlState('forward', true)
+        bot.setControlState('jump', true)
+        await delay(100, undefined, { signal })
+      }
+    } finally {
+      bot.setControlState('forward', false)
+      bot.setControlState('jump', false)
+    }
   }
 
   /** @param {Bot} bot @param {AbortSignal} signal */

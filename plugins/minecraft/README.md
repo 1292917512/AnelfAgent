@@ -168,7 +168,9 @@ Node 事件循环延迟；这些指标不能当作模型延迟、游戏 FPS 或�
 
 MCP 工作、自救与空闲行为共用控制器。危险抢占等待合成光标、装备和寻路实际收尾，
 同时撤销被中断请求，旧 worker 的迟到指令会被拒绝。每次持续危险最多两次自救尝试；
-路线计算候选最多三个、总预算 30 毫秒，移动最多 8 秒、上浮最多 5 秒，不保证所有地形都能脱困。
+路线计算候选最多三个、总预算 30 毫秒，移动最多 8 秒、上浮最多 5 秒。露头后还需抵达可站立岸边：
+仅沿最多 8 格的已知通道游泳，另有 8 秒预算，每 100 毫秒重查通道及身体占用空间。
+没有安全出口时明确报告仍在水中；不保证所有地形都能脱困，停止会释放前进与跳跃。
 Python 只从现有 `get_connection_status` 快照同步 `configure_survival` 设置，接收生存事件并异步播报；
 `get_survival_status` 可查询生命状态、停止限制及最近结果。配置仍在 `adapter/minecraft`，
 `reflexes_enabled` 为总开关，`reflex_interval_seconds` 为本地观察周期（新配置默认 0.25 秒，已有设置保留）。
@@ -220,6 +222,21 @@ npm test --prefix plugins/minecraft
 单元测试覆盖工具名冲突与回滚、聊天路由、私聊隔离、消息去重、执行器重启和停止指令。
 真实 MCP 检查覆盖已安装开源执行器的协议握手与工具契约。
 实际寻路、跟随与采集还需要在运行的 Java 26.1 世界中进行体验验证。
+
+本地生存反应另有可重复的独立真服验收，需要 Java 25 和官方 Java 26.1 `server.jar`。
+先完成上面的依赖安装与补丁，把服务端 JAR 放进专用的空目录
+`workspace/minecraft/acceptance-26.1/`，在仓库根目录运行（Java 路径按本机填写）：
+
+```powershell
+node plugins/minecraft/tests/live-survival.cjs --java '<Java 25 的 java.exe 路径>' --server-dir workspace/minecraft/acceptance-26.1 --payload plugins/minecraft
+```
+
+脚本会写入服务端 EULA 接受配置并创建专用平坦世界，仅监听本机随机端口，不复用玩家世界。
+已有世界或服务端配置但没有测试标记的目录会被拒绝；同一测试目录可重复运行。
+九个场景覆盖水池上岸、停止、封顶、火焰、受伤抢占、僵尸逼近和死亡重生；
+`--case water_surface_and_remain_safe` 可单独复测上岸。普通 `npm test` 不会启动真服。
+结果、事件及位置采样保存在测试目录的 `results.json`，控制台在 `server-console.log`，
+退出时关闭自建服务端。九项通过不代表未知地形或全方向围攻均可脱困。
 
 陪玩执行契约以 `channels/minecraft/reply_policy.py` 为唯一编辑源。修改后在仓库根目录运行
 `uv run python -m scripts.minecraft_contract`，同步随插件分发的技能契约块；其他技能章节保留。

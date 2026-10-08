@@ -342,3 +342,62 @@ test('escape uses real pathfinder geometry without digging, placing, or stepping
   assert.ok(walked.length > 0, survival.last.reason)
   assert.equal(survival.last.phase, 'moved')
 })
+
+test('reaching air in deep water continues to a known shore instead of releasing control in the pool', async t => {
+  const { bot, survival, set, motion } = await fixture(t)
+  for (let x = -2; x <= 2; x++) for (let z = -2; z <= 2; z++) {
+    for (let y = 60; y <= 63; y++) set(x, y, z, 'water')
+  }
+  bot.entity.position = new Vec3(0.5, 62.5, 0.5)
+  bot.entity.onGround = false
+  bot.lookAt = async point => { motion.push(point); bot.entity.position = new Vec3(point.x, 64, point.z) }
+  await survival.surface(bot, new AbortController().signal)
+  assert.equal(motion.length, 1)
+  assert.ok(Math.abs(bot.entity.position.x) >= 3 || Math.abs(bot.entity.position.z) >= 3)
+  assert.equal(bot.entity.position.y, 64)
+  assert.equal(bot.controlState.jump, false)
+})
+
+test('swimming corridor allows arrival into the bot own footprint but rejects another body', async t => {
+  const { bot, set } = await fixture(t)
+  const { safeSwimCorridor } = await load('bot/anelf-survival-observation.mjs')
+  set(2, 63, 0, 'water')
+  bot.entity.position = new Vec3(2.72, 64.07, 0.5)
+  assert.equal(safeSwimCorridor(bot, new Vec3(3, 64, 0)), true)
+  bot.entities[2] = { id: 2, position: new Vec3(3.5, 64, 0.5), width: 0.6, height: 1.8 }
+  assert.equal(safeSwimCorridor(bot, new Vec3(3, 64, 0)), false)
+})
+
+test('manual stop during a shore turn cannot press late movement keys', async t => {
+  const { bot, survival, locks, controls } = await fixture(t)
+  const turn = deferred()
+  bot.lookAt = () => turn.promise
+  const work = locks.run('auto_survival_drowning', 2, signal => survival.swimToShore(bot, new Vec3(3, 64, 0), signal))
+  const rejected = assert.rejects(work, /cancelled/)
+  locks.cancelAll(); turn.resolve(); await rejected
+  assert.ok(!controls.some(([, value]) => value))
+})
+
+test('water without a loaded standing exit reports incomplete recovery instead of success', async t => {
+  const { bot, survival, set, motion } = await fixture(t)
+  for (let x = -9; x <= 9; x++) for (let z = -9; z <= 9; z++) {
+    for (let y = 61; y <= 63; y++) set(x, y, z, 'water')
+  }
+  bot.entity.position = new Vec3(0.5, 62.5, 0.5)
+  bot.entity.onGround = false
+  await assert.rejects(survival.surface(bot, new AbortController().signal), /still in water, not recovered/)
+  assert.deepEqual(motion, [])
+  assert.equal(bot.controlState.jump, false)
+})
+
+test('swimming escape rejects downward detours, unknown columns and obstructed ceilings', async t => {
+  const { bot, set } = await fixture(t)
+  const { safeSwimStep } = await load('bot/anelf-survival-observation.mjs')
+  set(0, 62, 0, 'water'); set(0, 63, 0, 'water')
+  assert.equal(safeSwimStep(bot, new Vec3(0, 62, 0), 62), true)
+  assert.equal(safeSwimStep(bot, new Vec3(0, 62, 0), 63), false)
+  set(0, 64, 0, 'unknown')
+  assert.equal(safeSwimStep(bot, new Vec3(0, 62, 0), 62), false)
+  set(0, 64, 0, 'stone')
+  assert.equal(safeSwimStep(bot, new Vec3(0, 62, 0), 62), false)
+})
