@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from agent.channel.manager import ChannelManager
     from agent.skills.skill_store import SkillStore
     from agent.storage.data_center import ConversationData
+    from core.plugins.store import PluginRegistry
 
 
 class PrefrontalCortex:
@@ -43,6 +44,7 @@ class PrefrontalCortex:
             channel_manager: Optional["ChannelManager"] = None,
             conversation_data: Optional["ConversationData"] = None,
             skill_store: Optional["SkillStore"] = None,
+            plugin_registry: Optional["PluginRegistry"] = None,
     ) -> None:
         self.record: dict[str, int] = {}
         self.everything_data = everything_data
@@ -53,7 +55,7 @@ class PrefrontalCortex:
         self.tool_assembly = ToolAssembly(channel_manager)
         self.context_assembly = ContextAssembly(
             self.work_memory, self.tool_assembly, channel_manager, conversation_data,
-            skill_store,
+            skill_store, plugin_registry,
         )
         # 消息标签扫描命中时经 ToolAssembly 激活工具（数据面 → 工具面接线）
         self.work_memory.tool_assembly = self.tool_assembly

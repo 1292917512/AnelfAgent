@@ -83,6 +83,7 @@ class MCPService(MCPServerStore):
         data = self.load_config()
         connected = self.get_connected_tools()
         errors = self.get_last_errors()
+        channel_only = self.get_channel_only()
         result: List[Dict[str, Any]] = []
         for name, cfg in data.get("mcpServers", {}).items():
             if not isinstance(cfg, dict):
@@ -103,8 +104,22 @@ class MCPService(MCPServerStore):
                 # 常驻开关（不沉睡，schema 常驻）+ 当前生效的沉睡状态
                 "stay_awake": stay_awake,
                 "sleeping": self._effective_sleeping(name),
+                "plugin": cfg.get("plugin", ""),
+                "channel_only": name in channel_only,
             })
         return result
+
+    @staticmethod
+    def get_channel_only() -> set:
+        """channel-only server 名集合（握手成功但不提供 MCP 工具）。"""
+        try:
+            from entities.mcp.bridge import get_mcp_bridge
+            bridge = get_mcp_bridge()
+            if bridge:
+                return bridge.get_channel_only()
+        except Exception as e:
+            log(f"获取 MCP channel-only 状态失败: {e}", "DEBUG")
+        return set()
 
     @staticmethod
     def _effective_sleeping(name: str) -> bool:

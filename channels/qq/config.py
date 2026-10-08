@@ -52,6 +52,11 @@ class QQConfig(ChannelConfig):
     require_mention: bool = Field(
         default=True,
         description="群聊中是否需要 @ bot 才激活思考（私聊不受影响，所有消息仍会记录到对话历史）")
+    group_notice_trigger: Literal["auto", "all", "off"] = Field(
+        default="auto",
+        description="群系统通知触发思考的范围（auto=成员变动总是触发、禁言/撤回/管理员变更仅 "
+                    "bot 为群主/管理员时触发、互动类只入库；all=全部触发；off=只入库不触发）。"
+                    "触发后是否回应由 AI 自主决定")
     reply_to_mode: Literal["first", "all", "off"] = Field(
         default="first", description="回复引用策略（first=仅首条分段挂引用 / all=全部挂引用 / off=不引用）")
     whitelist_enabled: bool = Field(

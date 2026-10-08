@@ -1,7 +1,7 @@
-"""插件运行时激活 — 技能入库、MCP 合并、工具注册与事件广播。
+"""插件运行时激活 — 技能入库、MCP 合并、工具注册与变更通知。
 
-PluginManager 的 on_activate/on_deactivate 钩子实现：把插件负载接入
-Anelf 运行时（core/plugins 不反向依赖 entities，编排在本层完成）。
+PluginManager 的 on_activate/on_deactivate/on_change 钩子实现：把插件负载
+接入 Anelf 运行时（core/plugins 不反向依赖 entities，编排在本层完成）。
 
 激活产物回收约定：
 - 技能：拷入 workspace/skills/<name>/，目录内放置 ``.anelf_plugin`` 来源标记，
@@ -12,7 +12,6 @@ Anelf 运行时（core/plugins 不反向依赖 entities，编排在本层完成�
 
 from __future__ import annotations
 
-import asyncio
 import importlib.util
 import shutil
 import sys
@@ -20,14 +19,22 @@ from pathlib import Path
 from typing import List
 
 from core.entity import EntityMetadata, EntityRegistry, EntityType
-from core.event_bus import EVENT_PLUGIN_LOADED, EVENT_PLUGIN_UNLOADED
 from core.log import log
 from core.path import workspace_root
 from core.plugins.manifest import PluginError, load_plugin_mcp_servers, parse_manifest
+from core.plugins.roster import roster_line
 from core.plugins.store import InstalledPlugin
 
 _TAG = "插件"
 _SKILL_MARKER = ".anelf_plugin"
+
+_ACTION_VERBS = {
+    "installed": "已安装",
+    "removed": "已移除",
+    "upgraded": "已升级",
+    "enabled": "已启用",
+    "disabled": "已禁用",
+}
 
 
 # ==================================================================
@@ -50,7 +57,6 @@ def activate_plugin(record: InstalledPlugin, payload_dir: Path) -> InstalledPlug
     record.mcp_servers = _activate_mcp_servers(record.name, payload_dir, manifest)
     record.tools = _activate_tools(record.name, payload_dir, manifest)
     _register_plugin_entity(record)
-    _emit(EVENT_PLUGIN_LOADED, record)
     log(
         f"插件已激活: {record.name} "
         f"(技能 {len(record.skills)} / 工具 {len(record.tools)} / MCP {len(record.mcp_servers)})",
@@ -65,7 +71,6 @@ def deactivate_plugin(record: InstalledPlugin) -> None:
     _deactivate_mcp_servers(record)
     _deactivate_skills(record)
     EntityRegistry.unregister(f"plugin:{record.name}")
-    _emit(EVENT_PLUGIN_UNLOADED, record)
     log(f"插件已去激活: {record.name}", tag=_TAG)
 
 
@@ -99,9 +104,25 @@ def activate_installed_plugins() -> int:
 
 
 def wire_plugin_manager(manager) -> None:
-    """把激活钩子注入插件管理器（幂等）。"""
+    """把激活与变更钩子注入插件管理器（幂等）。"""
     manager.on_activate = activate_plugin
     manager.on_deactivate = deactivate_plugin
+    manager.on_change = notify_plugin_change
+
+
+def notify_plugin_change(action: str, record: InstalledPlugin) -> None:
+    """插件变更通知：仅非 AI 会话发起的操作（Web/外部路径）推送告知 AI。
+
+    AI 工具路径发起的操作经工具返回值直达发起会话，重复推送是噪音；
+    PushHub 线程安全（call_soon_threadsafe 回主循环），安装全程在
+    to_thread 工作线程执行无碍。
+    """
+    from entities._sdk import get_current_scope, push_notify
+
+    if get_current_scope() != "_global":
+        return
+    verb = _ACTION_VERBS.get(action, action)
+    push_notify(f"插件 {record.name} {verb}。{roster_line(record)}", "plugins")
 
 
 # ==================================================================
@@ -266,6 +287,13 @@ def _activate_mcp_servers(plugin_name: str, payload_dir: Path, manifest) -> List
         cfg["plugin"] = plugin_name
         try:
             if final_name in owned:
+                # 启停/常驻是用户治理状态，重激活只更新清单声明的连接参数
+                # ——replace 语义会整体重建配置，不继承会把禁用翻回启用
+                existing = raw.get(final_name)
+                if isinstance(existing, dict):
+                    for governed in ("enabled", "stay_awake"):
+                        if governed in existing:
+                            cfg[governed] = existing[governed]
                 store.update_server_config(final_name, cfg, replace=True, reload=False)
                 owned.discard(final_name)
             else:
@@ -439,19 +467,3 @@ def _register_plugin_entity(record: InstalledPlugin) -> None:
             "mcp_servers": list(record.mcp_servers),
         },
     ))
-
-
-def _emit(event: str, record: InstalledPlugin) -> None:
-    """广播插件加载/卸载事件（无运行中事件循环时静默跳过）。"""
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return
-    from core.async_helper import spawn
-    from core.event_bus import event_bus
-
-    spawn(event_bus.emit(event, {
-        "name": record.name,
-        "version": record.version,
-        "marketplace": record.marketplace,
-    }), name=event)

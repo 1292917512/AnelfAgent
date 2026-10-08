@@ -40,10 +40,12 @@
     "vision": "视觉",
     "other": "其他",
     "model": "模型",
-    "judgment": "判断"
+    "judgment": "判断",
+    "plugins": "插件"
   },
   "sections": {
     "judgment/core": "判断核心",
+    "plugins/roster": "名册注入",
     "mind/core": "核心",
     "mind/llm": "LLM 调用",
     "mind/interrupt": "中断控制",

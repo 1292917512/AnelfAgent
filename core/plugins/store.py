@@ -6,7 +6,8 @@
 - 市场克隆：``ConfigPaths.PLUGINS_DIR``/_marketplaces/<name>/
 
 读写经单把 RLock 串行化 + 原子落盘；记录中的组件清单（技能/工具/MCP server
-名称）由激活层回写，供卸载时精确回收。
+名称）由激活层回写，供卸载时精确回收。内容版本号（version）随已安装记录的
+任一写路径递增，供名册渲染等下游缓存失效。
 """
 
 from __future__ import annotations
@@ -83,7 +84,14 @@ class PluginRegistry:
         self._lock = threading.RLock()
         self._installed: Dict[str, InstalledPlugin] = {}
         self._marketplaces: Dict[str, MarketplaceSource] = {}
+        self._version = 0
         self._load()
+
+    @property
+    def version(self) -> int:
+        """已安装插件内容版本（装卸/启停/组件回写/reload 递增，供缓存失效）。"""
+        with self._lock:
+            return self._version
 
     # ------------------------------------------------------------------
     # 持久化
@@ -108,6 +116,7 @@ class PluginRegistry:
                 if isinstance(raw, dict):
                     raw.setdefault("name", name)
                     self._marketplaces[name] = MarketplaceSource.from_dict(raw)
+            self._version += 1
 
     def _save(self) -> None:
         payload = {
@@ -138,12 +147,14 @@ class PluginRegistry:
                 record.installed_at = time.time()
             record.updated_at = time.time()
             self._installed[record.name] = record
+            self._version += 1
             self._save()
 
     def remove(self, name: str) -> Optional[InstalledPlugin]:
         with self._lock:
             record = self._installed.pop(name, None)
             if record is not None:
+                self._version += 1
                 self._save()
             return record
 

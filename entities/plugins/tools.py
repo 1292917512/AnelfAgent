@@ -109,7 +109,7 @@ def _manager():
 # 插件管理
 # ==================================================================
 
-@tool(name="list_plugins", group="plugins", concurrency_safe=True)
+@tool(name="list_plugins", group="plugins", tags=["always"], concurrency_safe=True)
 def list_plugins() -> str:
     """列出全部已安装插件（版本、来源市场、启用状态、携带的技能/工具/MCP server 数量）。"""
     records = _manager().list_plugins()

@@ -27,8 +27,6 @@ from core.event_bus import (
     EVENT_ERROR_OCCURRED,
     EVENT_MULTI_TOOL_COMPLETE,
     EVENT_MULTI_TOOL_PROGRESS,
-    EVENT_PLUGIN_LOADED,
-    EVENT_PLUGIN_UNLOADED,
     EVENT_THINKING_CONTEXT_BUILD,
     EVENT_THINKING_DECISION,
     EVENT_THINKING_FAKE_TOOL_CALL,
@@ -76,7 +74,6 @@ class NodeType(str, Enum):
     ENTITY_CALL = "entity_call"       # EntityRegistry 工具调用（无 Mind 会话时）
     AGENT_LIFECYCLE = "agent_lifecycle"  # 代理启停
     ADAPTER_EVENT = "adapter_event"   # 适配器启停
-    PLUGIN_EVENT = "plugin_event"     # 插件加载/卸载
     SYSTEM_EVENT = "system_event"     # span() 通用系统事件
     ERROR = "error"                   # 系统错误
     MULTI_TOOL_TASK = "multi_tool_task"    # 多工具子任务
@@ -484,9 +481,6 @@ class Tracer:
         event_bus.on(EVENT_THINKING_REPLY_ROUND, self._on_reply_round, owner=_OWNER)
         event_bus.on(EVENT_THINKING_INTROSPECTION, self._on_introspection, owner=_OWNER)
         event_bus.on(EVENT_THINKING_FAKE_TOOL_CALL, self._on_fake_tool_call, owner=_OWNER)
-        # 插件事件
-        event_bus.on(EVENT_PLUGIN_LOADED, self._on_plugin_loaded, owner=_OWNER)
-        event_bus.on(EVENT_PLUGIN_UNLOADED, self._on_plugin_unloaded, owner=_OWNER)
         # 系统级事件
         event_bus.on(EVENT_AGENT_STARTED, self._on_agent_started, owner=_OWNER)
         event_bus.on(EVENT_AGENT_STOPPED, self._on_agent_stopped, owner=_OWNER)
@@ -891,28 +885,6 @@ class Tracer:
     # ==================================================================
     # 系统级事件处理器
     # ==================================================================
-
-    async def _on_plugin_loaded(self, payload: Dict[str, Any]) -> None:
-        """插件加载：创建 PLUGIN_EVENT 节点 + 广播工具变更。"""
-        plugin_name = payload.get("plugin_name", "?")
-        self._add_system_node(TraceNode(
-            id=f"plugin_{uuid.uuid4().hex[:8]}",
-            type=NodeType.PLUGIN_EVENT,
-            label=f"插件加载: {plugin_name}",
-            data=payload,
-        ))
-        self._broadcast("tools_changed", payload)
-
-    async def _on_plugin_unloaded(self, payload: Dict[str, Any]) -> None:
-        """插件卸载：创建 PLUGIN_EVENT 节点 + 广播工具变更。"""
-        plugin_name = payload.get("plugin_name", "?")
-        self._add_system_node(TraceNode(
-            id=f"plugin_{uuid.uuid4().hex[:8]}",
-            type=NodeType.PLUGIN_EVENT,
-            label=f"插件卸载: {plugin_name}",
-            data=payload,
-        ))
-        self._broadcast("tools_changed", payload)
 
     async def _on_agent_started(self, payload: Dict[str, Any]) -> None:
         """代理启动事件。"""

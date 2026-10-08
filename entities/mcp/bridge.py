@@ -69,6 +69,18 @@ _GROUP_DESC_TOOL_LIMIT = 8        # 描述中列出的工具数量上限
 _GROUP_DESC_TOOL_BRIEF_LEN = 40   # 单个工具一句话描述截断长度
 _GROUP_DESC_MAX_LEN = 300         # 描述整体长度上限
 
+# JSON-RPC 标准错误码：方法不存在（channel-only server 不实现 tools/list 的指纹）
+_JSONRPC_METHOD_NOT_FOUND = -32601
+
+
+def _is_method_not_found(exc: Exception) -> bool:
+    """异常是否为 server 不实现该方法（JSON-RPC -32601）。"""
+    try:
+        from mcp.shared.exceptions import MCPError
+    except ImportError:
+        return False
+    return isinstance(exc, MCPError) and exc.code == _JSONRPC_METHOD_NOT_FOUND
+
 
 def _is_connection_closed(exc: Exception) -> bool:
     """判断异常是否为连接断开类型，递归处理 ExceptionGroup。"""
@@ -114,6 +126,7 @@ class MCPBridge:
         self._tool_server_map: Dict[str, str] = {}      # 注册名 -> server 名
         self._tool_original_names: Dict[str, str] = {}  # 注册名 -> MCP 原始工具名（仅冲突重命名时记录）
         self._last_errors: Dict[str, str] = {}          # name -> 最近一次连接错误详情
+        self._channel_only: set = set()                 # 握手成功但不实现 tools/list 的 server
         self._op_locks: Dict[str, threading.Lock] = {}  # name -> 连接/断开操作串行锁
         self._sync_pending: set = set()                 # name -> 工具列表同步防抖中
         self._orphan_swept = False                      # 启动孤儿清扫只跑一次
@@ -311,11 +324,15 @@ class MCPBridge:
                 removed.append(name)
 
         for name in removed + changed:
+            # 禁用/删除的 server 无条件走断开清理：连接失败的 server 既无
+            # session 也无 lifecycle task，按「是否连接」判定会跳过清理，
+            # last_error 与注册表残留将永久滞留（面板一直显示旧错误）
+            new_enabled = name in new_map and new_map[name].enabled
             with self._lock:
                 # 重连退避中的 server：session 已摘除但 lifecycle task 仍存活，
                 # 必须一并停止，否则旧配置会把它复活
                 connected = name in self._sessions or name in self._stop_events
-            if connected:
+            if connected or not new_enabled:
                 try:
                     self.disconnect_server_by_name(name)
                 except Exception as exc:
@@ -367,6 +384,11 @@ class MCPBridge:
         with self._lock:
             return dict(self._last_errors)
 
+    def get_channel_only(self) -> set:
+        """返回 channel-only server 名集合（握手成功但不提供 MCP 工具）。"""
+        with self._lock:
+            return set(self._channel_only)
+
     def list_available_servers(self) -> List[Dict[str, Any]]:
         """列出所有配置的 server 及其连接状态（供 AI 工具使用，url 已脱敏）。"""
         with self._lock:
@@ -374,6 +396,7 @@ class MCPBridge:
             session_names = set(self._sessions.keys())
             tsm = dict(self._tool_server_map)
             errors = dict(self._last_errors)
+            channel_only = set(self._channel_only)
         mask = is_sanitize_enabled()
         servers: List[Dict[str, Any]] = []
         for srv in servers_snapshot:
@@ -387,6 +410,8 @@ class MCPBridge:
                 "connected": connected,
                 "tool_count": tool_count,
                 "last_error": errors.get(srv.name, ""),
+                "plugin": srv.plugin,
+                "channel_only": srv.name in channel_only,
             })
         return servers
 
@@ -627,6 +652,7 @@ class MCPBridge:
     def _cleanup_server_entities(self, name: str) -> None:
         """从 EntityRegistry 和工具映射中移除指定 server 的所有工具。"""
         with self._lock:
+            self._channel_only.discard(name)
             tools = [t for t, s in self._tool_server_map.items() if s == name]
             for t in tools:
                 self._tool_server_map.pop(t, None)
@@ -775,7 +801,7 @@ class MCPBridge:
                                 self._set_last_error(srv.name, "")
                                 log(f"MCP server '{srv.name}' 自动重连成功 (第 {iteration} 次)，{count} 个工具")
 
-                            await self._wait_with_liveness(session, stop_event)
+                            await self._wait_with_liveness(session, stop_event, srv.name)
                             return
 
                 except Exception as exc:
@@ -822,7 +848,8 @@ class MCPBridge:
             if not first_attempt:
                 self._cleanup_server_entities(srv.name)
 
-    async def _wait_with_liveness(self, session: Any, stop_event: Any) -> None:
+    async def _wait_with_liveness(self, session: Any, stop_event: Any,
+                                  server_name: str = "") -> None:
         """等待停止信号，期间按周期 ping 探测连接存活。
 
         stdio 子进程退出或网络静默断开时，SDK 的接收循环结束不会通知
@@ -831,10 +858,16 @@ class MCPBridge:
         ConnectionError，由 lifecycle 的断线分支按配置决定重连或退出
         （该分支自带断开/重试/放弃/重连成功日志，探测成功不打日志）。
         周期经 mcp_liveness_ping_seconds 热读取（≤0 关闭探测）。
+        channel-only server 连 ping 也大概率不实现，探测必失败——
+        直接等待停止信号。
         """
         import asyncio
 
         from core.config import get_config
+
+        if server_name and server_name in self._channel_only:
+            await stop_event.wait()
+            return
 
         while True:
             try:
@@ -933,8 +966,8 @@ class MCPBridge:
         try:
             with self._lock:
                 session = self._sessions.get(server_name)
-            if session is None:
-                return
+                if session is None or server_name in self._channel_only:
+                    return
             tools_result = await session.list_tools()
             mcp_tools = list(tools_result.tools)
             with self._lock:
@@ -1010,7 +1043,25 @@ class MCPBridge:
             },
         ))
 
-        tools_result = await session.list_tools()
+        try:
+            tools_result = await session.list_tools()
+        except Exception as exc:
+            if not _is_method_not_found(exc):
+                raise
+            # channel-only server（Claude Code 通道型插件常见形态）：握手成功
+            # 但不实现 tools/list——按 0 工具的已连接 server 呈现，不判连接失败
+            self._channel_only.add(srv.name)
+            EntityRegistry.register_group(
+                f"mcp:{srv.name}",
+                f"MCP 服务 {srv.name}（channel-only：不提供 MCP 工具）",
+            )
+            mcp_entity = EntityRegistry.get(f"mcp:{srv.name}")
+            if mcp_entity is not None:
+                mcp_entity.meta["channel_only"] = True
+                mcp_entity.meta["tools"] = []
+            log(f"MCP server '{srv.name}' 为 channel-only（不实现 tools/list），按 0 工具保持连接", tag="MCP")
+            return 0
+        self._channel_only.discard(srv.name)
         mcp_tools = list(tools_result.tools)
         tool_names = self._register_tool_entries(
             srv.name, mcp_tools,

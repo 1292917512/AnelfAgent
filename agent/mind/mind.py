@@ -178,11 +178,16 @@ class Mind:
         from agent.skills import get_skill_store
         self.skill_store = get_skill_store()
 
+        # 插件注册表（PFC 工具块的插件名册注入来源）
+        from core.plugins import get_plugin_manager
+        self.plugin_registry = get_plugin_manager().registry
+
         self.pfc = prefrontal_cortex or PrefrontalCortex(
             everything_data=everything_data,
             channel_manager=channel_manager,
             conversation_data=conversation_data,
             skill_store=self.skill_store,
+            plugin_registry=self.plugin_registry,
         )
         self.heartbeat_engine = HeartbeatEngine(self)
 

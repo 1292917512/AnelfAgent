@@ -14,6 +14,7 @@ from agent.mind.message_schema import (
     ensure_tool_result_pairing,
     fix_empty_tool_call_content,
     fix_trailing_assistant,
+    is_genuine_user_message,
     normalize_for_send,
     normalize_roles,
     validate_messages,
@@ -390,3 +391,46 @@ class TestNormalizeMessageRoles:
 
     def test_empty_list(self) -> None:
         assert _normalize_message_roles([]) == []
+
+
+class TestIsGenuineUserMessage:
+    """真用户原话判定：到达标签存在 + 平台事件/推送排除。"""
+
+    def test_plain_user_message_with_arrival_tags(self) -> None:
+        msg = {"role": "user", "content": "[time:2026年10月08日13时04分50秒][uid:123][channel:qq] 你好"}
+        assert is_genuine_user_message(msg) is True
+
+    def test_message_without_arrival_tags_rejected(self) -> None:
+        """机器生成的 user 角色消息（无到达标签）不算用户原话。"""
+        assert is_genuine_user_message({"role": "user", "content": "自主操作提示"}) is False
+
+    def test_non_user_role_rejected(self) -> None:
+        assert is_genuine_user_message({"role": "assistant", "content": "[uid:123] x"}) is False
+
+    def test_empty_content_rejected(self) -> None:
+        assert is_genuine_user_message({"role": "user", "content": ""}) is False
+
+    def test_platform_event_kind_excluded(self) -> None:
+        """群通知（kind=event）经渠道到达且带 uid 标签，但不是用户请求。"""
+        msg = {
+            "role": "user",
+            "content": "[time:2026年10月08日13时04分50秒][channel:qq][session_id:110]"
+                       "[message_id:1966659fec4a462c][group_id:110][uid:2457978041]"
+                       "[name:2457978041][kind:event](新成员 2457978041 加入了群聊)",
+        }
+        assert is_genuine_user_message(msg) is False
+
+    def test_notification_and_system_kind_excluded(self) -> None:
+        for kind in ("notification", "system"):
+            msg = {"role": "user", "content": f"[time:2026年10月08日][uid:1][channel:qq][kind:{kind}] 推送"}
+            assert is_genuine_user_message(msg) is False
+
+    def test_kind_marker_beyond_head_window_still_excluded(self) -> None:
+        """kind 标签渲染在元数据标签之后，超长名片把标签串顶过 200 头窗、400 窗口需覆盖。"""
+        long_name = "风" * 80  # 跨频道显示名可超长，QQ 群名片亦然
+        tags = "[time:2026年10月08日13时04分50秒][channel:qq][session_id:1104224649]" \
+               "[message_id:eb24e9ea1ccf42f8][group_id:1104224649][uid:1608497969]" \
+               f"[name:{long_name}]"
+        assert len(tags) > 200
+        msg = {"role": "user", "content": f"{tags}[kind:event](成员 1608497969 撤回了一条消息)"}
+        assert is_genuine_user_message(msg) is False

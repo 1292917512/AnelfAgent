@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+import time
 import uuid
 from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
@@ -15,10 +16,18 @@ from agent.channel.channel_types import ChannelStatus
 from agent.channel.schemas import ChannelType
 from core.log import log
 
-from .parser import parse_event_async
+from .parser import (
+    NOTICE_CATEGORY_MEMBERSHIP,
+    NOTICE_CATEGORY_MODERATION,
+    notice_category,
+    parse_event_async,
+)
 
 if TYPE_CHECKING:
     from .adapter import OneBotV11Channel
+
+# bot 群角色缓存 TTL（秒）：owner/admin 判定按群缓存，避免每条管理类通知都查 API
+_GROUP_ROLE_CACHE_TTL_SECONDS = 3600.0
 
 
 def _api_failure_text(result: Dict[str, Any]) -> str:
@@ -32,6 +41,8 @@ class QQTransport:
 
     def __init__(self, channel: "OneBotV11Channel") -> None:
         self._ch = channel
+        # 群号 → (是否群主/管理员, 缓存时间戳)
+        self._group_admin_cache: Dict[str, Tuple[bool, float]] = {}
 
     # ------------------------------------------------------------------
     # 生命周期
@@ -268,18 +279,78 @@ class QQTransport:
             # 使用异步解析，支持获取引用消息内容、群成员昵称和合并转发
             message = await parse_event_async(data, self.call_api_raw)
             if message:
-                # require_mention: 群聊中非 @ 消息仍记录到历史，但不触发思考
+                # require_mention: 群聊中非 @ 消息仍记录到历史，但不触发思考；
+                # 系统通知（notice）按 group_notice_trigger 分档豁免
                 if (
                     ch._cfg("require_mention", False)
                     and not message.is_to_me
                     and message.channel.channel_type == ChannelType.GROUP
                 ):
-                    message.trigger_mind = False
+                    if data.get("post_type") == "notice":
+                        message.trigger_mind = await self._decide_notice_trigger(data)
+                    else:
+                        message.trigger_mind = False
                 await ch.on_message(message)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             log(f"QQ: 事件处理异常 -> {exc}", "ERROR")
+
+    async def _decide_notice_trigger(self, data: Dict[str, Any]) -> bool:
+        """判定群系统通知是否触发思考（group_notice_trigger 配置分档）。
+
+        auto: 成员变动总是触发（任何群身份都值得知晓）；管理类仅在 bot 为
+        群主/管理员时触发；互动类只入库。角色查询失败保守降级为不触发。
+        """
+        mode = self._ch._cfg("group_notice_trigger", "auto")
+        if mode == "off":
+            return False
+        if mode == "all":
+            return True
+
+        category = notice_category(
+            str(data.get("notice_type", "")), str(data.get("sub_type", ""))
+        )
+        if category == NOTICE_CATEGORY_MEMBERSHIP:
+            return True
+        if category == NOTICE_CATEGORY_MODERATION:
+            group_id = data.get("group_id")
+            if group_id is None:
+                return False
+            return await self._is_group_admin(str(group_id))
+        return False
+
+    async def _is_group_admin(self, group_id: str) -> bool:
+        """查询 bot 在指定群是否为群主/管理员（带 TTL 缓存，失败降级 False）。"""
+        now = time.monotonic()
+        cached = self._group_admin_cache.get(group_id)
+        if cached and now - cached[1] < _GROUP_ROLE_CACHE_TTL_SECONDS:
+            return cached[0]
+
+        self_id = getattr(self._ch, "_self_id", "") or ""
+        if not self_id:
+            return False
+
+        try:
+            data = await self.call_api_data(
+                "get_group_member_info",
+                {"group_id": group_id, "user_id": self_id},
+            )
+        except Exception as exc:
+            log(f"QQ: 查询群角色异常 group={group_id}: {exc}，管理类通知本轮不触发",
+                "DEBUG", tag="通道")
+            return False
+
+        role = str((data or {}).get("role", "") or "").lower()
+        if not role:
+            # 查询失败不缓存，下一条管理类通知即重试（避免把降级结果固化一小时）
+            log(f"QQ: 查询群角色失败（无数据）group={group_id}，管理类通知本轮不触发",
+                "DEBUG", tag="通道")
+            return False
+
+        is_admin = role in ("owner", "admin")
+        self._group_admin_cache[group_id] = (is_admin, now)
+        return is_admin
 
     def _fail_pending_echoes(self, reason: str) -> None:
         """断线时将等待中的 echo Future 全部失败化，避免发送方挂到超时。"""

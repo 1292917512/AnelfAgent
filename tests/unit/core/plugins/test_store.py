@@ -50,6 +50,22 @@ class TestPluginRegistry:
         registry.reload()
         assert registry.get("demo").name == "demo"
 
+    def test_version_bumps_on_installed_writes(self, registry):
+        base = registry.version
+        registry.upsert(InstalledPlugin(name="demo"))
+        after_upsert = registry.version
+        assert after_upsert > base
+        registry.upsert(InstalledPlugin(name="demo", version="2"))
+        assert registry.version > after_upsert
+        registry.remove("demo")
+        assert registry.version > after_upsert
+
+    def test_marketplace_writes_do_not_bump_version(self, registry):
+        base = registry.version
+        registry.upsert_marketplace(MarketplaceSource(
+            name="official", source_type="local", path="/tmp"))
+        assert registry.version == base
+
 
 class TestMarketplaceRegistry:
     def test_marketplace_crud(self, registry):
