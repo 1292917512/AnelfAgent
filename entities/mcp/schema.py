@@ -5,6 +5,10 @@
 经 schema_extra 直通 wire schema——模型由此看到默认值与数组元素结构，
 而不是被静默丢弃后按 string 兜底猜参数。
 
+Model Experience: 对象的嵌套 properties/required/additionalProperties 保留到模型工具定义。
+Token effect: 每个对象参数增加真实字段结构，仍受附加 schema 大小上限约束，减少猜错重试。
+Cache effect: 注册时一次性解析，schema 在会话内保持稳定，不改动态消息前缀。
+
 尺寸治理：外部 server 的 schema 直接进工具目录（冻结前缀的一部分），
 描述与附加键超限时在注册时一次性截断/丢弃——字节此后保持稳定，
 一个臃肿的社区 server 不会撑爆工具前缀预算。
@@ -89,12 +93,13 @@ def _parse_param_schema(p_schema: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
     """解析单个参数的 JSON Schema 片段为 (type, schema_extra)。
 
     - type 缺失而 anyOf/oneOf 存在 → 取首个非 null 分支的 type；
-    - default/items/数值范围等附加键保留进 schema_extra（随 ToolParam
+    - default/items/对象结构/数值范围等附加键保留进 schema_extra（随 ToolParam
       直通 wire schema 的 properties 字段）；
     - 附加键序列化超限 → 整体丢弃（只留 type），防止巨型 enum/items
       撑爆工具前缀。
     """
     extra: Dict[str, Any] = {}
+    resolved = p_schema
     p_type = str(p_schema.get("type", "") or "")
     if not p_type:
         for union_key in ("anyOf", "oneOf"):
@@ -107,14 +112,18 @@ def _parse_param_schema(p_schema: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
                         and branch.get("type") != "null"
                     ):
                         p_type = str(branch["type"])
+                        resolved = {**branch, **p_schema}
                         break
             if p_type:
                 break
     if not p_type:
         p_type = "string"  # 保持既有兜底行为
-    for key in ("default", "items", "minimum", "maximum", "pattern", "format"):
-        if key in p_schema:
-            extra[key] = p_schema[key]
+    for key in (
+        "default", "items", "minimum", "maximum", "pattern", "format",
+        "properties", "required", "additionalProperties",
+    ):
+        if key in resolved:
+            extra[key] = resolved[key]
     if extra and len(json.dumps(extra, ensure_ascii=False)) > _MAX_EXTRA_JSON_CHARS:
         log(
             f"MCP 参数附加 schema 超限已丢弃（{_MAX_EXTRA_JSON_CHARS} 字符）",
