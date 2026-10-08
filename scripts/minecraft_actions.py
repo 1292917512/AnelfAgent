@@ -78,6 +78,9 @@ _MODULES = {
     "production-plan.mjs": "tools/anelf-production-plan.mjs",
     "production-task.mjs": "tools/anelf-production-task.mjs",
     "production-tools.mjs": "tools/anelf-production-tools.mjs",
+    "supply-plan.mjs": "tools/anelf-supply-plan.mjs",
+    "supply-task.mjs": "tools/anelf-supply-task.mjs",
+    "supply-tools.mjs": "tools/anelf-supply-tools.mjs",
 }
 
 

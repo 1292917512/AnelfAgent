@@ -98,6 +98,42 @@ async def test_production_without_inventory_evidence_is_ignored(
     announce.assert_not_awaited()
 
 
+@pytest.mark.parametrize("phase,confirmed,clean,available,expected", [
+    ("completed", True, True, 8, "补给任务已完成"),
+    ("cancelled", True, True, 4, "补给任务已取消"),
+    ("completed", False, True, 8, "双方库存尚未完整确认"),
+    ("completed", True, False, 8, "临时物品收尾尚未确认"),
+    ("completed", True, True, 4, "补给任务受阻"),
+])
+async def test_supply_terminal_requires_accounting_target_and_cleanup(
+    channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch,
+    phase: str, confirmed: bool, clean: bool, available: int, expected: str,
+) -> None:
+    announce, inbound = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(channel, "_announce_reflex", announce)
+    monkeypatch.setattr(channel, "on_message", inbound)
+    data = {"id": "supply", "actionId": "supply-action", "phase": phase, "confirmed": confirmed,
+            "inventoryClean": clean, "items": [{"item": "bread", "deposited": 0, "withdrawn": available,
+                                                "available": available, "target": 8, "verified": confirmed}]}
+    for seq in (1, 2):
+        await channel._dispatch_event(GameEvent(seq=seq, ts=1000, type="supply_progress", data=data))
+    announce.assert_awaited_once()
+    text = announce.call_args.args[0]
+    assert expected in text
+    if not confirmed or not clean or available != 8:
+        assert "已完成" not in text
+    inbound.assert_not_awaited()
+
+
+async def test_supply_without_evidence_is_ignored(channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch) -> None:
+    announce = AsyncMock()
+    monkeypatch.setattr(channel, "_announce_reflex", announce)
+    await channel._dispatch_event(GameEvent(seq=1, ts=1000, type="supply_progress", data={
+        "id": "supply", "actionId": "supply-action", "phase": "completed",
+    }))
+    announce.assert_not_awaited()
+
+
 def test_reply_policy_uses_configured_server_and_requires_delegation(channel: MinecraftChannel) -> None:
     channel.get_config().mcp_server = "game-test"
     policy = channel.reply_policy

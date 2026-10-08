@@ -125,6 +125,52 @@ class ProductionProgress(BaseModel):
         return f"{label}：新合成 {self.created} 个{name}，复用原有 {self.reused} 个，背包现有 {self.available} 个；{cleanup}。"
 
 
+class SupplyItemProgress(BaseModel):
+    """单类物品的容器/背包对账，不把请求量当实际转移量。"""
+
+    item: str = Field(pattern=r"^[a-z0-9_]+$")
+    deposited: int = Field(ge=0)
+    withdrawn: int = Field(ge=0)
+    available: int = Field(ge=0)
+    target: int = Field(ge=0)
+    verified: bool
+
+
+class SupplyProgress(BaseModel):
+    """补给终态与真实库存收尾事实。"""
+
+    id: str = Field(min_length=1)
+    action_id: str = Field(alias="actionId", min_length=1)
+    phase: Literal["running", "completed", "blocked", "cancelled", "interrupted"]
+    confirmed: bool
+    inventory_clean: bool = Field(alias="inventoryClean")
+    items: list[SupplyItemProgress] = Field(max_length=16)
+    failure_code: str = Field(default="", alias="failureCode")
+
+    def announcement(self) -> str | None:
+        if self.phase == "running":
+            return None
+        verified = self.confirmed and all(item.verified for item in self.items)
+        complete = self.phase == "completed" and verified and self.inventory_clean and bool(self.items) and all(
+            item.available == item.target for item in self.items
+        )
+        label = "补给任务已完成" if complete else {
+            "cancelled": "补给任务已取消", "interrupted": "补给任务已中断",
+        }.get(self.phase, "补给任务受阻，已停止")
+        names = {"cobblestone": "圆石", "oak_log": "橡木原木", "oak_planks": "橡木板", "stick": "木棍",
+                 "bread": "面包", "torch": "火把", "wooden_pickaxe": "木镐", "stone_pickaxe": "石镐", "iron_pickaxe": "铁镐"}
+        facts = "；".join(f"{names.get(item.item, item.item)} 存入 {item.deposited}、取出 {item.withdrawn}、现有 {item.available}" for item in self.items[:3])
+        if len(self.items) > 3:
+            facts += f"；另 {len(self.items) - 3} 类物品见补给状态"
+        if not verified:
+            cause = {"MISSING_MATERIALS": "箱子物资不足", "INVENTORY_FULL_NO_CHEST": "箱子或背包空间不足",
+                     "FORBIDDEN": "不满足物资保留量或使用条件", "NO_WINDOW": "箱子连接已失效",
+                     "BUSY": "库存发生变化或尚未收尾"}.get(self.failure_code, "双方库存尚未完整确认")
+            facts = f"{cause}，请先查看补给状态"
+        cleanup = "光标已收尾并关闭箱子" if self.inventory_clean else "临时物品收尾尚未确认，不能继续搬运"
+        return f"{label}：{facts}；{cleanup}。"
+
+
 class ActionOrigin(BaseModel):
     """宿主生成的动作来源，用于区分新请求与停止前的迟到事件。"""
 

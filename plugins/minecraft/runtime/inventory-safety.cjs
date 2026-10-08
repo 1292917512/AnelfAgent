@@ -79,29 +79,39 @@ async function restoreCrafting (bot, signal) {
  * @returns {Promise<T>}
  */
 async function runCraft (bot, action) {
-  const state = stateFor(bot)
-  if (state.closing) throw new Error('Bot is disconnecting; no new crafting is accepted')
-  if (state.active) throw new Error('Previous crafting operation is still running')
-  const task = Promise.resolve().then(async () => {
-    checkCraft(bot)
-    // Placement/equipment acknowledgements may follow the block update that completed the prior step.
-    await bot._syncWindow(bot.currentWindow || bot.inventory)
-    checkCraft(bot)
-    const result = await action()
-    const window = bot.currentWindow || bot.inventory
-    const inputs = window.type === 'minecraft:crafting' ? 9 : window.type === 'minecraft:inventory' ? 4 : 0
-    if (window.selectedItem || window.slots.slice(0, inputs + 1).some(Boolean)) {
-      throw new Error('Craft finished with unconfirmed cursor or grid contents')
-    }
-    return result
-  }).catch(async error => {
+  return runInventory(bot, async () => {
+    const state = stateFor(bot)
     try {
-      await restoreCrafting(bot, state.signal)
-    } catch (recoveryError) {
-      throw new Error(`${errorText(error)}; inventory recovery failed: ${errorText(recoveryError)}`, { cause: error })
+      checkCraft(bot)
+      // Placement/equipment acknowledgements may follow the block update that completed the prior step.
+      await bot._syncWindow(bot.currentWindow || bot.inventory)
+      checkCraft(bot)
+      const result = await action()
+      const window = bot.currentWindow || bot.inventory
+      const inputs = window.type === 'minecraft:crafting' ? 9 : window.type === 'minecraft:inventory' ? 4 : 0
+      if (window.selectedItem || window.slots.slice(0, inputs + 1).some(Boolean)) {
+        throw new Error('Craft finished with unconfirmed cursor or grid contents')
+      }
+      return result
+    } catch (error) {
+      try {
+        await restoreCrafting(bot, state.signal)
+      } catch (recoveryError) {
+        throw new Error(`${errorText(error)}; inventory recovery failed: ${errorText(recoveryError)}`, { cause: error })
+      }
+      throw error
     }
-    throw error
   })
+}
+
+/** Track inventory work including its recovery, so orderly disconnect cannot race a container transfer.
+ * @template T @param {object} bot @param {() => Promise<T>} action @returns {Promise<T>}
+ */
+async function runInventory (bot, action) {
+  const state = stateFor(bot)
+  if (state.closing) throw new Error('Bot is disconnecting; no new inventory work is accepted')
+  if (state.active) throw new Error('Previous inventory operation is still running')
+  const task = Promise.resolve().then(action)
   state.active = task
   try {
     return await task
@@ -117,6 +127,14 @@ function bindCraftAction (bot, signal) { stateFor(bot).actionSignal = signal }
  * @param {object} bot
  */
 function checkCraft (bot) { stateFor(bot).actionSignal?.throwIfAborted() }
+
+/** Access the installed synchronization extension through a checked boundary.
+ * @param {import('mineflayer').Bot} bot @param {InventoryWindow} window @returns {Promise<void>}
+ */
+async function syncInventory (bot, window) {
+  if (!('_syncWindow' in bot) || typeof bot._syncWindow !== 'function') throw new Error('Inventory synchronization patch is not installed')
+  await bot._syncWindow(window)
+}
 
 /** @param {object} bot @returns {Promise<void>} */
 async function waitForCraft (bot) { await stateFor(bot).active?.catch(() => {}) }
@@ -172,4 +190,4 @@ function errorText (error) {
   return error instanceof Error ? error.message : String(error)
 }
 
-module.exports = { restoreCrafting, runCraft, prepareDisconnect, bindCraftAction, checkCraft, waitForCraft }
+module.exports = { restoreCrafting, runCraft, runInventory, syncInventory, prepareDisconnect, bindCraftAction, checkCraft, waitForCraft }

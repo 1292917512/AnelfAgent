@@ -37,7 +37,16 @@ from entities._sdk import call_mcp_server_tool
 from . import discovery as _discovery  # noqa: F401  导入即注册全局发现工具
 from .autoconnect import _CONNECT_STATE, AutoConnector
 from .config import MinecraftConfig
-from .protocol import ConnectionStatus, EventBatch, GameEvent, MineProgress, PlayerChat, ProductionProgress, split_chat
+from .protocol import (
+    ConnectionStatus,
+    EventBatch,
+    GameEvent,
+    MineProgress,
+    PlayerChat,
+    ProductionProgress,
+    SupplyProgress,
+    split_chat,
+)
 from .reflexes import SurvivalBridge
 from .reply_policy import companion_policy
 from .session import record_game_event, stop_companion_work
@@ -217,7 +226,7 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             scope=build_entity_scope("group", "minecraft", cfg.server_id),
         )
         args: dict[str, Any] = {
-            "types": ["__anelf_cursor__"] if self._cursor is None else ["chat", "whisper", "mine_progress", "survival_progress", "production_progress"],
+            "types": ["__anelf_cursor__"] if self._cursor is None else ["chat", "whisper", "mine_progress", "survival_progress", "production_progress", "supply_progress"],
             "limit": 32,
         }
         if self._cursor is not None:
@@ -239,9 +248,10 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
         if event.type == "survival_progress":
             self._survival.event(event.data)
             return
-        if event.type in {"mine_progress", "production_progress"}:
+        if event.type in {"mine_progress", "production_progress", "supply_progress"}:
             try:
                 progress = (MineProgress.model_validate(event.data) if event.type == "mine_progress"
+                            else SupplyProgress.model_validate(event.data) if event.type == "supply_progress"
                             else ProductionProgress.model_validate(event.data))
             except ValidationError:
                 log(f"Minecraft 忽略非法任务进度事件: type={event.type} seq={event.seq}", "WARNING", tag="Minecraft")

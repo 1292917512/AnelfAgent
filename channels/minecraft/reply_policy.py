@@ -9,6 +9,7 @@ from agent.channel.reply_policy import ReplyPolicy
 
 COMPANION_GAME_TOOLS = frozenset({
     "get_inventory", "get_state", "get_block_at", "place_block", "craft_item", "mine_resources", "prepare_item", "production_status",
+    "manage_supplies", "supply_status",
 })
 
 
@@ -27,7 +28,12 @@ def companion_policy(server: str) -> ReplyPolicy:
             "它不采集、不走路、不交付；只有启动成功才说已开始，等待制作终态播报，不重复派工或恢复。"
             "需要查询时用 `production_status`，按 created/available/reused/inventoryClean 区分新做、现有及收尾。"
             "材料不足或无放台空间时保留原始限制，准确解释受阻，不擅自扩大任务。\n"
-            "单步查询、跟随、停止和启动 `mine_resources` 可直接做；超出上述制作入口的采集、交付和其他多步任务，"
+            "指定箱子的卸货/补给优先直接用 `manage_supplies`，仅使用玩家明确授权且能确定坐标的普通箱子或木桶，"
+            "不能猜箱子或擅取其他容器；需在可见四格内，不会自动走过去。deposit.count 是存入数量，keep 保留任务所需材料；"
+            "withdraw.count 是背包应补到的总数。整批缺料或空间不足则不搬物品，工具/食物/火把有最低保留量。"
+            "等待补给终态播报或查询 `supply_status`；按 confirmed/items 的双方库存对账及 inventoryClean 汇报，"
+            "部分完成或取消不重做，也不擅自接着采集或制作。\n"
+            "单步查询、跟随、停止和启动 `mine_resources` 可直接做；超出上述制作和补给入口的采集、交付和其他多步任务，"
             "第一轮实际调用 delegate_task(agent_name='mc-worker', background=true)。"
             "必须读取本次工具返回的成功状态和 delegation_id，确认任务成功启动后，才可用 send_message 告知已派工。"
             "没有本次委托成功的工具结果就是尚未派工；文字承诺、历史任务和自己的独白均不算派工事实。"

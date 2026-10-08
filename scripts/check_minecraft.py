@@ -51,6 +51,8 @@ _REQUIRED_TOOLS = {
     "get_survival_status",
     "prepare_item",
     "production_status",
+    "manage_supplies",
+    "supply_status",
 } | COMPANION_GAME_TOOLS
 _REQUIRED_PARAMS = {
     "follow_entity": {"entityId", "range"},
@@ -60,6 +62,7 @@ _REQUIRED_PARAMS = {
     "mine_resources": {"direction", "depth", "minY", "length", "item", "count"},
     "configure_survival": {"enabled", "intervalMs"},
     "prepare_item": {"item", "count", "mode"},
+    "manage_supplies": {"x", "y", "z", "deposit", "withdraw"},
 }
 
 
