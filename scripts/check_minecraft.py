@@ -49,6 +49,8 @@ _REQUIRED_TOOLS = {
     "get_runtime_metrics",
     "configure_survival",
     "get_survival_status",
+    "prepare_item",
+    "production_status",
 } | COMPANION_GAME_TOOLS
 _REQUIRED_PARAMS = {
     "follow_entity": {"entityId", "range"},
@@ -57,6 +59,7 @@ _REQUIRED_PARAMS = {
     "get_events": {"since", "types", "limit"},
     "mine_resources": {"direction", "depth", "minY", "length", "item", "count"},
     "configure_survival": {"enabled", "intervalMs"},
+    "prepare_item": {"item", "count", "mode"},
 }
 
 

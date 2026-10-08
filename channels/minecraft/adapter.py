@@ -37,7 +37,7 @@ from entities._sdk import call_mcp_server_tool
 from . import discovery as _discovery  # noqa: F401  导入即注册全局发现工具
 from .autoconnect import _CONNECT_STATE, AutoConnector
 from .config import MinecraftConfig
-from .protocol import ConnectionStatus, EventBatch, GameEvent, MineProgress, PlayerChat, split_chat
+from .protocol import ConnectionStatus, EventBatch, GameEvent, MineProgress, PlayerChat, ProductionProgress, split_chat
 from .reflexes import SurvivalBridge
 from .reply_policy import companion_policy
 from .session import record_game_event, stop_companion_work
@@ -72,7 +72,7 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
         self._survival = SurvivalBridge(
             lambda name, args: self._call(name, args), lambda text: self._announce_reflex(text),
         )
-        self._mine_announcements: dict[tuple[str, str], None] = {}
+        self._task_announcements: dict[tuple[str, str, str], None] = {}
         self._auto = AutoConnector(
             self._call,
             self._discover_worlds,
@@ -217,7 +217,7 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             scope=build_entity_scope("group", "minecraft", cfg.server_id),
         )
         args: dict[str, Any] = {
-            "types": ["__anelf_cursor__"] if self._cursor is None else ["chat", "whisper", "mine_progress", "survival_progress"],
+            "types": ["__anelf_cursor__"] if self._cursor is None else ["chat", "whisper", "mine_progress", "survival_progress", "production_progress"],
             "limit": 32,
         }
         if self._cursor is not None:
@@ -239,21 +239,22 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
         if event.type == "survival_progress":
             self._survival.event(event.data)
             return
-        if event.type == "mine_progress":
+        if event.type in {"mine_progress", "production_progress"}:
             try:
-                progress = MineProgress.model_validate(event.data)
+                progress = (MineProgress.model_validate(event.data) if event.type == "mine_progress"
+                            else ProductionProgress.model_validate(event.data))
             except ValidationError:
-                log(f"Minecraft 忽略非法矿洞进度事件: seq={event.seq}", "WARNING", tag="Minecraft")
+                log(f"Minecraft 忽略非法任务进度事件: type={event.type} seq={event.seq}", "WARNING", tag="Minecraft")
                 return
             announcement = progress.announcement()
             if announcement:
-                key = (progress.action_id or progress.id, progress.phase)
-                if key[0]:
-                    if key in self._mine_announcements:
+                key = (event.type, progress.action_id or progress.id, progress.phase)
+                if key[1]:
+                    if key in self._task_announcements:
                         return
-                    self._mine_announcements[key] = None
-                    if len(self._mine_announcements) > 128:
-                        self._mine_announcements.pop(next(iter(self._mine_announcements)))
+                    self._task_announcements[key] = None
+                    if len(self._task_announcements) > 128:
+                        self._task_announcements.pop(next(iter(self._task_announcements)))
                 if enqueue_commands:
                     self._survival.announce(announcement)
                 else:

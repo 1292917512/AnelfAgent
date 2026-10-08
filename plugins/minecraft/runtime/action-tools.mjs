@@ -8,6 +8,7 @@ import inventorySafety from 'mineflayer/lib/anelf_inventory.js'
 import { ActionController } from '../bot/anelf-actions.mjs'
 import { ToolError } from '../util/errors.js'
 import { workbenchPlacementHints } from './anelf-placement-hints.mjs'
+import { registerProduction } from './anelf-production-tools.mjs'
 
 /** @typedef {import('../context.js').ToolContext} Context */
 /** @typedef {import('./registry.js').Registrar} Registrar */
@@ -34,6 +35,7 @@ async function stop (locks, reflex = false) {
 
 /** @param {Registrar} reg */
 export function registerActions (reg) {
+  registerProduction(reg)
   reg({ name: 'configure_survival', group: 'state', inputSchema: {
     enabled: z.boolean(), intervalMs: z.number().int().min(100).max(10000).default(250),
   }, description: 'Configure local survival observations; health/death/breath events are immediate. Does not resume stopped or paused work. Normal companion settings are synchronized by the Minecraft channel.',
@@ -85,7 +87,8 @@ export function wrapActionTools (def) {
       locks.attach(bot)
       /** @param {AbortSignal} signal */
       const run = async signal => {
-        inventorySafety.bindCraftAction(bot, signal)
+        const backgroundProduction = def.name === 'prepare_item'
+        if (!backgroundProduction) inventorySafety.bindCraftAction(bot, signal)
         try {
           if (persistent.has(def.name)) {
             locks.continuation(() => {
@@ -112,8 +115,10 @@ export function wrapActionTools (def) {
           throw error
         } finally {
           // A tool timeout does not imply that craft's window clicks have stopped.
-          await inventorySafety.waitForCraft(bot)
-          inventorySafety.bindCraftAction(bot, null)
+          if (!backgroundProduction) {
+            await inventorySafety.waitForCraft(bot)
+            inventorySafety.bindCraftAction(bot, null)
+          }
         }
       }
       if (def.name === 'set_control_state' && locks.current === 'set_control_state') {

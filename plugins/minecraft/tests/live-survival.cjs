@@ -1,4 +1,4 @@
-// Opt-in acceptance against an isolated vanilla server; never targets the player's world.
+// Opt-in survival/production acceptance against an isolated vanilla server.
 const assert = require('node:assert/strict')
 const { spawn } = require('node:child_process')
 const { randomUUID } = require('node:crypto')
@@ -22,7 +22,7 @@ const deps = createRequire(path.join(payload, 'package.json'))
 const load = name => import(pathToFileURL(deps.resolve(name)).href)
 const username = 'M2TestBot'
 const producer = randomUUID()
-const lines = [], events = [], results = [], samples = [], routes = []
+const lines = [], events = [], results = [], samples = [], routes = [], packets = []
 let child, client, server, ctx, epoch = 0, current = 'startup', bot, sampling
 let serverOwned = false, serverClosed = false, serverError
 
@@ -36,7 +36,13 @@ function snapshot () {
   const p = bot?.entity?.position
   return { at: Date.now(), test: current, position: p ? { x: p.x, y: p.y, z: p.z } : null,
     health: bot?.health, oxygen: bot?.oxygenLevel, food: bot?.food,
-    controls: bot ? { ...bot.controlState } : {}, survival: ctx?.locks.survival.status(), action: ctx?.locks.status() }
+    controls: bot ? { ...bot.controlState } : {}, survival: ctx?.locks.survival.status(), action: ctx?.locks.status(),
+    inventory: current.startsWith('production_') && bot?.inventory ? {
+      items: bot.inventory.items().map(item => ({ name: item.name, count: item.count, slot: item.slot })),
+      window: bot.currentWindow?.type ?? bot.inventory.type,
+      cursor: (bot.currentWindow ?? bot.inventory).selectedItem,
+      grid: (bot.currentWindow ?? bot.inventory).slots.slice(0, bot.currentWindow ? 10 : 5),
+    } : undefined }
 }
 
 function metadata (requestId = randomUUID()) {
@@ -109,6 +115,11 @@ async function startServer () {
 async function prepare () {
   await call('configure_survival', { enabled: false, intervalMs: 250 })
   await call('cancel_task')
+  await waitFor('previous action drained', () => !ctx.locks.action)
+  const window = bot.currentWindow ?? bot.inventory
+  if (window.selectedItem || window.slots.slice(0, bot.currentWindow ? 10 : 5).some(Boolean)) {
+    await deps('mineflayer/lib/anelf_inventory.js').restoreCrafting(bot)
+  }
   await command('difficulty peaceful')
   await command('kill @e[type=!minecraft:player]')
   await command('fill -12 64 -12 12 73 12 air')
@@ -140,7 +151,7 @@ async function scenario (name, work) {
     results.push({ name, passed: false, error: String(error.stack || error), final: snapshot(), events: events.slice(start) })
   }
   console.log(JSON.stringify({ ...results.at(-1), final: undefined, events: undefined }))
-  await fs.writeFile(path.join(serverDir, 'results.json'), JSON.stringify({ results, events, samples, routes }, null, 2))
+  await fs.writeFile(path.join(serverDir, 'results.json'), JSON.stringify({ results, events, samples, routes, packets }, null, 2))
 }
 
 async function main () {
@@ -154,6 +165,15 @@ async function main () {
   await server.connect(remote); await client.connect(local)
   await call('connect_bot', { host: '127.0.0.1', port, username, auth: 'offline', version: '26.1', viewDistance: 'short' })
   bot = ctx.manager.requireBot()
+  if (args.includes('--trace-inventory')) {
+    const relevant = new Set(['window_click', 'window_items', 'set_slot', 'set_player_inventory', 'set_cursor_item', 'close_window', 'open_window', 'block_place', 'held_item_slot'])
+    const record = (direction, name, data) => {
+      if (relevant.has(name) && packets.length < 10000) packets.push({ at: Date.now(), test: current, direction, name, data: structuredClone(data) })
+    }
+    const write = bot._client.write.bind(bot._client)
+    bot._client.write = (name, data) => { record('out', name, data); return write(name, data) }
+    bot._client.on('packet', (data, metadata) => record('in', metadata.name, data))
+  }
   const search = bot.pathfinder.getPathTo.bind(bot.pathfinder)
   bot.pathfinder.getPathTo = (movements, goal, timeout) => {
     const found = search(movements, goal, timeout)
@@ -162,11 +182,14 @@ async function main () {
     return found
   }
   const push = ctx.locks.events.push.bind(ctx.locks.events)
-  ctx.locks.events.push = (type, data) => { if (['survival_progress', 'action_progress'].includes(type)) events.push({ at: Date.now(), test: current, type, data }); return push(type, data) }
+  ctx.locks.events.push = (type, data) => { if (['survival_progress', 'action_progress', 'production_progress'].includes(type)) events.push({ at: Date.now(), test: current, type, data }); return push(type, data) }
   sampling = setInterval(() => samples.push(snapshot()), 100)
   const has = (start, kind, phase) => events.slice(start).some(event => event.type === 'survival_progress' && event.data.kind === kind && event.data.phase === phase)
   const selected = option('--case')
-  const test = (name, work) => !selected || selected === name ? scenario(name, work) : Promise.resolve()
+  const suite = option('--suite') || 'survival'
+  assert.ok(['survival', 'production', 'all'].includes(suite), `Unknown suite: ${suite}`)
+  const test = (name, work) => (!selected || selected === name) &&
+    (suite === 'all' || name.startsWith('production_') === (suite === 'production')) ? scenario(name, work) : Promise.resolve()
 
   await test('water_surface_and_remain_safe', async start => {
     await call('configure_survival', { enabled: false, intervalMs: 250 })
@@ -263,6 +286,7 @@ async function main () {
     assert.equal(ctx.locks.action, null)
     await assert.rejects(call('look_at', { x: 1, y: 65, z: 0 }, old), /CANCELLED|interrupted/)
   })
+  await require('./live-production.cjs')({ test, call, command, waitFor, bot, ctx, username, metadata })
   assert.ok(results.length, `Unknown test case: ${selected}`)
 }
 
@@ -281,7 +305,7 @@ main().catch(error => { console.error(error); process.exitCode = 1 }).finally(as
     try { await waitFor('test server shutdown', () => serverClosed, 20000) } catch { child.kill() }
   }
   if (serverOwned) {
-    await fs.writeFile(path.join(serverDir, 'results.json'), JSON.stringify({ results, events, samples, routes }, null, 2))
+    await fs.writeFile(path.join(serverDir, 'results.json'), JSON.stringify({ results, events, samples, routes, packets }, null, 2))
   }
   if (results.some(result => !result.passed)) process.exitCode = 1
   console.log(JSON.stringify({ passed: results.filter(result => result.passed).length, failed: results.filter(result => !result.passed).length, output: path.join(serverDir, 'results.json') }))

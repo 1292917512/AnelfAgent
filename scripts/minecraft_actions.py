@@ -75,6 +75,9 @@ _MODULES = {
     "autonomous-actions.mjs": "bot/anelf-autonomous.mjs",
     "survival-controller.mjs": "bot/anelf-survival.mjs",
     "survival-observation.mjs": "bot/anelf-survival-observation.mjs",
+    "production-plan.mjs": "tools/anelf-production-plan.mjs",
+    "production-task.mjs": "tools/anelf-production-task.mjs",
+    "production-tools.mjs": "tools/anelf-production-tools.mjs",
 }
 
 

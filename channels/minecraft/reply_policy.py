@@ -8,7 +8,7 @@ Cache effect: 经 channel_policy 尾部层注入，实时任务事实仍留在�
 from agent.channel.reply_policy import ReplyPolicy
 
 COMPANION_GAME_TOOLS = frozenset({
-    "get_inventory", "get_state", "get_block_at", "place_block", "craft_item", "mine_resources",
+    "get_inventory", "get_state", "get_block_at", "place_block", "craft_item", "mine_resources", "prepare_item", "production_status",
 })
 
 
@@ -22,7 +22,12 @@ def companion_policy(server: str) -> ReplyPolicy:
             "本频道游戏请求由当前回复负责，不另起 tool_action 或重复执行。游戏工具已在当前目录中，"
             "只用真实工具名，不先查目录/激活分组。当前名称是 `get_inventory`、`get_state`、`get_block_at`、"
             "`place_block`、`craft_item`；委托中也必须原样书写，禁止添加 mcp__minecraft__ 等前缀。\n"
-            "单步查询、跟随、停止和启动 `mine_resources` 可直接做；玩家新提出的制作、放工作台再合工具、采集等多步任务，"
+            "木制工具、工作台和木棍的准备优先直接调用 `prepare_item`：自动核算背包材料、准备中间产物和可操作的工作台。"
+            "count 是产物数量；准备够用用 mode=ensure，明确制作/新做/再做用 mode=craft，不能拿旧工具冒充新做。"
+            "它不采集、不走路、不交付；只有启动成功才说已开始，等待制作终态播报，不重复派工或恢复。"
+            "需要查询时用 `production_status`，按 created/available/reused/inventoryClean 区分新做、现有及收尾。"
+            "材料不足或无放台空间时保留原始限制，准确解释受阻，不擅自扩大任务。\n"
+            "单步查询、跟随、停止和启动 `mine_resources` 可直接做；超出上述制作入口的采集、交付和其他多步任务，"
             "第一轮实际调用 delegate_task(agent_name='mc-worker', background=true)。"
             "必须读取本次工具返回的成功状态和 delegation_id，确认任务成功启动后，才可用 send_message 告知已派工。"
             "没有本次委托成功的工具结果就是尚未派工；文字承诺、历史任务和自己的独白均不算派工事实。"

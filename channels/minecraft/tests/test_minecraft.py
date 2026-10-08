@@ -61,6 +61,43 @@ async def test_duplicate_mining_terminal_is_announced_once_per_action(channel: M
     assert announce.await_count == 2
 
 
+@pytest.mark.parametrize("phase,available,clean,expected", [
+    ("completed", 1, True, "制作任务已完成"),
+    ("cancelled", 1, True, "制作任务已取消"),
+    ("completed", 0, True, "制作任务受阻"),
+    ("completed", 1, False, "尚未确认临时材料收尾"),
+])
+async def test_production_terminal_deduplicates_and_never_calls_existing_tool_new(
+    channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch,
+    phase: str, available: int, clean: bool, expected: str,
+) -> None:
+    announce, inbound = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(channel, "_announce_reflex", announce)
+    monkeypatch.setattr(channel, "on_message", inbound)
+    data = {"id": "production", "actionId": "craft-action", "phase": phase,
+            "item": "wooden_pickaxe", "created": 0, "reused": 1, "available": available,
+            "required": 1, "inventoryClean": clean}
+    for seq in (1, 2):
+        await channel._dispatch_event(GameEvent(seq=seq, ts=1000, type="production_progress", data=data))
+    announce.assert_awaited_once()
+    text = announce.call_args.args[0]
+    assert expected in text and "新合成 0" in text and "复用原有 1" in text
+    if available == 0 or not clean:
+        assert "已完成" not in text
+    inbound.assert_not_awaited()
+
+
+async def test_production_without_inventory_evidence_is_ignored(
+    channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    announce = AsyncMock()
+    monkeypatch.setattr(channel, "_announce_reflex", announce)
+    await channel._dispatch_event(GameEvent(seq=1, ts=1000, type="production_progress", data={
+        "id": "production", "actionId": "action", "phase": "completed",
+    }))
+    announce.assert_not_awaited()
+
+
 def test_reply_policy_uses_configured_server_and_requires_delegation(channel: MinecraftChannel) -> None:
     channel.get_config().mcp_server = "game-test"
     policy = channel.reply_policy
