@@ -21,7 +21,8 @@ awesome-mineflayer-mcp，底层复用 Mineflayer、pathfinder、collectblock、t
 本频道游戏请求由当前回复负责，不另起 tool_action 或重复执行。游戏工具已在当前目录中，只用真实工具名，不先查目录/激活分组。当前名称是 `get_inventory`、`get_state`、`get_block_at`、`place_block`、`craft_item`；委托中也必须原样书写，禁止添加 mcp__minecraft__ 等前缀。
 木制工具、工作台和木棍的准备优先直接调用 `prepare_item`：自动核算背包材料、准备中间产物和可操作的工作台。count 是产物数量；准备够用用 mode=ensure，明确制作/新做/再做用 mode=craft，不能拿旧工具冒充新做。它不采集、不走路、不交付；只有启动成功才说已开始，等待制作终态播报，不重复派工或恢复。需要查询时用 `production_status`，按 created/available/reused/inventoryClean 区分新做、现有及收尾。材料不足或无放台空间时保留原始限制，准确解释受阻，不擅自扩大任务。
 指定箱子的卸货/补给优先直接用 `manage_supplies`，仅使用玩家明确授权且能确定坐标的普通箱子或木桶，不能猜箱子或擅取其他容器；需在可见四格内，不会自动走过去。deposit.count 是存入数量，keep 保留任务所需材料；withdraw.count 是背包应补到的总数。整批缺料或空间不足则不搬物品，工具/食物/火把有最低保留量。等待补给终态播报或查询 `supply_status`；按 confirmed/items 的双方库存对账及 inventoryClean 汇报，部分完成或取消不重做，也不擅自接着采集或制作。
-单步查询、跟随、停止和启动 `mine_resources` 可直接做；超出上述制作和补给入口的采集、交付和其他多步任务，第一轮实际调用 delegate_task(agent_name='mc-worker', background=true)。必须读取本次工具返回的成功状态和 delegation_id，确认任务成功启动后，才可用 send_message 告知已派工。没有本次委托成功的工具结果就是尚未派工；文字承诺、历史任务和自己的独白均不算派工事实。不要在主会话先查背包、预演、present_plan 或执行同一组动作；委托失败才如实解释。成功委托后无需再建计划或定时提醒；此时才结束本轮等待后台完成通知，不轮询。
+附近表面原木/圆石采集优先 `gather_resources`：先确定玩家允许采集区域的中心坐标，半径最多四格，只走已有平坦通路，绝不挖脚下或开路。count 是本次新增入包，不含旧库存/出发补给。可用明确授权且出发点可见四格内的 chest 坐标组合 withdraw 补给和 deposit=true 返程存货；不猜箱子。等待终态或查 `gathering_status`，分别看 dug/gained/remaining/returned/deposited；缺拾取即停挖，停止或断线不自续。不能识别人造建筑，采集区域必须获准；地形高差、地下目标用 `mine_resources` 或准确解释限制。
+单步查询、跟随、停止和启动 `mine_resources` 可直接做；超出上述制作、补给和表面采集入口的交付和其他多步任务，第一轮实际调用 delegate_task(agent_name='mc-worker', background=true)。必须读取本次工具返回的成功状态和 delegation_id，确认任务成功启动后，才可用 send_message 告知已派工。没有本次委托成功的工具结果就是尚未派工；文字承诺、历史任务和自己的独白均不算派工事实。不要在主会话先查背包、预演、present_plan 或执行同一组动作；委托失败才如实解释。成功委托后无需再建计划或定时提醒；此时才结束本轮等待后台完成通知，不轮询。
 后台任务完成/失败/取消通知只用于核对并汇报，不能当成玩家的新请求再次 delegate_task，更不能从头重做消耗材料；没有玩家新指令就待命。
 委托的 task/context 必须保留玩家原始目标、世界和全部约束，并带上以下执行规则：只用指定游戏 MCP 工具，不调用 shell/记忆/规划工具；首轮并行 get_inventory 和 get_state，同一机器人的写动作串行。已有工作台可复用；新台先确认背包到账，再选身体外的空位和可见实心支撑面，place_block 后用 get_block_at 确认 crafting_table，才能用 craftingTablePos 合三乘三配方。craft_item 的 count 是配方操作次数。合成后再查背包，按同名物品全部槽位求和；额外新做数量按本次背包增量核验，不能拿原有工具冒充。取消/失败先核对 crafting 光标和格子，未确认收尾不能继续；最多重试一次，受阻时报告事实而非要求玩家重复试错。
 worker 返回后只按实际入包、服务器方块与终态汇报；预算耗尽、partial、blocked、通用计划完成都不是游戏任务成功证据。保留用户限制，不擅自采集、挖掘、丢弃或另起任务。
@@ -194,11 +195,12 @@ worker 默认看不到主会话与本技能全文；派工时须按上述契约�
 - 玩家说“来找我/过来/跟着我”：用 `follow_entity`（常驻跟随），不要用 `goto` 逐点追；
   玩家报出明确坐标时才用 `goto`。
 - 工具名以工具目录为准，禁止猜测（如 `get_player` 不存在；查玩家用 `list_players`）。
-- 采集起手式（铁律，07:22 实机事故：拿旧坐标盲挖三连败，13 秒被系统强制收回合、
-  玩家收到零消息）：任何挖掘/采集**第一手必须是现查**——`find_blocks`
+- 表面原木/圆石的批量采集优先按上方执行契约使用 `gather_resources`；脚本内部每次重查目标、
+  可达性、工具、拾取和返程。不能因脚本受阻就自动改用低层工具绕过地形与授权范围限制。
+- 以下为尚未覆盖目标的低层采集规则：第一手先用 `find_blocks`
   （matching=目标名）拿到当次坐标；**禁止用记忆/历史/摘要里的坐标直接 `dig`/`goto`**
   （坐标会过期，挖到的是空气）。挖之前 `get_block_at` 复核该坐标确有目标方块。
-  然后 `collect_block`（指定数量）；多个目标派 worker。
+  然后 `collect_block`（指定数量）；超出高层脚本能力的多个目标派 worker。
 - `find_blocks` 也能找到地下被遮挡的方块，距离近不等于能挖。优先寻找露出的岩壁或洞口，
   不要对脚下隔着泥土的石头连续发出挖掘。`dig` 会装备可采收工具并检查可见面，
   `BLOCK_NOT_VISIBLE` 时换位置或目标，`MISSING_TOOL` 时先补工具，`DIG_UNCONFIRMED`

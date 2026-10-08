@@ -63,6 +63,7 @@ _REQUIRED_PARAMS = {
     "configure_survival": {"enabled", "intervalMs"},
     "prepare_item": {"item", "count", "mode"},
     "manage_supplies": {"x", "y", "z", "deposit", "withdraw"},
+    "gather_resources": {"x", "y", "z", "block", "count", "radius", "chest", "withdraw", "deposit"},
 }
 
 

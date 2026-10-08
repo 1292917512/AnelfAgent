@@ -72,11 +72,14 @@ export class SupplyTask {
       startedAt: this.startedAt, finishedAt: this.finishedAt }
   }
 
-  start () {
+  /** Nested transfers retain the parent's ownership and publish only through its final report.
+   * @param {boolean} [nested]
+   */
+  start (nested = false) {
     const handle = this.locks.begin('manage_supplies')
     this.actionId = handle.actionId
-    this.locks.linkTask(this.id, this.world)
-    this.done = this.execute(handle)
+    if (!nested) this.locks.linkTask(this.id, this.world)
+    this.done = this.execute(handle, nested)
     return this.snapshot()
   }
 
@@ -85,8 +88,8 @@ export class SupplyTask {
       this.locks.action?.outcome !== 'interrupted'
   }
 
-  /** @param {ReturnType<ActionController['begin']>} handle */
-  async execute (handle) {
+  /** @param {ReturnType<ActionController['begin']>} handle @param {boolean} nested */
+  async execute (handle, nested) {
     const deadline = AbortSignal.timeout(120000)
     const check = () => {
       handle.signal.throwIfAborted(); deadline.throwIfAborted()
@@ -158,10 +161,11 @@ export class SupplyTask {
         this.failureCode = 'INTERNAL'
       }
       const owner = this.locks.action
-      handle.release(this.phase, this.reason)
-      if (owner?.id === this.actionId) await owner.done
+      if (nested) handle.release()
+      else handle.release(this.phase, this.reason)
+      if (!nested && owner?.id === this.actionId) await owner.done
       this.finishedAt = Date.now()
-      this.ctx.events.push('supply_progress', this.snapshot())
+      if (!nested) this.ctx.events.push('supply_progress', this.snapshot())
     }
   }
 

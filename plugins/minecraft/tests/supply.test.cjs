@@ -141,3 +141,23 @@ test('orderly disconnect waits for a real container click and recovery before in
   assert.equal(window.selectedItem, null)
   assert.equal(task.snapshot().items[0].withdrawn, 0)
 })
+
+for (const mismatch of [false, true]) test(`nested supply drains without overwriting or waiting for parent (mismatch=${mismatch})`, async t => {
+  const { task, locks, events } = await taskFixture(t, mismatch ? async () => {} : undefined)
+  let parent
+  await locks.run('gather_resources', 1, () => {
+    parent = locks.begin('gather_resources')
+    locks.linkTask('parent-gather', 'world')
+    return task.start(true)
+  })
+  await task.done
+  assert.equal(task.phase, mismatch ? 'blocked' : 'completed')
+  assert.equal(locks.action.taskId, 'parent-gather')
+  assert.equal(locks.action.outcome, 'completed')
+  assert.equal(events.filter(event => event.type === 'supply_progress').length, 0)
+  assert.equal(task.snapshot().inventoryClean, true)
+  const owner = locks.action
+  parent.release('blocked', 'Parent still decides its final outcome')
+  await owner.done
+  assert.equal(locks.action, null)
+})

@@ -171,6 +171,37 @@ class SupplyProgress(BaseModel):
         return f"{label}：{facts}；{cleanup}。"
 
 
+class GatherProgress(BaseModel):
+    """采集只认可新入包、返程与交付事实，方块挖掉不代表资源到手。"""
+
+    id: str = Field(min_length=1)
+    action_id: str = Field(alias="actionId", min_length=1)
+    phase: Literal["running", "completed", "blocked", "cancelled", "interrupted"]
+    item: str = Field(pattern=r"^[a-z0-9_]+$")
+    requested: int = Field(ge=1)
+    dug: int = Field(ge=0)
+    gained: int = Field(ge=0)
+    deposited: int = Field(ge=0)
+    deposit_requested: bool = Field(alias="depositRequested")
+    returned: bool
+    inventory_clean: bool = Field(alias="inventoryClean")
+
+    def announcement(self) -> str | None:
+        if self.phase == "running":
+            return None
+        complete = (self.phase == "completed" and self.gained >= self.requested and self.returned
+                    and self.inventory_clean and (not self.deposit_requested or self.deposited >= self.gained))
+        label = "采集任务已完成" if complete else {
+            "cancelled": "采集任务已取消", "interrupted": "采集任务已中断",
+        }.get(self.phase, "采集任务受阻，已停止")
+        name = {"cobblestone": "圆石", "oak_log": "橡木原木", "birch_log": "白桦原木"}.get(self.item, self.item)
+        returned = "已回到出发点" if self.returned else "尚未确认回到出发点"
+        delivery = f"；确认存入指定箱子 {self.deposited} 个" if self.deposit_requested else ""
+        cleanup = "" if self.inventory_clean else "；临时物品收尾尚未确认"
+        return (f"{label}：确认挖掉 {self.dug} 个方块，新入包 {self.gained}/{self.requested} 个{name}"
+                f"；{returned}{delivery}{cleanup}。")
+
+
 class ActionOrigin(BaseModel):
     """宿主生成的动作来源，用于区分新请求与停止前的迟到事件。"""
 

@@ -41,6 +41,7 @@ from .protocol import (
     ConnectionStatus,
     EventBatch,
     GameEvent,
+    GatherProgress,
     MineProgress,
     PlayerChat,
     ProductionProgress,
@@ -226,7 +227,7 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             scope=build_entity_scope("group", "minecraft", cfg.server_id),
         )
         args: dict[str, Any] = {
-            "types": ["__anelf_cursor__"] if self._cursor is None else ["chat", "whisper", "mine_progress", "survival_progress", "production_progress", "supply_progress"],
+            "types": ["__anelf_cursor__"] if self._cursor is None else ["chat", "whisper", "mine_progress", "survival_progress", "production_progress", "supply_progress", "gather_progress"],
             "limit": 32,
         }
         if self._cursor is not None:
@@ -248,10 +249,11 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
         if event.type == "survival_progress":
             self._survival.event(event.data)
             return
-        if event.type in {"mine_progress", "production_progress", "supply_progress"}:
+        if event.type in {"mine_progress", "production_progress", "supply_progress", "gather_progress"}:
             try:
                 progress = (MineProgress.model_validate(event.data) if event.type == "mine_progress"
                             else SupplyProgress.model_validate(event.data) if event.type == "supply_progress"
+                            else GatherProgress.model_validate(event.data) if event.type == "gather_progress"
                             else ProductionProgress.model_validate(event.data))
             except ValidationError:
                 log(f"Minecraft 忽略非法任务进度事件: type={event.type} seq={event.seq}", "WARNING", tag="Minecraft")

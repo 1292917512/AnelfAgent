@@ -134,6 +134,40 @@ async def test_supply_without_evidence_is_ignored(channel: MinecraftChannel, mon
     announce.assert_not_awaited()
 
 
+@pytest.mark.parametrize("phase,gained,returned,deposited,expected", [
+    ("completed", 2, True, 2, "采集任务已完成"),
+    ("completed", 0, True, 0, "采集任务受阻"),
+    ("completed", 2, False, 2, "采集任务受阻"),
+    ("completed", 2, True, 0, "采集任务受阻"),
+    ("cancelled", 1, False, 0, "采集任务已取消"),
+])
+async def test_gather_requires_receipt_return_and_requested_delivery(
+    channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch,
+    phase: str, gained: int, returned: bool, deposited: int, expected: str,
+) -> None:
+    announce, inbound = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(channel, "_announce_reflex", announce)
+    monkeypatch.setattr(channel, "on_message", inbound)
+    data = {"id": "gather", "actionId": "gather-action", "phase": phase, "dug": 2,
+            "item": "cobblestone", "gained": gained, "requested": 2, "returned": returned,
+            "depositRequested": True, "deposited": deposited, "inventoryClean": True}
+    for seq in (1, 2):
+        await channel._dispatch_event(GameEvent(seq=seq, ts=1000, type="gather_progress", data=data))
+    announce.assert_awaited_once()
+    assert expected in announce.call_args.args[0]
+    assert f"新入包 {gained}/2" in announce.call_args.args[0]
+    inbound.assert_not_awaited()
+
+
+async def test_gather_without_evidence_is_ignored(channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch) -> None:
+    announce = AsyncMock()
+    monkeypatch.setattr(channel, "_announce_reflex", announce)
+    await channel._dispatch_event(GameEvent(seq=1, ts=1000, type="gather_progress", data={
+        "id": "gather", "actionId": "action", "phase": "completed",
+    }))
+    announce.assert_not_awaited()
+
+
 def test_reply_policy_uses_configured_server_and_requires_delegation(channel: MinecraftChannel) -> None:
     channel.get_config().mcp_server = "game-test"
     policy = channel.reply_policy

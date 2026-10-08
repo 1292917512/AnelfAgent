@@ -37,7 +37,7 @@ function snapshot () {
   return { at: Date.now(), test: current, position: p ? { x: p.x, y: p.y, z: p.z } : null,
     health: bot?.health, oxygen: bot?.oxygenLevel, food: bot?.food,
     controls: bot ? { ...bot.controlState } : {}, survival: ctx?.locks.survival.status(), action: ctx?.locks.status(),
-    inventory: (current.startsWith('production_') || current.startsWith('supply_')) && bot?.inventory ? {
+    inventory: (current.startsWith('production_') || current.startsWith('supply_') || current.startsWith('gather_')) && bot?.inventory ? {
       items: bot.inventory.items().map(item => ({ name: item.name, count: item.count, slot: item.slot })),
       window: bot.currentWindow?.type ?? bot.inventory.type,
       cursor: (bot.currentWindow ?? bot.inventory).selectedItem,
@@ -182,14 +182,14 @@ async function main () {
     return found
   }
   const push = ctx.locks.events.push.bind(ctx.locks.events)
-  ctx.locks.events.push = (type, data) => { if (['survival_progress', 'action_progress', 'production_progress', 'supply_progress'].includes(type)) events.push({ at: Date.now(), test: current, type, data }); return push(type, data) }
+  ctx.locks.events.push = (type, data) => { if (['survival_progress', 'action_progress', 'production_progress', 'supply_progress', 'gather_progress'].includes(type)) events.push({ at: Date.now(), test: current, type, data }); return push(type, data) }
   sampling = setInterval(() => samples.push(snapshot()), 100)
   const has = (start, kind, phase) => events.slice(start).some(event => event.type === 'survival_progress' && event.data.kind === kind && event.data.phase === phase)
   const selected = option('--case')
   const suite = option('--suite') || 'survival'
-  assert.ok(['survival', 'production', 'supply', 'all'].includes(suite), `Unknown suite: ${suite}`)
+  assert.ok(['survival', 'production', 'supply', 'gather', 'all'].includes(suite), `Unknown suite: ${suite}`)
   const test = (name, work) => (!selected || selected === name) &&
-    (suite === 'all' || (name.startsWith('production_') ? 'production' : name.startsWith('supply_') ? 'supply' : 'survival') === suite) ? scenario(name, work) : Promise.resolve()
+    (suite === 'all' || (name.startsWith('production_') ? 'production' : name.startsWith('supply_') ? 'supply' : name.startsWith('gather_') ? 'gather' : 'survival') === suite) ? scenario(name, work) : Promise.resolve()
 
   await test('water_surface_and_remain_safe', async start => {
     await call('configure_survival', { enabled: false, intervalMs: 250 })
@@ -287,6 +287,7 @@ async function main () {
     await assert.rejects(call('look_at', { x: 1, y: 65, z: 0 }, old), /CANCELLED|interrupted/)
   })
   await require('./live-production.cjs')({ test, call, command, waitFor, bot, ctx, username, metadata })
+  await require('./live-gather.cjs')({ test, call, command, waitFor, bot, ctx, username, metadata, onReconnect: connected => { bot = connected } })
   await require('./live-supply.cjs')({ test, call, command, waitFor, bot, ctx, username, metadata })
   assert.ok(results.length, `Unknown test case: ${selected}`)
 }
