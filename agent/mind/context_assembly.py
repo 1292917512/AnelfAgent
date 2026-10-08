@@ -569,6 +569,17 @@ class ContextAssembly:
             return []
         return [{"role": "system", "content": inp.tools_text}]
 
+    @context_block("channel_policy", VOL_SESSION + 4, "当前频道操作规则")
+    def _blk_channel_policy(self, inp: ContextInput) -> List[Dict]:
+        """频道规则在历史之后注入，不依赖技能召回命中。"""
+        from agent.channel.reply_policy import get_reply_policy
+
+        policy = get_reply_policy(inp.adapter_key, self._channel_manager)
+        if not policy.instructions:
+            return []
+        return [{"role": "system", "content": policy.instructions,
+                 "_source": {"origin": "channel_policy"}}]
+
     @context_block("context", VOL_TAIL_HEAD, "动态便签 + 文件索引（尾部动态区最前）")
     def _blk_notes(self, inp: ContextInput) -> List[Dict]:
         """context 层：动态便签 + 文件索引（尾部动态区最稳定的内容，放最前）。

@@ -59,6 +59,7 @@ from core.entity import BaseEntity, EntityType
 from core.log import log
 
 from .channel_types import ChannelCapability, ChannelStatus, _err, _ok
+from .reply_policy import ReplyPolicy
 from .schemas import (
     AdapterChannel,
     ChannelInfo,
@@ -66,6 +67,7 @@ from .schemas import (
     ChannelUser,
     CommandResponse,
     HealthStatus,
+    SegmentType,
     SendRequest,
     SendResponse,
     SendSegment,
@@ -184,6 +186,11 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
 
     # 频道列表展示排序权重（越小越靠前，默认 100），频道自声明
     display_order: int = 100
+
+    @property
+    def reply_policy(self) -> ReplyPolicy:
+        """本频道的回复路由与操作规则。"""
+        return ReplyPolicy()
 
     # 子类必填：配置类
     _Configs: ClassVar[Type[ChannelConfig]] = ChannelConfig
@@ -414,7 +421,7 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
         """发送文本消息。"""
         req = self._build_send_request(
             chat_id,
-            [SendSegment(type="text", content=text)],
+            [SendSegment(type=SegmentType.TEXT, content=text)],
             reply_to=reply_to,
             parse_mode=parse_mode,
             silent=silent,
@@ -435,7 +442,7 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
     ) -> str:
         req = self._build_send_request(
             chat_id,
-            [SendSegment(type="image", file_path=photo, caption=caption)],
+            [SendSegment(type=SegmentType.IMAGE, file_path=photo, caption=caption)],
             **kwargs,
         )
         resp = await self.forward_message(req)
@@ -447,7 +454,7 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
     ) -> str:
         req = self._build_send_request(
             chat_id,
-            [SendSegment(type="video", file_path=video, caption=caption)],
+            [SendSegment(type=SegmentType.VIDEO, file_path=video, caption=caption)],
             **kwargs,
         )
         resp = await self.forward_message(req)
@@ -459,7 +466,7 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
     ) -> str:
         req = self._build_send_request(
             chat_id,
-            [SendSegment(type="audio", file_path=audio, caption=caption)],
+            [SendSegment(type=SegmentType.AUDIO, file_path=audio, caption=caption)],
             **kwargs,
         )
         resp = await self.forward_message(req)
@@ -470,7 +477,7 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
     ) -> str:
         req = self._build_send_request(
             chat_id,
-            [SendSegment(type="voice", file_path=voice, caption=caption)],
+            [SendSegment(type=SegmentType.VOICE, file_path=voice, caption=caption)],
             **kwargs,
         )
         resp = await self.forward_message(req)
@@ -481,7 +488,7 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
     ) -> str:
         req = self._build_send_request(
             chat_id,
-            [SendSegment(type="file", file_path=file_path, caption=caption)],
+            [SendSegment(type=SegmentType.FILE, file_path=file_path, caption=caption)],
             **kwargs,
         )
         resp = await self.forward_message(req)
@@ -679,7 +686,7 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
         )
         return self._build_send_request(
             chat_id="",  # 由 approval/gate.py 填充
-            segments=[SendSegment(type="text", content=text)],
+            segments=[SendSegment(type=SegmentType.TEXT, content=text)],
             extra={"approval_request_id": ctx.request_id},
         )
 

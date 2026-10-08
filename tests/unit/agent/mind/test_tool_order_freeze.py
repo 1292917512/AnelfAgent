@@ -178,6 +178,31 @@ class TestReflectToolSchemas:
         finally:
             tool_activation.clear_scope(scope)
 
+    async def test_explicit_selector_wakes_only_its_catalog_and_keeps_gate(self, monkeypatch) -> None:
+        from core.entity import EntityRegistry
+
+        ta = ToolAssembly()
+        assert "ra_sleep" in _names(await ta.get_reflect_tool_schemas(scope="worker", selectors=["g_sleep"]))
+        assert "ra_sleep" not in _names(await ta.get_reflect_tool_schemas(scope="other"))
+        original = EntityRegistry.get_active_tools
+
+        async def gated(names):
+            return [item for item in await original(names) if item.name != "ra_sleep"]
+
+        monkeypatch.setattr(EntityRegistry, "get_active_tools", gated)
+        assert "ra_sleep" not in _names(await ta.get_reflect_tool_schemas(scope="worker", selectors=["g_sleep"]))
+
+    async def test_channel_policy_wakes_tools_without_leaking_to_other_scope(self, monkeypatch) -> None:
+        from agent.channel.reply_policy import ReplyPolicy
+
+        monkeypatch.setattr(
+            "agent.channel.reply_policy.get_reply_policy",
+            lambda adapter, manager=None: ReplyPolicy(tool_groups=("g_sleep",)) if adapter == "game" else ReplyPolicy(),
+        )
+        ta = ToolAssembly()
+        assert "ra_sleep" in _names(await ta.get_active_tool_schemas(adapter_key="game", scope="game:1"))
+        assert "ra_sleep" not in _names(await ta.get_active_tool_schemas(adapter_key="webui", scope="webui:1"))
+
     async def test_discovered_tools_included(self) -> None:
         """list_entity_methods 动态发现的工具在重建后保留。"""
         ta = ToolAssembly()
