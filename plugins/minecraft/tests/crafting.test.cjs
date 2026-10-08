@@ -34,7 +34,7 @@ function loadPlugin (originalPath, override) {
 const injectInventory = loadPlugin(inventoryPath, process.env.MINECRAFT_INVENTORY_SOURCE)
 const injectCraft = loadPlugin(craftPath, process.env.MINECRAFT_CRAFT_SOURCE)
 
-function makeBot ({ table = false, responsive = true } = {}) {
+function makeBot ({ table = false, responsive = true, resyncStaleClicks = false } = {}) {
   const bot = new EventEmitter()
   bot.registry = registry
   bot.version = '26.1'
@@ -96,6 +96,7 @@ function makeBot ({ table = false, responsive = true } = {}) {
     if (!responsive) return
     setImmediate(() => {
       if (sync) return sendAll()
+      const stale = resyncStaleClicks && packet.stateId !== stateId
       if (packet.slot === -999 && packet.mode === 0 && server.selectedItem) dropped.push(server.selectedItem)
       const previous = server.slots[0]
       const takingResult = packet.slot === 0 && previous
@@ -114,6 +115,7 @@ function makeBot ({ table = false, responsive = true } = {}) {
       if (!Item.equal(previous, result, true)) {
         bot._client.emit('set_slot', { windowId: server.id, stateId: ++stateId, slot: 0, item: Item.toNotch(result) })
       }
+      if (stale) sendAll()
     })
   }
 
@@ -356,6 +358,19 @@ test('placement does not turn a server refusal into success', async () => {
 })
 
 const { restoreCrafting, prepareDisconnect } = require('../runtime/inventory-safety.cjs')
+
+test('craft synchronizes before clicking when preceding world changes made the inventory state id stale', async () => {
+  const { bot, server, seed, id, dropped } = makeBot({ resyncStaleClicks: true })
+  seed('oak_log', 2)
+  const recipe = bot.recipesFor(id('oak_planks'), null, 1, null)[0]
+  await bot.craft(recipe, 1)
+  assert.equal(server.count(id('oak_planks'), null), 4)
+  assert.equal(bot.inventory.count(id('oak_planks'), null), 4)
+  assert.equal(server.count(id('oak_log'), null), 1)
+  assert.equal(server.selectedItem, null)
+  assert.ok(server.slots.slice(0, 5).every(item => item === null))
+  assert.deepEqual(dropped, [])
+})
 
 test('failed 2x2 crafting restores the cursor and partial ingredients before returning', async () => {
   const { bot, server, seed, id, dropped } = makeBot()

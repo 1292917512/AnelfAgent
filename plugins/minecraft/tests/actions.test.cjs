@@ -395,6 +395,8 @@ test('stop tool reports pending cleanup and observations still work', async t =>
 
 test('timed-out crafting keeps ownership until real inventory work settles', async t => {
   const { locks, bot, tool } = await fixture(t)
+  bot._syncWindow = async () => {}
+  bot.inventory = { type: 'minecraft:inventory', selectedItem: null, slots: Array(46).fill(null) }
   const gate = deferred(), entered = deferred()
   const run = tool('craft_item', async () => {
     void inventorySafety.runCraft(bot, () => gate.promise)

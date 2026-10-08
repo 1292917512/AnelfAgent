@@ -82,7 +82,19 @@ async function runCraft (bot, action) {
   const state = stateFor(bot)
   if (state.closing) throw new Error('Bot is disconnecting; no new crafting is accepted')
   if (state.active) throw new Error('Previous crafting operation is still running')
-  const task = Promise.resolve().then(() => { checkCraft(bot); return action() }).catch(async error => {
+  const task = Promise.resolve().then(async () => {
+    checkCraft(bot)
+    // Placement/equipment acknowledgements may follow the block update that completed the prior step.
+    await bot._syncWindow(bot.currentWindow || bot.inventory)
+    checkCraft(bot)
+    const result = await action()
+    const window = bot.currentWindow || bot.inventory
+    const inputs = window.type === 'minecraft:crafting' ? 9 : window.type === 'minecraft:inventory' ? 4 : 0
+    if (window.selectedItem || window.slots.slice(0, inputs + 1).some(Boolean)) {
+      throw new Error('Craft finished with unconfirmed cursor or grid contents')
+    }
+    return result
+  }).catch(async error => {
     try {
       await restoreCrafting(bot, state.signal)
     } catch (recoveryError) {
