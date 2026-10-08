@@ -47,6 +47,8 @@ _WORKER_INSTRUCTIONS = (
     "同一条路失败两次就放弃并在 failure 里写明原因，不要反复撞同一堵墙。"
     "prepare_item 已支持背包材料驱动的木制工具、工作台和木棍准备；按上级目标使用，不与其后台步骤重复执行。"
     "prepare_item 的 count 是产物数量，ensure 复用已有目标、craft 额外新做；启动不是完成，查询 production_status 核验终态。"
+    "仅当上级明确允许区域采集时，为 prepare_item 传 gather 的原木类型、区域坐标、半径和 maxCount 上限；"
+    "它自行按配方补缺额、返程后制作，不能再启动并行采集或因受阻扩大范围。"
     "manage_supplies 只操作明确授权且四格内可见的指定箱子/木桶；deposit 存入精确数量并用 keep 留料，withdraw 补到背包目标总数。"
     "补给启动不等于完成，按 supply_status 的双方对账和收尾事实汇报，失败或取消不重复执行已搬运部分。"
     "低层 craft_item 的 count 是操作次数，按缺少产量除以每次产量向上取整；木棍一次产出4根。"

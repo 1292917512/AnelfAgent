@@ -71,6 +71,41 @@ test('ensure, additional crafting and recipe output batches have distinct quanti
   assert.equal(craft.required, 8)
 })
 
+test('deficit planning uses real recipes and supplements only missing logs without mutating inventory', async () => {
+  const { planPreparation } = await load('tools/anelf-preparation-plan.mjs')
+  for (const [items, hasTable, expected] of [
+    [[], false, 3], [[['oak_log', 1]], false, 2], [[['oak_log', 2]], false, 1], [[['oak_log', 3]], false, 0],
+    [[], true, 2], [[['crafting_table', 1], ['stick', 2], ['oak_planks', 3]], false, 0],
+  ]) {
+    const bot = inventoryBot(items), before = bot.inventory.items().map(item => [item.name, item.count])
+    const result = await planPreparation(bot, { item: 'wooden_pickaxe', count: 1, mode: 'craft',
+      gather: { block: 'oak_log', maxCount: 8 } }, hasTable, () => {})
+    assert.equal(result.amount, expected)
+    assert.deepEqual(bot.inventory.items().map(item => [item.name, item.count]), before)
+  }
+})
+
+test('gathering authorization limits, reuse and recipe batch outputs survive deficit planning', async () => {
+  const { planPreparation } = await load('tools/anelf-preparation-plan.mjs')
+  const order = { item: 'wooden_pickaxe', count: 1, mode: 'craft', gather: { block: 'birch_log', maxCount: 2 } }
+  await assert.rejects(planPreparation(inventoryBot([]), order, false, () => {}), /authorized 2 birch_log/)
+  const existing = inventoryBot([['wooden_pickaxe', 1]])
+  assert.equal((await planPreparation(existing, { ...order, mode: 'ensure' }, false, () => {})).amount, 0)
+  const additional = await planPreparation(existing, { ...order, gather: { block: 'birch_log', maxCount: 3 } }, false, () => {})
+  assert.equal(additional.amount, 3); assert.equal(additional.plan.required, 2)
+  const sticks = await planPreparation(inventoryBot([]), { ...order, item: 'stick', count: 5 }, false, () => {})
+  assert.equal(sticks.amount, 1)
+  assert.equal(sticks.plan.steps.at(-1).operations, 2)
+})
+
+test('deficit search remains cancellable between unsuccessful recipe probes', async () => {
+  const { planPreparation } = await load('tools/anelf-preparation-plan.mjs')
+  let checked = 0
+  await assert.rejects(planPreparation(inventoryBot([]), { item: 'wooden_pickaxe', count: 1, mode: 'craft',
+    gather: { block: 'oak_log', maxCount: 8 } }, false, () => { if (++checked === 2) throw new Error('cancelled search') }), /cancelled search/)
+  assert.equal(checked, 2)
+})
+
 async function taskFixture (t, craft) {
   const { ActionController } = await load('bot/anelf-actions.mjs')
   const { ProductionTask } = await load('tools/anelf-production-task.mjs')
@@ -139,4 +174,58 @@ test('background cancellation retains ownership until the real craft drains and 
   assert.equal(locks.action, null)
   bot.inventory.updateSlot(9, null)
   assert.equal(task.snapshot().available, 4, 'Past results must not drift with later inventory')
+})
+
+for (const failed of [false, true]) test(`nested production preserves parent identity and outcome (failed=${failed})`, async t => {
+  const { task, locks, events } = await taskFixture(t, async bot => {
+    if (failed) throw new Error('Recipe failed')
+    bot.inventory.updateSlot(9, new Item(registry.itemsByName.stick.id, 4))
+  })
+  let parent
+  await locks.run('prepare_item', 1, () => {
+    parent = locks.begin('prepare_item'); locks.linkTask('composed-preparation', 'world')
+    return task.start(true)
+  })
+  await task.done
+  assert.equal(task.phase, failed ? 'blocked' : 'completed')
+  assert.equal(locks.action.taskId, 'composed-preparation')
+  assert.equal(locks.action.outcome, 'completed')
+  assert.equal(events.filter(event => event.type === 'production_progress').length, 0)
+  const owner = locks.action; parent.release('blocked'); await owner.done
+  assert.equal(locks.action, null)
+})
+
+test('stop at the gather-to-craft boundary cannot start dependent production or publish a child completion', async t => {
+  const { PreparationTask } = await load('tools/anelf-preparation-task.mjs')
+  const { GatherTask } = await load('tools/anelf-gather-task.mjs')
+  const { ActionController } = await load('bot/anelf-actions.mjs')
+  const Block = deps('prismarine-block')(registry)
+  const bot = inventoryBot([])
+  bot.entity = { position: new Vec3(0.5, 64, 0.5) }
+  bot.health = bot.food = 20; bot.game = { dimension: 'overworld' }; bot.username = 'Test'
+  bot.findBlocks = () => [new Vec3(2, 64, 0)]
+  bot.blockAt = p => { const block = Block.fromStateId(registry.blocksByName.crafting_table.defaultState, 0); block.position = p; return block }
+  bot.canSeeBlock = () => true
+  bot.pathfinder = { setGoal () {} }; bot.stopDigging = bot.clearControlStates = () => {}
+  bot.craft = () => assert.fail('Cancelled gathering must not start crafting')
+  const events = [], ctx = { manager: { botOrNull: () => bot, statusReport: () => ({}) }, events: { push: (type, data) => events.push({ type, data }) } }
+  ctx.locks = new ActionController(ctx.events); ctx.locks.attach(bot)
+  const original = GatherTask.prototype.start
+  GatherTask.prototype.start = function (nested) {
+    assert.equal(nested, true)
+    const child = this.locks.begin('gather_resources')
+    bot.inventory.updateSlot(9, new Item(registry.itemsByName.oak_log.id, this.order.count))
+    this.phase = 'completed'; this.gained = this.order.count; this.returned = true; this.finishedAt = Date.now()
+    this.done = Promise.resolve().then(() => { ctx.locks.cancelAll(); child.release() })
+    return this.snapshot()
+  }
+  t.after(() => { GatherTask.prototype.start = original; ctx.locks.metrics.close(); bot.emit('end') })
+  const task = new PreparationTask(ctx, bot, { item: 'wooden_pickaxe', count: 1, mode: 'craft',
+    gather: { block: 'oak_log', x: 4, y: 64, z: 0, radius: 3, maxCount: 8 } })
+  await ctx.locks.run('prepare_item', 1, () => task.start()); await task.done
+  assert.equal(task.phase, 'cancelled'); assert.equal(task.production, null)
+  assert.equal(ctx.locks.action, null)
+  const terminals = events.filter(event => ['production_progress', 'gather_progress'].includes(event.type))
+  assert.equal(terminals.length, 1); assert.equal(terminals[0].data.id, task.id)
+  assert.equal(task.snapshot().inventoryClean, true)
 })

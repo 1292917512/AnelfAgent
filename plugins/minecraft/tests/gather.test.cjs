@@ -11,6 +11,25 @@ const load = name => import(pathToFileURL(path.join(root, 'node_modules/awesome-
 const solid = { name: 'stone', boundingBox: 'block', shapes: [[0, 0, 0, 1, 1, 1]] }
 const air = { name: 'air', boundingBox: 'empty', shapes: [] }
 
+test('real face rays accept exposed trunk faces while rejecting fully hidden blocks and unknown eyes', async () => {
+  const { reachableFace } = await load('tools/anelf-gather-navigation.mjs')
+  const registry = deps('prismarine-registry')('26.1')
+  const World = deps('prismarine-world')(registry), Chunk = deps('prismarine-chunk')(registry)
+  const world = new World().sync; world.setColumn(0, 0, new Chunk())
+  const set = (x, y, z, name) => world.setBlockStateId(new Vec3(x, y, z), registry.blocksByName[name].defaultState)
+  const bot = { entity: { eyeHeight: 1.62 }, world }
+  const feet = new Vec3(3.5, 64, 3.5), target = new Vec3(4, 64, 3)
+  set(4, 64, 3, 'oak_log'); set(4, 65, 3, 'oak_log')
+  const eye = feet.offset(0, 1.62, 0)
+  const centerHit = world.raycast(eye, target.offset(0.5, 0.5, 0.5).minus(eye).normalize(), 4)
+  assert.equal(centerHit.position.y, 65, 'The old center ray sees the upper trunk')
+  assert.equal(reachableFace(bot, target, feet), true, 'The lower west face is still exposed')
+  for (let y = 64; y <= 66; y++) for (let z = 1; z <= 5; z++) set(5, y, z, 'stone')
+  set(6, 64, 3, 'oak_log')
+  assert.equal(reachableFace(bot, new Vec3(6, 64, 3), feet), false)
+  assert.equal(reachableFace({ ...bot, entity: {} }, target, feet), false)
+})
+
 async function navigation () {
   const { GatherNavigation } = await load('tools/anelf-gather-navigation.mjs')
   const bot = new EventEmitter()

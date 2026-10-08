@@ -61,7 +61,7 @@ _REQUIRED_PARAMS = {
     "get_events": {"since", "types", "limit"},
     "mine_resources": {"direction", "depth", "minY", "length", "item", "count"},
     "configure_survival": {"enabled", "intervalMs"},
-    "prepare_item": {"item", "count", "mode"},
+    "prepare_item": {"item", "count", "mode", "gather"},
     "manage_supplies": {"x", "y", "z", "deposit", "withdraw"},
     "gather_resources": {"x", "y", "z", "block", "count", "radius", "chest", "withdraw", "deposit"},
 }

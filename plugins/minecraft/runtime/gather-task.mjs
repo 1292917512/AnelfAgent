@@ -9,7 +9,7 @@ import { ToolError } from '../util/errors.js'
 import { itemCount } from './anelf-production-plan.mjs'
 import { inventoryClean } from './anelf-production-task.mjs'
 import { SupplyTask } from './anelf-supply-task.mjs'
-import { GatherNavigation } from './anelf-gather-navigation.mjs'
+import { GatherNavigation, reachableFace } from './anelf-gather-navigation.mjs'
 
 export const resources = /** @type {const} */ ({ stone: 'cobblestone', cobblestone: 'cobblestone',
   oak_log: 'oak_log', birch_log: 'birch_log', spruce_log: 'spruce_log', jungle_log: 'jungle_log',
@@ -49,10 +49,14 @@ export class GatherTask {
       startedAt: this.startedAt, finishedAt: this.finishedAt }
   }
 
-  start () {
+  /** Internal composition keeps the parent task id and sends no separate terminal event.
+   * @param {boolean} [nested]
+   */
+  start (nested = false) {
     const handle = this.locks.begin('gather_resources')
-    this.actionId = handle.actionId; this.locks.linkTask(this.id, this.world)
-    this.done = this.execute(handle)
+    this.actionId = handle.actionId
+    if (!nested) this.locks.linkTask(this.id, this.world)
+    this.done = this.execute(handle, nested)
     return this.snapshot()
   }
 
@@ -79,8 +83,8 @@ export class GatherTask {
     if (result.phase !== 'completed') throw new Error(`GATHER_SUPPLY_FAILED: ${result.reason}`)
   }
 
-  /** @param {GatherNavigation} navigation */
-  async candidate (navigation) {
+  /** @param {GatherNavigation} navigation @param {Set<string>} [tried] */
+  async candidate (navigation, tried = new Set()) {
     const center = new Vec3(this.order.x, this.order.y, this.order.z)
     const positions = this.bot.findBlocks({ matching: this.bot.registry.blocksByName[this.order.block].id,
       point: center, maxDistance: this.order.radius, count: 64 })
@@ -97,24 +101,41 @@ export class GatherTask {
       stands.sort((a, b) => a.distanceTo(this.bot.entity.position) - b.distanceTo(this.bot.entity.position))
       for (const stand of stands) {
         this.check(navigation.signal)
+        if (tried.has(`${safety.key(p)}|${safety.key(stand)}`) || !reachableFace(this.bot, p, stand.offset(0.5, 0, 0.5))) continue
         if (await navigation.reachable(this.bot.entity.position, stand) && await navigation.reachable(stand, this.entry)) return { block, stand }
       }
     }
     throw new Error('GATHER_NO_TARGET: No permitted target with a level walking and return route; buried blocks require a mine task.')
   }
 
+  /** Verify actual arrival sightlines; bounded alternatives handle off-center pathfinder arrival.
+   * @param {GatherNavigation} navigation @param {AbortSignal} signal
+   */
+  async approach (navigation, signal) {
+    const tried = new Set()
+    for (let attempt = 0; attempt < 8; attempt++) {
+      this.check(signal); this.stage = 'searching'
+      const { block, stand } = await this.candidate(navigation, tried)
+      tried.add(`${safety.key(block.position)}|${safety.key(stand)}`)
+      this.stage = 'walking'; await navigation.walk(stand); this.check(signal)
+      if (this.bot.blockAt(block.position)?.type !== block.type || !safety.canHarvestBlock(this.bot, block)) {
+        throw new Error('GATHER_TARGET_CHANGED: Target changed or became unsafe before digging.')
+      }
+      if (reachableFace(this.bot, block.position, this.bot.entity.position)) return block
+    }
+    throw new Error('GATHER_NO_SIGHT: No visible harvest face after bounded safe standing attempts.')
+  }
+
   /** @param {GatherNavigation} navigation @param {AbortSignal} signal */
   async collectOne (navigation, signal) {
     this.check(signal)
     if (this.bot.inventory.emptySlotCount() < 2) throw new Error('GATHER_FULL: Keep two inventory slots free.')
-    this.stage = 'searching'
-    const { block, stand } = await this.candidate(navigation)
-    this.stage = 'walking'; await navigation.walk(stand); this.check(signal)
-    if (this.bot.blockAt(block.position)?.type !== block.type || !this.bot.canSeeBlock(block) || !safety.canHarvestBlock(this.bot, block)) {
-      throw new Error('GATHER_TARGET_CHANGED: Target is changed, hidden or unsafe; stopped before digging.')
-    }
+    const block = await this.approach(navigation, signal)
     await this.bot.tool.equipForBlock(block, { requireHarvest: true, getFromChest: false })
     this.check(signal)
+    if (this.bot.blockAt(block.position)?.type !== block.type || !reachableFace(this.bot, block.position, this.bot.entity.position) || !safety.canHarvestBlock(this.bot, block)) {
+      throw new Error('GATHER_TARGET_CHANGED: Target or sightline changed during tool selection; stopped before digging.')
+    }
     const held = this.bot.heldItem
     if (!block.canHarvest(held?.type ?? null)) throw new Error('GATHER_TOOL: No suitable harvesting tool.')
     if (held) {
@@ -144,8 +165,8 @@ export class GatherTask {
     if (this.available <= before) throw new Error('GATHER_NO_PICKUP: Block removed but no matching inventory gain; remaining excavation stopped.')
   }
 
-  /** @param {ReturnType<ActionController['begin']>} handle */
-  async execute (handle) {
+  /** @param {ReturnType<ActionController['begin']>} handle @param {boolean} nested */
+  async execute (handle, nested) {
     const navigation = new GatherNavigation(this.bot, this.entry, handle.signal)
     try {
       await yieldFrame(); this.check(handle.signal)
@@ -176,10 +197,11 @@ export class GatherTask {
       this.clean = inventoryClean(this.bot)
       if (!this.clean && this.phase === 'completed') { this.phase = 'blocked'; this.reason = 'GATHER_INVENTORY: Inventory cleanup was not confirmed.' }
       const owner = this.locks.action
-      handle.release(this.phase, this.reason)
-      if (owner?.id === this.actionId) await owner.done
+      if (nested) handle.release()
+      else handle.release(this.phase, this.reason)
+      if (!nested && owner?.id === this.actionId) await owner.done
       this.finishedAt = Date.now()
-      this.ctx.events.push('gather_progress', this.snapshot())
+      if (!nested) this.ctx.events.push('gather_progress', this.snapshot())
     }
   }
 }

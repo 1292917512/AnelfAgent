@@ -41,6 +41,17 @@ export function findTable (bot) {
 /** @param {Bot} bot @returns {Map<string,number>} */
 function inventory (bot) { return new Map(bot.inventory.items().map(item => [item.name, itemCount(bot, item.name)])) }
 
+/** Check recovery room and facility placement before any gathering or crafting.
+ * @param {Bot} bot @param {Plan} plan
+ */
+export function validateProductionSpace (bot, plan) {
+  if (!inventoryClean(bot)) throw new ToolError('BUSY', 'Close other windows and recover the cursor/crafting grid before production.')
+  if (plan.steps.length && bot.inventory.emptySlotCount() < 2) throw new ToolError('INVENTORY_FULL_NO_CHEST', 'Keep at least two empty inventory slots for intermediate output and safe recovery; nothing was consumed.')
+  if (plan.steps.some(step => step.kind === 'place_table') && !workbenchPlacementHints(bot).length) {
+    throw new ToolError('FORBIDDEN', 'No safe workbench space within reach; nothing was consumed. Move to an open, supported position.')
+  }
+}
+
 export class ProductionTask {
   /** @param {Context} ctx @param {Bot} bot @param {Plan} plan @param {Block|null} table */
   constructor (ctx, bot, plan, table) {
@@ -85,16 +96,19 @@ export class ProductionTask {
       startedAt: this.startedAt, finishedAt: this.finishedAt }
   }
 
-  start () {
+  /** Nested work publishes through its parent, retaining ownership until all stages finish.
+   * @param {boolean} [nested]
+   */
+  start (nested = false) {
     const handle = this.locks.begin('prepare_item')
     this.actionId = handle.actionId
-    this.locks.linkTask(this.id, this.world)
-    this.done = this.execute(handle)
+    if (!nested) this.locks.linkTask(this.id, this.world)
+    this.done = this.execute(handle, nested)
     return this.snapshot()
   }
 
-  /** @param {ReturnType<ActionController['begin']>} handle */
-  async execute (handle) {
+  /** @param {ReturnType<ActionController['begin']>} handle @param {boolean} nested */
+  async execute (handle, nested) {
     const budget = new AbortController()
     const timer = setTimeout(() => budget.abort(new ToolError('TIMEOUT', 'Production time budget reached; inventory cleanup is still required.')), 120000)
     const signal = AbortSignal.any([handle.signal, budget.signal])
@@ -168,10 +182,11 @@ export class ProductionTask {
         this.reason += ' Inventory cleanup is not confirmed; inspect cursor/grid before further work.'
       }
       const owner = this.locks.action
-      handle.release(this.phase, this.reason)
-      if (owner?.id === this.actionId) await owner.done
+      if (nested) handle.release()
+      else handle.release(this.phase, this.reason)
+      if (!nested && owner?.id === this.actionId) await owner.done
       this.finishedAt = Date.now()
-      this.ctx.events.push('production_progress', this.snapshot())
+      if (!nested) this.ctx.events.push('production_progress', this.snapshot())
     }
   }
 

@@ -98,6 +98,21 @@ class MineProgress(BaseModel):
         return f"{label}：通道推进 {self.steps} 格，确认挖掉 {self.dug} 个方块，背包净增加 {self.gained} 个 {self.item}；{returned}。"
 
 
+class PreparationGatherProgress(BaseModel):
+    """制作的采集前置步骤必须同时确认数量、返程和收尾。"""
+
+    phase: Literal["running", "completed", "blocked", "cancelled", "interrupted"]
+    item: str = Field(pattern=r"^[a-z0-9_]+$")
+    requested: int = Field(ge=1)
+    gained: int = Field(ge=0)
+    returned: bool
+    inventory_clean: bool = Field(alias="inventoryClean")
+
+    def confirmed(self) -> bool:
+        return (self.phase == "completed" and self.gained >= self.requested
+                and self.returned and self.inventory_clean)
+
+
 class ProductionProgress(BaseModel):
     """制作任务的库存与收尾事实；已有工具不计入新制作数量。"""
 
@@ -110,19 +125,25 @@ class ProductionProgress(BaseModel):
     required: int = Field(ge=1)
     reused: int = Field(ge=0)
     inventory_clean: bool = Field(alias="inventoryClean")
+    gathering: PreparationGatherProgress | None = None
 
     def announcement(self) -> str | None:
         """只播报终态；未确认数量或收尾时不得称制作成功。"""
         if self.phase == "running":
             return None
-        complete = self.phase == "completed" and self.available >= self.required and self.inventory_clean
+        complete = (self.phase == "completed" and self.available >= self.required and self.inventory_clean
+                    and (self.gathering is None or self.gathering.confirmed()))
         label = "制作任务已完成" if complete else {
             "cancelled": "制作任务已取消", "interrupted": "制作任务已中断",
         }.get(self.phase, "制作任务受阻，已停止")
         name = {"wooden_pickaxe": "木镐", "wooden_axe": "木斧", "wooden_shovel": "木锹",
                 "wooden_hoe": "木锄", "wooden_sword": "木剑", "crafting_table": "工作台", "stick": "木棍"}.get(self.item, self.item)
         cleanup = "合成格和光标已收尾" if self.inventory_clean else "尚未确认临时材料收尾，不能继续合成"
-        return f"{label}：新合成 {self.created} 个{name}，复用原有 {self.reused} 个，背包现有 {self.available} 个；{cleanup}。"
+        gathering = ""
+        if self.gathering:
+            returned = "已返回出发点" if self.gathering.returned else "尚未确认返程"
+            gathering = f"；前置采集新入包 {self.gathering.gained}/{self.gathering.requested} 个 {self.gathering.item}，{returned}"
+        return f"{label}：新合成 {self.created} 个{name}，复用原有 {self.reused} 个，背包现有 {self.available} 个{gathering}；{cleanup}。"
 
 
 class SupplyItemProgress(BaseModel):

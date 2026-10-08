@@ -98,6 +98,34 @@ async def test_production_without_inventory_evidence_is_ignored(
     announce.assert_not_awaited()
 
 
+@pytest.mark.parametrize("gained,returned,clean,phase,expected", [
+    (3, True, True, "completed", "制作任务已完成"),
+    (2, True, True, "completed", "制作任务受阻"),
+    (3, False, True, "completed", "制作任务受阻"),
+    (3, True, False, "completed", "制作任务受阻"),
+    (3, True, True, "blocked", "制作任务受阻"),
+    (1, False, True, "cancelled", "制作任务已取消"),
+])
+async def test_preparation_requires_gathering_receipt_return_and_production(
+    channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch,
+    gained: int, returned: bool, clean: bool, phase: str, expected: str,
+) -> None:
+    announce, inbound = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(channel, "_announce_reflex", announce)
+    monkeypatch.setattr(channel, "on_message", inbound)
+    data = {"id": "preparation", "actionId": "prepare-action", "phase": phase,
+            "item": "wooden_pickaxe", "created": 1, "reused": 0, "available": 1,
+            "required": 1, "inventoryClean": True,
+            "gathering": {"item": "oak_log", "requested": 3, "gained": gained, "returned": returned,
+                          "phase": "completed", "inventoryClean": clean}}
+    for seq in (1, 2):
+        await channel._dispatch_event(GameEvent(seq=seq, ts=1000, type="production_progress", data=data))
+    announce.assert_awaited_once()
+    assert expected in announce.call_args.args[0]
+    assert f"前置采集新入包 {gained}/3" in announce.call_args.args[0]
+    inbound.assert_not_awaited()
+
+
 @pytest.mark.parametrize("phase,confirmed,clean,available,expected", [
     ("completed", True, True, 8, "补给任务已完成"),
     ("cancelled", True, True, 4, "补给任务已取消"),

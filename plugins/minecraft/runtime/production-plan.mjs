@@ -18,9 +18,11 @@ export function itemCount (bot, name) {
 function copy (state) { return { stock: new Map(state.stock), steps: [...state.steps], table: state.table } }
 
 /** count is final inventory quantity in ensure mode, and additional output in craft mode.
+ * additional is read-only hypothetical stock for preflight, never an inventory receipt.
  * @param {Bot} bot @param {string} item @param {number} count @param {'ensure'|'craft'} mode @param {boolean} hasTable
+ * @param {ReadonlyMap<number,number>} [additional]
  */
-export function planProduction (bot, item, count, mode, hasTable) {
+export function planProduction (bot, item, count, mode, hasTable, additional = new Map()) {
   const target = bot.registry.itemsByName[item]
   if (!target || !productionItems.some(name => name === item) || !Number.isInteger(count) || count < 1 || count > 8) {
     throw new ToolError('INVALID_ARGS', 'Supported wooden tools, crafting_table or stick only; count must be 1..8 output items.')
@@ -29,6 +31,7 @@ export function planProduction (bot, item, count, mode, hasTable) {
   /** @type {Map<number,number>} */
   const stock = new Map()
   for (const entry of bot.inventory.items()) stock.set(entry.type, (stock.get(entry.type) ?? 0) + entry.count)
+  for (const [id, amount] of additional) stock.set(id, (stock.get(id) ?? 0) + amount)
   const deadline = performance.now() + 50
   let visited = 0
   /** @type {Map<string,number>} */

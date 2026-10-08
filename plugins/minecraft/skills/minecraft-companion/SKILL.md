@@ -19,7 +19,7 @@ awesome-mineflayer-mcp，底层复用 Mineflayer、pathfinder、collectblock、t
 <!-- BEGIN GENERATED COMPANION CONTRACT -->
 [Minecraft 陪玩执行契约]
 本频道游戏请求由当前回复负责，不另起 tool_action 或重复执行。游戏工具已在当前目录中，只用真实工具名，不先查目录/激活分组。当前名称是 `get_inventory`、`get_state`、`get_block_at`、`place_block`、`craft_item`；委托中也必须原样书写，禁止添加 mcp__minecraft__ 等前缀。
-木制工具、工作台和木棍的准备优先直接调用 `prepare_item`：自动核算背包材料、准备中间产物和可操作的工作台。count 是产物数量；准备够用用 mode=ensure，明确制作/新做/再做用 mode=craft，不能拿旧工具冒充新做。它不采集、不走路、不交付；只有启动成功才说已开始，等待制作终态播报，不重复派工或恢复。需要查询时用 `production_status`，按 created/available/reused/inventoryClean 区分新做、现有及收尾。材料不足或无放台空间时保留原始限制，准确解释受阻，不擅自扩大任务。
+木制工具、工作台和木棍的准备优先直接调用 `prepare_item`：自动核算背包材料、准备中间产物和可操作的工作台。count 是产物数量；准备够用用 mode=ensure，明确制作/新做/再做用 mode=craft，不能拿旧工具冒充新做。默认只用背包；玩家允许补原木且已确定可采集区域时，可传 gather={block,x,y,z,radius,maxCount}：只采配方所缺的一种原木，最多 maxCount 个，确认入包并返回后才制作；材料够则不采集。不得猜区域或扩大玩家限制，同高平地/目标高度及建筑授权边界与表面采集相同。不使用箱子、不交付；只有启动成功才说已开始，等待唯一制作终态播报，不另派采集或重复制作。需要查询时用 `production_status`，按 plannedGather/gathering 核对采集和返程，按 created/available/reused/inventoryClean 区分新做、现有及收尾。采到原木不代表已做成工具。材料不足或无放台空间时保留原始限制，准确解释受阻，不擅自扩大任务。
 指定箱子的卸货/补给优先直接用 `manage_supplies`，仅使用玩家明确授权且能确定坐标的普通箱子或木桶，不能猜箱子或擅取其他容器；需在可见四格内，不会自动走过去。deposit.count 是存入数量，keep 保留任务所需材料；withdraw.count 是背包应补到的总数。整批缺料或空间不足则不搬物品，工具/食物/火把有最低保留量。等待补给终态播报或查询 `supply_status`；按 confirmed/items 的双方库存对账及 inventoryClean 汇报，部分完成或取消不重做，也不擅自接着采集或制作。
 附近表面原木/圆石采集优先 `gather_resources`：先确定玩家允许采集区域的中心坐标，半径最多四格，只走已有平坦通路，绝不挖脚下或开路。count 是本次新增入包，不含旧库存/出发补给。可用明确授权且出发点可见四格内的 chest 坐标组合 withdraw 补给和 deposit=true 返程存货；不猜箱子。等待终态或查 `gathering_status`，分别看 dug/gained/remaining/returned/deposited；缺拾取即停挖，停止或断线不自续。不能识别人造建筑，采集区域必须获准；地形高差、地下目标用 `mine_resources` 或准确解释限制。
 单步查询、跟随、停止和启动 `mine_resources` 可直接做；超出上述制作、补给和表面采集入口的交付和其他多步任务，第一轮实际调用 delegate_task(agent_name='mc-worker', background=true)。必须读取本次工具返回的成功状态和 delegation_id，确认任务成功启动后，才可用 send_message 告知已派工。没有本次委托成功的工具结果就是尚未派工；文字承诺、历史任务和自己的独白均不算派工事实。不要在主会话先查背包、预演、present_plan 或执行同一组动作；委托失败才如实解释。成功委托后无需再建计划或定时提醒；此时才结束本轮等待后台完成通知，不轮询。
@@ -169,8 +169,10 @@ worker 默认看不到主会话与本技能全文；派工时须按上述契约�
   复述范围等确认）；`dig_staircase`（direction+depth 向下凿楼梯）；
   `dig_tunnel`（direction+length 水平掘进）。
 - 木制工具、工作台和木棍优先 `prepare_item(item, count, mode)`：count 是产物数量，
-  mode=ensure 复用已有目标，mode=craft 额外新做。脚本只用背包材料，复用可见工作台或放置一个；
-  缺材料、没有安全空间或库存放不下时明确拒绝，不主动砍树、挖路或丢材料。
+  mode=ensure 复用已有目标，mode=craft 额外新做。默认只用背包材料，复用可见工作台或放置一个。
+  玩家已授权区域采集时可传 gather（block、x/y/z、radius、maxCount）；脚本按配方只补缺少的原木，
+  确认入包并返回后重新核对制作条件。未授权、材料超上限、没有安全空间或库存放不下则受阻，
+  不扩大范围、不挖路、不丢材料；不要在它运行时另起采集或制作。
   返回任务 ID 只表示已开始；等待制作终态播报，需要查询时用 `production_status`。
   不要在后台制作期间重复调用低层工具，不能再派一个 worker 重做同一目标。
 - 其他配方的低层合成：`craft_item`（item、count；用工作台时给 craftingTablePos）；

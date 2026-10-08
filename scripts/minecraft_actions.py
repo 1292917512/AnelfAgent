@@ -67,6 +67,8 @@ _PATCHES: dict[str, tuple[tuple[str, str], ...]] = {
     ),
 }
 _MODULES = {
+    "preparation-plan.mjs": "tools/anelf-preparation-plan.mjs",
+    "preparation-task.mjs": "tools/anelf-preparation-task.mjs",
     "gather-navigation.mjs": "tools/anelf-gather-navigation.mjs",
     "gather-task.mjs": "tools/anelf-gather-task.mjs",
     "gather-tools.mjs": "tools/anelf-gather-tools.mjs",

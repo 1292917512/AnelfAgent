@@ -8,6 +8,27 @@ import { safeStanding, occupied } from '../bot/anelf-survival-observation.mjs'
 
 const { Movements, goals } = pathfinder
 
+/** Check exposed full-block faces from actual or proposed feet using the installed world raycaster.
+ * A hidden block center does not imply that all of its harvestable faces are hidden.
+ * @param {import('mineflayer').Bot} bot @param {Vec3} position @param {Vec3} feet
+ */
+export function reachableFace (bot, position, feet) {
+  const height = 'eyeHeight' in bot.entity ? bot.entity.eyeHeight : null
+  if (typeof height !== 'number' || !Number.isFinite(height) || height <= 0) return false
+  const eye = feet.offset(0, height, 0), center = position.offset(0.5, 0.5, 0.5)
+  for (const axis of /** @type {const} */ (['x', 'y', 'z'])) {
+    const delta = eye[axis] - center[axis]
+    if (Math.abs(delta) <= 0.5) continue
+    const target = center.clone()
+    target[axis] += Math.sign(delta) * 0.499
+    const direction = target.minus(eye)
+    if (direction.norm() > 4) continue
+    const hit = bot.world.raycast(eye, direction.normalize(), 4)
+    if (hit && 'position' in hit && hit.position instanceof Vec3 && hit.position.equals(position)) return true
+  }
+  return false
+}
+
 export class GatherNavigation {
   /** @param {import('mineflayer').Bot} bot @param {Vec3} entry @param {AbortSignal} signal */
   constructor (bot, entry, signal) { this.bot = bot; this.entry = entry; this.signal = signal }
