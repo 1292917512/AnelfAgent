@@ -75,6 +75,17 @@ class AcfunChannel(AcfunToolsMixin, LiveHotReloadMixin, BaseChannel[AcfunConfig]
     )
     _Configs = AcfunConfig
 
+    @property
+    def live_control(self) -> LiveSessionManager:
+        return self.live_manager
+
+    @property
+    def live_config(self) -> AcfunConfig:
+        return self.config
+
+    def _reload_channel_config(self) -> bool:
+        return BaseChannel.reload_config(self)
+
     def __init__(self) -> None:
         self.client = AcfunClient()
         self.poller = NotificationPoller(self)

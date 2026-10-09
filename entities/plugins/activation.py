@@ -185,7 +185,7 @@ def _activate_commands(plugin_name: str, payload_dir: Path, commands_dir: str) -
                 "user_invocable": True,
                 "trigger_patterns": [cmd_name],
             }
-            target_name = _resolve_skill_target(skills_base, plugin_name, skill_meta["name"])
+            target_name = _resolve_skill_target(skills_base, plugin_name, str(skill_meta["name"]))
             target = skills_base / target_name
             if target.exists():
                 shutil.rmtree(target)

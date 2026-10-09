@@ -39,6 +39,8 @@ def create_application(args: argparse.Namespace) -> Application:
     @app.startup.node(skip_on_error=False)
     async def init_foundation() -> None:
         """初始化配置中心并开启文件日志。"""
+        from core.async_helper import register_shared_executor
+        register_shared_executor()
         ConfigManager.initialize()
         enable_file_logging()
 
@@ -50,8 +52,20 @@ def create_application(args: argparse.Namespace) -> Application:
     @app.startup.node(skip_on_error=False)
     async def run_bootstrap() -> None:
         """执行运行时组装（agent/runtime/bootstrap.py 子流程）。"""
+        from agent.storage.migration import finalize_pending_migration
+
+        def assign_volume(volume_id: str, path: str) -> None:
+            from core.storage_volume import get_volume_registry
+            from services.database import ensure_volume_modules
+            ensure_volume_modules()
+            get_volume_registry().write_location(volume_id, path)
+
+        await asyncio.to_thread(finalize_pending_migration, assign_volume)
         from agent.runtime.bootstrap import create_bootstrap
-        await create_bootstrap().execute()
+        result = await create_bootstrap().execute()
+        if not result.success:
+            failed = ", ".join(r.name for r in result.results if r.error is not None)
+            raise RuntimeError(f"运行时初始化失败: {failed}")
 
     @app.startup.node(skip_on_error=False)
     async def init_approval_rules() -> None:

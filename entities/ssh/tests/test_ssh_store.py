@@ -141,6 +141,7 @@ class TestPersistence:
         finally:
             del os.environ["SSH_TEST_PW"]
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits do not represent Windows ACLs")
     async def test_file_permission_600(self, tmp_path, profile: dict) -> None:
         path = str(tmp_path / "connections.json")
         s = SshConfigStore(path)

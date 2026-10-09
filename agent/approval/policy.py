@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import ntpath
 import os
 from enum import Enum
 from typing import Any, Callable, Dict, List, NamedTuple, Optional
@@ -91,13 +92,8 @@ class ApprovalPolicy(BaseModel):
         if tool_args is None:
             # 无参数上下文时参数模式不命中（fail-closed，不误放行）
             return False
-        candidates = matchable_arg_candidates(tool_name, tool_args)
-        if "/" in arg_pattern:
-            return any(match_path_pattern(candidate, arg_pattern) for candidate in candidates)
-        return any(
-            fnmatch.fnmatch(candidate, arg_pattern)
-            for candidate in candidates
-        )
+        return matches_arg_pattern(tool_name, tool_args, arg_pattern,
+                                   require_all=not self.requires_approval)
 
     def is_auto_approved(self, user_id: str) -> bool:
         """检查用户是否在白名单中。"""
@@ -138,7 +134,10 @@ def match_path_pattern(value: str, pattern: str) -> bool:
     独立的 ``**`` 段匹配零或多层目录。防止 ``config/*`` 这类规则被
     ``config/../../etc`` 之类的多层路径意外命中。
     """
-    return _match_path_segments(value.split("/"), pattern.split("/"))
+    if os.name == "nt" or ntpath.splitdrive(value)[0]:
+        value, pattern = value.casefold(), pattern.casefold()
+    return _match_path_segments(value.replace("\\", "/").split("/"),
+                                pattern.replace("\\", "/").split("/"))
 
 
 def _match_path_segments(value_segs: List[str], pattern_segs: List[str]) -> bool:
@@ -182,24 +181,35 @@ def matchable_arg_candidates(tool_name: str, tool_args: Optional[Dict[str, Any]]
     """
     if tool_args is None:
         return []
-    value = extract_matchable_arg(tool_name, tool_args)
-    candidates = [value]
-    if tool_name in _PATH_TOOLS:
-        try:
-            if workspace_paths_port.bound:
-                root = workspace_paths_port.get().get_root()
-                parts = []
-                for v in value.split(" "):
-                    if v.startswith(root + os.sep):
-                        parts.append(v[len(root) + 1:])
-                    else:
-                        parts.append(v)
-                rel = " ".join(parts).strip()
-                if rel != value:
-                    candidates.append(rel)
-        except Exception:
-            log("matchable_arg_candidates 异常已忽略", "DEBUG")
-    return candidates
+    return [candidate for group in _arg_candidate_groups(tool_name, tool_args) for candidate in group]
+
+
+def _arg_candidate_groups(tool_name: str, tool_args: Dict[str, Any]) -> List[List[str]]:
+    """每个路径独立保留绝对/相对候选，空格不是路径分隔符。"""
+    if tool_name not in _PATH_TOOLS:
+        return [[extract_matchable_arg(tool_name, tool_args)]]
+    groups: List[List[str]] = []
+    for key in _ARG_KEYS[tool_name]:
+        value = _normalize_path_arg(str(tool_args.get(key, "")))
+        candidates = [value]
+        if workspace_paths_port.bound and value:
+            root = workspace_paths_port.get().get_root()
+            try:
+                if os.path.commonpath((value, root)) == os.path.normpath(root):
+                    candidates.append(os.path.relpath(value, root))
+            except ValueError:
+                pass  # 不同磁盘没有 workspace 相对形式
+        groups.append(candidates)
+    return groups
+
+
+def matches_arg_pattern(tool_name: str, tool_args: Dict[str, Any], pattern: str,
+                        *, require_all: bool = False) -> bool:
+    """拒绝/审批匹配任一路径，放行必须覆盖所有路径（含移动/复制的目标）。"""
+    matcher = match_path_pattern if "/" in pattern or "\\" in pattern else fnmatch.fnmatch
+    matches = [any(matcher(value, pattern) for value in group)
+               for group in _arg_candidate_groups(tool_name, tool_args)]
+    return all(matches) if require_all else any(matches)
 
 
 def _normalize_path_arg(path: str) -> str:

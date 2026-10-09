@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import Any, Optional, Tuple
+from typing import Optional, Tuple
 from urllib.parse import urlsplit, urlunsplit
 
 import aiohttp
@@ -200,7 +200,7 @@ async def proxy_channel_webui_ws(websocket: WebSocket, channel_id: str, path: st
 
                 async def client_to_upstream() -> None:
                     while True:
-                        event: dict[str, Any] = await websocket.receive()
+                        event = await websocket.receive()
                         if event["type"] == "websocket.disconnect":
                             break
                         if event.get("text") is not None:

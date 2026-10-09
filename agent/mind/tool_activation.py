@@ -11,30 +11,18 @@ AI 需要时调用 ``activate_tool_group`` 唤醒整个分组，唤醒后持续 
 from __future__ import annotations
 
 import json
-from contextvars import ContextVar
 from typing import Dict, List, Optional
 
 from core.config import get_config_int
+from core.conversation_scope import bind_scope as bind_scope
+from core.conversation_scope import current_scope
+from core.conversation_scope import reset_scope as reset_scope
 from core.entity import EntityRegistry, EntityType
 from core.log import log
 from entities._sdk import deferred_tool
 
 _DEFAULT_ACTIVE_ROUNDS = 3
 _MAX_ACTIVE_ROUNDS = 20
-
-# 当前思维会话的对话 scope（由 think_loop 在会话期间绑定）
-_current_scope: ContextVar[str] = ContextVar("tool_activation_scope", default="")
-
-
-def bind_scope(scope: str):
-    """绑定当前对话 scope，返回可复位的 token（供 think_loop 使用）。"""
-    return _current_scope.set(scope)
-
-
-def reset_scope(token) -> None:
-    """复位 bind_scope 绑定的 scope。"""
-    _current_scope.reset(token)
-
 
 def current_owner_scope() -> str:
     """解析后台任务的归属会话 scope（完成通知的路由目标）。
@@ -67,7 +55,7 @@ class ToolActivationManager:
     @staticmethod
     def current_scope() -> str:
         """解析当前对话 scope（未绑定时使用全局作用域）。"""
-        return _current_scope.get() or "_global"
+        return current_scope()
 
     @staticmethod
     def _clamp_rounds(rounds: Optional[int]) -> int:

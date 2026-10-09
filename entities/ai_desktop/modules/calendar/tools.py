@@ -259,6 +259,8 @@ async def _update(event_id: str, title: str, date_text: str, time_text: str,
     patch["reminder_id"] = merged.get("reminder_id")
     patch["remind_minutes"] = merged.get("remind_minutes")
     saved = store.update_event(event_id, patch)
+    if saved is None:
+        return tool_error("事件已不存在", cause=ErrorCause.PARAM)
     return json.dumps({"success": True, "event": _event_out(saved)},
                       ensure_ascii=False, default=str)
 

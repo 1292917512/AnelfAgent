@@ -447,15 +447,45 @@ class ConfigManager:
                 from core.file_utils import atomic_write_text
                 config_content = json.dumps(cls._file_config, indent=2, ensure_ascii=False)
                 atomic_write_text(Path(cls._get_config_file()), config_content)
+            success = True
             for store in list(cls._stores.values()):
                 try:
                     store.save()
                 except Exception as exc:
                     log(f"外部配置存储落盘失败: {exc}", "ERROR")
-            return True
+                    success = False
+            return success
         except Exception as e:
             log(f"❌ 保存配置异常: {str(e)}", "ERROR")
             return False
+
+    @classmethod
+    def set_persisted(cls, values: Dict[str, Any]) -> None:
+        """原子保存同一后端的配置，成功后通知；失败恢复内存并向调用方抛错。"""
+        if not values:
+            return
+        with cls._lock:
+            stores = [cls._store_for(key) for key in values]
+            store = stores[0]
+            if any(item is not store for item in stores):
+                raise ValueError("一次配置提交必须属于同一存储后端")
+            if store is not None:
+                try:
+                    for key, value in values.items():
+                        store.set(key, value)
+                    store.save()
+                except BaseException:
+                    store.load()
+                    raise
+            else:
+                from core.file_utils import atomic_write_text
+                updated = {**cls._file_config, **values}
+                atomic_write_text(Path(cls._get_config_file()),
+                                  json.dumps(updated, indent=2, ensure_ascii=False))
+                cls._file_config = updated
+                cls._config.update(values)
+        for key, value in values.items():
+            cls._notify_listeners(key, value)
 
     @classmethod
     def reload(cls) -> bool:

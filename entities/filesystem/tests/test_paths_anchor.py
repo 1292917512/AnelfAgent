@@ -58,6 +58,7 @@ class TestGetWorkspaceRoot:
         proj = str(tmp_path / "proj")
         monkeypatch.setattr(path_mod, "_PROJECT_ROOT", proj)
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
         _set_workspace_cfg(monkeypatch, dangerous)
         assert paths_mod.get_workspace_root() == os.path.join(proj, "workspace")
 
@@ -65,13 +66,13 @@ class TestGetWorkspaceRoot:
 class TestResolveWorkspacePath:
     def test_relative_path_anchors_root(self) -> None:
         """相对路径锚定 workspace 根（与进程 cwd 无关）。"""
-        root = "/tmp/fake-ws-anchor"
+        root = os.path.normpath("/tmp/fake-ws-anchor")
         assert paths_mod.resolve_workspace_path("a/b.txt", root) == \
             os.path.join(root, "a", "b.txt")
 
     def test_workspace_prefix_stripped(self) -> None:
         """误带 workspace 前缀剥离防双重嵌套。"""
-        root = "/tmp/fake-ws-anchor"
+        root = os.path.normpath("/tmp/fake-ws-anchor")
         assert paths_mod.resolve_workspace_path("fake-ws-anchor/x.txt", root) == \
             os.path.join(root, "x.txt")
 

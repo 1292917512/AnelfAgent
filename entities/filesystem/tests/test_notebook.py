@@ -31,7 +31,7 @@ class TestNotebookEdit:
     def test_replace_cell(self, workspace):
         out = json.loads(notebook_edit("test.ipynb", 1, "print(42)"))
         assert out["ok"]
-        nb = json.loads((workspace / "test.ipynb").read_text())
+        nb = json.loads((workspace / "test.ipynb").read_text(encoding="utf-8"))
         assert nb["cells"][1]["source"] == ["print(42)"]
         assert nb["cells"][1]["cell_type"] == "code"
 
@@ -39,14 +39,14 @@ class TestNotebookEdit:
         out = json.loads(notebook_edit("test.ipynb", 1, "新内容", cell_type="markdown",
                                        edit_mode="insert"))
         assert out["ok"]
-        nb = json.loads((workspace / "test.ipynb").read_text())
+        nb = json.loads((workspace / "test.ipynb").read_text(encoding="utf-8"))
         assert len(nb["cells"]) == 3
         assert nb["cells"][1]["cell_type"] == "markdown"
 
     def test_delete_cell(self, workspace):
         out = json.loads(notebook_edit("test.ipynb", 0, edit_mode="delete"))
         assert out["ok"]
-        nb = json.loads((workspace / "test.ipynb").read_text())
+        nb = json.loads((workspace / "test.ipynb").read_text(encoding="utf-8"))
         assert len(nb["cells"]) == 1
 
     def test_index_out_of_range(self, workspace):

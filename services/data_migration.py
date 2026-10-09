@@ -1,7 +1,8 @@
 """数据目录迁移服务 — Web 端发起的数据目录搬迁。
 
 流程：目标校验 → 在线热拷贝（SQLite 走 Backup API，其余文件 copy2）
-→ 逐文件校验 → 写入 data_root → 提示重启。源目录保留不删，由用户确认后手动清理。
+→ 逐文件校验 → 登记迁移 → 重启最终同步并写入 data_root。
+源目录保留不删，由用户确认后手动清理。
 
 注意：迁移期间 Agent 保持运行（Backup API 对并发写安全），
 但新目录需重启后生效（各模块的连接与缓存路径在运行期不会切换）。
@@ -170,7 +171,12 @@ def check_target(target: str) -> Dict[str, Any]:
 
 
 def migration_status() -> Dict[str, Any]:
-    return dict(_state)
+    result = dict(_state)
+    from agent.storage.migration import pending_migration
+    pending = pending_migration()
+    if pending and pending.kind == "data" and result["state"] != "running":
+        result.update(state="done", target=pending.target, needs_restart=True)
+    return result
 
 
 def start_migration(target: str) -> Dict[str, Any]:
@@ -178,6 +184,13 @@ def start_migration(target: str) -> Dict[str, Any]:
     global _running
     if _running:
         raise MigrationError("已有迁移任务进行中", status_code=409)
+    from agent.storage.volume_restore import pending_summary
+    from services.volume_ops import has_running_operations
+    if pending_summary() or has_running_operations():
+        raise MigrationError("请先完成存储卷操作及待重启恢复", status_code=409)
+    from agent.storage.migration import pending_migration
+    if pending_migration() is not None:
+        raise MigrationError("已有待重启迁移，请重启完成后再操作", status_code=409)
 
     if _data_dir_source() == "env":
         raise MigrationError(
@@ -213,6 +226,8 @@ async def _run_migration(source: Path, target: Path) -> None:
         for index, src in enumerate(files):
             rel = src.relative_to(source)
             dest = target / rel
+            if not dest.resolve().is_relative_to(target.resolve()):
+                raise MigrationError("迁移目标内存在越界符号链接")
             _state["current_file"] = rel.as_posix()
             dest.parent.mkdir(parents=True, exist_ok=True)
             if src.suffix == ".sqlite3":
@@ -225,15 +240,14 @@ async def _run_migration(source: Path, target: Path) -> None:
                     raise MigrationError(f"文件校验失败: {rel.as_posix()}")
             _state["done"] = index + 1
 
-        # 全部拷贝完成 → 切换 data_root
-        from core.config import ConfigManager
-        ConfigManager.initialize()
-        ConfigManager.set("data_root", str(target))
-        if not ConfigManager.save():
-            raise MigrationError("data_root 配置写入失败", status_code=500)
+        from agent.storage.migration import PendingMigration, stage_migration
+        stage_migration(PendingMigration(
+            kind="data", source=str(source), target=str(target),
+            files=[path.relative_to(source).as_posix() for path in files],
+        ))
 
         _state.update({"state": "done", "finished_at": time.time(), "current_file": ""})
-        log(f"数据迁移完成: {source} -> {target}（{_state['done']} 个文件），需重启生效", tag="迁移")
+        log(f"数据预拷贝完成: {source} -> {target}，重启时最终同步并切换", tag="迁移")
     except Exception as exc:
         _state.update({"state": "error", "finished_at": time.time(), "error": str(exc)})
         log(f"数据迁移失败: {exc}", "ERROR", tag="迁移")

@@ -419,6 +419,8 @@ class WorkMemory:
         """
         group_id = anything.group_id if isinstance(anything, EverythingGroup) else 0
         adapter_key = str(getattr(anything, "adapter_key", "") or "")
+        if anything.uid is None:
+            return
         user_entity = await self.everything_data.get_anything(group_id, anything.uid, adapter_key)
         conv_count = user_entity.add_conversations_num()
         has_personality = bool(user_entity.personality.get("personality"))

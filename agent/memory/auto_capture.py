@@ -31,7 +31,7 @@ import hashlib
 import json
 import re
 import time
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from core.config import get_config_bool, get_config_int, register_configs_safe
 from core.latebind import LateBinding
@@ -45,9 +45,7 @@ from .dedup import (
     light_llm,
 )
 from .memory_types import MemoryEntry, MemoryType
-
-if TYPE_CHECKING:
-    from agent.mind.mind import Mind
+from .ports import MemoryHost
 
 _JSON_ARRAY_RE = re.compile(r"\[.*\]", re.DOTALL)
 
@@ -226,7 +224,7 @@ class _ScopeState:
 class AutoCapturePipeline:
     """自动捕获调度器：每 tick 扫描各 scope，满足触发条件即提取。"""
 
-    def __init__(self, mind: "Mind") -> None:
+    def __init__(self, mind: MemoryHost) -> None:
         self._mind = mind
         self._states: Dict[str, _ScopeState] = {}
         # 每 scope 一把锁：心跳 tick 与压缩前抢跑（PreCompact flush）可能并发
@@ -657,12 +655,12 @@ def _pipeline() -> "AutoCapturePipeline":
     return auto_capture_port.get()
 
 
-async def run_auto_capture(mind: "Mind") -> None:
+async def run_auto_capture(mind: MemoryHost) -> None:
     """心跳集成入口：每个 tick 调用一次。"""
     await _pipeline().run()
 
 
-async def flush_auto_capture(mind: "Mind") -> None:
+async def flush_auto_capture(mind: MemoryHost) -> None:
     """进程退出前的兜底提取：所有有待提取内容的 scope 立即处理（不等阈值/空闲）。
 
     对应触发器的第三轨（shutdown flush）：未达轮数阈值且未满空闲时间的
@@ -694,7 +692,7 @@ async def flush_auto_capture(mind: "Mind") -> None:
             log(f"关停兜底提取失败 [{scope.get('scope_id')}]: {exc}", "DEBUG", tag="记忆")
 
 
-async def flush_scope_capture(mind: "Mind", scope_key: str) -> bool:
+async def flush_scope_capture(mind: MemoryHost, scope_key: str) -> bool:
     """单 scope 强制提取：上下文压缩前抢跑沉淀（PreCompact flush）。
 
     上下文压缩只裁剪内存中的消息链，但被裁掉的细节若尚未经 auto_capture

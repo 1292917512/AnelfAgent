@@ -86,7 +86,7 @@ def list_api_keys(*, include_hash: bool = False) -> list[dict[str, Any]]:
 
 def create_api_key(*, name: str = "") -> dict[str, Any]:
     raw = f"{_API_KEY_PREFIX}{secrets.token_urlsafe(32)}"
-    entry = {
+    entry: dict[str, Any] = {
         "id": f"ak_{uuid.uuid4().hex[:12]}",
         "name": name or "default",
         "key_prefix": raw[:12],

@@ -6,7 +6,7 @@ PUT  /api/config/meta/{key}  保存单个配置项（热更生效，自动路由
 设计要点：
 - 配置项元数据来自 ConfigRegistry（各模块声明式注册，频道经 adapter/<id> 组接入）
 - MindConfig 字段保存时路由到 save_mind_config（实时生效 + 持久化 + 同步 ConfigManager）
-- 其余配置走 ConfigManager.set + save（变更监听驱动频道等消费方即时热更）
+- 其余配置走 ConfigManager.set_persisted（落盘成功后通知消费方热更）
 - PASSWORD 类型：GET 掩码返回；PUT 提交掩码占位符时保留现值（留空则清空）
 """
 from __future__ import annotations
@@ -97,7 +97,9 @@ async def save_config_meta(key: str, data: ConfigValueUpdate) -> Dict[str, Any]:
         except Exception as exc:
             raise server_error("保存 Mind 配置", exc) from exc
     else:
-        ConfigManager.set(key, value)
-        ConfigManager.save()
+        try:
+            ConfigManager.set_persisted({key: value})
+        except Exception as exc:
+            raise server_error("保存配置", exc) from exc
 
     return {"status": "ok", "key": key, "value": value}

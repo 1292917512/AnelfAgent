@@ -39,11 +39,8 @@ def _dead_pid() -> int:
 
 
 def _alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
+    import psutil
+    return psutil.pid_exists(pid)
 
 
 class TestAcquire:

@@ -2,8 +2,7 @@
  * 频道前端插件注册表 — 频道卡片/路由的频道自定义 UI 由此驱动。
  *
  * 频道在 channels/<id>/frontend/ 内自带完整前端（组件/API/类型/locales），
- * 经 vite moduleFrontendsPlugin 软链到 src/plugins/channels/<id>/（软链提交 git），
- * 本模块通过 import.meta.glob 构建时自动发现。
+ * 经 module-links.mjs 生成显式加载清单，构建时自动发现并检查类型。
  *
  * 插件 index.ts 为轻量清单模块：声明清单 + 自注册 i18n；组件经 loader
  * 动态 import 保持懒加载分块。删除频道目录即整体热拔出，核心零改动。
@@ -12,6 +11,7 @@
  * 仅跳过该插件并记日志，不再拖垮整个入口 chunk（整站黑屏）。
  */
 import { lazy, type ComponentType, type LazyExoticComponent } from "react";
+import { channelPluginLoaders } from "@/generated/channel-plugins";
 
 /** 频道插件清单（index.ts 的默认导出） */
 export interface ChannelPlugin {
@@ -28,9 +28,7 @@ export interface ChannelPlugin {
 }
 
 // 构建时解析：频道插件清单 loader（隔离加载，单插件失败不影响其余）
-const pluginLoaders = import.meta.glob<{ default: ChannelPlugin }>(
-  "../plugins/channels/*/index.ts",
-);
+const pluginLoaders = channelPluginLoaders;
 
 const plugins = new Map<string, ChannelPlugin>();
 
@@ -48,10 +46,7 @@ export const CHANNEL_PANEL_COMPONENTS: Record<string, LazyExoticComponent<Compon
  */
 export async function initChannelPlugins(): Promise<void> {
   await Promise.all(
-    Object.entries(pluginLoaders).map(async ([path, load]) => {
-      const match = path.match(/\/plugins\/channels\/([^/]+)\/index\.ts$/);
-      const key = match?.[1];
-      if (!key) return;
+    Object.entries(pluginLoaders).map(async ([key, load]) => {
       try {
         const mod = await load();
         plugins.set(key, mod.default);

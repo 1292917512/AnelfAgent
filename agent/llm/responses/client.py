@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import AsyncIterable
 from enum import Enum
 from typing import Any, AsyncGenerator, Dict, Optional, Union
 
@@ -483,6 +484,8 @@ class ResponsesClient:
             kwargs.update(extra)
 
         stream = await litellm.aresponses(**kwargs)
+        if not isinstance(stream, AsyncIterable):
+            raise TypeError("Responses 流式调用未返回异步流")
         saw_terminal = False
         try:
             async for event in stream:

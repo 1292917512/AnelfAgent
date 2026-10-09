@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from .helpers import (
     build_sender_label,
@@ -92,7 +92,7 @@ def _describe_reply_target(reply_msg: Any) -> Optional[ReplyTarget]:
 
     sender = build_sender_label(reply_msg.from_user) if reply_msg.from_user else "unknown"
     quote_text = getattr(reply_msg, "quote", None)
-    kind = "quote" if quote_text else "reply"
+    kind: Literal["reply", "quote"] = "quote" if quote_text else "reply"
 
     forwarded_from = _extract_forward_origin(reply_msg)
 

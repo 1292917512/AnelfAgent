@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from typing import Any, Dict, List, Optional
@@ -97,18 +98,16 @@ class WorkflowJournal:
     def __init__(self, db_path: Optional[str] = None) -> None:
         self._db_path = db_path or ConfigPaths.WORKFLOW_DB
         self._conn: Optional[aiosqlite.Connection] = None
-        self._conn_lock: Optional[Any] = None  # asyncio.Lock，首次使用时创建
-        self._write_lock: Optional[Any] = None
+        self._conn_lock = asyncio.Lock()
+        self._write_lock = asyncio.Lock()
+        self._closed = False
 
     async def _get_db(self) -> aiosqlite.Connection:
-        import asyncio
-
-        if self._conn_lock is None:
-            self._conn_lock = asyncio.Lock()
-            self._write_lock = asyncio.Lock()
-        if self._conn is not None:
-            return self._conn
+        if self._closed:
+            raise RuntimeError("工作流 journal 已关闭")
         async with self._conn_lock:
+            if self._closed:
+                raise RuntimeError("工作流 journal 已关闭")
             if self._conn is not None:
                 return self._conn
             import os
@@ -125,9 +124,11 @@ class WorkflowJournal:
             return db
 
     async def aclose(self) -> None:
-        if self._conn is not None:
-            await self._conn.close()
-            self._conn = None
+        async with self._conn_lock:
+            self._closed = True
+            if self._conn is not None:
+                await self._conn.close()
+                self._conn = None
 
     # ------------------------------------------------------------------
     # run
@@ -275,7 +276,7 @@ class WorkflowJournal:
                 "SELECT COALESCE(MAX(ordinal), 0) AS mo FROM workflow_node"
                 " WHERE run_id = ? AND step_key = ?", (run_id, step_key)) as cur:
             row = await cur.fetchone()
-        return int(row["mo"]) + 1
+        return int(row["mo"]) + 1 if row is not None else 0
 
     async def importable_nodes(self, parent_run_id: str) -> Dict[str, Dict[str, Any]]:
         """父 run 可导入的步骤成果：每 key 的最新 completed 行（input_hash 比对用）。"""
@@ -311,7 +312,7 @@ class WorkflowJournal:
                     "SELECT COALESCE(MAX(sequence), -1) AS ms FROM workflow_event"
                     " WHERE run_id = ?", (run_id,)) as cur:
                 row = await cur.fetchone()
-            sequence = int(row["ms"]) + 1
+            sequence = int(row["ms"]) + 1 if row is not None else 0
             await db.execute(
                 "INSERT INTO workflow_event (run_id, sequence, type, payload_json, ts)"
                 " VALUES (?, ?, ?, ?, ?)",

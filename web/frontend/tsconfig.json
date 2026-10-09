@@ -22,7 +22,8 @@
     "resolveJsonModule": true,
     "paths": {
       "@/*": ["src/*"],
-      "@entities/*": ["../../entities/*"]
+      "@entities/*": ["../../entities/*"],
+      "@channels/*": ["../../channels/*"]
     }
   },
   "include": ["src"]

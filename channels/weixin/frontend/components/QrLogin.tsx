@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import { weixinQrApi } from "../api";
@@ -21,46 +21,54 @@ export default function WeixinQrLogin({ compact = false }: { compact?: boolean }
   const [error, setError] = useState("");
   const [refreshed, setRefreshed] = useState(false);
   const sessionRef = useRef<string | null>(null);
+  const generationRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollingRef = useRef(false);
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const stopPolling = () => {
+  const stopPolling = useCallback(() => {
     if (timerRef.current) {
       clearInterval(timerRef.current);
       timerRef.current = null;
     }
-  };
+  }, []);
 
-  const clearRefreshTimer = () => {
+  const clearRefreshTimer = useCallback(() => {
     if (refreshTimerRef.current) {
       clearTimeout(refreshTimerRef.current);
       refreshTimerRef.current = null;
     }
-  };
+  }, []);
 
-  const discardSession = () => {
+  const discardSession = useCallback(() => {
+    generationRef.current += 1;
     stopPolling();
     clearRefreshTimer();
     const sid = sessionRef.current;
     sessionRef.current = null;
     if (sid) weixinQrApi.discard(sid).catch(() => undefined);
-  };
+  }, [stopPolling, clearRefreshTimer]);
 
   const start = async () => {
     discardSession();
+    const generation = generationRef.current;
     setPhase("loading");
     setError("");
     setAccountId("");
     setRefreshed(false);
     try {
       const { data } = await weixinQrApi.start();
+      if (generation !== generationRef.current) {
+        weixinQrApi.discard(data.session_id).catch(() => undefined);
+        return;
+      }
       sessionRef.current = data.session_id;
       setQrPng(data.qr_png);
       setQrUrl(data.qr_url);
       setPhase("wait");
       timerRef.current = setInterval(poll, 1500);
     } catch (e) {
+      if (generation !== generationRef.current) return;
       setPhase("error");
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -72,6 +80,7 @@ export default function WeixinQrLogin({ compact = false }: { compact?: boolean }
     pollingRef.current = true;
     try {
       const { data } = await weixinQrApi.status(sid);
+      if (sessionRef.current !== sid) return;
       if (data.qr_png) {
         setQrPng(data.qr_png);
         setQrUrl(data.qr_url ?? "");
@@ -119,7 +128,7 @@ export default function WeixinQrLogin({ compact = false }: { compact?: boolean }
     setPhase("idle");
   };
 
-  useEffect(() => () => { discardSession(); clearRefreshTimer(); }, []);
+  useEffect(() => discardSession, [discardSession]);
 
   return (
     <>

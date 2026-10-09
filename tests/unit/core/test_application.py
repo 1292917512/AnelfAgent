@@ -116,16 +116,40 @@ async def test_startup_timeline_serialization():
     assert timeline[0]["error"] is None
 
 
-async def test_arm_signals_registers_handlers_and_requester():
+async def test_arm_signals_registers_handlers_and_requester(monkeypatch):
     """信号布防：注册 SIGINT/SIGTERM 处理器并接线 Lifecycle 关停请求。"""
     app = Application()
     app._shutdown_event = asyncio.Event()
-    app._arm_signals(asyncio.get_running_loop())
-    try:
-        Lifecycle.request_shutdown()
-        await asyncio.sleep(0)  # requester 经 call_soon_threadsafe 派发，让出一个循环节拍
-        assert app._shutdown_event.is_set()
-    finally:
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.remove_signal_handler(sig)
+    loop = asyncio.get_running_loop()
+    registered = {}
+    monkeypatch.setattr(loop, "add_signal_handler", lambda sig, fn: registered.update({sig: fn}))
+    app._arm_signals(loop)
+    assert set(registered) == {signal.SIGINT, signal.SIGTERM}
+    Lifecycle.request_shutdown()
+    await asyncio.sleep(0)
+    assert app._shutdown_event.is_set()
+
+
+@pytest.mark.parametrize("during_startup", [True, False])
+async def test_cancel_always_cleans_resources(during_startup):
+    app = Application()
+    _stub_signals(app)
+    entered = asyncio.Event()
+    cleaned = []
+    Lifecycle.register("resource", None, cleanup=lambda: cleaned.append("resource"))
+    app.on_post_shutdown("post", lambda: cleaned.append("post"))
+
+    @app.startup.node()
+    async def startup():
+        entered.set()
+        if during_startup:
+            await asyncio.Event().wait()
+
+    task = asyncio.create_task(app.run())
+    await entered.wait()
+    if not during_startup:
+        await asyncio.sleep(0.02)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert cleaned == ["resource", "post"]

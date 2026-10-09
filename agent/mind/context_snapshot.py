@@ -12,7 +12,7 @@ import asyncio
 import json
 import os
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TypeVar
 
 from agent.mind.context_pipeline import get_layer_meta, list_layer_metas
 from core.log import log
@@ -518,15 +518,8 @@ class ContextSnapshot:
 
         # 更新该族的基线（重插保序实现 LRU 触达；超容量逐出最久未用的族——
         # reflect 的一次性 scope 每次委托都是新族，无界累积会缓慢泄漏）
-        for store, values in (
-            (self._last_section_hashes, new_hashes),
-            (self._last_msg_hashes, new_msg_hashes),
-        ):
-            for key, value in values.items():
-                store.pop(key, None)
-                store[key] = value
-            while len(store) > _MAX_DIFF_FAMILIES * 4:
-                store.pop(next(iter(store)))
+        _update_baseline(self._last_section_hashes, new_hashes)
+        _update_baseline(self._last_msg_hashes, new_msg_hashes)
         return sections
 
     @staticmethod
@@ -608,3 +601,15 @@ class ContextSnapshot:
 
 # 全局单例
 context_snapshot = ContextSnapshot()
+
+
+_BaselineValue = TypeVar("_BaselineValue")
+
+
+def _update_baseline(store: Dict[Tuple[str, str, str], _BaselineValue],
+                     values: Dict[Tuple[str, str, str], _BaselineValue]) -> None:
+    for key, value in values.items():
+        store.pop(key, None)
+        store[key] = value
+    while len(store) > _MAX_DIFF_FAMILIES * 4:
+        store.pop(next(iter(store)))

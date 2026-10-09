@@ -5,7 +5,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Awaitable, Callable, Optional, Union
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional, Union
 
 from agent.llm.types import ImageContent
 from agent.messages import (
@@ -22,6 +22,9 @@ from core.event_bus import (
     event_bus,
 )
 from core.log import log
+
+if TYPE_CHECKING:
+    from agent.runtime.runtime import AgentRuntime
 
 # 频道内审批授权白名单：非空时仅白名单用户可 approve/deny，其他用户指令按普通消息放行。
 # 条目格式："user_id"（全局）或 "channel:user_id"（限定频道）；默认空=不启用校验。
@@ -98,10 +101,10 @@ class AgentApp:
         self._main_loop: Optional[asyncio.AbstractEventLoop] = None
 
         self._handler: Optional[Callable[[AgentEvent], Awaitable[None]]] = None
-        self._runtime = None
+        self._runtime: Optional[AgentRuntime] = None
 
     @property
-    def runtime(self):
+    def runtime(self) -> AgentRuntime:
         if self._runtime is None:
             from agent.runtime.singleton import require_runtime
             self._runtime = require_runtime()

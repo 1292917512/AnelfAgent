@@ -8,7 +8,8 @@
     "prebuild": "node scripts/module-links.mjs",
     "build": "tsc -b && vite build --outDir dist.next && node scripts/swap-dist.mjs",
     "preview": "vite preview",
-    "lint": "cd ../.. && web/frontend/node_modules/.bin/eslint web/frontend/src \"entities/*/panel.tsx\" \"entities/*/panels/**/*.{ts,tsx}\""
+    "test:modules": "node --test scripts/module-links.test.mjs",
+    "lint": "cd ../.. && node web/frontend/node_modules/eslint/bin/eslint.js web/frontend/src \"entities/*/panel.tsx\" \"entities/*/panels/**/*.{ts,tsx}\" \"channels/*/frontend/**/*.{ts,tsx}\""
   },
   "dependencies": {
     "@codemirror/lang-css": "^6.3.1",

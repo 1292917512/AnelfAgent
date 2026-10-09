@@ -126,6 +126,7 @@ class WorkflowEngine:
         self._started_at = time.time()
         # start/resume 的开账-派发段串行锁：并发续跑同一 run 只生效一次
         self._lifecycle_lock = asyncio.Lock()
+        self._closing = False
 
     @property
     def journal(self) -> WorkflowJournal:
@@ -138,7 +139,16 @@ class WorkflowEngine:
         return run_id in self._runs
 
     async def aclose(self) -> None:
-        await self._journal.aclose()
+        """停止接收运行，等待在途步骤取消收敛后关闭 journal。"""
+        async with self._lifecycle_lock:
+            self._closing = True
+            tasks = {task for state in self._runs.values()
+                     for task in [state.task, *state.step_tasks] if task is not None}
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            await self._journal.aclose()
 
     # ------------------------------------------------------------------
     # 启动 / 续跑 / 停止
@@ -153,38 +163,44 @@ class WorkflowEngine:
         if not get_config_bool("workflow_enabled", True):
             raise WorkflowSpecError("工作流引擎已禁用（workflow_enabled）")
         spec = parse_spec(spec_data)
-        if resume_of:
-            parent = await self._journal.get_run(resume_of)
-            if parent is None:
-                raise ValueError(f"修订源 run 不存在: {resume_of}")
-            if parent["status"] == wf_journal.RUNNING:
-                raise ValueError(f"修订源 run 尚未终结: {resume_of}")
         run_id = uuid.uuid4().hex[:12]
         async with self._lifecycle_lock:
+            if self._closing:
+                raise RuntimeError("工作流引擎正在关闭")
+            if resume_of:
+                parent = await self._journal.get_run(resume_of)
+                if parent is None:
+                    raise ValueError(f"修订源 run 不存在: {resume_of}")
+                if parent["status"] == wf_journal.RUNNING:
+                    raise ValueError(f"修订源 run 尚未终结: {resume_of}")
             await self._journal.create_run(
                 run_id, spec.name, canonical_spec(spec), spec_hash(spec), scope, resume_of,
             )
             self._spawn(run_id, scope, spec.name)
-        await self._journal.purge_expired(get_config_int("workflow_retention_days", 30))
+            await self._journal.purge_expired(get_config_int("workflow_retention_days", 30))
+            summary = self._run_summary(await self._journal.get_run(run_id))
         log(f"工作流已启动: {run_id} [{spec.name}] {len(spec.steps)} 步"
             + (f"（修订自 {resume_of}）" if resume_of else ""), tag=_TAG)
-        return self._run_summary(await self._journal.get_run(run_id))
+        return summary
 
     async def resume(self, run_id: str) -> Dict[str, Any]:
         """续跑已停止的 run（completed 步骤缓存结算，中断步骤重派）。"""
-        run = await self._journal.get_run(run_id)
-        if run is None:
-            raise ValueError(f"工作流不存在: {run_id}")
-        if run["status"] != wf_journal.STOPPED:
-            raise ValueError(f"仅停止的运行可续跑（当前 {run['status']}）；终态运行请修订启动新运行")
         async with self._lifecycle_lock:
+            if self._closing:
+                raise RuntimeError("工作流引擎正在关闭")
             if run_id in self._runs:
                 raise ValueError(f"工作流 {run_id} 已在运行中")
+            run = await self._journal.get_run(run_id)
+            if run is None:
+                raise ValueError(f"工作流不存在: {run_id}")
+            if run["status"] != wf_journal.STOPPED:
+                raise ValueError(f"仅停止的运行可续跑（当前 {run['status']}）；终态运行请修订启动新运行")
             if not await self._journal.reopen_run(run_id):
                 raise ValueError(f"续跑开账失败: {run_id}")
             self._spawn(run_id, str(run["scope"]), str(run["name"]))
+            summary = self._run_summary(await self._journal.get_run(run_id))
         log(f"工作流续跑: {run_id} [{run['name']}]", tag=_TAG)
-        return self._run_summary(await self._journal.get_run(run_id))
+        return summary
 
     def stop(self, run_id: str, reason: str = "user") -> Dict[str, Any]:
         """请求停止（线程安全）：标记先行，取消经运行循环线程侧执行。
@@ -600,6 +616,8 @@ class WorkflowEngine:
                 except Exception:
                     pass  # 注册表收尾失败不影响步骤结局
 
+        if result is None:
+            return _StepOutcome(status=NODE_FAILED, error="子代理未返回执行结果")
         if result.cancelled:
             return _StepOutcome(status="cancelled", error=result.error or "已取消",
                                 delegation_id=delegation_id)

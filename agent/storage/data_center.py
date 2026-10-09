@@ -104,7 +104,7 @@ class EverythingData:
                 entity.personality["personality"] = personality
 
     @staticmethod
-    def _restore_entity_from_db(entity: EntityData, data: Optional[dict]) -> None:
+    def _restore_entity_from_db(entity: EntityData, data: dict | str | None) -> None:
         """从 SQLite 返回的 dict 恢复 personality 和对话计数。"""
         if not data:
             return

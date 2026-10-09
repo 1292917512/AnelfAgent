@@ -75,20 +75,14 @@ async def suppress_task(task: asyncio.Task) -> None:
         pass
 
 
-def _register_shutdown_hook() -> None:
+def register_shared_executor() -> None:
     """将共享线程池的清理回调注册到 Lifecycle。"""
-    try:
-        from core.lifecycle import Lifecycle
-        Lifecycle.register(
-            "async_helper_executor",
-            _shared_executor,
-            cleanup=shutdown_shared_executor,
-        )
-    except Exception as e:
-        log(f"共享线程池关闭钩子注册失败: {e}", "DEBUG")
-
-
-_register_shutdown_hook()
+    from core.lifecycle import Lifecycle
+    Lifecycle.register(
+        "async_helper_executor",
+        _shared_executor,
+        cleanup=shutdown_shared_executor,
+    )
 
 
 class AsyncHelper:

@@ -27,6 +27,7 @@ from agent.channel.schemas import (
     ChannelUser,
     ChannelUserRole,
     HealthStatus,
+    SegmentType,
     SendRequest,
     SendResponse,
     SendSegment,
@@ -316,5 +317,5 @@ class OneBotV11Channel(QQToolsMixin, BaseChannel[QQConfig]):
                 channel_id="",  # 由 approval/gate.py 填充
                 channel_type=ChannelType.PRIVATE,
             ),
-            segments=[SendSegment(type="text", content=text)],
+            segments=[SendSegment(type=SegmentType.TEXT, content=text)],
         )

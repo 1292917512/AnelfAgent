@@ -15,7 +15,7 @@ import { syncEntityPanels, syncModuleLinks } from "./scripts/module-links.mjs";
  *   → codegen src/generated/entity-panels.ts + entity-panel-locales.ts
  *   (consumed via @entities alias, no symlinks, nothing to commit)
  * - Channel frontends: channels/<id>/frontend/ (whole dir)
- *   → symlinks src/plugins/channels/<id>/ (committed to git)
+ *   → codegen src/generated/channel-plugins.ts (consumed via @channels alias)
  *
  * - build: runs once at buildStart (prebuild 已先行同步，此处兜底)
  * - dev: fs.watch on entities/ + channels/ dirs, re-sync + full reload
@@ -77,6 +77,7 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
       // 实体面板源码真实路径（src/generated 的接入表与核心薄壳引用共用）
       "@entities": path.resolve(projectRoot, "entities"),
+      "@channels": path.resolve(projectRoot, "channels"),
     },
     // 必须为 false（默认）：模块源码经 entities|channels/node_modules 解析桥
     // 引用 react 等依赖，preserveSymlinks 会把桥路径当成独立模块 id，打出

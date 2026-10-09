@@ -161,7 +161,7 @@ def _first_validation_message(exc: Exception) -> str:
     """提取 pydantic 校验错误的首条可读信息。"""
     errors = getattr(exc, "errors", None)
     if callable(errors):
-        details = exc.errors()
+        details = errors()
         if details:
             first = details[0]
             loc = ".".join(str(part) for part in first.get("loc", ()))

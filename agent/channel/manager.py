@@ -120,7 +120,7 @@ class ChannelManager(BaseEntity):
         cid = channel.channel_id
         if cid in self._channels:
             return
-        self._channels[cid] = channel  # type: ignore[assignment]
+        self._channels[cid] = channel
         name = getattr(channel, "display_name", cid)
         log(f"轻量频道已注册: {cid} ({name})", tag="通道")
 
@@ -347,7 +347,7 @@ class ChannelManager(BaseEntity):
         if key in self._group_targets:
             return "group"
         ch = self._channels.get(channel_id)
-        if ch is not None and hasattr(ch, "is_known_group") and ch.is_known_group(target_id):  # type: ignore[union-attr]
+        if ch is not None and hasattr(ch, "is_known_group") and ch.is_known_group(target_id):
             self._group_targets.add(key)
             return "group"
         return "private"

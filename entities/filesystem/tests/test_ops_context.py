@@ -120,9 +120,15 @@ class TestDocs:
         doc.write_text("v1", encoding="utf-8")
         assert ops_context._read_doc(str(doc), 3000) == "v1"
         import os
-        os.utime(doc, (time.time() + 5, time.time() + 5))
         doc.write_text("v2", encoding="utf-8")
+        os.utime(doc, (time.time() + 5, time.time() + 5))
         assert ops_context._read_doc(str(doc), 3000) == "v2"
+
+    def test_doc_budget_change_invalidates_cache(self, workspace) -> None:
+        doc = workspace / "AGENTS.md"
+        doc.write_text("x" * 100, encoding="utf-8")
+        assert "截断" in ops_context._read_doc(str(doc), 10)
+        assert ops_context._read_doc(str(doc), 200) == "x" * 100
 
     def test_doc_truncated(self, workspace) -> None:
         doc = workspace / "AGENTS.md"

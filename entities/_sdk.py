@@ -158,7 +158,7 @@ def tool(
         tool_desc = description or get_first_line(func.__doc__) or tool_name
         params = extract_tool_params(func)
 
-        meta = {}
+        meta: Dict[str, Any] = {}
         if timeout is not None:
             meta["timeout"] = timeout
         if concurrency_safe:
@@ -238,7 +238,7 @@ def deferred_tool(
                 if extra:
                     p.schema_extra = {**(p.schema_extra or {}), **extra}
 
-        meta = {}
+        meta: Dict[str, Any] = {}
         if timeout is not None:
             meta["timeout"] = timeout
         if concurrency_safe:
@@ -987,7 +987,7 @@ async def execute_send_action(
 
 def save_config_value(key: str, value: Any) -> None:
     """统一配置写入：MindConfig 字段路由 save_mind_config（双轨同步 + 实时生效），
-    其余走 ConfigManager.set + save（变更监听驱动消费方热更）。
+    其余走 ConfigManager.set_persisted（落盘成功后通知消费方热更）。
 
     Web 的 PUT /config/meta 与本函数是同一写纪律的两个入口，AI 配置工具应走这里。
     """
@@ -1002,8 +1002,7 @@ def save_config_value(key: str, value: Any) -> None:
         from agent.config import get_config_provider
         get_config_provider().save_mind_config(**{key: value})
         return
-    ConfigManager.set(key, value)
-    ConfigManager.save()
+    ConfigManager.set_persisted({key: value})
 
 
 def set_default_model(model_id: str) -> bool:
@@ -1136,7 +1135,7 @@ def context_provider(
             # 类模式：实例化后注册
             instance = cls_or_func()
             meta = ProviderMeta(
-                name=provider_name,
+                name=str(provider_name),
                 priority=priority,
                 max_tokens=max_tokens,
                 scope_filter=scope,
@@ -1150,7 +1149,7 @@ def context_provider(
         else:
             # 函数模式
             meta = ProviderMeta(
-                name=provider_name,
+                name=str(provider_name),
                 priority=priority,
                 max_tokens=max_tokens,
                 scope_filter=scope,

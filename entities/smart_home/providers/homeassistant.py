@@ -114,7 +114,7 @@ class HomeAssistantProvider(SmartHomeProvider):
 
     async def _supervise(self) -> None:
         """托管循环：连接 → 运行 → 断线退避重连（稳定窗口复位重试计数）。"""
-        while not self._closed:
+        while not self._is_closed():
             try:
                 await self._run_once()
             except asyncio.CancelledError:
@@ -124,7 +124,7 @@ class HomeAssistantProvider(SmartHomeProvider):
                 log(f"HA 连接异常: {exc}", "WARNING", tag=_LOG_TAG)
             await self._teardown()
             self._emit_connection()
-            if self._closed:
+            if self._is_closed():
                 return
             uptime = time.time() - self._connected_at if self._connected_at else 0.0
             self._connected_at = 0.0
@@ -133,6 +133,10 @@ class HomeAssistantProvider(SmartHomeProvider):
             )
             delay = min(2.0 ** (self._retry_count - 1), _BACKOFF_MAX_SECONDS)
             await asyncio.sleep(delay)
+
+    def _is_closed(self) -> bool:
+        """读取可能在网络等待期间被 stop 改变的关闭状态。"""
+        return self._closed
 
     async def _teardown(self) -> None:
         """回收连接资源并办结在途命令（设备缓存保留末次快照）。"""

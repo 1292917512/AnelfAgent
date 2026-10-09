@@ -55,9 +55,8 @@ def set_channel_config(channel_id: str, **fields: Any) -> None:
 
     供频道内部代码（登录回填/直播开关等）使用，禁止直写 channel_config.json。
     """
-    for field, value in fields.items():
-        ConfigManager.set(config_key(channel_id, field), value)
-    ConfigManager.save()
+    ConfigManager.set_persisted({config_key(channel_id, field): value
+                                 for field, value in fields.items()})
 
 
 class ChannelConfigStore(ConfigStore):

@@ -20,6 +20,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -74,38 +75,43 @@ def _save(data: Dict[str, Any]) -> None:
 
 
 def _alive(pgid: int) -> bool:
-    try:
-        os.killpg(pgid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True  # 组存在但无权发信号——按存活处理（不误清登记）
-    except OSError:
-        return False
+    if sys.platform == "win32":
+        import psutil
+        return psutil.pid_exists(pgid)
+    else:
+        try:
+            os.killpg(pgid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True  # 组存在但无权发信号——按存活处理（不误清登记）
+        except OSError:
+            return False
 
 
 def _terminate_group(pgid: int, *, grace_seconds: float = 5.0) -> None:
     """终止一个进程组：SIGTERM → 宽限 → SIGKILL（尽力而为，失败只记日志）。"""
-    if os.name == "nt":
+    if sys.platform == "win32":
         subprocess.run(
             ["taskkill", "/PID", str(pgid), "/T", "/F"],
             capture_output=True, timeout=10, check=False,
         )
         return
-    try:
-        os.killpg(pgid, signal.SIGTERM)
-    except (ProcessLookupError, PermissionError, OSError):
-        return
-    deadline = time.monotonic() + grace_seconds
-    while time.monotonic() < deadline:
-        if not _alive(pgid):
+    else:
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
             return
-        time.sleep(0.2)
-    try:
-        os.killpg(pgid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError, OSError):
-        pass
+        deadline = time.monotonic() + grace_seconds
+        while time.monotonic() < deadline:
+            if not _alive(pgid):
+                return
+            time.sleep(0.2)
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
 
 
 def sweep_stale_children() -> int:

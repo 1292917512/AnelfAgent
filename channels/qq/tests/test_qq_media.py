@@ -176,7 +176,7 @@ class TestDownloadFileFallback:
 
         result = json.loads(await tools.download_file("fid-1"))
         assert result["success"] is True
-        assert "/uploads/file/" in result["path"]
+        assert "/uploads/file/" in result["path"].replace("\\", "/")
         assert tools.calls == ["get_file"]
 
     async def test_image_file_id_falls_back_to_get_image(self, tmp_path, monkeypatch) -> None:
@@ -190,7 +190,7 @@ class TestDownloadFileFallback:
 
         result = json.loads(await tools.download_file("img-fid"))
         assert result["success"] is True
-        assert "/uploads/image/" in result["path"]
+        assert "/uploads/image/" in result["path"].replace("\\", "/")
         assert result["name"].endswith("pic.jpg")
         assert tools.calls == ["get_file", "get_image"]
 
@@ -206,7 +206,7 @@ class TestDownloadFileFallback:
 
         result = json.loads(await tools.download_file("voice-fid"))
         assert result["success"] is True
-        assert "/uploads/voice/" in result["path"]
+        assert "/uploads/voice/" in result["path"].replace("\\", "/")
         assert tools.calls == ["get_file", "get_image", "get_record"]
 
     async def test_all_attempts_fail_returns_error(self) -> None:

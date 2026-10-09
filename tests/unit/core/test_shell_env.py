@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from shell_helpers import python_command
+
 from core.command import run_command
 from core.shell_env import shell_env_defaults
 
@@ -27,7 +29,7 @@ class TestRunCommandHygiene:
     def test_defaults_injected(self):
         # 卫生变量未被用户环境设置时，run_command 应注入默认值
         result = run_command(
-            "printf '%s' \"${NO_COLOR:-missing}\"", shell=True, timeout_sec=10,
+            python_command("import os; print(os.environ.get('NO_COLOR', 'missing'), end='')"), shell=True, timeout_sec=10,
         )
         assert result.ok
         assert result.stdout == "1"
@@ -35,7 +37,7 @@ class TestRunCommandHygiene:
     def test_user_value_wins(self):
         # 用户显式设置的同名变量优先（补缺语义，不覆盖）
         result = run_command(
-            "printf '%s' \"$NO_COLOR\"", shell=True, timeout_sec=10,
+            python_command("import os; print(os.environ.get('NO_COLOR', 'missing'), end='')"), shell=True, timeout_sec=10,
             env_vars={"NO_COLOR": "user-set"},
         )
         assert result.ok
@@ -43,7 +45,7 @@ class TestRunCommandHygiene:
 
     def test_locale_defaults(self):
         result = run_command(
-            "printf '%s' \"${LC_ALL:-missing}\"", shell=True, timeout_sec=10,
+            python_command("import os; print(os.environ.get('LC_ALL', 'missing'), end='')"), shell=True, timeout_sec=10,
         )
         assert result.ok
         assert result.stdout == "C.UTF-8"

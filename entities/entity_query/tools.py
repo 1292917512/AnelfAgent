@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any, Dict
 
 from entities._sdk import (
     ErrorCause,
@@ -292,7 +293,7 @@ def get_entity_status(entity_name: str = "") -> str:
                                   hint="可用 query_entities 搜索可用实体")
             metadata = results[0]
 
-        info = {
+        info: Dict[str, Any] = {
             "name": metadata.name,
             "type": metadata.entity_type.value,
             "description": metadata.description,

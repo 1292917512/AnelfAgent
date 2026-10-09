@@ -18,6 +18,22 @@ async def _approval_ok(self, step, run):
     return ApprovalDecision.APPROVED
 
 
+async def test_close_drains_steps_and_refuses_restart(engine, fake_manager):
+    fake_manager.gates["blocked"] = asyncio.Event()
+    spec = {"name": "close", "steps": [{"key": "a", "kind": "ask", "goal": "blocked"}]}
+    summary = await engine.start(spec)
+    await wait_until(lambda: bool(fake_manager.calls))
+    task = engine._runs[summary["run_id"]].task
+    await engine.aclose()
+    assert task.done()
+    assert engine.running_ids() == []
+    assert engine.journal._conn is None
+    with pytest.raises(RuntimeError):
+        await engine.start(spec)
+    with pytest.raises(RuntimeError):
+        await engine.journal.get_run(summary["run_id"])
+
+
 @pytest.fixture()
 def approve_all(monkeypatch):
     monkeypatch.setattr("agent.workflow.engine.WorkflowEngine._request_approval", _approval_ok)

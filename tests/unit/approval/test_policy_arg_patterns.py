@@ -37,7 +37,8 @@ class TestExtractMatchableArg:
     def test_move_file_two_paths(self):
         out = extract_matchable_arg("move_file", {"src": "a", "dst": "b"})
         parts = out.split(" ")
-        assert len(parts) == 2 and parts[0].endswith("/a") and parts[1].endswith("/b")
+        from pathlib import Path
+        assert len(parts) == 2 and Path(parts[0]).name == "a" and Path(parts[1]).name == "b"
 
     def test_unknown_tool_falls_back_to_json(self):
         out = extract_matchable_arg("some_tool", {"x": 1})

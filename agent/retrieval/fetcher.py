@@ -6,7 +6,7 @@ web_download 工具复用（这些工具只支持直连语义，不经提供者�
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, TypedDict
 
 from core.config import ConfigManager
 from core.log import log
@@ -25,12 +25,17 @@ class RobotsDisallowed(Exception):
     """robots.txt 合规检查未通过。"""
 
 
-def proxy_kwargs(use_proxy: bool) -> Dict[str, str]:
+class ProxyOptions(TypedDict, total=False):
+    trust_env: bool
+    proxy: str
+
+
+def proxy_kwargs(use_proxy: bool) -> ProxyOptions:
     """构建 httpx 代理参数。始终禁止读取环境变量代理，避免被 LLM 代理污染。"""
     if not use_proxy:
         return {"trust_env": False}
     from agent.retrieval.config import get_proxy
-    result: Dict[str, str] = {"trust_env": False}
+    result: ProxyOptions = {"trust_env": False}
     proxy = get_proxy()
     if proxy:
         result["proxy"] = proxy

@@ -113,11 +113,11 @@ class TestEditFile:
 
     def test_curly_quotes_matched_and_preserved(self, workspace):
         fp = workspace / "a.txt"
-        fp.write_text("say “hello” loudly")
+        fp.write_text("say “hello” loudly", encoding="utf-8")
         _read(fp)
         result = _edit(fp, '"hello"', '"hi"')
         assert result["ok"]
-        assert fp.read_text() == "say “hi” loudly"
+        assert fp.read_text(encoding="utf-8") == "say “hi” loudly"
 
     def test_crlf_roundtrip(self, workspace):
         fp = workspace / "a.txt"

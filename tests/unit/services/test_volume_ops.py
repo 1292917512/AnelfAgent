@@ -221,6 +221,12 @@ class TestRelocate:
 
         assert (target / "testvol.sqlite3").is_file()
         assert _read_sqlite(target / "testvol.sqlite3") == [("original",)]
+        assert sandbox.resolve_path("testvol") == str(db)
+        from agent.storage.migration import finalize_pending_migration
+        with sqlite3.connect(db) as conn:
+            conn.execute("INSERT INTO t(v) VALUES ('after-copy')")
+        finalize_pending_migration(sandbox.write_location)
+        assert _read_sqlite(target / "testvol.sqlite3") == [("original",), ("after-copy",)]
         assert sandbox.resolve_path("testvol") == str(target / "testvol.sqlite3")
         assert sandbox.needs_restart("testvol") is True
         # 源文件保留

@@ -43,6 +43,8 @@ def _pid_alive(pid: int) -> bool:
         import psutil as _psutil  # noqa: F401
         if isinstance(exc, _psutil.NoSuchProcess):
             return False
+        if os.name == "nt":
+            return _psutil.pid_exists(pid)
     try:
         os.kill(pid, 0)
         return True

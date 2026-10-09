@@ -268,7 +268,7 @@ class LoopbackCallbackServer:
 
                 query = parse_qs(urlparse(self.path).query)
                 code = (query.get("code") or [""])[0]
-                state = (query.get("state") or [None])[0]
+                state = (query.get("state") or [""])[0] or None
                 error = (query.get("error") or [""])[0]
                 iss = (query.get("iss") or [""])[0] or None
                 if not error and not code:
@@ -639,6 +639,8 @@ class AuthorizationSession:
 
     async def _register_client(self, meta: Dict[str, Any]) -> Dict[str, Any]:
         """RFC 7591 动态客户端注册（每次授权重新注册，不复用旧注册）。"""
+        if self._callback is None or self._http is None:
+            raise OAuthConfigurationError("OAuth 会话尚未初始化")
         body: Dict[str, Any] = {
             "client_name": "AnelfAgent",
             "redirect_uris": [self._callback.redirect_uri],
@@ -706,6 +708,8 @@ class AuthorizationSession:
         return tokens
 
     async def _exchange_code(self, code: str) -> OAuthToken:
+        if self._callback is None or self._client is None or self._http is None:
+            raise OAuthConfigurationError("OAuth 会话尚未初始化")
         meta = self._server_meta or {}
         data: Dict[str, str] = {
             "grant_type": "authorization_code",

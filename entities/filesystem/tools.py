@@ -545,9 +545,9 @@ def _emit_file_diff(fp: str, old_content: str, new_content: str,
             # 同步工具在 to_thread 工作线程中执行：经后台注册表绑定的主循环桥回
             from entities._sdk import get_background_registry
             registry = get_background_registry()
-            loop = getattr(registry, "_loop", None) if registry else None
-            if loop and loop.is_running():
-                loop.call_soon_threadsafe(
+            registry_loop = getattr(registry, "_loop", None) if registry else None
+            if registry_loop and registry_loop.is_running():
+                registry_loop.call_soon_threadsafe(
                     lambda: asyncio.ensure_future(event_bus.emit(EVENT_FILE_DIFF, payload)))
     except Exception:
         pass  # 展示事件失败不影响编辑主流程
@@ -576,9 +576,9 @@ def _emit_rename_diff(src: str, dst: str) -> None:
         except RuntimeError:
             from entities._sdk import get_background_registry
             registry = get_background_registry()
-            loop = getattr(registry, "_loop", None) if registry else None
-            if loop and loop.is_running():
-                loop.call_soon_threadsafe(
+            registry_loop = getattr(registry, "_loop", None) if registry else None
+            if registry_loop and registry_loop.is_running():
+                registry_loop.call_soon_threadsafe(
                     lambda: asyncio.ensure_future(event_bus.emit(EVENT_FILE_DIFF, payload)))
     except Exception:
         pass
@@ -983,9 +983,9 @@ def run_shell_command(command: str, timeout: int = 0, run_in_background: bool = 
 
         # 便签键空间守卫：键误用（注定 ENOENT）与便签树直接路径访问在执行前拦截，
         # 返回 notes 工具路由指引，不消耗一次执行（前台/后台同纪律）
-        violation = notes_guard.find_shell_violation(command, cwd)
-        if violation:
-            return notes_guard.shell_violation_error(violation)
+        notes_violation = notes_guard.find_shell_violation(command, cwd)
+        if notes_violation:
+            return notes_guard.shell_violation_error(notes_violation)
 
         if run_in_background:
             # 0 = 自动：后台缺省预期时长由 launch_background 读

@@ -304,7 +304,7 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         })
         return json.dumps({"success": True}, ensure_ascii=False)
 
-    async def send_voice(self, chat_id: str, voice: str, **kwargs: Any) -> str:
+    async def send_voice(self, chat_id: str, voice: str, caption: str = "", **kwargs: Any) -> str:
         offline = self._offline_error()
         if offline is not None:
             return offline

@@ -9,6 +9,7 @@ from typing import AsyncIterator, Optional
 import aiosqlite
 
 from core.log import log
+from core.sqlite_utils import required_row
 
 # 连接健康检查节流间隔（秒）：避免每次 _get_db 都执行 SELECT 1
 _HEALTH_CHECK_INTERVAL = 30.0
@@ -341,7 +342,11 @@ class SqliteBackend:
         """
         db = await self._get_db()
         async with self._write_lock:
-            yield db
+            try:
+                yield db
+            except BaseException:
+                await db.rollback()
+                raise
 
     # ------------------------------------------------------------------
     # 会话记录
@@ -415,7 +420,7 @@ class SqliteBackend:
             ) t ON m.scope_type=t.scope_type AND m.scope_id=t.scope_id AND m.id=t.max_id
             """
         )
-        rows = await cursor.fetchall()
+        rows = list(await cursor.fetchall())
         return [
             {
                 "scope_type": r[0], "scope_id": r[1], "role": r[2],
@@ -439,8 +444,8 @@ class SqliteBackend:
             """,
             (scope_type, scope_id, int(limit)),
         )
-        rows = await cursor.fetchall()
-        rows = list(reversed(rows))
+        rows = list(await cursor.fetchall())
+        rows.reverse()
         # 角色按存储原样返回（主流 OpenAI 格式：system/user/assistant/tool），
         # 不做 system→assistant 等特殊映射；ts_ns 由调用方用于时序水位，入库时间即消息到达时间。
         # 按列位置手工构造 dict，避免修改共享连接的 row_factory 引发并发竞态。
@@ -476,8 +481,8 @@ class SqliteBackend:
             """,
             params,
         )
-        rows = await cursor.fetchall()
-        rows = list(reversed(rows))
+        rows = list(await cursor.fetchall())
+        rows.reverse()
         return [{"id": r[0], "role": r[1], "content": r[2], "ts_ns": r[3]} for r in rows]
 
     # ------------------------------------------------------------------
@@ -505,6 +510,8 @@ class SqliteBackend:
         import json as _json
 
         def _parse_marks(raw: object) -> dict:
+            if not isinstance(raw, (str, bytes, bytearray)):
+                return {}
             try:
                 marks = _json.loads(raw or "{}")
                 if not isinstance(marks, dict):
@@ -687,7 +694,7 @@ class SqliteBackend:
             """,
             params,
         )
-        rows = list(reversed(await cursor.fetchall()))
+        rows = list(reversed(list(await cursor.fetchall())))
         return [
             {
                 "id": r[0], "scope_type": r[1], "scope_id": r[2], "role": r[3],
@@ -720,7 +727,7 @@ class SqliteBackend:
             """,
             params,
         )
-        rows = await cursor.fetchall()
+        rows = list(await cursor.fetchall())
         return [
             {
                 "id": r[0], "scope_type": r[1], "scope_id": r[2], "role": r[3],
@@ -879,7 +886,7 @@ class SqliteBackend:
         cursor = await db.execute(
             "SELECT id, scope, kind, payload_json, ts_ns FROM pending_tasks ORDER BY ts_ns ASC"
         )
-        rows = await cursor.fetchall()
+        rows = list(await cursor.fetchall())
         return [
             {"id": r[0], "scope": r[1], "kind": r[2], "payload_json": r[3], "ts_ns": r[4]}
             for r in rows
@@ -920,7 +927,7 @@ class SqliteBackend:
             "SELECT scope_key, adapter_key, phase, iteration, started_ns "
             "FROM reply_checkpoints ORDER BY started_ns ASC"
         )
-        rows = await cursor.fetchall()
+        rows = list(await cursor.fetchall())
         return [
             {"scope_key": r[0], "adapter_key": r[1], "phase": r[2],
              "iteration": r[3], "started_ns": r[4]}
@@ -955,7 +962,7 @@ class SqliteBackend:
             "FROM reply_tool_journal WHERE scope_key=? ORDER BY id ASC",
             (scope_key,),
         )
-        rows = await cursor.fetchall()
+        rows = list(await cursor.fetchall())
         return [
             {"tool_name": r[0], "arguments": r[1], "result_head": r[2], "status": r[3]}
             for r in rows
@@ -1022,7 +1029,7 @@ class SqliteBackend:
             "FROM scope_usage ORDER BY total_tokens DESC LIMIT ?",
             (max(1, int(limit)),),
         )
-        rows = await cursor.fetchall()
+        rows = list(await cursor.fetchall())
         return [
             {"scope_key": r[0], "turns": r[1], "llm_calls": r[2],
              "prompt_tokens": r[3], "completion_tokens": r[4], "total_tokens": r[5],
@@ -1066,7 +1073,7 @@ class SqliteBackend:
             f"FROM approval_audit {where}ORDER BY id DESC LIMIT ? OFFSET ?",
             (*args, max(1, int(limit)), max(0, int(offset))),
         )
-        rows = await cursor.fetchall()
+        rows = list(await cursor.fetchall())
         return [
             {"id": r[0], "ts_ns": r[1], "tool_name": r[2], "outcome": r[3],
              "decided_by": r[4], "reason": r[5], "channel_id": r[6],
@@ -1094,7 +1101,7 @@ class SqliteBackend:
         cursor = await db.execute(
             "SELECT outcome, COUNT(*) FROM approval_audit GROUP BY outcome"
         )
-        rows = await cursor.fetchall()
+        rows = list(await cursor.fetchall())
         by_outcome = {r[0]: int(r[1]) for r in rows}
         return {"total": sum(by_outcome.values()), "by_outcome": by_outcome}
 
@@ -1109,7 +1116,7 @@ class SqliteBackend:
             "SELECT scope_type, scope_id, COUNT(*) as cnt, MAX(ts_ns) as last_ts "
             "FROM conversation_messages GROUP BY scope_type, scope_id ORDER BY last_ts DESC"
         )
-        rows = await cursor.fetchall()
+        rows = list(await cursor.fetchall())
         return [
             {"scope_type": r[0], "scope_id": r[1], "count": r[2], "last_ts": r[3]}
             for r in rows
@@ -1122,7 +1129,7 @@ class SqliteBackend:
         cursor = await db.execute(
             "SELECT DISTINCT scope_type, scope_id FROM conversation_messages"
         )
-        rows = await cursor.fetchall()
+        rows = list(await cursor.fetchall())
         return [{"scope_type": r[0], "scope_id": r[1]} for r in rows]
 
     async def list_user_chat_sessions(self, user_id: str) -> list[dict]:
@@ -1139,7 +1146,7 @@ class SqliteBackend:
             "GROUP BY scope_id ORDER BY last_ts DESC",
             (user_id, f"{user_id}#%"),
         )
-        rows = await cursor.fetchall()
+        rows = list(await cursor.fetchall())
         title_cursor = await db.execute(
             "SELECT m.scope_id, m.content FROM conversation_messages m "
             "JOIN ("
@@ -1192,7 +1199,7 @@ class SqliteBackend:
                 f"WHERE {' AND '.join(where)} ORDER BY id ASC LIMIT ?",
                 (*params, int(limit)),
             )
-            rows = await cursor.fetchall()
+            rows = list(await cursor.fetchall())
             return [{"id": r[0], "role": r[1], "content": r[2], "ts_ns": r[3]} for r in rows]
         if before_id is not None:
             where.append("id<?")
@@ -1202,8 +1209,8 @@ class SqliteBackend:
             f"WHERE {' AND '.join(where)} ORDER BY ts_ns DESC LIMIT ?",
             (*params, int(limit)),
         )
-        rows = await cursor.fetchall()
-        rows = list(reversed(rows))
+        rows = list(await cursor.fetchall())
+        rows.reverse()
         return [{"id": r[0], "role": r[1], "content": r[2], "ts_ns": r[3]} for r in rows]
 
     async def count_conversation(self, *, scope_type: str, scope_id: str) -> int:
@@ -1236,7 +1243,7 @@ class SqliteBackend:
             "WHERE content LIKE ? ORDER BY ts_ns DESC LIMIT ?",
             (f"%{keyword}%", int(limit)),
         )
-        rows = await cursor.fetchall()
+        rows = list(await cursor.fetchall())
         return [
             {
                 "id": r[0], "scope_type": r[1], "scope_id": r[2],
@@ -1279,7 +1286,7 @@ class SqliteBackend:
             f"WHERE {' AND '.join(conditions)} ORDER BY ts_ns DESC LIMIT ?",
             params,
         )
-        rows = await cursor.fetchall()
+        rows = list(await cursor.fetchall())
 
         matched: list[dict] = []
         for r in rows:
@@ -1316,7 +1323,7 @@ class SqliteBackend:
         before = max(0, int(before))
         after = max(0, int(after))
 
-        older: list[tuple] = []
+        older: list[aiosqlite.Row] = []
         if before > 0:
             cursor = await db.execute(
                 "SELECT id, scope_type, scope_id, role, content, ts_ns FROM conversation_messages "
@@ -1324,7 +1331,7 @@ class SqliteBackend:
                 "ORDER BY ts_ns DESC, id DESC LIMIT ?",
                 (scope_type, scope_id, center_ts_ns, center_ts_ns, center_id, before),
             )
-            older = list(reversed(await cursor.fetchall()))
+            older = list(reversed(list(await cursor.fetchall())))
 
         cursor = await db.execute(
             "SELECT id, scope_type, scope_id, role, content, ts_ns FROM conversation_messages "
@@ -1335,7 +1342,7 @@ class SqliteBackend:
         if not center_row:
             return []
 
-        newer: list[tuple] = []
+        newer: list[aiosqlite.Row] = []
         if after > 0:
             cursor = await db.execute(
                 "SELECT id, scope_type, scope_id, role, content, ts_ns FROM conversation_messages "
@@ -1345,7 +1352,7 @@ class SqliteBackend:
             )
             newer = list(await cursor.fetchall())
 
-        def _row(r: tuple) -> dict:
+        def _row(r: aiosqlite.Row) -> dict:
             return {
                 "id": r[0],
                 "scope_type": r[1],
@@ -1369,7 +1376,7 @@ class SqliteBackend:
             f"SELECT COUNT(*) FROM conversation_messages WHERE {' AND '.join(conditions)}",
             params,
         )
-        return int((await cursor.fetchone())[0])
+        return int(required_row(await cursor.fetchone())[0])
 
     async def clear_conversation_embeddings(self) -> int:
         """清空全部对话消息向量（切换 embedding 模型后由后台 worker 重建）。"""
@@ -1413,7 +1420,7 @@ class SqliteBackend:
             f"WHERE {' AND '.join(conditions)} LIMIT ?",
             params,
         )
-        rows = await cursor.fetchall()
+        rows = list(await cursor.fetchall())
         if not rows:
             return 0
 
@@ -1660,7 +1667,7 @@ class SqliteBackend:
             "SELECT scope_type, scope_id, personality, updated_ts_ns, conv_num, conv_update_num "
             "FROM entity_profile ORDER BY updated_ts_ns DESC"
         )
-        rows = await cursor.fetchall()
+        rows = list(await cursor.fetchall())
         return [
             {
                 "scope_type": r[0], "scope_id": r[1], "personality": r[2],
@@ -1738,7 +1745,7 @@ class SqliteBackend:
             "SELECT scope_type, scope_id, primary_scope_type, primary_scope_id, created_ts_ns "
             "FROM entity_alias ORDER BY created_ts_ns DESC"
         )
-        rows = await cursor.fetchall()
+        rows = list(await cursor.fetchall())
         return [
             {
                 "scope_type": r[0], "scope_id": r[1],
@@ -1758,5 +1765,5 @@ class SqliteBackend:
             "WHERE primary_scope_type=? AND primary_scope_id=?",
             (scope_type, scope_id),
         )
-        rows = await cursor.fetchall()
+        rows = list(await cursor.fetchall())
         return [{"scope_type": r[0], "scope_id": r[1]} for r in rows]

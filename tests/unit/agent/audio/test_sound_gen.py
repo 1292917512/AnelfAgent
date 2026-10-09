@@ -28,6 +28,7 @@ def mem_config(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(ConfigManager, "set", staticmethod(lambda k, v: store.__setitem__(k, v)))
     monkeypatch.setattr(ConfigManager, "has", staticmethod(lambda k: k in store))
     monkeypatch.setattr(ConfigManager, "save", staticmethod(lambda: True))
+    monkeypatch.setattr(ConfigManager, "set_persisted", staticmethod(store.update))
     return store
 
 

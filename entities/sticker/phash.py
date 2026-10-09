@@ -23,7 +23,7 @@ def compute_phash(path: str) -> str:
                 img.seek(0)
             except EOFError:
                 log("compute_phash 异常已忽略", "DEBUG")
-            gray = img.convert("L").resize((_HASH_SIZE + 1, _HASH_SIZE), Image.LANCZOS)
+            gray = img.convert("L").resize((_HASH_SIZE + 1, _HASH_SIZE), Image.Resampling.LANCZOS)
             pixels = list(gray.getdata())
         bits = 0
         for row in range(_HASH_SIZE):

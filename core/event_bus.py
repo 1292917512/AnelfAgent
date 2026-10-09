@@ -119,6 +119,23 @@ class EventBus:
                 del self._handlers[event]
         return removed
 
+    def off_by_module(self, module: str) -> int:
+        """清理模块及其子模块声明的事件回调。"""
+        removed = 0
+        for event, subs in list(self._handlers.items()):
+            kept = []
+            for sub in subs:
+                origin = getattr(sub.handler, "__module__", "")
+                if origin == module or origin.startswith(module + "."):
+                    removed += 1
+                else:
+                    kept.append(sub)
+            if kept:
+                self._handlers[event] = kept
+            else:
+                del self._handlers[event]
+        return removed
+
     async def _invoke_handler(
         self, event: str, sub: "_Subscription", payload: Dict[str, Any],
     ) -> Any:

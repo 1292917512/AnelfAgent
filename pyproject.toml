@@ -168,14 +168,16 @@ ignore = [
 "channels/**/tests/**" = ["B017"]
 
 [tool.mypy]
-python_version = "3.11"
-# 渐进严格：全仓跑基础检查，core 层逐步收紧
+python_version = "3.12"
+files = ["core", "agent", "services", "entities", "channels", "web"]
+# 生产模块全量检查，core 层要求完整函数注解
 ignore_missing_imports = true
 follow_imports = "silent"
 warn_unused_ignores = true
 warn_redundant_casts = true
 warn_unreachable = true
 strict_optional = true
+check_untyped_defs = true
 exclude = "(\\.venv|workspace|web/frontend|config|tests)"
 
 [[tool.mypy.overrides]]
@@ -234,4 +236,11 @@ name = "web/routers 不直接依赖 agent/entities/channels（经 services 收�
 type = "forbidden"
 source_modules = ["web.routers"]
 forbidden_modules = ["agent", "entities", "channels"]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "memory 不直接依赖 mind（经最小宿主接口注入）"
+type = "forbidden"
+source_modules = ["agent.memory"]
+forbidden_modules = ["agent.mind"]
 allow_indirect_imports = true

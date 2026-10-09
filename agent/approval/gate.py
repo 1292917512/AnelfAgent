@@ -491,8 +491,10 @@ class ApprovalGate:
         if not response.success:
             raise RuntimeError(f"批准提示发送失败: {response.error}")
 
-    async def _safe_notify(self, notify: Callable[[str], Any], text: str) -> None:
+    async def _safe_notify(self, notify: Optional[Callable[[str], Any]], text: str) -> None:
         """best-effort 调用提醒回调（提醒失败不影响放行决策）。"""
+        if notify is None:
+            return
         try:
             result = notify(text)
             if asyncio.iscoroutine(result) or hasattr(result, "__await__"):

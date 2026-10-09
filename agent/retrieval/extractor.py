@@ -72,22 +72,22 @@ def extract_page_metadata(html: str, url: str = "") -> Dict[str, str]:
     # 标题
     og_title = soup.find("meta", property="og:title")
     if og_title and og_title.get("content"):
-        meta["title"] = og_title["content"].strip()
+        meta["title"] = str(og_title["content"]).strip()
     elif soup.title:
         meta["title"] = soup.title.get_text(strip=True)
 
     # 描述
     for sel in [{"property": "og:description"}, {"name": "description"}, {"name": "twitter:description"}]:
-        tag = soup.find("meta", attrs=sel)
+        tag = soup.find("meta", attrs=dict(sel))
         if tag and tag.get("content"):
-            meta["description"] = tag["content"].strip()
+            meta["description"] = str(tag["content"]).strip()
             break
 
     # 作者
     for sel in [{"name": "author"}, {"property": "article:author"}]:
-        tag = soup.find("meta", attrs=sel)
+        tag = soup.find("meta", attrs=dict(sel))
         if tag and tag.get("content"):
-            meta["author"] = tag["content"].strip()
+            meta["author"] = str(tag["content"]).strip()
             break
     if "author" not in meta:
         for cls in ("author", "byline", "post-author"):
@@ -98,22 +98,22 @@ def extract_page_metadata(html: str, url: str = "") -> Dict[str, str]:
 
     # 发布时间
     for sel in [{"property": "article:published_time"}, {"name": "pubdate"}, {"itemprop": "datePublished"}]:
-        tag = soup.find("meta", attrs=sel) or soup.find(attrs=sel)
+        tag = soup.find("meta", attrs=dict(sel)) or soup.find(True, attrs=dict(sel))
         if tag:
             v = tag.get("content") or tag.get("datetime") or tag.get_text(strip=True)
             if v:
-                meta["published"] = v.strip()[:50]
+                meta["published"] = str(v).strip()[:50]
                 break
 
     # 关键词
     kw_tag = soup.find("meta", attrs={"name": "keywords"})
     if kw_tag and kw_tag.get("content"):
-        meta["keywords"] = kw_tag["content"].strip()[:200]
+        meta["keywords"] = str(kw_tag["content"]).strip()[:200]
 
     # 规范 URL
     og_url = soup.find("meta", property="og:url") or soup.find("link", rel="canonical")
     if og_url:
-        meta["canonical_url"] = (og_url.get("content") or og_url.get("href") or "").strip()
+        meta["canonical_url"] = str(og_url.get("content") or og_url.get("href") or "").strip()
 
     return meta
 
@@ -237,7 +237,7 @@ def extract_links(html: str, base_url: str = "", filter_noise: bool = True) -> L
         if filter_noise and _in_noise(a):
             continue
 
-        href = a["href"].strip()
+        href = str(a["href"]).strip()
         if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
             continue
         if base_url:

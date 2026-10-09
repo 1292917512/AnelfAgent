@@ -126,7 +126,7 @@ class CLIChannel(BaseChannel[CLIConfig]):
 
     async def render_approval_prompt(self, ctx) -> SendRequest:
         """渲染批准提示（CLI y/n 提示，覆盖基类文本模板——终端交互需要 y/n 快捷输入）。"""
-        from agent.channel.schemas import AdapterChannel, ChannelType, SendSegment
+        from agent.channel.schemas import AdapterChannel, ChannelType, SegmentType, SendSegment
 
         text = (
             f"\n⚠️  工具调用需要批准\n"
@@ -145,7 +145,7 @@ class CLIChannel(BaseChannel[CLIConfig]):
                 channel_id="",  # 由 approval/gate.py 填充
                 channel_type=ChannelType.PRIVATE,
             ),
-            segments=[SendSegment(type="text", content=text)],
+            segments=[SendSegment(type=SegmentType.TEXT, content=text)],
         )
 
     # ------------------------------------------------------------------

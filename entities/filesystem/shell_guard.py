@@ -29,11 +29,12 @@ _BENIGN_PREFIXES = ("/dev/null", "/dev/zero", "/tmp/", "/var/tmp/", "/dev/pts/")
 
 
 def _is_benign(path: str, workspace: str, tmpdir: str) -> bool:
-    if path.startswith(os.path.abspath(workspace) + os.sep):
-        return True
     if any(path.startswith(p) for p in _BENIGN_PREFIXES):
         return True
-    if tmpdir and path.startswith(os.path.abspath(tmpdir) + os.sep):
+    path = os.path.normcase(os.path.abspath(path))
+    if path.startswith(os.path.normcase(os.path.abspath(workspace)) + os.sep):
+        return True
+    if tmpdir and path.startswith(os.path.normcase(os.path.abspath(tmpdir)) + os.sep):
         return True
     return False
 
@@ -64,7 +65,7 @@ def check_command_safety(command: str, workspace: str) -> Optional[str]:
 
     # 2. 写动词参数
     try:
-        tokens = shlex.split(command, posix=True)
+        tokens = [token.strip('"\'') for token in shlex.split(command, posix=os.name != "nt")]
     except ValueError:
         tokens = command.split()
     prev_verb = ""
@@ -73,7 +74,7 @@ def check_command_safety(command: str, workspace: str) -> Optional[str]:
         if verb in _WRITE_VERBS:
             prev_verb = verb
             continue
-        if prev_verb and token.startswith("/") and not _is_benign(token, workspace, tmpdir):
+        if prev_verb and os.path.isabs(token) and not _is_benign(token, workspace, tmpdir):
             return f"{prev_verb} 操作涉及 workspace 外的路径: {token}"
         # 遇到管道/分隔符重置动词上下文（shlex 会保留 | 等 token）
         if token in ("|", ";", "&&", "||"):

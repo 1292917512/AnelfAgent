@@ -60,9 +60,9 @@ class ToolService:
                 groups[g]["enabled_count"] += 1
 
         result = list(groups.values())
-        for g in result:
-            g["all_enabled"] = g["enabled_count"] == g["total_count"] and g["total_count"] > 0
-            g["any_enabled"] = g["enabled_count"] > 0
+        for group in result:
+            group["all_enabled"] = group["enabled_count"] == group["total_count"] and group["total_count"] > 0
+            group["any_enabled"] = group["enabled_count"] > 0
         return sorted(result, key=lambda x: _group_sort_key(x["group"]))
 
     def toggle_tool(self, name: str) -> bool:
@@ -113,7 +113,7 @@ class ToolService:
         EntityRegistry.bump_version()
 
         # 持久化覆盖到 ConfigManager
-        overrides: dict = ConfigManager.get("tool_overrides", {})
+        overrides = ConfigManager.get("tool_overrides", {})
         if not isinstance(overrides, dict):
             overrides = {}
 

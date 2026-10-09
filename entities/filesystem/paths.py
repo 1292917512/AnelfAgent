@@ -36,7 +36,11 @@ def get_workspace_root() -> str:
 
     proj = os.path.realpath(project_root())
     real = os.path.realpath(root)
-    if real == proj or real == os.sep or proj.startswith(real + os.sep):
+    try:
+        covers_project = os.path.commonpath((real, proj)) == real
+    except ValueError:
+        covers_project = False
+    if covers_project or os.path.dirname(real) == real:
         from core.log import log
         log(
             f"workspace_root 配置危险（{cfg!r} 覆盖项目根），已回退 <项目根>/workspace",

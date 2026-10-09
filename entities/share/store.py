@@ -20,6 +20,7 @@ from urllib.parse import urlsplit
 import aiosqlite
 
 from core.log import log
+from core.sqlite_utils import required_row
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS share_links (
@@ -198,8 +199,6 @@ class ShareStore:
         self._lock = asyncio.Lock()
 
     async def _get_db(self) -> aiosqlite.Connection:
-        if self._db is not None:
-            return self._db
         async with self._lock:
             if self._db is not None:
                 return self._db
@@ -380,7 +379,7 @@ class ShareStore:
 
         cursor = await db.execute(
             f"SELECT COUNT(*) AS c FROM share_links {where}", params)
-        total = (await cursor.fetchone())["c"]
+        total = required_row(await cursor.fetchone())["c"]
 
         cursor = await db.execute(
             f"SELECT * FROM share_links {where} "
@@ -451,7 +450,7 @@ class ShareStore:
         counts = {r["status"]: r["c"] for r in await cursor.fetchall()}
         cursor = await db.execute(
             "SELECT COALESCE(SUM(download_count),0) AS d FROM share_links")
-        total_downloads = (await cursor.fetchone())["d"]
+        total_downloads = required_row(await cursor.fetchone())["d"]
         cursor = await db.execute(
             "SELECT file_path, file_name, SUM(download_count) AS d "
             "FROM share_links GROUP BY file_path ORDER BY d DESC LIMIT 10")
@@ -509,7 +508,7 @@ class ShareStore:
 
         cursor = await db.execute(
             f"SELECT COUNT(*) AS c FROM download_logs {where}", params)
-        total = (await cursor.fetchone())["c"]
+        total = required_row(await cursor.fetchone())["c"]
 
         cursor = await db.execute(
             f"SELECT * FROM download_logs {where} "

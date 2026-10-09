@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field
 from core.log import log
 from core.path import ConfigPaths
 
-from .policy import ApprovalPolicySet, RiskLevel, match_path_pattern, matchable_arg_candidates
+from .policy import ApprovalPolicySet, RiskLevel, matchable_arg_candidates, matches_arg_pattern
 
 
 def rules_path() -> str:
@@ -121,12 +121,8 @@ class PermissionRule(BaseModel):
                 and any(COMPOUND_CMD_RE.search(c) for c in candidates)
             ):
                 return False
-            if "/" in arg_pattern:
-                return any(match_path_pattern(candidate, arg_pattern) for candidate in candidates)
-            return any(
-                fnmatch.fnmatch(candidate, arg_pattern)
-                for candidate in candidates
-            )
+            return matches_arg_pattern(tool_name, tool_args, arg_pattern,
+                                       require_all=self.effect == PermissionEffect.ALLOW)
         return True
 
     def applies_to_channel(self, channel_id: str) -> bool:

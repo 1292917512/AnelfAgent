@@ -16,6 +16,7 @@ from core.log import log
 
 from . import audit
 from .policy import ApprovalPolicy
+from .rules import PermissionRule
 from .session import ApprovalDecision, ApprovalRequest, ApprovalSession
 
 
@@ -167,7 +168,7 @@ class ApprovalManager:
         self,
         tool_name: str,
         user_id: str,
-        policy: ApprovalPolicy,
+        policy: ApprovalPolicy | PermissionRule,
     ) -> bool:
         """检查是否已达到 trust_after_n_approvals 阈值。
 

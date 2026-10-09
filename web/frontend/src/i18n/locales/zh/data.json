@@ -97,7 +97,7 @@
       "default": "默认目录"
     },
     "envWarning": "ANELF_DATA_DIR 环境变量（{{value}}）生效中，优先级高于 data_root 配置；迁移写入的配置不会生效，请先移除环境变量。",
-    "restartHint": "迁移已完成并写入 data_root（{{target}}）。新目录将在重启后生效；源目录已保留，确认无误后可手动删除。",
+    "restartHint": "预拷贝已完成（{{target}}）。重启时会补齐期间的新写入，再切换目录；源目录保留，确认无误后可手动删除。",
     "errorHint": "迁移失败：{{error}}。已拷贝的部分文件保留在目标目录，可处理后重试。",
     "migrateTitle": "数据目录迁移",
     "targetPlaceholder": "目标目录绝对路径，如 /Volumes/nas/anelf/data",
@@ -118,7 +118,7 @@
     },
     "running": "迁移中 {{done}} / {{total}}",
     "migrate": "开始迁移",
-    "migrateHint": "SQLite 走在线热备份（运行中安全），源目录保留不删；完成后需重启生效。",
+    "migrateHint": "SQLite 走在线热备份；重启时再次同步源目录的新数据后切换，源目录保留不删。",
     "migrateFailed": "启动迁移失败"
   },
   "volumes": {
@@ -135,7 +135,7 @@
     },
     "pendingBanner": "以下卷的恢复任务已暂存，重启后落盘：{{volumes}}",
     "pendingOne": "恢复任务已暂存，重启后落盘",
-    "needsRestart": "位置已切换，重启后生效；重启前的新写入仍落旧位置",
+    "needsRestart": "等待重启切换位置；重启时会同步旧位置的新写入",
     "restartNow": "立即重启",
     "restarting": "重启指令已下发",
     "restartFailed": "重启请求失败",

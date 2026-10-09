@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Callable, Dict, Optional, Set
+from typing import AbstractSet, Any, Callable, Dict, Optional
 
 # 状态机词汇（与前端扫码组件的轮询契约一致）
 QR_WAIT = "wait"
@@ -39,7 +39,7 @@ class QrSessionStore:
     def is_expired(self, session: Any) -> bool:
         return self._clock() - session.created_at > self._ttl
 
-    def gc(self, *, keep_status: Set[str] = frozenset()) -> None:
+    def gc(self, *, keep_status: AbstractSet[str] = frozenset()) -> None:
         """回收过期会话；keep_status 中的状态（如 confirmed）即使过期也保留。"""
         dead = [
             sid for sid, s in self._sessions.items()

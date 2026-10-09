@@ -129,7 +129,7 @@ class QQTransport:
         log(f"QQ: 反向 WS Server 已启动，等待连接 ws://{host}:{port}/onebot/v11/ws"
             f"（认证: {'token' if token else '仅回环'}）")
 
-    async def _reverse_ws_handler(self, request: web.Request) -> web.WebSocketResponse:
+    async def _reverse_ws_handler(self, request: web.Request) -> web.StreamResponse:
         """处理 OneBot 端的反向 WS 连接。"""
         ch = self._ch
         token = ch._cfg("access_token", "")

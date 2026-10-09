@@ -99,8 +99,8 @@ class SmartHomeManager:
             result = [
                 d for d in result
                 if d.domain == domain
-                or (framework.domain_for_ha(d.domain) is not None
-                    and framework.domain_for_ha(d.domain).key == domain)
+                or ((device_domain := framework.domain_for_ha(d.domain)) is not None
+                    and device_domain.key == domain)
             ]
         area = area.strip()
         if area:
