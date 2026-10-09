@@ -44,6 +44,8 @@ uv run python scripts/setup_minecraft.py --download-node --host 127.0.0.1 --port
 服务地址、端口或账号改变后，重跑安装命令更新配置，再重启 AnelfAgent。
 重跑和使用 `--upgrade` 时，未提供的连接参数、世界标识和玩家名单沿用已有配置；
 `--clear-players` 可清空玩家限制。应用重启也会保留已保存的 MCP 连接配置。
+插件在 `.mcp.json` 中显式声明 `preserve_runtime_config: true`，重激活时合并清单默认值和
+已保存的连接参数；其他插件默认按清单刷新连接参数。所有插件均保留服务的启停和常驻设置。
 
 ## 开始陪玩
 

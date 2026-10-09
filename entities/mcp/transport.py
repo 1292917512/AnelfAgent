@@ -100,6 +100,7 @@ async def _spawn_windows_process_with_priority(
     from mcp.os.win32 import utilities as win32_util
 
     creationflags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) | priority_flag
+    process: anyio.abc.Process | win32_util.FallbackProcess
     try:
         process = await anyio.open_process(
             [command, *args],

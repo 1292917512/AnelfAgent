@@ -162,7 +162,9 @@ class MCPBridge:
         async def _proxy(_name: str = prefixed, **kwargs: Any) -> str:
             return await bridge.call_tool(_name, kwargs)
 
-        meta = {"timeout": old.meta["timeout"]} if "timeout" in old.meta else None
+        meta = {"mcp_original_name": original}
+        if "timeout" in old.meta:
+            meta["timeout"] = old.meta["timeout"]
         EntityRegistry.register_tool(
             name=prefixed,
             func=_proxy,
@@ -1165,6 +1167,7 @@ class MCPBridge:
             # 远端语义由服务器声明，本地桥接层按 request-id 多路复用天然容忍并发；
             # 写操作保持串行。注册时读入 meta，重连重注册字节不变。
             tool_meta = dict(meta or {})
+            tool_meta["mcp_original_name"] = t_name
             if t.annotations and t.annotations.read_only_hint:
                 tool_meta["concurrency_safe"] = True
 

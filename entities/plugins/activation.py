@@ -257,6 +257,8 @@ def _activate_mcp_servers(plugin_name: str, payload_dir: Path, manifest) -> List
       启动增生一层前缀副本
     - 非本插件占用同名时才加 ``<插件>__`` 前缀
     - 本插件残留但清单已不声明的 server 直接回收
+    - 启停/常驻状态始终保留；清单显式声明 preserve_runtime_config=true
+      时另保留运行连接参数，该声明仅用于激活，不写入 MCP 配置
     """
     from entities.mcp.config import MCPServerStore
 
@@ -284,17 +286,20 @@ def _activate_mcp_servers(plugin_name: str, payload_dir: Path, manifest) -> List
             final_name = f"{plugin_name}__{server_name}"
             log(f"MCP server 名冲突，以前缀合并: {server_name} → {final_name}", "WARNING", tag=_TAG)
         cfg = dict(cfg)
+        preserve_runtime = cfg.pop("preserve_runtime_config", False) is True
         cfg["plugin"] = plugin_name
         try:
             if final_name in owned:
-                # 重激活保留运行配置及启停/常驻状态；升级先去激活，再按新清单创建。
                 existing = raw[final_name]
-                for field in ("env", "headers"):
-                    defaults = cfg.get(field, {})
-                    overrides = existing.get(field, {})
-                    if isinstance(defaults, dict) and isinstance(overrides, dict) and (defaults or overrides):
-                        cfg[field] = {**defaults, **overrides}
-                cfg = {**cfg, **{key: value for key, value in existing.items() if key not in {"env", "headers"}}}
+                if preserve_runtime:
+                    for field in ("env", "headers"):
+                        defaults = cfg.get(field, {})
+                        overrides = existing.get(field, {})
+                        if isinstance(defaults, dict) and isinstance(overrides, dict) and (defaults or overrides):
+                            cfg[field] = {**defaults, **overrides}
+                    cfg.update({key: value for key, value in existing.items() if key not in {"env", "headers"}})
+                else:
+                    cfg.update({key: existing[key] for key in ("enabled", "stay_awake") if key in existing})
                 store.update_server_config(final_name, cfg, replace=True, reload=False)
                 owned.discard(final_name)
             else:

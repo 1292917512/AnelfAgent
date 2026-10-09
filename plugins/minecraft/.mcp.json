@@ -1,6 +1,7 @@
 {
   "mcpServers": {
     "minecraft": {
+      "preserve_runtime_config": true,
       "command": "node",
       "args": ["${PLUGIN_ROOT}/node_modules/awesome-mineflayer-mcp/dist/index.js"],
       "enabled": false,
