@@ -454,7 +454,6 @@ class TestRulesDoc:
 
         target = tmp_path / "config" / "memory_rules.md"
         monkeypatch.setattr(rules_doc, "rules_path", lambda: target)
-        monkeypatch.setattr(rules_doc, "_cache", None)
         return target
 
     def test_seed_default_on_missing(self, rules_file: Path) -> None:
@@ -472,12 +471,26 @@ class TestRulesDoc:
         assert rules_doc.load_rules() == "自定义铁律文档\n第二行"
 
     def test_external_edit_picked_up(self, rules_file: Path) -> None:
-        """手工编辑文件（绕过 save_rules）经 mtime 失效被读取到。"""
+        """直接读取手工编辑后的规则内容。"""
         from agent.memory import rules_doc
 
         rules_doc.load_rules()
         rules_file.write_text("手工编辑的内容", encoding="utf-8")
         assert rules_doc.load_rules() == "手工编辑的内容"
+
+    def test_external_edit_with_unchanged_timestamp_and_size(self, rules_file: Path) -> None:
+        """同长度且保留修改时间的外部编辑也应立即生效。"""
+        import os
+
+        from agent.memory import rules_doc
+
+        rules_doc.save_rules("旧规则")
+        before = rules_file.stat()
+        rules_file.write_text("新规则", encoding="utf-8")
+        os.utime(rules_file, ns=(before.st_atime_ns, before.st_mtime_ns))
+        after = rules_file.stat()
+        assert (after.st_mtime_ns, after.st_size) == (before.st_mtime_ns, before.st_size)
+        assert rules_doc.load_rules() == "新规则"
 
 
 # ==================================================================
