@@ -7,7 +7,11 @@ import { ToolError } from '../util/errors.js'
 /** @typedef {import('prismarine-recipe').Recipe} Recipe */
 /** @typedef {{kind:'craft',item:string,recipe:Recipe,operations:number}|{kind:'place_table'}} Step */
 /** @typedef {{stock:Map<number,number>,steps:Step[],table:boolean}} State */
-export const productionItems = /** @type {const} */ (['wooden_pickaxe', 'wooden_axe', 'wooden_shovel', 'wooden_hoe', 'wooden_sword', 'crafting_table', 'stick'])
+export const productionItems = /** @type {const} */ ([
+  'wooden_pickaxe', 'wooden_axe', 'wooden_shovel', 'wooden_hoe', 'wooden_sword',
+  'stone_pickaxe', 'stone_axe', 'stone_shovel', 'stone_hoe', 'stone_sword',
+  'shield', 'torch', 'crafting_table', 'stick',
+])
 
 /** @param {Bot} bot @param {string} name */
 export function itemCount (bot, name) {
@@ -25,7 +29,7 @@ function copy (state) { return { stock: new Map(state.stock), steps: [...state.s
 export function planProduction (bot, item, count, mode, hasTable, additional = new Map()) {
   const target = bot.registry.itemsByName[item]
   if (!target || !productionItems.some(name => name === item) || !Number.isInteger(count) || count < 1 || count > 8) {
-    throw new ToolError('INVALID_ARGS', 'Supported wooden tools, crafting_table or stick only; count must be 1..8 output items.')
+    throw new ToolError('INVALID_ARGS', 'Supported wooden/stone tools, shield, torch, crafting_table or stick only; count must be 1..8 output items.')
   }
   const before = itemCount(bot, item), required = mode === 'craft' ? before + count : count
   /** @type {Map<number,number>} */

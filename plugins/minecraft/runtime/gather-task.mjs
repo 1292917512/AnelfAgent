@@ -30,6 +30,7 @@ export class GatherTask {
     this.dimension = bot.game.dimension; this.entry = bot.entity.position.floored()
     this.item = resources[order.block]; this.before = itemCount(bot, this.item); this.available = this.before
     this.dug = 0; this.gained = 0; this.deposited = 0; this.returned = false; this.clean = true
+    /** @type {Vec3|null} */ this.treeAnchor = null
     this.stage = 'planned'; this.reason = ''; this.returnReason = ''
     /** @type {Phase} */ this.phase = 'running'
     this.startedAt = Date.now()
@@ -84,25 +85,30 @@ export class GatherTask {
   }
 
   /** @param {GatherNavigation} navigation @param {Set<string>} [tried] */
-  async candidate (navigation, tried = new Set()) {
+  async candidate (navigation, tried = new Set(), allowed = null) {
     const center = new Vec3(this.order.x, this.order.y, this.order.z)
     const positions = this.bot.findBlocks({ matching: this.bot.registry.blocksByName[this.order.block].id,
       point: center, maxDistance: this.order.radius, count: 64 })
     for (const p of positions) {
+      if (allowed && !allowed.has(safety.key(p))) continue
       this.check(navigation.signal)
-      if (p.y < this.entry.y || p.y > this.entry.y + 2) continue
+      if (p.y < this.entry.y || (p.y > this.entry.y + 3 && !(allowed && allowed.has(safety.key(p))))) continue
       const block = this.bot.blockAt(p)
       if (!block || !safety.canHarvestBlock(this.bot, block)) continue
-      const stands = []
-      for (let x = -1; x <= 1; x++) for (let z = -1; z <= 1; z++) {
-        const stand = new Vec3(p.x + x, this.entry.y, p.z + z)
-        if (navigation.safe(stand)) stands.push(stand)
-      }
-      stands.sort((a, b) => a.distanceTo(this.bot.entity.position) - b.distanceTo(this.bot.entity.position))
-      for (const stand of stands) {
-        this.check(navigation.signal)
-        if (tried.has(`${safety.key(p)}|${safety.key(stand)}`) || !reachableFace(this.bot, p, stand.offset(0.5, 0, 0.5))) continue
-        if (await navigation.reachable(this.bot.entity.position, stand) && await navigation.reachable(stand, this.entry)) return { block, stand }
+      const modes = p.y > this.entry.y + 2 ? ['scaffold'] : ['leaf', 'high', 'scaffold']
+      for (const mode of modes) {
+        const standY = mode === 'scaffold' ? this.entry.y + 1 : this.entry.y
+        const stands = []
+        for (let x = -1; x <= 1; x++) for (let z = -1; z <= 1; z++) {
+          const stand = new Vec3(p.x + x, standY, p.z + z)
+          if (navigation.safeRoutePoint(stand, mode)) stands.push(stand)
+        }
+        stands.sort((a, b) => a.distanceTo(this.bot.entity.position) - b.distanceTo(this.bot.entity.position))
+        for (const stand of stands) {
+          this.check(navigation.signal)
+          if (tried.has(`${safety.key(p)}|${safety.key(stand)}|${mode}`)) continue
+          if (await navigation.reachable(this.bot.entity.position, stand, mode) && await navigation.reachable(stand, this.entry, mode)) return { block, stand, mode }
+        }
       }
     }
     throw new Error('GATHER_NO_TARGET: No permitted target with a level walking and return route; buried blocks require a mine task.')
@@ -110,27 +116,58 @@ export class GatherTask {
 
   /** Verify actual arrival sightlines; bounded alternatives handle off-center pathfinder arrival.
    * @param {GatherNavigation} navigation @param {AbortSignal} signal
+   * @param {Set<string>|null} [allowed]
    */
-  async approach (navigation, signal) {
+  async approach (navigation, signal, allowed = null) {
     const tried = new Set()
     for (let attempt = 0; attempt < 8; attempt++) {
       this.check(signal); this.stage = 'searching'
-      const { block, stand } = await this.candidate(navigation, tried)
-      tried.add(`${safety.key(block.position)}|${safety.key(stand)}`)
-      this.stage = 'walking'; await navigation.walk(stand); this.check(signal)
+      const { block, stand, mode } = await this.candidate(navigation, tried, allowed)
+      tried.add(`${safety.key(block.position)}|${safety.key(stand)}|${mode}`)
+      this.stage = 'walking'; await navigation.walk(stand, mode); this.check(signal)
       if (this.bot.blockAt(block.position)?.type !== block.type || !safety.canHarvestBlock(this.bot, block)) {
         throw new Error('GATHER_TARGET_CHANGED: Target changed or became unsafe before digging.')
       }
-      if (reachableFace(this.bot, block.position, this.bot.entity.position)) return block
+      if (reachableFace(this.bot, block.position, this.bot.entity.position)) return { block, mode }
+      if (mode !== 'leaf' && await this.clearSightObstruction(navigation, block, mode, signal)) continue
     }
     throw new Error('GATHER_NO_SIGHT: No visible harvest face after bounded safe standing attempts.')
   }
 
+  /** Remove one bounded, higher-than-feet obstruction that hides a target face. */
+  async clearSightObstruction (navigation, target, mode, signal) {
+    const height = 'eyeHeight' in this.bot.entity ? this.bot.entity.eyeHeight : null
+    if (typeof height !== 'number' || !Number.isFinite(height) || height <= 0) return false
+    const eye = this.bot.entity.position.offset(0, height, 0)
+    const center = target.position.offset(0.5, 0.5, 0.5)
+    for (const axis of /** @type {const} */ (['x', 'y', 'z'])) {
+      const delta = eye[axis] - center[axis]
+      if (Math.abs(delta) <= 0.5) continue
+      const face = center.clone(); face[axis] += Math.sign(delta) * 0.499
+      const direction = face.minus(eye)
+      if (direction.norm() > 4) continue
+      const hit = this.bot.world.raycast(eye, direction.normalize(), 4)
+      if (!hit || !('position' in hit) || !(hit.position instanceof Vec3) || hit.position.equals(target.position)) continue
+      const obstruction = this.bot.blockAt(hit.position)
+      if (!obstruction || !navigation.breakable(hit.position, mode) || !safety.canHarvestBlock(this.bot, obstruction)) continue
+      try {
+        await this.bot.tool.equipForBlock(obstruction, { requireHarvest: true, getFromChest: false })
+        this.check(signal)
+        await this.bot.dig(obstruction, true, 'raycast')
+      } catch {
+        continue
+      }
+      if (this.bot.blockAt(obstruction.position)?.type === obstruction.type) continue
+      return true
+    }
+    return false
+  }
+
   /** @param {GatherNavigation} navigation @param {AbortSignal} signal */
-  async collectOne (navigation, signal) {
+  async collectOne (navigation, signal, allowed = null) {
     this.check(signal)
     if (this.bot.inventory.emptySlotCount() < 2) throw new Error('GATHER_FULL: Keep two inventory slots free.')
-    const block = await this.approach(navigation, signal)
+    const { block, mode } = await this.approach(navigation, signal, allowed)
     await this.bot.tool.equipForBlock(block, { requireHarvest: true, getFromChest: false })
     this.check(signal)
     if (this.bot.blockAt(block.position)?.type !== block.type || !reachableFace(this.bot, block.position, this.bot.entity.position) || !safety.canHarvestBlock(this.bot, block)) {
@@ -149,10 +186,11 @@ export class GatherTask {
     try { await this.bot.dig(block, true, 'raycast') } finally { clearTimeout(timer) }
     if (this.bot.blockAt(block.position)?.type === block.type) throw new Error('GATHER_UNCONFIRMED: Server did not confirm block removal.')
     this.dug++
+    if (mode === 'scaffold') await navigation.cleanupScaffolding()
     try {
       this.check(signal); this.stage = 'collecting'
       const pickup = new Vec3(block.position.x, this.entry.y, block.position.z)
-      if (navigation.safe(pickup)) await navigation.walk(pickup)
+      if (navigation.safe(pickup)) await navigation.walk(pickup, mode === 'scaffold' ? 'scaffold' : 'leaf')
       const end = Date.now() + 4000
       while (itemCount(this.bot, this.item) <= before && Date.now() < end) {
         this.check(signal); await delay(100, undefined, { signal })
@@ -163,6 +201,60 @@ export class GatherTask {
       this.available = itemCount(this.bot, this.item)
     }
     if (this.available <= before) throw new Error('GATHER_NO_PICKUP: Block removed but no matching inventory gain; remaining excavation stopped.')
+    return block.position.clone()
+  }
+
+  /**
+   * Return the connected log component around the first harvested block.
+   * Leaves are traversed only inside a small crown envelope, so a nearby
+   * second tree is not silently treated as part of the target tree.
+   */
+  connectedTreeLogs (anchor) {
+    const logName = this.item
+    const pending = [anchor.clone()]
+    const seen = new Set()
+    const logs = new Map()
+    const maxY = anchor.y + 8
+    const maxHorizontal = 4
+    while (pending.length && seen.size < 256) {
+      const position = pending.shift()
+      const key = safety.key(position)
+      if (seen.has(key)) continue
+      seen.add(key)
+      if (position.y < this.entry.y || position.y > maxY ||
+          Math.hypot(position.x - anchor.x, position.z - anchor.z) > maxHorizontal) continue
+      const block = this.bot.blockAt(position)
+      if (!block) continue
+      const isLog = block.name === logName
+      const isLeaf = typeof block.name === 'string' && /^(?:[a-z0-9]+)_leaves$/.test(block.name)
+      if (!isLog && !isLeaf) continue
+      if (isLog) logs.set(key, position.clone())
+      for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
+        pending.push(position.offset(dx, dy, dz))
+      }
+    }
+    return [...logs.values()]
+  }
+
+  /** Harvest every remaining log in the target tree, even when count is met. */
+  async collectTree (navigation, signal, anchor) {
+    this.treeAnchor = anchor.clone()
+    for (let pass = 0; pass < 64; pass++) {
+      this.check(signal)
+      const targets = this.connectedTreeLogs(this.treeAnchor)
+      if (!targets.length) return
+      if (targets.some(position => position.y > this.entry.y + 3)) {
+        throw new Error('GATHER_TREE_TOO_HIGH: Full tree cleanup needs a reachable scaffold above the bounded gathering height.')
+      }
+      const allowed = new Set(targets.map(position => safety.key(position)))
+      const before = this.dug
+      try {
+        await this.collectOne(navigation, signal, allowed)
+      } catch (error) {
+        if (this.dug === before) throw error
+      }
+    }
+    throw new Error('GATHER_TREE_LIMIT: Tree cleanup exceeded the bounded log budget.')
   }
 
   /** @param {ReturnType<ActionController['begin']>} handle @param {boolean} nested */
@@ -174,14 +266,36 @@ export class GatherTask {
       if (this.order.withdraw.length) { this.stage = 'resupplying'; await this.supply(false); this.check(handle.signal) }
       this.before = itemCount(this.bot, this.item)
       try {
-        while (this.gained < this.order.count) await this.collectOne(navigation, handle.signal)
+        if (this.order.block.endsWith('_log')) {
+          const preview = await this.candidate(navigation)
+          const previewLogs = this.connectedTreeLogs(preview.block.position)
+          if (previewLogs.some(position => position.y > this.entry.y + 3)) {
+            throw new Error('GATHER_TREE_TOO_HIGH: Full tree cleanup needs a reachable scaffold above the bounded gathering height.')
+          }
+          const first = await this.collectOne(
+            navigation, handle.signal, new Set(previewLogs.map(position => safety.key(position))),
+          )
+          await this.collectTree(navigation, handle.signal, first)
+        } else {
+          while (this.gained < this.order.count) await this.collectOne(navigation, handle.signal)
+        }
       } catch (error) {
         this.phase = 'blocked'; this.reason = error instanceof Error ? error.message : String(error)
       }
       handle.signal.throwIfAborted()
       if (!this.connected()) throw new Error('GATHER_INTERRUPTED: Connection changed before return.')
       this.stage = 'returning'
-      try { await navigation.walk(this.entry); this.returned = true } catch (error) {
+      try {
+        const returnMode = this.bot.entity.position.floored().y > this.entry.y ? 'scaffold' : 'leaf'
+        try {
+          await navigation.walk(this.entry, returnMode)
+        } catch (firstError) {
+          if (returnMode !== 'leaf') throw firstError
+          await navigation.walk(this.entry, 'scaffold')
+        }
+        await navigation.cleanupScaffolding()
+        this.returned = true
+      } catch (error) {
         this.returnReason = error instanceof Error ? error.message : String(error); throw error
       }
       handle.signal.throwIfAborted()

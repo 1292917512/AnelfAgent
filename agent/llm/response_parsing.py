@@ -231,6 +231,12 @@ async def _iter_stream(
     # （最终批次仍含全量供对账），去重靠该集合
     emitted_early: set[int] = set()
     async for chunk in stream:
+        from agent.llm.timing import current_llm_timing
+
+        timing = current_llm_timing()
+        if timing is not None:
+            timing.mark_raw_chunk()
+            timing.set_provider_request_id(getattr(chunk, "id", None))
         choices = getattr(chunk, "choices", None) or []
         if not choices:
             stream_usage = _merge_sink(

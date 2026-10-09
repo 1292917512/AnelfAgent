@@ -5,5 +5,8 @@
   "bot_username": "AnelfBot",
   "allowed_players": "",
   "require_mention": false,
-  "poll_interval_seconds": 1.0
+  "poll_interval_seconds": 1.0,
+  "autonomous_lifestyle": true,
+  "autonomous_interval_seconds": 300.0,
+  "autonomous_idle_seconds": 90.0
 }

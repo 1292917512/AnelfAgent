@@ -396,7 +396,7 @@ test('actual MCP server registers mining schemas and completes a protocol handsh
       assert.ok(tools.some(t => t.name === name), name)
     }
     const schema = tools.find(t => t.name === 'mine_resources').inputSchema
-    assert.deepEqual(Object.keys(schema.properties), ['direction', 'depth', 'minY', 'length', 'item', 'count'])
+    assert.deepEqual(Object.keys(schema.properties), ['direction', 'depth', 'minY', 'length', 'item', 'count', 'extend'])
     const status = await client.callTool({ name: 'get_connection_status', arguments: {} })
     assert.equal(status.isError, undefined)
     assert.equal(JSON.parse(status.content[0].text).survival.version, 1)

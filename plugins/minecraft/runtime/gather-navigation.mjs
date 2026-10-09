@@ -1,12 +1,19 @@
 // @ts-check
-/** Bounded walking on known, level ground; never excavate a route or descend to resources. */
+/** Bounded walking on known, level ground; only low leaf blocks may be cleared as a route obstacle. */
 import { setImmediate as yieldFrame, setTimeout as delay } from 'node:timers/promises'
 import { Vec3 } from 'vec3'
 import pathfinder from 'mineflayer-pathfinder'
 import safety from 'mineflayer/lib/anelf_mining/mining-safety.cjs'
-import { safeStanding, occupied } from '../bot/anelf-survival-observation.mjs'
+import { clear, safeStanding, solid, occupied } from '../bot/anelf-survival-observation.mjs'
 
 const { Movements, goals } = pathfinder
+const routeModes = /** @type {const} */ (['leaf', 'high', 'scaffold'])
+/** @typedef {typeof routeModes[number]} RouteMode */
+
+/** @param {unknown} name */
+export function isLeafBlockName (name) {
+  return typeof name === 'string' && /^[a-z0-9]+(?:_[a-z0-9]+)*_leaves$/.test(name)
+}
 
 /** Check exposed full-block faces from actual or proposed feet using the installed world raycaster.
  * A hidden block center does not imply that all of its harvestable faces are hidden.
@@ -31,7 +38,38 @@ export function reachableFace (bot, position, feet) {
 
 export class GatherNavigation {
   /** @param {import('mineflayer').Bot} bot @param {Vec3} entry @param {AbortSignal} signal */
-  constructor (bot, entry, signal) { this.bot = bot; this.entry = entry; this.signal = signal }
+  constructor (bot, entry, signal) { this.bot = bot; this.entry = entry; this.signal = signal; this.scaffolds = new Map() }
+
+  /** @param {{x:number,y:number,z:number}} p @param {RouteMode} mode */
+  breakable (p, mode) {
+    const point = new Vec3(p.x, p.y, p.z).floored()
+    const block = this.bot.blockAt(point)
+    if (mode === 'leaf') return point.y >= this.entry.y && point.y <= this.entry.y + 1 && isLeafBlockName(block?.name)
+    if (point.y < this.entry.y + 1 || point.y > this.entry.y + 2) return false
+    return Boolean(block && block.boundingBox === 'block')
+  }
+
+  /** @param {{x:number,y:number,z:number}} p @param {RouteMode} mode */
+  leafBreakable (p, mode = 'leaf') { return this.breakable(p, mode) }
+
+  /** @param {Array<{x:number,y:number,z:number}>} blocks @param {RouteMode} mode */
+  allowedBreaks (blocks, mode) { return blocks.every(block => this.breakable(block, mode)) }
+
+  /** @param {{x:number,y:number,z:number}} p @param {RouteMode} mode */
+  safeRoutePoint (p, mode) {
+    const point = new Vec3(p.x, p.y, p.z).floored()
+    if (point.distanceTo(this.entry) > 16 || occupied(this.bot, point, true)) return false
+    if (mode === 'scaffold' && point.y === this.entry.y + 1) {
+      const feet = this.bot.blockAt(point), head = this.bot.blockAt(point.offset(0, 1, 0))
+      return (clear(feet) || isLeafBlockName(feet?.name)) && (clear(head) || isLeafBlockName(head?.name))
+    }
+    if (point.y !== this.entry.y) return false
+    const floor = this.bot.blockAt(point.offset(0, -1, 0))
+    const feet = this.bot.blockAt(point), head = this.bot.blockAt(point.offset(0, 1, 0))
+    const openFeet = clear(feet) || isLeafBlockName(feet?.name)
+    const openHead = clear(head) || isLeafBlockName(head?.name) || (mode !== 'leaf' && head?.boundingBox === 'block')
+    return solid(floor) && openFeet && openHead
+  }
 
   /** @param {{x:number,y:number,z:number}} p */
   safe (p) {
@@ -40,40 +78,74 @@ export class GatherNavigation {
       safeStanding(this.bot, point) && !occupied(this.bot, point, true)
   }
 
-  movements () {
-    const movement = safety.restrictMovements(new Movements(this.bot))
+  /** @param {RouteMode} mode */
+  movements (mode = 'leaf') {
+    const movement = new Movements(this.bot)
+    movement.anelfGatherMode = mode
+    if (mode === 'scaffold') {
+      movement.anelfScaffoldingBlocks = this.scaffoldingIds()
+    }
+    safety.restrictMovements(movement)
+    movement.blocksCantBreak ??= new Set()
+    if (mode === 'leaf') for (const [name, definition] of Object.entries(this.bot.registry?.blocksByName ?? {})) {
+      if (!isLeafBlockName(name) && Number.isInteger(definition?.id)) movement.blocksCantBreak.add(definition.id)
+    }
     movement.exclusionAreasStep.push(block => {
       const p = block.position
-      return p.y >= this.entry.y && p.y <= this.entry.y + 1 && this.safe(new Vec3(p.x, this.entry.y, p.z)) ? 0 : 100
+      // mineflayer-pathfinder asks this hook about the floor, feet and head
+      // blocks around a route point. Checking the queried block itself would
+      // reject every otherwise valid point because its floor is one block low.
+      const allowed = [this.entry.y, this.entry.y + 1].some(y => {
+        const point = new Vec3(p.x, y, p.z)
+        return p.y >= y - 1 && p.y <= y + 2 && this.safeRoutePoint(point, mode)
+      })
+      return allowed ? 0 : 100
     })
     return movement
   }
 
-  /** @param {Vec3} from @param {Vec3} to */
-  async reachable (from, to) {
-    if (!this.safe(from) || !this.safe(to)) return false
-    const search = this.bot.pathfinder.getPathFromTo(this.movements(), from, new goals.GoalBlock(to.x, to.y, to.z), {
+  scaffoldingIds () {
+    const names = ['dirt', 'cobblestone', 'netherrack', 'stone', 'oak_planks']
+    const ids = []
+    for (const name of names) {
+      const item = this.bot.registry?.itemsByName?.[name]
+      if (item && Number.isInteger(item.id) && this.bot.inventory?.items?.().some(entry => entry.name === name)) ids.push(item.id)
+    }
+    return ids
+  }
+
+  /** @param {Vec3} from @param {Vec3} to @param {RouteMode} mode */
+  async reachable (from, to, mode = 'leaf') {
+    if (!this.safeRoutePoint(from, mode) || !this.safeRoutePoint(to, mode)) return false
+    if (mode === 'scaffold' && !this.scaffoldingIds().length) return false
+    const search = this.bot.pathfinder.getPathFromTo(this.movements(mode), from, new goals.GoalBlock(to.x, to.y, to.z), {
       timeout: 200, tickTimeout: 10, searchRadius: 32, optimizePath: false,
     })
     for (const { result } of search) {
       this.signal.throwIfAborted()
       if (String(result.status) === 'partial') { await yieldFrame(); continue }
-      return result.status === 'success' && result.path.every(p => this.safe(p) && !p.toBreak.length && !p.toPlace.length)
+      return result.status === 'success' && result.path.every(p => this.safeRoutePoint(p, mode) && this.allowedBreaks(p.toBreak, mode) &&
+        (mode !== 'scaffold' ? !p.toPlace.length : p.toPlace.every(place => Math.floor(place.y) === this.entry.y)))
     }
     return false
   }
 
-  /** @param {Vec3} to */
-  async walk (to) {
+  /** @param {Vec3} to @param {RouteMode} mode */
+  async walk (to, mode = 'leaf') {
     this.signal.throwIfAborted()
-    if (!await this.reachable(this.bot.entity.position, to)) throw new Error('GATHER_NO_ROUTE: No confirmed level walking route; no digging or scaffolding was attempted.')
+    if (!await this.reachable(this.bot.entity.position, to, mode)) throw new Error(`GATHER_NO_ROUTE: No confirmed ${mode} route.`)
     this.signal.throwIfAborted()
-    this.bot.pathfinder.setMovements(this.movements())
+    this.bot.pathfinder.setMovements(this.movements(mode))
     const stop = () => this.bot.pathfinder.setGoal(null)
     let unsafe = false
     /** @param {import('mineflayer-pathfinder').PartiallyComputedPath} result */
     const validate = result => {
-      if (result.path.some(p => !this.safe(p) || p.toBreak.length || p.toPlace.length)) {
+      if (mode === 'scaffold') for (const place of result.path.flatMap(step => step.toPlace ?? [])) {
+        const point = new Vec3(place.x, place.y, place.z).floored()
+        if (point.y === this.entry.y) this.scaffolds.set(`${point.x},${point.y},${point.z}`, point)
+      }
+      if (result.path.some(p => !this.safeRoutePoint(p, mode) || !this.allowedBreaks(p.toBreak, mode) ||
+        (mode !== 'scaffold' ? p.toPlace.length : p.toPlace.some(place => Math.floor(place.y) !== this.entry.y)))) {
         unsafe = true; result.path.length = 0; stop()
       }
     }
@@ -84,12 +156,29 @@ export class GatherNavigation {
     try {
       await Promise.race([motion, delay(15000, undefined, { signal: timeout.signal }).then(() => { throw new Error('GATHER_TRAVEL_TIMEOUT: Walking timed out.') })])
       this.signal.throwIfAborted()
-      if (unsafe || !this.safe(to) || safety.key(this.bot.entity.position) !== safety.key(to)) throw new Error('GATHER_NOT_ARRIVED: Safe arrival was not confirmed.')
+      if (unsafe || !this.safeRoutePoint(to, mode) || safety.key(this.bot.entity.position) !== safety.key(to)) throw new Error('GATHER_NOT_ARRIVED: Safe arrival was not confirmed.')
     } finally {
       timeout.abort(); stop()
       await motion.catch(() => {})
       this.signal.removeEventListener('abort', stop)
       this.bot.removeListener('path_update', validate)
     }
+  }
+
+  async cleanupScaffolding () {
+    if (!this.scaffolds.size) return
+    if (this.bot.entity.position.floored().y !== this.entry.y) await this.walk(this.entry, 'scaffold')
+    for (const point of this.scaffolds.values()) {
+      if (this.bot.blockAt(point)?.boundingBox === 'empty') continue
+      const stand = [point.offset(1, 0, 0), point.offset(-1, 0, 0), point.offset(0, 0, 1), point.offset(0, 0, -1)]
+        .find(candidate => this.safe(candidate))
+      if (!stand) throw new Error('GATHER_SCAFFOLD_CLEANUP: No safe side position to remove temporary support.')
+      await this.walk(stand, 'leaf')
+      const block = this.bot.blockAt(point)
+      if (!block || block.boundingBox === 'empty') continue
+      await this.bot.dig(block, true, 'raycast')
+      if (this.bot.blockAt(point)?.boundingBox !== 'empty') throw new Error('GATHER_SCAFFOLD_CLEANUP: Temporary support removal was not confirmed.')
+    }
+    this.scaffolds.clear()
   }
 }

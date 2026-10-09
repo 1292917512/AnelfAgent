@@ -191,7 +191,7 @@ Cache effect：实时进度留在结果和事件，不写入稳定提示前缀�
 ## 完整制作任务
 
 可以对 bot 说“用身上的材料制作一把木镐”，或“准备一把木镐，已有的就用”。
-执行器的 `prepare_item(item, count, mode, gather?)` 支持木镐、木斧、木锹、木锄、木剑、工作台和木棍。
+执行器的 `prepare_item(item, count, mode, gather?)` 支持木制/石制工具、盾牌、火把、工作台和木棍。
 count 是 1～8 个产物；`mode=ensure` 补足目标库存，`mode=craft` 额外制作，不将旧工具计为新产物。
 配方会按批次向上取整，例如新做 5 根木棍实际产出 8 根，并如实报告。
 

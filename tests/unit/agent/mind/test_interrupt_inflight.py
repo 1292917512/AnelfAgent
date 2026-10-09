@@ -18,6 +18,7 @@ import pytest
 
 import agent.mind.llm_invoker as li
 from agent.llm import LLMCallAborted
+from agent.llm.timing import current_llm_timing
 from agent.llm.types import ChatStreamDelta
 from agent.mind.interrupt import InterruptRegistry
 
@@ -217,3 +218,4 @@ class TestUnifiedNoFallbackOnAbort:
             )
         await trig
         assert cancelled["hit"]
+        assert current_llm_timing() is None

@@ -195,16 +195,22 @@ async def _invoke_llm_unified(
     tool_names = [t.get("function", {}).get("name", "") for t in (tools or [])]
     from core.log import current_log_actor
 
-    trace = {"request": request_trace(), "message_count": len(messages), "tool_count": len(tool_names),
+    trace_request = request_trace()
+    trace = {"request": trace_request, "message_count": len(messages), "tool_count": len(tool_names),
              "purpose": purpose, "actor": current_log_actor()}
+    from agent.llm.timing import LLMCallTiming, reset_llm_timing, set_llm_timing
+
+    timing = LLMCallTiming(trace_request, purpose, stream)
     await event_bus.emit(EVENT_THINKING_LLM_START, {
         **trace,
         "model": model_name,
         "message_count": len(messages),
         "tool_count": len(tools) if tools else 0,
         "tool_names": tool_names[:20],
+        "timing": timing.snapshot(),
     })
-    t0 = time.time()
+    timing_token = set_llm_timing(timing)
+    t0 = time.monotonic()
     try:
         if stream:
             try:
@@ -238,22 +244,47 @@ async def _invoke_llm_unified(
                 ),
                 abort_event,
             )
+    except asyncio.CancelledError:
+        timing.finish("cancelled")
+        timing_data = timing.snapshot()
+        reset_llm_timing(timing_token)
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        await event_bus.emit(EVENT_THINKING_LLM_END, {
+            **trace,
+            "model": model_name,
+            "duration_ms": round(elapsed_ms),
+            "timing": timing_data,
+            "error": "cancelled",
+            "success": False,
+        })
+        raise
     except Exception as exc:
+        timing.finish(str(exc))
+        timing_data = timing.snapshot()
+        reset_llm_timing(timing_token)
+        elapsed_ms = (time.monotonic() - t0) * 1000
         # 关闭链路中的 LLM 节点，避免一直停留在执行中
         await event_bus.emit(EVENT_THINKING_LLM_END, {
             **trace,
             "model": model_name,
-            "duration_ms": round((time.time() - t0) * 1000),
+            "duration_ms": round(elapsed_ms),
+            "timing": timing_data,
             "error": str(exc),
             "success": False,
         })
         # 请求级审计：异常交换同样落盘（未开启时零开销）
         await context_audit.record_exchange(
             model=model_name, messages=messages, tools=tools,
-            error=exc, duration_ms=(time.time() - t0) * 1000,
+            error=exc, duration_ms=elapsed_ms,
         )
         raise
-    elapsed_ms = (time.time() - t0) * 1000
+    elapsed_ms = (time.monotonic() - t0) * 1000
+    raw_result = result.raw
+    if isinstance(raw_result, dict):
+        timing.set_provider_request_id(raw_result.get("id"))
+    timing.finish()
+    timing_data = timing.snapshot()
+    reset_llm_timing(timing_token)
     # 请求级审计：规整后最终发送的 messages + 完整响应（未开启时零开销）
     await context_audit.record_exchange(
         model=result.model or model_name, messages=messages, tools=tools,
@@ -314,6 +345,7 @@ async def _invoke_llm_unified(
         **trace,
         "model": result.model or model_name,
         "duration_ms": round(elapsed_ms),
+        "timing": timing_data,
         # TTFT（流式路径）：排队/首 token 延迟，与 duration_ms（总时长）
         # 相减即输出生成耗时——两个独立的延迟来源分别可诊断
         "ttft_ms": round(result.ttft_ms) if result.ttft_ms is not None else None,
@@ -525,6 +557,14 @@ async def _llm_chat_stream_once(
                 break
             if ttft_ms is None:
                 ttft_ms = (time.monotonic() - started) * 1000
+            from agent.llm.timing import current_llm_timing
+
+            timing = current_llm_timing()
+            if timing is not None and (
+                delta.content or delta.reasoning_content or delta.tool_calls
+                or delta.early_tool_calls or delta.finish_reason
+            ):
+                timing.mark_model_delta()
             if delta.early_tool_calls and on_tool_call_ready is not None:
                 for call in delta.early_tool_calls:
                     on_tool_call_ready(call)

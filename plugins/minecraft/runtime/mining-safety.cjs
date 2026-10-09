@@ -25,15 +25,16 @@ function key (p) { return `${Math.floor(p.x)},${Math.floor(p.y)},${Math.floor(p.
 
 /** @param {Movements} movements @returns {Movements} */
 function restrictMovements (movements) {
-  movements.canDig = false
-  movements.allow1by1towers = false
+  const gatherMode = movements.anelfGatherMode
+  movements.canDig = gatherMode === 'leaf' || gatherMode === 'high' || gatherMode === 'scaffold'
+  movements.allow1by1towers = gatherMode === 'scaffold'
   movements.allowParkour = false
   movements.allowFreeMotion = false
   movements.allowSprinting = false
   // Pathfinder measures solid landings to the supporting block, one below the feet.
   movements.maxDropDown = 2
   movements.infiniteLiquidDropdownDistance = false
-  movements.scafoldingBlocks = []
+  movements.scafoldingBlocks = gatherMode === 'scaffold' ? [...(movements.anelfScaffoldingBlocks ?? [])] : []
   movements.dontCreateFlow = true
   movements.dontMineUnderFallingBlock = true
   if (!restricted.has(movements)) {

@@ -25,7 +25,8 @@ const input = {
   minY: z.number().int().optional().describe('Lowest feet Y for mining. Defaults to the dimension bottom + 10; requests below that hard limit are clamped. At this height only the requested horizontal length may continue.'),
   length: z.number().int().min(0).max(32).default(16).describe('Maximum extra horizontal tunnel length after the stairs.'),
   item: z.string().default('cobblestone').describe('Inventory item to gather; gains are measured against the starting inventory.'),
-  count: z.number().int().min(1).max(256).default(16)
+  count: z.number().int().min(1).max(256).default(16),
+  extend: z.boolean().default(false).describe('Continue the saved mine corridor from its fixed entrance instead of creating a new corridor.')
 }
 const options = z.object(input)
 
@@ -70,7 +71,31 @@ async function start (ctx, args) {
   if (s.record && !s.record.returned) throw new ToolError('BUSY', 'The previous mine has not confirmed a return. Use return_from_mine or resume_mining before replacing its checkpoint.')
   if (!s.bot.registry.itemsByName[args.item]) throw new ToolError('INVALID_ARGS', `Unknown inventory item: ${args.item}`)
   if (args.depth + args.length === 0) throw new ToolError('INVALID_ARGS', 'Specify a non-empty mine passage.')
-  const record = tasks.newRecord(s.bot, { ...args, direction: resolveDirection(s.bot, args.direction) }, s.world)
+  const directionValue = resolveDirection(s.bot, args.direction)
+  const { extend: _extend, ...mineArgs } = args
+  let record
+  if (args.extend) {
+    if (!s.record || !s.record.returned || s.record.phase !== 'completed') {
+      throw new ToolError('NOT_FOUND', 'No completed mine corridor is available for extension.')
+    }
+    if (directionValue !== s.record.direction) {
+      throw new ToolError('FORBIDDEN', 'Mine extensions must keep the saved corridor direction.')
+    }
+    if (s.record.steps + args.length > 64) {
+      throw new ToolError('INVALID_ARGS', 'The saved mine corridor has reached its bounded length.')
+    }
+    record = tasks.newRecord(s.bot, {
+      ...mineArgs,
+      direction: directionValue,
+      depth: s.record.depth,
+      length: s.record.length + args.length,
+    }, s.world)
+    record.entry = s.record.entry
+    record.route = s.record.route.map(p => ({ ...p }))
+    record.steps = s.record.steps
+  } else {
+    record = tasks.newRecord(s.bot, { ...mineArgs, direction: directionValue }, s.world)
+  }
   if (s.record) {
     const floors = [...s.record.protectedFloors, ...s.record.route.map(p => ({ ...p, y: p.y - 1 }))]
     record.protectedFloors = Array.from(new Map(floors.map(p => [safety.key(p), p])).values())
@@ -118,7 +143,7 @@ async function resumeSaved (ctx, returnOnly) {
 /** @param {Registrar} reg */
 export function registerMining (reg) {
   reg({ name: 'mine_resources', group: 'build',
-    description: 'Start a BACKGROUND mine task at the current feet position. Builds a 1-wide, 3-high stair passage, optionally extends a tunnel, verifies walking return routes, then actually returns to the entrance. Bring a suitable pickaxe, food, torches and 8 spare blocks. Excavates natural terrain only. Returns a task id, not completed work. Inspect mining_status; use cancel_task to stop immediately or return_from_mine to return safely.',
+    description: 'Start a BACKGROUND mine task at the fixed mine entrance. Builds a 1-wide, 3-high stair passage, optionally extends the saved corridor, verifies walking return routes, then actually returns to the entrance. Bring a suitable pickaxe, food, torches and 8 spare blocks. Excavates natural terrain only. Use extend=true to continue a completed corridor; never start a new random corridor for the same site. Returns a task id, not completed work. Inspect mining_status; use cancel_task to stop immediately or return_from_mine to return safely.',
     inputSchema: input, annotations: { title: 'Mine and return', destructiveHint: true },
     handler: (args, ctx) => start(ctx, options.parse(args)) })
   reg({ name: 'mining_status', group: 'build', description: 'Read the current/last mine task, actual inventory gains, entrance and confirmed return status. A saved interrupted task requires explicit resume or return.',

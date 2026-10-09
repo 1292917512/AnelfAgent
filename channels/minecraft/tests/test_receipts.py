@@ -4,6 +4,7 @@ import pytest
 
 from agent.channel.reply_policy import ReplyToolResult
 from channels.minecraft.receipts import game_result_receipt, handed_to_game_events
+from channels.minecraft.stop_observer import StopCandidateLedger
 from core.tool_context import tool_request
 
 
@@ -37,6 +38,19 @@ def test_direct_chat_already_sent_and_failed_chat_distinguished() -> None:
     results = [ReplyToolResult("cancel_task", {"ok": True, "stopped": True})]
     assert not game_result_receipt([*results, ReplyToolResult("chat", {"ok": True})])
     assert "已停止" in game_result_receipt([*results, ReplyToolResult("chat", {"error": "offline"})])
+
+
+def test_stop_receipt_resolves_unmatched_candidate(monkeypatch: pytest.MonkeyPatch) -> None:
+    import channels.minecraft.receipts as receipts
+
+    ledger = StopCandidateLedger()
+    monkeypatch.setattr(receipts, "stop_candidates", ledger)
+    with tool_request("group_minecraft:test", message_id="mc-42") as request:
+        ledger.record("mc-42", "停下然后跟我走", "composite")
+        assert "当前动作已停止" in game_result_receipt([
+            ReplyToolResult("cancel_task", {"ok": True, "stopped": True}),
+        ])
+        assert ledger.resolve("mc-42", request_id=request.request_id, tool="cancel_task", stopped=True) is None
 
 
 @pytest.mark.parametrize("tool", ["prepare_item", "manage_supplies", "gather_resources"])

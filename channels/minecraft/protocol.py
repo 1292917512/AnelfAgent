@@ -21,7 +21,10 @@ class ConnectionStatus(BaseModel):
 
     state: str = Field(alias="status")
     username: str | None = None
+    host: str | None = None
+    port: int | None = None
     version: str | None = None
+    dimension: str | None = None
     survival: SurvivalStatus | None = None
 
 

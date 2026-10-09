@@ -6,6 +6,8 @@ from collections.abc import Sequence
 from agent.channel.reply_policy import ReplyToolResult
 from core.tool_context import request_trace
 
+from .stop_observer import stop_candidates
+
 _NON_ACTIONS = frozenset({
     "end_reply", "list_entity_methods", "query_entities", "activate_tool_group", "recall",
     "send_message", "chat", "whisper",
@@ -49,6 +51,14 @@ def game_result_receipt(results: Sequence[ReplyToolResult]) -> str:
         if result.name in _NON_ACTIONS:
             continue
         data = result.payload
+        if result.name in _STOPS:
+            trace = request_trace()
+            stop_candidates.resolve(
+                trace.get("message_id", ""),
+                request_id=trace.get("request_id", ""),
+                tool=result.name,
+                stopped=data.get("stopped") if isinstance(data, dict) else None,
+            )
         if result.name not in _STOPS and result.name != "get_inventory":
             # 制作/采集/补给/挖矿由各自终态事件播报；不重复，也不报动作前的库存。
             return ""

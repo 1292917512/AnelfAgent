@@ -449,9 +449,21 @@ class LLMClient(BaseEntity):
         自适应。每类修复各自收敛，循环不会无限重试。
         """
         while True:
+            from agent.llm.timing import current_llm_timing
+
+            timing = current_llm_timing()
+            if timing is not None:
+                timing.begin_attempt("chat_completions", bool(kwargs.get("stream")))
+                timing.mark_sdk_started()
             try:
-                return await litellm.acompletion(**kwargs)
+                response = await litellm.acompletion(**kwargs)
+                if timing is not None:
+                    timing.set_provider_request_id(getattr(response, "id", None))
+                    timing.mark_sdk_finished()
+                return response
             except Exception as exc:
+                if timing is not None:
+                    timing.mark_sdk_finished(str(exc))
                 if self._learn_tool_choice_rejection(exc, kwargs):
                     kwargs["tool_choice"] = "auto"
                     continue
@@ -1023,9 +1035,21 @@ class LLMClient(BaseEntity):
     async def _start_responses_create(self, create_kwargs: Dict[str, Any]) -> Any:
         """发起 Responses create：端点报错自适应学习后重试（与 _start_completion 同纪律）。"""
         while True:
+            from agent.llm.timing import current_llm_timing
+
+            timing = current_llm_timing()
+            if timing is not None:
+                timing.begin_attempt("responses", False)
+                timing.mark_sdk_started()
             try:
-                return await self.responses_create(**create_kwargs)
+                response = await self.responses_create(**create_kwargs)
+                if timing is not None:
+                    timing.set_provider_request_id(getattr(response, "id", None))
+                    timing.mark_sdk_finished()
+                return response
             except Exception as exc:
+                if timing is not None:
+                    timing.mark_sdk_finished(str(exc))
                 if self._learn_tool_choice_rejection(exc, create_kwargs):
                     create_kwargs["tool_choice"] = "auto"
                     continue
@@ -1071,8 +1095,16 @@ class LLMClient(BaseEntity):
         # 仅在未产出任何增量时允许换参重试，防重复下发
         emitted = False
         while True:
+            from agent.llm.timing import current_llm_timing
+
+            timing = current_llm_timing()
+            if timing is not None:
+                timing.begin_attempt("responses", True)
+                timing.mark_sdk_started()
             try:
                 async for event in self.responses_stream(**stream_kwargs):
+                    if timing is not None:
+                        timing.mark_raw_chunk()
                     if event.type == "response.output_text.delta":
                         text = str(event.data.get("delta") or "")
                         if text:
@@ -1099,7 +1131,10 @@ class LLMClient(BaseEntity):
                             emitted = True
                             yield ChatStreamDelta(early_tool_calls=[call])
                     elif event.type in ("response.completed", "response.incomplete"):
-                        result = parse_responses_payload(event.data.get("response") or event.data)
+                        response_data = event.data.get("response") or event.data
+                        if timing is not None and isinstance(response_data, dict):
+                            timing.set_provider_request_id(response_data.get("id"))
+                        result = parse_responses_payload(response_data)
                         chat_result = result.to_chat_result()
                         yield ChatStreamDelta(
                             tool_calls=chat_result.tool_calls,
@@ -1111,8 +1146,12 @@ class LLMClient(BaseEntity):
                         raise RuntimeError(
                             f"Responses 流式调用失败: {result.error or event.data}"
                         )
+                if timing is not None:
+                    timing.mark_sdk_finished()
                 return
             except Exception as exc:
+                if timing is not None:
+                    timing.mark_sdk_finished(str(exc))
                 if emitted:
                     raise
                 if self._learn_tool_choice_rejection(exc, stream_kwargs):
