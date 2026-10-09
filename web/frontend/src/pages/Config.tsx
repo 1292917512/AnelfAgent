@@ -3,7 +3,6 @@ import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { configMetaApi } from "@/lib/api";
-import type { ConfigMetaItem } from "@/lib/types";
 import { PageContainer, PageHeader } from "@/components/common/PageContainer";
 import { Loader2, Search, SlidersHorizontal, X } from "lucide-react";
 import { buildConfigTree, findGroupOfKey, searchConfigItems } from "@/pages/config/configTree";
@@ -33,10 +32,13 @@ function useConfigOrder(): { moduleOrder: string[]; sectionOrder: string[] } {
 export default function Config() {
   const { t } = useTranslation(["config", "common"]);
   const [searchParams, setSearchParams] = useSearchParams();
-  const [activeGroup, setActiveGroup] = useState<string | null>(null);
+  const focusKey = searchParams.get("key");
+  const activeGroup = searchParams.get("group");
+  const setActiveGroup = (group: string) => setSearchParams((current) => {
+    const next = new URLSearchParams(current); next.set("group", group); next.delete("key"); return next;
+  });
   const [query, setQuery] = useState("");
-  const [focusKey, setFocusKey] = useState<string | null>(null);
-  const [detail, setDetail] = useState<{ item: ConfigMetaItem; group: string } | null>(null);
+  const [detail, setDetail] = useState<{ key: string; group: string } | null>(null);
   const { moduleOrder, sectionOrder } = useConfigOrder();
 
   const { data, isLoading } = useQuery({
@@ -49,19 +51,6 @@ export default function Config() {
     [data, moduleOrder, sectionOrder],
   );
 
-  // 深链定位：?key=xxx → 切到所属分组 + 高亮 + 滚动定位
-  useEffect(() => {
-    const key = searchParams.get("key");
-    if (!key || tree.length === 0) return;
-    const group = findGroupOfKey(tree, key);
-    if (group) {
-      setActiveGroup(group);
-      setFocusKey(key);
-      setQuery("");
-    }
-    setSearchParams({}, { replace: true });
-  }, [searchParams, setSearchParams, tree]);
-
   // 高亮行滚动定位
   useEffect(() => {
     if (!focusKey) return;
@@ -71,7 +60,7 @@ export default function Config() {
         ?.scrollIntoView({ block: "center", behavior: "smooth" });
     });
     return () => cancelAnimationFrame(raf);
-  }, [focusKey, activeGroup]);
+  }, [focusKey, activeGroup, data]);
 
   const searching = query.trim().length > 0;
   const searchResults = useMemo(
@@ -80,7 +69,7 @@ export default function Config() {
   );
 
   const currentGroup =
-    tree.flatMap((m) => m.sections).find((s) => s.group === activeGroup) ??
+    tree.flatMap((m) => m.sections).find((s) => s.group === (focusKey ? findGroupOfKey(tree, focusKey) : activeGroup)) ??
     tree[0]?.sections[0] ??
     null;
 
@@ -114,6 +103,7 @@ export default function Config() {
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
+              aria-label={t("searchPlaceholder")}
               placeholder={t("searchPlaceholder")}
               className="w-full bg-card border border-border rounded-md pl-9 pr-9 py-2 text-sm text-foreground outline-none focus:border-ring placeholder:text-muted"
             />
@@ -132,6 +122,7 @@ export default function Config() {
           {/* 移动端分组下拉 */}
           {!searching && (
             <select
+              aria-label={t("title")}
               value={currentGroup?.group ?? ""}
               onChange={(e) => setActiveGroup(e.target.value)}
               className="md:hidden w-full bg-card border border-border rounded-md px-3 py-2 text-sm text-foreground outline-none focus:border-ring"
@@ -168,7 +159,7 @@ export default function Config() {
                   <ConfigSection
                     items={s.items}
                     expandAdvanced
-                    onOpenDetail={(item) => setDetail({ item, group: s.group })}
+                    onOpenDetail={(item) => setDetail({ key: item.key, group: s.group })}
                   />
                 </div>
               ))}
@@ -187,9 +178,9 @@ export default function Config() {
                 items={currentGroup.items}
                 focusKey={focusKey}
                 renderRow={(item, defaultRow) =>
-                  WINDOW_KEYS.has(item.key) ? null : defaultRow
+                  windowItems && WINDOW_KEYS.has(item.key) ? null : defaultRow
                 }
-                onOpenDetail={(item) => setDetail({ item, group: currentGroup.group })}
+                onOpenDetail={(item) => setDetail({ key: item.key, group: currentGroup.group })}
               />
             </div>
           ) : null}
@@ -197,7 +188,7 @@ export default function Config() {
       </div>
 
       <ConfigDetailDrawer
-        item={detail?.item ?? null}
+        item={data?.groups.flatMap((group) => group.items).find((item) => item.key === detail?.key) ?? null}
         group={detail?.group}
         onClose={() => setDetail(null)}
       />

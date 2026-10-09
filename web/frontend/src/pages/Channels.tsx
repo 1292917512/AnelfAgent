@@ -1,7 +1,8 @@
+import { useRouteTab } from "@/hooks/useRouteTab";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
-import { PageContainer } from "@/components/common/PageContainer";
+import { PageContainer, PageIntro } from "@/components/common/PageContainer";
 import { FlaskConical } from "lucide-react";
 import { ChannelsPanel } from "@/pages/channels/ChannelsPanel";
 import { ChannelTestPanel } from "@/pages/channels/ChannelTestPanel";
@@ -11,7 +12,7 @@ type ChannelTab = "channels" | "test";
 
 export default function Channels() {
   const { t } = useTranslation("channels");
-  const [activeTab, setActiveTab] = useState<ChannelTab>("channels");
+  const [activeTab, setActiveTab] = useRouteTab<ChannelTab>(["channels", "test"], "channels");
   const [toolsChannel, setToolsChannel] = useState<ChannelToolsTarget | null>(null);
   const [testChannelKey, setTestChannelKey] = useState<string>("");
 
@@ -22,6 +23,7 @@ export default function Channels() {
 
   return (
     <PageContainer>
+      <PageIntro />
       <TabBar tabs={tabs} activeTab={activeTab} onChange={setActiveTab} />
 
       {activeTab === "test" ? (

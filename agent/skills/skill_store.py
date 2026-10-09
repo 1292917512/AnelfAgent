@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
+from core.file_utils import file_write_lock
 from core.log import log
 
 try:
@@ -221,7 +222,7 @@ class SkillStore:
         self.skills_dir.mkdir(parents=True, exist_ok=True)
         # 读写锁（可重入）：save 原子写 + get/delete 读取串行化，
         # record_use 等读-改-写操作需在同一把锁内完成，避免并发计数互相覆盖
-        self._lock = threading.RLock()
+        self._lock = file_write_lock(self.skills_dir)
         # 内容版本号：定义或可匹配状态变更时递增（计数类更新不递增），
         # 供调用方做廉价缓存失效判断
         self._version = 0
@@ -385,29 +386,34 @@ class SkillStore:
             trigger_patterns: Optional[List[str]] = None,
             created_by: str = "agent",
             rationale: str = "",
+            *,
+            replace_existing: bool = True,
     ) -> Skill:
-        """创建新技能（已存在时转为内容更新）。rationale 记录本次写入的决策理由。"""
-        existing = self.get(name)
-        if existing is not None:
-            existing.content = content
-            if description:
-                existing.description = description
-            if trigger_patterns:
-                merged = list(dict.fromkeys(existing.trigger_patterns + trigger_patterns))
-                existing.trigger_patterns = merged
-            existing.patch_count += 1
-            existing.rationale = rationale or existing.rationale
-            existing.touch()
-            return self.save(existing)
-        skill = Skill(
-            name=self.normalize_name(name),
-            description=description,
-            content=content,
-            trigger_patterns=trigger_patterns or [],
-            created_by=created_by,
-            rationale=rationale,
-        )
-        return self.save(skill)
+        """在库写锁内创建技能；replace_existing 控制是否允许更新同名定义。"""
+        with self._lock:
+            if not replace_existing and self.exists(name):
+                raise FileExistsError(f"技能 '{self.normalize_name(name)}' 已存在，请编辑现有技能")
+            existing = self.get(name)
+            if existing is not None:
+                existing.content = content
+                if description:
+                    existing.description = description
+                if trigger_patterns:
+                    merged = list(dict.fromkeys(existing.trigger_patterns + trigger_patterns))
+                    existing.trigger_patterns = merged
+                existing.patch_count += 1
+                existing.rationale = rationale or existing.rationale
+                existing.touch()
+                return self.save(existing)
+            skill = Skill(
+                name=self.normalize_name(name),
+                description=description,
+                content=content,
+                trigger_patterns=trigger_patterns or [],
+                created_by=created_by,
+                rationale=rationale,
+            )
+            return self.save(skill)
 
     def patch(
             self,

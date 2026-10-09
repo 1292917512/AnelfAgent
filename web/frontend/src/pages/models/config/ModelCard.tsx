@@ -16,6 +16,7 @@ export function ModelCard({
   onRemove,
   testResult,
   isPending,
+  disabled,
 }: {
   model: ModelConfig;
   expanded: boolean;
@@ -26,6 +27,7 @@ export function ModelCard({
   onRemove: () => void;
   testResult: string;
   isPending: boolean;
+  disabled: boolean;
 }) {
   const { t } = useTranslation(["models", "common"]);
 
@@ -54,8 +56,8 @@ export function ModelCard({
       expanded ? "border-accent2 bg-elevated" : "border-border bg-elevated hover:border-border-strong",
       !model.enabled && "opacity-60",
     )}>
-      <div className="flex items-center justify-between gap-2 p-3 cursor-pointer" onClick={onToggle}>
-        <div className="flex items-center gap-2 min-w-0 flex-wrap">
+      <div className="flex items-center justify-between gap-2 p-3">
+        <button type="button" aria-expanded={expanded} onClick={onToggle} className="flex flex-1 items-center gap-2 min-w-0 flex-wrap text-left">
           {expanded ? <ChevronDown size={14} className="text-accent2 shrink-0" /> : <ChevronRight size={14} className="text-muted shrink-0" />}
           <span className="text-sm font-medium text-heading truncate">{model.id}</span>
           <span className="text-xs text-muted truncate hidden sm:inline">{model.model}</span>
@@ -65,9 +67,11 @@ export function ModelCard({
             </span>
           )}
           <ModelBadges model={model} />
-        </div>
+        </button>
         <button
-          onClick={(e) => { e.stopPropagation(); onRemove(); }}
+          onClick={onRemove}
+          disabled={disabled}
+          aria-label={t("deleteModel")}
           className="p-1 rounded text-muted hover:text-danger transition-colors shrink-0"
         >
           <Trash2 size={13} />
@@ -77,13 +81,13 @@ export function ModelCard({
       {expanded && (
         <div className="border-t border-border p-3 space-y-3">
           <div className="flex gap-2 flex-wrap">
-            <Button variant="primary" size="sm" onClick={onEdit}>
+            <Button variant="primary" size="sm" disabled={disabled} onClick={onEdit}>
               <Pencil size={12} /> {t("common:edit")}
             </Button>
-            <Button variant="secondary" size="sm" onClick={onProbe} loading={isPending}>
+            <Button variant="secondary" size="sm" onClick={onProbe} disabled={disabled} loading={isPending}>
               <Scan size={12} /> {t("probeCapability")}
             </Button>
-            <Button variant="secondary" size="sm" onClick={onAutoConfig} className="border-accent text-accent hover:bg-accent-subtle">
+            <Button variant="secondary" size="sm" onClick={onAutoConfig} disabled={disabled} className="border-accent text-accent hover:bg-accent-subtle">
               <Wand2 size={12} /> {t("autoConfig")}
             </Button>
           </div>

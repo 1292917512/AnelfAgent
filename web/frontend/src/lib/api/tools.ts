@@ -159,7 +159,7 @@ export const skillsApi = {
   embed: (name: string) => api.post<{ ok: boolean; name: string; embedded: boolean; message?: string }>(`/skills/${encodeURIComponent(name)}/embed`),
   get: (name: string) => api.get<SkillItem>(`/skills/${encodeURIComponent(name)}`),
   create: (data: { name: string; description: string; content: string; trigger_patterns?: string[] }) =>
-    api.post("/skills/", data),
+    api.post<{ name: string }>("/skills/", data),
   update: (name: string, data: { content?: string; description?: string; add_trigger_patterns?: string[]; rationale?: string }) =>
     api.put(`/skills/${encodeURIComponent(name)}`, data),
   remove: (name: string) => api.delete(`/skills/${encodeURIComponent(name)}`),

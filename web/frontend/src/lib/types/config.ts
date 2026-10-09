@@ -102,6 +102,8 @@ export interface ConfigMetaItem {
   /** 条件显示标记（如频道 ws_mode 的 forward/reverse，仅供卡片分组过滤） */
   tag: string;
   source: "mind" | "config_manager";
+  value_source: "environment" | "configured" | "default";
+  environment_variable: string | null;
 }
 
 /**

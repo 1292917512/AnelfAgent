@@ -514,6 +514,7 @@ class BotConfigProvider:
             mc = self._config.mind
             for k in MIND_CONFIG_FIELDS:
                 ConfigManager.set(k, getattr(mc, k))
+                setattr(mc, k, ConfigManager.get(k))
         except Exception as e:
             log(f"Mind 配置同步到 ConfigManager 失败: {e}", "DEBUG")
 
@@ -524,6 +525,10 @@ class BotConfigProvider:
             raise ValueError(
                 f"未知 Mind 配置字段: {', '.join(unknown)}（合法字段见 MindConfig）"
             )
+        from core.config import ConfigManager
+        locked = [key for key in overrides if ConfigManager.environment_override(key)]
+        if locked:
+            raise ValueError(f"配置由环境变量管理: {', '.join(locked)}")
         mc = replace(self._config.mind)
         for k, v in overrides.items():
             current = getattr(mc, k)
@@ -536,6 +541,10 @@ class BotConfigProvider:
         p = Path(self.mind_config_path)
         p.parent.mkdir(parents=True, exist_ok=True)
         data = {key: getattr(mc, key) for key in MIND_CONFIG_FIELDS}
+        previous = json.loads(p.read_text("utf-8")) if p.exists() else {}
+        for key in data:
+            if ConfigManager.environment_override(key):
+                data[key] = previous.get(key, getattr(MindConfig(), key))
         from core.file_utils import atomic_write_text
         atomic_write_text(p, json.dumps(data, ensure_ascii=False, indent=2))
         # 保留消费者持有的 MindConfig 引用，仅在持久化后发布新值。

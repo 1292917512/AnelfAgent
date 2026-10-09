@@ -6,5 +6,8 @@
   "nameLabel": "Name",
   "descriptionLabel": "Description",
   "personalityLabel": "Personality Traits (JSON)",
-  "activate": "Activate"
+  "activate": "Activate",
+  "invalidPersonality": "Enter a valid JSON array of strings, such as [\"Patient\", \"Concise\"].",
+  "selectPersona": "Select a persona to edit, or create a new one.",
+  "confirmDelete": "Delete persona \"{{name}}\"? This cannot be undone."
 }

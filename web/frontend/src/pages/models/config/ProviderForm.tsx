@@ -1,91 +1,37 @@
-import { useState } from "react";
-import axios from "axios";
+import { useId, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { Plus } from "lucide-react";
 import { providersApi } from "@/lib/api";
-import type { CreateProviderConfig } from "@/lib/types";
-import { Button, Input, Select } from "@/components/ui";
-import { ApiTypeSelect, MEDIA_PROTOCOL_OPTIONS } from "./shared";
+import { Button, Input, Modal, ConfirmDialog } from "@/components/ui";
+import { QueryError } from "@/components/common/AsyncState";
+import { useDiscardChanges } from "@/hooks/useDiscardChanges";
+import { EMPTY_PROVIDER_FIELDS, ProviderFields } from "./ProviderFields";
 
-const EMPTY_PROVIDER: CreateProviderConfig = {
-  id: "", name: "", base_url: "", api_key: "", api_type: "openai", proxy_url: "", media_protocol: "",
-};
-
-/** 新建供应商表单 */
 export function ProviderForm({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation(["models", "common"]);
-  const qc = useQueryClient();
-  const [form, setForm] = useState<CreateProviderConfig>(EMPTY_PROVIDER);
-  const [error, setError] = useState("");
-
-  const addMut = useMutation({
-    mutationFn: (data: CreateProviderConfig) => providersApi.create(data),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["providers"] });
-      onClose();
-    },
-    onError: (err) => {
-      const detail = axios.isAxiosError(err) ? err.response?.data?.detail : null;
-      setError(`${t("createProviderFailed")}: ${typeof detail === "string" ? detail : String(err)}`);
-    },
+  const client = useQueryClient();
+  const id = useId();
+  const [providerId, setProviderId] = useState("");
+  const [form, setForm] = useState(EMPTY_PROVIDER_FIELDS);
+  const add = useMutation({
+    mutationFn: () => providersApi.create({ ...form, id: providerId.trim() }),
+    onSuccess: async () => { await client.invalidateQueries({ queryKey: ["providers"] }); onClose(); },
   });
-
-  return (
-    <div className="p-4 rounded-md border border-accent bg-card space-y-3">
-      <p className="text-sm font-semibold text-heading">{t("newProvider")}</p>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        {(["id", "name", "base_url", "api_key"] as const).map((k) => (
-          <div key={k} className="space-y-1">
-            <label className="text-xs font-medium text-muted">{t(`providerFields.${k}`, { defaultValue: k })}</label>
-            <Input
-              type={k === "api_key" ? "password" : "text"}
-              value={form[k]}
-              onChange={(e) => setForm({ ...form, [k]: e.target.value })}
-            />
-          </div>
-        ))}
-        <div className="space-y-1">
-          <label className="text-xs font-medium text-muted">{t("providerFields.api_type", { defaultValue: "api_type" })}</label>
-          <ApiTypeSelect
-            value={form.api_type}
-            onChange={(v, info) => setForm({
-              ...form,
-              api_type: v,
-              // 未填 base_url 时联动该类型的默认官方地址
-              base_url: form.base_url || info?.default_base_url || form.base_url,
-            })}
-          />
+  const guard = useDiscardChanges(!!providerId || JSON.stringify(form) !== JSON.stringify(EMPTY_PROVIDER_FIELDS), onClose, add.isPending);
+  return <>
+    <Modal open onClose={guard.requestClose} title={t("newProvider")} width="max-w-2xl" dismissible={!add.isPending} footer={<>
+      <Button onClick={guard.requestClose} disabled={add.isPending}>{t("common:cancel")}</Button>
+      <Button variant="primary" disabled={!providerId.trim()} loading={add.isPending} onClick={() => add.mutate()}>{t("common:create")}</Button>
+    </>}>
+      <fieldset disabled={add.isPending} className="space-y-4">
+        <div className="space-y-1.5">
+          <label htmlFor={id} className="text-xs font-medium text-muted">{t("providerFields.id")}</label>
+          <Input id={id} required value={providerId} onChange={(event) => setProviderId(event.target.value)} />
         </div>
-        <div className="space-y-1">
-          <label className="text-xs font-medium text-muted">{t("providerFields.proxy_url", { defaultValue: "proxy_url" })}</label>
-          <Input
-            type="text"
-            placeholder={t("proxyPlaceholder")}
-            value={form.proxy_url}
-            onChange={(e) => setForm({ ...form, proxy_url: e.target.value })}
-          />
-        </div>
-        <div className="space-y-1">
-          <label className="text-xs font-medium text-muted">{t("providerFields.media_protocol", { defaultValue: "media_protocol" })}</label>
-          <Select className="w-full" value={form.media_protocol} onChange={(e) => setForm({ ...form, media_protocol: e.target.value })}>
-            <option value="">{t("mediaProtocolAuto")}</option>
-            {MEDIA_PROTOCOL_OPTIONS.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
-          </Select>
-        </div>
-      </div>
-      {error && <p className="text-xs text-danger">{error}</p>}
-      <div className="flex gap-2">
-        <Button
-          variant="primary"
-          onClick={() => form.id.trim() && addMut.mutate({ ...form, id: form.id.trim() })}
-          disabled={!form.id.trim()}
-          loading={addMut.isPending}
-        >
-          <Plus size={14} /> {t("common:create")}
-        </Button>
-        <Button variant="secondary" onClick={onClose}>{t("common:cancel")}</Button>
-      </div>
-    </div>
-  );
+        <ProviderFields value={form} onChange={setForm} />
+      </fieldset>
+      {add.error && <div className="mt-4"><QueryError compact error={add.error} /></div>}
+    </Modal>
+    <ConfirmDialog {...guard.confirmProps} />
+  </>;
 }

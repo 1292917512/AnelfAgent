@@ -70,12 +70,17 @@ class CreateSkillRequest(BaseModel):
 async def create_skill(req: CreateSkillRequest) -> Dict[str, Any]:
     if not req.name.strip():
         raise HTTPException(400, "技能名不能为空")
-    return _skill_svc.create_skill(
-        name=req.name,
-        description=req.description,
-        content=req.content,
-        trigger_patterns=req.trigger_patterns,
-    )
+    try:
+        return _skill_svc.create_skill(
+            name=req.name,
+            description=req.description,
+            content=req.content,
+            trigger_patterns=req.trigger_patterns,
+        )
+    except FileExistsError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 class UpdateSkillRequest(BaseModel):

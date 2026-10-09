@@ -17,7 +17,7 @@ import re
 from graphlib import CycleError, TopologicalSorter
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 # 步骤数上限（防 AI 生成巨型 DAG）
 MAX_STEPS = 64
@@ -37,7 +37,9 @@ class GateSpec(BaseModel):
     通用修复提示（携带上轮结果全文）。
     """
 
-    field: str
+    model_config = ConfigDict(extra="forbid")
+
+    field: str = Field(min_length=1)
     equals: Any
     repair_goal: str = ""
     max_rounds: int = 3
@@ -52,6 +54,8 @@ class WorkflowStepSpec(BaseModel):
     kind=tool：调用注册表工具，静态参数；gate 可选。
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     key: str
     kind: str = "ask"
     phase: Optional[str] = None
@@ -64,11 +68,13 @@ class WorkflowStepSpec(BaseModel):
     args: Dict[str, Any] = Field(default_factory=dict)
     gate: Optional[GateSpec] = None
     retries: int = 0
-    timeout: float = 0.0
+    timeout: float = Field(default=0.0, ge=0, allow_inf_nan=False)
 
 
 class WorkflowSpec(BaseModel):
     """工作流规格（name + steps；steps 间经 depends_on 组成 DAG）。"""
+
+    model_config = ConfigDict(extra="forbid")
 
     name: str
     description: str = ""

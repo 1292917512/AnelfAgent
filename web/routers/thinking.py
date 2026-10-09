@@ -6,7 +6,7 @@ import asyncio
 import json
 from typing import Any, Dict
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
@@ -42,7 +42,7 @@ async def list_sessions(
 async def get_session(session_id: str) -> Dict[str, Any]:
     data = thinking_tracer.get_session(session_id)
     if data is None:
-        return {"error": "session not found"}
+        raise HTTPException(status_code=404, detail="Trace session not found or expired")
     return data
 
 

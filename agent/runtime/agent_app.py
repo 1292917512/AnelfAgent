@@ -17,6 +17,7 @@ from core.config import get_config, register_configs_safe
 from core.event_bus import (
     EVENT_AGENT_STARTED,
     EVENT_AGENT_STOPPED,
+    EVENT_CHAT_BROADCAST,
     EVENT_ERROR_OCCURRED,
     EVENT_MESSAGE_RECEIVED,
     event_bus,
@@ -79,8 +80,6 @@ class AgentStats:
         return time.time() - self.start_time
 
 
-# 主事件队列容量上限：满时丢弃最旧事件并记 WARNING（不阻塞生产者，
-# 防止下游 Mind 卡死时内存无界增长）
 _EVENT_QUEUE_MAX_SIZE = 10000
 
 
@@ -158,17 +157,9 @@ class AgentApp:
         self._enqueue(event)
 
     def _enqueue(self, event: AgentEvent) -> None:
-        """非阻塞入队：队列满时丢弃最旧事件并记 WARNING（不阻塞生产者）。"""
+        """非阻塞入队；满载时拒绝新请求并保留已受理事件。"""
         if self._queue.full():
-            try:
-                self._queue.get_nowait()
-                self._queue.task_done()
-                log(
-                    f"AgentApp 事件队列已满（{_EVENT_QUEUE_MAX_SIZE}），丢弃最旧事件",
-                    "WARNING",
-                )
-            except asyncio.QueueEmpty:
-                log("_enqueue 异常已忽略", "DEBUG")
+            raise RuntimeError("消息队列已满，请稍后重试")
         self._queue.put_nowait(event)
 
     async def send_message(
@@ -240,7 +231,8 @@ class AgentApp:
             and self._main_loop is not current_loop
             and self._main_loop.is_running()
         ):
-            self._main_loop.call_soon_threadsafe(self._enqueue, event)
+            future = asyncio.run_coroutine_threadsafe(self.submit(event), self._main_loop)
+            await asyncio.wrap_future(future)
         else:
             self._enqueue(event)
 
@@ -296,6 +288,12 @@ class AgentApp:
                 self._status = AgentStatus.ERROR
                 log(f"AgentApp 处理事件异常: {event.type} -> {exc}", "ERROR")
                 await event_bus.emit(EVENT_ERROR_OCCURRED, {"error": str(exc), "event_type": event.type})
+                if event.type == "message" and event.payload.get("adapter_key") == "webui":
+                    await event_bus.emit(EVENT_CHAT_BROADCAST, {
+                        "event": "message_failed",
+                        "message_id": event.payload.get("message_id", ""),
+                        "chat_id": event.payload.get("session_id") or "default",
+                    })
             finally:
                 self._queue.task_done()
                 # ERROR 状态保留到下一个事件到来再被覆盖，便于外部观测最近一次失败

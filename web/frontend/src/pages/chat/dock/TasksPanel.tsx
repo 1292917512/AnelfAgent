@@ -4,9 +4,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FolderOpen, FolderPlus, Pencil, Play, Plus } from "lucide-react";
 import { tasksApi } from "@/lib/api";
 import type { TaskConfig } from "@/lib/types";
-import { Button, Input, Switch } from "@/components/ui";
-import { Drawer } from "@/components/common/Drawer";
-import { EMPTY_TASK, TaskFormFields } from "@/pages/config/TaskForm";
+import { Button, Switch } from "@/components/ui";
+import { TaskEditor } from "@/pages/tasks/TaskEditor";
 
 /** 任务面板：按文件夹分组 + 启停/触发/编辑/新建 */
 export function DockTasksPanel() {
@@ -14,7 +13,6 @@ export function DockTasksPanel() {
   const queryClient = useQueryClient();
   const [editorOpen, setEditorOpen] = useState(false);
   const [editing, setEditing] = useState<TaskConfig | null>(null);
-  const [draft, setDraft] = useState<TaskConfig>({ ...EMPTY_TASK });
 
   const { data: tasks } = useQuery({
     queryKey: ["tasks"],
@@ -23,9 +21,6 @@ export function DockTasksPanel() {
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["tasks"] });
 
-  const set = (key: keyof TaskConfig, value: unknown) =>
-    setDraft((prev) => ({ ...prev, [key]: value }));
-
   const toggleMut = useMutation({
     mutationFn: (task: TaskConfig) => tasksApi.update(task.name, { enabled: !task.enabled }, task.folder || ""),
     onSuccess: invalidate,
@@ -33,26 +28,6 @@ export function DockTasksPanel() {
   const triggerMut = useMutation({
     mutationFn: (task: TaskConfig) => tasksApi.trigger(task.name, task.folder || ""),
   });
-  const saveMut = useMutation({
-    mutationFn: async () => {
-      const payload: TaskConfig = {
-        ...draft,
-        name: draft.name.trim(),
-        display_name: draft.display_name.trim() || draft.name.trim(),
-        source: draft.source || draft.name.trim(),
-        folder: (draft.folder ?? "").trim().replace(/^\/+|\/+$/g, ""),
-      };
-      if (editing) {
-        return tasksApi.update(editing.name, payload, editing.folder || "");
-      }
-      return tasksApi.create(payload);
-    },
-    onSuccess: () => {
-      invalidate();
-      setEditorOpen(false);
-    },
-  });
-
   /** 按文件夹分组 */
   const grouped = useMemo(() => {
     const map = new Map<string, TaskConfig[]>();
@@ -66,12 +41,10 @@ export function DockTasksPanel() {
 
   const openCreate = () => {
     setEditing(null);
-    setDraft({ ...EMPTY_TASK });
     setEditorOpen(true);
   };
   const openEdit = (task: TaskConfig) => {
     setEditing(task);
-    setDraft({ ...task });
     setEditorOpen(true);
   };
 
@@ -120,6 +93,8 @@ export function DockTasksPanel() {
                     <Pencil size={13} />
                   </button>
                   <Switch
+                    label={t("tasks.edit")}
+                    disabled={toggleMut.isPending}
                     checked={task.enabled}
                     onChange={() => toggleMut.mutate(task)}
                   />
@@ -133,42 +108,7 @@ export function DockTasksPanel() {
         )}
       </div>
 
-      {/* 编辑/新建抽屉（字段与配置中心同一实现，folder 为 dock 分组维度） */}
-      <Drawer
-        open={editorOpen}
-        onClose={() => setEditorOpen(false)}
-        title={editing ? t("tasks.editTitle", { name: editing.name }) : t("tasks.createTitle")}
-        footer={
-          <>
-            <Button variant="secondary" size="sm" onClick={() => setEditorOpen(false)}>
-              {t("tasks.cancel")}
-            </Button>
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={() => saveMut.mutate()}
-              disabled={saveMut.isPending || !draft.name.trim() || !draft.prompt.trim()}
-            >
-              {t("tasks.save")}
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-3">
-          <label className="block space-y-1">
-            <span className="text-xs text-muted">{t("tasks.fieldFolder")}</span>
-            <Input
-              value={draft.folder ?? ""}
-              placeholder="dev/backend"
-              onChange={(e) => set("folder", e.target.value)}
-            />
-          </label>
-          <TaskFormFields task={draft} set={set} isCreate={!editing} />
-          {saveMut.isError && (
-            <p className="text-[11px] text-danger">{t("tasks.saveFailed")}</p>
-          )}
-        </div>
-      </Drawer>
+      {editorOpen && <TaskEditor task={editing} onClose={() => setEditorOpen(false)} />}
     </div>
   );
 }

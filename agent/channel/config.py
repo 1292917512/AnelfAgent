@@ -28,6 +28,7 @@ from core.config import (
     ConfigManager,
     ConfigRegistry,
     ConfigStore,
+    expand_env_refs,
     parse_env_value,
     register_model_configs,
 )
@@ -94,7 +95,7 @@ class ChannelConfigStore(ConfigStore):
         env_val = os.environ.get(f"ANELF_{key.upper()}")
         if env_val is not None:
             return parse_env_value(env_val)
-        return self._values.get(self._field(key), default)
+        return expand_env_refs(self._values.get(self._field(key), default))
 
     def set(self, key: str, value: Any) -> None:
         self._values[self._field(key)] = value

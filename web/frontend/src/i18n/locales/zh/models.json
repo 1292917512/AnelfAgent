@@ -217,5 +217,21 @@
     "music": "音乐",
     "rerank": "重排序"
   },
-  "noModelMatch": "没有匹配的模型标识"
+  "noModelMatch": "没有匹配的模型标识",
+  "confirmDeleteProvider": "确定删除供应商「{{name}}」及其 {{count}} 个模型？此操作无法撤销。",
+  "searchModels": "搜索模型或服务商",
+  "unavailableModel": "模型不可用",
+  "unavailableHint": "当前配置的 {{model}} 已停用或不存在，请重新选择。",
+  "noMatchingModels": "没有匹配的可用模型",
+  "pinSelected": "将 {{model}} 设为默认",
+  "alreadyDefault": "{{model}} 已是默认",
+  "capVision": "视觉",
+  "capTools": "工具调用",
+  "capReasoning": "推理",
+  "defaultModel": "默认模型",
+  "deleteModel": "删除模型",
+  "confirmDeleteModel": "确定删除模型 {{name}}？引用此模型的配置需要重新选择。",
+  "fetchModels": "获取远端模型列表",
+  "modelIdPlaceholder": "输入远端模型标识",
+  "headerValuesRequired": "请求头的值必须是字符串"
 }

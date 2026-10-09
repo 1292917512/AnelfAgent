@@ -1,17 +1,10 @@
-/**
- * 审批弹窗 — SSE 驱动的全局权限批准对话框。
- *
- * 三档决策：
- * - 允许一次
- * - 本会话不再询问（会话级放行规则）
- * - 永久允许（写入权限规则文件）
- * - 拒绝（可附言）
- */
 import { useEffect, useState } from "react";
+import { isAxiosError } from "axios";
+import { DialogSurface } from "./ui/DialogSurface";
 import { useTranslation } from "react-i18next";
 import { ShieldAlert, Check, X, Timer, Repeat, Infinity as InfinityIcon } from "lucide-react";
 import { approvalsApi } from "@/lib/api";
-import { useApprovalPopupStore } from "@/stores/approval-popup-store";
+import { useApprovalPopupStore, type ApprovalRequestPayload } from "@/stores/approval-popup-store";
 import { ApprovalPreview } from "./ApprovalPreview";
 import { cn } from "@/lib/utils";
 
@@ -23,10 +16,14 @@ const RISK_STYLE: Record<string, string> = {
 };
 
 export function ApprovalDialog() {
-  const { t } = useTranslation("approvals");
   const queue = useApprovalPopupStore((s) => s.queue);
-  const dismiss = useApprovalPopupStore((s) => s.dismiss);
   const current = queue[0];
+  return current ? <ApprovalDecision key={current.request_id} current={current} queued={queue.length - 1} /> : null;
+}
+
+function ApprovalDecision({ current, queued }: { current: ApprovalRequestPayload; queued: number }) {
+  const { t } = useTranslation("approvals");
+  const dismiss = useApprovalPopupStore((s) => s.dismiss);
 
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
@@ -34,7 +31,6 @@ export function ApprovalDialog() {
 
   // 倒计时（超时后端会按规则 on_timeout 处理）
   useEffect(() => {
-    if (!current) return;
     const deadline = current.received_at + current.timeout_seconds * 1000;
     const tick = () => setRemaining(Math.max(0, Math.round((deadline - Date.now()) / 1000)));
     tick();
@@ -42,14 +38,8 @@ export function ApprovalDialog() {
     return () => clearInterval(timer);
   }, [current]);
 
-  useEffect(() => {
-    setReason("");
-    setBusy(false);
-  }, [current?.request_id]);
-
-  if (!current) return null;
-
   const decide = async (action: "approve" | "deny", remember: string = "once") => {
+    if (busy) return;
     setBusy(true);
     try {
       if (action === "approve") {
@@ -57,13 +47,16 @@ export function ApprovalDialog() {
       } else {
         await approvalsApi.deny(current.request_id, reason);
       }
-    } catch { /* 请求可能已被其他端决策 */ }
-    dismiss(current.request_id);
+      dismiss(current.request_id);
+    } catch (error) {
+      if (isAxiosError(error) && [404, 409].includes(error.response?.status ?? 0)) dismiss(current.request_id);
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="w-[480px] max-w-[92vw] rounded-lg border border-border bg-card shadow-xl">
+    <DialogSurface open title={t("popup.title")} onClose={() => {}} dismissible={false} className="sm:max-w-lg overflow-y-auto">
         {/* 头部 */}
         <div className="flex items-center gap-2 border-b border-border px-4 py-3">
           <ShieldAlert className="h-5 w-5 text-orange-500" />
@@ -83,20 +76,7 @@ export function ApprovalDialog() {
             <div className="text-xs text-muted mb-1">{t("popup.tool")}</div>
             <div className="font-mono text-sm text-foreground">{current.tool_name}</div>
           </div>
-          {current.tool_args && (() => {
-            const semantic = (
-              <ApprovalPreview toolName={current.tool_name} toolArgs={current.tool_args} />
-            );
-            if (semantic) return semantic;
-            return (
-              <div>
-                <div className="text-xs text-muted mb-1">{t("popup.args")}</div>
-                <pre className="max-h-40 overflow-auto rounded bg-muted p-2 text-xs text-foreground whitespace-pre-wrap break-all">
-                  {current.tool_args}
-                </pre>
-              </div>
-            );
-          })()}
+          {current.tool_args && <ApprovalPreview toolName={current.tool_name} toolArgs={current.tool_args} />}
           {current.reason && (
             <div className="text-xs text-muted">{current.reason}</div>
           )}
@@ -104,8 +84,9 @@ export function ApprovalDialog() {
             type="text"
             value={reason}
             onChange={(e) => setReason(e.target.value)}
+            aria-label={t("popup.feedbackPlaceholder")}
             placeholder={t("popup.feedbackPlaceholder")}
-            className="w-full rounded border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+            className="w-full rounded border border-border bg-elevated px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent"
           />
         </div>
 
@@ -115,7 +96,7 @@ export function ApprovalDialog() {
             <button
               onClick={() => decide("approve", "once")}
               disabled={busy}
-              className="flex-1 flex items-center justify-center gap-1.5 rounded bg-primary px-3 py-2 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              className="flex-1 flex items-center justify-center gap-1.5 rounded bg-accent px-3 py-2 text-sm text-primary-foreground hover:bg-accent/90 disabled:opacity-50"
             >
               <Check className="h-4 w-4" />
               {t("popup.allowOnce")}
@@ -123,7 +104,7 @@ export function ApprovalDialog() {
             <button
               onClick={() => decide("deny")}
               disabled={busy}
-              className="flex items-center justify-center gap-1.5 rounded bg-destructive px-3 py-2 text-sm text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
+              className="flex items-center justify-center gap-1.5 rounded bg-danger px-3 py-2 text-sm text-white hover:bg-danger/90 disabled:opacity-50"
             >
               <X className="h-4 w-4" />
               {t("popup.deny")}
@@ -147,13 +128,12 @@ export function ApprovalDialog() {
               {t("popup.allowAlways")}
             </button>
           </div>
-          {queue.length > 1 && (
+          {queued > 0 && (
             <div className="text-center text-xs text-muted">
-              {t("popup.more", { count: queue.length - 1 })}
+              {t("popup.more", { count: queued })}
             </div>
           )}
         </div>
-      </div>
-    </div>
+    </DialogSurface>
   );
 }

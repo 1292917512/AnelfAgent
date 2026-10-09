@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { useDeferredValue } from "react";
 import { useTranslation } from "react-i18next";
+import { QueryError } from "@/components/common/AsyncState";
 import { Loader2 } from "lucide-react";
 import type { WorkspaceFileKind, WorkspaceRoot } from "@/lib/types";
 import { isPreviewableBinary, workspaceMediaKind } from "@/lib/workspace-kind";
@@ -12,7 +13,8 @@ import { HtmlPreview } from "./file_preview/HtmlPreview";
 import { PdfPreview } from "./file_preview/PdfPreview";
 import { VideoPreview } from "./file_preview/VideoPreview";
 import { XlsxPreview } from "./file_preview/XlsxPreview";
-import type { TabState, ViewMode } from "./fileEditorUtils";
+import type { ViewMode } from "./fileEditorUtils";
+import type { TabState } from "@/stores/file-editor-store";
 
 /** 文件编辑器内容区：加载态 + 二进制预览 + 文本编辑/渲染预览 */
 export function FileEditorContent({
@@ -23,6 +25,7 @@ export function FileEditorContent({
   curRoot,
   loading,
   loadError,
+  onRetry,
   viewMode,
   editorNode,
   lightboxOpen,
@@ -34,7 +37,8 @@ export function FileEditorContent({
   rawUrl: string;
   curRoot: WorkspaceRoot;
   loading: boolean;
-  loadError: boolean;
+  loadError: unknown;
+  onRetry: () => void;
   viewMode: ViewMode;
   editorNode: ReactNode;
   lightboxOpen: boolean;
@@ -51,7 +55,7 @@ export function FileEditorContent({
           <Loader2 size={16} className="animate-spin" /> {t("editor.loading")}
         </div>
       )}
-      {loadError && <p className="py-8 text-center text-sm text-danger">{t("editor.loadFailed")}</p>}
+      {loadError != null && <QueryError error={loadError} retry={onRetry} />}
 
       {cur && cur.file.binary && mediaKind === "image" && (
         <div className="flex items-center justify-center py-4 overflow-y-auto">

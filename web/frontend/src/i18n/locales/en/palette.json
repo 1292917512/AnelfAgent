@@ -16,5 +16,7 @@
   "action_sidebar": "Toggle sidebar",
   "action_search": "Open global search",
   "action_logout": "Log out",
-  "menu": "Menu"
+  "menu": "Menu",
+  "searching": "Searching content…",
+  "searchFailed": "Content search is unavailable. Pages and settings are still searchable."
 }

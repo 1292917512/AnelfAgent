@@ -1,276 +1,94 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Play, RotateCcw, Square } from "lucide-react";
-import { apiErrorMessage, workflowApi } from "@/lib/api";
-import type { WorkflowRun, WorkflowRunDetail } from "@/lib/api";
-import { StatusDot } from "@/components/common/StatusDot";
-import { Badge, Button, toast } from "@/components/ui";
+import { useSearchParams } from "react-router-dom";
+import { Play, Plus, RotateCcw, Square, Workflow } from "lucide-react";
+import { workflowApi, type WorkflowRun, type WorkflowRunDetail } from "@/lib/api";
+import { Badge, Button, EmptyState } from "@/components/ui";
+import { AsyncState, QueryError } from "@/components/common/AsyncState";
 import { cn } from "@/lib/utils";
 import { RunDetail } from "./RunDetail";
+import { WorkflowComposer } from "./WorkflowComposer";
 
-const SPEC_PLACEHOLDER = `{
-  "name": "并行调研并汇总",
-  "steps": [
-    { "key": "topic_a", "kind": "ask", "goal": "调研主题 A 并输出要点" },
-    { "key": "topic_b", "kind": "ask", "goal": "调研主题 B 并输出要点" },
-    { "key": "summary", "kind": "ask", "depends_on": ["topic_a", "topic_b"],
-      "goal": "汇总上游结果为结构化报告" }
-  ]
-}`;
-
-/** 工作流运行面板：启动表单 + 运行列表 + 选中详情。 */
-export function RunsPanel({
-  selected,
-  onSelect,
-}: {
-  selected: WorkflowRun | null;
-  onSelect: (run: WorkflowRun | null) => void;
-}) {
-  const { t } = useTranslation("workflow");
-  const queryClient = useQueryClient();
-  const [specText, setSpecText] = useState("");
-  const [resumeOf, setResumeOf] = useState("");
-
-  const { data: runs = [], isLoading } = useQuery({
-    queryKey: ["workflowRuns"],
-    queryFn: () => workflowApi.listRuns().then((r) => r.data.runs),
-    refetchInterval: 4000,
+export function RunsPanel() {
+  const { t, i18n } = useTranslation("workflow");
+  const client = useQueryClient();
+  const [params, setParams] = useSearchParams();
+  const selected = params.get("run");
+  const [composer, setComposer] = useState<{ source: WorkflowRunDetail | null } | null>(null);
+  const runsQuery = useQuery({
+    queryKey: ["workflowRuns"], queryFn: () => workflowApi.listRuns().then((r) => r.data.runs),
+    refetchInterval: 4000, throwOnError: false,
   });
-
-  const activeRun = selected
-    ? runs.find((r) => r.run_id === selected.run_id) ?? selected
-    : null;
-  const polling = !!activeRun?.running;
-  const detailRunId = activeRun?.run_id;
-
-  const { data: detail, isLoading: detailLoading, isError: detailError } = useQuery({
-    queryKey: ["workflowRunDetail", detailRunId],
-    // run_id 缺失（列表契约异常）时不发请求——防止拿 "undefined" 去请求详情
-    queryFn: () => workflowApi.runDetail(detailRunId!).then((r) => r.data),
-    enabled: Boolean(detailRunId),
-    refetchInterval: polling ? 4000 : false,
+  const runs = runsQuery.data ?? [];
+  const listedRun = runs.find((run) => run.run_id === selected);
+  const detailQuery = useQuery({
+    queryKey: ["workflowRunDetail", selected],
+    queryFn: () => { if (!selected) throw new Error("Missing run"); return workflowApi.runDetail(selected).then((r) => r.data); },
+    enabled: !!selected, throwOnError: false,
+    refetchInterval: (query) => listedRun?.running || query.state.data?.run.running ? 4000 : false,
   });
-
+  const previous = useRef<{ id: string; running: boolean } | null>(null);
   useEffect(() => {
-    if (activeRun && !activeRun.running && polling) {
-      queryClient.invalidateQueries({ queryKey: ["workflowRuns"] });
+    if (!listedRun) { previous.current = null; return; }
+    if (previous.current?.id === listedRun.run_id && previous.current.running && !listedRun.running) {
+      void client.invalidateQueries({ queryKey: ["workflowRunDetail", listedRun.run_id] });
     }
-  }, [activeRun, polling, queryClient]);
-
-  const startMutation = useMutation({
-    mutationFn: () => {
-      const spec = JSON.parse(specText);
-      return workflowApi.startRun(spec, resumeOf.trim()).then((r) => r.data);
-    },
-    onSuccess: (run) => {
-      toast.success(t("toast.started", { name: run.name }));
-      setSpecText("");
-      setResumeOf("");
-      queryClient.invalidateQueries({ queryKey: ["workflowRuns"] });
-    },
-    onError: (err) => {
-      toast.error(apiErrorMessage(err, t("toast.requestFailed")));
-    },
+    previous.current = { id: listedRun.run_id, running: !!listedRun.running };
+  }, [listedRun, client]);
+  const select = (id: string) => setParams((current) => { const next = new URLSearchParams(current); next.set("run", id); return next; });
+  const invalidate = () => {
+    void client.invalidateQueries({ queryKey: ["workflowRuns"] });
+    void client.invalidateQueries({ queryKey: ["workflowRunDetail"] });
+  };
+  const action = useMutation({
+    mutationFn: async ({ id, kind }: { id: string; kind: "stop" | "resume" }) => { if (kind === "stop") await workflowApi.stopRun(id); else await workflowApi.resumeRun(id); },
+    onSuccess: invalidate,
   });
-
-  const stopMutation = useMutation({
-    mutationFn: (runId: string) => workflowApi.stopRun(runId).then((r) => r.data),
-    onSuccess: () => {
-      toast.success(t("toast.stopped"));
-      queryClient.invalidateQueries({ queryKey: ["workflowRuns"] });
-      queryClient.invalidateQueries({ queryKey: ["workflowRunDetail"] });
-    },
-    onError: (err) => toast.error(apiErrorMessage(err, t("toast.requestFailed"))),
-  });
-
-  const resumeMutation = useMutation({
-    mutationFn: (runId: string) => workflowApi.resumeRun(runId).then((r) => r.data),
-    onSuccess: () => {
-      toast.success(t("toast.resumed"));
-      queryClient.invalidateQueries({ queryKey: ["workflowRuns"] });
-      queryClient.invalidateQueries({ queryKey: ["workflowRunDetail"] });
-    },
-    onError: (err) => toast.error(apiErrorMessage(err, t("toast.requestFailed"))),
-  });
-
-  return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
-      <div className="space-y-4">
-        <div className="rounded-lg border border-border bg-card p-4 space-y-3">
-          <div className="text-sm font-medium text-heading">{t("start.title")}</div>
-          <textarea
-            value={specText}
-            onChange={(e) => setSpecText(e.target.value)}
-            placeholder={SPEC_PLACEHOLDER}
-            spellCheck={false}
-            rows={10}
-            className="w-full rounded border border-border bg-background p-2 font-mono text-xs text-foreground resize-y focus:outline-none focus:border-accent"
-          />
-          <div className="flex items-center gap-2">
-            <input
-              value={resumeOf}
-              onChange={(e) => setResumeOf(e.target.value)}
-              placeholder={t("start.resumeOf")}
-              className="flex-1 rounded border border-border bg-background px-2 py-1.5 text-xs focus:outline-none focus:border-accent"
-            />
-            <Button
-              variant="primary"
-              size="sm"
-              disabled={startMutation.isPending || !specText.trim()}
-              onClick={() => startMutation.mutate()}
-            >
-              {startMutation.isPending ? (
-                <Loader2 size={14} className="animate-spin" />
-              ) : (
-                <Play size={14} />
-              )}
-              {t("start.submit")}
-            </Button>
-          </div>
-        </div>
-
-        <div className="rounded-lg border border-border bg-card p-4 space-y-2">
-          <div className="text-sm font-medium text-heading">{t("list.title")}</div>
-          {isLoading ? (
-            <div className="text-xs text-muted py-4 text-center">{t("list.loading")}</div>
-          ) : runs.length === 0 ? (
-            <div className="text-xs text-muted py-4 text-center">{t("list.empty")}</div>
-          ) : (
-            <div className="divide-y divide-border">
-              {runs.map((run) => (
-                <button
-                  key={run.run_id}
-                  onClick={() => onSelect(run)}
-                  className={cn(
-                    "w-full flex items-center gap-3 py-2.5 px-2 text-left rounded transition-colors",
-                    activeRun?.run_id === run.run_id
-                      ? "bg-accent/10"
-                      : "hover:bg-accent/5",
-                  )}
-                >
-                  <StatusDot status={statusDot(run)} />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm text-heading truncate">{run.name}</span>
-                      <Badge variant="neutral">{run.run_id}</Badge>
-                      {run.parent_run_id ? (
-                        <Badge variant="info">↩ {run.parent_run_id}</Badge>
-                      ) : null}
-                    </div>
-                    <div className="text-[11px] text-muted">
-                      {t(`status.${run.status}`)}
-                      {run.status === "stopped" && run.stop_reason
-                        ? ` · ${t(`stopReason.${run.stop_reason}`)}`
-                        : ""}
-                      {" · "}
-                      {run.running ? t("list.elapsed", { sec: elapsed(run) }) : timeAgo(run)}
-                    </div>
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-
-      <div className="space-y-3">
-        {activeRun ? (
-          <>
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2 min-w-0">
-                <StatusDot status={statusDot(activeRun)} />
-                <span className="font-medium text-heading truncate">
-                  {activeRun.name}
-                </span>
-                <Badge variant="neutral">{activeRun.run_id}</Badge>
-              </div>
-              <div className="flex items-center gap-1 shrink-0">
-                {activeRun.running ? (
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    disabled={stopMutation.isPending}
-                    onClick={() => stopMutation.mutate(activeRun.run_id)}
-                  >
-                    {stopMutation.isPending ? (
-                      <Loader2 size={13} className="animate-spin" />
-                    ) : (
-                      <Square size={13} />
-                    )}
-                    {t("action.stop")}
-                  </Button>
-                ) : activeRun.status === "stopped" ? (
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    disabled={resumeMutation.isPending}
-                    onClick={() => resumeMutation.mutate(activeRun.run_id)}
-                  >
-                    {resumeMutation.isPending ? (
-                      <Loader2 size={13} className="animate-spin" />
-                    ) : (
-                      <RotateCcw size={13} />
-                    )}
-                    {t("action.resume")}
-                  </Button>
-                ) : (
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => {
-                      setResumeOf(activeRun.run_id);
-                      toast.info(t("toast.revisionHint", { id: activeRun.run_id }));
-                    }}
-                  >
-                    <Play size={13} />
-                    {t("action.revise")}
-                  </Button>
-                )}
-              </div>
-            </div>
-            {detailError ? (
-              <div className="text-xs text-danger py-8 text-center">
-                {t("detail.loadFailed")}
-              </div>
-            ) : detail ? (
-              <RunDetail detail={detail} />
-            ) : detailLoading ? (
-              <div className="text-xs text-muted py-8 text-center">
-                <Loader2 size={16} className="animate-spin inline mr-2" />
-                {t("detail.loading")}
-              </div>
-            ) : null}
-          </>
-        ) : (
-          <div className="rounded-lg border border-dashed border-border py-16 text-center text-sm text-muted">
-            {t("detail.empty")}
-          </div>
-        )}
-      </div>
+  const detail = detailQuery.data;
+  const run = listedRun ?? detail?.run;
+  const variant = (item: WorkflowRun) => item.status === "completed" ? "ok" : item.status === "failed" ? "danger" : item.running ? "info" : "neutral";
+  return <div className="space-y-4">
+    <div className="flex items-center justify-between gap-3">
+      <p className="text-sm text-muted">{t("list.title")} · {runs.length}</p>
+      <Button variant="primary" onClick={() => setComposer({ source: null })}><Plus size={16} />{t("start.submit")}</Button>
     </div>
-  );
+    <div className="grid items-start gap-5 xl:grid-cols-[19rem_minmax(0,1fr)]">
+      <aside className="min-w-0 space-y-2 xl:sticky xl:top-4">
+        <AsyncState pending={runsQuery.isPending} error={runsQuery.error} retry={() => void runsQuery.refetch()}>
+          {!runs.length && <EmptyState icon={Workflow} title={t("list.empty")} />}
+          {runs.map((item) => <button key={item.run_id} onClick={() => select(item.run_id)} aria-pressed={selected === item.run_id}
+            className={cn("w-full rounded-xl border bg-card p-4 text-left transition-colors", selected === item.run_id ? "border-accent bg-accent/5" : "border-border hover:border-border-strong")}>
+            <div className="mb-2 flex items-center justify-between gap-2"><span className="truncate text-sm font-medium">{item.name}</span>
+              <Badge variant={variant(item)}>{t(`status.${item.status}`)}</Badge></div>
+            <p className="truncate font-mono text-xs text-muted">{item.run_id}</p>
+            {!!item.created_at && <p className="mt-2 text-xs text-muted">{new Date(item.created_at * 1000).toLocaleString(i18n.language)}</p>}
+          </button>)}
+        </AsyncState>
+      </aside>
+      <section className="min-w-0 space-y-4">
+        {!selected ? <EmptyState icon={Workflow} title={t("detail.empty")} /> : <>
+          {run && <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card p-4">
+            <div className="min-w-0"><h2 className="truncate font-semibold">{run.name}</h2>
+              <p className="mt-1 break-all font-mono text-xs text-muted">{run.run_id}</p>
+              {run.parent_run_id && <button className="mt-1 text-xs text-accent hover:underline" onClick={() => select(run.parent_run_id!)}>{t("detail.parent", { id: run.parent_run_id })}</button>}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Badge variant={variant(run)}>{t(`status.${run.status}`)}</Badge>
+              {run.running ? <Button size="sm" onClick={() => action.mutate({ id: run.run_id, kind: "stop" })} loading={action.isPending}><Square size={13} />{t("action.stop")}</Button>
+                : run.status === "stopped" ? <Button size="sm" variant="primary" onClick={() => action.mutate({ id: run.run_id, kind: "resume" })} loading={action.isPending}><RotateCcw size={13} />{t("action.resume")}</Button> : null}
+              {!run.running && detail && <Button size="sm" onClick={() => setComposer({ source: detail })}><Play size={13} />{t("action.revise")}</Button>}
+            </div>
+          </div>}
+          {action.error && <QueryError compact error={action.error} />}
+          <AsyncState pending={detailQuery.isPending} error={detailQuery.error} retry={() => void detailQuery.refetch()}>
+            {detail && <RunDetail detail={detail} />}
+          </AsyncState>
+        </>}
+      </section>
+    </div>
+    {composer && <WorkflowComposer source={composer.source} onClose={() => setComposer(null)} onStarted={(started) => {
+      setComposer(null); invalidate(); select(started.run_id);
+    }} />}
+  </div>;
 }
-
-function statusDot(run: WorkflowRun): "ok" | "warn" | "offline" {
-  if (run.running || run.status === "completed") return "ok";
-  if (run.status === "running") return "warn";
-  return "offline";
-}
-
-function elapsed(run: WorkflowRun): number {
-  const start = run.created_at ?? 0;
-  return start ? Math.max(0, Math.floor(Date.now() / 1000 - start)) : 0;
-}
-
-function timeAgo(run: WorkflowRun): string {
-  const ts = run.finished_at ?? run.created_at ?? 0;
-  if (!ts) return "";
-  const diff = Math.floor(Date.now() / 1000 - ts);
-  if (diff < 60) return `${diff}s ago`;
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-  return `${Math.floor(diff / 86400)}d ago`;
-}
-
-export type { WorkflowRunDetail };

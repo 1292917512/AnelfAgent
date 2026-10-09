@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useRouteTab } from "@/hooks/useRouteTab";
 import { useTranslation } from "react-i18next";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
-import { PageContainer } from "@/components/common/PageContainer";
+import { PageContainer, PageIntro } from "@/components/common/PageContainer";
 import { SysConfigPanel } from "./settings/SysConfigPanel";
 import { SystemPanel } from "./settings/SystemPanel";
 import { PythonPanel } from "./settings/PythonPanel";
@@ -15,7 +15,7 @@ type SettingsTab = "sysConfig" | "system" | "python" | "git" | "config" | "hooks
 
 export default function Settings() {
   const { t } = useTranslation("settings");
-  const [tab, setTab] = useState<SettingsTab>("sysConfig");
+  const [tab, setTab] = useRouteTab<SettingsTab>(["sysConfig", "system", "python", "git", "config", "hooks", "llmHooks", "localModels"], "sysConfig");
 
   const TAB_KEYS: TabItem<SettingsTab>[] = [
     { key: "sysConfig", label: t("tabs.sysConfig") },
@@ -30,6 +30,7 @@ export default function Settings() {
 
   return (
     <PageContainer>
+      <PageIntro />
       <TabBar tabs={TAB_KEYS} activeTab={tab} onChange={setTab} />
 
       {tab === "sysConfig" && <SysConfigPanel />}

@@ -36,9 +36,8 @@ export function UnmatchedGroupCard({
       isOpen ? "border-accent shadow-[0_0_0_2px_var(--bg),0_0_0_4px_var(--ring)]"
              : "border-border hover:border-border-strong",
     )}>
-      <div className="flex items-center justify-between p-4 cursor-pointer"
-        onClick={onToggleExpand}>
-        <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 p-4">
+        <button type="button" aria-expanded={isOpen} onClick={onToggleExpand} className="flex min-w-0 flex-1 items-center gap-3 text-left">
           <ChevronDown size={16} className={cn("text-muted transition-transform", isOpen && "rotate-180")} />
           <StatusDot status="offline" />
           <div>
@@ -50,8 +49,8 @@ export function UnmatchedGroupCard({
           <span className="text-[11px] text-muted flex items-center gap-1">
             <Settings2 size={12} /> {t("nConfigItems", { count: configs.length })}
           </span>
-        </div>
-        <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+        </button>
+        <div className="flex flex-wrap items-center gap-2">
           {PluginLogin && (
             <Suspense fallback={null}>
               <PluginLogin compact />

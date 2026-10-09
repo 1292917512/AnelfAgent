@@ -5,7 +5,7 @@
  * 命名空间约定：频道插件用 `channel-<id>`；实体面板沿用原命名空间名（如 "ssh"）。
  * 覆盖语义：deep 合并 + overwrite，插件包与核心 locale 同名键以插件为准。
  */
-import i18n from "@/i18n";
+import i18n from "i18next";
 
 export interface PluginLocales {
   zh: Record<string, unknown>;

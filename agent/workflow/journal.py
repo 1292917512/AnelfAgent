@@ -323,11 +323,12 @@ class WorkflowJournal:
             return sequence
 
     async def list_events(self, run_id: str, after_sequence: int = 0,
-                          limit: int = 200) -> List[Dict[str, Any]]:
+                          limit: int = 200, *, latest: bool = False) -> List[Dict[str, Any]]:
         db = await self._get_db()
+        order = "DESC" if latest else "ASC"
         async with db.execute(
                 "SELECT sequence, type, payload_json, ts FROM workflow_event"
-                " WHERE run_id = ? AND sequence > ? ORDER BY sequence LIMIT ?",
+                f" WHERE run_id = ? AND sequence > ? ORDER BY sequence {order} LIMIT ?",
                 (run_id, after_sequence, max(1, limit))) as cur:
             rows = await cur.fetchall()
         events: List[Dict[str, Any]] = []
@@ -338,7 +339,7 @@ class WorkflowJournal:
             except ValueError:
                 item["payload"] = {}
             events.append(item)
-        return events
+        return list(reversed(events)) if latest else events
 
     # ------------------------------------------------------------------
     # retention

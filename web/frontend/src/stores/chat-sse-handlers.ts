@@ -138,6 +138,16 @@ function dispatchUiCommand(data: UiCommandPayload) {
 export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): void {
   const { updateBucket } = ctx;
 
+  es.addEventListener("message_failed", (event) => {
+    try {
+      const data = JSON.parse(event.data) as { chat_id?: string; message_id: string };
+      updateBucket(routeChatId(data), (bucket) => ({
+        messages: bucket.messages.map((message) => message.cid === data.message_id ? { ...message, delivery: "failed" } : message),
+      }));
+    } catch { /* Ignore invalid event data. */ }
+  });
+
+
   // 实时通话：用户语音转写定稿 → 聊天流（语音形态消息）
   es.addEventListener("voice_transcript", (e) => {
     try {
@@ -145,7 +155,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
       const chatId = routeChatId(data);
       updateBucket(chatId, (b) => ({
         messages: [
-          ...b.messages.map((m) => (m.queued ? { ...m, queued: undefined } : m)),
+          ...b.messages,
           { role: "user", content: data.content, cid: nextCid(), ts: Date.now() / 1000, voice: "transcript" as const },
         ],
       }));
@@ -182,7 +192,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
         if (changes.length) msg.changes = changes;
         return {
           messages: pruneThinking([
-            ...b.messages.map((m) => (m.queued ? { ...m, queued: undefined } : m)),
+            ...b.messages,
             msg,
           ]),
           sending: false,
@@ -248,7 +258,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
         if (thinking) msg.thinking = thinking;
         return {
           messages: pruneThinking([
-            ...b.messages.map((m) => (m.queued ? { ...m, queued: undefined } : m)),
+            ...b.messages,
             msg,
           ]),
           sending: false,
@@ -286,7 +296,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
         };
         return {
           messages: [
-            ...b.messages.map((m) => (m.queued ? { ...m, queued: undefined } : m)),
+            ...b.messages,
             msg,
           ],
           unread: isBackground ? b.unread + 1 : b.unread,

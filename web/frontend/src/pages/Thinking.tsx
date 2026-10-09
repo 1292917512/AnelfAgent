@@ -1,263 +1,91 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ReactFlowProvider } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { useShallow } from "zustand/react/shallow";
-
+import { Activity } from "lucide-react";
 import { useThinkingStore } from "@/stores/thinking-store";
-import { warnApiError, thinkingApi } from "@/lib/api";
-import { useThinkingBootstrap } from "@/pages/chat/useThinkingBootstrap";
+import { useThinkingSessions } from "@/hooks/useThinking";
+import { useRouteTab } from "@/hooks/useRouteTab";
+import { useIsMobile } from "@/lib/use-media-query";
 import { NodeDetail } from "@/components/thinking/NodeDetail";
 import { ToolsPanel } from "@/components/thinking/ToolsPanel";
 import { ContextProvidersPanel } from "@/components/thinking/ContextProvidersPanel";
 import { FlowView } from "@/components/thinking/FlowView";
 import { TimelineView } from "@/components/thinking/TimelineView";
-import { TabBar } from "@/components/common/TabBar";
-import Context from "@/pages/Context";
-import { useIsMobile } from "@/lib/use-media-query";
-import { cn } from "@/lib/utils";
-import { X } from "lucide-react";
+import { SessionOverview } from "@/components/thinking/SessionOverview";
 import { ThinkingSessionsPanel } from "@/components/thinking/ThinkingSessionsPanel";
 import { ThinkingToolbar } from "@/components/thinking/ThinkingToolbar";
-
-type ViewMode = "flow" | "timeline";
+import { TabBar } from "@/components/common/TabBar";
+import { PageSkeleton, QueryError } from "@/components/common/AsyncState";
+import { Drawer } from "@/components/common/Drawer";
+import { DialogSurface } from "@/components/ui/DialogSurface";
+import { Button } from "@/components/ui/Button";
+import { useTracePlanNodes } from "@/components/thinking/trace-plans";
+import Context from "@/pages/Context";
 
 function ThinkingFlow() {
   const { t } = useTranslation("thinking");
-  const {
-    enabled,
-    connected,
-    sessions,
-    activeSessionId,
-    activeSession,
-    selectedNodeId,
-    autoFollow,
-    setEnabled,
-    setSessions,
-    setActiveSessionId,
-    setActiveSession,
-    setSelectedNodeId,
-    setAutoFollow,
-    startSSE,
-    stopSSE,
-  } = useThinkingStore(useShallow((s) => ({
-    enabled: s.enabled,
-    connected: s.connected,
-    sessions: s.sessions,
-    activeSessionId: s.activeSessionId,
-    activeSession: s.activeSession,
-    selectedNodeId: s.selectedNodeId,
-    autoFollow: s.autoFollow,
-    setEnabled: s.setEnabled,
-    setSessions: s.setSessions,
-    setActiveSessionId: s.setActiveSessionId,
-    setActiveSession: s.setActiveSession,
-    setSelectedNodeId: s.setSelectedNodeId,
-    setAutoFollow: s.setAutoFollow,
-    startSSE: s.startSSE,
-    stopSSE: s.stopSSE,
-  })));
-
-  const [view, setView] = useState<ViewMode>("flow");
-  const [showTools, setShowTools] = useState(false);
-  const [showProviders, setShowProviders] = useState(false);
+  useThinkingSessions();
+  const state = useThinkingStore();
+  const [view, setView] = useRouteTab(["timeline", "flow"] as const, "timeline", "view");
+  const [panel, setPanel] = useState<"tools" | "providers" | null>(null);
   const [showSessions, setShowSessions] = useState(false);
   const isMobile = useIsMobile();
-
-  // 服务端 enabled 状态只同步一次（首次加载），切换页面不重置用户的开关选择
-  useThinkingBootstrap();
-
-  // 每次进入页面都刷新会话列表（获取离开期间产生的新会话）
-  useEffect(() => {
-    thinkingApi.sessions(50).then((r) => {
-      setSessions(r.data.sessions ?? []);
-    }).catch(warnApiError);
-  }, [setSessions]);
-
-  const handleToggle = useCallback(() => {
-    const next = !enabled;
-    thinkingApi.toggle(next).then(() => {
-      setEnabled(next);
-      if (next) {
-        startSSE();
-      } else {
-        stopSSE();
-      }
-    }).catch(warnApiError);
-  }, [enabled, setEnabled, startSSE, stopSSE]);
-
-  const handleSelectSession = useCallback((id: string) => {
-    setActiveSessionId(id);
-    setSelectedNodeId(null);
-    const local = sessions.find((s) => s.id === id);
-    if (local && activeSession?.id !== id) {
-      thinkingApi.session(id).then((r) => {
-        if (r.data && !r.data.error) {
-          setActiveSession(r.data);
-        }
-      }).catch(warnApiError);
-    }
-  }, [sessions, activeSession, setActiveSessionId, setActiveSession, setSelectedNodeId]);
-
-  const selectedNode = useMemo(() => {
-    if (!selectedNodeId || !activeSession) return null;
-    return activeSession.nodes.find((n) => n.id === selectedNodeId) ?? null;
-  }, [selectedNodeId, activeSession]);
-
-  const availableTools = activeSession?.available_tools ?? [];
-
-  return (
-    <div className="flex h-full gap-0">
-      <ThinkingSessionsPanel
-        sessions={sessions}
-        activeId={activeSessionId}
-        onSelect={handleSelectSession}
-        onRefresh={() => {
-          thinkingApi.sessions(50).then((r) => setSessions(r.data.sessions ?? [])).catch(warnApiError);
-        }}
-        isMobile={isMobile}
-        open={showSessions}
-        onClose={() => setShowSessions(false)}
-      />
-
-      {/* 中间：工具栏 + 视图 */}
-      <div className="flex-1 flex flex-col min-w-0">
-        <ThinkingToolbar
-          isMobile={isMobile}
-          onShowSessions={() => setShowSessions(true)}
-          enabled={enabled}
-          onToggle={handleToggle}
-          connected={connected}
-          view={view}
-          onViewChange={setView}
-          showTools={showTools}
-          onToggleTools={() => setShowTools(!showTools)}
-          showProviders={showProviders}
-          onToggleProviders={() => setShowProviders(!showProviders)}
-          autoFollow={autoFollow}
-          onToggleAutoFollow={() => setAutoFollow(!autoFollow)}
-          nodeCount={activeSession?.nodes.length}
-        />
-
-        {/* 主区域：工具面板 + 视图 */}
-        <div className="flex-1 flex min-h-0">
-          {/* 工具面板（桌面常驻，移动端抽屉） */}
-          {showTools && !isMobile && (
-            <div className="w-56 shrink-0 border-r border-border bg-panel">
-              <ToolsPanel tools={availableTools} />
-            </div>
-          )}
-          {showTools && isMobile && (
-            <>
-              <div className="fixed inset-0 z-40 bg-black/50" onClick={() => setShowTools(false)} />
-              <div className="fixed inset-y-0 right-0 z-50 w-64 border-l border-border bg-panel flex flex-col">
-                <div className="flex items-center justify-between px-4 py-2 border-b border-border">
-                  <span className="text-xs font-semibold text-heading">{t("toolsPanel")}</span>
-                  <button
-                    onClick={() => setShowTools(false)}
-                    className="p-1 rounded-sm text-muted hover:text-foreground hover:bg-hover"
-                  >
-                    <X size={14} />
-                  </button>
-                </div>
-                <div className="flex-1 min-h-0">
-                  <ToolsPanel tools={availableTools} />
-                </div>
-              </div>
-            </>
-          )}
-
-          {/* 上下文提供者面板（右侧） */}
-          {showProviders && !isMobile && (
-            <div className="w-56 shrink-0 border-l border-border bg-panel">
-              <ContextProvidersPanel />
-            </div>
-          )}
-          {showProviders && isMobile && (
-            <>
-              <div className="fixed inset-0 z-40 bg-black/50" onClick={() => setShowProviders(false)} />
-              <div className="fixed inset-y-0 right-0 z-50 w-64 border-l border-border bg-panel flex flex-col">
-                <div className="flex items-center justify-between px-4 py-2 border-b border-border">
-                  <span className="text-xs font-semibold text-heading">{t("contextProviders.title")}</span>
-                  <button
-                    onClick={() => setShowProviders(false)}
-                    className="p-1 rounded-sm text-muted hover:text-foreground hover:bg-hover"
-                  >
-                    <X size={14} />
-                  </button>
-                </div>
-                <div className="flex-1 min-h-0">
-                  <ContextProvidersPanel />
-                </div>
-              </div>
-            </>
-          )}
-
-          <div className="flex-1 relative min-w-0">
-            {!activeSession ? (
-              <div className="flex items-center justify-center h-full text-sm text-muted px-4 text-center">
-                {enabled
-                  ? t("waitingForActivity")
-                  : t("enableTracking")}
-              </div>
-            ) : view === "flow" ? (
-              <FlowView
-                key={activeSession.id}
-                session={activeSession}
-                autoFollow={autoFollow}
-                onNodeClick={setSelectedNodeId}
-              />
-            ) : (
-              <TimelineView
-                session={activeSession}
-                selectedNodeId={selectedNodeId}
-                autoFollow={autoFollow}
-                onSelect={setSelectedNodeId}
-              />
-            )}
-          </div>
+  const planNodes = useTracePlanNodes(state.activeSession);
+  const selected = [...(state.activeSession?.nodes ?? []), ...planNodes].find((node) => node.id === state.selectedNodeId);
+  const selectNode = (id: string) => { state.setSelectedNodeId(id); };
+  return <div className="flex h-full min-h-0">
+    <ThinkingSessionsPanel sessions={state.sessions} activeId={state.activeSessionId}
+      onSelect={(id) => void state.selectSession(id)} onRefresh={() => void state.refreshSessions()}
+      loading={state.sessionsLoading} error={state.sessionsError}
+      isMobile={isMobile} open={showSessions} onClose={() => setShowSessions(false)} />
+    <div className="flex min-w-0 flex-1 flex-col">
+      <ThinkingToolbar isMobile={isMobile} onShowSessions={() => setShowSessions(true)}
+        enabled={state.enabled} busy={state.toggling || !state.statusSynced} onToggle={() => void state.setTracking(!state.enabled)}
+        connected={state.connected} view={view} onViewChange={setView}
+        onShowTools={() => setPanel("tools")} onShowProviders={() => setPanel("providers")}
+        autoFollow={state.autoFollow} onToggleAutoFollow={() => { state.setSelectedNodeId(null); state.setAutoFollow(!state.autoFollow); }} />
+      {state.statusError != null && <div className="p-3"><QueryError compact error={state.statusError} retry={() => void (state.statusSynced ? state.setTracking(!state.enabled) : state.initialize())} /></div>}
+      {state.sessionError != null && <div className="p-3"><QueryError compact error={state.sessionError} retry={() => void state.refreshSession()} /></div>}
+      {!state.enabled && state.activeSession && <p className="border-b border-border bg-elevated px-4 py-2 text-xs text-muted">{t("historyWhileDisabled")}</p>}
+      {state.activeSession ? <>
+        <SessionOverview session={state.activeSession} onSelect={selectNode} onSelectSession={(id) => void state.selectSession(id)} />
+        <div className="relative min-h-0 flex-1">
+          {view === "flow"
+            ? <FlowView key={state.activeSession.id} session={{ ...state.activeSession, nodes: [...state.activeSession.nodes, ...planNodes] }} autoFollow={state.autoFollow} onNodeClick={selectNode} />
+            : <TimelineView key={state.activeSession.id} session={state.activeSession} selectedNodeId={state.selectedNodeId}
+              autoFollow={state.autoFollow} onSelect={selectNode} />}
         </div>
-      </div>
-
-      {/* 右侧：节点详情（仅流程图视图；时间线视图内联展开） */}
-      {view === "flow" && selectedNode && (
-        <div className={cn(
-          "border-l border-border bg-panel",
-          isMobile ? "fixed inset-y-0 right-0 z-50 w-full max-w-sm shadow-lg" : "w-72 shrink-0",
-        )}>
-          <NodeDetail
-            node={selectedNode}
-            onClose={() => setSelectedNodeId(null)}
-          />
-        </div>
-      )}
+      </> : state.sessionLoading || state.sessionsLoading
+        ? <div className="p-6"><PageSkeleton /></div>
+        : <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
+          <Activity size={32} className="text-accent" />
+          <h2 className="text-base font-semibold text-heading">{t(state.enabled ? "waitingForActivity" : "enableTracking")}</h2>
+          <p className="max-w-md text-sm leading-relaxed text-muted">{t("trackingHint")}</p>
+          {!state.enabled && <Button variant="primary" loading={state.toggling} onClick={() => void state.setTracking(true)}>{t("startTracking")}</Button>}
+        </div>}
     </div>
-  );
+    {selected && !isMobile && <aside className="w-[340px] shrink-0 border-l border-border bg-panel">
+      <NodeDetail key={selected.id} node={selected} onClose={() => state.setSelectedNodeId(null)} />
+    </aside>}
+    {isMobile && <DialogSurface open={!!selected} onClose={() => state.setSelectedNodeId(null)} title={t("nodeDetails")} placement="right" className="max-w-lg">
+      {selected && <NodeDetail key={selected.id} node={selected} onClose={() => state.setSelectedNodeId(null)} />}
+    </DialogSurface>}
+    <Drawer open={panel !== null} onClose={() => setPanel(null)} title={t(panel === "tools" ? "availableTools" : "contextProviders.title")}>
+      <div className="h-[70dvh]">{panel === "tools" ? <ToolsPanel tools={state.activeSession?.available_tools ?? []} /> : panel === "providers" ? <ContextProvidersPanel /> : null}</div>
+    </Drawer>
+  </div>;
 }
 
 export default function Thinking() {
   const { t } = useTranslation("thinking");
-  const [pageTab, setPageTab] = useState<"chain" | "context">("chain");
-
-  const pageTabs = [
-    { key: "chain" as const, label: t("title") },
-    { key: "context" as const, label: t("contextTab") },
-  ];
-
-  return (
-    <div className="h-full flex flex-col">
-      <div className="px-3 md:px-6 pt-4 border-b border-border">
-        <TabBar tabs={pageTabs} activeTab={pageTab} onChange={setPageTab} />
-      </div>
-      <div className="flex-1 min-h-0">
-        {pageTab === "chain" ? (
-          <ReactFlowProvider>
-            <ThinkingFlow />
-          </ReactFlowProvider>
-        ) : (
-          <Context hideHeader />
-        )}
-      </div>
+  const [tab, setTab] = useRouteTab(["chain", "context"] as const, "chain");
+  return <div className="flex h-full min-h-0 flex-col">
+    <div className="border-b border-border px-4 pt-3">
+      <TabBar tabs={[{ key: "chain", label: t("title") }, { key: "context", label: t("contextTab") }]} activeTab={tab} onChange={setTab} />
     </div>
-  );
+    <div className="min-h-0 flex-1">
+      {tab === "chain" ? <ReactFlowProvider><ThinkingFlow /></ReactFlowProvider> : <Context hideHeader />}
+    </div>
+  </div>;
 }

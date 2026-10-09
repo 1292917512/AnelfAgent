@@ -2,6 +2,7 @@ import { Check, Loader2, RotateCcw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { ConfigMetaItem } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { ConfigSource } from "@/components/common/ConfigSource";
 import { useConfigSave } from "./useConfigSave";
 import { NumberField, ModelField, PasswordField, RangeField, SelectField, SwitchField, TextField } from "./fields";
 
@@ -23,16 +24,16 @@ export function ConfigItemRow({ item, highlight, onOpenDetail }: ConfigItemRowPr
 
   const control = (() => {
     if (item.type === "boolean") {
-      return <SwitchField value={!!value} disabled={disabled} onCommit={save} />;
+      return <SwitchField label={item.description || item.key} value={!!value} disabled={disabled} onCommit={save} />;
     }
     if (item.type === "enum" && item.options) {
       return (
-        <SelectField value={String(value ?? "")} options={item.options} disabled={disabled} onCommit={save} />
+        <SelectField label={item.description || item.key} value={String(value ?? "")} options={item.options} disabled={disabled} onCommit={save} />
       );
     }
     if (item.type === "range" && item.min !== null && item.max !== null) {
       return (
-        <RangeField
+        <RangeField label={item.description || item.key}
           value={Number(value ?? item.default ?? 0)}
           min={item.min}
           max={item.max}
@@ -45,7 +46,7 @@ export function ConfigItemRow({ item, highlight, onOpenDetail }: ConfigItemRowPr
     }
     if (item.type === "model") {
       return (
-        <ModelField
+        <ModelField label={item.description || item.key}
           value={value == null ? "" : String(value)}
           allowEmpty={item.default === "" || item.default === null}
           disabled={disabled}
@@ -55,9 +56,9 @@ export function ConfigItemRow({ item, highlight, onOpenDetail }: ConfigItemRowPr
     }
     if (item.type === "integer" || item.type === "float" || item.type === "range") {
       return (
-        <NumberField
+        <NumberField label={item.description || item.key}
           value={Number(value ?? 0)}
-          isFloat={item.type === "float"}
+          isFloat={item.type === "float"} min={item.min ?? undefined} max={item.max ?? undefined}
           unit={item.unit || undefined}
           disabled={disabled}
           onCommit={save}
@@ -65,32 +66,33 @@ export function ConfigItemRow({ item, highlight, onOpenDetail }: ConfigItemRowPr
       );
     }
     if (item.type === "password") {
-      return <PasswordField value={value == null ? "" : String(value)} disabled={disabled} onCommit={save} />;
+      return <PasswordField label={item.description || item.key} value={value == null ? "" : String(value)} disabled={disabled} onCommit={save} />;
     }
-    return <TextField value={value == null ? "" : String(value)} disabled={disabled} onCommit={save} />;
+    return <TextField multiline={item.type === "text"} label={item.description || item.key} value={value == null ? "" : String(value)} disabled={disabled} onCommit={save} />;
   })();
 
   return (
     <div
       id={`config-item-${item.key}`}
       className={cn(
-        "flex items-center gap-3 p-3 rounded-md border bg-card transition-colors",
+        "flex flex-wrap items-center gap-3 p-3 rounded-md border bg-card transition-colors",
         highlight ? "border-accent ring-1 ring-accent" : "border-border",
       )}
     >
       <button
         type="button"
         onClick={() => onOpenDetail(item)}
-        className="flex-1 min-w-0 text-left group"
+        className="min-w-[180px] flex-1 text-left group"
         title={t("detail.open")}
       >
         <div className="text-sm text-heading group-hover:text-accent transition-colors">
           {item.description}
         </div>
         <div className="text-xs text-muted font-mono truncate">{item.key}</div>
+        <ConfigSource item={item} />
       </button>
 
-      <div className="flex items-center gap-2 shrink-0">
+      <div className="flex max-w-full items-center gap-2">
         {control}
         {saving && <Loader2 size={14} className="animate-spin text-muted" />}
         {saved && <Check size={16} className="text-ok" />}

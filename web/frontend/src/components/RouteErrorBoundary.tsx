@@ -1,64 +1,38 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { AlertTriangle, RefreshCw } from "lucide-react";
-import { Button } from "@/components/ui";
+import { Button } from "@/components/ui/Button";
+import { apiErrorMessage } from "@/lib/api/client";
+import { recoverChunk } from "@/lib/chunk-recovery";
 
-/** 懒加载 chunk 失效（重新构建后旧哈希文件不存在）的特征判定 */
-function isChunkLoadError(error: Error): boolean {
-  return (
-    error.name === "ChunkLoadError" ||
-    /loading chunk|dynamically imported module|module script failed/i.test(error.message)
-  );
-}
-
-const RELOAD_GUARD_KEY = "route-chunk-reload-at";
-
-/** chunk 失效时自动刷新一次自愈；10s 守卫防止服务端持续异常时刷新死循环 */
-function tryAutoReload(): boolean {
-  const last = Number(sessionStorage.getItem(RELOAD_GUARD_KEY) ?? 0);
-  if (Date.now() - last < 10_000) return false;
-  sessionStorage.setItem(RELOAD_GUARD_KEY, String(Date.now()));
-  window.location.reload();
-  return true;
-}
-
-/** 错误回退 UI：函数组件以便使用 i18n hook */
-function RouteErrorFallback({ error }: { error: Error }) {
+function RouteErrorFallback({ error, retry }: { error: Error; retry: () => void }) {
   const { t } = useTranslation("common");
   return (
-    <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
-      <AlertTriangle size={28} className="text-warn" />
-      <p className="text-sm font-medium text-heading">{t("pageErrorTitle")}</p>
-      <p className="text-xs text-muted max-w-md break-all">{t("pageErrorDesc")}</p>
-      <p className="text-[11px] text-muted opacity-60 max-w-md break-all">{error.message}</p>
-      <Button variant="secondary" size="sm" onClick={() => window.location.reload()}>
-        <RefreshCw size={12} /> {t("refresh")}
-      </Button>
+    <div role="alert" className="mx-auto flex max-w-xl flex-col items-center gap-4 py-16 text-center">
+      <div className="rounded-2xl bg-danger-subtle p-4 text-danger"><AlertTriangle size={28} /></div>
+      <h1 className="text-lg font-semibold text-heading">{t("pageErrorTitle")}</h1>
+      <p className="text-sm text-muted">{t("pageErrorDesc")}</p>
+      <p className="max-w-full break-words text-xs text-muted">{apiErrorMessage(error, t("requestFailed"))}</p>
+      <div className="flex gap-2">
+        <Button onClick={retry}><RefreshCw size={14} />{t("retry")}</Button>
+        <Button variant="ghost" onClick={() => window.location.reload()}>{t("refresh")}</Button>
+      </div>
     </div>
   );
 }
 
-/**
- * 路由级错误边界：兜住页面懒加载/渲染异常。
- * 无边界时任何页面渲染异常会卸载整个 React 根（整页黑屏），
- * 这里收敛为内容区回退 UI，侧边栏与导航保持可用；
- * chunk 失效（发版后旧标签页）优先自动刷新一次自愈。
- */
-export class RouteErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
-  state = { error: null as Error | null };
-
-  static getDerivedStateFromError(error: Error) {
-    return { error };
-  }
-
+export class RouteErrorBoundary extends Component<{ children: ReactNode; onReset?: () => void }, { error: Error | null }> {
+  state: { error: Error | null } = { error: null };
+  static getDerivedStateFromError(error: Error) { return { error }; }
   componentDidCatch(error: Error, info: ErrorInfo) {
     console.error("[RouteErrorBoundary]", error, info.componentStack);
-    if (isChunkLoadError(error)) tryAutoReload();
+    if (error.name === "ChunkLoadError" || /loading chunk|dynamically imported module|module script failed/i.test(error.message)) recoverChunk();
   }
-
   render() {
-    const { error } = this.state;
-    if (error) return <RouteErrorFallback error={error} />;
+    if (this.state.error) return <RouteErrorFallback error={this.state.error} retry={() => {
+      this.props.onReset?.();
+      this.setState({ error: null });
+    }} />;
     return this.props.children;
   }
 }

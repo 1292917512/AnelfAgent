@@ -56,7 +56,6 @@ export default function Chat() {
   const { t } = useTranslation("chat");
   const isMobile = useIsMobile();
   const loadHistory = useChatStore((s) => s.loadHistory);
-  const startSSE = useChatStore((s) => s.startSSE);
   const loadChats = useChatStore((s) => s.loadChats);
   const clearMessages = useChatStore((s) => s.clearMessages);
 
@@ -80,10 +79,9 @@ export default function Chat() {
   useEffect(() => {
     loadChats();
     loadHistory();
-    startSSE();
     const stopReporting = startUiStateReporting();
     return stopReporting;
-  }, [loadChats, loadHistory, startSSE]);
+  }, [loadChats, loadHistory]);
 
   const handleLayoutChanged = (layout: Layout, meta: LayoutChangedMeta) => {
     if (!meta.isUserInteraction) return;
@@ -116,7 +114,7 @@ export default function Chat() {
         <div className="flex items-center gap-2 shrink-0">
           <ContextChip />
           <ModelSelect modelType="chat" compact />
-          <Button variant="secondary" size="sm" onClick={clearMessages}>
+          <Button variant="secondary" size="sm" title={t("clear")} aria-label={t("clear")} onClick={clearMessages}>
             <Trash2 size={14} />
             <span className="hidden sm:inline">{t("clear")}</span>
           </Button>
@@ -152,7 +150,7 @@ export default function Chat() {
   if (isMobile) {
     return (
       <RealtimeCallProvider>
-      <div className="relative flex h-full min-h-0 -m-3 md:-m-6">
+      <div className="relative flex h-full min-h-0">
         <LeftDock />
         {hasOpenFiles && (
           <Suspense fallback={null}>
@@ -170,7 +168,7 @@ export default function Chat() {
   // 桌面端：可拖拽调宽的三栏（宽度持久化到 localStorage，双击复位）
   return (
     <RealtimeCallProvider>
-    <div className="relative h-full min-h-0 -m-3 md:-m-6">
+    <div className="relative h-full min-h-0">
       <Group
         orientation="horizontal"
         className="h-full"

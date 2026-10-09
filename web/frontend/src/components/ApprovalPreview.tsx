@@ -59,11 +59,14 @@ function PreviewRow({ icon: Icon, title, children }: {
   );
 }
 
-/** 按工具类型分发审批预览；返回 null 表示走通用参数展示 */
+/** 按工具类型展示操作语义，未知工具展示完整参数。 */
 export function ApprovalPreview({ toolName, toolArgs }: { toolName: string; toolArgs: string }) {
   const { t } = useTranslation("approvals");
   const args = tryParse(toolArgs);
-  if (!args) return null;
+  const fallback = <PreviewRow icon={Terminal} title={t("popup.args")}>
+    <pre className="max-h-40 overflow-auto rounded bg-elevated p-2 text-xs whitespace-pre-wrap break-all">{toolArgs}</pre>
+  </PreviewRow>;
+  if (!args) return fallback;
 
   // 文件编辑：old/new 拼极简 diff
   if (toolName === "edit_file" || toolName === "write_file") {
@@ -114,5 +117,5 @@ export function ApprovalPreview({ toolName, toolArgs }: { toolName: string; tool
     );
   }
 
-  return null;
+  return fallback;
 }

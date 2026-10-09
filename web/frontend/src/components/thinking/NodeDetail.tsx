@@ -1,192 +1,78 @@
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { X } from "lucide-react";
-import type { TraceNode } from "@/stores/thinking-store";
+import { Check, Copy, X } from "lucide-react";
+import type { TraceNode } from "@/lib/types";
+import { Button } from "@/components/ui/Button";
+import { TraceStatus } from "./TraceStatus";
+import { durationLabel, nodeTitle, nodeUsage, textValue } from "./trace-model";
 
-interface Props {
-  node: TraceNode;
-  onClose: () => void;
+function DataBlock({ title, value, warning = false }: { title: string; value: unknown; warning?: boolean }) {
+  if (value === undefined || value === null || value === "") return null;
+  const content = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  return <section className="space-y-2">
+    <h4 className="text-xs font-medium text-heading">{title}</h4>
+    <pre className={`max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-lg border p-3 text-xs leading-relaxed ${warning ? "border-danger/25 bg-danger-subtle text-danger" : "border-border bg-elevated text-foreground"}`}>{content}</pre>
+  </section>;
 }
 
-export function NodeDetail({ node, onClose }: Props) {
+/** Shows complete recorded inputs, results and diagnostics without silently truncating values. */
+export function NodeDetail({ node, onClose }: { node: TraceNode; onClose: () => void }) {
   const { t } = useTranslation("thinking");
-  const ts = new Date(node.timestamp * 1000);
-
-  return (
-    <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-        <h3 className="text-sm font-semibold text-heading truncate">
-          {t(`nodeTypes.${node.type}`, { defaultValue: node.type })}
-        </h3>
-        <button
-          onClick={onClose}
-          className="p-1 rounded-sm text-muted hover:text-foreground hover:bg-hover transition-colors"
-        >
-          <X size={14} />
-        </button>
-      </div>
-
-      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3 text-xs">
-        <div className="space-y-1.5">
-          <Row label={t("detailLabels.label")} value={node.label} />
-          <Row label={t("detailLabels.status")} value={t(`statusLabels.${node.status}`, { defaultValue: node.status })} />
-          <Row label={t("detailLabels.time")} value={ts.toLocaleTimeString()} />
-          {node.duration_ms != null && (
-            <Row
-              label={t("detailLabels.duration")}
-              value={
-                node.duration_ms >= 1000
-                  ? `${(node.duration_ms / 1000).toFixed(2)}s`
-                  : `${Math.round(node.duration_ms)}ms`
-              }
-            />
-          )}
-          <Row label="ID" value={node.id} mono />
+  const { t: tc } = useTranslation("common");
+  const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
+  const usage = nodeUsage(node);
+  const reasoning = textValue(node.data.reasoning_content) || textValue(node.data.reasoning_preview);
+  const output = node.data.result_preview ?? node.data.content_preview ?? node.data.preview;
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(JSON.stringify(node, null, 2)); setCopied(true); setCopyFailed(false); }
+    catch { setCopyFailed(true); }
+  };
+  return <div className="flex h-full min-h-0 flex-col">
+    <div className="flex shrink-0 items-center gap-2 border-b border-border p-4">
+      <h3 className="min-w-0 flex-1 truncate text-sm font-semibold text-heading">{t("nodeDetails")}</h3>
+      <Button size="icon" variant="ghost" title={t(copied ? "copied" : "copyNode")} onClick={() => void copy()}>
+        {copied ? <Check size={15} /> : <Copy size={15} />}
+      </Button>
+      <Button size="icon" variant="ghost" title={tc("close")} onClick={onClose}><X size={16} /></Button>
+    </div>
+    <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4">
+      <div>
+        <div className="mb-2 flex items-center gap-2 text-xs text-muted">
+          <TraceStatus status={node.status} label />
+          <span>· {t(`nodeTypes.${node.type}`, { defaultValue: node.type })}</span>
         </div>
-
-        {node.type === "llm_call" && (() => {
-          const usage = node.data.usage as {
-            prompt_tokens?: number;
-            completion_tokens?: number;
-            total_tokens?: number;
-            cache_read_input_tokens?: number;
-            cache_creation_input_tokens?: number;
-            cache_hit_rate?: number;
-          } | undefined;
-          const pct = node.data.usage_percent as number | undefined;
-          const maxTokens = node.data.max_tokens as number | undefined;
-          if (!usage?.total_tokens) return null;
-          const hasCache = (usage.cache_read_input_tokens ?? 0) > 0 || (usage.cache_creation_input_tokens ?? 0) > 0;
-          return (
-            <div className="space-y-1.5">
-              <Row label={t("detailLabels.promptTokens", { defaultValue: "Prompt Tokens" })} value={String(usage.prompt_tokens ?? 0)} mono />
-              <Row label={t("detailLabels.completionTokens", { defaultValue: "Completion Tokens" })} value={String(usage.completion_tokens ?? 0)} mono />
-              <Row label={t("detailLabels.totalTokens", { defaultValue: "Total Tokens" })} value={String(usage.total_tokens)} mono />
-              {hasCache && (
-                <>
-                  <Row
-                    label={t("detailLabels.cacheRead", { defaultValue: "Cache Read" })}
-                    value={String(usage.cache_read_input_tokens ?? 0)}
-                    mono
-                  />
-                  <Row
-                    label={t("detailLabels.cacheCreation", { defaultValue: "Cache Write" })}
-                    value={String(usage.cache_creation_input_tokens ?? 0)}
-                    mono
-                  />
-                  <Row
-                    label={t("detailLabels.cacheHitRate", { defaultValue: "Cache Hit" })}
-                    value={`${Math.round((usage.cache_hit_rate ?? 0) * 100)}%`}
-                    mono
-                  />
-                </>
-              )}
-              {maxTokens != null && maxTokens > 0 && (
-                <Row label={t("detailLabels.maxTokens", { defaultValue: "Max Tokens" })} value={String(maxTokens)} mono />
-              )}
-              {pct != null && (
-                <Row label={t("detailLabels.usagePercent", { defaultValue: "Usage" })} value={`${pct}%`} mono />
-              )}
-            </div>
-          );
-        })()}
-
-        {node.type === "llm_call" && (() => {
-          // 优先思考全文（有界截断），退回 800 字预览（旧会话/未开启全文采集的节点）
-          const reasoning = typeof node.data.reasoning_content === "string" && node.data.reasoning_content
-            ? node.data.reasoning_content
-            : typeof node.data.reasoning_preview === "string" ? node.data.reasoning_preview : "";
-          if (!reasoning) return null;
-          return (
-            <div>
-              <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-strong mb-1.5">
-                {t("reasoningContent")}
-                {node.data.reasoning_truncated === true && (
-                  <span className="ml-2 normal-case text-amber-600 dark:text-amber-400">
-                    {t("reasoningTruncated", { defaultValue: "已截断" })}
-                  </span>
-                )}
-              </div>
-              <div className="rounded-sm bg-purple-500/5 border border-purple-500/30 p-2.5 text-xs text-foreground whitespace-pre-wrap leading-relaxed max-h-96 overflow-y-auto">
-                {reasoning}
-              </div>
-            </div>
-          );
-        })()}
-
-        {node.data && Object.keys(node.data).length > 0 && (
-          <div>
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-strong mb-1.5">
-              {t("detailData")}
-            </div>
-            <div className="rounded-sm bg-elevated border border-border p-2.5 overflow-x-auto">
-              <DataTree data={node.data} />
-            </div>
-          </div>
-        )}
+        <h4 className="break-words text-sm font-semibold text-heading">{nodeTitle(node, t)}</h4>
+        <p className="mt-2 text-xs text-muted">
+          {new Date(node.timestamp * 1000).toLocaleString()}
+          {node.duration_ms !== null && ` · ${durationLabel(node.duration_ms)}`}
+        </p>
       </div>
+      {copyFailed && <p role="alert" className="text-xs text-danger">{t("copyFailed")}</p>}
+      <DataBlock title={t("executionError")} value={node.data.error} warning />
+      <DataBlock title={t("inputArguments")} value={node.data.arguments} />
+      <DataBlock title={t("recordedOutput")} value={output} />
+      {reasoning && <section className="space-y-2">
+        <DataBlock title={t("reasoningContent")} value={reasoning} />
+        {node.data.reasoning_truncated === true && <p className="text-xs text-warn">{t("reasoningTruncated")}</p>}
+      </section>}
+      {usage.total_tokens > 0 && <section className="space-y-2">
+        <h4 className="text-xs font-medium text-heading">{t("tokenUsage")}</h4>
+        <dl className="grid grid-cols-2 gap-2 rounded-lg border border-border bg-elevated p-3">
+          {([
+            ["promptTokens", usage.prompt_tokens], ["completionTokens", usage.completion_tokens],
+            ["totalTokens", usage.total_tokens], ["cacheRead", usage.cache_read_input_tokens],
+            ["cacheCreation", usage.cache_creation_input_tokens],
+          ] as const).map(([key, value]) => <div key={key}>
+            <dt className="text-[11px] text-muted">{t(`detailLabels.${key}`)}</dt>
+            <dd className="mt-1 text-xs font-medium tabular-nums">{value.toLocaleString()}</dd>
+          </div>)}
+        </dl>
+      </section>}
+      <details className="rounded-lg border border-border">
+        <summary className="cursor-pointer p-3 text-xs font-medium text-heading">{t("rawRecord")}</summary>
+        <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap break-words border-t border-border p-3 text-xs leading-relaxed">{JSON.stringify(node, null, 2)}</pre>
+      </details>
     </div>
-  );
-}
-
-function Row({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
-  return (
-    <div className="flex justify-between gap-2">
-      <span className="text-muted shrink-0">{label}</span>
-      <span className={`text-foreground text-right truncate ${mono ? "font-mono" : ""}`}>
-        {value}
-      </span>
-    </div>
-  );
-}
-
-function DataTree({ data, depth = 0 }: { data: unknown; depth?: number }) {
-  if (data === null || data === undefined) {
-    return <span className="text-muted italic">null</span>;
-  }
-
-  if (typeof data === "string") {
-    if (data.length > 200) {
-      return (
-        <span className="text-ok font-mono break-all whitespace-pre-wrap">
-          "{data.slice(0, 200)}..."
-        </span>
-      );
-    }
-    return <span className="text-ok font-mono break-all">"{data}"</span>;
-  }
-
-  if (typeof data === "number" || typeof data === "boolean") {
-    return <span className="text-accent font-mono">{String(data)}</span>;
-  }
-
-  if (Array.isArray(data)) {
-    if (data.length === 0) return <span className="text-muted font-mono">[]</span>;
-    return (
-      <div className="space-y-0.5" style={{ paddingLeft: depth > 0 ? 12 : 0 }}>
-        {data.map((item, i) => (
-          <div key={`arr-${i}`} className="flex gap-1">
-            <span className="text-muted font-mono shrink-0">{i}:</span>
-            <DataTree data={item} depth={depth + 1} />
-          </div>
-        ))}
-      </div>
-    );
-  }
-
-  if (typeof data === "object") {
-    const entries = Object.entries(data as Record<string, unknown>);
-    if (entries.length === 0) return <span className="text-muted font-mono">{"{}"}</span>;
-    return (
-      <div className="space-y-0.5" style={{ paddingLeft: depth > 0 ? 12 : 0 }}>
-        {entries.map(([key, val]) => (
-          <div key={key} className="flex gap-1">
-            <span className="text-purple-400 font-mono shrink-0">{key}:</span>
-            <DataTree data={val} depth={depth + 1} />
-          </div>
-        ))}
-      </div>
-    );
-  }
-
-  return <span className="font-mono">{String(data)}</span>;
+  </div>;
 }

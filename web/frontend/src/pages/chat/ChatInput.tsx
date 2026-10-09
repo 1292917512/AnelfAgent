@@ -8,6 +8,7 @@ import type { PendingFile, WorkspaceSearchHit } from "@/lib/types";
 import { RealtimeCallPanel, RealtimeCallToggle } from "./RealtimeCallBar";
 import { detectMention, useMentionSearch } from "./mention/useMention";
 import { MentionPanel } from "./mention/MentionPanel";
+import { WorkspaceContextPreview } from "./WorkspaceContextPreview";
 import { mentionMarkdown } from "./mention/mentionMarkdown";
 
 const FILE_TYPE_ICONS: Record<string, typeof FileText> = {
@@ -45,7 +46,7 @@ function PendingFileItem({ pf, onRemove }: { pf: PendingFile; onRemove: () => vo
         <button
           onClick={onRemove}
           aria-label={t("removeAttachment")}
-          className="absolute right-1 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full text-muted hover:text-danger hover:bg-danger/10 flex items-center justify-center transition-colors md:opacity-0 md:group-hover:opacity-100"
+          className="absolute right-1 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full text-muted hover:text-danger hover:bg-danger/10 flex items-center justify-center transition-colors md:opacity-0 md:group-hover:opacity-100 focus-visible:opacity-100"
         >
           <X size={10} />
         </button>
@@ -72,7 +73,7 @@ function PendingFileItem({ pf, onRemove }: { pf: PendingFile; onRemove: () => vo
       <button
         onClick={onRemove}
         aria-label={t("removeAttachment")}
-        className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-danger text-white flex items-center justify-center transition-opacity opacity-100 md:opacity-0 md:group-hover:opacity-100"
+        className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-danger text-white flex items-center justify-center transition-opacity opacity-100 md:opacity-0 md:group-hover:opacity-100 focus-visible:opacity-100"
       >
         <X size={10} />
       </button>
@@ -83,7 +84,11 @@ function PendingFileItem({ pf, onRemove }: { pf: PendingFile; onRemove: () => vo
 /** 对话输入区：文本 + 附件 + 草稿注入 + 工作区文件拖入 + @提及 */
 export function ChatInput() {
   const { t } = useTranslation("chat");
-  const [input, setInput] = useState("");
+  const chatId = useChatStore((state) => state.activeChatId);
+  const input = useChatStore((state) => state.buckets[chatId]?.inputDraft ?? "");
+  const submitting = useChatStore((state) => state.buckets[chatId]?.submitting ?? false);
+  const setDraft = useChatStore((state) => state.setInputDraft);
+  const setInput = useCallback((text: string) => setDraft(chatId, text), [chatId, setDraft]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -100,7 +105,9 @@ export function ChatInput() {
   // ── @提及 ──────────────────────────────────────────────────
   const [cursor, setCursor] = useState(0);
   const [activeIndex, setActiveIndex] = useState(0);
-  const mention = useMemo(() => detectMention(input, cursor), [input, cursor]);
+  const [dismissedMention, setDismissedMention] = useState<string | null>(null);
+  const mentionKey = JSON.stringify([chatId, input, cursor]);
+  const mention = useMemo(() => dismissedMention === mentionKey ? null : detectMention(input, cursor), [input, cursor, dismissedMention, mentionKey]);
   const { items: mentionItems, loading: mentionLoading } = useMentionSearch(
     mention?.query ?? "", mention !== null,
   );
@@ -112,11 +119,12 @@ export function ChatInput() {
     const next = input.slice(0, mention.start) + link + input.slice(cursor);
     setInput(next);
     const pos = mention.start + link.length;
+    setCursor(pos);
     requestAnimationFrame(() => {
       inputRef.current?.focus();
       inputRef.current?.setSelectionRange(pos, pos);
     });
-  }, [input, mention, cursor]);
+  }, [input, mention, cursor, setInput]);
 
   // AI ui_compose 草稿注入
   useEffect(() => {
@@ -126,7 +134,7 @@ export function ChatInput() {
       setInput(draft);
       inputRef.current?.focus();
     }
-  }, [draftSeq, consumeDraft]);
+  }, [draftSeq, consumeDraft, setInput]);
 
   /** 输入框自动增高（上限约 8 行） */
   const autoGrow = useCallback(() => {
@@ -139,12 +147,11 @@ export function ChatInput() {
   useEffect(() => { autoGrow(); }, [input, autoGrow]);
 
   const handleSend = useCallback(async () => {
-    const text = input.trim();
-    const ok = await send(text, t("user"));
-    if (ok) setInput("");
+    await send(input, t("user"));
   }, [input, send, t]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.nativeEvent.isComposing) return;
     // 提及面板打开时优先消化导航键
     if (mention && mentionItems.length > 0) {
       if (e.key === "ArrowDown") {
@@ -163,6 +170,7 @@ export function ChatInput() {
         return;
       }
       if (e.key === "Escape") {
+        setDismissedMention(mentionKey);
         e.preventDefault();
         return;
       }
@@ -183,6 +191,7 @@ export function ChatInput() {
       }
     }
     if (files.length) {
+      e.preventDefault();
       const dt = new DataTransfer();
       files.forEach((f) => dt.items.add(f));
       addFiles(dt.files);
@@ -202,7 +211,7 @@ export function ChatInput() {
       const placeholder = `[Pasted Content ${text.length} chars]`;
       setInput(input.slice(0, at) + placeholder + input.slice(el?.selectionEnd ?? at));
     }
-  }, [addFiles, input]);
+  }, [addFiles, input, setInput]);
 
   return (
     <div className="shrink-0">
@@ -217,6 +226,8 @@ export function ChatInput() {
 
       {/* 通话状态条（仅通话中显示：状态/转写/电平/音量） */}
       <RealtimeCallPanel />
+
+      <WorkspaceContextPreview />
 
       {/* 输入卡片 */}
       <div className="relative border border-input rounded-lg bg-card focus-within:border-ring transition-colors">
@@ -238,7 +249,8 @@ export function ChatInput() {
           }}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
-          onSelect={(e) => setCursor((e.target as HTMLTextAreaElement).selectionStart)}
+          onSelect={(e) => setCursor(e.currentTarget.selectionStart)}
+          aria-label={t("messageInput")}
           placeholder={t("placeholder")}
           rows={1}
           className="w-full resize-none bg-transparent p-3 text-sm text-foreground placeholder:text-muted outline-none max-h-[180px]"
@@ -257,27 +269,15 @@ export function ChatInput() {
             </Button>
             <RealtimeCallToggle />
           </div>
-          {sending ? (
-            <Button
-              variant="danger"
-              size="sm"
-              onClick={() => void interrupt()}
-              title={t("stopTitle")}
-            >
-              <Square size={13} />
-              {t("stop")}
+          <div className="flex items-center gap-2">
+            {sending && <Button variant="danger" size="sm" onClick={() => void interrupt()} title={t("stopTitle")}>
+              <Square size={13} />{t("stop")}
+            </Button>}
+            <Button variant="primary" size="sm" onClick={() => void handleSend()} loading={submitting}
+              disabled={(!input.trim() && !pendingFiles.some((file) => file.path)) || pendingFiles.some((file) => file.uploading)}>
+              <Send size={15} />{t(sending ? "addMessage" : "send")}
             </Button>
-          ) : (
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={handleSend}
-              disabled={!input.trim() && !pendingFiles.some((f) => f.path)}
-            >
-              <Send size={15} />
-              {t("send")}
-            </Button>
-          )}
+          </div>
         </div>
       </div>
     </div>

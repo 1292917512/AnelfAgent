@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Download, Plus } from "lucide-react";
@@ -8,28 +8,25 @@ import type {
   ModelConfig,
   ProviderConfig,
   UpdateModelConfig,
-  UpdateProviderConfig,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui";
+import { Button, ConfirmDialog } from "@/components/ui";
 import { ModelCard } from "./ModelCard";
 import { ModelEditorDialog } from "./ModelEditorDialog";
 import { ProviderConfigEditor } from "./ProviderConfigEditor";
 import { ManualAddForm } from "./ManualAddForm";
 import { RemoteModelPicker } from "./RemoteModelPicker";
 
-/**
- * 展开的供应商详情：配置编辑 + 模型列表 + 手动/远程添加。
- * 以 key 挂载在供应商卡片内，折叠时卸载，编辑状态自然重置。
- * 模型编辑在 ModelEditorDialog 中进行；探测/自动配置直接落库。
- */
+/** Provider configuration, model discovery and model operations. */
 export function ProviderDetail({ provider }: { provider: ProviderConfig }) {
   const { t } = useTranslation(["models", "common"]);
   const qc = useQueryClient();
   const pid = provider.id;
 
-  const [providerEdit, setProviderEdit] = useState<UpdateProviderConfig | null>(null);
   const [testResult, setTestResult] = useState("");
+  const [resultModelId, setResultModelId] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<ModelConfig | null>(null);
+  const operation = useRef(false);
   const [expandedModel, setExpandedModel] = useState<string | null>(null);
   const [editorModel, setEditorModel] = useState<ModelConfig | null>(null);
   const [pendingModelId, setPendingModelId] = useState<string | null>(null);
@@ -43,14 +40,11 @@ export function ProviderDetail({ provider }: { provider: ProviderConfig }) {
   });
 
   const invalidateModels = () => {
+    void qc.invalidateQueries({ queryKey: ["priorities"] });
     qc.invalidateQueries({ queryKey: ["providerModels", pid] });
     qc.invalidateQueries({ queryKey: ["providers"] });
   };
 
-  const updateProviderMut = useMutation({
-    mutationFn: (data: UpdateProviderConfig) => providersApi.update(pid, data),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["providers"] }); setProviderEdit(null); },
-  });
   const addModelMut = useMutation({
     mutationFn: (data: CreateModelConfig) => providersApi.createModel(pid, data),
     onSuccess: () => {
@@ -60,24 +54,19 @@ export function ProviderDetail({ provider }: { provider: ProviderConfig }) {
   });
   const updateModelMut = useMutation({
     mutationFn: ({ mid, data }: { mid: string; data: UpdateModelConfig }) => modelsApi.update(mid, data),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["providerModels", pid] }); setPendingModelId(null); },
+    onSuccess: invalidateModels,
   });
   const removeModelMut = useMutation({
     mutationFn: (mid: string) => modelsApi.remove(mid),
-    onSuccess: () => { invalidateModels(); setExpandedModel(null); },
+    onSuccess: () => { invalidateModels(); setExpandedModel(null); setDeleting(null); },
   });
 
-  const pe: ProviderConfig = providerEdit ? { ...provider, ...providerEdit } : provider;
-
-  const handleTest = async () => {
-    try {
-      const r = await modelsApi.test(provider.base_url, provider.api_key, pid, provider.api_type);
-      setTestResult(r.data.result);
-    } catch { setTestResult(t("connectionFailed")); }
-  };
-
   const handleProbe = async (m: ModelConfig) => {
+    if (operation.current) return;
+    operation.current = true;
     setPendingModelId(m.id);
+    setResultModelId(m.id);
+    setTestResult("");
     try {
       const r = await modelsApi.probe(provider.base_url, provider.api_key, m.model, provider.api_type, pid);
       const d = r.data;
@@ -92,9 +81,14 @@ export function ProviderDetail({ provider }: { provider: ProviderConfig }) {
       } else { setTestResult(t("probeFailed") + ": " + String(d.error)); }
     } catch { setTestResult(t("probeError")); }
     setPendingModelId(null);
+    operation.current = false;
   };
 
   const handleAutoConfig = async (m: ModelConfig) => {
+    if (operation.current) return;
+    operation.current = true;
+    setPendingModelId(m.id);
+    setResultModelId(m.id);
     setTestResult(t("autoConfigLoading"));
     try {
       const r = await providersApi.modelInfo(m.model, provider.api_type);
@@ -117,21 +111,15 @@ export function ProviderDetail({ provider }: { provider: ProviderConfig }) {
       setTestResult(t("autoConfigDone") + ": " + parts.join(", "));
     } catch {
       setTestResult(t("autoConfigError"));
+    } finally {
+      operation.current = false;
+      setPendingModelId(null);
     }
   };
 
   return (
     <div className="border-t border-border p-3 md:p-4 space-y-4">
-      <ProviderConfigEditor
-        provider={provider}
-        providerEdit={providerEdit}
-        onEditChange={setProviderEdit}
-        pe={pe}
-        onTest={handleTest}
-        onSave={() => providerEdit && updateProviderMut.mutate(providerEdit)}
-        savePending={updateProviderMut.isPending}
-        testResult={testResult}
-      />
+      <ProviderConfigEditor provider={provider} />
 
       {/* 模型列表操作 */}
       <div className="flex items-center justify-between flex-wrap gap-2">
@@ -184,14 +172,17 @@ export function ProviderDetail({ provider }: { provider: ProviderConfig }) {
             onEdit={() => setEditorModel(m)}
             onProbe={() => handleProbe(m)}
             onAutoConfig={() => handleAutoConfig(m)}
-            onRemove={() => removeModelMut.mutate(m.id)}
-            testResult={testResult}
-            isPending={pendingModelId === m.id && updateModelMut.isPending}
+            onRemove={() => setDeleting(m)}
+            testResult={resultModelId === m.id ? testResult : ""}
+            isPending={pendingModelId === m.id}
+            disabled={pendingModelId !== null}
           />
         ))}
         {providerModels.length === 0 && <p className="text-sm text-muted py-4 text-center">{t("noModels")}</p>}
       </div>
 
+      <ConfirmDialog open={!!deleting} title={t("deleteModel")} message={t("confirmDeleteModel", { name: deleting?.id })}
+        onClose={() => setDeleting(null)} onConfirm={() => { if (deleting) removeModelMut.mutate(deleting.id); }} danger loading={removeModelMut.isPending} />
       {editorModel && (
         <ModelEditorDialog
           provider={provider}

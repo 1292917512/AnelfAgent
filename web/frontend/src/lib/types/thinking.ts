@@ -14,6 +14,11 @@ export interface TraceNode {
 export interface SessionSummary {
   id: string;
   start_time: number;
+  label?: string;
+  outcome?: "running" | "completed" | "failed" | "cancelled" | "interrupted";
+  nodes_truncated?: boolean;
+  parent_session_id?: string | null;
+  scope?: string;
   end_time: number | null;
   is_heartbeat: boolean;
   is_introspection?: boolean;

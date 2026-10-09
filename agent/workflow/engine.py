@@ -745,21 +745,24 @@ class WorkflowEngine:
         if run is None:
             raise ValueError(f"工作流不存在: {run_id}")
         nodes = await self._journal.nodes_of_run(run_id)
-        events = await self._journal.list_events(run_id, limit=400)
+        events = await self._journal.list_events(run_id, limit=400, latest=True)
         return {
-            "run": self._run_summary(run),
+            "run": {**self._run_summary(run), "running": run_id in self._runs},
+            "spec": json.loads(run["spec_json"]),
             "nodes": [
                 {
                     "key": n["step_key"], "ordinal": n["ordinal"], "kind": n["kind"],
                     "status": n["status"],
-                    "result_preview": _bounded(str(n.get("result_text") or ""), 400),
-                    "error": _bounded(str(n.get("error_text") or ""), 400),
+                    "result": str(n.get("result_text") or ""),
+                    "error": str(n.get("error_text") or ""),
+                    "usage": self._usage_of(n),
                     "delegation_id": n.get("delegation_id") or "",
                     "created_at": n["created_at"], "updated_at": n["updated_at"],
                 }
                 for n in nodes
             ],
             "events": events,
+            "events_truncated": bool(events and events[0]["sequence"] > 1),
         }
 
     @staticmethod

@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { Loader2, Save } from "lucide-react";
 import { Button } from "@/components/ui";
-import type { TabState } from "./fileEditorUtils";
+import type { TabState } from "@/stores/file-editor-store";
 
 /** 文件编辑器底栏：路径/大小/保存状态 + 关闭/保存按钮 */
 export function FileEditorFooter({

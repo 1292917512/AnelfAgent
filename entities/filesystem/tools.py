@@ -194,23 +194,10 @@ def _atomic_write_bytes(fp: str, data: bytes) -> None:
     长驻进程下避免"写到一半崩溃/断电留下半截文件"。临时文件与目标同目录
     （保证同文件系统，rename 才是原子的）；异常路径负责清理临时文件。
     """
-    import tempfile
-    directory = os.path.dirname(fp) or "."
-    os.makedirs(directory, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=directory, prefix=f".{os.path.basename(fp)}.",
-                               suffix=".tmp")
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, fp)
-    except BaseException:
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
-        raise
+    from pathlib import Path
+
+    from core.file_utils import atomic_write_bytes
+    atomic_write_bytes(Path(fp), data)
 
 
 def _add_line_numbers(content: str, start_line: int = 1) -> str:

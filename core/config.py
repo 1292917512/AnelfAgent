@@ -362,12 +362,24 @@ class ConfigManager:
         store = cls._store_for(key)
         if store is not None:
             store.set(key, value)
-            cls._notify_listeners(key, value)
+            cls._notify_listeners(key, store.get(key))
             return
         with cls._lock:
-            cls._config[key] = value
+            cls._config[key] = cls.resolve_value(key, value)
             cls._file_config[key] = value
-        cls._notify_listeners(key, value)
+        cls._notify_listeners(key, cls.get(key))
+
+    @staticmethod
+    def environment_override(key: str) -> Optional[str]:
+        """返回直接覆盖配置项的环境变量名。"""
+        name = f"ANELF_{key.upper()}"
+        return name if name in os.environ else None
+
+    @classmethod
+    def resolve_value(cls, key: str, value: Any) -> Any:
+        """按环境变量优先级解析配置项的实际生效值。"""
+        name = cls.environment_override(key)
+        return parse_env_value(os.environ[name]) if name else expand_env_refs(value)
 
     @classmethod
     def register_store(cls, prefix: str, store: "ConfigStore") -> None:
@@ -426,7 +438,7 @@ class ConfigManager:
     @classmethod
     def notify_external(cls, key: str, value: Any) -> None:
         """外部存储后端检测到文件级变更时上报（驱动变更监听，如手工编辑频道配置文件）。"""
-        cls._notify_listeners(key, value)
+        cls._notify_listeners(key, cls.resolve_value(key, value))
 
     @classmethod
     def has(cls, key: str) -> bool:
@@ -483,9 +495,9 @@ class ConfigManager:
                 atomic_write_text(Path(cls._get_config_file()),
                                   json.dumps(updated, indent=2, ensure_ascii=False))
                 cls._file_config = updated
-                cls._config.update(values)
-        for key, value in values.items():
-            cls._notify_listeners(key, value)
+                cls._config.update({key: cls.resolve_value(key, value) for key, value in values.items()})
+        for key in values:
+            cls._notify_listeners(key, cls.get(key))
 
     @classmethod
     def reload(cls) -> bool:
@@ -531,10 +543,10 @@ class ConfigManager:
                 store.set(key, value)
                 continue
             with cls._lock:
-                cls._config[key] = value
+                cls._config[key] = cls.resolve_value(key, value)
                 cls._file_config[key] = value
-        for key, value in config_dict.items():
-            cls._notify_listeners(key, value)
+        for key in config_dict:
+            cls._notify_listeners(key, cls.get(key))
 
     @classmethod
     def _load_config(cls) -> None:

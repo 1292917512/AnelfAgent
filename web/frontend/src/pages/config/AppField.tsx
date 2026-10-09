@@ -1,4 +1,4 @@
-import { cn } from "@/lib/utils";
+import { Switch } from "@/components/ui/Switch";
 import { ModelSelect } from "@/components/models/ModelSelect";
 
 export type FieldType = "int" | "float" | "bool" | "string" | "password" | "model";
@@ -26,26 +26,11 @@ export function AppField({ meta, value, onChange }: AppFieldProps) {
 
   const renderInput = () => {
     if (meta.type === "bool") {
-      return (
-        <button
-          onClick={() => onChange(!value)}
-          className={cn(
-            "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-            value ? "bg-accent" : "bg-[var(--border)]",
-          )}
-        >
-          <span
-            className={cn(
-              "inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform",
-              value ? "translate-x-4" : "translate-x-1",
-            )}
-          />
-        </button>
-      );
+      return <Switch checked={!!value} onChange={onChange} label={meta.label} />;
     }
     if (meta.type === "int") {
       return (
-        <input
+        <input aria-label={meta.label}
           type="number"
           step="1"
           className={base}
@@ -56,7 +41,7 @@ export function AppField({ meta, value, onChange }: AppFieldProps) {
     }
     if (meta.type === "float") {
       return (
-        <input
+        <input aria-label={meta.label}
           type="number"
           step="any"
           className={base}
@@ -67,7 +52,7 @@ export function AppField({ meta, value, onChange }: AppFieldProps) {
     }
     if (meta.type === "password") {
       return (
-        <input
+        <input aria-label={meta.label}
           type="password"
           autoComplete="off"
           className={base}
@@ -79,6 +64,7 @@ export function AppField({ meta, value, onChange }: AppFieldProps) {
     if (meta.type === "model") {
       return (
         <ModelSelect
+          label={meta.label}
           modelType={meta.modelType || "chat"}
           value={typeof value === "string" ? value : ""}
           onChange={(id) => onChange(id)}
@@ -89,7 +75,7 @@ export function AppField({ meta, value, onChange }: AppFieldProps) {
       );
     }
     return (
-      <input
+      <input aria-label={meta.label}
         type="text"
         className={base}
         value={typeof value === "string" ? value : ""}

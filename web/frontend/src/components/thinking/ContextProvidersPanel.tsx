@@ -3,8 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { contextApi } from "@/lib/api";
 import { ProviderContent } from "@/components/common/ProviderContent";
+import { PageSkeleton, QueryError } from "@/components/common/AsyncState";
 import { cn } from "@/lib/utils";
-import type { ContextProviderStatus } from "@/lib/types";
 
 function budgetColor(ratio: number): string {
   if (ratio >= 0.9) return "bg-danger";
@@ -15,12 +15,15 @@ function budgetColor(ratio: number): string {
 export function ContextProvidersPanel() {
   const { t } = useTranslation("thinking");
   const [expanded, setExpanded] = useState<string | null>(null);
-  const { data } = useQuery({
+  const { data, error, isPending, refetch } = useQuery({
     queryKey: ["context-providers"],
-    queryFn: () => contextApi.providers().then((r) => r.data as ContextProviderStatus),
+    queryFn: () => contextApi.providers().then((r) => r.data),
     refetchInterval: 3000,
+    throwOnError: false,
   });
 
+  if (isPending) return <div className="p-3"><PageSkeleton /></div>;
+  if (error) return <QueryError error={error} retry={() => void refetch()} />;
   if (!data) return null;
 
   const ratio = data.total_budget > 0 ? data.current_used / data.total_budget : 0;
@@ -65,9 +68,9 @@ export function ContextProvidersPanel() {
               return (
                 <div
                   key={p.name}
-                  className="py-1.5 px-2.5 rounded-sm bg-elevated border border-border cursor-pointer transition-colors hover:border-border-strong"
-                  onClick={() => setExpanded(open ? null : p.name)}
+                  className="rounded-lg bg-elevated border border-border transition-colors hover:border-border-strong"
                 >
+                  <button type="button" aria-expanded={open} onClick={() => setExpanded(open ? null : p.name)} className="w-full py-2 px-2.5 text-left">
                   <div className="flex items-center gap-2">
                     <span
                       className={cn(
@@ -99,8 +102,9 @@ export function ContextProvidersPanel() {
                   {p.last_error && (
                     <p className="text-[10px] text-danger mt-0.5 truncate pl-3.5">{p.last_error}</p>
                   )}
+                  </button>
                   {open && (
-                    <div className="pl-3.5" onClick={(e) => e.stopPropagation()}>
+                    <div className="px-3.5 pb-2">
                       <ProviderContent provider={p} />
                     </div>
                   )}

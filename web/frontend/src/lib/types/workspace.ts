@@ -1,5 +1,11 @@
 import type { LogEntry } from "./logs";
 
+export interface WorkspaceContext {
+  active_file: string | null;
+  selection: { path: string; ranges: { start_line: number; end_line: number }[]; content: string } | null;
+  open_tabs: { label: string; path: string }[];
+}
+
 export interface WorkspaceNode {
   name: string;
   path: string;
@@ -14,6 +20,7 @@ export interface WorkspaceNode {
 }
 
 export interface WorkspaceFile {
+  version: string;
   path: string;
   name: string;
   size: number;

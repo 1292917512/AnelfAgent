@@ -99,5 +99,6 @@
     "keepSeg": "Keep {{count}} raw",
     "foldSeg": "Fold {{count}}/batch",
     "range": "Window {{min}} ~ {{max}}"
-  }
+  },
+  "environmentManaged": "Managed by environment variable {{name}}"
 }

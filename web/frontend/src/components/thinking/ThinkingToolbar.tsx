@@ -1,155 +1,39 @@
 import { useTranslation } from "react-i18next";
-import {
-  Crosshair, Database, List, ListTree, PanelLeftClose, PanelLeftOpen, Power, PowerOff, Workflow, Wrench,
-} from "lucide-react";
+import { Crosshair, Database, List, ListTree, Power, Workflow, Wrench } from "lucide-react";
+import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/utils";
 
 export type ThinkingViewMode = "flow" | "timeline";
+interface Props {
+  isMobile: boolean; onShowSessions: () => void; enabled: boolean; onToggle: () => void;
+  busy: boolean; connected: boolean; view: ThinkingViewMode; onViewChange: (view: ThinkingViewMode) => void;
+  onShowTools: () => void; onShowProviders: () => void; autoFollow: boolean; onToggleAutoFollow: () => void;
+}
 
-/** 思维链页面工具栏：开关 / 连接状态 / 视图切换 / 面板与跟随开关 */
-export function ThinkingToolbar({
-  isMobile,
-  onShowSessions,
-  enabled,
-  onToggle,
-  connected,
-  view,
-  onViewChange,
-  showTools,
-  onToggleTools,
-  showProviders,
-  onToggleProviders,
-  autoFollow,
-  onToggleAutoFollow,
-  nodeCount,
-}: {
-  isMobile: boolean;
-  onShowSessions: () => void;
-  enabled: boolean;
-  onToggle: () => void;
-  connected: boolean;
-  view: ThinkingViewMode;
-  onViewChange: (view: ThinkingViewMode) => void;
-  showTools: boolean;
-  onToggleTools: () => void;
-  showProviders: boolean;
-  onToggleProviders: () => void;
-  autoFollow: boolean;
-  onToggleAutoFollow: () => void;
-  nodeCount: number | undefined;
-}) {
+export function ThinkingToolbar(props: Props) {
   const { t } = useTranslation("thinking");
-  const { t: tc } = useTranslation("common");
-  return (
-    <div className="flex items-center gap-2 px-3 md:px-4 py-2 border-b border-border bg-panel">
-      {isMobile && (
-        <button
-          onClick={onShowSessions}
-          className="flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] font-medium text-muted hover:text-foreground transition-all"
-          title={t("sessionList")}
-          aria-label={t("sessionList")}
-        >
-          <List size={14} />
-        </button>
-      )}
-      <button
-        onClick={onToggle}
-        className={cn(
-          "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all",
-          enabled
-            ? "bg-ok-subtle text-ok border border-ok"
-            : "bg-hover text-muted border border-border hover:border-border-strong",
-        )}
-      >
-        {enabled ? <Power size={12} /> : <PowerOff size={12} />}
-        <span className="hidden sm:inline">{enabled ? t("tracking") : t("disabled")}</span>
-      </button>
-
-      <div className="flex items-center gap-1 text-[10px] text-muted">
-        <div
-          className={cn(
-            "w-1.5 h-1.5 rounded-full",
-            connected ? "bg-ok" : "bg-danger",
-          )}
-        />
-        <span className="hidden md:inline">{connected ? tc("connected") : tc("disconnected")}</span>
-      </div>
-
-      {/* 视图切换 */}
-      <div className="flex items-center rounded-md border border-border overflow-hidden">
-        {(["flow", "timeline"] as const).map((v) => (
-          <button
-            key={v}
-            onClick={() => onViewChange(v)}
-            className={cn(
-              "flex items-center gap-1 px-2 py-1 text-[10px] font-medium transition-all",
-              view === v
-                ? "bg-accent-subtle text-accent"
-                : "text-muted hover:text-foreground",
-            )}
-            title={t(`views.${v}`)}
-            aria-label={t(`views.${v}`)}
-          >
-            {v === "flow" ? <Workflow size={11} /> : <ListTree size={11} />}
-            <span className="hidden sm:inline">{t(`views.${v}`)}</span>
-          </button>
-        ))}
-      </div>
-
-      <div className="flex-1" />
-
-      <button
-        onClick={onToggleTools}
-        className={cn(
-          "flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] font-medium transition-all",
-          showTools
-            ? "bg-accent-subtle text-accent"
-            : "text-muted hover:text-foreground",
-        )}
-        title={t("toolsPanel")}
-        aria-label={t("toolsPanel")}
-      >
-        {isMobile
-          ? <Wrench size={11} />
-          : showTools ? <PanelLeftClose size={11} /> : <PanelLeftOpen size={11} />}
-        <span className="hidden md:inline">{t("toolsPanel")}</span>
-      </button>
-
-      <button
-        onClick={onToggleProviders}
-        className={cn(
-          "flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] font-medium transition-all",
-          showProviders
-            ? "bg-accent-subtle text-accent"
-            : "text-muted hover:text-foreground",
-        )}
-        title={t("contextProviders.title")}
-        aria-label={t("contextProviders.title")}
-      >
-        <Database size={11} />
-        <span className="hidden md:inline">{t("contextProviders.title")}</span>
-      </button>
-
-      <button
-        onClick={onToggleAutoFollow}
-        className={cn(
-          "flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] font-medium transition-all",
-          autoFollow
-            ? "bg-accent-subtle text-accent"
-            : "text-muted hover:text-foreground",
-        )}
-        title={t("autoFollow")}
-        aria-label={t("autoFollow")}
-      >
-        <Crosshair size={11} />
-        <span className="hidden sm:inline">{t("autoFollow")}</span>
-      </button>
-
-      {nodeCount !== undefined && (
-        <div className="text-[10px] text-muted font-mono">
-          {t("nNodes", { count: nodeCount })}
-        </div>
-      )}
+  return <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-panel px-3 py-2">
+    {props.isMobile && <Button size="icon" variant="ghost" title={t("sessionList")} onClick={props.onShowSessions}><List size={16} /></Button>}
+    <Button size={props.isMobile ? "icon" : "sm"} loading={props.busy} aria-pressed={props.enabled} onClick={props.onToggle}
+      title={t(props.enabled ? "tracking" : "startTracking")} aria-label={t(props.enabled ? "tracking" : "startTracking")}
+      className={props.enabled ? "border-accent/30 bg-accent-subtle text-accent" : ""}>
+      {!props.busy && <Power size={14} />}{!props.isMobile && t(props.enabled ? "tracking" : "startTracking")}
+    </Button>
+    <span className="inline-flex items-center gap-1.5 text-xs text-muted" role="status">
+      <span className={cn("size-1.5 rounded-full", !props.enabled ? "bg-muted" : props.connected ? "bg-ok" : "bg-warn")} />
+      <span className="sr-only lg:not-sr-only">{t(!props.enabled ? "disabled" : props.connected ? "streamConnected" : "reconnecting")}</span>
+    </span>
+    <div className="ml-auto flex items-center rounded-lg border border-border p-0.5">
+      {(["timeline", "flow"] as const).map((view) => <Button key={view} variant="ghost" size="sm"
+        aria-label={t(`views.${view}`)} aria-pressed={props.view === view} title={t(`views.${view}`)}
+        onClick={() => props.onViewChange(view)} className={cn("px-2", props.view === view && "bg-accent-subtle text-accent")}>
+        {view === "timeline" ? <ListTree size={14} /> : <Workflow size={14} />}
+        <span className="hidden sm:inline">{t(`views.${view}`)}</span>
+      </Button>)}
     </div>
-  );
+    <Button size="icon" variant="ghost" aria-pressed={props.autoFollow} title={t("autoFollow")} onClick={props.onToggleAutoFollow}
+      className={props.autoFollow ? "bg-accent-subtle text-accent" : ""}><Crosshair size={16} /></Button>
+    <Button size="icon" variant="ghost" title={t("toolsPanel")} onClick={props.onShowTools}><Wrench size={16} /></Button>
+    <Button size="icon" variant="ghost" title={t("contextProviders.title")} onClick={props.onShowProviders}><Database size={16} /></Button>
+  </div>;
 }

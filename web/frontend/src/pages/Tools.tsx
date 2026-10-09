@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRouteTab } from "@/hooks/useRouteTab";
 import { useTranslation } from "react-i18next";
 import { Wrench, List, FileText } from "lucide-react";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
@@ -10,7 +10,7 @@ type ToolsTab = "list" | "rules";
 
 export default function Tools() {
   const { t } = useTranslation(["tools", "common"]);
-  const [tab, setTab] = useState<ToolsTab>("list");
+  const [tab, setTab] = useRouteTab<ToolsTab>(["list", "rules"], "list");
 
   const TABS: TabItem<ToolsTab>[] = [
     { key: "list", label: t("tools:tabs.list"), icon: List },

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRouteTab } from "@/hooks/useRouteTab";
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import { Shield, Clock, History, Settings } from "lucide-react";
@@ -16,7 +16,7 @@ type ApprovalTab = "pending" | "history" | "rules";
 /** 批准管理 — 待处理 / 历史 / 权限规则，顶部常驻统计条。 */
 export default function Approvals() {
   const { t } = useTranslation("approvals");
-  const [activeTab, setActiveTab] = useState<ApprovalTab>("pending");
+  const [activeTab, setActiveTab] = useRouteTab<ApprovalTab>(["pending", "history", "rules"], "pending");
 
   const { data: pendingData } = useQuery({
     queryKey: ["approvals", "pending"],

@@ -84,3 +84,31 @@ class TestDisableClosesSessions:
         # 事后退出上下文管理器不重复关闭（幂等）
         await cm.__aexit__(None, None, None)
         assert len([n for n in session.nodes if n.type == NodeType.SESSION_END]) == 1
+
+
+class TestRecordingLifecycle:
+    async def test_disconnected_session_still_finishes(self, tracer: Tracer) -> None:
+        async with thinking_session({"scope": "offline"}):
+            for queue in list(tracer._sse_subscribers):
+                tracer.unsubscribe(queue)
+        session = _only_session(tracer)
+        assert session.ended is True
+        assert session.outcome == "completed"
+
+    async def test_failure_and_cancel_are_distinct(self, tracer: Tracer) -> None:
+        import asyncio
+        with pytest.raises(ValueError):
+            async with thinking_session():
+                raise ValueError("failure")
+        assert _only_session(tracer).outcome == "failed"
+        with pytest.raises(asyncio.CancelledError):
+            async with thinking_session():
+                raise asyncio.CancelledError()
+        assert list(tracer._sessions.values())[-1].outcome == "cancelled"
+
+    async def test_subscriber_overflow_requests_snapshot(self, tracer: Tracer) -> None:
+        queue = tracer._sse_subscribers[0]
+        for _ in range(queue.maxsize):
+            queue.put_nowait({"event": "node_added", "data": {}})
+        tracer._push_to_subscribers({"event": "session_end", "data": {}})
+        assert queue.get_nowait()["event"] == "resync"

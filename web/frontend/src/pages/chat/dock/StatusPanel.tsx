@@ -5,7 +5,7 @@ import { Link } from "react-router-dom";
 import { heartbeatApi } from "@/lib/api";
 import { useThinkingStore } from "@/stores/thinking-store";
 import { useChatStore } from "@/stores/chat-store";
-import { useThinkingBootstrap } from "../useThinkingBootstrap";
+import { useThinkingBootstrap } from "@/hooks/useThinking";
 import { Button } from "@/components/ui";
 
 /** 实时状态面板：活跃会话概要 + 错误高亮 + 快捷调试操作 */

@@ -6,5 +6,8 @@
   "nameLabel": "名称",
   "descriptionLabel": "描述",
   "personalityLabel": "人格特征 (JSON)",
-  "activate": "激活"
+  "activate": "激活",
+  "invalidPersonality": "请输入有效的 JSON 字符串数组，例如 [\"耐心\", \"简洁\"]。",
+  "selectPersona": "选择人设查看和编辑，或创建一份新的人设。",
+  "confirmDelete": "确定删除人设「{{name}}」？此操作无法撤销。"
 }

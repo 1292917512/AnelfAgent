@@ -1,12 +1,14 @@
-import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { Card } from "@/components/common/Card";
-import { cn } from "@/lib/utils";
 import { Check, Save, RotateCcw } from "lucide-react";
-import { AppField, type FieldMeta } from "@/pages/config/AppField";
+import { Card } from "@/components/common/Card";
+import { AsyncState } from "@/components/common/AsyncState";
+import { useUnsavedChanges } from "@/components/common/UnsavedChanges";
+import { AppField, type FieldMeta } from "./AppField";
 import type { ConfigValues } from "@/lib/types";
 import { useCopyFeedback } from "@/hooks/useCopyFeedback";
+import { useDraft } from "@/hooks/useDraft";
+import { Button } from "@/components/ui/Button";
 
 export interface ConfigFormPanelProps {
   title: string;
@@ -19,95 +21,41 @@ export interface ConfigFormPanelProps {
   note?: string;
 }
 
-export function ConfigFormPanel({
-  title,
-  subtitle,
-  fields,
-  queryKey,
-  fetchFn,
-  saveFn,
-  extraInvalidateKeys,
-  note,
-}: ConfigFormPanelProps) {
-  const { t: tc } = useTranslation("common");
-  const { t: ta } = useTranslation("appconfig");
-  const queryClient = useQueryClient();
-  const [form, setForm] = useState<ConfigValues>({});
-  const [dirtyKeys, setDirtyKeys] = useState<Set<string>>(new Set());
+export function ConfigFormPanel({ title, subtitle, fields, queryKey, fetchFn, saveFn, extraInvalidateKeys, note }: ConfigFormPanelProps) {
+  const { t } = useTranslation(["common", "appconfig"]);
+  const client = useQueryClient();
+  const query = useQuery({ queryKey: [queryKey], queryFn: fetchFn, throwOnError: false });
+  const draft = useDraft(query.data ?? {});
   const [saved, triggerSaved] = useCopyFeedback(2000);
-
-  const { data, isLoading } = useQuery({
-    queryKey: [queryKey],
-    queryFn: fetchFn,
-  });
-
-  useEffect(() => {
-    if (data) setForm(data);
-  }, [data]);
-
-  const saveMutation = useMutation({
-    // 仅提交变更过的字段，避免全量回写
-    mutationFn: (values: ConfigValues) =>
-      saveFn(Object.fromEntries([...dirtyKeys].map((k) => [k, values[k]]))),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [queryKey] });
-      extraInvalidateKeys?.forEach((key) =>
-        queryClient.invalidateQueries({ queryKey: [key] }),
-      );
-      setDirtyKeys(new Set());
+  useUnsavedChanges(draft.dirty);
+  const mutation = useMutation({
+    mutationFn: saveFn,
+    onSuccess: (_data, submitted) => {
+      client.setQueryData<ConfigValues>([queryKey], (current) => ({ ...current, ...submitted }));
+      draft.acknowledge(submitted);
+      void client.invalidateQueries({ queryKey: [queryKey] });
+      extraInvalidateKeys?.forEach((key) => void client.invalidateQueries({ queryKey: [key] }));
       triggerSaved();
     },
   });
-
-  const handleChange = (key: string, value: unknown) => {
-    setForm((prev) => ({ ...prev, [key]: value }));
-    setDirtyKeys((prev) => new Set(prev).add(key));
-  };
-
-  const handleSave = () => {
-    if (dirtyKeys.size === 0) return;
-    saveMutation.mutate(form);
-  };
-
-  const handleReset = () => {
-    if (data) {
-      setForm(data);
-      setDirtyKeys(new Set());
-    }
-  };
-
-  if (isLoading) return <Card title={title}><p className="text-sm text-muted">{tc("loading")}</p></Card>;
-
   return (
     <Card title={title} subtitle={subtitle}>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        {fields.map((field) => (
-          <AppField key={field.key} meta={field} value={form[field.key]} onChange={(v) => handleChange(field.key, v)} />
-        ))}
-      </div>
-      <div className="flex items-center gap-3 pt-3">
-        <button
-          onClick={handleSave}
-          disabled={dirtyKeys.size === 0 || saveMutation.isPending}
-          className={cn(
-            "flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-md transition-all",
-            saved
-              ? "bg-ok text-white border border-[var(--ok)]"
-              : "bg-accent text-white border border-accent hover:opacity-90",
-            (dirtyKeys.size === 0 || saveMutation.isPending) && "opacity-50 cursor-not-allowed",
-          )}
-        >
-          {saved ? <Check size={14} /> : <Save size={14} />}
-          {saved ? ta("actions.saved") : saveMutation.isPending ? ta("actions.saving") : ta("actions.save")}
-        </button>
-        <button
-          onClick={handleReset}
-          className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all"
-        >
-          <RotateCcw size={14} /> {ta("actions.reset")}
-        </button>
-        {note && <p className="text-xs text-muted">{note}</p>}
-      </div>
+      <AsyncState pending={query.isPending} error={!query.data ? query.error : undefined} retry={() => void query.refetch()}>
+        <form onSubmit={(event) => { event.preventDefault(); if (draft.dirty && !mutation.isPending) mutation.mutate(draft.patch); }}>
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            {fields.map((field) => <AppField key={field.key} meta={field} value={draft.values[field.key]} onChange={(value) => draft.update(field.key, value)} />)}
+          </div>
+          <div className="mt-5 flex flex-wrap items-center gap-3 border-t border-border pt-4">
+            <Button type="submit" variant="primary" disabled={!draft.dirty} loading={mutation.isPending}>
+              {saved && !draft.dirty ? <Check size={15} /> : <Save size={15} />}
+              {saved && !draft.dirty ? t("actions.saved", { ns: "appconfig" }) : t("save")}
+            </Button>
+            <Button onClick={draft.reset} disabled={!draft.dirty || mutation.isPending}><RotateCcw size={14} />{t("reset")}</Button>
+            {draft.dirty && <span className="text-xs text-warn">{t("unsavedChanges")}</span>}
+            {note && <p className="text-xs text-muted">{note}</p>}
+          </div>
+        </form>
+      </AsyncState>
     </Card>
   );
 }

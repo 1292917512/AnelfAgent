@@ -1,9 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { ReasoningEffort, TaskConfig } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { Plus, X } from "lucide-react";
-import { Button, Input, Select, Switch, Textarea } from "@/components/ui";
+import { Input, Select, Switch, Textarea } from "@/components/ui";
 import { ModelSelect } from "@/components/models/ModelSelect";
 import { ReasoningEffortOptions } from "@/components/common/ReasoningEffortSelect";
 
@@ -33,19 +32,19 @@ function Field({ label, required, children, className }: {
   className?: string;
 }) {
   return (
-    <div className={cn("flex flex-col gap-1", className)}>
-      <label className="text-xs text-muted font-medium">
+    <fieldset className={cn("flex min-w-0 flex-col gap-1", className)}>
+      <legend className="mb-1 text-xs text-muted font-medium">
         {label} {required && <span className="text-danger">*</span>}
-      </label>
+      </legend>
       {children}
-    </div>
+    </fieldset>
   );
 }
 
 /** 任务表单字段（创建/编辑共用） */
 export function TaskFormFields({ task, set, isCreate }: {
   task: TaskConfig;
-  set: (key: keyof TaskConfig, value: unknown) => void;
+  set: <K extends keyof TaskConfig>(key: K, value: TaskConfig[K]) => void;
   isCreate?: boolean;
 }) {
   const { t } = useTranslation("appconfig");
@@ -70,6 +69,8 @@ export function TaskFormFields({ task, set, isCreate }: {
               placeholder={t("tasks.taskNamePlaceholder")} />
           </Field>
         )}
+        <Field label={t("workbench:tasks.fieldFolder")}><Input aria-label={t("workbench:tasks.fieldFolder")} value={task.folder ?? ""} onChange={(e) => set("folder", e.target.value)} placeholder="dev/backend" /></Field>
+        <Field label={t("tasks.expiresAt")}><Input aria-label={t("tasks.expiresAt")} type="datetime-local" value={task.expires_at?.replace(" ", "T") ?? ""} onChange={(e) => set("expires_at", e.target.value.replace("T", " "))} /></Field>
         <Field label={t("tasks.displayName")}>
           <Input value={task.display_name} onChange={(e) => set("display_name", e.target.value)}
             placeholder={isCreate ? t("tasks.displayNamePlaceholder") : undefined} />
@@ -88,26 +89,23 @@ export function TaskFormFields({ task, set, isCreate }: {
           </Select>
         </Field>
         <Field label={t("tasks.importance")}>
-          <Input type="number" step="0.1" min="0" max="1" value={task.importance}
-            onChange={(e) => set("importance", parseFloat(e.target.value) || 0.5)} />
+          <Input aria-label={t("tasks.importance")} type="number" step="0.1" min="0" max="1" value={task.importance}
+            onChange={(e) => set("importance", e.target.value === "" ? 0 : Math.min(1, Math.max(0, Number(e.target.value))))} />
         </Field>
-        {!isCreate && (
+        {(
           <Field label={t("tasks.sourceLabel")}>
             <Input value={task.source} onChange={(e) => set("source", e.target.value)} placeholder={task.name} />
           </Field>
         )}
         <Field label={t("tasks.tagsLabel")}>
-          <Input value={(task.tags ?? []).join(", ")}
-            onChange={(e) => set("tags", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))} />
+          <TokenInput value={task.tags ?? []} onChange={(value) => set("tags", value)} />
         </Field>
         <Field label={t("tasks.nullKeywords")}>
-          <Input value={(task.null_keywords ?? []).join(", ")}
-            onChange={(e) => set("null_keywords", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))}
+          <TokenInput value={task.null_keywords ?? []} onChange={(value) => set("null_keywords", value)}
             placeholder={isCreate ? t("tasks.nullKeywordsCreatePlaceholder") : t("tasks.nullKeywordsPlaceholder")} />
         </Field>
         <Field label={t("tasks.toolTags")} className={isCreate ? "md:col-span-2" : undefined}>
-          <Input value={(task.tool_tags ?? []).join(", ")}
-            onChange={(e) => set("tool_tags", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))} />
+          <TokenInput value={task.tool_tags ?? []} onChange={(value) => set("tool_tags", value)} />
         </Field>
         <Field label={t("tasks.modelId")}>
           <ModelSelect
@@ -135,17 +133,17 @@ export function TaskFormFields({ task, set, isCreate }: {
         </Field>
         <div className="flex items-center justify-between md:col-span-2">
           <label className="text-xs text-muted font-medium">{t("tasks.allowOutputTools")}</label>
-          <Switch checked={task.allow_output_tools ?? false} onChange={(v) => set("allow_output_tools", v)} />
+          <Switch label={t("tasks.allowOutputTools")} checked={task.allow_output_tools ?? false} onChange={(v) => set("allow_output_tools", v)} />
         </div>
         <div className="flex items-center justify-between md:col-span-2">
           <label className="text-xs text-muted font-medium">{t("tasks.saveResultToMemory")}</label>
-          <Switch checked={task.save_result_to_memory !== false}
+          <Switch label={t("tasks.saveResultToMemory")} checked={task.save_result_to_memory !== false}
             onChange={(v) => set("save_result_to_memory", v)} />
         </div>
-        {!isCreate && (
+        {(
           <div className="flex items-center justify-between md:col-span-2">
             <label className="text-xs text-muted font-medium">{t("tasks.enableTask")}</label>
-            <Switch checked={task.enabled} onChange={(v) => set("enabled", v)} />
+            <Switch label={t("tasks.enableTask")} checked={task.enabled} onChange={(v) => set("enabled", v)} />
           </div>
         )}
       </div>
@@ -195,35 +193,13 @@ export function TaskDetail({ task }: { task: TaskConfig }) {
   );
 }
 
-export function TaskCreateForm({ onSave, onCancel, isPending }: {
-  onSave: (t: TaskConfig) => void;
-  onCancel: () => void;
-  isPending: boolean;
-}) {
-  const { t } = useTranslation("appconfig");
-  const [task, setTask] = useState<TaskConfig>({ ...EMPTY_TASK });
-  const set = (key: keyof TaskConfig, value: unknown) => setTask((prev) => ({ ...prev, [key]: value }));
-
-  return (
-    <div className="border border-accent rounded-md overflow-hidden">
-      <div className="flex items-center justify-between px-3 py-2 bg-elevated border-b border-border">
-        <span className="text-sm font-medium text-accent">{t("tasks.newTask")}</span>
-        <button onClick={onCancel} className="text-muted hover:text-heading">
-          <X size={14} />
-        </button>
-      </div>
-      <div className="px-3 py-3 space-y-3">
-        <TaskFormFields task={task} set={set} isCreate />
-        <div className="flex items-center gap-2">
-          <Button variant="primary" size="sm" onClick={() => onSave(task)}
-            disabled={!task.name.trim() || !task.prompt.trim()} loading={isPending}>
-            <Plus size={12} /> {isPending ? t("tasks.creating") : t("tasks.createTask")}
-          </Button>
-          <Button variant="secondary" size="sm" onClick={onCancel}>
-            <X size={12} /> {t("actions.cancel")}
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
+function TokenInput({ value, onChange, placeholder }: { value: string[]; onChange: (value: string[]) => void; placeholder?: string }) {
+  const [text, setText] = useState(value.join(", "));
+  useEffect(() => {
+    if (JSON.stringify(text.split(",").map((item) => item.trim()).filter(Boolean)) !== JSON.stringify(value)) setText(value.join(", "));
+  }, [value, text]);
+  return <Input value={text} placeholder={placeholder} onChange={(event) => {
+    setText(event.target.value);
+    onChange(event.target.value.split(",").map((item) => item.trim()).filter(Boolean));
+  }} />;
 }

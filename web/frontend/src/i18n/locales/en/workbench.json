@@ -151,12 +151,24 @@
     "renderFailed": "Failed to render preview",
     "emptyPreview": "File is empty",
     "csvTruncated": "Showing first {{count}} rows only",
-    "videoUnsupported": "This video format can't be played in the browser; please download to watch"
+    "videoUnsupported": "This video format can't be played in the browser; please download to watch",
+    "spreadsheetTruncated": "Preview limited to {{rows}} rows and {{columns}} columns per sheet."
   },
   "ask": {
     "inputPlaceholder": "Type your answer…",
     "submit": "Submit",
     "skip": "Skip",
     "skipped": "(skipped by user)"
+  },
+  "conflict": {
+    "title": "File changed on disk",
+    "description": "{{path}} has changed. Your draft is safe. Compare the versions before choosing how to proceed.",
+    "local": "Local draft",
+    "remote": "Latest on disk",
+    "deleted": "The file was deleted. Replacing it will create the file again.",
+    "notEditable": "The disk file cannot be edited as text. Reopen it to inspect it.",
+    "keepEditing": "Keep editing",
+    "useRemote": "Use disk version",
+    "overwrite": "Replace with local draft"
   }
 }

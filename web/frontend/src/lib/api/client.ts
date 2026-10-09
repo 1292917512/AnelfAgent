@@ -1,42 +1,47 @@
-/** API 客户端 — axios 实例、全局错误处理与共享错误工具。 */
-
 import axios from "axios";
 
-const api = axios.create({
-  baseURL: "/api",
-  timeout: 30000,
-  headers: { "Content-Type": "application/json" },
+export const api = axios.create({
+  baseURL: "/api", timeout: 30_000, headers: { "Content-Type": "application/json" },
 });
 
-// 模块前端插件（channels/*/frontend、entities/*/panel）经此实例复用认证与拦截器
-export { api };
+export type ApiErrorHandler = (error: unknown) => void;
+let onError: ApiErrorHandler | null = null;
+let onUnauthorized: (() => void) | null = null;
 
-/** 可注入的全局 API 错误处理器（默认空实现；上层可接入 toast/日志） */
-export type ApiErrorHandler = (err: unknown) => void;
-let _apiErrorHandler: ApiErrorHandler | null = null;
-export function setApiErrorHandler(handler: ApiErrorHandler | null): void {
-  _apiErrorHandler = handler;
+export function setApiErrorHandler(handler: ApiErrorHandler | null): void { onError = handler; }
+export function setUnauthorizedHandler(handler: (() => void) | null): void { onUnauthorized = handler; }
+export function warnApiError(error: unknown): void { if (!axios.isCancel(error)) console.warn("[API]", error); }
+
+api.interceptors.response.use((response) => response, (error: unknown) => {
+  if (axios.isAxiosError(error) && error.response?.status === 401 && !error.config?.url?.startsWith("/auth/")) {
+    onUnauthorized?.();
+  }
+  if (!axios.isCancel(error) && axios.isAxiosError(error) && !["get", "head"].includes(error.config?.method ?? "get")) onError?.(error);
+  return Promise.reject(error);
+});
+
+function detailMessage(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim()) return value;
+  if (Array.isArray(value)) {
+    const messages = value.map(detailMessage).filter((message): message is string => Boolean(message));
+    return messages.length ? messages.join("; ") : undefined;
+  }
+  if (value && typeof value === "object") {
+    if ("msg" in value) return detailMessage(value.msg);
+    if ("message" in value) return detailMessage(value.message);
+  }
+  return undefined;
 }
 
-/** 非关键路径后台请求的统一失败日志（替代各处 .catch((e) => console.warn(...))） */
-export function warnApiError(e: unknown): void {
-  console.warn("[API]", e);
+export function apiErrorMessage(error: unknown, fallback: string): string {
+  if (axios.isAxiosError<unknown>(error)) {
+    const data = error.response?.data;
+    if (data && typeof data === "object") {
+      if ("detail" in data) { const message = detailMessage(data.detail); if (message) return message; }
+      if ("error" in data) { const message = detailMessage(data.error); if (message) return message; }
+    }
+  }
+  return error instanceof Error && error.message ? error.message : fallback;
 }
-
-api.interceptors.response.use(
-  (res) => res,
-  (err) => {
-    _apiErrorHandler?.(err);
-    return Promise.reject(err);
-  },
-);
 
 export default api;
-
-
-export function apiErrorMessage(err: unknown, fallback: string): string {
-  const axErr = err as { response?: { data?: { detail?: string } }; message?: string };
-  return axErr?.response?.data?.detail || axErr?.message || fallback;
-}
-
-// Adapters（频道配置读写统一走 configMetaApi，组 adapter/<id>）

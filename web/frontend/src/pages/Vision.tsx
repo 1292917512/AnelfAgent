@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRouteTab } from "@/hooks/useRouteTab";
 import { useTranslation } from "react-i18next";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
 import { PageContainer, PageHeader } from "@/components/common/PageContainer";
@@ -13,7 +13,7 @@ type VisionTab = "overview" | "face" | "capabilities" | "config";
 /** 视觉感知 — 核心能力页（/vision）：视觉源总览/监视控制/画面预览 + 人脸识别 + 生成能力链与风格预设 + 配置 */
 export default function Vision() {
   const { t } = useTranslation("vision");
-  const [tab, setTab] = useState<VisionTab>("overview");
+  const [tab, setTab] = useRouteTab<VisionTab>(["overview", "face", "capabilities", "config"], "overview");
 
   const TABS: TabItem<VisionTab>[] = [
     { key: "overview", label: t("tabs.overview"), icon: LayoutGrid },

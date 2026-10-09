@@ -37,10 +37,12 @@ export function ApiTypeSelect({
   value,
   onChange,
   disabled,
+  id,
 }: {
   value: string;
   onChange: (v: string, info?: ApiTypeInfo) => void;
   disabled?: boolean;
+  id?: string;
 }) {
   const { t } = useTranslation("models");
   const types = useApiTypes();
@@ -48,7 +50,7 @@ export function ApiTypeSelect({
   const other = types.filter((x) => x.group !== "common");
   const select = (v: string) => onChange(v, types.find((x) => x.value === v));
   return (
-    <Select className="w-full" value={value} disabled={disabled} onChange={(e) => select(e.target.value)}>
+    <Select id={id} aria-label={t("providerFields.api_type")} className="w-full" value={value} disabled={disabled} onChange={(e) => select(e.target.value)}>
       <optgroup label={t("apiTypeCommon")}>
         {common.map((x) => <option key={x.value} value={x.value}>{x.value}</option>)}
       </optgroup>

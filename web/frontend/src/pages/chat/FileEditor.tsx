@@ -1,3 +1,5 @@
+import { workspaceFileId } from "@/lib/workspace-file";
+import { useFileEditorStore } from "@/stores/file-editor-store";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import CodeMirror from "@uiw/react-codemirror";
@@ -9,14 +11,17 @@ import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { useChatStore } from "@/stores/chat-store";
-import { useChangesStore } from "@/stores/changes-store";
+import { useFileSession } from "./useFileSession";
+import { FileConflictDialog } from "./FileConflictDialog";
+import { QueryError } from "@/components/common/AsyncState";
 import { ConfirmDialog, toast } from "@/components/ui";
+import { DialogSurface } from "@/components/ui/DialogSurface";
 import { useIsMobile } from "@/lib/use-media-query";
 import { FileEditorTabs } from "./FileEditorTabs";
 import { FileEditorToolbar } from "./FileEditorToolbar";
 import { FileEditorContent } from "./FileEditorContent";
 import { FileEditorFooter } from "./FileEditorFooter";
-import { defaultViewMode, langExtension, type TabState, type ViewMode } from "./fileEditorUtils";
+import { defaultViewMode, langExtension, type ViewMode } from "./fileEditorUtils";
 
 /** 工作区文件编辑器：多标签侧栏（非模态）+ CodeMirror + Markdown 预览 + 对话操作 */
 export function FileEditor() {
@@ -24,8 +29,10 @@ export function FileEditor() {
   const theme = useAppStore((s) => s.theme);
   const isMobile = useIsMobile();
   const openFiles = useWorkbenchStore((s) => s.openFiles);
-  const openFilePath = useWorkbenchStore((s) => s.openFilePath);
-  const fileRoot = useWorkbenchStore((s) => s.fileRoot);
+  const activeFileId = useWorkbenchStore((state) => state.activeFileId);
+  const activeFile = openFiles.find((file) => workspaceFileId(file) === activeFileId);
+  const openFilePath = activeFile?.path;
+  const curRoot = activeFile?.root ?? "workspace";
   const filePanelOpen = useWorkbenchStore((s) => s.filePanelOpen);
   const activateFile = useWorkbenchStore((s) => s.activateFile);
   const closeFile = useWorkbenchStore((s) => s.closeFile);
@@ -36,29 +43,25 @@ export function FileEditor() {
   const setInputDraft = useWorkbenchStore((s) => s.setDraft);
   const attachWorkspaceFile = useChatStore((s) => s.attachWorkspaceFile);
 
-  const [tabs, setTabs] = useState<Map<string, TabState>>(new Map());
-  const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [savedTick, setSavedTick] = useState(false);
+  const tabs = useFileEditorStore((state) => state.tabs);
+  const setTabs = useFileEditorStore((state) => state.setTabs);
+  const session = useFileSession(activeFile);
+  const { loading, saving, loadError, save } = session;
   const [copied, setCopied] = useState(false);
-  const [loadError, setLoadError] = useState(false);
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("edit");
   /** 待确认关闭的目标：path 为单标签，null path 语义为全部关闭 */
   const [confirmClose, setConfirmClose] = useState<{ path: string | null } | null>(null);
 
-  const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 组件卸载时清理定时器
   useEffect(() => () => {
-    if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
     if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
   }, []);
 
-  const cur = openFilePath ? tabs.get(openFilePath) : undefined;
+  const cur = activeFileId ? tabs.get(activeFileId) : undefined;
   // 当前文件所属根目录（workspace / project），决定读/写/预览的基准
-  const curRoot = openFilePath ? fileRoot(openFilePath) : "workspace";
   // 富格式预览类型（markdown/html/csv/pdf/docx/xlsx），不命中为普通文本
   const kind: WorkspaceFileKind | null = openFilePath ? workspaceFileKind(openFilePath) : null;
   // 二进制媒体（图片/视频/音频）走预览而非文本编辑
@@ -66,81 +69,15 @@ export function FileEditor() {
   const rawUrl = cur ? workspaceApi.rawUrl(cur.file.path, false, curRoot) : "";
   const dirty = cur !== undefined && cur.draft !== cur.file.content;
 
-  // tabs 的 ref 镜像：加载 effect 只随激活路径触发，通过 ref 读取缓存避免重复请求
-  const tabsRef = useRef(tabs);
-  useEffect(() => {
-    tabsRef.current = tabs;
-  }, [tabs]);
-
-  // 激活标签首次加载内容；切换标签按文件类型重置默认视图与加载状态
-  useEffect(() => {
-    setViewMode(openFilePath ? defaultViewMode(openFilePath) : "edit");
-    setLoadError(false);
-    setLoading(false);
-    if (!openFilePath || tabsRef.current.has(openFilePath)) return;
-    setLoading(true);
-    workspaceApi.read(openFilePath, fileRoot(openFilePath)).then((r) => {
-      setTabs((m) => new Map(m).set(openFilePath, { file: r.data, draft: r.data.content }));
-    }).catch(() => {
-      setLoadError(true);
-    }).finally(() => setLoading(false));
-  }, [openFilePath, fileRoot]);
-
-  // AI 编辑联动：已打开文件被外部改动（fileVersions 版本号变化）时刷新磁盘内容。
-  // 有未保存草稿时不覆盖（不丢用户编辑），仅在无脏改动时静默跟进。
-  const fileVersions = useChangesStore((s) => s.fileVersions);
-  const curVersion = openFilePath ? fileVersions[openFilePath] ?? 0 : 0;
-  useEffect(() => {
-    if (!openFilePath || curVersion === 0) return;
-    const tab = tabsRef.current.get(openFilePath);
-    if (!tab) return;
-    if (tab.draft !== tab.file.content) return; // 有未保存修改，不覆盖
-    workspaceApi.read(openFilePath, fileRoot(openFilePath)).then((r) => {
-      setTabs((m) => {
-        const cur2 = m.get(openFilePath);
-        if (!cur2 || cur2.draft !== cur2.file.content) return m; // 读期间用户又改了，放弃
-        return new Map(m).set(openFilePath, { file: r.data, draft: r.data.content });
-      });
-    }).catch(() => { /* 读取失败忽略（文件可能已删） */ });
-    // 只随版本号变化触发；fileRoot/tabsRef 为稳定引用
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [curVersion]);
-
-  // 清理已关闭标签的缓存（保留未关闭标签的未保存草稿）
-  useEffect(() => {
-    setTabs((m) => {
-      if ([...m.keys()].every((k) => openFiles.includes(k))) return m;
-      const next = new Map<string, TabState>();
-      for (const p of openFiles) {
-        const tab = m.get(p);
-        if (tab) next.set(p, tab);
-      }
-      return next;
-    });
-  }, [openFiles]);
+  useEffect(() => { setViewMode(openFilePath ? defaultViewMode(openFilePath) : "edit"); }, [openFilePath]);
 
   const updateDraft = useCallback((v: string) => {
-    if (!openFilePath) return;
+    if (!activeFileId) return;
     setTabs((m) => {
-      const tab = m.get(openFilePath);
-      return tab ? new Map(m).set(openFilePath, { ...tab, draft: v }) : m;
+      const tab = m.get(activeFileId);
+      return tab ? new Map(m).set(activeFileId, { ...tab, draft: v }) : m;
     });
-  }, [openFilePath]);
-
-  const save = useCallback(async () => {
-    if (!cur || !dirty) return;
-    setSaving(true);
-    try {
-      await workspaceApi.write(cur.file.path, cur.draft, curRoot);
-      setTabs((m) => new Map(m).set(cur.file.path, { file: { ...cur.file, content: cur.draft }, draft: cur.draft }));
-      setSavedTick(true);
-      if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
-      savedTimerRef.current = setTimeout(() => setSavedTick(false), 1500);
-    } catch {
-      toast.error(t("editor.saveFailed"));
-    }
-    finally { setSaving(false); }
-  }, [cur, dirty, curRoot, t]);
+  }, [activeFileId, setTabs]);
 
   // Ctrl/Cmd+S 保存
   useEffect(() => {
@@ -167,7 +104,7 @@ export function FileEditor() {
 
   /** 关闭请求：含未保存修改时先弹确认 */
   const requestClose = useCallback((path?: string) => {
-    const target = path ?? openFilePath;
+    const target = path ?? activeFileId;
     if (!target) return;
     const tab = tabs.get(target);
     if (tab && tab.draft !== tab.file.content) {
@@ -175,16 +112,16 @@ export function FileEditor() {
     } else {
       closeFile(target);
     }
-  }, [openFilePath, tabs, closeFile]);
+  }, [activeFileId, tabs, closeFile, setConfirmClose]);
 
   const requestCloseAll = useCallback(() => {
     const anyDirty = openFiles.some((p) => {
-      const tab = tabs.get(p);
+      const tab = tabs.get(workspaceFileId(p));
       return tab && tab.draft !== tab.file.content;
     });
     if (anyDirty) setConfirmClose({ path: null });
     else closeAllFiles();
-  }, [openFiles, tabs, closeAllFiles]);
+  }, [openFiles, tabs, closeAllFiles, setConfirmClose]);
 
   /** 将文件作为附件挂到对话输入框 */
   const attachToChat = useCallback(() => {
@@ -199,7 +136,7 @@ export function FileEditor() {
     if (!cur || cur.file.binary) return;
     const ext = cur.file.path.split(".").pop()?.toLowerCase() || "";
     const sel = useWorkbenchStore.getState().selection;
-    const range = sel && sel.path === cur.file.path && sel.content ? (sel.ranges[0] ?? null) : null;
+    const range = sel && sel.path === cur.file.path && sel.root === curRoot && sel.content ? (sel.ranges[0] ?? null) : null;
     // project 根的 mention 路径带 project: 前缀（MentionMarkdown 解析所属根）
     const refPath = curRoot === "project" ? `project:${cur.file.path}` : cur.file.path;
     const label = range ? `${cur.file.name}:L${range.start_line}-L${range.end_line}` : cur.file.name;
@@ -215,7 +152,7 @@ export function FileEditor() {
       if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
       copiedTimerRef.current = setTimeout(() => setCopied(false), 1500);
     }).catch(() => { /* 剪贴板不可用时忽略 */ });
-  }, [cur]);
+  }, [cur, setCopied]);
 
   /** 编辑器选区变化 → 写入工作台状态（ui_state 上报的数据源） */
   const reportSelection = useCallback((path: string, vu: ViewUpdate) => {
@@ -231,17 +168,17 @@ export function FileEditor() {
     const content = vu.state.sliceDoc(sel.from, sel.to);
     setSelection({
       path,
+      root: curRoot,
       ranges: [{ start_line: startLine, end_line: endLine }],
       content,
     });
-  }, []);
+  }, [curRoot]);
 
   // 面板收起时清空选区（关闭编辑器即无「当前选区」语义）
   useEffect(() => {
     if (!filePanelOpen) useWorkbenchStore.getState().setSelection(null);
   }, [filePanelOpen]);
 
-  // 面板收起时不渲染但保持挂载，标签缓存与未保存草稿不丢失
   if (!filePanelOpen || !openFilePath) return null;
 
   const editorNode = cur && !cur.file.binary && !cur.file.truncated && (
@@ -269,7 +206,7 @@ export function FileEditor() {
       <FileEditorTabs
         openFiles={openFiles}
         tabs={tabs}
-        openFilePath={openFilePath}
+        activeFileId={activeFileId}
         onActivate={activateFile}
         onRequestClose={requestClose}
         onRequestCloseAll={requestCloseAll}
@@ -292,6 +229,8 @@ export function FileEditor() {
         />
       )}
 
+      {session.saveError != null && <QueryError compact error={session.saveError} />}
+      <FileConflictDialog session={session} />
       <FileEditorContent
         cur={cur}
         kind={kind}
@@ -300,6 +239,7 @@ export function FileEditor() {
         curRoot={curRoot}
         loading={loading}
         loadError={loadError}
+        onRetry={session.retry}
         viewMode={viewMode}
         editorNode={editorNode}
         lightboxOpen={lightboxOpen}
@@ -311,7 +251,7 @@ export function FileEditor() {
           cur={cur}
           dirty={dirty}
           saving={saving}
-          savedTick={savedTick}
+          savedTick={session.saved && !dirty}
           onClose={() => requestClose()}
           onSave={save}
         />
@@ -337,9 +277,10 @@ export function FileEditor() {
   // 移动端为全屏覆盖（编辑需要全宽；点遮罩/关闭仅收起面板，标签保留），桌面端参与布局流
   if (isMobile) {
     return (
-      <div className="fixed inset-0 z-40" role="dialog" aria-modal="true">
-        <div className="absolute inset-0">{body}</div>
-      </div>
+      <DialogSurface open title={cur?.file.name ?? t("editor.loading")} onClose={collapseFilePanel}
+        placement="right" className="border-0">
+        {body}
+      </DialogSurface>
     );
   }
   return body;

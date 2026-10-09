@@ -4,241 +4,102 @@ import { Switch } from "@/components/ui";
 import { ModelSelect } from "@/components/models/ModelSelect";
 import { cn } from "@/lib/utils";
 
-/**
- * 配置控件族：按 ConfigMetaItem.type 分发的统一交互约定——
- * Switch/Select 即改即存；Number/Text 失焦或回车提交；Range 拖动中仅本地预览、松手提交。
- */
-
 interface CommonProps {
+  label?: string;
   disabled?: boolean;
 }
 
-export function SwitchField({
-  value,
-  disabled,
-  onCommit,
-}: CommonProps & { value: boolean; onCommit: (v: boolean) => void }) {
-  return <Switch checked={value} disabled={disabled} onChange={onCommit} />;
+const INPUT_CLS = "bg-bg border border-input rounded-md px-2.5 py-1.5 text-sm text-foreground outline-none focus:border-ring disabled:opacity-50";
+
+export function SwitchField({ value, label, disabled, onCommit }: CommonProps & {
+  value: boolean; onCommit: (value: boolean) => void;
+}) {
+  return <Switch label={label} checked={value} disabled={disabled} onChange={onCommit} />;
 }
 
-export function SelectField({
-  value,
-  options,
-  disabled,
-  onCommit,
-}: CommonProps & { value: string; options: string[]; onCommit: (v: string) => void }) {
+export function SelectField({ value, options, label, disabled, onCommit }: CommonProps & {
+  value: string; options: string[]; onCommit: (value: string) => void;
+}) {
   const { t } = useTranslation("config");
-  return (
-    <select
-      value={value}
-      disabled={disabled}
-      onChange={(e) => onCommit(e.target.value)}
-      className="bg-bg border border-input rounded-md px-2.5 py-1.5 text-sm text-foreground outline-none focus:border-ring disabled:opacity-50"
-    >
-      {options.map((opt) => (
-        <option key={opt} value={opt}>{opt === "" ? t("enumEmptyOption") : opt}</option>
-      ))}
-    </select>
-  );
+  return <select aria-label={label} value={value} disabled={disabled} onChange={(event) => onCommit(event.target.value)} className={cn(INPUT_CLS, "max-w-full")}>
+    {options.map((option) => <option key={option} value={option}>{option === "" ? t("enumEmptyOption") : option}</option>)}
+  </select>;
 }
 
-/**
- * 模型选择控件（MODEL 类型）：复用统一 ModelSelect（已启用 chat 模型下拉 +
- * 能力图标），选择即提交。空默认值允许选「跟随默认」（提交空串）。
- */
-export function ModelField({
-  value,
-  allowEmpty,
-  disabled,
-  onCommit,
-}: CommonProps & { value: string; allowEmpty: boolean; onCommit: (v: string) => void }) {
-  return (
-    <ModelSelect
-      modelType="chat"
-      value={value}
-      allowEmpty={allowEmpty}
-      allowPin={false}
-      showDefaultWhenEmpty={false}
-      compact
-      className="w-44"
-      onChange={onCommit}
-      disabled={disabled}
-    />
-  );
+export function ModelField({ value, allowEmpty, label, disabled, onCommit }: CommonProps & {
+  value: string; allowEmpty: boolean; onCommit: (value: string) => void;
+}) {
+  return <ModelSelect modelType="chat" value={value} label={label} allowEmpty={allowEmpty}
+    allowPin={false} showDefaultWhenEmpty={false} compact className="w-44"
+    onChange={onCommit} disabled={disabled} />;
 }
 
-const INPUT_CLS =
-  "bg-bg border border-input rounded-md px-2.5 py-1.5 text-sm text-foreground outline-none focus:border-ring disabled:opacity-50";
-
-export function NumberField({
-  value,
-  isFloat,
-  unit,
-  disabled,
-  onCommit,
-}: CommonProps & {
-  value: number;
-  isFloat?: boolean;
-  unit?: string;
-  onCommit: (v: number) => void;
+export function NumberField({ value, isFloat, unit, min, max, label, disabled, onCommit }: CommonProps & {
+  value: number; isFloat?: boolean; unit?: string; min?: number; max?: number;
+  onCommit: (value: number) => void;
 }) {
   const [text, setText] = useState(String(value));
   useEffect(() => setText(String(value)), [value]);
-
   const commit = () => {
-    if (text.trim() === "") {
-      setText(String(value));
-      return;
-    }
-    const parsed = isFloat ? parseFloat(text) : parseInt(text, 10);
-    if (Number.isNaN(parsed)) {
-      setText(String(value));
-      return;
-    }
+    if (!text.trim() || !Number.isFinite(Number(text))) { setText(String(value)); return; }
+    let parsed = isFloat ? Number(text) : Math.trunc(Number(text));
+    if (min !== undefined) parsed = Math.max(min, parsed);
+    if (max !== undefined) parsed = Math.min(max, parsed);
+    setText(String(parsed));
     if (parsed !== value) onCommit(parsed);
-    else setText(String(parsed));
   };
-
-  return (
-    <span className="flex items-center gap-1.5">
-      <input
-        type="number"
-        value={text}
-        disabled={disabled}
-        step={isFloat ? "any" : 1}
-        onChange={(e) => setText(e.target.value)}
-        onBlur={commit}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-        }}
-        className={cn(INPUT_CLS, "w-28")}
-      />
-      {unit && <span className="text-xs text-muted shrink-0">{unit}</span>}
-    </span>
-  );
+  return <span className="flex items-center gap-1.5">
+    <input type="number" aria-label={label} value={text} disabled={disabled} min={min} max={max}
+      step={isFloat ? "any" : 1} onChange={(event) => setText(event.target.value)} onBlur={commit}
+      onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }}
+      className={cn(INPUT_CLS, "w-28")} />
+    {unit && <span className="text-xs text-muted shrink-0">{unit}</span>}
+  </span>;
 }
 
-export function TextField({
-  value,
-  disabled,
-  onCommit,
-}: CommonProps & { value: string; onCommit: (v: string) => void }) {
+type TextFieldProps = CommonProps & {
+  value: string; multiline?: boolean; password?: boolean; onCommit: (value: string) => void;
+};
+
+export function TextField({ value, multiline, password, label, disabled, onCommit }: TextFieldProps) {
   const [text, setText] = useState(value);
   useEffect(() => setText(value), [value]);
-
-  const commit = () => {
-    if (text !== value) onCommit(text);
-  };
-
-  return (
-    <input
-      type="text"
-      value={text}
-      disabled={disabled}
-      onChange={(e) => setText(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-      }}
-      className={cn(INPUT_CLS, "w-48")}
-    />
-  );
+  const commit = () => { if (text !== value) onCommit(text); };
+  const props = { "aria-label": label, value: text, disabled, onBlur: commit, className: cn(INPUT_CLS, "w-48 max-w-full") };
+  return multiline
+    ? <textarea {...props} rows={3} onChange={(event) => setText(event.target.value)} />
+    : <input {...props} type={password ? "password" : "text"} autoComplete={password ? "new-password" : "off"}
+      onChange={(event) => setText(event.target.value)}
+      onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} />;
 }
 
-/**
- * 敏感值控件（PASSWORD 类型）：服务端返回掩码值（abcd****wxyz），
- * 未改动时提交掩码由服务端识别并保留现值；输入新值即替换。
- */
-export function PasswordField({
-  value,
-  disabled,
-  onCommit,
-}: CommonProps & { value: string; onCommit: (v: string) => void }) {
-  const [text, setText] = useState(value);
-  useEffect(() => setText(value), [value]);
-
-  const commit = () => {
-    if (text !== value) onCommit(text);
-  };
-
-  return (
-    <input
-      type="password"
-      value={text}
-      disabled={disabled}
-      autoComplete="new-password"
-      onChange={(e) => setText(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-      }}
-      className={cn(INPUT_CLS, "w-48")}
-    />
-  );
+export function PasswordField(props: Omit<TextFieldProps, "password" | "multiline">) {
+  return <TextField {...props} password />;
 }
 
-/**
- * 滑条 + 数值复合控件（RANGE 类型）：拖动过程只更新本地预览，
- * pointerup/keyup 才提交——避免拖动中连续打后端。
- */
-export function RangeField({
-  value,
-  min,
-  max,
-  step,
-  unit,
-  disabled,
-  className,
-  onCommit,
-}: CommonProps & {
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  unit?: string;
-  /** 滑条宽度类名，默认 w-32 */
-  className?: string;
-  onCommit: (v: number) => void;
+/** 滑条拖动期间保留预览值，松手或键盘操作结束时提交。 */
+export function RangeField({ value, min, max, step, unit, label, disabled, className, onCommit }: CommonProps & {
+  value: number; min: number; max: number; step: number; unit?: string; className?: string;
+  onCommit: (value: number) => void;
 }) {
   const { t } = useTranslation("config");
-  const [draft, setDraft] = useState(value);
-  const [dragging, setDragging] = useState(false);
-  useEffect(() => {
-    if (!dragging) setDraft(value);
-  }, [value, dragging]);
-
-  const shown = dragging ? draft : value;
-  const isInt = Number.isInteger(step);
-  const display = isInt ? String(Math.round(shown)) : shown.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
-
-  return (
-    <span className="flex items-center gap-2">
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={shown}
-        disabled={disabled}
-        aria-label={t("rangeAdjust")}
-        onChange={(e) => {
-          setDragging(true);
-          setDraft(parseFloat(e.target.value));
-        }}
-        onPointerUp={() => {
-          setDragging(false);
-          if (draft !== value) onCommit(draft);
-        }}
-        onKeyUp={() => {
-          setDragging(false);
-          if (draft !== value) onCommit(draft);
-        }}
-        className={cn("accent-[var(--accent)] disabled:opacity-50", className ?? "w-32")}
-      />
-      <span className="w-14 text-right font-mono text-sm text-heading shrink-0">
-        {display}
-        {unit && <span className="text-xs text-muted font-sans ml-0.5">{unit}</span>}
-      </span>
+  const [draft, setDraft] = useState<number | null>(null);
+  const shown = draft ?? value;
+  const display = Number.isInteger(step) ? String(Math.round(shown)) : String(Number(shown.toFixed(4)));
+  const commit = (next: number) => {
+    setDraft(null);
+    if (next !== value) onCommit(next);
+  };
+  return <span className="flex items-center gap-2">
+    <input type="range" min={min} max={max} step={step} value={shown} disabled={disabled}
+      aria-label={label ?? t("rangeAdjust")} onChange={(event) => setDraft(Number(event.target.value))}
+      onPointerUp={(event) => commit(Number(event.currentTarget.value))}
+      onKeyUp={(event) => commit(Number(event.currentTarget.value))}
+      onBlur={(event) => { if (draft !== null) commit(Number(event.currentTarget.value)); }}
+      onPointerCancel={() => setDraft(null)}
+      className={cn("accent-[var(--accent)] disabled:opacity-50", className ?? "w-32")} />
+    <span className="w-14 text-right font-mono text-sm text-heading shrink-0">{display}
+      {unit && <span className="text-xs text-muted font-sans ml-0.5">{unit}</span>}
     </span>
-  );
+  </span>;
 }

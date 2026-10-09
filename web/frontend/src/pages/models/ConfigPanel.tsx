@@ -1,12 +1,12 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import axios from "axios";
 import { ChevronDown, ChevronRight, Plus, RefreshCw, Server, Trash2 } from "lucide-react";
 import { modelsApi, providersApi } from "@/lib/api";
 import type { ProviderConfig } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { Button, EmptyState, toast } from "@/components/ui";
+import { Button, EmptyState, ConfirmDialog, toast } from "@/components/ui";
+import { AsyncState } from "@/components/common/AsyncState";
 import { ProviderForm } from "./config/ProviderForm";
 import { ProviderDetail } from "./config/ProviderDetail";
 
@@ -16,21 +16,24 @@ export function ConfigPanel() {
   const qc = useQueryClient();
   const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
   const [showNewProvider, setShowNewProvider] = useState(false);
+  const [deleting, setDeleting] = useState<ProviderConfig | null>(null);
 
-  const { data: providers = [] } = useQuery<ProviderConfig[]>({
+  const { data: providers = [], isPending, error, refetch } = useQuery<ProviderConfig[]>({
     queryKey: ["providers"],
     queryFn: () => providersApi.list().then((r) => r.data),
   });
 
   const removeProviderMut = useMutation({
     mutationFn: (pid: string) => providersApi.remove(pid),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["providers"] }); setExpandedProvider(null); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["providers"] }); qc.invalidateQueries({ queryKey: ["priorities"] }); setExpandedProvider(null); setDeleting(null); },
   });
 
   const reloadMut = useMutation({
     mutationFn: () => modelsApi.reload().then((r) => r.data),
     onSuccess: (summary) => {
       qc.invalidateQueries({ queryKey: ["providers"] });
+      qc.invalidateQueries({ queryKey: ["priorities"] });
+      qc.invalidateQueries({ queryKey: ["providerModels"] });
       const pa = summary.providers.added.length, pr = summary.providers.removed.length, pc = summary.providers.changed.length;
       const ma = summary.models.added.length, mr = summary.models.removed.length, mc = summary.models.changed.length;
       if (pa + pr + pc + ma + mr + mc === 0) {
@@ -39,15 +42,12 @@ export function ConfigPanel() {
         toast.success(t("reloadResult", { pa, pr, pc, ma, mr, mc }));
       }
     },
-    onError: (err) => {
-      const detail = axios.isAxiosError(err) ? err.response?.data?.detail : null;
-      toast.error(`${t("reloadFailed")}: ${typeof detail === "string" ? detail : String(err)}`);
-    },
+
   });
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="text-base font-semibold text-heading">{t("providersAndModels")}</h3>
         <div className="flex items-center gap-2">
           <Button
@@ -66,6 +66,7 @@ export function ConfigPanel() {
 
       {showNewProvider && <ProviderForm onClose={() => setShowNewProvider(false)} />}
 
+      <AsyncState pending={isPending} error={error} retry={() => void refetch()}>
       <div className="grid gap-3">
         {providers.map((prov) => {
           const isOpen = expandedProvider === prov.id;
@@ -78,20 +79,19 @@ export function ConfigPanel() {
               )}
             >
               <div
-                className="flex items-center justify-between gap-2 p-3 md:p-4 cursor-pointer"
-                onClick={() => setExpandedProvider(isOpen ? null : prov.id)}
+                className="flex items-center justify-between gap-2 p-3 md:p-4"
               >
-                <div className="flex items-center gap-2 md:gap-3 min-w-0">
+                <button type="button" aria-expanded={isOpen} onClick={() => setExpandedProvider(isOpen ? null : prov.id)} className="flex flex-1 items-center gap-2 text-left md:gap-3 min-w-0">
                   {isOpen
                     ? <ChevronDown size={16} className="text-accent shrink-0" />
                     : <ChevronRight size={16} className="text-muted shrink-0" />}
                   <Server size={16} className="text-accent shrink-0" />
                   <span className="font-medium text-heading truncate">{prov.name || prov.id}</span>
                   <span className="text-xs text-muted shrink-0">{t("nModels", { count: prov.model_count })}</span>
-                </div>
+                </button>
                 <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
                   <button
-                    onClick={() => removeProviderMut.mutate(prov.id)}
+                    onClick={() => setDeleting(prov)}
                     className="p-1.5 rounded text-muted hover:text-danger transition-colors"
                     title={t("deleteProvider")}
                   >
@@ -108,6 +108,9 @@ export function ConfigPanel() {
           <EmptyState icon={Server} title={t("noProviders")} />
         )}
       </div>
+      </AsyncState>
+      <ConfirmDialog open={!!deleting} title={t("deleteProvider")} message={t("confirmDeleteProvider", { name: deleting?.name || deleting?.id, count: deleting?.model_count ?? 0 })}
+        onClose={() => setDeleting(null)} onConfirm={() => { if (deleting) removeProviderMut.mutate(deleting.id); }} danger loading={removeProviderMut.isPending} />
     </div>
   );
 }

@@ -9,11 +9,13 @@ export const DEFAULT_CHAT_ID = "default";
 const LOCAL_STORAGE_ACTIVE_KEY = "anelf:activeChatId";
 const LOCAL_STORAGE_CHATS_KEY = "anelf:chats";
 
-let _cidSeq = 0;
-export const nextCid = () => `c-${++_cidSeq}`;
+export const nextCid = () => crypto.randomUUID();
 
 export function emptyBucket(): ChatBucket {
   return {
+    inputDraft: "",
+    workspaceContextEnabled: true,
+    submitting: false,
     messages: [],
     sending: false,
     sendingSince: null,

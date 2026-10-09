@@ -993,6 +993,9 @@ def save_config_value(key: str, value: Any) -> None:
     """
     from core.config import ConfigManager
 
+    environment = ConfigManager.environment_override(key)
+    if environment is not None:
+        raise ValueError(f"配置由环境变量 {environment} 管理，请修改环境变量")
     try:
         from agent.config import MIND_CONFIG_FIELDS
         mind_fields = frozenset(MIND_CONFIG_FIELDS)

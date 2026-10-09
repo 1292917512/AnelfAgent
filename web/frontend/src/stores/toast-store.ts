@@ -17,10 +17,11 @@ interface ToastState {
 let nextId = 1;
 
 /** 全局通知状态：最多保留 5 条，到期自动消失 */
-export const useToastStore = create<ToastState>((set) => ({
+export const useToastStore = create<ToastState>((set, get) => ({
   toasts: [],
 
   push: (type, message, duration = 4000) => {
+    if (get().toasts.some((item) => item.type === type && item.message === message)) return;
     const id = nextId++;
     set((s) => ({ toasts: [...s.toasts.slice(-4), { id, type, message }] }));
     if (duration > 0) {

@@ -1,10 +1,11 @@
-import { PageContainer } from "@/components/common/PageContainer";
+import { PageContainer, PageIntro } from "@/components/common/PageContainer";
 import { StickersPanel } from "@entities/sticker/panels/library/StickersPanel";
 
 /** 独立表情包页（/stickers，向后兼容）— 功能已并入「数据管理」页 */
 export default function Stickers() {
   return (
     <PageContainer>
+      <PageIntro />
       <StickersPanel />
     </PageContainer>
   );

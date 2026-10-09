@@ -1,102 +1,45 @@
-import type { Node, Edge } from "@xyflow/react";
-import type { ThinkingSession, TraceNode } from "@/stores/thinking-store";
+import type { Edge } from "@xyflow/react";
+import type { ThinkingSession, TraceNode } from "@/lib/types";
+import type { TraceGraphNode } from "./TraceNode";
 
-const COL_W = 340;
-const ROW_H = 130;
-
-function edgeStroke(status: string): string {
-  if (status === "error") return "var(--danger)";
-  return "var(--border-strong)";
-}
-
-/**
- * 递归子树布局：根节点（时间序列事件）横向排列，子树向下展开，
- * 父节点居中于子节点上方，支持任意深度嵌套且不重叠。
- */
-export function buildFlowElements(session: ThinkingSession | null): { nodes: Node[]; edges: Edge[] } {
+/** Places time-ordered roots vertically, with their child calls indented and cycle-safe. */
+export function buildFlowElements(session: ThinkingSession | null): { nodes: TraceGraphNode[]; edges: Edge[] } {
   if (!session) return { nodes: [], edges: [] };
-
-  const ids = new Set(session.nodes.map((n) => n.id));
-  const childrenMap = new Map<string, TraceNode[]>();
+  const nodesById = new Map(session.nodes.map((node) => [node.id, node]));
+  const children = new Map<string, TraceNode[]>();
   const roots: TraceNode[] = [];
-  for (const n of session.nodes) {
-    if (n.parent_id && ids.has(n.parent_id)) {
-      const list = childrenMap.get(n.parent_id) ?? [];
-      list.push(n);
-      childrenMap.set(n.parent_id, list);
-    } else {
-      roots.push(n);
-    }
+  for (const node of nodesById.values()) {
+    if (node.parent_id && node.parent_id !== node.id && nodesById.has(node.parent_id)) {
+      const siblings = children.get(node.parent_id) ?? [];
+      siblings.push(node);
+      children.set(node.parent_id, siblings);
+    } else roots.push(node);
   }
-
-  const positions = new Map<string, { x: number; y: number }>();
-  let leafCol = 0;
-
-  const layout = (node: TraceNode, depth: number, trail: Set<string>): number => {
-    // parent_id 环（数据异常）：按叶子落位，防无限递归撑爆栈
-    if (trail.has(node.id)) {
-      const col = leafCol++;
-      positions.set(node.id, { x: col * COL_W, y: depth * ROW_H });
-      return col;
-    }
-    trail.add(node.id);
-    const children = childrenMap.get(node.id) ?? [];
-    let col: number;
-    if (children.length === 0) {
-      col = leafCol++;
-    } else {
-      let first = Infinity;
-      let last = -Infinity;
-      for (const child of children) {
-        const childCol = layout(child, depth + 1, trail);
-        first = Math.min(first, childCol);
-        last = Math.max(last, childCol);
-      }
-      col = (first + last) / 2;
-    }
-    trail.delete(node.id);
-    positions.set(node.id, { x: col * COL_W, y: depth * ROW_H });
-    return col;
-  };
-  for (const root of roots) layout(root, 0, new Set());
-
-  const nodes: Node[] = session.nodes.map((n) => ({
-    id: n.id,
-    type: "trace",
-    position: positions.get(n.id) ?? { x: 0, y: 0 },
-    data: {
-      label: n.label,
-      nodeType: n.type,
-      status: n.status,
-      duration_ms: n.duration_ms,
-      data: n.data,
-    },
-  }));
-
+  const nodes: TraceGraphNode[] = [];
   const edges: Edge[] = [];
-  for (const n of session.nodes) {
-    if (n.parent_id && ids.has(n.parent_id)) {
-      edges.push({
-        id: `e-${n.parent_id}-${n.id}`,
-        source: n.parent_id,
-        target: n.id,
-        animated: n.status === "running",
-        style: { stroke: edgeStroke(n.status), strokeWidth: 1.5 },
+  const visited = new Set<string>();
+  function place(root: TraceNode): void {
+    const stack = [{ trace: root, depth: 0, parent: "" }];
+    while (stack.length) {
+      const entry = stack.pop();
+      if (!entry || visited.has(entry.trace.id)) continue;
+      const { trace, depth, parent } = entry;
+      visited.add(trace.id);
+      nodes.push({ id: trace.id, type: "trace", position: { x: Math.min(depth, 5) * 290, y: nodes.length * 145 }, data: { trace } });
+      if (parent) edges.push({
+        id: `child:${trace.id}`, source: parent, target: trace.id, type: "smoothstep",
+        animated: trace.status === "running",
+        style: { stroke: trace.status === "error" ? "var(--danger)" : "var(--border-strong)", strokeWidth: 1.5 },
       });
+      for (const child of [...(children.get(trace.id) ?? [])].reverse()) stack.push({ trace: child, depth: depth + 1, parent: trace.id });
     }
   }
-  // 相邻根节点的时间序连接（虚线）
-  for (let i = 1; i < roots.length; i++) {
-    const prev = roots[i - 1]!;
-    const cur = roots[i]!;
-    edges.push({
-      id: `e-seq-${prev.id}-${cur.id}`,
-      source: prev.id,
-      target: cur.id,
-      animated: cur.status === "running",
-      style: { stroke: edgeStroke(cur.status), strokeWidth: 1.5, strokeDasharray: "4 2" },
-    });
+  for (const root of roots) {
+    const previous = nodes[nodes.length - 1];
+    place(root);
+    if (previous) edges.push({ id: `sequence:${root.id}`, source: previous.id, target: root.id, type: "smoothstep",
+      style: { stroke: "var(--border-strong)", strokeDasharray: "4 4" } });
   }
-
+  for (const node of nodesById.values()) if (!visited.has(node.id)) place(node);
   return { nodes, edges };
 }

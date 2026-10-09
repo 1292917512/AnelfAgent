@@ -1,100 +1,58 @@
+import { useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { Save, TestTube } from "lucide-react";
+import { Pencil, Save, TestTube } from "lucide-react";
 import type { ProviderConfig, UpdateProviderConfig } from "@/lib/types";
-import { Button, Input, Select } from "@/components/ui";
-import { ApiTypeSelect, MEDIA_PROTOCOL_OPTIONS } from "./shared";
+import { modelsApi, providersApi } from "@/lib/api";
+import { Button, ConfirmDialog, Modal } from "@/components/ui";
+import { QueryError } from "@/components/common/AsyncState";
+import { useDiscardChanges } from "@/hooks/useDiscardChanges";
+import { ProviderFields, providerFields, type ProviderFieldsValue } from "./ProviderFields";
 
-/** 供应商配置编辑块：名称 / base_url / api_key / api_type / 代理 / 媒体协议 + 测试 */
-export function ProviderConfigEditor({
-  provider,
-  providerEdit,
-  onEditChange,
-  pe,
-  onTest,
-  onSave,
-  savePending,
-  testResult,
-}: {
-  provider: ProviderConfig;
-  providerEdit: UpdateProviderConfig | null;
-  onEditChange: (v: UpdateProviderConfig | null) => void;
-  pe: {
-    name: string;
-    base_url: string;
-    api_key: string;
-    api_type: string;
-    proxy_url: string;
-    media_protocol: string | undefined;
-  };
-  onTest: () => void;
-  onSave: () => void;
-  savePending: boolean;
-  testResult: string;
-}) {
-  const { t } = useTranslation("models");
-  return (
-    <div className="p-4 rounded-md bg-elevated border border-border space-y-3">
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <p className="text-xs font-semibold text-muted uppercase tracking-wider">{t("providerConfig")}</p>
-        <div className="flex gap-2">
-          <Button variant="secondary" size="sm" onClick={onTest}>
-            <TestTube size={12} /> {t("common:test")}
-          </Button>
-          {providerEdit ? (
-            <Button variant="primary" size="sm" onClick={onSave} loading={savePending}>
-              <Save size={12} /> {t("common:save")}
-            </Button>
-          ) : (
-            <Button variant="secondary" size="sm" onClick={() => onEditChange({ ...provider })}>
-              {t("common:edit")}
-            </Button>
-          )}
-        </div>
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        {(["name", "base_url", "api_key"] as const).map((k) => (
-          <div key={k} className="space-y-1">
-            <label className="text-xs font-medium text-muted">{t(`providerFields.${k}`, { defaultValue: k })}</label>
-            <Input
-              type={k === "api_key" ? "password" : "text"}
-              value={pe[k]}
-              readOnly={!providerEdit}
-              onChange={(e) => providerEdit && onEditChange({ ...providerEdit, [k]: e.target.value })}
-            />
-          </div>
-        ))}
-        <div className="space-y-1">
-          <label className="text-xs font-medium text-muted">{t("providerFields.api_type", { defaultValue: "api_type" })}</label>
-          <ApiTypeSelect
-            value={pe.api_type}
-            disabled={!providerEdit}
-            onChange={(v) => providerEdit && onEditChange({ ...providerEdit, api_type: v })}
-          />
-        </div>
-        <div className="space-y-1">
-          <label className="text-xs font-medium text-muted">{t("providerFields.proxy_url", { defaultValue: "proxy_url" })}</label>
-          <Input
-            type="text"
-            placeholder={t("proxyPlaceholder")}
-            value={pe.proxy_url}
-            readOnly={!providerEdit}
-            onChange={(e) => providerEdit && onEditChange({ ...providerEdit, proxy_url: e.target.value })}
-          />
-        </div>
-        <div className="space-y-1">
-          <label className="text-xs font-medium text-muted">{t("providerFields.media_protocol", { defaultValue: "media_protocol" })}</label>
-          <Select
-            className="w-full"
-            value={pe.media_protocol ?? ""}
-            disabled={!providerEdit}
-            onChange={(e) => providerEdit && onEditChange({ ...providerEdit, media_protocol: e.target.value })}
-          >
-            <option value="">{t("mediaProtocolAuto")}</option>
-            {MEDIA_PROTOCOL_OPTIONS.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
-          </Select>
-        </div>
-      </div>
-      {testResult && <div className="p-3 rounded-md bg-card border border-border text-sm text-foreground break-all">{testResult}</div>}
+function ProviderEditor({ provider, onClose }: { provider: ProviderConfig; onClose: () => void }) {
+  const { t } = useTranslation(["models", "common"]);
+  const client = useQueryClient();
+  const [initial] = useState(() => providerFields(provider));
+  const [draft, setDraft] = useState<ProviderFieldsValue>(initial);
+  const dirty = JSON.stringify(draft) !== JSON.stringify(initial);
+  const save = useMutation({
+    mutationFn: (data: UpdateProviderConfig) => providersApi.update(provider.id, data),
+    onSuccess: async () => {
+      await Promise.all([client.invalidateQueries({ queryKey: ["providers"] }), client.invalidateQueries({ queryKey: ["priorities"] })]);
+      onClose();
+    },
+  });
+  const test = useMutation({ mutationFn: () => modelsApi.test(draft.base_url, draft.api_key, provider.id, draft.api_type).then((response) => response.data.result) });
+  const busy = save.isPending || test.isPending;
+  const guard = useDiscardChanges(dirty, onClose, busy);
+  return <>
+    <Modal open onClose={guard.requestClose} title={t("providerConfig")} width="max-w-2xl" dismissible={!busy} footer={<>
+      <Button onClick={guard.requestClose} disabled={busy}>{t("common:cancel")}</Button>
+      <Button loading={test.isPending} disabled={save.isPending} onClick={() => test.mutate()}><TestTube size={14} />{t("common:test")}</Button>
+      <Button variant="primary" loading={save.isPending} disabled={!dirty || test.isPending} onClick={() => save.mutate(draft)}><Save size={14} />{t("common:save")}</Button>
+    </>}>
+      <fieldset disabled={busy}><ProviderFields value={draft} onChange={setDraft} /></fieldset>
+      {test.data && <p role="status" className="mt-4 break-words rounded-lg border border-border bg-elevated p-3 text-sm">{test.data}</p>}
+      {(save.error || test.error) && <div className="mt-4"><QueryError compact error={save.error || test.error} /></div>}
+    </Modal>
+    <ConfirmDialog {...guard.confirmProps} />
+  </>;
+}
+
+export function ProviderConfigEditor({ provider }: { provider: ProviderConfig }) {
+  const { t } = useTranslation(["models", "common"]);
+  const [editing, setEditing] = useState(false);
+  return <section className="rounded-lg border border-border bg-elevated p-4">
+    <div className="flex items-center justify-between gap-3">
+      <h4 className="text-sm font-medium text-heading">{t("providerConfig")}</h4>
+      <Button size="sm" onClick={() => setEditing(true)}><Pencil size={13} />{t("common:edit")}</Button>
     </div>
-  );
+    <dl className="mt-3 grid gap-3 text-xs sm:grid-cols-2">
+      {(["name", "base_url", "api_type", "proxy_url", "media_protocol"] as const).map((key) => <div key={key} className="min-w-0">
+        <dt className="text-muted">{t(`providerFields.${key}`)}</dt>
+        <dd className="mt-1 break-words text-foreground">{provider[key] || "—"}</dd>
+      </div>)}
+    </dl>
+    {editing && <ProviderEditor provider={provider} onClose={() => setEditing(false)} />}
+  </section>;
 }

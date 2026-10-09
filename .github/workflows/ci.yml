@@ -222,5 +222,16 @@ jobs:
       - name: Module discovery regression
         run: npm run test:modules
 
+      - name: Component regression
+        run: npm test
+
+      - name: Browser setup
+        if: runner.os == 'Linux'
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser regression
+        if: runner.os == 'Linux'
+        run: npm run test:e2e
+
       - name: Build (tsc + vite)
         run: npm run build

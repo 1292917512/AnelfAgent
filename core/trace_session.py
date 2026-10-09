@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import contextvars
 import uuid
@@ -45,12 +46,19 @@ async def thinking_session(
     子任务的链路事件自动归属本会话；退出时（含异常）保证发射 SESSION_END。
     """
     handle = ThinkingSessionHandle(uuid.uuid4().hex[:12])
+    parent_session_id = current_session_id.get()
     token = current_session_id.set(handle.id)
     try:
         await event_bus.emit(
-            EVENT_THINKING_SESSION_START, {**(payload or {}), "session_id": handle.id},
+            EVENT_THINKING_SESSION_START, {**(payload or {}), "session_id": handle.id, "parent_session_id": parent_session_id},
         )
         yield handle
+    except asyncio.CancelledError:
+        handle.end["reason"] = "cancelled"
+        raise
+    except BaseException as exc:
+        handle.end.update(reason="error", error_type=type(exc).__name__)
+        raise
     finally:
         try:
             await event_bus.emit(

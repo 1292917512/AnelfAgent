@@ -4,6 +4,7 @@ import { Loader2 } from "lucide-react";
 import { workspaceApi } from "@/lib/api";
 import type { WorkspaceRoot } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { MAX_PREVIEW_ROWS, MAX_PREVIEW_COLUMNS, type SheetPreview } from "./spreadsheet-types";
 import { PreviewFrame, wrapPreviewDocument } from "./PreviewFrame";
 
 /** Sheet 表格的补充排版样式 */
@@ -12,9 +13,6 @@ const TABLE_CSS = `
   table { font-size: 12px; }
   td, th { padding: 3px 8px; white-space: nowrap; }
 `;
-
-/** 单 Sheet 预览的最大行数（超出部分省略，避免大工作簿卡死主线程） */
-const MAX_ROWS = 1000;
 
 /** 单个 Sheet 的渲染结果 */
 interface SheetDoc {
@@ -38,46 +36,36 @@ export function XlsxPreview({ path, title, root = "workspace" }: XlsxPreviewProp
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
+    const worker = new Worker(new URL("./spreadsheet.worker.ts", import.meta.url), { type: "module" });
+    const timer = setTimeout(() => { controller.abort(); worker.terminate(); if (!cancelled) setFailed(true); }, 20000);
     setSheets(null);
     setActive(0);
     setFailed(false);
     (async () => {
       try {
-        const resp = await fetch(workspaceApi.rawUrl(path, false, root));
+        const resp = await fetch(workspaceApi.rawUrl(path, false, root), { signal: controller.signal });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const buf = await resp.arrayBuffer();
-        const XLSX = await import("xlsx");
-        const wb = XLSX.read(buf, { type: "array" });
-        const parsed: SheetDoc[] = [];
-        for (const name of wb.SheetNames) {
-          const sheet = wb.Sheets[name];
-          if (!sheet) continue;
-          // 行数截断：钳制 !ref 范围后转换，sheet_to_html 尊重 !ref（超出单元格不再渲染）
-          let target = sheet;
-          let truncated = false;
-          const ref = sheet["!ref"];
-          if (ref) {
-            const range = XLSX.utils.decode_range(ref);
-            if (range.e.r - range.s.r + 1 > MAX_ROWS) {
-              target = {
-                ...sheet,
-                "!ref": XLSX.utils.encode_range({
-                  s: range.s,
-                  e: { r: range.s.r + MAX_ROWS - 1, c: range.e.c },
-                }),
-              };
-              truncated = true;
-            }
-          }
-          parsed.push({ name, doc: wrapPreviewDocument(XLSX.utils.sheet_to_html(target), TABLE_CSS), truncated });
-        }
+        const parsed = await new Promise<SheetDoc[]>((resolve, reject) => {
+          const abort = () => reject(new DOMException("Spreadsheet preview cancelled", "AbortError"));
+          if (controller.signal.aborted) { abort(); return; }
+          controller.signal.addEventListener("abort", abort, { once: true });
+          worker.onmessage = (event: MessageEvent<{ sheets?: SheetPreview[]; error?: boolean }>) => {
+            controller.signal.removeEventListener("abort", abort);
+            if (!event.data.sheets) { reject(new Error("Spreadsheet parsing failed")); return; }
+            resolve(event.data.sheets.map((sheet) => ({ name: sheet.name, truncated: sheet.truncated, doc: wrapPreviewDocument(sheet.html, TABLE_CSS) })));
+          };
+          worker.onerror = (error) => { controller.signal.removeEventListener("abort", abort); reject(error); };
+          worker.postMessage(buf, [buf]);
+        });
         if (parsed.length === 0) throw new Error("no sheets");
         if (!cancelled) setSheets(parsed);
       } catch {
         if (!cancelled) setFailed(true);
-      }
+      } finally { clearTimeout(timer); worker.terminate(); }
     })();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; controller.abort(); clearTimeout(timer); worker.terminate(); };
   }, [path, root]);
 
   if (failed) {
@@ -112,7 +100,7 @@ export function XlsxPreview({ path, title, root = "workspace" }: XlsxPreviewProp
       )}
       {current && <PreviewFrame doc={current.doc} title={`${title} - ${current.name}`} />}
       {current?.truncated && (
-        <p className="text-[11px] text-muted shrink-0">{t("editor.csvTruncated", { count: MAX_ROWS })}</p>
+        <p className="text-[11px] text-muted shrink-0">{t("editor.spreadsheetTruncated", { rows: MAX_PREVIEW_ROWS, columns: MAX_PREVIEW_COLUMNS })}</p>
       )}
     </div>
   );

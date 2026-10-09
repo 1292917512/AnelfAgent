@@ -31,6 +31,7 @@ export interface ChannelPlugin {
 const pluginLoaders = channelPluginLoaders;
 
 const plugins = new Map<string, ChannelPlugin>();
+const pluginRoutes: Array<{ path: string; page: LazyExoticComponent<ComponentType> }> = [];
 
 // 组件映射由 initChannelPlugins 填充（lazy 组件为静态引用，渲染期零工厂调用，
 // 满足 react-hooks/static-components；loader 仍为动态 import，保持懒加载分块）
@@ -44,7 +45,12 @@ export const CHANNEL_PANEL_COMPONENTS: Record<string, LazyExoticComponent<Compon
  * 应用渲染前加载全部频道插件清单（main.tsx 调用，幂等）。
  * 单插件模块级异常只跳过该插件，其余插件与核心 UI 不受影响。
  */
-export async function initChannelPlugins(): Promise<void> {
+let initialization: Promise<void> | undefined;
+export function initChannelPlugins(): Promise<void> {
+  return initialization ??= loadChannelPlugins();
+}
+
+async function loadChannelPlugins(): Promise<void> {
   await Promise.all(
     Object.entries(pluginLoaders).map(async ([key, load]) => {
       try {
@@ -58,11 +64,14 @@ export async function initChannelPlugins(): Promise<void> {
   for (const [key, plugin] of plugins) {
     if (plugin.login) {
       CHANNEL_LOGIN_COMPONENTS[key] = lazy(
-        plugin.login as () => Promise<{ default: ComponentType<{ compact?: boolean }> }>,
+        plugin.login,
       );
     }
     if (plugin.panel) {
       CHANNEL_PANEL_COMPONENTS[key] = lazy(plugin.panel);
+    }
+    if (plugin.route && plugin.page && !pluginRoutes.some((route) => route.path === plugin.route?.path)) {
+      pluginRoutes.push({ path: plugin.route.path, page: lazy(plugin.page) });
     }
   }
 }
@@ -74,11 +83,5 @@ export function isChannelHidden(channelKey: string): boolean {
 
 /** 收集插件声明的整页路由。 */
 export function listPluginRoutes(): Array<{ path: string; page: LazyExoticComponent<ComponentType> }> {
-  const routes: Array<{ path: string; page: LazyExoticComponent<ComponentType> }> = [];
-  for (const plugin of plugins.values()) {
-    if (plugin.route && plugin.page) {
-      routes.push({ path: plugin.route.path, page: lazy(plugin.page) });
-    }
-  }
-  return routes;
+  return pluginRoutes;
 }

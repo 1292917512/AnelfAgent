@@ -99,5 +99,6 @@
     "keepSeg": "保留 {{count}} 条原文",
     "foldSeg": "每批折叠 {{count}} 条",
     "range": "窗口 {{min}} ~ {{max}} 条"
-  }
+  },
+  "environmentManaged": "由环境变量 {{name}} 管理"
 }

@@ -4,6 +4,7 @@ import type { ConfigMetaItem } from "@/lib/types";
 import { Drawer } from "@/components/common/Drawer";
 import { Badge } from "@/components/ui";
 import { useConfigSave } from "./useConfigSave";
+import { ConfigSource } from "@/components/common/ConfigSource";
 
 interface ConfigDetailDrawerProps {
   item: ConfigMetaItem | null;
@@ -55,6 +56,7 @@ export function ConfigDetailDrawer({ item, group, onClose }: ConfigDetailDrawerP
         </div>
 
         <ValueBlock label={t("detail.value")} value={item.value} />
+        <ConfigSource item={item} />
         <ValueBlock label={t("detail.default")} value={item.default} />
 
         {item.type === "range" && item.min !== null && item.max !== null && (

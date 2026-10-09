@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
-import type { SessionSummary } from "@/stores/thinking-store";
+import type { SessionSummary } from "@/lib/types";
 import { Bot, Clock, Zap, Brain } from "lucide-react";
 
 interface Props {
@@ -28,6 +28,7 @@ export function SessionList({ sessions, activeId, onSelect }: Props) {
         return (
           <button
             key={s.id}
+            aria-current={isActive ? "true" : undefined}
             onClick={() => onSelect(s.id)}
             className={cn(
               "w-full text-left px-3 py-2 rounded-md transition-all duration-150",
@@ -61,9 +62,12 @@ export function SessionList({ sessions, activeId, onSelect }: Props) {
                   {t("inProgress")}
                 </span>
               )}
+              {s.ended && s.outcome && s.outcome !== "completed" && <span className="ml-auto text-[10px] text-warn">{t(`outcomes.${s.outcome}`)}</span>}
             </div>
-            <div className="flex items-center gap-2 text-[10px] text-muted">
-              <span>{ts.toLocaleTimeString()}</span>
+            {s.is_delegation && s.label && <p className="mb-1 line-clamp-2 text-xs text-heading">{s.label}</p>}
+            {s.scope && <p className="mb-1 truncate text-[11px] text-muted" title={s.scope}>{s.scope}</p>}
+            <div className="flex flex-wrap items-center gap-2 text-[10px] text-muted">
+              <span>{ts.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
               <span>{t("nNodes", { count: s.node_count })}</span>
               {s.duration_ms != null && (
                 <span>{(s.duration_ms / 1000).toFixed(1)}s</span>

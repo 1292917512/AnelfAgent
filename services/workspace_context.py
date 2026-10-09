@@ -12,6 +12,31 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from pydantic import BaseModel, Field
+
+
+class SelectionRange(BaseModel):
+    start_line: int = Field(ge=1)
+    end_line: int = Field(ge=1)
+
+
+class WorkspaceSelection(BaseModel):
+    path: str = Field(max_length=4096)
+    ranges: list[SelectionRange] = Field(default_factory=list, max_length=20)
+    content: str = Field(default="", max_length=40_000)
+
+
+class WorkspaceTab(BaseModel):
+    label: str = Field(max_length=4096)
+    path: str = Field(max_length=4096)
+
+
+class WorkspaceContext(BaseModel):
+    """与单次消息同时提交的工作区快照。"""
+    active_file: str | None = Field(default=None, max_length=4096)
+    selection: WorkspaceSelection | None = None
+    open_tabs: list[WorkspaceTab] = Field(default_factory=list, max_length=100)
+
 # 注入块与用户原文的分隔符（历史清洗以此为锚取尾部）
 REQUEST_DELIMITER = "## My request:"
 # 注入块起始标记（清洗判定是否含注入块）
@@ -59,11 +84,12 @@ def render_workspace_context(state: Dict[str, Any]) -> str:
         shown = open_tabs[:MAX_OPEN_TABS]
         omitted = len(open_tabs) - len(shown)
         used = 0
-        for tab in shown:
+        for index, tab in enumerate(shown):
             label = str(tab.get("label") or "")
             tab_path = str(tab.get("path") or "")
             row = f"- {label}: {tab_path}"
             if used + len(row) > MAX_OPEN_TABS_CHARS:
+                omitted += len(shown) - index
                 break
             lines.append(row)
             used += len(row)

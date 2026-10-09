@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Brain, FileText, MessagesSquare, ScrollText, Search } from "lucide-react";
 import { searchApi } from "@/lib/api";
-import type { GlobalSearchResult } from "@/lib/types";
+import { useQuery } from "@tanstack/react-query";
+import { QueryError } from "@/components/common/AsyncState";
 import { Input } from "@/components/ui";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 
@@ -22,30 +23,20 @@ export function SearchPanel() {
   const setSearchSeed = useWorkbenchStore((s) => s.setSearchSeed);
   const openFile = useWorkbenchStore((s) => s.openFile);
   const [query, setQuery] = useState(searchSeed);
-  const [result, setResult] = useState<GlobalSearchResult | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  const runSearch = useCallback(async (q: string) => {
-    if (!q.trim()) return;
-    setLoading(true);
-    try {
-      const r = await searchApi.global(q.trim());
-      setResult(r.data);
-    } catch {
-      setResult(null);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  // AI ui_open_panel(search, payload) 预填搜索词
+  const [submitted, setSubmitted] = useState(searchSeed.trim());
+  const search = useQuery({
+    queryKey: ["globalSearch", submitted],
+    queryFn: ({ signal }) => searchApi.global(submitted, 10, signal).then((response) => response.data),
+    enabled: !!submitted, throwOnError: false,
+  });
+  const result = submitted ? search.data : undefined;
+  const loading = !!submitted && search.isFetching;
   useEffect(() => {
-    if (searchSeed) {
-      setQuery(searchSeed);
-      setSearchSeed("");
-      runSearch(searchSeed);
-    }
-  }, [searchSeed, setSearchSeed, runSearch]);
+    if (!searchSeed) return;
+    setQuery(searchSeed);
+    setSubmitted(searchSeed.trim());
+    setSearchSeed("");
+  }, [searchSeed, setSearchSeed]);
 
   const groups: { key: ResultGroup; count: number }[] = [
     { key: "memory", count: result?.memory.length ?? 0 },
@@ -58,13 +49,14 @@ export function SearchPanel() {
     <div className="flex flex-col h-full">
       <div className="p-3 border-b border-border shrink-0">
         <form
-          onSubmit={(e) => { e.preventDefault(); runSearch(query); }}
+          onSubmit={(e) => { e.preventDefault(); setSubmitted(query.trim()); }}
           className="relative"
         >
           <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted" />
           <Input
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => { setQuery(e.target.value); if (!e.target.value.trim()) setSubmitted(""); }}
+            aria-label={t("search.placeholder")}
             placeholder={t("search.placeholder")}
             className="pl-8"
           />
@@ -73,7 +65,8 @@ export function SearchPanel() {
 
       <div className="flex-1 overflow-y-auto p-3 space-y-4">
         {loading && <p className="text-xs text-muted">{t("search.searching")}</p>}
-        {!loading && !result && <p className="text-xs text-muted">{t("search.hint")}</p>}
+        {submitted && search.error && <QueryError compact error={search.error} retry={() => void search.refetch()} />}
+        {!loading && !result && !search.error && <p className="text-xs text-muted">{t("search.hint")}</p>}
         {!loading && result && groups.every((g) => g.count === 0) && (
           <p className="text-xs text-muted">{t("search.noResults")}</p>
         )}

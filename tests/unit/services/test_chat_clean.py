@@ -8,6 +8,20 @@ from __future__ import annotations
 
 from services.chat import clean_message_for_display
 
+
+def test_history_preserves_client_message_identity() -> None:
+    result = clean_message_for_display({
+        "id": 12, "role": "user",
+        "content": "[time:2026-10-09][message_id:client-id][channel:webui] Hello",
+    })
+    assert result["cid"] == "client-id"
+    assert result["content"] == "Hello"
+
+
+def test_assistant_content_does_not_claim_a_user_message_identity() -> None:
+    result = clean_message_for_display({"role": "assistant", "content": "[message_id:client-id] Done"})
+    assert "cid" not in result
+
 _SUMMARY = (
     "[time:2026年08月03日20时39分22秒][uid:web_user][channel:webui] "
     "[已执行操作摘要] 本轮共执行 3 次工具\n"

@@ -58,8 +58,10 @@ export function ServerFormModal({ open, onClose, editing }: ServerFormModalProps
   }, [open, editing]);
 
   const saveMutation = useMutation({
-    mutationFn: ({ target, config }: { target: string; config: MCPServerConfig }) =>
-      isEdit ? mcpApi.update(target, config) : mcpApi.add(target, config),
+    mutationFn: async ({ target, config }: { target: string; config: MCPServerConfig }) => {
+      if (isEdit) await mcpApi.update(target, config);
+      else await mcpApi.add(target, config);
+    },
     onSuccess: (_r, { target }) => {
       queryClient.invalidateQueries({ queryKey: ["mcpServers"] });
       toast.success(t(isEdit ? "toast.serverUpdated" : "toast.serverAdded", { name: target }));

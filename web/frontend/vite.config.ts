@@ -1,6 +1,6 @@
-import { defineConfig, type Plugin } from "vite";
+import { defineConfig, normalizePath, type Plugin } from "vite";
 import react from "@vitejs/plugin-react-swc";
-import tailwindcss from "@tailwindcss/vite";
+import tailwindcss from "@tailwindcss/postcss";
 import path from "path";
 import fs from "fs";
 import { syncEntityPanels, syncModuleLinks } from "./scripts/module-links.mjs";
@@ -25,6 +25,7 @@ function moduleFrontendsPlugin(): Plugin {
   const root = path.resolve(__dirname, "../..");
   const entitiesDir = path.join(root, "entities");
   const channelsDir = path.join(root, "channels");
+  let dispose: (() => void) | undefined;
 
   const syncEntities = () => {
     const generated = syncEntityPanels();
@@ -48,36 +49,47 @@ function moduleFrontendsPlugin(): Plugin {
     },
 
     configureServer(server) {
+      dispose?.();
       let debounce: ReturnType<typeof setTimeout> | null = null;
-      const watch = (dir: string, sync: () => void) => {
+      const watchers: fs.FSWatcher[] = [];
+      const pending = new Set<() => void>();
+      const watch = (dir: string, pattern: RegExp, sync: () => void) => {
         if (!fs.existsSync(dir)) return;
-        fs.watch(dir, { recursive: true }, (event, filename) => {
-          if (!filename || !/\.(tsx?|json)$/.test(filename)) return;
+        watchers.push(fs.watch(dir, { recursive: true }, (_event, filename) => {
+          if (!filename || !pattern.test(normalizePath(filename))) return;
+          pending.add(sync);
           if (debounce) clearTimeout(debounce);
           debounce = setTimeout(() => {
-            sync();
-            // 模块前端源码在 vite root 之外，统一全量重载
+            for (const update of pending) update();
+            pending.clear();
             server.ws.send({ type: "full-reload" });
           }, 200);
-        });
+        }));
       };
-      watch(entitiesDir, syncEntities);
-      watch(channelsDir, syncChannels);
+      watch(entitiesDir, /^[^/]+(?:\/(?:panel\.tsx|panels(?:\/.*)?))?$/, syncEntities);
+      watch(channelsDir, /^[^/]+(?:\/frontend(?:\/.*)?)?$/, syncChannels);
+      dispose = () => {
+        if (debounce) clearTimeout(debounce);
+        for (const watcher of watchers) watcher.close();
+        pending.clear();
+      };
     },
+    closeBundle() { dispose?.(); },
   };
 }
 
-const projectRoot = path.resolve(__dirname, "../..");
+const projectRoot = normalizePath(path.resolve(__dirname, "../.."));
 
 export default defineConfig({
-  plugins: [moduleFrontendsPlugin(), react(), tailwindcss()],
+  plugins: [moduleFrontendsPlugin(), react()],
+  css: { postcss: { plugins: [tailwindcss()] } },
   base: "/webui/",
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "./src"),
+      "@": normalizePath(path.resolve(__dirname, "./src")),
       // 实体面板源码真实路径（src/generated 的接入表与核心薄壳引用共用）
-      "@entities": path.resolve(projectRoot, "entities"),
-      "@channels": path.resolve(projectRoot, "channels"),
+      "@entities": normalizePath(path.resolve(projectRoot, "entities")),
+      "@channels": normalizePath(path.resolve(projectRoot, "channels")),
     },
     // 必须为 false（默认）：模块源码经 entities|channels/node_modules 解析桥
     // 引用 react 等依赖，preserveSymlinks 会把桥路径当成独立模块 id，打出
@@ -87,6 +99,9 @@ export default defineConfig({
   },
   server: {
     port: 3000,
+    watch: {
+      ignored: [/[/\\]dist(?:\.next|\.old-[^/\\]+)?(?:[/\\]|$)/],
+    },
     fs: {
       // 实体面板源码在 vite root 之外（仓库 entities/），dev 需放行仓库根
       allow: [projectRoot],
@@ -104,6 +119,8 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
+          "i18n-vendor": ["i18next", "react-i18next", "i18next-browser-languagedetector"],
+          "query-vendor": ["axios", "@tanstack/react-query"],
           "react-vendor": [
             "react",
             "react-dom",

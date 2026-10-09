@@ -28,14 +28,14 @@
   "prev": "Previous",
   "next": "Next",
   "merge": "Merge",
-  "reset": "Reset Defaults",
+  "reset": "Reset",
   "all": "All",
   "available": "Available",
   "unavailable": "Unavailable",
   "on": "On",
   "off": "Off",
   "connected": "Connected",
-  "disconnected": "Disconnected",
+  "disconnected": "Disconnected. Click to retry",
   "login": "Sign In",
   "passwordPlaceholder": "Enter access password",
   "verifying": "Verifying…",
@@ -70,5 +70,20 @@
       "vision": "Vision",
       "retrieval": "Retrieval"
     }
-  }
+  },
+  "dialog": "Dialog",
+  "loadFailed": "Unable to load",
+  "connecting": "Connecting",
+  "pageNotFound": "Page not found",
+  "pageNotFoundDescription": "This address does not match a page. Use navigation or search to find what you need.",
+  "backToWorkspace": "Back to workspace",
+  "sessionExpired": "Your session has expired. Sign in again.",
+  "unsavedChanges": "Unsaved changes",
+  "discardChanges": "Discard changes",
+  "keepEditing": "Keep editing",
+  "unsavedDescription": "Leaving will discard your unsaved changes.",
+  "resultsCount": "{{count}} items",
+  "noMatches": "No matching results",
+  "clearFilters": "Clear filters",
+  "saved": "Saved"
 }

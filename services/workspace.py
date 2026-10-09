@@ -8,11 +8,13 @@ HTTP 语义（status_code），由路由层统一映射为响应。
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol
 
+from core.file_utils import atomic_write_bytes, file_write_lock
 from core.log import log
 from core.path import project_root
 
@@ -212,13 +214,18 @@ class WorkspaceService:
             "binary": is_binary(fp),
             "truncated": False,
             "content": "",
+            "version": "",
         }
         if result["binary"] or size > MAX_READ_BYTES:
             if not result["binary"]:
                 result["truncated"] = True
             return result
         try:
-            result["content"] = Path(fp).read_text("utf-8", errors="replace")
+            raw = Path(fp).read_bytes()
+            result["version"] = hashlib.sha256(raw).hexdigest()
+            result["content"] = raw.decode("utf-8-sig").replace("\r\n", "\n")
+        except UnicodeDecodeError:
+            result["binary"] = True
         except OSError as e:
             raise WorkspaceError(500, f"读取文件失败: {e}") from e
         return result
@@ -230,21 +237,44 @@ class WorkspaceService:
             raise WorkspaceError(404, "文件不存在")
         return fp
 
-    def write_file(self, path: str, content: str, root: str) -> Dict[str, Any]:
-        """写入（新建或覆盖）文本文件。"""
+    def write_file(self, path: str, content: str, root: str, expected_version: str | None) -> Dict[str, Any]:
+        """校验读取版本后原子保存 UTF-8 文本；空版本仅允许新建。"""
         if len(content.encode("utf-8")) > _MAX_WRITE_BYTES:
             raise WorkspaceError(413, "文件内容超过 2MB 限制")
         fp = self.resolve(path, root)
         if os.path.isdir(fp):
             raise WorkspaceError(400, "目标是目录")
         try:
-            os.makedirs(os.path.dirname(fp), exist_ok=True)
-            Path(fp).write_text(content, encoding="utf-8")
+            target = Path(fp)
+            with file_write_lock(target):
+                if target.exists() and target.stat().st_size > _MAX_WRITE_BYTES:
+                    raise WorkspaceError(409, "磁盘文件已超出可编辑大小，请重新打开检查")
+                raw = target.read_bytes() if target.exists() else None
+                version = hashlib.sha256(raw).hexdigest() if raw is not None else None
+                if version != expected_version:
+                    raise WorkspaceError(409, "文件已被其他操作修改，请比较最新版本后再保存")
+                if raw is not None:
+                    try:
+                        raw.decode("utf-8-sig")
+                    except UnicodeDecodeError as exc:
+                        raise WorkspaceError(415, "文件不是可编辑的 UTF-8 文本") from exc
+                text = content.replace("\r\n", "\n")
+                if raw and b"\r\n" in raw:
+                    text = text.replace("\n", "\r\n")
+                data = (b"\xef\xbb\xbf" if raw and raw.startswith(b"\xef\xbb\xbf") else b"") + text.encode("utf-8")
+                atomic_write_bytes(target, data)
+                result = {
+                    "path": self.rel(fp, root=self.resolve_root(root)), "name": target.name,
+                    "size": len(data), "modified": target.stat().st_mtime,
+                    "binary": False, "truncated": len(data) > MAX_READ_BYTES,
+                    "content": content.replace("\r\n", "\n"),
+                    "version": hashlib.sha256(data).hexdigest(),
+                }
         except OSError as e:
             raise WorkspaceError(500, f"写入文件失败: {e}") from e
         rel = self.rel(fp, root=self.resolve_root(root))
         log(f"工作台写入文件: {rel}", "DEBUG", tag="工作区")
-        return {"status": "ok", "path": rel, "size": os.path.getsize(fp)}
+        return result
 
     def make_dir(self, path: str, root: str) -> Dict[str, Any]:
         """创建目录（已存在则幂等）。"""
@@ -311,22 +341,33 @@ class WorkspaceService:
         return fp
 
     async def save_upload(self, file: UploadStream, fp: str, root: str) -> Dict[str, Any]:
-        """分块落盘上传内容并返回结果（超限即清理并抛 WorkspaceError(413)）。"""
+        """独占创建上传文件，分块写入，失败时清理未完成内容。"""
         total = 0
+        created = False
         try:
-            with open(fp, "wb") as out:
+            with open(fp, "xb") as out:
+                created = True
                 while chunk := await file.read(1024 * 1024):
                     total += len(chunk)
                     if total > _MAX_UPLOAD_BYTES:
                         raise WorkspaceError(413, "文件超过 50MB 上传限制")
-                    await asyncio.to_thread(out.write, chunk)
-        finally:
-            await file.close()
-            if total > _MAX_UPLOAD_BYTES:
+                    write = asyncio.create_task(asyncio.to_thread(out.write, chunk))
+                    try:
+                        await asyncio.shield(write)
+                    except asyncio.CancelledError:
+                        await write
+                        raise
+        except BaseException as exc:
+            if created:
                 try:
                     os.remove(fp)
                 except OSError:
-                    pass
+                    log("未完成上传清理失败", "WARNING", tag="工作区")
+            if isinstance(exc, FileExistsError):
+                raise WorkspaceError(409, "同名文件已存在") from exc
+            raise
+        finally:
+            await file.close()
         rel = self.rel(fp, root=self.resolve_root(root))
         log(f"工作台上传: {rel} ({total}B)", "DEBUG", tag="工作区")
         return {"status": "ok", "path": rel, "size": total}

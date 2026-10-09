@@ -18,9 +18,9 @@ export function PaletteResults({
 }) {
   const { t } = useTranslation("palette");
   return (
-    <Command.Group heading={t("group_results")} className={groupCls}>
+    <Command.Group forceMount heading={t("group_results")} className={groupCls}>
       {results.memory.slice(0, 3).map((m) => (
-        <Command.Item
+        <Command.Item forceMount
           key={`mem-${m.id}`}
           value={`memory ${m.snippet.slice(0, 60)}`}
           className={itemCls}
@@ -34,7 +34,7 @@ export function PaletteResults({
         </Command.Item>
       ))}
       {results.conversations.slice(0, 3).map((c) => (
-        <Command.Item
+        <Command.Item forceMount
           key={`conv-${c.id}`}
           value={`conversation ${c.snippet.slice(0, 60)}`}
           className={itemCls}
@@ -48,7 +48,7 @@ export function PaletteResults({
         </Command.Item>
       ))}
       {results.files.slice(0, 3).map((f, i) => (
-        <Command.Item
+        <Command.Item forceMount
           key={`file-${f.path}-${i}`}
           value={`file ${f.path}`}
           className={itemCls}
@@ -61,7 +61,7 @@ export function PaletteResults({
           </span>
         </Command.Item>
       ))}
-      <Command.Item
+      <Command.Item forceMount
         value={`search-all ${query}`}
         className={itemCls}
         onSelect={() => onOpenSearchPanel(query)}

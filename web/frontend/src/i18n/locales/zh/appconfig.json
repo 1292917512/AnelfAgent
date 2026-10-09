@@ -189,7 +189,8 @@
     "triggerEventNone": "不启用（仅时间调度/手动）",
     "triggerEventAfterReply": "对话结束后 (after_reply)",
     "triggerEventContextPressure": "上下文压力 (context_pressure)",
-    "triggerEventDelegationResolved": "子代理完成 (delegation_resolved)"
+    "triggerEventDelegationResolved": "子代理完成 (delegation_resolved)",
+    "expiresAt": "生效截止时间"
   },
   "costMap": {
     "title": "LiteLLM 模型价格表",

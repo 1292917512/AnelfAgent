@@ -22,7 +22,7 @@ export default frontendConfig.map((entry) => {
     files: entry.files.map((pattern) =>
       pattern
         .replace(/^\.\.\/\.\.\//, "")
-        .replace(/^src\//, "web/frontend/src/"),
+        .replace(/^(src|e2e)\//, "web/frontend/$1/"),
     ),
   };
 });

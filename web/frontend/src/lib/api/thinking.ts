@@ -2,6 +2,8 @@
 
 import { api } from "./client";
 import type {
+  SessionSummary,
+  ThinkingSession,
   ContextProviderStatus,
   ContextSnapshotData,
   SnapshotListItem,
@@ -10,10 +12,10 @@ import type {
 } from "@/lib/types";
 
 export const thinkingApi = {
-  status: () => api.get("/thinking/status"),
-  toggle: (enabled: boolean) => api.put("/thinking/toggle", { enabled }),
-  sessions: (limit = 20) => api.get("/thinking/sessions", { params: { limit } }),
-  session: (id: string) => api.get(`/thinking/sessions/${encodeURIComponent(id)}`),
+  status: () => api.get<{ enabled: boolean }>("/thinking/status"),
+  toggle: (enabled: boolean) => api.put<{ enabled: boolean }>("/thinking/toggle", { enabled }),
+  sessions: (limit = 20) => api.get<{ sessions: SessionSummary[]; count: number }>("/thinking/sessions", { params: { limit } }),
+  session: (id: string) => api.get<ThinkingSession>(`/thinking/sessions/${encodeURIComponent(id)}`),
 };
 
 // Context（上下文管理）

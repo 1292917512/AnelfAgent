@@ -145,7 +145,7 @@ export const useFileTreeStore = create<FileTreeState>((set, get) => ({
     const dst = joinPath(parentPath(path), name);
     try {
       const res = await workspaceApi.move(path, dst, root);
-      useWorkbenchStore.getState().remapOpenFile(path, res.data.path);
+      useWorkbenchStore.getState().remapOpenFile(path, res.data.path, root);
       await get().refreshDir(root, parentPath(path));
       return true;
     } catch (e) {
@@ -163,7 +163,7 @@ export const useFileTreeStore = create<FileTreeState>((set, get) => ({
       if (dst === src || dst.startsWith(src + "/")) continue;
       try {
         const res = await workspaceApi.move(src, dst, root);
-        wb.remapOpenFile(src, res.data.path);
+        wb.remapOpenFile(src, res.data.path, root);
         moved = true;
         await get().refreshDir(root, parentPath(src));
       } catch (e) {
@@ -181,7 +181,7 @@ export const useFileTreeStore = create<FileTreeState>((set, get) => ({
       toast.error(apiErrorMessage(e, t("files.deleteFailed")));
       return false;
     }
-    useWorkbenchStore.getState().closeFilesUnder(path);
+    useWorkbenchStore.getState().closeFilesUnder(path, root);
     await get().refreshDir(root, parentPath(path));
     return true;
   },

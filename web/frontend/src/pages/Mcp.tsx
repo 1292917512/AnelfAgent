@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRouteTab } from "@/hooks/useRouteTab";
 import { useTranslation } from "react-i18next";
 import { Plug, Server, FileJson } from "lucide-react";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
@@ -10,7 +10,7 @@ type McpTab = "servers" | "json";
 
 export default function Mcp() {
   const { t } = useTranslation(["mcp"]);
-  const [tab, setTab] = useState<McpTab>("servers");
+  const [tab, setTab] = useRouteTab<McpTab>(["servers", "json"], "servers");
 
   const TABS: TabItem<McpTab>[] = [
     { key: "servers", label: t("mcp:tabServers"), icon: Server },
