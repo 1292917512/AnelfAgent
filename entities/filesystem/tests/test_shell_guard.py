@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from shell_helpers import python_command
 
 from entities.filesystem import tools
 from entities.filesystem.shell_guard import check_command_safety
@@ -64,5 +65,7 @@ class TestToolIntegration:
 
     def test_check_disabled_by_config(self, workspace, monkeypatch):
         monkeypatch.setattr(tools, "_shell_write_check_enabled", lambda: False)
-        out = json.loads(tools.run_shell_command("echo x > /tmp/y.txt && cat /tmp/y.txt"))
+        monkeypatch.setattr("entities.filesystem.shell_guard.check_command_safety",
+                            lambda *args: "blocked")
+        out = json.loads(tools.run_shell_command(python_command("print('x')")))
         assert out["ok"]

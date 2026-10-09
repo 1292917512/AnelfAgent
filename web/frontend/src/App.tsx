@@ -1,100 +1,62 @@
-import { lazy, Suspense, useEffect } from "react";
-import { useTranslation } from "react-i18next";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { Suspense, useEffect, useState } from "react";
+import { createBrowserRouter, RouterProvider, useLocation } from "react-router-dom";
+import { FileDraftLifecycle } from "./components/layout/FileDraftLifecycle";
 import { Layout } from "./components/layout/Layout";
 import { AuthGate } from "./components/AuthGate";
 import { Toaster } from "./components/ui/Toast";
 import { ApprovalDialog } from "./components/ApprovalDialog";
 import { CommandPalette } from "./components/palette/CommandPalette";
+import { useChatStore } from "./stores/chat-store";
+import { useThinkingStore } from "./stores/thinking-store";
 import { useAppStore } from "./stores/app-store";
-import { configApi } from "./lib/api";
-import { warnApiError } from "@/lib/api";
-import { CORE_ROUTES } from "@/lib/core-routes";
-import { listPluginRoutes } from "@/lib/channel-plugins";
-import { RouteErrorBoundary } from "@/components/RouteErrorBoundary";
+import { configApi, warnApiError } from "./lib/api";
+import { CORE_ROUTES } from "./lib/core-routes";
+import { listPluginRoutes } from "./lib/channel-plugins";
+import { RouteErrorBoundary } from "./components/RouteErrorBoundary";
+import { PageSkeleton } from "./components/common/AsyncState";
+import { NotFound } from "./components/layout/NotFound";
+import { QueryErrorResetBoundary } from "@tanstack/react-query";
+import { UnsavedChangesProvider } from "./components/common/UnsavedChanges";
 
-// 页面模块自动发现：pages/*.tsx 按文件名映射路由 path
-// 命名约定：Share.tsx → /share, Dashboard.tsx → /dashboard
-const pageModules = import.meta.glob("./pages/*.tsx");
+function ApplicationLayout() {
+  return <UnsavedChangesProvider><FileDraftLifecycle /><Layout /><CommandPalette /></UnsavedChangesProvider>;
+}
 
-// lazy 组件必须模块级缓存：render 中重复调用 lazy() 会被 React 视为新组件类型，
-// 导致页面每次渲染都卸载重挂（状态丢失）
-const pageCache = new Map<string, React.LazyExoticComponent<React.ComponentType>>();
+function PageBoundary({ children }: { children: React.ReactNode }) {
+  const location = useLocation();
+  return (
+    <QueryErrorResetBoundary>
+      {({ reset }) => <RouteErrorBoundary key={location.pathname} onReset={reset}>
+        <Suspense fallback={<PageSkeleton />}>{children}</Suspense>
+      </RouteErrorBoundary>}
+    </QueryErrorResetBoundary>
+  );
+}
 
-function lazyPage(name: string) {
-  let comp = pageCache.get(name);
-  if (comp) return comp;
-  const loader = pageModules[`./pages/${name}.tsx`];
-  if (!loader) return null;
-  comp = lazy(loader as () => Promise<{ default: React.ComponentType }>);
-  pageCache.set(name, comp);
-  return comp;
+export function createAppRoutes() {
+  return [{
+    element: <ApplicationLayout />,
+    children: [
+      ...CORE_ROUTES.map(({ path, page: Page }) => ({ path, element: <PageBoundary><Page /></PageBoundary> })),
+      ...listPluginRoutes().map(({ path, page: Page }) => ({ path, element: <PageBoundary><Page /></PageBoundary> })),
+      { path: "*", element: <NotFound /> },
+    ],
+  }];
+}
+
+function AuthenticatedApp() {
+  const [router] = useState(() => createBrowserRouter(createAppRoutes(), { basename: "/webui" }));
+  useEffect(() => {
+    useChatStore.getState().startSSE();
+    return () => { useChatStore.getState().stopSSE(); useThinkingStore.getState().shutdown(); };
+  }, []);
+  const setConfig = useAppStore((state) => state.setConfig);
+  useEffect(() => {
+    configApi.webui().then(({ data }) => setConfig({ branding: data.branding })).catch(warnApiError);
+  }, [setConfig]);
+  return <><RouterProvider router={router} /><ApprovalDialog /></>;
 }
 
 export default function App() {
-  const { t } = useTranslation();
-  const setConfig = useAppStore((s) => s.setConfig);
-
-  useEffect(() => {
-    configApi.webui().then((r) => {
-      const data = r.data;
-      setConfig({
-        branding: data.branding,
-      });
-    }).catch(warnApiError);
-    // chat SSE 由 Chat 页启动（startSSE 幂等，重复进入不会重建连接）
-  }, [setConfig]);
-
-  return (
-    <AuthGate>
-      <BrowserRouter basename="/webui">
-        <Routes>
-          <Route element={<Layout />}>
-            {CORE_ROUTES.map((r) => {
-              if (r.redirectTo) {
-                return (
-                  <Route
-                    key={r.path ?? "index"}
-                    path={r.path}
-                    element={<Navigate to={r.redirectTo} replace />}
-                  />
-                );
-              }
-              const Page = r.page ? lazyPage(r.page) : null;
-              if (!Page) return null;
-              const element = (
-                <RouteErrorBoundary>
-                  <Suspense fallback={<div className="p-4 text-muted">{t("common:loading")}</div>}>
-                    <Page />
-                  </Suspense>
-                </RouteErrorBoundary>
-              );
-              return r.index ? (
-                <Route key="index" index element={element} />
-              ) : (
-                <Route key={r.path} path={r.path} element={element} />
-              );
-            })}
-            {listPluginRoutes().map((r) => (
-              <Route
-                key={`plugin:${r.path}`}
-                path={r.path}
-                element={
-                  <RouteErrorBoundary>
-                    <Suspense fallback={<div className="p-4 text-muted">{t("common:loading")}</div>}>
-                      <r.page />
-                    </Suspense>
-                  </RouteErrorBoundary>
-                }
-              />
-            ))}
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Route>
-        </Routes>
-        <CommandPalette />
-      </BrowserRouter>
-      <Toaster />
-      <ApprovalDialog />
-    </AuthGate>
-  );
+  return <><AuthGate><AuthenticatedApp /></AuthGate><Toaster /></>;
 }

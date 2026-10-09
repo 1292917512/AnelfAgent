@@ -53,9 +53,8 @@ export function AdapterCard({
              : "border-border hover:border-border-strong",
     )}>
       {/* Header */}
-      <div className="flex items-center justify-between p-4 cursor-pointer"
-        onClick={onToggleExpand}>
-        <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 p-4">
+        <button type="button" aria-expanded={isOpen} onClick={onToggleExpand} className="flex min-w-0 flex-1 items-center gap-3 text-left">
           <ChevronDown size={16} className={cn("text-muted transition-transform", isOpen && "rotate-180")} />
           <StatusDot status={statusToColor(a.status)} />
           <div>
@@ -73,8 +72,8 @@ export function AdapterCard({
               <Settings2 size={12} /> {t("nConfigItems", { count: configs.length })}
             </span>
           )}
-        </div>
-        <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+        </button>
+        <div className="flex flex-wrap items-center gap-2">
           {PluginLogin && (
             <Suspense fallback={null}>
               <PluginLogin compact />

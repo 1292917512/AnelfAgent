@@ -217,5 +217,21 @@
     "music": "Music",
     "rerank": "Reranking"
   },
-  "noModelMatch": "No matching model id"
+  "noModelMatch": "No matching model id",
+  "confirmDeleteProvider": "Delete provider \"{{name}}\" and its {{count}} models? This cannot be undone.",
+  "searchModels": "Search models or providers",
+  "unavailableModel": "Model unavailable",
+  "unavailableHint": "Configured model {{model}} is disabled or unavailable. Choose another model.",
+  "noMatchingModels": "No matching available models",
+  "pinSelected": "Set {{model}} as default",
+  "alreadyDefault": "{{model}} is the default",
+  "capVision": "Vision",
+  "capTools": "Tool calling",
+  "capReasoning": "Reasoning",
+  "defaultModel": "Default model",
+  "deleteModel": "Delete model",
+  "confirmDeleteModel": "Delete model {{name}}? Settings referencing this model will need another selection.",
+  "fetchModels": "Fetch remote models",
+  "modelIdPlaceholder": "Enter a remote model ID",
+  "headerValuesRequired": "Header values must be strings"
 }

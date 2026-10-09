@@ -1,54 +1,42 @@
-/**
- * 核心路由注册表 — 声明式集中管理，新增核心页面只需在此追加一行。
- * - index: true → 首页（path="/"）
- * - redirectTo → Navigate 重定向（无需 page）
- * - path 含 ":" → 参数路由（如 entities/:name）
- *
- * 插件整页路由（channels/<id>/frontend 的 route 声明）不在此表，
- * 由 channel-plugins 注册表动态追加（见 App.tsx）。
- */
+import { lazy, type ComponentType, type LazyExoticComponent } from "react";
+import { AudioLines, Brain, Cpu, Database, Eye, GraduationCap, HeartPulse, LayoutDashboard, ListChecks, MessageCircle, Plug, Radio, ScanText, Search, Settings, Shield, SlidersHorizontal, Smile, Tags, UserCircle, Waypoints, Workflow, Wrench, type LucideIcon } from "lucide-react";
+
+export type NavigationGroup = "workspace" | "agent" | "capabilities" | "system";
+
 export interface CoreRoute {
-  path?: string;
-  page?: string;
-  index?: boolean;
-  redirectTo?: string;
+  path: string;
+  label: string;
+  icon: LucideIcon;
+  group: NavigationGroup;
+  page: LazyExoticComponent<ComponentType>;
+  navigation?: boolean;
+  mobile?: boolean;
+  workspace?: boolean;
 }
 
 export const CORE_ROUTES: CoreRoute[] = [
-  { index: true, page: "Chat" },
-  { path: "dashboard", page: "Dashboard" },
-  { path: "status", page: "Chat", redirectTo: "/" },
-  { path: "models", page: "Models" },
-  { path: "capabilities", page: "Tools", redirectTo: "/tools" },
-  { path: "tools", page: "Tools" },
-  { path: "entities/:name", page: "EntityDetail" },
-  { path: "skills", page: "Skills" },
-  { path: "mcp", page: "Mcp" },
-  { path: "tags", page: "Tags" },
-  { path: "personas", page: "Personas" },
-  { path: "memory", page: "Memory" },
-  { path: "stickers", page: "Stickers" },
-  { path: "vision", page: "Vision" },
-  { path: "sound", page: "Sound" },
-  { path: "retrieval", page: "Retrieval" },
-  { path: "data", page: "Data" },
-  { path: "config", page: "Config" },
-  { path: "channels", page: "Channels" },
-  { path: "approvals", page: "Approvals" },
-  { path: "tasks", page: "Tasks" },
-  { path: "heartbeat", page: "Heartbeat" },
-  { path: "thinking", page: "Thinking" },
-  { path: "workflow", page: "Workflow" },
-  { path: "settings", page: "Settings" },
+  { path: "/", label: "chat", icon: MessageCircle, group: "workspace", page: lazy(() => import("@/pages/Chat")), mobile: true, workspace: true },
+  { path: "/dashboard", label: "dashboard", icon: LayoutDashboard, group: "workspace", page: lazy(() => import("@/pages/Dashboard")), mobile: true },
+  { path: "/tasks", label: "tasks", icon: ListChecks, group: "workspace", page: lazy(() => import("@/pages/Tasks")), mobile: true },
+  { path: "/workflow", label: "workflow", icon: Waypoints, group: "workspace", page: lazy(() => import("@/pages/Workflow")) },
+  { path: "/models", label: "models", icon: Cpu, group: "agent", page: lazy(() => import("@/pages/Models")) },
+  { path: "/personas", label: "personas", icon: UserCircle, group: "agent", page: lazy(() => import("@/pages/Personas")) },
+  { path: "/memory", label: "memory", icon: Brain, group: "agent", page: lazy(() => import("@/pages/Memory")), mobile: true },
+  { path: "/skills", label: "skills", icon: GraduationCap, group: "agent", page: lazy(() => import("@/pages/Skills")) },
+  { path: "/heartbeat", label: "heartbeat", icon: HeartPulse, group: "agent", page: lazy(() => import("@/pages/Heartbeat")) },
+  { path: "/thinking", label: "thinking", icon: Workflow, group: "agent", page: lazy(() => import("@/pages/Thinking")) },
+  { path: "/context", label: "context", icon: ScanText, group: "agent", page: lazy(() => import("@/pages/Context")) },
+  { path: "/tools", label: "tools", icon: Wrench, group: "capabilities", page: lazy(() => import("@/pages/Tools")) },
+  { path: "/mcp", label: "mcp", icon: Plug, group: "capabilities", page: lazy(() => import("@/pages/Mcp")) },
+  { path: "/channels", label: "channels", icon: Radio, group: "capabilities", page: lazy(() => import("@/pages/Channels")) },
+  { path: "/vision", label: "vision", icon: Eye, group: "capabilities", page: lazy(() => import("@/pages/Vision")) },
+  { path: "/sound", label: "sound", icon: AudioLines, group: "capabilities", page: lazy(() => import("@/pages/Sound")) },
+  { path: "/retrieval", label: "retrieval", icon: Search, group: "capabilities", page: lazy(() => import("@/pages/Retrieval")) },
+  { path: "/stickers", label: "stickers", icon: Smile, group: "capabilities", page: lazy(() => import("@/pages/Stickers")) },
+  { path: "/tags", label: "tags", icon: Tags, group: "capabilities", page: lazy(() => import("@/pages/Tags")) },
+  { path: "/approvals", label: "approvals", icon: Shield, group: "system", page: lazy(() => import("@/pages/Approvals")) },
+  { path: "/data", label: "data", icon: Database, group: "system", page: lazy(() => import("@/pages/Data")) },
+  { path: "/config", label: "config", icon: SlidersHorizontal, group: "system", page: lazy(() => import("@/pages/Config")) },
+  { path: "/settings", label: "settings", icon: Settings, group: "system", page: lazy(() => import("@/pages/Settings")) },
+  { path: "/entities/:name", label: "entity", icon: Wrench, group: "capabilities", page: lazy(() => import("@/pages/EntityDetail")), navigation: false },
 ];
-
-/** 核心路由 path 集合（"/x" 形式；Sidebar 据此识别插件导航项） */
-export const CORE_ROUTE_PATHS = new Set(
-  CORE_ROUTES.flatMap((r) => {
-    const paths: string[] = [];
-    if (r.path) paths.push(`/${r.path}`);
-    if (r.index || r.redirectTo === "/") paths.push("/");
-    if (r.redirectTo) paths.push(r.redirectTo);
-    return paths;
-  }),
-);

@@ -1,0 +1,42 @@
+.app-sidebar { background: var(--sidebar-bg); }
+.app-header { background: var(--card); }
+.sidebar-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 37px;
+  padding: 8px 11px;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  transition: color 120ms, background 120ms;
+}
+.sidebar-link:hover { background: var(--bg-hover); color: var(--text-strong); }
+.sidebar-link.is-active { background: var(--accent-subtle); color: var(--accent); font-weight: 600; }
+[data-density="compact"] .sidebar-link { min-height: 31px; padding-block: 5px; }
+.page-container { width: 100%; max-width: 1560px; margin-inline: auto; display: flex; flex-direction: column; gap: 24px; }
+[data-density="compact"] .page-container { gap: 16px; }
+[data-density="compact"] .surface-card { padding: 16px; }
+.skeleton { border-radius: 10px; background: var(--bg-hover); animation: pulse-subtle 1.8s ease-in-out infinite; }
+.skip-link {
+  position: fixed; z-index: 300; top: 8px; left: 12px;
+  padding: 10px 16px; border-radius: 8px;
+  background: var(--accent); color: var(--accent-foreground);
+  transform: translateY(-150%);
+}
+.skip-link:focus { transform: translateY(0); }
+:where(button, a, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+:where(button, a) { -webkit-tap-highlight-color: transparent; }
+:where(input, select, textarea)[aria-invalid="true"] { border-color: var(--danger); }
+@media (max-width: 767px) {
+  .page-container { gap: 20px; }
+  .surface-card { padding: 16px; }
+  input, textarea, select { font-size: 16px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+}

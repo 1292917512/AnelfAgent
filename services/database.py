@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import aiosqlite
 
 from core.log import log
+from core.sqlite_utils import required_row
 from services.db_common import (
     CELL_TEXT_MAX,
     SHADOW_PATTERNS,
@@ -429,7 +430,7 @@ class DatabaseService:
         count_cursor = await conn.execute(
             f'SELECT COUNT(*) AS c FROM "{table}" {where_sql}', params,
         )
-        total = (await count_cursor.fetchone())["c"]
+        total = required_row(await count_cursor.fetchone())["c"]
 
         page = max(1, page)
         page_size = max(1, min(page_size, 200))
@@ -661,8 +662,8 @@ class DatabaseService:
         wal_path = f"{path}-wal"
         wal_bytes = os.path.getsize(wal_path) if os.path.isfile(wal_path) else 0
 
-        page_count = (await (await conn.execute("PRAGMA page_count")).fetchone())[0]
-        freelist_count = (await (await conn.execute("PRAGMA freelist_count")).fetchone())[0]
+        page_count = required_row(await (await conn.execute("PRAGMA page_count")).fetchone())[0]
+        freelist_count = required_row(await (await conn.execute("PRAGMA freelist_count")).fetchone())[0]
         fragmentation = round(freelist_count / page_count, 4) if page_count else 0.0
 
         tables = await self.list_tables(db_id)

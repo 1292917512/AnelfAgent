@@ -27,6 +27,19 @@ def demo_config():
 
 
 class TestGetMeta:
+    def test_environment_value_is_explicit_and_readonly(self, client, demo_config, monkeypatch) -> None:
+        monkeypatch.setenv("ANELF_META_TEST_FLAG", "false")
+        ConfigManager.set(demo_config, True)
+        groups = client.get("/api/config/meta").json()["groups"]
+        item = next(item for group in groups for item in group["items"] if item["key"] == demo_config)
+        assert item["value"] is False
+        assert item["editable"] is False
+        assert item["environment_variable"] == "ANELF_META_TEST_FLAG"
+        assert item["value_source"] == "environment"
+        response = client.put(f"/api/config/meta/{demo_config}", json={"value": True})
+        assert response.status_code == 409
+        assert ConfigManager.get(demo_config) is False
+
     def test_groups_structure(self, client, demo_config) -> None:
         r = client.get("/api/config/meta")
         assert r.status_code == 200
@@ -157,3 +170,5 @@ class TestPasswordMeta:
         r = client.put(f"/api/config/meta/{secret_config}", json={"value": "new-token-0001"})
         assert r.status_code == 200
         assert ConfigManager.get(secret_config) == "new-token-0001"
+        assert "new-token-0001" not in r.text
+        assert r.json()["value"] == "new-****0001"

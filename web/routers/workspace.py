@@ -65,13 +65,14 @@ class FileWriteRequest(BaseModel):
     path: str
     content: str
     root: str = "workspace"
+    expected_version: str | None
 
 
 @router.put("/file")
 async def write_file(req: FileWriteRequest) -> Dict[str, Any]:
     """写入（新建或覆盖）文本文件。"""
     try:
-        return await asyncio.to_thread(_svc.write_file, req.path, req.content, req.root)
+        return await asyncio.to_thread(_svc.write_file, req.path, req.content, req.root, req.expected_version)
     except WorkspaceError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail) from e
 

@@ -171,3 +171,6 @@ channels/bilibili/
 /entities/sillytavern/state.json
 /entities/sillytavern/logs/
 /entities/sillytavern/config.json
+
+web/frontend/test-results/
+web/frontend/playwright-report/

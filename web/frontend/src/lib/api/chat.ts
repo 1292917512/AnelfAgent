@@ -5,12 +5,14 @@ import type {
   ApiKeyCreated,
   ApiKeyInfo,
   AuthStatus,
+  ChatHistoryMessage,
   DelegationHistoryItem,
   DelegationOverviewItem,
   DelegationProgress,
   RunningDelegation,
 } from "@/lib/types";
 import i18n from "@/i18n";
+import type { WorkspaceContext } from "@/lib/types";
 
 export const authApi = {
   check: () => api.get<AuthStatus>("/auth/check"),
@@ -32,11 +34,13 @@ export const authApi = {
 // Chat
 
 export const chatApi = {
-  send: (message: string, userId = "web_user", userName?: string, files?: string[], chatId?: string) =>
+  send: (message: string, userId = "web_user", userName?: string, files?: string[], chatId?: string, context?: WorkspaceContext, messageId?: string) =>
     api.post("/chat/send", {
       message,
       user_id: userId,
       user_name: userName ?? i18n.t("user", { ns: "chat" }),
+      workspace_context: context,
+      message_id: messageId,
       ...(chatId ? { chat_id: chatId } : {}),
       ...(files?.length ? { files } : {}),
     }),
@@ -48,7 +52,7 @@ export const chatApi = {
     });
   },
   history: (scopeId = "web_user", limit = 50, chatId?: string, beforeId?: number) =>
-    api.get(`/chat/history`, {
+    api.get<ChatHistoryMessage[]>(`/chat/history`, {
       params: {
         scope_id: scopeId, limit,
         ...(chatId ? { chat_id: chatId } : {}),

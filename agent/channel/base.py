@@ -198,6 +198,8 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
     # 配置缓存（实例级）
     _config: Optional[ChannelConfig] = None
 
+    _deferred_start: bool = False
+
     def __init__(self) -> None:
         self._status: ChannelStatus = ChannelStatus.STOPPED
         self._last_health_check: float = 0.0

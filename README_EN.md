@@ -23,7 +23,7 @@ AnelfAgent is an open-source, self-hosted AI agent runtime. Give it one LLM API 
 | Dependency | Version | Notes |
 |---|---|---|
 | Python | **3.11 – 3.12** | Main runtime |
-| Node.js | **20** (recommended, see `.nvmrc`) | Builds the WebUI frontend; optional — without it everything runs except the web interface |
+| Node.js | **24** (recommended, see `.nvmrc`; minimum 22.12) | Builds the WebUI frontend; optional — without it everything runs except the web interface |
 | [uv](https://github.com/astral-sh/uv) | latest | Python package manager (strongly recommended; the start script uses it automatically) |
 
 ### 2. Clone & Configure
@@ -394,7 +394,23 @@ uv run mypy core/                # Type check (strict core layer)
 scripts/check.sh                 # Local CI mirror gate (run before pushing)
 ```
 
-CI (GitHub Actions): a repo-wide lint gate + module-matrix test legs + frontend build; doc-only commits are skipped entirely.
+### WebUI Development and Validation
+
+```bash
+cd web/frontend
+npm ci
+npm run dev                    # /webui/; proxies /api to 127.0.0.1:8091
+npm run lint
+npm run typecheck
+npm test
+npx playwright install chromium
+npm run test:e2e                # Desktop/mobile browsers with isolated API fixtures
+npm run build
+```
+
+Routes and navigation share the manifest in `src/lib/core-routes.ts`; channel and entity frontends remain auto-discovered. Page shells compose domain editors, shared components own interaction primitives, and `lib/api/` owns requests. TanStack Query manages server data; Zustand manages workbench state. Drafts stay separate from server snapshots. File tabs are identified by both their root directory and relative path.
+
+CI (GitHub Actions): a repo-wide lint gate + module-matrix test legs + frontend static checks, component/browser regressions, and builds; doc-only commits are skipped entirely.
 
 For deeper architectural conventions see [`AGENTS.md`](AGENTS.md) (workspace instructions injected for editors/agents, not a runtime dependency).
 

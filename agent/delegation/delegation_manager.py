@@ -427,7 +427,7 @@ class DelegationManager:
                 "error": f"委托 {delegation_id} 无可续跑 transcript（不存在/超限/已过期清理）",
                 "hint": "请用 delegate_task 重新委托，并在 context 中带上此前的关键结论",
             }
-        messages = list(transcript.get("messages"))[-_FOLLOWUP_MAX_MESSAGES:]
+        messages = list(transcript.get("messages") or [])[-_FOLLOWUP_MAX_MESSAGES:]
         goal = str(transcript.get("goal", "")) or delegation_id
         agent_name = str(transcript.get("agent", "") or "")
         facets = AgentFacets.from_dict(transcript.get("facets"))
@@ -443,7 +443,7 @@ class DelegationManager:
         }
         base_messages = messages + [follow_message]
         budget = max_iterations or int(transcript.get("max_iterations") or 0)
-        common = dict(
+        common: Dict[str, Any] = dict(
             role=str(transcript.get("role", "leaf")),
             max_iterations=budget,
             agent_name=agent_name,

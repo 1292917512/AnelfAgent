@@ -1,10 +1,10 @@
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import { Moon, Sun } from "lucide-react";
-import { warnApiError, thinkingApi, heartbeatApi } from "@/lib/api";
+import { heartbeatApi } from "@/lib/api";
 import { useThinkingStore } from "@/stores/thinking-store";
 import { useAppStore } from "@/stores/app-store";
-import { useThinkingBootstrap } from "../useThinkingBootstrap";
+import { useThinkingBootstrap } from "@/hooks/useThinking";
 import { ModelSelect } from "@/components/models/ModelSelect";
 import { Switch } from "@/components/ui";
 
@@ -17,23 +17,14 @@ export function SettingsPanel() {
   const toggleTheme = useAppStore((s) => s.toggleTheme);
 
   const enabled = useThinkingStore((s) => s.enabled);
-  const setEnabled = useThinkingStore((s) => s.setEnabled);
-  const startSSE = useThinkingStore((s) => s.startSSE);
-  const stopSSE = useThinkingStore((s) => s.stopSSE);
+  const setTracking = useThinkingStore((s) => s.setTracking);
+  const toggling = useThinkingStore((s) => s.toggling);
 
   const { data: heartbeatStatus } = useQuery({
     queryKey: ["heartbeatStatus"],
     queryFn: () => heartbeatApi.getStatus().then((r) => r.data),
     refetchInterval: 30000,
   });
-
-  const handleThinkingToggle = (next: boolean) => {
-    thinkingApi.toggle(next).then(() => {
-      setEnabled(next);
-      if (next) startSSE();
-      else stopSSE();
-    }).catch(warnApiError);
-  };
 
   return (
     <div className="p-3 space-y-4">
@@ -47,7 +38,7 @@ export function SettingsPanel() {
           <div className="text-xs font-medium text-heading">{t("settings.thinkingTrace")}</div>
           <div className="text-[10px] text-muted">{t("settings.thinkingTraceHint")}</div>
         </div>
-        <Switch checked={enabled} onChange={handleThinkingToggle} />
+        <Switch checked={enabled} disabled={toggling} onChange={(next) => void setTracking(next)} aria-label={t("settings.thinkingTrace")} />
       </section>
 
       <section className="flex items-center justify-between">

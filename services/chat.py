@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from core.log import log
 from core.path import ConfigPaths
 from services._runtime import get_agent_app, get_runtime, is_ready
+from services.workspace_context import WorkspaceContext, inject_workspace_context
 
 UPLOAD_DIR = Path(ConfigPaths.UPLOAD_DIR).resolve()
 
@@ -44,9 +45,10 @@ def clean_message_for_display(msg: Dict[str, Any]) -> Dict[str, Any]:
     - tool_summary：工具执行记录 → 折叠工具卡片（附 summary 结构化条目）
     - system_notice：[系统]/[执行步骤] 等系统元消息 → 居中细条
     """
-    from core.tags import strip_functional_tags, strip_message_meta_tags
+    from core.tags import etag_all, strip_functional_tags, strip_message_meta_tags
 
     content = str(msg.get("content", ""))
+    client_id = next((value for key, value in etag_all(content.split("\n", 1)[0]) if key == "message_id"), "") if msg.get("role") == "user" else ""
     content = strip_message_meta_tags(content)
     content = strip_functional_tags(content)
     # 工作区上下文注入块剥离（注入文本不在历史里重复刷屏，只留用户原文）
@@ -74,6 +76,8 @@ def clean_message_for_display(msg: Dict[str, Any]) -> Dict[str, Any]:
             result["summary"] = summary
     if "id" in msg:
         result["id"] = msg["id"]
+    if client_id:
+        result["cid"] = client_id
     ts_ns = msg.get("ts_ns")
     if ts_ns and isinstance(ts_ns, (int, float)) and ts_ns > 0:
         ts = ts_ns / 1e9 if ts_ns > 1e15 else ts_ns
@@ -190,6 +194,7 @@ class ChatService:
         user_name: str = "用户",
         chat_id: Optional[str] = None,
         adapter_key: str = "webui",
+        message_id: str = "",
     ) -> None:
         """通过 AgentApp 发送一条消息。
 
@@ -209,6 +214,7 @@ class ChatService:
             media_segments=media_segments or None,
             adapter_key=adapter_key,
             session_id=chat_id or "",
+            message_id=message_id,
         )
 
     async def send_web_message(
@@ -220,6 +226,8 @@ class ChatService:
         user_id: str = "web_user",
         user_name: str = "用户",
         chat_id: Optional[str] = None,
+        workspace_context: WorkspaceContext | None = None,
+        message_id: str = "",
     ) -> None:
         """组装并发送 WebUI 聊天消息（图片/文件附件 → ImageContent/MessageSegment）。"""
         from agent.channel.schemas import MessageSegment, SegmentType
@@ -285,12 +293,8 @@ class ChatService:
             text = text + "\n" + file_descs if text else file_descs
 
         # 工作区上下文注入（打开文件/选区/标签页 → 消息前缀块；历史清洗剥离）
-        from entities.ui.tools import get_ui_state_snapshot
-        from services.workspace_context import inject_workspace_context
-        try:
-            text = inject_workspace_context(text, get_ui_state_snapshot())
-        except Exception:
-            pass  # 注入失败不阻塞发送
+        if workspace_context is not None:
+            text = inject_workspace_context(text, workspace_context.model_dump())
 
         await self.send_message(
             text,
@@ -300,6 +304,7 @@ class ChatService:
             user_name=user_name,
             chat_id=chat_id,
             adapter_key="webui",
+            message_id=message_id,
         )
 
     @staticmethod

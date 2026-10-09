@@ -25,14 +25,16 @@
     "llm_call": "LLM 调用",
     "tool_call": "工具调用",
     "reply_round": "回复循环",
-    "introspection": "内省反思"
+    "introspection": "内省反思",
+    "plan_root": "会话计划",
+    "plan_step": "计划步骤"
   },
   "statusLabels": {
     "pending": "等待",
     "running": "执行中",
     "completed": "已完成",
     "error": "错误",
-    "warning": "跳过"
+    "warning": "提醒 / 跳过"
   },
   "detailLabels": {
     "label": "标签",
@@ -81,5 +83,57 @@
   "contextTab": "上下文管理",
   "planStepsCount": "{{count}} 步",
   "delegationSession": "子代理",
-  "reasoningTruncated": "已截断"
+  "reasoningTruncated": "已截断",
+  "runOverview": "运行概览",
+  "runEnded": "已结束",
+  "modelCalls": "模型调用",
+  "toolCalls": "工具执行",
+  "issueCount": "{{count}} 处需关注",
+  "incompleteTrace": "部分节点未记录结束事件；此链路已结束，不代表这些操作仍在运行。",
+  "roundTitle": "第 {{count}} 轮",
+  "situationSummary": "{{messages}} 条消息 · {{tasks}} 项任务",
+  "contextSummary": "{{memories}} 条记忆 · {{tools}} 个工具",
+  "callsTools": "调用工具：{{tools}}",
+  "searchNodes": "搜索模型、工具或结果",
+  "showAllEvents": "显示全部底层事件",
+  "noMatchingNodes": "没有符合条件的节点",
+  "resetFilters": "清除筛选",
+  "activityGroup": "运行事件",
+  "nodeDetails": "节点详情",
+  "copied": "已复制",
+  "copyNode": "复制节点记录",
+  "copyFailed": "复制失败，可在原始记录中选择文本复制。",
+  "executionError": "执行错误",
+  "inputArguments": "调用参数",
+  "recordedOutput": "已记录的输出摘要",
+  "tokenUsage": "用量统计",
+  "rawRecord": "完整原始记录",
+  "searchSessions": "搜索会话、来源或日期",
+  "startTracking": "开启追踪",
+  "streamConnected": "实时连接",
+  "reconnecting": "正在重连",
+  "historyWhileDisabled": "追踪已关闭，当前显示已采集的历史记录。",
+  "trackingHint": "开启后采集新的运行事件。查看每一轮模型调用、工具执行和结果，点击节点检查记录详情。",
+  "openFullTrace": "打开完整链路",
+  "loadingSession": "正在加载链路…",
+  "filters": {
+    "all": "关键事件",
+    "issues": "异常与提醒"
+  },
+  "stages": {
+    "prepare": "准备",
+    "reason": "推理",
+    "act": "执行",
+    "finish": "结束"
+  },
+  "outcomes": {
+    "running": "执行中",
+    "completed": "已完成",
+    "failed": "执行失败",
+    "cancelled": "已取消",
+    "interrupted": "记录已中断"
+  },
+  "truncatedTrace": "记录已达到保留上限，部分事件未被收录。",
+  "parentSession": "返回父级链路：{{id}}",
+  "retentionHint": "仅保留本次启动后的近期链路；重启后清空。"
 }

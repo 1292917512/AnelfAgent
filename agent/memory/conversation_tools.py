@@ -101,8 +101,8 @@ def _resolve_lookup_scope(
     if st and sid:
         return st, sid
     try:
-        from agent.mind.tool_activation import ToolActivationManager
-        scope = ToolActivationManager.current_scope()
+        from core.conversation_scope import current_scope as get_current_scope
+        scope = get_current_scope()
         if scope.startswith("user_"):
             return "user", scope[5:]
         if scope.startswith("group_"):

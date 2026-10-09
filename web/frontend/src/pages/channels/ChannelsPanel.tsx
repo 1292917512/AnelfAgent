@@ -1,210 +1,121 @@
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { adaptersApi, configMetaApi, warnApiError } from "@/lib/api";
-import type { AdapterInfo, ConfigMetaItem, ConfigValues } from "@/lib/types";
-import { useCopyFeedback } from "@/hooks/useCopyFeedback";
-import { Save, CheckCircle, RefreshCw } from "lucide-react";
+import { adaptersApi, configMetaApi } from "@/lib/api";
+import type { ConfigMetaGroup, ConfigMetaItem, ConfigValues } from "@/lib/types";
+import { Save, CheckCircle, RefreshCw, RotateCcw } from "lucide-react";
 import { isChannelHidden } from "@/lib/channel-plugins";
-import { AdapterCard } from "@/pages/channels/AdapterCard";
-import { UnmatchedGroupCard } from "@/pages/channels/UnmatchedGroupCard";
+import { AdapterCard } from "./AdapterCard";
+import { UnmatchedGroupCard } from "./UnmatchedGroupCard";
+import { useDraft } from "@/hooks/useDraft";
+import { useCopyFeedback } from "@/hooks/useCopyFeedback";
+import { useUnsavedChanges } from "@/components/common/UnsavedChanges";
+import { AsyncState } from "@/components/common/AsyncState";
+import { ListToolbar } from "@/components/common/ListToolbar";
+import { Button } from "@/components/ui";
 
-
-export function ChannelsPanel({
-  onOpenTools,
-}: {
-  /** 打开频道接口抽屉（开关 / 测试该频道的接口） */
+export function ChannelsPanel({ onOpenTools }: {
   onOpenTools?: (channel: { key: string; name: string }) => void;
 }) {
   const { t } = useTranslation("channels");
-  const queryClient = useQueryClient();
+  const client = useQueryClient();
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [togglingKey, setTogglingKey] = useState<string | null>(null);
-  const togglingRef = useRef<{ key: string; prevStatus: string } | null>(null);
-
-  const { data, isLoading } = useQuery({
-    queryKey: ["adapters"],
-    queryFn: () => adaptersApi.list().then((r) => r.data),
-    refetchInterval: togglingKey ? 1000 : 5000,
+  const [search, setSearch] = useState("");
+  const [saved, showSaved, resetSaved] = useCopyFeedback(2000);
+  const adapters = useQuery({
+    queryKey: ["adapters"], queryFn: () => adaptersApi.list().then((r) => r.data),
+    refetchInterval: 5000, throwOnError: false,
   });
-
-  // 频道配置走统一配置中心数据流（组 adapter/<id>），与 /config 页同源
-  const { data: configMeta } = useQuery({
-    queryKey: ["configMeta"],
-    queryFn: () => configMetaApi.list().then((r) => r.data),
+  const metadata = useQuery({
+    queryKey: ["configMeta"], queryFn: () => configMetaApi.list().then((r) => r.data), throwOnError: false,
   });
-
-  const toggleMutation = useMutation({
-    mutationFn: (key: string) => {
-      const prev = (data?.adapters ?? []).find((a: AdapterInfo) => a.key === key);
-      togglingRef.current = { key, prevStatus: prev?.status ?? "" };
-      setTogglingKey(key);
-      return adaptersApi.toggle(key);
-    },
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["adapters"] }); },
-    onError: () => { setTogglingKey(null); togglingRef.current = null; },
-  });
-
-  useEffect(() => {
-    if (!togglingRef.current || !data?.adapters) return;
-    const { key, prevStatus } = togglingRef.current;
-    const current = (data.adapters as AdapterInfo[]).find((a) => a.key === key);
-    if (current && current.status !== prevStatus) {
-      setTogglingKey(null);
-      togglingRef.current = null;
-    }
-  }, [data]);
-
-  const [values, setValues] = useState<ConfigValues>({});
-  const [dirtyKeys, setDirtyKeys] = useState<Set<string>>(new Set());
-  const [saveOk, triggerSaveOk, resetSaveOk] = useCopyFeedback(2000);
-
-  // 频道配置组：channelKey -> 该频道的配置项列表
-  const configsByChannel: Record<string, ConfigMetaItem[]> = {};
-  if (configMeta) {
-    for (const group of configMeta.groups) {
-      if (!group.group.startsWith("adapter/")) continue;
-      configsByChannel[group.group.slice("adapter/".length)] = group.items;
-    }
+  const configs: Record<string, ConfigMetaItem[]> = {};
+  const source: ConfigValues = {};
+  for (const group of metadata.data?.groups ?? []) {
+    if (!group.group.startsWith("adapter/")) continue;
+    configs[group.group.slice(8)] = group.items;
+    for (const item of group.items) source[item.key] = item.value !== undefined ? item.value : item.default;
   }
-
-  useEffect(() => {
-    if (!configMeta) return;
-    const initial: ConfigValues = {};
-    for (const items of Object.values(configsByChannel)) {
-      for (const item of items) {
-        initial[item.key] = item.value !== undefined ? item.value : item.default;
+  const draft = useDraft(source);
+  useUnsavedChanges(draft.dirty);
+  const toggle = useMutation({
+    mutationFn: adaptersApi.toggle,
+    onSettled: () => client.invalidateQueries({ queryKey: ["adapters"] }),
+  });
+  const save = useMutation({
+    mutationFn: async (patch: ConfigValues) => {
+      const results = await Promise.allSettled(Object.entries(patch).map(async ([key, value]) => {
+        const response = await configMetaApi.save(key, value);
+        return { key, submitted: value, value: response.data.value };
+      }));
+      const accepted: ConfigValues = {};
+      const persisted: ConfigValues = {};
+      for (const result of results) {
+        if (result.status !== "fulfilled") continue;
+        accepted[result.value.key] = result.value.submitted;
+        if (result.value.value !== undefined) persisted[result.value.key] = result.value.value;
       }
-    }
-    setValues(initial);
-    setDirtyKeys(new Set());
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [configMeta]);
-
-  const saveMutation = useMutation({
-    mutationFn: (keys: string[]) =>
-      Promise.all(keys.map((k) => configMetaApi.save(k, values[k]))),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["configMeta"] });
-      setDirtyKeys(new Set());
-      triggerSaveOk();
+      return { accepted, persisted, complete: results.every((r) => r.status === "fulfilled") };
+    },
+    onSuccess: ({ accepted, persisted, complete }) => {
+      client.setQueryData<{ groups: ConfigMetaGroup[] }>(["configMeta"], (current) => current && ({
+        groups: current.groups.map((group) => ({
+          ...group, items: group.items.map((item) => Object.prototype.hasOwnProperty.call(persisted, item.key) ? { ...item, value: persisted[item.key] } : item),
+        })),
+      }));
+      draft.acknowledge(accepted);
+      void client.invalidateQueries({ queryKey: ["configMeta"] });
+      if (complete) showSaved();
     },
   });
-
-  // 热同步 channels/ 目录：新增热插入 / 删除热拔除 / 存续代码热重载
-  const reloadMutation = useMutation({
-    mutationFn: () => adaptersApi.reload(),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["adapters"] });
-      queryClient.invalidateQueries({ queryKey: ["configMeta"] });
-    },
+  const reload = useMutation({
+    mutationFn: adaptersApi.reload,
+    onSuccess: () => Promise.all([
+      client.invalidateQueries({ queryKey: ["adapters"] }),
+      client.invalidateQueries({ queryKey: ["configMeta"] }),
+    ]),
   });
-
-  const adapters: AdapterInfo[] = (data?.adapters ?? []).filter(
-    (a: AdapterInfo) => !isChannelHidden(a.key),
-  );
-  const ready = data?.ready ?? false;
-
-  const getConfigsForChannel = (channelKey: string): ConfigMetaItem[] =>
-    configsByChannel[channelKey] ?? [];
-
-  const updateVal = (key: string, val: unknown) => {
-    setValues((prev) => ({ ...prev, [key]: val }));
-    setDirtyKeys((prev) => new Set(prev).add(key));
-    resetSaveOk();
-  };
-
-  const resetDefaults = (channelKey: string) => {
-    const items = configsByChannel[channelKey] ?? [];
-    const defaults: ConfigValues = {};
-    for (const item of items) defaults[item.key] = item.default;
-    setValues((prev) => ({ ...prev, ...defaults }));
-    setDirtyKeys((prev) => new Set([...prev, ...items.map((i) => i.key)]));
-    resetSaveOk();
-  };
-
-  const startUnmatched = (channelKey: string) => {
-    togglingRef.current = { key: channelKey, prevStatus: "stopped" };
-    setTogglingKey(channelKey);
-    adaptersApi.toggle(channelKey).then(() => {
-      queryClient.invalidateQueries({ queryKey: ["adapters"] });
-    }).catch((e) => {
-      warnApiError(e);
-      setTogglingKey(null);
-      togglingRef.current = null;
-    });
-  };
-
-  const adapterKeys = new Set(adapters.map((a) => a.key));
-  const unmatchedChannels = Object.keys(configsByChannel).filter(
-    (channelKey) => !adapterKeys.has(channelKey) && !isChannelHidden(channelKey),
-  );
-
+  const update = (key: string, value: unknown) => { draft.update(key, value); resetSaved(); };
+  const visible = (key: string, name = "") => !isChannelHidden(key) && (key + " " + name).toLowerCase().includes(search.trim().toLowerCase());
+  const registered = adapters.data?.adapters ?? [];
+  const matches = registered.filter((adapter) => visible(adapter.key, adapter.name));
+  const registeredKeys = new Set(registered.map((adapter) => adapter.key));
+  const unmatched = Object.keys(configs).filter((key) => !registeredKeys.has(key) && visible(key));
+  const count = matches.length + unmatched.length;
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-end gap-2">
-        <button onClick={() => reloadMutation.mutate()} disabled={reloadMutation.isPending}
-          title={t("reload")}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md
-            bg-secondary text-muted border border-border hover:text-heading transition-all disabled:opacity-50">
-          <RefreshCw size={14} className={reloadMutation.isPending ? "animate-spin" : ""} />
-          {reloadMutation.isPending ? t("reloading") : t("reload")}
-        </button>
-        {dirtyKeys.size > 0 && (
-          <div className="flex items-center gap-2">
-            {saveOk && (
-              <span className="flex items-center gap-1 text-xs text-ok">
-                <CheckCircle size={14} /> {t("savedOk")}
-              </span>
-            )}
-            <button onClick={() => saveMutation.mutate([...dirtyKeys])} disabled={saveMutation.isPending}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md
-                bg-accent text-white hover:opacity-90 transition-all disabled:opacity-50">
-              <Save size={14} />
-              {saveMutation.isPending ? t("common:saving") : t("saveConfig")}
-            </button>
+    <div className="space-y-5">
+      <ListToolbar search={search} onSearch={setSearch} count={count}>
+        {saved && !draft.dirty && <span role="status" className="flex items-center gap-1 text-xs text-ok"><CheckCircle size={14} />{t("savedOk")}</span>}
+        {draft.dirty && <Button size="sm" onClick={draft.reset} disabled={save.isPending}><RotateCcw size={14} />{t("common:reset")}</Button>}
+        <Button size="sm" onClick={() => reload.mutate()} loading={reload.isPending} disabled={draft.dirty || toggle.isPending}>
+          <RefreshCw size={14} />{t("reload")}
+        </Button>
+        <Button variant="primary" size="sm" onClick={() => save.mutate(draft.patch)} disabled={!draft.dirty} loading={save.isPending}>
+          <Save size={14} />{t("saveConfig")}{draft.dirty && ` (${draft.dirtyKeys.length})`}
+        </Button>
+      </ListToolbar>
+      <AsyncState pending={adapters.isPending || metadata.isPending}
+        error={!adapters.data ? adapters.error : !metadata.data ? metadata.error : undefined}
+        retry={() => { void adapters.refetch(); void metadata.refetch(); }}>
+        {!adapters.data?.ready ? <p className="text-sm text-muted">{t("runtimeNotReady")}</p> : (
+          <div className="grid gap-4">
+            {count === 0 && <p className="py-12 text-center text-muted">{t("common:noMatches")}</p>}
+            {matches.map((adapter) => (
+              <AdapterCard key={adapter.key} adapter={adapter} isOpen={expanded === adapter.key} configs={configs[adapter.key] ?? []}
+                values={draft.values} toggling={toggle.isPending && toggle.variables === adapter.key}
+                onToggleExpand={() => setExpanded(expanded === adapter.key ? null : adapter.key)}
+                onToggle={() => { if (!toggle.isPending) toggle.mutate(adapter.key); }} onOpenTools={onOpenTools}
+                onUpdateVal={update} onResetDefaults={() => { for (const item of configs[adapter.key] ?? []) update(item.key, item.default); }} />
+            ))}
+            {unmatched.map((key) => (
+              <UnmatchedGroupCard key={key} channelKey={key} configs={configs[key] ?? []} values={draft.values}
+                isOpen={expanded === key} toggling={toggle.isPending && toggle.variables === key}
+                onToggleExpand={() => setExpanded(expanded === key ? null : key)}
+                onStart={() => { if (!toggle.isPending) toggle.mutate(key); }} onUpdateVal={update} />
+            ))}
           </div>
         )}
-      </div>
-
-      {isLoading ? (
-        <p className="text-sm text-muted">{t("common:loading")}</p>
-      ) : !ready ? (
-        <p className="text-sm text-muted">{t("runtimeNotReady")}</p>
-      ) : (
-        <div className="grid gap-3">
-          {adapters.map((a) => (
-            <AdapterCard
-              key={a.key}
-              adapter={a}
-              isOpen={expanded === a.key}
-              configs={getConfigsForChannel(a.key)}
-              values={values}
-              toggling={togglingKey === a.key}
-              onToggleExpand={() => setExpanded(expanded === a.key ? null : a.key)}
-              onToggle={() => toggleMutation.mutate(a.key)}
-              onOpenTools={onOpenTools}
-              onUpdateVal={updateVal}
-              onResetDefaults={() => resetDefaults(a.key)}
-            />
-          ))}
-
-          {/* 已配置但尚未注册启动的频道 */}
-          {unmatchedChannels.map((channelKey) => (
-            <UnmatchedGroupCard
-              key={channelKey}
-              channelKey={channelKey}
-              configs={configsByChannel[channelKey] ?? []}
-              values={values}
-              isOpen={expanded === channelKey}
-              toggling={togglingKey === channelKey}
-              onToggleExpand={() => setExpanded(expanded === channelKey ? null : channelKey)}
-              onStart={() => startUnmatched(channelKey)}
-              onUpdateVal={updateVal}
-            />
-          ))}
-        </div>
-      )}
+      </AsyncState>
     </div>
   );
 }

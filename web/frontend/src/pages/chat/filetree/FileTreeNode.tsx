@@ -1,3 +1,4 @@
+import { workspaceFileId } from "@/lib/workspace-file";
 import { createContext, useContext, useEffect, useRef, useState, type MouseEvent } from "react";
 import type { NodeRendererProps, RowRendererProps } from "react-arborist";
 import { ChevronDown, ChevronRight, FolderClosed, FolderOpen, Loader2, MoreHorizontal } from "lucide-react";
@@ -70,7 +71,7 @@ export function FileTreeNode(props: NodeRendererProps<WorkspaceNode>) {
   const { root, onContextMenu } = useFileTreeContext();
   const isMobile = useIsMobile();
   const openFiles = useWorkbenchStore((s) => s.openFiles);
-  const openFilePath = useWorkbenchStore((s) => s.openFilePath);
+  const activeFileId = useWorkbenchStore((s) => s.activeFileId);
   const openFile = useWorkbenchStore((s) => s.openFile);
   const loading = useFileTreeStore((s) => s.loadingDirs[`${root}:${node.data.path}`] === true);
   const changeEntries = useTreeChangesStore((s) => s.entries);
@@ -78,8 +79,8 @@ export function FileTreeNode(props: NodeRendererProps<WorkspaceNode>) {
 
   const data = node.data;
   const isDir = data.type === "dir";
-  const isActive = openFilePath === data.path;
-  const isOpened = !isActive && openFiles.includes(data.path);
+  const isActive = activeFileId === workspaceFileId({ path: data.path, root });
+  const isOpened = !isActive && openFiles.some((file) => file.path === data.path && file.root === root);
   // 二进制中的图片/音视频/PDF/DOCX/XLSX 可打开预览，其余二进制不可编辑
   const openable = isDir || !data.binary || workspaceMediaKind(data.name) !== null || isPreviewableBinary(data.name);
   const { Icon, className: iconClass } = fileIcon(data.name);

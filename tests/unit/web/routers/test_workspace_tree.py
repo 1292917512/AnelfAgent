@@ -178,8 +178,8 @@ class TestSearchFiles:
     """/workspace/search：文件名 + 内容匹配，root=project 时搜索项目根。"""
 
     async def test_name_and_content_hits(self, ws) -> None:
-        (ws / "notes.md").write_text("包含关鍵词 anelf 的笔记")
-        (ws / "other.txt").write_text("无关内容")
+        (ws / "notes.md").write_text("包含关鍵词 anelf 的笔记", encoding="utf-8")
+        (ws / "other.txt").write_text("无关内容", encoding="utf-8")
         result = await search_files(q="anelf", limit=30, root="workspace")
         hits = {h["path"]: h["match"] for h in result["files"]}
         assert hits["notes.md"] == "content"

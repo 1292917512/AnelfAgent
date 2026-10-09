@@ -112,10 +112,8 @@ class VaultService:
             raise VaultCryptoStateError("机器密钥文件损坏")
         key = crypto.generate_dek()
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        try:
-            os.write(fd, key)
-        finally:
-            os.close(fd)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(key)
         return key
 
     async def _unlock_machine(self) -> None:

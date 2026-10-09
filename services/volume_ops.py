@@ -7,9 +7,7 @@
 恢复与迁移均为「校验 + 拷贝 + 配置切换 + 重启生效」语义：
 - 恢复：产物暂存 + pending 标记，重启后由 bootstrap 的
   agent.storage.volume_restore 完成文件交换
-- 迁移：在线拷贝（SQLite 走 Backup API；cognee 树经 coordinator
-  空闲窗口与写入互斥）+ 卷指派写入
-两者重启前的新写入不落新位置（与整目录迁移一致，UI 需明示）。
+- 迁移：在线预拷贝 + 重启最终同步，再写入卷指派；期间的新写入保留。
 
 外部 SQL 导出/导入为快照语义：导出会重建目标侧同名（可加前缀）表并
 全量覆写，同时在目标库登记导出清单表（`{prefix}_anelf_export`）；
@@ -150,6 +148,11 @@ async def _cognee_quiescence(job: Callable[[], Any]) -> Any:
 _op_states: Dict[str, Dict[str, Any]] = {}
 
 
+def has_running_operations() -> bool:
+    """是否有卷操作仍在修改或读取存储快照。"""
+    return any(state["state"] == "running" for state in _op_states.values())
+
+
 def _reset_state(volume_id: str, op: str) -> Dict[str, Any]:
     state = {
         "op": op,
@@ -193,6 +196,15 @@ def _pending_volume_ids() -> List[str]:
 
 
 def _ensure_not_pending(volume_id: str) -> None:
+    from services.data_migration import migration_status
+    if migration_status()["state"] == "running":
+        raise VolumeOperationError("数据目录正在迁移，请稍后再操作", status_code=409)
+    if any(state["state"] == "running" and state["op"] == "relocate"
+           for state in _op_states.values()):
+        raise VolumeOperationError("存储卷正在迁移，请稍后再操作", status_code=409)
+    from agent.storage.migration import pending_migration
+    if pending_migration() is not None:
+        raise VolumeOperationError("已有待重启迁移，完成前禁止更改存储位置或恢复", status_code=409)
     if volume_id in _pending_volume_ids():
         raise VolumeOperationError(
             f"存储卷 {volume_id} 存在待重启落盘的恢复任务，禁止再操作", status_code=409
@@ -224,6 +236,8 @@ async def list_volumes() -> List[Dict[str, Any]]:
     registry = get_volume_registry()
     ensure_volume_modules()
     pending = set(_pending_volume_ids())
+    from agent.storage.migration import pending_migration
+    migration = pending_migration()
     items: List[Dict[str, Any]] = []
     for descriptor in registry.list():
         volume_id = descriptor.volume_id
@@ -245,7 +259,8 @@ async def list_volumes() -> List[Dict[str, Any]]:
             "location_source": registry.location_source(volume_id),
             "assignment": location.path if location else None,
             "active_path": registry.active_path(volume_id),
-            "needs_restart": registry.needs_restart(volume_id),
+            "needs_restart": registry.needs_restart(volume_id) or bool(
+                migration and (migration.kind == "data" or migration.volume_id == volume_id)),
             "pending_restore": volume_id in pending,
             "exists": exists,
             "size_bytes": await _volume_size_bytes(volume_id, descriptor.kind, path),
@@ -520,7 +535,7 @@ async def check_relocate_target(volume_id: str, target: str) -> Dict[str, Any]:
     current = _resolved_path(volume_id)
     current_base = current.parent if descriptor.kind is VolumeKind.SQLITE else current
     required = await _volume_size_bytes(volume_id, descriptor.kind, current)
-    result = validate_target_dir(target, current_base, required_bytes=required)
+    result = validate_target_dir(target, current_base, required_bytes=required, forbid_contains=True)
     if result["ok"] and descriptor.kind is VolumeKind.SQLITE:
         dest_file = Path(result["target"]) / current.name
         if dest_file.exists():
@@ -530,7 +545,7 @@ async def check_relocate_target(volume_id: str, target: str) -> Dict[str, Any]:
 
 
 async def relocate_volume(volume_id: str, target_dir: str) -> Dict[str, Any]:
-    """启动后台迁移任务（拷贝 → 指派写入 → 重启生效）。"""
+    """启动后台预拷贝，重启最终同步并切换指派。"""
     check = await check_relocate_target(volume_id, target_dir)
     if not check["ok"]:
         raise VolumeOperationError(
@@ -538,6 +553,8 @@ async def relocate_volume(volume_id: str, target_dir: str) -> Dict[str, Any]:
         )
     _ensure_idle(volume_id)
     _ensure_not_pending(volume_id)
+    if has_running_operations() or _pending_volume_ids():
+        raise VolumeOperationError("请先完成存储卷操作及待重启恢复", status_code=409)
     if get_volume_registry().location_source(volume_id) == "env":
         raise VolumeOperationError(
             "该卷路径正被环境变量钉死（优先级最高），无法迁移", status_code=409
@@ -551,8 +568,6 @@ async def relocate_volume(volume_id: str, target_dir: str) -> Dict[str, Any]:
 async def _run_relocate(volume_id: str, target_dir: Path, state: Dict[str, Any]) -> Dict[str, Any]:
     descriptor = _descriptor(volume_id)
     source = _resolved_path(volume_id)
-    registry = get_volume_registry()
-
     if descriptor.kind is VolumeKind.SQLITE:
         dest = target_dir / source.name
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -566,7 +581,9 @@ async def _run_relocate(volume_id: str, target_dir: Path, state: Dict[str, Any])
     else:
         dest = target_dir / source.name
         state["phase"] = "tree_copy"
-        files = await asyncio.to_thread(walk_files, source)
+        files = await asyncio.to_thread(
+            _notes_members if descriptor.kind is VolumeKind.NOTES_TREE else walk_files, source,
+        )
         state["total"] = len(files)
 
         def _copy() -> None:
@@ -574,6 +591,8 @@ async def _run_relocate(volume_id: str, target_dir: Path, state: Dict[str, Any])
             for index, path in enumerate(files):
                 rel = path.relative_to(source)
                 to = dest / rel
+                if not to.resolve().is_relative_to(dest.resolve()):
+                    raise VolumeOperationError("迁移目标内存在越界符号链接")
                 to.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(path, to)
                 state["done"] = index + 1
@@ -586,10 +605,16 @@ async def _run_relocate(volume_id: str, target_dir: Path, state: Dict[str, Any])
             raise VolumeOperationError("迁移拷贝校验失败：目标目录为空")
         assignment = str(dest)
 
-    registry.write_location(volume_id, assignment)
+    from agent.storage.migration import PendingMigration, stage_migration
+    stage_migration(PendingMigration(
+        kind="volume", volume_id=volume_id, source=str(source), target=assignment,
+        files=[] if descriptor.kind is VolumeKind.SQLITE
+        else [path.relative_to(source).as_posix() for path in files],
+        notes_only=descriptor.kind is VolumeKind.NOTES_TREE,
+    ))
     log(
         f"存储卷 {volume_id} 迁移拷贝完成: {source} -> {assignment}（重启生效，"
-        f"重启前的写入仍落旧位置）",
+        f"重启时最终同步，保留期间的新写入）",
         tag="存储卷",
     )
     return {"assignment": assignment, "needs_restart": True}

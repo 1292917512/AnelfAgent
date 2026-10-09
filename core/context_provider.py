@@ -219,6 +219,25 @@ class ContextProviderRegistry:
         cls._call_counts.pop(name, None)
         cls._last_errors.pop(name, None)
         cls._last_contents.pop(name, None)
+        cls._last_clips.clear()
+        cls._last_metrics.clear()
+        cls._last_collect.clear()
+
+    @classmethod
+    async def unregister_by_module(cls, module: str) -> None:
+        """停止并移除模块声明的提供者，避免热拔除后继续采集。"""
+        for meta in cls.get_all():
+            owner = type(meta.instance) if meta.instance is not None else meta.provide_fn
+            origin = getattr(owner, "__module__", "")
+            if origin != module and not origin.startswith(module + "."):
+                continue
+            cls.unregister(meta.name)
+            stop = getattr(meta.instance, "on_stop", None)
+            if stop is not None:
+                try:
+                    await asyncio.wait_for(stop(), timeout=30.0)
+                except Exception as exc:
+                    log(f"上下文提供者停止失败: {meta.name} - {exc}", "WARNING", tag="Provider")
 
     @classmethod
     def get_all(cls) -> List[ProviderMeta]:
@@ -251,7 +270,7 @@ class ContextProviderRegistry:
         last = cls._last_collect.get(scope, {})
         stale = (
             time.time() - float(last.get("collected_at", 0))
-            > _COLLECT_FRESH_SECONDS
+            >= _COLLECT_FRESH_SECONDS
         )
         if stale:
             task = cls._inflight.get(scope)
@@ -299,7 +318,7 @@ class ContextProviderRegistry:
             used_bytes = 0
 
             for meta, result in zip(metas, results, strict=True):
-                if result is None:
+                if result is None or cls._providers.get(meta.name) is not meta:
                     continue
                 snap, cost_ms = result
 
@@ -530,7 +549,7 @@ class ContextProviderRegistry:
             latest_ts = -1.0
             for s, info in cls._last_collect.items():
                 ts = float(info.get("collected_at", 0))
-                if ts > latest_ts:
+                if ts >= latest_ts:
                     latest_ts, effective_scope = ts, s
 
         collect_info = cls._last_collect.get(effective_scope, {})

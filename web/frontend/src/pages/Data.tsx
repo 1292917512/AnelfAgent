@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRouteTab } from "@/hooks/useRouteTab";
 import { useTranslation } from "react-i18next";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
 import { PageContainer, PageHeader } from "@/components/common/PageContainer";
@@ -13,7 +13,7 @@ type DataTab = "database" | "volumes" | "stickers" | "storage";
 /** 数据管理 — 所有数据类功能的统一入口（数据库 / 存储卷 / 表情包 / 存储位置） */
 export default function Data() {
   const { t } = useTranslation("data");
-  const [tab, setTab] = useState<DataTab>("database");
+  const [tab, setTab] = useRouteTab<DataTab>(["database", "volumes", "stickers", "storage"], "database");
 
   const TABS: TabItem<DataTab>[] = [
     { key: "database", label: t("tabs.database"), icon: Database },

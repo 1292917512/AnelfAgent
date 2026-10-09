@@ -5,7 +5,10 @@ Token effect: 每轮增加约数百 token，避免重复侦查、查目录和激
 Cache effect: 经 channel_policy 尾部层注入，实时任务事实仍留在工具结果。
 """
 
-from agent.channel.reply_policy import ReplyPolicy
+from collections.abc import Sequence
+
+from agent.channel.reply_policy import ReplyPolicy, ReplyToolResult
+from core.entity import EntityRegistry, EntityType
 
 from .receipts import game_result_receipt, handed_to_game_events
 
@@ -29,18 +32,33 @@ COMPANION_DIALOGUE_TOOLS = (
 
 def companion_policy(server: str) -> ReplyPolicy:
     """按配置的 MCP 服务生成游戏会话策略。"""
+    game_names = {
+        entity.name: str(entity.meta.get("mcp_original_name") or entity.name)
+        for entity in EntityRegistry.get_by_group(f"mcp:{server}")
+        if entity.entity_type == EntityType.TOOL and entity.source == "mcp"
+    }
+    registered_names = sorted(game_names.items())
+    initial_game_tools = tuple(
+        name for original in COMPANION_INITIAL_GAME_TOOLS
+        for name, canonical in registered_names if canonical == original
+    )
+
+    def canonical_results(results: Sequence[ReplyToolResult]) -> list[ReplyToolResult]:
+        return [ReplyToolResult(game_names.get(result.name, result.name), result.payload) for result in results]
+
+    aliases = [f"{original} → {name}" for name, original in registered_names if name != original]
     return ReplyPolicy(
         direct_reply=True,
         tool_groups=(f"mcp:{server}",),
-        initial_tools=COMPANION_DIALOGUE_TOOLS + COMPANION_INITIAL_GAME_TOOLS,
-        result_receipt=game_result_receipt,
-        handoff_to_events=handed_to_game_events,
+        initial_tools=COMPANION_DIALOGUE_TOOLS + initial_game_tools,
+        result_receipt=lambda results: game_result_receipt(canonical_results(results)),
+        handoff_to_events=lambda results: handed_to_game_events(canonical_results(results)),
         instructions=(
             "[Minecraft 陪玩执行契约]\n"
             "本频道游戏请求由当前回复负责，不另起 tool_action 或重复执行。常用高层游戏工具已在当前目录中，"
             "直接使用；其他能力通过 list_entity_methods / activate_tool_group 按需发现。"
             "只用真实工具名：`get_inventory`、`get_state`；worker 的低层工具为 `get_block_at`、"
-            "`place_block`、`craft_item`，委托中原样书写，禁止添加 mcp__minecraft__ 等前缀。"
+            "`place_block`、`craft_item`。重名时按本服务注册名映射调用，委托也使用实际目录名，禁止猜测前缀。"
             "查询和停止后必须用 send_message 报告实际结果，再 end_reply；独白与结束备注不会发到游戏。\n"
             "prepare_item / manage_supplies / gather_resources 是单任务交接入口：真实受理后本次主会话结束，"
             "频道自动发送接单回执并由执行器终态事件报告结果，不再查询、轮询或另发完成总结。"
@@ -83,5 +101,5 @@ def companion_policy(server: str) -> ReplyPolicy:
             "受阻时报告事实而非要求玩家重复试错。\n"
             "worker 返回后只按实际入包、服务器方块与终态汇报；预算耗尽、partial、blocked、"
             "通用计划完成都不是游戏任务成功证据。保留用户限制，不擅自采集、挖掘、丢弃或另起任务。"
-        ),
+        ) + ("\n当前游戏服务注册名映射：" + "；".join(aliases) if aliases else ""),
     )

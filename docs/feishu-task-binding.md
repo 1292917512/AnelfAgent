@@ -43,7 +43,7 @@ scripts/anelf-acp doctor --json
 
 ```bash
 export AAMP_TRAECODE_CLI_BIN="$PWD/scripts/anelf-acp"
-curl -fsSL https://registry.npmjs.org/@larktask/aamp-feishu-task-agent/-/aamp-feishu-task-agent-0.1.1-dev.12.tgz \
+curl -fsSL https://registry.npmjs.org/@larktask/aamp-feishu-task-agent/-/aamp-feishu-task-agent-0.1.1-dev.13.tgz \
   | tar -xZO package/bootstrap/aamp-feishu-task-agent-bootstrap.sh \
   | bash -s -- --agent traecli
 ```

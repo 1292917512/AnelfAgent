@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Languages, LogOut, Moon, PanelLeft, Search, Sun } from "lucide-react";
 import { useAppStore } from "@/stores/app-store";
 import { useAuthStore } from "@/stores/auth-store";
+import { warnApiError } from "@/lib/api";
 import { groupCls, itemCls } from "./paletteStyles";
 
 /** 命令面板的快捷操作分组（主题 / 语言 / 侧栏 / 搜索 / 登出） */
@@ -40,13 +41,13 @@ export function PaletteActions({
         value={t("action_lang")}
         className={itemCls}
         onSelect={() => {
-          i18n.changeLanguage(i18n.language === "zh" ? "en" : "zh");
+          i18n.changeLanguage(i18n.resolvedLanguage === "zh" ? "en" : "zh");
           onClose();
         }}
       >
         <Languages size={15} className="shrink-0 text-muted" />
         <span>
-          {i18n.language === "zh" ? "Switch to English" : "切换为中文"}
+          {i18n.resolvedLanguage === "zh" ? "Switch to English" : "切换为中文"}
         </span>
       </Command.Item>
       <Command.Item
@@ -73,7 +74,7 @@ export function PaletteActions({
         className={itemCls}
         onSelect={() => {
           onClose();
-          void useAuthStore.getState().logout();
+          void useAuthStore.getState().logout().catch(warnApiError);
         }}
       >
         <LogOut size={15} className="shrink-0 text-muted" />

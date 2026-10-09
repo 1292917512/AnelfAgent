@@ -11,11 +11,13 @@
 import { useTranslation } from "react-i18next";
 import { Activity, AlertCircle, Brain, MessageSquare, Wrench, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useThinkingStore, type TraceNode } from "@/stores/thinking-store";
+import { useThinkingStore } from "@/stores/thinking-store";
+import type { TraceNode } from "@/lib/types";
+import { sessionChatId } from "@/components/thinking/trace-plans";
 import { useChatStore } from "@/stores/chat-store";
 import { useNow } from "@/hooks/useNow";
 import { useWorkbenchStore } from "@/stores/workbench-store";
-import { useThinkingBootstrap } from "./useThinkingBootstrap";
+import { useThinkingBootstrap } from "@/hooks/useThinking";
 
 const TYPE_ICONS: Record<string, typeof Activity> = {
   llm_call: Brain,
@@ -40,10 +42,11 @@ function TraceCapsule() {
   const activeSession = useThinkingStore((s) => s.activeSession);
   const setActiveTab = useWorkbenchStore((s) => s.setActiveTab);
 
+  const chatId = useChatStore((state) => state.activeChatId);
   const hasRunning = activeSession?.nodes.some((n) => n.status === "running") ?? false;
   useNow(hasRunning);
 
-  if (!activeSession || activeSession.ended) return null;
+  if (!activeSession || activeSession.ended || sessionChatId(activeSession) !== chatId) return <WorkingCapsule />;
 
   const nodes = activeSession.nodes;
   const runningNode = [...nodes].reverse().find((n) => n.status === "running");

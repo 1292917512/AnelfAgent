@@ -157,9 +157,23 @@ class ConversationFolder:
     def __init__(self) -> None:
         self._locks: Dict[str, asyncio.Lock] = {}
         self._last_failure: Dict[str, float] = {}
+        self._tasks: set[asyncio.Task[None]] = set()
+        self._scheduled: set[str] = set()
+        self._closing = False
         # 折后预热钩子（mind 层注册：用新前缀发一次轻调用写热缓存；
         # storage 层不反向依赖 mind，经注入解耦）
         self._prewarm_hook: Optional[Callable[[str, str], Awaitable[None]]] = None
+
+    async def aclose(self) -> None:
+        """取消并等待折叠与预热结束，保证先于数据库关闭。"""
+        self._closing = True
+        tasks = list(self._tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._tasks.clear()
+        self._scheduled.clear()
 
     def set_prewarm_hook(self, hook: "Callable[[str, str], Awaitable[None]]") -> None:
         """注册折后预热钩子（scope_type, scope_id）。"""
@@ -175,11 +189,11 @@ class ConversationFolder:
         watermark_ids: Optional[Dict[str, int]] = None,
     ) -> bool:
         """窗口满时调度一次后台折叠（fire-and-forget）；已在做/退避中则跳过。"""
-        if not is_summary_enabled():
+        if self._closing or not is_summary_enabled():
             return False
         key = f"{scope_type}:{scope_id}"
         lock = self._locks.setdefault(key, asyncio.Lock())
-        if lock.locked():
+        if lock.locked() or key in self._scheduled:
             log(f"折叠调度跳过（已在折叠中）: {key}", "DEBUG", tag="存储")
             return False
         last_fail = self._last_failure.get(key, 0.0)
@@ -187,12 +201,16 @@ class ConversationFolder:
             log(f"折叠调度跳过（失败退避中）: {key}", "DEBUG", tag="存储")
             return False
         try:
-            asyncio.get_running_loop().create_task(
+            task = asyncio.get_running_loop().create_task(
                 self._fold(
                     conv_data, scope_type, scope_id, scopes, dict(watermarks),
                     dict(watermark_ids or {}),
                 )
             )
+            self._tasks.add(task)
+            self._scheduled.add(key)
+            task.add_done_callback(self._tasks.discard)
+            task.add_done_callback(lambda _: self._scheduled.discard(key))
             return True
         except RuntimeError:
             # 无运行中的事件循环（测试/关闭路径）：不折叠，保持滑动行为
@@ -364,12 +382,14 @@ class ConversationFolder:
 
     def _dispatch_prewarm(self, scope_type: str, scope_id: str) -> None:
         """折叠成功后异步预热新前缀（把缓存断点代价转移到空闲后台）。"""
-        if not fold_prewarm_enabled() or self._prewarm_hook is None:
+        if self._closing or not fold_prewarm_enabled() or self._prewarm_hook is None:
             return
         try:
-            asyncio.get_running_loop().create_task(
+            task = asyncio.get_running_loop().create_task(
                 self._run_prewarm(scope_type, scope_id)
             )
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
         except RuntimeError:
             pass  # 无运行中的事件循环（测试/关闭路径）
 

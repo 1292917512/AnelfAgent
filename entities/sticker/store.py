@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 import aiosqlite
 
 from core.log import log
+from core.sqlite_utils import required_row
 
 from .fuzzy import fuzzy_rank
 from .phash import hamming_distance
@@ -109,7 +110,8 @@ def _cosine(a: List[float], b: List[float]) -> float:
     return dot / (na * nb)
 
 
-def _row_to_sticker(row: aiosqlite.Row) -> Dict[str, Any]:
+def _row_to_sticker(row: Optional[aiosqlite.Row]) -> Dict[str, Any]:
+    row = required_row(row)
     try:
         tags = json.loads(row["tags_json"])
     except Exception:
@@ -159,8 +161,6 @@ class StickerStore:
     # ------------------------------------------------------------------
 
     async def _get_db(self) -> aiosqlite.Connection:
-        if self._db is not None:
-            return self._db
         async with self._lock:
             if self._db is not None:
                 return self._db
@@ -426,7 +426,7 @@ class StickerStore:
     ) -> Dict[str, Any]:
         db = await self._get_db()
         cursor = await db.execute("SELECT COUNT(*) AS c FROM stickers")
-        total = (await cursor.fetchone())["c"]
+        total = required_row(await cursor.fetchone())["c"]
         cursor = await db.execute(
             "SELECT * FROM stickers ORDER BY updated_ns DESC LIMIT ? OFFSET ?",
             (page_size, (max(1, page) - 1) * page_size),
@@ -449,12 +449,12 @@ class StickerStore:
         db = await self._get_db()
         cursor = await db.execute(
             "SELECT COUNT(*) AS c, COALESCE(SUM(use_count),0) AS u FROM stickers")
-        row = await cursor.fetchone()
+        row = required_row(await cursor.fetchone())
         cursor = await db.execute("SELECT COUNT(*) AS c FROM images")
-        images = (await cursor.fetchone())["c"]
+        images = required_row(await cursor.fetchone())["c"]
         cursor = await db.execute(
             "SELECT COUNT(*) AS c FROM images WHERE description != ''")
-        described = (await cursor.fetchone())["c"]
+        described = required_row(await cursor.fetchone())["c"]
         return {
             "stickers": row["c"],
             "total_uses": row["u"],
@@ -739,7 +739,7 @@ class StickerStore:
     ) -> Dict[str, Any]:
         db = await self._get_db()
         cursor = await db.execute("SELECT COUNT(*) AS c FROM images")
-        total = (await cursor.fetchone())["c"]
+        total = required_row(await cursor.fetchone())["c"]
         cursor = await db.execute(
             "SELECT * FROM images ORDER BY ts_ns DESC LIMIT ? OFFSET ?",
             (page_size, (max(1, page) - 1) * page_size),

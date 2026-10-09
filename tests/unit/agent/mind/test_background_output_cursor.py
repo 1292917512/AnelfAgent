@@ -10,6 +10,21 @@ from agent.mind.background_tasks import BackgroundTaskRegistry
 
 
 class TestReadTaskOutput:
+    def test_partial_utf8_append_preserves_cursor(self, tmp_path) -> None:
+        reg = BackgroundTaskRegistry()
+        out = tmp_path / "partial.log"
+        encoded = "A中🌍".encode("utf-8")
+        out.write_bytes(encoded[:-1])
+        tid = reg.register("s", "shell", "t")
+        reg.attach_output_file(tid, str(out))
+        first = reg.read_task_output("s", tid)
+        assert first["delta"] == "A中"
+        assert first["consumed_bytes"] == len("A中".encode("utf-8"))
+        with out.open("ab") as stream:
+            stream.write(encoded[-1:])
+        assert reg.read_task_output("s", tid)["delta"] == "🌍"
+        assert reg.read_task_output("s", tid)["delta"] == ""
+
     def test_incremental_reads_return_only_new_output(self, tmp_path) -> None:
         reg = BackgroundTaskRegistry()
         out = tmp_path / "build.log"

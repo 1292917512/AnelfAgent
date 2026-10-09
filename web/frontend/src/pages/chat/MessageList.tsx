@@ -1,10 +1,9 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { GitFork, Loader2, Mic, Undo2, Volume2 } from "lucide-react";
+import { GitFork, Loader2, Mic, Copy, Volume2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatRelativeTimestamp } from "@/lib/format";
 import { useChatStore } from "@/stores/chat-store";
-import { useWorkbenchStore } from "@/stores/workbench-store";
 import { usePlanStore } from "@/stores/plan-store";
 import { useDelegationStore } from "@/stores/delegation-store";
 import { ConfirmDialog } from "@/components/ui/Modal";
@@ -22,6 +21,7 @@ import { CollapsibleUserMessage } from "./render/CollapsibleUserMessage";
 import { FoldChip } from "./render/FoldChip";
 import { ActivityRow } from "./ActivityRow";
 import { StreamingArea } from "./StreamingArea";
+import { HistoryStatus } from "./HistoryStatus";
 import type { ChatMessage, ConversationFold, DelegationNode, PlanRecord } from "@/lib/types";
 
 type TimelineEntry =
@@ -33,20 +33,13 @@ type TimelineEntry =
 /** 单条消息气泡（memo：流式 delta 更新时历史消息行不重渲染） */
 const MessageRow = memo(function MessageRow({ msg, foldPivot }: { msg: ChatMessage; foldPivot?: boolean }) {
   const { t } = useTranslation("chat");
-  const recallQueued = useChatStore((s) => s.recallQueued);
+  const copyMessageToDraft = useChatStore((s) => s.copyMessageToDraft);
   const foldFrom = useChatStore((s) => s.foldFrom);
-  const setDraft = useWorkbenchStore((s) => s.setDraft);
   const isUser = msg.role === "user";
   const [confirmFold, setConfirmFold] = useState(false);
   const [foldBusy, setFoldBusy] = useState(false);
-  // 换向入口：仅 DB 已落库的用户消息可作折叠起点（本地排队/系统消息无 id）
-  const canFold = isUser && msg.id != null && !msg.queued && !foldPivot;
-
-  const onRecall = () => {
-    if (!msg.cid) return;
-    const content = recallQueued(msg.cid);
-    if (content != null) setDraft(content);
-  };
+  // 仅已落库的用户消息可作折叠起点。
+  const canFold = isUser && msg.id != null && !foldPivot;
 
   const onFoldConfirm = async () => {
     if (msg.id == null) return;
@@ -92,23 +85,11 @@ const MessageRow = memo(function MessageRow({ msg, foldPivot }: { msg: ChatMessa
             className={cn(
               "rounded-lg px-4 py-2.5 text-sm leading-relaxed inline-block text-left",
               isUser ? "bg-accent-subtle" : "bg-secondary",
-              msg.queued && "border border-dashed border-muted-foreground/50 opacity-70",
+              msg.delivery === "submitting" && "opacity-70",
+              msg.delivery === "failed" && "border border-danger/50",
             )}
           >
-            {msg.queued && (
-              <div className="flex items-center gap-2 text-[10px] text-muted mb-1">
-                <span>{t("queued")}</span>
-                <button
-                  type="button"
-                  onClick={onRecall}
-                  className="inline-flex items-center gap-0.5 text-accent hover:underline"
-                  title={t("recallToEdit")}
-                >
-                  <Undo2 size={9} />
-                  {t("recall")}
-                </button>
-              </div>
-            )}
+            {isUser && msg.delivery && <p className={cn("mb-1 text-[10px]", msg.delivery === "failed" ? "text-danger" : "text-muted")} role="status">{t(`delivery.${msg.delivery}`)}</p>}
             {msg.voice && (
               <div className="flex items-center gap-1 text-[10px] text-muted mb-1">
                 {msg.voice === "transcript"
@@ -141,6 +122,8 @@ const MessageRow = memo(function MessageRow({ msg, foldPivot }: { msg: ChatMessa
             )}
             title={msg.timestamp}
           >
+            {isUser && msg.cid && <button type="button" onClick={() => copyMessageToDraft(msg.cid!)}
+              className="text-muted hover:text-accent" title={t("copyToDraft")} aria-label={t("copyToDraft")}><Copy size={12} /></button>}
             {canFold && (
               <button
                 type="button"
@@ -319,6 +302,7 @@ export function MessageList() {
 
   return (
     <div ref={scrollRef} className="flex-1 overflow-y-auto space-y-3 pr-1 mb-3 min-h-0">
+      <HistoryStatus />
       {!sseConnected && (
         <div className="flex justify-center" data-testid="sse-reconnect-banner">
           <div className="inline-flex items-center gap-1.5 text-[11px] text-amber-600 dark:text-amber-400 rounded-full bg-amber-500/10 px-3 py-1">
@@ -339,7 +323,7 @@ export function MessageList() {
           </button>
         </div>
       )}
-      {timeline.length === 0 && (
+      {historyLoaded && timeline.length === 0 && (
         <div className="flex items-center justify-center h-full text-muted text-sm">
           {t("startConversation")}
         </div>

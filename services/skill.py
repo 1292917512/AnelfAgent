@@ -155,7 +155,7 @@ class SkillService:
         """创建技能（created_by=user）。"""
         skill = self._store.create(
             name=name, description=description, content=content,
-            trigger_patterns=trigger_patterns or [], created_by="user",
+            trigger_patterns=trigger_patterns or [], created_by="user", replace_existing=False,
         )
         self._sync_vector(skill.name)
         return {"name": skill.name}

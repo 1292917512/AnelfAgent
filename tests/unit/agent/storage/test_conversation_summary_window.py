@@ -29,8 +29,11 @@ def _raw_min(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture
-async def conv_data(sqlite):
+async def conv_data(sqlite, monkeypatch: pytest.MonkeyPatch):
+    folder = ConversationFolder()
+    monkeypatch.setattr(conversation_fold, "conversation_folder", folder)
     yield ConversationData(StorageRouter(sqlite=sqlite), max_size=MAX_SIZE)
+    await folder.aclose()
 
 
 def _anything() -> SimpleNamespace:
@@ -51,6 +54,27 @@ async def _append(conv_data: ConversationData, contents: list[str], start_ts: in
 
 
 class TestWindowFetch:
+    async def test_fold_admission_and_shutdown(self, conv_data, monkeypatch) -> None:
+        folder = conversation_fold.conversation_folder
+        entered = asyncio.Event()
+        stopped = asyncio.Event()
+
+        async def blocked(*args):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.set()
+
+        monkeypatch.setattr(folder, "_fold", blocked)
+        assert folder.maybe_schedule_fold(conv_data, "user", "1", [], {})
+        assert not folder.maybe_schedule_fold(conv_data, "user", "1", [], {})
+        await entered.wait()
+        await folder.aclose()
+        assert stopped.is_set()
+        assert not folder._tasks
+        assert not folder.maybe_schedule_fold(conv_data, "user", "1", [], {})
+
     async def test_below_window_returns_all(self, conv_data) -> None:
         """窗口未满：返回全部消息（无摘要行时行为与旧逻辑一致）。"""
         await _append(conv_data, ["m1", "m2", "m3"])

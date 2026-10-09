@@ -7,6 +7,7 @@
  * 性能：每个 tab 的未读数由 ChatTabItem 独立订阅（细粒度 selector），
  * 任意会话的流式 delta 不会导致整个 tabs 条重渲染。
  */
+import { ConfirmDialog } from "@/components/ui";
 import { memo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Check, MessageSquare, Pencil, Plus, X } from "lucide-react";
@@ -42,9 +43,16 @@ const ChatTabItem = memo(function ChatTabItem({
   const unread = useChatStore((s) => s.buckets[c.chat_id]?.unread ?? 0);
   const setActiveChat = useChatStore((s) => s.setActiveChat);
   const removeChat = useChatStore((s) => s.removeChat);
+  const [confirmClose, setConfirmClose] = useState(false);
+  const requestClose = () => {
+    const bucket = useChatStore.getState().buckets[c.chat_id];
+    if (bucket && (bucket.inputDraft || bucket.pendingFiles.length || bucket.submitting || bucket.sending)) setConfirmClose(true);
+    else removeChat(c.chat_id);
+  };
   const isDefault = c.chat_id === "default";
 
   return (
+    <>
     <div
       className={cn(
         "group flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-md border text-xs whitespace-nowrap transition-colors shrink-0",
@@ -88,15 +96,15 @@ const ChatTabItem = memo(function ChatTabItem({
         <>
           <button
             onClick={() => onStartEdit(c.chat_id, c.title)}
-            className="p-0.5 opacity-0 group-hover:opacity-100 transition-opacity text-muted hover:text-foreground"
+            className="p-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 focus-visible:opacity-100 transition-opacity text-muted hover:text-foreground"
             title={t("tabs.rename")}
             aria-label={t("tabs.rename")}
           >
             <Pencil size={10} />
           </button>
           <button
-            onClick={() => removeChat(c.chat_id)}
-            className="p-0.5 opacity-0 group-hover:opacity-100 transition-opacity text-muted hover:text-red-500"
+            onClick={requestClose}
+            className="p-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 focus-visible:opacity-100 transition-opacity text-muted hover:text-red-500"
             title={t("tabs.close")}
             aria-label={t("tabs.close")}
           >
@@ -115,6 +123,9 @@ const ChatTabItem = memo(function ChatTabItem({
         </button>
       )}
     </div>
+    <ConfirmDialog open={confirmClose} title={t("tabs.close")} message={t("closeDraftWarning")}
+      onClose={() => setConfirmClose(false)} onConfirm={() => removeChat(c.chat_id)} danger />
+    </>
   );
 });
 

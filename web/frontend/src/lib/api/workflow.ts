@@ -20,8 +20,9 @@ export interface WorkflowNode {
   ordinal: number;
   kind: "ask" | "tool" | "repair";
   status: "running" | "completed" | "failed";
-  result_preview: string;
+  result: string;
   error: string;
+  usage: Record<string, unknown> | null;
   delegation_id: string;
   created_at: number;
   updated_at: number;
@@ -36,11 +37,31 @@ export interface WorkflowEvent {
 
 export interface WorkflowRunDetail {
   run: WorkflowRun;
+  spec: WorkflowSpec;
   nodes: WorkflowNode[];
   events: WorkflowEvent[];
+  events_truncated: boolean;
+}
+
+export interface WorkflowStep {
+  key: string;
+  kind: "ask" | "tool";
+  depends_on?: string[];
+  continue_from?: string;
+  goal?: string;
+  tool?: string;
+  phase?: string | null;
+  [field: string]: unknown;
+}
+
+export interface WorkflowSpec {
+  name: string;
+  description?: string;
+  steps: WorkflowStep[];
 }
 
 export const workflowApi = {
+  validate: (spec: unknown) => api.post<{ spec: WorkflowSpec; layers: string[][] }>("/workflow/validate", { spec }),
   listRuns: (limit = 30) =>
     api.get<{ runs: WorkflowRun[] }>("/workflow/runs", { params: { limit } }),
   runDetail: (runId: string) =>

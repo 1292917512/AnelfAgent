@@ -14,6 +14,10 @@ export interface MCPServer {
   stay_awake?: boolean;
   /** 当前生效的沉睡状态（策略求值结果） */
   sleeping?: boolean;
+  /** 来源插件名（插件带入的 server 非空） */
+  plugin?: string;
+  /** channel-only：握手成功但不提供 MCP 工具（通道型插件） */
+  channel_only?: boolean;
 }
 
 /** MCP server 完整配置（创建/编辑共用，字段均可选） */

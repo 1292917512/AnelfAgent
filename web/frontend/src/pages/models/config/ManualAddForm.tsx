@@ -3,7 +3,8 @@ import axios from "axios";
 import { useTranslation } from "react-i18next";
 import { Plus } from "lucide-react";
 import type { CreateModelConfig } from "@/lib/types";
-import { Button, Input } from "@/components/ui";
+import { useDiscardChanges } from "@/hooks/useDiscardChanges";
+import { Button, Input, Modal, ConfirmDialog } from "@/components/ui";
 import { EMPTY_MANUAL_MODEL, type ManualModelForm } from "./shared";
 
 /** 手动添加模型表单 */
@@ -19,6 +20,8 @@ export function ManualAddForm({
   const { t } = useTranslation(["models", "common"]);
   const [form, setForm] = useState<ManualModelForm>(EMPTY_MANUAL_MODEL);
   const [error, setError] = useState("");
+
+  const guard = useDiscardChanges(JSON.stringify(form) !== JSON.stringify(EMPTY_MANUAL_MODEL), onCancel, isPending);
 
   const handleSubmit = async () => {
     const modelId = form.id.trim();
@@ -42,22 +45,23 @@ export function ManualAddForm({
   };
 
   return (
-    <div className="p-4 rounded-md border border-accent bg-elevated space-y-3">
-      <p className="text-sm font-semibold text-heading">{t("manualAddTitle")}</p>
+    <>
+    <Modal open onClose={guard.requestClose} title={t("manualAddTitle")} dismissible={!isPending}>
+    <fieldset disabled={isPending} className="space-y-4">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div className="space-y-1">
           <label className="text-xs font-medium text-muted">{t("modelId")} *</label>
-          <Input value={form.id} placeholder={t("modelIdHint")}
+          <Input aria-label={t("modelId")} value={form.id} placeholder={t("modelIdHint")}
             onChange={(e) => setForm({ ...form, id: e.target.value })} />
         </div>
         <div className="space-y-1">
           <label className="text-xs font-medium text-muted">{t("modelName")}</label>
-          <Input value={form.model} placeholder={t("modelNameHint")}
+          <Input aria-label={t("modelName")} value={form.model} placeholder={t("modelNameHint")}
             onChange={(e) => setForm({ ...form, model: e.target.value })} />
         </div>
         <div className="space-y-1">
           <label className="text-xs font-medium text-muted">{t("contextWindowLabel")}</label>
-          <Input type="number" step={1} value={form.context_window}
+          <Input aria-label={t("contextWindowLabel")} type="number" min={0} step={1} value={form.context_window}
             onChange={(e) => setForm({ ...form, context_window: Number(e.target.value) })} />
         </div>
       </div>
@@ -105,8 +109,11 @@ export function ManualAddForm({
         >
           <Plus size={14} /> {t("common:create")}
         </Button>
-        <Button variant="secondary" onClick={onCancel}>{t("common:cancel")}</Button>
+        <Button variant="secondary" disabled={isPending} onClick={guard.requestClose}>{t("common:cancel")}</Button>
       </div>
-    </div>
+    </fieldset>
+    </Modal>
+    <ConfirmDialog {...guard.confirmProps} />
+    </>
   );
 }

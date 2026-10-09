@@ -1,348 +1,227 @@
 import { create } from "zustand";
-import type { ContextSnapshotData, PlanRecord, SessionSummary, ThinkingSession, TraceNode } from "@/lib/types";
+import type { ContextSnapshotData, SessionSummary, ThinkingSession, TraceNode } from "@/lib/types";
 import { thinkingApi } from "@/lib/api";
-import { usePlanStore } from "./plan-store";
-import { useChatStore } from "./chat-store";
-
-// 类型定义集中在 lib/types/thinking.ts，此处 re-export 兼容既有 import 路径
-export type { SessionSummary, ThinkingSession, TraceNode } from "@/lib/types";
+import { ThinkingStream, type ThinkingEvents } from "./thinking-stream";
 
 const MAX_SESSIONS = 100;
+type SessionPatch = (session: ThinkingSession) => ThinkingSession;
 
-// SSE 连接管理（全局单例，不随页面切换断开）
-let _eventSource: EventSource | null = null;
-// 断线重连判定（首次连接不触发重同步）
-let _wasConnected = false;
-let _storeSetters: {
-  setConnected: (v: boolean) => void;
-  onReconnect: () => void;
-  handleSessionStart: (data: { session: SessionSummary; node: TraceNode }) => void;
-  handleSessionEnd: (data: { session_id: string; node: TraceNode; summary: SessionSummary }) => void;
-  handleNodeAdded: (data: { session_id: string; node: TraceNode }) => void;
-  handleNodeUpdated: (data: { session_id: string; node_id: string; updates: Partial<TraceNode> }) => void;
-  handleToolsUpdated: (data: { session_id: string; tools: string[] }) => void;
-} | null = null;
-
-function connectSSE(setters: typeof _storeSetters) {
-  if (_eventSource) return;
-  _storeSetters = setters;
-
-  const es = new EventSource("/api/thinking/stream");
-  _eventSource = es;
-
-  es.onopen = () => {
-    setters?.setConnected(true);
-    // 重连成功：断线窗口内的事件（含 session_end）已丢失，REST 全量对齐一次
-    if (_wasConnected) setters?.onReconnect();
-    _wasConnected = true;
-  };
-  es.onerror = () => {
-    if (es.readyState === EventSource.CLOSED) {
-      setters?.setConnected(false);
-      _eventSource = null;
-      _wasConnected = false;
-      // 连接彻底关闭（服务端重启/网络中断）：延迟重建，恢复后自愈
-      setTimeout(() => {
-        if (!_eventSource && _storeSetters) connectSSE(_storeSetters);
-      }, 5000);
-    }
-  };
-
-  es.addEventListener("session_start", (e) => {
-    try { setters?.handleSessionStart(JSON.parse(e.data)); } catch {}
-  });
-  es.addEventListener("session_end", (e) => {
-    try { setters?.handleSessionEnd(JSON.parse(e.data)); } catch {}
-  });
-  es.addEventListener("node_added", (e) => {
-    try { setters?.handleNodeAdded(JSON.parse(e.data)); } catch {}
-  });
-  es.addEventListener("node_updated", (e) => {
-    try { setters?.handleNodeUpdated(JSON.parse(e.data)); } catch {}
-  });
-  es.addEventListener("tools_updated", (e) => {
-    try { setters?.handleToolsUpdated(JSON.parse(e.data)); } catch {}
-  });
-  es.addEventListener("ping", () => {});
+function upsertNode(nodes: TraceNode[], node: TraceNode): TraceNode[] {
+  return nodes.some((item) => item.id === node.id)
+    ? nodes.map((item) => item.id === node.id ? node : item)
+    : [...nodes, node];
 }
 
-function disconnectSSE() {
-  if (_eventSource) {
-    _eventSource.close();
-    _eventSource = null;
-  }
-  _wasConnected = false;
-  _storeSetters?.setConnected(false);
-  _storeSetters = null;
+function orderedSessions(sessions: SessionSummary[]): SessionSummary[] {
+  return [...new Map(sessions.map((session) => [session.id, session])).values()]
+    .sort((a, b) => b.start_time - a.start_time).slice(0, MAX_SESSIONS);
 }
 
 interface ThinkingState {
   enabled: boolean;
   connected: boolean;
+  statusSynced: boolean;
+  toggling: boolean;
+  statusError: unknown;
   sessions: SessionSummary[];
+  sessionsLoading: boolean;
+  sessionsError: unknown;
   activeSessionId: string | null;
   activeSession: ThinkingSession | null;
+  sessionLoading: boolean;
+  sessionError: unknown;
   selectedNodeId: string | null;
   autoFollow: boolean;
-  _statusSynced: boolean;
-
-  // 上下文快照（跨页面持久）
   snapshotArmed: boolean;
   snapshotData: ContextSnapshotData | null;
   showSnapshot: boolean;
-
-  setEnabled: (v: boolean) => void;
-  setConnected: (v: boolean) => void;
-  onReconnect: () => void;
-  setSessions: (s: SessionSummary[]) => void;
-  setActiveSessionId: (id: string | null) => void;
-  setActiveSession: (s: ThinkingSession | null) => void;
+  initialize: (force?: boolean) => Promise<void>;
+  shutdown: () => void;
+  setTracking: (enabled: boolean) => Promise<void>;
+  refreshSessions: () => Promise<void>;
+  selectSession: (id: string) => Promise<void>;
+  refreshSession: () => Promise<void>;
   setSelectedNodeId: (id: string | null) => void;
-  setAutoFollow: (v: boolean) => void;
-  setStatusSynced: (v: boolean) => void;
+  setAutoFollow: (value: boolean) => void;
   startSSE: () => void;
   stopSSE: () => void;
-
-  setSnapshotArmed: (v: boolean) => void;
-  setSnapshotData: (d: ContextSnapshotData | null) => void;
-  setShowSnapshot: (v: boolean) => void;
+  setSnapshotArmed: (value: boolean) => void;
+  setSnapshotData: (data: ContextSnapshotData | null) => void;
+  setShowSnapshot: (value: boolean) => void;
   clearSnapshot: () => void;
-
-  handleSessionStart: (data: { session: SessionSummary; node: TraceNode }) => void;
-  handleSessionEnd: (data: { session_id: string; node: TraceNode; summary: SessionSummary }) => void;
-  handleNodeAdded: (data: { session_id: string; node: TraceNode }) => void;
-  handleNodeUpdated: (data: { session_id: string; node_id: string; updates: Partial<TraceNode> }) => void;
-  handleToolsUpdated: (data: { session_id: string; tools: string[] }) => void;
+  handleSessionStart: (data: ThinkingEvents["session_start"]) => void;
+  handleSessionEnd: (data: ThinkingEvents["session_end"]) => void;
+  handleNodeAdded: (data: ThinkingEvents["node_added"]) => void;
+  handleNodeUpdated: (data: ThinkingEvents["node_updated"]) => void;
+  handleToolsUpdated: (data: ThinkingEvents["tools_updated"]) => void;
 }
 
-export const useThinkingStore = create<ThinkingState>((set, get) => ({
-  enabled: false,
-  connected: false,
-  sessions: [],
-  activeSessionId: null,
-  activeSession: null,
-  selectedNodeId: null,
-  autoFollow: true,
-  _statusSynced: false,
+export const useThinkingStore = create<ThinkingState>((set, get) => {
+  let initializing: Promise<void> | null = null;
+  let requestId = 0;
+  let generation = 0;
+  let patches: SessionPatch[] | null = null;
+  let listUpdates: Map<string, SessionSummary> | null = null;
+  const stream = new ThinkingStream({
+    session_start: (event) => get().handleSessionStart(event),
+    session_end: (event) => get().handleSessionEnd(event),
+    node_added: (event) => get().handleNodeAdded(event),
+    node_updated: (event) => get().handleNodeUpdated(event),
+    tools_updated: (event) => get().handleToolsUpdated(event),
+  }, (connected) => set({ connected }), () => {
+    void get().initialize(true);
+    void get().refreshSessions();
+    void get().refreshSession();
+  });
 
-  snapshotArmed: false,
-  snapshotData: null,
-  showSnapshot: false,
+  function patchSession(id: string, patch: SessionPatch): void {
+    if (get().activeSessionId !== id) return;
+    patches?.push(patch);
+    const active = get().activeSession;
+    if (active?.id === id) set({ activeSession: patch(active) });
+  }
 
-  setEnabled: (v) => set({ enabled: v }),
-  setConnected: (v) => set({ connected: v }),
-  setSessions: (s) => set({ sessions: s }),
-  setActiveSessionId: (id) => set({ activeSessionId: id }),
-  setActiveSession: (s) => set({ activeSession: s }),
-  setSelectedNodeId: (id) => set({ selectedNodeId: id }),
-  setAutoFollow: (v) => set({ autoFollow: v }),
-  setStatusSynced: (v) => set({ _statusSynced: v }),
+  function updateSummary(summary: SessionSummary): void {
+    listUpdates?.set(summary.id, summary);
+    set({ sessions: orderedSessions([...get().sessions.filter((item) => item.id !== summary.id), summary]) });
+  }
 
-  onReconnect: () => {
-    // SSE 断线窗口内的事件已丢失：REST 全量对齐会话列表与当前会话详情
-    const { activeSessionId } = get();
-    thinkingApi.sessions(50).then((r) => {
-      set({ sessions: r.data.sessions ?? [] });
-    }).catch(() => {});
-    if (activeSessionId) {
-      thinkingApi.session(activeSessionId).then((r) => {
-        if (r.data && !r.data.error) set({ activeSession: r.data });
-      }).catch(() => {});
+  async function loadSession(id: string): Promise<void> {
+    const ticket = ++requestId;
+    patches = [];
+    set({ sessionLoading: true, sessionError: null });
+    try {
+      const { data } = await thinkingApi.session(id);
+      if (ticket !== requestId || get().activeSessionId !== id) return;
+      const session = (patches ?? []).reduce((current, patch) => patch(current), data);
+      set({ activeSession: session });
+    } catch (error) {
+      if (ticket === requestId) set({ sessionError: error });
+    } finally {
+      if (ticket === requestId) {
+        patches = null;
+        set({ sessionLoading: false });
+      }
     }
-  },
+  }
 
-  setSnapshotArmed: (v) => set({ snapshotArmed: v }),
-  setSnapshotData: (d) => set({ snapshotData: d }),
-  setShowSnapshot: (v) => set({ showSnapshot: v }),
-  clearSnapshot: () => set({ snapshotArmed: false, snapshotData: null, showSnapshot: false }),
+  return {
+    enabled: false, connected: false, statusSynced: false, toggling: false, statusError: null,
+    sessions: [], sessionsLoading: false, sessionsError: null,
+    activeSessionId: null, activeSession: null, sessionLoading: false, sessionError: null,
+    selectedNodeId: null, autoFollow: true,
+    snapshotArmed: false, snapshotData: null, showSnapshot: false,
 
-  startSSE: () => {
-    const state = get();
-    connectSSE({
-      setConnected: state.setConnected,
-      onReconnect: state.onReconnect,
-      handleSessionStart: state.handleSessionStart,
-      handleSessionEnd: state.handleSessionEnd,
-      handleNodeAdded: state.handleNodeAdded,
-      handleNodeUpdated: state.handleNodeUpdated,
-      handleToolsUpdated: state.handleToolsUpdated,
-    });
-  },
-  stopSSE: () => {
-    disconnectSSE();
-  },
+    initialize: async (force = false) => {
+      if (get().toggling || (get().statusSynced && !force)) return;
+      if (initializing) return initializing;
+      const ticket = generation;
+      initializing = (async () => {
+        set({ statusError: null });
+        try {
+          const { data } = await thinkingApi.status();
+          if (ticket !== generation) return;
+          const changed = get().statusSynced && get().enabled !== data.enabled;
+          set({ enabled: data.enabled, statusSynced: true });
+          if (data.enabled) stream.start(); else stream.stop();
+          if (changed) {
+            await get().refreshSessions();
+            if (ticket === generation) await get().refreshSession();
+          }
+        } catch (error) { if (ticket === generation) set({ statusError: error }); }
+        finally { if (ticket === generation) initializing = null; }
+      })();
+      return initializing;
+    },
+    shutdown: () => {
+      generation += 1;
+      requestId += 1;
+      initializing = null;
+      patches = null;
+      listUpdates = null;
+      stream.stop();
+      set({ enabled: false, statusSynced: false, toggling: false, statusError: null,
+        sessions: [], sessionsLoading: false, sessionsError: null, activeSessionId: null,
+        activeSession: null, sessionLoading: false, sessionError: null, selectedNodeId: null,
+        snapshotArmed: false, snapshotData: null, showSnapshot: false });
+    },
+    setTracking: async (enabled) => {
+      if (get().toggling) return;
+      const ticket = generation;
+      set({ toggling: true, statusError: null });
+      await initializing;
+      if (ticket !== generation) return;
+      try {
+        const { data } = await thinkingApi.toggle(enabled);
+        if (ticket !== generation) return;
+        set({ enabled: data.enabled, statusSynced: true });
+        if (data.enabled) stream.start();
+        else stream.stop();
+        await get().refreshSessions();
+        await get().refreshSession();
+      } catch (error) { if (ticket === generation) set({ statusError: error }); }
+      finally { if (ticket === generation) set({ toggling: false }); }
+    },
+    refreshSessions: async () => {
+      if (get().sessionsLoading) return;
+      const ticket = generation;
+      listUpdates = new Map();
+      set({ sessionsLoading: true, sessionsError: null });
+      try {
+        const { data } = await thinkingApi.sessions(MAX_SESSIONS);
+        if (ticket !== generation) return;
+        const sessions = orderedSessions([...data.sessions, ...(listUpdates?.values() ?? [])]);
+        set({ sessions });
+        if (!get().activeSessionId && sessions[0]) {
+          set({ activeSessionId: sessions[0].id });
+          await loadSession(sessions[0].id);
+        }
+      } catch (error) { if (ticket === generation) set({ sessionsError: error }); }
+      finally { if (ticket === generation) { listUpdates = null; set({ sessionsLoading: false }); } }
+    },
+    selectSession: async (id) => {
+      set({ activeSessionId: id, activeSession: null, selectedNodeId: null, autoFollow: false });
+      await loadSession(id);
+    },
+    refreshSession: async () => {
+      const id = get().activeSessionId;
+      if (id && !get().sessionLoading) await loadSession(id);
+    },
+    setSelectedNodeId: (selectedNodeId) => set({ selectedNodeId, ...(selectedNodeId ? { autoFollow: false } : {}) }),
+    setAutoFollow: (autoFollow) => set({ autoFollow }),
+    startSSE: () => stream.start(),
+    stopSSE: () => stream.stop(),
+    setSnapshotArmed: (snapshotArmed) => set({ snapshotArmed }),
+    setSnapshotData: (snapshotData) => set({ snapshotData }),
+    setShowSnapshot: (showSnapshot) => set({ showSnapshot }),
+    clearSnapshot: () => set({ snapshotArmed: false, snapshotData: null, showSnapshot: false }),
 
-  handleSessionStart: ({ session, node }) => {
-    set((state) => {
-      const sessions = [session, ...state.sessions].slice(0, MAX_SESSIONS);
-      const newSession: ThinkingSession = { ...session, nodes: [node], available_tools: [] };
-      // 跟随策略：心跳/内省永不抢占面板（高频后台会话会把用户正看的
-      // 对话链路顶掉——「捕捉不到了」的根因）；只看历史心跳可经会话切换器
-      const isBackgroundKind = Boolean(session.is_heartbeat || session.is_introspection);
-      if (state.autoFollow && !isBackgroundKind) {
-        return { sessions, activeSessionId: session.id, activeSession: newSession };
+    handleSessionStart: ({ session, node }) => {
+      updateSummary(session);
+      const state = get();
+      if ((!state.activeSessionId || state.autoFollow) && !session.is_heartbeat && !session.is_introspection && !session.is_delegation) {
+        ++requestId;
+        patches = null;
+        set({ activeSessionId: session.id, activeSession: { ...session, nodes: [node], available_tools: [] },
+          selectedNodeId: null, sessionLoading: false, sessionError: null });
       }
-      return { sessions };
-    });
-  },
-
-  handleSessionEnd: ({ session_id, node, summary }) => {
-    set((state) => {
-      const sessions = state.sessions.map((s) =>
-        s.id === session_id ? { ...s, ...summary } : s,
-      );
-      if (state.activeSessionId === session_id && state.activeSession) {
-        return {
-          sessions,
-          activeSession: {
-            ...state.activeSession,
-            ...summary,
-            nodes: [...state.activeSession.nodes, node],
-          },
-        };
-      }
-      return { sessions };
-    });
-  },
-
-  handleNodeAdded: ({ session_id, node }) => {
-    set((state) => {
-      if (state.activeSessionId !== session_id || !state.activeSession) return {};
-      return {
-        activeSession: {
-          ...state.activeSession,
-          node_count: state.activeSession.node_count + 1,
-          nodes: [...state.activeSession.nodes, node],
-        },
-      };
-    });
-  },
-
-  handleNodeUpdated: ({ session_id, node_id, updates }) => {
-    set((state) => {
-      if (state.activeSessionId !== session_id || !state.activeSession) return {};
-      const nodes = state.activeSession.nodes.map((n) =>
-        n.id === node_id ? { ...n, ...updates } : n,
-      );
-      return { activeSession: { ...state.activeSession, nodes } };
-    });
-  },
-
-  handleToolsUpdated: ({ session_id, tools }) => {
-    set((state) => {
-      if (state.activeSessionId !== session_id || !state.activeSession) return {};
-      return { activeSession: { ...state.activeSession, available_tools: tools } };
-    });
-  },
-}));
-
-// ------------------------------------------------------------------
-// Plan 虚拟节点注入：把 plan-store 中的 plan 转为 TraceNode 拼到 activeSession.nodes
-// 使 FlowView 能看到"plan_root → plan_step × N"的子树
-// ------------------------------------------------------------------
-
-const PLAN_NODE_ID_PREFIX = "__plan__";
-
-function planRootNodeId(planId: string): string {
-  return `${PLAN_NODE_ID_PREFIX}root:${planId}`;
-}
-
-function planStepNodeId(planId: string, stepIndex: number): string {
-  return `${PLAN_NODE_ID_PREFIX}step:${planId}:${stepIndex}`;
-}
-
-function planStepStatusToNodeStatus(status: string): TraceNode["status"] {
-  if (status === "completed") return "completed";
-  if (status === "in_progress") return "running";
-  if (status === "skipped") return "error";
-  return "pending";
-}
-
-/**
- * 把指定 chat 的 plan 转成 TraceNode[]，挂在 activeSession 末端。
- * 保持幂等：以 plan_id 为 key，每次 plan-store 变化时全量重建。
- */
-export function buildPlanVirtualNodes(chatPlans: Record<string, PlanRecord> | undefined): TraceNode[] {
-  if (!chatPlans) return [];
-  const plans = Object.values(chatPlans).sort((a, b) => a.created_at - b.created_at);
-  const nodes: TraceNode[] = [];
-  for (const plan of plans) {
-    const rootId = planRootNodeId(plan.plan_id);
-    nodes.push({
-      id: rootId,
-      type: "plan_root",
-      label: plan.goal || `Plan ${plan.plan_id}`,
-      status: plan.status === "completed" ? "completed"
-        : plan.status === "cancelled" ? "error"
-          : "running",
-      timestamp: plan.created_at,
-      duration_ms: plan.completed_at
-        ? Math.round((plan.completed_at - plan.created_at) * 1000)
-        : null,
-      data: {
-        plan_id: plan.plan_id,
-        goal: plan.goal,
-        step_count: plan.steps.length,
-        files: plan.files,
-        risks: plan.risks,
-      },
-      parent_id: null,
-    });
-    for (const step of plan.steps) {
-      nodes.push({
-        id: planStepNodeId(plan.plan_id, step.index),
-        type: "plan_step",
-        label: step.content,
-        status: planStepStatusToNodeStatus(step.status),
-        timestamp: plan.created_at + step.index * 0.001,
-        duration_ms: null,
-        data: {
-          plan_id: plan.plan_id,
-          step_index: step.index,
-          note: step.note,
-          step_status: step.status,
-        },
-        parent_id: rootId,
+    },
+    handleSessionEnd: ({ session_id, node, summary }) => {
+      updateSummary(summary);
+      patchSession(session_id, (session) => ({ ...session, ...summary, nodes: upsertNode(session.nodes, node) }));
+    },
+    handleNodeAdded: ({ session_id, node }) => {
+      patchSession(session_id, (session) => {
+        const nodes = upsertNode(session.nodes, node);
+        return { ...session, nodes, node_count: nodes.length };
       });
-    }
-  }
-  return nodes;
-}
-
-// useMergedActiveSessionNodes 的结果缓存：输入引用未变时返回同一数组引用，
-// 保证 FlowView 的 useMemo([session, mergedNodes]) 链不被无意义的新数组击穿。
-let _mergedCache: {
-  session: ThinkingSession | null;
-  chatPlans: Record<string, PlanRecord> | undefined;
-  result: TraceNode[];
-} | null = null;
-
-/**
- * 订阅 plan-store 变化，把 plan 虚拟节点合并进 activeSession.nodes。
- * 在 FlowView / TimelineView 渲染前调用，保证 plan 节点实时同步。
- */
-export function useMergedActiveSessionNodes(): TraceNode[] {
-  const activeSession = useThinkingStore((s) => s.activeSession);
-  const activeChatId = useChatStore((s) => s.activeChatId);
-  const chatPlans = usePlanStore((s) => s.plans[activeChatId]);
-
-  if (_mergedCache && _mergedCache.session === activeSession && _mergedCache.chatPlans === chatPlans) {
-    return _mergedCache.result;
-  }
-
-  let result: TraceNode[];
-  if (!activeSession) {
-    // 即使没有 thinking session，也展示 plan 节点（让 PlanCard 也能在导图里看到）
-    result = buildPlanVirtualNodes(chatPlans);
-  } else {
-    // 真实 trace 节点（剔除之前的 plan 虚拟节点，避免重复）
-    const realNodes = activeSession.nodes.filter((n) => !n.id.startsWith(PLAN_NODE_ID_PREFIX));
-    const planNodes = buildPlanVirtualNodes(chatPlans);
-    // 简单合并：plan 节点附加在末尾（FlowView 的递归布局会按 parent_id 自动放置）
-    result = [...realNodes, ...planNodes];
-  }
-  // eslint-disable-next-line react-hooks/globals -- 有意的模块级 memo：保证输入不变时返回同一引用，供 FlowView 的 useMemo 链复用
-  _mergedCache = { session: activeSession, chatPlans, result };
-  return result;
-}
-
+    },
+    handleNodeUpdated: ({ session_id, node_id, updates }) => {
+      patchSession(session_id, (session) => ({ ...session, nodes: session.nodes.map((node) =>
+        node.id === node_id ? { ...node, ...updates, data: { ...node.data, ...updates.data } } : node) }));
+    },
+    handleToolsUpdated: ({ session_id, tools }) => {
+      patchSession(session_id, (session) => ({ ...session, available_tools: tools }));
+    },
+  };
+});

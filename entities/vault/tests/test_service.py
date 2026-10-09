@@ -32,6 +32,12 @@ async def service(tmp_path, monkeypatch):
 class TestMachineMode:
     """机器密钥模式：AI 优先的默认路径（自动建库 + 自动解锁）。"""
 
+    async def test_machine_key_binary_roundtrip(self, service, monkeypatch):
+        key = bytes(range(svc_mod.crypto.DEK_LENGTH))
+        monkeypatch.setattr(svc_mod.crypto, "generate_dek", lambda: key)
+        assert service._load_or_create_machine_key() == key
+        assert service._load_or_create_machine_key() == key
+
     async def test_auto_provision_on_first_write(self, service):
         """未初始化时首次写入自动建库（机器模式），AI 零摩擦。"""
         assert not await service.is_initialized()
@@ -87,6 +93,8 @@ class TestMachineMode:
     async def test_machine_key_file_permissions(self, service):
         import os
         import stat
+        if os.name == "nt":
+            pytest.skip("POSIX mode bits do not represent Windows ACLs")
 
         await service.setup_machine()
         key_path = f"{service.store.db_path}.key"

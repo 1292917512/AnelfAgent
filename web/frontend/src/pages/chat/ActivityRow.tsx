@@ -9,6 +9,7 @@ import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useChatStore } from "@/stores/chat-store";
 import { useNow } from "@/hooks/useNow";
+import { sessionChatId } from "@/components/thinking/trace-plans";
 import { useThinkingStore } from "@/stores/thinking-store";
 
 function pickVerb(verbs: string[], seed: number) {
@@ -18,6 +19,7 @@ function pickVerb(verbs: string[], seed: number) {
 export function ActivityRow() {
   const { t } = useTranslation("chat");
   const sendingSince = useChatStore((s) => s.buckets[s.activeChatId]?.sendingSince ?? null);
+  const chatId = useChatStore((state) => state.activeChatId);
   const activeSession = useThinkingStore((s) => s.activeSession);
 
   const [verbSeed] = useState(() => Math.floor(Math.random() * 1000));
@@ -26,7 +28,7 @@ export function ActivityRow() {
 
   // 当前运行中的工具节点（thinking SSE 实时事件，可能未启用则为空）
   const currentTool = useMemo(() => {
-    const nodes = activeSession?.nodes ?? [];
+    const nodes = activeSession && !activeSession.ended && sessionChatId(activeSession) === chatId ? activeSession.nodes : [];
     for (let i = nodes.length - 1; i >= 0; i--) {
       const node = nodes[i];
       if (node && node.status === "running" && node.type.includes("tool")) {
@@ -34,7 +36,7 @@ export function ActivityRow() {
       }
     }
     return "";
-  }, [activeSession]);
+  }, [activeSession, chatId]);
 
   const verb = useMemo(() => {
     const verbs = t("activity.verbs", { returnObjects: true }) as string[];

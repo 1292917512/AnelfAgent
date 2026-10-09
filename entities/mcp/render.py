@@ -80,8 +80,6 @@ async def _render_call_result(result: CallToolResult) -> str:
             placeholders.append(f"[resource: {item.uri}]")
         elif isinstance(item, EmbeddedResource):
             placeholders.append(_render_embedded_resource(item))
-        else:
-            placeholders.append(f"[未知内容块: {type(item).__name__}]")
 
     if dropped_images:
         placeholders.append(

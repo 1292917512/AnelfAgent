@@ -6,8 +6,8 @@ Markdown 文件持有（随 ANELF_CONFIG_DIR 搬迁，可直接备份/同步）�
 
 - AI 无写入路径（记忆/便签工具均不暴露此文件，写入口仅 Web API 与手工编辑）
 - 人类经 Web 记忆页「规则」标签整文档编辑（GET/PUT /api/memory/rules）
-- 读取经 mtime 缓存（每回复周期的 stable 指纹计算只付一次 stat syscall），
-  文件变更下个回复周期即生效；生效文本参与 stable 指纹，编辑后工具块
+- 每回复周期读取当前文档，文件变更下个回复周期即生效；
+  生效文本参与 stable 指纹，编辑后工具块
   按新文本重建一次，之后恢复字节冻结
 
 文案纪律：只讲路由与纪律（程序无法强制的判断准则），不写具体实例内容
@@ -67,8 +67,6 @@ DEFAULT_RULES = (
     "遇到问题及时反馈给你的管理者\n"
     ""
 )
-# mtime 快检缓存：(mtime_ns, 文本)；文件未变时读取只付一次 stat
-_cache: tuple[int, str] | None = None
 
 
 def rules_path() -> Path:
@@ -77,35 +75,22 @@ def rules_path() -> Path:
 
 
 def load_rules() -> str:
-    """读取铁律文档全文（mtime 缓存；缺失时以内置默认种子落盘，异常回退默认）。"""
-    global _cache
+    """读取当前铁律文档；缺失时写入默认文档，读取异常时回退默认。"""
     path = rules_path()
     try:
-        stat = path.stat()
-    except OSError:
-        # 首次运行：种子落盘（让人类直接拿到完整默认文档）
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
         save_rules(DEFAULT_RULES)
         return DEFAULT_RULES
-    if _cache is not None and _cache[0] == stat.st_mtime_ns:
-        return _cache[1]
-    try:
-        text = path.read_text(encoding="utf-8")
-    except Exception as exc:
+    except (OSError, UnicodeError) as exc:
         log(f"记忆铁律文档读取失败: {exc}", "WARNING", tag="记忆")
         return DEFAULT_RULES
-    _cache = (stat.st_mtime_ns, text)
-    return text
 
 
 def save_rules(content: str) -> None:
-    """原子写入铁律文档并刷新缓存（Web/手工编辑的唯一写入口）。"""
-    global _cache
+    """原子写入铁律文档。"""
     path = rules_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(content, encoding="utf-8")
     tmp.replace(path)
-    try:
-        _cache = (path.stat().st_mtime_ns, content)
-    except OSError:
-        _cache = None

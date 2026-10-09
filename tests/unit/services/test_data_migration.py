@@ -86,6 +86,30 @@ class TestGetLocation:
 
 
 class TestMigration:
+    def test_failed_finalization_keeps_old_location_and_can_retry(self, tmp_path, src_dir, monkeypatch):
+        from agent.storage import migration
+
+        target = tmp_path / "dst"
+        migration.stage_migration(migration.PendingMigration(
+            kind="data", source=str(src_dir), target=str(target), files=[],
+        ))
+        original = migration._copy_file
+
+        def fail_copy(*_args):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(migration, "_copy_file", fail_copy)
+        with pytest.raises(OSError, match="disk full"):
+            migration.finalize_pending_migration(lambda *_args: None)
+        assert ConfigManager.get("data_root") is None
+        assert migration.pending_migration() is not None
+        dm._reset_state()
+        assert dm.migration_status()["needs_restart"]
+        monkeypatch.setattr(migration, "_copy_file", original)
+        migration.finalize_pending_migration(lambda *_args: None)
+        assert ConfigManager.get("data_root") == str(target)
+        assert migration.pending_migration() is None
+
     async def test_full_migration(self, tmp_path, src_dir):
         target = tmp_path / "dst"
         status = dm.start_migration(str(target))
@@ -109,8 +133,20 @@ class TestMigration:
             assert conn.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 50
         finally:
             conn.close()
-        # data_root 已写入配置（隔离的临时配置文件）
+        from agent.storage.migration import finalize_pending_migration, pending_migration
+        assert ConfigManager.get("data_root") is None
+        assert pending_migration() is not None
+        with sqlite3.connect(src_dir / "data" / "agent.sqlite3") as db:
+            db.execute("INSERT INTO t(v) VALUES ('after-copy')")
+        (src_dir / "notes.md").unlink()
+        (src_dir / "new.md").write_text("new", encoding="utf-8")
+        finalize_pending_migration(lambda _id, _path: None)
+        with sqlite3.connect(target / "data" / "agent.sqlite3") as db:
+            assert db.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 51
+        assert not (target / "notes.md").exists()
+        assert (target / "new.md").read_text(encoding="utf-8") == "new"
         assert ConfigManager.get("data_root") == str(target.resolve())
+        assert pending_migration() is None
 
     async def test_single_flight(self, tmp_path):
         dm._running = True

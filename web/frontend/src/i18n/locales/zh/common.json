@@ -28,14 +28,14 @@
   "prev": "上一页",
   "next": "下一页",
   "merge": "合并",
-  "reset": "重置默认",
+  "reset": "重置",
   "all": "全部",
   "available": "可用",
   "unavailable": "不可用",
   "on": "开启中",
   "off": "关闭中",
   "connected": "已连接",
-  "disconnected": "未连接",
+  "disconnected": "连接中断，点击重试",
   "login": "登录",
   "passwordPlaceholder": "输入访问密码",
   "verifying": "验证中…",
@@ -70,5 +70,20 @@
       "vision": "视觉",
       "retrieval": "检索"
     }
-  }
+  },
+  "dialog": "对话框",
+  "loadFailed": "加载失败",
+  "connecting": "连接中",
+  "pageNotFound": "页面不存在",
+  "pageNotFoundDescription": "这个地址没有对应的功能页面，可以通过侧栏或搜索找到所需功能。",
+  "backToWorkspace": "返回工作区",
+  "sessionExpired": "登录已过期，请重新登录。",
+  "unsavedChanges": "有未保存的修改",
+  "discardChanges": "放弃修改",
+  "keepEditing": "继续编辑",
+  "unsavedDescription": "离开后将丢失当前未保存的修改。",
+  "resultsCount": "共 {{count}} 项",
+  "noMatches": "没有匹配结果",
+  "clearFilters": "清除筛选",
+  "saved": "已保存"
 }

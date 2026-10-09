@@ -8,7 +8,6 @@
   "sendFailed": "Send failed",
   "downloadFile": "Download file",
   "mediaLoadFailed": "Media failed to load (link may be expired)",
-  "queued": "Queued · will be handled after current reply",
   "activity": {
     "usingTool": "Using tool: {{tool}}",
     "verbs": [
@@ -98,8 +97,6 @@
   "rootProject": "Project",
   "removeAttachment": "Remove attachment",
   "rootDir": "Folder",
-  "recall": "Recall",
-  "recallToEdit": "Recall and edit",
   "attachmentUploading": "Attachments are still uploading. Please wait before sending.",
   "attachmentFailed": "Some attachments failed to upload. Remove them before sending.",
   "voiceConnectFailed": "Voice channel connection failed",
@@ -119,5 +116,24 @@
     "restore": "Restore",
     "foldFailed": "Failed to fold messages",
     "restoreFailed": "Failed to restore fold"
+  },
+  "messageInput": "Message",
+  "historyLoading": "Syncing conversation history…",
+  "closeDraftWarning": "Closing discards this conversation’s unsent text and attachments. Any AI task already started will continue.",
+  "addMessage": "Add message",
+  "copyToDraft": "Copy to draft (original kept)",
+  "delivery": {
+    "submitting": "Submitting…",
+    "submitted": "Submitted",
+    "failed": "Reception failed. Copy to draft to retry."
+  },
+  "workspaceContext": {
+    "include": "Include workspace context",
+    "summary": "{{tabs}} files · {{chars}} selected characters",
+    "preview": "Preview included context",
+    "help": "The current file path, open tabs and selected text are captured when you send. Unselected file contents are not sent automatically.",
+    "excluded": "Automatic context is off for this chat. Manually attached files will still be sent.",
+    "active": "Active file",
+    "selection": "Selected lines"
   }
 }

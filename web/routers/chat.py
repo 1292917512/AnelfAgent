@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 from core.path import upload_url_for
@@ -18,6 +18,7 @@ from services import ChatService, UiService
 from services.chat import UPLOAD_DIR as _UPLOAD_DIR
 from services.chat import classify_file_type as _classify_file
 from services.chat import clean_message_for_display, normalize_web_scope_id
+from services.workspace_context import WorkspaceContext
 from web.routers._errors import server_error
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -105,11 +106,13 @@ async def post_ui_state(req: UiStateRequest) -> Dict[str, str]:
 
 class SendMessageRequest(BaseModel):
     message: str
+    message_id: str = Field(default="", max_length=64)
     user_id: str = "web_user"
     user_name: str = "用户"
     chat_id: Optional[str] = None  # 前端多会话标识，落到 Everything.session_id 参与 scope 隔离
     images: Optional[List[str]] = None
     files: Optional[List[str]] = None
+    workspace_context: WorkspaceContext | None = None
 
 
 class SendMessageResponse(BaseModel):
@@ -177,10 +180,16 @@ async def send_message(req: SendMessageRequest) -> SendMessageResponse:
             user_id=req.user_id,
             user_name=req.user_name,
             chat_id=req.chat_id,
+            workspace_context=req.workspace_context,
+            message_id=req.message_id,
         )
         return SendMessageResponse()
-    except Exception as e:
-        return SendMessageResponse(ok=False, error=str(e))
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        raise server_error("发送消息", exc) from exc
 
 
 @router.get("/history")

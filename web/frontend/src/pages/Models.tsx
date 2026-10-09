@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useRouteTab } from "@/hooks/useRouteTab";
 import { useTranslation } from "react-i18next";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
-import { PageContainer } from "@/components/common/PageContainer";
+import { PageContainer, PageIntro } from "@/components/common/PageContainer";
 import { Bot, Cpu, KeyRound, ListOrdered, Scale } from "lucide-react";
 import { ConfigPanel } from "@/pages/models/ConfigPanel";
 import { PrioritiesPanel } from "@/pages/models/PrioritiesPanel";
@@ -13,7 +13,7 @@ type ModelTab = "config" | "priorities" | "subagents" | "judgment" | "providerKe
 
 export default function Models() {
   const { t } = useTranslation(["models", "common"]);
-  const [activeTab, setActiveTab] = useState<ModelTab>("config");
+  const [activeTab, setActiveTab] = useRouteTab<ModelTab>(["config", "priorities", "subagents", "judgment", "providerKeys"], "config");
 
   const tabs: TabItem<ModelTab>[] = [
     { key: "config", label: t("tabs.config"), icon: Cpu },
@@ -25,6 +25,7 @@ export default function Models() {
 
   return (
     <PageContainer>
+      <PageIntro />
       <TabBar tabs={tabs} activeTab={activeTab} onChange={setActiveTab} />
 
       {activeTab === "config" && <ConfigPanel />}

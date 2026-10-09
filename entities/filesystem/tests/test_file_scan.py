@@ -107,7 +107,7 @@ def test_looks_binary_by_nul_sampling(tmp_path) -> None:
     binary = tmp_path / "noext"
     binary.write_bytes(b"PK\x03\x04\x00\x00rest")
     text = tmp_path / "noext2"
-    text.write_text("普通文本")
+    text.write_text("普通文本", encoding="utf-8")
     assert looks_binary(str(binary)) is True
     assert looks_binary(str(text)) is False
     assert looks_binary(str(tmp_path / "ghost")) is False

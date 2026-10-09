@@ -119,7 +119,7 @@ class PromptCacheManager:
                     if scope in e.scopes and (layer is None or k[0] == layer)]:
             self._entries.pop(key, None)
 
-    def stats(self) -> Dict[str, int]:
+    def stats(self) -> Dict[str, int | float]:
         """缓存统计（命中/未命中/失效次数）。"""
         total = self.hits + self.misses
         return {

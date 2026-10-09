@@ -1,35 +1,58 @@
-/**
- * 构建产物原子切换：vite 输出到 dist.next，构建全部完成后才交换为 dist。
- *
- * 后端 web/server.py 每次请求实时从磁盘读 dist（index.html 禁缓存逐请求读盘），
- * 此前 vite 直接写 dist 且 emptyOutDir 在构建开始时清空整个目录——运行中的服务
- * 在整个构建窗口内无产物可服务（页面 500/黑屏）。先建后换使旧版本全程可用，
- * 切换窗口仅为两次 rename 之间（微秒级）。
- *
- * 用法：node scripts/swap-dist.mjs（package.json build 尾部调用）
- */
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 
-const frontendDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const dist = path.join(frontendDir, "dist");
-const next = path.join(frontendDir, "dist.next");
-const old = path.join(frontendDir, `dist.old-${process.pid}`);
-
-if (!fs.existsSync(path.join(next, "index.html"))) {
-  console.error("[swap-dist] dist.next/index.html 不存在，中止交换（旧 dist 保持原样）");
-  process.exit(1);
+async function exists(target) {
+  try { await fs.access(target); return true; }
+  catch (error) { if (error.code === "ENOENT") return false; throw error; }
 }
 
-// 清理历史交换中断残留的 dist.old-*（正常流程不会存在）
-for (const f of fs.readdirSync(frontendDir)) {
-  if (f.startsWith("dist.old-")) {
-    fs.rmSync(path.join(frontendDir, f), { recursive: true, force: true });
+async function renameWithRetry(source, destination) {
+  for (let attempt = 0; ; attempt++) {
+    try { await fs.rename(source, destination); return; }
+    catch (error) {
+      if (attempt >= 4 || !["EPERM", "EBUSY", "EACCES"].includes(error.code)) throw error;
+      await delay(100 * 2 ** attempt);
+    }
   }
 }
 
-if (fs.existsSync(dist)) fs.renameSync(dist, old);
-fs.renameSync(next, dist);
-fs.rmSync(old, { recursive: true, force: true });
-console.log("[swap-dist] dist 已切换为新构建产物");
+/** Publish a completed frontend build, restoring the previous directory if activation fails. */
+export async function swapDist(frontendDir, { rename = renameWithRetry } = {}) {
+  const root = path.resolve(frontendDir);
+  const dist = path.join(root, "dist");
+  const next = path.join(root, "dist.next");
+  const backup = path.join(root, `dist.old-${randomUUID()}`);
+
+  for (const directory of [dist, next]) {
+    if (!await exists(directory)) continue;
+    const stat = await fs.lstat(directory);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`Invalid build directory: ${directory}`);
+  }
+  if (!await exists(path.join(next, "index.html"))) throw new Error("dist.next/index.html is missing");
+
+  const hadPrevious = await exists(dist);
+  if (hadPrevious) await rename(dist, backup);
+  try {
+    await rename(next, dist);
+  } catch (error) {
+    if (hadPrevious) {
+      try { await rename(backup, dist); }
+      catch (rollbackError) {
+        throw new AggregateError([error, rollbackError], `Build activation and recovery failed; previous build retained at ${backup}`);
+      }
+    }
+    throw error;
+  }
+  if (hadPrevious) await fs.rm(backup, { recursive: true, force: true });
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const frontendDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  swapDist(frontendDir).then(() => console.log("[swap-dist] Build activated")).catch((error) => {
+    console.error("[swap-dist]", error);
+    process.exitCode = 1;
+  });
+}

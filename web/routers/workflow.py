@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from services.workflow import (
@@ -27,8 +27,16 @@ class StartRunRequest(BaseModel):
 
 
 @router.get("/runs")
-async def list_runs(limit: int = 30) -> Dict[str, Any]:
+async def list_runs(limit: int = Query(30, ge=1, le=100)) -> Dict[str, Any]:
     return {"runs": await _wf_svc.list_runs(limit)}
+
+
+@router.post("/validate")
+async def validate_spec(req: StartRunRequest) -> Dict[str, Any]:
+    try:
+        return _wf_svc.validate(req.spec)
+    except WorkflowServiceError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.post("/runs")

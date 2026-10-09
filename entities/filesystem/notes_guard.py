@@ -51,7 +51,7 @@ def in_notes_root(path: str) -> bool:
 
 def _split_tokens(command: str) -> List[str]:
     try:
-        return shlex.split(command, posix=True)
+        return [token.strip('"\'') for token in shlex.split(command, posix=os.name != "nt")]
     except ValueError:
         return command.split()
 
@@ -136,7 +136,7 @@ def memory_note_hint(file_path: str, resolved: Optional[str] = None) -> Optional
             continue
         real = os.path.realpath(p)
         if real.startswith(root + os.sep) and real.endswith(".md"):
-            key = os.path.relpath(real, key_base)
+            key = os.path.relpath(real, key_base).replace("\\", "/")
             return (
                 f"{file_path} 指向记忆便签文件（键 {key}），filesystem 组工具锚定 workspace 无法访问；"
                 f"请改用 notes 组工具（read_memory_file / patch_memory_file 等）"

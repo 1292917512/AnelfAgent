@@ -189,7 +189,8 @@
     "triggerEventNone": "Disabled (schedule/manual only)",
     "triggerEventAfterReply": "After reply (after_reply)",
     "triggerEventContextPressure": "Context pressure (context_pressure)",
-    "triggerEventDelegationResolved": "Delegation resolved (delegation_resolved)"
+    "triggerEventDelegationResolved": "Delegation resolved (delegation_resolved)",
+    "expiresAt": "Expires at"
   },
   "costMap": {
     "title": "LiteLLM Cost Map",

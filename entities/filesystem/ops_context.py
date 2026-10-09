@@ -118,8 +118,8 @@ class _OpsSession:
 
 
 _sessions: "OrderedDict[str, _OpsSession]" = OrderedDict()
-# 说明文档缓存：路径 -> (mtime, 内容)，mtime 一致即命中（写操作更新 mtime 自动失效）
-_doc_cache: "OrderedDict[str, Tuple[float, str]]" = OrderedDict()
+# 说明文档缓存：文件签名与读取预算共同决定缓存是否有效。
+_doc_cache: "OrderedDict[str, Tuple[Tuple[int, int, int], str]]" = OrderedDict()
 _lock = threading.Lock()
 
 
@@ -188,12 +188,13 @@ def _doc_names() -> List[str]:
 def _read_doc(path: str, max_chars: int) -> Optional[str]:
     """按 mtime 缓存读取说明文档（超限截断）；不存在/读取失败返回 None。"""
     try:
-        mtime = os.path.getmtime(path)
+        stat = os.stat(path)
+        signature = (stat.st_mtime_ns, stat.st_size, max_chars)
     except OSError:
         return None
     with _lock:
         cached = _doc_cache.get(path)
-    if cached is not None and cached[0] == mtime:
+    if cached is not None and cached[0] == signature:
         return cached[1]
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
@@ -204,7 +205,7 @@ def _read_doc(path: str, max_chars: int) -> Optional[str]:
     if len(content) > max_chars:
         content = content[:max_chars].rstrip() + "\n…（文档过长已截断）"
     with _lock:
-        _doc_cache[path] = (mtime, content)
+        _doc_cache[path] = (signature, content)
         _doc_cache.move_to_end(path)
         while len(_doc_cache) > _MAX_DOC_CACHE:
             _doc_cache.popitem(last=False)

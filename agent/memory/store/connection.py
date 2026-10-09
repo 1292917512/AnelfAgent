@@ -75,14 +75,13 @@ class MemoryConnectionManager:
         async with self.write_lock:
             try:
                 yield
-            except Exception:
+                await db.commit()
+            except BaseException:
                 try:
                     await db.rollback()
                 except Exception as rb_exc:
                     log(f"记忆库事务回滚失败: {rb_exc}", "DEBUG", tag="记忆")
                 raise
-            else:
-                await db.commit()
 
     async def get_db(self) -> aiosqlite.Connection:
         # 健康检查失败后的关闭/重建全程走 connect_lock：

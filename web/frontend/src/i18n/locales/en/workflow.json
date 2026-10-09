@@ -2,25 +2,41 @@
   "title": "Workflows",
   "subtitle": "Recoverable multi-step orchestration: resume, revision import, gated retries",
   "start": {
-    "title": "Start workflow (JSON spec)",
+    "title": "Create workflow",
     "resumeOf": "Revision source run_id (optional: completed steps with identical input are imported)",
-    "submit": "Start"
+    "submit": "Start",
+    "spec": "Workflow specification",
+    "validate": "Validate dependencies",
+    "valid": "Valid specification. Execution order:",
+    "help": "Define steps and dependencies. Steps in the same layer can run in parallel. Validate before starting; tool calls follow the system approval rules.",
+    "example": "Insert example",
+    "exampleName": "Research and summarize",
+    "exampleResearch": "Research the topic and produce verifiable findings",
+    "exampleSummary": "Summarize upstream results with conclusions and evidence",
+    "placeholder": "Paste a workflow JSON specification or start with the example",
+    "layer": "Layer {{count}}"
   },
   "list": {
     "title": "Recent runs",
     "loading": "Loading…",
     "empty": "No workflow runs yet",
-    "elapsed": "running {sec}s"
+    "elapsed": "running {{sec}}s"
   },
   "detail": {
     "loading": "Loading run detail…",
     "empty": "Select a run to view details",
     "steps": "Steps",
-    "rounds": "{count} rounds",
+    "rounds": "{{count}} rounds",
     "noSteps": "No step records yet",
     "timeline": "Event timeline",
     "noEvents": "No events yet",
-    "loadFailed": "Failed to load — the run may have been cleaned up or no longer exists"
+    "loadFailed": "Failed to load — the run may have been cleaned up or no longer exists",
+    "parent": "Source run: {{id}}",
+    "dependencies": "Depends on",
+    "delegation": "Sub-agent",
+    "usage": "Usage details",
+    "progress": "{{completed}} / {{total}} steps completed",
+    "eventsTruncated": "Showing the latest {{count}} events"
   },
   "status": {
     "running": "Running",
@@ -35,7 +51,9 @@
   "nodeStatus": {
     "running": "running",
     "completed": "completed",
-    "failed": "failed"
+    "failed": "failed",
+    "pending": "Waiting for dependencies",
+    "notRun": "Not executed"
   },
   "action": {
     "stop": "Stop",
@@ -43,10 +61,10 @@
     "revise": "Revise & restart"
   },
   "toast": {
-    "started": "Workflow \"{name}\" started",
+    "started": "Workflow \"{{name}}\" started",
     "stopped": "Stop signal sent",
     "resumed": "Workflow resumed",
-    "revisionHint": "Revision source {id} filled — edit the spec and start to import completed steps",
+    "revisionHint": "Revision source {{id}} filled — edit the spec and start to import completed steps",
     "requestFailed": "Request failed"
   }
 }

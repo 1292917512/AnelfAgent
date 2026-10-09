@@ -11,8 +11,7 @@ import {
   type NodeTypes,
   BackgroundVariant,
 } from "@xyflow/react";
-import type { ThinkingSession } from "@/stores/thinking-store";
-import { useMergedActiveSessionNodes } from "@/stores/thinking-store";
+import type { ThinkingSession } from "@/lib/types";
 import { buildFlowElements } from "./flow-layout";
 import TraceNodeComponent from "./TraceNode";
 
@@ -29,21 +28,13 @@ interface Props {
 /** 流程图视图：ReactFlow 画布 + 自动跟随最新节点；叠加 plan 虚拟节点 */
 export function FlowView({ session, autoFollow, onNodeClick }: Props) {
   const prevNodeCount = useRef(0);
-  const { setCenter, fitView, getZoom } = useReactFlow();
-
-  // 合并 thinking trace + plan 虚拟节点（plan_root / plan_step）
-  const mergedNodes = useMergedActiveSessionNodes();
-  const mergedSession = useMemo<ThinkingSession>(() => ({
-    ...session,
-    nodes: mergedNodes,
-  }), [session, mergedNodes]);
+  const { setCenter, getZoom } = useReactFlow();
 
   const { nodes: flowNodes, edges: flowEdges } = useMemo(
-    () => buildFlowElements(mergedSession),
-    [mergedSession],
+    () => buildFlowElements(session), [session],
   );
 
-  const [nodes, setNodes, onNodesChange] = useNodesState(flowNodes);
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node>(flowNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(flowEdges);
 
   useEffect(() => {
@@ -52,12 +43,11 @@ export function FlowView({ session, autoFollow, onNodeClick }: Props) {
   }, [flowNodes, flowEdges, setNodes, setEdges]);
 
   useEffect(() => {
-    if (!autoFollow || nodes.length === 0) return;
+    if (!autoFollow || session.ended || nodes.length === 0) return;
 
     if (prevNodeCount.current === 0) {
       prevNodeCount.current = nodes.length;
-      const timer = setTimeout(() => fitView({ padding: 0.3, duration: 300 }), 50);
-      return () => clearTimeout(timer);
+      return;
     }
 
     if (nodes.length > prevNodeCount.current) {
@@ -72,7 +62,7 @@ export function FlowView({ session, autoFollow, onNodeClick }: Props) {
       }
     }
     prevNodeCount.current = nodes.length;
-  }, [nodes, autoFollow, fitView, setCenter, getZoom]);
+  }, [nodes, autoFollow, session.ended, setCenter, getZoom]);
 
   const handleNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
     onNodeClick(node.id);
@@ -87,7 +77,7 @@ export function FlowView({ session, autoFollow, onNodeClick }: Props) {
       onNodeClick={handleNodeClick}
       nodeTypes={NODE_TYPES}
       fitView
-      fitViewOptions={{ padding: 0.3 }}
+      fitViewOptions={{ padding: 0.25, maxZoom: 1, nodes: autoFollow && !session.ended ? flowNodes.slice(-3) : flowNodes.slice(0, 3) }}
       minZoom={0.2}
       maxZoom={2}
       proOptions={{ hideAttribution: true }}

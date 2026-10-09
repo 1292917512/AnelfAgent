@@ -73,11 +73,14 @@ def register_lifecycle() -> None:
 
     from .store import get_share_store
     store = get_share_store()
+    async def sweep() -> None:
+        await store.sweep_expired()
+
     Lifecycle.register(
         "share_store",
         store,
         cleanup=store.close,
-        on_tick=store.sweep_expired,  # 心跳时清理过期链接
+        on_tick=sweep,  # 心跳时清理过期链接
     )
 
 

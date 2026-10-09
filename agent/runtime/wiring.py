@@ -108,7 +108,7 @@ def wire_runtime(
 
     # 出站哨兵：在途回复 scope 读取器（Mind._active_scopes 单一事实源）
     from agent.channel.outbound_guard import bind_reply_scopes
-    bind_reply_scopes(mind.active_reply_scopes)
+    bind_reply_scopes(lambda: mind.active_reply_scopes)
 
     # Embedding 后台 worker（施绑后挂载施绑前挂起的外部 backlog 注册）
     embedding_worker_port.set(embedding_worker)

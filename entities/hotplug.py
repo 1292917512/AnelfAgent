@@ -119,14 +119,27 @@ async def register_entity_lifecycle(name: str) -> bool:
     added = {entry["name"] for entry in Lifecycle.snapshot()} - before
     _entity_lifecycles.setdefault(name, set()).update(added)
     if Lifecycle.started():
-        for comp in sorted(added):
-            await Lifecycle.start_one(comp)
+        for entry in Lifecycle.snapshot():
+            if entry["name"] in added:
+                await Lifecycle.start_one(entry["name"])
     log(f"实体 lifecycle 已注册: {name}", "DEBUG", tag="实体")
     return True
 
 
 async def unload_entity(name: str) -> None:
     """完整拆除实体：注册表 → 分组 → 配置组 → Lifecycle 组件 → sys.modules → 路由事件。"""
+    from core.context_provider import ContextProviderRegistry
+    from core.event_bus import event_bus
+    from core.latebind import LateBinding
+
+    prefix = f"entities.{name}"
+    modules = [mod for key, mod in list(sys.modules.items())
+               if key == prefix or key.startswith(prefix + ".")]
+    # 由组合根施绑的端口有进程级消费者，运行期拆除会留下旧引用或名称冲突。
+    if any(isinstance(value, LateBinding) for mod in modules for value in vars(mod).values()):
+        raise RuntimeError(f"实体 {name} 含进程级端口，移除目录后须重启完成卸载")
+    event_bus.off_by_module(prefix)
+    await ContextProviderRegistry.unregister_by_module(prefix)
     removed_tools = 0
     for tool_name in _entity_tool_names(name):
         if EntityRegistry.unregister(tool_name):
@@ -138,10 +151,11 @@ async def unload_entity(name: str) -> None:
             EntityRegistry.unregister_group(group)
     for cfg_group in sorted(_entity_config_groups.get(name, set())):
         ConfigRegistry.unregister_group(cfg_group)
-    for comp in sorted(_entity_lifecycles.get(name, set())):
-        await Lifecycle.unregister(comp)
+    owned = _entity_lifecycles.get(name, set())
+    for entry in reversed(Lifecycle.snapshot()):
+        if entry["name"] in owned:
+            await Lifecycle.unregister(entry["name"])
 
-    prefix = f"entities.{name}"
     for mod_name in [m for m in sys.modules if m == prefix or m.startswith(prefix + ".")]:
         sys.modules.pop(mod_name, None)
     _loaded_modules.discard(name)
@@ -159,29 +173,34 @@ async def unload_entity(name: str) -> None:
 def reload_entity(name: str) -> bool:
     """代码热更：按归属注销旧工具后 re-import（被源码删除的工具不再回归）。
 
-    兄弟子模块（providers/router 等）一并从 sys.modules 摘除，re-import 时
-    全部以新代码加载（包自身与 tools 模块保留以走 importlib.reload 原地刷新，
-    避免父包重导入的循环副作用）；路由摘除后由事件通知 web 层重挂载。
-    失败时保留的模块一并摘除——旧工具已注销，陈旧字节码留在 sys.modules
-    会让下轮重试拿到旧代码而非修复后的源码。
+    只刷新 tools/router 两个入口，连接管理器、端口和后台工作器保持进程级
+    身份。状态模块的源码更新需要重启，避免新工具连到未纳入 Lifecycle 的
+    第二份资源。reload 原地执行，失败后也保留模块身份供下次修复重试。
     """
+    previous = [EntityRegistry.get(tool_name) for tool_name in _entity_tool_names(name)]
     for tool_name in _entity_tool_names(name):
         EntityRegistry.unregister(tool_name)
-    prefix = f"entities.{name}."
-    keep = {f"entities.{name}", f"entities.{name}.tools"}
-    for mod_name in [m for m in sys.modules if m.startswith(prefix) and m not in keep]:
-        sys.modules.pop(mod_name, None)
     module_path = f"entities.{name}.tools"
     mod = sys.modules.get(module_path)
+    router = sys.modules.get(f"entities.{name}.router")
+    snapshots = [(module, dict(vars(module))) for module in (mod, router) if module is not None]
     before = _snapshot()
     try:
         if mod is not None:
             importlib.reload(mod)
         else:
             importlib.import_module(module_path)
+        if router is not None:
+            importlib.reload(router)
     except Exception as e:
-        for stale in keep:
-            sys.modules.pop(stale, None)
+        for tool_name in _entity_tool_names(name):
+            EntityRegistry.unregister(tool_name)
+        for module, snapshot in snapshots:
+            vars(module).clear()
+            vars(module).update(snapshot)
+        for tool in previous:
+            if tool is not None:
+                EntityRegistry.register(tool)
         log(f"实体热重载失败: {name} - {e}", "WARNING", tag=_TAG)
         return False
     _record_diff(name, before)
@@ -262,9 +281,7 @@ async def _sync_entities_locked(reload_existing: bool) -> Dict[str, Any]:
                 _emit(EVENT_MODULE_ADDED, name)
             else:
                 failed.append(name)
-                # 重载失败时旧工具已注销：移出已知集合，下轮同步按新增目录重试
-                # （与频道侧失败目录移出已知集合的自愈语义对称）
-                _loaded_modules.discard(name)
+                # 保持资源归属；下次手动刷新继续 reload，不能走 import 的缓存捷径。
 
     if added or reloaded:
         try:

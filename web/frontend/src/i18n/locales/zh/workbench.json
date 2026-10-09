@@ -151,12 +151,24 @@
     "renderFailed": "预览渲染失败",
     "emptyPreview": "文件为空",
     "csvTruncated": "仅预览前 {{count}} 行",
-    "videoUnsupported": "此视频格式浏览器无法直接播放，请下载后观看"
+    "videoUnsupported": "此视频格式浏览器无法直接播放，请下载后观看",
+    "spreadsheetTruncated": "每个工作表最多预览 {{rows}} 行、{{columns}} 列。"
   },
   "ask": {
     "inputPlaceholder": "输入你的回答…",
     "submit": "提交",
     "skip": "跳过",
     "skipped": "（用户跳过）"
+  },
+  "conflict": {
+    "title": "文件发生变化",
+    "description": "{{path}} 的磁盘内容已变化，本地草稿已保留。请比较后选择如何处理。",
+    "local": "本地草稿",
+    "remote": "磁盘最新内容",
+    "deleted": "文件已被删除。覆盖将重新创建文件。",
+    "notEditable": "磁盘文件无法作为文本编辑，请重新打开检查。",
+    "keepEditing": "继续编辑",
+    "useRemote": "采用磁盘版本",
+    "overwrite": "用本地草稿覆盖"
   }
 }

@@ -18,6 +18,7 @@ from agent.channel.schemas import (
     AdapterMessage,
     AdapterUser,
     ChannelType,
+    MessageKind,
     MessageSegment,
     SegmentType,
 )
@@ -25,6 +26,34 @@ from core.log import log
 
 # API 回调类型：接收 action 和 params，返回 API 响应
 ApiCaller = Callable[[str, Dict[str, Any]], Awaitable[Optional[Dict[str, Any]]]]
+
+# 通知事件重要性分档（供触发思考决策，见 transport._decide_notice_trigger）
+NOTICE_CATEGORY_MEMBERSHIP = "membership"
+NOTICE_CATEGORY_MODERATION = "moderation"
+NOTICE_CATEGORY_INTERACTION = "interaction"
+
+_NOTICE_CATEGORIES: Dict[Tuple[str, str], str] = {
+    ("group_increase", ""): NOTICE_CATEGORY_MEMBERSHIP,
+    ("group_decrease", ""): NOTICE_CATEGORY_MEMBERSHIP,
+    ("group_ban", ""): NOTICE_CATEGORY_MODERATION,
+    ("group_admin", ""): NOTICE_CATEGORY_MODERATION,
+    ("group_recall", ""): NOTICE_CATEGORY_MODERATION,
+    ("group_upload", ""): NOTICE_CATEGORY_INTERACTION,
+    ("notify", "poke"): NOTICE_CATEGORY_INTERACTION,
+}
+
+
+def notice_category(notice_type: str, sub_type: str) -> str:
+    """返回通知事件的重要性分档。
+
+    membership = 成员变动（入群/退群/移除），任何群身份都值得知晓；
+    moderation = 管理相关（禁言/管理员变更/撤回），群主/管理员必须知晓；
+    interaction = 互动类（文件上传/戳一戳），仅入库不主动触发。
+    """
+    category = _NOTICE_CATEGORIES.get((notice_type, sub_type))
+    if category is not None:
+        return category
+    return _NOTICE_CATEGORIES.get((notice_type, ""), NOTICE_CATEGORY_INTERACTION)
 
 # 群成员名片缓存限制：单项 TTL（秒）、最大群数、每群最大成员数
 _MEMBER_CACHE_TTL_SECONDS = 3600.0
@@ -758,6 +787,7 @@ async def _parse_notice_event(
         channel=channel,
         content=notice_text,
         segments=[MessageSegment(type=SegmentType.TEXT, content=notice_text)],
+        kind=MessageKind.EVENT,
         is_to_me=is_to_me,
         timestamp=float(data.get("time", time.time())),
     )

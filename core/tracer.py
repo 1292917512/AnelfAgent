@@ -5,7 +5,7 @@
   - 会话节点：依附于 Mind 思维会话（EVENT_THINKING_SESSION_START/END 期间）
   - 系统节点：Mind 会话外的系统级事件（代理生命周期、实体调用、适配器、错误等）
 
-当无 SSE 订阅者时自动注销所有事件处理器，实现零开销。
+采集由 enabled 控制，浏览器连接只负责订阅；记录按会话与节点配额保留。
 """
 
 from __future__ import annotations
@@ -27,8 +27,6 @@ from core.event_bus import (
     EVENT_ERROR_OCCURRED,
     EVENT_MULTI_TOOL_COMPLETE,
     EVENT_MULTI_TOOL_PROGRESS,
-    EVENT_PLUGIN_LOADED,
-    EVENT_PLUGIN_UNLOADED,
     EVENT_THINKING_CONTEXT_BUILD,
     EVENT_THINKING_DECISION,
     EVENT_THINKING_FAKE_TOOL_CALL,
@@ -76,7 +74,6 @@ class NodeType(str, Enum):
     ENTITY_CALL = "entity_call"       # EntityRegistry 工具调用（无 Mind 会话时）
     AGENT_LIFECYCLE = "agent_lifecycle"  # 代理启停
     ADAPTER_EVENT = "adapter_event"   # 适配器启停
-    PLUGIN_EVENT = "plugin_event"     # 插件加载/卸载
     SYSTEM_EVENT = "system_event"     # span() 通用系统事件
     ERROR = "error"                   # 系统错误
     MULTI_TOOL_TASK = "multi_tool_task"    # 多工具子任务
@@ -120,6 +117,7 @@ class TraceSession:
     ended: bool = False
     end_time: Optional[float] = None
     available_tools: List[str] = field(default_factory=list)
+    outcome: str = "running"
     # 节点数触顶标记（防长会话无界增长；触顶后新事件丢弃并留一次截断标记）
     nodes_truncated: bool = False
 
@@ -132,7 +130,12 @@ class TraceSession:
             "is_introspection": self.is_introspection,
             "is_delegation": self.is_delegation,
             "node_count": len(self.nodes),
+            "label": self.nodes[0].label if self.nodes else "",
+            "scope": str(self.nodes[0].data.get("scope", "")) if self.nodes else "",
             "ended": self.ended,
+            "outcome": self.outcome,
+            "nodes_truncated": self.nodes_truncated,
+            "parent_session_id": self.nodes[0].data.get("parent_session_id") if self.nodes else None,
             "duration_ms": round((self.end_time - self.start_time) * 1000) if self.end_time else None,
         }
 
@@ -163,7 +166,7 @@ class Tracer:
     """系统级链路追踪器。
 
     - enabled 控制全局开关
-    - 仅当有 SSE 订阅者时才注册 EventBus 处理器
+    - enabled 时持续采集，订阅连接不影响记录完整性
     - 会话节点依附于 Mind 思维会话；系统节点独立存储并广播
     - span() 上下文管理器可由任意模块调用
     """
@@ -186,7 +189,7 @@ class Tracer:
     # ==================================================================
 
     def subscribe(self) -> asyncio.Queue[Dict[str, Any]]:
-        """新增 SSE 订阅者，首个订阅者触发处理器注册。"""
+        """订阅实时事件，补齐启用追踪时的处理器注册。"""
         queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue(maxsize=512)
         self._sse_subscribers.append(queue)
         if len(self._sse_subscribers) == 1 and self.enabled and not self._registered:
@@ -195,11 +198,9 @@ class Tracer:
         return queue
 
     def unsubscribe(self, queue: asyncio.Queue[Dict[str, Any]]) -> None:
-        """移除 SSE 订阅者，最后一个订阅者离开时注销处理器。"""
+        """移除实时订阅者，保持后台采集。"""
         if queue in self._sse_subscribers:
             self._sse_subscribers.remove(queue)
-        if len(self._sse_subscribers) == 0 and self._registered:
-            self._unregister_handlers()
         log(f"思维追踪 SSE 订阅者 -1 (共 {len(self._sse_subscribers)})", "DEBUG", tag="思维追踪")
 
     def _broadcast(self, event_type: str, data: Dict[str, Any]) -> None:
@@ -208,6 +209,8 @@ class Tracer:
         关键事件（会话开始/结束）立即推送；其他事件缓冲后批量推送。
         """
         payload = {"event": event_type, "data": data}
+        if not self._sse_subscribers:
+            return
         if event_type in _IMMEDIATE_EVENTS:
             self._flush_pending()
             self._push_to_subscribers(payload)
@@ -220,7 +223,9 @@ class Tracer:
             try:
                 q.put_nowait(payload)
             except asyncio.QueueFull:
-                log("思维追踪 SSE 订阅者队列已满，事件被丢弃", "DEBUG", tag="思维追踪")
+                while not q.empty():
+                    q.get_nowait()
+                q.put_nowait({"event": "resync", "data": {"reason": "subscriber_overflow"}})
 
     def _flush_pending(self) -> None:
         """将缓冲中的事件逐个推送。"""
@@ -248,14 +253,14 @@ class Tracer:
     def set_enabled(self, enabled: bool) -> None:
         """设置追踪开关。
 
-        - 开启时：如果有订阅者，立即注册处理器
-        - 关闭时：立即注销处理器并断开所有订阅者；
+        - 开启时：立即注册处理器并持续采集
+        - 关闭时：立即注销处理器；
           在途会话一并收束（否则处理器注销后它们永远等不到 SESSION_END，
           前端把它们永久显示为运行中）
         """
         self.enabled = enabled
         if enabled:
-            if self._sse_subscribers and not self._registered:
+            if not self._registered:
                 self._register_handlers()
         else:
             if self._registered:
@@ -264,11 +269,13 @@ class Tracer:
                 if session.ended:
                     continue
                 session.ended = True
+                session.outcome = "interrupted"
                 session.end_time = time.time()
                 node = TraceNode(
                     id=f"{session.id}_end",
                     type=NodeType.SESSION_END,
                     label="追踪已关闭",
+                    status=NodeStatus.WARNING,
                     data={"reason": "tracer_disabled"},
                 )
                 session.nodes.append(node)
@@ -380,7 +387,10 @@ class Tracer:
 
     def _trim_sessions(self) -> None:
         while len(self._sessions) > self.max_sessions:
-            sid, _session = self._sessions.popitem(last=False)
+            sid = next((key for key, session in self._sessions.items() if session.ended), None)
+            if sid is None:
+                break
+            self._sessions.pop(sid)
             # 被逐出会话的 flows 与活跃节点一并清理（从未发 SESSION_END
             # 的会话会永久残留）
             self._flows.pop(sid, None)
@@ -484,9 +494,6 @@ class Tracer:
         event_bus.on(EVENT_THINKING_REPLY_ROUND, self._on_reply_round, owner=_OWNER)
         event_bus.on(EVENT_THINKING_INTROSPECTION, self._on_introspection, owner=_OWNER)
         event_bus.on(EVENT_THINKING_FAKE_TOOL_CALL, self._on_fake_tool_call, owner=_OWNER)
-        # 插件事件
-        event_bus.on(EVENT_PLUGIN_LOADED, self._on_plugin_loaded, owner=_OWNER)
-        event_bus.on(EVENT_PLUGIN_UNLOADED, self._on_plugin_unloaded, owner=_OWNER)
         # 系统级事件
         event_bus.on(EVENT_AGENT_STARTED, self._on_agent_started, owner=_OWNER)
         event_bus.on(EVENT_AGENT_STOPPED, self._on_agent_stopped, owner=_OWNER)
@@ -559,6 +566,7 @@ class Tracer:
         session.ended = True
         session.end_time = time.time()
         reason = payload.get("reason", "")
+        session.outcome = "failed" if reason == "error" else "cancelled" if reason == "cancelled" else "completed"
         if session.is_delegation:
             label = "子代理结束" + (f": {reason}" if reason else "")
         elif session.is_introspection:
@@ -569,6 +577,7 @@ class Tracer:
             id=f"{session.id}_end",
             type=NodeType.SESSION_END,
             label=label,
+            status=NodeStatus.ERROR if session.outcome == "failed" else NodeStatus.WARNING if session.outcome == "cancelled" else NodeStatus.COMPLETED,
             data=payload,
         )
         session.nodes.append(node)
@@ -578,6 +587,8 @@ class Tracer:
             "summary": session.to_summary(),
         })
         self._flows.pop(session.id, None)
+
+        self._trim_sessions()
 
     async def _on_phase_change(self, payload: Dict[str, Any]) -> None:
         phase = payload.get("phase", "")
@@ -891,28 +902,6 @@ class Tracer:
     # ==================================================================
     # 系统级事件处理器
     # ==================================================================
-
-    async def _on_plugin_loaded(self, payload: Dict[str, Any]) -> None:
-        """插件加载：创建 PLUGIN_EVENT 节点 + 广播工具变更。"""
-        plugin_name = payload.get("plugin_name", "?")
-        self._add_system_node(TraceNode(
-            id=f"plugin_{uuid.uuid4().hex[:8]}",
-            type=NodeType.PLUGIN_EVENT,
-            label=f"插件加载: {plugin_name}",
-            data=payload,
-        ))
-        self._broadcast("tools_changed", payload)
-
-    async def _on_plugin_unloaded(self, payload: Dict[str, Any]) -> None:
-        """插件卸载：创建 PLUGIN_EVENT 节点 + 广播工具变更。"""
-        plugin_name = payload.get("plugin_name", "?")
-        self._add_system_node(TraceNode(
-            id=f"plugin_{uuid.uuid4().hex[:8]}",
-            type=NodeType.PLUGIN_EVENT,
-            label=f"插件卸载: {plugin_name}",
-            data=payload,
-        ))
-        self._broadcast("tools_changed", payload)
 
     async def _on_agent_started(self, payload: Dict[str, Any]) -> None:
         """代理启动事件。"""

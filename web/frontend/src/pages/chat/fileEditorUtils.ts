@@ -6,7 +6,6 @@ import { markdown } from "@codemirror/lang-markdown";
 import { yaml } from "@codemirror/lang-yaml";
 import { html } from "@codemirror/lang-html";
 import { css } from "@codemirror/lang-css";
-import type { WorkspaceFile } from "@/lib/types";
 import { workspaceFileKind } from "@/lib/workspace-kind";
 
 /** 按扩展名映射 CodeMirror 语言包 */
@@ -25,12 +24,6 @@ export function langExtension(path: string): Extension[] {
     case "css": return [css()];
     default: return [];
   }
-}
-
-/** 单个标签页的编辑状态（file 为已保存内容，draft 为当前草稿） */
-export interface TabState {
-  file: WorkspaceFile;
-  draft: string;
 }
 
 export type ViewMode = "edit" | "preview" | "split";

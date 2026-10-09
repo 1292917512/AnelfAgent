@@ -4,10 +4,11 @@ import { useAuthStore } from "@/stores/auth-store";
 import { useAppStore } from "@/stores/app-store";
 import { Button, Input, Spinner } from "@/components/ui";
 import { Lock } from "lucide-react";
+import { QueryError } from "./common/AsyncState";
 
 export function AuthGate({ children }: { children: ReactNode }) {
   const { t } = useTranslation("common");
-  const { checked, required, authenticated, error, checkAuth, login } =
+  const { checked, required, authenticated, unavailable, error, checkAuth, login } =
     useAuthStore();
   const branding = useAppStore((s) => s.branding);
   const [password, setPassword] = useState("");
@@ -23,6 +24,10 @@ export function AuthGate({ children }: { children: ReactNode }) {
         <Spinner size={24} />
       </div>
     );
+  }
+
+  if (unavailable) {
+    return <div className="flex min-h-dvh items-center justify-center bg-bg p-6"><div className="w-full max-w-md"><QueryError error={new Error(error)} retry={() => void checkAuth()} /></div></div>;
   }
 
   if (!required || authenticated) {
@@ -55,6 +60,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
 
         <Input
           type="password"
+          aria-label={t("passwordPlaceholder")}
           autoFocus
           autoComplete="current-password"
           placeholder={t("passwordPlaceholder")}

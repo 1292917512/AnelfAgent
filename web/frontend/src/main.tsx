@@ -1,48 +1,40 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
 import App from "./App";
+import { QueryError } from "./components/common/AsyncState";
 import { getInitialTheme } from "./stores/app-store";
+import { useAuthStore } from "./stores/auth-store";
 import { toast } from "./stores/toast-store";
-import { apiErrorMessage, setApiErrorHandler } from "./lib/api";
+import { apiErrorMessage, setApiErrorHandler, setUnauthorizedHandler } from "./lib/api";
+import { createQueryClient } from "./lib/query-client";
 import { initChannelPlugins } from "./lib/channel-plugins";
+import { recoverChunk } from "./lib/chunk-recovery";
 import i18n from "./i18n";
 import "./styles/globals.css";
 
-// 全局 API 错误反馈：任何请求失败都弹出 toast，避免静默失败（如保存 409 无提示）
-setApiErrorHandler((err) => {
-  toast.error(apiErrorMessage(err, i18n.t("requestFailed")));
+const queryClient = createQueryClient();
+setApiErrorHandler((error) => toast.error(apiErrorMessage(error, i18n.t("requestFailed"))));
+setUnauthorizedHandler(() => {
+  queryClient.clear();
+  useAuthStore.getState().expireSession();
 });
-
-// 前端重新构建后，已打开的旧标签页引用的懒加载 chunk 已不存在（哈希变更），
-// 监听预加载失败自动刷新一次完成自愈，避免单页空白（如记忆页打不开）
 window.addEventListener("vite:preloadError", (event) => {
-  event.preventDefault();
-  window.location.reload();
+  if (recoverChunk()) event.preventDefault();
 });
+const theme = getInitialTheme();
+document.documentElement.dataset.theme = theme;
+document.documentElement.classList.toggle("dark", theme === "dark");
 
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      refetchOnWindowFocus: false,
-      retry: 1,
-      staleTime: 10_000,
-    },
-  },
-});
-
-// 首帧前应用主题（index.html 内联脚本已先行设置，这里兜底并同步 dark class）
-const initialTheme = getInitialTheme();
-document.documentElement.setAttribute("data-theme", initialTheme);
-document.documentElement.classList.toggle("dark", initialTheme === "dark");
-
-// 频道插件清单隔离加载完成后再渲染（插件 index.ts 自注册 i18n 需先于首帧）
-initChannelPlugins().then(() => {
-  createRoot(document.getElementById("root")!).render(
-    <StrictMode>
-      <QueryClientProvider client={queryClient}>
-        <App />
-      </QueryClientProvider>
-    </StrictMode>,
-  );
-});
+async function bootstrap() {
+  const container = document.getElementById("root");
+  if (!container) throw new Error("Application root is missing");
+  const root = createRoot(container);
+  try {
+    await initChannelPlugins();
+    root.render(<StrictMode><QueryClientProvider client={queryClient}><App /></QueryClientProvider></StrictMode>);
+  } catch (error) {
+    root.render(<div className="mx-auto max-w-xl p-8"><QueryError error={error} retry={() => location.reload()} /></div>);
+  }
+}
+void bootstrap();

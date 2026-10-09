@@ -25,14 +25,16 @@
     "llm_call": "LLM Call",
     "tool_call": "Tool Call",
     "reply_round": "Reply Round",
-    "introspection": "Introspection"
+    "introspection": "Introspection",
+    "plan_root": "Conversation plan",
+    "plan_step": "Plan step"
   },
   "statusLabels": {
     "pending": "Pending",
     "running": "Running",
     "completed": "Completed",
     "error": "Error",
-    "warning": "Skipped"
+    "warning": "Warning / skipped"
   },
   "detailLabels": {
     "label": "Label",
@@ -81,5 +83,57 @@
   "contextTab": "Context",
   "planStepsCount": "{{count}} steps",
   "delegationSession": "Sub-agent",
-  "reasoningTruncated": "Truncated"
+  "reasoningTruncated": "Truncated",
+  "runOverview": "Run overview",
+  "runEnded": "Ended",
+  "modelCalls": "Model calls",
+  "toolCalls": "Tool calls",
+  "issueCount": "{{count}} to inspect",
+  "incompleteTrace": "Some nodes have no recorded end event. This trace has ended; those operations may no longer be running.",
+  "roundTitle": "Round {{count}}",
+  "situationSummary": "{{messages}} messages · {{tasks}} tasks",
+  "contextSummary": "{{memories}} memories · {{tools}} tools",
+  "callsTools": "Calls: {{tools}}",
+  "searchNodes": "Search models, tools or results",
+  "showAllEvents": "Show all internal events",
+  "noMatchingNodes": "No matching events",
+  "resetFilters": "Clear filters",
+  "activityGroup": "Run events",
+  "nodeDetails": "Node details",
+  "copied": "Copied",
+  "copyNode": "Copy node record",
+  "copyFailed": "Copy failed. Select text in the raw record to copy it.",
+  "executionError": "Execution error",
+  "inputArguments": "Call arguments",
+  "recordedOutput": "Recorded output preview",
+  "tokenUsage": "Token usage",
+  "rawRecord": "Complete raw record",
+  "searchSessions": "Search sessions, source or date",
+  "startTracking": "Start tracking",
+  "streamConnected": "Live connection",
+  "reconnecting": "Reconnecting",
+  "historyWhileDisabled": "Tracking is off. Showing previously captured records.",
+  "trackingHint": "Tracking captures new run events. Inspect each model call, tool execution and result by selecting an event.",
+  "openFullTrace": "Open full trace",
+  "loadingSession": "Loading trace…",
+  "filters": {
+    "all": "Key events",
+    "issues": "Issues"
+  },
+  "stages": {
+    "prepare": "Prepare",
+    "reason": "Reason",
+    "act": "Act",
+    "finish": "Finish"
+  },
+  "outcomes": {
+    "running": "Running",
+    "completed": "Completed",
+    "failed": "Failed",
+    "cancelled": "Cancelled",
+    "interrupted": "Recording interrupted"
+  },
+  "truncatedTrace": "Recording limit reached; some events were not retained.",
+  "parentSession": "Open parent trace: {{id}}",
+  "retentionHint": "Recent traces from this process only. Cleared on restart."
 }

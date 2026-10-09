@@ -31,7 +31,7 @@ export interface ChatMessage {
   /** epoch 秒：历史消息来自后端 ts_ns，本地/SSE 消息为到达时刻；时间线合排用 */
   ts?: number;
   id?: number;
-  queued?: boolean;
+  delivery?: "submitting" | "submitted" | "failed";
   cid?: string;
   media_type?: string;
   url?: string;
@@ -95,12 +95,18 @@ export interface ChatStreaming {
 }
 
 export interface ChatBucket {
+  workspaceContextEnabled: boolean;
+  inputDraft: string;
+  submitting: boolean;
   messages: ChatMessage[];
   sending: boolean;
   sendingSince: number | null;
   streaming: ChatStreaming | null;
   pendingFiles: PendingFile[];
   historyLoaded: boolean;
+  historyLoading?: boolean;
+  historyError?: unknown;
+  earlierError?: unknown;
   /** 非激活会话收到新消息时的未读计数（切换会话时清零） */
   unread: number;
   /** 已加载历史中最早一条的 DB id（"加载更早"分页游标） */
@@ -160,7 +166,7 @@ export interface UiStateReport {
   open_file: string | null;
   has_draft: boolean;
   pending_asks: number;
-  /** 工作区上下文注入数据源（发送时渲染为消息前缀块） */
+  /** 工作台实时快照，供 AI 查询界面状态。 */
   active_file?: string | null;
   selection?: EditorSelectionPayload | null;
   open_tabs?: { label: string; path: string }[];
@@ -333,6 +339,7 @@ export type ChatSseEventData = ChatSseEventMap[ChatSseEventName];
 /** 历史消息（GET /chat/history 返回项） */
 export interface ChatHistoryMessage {
   id?: number;
+  cid?: string;
   role: string;
   content: string;
   timestamp?: string;

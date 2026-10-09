@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useRouteTab } from "@/hooks/useRouteTab";
 import { useTranslation } from "react-i18next";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
-import { PageContainer } from "@/components/common/PageContainer";
+import { PageContainer, PageIntro } from "@/components/common/PageContainer";
 import { cn } from "@/lib/utils";
 import { Activity, HardDrive, Target, MessageSquare, StickyNote, Users, Database, Network, CalendarDays, BookOpen, Waypoints, ScrollText } from "lucide-react";
 import { OverviewPanel } from "@/pages/memory/OverviewPanel";
@@ -24,7 +24,7 @@ const FULL_HEIGHT_TABS = new Set<MemTab>(["conv", "notes", "rules"]);
 
 export default function Memory() {
   const { t } = useTranslation("memory");
-  const [tab, setTab] = useState<MemTab>("overview");
+  const [tab, setTab] = useRouteTab<MemTab>(["overview", "stm", "goals", "conv", "notes", "daily", "docs", "entity", "ltm", "graph", "cognee", "rules"], "overview");
 
   const TAB_KEYS: TabItem<MemTab>[] = [
     { key: "overview", label: t("tabs.overview"), icon: Activity },
@@ -43,6 +43,7 @@ export default function Memory() {
 
   return (
     <PageContainer className="min-h-full flex flex-col">
+      <PageIntro />
       <TabBar tabs={TAB_KEYS} activeTab={tab} onChange={setTab} />
       <div className={cn(FULL_HEIGHT_TABS.has(tab) && "md:flex-1 md:min-h-0 md:flex md:flex-col")}>
         {tab === "overview" && <OverviewPanel />}

@@ -1,64 +1,40 @@
 import { useTranslation } from "react-i18next";
+import { useLocation } from "react-router-dom";
+import { Sun, Moon, Languages, Menu, Search, ChevronRight, Rows3 } from "lucide-react";
 import { useAppStore } from "@/stores/app-store";
-import { Sun, Moon, Languages, Menu, Search } from "lucide-react";
+import { findRoute } from "@/lib/navigation";
+import { Button } from "@/components/ui/Button";
+import { ConnectionStatus } from "./ConnectionStatus";
 
 export function Header() {
-  const theme = useAppStore((s) => s.theme);
-  const toggleTheme = useAppStore((s) => s.toggleTheme);
-  const setMobileMenuOpen = useAppStore((s) => s.setMobileMenuOpen);
-  const branding = useAppStore((s) => s.branding);
-  const setPaletteOpen = useAppStore((s) => s.setPaletteOpen);
-  const { t, i18n } = useTranslation("palette");
-
-  // ⌘K 提示按平台显示（Mac 用 ⌘，其余 Ctrl）
-  const modKey =
-    typeof navigator !== "undefined" && /mac/i.test(navigator.platform) ? "\u2318K" : "Ctrl K";
-
-  const toggleLang = () => i18n.changeLanguage(i18n.language === "zh" ? "en" : "zh");
-
+  const { t, i18n } = useTranslation(["nav", "palette"]);
+  const theme = useAppStore((state) => state.theme);
+  const toggleTheme = useAppStore((state) => state.toggleTheme);
+  const setMobileMenuOpen = useAppStore((state) => state.setMobileMenuOpen);
+  const setPaletteOpen = useAppStore((state) => state.setPaletteOpen);
+  const density = useAppStore((state) => state.density);
+  const toggleDensity = useAppStore((state) => state.toggleDensity);
+  const route = findRoute(useLocation().pathname);
+  const modKey = /mac/i.test(navigator.platform) ? "⌘ K" : "Ctrl K";
   return (
-    <header className="flex items-center justify-between gap-1 h-14 px-3 md:px-6 border-b border-border bg-panel shrink-0">
-      {/* 移动端：汉堡菜单 + 品牌名 */}
-      <div className="flex items-center gap-2">
-        <button
-          onClick={() => setMobileMenuOpen(true)}
-          className="md:hidden p-2 rounded-md text-muted hover:text-foreground hover:bg-hover transition-colors"
-          aria-label={t("menu")}
-        >
-          <Menu size={20} />
-        </button>
-        <span className="md:hidden text-sm font-semibold text-heading">
-          {branding.title}
-        </span>
+    <header className="app-header flex h-14 shrink-0 items-center justify-between gap-3 border-b border-border px-3 md:px-6">
+      <div className="flex min-w-0 items-center gap-2">
+        <Button variant="ghost" size="icon" className="md:hidden" onClick={() => setMobileMenuOpen(true)} aria-label={t("menu", { ns: "palette" })}><Menu size={20} /></Button>
+        {route && <><span className="hidden text-xs text-muted sm:block">{t(`groups.${route.group}`)}</span><ChevronRight size={13} className="hidden text-muted sm:block" /><route.icon size={16} className="shrink-0 text-muted" /><span className="truncate text-sm font-medium text-heading">{t(route.label, { defaultValue: route.label })}</span></>}
       </div>
-
-      <div className="flex items-center gap-1">
-        {/* 命令面板入口：⌘K / Ctrl+K */}
-        <button
-          onClick={() => setPaletteOpen(true)}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-muted hover:text-foreground hover:bg-hover transition-colors"
-          title={t("label")}
-          aria-label={t("label")}
-        >
-          <Search size={16} />
-          <kbd className="hidden md:inline rounded border border-border bg-elevated px-1 py-0.5 text-[10px] font-mono text-muted">
-            {modKey}
-          </kbd>
+      <div className="flex shrink-0 items-center gap-1">
+        <ConnectionStatus />
+        <button type="button" onClick={() => setPaletteOpen(true)} aria-label={t("label", { ns: "palette" })}
+          className="ml-1 flex h-8 items-center gap-2 rounded-lg border border-border bg-card px-2.5 text-xs text-muted hover:border-border-hover hover:text-heading">
+          <Search size={14} /><span className="hidden lg:inline">{t("quickSearch")}</span><kbd className="hidden text-[10px] sm:inline">{modKey}</kbd>
         </button>
-        <button
-          onClick={toggleLang}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-muted hover:text-foreground hover:bg-hover transition-colors"
-          title={i18n.language === "zh" ? "Switch to English" : "切换为中文"}
-        >
-          <Languages size={16} />
-          {i18n.language === "zh" ? "EN" : "中"}
-        </button>
-        <button
-          onClick={toggleTheme}
-          className="p-2 rounded-md text-muted hover:text-foreground hover:bg-hover transition-colors"
-        >
-          {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
-        </button>
+        <Button variant="ghost" size="icon" className="hidden sm:inline-flex" aria-label={t(density === "comfortable" ? "compactDensity" : "comfortableDensity")}
+          title={t(density === "comfortable" ? "compactDensity" : "comfortableDensity")} onClick={toggleDensity}><Rows3 size={16} /></Button>
+        <Button variant="ghost" size="icon" aria-label={i18n.resolvedLanguage === "zh" ? "Switch to English" : "切换为中文"}
+          onClick={() => void i18n.changeLanguage(i18n.resolvedLanguage === "zh" ? "en" : "zh")}><Languages size={16} /></Button>
+        <Button variant="ghost" size="icon" aria-label={t(theme === "dark" ? "action_theme_light" : "action_theme_dark", { ns: "palette" })} onClick={toggleTheme}>
+          {theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}
+        </Button>
       </div>
     </header>
   );

@@ -2,25 +2,41 @@
   "title": "工作流",
   "subtitle": "可恢复的多步骤编排：断点续跑、修订导入、门控重跑",
   "start": {
-    "title": "启动工作流（JSON 规格）",
+    "title": "创建工作流",
     "resumeOf": "修订源 run_id（可选：输入一致的已完成步骤直接导入）",
-    "submit": "启动"
+    "submit": "启动",
+    "spec": "工作流规格",
+    "validate": "校验依赖",
+    "valid": "规格有效，执行顺序如下",
+    "help": "定义步骤和依赖关系，同一层内可并行执行。启动前可校验规格；工具调用仍遵循系统审批规则。",
+    "example": "填入示例",
+    "exampleName": "调研并汇总",
+    "exampleResearch": "调研目标主题并输出可核查的要点",
+    "exampleSummary": "汇总上游结果，给出结论与依据",
+    "placeholder": "粘贴工作流 JSON，或使用示例开始编辑",
+    "layer": "第 {{count}} 层"
   },
   "list": {
     "title": "最近运行",
     "loading": "加载中…",
     "empty": "暂无工作流运行",
-    "elapsed": "已运行 {sec} 秒"
+    "elapsed": "已运行 {{sec}} 秒"
   },
   "detail": {
     "loading": "加载运行详情…",
     "empty": "选择左侧运行查看详情",
     "steps": "步骤",
-    "rounds": "{count} 轮",
+    "rounds": "{{count}} 轮",
     "noSteps": "尚无步骤记录",
     "timeline": "事件时间线",
     "noEvents": "暂无事件",
-    "loadFailed": "加载失败，该运行可能已被清理或不存在"
+    "loadFailed": "加载失败，该运行可能已被清理或不存在",
+    "parent": "来源运行：{{id}}",
+    "dependencies": "依赖",
+    "delegation": "子代理",
+    "usage": "用量详情",
+    "progress": "{{completed}} / {{total}} 步已完成",
+    "eventsTruncated": "显示最近 {{count}} 条事件"
   },
   "status": {
     "running": "运行中",
@@ -35,7 +51,9 @@
   "nodeStatus": {
     "running": "执行中",
     "completed": "完成",
-    "failed": "失败"
+    "failed": "失败",
+    "pending": "等待依赖",
+    "notRun": "未执行"
   },
   "action": {
     "stop": "停止",
@@ -43,10 +61,10 @@
     "revise": "修订重启"
   },
   "toast": {
-    "started": "工作流「{name}」已启动",
+    "started": "工作流「{{name}}」已启动",
     "stopped": "停止信号已发出",
     "resumed": "工作流已续跑",
-    "revisionHint": "已填入修订源 {id}，编辑规格后启动即可导入已完成步骤",
+    "revisionHint": "已填入修订源 {{id}}，编辑规格后启动即可导入已完成步骤",
     "requestFailed": "请求失败"
   }
 }

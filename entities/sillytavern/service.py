@@ -16,6 +16,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 from typing import Any, Dict, Optional
@@ -318,6 +319,9 @@ def stop(grace_seconds: float = 8.0) -> Dict[str, Any]:
     proc = _proc if (_proc and _proc.pid == pid) else None
     if proc is not None:
         terminate_process_group(proc, grace_seconds=grace_seconds)
+    elif sys.platform == "win32":
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                       capture_output=True, timeout=10, check=False)
     else:
         # 外部拉起的实例：手动进程组终止（start_new_session 语义）
         try:

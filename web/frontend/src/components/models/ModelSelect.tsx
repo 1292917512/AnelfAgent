@@ -1,210 +1,142 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
+import * as Popover from "@radix-ui/react-popover";
+import { Command } from "cmdk";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { Brain, Check, ChevronsUp, ChevronsUpDown, Eye, Pin, Server, Wrench } from "lucide-react";
+import { Brain, Check, ChevronsUpDown, Eye, Pin, Search, TriangleAlert, Wrench } from "lucide-react";
 import { modelsApi } from "@/lib/api";
 import type { ModelPriorityItem } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { QueryError } from "@/components/common/AsyncState";
+import { Button } from "@/components/ui/Button";
 
-/** 模型优先级数据（全类型） */
+const priorityOptions = {
+  queryKey: ["priorities"],
+  queryFn: () => modelsApi.priorities().then((response) => response.data),
+};
+
 export function usePriorities() {
-  return useQuery<Record<string, ModelPriorityItem[]>>({
-    queryKey: ["priorities"],
-    queryFn: () => modelsApi.priorities().then((r) => r.data),
-  });
+  return useQuery({ ...priorityOptions, throwOnError: false });
 }
 
-/**
- * 模型置顶：chat 类型 = 设为全局默认（后端置顶语义）；
- * 其他类型 = 移到该类型优先级列表首位。
- */
 export function useModelPin() {
-  const qc = useQueryClient();
+  const client = useQueryClient();
   return useMutation({
     mutationFn: async ({ modelType, modelId }: { modelType: string; modelId: string }) => {
-      if (modelType === "chat") {
-        await modelsApi.setDefault(modelId);
-        return;
-      }
-      const priorities = qc.getQueryData<Record<string, ModelPriorityItem[]>>(["priorities"]);
-      const items = priorities?.[modelType] ?? [];
-      const rest = items.filter((i) => i.id !== modelId).map((i) => i.id);
+      if (modelType === "chat") { await modelsApi.setDefault(modelId); return; }
+      const priorities = await client.fetchQuery(priorityOptions);
+      const rest = (priorities[modelType] ?? []).filter((item) => item.id !== modelId).map((item) => item.id);
       await modelsApi.setPriority(modelType, [modelId, ...rest]);
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["priorities"] }),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["priorities"] }),
   });
 }
 
-/** 模型能力小图标 */
 function CapabilityIcons({ item }: { item: ModelPriorityItem }) {
-  return (
-    <span className="inline-flex items-center gap-1 text-muted shrink-0">
-      {item.supports_vision && <Eye size={11} className="text-accent2" />}
-      {item.supports_tools && <Wrench size={11} className="text-accent" />}
-      {item.supports_reasoning && <Brain size={11} className="text-[rgb(168,85,247)]" />}
-    </span>
-  );
+  const { t } = useTranslation("models");
+  return <span className="inline-flex shrink-0 items-center gap-1 text-muted">
+    {item.supports_vision && <span title={t("capVision")}><Eye size={12} /></span>}
+    {item.supports_tools && <span title={t("capTools")}><Wrench size={12} /></span>}
+    {item.supports_reasoning && <span title={t("capReasoning")}><Brain size={12} /></span>}
+  </span>;
 }
 
 export interface ModelSelectProps {
-  /** 模型类型（chat / vision / embedding / asr / tts ...） */
   modelType?: string;
-  /** 受控选中值；空串 = 跟随全局默认（需 allowEmpty） */
   value?: string;
-  /** 选择回调；不传则选择即置顶（切换默认） */
   onChange?: (modelId: string) => void;
-  /** 是否提供「跟随全局默认」空选项 */
   allowEmpty?: boolean;
-  /** 是否显示置顶按钮 */
   allowPin?: boolean;
-  /** 紧凑模式（页头内嵌） */
   compact?: boolean;
-  /** 无选中时的占位文案 */
   placeholder?: string;
-  /** value 为空时是否回显全局默认模型（默认 true；表单场景传 false 以显示占位文案） */
   showDefaultWhenEmpty?: boolean;
   className?: string;
   disabled?: boolean;
+  id?: string;
+  label?: string;
 }
 
-/** 统一模型选择器：列表 + 能力标识 + 置顶 */
+const optionValue = (id: string) => JSON.stringify(["model", id]);
+const DEFAULT_OPTION = JSON.stringify(["default"]);
+
+/** Searchable model picker with explicit unavailable values and a separate default-model action. */
 export function ModelSelect({
-  modelType = "chat",
-  value,
-  onChange,
-  allowEmpty = false,
-  allowPin = true,
-  compact = false,
-  placeholder,
-  showDefaultWhenEmpty = true,
-  className,
-  disabled = false,
+  modelType = "chat", value, onChange, allowEmpty = false, allowPin = true, compact = false,
+  placeholder, showDefaultWhenEmpty = true, className, disabled = false, id, label,
 }: ModelSelectProps) {
   const { t } = useTranslation("models");
+  const { t: tc } = useTranslation("common");
   const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-  const { data: priorities = {} } = usePriorities();
-  const pinMut = useModelPin();
-
-  // 已停用模型不参与选择（模型管理页仍可管理）
-  const items = (priorities[modelType] ?? []).filter((i) => i.enabled !== false);
-  const defaultItem = items.find((i) => i.is_default) ?? items[0];
-  const selected = value ? items.find((i) => i.id === value) : undefined;
-  // 未显式选择时：表单场景显示占位文案，否则回显全局默认
-  const display = selected ?? (showDefaultWhenEmpty && !allowEmpty ? defaultItem : undefined);
-  const isTop = (item: ModelPriorityItem, idx: number) =>
-    modelType === "chat" ? !!item.is_default : idx === 0;
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  const handleSelect = (id: string) => {
-    setOpen(false);
-    if (onChange) onChange(id);
-    else if (id) pinMut.mutate({ modelType, modelId: id });
+  const [highlighted, setHighlighted] = useState("");
+  const query = usePriorities();
+  const pin = useModelPin();
+  const items = (query.data?.[modelType] ?? []).filter((item) => item.enabled !== false);
+  const defaultItem = items.find((item) => item.is_default) ?? items[0];
+  const selected = value ? items.find((item) => item.id === value) : !allowEmpty && showDefaultWhenEmpty ? defaultItem : undefined;
+  const unavailable = !!value && !!query.data && !items.some((item) => item.id === value);
+  const display = value || selected?.id || (allowEmpty ? t("followDefault") : placeholder ?? t("selectModel"));
+  const focused = items.find((item) => optionValue(item.id) === highlighted);
+  const focusedDefault = focused && (modelType === "chat" ? focused.is_default : focused.id === items[0]?.id);
+  const select = (modelId: string) => {
+    if (onChange) { onChange(modelId); setOpen(false); }
+    else if (modelId) pin.mutate({ modelType, modelId }, { onSuccess: () => setOpen(false) });
   };
 
-  return (
-    <div ref={rootRef} className={cn("relative", className)}>
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={() => setOpen((v) => !v)}
-        className={cn(
-          "flex items-center gap-1.5 rounded-md border border-border bg-elevated text-sm transition-colors",
-          "hover:border-border-strong hover:bg-hover disabled:opacity-50 disabled:cursor-not-allowed",
-          compact ? "h-8 px-2.5 text-xs max-w-44" : "h-9 px-3 w-full",
-        )}
-      >
-        <span className={cn("truncate", display ? "text-foreground" : "text-muted")}>
-          {display ? display.id : allowEmpty ? t("followDefault") : (placeholder ?? t("selectModel"))}
-        </span>
-        {display && <CapabilityIcons item={display} />}
-        <ChevronsUpDown size={13} className="text-muted shrink-0 ml-auto" />
+  return <Popover.Root open={open && !disabled} onOpenChange={(next) => {
+    setOpen(next);
+    if (next) setHighlighted(value ? optionValue(value) : allowEmpty ? DEFAULT_OPTION : selected ? optionValue(selected.id) : "");
+  }}>
+    <Popover.Trigger asChild>
+      <button type="button" id={id} disabled={disabled || pin.isPending} aria-label={label ?? t("selectModel")}
+        className={cn("flex min-w-0 items-center gap-2 rounded-lg border bg-elevated text-sm transition-colors hover:bg-hover disabled:cursor-not-allowed disabled:opacity-50",
+          unavailable ? "border-warn/60" : "border-border hover:border-border-strong",
+          compact ? "h-8 max-w-52 px-2.5 text-xs" : "h-9 w-full px-3", className)}>
+        <span className="truncate" title={display}>{display}</span>
+        {unavailable ? <TriangleAlert size={13} className="shrink-0 text-warn" aria-label={t("unavailableModel")} />
+          : selected && <CapabilityIcons item={selected} />}
+        <ChevronsUpDown size={13} className="ml-auto shrink-0 text-muted" />
       </button>
-
-      {open && (
-        <div
-          className={cn(
-            "absolute z-50 mt-1 min-w-64 max-w-[calc(100vw-2rem)] rounded-md border border-border bg-card shadow-lg animate-fade-in",
-            "right-0 sm:left-0 sm:right-auto",
-          )}
-        >
-          <div className="max-h-72 overflow-y-auto p-1">
-            {allowEmpty && (
-              <button
-                type="button"
-                onClick={() => handleSelect("")}
-                className="flex w-full items-center gap-2 rounded-sm px-2.5 py-2 text-left text-sm text-muted hover:bg-hover"
-              >
-                <Check size={14} className={cn("shrink-0", !value ? "text-accent" : "opacity-0")} />
-                {t("followDefault")}
-              </button>
-            )}
-            {items.map((item, idx) => {
-              const active = display?.id === item.id && (!allowEmpty || !!value || display === selected);
-              return (
-                <div
-                  key={item.id}
-                  className={cn(
-                    "flex items-center gap-2 rounded-sm px-2.5 py-2 hover:bg-hover group",
-                    active && "bg-accent-subtle",
-                  )}
-                >
-                  <button
-                    type="button"
-                    onClick={() => handleSelect(item.id)}
-                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                  >
-                    <Check size={14} className={cn("shrink-0", active ? "text-accent" : "opacity-0")} />
-                    <span className="min-w-0">
-                      <span className="flex items-center gap-1.5">
-                        <span className="truncate text-sm text-foreground">{item.id}</span>
-                        <CapabilityIcons item={item} />
-                        {isTop(item, idx) && (
-                          <Pin size={11} className="text-warn fill-warn shrink-0" />
-                        )}
-                      </span>
-                      {item.provider_name && (
-                        <span className="flex items-center gap-1 text-[10px] text-muted">
-                          <Server size={9} /> {item.provider_name}
-                        </span>
-                      )}
-                    </span>
-                  </button>
-                  {allowPin && !isTop(item, idx) && (
-                    <button
-                      type="button"
-                      title={t("pinToTop")}
-                      disabled={pinMut.isPending}
-                      onClick={() => pinMut.mutate({ modelType, modelId: item.id })}
-                      className="shrink-0 rounded-sm p-1 text-muted transition-colors hover:text-warn disabled:opacity-40"
-                    >
-                      <ChevronsUp size={14} />
-                    </button>
-                  )}
-                </div>
-              );
-            })}
-            {items.length === 0 && (
-              <p className="px-2.5 py-4 text-center text-xs text-muted">{t("noModelsOfType")}</p>
-            )}
+    </Popover.Trigger>
+    <Popover.Portal>
+      <Popover.Content aria-label={label ?? t("selectModel")} align="start" sideOffset={6} collisionPadding={12}
+        onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setOpen(false); } }}
+        className="z-[120] flex max-h-[var(--radix-popover-content-available-height)] w-[360px] max-w-[calc(100vw-24px)] flex-col overflow-hidden rounded-xl border border-border bg-card text-foreground shadow-lg outline-none">
+        <Command label={t("searchModels")} value={highlighted} onValueChange={setHighlighted} loop className="flex min-h-0 flex-col">
+          <div className="flex shrink-0 items-center gap-2 border-b border-border px-3">
+            <Search size={15} className="shrink-0 text-muted" />
+            <Command.Input aria-label={t("searchModels")} placeholder={t("searchModels")}
+              className="h-11 min-w-0 flex-1 bg-transparent text-sm outline-none" />
           </div>
-        </div>
-      )}
-    </div>
-  );
+          {unavailable && <p className="px-3 py-2 text-xs text-warn">{t("unavailableHint", { model: value })}</p>}
+          {query.error && <div className="p-2"><QueryError compact error={query.error} retry={() => void query.refetch()} /></div>}
+          {query.isPending && <p role="status" className="p-4 text-sm text-muted">{tc("loading")}</p>}
+          <Command.List aria-label={t("selectModel")} className="max-h-72 min-h-0 overflow-y-auto overscroll-contain p-1.5">
+            {!query.isPending && !query.error && <Command.Empty className="px-3 py-6 text-center text-xs text-muted">{t("noMatchingModels")}</Command.Empty>}
+            {allowEmpty && <Command.Item value={DEFAULT_OPTION} keywords={[t("followDefault")]} onSelect={() => select("")}
+              className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-sm data-[selected=true]:bg-hover">
+              <Check size={14} className={!value ? "text-accent" : "opacity-0"} />{t("followDefault")}
+            </Command.Item>}
+            {items.map((item, index) => <Command.Item key={item.id} value={optionValue(item.id)}
+              disabled={pin.isPending} keywords={[item.id, item.model, item.provider_name]}
+              onSelect={() => select(item.id)}
+              className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2.5 data-[selected=true]:bg-accent-subtle data-[disabled=true]:opacity-50">
+              <Check size={14} className={selected?.id === item.id ? "shrink-0 text-accent" : "shrink-0 opacity-0"} />
+              <span className="min-w-0 flex-1">
+                <span className="block break-words text-sm font-medium">{item.id}</span>
+                <span className="mt-0.5 block truncate text-[11px] text-muted">{item.provider_name}</span>
+              </span>
+              <CapabilityIcons item={item} />
+              {(modelType === "chat" ? item.is_default : index === 0) && <Pin size={12} className="shrink-0 text-warn" aria-label={t("defaultModel")} />}
+            </Command.Item>)}
+          </Command.List>
+        </Command>
+        {allowPin && focused && <div className="shrink-0 border-t border-border p-2">
+          <Button className="w-full" size="sm" loading={pin.isPending} disabled={!!focusedDefault}
+            title={focused.id} onClick={() => pin.mutate({ modelType, modelId: focused.id })}>
+            <Pin size={13} /><span className="truncate">{t(focusedDefault ? "alreadyDefault" : "pinSelected", { model: focused.id })}</span>
+          </Button>
+        </div>}
+      </Popover.Content>
+    </Popover.Portal>
+  </Popover.Root>;
 }

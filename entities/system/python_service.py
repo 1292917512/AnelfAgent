@@ -615,7 +615,7 @@ def get_comprehensive_uv_info(python_path: Optional[str] = None, packages: Optio
     """获取全面的 uv 安装信息 - 检测 pip 和 pipx 两种安装方式"""
     log("🔍 获取uv工具安装信息", "DEBUG")
     
-    info = {
+    info: Dict[str, Any] = {
         'installed': False,
         'version': None,
         'installed_via': None,
@@ -780,7 +780,7 @@ def get_pip_config(python_path: Optional[str] = None) -> Dict[str, Any]:
     python_exe = python_path or sys.executable
     log(f"🔧 获取pip配置信息: {python_exe}", "DEBUG")
     
-    config_info = {
+    config_info: Dict[str, Any] = {
         'index_url': None,
         'trusted_hosts': [],
         'config_file': None,
@@ -999,7 +999,7 @@ def get_python_status() -> Dict[str, Any]:
     """获取完整的 Python 环境状态"""
     log("📊 获取完整Python环境状态", "INFO")
     
-    status = {
+    status: Dict[str, Any] = {
         'system_info': {
             'system': platform.system(),
             'architecture': platform.architecture()[0],

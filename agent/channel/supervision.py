@@ -130,7 +130,9 @@ class ChannelSupervisor:
             name=f"agent.channel.supervisor.restart.{cid}",
         )
         self._restart_tasks[cid] = task
-        task.add_done_callback(lambda t, c=cid: self._on_restart_done(c, t))
+        def on_done(task: asyncio.Task) -> None:
+            self._on_restart_done(cid, task)
+        task.add_done_callback(on_done)
 
     def _on_restart_done(self, cid: str, task: asyncio.Task) -> None:
         """重启任务收尾：清理登记并曝光未捕获异常。"""

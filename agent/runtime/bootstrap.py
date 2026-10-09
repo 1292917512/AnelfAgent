@@ -96,7 +96,11 @@ def create_bootstrap() -> FlowMachine:
         # 手改 llm_clients.json 热重载：mtime 轮询触发 reconcile（进程内写入
         # 也会 bump mtime，reconcile diff 为空即 no-op，与频道配置同纪律）
         from agent.channel.config_watcher import get_config_watcher
-        get_config_watcher().watch(manager.config_path, manager.reload_from_disk)
+
+        def reload_models() -> None:
+            manager.reload_from_disk()
+
+        get_config_watcher().watch(manager.config_path, reload_models)
         llm = manager.get_default()
         log(f"LLM 默认客户端: {llm.config.name} ({llm.config.model})")
         return {"manager": manager, "llm": llm}
@@ -460,7 +464,12 @@ def create_bootstrap() -> FlowMachine:
             "hooks_llm", hooks_llm_runtime,
             cleanup=hooks_llm_runtime.drain,
         )
-        # 工作流 journal 连接随关停回收（run 终态已落 SQLite，无 drain 语义）
+        from agent.storage.conversation_fold import conversation_folder
+        Lifecycle.register(
+            "conversation_folder", conversation_folder,
+            cleanup=conversation_folder.aclose,
+        )
+        # 先等待工作流任务终止，再关闭 journal 连接。
         Lifecycle.register(
             "workflow_engine", mind.workflow_engine,
             cleanup=mind.workflow_engine.aclose,
@@ -617,9 +626,12 @@ def create_bootstrap() -> FlowMachine:
             "channels", cm, on_start=_start_channels, cleanup=_stop_channels,
         )
         if is_supervisor_enabled():
+            def start_supervisor() -> None:
+                start_channel_supervisor(cm)
+
             Lifecycle.register(
                 "channel_supervisor", None,
-                on_start=lambda: start_channel_supervisor(cm),
+                on_start=start_supervisor,
                 cleanup=stop_channel_supervisor,
             )
         # 实时语音会话入 Lifecycle：进程退出时不再依赖 WS 断连的隐式清理
@@ -759,9 +771,6 @@ def create_bootstrap() -> FlowMachine:
         for port_name in assert_wired():
             issues.append(f"晚绑定端口未施绑: {port_name}")
 
-        if rt.llm is None:
-            issues.append("LLM 默认客户端未就绪")
-
         if rt.mind.memory_store:
             try:
                 await rt.mind.memory_store._get_db()
@@ -781,7 +790,7 @@ def create_bootstrap() -> FlowMachine:
                 log(f"健康检查警告: {issue}", "WARNING")
         else:
             log(
-                f"健康检查通过: LLM={rt.llm.config.name}, "
+                f"健康检查通过: LLM={type(rt.llm).__name__}, "
                 f"tools={tool_count}, channels={len(channels)}"
             )
 

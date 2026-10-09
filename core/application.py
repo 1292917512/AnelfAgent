@@ -51,16 +51,17 @@ class Application:
         self._arm_signals(asyncio.get_running_loop())
         Lifecycle.register("application", self)
 
-        self.last_startup = await self.startup.execute()
-        if self.last_startup.success:
-            await Lifecycle.start_all()
-            # 启动期间第三方库可能抢走 SIGINT/SIGTERM 处理器，进入运行期前重新布防
-            self._arm_signals(asyncio.get_running_loop())
-            await self._shutdown_event.wait()
-        else:
-            log("启动流程未完成，直接进入关停", "ERROR", tag="启动")
-
-        await self._shutdown()
+        try:
+            self.last_startup = await self.startup.execute()
+            if self.last_startup.success:
+                await Lifecycle.start_all()
+                # 启动期间第三方库可能抢走信号处理器，进入运行期前重新布防
+                self._arm_signals(asyncio.get_running_loop())
+                await self._shutdown_event.wait()
+            else:
+                log("启动流程未完成，直接进入关停", "ERROR", tag="启动")
+        finally:
+            await self._shutdown()
 
     async def _shutdown(self) -> None:
         """关停序列：前置钩子（失败降级为日志）→ 全局预算内逆序清理 → 后置钩子。"""

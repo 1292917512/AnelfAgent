@@ -1,129 +1,70 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { memoryApi } from "@/lib/api";
 import type { MemoryFileInfo } from "@/lib/types";
 import { Card } from "@/components/common/Card";
-import { ConfirmDialog } from "@/components/ui";
+import { AsyncState } from "@/components/common/AsyncState";
+import { ListToolbar } from "@/components/common/ListToolbar";
+import { ConfirmDialog, Button } from "@/components/ui";
 import { cn } from "@/lib/utils";
-import { Save, FileText, Trash2 } from "lucide-react";
+import { FileText, Trash2 } from "lucide-react";
+import { NoteEditor, MAIN_NOTE_PATH } from "./NoteEditor";
 
-/** events 日期便签由「日记」面板管理，此处排除 */
 const EVENT_PATH_RE = /memory\/events\/\d{4}-\d{2}-\d{2}\.md$/;
-const MAIN_NOTE_PATH = "memory/memory.md";
-
 type FileGroup = "knowledge" | "groups" | "others";
-
+const GROUP_ORDER: FileGroup[] = ["knowledge", "groups", "others"];
 function classify(path: string): FileGroup {
   if (path.includes("/groups/")) return "groups";
-  if (/^memory\/[^/]+\.md$/.test(path)) return "knowledge";
-  return "others";
+  return /^memory\/[^/]+\.md$/.test(path) ? "knowledge" : "others";
 }
-
-const GROUP_ORDER: FileGroup[] = ["knowledge", "groups", "others"];
 
 export function NotesPanel() {
   const { t } = useTranslation("memory");
-  const queryClient = useQueryClient();
-  const { data: notes } = useQuery({ queryKey: ["notes"], queryFn: () => memoryApi.notes.read().then((r) => r.data) });
-  const { data: files = [] } = useQuery({ queryKey: ["memoryFiles"], queryFn: () => memoryApi.files.list().then((r) => r.data) });
-  const [editingPath, setEditingPath] = useState<string | null>(null);
-  const [editContent, setEditContent] = useState<string>("");
-  const [isMainEdit, setIsMainEdit] = useState(false);
+  const client = useQueryClient();
+  const [params, setParams] = useSearchParams();
+  const selected = params.get("note") ?? MAIN_NOTE_PATH;
+  const select = (path: string) => setParams((current) => { const next = new URLSearchParams(current); next.set("note", path); return next; });
+  const [search, setSearch] = useState("");
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
-
-  /** 按 知识/群组/其他 分组（排除主便签与 events 日期便签） */
-  const grouped = useMemo(() => {
-    const map: Record<FileGroup, MemoryFileInfo[]> = { knowledge: [], groups: [], others: [] };
-    for (const f of files) {
-      if (f.path === MAIN_NOTE_PATH || EVENT_PATH_RE.test(f.path)) continue;
-      map[classify(f.path)].push(f);
-    }
-    return map;
-  }, [files]);
-
-  const invalidate = () => {
-    queryClient.invalidateQueries({ queryKey: ["memoryFiles"] });
-    queryClient.invalidateQueries({ queryKey: ["notes"] });
-  };
-
-  const saveMainMutation = useMutation({ mutationFn: (c: string) => memoryApi.notes.write(c), onSuccess: () => { invalidate(); setIsMainEdit(false); } });
-  const saveFileMutation = useMutation({ mutationFn: ({ path, content }: { path: string; content: string }) => memoryApi.files.write(path, content), onSuccess: () => { invalidate(); setEditingPath(null); } });
-  const deleteMutation = useMutation({
-    mutationFn: (path: string) => memoryApi.files.delete(path),
-    onSuccess: (_r, path) => {
-      invalidate();
-      setPendingDelete(null);
-      if (editingPath === path) { setEditingPath(null); setEditContent(""); }
-    },
+  const files = useQuery({ queryKey: ["memoryFiles"], queryFn: () => memoryApi.files.list().then((r) => r.data), throwOnError: false });
+  const grouped: Record<FileGroup, MemoryFileInfo[]> = { knowledge: [], groups: [], others: [] };
+  for (const file of files.data ?? []) {
+    if (file.path === MAIN_NOTE_PATH || EVENT_PATH_RE.test(file.path) || !file.path.toLowerCase().includes(search.trim().toLowerCase())) continue;
+    grouped[classify(file.path)].push(file);
+  }
+  const remove = useMutation({
+    mutationFn: memoryApi.files.delete,
+    onSuccess: () => { void client.invalidateQueries({ queryKey: ["memoryFiles"] }); setPendingDelete(null); },
   });
-
-  const openFile = async (path: string) => { const r = await memoryApi.files.read(path); setEditContent(r.data.content ?? ""); setEditingPath(path); setIsMainEdit(false); };
-  const openMain = () => { setEditContent(notes?.content ?? ""); setEditingPath(null); setIsMainEdit(true); };
-
-  const renderFile = (f: MemoryFileInfo) => (
-    <div
-      key={f.path}
-      className={cn(
-        "group flex items-center gap-2 p-2 rounded-md text-sm transition-colors cursor-pointer",
-        editingPath === f.path ? "bg-accent-subtle text-accent" : "text-foreground hover:bg-hover",
-      )}
-      onClick={() => openFile(f.path)}
-    >
-      <FileText size={14} className="text-muted shrink-0" />
-      <div className="min-w-0 flex-1">
-        <p className="truncate">{f.path.replace(/^memory\//, "")}</p>
-        <p className="text-[11px] text-muted">{t("nLines", { count: Number(f.lines) })} · {f.size}</p>
-      </div>
-      <button
-        type="button"
-        onClick={(e) => { e.stopPropagation(); setPendingDelete(f.path); }}
-        className="opacity-0 group-hover:opacity-100 p-1 rounded text-muted hover:text-danger transition-all shrink-0"
-      >
-        <Trash2 size={13} />
-      </button>
-    </div>
-  );
-
-  return (
-    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:flex-1 md:min-h-0">
-      <Card title={t("memoryFiles")} className="md:flex md:flex-col md:min-h-0">
-        <div className="space-y-1 max-h-[45vh] md:max-h-none overflow-y-auto md:flex-1 md:min-h-0">
-          <button onClick={openMain} className={cn("w-full text-left p-2 rounded-md text-sm transition-colors flex items-center gap-2", isMainEdit ? "bg-accent-subtle text-accent" : "text-foreground hover:bg-hover")}>
-            <FileText size={14} className="flex-shrink-0" />
-            <div className="min-w-0"><p className="font-medium">{t("mainNote")}</p><p className="text-[11px] text-muted font-mono truncate">{notes?.path ?? MAIN_NOTE_PATH}</p></div>
+  const selectedExists = selected === MAIN_NOTE_PATH || files.data?.some((file) => file.path === selected);
+  return <AsyncState pending={files.isPending} error={!files.data ? files.error : undefined} retry={() => void files.refetch()}>
+    <div className="grid items-start gap-5 lg:grid-cols-[300px_minmax(0,1fr)]">
+      <Card title={t("memoryFiles")}>
+        <ListToolbar search={search} onSearch={setSearch} count={Object.values(grouped).flat().length} />
+        <div className="mt-4 max-h-[60vh] overflow-auto">
+          <button onClick={() => select(MAIN_NOTE_PATH)} aria-pressed={selected === MAIN_NOTE_PATH}
+            className={cn("flex w-full items-center gap-2 rounded-lg p-3 text-left text-sm", selected === MAIN_NOTE_PATH ? "bg-accent-subtle text-accent" : "hover:bg-hover")}>
+            <FileText size={15} />{t("mainNote")}
           </button>
-          {GROUP_ORDER.map((g) => grouped[g].length > 0 && (
-            <div key={g}>
-              <p className="px-2 pt-3 pb-1 text-[11px] font-medium text-muted uppercase tracking-wide">{t(`noteGroups.${g}`)}</p>
-              {grouped[g].map(renderFile)}
-            </div>
-          ))}
+          {GROUP_ORDER.map((group) => grouped[group].length > 0 && <div key={group}>
+            <p className="px-3 pb-1 pt-4 text-xs font-medium text-muted">{t(`noteGroups.${group}`)}</p>
+            {grouped[group].map((file) => <div key={file.path} className={cn("flex items-center rounded-lg p-1", selected === file.path ? "bg-accent-subtle text-accent" : "hover:bg-hover")}>
+              <button onClick={() => select(file.path)} aria-pressed={selected === file.path} className="min-w-0 flex-1 p-2 text-left">
+                <span className="block truncate text-sm">{file.path.replace(/^memory\//, "")}</span>
+                <span className="text-xs text-muted">{t("nLines", { count: Number(file.lines) })} · {file.size}</span>
+              </button>
+              <Button size="icon" variant="ghost" title={t("common:delete")} onClick={() => setPendingDelete(file.path)}><Trash2 size={14} /></Button>
+            </div>)}
+          </div>)}
         </div>
       </Card>
-      <Card title={isMainEdit ? t("mainNote") : editingPath ? editingPath.split("/").pop() ?? "" : t("selectFile")} className="md:col-span-2 md:flex md:flex-col md:min-h-0" actions={
-        (isMainEdit || editingPath) ? (
-          <button onClick={() => { if (isMainEdit) saveMainMutation.mutate(editContent); else if (editingPath) saveFileMutation.mutate({ path: editingPath, content: editContent }); }}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-accent text-primary-foreground hover:bg-[var(--accent-hover)] transition-all"><Save size={14} /> {t("common:save")}</button>
-        ) : undefined
-      }>
-        {(isMainEdit || editingPath) ? (
-          <textarea value={editContent} onChange={(e) => setEditContent(e.target.value)} rows={16}
-            className="w-full bg-elevated border border-input rounded-md px-3 py-2 text-sm text-foreground font-mono outline-none focus:border-ring resize-y md:resize-none md:flex-1 md:min-h-0" />
-        ) : (<p className="text-sm text-muted">{t("clickToEdit")}</p>)}
-      </Card>
-
-      <ConfirmDialog
-        open={pendingDelete !== null}
-        onClose={() => setPendingDelete(null)}
-        onConfirm={() => pendingDelete && deleteMutation.mutate(pendingDelete)}
-        title={t("deleteFileTitle")}
-        message={t("deleteFileConfirm", { name: pendingDelete?.replace(/^memory\//, "") ?? "" })}
-        confirmText={t("common:delete")}
-        cancelText={t("common:cancel")}
-        danger
-        loading={deleteMutation.isPending}
-      />
+      {selectedExists ? <NoteEditor key={selected} path={selected} /> : <Card title={t("selectFile")}><p className="text-sm text-muted">{t("clickToEdit")}</p></Card>}
     </div>
-  );
+    <ConfirmDialog open={pendingDelete !== null} onClose={() => setPendingDelete(null)}
+      onConfirm={() => { if (pendingDelete) remove.mutate(pendingDelete); }} title={t("deleteFileTitle")}
+      message={t("deleteFileConfirm", { name: pendingDelete?.replace(/^memory\//, "") ?? "" })}
+      confirmText={t("common:delete")} danger loading={remove.isPending} />
+  </AsyncState>;
 }

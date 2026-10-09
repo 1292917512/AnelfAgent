@@ -121,6 +121,25 @@ class TestStableBlocks:
         store.create("another-skill", "另一个", "c")
         assert injected.stable_fingerprint() != fp_before  # 库内容变化触发重建
 
+    def test_tools_block_appends_plugin_roster(self, tmp_path) -> None:
+        """工具块尾接插件名册：注入 registry 才进名册；装卸后指纹变化触发重建。"""
+        from core.plugins.store import InstalledPlugin, PluginRegistry
+
+        registry = PluginRegistry(tmp_path / "plugins.json")
+        registry.upsert(InstalledPlugin(name="demo-plug", skills=["s"]))
+
+        wm = WorkMemory(everything_data=SimpleNamespace())
+        injected = ContextAssembly(wm, ToolAssembly(), plugin_registry=registry)
+        block = injected.build_tools_block()
+        assert "[插件名册]" in block and "demo-plug" in block
+
+        isolated = ContextAssembly(wm, ToolAssembly())
+        assert "[插件名册]" not in isolated.build_tools_block()
+
+        fp_before = injected.stable_fingerprint()
+        registry.upsert(InstalledPlugin(name="another-plug"))
+        assert injected.stable_fingerprint() != fp_before  # 装卸触发 stable 重建
+
     def test_stable_layer_combines_blocks(self) -> None:
         asm = self._assembly()
         layer = asm.build_stable_layer(["你是 Anelf。"], static_guide="指南")

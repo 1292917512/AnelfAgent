@@ -40,6 +40,14 @@ from core.plugins.store import (
 
 ActivateHook = Callable[[InstalledPlugin, Path], InstalledPlugin]
 DeactivateHook = Callable[[InstalledPlugin], None]
+ChangeHook = Callable[[str, InstalledPlugin], None]
+
+# on_change 动作标识
+ACTION_INSTALLED = "installed"
+ACTION_REMOVED = "removed"
+ACTION_UPGRADED = "upgraded"
+ACTION_ENABLED = "enabled"
+ACTION_DISABLED = "disabled"
 
 _MARKETPLACE_FILE_CANDIDATES = (
     ".agents/plugins/marketplace.json",
@@ -59,10 +67,21 @@ class PluginManager:
         self.on_activate: Optional[ActivateHook] = None
         # 去激活钩子：移除/升级/禁用时调用
         self.on_deactivate: Optional[DeactivateHook] = None
+        # 变更钩子：装卸/升级/启停成功后在管理器锁内调用（不得回调管理器方法）
+        self.on_change: Optional[ChangeHook] = None
 
     @property
     def registry(self) -> PluginRegistry:
         return self._registry
+
+    def _notify(self, action: str, record: InstalledPlugin) -> None:
+        """触发变更钩子（未施绑或钩子异常不影响操作结果）。"""
+        if self.on_change is None:
+            return
+        try:
+            self.on_change(action, record)
+        except Exception as e:
+            log(f"插件变更钩子异常 ({action} {record.name}): {e}", "WARNING")
 
     # ==================================================================
     # 已安装插件
@@ -130,6 +149,7 @@ class PluginManager:
             with self._lock:
                 self._registry.upsert(record)
             log(f"插件已安装: {name} {record.version} ({record.source_type})", tag="插件")
+            self._notify(ACTION_INSTALLED, record)
             return record
         except Exception:
             if record is not None and self.on_deactivate is not None:
@@ -154,6 +174,7 @@ class PluginManager:
                 self._registry.remove(name)
                 shutil.rmtree(plugin_payload_dir(name), ignore_errors=True)
         log(f"插件已移除: {name}", tag="插件")
+        self._notify(ACTION_REMOVED, record)
         return record
 
     def upgrade(self, name: str) -> Tuple[InstalledPlugin, bool]:
@@ -187,6 +208,7 @@ class PluginManager:
                 record = self.on_activate(record, target)
             self._registry.upsert(record)
             log(f"插件已升级: {record.name} → {record.version} {sha[:8]}", tag="插件")
+            self._notify(ACTION_UPGRADED, record)
             return record, True
         except Exception:
             # 升级失败：负载目录可能已被替换一半，以注册表记录为准重新激活
@@ -232,6 +254,7 @@ class PluginManager:
                 record.enabled = enabled
                 self._registry.upsert(record)
         log(f"插件已{'启用' if enabled else '禁用'}: {name}", tag="插件")
+        self._notify(ACTION_ENABLED if enabled else ACTION_DISABLED, record)
         return record
 
     # ==================================================================

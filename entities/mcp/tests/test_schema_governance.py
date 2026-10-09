@@ -43,6 +43,7 @@ class TestReadOnlyParallelMapping:
         write_tool = EntityRegistry.get("probe_write")
         assert read_tool is not None and write_tool is not None
         assert read_tool.meta.get("concurrency_safe") is True
+        assert read_tool.meta["mcp_original_name"] == "probe_read"
         assert not write_tool.meta.get("concurrency_safe")
 
     def test_no_annotations_defaults_serial(self, bridge: MCPBridge) -> None:

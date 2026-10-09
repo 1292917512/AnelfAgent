@@ -6,7 +6,7 @@ PUT  /api/config/meta/{key}  保存单个配置项（热更生效，自动路由
 设计要点：
 - 配置项元数据来自 ConfigRegistry（各模块声明式注册，频道经 adapter/<id> 组接入）
 - MindConfig 字段保存时路由到 save_mind_config（实时生效 + 持久化 + 同步 ConfigManager）
-- 其余配置走 ConfigManager.set + save（变更监听驱动频道等消费方即时热更）
+- 其余配置走 ConfigManager.set_persisted（落盘成功后通知消费方热更）
 - PASSWORD 类型：GET 掩码返回；PUT 提交掩码占位符时保留现值（留空则清空）
 """
 from __future__ import annotations
@@ -33,6 +33,7 @@ def _mind_fields() -> frozenset:
 def _serialize_item(item: ConfigItem) -> Dict[str, Any]:
     """将 ConfigItem 序列化为前端可用的元数据（PASSWORD 类型值掩码）。"""
     value = ConfigManager.get(item.key, item.default_value)
+    environment = ConfigManager.environment_override(item.key)
     if item.is_secret and isinstance(value, str) and value:
         value = mask_secret(value)
     return {
@@ -41,7 +42,9 @@ def _serialize_item(item: ConfigItem) -> Dict[str, Any]:
         "type": item.type_name,
         "value": value,
         "default": item.default_value,
-        "editable": item.editable,
+        "editable": item.editable and environment is None,
+        "environment_variable": environment,
+        "value_source": "environment" if environment else "configured" if ConfigManager.has(item.key) else "default",
         "options": item.enum_options,
         "advanced": item.advanced,
         "min": item.min_value,
@@ -76,6 +79,9 @@ async def save_config_meta(key: str, data: ConfigValueUpdate) -> Dict[str, Any]:
         raise HTTPException(404, f"配置项不存在: {key}")
     if not item.editable:
         raise HTTPException(403, f"配置项不可编辑: {key}")
+    environment = ConfigManager.environment_override(key)
+    if environment:
+        raise HTTPException(409, f"配置由环境变量 {environment} 管理，请修改环境变量后重新加载")
 
     # PASSWORD 项提交当前掩码值 = 用户未改动，保留现值（掩码不可逆，无法回写）
     if item.is_secret and isinstance(data.value, str):
@@ -97,7 +103,12 @@ async def save_config_meta(key: str, data: ConfigValueUpdate) -> Dict[str, Any]:
         except Exception as exc:
             raise server_error("保存 Mind 配置", exc) from exc
     else:
-        ConfigManager.set(key, value)
-        ConfigManager.save()
+        try:
+            ConfigManager.set_persisted({key: value})
+        except Exception as exc:
+            raise server_error("保存配置", exc) from exc
 
+    value = ConfigManager.get(key, item.default_value)
+    if item.is_secret and isinstance(value, str) and value:
+        value = mask_secret(value)
     return {"status": "ok", "key": key, "value": value}

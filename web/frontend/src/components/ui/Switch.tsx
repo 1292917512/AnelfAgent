@@ -3,10 +3,12 @@ import { cn } from "@/lib/utils";
 /** 统一开关 */
 export function Switch({
   checked,
+  label,
   onChange,
   disabled = false,
 }: {
   checked: boolean;
+  label?: string;
   onChange: (checked: boolean) => void;
   disabled?: boolean;
 }) {
@@ -15,6 +17,7 @@ export function Switch({
       type="button"
       role="switch"
       aria-checked={checked}
+      aria-label={label}
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={cn(

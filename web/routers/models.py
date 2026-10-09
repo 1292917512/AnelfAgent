@@ -209,7 +209,7 @@ async def get_model_info_batch(req: ModelInfoBatchReq) -> Dict[str, Any]:
 class CreateModelReq(BaseModel):
     id: str
     model: str = ""
-    model_types: List[ModelTypeValue] = Field(default_factory=lambda: ["chat"])
+    model_types: List[ModelTypeValue] = Field(default=["chat"])
     temperature: Optional[float] = Field(
         default=None, ge=0, le=2,
         description="可选采样温度；缺省不下发，由 provider/SDK 按模型默认决定",
@@ -455,9 +455,10 @@ async def update_cost_map(req: CostMapUpdateReq) -> Dict[str, Any]:
 # ── 模型（动态路径 /{model_id}，放最后避免吞掉固定路径） ────────────
 
 
-class UpdateModelReq(CreateModelReq):
+class UpdateModelReq(BaseModel):
     """更新请求：字段与创建一致，全部改为可选（仅透传显式提供的字段）。"""
 
+    enabled: Optional[bool] = None
     id: Optional[str] = None
     model: Optional[str] = None
     model_types: Optional[List[ModelTypeValue]] = None

@@ -64,8 +64,11 @@ def _status(code: str, details: str, request_id: Optional[str] = None) -> Dict[s
 
 def _check_auth(websocket: WebSocket) -> bool:
     """与 HTTP 面同一密码体系：cookie 或 ?token= 任一命中即放行（未设密码全放行）。"""
-    from web.server import _load_auth_password, _make_token
-    password = _load_auth_password()
+    from web.server import AuthConfigurationError, _load_auth_password, _make_token
+    try:
+        password = _load_auth_password()
+    except AuthConfigurationError:
+        return False
     if not password:
         return True
     token = websocket.query_params.get("token") or websocket.cookies.get("_anelf_token", "")

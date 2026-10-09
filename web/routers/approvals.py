@@ -75,7 +75,7 @@ class PolicyUpdateRequest(BaseModel):
 
 
 @router.put("/policies")
-async def save_policies(data: PolicyUpdateRequest) -> Dict[str, str]:
+async def save_policies(data: PolicyUpdateRequest) -> Dict[str, Any]:
     """保存策略集（触发热更新）。"""
     try:
         count = _approval_svc.save_policies(data.policies)

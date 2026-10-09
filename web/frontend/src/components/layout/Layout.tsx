@@ -1,61 +1,39 @@
-import { Suspense, useEffect } from "react";
+import { useEffect } from "react";
 import { Outlet, useLocation } from "react-router-dom";
+import { useTranslation } from "react-i18next";
+import { X } from "lucide-react";
 import { Sidebar } from "./Sidebar";
 import { Header } from "./Header";
 import { MobileNav } from "./MobileNav";
-import { Spinner } from "@/components/ui";
+import { DialogSurface } from "@/components/ui/DialogSurface";
+import { Button } from "@/components/ui/Button";
 import { useIsMobile } from "@/lib/use-media-query";
 import { useAppStore } from "@/stores/app-store";
 import { cn } from "@/lib/utils";
+import { CORE_ROUTES } from "@/lib/core-routes";
 
 export function Layout() {
+  const { t } = useTranslation("nav");
   const isMobile = useIsMobile();
-  const mobileMenuOpen = useAppStore((s) => s.mobileMenuOpen);
-  const setMobileMenuOpen = useAppStore((s) => s.setMobileMenuOpen);
+  const mobileMenuOpen = useAppStore((state) => state.mobileMenuOpen);
+  const setMobileMenuOpen = useAppStore((state) => state.setMobileMenuOpen);
+  const density = useAppStore((state) => state.density);
+  const branding = useAppStore((state) => state.branding);
   const location = useLocation();
-
-  // 路由切换时关闭移动端抽屉
-  useEffect(() => {
-    setMobileMenuOpen(false);
-  }, [location.pathname, setMobileMenuOpen]);
-
+  const workspace = CORE_ROUTES.some((route) => route.path === location.pathname && route.workspace);
+  useEffect(() => { setMobileMenuOpen(false); }, [location.pathname, setMobileMenuOpen]);
+  useEffect(() => { document.title = `${branding.title} · ${t(CORE_ROUTES.find((route) => route.path === location.pathname)?.label ?? "personalWorkspace")}`; }, [branding.title, location.pathname, t]);
   return (
-    <div className="flex h-dvh overflow-hidden">
-      {/* 桌面端：固定侧边栏；移动端：抽屉 + 遮罩 */}
-      {isMobile ? (
-        <>
-          {mobileMenuOpen && (
-            <div
-              className="fixed inset-0 z-40 bg-black/50"
-              onClick={() => setMobileMenuOpen(false)}
-            />
-          )}
-          <div
-            className={cn(
-              "fixed inset-y-0 left-0 z-50 w-64 transform transition-transform duration-200",
-              mobileMenuOpen ? "translate-x-0" : "-translate-x-full",
-            )}
-          >
-            <Sidebar />
-          </div>
-        </>
-      ) : (
-        <Sidebar />
-      )}
-
-      <div className="flex flex-col flex-1 min-w-0">
+    <div className="flex h-dvh overflow-hidden" data-density={density}>
+      <a href="#main-content" className="skip-link">{t("skipToContent")}</a>
+      {isMobile ? <DialogSurface open={mobileMenuOpen} onClose={() => setMobileMenuOpen(false)} title={t("navigation")} placement="left" className="max-w-[280px]">
+        <Button variant="ghost" size="icon" className="absolute right-2 top-4 z-10" onClick={() => setMobileMenuOpen(false)} aria-label={t("common:close")}><X size={16} /></Button>
+        <Sidebar mobile />
+      </DialogSurface> : <Sidebar />}
+      <div className="flex min-w-0 flex-1 flex-col">
         <Header />
-        <main className="flex-1 overflow-y-auto p-3 md:p-6">
-          {/* 页面级 React.lazy 的加载兜底 */}
-          <Suspense
-            fallback={
-              <div className="flex h-full items-center justify-center">
-                <Spinner size={24} />
-              </div>
-            }
-          >
-            <Outlet />
-          </Suspense>
+        <main id="main-content" tabIndex={-1} className={cn("min-h-0 flex-1 outline-none", workspace ? "overflow-hidden" : "overflow-y-auto px-4 py-6 md:px-7 md:py-7")}>
+          <Outlet />
         </main>
         <MobileNav />
       </div>

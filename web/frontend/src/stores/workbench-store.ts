@@ -1,3 +1,5 @@
+import { useFileEditorStore } from "./file-editor-store";
+import { isFileUnder, workspaceFileId, workspaceFileLabel, type WorkspaceFileRef } from "@/lib/workspace-file";
 import { create } from "zustand";
 import { uiApi } from "@/lib/api";
 import type { WorkspaceRoot } from "@/lib/types";
@@ -31,6 +33,7 @@ export interface EditorSelectionRange {
 export interface EditorSelection {
   /** 选区所在文件（工作区相对路径） */
   path: string;
+  root: WorkspaceRoot;
   ranges: EditorSelectionRange[];
   /** 选区内容（后端注入时按预算截断） */
   content: string;
@@ -43,11 +46,8 @@ interface WorkbenchState {
   dockOpen: boolean;
   activeTab: DockTab;
   /** 编辑器已打开的工作区文件标签（保持打开顺序） */
-  openFiles: string[];
-  /** 每个已打开文件所属根目录（workspace / project），缺省为 workspace */
-  fileRoots: Record<string, WorkspaceRoot>;
-  /** 当前激活的文件标签（openFiles 为空时为 null） */
-  openFilePath: string | null;
+  openFiles: WorkspaceFileRef[];
+  activeFileId: string | null;
   /** 编辑器面板是否展开（收起时标签保留，再点文件即恢复） */
   filePanelOpen: boolean;
   /** 编辑器是否全屏展开（覆盖整个工作台，专注编辑/操作） */
@@ -70,15 +70,13 @@ interface WorkbenchState {
   /** AI ui_open_panel 命令入口：打开面板并携带 payload */
   openPanel: (panel: string, payload?: string) => void;
   openFile: (path: string, root?: WorkspaceRoot) => void;
-  /** 获取文件所属根目录（缺省 workspace） */
-  fileRoot: (path: string) => WorkspaceRoot;
-  activateFile: (path: string) => void;
-  closeFile: (path?: string) => void;
+  activateFile: (id: string) => void;
+  closeFile: (id?: string) => void;
   closeAllFiles: () => void;
   /** 文件树重命名/移动联动：oldPath 为文件则精确重映射，为目录则重映射其下全部已打开标签 */
-  remapOpenFile: (oldPath: string, newPath: string) => void;
+  remapOpenFile: (oldPath: string, newPath: string, root: WorkspaceRoot) => void;
   /** 文件树删除联动：关闭该路径本身或其目录下全部已打开标签 */
-  closeFilesUnder: (path: string) => void;
+  closeFilesUnder: (path: string, root: WorkspaceRoot) => void;
   /** 收起编辑器面板（保留全部标签与未保存草稿） */
   collapseFilePanel: () => void;
   /** 切换编辑器全屏展开 */
@@ -96,11 +94,10 @@ interface WorkbenchState {
 
 export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   leftOpen: false,
-  dockOpen: true,
+  dockOpen: false,
   activeTab: "status",
   openFiles: [],
-  fileRoots: {},
-  openFilePath: null,
+  activeFileId: null,
   filePanelOpen: false,
   filePanelExpanded: false,
   fileTreeFocus: null,
@@ -130,68 +127,55 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
     if (tab === "search" && payload) set({ searchSeed: payload });
   },
 
-  openFile: (path, root = "workspace") =>
-    set((s) => ({
-      openFiles: s.openFiles.includes(path) ? s.openFiles : [...s.openFiles, path],
-      fileRoots: { ...s.fileRoots, [path]: root },
-      openFilePath: path,
-      filePanelOpen: true,
-    })),
-  fileRoot: (path) => get().fileRoots[path] ?? "workspace",
-  activateFile: (path) =>
-    set((s) => (s.openFiles.includes(path) ? { openFilePath: path, filePanelOpen: true } : {})),
-  closeFile: (path) =>
-    set((s) => {
-      const target = path ?? s.openFilePath;
-      if (!target) return {};
-      const idx = s.openFiles.indexOf(target);
-      const openFiles = s.openFiles.filter((p) => p !== target);
-      const fileRoots = { ...s.fileRoots };
-      delete fileRoots[target];
-      // 关闭激活标签时切到相邻标签（优先右侧，否则左侧）
-      const openFilePath =
-        s.openFilePath === target ? (openFiles[Math.min(idx, openFiles.length - 1)] ?? null) : s.openFilePath;
-      const empty = openFiles.length === 0;
-      // 全部关闭时退出全屏、收起面板，回归默认布局
-      return {
-        openFiles,
-        fileRoots,
-        openFilePath,
-        filePanelOpen: empty ? false : s.filePanelOpen,
-        filePanelExpanded: empty ? false : s.filePanelExpanded,
-      };
-    }),
-  closeAllFiles: () => set({ openFiles: [], fileRoots: {}, openFilePath: null, filePanelOpen: false, filePanelExpanded: false }),
-  remapOpenFile: (oldPath, newPath) =>
-    set((s) => {
-      // 命中规则：精确路径或其目录前缀（oldPath 为目录时重映射整棵子树的标签）
-      const hit = (p: string) => p === oldPath || p.startsWith(oldPath + "/");
-      const remap = (p: string) => (p === oldPath ? newPath : newPath + p.slice(oldPath.length));
-      if (!s.openFiles.some(hit)) return {};
-      const openFiles = s.openFiles.map((p) => (hit(p) ? remap(p) : p));
-      const fileRoots: Record<string, WorkspaceRoot> = {};
-      for (const [p, r] of Object.entries(s.fileRoots)) fileRoots[hit(p) ? remap(p) : p] = r;
-      const openFilePath = s.openFilePath && hit(s.openFilePath) ? remap(s.openFilePath) : s.openFilePath;
-      return { openFiles, fileRoots, openFilePath };
-    }),
-  closeFilesUnder: (path) =>
-    set((s) => {
-      const hit = (p: string) => p === path || p.startsWith(path + "/");
-      if (!s.openFiles.some(hit)) return {};
-      const openFiles = s.openFiles.filter((p) => !hit(p));
-      const fileRoots = Object.fromEntries(Object.entries(s.fileRoots).filter(([p]) => !hit(p)));
-      const openFilePath =
-        s.openFilePath && hit(s.openFilePath) ? (openFiles[openFiles.length - 1] ?? null) : s.openFilePath;
-      const empty = openFiles.length === 0;
-      return {
-        openFiles,
-        fileRoots,
-        openFilePath,
-        filePanelOpen: empty ? false : s.filePanelOpen,
-        filePanelExpanded: empty ? false : s.filePanelExpanded,
-      };
-    }),
-  collapseFilePanel: () => set({ filePanelOpen: false }),
+  openFile: (path, root = "workspace") => set((state) => {
+    const file = { path, root };
+    const id = workspaceFileId(file);
+    return {
+      openFiles: state.openFiles.some((entry) => workspaceFileId(entry) === id) ? state.openFiles : [...state.openFiles, file],
+      activeFileId: id, filePanelOpen: true, selection: null,
+    };
+  }),
+  activateFile: (id) => set((state) => state.openFiles.some((file) => workspaceFileId(file) === id)
+    ? { activeFileId: id, filePanelOpen: true, selection: null } : state),
+  closeFile: (id) => set((state) => {
+    const target = id ?? state.activeFileId;
+    const index = state.openFiles.findIndex((file) => workspaceFileId(file) === target);
+    if (index < 0) return state;
+    const openFiles = state.openFiles.filter((file) => workspaceFileId(file) !== target);
+    const adjacent = openFiles[Math.min(index, openFiles.length - 1)];
+    return {
+      openFiles,
+      activeFileId: state.activeFileId === target ? (adjacent ? workspaceFileId(adjacent) : null) : state.activeFileId,
+      filePanelOpen: !!openFiles.length && state.filePanelOpen,
+      filePanelExpanded: !!openFiles.length && state.filePanelExpanded,
+      selection: state.activeFileId === target ? null : state.selection,
+    };
+  }),
+  closeAllFiles: () => set({ openFiles: [], activeFileId: null, filePanelOpen: false, filePanelExpanded: false, selection: null }),
+  remapOpenFile: (oldPath, newPath, root) => set((state) => {
+    const remaps = new Map<string, WorkspaceFileRef>();
+    const openFiles = state.openFiles.map((file) => {
+      if (!isFileUnder(file, oldPath, root)) return file;
+      const renamed = { ...file, path: newPath + file.path.slice(oldPath.length) };
+      remaps.set(workspaceFileId(file), renamed);
+      return renamed;
+    });
+    if (!remaps.size) return state;
+    useFileEditorStore.getState().remap(remaps);
+    const active = state.activeFileId ? remaps.get(state.activeFileId) : undefined;
+    return { openFiles, activeFileId: active ? workspaceFileId(active) : state.activeFileId, selection: null };
+  }),
+  closeFilesUnder: (path, root) => set((state) => {
+    const openFiles = state.openFiles.filter((file) => !isFileUnder(file, path, root));
+    if (openFiles.length === state.openFiles.length) return state;
+    const active = openFiles.find((file) => workspaceFileId(file) === state.activeFileId) ?? openFiles[openFiles.length - 1];
+    return {
+      openFiles, activeFileId: active ? workspaceFileId(active) : null,
+      filePanelOpen: !!openFiles.length && state.filePanelOpen,
+      filePanelExpanded: !!openFiles.length && state.filePanelExpanded, selection: null,
+    };
+  }),
+  collapseFilePanel: () => set({ filePanelOpen: false, selection: null }),
   toggleFilePanelExpanded: () => set((s) => ({ filePanelExpanded: !s.filePanelExpanded, filePanelOpen: true })),
   setFileTreeFocus: (path) => set({ fileTreeFocus: path }),
   setSelection: (sel) => set({ selection: sel }),
@@ -222,19 +206,20 @@ export function startUiStateReporting(): () => void {
     if (_reportTimer) clearTimeout(_reportTimer);
     _reportTimer = setTimeout(() => {
       const state = useWorkbenchStore.getState();
+      const active = state.openFiles.find((file) => workspaceFileId(file) === state.activeFileId);
       uiApi.reportState({
         active_tab: state.activeTab,
         dock_open: state.dockOpen,
         left_open: state.leftOpen,
-        open_file: state.openFilePath,
+        open_file: active ? workspaceFileLabel(active) : null,
         has_draft: state.draft !== null,
         pending_asks: state.asks.length,
         // 工作区上下文注入数据源（发送时渲染为消息前缀块）
-        active_file: state.openFilePath,
-        selection: state.selection,
-        open_tabs: state.openFiles.map((p) => ({
-          label: p.split("/").pop() ?? p,
-          path: p,
+        active_file: active ? workspaceFileLabel(active) : null,
+        selection: state.selection ? { ...state.selection, path: workspaceFileLabel(state.selection) } : null,
+        open_tabs: state.openFiles.map((file) => ({
+          label: file.path.split("/").pop() ?? file.path,
+          path: workspaceFileLabel(file),
         })),
       }).catch(() => { /* 上报失败忽略 */ });
     }, 800);

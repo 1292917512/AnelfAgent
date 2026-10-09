@@ -1,5 +1,4 @@
-import { createHighlighterCore, type HighlighterCore, type LanguageRegistration } from "shiki/core";
-import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
+import type { HighlighterCore, LanguageRegistration } from "shiki/core";
 
 /** 语言语法模块的动态加载产物 */
 type LangModule = { default: LanguageRegistration | LanguageRegistration[] };
@@ -67,14 +66,14 @@ const pendingLangs = new Map<string, Promise<boolean>>();
 
 function getHighlighter(): Promise<HighlighterCore> {
   if (!highlighterPromise) {
-    highlighterPromise = createHighlighterCore({
+    highlighterPromise = Promise.all([import("shiki/core"), import("shiki/engine/javascript")]).then(([core, engine]) => core.createHighlighterCore({
       themes: [
         import("shiki/themes/one-dark-pro.mjs"),
         import("shiki/themes/github-light.mjs"),
       ],
       langs: [],
-      engine: createJavaScriptRegexEngine(),
-    });
+      engine: engine.createJavaScriptRegexEngine(),
+    })).catch((error: unknown) => { highlighterPromise = null; throw error; });
   }
   return highlighterPromise;
 }
@@ -102,7 +101,8 @@ export async function highlightCode(
             loadedLangs.add(normalized);
             return true;
           })
-          .catch(() => false);
+          .catch(() => false)
+          .finally(() => pendingLangs.delete(normalized));
         pendingLangs.set(normalized, pending);
       }
       if (!(await pending)) return null;

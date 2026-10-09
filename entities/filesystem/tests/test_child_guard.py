@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import time
 
 import pytest
@@ -24,7 +25,7 @@ def _spawn_sleeper() -> subprocess.Popen:
     if os.name != "nt":
         kwargs["start_new_session"] = True
     return subprocess.Popen(
-        ["python3", "-c", "import time; time.sleep(60)"],
+        [sys.executable, "-c", "import time; time.sleep(60)"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs,
     )
 

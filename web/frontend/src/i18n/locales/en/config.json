@@ -40,10 +40,12 @@
     "vision": "Vision",
     "other": "Other",
     "model": "Models",
-    "judgment": "Judgment"
+    "judgment": "Judgment",
+    "plugins": "Plugins"
   },
   "sections": {
     "judgment/core": "Judgment Core",
+    "plugins/roster": "Roster Injection",
     "mind/core": "Core",
     "mind/llm": "LLM Calls",
     "mind/interrupt": "Interrupt",
@@ -97,5 +99,6 @@
     "keepSeg": "Keep {{count}} raw",
     "foldSeg": "Fold {{count}}/batch",
     "range": "Window {{min}} ~ {{max}}"
-  }
+  },
+  "environmentManaged": "Managed by environment variable {{name}}"
 }

@@ -252,6 +252,10 @@ _USER_ARRIVAL_TAGS = (
     "time", "uid", "name", "channel", "group_id", "session_id", "message_id",
 )
 
+# 平台事件/推送的 kind 标签（渲染于元数据标签之后）：此类消息虽经渠道到达，
+# 但不是用户原话或请求，不应进入未回复补回等"欠回复"语义
+_NON_CHAT_KIND_MARKERS = ("[kind:event]", "[kind:notification]", "[kind:system]")
+
 
 def is_genuine_user_message(msg: Dict) -> bool:
     """判定 role=user 消息是否为真用户原话（渠道到达、带元数据标签）。"""
@@ -261,7 +265,10 @@ def is_genuine_user_message(msg: Dict) -> bool:
     if not isinstance(content, str) or not content:
         return False
     head = content.lstrip()[:200]
-    return head.startswith("[") and any(f"[{tag}:" in head for tag in _USER_ARRIVAL_TAGS)
+    if not (head.startswith("[") and any(f"[{tag}:" in head for tag in _USER_ARRIVAL_TAGS)):
+        return False
+    # kind 标签渲染在元数据标签串之后，窗口放宽覆盖其位置
+    return not any(marker in content[:400] for marker in _NON_CHAT_KIND_MARKERS)
 
 
 def preserve_reasoning_fields(msg: Dict[str, Any], result: "ChatResult",

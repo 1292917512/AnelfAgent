@@ -14,8 +14,8 @@ import type {
 
 export const personasApi = {
   list: () => api.get<PersonaItem[]>("/personas/"),
-  active: () => api.get("/personas/active"),
-  get: (key: string) => api.get(`/personas/${encodeURIComponent(key)}`),
+  active: () => api.get<{ active: string | null }>("/personas/active"),
+  get: (key: string) => api.get<PersonaData>(`/personas/${encodeURIComponent(key)}`),
   save: (key: string, data: Partial<PersonaData>) =>
     api.put(`/personas/${encodeURIComponent(key)}`, data),
   create: (key: string) => api.post("/personas/", { key }),
@@ -65,5 +65,5 @@ export const tasksApi = {
 export const configMetaApi = {
   list: () => api.get<{ groups: ConfigMetaGroup[] }>("/config/meta"),
   save: (key: string, value: unknown) =>
-    api.put(`/config/meta/${encodeURIComponent(key)}`, { value }),
+    api.put<{ status: string; key: string; value?: unknown; unchanged?: boolean }>(`/config/meta/${encodeURIComponent(key)}`, { value }),
 };

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 from typing import Any, Awaitable, Callable, Optional, TypeVar
 
 from core.log import log
@@ -45,7 +46,7 @@ def get_retry_after(exc: BaseException) -> float:
     try:
         from telegram.error import RetryAfter
         if isinstance(exc, RetryAfter):
-            return float(exc.retry_after)
+            return exc.retry_after.total_seconds() if isinstance(exc.retry_after, timedelta) else float(exc.retry_after)
     except (ImportError, AttributeError):
         log("get_retry_after 异常已忽略", "DEBUG")
     return 5.0

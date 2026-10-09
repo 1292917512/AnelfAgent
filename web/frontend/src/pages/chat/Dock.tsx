@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import { useWorkbenchStore, type DockTab } from "@/stores/workbench-store";
 import { useIsMobile } from "@/lib/use-media-query";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
+import { DialogSurface } from "@/components/ui/DialogSurface";
 import { StatusPanel } from "./dock/StatusPanel";
 import { TracePanel } from "./dock/TracePanel";
 import { DockTasksPanel } from "./dock/TasksPanel";
@@ -55,7 +56,7 @@ export function Dock() {
           <TabBar tabs={tabs} activeTab={activeTab} onChange={setActiveTab} fill />
         </div>
         {isMobile && (
-          <button onClick={toggleDock} className="p-2 text-muted hover:text-foreground shrink-0">
+          <button aria-label={t("common:close")} onClick={toggleDock} className="p-2 text-muted hover:text-foreground shrink-0">
             <X size={16} />
           </button>
         )}
@@ -68,10 +69,9 @@ export function Dock() {
 
   if (isMobile) {
     return (
-      <div className="fixed inset-0 z-40" role="dialog" aria-modal="true">
-        <div className="absolute inset-0 bg-black/50" onClick={toggleDock} />
-        <div className="absolute inset-y-0 right-0">{body}</div>
-      </div>
+      <DialogSurface open title={t("toggleDock")} onClose={toggleDock} placement="right" className="w-[85vw] max-w-sm border-0">
+        {body}
+      </DialogSurface>
     );
   }
   return body;
@@ -79,6 +79,7 @@ export function Dock() {
 
 /** 左侧文件树栏（移动端为抽屉） */
 export function LeftDock() {
+  const { t } = useTranslation("workbench");
   const isMobile = useIsMobile();
   const leftOpen = useWorkbenchStore((s) => s.leftOpen);
   const toggleLeft = useWorkbenchStore((s) => s.toggleLeft);
@@ -92,7 +93,7 @@ export function LeftDock() {
     )}>
       {isMobile && (
         <div className="flex justify-end p-1 border-b border-border shrink-0">
-          <button onClick={toggleLeft} className="p-1.5 text-muted hover:text-foreground">
+          <button aria-label={t("common:close")} onClick={toggleLeft} className="p-1.5 text-muted hover:text-foreground">
             <X size={15} />
           </button>
         </div>
@@ -111,10 +112,9 @@ export function LeftDock() {
 
   if (isMobile) {
     return (
-      <div className="fixed inset-0 z-40" role="dialog" aria-modal="true">
-        <div className="absolute inset-0 bg-black/50" onClick={toggleLeft} />
-        <div className="absolute inset-y-0 left-0">{body}</div>
-      </div>
+      <DialogSurface open title={t("toggleFiles")} onClose={toggleLeft} placement="left" className="w-[80vw] max-w-xs border-0">
+        {body}
+      </DialogSurface>
     );
   }
   return body;

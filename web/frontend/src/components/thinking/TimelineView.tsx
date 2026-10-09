@@ -1,161 +1,94 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { CheckCircle2, ChevronRight, Clock, AlertCircle, Loader2 } from "lucide-react";
-import type { ThinkingSession, TraceNode } from "@/stores/thinking-store";
-import { TYPE_STYLES } from "./TraceNode";
-import { NodeDetail } from "./NodeDetail";
+import { ChevronDown, Search, SlidersHorizontal } from "lucide-react";
+import type { ThinkingSession } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { TraceNodeRow } from "./TraceNodeRow";
+import { nodeStage, nodeSummary, nodeTitle, traceGroups, type TraceStage } from "./trace-model";
 
 interface Props {
-  session: ThinkingSession;
-  selectedNodeId: string | null;
-  autoFollow: boolean;
-  onSelect: (nodeId: string | null) => void;
+  session: ThinkingSession; selectedNodeId: string | null;
+  autoFollow: boolean; onSelect: (id: string) => void; compact?: boolean;
 }
+type Filter = "all" | "issues" | TraceStage;
+const FILTERS: Filter[] = ["all", "issues", "prepare", "reason", "act", "finish"];
 
-const STATUS_ICON: Record<string, React.ElementType> = {
-  running: Loader2,
-  completed: CheckCircle2,
-  error: AlertCircle,
-  pending: Clock,
-};
-
-const STATUS_COLOR: Record<string, string> = {
-  running: "text-accent animate-spin",
-  completed: "text-ok",
-  error: "text-danger",
-  pending: "text-muted",
-};
-
-/** 时间线视图：按时间顺序平铺节点，层级缩进，点击展开详情 */
-export function TimelineView({ session, selectedNodeId, autoFollow, onSelect }: Props) {
+/** Groups the recorded execution into rounds with searchable events and explicit status filters. */
+export function TimelineView({ session, selectedNodeId, autoFollow, onSelect, compact = false }: Props) {
   const { t } = useTranslation("thinking");
-  const [typeFilter, setTypeFilter] = useState<Set<string> | null>(null);
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<Filter>("all");
+  const [details, setDetails] = useState(false);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const scrollRef = useRef<HTMLDivElement>(null);
-
-  const depthMap = useMemo(() => {
-    const byId = new Map(session.nodes.map((n) => [n.id, n]));
-    const map = new Map<string, number>();
-    const depthOf = (n: TraceNode, guard: number): number => {
-      const cached = map.get(n.id);
-      if (cached !== undefined) return cached;
-      let d = 0;
-      if (n.parent_id && guard < 32) {
-        const parent = byId.get(n.parent_id);
-        if (parent) d = depthOf(parent, guard + 1) + 1;
-      }
-      map.set(n.id, d);
-      return d;
-    };
-    for (const n of session.nodes) depthOf(n, 0);
-    return map;
-  }, [session.nodes]);
-
-  const typeCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const n of session.nodes) counts.set(n.type, (counts.get(n.type) ?? 0) + 1);
-    return counts;
-  }, [session.nodes]);
-
-  const visible = useMemo(() => {
-    if (!typeFilter) return session.nodes;
-    return session.nodes.filter((n) => typeFilter.has(n.type));
-  }, [session.nodes, typeFilter]);
+  const groups = useMemo(() => traceGroups(session.nodes), [session.nodes]);
+  const terms = query.trim().toLocaleLowerCase();
+  const visibleGroups = groups.map((group) => ({
+    ...group, visible: group.nodes.filter((node) => {
+      if (node.id === selectedNodeId) return true;
+      if (filter === "issues" && node.status !== "error" && node.status !== "warning") return false;
+      if (filter !== "all" && filter !== "issues" && nodeStage(node) !== filter) return false;
+      if (terms && ![nodeTitle(node, t), nodeSummary(node, t), node.type, node.label].join(" ").toLocaleLowerCase().includes(terms)) return false;
+      if (!terms && filter === "all" && !details && ["phase_change", "session_start", "reply_round"].includes(node.type)) return false;
+      return true;
+    }),
+  })).filter((group) => group.visible.length);
 
   useEffect(() => {
-    if (autoFollow && scrollRef.current) {
-      requestAnimationFrame(() => {
-        if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-      });
-    }
-  }, [session.nodes.length, autoFollow]);
+    const element = scrollRef.current;
+    if (!element) return;
+    if (selectedNodeId) {
+      const row = Array.from(element.querySelectorAll<HTMLElement>("[data-trace-node]"))
+        .find((item) => item.dataset.traceNode === selectedNodeId);
+      row?.scrollIntoView({ block: "nearest" });
+    } else if (autoFollow && !session.ended) element.scrollTop = element.scrollHeight;
+  }, [selectedNodeId, session.nodes.length, session.ended, autoFollow]);
 
-  const toggleType = (type: string) => {
-    setTypeFilter((prev) => {
-      const next = new Set(prev ?? typeCounts.keys());
-      if (next.has(type)) next.delete(type);
-      else next.add(type);
-      return next;
-    });
-  };
-
-  return (
-    <div className="flex flex-col h-full">
-      {/* 类型过滤 */}
-      <div className="flex items-center gap-1.5 px-3 md:px-4 py-2 border-b border-border overflow-x-auto no-scrollbar">
-        <span className="text-[10px] text-muted shrink-0">{t("filterTypes")}</span>
-        {[...typeCounts.entries()].map(([type, count]) => {
-          const active = !typeFilter || typeFilter.has(type);
-          const style = TYPE_STYLES[type];
-          const Icon = style?.icon;
-          return (
-            <button
-              key={type}
-              onClick={() => toggleType(type)}
-              className={cn(
-                "flex items-center gap-1 px-2 py-1 rounded-full border text-[10px] font-medium whitespace-nowrap transition-all",
-                active
-                  ? "border-border-strong text-foreground bg-card"
-                  : "border-border text-muted opacity-40",
-              )}
-            >
-              {Icon && <Icon size={10} className={style.accent} />}
-              {t(`nodeTypes.${type}`, { defaultValue: type })}
-              <span className="opacity-60">{count}</span>
-            </button>
-          );
-        })}
+  return <div className="flex h-full min-h-0 flex-col">
+    <div className="shrink-0 space-y-2 border-b border-border bg-panel p-3">
+      <div className="flex items-center gap-2">
+        <div className="relative min-w-0 flex-1">
+          <Search size={14} className="pointer-events-none absolute left-2.5 top-2.5 text-muted" />
+          <input aria-label={t("searchNodes")} placeholder={t("searchNodes")} value={query} onChange={(event) => setQuery(event.target.value)}
+            className="h-9 w-full rounded-lg border border-input bg-card pl-8 pr-3 text-xs outline-none focus:border-accent" />
+        </div>
+        <button type="button" aria-label={t("showAllEvents")} title={t("showAllEvents")} aria-pressed={details}
+          onClick={() => setDetails(!details)} className={cn("rounded-lg border p-2.5", details ? "border-accent text-accent" : "border-border text-muted")}>
+          <SlidersHorizontal size={14} />
+        </button>
       </div>
-
-      {/* 节点列表 */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto">
-        {visible.length === 0 && (
-          <p className="text-sm text-muted text-center py-10">{t("waitingForActivity")}</p>
-        )}
-        {visible.map((n) => {
-          const depth = depthMap.get(n.id) ?? 0;
-          const style = TYPE_STYLES[n.type] ?? TYPE_STYLES.phase_change!;
-          const Icon = style.icon;
-          const StatusIcon = STATUS_ICON[n.status] ?? Clock;
-          const expanded = selectedNodeId === n.id;
-          const ts = new Date(n.timestamp * 1000);
-          return (
-            <div key={n.id} className="border-b border-border/50">
-              <button
-                onClick={() => onSelect(expanded ? null : n.id)}
-                className={cn(
-                  "w-full flex items-center gap-2 px-3 md:px-4 py-2 text-left transition-colors",
-                  expanded ? "bg-accent-subtle/40" : "hover:bg-hover",
-                )}
-                style={{ paddingLeft: `${(depth * 18) + 12}px` }}
-              >
-                <ChevronRight
-                  size={12}
-                  className={cn("shrink-0 text-muted transition-transform", expanded && "rotate-90")}
-                />
-                <span className={cn("flex items-center justify-center w-5 h-5 rounded-sm border shrink-0", style.bg, style.border)}>
-                  <Icon size={11} className={style.accent} />
-                </span>
-                <span className="text-xs text-foreground truncate flex-1 min-w-0">{n.label}</span>
-                {n.duration_ms != null && (
-                  <span className="text-[10px] text-muted font-mono shrink-0">
-                    {n.duration_ms >= 1000 ? `${(n.duration_ms / 1000).toFixed(1)}s` : `${Math.round(n.duration_ms)}ms`}
-                  </span>
-                )}
-                <span className="text-[10px] text-muted font-mono shrink-0 hidden sm:inline">
-                  {ts.toLocaleTimeString()}
-                </span>
-                <StatusIcon size={12} className={cn("shrink-0", STATUS_COLOR[n.status])} />
-              </button>
-              {expanded && (
-                <div className="border-t border-border bg-panel h-[55vh] max-h-[480px]">
-                  <NodeDetail node={n} onClose={() => onSelect(null)} />
-                </div>
-              )}
-            </div>
-          );
+      <div className="flex flex-wrap gap-1.5" aria-label={t("filterTypes")}>
+        {FILTERS.map((key) => <button type="button" key={key} aria-pressed={filter === key} onClick={() => setFilter(key)}
+          className={cn("rounded-md px-2 py-1 text-[11px]", filter === key ? "bg-accent-subtle font-medium text-accent" : "text-muted hover:bg-hover")}>
+          {t(key === "all" || key === "issues" ? `filters.${key}` : `stages.${key}`)}
+        </button>)}
+      </div>
+    </div>
+    <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto p-3 md:p-4">
+      {visibleGroups.length === 0 && <div className="px-4 py-10 text-center text-sm text-muted">
+        <p>{t(session.nodes.length ? "noMatchingNodes" : "waitingForActivity")}</p>
+        {(terms || filter !== "all") && <button className="mt-3 text-accent" onClick={() => { setQuery(""); setFilter("all"); }}>{t("resetFilters")}</button>}
+      </div>}
+      <div className="mx-auto max-w-4xl space-y-4">
+        {visibleGroups.map((group, index) => {
+          const hasIssue = group.nodes.some((node) => node.status === "error" || node.status === "warning");
+          const containsSelected = group.nodes.some((node) => node.id === selectedNodeId);
+          const isOpen = containsSelected || (expanded[group.id] ?? (index === visibleGroups.length - 1 || hasIssue || !!terms || filter !== "all" || !group.anchor));
+          return <section key={group.id}>
+            <button type="button" aria-expanded={isOpen} onClick={() => setExpanded((value) => ({ ...value, [group.id]: !isOpen }))}
+              className="mb-2 flex w-full items-center gap-2 rounded-md py-1 text-left text-xs text-muted hover:text-foreground">
+              <ChevronDown size={14} className={cn("transition-transform", !isOpen && "-rotate-90")} />
+              <span className="font-medium text-heading">{group.anchor ? nodeTitle(group.anchor, t) : t("activityGroup")}</span>
+              <span>{t("nNodes", { count: group.visible.length })}</span>
+              {hasIssue && <span className="ml-auto text-warn">{t("filters.issues")}</span>}
+            </button>
+            {isOpen && <div className={cn("space-y-2 border-l border-border pl-3", compact && "pl-2")}>
+              {group.visible.map((node) => <TraceNodeRow key={node.id} node={node} compact={compact}
+                selected={selectedNodeId === node.id} onSelect={() => onSelect(node.id)} />)}
+            </div>}
+          </section>;
         })}
       </div>
     </div>
-  );
+  </div>;
 }

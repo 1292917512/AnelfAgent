@@ -28,21 +28,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2  # push 与 HEAD^ 基线对比所需的最小历史
+          fetch-depth: 1
       - name: Detect changed paths
         id: filter
         run: |
           set -eu
           # pull_request 与目标分支基点对比（HEAD^ 只能看到 PR 末一个提交）；
-          # push 与 HEAD^ 对比；手动触发无视过滤全量跑；
+          # push 与本次推送前的提交对比，覆盖一次推送中的全部提交；
           # 基线不可得（浅历史边缘情形）时保守视为全量变更
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             changed=$(git ls-files)
           elif [ "${{ github.event_name }}" = "pull_request" ]; then
             git fetch --depth=1 origin "${{ github.event.pull_request.base.sha }}"
             changed=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD)
-          elif git cat-file -e HEAD^ 2>/dev/null; then
-            changed=$(git diff --name-only HEAD^ HEAD)
+          elif [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ] && \
+               git fetch --depth=1 origin "${{ github.event.before }}"; then
+            changed=$(git diff --name-only "${{ github.event.before }}" HEAD)
           else
             changed=$(git ls-files)
           fi
@@ -122,9 +123,8 @@ jobs:
           uv run mypy core/ --platform darwin
           uv run mypy core/ --platform win32
 
-      - name: Mypy (全量基线观察)
-        run: uv run mypy .
-        continue-on-error: true
+      - name: Mypy (全部生产模块)
+        run: uv run mypy
 
   # 测试按模块矩阵分腿：每条腿只跑自己的套件，UI 上按模块独立呈现
   tests:
@@ -170,10 +170,36 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  windows-tests:
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync
+        env:
+          UV_INDEX_URL: https://pypi.org/simple
+      - name: Pytest (Windows)
+        shell: pwsh
+        run: |
+          $env:ANELF_CONFIG_DIR = Join-Path $env:RUNNER_TEMP 'anelf-tests/config'
+          $env:ANELF_DATA_DIR = Join-Path $env:RUNNER_TEMP 'anelf-tests/data'
+          $env:PYTHONIOENCODING = 'utf-8'
+          uv run pytest tests/unit entities channels -n 4 --tb=short
+
   frontend:
     needs: changes
     if: needs.changes.outputs.frontend == 'true'
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     defaults:
       run:
@@ -192,6 +218,20 @@ jobs:
 
       - name: ESLint
         run: npm run lint
+
+      - name: Module discovery regression
+        run: npm run test:modules
+
+      - name: Component regression
+        run: npm test
+
+      - name: Browser setup
+        if: runner.os == 'Linux'
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser regression
+        if: runner.os == 'Linux'
+        run: npm run test:e2e
 
       - name: Build (tsc + vite)
         run: npm run build

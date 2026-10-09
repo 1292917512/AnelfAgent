@@ -1,8 +1,9 @@
-import { useEffect, type ReactNode } from "react";
-import { createPortal } from "react-dom";
+import type { ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "./Button";
+import { DialogSurface } from "./DialogSurface";
 
 export interface ModalProps {
   open: boolean;
@@ -10,73 +11,32 @@ export interface ModalProps {
   title?: ReactNode;
   children: ReactNode;
   footer?: ReactNode;
-  /** 面板最大宽度，默认 max-w-lg */
   width?: string;
+  placement?: "center" | "right" | "left";
+  dismissible?: boolean;
 }
 
-/** 统一模态框：遮罩关闭 / ESC 关闭 / 滚动锁定，移动端自适应边距 */
-export function Modal({ open, onClose, title, children, footer, width = "max-w-lg" }: ModalProps) {
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", onKey);
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      document.body.style.overflow = "";
-    };
-  }, [open, onClose]);
-
-  if (!open) return null;
-
-  return createPortal(
-    <div
-      className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/50 animate-fade-in p-0 sm:p-4"
-      onClick={onClose}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        className={cn(
-          "w-full bg-card border border-border shadow-lg animate-rise flex flex-col",
-          "max-h-[85dvh] rounded-t-xl sm:rounded-lg",
-          width,
-        )}
-        onClick={(e) => e.stopPropagation()}
-      >
-        {title != null && (
-          <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
-            <h3 className="text-[15px] font-semibold text-heading truncate">{title}</h3>
-            <Button variant="ghost" size="icon" onClick={onClose} aria-label="close">
-              <X size={16} />
-            </Button>
-          </div>
-        )}
-        <div className="px-5 py-4 overflow-y-auto">{children}</div>
-        {footer && (
-          <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-border shrink-0 safe-area-bottom">
-            {footer}
-          </div>
-        )}
+export function Modal({
+  open, onClose, title, children, footer, width = "max-w-lg", placement = "center", dismissible = true,
+}: ModalProps) {
+  const { t } = useTranslation("common");
+  return (
+    <DialogSurface open={open} onClose={onClose} title={title ?? t("dialog")}
+      placement={placement} dismissible={dismissible} className={width}>
+      <div className="flex items-center gap-3 border-b border-border px-5 py-4 shrink-0">
+        <div className="min-w-0 flex-1 text-base font-semibold text-heading">{title}</div>
+        <Button variant="ghost" size="icon" onClick={onClose} disabled={!dismissible} aria-label={t("close")}>
+          <X size={18} />
+        </Button>
       </div>
-    </div>,
-    document.body,
+      <div className={cn("min-h-0 overflow-y-auto overscroll-contain px-5 py-5", placement !== "center" && "flex-1")}>{children}</div>
+      {footer && <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border bg-elevated/50 px-5 py-4 shrink-0 safe-area-bottom">{footer}</div>}
+    </DialogSurface>
   );
 }
 
-/** 统一确认对话框 */
 export function ConfirmDialog({
-  open,
-  onClose,
-  onConfirm,
-  title,
-  message,
-  confirmText,
-  cancelText,
-  danger = false,
-  loading = false,
+  open, onClose, onConfirm, title, message, confirmText, cancelText, danger = false, loading = false,
 }: {
   open: boolean;
   onClose: () => void;
@@ -88,24 +48,16 @@ export function ConfirmDialog({
   danger?: boolean;
   loading?: boolean;
 }) {
+  const { t } = useTranslation("common");
   return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title={title}
-      width="max-w-sm"
-      footer={
-        <>
-          <Button variant="secondary" size="sm" onClick={onClose}>
-            {cancelText ?? "Cancel"}
-          </Button>
-          <Button variant={danger ? "danger" : "primary"} size="sm" loading={loading} onClick={onConfirm}>
-            {confirmText ?? "OK"}
-          </Button>
-        </>
-      }
-    >
-      {message && <p className="text-sm text-foreground whitespace-pre-wrap">{message}</p>}
+    <Modal open={open} onClose={onClose} title={title} width="max-w-md" dismissible={!loading}
+      footer={<>
+        <Button variant="secondary" disabled={loading} onClick={onClose}>{cancelText ?? t("cancel")}</Button>
+        <Button variant={danger ? "danger" : "primary"} loading={loading} onClick={onConfirm}>
+          {confirmText ?? t("confirm")}
+        </Button>
+      </>}>
+      {message && <div className="text-sm leading-relaxed text-foreground whitespace-pre-wrap">{message}</div>}
     </Modal>
   );
 }

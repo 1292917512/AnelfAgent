@@ -73,8 +73,8 @@ class AgentAssistant:
                     continue
                 # 感知写入失败的消息不再入队：accept_feel 未生效意味着该消息
                 # 未进入对话历史/PFC，入队只会让 Mind 基于缺失上下文决策
-                log(f"消息感知处理失败（重试后仍失败，消息丢弃）: {exc}", "ERROR", tag="运行时")
-                return
+                log(f"消息感知处理失败（重试后仍失败）: {exc}", "ERROR", tag="运行时")
+                raise
         await self._queue.put(anything)
 
     def _ensure_started(self) -> None:

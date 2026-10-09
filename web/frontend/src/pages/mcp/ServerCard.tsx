@@ -74,13 +74,16 @@ export function ServerCard({ server, oauth, onEdit, onDelete }: ServerCardProps)
       queryClient.invalidateQueries({ queryKey: ["mcpServers"] });
     },
   });
+  const channelOnly = !!server.channel_only;
   const status = isToggling ? "warn" : server.connected ? "ok" : "offline";
   const statusLabel = isToggling
     ? server.enabled
       ? t("disabling")
       : t("enabling")
     : server.connected
-      ? t("connectedStatus")
+      ? channelOnly
+        ? t("channelOnlyStatus")
+        : t("connectedStatus")
       : server.enabled
         ? t("disconnectedStatus")
         : t("disabledStatus");
@@ -109,14 +112,20 @@ export function ServerCard({ server, oauth, onEdit, onDelete }: ServerCardProps)
                 {statusLabel}
               </span>
               <Badge variant="neutral">{server.transport}</Badge>
+              {server.plugin ? (
+                <Badge variant="info">{t("pluginBadge", { plugin: server.plugin })}</Badge>
+              ) : null}
               {!server.enabled && (
                 <Badge variant="warn">{t("disabledStatus")}</Badge>
               )}
-              {server.connected && (
-                <Badge variant="accent">
-                  {t("nTools", { count: server.tool_count })}
-                </Badge>
-              )}
+              {server.connected &&
+                (channelOnly ? (
+                  <Badge variant="neutral">{t("channelOnlyBadge")}</Badge>
+                ) : (
+                  <Badge variant="accent">
+                    {t("nTools", { count: server.tool_count })}
+                  </Badge>
+                ))}
               {oauth?.pending_url ? (
                 <a href={oauth.pending_url} target="_blank" rel="noreferrer">
                   <Badge variant="warn">{t("oauthPending")}</Badge>

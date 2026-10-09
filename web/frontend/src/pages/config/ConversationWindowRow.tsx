@@ -1,9 +1,8 @@
-import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { ConfigMetaItem } from "@/lib/types";
 import { Check, Loader2, RotateCcw } from "lucide-react";
 import { useConfigSave } from "./useConfigSave";
-import { RangeField } from "./fields";
+import { NumberField, RangeField } from "./fields";
 
 interface ConversationWindowRowProps {
   /** max_conversation_size（总窗口条数 M） */
@@ -15,12 +14,11 @@ interface ConversationWindowRowProps {
 /** 对话窗口一行配置：总条数 + 保留比例滑条 + 折叠段可视化比例条。 */
 export function ConversationWindowRow({ sizeItem, percentItem }: ConversationWindowRowProps) {
   const { t } = useTranslation("config");
-  const [size, setSize] = useState(Number(sizeItem.value ?? sizeItem.default) || 30);
+  const size = Number(sizeItem.value ?? sizeItem.default ?? 30);
   const sizeSave = useConfigSave(sizeItem.key);
   const pctSave = useConfigSave(percentItem.key);
-  useEffect(() => setSize(Number(sizeItem.value ?? sizeItem.default) || 30), [sizeItem]);
 
-  const pct = Number(percentItem.value ?? percentItem.default) || 33;
+  const pct = Number(percentItem.value ?? percentItem.default ?? 33);
   const keep = Math.max(1, Math.min(size - 1, Math.round((size * pct) / 100)));
   const total = size + keep; // 触发折叠时的窗口（M+x）
   const keepPct = (keep / total) * 100;
@@ -29,12 +27,8 @@ export function ConversationWindowRow({ sizeItem, percentItem }: ConversationWin
   const saving = sizeSave.saving || pctSave.saving;
   const saved = sizeSave.saved || pctSave.saved;
 
-  const saveSize = (v: number) => {
-    setSize(v);
-    if (v >= 2) sizeSave.save(v);
-  };
   const reset = () => {
-    saveSize(Number(sizeItem.default));
+    sizeSave.save(Number(sizeItem.default));
     pctSave.save(Number(percentItem.default));
   };
 
@@ -52,6 +46,7 @@ export function ConversationWindowRow({ sizeItem, percentItem }: ConversationWin
             <button
               title={t("resetToDefault")}
               onClick={reset}
+              disabled={saving || !sizeItem.editable || !percentItem.editable}
               className="p-1.5 rounded-md text-muted hover:text-foreground hover:bg-hover transition-colors"
             >
               <RotateCcw size={14} />
@@ -64,14 +59,8 @@ export function ConversationWindowRow({ sizeItem, percentItem }: ConversationWin
         {/* 总窗口条数 */}
         <label className="flex items-center gap-1.5 text-xs text-muted">
           {t("window.size")}
-          <input
-            type="number"
-            min={2}
-            step={1}
-            value={size}
-            onChange={(e) => saveSize(parseInt(e.target.value, 10) || 2)}
-            className="w-20 bg-bg border border-input rounded-md px-2 py-1 text-sm text-foreground outline-none focus:border-ring"
-          />
+          <NumberField value={size} label={t("window.size")} min={sizeItem.min ?? 2} max={sizeItem.max ?? undefined}
+            disabled={sizeSave.saving || !sizeItem.editable} onCommit={sizeSave.save} />
         </label>
         {/* 保留比例滑条（拖动预览、松手提交） */}
         <label className="flex items-center gap-2 flex-1 min-w-48 text-xs text-muted">
@@ -79,9 +68,11 @@ export function ConversationWindowRow({ sizeItem, percentItem }: ConversationWin
           <span className="flex-1">
             <RangeField
               value={pct}
-              min={5}
-              max={90}
-              step={1}
+              label={t("window.keepPercent")}
+              disabled={pctSave.saving || !percentItem.editable}
+              min={percentItem.min ?? 5}
+              max={percentItem.max ?? 90}
+              step={percentItem.step ?? 1}
               unit="%"
               className="w-full"
               onCommit={(v) => pctSave.save(v)}

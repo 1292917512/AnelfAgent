@@ -23,7 +23,7 @@ AnelfAgent 是一个开源自托管的 AI 智能体运行时：给它一个 LLM 
 | 依赖 | 版本 | 说明 |
 |---|---|---|
 | Python | **3.11 ~ 3.12** | 主运行时 |
-| Node.js | **20**（推荐，见 `.nvmrc`） | 构建 WebUI 前端；不构建也能跑（仅无网页界面） |
+| Node.js | **24**（推荐，见 `.nvmrc`；最低 22.12） | 构建 WebUI 前端；不构建也能跑（仅无网页界面） |
 | [uv](https://github.com/astral-sh/uv) | 最新 | Python 包管理器（强烈推荐，启动脚本会自动用它装依赖） |
 
 ### 2. 克隆与配置
@@ -394,7 +394,23 @@ uv run mypy core/                # 类型检查（core 严格层）
 scripts/check.sh                 # 本地 CI 镜像门禁（push 前跑）
 ```
 
-CI（GitHub Actions）：lint 全仓静态门禁 + tests 按模块动态矩阵分腿 + frontend 构建；文档类提交全跳过。
+### WebUI 开发与验证
+
+```bash
+cd web/frontend
+npm ci
+npm run dev                    # /webui/; /api 代理到 127.0.0.1:8091
+npm run lint
+npm run typecheck
+npm test
+npx playwright install chromium
+npm run test:e2e                # 桌面/手机浏览器，使用隔离的 API 测试数据
+npm run build
+```
+
+路由与导航共用 `src/lib/core-routes.ts` 声明，频道与实体界面保持模块自发现。`pages/` 组装页面，子目录实现领域编辑器；`components/` 承载公共交互，`lib/api/` 收口请求，TanStack Query 管理服务端数据，Zustand 管理工作台状态。编辑草稿与服务端快照分离，文件标签以根目录和相对路径共同标识。
+
+CI（GitHub Actions）：lint 全仓静态门禁 + tests 按模块动态矩阵分腿 + frontend 静态检查、组件/浏览器回归与构建；文档类提交全跳过。
 
 更细的架构约定见 [`AGENTS.md`](AGENTS.md)（供编辑器 / Agent 注入的工作区指令，非运行时依赖）。
 

@@ -9,16 +9,16 @@ import json
 import secrets
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterator, Optional
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 
 from core.log import log
 from core.path import ConfigPaths
@@ -186,23 +186,31 @@ def _make_token(password: str) -> str:
 _auth_cache: Dict[str, Any] = {"password": "", "mtime": -1.0}
 
 
+class AuthConfigurationError(RuntimeError):
+    """鉴权配置不可读取，拒绝请求直到配置恢复。"""
+
+
 def _load_auth_password() -> str:
     """读取 auth.password（带 mtime 缓存，空字符串表示不启用密码）。"""
     p = Path(ConfigPaths.WEBUI_CONFIG)
     try:
-        mtime = p.stat().st_mtime if p.exists() else -1.0
-    except OSError:
-        mtime = -1.0
-    if mtime != _auth_cache["mtime"]:
-        _auth_cache["mtime"] = mtime
-        password = ""
-        if p.exists():
-            try:
-                password = json.loads(p.read_text("utf-8")).get("auth", {}).get("password", "")
-            except Exception:
-                password = ""
-        _auth_cache["password"] = password
-    return _auth_cache["password"]
+        stat = p.stat()
+        stamp = (str(p.resolve()), stat.st_mtime_ns, stat.st_size)
+        if stamp == _auth_cache.get("stamp"):
+            return str(_auth_cache["password"])
+        config = json.loads(p.read_text("utf-8"))
+        auth = config.get("auth", {})
+        password = auth.get("password", "")
+        if not isinstance(password, str) or (auth.get("strict", False) and not password):
+            raise ValueError("invalid auth.password")
+    except FileNotFoundError as exc:
+        if _auth_cache.get("path") == str(p.resolve()) and _auth_cache.get("password"):
+            raise AuthConfigurationError("鉴权配置丢失") from exc
+        return ""
+    except (OSError, ValueError, AttributeError, TypeError) as exc:
+        raise AuthConfigurationError("鉴权配置不可用") from exc
+    _auth_cache.update(password=password, stamp=stamp, path=str(p.resolve()))
+    return password
 
 
 def _ensure_strict_password() -> None:
@@ -236,12 +244,15 @@ _AUTH_EXEMPT = frozenset({
 class _AuthMiddleware(BaseHTTPMiddleware):
     """API 密码保护中间件。仅拦截 /api/* 请求，SPA 静态文件不受影响。"""
 
-    async def dispatch(self, request: Request, call_next):  # type: ignore[override]
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         path = request.url.path
         if not path.startswith("/api/") or path in _AUTH_EXEMPT:
             return await call_next(request)
 
-        password = _load_auth_password()
+        try:
+            password = _load_auth_password()
+        except AuthConfigurationError:
+            return JSONResponse({"error": "auth_configuration_unavailable"}, status_code=503)
         if not password:
             return await call_next(request)
 
@@ -255,7 +266,7 @@ class _AuthMiddleware(BaseHTTPMiddleware):
 class _V1BearerAuthMiddleware(BaseHTTPMiddleware):
     """保护 /v1/* 的独立 Bearer API Key 鉴权。"""
 
-    async def dispatch(self, request: Request, call_next):  # type: ignore[override]
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         path = request.url.path
         if not path.startswith("/v1"):
             return await call_next(request)
@@ -301,6 +312,10 @@ def create_app() -> FastAPI:
     """创建 WebUI FastAPI 应用。"""
     app = FastAPI(title="AnelfAgent WebUI", version="1.0.0")
 
+    @app.exception_handler(AuthConfigurationError)
+    async def _auth_config_error(request: Request, exc: AuthConfigurationError) -> JSONResponse:
+        return JSONResponse({"error": "auth_configuration_unavailable"}, status_code=503)
+
     _ensure_strict_password()
     _register_domain_error_handlers(app)
     app.add_middleware(_AuthMiddleware)
@@ -343,9 +358,12 @@ def create_app() -> FastAPI:
         app.mount("/webui/assets", StaticFiles(directory=str(FRONTEND_DIST / "assets")), name="webui-assets")
 
         @app.get("/webui/{path:path}")
-        async def webui_spa(path: str) -> HTMLResponse:
+        async def webui_spa(path: str) -> Response:
             """SPA fallback: all /webui/* routes return index.html."""
-            file_path = FRONTEND_DIST / path
+            root_path = FRONTEND_DIST.resolve()
+            file_path = (root_path / path).resolve()
+            if not file_path.is_relative_to(root_path):
+                raise HTTPException(status_code=404)
             if file_path.is_file():
                 content = file_path.read_bytes()
                 suffix = file_path.suffix
@@ -357,7 +375,6 @@ def create_app() -> FastAPI:
                     ".ico": "image/x-icon",
                     ".json": "application/json",
                 }.get(suffix, "application/octet-stream")
-                from starlette.responses import Response
                 return Response(content=content, media_type=media)
             return HTMLResponse(_index_html(), headers=_NO_CACHE)
 
@@ -410,7 +427,7 @@ class _QuietServer(uvicorn.Server):
     """跳过 uvicorn 自带的信号处理，由 Application 宿主统一管理关闭流程。"""
 
     @contextlib.contextmanager
-    def capture_signals(self):  # type: ignore[override]
+    def capture_signals(self) -> Iterator[None]:
         yield
 
 

@@ -205,7 +205,9 @@ class BackgroundTaskRegistry:
                 step = 4
             else:
                 step = 1  # 非法首字节按单字节消费（配合 errors=replace 语义）
-            i += min(step, n - i)
+            if i + step > n:
+                return data[:i], True
+            i += step
             count += 1
         return data, False
 
@@ -232,11 +234,8 @@ class BackgroundTaskRegistry:
         except OSError as exc:
             return {"ok": False, "error": f"读取任务输出失败: {exc}"}
         # 回退尾部可能不完整的多字节序列（文件仍在写入时最后一字符可能被截半）
-        safe = chunk
-        while safe and (safe[-1] & 0xC0) == 0x80:
-            safe = safe[:-1]
-        consumed, truncated = self._cut_utf8(safe, max_chars)
-        delta = consumed.decode("utf-8", errors="replace")
+        consumed, truncated = self._cut_utf8(chunk, max_chars)
+        delta = consumed.decode("utf-8", errors="replace").replace("\r\n", "\n")
         self._output_cursors[task_id] = offset + len(consumed)
         return {
             "ok": True,

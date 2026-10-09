@@ -37,7 +37,7 @@ class XiaoduSpeaker:
         """拉取 description.xml 并构建控制会话（失败抛异常）。"""
         factory = UpnpFactory(AiohttpRequester())
         device = await factory.async_create_device(location)
-        dmr = DmrDevice(device)
+        dmr = DmrDevice(device, event_handler=None)
         dmr.on_event = None  # 小度 eventing 不可靠，不订阅事件，纯轮询
         return cls(location, dmr)
 

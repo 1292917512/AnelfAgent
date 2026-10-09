@@ -65,8 +65,8 @@ def _bound_store() -> Optional[MemoryStore]:
 def current_scope() -> str:
     """读取当前对话 scope（ContextVar 绑定，think_loop 会话期间有效）。"""
     try:
-        from agent.mind.tool_activation import ToolActivationManager
-        return ToolActivationManager.current_scope()
+        from core.conversation_scope import current_scope as get_current_scope
+        return get_current_scope()
     except Exception:
         return "_global"
 

@@ -79,8 +79,8 @@ def _current_scope_tag() -> str:
     memorize 未指定实体标签时自动补充，让记忆自动挂入关联网络。
     """
     try:
-        from agent.mind.tool_activation import ToolActivationManager
-        scope = ToolActivationManager.current_scope()
+        from core.conversation_scope import current_scope as get_current_scope
+        scope = get_current_scope()
         if scope.startswith("user_"):
             return f"user:{scope[5:]}"
         if scope.startswith("group_"):
@@ -1067,8 +1067,8 @@ def _current_scope_adapter() -> str:
     """当前思维会话的频道 adapter（无会话上下文时为空串）。"""
     try:
         from agent.messages import parse_entity_scope
-        from agent.mind.tool_activation import ToolActivationManager
-        _st, adapter, _base, _sess = parse_entity_scope(ToolActivationManager.current_scope())
+        from core.conversation_scope import current_scope as get_current_scope
+        _st, adapter, _base, _sess = parse_entity_scope(get_current_scope())
         return adapter or ""
     except Exception:
         return ""

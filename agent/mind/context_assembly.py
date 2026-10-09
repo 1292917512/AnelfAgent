@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from agent.mind.work_memory import WorkMemory
     from agent.skills.skill_store import SkillStore
     from agent.storage.data_center import ConversationData
+    from core.plugins.store import PluginRegistry
 
 
 def _get_mind_config():
@@ -206,6 +207,7 @@ class ContextAssembly:
             channel_manager: Optional["ChannelManager"] = None,
             conversation_data: Optional["ConversationData"] = None,
             skill_store: Optional["SkillStore"] = None,
+            plugin_registry: Optional["PluginRegistry"] = None,
     ) -> None:
         self._work_memory = work_memory
         self._tool_assembly = tool_assembly
@@ -213,9 +215,11 @@ class ContextAssembly:
         self._conversation_data = conversation_data
         # 技能库（目录注入来源）：未注入时不进技能目录，测试构造默认与磁盘隔离
         self._skill_store = skill_store
+        # 插件注册表（名册注入来源）：未注入时不进插件名册，测试构造默认与磁盘隔离
+        self._plugin_registry = plugin_registry
         # stable_fingerprint 版本门控缓存：(tools_version, activation_version, models_summary,
-        # direct_vision, memory_rules, registry_version, catalog_factor) → hash
-        self._fp_cache: Optional[tuple[int, int, str, bool, str, int, str, str]] = None
+        # direct_vision, memory_rules, registry_version, catalog_factor, roster_factor) → hash
+        self._fp_cache: Optional[tuple[int, int, str, bool, str, int, str, str, str]] = None
         # 上下文构建管线：默认布局（动态在历史之后）+ legacy 回退布局
         self._pipeline = ContextPipeline(self)
         self._pipeline_legacy = ContextPipeline(self, volatility_overrides=_LEGACY_VOLATILITY)
@@ -397,7 +401,7 @@ class ContextAssembly:
             models_summary: str = "",
             direct_vision: bool = False,
     ) -> str:
-        """构建工具块：工具使用规则 + 工具目录 + 媒体规则 + 技能目录（随能力集变化重建）。"""
+        """构建工具块：工具使用规则 + 工具目录 + 媒体规则 + 技能目录 + 插件名册。"""
         parts: list[str] = []
         for msg in self.build_tool_system_prompt(
                 models_summary=models_summary, direct_vision=direct_vision,
@@ -409,6 +413,11 @@ class ContextAssembly:
             catalog = catalog_section(self._skill_store)
             if catalog:
                 parts.append(catalog)
+        if self._plugin_registry is not None:
+            from core.plugins.roster import roster_section
+            roster = roster_section(self._plugin_registry)
+            if roster:
+                parts.append(roster)
         return "\n\n".join(parts)
 
     def build_stable_layer(
@@ -428,7 +437,7 @@ class ContextAssembly:
         """计算 stable 层动态输入的指纹（任一输入变化即触发重建）。
 
         覆盖：工具目录、可沉睡分组、工具规则、记忆铁律文档、模型摘要、媒体规则、
-        运行环境、技能目录。不含激活状态（目录文案已静态化，激活状态由
+        运行环境、技能目录、插件名册。不含激活状态（目录文案已静态化，激活状态由
         exec_context 动态呈现）。以 _tools_version + 激活版本 + 铁律文本门控：
         工具集/激活状态/铁律文档均未变时直接返回缓存哈希，跳过 json.dumps 开销
         （铁律文本经 mtime 缓存读取，未变时仅一次 stat syscall，
@@ -443,6 +452,13 @@ class ContextAssembly:
         else:
             catalog_gate, catalog_text = "skills-catalog:none", ""
 
+        if self._plugin_registry is not None:
+            from core.plugins.roster import roster_factor, roster_section
+            roster_gate = roster_factor(self._plugin_registry)
+            roster_text = roster_section(self._plugin_registry)
+        else:
+            roster_gate, roster_text = "plugins-roster:none", ""
+
         memory_rules = _memory_rules_text()
         cache_key = (
             self._tool_assembly.tools_version,
@@ -453,9 +469,11 @@ class ContextAssembly:
             EntityRegistry.version(),
             # 技能目录随库内容版本变化（计数类账本更新不改变版本）
             catalog_gate,
+            # 插件名册随注册表内容版本变化（装卸/启停/组件回写）
+            roster_gate,
         )
-        if self._fp_cache is not None and self._fp_cache[:7] == cache_key:
-            return self._fp_cache[7]
+        if self._fp_cache is not None and self._fp_cache[:8] == cache_key:
+            return self._fp_cache[8]
 
         import json as _json
 
@@ -476,6 +494,7 @@ class ContextAssembly:
             str(_delegation_enabled()),
             _env_info_block(),
             catalog_text,
+            roster_text,
         )
         self._fp_cache = (*cache_key, result)
         return result

@@ -16,8 +16,8 @@ from core.log import log
 from .store import parse_node_key
 
 if TYPE_CHECKING:
+    from agent.memory.ports import RelationHost
     from agent.messages.characters import EntityData
-    from agent.mind.mind import Mind
 
 _MAX_CANDIDATES = 10
 _MAX_MATERIAL_CHARS = 6000
@@ -139,7 +139,7 @@ def render_material(conversation: List[Dict[str, Any]]) -> str:
 
 
 async def extract_and_store_relations(
-    mind: "Mind",
+    mind: "RelationHost",
     entity: "EntityData",
     conversation: List[Dict[str, Any]],
 ) -> int:

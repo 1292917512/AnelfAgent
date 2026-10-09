@@ -31,9 +31,9 @@ export function RetrievalProvidersPanel() {
           const selection = data.selection[cap] ?? "auto";
           const active = data.active[cap];
           return (
-            <div key={cap} className="flex items-center gap-3 px-4 py-3">
+            <div key={cap} className="flex flex-wrap items-center gap-3 px-4 py-3">
               <div className="w-20 shrink-0 text-sm font-medium text-heading">{t(`caps.${cap}`)}</div>
-              <div className="flex items-center gap-1 flex-wrap">
+              <div className="flex min-w-0 flex-1 items-center gap-1 flex-wrap">
                 {["auto", ...capable.map((p) => p.name)].map((name) => {
                   const selected = selection === name;
                   return (
@@ -41,6 +41,7 @@ export function RetrievalProvidersPanel() {
                       key={name}
                       onClick={() => activeMutation.mutate({ capability: cap, provider: name })}
                       disabled={activeMutation.isPending}
+                      aria-pressed={selected}
                       className={cn(
                         "px-2.5 py-1 rounded-md border text-xs transition-colors disabled:opacity-50",
                         selected
@@ -55,7 +56,7 @@ export function RetrievalProvidersPanel() {
                   );
                 })}
               </div>
-              <div className="ml-auto text-xs text-muted shrink-0">
+              <div className="w-full text-xs text-muted sm:ml-auto sm:w-auto">
                 {active
                   ? `${t("matrix.activeNow")}: ${data.providers.find((p) => p.name === active)?.display_name ?? active}`
                   : t("matrix.noneAvailable")}

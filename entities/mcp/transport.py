@@ -100,6 +100,7 @@ async def _spawn_windows_process_with_priority(
     from mcp.os.win32 import utilities as win32_util
 
     creationflags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) | priority_flag
+    process: anyio.abc.Process | win32_util.FallbackProcess
     try:
         process = await anyio.open_process(
             [command, *args],
@@ -152,12 +153,13 @@ async def _list_roots_callback(context: Any) -> Any:
     声明为 root 后，截图/快照等工具可直接保存到工作区。
     """
     from mcp import types
+    from pydantic import FileUrl
 
     from core.path import workspace_root
 
     ws = Path(workspace_root()).resolve()
     return types.ListRootsResult(
-        roots=[types.Root(uri=ws.as_uri(), name="workspace")]
+        roots=[types.Root(uri=FileUrl(ws.as_uri()), name="workspace")]
     )
 
 

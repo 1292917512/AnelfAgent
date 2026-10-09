@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRouteTab } from "@/hooks/useRouteTab";
 import { useTranslation } from "react-i18next";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
 import { PageContainer, PageHeader } from "@/components/common/PageContainer";
@@ -17,7 +17,7 @@ type SoundTab = "overview" | "presets" | "generation" | "speakers" | "timeline" 
 /** 声音能力 — 核心能力页（/sound）：实时对话 + 音色预设库 + 生成能力链 + 声纹身份 + 话语时间线/检索编辑 + 识别入库 + 语音会话 */
 export default function Sound() {
   const { t } = useTranslation("sound");
-  const [tab, setTab] = useState<SoundTab>("overview");
+  const [tab, setTab] = useRouteTab<SoundTab>(["overview", "presets", "generation", "speakers", "timeline", "transcripts", "identify", "voice"], "overview");
 
   const TABS: TabItem<SoundTab>[] = [
     { key: "overview", label: t("tabs.overview"), icon: LayoutGrid },

@@ -37,7 +37,6 @@ try:
     CRYPTO_AVAILABLE = True
 except ImportError:  # pragma: no cover - 依赖门禁
     default_backend = None  # type: ignore[assignment]
-    Cipher = None  # type: ignore[assignment]
     algorithms = None  # type: ignore[assignment]
     modes = None  # type: ignore[assignment]
     CRYPTO_AVAILABLE = False

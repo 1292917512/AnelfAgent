@@ -5,18 +5,16 @@ import {
   FolderPlus,
   ListCollapse,
   ListFilter,
-  Loader2,
   RefreshCw,
   Search,
   Upload,
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { workspaceApi } from "@/lib/api";
-import type { WorkspaceRoot, WorkspaceSearchHit } from "@/lib/types";
+import type { WorkspaceRoot } from "@/lib/types";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { useFileTreeStore } from "./file-tree-store";
-import { fileIcon } from "./file-tree-utils";
+import { FileTreeSearch } from "./FileTreeSearch";
 import { hasTreeChanges, useTreeChangesStore } from "@/stores/tree-changes-store";
 import { FileTree } from "./FileTree";
 
@@ -37,89 +35,11 @@ function ToolButton({
       onClick={onClick}
       disabled={disabled}
       title={title}
+      aria-label={title}
       className="p-1.5 rounded text-muted hover:text-foreground hover:bg-hover transition-colors disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted"
     >
       {children}
     </button>
-  );
-}
-
-/** 文件搜索结果列表（按当前根搜索，点击结果打开文件并回树定位） */
-function SearchResults({ root, onDone }: { root: WorkspaceRoot; onDone: () => void }) {
-  const { t } = useTranslation("workbench");
-  const [query, setQuery] = useState("");
-  const [hits, setHits] = useState<WorkspaceSearchHit[] | null>(null);
-  const [searching, setSearching] = useState(false);
-  const openFile = useWorkbenchStore((s) => s.openFile);
-  const setFileTreeFocus = useWorkbenchStore((s) => s.setFileTreeFocus);
-
-  useEffect(() => {
-    const q = query.trim();
-    if (!q) {
-      setHits(null);
-      return;
-    }
-    setSearching(true);
-    const timer = setTimeout(() => {
-      workspaceApi
-        .search(q, 30, root)
-        .then((r) => setHits(r.data.files))
-        .catch(() => setHits([]))
-        .finally(() => setSearching(false));
-    }, 300);
-    return () => clearTimeout(timer);
-  }, [query, root]);
-
-  return (
-    <div className="flex flex-col h-full">
-      <div className="px-2 py-1.5 border-b border-border shrink-0">
-        <input
-          autoFocus
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder={t("files.searchPlaceholder")}
-          className="w-full px-2 py-1.5 text-xs bg-card border border-border rounded outline-none focus:border-accent"
-        />
-      </div>
-      <div className="flex-1 overflow-y-auto p-1.5">
-        {searching && (
-          <div className="flex items-center gap-2 px-2 py-3 text-xs text-muted">
-            <Loader2 size={13} className="animate-spin" /> {t("files.loading")}
-          </div>
-        )}
-        {!searching && hits !== null && hits.length === 0 && (
-          <p className="px-2 py-3 text-xs text-muted">{t("files.searchEmpty")}</p>
-        )}
-        {!searching && hits === null && (
-          <p className="px-2 py-3 text-[11px] text-muted">{t("files.searchHint")}</p>
-        )}
-        {hits?.map((hit) => {
-          const { Icon, className } = fileIcon(hit.name);
-          return (
-            <button
-              key={`${hit.match}:${hit.path}`}
-              className="flex flex-col gap-0.5 w-full px-2 py-1.5 rounded text-left hover:bg-hover transition-colors"
-              onClick={() => {
-                openFile(hit.path, root);
-                setFileTreeFocus(hit.path);
-                onDone();
-              }}
-            >
-              <span className="flex items-center gap-1.5 text-xs text-foreground">
-                <Icon size={13} className={cn("shrink-0", className)} />
-                <span className="truncate">{hit.name}</span>
-                {hit.match === "content" && (
-                  <span className="ml-auto text-[9px] px-1 rounded bg-accent-subtle text-accent shrink-0">
-                    {t("files.matchContent")}
-                  </span>
-                )}
-              </span>
-              <span className="text-[10px] text-muted truncate pl-[18px]">{hit.snippet ?? hit.path}</span>
-            </button>
-          );
-        })}
-      </div>
-    </div>
   );
 }
 
@@ -223,7 +143,7 @@ export function FileTreePanel() {
       </div>
 
       {searchMode ? (
-        <SearchResults root={root} onDone={() => setSearchMode(false)} />
+        <FileTreeSearch key={root} root={root} onDone={() => setSearchMode(false)} />
       ) : (
         <FileTree root={root} onUpload={pickUpload} changedOnly={changedOnly} />
       )}

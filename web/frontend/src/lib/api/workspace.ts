@@ -12,10 +12,10 @@ import type {
 export const workspaceApi = {
   tree: (path = "", depth = 2, root: WorkspaceRoot = "workspace") =>
     api.get<{ path: string; children: WorkspaceNode[]; truncated: boolean }>("/workspace/tree", { params: { path: path || undefined, depth, root } }),
-  read: (path: string, root: WorkspaceRoot = "workspace") =>
-    api.get<WorkspaceFile>("/workspace/file", { params: { path, root } }),
-  write: (path: string, content: string, root: WorkspaceRoot = "workspace") =>
-    api.put("/workspace/file", { path, content, root }),
+  read: (path: string, root: WorkspaceRoot = "workspace", signal?: AbortSignal) =>
+    api.get<WorkspaceFile>("/workspace/file", { params: { path, root }, signal }),
+  write: (path: string, content: string, root: WorkspaceRoot = "workspace", expectedVersion: string | null = null) =>
+    api.put<WorkspaceFile>("/workspace/file", { path, content, root, expected_version: expectedVersion }),
   mkdir: (path: string, root: WorkspaceRoot = "workspace") => api.post("/workspace/mkdir", { path, root }),
   remove: (path: string, root: WorkspaceRoot = "workspace") => api.delete("/workspace/file", { params: { path, root } }),
   /** 重命名 / 移动（dst 为目标全路径，目标父目录须已存在） */
@@ -30,8 +30,8 @@ export const workspaceApi = {
       headers: { "Content-Type": "multipart/form-data" },
     });
   },
-  search: (q: string, limit = 30, root: WorkspaceRoot = "workspace") =>
-    api.get<{ query: string; files: WorkspaceSearchHit[] }>("/workspace/search", { params: { q, limit, root } }),
+  search: (q: string, limit = 30, root: WorkspaceRoot = "workspace", signal?: AbortSignal) =>
+    api.get<{ query: string; files: WorkspaceSearchHit[] }>("/workspace/search", { params: { q, limit, root }, signal }),
   /** 原始字节服务 URL（图片/音视频预览；inline 供 iframe 内联渲染，如 PDF） */
   rawUrl: (path: string, inline = false, root: WorkspaceRoot = "workspace") =>
     `/api/workspace/raw?path=${encodeURIComponent(path)}&root=${root}${inline ? "&inline=1" : ""}`,
@@ -40,8 +40,8 @@ export const workspaceApi = {
 /** 按文件名判断可预览的媒体类型 */
 
 export const searchApi = {
-  global: (q: string, limit = 10) =>
-    api.get<GlobalSearchResult>("/search/global", { params: { q, limit } }),
+  global: (q: string, limit = 10, signal?: AbortSignal) =>
+    api.get<GlobalSearchResult>("/search/global", { params: { q, limit }, signal }),
 };
 
 // UI 交互（ui_ask 回答 / 工作台状态上报）

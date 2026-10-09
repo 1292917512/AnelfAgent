@@ -6,6 +6,7 @@ import json
 import os
 
 import pytest
+from shell_helpers import python_command
 
 from entities.filesystem import shell_state, tools
 
@@ -64,7 +65,7 @@ class TestOutputPersistence:
         assert "persisted" not in result
 
     def test_large_output_persisted(self, workspace):
-        result = _run("seq 1 200000")
+        result = _run(python_command("print(*range(1, 200001), sep=chr(10))"))
         assert "persisted" in result
         assert "<persisted-output>" in result["stdout"]
         path = result["persisted"]
@@ -198,6 +199,6 @@ class TestMissingModuleHint:
 
     def test_note_in_failure_result(self, workspace, monkeypatch):
         self._uv_managed(monkeypatch)
-        result = _run('echo "No module named pip" >&2; exit 1')
+        result = _run(python_command("import sys; print('No module named pip', file=sys.stderr); sys.exit(1)"))
         assert result["ok"] is False
         assert any("不含 pip" in n for n in result.get("notes", []))

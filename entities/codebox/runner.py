@@ -30,17 +30,18 @@ _call_seq = 0
 
 def _apply_limits() -> None:
     """POSIX 资源上限（地址空间 + CPU 时间）；不支持的平台静默跳过。"""
-    try:
-        import resource
-    except ImportError:
-        return
-    mem = int(os.environ.get("ANELF_CODEBOX_MEM_MB", "1024")) * 1024 * 1024
-    cpu = int(os.environ.get("ANELF_CODEBOX_CPU_S", "180"))
-    for limit, value in ((resource.RLIMIT_AS, mem), (resource.RLIMIT_CPU, cpu)):
+    if sys.platform != "win32":
         try:
-            resource.setrlimit(limit, (value, value))
-        except (ValueError, OSError):
-            pass  # macOS 对 RLIMIT_AS 支持差，失败不阻断（墙钟超时仍在）
+            import resource
+        except ImportError:
+            return
+        mem = int(os.environ.get("ANELF_CODEBOX_MEM_MB", "1024")) * 1024 * 1024
+        cpu = int(os.environ.get("ANELF_CODEBOX_CPU_S", "180"))
+        for limit, value in ((resource.RLIMIT_AS, mem), (resource.RLIMIT_CPU, cpu)):
+            try:
+                resource.setrlimit(limit, (value, value))
+            except (ValueError, OSError):
+                pass  # macOS 对 RLIMIT_AS 支持差，失败不阻断（墙钟超时仍在）
 
 
 def _send(frame: dict) -> None:

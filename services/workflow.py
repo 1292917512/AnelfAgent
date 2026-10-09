@@ -29,6 +29,15 @@ def _engine():
 
 class WorkflowService:
 
+    def validate(self, spec: Dict[str, Any]) -> Dict[str, Any]:
+        """按执行引擎的同一契约校验规格并返回依赖层级。"""
+        from agent.workflow.spec import parse_spec, topo_layers
+        try:
+            parsed = parse_spec(spec)
+        except ValueError as exc:
+            raise WorkflowServiceError(str(exc)) from exc
+        return {"spec": parsed.model_dump(mode="json"), "layers": topo_layers(parsed)}
+
     async def start(self, spec: Dict[str, Any], *, scope: str = "",
                     resume_of: str = "") -> Dict[str, Any]:
         """启动工作流（后台执行）。"""

@@ -87,7 +87,7 @@ def notebook_edit(path: str, cell_index: int, new_source: str = "",
             return tool_error("cell_type 只能是 code 或 markdown",
                               cause=ErrorCause.PARAM, retryable=False)
 
-        new_cell = {
+        new_cell: dict[str, Any] = {
             "cell_type": cell_type or "code",
             "metadata": {},
             "source": new_source.splitlines(keepends=True),

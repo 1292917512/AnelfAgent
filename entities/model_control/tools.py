@@ -981,7 +981,7 @@ def _get_ollama():
                 "models": [m.name for m in models],
             }
 
-    def _fmt_size(b: int) -> str:
+    def _fmt_size(b: float) -> str:
         for unit in ("B", "KB", "MB", "GB"):
             if b < 1024:
                 return f"{b:.1f} {unit}"

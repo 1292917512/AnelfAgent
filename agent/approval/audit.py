@@ -43,7 +43,7 @@ def _audit_sink():
     try:
         from agent.runtime.singleton import get_runtime
         runtime = get_runtime()
-        return runtime.data_center.router.sqlite
+        return runtime.data_center.router.sqlite if runtime is not None else None
     except Exception:
         return None
 

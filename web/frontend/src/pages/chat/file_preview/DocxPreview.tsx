@@ -19,11 +19,12 @@ export function DocxPreview({ path, title, root = "workspace" }: DocxPreviewProp
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
     setDoc(null);
     setFailed(false);
     (async () => {
       try {
-        const resp = await fetch(workspaceApi.rawUrl(path, false, root));
+        const resp = await fetch(workspaceApi.rawUrl(path, false, root), { signal: controller.signal });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const arrayBuffer = await resp.arrayBuffer();
         const mammoth = await import("mammoth");
@@ -33,7 +34,7 @@ export function DocxPreview({ path, title, root = "workspace" }: DocxPreviewProp
         if (!cancelled) setFailed(true);
       }
     })();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; controller.abort(); };
   }, [path, root]);
 
   if (failed) {

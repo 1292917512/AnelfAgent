@@ -1,17 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import { Command } from "cmdk";
-import { Search, LayoutDashboard, SlidersHorizontal } from "lucide-react";
+import { Search, SlidersHorizontal } from "lucide-react";
 import { useAppStore } from "@/stores/app-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { PaletteResults } from "./PaletteResults";
 import { PaletteActions } from "./PaletteActions";
 import { groupCls, itemCls } from "./paletteStyles";
-import { ICON_MAP } from "../layout/Sidebar";
-import { NAVIGATION } from "@/lib/navigation";
+import { DialogSurface } from "@/components/ui/DialogSurface";
+import { getNavigation } from "@/lib/navigation";
 import { configMetaApi, searchApi } from "@/lib/api";
 import type { GlobalSearchResult } from "@/lib/types";
 
@@ -23,12 +22,15 @@ export function CommandPalette() {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<GlobalSearchResult | null>(null);
   const seqRef = useRef(0);
+  const [searchState, setSearchState] = useState<"idle" | "loading" | "error">("idle");
 
   // 配置项索引（⌘K 直接定位配置，跳转 /config?key= 深链）
   const { data: configMeta } = useQuery({
     queryKey: ["configMeta"],
     queryFn: () => configMetaApi.list().then((r) => r.data),
     staleTime: 60_000,
+    enabled: open,
+    throwOnError: false,
   });
   const configItems = useMemo(
     () => (configMeta?.groups ?? []).flatMap((g) => g.items),
@@ -52,44 +54,39 @@ export function CommandPalette() {
     return () => document.removeEventListener("keydown", onKey);
   }, []);
 
-  // 打开时锁定背景滚动；关闭时重置输入与结果
   useEffect(() => {
-    if (open) {
-      document.body.style.overflow = "hidden";
-    } else {
-      setQuery("");
-      setResults(null);
-    }
-    return () => {
-      document.body.style.overflow = "";
-    };
+    if (!open) { setQuery(""); setResults(null); }
   }, [open]);
 
   // 全局搜索（防抖 300ms，乱序响应按序号丢弃）
   useEffect(() => {
+    const seq = ++seqRef.current;
     const q = query.trim();
-    if (q.length < 2) {
+    if (!open || q.length < 2) {
       setResults(null);
+      setSearchState("idle");
       return;
     }
-    const seq = ++seqRef.current;
+    setResults(null);
+    setSearchState("loading");
+    const controller = new AbortController();
     const timer = setTimeout(() => {
       searchApi
-        .global(q, 5)
+        .global(q, 5, controller.signal)
         .then((r) => {
-          if (seq === seqRef.current) setResults(r.data);
+          if (seq === seqRef.current) { setResults(r.data); setSearchState("idle"); }
         })
         .catch(() => {
-          if (seq === seqRef.current) setResults(null);
+          if (seq === seqRef.current && !controller.signal.aborted) { setResults(null); setSearchState("error"); }
         });
     }, 300);
-    return () => clearTimeout(timer);
-  }, [query]);
+    return () => { clearTimeout(timer); controller.abort(); };
+  }, [query, open]);
 
   if (!open) return null;
 
   const close = () => setOpen(false);
-  const navItems = NAVIGATION;
+  const navItems = getNavigation();
 
   /** 跳转并关闭面板 */
   const go = (path: string) => {
@@ -110,17 +107,8 @@ export function CommandPalette() {
       results.conversations.length > 0 ||
       results.files.length > 0);
 
-  return createPortal(
-    <div
-      className="fixed inset-0 z-[150] flex items-start justify-center bg-black/50 animate-fade-in px-3 pt-[12vh] sm:pt-[15vh]"
-      onClick={close}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        className="w-full max-w-lg bg-card border border-border rounded-lg shadow-lg animate-rise overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
-      >
+  return (
+    <DialogSurface open={open} onClose={close} title={t("label")} placement="top" className="max-w-xl overflow-hidden">
         <Command label={t("label")} loop>
           <div className="flex items-center gap-2 px-3 border-b border-border">
             <Search size={16} className="shrink-0 text-muted" />
@@ -139,6 +127,7 @@ export function CommandPalette() {
             </kbd>
           </div>
 
+          {searchState !== "idle" && <p role={searchState === "error" ? "alert" : "status"} className="px-4 py-2 text-xs text-muted">{t(searchState === "loading" ? "searching" : "searchFailed")}</p>}
           <Command.List className="max-h-[52vh] overflow-y-auto p-2">
             <Command.Empty className="px-3 py-6 text-center text-sm text-muted">
               {t("empty")}
@@ -150,7 +139,7 @@ export function CommandPalette() {
 
             <Command.Group heading={t("group_nav")} className={groupCls}>
               {navItems.map((item) => {
-                const Icon = ICON_MAP[item.icon] ?? LayoutDashboard;
+                const Icon = item.icon;
                 const label = tNav(item.label, { defaultValue: item.label });
                 return (
                   <Command.Item
@@ -194,8 +183,6 @@ export function CommandPalette() {
             )}
           </Command.List>
         </Command>
-      </div>
-    </div>,
-    document.body,
+    </DialogSurface>
   );
 }

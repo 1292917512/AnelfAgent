@@ -7,6 +7,7 @@ import os
 import time
 
 import pytest
+from shell_helpers import python_command
 
 from agent.mind.background_tasks import BackgroundTaskRegistry
 from entities.filesystem import shell_background, tools
@@ -32,10 +33,10 @@ def registry(monkeypatch):
 
 class TestLaunchBackground:
     def test_returns_task_info_immediately(self, workspace, registry):
-        result = shell_background.launch_background("sleep 0.2; echo done", str(workspace), str(workspace))
+        result = shell_background.launch_background(python_command("import time; time.sleep(0.2); print('done')"), str(workspace), str(workspace))
         assert result["ok"] and result["background"]
         assert result["task_id"]
-        assert os.path.isfile(result["output_file"]) or True  # 文件由 Popen 创建
+        assert os.path.isfile(result["output_file"])  # 文件由 Popen 创建
         # 等待完成
         deadline = time.time() + 5
         while time.time() < deadline:
@@ -59,7 +60,7 @@ class TestLaunchBackground:
         assert "退出码 7" in completed[0].summary
 
     def test_output_written_to_file(self, workspace, registry):
-        result = shell_background.launch_background("echo line1; echo line2", str(workspace), str(workspace))
+        result = shell_background.launch_background(python_command("print('line1'); print('line2')"), str(workspace), str(workspace))
         deadline = time.time() + 5
         while time.time() < deadline:
             if not registry.running("_global"):
@@ -79,7 +80,7 @@ class TestLaunchBackground:
         registry.set_alert_callback(
             lambda scope, desc, detail, tid: alerts.append((scope, desc, detail, tid)))
         shell_background.launch_background(
-            "echo start; sleep 1.5", str(workspace), str(workspace), timeout_sec=0.3)
+            python_command("import time; print('start'); time.sleep(1.5)"), str(workspace), str(workspace), timeout_sec=0.3)
         deadline = time.time() + 5
         while time.time() < deadline and not alerts:
             time.sleep(0.05)
@@ -101,7 +102,7 @@ class TestLaunchBackground:
 
     def test_terminate_kills_process(self, workspace, registry):
         """AI 决策终止：terminate 发整组击杀信号，任务以终止态完成并通知。"""
-        shell_background.launch_background("sleep 30", str(workspace), str(workspace))
+        shell_background.launch_background(python_command("import time; time.sleep(30)"), str(workspace), str(workspace))
         task_id = registry.running("_global")[0].task_id
         result = registry.terminate("_global", task_id)
         assert result["ok"] and result["terminated"]
@@ -119,7 +120,7 @@ class TestLaunchBackground:
         完成通知才能路由回发起会话。"""
         monkeypatch.setattr(shell_background, "get_owner_scope", lambda: "user_test:1")
         # 命令需存活到断言之后：瞬时命令在快机器上可能先完成、任务已从 running 移出
-        shell_background.launch_background("sleep 0.5; echo scoped", str(workspace), str(workspace))
+        shell_background.launch_background(python_command("import time; time.sleep(0.5); print('scoped')"), str(workspace), str(workspace))
         assert len(registry.running("user_test:1")) == 1
         assert registry.running("_global") == []
 
@@ -146,7 +147,7 @@ class TestToolIntegration:
         registry.set_alert_callback(
             lambda scope, desc, detail, tid: alerts.append(detail))
         out = json.loads(tools.run_shell_command(
-            "sleep 30", timeout=1, run_in_background=True))
+            python_command("import time; time.sleep(30)"), timeout=1, run_in_background=True))
         assert out["timeout_seconds"] == 1
         deadline = time.time() + 5
         while time.time() < deadline and not alerts:

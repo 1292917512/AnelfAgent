@@ -16,5 +16,7 @@
   "action_sidebar": "折叠/展开侧边栏",
   "action_search": "打开全局搜索",
   "action_logout": "退出登录",
-  "menu": "菜单"
+  "menu": "菜单",
+  "searching": "正在搜索内容…",
+  "searchFailed": "内容搜索暂不可用，仍可搜索功能和配置项。"
 }

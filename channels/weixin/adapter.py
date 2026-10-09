@@ -23,7 +23,7 @@ import secrets
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
 from agent.channel.base import BaseChannel, ChannelMetadata
 from agent.channel.channel_types import ChannelCapability, ChannelStatus
@@ -54,6 +54,9 @@ from .state import (
     load_weixin_account,
     save_sync_buf,
 )
+
+if TYPE_CHECKING:
+    import aiohttp
 
 
 class WeixinChannel(BaseChannel[WeixinConfig]):
@@ -508,6 +511,16 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
         if seg is not None:
             segments.append(seg)
 
+    def _require_poll_session(self) -> aiohttp.ClientSession:
+        if self._poll_session is None:
+            raise RuntimeError("微信频道未连接（poll session 未初始化）")
+        return self._poll_session
+
+    def _require_send_session(self) -> aiohttp.ClientSession:
+        if self._send_session is None:
+            raise RuntimeError("微信频道未连接（send session 未初始化）")
+        return self._send_session
+
     async def _download_image(self, item: Dict[str, Any]) -> Optional[MessageSegment]:
         media = ilink.media_reference(item, "image_item")
         image_item = item.get("image_item") or {}
@@ -519,7 +532,7 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
             else media.get("aes_key")
         )
         data = await ilink.download_and_decrypt_media(
-            self._poll_session,
+            self._require_poll_session(),
             cdn_base_url=self._cdn_base_url,
             encrypted_query_param=media.get("encrypt_query_param"),
             aes_key_b64=aes_key_b64,
@@ -532,7 +545,7 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
     async def _download_video(self, item: Dict[str, Any]) -> Optional[MessageSegment]:
         media = ilink.media_reference(item, "video_item")
         data = await ilink.download_and_decrypt_media(
-            self._poll_session,
+            self._require_poll_session(),
             cdn_base_url=self._cdn_base_url,
             encrypted_query_param=media.get("encrypt_query_param"),
             aes_key_b64=media.get("aes_key"),
@@ -547,7 +560,7 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
         media = file_item.get("media") or {}
         filename = str(file_item.get("file_name") or "document.bin")
         data = await ilink.download_and_decrypt_media(
-            self._poll_session,
+            self._require_poll_session(),
             cdn_base_url=self._cdn_base_url,
             encrypted_query_param=media.get("encrypt_query_param"),
             aes_key_b64=media.get("aes_key"),
@@ -569,7 +582,7 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
             return None
         media = voice_item.get("media") or {}
         data = await ilink.download_and_decrypt_media(
-            self._poll_session,
+            self._require_poll_session(),
             cdn_base_url=self._cdn_base_url,
             encrypted_query_param=media.get("encrypt_query_param"),
             aes_key_b64=media.get("aes_key"),
@@ -814,7 +827,7 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
                 raise self._rate_limit_error()
             try:
                 resp = await ilink.send_message(
-                    self._send_session,
+                    self._require_send_session(),
                     base_url=self._base_url,
                     token=self._token,
                     to=chat_id,
@@ -901,8 +914,10 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
         if self._send_session is None:
             raise RuntimeError("微信频道未连接（send session 未初始化）")
 
+        session = self._send_session
+
         async def _do_fetch() -> bytes:
-            async with self._send_session.get(url) as response:
+            async with session.get(url) as response:
                 response.raise_for_status()
                 return await response.read()
 

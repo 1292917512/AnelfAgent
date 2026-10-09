@@ -9,7 +9,8 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from typing import TYPE_CHECKING, Any, Dict, Optional, Set
+from collections import OrderedDict
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Optional, Set
 
 from agent.channel.base import BaseChannel, ChannelMetadata
 from agent.channel.channel_types import ChannelCapability, ChannelStatus, _err, _ok
@@ -20,6 +21,7 @@ from agent.channel.schemas import (
     ChannelUser,
     ChannelUserRole,
     HealthStatus,
+    SegmentType,
     SendRequest,
     SendResponse,
     SendSegment,
@@ -27,12 +29,17 @@ from agent.channel.schemas import (
 from agent.channel.tool_bridge import channel_tool
 from agent.channel.utils.formatter import format_exception as _fmt_exc
 from core.log import log
+from core.sanitizer import sanitize_text
 
 from .config import TelegramConfig
 from .delivery import deliver_reply
 
 if TYPE_CHECKING:
+    from telegram.request import HTTPXRequest
+
     from agent.channel.base import ApprovalPromptRenderContext
+
+_STARTUP_TIMEOUT = 30.0
 
 
 class TelegramAdapter(BaseChannel[TelegramConfig]):
@@ -56,9 +63,16 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
         self._tg_loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
         self._ready = threading.Event()
+        self._stop_requested = threading.Event()
         self._stop_event: Optional[asyncio.Event] = None
+        self._main_task: Optional[asyncio.Task[None]] = None
+        self._lifecycle_lock = asyncio.Lock()
+        self._requests: tuple[HTTPXRequest, ...] = ()
+        self._started = False
+        self._stopping = False
+        self._start_stage = "准备启动"
         self._start_error: str = ""
-        self._known_chats: dict[str, dict] = {}
+        self._known_chats: OrderedDict[str, dict] = OrderedDict()
         super().__init__()
 
     channel_id = "telegram"
@@ -122,29 +136,54 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
+        async with self._lifecycle_lock:
+            try:
+                await self._start_locked()
+            except BaseException:
+                self._status = ChannelStatus.ERROR
+                if self._thread is not None:
+                    await self._stop_polling_thread()
+                else:
+                    await self._cleanup_application(self._app)
+                    self._app = None
+                    self._requests = ()
+                raise
+
+    async def _start_locked(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            if self._started and not self._stop_requested.is_set():
+                self._status = ChannelStatus.RUNNING
+                return
+            raise RuntimeError("Telegram 旧轮询线程尚未退出，拒绝创建重复轮询")
+
         from telegram.ext import (
             Application,
             CallbackQueryHandler,
             MessageHandler,
             filters,
         )
+        from telegram.request import HTTPXRequest
 
         token: str = self.config.bot_token
         if not token:
-            log("Telegram Bot Token 未配置，频道无法启动", "WARNING")
-            self._status = ChannelStatus.ERROR
-            return
+            raise RuntimeError("Telegram Bot Token 未配置，频道无法启动")
 
         proxy_host: str = self.config.proxy_host
         proxy_port: int = int(self.config.proxy_port)
 
-        builder = Application.builder().token(token).connect_timeout(15).read_timeout(30)
-        if proxy_host:
-            proxy_url = f"http://{proxy_host}:{proxy_port}"
-            builder = builder.proxy(proxy_url).get_updates_proxy(proxy_url)
-            log(f"Telegram 使用代理: {proxy_url}")
-
-        self._app = builder.build()
+        self._thread = None
+        self._requests = ()
+        proxy_url = f"http://{proxy_host}:{proxy_port}" if proxy_host else None
+        request = HTTPXRequest(
+            connect_timeout=15, read_timeout=30, proxy=proxy_url,
+        )
+        self._requests = (request,)
+        polling_request = HTTPXRequest(
+            connection_pool_size=1, proxy=proxy_url,
+        )
+        self._requests = (request, polling_request)
+        self._app = (Application.builder().token(token)
+                     .request(request).get_updates_request(polling_request).build())
         self._app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, self._on_message))
         self._app.add_handler(MessageHandler(filters.COMMAND, self._on_command))
         self._app.add_handler(CallbackQueryHandler(self._on_callback_query))
@@ -156,117 +195,181 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
             log("start 异常已忽略", "DEBUG")
 
         self._ready.clear()
+        self._stop_requested.clear()
+        self._stop_event = None
+        self._started = False
+        self._stopping = False
+        self._start_stage = "初始化/getMe"
         self._start_error = ""
+        self._bot_username = ""
+        self._bot_id = None
         self._thread = threading.Thread(
             target=self._run_thread, daemon=True, name="telegram-channel",
         )
         self._thread.start()
 
-        if not self._ready.wait(timeout=30):
-            err = self._start_error or "启动超时"
-            self._status = ChannelStatus.ERROR
-            # 停掉半启动的轮询线程：否则它可能随后初始化成功继续 polling，
-            # 看门狗重启后形成同 token 双 poller（409 Conflict，消息随机分裂）
-            await self._stop_polling_thread()
-            raise RuntimeError(f"Telegram 频道启动失败: {err}")
+        ready = await asyncio.to_thread(self._ready.wait, _STARTUP_TIMEOUT)
+        if not ready:
+            self._start_error = self._format_startup_error(TimeoutError("启动总等待时间已耗尽"))
 
-        if self._start_error:
-            self._status = ChannelStatus.ERROR
-            await self._stop_polling_thread()
+        if self._start_error or not self._started:
+            self._start_error = self._start_error or "轮询线程在就绪前已退出"
             raise RuntimeError(f"Telegram 频道启动失败: {self._start_error}")
 
         self._status = ChannelStatus.RUNNING
         log(f"Telegram 频道已启动: @{self._bot_username}")
 
-        try:
-            from .commands import register_commands
-            if self._tg_loop and self._app:
-                asyncio.run_coroutine_threadsafe(
-                    register_commands(self._app.bot), self._tg_loop,
-                )
-        except Exception as exc:
-            log(f"Telegram 命令菜单注册跳过: {exc}", "DEBUG")
-
     async def stop(self) -> None:
-        await self._stop_polling_thread()
-        self._tg_loop = None
-        self._app = None
-        self._status = ChannelStatus.STOPPED
-        log("Telegram 频道已停止")
+        self._request_stop()
+        async with self._lifecycle_lock:
+            await self._stop_polling_thread()
+            self._status = ChannelStatus.STOPPED
+            log("Telegram 频道已停止")
+
+    def _request_stop(self) -> None:
+        """记录停止意图，初始化未完成时也不会丢失；取消在所属循环执行。"""
+        self._stop_requested.set()
+        loop = self._tg_loop
+        if loop is not None and not loop.is_closed():
+            try:
+                loop.call_soon_threadsafe(self._stop_in_loop)
+            except RuntimeError:
+                pass  # 线程已完成并关闭事件循环
+
+    def _stop_in_loop(self) -> None:
+        if self._stopping:
+            return
+        if self._started and self._stop_event is not None:
+            self._stop_event.set()
+        elif self._main_task is not None:
+            self._main_task.cancel()
 
     async def _stop_polling_thread(self) -> None:
         """停掉独立轮询线程（幂等；join 超时不置空引用，避免重复 stop 误报）。"""
-        if self._tg_loop and self._stop_event:
-            self._tg_loop.call_soon_threadsafe(self._stop_event.set)
-        if self._thread:
-            self._thread.join(timeout=15)
-            if self._thread.is_alive():
-                # polling 网络超时可达 30s：线程稍后自行退出（daemon），
-                # 但 _app 引用必须等线程真正结束才释放，这里只告警
-                log("Telegram 轮询线程退出超时（等待其自行结束）", "WARNING")
-            self._thread = None
+        self._request_stop()
+        thread = self._thread
+        if thread is not None:
+            await asyncio.to_thread(thread.join, 15)
+            if thread.is_alive():
+                raise RuntimeError("Telegram 轮询线程退出超时，保留句柄并阻止重复启动")
+        self._thread = None
+        self._app = None
+        self._requests = ()
+        self._stop_event = None
+        self._started = False
 
     # ------------------------------------------------------------------
     # 独立线程
     # ------------------------------------------------------------------
 
     def _run_thread(self) -> None:
-        self._tg_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._tg_loop)
+        loop = asyncio.new_event_loop()
+        self._tg_loop = loop
+        asyncio.set_event_loop(loop)
         try:
-            self._tg_loop.run_until_complete(self._async_main())
+            self._main_task = loop.create_task(self._async_main())
+            loop.run_until_complete(self._main_task)
+        except asyncio.CancelledError:
+            pass
         except Exception as exc:
-            log(f"Telegram 线程异常退出: {exc}", "ERROR")
+            self._start_error = self._format_startup_error(exc)
+            self._status = ChannelStatus.ERROR
+            log(f"Telegram 线程异常退出: {self._start_error}", "ERROR")
         finally:
-            self._tg_loop.close()
+            self._stopping = True
+            self._ready.set()
+            # 即使主协程在首次执行前被取消，也必须回收已创建的请求客户端。
+            loop.run_until_complete(self._cleanup_application(self._app))
+            pending = asyncio.all_tasks(loop)
+            for task in pending:
+                task.cancel()
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.close()
+            self._main_task = None
             self._tg_loop = None
+            self._started = False
+            self._ready.set()
 
     async def _async_main(self) -> None:
-        assert self._app is not None
-        try:
-            await self._app.initialize()
-        except Exception as exc:
-            err = str(exc)
-            if "connect" in err.lower() or "network" in err.lower():
-                self._start_error = "网络连接失败（请确认代理已启动且可达 api.telegram.org）"
-            else:
-                self._start_error = err
-            self._ready.set()
-            return
-
-        await self._app.start()
-        await self._app.updater.start_polling(
-            allowed_updates=[
-                "message", "edited_message", "channel_post",
-                "callback_query", "message_reaction",
-            ],
-            drop_pending_updates=True,
-        )
-
-        try:
-            bot_info = await self._app.bot.get_me()
-            self._bot_username = bot_info.username or ""
-            self._bot_id = bot_info.id
-        except Exception as exc:
-            self._start_error = f"获取 Bot 信息失败: {exc}"
-            self._ready.set()
-            return
-
+        app = self._require_app()
         self._stop_event = asyncio.Event()
-        self._ready.set()
-        await self._stop_event.wait()
-
+        menu_task: Optional[asyncio.Task[None]] = None
         try:
-            if self._app.updater and self._app.updater.running:
-                await self._app.updater.stop()
-            await self._app.stop()
-            await self._app.shutdown()
+            if self._stop_requested.is_set():
+                raise asyncio.CancelledError
+            self._start_stage = "初始化/getMe"
+            await app.initialize()
+            # initialize 已缓存 getMe 结果，避免启动时重复请求同一接口。
+            self._bot_username = app.bot.username or ""
+            self._bot_id = app.bot.id
+            self._start_stage = "启动消息处理器"
+            await app.start()
+            self._start_stage = "启动轮询/deleteWebhook"
+            await app.updater.start_polling(
+                allowed_updates=[
+                    "message", "edited_message", "channel_post",
+                    "callback_query", "message_reaction",
+                ],
+                drop_pending_updates=True, bootstrap_retries=0,
+            )
+            self._started = True
+            self._ready.set()
+            from .commands import register_commands
+            menu_task = asyncio.create_task(register_commands(app.bot))
+            await self._stop_event.wait()
+        except asyncio.CancelledError:
+            if not self._started and not self._start_error:
+                self._start_error = f"{self._start_stage}: 启动已取消"
+            raise
         except Exception as exc:
-            log(f"Telegram 清理时异常: {exc}", "WARNING")
+            self._start_error = self._format_startup_error(exc)
+            self._status = ChannelStatus.ERROR
+            log(f"Telegram 启动异常: {self._start_error}", "ERROR", tag="通道")
+        finally:
+            self._stopping = True
+            self._ready.set()
+            if menu_task is not None:
+                menu_task.cancel()
+                await asyncio.gather(menu_task, return_exceptions=True)
+
+    def _format_startup_error(self, exc: BaseException) -> str:
+        from telegram.error import TimedOut
+
+        token = self.config.bot_token
+        detail = sanitize_text(str(exc).replace(token, "<redacted>") if token else str(exc))
+        message = f"{self._start_stage}: {type(exc).__name__}: {detail}"
+        if isinstance(exc, (TimedOut, TimeoutError)):
+            message += "；请检查服务端代理与 api.telegram.org:443 连通性"
+        return message
+
+    async def _cleanup_application(self, app: Any) -> None:
+        """在请求所属循环回收半初始化应用；单个步骤失败不阻断后续清理。"""
+        callbacks: list[Callable[[], Awaitable[None]]] = []
+        if app is not None:
+            if app.updater is not None and app.updater.running:
+                callbacks.append(app.updater.stop)
+            if app.running:
+                callbacks.append(app.stop)
+            callbacks.append(app.shutdown)
+        # PTB 的 application.shutdown 在 initialize 失败时可能提前返回。
+        callbacks.extend(request.shutdown for request in self._requests)
+        for callback in callbacks:
+            try:
+                await asyncio.wait_for(callback(), timeout=10)
+            except Exception as exc:
+                log(f"Telegram 清理异常: {self._format_startup_error(exc)}", "WARNING", tag="通道")
 
     # ------------------------------------------------------------------
     # 跨线程执行辅助
     # ------------------------------------------------------------------
+
+    def _require_app(self) -> Any:
+        """取得已启动的 Telegram 应用；停止后明确拒绝发送。"""
+        if self._app is None:
+            raise RuntimeError("Telegram 频道尚未启动或已停止")
+        return self._app
 
     async def _run_in_tg_loop(self, coro: Any) -> Any:
         """在 Telegram 事件循环中执行协程（跨线程非阻塞）。
@@ -300,9 +403,9 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
         try:
             async def _do():
                 from . import send as tg_send
-                await tg_send.send_chat_action(self._app.bot, chat_id, "typing")
+                await tg_send.send_chat_action(self._require_app().bot, chat_id, "typing")
                 return await deliver_reply(
-                    self._app.bot, chat_id, text,
+                    self._require_app().bot, chat_id, text,
                     reply_to=reply_to,
                     reply_to_mode=reply_to_mode,
                     parse_mode=parse_mode,
@@ -322,7 +425,7 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
             async def _do():
                 from . import send as tg_send
                 msg_id = await tg_send.send_photo(
-                    self._app.bot, chat_id, photo, caption=caption,
+                    self._require_app().bot, chat_id, photo, caption=caption,
                 )
                 return msg_id
 
@@ -336,7 +439,7 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
         try:
             async def _do():
                 from . import send as tg_send
-                return await tg_send.send_video(self._app.bot, chat_id, video, caption=caption)
+                return await tg_send.send_video(self._require_app().bot, chat_id, video, caption=caption)
 
             msg_id = await self._run_in_tg_loop(_do())
             return _ok({"message_id": msg_id, "chat_id": chat_id})
@@ -348,19 +451,19 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
         try:
             async def _do():
                 from . import send as tg_send
-                return await tg_send.send_audio(self._app.bot, chat_id, audio, caption=caption)
+                return await tg_send.send_audio(self._require_app().bot, chat_id, audio, caption=caption)
 
             msg_id = await self._run_in_tg_loop(_do())
             return _ok({"message_id": msg_id, "chat_id": chat_id})
         except Exception as exc:
             return _err(_fmt_exc(exc))
 
-    async def send_voice(self, chat_id: str, voice: str, **kwargs: Any) -> str:
+    async def send_voice(self, chat_id: str, voice: str, caption: str = "", **kwargs: Any) -> str:
         """通过 Telegram 发送语音消息。"""
         try:
             async def _do():
                 from . import send as tg_send
-                return await tg_send.send_voice(self._app.bot, chat_id, voice)
+                return await tg_send.send_voice(self._require_app().bot, chat_id, voice)
 
             msg_id = await self._run_in_tg_loop(_do())
             return _ok({"message_id": msg_id, "chat_id": chat_id})
@@ -372,7 +475,7 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
         try:
             async def _do():
                 from . import send as tg_send
-                return await tg_send.send_file(self._app.bot, chat_id, file_path, caption=caption)
+                return await tg_send.send_file(self._require_app().bot, chat_id, file_path, caption=caption)
 
             msg_id = await self._run_in_tg_loop(_do())
             return _ok({"message_id": msg_id, "chat_id": chat_id})
@@ -386,7 +489,7 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
             async def _do():
                 from . import send as tg_send
                 return await tg_send.send_location(
-                    self._app.bot, chat_id, float(latitude), float(longitude),
+                    self._require_app().bot, chat_id, float(latitude), float(longitude),
                 )
 
             msg_id = await self._run_in_tg_loop(_do())
@@ -400,7 +503,7 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
         try:
             async def _do():
                 from . import send as tg_send
-                return await tg_send.send_animation(self._app.bot, chat_id, animation, caption=caption)
+                return await tg_send.send_animation(self._require_app().bot, chat_id, animation, caption=caption)
 
             msg_id = await self._run_in_tg_loop(_do())
             return _ok({"message_id": msg_id, "chat_id": chat_id})
@@ -414,7 +517,7 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
             async def _do():
                 from . import send as tg_send
                 return await tg_send.edit_message_text(
-                    self._app.bot, chat_id, int(message_id), text,
+                    self._require_app().bot, chat_id, int(message_id), text,
                 )
 
             ok = await self._run_in_tg_loop(_do())
@@ -428,7 +531,7 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
         try:
             async def _do():
                 from . import send as tg_send
-                return await tg_send.delete_message(self._app.bot, chat_id, int(message_id))
+                return await tg_send.delete_message(self._require_app().bot, chat_id, int(message_id))
 
             ok = await self._run_in_tg_loop(_do())
             return _ok({"deleted": ok, "chat_id": chat_id, "message_id": message_id})
@@ -447,7 +550,7 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
                 params = {"chat_id": chat_id, "phone_number": phone, "first_name": first_name}
                 if last_name:
                     params["last_name"] = last_name
-                msg = await self._app.bot.send_contact(**params)
+                msg = await self._require_app().bot.send_contact(**params)
                 return msg.message_id
             msg_id = await self._run_in_tg_loop(_do())
             return _ok({"message_id": msg_id, "chat_id": chat_id})
@@ -462,7 +565,7 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
             if len(opts) < 2:
                 return _err("投票至少需要 2 个选项，用竖线分隔")
             async def _do():
-                msg = await self._app.bot.send_poll(chat_id=chat_id, question=question, options=opts)
+                msg = await self._require_app().bot.send_poll(chat_id=chat_id, question=question, options=opts)
                 return msg.message_id
             msg_id = await self._run_in_tg_loop(_do())
             return _ok({"message_id": msg_id, "chat_id": chat_id})
@@ -474,7 +577,7 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
         """转发 Telegram 消息到另一个会话。"""
         try:
             async def _do():
-                msg = await self._app.bot.forward_message(
+                msg = await self._require_app().bot.forward_message(
                     chat_id=chat_id, from_chat_id=from_chat_id, message_id=int(message_id),
                 )
                 return msg.message_id
@@ -488,7 +591,7 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
         """置顶 Telegram 群组中的消息。"""
         try:
             async def _do():
-                await self._app.bot.pin_chat_message(chat_id=chat_id, message_id=int(message_id))
+                await self._require_app().bot.pin_chat_message(chat_id=chat_id, message_id=int(message_id))
             await self._run_in_tg_loop(_do())
             return _ok({"pinned": True, "chat_id": chat_id, "message_id": message_id})
         except Exception as exc:
@@ -499,7 +602,7 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
         """取消置顶 Telegram 群组中的消息。"""
         try:
             async def _do():
-                await self._app.bot.unpin_chat_message(chat_id=chat_id, message_id=int(message_id))
+                await self._require_app().bot.unpin_chat_message(chat_id=chat_id, message_id=int(message_id))
             await self._run_in_tg_loop(_do())
             return _ok({"unpinned": True})
         except Exception as exc:
@@ -510,7 +613,7 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
         """查询 Telegram 会话详细信息（标题、类型、成员数等）。"""
         try:
             async def _do():
-                chat = await self._app.bot.get_chat(chat_id=chat_id)
+                chat = await self._require_app().bot.get_chat(chat_id=chat_id)
                 info = {
                     "id": chat.id,
                     "type": chat.type,
@@ -523,7 +626,7 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
                 member_count = getattr(chat, "get_member_count", None)
                 if member_count is None:
                     try:
-                        info["member_count"] = await self._app.bot.get_chat_member_count(chat_id)
+                        info["member_count"] = await self._require_app().bot.get_chat_member_count(chat_id)
                     except Exception as e:
                         log(f"获取群成员数失败 ({chat_id}): {e}", "DEBUG")
                 return info
@@ -546,7 +649,7 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
         """查询 Telegram 群组管理员列表。"""
         try:
             async def _do():
-                admins = await self._app.bot.get_chat_administrators(chat_id=chat_id)
+                admins = await self._require_app().bot.get_chat_administrators(chat_id=chat_id)
                 return [
                     {
                         "user_id": str(m.user.id),
@@ -567,7 +670,7 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
         """封禁 Telegram 群组中的用户。"""
         try:
             async def _do():
-                await self._app.bot.ban_chat_member(chat_id=chat_id, user_id=int(user_id))
+                await self._require_app().bot.ban_chat_member(chat_id=chat_id, user_id=int(user_id))
             await self._run_in_tg_loop(_do())
             return _ok({"banned": True, "chat_id": chat_id, "user_id": user_id})
         except Exception as exc:
@@ -578,7 +681,7 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
         """解除 Telegram 群组中用户的封禁。"""
         try:
             async def _do():
-                await self._app.bot.unban_chat_member(chat_id=chat_id, user_id=int(user_id), only_if_banned=True)
+                await self._require_app().bot.unban_chat_member(chat_id=chat_id, user_id=int(user_id), only_if_banned=True)
             await self._run_in_tg_loop(_do())
             return _ok({"unbanned": True, "chat_id": chat_id, "user_id": user_id})
         except Exception as exc:
@@ -589,7 +692,7 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
         """修改 Telegram 群组标题。"""
         try:
             async def _do():
-                await self._app.bot.set_chat_title(chat_id=chat_id, title=title)
+                await self._require_app().bot.set_chat_title(chat_id=chat_id, title=title)
             await self._run_in_tg_loop(_do())
             return _ok({"chat_id": chat_id, "title": title})
         except Exception as exc:
@@ -600,7 +703,7 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
         """修改 Telegram 群组简介描述。"""
         try:
             async def _do():
-                await self._app.bot.set_chat_description(chat_id=chat_id, description=description)
+                await self._require_app().bot.set_chat_description(chat_id=chat_id, description=description)
             await self._run_in_tg_loop(_do())
             return _ok({"chat_id": chat_id, "description": description[:50]})
         except Exception as exc:
@@ -657,7 +760,7 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
         handled = await handle_command(
             update, context,
             bot_username=self._bot_username,
-            bot=self._app.bot if self._app else None,
+            bot=self._require_app().bot if self._app else None,
         )
         if not handled:
             await self._on_message(update, context)
@@ -695,9 +798,9 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
 
     async def get_self_info(self) -> ChannelUser:
         """获取 Bot 自身信息（经 _run_in_tg_loop 在 Telegram 事件循环中执行）。"""
-        if not self._app or not self._app.bot:
+        if not self._app or not self._require_app().bot:
             raise RuntimeError("Telegram 频道未初始化")
-        bot_info = await self._run_in_tg_loop(self._app.bot.get_me())
+        bot_info = await self._run_in_tg_loop(self._require_app().bot.get_me())
         return ChannelUser(
             platform=self.channel_id,
             user_id=str(bot_info.id),
@@ -708,12 +811,12 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
 
     async def get_user_info(self, user_id: str, channel_id: str) -> ChannelUser:
         """获取用户信息。"""
-        if not self._app or not self._app.bot:
+        if not self._app or not self._require_app().bot:
             raise RuntimeError("Telegram 频道未初始化")
         try:
             chat_id_int = int(channel_id.split("_", 1)[1]) if "_" in channel_id else int(channel_id)
             if channel_id.startswith("group") or chat_id_int < 0:
-                member = await self._app.bot.get_chat_member(chat_id_int, int(user_id))
+                member = await self._require_app().bot.get_chat_member(chat_id_int, int(user_id))
                 user = member.user
                 role_map = {
                     "creator": ChannelUserRole.OWNER,
@@ -746,11 +849,11 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
 
     async def get_channel_info(self, channel_id: str) -> ChannelInfo:
         """获取频道信息。"""
-        if not self._app or not self._app.bot:
+        if not self._app or not self._require_app().bot:
             raise RuntimeError("Telegram 频道未初始化")
         try:
             chat_id_int = int(channel_id.split("_", 1)[1]) if "_" in channel_id else int(channel_id)
-            chat = await self._app.bot.get_chat(chat_id_int)
+            chat = await self._require_app().bot.get_chat(chat_id_int)
             chat_type = (
                 ChannelType.PRIVATE
                 if chat.type.value == "private"
@@ -758,7 +861,7 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
             )
             member_count: Optional[int] = None
             try:
-                member_count = await self._app.bot.get_chat_member_count(chat_id_int)
+                member_count = await self._require_app().bot.get_chat_member_count(chat_id_int)
             except Exception as exc:
                 log(f"获取群成员数失败 ({channel_id}): {exc}", "DEBUG")
             return ChannelInfo(
@@ -779,7 +882,7 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
 
     async def health_check(self) -> HealthStatus:
         """健康探针：调用 get_me 验证 Bot 可达（经 _run_in_tg_loop 跨线程执行）。"""
-        if not self._app or not self._app.bot:
+        if not self._app or not self._require_app().bot:
             return HealthStatus(
                 healthy=False,
                 detail="Telegram 频道未初始化",
@@ -787,7 +890,7 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
             )
         try:
             started = time.time()
-            await self._run_in_tg_loop(self._app.bot.get_me())
+            await self._run_in_tg_loop(self._require_app().bot.get_me())
             return HealthStatus(
                 healthy=True,
                 detail=f"@{self._bot_username} OK",
@@ -820,7 +923,7 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
                 channel_id="",  # 由 approval/gate.py 填充
                 channel_type=ChannelType.PRIVATE,
             ),
-            segments=[SendSegment(type="text", content=text)],
+            segments=[SendSegment(type=SegmentType.TEXT, content=text)],
             extra={
                 "reply_markup": {
                     "inline_keyboard": [
