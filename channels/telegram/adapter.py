@@ -10,7 +10,7 @@ import asyncio
 import threading
 import time
 from collections import OrderedDict
-from typing import TYPE_CHECKING, Any, Dict, Optional, Set
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Optional, Set
 
 from agent.channel.base import BaseChannel, ChannelMetadata
 from agent.channel.channel_types import ChannelCapability, ChannelStatus, _err, _ok
@@ -29,12 +29,17 @@ from agent.channel.schemas import (
 from agent.channel.tool_bridge import channel_tool
 from agent.channel.utils.formatter import format_exception as _fmt_exc
 from core.log import log
+from core.sanitizer import sanitize_text
 
 from .config import TelegramConfig
 from .delivery import deliver_reply
 
 if TYPE_CHECKING:
+    from telegram.request import HTTPXRequest
+
     from agent.channel.base import ApprovalPromptRenderContext
+
+_STARTUP_TIMEOUT = 30.0
 
 
 class TelegramAdapter(BaseChannel[TelegramConfig]):
@@ -58,7 +63,14 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
         self._tg_loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
         self._ready = threading.Event()
+        self._stop_requested = threading.Event()
         self._stop_event: Optional[asyncio.Event] = None
+        self._main_task: Optional[asyncio.Task[None]] = None
+        self._lifecycle_lock = asyncio.Lock()
+        self._requests: tuple[HTTPXRequest, ...] = ()
+        self._started = False
+        self._stopping = False
+        self._start_stage = "准备启动"
         self._start_error: str = ""
         self._known_chats: OrderedDict[str, dict] = OrderedDict()
         super().__init__()
@@ -124,29 +136,54 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
+        async with self._lifecycle_lock:
+            try:
+                await self._start_locked()
+            except BaseException:
+                self._status = ChannelStatus.ERROR
+                if self._thread is not None:
+                    await self._stop_polling_thread()
+                else:
+                    await self._cleanup_application(self._app)
+                    self._app = None
+                    self._requests = ()
+                raise
+
+    async def _start_locked(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            if self._started and not self._stop_requested.is_set():
+                self._status = ChannelStatus.RUNNING
+                return
+            raise RuntimeError("Telegram 旧轮询线程尚未退出，拒绝创建重复轮询")
+
         from telegram.ext import (
             Application,
             CallbackQueryHandler,
             MessageHandler,
             filters,
         )
+        from telegram.request import HTTPXRequest
 
         token: str = self.config.bot_token
         if not token:
-            log("Telegram Bot Token 未配置，频道无法启动", "WARNING")
-            self._status = ChannelStatus.ERROR
-            return
+            raise RuntimeError("Telegram Bot Token 未配置，频道无法启动")
 
         proxy_host: str = self.config.proxy_host
         proxy_port: int = int(self.config.proxy_port)
 
-        builder = Application.builder().token(token).connect_timeout(15).read_timeout(30)
-        if proxy_host:
-            proxy_url = f"http://{proxy_host}:{proxy_port}"
-            builder = builder.proxy(proxy_url).get_updates_proxy(proxy_url)
-            log(f"Telegram 使用代理: {proxy_url}")
-
-        self._app = builder.build()
+        self._thread = None
+        self._requests = ()
+        proxy_url = f"http://{proxy_host}:{proxy_port}" if proxy_host else None
+        request = HTTPXRequest(
+            connect_timeout=15, read_timeout=30, proxy=proxy_url,
+        )
+        self._requests = (request,)
+        polling_request = HTTPXRequest(
+            connection_pool_size=1, proxy=proxy_url,
+        )
+        self._requests = (request, polling_request)
+        self._app = (Application.builder().token(token)
+                     .request(request).get_updates_request(polling_request).build())
         self._app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, self._on_message))
         self._app.add_handler(MessageHandler(filters.COMMAND, self._on_command))
         self._app.add_handler(CallbackQueryHandler(self._on_callback_query))
@@ -158,113 +195,171 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
             log("start 异常已忽略", "DEBUG")
 
         self._ready.clear()
+        self._stop_requested.clear()
+        self._stop_event = None
+        self._started = False
+        self._stopping = False
+        self._start_stage = "初始化/getMe"
         self._start_error = ""
+        self._bot_username = ""
+        self._bot_id = None
         self._thread = threading.Thread(
             target=self._run_thread, daemon=True, name="telegram-channel",
         )
         self._thread.start()
 
-        if not self._ready.wait(timeout=30):
-            err = self._start_error or "启动超时"
-            self._status = ChannelStatus.ERROR
-            # 停掉半启动的轮询线程：否则它可能随后初始化成功继续 polling，
-            # 看门狗重启后形成同 token 双 poller（409 Conflict，消息随机分裂）
-            await self._stop_polling_thread()
-            raise RuntimeError(f"Telegram 频道启动失败: {err}")
+        ready = await asyncio.to_thread(self._ready.wait, _STARTUP_TIMEOUT)
+        if not ready:
+            self._start_error = self._format_startup_error(TimeoutError("启动总等待时间已耗尽"))
 
-        if self._start_error:
-            self._status = ChannelStatus.ERROR
-            await self._stop_polling_thread()
+        if self._start_error or not self._started:
+            self._start_error = self._start_error or "轮询线程在就绪前已退出"
             raise RuntimeError(f"Telegram 频道启动失败: {self._start_error}")
 
         self._status = ChannelStatus.RUNNING
         log(f"Telegram 频道已启动: @{self._bot_username}")
 
-        try:
-            from .commands import register_commands
-            if self._tg_loop and self._app:
-                asyncio.run_coroutine_threadsafe(
-                    register_commands(self._require_app().bot), self._tg_loop,
-                )
-        except Exception as exc:
-            log(f"Telegram 命令菜单注册跳过: {exc}", "DEBUG")
-
     async def stop(self) -> None:
-        await self._stop_polling_thread()
-        self._tg_loop = None
-        self._app = None
-        self._status = ChannelStatus.STOPPED
-        log("Telegram 频道已停止")
+        self._request_stop()
+        async with self._lifecycle_lock:
+            await self._stop_polling_thread()
+            self._status = ChannelStatus.STOPPED
+            log("Telegram 频道已停止")
+
+    def _request_stop(self) -> None:
+        """记录停止意图，初始化未完成时也不会丢失；取消在所属循环执行。"""
+        self._stop_requested.set()
+        loop = self._tg_loop
+        if loop is not None and not loop.is_closed():
+            try:
+                loop.call_soon_threadsafe(self._stop_in_loop)
+            except RuntimeError:
+                pass  # 线程已完成并关闭事件循环
+
+    def _stop_in_loop(self) -> None:
+        if self._stopping:
+            return
+        if self._started and self._stop_event is not None:
+            self._stop_event.set()
+        elif self._main_task is not None:
+            self._main_task.cancel()
 
     async def _stop_polling_thread(self) -> None:
         """停掉独立轮询线程（幂等；join 超时不置空引用，避免重复 stop 误报）。"""
-        if self._tg_loop and self._stop_event:
-            self._tg_loop.call_soon_threadsafe(self._stop_event.set)
-        if self._thread:
-            self._thread.join(timeout=15)
-            if self._thread.is_alive():
-                # polling 网络超时可达 30s：线程稍后自行退出（daemon），
-                # 但 _app 引用必须等线程真正结束才释放，这里只告警
-                log("Telegram 轮询线程退出超时（等待其自行结束）", "WARNING")
-            self._thread = None
+        self._request_stop()
+        thread = self._thread
+        if thread is not None:
+            await asyncio.to_thread(thread.join, 15)
+            if thread.is_alive():
+                raise RuntimeError("Telegram 轮询线程退出超时，保留句柄并阻止重复启动")
+        self._thread = None
+        self._app = None
+        self._requests = ()
+        self._stop_event = None
+        self._started = False
 
     # ------------------------------------------------------------------
     # 独立线程
     # ------------------------------------------------------------------
 
     def _run_thread(self) -> None:
-        self._tg_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._tg_loop)
+        loop = asyncio.new_event_loop()
+        self._tg_loop = loop
+        asyncio.set_event_loop(loop)
         try:
-            self._tg_loop.run_until_complete(self._async_main())
+            self._main_task = loop.create_task(self._async_main())
+            loop.run_until_complete(self._main_task)
+        except asyncio.CancelledError:
+            pass
         except Exception as exc:
-            log(f"Telegram 线程异常退出: {exc}", "ERROR")
+            self._start_error = self._format_startup_error(exc)
+            self._status = ChannelStatus.ERROR
+            log(f"Telegram 线程异常退出: {self._start_error}", "ERROR")
         finally:
-            self._tg_loop.close()
+            self._stopping = True
+            self._ready.set()
+            # 即使主协程在首次执行前被取消，也必须回收已创建的请求客户端。
+            loop.run_until_complete(self._cleanup_application(self._app))
+            pending = asyncio.all_tasks(loop)
+            for task in pending:
+                task.cancel()
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.close()
+            self._main_task = None
             self._tg_loop = None
+            self._started = False
+            self._ready.set()
 
     async def _async_main(self) -> None:
-        assert self._app is not None
-        try:
-            await self._app.initialize()
-        except Exception as exc:
-            err = str(exc)
-            if "connect" in err.lower() or "network" in err.lower():
-                self._start_error = "网络连接失败（请确认代理已启动且可达 api.telegram.org）"
-            else:
-                self._start_error = err
-            self._ready.set()
-            return
-
-        await self._app.start()
-        await self._app.updater.start_polling(
-            allowed_updates=[
-                "message", "edited_message", "channel_post",
-                "callback_query", "message_reaction",
-            ],
-            drop_pending_updates=True,
-        )
-
-        try:
-            bot_info = await self._require_app().bot.get_me()
-            self._bot_username = bot_info.username or ""
-            self._bot_id = bot_info.id
-        except Exception as exc:
-            self._start_error = f"获取 Bot 信息失败: {exc}"
-            self._ready.set()
-            return
-
+        app = self._require_app()
         self._stop_event = asyncio.Event()
-        self._ready.set()
-        await self._stop_event.wait()
-
+        menu_task: Optional[asyncio.Task[None]] = None
         try:
-            if self._app.updater and self._app.updater.running:
-                await self._app.updater.stop()
-            await self._app.stop()
-            await self._app.shutdown()
+            if self._stop_requested.is_set():
+                raise asyncio.CancelledError
+            self._start_stage = "初始化/getMe"
+            await app.initialize()
+            # initialize 已缓存 getMe 结果，避免启动时重复请求同一接口。
+            self._bot_username = app.bot.username or ""
+            self._bot_id = app.bot.id
+            self._start_stage = "启动消息处理器"
+            await app.start()
+            self._start_stage = "启动轮询/deleteWebhook"
+            await app.updater.start_polling(
+                allowed_updates=[
+                    "message", "edited_message", "channel_post",
+                    "callback_query", "message_reaction",
+                ],
+                drop_pending_updates=True, bootstrap_retries=0,
+            )
+            self._started = True
+            self._ready.set()
+            from .commands import register_commands
+            menu_task = asyncio.create_task(register_commands(app.bot))
+            await self._stop_event.wait()
+        except asyncio.CancelledError:
+            if not self._started and not self._start_error:
+                self._start_error = f"{self._start_stage}: 启动已取消"
+            raise
         except Exception as exc:
-            log(f"Telegram 清理时异常: {exc}", "WARNING")
+            self._start_error = self._format_startup_error(exc)
+            self._status = ChannelStatus.ERROR
+            log(f"Telegram 启动异常: {self._start_error}", "ERROR", tag="通道")
+        finally:
+            self._stopping = True
+            self._ready.set()
+            if menu_task is not None:
+                menu_task.cancel()
+                await asyncio.gather(menu_task, return_exceptions=True)
+
+    def _format_startup_error(self, exc: BaseException) -> str:
+        from telegram.error import TimedOut
+
+        token = self.config.bot_token
+        detail = sanitize_text(str(exc).replace(token, "<redacted>") if token else str(exc))
+        message = f"{self._start_stage}: {type(exc).__name__}: {detail}"
+        if isinstance(exc, (TimedOut, TimeoutError)):
+            message += "；请检查服务端代理与 api.telegram.org:443 连通性"
+        return message
+
+    async def _cleanup_application(self, app: Any) -> None:
+        """在请求所属循环回收半初始化应用；单个步骤失败不阻断后续清理。"""
+        callbacks: list[Callable[[], Awaitable[None]]] = []
+        if app is not None:
+            if app.updater is not None and app.updater.running:
+                callbacks.append(app.updater.stop)
+            if app.running:
+                callbacks.append(app.stop)
+            callbacks.append(app.shutdown)
+        # PTB 的 application.shutdown 在 initialize 失败时可能提前返回。
+        callbacks.extend(request.shutdown for request in self._requests)
+        for callback in callbacks:
+            try:
+                await asyncio.wait_for(callback(), timeout=10)
+            except Exception as exc:
+                log(f"Telegram 清理异常: {self._format_startup_error(exc)}", "WARNING", tag="通道")
 
     # ------------------------------------------------------------------
     # 跨线程执行辅助

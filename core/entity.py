@@ -1402,9 +1402,11 @@ class EntityRegistry:
         instance = metadata.instance
         if not instance:
             return
-        for method_name in dir(instance):
+        for method_name, member in inspect.getmembers_static(instance):
+            if isinstance(member, (staticmethod, classmethod)):
+                member = member.__func__
             if (not method_name.startswith('_')
-                    and callable(getattr(instance, method_name))
+                    and callable(member)
                     and method_name not in _SKIP_ENTITY_METHODS):
                 api_name = f"{metadata.name}.{method_name}"
                 if hasattr(instance, '_registered_apis'):
