@@ -1,7 +1,7 @@
 """ToolAssembly — 工具装配：召回、tag 激活、动态发现、schema 合并与门控。
 
 从 PrefrontalCortex 拆分而来。本模块为自包含状态类，不依赖 Mind/PFC，
-EntityRegistry 与 tool_gate 是唯一外部依赖，便于独立测试（与 guardrails.py 同模式）。
+工具实体、门控与频道声明通过各自公共接口读取，便于独立测试。
 
 职责：
 - 基于命中计数的工具召回（top-N 热工具常驻）
@@ -33,6 +33,8 @@ class ToolAssembly:
         self._tag_activated_tools: set[str] = set()
         # 通过 list_entity_methods 动态发现的工具名（整个思维会话有效，会话结束后清理）
         self._discovered_tools: set[str] = set()
+        self._scope_discovered_tools: dict[str, set[str]] = {}
+        self._scope_frozen_tool_names: dict[str, list[str]] = {}
         # 动态工具集版本号（tag 激活/动态发现变化时递增，供 think_loop 检测重建）
         self._tools_version: int = 0
         # 跨回复冻结的 tools 数组顺序（追加式：只增不改，缓存前缀稳定的最终防线；
@@ -78,7 +80,7 @@ class ToolAssembly:
             self.activate_by_tag("media:image")
         for seg in media_segments or []:
             seg_type = getattr(seg, "type", None)
-            type_name = seg_type.value if hasattr(seg_type, "value") else str(seg_type or "")
+            type_name = seg_type.value if seg_type is not None and hasattr(seg_type, "value") else str(seg_type or "")
             if type_name:
                 self.activate_by_tag(f"media:{type_name}")
 
@@ -142,7 +144,7 @@ class ToolAssembly:
             return []
         return EntityRegistry.get_tool_schema_by_names(sorted(self._tag_activated_tools))
 
-    def expand_discovered_tools(self, tool_calls: list) -> None:
+    def expand_discovered_tools(self, tool_calls: list, scope: str = "") -> None:
         """解析 list_entity_methods 调用结果，将发现的工具加入动态发现集。"""
         import json as _json
         for tc in tool_calls:
@@ -155,6 +157,11 @@ class ToolAssembly:
                     continue
                 for schema in EntityRegistry.get_tool_schemas_by_group(group):
                     name = schema["function"]["name"]
+                    if scope:
+                        discovered = self._scope_discovered_tools.setdefault(scope, set())
+                        if name not in discovered:
+                            discovered.add(name)
+                            self._tools_version += 1
                     if name not in self._discovered_tools:
                         self._discovered_tools.add(name)
                         self._tools_version += 1
@@ -166,8 +173,8 @@ class ToolAssembly:
         """清除当轮动态工具状态（tag 激活 + 动态发现）。
 
         scope 非空时仅清除该 scope 相关的状态（后台评审等并行会话不踩踏主会话）。
-        当前实现：动态工具是全局共享的（tag/discovered 不按 scope 分桶），
-        因此仅在 scope 为空时执行全量清理；调用方应在 active_scopes 清空后再清。
+        指定 scope 只清除其独立发现记录，不动普通目录的全局 tag/discovered；
+        scope 为空时执行全量清理，调用方应在 active_scopes 清空后再清。
 
         粘性模式（tool_dynamic_sticky，默认开）：保留 tag 激活与动态发现——
         它们是消息内容驱动的（如图片到达激活媒体工具），清掉会导致下个会话
@@ -175,14 +182,16 @@ class ToolAssembly:
         任何字节变化都会击穿其后的全部前缀缓存（实测单次重写 ~30K tokens）。
         进程生命周期内工具集只增不减 + 确定性排序 = 跨会话字节稳定。
         """
-        if scope:
-            # 非主会话（如后台评审 reflect）：不清理全局动态工具，避免踩踏正在进行的对话
-            return
         from core.config import get_config_bool
         if get_config_bool("tool_dynamic_sticky", True):
             return
+        if scope:
+            if self._scope_discovered_tools.pop(scope, None):
+                self._tools_version += 1
+            return
         self._tag_activated_tools.clear()
         self._discovered_tools.clear()
+        self._scope_discovered_tools.clear()
         self._tools_version += 1
 
     # ==================================================================
@@ -193,11 +202,15 @@ class ToolAssembly:
         """合并返回当前所有活跃工具 schema（always + 频道 + 标签 + 热召回 + 动态发现 + 已激活分组）。
 
         合并结果经两道门控过滤：
-        1. 沉睡过滤：allow_sleep 工具所属分组未激活时不出现在 schema 中；
-           已激活分组的全部工具补充进来
+        1. 沉睡过滤：已激活分组和频道显式声明的分组直接可见，其余遵循沉睡状态
         2. check_fn 门控：前置条件不满足的工具被过滤（core.tool_gate）
         """
+        from agent.channel.reply_policy import get_reply_policy
         from agent.mind.tool_activation import tool_activation
+
+        policy = get_reply_policy(adapter_key, self._channel_manager)
+        if policy.initial_tools is not None:
+            return await self._get_scoped_tool_schemas(policy.initial_tools, policy.tool_groups, scope)
 
         seen_names: set[str] = set()
         all_schemas: list[dict] = []
@@ -222,6 +235,12 @@ class ToolAssembly:
                 source_counts[source] = added
 
         _merge(EntityRegistry.get_tool_schema_by_tags(["always"]), "always")
+
+        awake_names: set[str] = set()
+        for group in policy.tool_groups:
+            schemas = EntityRegistry.get_tool_schemas_by_group(group)
+            awake_names.update(s.get("function", {}).get("name", "") for s in schemas)
+            _merge(schemas, f"channel_group:{group}", scoped=True)
 
         if adapter_key:
             _merge(self.get_channel_tool_schemas(adapter_key), f"channel:{adapter_key}", scoped=True)
@@ -253,7 +272,7 @@ class ToolAssembly:
 
         # 门控过滤（沉睡 + check_fn，与反思目录共用同一设施）
         before = len(all_schemas)
-        all_schemas = await self._apply_tool_gates(all_schemas, scope)
+        all_schemas = await self._apply_tool_gates(all_schemas, scope, awake_names)
         slept = before - len(all_schemas)
         if slept:
             source_counts["gated"] = -slept
@@ -275,6 +294,34 @@ class ToolAssembly:
 
         return all_schemas
 
+    async def _get_scoped_tool_schemas(
+        self, initial_tools: tuple[str, ...], tool_groups: tuple[str, ...], scope: str,
+    ) -> list[dict]:
+        """频道声明的精简目录，仅由同 scope 显式发现/激活扩展，门控仍然生效。"""
+        from agent.mind.tool_activation import tool_activation
+        from core.config import get_config_bool
+
+        names = set(initial_tools) | self._scope_discovered_tools.get(scope, set())
+        for group in tool_activation.active_groups(scope):
+            names.update(s["function"]["name"] for s in EntityRegistry.get_tool_schemas_by_group(group))
+        awake_names = {
+            s["function"]["name"] for group in tool_groups
+            for s in EntityRegistry.get_tool_schemas_by_group(group)
+            if s["function"]["name"] in names
+        }
+        schemas = await self._apply_tool_gates(
+            EntityRegistry.get_tool_schema_by_names(sorted(names)), scope, awake_names,
+        )
+        deterministic = get_config_bool("tool_order_deterministic", True)
+        if deterministic and get_config_bool("tool_order_frozen", True):
+            schemas = self._apply_append_only_freeze(
+                schemas, set(), frozen_names=self._scope_frozen_tool_names.setdefault(scope, []),
+            )
+        else:
+            schemas.sort(key=lambda s: self._tool_sort_key(s, deterministic=deterministic))
+        log(f"会话工具集: {len(schemas)} 个 (scope={scope})", "DEBUG", tag="PFC")
+        return schemas
+
     # 反思/任务循环未指定 tool_tags 时的默认选择器（心跳任务常态工具面）
     REFLECT_DEFAULT_SELECTORS: tuple[str, ...] = ("heartbeat",)
 
@@ -290,7 +337,8 @@ class ToolAssembly:
         （默认 heartbeat 标签；兼容 group 名与 mcp: 简写）+ 动态发现与已
         激活分组（自服务扩展）。刻意不含回复级的热召回与冻结结转——那是
         跨回复前缀缓存状态，反思 scope 一次性、无结转价值；精简目录显著
-        降低高频内部调用的 schema 开销。更多分组由模型经
+        降低高频内部调用的 schema 开销。显式 selectors 匹配的工具在本 scope
+        直接唤醒，默认 heartbeat 不改变沉睡状态；更多分组由模型经
         list_entity_methods / activate_tool_group（均为 always 工具）按需
         唤醒，工具分组目录在 stable 提示中常驻可见。
         """
@@ -315,16 +363,20 @@ class ToolAssembly:
             _merge(self.get_channel_tool_schemas(adapter_key), scoped=True)
             _merge(EntityRegistry.get_tool_schema_by_tags([adapter_key]), scoped=True)
 
+        awake_names: set[str] = set()
         effective = selectors if selectors else list(self.REFLECT_DEFAULT_SELECTORS)
         for selector in effective:
             sel = (selector or "").strip()
             if not sel:
                 continue
             # 1) 先按 tag 匹配，2) 再按 group 匹配（含 mcp: 简写）
-            _merge(EntityRegistry.get_tool_schema_by_tags([sel]))
+            selected = EntityRegistry.get_tool_schema_by_tags([sel])
             groups = [sel] if ":" in sel else [sel, f"mcp:{sel}"]
             for group in groups:
-                _merge(EntityRegistry.get_tool_schemas_by_group(group))
+                selected.extend(EntityRegistry.get_tool_schemas_by_group(group))
+            _merge(selected)
+            if selectors:
+                awake_names.update(s.get("function", {}).get("name", "") for s in selected)
 
         # 自服务扩展：list_entity_methods 动态发现 + activate_tool_group 唤醒
         if self._discovered_tools:
@@ -333,7 +385,7 @@ class ToolAssembly:
         for group in tool_activation.active_groups(scope):
             _merge(EntityRegistry.get_tool_schemas_by_group(group), scoped=True)
 
-        all_schemas = await self._apply_tool_gates(all_schemas, scope)
+        all_schemas = await self._apply_tool_gates(all_schemas, scope, awake_names)
 
         # 确定性排序（与回复同一排序键，目录跨调用字节稳定）；不使用回复级
         # 冻结结转——避免把回复的冻结历史重新引入精简目录
@@ -347,14 +399,16 @@ class ToolAssembly:
         log(f"反思工具集: {len(all_schemas)} 个 (selectors={effective}) [{', '.join(tool_names)}]", "DEBUG", tag="PFC")
         return all_schemas
 
-    async def _apply_tool_gates(self, all_schemas: list[dict], scope: str) -> list[dict]:
+    async def _apply_tool_gates(
+        self, all_schemas: list[dict], scope: str, awake_names: set[str] | None = None,
+    ) -> list[dict]:
         """门控过滤（回复与反思两条装配路径共用）：沉睡过滤 + check_fn 前置条件。"""
         # 沉睡过滤：移除未激活分组中的可沉睡工具
         sleepable_groups = EntityRegistry.get_sleepable_groups()
         if sleepable_groups:
             all_schemas = [
                 s for s in all_schemas
-                if not self._is_sleeping_tool(
+                if s.get("function", {}).get("name", "") in (awake_names or set()) or not self._is_sleeping_tool(
                     s.get("function", {}).get("name", ""), sleepable_groups, scope,
                 )
             ]
@@ -403,7 +457,9 @@ class ToolAssembly:
         bucket = 1 if name in scoped_names else 0
         return (bucket, self._CORE_TOOL_PRIORITY.get(name, 1), name)
 
-    def _apply_append_only_freeze(self, schemas: list[dict], scoped_names: set) -> list[dict]:
+    def _apply_append_only_freeze(
+        self, schemas: list[dict], scoped_names: set, *, frozen_names: list[str] | None = None,
+    ) -> list[dict]:
         """跨回复追加式冻结 tools 数组顺序（缓存前缀稳定的最终防线）。
 
         首轮（冻结名单为空）按双桶排序键建立冻结序；此后每次组装：
@@ -417,8 +473,9 @@ class ToolAssembly:
             name = s.get("function", {}).get("name", "")
             if name:
                 by_name[name] = s
-        frozen_set = set(self._frozen_tool_names)
-        ordered = [by_name[n] for n in self._frozen_tool_names if n in by_name]
+        frozen = self._frozen_tool_names if frozen_names is None else frozen_names
+        frozen_set = set(frozen)
+        ordered = [by_name[n] for n in frozen if n in by_name]
         newcomers = sorted(
             (n for n in by_name if n not in frozen_set),
             key=lambda n: (
@@ -427,7 +484,7 @@ class ToolAssembly:
                 n,
             ),
         )
-        self._frozen_tool_names += newcomers
+        frozen += newcomers
         return ordered + [by_name[n] for n in newcomers]
 
     @staticmethod

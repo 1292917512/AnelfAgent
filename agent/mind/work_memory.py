@@ -47,6 +47,7 @@ class PendingSignal:
     adapter_key: str = ""
     to_me: bool = False
     kind: str = ""
+    message_id: str = ""
 
 
 def _pfc_persist_enabled() -> bool:
@@ -322,6 +323,7 @@ class WorkMemory:
         adapter_key = getattr(anything, "adapter_key", "") or ""
         message_kind = getattr(anything, "message_kind", "chat") or "chat"
         signal = PendingSignal(
+            message_id=anything.adapter_message_id,
             preview=preview,
             adapter_key=adapter_key,
             to_me=bool(getattr(anything, "to_me", False)),

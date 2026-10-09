@@ -83,7 +83,7 @@ class FakePfc:
     def record_tool_use(self, name: str) -> None:
         pass
 
-    def expand_discovered_tools(self, tool_calls) -> None:
+    def expand_discovered_tools(self, tool_calls, scope: str = "") -> None:
         pass
 
     def peek_all_tasks(self) -> list:
@@ -206,6 +206,7 @@ def run_think_loop(
     base_messages: Optional[list] = None,
     adapter_key: Optional[str] = None,
     completion: Optional[dict] = None,
+    require_output: bool = False,
 ):
     """统一的 think_loop 启动器（收敛 10 个 kwargs 的调用样板）。"""
     kwargs: dict = {}
@@ -222,6 +223,7 @@ def run_think_loop(
         safety_limit=safety_limit,
         collected_text=collected_text if collected_text is not None else [],
         active_tools=tools if tools is not None else [],
+        require_output=require_output,
         anything=anything,
         base_messages=base_messages if base_messages is not None
         else [{"role": "user", "content": "你好"}],

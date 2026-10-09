@@ -17,6 +17,15 @@ def mcp_config_file(tmp_path, monkeypatch):
 
 
 class TestReconcileKeepsGovernedFields:
+    @staticmethod
+    def _manifest():
+        return SimpleNamespace(
+            mcp_servers_inline={"eigenflux": {
+                "command": "bun", "args": ["run"], "transport": "stdio",
+            }},
+            mcp_servers_file="",
+        )
+
     def test_reactivate_keeps_enabled_and_stay_awake(self, mcp_config_file, tmp_path):
         """插件重激活以清单更新连接参数，但启停/常驻等治理字段保留。"""
         mcp_config_file.write_text(json.dumps({"mcpServers": {
@@ -28,13 +37,7 @@ class TestReconcileKeepsGovernedFields:
 
         from entities.plugins.activation import _activate_mcp_servers
 
-        manifest = SimpleNamespace(
-            mcp_servers_inline={"eigenflux": {
-                "command": "bun", "args": ["run"], "transport": "stdio",
-            }},
-            mcp_servers_file="",
-        )
-        added = _activate_mcp_servers("eigenflux", tmp_path, manifest)
+        added = _activate_mcp_servers("eigenflux", tmp_path, self._manifest())
         assert added == ["eigenflux"]
 
         data = json.loads(mcp_config_file.read_text(encoding="utf-8"))
@@ -43,6 +46,47 @@ class TestReconcileKeepsGovernedFields:
         assert cfg["enabled"] is False          # 禁用状态不被翻回
         assert cfg["stay_awake"] is True        # 常驻开关不被抹掉
         assert cfg["plugin"] == "eigenflux"
+
+    def test_field_wiped_entry_adopted_and_prefix_swept(self, mcp_config_file, tmp_path):
+        """plugin 字段被外部改写抹掉时认领养（不增生前缀），历史前缀副本回收。"""
+        mcp_config_file.write_text(json.dumps({"mcpServers": {
+            "eigenflux": {"command": "old", "transport": "stdio", "enabled": False},
+            "eigenflux__eigenflux": {
+                "command": "old", "transport": "stdio",
+                "enabled": True, "plugin": "eigenflux",
+            },
+        }}), encoding="utf-8")
+
+        from entities.plugins.activation import _activate_mcp_servers
+
+        added = _activate_mcp_servers("eigenflux", tmp_path, self._manifest())
+        assert added == ["eigenflux"]
+
+        data = json.loads(mcp_config_file.read_text(encoding="utf-8"))
+        servers = data["mcpServers"]
+        assert "eigenflux__eigenflux" not in servers   # 前缀残留回收
+        cfg = servers["eigenflux"]
+        assert cfg["plugin"] == "eigenflux"            # 来源标记回补
+        assert cfg["enabled"] is False                 # 治理字段继承
+        assert cfg["command"] == "bun"
+
+    def test_other_plugin_claim_keeps_prefix(self, mcp_config_file, tmp_path):
+        """同名被他插件占用时仍走前缀，且前缀目标已存在时继承其治理字段。"""
+        mcp_config_file.write_text(json.dumps({"mcpServers": {
+            "eigenflux": {"command": "x", "plugin": "other", "enabled": True},
+            "eigenflux__eigenflux": {
+                "command": "x", "plugin": "eigenflux", "enabled": False,
+            },
+        }}), encoding="utf-8")
+
+        from entities.plugins.activation import _activate_mcp_servers
+
+        added = _activate_mcp_servers("eigenflux", tmp_path, self._manifest())
+        assert added == ["eigenflux__eigenflux"]
+
+        data = json.loads(mcp_config_file.read_text(encoding="utf-8"))
+        assert data["mcpServers"]["eigenflux"]["plugin"] == "other"  # 不抢他插件
+        assert data["mcpServers"]["eigenflux__eigenflux"]["enabled"] is False
 
 
 def _fake_session(method_not_found: bool):

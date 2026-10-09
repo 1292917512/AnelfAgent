@@ -7,7 +7,9 @@ MCP server），配置 mcp_stdio_passthrough_env=True 时恢复全量透传。
 from __future__ import annotations
 
 import os
+import sys
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, Optional
 
@@ -21,6 +23,125 @@ _STDIO_ENV_WHITELIST = frozenset({
     "APPDATA", "LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)",
     "HOMEDRIVE", "HOMEPATH", "PATHEXT", "USERNAME", "OS",
 })
+
+# Windows stdio 子进程优先级档位 → creationflags（spawn 时一次性生效，
+# 之后优先级不再变更）。below_normal/idle 让吃 CPU 的本地服务（如
+# minecraft 执行器进服时解析区块）不抢占同机主程序。
+_priority_flags_cache: Optional[Dict[str, int]] = None
+# spawn 期间的优先级意图：contextvar 按任务隔离，并发连接各自生效
+_stdio_priority_flag: ContextVar[int] = ContextVar("anelf_mcp_stdio_priority", default=0)
+
+
+def _windows_priority_flags() -> Dict[str, int]:
+    """惰性构建优先级档位表（仅 Windows 有意义，其他平台返回空表）。"""
+    global _priority_flags_cache
+    if _priority_flags_cache is None:
+        if sys.platform == "win32":
+            import subprocess
+
+            _priority_flags_cache = {
+                "normal": 0,
+                "below_normal": int(subprocess.BELOW_NORMAL_PRIORITY_CLASS),
+                "idle": int(subprocess.IDLE_PRIORITY_CLASS),
+            }
+        else:
+            _priority_flags_cache = {}
+    return _priority_flags_cache
+
+
+def _install_stdio_priority_patch() -> None:
+    """包装 mcp SDK 的 Windows 进程创建，注入优先级 creationflags。
+
+    SDK 的 create_windows_process 把 creationflags 写死为 CREATE_NO_WINDOW，
+    无公开扩展点；此处仅在其内部查找表上包一层，按 spawn 时的 contextvar
+    追加优先级标志。未设置优先级时原样透传，行为与未打补丁完全一致。
+    """
+    from mcp.client import stdio as mcp_stdio
+
+    if getattr(mcp_stdio.create_windows_process, "_anelf_priority_patch", False):
+        return
+    sdk_create_windows_process = mcp_stdio.create_windows_process
+
+    async def _create_windows_process_with_priority(
+        command: str,
+        args: list,
+        env: Optional[Dict[str, str]] = None,
+        errlog: Any = None,
+        cwd: Any = None,
+    ) -> Any:
+        flag = _stdio_priority_flag.get()
+        if not flag:
+            return await sdk_create_windows_process(command, args, env, errlog, cwd)
+        return await _spawn_windows_process_with_priority(
+            command, args, env, errlog, cwd, flag
+        )
+
+    _create_windows_process_with_priority._anelf_priority_patch = True  # type: ignore[attr-defined]
+    mcp_stdio.create_windows_process = _create_windows_process_with_priority
+
+
+async def _spawn_windows_process_with_priority(
+    command: str,
+    args: list,
+    env: Optional[Dict[str, str]],
+    errlog: Any,
+    cwd: Any,
+    priority_flag: int,
+) -> Any:
+    """带优先级 creationflags 的 Windows spawn（其余逻辑与 SDK 保持一致）。
+
+    复用 SDK 的 Job Object 助手，保证进程树终止语义不变。
+    （助手位于 mcp.os.win32.utilities——SDK 的 create_windows_process
+    也从该模块导入；私有符号，随 SDK 升级需核对。）
+    """
+    import subprocess
+
+    import anyio
+    from mcp.os.win32 import utilities as win32_util
+
+    creationflags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) | priority_flag
+    try:
+        process = await anyio.open_process(
+            [command, *args],
+            env=env,
+            creationflags=creationflags,
+            stderr=errlog,
+            cwd=cwd,
+        )
+    except NotImplementedError:
+        # 无 async subprocess 支持的事件循环（SelectorEventLoop）走 SDK 兜底
+        process = await win32_util._create_windows_fallback_process(
+            command, args, env, errlog, cwd
+        )
+    job = win32_util._create_job_object()
+    win32_util._maybe_assign_process_to_job(process, job)
+    return process
+
+
+@asynccontextmanager
+async def _priority_scoped_transport(
+    client_cm: Any, priority_flag: int
+) -> AsyncIterator[Any]:
+    """仅在 stdio_client 进入（spawn 发生）期间设置优先级 contextvar。
+
+    spawn 完成后立即复位：优先级是一次性 spawn 属性，贯穿会话会让
+    同任务内后续其他连接的 spawn 误继承。
+    """
+    token = _stdio_priority_flag.set(priority_flag)
+    try:
+        streams = await client_cm.__aenter__()
+    finally:
+        _stdio_priority_flag.reset(token)
+    try:
+        yield streams
+    except BaseException as exc:
+        suppress = await client_cm.__aexit__(
+            type(exc), exc, exc.__traceback__
+        )
+        if not suppress:
+            raise
+    else:
+        await client_cm.__aexit__(None, None, None)
 
 
 async def _list_roots_callback(context: Any) -> Any:
@@ -80,11 +201,16 @@ def _create_transport(srv: MCPServerConfig) -> Any:
     if transport == "stdio":
         from mcp.client.stdio import StdioServerParameters, stdio_client
         stdio_env = _build_stdio_env(srv.env)
-        return stdio_client(StdioServerParameters(
+        client_cm = stdio_client(StdioServerParameters(
             command=srv.command,
             args=srv.args,
             env=stdio_env,
         ))
+        priority_flag = _windows_priority_flags().get(str(srv.priority or "").strip().lower(), 0)
+        if priority_flag and sys.platform == "win32":
+            _install_stdio_priority_patch()
+            return _priority_scoped_transport(client_cm, priority_flag)
+        return client_cm
 
     if transport == "streamable_http":
         # mcp 2.x：headers/timeout/auth 全部经 http_client 传入，且外部

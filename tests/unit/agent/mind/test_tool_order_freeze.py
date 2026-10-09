@@ -27,6 +27,17 @@ def _assembly_ta() -> ToolAssembly:
 
 
 class TestAppendOnlyFreeze:
+    def test_nonsticky_cleanup_only_clears_requested_scope(self, monkeypatch) -> None:
+        monkeypatch.setattr("core.config.get_config_bool", lambda key, default=True: False)
+        ta = ToolAssembly()
+        ta._scope_discovered_tools = {"game": {"a"}, "other": {"b"}}
+        ta._discovered_tools.add("global")
+        ta.clear_dynamic_tools("game")
+        assert ta._scope_discovered_tools == {"other": {"b"}}
+        assert ta._discovered_tools == {"global"}
+        ta.clear_dynamic_tools()
+        assert not ta._scope_discovered_tools and not ta._discovered_tools
+
     def test_first_round_establishes_two_bucket_order(self) -> None:
         """首轮按双桶排序键建立冻结序（共享核心在前，作用域工具沉尾）。"""
         ta = _assembly_ta()
@@ -197,12 +208,80 @@ class TestReflectToolSchemas:
         finally:
             tool_activation.clear_scope(scope)
 
+    async def test_explicit_selector_wakes_only_its_catalog_and_keeps_gate(self, monkeypatch) -> None:
+        from core.entity import EntityRegistry
+
+        ta = ToolAssembly()
+        assert "ra_sleep" in _names(await ta.get_reflect_tool_schemas(scope="worker", selectors=["g_sleep"]))
+        assert "ra_sleep" not in _names(await ta.get_reflect_tool_schemas(scope="other"))
+        original = EntityRegistry.get_active_tools
+
+        async def gated(names):
+            return [item for item in await original(names) if item.name != "ra_sleep"]
+
+        monkeypatch.setattr(EntityRegistry, "get_active_tools", gated)
+        assert "ra_sleep" not in _names(await ta.get_reflect_tool_schemas(scope="worker", selectors=["g_sleep"]))
+
+    async def test_channel_policy_wakes_tools_without_leaking_to_other_scope(self, monkeypatch) -> None:
+        from agent.channel.reply_policy import ReplyPolicy
+
+        monkeypatch.setattr(
+            "agent.channel.reply_policy.get_reply_policy",
+            lambda adapter, manager=None: ReplyPolicy(tool_groups=("g_sleep",)) if adapter == "game" else ReplyPolicy(),
+        )
+        ta = ToolAssembly()
+        assert "ra_sleep" in _names(await ta.get_active_tool_schemas(adapter_key="game", scope="game:1"))
+        assert "ra_sleep" not in _names(await ta.get_active_tool_schemas(adapter_key="webui", scope="webui:1"))
+
     async def test_discovered_tools_included(self) -> None:
         """list_entity_methods 动态发现的工具在重建后保留。"""
         ta = ToolAssembly()
         ta._discovered_tools.add("ra_core")
         names = _names(await ta.get_reflect_tool_schemas(scope="t_reflect_disc"))
         assert "ra_core" in names
+
+    async def test_restricted_catalog_ignores_background_and_frozen_tools(self, monkeypatch) -> None:
+        from agent.channel.reply_policy import ReplyPolicy
+        from agent.llm import ToolCall
+
+        policy = ReplyPolicy(initial_tools=("ra_heartbeat",), tool_groups=("g_sleep",))
+        monkeypatch.setattr("agent.channel.reply_policy.get_reply_policy",
+                            lambda adapter, manager=None: policy if adapter == "game" else ReplyPolicy())
+        ta = ToolAssembly()
+        ta._frozen_tool_names = ["ra_always", "ra_core"]
+        ta._tag_activated_tools.add("ra_core")
+        ta.record_tool_use("ra_core")
+        call = ToolCall(id="discover", name="list_entity_methods", arguments='{"group":"g_core"}')
+        ta.expand_discovered_tools([call], scope="other")
+        first = await ta.get_active_tool_schemas("game", "game:1")
+        assert _names(first) == ["ra_heartbeat"]
+        ta.expand_discovered_tools([call], scope="game:1")
+        assert _names(await ta.get_active_tool_schemas("game", "game:1")) == ["ra_heartbeat", "ra_core"]
+        assert _names(await ta.get_active_tool_schemas("game", "game:2")) == ["ra_heartbeat"]
+        assert "ra_always" in _names(await ta.get_active_tool_schemas("webui", "webui:1"))
+
+    async def test_restricted_catalog_preserves_activation_and_gate(self, monkeypatch) -> None:
+        from agent.channel.reply_policy import ReplyPolicy
+        from agent.mind.tool_activation import tool_activation
+        from core.entity import EntityRegistry
+
+        monkeypatch.setattr("agent.channel.reply_policy.get_reply_policy",
+                            lambda *a: ReplyPolicy(initial_tools=("ra_heartbeat",)))
+        scope = "game:gate"
+        ta = ToolAssembly()
+        tool_activation.activate("g_sleep", rounds=3, scope=scope)
+        try:
+            assert "ra_sleep" in _names(await ta.get_active_tool_schemas("game", scope))
+            original = EntityRegistry.get_active_tools
+
+            async def gated(names):
+                return [item for item in await original(names) if item.name != "ra_sleep"]
+
+            monkeypatch.setattr(EntityRegistry, "get_active_tools", gated)
+            assert "ra_sleep" not in _names(await ta.get_active_tool_schemas("game", scope))
+        finally:
+            tool_activation.clear_scope(scope)
+        assert "ra_sleep" not in _names(await ta.get_active_tool_schemas("game", scope))
 
     async def test_order_deterministic_across_calls(self) -> None:
         """同一装配输入两次调用产出字节序一致（反思目录跨调用稳定）。"""

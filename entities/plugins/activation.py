@@ -280,20 +280,68 @@ def _activate_mcp_servers(plugin_name: str, payload_dir: Path, manifest) -> List
     added: List[str] = []
     for server_name, cfg in sorted(servers.items()):
         final_name = server_name
-        if final_name in foreign:
-            final_name = f"{plugin_name}__{server_name}"
+        leftover = f"{plugin_name}__{server_name}"
+        if leftover in owned and final_name in foreign:
+            # 本插件此前已合并出"前缀"残留 + 清单纯名当前为 foreign
+            # —— 区分两种 foreign 场景：
+            # ① 清单纯名无 plugin 标记（或标记被外部抹掉）→ 视为可接管，回收前缀
+            # ② 清单纯名 plugin 标记为他插件（other）→ 不能抢他人位置，保留前缀
+            legacy = raw.get(leftover) or {}
+            pure = raw.get(final_name) or {}
+            if (
+                isinstance(legacy, dict)
+                and isinstance(pure, dict)
+                and legacy.get("plugin") == plugin_name
+                and not pure.get("plugin")  # 纯名无 plugin 标记 → 视为可接管
+            ):
+                # 回收前缀和清单纯名（清单纯名无明确归属，可接管）
+                # 把清单纯名残留的 enabled/stay_awake/env/headers 治理字段
+                # 先并入 cfg，再删除两个旧条目，最后 create_server 重建
+                for governed in ("enabled", "stay_awake"):
+                    if governed in pure:
+                        cfg[governed] = pure[governed]
+                for field in ("env", "headers"):
+                    p_def = cfg.get(field, {})
+                    p_over = pure.get(field, {})
+                    if isinstance(p_def, dict) and isinstance(p_over, dict) and (p_def or p_over):
+                        cfg[field] = {**p_def, **p_over}
+                for stale in (leftover, final_name):
+                    try:
+                        store.remove_server(stale)
+                    except ValueError:
+                        pass
+                if leftover in owned:
+                    owned.discard(leftover)
+                foreign.discard(final_name)
+            else:
+                # 纯名被他人明确占据或前置条件不符 → 保留前缀
+                final_name = leftover
+                log(f"MCP server 名冲突，以前缀合并: {server_name} → {final_name}", "WARNING", tag=_TAG)
+        elif final_name in foreign:
+            # 清单纯名被他人明确占据 → 本插件以前缀形式保留
+            final_name = leftover
             log(f"MCP server 名冲突，以前缀合并: {server_name} → {final_name}", "WARNING", tag=_TAG)
         cfg = dict(cfg)
         cfg["plugin"] = plugin_name
         try:
             if final_name in owned:
-                # 启停/常驻是用户治理状态，重激活只更新清单声明的连接参数
-                # ——replace 语义会整体重建配置，不继承会把禁用翻回启用
+                # 重激活合并策略（清单优先 + 治理字段保护）：
+                # 1) 启停/常驻（enabled/stay_awake）是用户治理状态——保留旧值，
+                #    防止 replace 整体重建时把禁用翻回启用。
+                # 2) env / headers 按"清单声明为底、运行配置为覆盖"合并——env
+                #    常含密钥，密钥更新需走完整配置变更路径而非清单覆盖。
+                # 3) 其他字段全部以清单为准（command/args/transport/timeout 等
+                #    连接参数随版本升级由清单主导）。
                 existing = raw.get(final_name)
                 if isinstance(existing, dict):
                     for governed in ("enabled", "stay_awake"):
                         if governed in existing:
                             cfg[governed] = existing[governed]
+                    for field in ("env", "headers"):
+                        defaults = cfg.get(field, {})
+                        overrides = existing.get(field, {})
+                        if isinstance(defaults, dict) and isinstance(overrides, dict) and (defaults or overrides):
+                            cfg[field] = {**defaults, **overrides}
                 store.update_server_config(final_name, cfg, replace=True, reload=False)
                 owned.discard(final_name)
             else:

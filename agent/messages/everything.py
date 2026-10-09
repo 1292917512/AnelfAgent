@@ -72,6 +72,7 @@ class Everything(Nothing):
     # 消息到达时间（纳秒）：构造即到达，时间标签与对话历史入库均以它为准，保证时序
     created_ts_ns: int = Field(default_factory=time.time_ns)
     _tags_generated: bool = PrivateAttr(default=False)
+    _trace_message_id: str = PrivateAttr(default="")
 
     @property
     def scope_type(self) -> str:

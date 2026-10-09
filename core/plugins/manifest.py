@@ -202,23 +202,37 @@ def parse_manifest(root: Path) -> PluginManifest:
     )
 
 
+def _expand_plugin_vars(value: Any, root: Path) -> Any:
+    """展开插件 MCP 声明中的 Claude 私有变量（对齐 Claude Code 语义：
+    CLAUDE_PLUGIN_ROOT = 插件负载目录）；不展开则字面量传入子进程必失败。"""
+    if isinstance(value, str):
+        return value.replace("${CLAUDE_PLUGIN_ROOT}", str(root))
+    if isinstance(value, list):
+        return [_expand_plugin_vars(v, root) for v in value]
+    if isinstance(value, dict):
+        return {k: _expand_plugin_vars(v, root) for k, v in value.items()}
+    return value
+
+
 def load_plugin_mcp_servers(root: Path, manifest: PluginManifest) -> Dict[str, Dict[str, Any]]:
     """读取插件声明的 MCP server 配置（内联优先，其次引用的 JSON 文件）。"""
     if manifest.mcp_servers_inline:
-        return {
-            str(k): v for k, v in manifest.mcp_servers_inline.items() if isinstance(v, dict)
-        }
-    if not manifest.mcp_servers_file:
+        servers: Dict[str, Any] = manifest.mcp_servers_inline
+    elif manifest.mcp_servers_file:
+        mcp_path = root / manifest.mcp_servers_file
+        try:
+            data = json.loads(mcp_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            raise PluginError(f"插件 MCP 配置解析失败: {mcp_path} - {e}") from e
+        servers = data.get("mcpServers", data) if isinstance(data, dict) else {}
+        if not isinstance(servers, dict):
+            raise PluginError(f"插件 MCP 配置必须是对象: {mcp_path}")
+    else:
         return {}
-    mcp_path = root / manifest.mcp_servers_file
-    try:
-        data = json.loads(mcp_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
-        raise PluginError(f"插件 MCP 配置解析失败: {mcp_path} - {e}") from e
-    servers = data.get("mcpServers", data) if isinstance(data, dict) else {}
-    if not isinstance(servers, dict):
-        raise PluginError(f"插件 MCP 配置必须是对象: {mcp_path}")
-    return {str(k): v for k, v in servers.items() if isinstance(v, dict)}
+    return {
+        str(k): _expand_plugin_vars(v, root)
+        for k, v in servers.items() if isinstance(v, dict)
+    }
 
 
 @dataclass

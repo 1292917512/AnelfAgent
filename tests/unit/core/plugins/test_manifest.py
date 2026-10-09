@@ -97,6 +97,19 @@ class TestParseManifest:
         servers = load_plugin_mcp_servers(tmp_path, m)
         assert servers == {"s1": {"command": "npx"}}
 
+    def test_mcp_claude_plugin_root_expanded(self, tmp_path):
+        """Claude 私有变量展开为插件负载目录（字面量传入子进程必启动失败）。"""
+        (tmp_path / "plugin.json").write_text('{"name": "demo"}', encoding="utf-8")
+        (tmp_path / ".mcp.json").write_text(json.dumps({"mcpServers": {"s1": {
+            "command": "bun",
+            "args": ["run", "--cwd", "${CLAUDE_PLUGIN_ROOT}"],
+            "env": {"ROOT": "${CLAUDE_PLUGIN_ROOT}/data"},
+        }}}), encoding="utf-8")
+        m = parse_manifest(tmp_path)
+        servers = load_plugin_mcp_servers(tmp_path, m)
+        assert servers["s1"]["args"][2] == str(tmp_path)
+        assert servers["s1"]["env"]["ROOT"] == f"{tmp_path}/data"
+
     def test_component_path_escape_rejected(self, tmp_path):
         (tmp_path / "plugin.json").write_text(json.dumps({
             "name": "demo", "skills": "../outside",

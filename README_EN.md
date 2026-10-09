@@ -202,6 +202,8 @@ stdio / SSE / Streamable HTTP; background async connections with tools auto-regi
 
 ### Plugins & Hot-Swapping
 
+- **Minecraft companion**: reuses the open-source Mineflayer MCP runtime for Java 26.1 actions and in-game chat.
+  See [`plugins/minecraft/README.md`](plugins/minecraft/README.md) for setup.
 - **Plugin system** (`entities/plugins`): a plugin is a directory package with a manifest + skills/ + .mcp.json + tools.py; marketplace subscriptions (local directory or git repo); the AI can install / upgrade / remove plugins itself
 - **Module hot-swap**: adding or removing entity/channel directories is reconciled automatically via directory watching (instant registration, complete teardown), with a manual hot-sync button in the WebUI
 

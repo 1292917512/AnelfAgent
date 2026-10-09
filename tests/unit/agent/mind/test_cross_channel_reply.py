@@ -27,6 +27,22 @@ def _pfc() -> PrefrontalCortex:
 
 
 class TestCrossChannelIsolation:
+    async def test_reply_target_keeps_diagnostic_message_id_out_of_model_and_reply_to(self) -> None:
+        pfc = _pfc()
+        await pfc.add_task(MessageGroupUser(
+            uid="u1", group_id="100", adapter_key="qq", text_content="first", adapter_message_id="older",
+        ))
+        await pfc.add_task(MessageGroupUser(
+            uid="u1", group_id="100", adapter_key="qq", text_content="second", adapter_message_id="latest",
+        ))
+        mind = SimpleNamespace(pfc=pfc, _active_scopes=set())
+        target = resolve_reply_target(mind, "group_qq:100")
+        assert target._trace_message_id == "latest"
+        assert target.adapter_message_id == ""
+        assert "latest" not in str(target.model_dump())
+        assert "latest" not in str(target.get_agent_dic())
+        assert pfc.get_pending_signal("group_qq:100") is None
+
     async def test_scopes_bucketed_by_adapter(self) -> None:
         """两频道消息进入各自的 scope 桶（adapter 维度隔离）。"""
         pfc = _pfc()

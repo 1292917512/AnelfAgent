@@ -86,10 +86,21 @@ __all__ = [
     "get_llm_manager", "save_config_value",
     "get_session_llm_params", "canonical_efforts", "valid_api_types",
     "activate_tool_group_now", "notify_tool_set_changed",
+    "call_mcp_server_tool",
     "tool_error", "error_from_exception", "ErrorCause",
 ]
 
 F = TypeVar("F", bound=Callable[..., Any])
+
+
+async def call_mcp_server_tool(server_name: str, tool_name: str, arguments: Dict[str, Any]) -> str:
+    """供适配器按服务名访问 MCP 能力，复用桥接层的超时与重连。"""
+    from entities.mcp.bridge import get_mcp_bridge
+
+    bridge = get_mcp_bridge()
+    if bridge is None:
+        return tool_error("MCP 桥尚未初始化", cause=ErrorCause.NOT_FOUND, retryable=True)
+    return await bridge.call_server_tool(server_name, tool_name, arguments)
 
 
 def coerce_bool_arg(value: Any, default: bool) -> bool:
@@ -302,6 +313,14 @@ def get_current_scope() -> str:
         return ToolActivationManager.current_scope()
     except Exception:
         return "_global"
+
+
+def get_mcp_control_metadata(server: str, tool_name: str) -> Dict[str, Any] | None:
+    """把宿主生成的请求归属带入受控 MCP；不让模型填写来源或停止代次。"""
+    from agent.delegation.sub_agent import current_delegation_id
+    from core.tool_context import control_metadata
+
+    return control_metadata(server, tool_name, current_delegation_id())
 
 
 def get_owner_scope() -> str:

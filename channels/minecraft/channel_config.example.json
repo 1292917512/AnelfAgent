@@ -1,0 +1,9 @@
+{
+  "enabled": false,
+  "mcp_server": "minecraft",
+  "server_id": "local",
+  "bot_username": "AnelfBot",
+  "allowed_players": "",
+  "require_mention": false,
+  "poll_interval_seconds": 1.0
+}

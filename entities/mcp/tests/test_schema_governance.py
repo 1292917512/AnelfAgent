@@ -55,6 +55,21 @@ class TestReadOnlyParallelMapping:
 
 
 class TestSchemaSizeGovernance:
+    @pytest.mark.parametrize("nullable", [False, True])
+    def test_nested_coordinates_reach_model_schema(self, bridge: MCPBridge, nullable: bool) -> None:
+        vector = {
+            "type": "object",
+            "properties": {axis: {"type": "number"} for axis in ("x", "y", "z")},
+            "required": ["x", "y", "z"],
+            "additionalProperties": False,
+        }
+        parameter = {"anyOf": [vector, {"type": "null"}]} if nullable else vector
+        bridge._register_tool_entries(_PROBE_SERVER, [make_tool("probe_write", input_schema={
+            "type": "object", "properties": {"faceVector": parameter}, "required": ["faceVector"],
+        })])
+        schemas = EntityRegistry.get_tool_schema_by_names(["probe_write"])
+        assert schemas[0]["function"]["parameters"]["properties"]["faceVector"] == vector
+
     def test_tool_description_clipped(self, bridge: MCPBridge) -> None:
         """超长工具描述注册时截断，字节此后稳定。"""
         fat = "长" * (_MAX_TOOL_DESC_CHARS + 500)

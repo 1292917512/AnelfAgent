@@ -142,10 +142,12 @@ class DelegationManager:
         self._background_tasks: Dict[str, asyncio.Task] = {}
         # 运行中委托的实时信息（进度事件归属 / 取消 / 运行快照）
         self._running: Dict[str, Dict[str, Any]] = {}
-        # 已请求取消但尚未进入执行阶段的委托 ID（并发槽等待中取消的场景）
+        # 已请求取消的委托 ID（将执行/排队取消转化为用户取消结果）。
         self._cancel_marks: set[str] = set()
-        # 并发槽等待中的委托（此阶段可被 cancel 标记，获取槽位后先生效标记）
-        self._pending: set[str] = set()
+        # 并发槽等待任务可独立取消，不中断发起委托的父级任务。
+        self._pending: Dict[str, asyncio.Task[bool]] = {}
+        # 全生命周期归属：覆盖后台尚未启动、等槽和加载上下文的阶段。
+        self._owners: Dict[str, tuple[str, str]] = {}
         # 父子关系（父 delegation_id → 后代 id 集合）：取消级联用
         self._children: Dict[str, set[str]] = {}
         # 按委托归集的 LLM 用量（turns/tokens/耗时；完成时随结果带出后清理）
@@ -263,29 +265,48 @@ class DelegationManager:
         for did in [delegation_id, *descendants]:
             info = self._running.get(did)
             task = self._background_tasks.get(did)
-            if info is None and task is None and did not in self._pending:
+            if info is None and task is None and did not in self._pending and did not in self._owners:
                 continue
             found = True
             self._cancel_marks.add(did)
+            pending = self._pending.get(did)
+            if pending is not None and not pending.done():
+                pending.cancel()
             if info is not None:
                 run_task = info.get("task")
                 if isinstance(run_task, asyncio.Task) and not run_task.done():
                     run_task.cancel()
-            if task is not None and not task.done():
+            # 尚未启动或加载上下文的委托由取消标记收口，保留其清理入口。
+            if task is not None and not task.done() and info is not None:
                 task.cancel()
         if found:
             log(f"委托取消请求: {delegation_id}（级联 {len(descendants)} 个后代）", tag="委托")
         return found
 
     def cancel_scope(self, scope: str) -> int:
-        """取消指定会话 scope 下所有运行中的委托，返回取消数量。"""
-        targets = [
+        """取消指定会话运行中与排队中的委托，返回受理的取消数量。"""
+        targets = {
             did for did, info in self._running.items()
             if info.get("scope") == scope
-        ]
-        for did in targets:
-            self.cancel(did)
-        return len(targets)
+        }
+        targets.update(did for did, (owner, _) in self._owners.items() if owner == scope)
+        registry = getattr(self._mind, "background_tasks", None)
+        if registry is not None:
+            targets.update(task.task_id for task in registry.running(scope) if task.kind == "delegation")
+        return sum(self.cancel(did) for did in targets)
+
+    def cancel_agent(self, agent_name: str) -> set[str]:
+        """取消指定档案的运行中与排队委托，返回受影响的父会话。"""
+        if not agent_name:
+            return set()
+        targets = {
+            did: scope for did, (scope, name) in self._owners.items() if name == agent_name
+        }
+        targets.update({
+            did: str(info.get("scope", "")) for did, info in self._running.items()
+            if info.get("agent") == agent_name
+        })
+        return {scope for did, scope in targets.items() if self.cancel(did)}
 
     def _snapshot_item(self, did: str, info: Dict[str, Any], now: float) -> Dict[str, Any]:
         """运行快照条目构造（scope 过滤快照与全局快照共用）。"""
@@ -543,10 +564,32 @@ class DelegationManager:
         model_id = self._resolve_model(agent_name, difficulty)
         if facets is None:
             facets = self._resolve_facets(agent_name)
+        self._owners[delegation_id] = (scope, agent_name)
         # 父子登记：嵌套委托归属当前委托，取消时级联
         parent_id = current_delegation_id()
         if parent_id:
             self._children.setdefault(parent_id, set()).add(delegation_id)
+
+        async def finish_unstarted(result: SubAgentResult) -> SubAgentResult:
+            self._owners.pop(delegation_id, None)
+            self._cancel_marks.discard(delegation_id)
+            self._detach_child(parent_id, delegation_id)
+            if owns_registry_entry and registry is not None:
+                registry.complete(delegation_id, False, result.error, claimed=True)
+            if emit_events:
+                try:
+                    await event_bus.emit(EVENT_DELEGATION_RESOLVED, {
+                        "scope": scope, "chat_id": chat_id,
+                        "delegation_id": delegation_id, "goal": goal,
+                        "success": False, "error": result.error,
+                        "task_index": task_index, "cancelled": result.cancelled,
+                    })
+                except Exception:
+                    log("delegate 异常已忽略", "DEBUG")
+            return result
+
+        if delegation_id in self._cancel_marks:
+            return await finish_unstarted(_cancelled_result(goal, role=role, task_index=task_index))
 
         # 发射 started 事件（前端 DelegationCard 渲染）
         if emit_events:
@@ -565,14 +608,17 @@ class DelegationManager:
                     "agent": agent_name,
                     "ts": asyncio.get_running_loop().time(),
                 })
+            except asyncio.CancelledError:
+                await finish_unstarted(_cancelled_result(goal, role=role, task_index=task_index))
+                raise
             except Exception:
                 log("delegate 异常已忽略", "DEBUG")
 
-        # 等槽期间登记 pending：此阶段 cancel 仅打标记，获取槽位后先生效
-        self._pending.add(delegation_id)
+        acquire_task = asyncio.create_task(semaphore.acquire())
+        self._pending[delegation_id] = acquire_task
         try:
             try:
-                await asyncio.wait_for(semaphore.acquire(), timeout)
+                await asyncio.wait_for(acquire_task, timeout)
             except asyncio.TimeoutError:
                 log(f"委托并发槽获取超时（>{timeout:.0f}s）: {goal[:60]}", "WARNING", tag="委托")
                 fail_result = SubAgentResult(
@@ -580,35 +626,21 @@ class DelegationManager:
                     error=f"获取委托并发槽超时（>{timeout:.0f}s），子代理并发已满",
                     role=normalize_role(role), task_index=task_index,
                 )
-                if emit_events:
-                    try:
-                        await event_bus.emit(EVENT_DELEGATION_RESOLVED, {
-                            "scope": scope, "chat_id": chat_id,
-                            "delegation_id": delegation_id, "goal": goal,
-                            "success": False, "error": fail_result.error,
-                            "task_index": task_index,
-                        })
-                    except Exception:
-                        log("delegate 异常已忽略", "DEBUG")
-                self._detach_child(parent_id, delegation_id)
-                return fail_result
+                return await finish_unstarted(fail_result)
             except asyncio.CancelledError:
                 # 并发槽等待期间被取消（cancel 先于执行登记到达）
-                self._detach_child(parent_id, delegation_id)
-                if delegation_id in self._cancel_marks:
-                    self._cancel_marks.discard(delegation_id)
-                    return _cancelled_result(goal, role=role, task_index=task_index)
+                user_cancel = delegation_id in self._cancel_marks
+                cancelled_result = await finish_unstarted(_cancelled_result(goal, role=role, task_index=task_index))
+                if user_cancel:
+                    return cancelled_result
                 raise
         finally:
-            self._pending.discard(delegation_id)
+            self._pending.pop(delegation_id, None)
 
         # 等槽期间被标记取消：获取槽位后先生效，不进入执行
         if delegation_id in self._cancel_marks:
-            self._cancel_marks.discard(delegation_id)
             semaphore.release()
-            if parent_id:
-                self._detach_child(parent_id, delegation_id)
-            return _cancelled_result(goal, role=role, task_index=task_index)
+            return await finish_unstarted(_cancelled_result(goal, role=role, task_index=task_index))
 
         id_token = bind_delegation_id(delegation_id)
         # 日志 actor 归因：子代理执行树内的全部日志行（think_loop/LLM/工具）
@@ -624,6 +656,8 @@ class DelegationManager:
             parent_history = (
                 await self._load_parent_history(scope) if fork_context else ""
             )
+            if delegation_id in self._cancel_marks:
+                return await finish_unstarted(_cancelled_result(goal, role=role, task_index=task_index))
             agent = SubAgent(
                 self._mind, goal, context,
                 role=role, max_iterations=max_iterations, task_index=task_index,
@@ -724,6 +758,7 @@ class DelegationManager:
             reset_log_actor(actor_token)
             reset_delegation_id(id_token)
             self._usage.pop(delegation_id, None)
+            self._owners.pop(delegation_id, None)
             semaphore.release()
             if parent_id:
                 self._detach_child(parent_id, delegation_id)
@@ -960,9 +995,11 @@ class DelegationManager:
             name=f"delegation.{delegation_id}",
         )
         self._background_tasks[delegation_id] = task
+        self._owners[delegation_id] = (effective_scope, agent_name)
 
         def _bg_done(t: "asyncio.Task") -> None:
             self._background_tasks.pop(delegation_id, None)
+            self._owners.pop(delegation_id, None)
             if not t.cancelled():
                 _ = t.exception()  # 取回异常防 never-retrieved 告警
 

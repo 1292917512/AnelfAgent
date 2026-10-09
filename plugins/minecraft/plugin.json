@@ -1,0 +1,14 @@
+{
+  "name": "minecraft-companion",
+  "version": "0.1.0",
+  "description": "Minecraft Java 陪玩：复用 Mineflayer MCP 执行游戏操作，通过 Minecraft 频道聊天。",
+  "license": "MIT",
+  "skills": ["./skills"],
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Minecraft 陪玩",
+    "category": "games",
+    "capabilities": ["游戏聊天", "寻路跟随", "采集", "背包查询"],
+    "defaultPrompt": ["进入我的 Minecraft 世界并陪我玩", "跟着我，随时听我说停"]
+  }
+}

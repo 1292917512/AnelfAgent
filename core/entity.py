@@ -1142,10 +1142,14 @@ class EntityRegistry:
             tool_timeout = max(tool_timeout, inner_timeout + _INNER_TIMEOUT_MARGIN)
 
         call_id = uuid.uuid4().hex[:8]
+        from core.tool_context import request_trace
+
+        trace = request_trace()
         t0 = asyncio.get_running_loop().time()
 
         log(f"▶ 执行工具: {name}({arguments[:_LOG_ARGS_PREVIEW_LEN] if arguments else ''})", "DEBUG", tag="实体")
         await event_bus.emit(EVENT_TRACE_CALL_START, {
+            "request": trace,
             "call_id": call_id,
             "name": name,
             "group": entity.group,
@@ -1165,6 +1169,7 @@ class EntityRegistry:
             sync_note = "" if entity.is_async else "（同步工具底层线程将继续运行至自行结束）"
             log(f"工具执行超时 ({tool_timeout}s){sync_note}: {name}", "WARNING", tag="实体")
             await event_bus.emit(EVENT_TRACE_CALL_END, {
+                "request": trace,
                 "call_id": call_id,
                 "name": name,
                 "duration_ms": dur,
@@ -1187,6 +1192,7 @@ class EntityRegistry:
             dur = round((asyncio.get_running_loop().time() - t0) * 1000)
             log(f"工具执行异常: {name} - {exc}", "ERROR", tag="实体")
             await event_bus.emit(EVENT_TRACE_CALL_END, {
+                "request": trace,
                 "call_id": call_id,
                 "name": name,
                 "duration_ms": dur,
@@ -1200,6 +1206,7 @@ class EntityRegistry:
         result_str = _serialize_result(result)
         log(f"◀ 工具完成: {name} → {result_str[:_LOG_RESULT_PREVIEW_LEN]}", "DEBUG", tag="实体")
         await event_bus.emit(EVENT_TRACE_CALL_END, {
+            "request": trace,
             "call_id": call_id,
             "name": name,
             "duration_ms": dur,

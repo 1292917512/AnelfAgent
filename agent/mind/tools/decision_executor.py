@@ -525,13 +525,16 @@ def _coerce_base_id(base_id: str) -> Union[int, str]:
         return base_id
 
 
-def _build_target_message(scope: str) -> Everything:
+def _build_target_message(scope: str, *, trace_message_id: str = "") -> Everything:
     """按规范 scope 构造投递目标消息（uid/group_id 取 base id，携带频道与子会话）。"""
     scope_type, adapter, base_id, session_id = parse_entity_scope(scope)
     target_id = _coerce_base_id(base_id)
     if scope_type == "group":
-        return MessageAssistantGroup(group_id=target_id, adapter_key=adapter, session_id=session_id)
-    return MessageAssistant(uid=target_id, adapter_key=adapter, session_id=session_id)
+        message: Everything = MessageAssistantGroup(group_id=target_id, adapter_key=adapter, session_id=session_id)
+    else:
+        message = MessageAssistant(uid=target_id, adapter_key=adapter, session_id=session_id)
+    message._trace_message_id = trace_message_id
+    return message
 
 
 def routable_target(mind: Mind, target: str) -> Optional[Everything]:
@@ -552,9 +555,10 @@ def resolve_reply_target(mind: Mind, target: str) -> Optional[Everything]:
     scope = normalize_target_scope(mind, target)
     if not scope or scope in mind._active_scopes:
         return None
+    signal = mind.pfc.get_pending_signal(scope)
     if not mind.pfc.consume_scope_task(scope):
         return None
-    return _build_target_message(scope)
+    return _build_target_message(scope, trace_message_id=signal.message_id if signal else "")
 
 
 async def pop_next_reply_target(mind: Mind) -> Optional[Everything]:
@@ -575,6 +579,7 @@ async def pop_next_reply_target(mind: Mind) -> Optional[Everything]:
             mind.pfc.consume_scope_task(scope)
             continue
         # 按 scope 精确消费（含未读计数/预览清理），不依赖队首位置
+        signal = mind.pfc.get_pending_signal(scope)
         mind.pfc.consume_scope_task(scope)
-        return _build_target_message(scope)
+        return _build_target_message(scope, trace_message_id=signal.message_id if signal else "")
     return None
