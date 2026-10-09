@@ -121,6 +121,11 @@ norecursedirs = ["*.egg", ".*", "build", "dist", "venv", "node_modules", "fronte
 asyncio_mode = "auto"
 timeout = 120
 addopts = "--strict-markers"
+filterwarnings = [
+    "error::pytest.PytestUnhandledThreadExceptionWarning",
+    "error::pytest.PytestUnraisableExceptionWarning",
+    "error:.*was deleted before being closed.*:ResourceWarning",
+]
 markers = [
     "unit: 纯 mock/纯函数/tmp_path 的快速单元测试（tests/unit/ 与模块内 tests/ 下自动标记）",
     "integration: 真实应用组装或需外部服务/凭证（tests/integration/ 下自动标记）",

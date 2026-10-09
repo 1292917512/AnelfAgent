@@ -1,5 +1,8 @@
 """router 层冒烟测试：FastAPI 端点全链路（setup → unlock → CRUD → reveal → lock）。"""
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -22,7 +25,15 @@ def client(tmp_path, monkeypatch):
     svc = VaultService(str(tmp_path / "vault.sqlite3"))
     monkeypatch.setattr(svc_mod, "_service", svc)
     monkeypatch.setattr(router_mod, "get_vault_service", lambda: svc)
-    app = FastAPI()
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            await svc.close()
+
+    app = FastAPI(lifespan=lifespan)
     app.include_router(build_router(), prefix="/api/entity/vault")
     with TestClient(app) as test_client:
         yield test_client

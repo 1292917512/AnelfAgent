@@ -80,29 +80,36 @@ class VaultStore:
         return self._db_path
 
     async def initialize(self) -> None:
+        """初始化完整数据库后发布连接；失败或取消时关闭未就绪连接。"""
         async with self._init_lock:
             if self._db is not None:
                 return
             os.makedirs(os.path.dirname(self._db_path) or ".", exist_ok=True)
-            self._db = await aiosqlite.connect(self._db_path)
-            await self._db.execute("PRAGMA journal_mode=WAL")
-            await self._db.execute("PRAGMA synchronous=NORMAL")
-            await self._db.execute("PRAGMA busy_timeout=5000")
-            await self._db.executescript(_SCHEMA)
-            await self._db.commit()
+            db = await aiosqlite.connect(self._db_path)
+            try:
+                await db.execute("PRAGMA journal_mode=WAL")
+                await db.execute("PRAGMA synchronous=NORMAL")
+                await db.execute("PRAGMA busy_timeout=5000")
+                await db.executescript(_SCHEMA)
+                await db.commit()
+            except BaseException:
+                await db.close()
+                raise
             try:
                 os.chmod(self._db_path, 0o600)
             except OSError:
                 pass
+            self._db = db
 
     async def close(self) -> None:
-        if self._db is not None:
-            await self._db.close()
-            self._db = None
+        """与初始化互斥地关闭连接。"""
+        async with self._init_lock:
+            if self._db is not None:
+                await self._db.close()
+                self._db = None
 
     async def _conn(self) -> aiosqlite.Connection:
-        if self._db is None:
-            await self.initialize()
+        await self.initialize()
         assert self._db is not None
         return self._db
 

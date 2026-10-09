@@ -19,13 +19,18 @@ import sys
 import threading
 import traceback
 from pathlib import Path
+from typing import TYPE_CHECKING, AsyncIterator
 
 import pytest
+
+if TYPE_CHECKING:
+    from xdist.workermanage import WorkerController
 
 _REPO_ROOT = Path(__file__).parent
 _UNIT_DIR = _REPO_ROOT / "tests" / "unit"
 _INTEGRATION_DIR = _REPO_ROOT / "tests" / "integration"
 _MODULE_PARENTS = ("entities", "channels")
+_WORKER_THREAD_LEAKS = pytest.StashKey[list[str]]()
 
 
 @pytest.fixture(autouse=True)
@@ -126,6 +131,21 @@ async def _isolate_face_library(tmp_path, monkeypatch: pytest.MonkeyPatch):
     await lib.close()
 
 
+@pytest.fixture(autouse=True)
+async def _isolate_vault_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> AsyncIterator[None]:
+    """密码本单例使用临时存储，并在测试事件循环关闭前释放连接。"""
+    from entities.vault import service as vault_service_mod
+
+    service = vault_service_mod.VaultService(str(tmp_path / "vault.sqlite3"))
+    monkeypatch.setattr(vault_service_mod, "_service", service)
+    try:
+        yield
+    finally:
+        await service.close()
+
+
 def _is_module_test(path: Path) -> bool:
     """模块内测试判定：entities/channels 下任意层级的 tests/ 目录
     （含实体组件子包的内嵌套件，如 entities/<name>/modules/<mod>/tests/）。"""
@@ -178,15 +198,16 @@ def pytest_runtest_call(item: pytest.Item):
     return outcome
 
 
-def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    """报告退出时仍存活的非守护线程，并将泄漏线程转为守护放行退出。
+@pytest.hookimpl(optionalhook=True)
+def pytest_testnodedown(node: WorkerController, error: object) -> None:
+    """汇总并行测试进程退出时发现的线程泄漏。"""
+    leaks = getattr(node, "workeroutput", {}).get("thread_leaks", [])
+    node.config.stash.setdefault(_WORKER_THREAD_LEAKS, []).extend(leaks)
 
-    共享线程池与进程单例长驻连接（如 vault 的 aiosqlite）在生产由
-    Lifecycle 逆序收尾；测试进程没有该环节，测试期触发的惰性连接会以
-    非守护线程滞留、永久阻塞解释器退出（曾致合并跑"跑完退不出"）。
-    报告保留完整归因，随后把已泄漏线程标记为守护——进程可退出，
-    泄漏仍可见可修。
-    """
+
+@pytest.hookimpl(trylast=True)
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """报告泄漏线程并令测试失败，再尝试终止数据库工作线程以便进程退出。"""
     # 共享线程池（async_helper 等）是刻意的长生命周期设计，Lifecycle 已注册
     # 关闭钩子；会话收尾主动关闭并从泄漏报告中排除，避免误报与归因错乱。
     try:
@@ -201,6 +222,14 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         and not t.name.startswith("async_helper")
     ]
     if leaked:
+        if session.exitstatus == pytest.ExitCode.OK:
+            session.exitstatus = pytest.ExitCode.TESTS_FAILED
+        worker_output = getattr(session.config, "workeroutput", None)
+        if worker_output is not None:
+            worker_output["thread_leaks"] = [
+                f"{t.name}: {_thread_origins.get(t.ident or 0, '未知用例')}"
+                for t in leaked
+            ]
         print(f"\n[thread-leak] {len(leaked)} 个非守护线程仍存活：")
         frames = sys._current_frames()
         for t in leaked:
@@ -214,6 +243,11 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
                 stack = "".join(traceback.format_stack(frame, limit=5))
                 print(f"    当前栈顶:\n{stack}")
         _release_leaked_threads(leaked, frames)
+    worker_leaks = session.config.stash.get(_WORKER_THREAD_LEAKS, [])
+    if worker_leaks:
+        if session.exitstatus == pytest.ExitCode.OK:
+            session.exitstatus = pytest.ExitCode.TESTS_FAILED
+        print("\n[thread-leak] 并行测试进程泄漏线程：\n" + "\n".join(worker_leaks))
 
 
 def _release_leaked_threads(
