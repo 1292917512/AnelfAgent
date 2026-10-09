@@ -32,6 +32,7 @@ from agent.messages import build_entity_scope
 from core.entity import EntityMetadata, EntityRegistry
 from core.log import log
 from core.tool_context import register_control, tool_request
+from core.tracer import thinking_tracer
 from entities._sdk import call_mcp_server_tool
 
 from . import discovery as _discovery  # noqa: F401  导入即注册全局发现工具
@@ -308,6 +309,13 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             trigger_mind=addressed,
         )
         command = self._resolve_command(content)
+        if addressed and thinking_tracer.enabled:
+            async with thinking_tracer.span(
+                "Minecraft ingress", message_id=message.message_id, event_ts_ms=event.ts,
+                scope=build_entity_scope("user" if private else "group", "minecraft", channel.channel_id),
+                shortcut=command[0] if command else None,
+            ):
+                pass
         if addressed and command is not None:
             log(f"MC_COMMAND seq={event.seq} command={command[0]} received_at={time.time():.3f}", "DEBUG", tag="Minecraft")
             if enqueue_commands and command[0] not in {"stop", "stay", "pause"}:
@@ -401,7 +409,7 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
         """快捷指令及其后台动作共享请求归属，后续停止可使其失效。"""
         scope = build_entity_scope("user" if channel.channel_type == ChannelType.PRIVATE else "group",
                                    "minecraft", channel.channel_id)
-        with tool_request(scope, username):
+        with tool_request(scope, username, message_id=f"mc-{seq}" if seq is not None else ""):
             await self._execute_command(command, args, username, channel, seq)
 
     async def _execute_command(

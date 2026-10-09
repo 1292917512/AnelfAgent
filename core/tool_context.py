@@ -18,6 +18,7 @@ class ToolRequest:
     scope: str
     actor: str
     epochs: dict[str, int]
+    message_id: str = ""
 
 
 @dataclass
@@ -47,7 +48,7 @@ def register_control(server: str, world: str, barriers: frozenset[str]) -> None:
 
 
 @contextmanager
-def tool_request(scope: str = "", actor: str = "", *, inherit: bool = False) -> Iterator[ToolRequest]:
+def tool_request(scope: str = "", actor: str = "", *, inherit: bool = False, message_id: str = "") -> Iterator[ToolRequest]:
     """后台任务继承发起请求的代次，不能在停止后获取新代次继续旧任务。"""
     existing = _request.get()
     if inherit and existing is not None:
@@ -55,12 +56,20 @@ def tool_request(scope: str = "", actor: str = "", *, inherit: bool = False) -> 
         return
     with _lock:
         epochs = {name: state.epoch for name, state in _controls.items()}
-    origin = ToolRequest(uuid4().hex, scope, actor, epochs)
+    origin = ToolRequest(uuid4().hex, scope, actor, epochs, message_id)
     token = _request.set(origin)
     try:
         yield origin
     finally:
         _request.reset(token)
+
+
+def request_trace() -> dict[str, str]:
+    """只读诊断归属；不建立新请求、不推进代次、不包含消息正文。"""
+    origin = _request.get()
+    if origin is None:
+        return {}
+    return {"request_id": origin.request_id, "scope": origin.scope, "message_id": origin.message_id}
 
 
 def control_metadata(server: str, tool: str, delegation_id: str = "") -> dict[str, Any] | None:

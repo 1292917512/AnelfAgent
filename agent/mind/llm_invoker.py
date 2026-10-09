@@ -190,8 +190,12 @@ async def _invoke_llm_unified(
             log(f"  [{_role}] tool_calls={len(_tc) if _tc else 0} tool_call_id={_tcid!r}", "WARNING", tag="思维")
 
     log(f"调用 LLM: {model_name} msgs={len(messages)}", tag="思维")
+    from core.tool_context import request_trace
+
     tool_names = [t.get("function", {}).get("name", "") for t in (tools or [])]
+    trace = {"request": request_trace(), "message_count": len(messages), "tool_count": len(tool_names)}
     await event_bus.emit(EVENT_THINKING_LLM_START, {
+        **trace,
         "model": model_name,
         "message_count": len(messages),
         "tool_count": len(tools) if tools else 0,
@@ -234,6 +238,7 @@ async def _invoke_llm_unified(
     except Exception as exc:
         # 关闭链路中的 LLM 节点，避免一直停留在执行中
         await event_bus.emit(EVENT_THINKING_LLM_END, {
+            **trace,
             "model": model_name,
             "duration_ms": round((time.time() - t0) * 1000),
             "error": str(exc),
@@ -261,6 +266,8 @@ async def _invoke_llm_unified(
     max_ctx = 0
     if result.usage:
         usage_data = {
+            "total_input_tokens": result.usage.total_input_tokens,
+            "cache_observable": result.usage.cache_observable,
             "prompt_tokens": result.usage.prompt_tokens,
             "completion_tokens": result.usage.completion_tokens,
             "total_tokens": result.usage.total_tokens,
@@ -301,6 +308,7 @@ async def _invoke_llm_unified(
         if occupancy > 0:
             usage_percent = round(occupancy / max_ctx * 100, 1)
     payload: Dict[str, Any] = {
+        **trace,
         "model": result.model or model_name,
         "duration_ms": round(elapsed_ms),
         # TTFT（流式路径）：排队/首 token 延迟，与 duration_ms（总时长）

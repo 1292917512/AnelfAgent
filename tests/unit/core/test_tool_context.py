@@ -65,3 +65,19 @@ def test_retry_retains_identity_but_refreshes_revocation_floor() -> None:
     retry = context.refresh_control_metadata("mc", before)["anelf/action"]
     assert retry["epoch"] == 0 and retry["floor"] == 1
     assert retry["requestId"] == before["anelf/action"]["requestId"]
+
+
+async def test_trace_identity_is_inherited_without_changing_control_epochs() -> None:
+    assert context.request_trace() == {}
+
+    async def child() -> dict[str, str]:
+        with context.tool_request("reflect", inherit=True, message_id="ignored"):
+            return context.request_trace()
+
+    with context.tool_request("group_minecraft:world", "Alice", message_id="mc-42") as origin:
+        trace = await asyncio.create_task(child())
+        assert trace == {"request_id": origin.request_id, "scope": origin.scope, "message_id": "mc-42"}
+        trace["message_id"] = "changed-copy"
+        assert context.request_trace()["message_id"] == "mc-42"
+        assert context.control_metadata("mc", "dig")["anelf/action"]["epoch"] == 0
+    assert context.request_trace() == {}

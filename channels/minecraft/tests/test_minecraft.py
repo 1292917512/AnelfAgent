@@ -29,6 +29,29 @@ def chat_event(seq: int, message: str, *, username: str = "Alice", kind: str = "
     return GameEvent(seq=seq, ts=1000, type=kind, data={"username": username, "message": message})
 
 
+async def test_ingress_trace_links_game_time_and_message_without_content(
+    channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from core.tracer import Tracer
+
+    tracer = Tracer()
+    tracer.set_enabled(True)
+    queue = tracer.subscribe()
+    monkeypatch.setattr("channels.minecraft.adapter.thinking_tracer", tracer)
+    inbound = AsyncMock()
+    monkeypatch.setattr(channel, "on_message", inbound)
+    try:
+        await channel._dispatch_event(chat_event(42, "inventory request"))
+        node = tracer.get_system_nodes()[0]
+        assert node["data"]["message_id"] == inbound.await_args.args[0].message_id == "mc-42"
+        assert node["data"]["event_ts_ms"] == 1000
+        assert node["data"]["scope"] == "group_minecraft:local"
+        assert "inventory request" not in str(node)
+    finally:
+        tracer.unsubscribe(queue)
+        tracer.set_enabled(False)
+
+
 @pytest.mark.parametrize("message,tool", [("!pause", "pause_action"), ("暂停一下", "pause_action"), ("!resume", "resume_action")])
 async def test_pause_resume_bypass_model(channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch, message: str, tool: str) -> None:
     call = AsyncMock(return_value={"ok": True, "supported": True, "active": False})

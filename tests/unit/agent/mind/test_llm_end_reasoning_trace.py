@@ -12,6 +12,7 @@ from agent.llm.llm_client import LLMClient
 from agent.llm.types import ChatResult, UsageInfo
 from agent.mind.llm_invoker import _REASONING_TRACE_MAX, _invoke_llm_unified
 from core.event_bus import EVENT_THINKING_LLM_END, event_bus
+from core.tool_context import tool_request
 
 
 def _result(reasoning: str) -> ChatResult:
@@ -58,6 +59,19 @@ async def _capture(result: ChatResult) -> dict:
 
 
 class TestReasoningTracePayload:
+    async def test_request_and_cache_accounting_survive_end_payload(self):
+        result = _result("")
+        result.usage = UsageInfo(prompt_tokens=5, cache_read_input_tokens=7,
+                                 prompt_includes_cache=False, cache_observable=False)
+        with tool_request("group_minecraft:bench", message_id="mc-17") as origin:
+            payload = await _capture(result)
+        assert payload["request"]["request_id"] == origin.request_id
+        assert payload["request"]["message_id"] == "mc-17"
+        assert payload["usage"]["total_input_tokens"] == 12
+        assert payload["usage"]["cache_observable"] is False
+        assert payload["tool_count"] == 0
+        assert payload["message_count"] > 0
+
     async def test_full_reasoning_included_when_short(self):
         payload = await _capture(_result("短思考"))
         assert payload["reasoning_content"] == "短思考"
