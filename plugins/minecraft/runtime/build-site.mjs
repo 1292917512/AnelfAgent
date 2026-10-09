@@ -108,7 +108,7 @@ export function findBuildSite (bot, center, radius = 24, footprint = FOOTPRINT, 
     }
   }
   candidates.sort((a, b) => a.score - b.score)
-  const best = candidates[0]
+  const best = candidates.find(candidate => reachableBuildSite(bot, candidate.home))
   if (!best) return { ok: false, reason: 'NO_SAFE_BUILD_SITE', searchRadius: radius, footprint, maxFillDepth }
   return {
     ok: true,
@@ -129,6 +129,31 @@ export { inspectSite as inspectBuildSite }
 /** @param {{delta:number}[]} columns @param {number} homeY */
 function totalDelta (columns, homeY) {
   return columns.reduce((sum, column) => sum + Math.abs(column.delta), 0) / Math.max(1, columns.length)
+}
+
+/** @param {import('mineflayer').Bot} bot @param {Coord} home */
+function reachableBuildSite (bot, home) {
+  const pathfinder = bot.pathfinder
+  const position = bot.entity?.position
+  if (!pathfinder || typeof pathfinder.getPathTo !== 'function' || !pathfinder.movements || !position) return true
+  const anchors = [
+    { x: home.x + 3, y: home.y, z: home.z - 2 },
+    { x: home.x + 3, y: home.y, z: home.z + FOOTPRINT + 1 },
+    { x: home.x - 2, y: home.y, z: home.z + 3 },
+    { x: home.x + FOOTPRINT + 1, y: home.y, z: home.z + 3 },
+  ]
+  for (const anchor of anchors) {
+    if (Math.hypot(anchor.x - position.x, anchor.z - position.z) <= 3 && Math.abs(anchor.y - position.y) <= 2) return true
+    try {
+      const result = pathfinder.getPathTo(
+        pathfinder.movements,
+        new goals.GoalNear(anchor.x, anchor.y, anchor.z, 2),
+        500,
+      )
+      if (result?.status === 'success' && (result.path?.length ?? 0) > 0) return true
+    } catch { /* an unavailable pathfinder is handled by the action phase */ }
+  }
+  return false
 }
 
 /** @param {import('mineflayer').Bot} bot @param {number} needed */

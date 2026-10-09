@@ -52,6 +52,22 @@ test('find_build_site rejects non-plains ground even when it is flat', async () 
   assert.equal(result.reason, 'NO_SAFE_BUILD_SITE')
 })
 
+test('find_build_site skips the nearest candidate when the house perimeter is unreachable', async () => {
+  const { findBuildSite } = await load('tools/anelf-build-site.mjs')
+  const bot = flatBot(64)
+  bot.pathfinder = {
+    movements: {},
+    getPathTo (_movements, goal) {
+      return goal.x < -5 || goal.z < -5
+        ? { status: 'success', path: [{ x: goal.x, y: goal.y, z: goal.z }] }
+        : { status: 'partial', path: [] }
+    },
+  }
+  const result = findBuildSite(bot, { x: 0, y: 65, z: 0 }, 8, 7, 0)
+  assert.equal(result.ok, true)
+  assert.notDeepEqual({ x: result.home.x, z: result.home.z }, { x: 0, z: 0 })
+})
+
 test('prepare_build_site levels shallow high and low columns before construction', async () => {
   const { prepareBuildSite } = await load('tools/anelf-build-site.mjs')
   const blocks = new Map()
