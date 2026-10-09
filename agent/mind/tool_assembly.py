@@ -173,8 +173,8 @@ class ToolAssembly:
         """清除当轮动态工具状态（tag 激活 + 动态发现）。
 
         scope 非空时仅清除该 scope 相关的状态（后台评审等并行会话不踩踏主会话）。
-        当前实现：动态工具是全局共享的（tag/discovered 不按 scope 分桶），
-        因此仅在 scope 为空时执行全量清理；调用方应在 active_scopes 清空后再清。
+        指定 scope 只清除其独立发现记录，不动普通目录的全局 tag/discovered；
+        scope 为空时执行全量清理，调用方应在 active_scopes 清空后再清。
 
         粘性模式（tool_dynamic_sticky，默认开）：保留 tag 激活与动态发现——
         它们是消息内容驱动的（如图片到达激活媒体工具），清掉会导致下个会话
@@ -182,14 +182,16 @@ class ToolAssembly:
         任何字节变化都会击穿其后的全部前缀缓存（实测单次重写 ~30K tokens）。
         进程生命周期内工具集只增不减 + 确定性排序 = 跨会话字节稳定。
         """
-        if scope:
-            # 非主会话（如后台评审 reflect）：不清理全局动态工具，避免踩踏正在进行的对话
-            return
         from core.config import get_config_bool
         if get_config_bool("tool_dynamic_sticky", True):
             return
+        if scope:
+            if self._scope_discovered_tools.pop(scope, None):
+                self._tools_version += 1
+            return
         self._tag_activated_tools.clear()
         self._discovered_tools.clear()
+        self._scope_discovered_tools.clear()
         self._tools_version += 1
 
     # ==================================================================

@@ -27,6 +27,17 @@ def _assembly_ta() -> ToolAssembly:
 
 
 class TestAppendOnlyFreeze:
+    def test_nonsticky_cleanup_only_clears_requested_scope(self, monkeypatch) -> None:
+        monkeypatch.setattr("core.config.get_config_bool", lambda key, default=True: False)
+        ta = ToolAssembly()
+        ta._scope_discovered_tools = {"game": {"a"}, "other": {"b"}}
+        ta._discovered_tools.add("global")
+        ta.clear_dynamic_tools("game")
+        assert ta._scope_discovered_tools == {"other": {"b"}}
+        assert ta._discovered_tools == {"global"}
+        ta.clear_dynamic_tools()
+        assert not ta._scope_discovered_tools and not ta._discovered_tools
+
     def test_first_round_establishes_two_bucket_order(self) -> None:
         """首轮按双桶排序键建立冻结序（共享核心在前，作用域工具沉尾）。"""
         ta = _assembly_ta()
