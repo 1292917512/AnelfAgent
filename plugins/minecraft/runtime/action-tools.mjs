@@ -11,6 +11,7 @@ import { workbenchPlacementHints } from './anelf-placement-hints.mjs'
 import { registerProduction } from './anelf-production-tools.mjs'
 import { registerSupplies } from './anelf-supply-tools.mjs'
 import { registerGathering } from './anelf-gather-tools.mjs'
+import { registerBuildSite } from './anelf-build-site.mjs'
 
 /** @typedef {import('../context.js').ToolContext} Context */
 /** @typedef {import('./registry.js').Registrar} Registrar */
@@ -40,6 +41,7 @@ export function registerActions (reg) {
   registerProduction(reg)
   registerSupplies(reg)
   registerGathering(reg)
+  registerBuildSite(reg)
   reg({ name: 'configure_survival', group: 'state', inputSchema: {
     enabled: z.boolean(), intervalMs: z.number().int().min(100).max(10000).default(250),
   }, description: 'Configure local survival observations; health/death/breath events are immediate. Does not resume stopped or paused work. Normal companion settings are synchronized by the Minecraft channel.',

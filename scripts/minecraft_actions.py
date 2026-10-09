@@ -86,6 +86,7 @@ _MODULES = {
     "supply-plan.mjs": "tools/anelf-supply-plan.mjs",
     "supply-task.mjs": "tools/anelf-supply-task.mjs",
     "supply-tools.mjs": "tools/anelf-supply-tools.mjs",
+    "build-site.mjs": "tools/anelf-build-site.mjs",
 }
 
 

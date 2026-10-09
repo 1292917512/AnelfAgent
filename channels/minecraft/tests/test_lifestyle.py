@@ -56,6 +56,9 @@ async def test_lifestyle_waits_for_idle_and_runs_one_reflection(monkeypatch: pyt
     assert "first search for logs within 8 blocks" in content
     assert "If get_path_to or goto returns NO_PATH" in content
     assert "reference is the existing support block, not the target" in content
+    assert "find_build_site" in content
+    assert "prepare_build_site" in content
+    assert "Never invent home coordinates" in content
 
 
 @pytest.mark.asyncio

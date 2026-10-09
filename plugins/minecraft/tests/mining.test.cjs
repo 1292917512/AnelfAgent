@@ -392,9 +392,13 @@ test('actual MCP server registers mining schemas and completes a protocol handsh
     await server.connect(remote)
     await client.connect(local)
     const { tools } = await client.listTools()
-    for (const name of ['mine_resources', 'mining_status', 'resume_mining', 'return_from_mine', 'pause_action', 'resume_action', 'action_status', 'get_runtime_metrics', 'configure_survival', 'get_survival_status']) {
+    for (const name of ['mine_resources', 'mining_status', 'resume_mining', 'return_from_mine', 'pause_action', 'resume_action', 'action_status', 'get_runtime_metrics', 'configure_survival', 'get_survival_status', 'find_build_site', 'prepare_build_site']) {
       assert.ok(tools.some(t => t.name === name), name)
     }
+    const siteSchema = tools.find(t => t.name === 'find_build_site').inputSchema
+    assert.deepEqual(Object.keys(siteSchema.properties), ['searchRadius', 'footprint', 'maxFillDepth'])
+    const prepareSchema = tools.find(t => t.name === 'prepare_build_site').inputSchema
+    assert.deepEqual(Object.keys(prepareSchema.properties), ['home', 'footprint', 'maxFillDepth'])
     const schema = tools.find(t => t.name === 'mine_resources').inputSchema
     assert.deepEqual(Object.keys(schema.properties), ['direction', 'depth', 'minY', 'length', 'item', 'count', 'extend'])
     const status = await client.callTool({ name: 'get_connection_status', arguments: {} })
