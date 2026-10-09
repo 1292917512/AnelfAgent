@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import os
 import tempfile
+from pathlib import Path
 
+import aiosqlite
 import pytest
 
 import entities.audiosync.watcher as watcher_mod
@@ -279,6 +281,40 @@ class TestTrigger:
         await watcher.close()
         assert watcher._manual_task is None
         assert task is not None and task.cancelled()
+
+    async def test_close_during_database_initialization_releases_connection(
+        self, store: AudioStore, watch_dir: Path, mock_pipeline: dict[str, object],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        schema_started = asyncio.Event()
+        finish_schema = asyncio.Event()
+        connections: list[aiosqlite.Connection] = []
+        sync_schema = store._sync_schema
+
+        async def delayed_schema(db: aiosqlite.Connection) -> None:
+            connections.append(db)
+            schema_started.set()
+            await finish_schema.wait()
+            await sync_schema(db)
+
+        monkeypatch.setattr(store, "_sync_schema", delayed_schema)
+        _write(os.path.join(str(watch_dir), "a.wav"))
+        watcher = AudioSyncWatcher()
+        try:
+            await watcher.trigger(wait_seconds=0)
+            await asyncio.wait_for(schema_started.wait(), timeout=5)
+            await watcher.close()
+            with pytest.raises(ValueError):
+                await connections[0].execute("SELECT 1")
+            finish_schema.set()
+            result = await watcher.sync_now()
+            assert result["ingested"] == 1
+        finally:
+            finish_schema.set()
+            await watcher.close()
+            await store.close()
+            for connection in connections:
+                await connection.close()
 
 
 class TestExcludeRules:

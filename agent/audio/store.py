@@ -309,21 +309,23 @@ class AudioStore:
     # ------------------------------------------------------------------
 
     async def _get_db(self) -> aiosqlite.Connection:
-        existing = self._db
-        if existing is not None:
-            return existing
+        """获取就绪连接，初始化中断时释放连接。"""
         async with self._lock:
             if self._db is None:
                 os.makedirs(os.path.dirname(os.path.abspath(self._db_path)), exist_ok=True)
                 db = await aiosqlite.connect(self._db_path)
-                db.row_factory = aiosqlite.Row
-                await db.execute("PRAGMA journal_mode=WAL;")
-                await db.execute("PRAGMA synchronous=NORMAL;")
-                await db.execute("PRAGMA busy_timeout=5000;")
-                self._vec_available = await self._load_vec_extension(db)
-                await self._sync_schema(db)
-                await self._init_fts(db)
-                await db.commit()
+                try:
+                    db.row_factory = aiosqlite.Row
+                    await db.execute("PRAGMA journal_mode=WAL;")
+                    await db.execute("PRAGMA synchronous=NORMAL;")
+                    await db.execute("PRAGMA busy_timeout=5000;")
+                    self._vec_available = await self._load_vec_extension(db)
+                    await self._sync_schema(db)
+                    await self._init_fts(db)
+                    await db.commit()
+                except BaseException:
+                    await db.close()
+                    raise
                 self._db = db
                 log(f"AudioStore 就绪: {self._db_path} "
                     f"(vec={self._vec_available}, fts={self.fts_available})", tag=_LOG_TAG)
@@ -385,9 +387,11 @@ class AudioStore:
             self.fts_available = False
 
     async def close(self) -> None:
-        if self._db is not None:
-            await self._db.close()
-            self._db = None
+        """与初始化互斥地关闭连接。"""
+        async with self._lock:
+            if self._db is not None:
+                await self._db.close()
+                self._db = None
 
     async def initialize(self) -> None:
         """启动时建库建表（幂等）。"""
