@@ -13,6 +13,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "pretypecheck": "node scripts/module-links.mjs",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.tools.json --noEmit"
   },
   "dependencies": {

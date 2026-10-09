@@ -143,20 +143,26 @@ class TestFeelImmediateAccept:
         assert assistant._queue.qsize() == 1
         await assistant.stop()
 
-    async def test_feel_drops_message_on_accept_failure(self) -> None:
-        """感知失败的消息不入队（与旧批量路径的失败语义一致）。"""
+    async def test_feel_reports_accept_failure_without_enqueuing(self) -> None:
+        """感知重试仍失败时向调用方传播异常，且不入队触发思考。"""
         from agent.runtime.assistant import AgentAssistant
 
         class _FailingMind(_RecordingMind):
             async def accept_feel(self, anything) -> None:
+                await super().accept_feel(anything)
                 raise RuntimeError("db down")
 
-        assistant = AgentAssistant(_FailingMind(), heartbeat_enabled=False)  # type: ignore[arg-type]
+        mind = _FailingMind()
+        assistant = AgentAssistant(mind, heartbeat_enabled=False)  # type: ignore[arg-type]
         msg = MessageUser(uid=1)
         msg.set_text_content("你好")
-        await assistant.feel(msg)
-        assert assistant._queue.qsize() == 0
-        await assistant.stop()
+        try:
+            with pytest.raises(RuntimeError, match="db down"):
+                await assistant.feel(msg)
+            assert mind.calls == ["accept_feel", "accept_feel"]
+            assert assistant._queue.empty()
+        finally:
+            await assistant.stop()
 
 
 # ------------------------------------------------------------------

@@ -732,7 +732,7 @@ class TestSpeakArbitration:
         try:
             await engine.speak_to_scope("user_webui:u1", "第一条消息")
             await engine.speak_to_scope("user_webui:u1", "第二条消息")
-            await _wait_for(lambda: session_lane_idle(engine, "c-s2"))
+            await _wait_for(lambda: session_playback_idle(engine, "c-s2"))
             dones = [p for name, p in sink.events if name == "audio_done"
                      and not p.get("interrupted")]
             assert len(dones) == 2  # 各自完整收束一次
@@ -755,7 +755,7 @@ class TestSpeakArbitration:
             assert out["spoken"] is False and out["reason"] == "reply-stream"
             assert session.lane.active is not None and session.lane.active.source == "reply"
             await engine._on_after_reply({"scope": "user_webui:u1", "turn_id": "t1"})
-            await _wait_for(lambda: session_lane_idle(engine, "c-d1"))
+            await _wait_for(lambda: session_playback_idle(engine, "c-d1"))
             # 只有回复流的一次自然收束——没有第二条 TTS 播报
             dones = [p for name, p in sink.events if name == "audio_done"
                      and not p.get("interrupted")]
@@ -774,7 +774,7 @@ class TestSpeakArbitration:
             out = await engine.speak_to_scope("user_webui:u1", "提醒：晚饭订好了")
             assert out["spoken"] is True
             await engine._on_after_reply({"scope": "user_webui:u1", "turn_id": "t1"})
-            await _wait_for(lambda: session_lane_idle(engine, "c-d2"))
+            await _wait_for(lambda: session_playback_idle(engine, "c-d2"))
             dones = [p for name, p in sink.events if name == "audio_done"
                      and not p.get("interrupted")]
             assert len(dones) == 2  # 回复 + 主动消息各播一次
@@ -790,10 +790,10 @@ class TestSpeakArbitration:
             await engine.user_turn(session, "今天天气怎么样")
             await engine._on_delta({"scope": "user_webui:u1", "delta": "今天晴", "turn_id": "t1"})
             await engine._on_after_reply({"scope": "user_webui:u1", "turn_id": "t1"})
-            await _wait_for(lambda: session_lane_idle(engine, "c-d3"))
+            await _wait_for(lambda: session_playback_idle(engine, "c-d3"))
             out = await engine.speak_to_scope("user_webui:u1", "今天晴")
             assert out["spoken"] is True
-            await _wait_for(lambda: session_lane_idle(engine, "c-d3"))
+            await _wait_for(lambda: session_playback_idle(engine, "c-d3"))
             dones = [p for name, p in sink.events if name == "audio_done"
                      and not p.get("interrupted")]
             assert len(dones) == 2
@@ -819,7 +819,7 @@ class TestSpeakArbitration:
             # 宽限期内新一轮增量到达 → 并入/重开语音流，宽限任务取消
             await engine._on_delta({"scope": "user_webui:u1", "delta": "答二", "turn_id": "t2"})
             await engine._on_after_reply({"scope": "user_webui:u1", "turn_id": "t2"})
-            await _wait_for(lambda: session_lane_idle(engine, "c-s3"))
+            await _wait_for(lambda: session_playback_idle(engine, "c-s3"))
             dones = [p for name, p in sink.events if name == "audio_done"
                      and not p.get("interrupted")]
             assert len(dones) >= 1
@@ -865,9 +865,15 @@ class TestSpeakArbitration:
             await engine.stop("c-s5")
 
 
-def session_lane_idle(engine: RealtimeEngine, owner: str) -> bool:
+def session_playback_idle(engine: RealtimeEngine, owner: str) -> bool:
+    """播报生产已结束，且下行收束帧已发送。"""
     session = engine._sessions.get(owner)
-    return session is not None and session.lane.active is None
+    return (
+        session is not None
+        and session.lane.active is None
+        and session.playback.pending_finals == 0
+        and session.state is SessionState.LISTENING
+    )
 
 
 class TestSessionReattach:
