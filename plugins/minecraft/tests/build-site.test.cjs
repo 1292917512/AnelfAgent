@@ -95,3 +95,20 @@ test('prepare_build_site levels shallow high and low columns before construction
     }
   }
 })
+
+test('build_starter_cabin refuses to start a phase when structural planks are missing', async () => {
+  const { buildStarterCabin } = await load('tools/anelf-build-site.mjs')
+  const bot = {
+    inventory: { items: () => [{ name: 'oak_planks', count: 1, type: 1 }] },
+    blockAt: position => position.y === 64
+      ? { name: 'dirt', boundingBox: 'block', position }
+      : { name: 'air', boundingBox: 'empty', position },
+    pathfinder: { goto: async () => {}, stop: () => {} },
+    stopDigging: () => {},
+  }
+  await assert.rejects(
+    buildStarterCabin({ locks: { begin: () => ({ signal: { aborted: false }, release: () => {} }) } }, bot,
+      { x: 0, y: 65, z: 0 }, 'walls'),
+    /BUILD_MISSING_MATERIALS|needs 70 oak_planks/,
+  )
+})

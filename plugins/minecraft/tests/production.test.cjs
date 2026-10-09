@@ -58,6 +58,15 @@ test('recipe alternatives preserve scarce planks while selecting an available ta
   assert.equal(plan.steps.filter(step => step.kind === 'craft').length, 2)
 })
 
+test('building plank preparation accepts a larger bounded output and uses carried logs', async () => {
+  const { planProduction } = await load('tools/anelf-production-plan.mjs')
+  const bot = inventoryBot([['oak_log', 30]])
+  const plan = planProduction(bot, 'oak_planks', 120, 'ensure', false)
+  assert.equal(plan.item, 'oak_planks')
+  assert.equal(plan.steps.at(-1).item, 'oak_planks')
+  assert.equal(plan.steps.at(-1).operations, 30)
+})
+
 test('ensure, additional crafting and recipe output batches have distinct quantities', async () => {
   const { planProduction } = await load('tools/anelf-production-plan.mjs')
   const existing = inventoryBot([['wooden_pickaxe', 1]])

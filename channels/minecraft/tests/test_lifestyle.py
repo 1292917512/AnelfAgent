@@ -60,6 +60,8 @@ async def test_lifestyle_waits_for_idle_and_runs_one_reflection(monkeypatch: pyt
     assert "prepare_build_site" in content
     assert "Never invent home coordinates" in content
     assert "including walls, roof, and interior" in content
+    assert "build_starter_cabin" in content
+    assert "never accepts dirt as structural material" in content
 
 
 @pytest.mark.asyncio

@@ -16,6 +16,9 @@ const coord = z.object({ x: z.number().int(), y: z.number().int(), z: z.number()
 const PREFERRED = new Set(['grass_block', 'dirt', 'coarse_dirt', 'podzol', 'mycelium'])
 const ACCEPTABLE = new Set([...PREFERRED, 'stone', 'cobblestone', 'deepslate'])
 const LIQUID = new Set(['water', 'lava'])
+const STRUCTURAL_PLANKS = ['oak_planks', 'birch_planks', 'spruce_planks', 'jungle_planks',
+  'acacia_planks', 'dark_oak_planks', 'cherry_planks', 'mangrove_planks']
+const REPLACEABLE_TEMPLATE_BLOCKS = new Set(['air', 'dirt', 'grass_block', 'coarse_dirt', 'podzol', 'mycelium'])
 const FOOTPRINT = 7
 const SCAN_UP = 8
 const SCAN_DOWN = 24
@@ -190,6 +193,102 @@ async function prepare (ctx, bot, home, footprint, maxFillDepth) {
 
 export { prepare as prepareBuildSite }
 
+/** @param {Coord} home @param {'foundation'|'walls'|'roof'} phase */
+function templateTargets (home, phase) {
+  const out = []
+  const unique = () => Array.from(new Map(out.map(target => [`${target.x},${target.y},${target.z}`, target])).values())
+  const minX = home.x; const maxX = home.x + FOOTPRINT - 1
+  const minZ = home.z; const maxZ = home.z + FOOTPRINT - 1
+  if (phase === 'foundation') {
+    for (let x = minX; x <= maxX; x++) for (let z = minZ; z <= maxZ; z++) out.push({ x, y: home.y, z })
+    return unique()
+  }
+  if (phase === 'walls') {
+    for (let y = home.y + 1; y <= home.y + 3; y++) {
+      for (let x = minX; x <= maxX; x++) for (const z of [minZ, maxZ]) {
+        if (z === maxZ && x === home.x + 3 && y <= home.y + 2) continue
+        out.push({ x, y, z })
+      }
+      for (let z = minZ + 1; z < maxZ; z++) for (const x of [minX, maxX]) out.push({ x, y, z })
+    }
+    return unique()
+  }
+  for (let layer = 0; layer <= Math.floor(FOOTPRINT / 2); layer++) {
+    const left = minX + layer; const right = maxX - layer
+    const north = minZ + layer; const south = maxZ - layer
+    for (let x = left; x <= right; x++) for (const z of [north, south]) out.push({ x, y: home.y + 4, z })
+    for (let z = north + 1; z < south; z++) for (const x of [left, right]) out.push({ x, y: home.y + 4, z })
+  }
+  return unique()
+}
+
+/** @param {import('mineflayer').Bot} bot @param {string} name */
+function inventoryCount (bot, name) {
+  return bot.inventory.items().filter(item => item.name === name).reduce((sum, item) => sum + item.count, 0)
+}
+
+/** @param {import('mineflayer').Bot} bot @param {number} needed */
+function chooseTemplateMaterial (bot, needed) {
+  const available = Object.fromEntries(STRUCTURAL_PLANKS.map(name => [name, inventoryCount(bot, name)]).filter(([, count]) => count))
+  for (const name of STRUCTURAL_PLANKS) {
+    const count = inventoryCount(bot, name)
+    if (count >= needed) return { name, count, available }
+  }
+  return { name: 'oak_planks', count: inventoryCount(bot, 'oak_planks'), available }
+}
+
+/** @param {import('../context.js').Context} ctx @param {import('mineflayer').Bot} bot @param {Coord} home @param {'foundation'|'walls'|'roof'} phase */
+async function buildTemplate (ctx, bot, home, phase) {
+  const targets = templateTargets(home, phase)
+  const material = chooseTemplateMaterial(bot, targets.length)
+  const missing = targets.filter(target => bot.blockAt(new Vec3(target.x, target.y, target.z))?.name !== material.name)
+  if (material.count < missing.length) {
+    throw new ToolError('BUILD_MISSING_MATERIALS', `starter_cabin_v1 ${phase} needs ${missing.length} ${material.name}; available ${material.count}.`,
+      [`Prepare ${missing.length} ${material.name} before construction. Dirt is never accepted as a structural material.`, JSON.stringify(material.available ?? {})])
+  }
+  const handle = ctx.locks.begin('build_template', () => {
+    try { bot.pathfinder.stop(); bot.stopDigging() } catch { /* cleanup is best effort */ }
+  })
+  let placed = 0; let replaced = 0
+  try {
+    for (const target of targets) {
+      if (handle.signal.aborted) throw new ToolError('CANCELLED', 'Template construction was cancelled.')
+      let block = bot.blockAt(new Vec3(target.x, target.y, target.z))
+      if (block?.name === material.name) continue
+      if (block && !REPLACEABLE_TEMPLATE_BLOCKS.has(block.name)) {
+        throw new ToolError('BUILD_TEMPLATE_OCCUPIED', `Template cell ${target.x},${target.y},${target.z} contains ${block.name}; refusing to overwrite it.`)
+      }
+      if (block && block.name !== 'air') {
+        await bot.pathfinder.goto(new goals.GoalNear(target.x, target.y, target.z, 3))
+        await withTimeout(bot.dig(block), DEFAULT_ACTION_TIMEOUT_MS, 'template cleanup')
+        replaced++
+      }
+      const faces = [[0, -1, 0], [0, 1, 0], [-1, 0, 0], [1, 0, 0], [0, 0, -1], [0, 0, 1]]
+      let reference = null; let face = null
+      for (const [dx, dy, dz] of faces) {
+        const candidate = bot.blockAt(new Vec3(target.x + dx, target.y + dy, target.z + dz))
+        if (solid(candidate)) { reference = candidate; face = new Vec3(-dx, -dy, -dz); break }
+      }
+      if (!reference || !face) throw new ToolError('BUILD_TEMPLATE_NO_SUPPORT', `No solid support for ${target.x},${target.y},${target.z}. Prepare the site first.`)
+      await bot.pathfinder.goto(new goals.GoalNear(target.x, target.y, target.z, 3))
+      block = bot.blockAt(new Vec3(target.x, target.y, target.z))
+      if (!air(block)) throw new ToolError('BUILD_TEMPLATE_OCCUPIED', `Template cell ${target.x},${target.y},${target.z} became occupied.`)
+      const item = bot.inventory.items().find(entry => entry.name === material.name)
+      if (!item) throw new ToolError('BUILD_MISSING_MATERIALS', `Ran out of ${material.name} while building ${phase}.`)
+      await bot.equip(item.type, 'hand')
+      await withTimeout(bot.placeBlock(reference, face), DEFAULT_ACTION_TIMEOUT_MS, 'template placement')
+      const placedBlock = bot.blockAt(new Vec3(target.x, target.y, target.z))
+      if (placedBlock?.name !== material.name) throw new ToolError('BUILD_TEMPLATE_VERIFY_FAILED', `Placement at ${target.x},${target.y},${target.z} was not confirmed.`)
+      placed++
+    }
+    return { ok: true, template: 'starter_cabin_v1', phase, material: material.name, placed, replaced, verified: true }
+  } finally {
+    handle.release()
+  }
+}
+
+export { buildTemplate as buildStarterCabin }
+
 /** @param {Registrar} reg */
 export function registerBuildSite (reg) {
   reg({
@@ -215,5 +314,14 @@ export function registerBuildSite (reg) {
     },
     description: 'Prepare the exact house footprint before construction: dig only safe natural terrain above the target support, fill low columns with carried dirt/cobblestone/stone, then verify every support cell is solid and level. Refuses caves, unsafe blocks, occupied cells and missing fill material.',
     handler: (args, ctx) => prepare(ctx, ctx.manager.requireBot(), args.home, args.footprint ?? FOOTPRINT, args.maxFillDepth ?? 2),
+  })
+  reg({
+    name: 'build_starter_cabin', group: 'build', annotations: { destructiveHint: true },
+    inputSchema: {
+      home: coord.describe('Verified home anchor from find_build_site; future floor corner'),
+      phase: z.enum(['foundation', 'walls', 'roof']),
+    },
+    description: 'Deterministically build one starter_cabin_v1 structural phase. Uses only carried wood plank material, preflights the whole phase before placing, replaces only owned natural placeholder blocks, verifies every placement, and refuses dirt as a wall or roof. Prepare missing planks before retrying.',
+    handler: (args, ctx) => buildTemplate(ctx, ctx.manager.requireBot(), args.home, args.phase),
   })
 }
