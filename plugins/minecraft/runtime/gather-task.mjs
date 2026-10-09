@@ -192,9 +192,21 @@ export class GatherTask {
     if (mode === 'scaffold') await navigation.cleanupScaffolding()
     try {
       this.check(signal); this.stage = 'collecting'
-      const pickup = new Vec3(block.position.x, this.entry.y, block.position.z)
-      if (navigation.safe(pickup)) await navigation.walk(pickup, mode === 'scaffold' ? 'scaffold' : 'leaf')
-      const end = Date.now() + 4000
+      const pickups = [
+        new Vec3(block.position.x, this.entry.y, block.position.z),
+        new Vec3(block.position.x + 1, this.entry.y, block.position.z),
+        new Vec3(block.position.x - 1, this.entry.y, block.position.z),
+        new Vec3(block.position.x, this.entry.y, block.position.z + 1),
+        new Vec3(block.position.x, this.entry.y, block.position.z - 1),
+      ]
+      for (const pickup of pickups) {
+        if (!navigation.safe(pickup)) continue
+        try {
+          await navigation.walk(pickup, mode === 'scaffold' ? 'scaffold' : 'leaf')
+          break
+        } catch { /* try the next safe side of a root or canopy log */ }
+      }
+      const end = Date.now() + 6000
       while (itemCount(this.bot, this.item) <= before && Date.now() < end) {
         this.check(signal); await delay(100, undefined, { signal })
       }
