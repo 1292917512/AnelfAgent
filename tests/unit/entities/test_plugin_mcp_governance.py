@@ -27,7 +27,8 @@ class TestReconcileKeepsGovernedFields:
         )
 
     def test_reactivate_keeps_enabled_and_stay_awake(self, mcp_config_file, tmp_path):
-        """插件重激活以清单更新连接参数，但启停/常驻等治理字段保留。"""
+        """插件重激活沿用已保存的运行配置：连接参数与治理字段均以运行值为准
+        （升级走"先去激活再按新清单创建"， freshness 由该路径保证）。"""
         mcp_config_file.write_text(json.dumps({"mcpServers": {
             "eigenflux": {
                 "command": "/abs/path/bun", "transport": "stdio",
@@ -42,13 +43,14 @@ class TestReconcileKeepsGovernedFields:
 
         data = json.loads(mcp_config_file.read_text(encoding="utf-8"))
         cfg = data["mcpServers"]["eigenflux"]
-        assert cfg["command"] == "bun"          # 连接参数以清单为准
+        assert cfg["command"] == "/abs/path/bun"  # 部署机路径等运行调整不被重启冲掉
         assert cfg["enabled"] is False          # 禁用状态不被翻回
         assert cfg["stay_awake"] is True        # 常驻开关不被抹掉
         assert cfg["plugin"] == "eigenflux"
 
-    def test_field_wiped_entry_adopted_and_prefix_swept(self, mcp_config_file, tmp_path):
-        """plugin 字段被外部改写抹掉时认领养（不增生前缀），历史前缀副本回收。"""
+    def test_unmarked_pure_name_treated_as_foreign_prefix_stable(self, mcp_config_file, tmp_path):
+        """无 plugin 标记的纯名视为外来（可能是用户手建的同名 server）——
+        本插件保持前缀目标且前缀上的运行设置沿用，纯名原样保留。"""
         mcp_config_file.write_text(json.dumps({"mcpServers": {
             "eigenflux": {"command": "old", "transport": "stdio", "enabled": False},
             "eigenflux__eigenflux": {
@@ -60,15 +62,17 @@ class TestReconcileKeepsGovernedFields:
         from entities.plugins.activation import _activate_mcp_servers
 
         added = _activate_mcp_servers("eigenflux", tmp_path, self._manifest())
-        assert added == ["eigenflux"]
+        assert added == ["eigenflux__eigenflux"]
 
         data = json.loads(mcp_config_file.read_text(encoding="utf-8"))
         servers = data["mcpServers"]
-        assert "eigenflux__eigenflux" not in servers   # 前缀残留回收
-        cfg = servers["eigenflux"]
-        assert cfg["plugin"] == "eigenflux"            # 来源标记回补
-        assert cfg["enabled"] is False                 # 治理字段继承
-        assert cfg["command"] == "bun"
+        pure = servers["eigenflux"]
+        assert pure["command"] == "old"                  # 用户/未知来源条目不动
+        assert "plugin" not in pure or pure["plugin"] != "eigenflux"
+        cfg = servers["eigenflux__eigenflux"]
+        assert cfg["plugin"] == "eigenflux"              # 来源标记保留
+        assert cfg["enabled"] is True                    # 运行设置沿用
+        assert cfg["command"] == "old"                   # 运行值不被清单覆盖
 
     def test_other_plugin_claim_keeps_prefix(self, mcp_config_file, tmp_path):
         """同名被他插件占用时仍走前缀，且前缀目标已存在时继承其治理字段。"""
