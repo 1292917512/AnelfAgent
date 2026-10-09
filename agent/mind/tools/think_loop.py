@@ -20,6 +20,7 @@ import re
 import time
 from typing import TYPE_CHECKING, AbstractSet, Any, Dict, List, Optional, Set
 
+from agent.channel.reply_policy import ReplyToolResult
 from agent.channel.reply_route import (
     deliver_text,
     looks_like_context_leak,
@@ -852,26 +853,13 @@ async def _deliver_channel_receipt(ctx: _ThinkLoopCtx, state: _ThinkRoundState) 
     """频道可声明只依赖工具事实的收尾回执，已送达或中断的回复不补发。"""
     if ctx.mode != ThinkMode.REPLY or ctx.anything is None or state.output_sent or state.interrupted:
         return
-    from agent.channel.reply_policy import ReplyToolResult, get_reply_policy
-    from agent.mind.tools.result_parse import parse_tool_result_json
+    from agent.channel.reply_policy import get_reply_policy
 
     formatter = get_reply_policy(ctx.adapter_key).result_receipt
     if formatter is None:
         return
-    names: dict[str, str] = {}
-    results: list[ReplyToolResult] = []
-    for message in ctx.tool_chain:
-        if message.get("role") == "assistant":
-            for call in message.get("tool_calls") or []:
-                names[call.get("id", "")] = call.get("function", {}).get("name", "")
-        elif message.get("role") == "tool":
-            content = message.get("content")
-            results.append(ReplyToolResult(
-                names.get(message.get("tool_call_id", ""), ""),
-                parse_tool_result_json(content) if isinstance(content, str) else None,
-            ))
     try:
-        text = formatter(results)
+        text = formatter(_reply_tool_results(ctx.tool_chain))
         target = target_from_anything(ctx.anything, ctx.adapter_key)
         if text and target is not None:
             # 无论发送是否成功，都不能把内部独白作为这个回执的替代品发出。
@@ -881,6 +869,25 @@ async def _deliver_channel_receipt(ctx: _ThinkLoopCtx, state: _ThinkRoundState) 
     except Exception as exc:
         state.pending_text = ""
         log(f"频道结果回执失败: {exc}", "WARNING", tag="思维")
+
+
+def _reply_tool_results(tool_chain: List[Dict]) -> list[ReplyToolResult]:
+    """按实际调用 ID 配对已返回事实，不解析模型正文或结束备注。"""
+    from agent.mind.tools.result_parse import parse_tool_result_json
+
+    names: dict[str, str] = {}
+    results: list[ReplyToolResult] = []
+    for message in tool_chain:
+        if message.get("role") == "assistant":
+            for call in message.get("tool_calls") or []:
+                names[call.get("id", "")] = call.get("function", {}).get("name", "")
+        elif message.get("role") == "tool":
+            content = message.get("content")
+            results.append(ReplyToolResult(
+                names.get(message.get("tool_call_id", ""), ""),
+                parse_tool_result_json(content) if isinstance(content, str) else None,
+            ))
+    return results
 
 
 async def _handle_security_leak(
@@ -1153,6 +1160,16 @@ async def _handle_tool_round(
     if _round_output_sent_successfully(tool_chain, tool_calls):
         state.pending_text = ""
         state.output_sent = True
+
+    if ctx.mode == ThinkMode.REPLY:
+        from agent.channel.reply_policy import get_reply_policy
+
+        handoff = get_reply_policy(ctx.adapter_key).handoff_to_events
+        if handoff is not None and handoff(_reply_tool_results(tool_chain)):
+            state.pending_text = ""
+            execution_steps.append("→ 任务已受理，交给频道终态事件汇报")
+            await _finish_round(ctx, state, deliver_pending=False)
+            return _StageOutcome.BREAK
 
     # 非输出工具伴随文本独白时提醒"结果仅自己可见"——独白是模型误以为
     # 文字可达用户的信号；纯工具轮无需提示（exec_context 每轮已有输出契约）

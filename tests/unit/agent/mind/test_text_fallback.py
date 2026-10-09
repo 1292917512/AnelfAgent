@@ -9,6 +9,7 @@ end_reply/[SILENT] 是静默收束——同批正文与暂存独白一律不投�
 
 from __future__ import annotations
 
+import json
 from typing import List
 
 import pytest
@@ -45,6 +46,27 @@ async def test_channel_receipt_not_duplicated_after_send(anything, deliver_mock,
     mind._rounds = [tool_result("", ["cancel_task"]), tool_result("", ["send_message"]), tool_result("", ["end_reply"])]
     await _run(mind, anything)
     deliver_mock.assert_not_awaited()
+
+
+@pytest.mark.parametrize("accepted", [True, False])
+async def test_event_handoff_ends_only_after_real_acceptance(anything, deliver_mock, monkeypatch, accepted) -> None:
+    from channels.minecraft.reply_policy import companion_policy
+
+    monkeypatch.setattr("agent.channel.reply_policy.get_reply_policy", lambda *a: companion_policy("minecraft"))
+    monkeypatch.setattr("channels.minecraft.receipts.request_trace", lambda: {"request_id": "r", "scope": "s"})
+    payload = {"id": "task", "actionId": "action", "active": True, "phase": "running",
+               "origin": {"requestId": "r", "scope": "s"}} if accepted else {"error": "missing materials"}
+    mind = FakeMind(tool_results={"prepare_item": json.dumps(payload), "send_message": _SEND_MESSAGE_RESULT})
+    mind._rounds = [tool_result("internal only", ["prepare_item"]), tool_result("explanation", ["send_message"]),
+                    tool_result("", ["end_reply"])]
+    await _run(mind, anything)
+    if accepted:
+        assert mind.llm_calls == 1
+        deliver_mock.assert_awaited_once()
+        assert deliver_mock.await_args.args[1] == "制作任务已接单，完成或受阻后会按实际结果告诉你。"
+    else:
+        assert mind.llm_calls == 3
+        deliver_mock.assert_not_awaited()
 
 
 def _mind(text: str = "我先说两句～") -> FakeMind:

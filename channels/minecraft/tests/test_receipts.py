@@ -3,7 +3,8 @@
 import pytest
 
 from agent.channel.reply_policy import ReplyToolResult
-from channels.minecraft.receipts import game_result_receipt
+from channels.minecraft.receipts import game_result_receipt, handed_to_game_events
+from core.tool_context import tool_request
 
 
 def test_inventory_sums_slots_and_exposes_uncollected_materials() -> None:
@@ -36,3 +37,17 @@ def test_direct_chat_already_sent_and_failed_chat_distinguished() -> None:
     results = [ReplyToolResult("cancel_task", {"ok": True, "stopped": True})]
     assert not game_result_receipt([*results, ReplyToolResult("chat", {"ok": True})])
     assert "已停止" in game_result_receipt([*results, ReplyToolResult("chat", {"error": "offline"})])
+
+
+@pytest.mark.parametrize("tool", ["prepare_item", "manage_supplies", "gather_resources"])
+def test_handoff_requires_accepted_current_request(tool: str) -> None:
+    with tool_request("group_minecraft:test") as request:
+        data = {"id": "task", "actionId": "action", "active": True, "phase": "running",
+                "origin": {"requestId": request.request_id, "scope": request.scope}}
+        result = ReplyToolResult(tool, data)
+        assert handed_to_game_events([result])
+        assert "已接单" in game_result_receipt([result])
+        for mutation in ({"origin": {}}, {"id": ""}, {"active": False}, {"phase": "blocked"}, {"error": "failure"}):
+            assert not handed_to_game_events([ReplyToolResult(tool, {**data, **mutation})])
+        assert not handed_to_game_events([result, ReplyToolResult("cancel_task", {"stopped": True})])
+    assert not handed_to_game_events([result])
