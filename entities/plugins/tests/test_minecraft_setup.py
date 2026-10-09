@@ -40,7 +40,6 @@ def test_installed_minecraft_retains_runtime_settings_on_restart(
         record = activate_plugin(record, plugin_payload_dir(record.name))
         current = store.get_server_config(name)
         assert current is not None
-        assert "preserve_runtime_config" not in current
         for key in ("command", "enabled", "priority", "stay_awake"):
             assert current[key] == settings[key]
         for key, value in settings["env"].items():

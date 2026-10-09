@@ -37,15 +37,16 @@ def companion_policy(server: str) -> ReplyPolicy:
         for entity in EntityRegistry.get_by_group(f"mcp:{server}")
         if entity.entity_type == EntityType.TOOL and entity.source == "mcp"
     }
+    registered_names = sorted(game_names.items())
     initial_game_tools = tuple(
         name for original in COMPANION_INITIAL_GAME_TOOLS
-        for name, canonical in sorted(game_names.items()) if canonical == original
+        for name, canonical in registered_names if canonical == original
     )
 
     def canonical_results(results: Sequence[ReplyToolResult]) -> list[ReplyToolResult]:
         return [ReplyToolResult(game_names.get(result.name, result.name), result.payload) for result in results]
 
-    aliases = [f"{original} → {name}" for name, original in sorted(game_names.items()) if name != original]
+    aliases = [f"{original} → {name}" for name, original in registered_names if name != original]
     return ReplyPolicy(
         direct_reply=True,
         tool_groups=(f"mcp:{server}",),

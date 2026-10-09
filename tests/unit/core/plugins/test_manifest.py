@@ -7,25 +7,12 @@ import pytest
 
 from core.plugins.manifest import (
     PluginError,
-    PluginManifest,
     find_manifest_file,
     load_plugin_mcp_servers,
     parse_manifest,
     parse_marketplace,
     validate_plugin_name,
 )
-
-
-def test_mcp_plugin_root_is_portable(tmp_path: Path) -> None:
-    manifest = PluginManifest(name="mc", mcp_servers_inline={"mc": {
-        "command": "node", "args": ["${PLUGIN_ROOT}/server.js"],
-        "env": {"HOME": "${PLUGIN_ROOT}/state", "TOKEN": "${MY_TOKEN}"},
-    }})
-    config = load_plugin_mcp_servers(tmp_path, manifest)["mc"]
-    assert config["args"] == [str(tmp_path.resolve()) + "/server.js"]
-    assert config["env"]["HOME"] == str(tmp_path.resolve()) + "/state"
-    assert config["env"]["TOKEN"] == "${MY_TOKEN}"
-    assert manifest.mcp_servers_inline["mc"]["args"] == ["${PLUGIN_ROOT}/server.js"]
 
 
 class TestValidateName:
@@ -110,6 +97,21 @@ class TestParseManifest:
         assert m.mcp_servers_file == ".mcp.json"
         servers = load_plugin_mcp_servers(tmp_path, m)
         assert servers == {"s1": {"command": "npx"}}
+
+    @pytest.mark.parametrize("root_var", ["${PLUGIN_ROOT}", "${CLAUDE_PLUGIN_ROOT}"])
+    def test_mcp_plugin_root_expanded(self, tmp_path: Path, root_var: str) -> None:
+        """插件根变量展开为负载目录，环境变量引用留给配置层解析。"""
+        (tmp_path / "plugin.json").write_text('{"name": "demo"}', encoding="utf-8")
+        (tmp_path / ".mcp.json").write_text(json.dumps({"mcpServers": {"s1": {
+            "command": "bun",
+            "args": ["run", "--cwd", root_var],
+            "env": {"ROOT": f"{root_var}/data", "SECRET": "${API_TOKEN}"},
+        }}}), encoding="utf-8")
+        m = parse_manifest(tmp_path)
+        servers = load_plugin_mcp_servers(tmp_path, m)
+        assert servers["s1"]["args"][2] == str(tmp_path)
+        assert servers["s1"]["env"]["ROOT"] == f"{tmp_path}/data"
+        assert servers["s1"]["env"]["SECRET"] == "${API_TOKEN}"
 
     def test_component_path_escape_rejected(self, tmp_path):
         (tmp_path / "plugin.json").write_text(json.dumps({
