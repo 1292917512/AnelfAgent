@@ -29,6 +29,17 @@ def chat_event(seq: int, message: str, *, username: str = "Alice", kind: str = "
     return GameEvent(seq=seq, ts=1000, type=kind, data={"username": username, "message": message})
 
 
+async def test_mentions_are_readable_before_chat_split(channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch) -> None:
+    call = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(channel, "_call", call)
+    response = await channel.forward_message(SendRequest(
+        adapter_key="minecraft", channel=AdapterChannel(channel_id="local", channel_type=ChannelType.GROUP),
+        segments=[SendSegment(type=SegmentType.TEXT, content="[at_uid:local/heiyue] [at_uid:Alice] [at_uid:all]")],
+    ))
+    assert response.success
+    call.assert_awaited_once_with("chat", {"message": "@heiyue @Alice @全体成员"})
+
+
 async def test_ingress_trace_links_game_time_and_message_without_content(
     channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

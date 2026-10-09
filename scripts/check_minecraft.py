@@ -15,7 +15,7 @@ if str(_REPO) not in sys.path:
 from mcp import ClientSession
 
 from channels.minecraft.protocol import ConnectionStatus, EventBatch
-from channels.minecraft.reply_policy import COMPANION_GAME_TOOLS
+from channels.minecraft.reply_policy import COMPANION_GAME_TOOLS, COMPANION_INITIAL_GAME_TOOLS
 from core.log import set_log_level
 from entities.mcp.config import load_mcp_config
 from entities.mcp.render import _render_call_result
@@ -53,7 +53,7 @@ _REQUIRED_TOOLS = {
     "production_status",
     "manage_supplies",
     "supply_status",
-} | COMPANION_GAME_TOOLS
+} | COMPANION_GAME_TOOLS | set(COMPANION_INITIAL_GAME_TOOLS)
 _REQUIRED_PARAMS = {
     "follow_entity": {"entityId", "range"},
     "chat": {"message"},

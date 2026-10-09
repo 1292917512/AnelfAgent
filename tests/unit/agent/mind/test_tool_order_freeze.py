@@ -210,6 +210,49 @@ class TestReflectToolSchemas:
         names = _names(await ta.get_reflect_tool_schemas(scope="t_reflect_disc"))
         assert "ra_core" in names
 
+    async def test_restricted_catalog_ignores_background_and_frozen_tools(self, monkeypatch) -> None:
+        from agent.channel.reply_policy import ReplyPolicy
+        from agent.llm import ToolCall
+
+        policy = ReplyPolicy(initial_tools=("ra_heartbeat",), tool_groups=("g_sleep",))
+        monkeypatch.setattr("agent.channel.reply_policy.get_reply_policy",
+                            lambda adapter, manager=None: policy if adapter == "game" else ReplyPolicy())
+        ta = ToolAssembly()
+        ta._frozen_tool_names = ["ra_always", "ra_core"]
+        ta._tag_activated_tools.add("ra_core")
+        ta.record_tool_use("ra_core")
+        call = ToolCall(id="discover", name="list_entity_methods", arguments='{"group":"g_core"}')
+        ta.expand_discovered_tools([call], scope="other")
+        first = await ta.get_active_tool_schemas("game", "game:1")
+        assert _names(first) == ["ra_heartbeat"]
+        ta.expand_discovered_tools([call], scope="game:1")
+        assert _names(await ta.get_active_tool_schemas("game", "game:1")) == ["ra_heartbeat", "ra_core"]
+        assert _names(await ta.get_active_tool_schemas("game", "game:2")) == ["ra_heartbeat"]
+        assert "ra_always" in _names(await ta.get_active_tool_schemas("webui", "webui:1"))
+
+    async def test_restricted_catalog_preserves_activation_and_gate(self, monkeypatch) -> None:
+        from agent.channel.reply_policy import ReplyPolicy
+        from agent.mind.tool_activation import tool_activation
+        from core.entity import EntityRegistry
+
+        monkeypatch.setattr("agent.channel.reply_policy.get_reply_policy",
+                            lambda *a: ReplyPolicy(initial_tools=("ra_heartbeat",)))
+        scope = "game:gate"
+        ta = ToolAssembly()
+        tool_activation.activate("g_sleep", rounds=3, scope=scope)
+        try:
+            assert "ra_sleep" in _names(await ta.get_active_tool_schemas("game", scope))
+            original = EntityRegistry.get_active_tools
+
+            async def gated(names):
+                return [item for item in await original(names) if item.name != "ra_sleep"]
+
+            monkeypatch.setattr(EntityRegistry, "get_active_tools", gated)
+            assert "ra_sleep" not in _names(await ta.get_active_tool_schemas("game", scope))
+        finally:
+            tool_activation.clear_scope(scope)
+        assert "ra_sleep" not in _names(await ta.get_active_tool_schemas("game", scope))
+
     async def test_order_deterministic_across_calls(self) -> None:
         """同一装配输入两次调用产出字节序一致（反思目录跨调用稳定）。"""
         ta = ToolAssembly()

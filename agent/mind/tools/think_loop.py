@@ -813,6 +813,7 @@ async def _finish_round(
         state: _ThinkRoundState,
         *,
         deliver_pending: bool = True,
+    allow_receipt: bool = True,
 ) -> None:
     """正常结束的统一收尾：轮末投递 + plan 收敛（全模式）+ REPLY 摘要入库/完成事件。
 
@@ -825,6 +826,8 @@ async def _finish_round(
     - finish_think：仅 REPLY（摘要入库 + complete_reply 需要 anything）。
     异常路径（中断/安全上限）不走这里，由 think_loop 的 finally 统一收敛。
     """
+    if allow_receipt:
+        await _deliver_channel_receipt(ctx, state)
     if deliver_pending:
         await _deliver_pending_text(ctx, state)
     try:
@@ -843,6 +846,41 @@ async def _finish_round(
             ctx.mind, ctx.anything, ctx.execution_steps, state.iteration + 1, ctx.tool_chain,
             completion=ctx.completion, turn_id=ctx.turn_id,
         )
+
+
+async def _deliver_channel_receipt(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> None:
+    """频道可声明只依赖工具事实的收尾回执，已送达或中断的回复不补发。"""
+    if ctx.mode != ThinkMode.REPLY or ctx.anything is None or state.output_sent or state.interrupted:
+        return
+    from agent.channel.reply_policy import ReplyToolResult, get_reply_policy
+    from agent.mind.tools.result_parse import parse_tool_result_json
+
+    formatter = get_reply_policy(ctx.adapter_key).result_receipt
+    if formatter is None:
+        return
+    names: dict[str, str] = {}
+    results: list[ReplyToolResult] = []
+    for message in ctx.tool_chain:
+        if message.get("role") == "assistant":
+            for call in message.get("tool_calls") or []:
+                names[call.get("id", "")] = call.get("function", {}).get("name", "")
+        elif message.get("role") == "tool":
+            content = message.get("content")
+            results.append(ReplyToolResult(
+                names.get(message.get("tool_call_id", ""), ""),
+                parse_tool_result_json(content) if isinstance(content, str) else None,
+            ))
+    try:
+        text = formatter(results)
+        target = target_from_anything(ctx.anything, ctx.adapter_key)
+        if text and target is not None:
+            # 无论发送是否成功，都不能把内部独白作为这个回执的替代品发出。
+            state.pending_text = ""
+            state.output_sent = await deliver_text(target, text)
+            ctx.execution_steps.append("→ 频道结果回执" + ("已送达" if state.output_sent else "发送失败"))
+    except Exception as exc:
+        state.pending_text = ""
+        log(f"频道结果回执失败: {exc}", "WARNING", tag="思维")
 
 
 async def _handle_security_leak(
@@ -865,7 +903,7 @@ async def _handle_security_leak(
     if state.consecutive_security_leaks >= 2:
         log("连续令牌泄露，强制结束本轮", "WARNING", tag="安全")
         ctx.execution_steps.append(f"→ 第{state.iteration + 1}轮: 连续安全泄露，强制结束")
-        await _finish_round(ctx, state, deliver_pending=False)
+        await _finish_round(ctx, state, deliver_pending=False, allow_receipt=False)
         return _StageOutcome.BREAK
     # 本轮 tool_calls 因安全原因一并丢弃，显式告知 LLM 避免下轮误以为已执行
     prompt = _PROMPT_SECURITY_LEAK
@@ -1103,7 +1141,7 @@ async def _handle_tool_round(
 
     for tc in tool_calls:
         mind.pfc.record_tool_use(tc.name)
-    mind.pfc.expand_discovered_tools(tool_calls)
+    mind.pfc.expand_discovered_tools(tool_calls, scope=ctx.current_scope if ctx.mode == ThinkMode.REPLY else "")
 
     tool_names = ", ".join(tc.name for tc in tool_calls)
     execution_steps.append(f"→ 第{state.iteration + 1}轮: 调用工具 [{tool_names}]")

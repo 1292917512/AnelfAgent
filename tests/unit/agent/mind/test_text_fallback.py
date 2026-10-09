@@ -20,6 +20,33 @@ from agent.messages.everything import EverythingGroup
 _SEND_MESSAGE_RESULT = '{"success": true, "target_id": "1", "message_id": "m1"}'
 
 
+@pytest.mark.parametrize("ending", [tool_result("internal secret", ["end_reply"]), text_result("end_reply()"), text_result("[SILENT]")])
+async def test_channel_fact_receipt_covers_silent_exits(anything, deliver_mock, monkeypatch, ending) -> None:
+    from agent.channel.reply_policy import ReplyPolicy
+    from channels.minecraft.receipts import game_result_receipt
+
+    monkeypatch.setattr("agent.channel.reply_policy.get_reply_policy",
+                        lambda *a: ReplyPolicy(result_receipt=game_result_receipt))
+    mind = FakeMind(tool_results={"cancel_task": '{"ok":true,"stopped":true}'})
+    mind._rounds = [tool_result("internal secret", ["cancel_task"]), ending]
+    await _run(mind, anything)
+    deliver_mock.assert_awaited_once()
+    assert deliver_mock.await_args.args[1] == "当前动作已停止。"
+    assert mind.llm_calls == 2
+
+
+async def test_channel_receipt_not_duplicated_after_send(anything, deliver_mock, monkeypatch) -> None:
+    from agent.channel.reply_policy import ReplyPolicy
+    from channels.minecraft.receipts import game_result_receipt
+
+    monkeypatch.setattr("agent.channel.reply_policy.get_reply_policy",
+                        lambda *a: ReplyPolicy(result_receipt=game_result_receipt))
+    mind = FakeMind(tool_results={"cancel_task": '{"ok":true,"stopped":true}', "send_message": _SEND_MESSAGE_RESULT})
+    mind._rounds = [tool_result("", ["cancel_task"]), tool_result("", ["send_message"]), tool_result("", ["end_reply"])]
+    await _run(mind, anything)
+    deliver_mock.assert_not_awaited()
+
+
 def _mind(text: str = "我先说两句～") -> FakeMind:
     return FakeMind(default_text=text, tool_results={"send_message": _SEND_MESSAGE_RESULT})
 

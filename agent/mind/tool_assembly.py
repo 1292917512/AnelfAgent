@@ -33,6 +33,8 @@ class ToolAssembly:
         self._tag_activated_tools: set[str] = set()
         # 通过 list_entity_methods 动态发现的工具名（整个思维会话有效，会话结束后清理）
         self._discovered_tools: set[str] = set()
+        self._scope_discovered_tools: dict[str, set[str]] = {}
+        self._scope_frozen_tool_names: dict[str, list[str]] = {}
         # 动态工具集版本号（tag 激活/动态发现变化时递增，供 think_loop 检测重建）
         self._tools_version: int = 0
         # 跨回复冻结的 tools 数组顺序（追加式：只增不改，缓存前缀稳定的最终防线；
@@ -142,7 +144,7 @@ class ToolAssembly:
             return []
         return EntityRegistry.get_tool_schema_by_names(sorted(self._tag_activated_tools))
 
-    def expand_discovered_tools(self, tool_calls: list) -> None:
+    def expand_discovered_tools(self, tool_calls: list, scope: str = "") -> None:
         """解析 list_entity_methods 调用结果，将发现的工具加入动态发现集。"""
         import json as _json
         for tc in tool_calls:
@@ -155,6 +157,11 @@ class ToolAssembly:
                     continue
                 for schema in EntityRegistry.get_tool_schemas_by_group(group):
                     name = schema["function"]["name"]
+                    if scope:
+                        discovered = self._scope_discovered_tools.setdefault(scope, set())
+                        if name not in discovered:
+                            discovered.add(name)
+                            self._tools_version += 1
                     if name not in self._discovered_tools:
                         self._discovered_tools.add(name)
                         self._tools_version += 1
@@ -196,7 +203,12 @@ class ToolAssembly:
         1. 沉睡过滤：已激活分组和频道显式声明的分组直接可见，其余遵循沉睡状态
         2. check_fn 门控：前置条件不满足的工具被过滤（core.tool_gate）
         """
+        from agent.channel.reply_policy import get_reply_policy
         from agent.mind.tool_activation import tool_activation
+
+        policy = get_reply_policy(adapter_key, self._channel_manager)
+        if policy.initial_tools is not None:
+            return await self._get_scoped_tool_schemas(policy.initial_tools, policy.tool_groups, scope)
 
         seen_names: set[str] = set()
         all_schemas: list[dict] = []
@@ -222,10 +234,8 @@ class ToolAssembly:
 
         _merge(EntityRegistry.get_tool_schema_by_tags(["always"]), "always")
 
-        from agent.channel.reply_policy import get_reply_policy
-
         awake_names: set[str] = set()
-        for group in get_reply_policy(adapter_key, self._channel_manager).tool_groups:
+        for group in policy.tool_groups:
             schemas = EntityRegistry.get_tool_schemas_by_group(group)
             awake_names.update(s.get("function", {}).get("name", "") for s in schemas)
             _merge(schemas, f"channel_group:{group}", scoped=True)
@@ -281,6 +291,34 @@ class ToolAssembly:
         log(f"活跃工具集: {len(all_schemas)} 个 ({sources}) [{', '.join(tool_names)}]", "DEBUG", tag="PFC")
 
         return all_schemas
+
+    async def _get_scoped_tool_schemas(
+        self, initial_tools: tuple[str, ...], tool_groups: tuple[str, ...], scope: str,
+    ) -> list[dict]:
+        """频道声明的精简目录，仅由同 scope 显式发现/激活扩展，门控仍然生效。"""
+        from agent.mind.tool_activation import tool_activation
+        from core.config import get_config_bool
+
+        names = set(initial_tools) | self._scope_discovered_tools.get(scope, set())
+        for group in tool_activation.active_groups(scope):
+            names.update(s["function"]["name"] for s in EntityRegistry.get_tool_schemas_by_group(group))
+        awake_names = {
+            s["function"]["name"] for group in tool_groups
+            for s in EntityRegistry.get_tool_schemas_by_group(group)
+            if s["function"]["name"] in names
+        }
+        schemas = await self._apply_tool_gates(
+            EntityRegistry.get_tool_schema_by_names(sorted(names)), scope, awake_names,
+        )
+        deterministic = get_config_bool("tool_order_deterministic", True)
+        if deterministic and get_config_bool("tool_order_frozen", True):
+            schemas = self._apply_append_only_freeze(
+                schemas, set(), frozen_names=self._scope_frozen_tool_names.setdefault(scope, []),
+            )
+        else:
+            schemas.sort(key=lambda s: self._tool_sort_key(s, deterministic=deterministic))
+        log(f"会话工具集: {len(schemas)} 个 (scope={scope})", "DEBUG", tag="PFC")
+        return schemas
 
     # 反思/任务循环未指定 tool_tags 时的默认选择器（心跳任务常态工具面）
     REFLECT_DEFAULT_SELECTORS: tuple[str, ...] = ("heartbeat",)
@@ -417,7 +455,9 @@ class ToolAssembly:
         bucket = 1 if name in scoped_names else 0
         return (bucket, self._CORE_TOOL_PRIORITY.get(name, 1), name)
 
-    def _apply_append_only_freeze(self, schemas: list[dict], scoped_names: set) -> list[dict]:
+    def _apply_append_only_freeze(
+        self, schemas: list[dict], scoped_names: set, *, frozen_names: list[str] | None = None,
+    ) -> list[dict]:
         """跨回复追加式冻结 tools 数组顺序（缓存前缀稳定的最终防线）。
 
         首轮（冻结名单为空）按双桶排序键建立冻结序；此后每次组装：
@@ -431,8 +471,9 @@ class ToolAssembly:
             name = s.get("function", {}).get("name", "")
             if name:
                 by_name[name] = s
-        frozen_set = set(self._frozen_tool_names)
-        ordered = [by_name[n] for n in self._frozen_tool_names if n in by_name]
+        frozen = self._frozen_tool_names if frozen_names is None else frozen_names
+        frozen_set = set(frozen)
+        ordered = [by_name[n] for n in frozen if n in by_name]
         newcomers = sorted(
             (n for n in by_name if n not in frozen_set),
             key=lambda n: (
@@ -441,7 +482,7 @@ class ToolAssembly:
                 n,
             ),
         )
-        self._frozen_tool_names += newcomers
+        frozen += newcomers
         return ordered + [by_name[n] for n in newcomers]
 
     @staticmethod

@@ -4,7 +4,7 @@ import re
 
 import pytest
 
-from channels.minecraft.reply_policy import COMPANION_GAME_TOOLS, companion_policy
+from channels.minecraft.reply_policy import COMPANION_GAME_TOOLS, COMPANION_INITIAL_GAME_TOOLS, companion_policy
 from scripts.check_minecraft import _REQUIRED_TOOLS
 from scripts.minecraft_contract import END, SKILL_PATH, START, render_contract
 
@@ -19,6 +19,7 @@ def test_policy_game_tools_are_checked_against_live_registry() -> None:
     tools = set(re.findall(r"`([a-z][a-z_]+)`", companion_policy("custom-server").instructions))
     assert tools == COMPANION_GAME_TOOLS
     assert tools <= _REQUIRED_TOOLS
+    assert set(COMPANION_INITIAL_GAME_TOOLS) <= _REQUIRED_TOOLS
     assert companion_policy("custom-server").tool_groups == ("mcp:custom-server",)
 
 

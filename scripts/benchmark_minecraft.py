@@ -190,6 +190,10 @@ async def main(args: argparse.Namespace) -> None:
                                      for p in [ROOT / "scripts/benchmark_minecraft.py", ROOT / "scripts/minecraft_benchmark_report.py",
                                                ROOT / "plugins/minecraft/tests/benchmark-executor.cjs",
                                                ROOT / "plugins/minecraft/package-lock.json",
+                                               ROOT / "agent/channel/reply_policy.py", ROOT / "agent/mind/tool_assembly.py",
+                                               ROOT / "agent/mind/prefrontal_cortex.py", ROOT / "agent/mind/tools/think_loop.py",
+                                               ROOT / "channels/minecraft/adapter.py", ROOT / "channels/minecraft/reply_policy.py",
+                                               ROOT / "channels/minecraft/receipts.py",
                                                *sorted((ROOT / "plugins/minecraft/runtime").glob("*.mjs"))]}
         model_data = json.loads(model_path.read_text(encoding="utf-8"))
         manifest["default_model"] = model_data.get("default_chat")

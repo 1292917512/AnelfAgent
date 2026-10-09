@@ -83,7 +83,7 @@ class FakePfc:
     def record_tool_use(self, name: str) -> None:
         pass
 
-    def expand_discovered_tools(self, tool_calls) -> None:
+    def expand_discovered_tools(self, tool_calls, scope: str = "") -> None:
         pass
 
     def peek_all_tasks(self) -> list:

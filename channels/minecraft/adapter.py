@@ -28,6 +28,7 @@ from agent.channel.schemas import (
     SendResponse,
     SendSegment,
 )
+from agent.channel.utils.formatter import normalize_at_mentions
 from agent.messages import build_entity_scope
 from core.entity import EntityMetadata, EntityRegistry
 from core.log import log
@@ -669,6 +670,7 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             elif target != cfg.server_id:
                 raise ValueError("Minecraft 公共聊天目标不属于当前世界")
             text = "\n".join(seg.content for seg in request.segments)
+            text = normalize_at_mentions(text, lambda uid: "@全体成员" if uid == "all" else f"@{uid.rsplit('/', 1)[-1]}")
             limit = min(240, 256 - len(f"/tell {username} ")) if private else 240
             chunks = split_chat(text, limit=limit)
             if not chunks:
