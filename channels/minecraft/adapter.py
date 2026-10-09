@@ -31,8 +31,8 @@ from agent.channel.schemas import (
 from agent.messages import build_entity_scope
 from core.entity import EntityMetadata, EntityRegistry
 from core.log import log
-from core.tool_context import register_control, tool_request
-from core.tracer import thinking_tracer
+from core.tool_context import register_control, request_trace, tool_request
+from core.tracer import NodeType, thinking_tracer
 from entities._sdk import call_mcp_server_tool
 
 from . import discovery as _discovery  # noqa: F401  导入即注册全局发现工具
@@ -166,7 +166,11 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
         started = time.perf_counter()
         outcome = "interrupted"
         try:
-            raw = await call_mcp_server_tool(self.get_config().mcp_server, tool_name, arguments)
+            origin = request_trace()
+            span = (thinking_tracer.span("Minecraft RPC", NodeType.ENTITY_CALL, name=tool_name, request=origin)
+                    if origin and thinking_tracer.enabled else contextlib.nullcontext())
+            async with span:
+                raw = await call_mcp_server_tool(self.get_config().mcp_server, tool_name, arguments)
             data: object = json.loads(raw)
             if not isinstance(data, dict):
                 raise ValueError("Minecraft MCP 返回了非对象结果")

@@ -234,7 +234,7 @@ async def reply_loop(
 
     with think_session(mind, scope), tool_request(
         scope, str(getattr(anything, "uid", "") or ""),
-        message_id=str(getattr(anything, "adapter_message_id", "") or ""),
+        message_id=str(getattr(anything, "_trace_message_id", "") or getattr(anything, "adapter_message_id", "") or ""),
     ):
         # 会话开始清理历史中断信号，避免上一轮遗留请求误杀新会话；
         # 只清激活时刻之前的——启动窗口内用户发的"停止"是合法中断
