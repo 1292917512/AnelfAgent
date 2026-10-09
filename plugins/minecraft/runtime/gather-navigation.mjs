@@ -1,5 +1,5 @@
 // @ts-check
-/** Bounded walking on known, level ground; only low leaf blocks may be cleared as a route obstacle. */
+/** Bounded walking on known, level ground with explicitly bounded obstacle clearing. */
 import { setImmediate as yieldFrame, setTimeout as delay } from 'node:timers/promises'
 import { Vec3 } from 'vec3'
 import pathfinder from 'mineflayer-pathfinder'
@@ -40,20 +40,21 @@ export class GatherNavigation {
   /** @param {import('mineflayer').Bot} bot @param {Vec3} entry @param {AbortSignal} signal */
   constructor (bot, entry, signal) { this.bot = bot; this.entry = entry; this.signal = signal; this.scaffolds = new Map() }
 
-  /** @param {{x:number,y:number,z:number}} p @param {RouteMode} mode */
-  breakable (p, mode) {
+  /** @param {{x:number,y:number,z:number}} p @param {RouteMode} mode @param {number} [feetY] */
+  breakable (p, mode, feetY = this.entry.y) {
     const point = new Vec3(p.x, p.y, p.z).floored()
     const block = this.bot.blockAt(point)
     if (mode === 'leaf') return point.y >= this.entry.y && point.y <= this.entry.y + 1 && isLeafBlockName(block?.name)
-    if (point.y < this.entry.y + 1 || point.y > this.entry.y + 2) return false
+    const currentFeetY = Math.floor(feetY)
+    if (point.y < currentFeetY + 1 || point.y > currentFeetY + 2) return false
     return Boolean(block && block.boundingBox === 'block')
   }
 
   /** @param {{x:number,y:number,z:number}} p @param {RouteMode} mode */
   leafBreakable (p, mode = 'leaf') { return this.breakable(p, mode) }
 
-  /** @param {Array<{x:number,y:number,z:number}>} blocks @param {RouteMode} mode */
-  allowedBreaks (blocks, mode) { return blocks.every(block => this.breakable(block, mode)) }
+  /** @param {Array<{x:number,y:number,z:number}>} blocks @param {RouteMode} mode @param {number} [feetY] */
+  allowedBreaks (blocks, mode, feetY = this.entry.y) { return blocks.every(block => this.breakable(block, mode, feetY)) }
 
   /** @param {{x:number,y:number,z:number}} p @param {RouteMode} mode */
   safeRoutePoint (p, mode) {
@@ -63,7 +64,9 @@ export class GatherNavigation {
       const feet = this.bot.blockAt(point), head = this.bot.blockAt(point.offset(0, 1, 0))
       return (clear(feet) || isLeafBlockName(feet?.name)) && (clear(head) || isLeafBlockName(head?.name))
     }
-    if (point.y !== this.entry.y) return false
+    const minY = mode === 'high' ? this.entry.y - 1 : this.entry.y
+    const maxY = mode === 'high' ? this.entry.y + 1 : this.entry.y
+    if (point.y < minY || point.y > maxY) return false
     const floor = this.bot.blockAt(point.offset(0, -1, 0))
     const feet = this.bot.blockAt(point), head = this.bot.blockAt(point.offset(0, 1, 0))
     const openFeet = clear(feet) || isLeafBlockName(feet?.name)
@@ -95,7 +98,8 @@ export class GatherNavigation {
       // mineflayer-pathfinder asks this hook about the floor, feet and head
       // blocks around a route point. Checking the queried block itself would
       // reject every otherwise valid point because its floor is one block low.
-      const allowed = [this.entry.y, this.entry.y + 1].some(y => {
+      const routeYs = mode === 'high' ? [this.entry.y - 1, this.entry.y, this.entry.y + 1] : [this.entry.y, this.entry.y + 1]
+      const allowed = routeYs.some(y => {
         const point = new Vec3(p.x, y, p.z)
         return p.y >= y - 1 && p.y <= y + 2 && this.safeRoutePoint(point, mode)
       })
@@ -124,7 +128,7 @@ export class GatherNavigation {
     for (const { result } of search) {
       this.signal.throwIfAborted()
       if (String(result.status) === 'partial') { await yieldFrame(); continue }
-      return result.status === 'success' && result.path.every(p => this.safeRoutePoint(p, mode) && this.allowedBreaks(p.toBreak, mode) &&
+      return result.status === 'success' && result.path.every(p => this.safeRoutePoint(p, mode) && this.allowedBreaks(p.toBreak, mode, p.y) &&
         (mode !== 'scaffold' ? !p.toPlace.length : p.toPlace.every(place => Math.floor(place.y) === this.entry.y)))
     }
     return false
@@ -144,7 +148,7 @@ export class GatherNavigation {
         const point = new Vec3(place.x, place.y, place.z).floored()
         if (point.y === this.entry.y) this.scaffolds.set(`${point.x},${point.y},${point.z}`, point)
       }
-      if (result.path.some(p => !this.safeRoutePoint(p, mode) || !this.allowedBreaks(p.toBreak, mode) ||
+      if (result.path.some(p => !this.safeRoutePoint(p, mode) || !this.allowedBreaks(p.toBreak, mode, p.y) ||
         (mode !== 'scaffold' ? p.toPlace.length : p.toPlace.some(place => Math.floor(place.y) !== this.entry.y)))) {
         unsafe = true; result.path.length = 0; stop()
       }

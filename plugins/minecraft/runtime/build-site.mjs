@@ -330,7 +330,7 @@ function woodCandidates (bot, logName, maxDistance) {
     .map(position => ({ position, distance: position.distanceTo(center) }))
     .filter(candidate => {
       const block = bot.blockAt(candidate.position)
-      return block?.name === logName && candidate.position.y >= center.y - 2 && candidate.position.y <= center.y + 3
+      return block?.name === logName && candidate.position.y >= center.y - 3 && candidate.position.y <= center.y + 3
     })
     .sort((a, b) => a.distance - b.distance)
 }
@@ -349,7 +349,8 @@ async function walkToWood (bot, target, signal) {
         signal.throwIfAborted()
         await withTimeout(pathfinder.goto(goal), DEFAULT_ACTION_TIMEOUT_MS * 2, 'walk to authorized tree')
         signal.throwIfAborted()
-        return true
+        const arrived = bot.entity.position.floored()
+        if (Math.abs(arrived.y - target.y) <= 1) return true
       }
     } finally {
       movement.canDig = priorCanDig
@@ -359,21 +360,28 @@ async function walkToWood (bot, target, signal) {
     signal.throwIfAborted()
     const entry = bot.entity.position.floored()
     const distance = Math.hypot(target.x - entry.x, target.z - entry.z)
-    if (distance <= 8) return true
-    const step = Math.min(8, distance - 6)
-    const dx = (target.x - entry.x) / distance; const dz = (target.z - entry.z) / distance
+    if (distance <= 8 && Math.abs(entry.y - target.y) <= 1) return true
+    const step = Math.max(0, Math.min(8, distance - 6))
+    const dx = distance === 0 ? 0 : (target.x - entry.x) / distance
+    const dz = distance === 0 ? 0 : (target.z - entry.z) / distance
+    const waypointY = target.y < entry.y ? Math.max(target.y, entry.y - 1) : Math.min(target.y, entry.y + 1)
     const waypoints = [
-      new Vec3(Math.round(entry.x + dx * step), entry.y, Math.round(entry.z + dz * step)),
-      new Vec3(Math.round(entry.x + dz * step), entry.y, Math.round(entry.z - dx * step)),
-      new Vec3(Math.round(entry.x - dz * step), entry.y, Math.round(entry.z + dx * step)),
+      new Vec3(Math.round(entry.x + dx * step), waypointY, Math.round(entry.z + dz * step)),
+      new Vec3(Math.round(entry.x + dz * step), waypointY, Math.round(entry.z - dx * step)),
+      new Vec3(Math.round(entry.x - dz * step), waypointY, Math.round(entry.z + dx * step)),
     ]
-    const navigation = new GatherNavigation(bot, entry, signal)
     let walked = false
-    for (const waypoint of waypoints) {
-      if (!navigation.safeRoutePoint(waypoint, 'leaf') || !await navigation.reachable(bot.entity.position, waypoint, 'leaf')) continue
-      await navigation.walk(waypoint, 'leaf')
-      walked = true
-      break
+    // Try the least destructive route first, then allow clearing obstacles
+    // above the feet when foliage blocks every low-clearance route.
+    for (const mode of ['leaf', 'high']) {
+      const navigation = new GatherNavigation(bot, entry, signal)
+      for (const waypoint of waypoints) {
+        if (!navigation.safeRoutePoint(waypoint, mode) || !await navigation.reachable(bot.entity.position, waypoint, mode)) continue
+        await navigation.walk(waypoint, mode)
+        walked = true
+        break
+      }
+      if (walked) break
     }
     if (!walked) return false
   }

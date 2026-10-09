@@ -69,6 +69,19 @@ test('surface routes identify leaves and only allow low leaf clearing', async ()
   assert.equal(nav.leafBreakable(new Vec3(2, 64, 0)), false)
 })
 
+test('high routes clear only blocks above the feet', async () => {
+  const { GatherNavigation } = await load('tools/anelf-gather-navigation.mjs')
+  const { bot, controller } = await navigation()
+  bot.blockAt = p => p.y === 62 ? solid : p.y >= 63 ? { ...solid, name: 'oak_leaves' } : solid
+  const nav = new GatherNavigation(bot, new Vec3(0, 64, 0), controller.signal)
+  assert.equal(nav.leafBreakable(new Vec3(2, 65, 0), 'high'), true)
+  assert.equal(nav.leafBreakable(new Vec3(2, 66, 0), 'high'), true)
+  assert.equal(nav.leafBreakable(new Vec3(2, 64, 0), 'high'), false)
+  assert.equal(nav.breakable(new Vec3(2, 64, 0), 'high', 63), true)
+  assert.equal(nav.breakable(new Vec3(2, 63, 0), 'high', 63), false)
+  assert.equal(nav.safeRoutePoint(new Vec3(2, 63, 0), 'high'), true)
+})
+
 test('a path update crossing a hole is cleared before the pathfinder can install it', async () => {
   const { bot, nav } = await navigation()
   nav.reachable = async () => true; nav.movements = () => ({})

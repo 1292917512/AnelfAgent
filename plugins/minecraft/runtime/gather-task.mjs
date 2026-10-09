@@ -149,7 +149,7 @@ export class GatherTask {
       const hit = this.bot.world.raycast(eye, direction.normalize(), 4)
       if (!hit || !('position' in hit) || !(hit.position instanceof Vec3) || hit.position.equals(target.position)) continue
       const obstruction = this.bot.blockAt(hit.position)
-      if (!obstruction || !navigation.breakable(hit.position, mode) || !safety.canHarvestBlock(this.bot, obstruction)) continue
+      if (!obstruction || !navigation.breakable(hit.position, mode, this.bot.entity.position.y) || !safety.canHarvestBlock(this.bot, obstruction)) continue
       try {
         await this.bot.tool.equipForBlock(obstruction, { requireHarvest: true, getFromChest: false })
         this.check(signal)
