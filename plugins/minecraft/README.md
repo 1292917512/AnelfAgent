@@ -316,6 +316,44 @@ node plugins/minecraft/tests/live-survival.cjs --java '<Java 25 的 java.exe 路
 制作验收使用单独目录（同样先放入 `server.jar`），防止覆盖生存验收的原始报告。
 诊断时可加 `--trace-inventory` 记录窗口/背包协议包，普通运行不保存这些包。
 
+## 模型链路响应基线
+
+`scripts/benchmark_minecraft.py` 使用真实应用、当前模型与独立 Java 26.1 测试服，
+固定背包查询、从三根原木制作木镐、跟随中自然语言停止和快捷 `!stop` 四类请求。
+每次还原起点、地形、库存及专用测试会话；真实输入由测试玩家发出，动作与到账从执行器读取，
+不以模拟模型或直接脚本耗时代替聊天链路。仅供本机开发验收，运行前保持应用空闲：
+
+```powershell
+uv run python -m scripts.benchmark_minecraft --output workspace/minecraft/diagnostics/m0-run-new --server-jar '<独立测试目录的 server.jar>' --java '<Java 25 路径>' --node '<Node 22 路径>' --payload workspace/minecraft/diagnostics/m1-runtime-20261009 --repeats 30 --timeout 90
+```
+
+输出目录必须是新的；`--scenarios inventory,production,stop,shortcut` 可选子集，默认四类。
+首次可用 `--repeats 1 --fail-fast` 检查夹具，但试采不替代正式样本。
+脚本临时替换 Minecraft MCP 启动参数，并设置专用世界会话标识、测试玩家及关闭局域网自动进服，
+不连接玩家世界；退出时关闭自建服务器，经配置接口恢复原设置。测试期间 bot 会暂时离开玩家服。
+`backup.json` 只保存在本机诊断目录，包含恢复所需的原配置；若进程被强杀，须据它恢复原 MCP 和频道字段。
+`restored.json` 记录恢复核对，MCP 或频道字段发生并发编辑时保留新编辑并明确报错，不能仅凭进程退出认定恢复完成。
+
+`manifest.json` 记录源码/配方负载校验依据、模型配置哈希与非密钥参数；逐次 `sample-*.json`
+包含初始条件、主机负载、服务器 tick 查询、入站/模型/工具/动作/回执时间、库存和失败事实。
+`summary.json` 使用 nearest-rank P50/P95，并列明总样本、失败、超时及每项时间的缺失数。
+续测使用新的输出目录；可用下述命令合并相同应用版本、模型配置和测试条件的记录，原样保留失败及按批次/工具数分组：
+
+```powershell
+uv run python -m scripts.minecraft_benchmark_report --runs '<第一批目录>' '<续测目录>' --output workspace/minecraft/diagnostics/m0-summary.json
+```
+
+模型调用计数为主对话统一调用入口的逻辑调用，不含前置检索规划、embedding 或 SDK 内部重试；
+相关后台反思另计。主回复及动作完成后结束该样本，下一次采样前等待后台队列清空，等待时间单独保存。
+读背包成功判据是实际查询工具及游戏回执，回复文本保留供核验；制作还要求新木镐到账、临时格子收尾及确定性完成播报。
+
+缓存按首轮供应商实际 usage 分类：可观测且读取为零是 cold，读取大于零是 warm；
+缺失或不可观测是 unknown，快捷指令为 not_applicable。重启应用、清测试历史都不证明供应商缓存已冷却。
+warm 只表示存在缓存读取，可能是部分命中；原始 usage 保留用于核对命中比例。追踪中断时样本计为 `trace_error`，
+已完成的游戏事实与缺失的模型计时分别保留，不能把仅观察到的调用数当作完整调用数。
+记录仅保留计时、请求 ID、用量等诊断字段，不保存模型推理正文，也不向提示词注入计时信息。
+报告中的 Node 事件循环延迟、服务器 tick 耗时和游戏客户端 FPS 是不同指标；脚本不测客户端 FPS。
+
 陪玩执行契约以 `channels/minecraft/reply_policy.py` 为唯一编辑源。修改后在仓库根目录运行
 `uv run python -m scripts.minecraft_contract`，同步随插件分发的技能契约块；其他技能章节保留。
 `channels/minecraft/tests/test_reply_contract.py` 校验同步结果，`scripts/check_minecraft.py`
