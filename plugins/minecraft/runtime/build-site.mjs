@@ -332,12 +332,21 @@ function woodCandidates (bot, logName, maxDistance) {
       const block = bot.blockAt(candidate.position)
       return block?.name === logName && candidate.position.y >= center.y - 3 && candidate.position.y <= center.y + 3
     })
-    .sort((a, b) => a.distance - b.distance)
+    // Start from the lowest log in a trunk column.  Starting at the top
+    // makes the bounded gather task treat the lower trunk as unreachable and
+    // can leave a floating tree behind.
+    .sort((a, b) => {
+      const horizontal = Math.hypot(a.position.x - center.x, a.position.z - center.z) -
+        Math.hypot(b.position.x - center.x, b.position.z - center.z)
+      return horizontal || a.position.y - b.position.y || a.distance - b.distance
+    })
 }
 
 /** @param {import('mineflayer').Bot} bot @param {{x:number,y:number,z:number}} target @param {AbortSignal} signal */
 async function walkToWood (bot, target, signal) {
   const pathfinder = bot.pathfinder
+  const standPoint = new Vec3(target.x, target.y + 1, target.z)
+  const targetPoint = new Vec3(target.x, target.y, target.z)
   if (pathfinder?.movements && typeof pathfinder.getPathTo === 'function') {
     const movement = pathfinder.movements
     const priorCanDig = movement.canDig
@@ -350,7 +359,7 @@ async function walkToWood (bot, target, signal) {
         await withTimeout(pathfinder.goto(goal), DEFAULT_ACTION_TIMEOUT_MS * 2, 'walk to authorized tree')
         signal.throwIfAborted()
         const arrived = bot.entity.position.floored()
-        if (Math.abs(arrived.y - target.y) <= 1) return true
+        if (Math.abs(arrived.y - standPoint.y) <= 1 && arrived.distanceTo(targetPoint) <= 8) return true
       }
     } finally {
       movement.canDig = priorCanDig
@@ -360,16 +369,17 @@ async function walkToWood (bot, target, signal) {
     signal.throwIfAborted()
     const entry = bot.entity.position.floored()
     const distance = Math.hypot(target.x - entry.x, target.z - entry.z)
-    if (distance <= 8 && Math.abs(entry.y - target.y) <= 1) return true
+    if (entry.distanceTo(targetPoint) <= 8 && Math.abs(entry.y - standPoint.y) <= 1) return true
     const step = Math.max(0, Math.min(8, distance - 6))
     const dx = distance === 0 ? 0 : (target.x - entry.x) / distance
     const dz = distance === 0 ? 0 : (target.z - entry.z) / distance
-    const waypointY = target.y < entry.y ? Math.max(target.y, entry.y - 1) : Math.min(target.y, entry.y + 1)
-    const waypoints = [
-      new Vec3(Math.round(entry.x + dx * step), waypointY, Math.round(entry.z + dz * step)),
-      new Vec3(Math.round(entry.x + dz * step), waypointY, Math.round(entry.z - dx * step)),
-      new Vec3(Math.round(entry.x - dz * step), waypointY, Math.round(entry.z + dx * step)),
-    ]
+    const waypointY = standPoint.y < entry.y ? Math.max(standPoint.y, entry.y - 1) : Math.min(standPoint.y, entry.y + 1)
+    const levelYs = waypointY === entry.y ? [entry.y] : [entry.y, waypointY]
+    const waypoints = levelYs.flatMap(y => [
+      new Vec3(Math.round(entry.x + dx * step), y, Math.round(entry.z + dz * step)),
+      new Vec3(Math.round(entry.x + dz * step), y, Math.round(entry.z - dx * step)),
+      new Vec3(Math.round(entry.x - dz * step), y, Math.round(entry.z + dx * step)),
+    ])
     let walked = false
     // Try the least destructive route first, then allow clearing obstacles
     // above the feet when foliage blocks every low-clearance route.
@@ -412,6 +422,7 @@ async function buildHome (ctx, bot, home, footprint, maxFillDepth, woodSearchRad
   /** @type {{plan:unknown,table:unknown}|null} */
   let production = null
   const tried = new Set()
+  const failures = []
   for (let tree = 0; tree < 12; tree++) {
     signal.throwIfAborted()
     if (wood) {
@@ -435,14 +446,21 @@ async function buildHome (ctx, bot, home, footprint, maxFillDepth, woodSearchRad
     for (const choice of choices) {
       tried.add(choice.key)
       if (wood && wood.log !== choice.log) continue
-      if (!await walkToWood(bot, choice.position, signal)) continue
+      if (!await walkToWood(bot, choice.position, signal)) {
+        failures.push(`${choice.key}: no bounded route`)
+        continue
+      }
       wood ??= { log: choice.log, plank: choice.plank }
-      const task = new GatherTask(ctx, bot, { block: wood.log, count: 32, x: choice.position.x, y: choice.position.y, z: choice.position.z, radius: 3, withdraw: [], deposit: false })
+      const entry = bot.entity.position.floored()
+      const task = new GatherTask(ctx, bot, { block: wood.log, count: 32, x: entry.x, y: entry.y, z: entry.z, radius: 3, withdraw: [], deposit: false })
       task.start(true); await task.done
       const result = task.snapshot()
       if (result.phase === 'completed' && result.gained > 0) { gathered = true; break }
+      failures.push(`${choice.key}: ${result.phase} ${result.reason || 'no inventory gain'}`)
     }
-    if (!gathered && !production) throw new ToolError('BUILD_MATERIALS_UNAVAILABLE', 'No reachable complete tree can supply the selected structural plank family within the bounded area.')
+    if (!gathered && !production) {
+      throw new ToolError('BUILD_MATERIALS_UNAVAILABLE', 'No reachable complete tree can supply the selected structural plank family within the bounded area.', failures.slice(-8))
+    }
   }
   if (!production) throw new ToolError('BUILD_MATERIALS_UNAVAILABLE', `Unable to prepare ${requiredPlanks} matching structural planks within the bounded tree budget.`)
   const craft = new ProductionTask(ctx, bot, production.plan, production.table)

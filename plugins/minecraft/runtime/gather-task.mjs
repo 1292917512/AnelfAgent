@@ -92,7 +92,10 @@ export class GatherTask {
     for (const p of positions) {
       if (allowed && !allowed.has(safety.key(p))) continue
       this.check(navigation.signal)
-      if (p.y < this.entry.y || (p.y > this.entry.y + 3 && !(allowed && allowed.has(safety.key(p))))) continue
+      // A standing player is above a ground-level trunk log. Keep a bounded
+      // lower band eligible so roots on a slope can be harvested without
+      // treating the supporting floor as an excavation target.
+      if (p.y < this.entry.y - 3 || (p.y > this.entry.y + 3 && !(allowed && allowed.has(safety.key(p))))) continue
       const block = this.bot.blockAt(p)
       if (!block || !safety.canHarvestBlock(this.bot, block)) continue
       const modes = p.y > this.entry.y + 2 ? ['scaffold'] : ['leaf', 'high', 'scaffold']
@@ -221,7 +224,7 @@ export class GatherTask {
       const key = safety.key(position)
       if (seen.has(key)) continue
       seen.add(key)
-      if (position.y < this.entry.y || position.y > maxY ||
+      if (position.y < this.entry.y - 3 || position.y > maxY ||
           Math.hypot(position.x - anchor.x, position.z - anchor.z) > maxHorizontal) continue
       const block = this.bot.blockAt(position)
       if (!block) continue

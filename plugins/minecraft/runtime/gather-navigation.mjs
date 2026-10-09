@@ -64,7 +64,10 @@ export class GatherNavigation {
       const feet = this.bot.blockAt(point), head = this.bot.blockAt(point.offset(0, 1, 0))
       return (clear(feet) || isLeafBlockName(feet?.name)) && (clear(head) || isLeafBlockName(head?.name))
     }
-    const minY = mode === 'high' ? this.entry.y - 1 : this.entry.y
+    // A tree root can sit several blocks below the bot on a gentle slope.
+    // Allow bounded descent through existing solid steps; floor blocks are
+    // still never breakable by this navigation mode.
+    const minY = mode === 'high' ? this.entry.y - 3 : this.entry.y
     const maxY = mode === 'high' ? this.entry.y + 1 : this.entry.y
     if (point.y < minY || point.y > maxY) return false
     const floor = this.bot.blockAt(point.offset(0, -1, 0))
@@ -98,7 +101,7 @@ export class GatherNavigation {
       // mineflayer-pathfinder asks this hook about the floor, feet and head
       // blocks around a route point. Checking the queried block itself would
       // reject every otherwise valid point because its floor is one block low.
-      const routeYs = mode === 'high' ? [this.entry.y - 1, this.entry.y, this.entry.y + 1] : [this.entry.y, this.entry.y + 1]
+      const routeYs = mode === 'high' ? [this.entry.y - 3, this.entry.y - 2, this.entry.y - 1, this.entry.y, this.entry.y + 1] : [this.entry.y, this.entry.y + 1]
       const allowed = routeYs.some(y => {
         const point = new Vec3(p.x, y, p.z)
         return p.y >= y - 1 && p.y <= y + 2 && this.safeRoutePoint(point, mode)
