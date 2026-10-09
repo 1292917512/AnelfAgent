@@ -7,6 +7,10 @@ const { goals } = pathfinderPkg
 import { ToolError } from '../util/errors.js'
 import { withTimeout } from '../util/async.js'
 import { DEFAULT_ACTION_TIMEOUT_MS } from '../config.js'
+import { GatherNavigation } from './anelf-gather-navigation.mjs'
+import { GatherTask } from './anelf-gather-task.mjs'
+import { findTable, inventoryClean, validateProductionSpace, ProductionTask } from './anelf-production-task.mjs'
+import { itemCount, planProduction } from './anelf-production-plan.mjs'
 
 /** @typedef {import('../context.js').Context} Context */
 /** @typedef {import('./registry.js').Registrar} Registrar */
@@ -18,6 +22,7 @@ const ACCEPTABLE = new Set([...PREFERRED, 'stone', 'cobblestone', 'deepslate'])
 const LIQUID = new Set(['water', 'lava'])
 const STRUCTURAL_PLANKS = ['oak_planks', 'birch_planks', 'spruce_planks', 'jungle_planks',
   'acacia_planks', 'dark_oak_planks', 'cherry_planks', 'mangrove_planks']
+const LOG_TYPES = STRUCTURAL_PLANKS.map(name => name.replace('_planks', '_log'))
 const REPLACEABLE_TEMPLATE_BLOCKS = new Set(['air', 'dirt', 'grass_block', 'coarse_dirt', 'podzol', 'mycelium'])
 const FOOTPRINT = 7
 const SCAN_UP = 8
@@ -167,21 +172,22 @@ function chooseFillMaterial (bot, needed) {
 }
 
 /** @param {Context} ctx @param {import('mineflayer').Bot} bot @param {Coord} home @param {number} footprint @param {number} maxFillDepth */
-async function prepare (ctx, bot, home, footprint, maxFillDepth) {
+async function prepare (ctx, bot, home, footprint, maxFillDepth, parentSignal = null) {
   const report = inspectSite(bot, home, footprint, maxFillDepth)
   if (!report.ok) throw new ToolError('BUILD_SITE_BLOCKED', `Build site rejected: ${report.reason}. Choose another site.`)
   const material = chooseFillMaterial(bot, report.fillBlocks)
   if (report.fillBlocks && !material) {
     throw new ToolError('BUILD_SITE_MISSING_FILL', `Build site needs ${report.fillBlocks} dirt/cobblestone/stone blocks before leveling.`)
   }
-  const handle = ctx.locks.begin('build_site', () => {
+  const handle = parentSignal ? null : ctx.locks.begin('build_site', () => {
     try { bot.pathfinder.stop(); bot.stopDigging() } catch { /* cleanup is best effort */ }
   })
+  const signal = parentSignal ?? handle.signal
   let dug = 0
   let filled = 0
   try {
     for (const column of report.columns) {
-      if (handle.signal.aborted) throw new ToolError('CANCELLED', 'Build-site preparation was cancelled.')
+      if (signal.aborted) throw new ToolError('CANCELLED', 'Build-site preparation was cancelled.')
       const desired = home.y - 1
       if (column.delta > 0) {
         for (let y = column.groundY; y > desired; y--) {
@@ -212,7 +218,7 @@ async function prepare (ctx, bot, home, footprint, maxFillDepth) {
     }
     return { ok: true, home, footprint, dug, filled, material: material?.name ?? null, verified: true }
   } finally {
-    handle.release()
+    if (handle) handle.release()
   }
 }
 
@@ -263,7 +269,7 @@ function chooseTemplateMaterial (bot, needed) {
 }
 
 /** @param {import('../context.js').Context} ctx @param {import('mineflayer').Bot} bot @param {Coord} home @param {'foundation'|'walls'|'roof'} phase */
-async function buildTemplate (ctx, bot, home, phase) {
+async function buildTemplate (ctx, bot, home, phase, parentSignal = null) {
   const targets = templateTargets(home, phase)
   const material = chooseTemplateMaterial(bot, targets.length)
   const missing = targets.filter(target => bot.blockAt(new Vec3(target.x, target.y, target.z))?.name !== material.name)
@@ -271,13 +277,14 @@ async function buildTemplate (ctx, bot, home, phase) {
     throw new ToolError('BUILD_MISSING_MATERIALS', `starter_cabin_v1 ${phase} needs ${missing.length} ${material.name}; available ${material.count}.`,
       [`Prepare ${missing.length} ${material.name} before construction. Dirt is never accepted as a structural material.`, JSON.stringify(material.available ?? {})])
   }
-  const handle = ctx.locks.begin('build_template', () => {
+  const handle = parentSignal ? null : ctx.locks.begin('build_template', () => {
     try { bot.pathfinder.stop(); bot.stopDigging() } catch { /* cleanup is best effort */ }
   })
+  const signal = parentSignal ?? handle.signal
   let placed = 0; let replaced = 0
   try {
     for (const target of targets) {
-      if (handle.signal.aborted) throw new ToolError('CANCELLED', 'Template construction was cancelled.')
+      if (signal.aborted) throw new ToolError('CANCELLED', 'Template construction was cancelled.')
       let block = bot.blockAt(new Vec3(target.x, target.y, target.z))
       if (block?.name === material.name) continue
       if (block && !REPLACEABLE_TEMPLATE_BLOCKS.has(block.name)) {
@@ -308,11 +315,138 @@ async function buildTemplate (ctx, bot, home, phase) {
     }
     return { ok: true, template: 'starter_cabin_v1', phase, material: material.name, placed, replaced, verified: true }
   } finally {
-    handle.release()
+    if (handle) handle.release()
   }
 }
 
 export { buildTemplate as buildStarterCabin }
+
+/** @param {import('mineflayer').Bot} bot @param {string} logName @param {number} maxDistance */
+function woodCandidates (bot, logName, maxDistance) {
+  const definition = bot.registry?.blocksByName?.[logName]
+  if (!definition || !Number.isInteger(definition.id)) return []
+  const center = bot.entity.position.floored()
+  return bot.findBlocks({ matching: definition.id, point: center, maxDistance, count: 32 })
+    .map(position => ({ position, distance: position.distanceTo(center) }))
+    .filter(candidate => {
+      const block = bot.blockAt(candidate.position)
+      return block?.name === logName && candidate.position.y >= center.y - 2 && candidate.position.y <= center.y + 3
+    })
+    .sort((a, b) => a.distance - b.distance)
+}
+
+/** @param {import('mineflayer').Bot} bot @param {{x:number,y:number,z:number}} target @param {AbortSignal} signal */
+async function walkToWood (bot, target, signal) {
+  const pathfinder = bot.pathfinder
+  if (pathfinder?.movements && typeof pathfinder.getPathTo === 'function') {
+    const movement = pathfinder.movements
+    const priorCanDig = movement.canDig
+    movement.canDig = false
+    try {
+      const goal = new goals.GoalNearXZ(target.x, target.z, 2)
+      const result = pathfinder.getPathTo(movement, goal, 1500)
+      if (result?.status === 'success' && result.path?.length) {
+        signal.throwIfAborted()
+        await withTimeout(pathfinder.goto(goal), DEFAULT_ACTION_TIMEOUT_MS * 2, 'walk to authorized tree')
+        signal.throwIfAborted()
+        return true
+      }
+    } finally {
+      movement.canDig = priorCanDig
+    }
+  }
+  for (let hop = 0; hop < 6; hop++) {
+    signal.throwIfAborted()
+    const entry = bot.entity.position.floored()
+    const distance = Math.hypot(target.x - entry.x, target.z - entry.z)
+    if (distance <= 8) return true
+    const step = Math.min(8, distance - 6)
+    const dx = (target.x - entry.x) / distance; const dz = (target.z - entry.z) / distance
+    const waypoints = [
+      new Vec3(Math.round(entry.x + dx * step), entry.y, Math.round(entry.z + dz * step)),
+      new Vec3(Math.round(entry.x + dz * step), entry.y, Math.round(entry.z - dx * step)),
+      new Vec3(Math.round(entry.x - dz * step), entry.y, Math.round(entry.z + dx * step)),
+    ]
+    const navigation = new GatherNavigation(bot, entry, signal)
+    let walked = false
+    for (const waypoint of waypoints) {
+      if (!navigation.safeRoutePoint(waypoint, 'leaf') || !await navigation.reachable(bot.entity.position, waypoint, 'leaf')) continue
+      await navigation.walk(waypoint, 'leaf')
+      walked = true
+      break
+    }
+    if (!walked) return false
+  }
+  return false
+}
+
+/** @param {import('mineflayer').Bot} bot @param {Coord} home @param {AbortSignal} signal */
+async function walkHome (bot, home, signal) {
+  const pathfinder = bot.pathfinder
+  if (!pathfinder?.movements || typeof pathfinder.getPathTo !== 'function') throw new ToolError('BUILD_NO_RETURN_ROUTE', 'Pathfinder is unavailable for the return to the home site.')
+  const target = { x: home.x + 3, y: home.y, z: home.z - 2 }
+  const goal = new goals.GoalNear(target.x, target.y, target.z, 2)
+  const result = pathfinder.getPathTo(pathfinder.movements, goal, 1000)
+  if (result?.status !== 'success' || !(result.path?.length > 0)) throw new ToolError('BUILD_NO_RETURN_ROUTE', 'No confirmed route from the authorized tree area back to the home site.')
+  signal.throwIfAborted()
+  await withTimeout(pathfinder.goto(goal), DEFAULT_ACTION_TIMEOUT_MS * 2, 'return to home')
+  signal.throwIfAborted()
+}
+
+/** @param {import('../context.js').Context} ctx @param {import('mineflayer').Bot} bot @param {Coord} home @param {number} footprint @param {number} maxFillDepth @param {number} woodSearchRadius @param {AbortSignal} signal */
+async function buildHome (ctx, bot, home, footprint, maxFillDepth, woodSearchRadius, signal) {
+  if (!inventoryClean(bot)) throw new ToolError('BUSY', 'Close other windows and recover the inventory before building.')
+  const site = await prepare(ctx, bot, home, footprint, maxFillDepth, signal)
+  if (typeof bot.waitForChunksToLoad === 'function') await withTimeout(bot.waitForChunksToLoad(), 10000, 'load nearby chunks')
+  const requiredPlanks = templateTargets(home, 'foundation').length + templateTargets(home, 'walls').length + templateTargets(home, 'roof').length
+  /** @type {{log:string,plank:string}|null} */
+  let wood = null
+  /** @type {{plan:unknown,table:unknown}|null} */
+  let production = null
+  const tried = new Set()
+  for (let tree = 0; tree < 12; tree++) {
+    signal.throwIfAborted()
+    if (wood) {
+      const table = findTable(bot)
+      try {
+        const plan = planProduction(bot, wood.plank, requiredPlanks, 'ensure', Boolean(table))
+        validateProductionSpace(bot, plan)
+        production = { plan, table }
+        break
+      } catch (error) {
+        if (!(error instanceof ToolError) || error.code !== 'MISSING_MATERIALS') throw error
+      }
+    }
+    const choices = []
+    for (const log of LOG_TYPES) for (const candidate of woodCandidates(bot, log, woodSearchRadius)) {
+      const key = `${log}:${candidate.position.x},${candidate.position.y},${candidate.position.z}`
+      if (!tried.has(key)) choices.push({ log, plank: log.replace('_log', '_planks'), ...candidate, key })
+    }
+    choices.sort((a, b) => a.distance - b.distance)
+    let gathered = false
+    for (const choice of choices) {
+      tried.add(choice.key)
+      if (wood && wood.log !== choice.log) continue
+      if (!await walkToWood(bot, choice.position, signal)) continue
+      wood ??= { log: choice.log, plank: choice.plank }
+      const task = new GatherTask(ctx, bot, { block: wood.log, count: 32, x: choice.position.x, y: choice.position.y, z: choice.position.z, radius: 3, withdraw: [], deposit: false })
+      task.start(true); await task.done
+      const result = task.snapshot()
+      if (result.phase === 'completed' && result.gained > 0) { gathered = true; break }
+    }
+    if (!gathered && !production) throw new ToolError('BUILD_MATERIALS_UNAVAILABLE', 'No reachable complete tree can supply the selected structural plank family within the bounded area.')
+  }
+  if (!production) throw new ToolError('BUILD_MATERIALS_UNAVAILABLE', `Unable to prepare ${requiredPlanks} matching structural planks within the bounded tree budget.`)
+  const craft = new ProductionTask(ctx, bot, production.plan, production.table)
+  craft.start(true); await craft.done
+  const crafted = craft.snapshot()
+  if (crafted.phase !== 'completed' || crafted.available < requiredPlanks || !crafted.inventoryClean) throw new ToolError('BUILD_MATERIALS_UNAVAILABLE', `Structural plank preparation was not confirmed: ${crafted.reason}`)
+  await walkHome(bot, home, signal)
+  const verified = await prepare(ctx, bot, home, footprint, maxFillDepth, signal)
+  const phases = []
+  for (const phase of ['foundation', 'walls', 'roof']) phases.push(await buildTemplate(ctx, bot, home, /** @type {'foundation'|'walls'|'roof'} */ (phase), signal))
+  return { ok: true, home, site, wood, requiredPlanks, crafted, verified, phases }
+}
 
 /** @param {Registrar} reg */
 export function registerBuildSite (reg) {
@@ -348,5 +482,22 @@ export function registerBuildSite (reg) {
     },
     description: 'Deterministically build one starter_cabin_v1 structural phase. Uses only carried wood plank material, preflights the whole phase before placing, replaces only owned natural placeholder blocks, verifies every placement, and refuses dirt as a wall or roof. Prepare missing planks before retrying.',
     handler: (args, ctx) => buildTemplate(ctx, ctx.manager.requireBot(), args.home, args.phase),
+  })
+  reg({
+    name: 'build_starter_home', group: 'build', annotations: { destructiveHint: true },
+    inputSchema: {
+      searchRadius: z.number().int().min(8).max(48).optional().describe('Search radius for the home site, default 24'),
+      footprint: z.number().int().min(5).max(9).optional().describe('Square house footprint, default 7'),
+      maxFillDepth: z.number().int().min(0).max(4).optional().describe('Maximum leveling depth, default 2'),
+      woodSearchRadius: z.number().int().min(8).max(32).optional().describe('Bounded search radius for reachable trees, default 32'),
+    },
+    description: 'Run one deterministic starter_cabin_v1 build: select a reachable plains site, level and verify it, gather complete nearby trees, craft matching planks, return to the same site, then build foundation, walls and roof. The model should call this once instead of orchestrating the individual build and preparation tools. It never uses dirt as structural material, never issues per-block place_block calls, and stops with a concrete error before unsafe or partial phases.',
+    handler: async (args, ctx) => {
+      const bot = ctx.manager.requireBot()
+      const result = findBuildSite(bot, bot.entity.position.floored(), args.searchRadius ?? 24, args.footprint ?? FOOTPRINT, args.maxFillDepth ?? 2)
+      if (!result.ok) throw new ToolError('NO_SAFE_BUILD_SITE', 'No reachable plains-like site passed the house safety checks.')
+      return buildHome(ctx, bot, result.home, args.footprint ?? FOOTPRINT, args.maxFillDepth ?? 2,
+        args.woodSearchRadius ?? 32, ctx.locks.action?.controller.signal ?? new AbortController().signal)
+    },
   })
 }

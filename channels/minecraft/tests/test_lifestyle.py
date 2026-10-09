@@ -59,9 +59,10 @@ async def test_lifestyle_waits_for_idle_and_runs_one_reflection(monkeypatch: pyt
     assert "find_build_site" in content
     assert "prepare_build_site" in content
     assert "Never invent home coordinates" in content
-    assert "including walls, roof, and interior" in content
+    assert "builds foundation, walls, and roof" in content
     assert "build_starter_cabin" in content
-    assert "matching pair" in content
+    assert "build_starter_home" in content
+    assert "gathers complete trees" in content
     assert "never accepts dirt as structural material" in content
 
 

@@ -13,7 +13,7 @@ from core.entity import EntityRegistry, EntityType
 from .receipts import game_result_receipt, handed_to_game_events
 
 COMPANION_GAME_TOOLS = frozenset({
-    "get_inventory", "get_state", "get_block_at", "place_block", "craft_item", "mine_resources", "prepare_item", "production_status",
+    "get_inventory", "get_state", "get_block_at", "place_block", "craft_item", "mine_resources", "prepare_item", "production_status", "build_starter_home",
     "manage_supplies", "supply_status",
     "gather_resources", "gathering_status",
 })
@@ -21,7 +21,7 @@ COMPANION_GAME_TOOLS = frozenset({
 COMPANION_INITIAL_GAME_TOOLS = (
     "get_inventory", "get_state", "get_observation", "list_players", "goto", "follow_entity",
     "cancel_task", "action_status", "pause_action", "resume_action",
-    "prepare_item", "production_status", "manage_supplies", "supply_status",
+    "prepare_item", "production_status", "build_starter_home", "manage_supplies", "supply_status",
     "gather_resources", "gathering_status", "mine_resources", "mining_status", "return_from_mine", "resume_mining",
 )
 COMPANION_DIALOGUE_TOOLS = (
