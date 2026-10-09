@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 from typing import Optional, Tuple
+from urllib.parse import urlsplit
 
 from core.log import log
 from core.plugins.manifest import PluginError
@@ -123,10 +124,14 @@ def _dir_fingerprint(root: Path) -> str:
 
 def _repo_dir_name(url: str) -> str:
     """从仓库地址推导目录名（清单缺省 name 时按仓库名回退）。"""
-    text = url.rstrip("/")
+    text = url.replace("\\", "/").rstrip("/")
+    if "://" in text:
+        text = urlsplit(text).path.rstrip("/")
     if ":" in text and not text.startswith(("http://", "https://", "file://", "ssh://")):
         text = text.split(":")[-1]  # git@host:owner/repo 形式
     name = text.split("/")[-1] or "repo"
+    if name in {".", ".."} or ":" in name:
+        raise PluginError(f"仓库目录名非法: {name}")
     return name[:-4] if name.endswith(".git") else name
 
 
@@ -143,6 +148,12 @@ def fetch_git(url: str, ref: str, staging: Path, *, subdir: str = "",
     默认分支再按 sha 定点拉取（--branch 不接受 sha）。
     """
     clone_dir = staging / _repo_dir_name(url)
+    staging_root = staging.resolve()
+    if not clone_dir.resolve().is_relative_to(staging_root):
+        raise PluginError("仓库克隆路径越出暂存目录")
+    payload = clone_dir / subdir if subdir else clone_dir
+    if not payload.resolve().is_relative_to(clone_dir.resolve()):
+        raise PluginError(f"插件子目录越出仓库: {subdir}")
     if ref and _is_commit_sha(ref):
         _run_git(["clone", "--depth", "1", url, str(clone_dir)], timeout=timeout)
         _run_git(["fetch", "--depth", "1", "origin", ref], cwd=clone_dir, timeout=timeout)
@@ -154,7 +165,8 @@ def fetch_git(url: str, ref: str, staging: Path, *, subdir: str = "",
         args += [url, str(clone_dir)]
         _run_git(args, timeout=timeout)
     sha = _run_git(["rev-parse", "HEAD"], cwd=clone_dir)
-    payload = clone_dir / subdir if subdir else clone_dir
+    if not payload.resolve().is_relative_to(clone_dir.resolve()):
+        raise PluginError(f"插件子目录越出仓库: {subdir}")
     if not payload.is_dir():
         raise PluginError(f"仓库中不存在插件子目录: {subdir}")
     return payload, sha

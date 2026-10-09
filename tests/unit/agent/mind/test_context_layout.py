@@ -40,6 +40,24 @@ _BASE_KWARGS = dict(
 
 
 class TestTailInjectionLayout:
+    async def test_channel_contract_is_scoped_after_history(self, monkeypatch) -> None:
+        from agent.channel.reply_policy import ReplyPolicy
+
+        monkeypatch.setattr(
+            "agent.channel.reply_policy.get_reply_policy",
+            lambda adapter, manager=None: ReplyPolicy(instructions="游戏派工契约") if adapter == "game" else ReplyPolicy(),
+        )
+        pfc = _pfc()
+        game = await pfc.build_llm_context(**_BASE_KWARGS, adapter_key="game")
+        other = await pfc.build_llm_context(**_BASE_KWARGS, adapter_key="webui")
+        assert _layers(game).index("channel_policy") > _layers(game).index("conversation")
+        assert "channel_policy" not in _layers(other)
+        block = next(msg for msg in game if msg.get("_layer") == "channel_policy")
+        assert block["_source"] == {"origin": "channel_policy"}
+        assert [msg for msg in game if msg.get("_layer") in {"stable", "summary", "conversation"}] == [
+            msg for msg in other if msg.get("_layer") in {"stable", "summary", "conversation"}
+        ]
+
     async def test_dynamic_zone_after_history(self) -> None:
         """默认布局：stable → 摘要 → 历史 → 尾部动态区（便签在最前，画像/召回随后）。"""
         pfc = _pfc()

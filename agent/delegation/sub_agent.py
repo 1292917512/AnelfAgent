@@ -275,7 +275,12 @@ class SubAgent:
     # ------------------------------------------------------------------
 
     async def run(self) -> SubAgentResult:
-        """执行子任务并返回结果摘要。"""
+        """执行子任务并返回结果摘要。
+
+        ModelExperience：缺失总结时只补交已有事实，禁止把未交总结解释为未执行。
+        Token：补交占用现有轮次预算，不重新执行任务。
+        Cache：纠正提示追加在消息尾部，工具目录与任务前缀保持稳定。
+        """
         depth = current_depth()
         agent_tag = f", agent={self.agent_name}" if self.agent_name else ""
         continuation_tag = f", 续跑自={self.parent_delegation_id}" if self.parent_delegation_id else ""
@@ -290,7 +295,6 @@ class SubAgent:
         extra_blocked = {"delegate_task"} if self.role == _ROLE_LEAF else set()
         if self.facets and self.facets.blocked_tools:
             extra_blocked.update(self.facets.blocked_tools)
-        extra_blocked = extra_blocked or None
 
         token = _delegate_depth.set(depth + 1)
         timeout = delegation_timeout_seconds()
@@ -332,10 +336,11 @@ class SubAgent:
                             messages,
                             max_iterations=self.max_iterations,
                             allow_output_tools=False,
-                            extra_blocked_tools=extra_blocked,
+                            extra_blocked_tools=extra_blocked or None,
                             tool_tags=tool_tags,
                             options=options,
                             completion=completion,
+                            require_output=True,
                         ),
                         timeout=timeout,
                     )
@@ -358,6 +363,9 @@ class SubAgent:
             )
         finally:
             # 委托执行结束（无论成败/超时）：清箱防残留指令误入后续同名委托
+            from core.tool_context import forget_control_delegate
+
+            forget_control_delegate(self.delegation_id)
             if self.delegation_id:
                 steer_inbox.clear(self.delegation_id)
             _delegate_depth.reset(token)
@@ -372,7 +380,8 @@ class SubAgent:
         if not output:
             return SubAgentResult(
                 goal=self.goal, success=False,
-                error="子代理未产出任何结果",
+                error=("子代理未提交最终总结；可能已执行部分或全部操作，请先只读核验，"
+                       "不能据此认定未执行或从头重做"),
                 role=self.role, task_index=self.task_index,
                 completed_reason="no_output" if reason == "completed" else reason,
                 messages=final_messages, schema_ok=schema_ok,

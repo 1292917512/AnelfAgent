@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 from typing import Any, List
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -127,6 +127,30 @@ class TestHeartbeatDecisionDeferral:
             if len(scheduled) >= 1:
                 break
         assert scheduled == [DecisionType.REPLY.value]
+
+
+@pytest.mark.parametrize("heartbeat", [False, True])
+async def test_direct_channel_owns_request_and_preserves_background_work(monkeypatch, heartbeat: bool) -> None:
+    from agent.channel.reply_policy import ReplyPolicy
+
+    monkeypatch.setattr("agent.channel.reply_policy.get_reply_policy",
+                        lambda adapter: ReplyPolicy(direct_reply=adapter == "game"))
+    mind = _fake_mind()
+    mind._heartbeat_running = True
+    mind._gather_situation = AsyncMock(side_effect=AssertionError("must not decide the same game request again"))
+    mind._collect_active_goals = AsyncMock(side_effect=AssertionError("unrelated goals must not delay the request"))
+    mind.pfc.peek_all_tasks = lambda: [("group_game:local", "player", "local", "制作工具"),
+                                     ("user_webui:other", "other", "", "其他请求")]
+    mind.pfc.get_adapter_key = lambda scope: "game" if scope.startswith("group_game:") else "webui"
+    mind.pfc.peek_general_tasks = lambda: ["unrelated task"]
+    mind.pfc.pending_analysis = ["unrelated profile"]
+    mind.pfc.clear_general_tasks_before = Mock()
+    await cycle_mod._cycle_body(mind, {}, is_heartbeat=heartbeat)
+    await asyncio.sleep(0)
+    assert mind._safe_execute.await_count == 1
+    decision = mind._safe_execute.await_args.args[0]
+    assert decision.type == DecisionType.REPLY and decision.target == "group_game:local"
+    mind.pfc.clear_general_tasks_before.assert_called_once_with(0)
 
 
 class TestSituationSummary:

@@ -200,8 +200,8 @@ class PrefrontalCortex:
     def activate_media_tools(self, images: list, media_segments: list) -> None:
         self.tool_assembly.activate_media_tools(images, media_segments)
 
-    def expand_discovered_tools(self, tool_calls: list) -> None:
-        self.tool_assembly.expand_discovered_tools(tool_calls)
+    def expand_discovered_tools(self, tool_calls: list, scope: str = "") -> None:
+        self.tool_assembly.expand_discovered_tools(tool_calls, scope)
 
     def clear_dynamic_tools(self, scope: str = "") -> None:
         self.tool_assembly.clear_dynamic_tools(scope)

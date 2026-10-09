@@ -75,6 +75,24 @@ async def _cycle_body(mind: "Mind", end_payload: Dict[str, Any], *, is_heartbeat
         end_payload["reason"] = "no_pending"
         return
 
+    # 交互频道的请求由回复会话独占；无关后台目标不应再派生同一请求的工具反思。
+    from agent.channel.reply_policy import get_reply_policy
+
+    direct = [
+        PendingMessage(scope=scope, uid=uid, group_id=gid, preview=preview,
+                       adapter_key=mind.pfc.get_adapter_key(scope), timestamp=time.time())
+        for scope, uid, gid, preview in cheap_pending
+        if get_reply_policy(mind.pfc.get_adapter_key(scope)).direct_reply
+    ]
+    if direct:
+        log(f"channel fast-path: {len(direct)} direct replies (no meta-decision)", tag="思维")
+        await _execute_decisions_and_finalize(
+            mind, end_payload, SituationContext(pending_messages=direct),
+            [Decision(type=DecisionType.REPLY, target=pm.scope, priority=10) for pm in direct],
+            is_heartbeat=is_heartbeat, consume_general_tasks=False,
+        )
+        return
+
     # fast-path：有消息、无任务/画像/目标时直接 REPLY，跳过元决策和昂贵查询
     if (not is_heartbeat and cheap_pending and not cheap_tasks
             and cheap_profiles == 0):
@@ -173,6 +191,7 @@ async def _execute_decisions_and_finalize(
         decisions: List[Decision],
         *,
         is_heartbeat: bool = False,
+        consume_general_tasks: bool = True,
 ) -> None:
     """执行决策列表并完成周期收尾（供 fast-path 和主路径复用）。
 
@@ -206,7 +225,7 @@ async def _execute_decisions_and_finalize(
             name=f"agent.mind.bg.{d.type.value}",
         )
 
-    snapshot_count = len(mind.pfc.peek_general_tasks())
+    snapshot_count = len(mind.pfc.peek_general_tasks()) if consume_general_tasks else 0
 
     exec_ok: List[bool] = []
     if immediate:

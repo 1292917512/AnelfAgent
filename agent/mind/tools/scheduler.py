@@ -250,6 +250,19 @@ async def remove_reminder(reminder_id: str) -> bool:
     return True
 
 
+async def remove_scope_reminders(scopes: set[str]) -> int:
+    """取消指定会话尚未触发的提醒，读写与心跳检查共用同一把锁。"""
+    if not scopes:
+        return 0
+    async with _reminders_lock:
+        reminders = await asyncio.to_thread(_load_reminders)
+        kept = [r for r in reminders if r.get("scope") not in scopes]
+        removed = len(reminders) - len(kept)
+        if removed:
+            await asyncio.to_thread(_save_reminders, kept)
+    return removed
+
+
 async def _append_one_shot_history(
         pfc: Any, scope: str, channel: str, prompt: str) -> bool:
     """一次性事件通知写入目标会话的对话历史（system 角色，不触发思维）。

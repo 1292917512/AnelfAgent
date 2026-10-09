@@ -42,6 +42,13 @@ def test_parse_run_at_invalid() -> None:
     assert scheduler._parse_run_at("") is None
 
 
+async def test_cancel_scope_reminders_preserves_other_conversations() -> None:
+    for scope in ("group_minecraft:local", "user_minecraft:local/Alice", "group_minecraft:other", "user_qq:123"):
+        await scheduler.add_reminder("待办", time.time() + 600, scope)
+    assert await scheduler.remove_scope_reminders({"group_minecraft:local", "user_minecraft:local/Alice"}) == 2
+    assert {r["scope"] for r in scheduler._load_reminders()} == {"group_minecraft:other", "user_qq:123"}
+
+
 @pytest.mark.asyncio
 async def test_schedule_reminder_persists_and_lists() -> None:
     class FakePFC:

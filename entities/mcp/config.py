@@ -156,6 +156,9 @@ class MCPServerConfig:
     sse_read_timeout: float = 300.0
     call_timeout: float = _DEFAULT_CALL_TIMEOUT
     plugin: str = ""
+    # Windows stdio 子进程优先级（"" = SDK 默认；below_normal/idle 让吃 CPU 的
+    # 本地服务（如 minecraft 区块解析）不抢占同机主程序——MCP 桥 spawn 时生效）
+    priority: str = ""
     # OAuth 客户端配置（{"client_id"/"clientId", "scopes", ...}；缺省走动态注册）
     oauth: Dict[str, Any] = field(default_factory=dict)
 
@@ -269,9 +272,11 @@ class MCPServerStore:
         "call_timeout",
         "stay_awake",
         "plugin",
+        "priority",
         "oauth",
     })
     _SERVER_ALLOWED_TRANSPORTS = frozenset({"stdio", "streamable_http", "sse"})
+    _SERVER_ALLOWED_PRIORITIES = frozenset({"normal", "below_normal", "idle"})
     _SECRET_MASK = "********"
     _SECRET_FIELDS = ("env", "headers")
 
@@ -342,6 +347,7 @@ class MCPServerStore:
                 "timeout": "连接超时秒数（>0）",
                 "sse_read_timeout": "SSE 读取超时秒数（>0）",
                 "call_timeout": "工具调用超时秒数（>0）",
+                "priority": "Windows stdio 子进程优先级（normal/below_normal/idle，仅本机 spawn 生效）",
             },
             "required_one_of": ["url", "command"],
             "allowed_transports": sorted(cls._SERVER_ALLOWED_TRANSPORTS),
@@ -433,6 +439,17 @@ class MCPServerStore:
             if key in {"enabled", "stay_awake"}:
                 normalized[key] = cls._to_bool(val)
                 continue
+            if key == "priority":
+                text = str(val).strip().lower()
+                if not text:
+                    normalized[key] = None
+                elif text in cls._SERVER_ALLOWED_PRIORITIES:
+                    normalized[key] = text
+                else:
+                    raise ValueError(
+                        f"priority 必须是 {', '.join(sorted(cls._SERVER_ALLOWED_PRIORITIES))}"
+                    )
+                continue
             if key == "plugin":
                 normalized[key] = str(val).strip() or None
                 continue
@@ -499,6 +516,17 @@ class MCPServerStore:
                 if num <= 0:
                     raise ValueError(f"{key} 必须 > 0")
                 final[key] = num
+
+        if "priority" in final:
+            text = str(final["priority"] or "").strip().lower()
+            if not text:
+                final.pop("priority", None)
+            elif text not in cls._SERVER_ALLOWED_PRIORITIES:
+                raise ValueError(
+                    f"priority 必须是 {', '.join(sorted(cls._SERVER_ALLOWED_PRIORITIES))}"
+                )
+            else:
+                final["priority"] = text
 
         return final
 

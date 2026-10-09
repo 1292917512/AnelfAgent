@@ -32,6 +32,7 @@ if TYPE_CHECKING:
         BackgroundTaskRegistry,
         TaskCompletion,
     )
+    from agent.mind.context_compressor import ContextCompressor
     from agent.mind.guardrails import GuardrailController
     from agent.mind.mind import Mind
 
@@ -168,6 +169,8 @@ class _ThinkLoopCtx:
     # REFLECT 模式的工具选择器（mind.reflect 传入）：工具集版本变化重建
     # active_tools 时按同批选择器还原精简目录；REPLY 模式不使用
     reflect_tool_selectors: tuple[str, ...] = ()
+    require_output: bool = False
+    summary_only: bool = False
 
 
 # ==================================================================
@@ -233,6 +236,7 @@ async def _prepare_think_context(
         blocked_tools: Optional[Set[str]] = None,
         completion: Optional[Dict] = None,
         reflect_tool_selectors: Optional[List[str]] = None,
+        require_output: bool = False,
 ) -> tuple[_ThinkLoopCtx, _ThinkRoundState]:
     """think_loop 会话初始化：adapter/基线消息/快照水位/守卫/管线/流式探测。"""
     from agent.mind.guardrails import GuardrailController
@@ -305,6 +309,7 @@ async def _prepare_think_context(
 
     ctx = _ThinkLoopCtx(
         mind=mind,
+        require_output=require_output,
         mode=mode,
         anything=anything,
         adapter_key=adapter_key,
@@ -699,6 +704,7 @@ def _merge_steered_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> None
     messages = drain_steered_messages("steer")
     if not messages:
         return
+    ctx.summary_only = False
     lines = ["[转向指令] 委托方在你执行期间发来新指令，请据此调整当前工作"
              "（不否定已完成部分，按需修正方向）："]
     lines.extend(f"- {msg}" for msg in messages)
@@ -720,6 +726,7 @@ def merge_after_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> bool:
     messages = drain_steered_messages("after")
     if not messages:
         return False
+    ctx.summary_only = False
     lines = ["[追加指令] 委托方在你即将收束时发来追加要求，请在既有进展上继续完成："]
     lines.extend(f"- {msg}" for msg in messages)
     ctx.tool_chain.append({"role": "user", "content": "\n".join(lines),
@@ -732,12 +739,13 @@ def merge_after_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> bool:
 async def _emit_context_usage(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> None:
     """上下文用量快照（usage 锚定：API 真实用量优先；供 webui 状态栏显示）。"""
     mind = ctx.mind
-    if mind.compressor is None:
+    compressor: Optional["ContextCompressor"] = getattr(mind, "compressor", None)
+    if compressor is None:
         return
     try:
-        _tokens = state.last_input_tokens or mind.compressor.estimate_tokens(
+        _tokens = state.last_input_tokens or compressor.estimate_tokens(
             ctx.base_messages + ctx.tool_chain)
-        _threshold = mind.compressor.threshold_tokens()
+        _threshold = compressor.threshold_tokens()
         _window = mind.get_model_context_length()
         if _threshold > 0:
             await event_bus.emit(EVENT_CONTEXT_USAGE, {
@@ -1122,24 +1130,16 @@ def _collect_round_failures(tool_chain: List[Dict], tool_calls: List["ToolCall"]
 
 
 # ------------------------------------------------------------------
-# Plan 程序级自动进度（不依赖 AI 调 update_goal）
+# Plan 显式进度与终态收敛
 #
-# 设计原则：进度由程序从执行流自动推断，AI 不需要
-# 主动汇报；AI 调 update_goal 只是"可选的精确标记"，不是必要条件。
+# 步骤进度由 update_goal 按结果显式更新，不从调用次数推断。
 #
 # 全部状态机与事件发射统一由 ``agent.planning.tracker`` 实现：
 # - present_plan 工具 → tracker.submit_plan（公告 + 首步 in_progress）
-# - 每轮工具批次后 → tracker.advance_plan_step（粗粒度兜底）
+# - update_goal → 明确标记已完成步骤
 # - finish_think → tracker.finalize_plan（收敛终态，诚实语义）
 # - cancel-plan 路由 → tracker.cancel_plan
 # ------------------------------------------------------------------
-
-# 计划管理工具：调用它们不算"执行了一步"，不触发自动推进。
-# 否则 present_plan 当轮 step 0 就被误标完成（进度超前 bug）。
-_PLAN_MANAGEMENT_TOOL_NAMES = frozenset({
-    "present_plan", "update_goal", "create_goal", "list_goals", "get_goal", "delete_goal",
-})
-
 
 def _round_output_sent_successfully(
         tool_chain: List[Dict], tool_calls: List["ToolCall"],
@@ -1383,7 +1383,7 @@ def _push_approval_reminder(
 
 
 def _make_approval_notifier(
-        mind: Optional["Mind"], scope: str) -> Optional[object]:
+        mind: Optional["Mind"], scope: str) -> Optional[Callable[[str], Awaitable[None]]]:
     """构造给 gate 的提醒回调：经 PushHub 写短期记忆（带节流）。"""
     if mind is None or not scope:
         return None

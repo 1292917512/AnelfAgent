@@ -1,17 +1,31 @@
 """插件清单与市场目录解析测试。"""
 
 import json
+from pathlib import Path
 
 import pytest
 
 from core.plugins.manifest import (
     PluginError,
+    PluginManifest,
     find_manifest_file,
     load_plugin_mcp_servers,
     parse_manifest,
     parse_marketplace,
     validate_plugin_name,
 )
+
+
+def test_mcp_plugin_root_is_portable(tmp_path: Path) -> None:
+    manifest = PluginManifest(name="mc", mcp_servers_inline={"mc": {
+        "command": "node", "args": ["${PLUGIN_ROOT}/server.js"],
+        "env": {"HOME": "${PLUGIN_ROOT}/state", "TOKEN": "${MY_TOKEN}"},
+    }})
+    config = load_plugin_mcp_servers(tmp_path, manifest)["mc"]
+    assert config["args"] == [str(tmp_path.resolve()) + "/server.js"]
+    assert config["env"]["HOME"] == str(tmp_path.resolve()) + "/state"
+    assert config["env"]["TOKEN"] == "${MY_TOKEN}"
+    assert manifest.mcp_servers_inline["mc"]["args"] == ["${PLUGIN_ROOT}/server.js"]
 
 
 class TestValidateName:

@@ -415,6 +415,20 @@ class MCPBridge:
             })
         return servers
 
+    async def call_server_tool(self, server_name: str, tool_name: str, arguments: Dict[str, Any]) -> str:
+        """按服务与原始工具名调用，避免注册名冲突时误调其他服务。"""
+        with self._lock:
+            registered_name = next((
+                name for name, owner in self._tool_server_map.items()
+                if owner == server_name and self._tool_original_names.get(name, name) == tool_name
+            ), None)
+        if registered_name is None:
+            return tool_error(
+                f"MCP 服务 {server_name} 未注册工具 {tool_name}",
+                cause=ErrorCause.NOT_FOUND, retryable=True,
+            )
+        return await self._call_bound_tool(server_name, tool_name, arguments)
+
     async def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> str:
         """代理执行 MCP tool call（调度到 MCP 事件循环执行）。"""
         with self._lock:
@@ -427,14 +441,18 @@ class MCPBridge:
                 cause=ErrorCause.NOT_FOUND, retryable=False,
                 hint="可先调用 list_mcp_servers 查看已连接服务及其工具",
             )
+        return await self._call_bound_tool(server_name, original_name, arguments)
+
+    async def _call_bound_tool(self, server_name: str, tool_name: str, arguments: Dict[str, Any]) -> str:
+        """将已经绑定服务的调用调度到桥接事件循环，不重新解析注册名。"""
         try:
             import asyncio
             loop = asyncio.get_running_loop()
             if loop is self._loop:
-                return await self._do_call_tool(server_name, original_name, arguments)
+                return await self._do_call_tool(server_name, tool_name, arguments)
             else:
                 future = asyncio.run_coroutine_threadsafe(
-                    self._do_call_tool(server_name, original_name, arguments),
+                    self._do_call_tool(server_name, tool_name, arguments),
                     self._loop,
                 )
                 return await asyncio.wrap_future(future)
@@ -535,9 +553,21 @@ class MCPBridge:
         timeout = srv.call_timeout if srv else _DEFAULT_CALL_TIMEOUT
 
         log(f"MCP call: {tool_name}({arguments})", "DEBUG", tag="mcp")
+        from core.tool_context import refresh_control_metadata
+        from entities._sdk import get_mcp_control_metadata
+
+        metadata = get_mcp_control_metadata(server_name, tool_name)
+
+        async def invoke(active_session: Any) -> Any:
+            if metadata is None:
+                return await active_session.call_tool(tool_name, arguments=arguments)
+            return await active_session.call_tool(
+                tool_name, arguments=arguments, meta=refresh_control_metadata(server_name, metadata),
+            )
+
         try:
             result = await asyncio.wait_for(
-                session.call_tool(tool_name, arguments=arguments),
+                invoke(session),
                 timeout=timeout,
             )
         except asyncio.TimeoutError:
@@ -574,7 +604,7 @@ class MCPBridge:
                 )
             try:
                 result = await asyncio.wait_for(
-                    session.call_tool(tool_name, arguments=arguments),
+                    invoke(session),
                     timeout=timeout,
                 )
             except asyncio.TimeoutError:

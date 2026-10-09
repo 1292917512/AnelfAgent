@@ -193,6 +193,60 @@ def _slow_mind(seconds: float = 60.0) -> _FakeMind:
 
 
 class TestDelegationCancel:
+    @pytest.mark.parametrize("by_agent", [False, True])
+    async def test_cancel_includes_queued_delegations(self, by_agent: bool) -> None:
+        from agent.mind.background_tasks import BackgroundTaskRegistry
+
+        mind = _FakeMind()
+        registry = BackgroundTaskRegistry()
+        mind.background_tasks = registry
+        manager = DelegationManager(mind)
+        manager._semaphore = asyncio.Semaphore(0)
+        started = asyncio.Event()
+        original_acquire = manager._semaphore.acquire
+
+        async def acquire() -> bool:
+            started.set()
+            return await original_acquire()
+
+        manager._semaphore.acquire = acquire
+        scope = "user_webui:web_user#game" if by_agent else "group_minecraft:local"
+        task = asyncio.create_task(manager.delegate("排队采集", scope_hint=scope, agent_name="mc-worker"))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=5)
+            assert not manager._running
+            if by_agent:
+                assert manager.cancel_agent("mc-worker") == {scope}
+            else:
+                assert manager.cancel_scope(scope) == 1
+            result = await asyncio.wait_for(task, timeout=5)
+            assert result.cancelled
+            mind.reflect.assert_not_awaited()
+            assert not registry.running(scope)
+            assert not manager._owners
+            assert not manager._cancel_marks
+            assert not manager._pending
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_cancel_agent_before_background_coroutine_starts(self) -> None:
+        from agent.mind.background_tasks import BackgroundTaskRegistry
+
+        mind = _FakeMind()
+        mind.background_tasks = BackgroundTaskRegistry()
+        manager = DelegationManager(mind)
+        scope = "user_webui:web_user#game"
+        did = manager.delegate_background("采集", scope=scope, agent_name="mc-worker")
+        task = manager._background_tasks[did]
+        assert manager.cancel_agent("other-worker") == set()
+        assert manager.cancel_agent("mc-worker") == {scope}
+        await asyncio.wait_for(task, timeout=5)
+        mind.reflect.assert_not_awaited()
+        assert not mind.background_tasks.running(scope)
+        assert not manager._owners
+        assert not manager._cancel_marks
+
     async def test_cancel_running_sync_delegation(self) -> None:
         manager = DelegationManager(_slow_mind())
         task = asyncio.create_task(manager.delegate("长任务"))

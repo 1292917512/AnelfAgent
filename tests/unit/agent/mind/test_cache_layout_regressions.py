@@ -300,7 +300,7 @@ class TestStickyDynamicTools:
         """粘性模式（默认）：空闲清理保留 tag 激活/动态发现，工具集跨会话稳定。"""
         from agent.mind.tool_assembly import ToolAssembly
 
-        ta = ToolAssembly.__new__(ToolAssembly)
+        ta = ToolAssembly()
         ta._tag_activated_tools = {"recognize_image"}
         ta._discovered_tools = {"some_tool"}
         ta._tools_version = 5
@@ -313,7 +313,7 @@ class TestStickyDynamicTools:
         """关闭粘性：恢复每会话清空行为。"""
         from agent.mind.tool_assembly import ToolAssembly
 
-        ta = ToolAssembly.__new__(ToolAssembly)
+        ta = ToolAssembly()
         ta._tag_activated_tools = {"recognize_image"}
         ta._discovered_tools = set()
         ta._tools_version = 5

@@ -6,8 +6,8 @@
 
 两种规划生命周期（以 metadata.kind 判别，详见 tracker 模块说明）：
 - Plan 模式（present_plan → PLAN_KIND）：Agent 自发提交计划后立即开始
-  执行，**不**等待用户批准（不走 ApprovalGate），进度由 tracker 程序级
-  推断；用户通过浮窗"取消"按钮触发 ``EVENT_PLAN_CANCELLED``
+  执行，**不**等待用户批准（不走 ApprovalGate），进度经 update_goal 依据
+  执行结果明确更新；用户通过浮窗"取消"按钮触发 ``EVENT_PLAN_CANCELLED``
   （cancel-plan 路由 → tracker.cancel_plan）。
 - 持久目标（create_goal → GOAL_KIND）：跨会话长期目标，AI 经 update_goal
   手动推进步骤；关闭只由完成事实驱动——终态（completed/cancelled）即删、
@@ -16,6 +16,10 @@
 
 态势注入与 not_found 自纠上下文统一由 ``agent.planning.situation`` 提供，
 本文件全部写路径变更后调 ``situation.invalidate()`` 保持快照新鲜。
+
+Model Experience: update_goal 永驻，计划步骤须依据结果显式更新；调用次数不代表进度。
+Token effect: 未召回规划工具的会话增加一个工具 schema，约数百 token。
+Cache effect: 常驻 schema 在会话内冻结，不向稳定消息前缀注入实时进度。
 """
 
 from __future__ import annotations
@@ -184,7 +188,7 @@ async def list_goals(status: str = "active") -> str:
 
 
 @deferred_tool(
-    group=_GROUP, tags=["planning", "heartbeat"],
+    group=_GROUP, tags=["planning", "heartbeat", "always"],
     description=(
         "更新目标计划：步骤状态、整体状态或文本（标题/描述），空参数不变。"
         "标记 goal_status 为 completed/cancelled 时目标自动清理；"
@@ -425,11 +429,11 @@ async def get_goal(goal_id: str) -> str:
     group=_GROUP, tags=["planning", "always"],
     description=(
         "把任务的执行计划公告给用户（Plan 模式）。"
-        "**默认行为：除最简单的单步问答外，所有任务都应先调用本工具再执行**——"
+        "默认对需要公开跟踪的多步任务先调用本工具；单步问答和已委托的后台任务无需重复计划。"
         "用户能在浮窗中实时看到计划步骤与进度。"
         "适用：多步骤任务、信息搜集分析、目录/文件操作、代码修改、任何需要 2 步以上的工作。"
         "调用后立即返回 plan_id，无需等待批准，直接开始执行；"
-        "步骤进度由系统自动追踪，无需手动维护。"
+        "步骤须依据执行结果用 update_goal 明确更新，系统不会根据工具调用次数判定完成。"
         "注意：调用本工具后必须用工具继续执行（禁止只输出文字），用户取消时会收到中断信号。"
     ),
 )
@@ -482,7 +486,7 @@ async def present_plan(goal: str, steps: str, files: str = "", risks: str = "") 
         "status": "executing",
         "message": (
             f"计划已公告 (plan_id={plan_id})，立即开始执行即可。"
-            "步骤进度由系统自动追踪，无需手动维护；"
-            "如某步完成质量较好，可选调用 update_goal 精确标记。"
+            "步骤完成后用 update_goal 标记并记录结果证据；"
+            "查询或失败不算完成，未确认完成的计划在会话结束时按取消收束。"
         ),
     }, ensure_ascii=False)

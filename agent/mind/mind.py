@@ -797,6 +797,7 @@ class Mind:
             blocked_tools: Optional[Set[str]] = None,
             completion: Optional[Dict] = None,
             reflect_tool_selectors: Optional[List[str]] = None,
+            require_output: bool = False,
     ) -> None:
         """统一思维循环。"""
         await _tl_think_loop(
@@ -806,6 +807,7 @@ class Mind:
             adapter_key=adapter_key, blocked_tools=blocked_tools,
             completion=completion,
             reflect_tool_selectors=reflect_tool_selectors,
+            require_output=require_output,
         )
 
     @staticmethod
@@ -1042,6 +1044,7 @@ class Mind:
             allow_output_tools: bool = False,
             extra_blocked_tools: Optional[Set[str]] = None,
             completion: Optional[Dict] = None,
+            require_output: bool = False,
     ) -> str:
         """内部任务循环：与对话共享统一思维流程，默认禁止对外发送消息。
 
@@ -1055,6 +1058,7 @@ class Mind:
         list_entity_methods / activate_tool_group 按需唤醒（自服务扩展）。
         默认过滤 output 类工具（send_message/send_file 等），可按任务配置放开。
         extra_blocked_tools 可追加屏蔽特定工具（如子代理 leaf 角色屏蔽 delegate_task）。
+        require_output 要求结束前提交总结：空结束只在剩余预算内补一个禁止操作的总结轮。
 
         Returns:
             LLM 产出的文本内容（所有轮次输出的合并）。
@@ -1105,7 +1109,9 @@ class Mind:
             log(f"反思循环开始: {len(active_tools)} 个工具可用, 策略={output_policy}, 上限 {safety_limit} 轮", tag="思维")
 
             from agent.mind.think_session import think_session
-            with think_session(self, reflect_scope, with_token=False):
+            from core.tool_context import tool_request
+
+            with think_session(self, reflect_scope, with_token=False), tool_request(reflect_scope, inherit=True):
                 await self._think_loop(
                     mode=ThinkMode.REFLECT,
                     tool_chain=[],
@@ -1120,6 +1126,7 @@ class Mind:
                     blocked_tools=blocked_tools,
                     completion=completion,
                     reflect_tool_selectors=extra_selectors,
+                    require_output=require_output,
                 )
 
             total = "\n".join(collected_text)
