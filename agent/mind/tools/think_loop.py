@@ -1625,12 +1625,14 @@ async def execute_one_tool(
 ) -> str:
     """执行单个工具调用。"""
     from agent.mind.autonomous import MindPhase
+    from core.log import current_log_actor
     from core.tool_context import request_trace
 
     mind._set_phase(MindPhase.TOOL_EXECUTING)
     tool_scope = getattr(anything, "entity_scope", "") if anything is not None else ""
     await event_bus.emit(EVENT_TOOL_EXECUTED, {"tool": tc.name, "iteration": iteration})
     await event_bus.emit(EVENT_THINKING_TOOL_START, {
+        "actor": current_log_actor(),
         "request": request_trace(),
         "scope": tool_scope,
         "tool_name": tc.name,
@@ -1650,6 +1652,7 @@ async def execute_one_tool(
         result = await mind.tool_executor(tc)  # type: ignore[misc]
         elapsed_ms = (time.time() - t0) * 1000
         await event_bus.emit(EVENT_THINKING_TOOL_END, {
+            "actor": current_log_actor(),
             "request": request_trace(),
             "scope": tool_scope,
             "tool_name": tc.name,
@@ -1676,6 +1679,7 @@ async def execute_one_tool(
     except Exception as exc:
         elapsed_ms = (time.time() - t0) * 1000
         await event_bus.emit(EVENT_THINKING_TOOL_END, {
+            "actor": current_log_actor(),
             "request": request_trace(),
             "scope": tool_scope,
             "tool_name": tc.name,

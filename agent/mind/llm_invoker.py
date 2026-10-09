@@ -193,7 +193,10 @@ async def _invoke_llm_unified(
     from core.tool_context import request_trace
 
     tool_names = [t.get("function", {}).get("name", "") for t in (tools or [])]
-    trace = {"request": request_trace(), "message_count": len(messages), "tool_count": len(tool_names)}
+    from core.log import current_log_actor
+
+    trace = {"request": request_trace(), "message_count": len(messages), "tool_count": len(tool_names),
+             "purpose": purpose, "actor": current_log_actor()}
     await event_bus.emit(EVENT_THINKING_LLM_START, {
         **trace,
         "model": model_name,
