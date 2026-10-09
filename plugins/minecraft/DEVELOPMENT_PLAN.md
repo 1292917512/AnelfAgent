@@ -983,3 +983,7 @@ M4 配套回归须覆盖这一问题，并区分“真正停止的时间”与�
 不影响并行会话。采样时采用默认开启的粘性策略，此补充未参与上表测量；独立清理用例及最终完整专项共 **281 通过**
 （`m4-release-tests.log`），相关 Ruff/Mypy 通过。原组合门控失败的 HEAD 对照仍按本节前文记录，全仓未重跑。
 补给/采集交接有自动测试，但本批未新增它们的真实模型组合验收；制作后跟随等完整 worker 组合目标仍需专门验证。
+
+清理兼容与验收记录提交为 `75baa44`；最终通过应用接口优雅重启加载，`release-health.json` 记录新进程 uptime=23.8 秒、
+AnelfBot online、配置哈希不变，`release-restart.json` 记录重启确认。两份证据均在
+`workspace/minecraft/diagnostics/live-m4-handoff-20261009/`。本批所有提交仅保存在本地，未推送。
