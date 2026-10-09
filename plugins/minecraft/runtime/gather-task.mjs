@@ -3,6 +3,7 @@
 import { randomUUID } from 'node:crypto'
 import { setImmediate as yieldFrame, setTimeout as delay } from 'node:timers/promises'
 import { Vec3 } from 'vec3'
+import pathfinderPkg from 'mineflayer-pathfinder'
 import safety from 'mineflayer/lib/anelf_mining/mining-safety.cjs'
 import { ActionController } from '../bot/anelf-actions.mjs'
 import { ToolError } from '../util/errors.js'
@@ -10,6 +11,8 @@ import { itemCount } from './anelf-production-plan.mjs'
 import { inventoryClean } from './anelf-production-task.mjs'
 import { SupplyTask } from './anelf-supply-task.mjs'
 import { GatherNavigation, reachableFace } from './anelf-gather-navigation.mjs'
+
+const { goals } = pathfinderPkg
 
 export const resources = /** @type {const} */ ({ stone: 'cobblestone', cobblestone: 'cobblestone',
   oak_log: 'oak_log', birch_log: 'birch_log', spruce_log: 'spruce_log', jungle_log: 'jungle_log',
@@ -205,6 +208,18 @@ export class GatherTask {
           await navigation.walk(pickup, mode === 'scaffold' ? 'scaffold' : 'leaf')
           break
         } catch { /* try the next safe side of a root or canopy log */ }
+      }
+      if (itemCount(this.bot, this.item) <= before && this.bot.pathfinder?.goto && this.bot.pathfinder?.movements) {
+        const movement = this.bot.pathfinder.movements
+        const priorCanDig = movement.canDig
+        movement.canDig = false
+        try {
+          const motion = this.bot.pathfinder.goto(new goals.GoalNear(block.position.x, block.position.y, block.position.z, 1))
+          await Promise.race([motion, delay(5000, undefined, { signal })])
+        } catch { /* the bounded pickup fallback is best effort */ } finally {
+          movement.canDig = priorCanDig
+          this.bot.pathfinder.setGoal(null)
+        }
       }
       const end = Date.now() + 6000
       while (itemCount(this.bot, this.item) <= before && Date.now() < end) {
