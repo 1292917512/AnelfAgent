@@ -359,7 +359,7 @@ async function walkToWood (bot, target, signal) {
         await withTimeout(pathfinder.goto(goal), DEFAULT_ACTION_TIMEOUT_MS * 2, 'walk to authorized tree')
         signal.throwIfAborted()
         const arrived = bot.entity.position.floored()
-        if (Math.abs(arrived.y - standPoint.y) <= 1 && arrived.distanceTo(targetPoint) <= 8) return true
+        if (arrived.y === standPoint.y && arrived.distanceTo(targetPoint) <= 8) return true
       }
     } finally {
       movement.canDig = priorCanDig
@@ -369,7 +369,7 @@ async function walkToWood (bot, target, signal) {
     signal.throwIfAborted()
     const entry = bot.entity.position.floored()
     const distance = Math.hypot(target.x - entry.x, target.z - entry.z)
-    if (entry.distanceTo(targetPoint) <= 8 && Math.abs(entry.y - standPoint.y) <= 1) return true
+    if (entry.distanceTo(targetPoint) <= 8 && entry.y === standPoint.y) return true
     const step = Math.max(0, Math.min(8, distance - 6))
     const dx = distance === 0 ? 0 : (target.x - entry.x) / distance
     const dz = distance === 0 ? 0 : (target.z - entry.z) / distance
