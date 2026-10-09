@@ -59,6 +59,7 @@ async def test_lifestyle_waits_for_idle_and_runs_one_reflection(monkeypatch: pyt
     assert "find_build_site" in content
     assert "prepare_build_site" in content
     assert "Never invent home coordinates" in content
+    assert "including walls, roof, and interior" in content
 
 
 @pytest.mark.asyncio
