@@ -338,6 +338,8 @@ class TestReadinessAndTurns:
             await _wait_for(lambda: any(e[0] == "rt_final" for e in sink.events))
             final = next(e for e in sink.events if e[0] == "rt_final")
             assert final[1]["turn_id"] == 1
+            # 定稿通知先于消息投递；回复只能在统一入口收到本轮消息后产生。
+            await _wait_for(lambda: len(app.messages) == 1)
             from core.event_bus import EVENT_AFTER_REPLY, event_bus
             from core.stream_events import EVENT_ASSISTANT_DELTA
             scope = engine._scope_of(engine._sessions["c1"])
