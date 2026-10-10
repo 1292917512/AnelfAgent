@@ -41,7 +41,7 @@ export const useAppStore = create<AppState>((set) => ({
   theme: getInitialTheme(),
   density: readLocal("anelf:density") === "compact" ? "compact" : "comfortable",
   favorites: readFavorites(),
-  sidebarCollapsed: readLocal("anelf:sidebar-collapsed") === "true",
+  sidebarCollapsed: readLocal("anelf:sidebar-collapsed") !== "false",
   mobileMenuOpen: false,
   paletteOpen: false,
   branding: { title: "AnelfAgent", subtitle: "Personal AI workspace", version: "0.3.0" },

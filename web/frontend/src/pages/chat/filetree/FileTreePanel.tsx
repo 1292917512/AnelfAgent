@@ -36,7 +36,7 @@ function ToolButton({
       disabled={disabled}
       title={title}
       aria-label={title}
-      className="p-1.5 rounded text-muted hover:text-foreground hover:bg-hover transition-colors disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted"
+      className="flex min-h-9 min-w-0 items-center justify-center rounded text-muted hover:text-foreground hover:bg-hover transition-colors disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted"
     >
       {children}
     </button>
@@ -46,7 +46,8 @@ function ToolButton({
 /** 左侧文件树面板：根切换 + 操作工具栏 + 搜索 + 变更过滤 + 虚拟化懒加载树 */
 export function FileTreePanel() {
   const { t } = useTranslation("workbench");
-  const [root, setRoot] = useState<WorkspaceRoot>("workspace");
+  const root = useWorkbenchStore((state) => state.fileTreeRoot);
+  const setRoot = useWorkbenchStore((state) => state.setFileTreeRoot);
   const [searchMode, setSearchMode] = useState(false);
   const [changedOnly, setChangedOnly] = useState(false);
   const uploadInputRef = useRef<HTMLInputElement>(null);
@@ -87,15 +88,16 @@ export function FileTreePanel() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-2 py-1.5 border-b border-border shrink-0 gap-1">
+      <div className="space-y-2 px-2 py-3 border-b border-border shrink-0">
         {/* 根目录切换：工作区 / 项目，仅基准目录不同 */}
-        <div className="flex items-center rounded-md border border-border overflow-hidden shrink-0">
+        <div className="grid grid-cols-2 rounded-lg border border-border overflow-hidden">
           {(["workspace", "project"] as WorkspaceRoot[]).map((r) => (
             <button
               key={r}
               onClick={() => setRoot(r)}
+              aria-pressed={root === r}
               className={cn(
-                "px-2 py-1 text-[10px] font-medium transition-colors",
+                "px-3 py-1.5 text-xs font-medium transition-colors",
                 root === r ? "bg-accent-subtle text-accent" : "text-muted hover:text-foreground",
               )}
             >
@@ -103,7 +105,7 @@ export function FileTreePanel() {
             </button>
           ))}
         </div>
-        <div className="flex items-center shrink-0">
+        <div className="grid grid-cols-7 items-center">
           <ToolButton title={t("files.newFile")} onClick={() => void createEntry("file")}>
             <FilePlus2 size={14} />
           </ToolButton>
@@ -122,10 +124,12 @@ export function FileTreePanel() {
           {/* 只看变更：AI 编辑只落在工作区根；无变更时禁用 */}
           <button
             title={t("files.changedOnly")}
+            aria-label={t("files.changedOnly")}
+            aria-pressed={changedOnly}
             disabled={root !== "workspace" || !hasTreeChanges(changeEntries)}
             onClick={() => setChangedOnly((v) => !v)}
             className={cn(
-              "p-1.5 rounded transition-colors disabled:opacity-40 disabled:hover:bg-transparent",
+              "flex min-h-9 items-center justify-center rounded transition-colors disabled:opacity-40 disabled:hover:bg-transparent",
               changedOnly
                 ? "text-accent bg-accent-subtle"
                 : "text-muted hover:text-foreground hover:bg-hover disabled:hover:text-muted",

@@ -199,18 +199,18 @@ class TestAttributionRendering:
     async def test_entity_tag_fallback_shows_uid(self, store) -> None:
         r = self._retriever(store)
         display = await r._humanize_entity_tags(["user:qq:123", "topic:周报"])
-        assert display == ["[uid:123]", "周报"]
+        assert display == ["[channel:qq][uid:123]", "周报"]
 
     async def test_group_tag_shows_group_id(self, store) -> None:
         r = self._retriever(store)
         display = await r._humanize_entity_tags(["group:qq:456"])
-        assert display == ["[group_id:456]"]
+        assert display == ["[channel:qq][group_id:456]"]
 
     async def test_graph_label_prefixed_with_uid(self, store) -> None:
         await store.graph.upsert_node("user:qq:123", label="小李")
         r = self._retriever(store)
         display = await r._humanize_entity_tags(["user:qq:123"])
-        assert display == ["小李[uid:123]"]
+        assert display == ["[channel:qq][name:小李][uid:123]"]
 
     async def test_recall_block_carries_attribution_and_guidance(self, store) -> None:
         r = self._retriever(store)

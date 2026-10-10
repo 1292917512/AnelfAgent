@@ -2,6 +2,9 @@
 
 所有命令经 core.event_bus 的 EVENT_UI_COMMAND 事件发出，
 由 web 层桥接到 SSE 推送给前端，本模块不依赖 web。
+
+Model Experience：提问超时返回明确的失败归因，未回答不等于授权。
+反馈只占当前工具结果，不改变缓存前缀；取消或投递失败及时释放等待状态。
 """
 
 from __future__ import annotations
@@ -19,7 +22,7 @@ from entities._sdk import ErrorCause, entity, error_from_exception, tool, tool_e
 entity("ui", "界面交互 - 向 Web 工作台投递通知、弹窗提问、切换面板、注入草稿、查询界面状态")
 
 _VALID_LEVELS = {"info", "success", "warning", "error"}
-_VALID_PANELS = {"status", "trace", "files", "tasks", "search", "settings"}
+_VALID_PANELS = {"status", "trace", "context", "files", "tasks", "search", "settings"}
 
 
 @dataclass
@@ -120,19 +123,25 @@ async def ui_ask(question: str, options: Optional[List[str]] = None, timeout: in
             future: asyncio.Future[str] = loop.create_future()
             _pending_asks[ask_id] = _PendingAsk(future=future, created_at=time.time())
 
-        await _emit("ask", {
-            "ask_id": ask_id,
-            "question": question,
-            "options": options or [],
-            "ts": time.time(),
-        })
         try:
+            await _emit("ask", {
+                "ask_id": ask_id,
+                "question": question,
+                "options": options or [],
+                "ts": time.time(),
+            })
             answer = await asyncio.wait_for(future, timeout=min(max(timeout, 5), 600))
+            if answer == "__skipped__":
+                return tool_error("用户跳过了问题", cause=ErrorCause.USER_CANCEL, retryable=False)
             return json.dumps({"success": True, "answer": answer}, ensure_ascii=False)
         except asyncio.TimeoutError:
+            return tool_error("等待用户回答超时", cause=ErrorCause.TIMEOUT, retryable=False,
+                              hint="本次未获得回答，不得视为同意；可继续不依赖回答的工作")
+        finally:
             async with _state_lock:
                 _pending_asks.pop(ask_id, None)
-            return json.dumps({"timeout": True, "answer": ""}, ensure_ascii=False)
+            if not future.done():
+                future.cancel()
     except Exception as e:
         return error_from_exception(e, action="弹窗提问")
 
@@ -142,8 +151,8 @@ async def ui_open_panel(panel: str, payload: str = "") -> str:
     """打开 Web 工作台右侧面板并可附带定位内容（如打开文件、填入搜索词）。
 
     Args:
-        panel: 面板名 status/trace/files/tasks/search/settings
-        payload: 可选参数：files 面板为文件路径，search 面板为搜索词
+        panel: 面板名 status/trace/context/files/tasks/search/settings
+        payload: files 为工作区相对路径；项目路径加 project:，目录再加 dir:（如 project:dir:src）；search 为搜索词
     """
     try:
         normalized = panel.strip().lower()

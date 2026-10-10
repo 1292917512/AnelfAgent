@@ -52,6 +52,31 @@ class TestResolveLimit:
 
 
 class TestTruncateWithBudget:
+    def test_error_recovery_fields_survive_json_compaction(self) -> None:
+        import json
+
+        from core.tool_errors import ErrorCause, tool_error
+
+        output = tool_error("文件不存在", cause=ErrorCause.NOT_FOUND, hint="先查询目录", retryable=False,
+                            details=["x" * 1000] * 30)
+        result = json.loads(truncate_tool_output("read_file", output, ResultBudget(2000, 4000)))
+        assert result["error"] == "文件不存在"
+        assert result["hint"] == "先查询目录"
+        assert result["retryable"] is False
+
+    def test_exhausted_turn_budget_keeps_error_receipt_and_guardrail(self) -> None:
+        from agent.mind.guardrails import GuardrailController
+        from core.tool_errors import ErrorCause, tool_error
+
+        pipeline = _pipeline()
+        pipeline._budget = ResultBudget(2000, 1)
+        pipeline._guardrail = GuardrailController()
+        output = tool_error("没有权限", cause=ErrorCause.PERMISSION, hint="请先取得授权", retryable=False)
+        for _ in range(4):
+            result = pipeline.process("read_file", "{}", output)
+            assert "没有权限" in result and "请先取得授权" in result and '"retryable": false' in result
+        assert "工具守卫警告" in result
+
     def test_pinned_tool_not_truncated(self) -> None:
         budget = ResultBudget(per_result_chars=100, per_turn_chars=200)
         output = "x" * 10_000

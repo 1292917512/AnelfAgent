@@ -89,5 +89,14 @@
     "staleMark": "（{{min}} 分钟前的调用）",
     "unobservable": "该模型（{{model}}）流式响应不返回缓存统计字段——缓存仍在服务端生效，仅无法在流式下度量，故不显示命中率",
     "expectedPrefix": "理论可命中前缀"
+  },
+  "window": {
+    "title": "上下文窗口",
+    "description": "按实际发送顺序显示输入估算。点击分层查看稳定性；留白表示剩余容量，不代表缓存命中率。",
+    "other": "工具与协议开销 · {{tokens}}",
+    "remaining": "剩余 {{tokens}}",
+    "unknown": "未提供稳定性数据",
+    "stable": "{{count}} 条消息保持不变",
+    "pressure": "输入接近模型上限，需要为工具结果和回复保留空间。"
   }
 }

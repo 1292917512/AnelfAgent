@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { useLocation } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { Sun, Moon, Languages, Menu, Search, ChevronRight, Rows3 } from "lucide-react";
 import { useAppStore } from "@/stores/app-store";
 import { findRoute } from "@/lib/navigation";
@@ -14,13 +14,15 @@ export function Header() {
   const setPaletteOpen = useAppStore((state) => state.setPaletteOpen);
   const density = useAppStore((state) => state.density);
   const toggleDensity = useAppStore((state) => state.toggleDensity);
-  const route = findRoute(useLocation().pathname);
+  const location = useLocation();
+  const route = findRoute(location.pathname);
   const modKey = /mac/i.test(navigator.platform) ? "⌘ K" : "Ctrl K";
   return (
     <header className="app-header flex h-14 shrink-0 items-center justify-between gap-3 border-b border-border px-3 md:px-6">
       <div className="flex min-w-0 items-center gap-2">
         <Button variant="ghost" size="icon" className="md:hidden" onClick={() => setMobileMenuOpen(true)} aria-label={t("menu", { ns: "palette" })}><Menu size={20} /></Button>
-        {route && <><span className="hidden text-xs text-muted sm:block">{t(`groups.${route.group}`)}</span><ChevronRight size={13} className="hidden text-muted sm:block" /><route.icon size={16} className="shrink-0 text-muted" /><span className="truncate text-sm font-medium text-heading">{t(route.label, { defaultValue: route.label })}</span></>}
+        {location.pathname !== "/" && <><Link to="/" className="hidden text-xs text-muted hover:text-accent sm:block">{t("chat")}</Link><ChevronRight size={13} className="hidden text-muted sm:block" /></>}
+        {route && <><route.icon size={16} className="shrink-0 text-muted" /><span className="truncate text-sm font-medium text-heading">{t(route.label, { defaultValue: route.label })}</span></>}
       </div>
       <div className="flex shrink-0 items-center gap-1">
         <ConnectionStatus />

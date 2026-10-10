@@ -5,6 +5,8 @@ import { Check, Copy, ExternalLink, Link2 } from "lucide-react";
 import { useLightbox } from "./Lightbox";
 import { highlightCode } from "@/lib/shiki";
 import { useCopyFeedback } from "@/hooks/useCopyFeedback";
+import { parseFileReference } from "@/lib/file-reference";
+import { FileReferenceLink } from "./FileReferenceLink";
 
 /** 从 URL 提取域名（失败返回空串） */
 function domainOf(href: string): string {
@@ -21,6 +23,8 @@ function LinkCard({ href, children }: { href?: string; children?: ReactNode }) {
   const url = href || "";
   const domain = domainOf(url);
   const isExternal = /^https?:\/\//.test(url);
+  const reference = parseFileReference(url);
+  if (reference) return <FileReferenceLink reference={reference}>{children}</FileReferenceLink>;
 
   if (!isExternal) {
     return (

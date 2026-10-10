@@ -1,5 +1,15 @@
 .app-sidebar { background: var(--sidebar-bg); }
 .app-header { background: var(--card); }
+.trace-events::before { content: ""; position: absolute; left: 19px; top: 20px; bottom: 20px; width: 1px; background: var(--border); }
+.file-reference {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+  margin-inline: 2px; padding: 3px 7px; vertical-align: baseline;
+  border: 1px solid var(--border); border-radius: 7px;
+  background: var(--bg-elevated); color: var(--accent); font-size: 12px;
+}
+.file-reference:hover { background: var(--accent-subtle); border-color: var(--accent); }
+.file-reference svg { flex-shrink: 0; }
+.file-reference-root { padding-left: 6px; border-left: 1px solid var(--border); color: var(--muted); font-size: 10px; white-space: nowrap; }
 .sidebar-link {
   display: flex;
   align-items: center;

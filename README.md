@@ -374,9 +374,13 @@ async def get_weather(city: str) -> str:
 
 约定：返回 `str`（JSON）、完整类型注解 + Google docstring、错误统一走 `core.tool_errors`。
 
+实体通过 `entities._sdk` 获取 `tool_error`、`ErrorCause` 与运行时能力；错误填写 `cause`、`retryable` 和可执行的 `hint`，预算裁剪仍保留这些字段。标签通过 `core.tags.tag_label` 构造、`etag_all` 解析，不手工拼接或另写正则；身份按频道和 ID 联合识别。动态态势与召回放在上下文尾部，不把时间、运行状态或易变内容混入稳定指令前缀。标签描述来源与内容，不代表权限。
+
 ### 添加频道
 
 在 `channels/{name}/` 提供：`adapter.py`（继承 `BaseChannel`）+ `config.py`（暴露 `CONFIG_MODEL` pydantic 模型）+ `channel_config.json` + `__init__.py`（导出 `CHANNEL_CLASS`）。
+
+配置字段只在 `CONFIG_MODEL` 声明，通过 `set_channel_config` 写入；会话标识通过 `build_entity_scope` 构造。频道与实体测试随模块放入 `tests/`，使用唯一测试文件名（如 `test_weather_tools.py`），避免全仓收集时模块重名。
 
 ### 添加心跳任务
 
@@ -410,7 +414,11 @@ npm run build
 
 路由与导航共用 `src/lib/core-routes.ts` 声明，频道与实体界面保持模块自发现。`pages/` 组装页面，子目录实现领域编辑器；`components/` 承载公共交互，`lib/api/` 收口请求，TanStack Query 管理服务端数据，Zustand 管理工作台状态。编辑草稿与服务端快照分离，文件标签以根目录和相对路径共同标识。
 
+工作台为首页，桌面侧栏悬停或键盘聚焦展开，也可固定；手机使用导航抽屉。上下文与思维链路各自独立，工作台 Dock 复用快照和子代理组件。文件引用统一经 `lib/file-reference.ts` 编解码，后端 `services/file_references.py` 负责沙箱解析和历史还原；不要拆分 Markdown 段落来渲染引用。
+
 CI（GitHub Actions）：lint 全仓静态门禁 + tests 按模块动态矩阵分腿 + frontend 静态检查、组件/浏览器回归与构建；文档类提交全跳过。
+
+Linux/Windows 测试均上传完整日志和 JUnit 结果，浏览器失败保存截图与 trace；线程异常、未处理的终结器异常及 SQLite 连接泄漏继续作为失败处理。
 
 更细的架构约定见 [`AGENTS.md`](AGENTS.md)（供编辑器 / Agent 注入的工作区指令，非运行时依赖）。
 

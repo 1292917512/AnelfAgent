@@ -3,9 +3,10 @@ import { isFileUnder, workspaceFileId, workspaceFileLabel, type WorkspaceFileRef
 import { create } from "zustand";
 import { uiApi } from "@/lib/api";
 import type { WorkspaceRoot } from "@/lib/types";
+import { parseFileReference } from "@/lib/file-reference";
 
-export type DockTab = "status" | "trace" | "tasks" | "search" | "settings";
-const DOCK_TABS: DockTab[] = ["status", "trace", "tasks", "search", "settings"];
+export type DockTab = "status" | "trace" | "context" | "tasks" | "search" | "settings";
+const DOCK_TABS: DockTab[] = ["status", "trace", "context", "tasks", "search", "settings"];
 
 export interface UiNotification {
   id: string;
@@ -45,6 +46,7 @@ interface WorkbenchState {
   /** 右侧 Dock 栏 */
   dockOpen: boolean;
   activeTab: DockTab;
+  panelRequestSeq: number;
   /** 编辑器已打开的工作区文件标签（保持打开顺序） */
   openFiles: WorkspaceFileRef[];
   activeFileId: string | null;
@@ -54,6 +56,7 @@ interface WorkbenchState {
   filePanelExpanded: boolean;
   /** 文件树定位路径（open_panel files 时展开） */
   fileTreeFocus: string | null;
+  fileTreeRoot: WorkspaceRoot;
   /** 编辑器当前选区（FileEditor 上报；无选区/面板收起时为 null） */
   selection: EditorSelection | null;
   /** 搜索面板预填关键词 */
@@ -81,7 +84,8 @@ interface WorkbenchState {
   collapseFilePanel: () => void;
   /** 切换编辑器全屏展开 */
   toggleFilePanelExpanded: () => void;
-  setFileTreeFocus: (path: string | null) => void;
+  setFileTreeFocus: (path: string | null, root?: WorkspaceRoot) => void;
+  setFileTreeRoot: (root: WorkspaceRoot) => void;
   setSelection: (sel: EditorSelection | null) => void;
   setSearchSeed: (q: string) => void;
   setDraft: (text: string) => void;
@@ -96,11 +100,13 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   leftOpen: false,
   dockOpen: false,
   activeTab: "status",
+  panelRequestSeq: 0,
   openFiles: [],
   activeFileId: null,
   filePanelOpen: false,
   filePanelExpanded: false,
   fileTreeFocus: null,
+  fileTreeRoot: "workspace",
   selection: null,
   searchSeed: "",
   draft: null,
@@ -115,15 +121,17 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   openPanel: (panel, payload = "") => {
     // files 是左侧文件树栏而非右侧 Dock tab，单独处理
     if (panel === "files") {
-      set({ leftOpen: true });
       if (payload) {
-        get().openFile(payload);
-        set({ fileTreeFocus: payload });
+        const reference = parseFileReference(`./${encodeURIComponent(payload)}`);
+        if (!reference) return;
+        if (!reference.isDir) get().openFile(reference.path, reference.root);
+        set({ fileTreeFocus: reference.path, fileTreeRoot: reference.root });
       }
+      set((state) => ({ leftOpen: true, panelRequestSeq: state.panelRequestSeq + 1 }));
       return;
     }
-    const tab = DOCK_TABS.includes(panel as DockTab) ? (panel as DockTab) : "status";
-    set({ activeTab: tab, dockOpen: true });
+    const tab = DOCK_TABS.find((tab) => tab === panel) ?? "status";
+    set((state) => ({ activeTab: tab, dockOpen: true, panelRequestSeq: state.panelRequestSeq + 1 }));
     if (tab === "search" && payload) set({ searchSeed: payload });
   },
 
@@ -177,7 +185,8 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   }),
   collapseFilePanel: () => set({ filePanelOpen: false, selection: null }),
   toggleFilePanelExpanded: () => set((s) => ({ filePanelExpanded: !s.filePanelExpanded, filePanelOpen: true })),
-  setFileTreeFocus: (path) => set({ fileTreeFocus: path }),
+  setFileTreeFocus: (path, root) => set((state) => ({ fileTreeFocus: path, fileTreeRoot: root ?? state.fileTreeRoot })),
+  setFileTreeRoot: (fileTreeRoot) => set({ fileTreeRoot, fileTreeFocus: null }),
   setSelection: (sel) => set({ selection: sel }),
   setSearchSeed: (q) => set({ searchSeed: q }),
 
@@ -198,16 +207,14 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
 }));
 
 // ── 状态上报（供 AI ui_get_state 查询） ─────────────────────────
-let _reportTimer: ReturnType<typeof setTimeout> | null = null;
-
 /** 订阅工作台状态变化，防抖上报后端 */
-export function startUiStateReporting(): () => void {
-  const unsub = useWorkbenchStore.subscribe(() => {
-    if (_reportTimer) clearTimeout(_reportTimer);
-    _reportTimer = setTimeout(() => {
+export function startUiStateReporting(page: string): () => void {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const report = () => {
       const state = useWorkbenchStore.getState();
       const active = state.openFiles.find((file) => workspaceFileId(file) === state.activeFileId);
       uiApi.reportState({
+        page,
         active_tab: state.activeTab,
         dock_open: state.dockOpen,
         left_open: state.leftOpen,
@@ -222,10 +229,14 @@ export function startUiStateReporting(): () => void {
           path: workspaceFileLabel(file),
         })),
       }).catch(() => { /* 上报失败忽略 */ });
-    }, 800);
+  };
+  report();
+  const unsub = useWorkbenchStore.subscribe(() => {
+    clearTimeout(timer);
+    timer = setTimeout(report, 800);
   });
   return () => {
     unsub();
-    if (_reportTimer) clearTimeout(_reportTimer);
+    clearTimeout(timer);
   };
 }

@@ -5,9 +5,9 @@ import { FolderTree, PanelRight, Trash2 } from "lucide-react";
 import { Group, Panel, Separator, type Layout, type LayoutChangedMeta } from "react-resizable-panels";
 import { chatApi } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { useIsMobile } from "@/lib/use-media-query";
+import { useCompactWorkbench } from "@/lib/use-media-query";
 import { useChatStore } from "@/stores/chat-store";
-import { useWorkbenchStore, startUiStateReporting } from "@/stores/workbench-store";
+import { useWorkbenchStore } from "@/stores/workbench-store";
 import { Button } from "@/components/ui";
 import { ModelSelect } from "@/components/models/ModelSelect";
 import { MessageList } from "./chat/MessageList";
@@ -17,7 +17,6 @@ import { ChatDropZone } from "./chat/ChatDropZone";
 import { StatusCapsule } from "./chat/StatusCapsule";
 import { ActivityBar } from "./chat/ActivityBar";
 import { Dock, LeftDock } from "./chat/Dock";
-import { UiCommandHost } from "./chat/UiCommandHost";
 import { ContextChip } from "./chat/ContextChip";
 import { ChatTabs } from "./chat/ChatTabs";
 import { PlanPanel } from "@/components/plan/PlanPanel";
@@ -51,10 +50,10 @@ function ResizeHandle({ id }: { id: string }) {
   );
 }
 
-/** 对话工作台：左文件树 / 中对话流 / 右功能 Dock 三栏布局（桌面端可拖拽调宽） */
+/** 对话工作台：左文件树 / 中对话流 / 右功能 Dock 三栏布局（宽屏可拖拽调宽） */
 export default function Chat() {
   const { t } = useTranslation("chat");
-  const isMobile = useIsMobile();
+  const compact = useCompactWorkbench();
   const loadHistory = useChatStore((s) => s.loadHistory);
   const loadChats = useChatStore((s) => s.loadChats);
   const clearMessages = useChatStore((s) => s.clearMessages);
@@ -79,8 +78,6 @@ export default function Chat() {
   useEffect(() => {
     loadChats();
     loadHistory();
-    const stopReporting = startUiStateReporting();
-    return stopReporting;
   }, [loadChats, loadHistory]);
 
   const handleLayoutChanged = (layout: Layout, meta: LayoutChangedMeta) => {
@@ -96,7 +93,7 @@ export default function Chat() {
     <ChatDropZone className="flex-1 flex flex-col min-w-0 h-full">
       <div className="flex-1 flex flex-col min-w-0 h-full p-3 md:p-4 relative">
       {/* 头部 */}
-      <div className="flex items-center justify-between gap-2 mb-3 shrink-0">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-3 shrink-0">
         <div className="flex items-center gap-1 min-w-0">
           <Button
             variant="ghost"
@@ -111,7 +108,7 @@ export default function Chat() {
             {botName ?? "Bot"}
           </h2>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex min-w-0 items-center gap-1.5">
           <ContextChip />
           <ModelSelect modelType="chat" compact />
           <Button variant="secondary" size="sm" title={t("clear")} aria-label={t("clear")} onClick={clearMessages}>
@@ -146,8 +143,8 @@ export default function Chat() {
     </ChatDropZone>
   );
 
-  // 移动端：三栏全部退化为抽屉（Dock/LeftDock/FileEditor 内部自行处理）
-  if (isMobile) {
+  // 窄屏：三栏全部退化为抽屉（Dock/LeftDock/FileEditor 内部自行处理）
+  if (compact) {
     return (
       <RealtimeCallProvider>
       <div className="relative flex h-full min-h-0">
@@ -159,13 +156,12 @@ export default function Chat() {
         )}
         {!centerHidden && center}
         <Dock />
-        <UiCommandHost />
       </div>
       </RealtimeCallProvider>
     );
   }
 
-  // 桌面端：可拖拽调宽的三栏（宽度持久化到 localStorage，双击复位）
+  // 宽屏：可拖拽调宽的三栏（宽度持久化到 localStorage，双击复位）
   return (
     <RealtimeCallProvider>
     <div className="relative h-full min-h-0">
@@ -210,8 +206,6 @@ export default function Chat() {
         )}
       </Group>
 
-      {/* AI 界面命令宿主 */}
-      <UiCommandHost />
     </div>
     </RealtimeCallProvider>
   );

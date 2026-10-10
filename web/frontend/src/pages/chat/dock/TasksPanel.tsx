@@ -6,6 +6,10 @@ import { tasksApi } from "@/lib/api";
 import type { TaskConfig } from "@/lib/types";
 import { Button, Switch } from "@/components/ui";
 import { TaskEditor } from "@/pages/tasks/TaskEditor";
+import { useChatStore } from "@/stores/chat-store";
+import { useDelegationStore } from "@/stores/delegation-store";
+import { DelegationCard } from "@/components/delegation/DelegationCard";
+import { PageSkeleton, QueryError } from "@/components/common/AsyncState";
 
 /** 任务面板：按文件夹分组 + 启停/触发/编辑/新建 */
 export function DockTasksPanel() {
@@ -13,11 +17,17 @@ export function DockTasksPanel() {
   const queryClient = useQueryClient();
   const [editorOpen, setEditorOpen] = useState(false);
   const [editing, setEditing] = useState<TaskConfig | null>(null);
+  const chatId = useChatStore((state) => state.activeChatId);
+  const delegations = useDelegationStore((state) => state.delegations[chatId]);
+  const runs = Object.values(delegations ?? {}).sort((a, b) => Number(b.status === "running") - Number(a.status === "running") || b.started_at - a.started_at);
 
-  const { data: tasks } = useQuery({
+  const query = useQuery({
     queryKey: ["tasks"],
     queryFn: () => tasksApi.list().then((r) => r.data),
+    refetchInterval: 15_000,
+    throwOnError: false,
   });
+  const tasks = query.data;
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["tasks"] });
 
@@ -58,6 +68,13 @@ export function DockTasksPanel() {
       </div>
 
       <div className="flex-1 overflow-y-auto p-2 space-y-3">
+        {runs.length > 0 && <section className="space-y-2">
+          <h3 className="px-1.5 py-1 text-xs font-medium text-heading">{t("plan:activity.delegations")}</h3>
+          {runs.map((node) => <DelegationCard key={node.delegation_id} node={node} compact />)}
+        </section>}
+        {query.isPending && <PageSkeleton />}
+        {query.error && <QueryError compact error={query.error} retry={() => void query.refetch()} />}
+        {(toggleMut.error || triggerMut.error) && <QueryError compact error={toggleMut.error ?? triggerMut.error} />}
         {grouped.map(([folder, folderTasks]) => (
           <section key={folder || "(root)"}>
             <div className="flex items-center gap-1.5 px-1.5 py-1 text-[11px] font-medium text-muted">
@@ -80,6 +97,7 @@ export function DockTasksPanel() {
                   </div>
                   <button
                     onClick={() => triggerMut.mutate(task)}
+                    disabled={triggerMut.isPending}
                     title={t("tasks.trigger")}
                     className="p-1 rounded text-muted hover:text-accent transition-colors shrink-0"
                   >
@@ -93,7 +111,7 @@ export function DockTasksPanel() {
                     <Pencil size={13} />
                   </button>
                   <Switch
-                    label={t("tasks.edit")}
+                    label={t("common:enabled")}
                     disabled={toggleMut.isPending}
                     checked={task.enabled}
                     onChange={() => toggleMut.mutate(task)}

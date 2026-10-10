@@ -77,7 +77,9 @@ class TestMediaPipelineHints:
         real.write_bytes(b"\x00")
         seg = MessageSegment(type=SegmentType.VOICE, file_path=str(real))
         results = await MediaPipeline().process_segments([seg])
-        assert results == [f"[media_file:voice:{real}]"]
+        from core.tags import etag_all
+        assert len(results) == 1
+        assert etag_all(results[0]) == [("media_file", f"voice:{real.as_posix()}")]
 
     async def test_url_hint(self) -> None:
         seg = MessageSegment(

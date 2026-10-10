@@ -7,7 +7,7 @@
 import { create } from "zustand";
 import type { DelegationNode, RunningDelegation, SseDelegationProgressEvent } from "@/lib/types";
 
-const MAX_DELEGATIONS_PER_CHAT = 50;
+const MAX_COMPLETED_DELEGATIONS_PER_CHAT = 50;
 
 interface DelegationState {
   /** chat_id → delegation_id → DelegationNode */
@@ -15,7 +15,7 @@ interface DelegationState {
 
   upsertDelegation: (node: DelegationNode) => void;
   updateProgress: (chatId: string, data: SseDelegationProgressEvent) => void;
-  markCancelling: (chatId: string, delegationId: string) => void;
+  markCancelling: (chatId: string, delegationId: string, cancelling?: boolean) => void;
   resolveDelegation: (
     chatId: string,
     delegationId: string,
@@ -40,10 +40,13 @@ export const useDelegationStore = create<DelegationState>((set, get) => ({
   upsertDelegation: (node) =>
     set((s) => {
       const chatNodes = { ...(s.delegations[node.chat_id] ?? {}) };
+      const previous = chatNodes[node.delegation_id];
+      if (previous && previous.status !== "running" && node.status === "running") return {};
       chatNodes[node.delegation_id] = node;
       const all = Object.values(chatNodes);
-      if (all.length > MAX_DELEGATIONS_PER_CHAT) {
-        const sorted = sortDelegations(all).slice(0, MAX_DELEGATIONS_PER_CHAT);
+      if (all.length > MAX_COMPLETED_DELEGATIONS_PER_CHAT) {
+        const sorted = [...all.filter((item) => item.status === "running"),
+          ...sortDelegations(all.filter((item) => item.status !== "running")).slice(0, MAX_COMPLETED_DELEGATIONS_PER_CHAT)];
         const keep: Record<string, DelegationNode> = {};
         for (const n of sorted) keep[n.delegation_id] = n;
         return { delegations: { ...s.delegations, [node.chat_id]: keep } };
@@ -77,7 +80,7 @@ export const useDelegationStore = create<DelegationState>((set, get) => ({
       };
     }),
 
-  markCancelling: (chatId, delegationId) =>
+  markCancelling: (chatId, delegationId, cancelling = true) =>
     set((s) => {
       const node = s.delegations[chatId]?.[delegationId];
       if (!node || node.status !== "running") return {};
@@ -86,7 +89,7 @@ export const useDelegationStore = create<DelegationState>((set, get) => ({
           ...s.delegations,
           [chatId]: {
             ...s.delegations[chatId],
-            [delegationId]: { ...node, cancelling: true },
+            [delegationId]: { ...node, cancelling },
           },
         },
       };

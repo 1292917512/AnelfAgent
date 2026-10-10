@@ -9,7 +9,7 @@ import { RealtimeCallPanel, RealtimeCallToggle } from "./RealtimeCallBar";
 import { detectMention, useMentionSearch } from "./mention/useMention";
 import { MentionPanel } from "./mention/MentionPanel";
 import { WorkspaceContextPreview } from "./WorkspaceContextPreview";
-import { mentionMarkdown } from "./mention/mentionMarkdown";
+import { fileReferenceMarkdown } from "@/lib/file-reference";
 
 const FILE_TYPE_ICONS: Record<string, typeof FileText> = {
   image: ImageIcon,
@@ -115,7 +115,7 @@ export function ChatInput() {
 
   const pickMention = useCallback((hit: WorkspaceSearchHit) => {
     if (!mention) return;
-    const link = mentionMarkdown(hit.name, hit.path);
+    const link = fileReferenceMarkdown({ path: hit.path, root: "workspace", isDir: false }, hit.name);
     const next = input.slice(0, mention.start) + link + input.slice(cursor);
     setInput(next);
     const pos = mention.start + link.length;

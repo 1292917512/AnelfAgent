@@ -13,6 +13,20 @@ beforeEach(() => {
 });
 
 describe("workspace file identities", () => {
+  it("opens the referenced directory in its original root", () => {
+    useWorkbenchStore.getState().setFileTreeFocus("docs", "project");
+    expect(useWorkbenchStore.getState()).toMatchObject({ fileTreeRoot: "project", fileTreeFocus: "docs" });
+    useWorkbenchStore.getState().setFileTreeRoot("workspace");
+    expect(useWorkbenchStore.getState().fileTreeFocus).toBeNull();
+  });
+  it("uses the same file reference contract for AI panel commands", () => {
+    useWorkbenchStore.getState().openPanel("files", "project:dir:docs");
+    expect(useWorkbenchStore.getState()).toMatchObject({ fileTreeRoot: "project", fileTreeFocus: "docs", leftOpen: true, openFiles: [] });
+    useWorkbenchStore.getState().openPanel("files", "project:src/a.ts");
+    expect(useWorkbenchStore.getState().openFiles).toEqual([{ path: "src/a.ts", root: "project" }]);
+    useWorkbenchStore.getState().openPanel("context");
+    expect(useWorkbenchStore.getState()).toMatchObject({ activeTab: "context", dockOpen: true });
+  });
   it("keeps identically named files in different roots separate", () => {
     const workbench = useWorkbenchStore.getState();
     workbench.openFile(workspace.path, workspace.root);

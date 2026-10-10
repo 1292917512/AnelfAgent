@@ -4,11 +4,15 @@ Media files are referenced by local path when available; otherwise the
 tag carries the remote URL or platform file_id plus a download hint, so
 AI can fetch the file on demand (web_download / qq_download_file) and
 then process it with tools (recognize_image, voice_to_text, read_file, etc.).
+
+Model Experience: local paths use forward slashes and the shared tag codec.
+Windows paths avoid redundant escape tokens; tags remain in the appended message.
 """
 
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Callable, List
 
 from core.latebind import LateBinding
@@ -65,7 +69,7 @@ class MediaPipeline:
                     log("人脸识别投递异常已忽略", "DEBUG")
 
             if file_path and os.path.isfile(file_path):
-                tag_text = tag_label("media_file", f"{seg_type}:{file_path}")
+                tag_text = tag_label("media_file", f"{seg_type}:{Path(file_path).as_posix()}")
                 results.append(tag_text)
                 log(f"media tag: [{seg_type}] {file_path}", "DEBUG", tag="媒体")
                 continue

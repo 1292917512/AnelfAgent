@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { ContextSnapshotData, SessionSummary, ThinkingSession, TraceNode } from "@/lib/types";
+import type { SessionSummary, ThinkingSession, TraceNode } from "@/lib/types";
 import { thinkingApi } from "@/lib/api";
 import { ThinkingStream, type ThinkingEvents } from "./thinking-stream";
 
@@ -32,9 +32,6 @@ interface ThinkingState {
   sessionError: unknown;
   selectedNodeId: string | null;
   autoFollow: boolean;
-  snapshotArmed: boolean;
-  snapshotData: ContextSnapshotData | null;
-  showSnapshot: boolean;
   initialize: (force?: boolean) => Promise<void>;
   shutdown: () => void;
   setTracking: (enabled: boolean) => Promise<void>;
@@ -45,10 +42,6 @@ interface ThinkingState {
   setAutoFollow: (value: boolean) => void;
   startSSE: () => void;
   stopSSE: () => void;
-  setSnapshotArmed: (value: boolean) => void;
-  setSnapshotData: (data: ContextSnapshotData | null) => void;
-  setShowSnapshot: (value: boolean) => void;
-  clearSnapshot: () => void;
   handleSessionStart: (data: ThinkingEvents["session_start"]) => void;
   handleSessionEnd: (data: ThinkingEvents["session_end"]) => void;
   handleNodeAdded: (data: ThinkingEvents["node_added"]) => void;
@@ -110,7 +103,6 @@ export const useThinkingStore = create<ThinkingState>((set, get) => {
     sessions: [], sessionsLoading: false, sessionsError: null,
     activeSessionId: null, activeSession: null, sessionLoading: false, sessionError: null,
     selectedNodeId: null, autoFollow: true,
-    snapshotArmed: false, snapshotData: null, showSnapshot: false,
 
     initialize: async (force = false) => {
       if (get().toggling || (get().statusSynced && !force)) return;
@@ -143,7 +135,7 @@ export const useThinkingStore = create<ThinkingState>((set, get) => {
       set({ enabled: false, statusSynced: false, toggling: false, statusError: null,
         sessions: [], sessionsLoading: false, sessionsError: null, activeSessionId: null,
         activeSession: null, sessionLoading: false, sessionError: null, selectedNodeId: null,
-        snapshotArmed: false, snapshotData: null, showSnapshot: false });
+      });
     },
     setTracking: async (enabled) => {
       if (get().toggling) return;
@@ -191,10 +183,6 @@ export const useThinkingStore = create<ThinkingState>((set, get) => {
     setAutoFollow: (autoFollow) => set({ autoFollow }),
     startSSE: () => stream.start(),
     stopSSE: () => stream.stop(),
-    setSnapshotArmed: (snapshotArmed) => set({ snapshotArmed }),
-    setSnapshotData: (snapshotData) => set({ snapshotData }),
-    setShowSnapshot: (showSnapshot) => set({ showSnapshot }),
-    clearSnapshot: () => set({ snapshotArmed: false, snapshotData: null, showSnapshot: false }),
 
     handleSessionStart: ({ session, node }) => {
       updateSummary(session);

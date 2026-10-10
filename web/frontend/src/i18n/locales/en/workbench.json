@@ -158,7 +158,8 @@
     "inputPlaceholder": "Type your answer…",
     "submit": "Submit",
     "skip": "Skip",
-    "skipped": "(skipped by user)"
+    "skipped": "(skipped by user)",
+    "expired": "This question has expired. Your answer was not delivered."
   },
   "conflict": {
     "title": "File changed on disk",

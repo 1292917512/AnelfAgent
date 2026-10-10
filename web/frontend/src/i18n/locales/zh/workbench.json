@@ -158,7 +158,8 @@
     "inputPlaceholder": "输入你的回答…",
     "submit": "提交",
     "skip": "跳过",
-    "skipped": "（用户跳过）"
+    "skipped": "（用户跳过）",
+    "expired": "这个问题已过期，回答未送达。"
   },
   "conflict": {
     "title": "文件发生变化",

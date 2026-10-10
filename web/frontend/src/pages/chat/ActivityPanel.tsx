@@ -13,7 +13,7 @@ import { usePlanStore } from "@/stores/plan-store";
 import { useDelegationStore } from "@/stores/delegation-store";
 import { PlanStepRow } from "@/components/plan/PlanStepRow";
 import { PlanStatusBadge } from "@/components/plan/PlanStatusBadge";
-import { DelegationCard } from "./render/DelegationCard";
+import { DelegationCard } from "@/components/delegation/DelegationCard";
 
 interface Props {
   onClose: () => void;

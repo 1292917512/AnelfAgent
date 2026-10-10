@@ -17,9 +17,10 @@ import { PageSkeleton } from "./components/common/AsyncState";
 import { NotFound } from "./components/layout/NotFound";
 import { QueryErrorResetBoundary } from "@tanstack/react-query";
 import { UnsavedChangesProvider } from "./components/common/UnsavedChanges";
+import { UiCommandHost } from "./components/workbench/UiCommandHost";
 
 function ApplicationLayout() {
-  return <UnsavedChangesProvider><FileDraftLifecycle /><Layout /><CommandPalette /></UnsavedChangesProvider>;
+  return <UnsavedChangesProvider><FileDraftLifecycle /><Layout /><CommandPalette /><UiCommandHost /></UnsavedChangesProvider>;
 }
 
 function PageBoundary({ children }: { children: React.ReactNode }) {

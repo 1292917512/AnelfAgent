@@ -165,6 +165,7 @@ export function FileTree({ root, onUpload, changedOnly }: Props) {
       if (cancelled) return;
       if (node) {
         node.select();
+        if (node.data.type === "dir") node.open();
         // 直接按行号换算偏移滚动（scrollTo 内部 waitFor 在部分 WebView 不可靠）
         const api = treeRef.current;
         if (api && node.rowIndex !== null) {

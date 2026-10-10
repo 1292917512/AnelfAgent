@@ -8,6 +8,8 @@
 import { useTranslation } from "react-i18next";
 import { Bot, CheckCircle2, ChevronDown, ChevronRight, CircleSlash, Loader2, XCircle, Zap } from "lucide-react";
 import { useState } from "react";
+import { useMutation } from "@tanstack/react-query";
+import { QueryError } from "@/components/common/AsyncState";
 import { cn } from "@/lib/utils";
 import { chatApi } from "@/lib/api";
 import { useNow } from "@/hooks/useNow";
@@ -16,9 +18,10 @@ import type { DelegationNode } from "@/lib/types";
 
 interface Props {
   node: DelegationNode;
+  compact?: boolean;
 }
 
-export function DelegationCard({ node }: Props) {
+export function DelegationCard({ node, compact = false }: Props) {
   const { t } = useTranslation("plan");
   const [expanded, setExpanded] = useState(false);
   const markCancelling = useDelegationStore((s) => s.markCancelling);
@@ -26,20 +29,19 @@ export function DelegationCard({ node }: Props) {
   const running = node.status === "running";
   // 运行中每秒钟刷新耗时（避免渲染期直接调用 Date.now）
   const now = useNow(running) / 1000;
-  const durationSec = Math.round((node.resolved_at ?? now) - node.started_at);
-
-  const handleCancel = async () => {
-    markCancelling(node.chat_id, node.delegation_id);
-    try {
-      await chatApi.cancelDelegation(node.delegation_id);
-    } catch { /* 取消失败时由 delegation_resolved 或超时兜底 */ }
-  };
+  const durationSec = Math.max(0, Math.round((node.resolved_at ?? now) - node.started_at));
+  const cancel = useMutation({
+    mutationFn: () => chatApi.cancelDelegation(node.delegation_id),
+    onMutate: () => markCancelling(node.chat_id, node.delegation_id),
+    onError: () => markCancelling(node.chat_id, node.delegation_id, false),
+  });
 
   return (
     <div className="flex justify-start">
       <div
         className={cn(
-          "max-w-[88%] sm:max-w-[80%] w-full rounded-lg border overflow-hidden text-sm",
+          "w-full rounded-lg border overflow-hidden text-sm",
+          !compact && "max-w-[88%] sm:max-w-[80%]",
           node.status === "failed"
             ? "border-red-400/40 bg-red-50/40 dark:bg-red-950/20"
             : node.status === "completed"
@@ -51,6 +53,7 @@ export function DelegationCard({ node }: Props) {
       >
         <button
           onClick={() => setExpanded(!expanded)}
+          aria-expanded={expanded}
           className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-hover/50 transition-colors"
         >
           <Bot size={14} className={cn("shrink-0",
@@ -97,7 +100,8 @@ export function DelegationCard({ node }: Props) {
             </span>
             {!node.cancelling && (
               <button
-                onClick={handleCancel}
+                onClick={() => cancel.mutate()}
+                disabled={cancel.isPending}
                 className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-danger hover:bg-danger-subtle transition-colors shrink-0"
               >
                 <CircleSlash size={11} />
@@ -107,6 +111,7 @@ export function DelegationCard({ node }: Props) {
           </div>
         )}
 
+        {cancel.error && <div className="p-2"><QueryError compact error={cancel.error} /></div>}
         {expanded && (
           <div className="px-3 pb-2 space-y-1.5 border-t border-border/50">
             {node.context_preview && (

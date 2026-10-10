@@ -6,22 +6,20 @@ import { Activity } from "lucide-react";
 import { useThinkingStore } from "@/stores/thinking-store";
 import { useThinkingSessions } from "@/hooks/useThinking";
 import { useRouteTab } from "@/hooks/useRouteTab";
-import { useIsMobile } from "@/lib/use-media-query";
+import { useIsMobile, useMediaQuery } from "@/lib/use-media-query";
 import { NodeDetail } from "@/components/thinking/NodeDetail";
 import { ToolsPanel } from "@/components/thinking/ToolsPanel";
-import { ContextProvidersPanel } from "@/components/thinking/ContextProvidersPanel";
+import { ProvidersPanel } from "@/components/context/ProvidersPanel";
 import { FlowView } from "@/components/thinking/FlowView";
 import { TimelineView } from "@/components/thinking/TimelineView";
 import { SessionOverview } from "@/components/thinking/SessionOverview";
 import { ThinkingSessionsPanel } from "@/components/thinking/ThinkingSessionsPanel";
 import { ThinkingToolbar } from "@/components/thinking/ThinkingToolbar";
-import { TabBar } from "@/components/common/TabBar";
 import { PageSkeleton, QueryError } from "@/components/common/AsyncState";
 import { Drawer } from "@/components/common/Drawer";
 import { DialogSurface } from "@/components/ui/DialogSurface";
 import { Button } from "@/components/ui/Button";
 import { useTracePlanNodes } from "@/components/thinking/trace-plans";
-import Context from "@/pages/Context";
 
 function ThinkingFlow() {
   const { t } = useTranslation("thinking");
@@ -31,6 +29,7 @@ function ThinkingFlow() {
   const [panel, setPanel] = useState<"tools" | "providers" | null>(null);
   const [showSessions, setShowSessions] = useState(false);
   const isMobile = useIsMobile();
+  const detailOverlay = useMediaQuery("(max-width: 1279px)");
   const planNodes = useTracePlanNodes(state.activeSession);
   const selected = [...(state.activeSession?.nodes ?? []), ...planNodes].find((node) => node.id === state.selectedNodeId);
   const selectNode = (id: string) => { state.setSelectedNodeId(id); };
@@ -65,27 +64,18 @@ function ThinkingFlow() {
           {!state.enabled && <Button variant="primary" loading={state.toggling} onClick={() => void state.setTracking(true)}>{t("startTracking")}</Button>}
         </div>}
     </div>
-    {selected && !isMobile && <aside className="w-[340px] shrink-0 border-l border-border bg-panel">
+    {selected && !detailOverlay && <aside className="w-[340px] shrink-0 border-l border-border bg-panel">
       <NodeDetail key={selected.id} node={selected} onClose={() => state.setSelectedNodeId(null)} />
     </aside>}
-    {isMobile && <DialogSurface open={!!selected} onClose={() => state.setSelectedNodeId(null)} title={t("nodeDetails")} placement="right" className="max-w-lg">
+    {detailOverlay && <DialogSurface open={!!selected} onClose={() => state.setSelectedNodeId(null)} title={t("nodeDetails")} placement="right" className="max-w-lg">
       {selected && <NodeDetail key={selected.id} node={selected} onClose={() => state.setSelectedNodeId(null)} />}
     </DialogSurface>}
     <Drawer open={panel !== null} onClose={() => setPanel(null)} title={t(panel === "tools" ? "availableTools" : "contextProviders.title")}>
-      <div className="h-[70dvh]">{panel === "tools" ? <ToolsPanel tools={state.activeSession?.available_tools ?? []} /> : panel === "providers" ? <ContextProvidersPanel /> : null}</div>
+      <div className="h-[70dvh] overflow-y-auto p-3">{panel === "tools" ? <ToolsPanel tools={state.activeSession?.available_tools ?? []} /> : panel === "providers" ? <ProvidersPanel /> : null}</div>
     </Drawer>
   </div>;
 }
 
 export default function Thinking() {
-  const { t } = useTranslation("thinking");
-  const [tab, setTab] = useRouteTab(["chain", "context"] as const, "chain");
-  return <div className="flex h-full min-h-0 flex-col">
-    <div className="border-b border-border px-4 pt-3">
-      <TabBar tabs={[{ key: "chain", label: t("title") }, { key: "context", label: t("contextTab") }]} activeTab={tab} onChange={setTab} />
-    </div>
-    <div className="min-h-0 flex-1">
-      {tab === "chain" ? <ReactFlowProvider><ThinkingFlow /></ReactFlowProvider> : <Context hideHeader />}
-    </div>
-  </div>;
+  return <ReactFlowProvider><ThinkingFlow /></ReactFlowProvider>;
 }

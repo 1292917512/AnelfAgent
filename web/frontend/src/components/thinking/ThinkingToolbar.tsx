@@ -1,4 +1,5 @@
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router-dom";
 import { Crosshair, Database, List, ListTree, Power, Workflow, Wrench } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/utils";
@@ -35,5 +36,6 @@ export function ThinkingToolbar(props: Props) {
       className={props.autoFollow ? "bg-accent-subtle text-accent" : ""}><Crosshair size={16} /></Button>
     <Button size="icon" variant="ghost" title={t("toolsPanel")} onClick={props.onShowTools}><Wrench size={16} /></Button>
     <Button size="icon" variant="ghost" title={t("contextProviders.title")} onClick={props.onShowProviders}><Database size={16} /></Button>
+    <Link to="/context" className="rounded-lg px-2 py-2 text-xs font-medium text-accent hover:bg-hover">{t("contextTab")}</Link>
   </div>;
 }

@@ -9,15 +9,15 @@ import { useDelegationStore } from "@/stores/delegation-store";
 import { ConfirmDialog } from "@/components/ui/Modal";
 import { MediaBubble } from "./render/MediaBubble";
 import { PlanCard } from "./render/PlanCard";
-import { DelegationCard } from "./render/DelegationCard";
+import { DelegationCard } from "@/components/delegation/DelegationCard";
 import { ShareCard } from "@entities/share/panels/ShareCard";
 import { SystemNotice } from "./render/SystemNotice";
 import { ToolSummaryCard } from "./render/ToolSummaryCard";
 import { ToolCallsCard } from "./render/ToolCallsCard";
 import { ThinkingBlock } from "./render/ThinkingBlock";
 import { ChangesCard } from "./render/ChangesCard";
-import { MentionMarkdown } from "./render/MentionMarkdown";
 import { CollapsibleUserMessage } from "./render/CollapsibleUserMessage";
+import { CollapsibleMarkdown } from "./render/CollapsibleMarkdown";
 import { FoldChip } from "./render/FoldChip";
 import { ActivityRow } from "./ActivityRow";
 import { StreamingArea } from "./StreamingArea";
@@ -99,13 +99,13 @@ const MessageRow = memo(function MessageRow({ msg, foldPivot }: { msg: ChatMessa
             )}
             {isUser ? (
               <CollapsibleUserMessage>
-                <MentionMarkdown
+                <CollapsibleMarkdown
                   content={msg.content}
                   fadeClass="from-accent-subtle"
                 />
               </CollapsibleUserMessage>
             ) : (
-              <MentionMarkdown
+              <CollapsibleMarkdown
                 content={msg.content}
                 fadeClass="from-secondary"
               />

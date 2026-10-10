@@ -11,6 +11,7 @@ import { useIsMobile } from "@/lib/use-media-query";
 import { useAppStore } from "@/stores/app-store";
 import { cn } from "@/lib/utils";
 import { CORE_ROUTES } from "@/lib/core-routes";
+import { startUiStateReporting } from "@/stores/workbench-store";
 
 export function Layout() {
   const { t } = useTranslation("nav");
@@ -20,6 +21,7 @@ export function Layout() {
   const density = useAppStore((state) => state.density);
   const branding = useAppStore((state) => state.branding);
   const location = useLocation();
+  useEffect(() => startUiStateReporting(location.pathname), [location.pathname]);
   const workspace = CORE_ROUTES.some((route) => route.path === location.pathname && route.workspace);
   useEffect(() => { setMobileMenuOpen(false); }, [location.pathname, setMobileMenuOpen]);
   useEffect(() => { document.title = `${branding.title} · ${t(CORE_ROUTES.find((route) => route.path === location.pathname)?.label ?? "personalWorkspace")}`; }, [branding.title, location.pathname, t]);

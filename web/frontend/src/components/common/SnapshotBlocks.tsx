@@ -26,7 +26,7 @@ const LAYER_COLORS: Record<string, string> = {
   exec_context: "border-l-teal-500",
 };
 
-const LAYER_BAR_COLORS: Record<string, string> = {
+export const LAYER_BAR_COLORS: Record<string, string> = {
   stable: "bg-violet-500",
   context: "bg-blue-500",
   summary: "bg-indigo-500",
@@ -160,14 +160,15 @@ export function SnapshotSectionBlock({ section, totalTokens, defaultOpen = false
     <div className={cn("border-l-2 pl-3", colorClass)}>
       <button
         onClick={() => setOpen(!open)}
-        className={cn("flex items-center gap-2 w-full text-left group", showTokens ? "py-1.5" : "py-1")}
+        aria-expanded={open}
+        className={cn("flex flex-wrap items-center gap-2 w-full text-left group", showTokens ? "py-2" : "py-1")}
       >
         {open ? <ChevronDown size={12} className="text-muted" /> : <ChevronRight size={12} className="text-muted" />}
         <span className="text-xs font-medium text-foreground">{section.label}</span>
         <span className="text-[10px] text-muted font-mono">×{section.count}</span>
         {section.volatility_label && (
           <span
-            className="px-1 py-px rounded text-[9px] bg-sky-500/10 text-sky-500"
+            className="px-1.5 py-0.5 rounded text-[11px] bg-elevated text-muted"
             title={t("sections.volatilityTitle", { value: section.volatility })}
           >
             {section.volatility_label}
@@ -176,21 +177,21 @@ export function SnapshotSectionBlock({ section, totalTokens, defaultOpen = false
         {hasBaseline && newCount > 0 ? (
           <>
             {splitable && (
-              <span className="px-1 py-px rounded text-[9px] font-medium bg-emerald-500/15 text-emerald-500">
+              <span className="px-1 py-px rounded text-[9px] font-medium bg-emerald-500/15 text-ok">
                 {t("sections.cachedPrefix", { count: stableCount })}
               </span>
             )}
-            <span className="px-1 py-px rounded text-[9px] font-medium bg-amber-500/15 text-amber-500">
+            <span className="px-1 py-px rounded text-[9px] font-medium bg-amber-500/15 text-warn">
               {t("sections.newAdds", { count: newCount })}
             </span>
           </>
         ) : fullyStable ? (
-          <span className="px-1 py-px rounded text-[9px] font-medium bg-emerald-500/15 text-emerald-500">
+          <span className="px-1 py-px rounded text-[9px] font-medium bg-emerald-500/15 text-ok">
             {t("sections.unchanged")}
           </span>
         ) : (
           section.changed === true && (
-            <span className="px-1 py-px rounded text-[9px] font-medium bg-amber-500/15 text-amber-500">
+            <span className="px-1 py-px rounded text-[9px] font-medium bg-amber-500/15 text-warn">
               {t("sections.changed")}
             </span>
           )
@@ -214,7 +215,7 @@ export function SnapshotSectionBlock({ section, totalTokens, defaultOpen = false
             <div>
               <button
                 onClick={() => setStableOpen(!stableOpen)}
-                className="flex items-center gap-1 text-[10px] text-emerald-500/80 hover:text-emerald-500"
+                className="flex items-center gap-1 text-[10px] text-ok hover:text-ok"
               >
                 {stableOpen ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
                 {t("sections.cachedPrefixRegion", { count: stableMsgs.length })}
@@ -236,10 +237,10 @@ export function SnapshotSectionBlock({ section, totalTokens, defaultOpen = false
           )}
           {/* 全局断链点标记：本轮缓存命中至此为止 */}
           {isBreakLayer && !breakAtTail && (
-            <div className="flex items-center gap-1.5 px-2 py-1 rounded border border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-500">
+            <div className="flex items-center gap-1.5 px-2 py-1 rounded border border-amber-500/40 bg-amber-500/10 text-[10px] text-warn">
               <Zap size={10} className="shrink-0" />
               <span className="font-semibold">{t("sections.breakPoint")}</span>
-              <span className="text-amber-500/80">
+              <span className="text-warn/80">
                 {t("sections.breakDesc", { tokens: (prefixBreak?.before_tokens ?? 0).toLocaleString() })}
               </span>
             </div>
@@ -254,10 +255,10 @@ export function SnapshotSectionBlock({ section, totalTokens, defaultOpen = false
             />
           ))}
           {breakAtTail && (
-            <div className="flex items-center gap-1.5 px-2 py-1 rounded border border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-500">
+            <div className="flex items-center gap-1.5 px-2 py-1 rounded border border-amber-500/40 bg-amber-500/10 text-[10px] text-warn">
               <Zap size={10} className="shrink-0" />
               <span className="font-semibold">{t("sections.breakPoint")}</span>
-              <span className="text-amber-500/80">
+              <span className="text-warn/80">
                 {t("sections.breakDesc", { tokens: (prefixBreak?.before_tokens ?? 0).toLocaleString() })}
               </span>
             </div>

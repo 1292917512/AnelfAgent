@@ -1,9 +1,9 @@
 import { useTranslation } from "react-i18next";
 import { lazy, Suspense } from "react";
-import { Activity, FolderTree, ListTodo, Loader2, Search, Settings, X } from "lucide-react";
+import { Activity, FolderTree, ListTodo, Loader2, ScanText, Search, Settings, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useWorkbenchStore, type DockTab } from "@/stores/workbench-store";
-import { useIsMobile } from "@/lib/use-media-query";
+import { useCompactWorkbench } from "@/lib/use-media-query";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
 import { DialogSurface } from "@/components/ui/DialogSurface";
 import { StatusPanel } from "./dock/StatusPanel";
@@ -11,6 +11,7 @@ import { TracePanel } from "./dock/TracePanel";
 import { DockTasksPanel } from "./dock/TasksPanel";
 import { SearchPanel } from "./dock/SearchPanel";
 import { SettingsPanel } from "./dock/SettingsPanel";
+import { ContextPanel } from "./dock/ContextPanel";
 
 // 文件树依赖 react-arborist（react-dnd/react-window 体积较大），按需加载
 const FileTreePanel = lazy(() =>
@@ -20,15 +21,16 @@ const FileTreePanel = lazy(() =>
 const PANELS: Record<DockTab, () => React.JSX.Element> = {
   status: StatusPanel,
   trace: TracePanel,
+  context: ContextPanel,
   tasks: DockTasksPanel,
   search: SearchPanel,
   settings: SettingsPanel,
 };
 
-/** 右侧功能 Dock：TabBar 切换状态/思维/任务/搜索/设置（移动端为抽屉） */
+/** 右侧功能 Dock：TabBar 切换状态/思维/任务/搜索/设置（窄屏为抽屉） */
 export function Dock() {
   const { t } = useTranslation("workbench");
-  const isMobile = useIsMobile();
+  const compact = useCompactWorkbench();
   const activeTab = useWorkbenchStore((s) => s.activeTab);
   const dockOpen = useWorkbenchStore((s) => s.dockOpen);
   const setActiveTab = useWorkbenchStore((s) => s.setActiveTab);
@@ -37,6 +39,7 @@ export function Dock() {
   const tabs: TabItem<DockTab>[] = [
     { key: "status", label: t("tabs.status"), icon: Activity },
     { key: "trace", label: t("tabs.trace"), icon: FolderTree },
+    { key: "context", label: t("context:title"), icon: ScanText },
     { key: "tasks", label: t("tabs.tasks"), icon: ListTodo },
     { key: "search", label: t("tabs.search"), icon: Search },
     { key: "settings", label: t("tabs.settings"), icon: Settings },
@@ -49,25 +52,26 @@ export function Dock() {
   const body = (
     <div className={cn(
       "flex flex-col h-full bg-panel border-border",
-      isMobile ? "w-[85vw] max-w-sm border-l shadow-xl" : "w-full min-w-0 border-l",
+      compact ? "w-[85vw] max-w-sm border-l shadow-xl" : "w-full min-w-0 border-l",
     )}>
       <div className="flex items-center shrink-0">
         <div className="flex-1 min-w-0">
-          <TabBar tabs={tabs} activeTab={activeTab} onChange={setActiveTab} fill />
+          <TabBar tabs={tabs} activeTab={activeTab} onChange={setActiveTab} fill iconOnly />
         </div>
-        {isMobile && (
+        {compact && (
           <button aria-label={t("common:close")} onClick={toggleDock} className="p-2 text-muted hover:text-foreground shrink-0">
             <X size={16} />
           </button>
         )}
       </div>
+      <div className="shrink-0 border-b border-border px-3 py-2 text-xs font-semibold text-heading">{tabs.find((tab) => tab.key === activeTab)?.label}</div>
       <div className="flex-1 min-h-0 overflow-y-auto">
         <ActivePanel />
       </div>
     </div>
   );
 
-  if (isMobile) {
+  if (compact) {
     return (
       <DialogSurface open title={t("toggleDock")} onClose={toggleDock} placement="right" className="w-[85vw] max-w-sm border-0">
         {body}
@@ -77,10 +81,10 @@ export function Dock() {
   return body;
 }
 
-/** 左侧文件树栏（移动端为抽屉） */
+/** 左侧文件树栏（窄屏为抽屉） */
 export function LeftDock() {
   const { t } = useTranslation("workbench");
-  const isMobile = useIsMobile();
+  const compact = useCompactWorkbench();
   const leftOpen = useWorkbenchStore((s) => s.leftOpen);
   const toggleLeft = useWorkbenchStore((s) => s.toggleLeft);
 
@@ -89,9 +93,9 @@ export function LeftDock() {
   const body = (
     <div className={cn(
       "flex flex-col h-full bg-panel border-border",
-      isMobile ? "w-[80vw] max-w-xs border-r shadow-xl" : "w-full min-w-0 border-r",
+      compact ? "w-[80vw] max-w-xs border-r shadow-xl" : "w-full min-w-0 border-r",
     )}>
-      {isMobile && (
+      {compact && (
         <div className="flex justify-end p-1 border-b border-border shrink-0">
           <button aria-label={t("common:close")} onClick={toggleLeft} className="p-1.5 text-muted hover:text-foreground">
             <X size={15} />
@@ -110,7 +114,7 @@ export function LeftDock() {
     </div>
   );
 
-  if (isMobile) {
+  if (compact) {
     return (
       <DialogSurface open title={t("toggleFiles")} onClose={toggleLeft} placement="left" className="w-[80vw] max-w-xs border-0">
         {body}

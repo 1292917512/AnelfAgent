@@ -2,9 +2,10 @@
 # 本地 CI 镜像门禁：与 .github/workflows/ci.yml 同口径，push 前一键验证。
 #
 # 用法：
-#   scripts/check.sh              # 全部门禁（静态 + 全量测试 + 前端 lint/build）
-#   scripts/check.sh --fast       # 仅静态门禁（ruff + lint-imports + mypy 三平台）
+#   scripts/check.sh              # 静态 + 全量测试 + 前端 lint/单测/浏览器/构建
+#   scripts/check.sh --fast       # 仅静态门禁（ruff + lint-imports + mypy）
 #   scripts/check.sh --skip-fe    # 跳过前端门禁
+#   scripts/check.sh --skip-browser # 跳过浏览器回归（其余前端检查仍执行）
 #   scripts/check.sh --skip-test  # 跳过后端测试
 #   scripts/check.sh -- <pytest 参数>  # 透传 pytest 参数（如 -k xxx 或路径收窄）
 
@@ -13,12 +14,14 @@ cd "$(dirname "$0")/.."
 
 RUN_TEST=1
 RUN_FE=1
+RUN_BROWSER=1
 PYTEST_ARGS=()
 
 for arg in "$@"; do
   case "$arg" in
     --fast) RUN_TEST=0; RUN_FE=0 ;;
     --skip-fe) RUN_FE=0 ;;
+    --skip-browser) RUN_BROWSER=0 ;;
     --skip-test) RUN_TEST=0 ;;
     --) ;;
     *) PYTEST_ARGS+=("$arg") ;;
@@ -38,6 +41,9 @@ for plat in linux darwin win32; do
   uv run mypy core/ --platform "$plat"
 done
 
+step "mypy 全部生产模块"
+uv run mypy
+
 if [ "$RUN_TEST" -eq 1 ]; then
   step "pytest 全量"
   uv run pytest -n auto ${PYTEST_ARGS[@]+"${PYTEST_ARGS[@]}"}
@@ -45,10 +51,20 @@ fi
 
 if [ "$RUN_FE" -eq 1 ]; then
   if [ -d web/frontend/node_modules ]; then
-    step "前端 ESLint + 构建"
-    (cd web/frontend && npm run lint && npm run build)
+    step "前端 ESLint + 模块/组件回归 + 构建"
+    (
+      cd web/frontend
+      npm run lint
+      npm run test:modules
+      npm test
+      if [ "$RUN_BROWSER" -eq 1 ]; then
+        npm run test:e2e
+      fi
+      npm run build
+    )
   else
-    echo "跳过前端门禁：web/frontend/node_modules 不存在（先 npm ci）" >&2
+    echo "无法执行前端门禁：请先在 web/frontend 运行 npm ci，或显式指定 --skip-fe" >&2
+    exit 1
   fi
 fi
 

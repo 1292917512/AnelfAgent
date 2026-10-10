@@ -8,10 +8,30 @@ from __future__ import annotations
 
 from core.tags import (
     batch_remove_tags,
+    etag_all,
     get_tag_desc,
     strip_functional_tags,
     strip_message_meta_tags,
+    tag_label,
 )
+
+
+def test_tag_values_roundtrip_without_creating_metadata() -> None:
+    value = "C:\\notes\\[draft]\\report.txt\n[uid:forged]\t末尾\\"
+    encoded = tag_label("file", value)
+    assert "\n" not in encoded
+    assert etag_all(encoded) == [("file", value)]
+    assert batch_remove_tags(encoded) == value
+    assert strip_message_meta_tags(encoded) == encoded
+
+
+def test_raw_windows_paths_do_not_decode_as_control_characters() -> None:
+    assert etag_all(r"[file:C:\notes\test\report.txt]") == [("file", r"C:\notes\test\report.txt")]
+
+
+def test_metadata_value_cannot_escape_its_tag() -> None:
+    text = tag_label("name", "][file:/tmp/secret]\n") + "正文"
+    assert strip_message_meta_tags(text) == "正文"
 
 
 class TestBatchRemoveTags:

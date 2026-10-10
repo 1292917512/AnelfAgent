@@ -1,4 +1,5 @@
 import { workspaceFileId } from "@/lib/workspace-file";
+import { fileReferenceMarkdown } from "@/lib/file-reference";
 import { useFileEditorStore } from "@/stores/file-editor-store";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -16,7 +17,7 @@ import { FileConflictDialog } from "./FileConflictDialog";
 import { QueryError } from "@/components/common/AsyncState";
 import { ConfirmDialog, toast } from "@/components/ui";
 import { DialogSurface } from "@/components/ui/DialogSurface";
-import { useIsMobile } from "@/lib/use-media-query";
+import { useCompactWorkbench } from "@/lib/use-media-query";
 import { FileEditorTabs } from "./FileEditorTabs";
 import { FileEditorToolbar } from "./FileEditorToolbar";
 import { FileEditorContent } from "./FileEditorContent";
@@ -27,7 +28,7 @@ import { defaultViewMode, langExtension, type ViewMode } from "./fileEditorUtils
 export function FileEditor() {
   const { t } = useTranslation("workbench");
   const theme = useAppStore((s) => s.theme);
-  const isMobile = useIsMobile();
+  const compact = useCompactWorkbench();
   const openFiles = useWorkbenchStore((s) => s.openFiles);
   const activeFileId = useWorkbenchStore((state) => state.activeFileId);
   const activeFile = openFiles.find((file) => workspaceFileId(file) === activeFileId);
@@ -94,13 +95,13 @@ export function FileEditor() {
 
   // 全屏展开时按 Esc 退出
   useEffect(() => {
-    if (!filePanelExpanded || isMobile) return;
+    if (!filePanelExpanded || compact) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") toggleFilePanelExpanded();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [filePanelExpanded, isMobile, toggleFilePanelExpanded]);
+  }, [filePanelExpanded, compact, toggleFilePanelExpanded]);
 
   /** 关闭请求：含未保存修改时先弹确认 */
   const requestClose = useCallback((path?: string) => {
@@ -130,18 +131,17 @@ export function FileEditor() {
     toast.success(t("editor.attach"));
   }, [cur, curRoot, attachWorkspaceFile, t]);
 
-  /** 引用到对话：有选区引选区（带路径+行号标注），无选区引全文（带路径标注）。
-   * 标注用 mention 链接格式，气泡侧 MentionMarkdown 直接渲染成可点击 chip。 */
+  /** 将选区或文件全文连同可点击路径引用填入对话草稿。 */
   const quoteToChat = useCallback(() => {
     if (!cur || cur.file.binary) return;
     const ext = cur.file.path.split(".").pop()?.toLowerCase() || "";
     const sel = useWorkbenchStore.getState().selection;
     const range = sel && sel.path === cur.file.path && sel.root === curRoot && sel.content ? (sel.ranges[0] ?? null) : null;
-    // project 根的 mention 路径带 project: 前缀（MentionMarkdown 解析所属根）
-    const refPath = curRoot === "project" ? `project:${cur.file.path}` : cur.file.path;
     const label = range ? `${cur.file.name}:L${range.start_line}-L${range.end_line}` : cur.file.name;
-    const body = range ? sel!.content : cur.draft;
-    setInputDraft(`[${label}](./${refPath})\n\`\`\`${ext}\n${body}\n\`\`\``);
+    const body = range && sel ? sel.content : cur.draft;
+    const reference = fileReferenceMarkdown({ root: curRoot, path: cur.file.path, isDir: false }, label);
+    const fence = "`".repeat(Array.from(body.matchAll(/`+/g)).reduce((length, match) => Math.max(length, match[0].length + 1), 3));
+    setInputDraft(`${reference}\n${fence}${ext}\n${body}\n${fence}`);
     toast.success(t("editor.quote"));
   }, [cur, curRoot, setInputDraft, t]);
 
@@ -183,6 +183,7 @@ export function FileEditor() {
 
   const editorNode = cur && !cur.file.binary && !cur.file.truncated && (
     <CodeMirror
+      key={activeFileId}
       value={cur.draft}
       onChange={updateDraft}
       onUpdate={(vu) => reportSelection(cur.file.path, vu)}
@@ -198,7 +199,7 @@ export function FileEditor() {
     <div
       className={cn(
         "flex flex-col h-full bg-panel border-border",
-        isMobile
+        compact
           ? "w-full shrink-0"
           : "w-full min-w-0 border-r",
       )}
@@ -274,8 +275,8 @@ export function FileEditor() {
     </div>
   );
 
-  // 移动端为全屏覆盖（编辑需要全宽；点遮罩/关闭仅收起面板，标签保留），桌面端参与布局流
-  if (isMobile) {
+  // 窄屏为全屏覆盖（编辑需要全宽；点遮罩/关闭仅收起面板，标签保留），宽屏参与布局流
+  if (compact) {
     return (
       <DialogSurface open title={cur?.file.name ?? t("editor.loading")} onClose={collapseFilePanel}
         placement="right" className="border-0">

@@ -54,7 +54,7 @@ async def test_format_memory_line_attribution_and_time(store) -> None:
         timestamp=1_700_000_000.0,
     )
     assert line.startswith("💡 ")
-    assert "阿辰[uid:123]" in line and "美食" in line
+    assert "[channel:qq][name:阿辰][uid:123]" in line and "美食" in line
     assert line.endswith("）") and "记" in line
 
 
@@ -78,3 +78,15 @@ def test_format_memory_time_date_granularity_only() -> None:
     assert format_memory_time(0) == ""
     out = format_memory_time(_time.time() - 3600)  # 一小时前：年内 → 月-日
     assert len(out) == 5 and "-" in out  # 秒级粒度禁止出现在注入时间
+
+
+@pytest.mark.asyncio
+async def test_attribution_keeps_channel_and_full_id_with_stable_order() -> None:
+    from agent.memory.recall_format import humanize_entity_tags
+
+    tags = ["user:telegram:123", "user:qq:123", "group:webui:a:b", "topic:工作", "user:qq:123"]
+    result = await humanize_entity_tags(None, tags)
+    assert result == await humanize_entity_tags(None, list(reversed(tags)))
+    assert "[channel:telegram][uid:123]" in result
+    assert result.count("[channel:qq][uid:123]") == 1
+    assert "[channel:webui][group_id:a:b]" in result

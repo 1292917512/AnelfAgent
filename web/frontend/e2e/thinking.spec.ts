@@ -32,7 +32,7 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test("trace overview explains work, locates issues and exposes complete recorded data", async ({ page, isMobile }) => {
+test("trace overview explains work, locates issues and exposes complete recorded data", async ({ page, isMobile }, info) => {
   await page.goto("/webui/thinking");
   // Newest session is selected by timestamp.
   if (isMobile) await page.getByRole("button", { name: "Session List", exact: true }).click();
@@ -40,6 +40,7 @@ test("trace overview explains work, locates issues and exposes complete recorded
   const overview = page.getByRole("region", { name: "Run overview" });
   await expect(overview).toContainText("Review ended");
   await expect(overview).toContainText("1,280");
+  await page.screenshot({ path: info.outputPath("trace.png") });
   await page.getByRole("button", { name: "2 to inspect" }).click();
   await expect(page.getByRole("heading", { name: "Node details", exact: true, level: 3 })).toBeVisible();
   await expect(page.getByText("system architecture", { exact: false }).first()).toBeVisible();

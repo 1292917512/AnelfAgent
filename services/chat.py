@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import datetime
 import os
-import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from core.log import log
 from core.path import ConfigPaths
+from core.tags import replace_tags, tag_label
 from services._runtime import get_agent_app, get_runtime, is_ready
+from services.file_references import display_reference_tag, expand_file_references
 from services.workspace_context import WorkspaceContext, inject_workspace_context
 
 UPLOAD_DIR = Path(ConfigPaths.UPLOAD_DIR).resolve()
@@ -18,12 +19,6 @@ UPLOAD_DIR = Path(ConfigPaths.UPLOAD_DIR).resolve()
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg"}
 _AUDIO_EXTS = {".mp3", ".wav", ".ogg", ".flac", ".m4a", ".amr", ".opus"}
 _VIDEO_EXTS = {".mp4", ".avi", ".mkv", ".mov", ".webm", ".flv"}
-
-# 消息内容内部标签（[tag:xxx]）剥离正则，历史清洗与会话标题共用；
-# 键为单词字符（与 tag_label 生成一致），值禁止跨 [、] 与换行，
-# 防止多行正文（执行摘要等）被错误配对吞掉
-_TAG_PREFIX_RE = re.compile(r"\[(?:\w+):([^\[\]\n]*)\]")
-
 
 def normalize_web_scope_id(scope_id: str) -> str:
     """webui 历史查询的 scope_id 归一化：裸 user_id 自动补 adapter 前缀。"""
@@ -49,11 +44,11 @@ def clean_message_for_display(msg: Dict[str, Any]) -> Dict[str, Any]:
 
     content = str(msg.get("content", ""))
     client_id = next((value for key, value in etag_all(content.split("\n", 1)[0]) if key == "message_id"), "") if msg.get("role") == "user" else ""
-    content = strip_message_meta_tags(content)
-    content = strip_functional_tags(content)
     # 工作区上下文注入块剥离（注入文本不在历史里重复刷屏，只留用户原文）
     from services.workspace_context import strip_workspace_context
     content = strip_workspace_context(content)
+    content = strip_message_meta_tags(content)
+    content = strip_functional_tags(content)
     # kind 判定先于通用标签剥离：结构化前缀一旦识别即锁定，
     # 避免正文中的类标签片段干扰后续清洗导致前缀丢失
     head = content.strip()
@@ -62,7 +57,7 @@ def clean_message_for_display(msg: Dict[str, Any]) -> Dict[str, Any]:
         kind = "tool_summary"
     elif head.startswith(("[系统]", "[执行步骤]")):
         kind = "system_notice"
-    content = _TAG_PREFIX_RE.sub(r"\1", content).strip()
+    content = replace_tags(content, display_reference_tag).strip()
     result: Dict[str, Any] = {
         "role": msg.get("role", ""),
         "content": content,
@@ -99,11 +94,11 @@ def classify_file_type(ext: str) -> str:
     return "file"
 
 
-def _file_ref_descs(resolved_files: List[tuple]) -> str:
+def _file_ref_descs(resolved_files: List[tuple[str, bool]]) -> str:
     """内联附件引用标记（与结构化 media_path 同源）：dir→[dir:绝对路径]、
     file→[file:绝对路径]，AI 照抄路径即可调用 read_file/list_directory。"""
     return " ".join(
-        f"[{'dir' if is_dir else 'file'}:{fp}]" for fp, is_dir in resolved_files
+        tag_label("dir" if is_dir else "file", Path(fp).as_posix()) for fp, is_dir in resolved_files
     )
 
 
@@ -286,7 +281,7 @@ class ChatService:
             if not media_segments:
                 media_segments = None
 
-        text = message
+        text = expand_file_references(message)
         if resolved_files:
             # 内联标记与结构化通道同源（绝对路径），AI 照抄路径即可调用工具
             file_descs = _file_ref_descs(resolved_files)
@@ -350,7 +345,7 @@ class ChatService:
         parts: List[str] = []
         total = 0
         for row in rows:
-            text = _TAG_PREFIX_RE.sub("", str(row.get("content") or "")).strip()
+            text = replace_tags(str(row.get("content") or ""), lambda _key, _value: "").strip()
             if not text:
                 continue
             text = text[:300]
@@ -398,7 +393,7 @@ class ChatService:
             except Exception as exc:
                 log(f"换向折叠摘要生成失败，降级确定性摘要: {exc}", "DEBUG", tag="聊天")
         if not summary:
-            first = _TAG_PREFIX_RE.sub("", str(foldable[0].get("content") or "")).strip()
+            first = replace_tags(str(foldable[0].get("content") or ""), lambda _key, _value: "").strip()
             summary = f"共 {len(foldable)} 条消息；起始：{first[:80] or '（无文本）'}"
 
         fold_id = await sqlite.create_conversation_fold(

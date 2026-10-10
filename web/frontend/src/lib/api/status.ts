@@ -28,7 +28,7 @@ export const statusApi = {
 
 export const uiApi = {
   answer: (askId: string, answer: string) =>
-    api.post<{ status: string }>("/chat/ui-answer", { ask_id: askId, answer }),
+    api.post<{ status: "ok" | "expired" }>("/chat/ui-answer", { ask_id: askId, answer }),
   reportState: (state: UiStateReport) =>
     api.post("/chat/ui-state", { state }),
 };

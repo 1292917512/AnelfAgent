@@ -374,9 +374,13 @@ async def get_weather(city: str) -> str:
 
 Conventions: return `str` (JSON), full type annotations + Google docstrings, and route errors through `core.tool_errors`.
 
+Entities obtain `tool_error`, `ErrorCause`, and runtime capabilities through `entities._sdk`. Include `cause`, `retryable`, and an actionable `hint`; result budgets preserve these failure fields. Construct tags with `core.tags.tag_label` and parse them with `etag_all`, instead of assembling strings or separate regexes. Identify users by both channel and ID. Put changing state and recalled facts at the context tail, keeping timestamps and runtime status out of stable instruction prefixes. Tags describe provenance and content, not permissions.
+
 ### Adding a Channel
 
 Provide under `channels/{name}/`: `adapter.py` (subclass `BaseChannel`) + `config.py` (expose a `CONFIG_MODEL` pydantic model) + `channel_config.json` + `__init__.py` (export `CHANNEL_CLASS`).
+
+Declare configuration fields only in `CONFIG_MODEL`, write them through `set_channel_config`, and construct conversation scopes with `build_entity_scope`. Keep channel and entity tests in their module's `tests/` directory with unique filenames such as `test_weather_tools.py` to avoid full-suite import collisions.
 
 ### Adding a Heartbeat Task
 
@@ -410,7 +414,11 @@ npm run build
 
 Routes and navigation share the manifest in `src/lib/core-routes.ts`; channel and entity frontends remain auto-discovered. Page shells compose domain editors, shared components own interaction primitives, and `lib/api/` owns requests. TanStack Query manages server data; Zustand manages workbench state. Drafts stay separate from server snapshots. File tabs are identified by both their root directory and relative path.
 
+The workbench is the home screen. Desktop navigation expands on hover or keyboard focus and can be pinned; mobile uses a navigation drawer. Context and thinking traces have independent pages, while the workbench Dock reuses snapshot and delegation components. File references use `lib/file-reference.ts`; `services/file_references.py` handles sandbox resolution and history conversion. Render references within Markdown without splitting paragraphs.
+
 CI (GitHub Actions): a repo-wide lint gate + module-matrix test legs + frontend static checks, component/browser regressions, and builds; doc-only commits are skipped entirely.
+
+Linux and Windows tests upload full logs and JUnit results; browser failures retain screenshots and traces. Unhandled thread exceptions, unraisable exceptions, and leaked SQLite connections remain test failures.
 
 For deeper architectural conventions see [`AGENTS.md`](AGENTS.md) (workspace instructions injected for editors/agents, not a runtime dependency).
 

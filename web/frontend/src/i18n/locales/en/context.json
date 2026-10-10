@@ -89,5 +89,14 @@
     "staleMark": " (call from {{min}} min ago)",
     "unobservable": "This model ({{model}}) does not report cache fields on streaming usage — caching still works server-side but is unmeasurable over stream, so hit rate is hidden",
     "expectedPrefix": "Expected Prefix"
+  },
+  "window": {
+    "title": "Context window",
+    "description": "Estimated input in sending order. Select a layer to inspect its stability; the blank area is remaining capacity, not a cache hit forecast.",
+    "other": "Tools & overhead · {{tokens}}",
+    "remaining": "{{tokens}} available",
+    "unknown": "Stability unreported",
+    "stable": "{{count}} unchanged messages",
+    "pressure": "The input is approaching the model limit. Reserve room for tool results and the reply."
   }
 }

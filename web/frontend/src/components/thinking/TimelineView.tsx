@@ -57,7 +57,7 @@ export function TimelineView({ session, selectedNodeId, autoFollow, onSelect, co
           <SlidersHorizontal size={14} />
         </button>
       </div>
-      <div className="flex flex-wrap gap-1.5" aria-label={t("filterTypes")}>
+      <div className="flex gap-1 overflow-x-auto whitespace-nowrap pb-1" aria-label={t("filterTypes")}>
         {FILTERS.map((key) => <button type="button" key={key} aria-pressed={filter === key} onClick={() => setFilter(key)}
           className={cn("rounded-md px-2 py-1 text-[11px]", filter === key ? "bg-accent-subtle font-medium text-accent" : "text-muted hover:bg-hover")}>
           {t(key === "all" || key === "issues" ? `filters.${key}` : `stages.${key}`)}
@@ -74,15 +74,15 @@ export function TimelineView({ session, selectedNodeId, autoFollow, onSelect, co
           const hasIssue = group.nodes.some((node) => node.status === "error" || node.status === "warning");
           const containsSelected = group.nodes.some((node) => node.id === selectedNodeId);
           const isOpen = containsSelected || (expanded[group.id] ?? (index === visibleGroups.length - 1 || hasIssue || !!terms || filter !== "all" || !group.anchor));
-          return <section key={group.id}>
+          return <section key={group.id} className="rounded-xl border border-border bg-card p-2 shadow-sm">
             <button type="button" aria-expanded={isOpen} onClick={() => setExpanded((value) => ({ ...value, [group.id]: !isOpen }))}
-              className="mb-2 flex w-full items-center gap-2 rounded-md py-1 text-left text-xs text-muted hover:text-foreground">
+              className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs text-muted hover:text-foreground">
               <ChevronDown size={14} className={cn("transition-transform", !isOpen && "-rotate-90")} />
               <span className="font-medium text-heading">{group.anchor ? nodeTitle(group.anchor, t) : t("activityGroup")}</span>
               <span>{t("nNodes", { count: group.visible.length })}</span>
               {hasIssue && <span className="ml-auto text-warn">{t("filters.issues")}</span>}
             </button>
-            {isOpen && <div className={cn("space-y-2 border-l border-border pl-3", compact && "pl-2")}>
+            {isOpen && <div className={cn("trace-events relative", compact && "text-xs")}>
               {group.visible.map((node) => <TraceNodeRow key={node.id} node={node} compact={compact}
                 selected={selectedNodeId === node.id} onSelect={() => onSelect(node.id)} />)}
             </div>}

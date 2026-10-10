@@ -4,6 +4,7 @@ import { AlertCircle, ArrowRight, Brain, Clock, Coins, Wrench } from "lucide-rea
 import type { ThinkingSession } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { durationLabel, nodeTitle, sessionKind, textValue, traceSummary } from "./trace-model";
+import { TraceStages } from "./TraceStages";
 
 export function SessionOverview({ session, onSelect, onSelectSession, compact = false }: {
   session: ThinkingSession; onSelect: (id: string) => void; onSelectSession?: (id: string) => void; compact?: boolean;
@@ -40,12 +41,13 @@ export function SessionOverview({ session, onSelect, onSelectSession, compact = 
         <AlertCircle size={14} />{t("issueCount", { count: summary.issues.length })}<ArrowRight size={12} />
       </button>}
     </div>
-    <dl className={cn("mt-4 grid gap-2", compact ? "grid-cols-2" : "grid-cols-4")}>
-      {metrics.map(({ icon: Icon, label, value }) => <div key={label} className="min-w-0 rounded-lg bg-elevated/70 px-2 py-2 sm:px-3">
+    <dl className="mt-3 grid grid-cols-4 gap-2 border-t border-border pt-3">
+      {metrics.map(({ icon: Icon, label, value }) => <div key={label} className="min-w-0">
         <dt className="flex items-center gap-1.5 whitespace-nowrap text-[10px] text-muted sm:text-[11px]"><Icon size={12} className="hidden sm:block" />{label}</dt>
-        <dd className="mt-1 text-sm font-semibold tabular-nums text-heading">{value}</dd>
+        <dd className={cn("mt-1 font-semibold tabular-nums text-heading", compact ? "text-xs" : "text-sm")}>{value}</dd>
       </div>)}
     </dl>
+    {!compact && <TraceStages session={session} onSelect={onSelect} />}
     {session.ended && session.nodes.some((node) => node.status === "running") && <p className="mt-2 text-xs text-warn">{t("incompleteTrace")}</p>}
     {session.nodes_truncated && <p className="mt-2 text-xs text-warn">{t("truncatedTrace")}</p>}
   </section>;

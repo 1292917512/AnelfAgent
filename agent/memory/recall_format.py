@@ -2,17 +2,22 @@
 
 被动召回（memory_retriever）与异步深探（probe）共用同一套行格式——
 同一种事实一种长相：``💡 归属标注 正文（时间 记，私事）``。归属标注
-（称呼[uid:xxx]）与会话消息 [uid:] 标签同构，模型可直接对照当前对话
+（[channel:xxx][name:称呼][uid:xxx]）与会话消息标签同构，模型可直接对照当前对话
 对象确认归属。temporal_scope 超期的 state/episode 追加"过去时"尾注，
 让模型以"曾经"而非"现在"的口径转述。
 
 叶子模块：只依赖标签前缀常量、图谱查询面与 store 纯函数（注入侧无
 I/O 之外的逻辑）。
+
+Model Experience：归属沿用 channel/uid/group_id/name 标签，保留跨频道身份。
+每个归属增加一个频道标签；去重和排序使同组事实字节稳定，只进入召回动态层。
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+from core.tags import tag_label
 
 from .store._shared import temporal_is_past
 from .store.tag_intel import ENTITY_PREFIXES
@@ -24,14 +29,14 @@ if TYPE_CHECKING:
 async def humanize_entity_tags(graph: Optional["GraphStore"], tags: List[str]) -> List[str]:
     """将记忆标签转为 AI 可读的归属标注：实体标签带明确身份 ID，主题标签去前缀。
 
-    实体标签渲染为「称呼[uid:xxx]」（图谱有称呼时）或「[uid:xxx]」——
-    ID 与会话消息的 [uid:xxx] 标签同构，AI 可直接对照当前对话对象确认归属，
+    实体标签保留 channel 与 uid/group_id，图谱有称呼时增加 name 标签。
+    AI 可直接对照当前对话对象确认归属，
     避免仅凭称呼把别人的记忆安到当前对象头上（同名/称呼变更场景）。
     type: 等内部机制标签不展示。
     """
     display: List[str] = []
     entity_tags: List[str] = []
-    for tag in tags:
+    for tag in sorted(set(tags)):
         if tag.startswith(ENTITY_PREFIXES):
             entity_tags.append(tag)
         elif tag.startswith(("topic:", "goal:")):
@@ -50,12 +55,15 @@ async def humanize_entity_tags(graph: Optional["GraphStore"], tags: List[str]) -
     labels: List[str] = []
     for tag in entity_tags:
         kind, _, raw = tag.partition(":")
-        # 剥离 adapter 段：user:qq:123 → 123，与消息 [uid:xxx] 标签对齐
-        uid = raw.rsplit(":", 1)[-1] if raw else ""
+        adapter, separator, uid = raw.partition(":")
+        if not separator:
+            uid, adapter = raw, ""
         id_key = "uid" if kind == "user" else "group_id"
         node = node_map.get(tag)
         name = str(node.get("label", "")).strip() if node else ""
-        label = f"{name}[{id_key}:{uid}]" if name else f"[{id_key}:{uid}]"
+        label = (tag_label("channel", adapter) if adapter else "")
+        label += tag_label("name", name) if name else ""
+        label += tag_label(id_key, uid)
         if label not in labels:
             labels.append(label)
     return labels + display

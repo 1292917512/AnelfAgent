@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import type { ContextSnapshotData } from "@/lib/types";
 import { SnapshotSectionBlock } from "@/components/common/SnapshotBlocks";
+import { ContextWindow } from "./ContextWindow";
 import { ChevronDown, ChevronRight, Zap } from "lucide-react";
 
 interface SnapshotDetailProps {
@@ -13,46 +14,15 @@ export function SnapshotDetail({ snapshot }: SnapshotDetailProps) {
   const { t } = useTranslation("context");
   const [showTools, setShowTools] = useState(false);
 
-  const ctxWindow = snapshot.model_context_window || 0;
-  const usedTokens = snapshot.estimated_tokens || 0;
-  const usagePct = ctxWindow > 0 ? Math.round((usedTokens / ctxWindow) * 100) : 0;
   const totalSectionTokens = snapshot.sections.reduce((s, sec) => s + sec.estimated_tokens, 0);
 
   return (
     <div className="space-y-4">
-      {/* 顶部统计 */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <div className="p-3 rounded-lg bg-elevated border border-border text-center">
-          <p className="text-lg font-bold text-heading font-mono">~{usedTokens.toLocaleString()}</p>
-          <p className="text-[10px] text-muted mt-0.5">{t("stats.totalTokens")}</p>
-        </div>
-        <div className="p-3 rounded-lg bg-elevated border border-border text-center">
-          <p className="text-lg font-bold text-heading font-mono">{ctxWindow > 0 ? `${usagePct}%` : "—"}</p>
-          <p className="text-[10px] text-muted mt-0.5">{t("stats.modelUsage")}</p>
-          {ctxWindow > 0 && (
-            <div className="h-1 rounded-full bg-panel mt-1.5 overflow-hidden">
-              <div
-                className={cn("h-full rounded-full", usagePct >= 90 ? "bg-danger" : usagePct >= 70 ? "bg-warn" : "bg-ok")}
-                style={{ width: `${Math.min(usagePct, 100)}%` }}
-              />
-            </div>
-          )}
-        </div>
-        <div className="p-3 rounded-lg bg-elevated border border-border text-center">
-          <p className="text-lg font-bold text-heading font-mono">{snapshot.message_count}</p>
-          <p className="text-[10px] text-muted mt-0.5">{t("stats.messages")}</p>
-        </div>
-        <div className="p-3 rounded-lg bg-elevated border border-border text-center">
-          <p className="text-lg font-bold text-heading font-mono">{snapshot.tool_count}</p>
-          <p className="text-[10px] text-muted mt-0.5">{t("stats.tools")}</p>
-        </div>
-      </div>
-
-      {/* 模型信息 */}
-      <div className="flex items-center gap-3 text-[11px] text-muted px-1">
-        <span className="font-mono text-foreground">{snapshot.model}</span>
-        {ctxWindow > 0 && <span>· {ctxWindow.toLocaleString()} ctx</span>}
-        <span>· {new Date(snapshot.captured_at * 1000).toLocaleString()}</span>
+      <ContextWindow snapshot={snapshot} />
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted">
+        <span className="break-all font-mono text-foreground">{snapshot.model}</span>
+        <span>{snapshot.message_count} {t("stats.messages")} · {snapshot.tool_count} {t("stats.tools")}</span>
+        <time>{new Date(snapshot.captured_at * 1000).toLocaleString()}</time>
       </div>
 
       {/* 缓存观测：上次调用真实命中 + 可复用前缀估算 */}
@@ -65,9 +35,9 @@ export function SnapshotDetail({ snapshot }: SnapshotDetailProps) {
         return (
           <div className="p-3 rounded-lg bg-elevated border border-border space-y-2">
             <p className="text-xs font-semibold text-heading">{t("cache.title")}</p>
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center">
+            <div className="grid grid-cols-[repeat(auto-fit,minmax(105px,1fr))] gap-2 text-center">
               <div>
-                <p className={cn("text-sm font-bold font-mono", (stale || unobs) ? "text-muted" : "text-emerald-500")}>
+                <p className={cn("text-sm font-bold font-mono", (stale || unobs) ? "text-muted" : "text-ok")}>
                   {unobs ? "—" : lastCall ? `${Math.round(lastCall.cache_hit_rate * 100)}%` : "—"}
                 </p>
                 <p className="text-[10px] text-muted mt-0.5">
@@ -106,7 +76,7 @@ export function SnapshotDetail({ snapshot }: SnapshotDetailProps) {
                   "text-sm font-bold font-mono",
                   lastCall && !unobs && snapshot.cache.expected_prefix_tokens != null
                     && lastCall.cache_read_input_tokens < snapshot.cache.expected_prefix_tokens * 0.5
-                    ? "text-amber-500"
+                    ? "text-warn"
                     : "text-heading",
                 )}>
                   {snapshot.cache.expected_prefix_tokens != null
@@ -136,6 +106,7 @@ export function SnapshotDetail({ snapshot }: SnapshotDetailProps) {
       <div className="border border-border rounded-lg">
         <button
           onClick={() => setShowTools(!showTools)}
+          aria-expanded={showTools}
           className="flex items-center gap-2 w-full px-3 py-2 text-xs text-muted hover:text-foreground"
         >
           {showTools ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
@@ -159,7 +130,7 @@ export function SnapshotDetail({ snapshot }: SnapshotDetailProps) {
           <span className="text-[10px] text-muted font-mono">~{totalSectionTokens}t</span>
         </div>
         {snapshot.prefix_break && snapshot.prefix_break.layer != null && (
-          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-amber-500/40 bg-amber-500/10 text-[11px] text-amber-500">
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-amber-500/40 bg-amber-500/10 text-[11px] text-warn">
             <Zap size={11} className="shrink-0" />
             <span>
               {t("sections.breakBanner", {
@@ -171,13 +142,13 @@ export function SnapshotDetail({ snapshot }: SnapshotDetailProps) {
           </div>
         )}
         {snapshot.prefix_break && snapshot.prefix_break.layer == null && (
-          <div className="px-3 py-1.5 rounded border border-emerald-500/30 bg-emerald-500/10 text-[11px] text-emerald-500">
+          <div className="px-3 py-1.5 rounded border border-emerald-500/30 bg-emerald-500/10 text-[11px] text-ok">
             {t("sections.stableAll")}
           </div>
         )}
-        {snapshot.sections.map((section) => (
+        {snapshot.sections.map((section, index) => (
           <SnapshotSectionBlock
-            key={section.layer}
+            key={`${section.layer}-${index}`}
             section={section}
             totalTokens={totalSectionTokens}
             prefixBreak={snapshot.prefix_break ?? null}

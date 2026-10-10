@@ -154,12 +154,23 @@ jobs:
       - name: Pytest (${{ matrix.name }})
         run: |
           set +e
-          uv run pytest ${{ matrix.paths }} --cov --cov-report=xml --cov-report=term -n auto > /tmp/pytest.log 2>&1
+          uv run pytest ${{ matrix.paths }} --cov --cov-report=xml --cov-report=term --junitxml=test-results.xml -n auto > pytest.log 2>&1
           status=$?
-          grep -E '^(FAILED|ERROR) ' /tmp/pytest.log | head -30 \
+          grep -E '^(FAILED|ERROR) ' pytest.log | head -30 \
             | sed 's/^/::error title=pytest::/' || true
-          tail -5 /tmp/pytest.log
+          tail -40 pytest.log
           exit $status
+
+      - name: Upload test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-linux-${{ matrix.name }}
+          path: |
+            pytest.log
+            test-results.xml
+          retention-days: 7
+          if-no-files-found: ignore
 
       - name: Upload coverage report
         if: always()  # pytest 失败时也上传，便于排查
@@ -190,7 +201,21 @@ jobs:
           $env:ANELF_CONFIG_DIR = Join-Path $env:RUNNER_TEMP 'anelf-tests/config'
           $env:ANELF_DATA_DIR = Join-Path $env:RUNNER_TEMP 'anelf-tests/data'
           $env:PYTHONIOENCODING = 'utf-8'
-          uv run pytest tests/unit entities channels -n 4 --tb=short
+          uv run pytest tests/unit entities channels -n 4 --tb=short --junitxml=test-results.xml *> pytest.log
+          $testExit = $LASTEXITCODE
+          Get-Content -LiteralPath pytest.log -Tail 80
+          exit $testExit
+
+      - name: Upload test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-windows
+          path: |
+            pytest.log
+            test-results.xml
+          retention-days: 7
+          if-no-files-found: ignore
 
   frontend:
     needs: changes
@@ -235,3 +260,12 @@ jobs:
 
       - name: Build (tsc + vite)
         run: npm run build
+
+      - name: Upload browser diagnostics
+        if: failure() && runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-browser
+          path: web/frontend/test-results
+          retention-days: 7
+          if-no-files-found: ignore

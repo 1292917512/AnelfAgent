@@ -8,6 +8,7 @@
 import { useTranslation } from "react-i18next";
 import { useChatStore } from "@/stores/chat-store";
 import { useThinkingStore } from "@/stores/thinking-store";
+import { useWorkbenchStore } from "@/stores/workbench-store";
 import { cn } from "@/lib/utils";
 import { formatTokensCompact } from "@/lib/format";
 
@@ -21,7 +22,7 @@ export function ContextChip() {
   const hitRate = usage.cache_hit_rate ?? 0;
   const showCache = tracingEnabled && (usage.cache_read_input_tokens ?? 0) > 0;
   return (
-    <span
+    <button type="button" onClick={() => useWorkbenchStore.getState().setActiveTab("context")}
       title={t("contextUsage.title", {
         tokens: formatTokensCompact(usage.tokens),
         threshold: formatTokensCompact(usage.threshold),
@@ -41,7 +42,7 @@ export function ContextChip() {
           {t("contextUsage.cache", { pct: Math.round(hitRate * 100) })}
         </span>
       )}
-    </span>
+    </button>
   );
 }
 

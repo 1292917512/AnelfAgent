@@ -7,20 +7,22 @@ import { Card } from "@/components/common/Card";
 import { StatusDot } from "@/components/common/StatusDot";
 import { ProviderContent } from "@/components/common/ProviderContent";
 import { cn } from "@/lib/utils";
-import type { ContextProviderStatus } from "@/lib/types";
+import { PageSkeleton, QueryError } from "@/components/common/AsyncState";
 
-export function ProvidersTab() {
+export function ProvidersPanel() {
   const { t } = useTranslation("context");
   const [expanded, setExpanded] = useState<string | null>(null);
-  const { data } = useQuery({
+  const { data, error, isPending, refetch } = useQuery({
     queryKey: ["context-providers"],
-    queryFn: () => contextApi.providers().then((r) => r.data as ContextProviderStatus),
+    queryFn: () => contextApi.providers().then((r) => r.data),
     refetchInterval: 3000,
+    retry: false,
+    throwOnError: false,
   });
 
-  if (!data || data.providers.length === 0) {
-    return <p className="text-sm text-muted py-8 text-center">{t("providers.empty")}</p>;
-  }
+  if (isPending) return <PageSkeleton />;
+  if (error) return <QueryError error={error} retry={() => void refetch()} />;
+  if (!data) return null;
 
   const ratio = data.total_budget > 0 ? data.current_used / data.total_budget : 0;
 
@@ -53,6 +55,7 @@ export function ProvidersTab() {
         )}
       </Card>
 
+      {data.providers.length === 0 && <p className="py-8 text-center text-sm text-muted">{t("providers.empty")}</p>}
       <div className="space-y-2">
         {data.providers.map((p) => {
           const open = expanded === p.name;
@@ -60,12 +63,11 @@ export function ProvidersTab() {
             <div
               key={p.name}
               className={cn(
-                "rounded-lg bg-elevated border border-border cursor-pointer transition-colors hover:border-border-strong",
+                "rounded-lg bg-card border border-border transition-colors hover:border-border-strong",
                 p.active === false && "opacity-55",
               )}
-              onClick={() => setExpanded(open ? null : p.name)}
             >
-              <div className="flex items-center gap-3 py-2 px-3">
+              <button type="button" aria-expanded={open} onClick={() => setExpanded(open ? null : p.name)} className="flex w-full flex-wrap items-center gap-3 py-3 px-3 text-left">
                 <ChevronRight
                   className={cn(
                     "h-3.5 w-3.5 text-muted transition-transform flex-shrink-0",
@@ -73,7 +75,7 @@ export function ProvidersTab() {
                   )}
                 />
                 <StatusDot status={p.active === false ? "offline" : p.injecting ? "ok" : p.ready ? "warn" : "warn"} />
-                <div className="flex-1 min-w-0">
+                <div className="flex-1 min-w-32">
                   <span className="text-xs font-medium text-foreground">{p.name}</span>
                   {p.group && <span className="ml-1.5 text-[10px] text-muted font-mono">{p.group}</span>}
                   {/* 注入状态徽标：区分"已注册未注入"（如直播模式关闭）与实际注入 */}
@@ -95,18 +97,18 @@ export function ProvidersTab() {
                       {t("providers.inactive")}
                     </span>
                   )}
-                  {p.description && <p className="text-[10px] text-muted truncate">{p.description}</p>}
-                  {p.last_error && <p className="text-[10px] text-danger truncate">{p.last_error}</p>}
+                  {p.description && <p className="mt-1 text-xs leading-relaxed text-muted break-words">{p.description}</p>}
+                  {p.last_error && <p className="mt-1 text-xs text-danger break-words">{p.last_error}</p>}
                 </div>
-                <div className="flex items-center gap-3 text-[10px] font-mono text-muted flex-shrink-0">
+                <div className="flex flex-wrap items-center gap-3 text-[11px] font-mono text-muted">
                   <span>{p.tokens}t</span>
                   <span>{p.bytes}B</span>
                   <span>{p.cost_ms.toFixed(1)}ms</span>
                   <span>×{p.call_count}</span>
                 </div>
-              </div>
+              </button>
               {open && (
-                <div className="px-3 pb-2.5 pl-9" onClick={(e) => e.stopPropagation()}>
+                <div className="border-t border-border px-3 py-3">
                   <ProviderContent provider={p} />
                 </div>
               )}
@@ -117,7 +119,3 @@ export function ProvidersTab() {
     </div>
   );
 }
-
-// ======================================================================
-// 主页面
-// ======================================================================

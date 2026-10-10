@@ -12,6 +12,7 @@
  */
 import { create } from "zustand";
 import { captureWorkspaceContext } from "@/lib/workspace-context";
+import { fileReferenceMarkdown } from "@/lib/file-reference";
 import { usePlanStore } from "./plan-store";
 import { useDelegationStore } from "./delegation-store";
 import { useWorkbenchStore } from "./workbench-store";
@@ -448,11 +449,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       if (text.trim()) displayParts.push(text.trim());
       for (const pf of pendingFiles) {
         if (pf.root) {
-          // 工作区/项目引用：mention 链接形态（气泡经 MentionMarkdown 渲染为可点击 chip；
-          // project 前缀解析所属根；目录带 dir: 标记供 chip 分流（聚焦树而非开编辑器）
-          const rootPrefix = pf.root === "project" ? "project:" : "";
-          const dirPrefix = pf.type === "dir" ? "dir:" : "";
-          displayParts.push(`[${pf.file.name}](./${rootPrefix}${dirPrefix}${pf.path})`);
+          displayParts.push(fileReferenceMarkdown({ path: pf.path ?? pf.file.name, root: pf.root, isDir: pf.type === "dir" }, pf.file.name));
         } else if (pf.type === "image" && pf.preview) {
           displayParts.push(`![image](${pf.preview})`);
         } else {

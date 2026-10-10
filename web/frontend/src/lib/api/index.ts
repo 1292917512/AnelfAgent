@@ -10,6 +10,7 @@ export * from "./memory";
 export * from "./config";
 export * from "./workspace";
 export * from "./thinking";
+export * from "./context";
 export * from "./vision";
 export * from "./audio";
 export * from "./database";

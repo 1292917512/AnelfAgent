@@ -1,15 +1,5 @@
-/** 思维观测域 API — 思维链路 / 上下文快照。 */
-
 import { api } from "./client";
-import type {
-  SessionSummary,
-  ThinkingSession,
-  ContextProviderStatus,
-  ContextSnapshotData,
-  SnapshotListItem,
-  SnapshotRecord,
-  SnapshotResponse,
-} from "@/lib/types";
+import type { SessionSummary, ThinkingSession } from "@/lib/types";
 
 export const thinkingApi = {
   status: () => api.get<{ enabled: boolean }>("/thinking/status"),
@@ -17,23 +7,3 @@ export const thinkingApi = {
   sessions: (limit = 20) => api.get<{ sessions: SessionSummary[]; count: number }>("/thinking/sessions", { params: { limit } }),
   session: (id: string) => api.get<ThinkingSession>(`/thinking/sessions/${encodeURIComponent(id)}`),
 };
-
-// Context（上下文管理）
-
-export const contextApi = {
-  snapshotArm: () => api.post("/context/snapshot/arm"),
-  snapshotDisarm: () => api.post("/context/snapshot/disarm"),
-  snapshotGet: () => api.get<SnapshotResponse>("/context/snapshot"),
-  snapshotClear: () => api.post("/context/snapshot/clear"),
-  snapshotSetContinuous: (enabled: boolean) =>
-    api.put<{ continuous: boolean }>("/context/snapshot/continuous", { enabled }),
-  snapshotRecords: (limit = 100) =>
-    api.get<{ records: SnapshotRecord[]; count: number }>("/context/snapshot/records", { params: { limit } }),
-  snapshotsList: () => api.get<{ snapshots: SnapshotListItem[]; count: number }>("/context/snapshots"),
-  snapshotDetail: (filename: string) => api.get<ContextSnapshotData>(`/context/snapshots/${encodeURIComponent(filename)}`),
-  snapshotDelete: (filename: string) => api.delete(`/context/snapshots/${encodeURIComponent(filename)}`),
-  snapshotsClear: () => api.post("/context/snapshots/clear"),
-  providers: () => api.get<ContextProviderStatus>("/context/providers"),
-};
-
-// Config

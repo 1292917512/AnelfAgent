@@ -160,6 +160,7 @@ export interface UiCommandPayload {
 
 /** 工作台状态上报（POST /chat/ui-state 的 state 字段，供 AI ui_get_state 查询） */
 export interface UiStateReport {
+  page: string;
   active_tab: string;
   dock_open: boolean;
   left_open: boolean;
