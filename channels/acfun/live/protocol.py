@@ -73,28 +73,36 @@ class PbField:
 
 
 def pb_parse(data: bytes) -> List[PbField]:
-    """按 wire format 解析字节流（忽略未知字段类型时安全跳过）。"""
+    """按 wire format 解析字段，拒绝截断或无法解释的载荷。"""
     fields: List[PbField] = []
     pos = 0
     size = len(data)
     while pos < size:
         tag, pos = _read_varint(data, pos)
         num, wire = tag >> 3, tag & 0x07
+        if not 1 <= num < 1 << 29:
+            raise ProtocolError("protobuf 字段号非法")
         value: Union[int, bytes]
         if wire == 0:
             value, pos = _read_varint(data, pos)
         elif wire == 2:
             length, pos = _read_varint(data, pos)
+            if length > size - pos:
+                raise ProtocolError("protobuf 字段长度超出载荷")
             value = data[pos: pos + length]
             pos += length
         elif wire == 1:
+            if size - pos < 8:
+                raise ProtocolError("protobuf fixed64 字段截断")
             value = data[pos: pos + 8]
             pos += 8
         elif wire == 5:
+            if size - pos < 4:
+                raise ProtocolError("protobuf fixed32 字段截断")
             value = data[pos: pos + 4]
             pos += 4
         else:
-            break  # 分组类型已废弃，剩余按无法解析丢弃
+            raise ProtocolError(f"不支持的 protobuf wire type: {wire}")
         fields.append(PbField(num, wire, value))
     return fields
 
@@ -103,7 +111,11 @@ def _read_varint(data: bytes, pos: int) -> Tuple[int, int]:
     result = 0
     shift = 0
     while True:
+        if pos >= len(data):
+            raise ProtocolError("protobuf varint 截断")
         byte = data[pos]
+        if shift == 63 and byte > 1:
+            raise ProtocolError("protobuf varint 超出 64 位")
         pos += 1
         result |= (byte & 0x7F) << shift
         if not byte & 0x80:
@@ -228,9 +240,14 @@ class PacketHeader:
 
 
 def build_frame(header: PacketHeader, key: bytes, payload_plain: bytes) -> bytes:
-    """组帧：魔数 + 长度前缀 + header + AES 载荷。"""
+    """按头部加密模式组帧，错误帧保留明文载荷。"""
     header_bytes = header.encode()
-    encrypted = aes_encrypt(key, payload_plain)
+    if header.encryption_mode == 0:
+        encrypted = payload_plain
+    elif header.encryption_mode in (ENCRYPTION_SERVICE_TOKEN, ENCRYPTION_SESSION_KEY):
+        encrypted = aes_encrypt(key, payload_plain)
+    else:
+        raise ProtocolError(f"不支持的加密模式: {header.encryption_mode}")
     return MAGIC + struct.pack(">II", len(header_bytes), len(encrypted)) + header_bytes + encrypted
 
 
@@ -267,9 +284,11 @@ def parse_frame(raw: bytes, ssecurity_key: bytes, sess_key: bytes) -> Downstream
         plain = aes_decrypt(ssecurity_key, encrypted)
     elif header.encryption_mode == ENCRYPTION_SESSION_KEY:
         plain = aes_decrypt(sess_key, encrypted)
-    else:
+    elif header.encryption_mode == 0:
         fields = pb_parse(encrypted)
         raise ProtocolError(f"服务端错误帧: {pb_get_str(fields, 1)[:200]}")
+    else:
+        raise ProtocolError(f"不支持的加密模式: {header.encryption_mode}")
     fields = pb_parse(plain)
     payload = pb_get_bytes(fields, 4) or b""
     return DownstreamPayload(

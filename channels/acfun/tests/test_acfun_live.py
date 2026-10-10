@@ -62,6 +62,14 @@ class TestProtobufPrimitives:
     def test_empty_message(self):
         assert pb_parse(b"") == []
 
+    @pytest.mark.parametrize("data", [
+        b"\x08\x80", b"\x12\x05ab", b"\x09abcd", b"\x0dab", b"\x00\x00",
+        b"\x0f", b"\x08" + b"\xff" * 10,
+    ])
+    def test_malformed_fields_raise_protocol_error(self, data: bytes) -> None:
+        with pytest.raises(ProtocolError):
+            pb_parse(data)
+
     def test_aes_roundtrip(self):
         key = os.urandom(16)
         plaintext = b"payload \xe4\xbd\xa0\xe5\xa5\xbd" * 7
@@ -178,7 +186,7 @@ class TestKlinkCodec:
         err_payload = pb_field_str(1, "boom")
         header = PacketHeader(app_id=13, uid=1, seq_id=1, encryption_mode=0)
         frame = build_frame(header, b"k" * 16, err_payload)  # mode 0 时载荷不加密
-        with pytest.raises(ProtocolError):
+        with pytest.raises(ProtocolError, match="服务端错误帧: boom"):
             parse_frame(frame, SSECURITY_PLAIN, b"")
 
 
