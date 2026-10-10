@@ -125,9 +125,9 @@ async def _get_recollection(
         ]
         return await mind.retriever.load_relation_snippets(all_scopes)
 
-    async def _recall_channels() -> Tuple[List[Dict], List[str]]:
+    async def _recall_channels() -> Tuple[List[Dict], set[str]]:
         if trivial:
-            return [], []
+            return [], set()
         return await mind._recall_cross_channel(tail, current_adapter, entity_scope, query_vec=query_vec)
 
     # 主标签记忆（main:hub）：索引中枢与长工作流工作窗口，完整/精简模式均注入
