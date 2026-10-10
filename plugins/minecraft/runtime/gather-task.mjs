@@ -113,11 +113,11 @@ export class GatherTask {
         for (const stand of stands) {
           this.check(navigation.signal)
           if (tried.has(`${safety.key(p)}|${safety.key(stand)}|${mode}`)) continue
-          if (!await navigation.reachable(this.bot.entity.position, stand, mode)) continue
-          if (await navigation.reachable(stand, this.entry, mode)) return { block, stand, mode }
-          // A route may need the high-clearance profile only on the return leg
-          // after foliage or a one-block support was introduced.
-          if (mode !== 'high' && await navigation.reachable(stand, this.entry, 'high')) return { block, stand, mode }
+          // Only the outbound route is a precondition. Clearing foliage or
+          // building a temporary support can make the return route available;
+          // it is verified after the actual harvest instead of rejecting the
+          // tree before any safe work begins.
+          if (await navigation.reachable(this.bot.entity.position, stand, mode)) return { block, stand, mode }
         }
       }
     }
@@ -319,13 +319,18 @@ export class GatherTask {
       if (!this.connected()) throw new Error('GATHER_INTERRUPTED: Connection changed before return.')
       this.stage = 'returning'
       try {
-        const returnMode = this.bot.entity.position.floored().y > this.entry.y ? 'scaffold' : 'leaf'
-        try {
-          await navigation.walk(this.entry, returnMode)
-        } catch (firstError) {
-          if (returnMode !== 'leaf') throw firstError
-          await navigation.walk(this.entry, 'scaffold')
+        const preferred = this.bot.entity.position.floored().y > this.entry.y ? 'scaffold' : 'leaf'
+        const returnModes = [...new Set([preferred, 'high', 'scaffold', 'leaf'])]
+        let returned = false
+        let lastError = null
+        for (const mode of returnModes) {
+          try {
+            await navigation.walk(this.entry, mode)
+            returned = true
+            break
+          } catch (error) { lastError = error }
         }
+        if (!returned) throw lastError ?? new Error('GATHER_RETURN_NO_ROUTE: No safe return route.')
         await navigation.cleanupScaffolding()
         this.returned = true
       } catch (error) {
