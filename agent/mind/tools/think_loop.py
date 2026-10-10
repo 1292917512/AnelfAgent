@@ -32,6 +32,7 @@ from agent.channel.reply_route import (
 from agent.llm import LLMCallAborted
 from agent.mind.message_schema import preserve_reasoning_fields
 from agent.mind.think_session import think_session
+from agent.mind.tools.permission import check_tool_permission
 from agent.mind.tools.reply_finalize import complete_reply, finish_think
 from agent.mind.tools.result_pipeline import (
     ToolResultPipeline,
@@ -59,7 +60,6 @@ from agent.mind.tools.round_helpers import (
     _partition_tool_calls,
     _precompact_flush,
     _prepare_think_context,
-    _request_tool_approval,
     _round_output_sent_successfully,
     _StageOutcome,
     _streaming_enabled,
@@ -1697,8 +1697,8 @@ async def execute_one_tool(
     })
     log(f"执行工具: {tc.name}", tag="思维")
 
-    # 批准机制：执行前审批检查（对话/反思/子代理统一求值）
-    denied = await _request_tool_approval(tc, anything, tool_scope, mind)
+    # 工具执行前统一检查规则与 AI 评审
+    denied = await check_tool_permission(tc, anything, tool_scope, mind)
     if denied is not None:
         return denied
 

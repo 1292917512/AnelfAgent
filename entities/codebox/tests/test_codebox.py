@@ -43,19 +43,19 @@ def _ensure_test_tools() -> None:
 @pytest.fixture()
 def gate(monkeypatch):
     """审批门替身（默认自动放行；calls 记录每次审批请求）。"""
-    from agent.approval.gate import ApprovalDecision
+    from agent.approval.types import ApprovalResult
 
     class _FakeGate:
         def __init__(self) -> None:
-            self.decision = ApprovalDecision.APPROVED
+            self.decision = ApprovalResult(True, "rule_allow")
             self.calls: list = []
 
-        async def request_approval(self, **kwargs):
+        async def check(self, **kwargs):
             self.calls.append(kwargs)
             return self.decision
 
     fake = _FakeGate()
-    monkeypatch.setattr("agent.approval.gate.get_approval_gate", lambda: fake)
+    monkeypatch.setattr("agent.approval.get_approval_gate", lambda: fake)
     return fake
 
 
@@ -78,24 +78,24 @@ class TestDispatch:
         assert gate.calls == []  # 排除清单在审批门之前
 
     async def test_approval_denied_blocks_execution(self, gate) -> None:
-        from agent.approval.gate import ApprovalDecision
+        from agent.approval.types import ApprovalResult
         _ensure_test_tools()
-        gate.decision = ApprovalDecision.DENIED
+        gate.decision = ApprovalResult(False, "denied", "rule blocked")
         result = await sandbox._dispatch("codebox_test_echo", {"text": "hi"}, 8000)
         assert result["ok"] is False
-        assert "审批未通过" in result["error"]
+        assert "rule blocked" in result["error"]
         assert gate.calls[0]["tool_name"] == "codebox_test_echo"
-        assert gate.calls[0]["channel"] is None
+        assert "channel" not in gate.calls[0]
 
-    async def test_approval_gate_failure_fails_open(self, gate, monkeypatch) -> None:
+    async def test_approval_gate_failure_blocks_execution(self, gate, monkeypatch) -> None:
         _ensure_test_tools()
 
         async def _boom(**kwargs):
             raise RuntimeError("gate down")
 
-        gate.request_approval = _boom
+        gate.check = _boom
         result = await sandbox._dispatch("codebox_test_echo", {"text": "hi"}, 8000)
-        assert result["ok"] is True and result["result"] == "echo:hi"
+        assert result["ok"] is False and "未执行" in result["error"]
 
     async def test_tool_error_json_is_failure(self, gate) -> None:
         _ensure_test_tools()

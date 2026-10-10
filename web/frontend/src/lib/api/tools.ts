@@ -4,9 +4,6 @@ import { api } from "./client";
 import type {
   AdapterListResult,
   ApprovalHistoryResponse,
-  ApprovalPendingResponse,
-  ApprovalPoliciesPayload,
-  ApprovalPoliciesResponse,
   ApprovalRulesResponse,
   ApprovalStats,
   ChannelTestHealthResult,
@@ -130,23 +127,11 @@ export const adaptersApi = {
 // Approvals
 
 export const approvalsApi = {
-  pending: () => api.get<ApprovalPendingResponse>("/approvals/pending"),
-  history: (limit = 50) => api.get<ApprovalHistoryResponse>("/approvals/history", { params: { limit } }),
-  approve: (requestId: string, reason?: string, remember: string = "once") =>
-    api.post(`/approvals/${encodeURIComponent(requestId)}/approve`, { reason, remember }),
-  deny: (requestId: string, reason?: string) =>
-    api.post(`/approvals/${encodeURIComponent(requestId)}/deny`, { reason }),
+  history: (limit = 50, offset = 0) => api.get<ApprovalHistoryResponse>("/approvals/history", { params: { limit, offset } }),
   stats: () => api.get<ApprovalStats>("/approvals/stats"),
-  policies: () => api.get<ApprovalPoliciesResponse>("/approvals/policies"),
-  savePolicies: (policies: ApprovalPoliciesPayload) =>
-    api.put("/approvals/policies", policies),
-  // 统一权限规则
   rules: () => api.get<ApprovalRulesResponse>("/approvals/rules"),
   saveRules: (data: { rules: Partial<PermissionRuleItem>[]; default_effect: string }) =>
     api.put("/approvals/rules", data),
-  addRule: (rule: Partial<PermissionRuleItem>) => api.post("/approvals/rules", rule),
-  deleteRule: (ruleId: string) =>
-    api.delete(`/approvals/rules/${encodeURIComponent(ruleId)}`),
 };
 
 // Thinking Tracer

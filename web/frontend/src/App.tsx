@@ -4,7 +4,6 @@ import { FileDraftLifecycle } from "./components/layout/FileDraftLifecycle";
 import { Layout } from "./components/layout/Layout";
 import { AuthGate } from "./components/AuthGate";
 import { Toaster } from "./components/ui/Toast";
-import { ApprovalDialog } from "./components/ApprovalDialog";
 import { CommandPalette } from "./components/palette/CommandPalette";
 import { useChatStore } from "./stores/chat-store";
 import { useThinkingStore } from "./stores/thinking-store";
@@ -55,7 +54,7 @@ function AuthenticatedApp() {
   useEffect(() => {
     configApi.webui().then(({ data }) => setConfig({ branding: data.branding })).catch(warnApiError);
   }, [setConfig]);
-  return <><RouterProvider router={router} /><ApprovalDialog /></>;
+  return <RouterProvider router={router} />;
 }
 
 export default function App() {

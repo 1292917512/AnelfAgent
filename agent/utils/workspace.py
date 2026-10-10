@@ -1,6 +1,6 @@
 """工作区路径解析与媒体产物落盘 — 核心层共享工具。
 
-路径解析经 agent.approval.policy.workspace_paths_port 晚绑定端口获取
+路径解析经 workspace_paths_port 晚绑定端口获取
 与文件工具一致的工作区解析/沙箱判定（端口未施绑时仅接受绝对路径）。
 """
 
@@ -11,12 +11,30 @@ import json
 import mimetypes
 import os
 import time
-from typing import List
+from typing import Callable, List, NamedTuple
+
+from core.latebind import LateBinding
+
+
+class WorkspacePathFns(NamedTuple):
+    """工作区路径解析函数集（entities.filesystem.paths 的端口载体）。
+
+    agent → entities 跨层桥：媒体处理和权限匹配需与文件工具执行层完全一致的
+    路径解析，经端口获取实现，不直接 import entities 内部模块。
+    """
+
+    get_root: Callable[[], str]
+    resolve: Callable[[str], str]
+    #: 沙箱准入判定（沙箱关闭时恒 True；缺省 True 兼容未携带判定的绑定）
+    allowed: Callable[[str], bool] = lambda _p: True
+
+
+#: 工作区路径解析端口（agent.runtime.wiring 以 entities 实现施绑）
+workspace_paths_port: LateBinding[WorkspacePathFns] = LateBinding("workspace.paths")
 
 
 def get_workspace_root() -> str:
     """工作区根目录（端口未施绑时回退配置值）。"""
-    from agent.approval.policy import workspace_paths_port
     if workspace_paths_port.bound:
         return workspace_paths_port.get().get_root()
     try:
@@ -34,7 +52,6 @@ def resolve_workspace_path(path: str) -> str:
     """
     if not path:
         return ""
-    from agent.approval.policy import workspace_paths_port
     if workspace_paths_port.bound:
         fns = workspace_paths_port.get()
         resolved = fns.resolve(path)

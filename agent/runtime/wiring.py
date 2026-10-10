@@ -55,10 +55,10 @@ def wire_runtime(
     mind_port.set(mind)
 
     # agent → entities 跨层桥（消费方 agent 侧声明端口，此处以 entities 实现施绑）
-    from agent.approval.policy import WorkspacePathFns, workspace_paths_port
     from agent.mind.tools.media_pipeline import image_index_submit_port
     from agent.mind.tools.result_pipeline import shell_persist_port
     from agent.mind.tools.round_helpers import file_state_cache_port
+    from agent.utils.workspace import WorkspacePathFns, workspace_paths_port
     from entities.filesystem.file_state import get_cache as get_file_state_cache
     from entities.filesystem.paths import (
         check_sandbox,

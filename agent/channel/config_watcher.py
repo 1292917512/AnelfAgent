@@ -65,7 +65,7 @@ class ConfigWatcher:
         """为所有已登记但尚未启动的监听创建轮询任务（幂等）。
 
         供无事件循环期间登记的监听在首个有效事件循环可用时补启动；
-        当前生产调用点（approval_policies / hooks）均在异步启动节点内登记，
+        当前生产调用点（permission_rules / hooks）均在异步启动节点内登记，
         正常路径下 watch() 即已即时启动，本方法为兜底。
         """
         try:

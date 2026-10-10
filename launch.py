@@ -71,19 +71,13 @@ def create_application(args: argparse.Namespace) -> Application:
     async def init_approval_rules() -> None:
         """加载权限规则并启动热更新监听。"""
         from agent.approval import get_approval_gate
-        from agent.approval.rules import legacy_path, rules_path
+        from agent.approval.rules import rules_path
         from agent.channel.config_watcher import get_config_watcher
 
         gate = get_approval_gate()
-        watcher = get_config_watcher()
-        for path in (rules_path(), legacy_path()):
-            if os.path.exists(path):
-                gate.reload_rules(path)
-                watcher.watch(path, lambda p=path: gate.reload_rules(p))
-                log(f"权限规则热更新监听已启动: {path}", tag="权限")
-                log(f"权限规则已加载 ({len(gate.get_rule_set().rules)} 条)", tag="权限")
-                return
-        log("权限规则文件不存在，使用默认（全部放行）", "WARNING", tag="权限")
+        path = rules_path()
+        get_config_watcher().watch(path, lambda: gate.reload_rules(path))
+        log(f"权限规则已加载，自动评审已就绪 ({len(gate.get_rule_set().rules)} 条)", tag="权限")
 
     @app.startup.node(skip_on_error=False)
     async def init_user_hooks() -> None:

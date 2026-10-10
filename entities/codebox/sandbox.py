@@ -99,19 +99,17 @@ async def _dispatch(tool_name: str, args: Dict[str, Any], result_cap: int) -> Di
         }
 
     try:
-        from entities._sdk import request_tool_approval
-        approved = await request_tool_approval(
-            tool_name, args, f"代码编排脚本调用 {tool_name}",
-            chat_id="codebox", user_id="codebox",
-        )
-        if not approved:
+        from entities._sdk import check_tool_permission
+        permission = await check_tool_permission(tool_name, args, f"代码编排脚本调用 {tool_name}")
+        if permission["notice"]:
+            ledger["permission_notice"] = permission["notice"]
+        if not permission["allowed"]:
             _finish(False)
-            return {"ok": False,
-                    "error": f"审批未通过：{tool_name}；"
-                             "可在脚本外单独调用该工具，或调整审批策略后重试",
-                    "ledger": ledger}
-    except Exception as exc:  # 审批门自身故障不阻断执行（与 workflow 引擎同纪律）
-        log(f"代码编排审批门异常按放行处理: {exc}", "DEBUG", tag=_TAG)
+            return {"ok": False, "error": permission["reason"], "retryable": False, "ledger": ledger}
+    except Exception as exc:
+        _finish(False)
+        log(f"代码编排权限检查异常: {type(exc).__name__}", "ERROR", tag=_TAG)
+        return {"ok": False, "error": "权限检查未完成，工具未执行", "ledger": ledger}
 
     from core.entity import EntityRegistry
     try:

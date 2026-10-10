@@ -1,11 +1,10 @@
 """统一权限规则引擎 — Anelf 全部工具权限的单一求值点。
 
-设计目标（合并原 ApprovalPolicy/白名单/频道规则三套机制）：
+权限规则：
 - 单一规则模型：``工具名(参数glob)`` + effect(allow/ask/deny) + scope(global/频道)
 - 单一求值管线：频道deny → 全局deny → 频道ask → 全局ask → 频道allow → 全局allow
   → 工具元数据 CRITICAL 兜底 → 默认
 - 每个决策都带 Verdict（决策 + 命中规则 + 原因），拒绝原因全链路可见
-- 旧 ``approval_policies.json`` 自动转换加载，平滑迁移
 
 存储：``config/permission_rules.json``（热重载由 config_watcher 负责）。
 """
@@ -22,12 +21,12 @@ import uuid
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
-from core.log import log
 from core.path import ConfigPaths
 
-from .policy import ApprovalPolicySet, RiskLevel, matchable_arg_candidates, matches_arg_pattern
+from .matching import matchable_arg_candidates, matches_arg_pattern
+from .types import RiskLevel
 
 
 def rules_path() -> str:
@@ -36,13 +35,9 @@ def rules_path() -> str:
     return ConfigPaths.PERMISSION_RULES
 
 
-def legacy_path() -> str:
-    """旧审批策略文件路径（运行时解析，同 rules_path）。"""
-    return ConfigPaths.APPROVAL_POLICIES
-
 # 命令执行类工具：参数 glob 的比对对象是命令字符串
 COMMAND_TOOLS = frozenset({"run_shell_command", "python_exec"})
-# 复合命令特征（与 gate 创建永久规则时的拦截共用同一正则）
+# 通配放行不能跨复合命令边界
 COMPOUND_CMD_RE = re.compile(r"&&|\|\||[;|\n\r]|`\s*[^`]|\$\(")
 
 
@@ -50,7 +45,7 @@ class PermissionEffect(str, Enum):
     """规则效果。"""
 
     ALLOW = "allow"    # 直接放行
-    ASK = "ask"        # 请求人工批准
+    ASK = "ask"        # 交由 AI 评审
     DENY = "deny"      # 直接拒绝
 
 
@@ -72,18 +67,32 @@ class PermissionRule(BaseModel):
     """
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:8])
-    pattern: str = Field(..., description="工具名 glob 或 工具名(参数glob)")
+    pattern: str = Field(..., min_length=1, description="工具名 glob 或 工具名(参数glob)")
     effect: PermissionEffect = Field(..., description="allow / ask / deny")
     scope: str = Field(default="global", description="global 或频道 id（如 telegram、webui）")
     users: List[str] = Field(default_factory=list, description="限定用户 ID（空=所有用户）")
     risk_level: RiskLevel = Field(default=RiskLevel.MEDIUM)
-    timeout_seconds: float = Field(default=60.0, description="ask 规则的超时时间")
-    on_timeout: str = Field(default="deny", description="超时默认动作 deny/allow/halt")
-    trust_after_n_approvals: int = Field(default=0, description="批准 N 次后自动信任（0=永远问）")
     description: str = Field(default="")
     enabled: bool = Field(default=True)
-    created_by: str = Field(default="", description="创建来源（manual/web_approve/session）")
+    created_by: str = Field(default="", description="创建来源")
     created_at: float = Field(default_factory=time.time)
+
+    @field_validator("pattern", "scope")
+    @classmethod
+    def nonempty(cls, value: str) -> str:
+        """拒绝空模式和空作用域。"""
+        value = value.strip()
+        if not value:
+            raise ValueError("pattern 和 scope 不能为空")
+        return value
+
+    @model_validator(mode="after")
+    def scoped_users(self) -> "PermissionRule":
+        """用户 ID 必须限定频道，避免跨平台同号身份获得权限。"""
+        if self.users and self.scope == "global":
+            raise ValueError("限定用户的规则必须指定频道 scope")
+        self.users = list(dict.fromkeys(uid.strip() for uid in self.users if uid.strip()))
+        return self
 
     def _split_pattern(self) -> "tuple[str, str]":
         pattern = self.pattern.strip()
@@ -92,8 +101,8 @@ class PermissionRule(BaseModel):
             return name.strip(), arg.strip()
         return pattern, ""
 
-    def matches(self, tool_name: str, tool_args: Optional[Dict[str, Any]],
-                channel_id: str, user_id: str) -> bool:
+    def matches(self, tool_name: str, tool_args: Optional[Dict[str, Any]] = None,
+                channel_id: str = "", user_id: str = "") -> bool:
         """判断规则是否命中本次调用。
 
         参数模式匹配语义：
@@ -104,10 +113,13 @@ class PermissionRule(BaseModel):
         """
         if not self.enabled:
             return False
-        if self.users and user_id not in self.users:
-            return False
+        if self.users:
+            if user_id and user_id not in self.users:
+                return False
+            if not user_id and self.effect == PermissionEffect.ALLOW:
+                return False
         name_pattern, arg_pattern = self._split_pattern()
-        if not fnmatch.fnmatch(tool_name, name_pattern):
+        if not fnmatch.fnmatchcase(tool_name, name_pattern):
             return False
         if arg_pattern:
             if tool_args is None:
@@ -144,7 +156,7 @@ class PermissionVerdict(BaseModel):
 def tool_meta_risk_rule(tool_name: str) -> Optional[PermissionRule]:
     """工具元数据声明的 CRITICAL 风险 → 合成 ask 规则（求值管线第 6 层兜底）。
 
-    优先级：声明式规则（含会话级）> 工具 metadata > 默认效果。仅 CRITICAL
+    优先级：声明式规则> 工具 metadata > 默认效果。仅 CRITICAL
     升级为 ask——write_file 等高频工具即便声明 HIGH 也不能逐次评审（评审
     延迟会拖垮日常自治），MEDIUM/HIGH 只作为 risk_level 标注供 guardian
     评审与审计参考。显式 allow/ask/deny 规则命中时本层不参与（求值顺序
@@ -189,7 +201,7 @@ class PermissionRuleSet(BaseModel):
 
         1. 用户限定 deny（黑名单最优先，安全方向）
         2. 频道 deny → 全局 deny（显式拒绝优先于白名单）
-        3. 用户限定 allow（白名单免审批，兼容旧 auto_approve_users 语义）
+        3. 用户限定 allow（限定用户的显式放行）
         4. 频道 ask → 全局 ask
         5. 频道 allow → 全局 allow
         6. 工具元数据 CRITICAL 兜底（默认放行时，见 tool_meta_risk_rule）
@@ -206,7 +218,7 @@ class PermissionRuleSet(BaseModel):
             if user_scoped:
                 candidates = [r for r in candidates if r.users]
             else:
-                candidates = [r for r in candidates if not r.users]
+                candidates = [r for r in candidates if not r.users or effect == PermissionEffect.ASK]
             if channel_first:
                 for scope_kind in ("channel", "global"):
                     for rule in candidates:
@@ -259,18 +271,18 @@ class PermissionRuleSet(BaseModel):
                 decision=PermissionDecision.ASK,
                 rule=PermissionRule(pattern="*", effect=PermissionEffect.ASK,
                                     risk_level=self.default_risk),
-                reason="未命中任何规则，默认请求批准",
+                reason="未命中任何规则，默认交由 AI 评审",
             )
         # 6. 工具元数据 CRITICAL 兜底：默认放行前，声明 risk=CRITICAL 且无
-        # 显式规则覆盖的工具升级为 ask（guardian 先行评审，危险才升级人工）
+        # 显式规则覆盖的工具升级为 ask（guardian 先行评审，不转交人工）
         meta_rule = tool_meta_risk_rule(tool_name)
         if meta_rule is not None:
             return PermissionVerdict(
                 decision=PermissionDecision.ASK,
                 rule=meta_rule,
-                reason=f"工具 {tool_name} 声明 CRITICAL 风险且无显式规则覆盖，升级请求批准",
+                reason=f"工具 {tool_name} 声明 CRITICAL 风险且无显式规则覆盖，交由 AI 评审",
             )
-        return PermissionVerdict(decision=PermissionDecision.AUTO_ALLOW, reason="无需批准")
+        return PermissionVerdict(decision=PermissionDecision.AUTO_ALLOW, reason="规则允许执行")
 
     # ------------------------------------------------------------------
     # 持久化
@@ -279,113 +291,28 @@ class PermissionRuleSet(BaseModel):
     def to_file_dict(self) -> Dict[str, Any]:
         return {
             "default_effect": self.default_effect.value,
+            "default_risk": self.default_risk.value,
             "rules": [json.loads(r.model_dump_json()) for r in self.rules],
         }
 
     @classmethod
     def from_file_dict(cls, data: Dict[str, Any]) -> "PermissionRuleSet":
-        rules = [PermissionRule(**r) for r in data.get("rules", [])]
-        default_effect = PermissionEffect(data.get("default_effect", "allow"))
-        return cls(rules=rules, default_effect=default_effect)
-
-
-# 上一次成功加载的规则集（解析失败时保留，避免损坏文件导致规则被清空）
-_last_good_rules: Optional["PermissionRuleSet"] = None
+        if not isinstance(data, dict) or "rules" not in data:
+            raise ValueError("权限配置必须包含 rules 数组")
+        return cls.model_validate(data)
 
 
 def load_rules(path: Optional[str] = None) -> PermissionRuleSet:
-    """加载规则集（自动识别新旧格式）；文件不存在时尝试转换旧 approval_policies.json。
-
-    解析失败时 fail-closed：保留内存中上一次成功加载的规则集；若从未成功
-    加载过，返回 default_effect=ASK 的集合（全部询问），避免损坏的规则文件
-    导致权限被静默放开。
-    """
-    global _last_good_rules
+    """读取唯一规则文件；格式错误交由调用者保留当前规则。"""
     resolved = path or rules_path()
-    if os.path.exists(resolved):
-        try:
-            with open(resolved, encoding="utf-8") as f:
-                data = json.load(f)
-            if "rules" in data:
-                rule_set = PermissionRuleSet.from_file_dict(data)
-                _last_good_rules = rule_set
-                return rule_set
-            if "policies" in data:
-                # 旧格式：ApprovalPolicySet 自动转换
-                policy_set = ApprovalPolicySet.load_from_file(resolved)
-                converted = from_legacy_policyset(policy_set)
-                log(f"已从旧审批策略转换 {len(converted.rules)} 条权限规则", tag="权限")
-                _last_good_rules = converted
-                return converted
-            log(f"权限规则文件格式未知: {resolved}，使用空规则集", "WARNING", tag="权限")
-            return PermissionRuleSet()
-        except Exception as exc:
-            if _last_good_rules is not None:
-                log(f"权限规则文件损坏，解析失败: {exc}；已保留上一次成功加载的规则集",
-                    "WARNING", tag="权限")
-                return _last_good_rules
-            log(f"权限规则文件损坏，解析失败: {exc}；已降级为全部询问",
-                "WARNING", tag="权限")
-            return PermissionRuleSet(default_effect=PermissionEffect.ASK)
-    legacy = load_legacy_rules()
-    if legacy is not None:
-        log(f"已从旧审批策略转换 {len(legacy.rules)} 条权限规则", tag="权限")
-        return legacy
-    return default_rules()
-
-
-def default_rules() -> PermissionRuleSet:
-    """默认规则集（无配置文件时）。
-
-    说明：``present_plan`` 历史曾是默认 ask 规则（plan 进入审批），现已改为
-    **直接执行 + SSE 公告**（Plan 是公告不是审批）。
-    真正的危险操作（删库/外发/系统命令）由各 channel/工具的权限规则管控。
-    """
-    return PermissionRuleSet(rules=[])
-
-
-def load_legacy_rules(path: Optional[str] = None) -> Optional[PermissionRuleSet]:
-    """把旧 ApprovalPolicySet 转换为统一规则集。"""
-    resolved = path or legacy_path()
-    if not os.path.exists(resolved):
-        return None
-    policy_set = ApprovalPolicySet.load_from_file(resolved)
-    return from_legacy_policyset(policy_set)
-
-
-def from_legacy_policyset(policy_set: ApprovalPolicySet) -> PermissionRuleSet:
-    """旧策略 → 新规则映射：
-
-    - requires_approval=True → ask 规则
-    - requires_approval=False（非 "*"）→ allow 规则
-    - auto_approve_users → 附加 allow 规则（限定用户，优先级靠 users 过滤）
-    - auto_deny_users → 附加 deny 规则（限定用户）
-    - "*" 兜底 → default_effect
-    """
-    rules: List[PermissionRule] = []
-    default_effect = PermissionEffect.ALLOW
-    for p in policy_set.policies:
-        base: Dict[str, Any] = {
-            "pattern": p.tool_name_pattern,
-            "risk_level": p.risk_level,
-            "timeout_seconds": p.timeout_seconds,
-            "on_timeout": p.on_timeout,
-            "trust_after_n_approvals": p.trust_after_n_approvals,
-            "description": p.description,
-            "created_by": "legacy_migration",
-        }
-        if p.tool_name_pattern == "*" and not p.requires_approval:
-            default_effect = PermissionEffect.ALLOW
-            continue
-        rules.append(PermissionRule(
-            **base,
-            effect=PermissionEffect.ASK if p.requires_approval else PermissionEffect.ALLOW,
-        ))
-        for uid in p.auto_approve_users:
-            rules.append(PermissionRule(**base, effect=PermissionEffect.ALLOW, users=[uid]))
-        for uid in p.auto_deny_users:
-            rules.append(PermissionRule(**base, effect=PermissionEffect.DENY, users=[uid]))
-    return PermissionRuleSet(rules=rules, default_effect=default_effect)
+    try:
+        with open(resolved, encoding="utf-8") as file:
+            return PermissionRuleSet.from_file_dict(json.load(file))
+    except FileNotFoundError:
+        retired = os.path.join(os.path.dirname(resolved), "approval_policies.json")
+        if os.path.exists(retired):
+            raise ValueError("请在权限页面保存 permission_rules.json；approval_policies.json 已停用") from None
+        return PermissionRuleSet()
 
 
 def save_rules(rule_set: PermissionRuleSet, path: Optional[str] = None) -> None:
@@ -402,5 +329,5 @@ def save_rules(rule_set: PermissionRuleSet, path: Optional[str] = None) -> None:
         try:
             os.unlink(tmp_path)
         except OSError:
-            log("save_rules 异常已忽略", "DEBUG")
+            pass
         raise

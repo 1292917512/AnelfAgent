@@ -11,14 +11,13 @@ import type { PermissionRuleItem } from "@/lib/types";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
-import { Badge } from "@/components/ui/Badge";
 import { Switch } from "@/components/ui/Switch";
 import { LoadingBlock } from "@/components/ui/Spinner";
-import { Save, RotateCcw, Plus, Trash2, ShieldCheck, ShieldX, ShieldQuestion, Info } from "lucide-react";
+import { Save, RotateCcw, Plus, Trash2, ShieldCheck, ShieldX, ShieldQuestion } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /** 编辑器中的规则：id / created_by 可选（新规则无服务端字段），省略自动填充的字段 */
-type EditableRule = Omit<PermissionRuleItem, "id" | "created_at" | "trust_after_n_approvals" | "created_by"> & {
+type EditableRule = Omit<PermissionRuleItem, "id" | "created_at" | "created_by"> & {
   id?: string;
   created_by?: string;
 };
@@ -46,7 +45,6 @@ export function PermissionRulesEditor() {
   const queryClient = useQueryClient();
   const [rules, setRules] = useState<EditableRule[]>([]);
   const [defaultEffect, setDefaultEffect] = useState("allow");
-  const [sessionCount, setSessionCount] = useState(0);
   const [dirty, setDirty] = useState(false);
 
   const { data, isLoading } = useQuery({
@@ -57,19 +55,18 @@ export function PermissionRulesEditor() {
   const saveMutation = useMutation({
     mutationFn: () =>
       approvalsApi.saveRules({ rules, default_effect: defaultEffect }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["approvals", "rules"] });
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["approvals", "rules"] });
       setDirty(false);
     },
   });
 
   useEffect(() => {
-    if (data?.rules) {
+    if (data?.rules && !dirty) {
       setRules(data.rules);
       setDefaultEffect(data.default_effect ?? "allow");
-      setSessionCount(data.session_count ?? 0);
     }
-  }, [data]);
+  }, [data, dirty]);
 
   const handleAdd = () => {
     setRules([
@@ -80,8 +77,6 @@ export function PermissionRulesEditor() {
         scope: "global",
         users: [],
         risk_level: "medium",
-        timeout_seconds: 60,
-        on_timeout: "deny",
         description: "",
         enabled: true,
       },
@@ -89,9 +84,11 @@ export function PermissionRulesEditor() {
     setDirty(true);
   };
 
-  const handleChange = (index: number, field: keyof EditableRule, value: EditableRule[keyof EditableRule]) => {
+  const handleChange = <K extends keyof EditableRule,>(index: number, field: K, value: EditableRule[K]) => {
     const updated = [...rules];
-    updated[index] = { ...updated[index], [field]: value } as EditableRule;
+    const current = updated[index];
+    if (!current) return;
+    updated[index] = { ...current, [field]: value };
     setRules(updated);
     setDirty(true);
   };
@@ -102,13 +99,13 @@ export function PermissionRulesEditor() {
 
   return (
     <div className="space-y-4">
-      {/* 操作栏 */}
+      {data?.load_error && <div role="alert" className="rounded-lg border border-danger/30 bg-danger-subtle p-3 text-sm text-danger">{data.load_error}</div>}
       <div className="flex justify-between items-center gap-3 flex-wrap rounded-lg border border-border bg-card p-3">
         <div className="flex items-center gap-2 flex-wrap">
           <Button
             variant="primary"
             onClick={() => saveMutation.mutate()}
-            disabled={!dirty}
+            disabled={!dirty || saveMutation.isPending}
             loading={saveMutation.isPending}
           >
             <Save size={14} />
@@ -122,7 +119,7 @@ export function PermissionRulesEditor() {
                 setDirty(false);
               }
             }}
-            disabled={!dirty}
+            disabled={!dirty || saveMutation.isPending}
           >
             <RotateCcw size={14} />
             {t("reset")}
@@ -130,6 +127,7 @@ export function PermissionRulesEditor() {
           <div className="flex items-center gap-2 text-sm ml-1">
             <span className="text-muted">{t("rules.defaultEffect")}</span>
             <Select
+              disabled={saveMutation.isPending}
               value={defaultEffect}
               onChange={(e) => { setDefaultEffect(e.target.value); setDirty(true); }}
               className="w-28"
@@ -140,24 +138,16 @@ export function PermissionRulesEditor() {
             </Select>
           </div>
         </div>
-        <Button variant="primary" onClick={handleAdd}>
+        <Button variant="primary" onClick={handleAdd} disabled={saveMutation.isPending}>
           <Plus size={14} />
           {t("rules.add")}
         </Button>
       </div>
 
-      {sessionCount > 0 && (
-        <div className="flex items-center gap-2 px-4 py-2.5 rounded-md border border-info/30 bg-accent-subtle text-info text-sm">
-          <Info size={16} className="shrink-0" />
-          {t("rules.sessionNotice", { count: sessionCount })}
-        </div>
-      )}
-
-      {/* 规则列表 */}
+      <fieldset disabled={saveMutation.isPending} className="min-w-0">
       <div className="space-y-3">
         {rules.map((rule, index) => {
           const EffectIcon = EFFECT_ICON[rule.effect] ?? ShieldQuestion;
-          const isSession = rule.created_by?.startsWith("approve:");
           return (
             <div
               key={rule.id ?? index}
@@ -172,11 +162,13 @@ export function PermissionRulesEditor() {
                 <Input
                   value={rule.pattern}
                   onChange={(e) => handleChange(index, "pattern", e.target.value)}
-                  className="flex-1 min-w-[220px] font-mono"
+                  className="flex-1 min-w-0 w-full sm:w-auto sm:min-w-[180px] font-mono"
                   placeholder="run_shell_command(npm test*)"
+                  aria-label={t("toolNamePattern")}
                   title={t("rules.patternHint")}
                 />
                 <Select
+                  aria-label={t("rules.effectLabel")}
                   value={rule.effect}
                   onChange={(e) => handleChange(index, "effect", e.target.value)}
                   className="w-28"
@@ -186,6 +178,7 @@ export function PermissionRulesEditor() {
                   <option value="deny">{t("rules.effect.deny")}</option>
                 </Select>
                 <Input
+                  aria-label={t("rules.scope")}
                   value={rule.scope}
                   onChange={(e) => handleChange(index, "scope", e.target.value)}
                   className="w-32"
@@ -199,11 +192,11 @@ export function PermissionRulesEditor() {
                   />
                   {t("rules.enabled")}
                 </label>
-                {isSession && <Badge variant="info">{t("rules.sessionBadge")}</Badge>}
                 <Button
                   variant="ghost"
                   size="icon"
                   className="text-danger hover:bg-danger-subtle"
+                  aria-label={t("rules.remove")}
                   onClick={() => {
                     setRules(rules.filter((_, i) => i !== index));
                     setDirty(true);
@@ -213,7 +206,7 @@ export function PermissionRulesEditor() {
                 </Button>
               </div>
 
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs text-muted mb-1">{t("rules.users")}</label>
                   <Input
@@ -237,26 +230,6 @@ export function PermissionRulesEditor() {
                     <option value="critical">{t("risk.critical")}</option>
                   </Select>
                 </div>
-                <div>
-                  <label className="block text-xs text-muted mb-1">{t("timeoutSeconds")}</label>
-                  <Input
-                    type="number"
-                    value={rule.timeout_seconds}
-                    onChange={(e) => handleChange(index, "timeout_seconds", Number(e.target.value))}
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs text-muted mb-1">{t("onTimeoutLabel")}</label>
-                  <Select
-                    value={rule.on_timeout}
-                    onChange={(e) => handleChange(index, "on_timeout", e.target.value)}
-                    className="w-full"
-                  >
-                    <option value="deny">{t("onTimeout.deny")}</option>
-                    <option value="allow">{t("onTimeout.allow")}</option>
-                    <option value="halt">{t("onTimeout.halt")}</option>
-                  </Select>
-                </div>
               </div>
 
               <Input
@@ -269,7 +242,7 @@ export function PermissionRulesEditor() {
         })}
       </div>
 
-      {/* 求值顺序说明 */}
+      </fieldset>
       <div className="text-xs text-muted p-4 rounded-lg border border-border bg-elevated space-y-1">
         <div className="font-medium text-foreground">{t("rules.orderTitle")}</div>
         <div>{t("rules.orderDesc")}</div>

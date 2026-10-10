@@ -88,7 +88,6 @@ class ContextUsagePayload(TypedDict, total=False):
 SSE_DELTA = "delta"                    # AssistantDeltaPayload 子集 {turn_id, delta, reasoning}
 SSE_TOOL_CALL = "tool_call"            # {turn_id, call_id, name, status, arguments?}
 SSE_CONTEXT_USAGE = "context_usage"    # ContextUsagePayload
-SSE_APPROVAL_REQUEST = "approval_request"  # 审批弹窗
 SSE_FILE_DIFF = "file_diff"                # FileDiffPayload
 
 

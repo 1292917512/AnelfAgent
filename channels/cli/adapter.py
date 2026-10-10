@@ -120,33 +120,6 @@ class CLIChannel(BaseChannel[CLIConfig]):
             last_success_at=time.time(),
         )
 
-    # ------------------------------------------------------------------
-    # 批准机制渲染
-    # ------------------------------------------------------------------
-
-    async def render_approval_prompt(self, ctx) -> SendRequest:
-        """渲染批准提示（CLI y/n 提示，覆盖基类文本模板——终端交互需要 y/n 快捷输入）。"""
-        from agent.channel.schemas import AdapterChannel, ChannelType, SegmentType, SendSegment
-
-        text = (
-            f"\n⚠️  工具调用需要批准\n"
-            f"  工具: {ctx.tool_name}\n"
-            f"  参数: {ctx.tool_args_summary[:200]}\n"
-            f"  风险: {ctx.risk_level}\n"
-            f"  原因: {ctx.reason}\n"
-            f"\n"
-            f"输入 'y' 允许, 'n' 拒绝, 超时 {ctx.timeout_seconds:.0f}s\n"
-            f"[request_id: {ctx.request_id}] "
-        )
-
-        return SendRequest(
-            adapter_key=self.channel_id,
-            channel=AdapterChannel(
-                channel_id="",  # 由 approval/gate.py 填充
-                channel_type=ChannelType.PRIVATE,
-            ),
-            segments=[SendSegment(type=SegmentType.TEXT, content=text)],
-        )
 
     # ------------------------------------------------------------------
     # 内部工具

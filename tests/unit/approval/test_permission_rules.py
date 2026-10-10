@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import json
 
-from agent.approval.policy import ApprovalPolicy, ApprovalPolicySet, RiskLevel
+import pytest
+
 from agent.approval.rules import (
     PermissionDecision,
     PermissionEffect,
     PermissionRule,
     PermissionRuleSet,
-    from_legacy_policyset,
 )
 
 
@@ -57,7 +57,7 @@ class TestEvaluateOrdering:
 
     def test_users_filter(self):
         rs = PermissionRuleSet(rules=[
-            _rule("run_shell_command*", PermissionEffect.ALLOW, users=["admin"]),
+            _rule("run_shell_command*", PermissionEffect.ALLOW, users=["admin"], scope="qq"),
         ])
         assert rs.evaluate("run_shell_command", {"command": "ls"}, "", "admin").decision == PermissionDecision.AUTO_ALLOW
         # 非白名单用户不命中 allow 规则 → 落到默认
@@ -133,34 +133,6 @@ class TestCompoundFailClosed:
         assert v.decision == PermissionDecision.ASK
 
 
-class TestLegacyConversion:
-    def test_requires_approval_becomes_ask(self):
-        ps = ApprovalPolicySet(policies=[
-            ApprovalPolicy(tool_name_pattern="shell.*", risk_level=RiskLevel.CRITICAL,
-                           requires_approval=True),
-            ApprovalPolicy(tool_name_pattern="*", risk_level=RiskLevel.LOW,
-                           requires_approval=False),
-        ])
-        rs = from_legacy_policyset(ps)
-        assert rs.default_effect == PermissionEffect.ALLOW
-        assert rs.rules[0].effect == PermissionEffect.ASK
-
-    def test_user_lists_become_scoped_rules(self):
-        ps = ApprovalPolicySet(policies=[
-            ApprovalPolicy(tool_name_pattern="run_shell_command*",
-                           risk_level=RiskLevel.HIGH, requires_approval=True,
-                           auto_approve_users=["admin"], auto_deny_users=["bad"]),
-        ])
-        rs = from_legacy_policyset(ps)
-        allow = [r for r in rs.rules if r.effect == PermissionEffect.ALLOW]
-        deny = [r for r in rs.rules if r.effect == PermissionEffect.DENY]
-        assert allow[0].users == ["admin"]
-        assert deny[0].users == ["bad"]
-        # admin 命中 allow 规则；bad 命中 deny 规则（deny 优先）
-        assert rs.evaluate("run_shell_command", {"command": "ls"}, "", "admin").decision == PermissionDecision.AUTO_ALLOW
-        assert rs.evaluate("run_shell_command", {"command": "ls"}, "", "bad").decision == PermissionDecision.AUTO_DENY
-
-
 class TestPersistence:
     def test_roundtrip(self, tmp_path):
         rs = PermissionRuleSet(rules=[
@@ -174,11 +146,37 @@ class TestPersistence:
         assert loaded.rules[0].pattern == "run_shell_command(npm *)"
         assert loaded.rules[0].scope == "webui"
 
-    def test_legacy_file_auto_converted(self, tmp_path):
-        path = tmp_path / "legacy.json"
-        path.write_text(json.dumps({"policies": [
-            {"tool_name_pattern": "x", "risk_level": "high", "requires_approval": True},
-        ]}))
+
+    def test_unknown_format_rejected(self, tmp_path):
         from agent.approval.rules import load_rules
-        rs = load_rules(str(path))
-        assert rs.rules[0].effect == PermissionEffect.ASK
+        path = tmp_path / "rules.json"
+        path.write_text(json.dumps({"policies": []}))
+        with pytest.raises(ValueError):
+            load_rules(str(path))
+
+    def test_retired_file_requires_explicit_rule_configuration(self, tmp_path):
+        from agent.approval.rules import load_rules
+        (tmp_path / "approval_policies.json").write_text('{"policies": []}')
+        with pytest.raises(ValueError, match="permission_rules.json"):
+            load_rules(str(tmp_path / "permission_rules.json"))
+
+
+def test_user_scoped_review_not_ignored():
+    rules = PermissionRuleSet(rules=[PermissionRule(pattern="t", effect="ask", users=["123"], scope="qq")])
+    assert rules.evaluate("t", {}, "qq", "123").decision == PermissionDecision.ASK
+    assert rules.evaluate("t", {}, "webui", "123").decision == PermissionDecision.AUTO_ALLOW
+
+
+def test_unqualified_cross_channel_user_rules_rejected():
+    with pytest.raises(ValueError, match="频道"):
+        PermissionRule(pattern="t", effect="allow", users=["123"])
+
+
+def test_unknown_group_actor_cannot_bypass_user_restriction():
+    rules = PermissionRuleSet(rules=[PermissionRule(pattern="t", effect="deny", users=["123"], scope="qq")])
+    assert rules.evaluate("t", {}, "qq", "").decision == PermissionDecision.AUTO_DENY
+    assert rules.evaluate("t", {}, "qq", "456").decision == PermissionDecision.AUTO_ALLOW
+    rules = PermissionRuleSet(default_effect=PermissionEffect.ASK, rules=[
+        PermissionRule(pattern="t", effect="allow", users=["123"], scope="qq"),
+    ])
+    assert rules.evaluate("t", {}, "qq", "").decision == PermissionDecision.ASK

@@ -369,17 +369,6 @@ def create_bootstrap() -> FlowMachine:
         from entities import discover_entity_lifecycles
         await discover_entity_lifecycles()
 
-    @machine.node(skip_on_error=True, depends_on=[])
-    async def init_approval():
-        """审批管理器：过期会话清理任务经 Lifecycle 托管（随关停 drain 回收）。"""
-        from agent.approval import get_approval_manager
-        from core.lifecycle import Lifecycle
-        manager = get_approval_manager()
-        Lifecycle.register(
-            "approval_manager", manager,
-            on_start=manager.start_cleanup_task,
-            cleanup=manager.stop_cleanup_task,
-        )
 
     @machine.node(
         skip_on_error=False,

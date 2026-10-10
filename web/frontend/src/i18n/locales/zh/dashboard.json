@@ -28,8 +28,6 @@
     "okShort": "正常",
     "allClear": "运行正常，未发现需要关注的问题",
     "notReady": "Agent 尚未就绪",
-    "pendingApprovals": "{{count}} 个待处理批准请求",
-    "nearestExpiry": "最近一个 {{seconds}}s 后过期",
     "mcpDown": "MCP 服务器「{{name}}」未连接",
     "channelError": "通道「{{name}}」状态异常"
   },

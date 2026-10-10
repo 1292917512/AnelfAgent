@@ -283,23 +283,15 @@ def get_llm_manager() -> Any:
     return _get()
 
 
-async def request_tool_approval(
-    tool_name: str, tool_args: Dict[str, Any], reason: str,
-    chat_id: str, user_id: str,
-) -> bool:
-    """实体编排面（脚本子调用/后台任务等非对话上下文）请求审批门判定。
+async def check_tool_permission(tool_name: str, tool_args: Dict[str, Any], reason: str) -> Dict[str, Any]:
+    """实体编排子调用使用当前任务来源执行统一权限检查，返回裁决与 AI 提醒。"""
+    from dataclasses import asdict
 
-    channel 固定为 None（无人可问路径：Guardian 评审/规则引擎裁决）——
-    实体编排面没有可呈现审批弹窗的频道上下文。调用方负责异常兜底
-    （fail-open 纪律参照 workflow 引擎 _dispatch_tool）。
-    """
-    from agent.approval.gate import ApprovalDecision, get_approval_gate
-    decision = await get_approval_gate().request_approval(
-        tool_name=tool_name, tool_args=tool_args, reason=reason,
-        channel=None, chat_id=chat_id, user_id=user_id,
+    from agent.approval import get_approval_gate
+    result = await get_approval_gate().check(
+        tool_name=tool_name, tool_args=tool_args, reason=reason, scope=get_current_scope(),
     )
-    return decision is ApprovalDecision.APPROVED
-
+    return asdict(result)
 
 
 def get_current_scope() -> str:
@@ -1290,4 +1282,3 @@ def entity_config(
                 ConfigManager.set(key, values[key])
             elif "default" in item:
                 ConfigManager.set(key, item["default"])
-

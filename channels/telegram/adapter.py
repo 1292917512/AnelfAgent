@@ -15,16 +15,13 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Optional, Set
 from agent.channel.base import BaseChannel, ChannelMetadata
 from agent.channel.channel_types import ChannelCapability, ChannelStatus, _err, _ok
 from agent.channel.schemas import (
-    AdapterChannel,
     ChannelInfo,
     ChannelType,
     ChannelUser,
     ChannelUserRole,
     HealthStatus,
-    SegmentType,
     SendRequest,
     SendResponse,
-    SendSegment,
 )
 from agent.channel.tool_bridge import channel_tool
 from agent.channel.utils.formatter import format_exception as _fmt_exc
@@ -37,7 +34,6 @@ from .delivery import deliver_reply
 if TYPE_CHECKING:
     from telegram.request import HTTPXRequest
 
-    from agent.channel.base import ApprovalPromptRenderContext
 
 _STARTUP_TIMEOUT = 30.0
 
@@ -903,36 +899,3 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
                 detail=f"get_me failed: {exc}",
                 last_error=str(exc),
             )
-
-    async def render_approval_prompt(self, ctx: "ApprovalPromptRenderContext") -> SendRequest:
-        """渲染批准提示（Telegram InlineKeyboard，覆盖基类纯文本默认实现）。"""
-
-        text = (
-            f"⚠️ **工具调用需要批准**\n"
-            f"\n"
-            f"工具: `{ctx.tool_name}`\n"
-            f"参数: ```\n{ctx.tool_args_summary}\n```\n"
-            f"风险等级: **{ctx.risk_level}**\n"
-            f"原因: {ctx.reason}\n"
-            f"超时: {ctx.timeout_seconds:.0f}s\n"
-        )
-
-        return SendRequest(
-            adapter_key=self.channel_id,
-            channel=AdapterChannel(
-                channel_id="",  # 由 approval/gate.py 填充
-                channel_type=ChannelType.PRIVATE,
-            ),
-            segments=[SendSegment(type=SegmentType.TEXT, content=text)],
-            extra={
-                "reply_markup": {
-                    "inline_keyboard": [
-                        [
-                            {"text": "✅ 允许", "callback_data": f"approve:{ctx.request_id}"},
-                            {"text": "❌ 拒绝", "callback_data": f"deny:{ctx.request_id}"},
-                        ],
-                    ],
-                },
-                "parse_mode": "markdown",
-            },
-        )

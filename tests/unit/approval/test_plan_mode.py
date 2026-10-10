@@ -158,7 +158,7 @@ class TestUpdateGoal:
 class TestApprovalGateNoLongerAsksForPlan:
     async def test_default_rules_does_not_include_present_plan(self):
         """新范式下 default_rules 不再包含 present_plan 的 ask 规则。"""
-        from agent.approval.rules import default_rules
-        rs = default_rules()
+        from agent.approval.rules import PermissionRuleSet
+        rs = PermissionRuleSet()
         patterns = [r.pattern for r in rs.rules]
         assert "present_plan" not in patterns

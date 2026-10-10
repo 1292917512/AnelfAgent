@@ -68,7 +68,6 @@
     "cache/prompt": "Prompt Cache",
     "tools/gate": "Tool Gate",
     "security/core": "Protection",
-    "security/approval": "Approvals",
     "skills/core": "Skills",
     "skills/catalog": "Skill Catalog",
     "skills/match": "Skill Matching",

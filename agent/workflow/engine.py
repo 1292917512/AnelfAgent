@@ -33,6 +33,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.approval.types import ApprovalResult
 from agent.workflow import journal as wf_journal
 from agent.workflow.journal import (
     NODE_COMPLETED,
@@ -660,10 +661,9 @@ class WorkflowEngine:
             self, run: Dict[str, Any], step: Any, timeout: float = 0.0,
     ) -> _StepOutcome:
         decision = await self._request_approval(step, run)
-        from agent.approval.session import ApprovalDecision
-        if decision is not ApprovalDecision.APPROVED:
+        if not decision.allowed:
             return _StepOutcome(status=NODE_FAILED,
-                                error=f"审批未通过（{getattr(decision, 'value', decision)}）")
+                                error=f"权限检查拒绝: {decision.reason}")
         from core.entity import EntityRegistry
         arguments = json.dumps(step.args, ensure_ascii=False)
         coro = EntityRegistry.execute_tool(step.tool, arguments)
@@ -676,21 +676,19 @@ class WorkflowEngine:
         if isinstance(parsed, dict) and parsed.get("error"):
             return _StepOutcome(status=NODE_FAILED,
                                 error=str(parsed["error"])[:4000], result=result_str)
+        if decision.notice:
+            payload = parsed if isinstance(parsed, dict) else {"result": result_str}
+            payload["permission_notice"] = decision.notice
+            result_str = json.dumps(payload, ensure_ascii=False)
         return _StepOutcome(status=NODE_COMPLETED, result=result_str)
 
-    async def _request_approval(self, step: Any, run: Dict[str, Any]) -> Any:
-        """工具步审批（无人可问路径：规则引擎 + Guardian 裁决，与子代理路径同语义）。"""
-        from agent.approval.gate import get_approval_gate
-        from agent.approval.session import ApprovalDecision
-        try:
-            return await get_approval_gate().request_approval(
-                tool_name=step.tool, tool_args=dict(step.args),
-                reason=f"工作流[{run['name']}] 步骤 {step.key}",
-                channel=None, chat_id=str(run.get("scope") or ""), user_id="workflow",
-            )
-        except Exception as exc:
-            log(f"工作流审批门异常（按放行处理）: {exc}", "WARNING", tag=_TAG)
-            return ApprovalDecision.APPROVED
+    async def _request_approval(self, step: Any, run: Dict[str, Any]) -> "ApprovalResult":
+        """工具步骤使用与对话相同的规则和 AI 评审。"""
+        from agent.approval import get_approval_gate
+        return await get_approval_gate().check(
+            tool_name=step.tool, tool_args=dict(step.args),
+            reason=f"工作流[{run['name']}] 步骤 {step.key}", scope=str(run.get("scope") or ""),
+        )
 
     @staticmethod
     def _parse_tool_result(result_str: str) -> Any:

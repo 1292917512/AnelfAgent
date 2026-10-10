@@ -1,38 +1,19 @@
 {
   "tabs": {
-    "pending": "待批准",
     "history": "历史记录",
-    "policies": "策略配置",
-    "stats": "统计信息",
     "rules": "权限规则"
   },
   "loading": "加载中...",
-  "noPendingApprovals": "没有待批准的请求",
   "noHistory": "暂无历史记录",
-  "requestedBy": "请求者",
   "reason": "原因",
   "arguments": "参数",
-  "expiresIn": "过期时间",
-  "approve": "批准",
-  "deny": "拒绝",
   "save": "保存",
   "reset": "重置",
-  "addPolicy": "添加策略",
-  "policy": "策略",
   "toolNamePattern": "工具名称模式",
   "riskLevel": "风险等级",
-  "requiresApproval": "需要批准",
-  "timeoutSeconds": "超时时间（秒）",
-  "onTimeout": {
-    "deny": "拒绝",
-    "allow": "允许",
-    "halt": "终止"
-  },
-  "trustAfterNApprovals": "信任阈值",
-  "trustAfterNApprovalsHint": "批准 N 次后自动信任（0 = 永远询问）",
   "description": "描述",
   "descriptionPlaceholder": "策略描述...",
-  "decidedBy": "决策人",
+  "decidedBy": "裁决来源",
   "decisionReason": "决策理由",
   "system": "系统",
   "risk": {
@@ -45,51 +26,48 @@
     "approved": "已批准",
     "denied": "已拒绝",
     "expired": "已过期",
-    "cancelled": "已取消"
+    "cancelled": "已取消",
+    "guardian_approved": "AI 放行",
+    "guardian_denied": "AI 拒绝",
+    "guardian_bypass": "评审未完成",
+    "permission_error": "权限检查故障"
   },
   "stats": {
-    "pending": "待批准",
-    "totalDecisions": "总决策数",
-    "approvalRate": "批准率",
-    "decisionBreakdown": "决策分布"
+    "totalDecisions": "审计记录",
+    "blocked": "已拦截"
   },
   "matchedRule": "命中规则",
-  "popup": {
-    "previewEdit": "编辑文件：{{path}}",
-    "previewShell": "将执行命令",
-    "previewDelete": "将删除",
-    "previewCreate": "将创建"
-  },
   "rules": {
     "add": "添加规则",
     "defaultEffect": "默认效果",
     "effect": {
       "allow": "放行",
-      "ask": "询问",
+      "ask": "AI 评审",
       "deny": "拒绝"
     },
     "enabled": "启用",
     "users": "限定用户",
-    "usersPlaceholder": "留空=所有用户，逗号分隔",
+    "usersPlaceholder": "指定频道后填写用户 ID，逗号分隔",
     "patternHint": "工具名 glob，可带参数模式：run_shell_command(npm test*)",
     "scopeHint": "global 或频道 id（telegram/qq/webui...）",
-    "sessionBadge": "会话级",
-    "sessionNotice": "当前有 {{count}} 条会话级放行规则（重启后失效），保存只影响持久规则",
     "orderTitle": "求值顺序（命中即生效）",
-    "orderDesc": "用户限定拒绝 → 频道拒绝 → 全局拒绝 → 用户限定放行 → 频道询问 → 全局询问 → 频道放行 → 全局放行 → 默认效果"
+    "orderDesc": "拒绝优先 → 指定用户放行 → AI 评审 → 显式放行 → 默认拒绝或评审；默认放行时，CRITICAL 工具仍需 AI 评审。用户 ID 必须限定频道。",
+    "remove": "删除规则",
+    "scope": "作用域",
+    "effectLabel": "规则效果"
   },
-  "pageTitle": "批准管理",
-  "pageSubtitle": "审批 AI 的工具调用请求，并管理权限规则",
-  "pendingBadge": "{{count}} 个待处理",
-  "noPendingHint": "AI 发起的高风险工具调用会在这里等待你的审批",
-  "onTimeoutLabel": "超时行为",
+  "pageTitle": "权限与审计",
+  "pageSubtitle": "规则确定边界，AI 自动评审；评审不可用时自主执行并留痕，无需人工批准。",
   "filterAll": "全部",
-  "searchTool": "搜索工具名...",
+  "searchTool": "筛选本页工具名…",
   "noMatch": "没有匹配的记录",
   "timeAgo": {
     "justNow": "刚刚",
     "minutes": "{{count}} 分钟前",
     "hours": "{{count}} 小时前",
     "days": "{{count}} 天前"
-  }
+  },
+  "previous": "上一页",
+  "next": "下一页",
+  "page": "第 {{number}} 页"
 }

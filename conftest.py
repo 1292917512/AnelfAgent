@@ -54,10 +54,10 @@ def _wire_function_ports():
     图片索引投递），生产由 agent.runtime.wiring 施绑；测试环境无 bootstrap，
     在此统一施绑真实实现，保持被测路径与生产一致。
     """
-    from agent.approval.policy import WorkspacePathFns, workspace_paths_port
     from agent.mind.tools.media_pipeline import image_index_submit_port
     from agent.mind.tools.result_pipeline import shell_persist_port
     from agent.mind.tools.round_helpers import file_state_cache_port
+    from agent.utils.workspace import WorkspacePathFns, workspace_paths_port
     from entities.filesystem.file_state import get_cache as get_file_state_cache
     from entities.filesystem.paths import get_workspace_root, resolve_workspace_path
     from entities.filesystem.shell_state import persist_output

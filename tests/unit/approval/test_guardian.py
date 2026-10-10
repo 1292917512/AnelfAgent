@@ -1,362 +1,106 @@
-"""Guardian 自动审批 + 事件驱动等待测试。
-
-覆盖：
-- guardian 放行：ask 秒级自动批准，不发人工提示
-- guardian 拒绝：有频道 → 升级人工（弹窗照常）；无频道 → 直接拒绝
-- guardian 不可用：有频道 → 走人工流程；无频道 → 自主性放行（bypass 审计）
-- wait_decision：事件驱动唤醒（决策即返回）、超时 EXPIRED、abort_check 中断 CANCELLED
-"""
-
-from __future__ import annotations
+"""Guardian 的截止时间、模型配置、解析、熔断和取消契约。"""
 
 import asyncio
-import json
-import time
+from dataclasses import replace
 from types import SimpleNamespace
-from typing import Any, List, Optional
+from unittest.mock import AsyncMock
 
 import pytest
 
-from agent.approval.gate import ApprovalGate
-from agent.approval.guardian import ApprovalGuardian, GuardianVerdict
-from agent.approval.manager import ApprovalManager
-from agent.approval.rules import PermissionEffect, PermissionRule, PermissionRuleSet
-from agent.approval.session import ApprovalDecision
-from core.config import ConfigManager
-
-
-class MockChannel:
-    channel_id = "webui"
-
-    def __init__(self):
-        self.sent: List[str] = []
-        self.prompts: List[Any] = []
-
-    async def send_text(self, chat_id: str, text: str, **kwargs):
-        self.sent.append(text)
-        return json.dumps({"success": True})
-
-    async def render_approval_prompt(self, ctx):
-        self.prompts.append(ctx)
-        return SimpleNamespace(channel=SimpleNamespace(channel_id=""))
-
-    async def forward_message(self, request):
-        return SimpleNamespace(success=True, error="")
-
-
-class FakeGuardian:
-    """可控的 guardian 替身（不触网；与真实实现一样先检查启用开关）。"""
-
-    def __init__(self, verdict: Optional[GuardianVerdict]):
-        self.verdict = verdict
-        self.calls = 0
-
-    async def review(self, **kwargs) -> Optional[GuardianVerdict]:
-        from core.config import get_config_bool
-        if not get_config_bool("approval_guardian_enabled", True):
-            return None
-        self.calls += 1
-        return self.verdict
+from agent.approval.guardian import ApprovalGuardian, GuardianVerdict, _Settings
 
 
 @pytest.fixture()
-def guardian_on():
-    ConfigManager.set("approval_guardian_enabled", True)
-    yield
-    ConfigManager.set("approval_guardian_enabled", True)
+def settings(monkeypatch):
+    config = _Settings(True, "", "low", 30.0, 300.0, 5)
+    state = {"current": config}
+    monkeypatch.setattr(_Settings, "read", lambda: state["current"])
+    return state
 
 
-def _gate(monkeypatch, guardian: FakeGuardian, rules) -> ApprovalGate:
-    monkeypatch.setattr("agent.approval.gate.get_approval_guardian", lambda: guardian)
-    return ApprovalGate(manager=ApprovalManager(),
-                        rule_set=PermissionRuleSet(rules=rules))
+@pytest.fixture()
+def manager(monkeypatch, fake_audit_sink):
+    manager = SimpleNamespace(
+        get_client_by_id=lambda _: None,
+        chat_with_fallback=AsyncMock(return_value=SimpleNamespace(content='{"approve":true,"risk":"low","rationale":"safe"}')),
+    )
+    monkeypatch.setattr("agent.llm.get_llm_manager", lambda: manager)
+    return manager
 
 
-_ASK_RULE = [PermissionRule(pattern="write_file", effect=PermissionEffect.ASK)]
+async def test_timeout_configuration_reaches_model(settings, manager):
+    verdict = await ApprovalGuardian().review(tool_name="t", tool_args={}, reason="", risk_level="low")
+    assert verdict.approved is True
+    kwargs = manager.chat_with_fallback.call_args.kwargs
+    assert 29 < kwargs["timeout"] <= 30
+    assert kwargs["max_retries"] == 0 and kwargs["purpose"] == "guardian"
 
 
-class TestGuardianFlow:
-    async def test_guardian_approve_skips_human(self, monkeypatch, guardian_on):
-        guardian = FakeGuardian(GuardianVerdict(approved=True, risk="low", rationale="常规写文件"))
-        gate = _gate(monkeypatch, guardian, _ASK_RULE)
-        ch = MockChannel()
-        d = await gate.request_approval(
-            tool_name="write_file", tool_args={"path": "a"}, reason="t",
-            channel=ch, chat_id="c", user_id="u", timeout=5)
-        assert d == ApprovalDecision.APPROVED
-        assert guardian.calls == 1
-        assert ch.prompts == []  # 未打扰用户
-        assert await gate._manager.list_pending() == []
-
-    async def test_guardian_deny_escalates_to_human(self, monkeypatch, guardian_on):
-        guardian = FakeGuardian(GuardianVerdict(approved=False, risk="high", rationale="批量删除"))
-        gate = _gate(monkeypatch, guardian, _ASK_RULE)
-        ch = MockChannel()
-
-        async def decide_later():
-            await asyncio.sleep(0.2)
-            pending = await gate._manager.list_pending()
-            assert len(pending) == 1
-            await gate.approve(pending[0].request.request_id, decided_by="tester")
-
-        task = asyncio.create_task(decide_later())
-        d = await gate.request_approval(
-            tool_name="write_file", tool_args={"path": "a"}, reason="t",
-            channel=ch, chat_id="c", user_id="u", timeout=5)
-        await task
-        assert d == ApprovalDecision.APPROVED  # 人工可越过 guardian
-        assert len(ch.prompts) == 1
-
-    async def test_guardian_deny_no_channel_denies(self, monkeypatch, guardian_on):
-        """无人可问路径（reflect/心跳/子代理）：guardian 拒绝即拦截。"""
-        guardian = FakeGuardian(GuardianVerdict(approved=False, risk="high", rationale="外泄凭据"))
-        gate = _gate(monkeypatch, guardian, _ASK_RULE)
-        d = await gate.request_approval(
-            tool_name="write_file", tool_args={"path": "a"}, reason="t",
-            channel=None, chat_id="scope", user_id="agent", timeout=5)
-        assert d == ApprovalDecision.DENIED
-
-    async def test_guardian_unavailable_no_channel_allows(self, monkeypatch, guardian_on):
-        """无人可问 + guardian 不可用 → 自主性放行（不挂死）。"""
-        guardian = FakeGuardian(None)
-        gate = _gate(monkeypatch, guardian, _ASK_RULE)
-        d = await gate.request_approval(
-            tool_name="write_file", tool_args={"path": "a"}, reason="t",
-            channel=None, chat_id="scope", user_id="agent", timeout=5)
-        assert d == ApprovalDecision.APPROVED
-
-    async def test_guardian_unavailable_with_channel_goes_human(self, monkeypatch, guardian_on):
-        """有频道 + guardian 不可用 → 人工流程不受影响。"""
-        guardian = FakeGuardian(None)
-        gate = _gate(monkeypatch, guardian, _ASK_RULE)
-        ch = MockChannel()
-
-        async def decide_later():
-            await asyncio.sleep(0.2)
-            pending = await gate._manager.list_pending()
-            await gate.approve(pending[0].request.request_id, decided_by="tester")
-
-        task = asyncio.create_task(decide_later())
-        d = await gate.request_approval(
-            tool_name="write_file", tool_args={"path": "a"}, reason="t",
-            channel=ch, chat_id="c", user_id="u", timeout=5)
-        await task
-        assert d == ApprovalDecision.APPROVED
-        assert len(ch.prompts) == 1
-
-    async def test_guardian_disabled_goes_straight_to_human(self, monkeypatch):
-        """配置关闭时完全不经过 guardian。"""
-        ConfigManager.set("approval_guardian_enabled", False)
+async def test_timeout_cancels_inflight_request(settings, manager):
+    settings["current"] = replace(settings["current"], timeout=0.01)
+    cancelled = asyncio.Event()
+    async def hang(*args, **kwargs):
         try:
-            guardian = FakeGuardian(GuardianVerdict(approved=True))
-            gate = _gate(monkeypatch, guardian, _ASK_RULE)
-            ch = MockChannel()
-
-            async def decide_later():
-                await asyncio.sleep(0.2)
-                pending = await gate._manager.list_pending()
-                await gate.approve(pending[0].request.request_id, decided_by="tester")
-
-            task = asyncio.create_task(decide_later())
-            d = await gate.request_approval(
-                tool_name="write_file", tool_args={"path": "a"}, reason="t",
-                channel=ch, chat_id="c", user_id="u", timeout=5)
-            await task
-            assert d == ApprovalDecision.APPROVED
-            assert guardian.calls == 0
-            assert len(ch.prompts) == 1
+            await asyncio.Event().wait()
         finally:
-            ConfigManager.set("approval_guardian_enabled", True)
+            cancelled.set()
+    manager.chat_with_fallback.side_effect = hang
+    verdict = await ApprovalGuardian().review(tool_name="t", tool_args={}, reason="", risk_level="high")
+    assert verdict.approved is None and "总时限" in verdict.rationale
+    assert cancelled.is_set()
 
 
-class TestGuardianBreaker:
-    async def test_breaker_opens_after_consecutive_failures(self):
-        guardian = ApprovalGuardian()
-        ConfigManager.set("approval_guardian_breaker_cooldown", 60.0)
-        try:
-            for _ in range(3):
-                guardian._record_failure()
-            assert guardian._breaker_open_until > time.monotonic()
-            # 熔断期内直接返回 None（不发起评审）
-            verdict = await guardian.review(
-                tool_name="t", tool_args={}, reason="", risk_level="low")
-            assert verdict is None
-        finally:
-            ConfigManager.set("approval_guardian_breaker_cooldown", 300.0)
-
-    def test_parse_verdict_tolerant(self):
-        parse = ApprovalGuardian._parse_verdict
-        assert parse('{"approve": true, "risk": "low", "rationale": "ok"}').approved is True
-        assert parse('前言 {"approve": false, "risk": "high", "rationale": "危险"} 后缀').approved is False
-        assert parse("不是 JSON") is None
-        assert parse('{"approve": "yes"}') is None  # 非布尔不采信
+async def test_cancellation_not_counted_as_failure(settings, manager):
+    guardian = ApprovalGuardian()
+    manager.chat_with_fallback.side_effect = asyncio.CancelledError
+    with pytest.raises(asyncio.CancelledError):
+        await guardian.review(tool_name="t", tool_args={}, reason="", risk_level="high")
+    assert guardian._consecutive_failures == 0
 
 
-class TestWaitDecision:
-    async def _session(self, manager: ApprovalManager, timeout: float = 5.0):
-        from agent.approval.policy import RiskLevel
-        from agent.approval.session import ApprovalRequest
-        req = ApprovalRequest(
-            tool_name="write_file", tool_args={}, risk_level=RiskLevel.MEDIUM,
-            reason="t", requester_channel="webui", requester_chat_id="c",
-            requester_user_id="u", expires_at=time.time() + timeout,
-        )
-        return await manager.create_session(req)
-
-    async def test_decision_wakes_waiter_immediately(self):
-        """事件驱动：决策到达即唤醒，不等超时。"""
-        manager = ApprovalManager()
-        session = await self._session(manager, timeout=30.0)
-
-        async def decide():
-            await asyncio.sleep(0.1)
-            await manager.approve(session.request.request_id, decided_by="tester")
-
-        task = asyncio.create_task(decide())
-        t0 = time.monotonic()
-        d = await manager.wait_decision(session.request.request_id, timeout=30.0)
-        elapsed = time.monotonic() - t0
-        await task
-        assert d == ApprovalDecision.APPROVED
-        assert elapsed < 5.0  # 远超轮询时代的下限，事件驱动即时返回
-
-    async def test_timeout_expires(self):
-        manager = ApprovalManager()
-        session = await self._session(manager)
-        d = await manager.wait_decision(session.request.request_id, timeout=0.3)
-        assert d == ApprovalDecision.EXPIRED
-
-    async def test_abort_check_cancels(self):
-        """中断信号命中：等待立即收束为 CANCELLED。"""
-        manager = ApprovalManager()
-        session = await self._session(manager, timeout=30.0)
-        flag = {"aborted": False}
-
-        async def raise_interrupt():
-            await asyncio.sleep(0.2)
-            flag["aborted"] = True
-
-        task = asyncio.create_task(raise_interrupt())
-        t0 = time.monotonic()
-        d = await manager.wait_decision(
-            session.request.request_id, timeout=30.0,
-            abort_check=lambda: flag["aborted"],
-        )
-        elapsed = time.monotonic() - t0
-        await task
-        assert d == ApprovalDecision.CANCELLED
-        assert elapsed < 5.0
-
-    async def test_gate_abort_during_human_wait(self, monkeypatch):
-        """端到端：人工等待期间 abort_check 命中，request_approval 返回 CANCELLED。"""
-        ConfigManager.set("approval_guardian_enabled", False)
-        try:
-            gate = ApprovalGate(manager=ApprovalManager(),
-                                rule_set=PermissionRuleSet(rules=_ASK_RULE))
-            ch = MockChannel()
-            flag = {"aborted": False}
-
-            async def raise_interrupt():
-                await asyncio.sleep(0.2)
-                flag["aborted"] = True
-
-            task = asyncio.create_task(raise_interrupt())
-            d = await gate.request_approval(
-                tool_name="write_file", tool_args={"path": "a"}, reason="t",
-                channel=ch, chat_id="c", user_id="u", timeout=30,
-                abort_check=lambda: flag["aborted"])
-            await task
-            assert d == ApprovalDecision.CANCELLED
-        finally:
-            ConfigManager.set("approval_guardian_enabled", True)
+async def test_breaker_and_configuration_recovery(settings, manager):
+    guardian = ApprovalGuardian()
+    manager.chat_with_fallback.side_effect = OSError
+    for _ in range(4):
+        assert (await guardian.review(tool_name="t", tool_args={}, reason="", risk_level="high")).approved is None
+    assert manager.chat_with_fallback.await_count == 3
+    settings["current"] = replace(settings["current"], timeout=40)
+    manager.chat_with_fallback.side_effect = None
+    assert (await guardian.review(tool_name="t", tool_args={}, reason="", risk_level="high")).approved is True
+    assert guardian._consecutive_failures == 0
 
 
-class TestGuardianEvidence:
-    """评审证据：近期审批历史注入 + 专用评审模型。"""
+async def test_disabled_skips_model(settings, manager):
+    settings["current"] = replace(settings["current"], enabled=False)
+    result = await ApprovalGuardian().review(tool_name="t", tool_args={}, reason="", risk_level="high")
+    assert result.approved is None and "关闭" in result.rationale
+    manager.chat_with_fallback.assert_not_awaited()
 
-    async def test_history_injected_when_present(self, monkeypatch):
-        """有审计记录时评审消息包含历史段，无记录时不占上下文。"""
 
-        captured: dict = {}
+async def test_model_override_and_missing_model(settings, manager):
+    settings["current"] = replace(settings["current"], model="reviewer")
+    result = await ApprovalGuardian().review(tool_name="t", tool_args={}, reason="", risk_level="low")
+    assert result.approved is None
+    manager.chat_with_fallback.assert_not_awaited()
+    client = SimpleNamespace(config=SimpleNamespace(enabled=True))
+    manager.get_client_by_id = lambda _: client
+    result = await ApprovalGuardian().review(tool_name="t", tool_args={}, reason="", risk_level="low")
+    assert result.approved is True
+    assert manager.chat_with_fallback.call_args.kwargs["client"] is client
 
-        class _Sink:
-            async def list_approval_audit(self, limit=50, offset=0, tool_name=""):
-                return [
-                    {"outcome": "approved", "reason": "清理缓存", "user_id": "u1"},
-                    {"outcome": "guardian_denied", "reason": "目标为系统目录", "user_id": "u2"},
-                ]
 
-        class _Manager:
-            def get_client_by_id(self, mid):
-                return None
+async def test_history_identity_includes_channel(settings, manager, fake_audit_sink):
+    fake_audit_sink.rows = [{"tool_name":"t", "outcome":"guardian_approved", "user_id":"123", "channel_id":"qq", "reason":"previous"}]
+    await ApprovalGuardian().review(tool_name="t", tool_args={}, reason="", risk_level="low", channel_id="webui", user_id="123")
+    text = manager.chat_with_fallback.call_args.args[0][1]["content"]
+    assert '"same_actor": false' in text
+    assert "不构成授权" in text
 
-            async def chat_with_fallback(self, messages, **kwargs):
-                captured["user"] = messages[1]["content"]
-                captured["client"] = kwargs.get("client")
-                captured["options"] = kwargs.get("options")
-                return SimpleNamespace(content='{"approve": true, "risk": "low", "rationale": "ok"}')
 
-        monkeypatch.setattr("agent.approval.audit._audit_sink", lambda: _Sink())
-        monkeypatch.setattr("agent.llm.get_llm_manager", lambda: _Manager())
-        verdict = await ApprovalGuardian()._review_llm(
-            tool_name="delete_file", tool_args={"path": "/tmp/x"}, reason="清理",
-            risk_level="medium", channel_id="webui", user_id="u1",
-        )
-        assert verdict is not None and verdict.approved
-        assert "近期同类审批" in captured["user"]
-        assert "approved（本用户）" in captured["user"]
-        assert captured["options"] == {"reasoning_effort": "low"}
+@pytest.mark.parametrize("text", ['[]', 'null', '{"approve":"yes"}', '{"approve":true,"risk":"unknown","rationale":"ok"}', '{"approve":true,"risk":"low"}'])
+def test_invalid_decisions_are_not_accepted(text):
+    assert ApprovalGuardian._parse_verdict(text) is None
 
-    async def test_no_history_no_section(self, monkeypatch):
-        """无审计记录时不注入历史段。"""
-        captured: dict = {}
 
-        class _Sink:
-            async def list_approval_audit(self, limit=50, offset=0, tool_name=""):
-                return []
-
-        class _Manager:
-            async def chat_with_fallback(self, messages, **kwargs):
-                captured["user"] = messages[1]["content"]
-                return SimpleNamespace(content='{"approve": true, "risk": "low", "rationale": "ok"}')
-
-        monkeypatch.setattr("agent.approval.audit._audit_sink", lambda: _Sink())
-        monkeypatch.setattr("agent.llm.get_llm_manager", lambda: _Manager())
-        await ApprovalGuardian()._review_llm(
-            tool_name="delete_file", tool_args={}, reason="", risk_level="low",
-            channel_id="", user_id="",
-        )
-        assert "近期同类审批" not in captured["user"]
-
-    async def test_review_model_override(self, monkeypatch):
-        """配置评审模型时按 ID 取客户端传入；取不到则回退默认链。"""
-        from core.config import ConfigManager
-
-        captured: dict = {}
-        sentinel_client = object()
-
-        class _Sink:
-            async def list_approval_audit(self, limit=50, offset=0, tool_name=""):
-                return []
-
-        class _Manager:
-            def get_client_by_id(self, mid):
-                captured["model_id"] = mid
-                return sentinel_client if mid == "fast-model" else None
-
-            async def chat_with_fallback(self, messages, **kwargs):
-                captured["client"] = kwargs.get("client")
-                return SimpleNamespace(content='{"approve": true, "risk": "low", "rationale": "ok"}')
-
-        monkeypatch.setattr("agent.approval.audit._audit_sink", lambda: _Sink())
-        monkeypatch.setattr("agent.llm.get_llm_manager", lambda: _Manager())
-        ConfigManager.set("approval_guardian_model", "fast-model")
-        try:
-            await ApprovalGuardian()._review_llm(
-                tool_name="t", tool_args={}, reason="", risk_level="low",
-                channel_id="", user_id="",
-            )
-        finally:
-            ConfigManager.set("approval_guardian_model", "")
-        assert captured["model_id"] == "fast-model"
-        assert captured["client"] is sentinel_client
+def test_fenced_json_is_accepted():
+    assert ApprovalGuardian._parse_verdict('```json\n{"approve":false,"risk":"high","rationale":"danger"}\n```') == GuardianVerdict(False,"high","danger")

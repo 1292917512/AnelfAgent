@@ -1,7 +1,7 @@
 {
   "tabs": {
     "channels": "通道管理",
-    "approvals": "批准管理",
+    "approvals": "权限与审计",
     "test": "接口测试"
   },
   "savedOk": "已保存",

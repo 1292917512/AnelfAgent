@@ -2,7 +2,7 @@
  * Chat SSE 事件路由（/api/chat/stream）。
  *
  * 从 chat-store 拆出：15 种事件的解析与分发；通过 ChatSseContext 回调操作
- * chat-store 状态，plan / delegation / approval 事件分流到对应 store。
+ * chat-store 状态，plan / delegation 事件分流到对应 store。
  */
 import type {
   ChatBucket,
@@ -12,7 +12,6 @@ import type {
   ContextUsage,
   DelegationNode,
   PlanRecord,
-  SseApprovalRequestEvent,
   SseContextUsageEvent,
   SseDelegationProgressEvent,
   SseDelegationResolvedEvent,
@@ -32,7 +31,6 @@ import type {
   SseTurnEndEvent,
   UiCommandPayload,
 } from "@/lib/types";
-import { useApprovalPopupStore } from "./approval-popup-store";
 import { useDelegationStore } from "./delegation-store";
 import { usePlanStore } from "./plan-store";
 import { useWorkbenchStore } from "./workbench-store";
@@ -308,21 +306,6 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
   es.addEventListener("ui_command", (e) => {
     try {
       dispatchUiCommand(JSON.parse(e.data) as UiCommandPayload);
-    } catch { /* ignore */ }
-  });
-
-  es.addEventListener("approval_request", (e) => {
-    try {
-      const data = JSON.parse(e.data) as SseApprovalRequestEvent;
-      useApprovalPopupStore.getState().push({
-        request_id: data.request_id,
-        tool_name: data.tool_name,
-        tool_args: data.tool_args ?? "",
-        risk_level: data.risk_level ?? "medium",
-        reason: data.reason ?? "",
-        timeout_seconds: data.timeout_seconds ?? 60,
-        received_at: Date.now(),
-      });
     } catch { /* ignore */ }
   });
 

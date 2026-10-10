@@ -33,7 +33,6 @@ export async function mockApi(page: Page) {
       "/memory/files": [{ path: "memory/ideas.md", lines: "2", size: "32 B" }],
       "/memory/notes": { content: "# Notes\nOriginal note", path: "memory/memory.md" },
       "/memory/files/content": { content: "Research notes" },
-      "/approvals/pending": { pending: [], count: 0 },
       "/status/logs": { logs: [], count: 0 },
       "/status/log-stats": { total: 0, by_level: {}, by_tag: {} },
       "/chat/bot-name": { name: "AnelfAgent" },

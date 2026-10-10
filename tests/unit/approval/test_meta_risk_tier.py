@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import pytest
 
-from agent.approval.policy import RiskLevel
 from agent.approval.rules import (
     _META_RISK_PATTERN,
     PermissionDecision,
@@ -16,6 +15,7 @@ from agent.approval.rules import (
     PermissionRuleSet,
     tool_meta_risk_rule,
 )
+from agent.approval.types import RiskLevel
 from core.entity import EntityRegistry
 
 

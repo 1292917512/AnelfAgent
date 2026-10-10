@@ -134,25 +134,6 @@ T = TypeVar("T", bound="BaseChannel")
 
 
 # ======================================================================
-# 批准机制相关（前置声明，完整实现在 agent/approval/）
-# ======================================================================
-
-
-class ApprovalPromptRenderContext(BaseModel):
-    """渲染批准提示的上下文。
-
-    各频道根据自身能力渲染（Telegram 用 InlineKeyboard、WebUI 用按钮、CLI 用 y/n）。
-    """
-
-    request_id: str
-    tool_name: str
-    tool_args_summary: str  # 已脱敏
-    risk_level: str
-    reason: str
-    timeout_seconds: float
-
-
-# ======================================================================
 # BaseChannel
 # ======================================================================
 
@@ -173,7 +154,6 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
       - set_message_reaction()（表情反馈）
       - detect_command()（命令解析定制）
       - get_router()（HTTP 频道）
-      - render_approval_prompt()（批准提示渲染）
     """
 
     _entity_type = EntityType.ADAPTER
@@ -661,36 +641,6 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
         """
         return None
 
-    # ------------------------------------------------------------------
-    # 批准机制钩子（占位，由 agent/approval/ 驱动）
-    # ------------------------------------------------------------------
-
-    async def render_approval_prompt(
-        self,
-        ctx: ApprovalPromptRenderContext,
-    ) -> SendRequest:
-        """渲染批准提示消息。
-
-        默认实现：纯文本提示（微信 / 飞书 / HTTP API 等纯文本频道共用），
-        子类可覆盖（Telegram 用 InlineKeyboard、WebUI 用 SSE 弹窗、CLI 用 y/n 提示等）。
-        """
-        text = (
-            f"⚠️ 工具调用需要批准\n"
-            f"工具: {ctx.tool_name}\n"
-            f"参数: {ctx.tool_args_summary[:200]}\n"
-            f"风险: {ctx.risk_level}\n"
-            f"原因: {ctx.reason}\n"
-            f"超时: {ctx.timeout_seconds:.0f}s\n"
-            f"\n"
-            f"回复以下命令之一：\n"
-            f"  approve {ctx.request_id}\n"
-            f"  deny {ctx.request_id}"
-        )
-        return self._build_send_request(
-            chat_id="",  # 由 approval/gate.py 填充
-            segments=[SendSegment(type=SegmentType.TEXT, content=text)],
-            extra={"approval_request_id": ctx.request_id},
-        )
 
     # ------------------------------------------------------------------
     # HTTP 频道钩子
@@ -789,7 +739,6 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
         """将 [at_uid:xxx] 转为纯文本 @uid。"""
         from .channel_types import normalize_at_mentions as _normalize
         return _normalize(text)
-
 
 
 # ======================================================================

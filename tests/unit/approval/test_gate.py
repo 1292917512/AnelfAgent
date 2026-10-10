@@ -1,238 +1,85 @@
-"""批准机制测试。"""
+"""统一权限入口：所有调用来源共享裁决，不产生人工批准状态。"""
 
 import asyncio
-import time
+from unittest.mock import AsyncMock
 
 import pytest
 
-from agent.approval import (
-    ApprovalDecision,
-    ApprovalManager,
-    ApprovalPolicy,
-    ApprovalRequest,
-    RiskLevel,
-    get_approval_gate,
-    get_approval_manager,
-)
+from agent.approval import ApprovalGate, PermissionEffect, PermissionRule, PermissionRuleSet
+from agent.approval.guardian import GuardianVerdict
+from agent.approval.redaction import redact_arguments
 
 
-class _FakeAuditSink:
-    """审批审计的内存假 sqlite（与 SqliteBackend 审计方法同接口）。"""
-
-    def __init__(self) -> None:
-        self.rows: list[dict] = []
-        self._seq = 0
-
-    async def append_approval_audit(self, record: dict) -> None:
-        self._seq += 1
-        self.rows.append({"id": self._seq, **record})
-
-    async def count_approval_outcomes(self, tool_name: str, user_id: str, outcome: str) -> int:
-        return sum(
-            1 for r in self.rows
-            if r.get("tool_name") == tool_name
-            and r.get("user_id") == user_id
-            and r.get("outcome") == outcome
-        )
-
-    async def approval_audit_stats(self) -> dict:
-        by: dict[str, int] = {}
-        for r in self.rows:
-            by[r.get("outcome", "")] = by.get(r.get("outcome", ""), 0) + 1
-        return {"total": len(self.rows), "by_outcome": by}
-
-    async def list_approval_audit(self, limit: int = 50, offset: int = 0, tool_name: str = "") -> list[dict]:
-        rows = [r for r in self.rows if not tool_name or r.get("tool_name") == tool_name]
-        return list(reversed(rows))[offset:offset + limit]
+@pytest.mark.parametrize("scope", ["user_qq:123", "user_telegram:123", "user_webui:u#chat", "reflect"])
+@pytest.mark.parametrize("approved,outcome", [(True, "guardian_approved"), (False, "guardian_denied"), (None, "guardian_bypass")])
+async def test_same_decision_for_every_source(monkeypatch, fake_audit_sink, scope, approved, outcome):
+    guardian = AsyncMock()
+    guardian.review.return_value = GuardianVerdict(approved, "high", "评审原因")
+    monkeypatch.setattr("agent.approval.gate.get_approval_guardian", lambda: guardian)
+    gate = ApprovalGate(PermissionRuleSet(rules=[PermissionRule(pattern="write_file", effect="ask")]))
+    result = await gate.check(tool_name="write_file", tool_args={}, reason="task", scope=scope)
+    assert result.allowed is (approved is not False)
+    assert result.outcome == outcome
+    assert result.reason == "评审原因"
+    assert bool(result.notice) is (approved is not False)
+    assert fake_audit_sink.rows[-1]["outcome"] == outcome
+    assert not hasattr(gate, "approve") and not hasattr(gate, "_manager")
 
 
-@pytest.fixture()
-def fake_audit_sink(monkeypatch: pytest.MonkeyPatch) -> _FakeAuditSink:
-    """把审批审计数据面指向内存假 sqlite（隔离真实 DB）。"""
-    import agent.approval.audit as audit_mod
-
-    sink = _FakeAuditSink()
-    monkeypatch.setattr(audit_mod, "_audit_sink", lambda: sink)
-    return sink
-
-
-async def _drain_audit_bg() -> None:
-    """让即发即忘的审计后台任务跑完（record_decision_bg 经 create_task）。"""
-    for _ in range(4):
-        await asyncio.sleep(0)
+async def test_channel_scope_is_enforced_without_channel_adapter(monkeypatch, fake_audit_sink):
+    guardian = AsyncMock()
+    monkeypatch.setattr("agent.approval.gate.get_approval_guardian", lambda: guardian)
+    gate = ApprovalGate(PermissionRuleSet(rules=[PermissionRule(pattern="write_file", effect="deny", scope="qq")]))
+    denied = await gate.check(tool_name="write_file", tool_args={}, reason="", scope="user_qq:123")
+    allowed = await gate.check(tool_name="write_file", tool_args={}, reason="", scope="user_webui:123#chat")
+    assert not denied.allowed and allowed.allowed
+    guardian.review.assert_not_awaited()
+    assert fake_audit_sink.rows[0]["channel_id"] == "qq"
+    assert fake_audit_sink.rows[0]["user_id"] == "123"
 
 
-@pytest.mark.asyncio
-async def test_approval_session_lifecycle():
-    """测试批准会话生命周期。"""
-    manager = ApprovalManager()
-
-    request = ApprovalRequest(
-        tool_name="test.tool",
-        tool_args={"arg": "value"},
-        risk_level=RiskLevel.HIGH,
-        reason="test",
-        requester_channel="test",
-        requester_chat_id="chat_1",
-        requester_user_id="user_1",
-        expires_at=time.time() + 10.0,
-    )
-
-    session = await manager.create_session(request)
-    assert session.is_pending() is True
-    assert session.status == "pending"
-
-    # 批准
-    ok = await manager.approve(request.request_id, decided_by="admin")
-    assert ok is True
-
-    session = await manager.get_session(request.request_id)
-    assert session.status == "resolved"
-    assert session.decision == ApprovalDecision.APPROVED
-    assert session.decided_by == "admin"
+async def test_rule_fault_never_bypasses_deny(monkeypatch, fake_audit_sink):
+    gate = ApprovalGate(PermissionRuleSet())
+    monkeypatch.setattr(PermissionRuleSet, "evaluate", lambda *args: 1 / 0)
+    result = await gate.check(tool_name="t", tool_args={}, reason="")
+    assert not result.allowed and result.outcome == "permission_error"
+    assert fake_audit_sink.rows[-1]["outcome"] == "permission_error"
 
 
-@pytest.mark.asyncio
-async def test_approval_timeout():
-    """测试批准超时。"""
-    manager = ApprovalManager()
-
-    request = ApprovalRequest(
-        tool_name="test.tool",
-        tool_args={},
-        risk_level=RiskLevel.HIGH,
-        reason="test",
-        requester_channel="test",
-        requester_chat_id="chat_1",
-        requester_user_id="user_1",
-        expires_at=time.time() + 0.1,  # 立即过期
-    )
-
-    session = await manager.create_session(request)
-    await asyncio.sleep(0.2)
-
-    assert session.is_expired() is True
-    assert session.is_pending() is False
+async def test_cancelled_review_is_not_approved(monkeypatch, fake_audit_sink):
+    guardian = AsyncMock()
+    guardian.review.side_effect = asyncio.CancelledError
+    monkeypatch.setattr("agent.approval.gate.get_approval_guardian", lambda: guardian)
+    gate = ApprovalGate(PermissionRuleSet(default_effect=PermissionEffect.ASK))
+    with pytest.raises(asyncio.CancelledError):
+        await gate.check(tool_name="t", tool_args={}, reason="")
+    assert fake_audit_sink.rows == []
 
 
-@pytest.mark.asyncio
-async def test_auto_approve_deny():
-    """测试自动批准/拒绝。"""
-    policy = ApprovalPolicy(
-        tool_name_pattern="test.*",
-        risk_level=RiskLevel.HIGH,
-        requires_approval=True,
-        auto_approve_users=["admin"],
-        auto_deny_users=["blocked"],
-    )
-
-    assert policy.is_auto_approved("admin") is True
-    assert policy.is_auto_approved("user") is False
-    assert policy.is_auto_denied("blocked") is True
-    assert policy.is_auto_denied("user") is False
+def test_recursive_redaction_preserves_config_target():
+    args = {"key": "smart_home_api_key", "value": "secret-value", "nested": [{"password": "abc"}], "keyboard": "normal"}
+    result = redact_arguments(args)
+    assert result["key"] == "smart_home_api_key"
+    assert result["value"] == "***REDACTED***"
+    assert result["nested"][0]["password"] == "***REDACTED***"
+    assert result["keyboard"] == "normal"
+    assert args["value"] == "secret-value"
 
 
-@pytest.mark.asyncio
-async def test_trust_mechanism(fake_audit_sink: _FakeAuditSink):
-    """测试信任机制（trust_after_n_approvals，计数来自审计账本）。"""
-    manager = ApprovalManager()
-    policy = ApprovalPolicy(
-        tool_name_pattern="test.*",
-        risk_level=RiskLevel.HIGH,
-        requires_approval=True,
-        trust_after_n_approvals=2,
-    )
-
-    # 未达到阈值
-    trusted = await manager.is_trusted("test.tool", "user_1", policy)
-    assert trusted is False
-
-    # 模拟 2 次批准（决策经审计账本持久化）
-    for _ in range(2):
-        request = ApprovalRequest(
-            tool_name="test.tool",
-            tool_args={},
-            risk_level=RiskLevel.HIGH,
-            reason="test",
-            requester_channel="test",
-            requester_chat_id="chat_1",
-            requester_user_id="user_1",
-            expires_at=time.time() + 10.0,
-        )
-        await manager.create_session(request)
-        await manager.approve(request.request_id, decided_by="admin")
-    await _drain_audit_bg()
-
-    # 达到阈值（账本累计计数，重启不清零——由账本持久性保证）
-    trusted = await manager.is_trusted("test.tool", "user_1", policy)
-    assert trusted is True
-
-
-@pytest.mark.asyncio
-async def test_manager_cleanup():
-    """测试过期会话清理。"""
-    manager = ApprovalManager()
-
-    # 创建 3 个会话，其中 2 个过期
-    for i in range(3):
-        request = ApprovalRequest(
-            tool_name=f"test.tool{i}",
-            tool_args={},
-            risk_level=RiskLevel.HIGH,
-            reason="test",
-            requester_channel="test",
-            requester_chat_id="chat_1",
-            requester_user_id="user_1",
-            expires_at=time.time() + (0.1 if i < 2 else 10.0),
-        )
-        await manager.create_session(request)
-
-    await asyncio.sleep(0.2)
-    cleaned = await manager.cleanup_expired()
-    assert cleaned == 2
-
-    pending = await manager.list_pending()
-    assert len(pending) == 1
-
-
-@pytest.mark.asyncio
-async def test_manager_stats(fake_audit_sink: _FakeAuditSink):
-    """测试统计信息（决策聚合来自审计账本）。"""
-    manager = ApprovalManager()
-
-    # 创建并决策几个会话
-    for i, decision in enumerate(["approved", "denied", "approved"]):
-        request = ApprovalRequest(
-            tool_name=f"test.tool{i}",
-            tool_args={},
-            risk_level=RiskLevel.HIGH,
-            reason="test",
-            requester_channel="test",
-            requester_chat_id="chat_1",
-            requester_user_id="user_1",
-            expires_at=time.time() + 10.0,
-        )
-        await manager.create_session(request)
-        if decision == "approved":
-            await manager.approve(request.request_id)
-        else:
-            await manager.deny(request.request_id)
-    await _drain_audit_bg()
-
-    stats = await manager.get_stats()
-    assert stats["pending_count"] == 0
-    assert stats["history_size"] == 3
-    assert stats["history_by_decision"]["approved"] == 2
-    assert stats["history_by_decision"]["denied"] == 1
-
-
-@pytest.mark.asyncio
-async def test_gate_singleton():
-    """测试全局单例。"""
-    gate1 = get_approval_gate()
-    gate2 = get_approval_gate()
-    assert gate1 is gate2
-
-    manager1 = get_approval_manager()
-    manager2 = get_approval_manager()
-    assert manager1 is manager2
+def test_hot_reload_retains_last_good_rules(tmp_path, monkeypatch):
+    from agent.approval.rules import save_rules
+    path = tmp_path / "permission_rules.json"
+    snapshot = PermissionRuleSet(default_effect=PermissionEffect.DENY)
+    save_rules(snapshot, str(path))
+    gate = ApprovalGate(snapshot)
+    gate.reload_rules(str(path))
+    path.write_text('{"unrecognized": []}')
+    gate.reload_rules(str(path))
+    assert gate.get_rule_set().default_effect == PermissionEffect.DENY
+    monkeypatch.setattr("agent.approval.gate.save_rules", lambda _: (_ for _ in ()).throw(OSError()))
+    with pytest.raises(OSError):
+        gate.set_rule_set(PermissionRuleSet(), persist=True)
+    assert gate.get_rule_set().default_effect == PermissionEffect.DENY
+    copy = gate.get_rule_set()
+    copy.default_effect = PermissionEffect.ALLOW
+    assert gate.get_rule_set().default_effect == PermissionEffect.DENY

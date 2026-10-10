@@ -255,9 +255,7 @@ class SqliteBackend:
                     );
                     """
                 )
-                # 审批审计账本：所有非默认放行的审批决策（人工批准/拒绝/取消/超时、
-                # 规则拒绝、信任阈值放行）追加写入；trust_after_n_approvals 的
-                # 信任计数从此表统计——重启不再清零
+                # 权限与 AI 评审的持久裁决账本。
                 await db.execute(
                     """
                     CREATE TABLE IF NOT EXISTS approval_audit (
@@ -1082,18 +1080,6 @@ class SqliteBackend:
             for r in rows
         ]
 
-    async def count_approval_outcomes(
-        self, tool_name: str, user_id: str, outcome: str,
-    ) -> int:
-        """统计某用户对某工具某结果的累计次数（trust 计数的数据源）。"""
-        db = await self._get_db()
-        cursor = await db.execute(
-            "SELECT COUNT(*) FROM approval_audit "
-            "WHERE tool_name = ? AND user_id = ? AND outcome = ?",
-            (tool_name, user_id, outcome),
-        )
-        row = await cursor.fetchone()
-        return int(row[0]) if row else 0
 
     async def approval_audit_stats(self) -> dict:
         """按 outcome 聚合审计记录（统计页用）。"""

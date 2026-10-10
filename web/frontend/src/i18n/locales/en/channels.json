@@ -1,7 +1,7 @@
 {
   "tabs": {
     "channels": "Channel Management",
-    "approvals": "Approvals",
+    "approvals": "Permissions",
     "test": "API Test"
   },
   "savedOk": "Saved",

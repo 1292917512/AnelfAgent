@@ -11,7 +11,7 @@
   "mcp": "MCP",
   "thinking": "思维链路",
   "channels": "通道",
-  "approvals": "批准管理",
+  "approvals": "权限与审计",
   "settings": "环境设置",
   "group_core": "核心",
   "group_ability": "能力",
@@ -71,7 +71,7 @@
     "retrieval": "配置检索来源，检查服务能力与连接状态。",
     "stickers": "整理与检索用于对话的表情资源。",
     "tags": "管理用于组织工具和内容的标签。",
-    "approvals": "处理待审批操作，检查权限规则与审计记录。",
+    "approvals": "权限与审计",
     "data": "浏览存储与数据连接，检查资源使用情况。",
     "config": "按模块搜索和调整系统参数。",
     "settings": "管理运行环境、扩展钩子与本地模型。"

@@ -47,21 +47,6 @@ def _upload_dir(type_dir: str) -> str:
     return dl_dir
 
 
-_APPROVAL_CALLBACK_RE = re.compile(r"^(approve|deny|allow|reject)[:\s](\S+)$", re.IGNORECASE)
-
-
-def _normalize_approval_callback(data: str) -> str:
-    """InlineKeyboard 回调格式归一：approve:<id> / deny:<id> → approve <id> / deny <id>。
-
-    与文本审批命令（agent/approval/renderer.parse_approval_command）保持同一格式，
-    使按钮回调与手动输入走完全一致的解析路径。
-    """
-    m = _APPROVAL_CALLBACK_RE.match(data.strip())
-    if not m:
-        return data
-    return f"{m.group(1).lower()} {m.group(2)}"
-
-
 async def handle_message(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -117,8 +102,7 @@ async def handle_callback_query(
     except Exception as e:
         log(f"回调查询应答失败: {e}", "DEBUG")
 
-    # 审批按钮回调（approve:<id>）归一为文本命令格式，与手动输入走同一解析路径
-    data = _normalize_approval_callback(query.data)
+    data = query.data
     adapter_msg = _build_adapter_message(update, data, is_to_me=True)
     await on_message(adapter_msg)
 

@@ -2,14 +2,12 @@ import { useQuery } from "@tanstack/react-query";
 
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
-import { approvalsApi, statusApi, mcpApi, adaptersApi } from "@/lib/api";
-import { useNow } from "@/hooks/useNow";
+import { statusApi, mcpApi, adaptersApi } from "@/lib/api";
 import type { LogEntry, MCPServer, AdapterInfo } from "@/lib/types";
 import { Card } from "@/components/common/Card";
 import { Badge } from "@/components/ui/Badge";
 import { cn } from "@/lib/utils";
 import {
-  ShieldAlert,
   Plug,
   Radio,
   ScrollText,
@@ -45,18 +43,13 @@ function logTime(e: LogEntry): number {
   return Number.isNaN(t) ? 0 : t;
 }
 
-/** 总览页「需要注意」区块：聚合待批准、异常日志、MCP/通道故障等需要人工关注的问题 */
+/** 总览页「需要注意」区块：聚合异常日志、MCP/通道故障等需要人工关注的问题 */
 export function AttentionPanel() {
-  const { t } = useTranslation(["dashboard", "approvals", "common"]);
+  const { t } = useTranslation(["dashboard", "common"]);
 
   const { data: status } = useQuery({
     queryKey: ["status"],
     queryFn: () => statusApi.get().then((r) => r.data),
-    refetchInterval: 3000,
-  });
-  const { data: pendingData } = useQuery({
-    queryKey: ["approvals", "pending"],
-    queryFn: () => approvalsApi.pending().then((r) => r.data),
     refetchInterval: 3000,
   });
   const { data: errorLogs } = useQuery({
@@ -80,11 +73,6 @@ export function AttentionPanel() {
     refetchInterval: 10000,
   });
 
-  // 到期倒计时基准：渲染期禁调 Date.now（React Compiler 规则），经 1s tick 驱动；
-  // 无待批准请求时不计时（此时倒计时不被消费）
-  const pendingTotal = (pendingData?.pending?.length ?? 0);
-  const nowSec = Math.floor(useNow(pendingTotal > 0) / 1000);
-
   const items: AttentionItem[] = [];
 
   // Agent 未就绪
@@ -94,21 +82,6 @@ export function AttentionPanel() {
       severity: "danger",
       icon: AlertTriangle,
       title: t("attention.notReady"),
-    });
-  }
-
-  // 待处理批准请求
-  const pending = (pendingData?.pending ?? []) as { request_id: string; tool_name: string; expires_at: number }[];
-  if (pending.length > 0) {
-    const nearest = Math.min(...pending.map((p) => p.expires_at));
-    const seconds = Math.max(0, Math.floor(nearest - nowSec));
-    items.push({
-      key: "pending-approvals",
-      severity: seconds < 30 ? "danger" : "warn",
-      icon: ShieldAlert,
-      title: t("attention.pendingApprovals", { count: pending.length }),
-      desc: t("attention.nearestExpiry", { seconds }),
-      to: "/approvals",
     });
   }
 

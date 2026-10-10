@@ -1,38 +1,19 @@
 {
   "tabs": {
-    "pending": "Pending",
     "history": "History",
-    "policies": "Policies",
-    "stats": "Statistics",
     "rules": "Permission Rules"
   },
   "loading": "Loading...",
-  "noPendingApprovals": "No pending approvals",
   "noHistory": "No history",
-  "requestedBy": "Requested by",
   "reason": "Reason",
   "arguments": "Arguments",
-  "expiresIn": "Expires in",
-  "approve": "Approve",
-  "deny": "Deny",
   "save": "Save",
   "reset": "Reset",
-  "addPolicy": "Add Policy",
-  "policy": "Policy",
   "toolNamePattern": "Tool Name Pattern",
   "riskLevel": "Risk Level",
-  "requiresApproval": "Requires Approval",
-  "timeoutSeconds": "Timeout (seconds)",
-  "onTimeout": {
-    "deny": "Deny",
-    "allow": "Allow",
-    "halt": "Halt"
-  },
-  "trustAfterNApprovals": "Trust After N Approvals",
-  "trustAfterNApprovalsHint": "Auto-trust after N approvals (0 = always ask)",
   "description": "Description",
   "descriptionPlaceholder": "Policy description...",
-  "decidedBy": "Decided By",
+  "decidedBy": "Decision source",
   "decisionReason": "Decision Reason",
   "system": "System",
   "risk": {
@@ -45,51 +26,48 @@
     "approved": "Approved",
     "denied": "Denied",
     "expired": "Expired",
-    "cancelled": "Cancelled"
+    "cancelled": "Cancelled",
+    "guardian_approved": "AI allowed",
+    "guardian_denied": "AI denied",
+    "guardian_bypass": "Not reviewed",
+    "permission_error": "Permission check failed"
   },
   "stats": {
-    "pending": "Pending",
-    "totalDecisions": "Total Decisions",
-    "approvalRate": "Approval Rate",
-    "decisionBreakdown": "Decision Breakdown"
+    "totalDecisions": "Audit records",
+    "blocked": "Blocked"
   },
   "matchedRule": "Matched Rule",
-  "popup": {
-    "previewEdit": "Edit file: {{path}}",
-    "previewShell": "Will execute",
-    "previewDelete": "Will delete",
-    "previewCreate": "Will create"
-  },
   "rules": {
     "add": "Add Rule",
     "defaultEffect": "Default effect",
     "effect": {
       "allow": "Allow",
-      "ask": "Ask",
+      "ask": "AI review",
       "deny": "Deny"
     },
     "enabled": "Enabled",
     "users": "Users",
-    "usersPlaceholder": "Empty=all users, comma-separated",
+    "usersPlaceholder": "Select a channel; comma-separated user IDs",
     "patternHint": "Tool name glob, optionally with arg pattern: run_shell_command(npm test*)",
     "scopeHint": "global or channel id (telegram/qq/webui...)",
-    "sessionBadge": "Session",
-    "sessionNotice": "{{count}} session-scoped allow rules active (lost on restart); saving only affects persisted rules",
     "orderTitle": "Evaluation order (first match wins)",
-    "orderDesc": "User deny → channel deny → global deny → user allow → channel ask → global ask → channel allow → global allow → default"
+    "orderDesc": "Deny → user-specific allow → AI review → explicit allow → default deny or review. With default allow, CRITICAL tools still receive AI review. User IDs must be scoped to a channel.",
+    "remove": "Delete rule",
+    "scope": "Scope",
+    "effectLabel": "Rule effect"
   },
-  "pageTitle": "Approvals",
-  "pageSubtitle": "Review AI tool-call requests and manage permission rules",
-  "pendingBadge": "{{count}} pending",
-  "noPendingHint": "High-risk tool calls from the AI will wait here for your approval",
-  "onTimeoutLabel": "On Timeout",
+  "pageTitle": "Permissions & audit",
+  "pageSubtitle": "Rules define boundaries and AI reviews actions. Unavailable reviews continue autonomously with an audit record; no human approval is required.",
   "filterAll": "All",
-  "searchTool": "Search tool name...",
+  "searchTool": "Filter tools on this page…",
   "noMatch": "No matching records",
   "timeAgo": {
     "justNow": "just now",
     "minutes": "{{count}}m ago",
     "hours": "{{count}}h ago",
     "days": "{{count}}d ago"
-  }
+  },
+  "previous": "Previous",
+  "next": "Next",
+  "page": "Page {{number}}"
 }

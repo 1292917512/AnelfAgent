@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Any, Dict, Optional, Set, Tuple
+from typing import Any, Dict, Optional, Set, Tuple
 
 import aiohttp
 from aiohttp import web
@@ -21,16 +21,13 @@ from aiohttp import web
 from agent.channel.base import BaseChannel, ChannelMetadata
 from agent.channel.channel_types import ChannelCapability
 from agent.channel.schemas import (
-    AdapterChannel,
     ChannelInfo,
     ChannelType,
     ChannelUser,
     ChannelUserRole,
     HealthStatus,
-    SegmentType,
     SendRequest,
     SendResponse,
-    SendSegment,
 )
 from core.log import log
 
@@ -38,9 +35,6 @@ from .config import QQConfig
 from .send import QQSender
 from .tools import QQToolsMixin
 from .transport import QQTransport
-
-if TYPE_CHECKING:
-    from agent.channel.base import ApprovalPromptRenderContext
 
 
 class OneBotV11Channel(QQToolsMixin, BaseChannel[QQConfig]):
@@ -294,28 +288,4 @@ class OneBotV11Channel(QQToolsMixin, BaseChannel[QQConfig]):
             healthy=False,
             detail="get_version_info probe failed",
             last_error=str(result),
-        )
-
-    async def render_approval_prompt(self, ctx: "ApprovalPromptRenderContext") -> SendRequest:
-        """渲染批准提示（QQ 关键词回复）。"""
-        text = (
-            f"⚠️ 工具调用需要批准\n"
-            f"工具: {ctx.tool_name}\n"
-            f"参数: {ctx.tool_args_summary[:200]}\n"
-            f"风险: {ctx.risk_level}\n"
-            f"原因: {ctx.reason}\n"
-            f"超时: {ctx.timeout_seconds:.0f}s\n"
-            f"\n"
-            f"回复以下命令之一：\n"
-            f"  approve {ctx.request_id}\n"
-            f"  deny {ctx.request_id}"
-        )
-
-        return SendRequest(
-            adapter_key=self.channel_id,
-            channel=AdapterChannel(
-                channel_id="",  # 由 approval/gate.py 填充
-                channel_type=ChannelType.PRIVATE,
-            ),
-            segments=[SendSegment(type=SegmentType.TEXT, content=text)],
         )

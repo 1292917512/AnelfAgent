@@ -14,8 +14,8 @@ from agent.workflow.spec import WorkflowSpecError
 
 
 async def _approval_ok(self, step, run):
-    from agent.approval.session import ApprovalDecision
-    return ApprovalDecision.APPROVED
+    from agent.approval.types import ApprovalResult
+    return ApprovalResult(True, "rule_allow")
 
 
 async def test_close_drains_steps_and_refuses_restart(engine, fake_manager):

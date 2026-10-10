@@ -1,44 +1,25 @@
-"""审批审计持久化 — 决策落库与信任计数的唯一数据面。
-
-职责：
-- 所有**非默认放行**的审批决策追加写入 ``approval_audit`` 表：
-  人工批准/拒绝/取消/超时、规则拒绝、信任阈值放行、超时放行。
-  常态规则放行（rule_allow）不记录——高频无信息量，会把账本刷成噪音。
-- ``trust_after_n_approvals`` 的信任计数从账本统计（outcome=approved 的
-  累计次数）——重启不再从零重数；信任放行本身（trusted）不计入 approved，
-  避免自动放行自我强化信任。
-
-全部 fail-open：审计写失败只记日志，绝不影响审批决策本身；runtime 未就绪
-（测试/早期启动）时静默跳过。
-"""
-
+"""工具权限决策的持久审计；写入失败不改变已经作出的执行结论。"""
 from __future__ import annotations
 
-import asyncio
 import json
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from core.async_helper import spawn
 from core.log import log
+from core.sanitizer import sanitize_text
+
+if TYPE_CHECKING:
+    from agent.storage.sqlite_backend import SqliteBackend
 
 # 审计记录的 args_json 序列化上限（参数已在 gate 层脱敏，此处只防超大正文）
 _ARGS_JSON_MAX_CHARS = 2000
 
 # 仅审计的 outcome 词表（写入口校验，防拼写漂移）
 AUDITED_OUTCOMES = frozenset({
-    "approved",    # 人工批准
-    "denied",      # 人工拒绝 / 规则拒绝 / 超时拒绝
-    "cancelled",   # 取消（发送提示失败 / agent 中断）
-    "expired",     # 超时未决策
-    "trusted",     # 信任阈值自动放行（不计入 approved 计数）
-    "timeout_allow",  # 规则 on_timeout=allow 的超时放行
-    "guardian_approved",  # Guardian 自动放行（不计入 approved 计数）
-    "guardian_denied",    # Guardian 判定危险拒绝（无人可问路径）
-    "guardian_bypass",    # Guardian 不可用，无人可问路径按自主性放行
+    "denied", "guardian_approved", "guardian_denied", "guardian_bypass", "permission_error",
 })
 
 
-def _audit_sink():
+def _audit_sink() -> SqliteBackend | None:
     """取 sqlite 审计写入面（runtime 未就绪返回 None）。"""
     try:
         from agent.runtime.singleton import get_runtime
@@ -84,7 +65,7 @@ async def record_decision(
         "tool_name": tool_name,
         "outcome": outcome,
         "decided_by": decided_by,
-        "reason": str(reason or "")[:500],
+        "reason": sanitize_text(str(reason or ""))[:500],
         "channel_id": channel_id,
         "chat_id": chat_id,
         "user_id": user_id,
@@ -96,37 +77,6 @@ async def record_decision(
         await sink.append_approval_audit(record)
     except Exception as exc:
         log(f"审批审计写入失败（已忽略）: {exc}", "WARNING", tag="权限")
-
-
-def record_decision_bg(**kwargs: Any) -> None:
-    """record_decision 的即发即忘入口（同步上下文用，如 resolve 内部）。
-
-    无运行中事件循环时直接丢弃（审批决策本身已生效，仅审计缺失）。
-    """
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return
-    task = spawn(record_decision(**kwargs), name="approval.audit")
-    task.add_done_callback(_swallow_task_exc)
-
-
-def _swallow_task_exc(task: "asyncio.Task[None]") -> None:
-    """后台审计任务的异常已在 record_decision 内处理，此处仅防未消费告警。"""
-    if not task.cancelled() and task.exception() is not None:
-        log(f"审批审计后台任务异常: {task.exception()}", "DEBUG", tag="权限")
-
-
-async def count_approvals(tool_name: str, user_id: str) -> int:
-    """统计某用户对某工具的累计人工批准次数（trust 计数数据源）。"""
-    sink = _audit_sink()
-    if sink is None:
-        return 0
-    try:
-        return await sink.count_approval_outcomes(tool_name, user_id, "approved")
-    except Exception as exc:
-        log(f"信任计数查询失败（按未达阈值处理）: {exc}", "WARNING", tag="权限")
-        return 0
 
 
 async def list_history(

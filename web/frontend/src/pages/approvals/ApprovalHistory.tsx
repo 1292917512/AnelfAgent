@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { approvalsApi } from "@/lib/api";
 import type { ApprovalHistoryItem } from "@/lib/types";
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingBlock } from "@/components/ui/Spinner";
@@ -20,9 +21,13 @@ import {
 } from "lucide-react";
 import type { TOptions } from "i18next";
 
-type DecisionFilter = "all" | "approved" | "denied" | "expired" | "cancelled";
+type DecisionFilter = "all" | "guardian_approved" | "guardian_denied" | "guardian_bypass" | "denied" | "permission_error";
 
 const DECISION_VARIANT: Record<string, BadgeVariant> = {
+  guardian_approved: "ok",
+  guardian_denied: "danger",
+  guardian_bypass: "warn",
+  permission_error: "danger",
   approved: "ok",
   denied: "danger",
   expired: "warn",
@@ -30,6 +35,10 @@ const DECISION_VARIANT: Record<string, BadgeVariant> = {
 };
 
 const DECISION_ICON: Record<string, typeof CheckCircle> = {
+  guardian_approved: CheckCircle,
+  guardian_denied: XCircle,
+  guardian_bypass: Clock,
+  permission_error: Ban,
   approved: CheckCircle,
   denied: XCircle,
   expired: Clock,
@@ -37,6 +46,10 @@ const DECISION_ICON: Record<string, typeof CheckCircle> = {
 };
 
 const DECISION_ICON_COLOR: Record<string, string> = {
+  guardian_approved: "text-ok",
+  guardian_denied: "text-danger",
+  guardian_bypass: "text-warn",
+  permission_error: "text-danger",
   approved: "text-ok",
   denied: "text-danger",
   expired: "text-warn",
@@ -53,13 +66,15 @@ function relativeTime(ts: number, t: (key: string, opts?: TOptions) => string): 
 
 export function ApprovalHistory() {
   const { t } = useTranslation("approvals");
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<number | null>(null);
   const [filter, setFilter] = useState<DecisionFilter>("all");
   const [search, setSearch] = useState("");
 
+  const [offset, setOffset] = useState(0);
   const { data, isLoading } = useQuery({
-    queryKey: ["approvals", "history"],
-    queryFn: () => approvalsApi.history(100).then((r) => r.data),
+    queryKey: ["approvals", "history", offset],
+    queryFn: () => approvalsApi.history(50, offset).then((r) => r.data),
+    refetchInterval: offset === 0 ? 10000 : false,
   });
 
   const history: ApprovalHistoryItem[] = useMemo(
@@ -69,12 +84,12 @@ export function ApprovalHistory() {
 
   const counts = useMemo(() => {
     const c: Record<string, number> = { all: history.length };
-    for (const item of history) c[item.decision] = (c[item.decision] ?? 0) + 1;
+    for (const item of history) c[item.outcome] = (c[item.outcome] ?? 0) + 1;
     return c;
   }, [history]);
 
   const filtered = history.filter((item) => {
-    if (filter !== "all" && item.decision !== filter) return false;
+    if (filter !== "all" && item.outcome !== filter) return false;
     if (search && !item.tool_name.toLowerCase().includes(search.toLowerCase())) return false;
     return true;
   });
@@ -83,7 +98,7 @@ export function ApprovalHistory() {
     return <LoadingBlock label={t("loading")} />;
   }
 
-  const FILTERS: DecisionFilter[] = ["all", "approved", "denied", "expired", "cancelled"];
+  const FILTERS: DecisionFilter[] = ["all", "guardian_approved", "guardian_denied", "guardian_bypass", "denied", "permission_error"];
 
   return (
     <div className="space-y-3">
@@ -122,34 +137,36 @@ export function ApprovalHistory() {
       ) : (
         <div className="space-y-2">
           {filtered.map((item) => {
-            const isExpanded = expandedId === item.request_id;
-            const Icon = DECISION_ICON[item.decision] ?? Clock;
-            const absolute = new Date(item.decided_at * 1000).toLocaleString();
+            const isExpanded = expandedId === item.id;
+            const Icon = DECISION_ICON[item.outcome] ?? Clock;
+            const absolute = new Date(item.ts_ns / 1e6).toLocaleString();
 
             return (
               <div
-                key={item.request_id}
+                key={item.id}
                 className="rounded-lg border border-border bg-card overflow-hidden transition-shadow hover:shadow-sm animate-rise"
               >
-                <div
-                  className="flex items-center gap-3 p-3 cursor-pointer"
-                  onClick={() => setExpandedId(isExpanded ? null : item.request_id)}
+                <button
+                  type="button"
+                  aria-expanded={isExpanded}
+                  className="flex w-full text-left flex-wrap sm:flex-nowrap items-center gap-3 p-3 cursor-pointer"
+                  onClick={() => setExpandedId(isExpanded ? null : item.id)}
                 >
-                  <Icon size={18} className={cn("shrink-0", DECISION_ICON_COLOR[item.decision])} />
+                  <Icon size={18} className={cn("shrink-0", DECISION_ICON_COLOR[item.outcome])} />
                   <div className="flex-1 min-w-0">
                     <div className="font-mono text-sm text-heading truncate">{item.tool_name}</div>
                     <div className="text-xs text-muted mt-0.5 truncate">
-                      {item.requester_user_id} ({item.requester_channel})
+                      {item.channel_id || t("system")} · {item.user_id || item.chat_id || "—"}
                     </div>
                   </div>
-                  <Badge variant={DECISION_VARIANT[item.decision] ?? "neutral"}>
-                    {t(`decision.${item.decision}`)}
+                  <Badge variant={DECISION_VARIANT[item.outcome] ?? "neutral"}>
+                    {t(`decision.${item.outcome}`, { defaultValue: item.outcome })}
                   </Badge>
                   <span className="text-xs text-muted shrink-0" title={absolute}>
-                    {relativeTime(item.decided_at, t)}
+                    {relativeTime(item.ts_ns / 1e9, t)}
                   </span>
                   {isExpanded ? <ChevronUp size={14} className="shrink-0 text-muted" /> : <ChevronDown size={14} className="shrink-0 text-muted" />}
-                </div>
+                </button>
 
                 {isExpanded && (
                   <div className="px-4 pb-4 pt-3 grid grid-cols-1 sm:grid-cols-2 gap-3 border-t border-border">
@@ -169,10 +186,16 @@ export function ApprovalHistory() {
                         </div>
                       </div>
                     )}
-                    {item.decision_reason && (
+                    {item.args_json && (
+                      <div className="sm:col-span-2">
+                        <div className="text-xs font-medium text-muted mb-1">{t("arguments")}</div>
+                        <pre className="text-xs whitespace-pre-wrap break-all rounded-md bg-elevated p-3">{item.args_json}</pre>
+                      </div>
+                    )}
+                    {item.reason && (
                       <div className="sm:col-span-2">
                         <div className="text-xs font-medium text-muted mb-1">{t("decisionReason")}</div>
-                        <div className="text-sm text-foreground">{item.decision_reason}</div>
+                        <div className="text-sm text-foreground">{item.reason}</div>
                       </div>
                     )}
                   </div>
@@ -182,6 +205,11 @@ export function ApprovalHistory() {
           })}
         </div>
       )}
+      <div className="flex justify-between items-center gap-3 text-sm text-muted">
+        <Button disabled={offset === 0 || isLoading} onClick={() => setOffset(Math.max(0, offset - 50))}>{t("previous")}</Button>
+        <span>{t("page", { number: Math.floor(offset / 50) + 1 })}</span>
+        <Button disabled={history.length < 50 || isLoading} onClick={() => setOffset(offset + 50)}>{t("next")}</Button>
+      </div>
     </div>
   );
 }

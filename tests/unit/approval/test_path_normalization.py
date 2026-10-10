@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from agent.approval.policy import extract_matchable_arg, matchable_arg_candidates
+from agent.approval.matching import extract_matchable_arg, matchable_arg_candidates
 from agent.approval.rules import PermissionDecision, PermissionEffect, PermissionRule, PermissionRuleSet
 from entities.filesystem import paths as fs_paths
 

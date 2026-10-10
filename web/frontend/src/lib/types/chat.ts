@@ -231,14 +231,7 @@ export interface SseFileDiffEvent extends SseEventBase {
 
 export type SseContextUsageEvent = ContextUsage;
 
-export interface SseApprovalRequestEvent {
-  request_id: string;
-  tool_name: string;
-  tool_args?: string;
-  risk_level?: string;
-  reason?: string;
-  timeout_seconds?: number;
-}
+
 
 export interface SsePlanStepInput {
   index: number;
@@ -317,7 +310,6 @@ export interface ChatSseEventMap {
   media: SseMediaEvent;
   share: SseShareEvent;
   ui_command: UiCommandPayload;
-  approval_request: SseApprovalRequestEvent;
   delta: SseDeltaEvent;
   tool_call: SseToolCallEvent;
   file_diff: SseFileDiffEvent;

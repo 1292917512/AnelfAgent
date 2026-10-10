@@ -13,7 +13,6 @@ from agent.messages import (
     MessageGroupUser,
     MessageUser,
 )
-from core.config import get_config, register_configs_safe
 from core.event_bus import (
     EVENT_AGENT_STARTED,
     EVENT_AGENT_STOPPED,
@@ -26,22 +25,6 @@ from core.log import log
 
 if TYPE_CHECKING:
     from agent.runtime.runtime import AgentRuntime
-
-# 频道内审批授权白名单：非空时仅白名单用户可 approve/deny，其他用户指令按普通消息放行。
-# 条目格式："user_id"（全局）或 "channel:user_id"（限定频道）；默认空=不启用校验。
-_APPROVAL_CONFIGS = {
-    "security/approval": {
-        "approval_admin_users": {
-            "description": "频道内审批授权白名单（user_id 或 channel:user_id），空=不限制",
-            "default": [],
-        },
-    },
-}
-register_configs_safe(_APPROVAL_CONFIGS)
-
-# 白名单为空时仅提示一次（启动后首次遇到审批指令时）
-_approval_admin_hint_logged = False
-
 
 class AgentStatus(str, Enum):
     """智能体运行状态。"""
@@ -309,85 +292,12 @@ class AgentApp:
 
             await event_bus.emit(EVENT_MESSAGE_RECEIVED, payload)
 
-            # 批准回复路由：approve/deny <request_id> 直接决策，不触发思维
-            if await _try_resolve_approval(payload):
-                return
 
             anything = _build_message_everything(payload)
             anything.set_text_content(str(payload.get("content", "")))
             await self.runtime.pipeline.ingest(anything)
         else:
             log(f"未处理的事件类型: {event.type}", "DEBUG")
-
-
-def _is_approval_admin(user_id: str, channel_id: str) -> bool:
-    """判断用户是否有权在频道内做出审批决策。
-
-    白名单（approval_admin_users）为空时不启用校验，任何用户均可审批
-    （保持向后兼容）；非空时仅 ``user_id`` 或 ``channel:user_id`` 命中者生效。
-    """
-    global _approval_admin_hint_logged
-    admins = get_config("approval_admin_users", []) or []
-    if not isinstance(admins, (list, tuple)):
-        admins = []
-    # 规整空白/大小写，避免配置中多一个空格导致静默失效
-    admins = [str(a).strip() for a in admins if str(a).strip()]
-    if not admins:
-        if not _approval_admin_hint_logged:
-            log("approval_admin_users 未配置，频道内审批不限制操作者（任意用户可审批）",
-                "WARNING", tag="权限")
-            _approval_admin_hint_logged = True
-        return True
-    uid = str(user_id).strip()
-    return uid in admins or f"{channel_id}:{uid}" in admins
-
-
-async def _try_resolve_approval(payload: dict) -> bool:
-    """把频道内的批准回复（approve/deny <id>）路由到批准管理器。
-
-    仅当 request_id 对应挂起会话时拦截消息，否则按普通消息放行。
-    """
-    content = str(payload.get("content", "") or "").strip()
-    if not content or len(content) > 64:
-        return False
-    from agent.approval.renderer import parse_approval_command
-    parsed = parse_approval_command(content)
-    if not parsed:
-        return False
-    decision_str, request_id = parsed
-
-    from agent.approval import get_approval_gate, get_approval_manager
-    manager_gate = get_approval_gate()
-    session = await get_approval_manager().get_session(request_id)
-    if session is None or not session.is_pending():
-        return False
-
-    user_id = str(payload.get("user_id", "") or "unknown")
-    channel_id = str(payload.get("adapter_key", "") or "")
-    if not _is_approval_admin(user_id, channel_id):
-        # 非授权用户：审批指令按普通消息放行（不拦截、不决策）
-        log(f"频道内审批指令来自非授权用户，已按普通消息放行: "
-            f"{request_id} (user={user_id}, channel={channel_id})", "WARNING", tag="权限")
-        return False
-    ok = await (manager_gate.approve(request_id, decided_by=user_id)
-                if decision_str == "approved"
-                else manager_gate.deny(request_id, decided_by=user_id))
-    if ok:
-        # 决策确认回执（best-effort）
-        try:
-            from agent.channel.manager import get_channel_manager
-            channel = get_channel_manager().get(str(payload.get("adapter_key", "") or ""))
-            if channel is not None:
-                mark = "✅ 已批准" if decision_str == "approved" else "🚫 已拒绝"
-                send_text = getattr(channel, "send_text", None)
-                if callable(send_text):
-                    await send_text(str(payload.get("group_id") or payload.get("user_id") or ""),
-                                    f"{mark}: {session.request.tool_name} ({request_id})")
-        except Exception as exc:
-            log(f"审批决策回执发送失败: {request_id}: {exc}", "WARNING", tag="权限")
-        log(f"频道内批准决策: {request_id} -> {decision_str} (by {user_id})", tag="权限")
-        return True
-    return False
 
 
 # 全局单例

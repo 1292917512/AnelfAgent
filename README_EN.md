@@ -57,7 +57,7 @@ start.bat                  # Windows
 
 Visit: **http://127.0.0.1:8092/webui/**
 
-From the WebUI you can chat with the AI, add/switch models, enable channels, schedule heartbeat tasks, inspect memory and skills, and manage approvals — **almost everything is point-and-click with hot-reload on save**.
+From the WebUI you can chat with the AI, add/switch models, enable channels, schedule heartbeat tasks, inspect memory and skills, and manage permissions — **almost everything is point-and-click with hot-reload on save**.
 
 ### Daily Operations
 
@@ -86,7 +86,7 @@ In one sentence: **a 7×24 online AI that remembers, learns skills, and gets thi
 | 💬 Chat assistant | Lives in QQ / WeChat / Feishu / Telegram / Bilibili / AcFun / WebUI — one brain across all platforms |
 | 🧠 Long-term memory | Semantic memory + knowledge graph: your preferences, facts, and relationships, remembered and sharpened over time |
 | 🌱 Self-improvement | Distills "skills" (troubleshooting know-how, task playbooks) from conversations and reuses them next time |
-| 🛠 Real work | Files, shell commands, web search, desktop control, smart home, server administration — executed safely via approvals |
+| 🛠 Real work | Files, shell commands, web search, desktop control, smart home, server administration — governed by rules and AI review |
 | ⏰ Proactivity | Heartbeat scheduling: timed reminders, recurring tasks, idle-time self-reflection — no prompt needed |
 | 🎨 Multimodal | Image, speech, video, and music generation; sticker search; image understanding; speech transcription |
 | 📞 Realtime voice | Full-duplex call engine: listen while speaking, barge-in anytime, voiceprints tell *who* is talking |
@@ -184,9 +184,9 @@ Each heartbeat also runs built-in maintenance: memory health checks, skill curat
 
 | Mechanism | Role |
 |---|---|
-| Unified permission engine | `tool_name(arg-glob)` + allow / ask / deny, at global and per-channel scope; high-risk operations approved via channel message or the WebUI |
-| CRITICAL risk backstop | `@tool(risk="CRITICAL")` automatically escalates to approval, with a guardian pre-review |
-| Approval audit | All non-default decisions are persisted; trust counters survive restarts |
+| Unified permission engine | `tool_name(arg-glob)` + allow / ask / deny, at global and per-channel scope; rules define boundaries; ask requests AI review without human approval |
+| CRITICAL risk backstop | `@tool(risk="CRITICAL")` automatically receives AI review unless an explicit rule applies |
+| Approval audit | All non-default decisions are persisted; no human approval or trust counters |
 | Tool guardrails | Exact-failure repeats / consecutive failures / no-progress loops → warn / block / halt |
 | Session tokens + threat scanning | One-time tokens mark trusted history; injection-pattern scanning guards tool results and memory writes |
 | Automatic redaction | API keys / tokens / passwords are masked in tool results and logs |
@@ -304,7 +304,7 @@ Forbidden: agent → web | core → business layers | services → web | entitie
 | `agent/realtime/` · `voice/` · `tts/` · `audio/` | Realtime call engine / voice sessions / TTS pipeline / audio capability registries (ASR · voiceprint) |
 | `agent/vision/` | Vision framework (screenshots / screen-watching / faces / desktop-control sources) |
 | `agent/judgment/` · `retrieval/` | Structured judgment (Jev) / web-retrieval providers |
-| `agent/approval/` · `security/` | Unified permission & approval gate / session tokens / threat scanning |
+| `agent/approval/` · `security/` | Unified permission & AI review / session tokens / threat scanning |
 | `channels/` | Channel adapters (directory auto-discovery + hot-swap) |
 | `entities/` | Tool entities (directory auto-discovery + hot-swap, registered via `_sdk`) |
 | `services/` · `web/` | Business service layer / FastAPI routers + React frontend |
@@ -475,3 +475,11 @@ Special thanks to [Nekro Agent](https://github.com/KroMiose/nekro-agent) and [N.
 ## License
 
 [MIT](LICENSE) © 2025–2026 AnelfAgent Contributors
+
+### Tool permissions and AI review
+
+`config/permission_rules.json` is the sole rule source; see `config/permission_rules.example.json`. `allow` executes, `deny` blocks, and `ask` requests Guardian AI review. CRITICAL tools receive review unless an explicit rule applies. Deny rules take priority. User filters require a channel scope; a group ID does not identify the caller.
+
+Unavailable AI review permits autonomous execution with an audit record and a task-local AI notice. It never creates a human approval session or sends channel notifications. Rule loading or evaluation failures block execution. Configure the reviewer and total timeout in `approval/guardian`; the shared deadline covers history retrieval and model calls, and configuration changes reset the circuit breaker.
+
+Human decision endpoints, channel approval commands, session grants, approval-count trust and `approval_policies.json` are removed. Before upgrading, place required rules in `permission_rules.json` or save them in Permissions. An installation with only the retired file reports a configuration error and blocks tool execution instead of silently dropping restrictions. Existing audit records remain readable.

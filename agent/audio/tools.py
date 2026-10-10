@@ -83,7 +83,7 @@ def _resolve_audio_path(path: str) -> str:
         raise ValueError("audio_path 不能为空")
     if os.path.isabs(path):
         return path
-    from agent.approval.policy import workspace_paths_port
+    from agent.utils.workspace import workspace_paths_port
     if workspace_paths_port.bound:
         return workspace_paths_port.get().resolve(path)
     raise ValueError("相对路径需要 workspace 解析（请传绝对路径）")

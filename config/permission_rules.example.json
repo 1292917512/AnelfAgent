@@ -1,0 +1,12 @@
+{
+  "default_effect": "allow",
+  "rules": [
+    {
+      "pattern": "update_entity_config",
+      "effect": "ask",
+      "scope": "global",
+      "risk_level": "critical",
+      "description": "配置修改交由 AI 自动评审"
+    }
+  ]
+}

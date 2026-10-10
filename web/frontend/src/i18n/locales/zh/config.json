@@ -68,7 +68,6 @@
     "cache/prompt": "Prompt 缓存",
     "tools/gate": "工具门控",
     "security/core": "安全防护",
-    "security/approval": "审批权限",
     "skills/core": "技能",
     "skills/catalog": "技能目录",
     "skills/match": "技能匹配",
