@@ -1,0 +1,29 @@
+{
+  "enabled": false,
+  "mode": "poll",
+  "default_poll_interval_sec": 300,
+  "webhook_secret": "",
+  "auth_mode": "pat",
+  "token_ref": "github",
+  "api_base_url": "https://api.github.com",
+  "aggregate_window_sec": 300,
+  "aggregate_max_events": 20,
+  "body_digest_chars": 500,
+  "quiet_hours": "",
+  "watch_mentions_of": "",
+  "reply_relay": "webui:web_user",
+  "allow_write": false,
+  "rate_limit_reserve": 500,
+  "repos": [
+    {
+      "owner": "KroMiose",
+      "repo": "nekro-agent",
+      "events": [],
+      "branches": [],
+      "poll_interval_sec": 0,
+      "priority_boost": true,
+      "local_path": "/Users/wangchenglong/projects/nekro-agent",
+      "digest": true
+    }
+  ]
+}

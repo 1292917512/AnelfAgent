@@ -87,3 +87,41 @@
 | 待回复队列毒丸防护 | `is_conversation_scope`（单点判据）+ `scheduler.enqueue_scope_reply`/`add_reminder`（校验）+ `pop_next_reply_target`（就地清除）+ `work_memory.consume_scope_task`（双队列消费） | 三层防线：①源头——`add_reminder` 拒绝持久化不可路由 scope 的提醒（ValueError，事件降级为不提醒）；②入口——`enqueue_scope_reply` 拒绝非会话 scope 入队（退化为全局短期记忆桶）；③兜底——回复消费点对解析失败或缺频道前缀的队列条目就地清除 + WARNING，任何坏条目最多空转一轮即收敛。投递面守卫（待回复队列/持久化提醒/一次性通知）统一拒绝不可路由 scope |
 
 配置组 `channel/outbound`（enabled / recent_seconds / facts_inject / empty_enabled）。
+
+## GitHub 频道（channels/github/）
+
+仓库动态监听频道：GitHub 事件规范化后走标准入站消息链推送给 AI，并提供 `github_*`
+工具面反查与回写。设计取舍见 `projects/anelf-github-channel-plan.md`。
+
+- **接收双模**：`poll`（默认，零公网依赖——Events API + releases/latest 的 ETag 条件请求
+  轮询，304 不占限流配额）与 `webhook`（可选，需公网/隧道——HMAC-SHA256 验签
+  **fail-closed**（不配 `webhook_secret` 拒绝启动）+ delivery id 去重环 + 有界队列单
+  worker 保序，立即 200 规避 GitHub 10s 超时重投）；`both` 并存。webhook 端点经
+  `build_router()` 挂 `/api/channels/github/webhook` 并声明 `@self_authenticated`
+- **轮询可靠性**：首次轮询只播种不重放历史（PollCursorStore 语义）；游标/ETag 落数据目录
+  （`channel_data_dir("github")`，原子写）重启续传；401/404 暂停该仓并向其会话注入一条
+  告警（唤醒 AI 转告主人，不轰炸）；限流读 `Retry-After`/`X-RateLimit-Reset` 全局暂停；
+  连续 5 次失败熔断 30 分钟；剩余配额低于 `rate_limit_reserve` 暂停轮询
+- **事件管线**（`pipeline.py`，两模汇合点）：订阅匹配（`*`/事件族/精确 action 三档）→
+  渲染（`events.py` 渲染器注册表 + 未知事件 generic 降级，不做 codegen）→ 优先级调整
+  （`priority_boost` / `watch_mentions_of` @提及升级 / `quiet_hours` 降级）→ 分档路由：
+  IMMEDIATE 立即唤醒（先冲刷该仓防抖缓冲保时序）、NORMAL 防抖窗聚合（同窗同分支 push
+  合并、达 `aggregate_max_events` 拆条）、DIGEST 只计数进缓冲（不写历史，防噪音）
+- **会话形态**：每仓一个 GROUP 会话 `group_github:{owner}/{repo}`（历史/记忆按仓隔离）；
+  AI 在该会话的回复经 `reply_relay`（`adapter:target`，默认 `webui:web_user`）转述主人
+  频道，未配置则如实失败——GitHub 无会话可回，回写是写工具的职责
+- **注入防护**：issue/PR/评论正文是外部不可信内容——注入消息一律包裹「不可信」分隔块、
+  截断（`body_digest_chars`）并剥图片语法（防 tracking pixel）；AI 因事件诱发的写操作
+  走审批门（可按 `channel_id="github"` 配规则）
+- **鉴权三形态**：PAT（主，登记 `provider_keys.json` 的 `github` 条目，不落频道配置文件）/
+  GitHub App（`app_auth.py`：JWT RS256 缓存 8min → installation token 缓存至 expires_at-60s，
+  pyjwt 既有依赖）/ 匿名（60 req/h，轮询间隔自动抬至 900s）
+- **工具面**（`tools.py`，组 `github`）：读组 12 个（事件/issue/PR/commit/diff/CI/release/
+  搜索/配额/digest/订阅清单）AUTO_ALLOW；写组 4 个（评论/开 issue/打标签/关闭）`sensitive`
+  + `allow_write` 配置门控（默认关）；`react` 表情回应敏感但不受 allow_write 限制；
+  订阅自助 `subscribe_repo/unsubscribe_repo`（AI 自行增删监听仓，写配置走
+  `set_channel_config` 唯一入口，热更生效）。不提供 merge/push/release/delete 高危写
+- **每日巡检**：`github_watch.example.json` 复制到 `config/tasks/`（gitignored）即启用
+  定时 digest 任务（AI 读 `github_get_daily_digest` 汇总静默事件，有事通知无事记心跳日志）
+- **测试**：`channels/github/tests/`（隔离纪律：状态存储类构造接受 `directory` 参数，
+  测试一律落临时目录，绝不写真实数据目录）
