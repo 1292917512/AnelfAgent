@@ -49,46 +49,44 @@ export function OverviewPanel() {
   return (
     <div className="overview-layout">
       {statusQuery.error && <QueryError compact error={statusQuery.error} retry={() => void statusQuery.refetch()} />}
-      <section className="overview-status" aria-label={t("runningStatus")}>
-        <div className="overview-status-copy">
-          <div className="flex items-center gap-2 text-xs text-muted"><StatusDot status={statusQuery.isPending ? "offline" : isReady ? "ok" : "danger"} />{statusQuery.isPending ? t("common:loading") : isReady ? t("common:running") : t("common:notReady")}</div>
-          <h2>{t(`phaseLabels.${phase}`, { ns: "status", defaultValue: phase })}</h2>
-          <Uptime />
-        </div>
-        <div className="overview-phase-track" aria-label={t("status:thinkingPhase")}>
-          {["observe", "think", "execute", "deliver"].map((step, index) => <div key={step} data-active={isReady && phaseIndex === index}>
-            <span className="overview-phase-node">{String(index + 1).padStart(2, "0")}</span>
-            <span>{t(`overview.${step}`)}</span>
+      <div className="overview-summary">
+        <section className="overview-status" aria-label={t("runningStatus")}>
+          <div className="overview-status-copy">
+            <div className="flex items-center gap-2 text-xs text-muted"><StatusDot status={statusQuery.isPending ? "offline" : isReady ? "ok" : "danger"} />{statusQuery.isPending ? t("common:loading") : isReady ? t("common:running") : t("common:notReady")}</div>
+            <h2>{t(`phaseLabels.${phase}`, { ns: "status", defaultValue: phase })}</h2>
+            <Uptime />
+          </div>
+          <div className="overview-phase-track" aria-label={t("status:thinkingPhase")}>
+            {["observe", "think", "execute", "deliver"].map((step, index) => <div key={step} data-active={isReady && phaseIndex === index}>
+              <span className="overview-phase-node">{String(index + 1).padStart(2, "0")}</span>
+              <span>{t(`overview.${step}`)}</span>
+            </div>)}
+          </div>
+        </section>
+        <div className="dashboard-metrics">
+          {[
+            { label: t("messageCount"), icon: MessageSquare, value: statusInfo?.message_count ?? "—", note: t("overview.received") },
+            { label: t("tools"), icon: Wrench, value: tools ? `${tools.enabled} / ${tools.total}` : "—", note: t("overview.availableTools") },
+            { label: t("status:stm"), icon: Brain, value: pfc ? `${pfc.short_term_memory_count ?? 0} / ${pfc.short_term_memory_max ?? 0}` : "—", note: t("overview.memoryWindow") },
+            { label: t("status:pending"), icon: Inbox, value: pfc ? pendingTotal : "—", note: t("overview.pendingHint") },
+          ].map((metric) => <div key={metric.label} className="overview-metric">
+            <div><span>{metric.label}</span><metric.icon size={16} /></div>
+            <strong>{String(metric.value)}</strong><span className="overview-metric-note">{metric.note}</span>
           </div>)}
         </div>
-      </section>
-      <div className="dashboard-metrics">
-        {[
-          { label: t("messageCount"), icon: MessageSquare, value: statusInfo?.message_count ?? "—", note: t("overview.received") },
-          { label: t("tools"), icon: Wrench, value: tools ? `${tools.enabled} / ${tools.total}` : "—", note: t("overview.availableTools") },
-          { label: t("status:stm"), icon: Brain, value: pfc ? `${pfc.short_term_memory_count ?? 0} / ${pfc.short_term_memory_max ?? 0}` : "—", note: t("overview.memoryWindow") },
-          { label: t("status:pending"), icon: Inbox, value: pfc ? pendingTotal : "—", note: t("overview.pendingHint") },
-        ].map((metric) => <div key={metric.label} className="overview-metric">
-          <div><span>{metric.label}</span><metric.icon size={16} /></div>
-          <strong>{String(metric.value)}</strong><span className="overview-metric-note">{metric.note}</span>
-        </div>)}
       </div>
-      <div className="overview-primary">
-        <SectionBoundary><DelegationsPanel /></SectionBoundary>
-        <div className="overview-aside">
-          <SectionBoundary><AttentionPanel /></SectionBoundary>
-          <PendingTasks pfc={pfc} />
-        </div>
+      <div className="overview-inbox">
+        <SectionBoundary><AttentionPanel /></SectionBoundary>
+        <PendingTasks pfc={pfc} />
       </div>
-      <div className="overview-secondary">
-        <SectionBoundary><ToolsInsightPanel /></SectionBoundary>
-        <SectionBoundary><ComponentInfoCard /></SectionBoundary>
-      </div>
+      <SectionBoundary><DelegationsPanel /></SectionBoundary>
       <Card className="overview-details !p-0">
         <button type="button" className="overview-details-toggle" aria-expanded={detailsOpen} onClick={() => setDetailsOpen(!detailsOpen)}>
           <Server size={17} /><span><strong>{t("overview.systemDetails")}</strong><small>{t("overview.systemDetailsHint")}</small></span><ChevronDown size={17} className={detailsOpen ? "rotate-180" : ""} />
         </button>
         {detailsOpen && <div className="overview-details-content">
+          <SectionBoundary><ComponentInfoCard /></SectionBoundary>
+          <SectionBoundary><ToolsInsightPanel /></SectionBoundary>
           <SectionBoundary><ServicesPanel /></SectionBoundary>
           <SectionBoundary><EventsPanel /></SectionBoundary>
         </div>}

@@ -29,7 +29,7 @@ export function ServicesPanel() {
   });
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+    <>
       <Card title={t("services.title")} subtitle={t("services.subtitle")}>
         {services && services.length > 0 ? (
           <div className="rounded-md border border-border overflow-auto max-h-[320px]">
@@ -78,6 +78,6 @@ export function ServicesPanel() {
           </div>
         ) : <p className="text-muted text-sm">{t("services.startupEmpty")}</p>}
       </Card>
-    </div>
+    </>
   );
 }

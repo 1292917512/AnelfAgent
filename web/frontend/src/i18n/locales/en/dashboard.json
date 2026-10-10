@@ -82,7 +82,7 @@
     "memoryWindow": "Used / capacity",
     "pendingHint": "Waiting for a reply or execution",
     "systemDetails": "System details",
-    "systemDetailsHint": "Services, startup timing and event statistics",
+    "systemDetailsHint": "Components, tools, services, startup timing and events",
     "toolRankingHint": "Cumulative usage of recalled tools",
     "delegationHint": "Active delegations and recent outcomes across sessions"
   },

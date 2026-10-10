@@ -32,7 +32,7 @@ test("overview prioritizes delegations and makes nested history traceable", asyn
   const now = 1791604800;
   let phase = "tool_executing";
   const items: DelegationHistoryItem[] = Array.from({ length: 20 }, (_, i) => ({
-    delegation_id: `task-${i}`, goal: `Review deployment ${i}`, scope: "group_qq:42", adapter_key: "qq", model: "review-model",
+    delegation_id: `task-${i}`, goal: `Review deployment ${i}: verify the long-running task, inspect tool failures, and report the complete result with its source and execution time.`, scope: "group_qq:42", adapter_key: "qq", model: "review-model",
     status: i % 4 === 0 ? "failed" : "success", started_at: now - 200 - i * 100, finished_at: now - i * 100, duration_seconds: 20 + i * 7,
     parent_id: i === 0 ? "parent-review" : "", depth: i === 0 ? 2 : 0, summary: i === 0 ? "Connection timed out after retries" : "Review completed",
     usage: { turns: 3, input_tokens: 4500, output_tokens: 200 },
@@ -68,8 +68,18 @@ test("overview prioritizes delegations and makes nested history traceable", asyn
   await page.getByRole("button", { name: "Issues only", exact: false }).click();
   await page.getByRole("button", { name: "Show 14 more" }).click();
   await expect(page.locator(".delegation-history-row")).toHaveCount(13);
+  const layout = await page.locator(".overview-layout").boundingBox();
+  const delegations = await page.locator(".delegation-panel").boundingBox();
+  const inbox = await page.locator(".overview-inbox").boundingBox();
+  const details = await page.locator(".overview-details").boundingBox();
+  expect(Math.abs(delegations!.width - layout!.width)).toBeLessThan(2);
+  expect(Math.abs(inbox!.width - layout!.width)).toBeLessThan(2);
+  expect(delegations!.y - inbox!.y - inbox!.height).toBeLessThanOrEqual(21);
+  expect(details!.y - delegations!.y - delegations!.height).toBeLessThanOrEqual(21);
+  await page.screenshot({ path: info.outputPath("overview-long-history.png"), fullPage: true });
   await page.getByRole("button", { name: /System details/ }).click();
   await expect(page.getByRole("heading", { name: "System Services", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Component Info", exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   const accessibility = await new AxeBuilder({ page }).include("main").analyze();
   expect(accessibility.violations.filter((item) => ["serious", "critical"].includes(item.impact ?? ""))).toEqual([]);

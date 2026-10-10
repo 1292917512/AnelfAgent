@@ -82,7 +82,7 @@
     "memoryWindow": "当前占用 / 容量",
     "pendingHint": "等待回复与执行",
     "systemDetails": "系统详情",
-    "systemDetailsHint": "服务清单、启动耗时与事件统计",
+    "systemDetailsHint": "组件与工具、系统服务、启动耗时与事件统计",
     "toolRankingHint": "已召回工具的累计使用分布",
     "delegationHint": "跨会话的当前委托与最近执行结果"
   },
