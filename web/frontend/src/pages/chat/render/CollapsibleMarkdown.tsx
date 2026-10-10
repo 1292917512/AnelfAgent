@@ -25,17 +25,20 @@ export function CollapsibleMarkdown({
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    setOverflow(el.scrollHeight > COLLAPSE_THRESHOLD_PX);
+    const measure = () => setOverflow(el.scrollHeight > COLLAPSE_THRESHOLD_PX + 1);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
   }, [content]);
 
   const collapsed = overflow && !expanded;
   return (
     <div className="relative">
       <div
-        ref={ref}
         className={cn(collapsed && "max-h-[360px] overflow-hidden")}
       >
-        <Markdown content={content} />
+        <div ref={ref}><Markdown content={content} /></div>
       </div>
       {collapsed && (
         <div className={cn("absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t to-transparent pointer-events-none", fadeClass)} />

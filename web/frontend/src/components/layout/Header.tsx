@@ -1,19 +1,16 @@
 import { useTranslation } from "react-i18next";
 import { Link, useLocation } from "react-router-dom";
-import { Sun, Moon, Languages, Menu, Search, ChevronRight, Rows3 } from "lucide-react";
+import { Menu, Search, ChevronRight } from "lucide-react";
 import { useAppStore } from "@/stores/app-store";
 import { findRoute } from "@/lib/navigation";
 import { Button } from "@/components/ui/Button";
 import { ConnectionStatus } from "./ConnectionStatus";
+import { AppearanceMenu } from "./AppearanceMenu";
 
 export function Header() {
-  const { t, i18n } = useTranslation(["nav", "palette"]);
-  const theme = useAppStore((state) => state.theme);
-  const toggleTheme = useAppStore((state) => state.toggleTheme);
+  const { t } = useTranslation(["nav", "palette"]);
   const setMobileMenuOpen = useAppStore((state) => state.setMobileMenuOpen);
   const setPaletteOpen = useAppStore((state) => state.setPaletteOpen);
-  const density = useAppStore((state) => state.density);
-  const toggleDensity = useAppStore((state) => state.toggleDensity);
   const location = useLocation();
   const route = findRoute(location.pathname);
   const modKey = /mac/i.test(navigator.platform) ? "⌘ K" : "Ctrl K";
@@ -30,13 +27,7 @@ export function Header() {
           className="ml-1 flex h-8 items-center gap-2 rounded-lg border border-border bg-card px-2.5 text-xs text-muted hover:border-border-hover hover:text-heading">
           <Search size={14} /><span className="hidden lg:inline">{t("quickSearch")}</span><kbd className="hidden text-[10px] sm:inline">{modKey}</kbd>
         </button>
-        <Button variant="ghost" size="icon" className="hidden sm:inline-flex" aria-label={t(density === "comfortable" ? "compactDensity" : "comfortableDensity")}
-          title={t(density === "comfortable" ? "compactDensity" : "comfortableDensity")} onClick={toggleDensity}><Rows3 size={16} /></Button>
-        <Button variant="ghost" size="icon" aria-label={i18n.resolvedLanguage === "zh" ? "Switch to English" : "切换为中文"}
-          onClick={() => void i18n.changeLanguage(i18n.resolvedLanguage === "zh" ? "en" : "zh")}><Languages size={16} /></Button>
-        <Button variant="ghost" size="icon" aria-label={t(theme === "dark" ? "action_theme_light" : "action_theme_dark", { ns: "palette" })} onClick={toggleTheme}>
-          {theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}
-        </Button>
+        <AppearanceMenu />
       </div>
     </header>
   );

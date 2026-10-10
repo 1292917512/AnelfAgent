@@ -1,10 +1,12 @@
 import { workspaceFileId, workspaceFileLabel, type WorkspaceFileRef } from "@/lib/workspace-file";
 import { useTranslation } from "react-i18next";
-import { ListX, Maximize2, Minimize2, PanelLeftClose, X } from "lucide-react";
+import { ArrowLeft, FolderTree, ListX, Maximize2, Minimize2, PanelLeftClose, X } from "lucide-react";
+import { useWorkbenchStore } from "@/stores/workbench-store";
 import { cn } from "@/lib/utils";
 import type { TabState } from "@/stores/file-editor-store";
 
 interface FileEditorTabsProps {
+  overlay?: boolean;
   openFiles: WorkspaceFileRef[];
   tabs: Map<string, TabState>;
   activeFileId: string | null;
@@ -16,11 +18,15 @@ interface FileEditorTabsProps {
   onCollapse: () => void;
 }
 
-export function FileEditorTabs({ openFiles, tabs, activeFileId, onActivate, onRequestClose,
+export function FileEditorTabs({ overlay = false, openFiles, tabs, activeFileId, onActivate, onRequestClose,
   onRequestCloseAll, filePanelExpanded, onToggleExpanded, onCollapse }: FileEditorTabsProps) {
   const { t } = useTranslation("workbench");
   const actionClass = "p-1 rounded text-muted hover:text-foreground hover:bg-hover shrink-0 transition-colors";
-  return <div className="flex items-center gap-1 pl-2 pr-1 py-1.5 border-b border-border shrink-0">
+  return <><div className="editor-navigation flex items-center gap-2 px-3 py-2 border-b border-border shrink-0">
+    {overlay && <button type="button" className="menu-action !w-auto !px-2" onClick={onCollapse}><ArrowLeft size={16} />{t("backToChat")}</button>}
+    <span className="min-w-0 flex-1 truncate text-xs text-muted">{openFiles.find((file) => workspaceFileId(file) === activeFileId)?.path}</span>
+    {overlay && <button type="button" className="panel-close" title={t("toggleFiles")} aria-label={t("toggleFiles")} onClick={() => useWorkbenchStore.getState().showSurface("files")}><FolderTree size={17} /></button>}
+  </div><div className="editor-tabs flex items-center gap-1 pl-2 pr-1 py-1.5 border-b border-border shrink-0">
     <div className="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto">
       {openFiles.map((file) => {
         const id = workspaceFileId(file);
@@ -43,10 +49,10 @@ export function FileEditorTabs({ openFiles, tabs, activeFileId, onActivate, onRe
       })}
     </div>
     <button onClick={onRequestCloseAll} title={t("editor.closeAll")} className={actionClass}><ListX size={14} /></button>
-    <button onClick={onToggleExpanded} title={filePanelExpanded ? t("editor.exitFullscreen") : t("editor.fullscreen")}
+    {!overlay && <button onClick={onToggleExpanded} title={filePanelExpanded ? t("editor.exitFullscreen") : t("editor.fullscreen")}
       className={cn(actionClass, filePanelExpanded && "text-accent bg-accent-subtle")}>
       {filePanelExpanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
-    </button>
+    </button>}
     <button onClick={onCollapse} title={t("editor.collapse")} className={actionClass}><PanelLeftClose size={14} /></button>
-  </div>;
+  </div></>;
 }

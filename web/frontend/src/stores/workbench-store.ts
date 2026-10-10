@@ -1,7 +1,7 @@
 import { useFileEditorStore } from "./file-editor-store";
-import { isFileUnder, workspaceFileId, workspaceFileLabel, type WorkspaceFileRef } from "@/lib/workspace-file";
+import { isFileUnder, workspaceFileId, type WorkspaceFileRef } from "@/lib/workspace-file";
 import { create } from "zustand";
-import { uiApi } from "@/lib/api";
+import type { WorkbenchSurface } from "@/lib/workbench-layout";
 import type { WorkspaceRoot } from "@/lib/types";
 import { parseFileReference } from "@/lib/file-reference";
 
@@ -41,6 +41,11 @@ export interface EditorSelection {
 }
 
 interface WorkbenchState {
+  containerWidth: number | null;
+  setContainerWidth: (width: number | null) => void;
+  activeSurface: WorkbenchSurface | null;
+  showSurface: (surface: WorkbenchSurface) => void;
+  dismissSurface: () => void;
   /** 左侧文件树栏 */
   leftOpen: boolean;
   /** 右侧 Dock 栏 */
@@ -97,6 +102,13 @@ interface WorkbenchState {
 }
 
 export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
+  containerWidth: null,
+  setContainerWidth: (containerWidth) => set({ containerWidth }),
+  activeSurface: null,
+  showSurface: (activeSurface) => set({ activeSurface,
+    ...(activeSurface === "files" ? { leftOpen: true } : activeSurface === "dock" ? { dockOpen: true } : { filePanelOpen: true }),
+  }),
+  dismissSurface: () => set({ activeSurface: null }),
   leftOpen: false,
   dockOpen: false,
   activeTab: "status",
@@ -114,24 +126,25 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   notifications: [],
   asks: [],
 
-  toggleLeft: () => set((s) => ({ leftOpen: !s.leftOpen })),
-  toggleDock: () => set((s) => ({ dockOpen: !s.dockOpen })),
-  setActiveTab: (tab) => set({ activeTab: tab, dockOpen: true }),
+  toggleLeft: () => set((s) => ({ leftOpen: !s.leftOpen, activeSurface: s.leftOpen ? null : "files" })),
+  toggleDock: () => set((s) => ({ dockOpen: !s.dockOpen, activeSurface: s.dockOpen ? null : "dock" })),
+  setActiveTab: (tab) => set({ activeTab: tab, dockOpen: true, activeSurface: "dock" }),
 
   openPanel: (panel, payload = "") => {
     // files 是左侧文件树栏而非右侧 Dock tab，单独处理
     if (panel === "files") {
+      let surface: WorkbenchSurface = "files";
       if (payload) {
         const reference = parseFileReference(`./${encodeURIComponent(payload)}`);
         if (!reference) return;
-        if (!reference.isDir) get().openFile(reference.path, reference.root);
+        if (!reference.isDir) { get().openFile(reference.path, reference.root); surface = "editor"; }
         set({ fileTreeFocus: reference.path, fileTreeRoot: reference.root });
       }
-      set((state) => ({ leftOpen: true, panelRequestSeq: state.panelRequestSeq + 1 }));
+      set((state) => ({ leftOpen: true, activeSurface: surface, panelRequestSeq: state.panelRequestSeq + 1 }));
       return;
     }
     const tab = DOCK_TABS.find((tab) => tab === panel) ?? "status";
-    set((state) => ({ activeTab: tab, dockOpen: true, panelRequestSeq: state.panelRequestSeq + 1 }));
+    set((state) => ({ activeTab: tab, dockOpen: true, activeSurface: "dock", panelRequestSeq: state.panelRequestSeq + 1 }));
     if (tab === "search" && payload) set({ searchSeed: payload });
   },
 
@@ -140,11 +153,11 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
     const id = workspaceFileId(file);
     return {
       openFiles: state.openFiles.some((entry) => workspaceFileId(entry) === id) ? state.openFiles : [...state.openFiles, file],
-      activeFileId: id, filePanelOpen: true, selection: null,
+      activeFileId: id, filePanelOpen: true, selection: null, activeSurface: "editor",
     };
   }),
   activateFile: (id) => set((state) => state.openFiles.some((file) => workspaceFileId(file) === id)
-    ? { activeFileId: id, filePanelOpen: true, selection: null } : state),
+    ? { activeFileId: id, filePanelOpen: true, selection: null, activeSurface: "editor" } : state),
   closeFile: (id) => set((state) => {
     const target = id ?? state.activeFileId;
     const index = state.openFiles.findIndex((file) => workspaceFileId(file) === target);
@@ -183,7 +196,7 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
       filePanelExpanded: !!openFiles.length && state.filePanelExpanded, selection: null,
     };
   }),
-  collapseFilePanel: () => set({ filePanelOpen: false, selection: null }),
+  collapseFilePanel: () => set({ filePanelOpen: false, selection: null, activeSurface: null }),
   toggleFilePanelExpanded: () => set((s) => ({ filePanelExpanded: !s.filePanelExpanded, filePanelOpen: true })),
   setFileTreeFocus: (path, root) => set((state) => ({ fileTreeFocus: path, fileTreeRoot: root ?? state.fileTreeRoot })),
   setFileTreeRoot: (fileTreeRoot) => set({ fileTreeRoot, fileTreeFocus: null }),
@@ -205,38 +218,3 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   pushAsk: (a) => set((s) => ({ asks: [...s.asks.filter((x) => x.ask_id !== a.ask_id), a].slice(-MAX_ASKS) })),
   resolveAsk: (askId) => set((s) => ({ asks: s.asks.filter((a) => a.ask_id !== askId) })),
 }));
-
-// ── 状态上报（供 AI ui_get_state 查询） ─────────────────────────
-/** 订阅工作台状态变化，防抖上报后端 */
-export function startUiStateReporting(page: string): () => void {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const report = () => {
-      const state = useWorkbenchStore.getState();
-      const active = state.openFiles.find((file) => workspaceFileId(file) === state.activeFileId);
-      uiApi.reportState({
-        page,
-        active_tab: state.activeTab,
-        dock_open: state.dockOpen,
-        left_open: state.leftOpen,
-        open_file: active ? workspaceFileLabel(active) : null,
-        has_draft: state.draft !== null,
-        pending_asks: state.asks.length,
-        // 工作区上下文注入数据源（发送时渲染为消息前缀块）
-        active_file: active ? workspaceFileLabel(active) : null,
-        selection: state.selection ? { ...state.selection, path: workspaceFileLabel(state.selection) } : null,
-        open_tabs: state.openFiles.map((file) => ({
-          label: file.path.split("/").pop() ?? file.path,
-          path: workspaceFileLabel(file),
-        })),
-      }).catch(() => { /* 上报失败忽略 */ });
-  };
-  report();
-  const unsub = useWorkbenchStore.subscribe(() => {
-    clearTimeout(timer);
-    timer = setTimeout(report, 800);
-  });
-  return () => {
-    unsub();
-    clearTimeout(timer);
-  };
-}

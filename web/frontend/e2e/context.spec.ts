@@ -50,7 +50,7 @@ test("a late history response cannot replace the newly selected snapshot", async
   await expect(page.getByText("second-model", { exact: true })).toBeVisible();
 });
 
-test("file references stay inline and directory clicks select the project root", async ({ page }, info) => {
+test("file references stay inline and directory clicks select the project root", async ({ page, isMobile }, info) => {
   await page.route("**/api/workspace/tree?**", (route) => {
     const path = new URL(route.request().url()).searchParams.get("path") ?? "";
     return route.fulfill({ json: { path, children: path === "docs"
@@ -67,6 +67,12 @@ test("file references stay inline and directory clicks select the project root",
   await expect(page.getByRole("button", { name: "Project", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Project", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("treeitem").filter({ hasText: "guide.md" })).toBeVisible();
+  if (isMobile) {
+    await page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await ref.click();
+    await expect(page.getByRole("treeitem").filter({ hasText: "guide.md" })).toBeVisible();
+  }
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: info.outputPath("workspace.png") });
 });
@@ -83,9 +89,8 @@ test("dark context remains readable on a narrow viewport", async ({ page }, info
   await page.screenshot({ path: info.outputPath("context-dark.png") });
 });
 
-test("desktop navigation expands without moving the workspace and supports keyboard focus", async ({ page }, info) => {
-  test.skip(info.project.name !== "desktop", "Hover navigation applies to desktop pointers");
-  await page.mouse.move(0, 0);
+test("desktop navigation only expands explicitly and preserves the workspace", async ({ page }, info) => {
+  test.skip(info.project.name !== "desktop", "Desktop navigation");
   await page.goto("/webui/");
   const sidebar = page.locator(".app-sidebar");
   await expect(sidebar).toHaveCSS("width", "68px");
@@ -93,16 +98,16 @@ test("desktop navigation expands without moving the workspace and supports keybo
   await expect(page.getByRole("treeitem").filter({ hasText: "note.txt" })).toBeVisible();
   const bounds = await page.getByRole("main").boundingBox();
   await sidebar.hover();
-  await expect(sidebar).toHaveCSS("width", "248px");
+  await expect(sidebar).toHaveCSS("width", "68px");
   expect(await page.getByRole("main").boundingBox()).toEqual(bounds);
-  await page.getByRole("main").hover();
+  const expand = sidebar.getByRole("button", { name: "Expand sidebar", exact: true });
+  await expand.focus();
   await expect(sidebar).toHaveCSS("width", "68px");
-  await page.locator(".skip-link").focus();
-  await page.keyboard.press("Tab");
-  await expect(sidebar).toHaveCSS("width", "248px");
-  await expect(sidebar.getByRole("button", { name: "Search", exact: true })).toBeFocused();
-  await page.keyboard.press("Escape");
-  await expect(sidebar).toHaveCSS("width", "68px");
+  await page.keyboard.press("Enter");
+  await expect(sidebar).toHaveCSS("width", "236px");
+  await expect(page.getByRole("treeitem").filter({ hasText: "note.txt" })).toBeVisible();
+  await sidebar.getByRole("button", { name: "Collapse sidebar", exact: true }).click();
+  expect(await page.getByRole("main").boundingBox()).toEqual(bounds);
 });
 
 test("tablet workspace uses an editor overlay and keeps the conversation width", async ({ page }, info) => {
@@ -118,7 +123,7 @@ test("tablet workspace uses an editor overlay and keeps the conversation width",
   await expect(editor.locator(".cm-content")).toHaveText("workspace content");
   await page.screenshot({ path: info.outputPath("workspace-tablet.png") });
   await editor.getByRole("button", { name: "Collapse panel (tabs kept)" }).click();
-  await files.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });

@@ -10,6 +10,9 @@ import { detectMention, useMentionSearch } from "./mention/useMention";
 import { MentionPanel } from "./mention/MentionPanel";
 import { WorkspaceContextPreview } from "./WorkspaceContextPreview";
 import { fileReferenceMarkdown } from "@/lib/file-reference";
+import { useMediaQuery } from "@/lib/use-media-query";
+import { ModelSelect } from "@/components/models/ModelSelect";
+import { ContextChip } from "./ContextChip";
 
 const FILE_TYPE_ICONS: Record<string, typeof FileText> = {
   image: ImageIcon,
@@ -46,7 +49,7 @@ function PendingFileItem({ pf, onRemove }: { pf: PendingFile; onRemove: () => vo
         <button
           onClick={onRemove}
           aria-label={t("removeAttachment")}
-          className="absolute right-1 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full text-muted hover:text-danger hover:bg-danger/10 flex items-center justify-center transition-colors md:opacity-0 md:group-hover:opacity-100 focus-visible:opacity-100"
+          className="absolute right-0 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full text-muted hover:text-danger hover:bg-danger/10 flex items-center justify-center transition-colors md:opacity-0 md:group-hover:opacity-100 focus-visible:opacity-100"
         >
           <X size={10} />
         </button>
@@ -73,7 +76,7 @@ function PendingFileItem({ pf, onRemove }: { pf: PendingFile; onRemove: () => vo
       <button
         onClick={onRemove}
         aria-label={t("removeAttachment")}
-        className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-danger text-white flex items-center justify-center transition-opacity opacity-100 md:opacity-0 md:group-hover:opacity-100 focus-visible:opacity-100"
+        className="absolute -top-1.5 -right-1.5 w-7 h-7 rounded-full bg-danger text-white flex items-center justify-center transition-opacity opacity-100 md:opacity-0 md:group-hover:opacity-100 focus-visible:opacity-100"
       >
         <X size={10} />
       </button>
@@ -84,6 +87,7 @@ function PendingFileItem({ pf, onRemove }: { pf: PendingFile; onRemove: () => vo
 /** 对话输入区：文本 + 附件 + 草稿注入 + 工作区文件拖入 + @提及 */
 export function ChatInput() {
   const { t } = useTranslation("chat");
+  const touchInput = useMediaQuery("(pointer: coarse)");
   const chatId = useChatStore((state) => state.activeChatId);
   const input = useChatStore((state) => state.buckets[chatId]?.inputDraft ?? "");
   const submitting = useChatStore((state) => state.buckets[chatId]?.submitting ?? false);
@@ -175,7 +179,7 @@ export function ChatInput() {
         return;
       }
     }
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+    if (e.key === "Enter" && !e.shiftKey && (!touchInput || e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       handleSend();
     }
@@ -214,7 +218,7 @@ export function ChatInput() {
   }, [addFiles, input, setInput]);
 
   return (
-    <div className="shrink-0">
+    <div className="chat-composer shrink-0">
       {/* 待发送附件（工作区/项目引用 chip + 上传缩略图） */}
       {pendingFiles.length > 0 && (
         <div className="flex flex-wrap gap-2 py-2">
@@ -228,9 +232,10 @@ export function ChatInput() {
       <RealtimeCallPanel />
 
       <WorkspaceContextPreview />
+      <div className="mb-1 flex justify-end empty:hidden"><ContextChip /></div>
 
       {/* 输入卡片 */}
-      <div className="relative border border-input rounded-lg bg-card focus-within:border-ring transition-colors">
+      <div className="composer-card relative border border-input rounded-2xl bg-card focus-within:border-ring transition-colors">
         {mention && (
           <MentionPanel
             items={mentionItems}
@@ -251,12 +256,13 @@ export function ChatInput() {
           onPaste={handlePaste}
           onSelect={(e) => setCursor(e.currentTarget.selectionStart)}
           aria-label={t("messageInput")}
-          placeholder={t("placeholder")}
+          placeholder={t(touchInput ? "placeholderTouch" : "placeholder")}
           rows={1}
+          enterKeyHint={touchInput ? "enter" : "send"}
           className="w-full resize-none bg-transparent p-3 text-sm text-foreground placeholder:text-muted outline-none max-h-[180px]"
         />
-        <div className="flex items-center justify-between px-3 pb-2">
-          <div className="flex items-center gap-2">
+        <div className="composer-actions flex flex-wrap items-center justify-between gap-2 px-3 pb-2">
+          <div className="flex min-w-0 items-center gap-1">
             <input
               ref={fileInputRef}
               type="file"
@@ -268,6 +274,7 @@ export function ChatInput() {
               <Paperclip size={18} />
             </Button>
             <RealtimeCallToggle />
+            <ModelSelect modelType="chat" compact className="composer-model" />
           </div>
           <div className="flex items-center gap-2">
             {sending && <Button variant="danger" size="sm" onClick={() => void interrupt()} title={t("stopTitle")}>

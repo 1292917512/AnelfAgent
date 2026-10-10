@@ -13,6 +13,17 @@ beforeEach(() => {
 });
 
 describe("workspace file identities", () => {
+  it("directory commands restore the tree even while an editor is open", () => {
+    const store = useWorkbenchStore.getState();
+    store.openFile("notes.txt");
+    store.openPanel("files", "project:dir:docs");
+    expect(useWorkbenchStore.getState()).toMatchObject({ activeSurface: "files", fileTreeRoot: "project", fileTreeFocus: "docs" });
+    store.openPanel("files", "project:src/app.ts");
+    expect(useWorkbenchStore.getState()).toMatchObject({ activeSurface: "editor", filePanelOpen: true });
+    store.collapseFilePanel();
+    expect(useWorkbenchStore.getState()).toMatchObject({ activeSurface: null, filePanelOpen: false });
+    expect(useWorkbenchStore.getState().openFiles).toHaveLength(2);
+  });
   it("opens the referenced directory in its original root", () => {
     useWorkbenchStore.getState().setFileTreeFocus("docs", "project");
     expect(useWorkbenchStore.getState()).toMatchObject({ fileTreeRoot: "project", fileTreeFocus: "docs" });

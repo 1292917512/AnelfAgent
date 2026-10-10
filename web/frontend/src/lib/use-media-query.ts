@@ -21,8 +21,3 @@ export function useMediaQuery(query: string): boolean {
 export function useIsMobile(): boolean {
   return useMediaQuery("(max-width: 767px)");
 }
-
-/** 窄屏工作台使用覆盖面板，避免文件、编辑器和对话互相挤占。 */
-export function useCompactWorkbench(): boolean {
-  return useMediaQuery("(max-width: 1199px)");
-}

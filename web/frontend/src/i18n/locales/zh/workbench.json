@@ -171,5 +171,9 @@
     "keepEditing": "继续编辑",
     "useRemote": "采用磁盘版本",
     "overwrite": "用本地草稿覆盖"
-  }
+  },
+  "openEditor": "打开编辑器",
+  "editorLabel": "编辑器",
+  "backToChat": "返回对话",
+  "resetLayout": "重置面板宽度"
 }

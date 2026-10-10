@@ -11,9 +11,11 @@ import { useIsMobile } from "@/lib/use-media-query";
 import { useAppStore } from "@/stores/app-store";
 import { cn } from "@/lib/utils";
 import { CORE_ROUTES } from "@/lib/core-routes";
-import { startUiStateReporting } from "@/stores/workbench-store";
+import { startUiStateReporting } from "@/lib/ui-state-reporting";
+import { useVisualViewport } from "@/hooks/useVisualViewport";
 
 export function Layout() {
+  useVisualViewport();
   const { t } = useTranslation("nav");
   const isMobile = useIsMobile();
   const mobileMenuOpen = useAppStore((state) => state.mobileMenuOpen);
@@ -26,15 +28,15 @@ export function Layout() {
   useEffect(() => { setMobileMenuOpen(false); }, [location.pathname, setMobileMenuOpen]);
   useEffect(() => { document.title = `${branding.title} · ${t(CORE_ROUTES.find((route) => route.path === location.pathname)?.label ?? "personalWorkspace")}`; }, [branding.title, location.pathname, t]);
   return (
-    <div className="flex h-dvh overflow-hidden" data-density={density}>
+    <div className="app-shell flex overflow-hidden" data-density={density}>
       <a href="#main-content" className="skip-link">{t("skipToContent")}</a>
-      {isMobile ? <DialogSurface open={mobileMenuOpen} onClose={() => setMobileMenuOpen(false)} title={t("navigation")} placement="left" className="max-w-[280px]">
+      {isMobile ? <DialogSurface open={mobileMenuOpen} onClose={() => setMobileMenuOpen(false)} title={t("navigation")} placement="left" className="mobile-menu">
         <Button variant="ghost" size="icon" className="absolute right-2 top-4 z-10" onClick={() => setMobileMenuOpen(false)} aria-label={t("common:close")}><X size={16} /></Button>
         <Sidebar mobile />
       </DialogSurface> : <Sidebar />}
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="app-frame flex min-w-0 flex-1 flex-col">
         <Header />
-        <main id="main-content" tabIndex={-1} className={cn("min-h-0 flex-1 outline-none", workspace ? "overflow-hidden" : "overflow-y-auto px-4 py-6 md:px-7 md:py-7")}>
+        <main id="main-content" tabIndex={-1} className={cn("min-h-0 flex-1 outline-none", workspace ? "overflow-hidden" : "page-scroll overflow-y-auto overscroll-contain px-4 py-6 md:px-8 md:py-8")}>
           <Outlet />
         </main>
         <MobileNav />

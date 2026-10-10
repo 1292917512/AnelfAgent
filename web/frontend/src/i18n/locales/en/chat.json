@@ -135,5 +135,9 @@
     "excluded": "Automatic context is off for this chat. Manually attached files will still be sent.",
     "active": "Active file",
     "selection": "Selected lines"
-  }
+  },
+  "welcomeTitle": "A little space for your next idea.",
+  "welcomeFiles": "Explore files",
+  "welcomeTasks": "View tasks",
+  "placeholderTouch": "Message your agent, or reference a file…"
 }

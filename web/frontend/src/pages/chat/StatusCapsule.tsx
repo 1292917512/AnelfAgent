@@ -108,13 +108,13 @@ function WorkingCapsule() {
   );
 }
 
-/** 浮动状态胶囊（绝对定位于对话容器右上角；空闲零占位） */
+/** 当前对话工作状态，空闲时不占空间。 */
 export function StatusCapsule() {
   useThinkingBootstrap();
   const enabled = useThinkingStore((s) => s.enabled);
 
   return (
-    <div className="pointer-events-none absolute top-2 right-4 z-20 flex justify-end">
+    <div className="pointer-events-none flex justify-end empty:hidden">
       {enabled ? <TraceCapsule /> : <WorkingCapsule />}
     </div>
   );

@@ -12,7 +12,7 @@ export function PageHeader({ icon, title, subtitle, actions }: {
   icon?: ReactNode; title: ReactNode; subtitle?: ReactNode; actions?: ReactNode;
 }) {
   return (
-    <header className="flex flex-wrap items-start justify-between gap-4">
+    <header className="page-header flex flex-wrap items-start justify-between gap-4">
       <div className="min-w-0">
         <div className="flex items-center gap-2.5">
           {icon && <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border bg-card text-accent [&>svg]:h-[18px] [&>svg]:w-[18px]">{icon}</span>}
@@ -20,7 +20,7 @@ export function PageHeader({ icon, title, subtitle, actions }: {
         </div>
         {subtitle && <p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted">{subtitle}</p>}
       </div>
-      {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+      {actions && <div className="page-header-actions flex flex-wrap items-center gap-2">{actions}</div>}
     </header>
   );
 }

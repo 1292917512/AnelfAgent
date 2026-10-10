@@ -99,5 +99,8 @@
     "foldSeg": "Fold {{count}}/batch",
     "range": "Window {{min}} ~ {{max}}"
   },
-  "environmentManaged": "Managed by environment variable {{name}}"
+  "environmentManaged": "Managed by environment variable {{name}}",
+  "selectGroup": "Choose configuration group",
+  "groupLabel": "Group",
+  "filterGroups": "Find a module or group…"
 }

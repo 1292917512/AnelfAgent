@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "./shell.css";
+@import "./workbench.css";
 
 /* dark: 变体跟随应用主题（<html class="dark">），而非系统 prefers-color-scheme */
 @custom-variant dark (&:where(.dark, .dark *));
@@ -79,14 +80,14 @@
 }
 
 :root {
-  --sidebar-bg: #121822;
-  --bg: #10141c;
+  --sidebar-bg: #111722;
+  --bg: #0d121b;
   --bg-accent: #121923;
   --bg-elevated: #1b2330;
   --bg-hover: #242f3e;
   --bg-muted: #242f3e;
 
-  --card: #171e29;
+  --card: #171e2b;
   --card-foreground: #e8edf5;
   --card-highlight: rgba(255, 255, 255, 0.05);
 
@@ -98,7 +99,7 @@
   --muted: #99a6b8;
   --muted-strong: #8190a4;
 
-  --border: #293445;
+  --border: #2b3545;
   --border-strong: #3c4b61;
   --border-hover: #50627d;
   --input: #344156;
@@ -149,10 +150,10 @@
 }
 
 [data-theme="light"] {
-  --sidebar-bg: #f9fbfd;
-  --bg: #f4f6fa;
+  --sidebar-bg: #eff2f5;
+  --bg: #eef1f5;
   --bg-accent: #edf1f7;
-  --bg-elevated: #f8fafc;
+  --bg-elevated: #f5f7fa;
   --bg-hover: #edf1f6;
   --bg-muted: #edf1f6;
 
@@ -160,25 +161,25 @@
   --card-foreground: #263248;
   --card-highlight: rgba(0, 0, 0, 0.03);
 
-  --panel: #ffffff;
+  --panel: #f9fafc;
   --panel-strong: #f8fafc;
 
   --text: #344158;
-  --text-strong: #19263b;
+  --text-strong: #17253a;
   --muted: #53647a;
   --muted-strong: #56677e;
 
-  --border: #e0e6ef;
+  --border: #e3e7ee;
   --border-strong: #ccd6e4;
   --border-hover: #abbdd3;
   --input: #d8e0ec;
 
-  --accent: #285fe5;
-  --accent-hover: #1d4ed8;
-  --accent-subtle: #eaf0ff;
+  --accent: #3c57bc;
+  --accent-hover: #30499e;
+  --accent-subtle: #edf0fc;
   --accent-foreground: #ffffff;
   --accent-glow: rgba(37, 99, 235, 0.15);
-  --primary: #2563eb;
+  --primary: #3c57bc;
   --primary-foreground: #ffffff;
 
   --secondary: #f4f4f5;

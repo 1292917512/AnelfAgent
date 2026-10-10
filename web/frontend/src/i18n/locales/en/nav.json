@@ -75,5 +75,6 @@
     "data": "Inspect storage, data connections and resource usage.",
     "config": "Find and edit system settings by module.",
     "settings": "Manage the runtime environment, hooks and local models."
-  }
+  },
+  "appearance": "Appearance & language"
 }

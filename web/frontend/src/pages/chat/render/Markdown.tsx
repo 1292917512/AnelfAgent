@@ -119,7 +119,7 @@ export const Markdown = memo(function Markdown({ content }: MarkdownProps) {
 
   return (
     <div
-      className="max-w-none break-words
+      className="markdown-content max-w-none break-words
         [&_p]:my-1 [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0.5
         [&_h1]:text-base [&_h1]:font-semibold [&_h1]:mt-3 [&_h1]:mb-1
         [&_h2]:text-[15px] [&_h2]:font-semibold [&_h2]:mt-3 [&_h2]:mb-1
@@ -134,6 +134,7 @@ export const Markdown = memo(function Markdown({ content }: MarkdownProps) {
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
+          table: ({ children }) => <div className="markdown-table"><table>{children}</table></div>,
           a: ({ href, children }) => <LinkCard href={href}>{children}</LinkCard>,
           pre: ({ children }) => {
             // react-markdown 将代码块渲染为 pre > code

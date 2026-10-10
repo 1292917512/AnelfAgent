@@ -78,7 +78,8 @@ const ChatTabItem = memo(function ChatTabItem({
         <button
           onClick={() => setActiveChat(c.chat_id)}
           onDoubleClick={() => onStartEdit(c.chat_id, c.title)}
-          className="text-xs font-medium max-w-[120px] truncate"
+          className="text-xs font-medium max-w-[160px] truncate"
+          aria-pressed={isActive}
           title={c.title}
         >
           {c.title}
@@ -158,7 +159,7 @@ export function ChatTabs() {
   };
 
   return (
-    <div className="flex items-center gap-1.5 mb-2 -mt-1 overflow-x-auto no-scrollbar shrink-0">
+    <div className="chat-tabs flex items-center gap-1.5 overflow-x-auto no-scrollbar shrink-0">
       {chats.map((c) => (
         <ChatTabItem
           key={c.chat_id}

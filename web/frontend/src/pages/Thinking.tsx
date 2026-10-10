@@ -6,7 +6,7 @@ import { Activity } from "lucide-react";
 import { useThinkingStore } from "@/stores/thinking-store";
 import { useThinkingSessions } from "@/hooks/useThinking";
 import { useRouteTab } from "@/hooks/useRouteTab";
-import { useIsMobile, useMediaQuery } from "@/lib/use-media-query";
+import { useIsMobile } from "@/lib/use-media-query";
 import { NodeDetail } from "@/components/thinking/NodeDetail";
 import { ToolsPanel } from "@/components/thinking/ToolsPanel";
 import { ProvidersPanel } from "@/components/context/ProvidersPanel";
@@ -20,6 +20,7 @@ import { Drawer } from "@/components/common/Drawer";
 import { DialogSurface } from "@/components/ui/DialogSurface";
 import { Button } from "@/components/ui/Button";
 import { useTracePlanNodes } from "@/components/thinking/trace-plans";
+import { useElementSize } from "@/hooks/useElementSize";
 
 function ThinkingFlow() {
   const { t } = useTranslation("thinking");
@@ -29,17 +30,19 @@ function ThinkingFlow() {
   const [panel, setPanel] = useState<"tools" | "providers" | null>(null);
   const [showSessions, setShowSessions] = useState(false);
   const isMobile = useIsMobile();
-  const detailOverlay = useMediaQuery("(max-width: 1279px)");
+  const { ref, size } = useElementSize<HTMLDivElement>();
+  const sessionOverlay = (size?.width ?? 0) < 960;
+  const detailOverlay = (size?.width ?? 0) < 1240;
   const planNodes = useTracePlanNodes(state.activeSession);
   const selected = [...(state.activeSession?.nodes ?? []), ...planNodes].find((node) => node.id === state.selectedNodeId);
   const selectNode = (id: string) => { state.setSelectedNodeId(id); };
-  return <div className="flex h-full min-h-0">
+  return <div ref={ref} className="flex h-full min-h-0">
     <ThinkingSessionsPanel sessions={state.sessions} activeId={state.activeSessionId}
       onSelect={(id) => void state.selectSession(id)} onRefresh={() => void state.refreshSessions()}
       loading={state.sessionsLoading} error={state.sessionsError}
-      isMobile={isMobile} open={showSessions} onClose={() => setShowSessions(false)} />
+      isMobile={sessionOverlay} open={showSessions} onClose={() => setShowSessions(false)} />
     <div className="flex min-w-0 flex-1 flex-col">
-      <ThinkingToolbar isMobile={isMobile} onShowSessions={() => setShowSessions(true)}
+      <ThinkingToolbar isMobile={isMobile} sessionsHidden={sessionOverlay} onShowSessions={() => setShowSessions(true)}
         enabled={state.enabled} busy={state.toggling || !state.statusSynced} onToggle={() => void state.setTracking(!state.enabled)}
         connected={state.connected} view={view} onViewChange={setView}
         onShowTools={() => setPanel("tools")} onShowProviders={() => setPanel("providers")}

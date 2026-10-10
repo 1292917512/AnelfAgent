@@ -17,7 +17,6 @@ import { FileConflictDialog } from "./FileConflictDialog";
 import { QueryError } from "@/components/common/AsyncState";
 import { ConfirmDialog, toast } from "@/components/ui";
 import { DialogSurface } from "@/components/ui/DialogSurface";
-import { useCompactWorkbench } from "@/lib/use-media-query";
 import { FileEditorTabs } from "./FileEditorTabs";
 import { FileEditorToolbar } from "./FileEditorToolbar";
 import { FileEditorContent } from "./FileEditorContent";
@@ -25,10 +24,9 @@ import { FileEditorFooter } from "./FileEditorFooter";
 import { defaultViewMode, langExtension, type ViewMode } from "./fileEditorUtils";
 
 /** 工作区文件编辑器：多标签侧栏（非模态）+ CodeMirror + Markdown 预览 + 对话操作 */
-export function FileEditor() {
+export function FileEditor({ overlay = false }: { overlay?: boolean }) {
   const { t } = useTranslation("workbench");
   const theme = useAppStore((s) => s.theme);
-  const compact = useCompactWorkbench();
   const openFiles = useWorkbenchStore((s) => s.openFiles);
   const activeFileId = useWorkbenchStore((state) => state.activeFileId);
   const activeFile = openFiles.find((file) => workspaceFileId(file) === activeFileId);
@@ -95,13 +93,13 @@ export function FileEditor() {
 
   // 全屏展开时按 Esc 退出
   useEffect(() => {
-    if (!filePanelExpanded || compact) return;
+    if (!filePanelExpanded || overlay) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") toggleFilePanelExpanded();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [filePanelExpanded, compact, toggleFilePanelExpanded]);
+  }, [filePanelExpanded, overlay, toggleFilePanelExpanded]);
 
   /** 关闭请求：含未保存修改时先弹确认 */
   const requestClose = useCallback((path?: string) => {
@@ -128,8 +126,9 @@ export function FileEditor() {
   const attachToChat = useCallback(() => {
     if (!cur) return;
     attachWorkspaceFile(cur.file.path, cur.file.name, curRoot);
+    if (overlay) collapseFilePanel();
     toast.success(t("editor.attach"));
-  }, [cur, curRoot, attachWorkspaceFile, t]);
+  }, [cur, curRoot, attachWorkspaceFile, t, overlay, collapseFilePanel]);
 
   /** 将选区或文件全文连同可点击路径引用填入对话草稿。 */
   const quoteToChat = useCallback(() => {
@@ -142,8 +141,9 @@ export function FileEditor() {
     const reference = fileReferenceMarkdown({ root: curRoot, path: cur.file.path, isDir: false }, label);
     const fence = "`".repeat(Array.from(body.matchAll(/`+/g)).reduce((length, match) => Math.max(length, match[0].length + 1), 3));
     setInputDraft(`${reference}\n${fence}${ext}\n${body}\n${fence}`);
+    if (overlay) collapseFilePanel();
     toast.success(t("editor.quote"));
-  }, [cur, curRoot, setInputDraft, t]);
+  }, [cur, curRoot, setInputDraft, t, overlay, collapseFilePanel]);
 
   const copyContent = useCallback(() => {
     if (!cur || cur.file.binary) return;
@@ -177,6 +177,7 @@ export function FileEditor() {
   // 面板收起时清空选区（关闭编辑器即无「当前选区」语义）
   useEffect(() => {
     if (!filePanelOpen) useWorkbenchStore.getState().setSelection(null);
+    return () => useWorkbenchStore.getState().setSelection(null);
   }, [filePanelOpen]);
 
   if (!filePanelOpen || !openFilePath) return null;
@@ -198,13 +199,14 @@ export function FileEditor() {
   const body = (
     <div
       className={cn(
-        "flex flex-col h-full bg-panel border-border",
-        compact
+        "file-editor flex flex-col h-full bg-panel border-border",
+        overlay
           ? "w-full shrink-0"
           : "w-full min-w-0 border-r",
       )}
     >
       <FileEditorTabs
+        overlay={overlay}
         openFiles={openFiles}
         tabs={tabs}
         activeFileId={activeFileId}
@@ -276,10 +278,10 @@ export function FileEditor() {
   );
 
   // 窄屏为全屏覆盖（编辑需要全宽；点遮罩/关闭仅收起面板，标签保留），宽屏参与布局流
-  if (compact) {
+  if (overlay) {
     return (
       <DialogSurface open title={cur?.file.name ?? t("editor.loading")} onClose={collapseFilePanel}
-        placement="right" className="border-0">
+        placement="right" className="workbench-sheet border-0">
         {body}
       </DialogSurface>
     );

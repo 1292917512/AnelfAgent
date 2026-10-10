@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-/** 监听元素尺寸供虚拟化树填充父容器：挂载时同步测量一次，之后经 ResizeObserver 跟随变化 */
+/** 读取容器实际尺寸，并跟随布局变化。 */
 export function useElementSize<T extends HTMLElement>() {
   const ref = useRef<T>(null);
   const [size, setSize] = useState<{ width: number; height: number } | null>(null);

@@ -135,5 +135,9 @@
     "excluded": "本会话已关闭自动附带上下文，手动添加的附件仍会发送。",
     "active": "当前文件",
     "selection": "选区行号"
-  }
+  },
+  "welcomeTitle": "从一个想法，开始。",
+  "welcomeFiles": "浏览工作区",
+  "welcomeTasks": "查看任务",
+  "placeholderTouch": "输入消息，或引用工作区文件…"
 }

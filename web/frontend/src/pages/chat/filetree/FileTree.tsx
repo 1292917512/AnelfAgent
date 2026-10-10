@@ -9,7 +9,7 @@ import { ConfirmDialog } from "@/components/ui";
 import { useFileTreeStore } from "./file-tree-store";
 import { chainTailPath, compactChains, filterChangedTree, findNode, parentPath, treeChildren } from "./file-tree-utils";
 import { useTreeChangesStore } from "@/stores/tree-changes-store";
-import { useElementSize } from "./use-element-size";
+import { useElementSize } from "@/hooks/useElementSize";
 import { FileTreeContext, FileTreeNode, FileTreeRow } from "./FileTreeNode";
 import { registerTreeRoot, sharedDndManager } from "../tree-dnd";
 import { FileTreeDragPreview } from "./FileTreeDragPreview";
@@ -41,6 +41,7 @@ export function FileTree({ root, onUpload, changedOnly }: Props) {
   const tree = useFileTreeStore((s) => s.trees[root]);
   const pendingEdit = useFileTreeStore((s) => s.pendingEdit);
   const collapseSeq = useFileTreeStore((s) => s.collapseSeq);
+  const previousCollapseSeq = useRef(collapseSeq);
   const fileTreeFocus = useWorkbenchStore((s) => s.fileTreeFocus);
   const changeEntries = useTreeChangesStore((s) => s.entries);
   const [menu, setMenu] = useState<MenuState | null>(null);
@@ -48,7 +49,7 @@ export function FileTree({ root, onUpload, changedOnly }: Props) {
   const [deleting, setDeleting] = useState(false);
 
   const store = useFileTreeStore.getState();
-  const rowHeight = isMobile ? 32 : 26;
+  const rowHeight = isMobile ? 44 : 30;
 
   useEffect(() => {
     void store.loadRoot(root);
@@ -154,7 +155,8 @@ export function FileTree({ root, onUpload, changedOnly }: Props) {
 
   // 全部折叠信号
   useEffect(() => {
-    if (collapseSeq > 0) treeRef.current?.closeAll();
+    if (previousCollapseSeq.current !== collapseSeq) treeRef.current?.closeAll();
+    previousCollapseSeq.current = collapseSeq;
   }, [collapseSeq]);
 
   // AI ui_open_panel(files, path) 焦点定位：展开祖先 + 选中 + 滚动到位
@@ -301,6 +303,7 @@ export function FileTree({ root, onUpload, changedOnly }: Props) {
               renderRow={FileTreeRow}
               renderDragPreview={FileTreeDragPreview}
               openByDefault={false}
+              initialOpenState={store.expanded[root]}
               width={size.width}
               height={size.height}
               rowHeight={rowHeight}
@@ -313,6 +316,7 @@ export function FileTree({ root, onUpload, changedOnly }: Props) {
               }
               onToggle={(id) => {
                 const node = treeRef.current?.get(id);
+                store.setExpanded(root, id, node?.isOpen ?? false);
                 if (!node || node.data.type !== "dir" || !node.isOpen) return;
                 if (node.data.children?.length || node.data.has_children === false) return;
                 void store.loadChildren(root, id).then(async () => {

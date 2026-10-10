@@ -106,9 +106,6 @@ export function FileTreeNode(props: NodeRendererProps<WorkspaceNode>) {
       node.toggle();
     } else if (openable) {
       openFile(data.path, root);
-      // 移动端打开文件后收起抽屉，直接进入编辑器（仅在抽屉打开时收起）
-      const wb = useWorkbenchStore.getState();
-      if (isMobile && wb.leftOpen) wb.toggleLeft();
     }
   };
 
@@ -117,7 +114,7 @@ export function FileTreeNode(props: NodeRendererProps<WorkspaceNode>) {
       ref={dragHandle}
       style={style}
       className={cn(
-        "flex items-center gap-1 px-1.5 rounded text-xs select-none transition-colors cursor-pointer",
+        "flex h-full items-center gap-1 px-1.5 rounded text-xs select-none transition-colors cursor-pointer",
         node.isSelected || isActive ? "bg-accent-subtle text-accent" : "text-foreground hover:bg-hover",
         node.willReceiveDrop && "bg-accent-subtle ring-1 ring-accent",
         node.isDragging && "opacity-50",
@@ -180,7 +177,7 @@ export function FileTreeNode(props: NodeRendererProps<WorkspaceNode>) {
       {isOpened && <span className="w-1 h-1 rounded-full bg-accent shrink-0" aria-label="opened" />}
       {isMobile && !node.isEditing && (
         <button
-          className="p-1 -mr-1 rounded text-muted hover:text-foreground shrink-0"
+          className="flex h-full w-10 -mr-1 items-center justify-center rounded text-muted hover:text-foreground shrink-0"
           aria-label="more"
           onClick={(e) => {
             e.stopPropagation();

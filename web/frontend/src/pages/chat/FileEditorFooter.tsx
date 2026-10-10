@@ -21,7 +21,7 @@ export function FileEditorFooter({
 }) {
   const { t } = useTranslation("workbench");
   return (
-    <div className="flex items-center gap-2 px-3 py-2 border-t border-border shrink-0">
+    <div className="editor-footer safe-area-bottom flex items-center gap-2 px-3 py-2 border-t border-border shrink-0">
       <span className="text-[11px] text-muted mr-auto truncate">
         {cur.file.path} · {(cur.file.size / 1024).toFixed(1)} KB
         {savedTick && <span className="text-ok ml-2">{t("editor.saved")}</span>}

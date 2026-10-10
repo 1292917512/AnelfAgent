@@ -64,17 +64,17 @@ export function TimelineView({ session, selectedNodeId, autoFollow, onSelect, co
         </button>)}
       </div>
     </div>
-    <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto p-3 md:p-4">
+    <div ref={scrollRef} className="trace-timeline min-h-0 flex-1 overflow-y-auto overscroll-contain p-3 md:p-5">
       {visibleGroups.length === 0 && <div className="px-4 py-10 text-center text-sm text-muted">
         <p>{t(session.nodes.length ? "noMatchingNodes" : "waitingForActivity")}</p>
         {(terms || filter !== "all") && <button className="mt-3 text-accent" onClick={() => { setQuery(""); setFilter("all"); }}>{t("resetFilters")}</button>}
       </div>}
-      <div className="mx-auto max-w-4xl space-y-4">
+      <div className="trace-rounds mx-auto max-w-4xl">
         {visibleGroups.map((group, index) => {
           const hasIssue = group.nodes.some((node) => node.status === "error" || node.status === "warning");
           const containsSelected = group.nodes.some((node) => node.id === selectedNodeId);
           const isOpen = containsSelected || (expanded[group.id] ?? (index === visibleGroups.length - 1 || hasIssue || !!terms || filter !== "all" || !group.anchor));
-          return <section key={group.id} className="rounded-xl border border-border bg-card p-2 shadow-sm">
+          return <section key={group.id} className="trace-round bg-card p-2">
             <button type="button" aria-expanded={isOpen} onClick={() => setExpanded((value) => ({ ...value, [group.id]: !isOpen }))}
               className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs text-muted hover:text-foreground">
               <ChevronDown size={14} className={cn("transition-transform", !isOpen && "-rotate-90")} />

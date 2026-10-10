@@ -21,6 +21,8 @@ const dirKey = (root: WorkspaceRoot, path: string) => `${root}:${path}`;
 const t = (key: string): string => i18n.t(key, { ns: "workbench" });
 
 interface FileTreeState {
+  expanded: Record<WorkspaceRoot, Record<string, boolean>>;
+  setExpanded: (root: WorkspaceRoot, path: string, open: boolean) => void;
   trees: Record<WorkspaceRoot, RootTree>;
   /** 正在加载子级的目录（key = `${root}:${path}`） */
   loadingDirs: Record<string, boolean>;
@@ -56,6 +58,8 @@ interface FileTreeState {
 }
 
 export const useFileTreeStore = create<FileTreeState>((set, get) => ({
+  expanded: { workspace: {}, project: {} },
+  setExpanded: (root, path, open) => set((s) => ({ expanded: { ...s.expanded, [root]: { ...s.expanded[root], [path]: open } } })),
   trees: { workspace: EMPTY_TREE, project: EMPTY_TREE },
   loadingDirs: {},
   selection: { workspace: null, project: null },
@@ -121,7 +125,7 @@ export const useFileTreeStore = create<FileTreeState>((set, get) => ({
 
   requestEdit: (root, path) => set({ pendingEdit: { root, path } }),
   clearPendingEdit: () => set({ pendingEdit: null }),
-  collapseAll: () => set((s) => ({ collapseSeq: s.collapseSeq + 1 })),
+  collapseAll: () => set((s) => ({ collapseSeq: s.collapseSeq + 1, expanded: { workspace: {}, project: {} } })),
 
   createEntry: async (root, parent, kind, defaultName) => {
     const children = get().trees[root].children ?? [];

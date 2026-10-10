@@ -1,15 +1,13 @@
 import { useEffect, useState, lazy, Suspense } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { FolderTree, PanelRight, Trash2 } from "lucide-react";
-import { Group, Panel, Separator, type Layout, type LayoutChangedMeta } from "react-resizable-panels";
+import { Bot, Trash2 } from "lucide-react";
+import { Group, Panel, Separator, type Layout } from "react-resizable-panels";
 import { chatApi } from "@/lib/api";
-import { cn } from "@/lib/utils";
-import { useCompactWorkbench } from "@/lib/use-media-query";
+import { useElementSize } from "@/hooks/useElementSize";
 import { useChatStore } from "@/stores/chat-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { Button } from "@/components/ui";
-import { ModelSelect } from "@/components/models/ModelSelect";
 import { MessageList } from "./chat/MessageList";
 import { ChatInput } from "./chat/ChatInput";
 import { RealtimeCallProvider } from "./chat/RealtimeCallBar";
@@ -17,196 +15,89 @@ import { ChatDropZone } from "./chat/ChatDropZone";
 import { StatusCapsule } from "./chat/StatusCapsule";
 import { ActivityBar } from "./chat/ActivityBar";
 import { Dock, LeftDock } from "./chat/Dock";
-import { ContextChip } from "./chat/ContextChip";
 import { ChatTabs } from "./chat/ChatTabs";
 import { PlanPanel } from "@/components/plan/PlanPanel";
+import { WorkbenchToolbar } from "./chat/WorkbenchToolbar";
+import { resolveWorkbenchLayout } from "@/lib/workbench-layout";
 
-// CodeMirror 编辑器体积较大，仅在打开文件时按需加载
-const FileEditor = lazy(() =>
-  import("./chat/FileEditor").then((m) => ({ default: m.FileEditor })),
-);
+const FileEditor = lazy(() => import("./chat/FileEditor").then((m) => ({ default: m.FileEditor })));
+const LAYOUT_KEY = "anelf:workbench-layout:";
 
-/** 三栏宽度持久化 key（用户拖拽后记住布局） */
-const LAYOUT_STORAGE_KEY = "anelf:chat-layout-v1";
-
-function loadLayout(): Layout | undefined {
+function loadLayout(key: string): Layout | undefined {
   try {
-    const raw = localStorage.getItem(LAYOUT_STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as Layout) : undefined;
-  } catch {
-    return undefined;
-  }
+    const value: unknown = JSON.parse(localStorage.getItem(LAYOUT_KEY + key) ?? "null");
+    if (!value || typeof value !== "object" || Array.isArray(value)) return;
+    const entries = Object.entries(value);
+    if (!entries.length) return;
+    const layout: Layout = {};
+    for (const [id, size] of entries) {
+      if (typeof size !== "number" || !Number.isFinite(size) || size <= 0 || size > 100) return;
+      layout[id] = size;
+    }
+    return layout;
+  } catch { return; }
 }
 
-/** 栏间拖拽手柄（hover 高亮；双击复位到默认宽度，库内置行为） */
 function ResizeHandle({ id }: { id: string }) {
-  return (
-    <Separator
-      id={id}
-      className="group relative w-1 shrink-0 bg-transparent hover:bg-accent/20 transition-colors"
-    >
-      <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-border group-hover:bg-accent/50 transition-colors" />
-    </Separator>
-  );
+  return <Separator id={id} className="workbench-separator" />;
 }
 
-/** 对话工作台：左文件树 / 中对话流 / 右功能 Dock 三栏布局（宽屏可拖拽调宽） */
+/** 对话、文件和运行面板按容器空间排列；窄屏保留单一活动面板。 */
 export default function Chat() {
   const { t } = useTranslation("chat");
-  const compact = useCompactWorkbench();
+  const { ref, size } = useElementSize<HTMLDivElement>();
   const loadHistory = useChatStore((s) => s.loadHistory);
   const loadChats = useChatStore((s) => s.loadChats);
   const clearMessages = useChatStore((s) => s.clearMessages);
-
   const leftOpen = useWorkbenchStore((s) => s.leftOpen);
   const dockOpen = useWorkbenchStore((s) => s.dockOpen);
-  const toggleLeft = useWorkbenchStore((s) => s.toggleLeft);
-  const toggleDock = useWorkbenchStore((s) => s.toggleDock);
-  // 编辑器面板可见：有打开文件且面板展开（收起 filePanelOpen=false 时不占位，
-  // 否则 Panel 仍渲染但 FileEditor return null 出现空白区域）
   const hasOpenFiles = useWorkbenchStore((s) => s.openFiles.length > 0 && s.filePanelOpen);
-  const filePanelExpanded = useWorkbenchStore((s) => s.filePanelExpanded);
+  const expanded = useWorkbenchStore((s) => s.filePanelExpanded);
+  const activeSurface = useWorkbenchStore((s) => s.activeSurface);
+  const setContainerWidth = useWorkbenchStore((s) => s.setContainerWidth);
+  const [layoutRevision, setLayoutRevision] = useState(0);
+  const width = size?.width ?? null;
+  const layout = resolveWorkbenchLayout(width ?? 0, { files: leftOpen, editor: hasOpenFiles, dock: dockOpen, expanded }, activeSurface);
+  const { filesInline, editorInline, dockInline, conversationHidden } = layout;
+  const layoutId = [filesInline && "files", editorInline && "editor", !conversationHidden && "chat", dockInline && "dock"].filter(Boolean).join("-");
+  const { data: botName } = useQuery({ queryKey: ["botName"], queryFn: () => chatApi.botName().then((r) => r.data.name) });
 
-  // 初始布局只读一次（后续拖拽经 onLayoutChanged 回写）
-  const [defaultLayout] = useState<Layout | undefined>(loadLayout);
-
-  const { data: botName } = useQuery({
-    queryKey: ["botName"],
-    queryFn: () => chatApi.botName().then((r) => r.data.name),
-  });
-
+  useEffect(() => { loadChats(); loadHistory(); }, [loadChats, loadHistory]);
   useEffect(() => {
-    loadChats();
-    loadHistory();
-  }, [loadChats, loadHistory]);
+    setContainerWidth(width);
+    return () => setContainerWidth(null);
+  }, [width, setContainerWidth]);
 
-  const handleLayoutChanged = (layout: Layout, meta: LayoutChangedMeta) => {
-    if (!meta.isUserInteraction) return;
-    try {
-      localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(layout));
-    } catch { /* 存储不可用时忽略 */ }
-  };
-
-  // 中栏：对话流（编辑器全屏且有打开文件时让位隐藏，文件树/Dock 保留）
-  const centerHidden = filePanelExpanded && hasOpenFiles;
-  const center = (
-    <ChatDropZone className="flex-1 flex flex-col min-w-0 h-full">
-      <div className="flex-1 flex flex-col min-w-0 h-full p-3 md:p-4 relative">
-      {/* 头部 */}
-      <div className="flex flex-wrap items-center justify-between gap-2 mb-3 shrink-0">
-        <div className="flex items-center gap-1 min-w-0">
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={toggleLeft}
-            title={t("workbench:toggleFiles")}
-            className={cn(leftOpen && "text-accent")}
-          >
-            <FolderTree size={16} />
-          </Button>
-          <h2 className="text-base md:text-lg font-semibold text-heading truncate">
-            {botName ?? "Bot"}
-          </h2>
-        </div>
-        <div className="flex min-w-0 items-center gap-1.5">
-          <ContextChip />
-          <ModelSelect modelType="chat" compact />
-          <Button variant="secondary" size="sm" title={t("clear")} aria-label={t("clear")} onClick={clearMessages}>
-            <Trash2 size={14} />
-            <span className="hidden sm:inline">{t("clear")}</span>
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={toggleDock}
-            title={t("workbench:toggleDock")}
-            className={cn(dockOpen && "text-accent")}
-          >
-            <PanelRight size={16} />
-          </Button>
-        </div>
-      </div>
-
-      {/* 多会话 Tab */}
+  const editor = (overlay: boolean) => <Suspense fallback={<div className="p-6 text-sm text-muted" role="status">{t("workbench:editor.loading")}</div>}><FileEditor overlay={overlay} /></Suspense>;
+  const conversation = <ChatDropZone className="conversation-pane flex h-full min-w-0 flex-col">
+    <div className="conversation-heading">
+      <div className="conversation-identity flex min-w-0 items-center gap-2.5"><span className="agent-avatar"><Bot size={18} /></span><h2 className="truncate text-sm font-semibold text-heading">{botName ?? "AnelfAgent"}</h2></div>
       <ChatTabs />
-
-      <MessageList />
-      <ActivityBar />
-      <ChatInput />
-
-      {/* 浮动状态胶囊（absolute 右上角；思维链会话态 > 对话工作态 两级优先） */}
-      <StatusCapsule />
-
-      {/* 对话窗口内嵌入式悬浮计划窗（absolute，相对中栏容器定位，可拖拽） */}
-      <PlanPanel />
-      </div>
-    </ChatDropZone>
-  );
-
-  // 窄屏：三栏全部退化为抽屉（Dock/LeftDock/FileEditor 内部自行处理）
-  if (compact) {
-    return (
-      <RealtimeCallProvider>
-      <div className="relative flex h-full min-h-0">
-        <LeftDock />
-        {hasOpenFiles && (
-          <Suspense fallback={null}>
-            <FileEditor />
-          </Suspense>
-        )}
-        {!centerHidden && center}
-        <Dock />
-      </div>
-      </RealtimeCallProvider>
-    );
-  }
-
-  // 宽屏：可拖拽调宽的三栏（宽度持久化到 localStorage，双击复位）
-  return (
-    <RealtimeCallProvider>
-    <div className="relative h-full min-h-0">
-      <Group
-        orientation="horizontal"
-        className="h-full"
-        defaultLayout={defaultLayout}
-        onLayoutChanged={handleLayoutChanged}
-      >
-        {leftOpen && (
-          <Panel id="left" defaultSize="15" minSize="10%" maxSize="30%" className="min-w-0 h-full">
-            <LeftDock />
-          </Panel>
-        )}
-        {leftOpen && <ResizeHandle id="sep-left" />}
-
-        {hasOpenFiles && (
-          <Panel
-            id="editor"
-            defaultSize={centerHidden ? "70" : "28"}
-            minSize="18%"
-            className="min-w-0 h-full"
-          >
-            <Suspense fallback={null}>
-              <FileEditor />
-            </Suspense>
-          </Panel>
-        )}
-        {hasOpenFiles && !centerHidden && <ResizeHandle id="sep-editor" />}
-
-        {!centerHidden && (
-          <Panel id="center" minSize="25%" className="min-w-0 h-full">
-            {center}
-          </Panel>
-        )}
-
-        {dockOpen && !centerHidden && <ResizeHandle id="sep-dock" />}
-        {dockOpen && (
-          <Panel id="dock" defaultSize="20" minSize="14%" maxSize="40%" className="min-w-0 h-full">
-            <Dock />
-          </Panel>
-        )}
-      </Group>
-
+      <Button variant="ghost" size="icon" title={t("clear")} onClick={clearMessages}><Trash2 size={15} /></Button>
     </div>
-    </RealtimeCallProvider>
-  );
+    <div className="conversation-body relative flex min-h-0 flex-1 flex-col">
+      <MessageList /><ActivityBar /><StatusCapsule /><ChatInput /><PlanPanel />
+    </div>
+  </ChatDropZone>;
+
+  return <RealtimeCallProvider>
+    <div ref={ref} className="workbench flex h-full min-h-0 flex-col">
+      <WorkbenchToolbar {...layout} onResetLayout={() => {
+        try { localStorage.removeItem(LAYOUT_KEY + layoutId); } catch { /* 布局存储可选 */ }
+        setLayoutRevision((revision) => revision + 1);
+      }} />
+      <Group key={`${layoutId}:${layoutRevision}`} orientation="horizontal" className="min-h-0 flex-1" defaultLayout={loadLayout(layoutId)}
+        onLayoutChanged={(next, meta) => {
+          if (meta.isUserInteraction) try { localStorage.setItem(LAYOUT_KEY + layoutId, JSON.stringify(next)); } catch { /* 布局存储可选 */ }
+        }}>
+        {filesInline && <><Panel id="files" defaultSize={256} minSize={240} maxSize="35%"><LeftDock /></Panel><ResizeHandle id="files-separator" /></>}
+        {editorInline && <><Panel id="editor" defaultSize="45%" minSize={420}>{editor(false)}</Panel>{!conversationHidden && <ResizeHandle id="editor-separator" />}</>}
+        {!conversationHidden && <Panel id="chat" minSize={Math.min(440, size?.width ?? 440)}>{conversation}</Panel>}
+        {dockInline && <><ResizeHandle id="dock-separator" /><Panel id="dock" defaultSize={340} minSize={320} maxSize="40%"><Dock /></Panel></>}
+      </Group>
+      {layout.filesVisible && !filesInline && <LeftDock overlay />}
+      {layout.editorVisible && !editorInline && editor(true)}
+      {layout.dockVisible && !dockInline && <Dock overlay />}
+    </div>
+  </RealtimeCallProvider>;
 }

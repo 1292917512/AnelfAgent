@@ -43,6 +43,6 @@ export function ThinkingSessionsPanel({ sessions, activeId, onSelect, onRefresh,
     </div>
   </>;
   return isMobile
-    ? <DialogSurface open={open} onClose={onClose} title={t("sessionList")} placement="left" className="max-w-xs">{content}</DialogSurface>
+    ? <DialogSurface open={open} onClose={onClose} title={t("sessionList")} placement="left" className="sm:max-w-sm">{content}</DialogSurface>
     : <aside className="flex w-60 shrink-0 flex-col border-r border-border bg-panel">{content}</aside>;
 }

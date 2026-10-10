@@ -1,6 +1,8 @@
 import { useNow } from "@/hooks/useNow";
+import { useState } from "react";
+import { useIsMobile } from "@/lib/use-media-query";
 import { useTranslation } from "react-i18next";
-import { AlertCircle, ArrowRight, Brain, Clock, Coins, Wrench } from "lucide-react";
+import { AlertCircle, ArrowRight, Brain, ChevronDown, Clock, Coins, Wrench } from "lucide-react";
 import type { ThinkingSession } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { durationLabel, nodeTitle, sessionKind, textValue, traceSummary } from "./trace-model";
@@ -10,6 +12,8 @@ export function SessionOverview({ session, onSelect, onSelectSession, compact = 
   session: ThinkingSession; onSelect: (id: string) => void; onSelectSession?: (id: string) => void; compact?: boolean;
 }) {
   const { t } = useTranslation("thinking");
+  const mobile = useIsMobile();
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const now = useNow(!session.ended);
   const summary = traceSummary(session);
   const elapsed = session.duration_ms ?? Math.max(0, (session.end_time ? session.end_time * 1000 : now) - session.start_time * 1000);
@@ -33,7 +37,7 @@ export function SessionOverview({ session, onSelect, onSelectSession, compact = 
         <h2 className={cn("mt-2 font-semibold text-heading break-words", compact ? "text-sm" : "text-base")}>
           {summary.current ? nodeTitle(summary.current, t) : t("waitingForActivity")}
         </h2>
-        {goal && <p className="mt-1 truncate text-xs text-muted" title={goal}>{goal}</p>}
+        {goal && (!mobile || detailsOpen) && <p className="mt-1 truncate text-xs text-muted" title={goal}>{goal}</p>}
         {session.parent_session_id && onSelectSession && <button className="mt-2 break-all text-left text-xs text-accent hover:underline"
           onClick={() => onSelectSession(session.parent_session_id!)}>{t("parentSession", { id: session.parent_session_id })}</button>}
       </div>
@@ -41,6 +45,10 @@ export function SessionOverview({ session, onSelect, onSelectSession, compact = 
         <AlertCircle size={14} />{t("issueCount", { count: summary.issues.length })}<ArrowRight size={12} />
       </button>}
     </div>
+    {mobile && !compact && <button type="button" aria-expanded={detailsOpen} onClick={() => setDetailsOpen(!detailsOpen)} className="mt-2 flex min-h-10 w-full items-center gap-2 text-xs text-muted">
+      <span>{durationLabel(elapsed)} · {summary.tools} {t("toolCalls")} · {summary.usage.tokens.toLocaleString()} tokens</span><ChevronDown size={15} className={cn("ml-auto", detailsOpen && "rotate-180")} />
+    </button>}
+    <div hidden={mobile && !compact && !detailsOpen}>
     <dl className="mt-3 grid grid-cols-4 gap-2 border-t border-border pt-3">
       {metrics.map(({ icon: Icon, label, value }) => <div key={label} className="min-w-0">
         <dt className="flex items-center gap-1.5 whitespace-nowrap text-[10px] text-muted sm:text-[11px]"><Icon size={12} className="hidden sm:block" />{label}</dt>
@@ -48,6 +56,7 @@ export function SessionOverview({ session, onSelect, onSelectSession, compact = 
       </div>)}
     </dl>
     {!compact && <TraceStages session={session} onSelect={onSelect} />}
+    </div>
     {session.ended && session.nodes.some((node) => node.status === "running") && <p className="mt-2 text-xs text-warn">{t("incompleteTrace")}</p>}
     {session.nodes_truncated && <p className="mt-2 text-xs text-warn">{t("truncatedTrace")}</p>}
   </section>;

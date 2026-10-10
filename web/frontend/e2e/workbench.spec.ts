@@ -81,6 +81,7 @@ test("notes keep unsaved content when another file is selected", async ({ page }
 test("navigation exposes all core areas and mobile pages stay within the viewport", async ({ page, isMobile }) => {
   await page.goto("/webui/tasks");
   if (isMobile) await page.getByRole("button", { name: "More", exact: true }).click();
+  else await page.getByRole("button", { name: "Expand sidebar", exact: true }).click();
   const navigation = page.getByRole("navigation").first();
   await expect(navigation.getByRole("link", { name: /Persona/i })).toBeVisible();
   await expect(navigation.getByRole("link", { name: /Config/ })).toBeAttached();

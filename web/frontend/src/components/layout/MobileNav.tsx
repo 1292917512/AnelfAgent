@@ -9,9 +9,9 @@ export function MobileNav() {
   const { t } = useTranslation("nav");
   const openMenu = useAppStore((state) => state.setMobileMenuOpen);
   return (
-    <nav aria-label={t("navigation")} className="flex shrink-0 items-stretch border-t border-border bg-panel md:hidden safe-area-bottom">
+    <nav aria-label={t("navigation")} className="mobile-nav flex shrink-0 items-stretch border-t border-border bg-panel md:hidden safe-area-bottom">
       {getNavigation().filter((item) => item.mobile).map((item) => <NavLink key={item.path} to={item.path} end={item.path === "/"}
-        className={({ isActive }) => cn("flex min-h-14 flex-1 flex-col items-center justify-center gap-1 text-[10px] font-medium", isActive ? "text-accent" : "text-muted")}>
+        className={({ isActive }) => cn("mobile-nav-item flex min-h-14 flex-1 flex-col items-center justify-center gap-1 text-[10px] font-medium", isActive ? "is-active text-accent" : "text-muted")}>
         <item.icon size={19} strokeWidth={1.8} /><span>{t(item.label)}</span>
       </NavLink>)}
       <button type="button" onClick={() => openMenu(true)} className="flex min-h-14 flex-1 flex-col items-center justify-center gap-1 text-[10px] font-medium text-muted">

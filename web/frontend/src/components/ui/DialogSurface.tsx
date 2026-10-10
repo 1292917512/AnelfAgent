@@ -31,13 +31,15 @@ export function DialogSurface({
         <Dialog.Content
           ref={surfaceRef}
           aria-describedby={undefined}
-          className={cn("fixed z-[100] w-full border border-border bg-card text-foreground shadow-lg outline-none flex flex-col", PLACEMENT[placement], className)}
+          data-placement={placement}
+          className={cn("dialog-surface fixed z-[100] w-full border border-border bg-card text-foreground shadow-lg outline-none flex flex-col", PLACEMENT[placement], className)}
           onOpenAutoFocus={() => {
             returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
           }}
           onCloseAutoFocus={(event) => {
             event.preventDefault();
             if (returnFocus.current?.isConnected) returnFocus.current.focus();
+            else document.querySelector<HTMLElement>("main")?.focus();
           }}
           onEscapeKeyDown={(event) => {
             const owner = event.target instanceof Element ? event.target.closest('[role="dialog"]') : null;

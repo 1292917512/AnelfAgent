@@ -99,5 +99,8 @@
     "foldSeg": "每批折叠 {{count}} 条",
     "range": "窗口 {{min}} ~ {{max}} 条"
   },
-  "environmentManaged": "由环境变量 {{name}} 管理"
+  "environmentManaged": "由环境变量 {{name}} 管理",
+  "selectGroup": "选择配置分组",
+  "groupLabel": "当前分组",
+  "filterGroups": "搜索模块或分组…"
 }

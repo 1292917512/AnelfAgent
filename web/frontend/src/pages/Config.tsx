@@ -7,6 +7,7 @@ import { PageContainer, PageHeader } from "@/components/common/PageContainer";
 import { Loader2, Search, SlidersHorizontal, X } from "lucide-react";
 import { buildConfigTree, findGroupOfKey, searchConfigItems } from "@/pages/config/configTree";
 import { ConfigSidebar } from "@/pages/config/ConfigSidebar";
+import { ConfigGroupPicker } from "@/pages/config/ConfigGroupPicker";
 import { ConfigSection } from "@/pages/config/ConfigSection";
 import { ConfigDetailDrawer } from "@/pages/config/ConfigDetailDrawer";
 import { ConversationWindowRow } from "@/pages/config/ConversationWindowRow";
@@ -119,24 +120,7 @@ export default function Config() {
             )}
           </div>
 
-          {/* 移动端分组下拉 */}
-          {!searching && (
-            <select
-              aria-label={t("title")}
-              value={currentGroup?.group ?? ""}
-              onChange={(e) => setActiveGroup(e.target.value)}
-              className="md:hidden w-full bg-card border border-border rounded-md px-3 py-2 text-sm text-foreground outline-none focus:border-ring"
-            >
-              {tree.flatMap((m) =>
-                m.sections.map((s) => (
-                  <option key={s.group} value={s.group}>
-                    {t(`modules.${m.module}`, { defaultValue: m.module })} ·{" "}
-                    {t(`sections.${s.group}`, { defaultValue: s.group })}
-                  </option>
-                )),
-              )}
-            </select>
-          )}
+          {!searching && <ConfigGroupPicker tree={tree} active={currentGroup?.group ?? null} onSelect={setActiveGroup} />}
 
           {isLoading ? (
             <div className="flex justify-center py-12 text-muted">

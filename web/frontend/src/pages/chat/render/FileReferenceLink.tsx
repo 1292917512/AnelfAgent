@@ -12,7 +12,7 @@ export function FileReferenceLink({ reference, children }: { reference: FileRefe
   const label = t(root === "project" ? "rootProject" : "rootWorkspace");
   return <button type="button" title={`${label} / ${path}`} onClick={() => {
     const state = useWorkbenchStore.getState();
-    if (isDir && !state.leftOpen) state.toggleLeft();
+    if (isDir) state.showSurface("files");
     if (!isDir) state.openFile(path, root);
     state.setFileTreeFocus(path, root);
     navigate("/");

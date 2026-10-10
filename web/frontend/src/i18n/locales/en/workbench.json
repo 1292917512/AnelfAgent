@@ -171,5 +171,9 @@
     "keepEditing": "Keep editing",
     "useRemote": "Use disk version",
     "overwrite": "Replace with local draft"
-  }
+  },
+  "openEditor": "Open editor",
+  "editorLabel": "Editor",
+  "backToChat": "Back to conversation",
+  "resetLayout": "Reset panel widths"
 }

@@ -4,6 +4,7 @@ import { GitFork, Loader2, Mic, Copy, Volume2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatRelativeTimestamp } from "@/lib/format";
 import { useChatStore } from "@/stores/chat-store";
+import { useWorkbenchStore } from "@/stores/workbench-store";
 import { usePlanStore } from "@/stores/plan-store";
 import { useDelegationStore } from "@/stores/delegation-store";
 import { ConfirmDialog } from "@/components/ui/Modal";
@@ -63,7 +64,7 @@ const MessageRow = memo(function MessageRow({ msg, foldPivot }: { msg: ChatMessa
 
   return (
     <div className={cn("flex group/msg", isUser ? "justify-end" : "justify-start")}>
-      <div className={cn("max-w-[85%] sm:max-w-[80%]", isUser ? "text-right" : "text-left")}>
+      <div className={cn("message-content min-w-0", isUser ? "is-user text-right" : "is-assistant text-left")}>
         {/* 本轮思考过程（内存态固化，默认折叠；仅保留最近几轮，刷新即消失） */}
         {!isUser && msg.thinking && (
           <div className="mb-1.5">
@@ -83,7 +84,7 @@ const MessageRow = memo(function MessageRow({ msg, foldPivot }: { msg: ChatMessa
         {msg.content && (
           <div
             className={cn(
-              "rounded-lg px-4 py-2.5 text-sm leading-relaxed inline-block text-left",
+              "message-bubble rounded-2xl px-4 py-3 text-sm leading-relaxed inline-block text-left",
               isUser ? "bg-accent-subtle" : "bg-secondary",
               msg.delivery === "submitting" && "opacity-70",
               msg.delivery === "failed" && "border border-danger/50",
@@ -101,13 +102,13 @@ const MessageRow = memo(function MessageRow({ msg, foldPivot }: { msg: ChatMessa
               <CollapsibleUserMessage>
                 <CollapsibleMarkdown
                   content={msg.content}
-                  fadeClass="from-accent-subtle"
+                  fadeClass="from-elevated"
                 />
               </CollapsibleUserMessage>
             ) : (
               <CollapsibleMarkdown
                 content={msg.content}
-                fadeClass="from-secondary"
+                fadeClass="from-card"
               />
             )}
           </div>
@@ -128,7 +129,7 @@ const MessageRow = memo(function MessageRow({ msg, foldPivot }: { msg: ChatMessa
               <button
                 type="button"
                 onClick={() => setConfirmFold(true)}
-                className="opacity-0 group-hover/msg:opacity-100 transition-opacity text-muted hover:text-accent"
+                className="md:opacity-0 group-hover/msg:opacity-100 focus-visible:opacity-100 transition-opacity text-muted hover:text-accent"
                 title={t("fold.fromHere")}
               >
                 <GitFork size={11} />
@@ -301,7 +302,7 @@ export function MessageList() {
   }, [activeChatId]);
 
   return (
-    <div ref={scrollRef} className="flex-1 overflow-y-auto space-y-3 pr-1 mb-3 min-h-0">
+    <div ref={scrollRef} className="message-list flex-1 overflow-y-auto overscroll-contain min-h-0">
       <HistoryStatus />
       {!sseConnected && (
         <div className="flex justify-center" data-testid="sse-reconnect-banner">
@@ -324,8 +325,14 @@ export function MessageList() {
         </div>
       )}
       {historyLoaded && timeline.length === 0 && (
-        <div className="flex items-center justify-center h-full text-muted text-sm">
-          {t("startConversation")}
+        <div className="conversation-welcome">
+          <span className="welcome-orbit" aria-hidden="true"><span /></span>
+          <h3>{t("welcomeTitle")}</h3>
+          <p>{t("startConversation")}</p>
+          <div className="welcome-actions">
+            <button type="button" onClick={() => useWorkbenchStore.getState().showSurface("files")}>{t("welcomeFiles")}</button>
+            <button type="button" onClick={() => useWorkbenchStore.getState().setActiveTab("tasks")}>{t("welcomeTasks")}</button>
+          </div>
         </div>
       )}
       {timeline.map((entry) => {

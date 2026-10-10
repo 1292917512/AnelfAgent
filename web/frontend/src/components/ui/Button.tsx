@@ -40,9 +40,10 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       type={type}
       disabled={disabled || loading}
       aria-busy={loading || undefined}
+      data-size={size}
       aria-label={rest["aria-label"] ?? (size === "icon" ? rest.title : undefined)}
       className={cn(
-        "inline-flex items-center justify-center rounded-lg font-medium transition-colors select-none",
+        "app-button inline-flex items-center justify-center rounded-lg font-medium transition-colors select-none",
         "disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none",
         VARIANT_CLASSES[variant],
         SIZE_CLASSES[size],

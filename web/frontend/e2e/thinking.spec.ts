@@ -92,7 +92,7 @@ test("chat drafts stay isolated across conversations and an earlier send acknowl
   await expect(input).toHaveValue("Next request");
 });
 
-test("historical traces start at the beginning and provider failures stay inside their panel", async ({ page }) => {
+test("historical traces start at the beginning and provider failures stay inside their panel", async ({ page, isMobile }) => {
   await page.route("**/api/thinking/sessions?*", (route) => route.fulfill({ json: { sessions: [trace], count: 1 } }));
   await page.goto("/webui/thinking");
   await expect(page.locator('[data-trace-node="context"]')).toBeInViewport();
@@ -100,6 +100,7 @@ test("historical traces start at the beginning and provider failures stay inside
   const firstNode = page.locator('.react-flow__node[data-id="start"]');
   await expect(firstNode).toBeInViewport();
   await expect.poll(async () => (await firstNode.boundingBox())?.width ?? 0).toBeGreaterThan(140);
+  if (isMobile) await page.getByRole("main").getByRole("button", { name: "More", exact: true }).click();
   await page.getByRole("button", { name: "Context Injection", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Context Injection" });
   await expect(dialog.getByRole("alert")).toContainText("Test service unavailable");
