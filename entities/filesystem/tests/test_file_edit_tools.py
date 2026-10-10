@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import time
+from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 
@@ -372,6 +374,73 @@ class TestAtomicWrite:
 # ------------------------------------------------------------------
 
 class TestSearchFiles:
+    def test_recover_moved_directory_from_verified_parent(self, workspace: Path) -> None:
+        """错误路径的回执可接到发现工具，最终读到真实文件，无需猜替代路径。"""
+        actual = workspace / "agent" / "memory" / "graph"
+        actual.mkdir(parents=True)
+        (actual / "tools.py").write_text("graph tools", encoding="utf-8")
+        failure = json.loads(tools.list_directory("agent/graph"))
+        assert failure["cause"] == "not_found" and failure["retryable"] is False
+        assert failure["existing_parent"] == str(workspace / "agent")
+        result = json.loads(tools.search_files(failure["existing_parent"], "graph"))
+        assert result["root"] == failure["existing_parent"]
+        assert result["count"] == 1 and result["truncated"] is False
+        found = json.loads(tools.list_directory(result["results"][0]["path"]))
+        assert "graph tools" in tools.read_file(found["items"][0]["path"])
+
+    @pytest.mark.parametrize("content_pattern", ["", "needle"])
+    def test_exact_filename_at_depth_and_truncation(
+        self, workspace: Path, content_pattern: str,
+    ) -> None:
+        for directory in ("one", "two"):
+            (workspace / directory).mkdir()
+            (workspace / directory / "tools.py").write_text("needle", encoding="utf-8")
+        result = json.loads(tools.search_files(".", "tools.py", content_pattern, max_results=1))
+        assert result["count"] == len(result["results"]) == 1
+        assert result["truncated"] is True
+        result = json.loads(tools.search_files(".", "tools.py", content_pattern, max_results=2))
+        assert result["count"] == 2 and result["truncated"] is False
+
+    def test_empty_search_is_success_for_guardrails(self, workspace: Path) -> None:
+        from agent.mind.guardrails import classify_tool_failure
+
+        result = tools.search_files(".", "missing.py")
+        assert not classify_tool_failure(result)
+        assert json.loads(result)["count"] == 0
+        assert json.loads(result)["truncated"] is False
+
+    @pytest.mark.parametrize("operation", [tools.read_file, tools.list_directory, tools.search_files])
+    def test_missing_path_has_recovery_context(
+        self, workspace: Path, operation: Callable[[str], str],
+    ) -> None:
+        result = json.loads(operation("gone/nested/target"))
+        assert result["cause"] == "not_found"
+        assert result["resolved"] == str(workspace / "gone/nested/target")
+        assert result["existing_parent"] == str(workspace)
+        assert "list_directory" in result["hint"]
+
+    def test_wrong_type_is_not_reported_as_missing(self, workspace: Path) -> None:
+        (workspace / "file.txt").write_text("x", encoding="utf-8")
+        result = json.loads(tools.list_directory("file.txt"))
+        assert result["cause"] == "param"
+        assert result["existing_parent"] == str(workspace)
+        assert json.loads(tools.read_file("."))["cause"] == "param"
+
+    def test_path_feedback_does_not_probe_outside_sandbox(self, workspace: Path) -> None:
+        from entities.filesystem.path_feedback import path_error
+
+        outside = workspace.parent / "outside-missing"
+        result = json.loads(path_error(str(outside), str(outside), str(workspace),
+                                       sandbox=True, expected="directory"))
+        assert "existing_parent" not in result
+
+    async def test_discovery_tools_available_with_shell(self) -> None:
+        from agent.mind.tool_assembly import ToolAssembly
+
+        schemas = await ToolAssembly().get_active_tool_schemas()
+        names = {schema["function"]["name"] for schema in schemas}
+        assert {"run_shell_command", "search_files", "list_directory"} <= names
+
     def test_glob_mode_sorted_by_mtime(self, workspace):
         old = workspace / "old.txt"
         new = workspace / "new.txt"
@@ -459,4 +528,6 @@ class TestLongPrompts:
         assert "行号前缀" in schemas["read_file"]
         assert "replace_all" in schemas["edit_file"]
         assert "search_files" in schemas["run_shell_command"]  # 工具偏好表
+        assert "零匹配" in schemas["search_files"]  # 多行描述须完整进入模型 schema
+        assert "truncated" in schemas["list_directory"]
         assert "edit_file" in schemas["write_file"]  # 优先用 edit 的引导

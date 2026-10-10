@@ -447,13 +447,28 @@ def project_root() -> str:
 
 
 def workspace_root() -> str:
-    """获取工作区根目录绝对路径。
-
-    与 entities/filesystem 工具的路径解析基准保持一致：
-    读取 workspace_root 配置（默认 "workspace"），相对路径基于进程 cwd 解析。
-    """
+    """获取工作区根目录，与工具、环境提示和业务层共用同一解析规则。"""
     from core.config import ConfigManager
-    return os.path.abspath(ConfigManager.get("workspace_root", "workspace"))
+    return resolve_workspace_root(str(ConfigManager.get("workspace_root", "workspace")))
+
+
+def resolve_workspace_root(configured_root: str) -> str:
+    """以项目根解析工作区配置；覆盖项目根或指向盘符根时回退默认工作区。"""
+    cfg = os.path.expanduser(configured_root)
+    root = os.path.abspath(cfg if os.path.isabs(cfg) else os.path.join(project_root(), cfg))
+    proj = os.path.realpath(project_root())
+    real = os.path.realpath(root)
+    try:
+        covers_project = os.path.commonpath((real, proj)) == real
+    except ValueError:
+        covers_project = False
+    if covers_project or os.path.dirname(real) == real:
+        log(
+            f"workspace_root 配置危险（{cfg!r} 覆盖项目根），已回退 <项目根>/workspace",
+            "WARNING", tag="文件",
+        )
+        return os.path.join(project_root(), "workspace")
+    return root
 
 
 def config_dir() -> str:

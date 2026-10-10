@@ -82,6 +82,8 @@ def iter_matches(
         alt = alt[3:]
 
     def _matched(rel: str, name: str) -> bool:
+        if "/" not in pattern:
+            return fnmatch.fnmatch(name, pattern)
         if fnmatch.fnmatch(rel, pattern):
             return True
         return alt != pattern and fnmatch.fnmatch(name, alt)

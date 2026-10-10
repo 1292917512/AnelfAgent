@@ -125,7 +125,8 @@ _lock = threading.Lock()
 
 def _workspace_root() -> str:
     """工作区根目录（与 tools.safe_path 同源热读取）。"""
-    return os.path.abspath(str(get_config("workspace_root", "workspace")))
+    from core.path import workspace_root
+    return workspace_root()
 
 
 def _target_dir(raw: str, workspace: str) -> Optional[str]:

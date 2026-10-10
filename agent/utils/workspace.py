@@ -34,14 +34,11 @@ workspace_paths_port: LateBinding[WorkspacePathFns] = LateBinding("workspace.pat
 
 
 def get_workspace_root() -> str:
-    """工作区根目录（端口未施绑时回退配置值）。"""
+    """工作区根目录（端口未施绑时使用核心层的同源解析）。"""
     if workspace_paths_port.bound:
         return workspace_paths_port.get().get_root()
-    try:
-        from core.config import ConfigManager
-        return str(ConfigManager.get("workspace_root", "workspace"))
-    except Exception:
-        return "workspace"
+    from core.path import workspace_root
+    return workspace_root()
 
 
 def resolve_workspace_path(path: str) -> str:

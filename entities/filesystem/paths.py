@@ -28,26 +28,8 @@ def get_workspace_root() -> str:
     防呆守卫：解析结果等于项目根或为其祖先目录时，等于把项目本体暴露为
     AI 可写区——回退默认 ``<项目根>/workspace`` 并告警。
     """
-    from core.path import project_root
-
-    cfg = os.path.expanduser(get_workspace_config())
-    root = cfg if os.path.isabs(cfg) else os.path.join(project_root(), cfg)
-    root = os.path.abspath(root)
-
-    proj = os.path.realpath(project_root())
-    real = os.path.realpath(root)
-    try:
-        covers_project = os.path.commonpath((real, proj)) == real
-    except ValueError:
-        covers_project = False
-    if covers_project or os.path.dirname(real) == real:
-        from core.log import log
-        log(
-            f"workspace_root 配置危险（{cfg!r} 覆盖项目根），已回退 <项目根>/workspace",
-            "WARNING", tag="文件",
-        )
-        return os.path.join(project_root(), "workspace")
-    return root
+    from core.path import resolve_workspace_root
+    return resolve_workspace_root(get_workspace_config())
 
 
 def sandbox_enabled() -> bool:

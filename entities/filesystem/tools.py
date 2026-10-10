@@ -20,6 +20,12 @@ Model Experience（写操作成功结果 location 标注）:
   落点是否在工作区内（沙箱关闭或审批放行的区外写也能成功，需让 AI 知情）
 - token 影响：每次写操作约 +5 token，属 tool_chain 尾部动态区
 - 缓存影响：不触碰任何前缀层（工具结果在尾部动态区）
+
+Model Experience（文件发现与路径反馈）:
+- 模型看到什么：list_directory/search_files 与 Shell 一起常驻；搜索回显绝对根目录、
+  是否截断，定位失败给已验证目录和下一步指引；Shell 回执区分执行目录与后续目录。
+- token 影响：两份发现工具 schema 为固定开销；路径回执约增 50~200 token，不注入全目录树。
+- 缓存影响：schema/说明在加载后稳定，目录事实只进入工具结果尾部，不逐轮重写前缀。
 """
 
 from __future__ import annotations
@@ -42,6 +48,7 @@ from entities._sdk import (
 )
 from entities.filesystem import edit_utils, file_state, notes_guard
 from entities.filesystem.ops_context import track_fs_op
+from entities.filesystem.path_feedback import path_error, shell_path_hint
 
 # 顶部导入：shell_background 的配置注册（entity/os 组）随模块加载生效，
 # 配置中心启动即可见；惰性导入会让配置项迟到首次后台执行
@@ -133,14 +140,25 @@ _EDIT_FILE_PROMPT = """在文件中执行精确的字符串替换 — 修改已�
 - 修改成功后无需再用 read_file 验证——失败会明确报错，重复读取浪费 token。
 - 除非用户要求，不要在代码中添加 emoji。"""
 
+_LIST_DIRECTORY_PROMPT = """列出已知目录的内容，返回可直接用于文件工具的绝对路径。
+不确定目录结构时先列举，再使用返回的路径；只知道名称时用 search_files。
+默认只列一层，支持 recursive 树形浏览。非递归结果超过 200 项会标记 truncated，需按名称搜索缩小范围。"""
+
+_SEARCH_FILES_PROMPT = """从已知目录搜索文件/目录名，或按正则搜索文件内容；结果返回可直接使用的绝对路径。
+仅知道名称时先搜索，不要拼接猜测的路径。例如 pattern="graph" 可找到嵌套的 memory/graph。
+零匹配是正常查询结果；truncated=true 表示有结果未展示，应缩小 path/pattern/content_pattern。
+自动跳过噪声目录（node_modules/.git/__pycache__ 等，search_exclude_dirs 可配置）；内容模式额外跳过二进制与超大文件（>2MB）。"""
+
 _SHELL_PROMPT = """在系统 shell 中执行命令并返回输出。
 
 工作目录:
-- 初始目录即工作区根目录（绝对路径见系统提示 [运行环境]），直接用相对路径，不存在嵌套的 workspace/workspace。
-- 优先在工作区内操作；访问其他位置用绝对路径并先 ls 确认目标存在，禁止凭记忆猜路径。
+- 相对路径基于当前 Shell 目录，初始为工作区根目录（见系统提示 [运行环境]）；文件工具相对路径始终基于工作区根。
+- 路径来自用户明确提供的信息或工具返回；仅知道名称/旧路径时，先从已确认存在的目录用 list_directory/search_files 定位。
+- 路径不存在时先获取新的目录证据，不要继续猜相似路径。访问区外用绝对路径并遵守沙箱限制。
 
 执行环境:
-- 每条命令独立进程（环境变量/alias 不保留），但 cd 对后续命令生效；沙箱下漂出 workspace 自动重置。
+- 每条命令独立进程（环境变量/alias 不保留）；POSIX 前台命令的 cd 对后续调用生效，沙箱下漂出工作区自动重置。
+- Windows 或后台命令的 cd 只影响本次进程。回执 cwd 是本次启动目录，shell_cwd 是后续调用目录。
 - 输出超 30000 字符自动落盘，返回预览和文件路径（用 read_file 查看）。
 - 超时由 timeout 参数指定：前台默认 120 秒（到时返回失败结果）；run_in_background=True 后台执行
   不受强制超时——超过预期时长（默认 1800 秒）系统会提醒你并附最新进度，是否终止由你决定
@@ -221,8 +239,7 @@ def read_file(file_path: str, offset: int = 0, limit: int = 0, encoding: str = "
     try:
         fp = safe_path(file_path)
         if not os.path.isfile(fp):
-            return tool_error(f"文件不存在: {file_path}", cause=ErrorCause.NOT_FOUND,
-                              retryable=False, resolved=fp,
+            return path_error(file_path, fp, _ws_root(), sandbox=_SANDBOX, expected="file",
                               hint=notes_guard.memory_note_hint(file_path, fp))
         # Binary files: return metadata instead of trying to decode
         bin_exts = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".ico",
@@ -446,9 +463,9 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
             except Exception as e:
                 return _err(f"创建文件失败: {e}", 11)
         suggestion = _suggest_similar_path(fp)
-        return _err(f"文件不存在: {file_path}。{suggestion}", 4,
-                    cause=ErrorCause.NOT_FOUND,
-                    hint=notes_guard.memory_note_hint(file_path, fp))
+        return path_error(file_path, fp, _ws_root(), sandbox=_SANDBOX, expected="file",
+                          code=4, detail=f"。{suggestion}" if suggestion else "",
+                          hint=notes_guard.memory_note_hint(file_path, fp))
 
     if old_string == "":
         return _err("文件已存在，不能用空 old_string 创建。如需整体覆盖请使用 write_file，"
@@ -632,22 +649,21 @@ def append_file(path: str, content: str) -> str:
         return error_from_exception(e, action="追加文件内容")
 
 
-@tool(name="list_directory", group="os", concurrency_safe=True)
+@tool(name="list_directory", group="os", tags=["always"], concurrency_safe=True,
+      description=_LIST_DIRECTORY_PROMPT)
 @track_fs_op("path")
 def list_directory(path: str = ".", recursive: bool = False, max_depth: int = 3) -> str:
-    """列出目录内容。支持递归树形浏览。
+    """列出已知目录的内容，返回可直接用于文件工具的绝对路径。支持递归树形浏览。
 
     Args:
-        path: 目录路径（相对于 workspace），默认 workspace 根目录
+        path: 已知存在的目录（相对于工作区根或绝对路径），默认工作区根目录
         recursive: 是否递归列出子目录
         max_depth: 递归最大深度，默认 3
     """
     try:
         fp = safe_path(path)
         if not os.path.isdir(fp):
-            return tool_error(f"不是有效目录: {path}", cause=ErrorCause.PARAM,
-                              retryable=False,
-                              hint="请确认路径存在且为目录（可用 file_info 检查）")
+            return path_error(path, fp, _ws_root(), sandbox=_SANDBOX, expected="directory")
 
         if recursive:
             tree = _build_tree(fp, max_depth, 0)
@@ -666,7 +682,12 @@ def list_directory(path: str = ".", recursive: bool = False, max_depth: int = 3)
                 except OSError:
                     log("list_directory 异常已忽略", "DEBUG")
             items.append(entry)
-        return json.dumps({"path": fp, "count": len(items), "items": items[:200]}, ensure_ascii=False)
+        payload: Dict[str, Any] = {
+            "path": fp, "count": len(items), "items": items[:200], "truncated": len(items) > 200,
+        }
+        if payload["truncated"]:
+            payload["hint"] = "仅返回前 200 项；用 search_files 在该目录按名称或内容缩小范围。"
+        return json.dumps(payload, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="列出目录")
 
@@ -809,28 +830,26 @@ def mkdir(path: str) -> str:
         return error_from_exception(e, action="创建目录")
 
 
-@tool(name="search_files", group="os", concurrency_safe=True)
+@tool(name="search_files", group="os", tags=["always"], concurrency_safe=True,
+      description=_SEARCH_FILES_PROMPT)
 @track_fs_op("path")
 def search_files(path: str = ".", pattern: str = "*", content_pattern: str = "",
                  max_results: int = 50) -> str:
-    """搜索文件：按 glob 模式找文件名（任意深度），或按正则搜索文件内容（类似 grep）。
-
-    自动跳过噪声目录（node_modules/.git/__pycache__ 等，search_exclude_dirs 可配置）；
-    内容模式额外跳过二进制与超大文件（>2MB）。
+    """从已知目录搜索文件/目录名，或按正则搜索文件内容；结果返回可直接使用的绝对路径。
 
     Args:
-        path: 搜索根目录（相对于 workspace）
-        pattern: 文件名 glob 模式，如 '*.png'、'config/*.json'（任意深度匹配）
+        path: 已知存在的搜索根目录（相对于工作区根或绝对路径）
+        pattern: 文件/目录名 glob，如 'graph'、'*.png'（任意深度）；含 / 时匹配相对路径
         content_pattern: 文件内容正则（可选）。提供时返回匹配的文件及命中行，
             如 'def \\w+\\('、'TODO'
-        max_results: 最大返回数量，默认 50
+        max_results: 最大返回数量，默认 50，范围 1~200
     """
     try:
         fp = safe_path(path)
         if not os.path.isdir(fp):
-            return tool_error(f"不是有效目录: {path}", cause=ErrorCause.PARAM,
-                              retryable=False,
-                              hint="请确认路径存在且为目录（可用 file_info 检查）")
+            return path_error(path, fp, _ws_root(), sandbox=_SANDBOX, expected="directory")
+
+        max_results = min(200, max(1, max_results))
 
         from entities.filesystem.scan import (
             content_search,
@@ -843,8 +862,10 @@ def search_files(path: str = ".", pattern: str = "*", content_pattern: str = "",
             # 按修改时间倒序（最近修改在前）；
             # 目录沉底——mtime 排序对目录无操作价值。path 保持绝对路径
             # （可直接传给 read_file 等工具）
-            entries = sorted(
-                iter_matches(fp, pattern, exclude),
+            from heapq import nsmallest
+
+            entries = nsmallest(
+                max_results + 1, iter_matches(fp, pattern, exclude),
                 key=lambda e: (not e.is_dir, -e.mtime),
             )
             matches = [
@@ -854,9 +875,10 @@ def search_files(path: str = ".", pattern: str = "*", content_pattern: str = "",
             ]
             return json.dumps({
                 "pattern": pattern,
-                "root": path,
+                "root": fp,
                 "excluded_dirs": sorted(exclude),
                 "count": len(matches),
+                "truncated": len(entries) > max_results,
                 "results": matches,
             }, ensure_ascii=False)
 
@@ -868,14 +890,16 @@ def search_files(path: str = ".", pattern: str = "*", content_pattern: str = "",
             return tool_error(f"无效的正则表达式: {e}", cause=ErrorCause.PARAM,
                               retryable=False)
 
-        hits = content_search(fp, pattern, regex, exclude, max_results=max_results)
+        hits = content_search(fp, pattern, regex, exclude, max_results=max_results + 1)
         return json.dumps({
             "pattern": pattern,
             "content_pattern": content_pattern,
-            "root": path,
-            "count": len(hits),
+            "root": fp,
+            "excluded_dirs": sorted(exclude),
+            "count": min(len(hits), max_results),
+            "truncated": len(hits) > max_results,
             "results": [
-                {"path": os.path.normpath(h.abspath), "matches": h.lines} for h in hits
+                {"path": os.path.normpath(h.abspath), "matches": h.lines} for h in hits[:max_results]
             ],
         }, ensure_ascii=False)
     except Exception as e:
@@ -887,19 +911,23 @@ def search_files(path: str = ".", pattern: str = "*", content_pattern: str = "",
 # ------------------------------------------------------------------
 
 
-def _redundant_workspace_prefix(command: str) -> Optional[str]:
+def _redundant_workspace_prefix(command: str, cwd: str = "") -> Optional[str]:
     """返回命令中误带 workspace 目录名前缀的相对路径 token。
 
     cwd 已是 workspace 根目录，该前缀会指向不存在的嵌套路径（workspace/workspace/...）。
     仅用于失败归因提示，不做拦截；无命中返回 None。
     """
-    prefix = os.path.basename(_ws_root()) + "/"
+    root = _ws_root()
+    cwd = cwd or root
+    if os.path.normcase(os.path.abspath(cwd)) != os.path.normcase(os.path.abspath(root)):
+        return None
+    prefix = os.path.basename(root) + "/"
     try:
         tokens = shlex.split(command, posix=True)
     except ValueError:
         tokens = command.split()
     for token in tokens:
-        if token.startswith(prefix):
+        if token.startswith(prefix) and not os.path.exists(os.path.join(cwd, token)):
             return token
     return None
 
@@ -929,8 +957,8 @@ def _missing_module_hint(stdout: str, stderr: str) -> Optional[str]:
 def run_shell_command(command: str, timeout: int = 0, run_in_background: bool = False) -> str:
     """在系统 shell 中执行命令并返回输出结果。
 
-    每次命令在独立进程中执行（shell 状态不持久），但工作目录在命令间持久
-    （可用 cd 切换，对后续命令生效）；沙箱开启时工作目录被限制在 workspace 内，漂出自动重置。
+    每次命令在独立进程中执行；POSIX 前台命令的工作目录跨调用持久，
+    Windows/后台命令的 cd 只影响本次进程。沙箱开启时目录漂出 workspace 自动重置。
     输出超过 30000 字符时完整内容自动落盘，返回预览和文件路径。
 
     工具偏好：搜文件用 search_files（而非 find/ls）、读文件用 read_file（而非 cat/head）、
@@ -977,13 +1005,12 @@ def run_shell_command(command: str, timeout: int = 0, run_in_background: bool = 
         if run_in_background:
             # 0 = 自动：后台缺省预期时长由 launch_background 读
             # background_shell_alert_after 决定（超时提醒语义，不终止进程）
-            return json.dumps(
-                launch_background(
-                    command, cwd, ws_root,
-                    timeout_sec=float(timeout) if timeout > 0 else 0.0,
-                ),
-                ensure_ascii=False,
+            background_result = launch_background(
+                command, cwd, ws_root,
+                timeout_sec=float(timeout) if timeout > 0 else 0.0,
             )
+            background_result.update(cwd=cwd, shell_cwd=cwd, workspace_root=ws_root)
+            return json.dumps(background_result, ensure_ascii=False)
 
         # 前台缺省沿用历史默认 120s；显式值钳制在 1s~24h
         timeout = 120 if timeout <= 0 else min(max(1, int(timeout)), 86400)
@@ -1009,24 +1036,30 @@ def run_shell_command(command: str, timeout: int = 0, run_in_background: bool = 
         if len(stderr) > 2000:
             stderr = stderr[:2000] + "\n... (stderr 已截断)"
 
-        payload: Dict[str, Any] = {"ok": result.ok, "stdout": stdout, "stderr": stderr}
+        payload: Dict[str, Any] = {
+            "ok": result.ok, "stdout": stdout, "stderr": stderr,
+            "cwd": cwd,
+            "shell_cwd": shell_state.get_cwd(ws_root, sandbox=_SANDBOX),
+            "workspace_root": ws_root,
+        }
+        if result.returncode is not None:
+            payload["returncode"] = result.returncode
         if persisted:
             payload["persisted"] = persisted
-        # 失败时附带真实 cwd 与工作区根，便于模型定位路径问题后自纠（而非猜测系统路径）
+        # 失败反馈保留退出码语义，并针对已知路径错误提供恢复指引。
         if not result.ok:
-            # 退出码帮助模型区分否定结果与真实错误（如 grep: 1=无匹配, 2=用法错误）
-            if result.returncode is not None:
-                payload["returncode"] = result.returncode
             # 非零码 + 无错误输出的语义提示（grep 无匹配/条件不成立 vs 真实错误，
             # 避免模型把否定结果当故障盲目重试或谎报失败）
             if not stderr:
                 notes.append(
-                    "注意: 命令以非零码结束但无错误输出——若是 grep/搜索/测试类命令，"
-                    "这通常表示无匹配或条件不成立，不是执行失败，无需重试"
+                    "注意: 非零退出码且无 stderr 不足以判定原因；grep 的 1 可表示无匹配，"
+                    "其他程序也可能仅在 stdout 报错。请结合命令语义和输出判断；"
+                    "文件搜索优先 search_files，零匹配会返回正常查询结果。"
                 )
-            payload["cwd"] = shell_state.get_cwd(ws_root, sandbox=_SANDBOX)
-            payload["workspace_root"] = ws_root
-            redundant = _redundant_workspace_prefix(command)
+            path_hint = shell_path_hint(result.stderr or "")
+            if path_hint:
+                payload["hint"] = path_hint
+            redundant = _redundant_workspace_prefix(command, cwd)
             if redundant:
                 prefix = os.path.basename(_ws_root()) + "/"
                 stripped = redundant

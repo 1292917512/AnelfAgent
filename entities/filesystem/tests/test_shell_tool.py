@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import pytest
 from shell_helpers import python_command
@@ -34,6 +35,14 @@ class TestShellCwd:
         assert result["ok"]
         assert result["stdout"].endswith("subdir")
 
+    def test_receipt_distinguishes_start_and_next_directory(self, workspace: Path) -> None:
+        (workspace / "subdir").mkdir()
+        result = _run("cd subdir")
+        assert result["cwd"] == str(workspace)
+        assert result["shell_cwd"] == str(workspace / "subdir")
+        assert result["workspace_root"] == str(workspace)
+        assert _run("pwd -P")["cwd"] == result["shell_cwd"]
+
     def test_drift_outside_workspace_resets(self, workspace):
         _run("cd /tmp")
         result = _run("pwd -P")
@@ -63,6 +72,8 @@ class TestOutputPersistence:
         result = _run("echo hello")
         assert result["stdout"] == "hello"
         assert "persisted" not in result
+        assert result["returncode"] == 0
+        assert result["cwd"] == result["shell_cwd"] == str(workspace)
 
     def test_large_output_persisted(self, workspace):
         result = _run(python_command("print(*range(1, 200001), sep=chr(10))"))
@@ -95,6 +106,13 @@ class TestRedundantWorkspacePrefix:
 
 
 class TestRedundantWorkspacePrefixHelper:
+    def test_real_nested_path_and_changed_cwd_are_not_misdiagnosed(self, workspace: Path) -> None:
+        nested = workspace / workspace.name
+        nested.mkdir()
+        (nested / "x").write_text("x", encoding="utf-8")
+        assert tools._redundant_workspace_prefix(f"cat {workspace.name}/x") is None
+        assert tools._redundant_workspace_prefix(f"cat {workspace.name}/missing", str(nested)) is None
+
     def test_hit(self, workspace):
         assert tools._redundant_workspace_prefix(f"ls {workspace.name}/x") == f"{workspace.name}/x"
 
@@ -202,3 +220,30 @@ class TestMissingModuleHint:
         result = _run(python_command("import sys; print('No module named pip', file=sys.stderr); sys.exit(1)"))
         assert result["ok"] is False
         assert any("不含 pip" in n for n in result.get("notes", []))
+
+
+class TestShellFailureFeedback:
+    @pytest.mark.parametrize("stderr,has_path_hint", [
+        ("ls: agent/graph: No such file or directory", True),
+        ("cd: target: Not a directory", True),
+        ("系统找不到指定的路径。", True),
+        ("Permission denied", False),
+        ("", False),
+    ])
+    def test_failed_command_keeps_exit_status_and_targeted_hint(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch,
+        stderr: str, has_path_hint: bool,
+    ) -> None:
+        from core.command import CommandResult
+
+        monkeypatch.setattr("core.command.run_command",
+                            lambda *args, **kwargs: CommandResult(False, "", stderr, 1))
+        result = _run("echo probe")
+        assert result["ok"] is False and result["returncode"] == 1
+        assert result["stderr"] == stderr
+        assert ("hint" in result) is has_path_hint
+        assert result["cwd"] == result["shell_cwd"] == str(workspace)
+        if has_path_hint:
+            assert "search_files" in result["hint"]
+        if not stderr:
+            assert any("不足以判定原因" in note for note in result["notes"])

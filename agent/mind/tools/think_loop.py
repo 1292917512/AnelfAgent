@@ -328,11 +328,11 @@ _END_REPLY_TEXT_RE = re.compile(r"^end_reply\s*\(.*\)\s*$", re.DOTALL)
 _SYNTHETIC_END_REPLY_CALL_ID = "call_end_reply_text_intent"
 
 _PROMPT_TOOL_ERROR_ESCALATION = (
-    "[严重警告] 工具调用连续返回错误，你可能陷入了参数格式错误的循环。"
-    "请立即停止重试，改用以下策略之一：\n"
-    "1. 调用 end_reply 结束本轮\n"
-    "2. 换用完全不同的工具或不同的参数格式\n"
-    "禁止继续以相同方式调用正在报错的工具。"
+    "[工具恢复] 工具调用已连续两轮返回错误。下一步应获取能纠正原因的新证据："
+    "先阅读回执中的 cause/hint 与实际输出；路径问题从已确认存在的目录列举或搜索，"
+    "未知工具先查工具目录，参数问题先核对 schema。"
+    "不要仅换一个猜测值继续尝试，也不要把搜索无匹配当作系统故障。"
+    "如已无法取得新证据，向用户说明具体阻碍后结束本轮。"
 )
 
 _PROMPT_SECURITY_LEAK = (
@@ -1110,6 +1110,7 @@ async def _handle_tool_round(
         tool_chain.append({
             "role": "system",
             "content": _PROMPT_TOOL_ERROR_ESCALATION,
+            "_source": {"origin": "tool_recovery"},
         })
 
     if should_end_reply(tool_calls):

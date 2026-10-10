@@ -10,7 +10,9 @@ paths.get_workspace_root()（相对配置以项目根为基准 + 防项目根守
 
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 from typing import Any, Dict
 
 import pytest
@@ -23,6 +25,34 @@ def _set_workspace_cfg(monkeypatch: pytest.MonkeyPatch, cfg: str) -> None:
 
 
 class TestGetWorkspaceRoot:
+    @pytest.mark.parametrize("configured", ["workspace", "data/ws", "."])
+    def test_environment_and_tools_agree_after_changing_launch_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, configured: str,
+    ) -> None:
+        from agent.mind.context_assembly import _env_info_block
+        from core import path as path_mod
+        from core.config import ConfigManager
+        from entities.filesystem import ops_context, shell_state
+        from entities.system.tools import get_workspace_info
+
+        project = tmp_path / "project"
+        launch = tmp_path / "launch"
+        project.mkdir()
+        launch.mkdir()
+        expected = project / ("workspace" if configured == "." else configured)
+        expected.mkdir(parents=True)
+        monkeypatch.setattr(path_mod, "_PROJECT_ROOT", str(project))
+        monkeypatch.setattr(shell_state, "_cwds", {})
+        monkeypatch.chdir(launch)
+        ConfigManager.set("workspace_root", configured)
+
+        info = json.loads(get_workspace_info())
+        assert path_mod.workspace_root() == paths_mod.get_workspace_root() == str(expected)
+        assert ops_context._workspace_root() == str(expected)
+        assert info["workspace_root"] == info["shell_cwd"] == str(expected)
+        assert str(expected) in _env_info_block()
+        assert str(launch) not in _env_info_block()
+
     def test_default_relative_anchors_project_root(
             self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
         """默认相对配置：以项目根为基准解析（与进程 cwd 无关）。"""
