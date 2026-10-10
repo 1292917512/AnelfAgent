@@ -27,7 +27,7 @@ export function DialogSurface({
   return (
     <Dialog.Root open={open} onOpenChange={(next) => { if (!next && dismissible) onClose(); }}>
       <Dialog.Portal>
-        <Dialog.Overlay className="dialog-overlay fixed inset-0 z-[100] bg-black/45 backdrop-blur-[2px]" />
+        <Dialog.Overlay className="dialog-overlay fixed inset-0 z-[100] bg-black/45" />
         <Dialog.Content
           ref={surfaceRef}
           aria-describedby={undefined}

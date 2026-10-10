@@ -1,7 +1,5 @@
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ReactFlowProvider } from "@xyflow/react";
-import "@xyflow/react/dist/style.css";
 import { Activity } from "lucide-react";
 import { useThinkingStore } from "@/stores/thinking-store";
 import { useThinkingSessions } from "@/hooks/useThinking";
@@ -10,7 +8,6 @@ import { useIsMobile } from "@/lib/use-media-query";
 import { NodeDetail } from "@/components/thinking/NodeDetail";
 import { ToolsPanel } from "@/components/thinking/ToolsPanel";
 import { ProvidersPanel } from "@/components/context/ProvidersPanel";
-import { FlowView } from "@/components/thinking/FlowView";
 import { TimelineView } from "@/components/thinking/TimelineView";
 import { SessionOverview } from "@/components/thinking/SessionOverview";
 import { ThinkingSessionsPanel } from "@/components/thinking/ThinkingSessionsPanel";
@@ -21,6 +18,8 @@ import { DialogSurface } from "@/components/ui/DialogSurface";
 import { Button } from "@/components/ui/Button";
 import { useTracePlanNodes } from "@/components/thinking/trace-plans";
 import { useElementSize } from "@/hooks/useElementSize";
+
+const FlowView = lazy(() => import("./FlowView").then((module) => ({ default: module.FlowView })));
 
 function ThinkingFlow({ compact }: { compact: boolean }) {
   const { t } = useTranslation("thinking");
@@ -55,7 +54,7 @@ function ThinkingFlow({ compact }: { compact: boolean }) {
         <SessionOverview compact={compact && !isMobile} session={state.activeSession} onSelect={selectNode} onSelectSession={(id) => void state.selectSession(id)} />
         <div className="relative min-h-0 flex-1">
           {view === "flow"
-            ? <FlowView key={state.activeSession.id} session={{ ...state.activeSession, nodes: [...state.activeSession.nodes, ...planNodes] }} autoFollow={state.autoFollow} onNodeClick={selectNode} />
+            ? <Suspense fallback={<PageSkeleton />}><FlowView key={state.activeSession.id} session={{ ...state.activeSession, nodes: [...state.activeSession.nodes, ...planNodes] }} autoFollow={state.autoFollow} onNodeClick={selectNode} /></Suspense>
             : <TimelineView key={state.activeSession.id} session={state.activeSession} selectedNodeId={state.selectedNodeId}
               autoFollow={state.autoFollow} onSelect={selectNode} />}
         </div>
@@ -81,5 +80,5 @@ function ThinkingFlow({ compact }: { compact: boolean }) {
 }
 
 export function ExecutionTimeline({ compact = false }: { compact?: boolean }) {
-  return <ReactFlowProvider><ThinkingFlow compact={compact} /></ReactFlowProvider>;
+  return <ThinkingFlow compact={compact} />;
 }

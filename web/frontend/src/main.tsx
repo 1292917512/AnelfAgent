@@ -32,8 +32,7 @@ async function bootstrap() {
   if (!container) throw new Error("Application root is missing");
   const root = createRoot(container);
   try {
-    await initChannelPlugins();
-    await initUiContributions();
+    await Promise.all([initChannelPlugins(), initUiContributions()]);
     root.render(<StrictMode><QueryClientProvider client={queryClient}><App /></QueryClientProvider></StrictMode>);
   } catch (error) {
     root.render(<div className="mx-auto max-w-xl p-8"><QueryError error={error} retry={() => location.reload()} /></div>);

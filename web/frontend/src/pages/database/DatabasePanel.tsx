@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { connectionApi, databaseApi } from "@/lib/api";
@@ -20,10 +20,11 @@ import {
 } from "lucide-react";
 import { RowsPanel } from "./RowsPanel";
 import { SchemaPanel } from "./SchemaPanel";
-import { QueryPanel } from "./QueryPanel";
 import { HealthCard } from "./HealthCard";
 import { ConnectionDialog } from "./ConnectionDialog";
 import { formatSize } from "./format";
+
+const QueryPanel = lazy(() => import("./QueryPanel").then((module) => ({ default: module.QueryPanel })));
 
 type SubTab = "rows" | "schema" | "query";
 
@@ -243,7 +244,7 @@ export function DatabasePanel() {
             {showHealth && <HealthCard db={activeDb} />}
             <TabBar tabs={SUB_TABS} activeTab={subTab} onChange={setSubTab} />
             {subTab === "query" ? (
-              <QueryPanel key={activeDb} db={activeDb} />
+              <Suspense fallback={<LoadingBlock label={t("common:loading")} />}><QueryPanel key={activeDb} db={activeDb} /></Suspense>
             ) : !table ? (
               <p className="text-sm text-muted text-center py-10">{t("db.selectTable")}</p>
             ) : subTab === "rows" ? (

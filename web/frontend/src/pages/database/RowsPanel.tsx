@@ -1,13 +1,14 @@
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { databaseApi } from "@/lib/api";
 import type { DbRow } from "@/lib/types";
-import { Button, ConfirmDialog, Input, LoadingBlock, Select, toast } from "@/components/ui";
+import { Button, ConfirmDialog, Input, LoadingBlock, Modal, Select, toast } from "@/components/ui";
 import { Lock, Plus, Search } from "lucide-react";
-import { RowEditModal } from "./RowEditModal";
-import { RowDetailModal } from "./RowDetailModal";
 import { RowsTable } from "./RowsTable";
+
+const RowEditModal = lazy(() => import("./RowEditModal").then((module) => ({ default: module.RowEditModal })));
+const RowDetailModal = lazy(() => import("./RowDetailModal").then((module) => ({ default: module.RowDetailModal })));
 
 const PAGE_SIZE = 50;
 
@@ -163,19 +164,21 @@ export function RowsPanel({ db, table }: { db: string; table: string }) {
       )}
 
       {/* 弹窗 */}
-      {viewRowid !== null && (
-        <RowDetailModal db={db} table={table} rowid={viewRowid} onClose={() => setViewRowid(null)} />
-      )}
-      {(editRow || inserting) && (
-        <RowEditModal
-          db={db}
-          table={table}
-          columns={columns}
-          row={inserting ? null : editRow}
-          onClose={() => { setEditRow(null); setInserting(false); }}
-          onSaved={invalidate}
-        />
-      )}
+      <Suspense fallback={<Modal open title={t("common:loading")} onClose={() => { setViewRowid(null); setEditRow(null); setInserting(false); }}><LoadingBlock /></Modal>}>
+        {viewRowid !== null && (
+          <RowDetailModal db={db} table={table} rowid={viewRowid} onClose={() => setViewRowid(null)} />
+        )}
+        {(editRow || inserting) && (
+          <RowEditModal
+            db={db}
+            table={table}
+            columns={columns}
+            row={inserting ? null : editRow}
+            onClose={() => { setEditRow(null); setInserting(false); }}
+            onSaved={invalidate}
+          />
+        )}
+      </Suspense>
       <ConfirmDialog
         open={!!deleteTarget}
         onClose={() => setDeleteTarget(null)}

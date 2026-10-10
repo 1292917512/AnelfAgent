@@ -119,6 +119,7 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
+          "icons": ["lucide-react"],
           "i18n-vendor": ["i18next", "react-i18next", "i18next-browser-languagedetector"],
           "query-vendor": ["axios", "@tanstack/react-query"],
           "react-vendor": [

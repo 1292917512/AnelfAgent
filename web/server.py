@@ -15,8 +15,8 @@ import uvicorn
 from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Match, Route
@@ -25,6 +25,7 @@ from core.http_endpoints import handles_own_auth
 from core.log import log
 from core.path import ConfigPaths
 from web.auth_keys import extract_bearer_token, verify_bearer_api_key
+from web.static_assets import FrontendAssets
 
 _WEB_DIR = Path(__file__).parent
 FRONTEND_DIST = _WEB_DIR / "frontend" / "dist"
@@ -389,7 +390,11 @@ def create_app() -> FastAPI:
         async def root() -> RedirectResponse:
             return RedirectResponse("/webui/")
 
-        app.mount("/webui/assets", StaticFiles(directory=str(FRONTEND_DIST / "assets")), name="webui-assets")
+        app.mount(
+            "/webui/assets",
+            GZipMiddleware(FrontendAssets(directory=str(FRONTEND_DIST / "assets")), minimum_size=1024, compresslevel=6),
+            name="webui-assets",
+        )
 
         @app.get("/webui/{path:path}")
         async def webui_spa(path: str) -> Response:

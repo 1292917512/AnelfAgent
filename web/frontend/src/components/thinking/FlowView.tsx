@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import {
   ReactFlow,
+  ReactFlowProvider,
   Background,
   Controls,
   MiniMap,
@@ -11,6 +12,7 @@ import {
   type NodeTypes,
   BackgroundVariant,
 } from "@xyflow/react";
+import "@xyflow/react/dist/style.css";
 import type { ThinkingSession } from "@/lib/types";
 import { buildFlowElements } from "./flow-layout";
 import TraceNodeComponent from "./TraceNode";
@@ -25,8 +27,12 @@ interface Props {
   onNodeClick: (nodeId: string) => void;
 }
 
+export function FlowView(props: Props) {
+  return <ReactFlowProvider><FlowCanvas {...props} /></ReactFlowProvider>;
+}
+
 /** 流程图视图：ReactFlow 画布 + 自动跟随最新节点；叠加 plan 虚拟节点 */
-export function FlowView({ session, autoFollow, onNodeClick }: Props) {
+function FlowCanvas({ session, autoFollow, onNodeClick }: Props) {
   const prevNodeCount = useRef(0);
   const { setCenter, getZoom } = useReactFlow();
 

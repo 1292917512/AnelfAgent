@@ -1,4 +1,6 @@
 import { useRouteTab } from "@/hooks/useRouteTab";
+import { lazy, Suspense } from "react";
+import { PageSkeleton } from "@/components/common/AsyncState";
 import { useTranslation } from "react-i18next";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
 import { PageContainer, PageIntro } from "@/components/common/PageContainer";
@@ -15,7 +17,7 @@ import { RulesPanel } from "@/pages/memory/RulesPanel";
 import { DailyNotesPanel } from "@/pages/memory/DailyNotesPanel";
 import { DocsPanel } from "@/pages/memory/DocsPanel";
 import { CogneePanel } from "@/pages/memory/cognee/CogneePanel";
-import { GraphPanel } from "@/pages/memory/graph/GraphPanel";
+const GraphPanel = lazy(() => import("@/pages/memory/graph/GraphPanel").then((module) => ({ default: module.GraphPanel })));
 
 type MemTab = "overview" | "stm" | "goals" | "conv" | "notes" | "daily" | "docs" | "entity" | "ltm" | "graph" | "cognee" | "rules";
 
@@ -56,7 +58,7 @@ export default function Memory() {
         {tab === "docs" && <DocsPanel />}
         {tab === "entity" && <EntityPanel />}
         {tab === "ltm" && <LTMPanel />}
-        {tab === "graph" && <GraphPanel />}
+        {tab === "graph" && <Suspense fallback={<PageSkeleton />}><GraphPanel /></Suspense>}
         {tab === "cognee" && <CogneePanel />}
       </div>
     </PageContainer>

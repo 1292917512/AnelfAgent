@@ -16,6 +16,8 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     (dist / "assets").mkdir(parents=True)
     (dist / "index.html").write_text("<h1>app</h1>", encoding="utf-8")
     (dist / "test.txt").write_text("public", encoding="utf-8")
+    (dist / "assets" / "app-abCD1234.js").write_text("const message = 'hello';\n" * 200, encoding="utf-8")
+    (dist / "assets" / "plain.js").write_text("plain", encoding="utf-8")
     (tmp_path / "private.txt").write_text("PRIVATE_MARKER", encoding="utf-8")
     monkeypatch.setattr(server, "FRONTEND_DIST", dist)
     monkeypatch.setattr(server, "_auth_cache", {})
@@ -35,6 +37,34 @@ def test_static_traversal_never_discloses_file(client: TestClient, path: str):
     assert "PRIVATE_MARKER" not in response.text
     assert client.get("/webui/test.txt").text == "public"
     assert "<h1>app</h1>" in client.get("/webui/chat").text
+
+
+def test_fingerprinted_assets_are_compressed_and_reused(client: TestClient):
+    path = "/webui/assets/app-abCD1234.js"
+    plain = client.get(path, headers={"Accept-Encoding": "identity"})
+    compressed = client.get(path, headers={"Accept-Encoding": "gzip"})
+    assert compressed.text == plain.text
+    assert "Content-Encoding" not in plain.headers
+    assert compressed.headers["Content-Encoding"] == "gzip"
+    assert "accept-encoding" in compressed.headers["Vary"].lower()
+    assert compressed.headers["Cache-Control"] == "public, max-age=31536000, immutable"
+    cached = client.get(path, headers={"If-None-Match": plain.headers["ETag"]})
+    assert cached.status_code == 304
+    assert cached.headers["Cache-Control"] == compressed.headers["Cache-Control"]
+    partial = client.get(path, headers={"Range": "bytes=0-9", "Accept-Encoding": "identity"})
+    assert partial.status_code == 206
+    assert partial.content == plain.content[:10]
+
+
+def test_only_fingerprinted_assets_receive_immutable_caching(client: TestClient):
+    assert client.get("/webui/assets/plain.js").headers["Cache-Control"] == "no-cache"
+    for path in ("/webui/", "/webui/models", "/webui"):
+        response = client.get(path)
+        assert "no-store" in response.headers["Cache-Control"]
+        assert "Content-Encoding" not in response.headers
+    missing = client.get("/webui/assets/missing-abCD1234.js")
+    assert missing.status_code == 404
+    assert "immutable" not in missing.headers.get("Cache-Control", "")
 
 
 def test_corrupt_auth_config_closes_all_auth_entrypoints(client: TestClient):
