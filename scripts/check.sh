@@ -57,10 +57,10 @@ if [ "$RUN_FE" -eq 1 ]; then
       npm run lint
       npm run test:modules
       npm test
-      if [ "$RUN_BROWSER" -eq 1 ]; then
-        npm run test:e2e
-      fi
       npm run build
+      if [ "$RUN_BROWSER" -eq 1 ]; then
+        CI=1 npm run test:e2e
+      fi
     )
   else
     echo "无法执行前端门禁：请先在 web/frontend 运行 npm ci，或显式指定 --skip-fe" >&2

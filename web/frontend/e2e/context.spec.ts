@@ -85,9 +85,12 @@ test("dark context remains readable on a narrow viewport", async ({ page }, info
 
 test("desktop navigation expands without moving the workspace and supports keyboard focus", async ({ page }, info) => {
   test.skip(info.project.name !== "desktop", "Hover navigation applies to desktop pointers");
+  await page.mouse.move(0, 0);
   await page.goto("/webui/");
   const sidebar = page.locator(".app-sidebar");
   await expect(sidebar).toHaveCSS("width", "68px");
+  await page.getByRole("button", { name: "Workspace files", exact: true }).click();
+  await expect(page.getByRole("treeitem").filter({ hasText: "note.txt" })).toBeVisible();
   const bounds = await page.getByRole("main").boundingBox();
   await sidebar.hover();
   await expect(sidebar).toHaveCSS("width", "248px");

@@ -13,7 +13,9 @@ export default defineConfig({
     { name: "mobile", use: { ...devices["Pixel 7"], defaultBrowserType: "chromium" } },
   ],
   webServer: {
-    command: "node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 4173 --strictPort",
+    command: process.env.CI
+      ? "node node_modules/vite/bin/vite.js preview --host 127.0.0.1 --port 4173 --strictPort"
+      : "node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 4173 --strictPort",
     url: "http://127.0.0.1:4173/webui/", reuseExistingServer: !process.env.CI,
   },
 });

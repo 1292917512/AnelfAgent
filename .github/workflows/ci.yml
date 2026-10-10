@@ -250,6 +250,9 @@ jobs:
       - name: Component regression
         run: npm test
 
+      - name: Build (tsc + vite)
+        run: npm run build
+
       - name: Browser setup
         if: runner.os == 'Linux'
         run: npx playwright install --with-deps chromium
@@ -257,9 +260,6 @@ jobs:
       - name: Browser regression
         if: runner.os == 'Linux'
         run: npm run test:e2e
-
-      - name: Build (tsc + vite)
-        run: npm run build
 
       - name: Upload browser diagnostics
         if: failure() && runner.os == 'Linux'

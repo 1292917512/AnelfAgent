@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { Bot, PanelLeftClose, PanelLeftOpen, Search, Star } from "lucide-react";
@@ -35,6 +35,12 @@ export function Sidebar({ mobile = false }: { mobile?: boolean }) {
   const pinned = useAppStore((state) => !state.sidebarCollapsed);
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
+  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelHover = () => {
+    if (hoverTimer.current !== null) clearTimeout(hoverTimer.current);
+    hoverTimer.current = null;
+  };
+  useEffect(() => () => { if (hoverTimer.current !== null) clearTimeout(hoverTimer.current); }, []);
   const collapsed = !mobile && !pinned && !hovered && !focused;
   const toggleSidebar = useAppStore((state) => state.toggleSidebar);
   const setPaletteOpen = useAppStore((state) => state.setPaletteOpen);
@@ -47,12 +53,15 @@ export function Sidebar({ mobile = false }: { mobile?: boolean }) {
   return (
     <div className={cn("relative h-full shrink-0", mobile ? "w-full" : pinned ? "w-[248px]" : "w-[68px]")}>
     <aside
-      onPointerEnter={(event) => { if (event.pointerType === "mouse") setHovered(true); }}
-      onPointerLeave={() => setHovered(false)}
+      onPointerMove={(event) => {
+        if (event.pointerType !== "mouse" || mobile || pinned || hovered || hoverTimer.current !== null) return;
+        hoverTimer.current = setTimeout(() => { hoverTimer.current = null; setHovered(true); }, 180);
+      }}
+      onPointerLeave={() => { cancelHover(); setHovered(false); }}
       onFocusCapture={(event) => { if (event.target.matches(":focus-visible")) setFocused(true); }}
       onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false); }}
-      onKeyDown={(event) => { if (event.key === "Escape") { setHovered(false); setFocused(false); } }}
-      onClickCapture={(event) => { if (event.target instanceof Element && event.target.closest("a")) { setHovered(false); setFocused(false); } }}
+      onKeyDown={(event) => { if (event.key === "Escape") { cancelHover(); setHovered(false); setFocused(false); } }}
+      onClickCapture={(event) => { if (event.target instanceof Element && event.target.closest("a")) { cancelHover(); setHovered(false); setFocused(false); } }}
       className={cn("app-sidebar flex h-full flex-col border-r border-border transition-[width,box-shadow] duration-200", mobile ? "w-full border-r-0" : "absolute inset-y-0 left-0 z-40", collapsed ? "w-[68px]" : "w-[248px]", !mobile && !pinned && !collapsed && "shadow-2xl")}>
       <div className={cn("flex h-16 shrink-0 items-center gap-2.5 px-4", collapsed && "!px-3")}>
         <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-accent text-accent-foreground shadow-sm"><Bot size={21} strokeWidth={1.8} /></div>
