@@ -5,6 +5,9 @@ from __future__ import annotations
 from types import SimpleNamespace as SN
 from unittest.mock import AsyncMock
 
+import pytest
+
+from agent.memory.memory_retriever import MemoryRetriever
 from agent.mind import recollection
 
 
@@ -85,6 +88,34 @@ class TestLeanLayeredPrompts:
 
 
 class TestLeanRecollection:
+    @pytest.mark.parametrize("query", ["我钥匙放哪了", "WiFi密码", "会议地址", "帮我查下", "/review", "好的？"])
+    def test_short_queries_are_not_treated_as_greetings(self, query: str) -> None:
+        assert not MemoryRetriever._is_trivial_turn([{"role": "user", "content": query}])
+
+    async def test_greeting_skips_network_recall_but_keeps_profiles_and_gestures(self) -> None:
+        mind = _fake_mind()
+        mind.embedder = SN(embed_query=AsyncMock())
+        mind.retriever.recall_split = AsyncMock(return_value=([{"content": "画像"}], []))
+        mind.retriever.load_relation_snippets = AsyncMock(return_value=[])
+        mind._extract_related_scopes = lambda *args: []
+        mind._recall_cross_channel = AsyncMock()
+        mind._match_skills = AsyncMock(return_value=[{"content": "手势技能"}])
+        mind._build_cross_channel_narrative = lambda *args: ""
+        mind._apply_memory_budget = lambda msgs: msgs
+        mind._get_models_summary = lambda: "models"
+        mind._resolve_target_id = lambda anything: ""
+        mind._build_layered_prompts = AsyncMock(return_value=("p", "t", "c", True, True, True, "", ""))
+        mind.pfc.build_llm_context = AsyncMock(return_value=[])
+        await recollection.get_recollection(mind, [
+            {"role": "user", "content": "请记住详细的项目信息"},
+            {"role": "user", "content": "[channel:qq]谢谢！"},
+        ])
+        mind.embedder.embed_query.assert_not_called()
+        mind._recall_cross_channel.assert_not_called()
+        mind.retriever.recall_split.assert_awaited_once()
+        assert mind._match_skills.call_args.args == ("",)
+        assert mind.pfc.build_llm_context.call_args.kwargs["memory_msgs"] == [{"content": "手势技能"}]
+
     async def test_lean_skips_all_recall_paths(self) -> None:
         """lean 的 get_recollection：不 embed、不召回，环境注入位全空。"""
         mind = _fake_mind("永久")

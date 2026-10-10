@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock
 
+import pytest
+
 from agent.delegation.delegation_manager import DelegationManager
 from agent.delegation.profile import AgentFacets
 from agent.delegation.sub_agent import SubAgent, extract_json_output
@@ -22,6 +24,37 @@ class _FakeMind:
 
 
 class TestFacetsConsumption:
+    @pytest.mark.parametrize(("output", "path"), [
+        ('{"other": "done"}', "$.summary"),
+        ('{"summary": 12, "facts": []}', "$.summary"),
+        ('{"summary": "done", "facts": [{"verified": "yes"}]}', "$.facts[0].verified"),
+    ])
+    async def test_json_must_match_contract(self, output: str, path: str) -> None:
+        result = await SubAgent(
+            _FakeMind(output), "目标",
+            facets=AgentFacets(output_schema={"summary": "", "facts": [{"verified": True}]}),
+        ).run()
+        assert result.success and result.output == output
+        assert result.schema_ok is False
+        assert path in result.schema_error
+        assert not result.completion_ready
+
+    async def test_budget_exhaustion_preserves_report_without_claiming_completion(self) -> None:
+        mind = _FakeMind()
+
+        async def reflect(messages, **kwargs):
+            kwargs["completion"].update(reason="budget_exhausted", messages=messages)
+            return "已写入文件，尚未验证"
+
+        mind.reflect = reflect
+        result = await SubAgent(mind, "任务").run()
+        payload = json.loads(DelegationManager(mind).aggregate_results([result]))
+        assert result.success and result.messages
+        assert not result.completion_ready
+        assert payload["needs_review"] == 1
+        assert not payload["completion_ready"]
+        assert "follow_up_agent" in payload["results"][0]["hint"]
+
     async def test_instructions_and_schema_in_prompt(self) -> None:
         mind = _FakeMind()
         facets = AgentFacets(
@@ -80,6 +113,9 @@ class TestFacetsConsumption:
 
 
 class TestExtractJsonOutput:
+    def test_braces_inside_strings_do_not_end_json(self) -> None:
+        assert extract_json_output('结果：{"text": "} 转义\\\" {"} 完毕') == {"text": '} 转义" {'}
+
     def test_plain_json(self) -> None:
         assert extract_json_output('{"a": 1}') == {"a": 1}
 

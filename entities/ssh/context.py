@@ -75,7 +75,7 @@ class SshStatusProvider:
 
 
 @context_provider(
-    name="ssh_ops", priority=30, max_tokens=2000,
+    name="ssh_ops", priority=30, max_tokens=2000, retention_priority=20,
     group="ssh", inject_key="ssh_ops_context_inject",
 )
 class SshOpsProvider:

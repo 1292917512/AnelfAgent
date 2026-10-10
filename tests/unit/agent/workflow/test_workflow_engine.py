@@ -13,9 +13,54 @@ from agent.workflow import journal as wf_journal
 from agent.workflow.spec import WorkflowSpecError
 
 
+@pytest.mark.parametrize(("reason", "schema_ok"), [
+    ("budget_exhausted", None), ("completed", False),
+])
+async def test_incomplete_ask_preserves_progress_without_retrying(
+        engine, fake_manager, monkeypatch, reason, schema_ok):
+    from unittest.mock import AsyncMock
+
+    from agent.delegation.sub_agent import SubAgentResult
+
+    delegate = AsyncMock(return_value=SubAgentResult(
+        goal="write", success=True, output="文件已写入，待核验",
+        completed_reason=reason, schema_ok=schema_ok,
+    ))
+    monkeypatch.setattr(fake_manager, "delegate", delegate)
+    summary = await engine.start({"name": "收束", "steps": [
+        {"key": "a", "kind": "ask", "goal": "write", "retries": 2},
+        {"key": "b", "kind": "ask", "goal": "publish", "depends_on": ["a"]},
+    ]})
+    run = await wait_run_terminal(engine.journal, summary["run_id"])
+    assert run["status"] == wf_journal.FAILED
+    assert delegate.await_count == 1
+    nodes = await engine.journal.nodes_of_run(summary["run_id"])
+    assert "未自动重试" in nodes[0]["error_text"]
+    assert nodes[0]["result_text"] == "文件已写入，待核验"
+    assert nodes[0]["delegation_id"]
+
+
 async def _approval_ok(self, step, run):
     from agent.approval.types import ApprovalResult
     return ApprovalResult(True, "rule_allow")
+
+
+@pytest.mark.parametrize("payload", [
+    {"success": False, "message": "target not reached", "retryable": False},
+    {"ok": False, "detail": "result unknown", "outcome": "unknown"},
+    {"error": "write timed out", "retryable": False},
+])
+async def test_tool_failure_contract_stops_unsafe_retry(engine, monkeypatch, approve_all, payload):
+    execute = _fake_tool_results([payload])
+    monkeypatch.setattr("core.entity.EntityRegistry.execute_tool", execute)
+    summary = await engine.start({"name": "工具结果", "steps": [
+        {"key": "write", "kind": "tool", "tool": "write_file", "args": {}, "retries": 2},
+    ]})
+    run = await wait_run_terminal(engine.journal, summary["run_id"])
+    assert run["status"] == wf_journal.FAILED
+    assert len(execute.calls) == 1
+    nodes = await engine.journal.nodes_of_run(summary["run_id"])
+    assert json.loads(nodes[0]["result_text"]) == payload
 
 
 async def test_close_drains_steps_and_refuses_restart(engine, fake_manager):

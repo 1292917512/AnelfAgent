@@ -283,7 +283,7 @@ def track_fs_op(*target_params: str):
 
 
 @context_provider(
-    name="fs_ops", priority=32, max_tokens=2000,
+    name="fs_ops", priority=32, max_tokens=2000, retention_priority=20,
     group="os", inject_key="os_context_inject",
 )
 async def fs_ops_provider(scope: str) -> Optional[str]:

@@ -58,22 +58,8 @@ def _child_env() -> Dict[str, str]:
     return env
 
 
-def _truncate_call_result(result: str, cap: int) -> str:
-    """单次子调用结果截断（头 60% + 尾 30%，中间标注分页指引）。"""
-    if len(result) <= cap:
-        return result
-    head = int(cap * 0.6)
-    tail = int(cap * 0.3)
-    return (
-        result[:head]
-        + f"\n…（结果共 {len(result)} 字符，已截断；如需完整内容，"
-          "用支持 offset/limit 或更窄参数的调用分段读取）…\n"
-        + result[-tail:]
-    )
-
-
 async def _dispatch(tool_name: str, args: Dict[str, Any], result_cap: int) -> Dict[str, Any]:
-    """单次子调用：排除清单 → 审批门（fail-open 纪律同 workflow）→ 注册表执行 → 截断。
+    """校验并执行脚本子调用，完整返回数据或明确报告失败及资源限制。
 
     返回 {"ok", "result"|"error", "ledger"}；ledger 供运行结束后的调用账目汇总。
     """
@@ -120,16 +106,27 @@ async def _dispatch(tool_name: str, args: Dict[str, Any], result_cap: int) -> Di
         _finish(False)
         return {"ok": False, "error": f"工具执行异常: {exc}"[:500], "ledger": ledger}
 
-    try:
-        parsed = json.loads(result)
-    except ValueError:
-        parsed = None
-    if isinstance(parsed, dict) and parsed.get("error"):
+    from core.tool_results import extract_error_text
+
+    if extract_error_text(result):
         _finish(False)
         return {"ok": False, "error": result[:2000], "ledger": ledger}
 
+    if len(result) > result_cap:
+        _finish(False)
+        return {
+            "ok": False,
+            "error": tool_error(
+                f"工具已执行，结果超过脚本数据上限（{len(result)}/{result_cap} 字符）",
+                cause=ErrorCause.STATE, retryable=False, code="CODEBOX_RESULT_LIMIT",
+                outcome="completed",
+                hint="不要重做已执行的写操作；查询类结果请使用分页或更窄的查询范围。",
+            ),
+            "ledger": ledger,
+        }
+
     _finish(True)
-    return {"ok": True, "result": _truncate_call_result(result, result_cap), "ledger": ledger}
+    return {"ok": True, "result": result, "ledger": ledger}
 
 
 def _tool_catalog() -> str:
@@ -177,7 +174,7 @@ async def run_script(code: str, *, timeout: int = 0, workspace_root: str = "") -
     env["ANELF_CODEBOX_CPU_S"] = str(timeout + 60)
     max_output = get_config_int("codebox_output_chars", 20000)
     max_calls = get_config_int("codebox_max_tool_calls", 100)
-    result_cap = get_config_int("codebox_call_result_chars", 8000)
+    result_cap = max(1024, get_config_int("codebox_max_result_chars", 2_000_000))
 
     started = time.monotonic()
     deadline = started + timeout
@@ -201,6 +198,7 @@ async def run_script(code: str, *, timeout: int = 0, workspace_root: str = "") -
     ledger: List[Dict[str, Any]] = []
     done_info: Optional[Dict[str, Any]] = None
     timed_out = False
+    pending_tool = ""
 
     async def _pump_stderr() -> None:
         assert proc.stderr is not None
@@ -250,10 +248,17 @@ async def run_script(code: str, *, timeout: int = 0, workspace_root: str = "") -
                                  "请缩小本次任务范围，剩余工作拆到下一次 run_python",
                     })
                     continue
-                result = await _dispatch(
-                    str(frame.get("tool") or ""), frame.get("args") or {}, result_cap
-                )
+                try:
+                    pending_tool = str(frame.get("tool") or "")
+                    result = await asyncio.wait_for(
+                        _dispatch(pending_tool, frame.get("args") or {}, result_cap),
+                        timeout=max(0.0, deadline - time.monotonic()),
+                    )
+                except asyncio.TimeoutError:
+                    timed_out = True
+                    break
                 ledger.append(result["ledger"])
+                pending_tool = ""
                 payload: Dict[str, Any] = {"f": "ret", "id": frame.get("id"), "ok": result["ok"]}
                 if result["ok"]:
                     payload["result"] = result["result"]
@@ -268,6 +273,7 @@ async def run_script(code: str, *, timeout: int = 0, workspace_root: str = "") -
             proc.kill()
         await proc.wait()
         stderr_task.cancel()
+        await asyncio.gather(stderr_task, return_exceptions=True)
         script_path.unlink(missing_ok=True)
 
     elapsed = time.monotonic() - started
@@ -279,9 +285,10 @@ async def run_script(code: str, *, timeout: int = 0, workspace_root: str = "") -
     if timed_out:
         return tool_error(
             f"脚本运行超时（{timeout}s），进程已强制终止",
-            cause=ErrorCause.TIMEOUT, retryable=True,
-            hint="缩小任务范围或分片处理；timeout 参数上限 600s",
-            output_so_far=output[-4000:], calls=len(ledger),
+            cause=ErrorCause.TIMEOUT, retryable=False, outcome="unknown",
+            hint="已调用的工具可能生效；先只读核验状态或产物，保留已完成部分，再决定续做范围。",
+            output_so_far=output[-4000:], calls=len(ledger) + bool(pending_tool),
+            pending_tool=pending_tool, completed_calls=len(ledger),
         )
     if done_info is None:
         diag = "".join(stderr_parts).strip()[:1000]

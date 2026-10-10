@@ -1111,8 +1111,9 @@ class DelegationManager:
             f"[后台委托完成] id={delegation_id} 状态={journal.terminal_label(status)}\n"
             f"目标: {goal[:200]}\n结果: {summary[:_SUMMARY_NOTICE_MAX_CHARS]}"
         )
-        if getattr(result, "completed_reason", "completed") == "budget_exhausted":
-            note += "\n（轮次预算用尽，结果可能不完整；需要更完整结论可拆小任务重新委托）"
+        if not result.completion_ready:
+            note += (f"\n[完成待核验] reason={result.completed_reason} "
+                     f"{result.schema_error}\n保留已执行进展，先核验，再续跑或补交；不要从头重做。")
 
         # 结果登记兜底：无论后续路由是否成功，registry 都必须完成，
         # 否则 delegation 永久卡 running、等待者永远收不到会合注入
@@ -1179,6 +1180,8 @@ class DelegationManager:
                 "goal": r.goal,
                 "success": r.success,
                 "output": output,
+                "completed_reason": r.completed_reason,
+                "completion_ready": r.completion_ready,
             }
             if r.error:
                 item["error"] = r.error
@@ -1191,12 +1194,13 @@ class DelegationManager:
             if r.completed_reason == "budget_exhausted":
                 # 轮次预算用尽：产出可能只是中途状态，父级可决策拆小重委托
                 item["completed_reason"] = "budget_exhausted"
-                item["hint"] = "轮次预算用尽，结果可能不完整；需要更完整结论可拆分为更小的子任务重新委托"
+                item["hint"] = "轮次预算用尽，已执行操作可能生效；先核验已有结果，再用 follow_up_agent 续跑或补交总结，不要从头重做"
             if r.schema_ok is False:
                 # 输出契约未满足：事实报告，父级决定重试还是将就用文本
                 item["schema_ok"] = False
+                item["schema_error"] = r.schema_error
                 item["hint"] = (item.get("hint", "") + " " if item.get("hint") else "") + \
-                    "输出未满足档案 output_schema 契约（未解析出合法 JSON），如需结构化结果可重试或续跑补交"
+                    "输出未满足档案 output_schema 的字段或类型契约；可续跑补交已有结果，无需重新执行任务"
             items.append(item)
         succeeded = sum(1 for r in results if r.success)
         return json.dumps({
@@ -1204,6 +1208,8 @@ class DelegationManager:
             "total": len(results),
             "succeeded": succeeded,
             "failed": len(results) - succeeded,
+            "completion_ready": all(r.completion_ready for r in results),
+            "needs_review": sum(1 for r in results if r.success and not r.completion_ready),
             "results": items,
         }, ensure_ascii=False)
 

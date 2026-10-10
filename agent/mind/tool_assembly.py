@@ -35,6 +35,7 @@ class ToolAssembly:
         self._discovered_tools: set[str] = set()
         self._scope_discovered_tools: dict[str, set[str]] = {}
         self._scope_frozen_tool_names: dict[str, list[str]] = {}
+        self._scope_order: dict[str, None] = {}
         # 动态工具集版本号（tag 激活/动态发现变化时递增，供 think_loop 检测重建）
         self._tools_version: int = 0
         # 跨回复冻结的 tools 数组顺序（追加式：只增不改，缓存前缀稳定的最终防线；
@@ -147,6 +148,7 @@ class ToolAssembly:
     def expand_discovered_tools(self, tool_calls: list, scope: str = "") -> None:
         """解析 list_entity_methods 调用结果，将发现的工具加入动态发现集。"""
         import json as _json
+        self._touch_scope(scope)
         for tc in tool_calls:
             if tc.name != "list_entity_methods":
                 continue
@@ -162,36 +164,42 @@ class ToolAssembly:
                         if name not in discovered:
                             discovered.add(name)
                             self._tools_version += 1
-                    if name not in self._discovered_tools:
+                    elif name not in self._discovered_tools:
                         self._discovered_tools.add(name)
                         self._tools_version += 1
                         log(f"动态发现工具: {name} (来自分组 {group})", "DEBUG", tag="PFC")
             except Exception as e:
                 log(f"动态工具发现失败: {e}", "DEBUG", tag="PFC")
 
-    def clear_dynamic_tools(self, scope: str = "") -> None:
-        """清除当轮动态工具状态（tag 激活 + 动态发现）。
+    def _touch_scope(self, scope: str) -> None:
+        """保留最近 128 个会话的工具目录，限制跨回复缓存占用。"""
+        if not scope:
+            return
+        self._scope_order.pop(scope, None)
+        self._scope_order[scope] = None
+        while len(self._scope_order) > 128:
+            oldest = next(iter(self._scope_order))
+            self._scope_order.pop(oldest)
+            self._scope_discovered_tools.pop(oldest, None)
+            self._scope_frozen_tool_names.pop(oldest, None)
 
-        scope 非空时仅清除该 scope 相关的状态（后台评审等并行会话不踩踏主会话）。
-        指定 scope 只清除其独立发现记录，不动普通目录的全局 tag/discovered；
-        scope 为空时执行全量清理，调用方应在 active_scopes 清空后再清。
-
-        粘性模式（tool_dynamic_sticky，默认开）：保留 tag 激活与动态发现——
-        它们是消息内容驱动的（如图片到达激活媒体工具），清掉会导致下个会话
-        重新激活、工具集在两个状态间反复抖动；tools 数组位于请求最前，
-        任何字节变化都会击穿其后的全部前缀缓存（实测单次重写 ~30K tokens）。
-        进程生命周期内工具集只增不减 + 确定性排序 = 跨会话字节稳定。
-        """
+    def clear_dynamic_tools(self, scope: str = "", *, force: bool = False) -> None:
+        """清理动态目录；长期会话可保留前缀，一次性反思强制释放自身状态。"""
         from core.config import get_config_bool
-        if get_config_bool("tool_dynamic_sticky", True):
+        if not force and get_config_bool("tool_dynamic_sticky", True):
             return
         if scope:
-            if self._scope_discovered_tools.pop(scope, None):
-                self._tools_version += 1
+            self._scope_discovered_tools.pop(scope, None)
+            self._scope_frozen_tool_names.pop(scope, None)
+            self._scope_order.pop(scope, None)
+            self._tools_version += 1
             return
         self._tag_activated_tools.clear()
         self._discovered_tools.clear()
         self._scope_discovered_tools.clear()
+        self._scope_frozen_tool_names.clear()
+        self._scope_order.clear()
+        self._frozen_tool_names.clear()
         self._tools_version += 1
 
     # ==================================================================
@@ -208,6 +216,7 @@ class ToolAssembly:
         from agent.channel.reply_policy import get_reply_policy
         from agent.mind.tool_activation import tool_activation
 
+        self._touch_scope(scope)
         policy = get_reply_policy(adapter_key, self._channel_manager)
         if policy.initial_tools is not None:
             return await self._get_scoped_tool_schemas(policy.initial_tools, policy.tool_groups, scope)
@@ -250,9 +259,10 @@ class ToolAssembly:
         _merge(self.resolve_tag_tool_schemas(), "tag_match")
         _merge(self.get_hot_tool_schemas(), "hot_recall")
 
-        if self._discovered_tools:
+        discovered = self._scope_discovered_tools.get(scope, set()) if scope else self._discovered_tools
+        if discovered:
             _merge(EntityRegistry.get_tool_schema_by_names(
-                sorted(self._discovered_tools)), "discovered")
+                sorted(discovered)), "discovered", scoped=True)
 
         # 已激活的沉睡分组：补充其全部工具（即使未被上述渠道命中）
         activated = tool_activation.active_groups(scope)
@@ -262,8 +272,9 @@ class ToolAssembly:
         # 冻结结转：历史冻结工具仍注册在案则并回候选——热召回 top-N 换血、
         # tag/发现集变化不再导致数组元素消失（消失会把缓存前缀在该位置截断）；
         # 沉睡过滤与 check_fn 门控在下方照常适用于结转工具
-        if self._frozen_tool_names:
-            carryover = sorted(n for n in self._frozen_tool_names if n not in seen_names)
+        frozen = self._scope_frozen_tool_names.setdefault(scope, []) if scope else self._frozen_tool_names
+        if frozen:
+            carryover = sorted(n for n in frozen if n not in seen_names)
             if carryover:
                 _merge(
                     EntityRegistry.get_tool_schema_by_names(carryover),
@@ -281,7 +292,7 @@ class ToolAssembly:
         from core.config import get_config_bool
         deterministic = get_config_bool("tool_order_deterministic", True)
         if get_config_bool("tool_order_frozen", True) and deterministic:
-            all_schemas = self._apply_append_only_freeze(all_schemas, scoped_names)
+            all_schemas = self._apply_append_only_freeze(all_schemas, scoped_names, frozen_names=frozen)
         else:
             # 配置在排序前读一次，排序键不再逐元素读取
             all_schemas.sort(
@@ -379,9 +390,11 @@ class ToolAssembly:
                 awake_names.update(s.get("function", {}).get("name", "") for s in selected)
 
         # 自服务扩展：list_entity_methods 动态发现 + activate_tool_group 唤醒
-        if self._discovered_tools:
+        self._touch_scope(scope)
+        discovered = self._scope_discovered_tools.get(scope, set()) if scope else self._discovered_tools
+        if discovered:
             _merge(EntityRegistry.get_tool_schema_by_names(
-                sorted(self._discovered_tools)))
+                sorted(discovered)), scoped=True)
         for group in tool_activation.active_groups(scope):
             _merge(EntityRegistry.get_tool_schemas_by_group(group), scoped=True)
 
@@ -510,4 +523,4 @@ class ToolAssembly:
 
     @property
     def discovered_tools(self) -> set[str]:
-        return self._discovered_tools
+        return self._discovered_tools.union(*self._scope_discovered_tools.values())

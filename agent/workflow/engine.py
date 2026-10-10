@@ -50,6 +50,7 @@ from agent.workflow.spec import (
 )
 from core.config import get_config_bool, get_config_int, register_configs_safe
 from core.log import log
+from core.tool_results import extract_error_text, parse_tool_result_json
 
 _TAG = "工作流"
 
@@ -97,6 +98,7 @@ class _StepOutcome:
     cached: bool = False
     delegation_id: str = ""
     usage: Optional[Dict[str, Any]] = None
+    retryable: bool = True
 
 
 @dataclass
@@ -513,7 +515,7 @@ class WorkflowEngine:
                 return outcome
 
             # 失败：重试预算内换 ordinal 再跑，否则本步失败
-            if retries_left > 0:
+            if retries_left > 0 and outcome.retryable:
                 retries_left -= 1
                 await asyncio.sleep(_RETRY_BACKOFF_SECONDS)
                 ordinal = await self._journal.next_ordinal(run_id, step.key)
@@ -605,14 +607,15 @@ class WorkflowEngine:
                 result = await (asyncio.wait_for(coro, timeout) if timeout > 0 else coro)
         except asyncio.TimeoutError:
             return _StepOutcome(status=NODE_FAILED,
-                                error=f"步骤超时（{timeout:.0f}s）: {goal[:120]}")
+                                error=f"步骤超时（{timeout:.0f}s），操作结果未确认，请先核验: {goal[:120]}",
+                                delegation_id=delegation_id, retryable=False)
         finally:
             if delegation_id and registry is not None:
                 preview = ""
                 if result is not None:
                     preview = ((result.output if result.success else result.error) or "")[:1500]
                 try:
-                    registry.complete(delegation_id, bool(result and result.success),
+                    registry.complete(delegation_id, bool(result and result.completion_ready),
                                       preview, claimed=True)
                 except Exception:
                     pass  # 注册表收尾失败不影响步骤结局
@@ -624,9 +627,18 @@ class WorkflowEngine:
                                 delegation_id=delegation_id)
         if not result.success:
             return _StepOutcome(status=NODE_FAILED, error=result.error or "子代理执行失败",
-                                delegation_id=delegation_id)
+                                delegation_id=delegation_id,
+                                retryable=result.completed_reason == "completed")
         state.delegation_ids[node_key] = delegation_id
         usage = dict(getattr(result, "usage", {}) or {})
+        if not result.completion_ready:
+            detail = result.schema_error or result.completed_reason
+            return _StepOutcome(
+                status=NODE_FAILED, result=result.output, delegation_id=delegation_id,
+                usage=usage or None, retryable=False,
+                error=f"子代理尚未满足完成契约（{detail}）；已保留进展，"
+                      "请先核验并续跑补交，未自动重试以避免重复执行",
+            )
         return _StepOutcome(status=NODE_COMPLETED, result=result.output,
                             delegation_id=delegation_id, usage=usage or None)
 
@@ -671,11 +683,15 @@ class WorkflowEngine:
             result_str = await (asyncio.wait_for(coro, timeout) if timeout > 0 else coro)
         except asyncio.TimeoutError:
             return _StepOutcome(status=NODE_FAILED,
-                                error=f"步骤超时（{timeout:.0f}s）: {step.tool}")
-        parsed = self._parse_tool_result(result_str)
-        if isinstance(parsed, dict) and parsed.get("error"):
+                                error=f"步骤超时（{timeout:.0f}s），操作结果未确认，请先核验: {step.tool}",
+                                retryable=False)
+        parsed = parse_tool_result_json(result_str)
+        error = extract_error_text(parsed)
+        if error:
+            retryable = isinstance(parsed, dict) and parsed.get("retryable") is not False \
+                and parsed.get("outcome") != "unknown"
             return _StepOutcome(status=NODE_FAILED,
-                                error=str(parsed["error"])[:4000], result=result_str)
+                                error=error[:4000], result=result_str, retryable=retryable)
         if decision.notice:
             payload = parsed if isinstance(parsed, dict) else {"result": result_str}
             payload["permission_notice"] = decision.notice
@@ -689,13 +705,6 @@ class WorkflowEngine:
             tool_name=step.tool, tool_args=dict(step.args),
             reason=f"工作流[{run['name']}] 步骤 {step.key}", scope=str(run.get("scope") or ""),
         )
-
-    @staticmethod
-    def _parse_tool_result(result_str: str) -> Any:
-        try:
-            return json.loads(result_str)
-        except ValueError:
-            return None
 
     @staticmethod
     def _usage_of(node: Dict[str, Any]) -> Optional[Dict[str, Any]]:

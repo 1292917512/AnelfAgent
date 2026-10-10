@@ -106,7 +106,7 @@ class AgentFacets:
     blocked_tools: List[str] = field(default_factory=list)
     """追加屏蔽的工具名（在角色屏蔽之外叠加）。"""
     output_schema: Optional[Dict[str, Any]] = None
-    """结构化产出契约：JSON object，注入为输出纪律；产出经 JSON 提取校验。"""
+    """JSON 示例契约：要求示例中的字段及值类型，空数组不限定元素类型。"""
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {}

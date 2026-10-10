@@ -2,6 +2,7 @@
 
 import { api } from "./client";
 import type {
+  AgentStatusResponse,
   ConfigValues,
   LifecycleService,
   LogEntry,
@@ -14,7 +15,7 @@ import type {
 } from "@/lib/types";
 
 export const statusApi = {
-  get: () => api.get("/status/"),
+  get: () => api.get<AgentStatusResponse>("/status/"),
   components: () => api.get<{ structured: RuntimeComponents; lines: string[] }>("/status/components"),
   events: () => api.get<{ stats: Record<string, number> }>("/status/events"),
   pfc: () => api.get<PfcSnapshot>("/status/pfc"),

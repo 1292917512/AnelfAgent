@@ -104,12 +104,23 @@ class TestDispatch:
         assert "故意失败" in result["error"]
         assert result["ledger"]["ok"] is False
 
-    async def test_result_truncated_head_tail(self, gate) -> None:
+    async def test_result_limit_reports_completed_operation(self, gate) -> None:
         _ensure_test_tools()
         result = await sandbox._dispatch("codebox_test_big", {}, 8000)
-        assert result["ok"] is True
-        assert len(result["result"]) < 9000
-        assert "已截断" in result["result"]
+        assert result["ok"] is False
+        error = json.loads(result["error"])
+        assert error["code"] == "CODEBOX_RESULT_LIMIT"
+        assert error["outcome"] == "completed"
+        assert error["retryable"] is False
+
+    @pytest.mark.parametrize("failure", [{"success": False, "message": "failed"}, {"ok": False, "stderr": "failed"}])
+    async def test_failure_contract_matches_direct_tools(self, gate, monkeypatch, failure) -> None:
+        from unittest.mock import AsyncMock
+
+        monkeypatch.setattr(EntityRegistry, "execute_tool", AsyncMock(return_value=json.dumps(failure)))
+        result = await sandbox._dispatch("codebox_test_echo", {}, 8000)
+        assert result["ok"] is False
+        assert result["ledger"]["ok"] is False
 
     async def test_catalog_lists_callable_excludes_output(self, gate) -> None:
         _ensure_test_tools()
@@ -127,6 +138,33 @@ class TestDispatch:
 # ------------------------------------------------------------------
 
 class TestRunScript:
+    async def test_script_can_parse_large_json_and_return_only_summary(self, gate, ws, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        payload = json.dumps({"rows": [{"id": i, "text": "x" * 200} for i in range(100)]})
+        monkeypatch.setattr(EntityRegistry, "execute_tool", AsyncMock(return_value=payload))
+        result = await sandbox.run_script(
+            "import json\nrows = json.loads(tools.codebox_test_rows())['rows']\n"
+            "print('sum:', sum(row['id'] for row in rows))\n", workspace_root=ws)
+        assert "sum: 4950" in result
+        assert len(result) < 200
+
+    async def test_timeout_includes_time_waiting_for_tool(self, gate, ws, monkeypatch) -> None:
+        import asyncio
+
+        async def slow(*args, **kwargs):
+            await asyncio.sleep(30)
+            return "finished"
+
+        monkeypatch.setattr(EntityRegistry, "execute_tool", slow)
+        started = time.monotonic()
+        result = json.loads(await sandbox.run_script("tools.codebox_test_slow()", timeout=1, workspace_root=ws))
+        assert time.monotonic() - started < 5
+        assert result["outcome"] == "unknown"
+        assert result["pending_tool"] == "codebox_test_slow"
+        assert result["calls"] == 1 and result["completed_calls"] == 0
+        assert result["retryable"] is False
+
     async def test_loop_and_conditional(self, gate, ws) -> None:
         _ensure_test_tools()
         result = await sandbox.run_script(

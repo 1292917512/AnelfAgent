@@ -541,7 +541,10 @@ async def list_memory_files() -> List[Dict[str, str]]:
 
 @router.get("/files/content")
 async def read_memory_file(path: str = Query(...)) -> Dict[str, str]:
-    return {"content": _mem_svc.read_memory_file(path)}
+    try:
+        return {"content": _mem_svc.read_memory_file(path)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 class WriteMemoryFileRequest(BaseModel):
@@ -551,7 +554,10 @@ class WriteMemoryFileRequest(BaseModel):
 
 @router.put("/files/content")
 async def write_memory_file(req: WriteMemoryFileRequest) -> Dict[str, int]:
-    lines = _mem_svc.write_memory_file(req.path, req.content)
+    try:
+        lines = _mem_svc.write_memory_file(req.path, req.content)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"lines": lines}
 
 

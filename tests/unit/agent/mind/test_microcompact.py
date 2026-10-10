@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import os
 from types import SimpleNamespace
 from typing import Dict, List
+
+import pytest
 
 from agent.mind.context_compressor import CompressionConfig, ContextCompressor
 
@@ -41,9 +44,20 @@ class TestMicrocompact:
         for m in tool_msgs[:-2]:
             assert m["content"] == ContextCompressor._MICROCOMPACT_PLACEHOLDER
 
-    def test_write_tool_results_preserved(self):
+    @pytest.mark.parametrize("name", ["write_file", "run_shell_command", "web_request"])
+    def test_write_tool_results_preserved(self, name):
         c = _compressor(microcompact_chain_threshold=4, microcompact_keep_recent=1)
-        chain = _chain(4, tool_name="write_file")
+        chain = _chain(4, tool_name=name)
+        assert c.microcompact(chain) == 0
+
+    @pytest.mark.parametrize("content", [json.dumps({"success": False, "error": "x" * 400}),
+                                         "<persisted-output>" + "x" * 400 + "</persisted-output>"])
+    def test_diagnostics_and_result_references_survive(self, content):
+        c = _compressor(microcompact_chain_threshold=4, microcompact_keep_recent=1)
+        chain = _chain(4)
+        for message in chain:
+            if message["role"] == "tool":
+                message["content"] = content
         assert c.microcompact(chain) == 0
 
     def test_short_chain_untouched(self):

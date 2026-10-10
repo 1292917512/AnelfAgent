@@ -364,7 +364,9 @@ class TestAggregateReason:
         ]))
         item = out["results"][0]
         assert item["completed_reason"] == "budget_exhausted"
-        assert "拆分" in item["hint"]
+        assert "follow_up_agent" in item["hint"]
+        assert "不要从头重做" in item["hint"]
+        assert item["completion_ready"] is False
 
     def test_completed_items_unchanged(self) -> None:
         import json
@@ -375,7 +377,8 @@ class TestAggregateReason:
         out = json.loads(manager.aggregate_results([
             SubAgentResult(goal="调研", success=True, output="结论"),
         ]))
-        assert "completed_reason" not in out["results"][0]
+        assert out["results"][0]["completed_reason"] == "completed"
+        assert out["completion_ready"] is True
 
 
 class TestAfterBoundary:

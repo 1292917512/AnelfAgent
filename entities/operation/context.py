@@ -87,7 +87,7 @@ def _render_recent() -> str:
 
 
 @context_provider(
-    name="operation", priority=36, max_tokens=800,
+    name="operation", priority=36, max_tokens=800, retention_priority=20,
     group="operation", inject_key="operation_context_inject",
 )
 class OperationProvider:

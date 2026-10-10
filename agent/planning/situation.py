@@ -294,6 +294,7 @@ def _register_provider() -> None:
     ContextProviderRegistry.register(ProviderMeta(
         name="plan_ops",
         priority=30,
+        retention_priority=10,
         max_tokens=600,
         group="planning",
         inject_key="goals_inject_enabled",

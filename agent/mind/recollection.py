@@ -84,11 +84,12 @@ async def _get_recollection(
     tail = conversation_list[-10:] if len(conversation_list) > 10 else conversation_list
     current_adapter = getattr(anything, "adapter_key", "") or ""
 
-    # 查询提取与 embedding 每轮只做一次，三条召回路径（语义/跨频道/技能）共享
-    # （embed_query 内部自带超时与降级，永不阻塞对话路径）；精简模式不召回，跳过
+    # 明确寒暄跳过远端查询，保留画像、永久记忆和显式技能手势。
+    trivial = MemoryRetriever._is_trivial_turn(tail)
+    # 三条召回路径（语义/跨频道/技能）共享查询向量。
     query_vec: Optional[List[float]] = None
     base_query = ""
-    if not lean:
+    if not lean and not trivial:
         base_query = MemoryRetriever._extract_query(tail) if tail else ""
         if base_query:
             query_vec = await mind.embedder.embed_query(base_query)
@@ -123,6 +124,11 @@ async def _get_recollection(
             s for s in related_scopes if s != entity_scope
         ]
         return await mind.retriever.load_relation_snippets(all_scopes)
+
+    async def _recall_channels() -> Tuple[List[Dict], List[str]]:
+        if trivial:
+            return [], []
+        return await mind._recall_cross_channel(tail, current_adapter, entity_scope, query_vec=query_vec)
 
     # 主标签记忆（main:hub）：索引中枢与长工作流工作窗口，完整/精简模式均注入
     # （精简模式砍掉的是召回与环境便签；主标签是 AI 自己的维护面，与 pins 同口径）
@@ -160,11 +166,11 @@ async def _get_recollection(
         # 三条召回路径互相独立（各自读 DB/检索，无共享状态），并行执行；
         # 技能匹配排在记忆召回之后：复用其检索计划做查询车道（规划查询刚被
         # 召回车道嵌入过，Embedder 查询缓存命中，技能侧嵌入近乎零成本），
-        # 排序只为拿到计划，不把技能匹配放上关键路径
+        # 技能匹配复用计划，仍计入本轮上下文准备耗时。
         (profile_msgs, memory_msgs), relation_msgs, (cross_recall_msgs, recalled_scopes) = await asyncio.gather(
             _recall_memory(),
             _load_relations(),
-            mind._recall_cross_channel(tail, current_adapter, entity_scope, query_vec=query_vec),
+            _recall_channels(),
         )
         skill_msgs = await mind._match_skills(
             base_query, query_vec=query_vec, scope=entity_scope,

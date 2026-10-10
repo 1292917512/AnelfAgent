@@ -1,19 +1,18 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Card } from "@/components/common/Card";
+import { QueryError } from "@/components/common/AsyncState";
 import { StatusDot } from "@/components/common/StatusDot";
 import { heartbeatApi, statusApi, memoryApi, tasksApi } from "@/lib/api";
 import type { TaskConfig } from "@/lib/types";
 import { RefreshCw, Play, Zap } from "lucide-react";
-import { useState } from "react";
 import { cn, formatAge, formatDurationMs } from "@/lib/utils";
 
 export function StatusPanel() {
   const { t } = useTranslation("heartbeat");
-  const [logRefreshKey, setLogRefreshKey] = useState(0);
 
   const { data: agentStatus } = useQuery({
-    queryKey: ["agentStatus"],
+    queryKey: ["status"],
     queryFn: () => statusApi.get().then((r) => r.data),
     refetchInterval: 5000,
   });
@@ -29,17 +28,19 @@ export function StatusPanel() {
     queryFn: () => tasksApi.list().then((r) => r.data as TaskConfig[]),
   });
 
-  const { data: heartbeatLog, isLoading: logLoading } = useQuery({
-    queryKey: ["heartbeatLog", logRefreshKey],
+  const { data: heartbeatLog, isLoading: logLoading, error: logError, refetch: refreshLog, isFetching: logFetching } = useQuery({
+    queryKey: ["heartbeatLog"],
     queryFn: () =>
-      memoryApi.files.read("config/memory/heartbeat.md").then((r) => r.data?.content ?? r.data ?? ""),
+      memoryApi.files.read("memory/heartbeat.md").then((r) => r.data.content),
     refetchInterval: 30000,
+    throwOnError: false,
   });
 
   const triggerMut = useMutation({ mutationFn: () => heartbeatApi.trigger() });
   const triggerTaskMut = useMutation({ mutationFn: (name: string) => tasksApi.trigger(name) });
 
-  const isRunning = !!agentStatus && agentStatus.status !== "stopped";
+  const runtime = agentStatus?.status;
+  const isRunning = !!agentStatus?.ready && !!runtime && ["running", "processing"].includes(runtime.status);
   const interval = hbStatus?.interval_seconds ?? 300;
   const totalTicks = hbStatus?.total_ticks ?? 0;
 
@@ -97,15 +98,14 @@ export function StatusPanel() {
             {hbStatus?.last_activity_sec != null ? formatTime(hbStatus.last_activity_sec) : "—"}
           </p>
         </div>
-        {agentStatus?.uptime != null && (
-          <div className="p-3 rounded-md border border-border bg-card">
+        <div className="p-3 rounded-md border border-border bg-card">
             <p className="text-[10px] text-muted uppercase tracking-wide">{t("status.uptime")}</p>
-            <p className="text-sm font-semibold text-heading">{formatTime(agentStatus.uptime)}</p>
+            <p className="text-sm font-semibold text-heading">{runtime?.uptime != null ? formatTime(Math.floor(runtime.uptime)) : "—"}</p>
           </div>
-        )}
       </div>
 
       {/* 手动心跳按钮 */}
+      {(triggerMut.error || triggerTaskMut.error) && <QueryError compact error={triggerMut.error ?? triggerTaskMut.error} />}
       <div className="flex gap-2">
         <button
           onClick={() => triggerMut.mutate()}
@@ -216,14 +216,15 @@ export function StatusPanel() {
         title={t("status.recentLog")}
         actions={
           <button
-            onClick={() => setLogRefreshKey((k) => k + 1)}
+            onClick={() => void refreshLog()}
+            disabled={logFetching}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all"
           >
             <RefreshCw size={14} /> {t("status.refreshLog")}
           </button>
         }
       >
-        {logLoading ? (
+        {logError ? <QueryError compact error={logError} retry={() => void refreshLog()} /> : logLoading ? (
           <p className="text-sm text-muted">{t("status.loadingLog")}</p>
         ) : logLines.length === 0 ? (
           <p className="text-sm text-muted">{t("status.noLog")}</p>

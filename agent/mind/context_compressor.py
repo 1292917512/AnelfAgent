@@ -304,10 +304,10 @@ class ContextCompressor:
     # 可 microcompact 清理的只读工具
     _MICROCOMPACTABLE_TOOLS = frozenset({
         "read_file", "search_files", "list_directory", "file_info",
-        "run_shell_command", "web_fetch", "web_search",
-        "extract_page_links", "web_request", "recall", "get_conversation",
+        "web_fetch", "web_search",
+        "extract_page_links", "recall", "get_conversation",
     })
-    _MICROCOMPACT_PLACEHOLDER = "[旧工具结果已清理，需要时请重新调用工具获取]"
+    _MICROCOMPACT_PLACEHOLDER = "[旧读取结果已折叠] 此调用已执行；原参数与调用标识保留，需要最新数据时可再次读取。"
 
     # token 估算结果缓存（内容哈希 → token 数），进程内共享。
     # OrderedDict LRU 逐条淘汰（悬崖式全清会造成下一轮全上下文重编码突发；
@@ -318,7 +318,7 @@ class ContextCompressor:
         """清理工具链中较早的只读工具结果为占位符（microCompact）。
 
         在完整压缩之前先做轻量清理：工具链较长时，只读工具的旧结果
-        （read_file/shell/web 等）通常已失效，直接替换为占位符，
+        （文件读取、检索等）正文替换为执行回执，
         避免触发更重 LLM 摘要压缩。返回清理条数。
 
         两类原地重写（结果清理/图片折叠）必须先于重复提示折叠执行：
@@ -363,6 +363,8 @@ class ContextCompressor:
             if name not in self._MICROCOMPACTABLE_TOOLS:
                 continue
             content = msg.get("content")
+            if isinstance(content, str) and (extract_error_text(content) or "<persisted-output>" in content):
+                continue
             if isinstance(content, str) and len(content) > 200 \
                     and content != self._MICROCOMPACT_PLACEHOLDER:
                 tool_chain[i] = {**msg, "content": self._MICROCOMPACT_PLACEHOLDER}

@@ -1,3 +1,17 @@
+export interface AgentStatusResponse {
+  ready: boolean;
+  status?: {
+    status: string;
+    mind_phase: string;
+    uptime: number;
+    message_count: number;
+    error_count: number;
+    last_message_time: number;
+    last_error: string;
+    queue_size: number;
+  } | null;
+}
+
 /** 已安装 Python 包（GET /system/python/packages） */
 export interface PythonPackage {
   name: string;

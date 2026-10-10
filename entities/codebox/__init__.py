@@ -45,9 +45,12 @@ register_configs_safe({
             "description": "单次运行的工具调用次数上限",
             "default": 100,
         },
-        "codebox_call_result_chars": {
-            "description": "单次工具调用结果回传字符上限（头尾保留截断）",
-            "default": 8000,
+        "codebox_max_result_chars": {
+            "description": "单次工具结果传给脚本的数据上限；超限报错，保持数据完整性",
+            "default": 2000000,
+            "min": 1024,
+            "max": 32000000,
+            "advanced": True,
         },
         "codebox_output_chars": {
             "description": "脚本打印输出回传字符上限",

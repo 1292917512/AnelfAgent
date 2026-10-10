@@ -148,7 +148,7 @@ class ProviderMeta:
 
     Attributes:
         name: 提供者唯一标识。
-        priority: 注入优先级（越小越靠前，预算超限时大值先被截断）。语义为
+        priority: 注入位置（越小越靠前）。语义为
             变动率排序，与上下文管线 volatility 教义同构——快照越静态越小
             （注入越靠前），含时间/秒计数等逐轮变化内容的实时快照越大
             （越靠尾部动态区末尾，贴近注意力最强处）。段位约定：
@@ -156,6 +156,7 @@ class ProviderMeta:
             20-29 摘要级（低频刷新的计数/名单摘要）、30-39 会话操作态势
             （随本会话操作实时变化）、40+ 实时快照（含时间等逐轮变化内容）。
         max_tokens: 静态预估上限（Web 展示 + 预算告警参考）。
+        retention_priority: 预算竞争优先级，越小越优先保留，与注入位置无关。
         scope_filter: 作用域过滤。None=全局；"webui:*"=前缀匹配；"webui:u123"=精确匹配。
         group: 所属工具分组（实体启停门控依据）。None=全局常驻，不随实体启停。
         inject_key: 注入开关配置键（约定 <组名>_context_inject）。声明后该配置
@@ -175,6 +176,7 @@ class ProviderMeta:
     instance: Any = None
     provide_fn: Optional[Callable] = None
     description: str = ""
+    retention_priority: int = 50
 
 
 # ======================================================================
@@ -198,8 +200,8 @@ class ContextProviderRegistry:
     _last_collect: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
     _last_clips: "OrderedDict[str, List[VolatileClip]]" = OrderedDict()
     _peak: "OrderedDict[str, int]" = OrderedDict()
-    # scope -> 进行中的后台收集任务（同一 scope 同时只有一个收集任务）
-    _inflight: Dict[str, "asyncio.Task[None]"] = {}
+    # (scope, budget) -> 进行中的收集任务，相同请求合并。
+    _inflight: Dict[Tuple[str, int], "asyncio.Task[Tuple[List[VolatileClip], List[ProviderMetric]]]"] = {}
 
     # ------------------------------------------------------------------
     # 注册 / 注销
@@ -271,19 +273,22 @@ class ContextProviderRegistry:
         stale = (
             time.time() - float(last.get("collected_at", 0))
             >= _COLLECT_FRESH_SECONDS
-        )
+        ) or last.get("total_budget") != budget
         if stale:
-            task = cls._inflight.get(scope)
+            key = (scope, budget)
+            task = cls._inflight.get(key)
             if task is None or task.done():
                 task = asyncio.ensure_future(cls._collect_background(scope, budget))
-                cls._inflight[scope] = task
+                cls._inflight[key] = task
 
-                def _cleanup(done: "asyncio.Task[None]", key: str = scope) -> None:
+                def _cleanup(done: "asyncio.Task[Tuple[List[VolatileClip], List[ProviderMetric]]]",
+                             key: Tuple[str, int] = key) -> None:
                     if cls._inflight.get(key) is done:
                         del cls._inflight[key]
 
                 task.add_done_callback(_cleanup)
-            await task
+            clips, metrics = await asyncio.shield(task)
+            return list(clips), list(metrics)
         clips = list(cls._last_clips.get(scope, []))
         metrics = list(cls._last_metrics.get(scope, []))
         return clips, metrics
@@ -297,7 +302,7 @@ class ContextProviderRegistry:
             store.popitem(last=False)
 
     @classmethod
-    async def _collect_background(cls, scope: str, budget: int) -> None:
+    async def _collect_background(cls, scope: str, budget: int) -> Tuple[List[VolatileClip], List[ProviderMetric]]:
         """收集一轮所有匹配 scope 的 provider 快照并写入缓存。
 
         全部 provider 并发采集（各自 1s 硬超时，总耗时有界 ≈1s），
@@ -317,7 +322,11 @@ class ContextProviderRegistry:
             used_tokens = 0
             used_bytes = 0
 
-            for meta, result in zip(metas, results, strict=True):
+            candidates = sorted(zip(metas, results, strict=True), key=lambda pair: (
+                pair[0].retention_priority, pair[0].priority, pair[0].name,
+            ))
+            omitted: List[str] = []
+            for meta, result in candidates:
                 if result is None or cls._providers.get(meta.name) is not meta:
                     continue
                 snap, cost_ms = result
@@ -325,8 +334,11 @@ class ContextProviderRegistry:
                 # 未加载完：有兜底文案则注入占位，否则跳过
                 if not snap.ready:
                     if snap.default_when_not_ready:
-                        clips.append(VolatileClip(text=snap.default_when_not_ready, source=meta.name))
-                    continue
+                        text = snap.default_when_not_ready
+                        snap = ProviderSnapshot(content=text, tokens=max(1, len(text) // _CHARS_PER_TOKEN),
+                                                bytes=len(text.encode("utf-8")), ready=False)
+                    else:
+                        continue
 
                 # 空快照跳过（文本与画面都没有 = 本轮无注入）
                 if not snap.content and not snap.media:
@@ -340,7 +352,8 @@ class ContextProviderRegistry:
                         "WARNING",
                         tag="Provider",
                     )
-                    break
+                    omitted.append(meta.name)
+                    continue
 
                 clips.append(VolatileClip(
                     text=snap.content or "", media=list(snap.media), source=meta.name,
@@ -364,6 +377,9 @@ class ContextProviderRegistry:
                     call_count=cls._call_counts.get(meta.name, 0),
                 ))
 
+            order = {meta.name: index for index, meta in enumerate(metas)}
+            clips.sort(key=lambda clip: order[clip.source])
+            metrics.sort(key=lambda metric: order[metric.name])
             # 记录本次收集结果（供下一轮 collect 与 Web API 读取）
             cls._bounded_put(cls._last_clips, scope, clips)
             cls._bounded_put(cls._last_metrics, scope, metrics)
@@ -372,13 +388,16 @@ class ContextProviderRegistry:
                 "used_bytes": used_bytes,
                 "total_budget": budget,
                 "providers_count": len(metrics),
+                "omitted_providers": omitted,
                 "collected_at": time.time(),
             })
             # 更新峰值
             if used_tokens > cls._peak.get(scope, 0):
                 cls._bounded_put(cls._peak, scope, used_tokens)
+            return clips, metrics
         except Exception as exc:
             log(f"上下文后台收集异常: scope={scope!r} - {exc}", "DEBUG", tag="Provider")
+            return [], []
 
     @classmethod
     async def _safe_provide(
@@ -569,6 +588,8 @@ class ContextProviderRegistry:
             provider_metrics.append({
                 "name": meta.name,
                 "priority": meta.priority,
+                "retention_priority": meta.retention_priority,
+                "omitted_by_budget": meta.name in collect_info.get("omitted_providers", []),
                 "max_tokens": meta.max_tokens,
                 "scope_filter": meta.scope_filter,
                 "group": meta.group,
@@ -644,6 +665,7 @@ def context_provider(
     scope: Optional[str] = None,
     group: Optional[str] = None,
     inject_key: Optional[str] = None,
+    retention_priority: int = 50,
 ) -> Callable:
     """装饰器：将类或函数注册为上下文提供者。
 
@@ -674,11 +696,12 @@ def context_provider(
 
     Args:
         name: 提供者唯一标识（默认取类名/函数名）。
-        priority: 注入优先级（越小越靠前，预算超限时大值先被截断）。语义为变动率
+        priority: 注入位置（越小越靠前）。语义为变动率
             排序：快照越静态越小（靠前），含时间/秒计数等逐轮变化内容的实时
             快照越大（靠尾部动态区末尾）。段位：10-19 状态级 / 20-29 摘要级 /
             30-39 会话操作态势 / 40+ 实时快照（详见 core.context_provider.ProviderMeta）。
         max_tokens: 静态预估上限（Web 展示 + 预算告警参考）。
+        retention_priority: 预算竞争优先级，越小越优先保留，默认 50。
         scope: 作用域过滤。None=全局；"webui:*"=前缀匹配；"webui:u123"=精确匹配。
         group: 所属工具分组（如 "ssh"）。声明后随实体启停联动：分组内全部
             工具被禁用时停止采集与注入，重新启用自动恢复；None 表示全局常驻。
@@ -719,6 +742,7 @@ def context_provider(
                 inject_key=inject_key,
                 instance=instance,
                 description=provider_desc,
+                retention_priority=retention_priority,
             )
             ContextProviderRegistry.register(meta)
             return cls_or_func
@@ -733,6 +757,7 @@ def context_provider(
                 inject_key=inject_key,
                 provide_fn=cls_or_func,
                 description=provider_desc,
+                retention_priority=retention_priority,
             )
             ContextProviderRegistry.register(meta)
             return cls_or_func

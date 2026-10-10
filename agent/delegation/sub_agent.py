@@ -61,8 +61,15 @@ class SubAgentResult:
     usage: Dict[str, int] = field(default_factory=dict)
     # reflect 结束时的完整消息链（transcript 持久化用；取消/超时路径无值）
     messages: Optional[List[Dict]] = None
-    # 输出契约校验：output_schema 存在时为 True/False（是否解析出合法 JSON），否则 None
+    # 输出契约校验：JSON 示例中的字段与类型均满足时为 True，无契约时为 None
     schema_ok: Optional[bool] = None
+    schema_error: str = ""
+
+    @property
+    def completion_ready(self) -> bool:
+        """正常收束且满足输出契约；不代表外部操作效果已经核验。"""
+        return (self.success and not self.cancelled
+                and self.completed_reason == "completed" and self.schema_ok is not False)
 
     def to_dict(self) -> dict:
         return {
@@ -76,6 +83,8 @@ class SubAgentResult:
             "completed_reason": self.completed_reason,
             "usage": dict(self.usage),
             "schema_ok": self.schema_ok,
+            "schema_error": self.schema_error,
+            "completion_ready": self.completion_ready,
         }
 
 
@@ -179,16 +188,31 @@ def _json_candidates(text: str) -> List[str]:
         candidates.append(fence.group(1))
     start = text.find("{")
     if start >= 0:
-        depth = 0
-        for i in range(start, len(text)):
-            if text[i] == "{":
-                depth += 1
-            elif text[i] == "}":
-                depth -= 1
-                if depth == 0:
-                    candidates.append(text[start:i + 1])
-                    break
+        try:
+            _, end = json.JSONDecoder().raw_decode(text[start:])
+            candidates.append(text[start:start + end])
+        except json.JSONDecodeError:
+            pass
     return candidates
+
+
+def validate_output_shape(value: Any, example: Any, path: str = "$") -> str:
+    """按 JSON 示例检查字段和类型，返回首个不满足契约的位置。"""
+    if type(value) is not type(example):
+        return f"{path}: 期望 {type(example).__name__}，实际 {type(value).__name__}"
+    if isinstance(example, dict):
+        for key, expected in example.items():
+            if key not in value:
+                return f"{path}.{key}: 缺少字段"
+            error = validate_output_shape(value[key], expected, f"{path}.{key}")
+            if error:
+                return error
+    elif isinstance(example, list) and example:
+        for index, item in enumerate(value):
+            error = validate_output_shape(item, example[0], f"{path}[{index}]")
+            if error:
+                return error
+    return ""
 
 
 class SubAgent:
@@ -353,8 +377,10 @@ class SubAgent:
             )
             return SubAgentResult(
                 goal=self.goal, success=False,
-                error=f"子代理执行超时（>{timeout:.0f}s），已中断",
+                error=(f"子代理执行超时（>{timeout:.0f}s），已中断；"
+                       "操作可能已生效，请先只读核验或基于已有上下文续跑，不要从头重做"),
                 role=self.role, task_index=self.task_index,
+                completed_reason="interrupted", messages=completion.get("messages"),
             )
         except Exception as exc:
             log(f"子代理失败: {self.goal[:60]}: {type(exc).__name__}: {exc}", "WARNING", tag="委托")
@@ -362,6 +388,7 @@ class SubAgent:
                 goal=self.goal, success=False,
                 error=f"{type(exc).__name__}: {exc}",
                 role=self.role, task_index=self.task_index,
+                completed_reason="interrupted", messages=completion.get("messages"),
             )
         finally:
             # 委托执行结束（无论成败/超时）：清箱防残留指令误入后续同名委托
@@ -377,8 +404,12 @@ class SubAgent:
         # 中断/异常路径容器无消息 → transcript 不可续跑）
         final_messages = completion.get("messages")
         schema_ok: Optional[bool] = None
+        schema_error = ""
         if self.facets and self.facets.output_schema:
-            schema_ok = extract_json_output(output) is not None
+            parsed = extract_json_output(output)
+            schema_error = ("未解析出 JSON 对象" if parsed is None else
+                            validate_output_shape(parsed, self.facets.output_schema))
+            schema_ok = not schema_error
         if not output:
             return SubAgentResult(
                 goal=self.goal, success=False,
@@ -386,7 +417,7 @@ class SubAgent:
                        "不能据此认定未执行或从头重做"),
                 role=self.role, task_index=self.task_index,
                 completed_reason="no_output" if reason == "completed" else reason,
-                messages=final_messages, schema_ok=schema_ok,
+                messages=final_messages, schema_ok=schema_ok, schema_error=schema_error,
             )
         log(
             f"子代理完成: {self.goal[:60]} -> {len(output)} 字 "
@@ -397,5 +428,5 @@ class SubAgent:
             goal=self.goal, success=True, output=output,
             role=self.role, task_index=self.task_index,
             completed_reason=reason,
-            messages=final_messages, schema_ok=schema_ok,
+            messages=final_messages, schema_ok=schema_ok, schema_error=schema_error,
         )

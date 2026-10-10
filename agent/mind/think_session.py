@@ -51,4 +51,4 @@ def think_session(
         clear_current_channel()
         if clear_dynamic_tools:
             # 传入 scope：非主会话（如后台评审 reflect）不清理全局动态工具，避免踩踏
-            mind.pfc.clear_dynamic_tools(scope=scope)
+            mind.pfc.clear_dynamic_tools(scope=scope, force=not with_token)

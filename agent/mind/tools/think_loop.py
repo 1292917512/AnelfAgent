@@ -1057,7 +1057,7 @@ async def _handle_tool_round(
 
     for tc in tool_calls:
         mind.pfc.record_tool_use(tc.name)
-    mind.pfc.expand_discovered_tools(tool_calls, scope=ctx.current_scope if ctx.mode == ThinkMode.REPLY else "")
+    mind.pfc.expand_discovered_tools(tool_calls, scope=ctx.current_scope)
 
     tool_names = ", ".join(tc.name for tc in tool_calls)
     failures = _collect_round_error_briefs(tool_chain, tool_calls)

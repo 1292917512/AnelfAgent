@@ -236,9 +236,44 @@ class TestReflectToolSchemas:
     async def test_discovered_tools_included(self) -> None:
         """list_entity_methods 动态发现的工具在重建后保留。"""
         ta = ToolAssembly()
-        ta._discovered_tools.add("ra_core")
+        from agent.llm import ToolCall
+
+        ta.expand_discovered_tools([
+            ToolCall(id="discover", name="list_entity_methods", arguments='{"group":"g_core"}'),
+        ], scope="t_reflect_disc")
         names = _names(await ta.get_reflect_tool_schemas(scope="t_reflect_disc"))
         assert "ra_core" in names
+        assert "ra_core" not in _names(await ta.get_reflect_tool_schemas(scope="unrelated"))
+        first = await ta.get_active_tool_schemas(scope="t_reflect_disc")
+        assert "ra_core" in _names(first)
+        assert "ra_core" not in _names(await ta.get_active_tool_schemas(scope="unrelated"))
+        assert await ta.get_active_tool_schemas(scope="t_reflect_disc") == first
+        ta.clear_dynamic_tools("t_reflect_disc", force=True)
+        assert "t_reflect_disc" not in ta._scope_frozen_tool_names
+        assert "t_reflect_disc" not in ta._scope_discovered_tools
+
+    async def test_scoped_catalog_cache_is_bounded(self) -> None:
+        ta = ToolAssembly()
+        for index in range(140):
+            await ta.get_active_tool_schemas(scope=f"conversation:{index}")
+        assert len(ta._scope_frozen_tool_names) == 128
+        assert "conversation:0" not in ta._scope_frozen_tool_names
+
+    async def test_channel_identity_session_and_mind_isolate_discovery(self) -> None:
+        import asyncio
+
+        from agent.llm import ToolCall
+
+        ta = ToolAssembly()
+        source = "user_qq:42#one"
+        others = ["user_webui:42#one", "user_qq:42#two", "group_qq:42", "reflect:worker"]
+        ta.expand_discovered_tools([
+            ToolCall(id="discover", name="list_entity_methods", arguments='{"group":"g_core"}'),
+        ], scope=source)
+        catalogs = await asyncio.gather(*(ta.get_active_tool_schemas(scope=s) for s in [source, *others]))
+        assert "ra_core" in _names(catalogs[0])
+        assert all("ra_core" not in _names(catalog) for catalog in catalogs[1:])
+        assert "ra_core" not in _names(await ToolAssembly().get_active_tool_schemas(scope=source))
 
     async def test_restricted_catalog_ignores_background_and_frozen_tools(self, monkeypatch) -> None:
         from agent.channel.reply_policy import ReplyPolicy

@@ -929,11 +929,7 @@ class MemoryRetriever:
 
     @classmethod
     def _is_trivial_turn(cls, conversation: List[Dict]) -> bool:
-        """平凡消息轮判定：最近一条用户消息为纯客套/短回复时跳过检索。
-
-        保守阈值：仅当消息 ≤6 个字符、不含时间引用词、不含问号时才跳过——
-        "我钥匙放哪了"这类短但记忆相关的查询不受影响。
-        """
+        """仅对明确的寒暄、确认词跳过自动检索，短查询仍正常召回。"""
         try:
             from core.config import get_config_bool
             if not get_config_bool("memory_recall_skip_trivial", True):
@@ -949,13 +945,11 @@ class MemoryRetriever:
             cleaned = _strip_tags(content).strip()
             if not cleaned:
                 return False
-            if len(cleaned) > 6:
-                return False
-            if "?" in cleaned or "？" in cleaned:
-                return False
-            if cls._detect_time_reference(cleaned):
-                return False
-            return True
+            return cleaned.lower().rstrip("。.!！～~ ") in {
+                "嗯", "嗯嗯", "哦", "噢", "好的", "好", "好哒", "收到", "明白了",
+                "了解", "谢谢", "多谢", "辛苦了", "你好", "您好", "早上好", "晚安",
+                "hi", "hello", "ok", "okay", "thanks", "thank you",
+            }
         return False
 
     @classmethod

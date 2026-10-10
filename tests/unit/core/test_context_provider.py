@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from core.context_provider import (
@@ -29,6 +31,70 @@ def _register(name: str = "demo") -> None:
 
 
 class TestGetStatusScopeAggregation:
+    async def test_concurrent_budgets_do_not_share_filtered_results(self) -> None:
+        async def provide(scope: str) -> ProviderSnapshot:
+            await asyncio.sleep(0)
+            return ProviderSnapshot(content="data", tokens=50)
+
+        ContextProviderRegistry.register(ProviderMeta(name="data", provide_fn=provide))
+        small, large = await asyncio.gather(
+            ContextProviderRegistry.collect("scope", budget=10),
+            ContextProviderRegistry.collect("scope", budget=100),
+        )
+        assert small == ([], [])
+        assert [clip.text for clip in large[0]] == ["data"]
+        large[0].clear()
+        clips, _ = await ContextProviderRegistry.collect("scope", budget=100)
+        assert [clip.text for clip in clips] == ["data"]
+
+    async def test_cancelled_waiter_does_not_cancel_shared_collection(self) -> None:
+        started, release = asyncio.Event(), asyncio.Event()
+        calls = 0
+
+        async def provide(scope: str) -> ProviderSnapshot:
+            nonlocal calls
+            calls += 1
+            started.set()
+            await release.wait()
+            return ProviderSnapshot(content="live status", tokens=3)
+
+        ContextProviderRegistry.register(ProviderMeta(name="state", provide_fn=provide))
+        first = asyncio.create_task(ContextProviderRegistry.collect("scope"))
+        await started.wait()
+        second = asyncio.create_task(ContextProviderRegistry.collect("scope"))
+        await asyncio.sleep(0)
+        first.cancel()
+        await asyncio.gather(first, return_exceptions=True)
+        release.set()
+        clips, _ = await second
+        assert calls == 1
+        assert [clip.text for clip in clips] == ["live status"]
+
+    async def test_oversized_provider_does_not_hide_small_following_status(self) -> None:
+        ContextProviderRegistry.register(ProviderMeta(
+            name="large", priority=10, provide_fn=lambda scope: ProviderSnapshot(content="large", tokens=101)))
+        ContextProviderRegistry.register(ProviderMeta(
+            name="status", priority=40, provide_fn=lambda scope: ProviderSnapshot(content="status", tokens=3)))
+        clips, _ = await ContextProviderRegistry.collect("scope", budget=100)
+        assert [clip.source for clip in clips] == ["status"]
+
+    async def test_retention_is_independent_of_prompt_position_and_cached_budget(self) -> None:
+        for name, position, importance in [("static", 10, 50), ("operation", 40, 10)]:
+            ContextProviderRegistry.register(ProviderMeta(
+                name=name, priority=position, retention_priority=importance,
+                provide_fn=lambda scope: ProviderSnapshot(content="snapshot", tokens=60)))
+        full, _ = await ContextProviderRegistry.collect("scope", budget=120)
+        bounded, _ = await ContextProviderRegistry.collect("scope", budget=60)
+        assert [clip.source for clip in full] == ["static", "operation"]
+        assert [clip.source for clip in bounded] == ["operation"]
+
+    async def test_not_ready_placeholder_counts_towards_budget(self) -> None:
+        ContextProviderRegistry.register(ProviderMeta(
+            name="loading", provide_fn=lambda scope: ProviderSnapshot(
+                ready=False, default_when_not_ready="x" * 400)))
+        clips, _ = await ContextProviderRegistry.collect("scope", budget=10)
+        assert clips == []
+
     async def test_panel_reads_latest_collect_across_scopes(self) -> None:
         """收集按真实 scope 分桶时，无 scope 的面板口径取最近一次收集（而非 "" 桶的零值）。"""
         _register()

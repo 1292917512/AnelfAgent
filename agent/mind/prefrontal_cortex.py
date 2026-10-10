@@ -203,8 +203,8 @@ class PrefrontalCortex:
     def expand_discovered_tools(self, tool_calls: list, scope: str = "") -> None:
         self.tool_assembly.expand_discovered_tools(tool_calls, scope)
 
-    def clear_dynamic_tools(self, scope: str = "") -> None:
-        self.tool_assembly.clear_dynamic_tools(scope)
+    def clear_dynamic_tools(self, scope: str = "", *, force: bool = False) -> None:
+        self.tool_assembly.clear_dynamic_tools(scope, force=force)
 
     async def get_active_tool_schemas(self, adapter_key: str = "", scope: str = "") -> list[dict]:
         return await self.tool_assembly.get_active_tool_schemas(adapter_key, scope)
