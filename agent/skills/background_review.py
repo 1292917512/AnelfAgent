@@ -143,6 +143,7 @@ class SkillReviewer:
             max_iterations=6, max_concurrent=1,
             cooldown_seconds=_review_cooldown_seconds(),
             owner=_HOOK_OWNER, source="code",
+            config_key="skills_review_enabled",
             description="每轮对话后评审执行过程，自主决策技能沉淀/合并/治理",
         )
         async def _skill_review_hook(ctx: HookContext) -> Optional[str]:

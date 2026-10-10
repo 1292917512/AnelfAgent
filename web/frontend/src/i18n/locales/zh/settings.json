@@ -165,7 +165,11 @@
       "code": "代码",
       "task": "任务",
       "entity": "实体"
-    }
+    },
+    "rowToggle": "停用/启用该钩子",
+    "rowDisabled": "已停用",
+    "toggleSaved": "钩子 {{name}} 已{{action}}",
+    "toggleSaveFailed": "钩子启停更新失败"
   },
   "localModels": {
     "title": "本地模型资产",

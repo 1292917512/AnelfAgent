@@ -172,6 +172,11 @@ export const hooksApi = {
 
 export const hooksLlmApi = {
   get: () => api.get<LlmHooksOverview>("/hooks-llm"),
+  setEnabled: (name: string, enabled: boolean) =>
+    api.post<{ updated: boolean; hook: { name: string; enabled: boolean } }>(
+      `/hooks-llm/${encodeURIComponent(name)}/enabled`,
+      { enabled },
+    ),
 };
 
 // Retrieval（检索能力页 · 提供者矩阵 + 抓取设置）

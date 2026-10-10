@@ -95,7 +95,10 @@ class HookExecutor:
         if _RecursionGuard.active():
             log(f"钩子事件 {event} 在钩子内派生，跳过再触发（防递归）", "DEBUG", tag="钩子")
             return
-        for spec in specs:
+        enabled = [s for s in specs if s.enabled]
+        if not enabled:
+            return  # 全部停用：零开销短路
+        for spec in enabled:
             if self._passes_when(spec, payload):
                 self._schedule(spec, payload)
 

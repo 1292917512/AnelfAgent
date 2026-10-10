@@ -165,7 +165,11 @@
       "code": "Code",
       "task": "Task",
       "entity": "Entity"
-    }
+    },
+    "rowToggle": "Disable/enable this hook",
+    "rowDisabled": "Disabled",
+    "toggleSaved": "Hook {{name}} updated",
+    "toggleSaveFailed": "Failed to update hook"
   },
   "localModels": {
     "title": "Local Model Assets",

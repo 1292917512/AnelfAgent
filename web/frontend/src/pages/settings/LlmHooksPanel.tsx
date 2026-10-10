@@ -1,10 +1,11 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { useQuery } from "@tanstack/react-query";
 import { Zap } from "lucide-react";
 import { hooksLlmApi } from "@/lib/api";
 import type { LlmHookItem } from "@/lib/types";
 import { Card } from "@/components/common/Card";
-import { Badge, EmptyState, LoadingBlock } from "@/components/ui";
+import { Badge, EmptyState, LoadingBlock, Switch } from "@/components/ui";
+import { toast } from "@/stores/toast-store";
 
 const SOURCE_VARIANT: Record<string, "accent" | "info" | "warn" | "neutral"> = {
   code: "accent",
@@ -12,13 +13,27 @@ const SOURCE_VARIANT: Record<string, "accent" | "info" | "warn" | "neutral"> = {
   entity: "warn",
 };
 
-/** LLM 钩子面观测面板：全部已注册钩子 + 治理配置（只读；开关经配置中心热调） */
+/** LLM 钩子面观测面板：全部已注册钩子 + 治理配置 + 运行期启停（注册表内存态）。 */
 export function LlmHooksPanel() {
   const { t } = useTranslation("settings");
+  const queryClient = useQueryClient();
   const { data, isLoading } = useQuery({
     queryKey: ["hooks-llm"],
     queryFn: () => hooksLlmApi.get().then((r) => r.data),
     refetchInterval: 8000,
+  });
+
+  const toggle = useMutation({
+    mutationFn: ({ name, enabled }: { name: string; enabled: boolean }) =>
+      hooksLlmApi.setEnabled(name, enabled),
+    onSuccess: (_, vars) => {
+      toast.success(t("llmHooks.toggleSaved", { name: vars.name }));
+      queryClient.invalidateQueries({ queryKey: ["hooks-llm"] });
+    },
+    onError: (exc) => {
+      const detail = (exc as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      toast.error(detail || t("llmHooks.toggleSaveFailed"));
+    },
   });
 
   if (isLoading || !data) return <LoadingBlock label={t("common:loading")} />;
@@ -53,7 +68,12 @@ export function LlmHooksPanel() {
       ) : (
         <ul className="space-y-2">
           {data.hooks.map((hook) => (
-            <HookRow key={hook.name} hook={hook} />
+            <HookRow
+              key={hook.name}
+              hook={hook}
+              onToggle={(enabled) => toggle.mutate({ name: hook.name, enabled })}
+              toggling={toggle.isPending}
+            />
           ))}
         </ul>
       )}
@@ -62,17 +82,28 @@ export function LlmHooksPanel() {
   );
 }
 
-function HookRow({ hook }: { hook: LlmHookItem }) {
+function HookRow({ hook, onToggle, toggling }: {
+  hook: LlmHookItem;
+  onToggle: (enabled: boolean) => void;
+  toggling: boolean;
+}) {
   const { t } = useTranslation("settings");
   return (
-    <li className="rounded-md border border-border bg-elevated p-3">
+    <li className={`rounded-lg border border-border bg-elevated/60 px-3 py-2.5 transition-colors ${hook.enabled ? "" : "opacity-55"}`}>
       <div className="flex flex-wrap items-center gap-2">
+        <Switch
+          checked={hook.enabled}
+          label={t("llmHooks.rowToggle")}
+          disabled={toggling}
+          onChange={onToggle}
+        />
         <span className="text-sm font-medium text-foreground">{hook.name}</span>
         <span className="font-mono text-[10px] text-muted">{hook.event}</span>
         <Badge variant="neutral">{hook.context}</Badge>
         <Badge variant={SOURCE_VARIANT[hook.source] ?? "neutral"}>
           {t(`llmHooks.source.${hook.source}`, { defaultValue: hook.source })}
         </Badge>
+        {!hook.enabled && <Badge variant="neutral">{t("llmHooks.rowDisabled")}</Badge>}
         {hook.model && <Badge variant="info">{hook.model}</Badge>}
       </div>
       {hook.description && (

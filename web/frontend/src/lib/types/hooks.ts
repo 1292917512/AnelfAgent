@@ -75,6 +75,8 @@ export interface LlmHookItem {
   allow_output_tools: boolean;
   route_output: boolean;
   tool_tags: string[];
+  /** 启用状态（运行期开关，重启恢复代码声明初始值） */
+  enabled: boolean;
 }
 
 export interface LlmHooksOverview {
