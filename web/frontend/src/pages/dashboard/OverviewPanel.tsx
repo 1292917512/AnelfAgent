@@ -41,7 +41,7 @@ export function OverviewPanel() {
   const phase = String(statusInfo?.mind_phase ?? "idle");
   const pendingTotal = (pfc?.pending_messages?.length ?? 0) + (pfc?.general_tasks?.length ?? 0);
   const tools = components?.structured?.tools;
-  const phaseIndex = ["accepting", "deciding", "recalling", "introspecting"].includes(phase) ? 0 : phase === "llm_calling" ? 1 : phase === "tool_executing" ? 2 : phase === "replying" ? 3 : -1;
+  const phaseIndex = ["accepting", "recalling"].includes(phase) ? 0 : ["deciding", "introspecting", "llm_calling"].includes(phase) ? 1 : phase === "tool_executing" ? 2 : phase === "replying" ? 3 : -1;
   useEffect(() => {
     if (typeof statusInfo?.uptime === "number" && statusInfo.uptime > 0) setStartedAt(statusInfo.uptime);
   }, [statusInfo?.uptime, setStartedAt]);

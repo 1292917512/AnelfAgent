@@ -30,13 +30,14 @@ async function logStream(page: Page, entries: LogEntry[]) {
 
 test("overview prioritizes delegations and makes nested history traceable", async ({ page }, info) => {
   const now = 1791604800;
+  let phase = "tool_executing";
   const items: DelegationHistoryItem[] = Array.from({ length: 20 }, (_, i) => ({
     delegation_id: `task-${i}`, goal: `Review deployment ${i}`, scope: "group_qq:42", adapter_key: "qq", model: "review-model",
     status: i % 4 === 0 ? "failed" : "success", started_at: now - 200 - i * 100, finished_at: now - i * 100, duration_seconds: 20 + i * 7,
     parent_id: i === 0 ? "parent-review" : "", depth: i === 0 ? 2 : 0, summary: i === 0 ? "Connection timed out after retries" : "Review completed",
     usage: { turns: 3, input_tokens: 4500, output_tokens: 200 },
   }));
-  await page.route("**/api/status/", (route) => route.fulfill({ json: { ready: true, status: { uptime: 1200, mind_phase: "tool_executing", message_count: 48 } } }));
+  await page.route("**/api/status/", (route) => route.fulfill({ json: { ready: true, status: { uptime: 1200, mind_phase: phase, message_count: 48 } } }));
   await page.route("**/api/status/pfc", (route) => route.fulfill({ json: { tool_recall: [{ name: "read_file", count: 83 }, { name: "recall", count: 25 }], short_term_memory_count: 2, short_term_memory_max: 10, pending_messages: [], general_tasks: [] } }));
   await page.route("**/api/status/components", (route) => route.fulfill({ json: { structured: { ready: true, tools: { enabled: 123, total: 140, by_source: { core: 80, entity: 60 } }, llm: { impl: "LLMClient", model: "review-model" } } } }));
   await page.route("**/api/mcp/", (route) => route.fulfill({ json: [] }));
@@ -49,6 +50,9 @@ test("overview prioritizes delegations and makes nested history traceable", asyn
   page.on("request", (request) => requests.push(new URL(request.url()).pathname));
   await page.goto("/webui/dashboard");
   await expect(page.locator(".delegation-history-row")).toHaveCount(6);
+  await expect(page.locator('.overview-phase-track [data-active="true"]')).toContainText("Execute");
+  phase = "introspecting";
+  await expect(page.locator('.overview-phase-track [data-active="true"]')).toContainText("Think", { timeout: 10000 });
   await expect(page.getByRole("group", { name: "Execution durations" }).getByRole("button")).toHaveCount(20);
   expect(requests).not.toContain("/api/tools/");
   expect(requests).not.toContain("/api/status/services");
