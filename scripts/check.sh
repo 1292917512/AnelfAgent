@@ -30,6 +30,13 @@ done
 
 step() { printf '\n\033[1;34m== %s ==\033[0m\n' "$1"; }
 
+step "工作区指令体量"
+AGENTS_LINES=$(wc -l < AGENTS.md)
+if [ "$AGENTS_LINES" -gt 500 ]; then
+  echo "AGENTS.md 超过 500 行（当前 $AGENTS_LINES），请把长期说明迁移到 docs/ 专题分册" >&2
+  exit 1
+fi
+
 step "ruff"
 uv run ruff check .
 

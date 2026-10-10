@@ -89,6 +89,21 @@ jobs:
             echo "matrix=$entries"
           } >> "$GITHUB_OUTPUT"
 
+  # 工作区指令体量门禁：AGENTS.md 超过 500 行即红——长期指导迁移到 docs/ 专题分册，
+  # 防止全量注入的指令文件再次膨胀
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check workspace guidance size
+        run: |
+          lines=$(wc -l < AGENTS.md)
+          if [ "$lines" -gt 500 ]; then
+            echo "AGENTS.md exceeds 500 lines ($lines); move durable guidance to docs/" >&2
+            exit 1
+          fi
+
   # 静态门禁全仓收口：ruff / 分层依赖守卫 / mypy 与改动面无关，始终全量
   lint:
     needs: changes

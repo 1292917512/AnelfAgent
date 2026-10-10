@@ -420,7 +420,7 @@ CI（GitHub Actions）：lint 全仓静态门禁 + tests 按模块动态矩阵�
 
 Linux/Windows 测试均上传完整日志和 JUnit 结果，浏览器失败保存截图与 trace；线程异常、未处理的终结器异常及 SQLite 连接泄漏继续作为失败处理。
 
-更细的架构约定见 [`AGENTS.md`](AGENTS.md)（供编辑器 / Agent 注入的工作区指令，非运行时依赖）。
+更细的架构约定见 [`AGENTS.md`](AGENTS.md)（供编辑器 / Agent 注入的工作区指令，非运行时依赖）。开发文档按种类拆分在 [`docs/`](docs/)：思维系统见 [`docs/mind-architecture.md`](docs/mind-architecture.md)，整体架构见 [`docs/architecture-reference.md`](docs/architecture-reference.md)，记忆 / 模型 / 频道 / 实时语音 / 安全审批 / 前端等专题分册与设计取舍见其索引（AGENTS.md「开发文档索引」）。
 
 ---
 
@@ -472,14 +472,16 @@ Linux/Windows 测试均上传完整日志和 JUnit 结果，浏览器失败保�
 
 ---
 
-## License
-
-[MIT](LICENSE) © 2025–2026 AnelfAgent Contributors
-
-### 工具权限与 AI 评审
+## 工具权限与 AI 评审
 
 权限配置只有 `config/permission_rules.json`，参考 `config/permission_rules.example.json`。`allow` 直接执行，`deny` 拦截，`ask` 由 Guardian AI 裁决。CRITICAL 工具在无显式规则覆盖时自动评审。规则拒绝优先于放行；用户 ID 必须限定频道，群聊 ID 不是操作者身份。
 
 Guardian 不可用时按自主策略继续执行，原因进入审计和执行任务的 AI 上下文，不创建人工会话或发送频道通知。权限规则本身损坏或检查故障则拦截本次调用，不能借此绕过禁止规则。配置中心 `approval/guardian` 可选择评审模型和总时限；总时限覆盖历史读取与模型调用，调整配置会重置熔断。
 
 旧的人工批准 API、频道批准命令、会话放行、累计人工信任和 `approval_policies.json` 已移除。升级前将仍需要的规则整理到 `permission_rules.json` 或在“权限与审计”页保存；仅有旧配置时系统会提示配置错误并拒绝工具执行，不会静默丢弃限制。存量审计记录保留可读。
+
+---
+
+## License
+
+[MIT](LICENSE) © 2025–2026 AnelfAgent Contributors
