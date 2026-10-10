@@ -101,7 +101,7 @@ def capped_memory(tmp_path, monkeypatch) -> WorkMemory:
     """容量为 2 的短期记忆 + 隔离的便签工作区。"""
     ws = tmp_path / "config"
     (ws / "memory" / "events").mkdir(parents=True)
-    monkeypatch.setattr(notes, "_workspace_dir", ws)
+    monkeypatch.setattr(notes, "_memory_dir", ws / "memory")
     monkeypatch.setattr(WorkMemory, "_max_temp", property(lambda self: 2))
     return WorkMemory(everything_data=SimpleNamespace())
 

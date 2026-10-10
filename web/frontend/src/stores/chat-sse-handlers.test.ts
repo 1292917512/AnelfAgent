@@ -5,7 +5,7 @@ import { attachChatSseHandlers } from "./chat-sse-handlers";
 import { emptyBucket } from "./chat-shared";
 import { useActivityStore } from "./activity-store";
 
-beforeEach(() => { useActivityStore.setState({ epoch: "", runs: [] }); });
+beforeEach(() => { useActivityStore.setState({ epoch: "", snapshotRevision: 0, runs: [] }); });
 
 it("routes global runtime to activity and only delivered replies to Web messages", () => {
   const events = new EventTarget();
@@ -21,6 +21,10 @@ it("routes global runtime to activity and only delivered replies to Web messages
   expect(bucket.messages.map((message) => message.content)).toEqual(["Delivered to Web"]);
   events.dispatchEvent(new MessageEvent("activity_end", { data: JSON.stringify({ epoch: "p", run: { ...run, revision: 2, status: "completed" } }) }));
   expect(useActivityStore.getState().runs[0]?.status).toBe("completed");
+  events.dispatchEvent(new MessageEvent("activity_snapshot", { data: JSON.stringify({ epoch: "p", revision: 3, runs: [] }) }));
+  expect(useActivityStore.getState().runs).toEqual([]);
+  events.dispatchEvent(new MessageEvent("activity_end", { data: JSON.stringify({ epoch: "p", run: { ...run, revision: 2, status: "completed" } }) }));
+  expect(useActivityStore.getState().runs).toEqual([]);
   expect(bucket.messages).toHaveLength(1);
 });
 

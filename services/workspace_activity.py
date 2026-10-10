@@ -107,6 +107,39 @@ class WorkspaceActivityService:
         """返回本进程有界的脱敏过程快照，进程结束后不保留。"""
         return {"epoch": self._epoch, "revision": self._revision, "runs": deepcopy(list(self._runs.values()))}
 
+    def clear_history(self) -> dict[str, Any]:
+        """清除当前执行轮次之前的内存记录，保留并发执行及完整父子调用树。"""
+        if not self._runs:
+            return self.snapshot()
+        runs = list(self._runs.values())
+        latest = max(runs, key=lambda run: (run["started_at"], run["id"]))
+        kept = {latest["id"]} | {run["id"] for run in runs if run["status"] == "running"}
+
+        def end(run: dict[str, Any]) -> float:
+            return float("inf") if run["status"] == "running" else float(run["ended_at"] or run["updated_at"])
+
+        while True:
+            current = [run for run in runs if run["id"] in kept]
+            start, finish = min(run["started_at"] for run in current), max(map(end, current))
+            parents = {run["parent_id"] for run in current}
+            connected = {run["id"] for run in runs if run["parent_id"] in kept or run["id"] in parents
+                         or (run["started_at"] < finish and end(run) > start)}
+            if connected <= kept:
+                break
+            kept |= connected
+        removed = set(self._runs) - kept
+        if not removed:
+            return self.snapshot()
+        for run_id in removed:
+            self._runs.pop(run_id)
+            timer = self._pending.pop(run_id, None)
+            if timer:
+                timer.cancel()
+        self._revision += 1
+        snapshot = self.snapshot()
+        publish({"event": "activity_snapshot", **snapshot})
+        return snapshot
+
     def _get(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         return self._runs.get(str(payload.get("turn_id") or current_activity_id.get()))
 
@@ -272,7 +305,7 @@ class WorkspaceActivityService:
             return
         self._append(run, {"id": str(payload["tool_id"]), "kind": "tool", "name": str(payload["tool_name"]),
                            "arguments": sanitize_text(str(payload.get("arguments") or payload.get("arguments_preview", "")))[:MAX_TEXT],
-                           "targets": tool_targets(str(payload.get("arguments") or payload.get("arguments_preview", ""))),
+                           "targets": tool_targets(str(payload.get("arguments") or payload.get("arguments_preview", "")), str(payload["tool_name"])),
                            "request_id": str((payload.get("request") or {}).get("request_id", "")),
                            "truncated": bool(payload.get("arguments_truncated")) or len(str(payload.get("arguments", ""))) > MAX_TEXT, "status": "running"})
         self._changed(run)

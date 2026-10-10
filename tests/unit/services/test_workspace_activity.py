@@ -181,6 +181,42 @@ def test_targets_decode_tags_without_inventing_routes():
     assert targets == [{"key": "channel", "value": "custom"}, {"key": "name", "value": "one[two]\\three"}, {"key": "path", "value": "notes/a.md"}]
 
 
+async def test_clear_history_keeps_current_family_and_concurrent_work(activity, monkeypatch):
+    service, frames = activity
+    clock = 1.0
+    monkeypatch.setattr("services.workspace_activity.time.time", lambda: clock)
+    async with activity_scope("previous", "group_qq:1"):
+        clock = 2.0
+    clock = 10.0
+    async with activity_scope("parent", "group_qq:1"):
+        await event_bus.emit("thinking_tool_end", {"tool_id": "done", "tool_name": "inspect", "success": True, "result": "Keep this result"})
+        clock = 11.0
+    clock = 12.0
+    async with activity_scope("parallel", "group_telegram:1"):
+        clock = 14.0
+    clock = 16.0
+    await service._start({"turn_id": "child", "parent_id": "parent", "scope": "reflect:child"})
+    snapshot = service.clear_history()
+    assert [run["id"] for run in snapshot["runs"]] == ["parent", "parallel", "child"]
+    assert snapshot["runs"][0]["entries"][0]["result"] == "Keep this result"
+    assert snapshot["runs"][-1]["status"] == "running"
+    assert frames[-1]["event"] == "activity_snapshot"
+    assert "activity_snapshot" in TERMINAL_EVENTS
+    await service._tool_end({"turn_id": "child", "tool_id": "continued", "tool_name": "inspect", "success": True, "result": "Still running"})
+    assert service.snapshot()["runs"][-1]["entries"][-1]["result"] == "Still running"
+
+
+async def test_clear_history_keeps_last_completed_round(activity, monkeypatch):
+    service, _ = activity
+    for clock in (1.0, 2.0, 3.0):
+        monkeypatch.setattr("services.workspace_activity.time.time", lambda: clock)
+        async with activity_scope(str(clock), "group_qq:1"):
+            pass
+    snapshot = service.clear_history()
+    assert [run["id"] for run in snapshot["runs"]] == ["3.0"]
+    assert service.clear_history() == snapshot
+
+
 async def test_structured_tool_failure_is_rendered_as_failure(activity, monkeypatch):
     from agent.llm.types import ToolCall
     from agent.mind.tools.think_loop import execute_one_tool

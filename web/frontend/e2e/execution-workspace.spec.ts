@@ -16,6 +16,53 @@ function activity(id: string, patch: Partial<ActivityRun> = {}): ActivityRun {
   };
 }
 
+test("memory tool references open the resolved project file instead of a workspace namesake", async ({ page }) => {
+  const run = activity("notes", { entries: [
+    { id: "read-note", kind: "tool", name: "read_memory_file", status: "done", ts: Date.now() / 1000, duration_ms: 24,
+      arguments: '{"file_path":"memory/note.md"}', targets: [{ key: "file_path", value: "memory/note.md", path: "config/memory/note.md", root: "project" }], request_id: "read-note", result: "Memory content" },
+    { id: "external-note", kind: "tool", name: "read_memory_file", status: "done", ts: Date.now() / 1000,
+      arguments: '{"file_path":"memory/external.md"}', targets: [{ key: "file_path", value: "memory/external.md", path: "/data/external.md", root: "external" }], request_id: "external-note", result: "Memory content" },
+  ] });
+  await page.route("**/api/workspace/activity", (route) => route.fulfill({ json: { epoch: "test", revision: 1, runs: [run] } }));
+  const reads: string[] = [];
+  page.on("request", (request) => { if (new URL(request.url()).pathname === "/api/workspace/file") reads.push(request.url()); });
+  await page.goto("/webui/");
+  const execution = page.getByRole("region", { name: "Global execution", exact: true });
+  await expect(execution.getByRole("button", { name: /memory\/external.md/ })).toHaveCount(0);
+  await execution.getByRole("button", { name: "memory/note.md Project", exact: true }).click();
+  await expect(page.getByText("project content", { exact: true })).toBeVisible();
+  expect(reads).toHaveLength(1);
+  const read = reads[0];
+  if (!read) throw new Error("The project file was not requested");
+  expect(new URL(read).searchParams.get("root")).toBe("project");
+  expect(new URL(read).searchParams.get("path")).toBe("config/memory/note.md");
+});
+
+test("clearing earlier process keeps the current round and Web conversation", async ({ page }) => {
+  const previous = activity("previous", { status: "completed", started_at: 1, ended_at: 2, updated_at: 2, entries: [] });
+  const current = activity("current");
+  let snapshot = { epoch: "test", revision: 2, runs: [previous, current] };
+  await page.route("**/api/workspace/activity", (route) => route.fulfill({ json: snapshot }));
+  await page.route("**/api/workspace/activity/history", (route) => {
+    expect(route.request().method()).toBe("DELETE");
+    snapshot = { ...snapshot, revision: 3, runs: [current] };
+    return route.fulfill({ json: snapshot });
+  });
+  await page.route("**/api/chat/history*", (route) => route.fulfill({ json: [{ id: 1, role: "assistant", content: "Web conversation stays here", ts: 1 }] }));
+  await page.goto("/webui/");
+  const execution = page.getByRole("region", { name: "Global execution", exact: true });
+  const clear = execution.getByRole("button", { name: "Clear previous", exact: true });
+  await expect(clear).toBeEnabled();
+  await clear.click();
+  await expect(clear).toBeDisabled();
+  await expect(execution.locator(".activity-history-link")).toHaveCount(0);
+  await expect(execution.getByText("inspect_service", { exact: true })).toBeVisible();
+  await openWebChat(page);
+  await expect(page.getByText("Web conversation stays here", { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(execution.getByRole("button", { name: "Clear previous", exact: true })).toBeDisabled();
+});
+
 test("context evidence, tagged results and cache facts remain readable on narrow screens", async ({ page }) => {
   const run = activity("evidence", { entries: [
     { id: "context", kind: "context", status: "done", duration_ms: 2300, ts: Date.now() / 1000, block_count: 1,

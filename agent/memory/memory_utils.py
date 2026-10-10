@@ -40,32 +40,31 @@ def hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def list_workspace_md_files(workspace_dir: Path) -> list[Path]:
-    """扫描 workspace/memory/ 下的所有 .md 记忆文件。"""
-    memory_dir = workspace_dir / "memory"
+def list_memory_md_files(memory_dir: Path) -> list[Path]:
+    """扫描记忆数据目录内的 Markdown 文件，排除越界符号链接。"""
     if not memory_dir.is_dir():
         return []
     return sorted(
         p for p in memory_dir.rglob("*.md")
-        if p.is_file() and not p.is_symlink()
+        if p.is_file() and not p.is_symlink() and p.resolve().is_relative_to(memory_dir.resolve())
     )
 
 
 def list_indexable_files(
-    workspace_dir: Path,
+    memory_dir: Path,
     uploads_dir: Path | None = None,
 ) -> list[tuple[Path, str]]:
     """枚举全部可索引文件，返回 (绝对路径, 索引 rel_key) 对。
 
     rel_key 命名空间：
-    - memory/**/*.md → 相对 workspace_dir 的路径（兼容存量索引）
+    - memory/**/*.md → 记忆数据目录内的路径，统一使用 memory/ 索引前缀
     - uploads/docs/** → "uploads/docs/<相对路径>"（文档命名空间）
     """
     from .doc_extract import SUPPORTED_DOC_EXTS
 
     pairs: list[tuple[Path, str]] = [
-        (p, str(p.relative_to(workspace_dir)).replace("\\", "/"))
-        for p in list_workspace_md_files(workspace_dir)
+        (p, f"memory/{p.relative_to(memory_dir).as_posix()}")
+        for p in list_memory_md_files(memory_dir)
     ]
     if uploads_dir is not None:
         docs_dir = uploads_dir / "docs"

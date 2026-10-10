@@ -201,6 +201,8 @@
   "chatFocus": "Conversation reading mode",
   "activity": {
     "title": "Live activity",
+    "clearHistory": "Clear previous",
+    "clearHistoryHint": "Clear earlier temporary records, keeping the current round and subagents running",
     "working": "Working",
     "activeRuns": "Active runs",
     "previousRound": "Scroll up for previous round",

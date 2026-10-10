@@ -18,11 +18,12 @@ export function ActivitySourceLabel({ source }: { source: ActivitySource }) {
 
 export function ActivityTagLabel({ tag, root = "workspace" }: { tag: ActivityTag; root?: string }) {
   const { t } = useTranslation("workbench");
-  if (["path", "file_path", "directory", "media_file", "file", "dir"].includes(tag.key)) {
-    const ref = parseFileReference(`./${root === "project" ? "project:" : ""}${["directory", "dir"].includes(tag.key) ? "dir:" : ""}${encodeURIComponent(tag.value)}`);
+  const fileRoot = tag.root ?? root;
+  if (["workspace", "project"].includes(fileRoot) && ["path", "file_path", "directory", "media_file", "file", "dir"].includes(tag.key)) {
+    const ref = parseFileReference(`./${fileRoot === "project" ? "project:" : ""}${["directory", "dir"].includes(tag.key) ? "dir:" : ""}${encodeURIComponent(tag.path ?? tag.value)}`);
     if (ref) return <FileReferenceLink reference={ref}>{tag.value}</FileReferenceLink>;
   }
-  return <span className="activity-tag" title={`${tag.key}: ${tag.value}`}><span>{t(`activity.tags.${tag.key}`, { defaultValue: tag.key })}</span><b>{tag.value}</b></span>;
+  return <span className="activity-tag" title={`${tag.key}: ${tag.path ?? tag.value}`}><span>{t(`activity.tags.${tag.key}`, { defaultValue: tag.key })}</span><b>{tag.value}</b></span>;
 }
 
 export function ActivityTargets({ targets }: { targets: ActivityTag[] }) {

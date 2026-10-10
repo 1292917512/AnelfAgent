@@ -21,6 +21,7 @@ import uuid
 from abc import ABC
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Type
 
 from core.event_bus import EVENT_TRACE_CALL_END, EVENT_TRACE_CALL_START, event_bus
@@ -160,6 +161,11 @@ class EntityMetadata:
     def check_fn(self) -> Optional[Callable]:
         """工具门控前置检查函数（meta["check_fn"]），None 表示无门控。"""
         return self.meta.get("check_fn")
+
+    @property
+    def path_resolver(self) -> Optional[Callable[[str], Path]]:
+        """工具文件参数的展示定位解析器，不参与执行或权限判断。"""
+        return self.meta.get("path_resolver")
 
     @property
     def allow_sleep(self) -> bool:

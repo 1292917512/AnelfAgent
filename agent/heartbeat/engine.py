@@ -1262,8 +1262,8 @@ class HeartbeatEngine:
             return
         try:
             from agent.memory.memory_sync import sync_files
-            from agent.memory.notes import get_workspace_dir
-            await sync_files(store, self.mind.embedder, get_workspace_dir())
+            from agent.memory.notes import get_memory_dir
+            await sync_files(store, self.mind.embedder, get_memory_dir())
         except Exception as exc:
             log(f"文件索引同步失败: {exc}", "DEBUG", tag="心跳")
 

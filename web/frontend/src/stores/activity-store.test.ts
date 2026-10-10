@@ -3,12 +3,38 @@ import type { ActivityRun } from "@/lib/types/activity";
 import { useActivityStore } from "./activity-store";
 import { api } from "@/lib/api/client";
 
-vi.mock("@/lib/api/client", () => ({ api: { get: vi.fn() } }));
+vi.mock("@/lib/api/client", () => ({ api: { get: vi.fn(), delete: vi.fn() } }));
 const run = (id: string, revision: number, status = "running"): ActivityRun => ({
   id, revision, status, scope: "group_qq:42", origin_scope: "group_qq:42", source: { scope: "group_qq:42", kind: "group", channel: "qq", target: "42", session: "" },
   actor: "", label: "Review deployment", kind: "conversation", input: "Review deployment", owner_id: "", parent_id: "", started_at: 10, updated_at: 12, ended_at: null, entries: [], entry_count: 0, truncated: false,
 });
-beforeEach(() => { vi.clearAllMocks(); useActivityStore.setState({ epoch: "", runs: [], loaded: false, loading: false, error: null }); });
+beforeEach(() => { vi.clearAllMocks(); useActivityStore.setState({ epoch: "", snapshotRevision: 0, runs: [], loaded: false, loading: false, clearing: false, error: null }); });
+
+it("clears earlier records without stale snapshots or queued frames bringing them back", async () => {
+  const store = useActivityStore.getState();
+  const previous = run("previous", 1, "completed");
+  const current = run("current", 2);
+  store.restore({ epoch: "p", revision: 2, runs: [previous, current] });
+  vi.mocked(api.delete).mockResolvedValueOnce({ data: { epoch: "p", revision: 3, runs: [current] } });
+  await store.clearHistory();
+  expect(api.delete).toHaveBeenCalledWith("/workspace/activity/history");
+  store.restore({ epoch: "p", revision: 2, runs: [previous, current] });
+  store.receive("p", previous);
+  expect(useActivityStore.getState().runs).toEqual([current]);
+  store.receive("p", { ...current, revision: 4, status: "completed" });
+  expect(useActivityStore.getState().runs[0]?.status).toBe("completed");
+  expect(useActivityStore.getState().clearing).toBe(false);
+});
+
+it("keeps all records when clearing fails", async () => {
+  const store = useActivityStore.getState();
+  store.receive("p", run("current", 1));
+  vi.mocked(api.delete).mockRejectedValueOnce(new Error("Offline"));
+  await store.clearHistory();
+  expect(useActivityStore.getState().runs).toHaveLength(1);
+  expect(useActivityStore.getState().error).toBeInstanceOf(Error);
+  expect(useActivityStore.getState().clearing).toBe(false);
+});
 
 it("merges live updates with a delayed snapshot without reviving completed tools", () => {
   const store = useActivityStore.getState();

@@ -449,9 +449,8 @@ class MemoryService:
     @staticmethod
     def delete_memory_file(file_path: str) -> bool:
         """删除指定 MD 便签文件。主便签 memory.md 不允许删除。"""
-        from agent.memory.notes import delete_memory_file, get_notes_path, get_workspace_dir
-        main_rel = str(get_notes_path().relative_to(get_workspace_dir())).replace("\\", "/")
-        if file_path == main_rel:
+        from agent.memory.notes import delete_memory_file, get_notes_path, resolve_memory_file
+        if resolve_memory_file(file_path) == get_notes_path().resolve():
             raise ValueError("主便签不允许删除")
         return delete_memory_file(file_path)
 
@@ -472,8 +471,8 @@ class MemoryService:
         if not store:
             return {"error": "记忆系统未初始化"}
         from agent.memory.memory_sync import sync_files
-        from agent.memory.notes import get_workspace_dir
-        return await sync_files(store, rt.mind.embedder, get_workspace_dir(), force=force)
+        from agent.memory.notes import get_memory_dir
+        return await sync_files(store, rt.mind.embedder, get_memory_dir(), force=force)
 
     async def clean_embedding_cache(self) -> Dict[str, Any]:
         rt = require_runtime()

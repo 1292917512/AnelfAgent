@@ -14,10 +14,10 @@ from agent.memory.memory_utils import list_indexable_files
 
 
 @pytest.fixture
-def workspace(tmp_path) -> Path:
-    ws = tmp_path / "config"
-    (ws / "memory").mkdir(parents=True)
-    (ws / "memory" / "note.md").write_text("# 便签\n这是记忆文件内容", encoding="utf-8")
+def memory_dir(tmp_path) -> Path:
+    ws = tmp_path / "custom-data"
+    ws.mkdir(parents=True)
+    (ws / "note.md").write_text("# 便签\n这是记忆文件内容", encoding="utf-8")
     return ws
 
 
@@ -102,13 +102,13 @@ class TestExtractDocumentText:
 
 
 class TestListIndexableFiles:
-    def test_namespaces(self, workspace: Path, uploads: Path) -> None:
-        pairs = dict((rel, p) for p, rel in list_indexable_files(workspace, uploads))
+    def test_namespaces(self, memory_dir: Path, uploads: Path) -> None:
+        pairs = dict((rel, p) for p, rel in list_indexable_files(memory_dir, uploads))
         assert "memory/note.md" in pairs
         assert "uploads/docs/doc1.txt" in pairs
 
-    def test_no_uploads_dir(self, workspace: Path) -> None:
-        pairs = list_indexable_files(workspace, None)
+    def test_no_uploads_dir(self, memory_dir: Path) -> None:
+        pairs = list_indexable_files(memory_dir, None)
         assert [rel for _, rel in pairs] == ["memory/note.md"]
 
 
@@ -119,8 +119,8 @@ async def _chunk_texts(store: MemoryStore, path: str) -> list[str]:
 
 
 class TestSyncFilesWithDocs:
-    async def test_docs_indexed(self, store: MemoryStore, workspace: Path, uploads: Path) -> None:
-        stats = await sync_files(store, Embedder(), workspace, uploads_dir=uploads)
+    async def test_docs_indexed(self, store: MemoryStore, memory_dir: Path, uploads: Path) -> None:
+        stats = await sync_files(store, Embedder(), memory_dir, uploads_dir=uploads)
         assert stats["synced"] == 2
 
         files = {f["path"] for f in await store.list_files()}
@@ -129,24 +129,24 @@ class TestSyncFilesWithDocs:
         texts = await _chunk_texts(store, "uploads/docs/doc1.txt")
         assert any("上传文档一的内容" in t for t in texts)
 
-    async def test_removed_doc_cleaned(self, store: MemoryStore, workspace: Path, uploads: Path) -> None:
-        await sync_files(store, Embedder(), workspace, uploads_dir=uploads)
+    async def test_removed_doc_cleaned(self, store: MemoryStore, memory_dir: Path, uploads: Path) -> None:
+        await sync_files(store, Embedder(), memory_dir, uploads_dir=uploads)
         (uploads / "docs" / "doc1.txt").unlink()
 
-        stats = await sync_files(store, Embedder(), workspace, uploads_dir=uploads)
+        stats = await sync_files(store, Embedder(), memory_dir, uploads_dir=uploads)
         assert stats["removed"] == 1
         files = {f["path"] for f in await store.list_files()}
         assert files == {"memory/note.md"}
         assert await _chunk_texts(store, "uploads/docs/doc1.txt") == []
 
-    async def test_docx_indexed(self, store: MemoryStore, workspace: Path, uploads: Path) -> None:
+    async def test_docx_indexed(self, store: MemoryStore, memory_dir: Path, uploads: Path) -> None:
         _make_docx(uploads / "docs" / "report.docx", "季度报告正文内容")
-        stats = await sync_files(store, Embedder(), workspace, uploads_dir=uploads)
+        stats = await sync_files(store, Embedder(), memory_dir, uploads_dir=uploads)
         assert stats["synced"] == 3
         texts = await _chunk_texts(store, "uploads/docs/report.docx")
         assert any("季度报告正文内容" in t for t in texts)
 
-    async def test_incremental_skip_unchanged(self, store: MemoryStore, workspace: Path, uploads: Path) -> None:
-        await sync_files(store, Embedder(), workspace, uploads_dir=uploads)
-        stats = await sync_files(store, Embedder(), workspace, uploads_dir=uploads)
+    async def test_incremental_skip_unchanged(self, store: MemoryStore, memory_dir: Path, uploads: Path) -> None:
+        await sync_files(store, Embedder(), memory_dir, uploads_dir=uploads)
+        stats = await sync_files(store, Embedder(), memory_dir, uploads_dir=uploads)
         assert stats["synced"] == 0

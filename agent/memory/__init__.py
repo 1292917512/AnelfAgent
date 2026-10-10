@@ -4,7 +4,7 @@ from .embedding import Embedder
 from .memory_retriever import MemoryRetriever
 from .memory_store import MemoryStore
 from .memory_types import MemoryEntry, MemorySearchResult, MemoryType
-from .memory_utils import cosine_similarity, hash_text, list_workspace_md_files, pack_embedding, unpack_embedding
+from .memory_utils import cosine_similarity, hash_text, list_memory_md_files, pack_embedding, unpack_embedding
 from .notes import register_notes_tools
 
 __all__ = [
@@ -17,7 +17,7 @@ __all__ = [
     "register_notes_tools",
     "cosine_similarity",
     "hash_text",
-    "list_workspace_md_files",
+    "list_memory_md_files",
     "pack_embedding",
     "unpack_embedding",
 ]

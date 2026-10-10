@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Activity, ArrowDown, ArrowUp } from "lucide-react";
+import { Activity, ArrowDown, ArrowUp, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useActivityStore } from "@/stores/activity-store";
 import { useChatStore } from "@/stores/chat-store";
@@ -12,15 +12,15 @@ import { activityPages } from "./activity/activity-pages";
 /** 当前执行轮次优先展示；更早的过程只在主动上翻时挂载。 */
 export default function ExecutionWorkspace() {
   const { t } = useTranslation("workbench");
-  const { epoch, runs, loaded, error, load } = useActivityStore();
+  const { epoch, runs, loaded, error, load, clearing, clearHistory } = useActivityStore();
   useEffect(() => { if (!loaded) void load(); }, [loaded, load]);
   return <section aria-label={t("execution.region")} className="activity-pane flex h-full min-h-0 flex-col">
     {error != null && <div className="p-3"><QueryError compact error={error} retry={() => void load()} /></div>}
-    <ActivityFeed key={epoch} runs={runs} />
+    <ActivityFeed key={epoch} runs={runs} clearing={clearing} onClear={() => void clearHistory()} />
   </section>;
 }
 
-function ActivityFeed({ runs }: { runs: ActivityRun[] }) {
+function ActivityFeed({ runs, clearing, onClear }: { runs: ActivityRun[]; clearing: boolean; onClear: () => void }) {
   const { t } = useTranslation("workbench");
   const connected = useChatStore((state) => state.sseConnected);
   const pages = useMemo(() => activityPages(runs), [runs]);
@@ -71,6 +71,7 @@ function ActivityFeed({ runs }: { runs: ActivityRun[] }) {
   return <>
     <header className="activity-heading"><Activity size={16} className="text-accent" /><h2>{t("activity.title")}</h2>
       <span className="ml-auto inline-flex items-center gap-2 text-xs text-muted" role="status">{activeRuns.length > 0 && <span className="activity-live-dot" />}{t(!connected ? "activity.reconnecting" : activeRuns.length ? "activity.working" : "activity.idle")}</span>
+      <Button variant="ghost" size="sm" title={t("activity.clearHistoryHint")} disabled={pages.length < 2} loading={clearing} onClick={onClear}><Trash2 size={13} />{t("activity.clearHistory")}</Button>
     </header>
     {activeRuns.length > 1 && <nav className="activity-active-runs" aria-label={t("activity.activeRuns")}>
       {activeRuns.map((run) => <button key={run.id} title={run.label} onClick={() => revealRun(run.id)}>

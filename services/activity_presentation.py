@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any
 
 from agent.messages.everything import parse_entity_scope
+from core.entity import EntityRegistry
+from core.path import project_root
 from core.sanitizer import sanitize_text
 from core.tags import etag_all, strip_message_meta_tags
 from core.tool_results import parse_tool_result_json
@@ -37,12 +40,30 @@ def relative_workspace_path(path: str) -> str:
     return relative.replace(os.sep, "/")
 
 
-def tool_targets(arguments: str) -> list[dict[str, str]]:
-    """提取参数中显式声明的操作对象，不根据工具名或用户文本推断路由。"""
+def _file_location(path: Path) -> dict[str, str]:
+    """将绝对路径映射到可浏览的文件根，区外路径只展示、不创建错误链接。"""
+    from services.filesystem import workspace_root
+
+    if not path.is_absolute():
+        return {"root": "unresolved"}
+    path = path.resolve()
+    for root, base in (("workspace", workspace_root()), ("project", project_root())):
+        try:
+            relative = path.relative_to(Path(base).resolve()).as_posix()
+        except ValueError:
+            continue
+        return {"root": root, "path": relative} if len(relative) <= 400 else {"root": "unresolved"}
+    return {"root": "external", "path": str(path)[:400]}
+
+
+def tool_targets(arguments: str, tool_name: str = "") -> list[dict[str, str]]:
+    """提取显式操作对象，文件位置由工具声明的解析器提供，保留原始索引键。"""
     payload = parse_tool_result_json(arguments)
     if not isinstance(payload, dict):
         return []
     result: list[dict[str, str]] = []
+    entity = EntityRegistry.get(tool_name) if tool_name else None
+    resolver = entity.path_resolver if entity else None
     fields = ("target", "scope", "entity_scope", "channel", "adapter_key", "chat_id", "session_id",
               "uid", "group_id", "entity_name", "entity", "path", "file_path", "directory", "root")
     for key in fields:
@@ -50,11 +71,19 @@ def tool_targets(arguments: str) -> list[dict[str, str]]:
         if not isinstance(value, (str, int)) or isinstance(value, bool) or value == "":
             continue
         text = sanitize_text(str(value))
+        location: dict[str, str] = {}
         if key in {"path", "file_path", "directory"}:
-            text = relative_workspace_path(text)
+            try:
+                if resolver:
+                    location = _file_location(resolver(str(value)))
+                elif os.path.isabs(str(value)):
+                    location = _file_location(Path(str(value)))
+            except Exception:
+                location = {"root": "unresolved"}
+            location = {name: sanitize_text(item) for name, item in location.items()}
         tags = etag_all(text) if text.startswith("[") else []
         if tags:
             result.extend({"key": tag, "value": value[:400]} for tag, value in tags[:8])
         else:
-            result.append({"key": key, "value": text[:400]})
+            result.append({"key": key, "value": text[:400], **location})
     return result

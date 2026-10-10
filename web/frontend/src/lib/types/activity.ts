@@ -1,7 +1,7 @@
 import type { ChatStreamingDiff } from "./chat";
 
 interface EntryBase { id: string; ts: number }
-export interface ActivityTag { key: string; value: string }
+export interface ActivityTag { key: string; value: string; root?: string; path?: string }
 export interface ActivitySource { scope: string; kind: string; channel: string; target: string; session: string }
 export type ActivityEntry =
   | EntryBase & { kind: "context"; status: string; duration_ms: number; blocks: { layer: string; label: string; content: string }[]; block_count: number; error?: string; truncated?: boolean }

@@ -201,6 +201,8 @@
   "chatFocus": "对话阅读模式",
   "activity": {
     "title": "实时过程",
+    "clearHistory": "清除历史",
+    "clearHistoryHint": "仅清除之前轮次的临时记录，保留当前轮次和子代理，不中断执行",
     "working": "执行中",
     "activeRuns": "正在执行的任务",
     "previousRound": "向上查看上一轮",

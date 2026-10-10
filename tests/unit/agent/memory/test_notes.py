@@ -11,13 +11,38 @@ import pytest
 from agent.memory import notes
 
 
+async def test_custom_data_root_has_one_note_path_for_tools_and_index(tmp_path, monkeypatch, store):
+    from agent.memory.embedding import Embedder
+    from agent.memory.memory_sync import sync_files
+    from core.path import ConfigPaths
+
+    data = tmp_path / "agent-data"
+    monkeypatch.setattr(notes, "_memory_dir", None)
+    monkeypatch.setattr(ConfigPaths, "MEMORY_DIR", str(data), raising=False)
+    notes.write_memory_file("memory/events/today.md", "# Event\nFound the correct directory")
+    assert (data / "events" / "today.md").is_file()
+    assert notes.resolve_memory_file("memory/events/today.md") == data / "events" / "today.md"
+    assert "correct directory" in notes.read_memory_file("memory/events/today.md")
+    assert [item["path"] for item in notes.list_all_memory_files()] == ["memory/events/today.md"]
+    await sync_files(store, Embedder(), notes.get_memory_dir(), uploads_dir=tmp_path / "uploads")
+    assert [item["path"] for item in await store.list_files()] == ["memory/events/today.md"]
+    assert not (tmp_path / "memory").exists()
+
+
+@pytest.mark.parametrize("key", ["../escape.md", "memory/../escape.md", "workspace/note.md", "memory/note.json"])
+def test_note_keys_cannot_leave_the_memory_namespace(tmp_path, monkeypatch, key):
+    monkeypatch.setattr(notes, "_memory_dir", tmp_path)
+    with pytest.raises(ValueError):
+        notes.resolve_memory_file(key)
+
+
 @pytest.fixture
 def memory_dir(tmp_path, monkeypatch) -> Path:
     """隔离的记忆工作区。"""
     ws = tmp_path / "config"
     md = ws / "memory"
     md.mkdir(parents=True)
-    monkeypatch.setattr(notes, "_workspace_dir", ws)
+    monkeypatch.setattr(notes, "_memory_dir", ws / "memory")
     return md
 
 
@@ -27,7 +52,7 @@ def events_dir(tmp_path, monkeypatch) -> Path:
     ws = tmp_path / "config"
     md = ws / "memory"
     (md / "events").mkdir(parents=True)
-    monkeypatch.setattr(notes, "_workspace_dir", ws)
+    monkeypatch.setattr(notes, "_memory_dir", ws / "memory")
     return md
 
 
@@ -107,7 +132,7 @@ class TestListExpiredEvents:
     def test_empty_when_no_events_dir(self, tmp_path, monkeypatch) -> None:
         ws = tmp_path / "config"
         (ws / "memory").mkdir(parents=True)
-        monkeypatch.setattr(notes, "_workspace_dir", ws)
+        monkeypatch.setattr(notes, "_memory_dir", ws / "memory")
         assert notes.list_expired_events(30, today=_TODAY) == []
 
     def test_boundary_exactly_retention_days_kept(self, events_dir: Path) -> None:

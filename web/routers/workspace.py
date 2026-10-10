@@ -28,6 +28,14 @@ async def activity_snapshot() -> Dict[str, Any]:
     return workspace_activity.snapshot()
 
 
+@router.delete("/activity/history")
+async def clear_activity_history() -> Dict[str, Any]:
+    """清除之前的临时过程记录，保留当前轮次，不中断执行。"""
+    from services.workspace_activity import workspace_activity
+
+    return workspace_activity.clear_history()
+
+
 @router.get("/tree")
 async def get_tree(
     path: str = Query(""),

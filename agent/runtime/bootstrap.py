@@ -205,19 +205,19 @@ def create_bootstrap() -> FlowMachine:
             f"embedding={'可用 (' + embed_client.config.name + ')' if embed_client else 'FTS-only'}"
         )
 
-        from agent.memory.notes import get_workspace_dir
-        workspace_dir = get_workspace_dir()
-        workspace_dir.mkdir(parents=True, exist_ok=True)
+        from agent.memory.notes import get_memory_dir
+        memory_dir = get_memory_dir()
+        memory_dir.mkdir(parents=True, exist_ok=True)
 
         if await needs_migration(db_path):
             try:
-                count = await migrate_memories_to_md(db_path, workspace_dir)
-                log(f"数据迁移: {count} 条记忆已导出到 {workspace_dir}")
+                count = await migrate_memories_to_md(db_path, memory_dir)
+                log(f"数据迁移: {count} 条记忆已导出到 {memory_dir}")
             except Exception as exc:
                 log(f"数据迁移失败（不影响启动）: {exc}", "WARNING")
 
         try:
-            stats = await sync_files(store, embedder, workspace_dir)
+            stats = await sync_files(store, embedder, memory_dir)
             if stats["synced"] or stats["removed"]:
                 log(f"文件索引同步: {stats}")
         except Exception as exc:
@@ -262,7 +262,7 @@ def create_bootstrap() -> FlowMachine:
         return {
             "store": store,
             "embedder": embedder,
-            "workspace_dir": workspace_dir,
+            "memory_dir": memory_dir,
             "embedding_worker": embedding_worker,
             "cognee_client": cognee_client,
             "cognee_coordinator": cognee_coordinator,
@@ -333,7 +333,7 @@ def create_bootstrap() -> FlowMachine:
         log(f"🎙 语音工具已注册 ({count} 个)", tag="语音")
         from agent.audio.worker import register_backlog as register_audio_backlog
         register_audio_backlog()
-        register_notes_tools(workspace_dir=mem.get("workspace_dir"))
+        register_notes_tools(memory_dir=mem.get("memory_dir"))
 
         # 图片感知索引 worker：入站图片后台沉淀（phash/描述/向量），支撑文搜图/图搜图
         # （引用经 wiring.wire_runtime 统一施绑，本节点只负责创建与生命周期注册）

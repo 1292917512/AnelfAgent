@@ -1,6 +1,7 @@
 """工具声明与延迟激活；注册元数据由核心持有，业务模块只提供实现。"""
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 from core.entity import EntityRegistry
@@ -21,6 +22,7 @@ def tool(
     sleep_brief: str = "",
     concurrency_safe: bool = False,
     risk: str = "",
+    path_resolver: Optional[Callable[[str], Path]] = None,
 ) -> Callable[[F], F]:
     """装饰器：将函数注册为 LLM 可调用工具（注册到 EntityRegistry）。
 
@@ -37,6 +39,7 @@ def tool(
             框架层（事件/审批/ContextVar 隔离）已保证并发安全，
             标注者只需确保工具体自身只读无共享写状态
         risk: 风险等级标记（如 CRITICAL），供规则与自动评审判断执行条件
+        path_resolver: 将工具文件参数解析为绝对路径，供界面定位；不改变调用参数或授权
     """
     def decorator(func: F) -> F:
         tool_name = name or func.__name__
@@ -50,6 +53,8 @@ def tool(
             meta["concurrency_safe"] = True
         if risk:
             meta["risk"] = risk
+        if path_resolver is not None:
+            meta["path_resolver"] = path_resolver
 
         EntityRegistry.register_tool(
             name=tool_name,
@@ -94,6 +99,7 @@ def deferred_tool(
     concurrency_safe: bool = False,
     risk: str = "",
     schema_extra: Optional[Dict[str, Dict[str, Any]]] = None,
+    path_resolver: Optional[Callable[[str], Path]] = None,
 ) -> Callable[[F], F]:
     """延迟注册装饰器：装饰时仅收集元数据，activate_group() 时批量注册。
 
@@ -108,6 +114,7 @@ def deferred_tool(
         concurrency_safe: 是否可与其他安全工具并行执行（只读工具才应开启；
             框架层已保证并发安全，标注者只需确保工具体自身只读无共享写状态）
         risk: 风险等级标记（如 CRITICAL），供规则与自动评审判断执行条件
+        path_resolver: 将工具文件参数解析为绝对路径，供界面定位；不改变调用参数或授权
         schema_extra: 参数级额外 JSON Schema 字段（{参数名: {...}}，如
             items/minItems），签名推导只到顶层类型，复杂数组/对象参数
             的完整 wire schema 经此声明
@@ -129,6 +136,8 @@ def deferred_tool(
             meta["concurrency_safe"] = True
         if risk:
             meta["risk"] = risk
+        if path_resolver is not None:
+            meta["path_resolver"] = path_resolver
 
         _deferred_registry.setdefault(group, []).append({
             "name": tool_name, "func": func, "description": tool_desc,

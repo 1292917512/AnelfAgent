@@ -27,20 +27,12 @@ from core.log import log
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
 from core.tool_registry import activate_group, deferred_tool
 
-from .memory_utils import list_workspace_md_files
+from .memory_utils import list_memory_md_files
 
 EntityRegistry.register_group_order("notes", 12)
 
-_workspace_dir: Optional[Path] = None
+_memory_dir: Optional[Path] = None
 _file_lock = asyncio.Lock()
-
-
-def get_workspace_dir() -> Path:
-    """获取记忆工作区目录（数据目录的父目录，历史布局为项目 config/）。"""
-    if _workspace_dir:
-        return _workspace_dir
-    from core.path import ConfigPaths
-    return Path(ConfigPaths.MEMORY_DIR).parent
 
 
 def get_notes_path() -> Path:
@@ -50,8 +42,8 @@ def get_notes_path() -> Path:
 
 def get_memory_dir() -> Path:
     """获取记忆文件目录（数据目录，默认 config/memory/）。"""
-    if _workspace_dir:
-        return _workspace_dir / "memory"
+    if _memory_dir:
+        return _memory_dir
     from core.path import ConfigPaths
     return Path(ConfigPaths.MEMORY_DIR)
 
@@ -410,12 +402,8 @@ async def _resync_single_file(file_path: Path) -> None:
         embedder = rt.mind.embedder
         if not store:
             return
-        ws = get_workspace_dir()
         from agent.memory.memory_sync import index_single_file
-        try:
-            rel_path = file_path.relative_to(ws).as_posix()
-        except ValueError:
-            rel_path = file_path.as_posix()
+        rel_path = f"memory/{file_path.resolve().relative_to(get_memory_dir().resolve()).as_posix()}"
         indexed = {f["path"]: f for f in await store.list_files()}
         existing = indexed.get(rel_path)
         await index_single_file(
@@ -465,11 +453,11 @@ def _apply_window_budget(window: List[str], keep_tail: bool) -> tuple[List[str],
 
 def list_all_memory_files() -> list[Dict[str, str]]:
     """列出所有 MD 便签文件及其大小。"""
-    ws = get_workspace_dir()
-    paths = list_workspace_md_files(ws)
+    memory_dir = get_memory_dir()
+    paths = list_memory_md_files(memory_dir)
     files: list[Dict[str, str]] = []
     for p in paths:
-        rel = str(p.relative_to(ws)).replace("\\", "/")
+        rel = f"memory/{p.relative_to(memory_dir).as_posix()}"
         try:
             content = p.read_text(encoding="utf-8")
             files.append({
@@ -482,12 +470,15 @@ def list_all_memory_files() -> list[Dict[str, str]]:
     return files
 
 
-def _validate_md_path(file_path: str) -> Path:
-    """验证文件路径在工作区内且为 .md 文件，返回解析后的绝对路径。"""
-    ws = get_workspace_dir()
-    target = (ws / file_path).resolve()
-    if not target.is_relative_to(ws.resolve()):
-        raise ValueError("路径不在工作区内")
+def resolve_memory_file(file_path: str) -> Path:
+    """将 memory/ 索引键解析为记忆数据目录内的 Markdown 文件绝对路径。"""
+    key = Path(file_path.replace("\\", "/"))
+    if key.is_absolute() or not key.parts or key.parts[0] != "memory" or ".." in key.parts:
+        raise ValueError("请使用 memory/ 开头的便签索引路径，如 memory/memory.md；普通文件请用文件工具")
+    root = get_memory_dir().resolve()
+    target = root.joinpath(*key.parts[1:]).resolve()
+    if not target.is_relative_to(root):
+        raise ValueError("路径超出记忆数据目录")
     if target.suffix != ".md":
         raise ValueError("只允许操作 .md 文件")
     return target
@@ -495,7 +486,7 @@ def _validate_md_path(file_path: str) -> Path:
 
 def delete_memory_file(file_path: str) -> bool:
     """删除指定 MD 便签文件，返回是否成功。不允许删除数据库目录下的文件。"""
-    target = _validate_md_path(file_path)
+    target = resolve_memory_file(file_path)
     # 只保护真正的数据目录（SQLite 所在），而非工作区内任何名为 data 的目录
     from core.path import ConfigPaths
     data_dir = Path(ConfigPaths.SQLITE_DB).resolve().parent
@@ -510,7 +501,7 @@ def delete_memory_file(file_path: str) -> bool:
 
 def read_memory_file(file_path: str) -> str:
     """读取指定记忆文件的内容。"""
-    target = _validate_md_path(file_path)
+    target = resolve_memory_file(file_path)
     if not target.exists():
         return ""
     return target.read_text(encoding="utf-8")
@@ -518,7 +509,7 @@ def read_memory_file(file_path: str) -> str:
 
 def write_memory_file(file_path: str, content: str) -> int:
     """写入指定记忆文件（原子写入），返回行数。"""
-    target = _validate_md_path(file_path)
+    target = resolve_memory_file(file_path)
     with _heartbeat_write_guard(file_path):
         existing = target.read_text(encoding="utf-8") if target.exists() else ""
         _assert_managed_blocks_intact(existing, content)
@@ -528,7 +519,7 @@ def write_memory_file(file_path: str, content: str) -> int:
 
 def append_to_memory_file(file_path: str, content: str) -> int:
     """在指定记忆文件末尾追加内容，返回追加后的总行数。文件不存在时自动创建。"""
-    target = _validate_md_path(file_path)
+    target = resolve_memory_file(file_path)
     with _heartbeat_write_guard(file_path):
         existing = target.read_text(encoding="utf-8") if target.exists() else ""
         if existing and not existing.endswith("\n"):
@@ -546,7 +537,7 @@ def patch_memory_file_content(
     返回包含 replaced（实际替换次数）和 total_occurrences（原始匹配总数）的字典。
     old_text 不存在时抛出 ValueError。
     """
-    target = _validate_md_path(file_path)
+    target = resolve_memory_file(file_path)
     if not target.exists():
         raise FileNotFoundError(f"{file_path} 不存在")
     with _heartbeat_write_guard(file_path):
@@ -574,7 +565,7 @@ def edit_file_lines(
     new_content 为空字符串时删除该行范围。end_line 为 -1 时表示文件最后一行。
     返回包含 total_lines（修改后总行数）的字典。
     """
-    target = _validate_md_path(file_path)
+    target = resolve_memory_file(file_path)
     if not target.exists():
         raise FileNotFoundError(f"{file_path} 不存在")
     # 读-改-写全程持守卫锁：心跳线程的追加不会被整文件覆写冲掉
@@ -644,7 +635,7 @@ def _find_section(
 
 def view_file_outline(file_path: str) -> dict:
     """获取记忆文件的 Markdown 标题大纲（仅标题行，不含正文）。"""
-    target = _validate_md_path(file_path)
+    target = resolve_memory_file(file_path)
     if not target.exists():
         raise FileNotFoundError(f"{file_path} 不存在")
     content = target.read_text(encoding="utf-8")
@@ -666,7 +657,7 @@ def view_file_outline(file_path: str) -> dict:
 
 def read_section_content(file_path: str, heading: str) -> dict:
     """按标题读取段落。返回 body（不含标题行）和带行号的 view（含标题行）。"""
-    target = _validate_md_path(file_path)
+    target = resolve_memory_file(file_path)
     if not target.exists():
         raise FileNotFoundError(f"{file_path} 不存在")
     file_content = target.read_text(encoding="utf-8")
@@ -700,7 +691,7 @@ def write_section_content(
     heading 存在时替换其 body（保留标题行），after 参数被忽略。
     heading 不存在时创建新段落；after 指定插入位置锚点，为空则追加到文件末尾。
     """
-    target = _validate_md_path(file_path)
+    target = resolve_memory_file(file_path)
     if not target.exists():
         raise FileNotFoundError(f"{file_path} 不存在")
     file_content = target.read_text(encoding="utf-8")
@@ -750,7 +741,7 @@ def write_section_content(
 
 def delete_section_content(file_path: str, heading: str) -> dict:
     """删除指定标题段落（含标题行和全部内容）。"""
-    target = _validate_md_path(file_path)
+    target = resolve_memory_file(file_path)
     if not target.exists():
         raise FileNotFoundError(f"{file_path} 不存在")
     file_content = target.read_text(encoding="utf-8")
@@ -929,18 +920,17 @@ def build_notes_empty_hint() -> str:
     return _NOTES_EMPTY_HINT
 
 
-def register_notes_tools(workspace_dir: Optional[Path] = None) -> None:
-    """注入工作区路径并批量注册便签记忆工具。"""
-    global _workspace_dir
-    if workspace_dir:
-        _workspace_dir = workspace_dir
+def register_notes_tools(memory_dir: Optional[Path] = None) -> None:
+    """注入记忆数据目录并批量注册便签工具。"""
+    global _memory_dir
+    _memory_dir = memory_dir
     # 目录整理：散落的日期/群文件迁移到 events/ groups/ 子目录（幂等）
     try:
         migrate_memory_layout()
     except Exception as e:
         log(f"记忆目录迁移失败: {e}", "WARNING", tag="记忆")
     count = activate_group("notes", "便签记忆 - 计划与关键记忆的持久化笔记本（支持多文件）")
-    log(f"便签记忆工具已注册 ({count} 个) -> {get_workspace_dir()}", tag="思维")
+    log(f"便签记忆工具已注册 ({count} 个) -> {get_memory_dir()}", tag="思维")
 
 
 # ------------------------------------------------------------------
@@ -1031,7 +1021,7 @@ async def list_memory_files() -> str:
 
 
 @deferred_tool(
-    name="read_memory_file",
+    name="read_memory_file", path_resolver=resolve_memory_file,
     group="notes", tags=["always", "core", "heartbeat"], source="mind.notes",
     description=(
         "读取指定记忆文件的内容（memory/reflections.md、memory/entities.md 等）。"
@@ -1130,7 +1120,7 @@ async def _tool_read_memory_file(
 
 
 @deferred_tool(
-    name="write_memory_file",
+    name="write_memory_file", path_resolver=resolve_memory_file,
     group="notes", tags=["always", "core", "heartbeat"], source="mind.notes",
     description=(
         "写入或编辑 MD 便签文件（完整覆写）。文件不存在时自动创建。"
@@ -1158,7 +1148,7 @@ async def _tool_write_memory_file(file_path: str, content: str) -> str:
 
 
 @deferred_tool(
-    name="delete_memory_file",
+    name="delete_memory_file", path_resolver=resolve_memory_file,
     group="notes", tags=["always", "core", "heartbeat"], source="mind.notes",
     description=(
         "删除指定的 MD 便签文件。仅限 .md 文件，不允许删除 data/ 目录下的数据库文件。"
@@ -1183,7 +1173,7 @@ async def _tool_delete_memory_file(file_path: str) -> str:
 
 
 @deferred_tool(
-    name="append_memory_file",
+    name="append_memory_file", path_resolver=resolve_memory_file,
     group="notes", tags=["always", "core", "heartbeat"], source="mind.notes",
     description=(
         "在 MD 便签文件末尾追加内容，文件不存在时自动创建。"
@@ -1210,7 +1200,7 @@ async def _tool_append_memory_file(file_path: str, content: str) -> str:
 
 
 @deferred_tool(
-    name="patch_memory_file",
+    name="patch_memory_file", path_resolver=resolve_memory_file,
     group="notes", tags=["always", "core", "heartbeat"], source="mind.notes",
     description=(
         "在 MD 便签文件中进行精确字符串替换。"
@@ -1244,7 +1234,7 @@ async def _tool_patch_memory_file(
 
 
 @deferred_tool(
-    name="edit_memory_lines",
+    name="edit_memory_lines", path_resolver=resolve_memory_file,
     group="notes", tags=["always", "core", "heartbeat"], source="mind.notes",
     description=(
         "按行号范围替换或插入 MD 便签文件中的内容（1-indexed，闭区间）。"
@@ -1288,7 +1278,7 @@ async def _tool_edit_memory_lines(
 # ------------------------------------------------------------------
 
 @deferred_tool(
-    name="view_memory_outline",
+    name="view_memory_outline", path_resolver=resolve_memory_file,
     group="notes", tags=["always", "core", "heartbeat"], source="mind.notes",
     description=(
         "查看 MD 便签文件的 Markdown 标题大纲（仅标题行和行号，不含正文）。"
@@ -1309,7 +1299,7 @@ async def _tool_view_memory_outline(file_path: str) -> str:
 
 
 @deferred_tool(
-    name="read_section",
+    name="read_section", path_resolver=resolve_memory_file,
     group="notes", tags=["always", "core", "heartbeat"], source="mind.notes",
     description=(
         "按 Markdown 标题读取 MD 便签文件中的指定段落。"
@@ -1333,7 +1323,7 @@ async def _tool_read_section(file_path: str, heading: str) -> str:
 
 
 @deferred_tool(
-    name="write_section",
+    name="write_section", path_resolver=resolve_memory_file,
     group="notes", tags=["always", "core", "heartbeat"], source="mind.notes",
     description=(
         "替换或创建 MD 便签文件中指定标题段落的内容。"
@@ -1370,7 +1360,7 @@ async def _tool_write_section(
 
 
 @deferred_tool(
-    name="delete_section",
+    name="delete_section", path_resolver=resolve_memory_file,
     group="notes", tags=["always", "core", "heartbeat"], source="mind.notes",
     description=(
         "删除 MD 便签文件中指定标题段落（含标题行和全部内容，包括子标题）。"

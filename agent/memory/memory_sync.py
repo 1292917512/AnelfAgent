@@ -183,7 +183,7 @@ async def index_single_file(
 async def sync_files(
     store: MemoryStore,
     embedder: Embedder,
-    workspace_dir: Path,
+    memory_dir: Path,
     *,
     force: bool = False,
     uploads_dir: Optional[Path] = None,
@@ -195,7 +195,7 @@ async def sync_files(
     """
     if uploads_dir is None:
         uploads_dir = _default_uploads_dir()
-    files = list_indexable_files(workspace_dir, uploads_dir)
+    files = list_indexable_files(memory_dir, uploads_dir)
     stats = {"synced": 0, "removed": 0, "chunks": 0}
 
     indexed_files = {f["path"]: f for f in await store.list_files()}

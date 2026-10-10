@@ -21,7 +21,7 @@ def _isolate_notes_and_history(tmp_path, monkeypatch: pytest.MonkeyPatch):
     """隔离便签工作区与执行历史文件（两者都指向真实数据目录，必须显式重定向）。"""
     ws = tmp_path / "config"
     (ws / "memory").mkdir(parents=True)
-    monkeypatch.setattr(notes_mod, "_workspace_dir", ws)
+    monkeypatch.setattr(notes_mod, "_memory_dir", ws / "memory")
     monkeypatch.setattr(task_history, "_history_path", lambda: tmp_path / "task_history.json")
     yield
 

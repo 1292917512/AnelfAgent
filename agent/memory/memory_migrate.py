@@ -34,7 +34,7 @@ async def needs_migration(db_path: str) -> bool:
         return False
 
 
-async def migrate_memories_to_md(db_path: str, workspace_dir: Path) -> int:
+async def migrate_memories_to_md(db_path: str, memory_dir: Path) -> int:
     """将 memories 表中未迁移的记忆导出为 MD 文件。
 
     按 MemoryType 分类：
@@ -46,7 +46,6 @@ async def migrate_memories_to_md(db_path: str, workspace_dir: Path) -> int:
 
     返回迁移的记忆条数。
     """
-    memory_dir = workspace_dir / "memory"
     memory_dir.mkdir(parents=True, exist_ok=True)
 
     async with aiosqlite.connect(db_path) as db:

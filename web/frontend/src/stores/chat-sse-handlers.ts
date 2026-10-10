@@ -22,7 +22,7 @@ import type {
   SseTurnEndEvent,
   UiCommandPayload,
 } from "@/lib/types";
-import type { ActivityRun } from "@/lib/types/activity";
+import type { ActivityRun, ActivitySnapshot } from "@/lib/types/activity";
 import { useActivityStore } from "./activity-store";
 import { useDelegationStore } from "./delegation-store";
 import { usePlanStore } from "./plan-store";
@@ -210,6 +210,12 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
   };
   es.addEventListener("activity", receiveActivity);
   es.addEventListener("activity_end", receiveActivity);
+  es.addEventListener("activity_snapshot", (event: MessageEvent<string>) => {
+    try {
+      const data = JSON.parse(event.data) as ActivitySnapshot;
+      if (data.epoch && typeof data.revision === "number" && Array.isArray(data.runs)) useActivityStore.getState().restore(data);
+    } catch { /* Ignore invalid event data. */ }
+  });
 
   es.addEventListener("file_diff", (event) => {
     try {
