@@ -7,15 +7,13 @@ import { SystemPanel } from "./settings/SystemPanel";
 import { PythonPanel } from "./settings/PythonPanel";
 import { GitPanel } from "./settings/GitPanel";
 import { ConfigStatusPanel } from "./settings/ConfigStatusPanel";
-import { HooksPanel } from "./settings/HooksPanel";
-import { LlmHooksPanel } from "./settings/LlmHooksPanel";
 import { LocalModelsPanel } from "./settings/LocalModelsPanel";
 
-type SettingsTab = "sysConfig" | "system" | "python" | "git" | "config" | "hooks" | "llmHooks" | "localModels";
+type SettingsTab = "sysConfig" | "system" | "python" | "git" | "config" | "localModels";
 
 export default function Settings() {
   const { t } = useTranslation("settings");
-  const [tab, setTab] = useRouteTab<SettingsTab>(["sysConfig", "system", "python", "git", "config", "hooks", "llmHooks", "localModels"], "sysConfig");
+  const [tab, setTab] = useRouteTab<SettingsTab>(["sysConfig", "system", "python", "git", "config", "localModels"], "sysConfig");
 
   const TAB_KEYS: TabItem<SettingsTab>[] = [
     { key: "sysConfig", label: t("tabs.sysConfig") },
@@ -23,8 +21,6 @@ export default function Settings() {
     { key: "python", label: t("tabs.python") },
     { key: "git", label: t("tabs.git") },
     { key: "config", label: t("tabs.config") },
-    { key: "hooks", label: t("tabs.hooks") },
-    { key: "llmHooks", label: t("tabs.llmHooks") },
     { key: "localModels", label: t("tabs.localModels") },
   ];
 
@@ -38,8 +34,6 @@ export default function Settings() {
       {tab === "python" && <PythonPanel />}
       {tab === "git" && <GitPanel />}
       {tab === "config" && <ConfigStatusPanel />}
-      {tab === "hooks" && <HooksPanel />}
-      {tab === "llmHooks" && <LlmHooksPanel />}
       {tab === "localModels" && <LocalModelsPanel />}
     </PageContainer>
   );

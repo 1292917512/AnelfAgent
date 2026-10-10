@@ -146,6 +146,14 @@ _CURATOR_CONFIGS = {
             "description": "是否启用对话后后台技能评审",
             "default": True,
         },
+        "skills_review_cooldown_seconds": {
+            "description": "技能评审冷却（同一会话两次评审的最小间隔秒数）：评审继承整轮"
+                           "transcript，prompt 天然每轮不同、前缀缓存几乎不可复用，冷却"
+                           "直接降低高频对话下的不可缓存输入开销",
+            "default": 120,
+            "advanced": True,
+            "unit": "秒",
+        },
         "skills_stale_after_days": {
             "description": "技能无真实活动降级为 stale 的天数（检索注入不算活动）",
             "default": 30,

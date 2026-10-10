@@ -15,6 +15,9 @@
 
 防失控设计（钩子面治理 + 本层语义）：
 - 上一轮评审未完成时跳过本次（钩子 per-hook 并发=1，单飞不堆积）
+- 评审冷却（skills_review_cooldown_seconds，默认 120s）：评审 prompt 继承
+  整轮 transcript、每轮全新，前缀缓存几乎不可复用——冷却直接压低高频对话
+  下的不可缓存输入总量（缓存命中低是该机制的固有代价，见 docs/context-cache.md）
 - 评审使用受限工具集（仅 skills 组），禁止外发消息
 - 评审轮次上限小（默认 6 轮，含决策协议的回执往返），无价值时 LLM 直接 end_reply
 """
@@ -77,6 +80,16 @@ _REVIEW_INSTRUCTION = """以上是本轮对话的完整执行上下文（你的�
 _MAX_CANDIDATES = 10
 # 评审触发最小材料：transcript 快照至少包含非空消息链才评审
 _MIN_TRANSCRIPT_MESSAGES = 2
+# 评审冷却默认值（秒）：评审继承整轮 transcript，prompt 每轮全新、前缀缓存
+# 几乎不可复用；冷却限制同会话评审频率，直接压低不可缓存输入总量
+_DEFAULT_COOLDOWN_SECONDS = 120.0
+
+
+def _review_cooldown_seconds() -> float:
+    """评审冷却（注册时读配置，生效值见 skills_review_cooldown_seconds）。"""
+    from core.config import get_config_float
+
+    return max(0.0, get_config_float("skills_review_cooldown_seconds", _DEFAULT_COOLDOWN_SECONDS))
 
 
 class SkillReviewer:
@@ -128,6 +141,7 @@ class SkillReviewer:
             when=_when, tool_tags=["skills"], allow_output_tools=False,
             route_output=False,
             max_iterations=6, max_concurrent=1,
+            cooldown_seconds=_review_cooldown_seconds(),
             owner=_HOOK_OWNER, source="code",
             description="每轮对话后评审执行过程，自主决策技能沉淀/合并/治理",
         )

@@ -30,6 +30,7 @@ import type {
   SkillBuildState,
   SkillItem,
   SkillLibraryHealth,
+  HooksTestResult,
 } from "@/lib/types";
 
 export const toolsApi = {
@@ -163,6 +164,8 @@ export const hooksApi = {
   save: (hooks: Record<string, HookEntry[]>) =>
     api.put<{ saved: boolean; count: number }>("/hooks", hooks),
   example: () => api.get<Record<string, HookEntry[]>>("/hooks/example"),
+  test: (event: string, toolName = "*") =>
+    api.post<HooksTestResult>("/hooks/test", { event, tool_name: toolName }),
 };
 
 // ── LLM 钩子面（/hooks-llm，agent/hooks_llm 注册表观测，只读） ──

@@ -8,7 +8,7 @@ import sys
 import pytest
 
 from agent.hooks import get_hook_registry, hooks_active, reload_hooks, run_event_hooks
-from agent.hooks.runner import HookRegistry
+from agent.hooks.runner import HookRegistry, get_hook_stats, reset_hook_stats
 from core.command import run_command
 
 
@@ -63,6 +63,18 @@ class TestHookRegistryLoad:
         reg.load(str(p))
         assert reg.for_event("tool_pre")[0].timeout == 60.0
 
+    def test_enabled_field_parsed_and_validated(self, tmp_path) -> None:
+        p = tmp_path / "hooks.json"
+        _write_hooks(p, {"tool_pre": [{"command": "x", "enabled": False}]})
+        reg = HookRegistry()
+        reg.load(str(p))
+        assert reg.for_event("tool_pre")[0].enabled is False
+
+        bad = tmp_path / "bad.json"
+        _write_hooks(bad, {"tool_pre": [{"command": "x", "enabled": "yes"}]})
+        with pytest.raises(ValueError, match="enabled 应为布尔"):
+            HookRegistry().load(str(bad))
+
 
 class TestReloadHooks:
     def test_missing_file_clears(self, tmp_path) -> None:
@@ -84,6 +96,25 @@ class TestReloadHooks:
     def test_hooks_active_empty_registry_false(self, tmp_path) -> None:
         reload_hooks(str(tmp_path / "nonexistent.json"))
         assert hooks_active("tool_pre") is False
+
+    def test_hooks_active_global_switch_off(self, tmp_path, monkeypatch) -> None:
+        import core.config
+
+        reload_hooks(str(tmp_path / "nonexistent.json"))
+        p = tmp_path / "hooks.json"
+        _write_hooks(p, {"tool_pre": [{"command": "exit 0"}]})
+        assert reload_hooks(str(p)) == 1
+        monkeypatch.setattr(core.config, "get_config_bool", lambda key, default: False)
+        assert hooks_active("tool_pre") is False
+        assert hooks_active() is False
+
+    def test_hooks_active_all_disabled_false(self, tmp_path) -> None:
+        reload_hooks(str(tmp_path / "nonexistent.json"))
+        p = tmp_path / "hooks.json"
+        _write_hooks(p, {"tool_pre": [{"command": "exit 0", "enabled": False}]})
+        assert reload_hooks(str(p)) == 1
+        assert hooks_active("tool_pre") is False
+        reload_hooks(str(tmp_path / "nonexistent.json"))
 
 
 class TestRunEventHooks:
@@ -146,3 +177,37 @@ class TestRunEventHooks:
         data = json.loads(out_file.read_text(encoding="utf-8"))
         assert data["event"] == "tool_post"
         assert data["tool_name"] == "write_file"
+
+    async def test_disabled_hook_skipped(self, tmp_path) -> None:
+        self._load(tmp_path, {"tool_pre": [
+            {"command": "exit 0", "enabled": False},
+            {"command": "exit 0"},
+        ]})
+        out = await run_event_hooks("tool_pre", tool_name="read_file")
+        assert out.executed == 1  # 停用条目跳过不执行
+        assert out.allowed
+
+    async def test_results_and_stats_recorded(self, tmp_path) -> None:
+        if sys.platform == "win32":
+            pytest.skip("POSIX only")
+        reset_hook_stats()
+        try:
+            self._load(tmp_path, {"tool_pre": [
+                {"matcher": "read_*", "command": "exit 0"},
+                {"matcher": "*", "command": "echo blocked >&2; exit 2"},
+            ]})
+            out = await run_event_hooks("tool_pre", tool_name="read_file", test=True)
+            assert len(out.results) == 2
+            assert out.results[0]["ok"] is True
+            assert out.results[1]["blocked"] is True
+            assert "blocked" in out.results[1]["detail"]
+
+            stats = get_hook_stats()
+            assert stats["events"]["tool_pre"]["executed"] == 2
+            assert stats["events"]["tool_pre"]["blocked"] == 1
+            assert stats["events"]["tool_pre"]["failed"] == 0
+            assert stats["events"]["tool_pre"]["last_run_at"] is not None
+            assert len(stats["recent"]) == 2
+            assert stats["recent"][0]["test"] is True
+        finally:
+            reset_hook_stats()

@@ -13,6 +13,7 @@
   "channels": "Channels",
   "approvals": "Permissions",
   "settings": "Environment",
+  "hooks": "Hooks",
   "group_core": "Core",
   "group_ability": "Capability",
   "group_agent": "Agent",
@@ -70,7 +71,8 @@
     "approvals": "Inspect permission rules and AI review records.",
     "data": "Inspect storage, data connections and resource usage.",
     "config": "Find and edit system settings by module.",
-    "settings": "Manage the runtime environment, hooks and local models."
+    "settings": "Manage the runtime environment, hooks and local models.",
+    "hooks": "Manage user script hooks (before/after tools, on reply end) and observe the LLM hook surface."
   },
   "appearance": "Appearance & language"
 }

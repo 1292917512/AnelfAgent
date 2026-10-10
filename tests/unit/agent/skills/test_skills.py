@@ -1083,6 +1083,9 @@ class TestSkillReviewerContract:
             assert spec.event == "after_reply"
             assert spec.context is HookContextMode.TRANSCRIPT
             assert spec.tool_tags == ("skills",)
+            # 冷却已装配（默认 120s，可经 skills_review_cooldown_seconds 调整）：
+            # 评审 transcript 每轮全新，冷却是压低不可缓存输入总量的治理位
+            assert spec.cooldown_seconds > 0
 
             ctx = HookContext(
                 name=spec.name, event="after_reply", scope="user_q:1",

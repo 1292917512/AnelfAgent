@@ -39,7 +39,9 @@ create/update 在事实层检测到显著信号时**不拒绝**，返回 needs_d
 
 - **后台评审**（background_review.py）：经 LLM 钩子面注册 `skill_review` 钩子（after_reply +
   transcript 档 + route_output=False + 6 轮上限）——评审材料为完整 transcript + 四问框架，
-  工具结果细节不被摘要蒸馏丢弃；评审报告只留完成记录、不唤醒主回复周期
+  工具结果细节不被摘要蒸馏丢弃；评审报告只留完成记录、不唤醒主回复周期。带 per-scope 冷却
+  （`skills_review_cooldown_seconds`，默认 120s）：评审 prompt 继承整轮 transcript、每轮全新，
+  前缀缓存几乎不可复用，冷却是压低不可缓存输入总量的治理位
 - **策展重力**（curator.py）：闲置降级/归档 + 试用期快筛（零参与 14 天降级）+ stale 软保留
   （仍被检索到不归档）；use/match 信号分离（检索注入不刷活动时间，get_skill 计数不刷活动）
 - **恢复通道**：`restore_skill` 工具 + `SkillStore.restore()`（置 ACTIVE 并刷新活动时钟，防重力

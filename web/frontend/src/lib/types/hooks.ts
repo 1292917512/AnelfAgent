@@ -4,14 +4,59 @@ export interface HookEntry {
   matcher: string;
   command: string;
   timeout?: number;
+  /** 停用保留配置但不执行（缺省视为 true） */
+  enabled?: boolean;
+}
+
+/** 单条 hook 的执行明细（测试运行结果与最近执行记录共用结构） */
+export interface HookRunDetail {
+  at?: number;
+  event: string;
+  matcher: string;
+  command: string;
+  ok: boolean;
+  returncode: number | null;
+  duration_ms: number;
+  blocked: boolean;
+  test?: boolean;
+  detail?: string;
+}
+
+export interface HookIntegration {
+  event: string;
+  where: string;
+  note: string;
+}
+
+export interface HookEventStats {
+  executed: number;
+  blocked: number;
+  failed: number;
+  last_run_at: number | null;
 }
 
 export interface HooksConfig {
   path: string;
   exists: boolean;
+  /** 总开关（配置项 hooks_enabled 的热读值） */
+  enabled: boolean;
   events: string[];
+  integrations: HookIntegration[];
   hooks: Record<string, HookEntry[]>;
   active: Record<string, number>;
+  stats: {
+    events: Record<string, HookEventStats>;
+    recent: HookRunDetail[];
+  };
+}
+
+export interface HooksTestResult {
+  event: string;
+  enabled: boolean;
+  allowed: boolean;
+  executed: number;
+  reason: string;
+  results: HookRunDetail[];
 }
 
 export interface LlmHookItem {

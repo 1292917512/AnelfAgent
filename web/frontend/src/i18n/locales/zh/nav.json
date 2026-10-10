@@ -13,6 +13,7 @@
   "channels": "通道",
   "approvals": "权限与审计",
   "settings": "环境设置",
+  "hooks": "钩子",
   "group_core": "核心",
   "group_ability": "能力",
   "group_agent": "智能体",
@@ -70,7 +71,8 @@
     "approvals": "权限与审计",
     "data": "浏览存储与数据连接，检查资源使用情况。",
     "config": "按模块搜索和调整系统参数。",
-    "settings": "管理运行环境、扩展钩子与本地模型。"
+    "settings": "管理运行环境、扩展钩子与本地模型。",
+    "hooks": "管理用户脚本钩子（工具前/后、回复完成）与 LLM 钩子面的观测与开关。"
   },
   "appearance": "外观与语言"
 }

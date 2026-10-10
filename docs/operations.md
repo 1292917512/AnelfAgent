@@ -115,8 +115,12 @@ stdin/stdout JSON 行协议桥接注册表工具（runner.py 纯 stdlib 按路�
 ## 用户 hook 事件面（agent/hooks/ + services/hooks.py + web/routers/hooks.py）
 
 `config/hooks.json` 声明 tool_pre/tool_post/reply_end 脚本；exit 2 阻塞（stderr 为理由）、串行、
-deny 胜过一切；空配置零开销。管理面：设置页「钩子」标签可视化编辑（保存即热生效），样例
-`config/hooks.example.json`；校验与运行时同源（`parse_hooks_data`）。
+deny 胜过一切；空配置零开销。条目字段：matcher（工具名 glob）/command/timeout（1~60s）/
+enabled（行级停用，缺省 true）；总开关 `hooks_enabled`（system/hooks 组）关闭即全部短路。
+管理面：设置页「钩子」标签——可视化编辑（保存即热生效）、总开关与行级开关、事件集成点
+（触发源文件）、每事件运行统计与最近执行明细（内存观测，重启清零）、事件级测试运行
+（`POST /api/hooks/test`，合成 payload 逐条回报 exit/耗时/阻塞，不受总开关影响）。
+样例 `config/hooks.example.json`；校验与运行时同源（`parse_hooks_data`）。
 
 - hook stdout 输出一行前缀 `REPLACE:<json-string>` 即返回替换内容（`HookOutcome.replace`，串行取
   第一个）；非字符串/非 JSON 静默忽略。当前无消费方，解析层保留供未来 tool_post 场景复用

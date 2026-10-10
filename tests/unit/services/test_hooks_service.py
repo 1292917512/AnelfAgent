@@ -30,6 +30,24 @@ class TestGetHooks:
         assert data["hooks"]["tool_pre"][0]["matcher"] == "delete_*"
         assert data["active"]["tool_pre"] == 1
 
+    def test_returns_enabled_integrations_stats(self, svc):
+        from agent.hooks.runner import HOOK_EVENTS
+
+        data = svc.get_hooks()
+        assert data["enabled"] is True
+        assert data["integrations"] and len(data["integrations"]) == len(HOOK_EVENTS)
+        assert {i["event"] for i in data["integrations"]} == set(HOOK_EVENTS)
+        assert all(i["where"] for i in data["integrations"])
+        assert set(data["stats"]["events"]) == set(HOOK_EVENTS)
+
+    def test_active_counts_enabled_only(self, svc):
+        svc.save_hooks({"tool_pre": [
+            {"command": "true"},
+            {"command": "true", "enabled": False},
+        ]})
+        data = svc.get_hooks()
+        assert data["active"]["tool_pre"] == 1
+
 
 class TestSaveHooks:
     def test_save_validates_and_reloads(self, svc):
@@ -63,6 +81,30 @@ class TestSaveHooks:
         with open(path, "w") as f:
             f.write("{bad json")
         assert svc.get_hooks()["hooks"] == {}
+
+
+class TestRunHooksTest:
+    async def test_executes_and_reports_per_hook(self, svc):
+        from agent.hooks.runner import reset_hook_stats
+
+        reset_hook_stats()
+        try:
+            svc.save_hooks({"tool_pre": [
+                {"matcher": "delete_*", "command": "exit 0"},
+                {"matcher": "*", "command": "exit 0", "enabled": False},
+            ]})
+            result = await svc.run_hooks_test("tool_pre", "delete_file")
+            assert result["event"] == "tool_pre"
+            assert result["enabled"] is True
+            assert result["executed"] == 1  # 停用条目不执行
+            assert len(result["results"]) == 1
+            assert result["results"][0]["ok"] is True
+        finally:
+            reset_hook_stats()
+
+    async def test_invalid_event_rejected(self, svc):
+        with pytest.raises(ValueError, match="未知 hook 事件"):
+            await svc.run_hooks_test("bogus_event")
 
 
 class TestExample:
