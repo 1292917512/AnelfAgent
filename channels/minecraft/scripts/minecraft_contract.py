@@ -8,7 +8,7 @@ from channels.minecraft.reply_policy import companion_policy
 
 START = "<!-- BEGIN GENERATED COMPANION CONTRACT -->"
 END = "<!-- END GENERATED COMPANION CONTRACT -->"
-SKILL_PATH = Path(__file__).resolve().parent.parent / "plugins/minecraft/skills/minecraft-companion/SKILL.md"
+SKILL_PATH = Path(__file__).resolve().parent.parent / "mcp/skills/minecraft-companion/SKILL.md"
 
 
 def render_contract(source: str) -> str:

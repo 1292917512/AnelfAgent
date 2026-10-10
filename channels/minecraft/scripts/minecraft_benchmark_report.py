@@ -132,7 +132,8 @@ def summarize_runs(directories: list[Path]) -> dict[str, Any]:
             "commit", "model_config_sha256", "prompts", "channel", "world", "timeout_seconds")}
         condition["executor_sources"] = {str(path).replace("\\", "/"): digest
                                          for path, digest in manifest.get("source_hashes", {}).items()
-                                         if str(path).replace("\\", "/").startswith("plugins/minecraft/")}
+                                         if str(path).replace("\\", "/").startswith(
+                                             ("channels/minecraft/mcp/", "plugins/minecraft/"))}
         conditions.append(condition)
         sample_paths[key] = sorted(directory.glob("sample-*.json"))
         rows = [json.loads(path.read_text(encoding="utf-8")) for path in sample_paths[key]]

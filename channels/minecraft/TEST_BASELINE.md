@@ -120,7 +120,7 @@ HEAD 本次全部失败；当前有一项 mtime 用例通过，其余失败。�
 - 最终 Node 离线测试 92 项通过；全部改动 Python 文件 Ruff 通过；新增契约相关 3 个生产文件
   mypy 通过；六条 import-linter 分层契约通过。执行器 JS 未在本轮修改，严格 JS 检查沿用 M1 验证。
 - 技能执行契约只在 `channels/minecraft/reply_policy.py` 编辑，技能块由
-  `python -m scripts.minecraft_contract` 生成并测试比对。已通过本地技能 API 更新运行中的正文，
+  `python -m channels.minecraft.scripts.minecraft_contract` 生成并测试比对。已通过本地技能 API 更新运行中的正文，
   保留元数据，安装负载同步并回读确认；本轮没有新增游戏动作。
 - M0 固定条件 P50/P95 仍未采样，M2 尚未开始；规程与 M4 前置条件见 DEVELOPMENT_PLAN.md。
 
@@ -136,3 +136,13 @@ HEAD 本次全部失败；当前有一项 mtime 用例通过，其余失败。�
 | `repeat-head.xml` | `086d70aca81c5aaf586007b773c69a2aacd316ad79398b577ccee1ddfc3a88b8` |
 | `repeat-current.xml` | `cee4ab6a6c19d7c729d6ebdbd00bc048ba68b9469c3abefb09bb6fb986adf9f6` |
 | `node-tests.log` | `0ed7a6c91bc030ad1c49d6960ef69a041d909300a1750d8623f9ff72d4f3b8c6` |
+
+## 单频道目录归属验证
+
+- MCP 包迁入 `channels/minecraft/mcp/`；逐文件核对运行代码、技能、清单与依赖锁文件未变。
+- 迁移后的全量 Python 测试：5789 通过、21 跳过；Minecraft 与实时语音定向回归：306 通过。
+- 新路径下 Node 回归：172 通过；补丁入口在隔离负载上重复执行保持幂等。
+- Ruff、mypy（725 个源文件）、八条 import-linter 契约全部通过；文档相对链接有效。
+- CI #160 的实时语音用例抢在消息投递前注入回复，已用延迟投递复现；改为等待统一入口
+  收到消息后，同一延迟条件通过。语音生产代码未修改。
+- 日志位于本地 `workspace/diagnostics/merge-review-20261010/`；本轮未连接真实游戏世界。

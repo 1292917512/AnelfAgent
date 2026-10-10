@@ -341,20 +341,20 @@ uv run lint-imports
 Node 22 及锁定依赖准备、补丁与动作回归按 [README 的验证说明](README.md#可往返矿洞) 执行：
 
 ```powershell
-npm ci --prefix plugins/minecraft --omit=optional --no-audit --no-fund
-uv run python -m scripts.minecraft_crafting plugins/minecraft
-uv run python -m scripts.minecraft_placement plugins/minecraft
-uv run python -m scripts.minecraft_digging plugins/minecraft
-uv run python -m scripts.minecraft_mining plugins/minecraft
-uv run python -m scripts.minecraft_actions plugins/minecraft
-npm test --prefix plugins/minecraft
+npm ci --prefix channels/minecraft/mcp --omit=optional --no-audit --no-fund
+uv run python -m channels.minecraft.scripts.minecraft_crafting channels/minecraft/mcp
+uv run python -m channels.minecraft.scripts.minecraft_placement channels/minecraft/mcp
+uv run python -m channels.minecraft.scripts.minecraft_digging channels/minecraft/mcp
+uv run python -m channels.minecraft.scripts.minecraft_mining channels/minecraft/mcp
+uv run python -m channels.minecraft.scripts.minecraft_actions channels/minecraft/mcp
+npm test --prefix channels/minecraft/mcp
 ```
 
 Python 修改执行对应 Ruff 和类型检查，Node 修改执行适用类型检查，并遵循仓库 CI；不以忽略新警告作为修复方式。纯文档变更检查内容、链接和差异即可。
 
-`uv run python scripts/check_minecraft.py` 会建立独立 MCP 会话。按 README 在机器人未连接时执行，避免把协议检查当成当前在线机器人的无副作用健康查询。
+`uv run python -m channels.minecraft.scripts.check_minecraft` 会建立独立 MCP 会话。按 README 在机器人未连接时执行，避免把协议检查当成当前在线机器人的无副作用健康查询。
 
-部署验证需区分源码 `plugins/minecraft/`、安装负载 `workspace/plugins/minecraft-companion/` 和实际运行进程。依赖或 Node 代码修改需重新加载 MCP；频道代码修改需相应重载。先完成离线检查，再进行有范围的真实游戏验收。
+部署验证需区分源码 `channels/minecraft/mcp/`、安装负载 `workspace/plugins/minecraft-companion/` 和实际运行进程。依赖或 Node 代码修改需重新加载 MCP；频道代码修改需相应重载。先完成离线检查，再进行有范围的真实游戏验收。
 
 ## 首批真服验收口令
 
@@ -524,31 +524,31 @@ M1 的任务与停止关联、暂停契约已在后续第二批实现并验收�
 
 | 入口 | 作用 |
 | --- | --- |
-| [频道适配器](../../channels/minecraft/adapter.py) | 消息轮询、快捷指令、家和标记、任务播报 |
-| [陪玩回复规则](../../channels/minecraft/reply_policy.py) | 单一请求入口、后台派工与事实核验规则 |
+| [频道适配器](adapter.py) | 消息轮询、快捷指令、家和标记、任务播报 |
+| [陪玩回复规则](reply_policy.py) | 单一请求入口、后台派工与事实核验规则 |
 | [工具参数解析](../../entities/mcp/schema.py) | MCP 嵌套对象类型保真，避免坐标结构丢失 |
-| [生存反射](../../channels/minecraft/reflexes.py) | 当前 Python 轮询与生存行为 |
-| [频道协议](../../channels/minecraft/protocol.py) | 连接、事件和挖矿进度模型 |
-| [陪玩技能](skills/minecraft-companion/SKILL.md) | 模型分工、工具调用和任务执行规则 |
-| [MCP 配置](.mcp.json) | 执行器与工具组开关 |
-| [矿洞工具](runtime/mining-tools.mjs) | 高层接口、工具兼容、动作保护与世界隔离 |
-| [矿洞任务](runtime/mining-task.cjs) | 施工、实际数量、路径检查与返程 |
-| [矿洞保护](runtime/mining-safety.cjs) | 支撑保护与移动约束 |
-| [动作控制器](runtime/action-controller.mjs) | MCP 动作所有权、优先级、取消与异步收尾 |
-| [动作工具包装](runtime/action-tools.mjs) | 停止契约、持久移动接入与只读诊断 |
-| [放置候选](runtime/placement-hints.mjs) | 工作台放置预检失败后的本地候选查询，不执行重试 |
-| [运行指标](runtime/runtime-metrics.mjs) | 有界工具/寻路耗时与事件循环延迟 |
-| [动作安装补丁](../../scripts/minecraft_actions.py) | 锚点验证、幂等安装及上游接入 |
-| [检查点存储](runtime/mining-store.cjs) | 原子保存与恢复检查点 |
-| [库存收尾](runtime/inventory-safety.cjs) | 光标和合成物品归还 |
-| [制作规划](runtime/production-plan.mjs) | 实际配方与背包驱动的有界、只读预检 |
-| [制作任务](runtime/production-task.mjs) | 后台配方执行、服务器到账核验及取消收尾 |
-| [制作工具](runtime/production-tools.mjs) | 准备物品和任务状态接口 |
-| [补给规划](runtime/supply-plan.mjs) | 物资保留、整批空间及现代物品组件预检 |
-| [补给任务](runtime/supply-task.mjs) | 指定容器会话、每次点击核验、双向对账与光标收尾 |
-| [补给工具](runtime/supply-tools.mjs) | 卸货/补齐后台入口与终态查询 |
-| [安装入口](../../scripts/setup_minecraft.py) | 锁定依赖、补丁装配、插件与 worker 配置 |
-| [MCP 检查](../../scripts/check_minecraft.py) | 独立会话的工具及协议契约检查 |
+| [生存反射](reflexes.py) | 当前 Python 轮询与生存行为 |
+| [频道协议](protocol.py) | 连接、事件和挖矿进度模型 |
+| [陪玩技能](mcp/skills/minecraft-companion/SKILL.md) | 模型分工、工具调用和任务执行规则 |
+| [MCP 配置](mcp/.mcp.json) | 执行器与工具组开关 |
+| [矿洞工具](mcp/runtime/mining-tools.mjs) | 高层接口、工具兼容、动作保护与世界隔离 |
+| [矿洞任务](mcp/runtime/mining-task.cjs) | 施工、实际数量、路径检查与返程 |
+| [矿洞保护](mcp/runtime/mining-safety.cjs) | 支撑保护与移动约束 |
+| [动作控制器](mcp/runtime/action-controller.mjs) | MCP 动作所有权、优先级、取消与异步收尾 |
+| [动作工具包装](mcp/runtime/action-tools.mjs) | 停止契约、持久移动接入与只读诊断 |
+| [放置候选](mcp/runtime/placement-hints.mjs) | 工作台放置预检失败后的本地候选查询，不执行重试 |
+| [运行指标](mcp/runtime/runtime-metrics.mjs) | 有界工具/寻路耗时与事件循环延迟 |
+| [动作安装补丁](scripts/minecraft_actions.py) | 锚点验证、幂等安装及上游接入 |
+| [检查点存储](mcp/runtime/mining-store.cjs) | 原子保存与恢复检查点 |
+| [库存收尾](mcp/runtime/inventory-safety.cjs) | 光标和合成物品归还 |
+| [制作规划](mcp/runtime/production-plan.mjs) | 实际配方与背包驱动的有界、只读预检 |
+| [制作任务](mcp/runtime/production-task.mjs) | 后台配方执行、服务器到账核验及取消收尾 |
+| [制作工具](mcp/runtime/production-tools.mjs) | 准备物品和任务状态接口 |
+| [补给规划](mcp/runtime/supply-plan.mjs) | 物资保留、整批空间及现代物品组件预检 |
+| [补给任务](mcp/runtime/supply-task.mjs) | 指定容器会话、每次点击核验、双向对账与光标收尾 |
+| [补给工具](mcp/runtime/supply-tools.mjs) | 卸货/补齐后台入口与终态查询 |
+| [安装入口](scripts/setup_minecraft.py) | 锁定依赖、补丁装配、插件与 worker 配置 |
+| [MCP 检查](scripts/check_minecraft.py) | 独立会话的工具及协议契约检查 |
 | [MCP 桥](../../entities/mcp/bridge.py) | 工具调用与会话生命周期；性能定位需核对实际等待位置 |
 
 ## 执行记录
@@ -565,7 +565,7 @@ M1 的任务与停止关联、暂停契约已在后续第二批实现并验收�
 本批复核信息：
 
 - Python：`.venv/Scripts/python.exe -m pytest channels/minecraft/tests entities/plugins/tests/test_minecraft_setup.py -q --basetemp=workspace/minecraft/diagnostics/<新的临时目录>`；默认系统 pytest 临时目录存在 ACL 问题，使用新的工作区目录后 135 项通过。
-- Node：设置 `MINECRAFT_TEST_PAYLOAD=F:\AnelfAgent\workspace\minecraft\diagnostics\actions-runtime-20261008`，用便携 Node 22 执行 `node --test plugins/minecraft/tests/*.test.cjs`，78 项通过；日志在本机 `workspace/minecraft/diagnostics/actions-tests-20261009.log`。该负载隔离复制了被补丁修改的包，没有连接游戏或修改世界。
+- Node：设置 `MINECRAFT_TEST_PAYLOAD=F:\AnelfAgent\workspace\minecraft\diagnostics\actions-runtime-20261008`，用便携 Node 22 执行 `node --test channels/minecraft/mcp/tests/*.test.cjs`，78 项通过；日志在本机 `workspace/minecraft/diagnostics/actions-tests-20261009.log`。该负载隔离复制了被补丁修改的包，没有连接游戏或修改世界。
 - Python 类型检查针对本批 5 个生产文件，使用 `--explicit-package-bases --python-version 3.12`；仓库默认 3.11 解析本机 NumPy 依赖的 3.12 类型语法会提前报错，未修改依赖或放宽检查。JS 以全部自有运行模块为输入执行 `tsc --allowJs --checkJs --noEmit --module NodeNext --moduleResolution NodeNext --target ES2022 --strict --skipLibCheck`。
 - 真服验收至少覆盖：跟随中派活、采集中停止、合成中停止且不掉材料、逃离后能接新任务、矿洞返程与最底层保护、连续派活/停止、断线后不自动续挖。固定初始位置与库存，多次采样，不用离线测试耗时充当游戏延迟。
 
@@ -600,12 +600,12 @@ M1 的任务与停止关联、暂停契约已在后续第二批实现并验收�
 ## 2026-10-09 M2 实施与部署
 
 - 提交 `3bd12b9`：本地生存观察与有限自救、原请求撤销、Python 配置/事件桥，移除旧反射循环。
-  生产实现位于 `plugins/minecraft/runtime/survival-*.mjs` 和 `channels/minecraft/reflexes.py`。
+  生产实现位于 `channels/minecraft/mcp/runtime/survival-*.mjs` 和 `channels/minecraft/reflexes.py`。
 - 验证：`python -m pytest channels/minecraft/tests entities/plugins/tests/test_minecraft_setup.py -q`，
-  125 通过；在隔离负载上执行 `node --test plugins/minecraft/tests/*.test.cjs`，113 通过。
+  125 通过；在隔离负载上执行 `node --test channels/minecraft/mcp/tests/*.test.cjs`，113 通过。
   严格 JS、Python 类型、Ruff 和六条依赖契约通过。没有将本批专项结果替代前述全仓基线。
 - 部署前应用空闲、运行中委托为零。备份位于 `workspace/minecraft/diagnostics/live-m2-20261009/before-050226`；
-  安装负载与技能正文已同步，技能元数据保持不变。`scripts/check_minecraft.py` 实际 MCP 握手通过，
+  安装负载与技能正文已同步，技能元数据保持不变。`channels/minecraft/scripts/check_minecraft.py` 实际 MCP 握手通过，
   96 个工具、参数契约和本地生存能力版本 1 均确认；该检查自身不连接世界。
 - 通过应用自身接口优雅重启。在线日志确认 05:03:10 注册 96 工具，05:03:19 同步
   `configure_survival(enabled=true, intervalMs=1000)`，05:03:33 自动重新进入局域网世界。
@@ -620,7 +620,7 @@ M1 的任务与停止关联、暂停契约已在后续第二批实现并验收�
 
 使用官方 Java 26.1 服务端、Java 25、锁定 Mineflayer 依赖和实际 MCP 工具，在独立平坦世界运行；
 仅监听本机随机端口，角色为 M2TestBot，不连接或改变玩家的世界。验收入口为
-`plugins/minecraft/tests/live-survival.cjs`，命令见 README。服务端命令只用于布置环境，
+`channels/minecraft/mcp/tests/live-survival.cjs`，命令见 README。服务端命令只用于布置环境，
 观察到的伤害、死亡、呼吸、位置和控制事件均来自真实服务端及 Mineflayer，未伪造动作结果。
 
 实测发现：原上浮逻辑只检查头部离水，随后松开跳跃，在有岸的四格深水池中再次沉底。
@@ -668,8 +668,8 @@ M1 的任务与停止关联、暂停契约已在后续第二批实现并验收�
 抓取实际库存报文定位后，在每次合成前同步窗口，并在返回前验证临时格子及光标为空；此修复独立提交为 `caeeb30`。
 回归模拟服务器拒绝过期编号并重发窗口的行为，防止只靠客户端预测把操作判为成功。
 
-沿用独立服务器验收入口 `plugins/minecraft/tests/live-survival.cjs --suite production`，生产场景位于
-`plugins/minecraft/tests/live-production.cjs`。使用官方 Java 26.1 服务端、Java 25、实际 MCP 和 Mineflayer，
+沿用独立服务器验收入口 `channels/minecraft/mcp/tests/live-survival.cjs --suite production`，生产场景位于
+`channels/minecraft/mcp/tests/live-production.cjs`。使用官方 Java 26.1 服务端、Java 25、实际 MCP 和 Mineflayer，
 仅连接独立本机世界；未改动玩家世界。最终十二项均通过：
 
 | 真服场景 | 实际核验 |
@@ -691,7 +691,7 @@ M1 的任务与停止关联、暂停契约已在后续第二批实现并验收�
 修复前证据为同目录 `before-sync-fix.json`、`placement-craft-race.json`。验收正常退出并关闭自建服务端。
 这些场景直接调用实际 MCP；本批没有通过自然语言模型跑完整聊天制作链，频道终态与契约通过专项测试，不能将两者写成同一次端到端验收。
 
-- Node 完整回归 **127 通过 / 0 失败**：隔离负载上运行 `node --test plugins/minecraft/tests/*.test.cjs`。
+- Node 完整回归 **127 通过 / 0 失败**：隔离负载上运行 `node --test channels/minecraft/mcp/tests/*.test.cjs`。
 - Python 频道及安装专项 **130 通过**：`python -m pytest channels/minecraft/tests entities/plugins/tests/test_minecraft_setup.py -q`，
   使用新的工作区 `--basetemp` 避开本机旧临时目录 ACL。日志为 `workspace/minecraft/diagnostics/m3-node-final.log`、`m3-python-final.log`。
 - 全部自持有运行模块的严格 JS 类型检查、4 个频道生产模块的 Python 类型检查、Ruff 和六条依赖契约均通过。
@@ -704,7 +704,7 @@ M1 的任务与停止关联、暂停契约已在后续第二批实现并验收�
 部署前消息队列及运行中委托均为空；旧负载和技能备份至
 `workspace/minecraft/diagnostics/live-m3-20261009/before-061308`。十一份自持有动作/生存/制作模块与库存助手
 按规范化换行核对源文件一致，补丁重复安装返回 `exists`，运行时技能元数据保持不变。
-`scripts/check_minecraft.py` 独立 MCP 握手确认 98 个工具、必需参数及本地生存能力版本 1；检查自身不连接游戏。
+`channels/minecraft/scripts/check_minecraft.py` 独立 MCP 握手确认 98 个工具、必需参数及本地生存能力版本 1；检查自身不连接游戏。
 通过应用自身接口优雅重启后，06:14:22 在线执行器注册 98 个工具，额外查询确认 `prepare_item`、`production_status` 已加载；
 06:14:46 健康接口报告 AnelfBot 在线、无频道错误，消息队列和运行中委托为空。
 频道、MCP、模型/worker 配置文件哈希均未变化，已保存的 1 秒观察周期和玩家白名单保留。
@@ -763,7 +763,7 @@ M1 的任务与停止关联、暂停契约已在后续第二批实现并验收�
 功能与验收提交为 `876250a`。部署前消息队列和运行中委托均为空；安装负载及技能备份至
 `workspace/minecraft/diagnostics/live-m3-supply-20261009/before-063640`。十四份自持有动作/生存/制作/补给模块和
 共享库存助手按规范化换行核对源码一致，重复安装返回 `exists`；更新技能正文，元数据未改动。
-独立 `scripts/check_minecraft.py` 握手确认 100 个工具、必需参数和本地生存能力版本 1，不连接游戏世界。
+独立 `channels/minecraft/scripts/check_minecraft.py` 握手确认 100 个工具、必需参数和本地生存能力版本 1，不连接游戏世界。
 通过应用接口优雅重启后，06:37:29 注册 100 个工具，06:37:38 同步 1 秒本地生存观察设置，06:37:52 自动重新进服。
 06:37:53 健康检查确认 AnelfBot 在线、无频道错误，实际工具目录包含 `manage_supplies` / `supply_status`；
 队列和运行中委托为空。频道、MCP、模型/worker 配置文件哈希均未变化，玩家白名单保留。
@@ -831,7 +831,7 @@ M1 的任务与停止关联、暂停契约已在后续第二批实现并验收�
 - 原独立采集十四项回归全通过，含指定箱子补工具/采集/返程/卸货：`workspace/minecraft/acceptance-gather-prepare-26.1/results.json`。
 - Node 完整离线回归 **148 通过 / 0 失败**，Python 频道与安装专项 **148 通过**；日志为
   `workspace/minecraft/diagnostics/m3-preparation-node.log`、`m3-preparation-python.log`。
-  命令为 `node --test plugins/minecraft/tests/*.test.cjs` 和
+  命令为 `node --test channels/minecraft/mcp/tests/*.test.cjs` 和
   `python -m pytest channels/minecraft/tests entities/plugins/tests/test_minecraft_setup.py -q`，使用隔离补丁负载及新的工作区临时目录。
 - 全部自持有运行模块严格 JS 类型检查、四个频道生产模块 Mypy、相关文件 Ruff、六条依赖契约和 Git 差异检查通过。
   离线另覆盖采集完成至制作开始边界的取消，真实射线验证中心遮挡但侧面可见及整面被墙遮挡。
@@ -863,7 +863,7 @@ M0 固定条件 P50/P95 采样仍为零，本批脚本耗时不证明模型响�
 - `684d314`：PFC 重建回复目标时保留最近待回复消息的诊断 ID；私有字段不进入模型提示词、消息序列化或引用回复语义。
 - `5e3bf26`：区分主回复与继承请求上下文的后台反思，避免把技能审查等后台调用算作主回复轮数。
 
-采样器 `scripts/benchmark_minecraft.py` 通过独立 Java 26.1 平坦服、真实测试玩家聊天、当前运行的应用和模型
+采样器 `channels/minecraft/scripts/benchmark_minecraft.py` 通过独立 Java 26.1 平坦服、真实测试玩家聊天、当前运行的应用和模型
 执行四类固定请求；每次清理专用测试会话、还原位置/库存/地形。原 MCP、频道字段和追踪开关在退出时恢复，
 并用 `restored.json` 核对。模型配置哈希持续校验，代码与执行器负载版本留在 `manifest.json`。
 运行时模块与隔离负载的十九份文件已按规范化换行核对一致；玩家世界未参与地形/库存操作。
@@ -1008,9 +1008,9 @@ AnelfBot online、配置哈希不变，`release-restart.json` 记录重启确认
 
 本轮核对源码、125 条 M0 原始样本及 M4 慢样本，并重跑技能契约测试，未修改运行时代码或新增真服验收。
 
-- 技能契约已由 `scripts/minecraft_contract.py` 从 `channels/minecraft/reply_policy.py` 生成，
+- 技能契约已由 `channels/minecraft/scripts/minecraft_contract.py` 从 `channels/minecraft/reply_policy.py` 生成，
   `channels/minecraft/tests/test_reply_contract.py` 检查分发正文一致性、工具声明及生成器行为，本次 **6 项通过**。
-  因此“仍完全手工同步、尚缺断言”不符合当前实现。真实执行器工具存在性另由 `scripts/check_minecraft.py` 的 MCP 握手检查，不能把静态测试当成此次已做了真实握手。
+  因此“仍完全手工同步、尚缺断言”不符合当前实现。真实执行器工具存在性另由 `channels/minecraft/scripts/check_minecraft.py` 的 MCP 握手检查，不能把静态测试当成此次已做了真实握手。
 - M0 三批共 125 条记录中，首轮工具数为 194 的有 11 条、224 的有 84 条，另 30 条无主模型目录；
   M4 最终 12 条模型请求均为 28。比较模型可见目录应采用 **194/224 → 28**，而非 92 → 28。
   制作累计输入从中位数 213129 到约 14976–14988 tokens 的约 14 倍差异属观测输入量，含缓存读取；不是收费或速度提高 14 倍。
@@ -1023,3 +1023,13 @@ AnelfBot online、配置哈希不变，`release-restart.json` 记录重启确认
   M3 熔炉、M5/M6 维持后续独立批次。125 条自然运行前测不等于严格受控冷/热缓存对照组，n=4 的 M4 各组仍不能用于宣称受控 P95 改善。
 - 已核对全部 29 条中文提交推送到 `6539ced`。本文历史执行记录中的旧编号对应当时采样版本，
   原始证据不改写；新旧编号对照保存在 `workspace/minecraft/diagnostics/commit-message-zh-20261009/commit-message-mapping.tsv`。
+
+## 单频道目录归属
+
+Minecraft 的 MCP 源包、技能、Node 用例统一放入 `mcp/`，安装补丁和诊断入口放入
+`scripts/`，Python 安装与基准测试归入 `tests/`。所有专属实现均位于本频道目录；
+公共插件管理器和 MCP 实体桥继续承担安装、注册与调用。旧本仓库安装来源由安装入口
+迁移到频道内 `mcp/`，自定义来源及已有连接配置保持原样。
+
+执行器源码与依赖锁文件保持一致，目录迁移通过离线 Node 回归、Python 回归与八条
+架构契约检查；验证数量及限制见 [测试基线](TEST_BASELINE.md#单频道目录归属验证)。

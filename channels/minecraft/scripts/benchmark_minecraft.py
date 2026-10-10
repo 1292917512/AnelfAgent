@@ -16,9 +16,9 @@ from typing import Any
 import httpx
 import psutil
 
-from scripts.minecraft_benchmark_report import measure, summarize
+from channels.minecraft.scripts.minecraft_benchmark_report import measure, summarize
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[3]
 PROMPTS = {
     "inventory": "查一下你现在背包里的橡木原木和木镐分别有多少，只报实际数量，不要制作、采集或移动。",
     "production": "用背包里的材料额外新做一把木镐，完成后按实际入包数量告诉我，不要采集或丢东西。",
@@ -165,7 +165,7 @@ async def main(args: argparse.Namespace) -> None:
     original_values = {key: original_channel.get(key) for key in edits}
     replacement = json.loads(json.dumps(original_mcp))
     minecraft = replacement["mcpServers"]["minecraft"]
-    minecraft.update({"command": str(args.node.resolve()), "args": [str(ROOT / "plugins/minecraft/tests/benchmark-executor.cjs"),
+    minecraft.update({"command": str(args.node.resolve()), "args": [str(ROOT / "channels/minecraft/mcp/tests/benchmark-executor.cjs"),
                        str(args.payload.resolve()), str(world), str(args.java.resolve())], "enabled": True})
     model_path = ROOT / "config/llm_clients.json"
     model_hash = hashlib.sha256(model_path.read_bytes()).hexdigest()
@@ -187,14 +187,14 @@ async def main(args: argparse.Namespace) -> None:
         manifest_path = output / "manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         manifest["source_hashes"] = {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest()
-                                     for p in [ROOT / "scripts/benchmark_minecraft.py", ROOT / "scripts/minecraft_benchmark_report.py",
-                                               ROOT / "plugins/minecraft/tests/benchmark-executor.cjs",
-                                               ROOT / "plugins/minecraft/package-lock.json",
+                                     for p in [ROOT / "channels/minecraft/scripts/benchmark_minecraft.py", ROOT / "channels/minecraft/scripts/minecraft_benchmark_report.py",
+                                               ROOT / "channels/minecraft/mcp/tests/benchmark-executor.cjs",
+                                               ROOT / "channels/minecraft/mcp/package-lock.json",
                                                ROOT / "agent/channel/reply_policy.py", ROOT / "agent/mind/tool_assembly.py",
                                                ROOT / "agent/mind/prefrontal_cortex.py", ROOT / "agent/mind/tools/think_loop.py",
                                                ROOT / "channels/minecraft/adapter.py", ROOT / "channels/minecraft/reply_policy.py",
                                                ROOT / "channels/minecraft/receipts.py",
-                                               *sorted((ROOT / "plugins/minecraft/runtime").glob("*.mjs"))]}
+                                               *sorted((ROOT / "channels/minecraft/mcp/runtime").glob("*.mjs"))]}
         model_data = json.loads(model_path.read_text(encoding="utf-8"))
         manifest["default_model"] = model_data.get("default_chat")
         manifest["model_parameters"] = [

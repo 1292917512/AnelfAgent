@@ -1,9 +1,6 @@
 """列出执行器连接类工具的参数 schema。"""
 
 import asyncio
-import sys
-
-sys.path.insert(0, ".")
 
 from mcp import ClientSession
 
@@ -24,4 +21,5 @@ async def main() -> None:
                           "|", (tool.description or "")[:100])
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())

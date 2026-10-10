@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-_HELPER = Path(__file__).resolve().parent.parent / "plugins/minecraft/runtime/inventory-safety.cjs"
+_HELPER = Path(__file__).resolve().parent.parent / "mcp/runtime/inventory-safety.cjs"
 
 _OVERFLOW_ORIGINAL = """        if (emptySlot === null) { // no room left
           if (slot === null) { // no room => drop it

@@ -6,15 +6,15 @@ import pytest
 
 from agent.channel.reply_policy import ReplyToolResult
 from channels.minecraft.reply_policy import COMPANION_GAME_TOOLS, COMPANION_INITIAL_GAME_TOOLS, companion_policy
+from channels.minecraft.scripts.check_minecraft import _REQUIRED_TOOLS
+from channels.minecraft.scripts.minecraft_contract import END, SKILL_PATH, START, render_contract
 from core.entity import EntityMetadata, EntityRegistry, EntityType
 from core.tool_context import tool_request
-from scripts.check_minecraft import _REQUIRED_TOOLS
-from scripts.minecraft_contract import END, SKILL_PATH, START, render_contract
 
 
 def test_distributed_skill_matches_channel_contract() -> None:
     source = SKILL_PATH.read_text(encoding="utf-8")
-    assert source == render_contract(source), "请运行 python -m scripts.minecraft_contract 同步技能契约"
+    assert source == render_contract(source), "请运行 python -m channels.minecraft.scripts.minecraft_contract 同步技能契约"
     assert "schedule_reminder" not in source
 
 

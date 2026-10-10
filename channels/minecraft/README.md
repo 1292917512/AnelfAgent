@@ -1,4 +1,4 @@
-# Minecraft 陪玩插件
+# Minecraft 陪玩频道
 
 开发评审、问题证据、分阶段任务和验收标准统一记录在
 [Minecraft 陪玩功能评审与实施计划](DEVELOPMENT_PLAN.md)。后续改造先阅读该文档，完成一项后同步更新进度与验证结果。
@@ -11,7 +11,27 @@ Java **26.1** 是本原型的目标版本。Minecraft 官方最新稳定版为 2
 其底层使用 [Mineflayer](https://github.com/PrismarineJS/mineflayer)、
 [mineflayer-pathfinder](https://github.com/PrismarineJS/mineflayer-pathfinder)、
 collectblock、tool、auto-eat 和 armor-manager。
-AnelfAgent 只增加安装配置、陪玩技能和游戏聊天频道，寻路、物理与采集由现成组件执行。
+频道封装消息接入、陪玩策略和有界动作执行，寻路、物理与底层采集复用现成组件。
+
+## 目录与入口
+
+Minecraft 专属源码、安装入口、技能、测试和文档统一归属 `channels/minecraft/`：
+
+```text
+channels/minecraft/
+├── adapter.py / config.py / protocol.py / …  频道接入、调度与回复策略
+├── mcp/                                    独立 Node/MCP 包
+│   ├── plugin.json / .mcp.json / package*.json
+│   ├── runtime/                            执行器扩展
+│   ├── skills/                             陪玩技能
+│   └── tests/                              Node 回归与实机验收入口
+├── scripts/                                安装、补丁、协议检查与基准工具
+└── tests/                                  Python 频道、安装及基准回归
+```
+
+频道复用项目的插件管理、MCP 注册和智能体公共能力；安装时只分发 `mcp/` 包，
+频道配置及世界计划不进入插件负载。下列 Python 命令均在项目根目录以 `python -m` 执行，
+不依赖顶层 `plugins/` 或 Minecraft 专属的根目录脚本。
 
 ## 安装
 
@@ -22,7 +42,7 @@ Windows 可以自动下载经过官方 SHA-256 校验的便携 Node 22，所有�
 依赖都留在项目 `workspace/` 下，不修改全局 Node。首次安装需要联网：
 
 ```powershell
-uv run python scripts/setup_minecraft.py --download-node --host 127.0.0.1 --port 25565 --username AnelfBot
+uv run python -m channels.minecraft.scripts.setup_minecraft --download-node --host 127.0.0.1 --port 25565 --username AnelfBot
 ```
 
 把端口换成你的实际端口。已有 Node 22+ 时可省略 `--download-node`；
@@ -33,7 +53,7 @@ uv run python scripts/setup_minecraft.py --download-node --host 127.0.0.1 --port
 正版验证服务器需要额外的 Microsoft Minecraft 账号：
 
 ```powershell
-uv run python scripts/setup_minecraft.py --download-node --host 127.0.0.1 --port 25565 --auth microsoft --username your-account@example.com
+uv run python -m channels.minecraft.scripts.setup_minecraft --download-node --host 127.0.0.1 --port 25565 --auth microsoft --username your-account@example.com
 ```
 
 第一次连接按执行器给出的 Microsoft 设备码流程登录，无需在项目中填写密码。
@@ -110,7 +130,7 @@ references/building.md；大型异形工程超出模板范围。
 ## 检查与配置
 
 ```powershell
-uv run python scripts/check_minecraft.py
+uv run python -m channels.minecraft.scripts.check_minecraft
 ```
 
 此命令建立真实 MCP 会话，验证所需工具、连接状态和增量事件格式，随后关闭会话。
@@ -129,8 +149,11 @@ uv run python scripts/check_minecraft.py
 更新本地插件源码后：
 
 ```powershell
-uv run python scripts/setup_minecraft.py --download-node --upgrade
+uv run python -m channels.minecraft.scripts.setup_minecraft --download-node --upgrade
 ```
+
+从旧布局更新时，安装入口会将本仓库旧 `plugins/minecraft/` 安装来源改为频道内的 `mcp/`，
+保留连接、玩家与世界配置；自定义来源保持原样。已安装的负载和运行数据仍由公共设施管理。
 
 如果 MCP 服务名与现有服务重名，插件管理器会加前缀，安装脚本会将频道绑定到实际服务名。
 关闭 Minecraft 频道会取消陪玩任务并让机器人正常下线；停用或卸载插件会通过现有 MCP 生命周期关闭其执行器。
@@ -306,13 +329,13 @@ Cache effect：工具 schema 随安装更新一次，进度留在工具结果和
 在仓库根目录、Node 22+ 环境运行：
 
 ```powershell
-npm ci --prefix plugins/minecraft --omit=optional --no-audit --no-fund
-uv run python -m scripts.minecraft_crafting plugins/minecraft
-uv run python -m scripts.minecraft_placement plugins/minecraft
-uv run python -m scripts.minecraft_digging plugins/minecraft
-uv run python -m scripts.minecraft_mining plugins/minecraft
-uv run python -m scripts.minecraft_actions plugins/minecraft
-npm test --prefix plugins/minecraft
+npm ci --prefix channels/minecraft/mcp --omit=optional --no-audit --no-fund
+uv run python -m channels.minecraft.scripts.minecraft_crafting channels/minecraft/mcp
+uv run python -m channels.minecraft.scripts.minecraft_placement channels/minecraft/mcp
+uv run python -m channels.minecraft.scripts.minecraft_digging channels/minecraft/mcp
+uv run python -m channels.minecraft.scripts.minecraft_mining channels/minecraft/mcp
+uv run python -m channels.minecraft.scripts.minecraft_actions channels/minecraft/mcp
+npm test --prefix channels/minecraft/mcp
 ```
 
 单元测试覆盖工具名冲突与回滚、聊天路由、私聊隔离、消息去重、执行器重启和停止指令。
@@ -324,7 +347,7 @@ npm test --prefix plugins/minecraft
 `workspace/minecraft/acceptance-26.1/`，在仓库根目录运行（Java 路径按本机填写）：
 
 ```powershell
-node plugins/minecraft/tests/live-survival.cjs --java '<Java 25 的 java.exe 路径>' --server-dir workspace/minecraft/acceptance-26.1 --payload plugins/minecraft
+node channels/minecraft/mcp/tests/live-survival.cjs --java '<Java 25 的 java.exe 路径>' --server-dir workspace/minecraft/acceptance-26.1 --payload channels/minecraft/mcp
 ```
 
 脚本会写入服务端 EULA 接受配置并创建专用平坦世界，仅监听本机随机端口，不复用玩家世界。
@@ -346,13 +369,13 @@ node plugins/minecraft/tests/live-survival.cjs --java '<Java 25 的 java.exe 路
 
 ## 模型链路响应基线
 
-`scripts/benchmark_minecraft.py` 使用真实应用、当前模型与独立 Java 26.1 测试服，
+`channels/minecraft/scripts/benchmark_minecraft.py` 使用真实应用、当前模型与独立 Java 26.1 测试服，
 固定背包查询、从三根原木制作木镐、跟随中自然语言停止和快捷 `!stop` 四类请求。
 每次还原起点、地形、库存及专用测试会话；真实输入由测试玩家发出，动作与到账从执行器读取，
 不以模拟模型或直接脚本耗时代替聊天链路。仅供本机开发验收，运行前保持应用空闲：
 
 ```powershell
-uv run python -m scripts.benchmark_minecraft --output workspace/minecraft/diagnostics/m0-run-new --server-jar '<独立测试目录的 server.jar>' --java '<Java 25 路径>' --node '<Node 22 路径>' --payload workspace/minecraft/diagnostics/m1-runtime-20261009 --repeats 30 --timeout 90
+uv run python -m channels.minecraft.scripts.benchmark_minecraft --output workspace/minecraft/diagnostics/m0-run-new --server-jar '<独立测试目录的 server.jar>' --java '<Java 25 路径>' --node '<Node 22 路径>' --payload workspace/minecraft/diagnostics/m1-runtime-20261009 --repeats 30 --timeout 90
 ```
 
 输出目录必须是新的；`--scenarios inventory,production,stop,shortcut` 可选子集，默认四类。
@@ -368,7 +391,7 @@ uv run python -m scripts.benchmark_minecraft --output workspace/minecraft/diagno
 续测使用新的输出目录；可用下述命令合并相同应用版本、模型配置和测试条件的记录，原样保留失败及按批次/工具数分组：
 
 ```powershell
-uv run python -m scripts.minecraft_benchmark_report --runs '<第一批目录>' '<续测目录>' --output workspace/minecraft/diagnostics/m0-summary.json
+uv run python -m channels.minecraft.scripts.minecraft_benchmark_report --runs '<第一批目录>' '<续测目录>' --output workspace/minecraft/diagnostics/m0-summary.json
 ```
 
 模型调用计数为主对话统一调用入口的逻辑调用，不含前置检索规划、embedding 或 SDK 内部重试；
@@ -383,8 +406,8 @@ warm 只表示存在缓存读取，可能是部分命中；原始 usage 保留�
 报告中的 Node 事件循环延迟、服务器 tick 耗时和游戏客户端 FPS 是不同指标；脚本不测客户端 FPS。
 
 陪玩执行契约以 `channels/minecraft/reply_policy.py` 为唯一编辑源。修改后在仓库根目录运行
-`uv run python -m scripts.minecraft_contract`，同步随插件分发的技能契约块；其他技能章节保留。
-`channels/minecraft/tests/test_reply_contract.py` 校验同步结果，`scripts/check_minecraft.py`
+`uv run python -m channels.minecraft.scripts.minecraft_contract`，同步随插件分发的技能契约块；其他技能章节保留。
+`channels/minecraft/tests/test_reply_contract.py` 校验同步结果，`channels/minecraft/scripts/check_minecraft.py`
 通过真实执行器的工具注册表校验契约引用的游戏工具，工具裁剪时必须同步运行这两项检查。
 
 ### 表面采集、返程与指定箱子交付

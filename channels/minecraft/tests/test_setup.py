@@ -7,9 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from core.plugins.manager import PluginManager
-from entities.mcp.config import MCPServerStore
-from scripts import (
+from channels.minecraft.scripts import (
     minecraft_actions,
     minecraft_crafting,
     minecraft_digging,
@@ -17,6 +15,8 @@ from scripts import (
     minecraft_placement,
     setup_minecraft,
 )
+from core.plugins.manager import PluginManager
+from entities.mcp.config import MCPServerStore
 
 
 def test_installed_minecraft_retains_runtime_settings_on_restart(
@@ -25,7 +25,7 @@ def test_installed_minecraft_retains_runtime_settings_on_restart(
     from core.plugins.store import plugin_payload_dir
     from entities.plugins.activation import activate_plugin
 
-    record = manager.install_from_source(str(setup_minecraft._REPO / "plugins" / "minecraft"))
+    record = manager.install_from_source(str(setup_minecraft._SOURCE))
     store = MCPServerStore()
     name = record.mcp_servers[0]
     settings: dict[str, Any] = {
@@ -52,14 +52,22 @@ def test_installed_minecraft_retains_runtime_settings_on_restart(
 
 
 @pytest.mark.parametrize("upgrade", [False, True])
+@pytest.mark.parametrize("relocated", [False, True])
 def test_setup_preserves_connection_and_player_settings(
     manager: PluginManager,
     plugin_env: Any,
     monkeypatch: pytest.MonkeyPatch,
     upgrade: bool,
+    relocated: bool,
 ) -> None:
     pkg = plugin_env.make_plugin("minecraft-companion", tools=False, skill=False)
-    manager.install_from_source(str(pkg))
+    record = manager.install_from_source(str(pkg))
+    if relocated:
+        legacy_source = plugin_env.root / "old-repo" / "plugins" / "minecraft"
+        record.source = str(legacy_source)
+        manager.registry.upsert(record)
+        monkeypatch.setattr(setup_minecraft, "_LEGACY_SOURCE", legacy_source)
+        monkeypatch.setattr(setup_minecraft, "_SOURCE", pkg)
     name = "minecraft-companion_srv"
     store = MCPServerStore()
     store.update_server_config(
@@ -122,6 +130,8 @@ def test_setup_preserves_connection_and_player_settings(
     assert current["env"]["MCP_DISABLE_GROUPS"] == "raw"
     assert write_channel.call_args.kwargs["server_id"] == "friends"
     assert write_channel.call_args.kwargs["allowed_players"] == ["Alice"]
+    installed = manager.get_plugin("minecraft-companion")
+    assert installed is not None and Path(installed.source) == pkg
 
 
 class _FakeLLMManager:

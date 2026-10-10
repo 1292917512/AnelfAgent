@@ -6,8 +6,14 @@ from typing import Any
 import httpx
 import pytest
 
-from scripts.benchmark_minecraft import TraceReader, reply_finished
-from scripts.minecraft_benchmark_report import first_cache_fraction, measure, percentile, summarize, summarize_runs
+from channels.minecraft.scripts.benchmark_minecraft import TraceReader, reply_finished
+from channels.minecraft.scripts.minecraft_benchmark_report import (
+    first_cache_fraction,
+    measure,
+    percentile,
+    summarize,
+    summarize_runs,
+)
 
 
 def test_nearest_rank_keeps_missing_and_failure_denominators() -> None:

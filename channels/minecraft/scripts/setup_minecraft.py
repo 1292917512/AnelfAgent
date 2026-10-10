@@ -13,20 +13,19 @@ import subprocess
 import sys
 import urllib.request
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-_REPO = Path(__file__).resolve().parent.parent
-if str(_REPO) not in sys.path:
-    sys.path.insert(0, str(_REPO))
-
-from scripts.minecraft_actions import patch_actions
-from scripts.minecraft_crafting import patch_crafting
-from scripts.minecraft_digging import patch_digging
-from scripts.minecraft_mining import patch_mining
-from scripts.minecraft_placement import patch_placement
+from channels.minecraft.scripts.minecraft_actions import patch_actions
+from channels.minecraft.scripts.minecraft_crafting import patch_crafting
+from channels.minecraft.scripts.minecraft_digging import patch_digging
+from channels.minecraft.scripts.minecraft_mining import patch_mining
+from channels.minecraft.scripts.minecraft_placement import patch_placement
 
 _PLUGIN_NAME = "minecraft-companion"
+_SOURCE = Path(__file__).resolve().parent.parent / "mcp"
+_LEGACY_SOURCE = _SOURCE.parents[2] / "plugins" / "minecraft"
 
 _WORKER_PROFILE_NAME = "mc-worker"
 # 模型池引用 llm_clients.json 模型条目的 id（客户端 ID），不是供应商模型名
@@ -188,9 +187,13 @@ def setup(args: argparse.Namespace) -> Path:
     selected = str(download_node(runtime)) if args.download_node else (args.node or previous.get("command", "node"))
     node, npm_cli = node_runtime(selected, args.npm_cli)
     if record is None:
-        record = manager.install_from_source(str(_REPO / "plugins" / "minecraft"))
-    elif args.upgrade:
-        record, _ = manager.upgrade(_PLUGIN_NAME)
+        record = manager.install_from_source(str(_SOURCE))
+    else:
+        if record.source_type == "local" and Path(record.source).resolve() == _LEGACY_SOURCE:
+            record = replace(record, source=str(_SOURCE))
+            manager.registry.upsert(record)
+        if args.upgrade:
+            record, _ = manager.upgrade(_PLUGIN_NAME)
     if not record.enabled:
         record = manager.toggle(_PLUGIN_NAME, True)
     payload = plugin_payload_dir(_PLUGIN_NAME)

@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-_RUNTIME = Path(__file__).resolve().parent.parent / "plugins/minecraft/runtime"
+_RUNTIME = Path(__file__).resolve().parent.parent / "mcp/runtime"
 _PATCHES: dict[str, tuple[tuple[str, str], ...]] = {
     "awesome-mineflayer-mcp/dist/server.js": (
         ('import { registerBuild } from "./tools/build.js";',
