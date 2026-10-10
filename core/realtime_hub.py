@@ -22,7 +22,7 @@ from core.log import log
 # 终态帧：丢失会导致前端状态错误（卡在 sending 态、漏一条回复），
 # 背压时宁可判死订阅者也不可静默丢弃
 TERMINAL_EVENTS: frozenset[str] = frozenset({
-    "reply", "media", "turn_end", "ui_command", "share",
+    "reply", "media", "turn_end", "ui_command", "share", "activity_end",
 })
 
 # 订阅者队列容量（与旧 sse_hub 一致）

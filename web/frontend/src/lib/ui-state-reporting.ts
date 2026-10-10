@@ -23,6 +23,7 @@ export function startUiStateReporting(page: string): () => void {
       dock: mounted && state.dockOpen,
       chat: mounted && state.chatOpen,
       expanded: state.filePanelExpanded,
+      chatExpanded: state.chatExpanded,
     }, state.activeSurface);
     const active = state.openFiles.find((file) => workspaceFileId(file) === state.activeFileId);
     const activeFile = active ? workspaceFileLabel(active) : null;
@@ -30,7 +31,6 @@ export function startUiStateReporting(page: string): () => void {
       page,
       chat_visible: layout.chatVisible,
       execution_visible: mounted && layout.executionVisible,
-      execution_tab: state.executionTab,
       active_tab: state.activeTab,
       dock_open: layout.dockVisible,
       left_open: layout.filesVisible,

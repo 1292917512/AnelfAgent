@@ -7,6 +7,7 @@ import { useUnsavedChanges } from "@/components/common/UnsavedChanges";
 import { AppField, type FieldMeta } from "./AppField";
 import type { ConfigValues } from "@/lib/types";
 import { useCopyFeedback } from "@/hooks/useCopyFeedback";
+import { apiErrorMessage } from "@/lib/api/client";
 import { useDraft } from "@/hooks/useDraft";
 import { Button } from "@/components/ui/Button";
 
@@ -45,13 +46,14 @@ export function ConfigFormPanel({ title, subtitle, fields, queryKey, fetchFn, sa
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             {fields.map((field) => <AppField key={field.key} meta={field} value={draft.values[field.key]} onChange={(value) => draft.update(field.key, value)} />)}
           </div>
-          <div className="mt-5 flex flex-wrap items-center gap-3 border-t border-border pt-4">
+          <div className="sticky bottom-0 z-10 mt-5 flex flex-wrap items-center gap-3 border-t border-border bg-card py-4">
             <Button type="submit" variant="primary" disabled={!draft.dirty} loading={mutation.isPending}>
               {saved && !draft.dirty ? <Check size={15} /> : <Save size={15} />}
               {saved && !draft.dirty ? t("actions.saved", { ns: "appconfig" }) : t("save")}
             </Button>
             <Button onClick={draft.reset} disabled={!draft.dirty || mutation.isPending}><RotateCcw size={14} />{t("reset")}</Button>
             {draft.dirty && <span className="text-xs text-warn">{t("unsavedChanges")}</span>}
+            {mutation.error && <p role="alert" className="w-full text-sm text-danger">{apiErrorMessage(mutation.error, t("requestFailed"))}</p>}
             {note && <p className="text-xs text-muted">{note}</p>}
           </div>
         </form>

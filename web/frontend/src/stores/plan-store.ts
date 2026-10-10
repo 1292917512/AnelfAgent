@@ -2,7 +2,7 @@
  * Plan 状态 store — 按 chat_id 分桶的计划记录。
  *
  * 数据源：SSE plan_submitted / plan_step_updated / plan_status_changed / plan_cancelled
- * 事件（由 webui adapter 转发），消费方：执行记录面板 + PlanCard 消息卡 + FlowView 叠加。
+ * 事件（由 webui adapter 转发），消费方：任务面板与 FlowView 叠加。
  *
  * 与 chat-store 解耦：plan 状态独立订阅，可跨页面持久；切 chat 时按 activeChatId 过滤。
  */

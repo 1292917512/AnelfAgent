@@ -19,7 +19,6 @@ export function emptyBucket(): ChatBucket {
     messages: [],
     sending: false,
     sendingSince: null,
-    streaming: null,
     pendingFiles: [],
     historyLoaded: false,
     unread: 0,

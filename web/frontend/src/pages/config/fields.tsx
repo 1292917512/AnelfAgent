@@ -9,7 +9,7 @@ interface CommonProps {
   disabled?: boolean;
 }
 
-const INPUT_CLS = "bg-bg border border-input rounded-md px-2.5 py-1.5 text-sm text-foreground outline-none focus:border-ring disabled:opacity-50";
+const INPUT_CLS = "bg-card border border-input rounded-lg px-2.5 py-1.5 text-sm text-foreground outline-none focus:border-ring disabled:opacity-50";
 
 export function SwitchField({ value, label, disabled, onCommit }: CommonProps & {
   value: boolean; onCommit: (value: boolean) => void;

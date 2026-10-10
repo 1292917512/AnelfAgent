@@ -34,7 +34,7 @@ export const FoldChip = memo(function FoldChip({
 
   return (
     <div className="flex flex-col items-center gap-1.5" data-fold-id={fold.id}>
-      <div className="inline-flex items-center gap-2 text-[11px] text-muted rounded-full bg-muted/50 px-3 py-1 max-w-full">
+      <div className="inline-flex items-center gap-2 text-[11px] text-muted rounded-full bg-elevated px-3 py-1 max-w-full">
         <GitFork size={11} className="shrink-0" />
         <span className="shrink-0">{t("fold.foldedMessages", { count: fold.folded_count })}</span>
         {fold.summary && (

@@ -678,9 +678,11 @@ class DelegationManager:
                 base_messages=base_messages,
                 parent_delegation_id=parent_delegation_id,
             )
-            run_task = asyncio.create_task(
-                agent.run(), name=f"delegation.run.{delegation_id}",
-            )
+            from core.activity import activity_owner
+            with activity_owner(kind="delegation", label=goal, owner_id=delegation_id, scope=scope):
+                run_task = asyncio.create_task(
+                    agent.run(), name=f"delegation.run.{delegation_id}",
+                )
             if owns_registry_entry and registry is not None:
                 # 终止句柄：标记先行 + 桥回主循环走 cancel()（转"用户取消"结果）
                 _loop = asyncio.get_running_loop()

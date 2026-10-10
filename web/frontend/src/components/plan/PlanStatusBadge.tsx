@@ -1,7 +1,7 @@
 /**
  * PlanStatusBadge — 计划状态徽标（executing / completed / cancelled）。
  *
- * 被 执行记录面板与 PlanCard（消息卡）共享，消除逐字重复。
+ * 供计划视图共享的状态标识。
  */
 import { useTranslation } from "react-i18next";
 import { CheckCircle2, Loader2, XCircle } from "lucide-react";

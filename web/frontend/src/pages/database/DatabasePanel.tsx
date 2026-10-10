@@ -93,7 +93,7 @@ export function DatabasePanel() {
       <div
         key={d.id}
         className={cn(
-          "relative rounded-md border transition-all",
+          "relative rounded-xl border transition-colors",
           activeDb === d.id
             ? "border-accent bg-accent-subtle"
             : "border-border bg-card hover:border-border-strong",
@@ -186,7 +186,7 @@ export function DatabasePanel() {
 
         {/* 表列表 */}
         {activeDb && (
-          <div className="rounded-md border border-border bg-card">
+          <div className="rounded-xl border border-border bg-card">
             <div className="flex items-center justify-between px-3 py-2 border-b border-border">
               <span className="text-xs font-semibold text-muted uppercase tracking-wider flex items-center gap-1.5">
                 <Table2 size={13} /> {t("db.tables")}

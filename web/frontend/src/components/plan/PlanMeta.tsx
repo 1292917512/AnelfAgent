@@ -1,14 +1,10 @@
-/**
- * PlanMeta — 计划的 files / risks 展示区块。
- *
- * 被 执行记录面板与 PlanCard（消息卡）共享，消除逐字重复。
- */
+/** 计划涉及的文件与风险说明。 */
 import { useTranslation } from "react-i18next";
 import { AlertTriangle, FileText } from "lucide-react";
 import type { PlanRecord } from "@/lib/types";
 
 interface Props {
-  plan: PlanRecord;
+  plan: Pick<PlanRecord, "files" | "risks">;
 }
 
 export function PlanMeta({ plan }: Props) {

@@ -58,8 +58,8 @@ function SortableItem({
   return (
     <div ref={setNodeRef} style={style}
       className={cn(
-        "flex items-center justify-between gap-2 p-3 md:p-4 rounded-md border transition-all bg-card",
-        isTop ? "border-warn shadow-[0_0_0_1px_var(--warn)]" : "border-border",
+        "flex items-center justify-between gap-2 p-3 md:p-4 rounded-xl border transition-colors bg-card",
+        isTop ? "border-accent/30 bg-accent-subtle" : "border-border",
         isDragging && "shadow-lg ring-2 ring-accent",
         item.enabled === false && "opacity-60",
       )}>
@@ -213,7 +213,7 @@ export function PrioritiesPanel() {
       <div className="flex flex-wrap gap-1.5">
         {availableTypes.map(mt => (
           <button key={mt} onClick={() => setActiveType(mt)}
-            className={cn("px-3 py-1.5 text-sm font-medium rounded-md border transition-all",
+            className={cn("px-3 py-1.5 text-sm font-medium rounded-xl border transition-colors",
               activeType === mt
                 ? "border-accent text-accent bg-accent-subtle"
                 : "border-border text-muted hover:text-foreground hover:bg-hover",

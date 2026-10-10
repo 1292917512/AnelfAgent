@@ -92,12 +92,12 @@ input:is([type="checkbox"], [type="radio"], [type="range"]):focus-visible { outl
   .mobile-nav-item { position: relative; margin: 5px 2px; min-height: 50px; border-radius: 14px; }
   .mobile-nav-item.is-active { background: var(--accent-subtle); }
   .mobile-nav-item.is-active::before { content: ""; position: absolute; top: 0; width: 18px; height: 2px; border-radius: 2px; background: var(--accent); }
-  .page-header { gap: 16px; }
+  .page-header { gap: 12px; }
   .page-header-actions { width: 100%; }
-  .page-header-actions > button { flex: 1; }
+  .page-header-actions > button { flex: 0 1 auto; }
   .dialog-surface[data-placement="center"] { top: calc(var(--viewport-top, 0px) + var(--viewport-height, 100dvh)); bottom: auto; translate: -50% 0; transform: translateY(-100%); max-height: calc(var(--viewport-height, 100dvh) - 16px); border-radius: 20px 20px 0 0; }
   .dialog-surface textarea, .dialog-surface input, .dialog-surface select { font-size: 16px; }
-  .page-container { gap: 20px; }
+  .page-container { gap: 16px; }
   .surface-card { padding: 16px; }
   input, textarea, select { font-size: 16px; }
 }

@@ -14,7 +14,7 @@
   "enable": "Enable",
   "editToolProps": "Edit Tool Properties",
   "toolName": "Tool Name",
-  "tagsLabel": "Tags (comma-separated)",
+  "tagsLabel": "Tool tags",
   "tagsHint": "always = persistent | core = core tool | output = output tool | media:image = image processing",
   "toolDescription": "Tool Description",
   "groups": {
@@ -43,5 +43,15 @@
   "tagCount": "{{count}} tags",
   "tagActiveCount": " ({{count}} active)",
   "openEntity": "Open entity details",
-  "entityPage": "Details"
+  "entityPage": "Details",
+  "subtitle": "Find capabilities, manage availability and refine tool instructions.",
+  "matchedCount": "{{count}} matching tools",
+  "statusFilter": "Tool status",
+  "statusAll": "All tools",
+  "statusEnabled": "Enabled",
+  "statusDisabled": "Disabled",
+  "filterTags": "Tags",
+  "searchTags": "Find a tag",
+  "removeTag": "Remove tag: {{tag}}",
+  "resetFilters": "Clear filters"
 }

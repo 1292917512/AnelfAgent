@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { GitFork, Loader2, Mic, Copy, Volume2 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -13,9 +13,11 @@ import { CollapsibleUserMessage } from "./render/CollapsibleUserMessage";
 import { CollapsibleMarkdown } from "./render/CollapsibleMarkdown";
 import { FoldChip } from "./render/FoldChip";
 import { ActivityRow } from "./ActivityRow";
-import { StreamingArea } from "./StreamingArea";
 import { HistoryStatus } from "./HistoryStatus";
 import type { ChatMessage, ConversationFold } from "@/lib/types";
+
+interface ReadingPosition { key?: string; offset: number; top: number; atBottom: boolean }
+const readingPositions = new Map<string, ReadingPosition>();
 
 type TimelineEntry =
   | { kind: "message"; ts: number; key: string; data: ChatMessage }
@@ -49,7 +51,7 @@ const MessageRow = memo(function MessageRow({ msg, foldPivot }: { msg: ChatMessa
   }
 
   return (
-    <div className={cn("flex group/msg", isUser ? "justify-end" : "justify-start")}>
+    <div data-message-key={`msg-${msg.id ?? msg.cid ?? msg.ts}-${msg.role}`} className={cn("flex group/msg", isUser ? "justify-end" : "justify-start")}>
       <div className={cn("message-content min-w-0", isUser ? "is-user text-right" : "is-assistant text-left")}>
         {msg.media_type && <MediaBubble msg={msg} />}
         {!isUser && msg.extension && <MessageExtension extension={msg.extension} />}
@@ -62,9 +64,9 @@ const MessageRow = memo(function MessageRow({ msg, foldPivot }: { msg: ChatMessa
               msg.delivery === "failed" && "border border-danger/50",
             )}
           >
-            {isUser && msg.delivery && <p className={cn("mb-1 text-[10px]", msg.delivery === "failed" ? "text-danger" : "text-muted")} role="status">{t(`delivery.${msg.delivery}`)}</p>}
+            {isUser && msg.delivery && <p className={cn("mb-1 text-xs", msg.delivery === "failed" ? "text-danger" : "text-muted")} role="status">{t(`delivery.${msg.delivery}`)}</p>}
             {msg.voice && (
-              <div className="flex items-center gap-1 text-[10px] text-muted mb-1">
+              <div className="flex items-center gap-1 text-xs text-muted mb-1">
                 {msg.voice === "transcript"
                   ? <><Mic size={10} />{t("voice.transcript")}</>
                   : <><Volume2 size={10} />{t("voice.spoken")}</>}
@@ -142,6 +144,23 @@ export function MessageList() {
   const prevScrollHeight = useRef(0);
   // 用户是否停留在底部附近（吸底判定：上翻阅读时新消息不打断）
   const nearBottomRef = useRef(true);
+
+  useLayoutEffect(() => {
+    initialLoad.current = true;
+    prevFirstKey.current = null;
+    prevLastKey.current = null;
+    const element = scrollRef.current;
+    return () => {
+      if (!element || initialLoad.current) return;
+      const top = element.getBoundingClientRect().top;
+      const row = Array.from(element.querySelectorAll<HTMLElement>("[data-message-key]"))
+        .find((item) => item.getBoundingClientRect().bottom > top);
+      readingPositions.delete(activeChatId);
+      readingPositions.set(activeChatId, { key: row?.dataset.messageKey, offset: row ? row.getBoundingClientRect().top - top : 0,
+        top: element.scrollTop, atBottom: nearBottomRef.current });
+      if (readingPositions.size > 40) readingPositions.delete(readingPositions.keys().next().value!);
+    };
+  }, [activeChatId]);
 
   // 监听滚动维护 nearBottom 状态（被动监听，不影响滚动性能）
   useEffect(() => {
@@ -221,7 +240,11 @@ export function MessageList() {
       firstKey !== prevFirstKey.current &&
       lastKey === prevLastKey.current;
     if (initialLoad.current) {
-      el.scrollTo({ top: el.scrollHeight });
+      const position = readingPositions.get(activeChatId);
+      const anchor = position?.key && Array.from(el.querySelectorAll<HTMLElement>("[data-message-key]")).find((row) => row.dataset.messageKey === position.key);
+      el.scrollTop = !position || position.atBottom ? el.scrollHeight : anchor
+        ? el.scrollTop + anchor.getBoundingClientRect().top - el.getBoundingClientRect().top - position.offset : position.top;
+      nearBottomRef.current = !position || position.atBottom;
       initialLoad.current = false;
     } else if (prepended) {
       el.scrollTo({ top: el.scrollHeight - prevScrollHeight.current + el.scrollTop });
@@ -237,14 +260,8 @@ export function MessageList() {
     prevFirstKey.current = firstKey;
     prevLastKey.current = lastKey;
     prevScrollHeight.current = el.scrollHeight;
-  }, [messages, historyLoaded]);
+  }, [messages, historyLoaded, activeChatId]);
 
-  // 切换会话时重置滚动初始位与锚点
-  useEffect(() => {
-    initialLoad.current = true;
-    prevFirstKey.current = null;
-    prevLastKey.current = null;
-  }, [activeChatId]);
 
   return (
     <div ref={scrollRef} className="message-list flex-1 overflow-y-auto overscroll-contain min-h-0">
@@ -262,7 +279,7 @@ export function MessageList() {
           <button
             onClick={() => void loadEarlier(activeChatId)}
             disabled={loadingEarlier}
-            className="inline-flex items-center gap-1.5 text-[11px] text-muted hover:text-foreground transition-colors disabled:opacity-50 rounded-full bg-muted/50 px-3 py-1"
+            className="inline-flex items-center gap-1.5 text-[11px] text-muted hover:text-foreground transition-colors disabled:opacity-50 rounded-full bg-elevated px-3 py-1"
           >
             {loadingEarlier && <Loader2 size={11} className="animate-spin" />}
             {t("loadEarlier")}
@@ -292,7 +309,6 @@ export function MessageList() {
           />
         );
       })}
-      <StreamingArea />
       {sending && <ActivityRow />}
     </div>
   );

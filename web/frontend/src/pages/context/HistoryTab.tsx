@@ -44,7 +44,7 @@ function CacheHitBadge({ rate, prefixStable, legalBreak }: { rate?: number | nul
           ? "bg-emerald-500/15 text-ok"
           : pct >= 30
             ? "bg-amber-500/15 text-warn"
-            : "bg-muted/15 text-muted",
+            : "bg-elevated text-muted",
       )}
     >
       {pct}%

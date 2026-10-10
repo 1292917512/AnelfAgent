@@ -9,7 +9,7 @@ import json
 import secrets
 import sys
 from pathlib import Path
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, AsyncIterator, Dict, Iterator, Optional
 
 import uvicorn
 from fastapi import APIRouter, FastAPI, HTTPException
@@ -334,7 +334,17 @@ def _register_domain_error_handlers(app: FastAPI) -> None:
 
 def create_app() -> FastAPI:
     """创建 WebUI FastAPI 应用。"""
-    app = FastAPI(title="AnelfAgent WebUI", version="1.0.0")
+    from services.workspace_activity import workspace_activity
+
+    @contextlib.asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        workspace_activity.start()
+        try:
+            yield
+        finally:
+            workspace_activity.stop()
+
+    app = FastAPI(title="AnelfAgent WebUI", version="1.0.0", lifespan=lifespan)
 
     @app.exception_handler(AuthConfigurationError)
     async def _auth_config_error(request: Request, exc: AuthConfigurationError) -> JSONResponse:

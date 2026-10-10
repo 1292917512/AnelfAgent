@@ -48,7 +48,7 @@ export function AdapterCard({
   const PluginPanel = CHANNEL_PANEL_COMPONENTS[a.key];
   return (
     <div className={cn(
-      "rounded-md border transition-all bg-card",
+      "rounded-xl border transition-colors bg-card",
       isOpen ? "border-accent shadow-[0_0_0_2px_var(--bg),0_0_0_4px_var(--ring)]"
              : "border-border hover:border-border-strong",
     )}>
@@ -82,14 +82,14 @@ export function AdapterCard({
           {onOpenTools && (
             <button onClick={() => onOpenTools({ key: a.key, name: a.name })}
               title={t("tools.openTools")}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border text-muted hover:text-foreground hover:bg-hover transition-all">
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-xl border border-border text-muted hover:text-foreground hover:bg-hover transition-colors">
               <Blocks size={14} />
               {t("tools.openTools")}
             </button>
           )}
           <button onClick={onToggle} disabled={toggling}
             className={cn(
-              "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border transition-all disabled:opacity-70",
+              "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-xl border transition-colors disabled:opacity-70",
               toggling
                 ? "border-border text-warn bg-warn-subtle cursor-wait"
                 : isRunning

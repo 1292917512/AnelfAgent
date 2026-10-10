@@ -1,149 +1,40 @@
+import { useId } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, ExternalLink, Package, Pencil, ToggleLeft, ToggleRight, Wrench } from "lucide-react";
+import { ChevronDown, ExternalLink, Package, Pencil } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Button, Switch } from "@/components/ui";
 import type { ToolGroup, ToolItem } from "@/lib/types";
 
-/** 工具分组卡片：手风琴 + 工具行 */
-export function ToolGroupCard({
-  group,
-  isOpen,
-  onToggle,
-  onToggleGroup,
-  onToggleTool,
-  onEditTool,
-  onOpenEntity,
-}: {
-  group: ToolGroup;
-  isOpen: boolean;
-  onToggle: () => void;
-  onToggleGroup: () => void;
-  onToggleTool: (name: string) => void;
-  onEditTool: (tool: ToolItem) => void;
-  onOpenEntity?: (group: string) => void;
+export function ToolGroupCard({ group, isOpen, busy, onToggle, onToggleGroup, onToggleTool, onEditTool, onOpenEntity }: {
+  group: ToolGroup; isOpen: boolean; busy: boolean; onToggle: () => void; onToggleGroup: () => void;
+  onToggleTool: (name: string) => void; onEditTool: (tool: ToolItem) => void; onOpenEntity: (group: string) => void;
 }) {
   const { t } = useTranslation("tools");
-
-  return (
-    <div
-      className={cn(
-        "rounded-md border transition-all bg-card",
-        isOpen
-          ? "border-accent shadow-[0_0_0_1px_var(--ring)]"
-          : "border-border hover:border-border-strong",
-      )}
-    >
-      {/* 分组头 */}
-      <div
-        className="flex items-center justify-between px-4 py-3 cursor-pointer select-none"
-        onClick={onToggle}
-      >
-        <div className="flex items-center gap-3 min-w-0">
-          <ChevronDown
-            size={16}
-            className={cn("text-muted transition-transform flex-shrink-0", isOpen && "rotate-180")}
-          />
-          <Package size={16} className="text-accent flex-shrink-0" />
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold text-heading">
-                {t(`groups.${group.group}`, { defaultValue: group.group })}
-              </span>
-              <span className="text-[11px] px-1.5 py-0.5 rounded bg-secondary text-muted">
-                {group.enabled_count}/{group.total_count}
-              </span>
-            </div>
-            {group.description && (
-              <p className="text-[11px] text-muted truncate mt-0.5">{group.description}</p>
-            )}
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
-          {onOpenEntity && (
-            <button
-              onClick={() => onOpenEntity(group.group)}
-              className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium text-muted hover:text-accent hover:bg-accent-subtle border border-transparent hover:border-accent/30 transition-all"
-              title={t("openEntity")}
-            >
-              <ExternalLink size={11} />
-              <span className="hidden sm:inline">{t("entityPage")}</span>
-            </button>
-          )}
-          <button
-            onClick={onToggleGroup}
-            className={cn(
-              "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-              group.any_enabled
-                ? group.all_enabled
-                  ? "bg-accent"
-                  : "bg-accent opacity-60"
-                : "bg-secondary border border-border",
-            )}
-            title={group.all_enabled ? t("disableGroup") : t("enableGroup")}
-          >
-            <span
-              className={cn(
-                "inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform",
-                group.any_enabled ? "translate-x-[18px]" : "translate-x-[3px]",
-              )}
-            />
-          </button>
-        </div>
+  const contentId = useId();
+  const title = t(`groups.${group.group}`, { defaultValue: group.group });
+  return <section className="overflow-hidden rounded-xl border border-border bg-card">
+    <div className="tool-group-header">
+      <button type="button" aria-expanded={isOpen} aria-controls={contentId} onClick={onToggle} className="flex min-w-0 flex-1 items-center gap-3 py-3 text-left">
+        <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-elevated text-accent"><Package size={17} /></span>
+        <span className="min-w-0 flex-1"><span className="block break-words text-sm font-semibold text-heading">{title}</span>
+          <span className="mt-1 block text-xs text-muted">{t("enabledCount", { enabled: group.enabled_count, total: group.total_count })}</span></span>
+        <ChevronDown size={16} className={cn("shrink-0 text-muted transition-transform", isOpen && "rotate-180")} />
+      </button>
+      <div className="flex shrink-0 items-center gap-2">
+        <Button variant="ghost" size="icon" title={`${t("openEntity")}: ${title}`} onClick={() => onOpenEntity(group.group)}><ExternalLink size={16} /></Button>
+        <Switch label={`${group.all_enabled ? t("disableGroup") : t("enableGroup")}: ${title}`} checked={group.all_enabled} disabled={busy} onChange={onToggleGroup} />
       </div>
-
-      {/* 工具列表 */}
-      {isOpen && (
-        <div className="border-t border-border">
-          {group.tools.map((tool, idx) => (
-            <div
-              key={tool.name}
-              className={cn(
-                "flex items-center justify-between px-4 py-2.5 hover:bg-hover transition-colors",
-                idx < group.tools.length - 1 && "border-b border-border",
-              )}
-            >
-              <div className="flex items-center gap-3 min-w-0 mr-3 flex-1">
-                <Wrench
-                  size={13}
-                  className={cn("flex-shrink-0", tool.enabled ? "text-ok" : "text-muted")}
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-sm font-medium text-heading font-mono">{tool.name}</span>
-                    {tool.tags.map((tag) => (
-                      <span
-                        key={tag}
-                        className="text-[10px] px-1.5 py-0.5 rounded-full bg-accent-subtle text-accent border border-accent/30"
-                      >
-                        {tag}
-                      </span>
-                    ))}
-                  </div>
-                  {tool.description && (
-                    <p className="text-[11px] text-muted truncate mt-0.5">{tool.description}</p>
-                  )}
-                </div>
-              </div>
-              <div className="flex items-center gap-2 flex-shrink-0">
-                <button
-                  onClick={() => onEditTool(tool)}
-                  className="text-muted hover:text-foreground transition-colors p-1"
-                  title={t("editProperties")}
-                >
-                  <Pencil size={14} />
-                </button>
-                <button
-                  onClick={() => onToggleTool(tool.name)}
-                  className={cn("transition-colors", tool.enabled ? "text-ok" : "text-muted")}
-                  title={tool.enabled ? t("disable") : t("enable")}
-                >
-                  {tool.enabled ? <ToggleRight size={22} /> : <ToggleLeft size={22} />}
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
     </div>
-  );
+    {isOpen && <div id={contentId} className="border-t border-border">
+      {group.description && <p className="border-b border-border bg-panel px-4 py-3 text-sm leading-relaxed text-muted">{group.description}</p>}
+      {group.tools.map((tool) => <div key={tool.name} className="tool-item border-b border-border last:border-b-0">
+        <div className="min-w-0 flex-1"><h3 className="break-all font-mono text-sm font-medium text-heading">{tool.name}</h3>
+          {tool.description && <p className="mt-1.5 line-clamp-3 whitespace-pre-wrap text-sm leading-relaxed text-muted" title={tool.description}>{tool.description}</p>}
+          <div className="mt-2 flex flex-wrap gap-1.5">{tool.tags.map((tag) => <span key={tag} className="max-w-full break-all rounded-md bg-elevated px-2 py-1 text-xs text-muted">{tag}</span>)}</div>
+        </div>
+        <div className="tool-item-actions"><Button variant="ghost" size="icon" disabled={busy} title={`${t("editProperties")}: ${tool.name}`} onClick={() => onEditTool(tool)}><Pencil size={15} /></Button>
+          <Switch checked={tool.enabled} label={`${tool.enabled ? t("disable") : t("enable")}: ${tool.name}`} disabled={busy} onChange={() => onToggleTool(tool.name)} /></div>
+      </div>)}
+    </div>}
+  </section>;
 }

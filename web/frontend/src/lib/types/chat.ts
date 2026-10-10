@@ -50,13 +50,6 @@ export interface ChatMessage {
   voice?: "transcript" | "spoken";
   /** 警示色调（发送超时/失败等 system_notice 用） */
   tone?: "warn";
-  /** 本轮工具调用记录（reply 到达时从流式区固化，渲染为消息内折叠卡片） */
-  toolCalls?: ChatStreamingTool[];
-  /** 本轮文件改动集（turn_end 时聚合沉淀；渲染为可折叠改动卡片） */
-  changes?: ChatStreamingDiff[];
-  /** 本轮思考过程（reply 到达时从流式区固化）。纯内存态：不落库、不进
-   * LLM 上下文，仅保留最近几轮（往前销毁），刷新即消失 */
-  thinking?: string;
   /** 模块自注册的消息内容与未安装模块时的文本降级。 */
   extension?: ChatExtension;
 }
@@ -72,15 +65,6 @@ export interface PendingFile {
   root?: "workspace" | "project";
 }
 
-export interface ChatStreamingTool {
-  call_id: string;
-  name: string;
-  status: "running" | "done" | "error";
-  arguments?: string;
-  result_preview?: string;
-  duration_ms?: number;
-}
-
 export interface ChatStreamingDiff {
   path: string;
   diff: string;
@@ -92,14 +76,6 @@ export interface ChatStreamingDiff {
   binary?: boolean;
 }
 
-export interface ChatStreaming {
-  turnId: string;
-  text: string;
-  reasoning: string;
-  tools: ChatStreamingTool[];
-  diffs: ChatStreamingDiff[];
-}
-
 export interface ChatBucket {
   workspaceContextEnabled: boolean;
   inputDraft: string;
@@ -107,7 +83,6 @@ export interface ChatBucket {
   messages: ChatMessage[];
   sending: boolean;
   sendingSince: number | null;
-  streaming: ChatStreaming | null;
   pendingFiles: PendingFile[];
   historyLoaded: boolean;
   historyLoading?: boolean;
@@ -168,7 +143,6 @@ export interface UiCommandPayload {
 export interface UiStateReport {
   chat_visible: boolean;
   execution_visible: boolean;
-  execution_tab: "runs" | "agents" | "web";
   page: string;
   active_tab: string;
   dock_open: boolean;
@@ -210,24 +184,6 @@ export interface SseMediaEvent extends SseEventBase {
 
 export interface SseExtensionEvent extends SseEventBase { extension: ChatExtension }
 
-export interface SseDeltaEvent extends SseEventBase {
-  turn_id: string;
-  delta?: string;
-  reasoning?: boolean;
-  /** 流式中途失败回退重试：清空该 turn 已渲染的增量文本 */
-  reset?: boolean;
-}
-
-export interface SseToolCallEvent extends SseEventBase {
-  turn_id?: string;
-  call_id: string;
-  name: string;
-  status: "running" | "done" | "error";
-  arguments?: string;
-  result_preview?: string;
-  duration_ms?: number;
-}
-
 export interface SseFileDiffEvent extends SseEventBase {
   turn_id?: string;
   path: string;
@@ -238,7 +194,7 @@ export interface SseFileDiffEvent extends SseEventBase {
   binary?: boolean;
 }
 
-export type SseContextUsageEvent = ContextUsage;
+export type SseContextUsageEvent = ContextUsage & SseEventBase;
 
 
 
@@ -319,8 +275,8 @@ export interface ChatSseEventMap {
   media: SseMediaEvent;
   extension: SseExtensionEvent;
   ui_command: UiCommandPayload;
-  delta: SseDeltaEvent;
-  tool_call: SseToolCallEvent;
+  activity: { epoch: string; run: import("./activity").ActivityRun };
+  activity_end: { epoch: string; run: import("./activity").ActivityRun };
   file_diff: SseFileDiffEvent;
   context_usage: SseContextUsageEvent;
   plan_submitted: SsePlanSubmittedEvent;

@@ -1,6 +1,10 @@
 @import "tailwindcss";
 @import "./shell.css";
 @import "./workbench.css";
+@import "./activity.css";
+@import "./management.css";
+@source not "../**/*.test.{ts,tsx}";
+@source not "../../e2e";
 @source "../../../../entities/*/panel.tsx";
 @source "../../../../entities/*/panels/**/*.{ts,tsx}";
 @source "../../../../channels/*/frontend/**/*.{ts,tsx}";

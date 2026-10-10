@@ -1,63 +1,62 @@
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect, openWebChat, closeWebChatOverlay } from "./fixtures";
-import type { ThinkingSession } from "../src/lib/types";
+import type { ActivityRun } from "../src/lib/types/activity";
 
-const trace: ThinkingSession = {
-  id: "qq-run", label: "Review deployment", scope: "group_qq:42", start_time: 1770000000,
-  ended: true, end_time: 1770000010, duration_ms: 10000, outcome: "completed", is_heartbeat: false,
-  node_count: 3, available_tools: ["inspect_service"], nodes: [
-    { id: "start", type: "session_start", label: "Deployment review", timestamp: 1770000000, duration_ms: null, status: "completed", parent_id: null, data: { scope: "group_qq:42" } },
-    { id: "model", type: "llm_call", label: "Analyze", timestamp: 1770000001, duration_ms: 400, status: "completed", parent_id: null,
-      data: { model: "review-model", reasoning_content: "Check the deployment status before changing any service configuration.", usage: { prompt_tokens: 14000, completion_tokens: 200, cache_read_input_tokens: 12000 } } },
-    { id: "tool", type: "tool_call", label: "Inspect", timestamp: 1770000002, duration_ms: 120, status: "completed", parent_id: "model",
-      data: { tool_name: "inspect_service", result_preview: "Service is healthy. No restart needed." } },
-  ],
-};
+function activity(id: string, patch: Partial<ActivityRun> = {}): ActivityRun {
+  return {
+    id, revision: 1, scope: "group_qq:42", origin_scope: "group_qq:42", source: { scope: "group_qq:42", kind: "group", channel: "qq", target: "42", session: "" },
+    actor: "", label: "Inspect deployment and report the service status", kind: "conversation", input: "[channel:qq][group_id:42][name:Operator] Inspect deployment and report the service status", owner_id: "", parent_id: "", status: "running", started_at: Date.now() / 1000 - 24, updated_at: Date.now() / 1000, ended_at: null, entry_count: 5, truncated: false,
+    entries: [
+      { id: "llm", kind: "model", name: "review-model", status: "done", duration_ms: 2300, ts: Date.now() / 1000 - 24 },
+      { id: "thought", kind: "thinking", content: "Check [channel:qq] and [group_id:42] before reporting the deployment result.", ts: Date.now() / 1000 - 24 },
+      { id: "tool", kind: "tool", name: "inspect_service", arguments: '{"target":"group_qq:42","path":"note.txt"}', targets: [{ key: "target", value: "group_qq:42" }, { key: "path", value: "note.txt" }], request_id: "request-review-1", status: "done", result: "Service is healthy. No restart needed.", duration_ms: 1280, ts: Date.now() / 1000 - 20 },
+      { id: "plan", kind: "plan", goal: "Check the deployment", status: "running", ts: Date.now() / 1000 - 18, steps: [{ content: "Inspect service status", status: "completed", note: "Healthy" }, { content: "Validate settings", status: "in_progress", note: "" }] },
+      { id: "delegation", kind: "delegation", goal: "Validate deployment settings", agent: "Reviewer", status: "running", background: true, run_id: "child", ts: Date.now() / 1000 - 12 },
+    ], ...patch,
+  };
+}
 
-test.beforeEach(async ({ page }) => {
-  await page.route("**/api/thinking/**", (route) => {
-    const path = new URL(route.request().url()).pathname;
-    if (path.endsWith("/status")) return route.fulfill({ json: { enabled: false } });
-    if (path.endsWith("/sessions")) return route.fulfill({ json: { sessions: [trace], count: 1 } });
-    return route.fulfill({ json: trace });
-  });
-  await page.route("**/api/delegations/overview", (route) => route.fulfill({ json: { running: [
-    { delegation_id: "worker", goal: "Review service health and validate the deployment configuration", agent: "reviewer", model: "fast-model", role: "leaf", scope: "group_qq:42", chat_id: "", state: "running", background: true, task_index: 0, started_at: Date.now() / 1000 - 20, elapsed_seconds: 20, iteration: 2, current_tool: "inspect_service", usage: { input_tokens: 2400, output_tokens: 300, turns: 2 } },
-    { delegation_id: "queued", goal: "Prepare the final report", agent: "writer", role: "leaf", scope: "user_webui:web_user#default", chat_id: "default", state: "queued", background: false, task_index: 1, started_at: Date.now() / 1000 - 2, elapsed_seconds: 2, iteration: 0, current_tool: "", usage: {} },
-  ] } }));
-});
-
-test("workspace separates global execution, subagents and the Web conversation", async ({ page, isMobile }, info) => {
-  await page.route("**/api/chat/history*", (route) => route.fulfill({ json: [{ id: 1, role: "assistant", content: "Deployment looks healthy.", ts: 1770000000,
-    thinking: "Verify the Web request separately", toolCalls: [{ call_id: "web-tool", name: "check_web_request", status: "done", duration_ms: 100, result_preview: "Web operation complete" }] }] }));
+test("workspace shows the global live process beside actual Web messages", async ({ page, isMobile }, info) => {
+  const parent = activity("global");
+  const child = activity("child", { parent_id: "global", kind: "delegation", owner_id: "delegation", actor: "Reviewer", label: "Validate deployment settings", input: "Validate deployment settings", entries: [
+    { id: "child-thought", kind: "thinking", content: "Reviewing settings while the main conversation continues.", ts: Date.now() / 1000 - 10 },
+    { id: "child-tool", kind: "tool", name: "read_deployment_settings", status: "running", ts: Date.now() / 1000 - 8, arguments: '{"path":"note.txt"}', targets: [{ key: "path", value: "note.txt" }], request_id: "child-request" },
+  ] });
+  await page.route("**/api/workspace/activity", (route) => route.fulfill({ json: { epoch: "test", revision: 2, runs: [parent, child] } }));
+  await page.route("**/api/chat/history*", (route) => route.fulfill({ json: [{ id: 1, role: "assistant", content: "Your Web message was received.", ts: Date.now() / 1000,
+    thinking: "Internal Web reasoning stays outside this pane", toolCalls: [{ call_id: "old", name: "old_web_tool", status: "done" }] }] }));
   await page.goto("/webui/");
   const execution = page.getByRole("region", { name: "Global execution", exact: true });
   await expect(execution).toBeVisible();
-  await expect(execution.getByText("Check the deployment status before changing any service configuration.")).toBeVisible();
-  await expect(execution.getByRole("button", { name: /2 sub-agents running/ })).toBeVisible();
-  await page.screenshot({ path: info.outputPath("execution-workspace.png") });
-  const picker = page.getByRole("button", { name: "Session List", exact: true });
-  const overlay = await picker.isVisible();
-  if (overlay) await picker.click();
-  const sessions = overlay ? page.getByRole("dialog", { name: "Session List", exact: true }) : execution.locator("aside").first();
-  await sessions.getByRole("combobox", { name: "Source", exact: true }).selectOption("qq");
-  await expect(sessions.getByRole("button").filter({ hasText: "group_qq:42" })).toBeVisible();
-  if (overlay) await sessions.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(execution.getByRole("tab")).toHaveCount(0);
+  await expect(execution.getByRole("button", { name: "Start Tracking", exact: true })).toHaveCount(0);
+  await expect(execution.getByText("read_deployment_settings", { exact: true })).toBeVisible();
+  await expect(execution.getByText("Group 42", { exact: true }).first()).toBeVisible();
+  const parentCard = execution.locator('[data-activity-run="global"]');
+  await parentCard.getByRole("button", { name: "Thought", exact: true }).click();
+  await expect(parentCard.getByText("before reporting the deployment result.", { exact: false })).toBeVisible();
+  await parentCard.getByRole("button", { name: /inspect_service Completed/ }).click();
+  await expect(parentCard.getByRole("region", { name: "Result", exact: true })).toContainText("Service is healthy");
+  await expect(parentCard.getByText("Call ID: tool", { exact: false })).toBeVisible();
+  await expect(parentCard.getByText("Validate settings", { exact: true })).toBeVisible();
+  await page.screenshot({ path: info.outputPath("workspace-live-activity.png") });
+  const childCard = execution.locator('[data-activity-run="child"]');
+  await childCard.locator(".activity-run-heading").click();
+  await expect(childCard.getByText("read_deployment_settings", { exact: true })).toHaveCount(0);
+  await parentCard.getByRole("button", { name: "View execution", exact: true }).click();
+  await expect(childCard).toBeInViewport();
+  await expect(childCard.getByText("read_deployment_settings", { exact: true })).toBeVisible();
+  await page.evaluate(() => { document.documentElement.dataset.theme = "dark"; document.documentElement.classList.add("dark"); });
+  await page.screenshot({ path: info.outputPath("workspace-live-activity-dark.png"), animations: "disabled" });
   await openWebChat(page);
   const chat = page.getByRole("region", { name: "Web chat", exact: true });
-  await expect(chat.locator("[data-trace-node]")).toHaveCount(0);
-  await expect(chat.getByText("Deployment looks healthy.", { exact: true })).toBeVisible();
-  await expect(chat.getByText("check_web_request", { exact: true })).toHaveCount(0);
+  await expect(chat.getByText("Your Web message was received.", { exact: true })).toBeVisible();
+  await expect(chat.getByText("old_web_tool", { exact: true })).toHaveCount(0);
+  await expect(chat.getByText("Internal Web reasoning stays outside this pane", { exact: true })).toHaveCount(0);
+  await expect(chat.getByText("read_deployment_settings", { exact: true })).toHaveCount(0);
   await chat.getByRole("textbox", { name: "Message", exact: true }).fill("Keep this Web draft");
   await closeWebChatOverlay(page);
-  await execution.getByRole("tab", { name: "Web records", exact: true }).click();
-  await expect(execution.getByText("check_web_request", { exact: true })).toBeVisible();
-  await execution.getByRole("tab", { name: /Sub-agents/ }).click();
-  await expect(execution.getByText("Review service health and validate the deployment configuration", { exact: true })).toBeVisible();
-  await expect(execution.getByText("Waiting for capacity", { exact: true })).toBeVisible();
-  await expect(execution.getByText("qq", { exact: true })).toBeVisible();
-  await expect(page.locator(".workbench-toolbar")).toBeInViewport();
-  await page.screenshot({ path: info.outputPath("workspace-agents.png") });
+  await page.screenshot({ path: info.outputPath("workspace-paired-panes.png") });
   const results = await new AxeBuilder({ page }).include("main").withTags(["wcag2a", "wcag2aa", "wcag21aa"]).analyze();
   expect(results.violations.map((item) => ({ id: item.id, targets: item.nodes.map((node) => node.target) }))).toEqual([]);
   await openWebChat(page);
@@ -66,24 +65,17 @@ test("workspace separates global execution, subagents and the Web conversation",
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
-test("agent progress failures stay retryable and cancellation failures retain controls", async ({ page }) => {
-  let fail = true;
-  await page.route("**/api/delegations/worker/progress*", (route) => fail
-    ? route.fulfill({ status: 503, json: { detail: "Progress storage unavailable" } })
-    : route.fulfill({ json: { running: true, truncated: false, lines: ["Inspecting service configuration", "Health checks passed"] } }));
-  await page.route("**/api/delegations/worker/cancel", (route) => route.fulfill({ json: { status: "error", error: "Cancellation rejected by runtime" } }));
+test("global activity snapshot failures are retryable without hiding Web messages", async ({ page }) => {
+  let failed = true;
+  await page.route("**/api/workspace/activity", (route) => failed
+    ? route.fulfill({ status: 503, json: { detail: "Activity temporarily unavailable" } })
+    : route.fulfill({ json: { epoch: "test", revision: 1, runs: [activity("recovered")] } }));
   await page.goto("/webui/");
-  await page.getByRole("tab", { name: /Sub-agents/ }).click();
-  await page.getByRole("button", { name: "Logs", exact: true }).first().click();
-  const drawer = page.getByRole("dialog");
-  await expect(drawer.getByRole("alert")).toContainText("Progress storage unavailable");
-  fail = false;
-  await drawer.getByRole("button", { name: "Retry", exact: true }).click();
-  await expect(drawer.getByText("Health checks passed", { exact: true })).toBeVisible();
-  await drawer.getByRole("button", { name: "Close", exact: true }).click();
-  await page.getByRole("button", { name: "Stop", exact: true }).first().click();
-  await expect(page.getByText("Cancellation rejected by runtime", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Stop", exact: true }).first()).toBeEnabled();
+  const execution = page.getByRole("region", { name: "Global execution", exact: true });
+  await expect(execution.getByRole("alert")).toContainText("Activity temporarily unavailable");
+  failed = false;
+  await execution.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(execution.getByText("inspect_service", { exact: true })).toBeVisible();
 });
 
 test("overview keeps maintenance separate and metric geometry aligned", async ({ page }, info) => {

@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import type { ConfigMetaItem } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { ConfigSource } from "@/components/common/ConfigSource";
+import { apiErrorMessage } from "@/lib/api/client";
 import { useConfigSave } from "./useConfigSave";
 import { NumberField, ModelField, PasswordField, RangeField, SelectField, SwitchField, TextField } from "./fields";
 
@@ -16,7 +17,7 @@ interface ConfigItemRowProps {
 /** 通用配置行：描述/key 信息区（点击开详情抽屉）+ 类型分发控件 + 保存反馈 + 重置。 */
 export function ConfigItemRow({ item, highlight, onOpenDetail }: ConfigItemRowProps) {
   const { t } = useTranslation("config");
-  const { save, saving, saved } = useConfigSave(item.key);
+  const { save, saving, saved, error } = useConfigSave(item.key);
 
   const value = item.value;
   const isDefault = JSON.stringify(value) === JSON.stringify(item.default);
@@ -75,8 +76,8 @@ export function ConfigItemRow({ item, highlight, onOpenDetail }: ConfigItemRowPr
     <div
       id={`config-item-${item.key}`}
       className={cn(
-        "flex flex-wrap items-center gap-3 p-3 rounded-md border bg-card transition-colors",
-        highlight ? "border-accent ring-1 ring-accent" : "border-border",
+        "config-item flex flex-wrap items-center gap-3 p-4 rounded-xl border bg-card transition-colors",
+        highlight ? "border-accent/40 bg-accent-subtle" : "border-border",
       )}
     >
       <button
@@ -92,10 +93,10 @@ export function ConfigItemRow({ item, highlight, onOpenDetail }: ConfigItemRowPr
         <ConfigSource item={item} />
       </button>
 
-      <div className="flex max-w-full items-center gap-2">
+      <div className="config-item-control flex max-w-full items-center gap-2">
         {control}
         {saving && <Loader2 size={14} className="animate-spin text-muted" />}
-        {saved && <Check size={16} className="text-ok" />}
+        {saved && !saving && !error && <Check size={16} className="text-ok" />}
         {!isDefault && item.editable && (
           <button
             title={t("resetToDefault")}
@@ -107,6 +108,7 @@ export function ConfigItemRow({ item, highlight, onOpenDetail }: ConfigItemRowPr
           </button>
         )}
       </div>
+      {error && <p role="alert" className="w-full text-sm text-danger">{apiErrorMessage(error, t("common:error"))}</p>}
     </div>
   );
 }

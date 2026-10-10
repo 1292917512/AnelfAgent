@@ -1,43 +1,53 @@
-import { lazy, Suspense } from "react";
-import { Activity, Bot, MessageSquare } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Activity, ArrowDown } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { useQuery } from "@tanstack/react-query";
-import { delegationApi } from "@/lib/api";
-import { useWorkbenchStore } from "@/stores/workbench-store";
-import { useThinkingBootstrap } from "@/hooks/useThinking";
-import { useThinkingStore } from "@/stores/thinking-store";
-import { TabBar } from "@/components/common/TabBar";
-import { SectionBoundary } from "@/components/common/SectionBoundary";
-import { ExecutionTimeline } from "@/components/thinking/ExecutionTimeline";
+import { useActivityStore } from "@/stores/activity-store";
+import { useChatStore } from "@/stores/chat-store";
+import { QueryError } from "@/components/common/AsyncState";
+import { Button } from "@/components/ui";
+import { ActivityRunCard } from "./activity/ActivityRunCard";
 
-const DelegationsPanel = lazy(() => import("@/components/delegation/DelegationsPanel").then((module) => ({ default: module.DelegationsPanel })));
-const WebActivityPanel = lazy(() => import("./WebActivityPanel"));
-
-/** 全频道运行观察、全局子代理管理与 Web 操作记录的独立宿主。 */
+/** 各会话共享的实时过程窗口，持续展示中间输出，不依赖详细追踪。 */
 export default function ExecutionWorkspace() {
   const { t } = useTranslation("workbench");
-  useThinkingBootstrap();
-  const tab = useWorkbenchStore((state) => state.executionTab);
-  const setTab = useWorkbenchStore((state) => state.setExecutionTab);
-  const sessions = useThinkingStore((state) => state.sessions);
-  const running = sessions.filter((session) => !session.ended).length;
-  const agents = useQuery({ queryKey: ["delegations", "overview"], queryFn: () => delegationApi.overview().then((response) => response.data), refetchInterval: 3000, throwOnError: false });
-  const count = agents.data?.running.length ?? 0;
-  return <section aria-label={t("execution.region")} className="execution-workspace flex h-full min-h-0 flex-col">
-    <header className="execution-heading">
-      <div className="min-w-0"><h1>{t("execution.heading")}</h1><p>{t("execution.description")}</p></div>
-      <span className="execution-count">{t("execution.running", { count: running })}</span>
+  const { runs, loaded, error, load } = useActivityStore();
+  const connected = useChatStore((state) => state.sseConnected);
+  const scroll = useRef<HTMLDivElement>(null);
+  const follow = useRef(true);
+  const [behind, setBehind] = useState(false);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const toggleRun = useCallback((id: string, open: boolean) => {
+    setExpanded((current) => ({ ...current, [id]: open }));
+  }, []);
+  const revealRun = useCallback((id: string) => {
+    toggleRun(id, true); follow.current = false;
+    requestAnimationFrame(() => {
+      const container = scroll.current;
+      const target = document.getElementById(`activity-${id}`);
+      if (container && target) container.scrollTo({ top: container.scrollTop + target.getBoundingClientRect().top - container.getBoundingClientRect().top - 18, behavior: "instant" });
+    });
+  }, [toggleRun]);
+  const running = runs.filter((run) => run.status === "running").length;
+  useEffect(() => { if (!loaded) void load(); }, [loaded, load]);
+  useLayoutEffect(() => {
+    if (follow.current && scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight;
+  }, [runs]);
+  return <section aria-label={t("execution.region")} className="activity-pane flex h-full min-h-0 flex-col">
+    <header className="activity-heading"><Activity size={16} className="text-accent" /><h2>{t("activity.title")}</h2>
+      <span className="ml-auto inline-flex items-center gap-2 text-xs text-muted" role="status">{running > 0 && <span className="activity-live-dot" />}{t(!connected ? "activity.reconnecting" : running ? "activity.working" : "activity.idle")}</span>
     </header>
-    <div className="shrink-0 px-3 pb-2"><TabBar activeTab={tab} onChange={setTab} tabs={[
-      { key: "runs", label: t("execution.runs"), icon: Activity },
-      { key: "agents", label: `${t("execution.agents")}${count ? ` · ${count}` : ""}`, icon: Bot },
-      { key: "web", label: t("execution.webRecords"), icon: MessageSquare },
-    ]} /></div>
-    {count > 0 && tab !== "agents" && <button className="execution-agents-banner" onClick={() => setTab("agents")}>
-      <Bot size={16} /><span>{t("execution.agentsRunning", { count })}</span><span className="ml-auto truncate text-muted">{agents.data?.running[0]?.current_tool || agents.data?.running[0]?.agent}</span>
-    </button>}
-    <div className="min-h-0 flex-1"><SectionBoundary><Suspense fallback={<div role="status" className="p-5 text-sm text-muted">{t("common:loading")}</div>}>
-      {tab === "runs" ? <ExecutionTimeline compact /> : tab === "agents" ? <div className="h-full overflow-y-auto p-3 md:p-5"><DelegationsPanel /></div> : <WebActivityPanel />}
-    </Suspense></SectionBoundary></div>
+    {error != null && <div className="p-3"><QueryError compact error={error} retry={() => void load()} /></div>}
+    <div className="relative min-h-0 flex-1">
+      <div ref={scroll} className="activity-feed h-full overflow-y-auto overscroll-contain" onScroll={() => {
+        const element = scroll.current;
+        if (!element) return;
+        follow.current = element.scrollHeight - element.scrollTop - element.clientHeight < 100;
+        setBehind(!follow.current);
+      }}>
+        {!runs.length && <div className="activity-empty"><span className="welcome-orbit" aria-hidden="true"><span /></span><h3>{t("activity.empty")}</h3><p>{t("activity.emptyHint")}</p></div>}
+        {runs.map((run, index) => <ActivityRunCard key={run.id} run={run} open={expanded[run.id] ?? (run.status === "running" || index === runs.length - 1)} onToggle={toggleRun} onReveal={revealRun} />)}
+      </div>
+      {behind && <Button className="activity-follow" size="sm" onClick={() => { follow.current = true; setBehind(false); scroll.current?.scrollTo({ top: scroll.current.scrollHeight, behavior: "instant" }); }}><ArrowDown size={14} />{t("activity.latest")}</Button>}
+    </div>
   </section>;
 }

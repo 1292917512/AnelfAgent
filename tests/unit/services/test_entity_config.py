@@ -57,6 +57,14 @@ class TestGroupNameResolution:
         assert svc.update_entity_config("no_such_entity", "svc_demo_enabled", True) is False
         assert svc.get_entity_config("no_such_entity") is None
 
+    def test_group_enable_updates_members_and_detail(self, svc: EntityService, group_entity: str) -> None:
+        assert svc.set_entity_enabled(group_entity, False)
+        assert EntityRegistry.get("svc_demo_tool").enabled is False
+        assert svc.get_entity_detail(group_entity)["enabled"] is False
+        assert svc.set_entity_enabled(group_entity, True)
+        assert svc.get_entity_detail(group_entity)["enabled"] is True
+        assert not svc.set_entity_enabled("missing-group", False)
+
 
 class TestValueCoercion:
     """写入值经配置项声明类型矫正与边界收敛（不存裸字符串）。"""

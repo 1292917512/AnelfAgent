@@ -42,6 +42,7 @@ export default function Chat() {
   const { ref, size } = useElementSize<HTMLDivElement>();
   const loadHistory = useChatStore((s) => s.loadHistory);
   const loadChats = useChatStore((s) => s.loadChats);
+  const chatExpanded = useWorkbenchStore((s) => s.chatExpanded);
   const chatOpen = useWorkbenchStore((s) => s.chatOpen);
   const toggleChat = useWorkbenchStore((s) => s.toggleChat);
   const dismissSurface = useWorkbenchStore((s) => s.dismissSurface);
@@ -53,7 +54,7 @@ export default function Chat() {
   const setContainerWidth = useWorkbenchStore((s) => s.setContainerWidth);
   const [layoutRevision, setLayoutRevision] = useState(0);
   const width = size?.width ?? null;
-  const layout = resolveWorkbenchLayout(width ?? 0, { files: leftOpen, editor: hasOpenFiles, dock: dockOpen, expanded, chat: chatOpen }, activeSurface);
+  const layout = resolveWorkbenchLayout(width ?? 0, { files: leftOpen, editor: hasOpenFiles, dock: dockOpen, expanded, chat: chatOpen, chatExpanded }, activeSurface);
   const { filesInline, editorInline, dockInline, chatInline, executionHidden } = layout;
   const layoutId = [filesInline && "files", editorInline && "editor", !executionHidden && "execution", chatInline && "chat", dockInline && "dock"].filter(Boolean).join("-");
 
@@ -78,7 +79,7 @@ export default function Chat() {
         {filesInline && <><Panel id="files" defaultSize={256} minSize={240} maxSize="35%"><LeftDock /></Panel><ResizeHandle id="files-separator" /></>}
         {editorInline && <><Panel id="editor" defaultSize="45%" minSize={420}>{editor(false)}</Panel>{!executionHidden && <ResizeHandle id="editor-separator" />}</>}
         {!executionHidden && <Panel id="execution" minSize={Math.min(500, size?.width ?? 500)}><Suspense fallback={<div className="p-6 text-sm text-muted">{t("common:loading")}</div>}><ExecutionWorkspace /></Suspense></Panel>}
-        {chatInline && <><ResizeHandle id="chat-separator" /><Panel id="chat" defaultSize={380} minSize={360} maxSize="45%"><WebConversation onClose={toggleChat} /></Panel></>}
+        {chatInline && <>{!executionHidden && <ResizeHandle id="chat-separator" />}<Panel id="chat" defaultSize={chatExpanded ? "100%" : 380} minSize={360} maxSize={chatExpanded ? "100%" : "45%"}><WebConversation onClose={toggleChat} /></Panel></>}
         {dockInline && <><ResizeHandle id="dock-separator" /><Panel id="dock" defaultSize={340} minSize={320} maxSize="40%"><Dock /></Panel></>}
       </Group>
       <DialogSurface open={layout.chatVisible && !chatInline} onClose={dismissSurface} title={t("workbench:webChat")} placement="right" className="workbench-sheet sm:max-w-[520px]">

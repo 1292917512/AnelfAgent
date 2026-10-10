@@ -8,11 +8,23 @@ const project = { root: "project" as const, path: "docs/note.md" };
 const file = { path: workspace.path, name: "note.md", content: "disk", version: "v1", size: 4, modified: 0, binary: false, truncated: false };
 
 beforeEach(() => {
+  useWorkbenchStore.setState(useWorkbenchStore.getInitialState());
   useWorkbenchStore.getState().closeAllFiles();
   useFileEditorStore.setState({ tabs: new Map() });
 });
 
 describe("workspace file identities", () => {
+  it("returns from expanded conversation to a requested file or panel without discarding open files", () => {
+    const store = useWorkbenchStore.getState();
+    store.openFile(workspace.path);
+    store.toggleChatExpanded();
+    expect(useWorkbenchStore.getState().chatExpanded).toBe(true);
+    store.openFile(project.path, project.root);
+    expect(useWorkbenchStore.getState()).toMatchObject({ chatExpanded: false, activeSurface: "editor", openFiles: [workspace, project] });
+    store.toggleChatExpanded();
+    store.openPanel("context");
+    expect(useWorkbenchStore.getState()).toMatchObject({ chatExpanded: false, activeSurface: "dock", activeTab: "context" });
+  });
   it("directory commands restore the tree even while an editor is open", () => {
     const store = useWorkbenchStore.getState();
     store.openFile("notes.txt");

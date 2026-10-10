@@ -22,7 +22,8 @@
   },
   "config": {
     "empty": "No configurable items for this entity",
-    "save": "Save Config"
+    "save": "Save Config",
+    "autoSave": "Changes save when you leave a field. Switches and selections apply immediately; each field shows its save status."
   },
   "tools": {
     "empty": "No tools registered for this entity"

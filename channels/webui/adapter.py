@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
-import os
 import time
 from typing import Any, Set
 
@@ -62,11 +60,6 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
     )
     _Configs = WebUIConfig
 
-    def __init__(self) -> None:
-        super().__init__()
-        # 流式 delta 合帧缓冲（turn_id → 待发送增量）
-        self._delta_buffers: dict = {}
-
     channel_id = "webui"
 
     display_name = "网页界面"
@@ -99,19 +92,12 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
     def _subscribe_stream_events(self) -> None:
         from core.event_bus import (
             EVENT_AFTER_REPLY,
-            EVENT_THINKING_TOOL_END,
-            EVENT_THINKING_TOOL_START,
             event_bus,
         )
-        from core.stream_events import EVENT_ASSISTANT_DELTA
-        event_bus.on(EVENT_ASSISTANT_DELTA, self._on_assistant_delta, owner="channel:webui")
-        event_bus.on(EVENT_THINKING_TOOL_START, self._on_tool_start, owner="channel:webui")
-        event_bus.on(EVENT_THINKING_TOOL_END, self._on_tool_end, owner="channel:webui")
+        from core.stream_events import EVENT_CONTEXT_USAGE
         event_bus.on(EVENT_AFTER_REPLY, self._on_after_reply, owner="channel:webui")
-        from core.stream_events import EVENT_CONTEXT_USAGE, EVENT_FILE_DIFF
-        event_bus.on(EVENT_FILE_DIFF, self._on_file_diff, owner="channel:webui")
         event_bus.on(EVENT_CONTEXT_USAGE, self._on_context_usage, owner="channel:webui")
-        # Plan 模式 / 子代理：直接广播到前端（PlanPanel / PlanCard / DelegationCard）。
+        # Web 会话的计划与子代理事件供任务面板使用。
         # 事件名与 SSE 帧名一致，表驱动注册（handler 统一为 _broadcast_scoped 转发）。
         from core.event_bus import (
             EVENT_DELEGATION_PROGRESS,
@@ -144,57 +130,6 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         """
         await self._broadcast_scoped("turn_end", {"scope": payload.get("scope", ""), "error": bool(payload.get("error"))})
 
-    async def _on_assistant_delta(self, payload: dict) -> None:
-        """assistant 文本增量 → 50ms 合帧后推送 SSE delta 帧。"""
-        turn_id = str(payload.get("turn_id", ""))
-        if payload.get("reset"):
-            # 流式中途失败回退重试：清空该 turn 缓冲并通知前端重置增量渲染
-            self._delta_buffers.pop(turn_id, None)
-            await self._broadcast_scoped("delta", {
-                "scope": str(payload.get("scope", "")), "turn_id": turn_id, "reset": True,
-            })
-            return
-        buf = self._delta_buffers.setdefault(
-            turn_id, {"text": "", "reasoning": "", "scope": "", "scheduled": False})
-        if payload.get("scope"):
-            buf["scope"] = str(payload["scope"])
-        key = "reasoning" if payload.get("reasoning") else "text"
-        buf[key] += str(payload.get("delta", ""))
-        if not buf["scheduled"]:
-            buf["scheduled"] = True
-            asyncio.get_running_loop().call_later(0.05, self._flush_delta, turn_id)
-
-    def _flush_delta(self, turn_id: str) -> None:
-        """50ms 合帧回调（call_later 同步上下文）：组帧后调度单个任务按序发射。"""
-        buf = self._delta_buffers.get(turn_id)
-        if not buf:
-            return
-        buf["scheduled"] = False
-        text, reasoning = buf["text"], buf["reasoning"]
-        scope = buf.get("scope", "")
-        buf["text"] = buf["reasoning"] = ""
-        frames = []
-        if reasoning:
-            frames.append({"scope": scope, "turn_id": turn_id, "delta": reasoning, "reasoning": True})
-        if text:
-            frames.append({"scope": scope, "turn_id": turn_id, "delta": text, "reasoning": False})
-        if frames:
-            asyncio.get_running_loop().create_task(self._emit_delta_frames(frames))
-
-    async def _emit_delta_frames(self, frames: list) -> None:
-        """按序发射合帧的 delta 帧（reasoning 先于 text）。"""
-        for frame in frames:
-            await self._broadcast_scoped("delta", frame)
-
-    async def _on_tool_start(self, payload: dict) -> None:
-        await self._broadcast_scoped("tool_call", {
-            "scope": payload.get("scope", ""),
-            "call_id": payload.get("tool_id", ""),
-            "name": payload.get("tool_name", ""),
-            "status": "running",
-            "arguments": payload.get("arguments_preview", ""),
-        })
-
     async def _on_context_usage(self, payload: dict) -> None:
         await self._broadcast_scoped("context_usage", {
             "scope": payload.get("scope", ""),
@@ -205,46 +140,6 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
             "cache_read_input_tokens": payload.get("cache_read_input_tokens", 0),
             "cache_creation_input_tokens": payload.get("cache_creation_input_tokens", 0),
             "cache_hit_rate": payload.get("cache_hit_rate", 0.0),
-        })
-
-    @staticmethod
-    def _relativize_workspace(p: str) -> str:
-        """file_diff 路径契约统一：工作区内绝对路径转相对（posix），区外原样保留。
-
-        工具层（entities/filesystem safe_path）产出规范化绝对路径，而前端
-        文件树/编辑器/改动集全部以工作区相对路径为键——不统一则三类消费
-        （树装饰/编辑器联动刷新/改动集跳转）全部静默失配。
-        """
-        if not p or not os.path.isabs(p):
-            return p
-        try:
-            from entities.filesystem.paths import get_workspace_root
-            rel = os.path.relpath(p, get_workspace_root())
-        except Exception:
-            return p
-        if rel == "." or rel.startswith(".."):
-            return p
-        return rel.replace(os.sep, "/")
-
-    async def _on_file_diff(self, payload: dict) -> None:
-        await self._broadcast_scoped("file_diff", {
-            "scope": payload.get("scope", ""),
-            "path": self._relativize_workspace(payload.get("path", "")),
-            "diff": payload.get("diff", ""),
-            "additions": payload.get("additions", 0),
-            "removals": payload.get("removals", 0),
-            "move_from": self._relativize_workspace(payload.get("move_from") or "") or None,
-            "binary": payload.get("binary", False),
-        })
-
-    async def _on_tool_end(self, payload: dict) -> None:
-        await self._broadcast_scoped("tool_call", {
-            "scope": payload.get("scope", ""),
-            "call_id": payload.get("tool_id", ""),
-            "name": payload.get("tool_name", ""),
-            "status": "done" if payload.get("success") else "error",
-            "result_preview": payload.get("result_preview", "") or payload.get("error", ""),
-            "duration_ms": payload.get("duration_ms", 0),
         })
 
     @staticmethod
@@ -404,10 +299,12 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
 
     @staticmethod
     async def _broadcast_scoped(event: str, payload: dict) -> None:
-        """带 scope/chat_id 的广播：从 payload.scope 解析 chat_id 一并推给前端，
-        前端 buckets[chat_id] 据此路由。"""
+        """仅转发 WebUI 会话事件，其他频道和内部任务不进入 Web 消息桶。"""
+        from agent.messages.everything import parse_entity_scope
+
         scope = str(payload.get("scope") or "")
-        chat_id = str(payload.get("chat_id") or "")
-        if not chat_id and "#" in scope:
-            chat_id = scope.split("#", 1)[1]
+        scope_type, adapter, _user_id, session_id = parse_entity_scope(scope)
+        if scope_type != "user" or adapter != "webui":
+            return
+        chat_id = session_id or "default"
         await WebUIChannel._broadcast(event, {**payload, "chat_id": chat_id})

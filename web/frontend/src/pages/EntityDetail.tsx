@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, Suspense } from "react";
+import { useMemo, Suspense } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -6,9 +6,11 @@ import { entitiesApi } from "@/lib/api";
 import { TabBar } from "@/components/common/TabBar";
 import { Card } from "@/components/common/Card";
 import { StatusDot } from "@/components/common/StatusDot";
-import { Switch } from "@/components/ui";
-import { cn } from "@/lib/utils";
-import type { ConfigValues, EntityDetail as EntityDetailType } from "@/lib/types";
+import { Button } from "@/components/ui";
+import { QueryError, PageSkeleton } from "@/components/common/AsyncState";
+import { SectionBoundary } from "@/components/common/SectionBoundary";
+import { RegisteredConfigPanel } from "./config/RegisteredConfigPanel";
+import { useRouteTab } from "@/hooks/useRouteTab";
 import { getEntityPanel } from "@/lib/entity-panels";
 import {
   ArrowLeft,
@@ -16,139 +18,38 @@ import {
   Wrench,
   LayoutDashboard,
   PanelRight,
-  Save,
 } from "lucide-react";
 
 type EntityTab = "overview" | "config" | "tools" | "panel";
-
-function ConfigForm({ entity }: { entity: EntityDetailType }) {
-  const { t } = useTranslation("entities");
-  const queryClient = useQueryClient();
-  const [draft, setDraft] = useState<ConfigValues>({});
-  const [dirty, setDirty] = useState(false);
-
-  useEffect(() => {
-    const initial: ConfigValues = {};
-    for (const item of entity.config_items) {
-      initial[item.key] = item.value ?? item.default;
-    }
-    setDraft(initial);
-    setDirty(false);
-  }, [entity]);
-
-  const saveMutation = useMutation({
-    mutationFn: () => entitiesApi.updateConfigBatch(entity.name, draft),
-    onSuccess: () => {
-      setDirty(false);
-      queryClient.invalidateQueries({ queryKey: ["entity-detail", entity.name] });
-    },
-  });
-
-  if (!entity.config_items.length) {
-    return <p className="text-sm text-muted py-4">{t("config.empty")}</p>;
-  }
-
-  return (
-    <div className="space-y-4">
-      {entity.config_items.map((item) => (
-        <div key={item.key} className="flex items-center gap-3">
-          <div className="flex-1 min-w-0">
-            <label className="text-xs font-medium text-foreground block">{item.key}</label>
-            <p className="text-[10px] text-muted">{item.description}</p>
-          </div>
-          <div className="w-56 flex justify-end">
-            {item.type === "boolean" ? (
-              <Switch
-                checked={Boolean(draft[item.key])}
-                disabled={!item.editable}
-                onChange={(v) => { setDraft((d) => ({ ...d, [item.key]: v })); setDirty(true); }}
-              />
-            ) : item.enum_options?.length ? (
-              <select
-                value={String(draft[item.key] ?? "")}
-                disabled={!item.editable}
-                onChange={(e) => { setDraft((d) => ({ ...d, [item.key]: e.target.value })); setDirty(true); }}
-                className="w-full px-2 py-1.5 rounded-md border border-border bg-elevated text-xs text-foreground"
-              >
-                {item.enum_options.map((opt) => (
-                  <option key={opt} value={opt}>{opt}</option>
-                ))}
-              </select>
-            ) : (
-              <input
-                type={item.type === "integer" || item.type === "float" ? "number" : "text"}
-                value={typeof draft[item.key] === "object"
-                  ? JSON.stringify(draft[item.key])
-                  : String(draft[item.key] ?? "")}
-                disabled={!item.editable}
-                onChange={(e) => { setDraft((d) => ({ ...d, [item.key]: e.target.value })); setDirty(true); }}
-                className="w-full px-2 py-1.5 rounded-md border border-border bg-elevated text-xs text-foreground font-mono"
-              />
-            )}
-          </div>
-        </div>
-      ))}
-      {dirty && (
-        <button
-          onClick={() => saveMutation.mutate()}
-          disabled={saveMutation.isPending}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-accent text-white text-xs font-medium hover:opacity-90 disabled:opacity-50"
-        >
-          <Save size={12} />
-          {t("config.save")}
-        </button>
-      )}
-    </div>
-  );
-}
 
 export default function EntityDetail() {
   const { name } = useParams<{ name: string }>();
   const navigate = useNavigate();
   const { t } = useTranslation("entities");
-  const [tab, setTab] = useState<EntityTab>("overview");
+  const queryClient = useQueryClient();
 
-  // 同步解析面板（import.meta.glob 在构建时已解析，无异步开销）
-  // 支持 group 名与目录名不一致的情况（如 file_share → share.tsx）
-  const PanelComponent = useMemo(
-    () => (name ? getEntityPanel(name) : null),
-    [name],
-  );
+  const PanelComponent = useMemo(() => name ? getEntityPanel(name) : null, [name]);
+  const [tab, setTab] = useRouteTab<EntityTab>(PanelComponent ? ["panel", "overview", "config", "tools"] : ["overview", "config", "tools"], PanelComponent ? "panel" : "overview");
 
-  // 有专属面板的实体默认落在 panel 页签（实体页即其功能主入口）
-  useEffect(() => {
-    setTab(PanelComponent ? "panel" : "overview");
-  }, [PanelComponent]);
-
-  const { data: entity, isError } = useQuery({
+  const query = useQuery({
     queryKey: ["entity-detail", name],
-    queryFn: () => entitiesApi.detail(name!).then((r) => r.data as EntityDetailType),
+    queryFn: () => entitiesApi.detail(name!).then((r) => r.data),
     enabled: !!name,
-    retry: false,
+    throwOnError: false,
   });
 
   const toggleMutation = useMutation({
     mutationFn: (enabled: boolean) => entitiesApi.toggle(name!, enabled),
+    onSuccess: async () => { await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["entity-detail", name] }),
+      queryClient.invalidateQueries({ queryKey: ["tools-grouped"] }),
+      queryClient.invalidateQueries({ queryKey: ["entities"] }),
+    ]); },
   });
 
-  if (isError) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full gap-3 text-sm text-muted">
-        <p>{t("notFound")}</p>
-        <button onClick={() => navigate("/tools")} className="text-accent hover:underline text-xs">
-          ← {t("backToTools")}
-        </button>
-      </div>
-    );
-  }
-
-  if (!entity) {
-    return (
-      <div className="flex items-center justify-center h-full text-sm text-muted">
-        {t("loading")}
-      </div>
-    );
-  }
+  const entity = query.data;
+  if (query.isError && !entity) return <div className="p-5"><QueryError error={query.error} retry={() => void query.refetch()} /></div>;
+  if (!entity) return <div className="p-5"><PageSkeleton /></div>;
 
   const manifest = entity.manifest;
   const displayName = manifest?.display_name || entity.group || entity.name;
@@ -166,7 +67,8 @@ export default function EntityDetail() {
         <div className="flex items-center gap-3">
           <button
             onClick={() => navigate("/tools")}
-            className="p-1.5 rounded-md text-muted hover:text-foreground hover:bg-hover transition-colors"
+            aria-label={t("backToTools")}
+            className="grid size-10 shrink-0 place-items-center rounded-lg text-muted hover:text-foreground hover:bg-hover transition-colors"
           >
             <ArrowLeft size={16} />
           </button>
@@ -179,27 +81,20 @@ export default function EntityDetail() {
                 </span>
               )}
             </div>
-            <p className="text-xs text-muted mt-0.5 truncate">
+            <p className="text-sm leading-relaxed text-muted mt-1">
               {manifest?.description || entity.description}
             </p>
           </div>
-          <button
-            onClick={() => toggleMutation.mutate(!entity.enabled)}
-            className={cn(
-              "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all",
-              entity.enabled
-                ? "bg-ok-subtle text-ok border border-ok"
-                : "bg-hover text-muted border border-border",
-            )}
-          >
+          <Button size="sm" loading={toggleMutation.isPending} aria-pressed={entity.enabled}
+            onClick={() => toggleMutation.mutate(!entity.enabled)}>
             <StatusDot status={entity.enabled ? "ok" : "offline"} />
             {entity.enabled ? t("enabled") : t("disabled")}
-          </button>
+          </Button>
         </div>
       </div>
 
       {/* TabBar */}
-      <div className="px-4 md:px-6 border-b border-border">
+      <div className="px-4 md:px-6 pb-3 border-b border-border">
         <TabBar tabs={tabs} activeTab={tab} onChange={setTab} />
       </div>
 
@@ -234,8 +129,8 @@ export default function EntityDetail() {
         )}
 
         {tab === "config" && (
-          <div className="max-w-2xl">
-            <ConfigForm entity={entity} />
+          <div className="mx-auto max-w-4xl">
+            <RegisteredConfigPanel key={name} group={entity.config_group} />
           </div>
         )}
 
@@ -249,7 +144,7 @@ export default function EntityDetail() {
                   <StatusDot status={tool.enabled ? "ok" : "offline"} />
                   <div className="flex-1 min-w-0">
                     <span className="text-xs font-mono text-foreground">{tool.name}</span>
-                    {tool.description && <p className="text-[10px] text-muted truncate">{tool.description}</p>}
+                    {tool.description && <p className="text-xs leading-relaxed text-muted">{tool.description}</p>}
                   </div>
                 </div>
               ))
@@ -258,10 +153,10 @@ export default function EntityDetail() {
         )}
 
         {tab === "panel" && PanelComponent && (
-          <Suspense fallback={<div className="text-sm text-muted py-4">{t("loading")}</div>}>
+          <SectionBoundary><Suspense fallback={<div className="text-sm text-muted py-4">{t("loading")}</div>}>
             {/* eslint-disable-next-line react-hooks/static-components -- 面板按实体名动态解析：注册表模块加载时预建（entity-panels.ts），非渲染期创建组件 */}
             <PanelComponent />
-          </Suspense>
+          </Suspense></SectionBoundary>
         )}
       </div>
     </div>

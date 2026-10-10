@@ -22,7 +22,7 @@ export function SystemNotice({ content, tone }: Props) {
           "inline-flex items-start gap-1.5 max-w-[85%] rounded-md px-3 py-1 text-[11px] leading-relaxed",
           tone === "warn"
             ? "bg-warn-subtle text-warn"
-            : "bg-muted/50 text-muted",
+            : "bg-elevated text-muted",
         )}
       >
         {tone === "warn" ? <AlertTriangle size={11} className="mt-0.5 shrink-0" /> : <Info size={11} className="mt-0.5 shrink-0" />}

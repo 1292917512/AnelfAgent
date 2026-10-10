@@ -11,7 +11,7 @@ import pytest
 @pytest.fixture
 def anything():
     """默认会话实体替身（SimpleNamespace 形态，够 think_loop 路由使用）。"""
-    return SimpleNamespace(adapter_key="test", uid=1, group_id=0)
+    return SimpleNamespace(adapter_key="test", uid=1, group_id=0, get_text_content=lambda: "你好")
 
 
 @pytest.fixture

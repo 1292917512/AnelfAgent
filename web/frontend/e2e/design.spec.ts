@@ -30,7 +30,7 @@ test("workspace keeps folders and drafts across focused panels and viewport chan
   await page.keyboard.insertText("Draft survives layout changes");
   if (!isMobile) {
     await page.getByRole("button", { name: "Expand sidebar", exact: true }).click();
-    const execution = await page.locator(".execution-workspace").boundingBox();
+    const execution = await page.getByRole("region", { name: "Global execution", exact: true }).boundingBox();
     expect(execution!.width).toBeGreaterThanOrEqual(499);
     await page.setViewportSize({ width: 2250, height: 1050 });
     await page.getByRole("button", { name: "Panels", exact: true }).click();

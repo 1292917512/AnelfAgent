@@ -402,29 +402,37 @@ async def think_loop(
     # 工具数组顺序由 ToolAssembly 跨回复追加式冻结（见 tool_assembly），
     # 会话内/回复间均字节稳定，无需在此再冻结。
 
-    try:
-        await _run_think_rounds(ctx, state, safety_limit, start_time)
-    finally:
-        # 结束原因收口（调用方传入 completion 容器时写出）：
-        # 中断 > 预算耗尽标记 > 默认完成
-        if ctx.completion is not None:
-            ctx.completion["reason"] = (
-                "interrupted" if state.interrupted else state.completion_reason
-            )
-            # 最终消息链（base + 工具链）随容器带出：SubAgent 据此持久化
-            # transcript 供 follow_up 续跑。中断路径消息不完整，同样带出
-            # （是否可续跑由 messages 是否存在决定，收束路径恒有值）。
-            ctx.completion["messages"] = ctx.base_messages + ctx.tool_chain
-        # 正常结束由 _finish_round 收敛；未走正常出口的中断、异常和预算耗尽只可取消。
-        if not state.plan_finalized:
-            try:
-                from agent.planning import tracker as _plan_tracker
-                await _plan_tracker.finalize_plan(
-                    ctx.current_scope,
-                    "cancelled",
+    from core.activity import activity_scope
+
+    async with activity_scope(
+        ctx.turn_id, ctx.current_scope,
+        label=anything.get_text_content() if anything is not None else "",
+        kind="conversation" if mode == ThinkMode.REPLY else "reflection",
+    ) as activity:
+        try:
+            await _run_think_rounds(ctx, state, safety_limit, start_time)
+        finally:
+            activity.status = "cancelled" if state.interrupted else state.completion_reason
+            # 结束原因收口（调用方传入 completion 容器时写出）：
+            # 中断 > 预算耗尽标记 > 默认完成
+            if ctx.completion is not None:
+                ctx.completion["reason"] = (
+                    "interrupted" if state.interrupted else state.completion_reason
                 )
-            except Exception:
-                pass  # 收敛失败不影响主流程
+                # 最终消息链（base + 工具链）随容器带出：SubAgent 据此持久化
+                # transcript 供 follow_up 续跑。中断路径消息不完整，同样带出
+                # （是否可续跑由 messages 是否存在决定，收束路径恒有值）。
+                ctx.completion["messages"] = ctx.base_messages + ctx.tool_chain
+            # 正常结束由 _finish_round 收敛；未走正常出口的中断、异常和预算耗尽只可取消。
+            if not state.plan_finalized:
+                try:
+                    from agent.planning import tracker as _plan_tracker
+                    await _plan_tracker.finalize_plan(
+                        ctx.current_scope,
+                        "cancelled",
+                    )
+                except Exception:
+                    pass  # 收敛失败不影响主流程
 
 
 async def _run_think_rounds(
@@ -1680,6 +1688,7 @@ async def execute_one_tool(
 ) -> str:
     """执行单个工具调用。"""
     from agent.mind.autonomous import MindPhase
+    from core.activity import ACTIVITY_TEXT_LIMIT
     from core.log import current_log_actor
     from core.tool_context import request_trace
 
@@ -1693,6 +1702,8 @@ async def execute_one_tool(
         "tool_name": tc.name,
         "tool_id": tc.id,
         "arguments_preview": tc.arguments[:300] if tc.arguments else "",
+        "arguments": (tc.arguments or "")[:ACTIVITY_TEXT_LIMIT],
+        "arguments_truncated": len(tc.arguments or "") > ACTIVITY_TEXT_LIMIT,
         "iteration": iteration,
     })
     log(f"执行工具: {tc.name}", tag="思维")
@@ -1705,6 +1716,8 @@ async def execute_one_tool(
     t0 = time.time()
     try:
         result = await mind.tool_executor(tc)  # type: ignore[misc]
+        from core.tool_results import extract_error_text
+        result_error = extract_error_text(result)
         elapsed_ms = (time.time() - t0) * 1000
         await event_bus.emit(EVENT_THINKING_TOOL_END, {
             "actor": current_log_actor(),
@@ -1714,7 +1727,10 @@ async def execute_one_tool(
             "tool_id": tc.id,
             "duration_ms": round(elapsed_ms),
             "result_preview": result[:300] if result else "",
-            "success": True,
+            "result": (result or "")[:ACTIVITY_TEXT_LIMIT],
+            "result_truncated": len(result or "") > ACTIVITY_TEXT_LIMIT,
+            "error": result_error,
+            "success": not bool(result_error),
         })
         # 用户 hook（tool_post）：fire 型事件，阻塞语义对工具结果无意义，
         # 只投递预览（记录/通知类脚本的挂点）。空配置零开销短路

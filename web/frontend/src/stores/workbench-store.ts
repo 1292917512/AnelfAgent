@@ -44,9 +44,9 @@ interface WorkbenchState {
   containerWidth: number | null;
   setContainerWidth: (width: number | null) => void;
   activeSurface: WorkbenchSurface | null;
-  executionTab: "runs" | "agents" | "web";
-  setExecutionTab: (tab: "runs" | "agents" | "web") => void;
   chatOpen: boolean;
+  chatExpanded: boolean;
+  toggleChatExpanded: () => void;
   toggleChat: () => void;
   showExecution: () => void;
   showSurface: (surface: WorkbenchSurface) => void;
@@ -110,15 +110,15 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   containerWidth: null,
   setContainerWidth: (containerWidth) => set({ containerWidth }),
   activeSurface: null,
-  executionTab: "runs",
-  setExecutionTab: (executionTab) => set({ executionTab }),
   chatOpen: true,
-  toggleChat: () => set((state) => ({ chatOpen: !state.chatOpen, activeSurface: state.chatOpen ? null : "chat" })),
-  showExecution: () => set({ activeSurface: null, filePanelExpanded: false, executionTab: "runs" }),
-  showSurface: (activeSurface) => set({ activeSurface,
+  chatExpanded: false,
+  toggleChatExpanded: () => set((state) => ({ chatExpanded: !state.chatExpanded, chatOpen: true, activeSurface: "chat" })),
+  toggleChat: () => set((state) => ({ chatExpanded: false, chatOpen: !state.chatOpen, activeSurface: state.chatOpen ? null : "chat" })),
+  showExecution: () => set({ chatExpanded: false, activeSurface: null, filePanelExpanded: false }),
+  showSurface: (activeSurface) => set({ activeSurface, chatExpanded: false,
     ...(activeSurface === "files" ? { leftOpen: true } : activeSurface === "dock" ? { dockOpen: true } : activeSurface === "chat" ? { chatOpen: true } : { filePanelOpen: true }),
   }),
-  dismissSurface: () => set({ activeSurface: null }),
+  dismissSurface: () => set({ activeSurface: null, chatExpanded: false }),
   leftOpen: false,
   dockOpen: false,
   activeTab: "status",
@@ -136,9 +136,9 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   notifications: [],
   asks: [],
 
-  toggleLeft: () => set((s) => ({ leftOpen: !s.leftOpen, activeSurface: s.leftOpen ? null : "files" })),
-  toggleDock: () => set((s) => ({ dockOpen: !s.dockOpen, activeSurface: s.dockOpen ? null : "dock" })),
-  setActiveTab: (tab) => set({ activeTab: tab, dockOpen: true, activeSurface: "dock" }),
+  toggleLeft: () => set((s) => ({ chatExpanded: false, leftOpen: !s.leftOpen, activeSurface: s.leftOpen ? null : "files" })),
+  toggleDock: () => set((s) => ({ chatExpanded: false, dockOpen: !s.dockOpen, activeSurface: s.dockOpen ? null : "dock" })),
+  setActiveTab: (tab) => set({ chatExpanded: false, activeTab: tab, dockOpen: true, activeSurface: "dock" }),
 
   openPanel: (panel, payload = "") => {
     if (panel === "trace") { get().showExecution(); return; }
@@ -152,11 +152,11 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
         if (!reference.isDir) { get().openFile(reference.path, reference.root); surface = "editor"; }
         set({ fileTreeFocus: reference.path, fileTreeRoot: reference.root });
       }
-      set((state) => ({ leftOpen: true, activeSurface: surface, panelRequestSeq: state.panelRequestSeq + 1 }));
+      set((state) => ({ chatExpanded: false, leftOpen: true, activeSurface: surface, panelRequestSeq: state.panelRequestSeq + 1 }));
       return;
     }
     const tab = DOCK_TABS.find((tab) => tab === panel) ?? "status";
-    set((state) => ({ activeTab: tab, dockOpen: true, activeSurface: "dock", panelRequestSeq: state.panelRequestSeq + 1 }));
+    set((state) => ({ chatExpanded: false, activeTab: tab, dockOpen: true, activeSurface: "dock", panelRequestSeq: state.panelRequestSeq + 1 }));
     if (tab === "search" && payload) set({ searchSeed: payload });
   },
 
@@ -165,11 +165,11 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
     const id = workspaceFileId(file);
     return {
       openFiles: state.openFiles.some((entry) => workspaceFileId(entry) === id) ? state.openFiles : [...state.openFiles, file],
-      activeFileId: id, filePanelOpen: true, selection: null, activeSurface: "editor",
+      chatExpanded: false, activeFileId: id, filePanelOpen: true, selection: null, activeSurface: "editor",
     };
   }),
   activateFile: (id) => set((state) => state.openFiles.some((file) => workspaceFileId(file) === id)
-    ? { activeFileId: id, filePanelOpen: true, selection: null, activeSurface: "editor" } : state),
+    ? { chatExpanded: false, activeFileId: id, filePanelOpen: true, selection: null, activeSurface: "editor" } : state),
   closeFile: (id) => set((state) => {
     const target = id ?? state.activeFileId;
     const index = state.openFiles.findIndex((file) => workspaceFileId(file) === target);
@@ -209,7 +209,7 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
     };
   }),
   collapseFilePanel: () => set({ filePanelOpen: false, selection: null, activeSurface: null }),
-  toggleFilePanelExpanded: () => set((s) => ({ filePanelExpanded: !s.filePanelExpanded, filePanelOpen: true })),
+  toggleFilePanelExpanded: () => set((s) => ({ chatExpanded: false, filePanelExpanded: !s.filePanelExpanded, filePanelOpen: true, activeSurface: "editor" })),
   setFileTreeFocus: (path, root) => set((state) => ({ fileTreeFocus: path, fileTreeRoot: root ?? state.fileTreeRoot })),
   setFileTreeRoot: (fileTreeRoot) => set({ fileTreeRoot, fileTreeFocus: null }),
   setSelection: (sel) => set({ selection: sel }),

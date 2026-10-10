@@ -108,7 +108,9 @@ class EntityService:
             "name": metadata.name,
             "type": metadata.entity_type.value,
             "description": metadata.description,
-            "enabled": metadata.enabled,
+            "enabled": metadata.enabled if EntityRegistry.get(name) else all(
+                item.enabled for item in EntityRegistry.get_by_group(group)
+            ),
             "group": group,
             "source": metadata.source,
             "tags": metadata.tags,
@@ -197,10 +199,14 @@ class EntityService:
         return count
 
     def set_entity_enabled(self, name: str, enabled: bool) -> bool:
-        """启用/禁用实体，并持久化到 app_config.json（实现归 EntityRegistry.set_enabled）。"""
+        """按实体名或分组名设置启用状态，经注册表统一持久化。"""
         from core.entity import EntityRegistry
 
-        return EntityRegistry.set_enabled(name, enabled)
+        if EntityRegistry.get(name) is not None:
+            return EntityRegistry.set_enabled(name, enabled)
+        if EntityRegistry.get_by_group(name):
+            return EntityRegistry.set_group_enabled(name, enabled) > 0
+        return False
 
     @staticmethod
     def apply_entity_states() -> int:

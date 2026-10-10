@@ -30,7 +30,7 @@ function FileHeader({ meta, additions, removals, open, onToggle }: {
   return (
     <button
       onClick={onToggle}
-      className="flex items-center gap-2 w-full px-2.5 py-1.5 text-left hover:bg-muted/60 transition-colors"
+      className="flex items-center gap-2 w-full px-2.5 py-1.5 text-left hover:bg-elevated transition-colors"
     >
       {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
       {meta.binary
@@ -107,13 +107,13 @@ const ROW_BG: Record<string, string> = {
   add: "bg-green-500/10",
   del: "bg-red-500/10",
   context: "",
-  hunk: "bg-muted/40",
+  hunk: "bg-elevated",
 };
 const GUTTER_BG: Record<string, string> = {
   add: "bg-green-500/20",
   del: "bg-red-500/20",
-  context: "bg-muted/30",
-  hunk: "bg-muted/60",
+  context: "bg-elevated",
+  hunk: "bg-elevated",
 };
 const TEXT_CLS: Record<string, string> = {
   add: "text-green-700 dark:text-green-300",
@@ -168,7 +168,7 @@ export function DiffView({
   const lines = parseUnifiedDiff(diff);
 
   return (
-    <div className="rounded border border-border/60 bg-muted/40 text-xs overflow-hidden">
+    <div className="rounded border border-border/60 bg-elevated text-xs overflow-hidden">
       <FileHeader
         meta={{ path, move_from, binary }}
         additions={additions}

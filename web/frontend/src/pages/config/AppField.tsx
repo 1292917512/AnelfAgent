@@ -22,7 +22,7 @@ interface AppFieldProps {
 
 export function AppField({ meta, value, onChange }: AppFieldProps) {
   const base =
-    "w-full text-sm bg-elevated border border-border rounded-md px-2.5 py-1.5 text-heading focus:outline-none focus:border-accent transition-colors";
+    "w-full text-sm bg-card border border-input rounded-lg px-2.5 py-1.5 text-heading focus:outline-none focus:border-accent transition-colors";
 
   const renderInput = () => {
     if (meta.type === "bool") {
@@ -91,7 +91,7 @@ export function AppField({ meta, value, onChange }: AppFieldProps) {
         {meta.type === "bool" && renderInput()}
       </div>
       {meta.desc && (
-        <p className="text-[11px] text-muted opacity-70 line-clamp-2" title={meta.desc}>
+        <p className="text-xs leading-relaxed text-muted" title={meta.desc}>
           {meta.desc}
         </p>
       )}

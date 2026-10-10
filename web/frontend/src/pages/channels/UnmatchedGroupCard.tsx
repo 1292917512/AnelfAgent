@@ -32,7 +32,7 @@ export function UnmatchedGroupCard({
   const PluginLogin = CHANNEL_LOGIN_COMPONENTS[channelKey];
   return (
     <div className={cn(
-      "rounded-md border transition-all bg-card",
+      "rounded-xl border transition-colors bg-card",
       isOpen ? "border-accent shadow-[0_0_0_2px_var(--bg),0_0_0_4px_var(--ring)]"
              : "border-border hover:border-border-strong",
     )}>
@@ -60,7 +60,7 @@ export function UnmatchedGroupCard({
             onClick={onStart}
             disabled={toggling}
             className={cn(
-              "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border transition-all disabled:opacity-70",
+              "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-xl border transition-colors disabled:opacity-70",
               toggling
                 ? "border-border text-warn bg-warn-subtle cursor-wait"
                 : "border-[rgba(34,197,94,0.3)] text-ok hover:bg-ok-subtle",

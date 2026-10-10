@@ -9,9 +9,12 @@ export function useConfigSave(key: string) {
     scope: { id: `config:${key}` },
     mutationFn: (value: unknown) => configMetaApi.save(key, value),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["configMeta"] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["configMeta"] }),
+        queryClient.invalidateQueries({ queryKey: ["entity-detail"] }),
+      ]);
       triggerSaved();
     },
   });
-  return { save: mutation.mutate, saving: mutation.isPending, saved };
+  return { save: mutation.mutate, saving: mutation.isPending, saved, error: mutation.error };
 }

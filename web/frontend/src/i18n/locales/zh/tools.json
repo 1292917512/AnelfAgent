@@ -14,7 +14,7 @@
   "enable": "启用",
   "editToolProps": "编辑工具属性",
   "toolName": "工具名称",
-  "tagsLabel": "标签（逗号分隔）",
+  "tagsLabel": "工具标签",
   "tagsHint": "always = 常驻工具 | core = 核心工具 | output = 输出工具 | media:image = 图片处理",
   "toolDescription": "工具描述",
   "groups": {
@@ -43,5 +43,15 @@
   "tagCount": "{{count}} 个标签",
   "tagActiveCount": "（已激活 {{count}} 个）",
   "openEntity": "打开实体详情",
-  "entityPage": "详情"
+  "entityPage": "详情",
+  "subtitle": "查找能力、管理可用状态，调整工具说明与标签。",
+  "matchedCount": "找到 {{count}} 个工具",
+  "statusFilter": "工具状态",
+  "statusAll": "全部工具",
+  "statusEnabled": "已启用",
+  "statusDisabled": "已停用",
+  "filterTags": "标签筛选",
+  "searchTags": "搜索标签",
+  "removeTag": "移除标签：{{tag}}",
+  "resetFilters": "清除筛选"
 }

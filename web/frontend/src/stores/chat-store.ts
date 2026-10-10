@@ -2,15 +2,15 @@
  * Chat store — 按 chat_id 分桶的对话状态。
  *
  * 关键设计：
- * - buckets[chat_id] 持有该会话的 messages / streaming / pendingFiles 等全部状态
+ * - buckets[chat_id] 持有该会话的 messages / pendingFiles 等全部状态
  * - activeChatId 控制当前激活的会话（Header tab / 新建 / 切换）
- * - SSE 单连接：所有事件带 chat_id，路由到对应 bucket（事件处理见 chat-sse-handlers.ts）
+ * - SSE 单连接：Web 消息按 chat_id 路由，全局过程独立交给 activity-store
  * - plan / delegation 事件分流到 plan-store / delegation-store（按 chat_id 维度）
  * - 文件上传逻辑见 chat-upload.ts；共享常量/工具见 chat-shared.ts
  *
- * 兼容：默认 chat_id = "default"（即旧 scope=user_web_user），历史数据无缝衔接。
  */
 import { create } from "zustand";
+import { useActivityStore } from "./activity-store";
 import { captureWorkspaceContext } from "@/lib/workspace-context";
 import { fileReferenceMarkdown } from "@/lib/file-reference";
 import { usePlanStore } from "./plan-store";
@@ -252,7 +252,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         // 无进行中的回复/子代理：本地直接复位发送态，避免空等 turn_end
         if (r.data?.status === "idle") {
           clearSendWatchdog(chatId);
-          updateBucket(chatId, () => ({ sending: false, sendingSince: null, streaming: null }));
+          updateBucket(chatId, () => ({ sending: false, sendingSince: null }));
         }
       } catch { /* 中断失败时由看门狗兜底复位 */ }
     },
@@ -310,16 +310,14 @@ export const useChatStore = create<ChatState>((set, get) => {
         updateBucket,
         getActiveChatId: () => get().activeChatId,
         setContextUsage: (usage) => set({ contextUsage: usage }),
-        forEachBucket: (fn) => {
-          for (const cid of Object.keys(get().buckets)) fn(cid);
-        },
       });
 
       es.onopen = () => {
         set({ sseConnected: true });
+        void useActivityStore.getState().load();
         if (_wasConnected) {
           // 断线重连：补拉当前会话最近一页历史——断线窗口内落地的回复
-          // 帧（delta/turn_end）不会重发，只有刷新历史才能补齐
+          // reply/turn_end 帧不会重发，刷新历史补齐实际交流内容。
           const chatId = get().activeChatId;
           void get().refreshAfterReconnect(chatId);
         }
@@ -483,7 +481,6 @@ export const useChatStore = create<ChatState>((set, get) => {
         updateBucket(cid, (cur) => ({
           sending: false,
           sendingSince: null,
-          streaming: null,
           messages: [
             ...cur.messages,
             { role: "system", kind: "system_notice", tone: "warn", content: i18n.t("sendTimeout", { ns: "chat" }), cid: nextCid(), ts: Date.now() / 1000 },

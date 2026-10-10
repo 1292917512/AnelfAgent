@@ -319,6 +319,8 @@ async def _invoke_llm_unified(
         "ttft_ms": round(result.ttft_ms) if result.ttft_ms is not None else None,
         "has_content": bool(result.content),
         "content_preview": (result.content or "")[:200],
+        "content": (result.content or "")[:_REASONING_TRACE_MAX],
+        "content_truncated": len(result.content or "") > _REASONING_TRACE_MAX,
         "tool_calls": [tc.name for tc in result.tool_calls] if result.tool_calls else [],
         "has_reasoning": bool(result.reasoning_content),
         "reasoning_preview": (result.reasoning_content or "")[:800],

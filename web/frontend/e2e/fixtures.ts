@@ -44,6 +44,7 @@ export async function mockApi(page: Page) {
       "/delegations/history": { items: [] },
       "/thinking/status": { enabled: false },
       "/thinking/sessions": { sessions: [], count: 0 },
+      "/workspace/activity": { epoch: "test", revision: 0, runs: [] },
       "/workspace/tree": { path: "", children: [{ name: "note.txt", path: "note.txt", type: "file", size: 8, modified: 0 }], truncated: false },
     };
     if (path === "/chat/stream") { await route.fulfill({ contentType: "text/event-stream", body: ": connected\n\n" }); return; }

@@ -6,10 +6,15 @@ export interface WorkbenchPanels {
   dock: boolean;
   expanded: boolean;
   chat: boolean;
+  chatExpanded: boolean;
 }
 
 /** 以内容所需的最小宽度分配并排面板，剩余面板通过显式抽屉访问。 */
 export function resolveWorkbenchLayout(width: number, panels: WorkbenchPanels, activeSurface: WorkbenchSurface | null = null) {
+  if (panels.chat && panels.chatExpanded && width >= 960) return {
+    executionVisible: false, executionHidden: true, filesInline: false, editorInline: false, dockInline: false,
+    chatInline: true, chatVisible: true, filesVisible: false, editorVisible: false, dockVisible: false,
+  };
   const editorInline = panels.editor && width >= 960;
   const executionHidden = editorInline && panels.expanded;
   let remaining = width - (executionHidden ? 0 : 500) - (editorInline ? 420 + (executionHidden ? 0 : 4) : 0);

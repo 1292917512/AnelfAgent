@@ -12,7 +12,7 @@ export function ContributionTools({ slot }: { slot: "workspace.tools" | "dashboa
   if (!getUiContributions(slot).length) return null;
   return <>
     <Button variant="ghost" size="sm" onClick={() => setOpen(true)} aria-label={title} title={title}>
-      <Wrench size={16} /><span className="hidden sm:inline">{slot === "dashboard.actions" ? title : t("tools")}</span>
+      <Wrench size={16} /><span className={slot === "dashboard.actions" ? "" : "hidden sm:inline"}>{slot === "dashboard.actions" ? title : t("tools")}</span>
     </Button>
     <Modal open={open} onClose={() => setOpen(false)} title={title}>
       <ContributionSlot slot={slot} />

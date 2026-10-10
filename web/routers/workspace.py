@@ -20,6 +20,14 @@ router = APIRouter(prefix="/workspace", tags=["workspace"])
 _svc = WorkspaceService()
 
 
+@router.get("/activity")
+async def activity_snapshot() -> Dict[str, Any]:
+    """获取独立于详细追踪的近期实时执行过程。"""
+    from services.workspace_activity import workspace_activity
+
+    return workspace_activity.snapshot()
+
+
 @router.get("/tree")
 async def get_tree(
     path: str = Query(""),

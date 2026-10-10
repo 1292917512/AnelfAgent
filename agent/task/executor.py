@@ -244,13 +244,15 @@ class TaskExecutor:
         if reasoning_effort:
             options["reasoning_effort"] = reasoning_effort
 
-        raw = await self.mind.reflect(
-            messages,
-            options=options,
-            tool_tags=task.tool_tags or None,
-            allow_output_tools=task.allow_output_tools,
-            completion=completion,
-        )
+        from core.activity import activity_owner
+        with activity_owner(kind="task", label=task.name, owner_id=task.name):
+            raw = await self.mind.reflect(
+                messages,
+                options=options,
+                tool_tags=task.tool_tags or None,
+                allow_output_tools=task.allow_output_tools,
+                completion=completion,
+            )
         cleaned = _clean_llm_output(raw)
         if not task.handoff:
             return cleaned

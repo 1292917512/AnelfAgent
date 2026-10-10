@@ -1,0 +1,24 @@
+.tools-filterbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.tools-filterbar > div:first-child { flex-basis: 320px; }
+.tools-filterbar input { height: 40px; }
+.filter-chip { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 32px; max-width: 100%; padding: 5px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--muted); font-size: 12px; overflow-wrap: anywhere; transition: color var(--duration-fast), background-color var(--duration-fast), border-color var(--duration-fast); }
+.filter-chip:hover, .filter-chip.is-active { color: var(--accent); background: var(--accent-subtle); border-color: color-mix(in srgb, var(--accent) 30%, var(--border)); }
+.filter-popover[data-state="open"] { animation: fade-in var(--duration-fast) var(--ease-out); }
+.tool-group-header { display: flex; align-items: center; gap: 16px; padding-inline: 16px; }
+.tool-item { display: flex; align-items: start; gap: 20px; padding: 18px 20px; }
+.tool-item-actions { display: flex; flex-shrink: 0; align-items: center; gap: 6px; }
+.config-item-control { margin-left: auto; }
+.config-item-control > input, .config-item-control > select { min-height: 36px; }
+@media (max-width: 767px) {
+  .tools-filterbar > div:first-child { flex-basis: 100%; }
+  .tools-filterbar > select { min-width: 0; flex: 1; min-height: 44px; }
+  .tools-filterbar input, .filter-chip, .app-switch { min-height: 44px; }
+  .tool-group-header { gap: 10px; padding-inline: 12px; }
+  .tool-item { flex-wrap: wrap; gap: 10px; padding: 16px; }
+  .tool-item > div:first-child { flex-basis: 100%; }
+  .tool-item-actions { margin-left: auto; }
+  .config-item > button { min-width: 0; flex-basis: 100%; }
+  .config-item-control { width: 100%; justify-content: flex-end; }
+  .config-item-control > input:not([type="checkbox"]), .config-item-control > textarea, .config-item-control > select { width: 100%; min-width: 0; min-height: 44px; }
+  .config-item-control > button:not([role="switch"]) { min-width: 44px; min-height: 44px; }
+}

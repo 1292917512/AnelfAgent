@@ -22,6 +22,8 @@ import type {
   MCPToggleResult,
   MCPToolInfo,
   PermissionRuleItem,
+  PluginInfo,
+  ToolGroup,
   RetrievalMatrix,
   RetrievalSettings,
   RetrievalTestResult,
@@ -32,13 +34,13 @@ import type {
 
 export const toolsApi = {
   list: () => api.get("/tools/"),
-  grouped: () => api.get("/tools/grouped"),
+  grouped: () => api.get<ToolGroup[]>("/tools/grouped"),
   toggle: (name: string) => api.put(`/tools/${encodeURIComponent(name)}/toggle`),
   toggleGroup: (group: string) => api.put(`/tools/group/${encodeURIComponent(group)}/toggle`),
   updateMeta: (name: string, data: { tags?: string[]; description?: string }) =>
     api.put(`/tools/${encodeURIComponent(name)}/meta`, data),
   reload: () => api.post("/tools/reload"),
-  plugins: () => api.get("/tools/plugins"),
+  plugins: () => api.get<PluginInfo[]>("/tools/plugins"),
 };
 
 // Entities
