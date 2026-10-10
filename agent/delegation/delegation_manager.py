@@ -322,6 +322,8 @@ class DelegationManager:
             "elapsed_seconds": max(0, int(now - float(info.get("started_at", now)))),
             "state": str(info.get("state", "running")),
             "usage": dict(self._usage.get(did) or {}),
+            "parent_id": str(info.get("parent_id", "")),
+            "depth": int(info.get("depth", 0)),
         }
 
     def running_snapshot(self, scope: str) -> List[Dict[str, Any]]:
@@ -599,6 +601,7 @@ class DelegationManager:
             "role": normalize_role(role), "task_index": task_index,
             "background": bool(scope_hint), "model": model_id, "agent": agent_name,
             "started_at": time.time(), "state": "queued",
+            "parent_id": parent_id, "depth": current_depth(),
         }
 
         # 发射 started 事件（前端 DelegationCard 渲染）
@@ -710,6 +713,8 @@ class DelegationManager:
                 journal.LEDGER_STARTED, delegation_id,
                 goal=goal[:200], scope=scope, agent=agent_name, model=model_id,
                 adapter_key=_adapter_key_of(self._mind, scope),
+                parent_id=parent_id, depth=current_depth(),
+                resumed_from=parent_delegation_id,
             )
             self._running[delegation_id] = {
                 **self._queued.pop(delegation_id), "task": run_task, "state": "running",
@@ -778,6 +783,7 @@ class DelegationManager:
             )
             journal.append_ledger(
                 journal.LEDGER_CLOSED, delegation_id, status=status,
+                summary=tail[:400], usage=dict(result.usage),
             )
 
         # 发射 resolved 事件

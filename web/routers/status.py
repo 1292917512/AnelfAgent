@@ -8,7 +8,6 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Query, Request
 from sse_starlette.sse import EventSourceResponse
 
-from core.log import log
 from services import AgentStatusService, is_ready
 
 router = APIRouter(prefix="/status", tags=["status"])
@@ -103,40 +102,17 @@ async def get_log_stats() -> Dict[str, Any]:
 
 @router.get("/logs/stream")
 async def log_stream(request: Request) -> EventSourceResponse:
-    """SSE: 实时推送新日志条目。"""
-    import asyncio
+    """SSE：日志快照与实时增量。"""
     import json
-    import time as _time
+    from contextlib import aclosing
 
-    from core.log import add_listener, remove_listener
-
-    queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue(maxsize=256)
-
-    def on_log(data: Dict[str, Any]) -> None:
-        try:
-            queue.put_nowait(data)
-        except asyncio.QueueFull:
-            log("on_log 异常已忽略", "DEBUG")
-
-    add_listener(on_log)
+    from services.logs import stream_logs
 
     async def event_generator():
-        try:
-            while True:
+        async with aclosing(stream_logs()) as stream:
+            async for event, data in stream:
                 if await request.is_disconnected():
                     break
-                try:
-                    entry = await asyncio.wait_for(queue.get(), timeout=30.0)
-                    payload = {
-                        "level": entry.get("level", "INFO"),
-                        "message": entry.get("message", ""),
-                        "tag": entry.get("tag", ""),
-                        "time": _time.strftime("%H:%M:%S", _time.localtime(entry.get("timestamp", _time.time()))),
-                    }
-                    yield {"event": "log", "data": json.dumps(payload, ensure_ascii=False)}
-                except asyncio.TimeoutError:
-                    yield {"event": "ping", "data": ""}
-        finally:
-            remove_listener(on_log)
+                yield {"event": event, "data": json.dumps(data, ensure_ascii=False)}
 
     return EventSourceResponse(event_generator())

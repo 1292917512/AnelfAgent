@@ -1,214 +1,42 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import {
-  AlertTriangle,
-  Bot,
-  CheckCircle2,
-  CircleSlash,
-  History,
-  Loader2,
-  ScrollText,
-  SendHorizontal,
-  XCircle,
-  Zap,
-} from "lucide-react";
+import { Bot, Loader2 } from "lucide-react";
 import { apiErrorMessage, delegationApi } from "@/lib/api";
 import { useNow } from "@/hooks/useNow";
 import { Card } from "@/components/common/Card";
-import { ProgressDrawer } from "./ProgressDrawer";
+import { QueryError } from "@/components/common/AsyncState";
+import { RunningRow } from "./DelegationRows";
+import { DelegationHistory } from "./DelegationHistory";
 import { Button, Modal, Select, Textarea, toast } from "@/components/ui";
-import { cn } from "@/lib/utils";
 import type { DelegationHistoryItem, DelegationOverviewItem } from "@/lib/types";
 
-/** scope（user_{adapter}:{uid}）→ 频道 adapter 徽标文本 */
-function scopeAdapter(scope: string): string {
-  const m = scope.match(/^[a-z]+_([^:]+):/);
-  return m?.[1] ?? "";
-}
-
-function formatDuration(totalSeconds: number): string {
-  const s = Math.max(0, Math.round(totalSeconds));
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ${s % 60}s`;
-  return `${Math.floor(m / 60)}h ${m % 60}m`;
-}
-
-function formatTokens(n: number): string {
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
-  return String(n);
-}
-
-type StatusTone = "ok" | "danger" | "muted" | "warn";
-
-const STATUS_TONES: Record<DelegationHistoryItem["status"], StatusTone> = {
-  success: "ok",
-  failed: "danger",
-  cancelled: "muted",
-  lost: "warn",
-};
-
-const STATUS_KEYS: Record<DelegationHistoryItem["status"], string> = {
-  success: "statusSuccess",
-  failed: "statusFailed",
-  cancelled: "statusCancelled",
-  lost: "statusLost",
-};
-
-const TONE_CLASSES: Record<StatusTone, string> = {
-  ok: "bg-ok-subtle text-ok",
-  danger: "bg-danger-subtle text-danger",
-  muted: "bg-elevated text-muted",
-  warn: "bg-warn-subtle text-warn",
-};
-
-function StatusChip({ tone, label }: { tone: StatusTone; label: string }) {
-  const Icon = tone === "ok" ? CheckCircle2 : tone === "danger" ? XCircle : tone === "warn" ? AlertTriangle : CircleSlash;
-  return (
-    <span className={cn("inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px]", TONE_CLASSES[tone])}>
-      <Icon size={10} />
-      {label}
-    </span>
-  );
-}
-
-function RunningRow({
-  item,
-  extraSeconds,
-  onShowProgress,
-  onSteer,
-  onCancel,
-  cancelling,
-}: {
-  item: DelegationOverviewItem;
-  /** 距上次数据刷新的本地漂移秒数（耗时平滑跳动） */
-  extraSeconds: number;
-  onShowProgress: () => void;
-  onSteer: () => void;
-  onCancel: () => void;
-  cancelling: boolean;
-}) {
-  const { t } = useTranslation("plan");
-  const adapter = scopeAdapter(item.scope);
-  const usage = item.usage ?? {};
-  const totalTokens = (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0);
-
-  return (
-    <div className="rounded-xl border border-border bg-elevated p-4">
-      <div className="flex items-center gap-2 min-w-0">
-        <Bot size={14} className="shrink-0 text-accent" />
-        <span className="text-sm font-medium text-heading flex-1 min-w-0 line-clamp-3 break-words">
-          {item.goal || t("delegation.untitled")}
-        </span>
-        <span className="text-xs text-muted shrink-0 font-mono">
-          {formatDuration(item.elapsed_seconds + extraSeconds)}
-        </span>
-        {item.background && (
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent-subtle text-accent shrink-0">
-            {t("delegation.background")}
-          </span>
-        )}
-        {item.role === "orchestrator" && (
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-100 dark:bg-purple-900/40 text-purple-600 dark:text-purple-300 shrink-0">
-            <Zap size={9} className="inline -mt-0.5 mr-0.5" />
-            {t("delegation.orchestrator")}
-          </span>
-        )}
-      </div>
-      <div className="flex items-center gap-2 mt-1.5 text-[11px] text-muted flex-wrap">
-        <Loader2 size={11} className="animate-spin shrink-0 text-accent" />
-        <span className="truncate">
-          {item.state === "queued" ? t("delegation.queued") : item.current_tool
-            ? t("delegation.progress.usingTool", { tool: item.current_tool })
-            : item.iteration > 0
-              ? t("delegation.progress.round", { n: item.iteration })
-              : t("delegation.running")}
-        </span>
-        {item.agent && <span className="text-accent truncate">@{item.agent}</span>}
-        {item.model && <span className="truncate">{item.model}</span>}
-        {adapter && (
-          <span className="px-1.5 py-0.5 rounded bg-accent-subtle text-accent text-[10px]">{adapter}</span>
-        )}
-        {(usage.turns ?? 0) > 0 && (
-          <span>{t("delegation.panel.turns", { n: usage.turns })}</span>
-        )}
-        {totalTokens > 0 && (
-          <span>{t("delegation.panel.tokens", { n: formatTokens(totalTokens) })}</span>
-        )}
-      </div>
-      <div className="delegation-actions">
-        <button
-          onClick={onShowProgress}
-          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-muted hover:text-foreground hover:bg-hover transition-colors"
-        >
-          <ScrollText size={11} />
-          {t("delegation.panel.progress")}
-        </button>
-        <button
-          onClick={onSteer}
-          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-accent hover:bg-accent-subtle transition-colors"
-        >
-          <SendHorizontal size={11} />
-          {t("delegation.panel.steer")}
-        </button>
-        <button
-          onClick={onCancel}
-          disabled={cancelling}
-          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-danger hover:bg-danger-subtle transition-colors disabled:opacity-50"
-        >
-          <CircleSlash size={11} />
-          {cancelling ? t("delegation.cancelling") : t("delegation.panel.stop")}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function HistoryRow({ item, onShowProgress }: { item: DelegationHistoryItem; onShowProgress: () => void }) {
-  const { t } = useTranslation("plan");
-  const tone = STATUS_TONES[item.status] ?? "muted";
-  const statusKey = STATUS_KEYS[item.status];
-  const adapter = item.adapter_key || scopeAdapter(item.scope);
-  return (
-    <button
-      onClick={onShowProgress}
-      className="w-full flex flex-wrap items-center gap-2 px-3 py-3 rounded-lg bg-elevated border border-border hover:bg-hover transition-colors text-left"
-    >
-      <StatusChip tone={tone} label={statusKey ? t(`delegation.panel.${statusKey}`) : item.status} />
-      <span className="text-xs text-foreground flex-1 basis-40 min-w-0 line-clamp-2 break-words">{item.goal || t("delegation.untitled")}</span>
-      {item.agent && <span className="text-[10px] text-accent truncate">@{item.agent}</span>}
-      {adapter && <span className="text-[10px] px-1 py-0.5 rounded bg-accent-subtle text-accent">{adapter}</span>}
-      <span className="text-[10px] text-muted font-mono shrink-0">{formatDuration(item.duration_seconds)}</span>
-      <span className="text-[10px] text-muted shrink-0">
-        {new Date(item.finished_at * 1000).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}
-      </span>
-    </button>
-  );
-}
+const ProgressDrawer = lazy(() => import("./ProgressDrawer").then((module) => ({ default: module.ProgressDrawer })));
 
 export function DelegationsPanel() {
   const { t } = useTranslation("plan");
   const queryClient = useQueryClient();
-  const [progressTarget, setProgressTarget] = useState<{ id: string; title: string } | null>(null);
+  const [progressTarget, setProgressTarget] = useState<DelegationOverviewItem | DelegationHistoryItem | null>(null);
   const [steerTarget, setSteerTarget] = useState<DelegationOverviewItem | null>(null);
   const [steerMessage, setSteerMessage] = useState("");
   const [steerMode, setSteerMode] = useState<"steer" | "after">("steer");
   const [cancellingIds, setCancellingIds] = useState<Set<string>>(new Set());
 
-  const { data: overview, dataUpdatedAt } = useQuery({
+  const { data: overview, dataUpdatedAt, error: overviewError, isPending: overviewPending, refetch: refetchOverview } = useQuery({
     queryKey: ["delegations", "overview"],
     queryFn: () => delegationApi.overview().then((r) => r.data),
     refetchInterval: 3000,
   });
-  const { data: history } = useQuery({
+  const { data: history, error: historyError, isPending: historyPending, refetch: refetchHistory } = useQuery({
     queryKey: ["delegations", "history"],
     queryFn: () => delegationApi.history().then((r) => r.data),
     refetchInterval: 10000,
   });
 
   const running = useMemo(() => overview?.running ?? [], [overview]);
-  const historyItems = history?.items ?? [];
+  const historyItems = (history?.items ?? []).filter((item) => !running.some((active) => active.delegation_id === item.delegation_id));
+  const selectedProgress = progressTarget && (running.find((item) => item.delegation_id === progressTarget.delegation_id)
+    ?? historyItems.find((item) => item.delegation_id === progressTarget.delegation_id) ?? progressTarget);
 
   // 运行中时每秒钟刷新耗时显示（数据本身 3s 轮询，漂移量本地补齐）
   const now = useNow(running.length > 0);
@@ -251,7 +79,10 @@ export function DelegationsPanel() {
   });
 
   const steerMutation = useMutation({
-    mutationFn: () => delegationApi.steer(steerTarget!.delegation_id, steerMessage.trim(), steerMode),
+    mutationFn: () => {
+      if (!steerTarget) throw new Error(t("delegation.panel.opFailed"));
+      return delegationApi.steer(steerTarget.delegation_id, steerMessage.trim(), steerMode);
+    },
     onSuccess: (r) => {
       if (r.data.status !== "ok") {
         toast.error(r.data.error || t("delegation.panel.opFailed"));
@@ -273,6 +104,8 @@ export function DelegationsPanel() {
   return (
     <Card
       title={t("delegation.panel.title")}
+      subtitle={t("dashboard:overview.delegationHint")}
+      className="delegation-panel"
       actions={
         running.length > 0 ? (
           <span className="inline-flex items-center gap-1.5 text-xs text-accent">
@@ -282,58 +115,26 @@ export function DelegationsPanel() {
         ) : undefined
       }
     >
-      <div className="delegation-columns">
-        <div>
-          <div className="flex items-center gap-1.5 text-xs font-medium text-muted mb-2">
-            <Bot size={12} />
-            {t("delegation.panel.running")}
-          </div>
-          {running.length > 0 ? (
-            <div className="space-y-3">
-              {running.map((item) => (
-                <RunningRow
-                  key={item.delegation_id}
-                  item={item}
-                  extraSeconds={extraSeconds}
-                  cancelling={cancellingIds.has(item.delegation_id)}
-                  onShowProgress={() => setProgressTarget({ id: item.delegation_id, title: item.goal || t("delegation.untitled") })}
-                  onSteer={() => setSteerTarget(item)}
-                  onCancel={() => handleCancel(item.delegation_id)}
-                />
-              ))}
-            </div>
-          ) : (
-            <p className="text-muted text-sm py-3">{t("delegation.panel.empty")}</p>
-          )}
-        </div>
-
-        <div>
-          <div className="flex items-center gap-1.5 text-xs font-medium text-muted mb-2">
-            <History size={12} />
-            {t("delegation.panel.history")}
-          </div>
-          {historyItems.length > 0 ? (
-            <div className="space-y-2">
-              {historyItems.map((item) => (
-                <HistoryRow
-                  key={item.delegation_id}
-                  item={item}
-                  onShowProgress={() => setProgressTarget({ id: item.delegation_id, title: item.goal || t("delegation.untitled") })}
-                />
-              ))}
-            </div>
-          ) : (
-            <p className="text-muted text-sm py-3">{t("delegation.panel.noHistory")}</p>
-          )}
-        </div>
+      {overviewError && <QueryError compact error={overviewError} retry={() => void refetchOverview()} />}
+      {historyError && <QueryError compact error={historyError} retry={() => void refetchHistory()} />}
+      <div className="delegation-running">
+        {running.length > 0 ? running.map((item) => <RunningRow
+          key={item.delegation_id} item={item} extraSeconds={extraSeconds}
+          cancelling={cancellingIds.has(item.delegation_id)}
+          onShowProgress={() => setProgressTarget(item)}
+          onSteer={() => setSteerTarget(item)}
+          onCancel={() => handleCancel(item.delegation_id)}
+        />) : <div className="delegation-idle"><Bot size={19} /><span>{overviewPending ? t("common:loading") : t("delegation.panel.empty")}</span></div>}
       </div>
+      <DelegationHistory items={historyItems} pending={historyPending} onSelect={setProgressTarget} />
 
-      {progressTarget && (
-        <ProgressDrawer
-          delegationId={progressTarget.id}
-          title={progressTarget.title}
+      {selectedProgress && (
+        <Suspense fallback={<Modal open onClose={() => setProgressTarget(null)} title={t("dashboard:history.executionDetail")}><p role="status" className="text-sm text-muted">{t("common:loading")}</p></Modal>}><ProgressDrawer
+          delegationId={selectedProgress.delegation_id}
+          title={selectedProgress.goal || t("delegation.untitled")}
+          item={selectedProgress}
           onClose={() => setProgressTarget(null)}
-        />
+        /></Suspense>
       )}
 
       <Modal
@@ -358,7 +159,7 @@ export function DelegationsPanel() {
       >
         <div className="space-y-3">
           <p className="text-xs text-muted truncate">{steerTarget?.goal}</p>
-          <Select value={steerMode} onChange={(e) => setSteerMode(e.target.value as "steer" | "after")} className="w-full">
+          <Select value={steerMode} onChange={(e) => setSteerMode(e.target.value === "after" ? "after" : "steer")} className="w-full">
             <option value="steer">{t("delegation.panel.steerModeSteer")}</option>
             <option value="after">{t("delegation.panel.steerModeAfter")}</option>
           </Select>

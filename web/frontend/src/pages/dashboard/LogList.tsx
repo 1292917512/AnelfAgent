@@ -1,103 +1,60 @@
-import type { ReactNode, Ref } from "react";
+import { memo, useState, type ReactNode, type Ref } from "react";
 import { useTranslation } from "react-i18next";
+import { ChevronDown, Copy, ScrollText } from "lucide-react";
 import type { LogEntry } from "@/lib/types";
-import { Card } from "@/components/common/Card";
+import { toast } from "@/components/ui";
 import { cn } from "@/lib/utils";
 
-const LEVEL_BADGE: Record<string, string> = {
-  DEBUG: "bg-secondary text-muted border-border",
-  INFO: "bg-[rgba(59,130,246,0.12)] text-info border-[rgba(59,130,246,0.3)]",
-  WARNING: "bg-warn-subtle text-warn border-[rgba(245,158,11,0.3)]",
-  ERROR: "bg-danger-subtle text-danger border-[rgba(239,68,68,0.3)]",
-  CRITICAL: "bg-danger-subtle text-danger border-[rgba(239,68,68,0.3)] font-bold",
-};
-
-/** 列表行：附加单调序号作为稳定 key（服务端日志条目无唯一 id） */
-export type LogRow = LogEntry & { seq: number };
-
-/** 关键词高亮渲染 */
 function Highlighted({ text, keyword }: { text: string; keyword: string }) {
   if (!keyword) return <>{text}</>;
   const lower = text.toLowerCase();
-  const kw = keyword.toLowerCase();
   const parts: ReactNode[] = [];
-  let i = 0;
-  let k = 0;
-  for (;;) {
-    const idx = lower.indexOf(kw, i);
-    if (idx === -1) {
-      parts.push(text.slice(i));
-      break;
-    }
-    if (idx > i) parts.push(text.slice(i, idx));
-    parts.push(
-      <mark key={k++} className="bg-accent-subtle text-accent rounded-sm px-0.5">
-        {text.slice(idx, idx + kw.length)}
-      </mark>,
-    );
-    i = idx + kw.length;
+  let offset = 0;
+  let match = lower.indexOf(keyword);
+  while (match !== -1) {
+    parts.push(text.slice(offset, match));
+    parts.push(<mark key={match}>{text.slice(match, match + keyword.length)}</mark>);
+    offset = match + keyword.length;
+    match = lower.indexOf(keyword, offset);
   }
+  parts.push(text.slice(offset));
   return <>{parts}</>;
 }
 
-/** 日志滚动列表 */
-export function LogList({
-  filtered,
-  keyword,
-  scrollRef,
-  onScroll,
-  highlightSeq,
-  rowRef,
-}: {
-  filtered: LogRow[];
-  keyword: string;
-  scrollRef: Ref<HTMLDivElement>;
-  onScroll: () => void;
-  /** 需要高亮定位的条目序号（无则不高亮） */
-  highlightSeq?: number | null;
-  /** 高亮行的 DOM 引用，供外部滚动定位 */
-  rowRef?: Ref<HTMLDivElement>;
+const LogRow = memo(function LogRow({ entry, keyword, highlighted, rowRef, onTagClick }: {
+  entry: LogEntry; keyword: string; highlighted: boolean; rowRef?: Ref<HTMLDivElement>; onTagClick: (tag: string) => void;
 }) {
   const { t } = useTranslation("status");
-  return (
-    <Card className="!p-0 overflow-hidden">
-      <div
-        ref={scrollRef}
-        onScroll={onScroll}
-        className="max-h-[560px] overflow-y-auto font-mono text-[11px] sm:text-[12px] py-1"
-      >
-        {filtered.length === 0 && (
-          <p className="text-sm text-muted py-8 text-center font-sans">{t("noMatchingLogs")}</p>
-        )}
-        {filtered.map((entry) => (
-          <div
-            key={entry.seq}
-            ref={entry.seq === highlightSeq ? rowRef : undefined}
-            className={cn(
-              "flex items-start gap-2 py-1 px-3 hover:bg-hover transition-colors",
-              entry.seq === highlightSeq && "bg-accent-subtle",
-            )}
-          >
-            <span className="text-muted flex-shrink-0 w-16">{entry.time}</span>
-            <span
-              className={cn(
-                "flex-shrink-0 w-[68px] text-center px-1 py-px rounded border text-[10px] leading-4",
-                LEVEL_BADGE[entry.level] ?? "bg-secondary text-foreground border-border",
-              )}
-            >
-              {entry.level}
-            </span>
-            {entry.tag && (
-              <span className="flex-shrink-0 px-1.5 py-px rounded text-[10px] leading-4 bg-secondary text-muted border border-border max-w-24 truncate">
-                {entry.tag}
-              </span>
-            )}
-            <span className="text-foreground break-all min-w-0">
-              <Highlighted text={entry.message} keyword={keyword} />
-            </span>
-          </div>
-        ))}
-      </div>
-    </Card>
-  );
+  const [expanded, setExpanded] = useState(false);
+  const long = entry.message.length > 420 || entry.message.split("\n").length > 4;
+  const preview = long && !expanded && !keyword ? entry.message.split("\n").slice(0, 4).join("\n").slice(0, 420) : entry.message;
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(`[${entry.time}] ${entry.level} ${entry.tag ? `[${entry.tag}] ` : ""}${entry.message}`);
+      toast.success(t("logsView.copied"));
+    } catch { toast.error(t("logsView.copyFailed")); }
+  };
+  return <div ref={rowRef} className={cn("log-row", highlighted && "is-highlighted")} data-level={entry.level} data-seq={entry.seq}>
+    <time title={entry.timestamp ? new Date(entry.timestamp * 1000).toLocaleString() : entry.time}>{entry.time}</time>
+    <span className="log-level">{entry.level}</span>
+    <span className="log-source">{entry.tag ? <button type="button" title={entry.tag} onClick={() => onTagClick(entry.tag)}>{entry.tag}</button> : "—"}</span>
+    <div className="log-message"><span><Highlighted text={preview} keyword={keyword} /></span>
+      {long && !keyword && <button type="button" className="log-expand" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}><ChevronDown size={12} className={expanded ? "rotate-180" : ""} />{t(expanded ? "logsView.collapse" : "logsView.expand")}</button>}
+    </div>
+    <button type="button" className="log-copy" title={t("logsView.copy")} aria-label={t("logsView.copy")} onClick={() => void copy()}><Copy size={13} /></button>
+  </div>;
+});
+
+export function LogList({ filtered, keyword, scrollRef, onScroll, highlightSeq, rowRef, loading, onTagClick }: {
+  filtered: LogEntry[]; keyword: string; scrollRef: Ref<HTMLDivElement>; onScroll: () => void;
+  highlightSeq: number | null; rowRef: Ref<HTMLDivElement>; loading: boolean; onTagClick: (tag: string) => void;
+}) {
+  const { t } = useTranslation("status");
+  return <>
+    <div className="logs-column-head" aria-hidden="true"><span>{t("logsView.time")}</span><span>{t("logsView.levels")}</span><span>{t("logsView.source")}</span><span>{t("logsView.message")}</span></div>
+    <div ref={scrollRef} onScroll={onScroll} className="logs-scroll" role="region" aria-label={t("logsView.entries")} tabIndex={0}>
+      {!filtered.length && <div className="logs-empty"><ScrollText size={28} /><p>{loading ? t("common:loading") : t("noMatchingLogs")}</p></div>}
+      {filtered.map((entry) => <LogRow key={entry.seq} entry={entry} keyword={keyword} highlighted={entry.seq === highlightSeq} rowRef={entry.seq === highlightSeq ? rowRef : undefined} onTagClick={onTagClick} />)}
+    </div>
+  </>;
 }

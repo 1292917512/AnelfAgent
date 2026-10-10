@@ -71,5 +71,43 @@
       "upstream_failed": "Upstream Failed",
       "crashed": "Crashed"
     }
+  },
+  "overview": {
+    "observe": "Observe",
+    "think": "Think",
+    "execute": "Execute",
+    "deliver": "Deliver",
+    "received": "Received in this process",
+    "availableTools": "Enabled / registered",
+    "memoryWindow": "Used / capacity",
+    "pendingHint": "Waiting for a reply or execution",
+    "systemDetails": "System details",
+    "systemDetailsHint": "Services, startup timing and event statistics",
+    "toolRankingHint": "Cumulative usage of recalled tools",
+    "delegationHint": "Active delegations and recent outcomes across sessions"
+  },
+  "history": {
+    "onlyIssues": "Issues only",
+    "successCount": "{{count}} succeeded",
+    "issueCount": "{{count}} issues",
+    "otherCount": "{{count}} cancelled",
+    "durationChart": "Execution durations",
+    "older": "Earlier",
+    "latest": "Latest",
+    "nested": "Nested · level {{depth}}",
+    "noIssues": "No issues in recent executions",
+    "showMore": "Show {{count}} more",
+    "window": "Last {{count}} finished executions",
+    "executionId": "Execution ID",
+    "model": "Model",
+    "agent": "Agent",
+    "scope": "Session",
+    "duration": "Duration",
+    "parent": "Parent agent",
+    "resumedFrom": "Resumed from",
+    "usage": "Usage",
+    "ended": "Finished",
+    "executionDetail": "Execution details",
+    "resultSummary": "Result summary"
   }
 }

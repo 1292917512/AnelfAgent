@@ -70,6 +70,8 @@ export interface RunningDelegation {
 
 /** GET /delegations/overview 的全局运行中委托条目（全 scope，含实时进度与用量） */
 export interface DelegationOverviewItem {
+  parent_id?: string;
+  depth?: number;
   state: "queued" | "running";
   delegation_id: string;
   goal: string;
@@ -97,6 +99,11 @@ export interface DelegationOverviewItem {
 
 /** GET /delegations/history 的近期执行条目（账本 started/closed 配对折叠） */
 export interface DelegationHistoryItem {
+  parent_id?: string;
+  depth?: number;
+  resumed_from?: string;
+  summary?: string;
+  usage?: DelegationOverviewItem["usage"];
   delegation_id: string;
   goal: string;
   scope: string;

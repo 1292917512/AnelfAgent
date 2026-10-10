@@ -215,7 +215,7 @@ test("overview keeps maintenance separate and metric geometry aligned", async ({
   await page.goto("/webui/dashboard");
   await expect(page.getByRole("button", { name: "Restart Service", exact: true })).toHaveCount(0);
   const cells = page.locator(".dashboard-metrics > div");
-  await expect(cells).toHaveCount(7);
+  await expect(cells).toHaveCount(4);
   const tops = await cells.evaluateAll((elements) => elements.map((element) => Math.round(element.getBoundingClientRect().top)));
   expect(tops[0]).toBe(tops[1]);
   await page.screenshot({ path: info.outputPath("overview-dark.png") });

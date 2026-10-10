@@ -1,4 +1,6 @@
 export interface LogEntry {
+  seq: number;
+  timestamp: number;
   level: string;
   message: string;
   tag: string;

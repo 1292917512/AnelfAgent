@@ -3,6 +3,7 @@
 @import "./workbench.css";
 @import "./activity.css";
 @import "./management.css";
+@import "./dashboard.css";
 @source not "../**/*.test.{ts,tsx}";
 @source not "../../e2e";
 @source "../../../../entities/*/panel.tsx";

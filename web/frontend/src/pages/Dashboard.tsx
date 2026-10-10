@@ -23,7 +23,7 @@ export default function Dashboard() {
   ];
 
   return (
-    <PageContainer>
+    <PageContainer className={tab === "logs" ? "dashboard-log-page" : undefined}>
       <PageIntro actions={<ContributionTools slot="dashboard.actions" />} />
       <TabBar tabs={TAB_KEYS} activeTab={tab} onChange={changeTab} />
       {tab === "overview" && <>

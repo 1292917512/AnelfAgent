@@ -7,6 +7,7 @@ import time
 from collections import deque
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
+from itertools import count
 from typing import TYPE_CHECKING, Any, Callable, Deque, Dict, List, Optional
 
 if TYPE_CHECKING:
@@ -68,6 +69,7 @@ _STDLIB_LEVEL_MAP = {
 _listeners: Dict[str, List[Callable[[Dict[str, Any]], None]]] = {}
 _all_listeners: List[Callable[[Dict[str, Any]], None]] = []
 _listeners_lock = threading.Lock()
+_log_sequence = count(1)
 
 # 日志 actor 上下文：标识当前执行主体（如子代理委托），非空时作为 [actor] 前缀
 # 渲染进消息——console/文件/环形缓冲区/监听器全链路一致。ContextVar 经
@@ -155,7 +157,7 @@ if _USE_LOGURU:
 
 def _notify_listeners(level: str, message: str, tag: Optional[str] = None) -> None:
     """通知监听器"""
-    log_data = {"level": level, "message": message, "tag": tag, "timestamp": time.time()}
+    log_data = {"level": level, "message": message, "tag": tag, "timestamp": time.time(), "seq": next(_log_sequence)}
 
     with _listeners_lock:
         all_listeners = list(_all_listeners)
@@ -376,6 +378,15 @@ class LogRecord:
     message: str
     tag: Optional[str]
     timestamp: float
+    seq: int
+
+    def as_dict(self) -> Dict[str, Any]:
+        """日志查询与实时流共用的展示字段。"""
+        return {
+            "seq": self.seq, "level": self.level, "message": self.message,
+            "tag": self.tag or "", "timestamp": self.timestamp,
+            "time": time.strftime("%H:%M:%S", time.localtime(self.timestamp)),
+        }
 
 _log_buffer: Deque[LogRecord] = deque(maxlen=_LOG_BUFFER_MAX)
 
@@ -387,6 +398,7 @@ def _buffer_listener(data: Dict[str, Any]) -> None:
         message=data.get("message", ""),
         tag=data.get("tag"),
         timestamp=data.get("timestamp", time.time()),
+        seq=data["seq"],
     ))
 
 # 自动注册缓冲区监听器
@@ -409,19 +421,14 @@ def query_log_buffer(
         limit: 返回条数上限
     """
     results: List[Dict[str, Any]] = []
-    for record in reversed(_log_buffer):
+    for record in sorted(tuple(_log_buffer), key=lambda item: item.seq, reverse=True):
         if level and record.level != level.upper():
             continue
         if tag and record.tag != tag:
             continue
         if keyword and keyword.lower() not in record.message.lower():
             continue
-        results.append({
-            "level": record.level,
-            "message": record.message,
-            "tag": record.tag or "",
-            "time": time.strftime("%H:%M:%S", time.localtime(record.timestamp)),
-        })
+        results.append(record.as_dict())
         if len(results) >= limit:
             break
     results.reverse()
@@ -439,7 +446,7 @@ def get_log_buffer_stats() -> Dict[str, Any]:
     """获取日志缓冲区统计信息。"""
     level_counts: Dict[str, int] = {}
     tag_counts: Dict[str, int] = {}
-    for record in _log_buffer:
+    for record in tuple(_log_buffer):
         level_counts[record.level] = level_counts.get(record.level, 0) + 1
         if record.tag:
             tag_counts[record.tag] = tag_counts.get(record.tag, 0) + 1

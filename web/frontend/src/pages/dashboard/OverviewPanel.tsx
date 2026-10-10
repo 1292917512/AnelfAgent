@@ -1,131 +1,98 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { Brain, ChevronDown, Clock3, Inbox, MessageSquare, Server, Wrench } from "lucide-react";
 import { useNow } from "@/hooks/useNow";
-import { statusApi, toolsApi } from "@/lib/api";
+import { statusApi } from "@/lib/api";
 import { SectionBoundary } from "@/components/common/SectionBoundary";
-import { StatCard } from "@/components/common/StatCard";
+import { QueryError } from "@/components/common/AsyncState";
 import { Card } from "@/components/common/Card";
 import { StatusDot } from "@/components/common/StatusDot";
 import { useAppStore } from "@/stores/app-store";
-import { AttentionPanel } from "@/pages/dashboard/AttentionPanel";
-import { ComponentInfoCard } from "@/pages/dashboard/ComponentInfoCard";
+import { AttentionPanel } from "./AttentionPanel";
+import { ComponentInfoCard } from "./ComponentInfoCard";
 import { DelegationsPanel } from "@/components/delegation/DelegationsPanel";
-import { ToolsInsightPanel } from "@/pages/dashboard/ToolsInsightPanel";
-import { EventsPanel } from "@/pages/dashboard/EventsPanel";
-import { ServicesPanel } from "@/pages/dashboard/ServicesPanel";
+import { ToolsInsightPanel } from "./ToolsInsightPanel";
+import { EventsPanel } from "./EventsPanel";
+import { ServicesPanel } from "./ServicesPanel";
+import { PendingTasks } from "./PendingTasks";
 
-type StmItem = { index: number; role: string; content: string };
-
-type PfcSnapshot = {
-  tool_recall: { name: string; count: number }[];
-  tool_recall_top_n: number;
-  tag_activated_tools: string[];
-  pending_messages: { scope: string; preview: string; adapter_key: string }[];
-  general_tasks: { type: string; scope: string; preview: string }[];
-  pending_analysis_count: number;
-  short_term_memory_count: number;
-  short_term_memory_max: number;
-  short_term_memory_items?: StmItem[];
-  active_tools?: string[];
-};
-
-function formatUptime(seconds: number, t: (key: string) => string): string {
-  const d = Math.floor(seconds / 86400);
-  const h = Math.floor((seconds % 86400) / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.floor(seconds % 60);
-  if (d > 0) return `${d}${t("day")} ${h}${t("hour")} ${m}${t("minute")} ${s}${t("second")}`;
-  if (h > 0) return `${h}${t("hour")} ${m}${t("minute")} ${s}${t("second")}`;
-  if (m > 0) return `${m}${t("minute")} ${s}${t("second")}`;
-  return `${s}${t("second")}`;
-}
-
-function useUptime() {
+function Uptime() {
   const startedAt = useAppStore((s) => s.startedAt);
   const { t } = useTranslation("dashboard");
   const now = useNow(startedAt !== null);
-  return startedAt === null ? "—" : formatUptime(now / 1000 - startedAt, t);
+  const seconds = startedAt === null ? null : Math.max(0, Math.floor(now / 1000 - startedAt));
+  const parts: [number, string][] = seconds === null ? [] : [
+    [Math.floor(seconds / 86400), "day"], [Math.floor(seconds % 86400 / 3600), "hour"],
+    [Math.floor(seconds % 3600 / 60), "minute"], [seconds % 60, "second"],
+  ];
+  return <span className="overview-uptime"><Clock3 size={14} />{t("uptime")} <strong>{seconds === null ? "—" : parts.filter(([n, unit]) => n > 0 || unit === "second").map(([n, unit]) => `${n}${t(unit)}`).join(" ")}</strong></span>;
 }
 
 export function OverviewPanel() {
   const { t } = useTranslation(["dashboard", "status", "common"]);
   const setStartedAt = useAppStore((s) => s.setStartedAt);
-
-  const { data: status } = useQuery({ queryKey: ["status"], queryFn: () => statusApi.get().then((r) => r.data), refetchInterval: 3000 });
-  const { data: pfc } = useQuery({ queryKey: ["pfc"], queryFn: () => statusApi.pfc().then((r) => r.data as PfcSnapshot), refetchInterval: 3000 });
-  const { data: tools } = useQuery({ queryKey: ["tools"], queryFn: () => toolsApi.list().then((r) => r.data) });
-
-  const isReady = status?.ready;
-  const statusInfo = status?.status as Record<string, unknown> | undefined;
-  const enabledTools = tools?.filter((t: { enabled: boolean }) => t.enabled).length ?? 0;
-  const totalTools = tools?.length ?? 0;
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const statusQuery = useQuery({ queryKey: ["status"], queryFn: () => statusApi.get().then((r) => r.data), refetchInterval: 3000 });
+  const { data: pfc } = useQuery({ queryKey: ["pfc"], queryFn: () => statusApi.pfc().then((r) => r.data), refetchInterval: 3000 });
+  const { data: components } = useQuery({ queryKey: ["components"], queryFn: () => statusApi.components().then((r) => r.data), refetchInterval: 10000 });
+  const isReady = statusQuery.data?.ready;
+  const statusInfo = statusQuery.data?.status as Record<string, unknown> | undefined;
   const phase = String(statusInfo?.mind_phase ?? "idle");
   const pendingTotal = (pfc?.pending_messages?.length ?? 0) + (pfc?.general_tasks?.length ?? 0);
-
+  const tools = components?.structured?.tools;
+  const phaseIndex = ["accepting", "deciding", "recalling", "introspecting"].includes(phase) ? 0 : phase === "llm_calling" ? 1 : phase === "tool_executing" ? 2 : phase === "replying" ? 3 : -1;
   useEffect(() => {
     if (typeof statusInfo?.uptime === "number" && statusInfo.uptime > 0) setStartedAt(statusInfo.uptime);
   }, [statusInfo?.uptime, setStartedAt]);
 
-  const uptimeDisplay = useUptime();
-
   return (
-    <div className="space-y-5">
-      <div className="dashboard-metrics grid grid-cols-2 gap-3 xl:grid-cols-4">
-        <StatCard label={t("runningStatus")} value={<span className="flex items-center gap-2"><StatusDot status={isReady ? "ok" : "danger"} />{isReady ? t("running", { ns: "common" }) : t("notReady", { ns: "common" })}</span>} variant={isReady ? "ok" : "danger"} />
-        <StatCard label={t("thinkingPhase", { ns: "status" })} value={t(`phaseLabels.${phase}`, { ns: "status", defaultValue: phase })} variant={phase === "idle" ? "default" : "ok"} />
-        <StatCard label={t("messageCount")} value={String(statusInfo?.message_count ?? "—")} />
-        <StatCard label={t("tools")} value={`${enabledTools}/${totalTools}`} variant={enabledTools > 0 ? "ok" : "default"} />
-        <StatCard className="col-span-2" label={t("uptime")} value={uptimeDisplay} />
-        <StatCard label={t("stm", { ns: "status" })} value={`${pfc?.short_term_memory_count ?? 0}/${pfc?.short_term_memory_max ?? 0}`} />
-        <StatCard label={t("pending", { ns: "status" })} value={String(pendingTotal)} variant={pendingTotal > 0 ? "warn" : "default"} />
+    <div className="overview-layout">
+      {statusQuery.error && <QueryError compact error={statusQuery.error} retry={() => void statusQuery.refetch()} />}
+      <section className="overview-status" aria-label={t("runningStatus")}>
+        <div className="overview-status-copy">
+          <div className="flex items-center gap-2 text-xs text-muted"><StatusDot status={statusQuery.isPending ? "offline" : isReady ? "ok" : "danger"} />{statusQuery.isPending ? t("common:loading") : isReady ? t("common:running") : t("common:notReady")}</div>
+          <h2>{t(`phaseLabels.${phase}`, { ns: "status", defaultValue: phase })}</h2>
+          <Uptime />
+        </div>
+        <div className="overview-phase-track" aria-label={t("status:thinkingPhase")}>
+          {["observe", "think", "execute", "deliver"].map((step, index) => <div key={step} data-active={isReady && phaseIndex === index}>
+            <span className="overview-phase-node">{String(index + 1).padStart(2, "0")}</span>
+            <span>{t(`overview.${step}`)}</span>
+          </div>)}
+        </div>
+      </section>
+      <div className="dashboard-metrics">
+        {[
+          { label: t("messageCount"), icon: MessageSquare, value: statusInfo?.message_count ?? "—", note: t("overview.received") },
+          { label: t("tools"), icon: Wrench, value: tools ? `${tools.enabled} / ${tools.total}` : "—", note: t("overview.availableTools") },
+          { label: t("status:stm"), icon: Brain, value: pfc ? `${pfc.short_term_memory_count ?? 0} / ${pfc.short_term_memory_max ?? 0}` : "—", note: t("overview.memoryWindow") },
+          { label: t("status:pending"), icon: Inbox, value: pfc ? pendingTotal : "—", note: t("overview.pendingHint") },
+        ].map((metric) => <div key={metric.label} className="overview-metric">
+          <div><span>{metric.label}</span><metric.icon size={16} /></div>
+          <strong>{String(metric.value)}</strong><span className="overview-metric-note">{metric.note}</span>
+        </div>)}
       </div>
-
-      <SectionBoundary><AttentionPanel /></SectionBoundary>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <Card title={t("pendingTasks", { ns: "status" })}>
-          {(pfc?.pending_messages?.length || pfc?.general_tasks?.length || (pfc?.pending_analysis_count ?? 0) > 0) ? (
-            <div className="space-y-1.5 max-h-[260px] overflow-y-auto">
-              {pfc?.pending_messages?.map((m, i) => (
-                <div key={`msg-${i}`} className="py-1.5 px-3 rounded-sm bg-elevated border border-border">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent-subtle text-accent font-medium">{t("message", { ns: "status" })}</span>
-                    <span className="text-xs font-mono text-muted">{m.scope}</span>
-                    {m.adapter_key && <span className="text-[10px] text-muted">[{m.adapter_key}]</span>}
-                  </div>
-                  <p className="text-xs text-foreground mt-1 truncate">{m.preview}</p>
-                </div>
-              ))}
-              {pfc?.general_tasks?.map((task, i) => (
-                <div key={`task-${i}`} className="py-1.5 px-3 rounded-sm bg-elevated border border-border">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-warn-subtle text-warn font-medium">{task.type}</span>
-                    <span className="text-xs font-mono text-muted">{task.scope}</span>
-                  </div>
-                  <p className="text-xs text-foreground mt-1 truncate">{task.preview}</p>
-                </div>
-              ))}
-              {(pfc?.pending_analysis_count ?? 0) > 0 && (
-                <div className="py-1.5 px-3 rounded-sm bg-elevated border border-border flex items-center gap-2">
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent-subtle text-info font-medium">{t("analysis", { ns: "status" })}</span>
-                  <span className="text-xs text-foreground">{t("entitiesWaiting", { ns: "status", count: pfc?.pending_analysis_count })}</span>
-                </div>
-              )}
-            </div>
-          ) : <p className="text-muted text-sm py-2">{t("noPendingTasks", { ns: "status" })}</p>}
-        </Card>
-
+      <div className="overview-primary">
+        <SectionBoundary><DelegationsPanel /></SectionBoundary>
+        <div className="overview-aside">
+          <SectionBoundary><AttentionPanel /></SectionBoundary>
+          <PendingTasks pfc={pfc} />
+        </div>
+      </div>
+      <div className="overview-secondary">
+        <SectionBoundary><ToolsInsightPanel /></SectionBoundary>
         <SectionBoundary><ComponentInfoCard /></SectionBoundary>
       </div>
-
-      <SectionBoundary><ToolsInsightPanel /></SectionBoundary>
-
-      <SectionBoundary><DelegationsPanel /></SectionBoundary>
-
-      <SectionBoundary><ServicesPanel /></SectionBoundary>
-
-      <SectionBoundary><EventsPanel /></SectionBoundary>
+      <Card className="overview-details !p-0">
+        <button type="button" className="overview-details-toggle" aria-expanded={detailsOpen} onClick={() => setDetailsOpen(!detailsOpen)}>
+          <Server size={17} /><span><strong>{t("overview.systemDetails")}</strong><small>{t("overview.systemDetailsHint")}</small></span><ChevronDown size={17} className={detailsOpen ? "rotate-180" : ""} />
+        </button>
+        {detailsOpen && <div className="overview-details-content">
+          <SectionBoundary><ServicesPanel /></SectionBoundary>
+          <SectionBoundary><EventsPanel /></SectionBoundary>
+        </div>}
+      </Card>
     </div>
   );
 }

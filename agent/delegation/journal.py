@@ -29,6 +29,7 @@ from core.config import get_config_int
 from core.file_utils import atomic_write_text
 from core.log import log
 from core.path import ConfigPaths
+from core.sanitizer import sanitize_text
 
 # transcript 消息链的序列化上限（超出则不落 messages，标记不可续跑）
 TRANSCRIPT_MAX_BYTES = 262_144
@@ -186,6 +187,9 @@ def append_ledger(event: str, delegation_id: str, **fields: Any) -> None:
             "ts": round(time.time(), 3),
             **fields,
         }
+        for key in ("goal", "summary"):
+            if isinstance(record.get(key), str):
+                record[key] = sanitize_text(record[key])
         with path.open("a", encoding="utf-8") as fp:
             fp.write(json.dumps(record, ensure_ascii=False) + "\n")
         _purge_expired()
@@ -259,6 +263,11 @@ def recent_history(limit: int = 20) -> List[Dict[str, Any]]:
             "started_at": started_ts,
             "finished_at": finished_ts,
             "duration_seconds": max(0, int(finished_ts - started_ts)) if started_ts else 0,
+            "parent_id": str(start_rec.get("parent_id", "")),
+            "depth": int(start_rec.get("depth", 0)),
+            "resumed_from": str(start_rec.get("resumed_from", "")),
+            "summary": str(close_rec.get("summary", "")),
+            "usage": close_rec.get("usage", {}),
         })
     items.sort(key=lambda item: float(item["finished_at"]), reverse=True)
     return items[: max(1, limit)]

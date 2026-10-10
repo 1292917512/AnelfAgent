@@ -225,12 +225,10 @@ class AgentApp:
 
     def get_status_info(self) -> dict[str, Any]:
         """返回当前运行时状态摘要。"""
-        mind_phase = "unknown"
-        try:
-            if self._runtime is not None:
-                mind_phase = self._runtime.mind.phase.value
-        except Exception:
-            log("get_status_info 异常已忽略", "DEBUG")
+        from agent.runtime.singleton import get_runtime
+
+        runtime = self._runtime or get_runtime()
+        mind_phase = runtime.mind.phase.value if runtime is not None else "unknown"
         return {
             "status": self._status.value,
             "mind_phase": mind_phase,

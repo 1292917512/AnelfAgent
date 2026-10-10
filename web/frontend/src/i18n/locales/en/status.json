@@ -122,6 +122,24 @@
     "pause": "Pause",
     "levels": "Levels",
     "bufferUsage": "Buffer {{used}}/{{capacity}}",
-    "clearConfirm": "Clear logs in current view?"
+    "clearConfirm": "Clear the in-memory log buffer? Log files are unaffected.",
+    "title": "Runtime logs",
+    "connecting": "Connecting",
+    "reconnecting": "Reconnecting",
+    "connectionLost": "Log connection lost. Reconnecting automatically.",
+    "clearFailed": "Could not clear logs. Current entries were kept.",
+    "clearSearch": "Clear search",
+    "copied": "Log copied",
+    "copyFailed": "Clipboard unavailable. Select the log to copy it.",
+    "copy": "Copy log",
+    "expand": "Show full message",
+    "collapse": "Collapse message",
+    "time": "Time",
+    "source": "Source",
+    "message": "Message",
+    "entries": "Log entries",
+    "visibleCount": "Showing {{count}} / {{total}} entries",
+    "following": "Following latest logs",
+    "pauseHint": "Display paused · up to 2,000 entries buffered"
   }
 }

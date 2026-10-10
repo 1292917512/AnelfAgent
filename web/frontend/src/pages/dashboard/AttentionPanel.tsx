@@ -3,8 +3,9 @@ import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 import { statusApi, mcpApi, adaptersApi } from "@/lib/api";
-import type { LogEntry, MCPServer, AdapterInfo } from "@/lib/types";
+import type { MCPServer, AdapterInfo } from "@/lib/types";
 import { Card } from "@/components/common/Card";
+import { QueryError } from "@/components/common/AsyncState";
 import { Badge } from "@/components/ui/Badge";
 import { cn } from "@/lib/utils";
 import {
@@ -38,41 +39,41 @@ const SEVERITY_ICON: Record<Severity, string> = {
   warn: "text-warn",
 };
 
-function logTime(e: LogEntry): number {
-  const t = Date.parse(e.time);
-  return Number.isNaN(t) ? 0 : t;
-}
-
 /** 总览页「需要注意」区块：聚合异常日志、MCP/通道故障等需要人工关注的问题 */
 export function AttentionPanel() {
   const { t } = useTranslation(["dashboard", "common"]);
 
-  const { data: status, isPending: statusPending } = useQuery({
+  const { data: status, isPending: statusPending, error: statusError } = useQuery({
     queryKey: ["status"],
     queryFn: () => statusApi.get().then((r) => r.data),
     refetchInterval: 3000,
   });
-  const { data: errorLogs, isPending: errorLogsPending } = useQuery({
+  const { data: errorLogs, isPending: errorLogsPending, error: errorLogsError } = useQuery({
     queryKey: ["logs", "ERROR"],
-    queryFn: () => statusApi.logs("ERROR", undefined, undefined, 5).then((r) => r.data),
+    queryFn: async () => {
+      const results = await Promise.all(["ERROR", "CRITICAL"].map((level) => statusApi.logs(level, undefined, undefined, 5)));
+      return { logs: results.flatMap((result) => result.data.logs) };
+    },
     refetchInterval: 10000,
   });
-  const { data: warnLogs, isPending: warnLogsPending } = useQuery({
+  const { data: warnLogs, isPending: warnLogsPending, error: warnLogsError } = useQuery({
     queryKey: ["logs", "WARNING"],
     queryFn: () => statusApi.logs("WARNING", undefined, undefined, 5).then((r) => r.data),
     refetchInterval: 10000,
   });
-  const { data: mcpServers, isPending: mcpServersPending } = useQuery({
+  const { data: mcpServers, isPending: mcpServersPending, error: mcpError } = useQuery({
     queryKey: ["mcp"],
     queryFn: () => mcpApi.list().then((r) => r.data),
     refetchInterval: 5000,
   });
-  const { data: adapters, isPending: adaptersPending } = useQuery({
+  const { data: adapters, isPending: adaptersPending, error: adaptersError } = useQuery({
     queryKey: ["adapters"],
     queryFn: () => adaptersApi.list().then((r) => r.data),
     refetchInterval: 10000,
   });
 
+  const error = statusError || errorLogsError || warnLogsError || mcpError || adaptersError;
+  if (error) return <Card title={t("attention.title")}><QueryError compact error={error} /></Card>;
   if (statusPending || errorLogsPending || warnLogsPending || mcpServersPending || adaptersPending) {
     return <Card title={t("attention.title")}><p role="status" className="text-sm text-muted">{t("common:loading")}</p></Card>;
   }
@@ -119,7 +120,7 @@ export function AttentionPanel() {
   // 最近的 ERROR / WARNING 日志（相同消息去重，避免重复告警刷屏）
   const seen = new Set<string>();
   const recentLogs = [...(errorLogs?.logs ?? []), ...(warnLogs?.logs ?? [])]
-    .sort((a, b) => logTime(b) - logTime(a))
+    .sort((a, b) => b.timestamp - a.timestamp)
     .filter((log) => {
       if (seen.has(log.message)) return false;
       seen.add(log.message);
@@ -156,7 +157,7 @@ export function AttentionPanel() {
           <span>{t("attention.allClear")}</span>
         </div>
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
+        <div className="overview-attention">
           {items.map((item) => {
             const inner = (
               <>

@@ -183,6 +183,21 @@ class TestHistory:
     def test_empty_ledger(self) -> None:
         assert journal.recent_history() == []
 
+    def test_nested_metadata_and_outcome_are_preserved(self) -> None:
+        journal.append_ledger(
+            journal.LEDGER_STARTED, "nested", goal="child task",
+            parent_id="parent", depth=2, resumed_from="previous",
+        )
+        journal.append_ledger(
+            journal.LEDGER_CLOSED, "nested", status=journal.STATUS_FAILED,
+            summary="Tool timed out", usage={"turns": 3, "input_tokens": 150},
+        )
+        item = journal.recent_history()[0]
+        assert item["parent_id"] == "parent" and item["depth"] == 2
+        assert item["resumed_from"] == "previous"
+        assert item["summary"] == "Tool timed out"
+        assert item["usage"]["turns"] == 3
+
 
 class TestRecovery:
     async def test_recover_injects_notice_per_scope(self) -> None:
