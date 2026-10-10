@@ -122,6 +122,34 @@ test('atomic inventory work is cancelled and drained without a replay continuati
   await assert.rejects(locks.resume(), /no paused action/)
 })
 
+test('explicit idle resume re-enables autonomy without replaying cancelled work', async t => {
+  const { locks, bot } = await fixture(t)
+  locks.cancelAll()
+  assert.equal(locks.autonomousEnabled, false)
+  await assert.rejects(locks.resume(), /no paused action/)
+  const result = await locks.resume(undefined, true)
+  assert.equal(result.supported, false)
+  assert.equal(result.active, false)
+  assert.equal(locks.autonomousEnabled, true)
+  assert.equal(locks.action, null)
+  locks.cancelAll()
+  bot.health = 0
+  await assert.rejects(locks.resume(undefined, true), /living connection/)
+  assert.equal(locks.autonomousEnabled, false)
+})
+
+test('idle resume cannot bypass the cleanup of an active action', async t => {
+  const { locks } = await fixture(t)
+  const gate = deferred()
+  const running = locks.run('craft_item', 1, () => gate.promise)
+  const cancelled = assert.rejects(running, /cancelled/)
+  locks.cancelAll()
+  await assert.rejects(locks.resume(undefined, true), /cleanup/)
+  assert.equal(locks.autonomousEnabled, false)
+  gate.resolve()
+  await cancelled
+})
+
 test('autonomous equipment waits for ownership and remains disabled after manual stop', async t => {
   const { locks, bot, tool } = await fixture(t)
   const { attachAutonomousActions } = await load('bot/anelf-autonomous.mjs')

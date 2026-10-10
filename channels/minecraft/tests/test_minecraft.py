@@ -65,7 +65,7 @@ async def test_ingress_trace_links_game_time_and_message_without_content(
 
 @pytest.mark.parametrize("message,tool", [("!pause", "pause_action"), ("暂停一下", "pause_action"), ("!resume", "resume_action")])
 async def test_pause_resume_bypass_model(channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch, message: str, tool: str) -> None:
-    call = AsyncMock(return_value={"ok": True, "supported": True, "active": False})
+    call = AsyncMock(return_value={"ok": True, "supported": True, "active": False, "paused": {"id": "paused-task"}})
     inbound = AsyncMock()
     monkeypatch.setattr(channel, "_call", call)
     monkeypatch.setattr(channel, "_send_text", AsyncMock())
@@ -81,6 +81,34 @@ async def test_action_events_cannot_change_executor_survival_settings(channel: M
     monkeypatch.setattr(channel, "_call", call)
     await channel._dispatch_event(GameEvent(seq=1, ts=1000, type="action_progress", data={"phase": "running"}))
     call.assert_not_awaited()
+
+
+async def test_resume_only_enables_lifestyle_after_confirmed_idle(channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch) -> None:
+    channel._lifestyle.pause()
+    call = AsyncMock(return_value={"ok": True, "active": False, "supported": False})
+    monkeypatch.setattr(channel, "_call", call)
+    assert "没有待恢复的任务" in await channel._cmd_resume()
+    assert not channel._lifestyle._paused
+    call.assert_awaited_once_with("resume_action", {"allowIdle": True})
+
+
+async def test_failed_resume_keeps_lifestyle_paused(channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch) -> None:
+    channel._lifestyle.pause()
+    monkeypatch.setattr(channel, "_call", AsyncMock(side_effect=RuntimeError("offline")))
+    assert "恢复失败" in await channel._cmd_resume()
+    assert channel._lifestyle._paused
+
+
+async def test_internal_reflex_is_not_sent_to_game_chat(channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch) -> None:
+    record = AsyncMock()
+    send = AsyncMock()
+    monkeypatch.setattr("channels.minecraft.adapter.record_game_event", record)
+    monkeypatch.setattr(channel, "_send_text", send)
+
+    await channel._record_reflex("mine_progress internal fact")
+
+    record.assert_awaited_once_with("local", "mine_progress internal fact")
+    send.assert_not_awaited()
 
 
 async def test_duplicate_mining_terminal_is_announced_once_per_action(channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -230,6 +258,21 @@ async def test_gather_without_evidence_is_ignored(channel: MinecraftChannel, mon
     announce.assert_not_awaited()
 
 
+@pytest.mark.parametrize("gained,expected", [(4, "采集任务已完成"), (0, "采集任务受阻"), (9, "采集任务受阻")])
+async def test_tree_receipt_treats_requested_as_a_hard_cap(
+    channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch, gained: int, expected: str,
+) -> None:
+    announce = AsyncMock()
+    monkeypatch.setattr(channel, "_announce_reflex", announce)
+    await channel._dispatch_event(GameEvent(seq=1, ts=1000, type="gather_progress", data={
+        "id": "tree", "actionId": "tree-action", "phase": "completed", "mode": "tree", "dug": gained,
+        "item": "oak_log", "gained": gained, "requested": 8, "returned": True,
+        "depositRequested": False, "deposited": 0, "inventoryClean": True,
+    }))
+    assert expected in announce.call_args.args[0]
+    assert "整树上限 8" in announce.call_args.args[0]
+
+
 def test_reply_policy_uses_configured_server_and_requires_delegation(channel: MinecraftChannel) -> None:
     channel.get_config().mcp_server = "game-test"
     policy = channel.reply_policy
@@ -287,7 +330,7 @@ async def test_slow_mining_announcement_does_not_delay_stop_dispatch(
 
     call = AsyncMock(return_value={"ok": True, "stopped": True})
     monkeypatch.setattr(channel, "_call", call)
-    monkeypatch.setattr(channel, "_announce_reflex", announce)
+    monkeypatch.setattr(channel, "_record_reflex", announce)
     monkeypatch.setattr(channel, "_send_text", AsyncMock())
     monkeypatch.setattr(channel, "on_message", AsyncMock())
     monkeypatch.setattr("channels.minecraft.adapter.stop_companion_work", AsyncMock())
@@ -727,6 +770,40 @@ async def test_near_miss_phrases_fall_through_to_ai(
     await channel._dispatch_event(chat_event(1, text))
     call.assert_not_awaited()
     inbound.assert_awaited_once()
+
+
+@pytest.mark.parametrize("text", ["停止当前任务", "停下来", "先停一下", "cancel task"])
+async def test_expanded_stop_phrases_bypass_model(
+    channel: MinecraftChannel,
+    monkeypatch: pytest.MonkeyPatch,
+    text: str,
+) -> None:
+    call = AsyncMock(return_value={"ok": True, "stopped": True})
+    outbound = AsyncMock()
+    inbound = AsyncMock()
+    monkeypatch.setattr(channel, "_call", call)
+    monkeypatch.setattr(channel, "forward_message", outbound)
+    monkeypatch.setattr(channel, "on_message", inbound)
+    await channel._dispatch_event(chat_event(1, text))
+    assert call.await_args_list[0].args[0] == "cancel_task"
+    inbound.assert_awaited_once()
+    assert inbound.call_args.args[0].trigger_mind is False
+
+
+@pytest.mark.parametrize("text", ["别停", "不要停下", "停下然后跟我走"])
+async def test_stop_negation_and_composite_phrases_fall_through_to_ai(
+    channel: MinecraftChannel,
+    monkeypatch: pytest.MonkeyPatch,
+    text: str,
+) -> None:
+    call = AsyncMock()
+    inbound = AsyncMock()
+    monkeypatch.setattr(channel, "_call", call)
+    monkeypatch.setattr(channel, "on_message", inbound)
+    await channel._dispatch_event(chat_event(1, text))
+    call.assert_not_awaited()
+    inbound.assert_awaited_once()
+    assert inbound.call_args.args[0].trigger_mind is True
 
 
 async def test_command_message_is_history_only(channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch) -> None:

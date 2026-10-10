@@ -295,10 +295,15 @@ export class ActionController extends ActionLocks {
     return { ok: true, supported: true, ...this.status() }
   }
 
-  /** @param {(()=>Promise<unknown>)} [work] */
-  async resume (work) {
+  /** @param {(()=>Promise<unknown>)} [work] @param {boolean} [allowIdle] */
+  async resume (work, allowIdle = false) {
     if (this.action) throw new ToolError('BUSY', 'Wait for the current action and pause cleanup to finish.')
     const saved = this.paused
+    if (!saved && allowIdle) {
+      if (!this.bot || this.bot.health <= 0) throw new ToolError('FORBIDDEN', 'A living connection is required to resume idle autonomy.')
+      this.autonomousEnabled = true
+      return { ok: true, supported: false, ...this.status() }
+    }
     if (!saved) throw new ToolError('NOT_FOUND', 'There is no paused action in this connection.')
     if (saved.bot !== this.bot || saved.dimension !== this.bot?.game?.dimension || !this.bot || this.bot.health <= 0) {
       this.paused = null

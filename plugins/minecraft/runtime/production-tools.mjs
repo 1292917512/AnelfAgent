@@ -18,9 +18,9 @@ const tasks = new WeakMap()
 /** @param {Registrar} reg */
 export function registerProduction (reg) {
   reg({ name: 'prepare_item', group: 'crafting', description:
-    'Start BACKGROUND preparation of wooden tools, crafting_table or sticks. count is output items, not recipe operations; ensure reuses existing targets, craft makes additional output. Default uses inventory only. Optional gather explicitly authorizes one log type in a nearby area: preflights the minimum extra logs within maxCount, gathers only that deficit over existing level ground, confirms pickup and return, then replans from real inventory and crafts. Center within 8 blocks, radius <=4, targets at start height through +2; never excavates support or routes. Cannot identify player buildings: only use an authorized area. No need to gather if materials already suffice. Reuses a visible workbench within 4 blocks or places one beside the start; requires two recovery slots. No chest use, delivery, retries, task expansion or automatic resumption. Returns task id, NOT completion; wait for production_progress or read production_status. One owner and final report cover all stages; stop drains actual work and inventory.',
+    'Start BACKGROUND preparation of wooden/stone tools, a shield, torches, crafting_table, sticks or building planks. count is output items, not recipe operations; ensure reuses existing targets, craft makes additional output. Default uses inventory only. Optional gather explicitly authorizes one log type in a nearby area: preflights the minimum extra logs within maxCount, prefers level routes and low leaf clearing, then permits bounded leaf clearing above the current feet and bounded inventory scaffolds for targets up to three blocks higher; every temporary support must be removed and confirmed before replanning from real inventory and crafting. Center within 8 blocks, radius <=4; never excavates support floors, tunnels or arbitrary routes. Cannot identify player buildings: only use an authorized area. No need to gather if materials already suffice. Reuses a visible workbench within 4 blocks or places one beside the start; requires two recovery slots. No chest use, delivery, retries, task expansion or automatic resumption. Returns task id, NOT completion; wait for production_progress or read production_status. One owner and final report cover all stages; stop drains actual work and inventory.',
   inputSchema: {
-    item: z.enum(productionItems), count: z.number().int().min(1).max(8).default(1),
+    item: z.enum(productionItems), count: z.number().int().min(1).max(192).default(1),
     mode: z.enum(['ensure', 'craft']).default('ensure'),
     gather: z.object({ block: z.enum(preparationLogs), x: z.number().int(), y: z.number().int(), z: z.number().int(),
       radius: z.number().int().min(1).max(4).default(3), maxCount: z.number().int().min(1).max(32).default(8),
@@ -31,7 +31,7 @@ export function registerProduction (reg) {
     if (args.gather) {
       const area = args.gather
       if (Math.hypot(area.x - bot.entity.position.x, area.y - bot.entity.position.y, area.z - bot.entity.position.z) > 8) {
-        throw new ToolError('FORBIDDEN', 'Gathering center must be within 8 blocks of the preparation position.')
+        throw new ToolError('FORBIDDEN', 'Gathering center must be within 8 blocks of the preparation position; use goto goalType=near range=2 first, then retry from the arrived position.')
       }
       const task = new PreparationTask(ctx, bot, { ...args, gather: area })
       const result = task.start(); tasks.set(ctx, task); return result

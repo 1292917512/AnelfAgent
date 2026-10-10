@@ -43,6 +43,24 @@ class MinecraftConfig(ChannelConfig):
         default=False,
         description="发现局域网世界且 bot 未连接时自动进服待命（进服会短暂占用游戏，发生在开世界时而非对话中途）",
     )
+    autonomous_lifestyle: bool = Field(
+        default=True,
+        description="玩家空闲时允许角色自主生活：补给、完整砍树、制作装备、短程挖矿、建造和探索；!stop 会暂停，!resume 恢复",
+    )
+    autonomous_interval_seconds: float = Field(
+        default=300.0,
+        ge=60,
+        le=3600,
+        description="自主生活两轮之间的最短间隔",
+        json_schema_extra={"unit": "s", "min": 60, "max": 3600, "advanced": True},
+    )
+    autonomous_idle_seconds: float = Field(
+        default=90.0,
+        ge=30,
+        le=3600,
+        description="玩家停止发言后等待多久才开始自主生活",
+        json_schema_extra={"unit": "s", "min": 30, "max": 3600, "advanced": True},
+    )
 
 
 CONFIG_MODEL = MinecraftConfig

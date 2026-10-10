@@ -53,6 +53,39 @@ test('surface routes reject height changes, unloaded terrain, water and unsafe s
   assert.equal(nav.safe(new Vec3(3, 64, 0)), false)
 })
 
+test('surface routes identify leaves and only allow low leaf clearing', async () => {
+  const { GatherNavigation, isLeafBlockName } = await load('tools/anelf-gather-navigation.mjs')
+  assert.equal(isLeafBlockName('oak_leaves'), true)
+  assert.equal(isLeafBlockName('flowering_azalea_leaves'), true)
+  assert.equal(isLeafBlockName('oak_log'), false)
+  assert.equal(isLeafBlockName('leaf_litter'), false)
+  const { bot, controller } = await navigation()
+  bot.blockAt = p => p.y < 64 ? solid : p.y <= 65 ? { ...solid, name: 'oak_leaves' } : air
+  const nav = new GatherNavigation(bot, new Vec3(0, 64, 0), controller.signal)
+  assert.equal(nav.leafBreakable(new Vec3(2, 64, 0)), true)
+  assert.equal(nav.leafBreakable(new Vec3(2, 65, 0)), true)
+  assert.equal(nav.leafBreakable(new Vec3(2, 63, 0)), false)
+  bot.blockAt = p => p.y < 64 ? solid : { ...solid, name: 'oak_log' }
+  assert.equal(nav.leafBreakable(new Vec3(2, 64, 0)), false)
+})
+
+test('high routes clear only blocks above the feet', async () => {
+  const { GatherNavigation } = await load('tools/anelf-gather-navigation.mjs')
+  const { bot, controller } = await navigation()
+  bot.blockAt = p => p.y === 62 ? solid : p.y >= 63 ? { ...solid, name: 'oak_leaves' } : solid
+  const nav = new GatherNavigation(bot, new Vec3(0, 64, 0), controller.signal)
+  assert.equal(nav.leafBreakable(new Vec3(2, 65, 0), 'high'), true)
+  assert.equal(nav.leafBreakable(new Vec3(2, 66, 0), 'high'), true)
+  assert.equal(nav.leafBreakable(new Vec3(2, 64, 0), 'high'), false)
+  assert.equal(nav.breakable(new Vec3(2, 64, 0), 'high', 63), true)
+  assert.equal(nav.breakable(new Vec3(2, 63, 0), 'high', 63), false)
+  assert.equal(nav.safeRoutePoint(new Vec3(2, 63, 0), 'high'), true)
+  bot.blockAt = () => ({ ...solid, name: 'chest' })
+  assert.equal(nav.breakable(new Vec3(2, 65, 0), 'high'), false)
+  bot.blockAt = () => solid
+  assert.equal(nav.breakable(new Vec3(2, 65, 0), 'scaffold'), false)
+})
+
 test('a path update crossing a hole is cleared before the pathfinder can install it', async () => {
   const { bot, nav } = await navigation()
   nav.reachable = async () => true; nav.movements = () => ({})
@@ -95,4 +128,117 @@ test('candidate searches stop at the task budget before starting more path calcu
     { block: 'stone', count: 2, x: 2, y: 64, z: 0, radius: 2, withdraw: [], deposit: false })
   task.startedAt -= 120001
   await assert.rejects(task.candidate({ signal: new AbortController().signal, reachable () { assert.fail('Expired candidate search') } }), /GATHER_TIMEOUT/)
+})
+
+async function treeTask (t, count, mode) {
+  const { GatherTask } = await load('tools/anelf-gather-task.mjs')
+  const { GatherNavigation } = await load('tools/anelf-gather-navigation.mjs')
+  const { ActionController } = await load('bot/anelf-actions.mjs')
+  const locks = new ActionController({ push () {} })
+  t.after(() => locks.metrics.close())
+  const logs = new Map([64, 65, 66, 67].map(y => {
+    const p = new Vec3(2, y, 0)
+    return [p.toString(), p]
+  }))
+  let stock = 0
+  const bot = { entity: { position: new Vec3(0.5, 64, 0.5) }, game: { dimension: 'overworld' }, health: 20, food: 20,
+    inventory: { type: 'minecraft:inventory', slots: [], items: () => [{ name: 'oak_log', count: stock }] },
+    registry: { blocksByName: { oak_log: { id: 1 } } },
+    blockAt: p => logs.has(p.toString()) ? { name: 'oak_log', position: p } : air,
+    pathfinder: { setGoal () {} },
+  }
+  const ctx = { locks, manager: { statusReport: () => ({}), botOrNull: () => bot } }
+  const task = new GatherTask(ctx, bot, { block: 'oak_log', count, mode, x: 2, y: 64, z: 0, radius: 3, withdraw: [], deposit: false })
+  // Isolate quantity ownership from navigation, using a real connected-log world.
+  for (const [name, replacement] of Object.entries({ safe: () => true, walk: async () => {}, cleanupScaffolding: async () => {} })) {
+    const original = GatherNavigation.prototype[name]
+    GatherNavigation.prototype[name] = replacement
+    t.after(() => { GatherNavigation.prototype[name] = original })
+  }
+  task.candidate = async () => ({ block: bot.blockAt(logs.values().next().value) })
+  task.collectOne = async (_nav, _signal, allowed) => {
+    const p = (allowed ? [...allowed.values()] : [...logs.values()]).find(p => logs.has(p.toString()))
+    assert.ok(p)
+    logs.delete(p.toString()); stock++; task.dug++; task.gained++
+    return p.clone()
+  }
+  const execute = () => task.execute({ signal: new AbortController().signal, release () {} }, true)
+  return { task, bot, logs, execute }
+}
+
+test('default quantity mode preserves the preparation cap even when the trunk is larger', async t => {
+  const { task, logs, execute } = await treeTask(t, 1)
+  await execute()
+  assert.equal(task.phase, 'completed')
+  assert.equal(task.gained, 1)
+  assert.equal(logs.size, 3)
+})
+
+test('tree mode rejects an oversized tree before the first dig', async t => {
+  const { task, logs, execute } = await treeTask(t, 3, 'tree')
+  await execute()
+  assert.equal(task.phase, 'blocked')
+  assert.match(task.reason, /GATHER_TREE_LIMIT/)
+  assert.equal(task.dug, 0)
+  assert.equal(logs.size, 4)
+})
+
+test('tree mode completes exactly the preflighted component within its budget', async t => {
+  const { task, logs, execute } = await treeTask(t, 8, 'tree')
+  await execute()
+  assert.equal(task.phase, 'completed')
+  assert.equal(task.gained, 4)
+  assert.equal(logs.size, 0)
+  assert.equal(task.snapshot().mode, 'tree')
+  assert.equal(task.snapshot().remaining, null)
+})
+
+test('a missed pickup stops tree cleanup instead of silently continuing excavation', async t => {
+  const { task, logs, execute } = await treeTask(t, 8, 'tree')
+  const collect = task.collectOne
+  task.collectOne = async (...args) => {
+    const p = await collect(...args)
+    if (task.dug === 2) throw new Error('GATHER_NO_PICKUP')
+    return p
+  }
+  await execute()
+  assert.equal(task.phase, 'blocked')
+  assert.match(task.reason, /GATHER_NO_PICKUP/)
+  assert.equal(logs.size, 2)
+})
+
+test('known crown targets outside the initial search sphere remain candidate inputs', async t => {
+  const { GatherTask } = await load('tools/anelf-gather-task.mjs')
+  const { task, bot } = await treeTask(t, 8, 'tree')
+  const crown = new Vec3(2, 69, 0)
+  let observed = false
+  bot.findBlocks = () => { assert.fail('Known tree targets must not be clipped by the original sphere') }
+  bot.blockAt = p => { observed = p.equals(crown); return null }
+  await assert.rejects(GatherTask.prototype.candidate.call(task, { signal: new AbortController().signal }, new Set(), new Map([['2,69,0', crown]])), /GATHER_NO_TARGET/)
+  assert.equal(observed, true)
+})
+
+test('scaffold ownership tracks actual placed target cells, never planned reference blocks', async () => {
+  const { bot, nav } = await navigation()
+  const placed = new Map()
+  const target = new Vec3(1, 64, 0)
+  bot.placeBlock = async (reference, face) => {
+    placed.set(reference.position.plus(face).toString(), { ...solid, type: 3 })
+  }
+  const originalPlace = bot.placeBlock
+  bot.blockAt = p => placed.get(p.toString()) ?? (p.y < 64 ? solid : air)
+  nav.reachable = async () => true
+  nav.movements = () => ({})
+  nav.safeRoutePoint = () => true
+  bot.pathfinder = { setMovements () {}, setGoal () {}, goto: async () => {
+    bot.emit('path_update', { path: [{ x: 1, y: 65, z: 0, toBreak: [],
+      toPlace: [{ x: 1, y: 63, z: 0, dx: 0, dy: 1, dz: 0 }] }] })
+    assert.equal(nav.scaffolds.size, 0, 'A path plan is not proof of placement')
+    await bot.placeBlock({ position: new Vec3(1, 63, 0) }, new Vec3(0, 1, 0))
+    bot.entity.position = new Vec3(1, 65, 0)
+  } }
+  await nav.walk(new Vec3(1, 65, 0), 'scaffold')
+  assert.deepEqual([...nav.scaffolds.keys()], ['1,64,0'])
+  assert.ok(nav.scaffolds.get('1,64,0').position.equals(target))
+  assert.equal(bot.placeBlock, originalPlace)
 })

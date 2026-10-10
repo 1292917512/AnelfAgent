@@ -14,6 +14,7 @@ from .receipts import handed_to_game_events
 
 COMPANION_GAME_TOOLS = frozenset({
     "get_inventory", "get_state", "get_block_at", "place_block", "craft_item", "mine_resources", "prepare_item", "production_status",
+    "find_build_site", "build_starter_home",
     "manage_supplies", "supply_status",
     "gather_resources", "gathering_status",
 })
@@ -21,7 +22,7 @@ COMPANION_GAME_TOOLS = frozenset({
 COMPANION_INITIAL_GAME_TOOLS = (
     "get_inventory", "get_state", "get_observation", "list_players", "goto", "follow_entity",
     "cancel_task", "action_status", "pause_action", "resume_action",
-    "prepare_item", "production_status", "manage_supplies", "supply_status",
+    "prepare_item", "production_status", "find_build_site", "build_starter_home", "manage_supplies", "supply_status",
     "gather_resources", "gathering_status", "mine_resources", "mining_status", "return_from_mine", "resume_mining",
 )
 COMPANION_DIALOGUE_TOOLS = (
@@ -63,7 +64,7 @@ def companion_policy(server: str) -> ReplyPolicy:
             "由执行器终态事件报告结果；需要告知接单时在同批调用 send_message，不再查询、轮询或另发完成总结。"
             "如果玩家要求制作后跟随、采集后再执行其他操作等组合任务，先将完整请求及全部限制委托给 mc-worker，"
             "不要在主会话先启动其中一个交接任务而遗漏后续目标。启动失败则继续核对并解释，不作成功交接。\n"
-            "木制工具、工作台和木棍的准备优先直接调用 `prepare_item`：自动核算背包材料、准备中间产物和可操作的工作台。"
+            "木制/石制工具、盾牌、工作台和木棍的准备优先直接调用 `prepare_item`：自动核算背包材料、准备中间产物和可操作的工作台。"
             "count 是产物数量；准备够用用 mode=ensure，明确制作/新做/再做用 mode=craft，不能拿旧工具冒充新做。"
             "默认只用背包；玩家允许补原木且已确定可采集区域时，可传 gather={block,x,y,z,radius,maxCount}："
             "只采配方所缺的一种原木，最多 maxCount 个，确认入包并返回后才制作；材料够则不采集。"
@@ -72,6 +73,8 @@ def companion_policy(server: str) -> ReplyPolicy:
             "需要查询时用 `production_status`，按 plannedGather/gathering 核对采集和返程，"
             "按 created/available/reused/inventoryClean 区分新做、现有及收尾。采到原木不代表已做成工具。"
             "材料不足或无放台空间时保留原始限制，准确解释受阻，不擅自扩大任务。\n"
+            "建房先用 `find_build_site` 核验家址，再以相同 home 调用 `build_starter_home`，每批默认最多放置 16 块。"
+            "工具按实际结构续建，返回各阶段核验与 nextPhase；补木板复用 prepare_item，不能自行换址或自动扩大采集。\n"
             "指定箱子的卸货/补给优先直接用 `manage_supplies`，仅使用玩家明确授权且能确定坐标的普通箱子或木桶，"
             "不能猜箱子或擅取其他容器；需在可见四格内，不会自动走过去。deposit.count 是存入数量，keep 保留任务所需材料；"
             "withdraw.count 是背包应补到的总数。整批缺料或空间不足则不搬物品，工具/食物/火把有最低保留量。"
@@ -79,6 +82,7 @@ def companion_policy(server: str) -> ReplyPolicy:
             "部分完成或取消不重做，也不擅自接着采集或制作。\n"
             "附近表面原木/圆石采集优先 `gather_resources`：先确定玩家允许采集区域的中心坐标，半径最多四格，"
             "只走已有平坦通路，绝不挖脚下或开路。count 是本次新增入包，不含旧库存/出发补给。"
+            "默认 mode=count 严守数量；明确整树采集才用 mode=tree，此时 count 为整树原木上限，超限先拒绝，不能追加采邻树。"
             "可用明确授权且出发点可见四格内的 chest 坐标组合 withdraw 补给和 deposit=true 返程存货；不猜箱子。"
             "等待终态或查 `gathering_status`，分别看 dug/gained/remaining/returned/deposited；缺拾取即停挖，停止或断线不自续。"
             "不能识别人造建筑，采集区域必须获准；地形高差、地下目标用 `mine_resources` 或准确解释限制。\n"

@@ -39,6 +39,7 @@ from entities._sdk import call_mcp_server_tool
 from . import discovery as _discovery  # noqa: F401  导入即注册全局发现工具
 from .autoconnect import _CONNECT_STATE, AutoConnector
 from .config import MinecraftConfig
+from .lifestyle import MinecraftLifestyle
 from .protocol import (
     ConnectionStatus,
     EventBatch,
@@ -82,7 +83,7 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
         self._commands: set[asyncio.Task[None]] = set()
         self._command_lock = asyncio.Lock()
         self._survival = SurvivalBridge(
-            lambda name, args: self._call(name, args), lambda text: self._announce_reflex(text),
+            lambda name, args: self._call(name, args), lambda text: self._record_reflex(text),
         )
         self._task_announcements: dict[tuple[str, str, str], None] = {}
         self._auto = AutoConnector(
@@ -91,10 +92,26 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             self._announce_join,
             bot_username=lambda: self.get_config().bot_username,
         )
+        self._lifestyle = MinecraftLifestyle(
+            server_id=lambda: self.get_config().server_id,
+            mcp_server=lambda: self.get_config().mcp_server,
+            world_signature=self._world_signature,
+            enabled=lambda: self.get_config().autonomous_lifestyle,
+            interval_seconds=lambda: self.get_config().autonomous_interval_seconds,
+            idle_seconds=lambda: self.get_config().autonomous_idle_seconds,
+        )
         self._home: dict[str, Any] | None = None
         self._marks: dict[str, dict[str, Any]] = {}
         self._last_success: float | None = None
         self._last_error = ""
+
+    def _world_signature(self) -> str:
+        connection = self._connection
+        if connection is None or connection.state != "online":
+            return ""
+        if not all((connection.host, connection.port, connection.username, connection.dimension)):
+            return ""
+        return f"{connection.host}:{connection.port}:{connection.username}:{connection.dimension}"
 
     async def start(self) -> None:
         if self._poll_task is not None and not self._poll_task.done():
@@ -116,6 +133,7 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         await self._auto.stop()
+        await self._lifestyle.stop()
         await self._survival.stop()
         pending = list(self._background | self._commands)
         for bg in pending:
@@ -154,6 +172,11 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             ),
             text,
         )
+
+    async def _record_reflex(self, text: str) -> None:
+        """只把内部事实写入模型历史，不向游戏聊天发送。"""
+        cfg = self.get_config()
+        await record_game_event(cfg.server_id, text)
 
     async def _discover_worlds(self) -> list[_discovery.LanWorld]:
         """组播监听是阻塞套接字循环，放线程池跑，不占用事件循环。"""
@@ -204,6 +227,8 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
                     log(f"Minecraft 聊天桥等待执行器: {detail}", "WARNING", tag="Minecraft")
                 self._last_error = detail
             await self._auto_tick()
+            if not self._last_error:
+                self._lifestyle.tick(self._connection.state if self._connection is not None else None)
             await asyncio.sleep(self.get_config().poll_interval_seconds)
 
     async def _auto_tick(self) -> None:
@@ -291,6 +316,7 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             return
         if cfg.allowed_players and chat.username.casefold() not in {p.casefold() for p in cfg.allowed_players}:
             return
+        self._lifestyle.note_player_activity()
         private = event.type == "whisper"
         mention_pattern = rf"(?<![A-Za-z0-9_])@{re.escape(bot_name)}(?![A-Za-z0-9_])"
         mentioned = bool(re.search(mention_pattern, chat.message, re.IGNORECASE))
@@ -376,8 +402,12 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
         "!地名": "marks",
     }
     _PHRASE_COMMANDS: tuple[tuple[str, frozenset[str]], ...] = (
-        ("stop", frozenset({"停", "停下", "别动", "站住", "stop"})),
-        ("pause", frozenset({"暂停", "暂停一下", "pause"})),
+        ("stop", frozenset({
+            "停", "停下", "停一下", "停住", "停下来", "先停", "先停一下", "先停下来",
+            "停止", "停止当前任务", "停止工作", "停止行动", "取消当前任务", "别动", "不要动",
+            "站住", "stop", "stop now", "cancel task",
+        })),
+        ("pause", frozenset({"暂停", "暂停一下", "先暂停", "暂停任务", "暂停当前任务", "pause"})),
         ("resume", frozenset({"继续任务", "恢复任务", "resume"})),
         ("come", frozenset({"过来", "过来一下", "来我这", "到我这边来", "过来玩", "come"})),
         ("follow", frozenset({"跟我", "跟着我", "跟我走", "跟着我走", "follow"})),
@@ -393,9 +423,7 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             if command is None:
                 return None
             return (command, parts[1].strip() if len(parts) > 1 else "")
-        text = content.strip().strip("！!。~～…").casefold()
-        if len(text) > 8:
-            return None
+        text = content.strip().strip("！!。~～…，,；;：:、").casefold()
         for command, phrases in self._PHRASE_COMMANDS:
             if text in phrases:
                 return (command, "")
@@ -459,6 +487,7 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             log(f"Minecraft 指令回执发送失败: {response.error}", "WARNING", tag="Minecraft")
 
     async def _cmd_stop(self, username: str, channel: AdapterChannel, *, pause: bool = False) -> str:
+        self._lifestyle.pause()
         failures: list[str] = []
         current = asyncio.current_task()
         tasks = [task for task in self._background | self._commands if task is not current]
@@ -508,12 +537,15 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
         return "已停止当前动作。"
 
     async def _cmd_resume(self) -> str:
-        """仅恢复执行器确认的暂停检查点，不重新拉起旧 worker。"""
+        """核对执行器检查点后恢复，空闲时只解除自主生活暂停。"""
         try:
-            await self._call("resume_action", {})
+            result = await self._call("resume_action", {"allowIdle": True})
         except Exception as exc:
             log(f"Minecraft 恢复被拒绝: {exc}", "INFO", tag="Minecraft")
-            return "暂时不能恢复：任务可能仍在收尾，或位置、路线、资源已不满足条件；我没有重新开工。"
+            return f"任务恢复失败，自主生活仍保持暂停：{exc}"
+        self._lifestyle.resume()
+        if result.get("supported") is False:
+            return "没有待恢复的任务；自主生活已恢复，满足空闲和安全条件后继续。"
         return "已重新检查并恢复任务。"
 
     async def _cmd_come(self, username: str, channel: AdapterChannel) -> str:

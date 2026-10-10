@@ -21,7 +21,10 @@ class ConnectionStatus(BaseModel):
 
     state: str = Field(alias="status")
     username: str | None = None
+    host: str | None = None
+    port: int | None = None
     version: str | None = None
+    dimension: str | None = None
     survival: SurvivalStatus | None = None
 
 
@@ -200,6 +203,7 @@ class GatherProgress(BaseModel):
     phase: Literal["running", "completed", "blocked", "cancelled", "interrupted"]
     item: str = Field(pattern=r"^[a-z0-9_]+$")
     requested: int = Field(ge=1)
+    mode: Literal["count", "tree"] = "count"
     dug: int = Field(ge=0)
     gained: int = Field(ge=0)
     deposited: int = Field(ge=0)
@@ -210,7 +214,8 @@ class GatherProgress(BaseModel):
     def announcement(self) -> str | None:
         if self.phase == "running":
             return None
-        complete = (self.phase == "completed" and self.gained >= self.requested and self.returned
+        quantity_confirmed = 0 < self.gained <= self.requested if self.mode == "tree" else self.gained >= self.requested
+        complete = (self.phase == "completed" and quantity_confirmed and self.returned
                     and self.inventory_clean and (not self.deposit_requested or self.deposited >= self.gained))
         label = "采集任务已完成" if complete else {
             "cancelled": "采集任务已取消", "interrupted": "采集任务已中断",
@@ -219,7 +224,8 @@ class GatherProgress(BaseModel):
         returned = "已回到出发点" if self.returned else "尚未确认回到出发点"
         delivery = f"；确认存入指定箱子 {self.deposited} 个" if self.deposit_requested else ""
         cleanup = "" if self.inventory_clean else "；临时物品收尾尚未确认"
-        return (f"{label}：确认挖掉 {self.dug} 个方块，新入包 {self.gained}/{self.requested} 个{name}"
+        quantity = f"{self.gained} 个{name}（整树上限 {self.requested}）" if self.mode == "tree" else f"{self.gained}/{self.requested} 个{name}"
+        return (f"{label}：确认挖掉 {self.dug} 个方块，新入包 {quantity}"
                 f"；{returned}{delivery}{cleanup}。")
 
 

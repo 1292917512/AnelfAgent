@@ -11,6 +11,7 @@ import { workbenchPlacementHints } from './anelf-placement-hints.mjs'
 import { registerProduction } from './anelf-production-tools.mjs'
 import { registerSupplies } from './anelf-supply-tools.mjs'
 import { registerGathering } from './anelf-gather-tools.mjs'
+import { registerBuildSite } from './anelf-build-site.mjs'
 
 /** @typedef {import('../context.js').ToolContext} Context */
 /** @typedef {import('./registry.js').Registrar} Registrar */
@@ -40,6 +41,7 @@ export function registerActions (reg) {
   registerProduction(reg)
   registerSupplies(reg)
   registerGathering(reg)
+  registerBuildSite(reg)
   reg({ name: 'configure_survival', group: 'state', inputSchema: {
     enabled: z.boolean(), intervalMs: z.number().int().min(100).max(10000).default(250),
   }, description: 'Configure local survival observations; health/death/breath events are immediate. Does not resume stopped or paused work. Normal companion settings are synchronized by the Minecraft channel.',
@@ -50,9 +52,9 @@ export function registerActions (reg) {
   reg({ name: 'pause_action', group: 'state', inputSchema: {},
     description: 'Pause mining at a verified corridor step or pause persistent movement. pausing is not yet paused. Atomic inventory actions are cancelled and drained instead of replayed; supported=false means they cannot resume.',
     handler: (_args, ctx) => controller(ctx).pause() })
-  reg({ name: 'resume_action', group: 'state', inputSchema: {},
-    description: 'Explicitly resume a paused mining or persistent movement action after validating the same connection, dimension and current conditions. Never replays a cancelled craft or resumes a worker.',
-    handler: (_args, ctx) => controller(ctx).resume() })
+  reg({ name: 'resume_action', group: 'state', inputSchema: { allowIdle: z.boolean().default(false) },
+    description: 'Explicitly resume a paused mining or persistent movement action after validating the same connection, dimension and current conditions. With allowIdle=true, an idle living connection without a paused task may re-enable autonomy and returns supported=false. Never replays a cancelled craft or resumes a worker; active cleanup still rejects the request.',
+    handler: (args, ctx) => controller(ctx).resume(undefined, args.allowIdle) })
   reg({ name: 'action_status', group: 'state', inputSchema: {}, annotations: { readOnlyHint: true },
     description: 'Read the current/last action id, owner, phase and cancellation timing. stopping means cleanup is still running; no new conflicting work is accepted. cancelled does not mean inventory or mining goals were completed.',
     handler: (_args, ctx) => controller(ctx).status() })
