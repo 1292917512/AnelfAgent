@@ -10,7 +10,6 @@ import platform
 import re
 import shutil
 import subprocess
-import sys
 import urllib.request
 import zipfile
 from dataclasses import replace
@@ -105,7 +104,7 @@ def ensure_worker_profile() -> str:
 
 def download_node(runtime: Path) -> Path:
     """下载并校验 Windows x64 便携 Node 22，所有文件留在工作区。"""
-    if sys.platform != "win32" or platform.machine().lower() not in {"amd64", "x86_64"}:
+    if platform.system() != "Windows" or platform.machine().lower() not in {"amd64", "x86_64"}:
         raise ValueError("便携下载目前支持 Windows x64；其他平台请安装 Node 22 并使用 --node")
     existing = list(runtime.glob("node-v22.*-win-x64/node.exe"))
     if existing:
