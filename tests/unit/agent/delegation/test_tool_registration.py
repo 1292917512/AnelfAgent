@@ -36,7 +36,7 @@ class TestDelegationGroupRegistration:
         两种情况都断言注册表终态完整。
         """
         import agent.delegation.delegate_tool  # noqa: F401
-        from entities._sdk import _deferred_registry, activate_group
+        from core.tool_registry import _deferred_registry, activate_group
 
         if "delegation" in _deferred_registry:
             count = activate_group("delegation", "子代理 - 复杂任务拆分委托与并行执行")

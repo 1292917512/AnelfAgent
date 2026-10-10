@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
@@ -18,10 +19,10 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from core.log import log
-from services import StickerService
-from services.sticker import StickerServiceError
 
-router = APIRouter(prefix="/stickers", tags=["stickers"])
+from .service import StickerService, StickerServiceError
+
+router = APIRouter()
 
 _sticker_svc = StickerService()
 
@@ -35,19 +36,12 @@ def _write_bytes(path: str, data: bytes) -> None:
         f.write(data)
 
 
-def _workspace_abs() -> str:
-    try:
-        from core.config import ConfigManager
-        ws = ConfigManager.get("workspace_root", "workspace")
-    except Exception:
-        ws = "workspace"
-    return os.path.abspath(ws)
-
-
 def _safe_file_response(path: str) -> FileResponse:
     """限定文件必须存在于 workspace 内，防止路径穿越。"""
-    abs_path = os.path.abspath(path)
-    if not abs_path.startswith(_workspace_abs() + os.sep):
+    from core.path import workspace_root
+
+    abs_path = Path(path).resolve()
+    if not abs_path.is_relative_to(Path(workspace_root()).resolve()):
         raise HTTPException(status_code=403, detail="文件不在工作区内")
     if not os.path.isfile(abs_path):
         raise HTTPException(status_code=404, detail="文件不存在")
@@ -143,7 +137,7 @@ async def upload_sticker(
     if ext not in _ALLOWED_EXTS:
         raise HTTPException(status_code=400, detail=f"不支持的图片格式: {ext or '未知'}")
 
-    data = await file.read()
+    data = await file.read(_MAX_UPLOAD_BYTES + 1)
     if not data:
         raise HTTPException(status_code=400, detail="空文件")
     if len(data) > _MAX_UPLOAD_BYTES:
@@ -198,3 +192,8 @@ async def delete_sticker(sticker_id: str) -> Dict[str, Any]:
     if not removed:
         raise HTTPException(status_code=404, detail="表情包不存在")
     return {"success": True, "removed": sticker_id}
+
+
+def build_router() -> APIRouter:
+    """返回实体持有的表情库路由。"""
+    return router

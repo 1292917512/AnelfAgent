@@ -303,7 +303,7 @@ def create_bootstrap() -> FlowMachine:
         from agent.memory.graph.tools import _resolve_alias
         from agent.memory.notes import register_notes_tools
         from agent.tts.builtin import register_builtin_tts_providers
-        from entities._sdk import activate_group
+        from core.tool_registry import activate_group
         register_models_asr()
         register_builtin_tts_providers()
 

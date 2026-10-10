@@ -1,5 +1,6 @@
 {
   "tools": "工具",
   "workspaceTools": "工作区工具",
-  "unavailable": "此模块暂时无法加载，其他功能仍可正常使用。"
+  "unavailable": "此模块暂时无法加载，其他功能仍可正常使用。",
+  "dashboardTools": "服务与维护"
 }

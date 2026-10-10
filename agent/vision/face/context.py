@@ -11,8 +11,7 @@ from __future__ import annotations
 import time
 from typing import Dict, List, Optional, Tuple
 
-from core.context_provider import ProviderSnapshot
-from entities._sdk import context_provider
+from core.context_provider import ProviderSnapshot, context_provider
 
 from .store import get_face_store
 

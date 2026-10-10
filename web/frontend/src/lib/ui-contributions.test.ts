@@ -20,4 +20,17 @@ describe("module UI contributions", () => {
     expect(() => defineUiContributions([entry, entry])).toThrow("duplicate");
     expect(() => defineUiContributions([{ ...entry, order: NaN }])).toThrow("order");
   });
+  it("reserves core routes and tabs, and resolves module collisions deterministically", async () => {
+    const route: UiContribution = { ...entry, id: "page", slot: "app.routes", path: "/example", group: "capabilities" };
+    const result = await loadUiContributions({
+      "entity:z": async () => ({ default: [route] }),
+      "entity:a": async () => ({ default: [route, { ...route, id: "core", path: "/data" },
+        { ...entry, id: "tab", slot: "data.tabs", tab: "database" }] }),
+    }, ["app.routes:/data", "data.tabs:database"]);
+    expect(result.map((item) => item.key)).toEqual(["entity:a/page"]);
+  });
+  it("loads the host with no modules", async () => {
+    expect(await loadUiContributions({})).toEqual([]);
+    expect(() => defineUiContributions([{ ...entry, slot: "app.routes", path: "/../data", group: "system" }])).toThrow("route");
+  });
 });

@@ -27,7 +27,7 @@ export function DialogSurface({
   return (
     <Dialog.Root open={open} onOpenChange={(next) => { if (!next && dismissible) onClose(); }}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-[100] bg-black/45 backdrop-blur-[2px] data-[state=open]:animate-fade-in" />
+        <Dialog.Overlay className="dialog-overlay fixed inset-0 z-[100] bg-black/45 backdrop-blur-[2px]" />
         <Dialog.Content
           ref={surfaceRef}
           aria-describedby={undefined}
@@ -38,8 +38,8 @@ export function DialogSurface({
           }}
           onCloseAutoFocus={(event) => {
             event.preventDefault();
-            if (returnFocus.current?.isConnected) returnFocus.current.focus();
-            else document.querySelector<HTMLElement>("main")?.focus();
+            if (returnFocus.current?.isConnected) returnFocus.current.focus({ preventScroll: true });
+            else document.querySelector<HTMLElement>("main")?.focus({ preventScroll: true });
           }}
           onEscapeKeyDown={(event) => {
             const owner = event.target instanceof Element ? event.target.closest('[role="dialog"]') : null;

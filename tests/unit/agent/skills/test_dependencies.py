@@ -11,7 +11,15 @@ def mcp_env(tmp_path, monkeypatch):
     """隔离 MCP 配置文件。"""
     monkeypatch.setenv("ANELF_MCP_CONFIG", str(tmp_path / "mcp_servers.json"))
     monkeypatch.setenv("ANELF_MCP_CONFIG_PATH", "")
-    return tmp_path
+    from agent.skills.dependencies import mcp_servers_port
+    from entities.mcp.config import MCPServerStore
+    previous = mcp_servers_port.get() if mcp_servers_port.bound else None
+    mcp_servers_port.set(lambda: MCPServerStore().get_server_names())
+    yield tmp_path
+    if previous is None:
+        mcp_servers_port.unbind()
+    else:
+        mcp_servers_port.set(previous)
 
 
 class TestMissingDependencies:

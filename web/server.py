@@ -12,14 +12,16 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, Optional
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
+from starlette.routing import Match, Route
 
+from core.http_endpoints import handles_own_auth
 from core.log import log
 from core.path import ConfigPaths
 from web.auth_keys import extract_bearer_token, verify_bearer_api_key
@@ -59,7 +61,8 @@ def _mount_module_routers(
         if not callable(build_router):
             continue
         try:
-            app.include_router(
+            _include_module_router(
+                app,
                 build_router(),
                 prefix=prefix_tpl.format(item.name),
                 tags=[tag_tpl.format(item.name)],
@@ -128,15 +131,27 @@ def _mount_one_module_router(app: FastAPI, kind: str, name: str) -> None:
         return
     _unmount_module_router(app, prefix)
     try:
-        app.include_router(build_router(), prefix=prefix, tags=[tag_tpl.format(name)])
+        _include_module_router(app, build_router(), prefix=prefix, tags=[tag_tpl.format(name)])
         log(f"模块路由已热挂载: {prefix}")
     except Exception as exc:
         log(f"模块路由热挂载失败: {name} - {exc}", "WARNING")
 
 
+def _include_module_router(app: FastAPI, router: APIRouter, *, prefix: str, tags: list[str]) -> None:
+    """挂载模块并记录端点认证声明，保持与路由顺序及 HTTP 方法一致。"""
+    auth_routes = [Route(prefix + route.path, endpoint=route.endpoint, methods=route.methods)
+                   for route in router.routes if isinstance(route, Route)]
+    app.include_router(router, prefix=prefix, tags=list(tags))
+    if not hasattr(app.state, "module_auth_routes"):
+        app.state.module_auth_routes = {}
+    app.state.module_auth_routes[prefix] = auth_routes
+
+
 def _unmount_module_router(app: FastAPI, prefix: str) -> int:
     """运行时摘除指定前缀的模块路由（热拔除目录时经 EVENT_MODULE_REMOVED 触发）。"""
     routes = app.router.routes
+    if hasattr(app.state, "module_auth_routes"):
+        app.state.module_auth_routes.pop(prefix, None)
 
     def _matches(route: Any) -> bool:
         path = getattr(route, "path", "")
@@ -236,8 +251,6 @@ def _ensure_strict_password() -> None:
 _AUTH_EXEMPT = frozenset({
     "/api/auth/login",
     "/api/auth/check",
-    # 音源推送供外部 pipeline 上行，由端点自校验 X-Ingest-Token（fail-closed）
-    "/api/entity/audiosync/ingest",
 })
 
 
@@ -248,6 +261,17 @@ class _AuthMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         if not path.startswith("/api/") or path in _AUTH_EXEMPT:
             return await call_next(request)
+
+        module_routes: dict[str, list[Route]] = getattr(request.app.state, "module_auth_routes", {})
+        for prefix, routes in module_routes.items():
+            if path != prefix and not path.startswith(prefix + "/"):
+                continue
+            for route in routes:
+                matched, _ = route.matches(request.scope)
+                if matched == Match.FULL:
+                    if handles_own_auth(route.endpoint):
+                        return await call_next(request)
+                    break
 
         try:
             password = _load_auth_password()

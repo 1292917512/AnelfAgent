@@ -129,6 +129,7 @@ class TraceSession:
             "is_heartbeat": self.is_heartbeat,
             "is_introspection": self.is_introspection,
             "is_delegation": self.is_delegation,
+            "delegation_id": str(self.nodes[0].data.get("delegation_id", "")) if self.nodes else "",
             "node_count": len(self.nodes),
             "label": self.nodes[0].label if self.nodes else "",
             "scope": str(self.nodes[0].data.get("scope", "")) if self.nodes else "",

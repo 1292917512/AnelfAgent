@@ -146,6 +146,7 @@ class DelegationManager:
         self._cancel_marks: set[str] = set()
         # 并发槽等待任务可独立取消，不中断发起委托的父级任务。
         self._pending: Dict[str, asyncio.Task[bool]] = {}
+        self._queued: Dict[str, Dict[str, Any]] = {}
         # 全生命周期归属：覆盖后台尚未启动、等槽和加载上下文的阶段。
         self._owners: Dict[str, tuple[str, str]] = {}
         # 父子关系（父 delegation_id → 后代 id 集合）：取消级联用
@@ -286,7 +287,7 @@ class DelegationManager:
     def cancel_scope(self, scope: str) -> int:
         """取消指定会话运行中与排队中的委托，返回受理的取消数量。"""
         targets = {
-            did for did, info in self._running.items()
+            did for did, info in (self._queued | self._running).items()
             if info.get("scope") == scope
         }
         targets.update(did for did, (owner, _) in self._owners.items() if owner == scope)
@@ -303,7 +304,7 @@ class DelegationManager:
             did: scope for did, (scope, name) in self._owners.items() if name == agent_name
         }
         targets.update({
-            did: str(info.get("scope", "")) for did, info in self._running.items()
+            did: str(info.get("scope", "")) for did, info in (self._queued | self._running).items()
             if info.get("agent") == agent_name
         })
         return {scope for did, scope in targets.items() if self.cancel(did)}
@@ -318,7 +319,8 @@ class DelegationManager:
             "background": bool(info.get("background")),
             "model": str(info.get("model", "")),
             "agent": str(info.get("agent", "")),
-            "elapsed_seconds": int(now - float(info.get("started_at", now))),
+            "elapsed_seconds": max(0, int(now - float(info.get("started_at", now)))),
+            "state": str(info.get("state", "running")),
             "usage": dict(self._usage.get(did) or {}),
         }
 
@@ -327,7 +329,7 @@ class DelegationManager:
         now = time.time()
         return [
             self._snapshot_item(did, info, now)
-            for did, info in self._running.items()
+            for did, info in (self._queued | self._running).items()
             if info.get("scope") == scope
         ]
 
@@ -339,7 +341,7 @@ class DelegationManager:
         """
         now = time.time()
         items: List[Dict[str, Any]] = []
-        for did, info in self._running.items():
+        for did, info in (self._queued | self._running).items():
             item = self._snapshot_item(did, info, now)
             item.update({
                 "scope": str(info.get("scope", "")),
@@ -572,6 +574,7 @@ class DelegationManager:
 
         async def finish_unstarted(result: SubAgentResult) -> SubAgentResult:
             self._owners.pop(delegation_id, None)
+            self._queued.pop(delegation_id, None)
             self._cancel_marks.discard(delegation_id)
             self._detach_child(parent_id, delegation_id)
             if owns_registry_entry and registry is not None:
@@ -591,6 +594,13 @@ class DelegationManager:
         if delegation_id in self._cancel_marks:
             return await finish_unstarted(_cancelled_result(goal, role=role, task_index=task_index))
 
+        self._queued[delegation_id] = {
+            "goal": goal, "scope": scope, "chat_id": chat_id,
+            "role": normalize_role(role), "task_index": task_index,
+            "background": bool(scope_hint), "model": model_id, "agent": agent_name,
+            "started_at": time.time(), "state": "queued",
+        }
+
         # 发射 started 事件（前端 DelegationCard 渲染）
         if emit_events:
             try:
@@ -606,7 +616,7 @@ class DelegationManager:
                     "depth": current_depth(),
                     "model": model_id,
                     "agent": agent_name,
-                    "ts": asyncio.get_running_loop().time(),
+                    "ts": self._queued[delegation_id]["started_at"],
                 })
             except asyncio.CancelledError:
                 await finish_unstarted(_cancelled_result(goal, role=role, task_index=task_index))
@@ -700,16 +710,7 @@ class DelegationManager:
                 adapter_key=_adapter_key_of(self._mind, scope),
             )
             self._running[delegation_id] = {
-                "task": run_task,
-                "goal": goal,
-                "scope": scope,
-                "chat_id": chat_id,
-                "role": normalize_role(role),
-                "task_index": task_index,
-                "background": bool(scope_hint),
-                "model": model_id,
-                "agent": agent_name,
-                "started_at": time.time(),
+                **self._queued.pop(delegation_id), "task": run_task, "state": "running",
             }
             result: Optional[SubAgentResult] = None
             try:
@@ -758,6 +759,7 @@ class DelegationManager:
             reset_log_actor(actor_token)
             reset_delegation_id(id_token)
             self._usage.pop(delegation_id, None)
+            self._queued.pop(delegation_id, None)
             self._owners.pop(delegation_id, None)
             semaphore.release()
             if parent_id:
@@ -979,6 +981,7 @@ class DelegationManager:
                 "depth": current_depth(),
                 "model": model_id,
                 "agent": agent_name,
+                "ts": time.time(),
             }))
         except Exception:
             log("delegate_background 异常已忽略", "DEBUG")

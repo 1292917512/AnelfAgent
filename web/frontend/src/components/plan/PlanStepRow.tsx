@@ -1,5 +1,5 @@
 /**
- * PlanStepRow — 单步骤行（用于 PlanCard / PlanPanel / ActivityPanel）。
+ * PlanStepRow — 单步骤行（用于 计划卡片）。
  *
  * 状态图标 + 内容 + 备注 + 进行中标识。
  * settled 表示 plan 已进入终态：残留的 in_progress 步骤按 skipped 渲染，

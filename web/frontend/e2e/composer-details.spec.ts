@@ -1,8 +1,9 @@
-import { test, expect } from "./fixtures";
+import { test, expect, openWebChat, closeWebChatOverlay } from "./fixtures";
 
 test("attachment tray stays inside the composer and keeps long filenames contained", async ({ page }, testInfo) => {
   await page.route("**/api/chat/upload", (route) => route.fulfill({ json: { path: "/uploads/example.txt", type: "file" } }));
   await page.goto("/webui/");
+  await openWebChat(page);
   const card = page.locator(".composer-card");
   await card.locator('input[type="file"]').setInputFiles(Array.from({ length: 4 }, (_, index) => ({
     name: `a-very-long-workspace-reference-name-${index}.txt`, mimeType: "text/plain", buffer: Buffer.from("test"),
@@ -42,6 +43,7 @@ test("command search has one integrated focus treatment and pointer selection re
 test("external file drops show feedback and become composer attachments", async ({ page }) => {
   await page.route("**/api/chat/upload", (route) => route.fulfill({ json: { path: "/uploads/dropped.txt" } }));
   await page.goto("/webui/");
+  await openWebChat(page);
   const input = page.getByRole("textbox", { name: "Message", exact: true });
   const transfer = await page.evaluateHandle(() => {
     const data = new DataTransfer();
@@ -79,15 +81,18 @@ test("workspace directories keep their identity when attached", async ({ page, i
   await page.keyboard.press("Escape");
   await expect(page.getByRole("menu")).not.toBeVisible();
   if (isMobile) await page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).click();
+  await openWebChat(page);
   const tray = page.locator(".composer-attachments");
   await expect(tray.getByRole("listitem")).toHaveCount(3);
   await expect(tray).toContainText("Workspace");
   await expect(tray).toContainText("Folder");
   await page.screenshot({ path: testInfo.outputPath("directories.png") });
+  await closeWebChatOverlay(page);
   await page.getByRole("button", { name: "Appearance & language", exact: true }).click();
   await page.getByRole("button", { name: /Switch to dark|Dark theme|Use dark|dark mode/i }).click();
   await page.keyboard.press("Escape");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await openWebChat(page);
   await expect(page.locator(".composer-card")).toHaveCSS("background-color", "rgb(23, 30, 43)");
   await page.screenshot({ path: testInfo.outputPath("directories-dark.png"), animations: "disabled" });
 });

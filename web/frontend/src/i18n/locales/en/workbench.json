@@ -175,5 +175,24 @@
   "openEditor": "Open editor",
   "editorLabel": "Editor",
   "backToChat": "Back to conversation",
-  "resetLayout": "Reset panel widths"
+  "resetLayout": "Reset panel widths",
+  "webChat": "Web chat",
+  "execution": {
+    "title": "Activity",
+    "region": "Global execution",
+    "heading": "Agent activity",
+    "description": "All channels, tasks and sub-agents in one place",
+    "running": "{{count}} active runs",
+    "runs": "Runs",
+    "agents": "Sub-agents",
+    "webRecords": "Web records",
+    "agentsRunning": "{{count}} sub-agents running",
+    "webRecordsHint": "Operations, reasoning and file changes from this Web conversation. Live traces for every channel are available in Runs.",
+    "noRecords": "No operations recorded for this conversation.",
+    "open": "View agent activity",
+    "waiting": "Waiting for the agent",
+    "source": "Source",
+    "allSources": "All sources",
+    "runningOnly": "Running only"
+  }
 }

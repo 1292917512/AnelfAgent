@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+
+import pytest
+
 from core.sanitizer import (
     clean_surrogates,
     has_surrogates,
@@ -9,6 +13,18 @@ from core.sanitizer import (
     sanitize_text,
     truncate_middle,
 )
+
+
+@pytest.mark.parametrize("value", ['abc def,gh', 'p"a\\ss', '123456'])
+def test_quoted_json_credentials_are_masked_without_breaking_json(value: str) -> None:
+    result = sanitize_text(json.dumps({"password": value, "message": "safe", "secret": ""}))
+    assert json.loads(result) == {"password": "****", "message": "safe", "secret": ""}
+
+
+def test_quoted_assignment_and_schema_are_distinguished() -> None:
+    assert sanitize_text("password = 'a short password'") == "password = '****'"
+    schema = '{"password": {"type": "string"}, "secret": null}'
+    assert sanitize_text(schema) == schema
 
 
 class TestUrlCredential:

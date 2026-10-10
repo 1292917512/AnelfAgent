@@ -26,7 +26,7 @@ import type {
   SsePlanStepUpdatedEvent,
   SsePlanSubmittedEvent,
   SseReplyEvent,
-  SseShareEvent,
+  SseExtensionEvent,
   SseToolCallEvent,
   SseTurnEndEvent,
   UiCommandPayload,
@@ -268,10 +268,10 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
     } catch { /* ignore */ }
   });
 
-  es.addEventListener("share", (e) => {
+  es.addEventListener("extension", (e) => {
     try {
-      const data = JSON.parse(e.data) as SseShareEvent;
-      if (!data.token) return;
+      const data = JSON.parse(e.data) as SseExtensionEvent;
+      if (typeof data.chat_id !== "string" || !data.chat_id || typeof data.extension?.type !== "string" || typeof data.extension.fallback !== "string" || !data.extension.payload || typeof data.extension.payload !== "object" || Array.isArray(data.extension.payload)) return;
       const chatId = routeChatId(data);
       const isBackground = chatId !== ctx.getActiveChatId();
       updateBucket(chatId, (b) => {
@@ -280,17 +280,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
           content: "",
           cid: nextCid(),
           ts: Date.now() / 1000,
-          share: {
-            token: data.token,
-            url: data.url,
-            download_url: data.download_url,
-            share_type: data.share_type,
-            media_kind: data.media_kind,
-            target_url: data.target_url,
-            file_name: data.file_name,
-            file_size: data.file_size,
-            description: data.description,
-          },
+          extension: data.extension,
         };
         return {
           messages: [
@@ -450,7 +440,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
     try {
       const data = JSON.parse(e.data) as SsePlanStepUpdatedEvent;
       const chatId = routeChatId(data);
-      // 步骤进度只更新 PlanCard/PlanPanel 浮窗，不再插入消息流（避免刷屏）
+      // 步骤进度只更新 PlanCard/执行记录面板，不再插入消息流（避免刷屏）
       usePlanStore.getState().updatePlanStep(
         chatId,
         data.plan_id,

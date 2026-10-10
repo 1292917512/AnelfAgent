@@ -9,11 +9,11 @@ from __future__ import annotations
 import json
 
 from agent.llm.types import ToolCall
-from agent.mind.tools.result_parse import parse_tool_result_json
 from agent.mind.tools.think_loop import (
     _check_tool_results_all_errors,
     _collect_round_error_briefs,
 )
+from core.tool_results import parse_tool_result_json
 
 
 def _chain(*contents: str) -> list[dict]:

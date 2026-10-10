@@ -127,6 +127,7 @@ export function FileEditor({ overlay = false }: { overlay?: boolean }) {
     if (!cur) return;
     attachWorkspaceFile(cur.file.path, cur.file.name, curRoot);
     if (overlay) collapseFilePanel();
+    useWorkbenchStore.getState().showSurface("chat");
     toast.success(t("editor.attach"));
   }, [cur, curRoot, attachWorkspaceFile, t, overlay, collapseFilePanel]);
 
@@ -142,6 +143,7 @@ export function FileEditor({ overlay = false }: { overlay?: boolean }) {
     const fence = "`".repeat(Array.from(body.matchAll(/`+/g)).reduce((length, match) => Math.max(length, match[0].length + 1), 3));
     setInputDraft(`${reference}\n${fence}${ext}\n${body}\n${fence}`);
     if (overlay) collapseFilePanel();
+    useWorkbenchStore.getState().showSurface("chat");
     toast.success(t("editor.quote"));
   }, [cur, curRoot, setInputDraft, t, overlay, collapseFilePanel]);
 

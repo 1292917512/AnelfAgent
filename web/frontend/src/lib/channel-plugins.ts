@@ -1,5 +1,5 @@
 /**
- * 频道前端插件注册表 — 频道卡片/路由的频道自定义 UI 由此驱动。
+ * 频道前端插件注册表 — 频道卡片的频道自定义 UI 由此驱动。
  *
  * 频道在 channels/<id>/frontend/ 内自带完整前端（组件/API/类型/locales），
  * 经 module-links.mjs 生成显式加载清单，构建时自动发现并检查类型。
@@ -19,11 +19,7 @@ export interface ChannelPlugin {
   login?: () => Promise<{ default: ComponentType<{ compact?: boolean }> }>;
   /** 频道卡片展开区的自定义面板（如直播模式面板） */
   panel?: () => Promise<{ default: ComponentType }>;
-  /** 整页路由（注册到 App 路由表，path 不含前导斜杠，如 "bilibili"） */
-  route?: { path: string };
-  /** 整页组件 loader（配合 route 使用） */
-  page?: () => Promise<{ default: ComponentType }>;
-  /** 从频道列表/测试面板隐藏（管理面另有入口的频道，如有整页路由的插件频道） */
+  /** 从频道列表/测试面板隐藏（由模块贡献清单提供独立管理入口） */
   hiddenInChannelList?: boolean;
 }
 
@@ -31,7 +27,6 @@ export interface ChannelPlugin {
 const pluginLoaders = channelPluginLoaders;
 
 const plugins = new Map<string, ChannelPlugin>();
-const pluginRoutes: Array<{ path: string; page: LazyExoticComponent<ComponentType> }> = [];
 
 // 组件映射由 initChannelPlugins 填充（lazy 组件为静态引用，渲染期零工厂调用，
 // 满足 react-hooks/static-components；loader 仍为动态 import，保持懒加载分块）
@@ -70,18 +65,11 @@ async function loadChannelPlugins(): Promise<void> {
     if (plugin.panel) {
       CHANNEL_PANEL_COMPONENTS[key] = lazy(plugin.panel);
     }
-    if (plugin.route && plugin.page && !pluginRoutes.some((route) => route.path === plugin.route?.path)) {
-      pluginRoutes.push({ path: plugin.route.path, page: lazy(plugin.page) });
-    }
+
   }
 }
 
 /** 频道是否应从频道列表/测试面板隐藏。 */
 export function isChannelHidden(channelKey: string): boolean {
   return plugins.get(channelKey)?.hiddenInChannelList === true;
-}
-
-/** 收集插件声明的整页路由。 */
-export function listPluginRoutes(): Array<{ path: string; page: LazyExoticComponent<ComponentType> }> {
-  return pluginRoutes;
 }

@@ -14,6 +14,7 @@ import asyncio
 import difflib
 import inspect
 import json
+import math
 import re
 import threading
 import uuid
@@ -25,7 +26,10 @@ from typing import Any, Callable, Dict, List, Optional, Type
 from core.event_bus import EVENT_TRACE_CALL_END, EVENT_TRACE_CALL_START, event_bus
 from core.exceptions import catch_exceptions
 from core.log import log
+from core.sanitizer import sanitize_text
+from core.tags import tag_label
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
+from core.tool_results import extract_error_text, parse_tool_result_json
 
 # ======================================================================
 # JSON 容错修复
@@ -477,7 +481,6 @@ _SKIP_ENTITY_METHODS = frozenset({
 _SUGGEST_CUTOFF = 0.35
 _SUGGEST_MAX = 8
 # 日志/事件载荷中的参数与结果预览截断长度
-_LOG_ARGS_PREVIEW_LEN = 120
 _LOG_RESULT_PREVIEW_LEN = 150
 _EVENT_PREVIEW_LEN = 200
 _JSON_ERROR_PREVIEW_LEN = 200
@@ -1054,13 +1057,60 @@ class EntityRegistry:
 
     @classmethod
     async def execute_tool(
+        cls, name: str, arguments: str = "", *, timeout: float = _DEFAULT_TOOL_TIMEOUT,
+    ) -> str:
+        """执行工具并关联请求、调用与结果；失败诊断只附加到工具链尾部。"""
+        from core.tool_context import request_trace
+
+        call_id = uuid.uuid4().hex
+        trace = request_trace()
+        entity = cls.get(name)
+        identity = {"request": trace, "call_id": call_id, "name": name}
+        labels = tag_label("call_id", call_id) + tag_label("tool", name)
+        if trace.get("request_id"):
+            labels += tag_label("request_id", trace["request_id"])
+        started = asyncio.get_running_loop().time()
+        await event_bus.emit(EVENT_TRACE_CALL_START, {
+            **identity, "group": entity.group if entity else "",
+            "entity_type": entity.entity_type.value if entity else "tool",
+            "arguments_preview": sanitize_text(arguments)[:_EVENT_PREVIEW_LEN],
+        })
+        log(f"▶ 执行工具 {labels}", "DEBUG", tag="实体")
+        try:
+            result = await cls._invoke_tool(name, arguments, timeout=timeout)
+        except asyncio.CancelledError:
+            await event_bus.emit(EVENT_TRACE_CALL_END, {
+                **identity, "duration_ms": round((asyncio.get_running_loop().time() - started) * 1000),
+                "success": False, "error": "工具调用已取消，执行结果未确认", "cancelled": True,
+            })
+            raise
+        except Exception as exc:
+            result = error_from_exception(exc, action=f"工具 {name} 执行")
+        error = extract_error_text(result)
+        if error:
+            payload = parse_tool_result_json(result)
+            if isinstance(payload, dict):
+                payload["diagnostic"] = {"tool": name, "call_id": call_id, **trace}
+                result = sanitize_text(json.dumps(payload, ensure_ascii=False))
+                error = extract_error_text(result)
+        duration = round((asyncio.get_running_loop().time() - started) * 1000)
+        await event_bus.emit(EVENT_TRACE_CALL_END, {
+            **identity, "duration_ms": duration, "success": not bool(error),
+            "error": error, "result_preview": sanitize_text(result)[:_EVENT_PREVIEW_LEN],
+        })
+        log(f"◀ 工具{'失败' if error else '完成'} {labels}: {sanitize_text(result)[:_LOG_RESULT_PREVIEW_LEN]}",
+            "WARNING" if error else "DEBUG", tag="实体")
+        return result
+
+    @classmethod
+    async def _invoke_tool(
         cls,
         name: str,
         arguments: str = "",
         *,
         timeout: float = _DEFAULT_TOOL_TIMEOUT,
     ) -> str:
-        """执行工具实体（带超时保护）。"""
+        """校验工具参数并在声明的预算内执行。"""
         entity = cls.get(name)
         if entity is None:
             catalog = cls.get_entity_catalog()
@@ -1072,28 +1122,29 @@ class EntityRegistry:
             suggested = difflib.get_close_matches(
                 name, all_tool_names, n=_SUGGEST_MAX, cutoff=_SUGGEST_CUTOFF,
             )
-            return json.dumps({
-                "error": f"工具 '{name}' 不存在或当前不可用，请勿猜测工具名。",
-                "hint": '请先调用 list_entity_methods({"group": "分组名"}) 查看该实体的具体方法名和参数。'
-                        '部分工具可能因门控检查未通过或处于沉睡状态而暂时隐藏；'
-                        '被管理员禁用或被权限规则拒绝的工具会在调用时收到明确的原因说明。',
-                "available_groups": groups,
-                "suggested_tools": suggested,
-            }, ensure_ascii=False)
+            return tool_error(
+                f"工具 '{name}' 不存在或当前不可用，请勿猜测工具名。",
+                cause=ErrorCause.NOT_FOUND, retryable=False, code="TOOL_NOT_FOUND",
+                hint='先用 list_entity_methods 查询分组的方法与参数；检查工具门控、沉睡与启用状态。',
+                available_groups=groups, suggested_tools=suggested,
+            )
         if not entity.enabled:
-            return json.dumps({"error": f"工具已禁用: {name}"}, ensure_ascii=False)
+            return tool_error(f"工具已禁用: {name}", cause=ErrorCause.STATE, retryable=False, code="TOOL_DISABLED", hint="该工具未执行；检查工具启用状态")
         if entity.func is None:
-            return json.dumps({"error": f"工具无执行函数: {name}"}, ensure_ascii=False)
+            return tool_error(f"工具无执行函数: {name}", cause=ErrorCause.STATE, retryable=False, code="TOOL_UNAVAILABLE", hint="检查模块是否已完成注册")
 
         try:
             repaired = repair_json_arguments(arguments) if arguments else "{}"
             kwargs = json.loads(repaired) if arguments else {}
         except json.JSONDecodeError as e:
             preview = arguments[:_JSON_ERROR_PREVIEW_LEN] if arguments else ""
-            return json.dumps(
-                {"error": f"参数 JSON 解析失败: {e}", "args_preview": preview},
-                ensure_ascii=False,
-            )
+            return tool_error(f"参数 JSON 解析失败: {e}", cause=ErrorCause.PARAM,
+                              retryable=False, code="TOOL_ARGUMENTS_INVALID", args_preview=preview,
+                              hint="按工具 schema 提供 JSON 对象")
+        if not isinstance(kwargs, dict):
+            return tool_error("工具参数必须是 JSON 对象", cause=ErrorCause.PARAM,
+                              retryable=False, code="TOOL_ARGUMENTS_INVALID",
+                              hint="使用参数名作为键；无参数时传 {}")
 
         # 按 schema 声明类型矫正参数（LLM 可能传错 JSON 类型，如数字 ID 按 number 传递）
         if isinstance(kwargs, dict):
@@ -1103,10 +1154,9 @@ class EntityRegistry:
             # 矫正失败的非法值在此拦截，给 AI 清晰反馈而非工具内部 TypeError
             type_error = _validate_param_types(entity.meta.get("params") or [], kwargs)
             if type_error:
-                return json.dumps({
-                    "error": f"参数类型错误: {type_error}",
-                    "hint": "请按工具 schema 声明的类型传参后重试",
-                }, ensure_ascii=False)
+                return tool_error(f"参数类型错误: {type_error}", cause=ErrorCause.PARAM,
+                                  retryable=False, code="TOOL_ARGUMENTS_INVALID",
+                                  hint="请按工具 schema 声明的类型传参后重试")
             # schema 未声明的参数对不接收 **kwargs 的工具必然崩溃成 TypeError，
             # 提前拦截并返回正确参数列表，避免 AI 盲猜参数名反复失败
             if not _func_accepts_var_kwargs(entity.func):
@@ -1118,17 +1168,32 @@ class EntityRegistry:
                         f"工具参数拦截: {name} 收到未知参数 {unknown}",
                         "WARNING", tag="实体",
                     )
-                    return json.dumps({
-                        "error": f"参数错误: 工具 {name} 不接受参数 {unknown}",
-                        "valid_params": sorted(declared - {"_timeout"}),
-                        "hint": "请仅使用 valid_params 列出的参数名修正后重试，不要猜测其他参数名",
-                    }, ensure_ascii=False)
+                    return tool_error(f"参数错误: 工具 {name} 不接受参数 {unknown}",
+                                      cause=ErrorCause.PARAM, retryable=False, code="TOOL_ARGUMENTS_INVALID",
+                                      valid_params=sorted(declared - {"_timeout"}),
+                                      hint="请仅使用 valid_params 列出的参数名修正后重试")
 
         # 优先级: AI 传入 > 装饰器定义 > 全局默认
         ai_timeout = kwargs.pop("_timeout", None)
         meta_timeout = entity.meta.get("timeout") if entity.meta else None
 
-        if isinstance(ai_timeout, (int, float)) and ai_timeout > 0:
+        try:
+            signature = inspect.signature(entity.func)
+        except (TypeError, ValueError):
+            signature = None
+        if signature is not None:
+            try:
+                signature.bind(**kwargs)
+            except TypeError as exc:
+                return tool_error(f"工具参数不完整或不匹配: {exc}", cause=ErrorCause.PARAM,
+                                  retryable=False, code="TOOL_ARGUMENTS_INVALID",
+                                  hint="按工具 schema 补齐必填参数并检查参数名")
+
+        if ai_timeout is not None and (isinstance(ai_timeout, bool) or not isinstance(ai_timeout, (int, float))
+                                       or not math.isfinite(ai_timeout) or ai_timeout <= 0):
+            return tool_error("_timeout 必须为有限正数（秒）", cause=ErrorCause.PARAM,
+                              retryable=False, code="TOOL_ARGUMENTS_INVALID")
+        if ai_timeout is not None:
             tool_timeout = float(ai_timeout)
         elif meta_timeout is not None:
             tool_timeout = float(meta_timeout)
@@ -1141,79 +1206,19 @@ class EntityRegistry:
         if inner_timeout > 0:
             tool_timeout = max(tool_timeout, inner_timeout + _INNER_TIMEOUT_MARGIN)
 
-        call_id = uuid.uuid4().hex[:8]
-        from core.tool_context import request_trace
-
-        trace = request_trace()
-        t0 = asyncio.get_running_loop().time()
-
-        log(f"▶ 执行工具: {name}({arguments[:_LOG_ARGS_PREVIEW_LEN] if arguments else ''})", "DEBUG", tag="实体")
-        await event_bus.emit(EVENT_TRACE_CALL_START, {
-            "request": trace,
-            "call_id": call_id,
-            "name": name,
-            "group": entity.group,
-            "entity_type": entity.entity_type.value,
-            "arguments_preview": arguments[:_EVENT_PREVIEW_LEN] if arguments else "",
-        })
-
         try:
             if entity.is_async:
                 coro = entity.func(**kwargs)
             else:
                 coro = asyncio.to_thread(entity.func, **kwargs)
-            result = await asyncio.wait_for(coro, timeout=tool_timeout)
+            return _serialize_result(await asyncio.wait_for(coro, timeout=tool_timeout))
         except asyncio.TimeoutError:
-            dur = round((asyncio.get_running_loop().time() - t0) * 1000)
-            # 同步工具经线程执行，超时后底层线程无法强制终止，仍可能继续运行至自行结束
-            sync_note = "" if entity.is_async else "（同步工具底层线程将继续运行至自行结束）"
-            log(f"工具执行超时 ({tool_timeout}s){sync_note}: {name}", "WARNING", tag="实体")
-            await event_bus.emit(EVENT_TRACE_CALL_END, {
-                "request": trace,
-                "call_id": call_id,
-                "name": name,
-                "duration_ms": dur,
-                "success": False,
-                "error": f"执行超时 ({tool_timeout}s)",
-            })
-            # 结构化错误（cause/retryable + 稳定 code）：守卫/重试/前端按 cause
-            # 路由，不解析 message（code 即机器可判定的错误契约）。
-            # 只陈述事实（哪个调用、执行上限多久），处置决策留给 AI。
-            # Model Experience: 超时错误附 args_preview 纯事实增量（仅错误路径，
-            # token 影响可忽略）；tool 结果属 tool_chain 动态区，不触碰前缀缓存层
             return tool_error(
-                f"工具执行超时 ({tool_timeout}s): {name}",
-                cause=ErrorCause.TIMEOUT,
-                retryable=True,
-                code="TOOL_TIMEOUT",
-                args_preview=arguments[:_LOG_ARGS_PREVIEW_LEN] if arguments else "",
+                f"工具执行超时 ({tool_timeout}s): {name}", cause=ErrorCause.TIMEOUT,
+                retryable=False, code="TOOL_TIMEOUT", outcome="unknown",
+                hint="先检查操作状态或产物，再决定是否重试；超时不代表操作未生效",
+                timeout_seconds=tool_timeout, background_may_continue=not entity.is_async,
             )
-        except Exception as exc:
-            dur = round((asyncio.get_running_loop().time() - t0) * 1000)
-            log(f"工具执行异常: {name} - {exc}", "ERROR", tag="实体")
-            await event_bus.emit(EVENT_TRACE_CALL_END, {
-                "request": trace,
-                "call_id": call_id,
-                "name": name,
-                "duration_ms": dur,
-                "success": False,
-                "error": str(exc),
-            })
-            # 统一走归因映射（超时/权限/未找到/网络/参数…），不裸抛 str(exc)
-            return error_from_exception(exc, action=f"工具 {name} 执行")
-
-        dur = round((asyncio.get_running_loop().time() - t0) * 1000)
-        result_str = _serialize_result(result)
-        log(f"◀ 工具完成: {name} → {result_str[:_LOG_RESULT_PREVIEW_LEN]}", "DEBUG", tag="实体")
-        await event_bus.emit(EVENT_TRACE_CALL_END, {
-            "request": trace,
-            "call_id": call_id,
-            "name": name,
-            "duration_ms": dur,
-            "success": True,
-            "result_preview": result_str[:_EVENT_PREVIEW_LEN],
-        })
-        return result_str
 
     @classmethod
     async def execute_tool_call(cls, tool_call: Any) -> str:

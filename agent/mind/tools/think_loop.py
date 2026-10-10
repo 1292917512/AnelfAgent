@@ -873,7 +873,7 @@ async def _deliver_channel_receipt(ctx: _ThinkLoopCtx, state: _ThinkRoundState) 
 
 def _reply_tool_results(tool_chain: List[Dict]) -> list[ReplyToolResult]:
     """按实际调用 ID 配对已返回事实，不解析模型正文或结束备注。"""
-    from agent.mind.tools.result_parse import parse_tool_result_json
+    from core.tool_results import parse_tool_result_json
 
     names: dict[str, str] = {}
     results: list[ReplyToolResult] = []

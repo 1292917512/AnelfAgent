@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from core.log import log
 from core.path import workspace_root
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
-from entities._sdk import deferred_tool
+from core.tool_registry import deferred_tool
 
 _LOG_TAG = "模型资产"
 

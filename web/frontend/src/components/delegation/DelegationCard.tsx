@@ -31,7 +31,10 @@ export function DelegationCard({ node, compact = false }: Props) {
   const now = useNow(running) / 1000;
   const durationSec = Math.max(0, Math.round((node.resolved_at ?? now) - node.started_at));
   const cancel = useMutation({
-    mutationFn: () => chatApi.cancelDelegation(node.delegation_id),
+    mutationFn: async () => {
+      const { data } = await chatApi.cancelDelegation(node.delegation_id);
+      if (data.status !== "ok") throw new Error(data.error || t("delegation.panel.opFailed"));
+    },
     onMutate: () => markCancelling(node.chat_id, node.delegation_id),
     onError: () => markCancelling(node.chat_id, node.delegation_id, false),
   });
@@ -47,7 +50,7 @@ export function DelegationCard({ node, compact = false }: Props) {
             : node.status === "completed"
               ? "border-green-400/40 bg-green-50/20 dark:bg-green-950/10"
               : node.status === "cancelled"
-                ? "border-border/60 bg-muted/30"
+                ? "border-border/60 bg-elevated"
                 : "border-blue-400/40 bg-blue-50/30 dark:bg-blue-950/20",
         )}
       >
@@ -63,7 +66,7 @@ export function DelegationCard({ node, compact = false }: Props) {
                   : "text-blue-500",
           )} />
           <span className={cn(
-            "text-sm font-medium flex-1 min-w-0 truncate",
+            "text-sm font-medium flex-1 min-w-0 line-clamp-2 break-words",
             node.status === "cancelled" ? "text-muted" : "text-foreground",
           )}>
             {node.goal || t("delegation.untitled")}

@@ -1,5 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
-import { test, expect } from "./fixtures";
+import { test, expect, openWebChat, closeWebChatOverlay } from "./fixtures";
 import type { UiStateReport } from "../src/lib/types";
 
 test("workspace keeps folders and drafts across focused panels and viewport changes", async ({ page, isMobile }, info) => {
@@ -18,7 +18,9 @@ test("workspace keeps folders and drafts across focused panels and viewport chan
     { id: 2, role: "assistant", content: "## A clearer workspace\n\nI’ll start with the files, then review the implementation and its tests.\n\n- Preserve existing behavior\n- Keep each module focused\n- Verify desktop and touch interactions\n\nYou can inspect [the working notes](./docs%2Fnote.txt) alongside this conversation.", ts: 1770000010 },
   ] }));
   await page.goto("/webui/");
+  await openWebChat(page);
   await page.getByRole("textbox", { name: "Message", exact: true }).fill("Keep this draft while I review the files.");
+  await closeWebChatOverlay(page);
   await page.getByRole("button", { name: "Workspace files", exact: true }).click();
   await page.getByRole("treeitem").filter({ hasText: /^docs$/ }).click();
   await page.getByRole("treeitem").filter({ hasText: "note.txt" }).click();
@@ -28,9 +30,9 @@ test("workspace keeps folders and drafts across focused panels and viewport chan
   await page.keyboard.insertText("Draft survives layout changes");
   if (!isMobile) {
     await page.getByRole("button", { name: "Expand sidebar", exact: true }).click();
-    const conversation = await page.locator(".conversation-pane").boundingBox();
-    expect(conversation!.width).toBeGreaterThanOrEqual(439);
-    await page.setViewportSize({ width: 1800, height: 1050 });
+    const execution = await page.locator(".execution-workspace").boundingBox();
+    expect(execution!.width).toBeGreaterThanOrEqual(499);
+    await page.setViewportSize({ width: 2250, height: 1050 });
     await page.getByRole("button", { name: "Panels", exact: true }).click();
     await page.getByRole("tab", { name: "Tasks", exact: true }).click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
@@ -41,7 +43,9 @@ test("workspace keeps folders and drafts across focused panels and viewport chan
   await expect.poll(() => reported).toMatchObject({ open_file: "docs/note.txt", has_draft: true, left_open: !isMobile });
   await page.screenshot({ path: info.outputPath("workspace-editor.png") });
   await page.getByRole("button", { name: "Collapse panel (tabs kept)", exact: true }).click();
+  await openWebChat(page);
   await expect(page.getByRole("textbox", { name: "Message", exact: true })).toHaveValue("Keep this draft while I review the files.");
+  await closeWebChatOverlay(page);
   if (isMobile) await page.getByRole("button", { name: "Workspace files", exact: true }).click();
   await expect(page.getByRole("treeitem").filter({ hasText: "note.txt" })).toBeVisible();
   await page.getByRole("treeitem").filter({ hasText: "note.txt" }).click();
@@ -50,8 +54,10 @@ test("workspace keeps folders and drafts across focused panels and viewport chan
   await expect.poll(() => reported).toMatchObject({ open_file: null, active_file: "docs/note.txt", left_open: !isMobile });
   await page.screenshot({ path: info.outputPath("workspace-conversation.png") });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await openWebChat(page);
   await page.getByRole("textbox", { name: "Message", exact: true }).fill("");
   await expect.poll(() => reported).toMatchObject({ has_draft: false });
+  await closeWebChatOverlay(page);
   await page.getByRole("link", { name: "Overview", exact: true }).click();
   await expect.poll(() => reported).toMatchObject({ page: "/dashboard", left_open: false, dock_open: false, open_file: null });
 });
@@ -61,6 +67,7 @@ test("touch input keeps Enter as a newline and stays above the virtual keyboard"
   let sends = 0;
   await page.route("**/api/chat/send", (route) => { sends++; return route.fulfill({ json: { ok: true } }); });
   await page.goto("/webui/");
+  await openWebChat(page);
   const input = page.getByRole("textbox", { name: "Message", exact: true });
   await input.fill("First line");
   await input.press("Enter");
@@ -117,6 +124,7 @@ test("rich messages keep lists and wide tables readable on narrow screens", asyn
     content: "## Release checks\n\n- Preserve the original data\n- Validate touch interactions\n\n| Module | Desktop | Mobile | Keyboard | Screen reader | Status |\n| --- | --- | --- | --- | --- | --- |\n| Workspace | Ready | Ready | Ready | Ready | Verified |\n\n" + "A long file reference: `" + "directory/".repeat(30) + "note.md`",
   }] }));
   await page.goto("/webui/");
+  await openWebChat(page);
   const markdown = page.locator(".markdown-content").first();
   await expect(markdown.locator("ul")).toHaveCSS("list-style-type", "disc");
   await expect(markdown.locator("table")).toContainText("Workspace");

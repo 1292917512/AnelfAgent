@@ -20,7 +20,7 @@ from agent.audio.capabilities import SOUND_CAPABILITIES, get_sound_router
 from agent.utils import workspace as ws
 from core.config import get_config_bool
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
-from entities._sdk import deferred_tool
+from core.tool_registry import deferred_tool
 
 _group = "audio"
 
@@ -513,43 +513,31 @@ async def voice_preset(
 # 声音能力配置管理
 # ==================================================================
 
-_SCALAR_KEYS = {
-    "funasr_timeout": "funasr_timeout",
-}
-
-
 @deferred_tool(name="sound_config", group=_group, tags=["core"])
 async def sound_config(action: str = "capabilities", key: str = "", value: str = "") -> str:
-    """查看声音能力矩阵与提供者状态，或修改 FunASR 服务/优先级链。
+    """查看声音能力矩阵与提供者状态，或修改提供者优先级链。
 
     典型用法：
     - 规划声音任务前先 capabilities 查当前可用能力与调用示例
-    - 转写/声纹不可用时，set funasr_endpoint http://<host>:<port> 配置本地转写服务
 
     Args:
         action: capabilities（能力矩阵：工具选型+参数+示例+实时可用状态，默认）/
             providers（各提供者能力与配置状态）/ get（声音配置）/ set（修改指定键）
-        key: set 时必填。可选：funasr_timeout（秒）/
-            provider_priority.<能力名>（value 为 JSON 数组如 '["models"]'，
+        key: set 时必填。可选：provider_priority.<能力名>（value 为 JSON 数组如 '["models"]'，
             能力名: tts/voice_mgmt/music）
         value: set 时必填，配置值（provider_priority 用 JSON 数组字符串）
 
     音色与场景指派归 voice_preset 工具（音色库增删改查），不在本工具。
     """
+    from agent.config import save_config_value
     from core.config import ConfigManager
-    from entities._sdk import save_config_value
 
     action = action.strip().lower() or "capabilities"
     router = get_sound_router()
 
     if action == "get":
-        from entities.audiosync import client as funasr_client
-
-        funasr_client.reset_probe_cache()
         return _dumps({"success": True, "config": {
             "provider_priority": ConfigManager.get("sound_provider_priority", {}),
-            "funasr_timeout": ConfigManager.get("funasr_timeout", 120),
-            "funasr_reachable": await funasr_client.probe_available(),
         }})
     if action == "providers":
         return _dumps({"success": True, **router.status(list(SOUND_CAPABILITIES))})
@@ -601,26 +589,6 @@ async def sound_config(action: str = "capabilities", key: str = "", value: str =
         return tool_error("set 操作必须提供 key", cause=ErrorCause.PARAM, retryable=False)
     key = key.strip()
 
-    if key == "funasr_endpoint":
-        from core import provider_keys as pk
-        from entities.audiosync import client as funasr_client
-
-        endpoint = value.strip()
-        if not endpoint:
-            return tool_error("funasr_endpoint 不能为空", cause=ErrorCause.PARAM, retryable=False)
-        pk.set_provider_key("funasr", "funasr_endpoint", endpoint)
-        funasr_client.reset_probe_cache()
-        reachable = await funasr_client.probe_available()
-        return _dumps({
-            "success": True, "key": key, "value": endpoint, "reachable": reachable,
-            "hint": ("服务在线，转写/流式转写/声纹提取即刻可用" if reachable
-                     else "地址已保存但服务不可达：请确认服务已启动、地址端口正确"),
-        })
-
-    if key in _SCALAR_KEYS:
-        save_config_value(_SCALAR_KEYS[key], str(value))
-        return _dumps({"success": True, "key": key, "value": str(value)})
-
     if key.startswith("provider_priority."):
         cap = key.split(".", 1)[1].strip()
         if cap not in SOUND_CAPABILITIES:
@@ -631,8 +599,7 @@ async def sound_config(action: str = "capabilities", key: str = "", value: str =
         except json.JSONDecodeError:
             parsed = [p.strip() for p in value.split(",") if p.strip()]
         names = router.names()
-        unknown = [p for p in parsed if isinstance(p, str) and p not in names]
-        if not isinstance(parsed, list) or unknown:
+        if not isinstance(parsed, list) or any(not isinstance(p, str) or p not in names for p in parsed):
             return tool_error(
                 f"provider_priority 值非法: {value}",
                 cause=ErrorCause.PARAM, retryable=False,
@@ -644,5 +611,4 @@ async def sound_config(action: str = "capabilities", key: str = "", value: str =
         return _dumps({"success": True, "key": key, "chain": router.chain(cap)})
 
     return tool_error(f"不支持的配置键: {key}", cause=ErrorCause.PARAM, retryable=False,
-                      hint="可选: funasr_endpoint / funasr_timeout / "
-                           "provider_priority.<能力>")
+                      hint="可选: provider_priority.<能力>；具体服务配置请查询所属实体工具")

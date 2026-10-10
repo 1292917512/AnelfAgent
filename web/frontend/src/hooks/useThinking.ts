@@ -1,14 +1,18 @@
 import { useEffect } from "react";
 import { useThinkingStore } from "@/stores/thinking-store";
 
-/** Starts shared trace observation and loads the retained session list. */
+let observers = 0;
+let timer: ReturnType<typeof setInterval> | undefined;
+
+/** 观察面板共享状态轮询；最后一个观察者离开时停止计时。 */
 export function useThinkingBootstrap(): void {
-  const initialize = useThinkingStore((state) => state.initialize);
   useEffect(() => {
-    void initialize();
-    const timer = setInterval(() => { if (!document.hidden) void initialize(true); }, 15_000);
-    return () => clearInterval(timer);
-  }, [initialize]);
+    if (observers++ === 0) {
+      void useThinkingStore.getState().initialize();
+      timer = setInterval(() => { if (!document.hidden) void useThinkingStore.getState().initialize(true); }, 15_000);
+    }
+    return () => { if (--observers === 0) { clearInterval(timer); timer = undefined; } };
+  }, []);
 }
 
 export function useThinkingSessions(): void {

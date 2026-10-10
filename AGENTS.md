@@ -49,7 +49,7 @@ description: "AnelfAgent 项目指令 — 开发规范与架构速查（对所�
 | `agent/judgment/` | 结构化判断（Choice/Score/Noul 三原语；TypeSafe Jev 原生通道 + 普通模型回退，双通道同构输出） | 配置走 `judgment/core` 组；引擎无构造期依赖（配置现读 + 惰性 LLMManager） |
 | `channels/` | 频道适配器（目录自动发现 + 热插拔 sync_channels） | 继承 BaseChannel，display_order 自声明排序 |
 | `entities/` | 工具实体（目录自动发现 + 热插拔 sync_entities） | 通过 `@tool`/`entity()` 注册，通过 `_sdk.py` 桥接 LLM |
-| `services/` | 业务封装层（model/chat/task/heartbeat/approval/context/config/sticker/system/ui/filesystem/mcp 等；mcp 为 entities.mcp 薄门面） | 供 Web API 调用，不依赖 web |
+| `services/` | 业务封装层（model/chat/task/heartbeat/approval/context/config/system/ui/filesystem/mcp 等；mcp 为 entities.mcp 薄门面） | 供 Web API 调用，不依赖 web |
 | `web/routers/` | FastAPI 路由 | 共享模型放 `schemas.py` |
 | `web/frontend/src/` | React 前端 | 页面壳组件 + 子面板目录拆分 |
 | `config/` | JSON 配置 + SQLite 数据 + Markdown 便签 | 路径统一用 `ConfigPaths` |
@@ -66,9 +66,9 @@ agent.heartbeat → agent.task + agent.memory + agent.mind（调度执行）
 agent.task → agent.memory（结果存储）
 agent.planning → agent.memory
 
-禁止: agent → web/services | core → 业务层 | services → web | channels → web/services | entities → agent/services/web/channels（entities 经 _sdk 桥接 agent，_sdk 是唯一豁免）| web/routers → agent/entities/channels（经 services 收口）
+禁止: agent → entities/channels（仅 agent/runtime 组合根允许装配）/web/services | core → 业务层 | services → web | channels → web/services | entities → agent/services/web/channels（entities 经 _sdk 桥接 agent，_sdk 是唯一豁免）| web/routers → agent/entities/channels（经 services 收口）
 
-以上方向由 import-linter 机械守卫（pyproject.toml `[tool.importlinter]` 六条 forbidden 契约，`uv run lint-imports`，CI python job 红绿门禁；`_sdk → agent.**` 为唯一豁免通道，web/routers 契约允许经 services 的间接依赖）
+以上方向由 import-linter 机械守卫（pyproject.toml `[tool.importlinter]` 八条 forbidden 契约，`uv run lint-imports`，CI python job 红绿门禁；`_sdk → agent.**` 为唯一豁免通道，web/routers 契约允许经 services 的间接依赖）
 ```
 
 ### 核心系统
@@ -216,7 +216,7 @@ tool_action 的 target 语义是「操作结果投递目标」而非「操作上
 
 #### entities/_sdk.py
 
-工具注册 SDK + LLM 桥接层。entities 层通过此模块访问 LLM 能力，不直接依赖 agent：
+工具注册 SDK + LLM 桥接层。工具装饰器实现归 `core.tool_registry`，上下文装饰器归 `core.context_provider`；SDK 导出同一接口，agent 内核直接依赖 core。entities 层通过此模块访问 LLM 能力，不直接依赖 agent：
 
 ```python
 from entities._sdk import tool, entity                     # 工具注册
@@ -823,9 +823,9 @@ voicehub（:10096）与 face 服务（:10097）升级为模型层启停——进
 | 机制 | 位置 | 说明 |
 |------|------|------|
 | GPU 状态/释放客户端 | `entities/audiosync/client.py::gpu_status/gpu_unload` | GET /gpu/status 聚合四组件加载态（moss 带 model/device/vram_gb）；POST /gpu/unload 走 JSON body {"targets":[...]}（缺省全部 moss/asr/diarize/embedder）——**必须走 body**：query 形态传无效 targets 会被静默当作全部卸载 |
-| 声音页 GPU 卡 | `web/routers/audio.py`（GET /funasr/gpu、POST /funasr/gpu/unload）+ OverviewPanel | 四 worker 行（加载徽章/model/显存/单组件释放）+ 全部释放（ConfirmDialog）；查询仅在 funasr reachable 时启用（15s 轮询），旧版服务报"未支持模型层启停" |
+| 声音页 GPU 卡 | `entities/audiosync/router.py`（GET /service/gpu、POST /service/gpu/unload）+ `panels/ServiceStatus.tsx`（audio.overview.cards 插槽） | 四 worker 行（加载徽章/model/显存/单组件释放）+ 全部释放（ConfirmDialog）；查询仅在 funasr reachable 时启用（15s 轮询），旧版服务报"未支持模型层启停" |
 | face 引擎释放 | `agent/vision/face/engine.py::unload` + `EngineHealth.loaded` + POST /face/engine/unload + FacePanel | /health 的 loaded 字段解析（None=老服务未上报）；人脸页引擎卡显示模型加载态 + 释放按钮（face 独立服务，不在 voicehub 四组件内，单独释放） |
-| 归因纪律 | `services/audio.py` 再导出 FunAsrError/FunAsrNotConfigured；`services/vision.py::engine_unload` 门面 | web 层错误映射一致：未配置→503、服务失败→502 |
+| 归因纪律 | `entities/audiosync/router.py` 在模块内映射 FunASR 异常；`services/vision.py::engine_unload` 门面 | web 层错误映射一致：未配置→503、服务失败→502 |
 
 > Model Experience：① 释放自愈——进程不死、模型懒重载，释放操作无数据风险；② AI 暂无对应工具（面板操作即可；后续若要 AI 在跑大模型前自动腾显存，可在 audio 工具组补 gpu_release）
 
@@ -1080,8 +1080,8 @@ i18n/locales/{zh,en}/         # 核心 namespace（zh/en key 须一一对应；�
 
 频道/实体的前端与后端收敛到同一模块目录，核心框架只做通用加载，删除模块目录即整体拔出（UI/API/文案/路由零残留）：
 
-- **频道前端**：`channels/<id>/frontend/`（index.ts 清单 + components/ + api.ts + types.ts + locales/{zh,en}.json），经 `moduleFrontendsPlugin`（vite.config.ts）/ `web/frontend/scripts/module-links.mjs` 整目录软链到 `src/plugins/channels/<id>/`（**软链须提交 git**——CI 中 `tsc -b` 先于 vite buildStart）。index.ts 为轻量 eager 清单：`registerPluginI18n("channel-<id>", {zh, en})` 自注册文案 + 组件 loader 动态 import。清单字段：`login`（频道卡片登录入口）/ `panel`（卡片展开区自定义面板）/ `route`+`page`（整页路由，App.tsx 动态注册）/ `hiddenInChannelList`（频道列表隐藏）。频道页（AdapterCard/UnmatchedGroupCard/ChannelsPanel/ChannelTestPanel/Sidebar）全部经 `lib/channel-plugins.ts` 注册表驱动，**禁止 `key === "xxx"` 硬编码**。频道在配置中心的分组展示名也由频道自注册：`registerPluginI18n("config", {sections: {"adapter/<id>": ...}})`（deep 合并进核心 config 命名空间），核心 locale 不写具体频道文案
-- **实体面板**：`entities/<name>/panel.tsx`（+ `panels/` 子目录拆分）经 `web/frontend/scripts/module-links.mjs` **代码生成**接入——扫描生成 `src/generated/entity-panels.ts`（懒加载表）与 `entity-panel-locales.ts`（locale eager 表），面板源码经 `@entities` 别名（vite alias + tsconfig paths）以真实路径被 tsc/vite/eslint 直接消费（**无软链、无提交残留**，生成文件 gitignored，prebuild/dev watcher 自动重写；`entities/node_modules` 为指向前端依赖树的自愈解析桥）；panel.tsx 内以 `./panels/...` 相对导入引用子目录；面板专属 i18n 放 `panels/locales/{zh,en}.json`，由 `lib/entity-plugin-locales.ts` 在 i18n 初始化后 **eager 注册**（面板组件懒加载，locale 静态打入主 chunk，panel.tsx 无需再自行 registerPluginI18n）；locale 文件的保留键 `_registry` 以显式映射声明全局词汇——`groups: {groupKey: 展示名}`（工具页分组名，合入 tools 命名空间）与 `configSections: {"entity/<key>": 展示名}`（配置中心分组名，合入 config 命名空间），实体目录名与分组 key 不必相同、一个实体可拥有多个分组；**实体的组名翻译一律自持于模块目录（热拔出零残留），核心 tools.json/config.json 不写实体条目**；无面板的实体也可只建 `panels/locales/` 目录（locale-only 实体同样被代码生成收录）；面板专属 API/类型放 `panels/api.ts` / `panels/types.ts`（不污染核心 lib/api.ts、lib/types）。**共享型例外**（被核心页面消费的实体功能）：实现代码一律归实体目录，核心只持路由薄壳/协议类型并经 `@entities/<name>/panels/` 别名路径引用——sticker（库管理组件群在实体 `panels/library/`，核心 `pages/Stickers.tsx` 与 Data 页为薄壳引用）、share（ShareCard 与链接管理在实体 `panels/`，核心仅留 SSE 协议类型 `lib/types/share.ts`）、devops（`panels/api.ts`+`types.ts`，核心数据库/记忆页经别名引用）；mcp / graph 为纯核心管理页（无实体面板，类型与 API 留核心）
+- **频道前端**：`channels/<id>/frontend/` 自持清单、组件、API、类型和翻译。`module-links.mjs` 生成懒加载清单，构建以 `@channels` 别名直接消费源码，无需提交软链。`index.ts` 声明 `login`（登录入口）、`panel`（频道卡片面板）与 `hiddenInChannelList`；整页内容经 `contributions.ts` 的 `app.routes` 插槽注册。核心频道管理面由注册表驱动，禁止按具体频道 ID 硬编码。频道文案经 `registerPluginI18n` 自注册，配置组展示名合入 config 命名空间，核心 locale 不存具体频道文案。
+- **实体面板**：`entities/<name>/panel.tsx`（+ `panels/` 子目录拆分）经 `web/frontend/scripts/module-links.mjs` **代码生成**接入——扫描生成 `src/generated/entity-panels.ts`（懒加载表）与 `entity-panel-locales.ts`（locale eager 表），面板源码经 `@entities` 别名（vite alias + tsconfig paths）以真实路径被 tsc/vite/eslint 直接消费（**无软链、无提交残留**，生成文件 gitignored，prebuild/dev watcher 自动重写；`entities/node_modules` 为指向前端依赖树的自愈解析桥）；panel.tsx 内以 `./panels/...` 相对导入引用子目录；面板专属 i18n 放 `panels/locales/{zh,en}.json`，由 `lib/entity-plugin-locales.ts` 在 i18n 初始化后 **eager 注册**（面板组件懒加载，locale 静态打入主 chunk，panel.tsx 无需再自行 registerPluginI18n）；locale 文件的保留键 `_registry` 以显式映射声明全局词汇——`groups: {groupKey: 展示名}`（工具页分组名，合入 tools 命名空间）与 `configSections: {"entity/<key>": 展示名}`（配置中心分组名，合入 config 命名空间），实体目录名与分组 key 不必相同、一个实体可拥有多个分组；**实体的组名翻译一律自持于模块目录（热拔出零残留），核心 tools.json/config.json 不写实体条目**；无面板的实体也可只建 `panels/locales/` 目录（locale-only 实体同样被代码生成收录）；面板专属 API/类型放 `panels/api.ts` / `panels/types.ts`（不污染核心 lib/api.ts、lib/types）。**跨页面扩展**：核心仅提供类型化插槽与渲染宿主，禁止直接导入具体实体/频道组件、API 或协议类型。模块在 `panels/contributions.ts` 或 `frontend/contributions.ts` 声明工作区工具、总览卡片、整页路由、数据页签、重启控件、音频区域和消息渲染器，详见 `docs/ui-contributions.md`。表情库路由/API 归 sticker，服务状态与 GPU 操作归 audiosync，重启实现归 devops，分享卡片与消息字段归 share；后端通过通用会话扩展消息投递，不在核心持有业务事件。前端架构测试机械校验此边界。
 - 插件 API 复用核心 axios 实例（`import { api, apiErrorMessage } from "@/lib/api"`），类型放插件 types.ts，不进 lib/types
 
 ### 关键文件索引
@@ -1098,7 +1098,7 @@ i18n/locales/{zh,en}/         # 核心 namespace（zh/en key 须一一对应；�
 | `agent/mind/tool_activation.py` | 工具沉睡/激活状态机（activate_tool_group） |
 | `agent/mind/tools/think_loop.py` | 统一思维循环（多轮 LLM + 工具编排 + 回复入口 reply_entry/reply_loop） |
 | `agent/mind/tools/reply_finalize.py` | 思维收尾块（finish_think/complete_reply/执行摘要；入口在 think_loop，单向依赖无环） |
-| `agent/mind/tools/result_parse.py` | 工具结果宽松 JSON 解析 + 错误文本提取（叶子模块，think_loop/round_helpers/vision/compressor 共用） |
+| `core/tool_results.py` | 工具结果宽松 JSON 解析 + 错误文本提取（叶子模块，think_loop/round_helpers/vision/compressor 共用） |
 | `agent/mind/message_schema.py` | 内部消息契约 + 发送边界规整 + 真用户消息判定（is_genuine_user_message）+ 推理字段回传（preserve_reasoning_fields） |
 | `agent/llm/resilience/classifier.py` | LLM 错误分类（驱动重试/压缩/回退策略） |
 | `agent/llm/reasoning.py` | 思考等级单一权威（7 级规范词汇 + GLM/MiniMax/Kimi 专项档位表 + 下发通道分派；litellm 未收录模型的参数透传修复见运行时机制表） |
@@ -1158,7 +1158,7 @@ i18n/locales/{zh,en}/         # 核心 namespace（zh/en key 须一一对应；�
 | `agent/runtime/bootstrap.py` | 启动流程（初始化 → 组装 → 启动 → 健康检查） |
 | `agent/runtime/state_restore.py` | 启动状态恢复（工具覆盖/实体启停/自定义标签回放，纯 core 操作；services 同名方法委托于此） |
 | `agent/runtime/singleton.py` | AgentRuntime 全局单例（get_runtime Optional 读 / require_runtime 未就绪抛错；services._runtime 为其 web 侧门面） |
-| `entities/_sdk.py` | 工具注册 + LLM 桥接（操作回报框架独立为 `entities/_ops.py`，实体态势注入的数据源） |
+| `entities/_sdk.py` | 导出 `core.tool_registry` 的工具声明接口 + LLM 桥接（操作回报框架独立为 `entities/_ops.py`，实体态势注入的数据源） |
 | `entities/filesystem/ops_context.py` | 文件操作态势（按会话追踪当前目录/活跃目录/最近操作 + 目录说明文档注入 + provider fs_ops） |
 | `entities/ssh/ops_state.py` | SSH 操作态势（按 会话×连接 追踪 + 远程说明文档后台抓取 + 渲染，provider 在 context.py） |
 | `agent/channel/manager.py` | 频道管理（register / route / activate_channel 动态加载未注册频道 / set_channel_enabled 启停意图落盘统一配置 / list_configured_channels 目录扫描） |

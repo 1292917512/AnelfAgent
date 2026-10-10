@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import inspect
-from typing import Callable, Dict, List
+from typing import Any, Callable, Dict, List
 
 from core.entity import ToolParam
 
@@ -125,3 +125,22 @@ def parse_docstring_args(docstring: str) -> Dict[str, str]:
                 result[key] = desc.strip()
 
     return result
+
+
+def coerce_bool_arg(value: Any, default: bool) -> bool:
+    """将工具参数稳健转为 bool（兼容 LLM 误传字符串）。
+
+    无法识别的字符串返回调用方提供的默认值。
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off"}:
+            return False
+        return default
+    return bool(value)

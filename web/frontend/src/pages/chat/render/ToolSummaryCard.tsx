@@ -15,7 +15,7 @@ export function ToolSummaryCard({ summary }: { summary: ToolSummaryData }) {
 
   return (
     <div className="flex justify-start">
-      <div className="max-w-[88%] sm:max-w-[80%] rounded-lg border border-border/60 bg-muted/30 text-xs overflow-hidden">
+      <div className="max-w-[88%] sm:max-w-[80%] rounded-lg border border-border/60 bg-panel text-xs overflow-hidden">
         <button
           onClick={() => setOpen(!open)}
           className="w-full flex items-center gap-1.5 px-2.5 py-1.5 text-left text-muted hover:text-foreground transition-colors"

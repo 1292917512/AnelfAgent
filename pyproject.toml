@@ -225,6 +225,18 @@ source_modules = ["agent"]
 forbidden_modules = ["web", "services"]
 
 [[tool.importlinter.contracts]]
+name = "agent 内核不依赖具体实体或频道实现（运行时组合根负责装配）"
+type = "forbidden"
+source_modules = ["agent"]
+forbidden_modules = ["entities", "channels"]
+allow_indirect_imports = true
+ignore_imports = [
+    "agent.runtime.** -> entities.**",
+    "agent.runtime.** -> entities",
+    "agent.runtime.** -> channels",
+]
+
+[[tool.importlinter.contracts]]
 name = "channels 不依赖 web/services（频道事件经 core.event_bus 上行）"
 type = "forbidden"
 source_modules = ["channels"]

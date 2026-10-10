@@ -8,7 +8,7 @@ import {
   Globe,
   Share2,
 } from "lucide-react";
-import type { ChatShareInfo } from "@/lib/types";
+import type { ChatShareInfo } from "./chat-types";
 import { toast } from "@/stores/toast-store";
 import { MediaPreview } from "@/pages/chat/render/MediaPreview";
 
@@ -98,10 +98,10 @@ export function ShareCard({ share }: { share: ChatShareInfo }) {
       )}
 
       {/* 底部操作区 */}
-      <div className="flex items-center gap-1 px-2 pb-2 pt-1 border-t border-border/50">
+      <div className="flex flex-wrap items-center gap-1 px-2 pb-2 pt-1 border-t border-border/50">
         <button
           onClick={openPreview}
-          className="flex items-center gap-1 px-2 py-1 text-xs rounded-md text-accent hover:bg-accent-subtle transition-colors"
+          className="flex min-h-11 items-center gap-1 px-2 py-1 text-xs rounded-md text-accent hover:bg-accent-subtle transition-colors"
         >
           <ExternalLink size={13} /> {t("actions.openPreview")}
         </button>
@@ -109,14 +109,14 @@ export function ShareCard({ share }: { share: ChatShareInfo }) {
           <a
             href={share.download_url}
             download
-            className="flex items-center gap-1 px-2 py-1 text-xs rounded-md text-muted hover:text-foreground hover:bg-hover transition-colors"
+            className="flex min-h-11 items-center gap-1 px-2 py-1 text-xs rounded-md text-muted hover:text-foreground hover:bg-hover transition-colors"
           >
             <Download size={13} /> {t("actions.download")}
           </a>
         )}
         <button
           onClick={copyUrl}
-          className="flex items-center gap-1 px-2 py-1 text-xs rounded-md text-muted hover:text-foreground hover:bg-hover transition-colors ml-auto"
+          className="flex min-h-11 items-center gap-1 px-2 py-1 text-xs rounded-md text-muted hover:text-foreground hover:bg-hover transition-colors ml-auto"
         >
           <Copy size={13} /> {t("actions.copy")}
         </button>

@@ -11,12 +11,16 @@
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
 
+from agent.skills.skill_store import Skill
+from core.latebind import LateBinding
 from core.log import log
 
+mcp_servers_port: LateBinding[Callable[[], list[str]]] = LateBinding("skills.mcp_servers")
 
-def missing_mcp_dependencies(skill) -> List[Dict[str, Any]]:
+
+def missing_mcp_dependencies(skill: Skill) -> List[Dict[str, Any]]:
     """返回技能声明但当前未安装的 MCP server 依赖列表（无声明/无缺失返回空）。"""
     declared = [
         d for d in (skill.dependencies or [])
@@ -25,8 +29,7 @@ def missing_mcp_dependencies(skill) -> List[Dict[str, Any]]:
     if not declared:
         return []
     try:
-        from entities.mcp.config import MCPServerStore
-        existing = set(MCPServerStore().get_server_names())
+        existing = set(mcp_servers_port.get()())
     except Exception as e:
         log(f"技能依赖检查读取 MCP 配置失败: {e}", "DEBUG", tag="技能")
         return []
@@ -40,7 +43,7 @@ def missing_mcp_dependencies(skill) -> List[Dict[str, Any]]:
     return missing
 
 
-def dependency_notice(skill) -> str:
+def dependency_notice(skill: Skill) -> str:
     """依赖缺失时生成给 AI 的引导文本；无缺失返回空串（零占用）。"""
     missing = missing_mcp_dependencies(skill)
     if not missing:

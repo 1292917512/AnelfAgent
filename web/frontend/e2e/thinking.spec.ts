@@ -1,5 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
-import { test, expect } from "./fixtures";
+import { test, expect, openWebChat } from "./fixtures";
 import type { ThinkingSession, TraceNode } from "../src/lib/types";
 
 const makeNode = (id: string, type: string, parent_id: string | null = null): TraceNode => ({
@@ -79,6 +79,7 @@ test("chat drafts stay isolated across conversations and an earlier send acknowl
   const pending = new Promise<void>((resolve) => { release = resolve; });
   await page.route("**/api/chat/send", async (route) => { await pending; await route.fulfill({ json: { status: "ok" } }); });
   await page.goto("/webui/");
+  await openWebChat(page);
   const input = page.getByRole("textbox", { name: "Message", exact: true });
   await input.fill("Original request");
   await page.getByRole("button", { name: "Send", exact: true }).click();

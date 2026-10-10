@@ -187,7 +187,7 @@ export const useThinkingStore = create<ThinkingState>((set, get) => {
     handleSessionStart: ({ session, node }) => {
       updateSummary(session);
       const state = get();
-      if ((!state.activeSessionId || state.autoFollow) && !session.is_heartbeat && !session.is_introspection && !session.is_delegation) {
+      if (!state.activeSessionId || (state.autoFollow && !session.parent_session_id)) {
         ++requestId;
         patches = null;
         set({ activeSessionId: session.id, activeSession: { ...session, nodes: [node], available_tools: [] },

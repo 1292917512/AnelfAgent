@@ -66,6 +66,7 @@ export function nodeSummary(node: TraceNode, t: TFunction<"thinking">): string {
   }
   if (node.type === "situation") return t("situationSummary", { messages: numberValue(data.message_count), tasks: numberValue(data.task_count) });
   if (node.type === "context_build") return t("contextSummary", { memories: numberValue(data.memory_msgs_count), tools: numberValue(data.tool_count) });
+  if (node.type === "llm_call" && textValue(data.reasoning_content)) return textValue(data.reasoning_content);
   if (node.type === "llm_call" && Array.isArray(data.tool_calls) && data.tool_calls.length) {
     return t("callsTools", { tools: data.tool_calls.filter((value): value is string => typeof value === "string").join(", ") });
   }

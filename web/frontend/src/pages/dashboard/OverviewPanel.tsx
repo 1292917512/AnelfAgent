@@ -3,13 +3,14 @@ import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useNow } from "@/hooks/useNow";
 import { statusApi, toolsApi } from "@/lib/api";
+import { SectionBoundary } from "@/components/common/SectionBoundary";
 import { StatCard } from "@/components/common/StatCard";
 import { Card } from "@/components/common/Card";
 import { StatusDot } from "@/components/common/StatusDot";
 import { useAppStore } from "@/stores/app-store";
 import { AttentionPanel } from "@/pages/dashboard/AttentionPanel";
 import { ComponentInfoCard } from "@/pages/dashboard/ComponentInfoCard";
-import { DelegationsPanel } from "@/pages/dashboard/DelegationsPanel";
+import { DelegationsPanel } from "@/components/delegation/DelegationsPanel";
 import { ToolsInsightPanel } from "@/pages/dashboard/ToolsInsightPanel";
 import { EventsPanel } from "@/pages/dashboard/EventsPanel";
 import { ServicesPanel } from "@/pages/dashboard/ServicesPanel";
@@ -70,17 +71,17 @@ export function OverviewPanel() {
 
   return (
     <div className="space-y-5">
-      <div className="grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-7 gap-3">
+      <div className="dashboard-metrics grid grid-cols-2 gap-3 xl:grid-cols-4">
         <StatCard label={t("runningStatus")} value={<span className="flex items-center gap-2"><StatusDot status={isReady ? "ok" : "danger"} />{isReady ? t("running", { ns: "common" }) : t("notReady", { ns: "common" })}</span>} variant={isReady ? "ok" : "danger"} />
         <StatCard label={t("thinkingPhase", { ns: "status" })} value={t(`phaseLabels.${phase}`, { ns: "status", defaultValue: phase })} variant={phase === "idle" ? "default" : "ok"} />
         <StatCard label={t("messageCount")} value={String(statusInfo?.message_count ?? "—")} />
         <StatCard label={t("tools")} value={`${enabledTools}/${totalTools}`} variant={enabledTools > 0 ? "ok" : "default"} />
-        <StatCard label={t("uptime")} value={uptimeDisplay} />
+        <StatCard className="col-span-2" label={t("uptime")} value={uptimeDisplay} />
         <StatCard label={t("stm", { ns: "status" })} value={`${pfc?.short_term_memory_count ?? 0}/${pfc?.short_term_memory_max ?? 0}`} />
         <StatCard label={t("pending", { ns: "status" })} value={String(pendingTotal)} variant={pendingTotal > 0 ? "warn" : "default"} />
       </div>
 
-      <AttentionPanel />
+      <SectionBoundary><AttentionPanel /></SectionBoundary>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Card title={t("pendingTasks", { ns: "status" })}>
@@ -115,16 +116,16 @@ export function OverviewPanel() {
           ) : <p className="text-muted text-sm py-2">{t("noPendingTasks", { ns: "status" })}</p>}
         </Card>
 
-        <ComponentInfoCard />
+        <SectionBoundary><ComponentInfoCard /></SectionBoundary>
       </div>
 
-      <ToolsInsightPanel />
+      <SectionBoundary><ToolsInsightPanel /></SectionBoundary>
 
-      <DelegationsPanel />
+      <SectionBoundary><DelegationsPanel /></SectionBoundary>
 
-      <ServicesPanel />
+      <SectionBoundary><ServicesPanel /></SectionBoundary>
 
-      <EventsPanel />
+      <SectionBoundary><EventsPanel /></SectionBoundary>
     </div>
   );
 }

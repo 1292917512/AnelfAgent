@@ -12,7 +12,7 @@ import json
 
 from agent.mind.tools.session_tools import _current_scope, _system_not_ready
 from core.tool_errors import ErrorCause, tool_error
-from entities._sdk import deferred_tool
+from core.tool_registry import deferred_tool
 
 from .ports import mind_port
 

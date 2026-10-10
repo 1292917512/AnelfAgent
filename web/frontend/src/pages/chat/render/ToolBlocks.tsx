@@ -1,5 +1,5 @@
 /**
- * 工具调用块共享组件 — StreamingArea（流式过程）与 MessageRow（固化卡片）复用。
+ * 工具调用状态、参数与结果的共享渲染组件。
  */
 import { useState } from "react";
 import { Loader2, Check, X } from "lucide-react";
@@ -7,11 +7,6 @@ import { formatElapsedCompact } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { ChatStreamingTool } from "@/lib/types";
 import { useWorkbenchStore } from "@/stores/workbench-store";
-
-export const READONLY_TOOLS = new Set([
-  "read_file", "search_files", "list_directory", "file_info",
-  "web_fetch", "web_search", "extract_page_links", "recall",
-]);
 
 function ToolStatusIcon({ status }: { status: string }) {
   if (status === "running") return <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />;
@@ -52,7 +47,7 @@ export function ToolBlock({ tool }: { tool: ChatStreamingTool }) {
   // ZCode 式文件 chip：工具参数带工作区相对路径时标题可点击打开（跳编辑器）
   const relPath = toolRelativePath(tool.arguments);
   return (
-    <div className="rounded border border-border/60 bg-muted/40 px-2.5 py-1.5 text-xs">
+    <div className="rounded border border-border/60 bg-elevated px-2.5 py-1.5 text-xs">
       <div className="flex items-center gap-2 w-full">
         <button
           onClick={() => hasResult && setOpen(!open)}

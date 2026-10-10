@@ -23,7 +23,7 @@ export const memoryApi = {
     getConfig: () => api.get<CogneeConfig>("/memory/cognee/config"),
     saveConfig: (data: Partial<CogneeConfig>) => api.put<CogneeConfig>("/memory/cognee/config", data),
     retry: () => api.post("/memory/cognee/retry"),
-    rebuild: () => api.post("/memory/cognee/rebuild"),
+    rebuild: () => api.post<{ restart_required?: boolean }>("/memory/cognee/rebuild"),
     compact: () =>
       api.post<{ ok: boolean; scheduled?: boolean; result?: { bytes_reclaimed?: number }; error?: string }>(
         "/memory/cognee/compact",

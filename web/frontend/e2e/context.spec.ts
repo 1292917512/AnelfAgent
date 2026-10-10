@@ -1,5 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
-import { test, expect } from "./fixtures";
+import { test, expect, openWebChat } from "./fixtures";
 import type { ContextSnapshotData } from "../src/lib/types";
 
 const snapshot: ContextSnapshotData = {
@@ -59,6 +59,7 @@ test("file references stay inline and directory clicks select the project root",
   });
   await page.route("**/api/chat/history?**", (route) => route.fulfill({ json: [{ id: 1, role: "user", content: "Please review **these files**:\n\n- [Project docs](./project%3Adir%3Adocs) with notes\n- [Draft \\[1\\]](./note%20%281%29.txt)\n\n`[literal](./note.txt)`", ts: 1770000000 }] }));
   await page.goto("/webui/");
+  await openWebChat(page);
   const ref = page.getByRole("button", { name: /Project docs/ });
   await expect(ref).toBeVisible();
   await expect(ref.locator("..")).toContainText("with notes");
@@ -70,6 +71,7 @@ test("file references stay inline and directory clicks select the project root",
   if (isMobile) {
     await page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
+    await openWebChat(page);
     await ref.click();
     await expect(page.getByRole("treeitem").filter({ hasText: "guide.md" })).toBeVisible();
   }
@@ -124,6 +126,7 @@ test("tablet workspace uses an editor overlay and keeps the conversation width",
   await page.screenshot({ path: info.outputPath("workspace-tablet.png") });
   await editor.getByRole("button", { name: "Collapse panel (tabs kept)" }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
+  await openWebChat(page);
   await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });

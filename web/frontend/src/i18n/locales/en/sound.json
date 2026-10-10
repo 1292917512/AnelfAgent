@@ -224,8 +224,7 @@
     "run": "Identify",
     "needFunasr": "Configure funasr_endpoint in Sound system settings first",
     "noSpeech": "No valid speech detected in the audio",
-    "noCandidate": "No candidates (empty library or no voiceprint extracted)",
-    "pipelineTitle": "Upstream pipeline contract"
+    "noCandidate": "No candidates (empty library or no voiceprint extracted)"
   },
   "sync": {
     "title": "Directory auto-sync",
@@ -296,34 +295,6 @@
     "asr_stream": "Streaming ASR (realtime)",
     "voiceprint": "Voiceprint embedding"
   },
-  "funasr": {
-    "title": "FunASR transcribe service",
-    "desc": "Self-hosted service for transcription / streaming ASR / voiceprint; takes effect immediately after saving",
-    "reachable": "Online",
-    "unreachable": "Unreachable",
-    "notConfigured": "Not configured",
-    "recheck": "Re-check",
-    "goConfigure": "Configure in Models → Provider Keys",
-    "modelNote": "Voiceprint vectors are extracted by this service (model & dims decided server-side, e.g. SenseVoice service uses cam++ 192-d); swap models on the server, only the address is configured here"
-  },
-  "gpu": {
-    "title": "GPU model memory",
-    "hint": "Model-level start/stop: process stays alive after release; models auto-reload on the next voice/face inference — free VRAM before running large models",
-    "unloadAll": "Release all",
-    "release": "Release",
-    "loaded": "Loaded",
-    "released": "Released",
-    "unloaded": "VRAM released; auto-reloads on next inference",
-    "unsupported": "Service does not support model-level start/stop (upgrade voicehub)",
-    "unloadAllTitle": "Release all GPU models",
-    "unloadAllConfirm": "Releases all models (moss / asr / diarize / embedder). Processes stay alive; models auto-reload on next inference.",
-    "worker": {
-      "moss": "MOSS transcribe",
-      "asr": "SenseVoice ASR",
-      "diarize": "Speaker diarization",
-      "embedder": "Voiceprint embedder (cam++)"
-    }
-  },
   "channels": {
     "mic": "Mic",
     "phone": "Phone",
@@ -337,11 +308,8 @@
     "count": "{{count}}",
     "hint": "Ingested audio sources. Rebuild = clear all segments & voiceprint registrations of the unit and trigger an immediate rescan (re-transcribe + speaker attribution, requires the audio-sync component); Delete = clear only.",
     "meta": "{{files}} files / {{segments}} segments",
-    "rebuild": "Rebuild",
     "delete": "Delete",
     "empty": "No recordings registered",
-    "rebuildTitle": "Rebuild recording unit",
-    "rebuildConfirm": "All transcript segments and voiceprint samples of this unit will be cleared, then re-parsed by the audio-sync component (speaker attribution rebuilt). Continue?",
     "deleteTitle": "Delete recording",
     "deleteConfirm": "All transcript segments and voiceprint samples of this unit will be cascade-deleted (no rescan). Continue?",
     "status": {
@@ -349,12 +317,6 @@
       "no_speech": "no speech",
       "error": "error",
       "pending": "pending"
-    },
-    "outcome": {
-      "done": "Rebuilt: re-transcribed and re-attributed",
-      "deleted": "Source no longer exists; registration and segments cleared",
-      "excluded": "Path matches exclusion rules; not rebuilt",
-      "missing": "Unit not found in sources"
     }
   },
   "voiceConfig": {

@@ -1,5 +1,11 @@
 import type { PlanStepStatus } from "./plan";
-import type { ChatShareInfo } from "./share";
+import type { JsonObject } from "./json";
+
+export interface ChatExtension {
+  type: string;
+  payload: JsonObject;
+  fallback: string;
+}
 
 // ── 多会话（chat_id 维度分桶） ──
 
@@ -51,8 +57,8 @@ export interface ChatMessage {
   /** 本轮思考过程（reply 到达时从流式区固化）。纯内存态：不落库、不进
    * LLM 上下文，仅保留最近几轮（往前销毁），刷新即消失 */
   thinking?: string;
-  /** 分享卡片信息（share SSE 事件到达时挂载，渲染为 ShareCard） */
-  share?: ChatShareInfo;
+  /** 模块自注册的消息内容与未安装模块时的文本降级。 */
+  extension?: ChatExtension;
 }
 
 export interface PendingFile {
@@ -160,6 +166,9 @@ export interface UiCommandPayload {
 
 /** 工作台状态上报（POST /chat/ui-state 的 state 字段，供 AI ui_get_state 查询） */
 export interface UiStateReport {
+  chat_visible: boolean;
+  execution_visible: boolean;
+  execution_tab: "runs" | "agents" | "web";
   page: string;
   active_tab: string;
   dock_open: boolean;
@@ -199,7 +208,7 @@ export interface SseMediaEvent extends SseEventBase {
   caption?: string;
 }
 
-export type SseShareEvent = SseEventBase & ChatShareInfo;
+export interface SseExtensionEvent extends SseEventBase { extension: ChatExtension }
 
 export interface SseDeltaEvent extends SseEventBase {
   turn_id: string;
@@ -308,7 +317,7 @@ export interface ChatSseEventMap {
   reply: SseReplyEvent;
   turn_end: SseTurnEndEvent;
   media: SseMediaEvent;
-  share: SseShareEvent;
+  extension: SseExtensionEvent;
   ui_command: UiCommandPayload;
   delta: SseDeltaEvent;
   tool_call: SseToolCallEvent;

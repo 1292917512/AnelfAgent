@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from entities._sdk import context_provider
+from core.context_provider import context_provider
 
 from .engine import get_realtime_engine
 

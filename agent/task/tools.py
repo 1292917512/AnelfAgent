@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional
 from core.log import log
 from core.path import ConfigPaths
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
-from entities._sdk import deferred_tool
+from core.tool_registry import deferred_tool
 
 from .model import (
     TASK_MEMORY_TYPES,

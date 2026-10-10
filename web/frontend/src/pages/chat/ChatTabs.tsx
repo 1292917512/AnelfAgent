@@ -2,7 +2,7 @@
  * ChatTabs — 多会话横向切换 Tab。
  *
  * 顶部横向排列的 chat 列表：当前激活高亮、新建按钮、右键/长按删除（默认会话除外）。
- * 数据来自 chat-store.chats，切换 chat 触发 activeChatId 变更 → 消息流/PlanPanel 自动切换。
+ * 数据来自 chat-store.chats，切换 chat 触发 activeChatId 变更 → 消息流/执行记录 自动切换。
  *
  * 性能：每个 tab 的未读数由 ChatTabItem 独立订阅（细粒度 selector），
  * 任意会话的流式 delta 不会导致整个 tabs 条重渲染。

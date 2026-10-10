@@ -13,8 +13,8 @@ from __future__ import annotations
 import json
 
 from core.entity import EntityRegistry
-from core.tool_errors import ErrorCause
-from entities._sdk import deferred_tool, tool_error
+from core.tool_errors import ErrorCause, tool_error
+from core.tool_registry import deferred_tool
 
 from .buffer import get_vision_buffer
 from .framework import all_sources, get_source, is_enabled, set_enabled
@@ -95,7 +95,7 @@ async def vision_watch(action: str = "status", source: str = "screen", interval:
         source: 视觉源 key（默认 screen；仅轮询型源可监视）
         interval: start 时的捕获间隔秒数（0 = 用配置 vision_watch_interval_s，默认 5s）
     """
-    from entities._sdk import save_config_value
+    from agent.config import save_config_value
 
     watcher = get_vision_watcher()
     action = action.strip().lower()

@@ -1,12 +1,4 @@
-/**
- * DelegationsPanel — Dashboard「子代理」全局总览面板。
- *
- * 运行中：全 scope 实时快照（轮次/当前工具/用量/耗时），行内操作
- * 进度（Drawer 轮询进度流）/ 指令（steer/after 双档投递）/ 停止；
- * 最近执行：账本折叠历史，点击查看最终进度日志。
- * 操作反馈经后端既有闭环送达 AI（SteerInbox / 注册表完成通知）。
- */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
@@ -24,7 +16,7 @@ import {
 import { apiErrorMessage, delegationApi } from "@/lib/api";
 import { useNow } from "@/hooks/useNow";
 import { Card } from "@/components/common/Card";
-import { Drawer } from "@/components/common/Drawer";
+import { ProgressDrawer } from "./ProgressDrawer";
 import { Button, Modal, Select, Textarea, toast } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import type { DelegationHistoryItem, DelegationOverviewItem } from "@/lib/types";
@@ -65,10 +57,10 @@ const STATUS_KEYS: Record<DelegationHistoryItem["status"], string> = {
 };
 
 const TONE_CLASSES: Record<StatusTone, string> = {
-  ok: "bg-green-100 dark:bg-green-900/40 text-green-600 dark:text-green-300",
-  danger: "bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-300",
-  muted: "bg-muted text-muted",
-  warn: "bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-300",
+  ok: "bg-ok-subtle text-ok",
+  danger: "bg-danger-subtle text-danger",
+  muted: "bg-elevated text-muted",
+  warn: "bg-warn-subtle text-warn",
 };
 
 function StatusChip({ tone, label }: { tone: StatusTone; label: string }) {
@@ -78,53 +70,6 @@ function StatusChip({ tone, label }: { tone: StatusTone; label: string }) {
       <Icon size={10} />
       {label}
     </span>
-  );
-}
-
-/** 进度流 Drawer：轮询尾部日志，自动吸附底部 */
-function ProgressDrawer({
-  delegationId,
-  title,
-  onClose,
-}: {
-  delegationId: string;
-  title: string;
-  onClose: () => void;
-}) {
-  const { t } = useTranslation("plan");
-  const { data } = useQuery({
-    queryKey: ["delegations", "progress", delegationId],
-    queryFn: () => delegationApi.progress(delegationId).then((r) => r.data),
-    refetchInterval: 2000,
-  });
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const lineCount = data?.lines.length ?? 0;
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ block: "end" });
-  }, [lineCount, delegationId]);
-
-  return (
-    <Drawer open onClose={onClose} title={title} width="max-w-xl">
-      <div className="flex items-center gap-2 mb-3 text-[11px] text-muted">
-        {data?.running ? (
-          <span className="inline-flex items-center gap-1 text-blue-500">
-            <Loader2 size={11} className="animate-spin" />
-            {t("delegation.running")}
-          </span>
-        ) : (
-          <span>{t("delegation.completed")}</span>
-        )}
-        {data?.truncated && <span>{t("delegation.panel.truncated")}</span>}
-      </div>
-      {lineCount > 0 ? (
-        <div className="max-h-[70dvh] overflow-y-auto rounded-md bg-elevated border border-border p-3 font-mono text-[11px] leading-relaxed text-foreground whitespace-pre-wrap break-words">
-          {data?.lines.map((line, i) => <div key={i}>{line}</div>)}
-          <div ref={bottomRef} />
-        </div>
-      ) : (
-        <p className="text-muted text-sm py-6 text-center">{t("delegation.panel.progressEmpty")}</p>
-      )}
-    </Drawer>
   );
 }
 
@@ -150,17 +95,17 @@ function RunningRow({
   const totalTokens = (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0);
 
   return (
-    <div className="rounded-md border border-blue-400/40 bg-blue-50/30 dark:bg-blue-950/20 px-3 py-2">
+    <div className="rounded-xl border border-border bg-elevated p-4">
       <div className="flex items-center gap-2 min-w-0">
-        <Bot size={14} className="shrink-0 text-blue-500" />
-        <span className="text-sm font-medium text-foreground flex-1 min-w-0 truncate">
+        <Bot size={14} className="shrink-0 text-accent" />
+        <span className="text-sm font-medium text-heading flex-1 min-w-0 line-clamp-3 break-words">
           {item.goal || t("delegation.untitled")}
         </span>
         <span className="text-xs text-muted shrink-0 font-mono">
           {formatDuration(item.elapsed_seconds + extraSeconds)}
         </span>
         {item.background && (
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-300 shrink-0">
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent-subtle text-accent shrink-0">
             {t("delegation.background")}
           </span>
         )}
@@ -172,9 +117,9 @@ function RunningRow({
         )}
       </div>
       <div className="flex items-center gap-2 mt-1.5 text-[11px] text-muted flex-wrap">
-        <Loader2 size={11} className="animate-spin shrink-0 text-blue-500" />
+        <Loader2 size={11} className="animate-spin shrink-0 text-accent" />
         <span className="truncate">
-          {item.current_tool
+          {item.state === "queued" ? t("delegation.queued") : item.current_tool
             ? t("delegation.progress.usingTool", { tool: item.current_tool })
             : item.iteration > 0
               ? t("delegation.progress.round", { n: item.iteration })
@@ -191,7 +136,8 @@ function RunningRow({
         {totalTokens > 0 && (
           <span>{t("delegation.panel.tokens", { n: formatTokens(totalTokens) })}</span>
         )}
-        <span className="flex-1" />
+      </div>
+      <div className="delegation-actions">
         <button
           onClick={onShowProgress}
           className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-muted hover:text-foreground hover:bg-hover transition-colors"
@@ -227,10 +173,10 @@ function HistoryRow({ item, onShowProgress }: { item: DelegationHistoryItem; onS
   return (
     <button
       onClick={onShowProgress}
-      className="w-full flex items-center gap-2 px-3 py-1.5 rounded-sm bg-elevated border border-border hover:bg-hover transition-colors text-left"
+      className="w-full flex flex-wrap items-center gap-2 px-3 py-3 rounded-lg bg-elevated border border-border hover:bg-hover transition-colors text-left"
     >
       <StatusChip tone={tone} label={statusKey ? t(`delegation.panel.${statusKey}`) : item.status} />
-      <span className="text-xs text-foreground flex-1 min-w-0 truncate">{item.goal || t("delegation.untitled")}</span>
+      <span className="text-xs text-foreground flex-1 basis-40 min-w-0 line-clamp-2 break-words">{item.goal || t("delegation.untitled")}</span>
       {item.agent && <span className="text-[10px] text-accent truncate">@{item.agent}</span>}
       {adapter && <span className="text-[10px] px-1 py-0.5 rounded bg-accent-subtle text-accent">{adapter}</span>}
       <span className="text-[10px] text-muted font-mono shrink-0">{formatDuration(item.duration_seconds)}</span>
@@ -329,21 +275,21 @@ export function DelegationsPanel() {
       title={t("delegation.panel.title")}
       actions={
         running.length > 0 ? (
-          <span className="inline-flex items-center gap-1.5 text-xs text-blue-500">
+          <span className="inline-flex items-center gap-1.5 text-xs text-accent">
             <Loader2 size={12} className="animate-spin" />
             {t("activity.runningCount", { n: running.length })}
           </span>
         ) : undefined
       }
     >
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="delegation-columns">
         <div>
           <div className="flex items-center gap-1.5 text-xs font-medium text-muted mb-2">
             <Bot size={12} />
             {t("delegation.panel.running")}
           </div>
           {running.length > 0 ? (
-            <div className="space-y-2 max-h-[320px] overflow-y-auto">
+            <div className="space-y-3">
               {running.map((item) => (
                 <RunningRow
                   key={item.delegation_id}
@@ -367,7 +313,7 @@ export function DelegationsPanel() {
             {t("delegation.panel.history")}
           </div>
           {historyItems.length > 0 ? (
-            <div className="space-y-1.5 max-h-[320px] overflow-y-auto">
+            <div className="space-y-2">
               {historyItems.map((item) => (
                 <HistoryRow
                   key={item.delegation_id}

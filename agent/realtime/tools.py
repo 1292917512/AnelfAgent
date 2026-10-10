@@ -11,7 +11,8 @@ import json
 from typing import Any
 
 from core.config import get_config
-from entities._sdk import deferred_tool, error_from_exception
+from core.tool_errors import error_from_exception
+from core.tool_registry import deferred_tool
 
 from .engine import get_realtime_engine
 

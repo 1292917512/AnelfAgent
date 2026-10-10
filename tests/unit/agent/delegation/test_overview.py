@@ -189,3 +189,40 @@ class TestDelegationThinkingSession:
         # 会话随执行结束闭合（含异常路径的 finally 保证）
         assert len(ends) == 1
         assert ends[0]["session_id"] == starts[0]["session_id"]
+
+
+async def test_queued_delegation_is_visible_and_uses_epoch_time() -> None:
+    from core.event_bus import EVENT_DELEGATION_STARTED
+
+    manager = DelegationManager(_FakeMind())
+    manager._semaphore = asyncio.Semaphore(0)
+    started: List[Dict[str, Any]] = []
+
+    async def capture(payload: Dict[str, Any]) -> None:
+        started.append(payload)
+
+    event_bus.on(EVENT_DELEGATION_STARTED, capture, owner="test_queued_clock")
+    before = time.time()
+    run = asyncio.create_task(manager.delegate("排队目标", scope_hint="user_qq:42"))
+    try:
+        for _ in range(100):
+            if manager._pending:
+                break
+            await asyncio.sleep(0.001)
+        item = manager.running_snapshot_all()[0]
+        assert item["state"] == "queued"
+        assert item["scope"] == "user_qq:42"
+        assert before <= item["started_at"] <= time.time()
+        assert started[0]["ts"] == item["started_at"]
+        assert item["elapsed_seconds"] < 2
+        assert manager.running_snapshot("user_qq:42")[0]["state"] == "queued"
+        assert manager.running_snapshot("user_webui:web_user") == []
+        manager.cancel(item["delegation_id"])
+        result = await run
+        assert result.cancelled
+        assert manager.running_snapshot_all() == []
+    finally:
+        event_bus.off_by_owner("test_queued_clock")
+        if not run.done():
+            run.cancel()
+            await asyncio.gather(run, return_exceptions=True)

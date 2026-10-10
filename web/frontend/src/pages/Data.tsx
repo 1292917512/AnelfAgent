@@ -2,23 +2,24 @@ import { useRouteTab } from "@/hooks/useRouteTab";
 import { useTranslation } from "react-i18next";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
 import { PageContainer, PageHeader } from "@/components/common/PageContainer";
-import { Database, HardDrive, Layers, Smile } from "lucide-react";
+import { Database, HardDrive, Layers } from "lucide-react";
 import { DatabasePanel } from "@/pages/database/DatabasePanel";
-import { StickersPanel } from "@entities/sticker/panels/library/StickersPanel";
+import { getUiContributions } from "@/lib/ui-contribution-registry";
+import { ContributionContent } from "@/components/extensions/ContributionSlot";
 import { StoragePanel } from "@/pages/database/StoragePanel";
 import { VolumePanel } from "@/pages/database/volumes/VolumePanel";
 
-type DataTab = "database" | "volumes" | "stickers" | "storage";
-
-/** 数据管理 — 所有数据类功能的统一入口（数据库 / 存储卷 / 表情包 / 存储位置） */
+/** 数据管理与模块自注册的数据面板。 */
 export default function Data() {
   const { t } = useTranslation("data");
-  const [tab, setTab] = useRouteTab<DataTab>(["database", "volumes", "stickers", "storage"], "database");
+  const extensions = getUiContributions("data.tabs");
+  const [tab, setTab] = useRouteTab(["database", "volumes", "storage", ...extensions.map((entry) => entry.tab)], "database");
+  const extension = extensions.find((entry) => entry.tab === tab);
 
-  const TABS: TabItem<DataTab>[] = [
+  const TABS: TabItem<string>[] = [
     { key: "database", label: t("tabs.database"), icon: Database },
     { key: "volumes", label: t("tabs.volumes"), icon: Layers },
-    { key: "stickers", label: t("tabs.stickers"), icon: Smile },
+    ...extensions.map((entry) => ({ key: entry.tab, label: t(entry.title.key, { ns: entry.title.ns }), icon: entry.icon })),
     { key: "storage", label: t("tabs.storage"), icon: HardDrive },
   ];
 
@@ -32,7 +33,7 @@ export default function Data() {
       <TabBar tabs={TABS} activeTab={tab} onChange={setTab} />
       {tab === "database" && <DatabasePanel />}
       {tab === "volumes" && <VolumePanel />}
-      {tab === "stickers" && <StickersPanel />}
+      {extension && <ContributionContent key={extension.key} entry={extension} componentProps={{}} />}
       {tab === "storage" && <StoragePanel />}
     </PageContainer>
   );

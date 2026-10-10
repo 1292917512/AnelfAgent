@@ -22,7 +22,7 @@ from entities._sdk import ErrorCause, entity, error_from_exception, tool, tool_e
 entity("ui", "界面交互 - 向 Web 工作台投递通知、弹窗提问、切换面板、注入草稿、查询界面状态")
 
 _VALID_LEVELS = {"info", "success", "warning", "error"}
-_VALID_PANELS = {"status", "trace", "context", "files", "tasks", "search", "settings"}
+_VALID_PANELS = {"status", "trace", "chat", "context", "files", "tasks", "search", "settings"}
 
 
 @dataclass
@@ -151,7 +151,7 @@ async def ui_open_panel(panel: str, payload: str = "") -> str:
     """打开 Web 工作台右侧面板并可附带定位内容（如打开文件、填入搜索词）。
 
     Args:
-        panel: 面板名 status/trace/context/files/tasks/search/settings
+        panel: 面板名 status/trace/chat/context/files/tasks/search/settings；trace 打开全局执行区，chat 打开独立 Web 对话窗
         payload: files 为工作区相对路径；项目路径加 project:，目录再加 dir:（如 project:dir:src）；search 为搜索词
     """
     try:

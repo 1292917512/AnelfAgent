@@ -635,3 +635,106 @@ class ContextProviderRegistry:
         cls._last_collect.clear()
         cls._last_clips.clear()
         cls._peak.clear()
+
+
+def context_provider(
+    name: Optional[str] = None,
+    priority: int = 50,
+    max_tokens: int = 500,
+    scope: Optional[str] = None,
+    group: Optional[str] = None,
+    inject_key: Optional[str] = None,
+) -> Callable:
+    """装饰器：将类或函数注册为上下文提供者。
+
+    PFC 每轮构建 volatile 层时拉取所有 provider 的最新快照，
+    实体自行管理更新节奏（RunTimeline），PFC 只做被动拉取。
+
+    类模式（有生命周期）::
+
+        @context_provider(name="health", priority=10, max_tokens=200, group="system")
+        class HealthWatcher:
+            async def on_start(self):
+                self._task = asyncio.create_task(self._collect_loop())
+
+            async def provide(self, scope: str) -> Optional[ProviderSnapshot]:
+                return self._snapshot  # 零 I/O，只读快照
+
+            async def on_tick(self):       # 可选：心跳 tick 时触发
+                ...
+
+            async def on_stop(self):       # 可选：shutdown 时触发
+                self._task.cancel()
+
+    函数模式（无状态）::
+
+        @context_provider(name="weather", priority=20)
+        async def weather(scope: str) -> Optional[str]:
+            return f"[天气] {await fetch_weather()}"
+
+    Args:
+        name: 提供者唯一标识（默认取类名/函数名）。
+        priority: 注入优先级（越小越靠前，预算超限时大值先被截断）。语义为变动率
+            排序：快照越静态越小（靠前），含时间/秒计数等逐轮变化内容的实时
+            快照越大（靠尾部动态区末尾）。段位：10-19 状态级 / 20-29 摘要级 /
+            30-39 会话操作态势 / 40+ 实时快照（详见 core.context_provider.ProviderMeta）。
+        max_tokens: 静态预估上限（Web 展示 + 预算告警参考）。
+        scope: 作用域过滤。None=全局；"webui:*"=前缀匹配；"webui:u123"=精确匹配。
+        group: 所属工具分组（如 "ssh"）。声明后随实体启停联动：分组内全部
+            工具被禁用时停止采集与注入，重新启用自动恢复；None 表示全局常驻。
+            属于某个实体分组的 provider 应始终声明，否则关闭实体无法停止其注入。
+        inject_key: 注入开关配置键（约定 ``<group>_context_inject``）。会产出
+            注入内容的 provider 必须声明——配置为 False 时框架停止采集与注入
+            （在 _is_active 层拦截，provide 内无需再手工检查）。声明后若该键
+            尚未注册，装饰器自动以默认值 True 兜底注册进 ``entity/<group>``
+            配置组（实体自行 register_configs 声明的更丰富定义优先，不被覆盖）；
+            频道等不走 entity 配置组的 provider 直接传 ProviderMeta.inject_key。
+    """
+    def decorator(cls_or_func: Any) -> Any:
+        provider_name = name or getattr(cls_or_func, "__name__", str(cls_or_func))
+        provider_desc = getattr(cls_or_func, "__doc__", "") or ""
+
+        if inject_key and group:
+            # 注入开关兜底注册（实体未自行声明时），配置中心/实体配置 tab 自动出现
+            from core.config import ConfigRegistry, register_configs_safe
+            if ConfigRegistry.get_item(inject_key) is None:
+                register_configs_safe({
+                    f"entity/{group}": {
+                        inject_key: {
+                            "description": f"是否向 AI 上下文注入{provider_desc.strip().rstrip('。') or provider_name}",
+                            "default": True,
+                        },
+                    },
+                })
+
+        if isinstance(cls_or_func, type):
+            # 类模式：实例化后注册
+            instance = cls_or_func()
+            meta = ProviderMeta(
+                name=str(provider_name),
+                priority=priority,
+                max_tokens=max_tokens,
+                scope_filter=scope,
+                group=group,
+                inject_key=inject_key,
+                instance=instance,
+                description=provider_desc,
+            )
+            ContextProviderRegistry.register(meta)
+            return cls_or_func
+        else:
+            # 函数模式
+            meta = ProviderMeta(
+                name=str(provider_name),
+                priority=priority,
+                max_tokens=max_tokens,
+                scope_filter=scope,
+                group=group,
+                inject_key=inject_key,
+                provide_fn=cls_or_func,
+                description=provider_desc,
+            )
+            ContextProviderRegistry.register(meta)
+            return cls_or_func
+
+    return decorator

@@ -202,22 +202,6 @@ class TestErrorMapping:
         assert resp.status_code == 503
 
 
-class TestFunasrStatus:
-    def test_funasr_status_shape(self, client: TestClient, monkeypatch, funasr_cred) -> None:
-        async def fake_probe() -> bool:
-            return True
-
-        from entities.audiosync import client as funasr_client
-        monkeypatch.setattr(funasr_client, "probe_available", fake_probe)
-        funasr_cred("http://funasr.local")
-        resp = client.get("/api/audio/funasr/status")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data == {"configured": True, "reachable": True,
-                        "endpoint": "http://funasr.local"}
-        funasr_cred("")
-
-
 class TestVoicePresetApi:
     @pytest.fixture(autouse=True)
     def preset_env(self, tmp_path, monkeypatch: pytest.MonkeyPatch):

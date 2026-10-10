@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Awaitable, Callable, Dict, List, Optional, Tup
 
 from core.latebind import LateBinding
 from core.log import log
-from entities._sdk import deferred_tool
+from core.tool_registry import deferred_tool
 
 if TYPE_CHECKING:
     from agent.storage.data_center import ConversationData

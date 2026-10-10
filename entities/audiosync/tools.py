@@ -19,6 +19,56 @@ def _dump(data: Any) -> str:
 
 
 @tool(group=_group, tags=["core"])
+async def audiosync_service(action: str = "get", key: str = "", value: str = "") -> str:
+    """查询或配置转写服务，保存后报告实际可达状态。
+
+    Args:
+        action: get（配置与可达状态）或 set（写入一项配置）。
+        key: set 时填写 funasr_endpoint（HTTP 地址）或 funasr_timeout（秒）。
+        value: 待保存的配置值。
+    """
+    from core.config import ConfigManager
+    from core.provider_keys import set_provider_key
+    from entities._sdk import save_config_value
+
+    from . import client
+
+    try:
+        action = action.strip().lower()
+        if action == "get":
+            client.reset_probe_cache()
+            return _dump({"success": True, "config": {
+                "funasr_endpoint": client.endpoint_config(),
+                "funasr_timeout": ConfigManager.get("funasr_timeout", 120),
+                "funasr_reachable": await client.probe_available(),
+            }})
+        if action != "set":
+            return tool_error("操作必须为 get 或 set", cause=ErrorCause.PARAM, retryable=False)
+        if key == "funasr_timeout":
+            from core.config import ConfigRegistry
+            item = ConfigRegistry.get_item(key)
+            if item is None:
+                return tool_error("转写服务配置尚未注册", cause=ErrorCause.STATE, retryable=False)
+            save_config_value(key, item.coerce_value(value))
+            return _dump({"success": True, "key": key, "value": ConfigManager.get(key)})
+        if key != "funasr_endpoint":
+            return tool_error("未知服务配置项", cause=ErrorCause.PARAM, retryable=False,
+                              hint="可选: funasr_endpoint / funasr_timeout")
+        from urllib.parse import urlsplit
+        endpoint = value.strip()
+        parsed = urlsplit(endpoint)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return tool_error("服务地址必须是完整 HTTP(S) URL", cause=ErrorCause.PARAM, retryable=False)
+        set_provider_key("funasr", key, endpoint)
+        client.reset_probe_cache()
+        reachable = await client.probe_available()
+        return _dump({"success": True, "key": key, "value": endpoint, "reachable": reachable,
+                      "hint": "服务在线" if reachable else "地址已保存但服务不可达，请检查服务进程与网络"})
+    except Exception as exc:
+        return error_from_exception(exc, action="转写服务配置")
+
+
+@tool(group=_group, tags=["core"])
 async def audiosync_sync_now() -> str:
     """触发一轮音源目录增量同步（后台执行）：扫描配置的音频来源（本地目录/OpenList），新增文件自动转写并声纹识别入库。
 

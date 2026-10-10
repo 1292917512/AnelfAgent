@@ -2,7 +2,7 @@
  * PlanCard — 消息流中的计划卡片。
  *
  * 渲染 PlanRecord 的完整结构化视图：goal / steps（带勾选）/ files / risks / 状态徽标。
- * 与 PlanPanel 浮窗共享 plan-store 与展示子组件（PlanStepRow / PlanStatusBadge / PlanMeta）。
+ * 与 执行记录面板共享 plan-store 与展示子组件（PlanStepRow / PlanStatusBadge / PlanMeta）。
  */
 import { useTranslation } from "react-i18next";
 import { Target, ChevronDown, ChevronRight } from "lucide-react";

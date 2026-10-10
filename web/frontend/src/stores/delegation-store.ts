@@ -2,7 +2,7 @@
  * 子代理状态 store — 按 chat_id 分桶的子代理执行记录。
  *
  * 数据源：SSE delegation_started / delegation_progress / delegation_resolved 事件。
- * 消费方：DelegationCard 消息卡 + PlanPanel 浮窗内的子代理子树。
+ * 消费方：DelegationCard 消息卡 + 执行记录面板内的子代理子树。
  */
 import { create } from "zustand";
 import type { DelegationNode, RunningDelegation, SseDelegationProgressEvent } from "@/lib/types";

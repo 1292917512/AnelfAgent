@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { volumeApi } from "@/lib/api";
-import { devopsApi } from "@entities/devops/panels/api";
+import { InlineContributions } from "@/components/extensions/ContributionSlot";
 import type { VolumeInfo } from "@/lib/types";
 import { Badge, Button, toast } from "@/components/ui";
 import {
@@ -11,7 +11,6 @@ import {
   FileText,
   FolderInput,
   HardDrive,
-  RotateCw,
   UploadCloud,
 } from "lucide-react";
 import { formatSize } from "../format";
@@ -54,11 +53,6 @@ export function VolumeCard({ volume, onChanged }: Props) {
     },
   });
 
-  const restartMut = useMutation({
-    mutationFn: () => devopsApi.restart(),
-    onSuccess: () => toast.success(t("volumes.restarting")),
-  });
-
   const Icon = KIND_ICON[volume.kind] ?? Database;
   const running = op?.state === "running";
   const done = op?.state === "done" && op.result?.needs_restart;
@@ -97,14 +91,7 @@ export function VolumeCard({ volume, onChanged }: Props) {
               ? t("volumes.pendingOne")
               : t("volumes.needsRestart")}
           </span>
-          <button
-            type="button"
-            className="flex items-center gap-1 rounded border border-warning/50 px-1.5 py-0.5 hover:bg-warning/20"
-            onClick={() => restartMut.mutate()}
-            disabled={restartMut.isPending}
-          >
-            <RotateCw size={11} /> {t("volumes.restartNow")}
-          </button>
+          <InlineContributions slot="system.restart" componentProps={{}} />
         </div>
       )}
 

@@ -117,7 +117,7 @@ if TYPE_CHECKING:
 _END_REPLY_TOOL_NAME = "end_reply"
 
 
-from entities._sdk import activate_group, deferred_tool
+from core.tool_registry import activate_group, deferred_tool
 
 
 @deferred_tool(

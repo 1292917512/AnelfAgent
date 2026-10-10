@@ -18,8 +18,7 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, Optional
 
-from core.context_provider import ContextMedia, ProviderSnapshot
-from entities._sdk import context_provider
+from core.context_provider import ContextMedia, ProviderSnapshot, context_provider
 
 from .buffer import get_vision_buffer
 from .watcher import get_vision_watcher

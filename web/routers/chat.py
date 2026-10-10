@@ -67,18 +67,8 @@ def _setup_ui_command_bridge() -> None:
         broadcast_chat_event({"event": "ui_command", **payload})
 
 
-def _setup_share_event_bridge() -> None:
-    """订阅分享创建事件并桥接到聊天 SSE 流（前端渲染分享卡片）。"""
-    from core.event_bus import EVENT_SHARE_CREATED, event_bus
-
-    @event_bus.on(EVENT_SHARE_CREATED, owner="webui")
-    async def _forward_share_created(payload: Dict[str, Any]) -> None:
-        broadcast_chat_event({"event": "share", **payload})
-
-
 _setup_chat_broadcast_bridge()
 _setup_ui_command_bridge()
-_setup_share_event_bridge()
 
 
 class UiAnswerRequest(BaseModel):
@@ -277,7 +267,7 @@ class CancelPlanRequest(BaseModel):
 
 @router.post("/cancel-plan")
 async def cancel_plan(req: CancelPlanRequest) -> Dict[str, Any]:
-    """用户从前端 PlanPanel 浮窗点击"取消"：标记 cancelled + interrupt scope + 发射事件。"""
+    """用户从前端 计划卡片点击"取消"：标记 cancelled + interrupt scope + 发射事件。"""
     ok = await _chat_svc.cancel_plan(req.chat_id, req.plan_id)
     if not ok:
         return {"status": "error", "error": "plan 不存在或已结束"}

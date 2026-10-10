@@ -92,10 +92,9 @@ def _env_info_block() -> str:
         "文件工具与 Shell 的相对路径均基于工作区根目录，操作在工作区内进行，"
         "访问区外用绝对路径；Shell 当前工作目录等实时信息用 get_workspace_info。"
     )
-    # 宿主环境事实：环境实体为单一数据源（与 get_python_status 工具共用
-    # 检测逻辑），进程级缓存保证字节稳定（人设层指纹依赖）
+    # 宿主环境事实在进程内冻结，与环境管理工具共用检测逻辑。
     try:
-        from entities.system.python_service import get_runtime_env_summary
+        from core.python_env import get_runtime_env_summary
         block += "\n" + get_runtime_env_summary()
     except Exception:
         pass

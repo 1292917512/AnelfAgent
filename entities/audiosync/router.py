@@ -1,8 +1,6 @@
 """音源同步实体的 HTTP 路由（自动挂载到 /api/entity/audiosync）。
 
-- /ingest：外部音源推送（X-Ingest-Token 鉴权，路径在 web/server.py
-  _AUTH_EXEMPT 白名单，由本端点自行校验令牌；未配置 audiosync_ingest_token
-  时 fail-closed）——解析结果经核心入库管线写入音频核心库
+- /ingest：外部音源推送（端点声明独立认证，校验 X-Ingest-Token；未配置令牌时关闭）——解析结果经核心入库管线写入音频核心库
 - /sync/*：目录镜像同步的手动触发 / 状态 / 预览 / 重建
 - /source/*：同步来源组件清单与连通性体检
 - /config：实体配置读写（entity/audiosync 组）
@@ -12,18 +10,26 @@
 
 from __future__ import annotations
 
+from hmac import compare_digest
 from typing import Any, Dict
 
 from fastapi import APIRouter, Body, HTTPException, Request
+from pydantic import BaseModel, Field
 
 from core.config import ConfigManager, ConfigRegistry, get_config
+from core.http_endpoints import self_authenticated
 from core.log import log
 from entities._sdk import IngestPayload, audio_ingest_payload
 
+from . import client
 from .framework import active_source, all_sources
 from .outbound import notify_ingested
 
 _LOG_TAG = "音源同步"
+
+
+class GpuUnloadRequest(BaseModel):
+    targets: list[str] = Field(default_factory=list)
 
 
 def _verify_ingest_token(request: Request) -> None:
@@ -34,12 +40,40 @@ def _verify_ingest_token(request: Request) -> None:
             status_code=503,
             detail="ingest 未启用：请在实体配置中设置 audiosync_ingest_token")
     provided = request.headers.get("x-ingest-token", "")
-    if provided != token:
+    if not compare_digest(provided.encode(), token.encode()):
         raise HTTPException(status_code=401, detail="ingest token 无效")
 
 
 def build_router() -> APIRouter:
     router = APIRouter()
+
+    @router.get("/service/status")
+    async def service_status(refresh: bool = False) -> Dict[str, Any]:
+        """返回转写服务配置与可达状态，按需重新探测。"""
+        if refresh:
+            client.reset_probe_cache()
+        return {"configured": bool(client.endpoint_config()),
+                "reachable": await client.probe_available(), "endpoint": client.endpoint_config()}
+
+    @router.get("/service/gpu")
+    async def gpu_status() -> Dict[str, Any]:
+        """读取转写服务的模型加载状态。"""
+        try:
+            return await client.gpu_status()
+        except client.FunAsrNotConfigured as exc:
+            raise HTTPException(503, str(exc)) from exc
+        except client.FunAsrError as exc:
+            raise HTTPException(502, str(exc)) from exc
+
+    @router.post("/service/gpu/unload")
+    async def gpu_unload(req: GpuUnloadRequest) -> Dict[str, Any]:
+        """释放选定模型，空列表释放全部模型。"""
+        try:
+            return await client.gpu_unload(req.targets or None)
+        except client.FunAsrNotConfigured as exc:
+            raise HTTPException(503, str(exc)) from exc
+        except client.FunAsrError as exc:
+            raise HTTPException(502, str(exc)) from exc
 
     # ── 实体配置 ──────────────────────────────────────────────────
 
@@ -80,6 +114,7 @@ def build_router() -> APIRouter:
     # ── 外部音源推送 ──────────────────────────────────────────────
 
     @router.post("/ingest")
+    @self_authenticated
     async def ingest(request: Request, payload: IngestPayload) -> Dict[str, Any]:
         """接收外部音源（上游 pipeline）推送的结构化语音片段。"""
         _verify_ingest_token(request)

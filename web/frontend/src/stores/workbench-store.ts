@@ -5,8 +5,8 @@ import type { WorkbenchSurface } from "@/lib/workbench-layout";
 import type { WorkspaceRoot } from "@/lib/types";
 import { parseFileReference } from "@/lib/file-reference";
 
-export type DockTab = "status" | "trace" | "context" | "tasks" | "search" | "settings";
-const DOCK_TABS: DockTab[] = ["status", "trace", "context", "tasks", "search", "settings"];
+export type DockTab = "status" | "context" | "tasks" | "search" | "settings";
+const DOCK_TABS: DockTab[] = ["status", "context", "tasks", "search", "settings"];
 
 export interface UiNotification {
   id: string;
@@ -44,6 +44,11 @@ interface WorkbenchState {
   containerWidth: number | null;
   setContainerWidth: (width: number | null) => void;
   activeSurface: WorkbenchSurface | null;
+  executionTab: "runs" | "agents" | "web";
+  setExecutionTab: (tab: "runs" | "agents" | "web") => void;
+  chatOpen: boolean;
+  toggleChat: () => void;
+  showExecution: () => void;
   showSurface: (surface: WorkbenchSurface) => void;
   dismissSurface: () => void;
   /** 左侧文件树栏 */
@@ -105,8 +110,13 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   containerWidth: null,
   setContainerWidth: (containerWidth) => set({ containerWidth }),
   activeSurface: null,
+  executionTab: "runs",
+  setExecutionTab: (executionTab) => set({ executionTab }),
+  chatOpen: true,
+  toggleChat: () => set((state) => ({ chatOpen: !state.chatOpen, activeSurface: state.chatOpen ? null : "chat" })),
+  showExecution: () => set({ activeSurface: null, filePanelExpanded: false, executionTab: "runs" }),
   showSurface: (activeSurface) => set({ activeSurface,
-    ...(activeSurface === "files" ? { leftOpen: true } : activeSurface === "dock" ? { dockOpen: true } : { filePanelOpen: true }),
+    ...(activeSurface === "files" ? { leftOpen: true } : activeSurface === "dock" ? { dockOpen: true } : activeSurface === "chat" ? { chatOpen: true } : { filePanelOpen: true }),
   }),
   dismissSurface: () => set({ activeSurface: null }),
   leftOpen: false,
@@ -131,6 +141,8 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   setActiveTab: (tab) => set({ activeTab: tab, dockOpen: true, activeSurface: "dock" }),
 
   openPanel: (panel, payload = "") => {
+    if (panel === "trace") { get().showExecution(); return; }
+    if (panel === "chat") { get().showSurface("chat"); return; }
     // files 是左侧文件树栏而非右侧 Dock tab，单独处理
     if (panel === "files") {
       let surface: WorkbenchSurface = "files";
@@ -203,7 +215,7 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   setSelection: (sel) => set({ selection: sel }),
   setSearchSeed: (q) => set({ searchSeed: q }),
 
-  setDraft: (text) => set((s) => ({ draft: text, draftSeq: s.draftSeq + 1 })),
+  setDraft: (text) => set((s) => ({ draft: text, draftSeq: s.draftSeq + 1, chatOpen: true, activeSurface: "chat" })),
   consumeDraft: () => {
     const d = get().draft;
     if (d !== null) set({ draft: null });

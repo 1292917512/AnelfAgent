@@ -15,7 +15,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Dict, List
 
-from entities._sdk import deferred_tool
+from core.tool_registry import deferred_tool
 
 #: 单会话保留的最近回复轮数
 LOG_DEPTH = 8

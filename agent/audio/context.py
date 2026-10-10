@@ -10,8 +10,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from core.context_provider import ProviderSnapshot
-from entities._sdk import context_provider
+from core.context_provider import ProviderSnapshot, context_provider
 
 from .store import get_audio_store
 

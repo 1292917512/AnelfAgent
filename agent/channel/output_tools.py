@@ -18,7 +18,7 @@ from core.latebind import LateBinding
 from core.log import log
 from core.tags import strip_message_meta_tags
 from core.tool_errors import ErrorCause, error_from_exception
-from entities._sdk import deferred_tool, get_current_scope
+from core.tool_registry import deferred_tool
 
 from .outbound_guard import guard_empty_conversation, guard_outbound, note_outbound
 
@@ -42,7 +42,8 @@ def inherit_current_session(adapter_key: str, resolved_target_id: str) -> str:
     """
     try:
         from agent.messages import parse_entity_scope
-        thinker = get_current_scope()
+        from agent.mind.tool_activation import ToolActivationManager
+        thinker = ToolActivationManager.current_scope()
         if not thinker:
             return ""
         _scope_type, adapter, base_id, session_id = parse_entity_scope(thinker)
@@ -293,7 +294,8 @@ async def execute_send_action(
             channel_id, resolved_target_id, channel_type, session_id,
         )
         target_scope = f"{scope_type}_{scope_id}"
-        thinker = get_current_scope()
+        from agent.mind.tool_activation import ToolActivationManager
+        thinker = ToolActivationManager.current_scope()
         rejection = guard_outbound(target_scope, thinker)
         if rejection:
             return rejection

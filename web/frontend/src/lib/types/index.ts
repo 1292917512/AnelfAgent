@@ -16,7 +16,6 @@ export * from "./workspace";
 export * from "./database";
 export * from "./context";
 export * from "./entities";
-export * from "./share";
 export * from "./graph";
 export * from "./plan";
 export * from "./chat";

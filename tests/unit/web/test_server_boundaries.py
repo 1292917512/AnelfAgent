@@ -58,3 +58,54 @@ def test_missing_previously_protected_config_stays_closed(client: TestClient):
     assert client.get("/api/status").status_code == 401
     Path(ConfigPaths.WEBUI_CONFIG).unlink()
     assert client.get("/api/status").status_code == 503
+
+
+def test_module_auth_applies_only_to_exact_registered_method(client: TestClient):
+    from fastapi import APIRouter, HTTPException, Request
+
+    from core.http_endpoints import self_authenticated
+
+    router = APIRouter()
+
+    @router.post("/ingest")
+    @self_authenticated
+    async def ingest(request: Request) -> dict[str, bool]:
+        if request.headers.get("X-Module-Token") != "module-secret":
+            raise HTTPException(401, "Invalid module token")
+        return {"ok": True}
+
+    @router.get("/settings")
+    async def settings() -> dict[str, bool]:
+        return {"private": True}
+
+    server._include_module_router(client.app, router, prefix="/api/entity/test", tags=["test"])
+    assert client.post("/api/entity/test/ingest").status_code == 401
+    assert client.post("/api/entity/test/ingest", headers={"X-Module-Token": "module-secret"}).status_code == 200
+    assert client.get("/api/entity/test/ingest").status_code == 401
+    assert client.get("/api/entity/test/settings").status_code == 401
+    server._unmount_module_router(client.app, "/api/entity/test")
+    assert client.post("/api/entity/test/ingest", headers={"X-Module-Token": "module-secret"}).status_code == 401
+
+
+def test_audio_ingest_keeps_its_own_auth_under_web_password(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    from entities.audiosync import router
+
+    monkeypatch.setattr(router, "get_config", lambda key, default=None: "module-secret" if key == "audiosync_ingest_token" else default)
+    server._include_module_router(client.app, router.build_router(), prefix="/api/entity/audiosync", tags=["audio"])
+    denied = client.post("/api/entity/audiosync/ingest", json={"segments": []})
+    assert denied.status_code == 401 and denied.json()["detail"] == "ingest token 无效"
+    assert client.get("/api/entity/audiosync/config", headers={"X-Ingest-Token": "module-secret"}).status_code == 401
+
+
+def test_share_token_does_not_unlock_management(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from entities.share import router
+
+    monkeypatch.setattr(router, "get_share_store", lambda: SimpleNamespace(get_by_token=AsyncMock(return_value=None)))
+    server._include_module_router(client.app, router.build_router(), prefix="/api/entity/share", tags=["share"])
+    for path in ("/d/invalid", "/raw/invalid", "/v/invalid"):
+        assert client.get("/api/entity/share" + path).status_code == 404
+    for path in ("/links", "/stats", "/logs"):
+        assert client.get("/api/entity/share" + path).status_code == 401

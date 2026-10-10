@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from entities.system import python_service
+from core import python_env as python_service
 
 
 @pytest.fixture(autouse=True)

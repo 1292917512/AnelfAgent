@@ -15,9 +15,6 @@ import type {
   AudioSpeakerUpdatePayload,
   AudioStatus,
   CapabilityStatus,
-  FunasrStatus,
-  GpuStatus,
-  GpuUnloadResult,
   VoicePresetEntry,
   VoicePresetOverview,
   VoicePresetPayload,
@@ -27,11 +24,6 @@ export const audioApi = {
   status: () => api.get<AudioStatus>("/audio/status"),
   stats: () => api.get<AudioLibraryStats>("/audio/stats"),
   capabilities: () => api.get<CapabilityStatus>("/audio/capabilities"),
-  funasrStatus: (refresh = false) =>
-    api.get<FunasrStatus>("/audio/funasr/status", { params: refresh ? { refresh: true } : {} }),
-  gpuStatus: () => api.get<GpuStatus>("/audio/funasr/gpu"),
-  gpuUnload: (targets?: string[]) =>
-    api.post<GpuUnloadResult>("/audio/funasr/gpu/unload", { targets: targets ?? [] }),
   analyze: (path: string) => api.post("/audio/analyze", { path }),
   // 声纹身份
   speakers: (params?: { status?: string; keyword?: string; limit?: number; offset?: number }) =>
@@ -97,9 +89,6 @@ export const audioApi = {
     api.get<AudioRecordingListResult>("/audio/recordings", { params }),
   deleteRecording: (path: string) =>
     api.delete("/audio/recordings", { params: { path } }),
-  rebuildRecording: (path: string) =>
-    api.post<{ error: string; results: Array<{ path: string; outcome: string }> }>(
-      "/entity/audiosync/sync/rebuild", { paths: [path] }),
   // 音色预设（AI 与 Web 共用的音色库）
   voicePresets: () => api.get<VoicePresetOverview>("/audio/voice-presets"),
   saveVoicePreset: (data: VoicePresetPayload) =>

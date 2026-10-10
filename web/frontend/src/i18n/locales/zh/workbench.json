@@ -175,5 +175,24 @@
   "openEditor": "打开编辑器",
   "editorLabel": "编辑器",
   "backToChat": "返回对话",
-  "resetLayout": "重置面板宽度"
+  "resetLayout": "重置面板宽度",
+  "webChat": "Web 对话",
+  "execution": {
+    "title": "执行",
+    "region": "全局执行",
+    "heading": "运行与思考",
+    "description": "统一查看所有频道、任务与子代理的执行过程",
+    "running": "{{count}} 个运行中",
+    "runs": "执行链路",
+    "agents": "子代理",
+    "webRecords": "Web 操作记录",
+    "agentsRunning": "{{count}} 个子代理正在执行",
+    "webRecordsHint": "此 Web 会话的工具、思考与文件改动记录。所有频道的实时过程在执行链路中查看。",
+    "noRecords": "此会话还没有操作记录",
+    "open": "查看思考与执行过程",
+    "waiting": "等待 AI 回复",
+    "source": "来源",
+    "allSources": "所有来源",
+    "runningOnly": "仅运行中"
+  }
 }

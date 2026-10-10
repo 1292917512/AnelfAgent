@@ -10,13 +10,13 @@ import { useThinkingStore } from "./stores/thinking-store";
 import { useAppStore } from "./stores/app-store";
 import { configApi, warnApiError } from "./lib/api";
 import { CORE_ROUTES } from "./lib/core-routes";
-import { listPluginRoutes } from "./lib/channel-plugins";
 import { RouteErrorBoundary } from "./components/RouteErrorBoundary";
 import { PageSkeleton } from "./components/common/AsyncState";
 import { NotFound } from "./components/layout/NotFound";
 import { QueryErrorResetBoundary } from "@tanstack/react-query";
 import { UnsavedChangesProvider } from "./components/common/UnsavedChanges";
 import { UiCommandHost } from "./components/workbench/UiCommandHost";
+import { getUiContributions } from "./lib/ui-contribution-registry";
 
 function ApplicationLayout() {
   return <UnsavedChangesProvider><FileDraftLifecycle /><Layout /><CommandPalette /><UiCommandHost /></UnsavedChangesProvider>;
@@ -38,7 +38,7 @@ export function createAppRoutes() {
     element: <ApplicationLayout />,
     children: [
       ...CORE_ROUTES.map(({ path, page: Page }) => ({ path, element: <PageBoundary><Page /></PageBoundary> })),
-      ...listPluginRoutes().map(({ path, page: Page }) => ({ path, element: <PageBoundary><Page /></PageBoundary> })),
+      ...getUiContributions("app.routes").map(({ path, Component: Page }) => ({ path, element: <PageBoundary><Page /></PageBoundary> })),
       { path: "*", element: <NotFound /> },
     ],
   }];

@@ -52,7 +52,7 @@ class TestToolRegistration:
         """judge 工具经 deferred 注册表激活（共享会话幂等：已弹出则注册表已有）。"""
         import agent.judgment.tools  # noqa: F401
         from core.entity import EntityRegistry
-        from entities._sdk import _deferred_registry, activate_group
+        from core.tool_registry import _deferred_registry, activate_group
 
         activate_group("judgment", "判断")
         assert "judge" in EntityRegistry.get_all_names()

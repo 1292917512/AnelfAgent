@@ -17,7 +17,7 @@ from core.entity import EntityRegistry
 from core.latebind import LateBinding
 from core.log import log
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
-from entities._sdk import deferred_tool
+from core.tool_registry import deferred_tool
 
 from .embedding import Embedder, wake_embedding_worker
 from .graph import entity_node_keys

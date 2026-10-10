@@ -36,7 +36,7 @@ from agent.planning.tracker import GOAL_KIND, planning_store_port
 from core.entity import EntityRegistry
 from core.log import log
 from core.tool_errors import ErrorCause, tool_error
-from entities._sdk import deferred_tool
+from core.tool_registry import deferred_tool
 
 EntityRegistry.register_group_order("planning", 20)
 
@@ -333,7 +333,7 @@ async def update_goal(
     await store.update(target_entry, clear_embedding=True)
     target_goal["memory_id"] = target_entry.id
 
-    # 发射步骤进度事件（前端 PlanPanel 浮窗据此打勾）；
+    # 发射步骤进度事件（前端 计划卡片据此打勾）；
     # 程序级联动：当前步骤 completed 后自动推进下一步为 in_progress
     try:
         scope = tracker.current_scope()

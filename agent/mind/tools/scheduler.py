@@ -25,7 +25,7 @@ from core.async_helper import spawn
 from core.log import log
 from core.path import ConfigPaths
 from core.tool_errors import ErrorCause, tool_error
-from entities._sdk import deferred_tool
+from core.tool_registry import deferred_tool
 
 from .ports import mind_port
 

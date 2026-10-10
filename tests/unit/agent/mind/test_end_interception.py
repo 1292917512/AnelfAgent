@@ -10,10 +10,10 @@ from __future__ import annotations
 import json
 
 from agent.llm.types import ToolCall
-from agent.mind.tools.result_parse import extract_error_text
 from agent.mind.tools.think_loop import (
     _collect_round_failures,
 )
+from core.tool_results import extract_error_text
 
 
 def _tc(tc_id: str, name: str) -> ToolCall:

@@ -1,22 +1,31 @@
-export type WorkbenchSurface = "files" | "editor" | "dock";
+export type WorkbenchSurface = "files" | "editor" | "dock" | "chat";
 
 export interface WorkbenchPanels {
   files: boolean;
   editor: boolean;
   dock: boolean;
   expanded: boolean;
+  chat: boolean;
 }
 
 /** 以内容所需的最小宽度分配并排面板，剩余面板通过显式抽屉访问。 */
 export function resolveWorkbenchLayout(width: number, panels: WorkbenchPanels, activeSurface: WorkbenchSurface | null = null) {
   const editorInline = panels.editor && width >= 960;
-  const conversationHidden = editorInline && panels.expanded;
-  let remaining = width - (conversationHidden ? 0 : 440) - (editorInline ? 420 + (conversationHidden ? 0 : 4) : 0);
+  const executionHidden = editorInline && panels.expanded;
+  let remaining = width - (executionHidden ? 0 : 500) - (editorInline ? 420 + (executionHidden ? 0 : 4) : 0);
   const filesInline = panels.files && width >= 960 && remaining >= 244;
   if (filesInline) remaining -= 244;
+  const chatInline = panels.chat && !executionHidden && width >= 960 && remaining >= 364;
+  if (chatInline) remaining -= 364;
   const dockInline = panels.dock && width >= 960 && remaining >= 324;
+  const overlayActive = (activeSurface === "files" && panels.files && !filesInline)
+    || (activeSurface === "editor" && panels.editor && !editorInline)
+    || (activeSurface === "dock" && panels.dock && !dockInline)
+    || (activeSurface === "chat" && panels.chat && !chatInline);
   return {
-    filesInline, editorInline, dockInline, conversationHidden,
+    executionVisible: !executionHidden && !overlayActive,
+    filesInline, editorInline, dockInline, chatInline, executionHidden,
+    chatVisible: panels.chat && (chatInline || activeSurface === "chat"),
     filesVisible: panels.files && (filesInline || activeSurface === "files"),
     editorVisible: panels.editor && (editorInline || activeSurface === "editor"),
     dockVisible: panels.dock && (dockInline || activeSurface === "dock"),

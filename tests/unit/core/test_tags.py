@@ -6,14 +6,31 @@
 
 from __future__ import annotations
 
+import pytest
+
 from core.tags import (
     batch_remove_tags,
+    etag,
     etag_all,
     get_tag_desc,
     strip_functional_tags,
     strip_message_meta_tags,
     tag_label,
 )
+
+
+def test_json_arrays_are_not_message_tags() -> None:
+    assert etag_all('{"tags": ["channel:qq", "user:123"]}') == []
+    assert etag_all('[file:one] ["kind:system"] [file:one]') == [("file", "one")]
+
+
+@pytest.mark.parametrize("key", ["bad key", "key:other", "[key", "key]", "", "key\n"])
+def test_tag_encoder_and_parser_use_the_same_key_grammar(key: str) -> None:
+    with pytest.raises(ValueError):
+        tag_label(key, "value")
+    if ":" not in key:
+        with pytest.raises(ValueError):
+            etag(f"[{key}:value]")
 
 
 def test_tag_values_roundtrip_without_creating_metadata() -> None:

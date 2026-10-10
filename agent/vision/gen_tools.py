@@ -21,7 +21,7 @@ from agent.vision.capabilities import (
     get_visual_router,
 )
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
-from entities._sdk import deferred_tool
+from core.tool_registry import deferred_tool
 
 _group = "vision"
 
@@ -313,7 +313,7 @@ async def query_video_task(task_id: str, download: bool = True, provider: str = 
     err = _check_provider(provider)
     if err:
         return err
-    from entities._sdk import coerce_bool_arg
+    from core.tool_schema import coerce_bool_arg
     download = coerce_bool_arg(download, True)
 
     out = await get_visual_router().run(
@@ -389,8 +389,8 @@ async def vision_config(action: str = "capabilities", key: str = "", value: str 
             能力名: understand/image_gen/image_edit/video）
         value: set 时必填，配置值（provider_priority 用 JSON 数组字符串）
     """
+    from agent.config import save_config_value
     from core.config import ConfigManager
-    from entities._sdk import save_config_value
 
     action = action.strip().lower() or "capabilities"
     router = get_visual_router()

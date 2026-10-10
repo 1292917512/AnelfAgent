@@ -1,11 +1,12 @@
 import { lazy, type ComponentType, type LazyExoticComponent } from "react";
-import { AudioLines, Brain, Cpu, Database, Eye, GraduationCap, HeartPulse, LayoutDashboard, ListChecks, MessageCircle, Plug, Radio, ScanText, Search, Settings, Shield, SlidersHorizontal, Smile, Tags, UserCircle, Waypoints, Workflow, Wrench, type LucideIcon } from "lucide-react";
+import { AudioLines, Brain, Cpu, Database, Eye, GraduationCap, HeartPulse, LayoutDashboard, ListChecks, MessageCircle, Plug, Radio, ScanText, Search, Settings, Shield, SlidersHorizontal, Tags, UserCircle, Waypoints, Workflow, Wrench, type LucideIcon } from "lucide-react";
 
 export type NavigationGroup = "workspace" | "agent" | "capabilities" | "system";
 
 export interface CoreRoute {
   path: string;
   label: string;
+  description?: string;
   icon: LucideIcon;
   group: NavigationGroup;
   page: LazyExoticComponent<ComponentType>;
@@ -32,7 +33,6 @@ export const CORE_ROUTES: CoreRoute[] = [
   { path: "/vision", label: "vision", icon: Eye, group: "capabilities", page: lazy(() => import("@/pages/Vision")) },
   { path: "/sound", label: "sound", icon: AudioLines, group: "capabilities", page: lazy(() => import("@/pages/Sound")) },
   { path: "/retrieval", label: "retrieval", icon: Search, group: "capabilities", page: lazy(() => import("@/pages/Retrieval")) },
-  { path: "/stickers", label: "stickers", icon: Smile, group: "capabilities", page: lazy(() => import("@/pages/Stickers")) },
   { path: "/tags", label: "tags", icon: Tags, group: "capabilities", page: lazy(() => import("@/pages/Tags")) },
   { path: "/approvals", label: "approvals", icon: Shield, group: "system", page: lazy(() => import("@/pages/Approvals")) },
   { path: "/data", label: "data", icon: Database, group: "system", page: lazy(() => import("@/pages/Data")) },

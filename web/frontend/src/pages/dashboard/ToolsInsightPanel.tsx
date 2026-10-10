@@ -49,7 +49,7 @@ export function ToolsInsightPanel() {
                     <span className="text-xs font-semibold text-accent ml-2 flex-shrink-0">{t("times", { count: tool.count })}</span>
                   </div>
                   <div className="h-1.5 rounded-full bg-secondary overflow-hidden">
-                    <div className="h-full rounded-full bg-accent transition-all duration-500" style={{ width: `${(tool.count / maxCount) * 100}%` }} />
+                    <div className="h-full rounded-full bg-accent transition-[width] duration-[var(--duration-normal)] ease-[var(--ease-out)]" style={{ width: `${(tool.count / maxCount) * 100}%` }} />
                   </div>
                 </div>
               ))}
@@ -63,7 +63,7 @@ export function ToolsInsightPanel() {
               {pfc.active_tools.map((name) => {
                 const recall = toolRecall.find((tr) => tr.name === name);
                 return (
-                  <span key={name} className={cn("px-2.5 py-1 text-[11px] font-mono rounded-md border transition-all",
+                  <span key={name} className={cn("px-2.5 py-1 text-[11px] font-mono rounded-md border transition-colors",
                     recall ? "bg-accent-subtle text-accent border-accent" : "bg-elevated text-foreground border-border"
                   )}>{name}{recall ? ` (${recall.count})` : ""}</span>
                 );

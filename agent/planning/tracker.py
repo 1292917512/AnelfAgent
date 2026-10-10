@@ -175,7 +175,7 @@ async def _persist(entry: MemoryEntry, goal: Dict[str, Any]) -> None:
 # ------------------------------------------------------------------
 
 # 非用户会话 scope：reflect（心跳/子代理）产生的 plan 只持久化、不发射前端事件，
-# 避免 scope="reflect" 的幽灵计划出现在 PlanPanel 浮窗
+# 避免 scope="reflect" 的幽灵计划出现在 计划卡片
 _REFLECT_SCOPE = "reflect"
 
 

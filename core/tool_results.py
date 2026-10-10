@@ -1,10 +1,4 @@
-"""工具结果解析 — 叶子模块（不依赖 tools/ 内任何兄弟模块）。
-
-工具结果经加工管线后可能带威胁扫描前缀 / 守卫警告后缀等附加文本，
-本模块提供宽松 JSON 解析与错误文本提取的纯函数实现，供
-think_loop / round_helpers / vision / context_compressor 共同消费。
-"""
-
+"""工具结果的 JSON 解析与错误判定，供执行器、追踪与思维守卫共用。"""
 from __future__ import annotations
 
 import json

@@ -23,11 +23,10 @@ _PATTERNS: List[Tuple[str, "re.Pattern[str]", int]] = [
     # Bearer Token
     ("bearer", re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{16,}\b", re.IGNORECASE), 7),
     # 通用密钥赋值（api_key/password/secret/token = "..."）
-    # 值要求 ≥8 字符且不含 ,}（避免匹配 JSON 结构字符和短布尔/枚举值如 true/none）；
-    # 短于 8 字符的真实密钥极少见，放宽阈值会显著增加误报（password: 123456 等场景）
+    # 引号值完整匹配（含转义和空格）；无引号值保留长度门槛以避免匹配布尔/枚举。
     ("credential_assign", re.compile(
         r"(?i)\b(api[_-]?key|passwd|password|secret|access[_-]?token|auth[_-]?token|private[_-]?key)"
-        r"([\s]*[=:][\s]*[\"']?)([^\s\"'}{,]{8,})"
+        r"([\"']?\s*[=:]\s*)(\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^\s\"'}{,]{8,})"
     ), 0),
     # 私钥块
     ("private_key_block", re.compile(
@@ -71,11 +70,7 @@ def sanitize_text(text: str) -> str:
     result = text
     for name, pattern, keep_prefix in _PATTERNS:
         if name == "credential_assign":
-            # 保留 "key=" 部分，仅遮盖值
-            result = pattern.sub(
-                lambda m: f"{m.group(1)}{m.group(2)}{_MASK}",
-                result,
-            )
+            result = pattern.sub(_mask_assignment, result)
         elif name == "private_key_block":
             result = pattern.sub("[PRIVATE KEY REDACTED]", result)
         elif name == "url_credential":
@@ -84,6 +79,18 @@ def sanitize_text(text: str) -> str:
         else:
             result = pattern.sub(lambda m: _mask_value(m.group(0), keep_prefix), result)
     return result
+
+
+def _mask_assignment(match: re.Match[str]) -> str:
+    """遮盖赋值内容并保留引号与空值，使 JSON 结果仍可解析。"""
+    value = match[3]
+    if value[0] in {'"', "'"}:
+        if len(value) == 2:
+            return match[0]
+        replacement = value[0] + _MASK + value[-1]
+    else:
+        replacement = _MASK
+    return match[1] + match[2] + replacement
 
 
 def contains_sensitive(text: str) -> bool:

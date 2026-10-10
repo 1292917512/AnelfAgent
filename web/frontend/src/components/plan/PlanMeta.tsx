@@ -1,7 +1,7 @@
 /**
  * PlanMeta — 计划的 files / risks 展示区块。
  *
- * 被 PlanPanel（浮窗）与 PlanCard（消息卡）共享，消除逐字重复。
+ * 被 执行记录面板与 PlanCard（消息卡）共享，消除逐字重复。
  */
 import { useTranslation } from "react-i18next";
 import { AlertTriangle, FileText } from "lucide-react";

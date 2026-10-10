@@ -94,24 +94,19 @@ def _attach_tool_urls(entry: Dict[str, Any], base_url: str) -> None:
 
 
 async def _emit_share_created(entry: Dict[str, Any]) -> None:
-    """发射分享创建事件 → 聊天 SSE → 前端分享卡片（失败不影响主流程）。"""
+    """将分享卡片投递到创建它的 Web 会话，投递失败不撤销分享链接。"""
     try:
-        from core.event_bus import EVENT_SHARE_CREATED, event_bus
+        from entities._sdk import emit_chat_extension
 
-        await event_bus.emit(EVENT_SHARE_CREATED, {
-            "token": entry.get("token", ""),
-            "url": entry.get("url", ""),
-            "download_url": entry.get("download_url", ""),
-            "share_type": entry.get("share_type", "file"),
-            "media_kind": entry.get("media_kind", ""),
-            "target_url": entry.get("target_url", ""),
-            "file_name": entry.get("file_name", ""),
-            "file_size": entry.get("file_size", 0),
-            "description": entry.get("description", ""),
-        })
-    except Exception as e:
+        fields = ("token", "url", "download_url", "share_type", "media_kind",
+                  "target_url", "file_name", "file_size", "description")
+        await emit_chat_extension(
+            "share.link", {key: entry[key] for key in fields if key in entry},
+            f"{entry.get('file_name', '')} {entry.get('url', '')}".strip(),
+        )
+    except Exception as exc:
         from core.log import log
-        log(f"分享事件发射失败: {e}", "DEBUG", tag="分享")
+        log(f"分享卡片投递失败: {type(exc).__name__}: {exc}", "WARNING", tag="分享")
 
 
 @tool(name="create_share_link", group="share", description=_CREATE_PROMPT)

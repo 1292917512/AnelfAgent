@@ -23,6 +23,7 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from agent.mind.scope_usage import current_usage_scope
 from core.log import log
 from core.trace_session import thinking_session
 
@@ -326,6 +327,7 @@ class SubAgent:
                 # 与子代理执行（tracer 未启用时事件无订阅者，近零开销）
                 async with thinking_session({
                     "is_delegation": True,
+                    "scope": current_usage_scope(),
                     "goal": self.goal[:120],
                     "agent": self.agent_name,
                     "role": self.role,

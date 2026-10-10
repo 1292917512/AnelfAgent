@@ -2,7 +2,7 @@
 实体开发标准接口。
 
 所有实体模块统一使用本模块提供的装饰器进行声明与注册，
-注册目标为 ``core.entity.EntityRegistry``，不依赖 ``agent``。
+注册声明由 ``core.tool_registry`` 实现，运行时能力经本模块桥接到 agent。
 
 两种注册模式：
 
@@ -37,6 +37,7 @@ import inspect
 import json
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, TypeVar
 
+from core.context_provider import context_provider
 from core.entity import EntityRegistry
 from core.log import log
 from core.provider_keys import (  # 组件凭据中心桥
@@ -46,7 +47,8 @@ from core.provider_keys import (  # 组件凭据中心桥
     set_provider_key,
 )
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
-from core.tool_schema import extract_tool_params, get_first_line
+from core.tool_registry import activate_group, deferred_tool, entity, tool
+from core.tool_schema import coerce_bool_arg
 
 if TYPE_CHECKING:
     from agent.llm.llm_client import LLMClient as LLMClient
@@ -55,7 +57,7 @@ if TYPE_CHECKING:
 __all__ = [
     "tool", "deferred_tool", "entity", "activate_group",
     "entity_manifest", "entity_config", "context_provider",
-    "push_notify", "register_entity_llm_hook",
+    "push_notify", "register_entity_llm_hook", "emit_chat_extension",
     "get_embedder", "wake_embedding_worker", "register_embedding_backlog",
     "register_provider_key", "get_provider_key", "set_provider_key",
     "list_provider_keys",
@@ -87,7 +89,7 @@ __all__ = [
     "get_session_llm_params", "canonical_efforts", "valid_api_types",
     "activate_tool_group_now", "notify_tool_set_changed",
     "call_mcp_server_tool",
-    "tool_error", "error_from_exception", "ErrorCause",
+    "tool_error", "error_from_exception", "ErrorCause", "coerce_bool_arg",
 ]
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -101,175 +103,6 @@ async def call_mcp_server_tool(server_name: str, tool_name: str, arguments: Dict
     if bridge is None:
         return tool_error("MCP 桥尚未初始化", cause=ErrorCause.NOT_FOUND, retryable=True)
     return await bridge.call_server_tool(server_name, tool_name, arguments)
-
-
-def coerce_bool_arg(value: Any, default: bool) -> bool:
-    """将工具参数稳健转为 bool（兼容 LLM 误传字符串）。
-
-    entities 层统一的布尔容错解析实现（mcp/filesystem 等工具共用，
-    services/ 与 web/ 侧的对应副本由各自负责人收敛）。
-    """
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        text = value.strip().lower()
-        if text in {"1", "true", "yes", "on"}:
-            return True
-        if text in {"0", "false", "no", "off"}:
-            return False
-        return default
-    return bool(value)
-
-
-def tool(
-    name: Optional[str] = None,
-    description: Optional[str] = None,
-    group: str = "default",
-    tags: Optional[List[str]] = None,
-    cacheable: bool = False,
-    timeout: Optional[float] = None,
-    check_fn: Optional[Callable[[], Any]] = None,
-    allow_sleep: bool = False,
-    sleep_brief: str = "",
-    concurrency_safe: bool = False,
-    risk: str = "",
-) -> Callable[[F], F]:
-    """装饰器：将函数注册为 LLM 可调用工具（注册到 EntityRegistry）。
-
-    参数的名称、类型、是否必填从函数签名自动推导。
-
-    Args:
-        timeout: 工具执行超时时间（秒），默认使用全局默认（60秒）
-        check_fn: 工具门控前置检查（返回 bool 或 Awaitable[bool]），
-            检查不通过时工具不出现在 LLM schema 中
-        allow_sleep: 是否允许沉睡（沉睡时仅展示 sleep_brief）
-        sleep_brief: 沉睡状态下展示给 AI 的简短描述
-        concurrency_safe: 是否可与其他安全工具并行执行（只读工具才应开启，
-            默认 False — fail-closed 语义）。这是对整条执行链的断言：
-            框架层（事件/审批/ContextVar 隔离）已保证并发安全，
-            标注者只需确保工具体自身只读无共享写状态
-        risk: 风险等级标记（如 CRITICAL），无显式权限规则覆盖时由审批
-            元数据层兜底升级为 ask（见 agent.approval.rules.tool_meta_risk_rule）
-    """
-    def decorator(func: F) -> F:
-        tool_name = name or func.__name__
-        tool_desc = description or get_first_line(func.__doc__) or tool_name
-        params = extract_tool_params(func)
-
-        meta: Dict[str, Any] = {}
-        if timeout is not None:
-            meta["timeout"] = timeout
-        if concurrency_safe:
-            meta["concurrency_safe"] = True
-        if risk:
-            meta["risk"] = risk
-
-        EntityRegistry.register_tool(
-            name=tool_name,
-            func=func,
-            description=tool_desc,
-            group=group,
-            params=params,
-            tags=tags or [],
-            source="internal",
-            meta=meta,
-            check_fn=check_fn,
-            allow_sleep=allow_sleep,
-            sleep_brief=sleep_brief,
-        )
-        return func
-
-    return decorator
-
-
-def entity(group: str, description: str) -> None:
-    """声明实体分组及其描述（立即注册），AI 将自动发现该实体。"""
-    EntityRegistry.register_group(group, description)
-
-
-# ------------------------------------------------------------------
-# 延迟注册（适合需要运行时依赖注入的 core 层工具）
-# ------------------------------------------------------------------
-
-_deferred_registry: dict[str, list[dict]] = {}
-
-
-def deferred_tool(
-    name: Optional[str] = None,
-    description: Optional[str] = None,
-    group: str = "default",
-    tags: Optional[List[str]] = None,
-    source: str = "internal",
-    timeout: Optional[float] = None,
-    check_fn: Optional[Callable[[], Any]] = None,
-    allow_sleep: bool = False,
-    sleep_brief: str = "",
-    concurrency_safe: bool = False,
-    risk: str = "",
-    schema_extra: Optional[Dict[str, Dict[str, Any]]] = None,
-) -> Callable[[F], F]:
-    """延迟注册装饰器：装饰时仅收集元数据，activate_group() 时批量注册。
-
-    用于需要运行时依赖注入的工具（如 MemoryStore、Embedder 等）。
-    参数名称、类型、描述从函数签名和 docstring 自动推导。
-
-    Args:
-        timeout: 工具执行超时时间（秒），默认使用全局默认（60秒）
-        check_fn: 工具门控前置检查（返回 bool 或 Awaitable[bool]）
-        allow_sleep: 是否允许沉睡（沉睡时仅展示 sleep_brief）
-        sleep_brief: 沉睡状态下展示给 AI 的简短描述
-        concurrency_safe: 是否可与其他安全工具并行执行（只读工具才应开启；
-            框架层已保证并发安全，标注者只需确保工具体自身只读无共享写状态）
-        risk: 风险等级标记（如 CRITICAL），无显式权限规则覆盖时由审批
-            元数据层兜底升级为 ask（见 agent.approval.rules.tool_meta_risk_rule）
-        schema_extra: 参数级额外 JSON Schema 字段（{参数名: {...}}，如
-            items/minItems），签名推导只到顶层类型，复杂数组/对象参数
-            的完整 wire schema 经此声明
-    """
-    def decorator(func: F) -> F:
-        tool_name = name or func.__name__
-        tool_desc = description or get_first_line(func.__doc__) or tool_name
-        params = extract_tool_params(func)
-        if schema_extra:
-            for p in params:
-                extra = schema_extra.get(p.name)
-                if extra:
-                    p.schema_extra = {**(p.schema_extra or {}), **extra}
-
-        meta: Dict[str, Any] = {}
-        if timeout is not None:
-            meta["timeout"] = timeout
-        if concurrency_safe:
-            meta["concurrency_safe"] = True
-        if risk:
-            meta["risk"] = risk
-
-        _deferred_registry.setdefault(group, []).append({
-            "name": tool_name, "func": func, "description": tool_desc,
-            "group": group, "params": params, "tags": tags or [],
-            "source": source, "meta": meta,
-            "check_fn": check_fn, "allow_sleep": allow_sleep,
-            "sleep_brief": sleep_brief,
-        })
-        return func
-    return decorator
-
-
-def activate_group(group: str, description: str = "") -> int:
-    """将延迟注册的工具批量注册到 EntityRegistry，返回注册数量。
-
-    通常在 register_xxx_tools() 中注入依赖后调用。
-    """
-    entries = _deferred_registry.pop(group, [])
-    if not entries:
-        return 0
-    if description:
-        EntityRegistry.register_group(group, description)
-    for e in entries:
-        EntityRegistry.register_tool(**e)
-    return len(entries)
 
 
 # ------------------------------------------------------------------
@@ -305,6 +138,25 @@ def get_current_scope() -> str:
         return ToolActivationManager.current_scope()
     except Exception:
         return "_global"
+
+
+async def emit_chat_extension(content_type: str, payload: Dict[str, Any], fallback: str) -> bool:
+    """向当前 Web 会话发送模块内容；非 Web 会话和无归属任务不投递。"""
+    import re
+
+    from agent.messages.everything import parse_entity_scope
+    from core.event_bus import EVENT_CHAT_BROADCAST, event_bus
+
+    if not re.fullmatch(r"[a-z][a-z0-9.-]*", content_type):
+        raise ValueError("扩展消息类型必须为小写模块限定名")
+    scope_type, adapter, _, session_id = parse_entity_scope(get_current_scope())
+    if scope_type != "user" or adapter != "webui":
+        return False
+    await event_bus.emit(EVENT_CHAT_BROADCAST, {
+        "event": "extension", "chat_id": session_id or "default",
+        "extension": {"type": content_type, "payload": payload, "fallback": fallback},
+    })
+    return True
 
 
 def get_mcp_control_metadata(server: str, tool_name: str) -> Dict[str, Any] | None:
@@ -978,26 +830,9 @@ async def execute_send_action(
 
 
 def save_config_value(key: str, value: Any) -> None:
-    """统一配置写入：MindConfig 字段路由 save_mind_config（双轨同步 + 实时生效），
-    其余走 ConfigManager.set_persisted（落盘成功后通知消费方热更）。
-
-    Web 的 PUT /config/meta 与本函数是同一写纪律的两个入口，AI 配置工具应走这里。
-    """
-    from core.config import ConfigManager
-
-    environment = ConfigManager.environment_override(key)
-    if environment is not None:
-        raise ValueError(f"配置由环境变量 {environment} 管理，请修改环境变量")
-    try:
-        from agent.config import MIND_CONFIG_FIELDS
-        mind_fields = frozenset(MIND_CONFIG_FIELDS)
-    except Exception:
-        mind_fields = frozenset()
-    if key in mind_fields:
-        from agent.config import get_config_provider
-        get_config_provider().save_mind_config(**{key: value})
-        return
-    ConfigManager.set_persisted({key: value})
+    """经统一配置入口写入并通知运行时消费方。"""
+    from agent.config import save_config_value as save
+    save(key, value)
 
 
 def set_default_model(model_id: str) -> bool:
@@ -1054,111 +889,6 @@ def get_provider_registry() -> Any:
     return ContextProviderRegistry
 
 
-def context_provider(
-    name: Optional[str] = None,
-    priority: int = 50,
-    max_tokens: int = 500,
-    scope: Optional[str] = None,
-    group: Optional[str] = None,
-    inject_key: Optional[str] = None,
-) -> Callable:
-    """装饰器：将类或函数注册为上下文提供者。
-
-    PFC 每轮构建 volatile 层时拉取所有 provider 的最新快照，
-    实体自行管理更新节奏（RunTimeline），PFC 只做被动拉取。
-
-    类模式（有生命周期）::
-
-        @context_provider(name="health", priority=10, max_tokens=200, group="system")
-        class HealthWatcher:
-            async def on_start(self):
-                self._task = asyncio.create_task(self._collect_loop())
-
-            async def provide(self, scope: str) -> Optional[ProviderSnapshot]:
-                return self._snapshot  # 零 I/O，只读快照
-
-            async def on_tick(self):       # 可选：心跳 tick 时触发
-                ...
-
-            async def on_stop(self):       # 可选：shutdown 时触发
-                self._task.cancel()
-
-    函数模式（无状态）::
-
-        @context_provider(name="weather", priority=20)
-        async def weather(scope: str) -> Optional[str]:
-            return f"[天气] {await fetch_weather()}"
-
-    Args:
-        name: 提供者唯一标识（默认取类名/函数名）。
-        priority: 注入优先级（越小越靠前，预算超限时大值先被截断）。语义为变动率
-            排序：快照越静态越小（靠前），含时间/秒计数等逐轮变化内容的实时
-            快照越大（靠尾部动态区末尾）。段位：10-19 状态级 / 20-29 摘要级 /
-            30-39 会话操作态势 / 40+ 实时快照（详见 core.context_provider.ProviderMeta）。
-        max_tokens: 静态预估上限（Web 展示 + 预算告警参考）。
-        scope: 作用域过滤。None=全局；"webui:*"=前缀匹配；"webui:u123"=精确匹配。
-        group: 所属工具分组（如 "ssh"）。声明后随实体启停联动：分组内全部
-            工具被禁用时停止采集与注入，重新启用自动恢复；None 表示全局常驻。
-            属于某个实体分组的 provider 应始终声明，否则关闭实体无法停止其注入。
-        inject_key: 注入开关配置键（约定 ``<group>_context_inject``）。会产出
-            注入内容的 provider 必须声明——配置为 False 时框架停止采集与注入
-            （在 _is_active 层拦截，provide 内无需再手工检查）。声明后若该键
-            尚未注册，装饰器自动以默认值 True 兜底注册进 ``entity/<group>``
-            配置组（实体自行 register_configs 声明的更丰富定义优先，不被覆盖）；
-            频道等不走 entity 配置组的 provider 直接传 ProviderMeta.inject_key。
-    """
-    from core.context_provider import ContextProviderRegistry, ProviderMeta
-
-    def decorator(cls_or_func: Any) -> Any:
-        provider_name = name or getattr(cls_or_func, "__name__", str(cls_or_func))
-        provider_desc = getattr(cls_or_func, "__doc__", "") or ""
-
-        if inject_key and group:
-            # 注入开关兜底注册（实体未自行声明时），配置中心/实体配置 tab 自动出现
-            from core.config import ConfigRegistry, register_configs_safe
-            if ConfigRegistry.get_item(inject_key) is None:
-                register_configs_safe({
-                    f"entity/{group}": {
-                        inject_key: {
-                            "description": f"是否向 AI 上下文注入{provider_desc.strip().rstrip('。') or provider_name}",
-                            "default": True,
-                        },
-                    },
-                })
-
-        if isinstance(cls_or_func, type):
-            # 类模式：实例化后注册
-            instance = cls_or_func()
-            meta = ProviderMeta(
-                name=str(provider_name),
-                priority=priority,
-                max_tokens=max_tokens,
-                scope_filter=scope,
-                group=group,
-                inject_key=inject_key,
-                instance=instance,
-                description=provider_desc,
-            )
-            ContextProviderRegistry.register(meta)
-            return cls_or_func
-        else:
-            # 函数模式
-            meta = ProviderMeta(
-                name=str(provider_name),
-                priority=priority,
-                max_tokens=max_tokens,
-                scope_filter=scope,
-                group=group,
-                inject_key=inject_key,
-                provide_fn=cls_or_func,
-                description=provider_desc,
-            )
-            ContextProviderRegistry.register(meta)
-            return cls_or_func
-
-    return decorator
-
-
 # ------------------------------------------------------------------
 # 实体清单与配置（实体 APP 化）
 # ------------------------------------------------------------------
@@ -1202,7 +932,6 @@ def entity_manifest(
             但 _groups 仅收录已有工具的分组，推导结果不可靠（manifest 串组覆盖），
             因此缺省时拒绝注册并告警。
     """
-    from core.entity import EntityRegistry
     from core.log import log
     if group is None:
         log("entity_manifest 缺少 group 参数，已跳过注册（manifest 推导机制已移除）", "WARNING")

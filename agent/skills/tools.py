@@ -20,7 +20,7 @@ from core.entity import EntityRegistry
 from core.latebind import LateBinding
 from core.log import log
 from core.tool_errors import ErrorCause, tool_error
-from entities._sdk import deferred_tool
+from core.tool_registry import deferred_tool
 
 EntityRegistry.register_group_order("skills", 21)
 

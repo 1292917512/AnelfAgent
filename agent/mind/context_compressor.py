@@ -26,8 +26,8 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 
 from agent.mind.message_schema import is_genuine_user_message
-from agent.mind.tools.result_parse import extract_error_text
 from core.log import log
+from core.tool_results import extract_error_text
 
 _CHARS_PER_TOKEN = 4
 _TOKENS_PER_MESSAGE = 4  # 每条消息的结构开销（参考 Mini-Agent / OpenAI 计数惯例）
@@ -1220,7 +1220,7 @@ class ContextCompressor:
 # ------------------------------------------------------------------
 
 from core.latebind import LateBinding  # noqa: E402
-from entities._sdk import deferred_tool  # noqa: E402
+from core.tool_registry import deferred_tool  # noqa: E402
 
 #: 压缩器端口（compress_context 工具 import 时注册、拿不到 Mind 构造参数，
 #: 由 agent.runtime.wiring 统一施绑）

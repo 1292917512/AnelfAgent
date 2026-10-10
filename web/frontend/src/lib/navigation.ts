@@ -1,11 +1,12 @@
 import { matchPath } from "react-router-dom";
 import { Radio, type LucideIcon } from "lucide-react";
 import { CORE_ROUTES, type NavigationGroup } from "./core-routes";
-import { listPluginRoutes } from "./channel-plugins";
+import { getUiContributions } from "./ui-contribution-registry";
 
 export interface NavItem {
   path: string;
   label: string;
+  description?: string;
   icon: LucideIcon;
   group: NavigationGroup;
   mobile?: boolean;
@@ -14,11 +15,12 @@ export const NAVIGATION_GROUPS: NavigationGroup[] = ["workspace", "agent", "capa
 
 export function getNavigation(): NavItem[] {
   const core = CORE_ROUTES.filter((route) => route.navigation !== false);
-  const paths = new Set(core.map((route) => route.path));
-  const plugins: NavItem[] = listPluginRoutes()
-    .filter((route) => !paths.has(`/${route.path}`))
-    .map((route) => ({ path: `/${route.path}`, label: route.path, icon: Radio, group: "capabilities" }));
-  return [...core, ...plugins];
+  const extensions: NavItem[] = getUiContributions("app.routes").map((entry) => ({
+    path: entry.path, label: `${entry.title.ns}:${entry.title.key}`,
+    description: entry.description ? `${entry.description.ns}:${entry.description.key}` : undefined,
+    icon: entry.icon ?? Radio, group: entry.group,
+  }));
+  return [...core, ...extensions];
 }
 
 export function findRoute(pathname: string) {

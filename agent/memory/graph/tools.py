@@ -18,7 +18,7 @@ from typing import Any, Dict, Optional, Tuple
 from core.entity import EntityRegistry
 from core.latebind import LateBinding
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
-from entities._sdk import deferred_tool
+from core.tool_registry import deferred_tool
 
 from ..memory_store import MemoryStore
 from .store import NODE_TYPES, format_triple, parse_node_key

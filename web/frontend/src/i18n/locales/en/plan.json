@@ -61,7 +61,8 @@
       "statusFailed": "Failed",
       "statusCancelled": "Cancelled",
       "statusLost": "Interrupted"
-    }
+    },
+    "queued": "Waiting for capacity"
   },
   "activity": {
     "title": "Activity",

@@ -19,6 +19,8 @@ import json
 from enum import Enum
 from typing import Any, Dict, Optional
 
+from core.sanitizer import sanitize_text
+
 _MAX_DETAIL_LEN = 300
 
 
@@ -70,7 +72,7 @@ def tool_error(message: str, *, cause: Optional[ErrorCause] = None,
 
 def _exc_detail(exc: BaseException) -> str:
     """提取异常细节文本并截断，防止超长输出与内部信息泄露。"""
-    detail = str(exc).strip() or type(exc).__name__
+    detail = sanitize_text(str(exc).strip()) or type(exc).__name__
     if len(detail) > _MAX_DETAIL_LEN:
         detail = detail[:_MAX_DETAIL_LEN] + "…"
     return detail

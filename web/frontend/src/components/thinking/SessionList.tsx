@@ -31,10 +31,10 @@ export function SessionList({ sessions, activeId, onSelect }: Props) {
             aria-current={isActive ? "true" : undefined}
             onClick={() => onSelect(s.id)}
             className={cn(
-              "w-full text-left px-3 py-2 rounded-md transition-all duration-150",
+              "w-full text-left px-3 py-2 rounded-md transition-colors",
               "border text-xs",
               isActive
-                ? "bg-accent-subtle border-accent text-heading"
+                ? "bg-accent-subtle border-accent/25 text-heading"
                 : "border-transparent text-muted hover:text-foreground hover:bg-hover",
             )}
           >

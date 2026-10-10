@@ -157,8 +157,8 @@ export function StickersPanel() {
   return (
     <>
       {/* 统计 + 上传 */}
-      <div className="flex items-start justify-between gap-4">
-        <div className="space-y-1.5 min-w-0">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0 space-y-2">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs px-2 py-0.5 rounded-full bg-secondary text-muted border border-border">
               {t("statsStickers", { count: stats?.stickers ?? 0 })}
@@ -197,9 +197,9 @@ export function StickersPanel() {
               </span>
             )}
           </div>
-          <p className="text-xs text-muted max-w-xl">{t("subtitle")}</p>
+          <p className="max-w-xl text-xs leading-relaxed text-muted">{t("subtitle")}</p>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center lg:shrink-0">
           <Button
             variant={mismatched > 0 ? "primary" : "secondary"}
             size="sm"

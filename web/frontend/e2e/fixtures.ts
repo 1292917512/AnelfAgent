@@ -40,6 +40,10 @@ export async function mockApi(page: Page) {
       "/chat/chats": { chats: [] },
       "/chat/folds": { folds: [] },
       "/chat/delegations": { running: [] },
+      "/delegations/overview": { running: [] },
+      "/delegations/history": { items: [] },
+      "/thinking/status": { enabled: false },
+      "/thinking/sessions": { sessions: [], count: 0 },
       "/workspace/tree": { path: "", children: [{ name: "note.txt", path: "note.txt", type: "file", size: 8, modified: 0 }], truncated: false },
     };
     if (path === "/chat/stream") { await route.fulfill({ contentType: "text/event-stream", body: ": connected\n\n" }); return; }
@@ -65,3 +69,16 @@ export const test = base.extend({
   page: async ({ page }, use) => { await mockApi(page); await use(page); },
 });
 export { expect } from "@playwright/test";
+
+
+export async function openWebChat(page: Page) {
+  await page.getByRole("button", { name: "Web chat", exact: true }).waitFor();
+  if (!await page.getByRole("textbox", { name: "Message", exact: true }).isVisible()) {
+    await page.getByRole("button", { name: "Web chat", exact: true }).click();
+  }
+}
+
+export async function closeWebChatOverlay(page: Page) {
+  const dialog = page.getByRole("dialog", { name: "Web chat", exact: true });
+  if (await dialog.isVisible()) await dialog.getByRole("button", { name: "Close", exact: true }).click();
+}

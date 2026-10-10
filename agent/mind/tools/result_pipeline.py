@@ -7,10 +7,8 @@
 4. 整轮预算：本轮结果总量超限后进一步收紧
 5. 失败回执与指引：保留关键错误并追加安全/守卫提示
 
-从 think_loop 抽离，使循环编排与结果加工职责分离。
-
-Model Experience：预算裁剪保留 error/cause/hint/retryable，守卫提醒在裁剪后追加。
-失败回执上限 2000 字符，避免静默丢错引起重复调用；仅影响工具链尾部，不改稳定前缀。
+预算裁剪保留失败原因、操作指引与调用标识，守卫提醒在裁剪后追加。
+失败摘要独立限长，仅影响工具链尾部，不改变稳定前缀。
 """
 from __future__ import annotations
 
@@ -25,6 +23,8 @@ from agent.mind.result_budget import (
 )
 from core.latebind import LateBinding
 from core.log import log
+from core.tags import tag_label
+from core.tool_results import extract_error_text
 
 if TYPE_CHECKING:
     from agent.mind.guardrails import GuardrailController
@@ -229,7 +229,7 @@ class ToolResultPipeline:
 
         return (
             "[系统提示] 工具返回内容过长，已自动截断以避免上下文溢出。\n"
-            f"[tool={tool_name}] 原始长度={len(output)} 字符（{output.count(chr(10)) + 1} 行），"
+            f"{tag_label('tool', tool_name)}{tag_label('truncated', 'true')} 原始长度={len(output)} 字符（{output.count(chr(10)) + 1} 行），"
             f"保留长度={kept_len} 字符（头 {head.count(chr(10)) + 1} 行 + 尾 {tail.count(chr(10)) + 1} 行）。\n"
             "----- head -----\n"
             f"{head}\n"
@@ -249,7 +249,7 @@ class ToolResultPipeline:
         if remaining <= 0:
             return (
                 f"[系统提示] 本轮工具结果总量已超预算，该结果被省略。"
-                f"[tool={tool_name}] 原始长度={original_len} 字符。"
+                f"{tag_label('tool', tool_name)}{tag_label('truncated', 'true')} 原始长度={original_len} 字符。"
             )
         if len(output) > remaining:
             saved_budget = self._budget
@@ -286,13 +286,16 @@ def _error_summary(output: str) -> Optional[str]:
         payload = json.loads(output)
     except (json.JSONDecodeError, TypeError):
         return None
-    if not isinstance(payload, dict) or not payload.get("error"):
+    if not isinstance(payload, dict) or not (error := extract_error_text(payload)):
         return None
-    summary = {key: value[:500] if isinstance(value, str) else value
-               for key in ("error", "cause", "hint", "retryable")
+    summary: Dict[str, Any] = {key: value[:500] if isinstance(value, str) else value
+               for key in ("error", "cause", "hint", "retryable", "code", "diagnostic", "outcome", "background_may_continue")
                if isinstance(value := payload.get(key), (str, bool))}
     if "error" not in summary:
-        summary["error"] = str(payload["error"])[:500]
+        summary["error"] = error[:500]
+    if isinstance(payload.get("diagnostic"), dict):
+        summary["diagnostic"] = {key: str(value)[:200] for key, value in payload["diagnostic"].items()
+                                 if key in {"tool", "call_id", "request_id", "scope", "message_id"}}
     summary["_truncated"] = True
     return json.dumps(summary, ensure_ascii=False)
 
@@ -373,7 +376,7 @@ def _truncate_json_output(tool_name: str, output: str, limit: int) -> Optional[s
         "_json_compacted": True,
     }
     if isinstance(parsed, dict):
-        for k in ("error", "cause", "hint", "retryable", "success", "status", "total", "completed", "failed", "group_id", "_end_reply"):
+        for k in ("error", "cause", "hint", "retryable", "code", "diagnostic", "outcome", "background_may_continue", "success", "status", "total", "completed", "failed", "group_id", "_end_reply"):
             if k in parsed:
                 summary[k] = parsed[k][:500] if isinstance(parsed[k], str) else _trim_json_value(parsed[k])
         summary["keys"] = list(parsed.keys())[:20]

@@ -21,7 +21,7 @@ from pydantic import BaseModel
 # 解析工具
 # ======================================================================
 
-_tag_content_pattern = re.compile(r"^\[([^\]:]+):((?:\\.|[^\[\]\\\r\n])*)\]$")
+_tag_content_pattern = re.compile(r"^\[(\w+):((?:\\.|[^\[\]\\\r\n])*)\]$")
 _tag_extract_all_pattern = re.compile(r"\[((?:[^\\\]\[]|\\\]|\\\[|\\.)*)\]")
 _tag_pattern = re.compile(r"\[(\w+):((?:\\.|[^\[\]\\\r\n])*)\]")
 _tag_escapes = {"\\": "\\", "[": "[", "]": "]", "u000a": "\n", "u000d": "\r", "u0009": "\t"}
@@ -33,6 +33,8 @@ def _decode_tag_value(value: str) -> str:
 
 def tag_label(key: str, value: str) -> str:
     """编码单行标签，转义值中的反斜杠、括号与控制字符。"""
+    if not re.fullmatch(r"\w+", key):
+        raise ValueError(f"非法标签名: {key!r}")
     encoded = value.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
     encoded = encoded.replace("\n", "\\u000a").replace("\r", "\\u000d").replace("\t", "\\u0009")
     return f"[{key}:{encoded}]"
@@ -57,11 +59,8 @@ def etag_all(text: str) -> List[Tuple[str, str]]:
     """提取所有 tag（支持转义字符），跳过非 key:value 格式的方括号。"""
     seen: set[Tuple[str, str]] = set()
     result: List[Tuple[str, str]] = []
-    for tag in extract_tag_brackets(text):
-        try:
-            tag_tuple = etag(tag)
-        except ValueError:
-            continue
+    for match in _tag_pattern.finditer(text):
+        tag_tuple = (match[1], _decode_tag_value(match[2]))
         if tag_tuple not in seen:
             seen.add(tag_tuple)
             result.append(tag_tuple)

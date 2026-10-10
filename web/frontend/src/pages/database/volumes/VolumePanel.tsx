@@ -1,9 +1,9 @@
 import { useTranslation } from "react-i18next";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { volumeApi } from "@/lib/api";
-import { devopsApi } from "@entities/devops/panels/api";
-import { LoadingBlock, toast } from "@/components/ui";
-import { AlertTriangle, Layers, RotateCw } from "lucide-react";
+import { InlineContributions } from "@/components/extensions/ContributionSlot";
+import { LoadingBlock } from "@/components/ui";
+import { AlertTriangle, Layers } from "lucide-react";
 import { VolumeCard } from "./VolumeCard";
 
 /** 存储卷：所有持久化数据的模块化管理（备份 / 恢复 / 迁移 / 外部 SQL） */
@@ -15,12 +15,6 @@ export function VolumePanel() {
     queryKey: ["dbVolumes"],
     queryFn: () => volumeApi.list().then((r) => r.data),
     refetchInterval: 30000,
-  });
-
-  const restartMut = useMutation({
-    mutationFn: () => devopsApi.restart(),
-    onSuccess: () => toast.success(t("volumes.restarting")),
-    onError: () => toast.error(t("volumes.restartFailed")),
   });
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ["dbVolumes"] });
@@ -43,14 +37,7 @@ export function VolumePanel() {
             <AlertTriangle size={14} className="mt-0.5 shrink-0" />
             {t("volumes.pendingBanner", { volumes: pending })}
           </span>
-          <button
-            type="button"
-            className="flex shrink-0 items-center gap-1 rounded border border-warning/50 px-2 py-1 hover:bg-warning/20"
-            onClick={() => restartMut.mutate()}
-            disabled={restartMut.isPending}
-          >
-            <RotateCw size={12} /> {t("volumes.restartNow")}
-          </button>
+          <InlineContributions slot="system.restart" componentProps={{}} />
         </div>
       )}
 

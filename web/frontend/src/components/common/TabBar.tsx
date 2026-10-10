@@ -19,7 +19,13 @@ interface TabBarProps<T extends string> {
 export function TabBar<T extends string>({ tabs, activeTab, onChange, fill = false, iconOnly = false }: TabBarProps<T>) {
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    root.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    const container = root.current;
+    const tab = container?.querySelector<HTMLElement>('[aria-selected="true"]');
+    if (!container || !tab) return;
+    const bounds = container.getBoundingClientRect();
+    const selected = tab.getBoundingClientRect();
+    if (selected.left < bounds.left) container.scrollLeft += selected.left - bounds.left;
+    else if (selected.right > bounds.right) container.scrollLeft += selected.right - bounds.right;
   }, [activeTab]);
   const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
     let next: number;
@@ -34,7 +40,7 @@ export function TabBar<T extends string>({ tabs, activeTab, onChange, fill = fal
     const item = tabs[next];
     if (!item) return;
     onChange(item.key);
-    root.current?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+    root.current?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus({ preventScroll: true });
   };
   return (
     <div ref={root} role="tablist" className={cn("flex min-h-11 shrink-0 items-center gap-1 overflow-x-auto rounded-xl border border-border bg-card p-1 no-scrollbar", fill && "w-full")}>

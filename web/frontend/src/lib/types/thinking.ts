@@ -24,6 +24,7 @@ export interface SessionSummary {
   is_introspection?: boolean;
   /** 子代理委托会话（SubAgent 独立思维链路，与主 AI 会话区分） */
   is_delegation?: boolean;
+  delegation_id?: string;
   node_count: number;
   ended: boolean;
   duration_ms: number | null;

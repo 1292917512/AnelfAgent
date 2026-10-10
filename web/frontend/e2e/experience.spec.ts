@@ -1,4 +1,4 @@
-import { test, expect } from "./fixtures";
+import { test, expect, openWebChat } from "./fixtures";
 
 test("history outages remain retryable without presenting a false empty conversation", async ({ page }) => {
   let reads = 0;
@@ -8,6 +8,7 @@ test("history outages remain retryable without presenting a false empty conversa
       : route.fulfill({ json: [{ id: 1, role: "assistant", content: "Recovered history", ts: 1 }] });
   });
   await page.goto("/webui/");
+  await openWebChat(page);
   await expect(page.getByRole("alert")).toContainText("History temporarily unavailable");
   await page.getByRole("alert").getByRole("button", { name: "Retry", exact: true }).click();
   await expect(page.getByText("Recovered history", { exact: true })).toBeVisible();
@@ -23,6 +24,7 @@ test("late initial history never replaces a newly submitted message", async ({ p
   });
   await page.route("**/api/chat/send", (route) => route.fulfill({ json: { ok: true } }));
   await page.goto("/webui/");
+  await openWebChat(page);
   await page.getByRole("textbox", { name: "Message", exact: true }).fill("New message during loading");
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await expect(page.getByText("Submitted", { exact: true })).toBeVisible();
@@ -121,6 +123,7 @@ test("message context can be inspected and excluded without hiding the submitted
   await page.getByRole("treeitem").filter({ hasText: "note.txt" }).click();
   await expect(page.locator(".cm-content")).toHaveText("workspace content");
   await page.getByRole("button", { name: "Collapse panel (tabs kept)", exact: true }).click();
+  await openWebChat(page);
   const context = page.getByRole("checkbox", { name: "Include workspace context", exact: true });
   await expect(context).toBeChecked();
   await context.uncheck();

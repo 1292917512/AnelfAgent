@@ -47,32 +47,35 @@ function logTime(e: LogEntry): number {
 export function AttentionPanel() {
   const { t } = useTranslation(["dashboard", "common"]);
 
-  const { data: status } = useQuery({
+  const { data: status, isPending: statusPending } = useQuery({
     queryKey: ["status"],
     queryFn: () => statusApi.get().then((r) => r.data),
     refetchInterval: 3000,
   });
-  const { data: errorLogs } = useQuery({
+  const { data: errorLogs, isPending: errorLogsPending } = useQuery({
     queryKey: ["logs", "ERROR"],
     queryFn: () => statusApi.logs("ERROR", undefined, undefined, 5).then((r) => r.data),
     refetchInterval: 10000,
   });
-  const { data: warnLogs } = useQuery({
+  const { data: warnLogs, isPending: warnLogsPending } = useQuery({
     queryKey: ["logs", "WARNING"],
     queryFn: () => statusApi.logs("WARNING", undefined, undefined, 5).then((r) => r.data),
     refetchInterval: 10000,
   });
-  const { data: mcpServers } = useQuery({
+  const { data: mcpServers, isPending: mcpServersPending } = useQuery({
     queryKey: ["mcp"],
     queryFn: () => mcpApi.list().then((r) => r.data),
     refetchInterval: 5000,
   });
-  const { data: adapters } = useQuery({
+  const { data: adapters, isPending: adaptersPending } = useQuery({
     queryKey: ["adapters"],
     queryFn: () => adaptersApi.list().then((r) => r.data),
     refetchInterval: 10000,
   });
 
+  if (statusPending || errorLogsPending || warnLogsPending || mcpServersPending || adaptersPending) {
+    return <Card title={t("attention.title")}><p role="status" className="text-sm text-muted">{t("common:loading")}</p></Card>;
+  }
   const items: AttentionItem[] = [];
 
   // Agent 未就绪
@@ -159,7 +162,7 @@ export function AttentionPanel() {
               <>
                 <item.icon size={16} className={cn("shrink-0 mt-0.5", SEVERITY_ICON[item.severity])} />
                 <div className="flex-1 min-w-0">
-                  <div className="text-sm text-foreground truncate">{item.title}</div>
+                  <div className="text-sm text-foreground line-clamp-2 break-words">{item.title}</div>
                   {item.desc && <div className="text-xs text-muted truncate mt-0.5">{item.desc}</div>}
                 </div>
                 {item.to && <ChevronRight size={14} className="shrink-0 text-muted mt-1" />}

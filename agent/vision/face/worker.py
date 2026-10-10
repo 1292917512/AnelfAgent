@@ -78,8 +78,9 @@ class FaceIngestWorker:
     async def _localize(self, path_or_url: str) -> str:
         """URL 下载到 uploads；本地路径原样返回。失败返回空串。"""
         if path_or_url.startswith(("http://", "https://")):
-            from entities._sdk import download_media_to_uploads
-            return await download_media_to_uploads(path_or_url, "image")
+            from agent.channel.media import download_to_uploads
+            from agent.channel.schemas import SegmentType
+            return await download_to_uploads(path_or_url, SegmentType.IMAGE)
         return path_or_url if os.path.exists(path_or_url) else ""
 
     async def _ingest_one(self, path_or_url: str, source: str, scope: str) -> None:

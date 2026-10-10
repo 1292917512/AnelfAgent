@@ -18,7 +18,7 @@ from agent.judgment.types import JsonValue, JudgmentError, parse_questions
 from core.config import get_config_bool, get_config_int
 from core.log import log
 from core.tool_errors import ErrorCause, tool_error
-from entities._sdk import deferred_tool
+from core.tool_registry import deferred_tool
 
 #: 注入时单条消息的字符上限（长消息截断，防单条撑满护栏）
 _MESSAGE_CHAR_CAP = 500

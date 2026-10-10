@@ -43,6 +43,7 @@ class TestDelegationSession:
         assert session.nodes[0].label.startswith("子代理 @leaf")
         assert session.nodes[-1].label.startswith("子代理结束")
         assert session.to_summary()["is_delegation"] is True
+        assert session.to_summary()["delegation_id"] == "d1"
 
     async def test_reply_session_unaffected(self, tracer: Tracer) -> None:
         """主 AI 会话：不带 is_delegation 标记（默认 False，标签不变）。"""

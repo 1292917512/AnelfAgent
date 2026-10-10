@@ -61,7 +61,8 @@
       "statusFailed": "失败",
       "statusCancelled": "已取消",
       "statusLost": "中断"
-    }
+    },
+    "queued": "等待并发名额"
   },
   "activity": {
     "title": "执行活动",

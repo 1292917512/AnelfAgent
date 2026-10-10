@@ -289,9 +289,6 @@ EVENT_MULTI_TOOL_COMPLETE = "multi_tool_complete"
 # 界面交互命令（entities/ui 工具 → 前端工作台）
 EVENT_UI_COMMAND = "ui_command"
 
-# 分享链接创建（entities/share → 聊天 SSE → 前端分享卡片）
-EVENT_SHARE_CREATED = "share_created"
-
 # 语音段成段（agent/voice → 钩子面/未来 Realtime 管线；payload 见 voice.session._deliver）
 EVENT_VOICE_UTTERANCE = "voice_utterance"
 
@@ -299,7 +296,7 @@ EVENT_VOICE_UTTERANCE = "voice_utterance"
 # Plan 模式（present_plan / update_goal 工具 → 前端 plan 浮窗与卡片）
 # ------------------------------------------------------------------
 # 计划提交：Agent 调 present_plan 工具时立即发射（不走 ApprovalGate），
-# 前端收到后插入 PlanCard + 弹出 PlanPanel 浮窗
+# 前端收到后更新执行记录中的计划卡片
 EVENT_PLAN_SUBMITTED = "plan_submitted"
 # 计划步骤状态变化：update_goal 工具调用成功后发射（pending/in_progress/completed/skipped）
 EVENT_PLAN_STEP_UPDATED = "plan_step_updated"

@@ -5,6 +5,7 @@ import { PageContainer, PageIntro } from "@/components/common/PageContainer";
 import { Activity, ScrollText } from "lucide-react";
 import { OverviewPanel } from "@/pages/dashboard/OverviewPanel";
 import { LogsPanel } from "@/pages/dashboard/LogsPanel";
+import { ContributionTools } from "@/components/extensions/ContributionTools";
 import { ContributionSlot } from "@/components/extensions/ContributionSlot";
 import { SectionBoundary } from "@/components/common/SectionBoundary";
 
@@ -23,11 +24,11 @@ export default function Dashboard() {
 
   return (
     <PageContainer>
-      <PageIntro />
+      <PageIntro actions={<ContributionTools slot="dashboard.actions" />} />
       <TabBar tabs={TAB_KEYS} activeTab={tab} onChange={changeTab} />
       {tab === "overview" && <>
-        <ContributionSlot slot="dashboard.cards" />
         <SectionBoundary><OverviewPanel /></SectionBoundary>
+        <ContributionSlot slot="dashboard.cards" />
       </>}
       {tab === "logs" && <LogsPanel />}
     </PageContainer>

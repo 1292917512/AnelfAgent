@@ -1,3 +1,4 @@
+import type { FunasrStatus, GpuStatus, GpuUnloadResult } from "./service-types";
 import { api } from "@/lib/api";
 
 /** 音源同步实体路由（/api/entity/audiosync）：同步业务与实体配置。
@@ -91,6 +92,12 @@ export interface AudiosyncConfigItem {
 }
 
 export const audiosyncApi = {
+  funasrStatus: (refresh = false) =>
+    api.get<FunasrStatus>("/entity/audiosync/service/status", { params: refresh ? { refresh: true } : {} }),
+  gpuStatus: () => api.get<GpuStatus>("/entity/audiosync/service/gpu"),
+  gpuUnload: (targets?: string[]) =>
+    api.post<GpuUnloadResult>("/entity/audiosync/service/gpu/unload", { targets: targets ?? [] }),
+
   config: () => api.get<{ items: AudiosyncConfigItem[] }>("/entity/audiosync/config"),
   updateConfig: (updates: Record<string, unknown>) =>
     api.put<{ updated: number }>("/entity/audiosync/config", { updates }),

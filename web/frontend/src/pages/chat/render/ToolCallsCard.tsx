@@ -23,7 +23,7 @@ export function ToolCallsCard({ tools }: { tools: ChatStreamingTool[] }) {
   const totalMs = tools.reduce((acc, tool) => acc + (tool.duration_ms ?? 0), 0);
 
   return (
-    <div className="rounded-lg border border-border/60 bg-muted/30 text-xs overflow-hidden mb-1.5">
+    <div className="rounded-lg border border-border/60 bg-panel text-xs overflow-hidden mb-1.5">
       <button
         onClick={() => setOpen(!open)}
         className="w-full flex items-center gap-1.5 px-2.5 py-1.5 text-left text-muted hover:text-foreground transition-colors"

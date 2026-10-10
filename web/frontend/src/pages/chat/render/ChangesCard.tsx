@@ -24,7 +24,7 @@ function ChangeRow({ entry }: { entry: ChatStreamingDiff }) {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left hover:bg-muted/60 transition-colors"
+        className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left hover:bg-hover transition-colors"
       >
         {open ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
         <span className="font-mono text-xs text-foreground/80 truncate flex-1">{fileName}</span>
@@ -78,7 +78,7 @@ export function ChangesCard({ changes }: { changes: ChatStreamingDiff[] }) {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted/40 transition-colors"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-elevated transition-colors"
       >
         {open ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
         <FileDiff className="h-3.5 w-3.5 text-primary shrink-0" />

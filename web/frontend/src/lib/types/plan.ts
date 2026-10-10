@@ -1,4 +1,4 @@
-// ── Plan 模式（present_plan / update_goal 工具 → SSE 事件 → 前端 PlanPanel/PlanCard） ──
+// ── Plan 模式（present_plan / update_goal 工具 → SSE 事件 → 前端 计划卡片） ──
 
 export type PlanStepStatus = "pending" | "in_progress" | "completed" | "skipped";
 
@@ -70,6 +70,7 @@ export interface RunningDelegation {
 
 /** GET /delegations/overview 的全局运行中委托条目（全 scope，含实时进度与用量） */
 export interface DelegationOverviewItem {
+  state: "queued" | "running";
   delegation_id: string;
   goal: string;
   role: "leaf" | "orchestrator";

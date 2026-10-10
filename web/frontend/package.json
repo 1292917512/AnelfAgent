@@ -8,7 +8,7 @@
     "prebuild": "node scripts/module-links.mjs",
     "build": "tsc -b tsconfig.json tsconfig.tools.json && vite build --outDir dist.next && node scripts/swap-dist.mjs",
     "preview": "vite preview",
-    "test:modules": "node --test scripts/module-links.test.mjs scripts/swap-dist.test.mjs",
+    "test:modules": "node --test scripts/*.test.mjs",
     "lint": "cd ../.. && node web/frontend/node_modules/eslint/bin/eslint.js web/frontend/src web/frontend/e2e \"entities/*/panel.tsx\" \"entities/*/panels/**/*.{ts,tsx,mts}\" \"channels/*/frontend/**/*.{ts,tsx,mts}\"",
     "test": "vitest run",
     "test:watch": "vitest",

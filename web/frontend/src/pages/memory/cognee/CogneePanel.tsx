@@ -9,7 +9,7 @@ import { type FieldMeta } from "@/pages/config/AppField";
 import { ModelConfigCard } from "@/pages/memory/cognee/ModelConfigCard";
 import { RecallTester } from "@/pages/memory/RecallTester";
 import { memoryApi } from "@/lib/api";
-import { devopsApi } from "@entities/devops/panels/api";
+import { InlineContributions } from "@/components/extensions/ContributionSlot";
 import { formatSize } from "@/lib/utils";
 import type { CogneeResolvedInfo, ConfigValues } from "@/lib/types";
 
@@ -68,14 +68,7 @@ export function CogneePanel() {
   const backfillMutation = useMutation({ mutationFn: () => memoryApi.cognee.backfill(0, false), onSuccess: invalidate });
   const rebuildMutation = useMutation({
     mutationFn: () => memoryApi.cognee.rebuild(),
-    onSuccess: async (resp) => {
-      invalidate();
-      // 重建后 cognee 引擎句柄已失效，必须重启进程才能干净恢复
-      if ((resp?.data as { restart_required?: boolean } | undefined)?.restart_required &&
-          window.confirm(t("cognee.rebuildRestartConfirm"))) {
-        await devopsApi.restart();
-      }
-    },
+    onSuccess: invalidate,
   });
   const improveMutation = useMutation({
     mutationFn: (name: string) => memoryApi.cognee.improve(name),
@@ -129,6 +122,10 @@ export function CogneePanel() {
 
   return (
     <div className="space-y-4">
+      {rebuildMutation.data?.data.restart_required && <div className="rounded-xl border border-warning/30 bg-warning/10 p-3 space-y-2">
+        <p className="text-sm text-warning">{t("cognee.rebuildRestartConfirm")}</p>
+        <InlineContributions slot="system.restart" componentProps={{}} />
+      </div>}
       <RecallTester preset="cognee" />
 
       <Card title={t("cognee.probeTitle")} subtitle={t("cognee.probeSubtitle")}>

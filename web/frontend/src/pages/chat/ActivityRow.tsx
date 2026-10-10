@@ -1,65 +1,16 @@
-/**
- * 加载活动行 — 对话窗口加载态：
- * 随机动词 + 耗时计时 + 当前工具活动（来自 thinking SSE 的运行中节点）。
- *
- * 设计为瞬时指示器（处理期间显示），不向聊天历史写入任何条目，
- * 符合 Anelf「记忆模式、条目受限」的对话窗口约束。
- */
-import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { Loader2 } from "lucide-react";
 import { useChatStore } from "@/stores/chat-store";
 import { useNow } from "@/hooks/useNow";
-import { sessionChatId } from "@/components/thinking/trace-plans";
-import { useThinkingStore } from "@/stores/thinking-store";
+import { useWorkbenchStore } from "@/stores/workbench-store";
 
-function pickVerb(verbs: string[], seed: number) {
-  return verbs[seed % verbs.length] ?? "";
-}
-
+/** 当前 Web 消息的等待状态，不混入其他会话的工具活动。 */
 export function ActivityRow() {
-  const { t } = useTranslation("chat");
-  const sendingSince = useChatStore((s) => s.buckets[s.activeChatId]?.sendingSince ?? null);
-  const chatId = useChatStore((state) => state.activeChatId);
-  const activeSession = useThinkingStore((s) => s.activeSession);
-
-  const [verbSeed] = useState(() => Math.floor(Math.random() * 1000));
-  const now = useNow(!!sendingSince);
-  const elapsed = sendingSince ? Math.floor((now - sendingSince) / 1000) : 0;
-
-  // 当前运行中的工具节点（thinking SSE 实时事件，可能未启用则为空）
-  const currentTool = useMemo(() => {
-    const nodes = activeSession && !activeSession.ended && sessionChatId(activeSession) === chatId ? activeSession.nodes : [];
-    for (let i = nodes.length - 1; i >= 0; i--) {
-      const node = nodes[i];
-      if (node && node.status === "running" && node.type.includes("tool")) {
-        return node.label;
-      }
-    }
-    return "";
-  }, [activeSession, chatId]);
-
-  const verb = useMemo(() => {
-    const verbs = t("activity.verbs", { returnObjects: true }) as string[];
-    return pickVerb(Array.isArray(verbs) ? verbs : [], verbSeed + Math.floor(elapsed / 3));
-  }, [t, verbSeed, elapsed]);
-  // 卡死提示：8 秒无进展时变暗红
-  const stalled = elapsed >= 8 && !currentTool;
-
-  return (
-    <div className="flex justify-start">
-      <div className="bg-secondary rounded-lg px-4 py-2.5 flex items-center gap-2.5 text-sm">
-        <span className="flex items-center gap-1">
-          <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse-subtle" />
-          <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse-subtle [animation-delay:0.15s]" />
-          <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse-subtle [animation-delay:0.3s]" />
-        </span>
-        <span className={stalled ? "text-red-400" : "text-muted-foreground"}>
-          {currentTool
-            ? t("activity.usingTool", { tool: currentTool })
-            : `${verb}…`}
-        </span>
-        <span className="text-xs text-muted">{elapsed}s</span>
-      </div>
-    </div>
-  );
+  const { t } = useTranslation("workbench");
+  const since = useChatStore((state) => state.buckets[state.activeChatId]?.sendingSince);
+  const now = useNow(!!since);
+  return <button className="flex items-center gap-2 py-2 text-xs text-muted" onClick={() => useWorkbenchStore.getState().showExecution()}>
+    <Loader2 size={14} className="animate-spin text-accent" />{t("execution.waiting")}
+    {since && <span className="tabular-nums">{Math.max(0, Math.floor((now - since) / 1000))}s</span>}
+  </button>;
 }

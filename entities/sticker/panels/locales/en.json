@@ -56,5 +56,6 @@
     "indexed": "Indexed",
     "fuzzyTitle": "Fuzzy Matching",
     "fuzzyHint": "Fuzzy matching threshold and auto-reply settings live in the Config tab."
-  }
+  },
+  "title": "Sticker Library"
 }

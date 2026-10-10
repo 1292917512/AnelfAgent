@@ -21,7 +21,7 @@ class StickerService:
 
     @staticmethod
     def _store() -> Any:
-        from entities.sticker.store import get_sticker_store
+        from .store import get_sticker_store
         return get_sticker_store()
 
     # ------------------------------------------------------------------
@@ -67,7 +67,7 @@ class StickerService:
         Raises:
             StickerServiceError: 模式非法（400）或无可用向量模型（503）。
         """
-        from entities.sticker.tools import get_embedder
+        from .tools import get_embedder
 
         if mode not in ("mismatched", "all"):
             raise StickerServiceError(f"不支持的重建模式: {mode}", status_code=400)
@@ -88,7 +88,7 @@ class StickerService:
         else:
             cleared = await store.clear_mismatched_embeddings(dims)
 
-        from agent.memory.embedding import wake_embedding_worker
+        from entities._sdk import wake_embedding_worker
         wake_embedding_worker()
         log(f"贴纸向量重建（{mode}）: 目标维度 {dims}，已清空 {cleared}", tag="贴纸")
         return {"ok": True, "dims": dims, "cleared": cleared}
@@ -103,7 +103,7 @@ class StickerService:
 
     async def stats(self) -> Dict[str, Any]:
         """表情包与图片索引统计（含向量维度健康）。"""
-        from entities.sticker.tools import get_embedder
+        from .tools import get_embedder
 
         stats = await self._store().stats()
         model = ""
@@ -142,8 +142,8 @@ class StickerService:
         Returns:
             新建的表情包记录。
         """
-        from entities.sticker.phash import compute_phash
-        from entities.sticker.tools import (
+        from .phash import compute_phash
+        from .tools import (
             describe_sticker,
             embed_for_index,
             import_to_stickers_dir,
@@ -184,7 +184,7 @@ class StickerService:
         Raises:
             StickerServiceError: 表情包不存在（404）。
         """
-        from entities.sticker.tools import embed_for_index
+        from .tools import embed_for_index
 
         store = self._store()
         current = await store.get_sticker(sticker_id)
@@ -209,7 +209,7 @@ class StickerService:
         Raises:
             StickerServiceError: 表情包不存在/文件丢失（404）或无可用视觉模型（503）。
         """
-        from entities.sticker.tools import describe_sticker, embed_for_index
+        from .tools import describe_sticker, embed_for_index
 
         store = self._store()
         current = await store.get_sticker(sticker_id)
@@ -241,5 +241,5 @@ class StickerService:
     @staticmethod
     def stickers_dir() -> str:
         """表情包存储目录（不存在时创建）。"""
-        from entities.sticker.tools import stickers_dir
+        from .tools import stickers_dir
         return stickers_dir()

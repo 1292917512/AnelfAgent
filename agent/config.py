@@ -740,3 +740,20 @@ def get_mind_config() -> MindConfig:
         return get_config_provider().mind
     except Exception:
         return MindConfig()
+
+
+def save_config_value(key: str, value: Any) -> None:
+    """统一配置写入：MindConfig 字段路由 save_mind_config（双轨同步 + 实时生效），
+    其余走 ConfigManager.set_persisted（落盘成功后通知消费方热更）。
+
+    Web 的 PUT /config/meta 与本函数是同一写纪律的两个入口，AI 配置工具应走这里。
+    """
+    from core.config import ConfigManager
+
+    environment = ConfigManager.environment_override(key)
+    if environment is not None:
+        raise ValueError(f"配置由环境变量 {environment} 管理，请修改环境变量")
+    if key in MIND_CONFIG_FIELDS:
+        get_config_provider().save_mind_config(**{key: value})
+    else:
+        ConfigManager.set_persisted({key: value})

@@ -47,9 +47,12 @@ def wire_runtime(
     from agent.mind.context_compressor import compressor_port
     from agent.mind.tools.ports import mind_port
     from agent.planning.tracker import planning_store_port
+    from agent.skills.dependencies import mcp_servers_port
     from agent.skills.tools import SkillToolDeps, skill_tools_port
     from agent.storage.conversation_fold import fold_data_port
+    from entities.mcp.config import MCPServerStore
     from entities.sticker.worker import image_index_worker_port
+    mcp_servers_port.set(lambda: MCPServerStore().get_server_names())
 
     # 思维工具组（scheduler / session_tools / short_term_tools 共用）
     mind_port.set(mind)

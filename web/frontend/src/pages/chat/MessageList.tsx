@@ -5,31 +5,22 @@ import { cn } from "@/lib/utils";
 import { formatRelativeTimestamp } from "@/lib/format";
 import { useChatStore } from "@/stores/chat-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
-import { usePlanStore } from "@/stores/plan-store";
-import { useDelegationStore } from "@/stores/delegation-store";
 import { ConfirmDialog } from "@/components/ui/Modal";
 import { MediaBubble } from "./render/MediaBubble";
-import { PlanCard } from "./render/PlanCard";
-import { DelegationCard } from "@/components/delegation/DelegationCard";
-import { ShareCard } from "@entities/share/panels/ShareCard";
+import { MessageExtension } from "@/components/extensions/MessageExtension";
 import { SystemNotice } from "./render/SystemNotice";
-import { ToolSummaryCard } from "./render/ToolSummaryCard";
-import { ToolCallsCard } from "./render/ToolCallsCard";
-import { ThinkingBlock } from "./render/ThinkingBlock";
-import { ChangesCard } from "./render/ChangesCard";
 import { CollapsibleUserMessage } from "./render/CollapsibleUserMessage";
 import { CollapsibleMarkdown } from "./render/CollapsibleMarkdown";
 import { FoldChip } from "./render/FoldChip";
 import { ActivityRow } from "./ActivityRow";
 import { StreamingArea } from "./StreamingArea";
 import { HistoryStatus } from "./HistoryStatus";
-import type { ChatMessage, ConversationFold, DelegationNode, PlanRecord } from "@/lib/types";
+import type { ChatMessage, ConversationFold } from "@/lib/types";
 
 type TimelineEntry =
   | { kind: "message"; ts: number; key: string; data: ChatMessage }
   | { kind: "fold"; ts: number; key: string; data: { fold: ConversationFold; messages: ChatMessage[] } }
-  | { kind: "plan"; ts: number; key: string; data: PlanRecord }
-  | { kind: "delegation"; ts: number; key: string; data: DelegationNode };
+;
 
 /** 单条消息气泡（memo：流式 delta 更新时历史消息行不重渲染） */
 const MessageRow = memo(function MessageRow({ msg, foldPivot }: { msg: ChatMessage; foldPivot?: boolean }) {
@@ -53,11 +44,6 @@ const MessageRow = memo(function MessageRow({ msg, foldPivot }: { msg: ChatMessa
     }
   };
 
-  // 结构化消息：工具执行摘要卡片 / 系统提示细条（居中，不占气泡位）。
-  // kind 与 summary 由后端历史清洗返回（摘要缺结构化条目时退居系统细条）
-  if (msg.kind === "tool_summary" && msg.summary) {
-    return <ToolSummaryCard summary={msg.summary} />;
-  }
   if (msg.role === "system" || msg.kind === "system_notice") {
     return <SystemNotice content={msg.content} tone={msg.tone} />;
   }
@@ -65,22 +51,8 @@ const MessageRow = memo(function MessageRow({ msg, foldPivot }: { msg: ChatMessa
   return (
     <div className={cn("flex group/msg", isUser ? "justify-end" : "justify-start")}>
       <div className={cn("message-content min-w-0", isUser ? "is-user text-right" : "is-assistant text-left")}>
-        {/* 本轮思考过程（内存态固化，默认折叠；仅保留最近几轮，刷新即消失） */}
-        {!isUser && msg.thinking && (
-          <div className="mb-1.5">
-            <ThinkingBlock reasoning={msg.thinking} active={false} />
-          </div>
-        )}
-        {/* 本轮工具调用记录（固化卡片，默认折叠） */}
-        {!isUser && msg.toolCalls && msg.toolCalls.length > 0 && (
-          <ToolCallsCard tools={msg.toolCalls} />
-        )}
-        {/* 本轮文件改动集（固化卡片，默认折叠） */}
-        {!isUser && msg.changes && msg.changes.length > 0 && (
-          <ChangesCard changes={msg.changes} />
-        )}
         {msg.media_type && <MediaBubble msg={msg} />}
-        {!isUser && msg.share && <ShareCard share={msg.share} />}
+        {!isUser && msg.extension && <MessageExtension extension={msg.extension} />}
         {msg.content && (
           <div
             className={cn(
@@ -118,8 +90,6 @@ const MessageRow = memo(function MessageRow({ msg, foldPivot }: { msg: ChatMessa
             className={cn(
               "text-[11px] text-muted mt-0.5 px-1 transition-opacity flex items-center gap-1.5",
               isUser ? "justify-end" : "justify-start",
-              // 时间戳 hover 浮现：默认淡显，悬停/聚焦该行时加深
-              "opacity-60 group-hover/msg:opacity-100 group-focus-within/msg:opacity-100",
             )}
             title={msg.timestamp}
           >
@@ -152,7 +122,7 @@ const MessageRow = memo(function MessageRow({ msg, foldPivot }: { msg: ChatMessa
   );
 });
 
-/** 消息列表：气泡渲染 + 自动滚动；按时间序合并 plan / delegation 卡片 */
+/** Web 消息与折叠历史，保留滚动锚点和未发送草稿。 */
 export function MessageList() {
   const { t } = useTranslation("chat");
   const activeChatId = useChatStore((s) => s.activeChatId);
@@ -184,18 +154,10 @@ export function MessageList() {
     return () => el.removeEventListener("scroll", onScroll);
   }, []);
 
-  const chatPlans = usePlanStore((s) => s.plans[activeChatId]);
-  // 悬浮窗可见时计划由浮窗唯一展示，聊天流不重复渲染；关闭浮窗后回落到聊天流
-  const panelHidden = usePlanStore((s) => s.panelHidden);
-  const chatDelegations = useDelegationStore((s) => s.delegations[activeChatId]);
   const folds = useChatStore((s) => s.buckets[s.activeChatId]?.folds);
   // 折叠起点消息集合（这些消息不再提供「从此换向」入口，避免同位置重复折叠）
   const foldPivotIds = useMemo(() => new Set((folds ?? []).map((f) => f.from_msg_id)), [folds]);
 
-  // 把 messages / plans / delegations 按时间序合并到同一条时间线（输入不变时复用结果）。
-  // 排序键统一用 epoch 秒：历史消息由后端 ts_ns 换算返回，本地/SSE 消息打到达时刻，
-  // 与 plan.created_at / delegation.started_at 同源——此前消息误用 DB 自增 id，
-  // 与 epoch 数量级不一致导致 plan/delegation 卡片永远排在最底部
   const timeline = useMemo<TimelineEntry[]>(() => {
     const entries: TimelineEntry[] = [];
     // 换向折叠：msg id → 所属折叠段（from 不含、to 含；无 id 的本地消息永不折叠）
@@ -221,6 +183,7 @@ export function MessageList() {
       collecting = null;
     };
     for (const m of messages ?? []) {
+      if (m.kind === "tool_summary" || (!m.content && !m.media_type && !m.extension)) continue;
       const ts = m.ts ?? lastMsgTs;
       lastMsgTs = ts;
       const fold = m.id != null ? coveredBy.get(m.id) : undefined;
@@ -240,27 +203,9 @@ export function MessageList() {
       });
     }
     flushFold();
-    if (panelHidden) {
-      for (const p of Object.values(chatPlans ?? {})) {
-        entries.push({
-          kind: "plan",
-          ts: p.created_at,
-          key: `plan-${p.plan_id}`,
-          data: p,
-        });
-      }
-    }
-    for (const d of Object.values(chatDelegations ?? {})) {
-      entries.push({
-        kind: "delegation",
-        ts: d.started_at,
-        key: `delegation-${d.delegation_id}`,
-        data: d,
-      });
-    }
     entries.sort((a, b) => a.ts - b.ts);
     return entries;
-  }, [messages, folds, chatPlans, panelHidden, chatDelegations]);
+  }, [messages, folds]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -282,17 +227,17 @@ export function MessageList() {
       el.scrollTo({ top: el.scrollHeight - prevScrollHeight.current + el.scrollTop });
     } else {
       // 吸底策略：本人刚发的消息强制吸底；其余仅当用户停留在底部附近才跟随，
-      // 上翻阅读历史时新消息/plan/delegation 更新不打断当前位置
+      // 上翻阅读历史时新消息更新不打断当前位置
       const lastMsg = list[list.length - 1];
       const sentByMe = lastMsg?.role === "user" && lastKey !== prevLastKey.current;
       if (sentByMe || nearBottomRef.current) {
-        el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+        el.scrollTo({ top: el.scrollHeight, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
       }
     }
     prevFirstKey.current = firstKey;
     prevLastKey.current = lastKey;
     prevScrollHeight.current = el.scrollHeight;
-  }, [messages, chatPlans, chatDelegations, historyLoaded]);
+  }, [messages, historyLoaded]);
 
   // 切换会话时重置滚动初始位与锚点
   useEffect(() => {
@@ -306,7 +251,7 @@ export function MessageList() {
       <HistoryStatus />
       {!sseConnected && (
         <div className="flex justify-center" data-testid="sse-reconnect-banner">
-          <div className="inline-flex items-center gap-1.5 text-[11px] text-amber-600 dark:text-amber-400 rounded-full bg-amber-500/10 px-3 py-1">
+          <div className="inline-flex items-center gap-1.5 text-[11px] text-warn rounded-full bg-warn-subtle px-3 py-1">
             <Loader2 size={11} className="animate-spin" />
             {t("stream.connectionLost")}
           </div>
@@ -336,12 +281,6 @@ export function MessageList() {
         </div>
       )}
       {timeline.map((entry) => {
-        if (entry.kind === "plan") {
-          return <PlanCard key={entry.key} plan={entry.data} />;
-        }
-        if (entry.kind === "delegation") {
-          return <DelegationCard key={entry.key} node={entry.data} />;
-        }
         if (entry.kind === "fold") {
           return <FoldChip key={entry.key} fold={entry.data.fold} messages={entry.data.messages} />;
         }

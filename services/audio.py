@@ -29,10 +29,6 @@ from agent.audio.schemas import (  # noqa: F401  # 门面再导出（web 层请�
 )
 from core.config import ConfigManager
 from core.log import log
-from entities.audiosync.client import (  # noqa: F401  # 门面再导出（web 层归因用）
-    FunAsrError,
-    FunAsrNotConfigured,
-)
 
 _LOG_TAG = "音频"
 
@@ -409,31 +405,3 @@ class AudioServiceFacade:
         result["text_embedding_model"] = str(
             ConfigManager.get("embedding_text_model", "") or "") or "default"
         return result
-
-    @staticmethod
-    async def funasr_status(refresh: bool = False) -> Dict[str, Any]:
-        """FunASR 转写服务状态（声音域自检：配置在位 + 真实可达 + 服务地址）。"""
-        from entities.audiosync import client as funasr
-
-        if refresh:
-            funasr.reset_probe_cache()
-        reachable = await funasr.probe_available()
-        return {
-            "configured": bool(funasr.endpoint_config()),
-            "reachable": reachable,
-            "endpoint": funasr.endpoint_config(),
-        }
-
-    @staticmethod
-    async def gpu_status() -> Dict[str, Any]:
-        """GPU worker 模型加载状态（模型层启停面板）。"""
-        from entities.audiosync import client as funasr
-
-        return await funasr.gpu_status()
-
-    @staticmethod
-    async def gpu_unload(targets: Optional[List[str]] = None) -> Dict[str, Any]:
-        """释放 GPU 模型显存（进程常驻，下次推理自动重载）。"""
-        from entities.audiosync import client as funasr
-
-        return await funasr.gpu_unload(targets)

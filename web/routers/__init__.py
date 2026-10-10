@@ -29,7 +29,6 @@ from web.routers.retrieval import router as retrieval_router
 from web.routers.search import router as search_router
 from web.routers.skills import router as skills_router
 from web.routers.status import router as status_router
-from web.routers.stickers import router as stickers_router
 from web.routers.system import router as system_router
 from web.routers.tags import router as tags_router
 from web.routers.thinking import router as thinking_router
@@ -70,7 +69,6 @@ api_router.include_router(judgment_router)
 api_router.include_router(thinking_router)
 api_router.include_router(workspace_router)
 api_router.include_router(search_router)
-api_router.include_router(stickers_router)
 api_router.include_router(database_router)
 api_router.include_router(delegation_router)
 api_router.include_router(retrieval_router)

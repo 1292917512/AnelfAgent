@@ -73,7 +73,7 @@ it("reports missing sessions without displaying the previously selected trace", 
 
 it("does not let background delegation replace an inspected conversation", () => {
   useThinkingStore.setState({ activeSessionId: "A", activeSession: session("A") });
-  useThinkingStore.getState().handleSessionStart({ session: { ...session("worker"), is_delegation: true }, node: node("worker") });
+  useThinkingStore.getState().handleSessionStart({ session: { ...session("worker"), is_delegation: true, parent_session_id: "A" }, node: node("worker") });
   expect(useThinkingStore.getState().activeSessionId).toBe("A");
 });
 
@@ -108,4 +108,14 @@ it("refreshes the final trace when recording is disabled in another browser", as
   await useThinkingStore.getState().initialize(true);
   expect(useThinkingStore.getState().activeSession?.outcome).toBe("interrupted");
   expect(useThinkingStore.getState().enabled).toBe(false);
+});
+
+
+it("follows root background runs while preserving an explicitly inspected trace", () => {
+  const store = useThinkingStore.getState();
+  store.handleSessionStart({ session: { ...session("heartbeat"), is_heartbeat: true }, node: node("heartbeat") });
+  expect(useThinkingStore.getState().activeSessionId).toBe("heartbeat");
+  store.setAutoFollow(false);
+  store.handleSessionStart({ session: session("next"), node: node("next") });
+  expect(useThinkingStore.getState().activeSessionId).toBe("heartbeat");
 });

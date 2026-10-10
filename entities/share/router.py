@@ -17,6 +17,7 @@ from typing import Any, Dict
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
+from core.http_endpoints import self_authenticated
 from core.log import log
 
 from .schemas import (
@@ -178,6 +179,7 @@ def build_router() -> APIRouter:
         return DownloadLogListResult(**result)
 
     @router.get("/d/{token}", name="download_share_file")
+    @self_authenticated
     async def download(token: str, request: Request) -> FileResponse:
         """下载分享文件（token 鉴权，过期/撤销/次数耗尽返回 404）。"""
         entry = await _validate_entry(token)
@@ -192,6 +194,7 @@ def build_router() -> APIRouter:
         )
 
     @router.get("/raw/{token}")
+    @self_authenticated
     async def raw(token: str) -> FileResponse:
         """媒体原始字节（inline + Range，供预览页内嵌引用，不重复计数）。
 
@@ -200,10 +203,8 @@ def build_router() -> APIRouter:
         """
         entry = await _validate_entry(token)
         fp = _resolve_file(entry)
-        headers: Dict[str, str] = {"Cache-Control": "private, max-age=300"}
-        # HTML 内联渲染走 CSP sandbox：禁脚本/表单/弹窗 + 独立源，防存储型 XSS
-        if entry.get("media_kind") == "html":
-            headers["Content-Security-Policy"] = "sandbox"
+        headers: Dict[str, str] = {"Cache-Control": "private, max-age=300",
+                                   "Content-Security-Policy": "sandbox", "X-Content-Type-Options": "nosniff"}
         return FileResponse(
             fp,
             filename=entry["file_name"],
@@ -212,6 +213,7 @@ def build_router() -> APIRouter:
         )
 
     @router.get("/v/{token}", name="view_share")
+    @self_authenticated
     async def view(token: str, request: Request) -> Any:
         """预览页：media 内嵌渲染 / link 落地页 / file 重定向下载。"""
         from core.config import get_config_bool

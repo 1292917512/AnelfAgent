@@ -12,9 +12,7 @@ export function StatCard({ label, value, variant = "default", className }: StatC
   return (
     <div
       className={cn(
-        "rounded-md border border-border bg-card p-4 transition-all duration-[var(--duration-normal)]",
-        "hover:border-border-strong hover:shadow-sm",
-        "animate-[rise_0.35s_var(--ease-out)_backwards]",
+        "min-w-0 rounded-xl border border-border bg-card p-4 sm:p-5",
         className,
       )}
     >
@@ -23,7 +21,7 @@ export function StatCard({ label, value, variant = "default", className }: StatC
       </div>
       <div
         className={cn(
-          "mt-1.5 text-2xl font-bold tracking-tight leading-tight",
+          "mt-2 text-xl font-semibold tracking-tight leading-snug tabular-nums break-words sm:text-2xl",
           variant === "ok" && "text-ok",
           variant === "warn" && "text-warn",
           variant === "danger" && "text-danger",

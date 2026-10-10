@@ -12,14 +12,13 @@ const FileTreePanel = lazy(() =>
 
 const PANELS = {
   status: lazy(() => import("./dock/StatusPanel").then((m) => ({ default: m.StatusPanel }))),
-  trace: lazy(() => import("./dock/TracePanel").then((m) => ({ default: m.TracePanel }))),
   context: lazy(() => import("./dock/ContextPanel").then((m) => ({ default: m.ContextPanel }))),
   tasks: lazy(() => import("./dock/TasksPanel").then((m) => ({ default: m.DockTasksPanel }))),
   search: lazy(() => import("./dock/SearchPanel").then((m) => ({ default: m.SearchPanel }))),
   settings: lazy(() => import("./dock/SettingsPanel").then((m) => ({ default: m.SettingsPanel }))),
 };
 
-/** 右侧功能 Dock：TabBar 切换状态/思维/任务/搜索/设置（窄屏为抽屉） */
+/** 右侧功能 Dock：TabBar 切换状态/上下文/任务/搜索/设置（窄屏为抽屉） */
 export function Dock({ overlay = false }: { overlay?: boolean }) {
   const { t } = useTranslation("workbench");
   const activeTab = useWorkbenchStore((s) => s.activeTab);
@@ -29,7 +28,6 @@ export function Dock({ overlay = false }: { overlay?: boolean }) {
 
   const tabs: TabItem<DockTab>[] = [
     { key: "status", label: t("tabs.status"), icon: Activity },
-    { key: "trace", label: t("tabs.trace"), icon: FolderTree },
     { key: "context", label: t("context:title"), icon: ScanText },
     { key: "tasks", label: t("tabs.tasks"), icon: ListTodo },
     { key: "search", label: t("tabs.search"), icon: Search },

@@ -18,7 +18,6 @@ from services.persona import PersonaService
 from services.responses import ResponsesService
 from services.search import SearchService
 from services.status import AgentStatusService
-from services.sticker import StickerService
 from services.system import SystemService
 from services.tag import TagService
 from services.task import TaskService
@@ -49,7 +48,6 @@ __all__ = [
     "ResponsesService",
     "SearchService",
     "AgentStatusService",
-    "StickerService",
     "SystemService",
     "TagService",
     "TaskService",

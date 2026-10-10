@@ -19,7 +19,7 @@ from core.conversation_scope import current_scope
 from core.conversation_scope import reset_scope as reset_scope
 from core.entity import EntityRegistry, EntityType
 from core.log import log
-from entities._sdk import deferred_tool
+from core.tool_registry import deferred_tool
 
 _DEFAULT_ACTIVE_ROUNDS = 3
 _MAX_ACTIVE_ROUNDS = 20

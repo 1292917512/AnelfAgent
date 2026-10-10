@@ -52,6 +52,28 @@ class TestResolveLimit:
 
 
 class TestTruncateWithBudget:
+    @pytest.mark.parametrize("marker", ["error", "ok", "success"])
+    def test_failure_trace_survives_exhausted_budget(self, marker: str) -> None:
+        import json
+
+        pipeline = _pipeline()
+        pipeline._budget = ResultBudget(2000, 1)
+        trace = {"tool": "write_file", "call_id": "call-123", "request_id": "request-456"}
+        output = json.dumps({
+            marker: "Timeout" if marker == "error" else False,
+            "message": "Timeout", "cause": "timeout", "code": "TOOL_TIMEOUT",
+            "retryable": False, "outcome": "unknown", "background_may_continue": True,
+            "hint": "Check operation state before retrying", "diagnostic": trace,
+            "details": "x" * 10000,
+        })
+        result = json.loads(pipeline.process("write_file", "{}", output))
+        assert result["diagnostic"] == trace
+        assert result["code"] == "TOOL_TIMEOUT"
+        assert result["outcome"] == "unknown"
+        assert result["retryable"] is False and result["background_may_continue"] is True
+        assert result["error"] == "Timeout" and result["hint"] == "Check operation state before retrying"
+        assert len(result.get("details", "")) == 0
+
     def test_error_recovery_fields_survive_json_compaction(self) -> None:
         import json
 

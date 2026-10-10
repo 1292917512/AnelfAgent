@@ -16,8 +16,8 @@ import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.config import get_config_bool
-from core.tool_errors import ErrorCause
-from entities._sdk import deferred_tool, error_from_exception, tool_error
+from core.tool_errors import ErrorCause, error_from_exception, tool_error
+from core.tool_registry import deferred_tool
 
 from . import consolidate, engine, matcher
 from .store import get_face_store

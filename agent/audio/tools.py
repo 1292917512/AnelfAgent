@@ -15,18 +15,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from agent.audio import KIND_ASR, get_audio_registry, get_audio_service
 from core.config import ConfigManager, get_config_bool
 from core.entity import EntityRegistry
 from core.log import log
-from entities._sdk import (
-    KIND_ASR,
-    ErrorCause,
-    audio_has_provider,
-    audio_transcribe,
-    deferred_tool,
-    error_from_exception,
-    tool_error,
-)
+from core.tool_errors import ErrorCause, error_from_exception, tool_error
+from core.tool_registry import deferred_tool
 
 from . import matcher
 from .store import get_audio_store, parse_time_ns
@@ -242,7 +236,7 @@ async def audio_stats() -> str:
         store = get_audio_store()
         stats = await store.stats()
         stats["match_threshold"] = matcher.global_threshold()
-        stats["asr_configured"] = await audio_has_provider(KIND_ASR)
+        stats["asr_configured"] = await get_audio_registry().resolve(KIND_ASR) is not None
         stats["text_embedding_model"] = str(
             ConfigManager.get("embedding_text_model", "") or "") or "default"
         return _dump(stats)
@@ -375,7 +369,7 @@ async def voice_compare(audio_a: str, audio_b: str) -> str:
     if (gate := _gate()):
         return gate
     try:
-        if not await audio_has_provider(KIND_ASR):
+        if not await get_audio_registry().resolve(KIND_ASR) is not None:
             return tool_error(
                 "无可用 ASR 提供者，无法提取声纹", cause=ErrorCause.CONFIG,
                 retryable=False, hint="请在音源同步组件配置 FunASR 服务地址")
@@ -384,7 +378,7 @@ async def voice_compare(audio_a: str, audio_b: str) -> str:
             resolved = _resolve_audio_path(audio_path)
             if not os.path.isfile(resolved):
                 raise FileNotFoundError(audio_path)
-            segments = await audio_transcribe(resolved)
+            segments = await get_audio_service().transcribe(resolved)
             return [
                 (s["vector"], max(0, int(s["end_ms"]) - int(s["start_ms"])))
                 for s in segments if s.get("vector")]
@@ -526,7 +520,7 @@ async def speaker_enroll(
                 "请提供 audio_path（AI 无法直接产生声纹向量）",
                 cause=ErrorCause.PARAM, retryable=False,
                 hint="Web 面板支持向量直传注册；或先配置 ASR 转写服务")
-        if not await audio_has_provider(KIND_ASR):
+        if not await get_audio_registry().resolve(KIND_ASR) is not None:
             return tool_error(
                 "无可用 ASR 提供者，无法从音频提取声纹",
                 cause=ErrorCause.CONFIG, retryable=False,
@@ -535,7 +529,7 @@ async def speaker_enroll(
         if not os.path.isfile(resolved):
             return tool_error(f"音频文件不存在: {audio_path}", cause=ErrorCause.NOT_FOUND,
                               retryable=False)
-        segments = await audio_transcribe(resolved)
+        segments = await get_audio_service().transcribe(resolved)
         voiced = [(s["vector"], max(0, int(s["end_ms"]) - int(s["start_ms"])))
                   for s in segments if s.get("vector")]
         if not voiced:
@@ -564,7 +558,7 @@ async def voice_identify(audio_path: str, ingest: bool = False) -> str:
     if (gate := _gate()):
         return gate
     try:
-        if not await audio_has_provider(KIND_ASR):
+        if not await get_audio_registry().resolve(KIND_ASR) is not None:
             return tool_error(
                 "无可用 ASR 提供者", cause=ErrorCause.CONFIG, retryable=False,
                 hint="请在音源同步组件配置 FunASR 服务地址")
@@ -572,7 +566,7 @@ async def voice_identify(audio_path: str, ingest: bool = False) -> str:
         if not os.path.isfile(resolved):
             return tool_error(f"音频文件不存在: {audio_path}", cause=ErrorCause.NOT_FOUND,
                               retryable=False)
-        segments = await audio_transcribe(resolved)
+        segments = await get_audio_service().transcribe(resolved)
         if not segments:
             return _dump({"segments": [], "message": "音频中未检测到有效语音段"})
 
@@ -1137,7 +1131,7 @@ def _get_embedder() -> Any:
     """文本域共享 Embedder（转写检索向量化用，惰性获取）。"""
     global _embedder
     if _embedder is None:
-        from entities._sdk import get_embedder
+        from agent.memory.embedding import get_embedder
         _embedder = get_embedder("text")
     return _embedder
 

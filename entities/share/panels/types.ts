@@ -1,5 +1,5 @@
 /** share 实体管理面类型（/api/entity/share 链接/统计/日志）。 */
-import type { ShareMediaKind, ShareType } from "@/lib/types/share";
+import type { ShareMediaKind, ShareType } from "./chat-types";
 
 export type { ShareMediaKind, ShareType };
 

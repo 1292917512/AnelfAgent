@@ -29,5 +29,5 @@ export function PageIntro({ actions }: { actions?: ReactNode }) {
   const { t } = useTranslation("nav");
   const route = findRoute(useLocation().pathname);
   if (!route) return null;
-  return <PageHeader icon={<route.icon />} title={t(route.label)} subtitle={t(`descriptions.${route.label}`)} actions={actions} />;
+  return <PageHeader icon={<route.icon />} title={t(route.label)} subtitle={route.description ? t(route.description) : route.label.includes(":") ? undefined : t(`descriptions.${route.label}`)} actions={actions} />;
 }
