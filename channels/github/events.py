@@ -118,6 +118,7 @@ def from_poll_api(raw: Dict[str, Any]) -> RawEvent:
     api_type = str(raw.get("type") or "")
     name = POLL_TYPE_MAP.get(api_type, api_type[:-5].lower() if api_type.endswith("Event") else api_type.lower())
     payload = raw.get("payload") if isinstance(raw.get("payload"), dict) else {}
+    assert payload is not None  # isinstance 检查后 mypy 仍判 Optional，收窄为 dict
     action = str(payload.get("action") or "").strip().lower()
     if name == "watch" and not action:
         action = "started"  # Events API 的 WatchEvent 即"被标星",对齐 webhook watch.started
