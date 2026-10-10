@@ -1,11 +1,4 @@
-"""纯文本独白保底投递 + end_reply 静默收束 + 多频道路由（think_loop）单元测试。
-
-输出契约：回复一律走 send_message；纯文本在循环内只是独白（不终局、不中途
-投递），强制收尾（独白上限掐断等）时经轮末统一投递点保底送达来源会话一次；
-end_reply/[SILENT] 是静默收束——同批正文与暂存独白一律不投递；本轮已有
-输出工具成功送达则不再投递（收尾独白不外发）。
-跨会话发送走 switch_session / send_message 工具。
-"""
+"""过程正文不投递；回复仅由输出工具完成，结束、停滞与异常保持静默。"""
 
 from __future__ import annotations
 
@@ -15,37 +8,9 @@ from typing import List
 import pytest
 from helpers.think_loop_fakes import FakeMind, run_think_loop, text_result, tool_result
 
-from agent.channel.reply_route import looks_like_tool_call_text
 from agent.messages.everything import EverythingGroup
 
 _SEND_MESSAGE_RESULT = '{"success": true, "target_id": "1", "message_id": "m1"}'
-
-
-@pytest.mark.parametrize("ending", [tool_result("internal secret", ["end_reply"]), text_result("end_reply()"), text_result("[SILENT]")])
-async def test_channel_fact_receipt_covers_silent_exits(anything, deliver_mock, monkeypatch, ending) -> None:
-    from agent.channel.reply_policy import ReplyPolicy
-    from channels.minecraft.receipts import game_result_receipt
-
-    monkeypatch.setattr("agent.channel.reply_policy.get_reply_policy",
-                        lambda *a: ReplyPolicy(result_receipt=game_result_receipt))
-    mind = FakeMind(tool_results={"cancel_task": '{"ok":true,"stopped":true}'})
-    mind._rounds = [tool_result("internal secret", ["cancel_task"]), ending]
-    await _run(mind, anything)
-    deliver_mock.assert_awaited_once()
-    assert deliver_mock.await_args.args[1] == "当前动作已停止。"
-    assert mind.llm_calls == 2
-
-
-async def test_channel_receipt_not_duplicated_after_send(anything, deliver_mock, monkeypatch) -> None:
-    from agent.channel.reply_policy import ReplyPolicy
-    from channels.minecraft.receipts import game_result_receipt
-
-    monkeypatch.setattr("agent.channel.reply_policy.get_reply_policy",
-                        lambda *a: ReplyPolicy(result_receipt=game_result_receipt))
-    mind = FakeMind(tool_results={"cancel_task": '{"ok":true,"stopped":true}', "send_message": _SEND_MESSAGE_RESULT})
-    mind._rounds = [tool_result("", ["cancel_task"]), tool_result("", ["send_message"]), tool_result("", ["end_reply"])]
-    await _run(mind, anything)
-    deliver_mock.assert_not_awaited()
 
 
 @pytest.mark.parametrize("accepted", [True, False])
@@ -62,8 +27,7 @@ async def test_event_handoff_ends_only_after_real_acceptance(anything, deliver_m
     await _run(mind, anything)
     if accepted:
         assert mind.llm_calls == 1
-        deliver_mock.assert_awaited_once()
-        assert deliver_mock.await_args.args[1] == "制作任务已接单，完成或受阻后会按实际结果告诉你。"
+        deliver_mock.assert_not_awaited()
     else:
         assert mind.llm_calls == 3
         deliver_mock.assert_not_awaited()
@@ -78,7 +42,7 @@ def _run(mind, anything, steps=None, chain=None, tools=None):
 
 
 # ==================================================================
-# 纯文本独白轮末保底投递
+# 纯文本独白与回复隔离
 # ==================================================================
 
 async def test_bare_text_dropped_at_end_reply(anything, deliver_mock) -> None:
@@ -96,31 +60,26 @@ async def test_bare_text_dropped_at_end_reply(anything, deliver_mock) -> None:
     assert any("静默收束" in s for s in steps)
 
 
-async def test_bare_text_monologue_cutoff_still_delivers(anything, deliver_mock) -> None:
-    """模型一直独白不调工具：连续上限掐断，最后一段独白仍保底投递。"""
+async def test_bare_text_monologue_cutoff_never_delivers(anything, deliver_mock) -> None:
+    """模型持续独白到达上限时仍不能将过程正文外发。"""
     mind = _mind()
     steps: List[str] = []
     await _run(mind, anything, steps)
 
-    deliver_mock.assert_awaited_once()
-    _, content = deliver_mock.await_args.args
-    assert content == "我先说两句～"
+    deliver_mock.assert_not_awaited()
     assert mind.llm_calls == 5  # text_without_tool_limit
     assert any("掐断结束" in s for s in steps)
 
 
-async def test_same_group_direct_reply(deliver_mock) -> None:
-    """同源群消息：独白掐断后轮末保底投递直接回到该群，不问 AI。"""
+async def test_group_monologue_is_not_a_reply(deliver_mock) -> None:
+    """群消息与私聊使用同一输出契约，独白不得自动投递。"""
     anything = EverythingGroup(adapter_key="qq", uid=42, group_id=777, text_content="hi")
     mind = _mind(text="群里见～")
     steps: List[str] = []
     chain: List = []
     await _run(mind, anything, steps, chain)
 
-    deliver_mock.assert_awaited_once()
-    target, content = deliver_mock.await_args.args
-    assert target.session_key == "qq:group:777"
-    assert content == "群里见～"
+    deliver_mock.assert_not_awaited()
     assert not any("路由询问" in m.get("content", "") for m in chain if m.get("role") == "system")
     assert mind.llm_calls == 5  # text_without_tool_limit
 
@@ -240,7 +199,7 @@ async def test_send_message_then_other_tool_then_text_not_delivered(
 
     deliver_mock.assert_not_awaited()
     assert mind.llm_calls == 7  # 2 轮工具 + 连续 5 轮独白掐断
-    assert any("不再重复投递" in s for s in steps)
+    assert any("掐断结束" in s for s in steps)
 
 
 async def test_send_message_mixed_with_other_tool_then_text_not_delivered(
@@ -274,8 +233,8 @@ async def test_bare_text_no_thought_label(anything, deliver_mock) -> None:
 # 多会话默认路由
 # ==================================================================
 
-async def test_multi_pending_still_delivers_to_source(anything, deliver_mock) -> None:
-    """存在其他待处理会话时：独白掐断后轮末仍默认投递回来源会话，不作路由询问。"""
+async def test_multi_pending_never_broadcasts_monologue(anything, deliver_mock) -> None:
+    """其他会话待处理时，独白也不能误发到任何频道。"""
     mind = _mind(text="大家好！")
     mind.pfc.pending_tasks = [("group_777", "0", "777", "群消息预览")]
     mind.pfc.adapter_keys = {"group_777": "qq"}
@@ -285,10 +244,7 @@ async def test_multi_pending_still_delivers_to_source(anything, deliver_mock) ->
 
     assert mind.llm_calls == 5  # text_without_tool_limit
     assert not any("路由询问" in m.get("content", "") for m in chain if m.get("role") == "system")
-    deliver_mock.assert_awaited_once()
-    first_deliver_target, first_content = deliver_mock.await_args.args
-    assert first_deliver_target.session_key == "test:private:1"
-    assert first_content == "大家好！"
+    deliver_mock.assert_not_awaited()
 
 
 # ==================================================================
@@ -317,12 +273,12 @@ async def test_silence_narration_ends_turn(anything, deliver_mock, narration) ->
     deliver_mock.assert_not_awaited()
 
 
-async def test_silence_word_in_sentence_delivered(anything, deliver_mock) -> None:
-    """正文中提到 [SILENT] 不触发沉默（独白掐断后轮末正常投递）。"""
+async def test_silence_word_in_sentence_does_not_end_early(anything, deliver_mock) -> None:
+    """正文中提到 [SILENT] 不误判为结束指令，也不会自动投递。"""
     mind = _mind(text="我不太想用 [SILENT] 这种方式回应你")
     await _run(mind, anything)
 
-    deliver_mock.assert_awaited_once()
+    deliver_mock.assert_not_awaited()
     assert mind.llm_calls == 5  # text_without_tool_limit
 
 
@@ -339,7 +295,7 @@ async def test_empty_output_quietly_ends(anything, deliver_mock) -> None:
 
 
 async def test_fake_tool_call_not_delivered(anything, deliver_mock) -> None:
-    """伪造工具调用文本：独白暂存后掐断轮末投递点过滤，不外发。"""
+    """伪造工具调用文本：与普通正文一致，仅保留在过程区。"""
     mind = _mind(text='[工具执行记录] send_message {"success": true}')
     await _run(mind, anything)
 
@@ -383,25 +339,6 @@ async def test_end_reply_empty_content_not_delivered(anything, deliver_mock) -> 
 # 文本形态工具调用（弱模型把 function calling 写成文本）
 # ==================================================================
 
-class TestLooksLikeToolCallText:
-    @pytest.mark.parametrize("text", [
-        "end_reply()",
-        'end_reply(reason=群员闲聊与我无关，静默结束)',
-        'send_message(content="你好")',
-    ])
-    def test_detected(self, text: str) -> None:
-        assert looks_like_tool_call_text(text)
-
-    @pytest.mark.parametrize("text", [
-        "这个函数 end_reply() 是用来结束对话的",  # 调用形态只是正文片段
-        "我来看看（稍等）",  # 中文括号不是调用
-        "今天的结论是这样。",
-        "",
-    ])
-    def test_normal_text_not_detected(self, text: str) -> None:
-        assert not looks_like_tool_call_text(text)
-
-
 async def test_text_form_end_reply_ends_without_delivery(anything, deliver_mock) -> None:
     """弱模型把 end_reply 写成文本：按结束意图处理，内部指令文本不投递。"""
     mind = _mind()
@@ -442,7 +379,7 @@ async def test_text_form_end_reply_drops_earlier_pending(anything, deliver_mock)
 
 
 async def test_tool_call_shaped_text_filtered_at_delivery(anything, deliver_mock) -> None:
-    """整条是字面工具调用形态的独白：掐断轮末投递点过滤，不外发。"""
+    """整条是字面工具调用形态的独白：不能冒充真实发送调用。"""
     mind = _mind(text='send_message(content="你好")')
     await _run(mind, anything)
 

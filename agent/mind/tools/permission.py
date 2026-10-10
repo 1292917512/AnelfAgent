@@ -35,14 +35,15 @@ async def check_tool_permission(
         return bool(interrupts is not None and scope and interrupts.is_requested(scope))
 
     async def blocked(error: str, outcome: str) -> str:
-        await event_bus.emit(EVENT_THINKING_TOOL_END, {
-            "scope": tool_scope, "tool_name": tc.name, "tool_id": tc.id,
-            "duration_ms": 0, "error": error, "success": False,
-        })
-        return json.dumps({
+        result = json.dumps({
             "error": error, "permission_outcome": outcome, "retryable": False,
             "hint": "请根据原因调整操作，不要重复相同调用或通过其他执行通道绕过规则。",
         }, ensure_ascii=False)
+        await event_bus.emit(EVENT_THINKING_TOOL_END, {
+            "scope": tool_scope, "tool_name": tc.name, "tool_id": tc.id,
+            "duration_ms": 0, "error": error, "success": False, "result": result,
+        })
+        return result
 
     outcome: str
     try:

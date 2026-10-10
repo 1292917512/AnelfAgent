@@ -16,6 +16,32 @@ function activity(id: string, patch: Partial<ActivityRun> = {}): ActivityRun {
   };
 }
 
+test("context evidence, tagged results and cache facts remain readable on narrow screens", async ({ page }) => {
+  const run = activity("evidence", { entries: [
+    { id: "context", kind: "context", status: "done", duration_ms: 2300, ts: Date.now() / 1000, block_count: 1,
+      blocks: [{ layer: "memory", label: "Matched memory and skill candidates", content: "[group_id:42][topic:review] Evidence BLUE-42; candidate skill review-check." }] },
+    { id: "model", kind: "model", name: "review-model", status: "done", duration_ms: 8100, ts: Date.now() / 1000,
+      usage: { total_input_tokens: 12000, completion_tokens: 300, cache_observable: false, cache_read_input_tokens: 0 } },
+    { id: "receipt", kind: "tool", name: "read_file", arguments: '{"file_path":"review/task-a.txt"}', targets: [], request_id: "request-42", status: "error", duration_ms: 12, ts: Date.now() / 1000,
+      result: JSON.stringify({ error: "Missing file for [group_id:42]", hint: "Verify the path before retrying.", diagnostic: { request_id: "request-42" } }) },
+  ] });
+  await page.route("**/api/workspace/activity", (route) => route.fulfill({ json: { epoch: "test", revision: 2, runs: [run] } }));
+  await page.goto("/webui/");
+  const execution = page.getByRole("region", { name: "Global execution", exact: true });
+  await expect(execution.getByText("Cache not reported", { exact: true })).toBeVisible();
+  await expect(execution.getByText("Cached 0%", { exact: true })).toHaveCount(0);
+  await execution.getByRole("button", { name: "Memory and context 2s", exact: true }).click();
+  await execution.locator(".activity-context-detail summary").click();
+  await expect(execution.getByText("Evidence BLUE-42", { exact: false })).toBeVisible();
+  await expect(execution.locator('[title="topic: review"]')).toBeVisible();
+  await expect(execution.getByText("Verify the path before retrying.", { exact: true })).toBeVisible();
+  await execution.getByText("Full receipt", { exact: true }).click();
+  await expect(execution.getByRole("region", { name: "Result", exact: true })).toContainText("request-42");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  const accessibility = await new AxeBuilder({ page }).include(".activity-pane").analyze();
+  expect(accessibility.violations).toEqual([]);
+});
+
 test("workspace shows the global live process beside actual Web messages", async ({ page, isMobile }, info) => {
   const parent = activity("global");
   const child = activity("child", { parent_id: "global", kind: "delegation", owner_id: "delegation", actor: "Reviewer", label: "Validate deployment settings", input: "Validate deployment settings", entries: [
@@ -32,6 +58,10 @@ test("workspace shows the global live process beside actual Web messages", async
   await expect(execution.getByRole("button", { name: "Start Tracking", exact: true })).toHaveCount(0);
   await expect(execution.getByText("read_deployment_settings", { exact: true })).toBeVisible();
   await expect(execution.getByText("Group 42", { exact: true }).first()).toBeVisible();
+  const activeRuns = execution.getByRole("navigation", { name: "Active runs", exact: true });
+  await expect(activeRuns.getByRole("button")).toHaveCount(2);
+  await activeRuns.getByRole("button", { name: "qq · Inspect deployment and report the service status", exact: true }).click();
+  await expect(execution.getByRole("button", { name: "Jump to latest", exact: true })).toBeVisible();
   const parentCard = execution.locator('[data-activity-run="global"]');
   await parentCard.getByRole("button", { name: "Thought", exact: true }).click();
   await expect(parentCard.getByText("before reporting the deployment result.", { exact: false })).toBeVisible();
@@ -76,6 +106,53 @@ test("global activity snapshot failures are retryable without hiding Web message
   failed = false;
   await execution.getByRole("button", { name: "Retry", exact: true }).click();
   await expect(execution.getByText("inspect_service", { exact: true })).toBeVisible();
+});
+
+test("long execution keeps its heading fixed while tools are opened", async ({ page }) => {
+  const run = activity("long", { entries: Array.from({ length: 24 }, (_, index) => ({
+    id: `tool-${index}`, kind: "tool", name: `read_file_${index}`, status: "done", ts: Date.now() / 1000,
+    arguments: '{"path":"note.txt"}', targets: [{ key: "path", value: "note.txt" }],
+    result: "File content", duration_ms: 10, request_id: `request-${index}`,
+  })) });
+  await page.route("**/api/workspace/activity", (route) => route.fulfill({ json: { epoch: "test", revision: 1, runs: [run] } }));
+  await page.goto("/webui/");
+  const execution = page.getByRole("region", { name: "Global execution", exact: true });
+  await execution.getByRole("button", { name: "read_file_23 Completed · 10ms", exact: true }).click();
+  const geometry = await execution.evaluate((element) => ({
+    height: element.clientHeight, content: element.scrollHeight,
+    top: element.getBoundingClientRect().top,
+    heading: element.querySelector("h2")?.getBoundingClientRect().top ?? -1,
+    parentScroll: element.parentElement?.scrollTop ?? -1,
+  }));
+  expect(geometry.content).toBeLessThanOrEqual(geometry.height + 1);
+  expect(geometry.heading).toBeGreaterThanOrEqual(geometry.top);
+  expect(geometry.parentScroll).toBe(0);
+});
+
+test("only the current round mounts until the user scrolls into transient history", async ({ page, isMobile }) => {
+  const old = activity("old", { label: "Earlier completed request", status: "completed", started_at: 10, ended_at: 20, updated_at: 20, entries: [] });
+  const current = activity("current", { label: "Current live request", started_at: 30, entries: [] });
+  let restarted = false;
+  await page.route("**/api/workspace/activity", (route) => route.fulfill({ json: {
+    epoch: restarted ? "restarted" : "test", revision: 2, runs: restarted ? [] : [old, current],
+  } }));
+  await page.goto("/webui/");
+  const execution = page.getByRole("region", { name: "Global execution", exact: true });
+  await expect(execution.locator('[data-activity-run="current"]')).toBeVisible();
+  await expect(execution.locator('[data-activity-run="old"]')).toHaveCount(0);
+  const feed = execution.locator(".activity-feed");
+  if (isMobile) {
+    await feed.dispatchEvent("touchstart", { touches: [{ identifier: 1, clientX: 100, clientY: 180 }] });
+    await feed.dispatchEvent("touchend", { changedTouches: [{ identifier: 1, clientX: 100, clientY: 300 }] });
+  } else await feed.dispatchEvent("wheel", { deltaY: -120 });
+  await expect(execution.locator('[data-activity-run="old"]')).toBeVisible();
+  await expect(execution.locator('[data-activity-run="current"]')).toHaveCount(0);
+  await execution.getByRole("button", { name: "Jump to latest", exact: true }).click();
+  await expect(execution.locator('[data-activity-run="current"]')).toBeVisible();
+  await expect(execution.locator('[data-activity-run="old"]')).toHaveCount(0);
+  restarted = true;
+  await page.reload();
+  await expect(execution.locator("[data-activity-run]")).toHaveCount(0);
 });
 
 test("overview keeps maintenance separate and metric geometry aligned", async ({ page }, info) => {

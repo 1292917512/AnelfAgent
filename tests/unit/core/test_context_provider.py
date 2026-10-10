@@ -13,9 +13,12 @@ from core.context_provider import (
 
 @pytest.fixture(autouse=True)
 def clean_registry():
+    providers = list(ContextProviderRegistry._providers.values())
     ContextProviderRegistry.reset()
     yield
     ContextProviderRegistry.reset()
+    for provider in providers:
+        ContextProviderRegistry.register(provider)
 
 
 def _register(name: str = "demo") -> None:

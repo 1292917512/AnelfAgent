@@ -374,40 +374,27 @@ async def execute_tool_action(mind: Mind, decision: Decision) -> None:
     action_prompt = (
         f"你需要执行以下操作：{content}\n"
         f"原因：{decision.reason or '自主决策'}\n"
-        "请使用合适的工具完成操作，完成后调用 end_reply。"
+        "请使用合适的工具完成操作，完成后调用 end_reply。普通正文仅作为内部过程，不会自动发送。"
     )
+    target = routable_target(mind, decision.target) if decision.target else None
+    can_notify = target is not None and not await _target_is_empty_conversation(target.entity_scope)
     if decision.target:
-        # 投递契约告知：target 非空时反思产出会原样投递（下方 deliver_text），
-        # 零产出即不投递——否则反思不知道文字会外发，把内部核对结论发给用户
         action_prompt += (
-            f"\n你的最终文本产出会原样投递给 {decision.target}："
-            "需要告知对方时才输出正文；例行核对无异常、无需打扰对方时"
-            "不要输出任何正文，直接 end_reply（零产出即不投递）。"
+            f"\n需要告知结果的目标会话：{target.entity_scope}。"
+            "需要通知时通过 send_message 发送，核对成功回执后再 end_reply；"
+            "无需通知则直接结束，不发送例行核对过程。"
+            if can_notify and target is not None else
+            "\n指定通知目标不可路由或从未有过对话；仅执行内部操作，不向其他会话发送。"
         )
     messages = (
             mind.char.get_personality_msg()
             + [{"role": "user", "content": action_prompt}]
     )
     try:
-        output = await mind.reflect(messages)
+        await mind.reflect(messages, adapter_key=target.adapter_key if can_notify and target else "",
+                           allow_output_tools=can_notify)
         _hb_append(f"工具操作: {content[:60]}")
         log(f"AI 自主工具操作完成: {content[:60]}", tag="思维")
-        if decision.target and output:
-            anything = resolve_reply_target(mind, decision.target)
-            if not anything:
-                anything = routable_target(mind, decision.target)
-            if anything:
-                if await _target_is_empty_conversation(anything.entity_scope):
-                    _hb_append(
-                        f"工具操作结果未投递: 目标 '{decision.target}' 为空会话 - {content[:40]}"
-                    )
-                else:
-                    # 经统一发送管道投递（出站事实面 + 历史固化 + 投递过滤），
-                    # 不再绕过频道直发
-                    from agent.channel.reply_route import deliver_text, target_from_anything
-                    target_rt = target_from_anything(anything)
-                    if target_rt is not None:
-                        await deliver_text(target_rt, output)
     except Exception as exc:
         _hb_append(f"工具操作失败: {content[:40]} - {exc}")
         log(f"AI 自主工具操作失败: {exc}", "WARNING", tag="思维")
@@ -525,7 +512,7 @@ def _coerce_base_id(base_id: str) -> Union[int, str]:
         return base_id
 
 
-def _build_target_message(scope: str, *, trace_message_id: str = "") -> Everything:
+def _build_target_message(scope: str, *, trace_message_id: str = "", input_preview: str = "") -> Everything:
     """按规范 scope 构造投递目标消息（uid/group_id 取 base id，携带频道与子会话）。"""
     scope_type, adapter, base_id, session_id = parse_entity_scope(scope)
     target_id = _coerce_base_id(base_id)
@@ -534,6 +521,7 @@ def _build_target_message(scope: str, *, trace_message_id: str = "") -> Everythi
     else:
         message = MessageAssistant(uid=target_id, adapter_key=adapter, session_id=session_id)
     message._trace_message_id = trace_message_id
+    message._trace_input_preview = input_preview
     return message
 
 
@@ -558,7 +546,8 @@ def resolve_reply_target(mind: Mind, target: str) -> Optional[Everything]:
     signal = mind.pfc.get_pending_signal(scope)
     if not mind.pfc.consume_scope_task(scope):
         return None
-    return _build_target_message(scope, trace_message_id=signal.message_id if signal else "")
+    return _build_target_message(scope, trace_message_id=signal.message_id if signal else "",
+                                 input_preview=signal.preview if signal else "")
 
 
 async def pop_next_reply_target(mind: Mind) -> Optional[Everything]:
@@ -581,5 +570,6 @@ async def pop_next_reply_target(mind: Mind) -> Optional[Everything]:
         # 按 scope 精确消费（含未读计数/预览清理），不依赖队首位置
         signal = mind.pfc.get_pending_signal(scope)
         mind.pfc.consume_scope_task(scope)
-        return _build_target_message(scope, trace_message_id=signal.message_id if signal else "")
+        return _build_target_message(scope, trace_message_id=signal.message_id if signal else "",
+                                     input_preview=signal.preview if signal else "")
     return None

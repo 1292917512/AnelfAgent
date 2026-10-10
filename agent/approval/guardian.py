@@ -168,7 +168,7 @@ class ApprovalGuardian:
         client = manager.get_client_by_id(settings.model) if settings.model else None
         if settings.model and (client is None or not client.config.enabled):
             raise ValueError("配置的 AI 评审模型不存在或未启用")
-        remaining = deadline - time.monotonic()
+        remaining = min(settings.timeout, deadline - time.monotonic())
         if remaining <= 0:
             raise TimeoutError
         result = await manager.chat_with_fallback(

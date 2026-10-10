@@ -1,7 +1,7 @@
 """频道声明的回复入口、工具分组和操作规则。
 
-Model Experience: 运行中频道声明入口工具与规则，可为已执行操作补交事实回执。
-Token effect: 精简目录省去无关 schema；事实回执不增加模型调用。
+Model Experience: 运行中频道声明入口工具与规则。
+Token effect: 精简目录省去无关 schema。
 Cache effect: 规则放在历史后的 channel_policy 层，精简目录仅随本 scope 显式发现扩展。
 """
 
@@ -32,7 +32,6 @@ class ReplyPolicy:
     instructions: str = ""
     # None 沿用全局目录；显式名单只自动注入这些工具，仍允许本会话发现/激活。
     initial_tools: tuple[str, ...] | None = None
-    result_receipt: Callable[[Sequence[ReplyToolResult]], str] | None = None
     handoff_to_events: Callable[[Sequence[ReplyToolResult]], bool] | None = None
 
 

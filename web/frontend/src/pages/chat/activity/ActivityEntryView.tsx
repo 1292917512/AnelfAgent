@@ -7,8 +7,11 @@ import { useNow } from "@/hooks/useNow";
 import { Markdown } from "../render/Markdown";
 import { DiffView } from "../DiffView";
 import { cn } from "@/lib/utils";
-import { ActivityTargets, TaggedText } from "./ActivityReferences";
+import { ActivityTargets, TaggedText, renderTaggedText } from "./ActivityReferences";
 import { PlanMeta } from "@/components/plan/PlanMeta";
+import { ActivityContext } from "./ActivityContext";
+import { ActivityModel } from "./ActivityModel";
+import { ActivityToolResult } from "./ActivityToolResult";
 
 function readableJson(value: string): string {
   try { return JSON.stringify(JSON.parse(value), null, 2); } catch { return value; }
@@ -23,14 +26,15 @@ export function ActivityEntryView({ entry, live, onReveal }: { entry: ActivityEn
   const { t } = useTranslation("workbench");
   const [expanded, setExpanded] = useState<boolean | null>(null);
   const now = useNow("status" in entry && (entry.status === "running" || entry.status === "queued"));
+  if (entry.kind === "context") return <ActivityContext entry={entry} />;
   if (entry.kind === "file") return <DiffView {...entry} />;
-  if (entry.kind === "model") return <div className="activity-model"><span>{entry.status === "running" ? <Loader2 size={12} className="animate-spin" /> : entry.status === "error" ? <AlertCircle size={12} className="text-warn" /> : <Brain size={12} />}{entry.name}</span><span>{durationLabel(entry.status === "running" ? Math.max(0, now - entry.ts * 1000) : entry.duration_ms ?? 0)}</span>{entry.error && <p role="alert">{entry.error}</p>}</div>;
-  if (entry.kind === "text") return <div className="activity-output">{entry.truncated && <p className="activity-note">{t("activity.truncated")}</p>}<Markdown content={entry.content} /></div>;
+  if (entry.kind === "model") return <ActivityModel entry={entry} />;
+  if (entry.kind === "text") return <div className="activity-output">{entry.truncated && <p className="activity-note">{t("activity.truncated")}</p>}<Markdown content={entry.content} renderText={renderTaggedText} /></div>;
   if (entry.kind === "thinking") {
-    const open = expanded ?? live;
+    const open = expanded ?? false;
     return <div className={cn("activity-thought", live && "is-live")}>
       <button aria-expanded={open} onClick={() => setExpanded(!open)} className="activity-entry-toggle"><Brain size={15} /><span>{t(live ? "activity.thinking" : "activity.thought")}</span><ChevronDown size={14} className={cn("ml-auto transition-transform", open && "rotate-180")} /></button>
-      {open && <div className="activity-thought-content">{entry.truncated && <p className="activity-note">{t("activity.truncated")}</p>}<TaggedText content={entry.content} /></div>}
+      <div className={cn("activity-thought-content", !open && "activity-thought-preview")}>{entry.truncated && open && <p className="activity-note">{t("activity.truncated")}</p>}<TaggedText content={entry.content} /></div>
     </div>;
   }
   if (entry.kind === "plan") {
@@ -58,6 +62,6 @@ export function ActivityEntryView({ entry, live, onReveal }: { entry: ActivityEn
       <ChevronDown size={14} className={cn("text-muted transition-transform", open && "rotate-180")} />
     </button>
     <ActivityTargets targets={entry.targets} />
-    {open && <div className="activity-tool-detail">{entry.truncated && <p className="activity-note">{t("activity.truncated")}</p>}{entry.arguments && <section aria-label={t("activity.arguments")}><h4>{t("activity.arguments")}</h4><pre>{readableJson(entry.arguments)}</pre></section>}{entry.result && <section aria-label={t("activity.result")}><h4>{t("activity.result")}</h4><pre>{readableJson(entry.result)}</pre></section>}<p className="activity-trace-id">{t("activity.callId")}: {entry.id}{entry.request_id && ` · ${t("activity.requestId")}: ${entry.request_id}`}</p></div>}
+    {open && <div className="activity-tool-detail">{entry.truncated && <p className="activity-note">{t("activity.truncated")}</p>}{entry.arguments && <section aria-label={t("activity.arguments")}><h3>{t("activity.arguments")}</h3><pre>{readableJson(entry.arguments)}</pre></section>}{entry.result && <section aria-label={t("activity.result")}><h3>{t("activity.result")}</h3><ActivityToolResult result={entry.result} /></section>}<p className="activity-trace-id">{t("activity.callId")}: {entry.id}{entry.request_id && ` · ${t("activity.requestId")}: ${entry.request_id}`}</p></div>}
   </div>;
 }

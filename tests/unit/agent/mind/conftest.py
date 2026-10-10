@@ -16,7 +16,7 @@ def anything():
 
 @pytest.fixture
 def deliver_mock(monkeypatch: pytest.MonkeyPatch):
-    """拦截纯文本投递，避免真实频道发送。"""
+    """监测发送管道，验证执行过程不会自行对外投递。"""
     mock = AsyncMock(return_value=True)
-    monkeypatch.setattr("agent.mind.tools.think_loop.deliver_text", mock)
+    monkeypatch.setattr("agent.channel.output_tools.execute_send_action", mock)
     return mock

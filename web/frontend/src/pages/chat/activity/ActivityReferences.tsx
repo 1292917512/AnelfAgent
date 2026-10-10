@@ -39,3 +39,7 @@ export function TaggedText({ content }: { content: string }) {
     return <Fragment key={tag.start}>{text}<ActivityTagLabel tag={tag} /></Fragment>;
   })}{content.slice(tags[tags.length - 1]?.end ?? 0)}</>;
 }
+
+export function renderTaggedText(content: string) {
+  return <TaggedText content={content} />;
+}

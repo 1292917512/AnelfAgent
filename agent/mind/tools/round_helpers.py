@@ -92,11 +92,7 @@ class _ThinkRoundState:
     # 独白计数：REPLY 模式连续纯文本（无工具调用）轮数，达到
     # text_without_tool_limit 掐断本轮（纯文本非终局，独白不结束循环）
     consecutive_text_rounds: int = 0
-    # 未送达文本：独白暂存，强制收尾时经统一投递点保底投递一次
-    # （end_reply/[SILENT] 静默收束不投递）；输出类工具成功送达后被取代清空
-    pending_text: str = ""
-    # 本轮回复已有输出类工具成功送达：置位后轮末纯文本不再兜底投递
-    # （收尾独白不外发，与输出契约「禁止纯文本投递」一致）
+    # 当前回复流程是否已有输出工具成功送达。
     output_sent: bool = False
     max_output_recoveries: int = 0
     # 上轮真实输入占用（口径归一：prompt 含/不含缓存两种记账下均为真实占用；
@@ -236,6 +232,7 @@ async def _prepare_think_context(
         completion: Optional[Dict] = None,
         reflect_tool_selectors: Optional[List[str]] = None,
         require_output: bool = False,
+        turn_id: str = "",
 ) -> tuple[_ThinkLoopCtx, _ThinkRoundState]:
     """think_loop 会话初始化：adapter/基线消息/快照水位/守卫/管线/流式探测。"""
     from agent.mind.guardrails import GuardrailController
@@ -304,7 +301,7 @@ async def _prepare_think_context(
         journal = build_reply_journal(mind, current_scope)
 
     # 流式过程事件：turn_id 标识本轮思维会话
-    turn_id = uuid.uuid4().hex[:8]
+    turn_id = turn_id or uuid.uuid4().hex[:8]
 
     ctx = _ThinkLoopCtx(
         mind=mind,

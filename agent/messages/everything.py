@@ -73,6 +73,7 @@ class Everything(Nothing):
     created_ts_ns: int = Field(default_factory=time.time_ns)
     _tags_generated: bool = PrivateAttr(default=False)
     _trace_message_id: str = PrivateAttr(default="")
+    _trace_input_preview: str = PrivateAttr(default="")
 
     @property
     def scope_type(self) -> str:

@@ -15,6 +15,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from agent.messages.presets import MessageAssistant, MessageAssistantGroup
 from agent.mind.tools.decision_executor import (
     normalize_target_scope,
@@ -244,3 +246,36 @@ def _decision(*, target: str, content: str, reason: str = ""):
     return Decision(
         type=DecisionType.PROACTIVE, target=target, content=content, reason=reason,
     )
+
+
+@pytest.mark.parametrize(("target", "interacted", "can_notify"), [
+    (_CANONICAL, True, True),
+    (_CANONICAL, False, False),
+    ("", True, False),
+    ("unknown", True, False),
+])
+async def test_tool_action_requires_explicit_output_tool(
+    monkeypatch: pytest.MonkeyPatch, deliver_mock, target: str, interacted: bool, can_notify: bool,
+) -> None:
+    from unittest.mock import AsyncMock
+
+    from agent.mind.tools import decision_executor as de
+
+    monkeypatch.setattr(de, "_hb_append", lambda _text: None)
+    monkeypatch.setattr("agent.channel.outbound_guard.target_has_interaction", AsyncMock(return_value=interacted))
+    mind = _mind(queued=(_CANONICAL,))
+    pending = mind.pfc.peek_all_tasks()
+    mind.char = SimpleNamespace(get_personality_msg=lambda: [])
+    mind.reflect = AsyncMock(return_value="内部核对结论，不得自动发送")
+    await de.execute_tool_action(mind, _decision(target=target, content="核对文件"))
+
+    call = mind.reflect.await_args
+    assert call.kwargs["allow_output_tools"] is can_notify
+    assert call.kwargs["adapter_key"] == ("qq" if can_notify else "")
+    prompt = call.args[0][-1]["content"]
+    assert "不会自动发送" in prompt
+    if can_notify:
+        assert "通过 send_message 发送" in prompt
+        assert _CANONICAL in prompt
+    assert mind.pfc.peek_all_tasks() == pending
+    deliver_mock.assert_not_awaited()

@@ -332,9 +332,10 @@ class ContextAssembly:
 - 不需要 @ 时直接写普通文本
 
 ## 回复方式
-直接输出文字即可回复当前会话（系统自动投递）；需要 @ 提及、引用回复、
-指定其他会话或发送媒体时再调用 send_message 等工具
-（channel_id 参数填消息中 [channel:xxx] 标签的值）。"""
+回复用户通过 send_message 等输出工具投递，普通文字与工具结果属于执行过程，
+不会因为 end_reply 自动发送。需要回复时先确认投递成功，再调用 end_reply 结束；
+无需回复时可直接 end_reply。channel_id 填消息中 [channel:xxx] 标签的值，
+目标使用对应会话标识；@、引用回复及媒体按工具参数声明填写。"""
 
     @staticmethod
     def _build_media_rules(direct_vision: bool = False) -> str:
@@ -965,12 +966,12 @@ class ContextAssembly:
             if len(execution_steps) > _MAX_RENDERED_STEPS:
                 omitted = len(execution_steps) - _MAX_RENDERED_STEPS
                 lines.append(
-                    f"[已完成步骤] 此前 {omitted} 步已省略，最近 {_MAX_RENDERED_STEPS} 步"
-                    "（均已成功执行，请勿重复）："
+                    f"[执行记录] 此前 {omitted} 步已省略，最近 {_MAX_RENDERED_STEPS} 步"
+                    "（成功、失败与中断以各工具回执为准，重试前核对状态）："
                 )
                 lines.extend(execution_steps[-_MAX_RENDERED_STEPS:])
             else:
-                lines.append("[已完成步骤（以下操作已执行成功，请勿重复）]")
+                lines.append("[执行记录（包含成功、失败或中断；以工具回执为准，重试前核对状态）]")
                 lines.extend(execution_steps)
 
         pending = wm.peek_all_tasks()

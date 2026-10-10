@@ -337,7 +337,7 @@ class MindConfig:
     conversation_analysis_threshold: int = 5
     max_tool_iterations: int = 8
     # 纯工具模式：思维循环中 LLM 调用强制工具选择（tool_choice=required）。
-    # 默认关闭：纯文本输出由系统自动投递到激活会话（兜底路由），无需强制
+    # 默认关闭，允许内部分析；对外回复仍须调用输出工具。
     force_tool_use: bool = False
     # 后台任务等待：等待意图挂起的单次上限 / 单轮回复累计预算（秒）
     background_wait_timeout: float = 30.0

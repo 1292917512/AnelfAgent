@@ -1,4 +1,4 @@
-import { memo, useEffect, useState, type ReactNode } from "react";
+import { Children, memo, useEffect, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Check, Copy, ExternalLink, Link2 } from "lucide-react";
@@ -111,11 +111,15 @@ function CodeBlock({ className, children }: { className?: string; children?: Rea
 
 interface MarkdownProps {
   content: string;
+  renderText?: (text: string) => ReactNode;
 }
 
 /** 统一 Markdown 渲染：GFM + 代码高亮 + 链接卡片 + 图片灯箱（memo：content 稳定时不重解析） */
-export const Markdown = memo(function Markdown({ content }: MarkdownProps) {
+export const Markdown = memo(function Markdown({ content, renderText }: MarkdownProps) {
   const { lightbox, openLightbox } = useLightbox();
+  const text = (children: ReactNode) => renderText
+    ? Children.map(children, (child) => typeof child === "string" ? renderText(child) : child)
+    : children;
 
   return (
     <div
@@ -134,6 +138,12 @@ export const Markdown = memo(function Markdown({ content }: MarkdownProps) {
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
+          p: ({ children }) => <p>{text(children)}</p>,
+          li: ({ children }) => <li>{text(children)}</li>,
+          strong: ({ children }) => <strong>{text(children)}</strong>,
+          em: ({ children }) => <em>{text(children)}</em>,
+          td: ({ children }) => <td>{text(children)}</td>,
+          th: ({ children }) => <th>{text(children)}</th>,
           table: ({ children }) => <div className="markdown-table"><table>{children}</table></div>,
           a: ({ href, children }) => <LinkCard href={href}>{children}</LinkCard>,
           pre: ({ children }) => {

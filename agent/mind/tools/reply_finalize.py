@@ -88,7 +88,7 @@ async def finish_think(
 
     Plan 收敛不在此处：正常结束由 think_loop 的 ``_finish_round`` 在调用本函数前
     执行 ``tracker.finalize_plan``；异常路径（中断/安全上限）由 think_loop 顶层
-    finally 统一收敛（中断 → cancelled，其余 → completed）。
+    finally 统一收敛，未正常完成的计划标记为 cancelled。
 
     completion 为本次回复的容器（已由 think_loop 写入完整消息链），透传给
     complete_reply 供 EVENT_AFTER_REPLY 附带 messages 快照。
@@ -114,6 +114,7 @@ async def finish_think(
 
     await complete_reply(
         mind, anything, "", iterations,
+        error=bool(completion and completion.get("reason") == "failed"),
         tool_chain=tool_chain,
         execution_summary=execution_summary,
         completion=completion,
@@ -240,7 +241,7 @@ async def complete_reply(
 ) -> None:
     """清理回复状态并发出完成事件。
 
-    AI 的最终输出已由投递路径（send_message / 纯文本自动投递）以
+    AI 的最终输出已由输出工具（send_message 等）以
     assistant 角色写入对话历史，此处不再重复记录。
 
     EVENT_AFTER_REPLY.execution_summary 是 SkillReviewer 的唯一评审材料来源。

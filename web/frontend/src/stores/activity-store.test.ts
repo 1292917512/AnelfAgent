@@ -30,8 +30,16 @@ it("limits completed records without evicting active work", () => {
   const store = useActivityStore.getState();
   store.receive("process", run("active", 1));
   for (let n = 0; n < 50; n++) store.receive("process", { ...run(String(n), n + 2, "completed"), started_at: n + 11 });
-  expect(useActivityStore.getState().runs).toHaveLength(31);
+  expect(useActivityStore.getState().runs).toHaveLength(20);
   expect(useActivityStore.getState().runs[0]?.id).toBe("active");
+});
+
+it("also bounds active records and clears every record after a process restart", () => {
+  const store = useActivityStore.getState();
+  for (let n = 0; n < 50; n++) store.receive("process", { ...run(String(n), n + 1), started_at: n });
+  expect(useActivityStore.getState().runs).toHaveLength(20);
+  store.restore({ epoch: "restarted", revision: 0, runs: [] });
+  expect(useActivityStore.getState().runs).toEqual([]);
 });
 
 it("keeps available records and permits retry when a snapshot fails", async () => {

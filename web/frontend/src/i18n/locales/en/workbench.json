@@ -202,6 +202,11 @@
   "activity": {
     "title": "Live activity",
     "working": "Working",
+    "activeRuns": "Active runs",
+    "previousRound": "Scroll up for previous round",
+    "historyRound": "Earlier activity",
+    "nextRound": "Next round",
+    "retention": "Recent records are kept in memory and cleared on server restart",
     "idle": "Ready",
     "reconnecting": "Reconnecting",
     "empty": "Ready for the next thought",
@@ -266,6 +271,25 @@
       "media_type": "Media",
       "to_me": "To AI",
       "push": "Notification"
+    },
+    "contextPreparing": "Preparing memory and context",
+    "contextReady": "Memory and context",
+    "contextHint": "These blocks entered this turn after budget trimming. Skill candidates are suggestions; actual calls appear in tool records.",
+    "contextChars": "{{count}} characters",
+    "contextEmpty": "No additional memory or skills in this turn",
+    "modelUsage": "In {{input}} · Out {{output}}",
+    "modelCache": "Cached {{percent}}%",
+    "cacheUnknown": "Cache not reported",
+    "cacheHint": "Based only on provider-reported cache usage. Missing data does not mean a cache miss.",
+    "rawResult": "Full receipt",
+    "resultFields": {
+      "error": "Error",
+      "hint": "Suggested action",
+      "stdout": "Output",
+      "stderr": "Error output",
+      "content": "Content",
+      "output": "Result",
+      "message": "Message"
     }
   }
 }

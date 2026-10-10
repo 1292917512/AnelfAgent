@@ -14,6 +14,7 @@ from core.tool_context import request_trace
 
 EVENT_ACTIVITY_STARTED = "activity_started"
 EVENT_ACTIVITY_FINISHED = "activity_finished"
+EVENT_ACTIVITY_CONTEXT = "activity_context"
 ACTIVITY_TEXT_LIMIT = 16000
 current_activity_id: ContextVar[str] = ContextVar("activity_id", default="")
 current_activity_owner: ContextVar[dict[str, str] | None] = ContextVar("activity_owner", default=None)
@@ -35,6 +36,7 @@ class ActivityHandle:
 
     status: str = "completed"
     error: str = ""
+    turn_id: str = ""
 
 
 @asynccontextmanager
@@ -42,7 +44,7 @@ async def activity_scope(turn_id: str, scope: str, *, label: str = "", kind: str
     """为并行及嵌套执行绑定独立轮次，并在所有退出路径发出终态。"""
     parent_id = current_activity_id.get()
     token = current_activity_id.set(turn_id)
-    handle = ActivityHandle()
+    handle = ActivityHandle(turn_id=turn_id)
     try:
         await event_bus.emit(EVENT_ACTIVITY_STARTED, {
             "turn_id": turn_id, "scope": scope,

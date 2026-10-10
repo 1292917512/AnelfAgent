@@ -4,8 +4,11 @@ import type { ActivityRun, ActivitySnapshot } from "@/lib/types/activity";
 
 function retainRuns(runs: ActivityRun[]): ActivityRun[] {
   const ordered = [...runs].sort((a, b) => a.started_at - b.started_at || a.id.localeCompare(b.id));
-  const recent = new Set(ordered.filter((run) => run.status !== "running").slice(-30).map((run) => run.id));
-  return ordered.filter((run) => run.status === "running" || recent.has(run.id));
+  while (ordered.length > 20) {
+    const completed = ordered.findIndex((run) => run.status !== "running");
+    ordered.splice(completed < 0 ? 0 : completed, 1);
+  }
+  return ordered;
 }
 
 interface ActivityState {

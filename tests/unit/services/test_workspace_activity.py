@@ -17,6 +17,36 @@ from services.activity_presentation import tool_targets
 from services.workspace_activity import WorkspaceActivityService
 
 
+async def test_context_and_blocked_tools_are_visible_with_terminal_truth(activity):
+    service, _ = activity
+    async with activity_scope("run", "user_qq:1"):
+        await event_bus.emit("activity_context", {"status": "running"})
+        await event_bus.emit("activity_context", {"status": "done", "duration_ms": 250,
+            "block_count": 1, "blocks": [{"layer": "relation", "label": "关联", "content": "[uid:1] 证据"}]})
+        await event_bus.emit("thinking_tool_end", {"tool_id": "denied", "tool_name": "inspect",
+            "arguments": '{"target":"user_qq:1"}', "success": False, "result": '{"error":"禁止调用","hint":"调整参数"}'})
+    entries = service.snapshot()["runs"][0]["entries"]
+    assert len(entries) == 2
+    assert entries[0]["duration_ms"] == 250
+    assert entries[0]["blocks"][0]["content"] == "[uid:1] 证据"
+    assert entries[1]["status"] == "error"
+    assert "调整参数" in entries[1]["result"]
+
+
+async def test_child_without_final_output_is_not_marked_completed(activity):
+    service, _ = activity
+    async with activity_scope("parent", "user_qq:1"):
+        await event_bus.emit("delegation_started", {"delegation_id": "child", "goal": "验证"})
+        with activity_owner(kind="delegation", label="验证", owner_id="child"):
+            async with activity_scope("child-run", "reflect:child"):
+                pass
+        await event_bus.emit("delegation_resolved", {"delegation_id": "child", "success": False, "error": "未提交总结"})
+    runs = service.snapshot()["runs"]
+    assert runs[0]["entries"][0]["status"] == "error"
+    assert runs[1]["status"] == "failed"
+    assert runs[1]["error"] == "未提交总结"
+
+
 @pytest.fixture
 def activity(monkeypatch):
     frames = []
@@ -125,6 +155,24 @@ async def test_snapshot_is_detached_and_subscription_is_idempotent(activity):
         snapshot["runs"][0]["entries"].clear()
         assert service.snapshot()["runs"][0]["entries"][0]["content"] == "once"
         assert service.snapshot()["runs"][0]["status"] == "running"
+
+
+async def test_process_records_and_content_are_bounded(activity):
+    from services.workspace_activity import MAX_RUN_TEXT, MAX_RUNS, _text_size
+
+    service, _ = activity
+    for index in range(MAX_RUNS + 10):
+        await service._start({"turn_id": str(index), "scope": "user_test:1"})
+    assert len(service.snapshot()["runs"]) == MAX_RUNS
+    for index in range(40):
+        await service._tool_end({"turn_id": str(MAX_RUNS + 9), "tool_id": f"tool-{index}",
+                                 "tool_name": "read_file", "result": "x" * 16000, "success": True})
+    current = service.snapshot()["runs"][-1]
+    assert current["truncated"] is True
+    assert _text_size(current["entries"]) <= MAX_RUN_TEXT
+    restarted = WorkspaceActivityService()
+    assert restarted.snapshot()["runs"] == []
+    assert restarted.snapshot()["epoch"] != service.snapshot()["epoch"]
 
 
 def test_targets_decode_tags_without_inventing_routes():

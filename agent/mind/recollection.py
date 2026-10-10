@@ -7,6 +7,7 @@ Mind 类持有一行薄委托，调用方签名零变化。
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from agent.memory.memory_retriever import MemoryRetriever
@@ -20,6 +21,8 @@ from agent.memory.notes import (
     get_memory_dir,
     get_notes_path,
 )
+from agent.mind.context_observation import emit_context_summary
+from core.activity import EVENT_ACTIVITY_CONTEXT
 from core.event_bus import EVENT_THINKING_CONTEXT_BUILD, event_bus
 from core.log import log
 
@@ -29,6 +32,28 @@ if TYPE_CHECKING:
 
 
 async def get_recollection(
+        mind: "Mind",
+        conversation_list: Optional[List[Dict]] = None,
+        anything: Optional["Everything"] = None,
+        *, lean: bool = False,
+) -> List[Dict]:
+    """观测上下文准备过程，成功后展示实际装配结果，失败仍交给调用方处理。"""
+    started = time.monotonic()
+    await event_bus.emit(EVENT_ACTIVITY_CONTEXT, {"status": "running"})
+    try:
+        messages = await _get_recollection(mind, conversation_list, anything, lean=lean)
+    except BaseException as exc:
+        await event_bus.emit(EVENT_ACTIVITY_CONTEXT, {
+            "status": "interrupted" if isinstance(exc, asyncio.CancelledError) else "error",
+            "duration_ms": round((time.monotonic() - started) * 1000),
+            "error": f"{type(exc).__name__}: {exc}",
+        })
+        raise
+    await emit_context_summary(messages, round((time.monotonic() - started) * 1000))
+    return messages
+
+
+async def _get_recollection(
         mind: "Mind",
         conversation_list: Optional[List[Dict]] = None,
         anything: Optional["Everything"] = None,
@@ -183,12 +208,14 @@ async def get_recollection(
                 log(f"自我画像注入失败: {exc}", "DEBUG", tag="思维")
 
         # 跨频道语义召回 + 叙事面包屑
-        memory_msgs.extend(cross_recall_msgs)
+        memory_msgs = [{**msg, "_source": {"origin": "memory_recall"}} for msg in memory_msgs]
+        memory_msgs.extend({**msg, "_source": {"origin": "cross_channel_recall"}} for msg in cross_recall_msgs)
         narrative = mind._build_cross_channel_narrative(
             current_adapter, entity_scope, recalled_scopes,
         )
         if narrative:
-            memory_msgs.append({"role": "system", "content": narrative})
+            memory_msgs.append({"role": "system", "content": narrative,
+                                "_source": {"origin": "cross_channel_narrative"}})
 
         # 技能匹配注入（volatile 层）：当前对话语义匹配到的经验技能
         memory_msgs.extend(skill_msgs)
@@ -374,6 +401,7 @@ async def _match_skills(
         return [{
             "role": "system",
             "content": "\n\n".join(skill_lines),
+            "_source": {"origin": "skill_match"},
         }]
     except Exception as exc:
         log(f"技能匹配失败: {exc}", "DEBUG", tag="技能")

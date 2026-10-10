@@ -3,6 +3,7 @@
 提供统一的命令执行和工具检测功能
 """
 
+import locale
 import os
 import platform
 import shutil
@@ -16,6 +17,14 @@ from core.shell_env import shell_env_defaults
 
 # 版本信息输出的最大长度（超出截断并追加省略号）
 _VERSION_OUTPUT_MAX_LEN = 50
+
+
+def decode_command_output(raw: bytes) -> str:
+    """解码命令输出：保留 UTF-8，Windows 原生命令回退到系统代码页。"""
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return raw.decode(locale.getencoding(), errors="replace")
 
 
 def _is_zsh_related(command: Union[str, List[str]]) -> bool:
@@ -137,7 +146,17 @@ def run_command(command: Union[str, List[str]], timeout_sec: int = 300, env_vars
             run_kwargs['start_new_session'] = True
 
         if is_windows:
-            result = subprocess.run(command, timeout=timeout_sec, **run_kwargs)
+            run_kwargs.pop('text')
+            run_kwargs.pop('encoding')
+            run_kwargs.pop('errors')
+            if stdin_data is not None:
+                run_kwargs['input'] = stdin_data.encode('utf-8')
+            raw_result = subprocess.run(command, timeout=timeout_sec, **run_kwargs)
+            result = subprocess.CompletedProcess(
+                command, raw_result.returncode,
+                decode_command_output(raw_result.stdout or b''),
+                decode_command_output(raw_result.stderr or b''),
+            )
         else:
             result = _run_with_group_kill(command, timeout_sec, run_kwargs)
 

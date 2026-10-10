@@ -162,7 +162,7 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
     def _offline_error(self) -> str | None:
         """无在线客户端时返回失败 JSON。
 
-        无订阅者时广播等于丢消息：如实返回失败，调用方（deliver_text）
+        无订阅者时广播等于丢消息：如实返回失败，调用方
         会记录投递失败而非把回复标记为已送达。文本与媒体同一语义。
         """
         if not self._has_online_clients():

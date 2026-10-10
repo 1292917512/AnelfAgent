@@ -4,7 +4,7 @@
 think_loop 回放并断言三件套——
   1. sent_messages 布局（_layer 序列 / 消息数 / 角色序列）
   2. 工具调用序列（名称 + 顺序，经 fake tool_executor 捕获）
-  3. 出站行为（deliver_text mock：end_reply 静默收束不投递）
+  3. 出站行为（发送管道监测：end_reply 静默收束不投递）
 
 任何改动 think_loop / 上下文组装 / 出站路由的 PR，若改变了模型可见行为，
 这里的断言会红——迫使作者在 PR 里解释"行为为什么该变"。

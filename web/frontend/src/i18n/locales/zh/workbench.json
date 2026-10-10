@@ -202,6 +202,11 @@
   "activity": {
     "title": "实时过程",
     "working": "执行中",
+    "activeRuns": "正在执行的任务",
+    "previousRound": "向上查看上一轮",
+    "historyRound": "较早的执行过程",
+    "nextRound": "下一轮",
+    "retention": "仅保留最近的内存记录，服务重启后清空",
     "idle": "就绪",
     "reconnecting": "正在重连",
     "empty": "等待新的思考",
@@ -266,6 +271,25 @@
       "media_type": "媒体",
       "to_me": "指向 AI",
       "push": "通知"
+    },
+    "contextPreparing": "正在准备记忆与上下文",
+    "contextReady": "记忆与上下文",
+    "contextHint": "以下是预算裁剪后实际进入本轮上下文的内容。技能候选不代表已经执行，实际调用见工具记录。",
+    "contextChars": "{{count}} 字符",
+    "contextEmpty": "本轮没有额外记忆或技能内容",
+    "modelUsage": "输入 {{input}} · 输出 {{output}}",
+    "modelCache": "缓存 {{percent}}%",
+    "cacheUnknown": "缓存未报告",
+    "cacheHint": "仅展示供应商返回的真实输入缓存用量；未报告不代表未命中。",
+    "rawResult": "查看完整回执",
+    "resultFields": {
+      "error": "错误",
+      "hint": "处理建议",
+      "stdout": "标准输出",
+      "stderr": "错误输出",
+      "content": "内容",
+      "output": "结果",
+      "message": "说明"
     }
   }
 }

@@ -36,10 +36,6 @@ def test_policy_uses_only_its_server_registered_game_names(monkeypatch: pytest.M
     assert policy.initial_tools is not None
     assert "custom_server__get_inventory" in policy.initial_tools
     assert "get_inventory" not in policy.initial_tools
-    assert policy.result_receipt is not None
-    assert "oak_log×2" in policy.result_receipt([ReplyToolResult(
-        "custom_server__get_inventory", {"items": [{"name": "oak_log", "count": 2}]},
-    )])
     assert policy.handoff_to_events is not None
     with tool_request("group_minecraft:test") as request:
         result = ReplyToolResult("custom_server__prepare_item", {
@@ -47,7 +43,6 @@ def test_policy_uses_only_its_server_registered_game_names(monkeypatch: pytest.M
             "origin": {"requestId": request.request_id, "scope": request.scope},
         })
         assert policy.handoff_to_events([result])
-        assert "已接单" in policy.result_receipt([result])
 
 
 def test_render_preserves_skill_sections_and_is_idempotent() -> None:

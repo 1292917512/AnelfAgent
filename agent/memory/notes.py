@@ -1066,6 +1066,13 @@ async def _tool_read_memory_file(
             "tail_lines 与 offset/limit 互斥，只能选一种分段方式",
             cause=ErrorCause.PARAM, retryable=False,
         )
+    if not file_path.lower().endswith(".md"):
+        return tool_error(
+            "记忆文件只接受 .md 便签路径，当前路径不是便签文件",
+            cause=ErrorCause.PARAM, retryable=False,
+            hint="普通工作区文件请用 read_file；未出现在工具列表时先通过 list_entity_methods 查找。不要用便签工具重试。",
+            file_path=file_path,
+        )
     try:
         content = read_memory_file(file_path)
         if not content:

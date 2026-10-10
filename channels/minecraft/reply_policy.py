@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from agent.channel.reply_policy import ReplyPolicy, ReplyToolResult
 from core.entity import EntityRegistry, EntityType
 
-from .receipts import game_result_receipt, handed_to_game_events
+from .receipts import handed_to_game_events
 
 COMPANION_GAME_TOOLS = frozenset({
     "get_inventory", "get_state", "get_block_at", "place_block", "craft_item", "mine_resources", "prepare_item", "production_status",
@@ -51,7 +51,6 @@ def companion_policy(server: str) -> ReplyPolicy:
         direct_reply=True,
         tool_groups=(f"mcp:{server}",),
         initial_tools=COMPANION_DIALOGUE_TOOLS + initial_game_tools,
-        result_receipt=lambda results: game_result_receipt(canonical_results(results)),
         handoff_to_events=lambda results: handed_to_game_events(canonical_results(results)),
         instructions=(
             "[Minecraft 陪玩执行契约]\n"
@@ -61,7 +60,7 @@ def companion_policy(server: str) -> ReplyPolicy:
             "`place_block`、`craft_item`。重名时按本服务注册名映射调用，委托也使用实际目录名，禁止猜测前缀。"
             "查询和停止后必须用 send_message 报告实际结果，再 end_reply；独白与结束备注不会发到游戏。\n"
             "prepare_item / manage_supplies / gather_resources 是单任务交接入口：真实受理后本次主会话结束，"
-            "频道自动发送接单回执并由执行器终态事件报告结果，不再查询、轮询或另发完成总结。"
+            "由执行器终态事件报告结果；需要告知接单时在同批调用 send_message，不再查询、轮询或另发完成总结。"
             "如果玩家要求制作后跟随、采集后再执行其他操作等组合任务，先将完整请求及全部限制委托给 mc-worker，"
             "不要在主会话先启动其中一个交接任务而遗漏后续目标。启动失败则继续核对并解释，不作成功交接。\n"
             "木制工具、工作台和木棍的准备优先直接调用 `prepare_item`：自动核算背包材料、准备中间产物和可操作的工作台。"

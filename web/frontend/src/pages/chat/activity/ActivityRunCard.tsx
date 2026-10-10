@@ -25,12 +25,12 @@ export const ActivityRunCard = memo(function ActivityRunCard({ run, open, onTogg
       {running ? <span className="activity-live-dot" aria-label={t("activity.working")} /> : hasError ? <AlertCircle size={14} className="text-warn" aria-label={t("activity.needsAttention")} /> : stopped ? <Pause size={14} className="text-muted" aria-label={t("activity.interrupted")} /> : <Check size={14} className="text-muted" aria-label={t("activity.status.completed")} />}
       <ChevronDown size={14} className={cn("text-muted transition-transform", open && "rotate-180")} />
     </button>
-    {open ? <div className="activity-run-content">
+    {open ? <div className="activity-run-content" onClickCapture={() => onToggle(run.id, true)}>
       {run.input && <details className="activity-input"><summary>{t(run.kind === "conversation" ? "activity.request" : "activity.goal")}</summary><div><TaggedText content={run.input} /></div></details>}
       {run.truncated && <p className="activity-note">{t("activity.truncated")}</p>}
       {run.error && <p className="text-xs text-warn break-words" role="alert">{run.error}</p>}
       {run.entries.map((entry, index) => <ActivityEntryView key={entry.id} entry={entry} live={running && index === run.entries.length - 1} onReveal={onReveal} />)}
-      {running && <p className="activity-waiting"><span className="activity-live-dot" />{t(run.entries.some((entry) => entry.kind === "tool" && entry.status === "running") ? "activity.executing" : "activity.thinking")}</p>}
+      {running && <p className="activity-waiting"><span className="activity-live-dot" />{t(run.entries.some((entry) => entry.kind === "context" && entry.status === "running") ? "activity.contextPreparing" : run.entries.some((entry) => entry.kind === "tool" && entry.status === "running") ? "activity.executing" : "activity.thinking")}</p>}
       {!running && <p className="activity-run-footer">{t(`activity.status.${run.status}`, { defaultValue: run.status })} · {t("activity.operationCount", { count: tools.length })}{hasError && ` · ${t("activity.needsAttention")}`}</p>}
     </div> : <p className="activity-run-summary">{t("activity.operationCount", { count: tools.length })}{hasError && ` · ${t("activity.needsAttention")}`}</p>}
   </article>;

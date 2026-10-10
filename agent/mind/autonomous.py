@@ -232,8 +232,8 @@ META_DECISION_SYSTEM = """你是决策核心。分析当前态势，调用 decid
   self_task 是一次性具体待办（做完即止）；待处理任务（self_task）需要你选择 tool_action 来执行
 - 可以连续调用多个 decide 来表达多个决策
 - tool_action 时在 content 中描述要执行的操作；target 仅当结果需要主动
-  发送到某会话时填写（如「查完后告诉主人」）——自查/核对/内部维护类操作
-  不要填 target，填了就会把操作结果投递过去打扰对方"""
+  发送到某会话时填写（如「查完后告诉主人」）；执行时仍须通过 send_message
+  发送，普通正文不会自动投递。自查/核对/内部维护类操作不要填 target"""
 
 DECISION_TOOLS: list[dict] = [
     {
@@ -255,7 +255,7 @@ DECISION_TOOLS: list[dict] = [
                         "description": (
                             "目标会话 scope，如 user_qq:123 / group_qq:456"
                             "（reply 原样使用待处理消息的 scope，不要改写格式；"
-                            "tool_action 填了即会把操作结果投递到该会话，"
+                            "tool_action 表示需要通知的会话，执行时须调用 send_message，正文不自动发送；"
                             "自查/核对类操作不要填）"
                         ),
                     },

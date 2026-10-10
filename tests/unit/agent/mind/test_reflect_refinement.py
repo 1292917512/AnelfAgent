@@ -256,7 +256,7 @@ class TestRequiredOutput:
 
 
 class TestCompletionReason:
-    async def test_reply_budget_reports_unfinished_instead_of_pending_promise(self, anything, deliver_mock) -> None:
+    async def test_reply_budget_records_unfinished_without_delivery(self, anything, deliver_mock) -> None:
         mind = FakeMind(rounds=[text_result("我马上去制作，做好告诉你。")], default_text=None)
         completion: dict = {}
         await run_think_loop(
@@ -264,10 +264,7 @@ class TestCompletionReason:
             safety_limit=1, completion=completion,
         )
         assert completion["reason"] == "budget_exhausted"
-        deliver_mock.assert_awaited_once()
-        notice = deliver_mock.await_args.args[1]
-        assert "尚未确认整个任务完成" in notice
-        assert "马上去制作" not in notice
+        deliver_mock.assert_not_awaited()
 
     async def test_tool_rounds_cannot_complete_plan_and_budget_cancels(self, store) -> None:
         from agent.mind.tool_activation import bind_scope, reset_scope

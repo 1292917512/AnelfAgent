@@ -28,7 +28,8 @@ def manager(monkeypatch, fake_audit_sink):
     return manager
 
 
-async def test_timeout_configuration_reaches_model(settings, manager):
+async def test_timeout_configuration_reaches_model(settings, manager, monkeypatch):
+    monkeypatch.setattr("agent.approval.guardian.time", SimpleNamespace(monotonic=lambda: 119.3))
     verdict = await ApprovalGuardian().review(tool_name="t", tool_args={}, reason="", risk_level="low")
     assert verdict.approved is True
     kwargs = manager.chat_with_fallback.call_args.kwargs

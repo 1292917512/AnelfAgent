@@ -4,8 +4,16 @@ from __future__ import annotations
 
 from shell_helpers import python_command
 
-from core.command import run_command
+from core.command import decode_command_output, run_command
 from core.shell_env import shell_env_defaults
+
+
+def test_command_output_preserves_utf8_and_native_windows_errors(monkeypatch):
+    monkeypatch.setattr("core.command.locale.getencoding", lambda: "cp936")
+    error = "系统找不到指定的文件。"
+    assert decode_command_output(error.encode("cp936")) == error
+    assert decode_command_output(error.encode("utf-8")) == error
+    assert decode_command_output(b"\xef\xbb\xbfBLUE-42") == "BLUE-42"
 
 
 class TestShellEnvDefaults:
