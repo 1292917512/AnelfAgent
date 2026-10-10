@@ -10,7 +10,7 @@
   "buildAndRestart": "构建前端并重启",
   "restartConfirm": "确定要重启服务吗？重启期间服务将短暂不可用。",
   "buildRestartConfirm": "确定要重新构建前端并重启吗？构建期间服务保持运行，构建成功后自动重启。",
-  "restartingHint": "正在重启，服务恢复后页面将自动刷新…",
+  "restartingHint": "正在重启，等待新的服务进程恢复…",
   "buildingHint": "正在构建前端，构建完成后将自动重启…",
   "buildInProgress": "已有构建任务进行中",
   "frontendNotFound": "未找到前端目录",
@@ -31,5 +31,12 @@
   "crashInfo": "最近崩溃",
   "crashInfoDesc": "启动脚本守护循环在崩溃后自动重新拉起，并记录崩溃状态",
   "crashAutoRestartHint": "进程以段错误等致命信号退出时，守护循环按递增间隔自动重启；连续 5 次崩溃后停止自动拉起，需人工排查。",
-  "restartFailed": "重启请求被拒绝"
+  "restartFailed": "重启请求被拒绝",
+  "quickControlsDesc": "管理服务与部署，更新失败时保留当前运行服务。",
+  "serviceReady": "服务已恢复。当前草稿保留，准备好后刷新页面加载新版本。",
+  "reloadPage": "刷新页面",
+  "invalidOperation": "服务返回的操作信息不完整，请检查服务版本。",
+  "operationReplaced": "操作状态已变化，请查看运维面板后再试。",
+  "operationTimeout": "等待操作完成超时。未确认成功，请查看服务日志，避免重复提交。",
+  "operationFailed": "操作未完成，请查看服务日志。"
 }

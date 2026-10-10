@@ -139,5 +139,9 @@
   "welcomeTitle": "从一个想法，开始。",
   "welcomeFiles": "浏览工作区",
   "welcomeTasks": "查看任务",
-  "placeholderTouch": "输入消息，或引用工作区文件…"
+  "placeholderTouch": "输入消息，或引用工作区文件…",
+  "pendingAttachments": "待发送附件",
+  "uploadedFile": "附件",
+  "uploadFailed": "上传失败",
+  "uploadingFile": "上传中…"
 }

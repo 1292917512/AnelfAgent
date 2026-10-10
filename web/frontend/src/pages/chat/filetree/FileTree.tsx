@@ -236,7 +236,7 @@ export function FileTree({ root, onUpload, changedOnly }: Props) {
 
   const openContextMenu = useCallback(
     (e: MouseEvent, node: WorkspaceNode | null) => {
-      setMenu({ x: e.clientX, y: e.clientY, node });
+      setMenu({ x: e.clientX, y: e.clientY, node, container: e.currentTarget.closest('[role="dialog"]') ?? document.body });
     },
     [],
   );

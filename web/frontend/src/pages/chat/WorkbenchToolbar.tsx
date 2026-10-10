@@ -1,6 +1,7 @@
 import { FileCode2, FolderTree, MessageSquare, PanelRight, RotateCcw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/Button";
+import { WorkspaceTools } from "@/components/extensions/WorkspaceTools";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 
 interface Props {
@@ -28,6 +29,7 @@ export function WorkbenchToolbar({ filesInline, dockInline, conversationHidden, 
       {conversationHidden && <Button variant="ghost" size="sm" onClick={expandEditor}><MessageSquare size={16} />{t("backToChat")}</Button>}
     </div>
     <div className="flex items-center gap-1">
+      <WorkspaceTools />
       <Button variant="ghost" size="icon" className="hidden lg:inline-flex" onClick={onResetLayout} title={t("resetLayout")}><RotateCcw size={14} /></Button>
       <Button variant="ghost" size="sm" aria-label={t("toggleDock")} aria-pressed={dockInline || activeSurface === "dock"}
         onClick={() => dockInline && dockOpen ? toggleDock() : showSurface("dock")}><PanelRight size={16} /><span>{t("toggleDock")}</span></Button>

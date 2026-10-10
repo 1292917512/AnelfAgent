@@ -1,10 +1,10 @@
 import { useTranslation } from "react-i18next";
-import { FileText, Folder, Image as ImageIcon, Loader2, Music, Paperclip, Send, Square, Video, X } from "lucide-react";
+import { Paperclip, Send, Square } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui";
 import { useChatStore } from "@/stores/chat-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
-import type { PendingFile, WorkspaceSearchHit } from "@/lib/types";
+import type { WorkspaceSearchHit } from "@/lib/types";
 import { RealtimeCallPanel, RealtimeCallToggle } from "./RealtimeCallBar";
 import { detectMention, useMentionSearch } from "./mention/useMention";
 import { MentionPanel } from "./mention/MentionPanel";
@@ -13,76 +13,9 @@ import { fileReferenceMarkdown } from "@/lib/file-reference";
 import { useMediaQuery } from "@/lib/use-media-query";
 import { ModelSelect } from "@/components/models/ModelSelect";
 import { ContextChip } from "./ContextChip";
+import { PendingAttachments } from "./PendingAttachments";
 
-const FILE_TYPE_ICONS: Record<string, typeof FileText> = {
-  image: ImageIcon,
-  audio: Music,
-  video: Video,
-  file: FileText,
-};
-
-
-
-/** 大段粘贴转占位符的字符阈值（Codex 式：全文暂存，文本框只留占位符） */
 const PASTE_PLACEHOLDER_MIN_CHARS = 400;
-
-/** 单个待发送文件：工作区/项目引用用 chip 卡片（根标签 + 文件名），上传文件用缩略图 */
-function PendingFileItem({ pf, onRemove }: { pf: PendingFile; onRemove: () => void }) {
-  const { t } = useTranslation("chat");
-  // 工作区/项目引用：chip 卡片（一眼看清引用了哪个根的哪个文件）
-  if (pf.root) {
-    const isDir = pf.type === "dir";
-    const Icon = isDir ? Folder : (FILE_TYPE_ICONS[pf.type] || FileText);
-    return (
-      <div
-        title={pf.path ?? pf.file.name}
-        className="relative flex-shrink-0 group flex items-center gap-2 rounded-md border border-border bg-elevated pl-2 pr-7 py-1.5"
-      >
-        <Icon size={14} className="shrink-0 text-accent" />
-        <div className="min-w-0">
-          <div className="text-xs text-foreground truncate max-w-[160px]">{pf.file.name}</div>
-          <div className="text-[10px] text-muted">
-            {pf.root === "project" ? t("rootProject") : t("rootWorkspace")}
-            {isDir ? ` · ${t("rootDir")}` : ""}
-          </div>
-        </div>
-        <button
-          onClick={onRemove}
-          aria-label={t("removeAttachment")}
-          className="absolute right-0 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full text-muted hover:text-danger hover:bg-danger/10 flex items-center justify-center transition-colors md:opacity-0 md:group-hover:opacity-100 focus-visible:opacity-100"
-        >
-          <X size={10} />
-        </button>
-      </div>
-    );
-  }
-  // 外部上传文件：缩略图（原行为）
-  const Icon = FILE_TYPE_ICONS[pf.type] || FileText;
-  return (
-    <div className="relative flex-shrink-0 group">
-      {pf.preview ? (
-        <img src={pf.preview} alt="" className="w-16 h-16 rounded-md object-cover border border-border" />
-      ) : (
-        <div className="w-16 h-16 rounded-md border border-border bg-elevated flex flex-col items-center justify-center gap-1">
-          <Icon size={16} className="text-muted" />
-          <span className="text-[9px] text-muted truncate max-w-[56px]">{pf.file.name}</span>
-        </div>
-      )}
-      {pf.uploading && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/40 rounded-md">
-          <Loader2 size={16} className="text-white animate-spin" />
-        </div>
-      )}
-      <button
-        onClick={onRemove}
-        aria-label={t("removeAttachment")}
-        className="absolute -top-1.5 -right-1.5 w-7 h-7 rounded-full bg-danger text-white flex items-center justify-center transition-opacity opacity-100 md:opacity-0 md:group-hover:opacity-100 focus-visible:opacity-100"
-      >
-        <X size={10} />
-      </button>
-    </div>
-  );
-}
 
 /** 对话输入区：文本 + 附件 + 草稿注入 + 工作区文件拖入 + @提及 */
 export function ChatInput() {
@@ -219,15 +152,6 @@ export function ChatInput() {
 
   return (
     <div className="chat-composer shrink-0">
-      {/* 待发送附件（工作区/项目引用 chip + 上传缩略图） */}
-      {pendingFiles.length > 0 && (
-        <div className="flex flex-wrap gap-2 py-2">
-          {pendingFiles.map((pf, idx) => (
-            <PendingFileItem key={`${pf.file.name}-${idx}`} pf={pf} onRemove={() => removeFile(idx)} />
-          ))}
-        </div>
-      )}
-
       {/* 通话状态条（仅通话中显示：状态/转写/电平/音量） */}
       <RealtimeCallPanel />
 
@@ -245,6 +169,7 @@ export function ChatInput() {
             onHover={setActiveIndex}
           />
         )}
+        <PendingAttachments files={pendingFiles} onRemove={removeFile} />
         <textarea
           ref={inputRef}
           value={input}

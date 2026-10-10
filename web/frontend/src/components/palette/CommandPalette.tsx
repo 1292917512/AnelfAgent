@@ -108,9 +108,9 @@ export function CommandPalette() {
       results.files.length > 0);
 
   return (
-    <DialogSurface open={open} onClose={close} title={t("label")} placement="top" className="max-w-xl overflow-hidden">
+    <DialogSurface open={open} onClose={close} title={t("label")} placement="top" className="command-palette max-w-xl overflow-hidden">
         <Command label={t("label")} loop>
-          <div className="flex items-center gap-2 px-3 border-b border-border">
+          <div className="integrated-field palette-search flex items-center gap-3 px-4 border-b border-border">
             <Search size={16} className="shrink-0 text-muted" />
             <Command.Input
               autoFocus

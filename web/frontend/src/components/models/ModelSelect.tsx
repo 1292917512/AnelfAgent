@@ -102,7 +102,7 @@ export function ModelSelect({
         onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setOpen(false); } }}
         className="z-[120] flex max-h-[var(--radix-popover-content-available-height)] w-[360px] max-w-[calc(100vw-24px)] flex-col overflow-hidden rounded-xl border border-border bg-card text-foreground shadow-lg outline-none">
         <Command label={t("searchModels")} value={highlighted} onValueChange={setHighlighted} loop className="flex min-h-0 flex-col">
-          <div className="flex shrink-0 items-center gap-2 border-b border-border px-3">
+          <div className="integrated-field palette-search flex shrink-0 items-center gap-2 border-b border-border px-3">
             <Search size={15} className="shrink-0 text-muted" />
             <Command.Input aria-label={t("searchModels")} placeholder={t("searchModels")}
               className="h-11 min-w-0 flex-1 bg-transparent text-sm outline-none" />

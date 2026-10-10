@@ -7,12 +7,14 @@ syncEntityPanels();
 syncModuleLinks();
 
 export default defineConfig({
+  root: path.resolve(__dirname, "../.."),
+  cacheDir: path.resolve(__dirname, "node_modules/.vite"),
   plugins: [react()],
   resolve: { alias: { "@": path.resolve(__dirname, "src"), "@entities": path.resolve(__dirname, "../../entities"), "@channels": path.resolve(__dirname, "../../channels") } },
   test: {
     environment: "jsdom",
-    include: ["src/**/*.test.{ts,tsx}"],
-    setupFiles: ["src/test/setup.ts"],
+    include: ["web/frontend/src/**/*.test.{ts,tsx}", "entities/*/panels/**/*.test.{ts,tsx}", "channels/*/frontend/**/*.test.{ts,tsx}"],
+    setupFiles: [path.resolve(__dirname, "src/test/setup.ts")],
     restoreMocks: true,
   },
 });

@@ -55,7 +55,7 @@ export function Sidebar({ mobile = false }: { mobile?: boolean }) {
         onClick={toggleSidebar} aria-expanded={!collapsed} aria-label={t(collapsed ? "expandSidebar" : "collapseSidebar")} title={t(collapsed ? "expandSidebar" : "collapseSidebar")}>
         {collapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
       </Button>}
-      <div className={cn("mx-3 mb-3 flex h-9 shrink-0 items-center rounded-lg", collapsed ? "justify-center" : "border border-border bg-card pr-2.5")}>
+      <div className={cn("integrated-field mx-3 mb-3 flex h-9 shrink-0 items-center rounded-lg", collapsed ? "justify-center" : "border border-border bg-card pr-2.5")}>
         <Button variant="ghost" size="icon" className="shrink-0" aria-label={t("search")} onClick={() => setPaletteOpen(true)}><Search size={18} /></Button>
         {!collapsed && <input aria-label={t("filterNavigation")} placeholder={t("filterNavigation")} value={filter}
           onChange={(event) => setFilter(event.target.value)} className="h-9 w-full min-w-0 bg-transparent text-xs outline-none placeholder:text-muted" />}

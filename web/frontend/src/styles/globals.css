@@ -1,6 +1,9 @@
 @import "tailwindcss";
 @import "./shell.css";
 @import "./workbench.css";
+@source "../../../../entities/*/panel.tsx";
+@source "../../../../entities/*/panels/**/*.{ts,tsx}";
+@source "../../../../channels/*/frontend/**/*.{ts,tsx}";
 
 /* dark: 变体跟随应用主题（<html class="dark">），而非系统 prefers-color-scheme */
 @custom-variant dark (&:where(.dark, .dark *));

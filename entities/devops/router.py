@@ -26,9 +26,7 @@ def build_router() -> APIRouter:
     @router.post("/build-restart")
     async def build_restart() -> Dict[str, Any]:
         """后台构建前端，成功后自动重启；面板轮询 /build-state 跟踪进度。"""
-        if not service.start_build_and_restart():
-            return {"ok": False, "error": "build_in_progress"}
-        return {"ok": True, "building": True}
+        return service.start_build_and_restart()
 
     @router.get("/build-state")
     async def build_state() -> Dict[str, Any]:
@@ -48,12 +46,6 @@ def build_router() -> APIRouter:
     @router.post("/update-restart")
     async def update_restart() -> Dict[str, Any]:
         """拉取最新代码后后台构建前端并重启；拉取失败/冲突则不进入构建。"""
-        pull = await asyncio.to_thread(service.git_pull)
-        if not pull["ok"]:
-            return pull
-        if not service.start_build_and_restart():
-            return {"ok": False, "error": "build_in_progress",
-                    "pull_result": pull.get("pull_result")}
-        return {"ok": True, "building": True, "pull_result": pull.get("pull_result")}
+        return service.start_build_and_restart(update=True)
 
     return router

@@ -27,6 +27,7 @@ import { parentPath } from "./file-tree-utils";
 export interface MenuState {
   x: number;
   y: number;
+  container: Element;
   /** null 表示空白区域（根级操作） */
   node: WorkspaceNode | null;
 }
@@ -65,9 +66,12 @@ export function FileTreeContextMenu({ menu, root, containerRef, onClose, onDelet
     if (!el) return;
     const rect = el.getBoundingClientRect();
     setPos({
-      x: Math.min(menu.x, window.innerWidth - rect.width - 8),
-      y: Math.min(menu.y, window.innerHeight - rect.height - 8),
+      x: Math.max(8, Math.min(menu.x, window.innerWidth - rect.width - 8)),
+      y: Math.max(8, Math.min(menu.y, window.innerHeight - rect.height - 8)),
     });
+    const previous = document.activeElement;
+    el.querySelector<HTMLButtonElement>("button")?.focus();
+    return () => { if (previous instanceof HTMLElement && previous.isConnected) previous.focus(); };
   }, [menu]);
 
   useEffect(() => {
@@ -163,16 +167,28 @@ export function FileTreeContextMenu({ menu, root, containerRef, onClose, onDelet
   return createPortal(
     <div
       ref={ref}
-      className="fixed z-[120] min-w-40 py-1 rounded-lg border border-border bg-card shadow-xl"
+      role="menu"
+      className="file-tree-menu fixed z-[120] min-w-40 max-h-[calc(100dvh-16px)] overflow-y-auto p-1 rounded-xl border border-border bg-card shadow-xl"
       style={{ left: pos.x, top: pos.y }}
       onMouseDown={(e) => e.stopPropagation()}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" || event.key === "Tab") { event.preventDefault(); event.stopPropagation(); onClose(); return; }
+        if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button"));
+        const current = buttons.findIndex((button) => button === document.activeElement);
+        const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : (current + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
+        buttons[next]?.focus();
+      }}
     >
       {items.map((item) => (
         <div key={item.key}>
           {item.dividerBefore && <div className="my-1 border-t border-border" />}
           <button
+            role="menuitem"
             className={cn(
-              "flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left transition-colors",
+              "flex min-h-9 items-center gap-2 w-full rounded-lg px-3 py-1.5 text-xs text-left transition-colors",
               item.danger ? "text-danger hover:bg-danger/10" : "text-foreground hover:bg-hover",
             )}
             onClick={item.onClick}
@@ -183,6 +199,6 @@ export function FileTreeContextMenu({ menu, root, containerRef, onClose, onDelet
         </div>
       ))}
     </div>,
-    document.body,
+    menu.container,
   );
 }

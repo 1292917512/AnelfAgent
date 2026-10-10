@@ -9,6 +9,7 @@ import { toast } from "./stores/toast-store";
 import { apiErrorMessage, setApiErrorHandler, setUnauthorizedHandler } from "./lib/api";
 import { createQueryClient } from "./lib/query-client";
 import { initChannelPlugins } from "./lib/channel-plugins";
+import { initUiContributions } from "./lib/ui-contribution-registry";
 import { recoverChunk } from "./lib/chunk-recovery";
 import i18n from "./i18n";
 import "./styles/globals.css";
@@ -31,7 +32,7 @@ async function bootstrap() {
   if (!container) throw new Error("Application root is missing");
   const root = createRoot(container);
   try {
-    await initChannelPlugins();
+    await Promise.all([initChannelPlugins(), initUiContributions()]);
     root.render(<StrictMode><QueryClientProvider client={queryClient}><App /></QueryClientProvider></StrictMode>);
   } catch (error) {
     root.render(<div className="mx-auto max-w-xl p-8"><QueryError error={error} retry={() => location.reload()} /></div>);

@@ -54,10 +54,23 @@
   transform: translateY(-150%);
 }
 .skip-link:focus { transform: translateY(0); }
-:where(button, a, input, select, textarea, [tabindex]):focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 3px;
+:where(button, a, [tabindex]):not([tabindex="-1"]):focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 75%, transparent);
+  outline-offset: 2px;
 }
+:where(input, select, textarea):focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-subtle); }
+input:is([type="checkbox"], [type="radio"], [type="range"]):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; box-shadow: none; }
+.integrated-field:has(input:focus-visible) { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-subtle); }
+.integrated-field input:focus-visible, .composer-card textarea:focus-visible { outline: none; box-shadow: none; }
+.palette-search:has(input:focus-visible) { border-color: var(--border); box-shadow: inset 0 -2px var(--accent); background: color-mix(in srgb, var(--accent-subtle) 45%, var(--card)); }
+.palette-search input { min-height: 56px; }
+.palette-search:has(input:focus-visible) > svg { color: var(--accent); }
+.command-option { border: 1px solid transparent; transition: background 120ms, color 120ms; }
+.command-option[aria-selected="true"] { border-color: color-mix(in srgb, var(--accent) 25%, transparent); }
+.command-option[aria-selected="true"] > svg { color: var(--accent); }
+.command-option:focus-visible { outline-offset: -2px; }
+[role="treeitem"]:focus-visible { outline-offset: -2px; border-radius: 6px; }
+.file-tree-menu [role="menuitem"]:focus-visible { outline-offset: -2px; background: var(--accent-subtle); color: var(--accent); }
 :where(button, a) { -webkit-tap-highlight-color: transparent; }
 :where(input, select, textarea)[aria-invalid="true"] { border-color: var(--danger); }
 @media (max-width: 767px) {
@@ -66,6 +79,7 @@
   .app-header { min-height: 52px; height: 52px; padding-inline: max(12px, env(safe-area-inset-left)); }
   .app-header button { min-width: 40px; min-height: 40px; }
   .app-button { min-height: 44px; }
+  .file-tree-menu [role="menuitem"] { min-height: 44px; }
   .app-button[data-size="icon"] { min-width: 44px; }
   .mobile-menu .sidebar-navigation { padding-inline: 16px; }
   .mobile-menu .navigation-group { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }

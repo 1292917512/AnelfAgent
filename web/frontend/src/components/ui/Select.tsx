@@ -14,7 +14,6 @@ export const Select = forwardRef<HTMLSelectElement, SelectHTMLAttributes<HTMLSel
         className={cn(
           "w-full h-9 appearance-none rounded-md border border-input bg-elevated pl-3 pr-8 text-sm text-foreground",
           "transition-colors cursor-pointer",
-          "focus:outline-none focus:border-ring focus:ring-1 focus:ring-ring",
           "disabled:opacity-50 disabled:cursor-not-allowed",
         )}
         {...rest}

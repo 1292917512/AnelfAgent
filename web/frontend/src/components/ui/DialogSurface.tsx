@@ -43,7 +43,8 @@ export function DialogSurface({
           }}
           onEscapeKeyDown={(event) => {
             const owner = event.target instanceof Element ? event.target.closest('[role="dialog"]') : null;
-            if (!dismissible || (owner && owner !== surfaceRef.current)) event.preventDefault();
+            const menu = event.target instanceof Element && event.target.closest('[role="menu"]');
+            if (!dismissible || menu || (owner && owner !== surfaceRef.current)) event.preventDefault();
           }}
           onPointerDownOutside={(event) => { if (!dismissible) event.preventDefault(); }}
         >

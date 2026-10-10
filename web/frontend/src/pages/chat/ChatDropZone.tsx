@@ -8,7 +8,7 @@
  * 外部文件（FileList）拖入不在 react-dnd 语义内，仍走 DOM drop → addFiles。
  */
 
-import { useCallback, type DragEvent, type ReactNode } from "react";
+import { useCallback, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { FileUp } from "lucide-react";
 import { DndProvider, useDrop } from "react-dnd";
@@ -35,6 +35,8 @@ function ChatDropZoneInner({ children, className }: { children: ReactNode; class
   const attachWorkspaceFile = useChatStore((s) => s.attachWorkspaceFile);
   const attachWorkspaceDir = useChatStore((s) => s.attachWorkspaceDir);
   const addFiles = useChatStore((s) => s.addFiles);
+  const dragDepth = useRef(0);
+  const [filesOver, setFilesOver] = useState(false);
 
   // react-dnd target：树节点（含目录）落进对话区
   const [{ isOver }, dropRef] = useDrop(() => ({
@@ -53,6 +55,8 @@ function ChatDropZoneInner({ children, className }: { children: ReactNode; class
   // 外部文件（FileList）：DOM drop（react-dnd 不管非树 item 的浏览器默认行为）
   const onDrop = useCallback((e: DragEvent) => {
     e.preventDefault();
+    dragDepth.current = 0;
+    setFilesOver(false);
     if (e.dataTransfer.files.length > 0) void addFiles(e.dataTransfer.files);
   }, [addFiles]);
   const onDragOver = useCallback((e: DragEvent) => {
@@ -71,9 +75,18 @@ function ChatDropZoneInner({ children, className }: { children: ReactNode; class
       className={cn("relative", className)}
       onDrop={onDrop}
       onDragOver={onDragOver}
+      onDragEnter={(event) => {
+        if (!event.dataTransfer.types.includes("Files")) return;
+        dragDepth.current += 1;
+        setFilesOver(true);
+      }}
+      onDragLeave={() => {
+        dragDepth.current = Math.max(0, dragDepth.current - 1);
+        if (!dragDepth.current) setFilesOver(false);
+      }}
     >
       {children}
-      {isOver && (
+      {(isOver || filesOver) && (
         <div
           aria-hidden
           className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-lg border-2 border-dashed border-accent/60 bg-accent/10"

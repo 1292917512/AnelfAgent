@@ -147,21 +147,18 @@ def update_and_restart(message: str = "") -> str:
     Args:
         message: 给重启后的自己的留言（接续指令 / 待办 / 要验证的事项），可空
     """
-    pull = service.git_pull()
-    if not pull["ok"]:
-        pull["message"] = f"{pull.get('message', '更新失败')}（不会重启）"
-        return _result("update_and_restart", **pull)
-
     result = service.build_and_restart_blocking(
-        wait_idle=True, handoff=_restart_handoff(message))
+        wait_idle=True, handoff=_restart_handoff(message), update=True)
     if result["ok"]:
         return _result("update_and_restart", ok=True,
-                       pull_result=pull.get("pull_result"),
+                       pull_result=result.get("pull_result"),
                        message="代码已更新、前端已构建。请立即调用 end_reply 结束本轮回复，"
                                "系统会等本轮思考收尾后自动重启，完成后唤醒你并回报结果。")
     return _result("update_and_restart", ok=False,
-                   pull_result=pull.get("pull_result"),
-                   message="代码已更新，但前端构建失败，已取消重启",
+                   error=result.get("error"), pull_result=result.get("pull_result"),
+                   conflict=result.get("conflict", False), detail=result.get("detail", ""),
+                   dirty_files=result.get("dirty_files", ""),
+                   message=result.get("message") or "更新或构建未完成，已取消重启",
                    log_tail=(result.get("build") or {}).get("log_tail", "")[-1000:])
 
 

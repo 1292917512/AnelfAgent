@@ -139,5 +139,9 @@
   "welcomeTitle": "A little space for your next idea.",
   "welcomeFiles": "Explore files",
   "welcomeTasks": "View tasks",
-  "placeholderTouch": "Message your agent, or reference a file…"
+  "placeholderTouch": "Message your agent, or reference a file…",
+  "pendingAttachments": "Pending attachments",
+  "uploadedFile": "Attachment",
+  "uploadFailed": "Upload failed",
+  "uploadingFile": "Uploading…"
 }

@@ -8,7 +8,7 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ["e2e/**/*.ts"],
+    files: ["e2e/**/*.{ts,mts}", "../../entities/*/panels/e2e/**/*.{ts,mts}", "../../channels/*/frontend/e2e/**/*.{ts,mts}"],
     languageOptions: { globals: { ...globals.browser, ...globals.node } },
   },
   {

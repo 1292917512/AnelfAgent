@@ -10,17 +10,26 @@ export interface DevopsBuildResult {
 export interface DevopsBuildState {
   building: boolean;
   last: DevopsBuildResult | null;
+  runtime_id: string;
+  operation_id: string | null;
+  restarting: boolean;
+  phase: "idle" | "pulling" | "building" | "restarting" | "failed" | "updated";
+  result: DevopsActionResult | null;
 }
 
 export interface DevopsActionResult {
   ok: boolean;
   error?: string;
   message?: string;
+  detail?: string;
   building?: boolean;
   restarting?: boolean;
   conflict?: boolean;
   pull_result?: string;
   dirty_files?: string;
+  runtime_id?: string;
+  operation_id?: string;
+  build?: DevopsBuildResult;
 }
 
 export interface DevopsCrashIps {

@@ -9,6 +9,8 @@
   },
   "include": [
     "e2e",
-    "playwright.config.ts"
+    "playwright.config.ts",
+    "../../entities/*/panels/e2e",
+    "../../channels/*/frontend/e2e"
   ]
 }

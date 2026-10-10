@@ -38,6 +38,13 @@
 .composer-card:focus-within { box-shadow: 0 0 0 3px var(--accent-subtle), 0 4px 20px rgb(15 23 42 / .04); }
 .composer-card textarea { min-height: 56px; padding: 16px 16px 8px; outline: none; }
 .composer-card textarea:focus-visible { outline: none; }
+.composer-attachments { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 180px), 1fr)); gap: 6px; max-height: min(164px, 24dvh); overflow-y: auto; overscroll-behavior: contain; margin: 10px 10px 0; padding: 2px; list-style: none; }
+.composer-attachment { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 5px 4px 5px 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); }
+.attachment-icon { display: grid; place-items: center; flex-shrink: 0; width: 32px; height: 32px; overflow: hidden; border-radius: 7px; color: var(--accent); background: var(--accent-subtle); }
+.attachment-icon img { width: 100%; height: 100%; object-fit: cover; }
+.attachment-remove { display: grid; place-items: center; width: 30px; height: 32px; flex-shrink: 0; border-radius: 7px; color: var(--muted); }
+.attachment-remove:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); }
+.composer-attachments + textarea { padding-top: 10px; }
 .composer-model { max-width: 160px; background: transparent; border-color: transparent; }
 .conversation-welcome { display: flex; min-height: 100%; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 32px 20px; }
 .conversation-welcome h3 { margin-top: 24px; font-size: clamp(22px, 3cqw, 32px); letter-spacing: -.035em; color: var(--text-strong); font-weight: 600; }
@@ -73,6 +80,8 @@
   .composer-card textarea { font-size: 16px; min-height: 48px; padding: 12px; max-height: min(180px, 25dvh); }
   .composer-model { max-width: 138px; min-height: 44px; }
   .composer-actions { padding-inline: 8px; }
+  .attachment-remove { width: 40px; height: 40px; }
+  .composer-attachments { margin: 8px 8px 0; grid-template-columns: repeat(auto-fill, minmax(min(100%, 160px), 1fr)); }
   .conversation-welcome { padding-block: 20px; }
   .conversation-welcome h3 { margin-top: 18px; font-size: 24px; }
   .conversation-welcome p { font-size: 13px; }

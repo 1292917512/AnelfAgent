@@ -13,7 +13,7 @@ export const devopsApi = {
   restart: () => api.post<DevopsActionResult>("/entity/devops/restart"),
   crashInfo: () => api.get<DevopsCrashInfo>("/entity/devops/crash-info"),
   buildAndRestart: () => api.post<DevopsActionResult>("/entity/devops/build-restart"),
-  buildState: () => api.get<DevopsBuildState>("/entity/devops/build-state"),
-  update: () => api.post<DevopsActionResult>("/entity/devops/update"),
+  buildState: () => api.get<DevopsBuildState>("/entity/devops/build-state", { timeout: 5000 }),
+  update: () => api.post<DevopsActionResult>("/entity/devops/update", undefined, { timeout: 150000 }),
   updateAndRestart: () => api.post<DevopsActionResult>("/entity/devops/update-restart"),
 };

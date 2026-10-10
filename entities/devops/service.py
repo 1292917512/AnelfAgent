@@ -22,6 +22,7 @@ import json
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -54,13 +55,13 @@ _HANDOFF_MESSAGE_LIMIT = 2000
 # 只清理不投递（防止进程被 kill 后数小时才手动启动时投递过期留言）
 _HANDOFF_TTL_SECONDS = 3600.0
 
-_build_state: Dict[str, Any] = {"building": False, "last": None}
-_build_lock = threading.Lock()
+_runtime_id = uuid.uuid4().hex
+_build_state: Dict[str, Any] = {"building": False, "last": None, "phase": "idle", "result": None, "operation_id": None}
+_operation_lock = threading.Lock()
 
 
 # ── 重启 ─────────────────────────────────────────────────────────────
 
-_restart_lock = threading.Lock()
 _restart_pending = False
 
 
@@ -200,13 +201,15 @@ def request_restart(
             重启完成重新拉起后由原会话消费
     """
     global _restart_pending
-    with _restart_lock:
+    with _operation_lock:
         if _restart_pending:
             # 已排定：仅在新留言非空时更新交接，避免空留言覆盖已写内容
             if handoff and handoff.get("message", "").strip():
                 write_handoff(handoff.get("scope", ""), handoff.get("channel", ""),
                               handoff.get("message", ""), source)
-            return {"ok": True, "restarting": True, "already_pending": True}
+            return {"ok": True, "restarting": True, "already_pending": True, "runtime_id": _runtime_id}
+        if _build_state["building"] and source != "build_and_restart":
+            return {"ok": False, "error": "build_in_progress", "message": "更新或构建正在进行，请等待完成后再重启"}
         if not _is_supervised():
             log(
                 f"拒绝重启请求（来源 {source}）：进程非 start.sh 守护拉起，重启将等同关机",
@@ -227,7 +230,7 @@ def request_restart(
         schedule_restart_when_idle(delay)
     else:
         schedule_restart(delay)
-    return {"ok": True, "restarting": True}
+    return {"ok": True, "restarting": True, "runtime_id": _runtime_id}
 
 
 # ── 崩溃信息 ─────────────────────────────────────────────────────────
@@ -260,17 +263,20 @@ def get_crash_info() -> Dict[str, Any]:
 
 def get_build_state() -> Dict[str, Any]:
     """查询前端构建状态（building / 最近一次构建结果）。"""
-    return _build_state
+    with _operation_lock:
+        return {**_build_state, "last": dict(_build_state["last"]) if _build_state["last"] else None,
+                "result": dict(_build_state["result"]) if _build_state["result"] else None,
+                "runtime_id": _runtime_id, "restarting": _restart_pending}
 
 
-def try_begin_build() -> Optional[Dict[str, Any]]:
-    """抢占构建名额；前端目录不存在或已有构建进行时返回错误字典，否则返回 None。"""
-    if not (FRONTEND_DIR / "package.json").exists():
+def _begin_operation(phase: str, require_frontend: bool = True) -> Optional[Dict[str, Any]]:
+    """原子占用运维操作名额，防止更新、构建与重启并发。"""
+    if require_frontend and not (FRONTEND_DIR / "package.json").exists():
         return {"ok": False, "error": "frontend_not_found"}
-    with _build_lock:
-        if _build_state["building"]:
+    with _operation_lock:
+        if _build_state["building"] or _restart_pending:
             return {"ok": False, "error": "build_in_progress"}
-        _build_state["building"] = True
+        _build_state.update(building=True, phase=phase, result=None, operation_id=uuid.uuid4().hex)
     return None
 
 
@@ -281,7 +287,6 @@ def _finish_build(ok: bool, started: float, log_tail: str) -> None:
         "finished_at": datetime.now().isoformat(timespec="seconds"),
         "log_tail": log_tail[-_LOG_TAIL_LIMIT:],
     }
-    _build_state["building"] = False
 
 
 async def _run_build() -> None:
@@ -298,6 +303,11 @@ async def _run_build() -> None:
         )
         try:
             out, _ = await asyncio.wait_for(proc.communicate(), timeout=_BUILD_TIMEOUT)
+        except asyncio.CancelledError:
+            proc.kill()
+            await proc.wait()
+            _finish_build(False, started, "构建已取消")
+            raise
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
@@ -322,46 +332,81 @@ async def _run_build() -> None:
 async def build_and_restart(
     wait_idle: bool = False,
     handoff: Optional[Dict[str, str]] = None,
+    update: bool = False,
 ) -> Dict[str, Any]:
     """构建前端，成功后调度重启；构建失败则取消重启并返回错误。"""
-    error = try_begin_build()
+    error = _begin_operation("pulling" if update else "building")
     if error:
         return error
-    await _run_build()
-    last = _build_state["last"]
-    if last and last["ok"]:
-        restart = request_restart(
-            source="build_and_restart", wait_idle=wait_idle, handoff=handoff)
-        if not restart["ok"]:
-            return {"ok": False, "error": restart["error"],
-                    "message": f"前端构建成功，但{restart['message']}", "build": last}
-        log("构建成功，即将重启", tag="运维")
-        return {"ok": True, "restarting": True, "build": last}
-    return {"ok": False, "error": "build_failed", "build": last}
+    return await _complete_build(wait_idle=wait_idle, handoff=handoff, update=update)
+
+
+async def _complete_build(
+    wait_idle: bool = False, handoff: Optional[Dict[str, str]] = None, update: bool = False,
+) -> Dict[str, Any]:
+    """执行已占用构建名额的更新、构建、重启流程，并保留完整终态。"""
+    result: Dict[str, Any] = {"ok": False, "error": "cancelled", "message": "操作已取消"}
+    pull_result = ""
+    try:
+        if update:
+            _build_state["phase"] = "pulling"
+            pull_task = asyncio.create_task(asyncio.to_thread(_git_pull))
+            try:
+                pull = await asyncio.shield(pull_task)
+            except asyncio.CancelledError:
+                try:
+                    await pull_task
+                finally:
+                    raise
+            if not pull["ok"]:
+                result = pull
+                return result
+            pull_result = pull.get("pull_result", "")
+        _build_state["phase"] = "building"
+        await _run_build()
+        last = _build_state["last"]
+        if not last or not last["ok"]:
+            result = {"ok": False, "error": "build_failed", "build": last}
+        else:
+            restart = request_restart(source="build_and_restart", wait_idle=wait_idle, handoff=handoff)
+            result = {**restart, "build": last}
+        if pull_result:
+            result["pull_result"] = pull_result
+        return result
+    except Exception as exc:
+        result = {"ok": False, "error": "operation_failed", "message": str(exc)}
+        log(f"运维操作失败: {exc}", "ERROR", tag="运维")
+        return result
+    finally:
+        with _operation_lock:
+            _build_state.update(building=False, result=result, phase="restarting" if result.get("ok") else "failed")
 
 
 def build_and_restart_blocking(
     wait_idle: bool = False,
     handoff: Optional[Dict[str, str]] = None,
+    update: bool = False,
 ) -> Dict[str, Any]:
     """build_and_restart 的同步包装（供工具工作线程使用，私有循环内执行子进程）。"""
-    return asyncio.run(build_and_restart(wait_idle=wait_idle, handoff=handoff))
+    return asyncio.run(build_and_restart(wait_idle=wait_idle, handoff=handoff, update=update))
 
 
 _background_tasks: set[asyncio.Task[Dict[str, Any]]] = set()
 
 
-def start_build_and_restart() -> bool:
+def start_build_and_restart(update: bool = False) -> Dict[str, Any]:
     """在当前事件循环上后台执行构建并重启（供 HTTP 路由使用）。
 
-    持有任务引用避免被 GC 提前回收；已有构建进行时返回 False。
+    提交任务前同步占用名额，拒绝重复请求；结果由 build-state 查询。
     """
-    if _build_state["building"]:
-        return False
-    task = asyncio.create_task(build_and_restart(), name="devops.build_restart")
+    asyncio.get_running_loop()
+    error = _begin_operation("pulling" if update else "building")
+    if error:
+        return error
+    task = asyncio.create_task(_complete_build(update=update), name="devops.build_restart")
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
-    return True
+    return {"ok": True, "building": True, "runtime_id": _runtime_id, "operation_id": _build_state["operation_id"]}
 
 
 # ── 项目代码更新 ──────────────────────────────────────────────────────
@@ -383,13 +428,15 @@ def _has_conflict(output: str) -> bool:
     return any(m in output for m in conflict_markers)
 
 
-def git_pull() -> Dict[str, Any]:
+def _git_pull() -> Dict[str, Any]:
     """从远程仓库拉取最新代码（git pull --ff-only）。
 
     工作区有未提交修改或拉取冲突时返回 ok=False，调用方不得继续重启流程。
     """
     status = _git(["status", "--porcelain"], timeout=15)
-    if status["ok"] and status["stdout"]:
+    if not status["ok"]:
+        return {"ok": False, "error": "status_failed", "message": status["stderr"] or "无法检查工作区状态"}
+    if status["stdout"]:
         return {
             "ok": False,
             "error": "dirty_workspace",
@@ -398,12 +445,27 @@ def git_pull() -> Dict[str, Any]:
         }
 
     pull = _git(["pull", "--ff-only"], timeout=120)
-    if not pull["ok"] or _has_conflict(pull["stdout"] + pull["stderr"]):
+    conflict = _has_conflict(pull["stdout"] + pull["stderr"])
+    if not pull["ok"] or conflict:
         return {
             "ok": False,
-            "error": "pull_conflict",
-            "conflict": True,
-            "message": "代码更新遇到冲突，请主动联系主人解决，不要尝试自动处理！",
-            "detail": pull["stdout"][:500],
+            "error": "pull_conflict" if conflict else "pull_failed",
+            "conflict": conflict,
+            "message": "代码更新失败，未继续构建或重启，请检查仓库状态与网络连接",
+            "detail": (pull["stderr"] or pull["stdout"])[:500],
         }
     return {"ok": True, "pull_result": pull["stdout"][:300]}
+
+
+def git_pull() -> Dict[str, Any]:
+    """独占运维操作期间拉取代码，并记录结果供各界面查询。"""
+    error = _begin_operation("pulling", require_frontend=False)
+    if error:
+        return error
+    result: Dict[str, Any] = {"ok": False, "error": "pull_failed"}
+    try:
+        result = _git_pull()
+        return result
+    finally:
+        with _operation_lock:
+            _build_state.update(building=False, result=result, phase="updated" if result.get("ok") else "failed")
