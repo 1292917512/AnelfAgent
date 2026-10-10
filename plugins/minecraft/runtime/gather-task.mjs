@@ -113,7 +113,11 @@ export class GatherTask {
         for (const stand of stands) {
           this.check(navigation.signal)
           if (tried.has(`${safety.key(p)}|${safety.key(stand)}|${mode}`)) continue
-          if (await navigation.reachable(this.bot.entity.position, stand, mode) && await navigation.reachable(stand, this.entry, mode)) return { block, stand, mode }
+          if (!await navigation.reachable(this.bot.entity.position, stand, mode)) continue
+          if (await navigation.reachable(stand, this.entry, mode)) return { block, stand, mode }
+          // A route may need the high-clearance profile only on the return leg
+          // after foliage or a one-block support was introduced.
+          if (mode !== 'high' && await navigation.reachable(stand, this.entry, 'high')) return { block, stand, mode }
         }
       }
     }
