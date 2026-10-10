@@ -168,7 +168,7 @@
     },
     "rowToggle": "停用/启用该钩子",
     "rowDisabled": "已停用",
-    "toggleSaved": "钩子 {{name}} 已{{action}}",
+    "toggleSaved": "钩子 {{name}} 已更新",
     "toggleSaveFailed": "钩子启停更新失败"
   },
   "localModels": {
