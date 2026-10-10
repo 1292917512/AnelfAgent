@@ -420,7 +420,7 @@ CI (GitHub Actions): a repo-wide lint gate + module-matrix test legs + frontend 
 
 Linux and Windows tests upload full logs and JUnit results; browser failures retain screenshots and traces. Unhandled thread exceptions, unraisable exceptions, and leaked SQLite connections remain test failures.
 
-For deeper architectural conventions see [`AGENTS.md`](AGENTS.md) (workspace instructions injected for editors/agents, not a runtime dependency).
+For deeper architectural conventions see [`AGENTS.md`](AGENTS.md) (workspace instructions injected for editors/agents, not a runtime dependency). The current mind architecture is described in [`docs/mind-architecture.md`](docs/mind-architecture.md), the detailed project reference is in [`docs/architecture-reference.md`](docs/architecture-reference.md), stable design decisions are recorded in [`docs/design-decisions.md`](docs/design-decisions.md), and the focused guides cover [`docs/context-cache.md`](docs/context-cache.md) and [`docs/mcp-architecture.md`](docs/mcp-architecture.md).
 
 ---
 
