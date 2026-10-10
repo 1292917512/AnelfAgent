@@ -98,12 +98,12 @@ export class GatherTask {
       // A standing player is above a ground-level trunk log. Keep a bounded
       // lower band eligible so roots on a slope can be harvested without
       // treating the supporting floor as an excavation target.
-      if (p.y < this.entry.y - 3 || (p.y > this.entry.y + 3 && !(allowed && allowed.has(safety.key(p))))) continue
+      if (p.y < this.entry.y - 3 || (p.y > this.entry.y + 6 && !(allowed && allowed.has(safety.key(p))))) continue
       const block = this.bot.blockAt(p)
       if (!block || !safety.canHarvestBlock(this.bot, block)) continue
       const modes = p.y > this.entry.y + 2 ? ['scaffold'] : ['leaf', 'high', 'scaffold']
       for (const mode of modes) {
-        const standY = mode === 'scaffold' ? this.entry.y + 1 : this.entry.y
+        const standY = mode === 'scaffold' ? Math.min(this.entry.y + 3, Math.max(this.entry.y + 1, p.y)) : this.entry.y
         const stands = []
         for (let x = -1; x <= 1; x++) for (let z = -1; z <= 1; z++) {
           const stand = new Vec3(p.x + x, standY, p.z + z)
@@ -192,7 +192,6 @@ export class GatherTask {
     try { await this.bot.dig(block, true, 'raycast') } finally { clearTimeout(timer) }
     if (this.bot.blockAt(block.position)?.type === block.type) throw new Error('GATHER_UNCONFIRMED: Server did not confirm block removal.')
     this.dug++
-    if (mode === 'scaffold') await navigation.cleanupScaffolding()
     try {
       this.check(signal); this.stage = 'collecting'
       const pickups = [
@@ -273,7 +272,7 @@ export class GatherTask {
       this.check(signal)
       const targets = this.connectedTreeLogs(this.treeAnchor)
       if (!targets.length) return
-      if (targets.some(position => position.y > this.entry.y + 3)) {
+      if (targets.some(position => position.y > this.entry.y + 6)) {
         throw new Error('GATHER_TREE_TOO_HIGH: Full tree cleanup needs a reachable scaffold above the bounded gathering height.')
       }
       const allowed = new Set(targets.map(position => safety.key(position)))
@@ -299,7 +298,7 @@ export class GatherTask {
         if (this.order.block.endsWith('_log')) {
           const preview = await this.candidate(navigation)
           const previewLogs = this.connectedTreeLogs(preview.block.position)
-          if (previewLogs.some(position => position.y > this.entry.y + 3)) {
+          if (previewLogs.some(position => position.y > this.entry.y + 6)) {
             throw new Error('GATHER_TREE_TOO_HIGH: Full tree cleanup needs a reachable scaffold above the bounded gathering height.')
           }
           const first = await this.collectOne(

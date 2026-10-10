@@ -60,9 +60,10 @@ export class GatherNavigation {
   safeRoutePoint (p, mode) {
     const point = new Vec3(p.x, p.y, p.z).floored()
     if (point.distanceTo(this.entry) > 16 || occupied(this.bot, point, true)) return false
-    if (mode === 'scaffold' && point.y === this.entry.y + 1) {
+    if (mode === 'scaffold' && point.y >= this.entry.y + 1 && point.y <= this.entry.y + 3) {
       const feet = this.bot.blockAt(point), head = this.bot.blockAt(point.offset(0, 1, 0))
-      return (clear(feet) || isLeafBlockName(feet?.name)) && (clear(head) || isLeafBlockName(head?.name))
+      const floor = this.bot.blockAt(point.offset(0, -1, 0))
+      return Boolean(floor) && (clear(feet) || isLeafBlockName(feet?.name)) && (clear(head) || isLeafBlockName(head?.name))
     }
     // A tree root can sit several blocks below the bot on a gentle slope.
     // Allow bounded descent through existing solid steps; floor blocks are
@@ -101,7 +102,10 @@ export class GatherNavigation {
       // mineflayer-pathfinder asks this hook about the floor, feet and head
       // blocks around a route point. Checking the queried block itself would
       // reject every otherwise valid point because its floor is one block low.
-      const routeYs = mode === 'high' ? [this.entry.y - 3, this.entry.y - 2, this.entry.y - 1, this.entry.y, this.entry.y + 1] : [this.entry.y, this.entry.y + 1]
+      const routeYs = mode === 'high'
+        ? [this.entry.y - 3, this.entry.y - 2, this.entry.y - 1, this.entry.y, this.entry.y + 1]
+        : mode === 'scaffold' ? [this.entry.y, this.entry.y + 1, this.entry.y + 2, this.entry.y + 3]
+          : [this.entry.y, this.entry.y + 1]
       const allowed = routeYs.some(y => {
         const point = new Vec3(p.x, y, p.z)
         return p.y >= y - 1 && p.y <= y + 2 && this.safeRoutePoint(point, mode)
@@ -132,7 +136,10 @@ export class GatherNavigation {
       this.signal.throwIfAborted()
       if (String(result.status) === 'partial') { await yieldFrame(); continue }
       return result.status === 'success' && result.path.every(p => this.safeRoutePoint(p, mode) && this.allowedBreaks(p.toBreak, mode, p.y) &&
-        (mode !== 'scaffold' ? !p.toPlace.length : p.toPlace.every(place => Math.floor(place.y) === this.entry.y)))
+        (mode !== 'scaffold' ? !p.toPlace.length : p.toPlace.every(place => {
+          const y = Math.floor(place.y)
+          return y >= this.entry.y && y <= this.entry.y + 2
+        })))
     }
     return false
   }
@@ -149,10 +156,13 @@ export class GatherNavigation {
     const validate = result => {
       if (mode === 'scaffold') for (const place of result.path.flatMap(step => step.toPlace ?? [])) {
         const point = new Vec3(place.x, place.y, place.z).floored()
-        if (point.y === this.entry.y) this.scaffolds.set(`${point.x},${point.y},${point.z}`, point)
+        if (point.y >= this.entry.y && point.y <= this.entry.y + 2) this.scaffolds.set(`${point.x},${point.y},${point.z}`, point)
       }
       if (result.path.some(p => !this.safeRoutePoint(p, mode) || !this.allowedBreaks(p.toBreak, mode, p.y) ||
-        (mode !== 'scaffold' ? p.toPlace.length : p.toPlace.some(place => Math.floor(place.y) !== this.entry.y)))) {
+        (mode !== 'scaffold' ? p.toPlace.length : p.toPlace.some(place => {
+          const y = Math.floor(place.y)
+          return y < this.entry.y || y > this.entry.y + 2
+        })))) {
         unsafe = true; result.path.length = 0; stop()
       }
     }
@@ -175,7 +185,8 @@ export class GatherNavigation {
   async cleanupScaffolding () {
     if (!this.scaffolds.size) return
     if (this.bot.entity.position.floored().y !== this.entry.y) await this.walk(this.entry, 'scaffold')
-    for (const point of this.scaffolds.values()) {
+    const supports = [...this.scaffolds.values()].sort((a, b) => b.y - a.y)
+    for (const point of supports) {
       if (this.bot.blockAt(point)?.boundingBox === 'empty') continue
       const stand = [point.offset(1, 0, 0), point.offset(-1, 0, 0), point.offset(0, 0, 1), point.offset(0, 0, -1)]
         .find(candidate => this.safe(candidate))
