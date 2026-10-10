@@ -130,7 +130,7 @@ export class GatherNavigation {
     if (!this.safeRoutePoint(from, mode) || !this.safeRoutePoint(to, mode)) return false
     if (mode === 'scaffold' && !this.scaffoldingIds().length) return false
     const search = this.bot.pathfinder.getPathFromTo(this.movements(mode), from, new goals.GoalBlock(to.x, to.y, to.z), {
-      timeout: 200, tickTimeout: 10, searchRadius: 32, optimizePath: false,
+      timeout: mode === 'leaf' ? 400 : 1000, tickTimeout: 25, searchRadius: 32, optimizePath: false,
     })
     for (const { result } of search) {
       this.signal.throwIfAborted()
