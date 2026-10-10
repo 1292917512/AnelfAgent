@@ -101,7 +101,7 @@ export class GatherTask {
       if (p.y < this.entry.y - 3 || (p.y > this.entry.y + 6 && !(allowed && allowed.has(safety.key(p))))) continue
       const block = this.bot.blockAt(p)
       if (!block || !safety.canHarvestBlock(this.bot, block)) continue
-      const modes = p.y > this.entry.y + 2 ? ['scaffold'] : ['leaf', 'high', 'scaffold']
+      const modes = p.y > this.entry.y + 2 ? ['scaffold', 'high'] : ['leaf', 'high', 'scaffold']
       for (const mode of modes) {
         const standY = mode === 'scaffold' ? Math.min(this.entry.y + 3, Math.max(this.entry.y + 1, p.y)) : this.entry.y
         const stands = []

@@ -69,7 +69,7 @@ export class GatherNavigation {
     // Allow bounded descent through existing solid steps; floor blocks are
     // still never breakable by this navigation mode.
     const minY = mode === 'high' ? this.entry.y - 3 : this.entry.y
-    const maxY = mode === 'high' ? this.entry.y + 1 : this.entry.y
+    const maxY = mode === 'high' ? this.entry.y + 3 : this.entry.y
     if (point.y < minY || point.y > maxY) return false
     const floor = this.bot.blockAt(point.offset(0, -1, 0))
     const feet = this.bot.blockAt(point), head = this.bot.blockAt(point.offset(0, 1, 0))
@@ -103,7 +103,7 @@ export class GatherNavigation {
       // blocks around a route point. Checking the queried block itself would
       // reject every otherwise valid point because its floor is one block low.
       const routeYs = mode === 'high'
-        ? [this.entry.y - 3, this.entry.y - 2, this.entry.y - 1, this.entry.y, this.entry.y + 1]
+        ? [this.entry.y - 3, this.entry.y - 2, this.entry.y - 1, this.entry.y, this.entry.y + 1, this.entry.y + 2, this.entry.y + 3]
         : mode === 'scaffold' ? [this.entry.y, this.entry.y + 1, this.entry.y + 2, this.entry.y + 3]
           : [this.entry.y, this.entry.y + 1]
       const allowed = routeYs.some(y => {
