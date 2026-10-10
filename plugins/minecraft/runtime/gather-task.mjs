@@ -269,12 +269,62 @@ export class GatherTask {
     return [...logs.values()]
   }
 
+  /**
+   * Include logs above a structural gap in the bounded tree envelope. A
+   * connected-component walk cannot see a floating trunk once leaves or logs
+   * below it have already been removed, so the layer audit supplies those
+   * residual targets without opening an unbounded search.
+   */
+  treeLogTargets (anchor) {
+    const targets = new Map(this.connectedTreeLogs(anchor).map(position => [safety.key(position), position]))
+    const layers = new Map()
+    const envelope = []
+    const minY = this.entry.y - 3
+    const maxY = anchor.y + 8
+    for (let y = minY; y <= maxY; y++) {
+      layers.set(y, { logs: 0, leaves: 0 })
+      for (let x = anchor.x - 4; x <= anchor.x + 4; x++) {
+        for (let z = anchor.z - 4; z <= anchor.z + 4; z++) {
+          const position = new Vec3(x, y, z)
+          const block = this.bot.blockAt(position)
+          if (!block) continue
+          if (block.name === this.item) {
+            envelope.push(position)
+            layers.get(y).logs++
+          } else if (typeof block.name === 'string' && /^(?:[a-z0-9]+)_leaves$/.test(block.name)) {
+            layers.get(y).leaves++
+          }
+        }
+      }
+    }
+    const connected = [...targets.values()]
+    if (!connected.length) return envelope.filter(position => Math.hypot(position.x - anchor.x, position.z - anchor.z) <= 2)
+    const lowest = Math.min(...connected.map(position => position.y))
+    const occupiedLayers = [...layers.entries()].filter(([, layer]) => layer.logs > 0 || layer.leaves > 0)
+    const highest = occupiedLayers.length ? Math.max(...occupiedLayers.map(([y]) => y)) : lowest
+    let gapY = null
+    for (let y = lowest; y <= highest; y++) {
+      const layer = layers.get(y)
+      if (layer && layer.logs === 0 && layer.leaves === 0) { gapY = y; break }
+    }
+    if (gapY !== null) {
+      for (const position of envelope) {
+        if (position.y > gapY && Math.hypot(position.x - anchor.x, position.z - anchor.z) <= 2) {
+          targets.set(safety.key(position), position)
+        }
+      }
+    }
+    return [...targets.values()]
+  }
+
   /** Harvest every remaining log in the target tree, even when count is met. */
-  async collectTree (navigation, signal, anchor) {
+  async collectTree (navigation, signal, anchor, initialTargets = []) {
     this.treeAnchor = anchor.clone()
+    const known = new Map(initialTargets.map(position => [safety.key(position), position.clone()]))
     for (let pass = 0; pass < 64; pass++) {
       this.check(signal)
-      const targets = this.connectedTreeLogs(this.treeAnchor)
+      for (const position of this.treeLogTargets(this.treeAnchor)) known.set(safety.key(position), position)
+      const targets = [...known.values()].filter(position => this.bot.blockAt(position)?.name === this.item)
       if (!targets.length) return
       if (targets.some(position => position.y > this.entry.y + 6)) {
         throw new Error('GATHER_TREE_TOO_HIGH: Full tree cleanup needs a reachable scaffold above the bounded gathering height.')
@@ -301,14 +351,14 @@ export class GatherTask {
       try {
         if (this.order.block.endsWith('_log')) {
           const preview = await this.candidate(navigation)
-          const previewLogs = this.connectedTreeLogs(preview.block.position)
+          const previewLogs = this.treeLogTargets(preview.block.position)
           if (previewLogs.some(position => position.y > this.entry.y + 6)) {
             throw new Error('GATHER_TREE_TOO_HIGH: Full tree cleanup needs a reachable scaffold above the bounded gathering height.')
           }
           const first = await this.collectOne(
             navigation, handle.signal, new Set(previewLogs.map(position => safety.key(position))),
           )
-          await this.collectTree(navigation, handle.signal, first)
+          await this.collectTree(navigation, handle.signal, first, previewLogs)
         } else {
           while (this.gained < this.order.count) await this.collectOne(navigation, handle.signal)
         }
