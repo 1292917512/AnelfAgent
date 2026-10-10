@@ -345,8 +345,12 @@ function woodCandidates (bot, logName, maxDistance) {
 /** @param {import('mineflayer').Bot} bot @param {{x:number,y:number,z:number}} target @param {AbortSignal} signal */
 async function walkToWood (bot, target, signal) {
   const pathfinder = bot.pathfinder
-  const standPoint = new Vec3(target.x, target.y + 1, target.z)
   const targetPoint = new Vec3(target.x, target.y, target.z)
+  const isUsableApproach = (position) => {
+    const point = position.floored()
+    const sameColumn = point.x === target.x && point.z === target.z
+    return point.distanceTo(targetPoint) <= 8 && Math.abs(point.y - target.y) <= 3 && !(sameColumn && point.y <= target.y)
+  }
   if (pathfinder?.movements && typeof pathfinder.getPathTo === 'function') {
     const movement = pathfinder.movements
     const priorCanDig = movement.canDig
@@ -359,7 +363,7 @@ async function walkToWood (bot, target, signal) {
         await withTimeout(pathfinder.goto(goal), DEFAULT_ACTION_TIMEOUT_MS * 2, 'walk to authorized tree')
         signal.throwIfAborted()
         const arrived = bot.entity.position.floored()
-        if (arrived.y === standPoint.y && arrived.distanceTo(targetPoint) <= 8) return true
+        if (isUsableApproach(arrived)) return true
       }
     } finally {
       movement.canDig = priorCanDig
@@ -369,11 +373,11 @@ async function walkToWood (bot, target, signal) {
     signal.throwIfAborted()
     const entry = bot.entity.position.floored()
     const distance = Math.hypot(target.x - entry.x, target.z - entry.z)
-    if (entry.distanceTo(targetPoint) <= 8 && entry.y === standPoint.y) return true
+    if (isUsableApproach(entry)) return true
     const step = Math.max(0, Math.min(8, distance - 6))
     const dx = distance === 0 ? 0 : (target.x - entry.x) / distance
     const dz = distance === 0 ? 0 : (target.z - entry.z) / distance
-    const waypointY = standPoint.y < entry.y ? Math.max(standPoint.y, entry.y - 1) : Math.min(standPoint.y, entry.y + 1)
+    const waypointY = target.y < entry.y ? Math.max(target.y, entry.y - 1) : Math.min(target.y, entry.y + 1)
     const levelYs = waypointY === entry.y ? [entry.y] : [entry.y, waypointY]
     const waypoints = levelYs.flatMap(y => [
       new Vec3(Math.round(entry.x + dx * step), y, Math.round(entry.z + dz * step)),
