@@ -94,12 +94,3 @@ class SmartHomeProvider(ABC):
     async def speak(self, device: DeviceState, text: str) -> None:
         """原生语音播报（supports_speak 为真时由 manager 直调，失败抛异常）。"""
         raise NotImplementedError(f"{self.display_name} 不支持语音播报")
-
-    # ---- 可选契约（设备发现，供 Web 一键接入） ----
-
-    discovery_supported: ClassVar[bool] = False
-    """是否支持局域网/账号设备发现（面板「发现设备」按钮）。"""
-
-    async def discover(self) -> List[Dict[str, Any]]:
-        """发现可接入设备（discovery_supported 为真时实现，返回候选列表）。"""
-        raise NotImplementedError(f"{self.display_name} 不支持设备发现")

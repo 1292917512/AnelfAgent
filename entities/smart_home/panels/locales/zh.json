@@ -15,25 +15,44 @@
     "disconnected": "连接中断",
     "unconfigured": "未配置",
     "reconnect": "重连",
-    "discover": "发现设备",
-    "discovering": "发现中…",
-    "addHost": "添加",
-    "manualHostPlaceholder": "手动输入音箱 IP（跨网段/发现失败时）",
     "configHint": "请在「配置」页签填写该供应商的连接信息",
     "configHint_ha": "请在「配置」页签填写 Home Assistant 地址与长期访问令牌",
     "configHint_xiaomi": "请在「配置」页签填写小米账号与密码（登录态自动缓存复用）",
-    "configHint_xiaodu": "小度为局域网直连，无需凭据——连接后点「发现设备」接入音箱"
+    "title": "供应商连接（共 {{count}} 家）",
+    "summary": "已连接 {{connected}}/{{total}}",
+    "statusConnected": "已连接",
+    "configHint_xiaodu": "小度经百度官方双 MCP 接入（xiaodu-iot 设备控制 / xiaodu 智能终端）——在 MCP 管理启用两条服务并配置共用 ACCESS_TOKEN",
+    "config": "连接配置",
+    "configSave": "保存并重连",
+    "configSaved": "配置已保存，正在重连",
+    "secretPlaceholder": "留空保持现值",
+    "detailUrl": "地址",
+    "detailAccount": "账号",
+    "detailExpires": "令牌到期",
+    "connectedAt": "连接于",
+    "mcpServers": "MCP 服务"
   },
   "preview": {
     "title": "AI 实际看到的注入内容",
     "refresh": "刷新预览",
-    "empty": "当前没有可用的设备状态注入（未连接或全部设备域无可用设备）"
+    "empty": "当前没有可用的设备状态注入（未连接或全部设备域无可用设备）",
+    "subtitle": "每轮实际注入 AI 上下文的设备状态文本",
+    "structured": "结构化",
+    "raw": "原文"
   },
   "devices": {
     "hint": "共 {{count}} 台设备，按房间分组（状态经 WebSocket 实时推送）",
     "empty": "暂无设备（Home Assistant 中尚未接入设备）",
     "emptyOffline": "连接成功后此处展示设备总览与控制",
-    "ungrouped": "未分组"
+    "ungrouped": "未分组",
+    "title": "设备总览（{{count}}）",
+    "search": "搜索设备名或实体 ID…",
+    "allDomains": "全部",
+    "hideUnavailable": "隐藏不可用",
+    "viewRoom": "按房间分组",
+    "viewDomain": "按类型分组",
+    "noMatch": "没有符合过滤条件的设备",
+    "clearFilter": "清除过滤"
   },
   "device": {
     "unavailable": "不可用"
@@ -51,7 +70,8 @@
     "heat_cool": "温控",
     "auto": "自动",
     "dry": "除湿",
-    "fan_only": "送风"
+    "fan_only": "送风",
+    "on": "开"
   },
   "cover": {
     "open": "开",
@@ -76,7 +96,8 @@
   "domains": {
     "hint": "设备域组件（共 {{count}} 个）——启停决定该域设备是否注入上下文与允许控制",
     "deviceCount": "{{available}}/{{total}} 台可用",
-    "footerHint": "设备域的启停与配置也可在「配置」页签或配置中心（entity/smart_home 组）中修改，AI 亦可经 smart_home_domains 工具管理"
+    "footerHint": "设备域的启停与配置也可在「配置」页签或配置中心（entity/smart_home 组）中修改，AI 亦可经 smart_home_domains 工具管理",
+    "title": "设备域组件（共 {{count}} 个）"
   },
   "config": {
     "unsaved": "有未保存的修改",
@@ -85,11 +106,16 @@
   },
   "messages": {
     "controlFailed": "控制失败",
-    "reconnectFailed": "重连失败",
-    "discoverFound": "发现并接入 {{count}} 台设备",
-    "discoverEmpty": "未发现新设备（确认音箱与本机在同一局域网）",
-    "discoverFailed": "设备发现失败",
-    "hostAdded": "已添加，重连后生效",
-    "hostAddFailed": "添加失败"
+    "reconnectFailed": "重连失败"
+  },
+  "tabs": {
+    "devices": "设备",
+    "providers": "连接",
+    "domains": "组件与注入"
+  },
+  "summary": {
+    "devices": "{{count}} 台设备",
+    "injecting": "上下文注入开",
+    "injectOff": "上下文注入关"
   }
 }

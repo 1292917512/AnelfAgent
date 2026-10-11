@@ -45,7 +45,6 @@ class ProviderStatus(BaseModel):
     device_count: int
     last_error: Optional[str]
     connected_at: Optional[float]
-    discovery: bool = False
 
 
 class StatusResult(BaseModel):

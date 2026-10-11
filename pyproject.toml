@@ -70,7 +70,6 @@ dependencies = [
     "icalendar>=7.3.0",
     "recurring-ical-events>=3.8.2",
     "miservice[aiohttp]>=3.0.1",
-    "async-upnp-client>=0.48.1",
     "edge-tts>=7.2.8",
     "mss>=10.2.0",
     "openpyxl>=3.1.5",

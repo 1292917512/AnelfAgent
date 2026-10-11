@@ -22,7 +22,8 @@ import {
   ToggleLeft,
   Waves,
 } from "lucide-react";
-import { Button, Switch } from "@/components/ui";
+import { Badge, Button, Switch } from "@/components/ui";
+import { formatIsoTimestamp } from "./format";
 import type { DeviceDomainInfo, DeviceInfo } from "./types";
 
 /** 设备域图标（未知域回落开关图标） */
@@ -77,7 +78,7 @@ function CommitSlider({
 }
 
 export function DeviceCard({ device, domainKey, domain, pending, onControl }: DeviceCardProps) {
-  const { t } = useTranslation("smart_home");
+  const { t, i18n } = useTranslation("smart_home");
   const Icon = DOMAIN_ICONS[domainKey] ?? ToggleLeft;
   const attrs = device.attributes as Record<string, number | string | undefined>;
   const disabled = pending || !device.available || !domain?.enabled;
@@ -98,6 +99,9 @@ export function DeviceCard({ device, domainKey, domain, pending, onControl }: De
     typeof attrs.volume_level === "number" ? Math.round(attrs.volume_level * 100) : null;
   const position = typeof attrs.current_position === "number" ? attrs.current_position : null;
   const targetTemp = typeof attrs.temperature === "number" ? attrs.temperature : null;
+  // MCP 传输平台只报开关态的空调：与灯/开关同构（首行开关），温度步进另起行
+  const binaryClimate =
+    domainKey === "climate" && (device.state === "on" || device.state === "off");
 
   const stateText = (() => {
     if (!device.available) return t("device.unavailable");
@@ -108,9 +112,13 @@ export function DeviceCard({ device, domainKey, domain, pending, onControl }: De
       case "climate":
         return t(`hvac.${device.state}`, { defaultValue: device.state });
       case "sensor":
-        return device.domain === "binary_sensor"
-          ? device.state === "on" ? t("state.triggered") : t("state.normal")
-          : `${device.state}${attrs.unit_of_measurement ?? ""}`;
+        if (device.domain === "binary_sensor") {
+          return device.state === "on" ? t("state.triggered") : t("state.normal");
+        }
+        return (
+          formatIsoTimestamp(device.state, i18n.language) ??
+          `${device.state}${attrs.unit_of_measurement ?? ""}`
+        );
       case "cover":
         return t(`cover.${device.state}`, { defaultValue: device.state });
       case "media_player":
@@ -133,8 +141,14 @@ export function DeviceCard({ device, domainKey, domain, pending, onControl }: De
         <span className="flex-1 min-w-0 truncate text-[13px] font-medium text-heading" title={device.entity_id}>
           {device.name}
         </span>
-        <span className="text-[12px] text-muted flex-shrink-0">{stateText}</span>
-        {(domainKey === "light" || domainKey === "switch") && (
+        {device.available ? (
+          <span className="flex-shrink-0 text-right text-[12px] tabular-nums text-muted">
+            {stateText}
+          </span>
+        ) : (
+          <Badge variant="neutral" className="flex-shrink-0">{stateText}</Badge>
+        )}
+        {(domainKey === "light" || domainKey === "switch" || binaryClimate) && (
           <Switch
             checked={device.state === "on"}
             disabled={disabled}
@@ -152,23 +166,26 @@ export function DeviceCard({ device, domainKey, domain, pending, onControl }: De
         />
       )}
 
-      {/* 空调：模式 + 温度 */}
-      {domainKey === "climate" && (
+      {/* 空调：二元态开关在首行（与灯/开关同构），此行仅温度步进；完整态走模式选择 */}
+      {domainKey === "climate" &&
+        (!binaryClimate || (device.state !== "off" && targetTemp !== null)) && (
         <div className="flex items-center gap-2">
-          <select
-            className="h-7 rounded-md border border-border bg-background px-1.5 text-[12px] text-foreground disabled:opacity-40"
-            value={HVAC_MODES.includes(device.state) ? device.state : "off"}
-            disabled={disabled}
-            onChange={(e) =>
-              e.target.value === "off"
-                ? control("turn_off")
-                : control("set_hvac_mode", e.target.value)
-            }
-          >
-            {HVAC_MODES.map((mode) => (
-              <option key={mode} value={mode}>{t(`hvac.${mode}`)}</option>
-            ))}
-          </select>
+          {!binaryClimate && (
+            <select
+              className="h-7 rounded-md border border-border bg-background px-1.5 text-[12px] text-foreground disabled:opacity-40"
+              value={HVAC_MODES.includes(device.state) ? device.state : "off"}
+              disabled={disabled}
+              onChange={(e) =>
+                e.target.value === "off"
+                  ? control("turn_off")
+                  : control("set_hvac_mode", e.target.value)
+              }
+            >
+              {HVAC_MODES.map((mode) => (
+                <option key={mode} value={mode}>{t(`hvac.${mode}`)}</option>
+              ))}
+            </select>
+          )}
           {device.state !== "off" && targetTemp !== null && (
             <div className="flex items-center gap-1 ml-auto">
               <Button

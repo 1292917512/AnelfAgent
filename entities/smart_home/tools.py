@@ -1,11 +1,13 @@
-"""智能家居 AI 工具 — 设备查询 / 设备控制 / 设备域组件管理。"""
+"""智能家居 AI 工具 — 设备查询 / 设备控制 / 设备域组件管理 / 小度令牌续期。"""
 
 from __future__ import annotations
 
 import json
-from typing import Union
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, Union
 
-from core.config import ConfigRegistry
+from core.config import ConfigManager, ConfigRegistry
+from core.log import log
 from core.tool_errors import ErrorCause
 from entities._sdk import save_config_value, tool, tool_error
 
@@ -149,3 +151,120 @@ def _resolve_domain(key: str) -> Union["framework.DeviceDomain", str]:
             cause=ErrorCause.NOT_FOUND,
         )
     return target
+
+
+# ---- 小度（DuerOS）令牌续期 ----
+
+BAIDU_TOKEN_URL = "https://openapi.baidu.com/oauth/2.0/token"
+_XIAODU_MCP_SERVERS = ("xiaodu-iot", "xiaodu")
+
+
+def _xiaodu_cfg(name: str) -> str:
+    """读小度凭据配置（服务端原文，不进 LLM 上下文）。"""
+    return str(ConfigManager.get(f"smart_home_xiaodu_{name}", "") or "").strip()
+
+
+def _xiaodu_auth_url(app_key: str) -> str:
+    """百度 oob 授权码流程链接（无回调服务，页面直接显示 code）。"""
+    return (
+        "https://openapi.baidu.com/oauth/2.0/authorize"
+        f"?response_type=code&client_id={app_key}&redirect_uri=oob&scope=basic,dueros"
+    )
+
+
+async def _baidu_token_request(params: Dict[str, str]) -> Dict[str, Any]:
+    """调百度 OAuth token 端点（独立函数便于测试替换）。"""
+    import aiohttp
+
+    timeout = aiohttp.ClientTimeout(total=15)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(BAIDU_TOKEN_URL, data=params) as resp:
+            return json.loads(await resp.text())
+
+
+def _mcp_store():
+    """挂接 bridge 热重载的 MCP 配置存取实例（mcp 管理工具同款模式）。"""
+    from entities.mcp.bridge import get_mcp_bridge
+    from entities.mcp.config import MCPServerStore
+
+    def _reload() -> None:
+        try:
+            bridge = get_mcp_bridge()
+            if bridge is not None:
+                bridge.reload_config()
+        except Exception as exc:
+            log(f"MCP 配置热重载失败: {exc}", "WARNING")
+
+    return MCPServerStore(on_reload=_reload)
+
+
+@tool(name="xiaodu_refresh_token", group="smart_home", risk="MEDIUM")
+async def xiaodu_refresh_token(code: str = "") -> str:
+    """刷新或换取小度（DuerOS）双 MCP 共用的 ACCESS_TOKEN，回写配置并热重载生效。
+
+    调用时机：xiaodu / xiaodu-iot MCP 连接异常（401/unauthorized 类错误）、
+    临近 smart_home_xiaodu_token_expires_at、或用户给了新授权码。应用信息
+    （AppKey/SecretKey/refresh_token）读自 entity/smart_home 配置组（配置中心
+    可填、AI 可经 update_entity_config 写）；密钥与令牌不进返回值。
+
+    Args:
+        code: 百度 OAuth 授权码（首接或 SecretKey 重置后用；留空则用配置中的 refresh_token 续期）
+    """
+    app_key, secret = _xiaodu_cfg("app_key"), _xiaodu_cfg("secret_key")
+    refresh = _xiaodu_cfg("refresh_token")
+    code = code.strip()
+    if not app_key or not secret:
+        return tool_error(
+            "小度应用信息未配置（smart_home_xiaodu_app_key / secret_key）",
+            cause=ErrorCause.CONFIG,
+            hint="在 DuerOS MCP 控制台创建应用后，经配置中心或 update_entity_config 填入",
+        )
+    if not code and not refresh:
+        return tool_error(
+            "无可用 refresh_token 且未提供授权码",
+            cause=ErrorCause.CONFIG,
+            hint=f"请用户打开授权链接授权后回传页面授权码: {_xiaodu_auth_url(app_key)}",
+        )
+    params = {
+        "grant_type": "authorization_code" if code else "refresh_token",
+        "client_id": app_key,
+        "client_secret": secret,
+        "redirect_uri": "oob",
+    }
+    if code:
+        params["code"] = code
+    else:
+        params["refresh_token"] = refresh
+    try:
+        data = await _baidu_token_request(params)
+    except Exception as exc:
+        return tool_error(
+            f"百度 token 端点调用失败: {exc}", cause=ErrorCause.NETWORK,
+        )
+    access = str(data.get("access_token") or "")
+    if not access:
+        return tool_error(
+            "百度授权失败: "
+            f"{data.get('error_description') or data.get('error') or data}",
+            cause=ErrorCause.PERMISSION,
+            hint=f"refresh_token 失效时请重新授权: {_xiaodu_auth_url(app_key)}",
+        )
+    expires_at = (
+        datetime.now(timezone.utc).astimezone()
+        + timedelta(seconds=int(data.get("expires_in") or 0))
+    ).strftime("%Y-%m-%d")
+    store = _mcp_store()
+    updated = []
+    for name in _XIAODU_MCP_SERVERS:
+        field = "env" if name == "xiaodu-iot" else "headers"
+        store.update_server_config(name, {field: {"ACCESS_TOKEN": access}})
+        updated.append(name)
+    new_refresh = str(data.get("refresh_token") or refresh)
+    save_config_value("smart_home_xiaodu_refresh_token", new_refresh)
+    save_config_value("smart_home_xiaodu_token_expires_at", expires_at)
+    return json.dumps({
+        "success": True,
+        "expires_at": expires_at,
+        "servers_updated": updated,
+        "refresh_token_rotated": new_refresh != refresh,
+    }, ensure_ascii=False)

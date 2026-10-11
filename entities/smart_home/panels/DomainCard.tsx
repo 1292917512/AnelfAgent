@@ -8,7 +8,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Check, Wrench } from "lucide-react";
 import { Card } from "@/components/common/Card";
-import { Input, Switch } from "@/components/ui";
+import { Badge, Input, Switch } from "@/components/ui";
 import { toast } from "@/stores/toast-store";
 import type { DeviceDomainInfo, DomainConfigItem } from "./types";
 
@@ -115,23 +115,25 @@ export function DomainCard({ domain, onSaveConfig }: DomainCardProps) {
   const actionEntries = Object.entries(domain.actions);
 
   return (
-    <Card>
-      <div className="flex items-center gap-2 mb-1">
-        <span className="flex-1 min-w-0">
-          <span className="text-[14px] font-semibold text-heading">{domain.display_name}</span>
-          <span className="ml-2 text-[11px] text-muted">
-            {t("domains.deviceCount", {
-              available: domain.available_count,
-              total: domain.device_count,
-            })}
-          </span>
+    <Card className="p-4">
+      <div className="flex items-center gap-2">
+        <span className="flex-1 min-w-0 truncate text-[13px] font-semibold text-heading">
+          {domain.display_name}
         </span>
+        <Badge variant={domain.available_count > 0 ? "accent" : "neutral"}>
+          {t("domains.deviceCount", {
+            available: domain.available_count,
+            total: domain.device_count,
+          })}
+        </Badge>
         <Switch
           checked={domain.enabled}
           onChange={(v) => void onSaveConfig(`smart_home_${domain.key}_enabled`, v)}
         />
       </div>
-      <p className="text-[11px] text-muted mb-2">{domain.description}</p>
+      <p className="mt-1 mb-2 truncate text-[11px] text-muted" title={domain.description}>
+        {domain.description}
+      </p>
 
       {actionEntries.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5 mb-2">

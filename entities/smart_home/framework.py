@@ -10,8 +10,9 @@
 
 Model Experience:
     模型看到什么 —— 各启用域 render() 的文本聚合成一个 ``[智能家居]`` 块注入
-        volatile 层尾部；
-    token 影响 —— 每轮增量注入，量级取决于设备数（受各域 inject_limit 约束）；
+        volatile 层尾部；设备片段带房间归属（``名称(房间): 状态``，无房间省略）；
+    token 影响 —— 每轮增量注入，量级取决于设备数（受各域 inject_limit 约束），
+        房间归属每台设备增量约 2-4 token；
     缓存影响 —— 走 volatile 尾部动态区，不触碰 stable/conversation 前缀缓存。
 """
 
@@ -114,8 +115,9 @@ class DeviceDomain:
         return f"{self.display_name}: " + " | ".join(parts)
 
     def format_device(self, device: DeviceState) -> str:
-        """单台设备的注入片段。"""
-        return f"{device.name}: {self.format_state(device)}"
+        """单台设备的注入片段（带房间归属，便于模型按位置定位设备）。"""
+        name = f"{device.name}({device.area})" if device.area else device.name
+        return f"{name}: {self.format_state(device)}"
 
     def format_state(self, device: DeviceState) -> str:
         """状态值的人性化文本（子类按域语义覆盖）。"""

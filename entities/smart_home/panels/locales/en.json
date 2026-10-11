@@ -15,25 +15,44 @@
     "disconnected": "Disconnected",
     "unconfigured": "Not configured",
     "reconnect": "Reconnect",
-    "discover": "Discover",
-    "discovering": "Discovering…",
-    "addHost": "Add",
-    "manualHostPlaceholder": "Enter speaker IP (cross-subnet / discovery failed)",
     "configHint": "Fill in this provider's connection info in the Config tab",
     "configHint_ha": "Fill in the Home Assistant URL and long-lived access token in the Config tab",
     "configHint_xiaomi": "Fill in your Xiaomi account and password in the Config tab (login token is cached and reused)",
-    "configHint_xiaodu": "Xiaodu is LAN-direct, no credentials needed — click Discover after connecting"
+    "title": "Provider connections ({{count}})",
+    "summary": "{{connected}}/{{total}} connected",
+    "statusConnected": "Connected",
+    "configHint_xiaodu": "Xiaodu connects via Baidu's official dual MCP servers (xiaodu-iot for devices / xiaodu for speakers) — enable both in MCP management with a shared ACCESS_TOKEN",
+    "config": "Connection settings",
+    "configSave": "Save & reconnect",
+    "configSaved": "Settings saved, reconnecting",
+    "secretPlaceholder": "Leave blank to keep current value",
+    "detailUrl": "URL",
+    "detailAccount": "Account",
+    "detailExpires": "Token expires",
+    "connectedAt": "Connected at",
+    "mcpServers": "MCP servers"
   },
   "preview": {
     "title": "What the AI actually sees",
     "refresh": "Refresh preview",
-    "empty": "No device state is being injected (disconnected or no available devices in enabled domains)"
+    "empty": "No device state is being injected (disconnected or no available devices in enabled domains)",
+    "subtitle": "The device state text actually injected into the AI context",
+    "structured": "Structured",
+    "raw": "Raw"
   },
   "devices": {
     "hint": "{{count}} devices, grouped by room (states pushed in real time over WebSocket)",
     "empty": "No devices yet (none onboarded in Home Assistant)",
     "emptyOffline": "Device overview and controls appear here once connected",
-    "ungrouped": "Ungrouped"
+    "ungrouped": "Ungrouped",
+    "title": "Device overview ({{count}})",
+    "search": "Search device name or entity ID…",
+    "allDomains": "All",
+    "hideUnavailable": "Hide unavailable",
+    "viewRoom": "By room",
+    "viewDomain": "By type",
+    "noMatch": "No devices match the filters",
+    "clearFilter": "Clear filters"
   },
   "device": {
     "unavailable": "Unavailable"
@@ -51,7 +70,8 @@
     "heat_cool": "Auto",
     "auto": "Auto",
     "dry": "Dry",
-    "fan_only": "Fan"
+    "fan_only": "Fan",
+    "on": "On"
   },
   "cover": {
     "open": "Open",
@@ -76,7 +96,8 @@
   "domains": {
     "hint": "Device domains ({{count}}) — enabling controls context injection and device control for that domain",
     "deviceCount": "{{available}}/{{total}} available",
-    "footerHint": "Domain toggles and settings are also available in the Config tab or the config center (entity/smart_home group); the AI can manage them via the smart_home_domains tool"
+    "footerHint": "Domain toggles and settings are also available in the Config tab or the config center (entity/smart_home group); the AI can manage them via the smart_home_domains tool",
+    "title": "Device domains ({{count}})"
   },
   "config": {
     "unsaved": "Unsaved changes",
@@ -85,11 +106,16 @@
   },
   "messages": {
     "controlFailed": "Control failed",
-    "reconnectFailed": "Reconnect failed",
-    "discoverFound": "Discovered and added {{count}} devices",
-    "discoverEmpty": "No new devices found (make sure the speaker is on the same LAN)",
-    "discoverFailed": "Discovery failed",
-    "hostAdded": "Added — takes effect after reconnect",
-    "hostAddFailed": "Failed to add"
+    "reconnectFailed": "Reconnect failed"
+  },
+  "tabs": {
+    "devices": "Devices",
+    "providers": "Connections",
+    "domains": "Domains & Injection"
+  },
+  "summary": {
+    "devices": "{{count}} devices",
+    "injecting": "Context injection on",
+    "injectOff": "Context injection off"
   }
 }

@@ -93,7 +93,6 @@ class HomeAssistantProvider(SmartHomeProvider):
             "device_count": len(self._devices),
             "last_error": self._last_error or None,
             "connected_at": self._connected_at or None,
-            "discovery": self.discovery_supported,
         }
 
     # ---- 生命周期 ----

@@ -1,28 +1,52 @@
-/**
- * 供应商连接卡片 — 每家平台一张（状态/设备数/错误/重连/发现设备）。
+/** 供应商连接卡片 — 每家外部接入平台一个组件模块。
  *
- * 小度支持局域网一键发现（discover 按钮 + 手动 IP 输入）；
- * 未配置的供应商展示配置引导（配置项在「配置」页签脱敏填写）。
+ * 结构：标识行（图标/名称/状态徽章）→ 状态行（设备数/错误/引导）→
+ * 接入详情（地址/账号/令牌到期/连接时刻）→ 连接配置（收纳式表单，保存后重连）→
+ * 操作行（重连，无操作时不渲染）。
  */
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { PlugZap, Radar, RefreshCw, Unplug } from "lucide-react";
-import { Card } from "@/components/common/Card";
-import { Button, Input } from "@/components/ui";
+import {
+  ChevronDown,
+  ChevronRight,
+  Home,
+  Mic,
+  RefreshCw,
+  Server,
+  Settings2,
+  Speaker,
+  Unplug,
+} from "lucide-react";
+import { Badge, Button } from "@/components/ui";
 import { toast } from "@/stores/toast-store";
 import { smartHomeApi } from "./api";
-import type { ProviderStatus } from "./types";
+import { ProviderConfigForm } from "./ProviderConfigForm";
+import type { EntityConfigItem, ProviderStatus } from "./types";
+
+/** 平台标识图标（未知平台回落服务器图标） */
+const PROVIDER_ICONS: Record<string, typeof Server> = {
+  ha: Home,
+  xiaodu: Speaker,
+  xiaomi: Mic,
+};
 
 interface ProviderCardProps {
   provider: ProviderStatus;
+  configItems: EntityConfigItem[];
   onChanged: () => void;
 }
 
-export function ProviderCard({ provider, onChanged }: ProviderCardProps) {
+export function ProviderCard({ provider, configItems, onChanged }: ProviderCardProps) {
   const { t } = useTranslation("smart_home");
   const [reconnecting, setReconnecting] = useState(false);
-  const [discovering, setDiscovering] = useState(false);
-  const [manualHost, setManualHost] = useState("");
+  const [configOpen, setConfigOpen] = useState(false);
+  const Icon = PROVIDER_ICONS[provider.provider] ?? Server;
+
+  const cfgValue = (suffix: string) =>
+    String(
+      configItems.find((i) => i.key === `smart_home_${provider.provider}_${suffix}`)
+        ?.value ?? "",
+    ).trim();
 
   const reconnect = async () => {
     setReconnecting(true);
@@ -36,123 +60,138 @@ export function ProviderCard({ provider, onChanged }: ProviderCardProps) {
     }
   };
 
-  const discover = async () => {
-    setDiscovering(true);
-    try {
-      const resp = await smartHomeApi.discover(provider.provider);
-      if (resp.data.count > 0) {
-        toast.success(t("messages.discoverFound", { count: resp.data.count }));
-      } else {
-        toast.error(t("messages.discoverEmpty"));
-      }
-      onChanged();
-    } catch (err) {
-      const detail = (err as { response?: { data?: { detail?: string } } })
-        .response?.data?.detail;
-      toast.error(detail || t("messages.discoverFailed"));
-    } finally {
-      setDiscovering(false);
+  // 接入详情（按平台展示关键连接信息）
+  const details: Array<[string, string]> = [];
+  if (provider.provider === "ha" && cfgValue("url")) {
+    details.push([t("providers.detailUrl"), cfgValue("url")]);
+  }
+  if (provider.provider === "xiaomi" && cfgValue("username")) {
+    details.push([t("providers.detailAccount"), cfgValue("username")]);
+  }
+  if (provider.provider === "xiaodu") {
+    details.push([t("providers.mcpServers"), "xiaodu-iot / xiaodu"]);
+    if (cfgValue("token_expires_at")) {
+      details.push([t("providers.detailExpires"), cfgValue("token_expires_at")]);
     }
-  };
+  }
+  if (provider.connected && provider.connected_at) {
+    details.push([
+      t("providers.connectedAt"),
+      new Date(provider.connected_at * 1000).toLocaleString(),
+    ]);
+  }
 
-  const addManualHost = async () => {
-    const host = manualHost.trim();
-    if (!host) return;
-    const key = `smart_home_${provider.provider}_hosts`;
-    try {
-      const config = await smartHomeApi.getConfig();
-      const existing = String(config.data.values[key] ?? "")
-        .split(",")
-        .map((h) => h.trim())
-        .filter(Boolean);
-      if (!existing.includes(host)) {
-        existing.push(host);
-      }
-      await smartHomeApi.updateConfig(key, existing.join(","));
-      setManualHost("");
-      onChanged();
-      toast.success(t("messages.hostAdded"));
-    } catch {
-      toast.error(t("messages.hostAddFailed"));
-    }
-  };
+  const statusBadge = provider.connected ? (
+    <Badge variant="ok">
+      <span className="h-1.5 w-1.5 rounded-full bg-current" />
+      {t("providers.statusConnected")}
+    </Badge>
+  ) : provider.configured ? (
+    <Badge variant="warn">
+      <Unplug className="h-2.5 w-2.5" />
+      {t("providers.disconnected")}
+    </Badge>
+  ) : (
+    <Badge variant="neutral">{t("providers.unconfigured")}</Badge>
+  );
 
   return (
-    <Card>
+    <div className="flex h-full flex-col gap-2.5 rounded-lg border border-border bg-surface p-3.5">
+      {/* 标识行 */}
       <div className="flex items-center gap-2.5">
-        {provider.connected ? (
-          <PlugZap className="h-4 w-4 text-ok flex-shrink-0" />
-        ) : (
-          <Unplug className="h-4 w-4 text-muted flex-shrink-0" />
-        )}
-        <div className="flex-1 min-w-0">
-          <div className="text-[13px] font-medium text-heading">
-            {provider.provider_name}
-            <span className="ml-2 text-[11px] text-muted">
-              {provider.connected
-                ? t("providers.connected", { count: provider.device_count })
-                : provider.configured
-                  ? t("providers.disconnected")
-                  : t("providers.unconfigured")}
-            </span>
+        <span
+          className={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md border ${
+            provider.connected
+              ? "border-ok/30 bg-ok-subtle text-ok"
+              : "border-border bg-elevated text-muted"
+          }`}
+        >
+          <Icon className="h-4 w-4" />
+        </span>
+        <span className="flex-1 min-w-0 truncate text-[13px] font-semibold text-heading">
+          {provider.provider_name}
+        </span>
+        {statusBadge}
+      </div>
+
+      {/* 状态行 */}
+      <div className="space-y-1 text-[11px] leading-relaxed">
+        {provider.configured && (
+          <div className="text-muted">
+            {t("providers.connected", { count: provider.device_count })}
           </div>
-          {provider.last_error && (
-            <div className="text-[11px] text-danger truncate" title={provider.last_error}>
-              {provider.last_error}
+        )}
+        {provider.last_error && (
+          <div
+            className="break-words rounded-md border border-danger/30 bg-danger-subtle px-2 py-1 text-danger"
+            title={provider.last_error}
+          >
+            {provider.last_error}
+          </div>
+        )}
+        {!provider.configured && (
+          <div className="text-muted">
+            {t(`providers.configHint_${provider.provider}`, {
+              defaultValue: t("providers.configHint"),
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* 接入详情 */}
+      {details.length > 0 && (
+        <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[11px]">
+          {details.map(([label, value]) => (
+            <div key={label} className="contents">
+              <span className="text-muted">{label}</span>
+              <span className="truncate text-foreground" title={value}>
+                {value}
+              </span>
             </div>
-          )}
-          {!provider.configured && (
-            <div className="text-[11px] text-muted">
-              {t(`providers.configHint_${provider.provider}`, {
-                defaultValue: t("providers.configHint"),
-              })}
-            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 连接配置（收纳式） */}
+      {configItems.some((item) => item.editable) && (
+        <div className="border-t border-border/60 pt-2">
+          <button
+            type="button"
+            onClick={() => setConfigOpen((v) => !v)}
+            className="flex items-center gap-1 text-[11px] text-muted hover:text-foreground"
+          >
+            <Settings2 className="h-3 w-3" />
+            {t("providers.config")}
+            {configOpen ? (
+              <ChevronDown className="h-3 w-3" />
+            ) : (
+              <ChevronRight className="h-3 w-3" />
+            )}
+          </button>
+          {configOpen && (
+            <ProviderConfigForm
+              providerKey={provider.provider}
+              items={configItems}
+              onSaved={onChanged}
+            />
           )}
         </div>
-        {provider.discovery && (
+      )}
+
+      {/* 操作行（无可用操作时不渲染空条） */}
+      {provider.configured && (
+        <div className="mt-auto flex items-center justify-end gap-1.5 border-t border-border/60 pt-2.5">
           <Button
             variant="ghost" size="sm"
-            disabled={discovering || !provider.connected}
-            onClick={() => void discover()}
-            title={t("providers.discover")}
-          >
-            <Radar className={`h-3.5 w-3.5 mr-1 ${discovering ? "animate-pulse" : ""}`} />
-            {discovering ? t("providers.discovering") : t("providers.discover")}
-          </Button>
-        )}
-        {provider.configured && (
-          <Button
-            variant="ghost" size="icon"
             disabled={reconnecting}
             onClick={() => void reconnect()}
             title={t("providers.reconnect")}
           >
-            <RefreshCw className={`h-3.5 w-3.5 ${reconnecting ? "animate-spin" : ""}`} />
-          </Button>
-        )}
-      </div>
-
-      {/* 小度：手动 IP 接入（跨网段/发现失败时） */}
-      {provider.discovery && provider.connected && (
-        <div className="flex items-center gap-1.5 mt-2.5">
-          <Input
-            className="h-7 flex-1 text-[12px]"
-            placeholder={t("providers.manualHostPlaceholder")}
-            value={manualHost}
-            onChange={(e) => setManualHost(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") void addManualHost();
-            }}
-          />
-          <Button
-            variant="ghost" size="sm"
-            disabled={!manualHost.trim()}
-            onClick={() => void addManualHost()}
-          >
-            {t("providers.addHost")}
+            <RefreshCw className={`h-3.5 w-3.5 mr-1 ${reconnecting ? "animate-spin" : ""}`} />
+            {t("providers.reconnect")}
           </Button>
         </div>
       )}
-    </Card>
+    </div>
   );
 }

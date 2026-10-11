@@ -1,82 +1,135 @@
-"""小度音箱平台接入 — 局域网 DLNA 直连（发现 / 播放控制 / TTS 播报）。
+"""小度（DuerOS）连接 — MCP 传输型 provider（百度官方双 MCP 为唯一通道）。
 
-小度音箱映射为 ``xiaodu.<ip>`` 的 media_player 设备：状态经周期轮询
-（小度 eventing 不可靠），语音播报走 edge-tts 合成 + 内嵌音频服务 +
-DLNA 播放的完整链路（supports_speak，不经任何云平台）。
-设备标识用 IP——小度每次重启 UDN 会变动。
+设备模型映射：``xiaodu-iot`` 的 GET_ALL_DEVICES_WITH_STATUS → 家电实体
+（applianceTypes → 设备域，未列类型不进设备面）；``xiaodu`` 的 list_user_devices
+→ 音箱实体（media_player，cuid/client_id 为控制前置）。控制经
+IOT_CONTROL_DEVICES（名称语义）与 control_xiaodu / xiaodu_speak（语音指令语义）。
+
+连接生命周期完全归 MCP 桥（配置/重连/状态/令牌），本层只做轮询同步、设备模型
+映射与动作翻译——桥未连接时待机，不自行建连。
 """
 
 from __future__ import annotations
 
 import asyncio
-import os
-import time
-from typing import Any, Dict, List, Optional
+import contextlib
+import json
+from typing import Any, Dict, List, Optional, Tuple
 
 from core.log import log
+from entities._sdk import call_mcp_server_tool
 
 from ...models import DeviceState
 from .. import home_provider
 from ..base import SmartHomeProvider
-from . import discovery
-from .dlna import XiaoduSpeaker
-from .server import AudioServer
-from .tts import TtsSynthesizer, get_synthesizer
 
 _LOG_TAG = "智能家居"
+
+IOT_SERVER = "xiaodu-iot"
+TERMINAL_SERVER = "xiaodu"
+
+# 小度 IoT 家电类型 → 设备域组件 key（未列类型不进统一设备面，仍可经裸 MCP 工具控制）
+_TYPE_DOMAIN: Dict[str, str] = {
+    "AIR_CONDITION": "climate",
+    "LIGHT": "light",
+    "SWITCH": "switch",
+}
+
+# hvac 模式 → 小度中文模式值（IOT attribute=mode）
+_HVAC_MODES: Dict[str, str] = {
+    "cool": "制冷",
+    "heat": "制热",
+    "auto": "自动",
+    "dry": "除湿",
+    "fan_only": "送风",
+}
+
+# 音箱 media_player 动作 → 语音指令（control_xiaodu 自然语言语义）
+_SPEAKER_COMMANDS: Dict[str, str] = {
+    "media_play": "播放",
+    "media_pause": "暂停",
+    "turn_on": "开机",
+    "turn_off": "关机",
+}
+
+
+def bridge_server_status() -> List[Dict[str, Any]]:
+    """MCP 桥全部 server 状态（桥未初始化时空列表；独立函数便于测试替换）。"""
+    try:
+        from entities.mcp.bridge import get_mcp_bridge
+
+        bridge = get_mcp_bridge()
+        return list(bridge.list_available_servers()) if bridge else []
+    except Exception:
+        return []
+
+
+async def _call(server: str, tool: str, arguments: Dict[str, Any]) -> Any:
+    """调 MCP 工具并解析 JSON 结果（tool_error / 非 JSON 抛 RuntimeError）。"""
+    raw = await call_mcp_server_tool(server, tool, arguments)
+    try:
+        data = json.loads(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{server}/{tool} 返回非 JSON: {raw[:120]}") from exc
+    if isinstance(data, dict) and (data.get("error") or data.get("success") is False):
+        raise RuntimeError(str(data.get("error") or data))
+    return data
 
 
 @home_provider
 class XiaoduProvider(SmartHomeProvider):
-    """小度音箱接入（DLNA 直连：状态轮询 / 音量控制 / 本地 TTS 播报）。"""
+    """小度平台接入（MCP 传输：设备同步轮询，控制翻译为 IoT/语音指令）。"""
 
     key = "xiaodu"
     display_name = "小度音箱"
     entity_prefix = "xiaodu."
-    discovery_supported = True
     config_schema = {
-        "hosts": {
-            "description": "手动指定的小度音箱 IP（逗号分隔；跨网段/发现不到时使用，留空纯靠局域网自动发现）",
+        "app_key": {
+            "description": "百度应用 AppKey（client_id，DuerOS MCP 控制台创建）",
             "default": "",
         },
-        "audio_port": {
-            "description": "播报音频服务端口（内嵌 HTTP 服务，供音箱拉取 TTS 音频）",
-            "default": 8195,
-            "min": 1024,
-            "max": 65535,
-            "advanced": True,
+        "secret_key": {
+            "description": "百度应用 SecretKey（client_secret）",
+            "default": "",
+            "value_type": "password",
         },
-        "tts_voice": {
-            "description": "播报语音（edge-tts 音色，如 zh-CN-XiaoxiaoNeural / zh-CN-YunxiNeural）",
-            "default": "zh-CN-XiaoxiaoNeural",
-            "advanced": True,
+        "refresh_token": {
+            "description": "OAuth refresh_token（一次性；续期成功后自动更新）",
+            "default": "",
+            "value_type": "password",
+        },
+        "token_expires_at": {
+            "description": "ACCESS_TOKEN 到期日（YYYY-MM-DD，续期时自动更新，供巡检提前续期）",
+            "default": "",
         },
         "poll_interval": {
-            "description": "音箱状态轮询间隔（小度 eventing 不可靠，只能轮询）",
+            "description": "设备状态轮询间隔（秒）",
             "default": 30,
+            "value_type": "integer",
             "min": 5,
-            "max": 300,
-            "unit": "秒",
+            "max": 600,
             "advanced": True,
         },
     }
 
     def __init__(self) -> None:
         super().__init__()
-        self._speakers: Dict[str, XiaoduSpeaker] = {}
         self._devices: Dict[str, DeviceState] = {}
-        self._server: Optional[AudioServer] = None
-        self._synthesizer: Optional[TtsSynthesizer] = None
+        self._iot_meta: Dict[str, Dict[str, str]] = {}
+        self._speaker_meta: Dict[str, Dict[str, str]] = {}
+        self._task: Optional[asyncio.Task[None]] = None
         self._connected = False
         self._last_error = ""
-        self._connected_at = 0.0
-        self._poll_task: Optional[asyncio.Task[None]] = None
 
     # ---- 状态 ----
 
     def is_configured(self) -> bool:
-        """小度为局域网直连，无需凭据——始终可启动（无音箱时为空载）。"""
-        return True
+        """两个小度 MCP server 均在配置中且启用（连接归桥管）。"""
+        enabled = {
+            str(s.get("name")): bool(s.get("enabled", True))
+            for s in bridge_server_status()
+        }
+        return enabled.get(IOT_SERVER, False) and enabled.get(TERMINAL_SERVER, False)
 
     def is_connected(self) -> bool:
         return self._connected
@@ -88,207 +141,203 @@ class XiaoduProvider(SmartHomeProvider):
         return {
             "provider": self.key,
             "provider_name": self.display_name,
-            "configured": True,
+            "configured": self.is_configured(),
             "connected": self._connected,
             "device_count": len(self._devices),
             "last_error": self._last_error or None,
-            "connected_at": self._connected_at or None,
-            "discovery": self.discovery_supported,
+            "connected_at": None,
         }
 
-    # ---- 生命周期 ----
+    # ---- 生命周期（轮询同步；连接态跟随 MCP 桥） ----
 
     async def connect(self) -> None:
-        """发现并接入音箱（幂等；音频服务懒启动——有音箱才占用端口）。"""
-        if self._connected:
+        if self._task is not None and not self._task.done():
             return
-        self._synthesizer = get_synthesizer(
-            str(self.get_config("tts_voice", "zh-CN-XiaoxiaoNeural")).strip()
-            or "zh-CN-XiaoxiaoNeural",
-        )
-        locations = self._manual_locations() + await self._safe_discover()
-        await self._add_locations(locations)
-        await self._ensure_server()
-        self._connected = True
-        self._connected_at = time.time()
-        self._last_error = ""
-        self._emit_connection()
-        if self._poll_task is None or self._poll_task.done():
-            self._poll_task = asyncio.create_task(self._poll_loop())
-
-    async def _ensure_server(self) -> None:
-        """音频服务懒启动（仅在有已接入音箱时占用端口）。"""
-        if self._server is not None or not self._devices:
-            return
-        server = AudioServer(
-            TtsSynthesizer.cache_dir(),
-            int(self.get_config("audio_port", 8195) or 8195),
-        )
-        try:
-            await server.start()
-        except Exception as exc:
-            self._last_error = f"音频服务启动失败: {exc}"
-            log(self._last_error, "WARNING", tag=_LOG_TAG)
-            return
-        self._server = server
+        self._task = asyncio.create_task(self._poll_loop())
 
     async def close(self) -> None:
-        """停止轮询并关停音频服务（幂等；保留末次设备缓存供展示）。"""
-        task, self._poll_task = self._poll_task, None
+        task, self._task = self._task, None
         if task is not None:
             task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await task
-            except asyncio.CancelledError:
-                pass
-        server, self._server = self._server, None
-        if server is not None:
-            await server.stop()
-        if self._connected:
-            self._connected = False
-            self._emit_connection()
+        self._connected = False
+        self._emit_connection()
 
-    # ---- 发现与接入 ----
-
-    def _manual_locations(self) -> List[str]:
-        """手动 hosts 配置转 description.xml 地址。"""
-        raw = str(self.get_config("hosts", "")).strip()
-        locations: List[str] = []
-        for host in raw.split(","):
-            host = host.strip()
-            if not host:
-                continue
-            if host.startswith("http://") or host.startswith("https://"):
-                locations.append(host)
-            else:
-                locations.append(f"http://{host}:49494/description.xml")
-        return locations
-
-    async def _safe_discover(self) -> List[str]:
-        """SSDP 发现（异常仅记日志，不阻断手动 hosts）。"""
-        try:
-            locations = await discovery.discover_renderers()
-        except Exception as exc:
-            log(f"SSDP 发现失败: {exc}", "WARNING", tag=_LOG_TAG)
-            return []
-        return [loc for loc in locations if discovery.is_xiaodu_location(loc)]
-
-    async def discover(self) -> List[Dict[str, Any]]:
-        """发现局域网小度音箱并接入新发现的（面板「发现音箱」按钮）。"""
-        if not self._connected:
-            raise ConnectionError("小度平台未启动")
-        locations = self._manual_locations() + await self._safe_discover()
-        added = await self._add_locations(locations)
-        return [
-            {"entity_id": entity_id, "name": self._devices[entity_id].name}
-            for entity_id in added
-        ]
-
-    async def _add_locations(self, locations: List[str]) -> List[str]:
-        """按 description.xml 地址接入音箱（已接入跳过；失败仅记日志）。"""
-        added: List[str] = []
-        for location in dict.fromkeys(locations):
-            speaker = await self._create_speaker(location)
-            if speaker is None:
-                continue
-            entity_id = f"{self.entity_prefix}{speaker.host.replace('.', '_')}"
-            if entity_id in self._devices:
-                self._speakers[entity_id] = speaker
-                continue
-            self._speakers[entity_id] = speaker
-            self._devices[entity_id] = DeviceState(
-                entity_id=entity_id,
-                domain="media_player",
-                name=speaker.name,
-                state="idle",
-            )
-            added.append(entity_id)
-        if added:
-            await self._ensure_server()
-            if self.on_sync is not None:
-                self.on_sync()
-        return added
-
-    async def _create_speaker(self, location: str) -> Optional[XiaoduSpeaker]:
-        """构建单台音箱控制会话（拉取 description.xml，失败记日志返回 None）。"""
-        try:
-            return await XiaoduSpeaker.create(location)
-        except Exception as exc:
-            log(f"小度音箱接入失败: {location} - {exc}", "WARNING", tag=_LOG_TAG)
-            return None
-
-    # ---- 状态轮询 ----
+    def _poll_interval(self) -> float:
+        return float(self.get_config("poll_interval", 30))
 
     async def _poll_loop(self) -> None:
-        """周期轮询全部音箱状态（无 eventing 的唯一状态来源）。"""
+        """轮询循环：桥连接态 → 设备同步 → 变更回调（异常不中断循环）。"""
         while True:
-            await asyncio.sleep(
-                float(self.get_config("poll_interval", 30) or 30),
-            )
-            for entity_id in list(self._speakers):
-                try:
-                    await self._refresh_device(entity_id)
-                except Exception as exc:
-                    log(f"小度音箱状态轮询失败: {entity_id} - {exc}",
-                        "DEBUG", tag=_LOG_TAG)
+            try:
+                connected = self._bridge_connected()
+                if connected != self._connected:
+                    self._connected = connected
+                    if connected:
+                        self._last_error = ""
+                    self._emit_connection()
+                if connected and await self._sync_devices() and self.on_sync:
+                    self.on_sync()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._last_error = f"{type(exc).__name__}: {exc}".rstrip(": ")
+                log(f"小度同步异常: {self._last_error}", "WARNING", tag=_LOG_TAG)
+            await asyncio.sleep(self._poll_interval())
 
-    async def _refresh_device(self, entity_id: str) -> None:
-        """刷新单台音箱的播放状态与音量。"""
-        speaker = self._speakers.get(entity_id)
-        device = self._devices.get(entity_id)
-        if speaker is None or device is None:
-            return
-        status = await speaker.poll()
-        device.state = status["state"]
-        volume = status.get("volume_level")
-        if isinstance(volume, (int, float)):
-            device.attributes["volume_level"] = max(0.0, min(volume, 1.0))
-        if status.get("media_title"):
-            device.attributes["media_title"] = status["media_title"]
-        if self.on_device_update is not None:
-            self.on_device_update(device)
+    def _bridge_connected(self) -> bool:
+        connected = {
+            str(s.get("name")): bool(s.get("connected"))
+            for s in bridge_server_status()
+        }
+        return connected.get(IOT_SERVER, False) and connected.get(
+            TERMINAL_SERVER, False,
+        )
+
+    async def _sync_devices(self) -> bool:
+        """全量拉双 MCP 设备并重建缓存（返回是否有变更）。"""
+        devices: Dict[str, DeviceState] = {}
+        iot_meta: Dict[str, Dict[str, str]] = {}
+        speaker_meta: Dict[str, Dict[str, str]] = {}
+        for device, meta in await self._sync_iot():
+            devices[device.entity_id] = device
+            iot_meta[device.entity_id] = meta
+        for device, meta in await self._sync_terminal():
+            devices[device.entity_id] = device
+            speaker_meta[device.entity_id] = meta
+        changed = {
+            eid: d.to_dict() for eid, d in devices.items()
+        } != {eid: d.to_dict() for eid, d in self._devices.items()}
+        self._devices, self._iot_meta, self._speaker_meta = (
+            devices, iot_meta, speaker_meta,
+        )
+        return changed
+
+    async def _sync_iot(self) -> List[Tuple[DeviceState, Dict[str, str]]]:
+        data = await _call(IOT_SERVER, "GET_ALL_DEVICES_WITH_STATUS", {})
+        result: List[Tuple[DeviceState, Dict[str, str]]] = []
+        for appliance in data.get("return") or []:
+            types = appliance.get("applianceTypes") or []
+            domain = _TYPE_DOMAIN.get(str(types[0]) if types else "")
+            name = str(appliance.get("applianceName") or "").strip()
+            if domain is None or not name:
+                continue
+            room = str(appliance.get("roomName") or "").strip()
+            status = appliance.get("status") or {}
+            reachable = str(status.get("connectivity") or "") == "REACHABLE"
+            on = str(status.get("turnOnState") or "").upper() == "ON"
+            attrs: Dict[str, Any] = {}
+            if isinstance(status.get("targetTemperature"), (int, float)):
+                attrs["temperature"] = status["targetTemperature"]
+            result.append((DeviceState(
+                entity_id=f"xiaodu.{name}",
+                domain=domain,
+                name=name,
+                state=("on" if on else "off") if reachable else "unavailable",
+                attributes=attrs,
+                area=room,
+            ), {"name": name, "room": room}))
+        return result
+
+    async def _sync_terminal(self) -> List[Tuple[DeviceState, Dict[str, str]]]:
+        data = await _call(TERMINAL_SERVER, "list_user_devices", {})
+        entries = data if isinstance(data, list) else ([data] if data else [])
+        result: List[Tuple[DeviceState, Dict[str, str]]] = []
+        for entry in entries:
+            cuid = str(entry.get("cuid") or "")
+            client_id = str(entry.get("client_id") or "")
+            if not cuid or not client_id:
+                continue
+            online = bool(entry.get("online_status"))
+            location = entry.get("location") or {}
+            meta = {"cuid": cuid, "client_id": client_id}
+            result.append((DeviceState(
+                entity_id=f"xiaodu.{cuid}",
+                domain="media_player",
+                name=str(entry.get("device_name") or cuid),
+                state="idle" if online else "unavailable",
+                attributes=dict(meta),
+                area=str(location.get("room") or ""),
+            ), meta))
+        return result
 
     # ---- 控制 ----
 
     async def call_service(
         self, domain: str, service: str, entity_id: str, data: Dict[str, Any],
     ) -> None:
-        speaker = self._require_speaker(entity_id)
-        if service == "volume_set":
-            level = float(data.get("volume_level", 0))
-            await speaker.set_volume(max(0.0, min(level, 1.0)))
-        elif service in ("media_stop", "turn_off"):
-            await speaker.stop()
-        elif service in ("media_play", "turn_on"):
-            await speaker.play()
-        elif service == "media_pause":
-            await speaker.pause()
+        if not self._connected:
+            raise ConnectionError("小度 MCP 未连接")
+        if entity_id in self._speaker_meta:
+            await self._call_speaker(service, entity_id, data)
+        elif entity_id in self._iot_meta:
+            await self._call_iot(service, entity_id, data)
         else:
-            raise ValueError(f"小度音箱不支持服务: {domain}.{service}")
+            raise RuntimeError(f"未知小度设备: {entity_id}")
 
-    # ---- 原生语音播报 ----
+    async def _call_iot(
+        self, service: str, entity_id: str, data: Dict[str, Any],
+    ) -> None:
+        meta = self._iot_meta[entity_id]
+        base: Dict[str, Any] = {"applianceName": meta["name"]}
+        if meta.get("room"):
+            base["roomName"] = meta["room"]
+
+        async def control(**extra: Any) -> None:
+            await _call(IOT_SERVER, "IOT_CONTROL_DEVICES", {**base, **extra})
+
+        if service in ("turn_on", "turn_off"):
+            await control(action="turnOn" if service == "turn_on" else "turnOff")
+        elif service == "set_brightness":
+            await control(
+                action="set", attribute="brightness",
+                value=str(data.get("brightness_pct")),
+            )
+        elif service == "set_temperature":
+            await control(
+                action="set", attribute="temperature",
+                value=str(data.get("temperature")),
+            )
+        elif service == "set_hvac_mode":
+            mode = str(data.get("hvac_mode") or "")
+            if mode == "off":
+                await control(action="turnOff")
+            elif mode in _HVAC_MODES:
+                await control(action="set", attribute="mode", value=_HVAC_MODES[mode])
+            else:
+                raise RuntimeError(f"小度不支持的空调模式: {mode}")
+        else:
+            raise RuntimeError(f"小度 IoT 不支持动作: {service}")
+
+    async def _call_speaker(
+        self, service: str, entity_id: str, data: Dict[str, Any],
+    ) -> None:
+        meta = self._speaker_meta[entity_id]
+        if service == "speak":
+            await self.speak(self._devices[entity_id], str(data.get("message", "")))
+            return
+        if service == "set_volume":
+            level = float(data.get("volume_level", 0))
+            command = f"音量调到{round(level * 100)}"
+        elif service in _SPEAKER_COMMANDS:
+            command = _SPEAKER_COMMANDS[service]
+        else:
+            raise RuntimeError(f"小度音箱不支持动作: {service}")
+        await _call(TERMINAL_SERVER, "control_xiaodu", {"command": command, **meta})
+
+    # ---- 原生播报 ----
 
     def supports_speak(self, device: DeviceState) -> bool:
-        return device.entity_id in self._speakers
+        return device.entity_id in self._speaker_meta
 
     async def speak(self, device: DeviceState, text: str) -> None:
-        """TTS 播报全链路：合成 → 内嵌服务 URL → DLNA 播放。"""
-        speaker = self._require_speaker(device.entity_id)
-        if self._server is None or self._synthesizer is None:
-            raise ConnectionError("小度播报服务未启动")
-        path = await self._synthesizer.synthesize(text)
-        url = self._server.url_for(os.path.basename(path), speaker.host)
-        await speaker.play_url(url, "语音播报")
-
-    def _require_speaker(self, entity_id: str) -> XiaoduSpeaker:
-        speaker = self._speakers.get(entity_id)
-        if speaker is None:
-            raise ValueError(f"未知设备: {entity_id}")
-        return speaker
+        meta = self._speaker_meta.get(device.entity_id)
+        if not meta:
+            raise RuntimeError(f"非小度音箱设备: {device.entity_id}")
+        await _call(TERMINAL_SERVER, "xiaodu_speak", {"text": text, **meta})
 
     def _emit_connection(self) -> None:
         if self.on_connection is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self.on_connection(self.status())
-            except Exception:
-                pass

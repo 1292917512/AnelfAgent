@@ -28,6 +28,11 @@
 凭据中心（dashscope 脱离 llm_clients 扫描，环境变量兜底），非凭据参数（模型名/音色/优先级）留
 各自配置组。
 
+**MCP server 凭据**：各 MCP server 凭据以字面量存 gitignored 的 `config/mcp_servers.json`
+（stdio 走 env、远程走 headers，配置层不做环境变量展开）。百度小度双 MCP（`xiaodu-iot` 设备
+控制 / `xiaodu` 智能终端）共用同一 ACCESS_TOKEN：有效期 30 天、隐式授权过期不可刷新，到期于
+DuerOS 控制台（dueros.baidu.com/dbp/mcp/console）重新授权并同步更新两条 entry。
+
 ## 本地模型资产（agent/model_assets.py + /api/local-models）
 
 - 登记制资产（id/来源/版本/SHA-256 固定，如 silero_vad、smart_turn）；落盘 workspace/models/

@@ -56,25 +56,6 @@ def build_router() -> APIRouter:
         await get_smart_home_manager().reconnect(key)
         return provider.status()
 
-    @router.post("/providers/{key}/discover")
-    async def discover_provider(key: str) -> dict:
-        """发现指定供应商的可接入设备（面板「发现设备」按钮）。"""
-        from .providers import get_provider
-
-        provider = get_provider(key)
-        if provider is None:
-            raise HTTPException(status_code=404, detail=f"未找到供应商: {key}")
-        if not provider.discovery_supported:
-            raise HTTPException(
-                status_code=400,
-                detail=f"{provider.display_name} 不支持设备发现",
-            )
-        try:
-            found = await provider.discover()
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"发现失败: {exc}") from exc
-        return {"found": found, "count": len(found)}
-
     @router.get("/devices", response_model=DevicesResult)
     async def list_devices(domain: str = "", area: str = "", name: str = "") -> dict:
         """设备全量清单与实时状态（可按设备域/房间/名称过滤）。"""

@@ -1,7 +1,8 @@
-"""供应商组件测试：多供应商路由 / 小米组件 / 小度组件。"""
+"""供应商组件测试：多供应商路由 / 小米组件 / 小度 MCP 传输组件。"""
 
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List
 
 import pytest
@@ -214,111 +215,104 @@ class TestXiaomiProvider:
         assert "账号或密码错误" in (broken.status()["last_error"] or "")
 
 
-class TestXiaoduDiscovery:
-    def test_parse_response(self) -> None:
-        from entities.smart_home.providers.xiaodu import discovery
-        raw = (
-            "HTTP/1.1 200 OK\r\n"
-            "LOCATION: http://192.168.1.20:49494/description.xml\r\n"
-            "ST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n"
-            "USN: uuid:abc\r\n\r\n"
-        ).encode()
-        headers = discovery.parse_response(raw)
-        assert headers["LOCATION"] == "http://192.168.1.20:49494/description.xml"
-        assert discovery.is_xiaodu_location(headers["LOCATION"]) is True
-        assert discovery.is_xiaodu_location("http://192.168.1.21:8008/ddd.xml") is False
+class TestXiaoduMcpProvider:
+    """小度 MCP 传输型 provider：设备映射 / 动作翻译 / 原生播报。"""
 
-
-class FakeSpeaker:
-    """小度音箱控制会话假实现。"""
-
-    def __init__(self, host: str, name: str = "小度音箱") -> None:
-        self.host = host
-        self.name = name
-        self.played: List[str] = []
-        self.volume: List[float] = []
-        self.stopped = 0
-
-    async def play_url(self, url: str, title: str) -> None:
-        self.played.append(url)
-
-    async def set_volume(self, level: float) -> None:
-        self.volume.append(level)
-
-    async def stop(self) -> None:
-        self.stopped += 1
-
-    async def poll(self) -> Dict[str, Any]:
-        return {"state": "playing", "volume_level": 0.3, "media_title": ""}
-
-
-class TestXiaoduProvider:
     @pytest.fixture()
-    def provider(self, monkeypatch: pytest.MonkeyPatch):
+    def env(self, monkeypatch: pytest.MonkeyPatch):
         from entities.smart_home.providers import xiaodu as xiaodu_mod
-        monkeypatch.setattr(xiaodu_mod.XiaoduSpeaker, "create", _fake_create)
-        return xiaodu_mod.XiaoduProvider()
 
-    def test_manual_locations(self, provider) -> None:
-        from core.config import ConfigManager
-        ConfigManager.set("smart_home_xiaodu_hosts",
-                          "192.168.1.20, http://192.168.1.30:49494/description.xml")
-        locations = provider._manual_locations()
-        assert locations == [
-            "http://192.168.1.20:49494/description.xml",
-            "http://192.168.1.30:49494/description.xml",
-        ]
-        ConfigManager.set("smart_home_xiaodu_hosts", "")
+        calls: List[tuple] = []
+        responses = {
+            ("xiaodu-iot", "GET_ALL_DEVICES_WITH_STATUS"): {"return": [
+                {"applianceName": "云佳", "roomName": "主卧",
+                 "applianceTypes": ["AIR_CONDITION"],
+                 "status": {"turnOnState": "OFF", "connectivity": "REACHABLE",
+                            "targetTemperature": 25}},
+                {"applianceName": "台灯", "roomName": "书房",
+                 "applianceTypes": ["LIGHT"],
+                 "status": {"turnOnState": "ON", "connectivity": "REACHABLE"}},
+                {"applianceName": "窗帘", "applianceTypes": ["CURTAIN"],
+                 "status": {}},
+                {"applianceName": "加湿器", "applianceTypes": ["LIGHT"],
+                 "status": {"turnOnState": "ON", "connectivity": "UNREACHABLE"}},
+            ]},
+            ("xiaodu", "list_user_devices"): [
+                {"cuid": "c1", "client_id": "k1", "device_name": "小度音箱",
+                 "online_status": True, "location": {"room": "客厅"}},
+            ],
+        }
 
-    @pytest.mark.asyncio
-    async def test_add_locations_registers_devices(self, provider) -> None:
-        added = await provider._add_locations(
-            ["http://192.168.1.20:49494/description.xml"],
-        )
-        assert added == ["xiaodu.192_168_1_20"]
-        device = provider.snapshot()[0]
-        assert device.domain == "media_player"
-        # 重复接入只刷新会话不重复注册
-        assert await provider._add_locations(
-            ["http://192.168.1.20:49494/description.xml"],
-        ) == []
-        assert len(provider.snapshot()) == 1
+        async def fake_call(server: str, tool: str, arguments: Dict[str, Any]):
+            calls.append((server, tool, arguments))
+            return json.dumps(responses.get((server, tool), {}))
 
-    @pytest.mark.asyncio
-    async def test_call_service_volume(self, provider) -> None:
-        await provider._add_locations(
-            ["http://192.168.1.20:49494/description.xml"],
-        )
-        await provider.call_service("media_player", "volume_set",
-                                    "xiaodu.192_168_1_20",
-                                    {"volume_level": 0.5})
-        speaker = provider._speakers["xiaodu.192_168_1_20"]
-        assert speaker.volume == [0.5]
+        monkeypatch.setattr(xiaodu_mod, "call_mcp_server_tool", fake_call)
+        monkeypatch.setattr(xiaodu_mod, "bridge_server_status", lambda: [
+            {"name": "xiaodu-iot", "enabled": True, "connected": True},
+            {"name": "xiaodu", "enabled": True, "connected": True},
+        ])
+        return xiaodu_mod.XiaoduProvider(), calls
 
     @pytest.mark.asyncio
-    async def test_speak_full_link(self, provider) -> None:
-        await provider._add_locations(
-            ["http://192.168.1.20:49494/description.xml"],
-        )
+    async def test_sync_maps_devices(self, env) -> None:
+        provider, _ = env
+        assert provider.is_configured() is True
+        assert await provider._sync_devices() is True
+        devices = {d.entity_id: d for d in provider.snapshot()}
+        # 无域组件的类型（CURTAIN）不进设备面；不可达 → unavailable
+        assert set(devices) == {
+            "xiaodu.云佳", "xiaodu.台灯", "xiaodu.加湿器", "xiaodu.c1",
+        }
+        ac = devices["xiaodu.云佳"]
+        assert (ac.domain, ac.state, ac.area) == ("climate", "off", "主卧")
+        assert ac.attributes["temperature"] == 25
+        assert devices["xiaodu.加湿器"].available is False
+        spk = devices["xiaodu.c1"]
+        assert (spk.domain, spk.state, spk.area) == ("media_player", "idle", "客厅")
+        assert provider.supports_speak(spk) is True
 
-        class FakeTts:
-            async def synthesize(self, text: str) -> str:
-                return f"/cache/{text}.mp3"
+    @pytest.mark.asyncio
+    async def test_iot_action_translation(self, env) -> None:
+        provider, calls = env
+        await provider._sync_devices()
+        provider._connected = True
+        await provider.call_service("light", "turn_on", "xiaodu.台灯", {})
+        await provider.call_service("climate", "set_temperature", "xiaodu.云佳",
+                                    {"temperature": 26})
+        await provider.call_service("climate", "set_hvac_mode", "xiaodu.云佳",
+                                    {"hvac_mode": "cool"})
+        await provider.call_service("climate", "set_hvac_mode", "xiaodu.云佳",
+                                    {"hvac_mode": "off"})
+        iot = [c for c in calls if c[1] == "IOT_CONTROL_DEVICES"]
+        assert iot[0][2] == {
+            "applianceName": "台灯", "roomName": "书房", "action": "turnOn",
+        }
+        assert iot[1][2]["attribute"] == "temperature"
+        assert iot[1][2]["value"] == "26"
+        assert iot[2][2]["value"] == "制冷"
+        assert iot[3][2]["action"] == "turnOff"
 
-        class FakeServer:
-            def url_for(self, filename: str, peer: str) -> str:
-                return f"http://192.168.1.2:8195/audio/{filename}"
+    @pytest.mark.asyncio
+    async def test_speaker_commands(self, env) -> None:
+        provider, calls = env
+        await provider._sync_devices()
+        provider._connected = True
+        device = next(d for d in provider.snapshot() if d.entity_id == "xiaodu.c1")
+        await provider.speak(device, "你好")
+        await provider.call_service("media_player", "set_volume", "xiaodu.c1",
+                                    {"volume_level": 0.4})
+        speak = [c for c in calls if c[1] == "xiaodu_speak"]
+        ctrl = [c for c in calls if c[1] == "control_xiaodu"]
+        assert speak[0][2] == {"text": "你好", "cuid": "c1", "client_id": "k1"}
+        assert ctrl[0][2]["command"] == "音量调到40"
 
-        provider._synthesizer = FakeTts()
-        provider._server = FakeServer()
-        device = provider.snapshot()[0]
-        assert provider.supports_speak(device) is True
-        await provider.speak(device, "播报")
-        speaker = provider._speakers["xiaodu.192_168_1_20"]
-        assert speaker.played == ["http://192.168.1.2:8195/audio/播报.mp3"]
-
-
-async def _fake_create(location: str) -> FakeSpeaker:
-    """按 location 构造假音箱（host 从 URL 提取）。"""
-    from yarl import URL
-    return FakeSpeaker(URL(location).host or "")
+    @pytest.mark.asyncio
+    async def test_unconfigured_when_server_disabled(
+            self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from entities.smart_home.providers import xiaodu as xiaodu_mod
+        monkeypatch.setattr(xiaodu_mod, "bridge_server_status", lambda: [
+            {"name": "xiaodu-iot", "enabled": True, "connected": True},
+            {"name": "xiaodu", "enabled": False, "connected": False},
+        ])
+        assert xiaodu_mod.XiaoduProvider().is_configured() is False

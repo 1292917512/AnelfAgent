@@ -9,7 +9,6 @@ export interface ProviderStatus {
   device_count: number;
   last_error: string | null;
   connected_at: number | null;
-  discovery: boolean;
 }
 
 /** 连接状态（多供应商聚合，manager.status） */
@@ -91,15 +90,29 @@ export interface ControlResponse {
   service: string;
 }
 
-/** 发现设备结果（POST /providers/{key}/discover） */
-export interface DiscoverResponse {
-  found: Array<{ entity_id: string; name: string }>;
-  count: number;
-}
-
 /** SSE 事件载荷（manager 广播；connection 事件为单供应商状态） */
 export interface StateEventPayload {
   event: string;
   device?: DeviceInfo;
   status?: ProviderStatus;
+}
+
+/** 通用实体配置项（GET /entities/smart_home/config 的 items 元素） */
+export interface EntityConfigItem {
+  key: string;
+  description: string;
+  value: unknown;
+  default: unknown;
+  type: string;
+  editable: boolean;
+  required: boolean;
+  enum_options: string[] | null;
+  min?: number | null;
+  max?: number | null;
+}
+
+/** 通用实体配置响应 */
+export interface EntityConfigResponse {
+  config_group: string;
+  items: EntityConfigItem[];
 }

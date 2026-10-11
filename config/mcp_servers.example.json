@@ -24,6 +24,28 @@
       "oauth": {
         "scopes": "read write"
       }
+    },
+    "xiaodu-iot": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "dueros-iot-mcp"
+      ],
+      "env": {
+        "ACCESS_TOKEN": "your-dueros-access-token"
+      },
+      "transport": "stdio",
+      "enabled": false,
+      "stay_awake": true
+    },
+    "xiaodu": {
+      "url": "https://xiaodu.baidu.com/dueros_mcp_server/mcp/",
+      "headers": {
+        "ACCESS_TOKEN": "your-dueros-access-token"
+      },
+      "transport": "streamable_http",
+      "enabled": false,
+      "stay_awake": true
     }
   }
 }

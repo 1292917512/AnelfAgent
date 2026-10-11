@@ -101,6 +101,12 @@ class TestRender:
         line = domain.render([_device(), _device("dummy.beta", "乙设备", "off")])
         assert line == "测试设备: 乙设备: 关 | 甲设备: 开"  # 按名称排序（乙 < 甲 码点序）
 
+    def test_render_includes_area(self) -> None:
+        domain = framework.get_domain("dummy_test")
+        assert domain is not None
+        line = domain.render([_device(area="主卧")])
+        assert line == "测试设备: 甲设备(主卧): 开"
+
     def test_inert_and_foreign_devices_skipped(self) -> None:
         domain = framework.get_domain("dummy_test")
         assert domain is not None

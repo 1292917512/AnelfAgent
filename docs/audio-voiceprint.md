@@ -74,7 +74,7 @@ audiosync/dashscope 实体时按需阅读；实时通话链路见[实时语音�
   跟随默认；克隆型预设不适用流式通话，落协议音色）
 - **解析链**（`agent/tts/voice.py`）：场景指派 → 预设内容 → 提供者协议音色——全部合成入口
   （text_to_voice/级联通话/native 会话/主动播报/内置提供者）经此单一决策链；链序兜底：调用点
-  显式音色 → 场景覆盖 → 全局默认 → 提供者协议音色。例外：小度音箱保留设备协议音色
+  显式音色 → 场景覆盖 → 全局默认 → 提供者协议音色
 - **AI/Web 同库同权**：`voice_preset` 工具（list/save/delete/apply）+ Web 声音页「音色」页签
   （/audio/voice-presets CRUD+assign）；实体组件经 `_sdk.default_tts_voice / realtime_tts_voice`
   取统一音色；clone_voice/design_voice 后 save+apply 即全链路换声
