@@ -1,13 +1,18 @@
-"""Home Assistant provider 测试：URL 规整 / 设备构建 / 增量事件 / 消息分发。"""
+"""Home Assistant provider 测试：URL 规整 / 设备构建 / 增量事件 / 消息分发 /
+全链路读取循环（_run_once 并发分发命令 result）。"""
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 
+import aiohttp
 import pytest
 
 from core.config import ConfigManager
 from entities.smart_home.providers import get_provider
+from entities.smart_home.providers import homeassistant as ha_module
 from entities.smart_home.providers.homeassistant import HomeAssistantProvider
 
 
@@ -153,3 +158,128 @@ class TestCallService:
                                          provider: HomeAssistantProvider) -> None:
         with pytest.raises(ConnectionError):
             await provider.call_service("light", "turn_on", "light.x", {})
+
+
+def _text(payload: dict) -> "_FakeWsMessage":
+    return _FakeWsMessage(aiohttp.WSMsgType.TEXT, json.dumps(payload))
+
+
+class _FakeWsMessage:
+    """aiohttp WS 消息最小替身（type + data）。"""
+
+    def __init__(self, type_: aiohttp.WSMsgType, data: str = "") -> None:
+        self.type = type_
+        self.data = data
+
+
+class _FakeWs:
+    """按 HA 协议应答的假 WebSocket。
+
+    命令 result 只经异步迭代（读取循环）到达——复刻真实服务端行为：
+    若 provider 在全量同步前没有启动并发读取循环，命令 future 无人
+    办结，将死锁至超时。
+    """
+
+    _RESULTS: dict[str, object] = {
+        "config/area_registry/list": [{"area_id": "a1", "name": "客厅"}],
+        "config/device_registry/list": [{"id": "d1", "area_id": "a1"}],
+        "config/entity_registry/list": [
+            {"entity_id": "light.desk", "device_id": "d1"},
+        ],
+        "get_states": [_state("light.desk", "on", "台灯")],
+        "subscribe_events": None,
+    }
+
+    def __init__(self) -> None:
+        self._auth = [
+            _text({"type": "auth_required"}),
+            _text({"type": "auth_ok"}),
+        ]
+        self._inbox: asyncio.Queue[_FakeWsMessage | None] = asyncio.Queue()
+        self.sent: list[dict] = []
+        self.closed = False
+
+    async def receive(self, timeout: float | None = None) -> _FakeWsMessage:
+        return self._auth.pop(0)
+
+    async def send_json(self, payload: dict) -> None:
+        self.sent.append(payload)
+        if payload.get("type") == "auth":
+            return
+        await self._inbox.put(_text({
+            "type": "result", "id": payload.get("id"), "success": True,
+            "result": self._RESULTS.get(str(payload.get("type")), []),
+        }))
+
+    async def close(self) -> None:
+        self.closed = True
+        await self._inbox.put(None)
+
+    def __aiter__(self) -> "_FakeWs":
+        return self
+
+    async def __anext__(self) -> _FakeWsMessage:
+        msg = await self._inbox.get()
+        if msg is None:
+            raise StopAsyncIteration
+        return msg
+
+
+class _FakeSession:
+    """aiohttp.ClientSession 替身（ws_connect 返回固定假连接）。"""
+
+    def __init__(self, ws: _FakeWs) -> None:
+        self._ws = ws
+        self.closed = False
+
+    async def ws_connect(self, url: str,
+                         heartbeat: float | None = None) -> _FakeWs:
+        return self._ws
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class TestRunOnce:
+    """全链路：鉴权 → 并发读取循环支撑全量同步 → 断线退出。"""
+
+    @pytest.mark.asyncio
+    async def test_full_sync_completes_via_read_loop(
+            self, provider: HomeAssistantProvider,
+            monkeypatch: pytest.MonkeyPatch) -> None:
+        fake_ws = _FakeWs()
+        fake_session = _FakeSession(fake_ws)
+        monkeypatch.setattr(
+            ha_module.aiohttp, "ClientSession", lambda *a, **k: fake_session,
+        )
+        ConfigManager.set("smart_home_ha_url", "http://ha.test:8123")
+        ConfigManager.set("smart_home_ha_token", "test-fixture-mock-key-001")
+        syncs: list[bool] = []
+        provider.on_sync = lambda: syncs.append(True)
+
+        task = asyncio.create_task(provider._run_once())
+        try:
+            # 无并发读取循环时首个命令 result 永不被分发（死锁至 15s 超时），
+            # 2s 窗口足以判定读取循环在位
+            for _ in range(40):
+                await asyncio.sleep(0.05)
+                if provider.is_connected():
+                    break
+            assert provider.is_connected() is True
+            assert syncs == [True]
+            assert provider._areas == {"a1": "客厅"}
+            assert provider._entity_area["light.desk"] == "客厅"
+            devices = provider.snapshot()
+            assert [d.entity_id for d in devices] == ["light.desk"]
+            assert devices[0].name == "台灯"
+            assert any(p.get("type") == "subscribe_events" for p in fake_ws.sent)
+            # 读取循环退出（连接关闭）→ _run_once 以 ConnectionError 收场
+            await fake_ws.close()
+            with pytest.raises(ConnectionError):
+                await asyncio.wait_for(task, 2)
+        finally:
+            if not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            await provider._teardown()

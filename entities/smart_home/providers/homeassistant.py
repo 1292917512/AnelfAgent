@@ -4,6 +4,8 @@
 config/area_registry/list + config/device_registry/list +
 config/entity_registry/list（解析房间归属）→ get_states（全量建缓存）→
 subscribe_events(state_changed)（增量维护缓存并回调 manager）。
+命令 result 只由并发读取循环分发（鉴权完成后立即启动，覆盖全量同步与
+增量维护两个阶段），任何命令都不得在读取循环之外等待 result。
 断线按指数退避自动重连（1/2/4/8/16s 上限），上次连接稳定运行超窗口后
 重试计数复位（对齐 MCP 重连预算语义）；设备缓存跨重连保留末次快照。
 """
@@ -11,6 +13,7 @@ subscribe_events(state_changed)（增量维护缓存并回调 manager）。
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 from typing import Any, Dict, List, Optional
@@ -120,8 +123,8 @@ class HomeAssistantProvider(SmartHomeProvider):
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self._last_error = str(exc)
-                log(f"HA 连接异常: {exc}", "WARNING", tag=_LOG_TAG)
+                self._last_error = f"{type(exc).__name__}: {exc}".rstrip(": ")
+                log(f"HA 连接异常: {self._last_error}", "WARNING", tag=_LOG_TAG)
             await self._teardown()
             self._emit_connection()
             if self._is_closed():
@@ -179,17 +182,28 @@ class HomeAssistantProvider(SmartHomeProvider):
         self._session = aiohttp.ClientSession()
         self._ws = await self._session.ws_connect(self._ws_url(), heartbeat=30.0)
         await self._handshake()
-        await self._full_sync()
-        self._connected = True
-        self._connected_at = time.time()
-        self._last_error = ""
-        self._emit_connection()
+        reader = asyncio.create_task(self._read_loop())
+        try:
+            await self._full_sync()
+            self._connected = True
+            self._connected_at = time.time()
+            self._last_error = ""
+            self._emit_connection()
+            await reader
+        finally:
+            reader.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await reader
+        raise ConnectionError("HA WebSocket 连接中断")
+
+    async def _read_loop(self) -> None:
+        """并发读取并分发服务端消息，直到连接关闭/出错（返回即视为断线）。"""
+        assert self._ws is not None
         async for msg in self._ws:
             if msg.type == aiohttp.WSMsgType.TEXT:
                 self._dispatch(json.loads(msg.data))
             elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                 break
-        raise ConnectionError("HA WebSocket 连接中断")
 
     async def _handshake(self) -> None:
         """鉴权握手（auth_required → auth → auth_ok）。"""
