@@ -23,7 +23,9 @@ export function ToolsListPanel() {
   const navigate = useNavigate();
   const client = useQueryClient();
   const [params, setParams] = useSearchParams();
-  const search = params.get("q") ?? "";
+  // 检索词以本地状态为即时事实源,URL 参数只是持久化副本(挂载时恢复,供刷新与分享)。
+  // 受控值若由 URL 异步状态直接回喂,导航迟到落地会用旧值覆写输入框,打断 IME 组合输入。
+  const [search, setSearch] = useState(() => params.get("q") ?? "");
   const requestedStatus = params.get("status");
   const status = requestedStatus === "enabled" || requestedStatus === "disabled" ? requestedStatus : "all";
   const tags = useMemo(() => [...new Set(params.getAll("tag").filter(Boolean))], [params]);
@@ -36,11 +38,14 @@ export function ToolsListPanel() {
     values.filter(Boolean).forEach((value) => next.append(key, value));
     return next;
   }, { replace: true });
-  const resetFilters = () => setParams((current) => {
-    const next = new URLSearchParams(current);
-    ["q", "status", "tag"].forEach((key) => next.delete(key));
-    return next;
-  }, { replace: true });
+  const resetFilters = () => {
+    setSearch("");
+    setParams((current) => {
+      const next = new URLSearchParams(current);
+      ["q", "status", "tag"].forEach((key) => next.delete(key));
+      return next;
+    }, { replace: true });
+  };
   const query = useQuery({ queryKey: ["tools-grouped"], queryFn: () => toolsApi.grouped().then((r) => r.data), refetchInterval: 10000, throwOnError: false });
   const tagQuery = useQuery({ queryKey: ["tool-tags"], queryFn: () => tagsApi.toolTags().then((r) => r.data), throwOnError: false });
   const plugins = useQuery({ queryKey: ["plugins"], queryFn: () => toolsApi.plugins().then((r) => r.data), throwOnError: false });
@@ -81,7 +86,7 @@ export function ToolsListPanel() {
     </div>
     <div className="tools-filterbar">
       <div className="relative min-w-0 flex-1"><Search size={16} className="pointer-events-none absolute left-3 top-3 text-muted" />
-        <Input value={search} aria-label={t("searchPlaceholder")} placeholder={t("searchPlaceholder")} onChange={(event) => updateFilter("q", [event.target.value])} className="pl-9" />
+        <Input value={search} aria-label={t("searchPlaceholder")} placeholder={t("searchPlaceholder")} onChange={(event) => { setSearch(event.target.value); updateFilter("q", [event.target.value]); }} className="pl-9" />
       </div>
       <select aria-label={t("statusFilter")} value={status} onChange={(event) => updateFilter("status", event.target.value === "all" ? [] : [event.target.value])} className="h-10 rounded-lg border border-input bg-card px-3 text-sm">
         <option value="all">{t("statusAll")}</option><option value="enabled">{t("statusEnabled")}</option><option value="disabled">{t("statusDisabled")}</option>
