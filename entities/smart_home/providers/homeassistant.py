@@ -1,9 +1,8 @@
 """Home Assistant 连接 — WebSocket API 实时状态同步与服务调用。
 
 协议流程：ws_connect → auth_required → auth → auth_ok →
-config/area_registry/list + config/device_registry/list +
-config/entity_registry/list（解析房间归属）→ get_states（全量建缓存）→
-subscribe_events(state_changed)（增量维护缓存并回调 manager）。
+subscribe_events（状态与注册表事件）→ 注册表与 get_states 全量同步 →
+重放同步期间的状态事件。注册表变更会刷新设备房间归属。
 命令 result 只由并发读取循环分发（鉴权完成后立即启动，覆盖全量同步与
 增量维护两个阶段），任何命令都不得在读取循环之外等待 result。
 断线按指数退避自动重连（1/2/4/8/16s 上限），上次连接稳定运行超窗口后
@@ -22,8 +21,9 @@ import aiohttp
 
 from core.config import expand_env_refs
 from core.log import log
+from core.tool_errors import ErrorCause
 
-from ..models import DeviceState
+from ..models import ActionSpec, DeviceState, SmartHomeCallError
 from . import home_provider
 from .base import SmartHomeProvider
 
@@ -32,6 +32,18 @@ _LOG_TAG = "智能家居"
 _COMMAND_TIMEOUT = 15.0
 _STABLE_WINDOW_SECONDS = 300.0
 _BACKOFF_MAX_SECONDS = 16.0
+_SERVICE_NAMES = {
+    "set_brightness": "turn_on", "set_color_temp": "turn_on",
+    "set_volume": "volume_set", "set_position": "set_cover_position", "activate": "turn_on",
+}
+# HA 各域官方 EntityFeature 位图；未提供能力声明时保持基本动作兼容。
+_FEATURES = {
+    "media_player": {"media_pause": 1, "set_volume": 4, "turn_on": 128,
+                     "turn_off": 256, "play_media": 512, "media_play": 16384},
+    "cover": {"open_cover": 1, "close_cover": 2, "set_position": 4, "stop_cover": 8},
+    "climate": {"set_temperature": 1, "turn_off": 128, "turn_on": 256},
+}
+_REGISTRY_EVENTS = ("area_registry_updated", "device_registry_updated", "entity_registry_updated")
 
 
 @home_provider
@@ -68,6 +80,32 @@ class HomeAssistantProvider(SmartHomeProvider):
         self._connected_at = 0.0
         self._retry_count = 0
         self._closed = True
+        self._syncing = False
+        self._buffer: Dict[str, Dict[str, Any]] = {}
+        self._registry_dirty = asyncio.Event()
+
+    def actions_for(self, device: DeviceState) -> Dict[str, ActionSpec]:
+        actions = super().actions_for(device)
+        features = device.attributes.get("supported_features")
+        if isinstance(features, int):
+            for action, bit in _FEATURES.get(device.domain, {}).items():
+                if not features & bit:
+                    actions.pop(action, None)
+        if device.domain == "light":
+            raw_modes = device.attributes.get("supported_color_modes")
+            modes = {mode for mode in raw_modes if isinstance(mode, str)} if isinstance(raw_modes, list) else set()
+            brightness = bool(modes - {"onoff", "unknown"}) if modes else isinstance(device.attributes.get("brightness"), (int, float))
+            color_temp = "color_temp" in modes if modes else isinstance(device.attributes.get("color_temp_kelvin"), (int, float))
+            if not brightness:
+                actions.pop("set_brightness", None)
+            if not color_temp:
+                actions.pop("set_color_temp", None)
+        if device.domain == "media_player":
+            from .. import framework
+            domain = framework.get_domain("media_player")
+            if domain is None or not domain.get_config("tts_service"):
+                actions.pop("speak", None)
+        return actions
 
     # ---- 状态 ----
 
@@ -113,6 +151,7 @@ class HomeAssistantProvider(SmartHomeProvider):
             except asyncio.CancelledError:
                 pass
         await self._teardown()
+        self._emit_connection()
 
     async def _supervise(self) -> None:
         """托管循环：连接 → 运行 → 断线退避重连（稳定窗口复位重试计数）。"""
@@ -133,7 +172,7 @@ class HomeAssistantProvider(SmartHomeProvider):
             self._retry_count = (
                 1 if uptime > _STABLE_WINDOW_SECONDS else self._retry_count + 1
             )
-            delay = min(2.0 ** (self._retry_count - 1), _BACKOFF_MAX_SECONDS)
+            delay = min(2.0 ** min(self._retry_count - 1, 4), _BACKOFF_MAX_SECONDS)
             await asyncio.sleep(delay)
 
     def _is_closed(self) -> bool:
@@ -151,14 +190,14 @@ class HomeAssistantProvider(SmartHomeProvider):
         if ws is not None:
             try:
                 await ws.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                log(f"HA WebSocket 关闭失败: {exc}", "DEBUG", tag=_LOG_TAG)
         session, self._session = self._session, None
         if session is not None:
             try:
                 await session.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                log(f"HA 会话关闭失败: {exc}", "DEBUG", tag=_LOG_TAG)
 
     # ---- 协议 ----
 
@@ -178,18 +217,24 @@ class HomeAssistantProvider(SmartHomeProvider):
         return base + "/api/websocket"
 
     async def _run_once(self) -> None:
-        self._session = aiohttp.ClientSession()
+        self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
         self._ws = await self._session.ws_connect(self._ws_url(), heartbeat=30.0)
         await self._handshake()
         reader = asyncio.create_task(self._read_loop())
+        registry_task: Optional[asyncio.Task[None]] = None
         try:
             await self._full_sync()
             self._connected = True
             self._connected_at = time.time()
             self._last_error = ""
             self._emit_connection()
+            registry_task = asyncio.create_task(self._registry_loop())
             await reader
         finally:
+            if registry_task is not None:
+                registry_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await registry_task
             reader.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await reader
@@ -219,7 +264,44 @@ class HomeAssistantProvider(SmartHomeProvider):
             raise PermissionError(f"HA 鉴权失败: {payload.get('message') or reply.type}")
 
     async def _full_sync(self) -> None:
-        """全量同步：区域/设备/实体注册表 → 设备状态 → 订阅增量事件。"""
+        """先订阅再取快照，缓冲同步期间事件，避免状态窗口丢失。"""
+        self._syncing = True
+        self._buffer.clear()
+        self._registry_dirty.clear()
+        try:
+            for event_type in ("state_changed", *_REGISTRY_EVENTS):
+                await self._command({"type": "subscribe_events", "event_type": event_type})
+            await self._refresh_registry()
+            states = await self._command({"type": "get_states"}) or []
+            self._devices = {str(s.get("entity_id")): self._build_device(s) for s in states}
+            for data in self._buffer.values():
+                entity_id = str(data.get("entity_id") or "")
+                state = data.get("new_state")
+                if state is None:
+                    self._devices.pop(entity_id, None)
+                else:
+                    self._devices[entity_id] = self._build_device(state)
+        finally:
+            self._syncing = False
+            self._buffer.clear()
+        if self.on_sync is not None:
+            self.on_sync()
+
+    async def _registry_loop(self) -> None:
+        while True:
+            await self._registry_dirty.wait()
+            self._registry_dirty.clear()
+            try:
+                await self._refresh_registry()
+                for device in self._devices.values():
+                    device.area = self._entity_area.get(device.entity_id, "")
+                if self.on_sync is not None:
+                    self.on_sync()
+            except Exception as exc:
+                log(f"HA 区域同步失败: {exc}", "WARNING", tag=_LOG_TAG)
+
+    async def _refresh_registry(self) -> None:
+        """刷新实体与设备的房间归属。"""
         areas = await self._command({"type": "config/area_registry/list"}) or []
         self._areas = {
             str(a.get("area_id")): str(a.get("name") or a.get("area_id"))
@@ -238,13 +320,6 @@ class HomeAssistantProvider(SmartHomeProvider):
             if not area:
                 area = self._device_area.get(str(entry.get("device_id") or ""), "")
             self._entity_area[entity_id] = area
-        states = await self._command({"type": "get_states"}) or []
-        self._devices = {
-            str(s.get("entity_id")): self._build_device(s) for s in states
-        }
-        await self._command({"type": "subscribe_events", "event_type": "state_changed"})
-        if self.on_sync is not None:
-            self.on_sync()
 
     def _build_device(self, state: Dict[str, Any]) -> DeviceState:
         """从 HA state 对象构建设备快照（含房间归属解析）。"""
@@ -262,6 +337,9 @@ class HomeAssistantProvider(SmartHomeProvider):
     def _apply_state_changed(self, data: Dict[str, Any]) -> None:
         """增量维护设备缓存（new_state 为 None 表示实体已删除）。"""
         entity_id = str(data.get("entity_id") or "")
+        if self._syncing:
+            self._buffer[entity_id] = data
+            return
         new_state = data.get("new_state")
         if new_state is None:
             if self._devices.pop(entity_id, None) is not None:
@@ -297,13 +375,14 @@ class HomeAssistantProvider(SmartHomeProvider):
                 future.set_result(msg.get("result"))
             else:
                 error = msg.get("error") or {}
-                future.set_exception(
-                    RuntimeError(str(error.get("message") or "HA 命令失败"))
-                )
+                cause = ErrorCause.PERMISSION if error.get("code") == "unauthorized" else ErrorCause.PARAM
+                future.set_exception(SmartHomeCallError(str(error.get("message") or "HA 命令失败"), cause))
         elif msg_type == "event":
             event = msg.get("event") or {}
             if event.get("event_type") == "state_changed":
                 self._apply_state_changed(event.get("data") or {})
+            elif event.get("event_type") in _REGISTRY_EVENTS:
+                self._registry_dirty.set()
 
     # ---- 控制 ----
 
@@ -315,7 +394,7 @@ class HomeAssistantProvider(SmartHomeProvider):
         await self._command({
             "type": "call_service",
             "domain": domain,
-            "service": service,
+            "service": _SERVICE_NAMES.get(service, service),
             "service_data": {**data, "entity_id": entity_id},
         })
 
@@ -323,5 +402,5 @@ class HomeAssistantProvider(SmartHomeProvider):
         if self.on_connection is not None:
             try:
                 self.on_connection(self.status())
-            except Exception:
-                pass
+            except Exception as exc:
+                log(f"HA 连接通知失败: {exc}", "DEBUG", tag=_LOG_TAG)

@@ -1,6 +1,6 @@
 """智能家居实体 — 家居设备状态感知与控制的统一接入。
 
-以 Home Assistant 为设备来源（WebSocket 实时同步），双层组件化架构：
+聚合 Home Assistant、米家音箱与小度 MCP，双层组件化架构：
 连接层平台自治于 ``providers/``（@home_provider 注册），设备类型域组件
 自治于 ``domains/``（@device_domain 注册，删除文件即整体拔出）；
 context.py 把启用域的设备状态聚合为 [智能家居] 块注入 volatile 层；
@@ -18,7 +18,7 @@ Web 面板与 AI 工具共用 framework/manager 的注册表与缓存。
 
 from __future__ import annotations
 
-import asyncio
+from pathlib import Path
 from typing import Any
 
 from core.config import ConfigManager
@@ -29,13 +29,14 @@ from .domains import load_domains
 from .manager import get_smart_home_manager
 from .providers import all_providers, load_providers
 from .providers import config_entries as provider_config_entries
+from .settings import SmartHomeConfigStore
 
-entity("smart_home", "智能家居 - 家居设备状态感知与控制（Home Assistant 接入，灯光/空调/窗帘等设备域组件可插拔）")
+entity("smart_home", "智能家居 - 家居设备状态感知与控制（Home Assistant / 米家音箱 / 小度；按需唤醒家居感知与控制）")
 
 entity_manifest(
     display_name="智能家居",
     icon="home",
-    description="接入 Home Assistant 的智能家居统一控制（设备状态上下文注入 + AI 控制工具 + 实时控制面板）",
+    description="聚合家庭设备、房间与实时状态，提供按需 AI 感知和统一控制面板",
     version="1.0.0",
     order=42,
     group="smart_home",
@@ -50,10 +51,16 @@ entity_config({
             "description": "是否向 AI 上下文注入智能家居设备状态（总开关，关闭后全部设备域停止注入）",
             "default": True,
         },
+        "smart_home_context_mode": {
+            "description": "AI 感知策略：on_demand 仅在当前会话唤醒 smart_home 后注入；always 持续感知。普通任务建议按需唤醒，家居阶段结束可 deactivate_tool_group。",
+            "default": "on_demand",
+            "type": "enum", "options": ["on_demand", "always"],
+        },
         **framework.config_entries(),
         **provider_config_entries(),
     },
 })
+ConfigManager.register_store("smart_home_", SmartHomeConfigStore(Path(__file__).with_name("config.json")))
 
 
 def _handle_config_changed(key: str, _value: Any) -> None:
@@ -68,11 +75,7 @@ def _handle_config_changed(key: str, _value: Any) -> None:
             break
     if not provider_key:
         return
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return
-    loop.create_task(get_smart_home_manager().reconnect(provider_key))
+    get_smart_home_manager().request_reconnect(provider_key)
 
 
 # 连接配置（url/token/账号等）被修改（Web/AI/配置中心任一路径）时自动重连

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+from dataclasses import replace
 from typing import Dict
 
 from ..framework import DeviceDomain, device_domain
@@ -34,6 +36,19 @@ class LightDomain(DeviceDomain):
     priority = 10
     ha_domains = ("light",)
 
+    def actions_for(self, device: DeviceState) -> Dict[str, ActionSpec]:
+        """使用灯具报告的色温范围，避免生成其不支持的参数。"""
+        actions = self.actions()
+        low = device.attributes.get("min_color_temp_kelvin")
+        high = device.attributes.get("max_color_temp_kelvin")
+        if (isinstance(low, (int, float)) and isinstance(high, (int, float))
+                and math.isfinite(low) and math.isfinite(high) and 0 < low < high):
+            actions["set_color_temp"] = replace(
+                actions["set_color_temp"], minimum=low, maximum=high,
+                convert=lambda raw: int(float(raw)), value_hint=f"色温开尔文 {low:g}-{high:g}",
+            )
+        return actions
+
     def format_state(self, device: DeviceState) -> str:
         if device.state != "on":
             return "关"
@@ -50,11 +65,11 @@ class LightDomain(DeviceDomain):
         return {
             **super().actions(),
             "set_brightness": ActionSpec(
-                "turn_on", "设置亮度", value_param="brightness_pct",
-                value_hint="亮度百分比 0-100", convert=_percent,
+                "set_brightness", "设置亮度", value_param="brightness_pct",
+                value_hint="亮度百分比 0-100", convert=_percent, minimum=0, maximum=100, step=1,
             ),
             "set_color_temp": ActionSpec(
-                "turn_on", "设置色温", value_param="color_temp_kelvin",
-                value_hint="色温开尔文 1500-8000", convert=_kelvin,
+                "set_color_temp", "设置色温", value_param="color_temp_kelvin",
+                value_hint="色温开尔文 1500-8000", convert=_kelvin, minimum=1500, maximum=8000, step=100,
             ),
         }

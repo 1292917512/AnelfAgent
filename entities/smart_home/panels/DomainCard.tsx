@@ -4,7 +4,7 @@
  * 数据驱动自 DeviceDomain.describe（/api/entity/smart_home/domains），
  * 新增后端设备域自动出现卡片；配置项写走通用实体配置端点。
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Check, Wrench } from "lucide-react";
 import { Card } from "@/components/common/Card";
@@ -31,18 +31,24 @@ function ConfigRow({
   const isBool = item.value_type === "boolean";
   const isNumber = ["integer", "float", "range"].includes(item.value_type);
   const current = String(item.value ?? "");
-  const [draft, setDraft] = useState(current);
+  const [draft, setDraft] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [savedTick, setSavedTick] = useState(false);
-  const dirty = draft !== current;
+  useEffect(() => {
+    if (!savedTick) return;
+    const timer = setTimeout(() => setSavedTick(false), 1200);
+    return () => clearTimeout(timer);
+  }, [savedTick]);
+  const shown = draft ?? current;
+  const dirty = shown !== current;
 
   const commit = async (raw: string) => {
     const text = raw.trim();
-    if (text === current) return;
-    let value: unknown = text;
-    if (isNumber && text !== "") {
-      value = item.value_type === "integer" ? parseInt(text, 10) : parseFloat(text);
-      if (Number.isNaN(value)) {
+    if (saving || text === current) return;
+    let value: unknown = isBool ? text === "true" : text;
+    if (isNumber) {
+      value = Number(text);
+      if (!text || !Number.isFinite(value) || (item.value_type === "integer" && !Number.isInteger(value))) {
         setDraft(current);
         toast.error(t("config.invalidNumber"));
         return;
@@ -51,8 +57,8 @@ function ConfigRow({
     setSaving(true);
     try {
       await onSave(item.key, value);
+      setDraft(null);
       setSavedTick(true);
-      setTimeout(() => setSavedTick(false), 1200);
     } catch {
       setDraft(current);
       toast.error(t("config.saveFailed"));
@@ -79,23 +85,25 @@ function ConfigRow({
       {isBool ? (
         <Switch
           checked={Boolean(item.value)}
+          label={item.description}
           disabled={disabled || saving}
-          onChange={(v) => void onSave(item.key, v).catch(() => toast.error(t("config.saveFailed")))}
+          onChange={(v) => void commit(String(v))}
         />
       ) : (
         <div className="relative flex-shrink-0">
           <Input
             className="w-32 h-7 pr-6 text-[12px]"
             type={isNumber ? "number" : "text"}
-            value={draft}
+            aria-label={item.description}
+            value={shown}
             min={item.min ?? undefined}
             max={item.max ?? undefined}
             disabled={disabled || saving}
             placeholder={String(item.default ?? "")}
             onChange={(e) => setDraft(e.target.value)}
-            onBlur={() => void commit(draft)}
+            onBlur={() => void commit(shown)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+              if (e.key === "Enter") e.currentTarget.blur();
             }}
           />
           <span className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none">
@@ -112,13 +120,20 @@ function ConfigRow({
 
 export function DomainCard({ domain, onSaveConfig }: DomainCardProps) {
   const { t } = useTranslation("smart_home");
+  const [saving, setSaving] = useState(false);
   const actionEntries = Object.entries(domain.actions);
+  const toggle = async (enabled: boolean) => {
+    setSaving(true);
+    try { await onSaveConfig(`smart_home_${domain.key}_enabled`, enabled); }
+    catch { toast.error(t("config.saveFailed")); }
+    finally { setSaving(false); }
+  };
 
   return (
     <Card className="p-4">
       <div className="flex items-center gap-2">
         <span className="flex-1 min-w-0 truncate text-[13px] font-semibold text-heading">
-          {domain.display_name}
+            {t("domainNames." + domain.key, { defaultValue: domain.display_name })}
         </span>
         <Badge variant={domain.available_count > 0 ? "accent" : "neutral"}>
           {t("domains.deviceCount", {
@@ -128,7 +143,9 @@ export function DomainCard({ domain, onSaveConfig }: DomainCardProps) {
         </Badge>
         <Switch
           checked={domain.enabled}
-          onChange={(v) => void onSaveConfig(`smart_home_${domain.key}_enabled`, v)}
+          label={t("domainNames." + domain.key, { defaultValue: domain.display_name })}
+          disabled={saving}
+          onChange={(v) => void toggle(v)}
         />
       </div>
       <p className="mt-1 mb-2 truncate text-[11px] text-muted" title={domain.description}>

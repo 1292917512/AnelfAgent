@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Set, Tuple
 
-from core.config import ConfigRegistry
+from core.config import ConfigManager, ConfigRegistry
 from core.entity import EntityRegistry, EntityType
 from core.event_bus import EVENT_MODULE_ADDED, EVENT_MODULE_REMOVED
 from core.lifecycle import Lifecycle
@@ -155,6 +155,7 @@ async def unload_entity(name: str) -> None:
     for entry in reversed(Lifecycle.snapshot()):
         if entry["name"] in owned:
             await Lifecycle.unregister(entry["name"])
+    ConfigManager.unregister_by_module(prefix)
 
     for mod_name in [m for m in sys.modules if m == prefix or m.startswith(prefix + ".")]:
         sys.modules.pop(mod_name, None)

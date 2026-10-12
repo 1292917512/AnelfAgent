@@ -27,6 +27,8 @@ export const smartHomeApi = {
   // 配置写复用通用实体配置端点（连接 url/token、域启停、域配置项等）
   updateConfig: (key: string, value: unknown) =>
     api.put("/entities/smart_home/config", { key, value }),
+  updateConfigs: (updates: Record<string, unknown>) =>
+    api.put<{ updated: number }>("/entities/smart_home/config/batch", { updates }),
   getConfig: () =>
     api.get<EntityConfigResponse>("/entities/smart_home/config"),
 };

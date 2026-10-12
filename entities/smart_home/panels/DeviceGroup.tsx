@@ -3,14 +3,16 @@ import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { Badge } from "@/components/ui";
 import { DeviceCard } from "./DeviceCard";
-import type { DeviceDomainInfo, DeviceInfo } from "./types";
+import type { CommandFeedback, DeviceDomainInfo, DeviceInfo } from "./types";
+import type { DeviceControl } from "./DeviceControls";
 
 interface DeviceGroupProps {
   title: string;
   devices: DeviceInfo[];
   domainByHa: Map<string, DeviceDomainInfo>;
   pendingIds: Set<string>;
-  onControl: (entityId: string, action: string, value?: string) => void;
+  onControl: DeviceControl;
+  feedback: Record<string, CommandFeedback>;
 }
 
 export function DeviceGroup({
@@ -19,14 +21,16 @@ export function DeviceGroup({
   domainByHa,
   pendingIds,
   onControl,
+  feedback,
 }: DeviceGroupProps) {
   const [open, setOpen] = useState(true);
   return (
     <section>
       <button
         type="button"
+        aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        className="mb-2 flex items-center gap-1.5 text-[12px] font-semibold tracking-wide text-muted-strong hover:text-foreground"
+        className="mb-3 flex items-center gap-2 py-1 text-sm font-semibold text-heading hover:text-accent"
       >
         {open ? (
           <ChevronDown className="h-3.5 w-3.5" />
@@ -37,7 +41,7 @@ export function DeviceGroup({
         <Badge variant="neutral">{devices.length}</Badge>
       </button>
       {open && (
-        <div className="grid gap-2.5 md:grid-cols-2 xl:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
           {devices.map((device) => {
             const domain = domainByHa.get(device.domain);
             return (
@@ -47,6 +51,7 @@ export function DeviceGroup({
                 domainKey={domain?.key ?? device.domain}
                 domain={domain}
                 pending={pendingIds.has(device.entity_id)}
+                feedback={feedback[device.entity_id]}
                 onControl={onControl}
               />
             );

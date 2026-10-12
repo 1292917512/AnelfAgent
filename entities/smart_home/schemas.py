@@ -25,6 +25,10 @@ class DeviceOut(BaseModel):
     area: str
     available: bool
     attributes: Dict[str, Any]
+    provider: str
+    updated_at: float
+    stale: bool
+    actions: Dict[str, Any]
 
 
 class DevicesResult(BaseModel):

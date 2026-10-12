@@ -23,5 +23,5 @@ class SceneDomain(DeviceDomain):
 
     def actions(self) -> Dict[str, ActionSpec]:
         return {
-            "activate": ActionSpec("turn_on", "激活场景"),
+            "activate": ActionSpec("activate", "激活场景"),
         }

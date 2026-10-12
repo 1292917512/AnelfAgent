@@ -129,9 +129,9 @@ class TestCallService:
     async def test_success(self, manager: SmartHomeManager,
                            fake: FakeProvider) -> None:
         result = await manager.call_service("light.desk", "set_brightness", "60")
-        assert result["service"] == "light.turn_on"
+        assert result["service"] == "light.set_brightness"
         assert fake.calls == [{
-            "domain": "light", "service": "turn_on",
+            "domain": "light", "service": "set_brightness",
             "entity_id": "light.desk", "data": {"brightness_pct": 60},
         }]
 
@@ -190,7 +190,7 @@ class TestCallService:
             await manager.call_service("sensor.temp", "turn_on")
         # sensor 域只读：动作校验先于平台调用失败
         assert info.value.cause == ErrorCause.PARAM
-        assert "无" in str(info.value)
+        assert "不支持" in str(info.value)
 
     @pytest.mark.asyncio
     async def test_speak_routes_to_tts_domain(self,
@@ -235,7 +235,8 @@ class TestTools:
         assert payload["count"] == 2
         assert payload["connection"]["connected"] is True
         # 批量清单裁剪属性（>5 台才裁，此处保留）
-        assert payload["devices"][0]["attributes"] == {"brightness": 128}
+        desk = next(d for d in payload["devices"] if d["entity_id"] == "light.desk")
+        assert desk["attributes"] == {"brightness": 128}
 
     def test_devices_slim_when_many(self, fake: FakeProvider) -> None:
         payload = json.loads(smart_home_devices(name="灯"))
@@ -290,3 +291,58 @@ class TestTools:
     def test_domains_unknown_action(self, fake: FakeProvider) -> None:
         payload = json.loads(smart_home_domains("explode"))
         assert "未知操作" in json.dumps(payload, ensure_ascii=False)
+
+
+class TestReliability:
+    @pytest.mark.asyncio
+    async def test_stale_snapshot_rejects_control(self, fake, monkeypatch):
+        monkeypatch.setattr(fake, "max_state_age", lambda: 0.0)
+        manager = SmartHomeManager()
+        assert all(d.stale for d in manager.devices())
+        with pytest.raises(SmartHomeCallError) as error:
+            await manager.call_service("light.desk", "turn_on")
+        assert error.value.cause == ErrorCause.STATE
+        assert fake.calls == []
+
+    def test_slow_subscriber_gets_resync(self):
+        manager = SmartHomeManager()
+        queue = manager.subscribe()
+        for _ in range(257):
+            manager._broadcast({"event": "state", "device": {}})
+        assert queue.qsize() == 1
+        assert queue.get_nowait()["event"] == "sync"
+
+    @pytest.mark.asyncio
+    async def test_batched_config_reconnect_coalesces(self, manager, monkeypatch):
+        import asyncio
+        from unittest.mock import AsyncMock
+        reconnect = AsyncMock()
+        monkeypatch.setattr(manager, "reconnect", reconnect)
+        await manager.start()
+        try:
+            for _ in range(5):
+                manager.request_reconnect("fake")
+            await asyncio.sleep(0.25)
+            reconnect.assert_awaited_once_with("fake")
+        finally:
+            await manager.close()
+
+    def test_migrated_settings_survive_reload(self, tmp_path, monkeypatch):
+        from core.path import ConfigPaths
+        from entities.smart_home.settings import SmartHomeConfigStore
+        monkeypatch.setattr(ConfigPaths, "APP_CONFIG", str(tmp_path / "app.json"))
+        legacy = tmp_path / "legacy.json"
+        legacy.write_text('{"smart_home_ha_url": "http://old"}', encoding="utf-8")
+        store = SmartHomeConfigStore(legacy)
+        store.load()
+        ConfigManager.register_store("smart_home_", store)
+        ConfigManager.set_persisted({"smart_home_ha_url": "http://new", "smart_home_context_mode": "always"})
+        restored = SmartHomeConfigStore(legacy)
+        restored.load()
+        assert restored.get("smart_home_ha_url") == "http://new"
+        assert restored.get("smart_home_context_mode") == "always"
+        assert json.loads(legacy.read_text())["smart_home_ha_url"] == "http://old"
+
+    def test_page_parameters_reject_bad_bounds(self, fake):
+        for offset, limit in [(-1, 50), (0, 0), (0, 101)]:
+            assert json.loads(smart_home_devices(offset=offset, limit=limit))["cause"] == "param"

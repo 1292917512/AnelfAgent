@@ -1,135 +1,93 @@
-/** 智能家居面板数据钩子 — 查询/SSE 实时推送/控制调用/配置保存的唯一收口。
- *
- * state 事件就地更新设备缓存，sync/connection 事件整表刷新；
- * 控制调用维护 pending 集合供卡片展示进行态。
- */
-import { useEffect, useMemo, useState } from "react";
+/** 查询、SSE 恢复、设备命令反馈与配置刷新共用的数据入口。 */
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { toast } from "@/stores/toast-store";
 import { useTranslation } from "react-i18next";
+import { apiErrorMessage } from "@/lib/api";
 import { smartHomeApi } from "./api";
-import type {
-  DeviceDomainInfo,
-  DevicesResponse,
-  StateEventPayload,
-  StatusResponse,
-} from "./types";
+import type { CommandFeedback, DeviceDomainInfo, DevicesResponse, StateEventPayload } from "./types";
+
+const QUERY_KEYS = ["smart-home-status", "smart-home-devices", "smart-home-domains", "smart-home-preview", "smart-home-entity-config"];
 
 export function useSmartHomeData() {
   const { t } = useTranslation("smart_home");
   const queryClient = useQueryClient();
+  const inFlight = useRef(new Set<string>());
   const [pendingIds, setPendingIds] = useState<Set<string>>(new Set());
+  const [feedback, setFeedback] = useState<Record<string, CommandFeedback>>({});
+  const [streamConnected, setStreamConnected] = useState(false);
+  const statusQuery = useQuery({ queryKey: [QUERY_KEYS[0]], queryFn: () => smartHomeApi.status().then((r) => r.data), refetchInterval: 30000 });
+  const devicesQuery = useQuery({ queryKey: [QUERY_KEYS[1]], queryFn: () => smartHomeApi.devices().then((r) => r.data), refetchInterval: 30000 });
+  const domainsQuery = useQuery({ queryKey: [QUERY_KEYS[2]], queryFn: () => smartHomeApi.domains().then((r) => r.data) });
+  const previewQuery = useQuery({ queryKey: [QUERY_KEYS[3]], queryFn: () => smartHomeApi.preview().then((r) => r.data), refetchInterval: 30000 });
 
-  const statusQuery = useQuery({
-    queryKey: ["smart-home-status"],
-    queryFn: () => smartHomeApi.status().then((r) => r.data),
-    refetchInterval: 30000,
-  });
-  const devicesQuery = useQuery({
-    queryKey: ["smart-home-devices"],
-    queryFn: () => smartHomeApi.devices().then((r) => r.data),
-    refetchInterval: 60000,
-  });
-  const domainsQuery = useQuery({
-    queryKey: ["smart-home-domains"],
-    queryFn: () => smartHomeApi.domains().then((r) => r.data),
-  });
-  const previewQuery = useQuery({
-    queryKey: ["smart-home-preview"],
-    queryFn: () => smartHomeApi.preview().then((r) => r.data),
-    refetchInterval: 30000,
-  });
-
-  const refreshAll = () => {
-    void queryClient.invalidateQueries({ queryKey: ["smart-home-status"] });
-    void queryClient.invalidateQueries({ queryKey: ["smart-home-devices"] });
-    void queryClient.invalidateQueries({ queryKey: ["smart-home-domains"] });
-    void queryClient.invalidateQueries({ queryKey: ["smart-home-preview"] });
-    void queryClient.invalidateQueries({ queryKey: ["smart-home-entity-config"] });
-  };
-
-  useEffect(() => {
-    const es = new EventSource("/api/entity/smart_home/stream");
-    es.addEventListener("state", (raw) => {
-      try {
-        const payload = JSON.parse((raw as MessageEvent).data) as StateEventPayload;
-        if (!payload.device) return;
-        queryClient.setQueryData<DevicesResponse>(["smart-home-devices"], (old) => {
-          if (!old) return old;
-          const idx = old.devices.findIndex(
-            (d) => d.entity_id === payload.device!.entity_id,
-          );
-          if (idx < 0) return old;
-          const devices = [...old.devices];
-          devices[idx] = payload.device!;
-          return { ...old, devices };
-        });
-      } catch {
-        /* 忽略畸形事件 */
-      }
-    });
-    es.addEventListener("sync", refreshAll);
-    es.addEventListener("connection", refreshAll);
-    return () => es.close();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  const refreshAll = useCallback(() => {
+    for (const key of QUERY_KEYS) void queryClient.invalidateQueries({ queryKey: [key] });
   }, [queryClient]);
 
-  const status: StatusResponse | undefined = statusQuery.data;
-  const devices = useMemo(
-    () => devicesQuery.data?.devices ?? [],
-    [devicesQuery.data],
-  );
-  const domains = useMemo(
-    () => domainsQuery.data?.domains ?? [],
-    [domainsQuery.data],
-  );
+  useEffect(() => {
+    const source = new EventSource("/api/entity/smart_home/stream");
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const refresh = () => {
+      if (timer !== undefined) return;
+      timer = setTimeout(() => { timer = undefined; refreshAll(); }, 1000);
+    };
+    source.onopen = () => { setStreamConnected(true); refresh(); };
+    source.onerror = () => setStreamConnected(false);
+    source.addEventListener("state", (raw) => {
+      try {
+        const payload = JSON.parse((raw as MessageEvent<string>).data) as StateEventPayload;
+        const device = payload.device;
+        if (!device?.entity_id) return;
+        queryClient.setQueryData<DevicesResponse>(["smart-home-devices"], (old) => {
+          if (!old) { refresh(); return old; }
+          const exists = old.devices.some((item) => item.entity_id === device.entity_id);
+          const devices = exists ? old.devices.map((item) => item.entity_id === device.entity_id ? device : item) : [...old.devices, device];
+          return { ...old, devices, count: devices.length };
+        });
+      } catch { refresh(); }
+    });
+    source.addEventListener("sync", refresh);
+    source.addEventListener("connection", refresh);
+    return () => { source.close(); if (timer !== undefined) clearTimeout(timer); };
+  }, [queryClient, refreshAll]);
 
-  /** ha domain → 设备域组件（面板按域特化渲染控制件） */
+  const devices = useMemo(() => devicesQuery.data?.devices ?? [], [devicesQuery.data]);
+  const domains = useMemo(() => domainsQuery.data?.domains ?? [], [domainsQuery.data]);
   const domainByHa = useMemo(() => {
     const map = new Map<string, DeviceDomainInfo>();
-    for (const domain of domains) {
-      for (const ha of domain.ha_domains) {
-        if (!map.has(ha)) map.set(ha, domain);
-      }
-    }
+    for (const domain of domains) for (const key of domain.ha_domains) if (!map.has(key)) map.set(key, domain);
     return map;
   }, [domains]);
 
   const saveConfig = async (key: string, value: unknown) => {
     await smartHomeApi.updateConfig(key, value);
-    await domainsQuery.refetch();
-    await previewQuery.refetch();
+    await Promise.all(QUERY_KEYS.map((queryKey) => queryClient.invalidateQueries({ queryKey: [queryKey] })));
   };
-
-  const control = (entityId: string, action: string, value = "") => {
-    setPendingIds((prev) => new Set(prev).add(entityId));
-    smartHomeApi
-      .control(entityId, action, value)
-      .catch((err: { response?: { data?: { detail?: string } } }) => {
-        toast.error(err.response?.data?.detail || t("messages.controlFailed"));
-      })
-      .finally(() => {
-        setPendingIds((prev) => {
-          const next = new Set(prev);
-          next.delete(entityId);
-          return next;
-        });
-      });
+  const control = async (entityId: string, action: string, value = ""): Promise<boolean> => {
+    if (inFlight.current.has(entityId)) return false;
+    inFlight.current.add(entityId);
+    setPendingIds(new Set(inFlight.current));
+    try {
+      await smartHomeApi.control(entityId, action, value);
+      setFeedback((old) => ({ ...old, [entityId]: { kind: "accepted", message: t("messages.accepted"), at: Date.now() } }));
+      refreshAll();
+      return true;
+    } catch (error) {
+      setFeedback((old) => ({ ...old, [entityId]: { kind: "error", message: apiErrorMessage(error, t("messages.controlFailed")), at: Date.now() } }));
+      return false;
+    } finally {
+      inFlight.current.delete(entityId);
+      setPendingIds(new Set(inFlight.current));
+    }
   };
-
   return {
-    status,
-    devices,
-    domains,
-    preview: previewQuery.data,
-    domainByHa,
-    pendingIds,
-    refreshAll,
+    status: statusQuery.data, devices, domains, domainByHa, pendingIds, feedback, streamConnected,
+    preview: previewQuery.data, refreshAll, saveConfig, control,
     refreshPreview: () => void previewQuery.refetch(),
-    saveConfig,
-    control,
-    isError: devicesQuery.isError || statusQuery.isError,
-    isLoading: devicesQuery.isLoading || !status,
+    isError: (!devicesQuery.data && devicesQuery.isError) || (!statusQuery.data && statusQuery.isError) || (!domainsQuery.data && domainsQuery.isError),
+    hasRefreshError: devicesQuery.isError || statusQuery.isError || domainsQuery.isError,
+    isLoading: statusQuery.isPending || devicesQuery.isPending || domainsQuery.isPending,
+    refreshing: statusQuery.isFetching || devicesQuery.isFetching,
   };
 }
 

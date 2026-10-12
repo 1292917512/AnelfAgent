@@ -96,7 +96,7 @@ export function ProviderCard({ provider, configItems, onChanged }: ProviderCardP
   );
 
   return (
-    <div className="flex h-full flex-col gap-2.5 rounded-lg border border-border bg-surface p-3.5">
+    <div className="flex h-full flex-col gap-4 rounded-2xl border border-border bg-card p-5">
       {/* 标识行 */}
       <div className="flex items-center gap-2.5">
         <span
@@ -108,14 +108,14 @@ export function ProviderCard({ provider, configItems, onChanged }: ProviderCardP
         >
           <Icon className="h-4 w-4" />
         </span>
-        <span className="flex-1 min-w-0 truncate text-[13px] font-semibold text-heading">
+        <span className="flex-1 min-w-0 text-sm font-semibold text-heading">
           {provider.provider_name}
         </span>
         {statusBadge}
       </div>
 
       {/* 状态行 */}
-      <div className="space-y-1 text-[11px] leading-relaxed">
+      <div className="space-y-2 text-xs leading-relaxed">
         {provider.configured && (
           <div className="text-muted">
             {t("providers.connected", { count: provider.device_count })}
@@ -140,7 +140,7 @@ export function ProviderCard({ provider, configItems, onChanged }: ProviderCardP
 
       {/* 接入详情 */}
       {details.length > 0 && (
-        <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[11px]">
+        <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 rounded-xl bg-elevated/60 p-3 text-xs">
           {details.map(([label, value]) => (
             <div key={label} className="contents">
               <span className="text-muted">{label}</span>
@@ -158,7 +158,8 @@ export function ProviderCard({ provider, configItems, onChanged }: ProviderCardP
           <button
             type="button"
             onClick={() => setConfigOpen((v) => !v)}
-            className="flex items-center gap-1 text-[11px] text-muted hover:text-foreground"
+            aria-expanded={configOpen}
+            className="flex w-full items-center gap-2 py-1 text-xs font-medium text-muted hover:text-foreground"
           >
             <Settings2 className="h-3 w-3" />
             {t("providers.config")}
@@ -170,7 +171,6 @@ export function ProviderCard({ provider, configItems, onChanged }: ProviderCardP
           </button>
           {configOpen && (
             <ProviderConfigForm
-              providerKey={provider.provider}
               items={configItems}
               onSaved={onChanged}
             />
@@ -183,7 +183,7 @@ export function ProviderCard({ provider, configItems, onChanged }: ProviderCardP
         <div className="mt-auto flex items-center justify-end gap-1.5 border-t border-border/60 pt-2.5">
           <Button
             variant="ghost" size="sm"
-            disabled={reconnecting}
+            loading={reconnecting}
             onClick={() => void reconnect()}
             title={t("providers.reconnect")}
           >

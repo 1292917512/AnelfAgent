@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from time import time
 from typing import Any, Callable, Dict, NamedTuple, Optional
 
 from core.tool_errors import ErrorCause
@@ -27,11 +28,15 @@ class DeviceState:
     """平台原始属性。"""
     area: str = ""
     """房间名（区域注册表解析，未分组为空串）。"""
+    updated_at: float = field(default_factory=time)
+    """最后一次成功取得状态的时间；不等同于设备状态改变时间。"""
+    provider: str = ""
+    stale: bool = False
 
     @property
     def available(self) -> bool:
         """设备当前是否有有效状态。"""
-        return self.state not in INERT_STATES
+        return not self.stale and self.state not in (*INERT_STATES, "")
 
     def to_dict(self) -> Dict[str, Any]:
         """可序列化快照（Web API / AI 工具共用）。"""
@@ -43,6 +48,9 @@ class DeviceState:
             "area": self.area,
             "available": self.available,
             "attributes": self.attributes,
+            "provider": self.provider,
+            "updated_at": self.updated_at,
+            "stale": self.stale,
         }
 
 
@@ -66,6 +74,20 @@ class ActionSpec:
     """字符串值到服务数据类型的转换器。"""
     ha_domain: Optional[str] = None
     """平台服务域覆盖（None 为跟随设备自身域；如语音播报的 tts 域）。"""
+    minimum: Optional[float] = None
+    maximum: Optional[float] = None
+    step: Optional[float] = None
+    options: tuple[str, ...] = ()
+
+    def to_dict(self) -> Dict[str, Any]:
+        """模型与控件共用的动作参数约束。"""
+        return {
+            "description": self.description,
+            "accepts_value": self.value_param is not None,
+            "value_hint": self.value_hint,
+            "min": self.minimum, "max": self.maximum, "step": self.step,
+            "options": list(self.options),
+        }
 
 
 class ServiceCall(NamedTuple):

@@ -9,8 +9,8 @@
 3. 纳入 ``context.py`` 的注入管线（按 priority 排序逐域渲染）。
 
 Model Experience:
-    模型看到什么 —— 各启用域 render() 的文本聚合成一个 ``[智能家居]`` 块注入
-        volatile 层尾部；设备片段带房间归属（``名称(房间): 状态``，无房间省略）；
+    模型看到什么 —— 按房间分组、设备域与名称排序的 ``[智能家居]`` 快照，
+        仅含新鲜状态，操作前通过查询工具获取实体 ID 和能力；
     token 影响 —— 每轮增量注入，量级取决于设备数（受各域 inject_limit 约束），
         房间归属每台设备增量约 2-4 token；
     缓存影响 —— 走 volatile 尾部动态区，不触碰 stable/conversation 前缀缓存。
@@ -18,6 +18,7 @@ Model Experience:
 
 from __future__ import annotations
 
+import math
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
 from core.config import ConfigManager
@@ -103,7 +104,7 @@ class DeviceDomain:
         mine = [d for d in devices if self.matches(d) and d.available]
         if not mine:
             return None
-        mine.sort(key=lambda d: d.name)
+        mine.sort(key=lambda d: (d.state in ("off", "idle", "closed"), d.area, d.name))
         limit = int(self.get_config("inject_limit", 8) or 0)
         omitted = 0
         if limit > 0 and len(mine) > limit:
@@ -116,7 +117,9 @@ class DeviceDomain:
 
     def format_device(self, device: DeviceState) -> str:
         """单台设备的注入片段（带房间归属，便于模型按位置定位设备）。"""
-        name = f"{device.name}({device.area})" if device.area else device.name
+        label = " ".join(device.name.split())[:80]
+        area = " ".join(device.area.split())[:40]
+        name = f"{label}({area})" if area else label
         return f"{name}: {self.format_state(device)}"
 
     def format_state(self, device: DeviceState) -> str:
@@ -137,13 +140,19 @@ class DeviceDomain:
             "toggle": ActionSpec("toggle", "切换"),
         }
 
-    def build_service_call(self, action: str, raw_value: str = "") -> ServiceCall:
+    def actions_for(self, device: DeviceState) -> Dict[str, ActionSpec]:
+        """设备级动作约束；平台可进一步按实际能力筛选。"""
+        return self.actions()
+
+    def build_service_call(
+        self, action: str, raw_value: str = "", device: Optional[DeviceState] = None,
+    ) -> ServiceCall:
         """把外部动作请求解析为平台服务调用（非法输入抛 SmartHomeCallError）。
 
         ha_domain 为 None 表示跟随设备自身域；动作需要跨域服务（如语音播报
         走 tts 域）时由 ActionSpec.ha_domain 声明或子类覆盖本方法。
         """
-        candidates = self.actions()
+        candidates = self.actions_for(device) if device is not None else self.actions()
         spec = candidates.get(action.strip())
         if spec is None:
             known = ", ".join(candidates) or "（无）"
@@ -162,7 +171,17 @@ class DeviceDomain:
                 )
             try:
                 data[spec.value_param] = spec.convert(value) if spec.convert else value
-            except (ValueError, TypeError) as exc:
+                converted = data[spec.value_param]
+                if spec.options and converted not in spec.options:
+                    raise ValueError(f"可用值: {', '.join(spec.options)}")
+                if isinstance(converted, (int, float)):
+                    if not math.isfinite(converted):
+                        raise ValueError("必须是有限数值")
+                    if spec.minimum is not None and converted < spec.minimum:
+                        raise ValueError(f"最小值为 {spec.minimum:g}")
+                    if spec.maximum is not None and converted > spec.maximum:
+                        raise ValueError(f"最大值为 {spec.maximum:g}")
+            except (ValueError, TypeError, OverflowError) as exc:
                 raise SmartHomeCallError(
                     f"动作 {action} 的值非法: {raw_value}"
                     f"（{spec.value_hint}；{exc}）",
@@ -209,11 +228,7 @@ class DeviceDomain:
             "device_count": len(mine),
             "available_count": sum(1 for d in mine if d.available),
             "actions": {
-                name: {
-                    "description": spec.description,
-                    "accepts_value": spec.value_param is not None,
-                    "value_hint": spec.value_hint,
-                }
+                name: spec.to_dict()
                 for name, spec in self.actions().items()
             },
             "configs": configs,
@@ -262,18 +277,41 @@ def config_entries() -> Dict[str, Any]:
 
 
 def render_context(devices: List[DeviceState]) -> str:
-    """组装当前注入文本（遍历启用域，按优先级排序拼接）。"""
-    parts: List[str] = []
+    """按房间、设备域与名称稳定排序；只收录新鲜状态，完整条目受总长度约束。"""
+    rows: list[tuple[str, int, str, str]] = []
+    omitted = 0
     for domain in all_domains():
         if not domain.is_enabled():
             continue
-        try:
-            text = domain.render(devices)
-        except Exception as exc:
-            log(f"设备域 {domain.key} 渲染异常: {exc}", "WARNING", tag=_LOG_TAG)
-            continue
-        if text:
-            parts.append(text.strip())
-    if not parts:
+        mine = sorted(
+            (d for d in devices if domain.matches(d) and d.available),
+            key=lambda d: (d.state in ("off", "idle", "closed"), d.area, d.name, d.entity_id),
+        )
+        limit = int(domain.get_config("inject_limit", 8) or 0)
+        if limit > 0:
+            omitted += max(0, len(mine) - limit)
+            mine = mine[:limit]
+        for device in mine:
+            try:
+                state = " ".join(domain.format_state(device).split())[:100]
+                name = " ".join(device.name.split())[:80]
+                room = " ".join(device.area.split())[:40] or "未分配房间"
+                rows.append((room, domain.priority, device.entity_id,
+                             f"- {domain.display_name}: {name}: {state}"))
+            except Exception as exc:
+                log(f"设备状态渲染失败 {device.entity_id}: {exc}", "DEBUG", tag=_LOG_TAG)
+    if not rows:
         return ""
-    return "[智能家居]\n" + "\n".join(parts)
+    content = "[智能家居]\n设备快照（仅供状态判断；操作前按名称/房间查询 entity_id 与可用动作）"
+    previous_room = ""
+    ordered = sorted(rows, key=lambda row: (row[0], row[1], row[3], row[2]))
+    for index, (room, _priority, _identity, line) in enumerate(ordered):
+        fragment = ("\n" + room + ":" if room != previous_room else "") + "\n" + line
+        if len(content) + len(fragment) > 2100:
+            omitted += len(ordered) - index
+            break
+        content += fragment
+        previous_room = room
+    if omitted:
+        content += f"\n其余 {omitted} 台请用 smart_home_devices 按房间或名称分页查询。"
+    return content + "\n家居阶段结束可 deactivate_tool_group(smart_home) 停止按需感知。"

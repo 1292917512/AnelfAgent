@@ -3,8 +3,12 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
+from agent.channel.config import ChannelConfigStore
 from core.config import ConfigManager, register_configs_safe
 from core.entity import EntityRegistry
 from services.entity import EntityService
@@ -81,3 +85,29 @@ class TestValueCoercion:
 
     def test_unknown_key_fails(self, svc: EntityService, group_entity: str) -> None:
         assert svc.update_entity_config(group_entity, "svc_demo_nope", 1) is False
+
+
+@pytest.mark.parametrize("batch", [False, True])
+@pytest.mark.parametrize("external", [False, True])
+def test_entity_config_persists_to_its_owner(
+    svc: EntityService, group_entity: str, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch, batch: bool, external: bool,
+) -> None:
+    module_path = tmp_path / "module"
+    module_path.mkdir()
+    module_config = module_path / "config.json"
+    module_config.write_text('{"svc_demo_count": 5}', encoding="utf-8")
+    monkeypatch.setattr(svc, "_find_entity_dir", lambda group: str(module_path))
+    store_path = tmp_path / "owned.json"
+    if external:
+        ConfigManager.register_store("svc_demo_", ChannelConfigStore("svc_demo", store_path))
+
+    if batch:
+        assert svc.update_entity_config_batch(group_entity, {"svc_demo_count": "42"}) == 1
+    else:
+        assert svc.update_entity_config(group_entity, "svc_demo_count", "42")
+
+    assert ConfigManager.get("svc_demo_count") == 42
+    assert json.loads(module_config.read_text("utf-8"))["svc_demo_count"] == (5 if external else 42)
+    if external:
+        assert json.loads(store_path.read_text("utf-8"))["count"] == 42

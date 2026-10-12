@@ -1,52 +1,28 @@
-/** 连接页签 — 各外部接入平台一张组件卡（状态/详情/连接配置/操作）。 */
+/** 展示已接入的平台；未接入平台仅在主动展开添加入口后显示。 */
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
-import { Server } from "lucide-react";
-import { Card } from "@/components/common/Card";
+import { Button, LoadingBlock } from "@/components/ui";
 import { smartHomeApi } from "./api";
 import { ProviderCard } from "./ProviderCard";
-import type { StatusResponse } from "./types";
+import type { ProviderStatus } from "./types";
 
-interface ProvidersPanelProps {
-  status: StatusResponse;
-  onChanged: () => void;
-}
-
-export function ProvidersPanel({ status, onChanged }: ProvidersPanelProps) {
+export function ProvidersPanel({ providers, availableProviders, onChanged }: {
+  providers: ProviderStatus[]; availableProviders: ProviderStatus[]; onChanged: () => void;
+}) {
   const { t } = useTranslation("smart_home");
-  const configQuery = useQuery({
-    queryKey: ["smart-home-entity-config"],
-    queryFn: () => smartHomeApi.getConfig().then((r) => r.data),
-  });
-  const itemsFor = (providerKey: string) =>
-    (configQuery.data?.items ?? []).filter((item) =>
-      item.key.startsWith(`smart_home_${providerKey}_`),
-    );
-
-  return (
-    <Card
-      title={t("providers.title", { count: status.providers.length })}
-      subtitle={t("providers.hint", { count: status.providers.length })}
-      actions={
-        <span className="flex items-center gap-1.5 text-[11px] text-muted">
-          <Server className="h-3.5 w-3.5" />
-          {t("providers.summary", {
-            connected: status.providers.filter((p) => p.connected).length,
-            total: status.providers.length,
-          })}
-        </span>
-      }
-    >
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-        {status.providers.map((provider) => (
-          <ProviderCard
-            key={provider.provider}
-            provider={provider}
-            configItems={itemsFor(provider.provider)}
-            onChanged={onChanged}
-          />
-        ))}
-      </div>
-    </Card>
-  );
+  const configQuery = useQuery({ queryKey: ["smart-home-entity-config"], queryFn: () => smartHomeApi.getConfig().then((r) => r.data) });
+  const cards = (items: ProviderStatus[]) => <div className="grid items-start gap-4 lg:grid-cols-2 2xl:grid-cols-3">
+    {items.map((provider) => <ProviderCard key={provider.provider} provider={provider} configItems={(configQuery.data?.items ?? []).filter((item) => item.key.startsWith("smart_home_" + provider.provider + "_"))} onChanged={onChanged} />)}
+  </div>;
+  return <div className="space-y-5">
+    <div><h3 className="text-sm font-semibold text-heading">{t("providers.title")}</h3><p className="mt-1.5 text-xs leading-relaxed text-muted">{t("providers.hint")}</p></div>
+    {configQuery.isPending ? <LoadingBlock /> : configQuery.isError ? <div role="alert" className="flex items-center justify-between gap-3 rounded-xl bg-danger-subtle p-4 text-xs text-danger">{t("config.loadFailed")}<Button size="sm" onClick={() => void configQuery.refetch()}>{t("retry")}</Button></div> : <>
+      {providers.length ? cards(providers) : <p className="rounded-xl border border-dashed border-border p-5 text-sm text-muted">{t("providers.empty")}</p>}
+      {availableProviders.length > 0 && <details className="rounded-2xl border border-border bg-card p-5">
+        <summary className="cursor-pointer text-sm font-medium text-heading">{t("providers.add")}</summary>
+        <p className="mb-4 mt-3 text-xs leading-relaxed text-muted">{t("providers.addHint")}</p>
+        {cards(availableProviders)}
+      </details>}
+    </>}
+  </div>;
 }

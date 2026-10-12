@@ -7,7 +7,8 @@ from typing import Any, Callable, ClassVar, Dict, List, Optional
 
 from core.config import ConfigManager
 
-from ..models import DeviceState
+from .. import framework
+from ..models import ActionSpec, DeviceState
 
 
 class SmartHomeProvider(ABC):
@@ -52,6 +53,15 @@ class SmartHomeProvider(ABC):
         item = self.config_schema.get(name, {})
         fallback = item.get("default", default)
         return ConfigManager.get(self.full_config_key(name), fallback)
+
+    def actions_for(self, device: DeviceState) -> Dict[str, ActionSpec]:
+        """设备可用动作；供应商应仅保留能实际执行的动作。"""
+        domain = framework.domain_for_ha(device.domain)
+        return domain.actions_for(device) if domain is not None else {}
+
+    def max_state_age(self) -> Optional[float]:
+        """轮询型平台的状态有效期；推送型平台由连接存活性保证。"""
+        return None
 
     # ---- 契约 ----
 

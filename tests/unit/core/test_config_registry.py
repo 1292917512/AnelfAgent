@@ -235,3 +235,28 @@ class TestUnregister:
         ConfigManager.set("st_a", 5)
         assert "st_a" in ConfigManager.get_all()
         assert store.data == {}
+
+    def test_module_cleanup_preserves_other_stores_and_shared_listeners(self) -> None:
+        class OwnedStore(_MemoryStore):
+            __module__ = "entities.home.settings"
+
+        class OtherStore(_MemoryStore):
+            __module__ = "entities.home_extra.settings"
+
+        events: list[str] = []
+
+        def listener(key: str, value: object) -> None:
+            events.append("removed")
+
+        listener.__module__ = "entities.home"
+        ConfigManager.register_store("home_", OwnedStore())
+        ConfigManager.register_store("other_", OtherStore())
+        ConfigManager.add_listener("home_", listener)
+        ConfigManager.add_listener("home_", lambda key, value: events.append("kept"))
+
+        assert ConfigManager.unregister_by_module("entities.home") == 2
+        assert ConfigManager.unregister_by_module("entities.home") == 0
+        assert not ConfigManager.has_external_store("home_key")
+        assert ConfigManager.has_external_store("other_key")
+        ConfigManager.set("home_key", 1)
+        assert events == ["kept"]

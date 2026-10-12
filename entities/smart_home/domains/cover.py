@@ -46,7 +46,7 @@ class CoverDomain(DeviceDomain):
             "close_cover": ActionSpec("close_cover", "关闭"),
             "stop_cover": ActionSpec("stop_cover", "停止"),
             "set_position": ActionSpec(
-                "set_cover_position", "设置位置", value_param="position",
-                value_hint="位置百分比 0-100（100 为全开）", convert=_position,
+                "set_position", "设置位置", value_param="position",
+                value_hint="位置百分比 0-100（100 为全开）", convert=_position, minimum=0, maximum=100, step=1,
             ),
         }

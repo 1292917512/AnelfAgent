@@ -210,3 +210,22 @@ class TestToggleServer:
 
         assert result["success"] is False
         assert "不存在" in result["message"]
+
+
+def test_secret_rotation_merges_and_commits_once(svc, monkeypatch):
+    reloads = []
+    monkeypatch.setattr(svc, "_trigger_reload", lambda: reloads.append(True))
+    svc.update_server_config("alpha", {"headers": {"Existing": "keep", "ACCESS_TOKEN": "old"}}, reload=False)
+    svc.update_server_config("beta", {"env": {"REGION": "keep", "ACCESS_TOKEN": "old"}}, reload=False)
+    svc.update_server_secrets({
+        "alpha": {"headers": {"ACCESS_TOKEN": "new"}},
+        "beta": {"env": {"ACCESS_TOKEN": "new"}},
+    })
+    assert svc.get_server_config("alpha")["headers"] == {"Existing": "keep", "ACCESS_TOKEN": "new"}
+    assert svc.get_server_config("beta")["env"] == {"REGION": "keep", "ACCESS_TOKEN": "new"}
+    assert reloads == [True]
+    before = svc.load_config()
+    with pytest.raises(ValueError):
+        svc.update_server_secrets({"alpha": {"headers": {"ACCESS_TOKEN": "lost"}}, "missing": {"env": {"A": "B"}}})
+    assert svc.load_config() == before
+    assert reloads == [True]

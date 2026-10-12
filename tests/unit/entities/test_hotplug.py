@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from core.config import ConfigRegistry, register_configs_safe
+from core.config import ConfigManager, ConfigRegistry, register_configs_safe
 from core.entity import EntityRegistry
 from core.lifecycle import Lifecycle
 from entities import hotplug
@@ -126,6 +126,35 @@ class TestSyncEntities:
 
 
 class TestUnloadEntity:
+    async def test_config_resources_remain_until_lifecycle_stops(self, tmp_path: Path) -> None:
+        from agent.channel.config import ChannelConfigStore
+
+        class Store(ChannelConfigStore):
+            __module__ = "entities._hp_fake.settings"
+
+        stopped_with_store = []
+        events = []
+
+        def changed(key: str, value: object) -> None:
+            events.append(key)
+
+        changed.__module__ = "entities._hp_fake"
+        path = tmp_path / "settings.json"
+        ConfigManager.register_store("owned_", Store("owned", path))
+        ConfigManager.set_persisted({"owned_value": "saved"})
+        ConfigManager.add_listener("owned_", changed)
+        Lifecycle.register("_hp_config", None, cleanup=lambda: stopped_with_store.append(
+            ConfigManager.get("owned_value")))
+        hotplug._entity_lifecycles["_hp_fake"] = {"_hp_config"}
+
+        await hotplug.unload_entity("_hp_fake")
+
+        assert stopped_with_store == ["saved"]
+        assert path.exists()
+        assert not ConfigManager.has_external_store("owned_value")
+        ConfigManager.set("owned_value", "after unload")
+        assert events == []
+
     async def test_teardown_order_and_module_subscriptions(self, monkeypatch) -> None:
         from core.context_provider import ContextProviderRegistry, ProviderMeta
         from core.event_bus import event_bus

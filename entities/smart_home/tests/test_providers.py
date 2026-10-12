@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, Dict, List
 
@@ -174,7 +175,7 @@ class TestXiaomiProvider:
         provider._client = FakeClient()
         provider._connected = True
         provider._device_ids["xiaomi.abc"] = "abc"
-        await provider.call_service("media_player", "volume_set", "xiaomi.abc",
+        await provider.call_service("media_player", "set_volume", "xiaomi.abc",
                                     {"volume_level": 0.4})
         await provider.call_service("media_player", "media_play", "xiaomi.abc", {})
         assert calls == [("volume", "abc", 40), ("play", "abc")]
@@ -211,8 +212,12 @@ class TestXiaomiProvider:
         from entities.smart_home.providers.xiaomi import XiaomiProvider
         broken = XiaomiProvider()
         await broken.connect()
-        assert broken.is_connected() is False
-        assert "账号或密码错误" in (broken.status()["last_error"] or "")
+        try:
+            await asyncio.sleep(0)
+            assert broken.is_connected() is False
+            assert "账号或密码错误" in (broken.status()["last_error"] or "")
+        finally:
+            await broken.close()
 
 
 class TestXiaoduMcpProvider:
@@ -252,67 +257,135 @@ class TestXiaoduMcpProvider:
             {"name": "xiaodu-iot", "enabled": True, "connected": True},
             {"name": "xiaodu", "enabled": True, "connected": True},
         ])
-        return xiaodu_mod.XiaoduProvider(), calls
+        provider = xiaodu_mod.XiaoduProvider()
+        monkeypatch.setattr("entities.smart_home.manager.all_providers", lambda: [provider])
+        return provider, calls, responses
 
     @pytest.mark.asyncio
     async def test_sync_maps_devices(self, env) -> None:
-        provider, _ = env
+        provider, _, _ = env
         assert provider.is_configured() is True
         assert await provider._sync_devices() is True
-        devices = {d.entity_id: d for d in provider.snapshot()}
+        devices = {d.name: d for d in provider.snapshot()}
         # 无域组件的类型（CURTAIN）不进设备面；不可达 → unavailable
         assert set(devices) == {
-            "xiaodu.云佳", "xiaodu.台灯", "xiaodu.加湿器", "xiaodu.c1",
+            "云佳", "台灯", "加湿器", "小度音箱",
         }
-        ac = devices["xiaodu.云佳"]
+        ac = devices["云佳"]
         assert (ac.domain, ac.state, ac.area) == ("climate", "off", "主卧")
         assert ac.attributes["temperature"] == 25
-        assert devices["xiaodu.加湿器"].available is False
-        spk = devices["xiaodu.c1"]
+        assert devices["加湿器"].available is False
+        spk = devices["小度音箱"]
         assert (spk.domain, spk.state, spk.area) == ("media_player", "idle", "客厅")
         assert provider.supports_speak(spk) is True
 
     @pytest.mark.asyncio
     async def test_iot_action_translation(self, env) -> None:
-        provider, calls = env
+        provider, calls, _ = env
         await provider._sync_devices()
         provider._connected = True
-        await provider.call_service("light", "turn_on", "xiaodu.台灯", {})
-        await provider.call_service("climate", "set_temperature", "xiaodu.云佳",
-                                    {"temperature": 26})
-        await provider.call_service("climate", "set_hvac_mode", "xiaodu.云佳",
-                                    {"hvac_mode": "cool"})
-        await provider.call_service("climate", "set_hvac_mode", "xiaodu.云佳",
-                                    {"hvac_mode": "off"})
+        devices = {device.name: device.entity_id for device in provider.snapshot()}
+        manager = SmartHomeManager()
+        await manager.call_service(devices["台灯"], "turn_on")
+        await manager.call_service(devices["云佳"], "set_temperature", "26")
+        await manager.call_service(devices["云佳"], "set_hvac_mode", "cool")
+        await manager.call_service(devices["云佳"], "set_hvac_mode", "off")
+        await manager.call_service(devices["台灯"], "set_brightness", "60")
         iot = [c for c in calls if c[1] == "IOT_CONTROL_DEVICES"]
         assert iot[0][2] == {
             "applianceName": "台灯", "roomName": "书房", "action": "turnOn",
         }
         assert iot[1][2]["attribute"] == "temperature"
-        assert iot[1][2]["value"] == "26"
+        assert float(iot[1][2]["value"]) == 26
         assert iot[2][2]["value"] == "制冷"
         assert iot[3][2]["action"] == "turnOff"
+        assert iot[4][2] == {"applianceName": "台灯", "roomName": "书房", "action": "set", "attribute": "brightness", "value": "60"}
 
     @pytest.mark.asyncio
     async def test_speaker_commands(self, env) -> None:
-        provider, calls = env
+        provider, calls, _ = env
         await provider._sync_devices()
         provider._connected = True
-        device = next(d for d in provider.snapshot() if d.entity_id == "xiaodu.c1")
-        await provider.speak(device, "你好")
-        await provider.call_service("media_player", "set_volume", "xiaodu.c1",
-                                    {"volume_level": 0.4})
+        device = next(d for d in provider.snapshot() if d.name == "小度音箱")
+        manager = SmartHomeManager()
+        await manager.call_service(device.entity_id, "speak", "你好")
+        await manager.call_service(device.entity_id, "set_volume", "40")
         speak = [c for c in calls if c[1] == "xiaodu_speak"]
         ctrl = [c for c in calls if c[1] == "control_xiaodu"]
         assert speak[0][2] == {"text": "你好", "cuid": "c1", "client_id": "k1"}
         assert ctrl[0][2]["command"] == "音量调到40"
 
     @pytest.mark.asyncio
-    async def test_unconfigured_when_server_disabled(
+    async def test_one_configured_server_is_sufficient(
             self, monkeypatch: pytest.MonkeyPatch) -> None:
         from entities.smart_home.providers import xiaodu as xiaodu_mod
         monkeypatch.setattr(xiaodu_mod, "bridge_server_status", lambda: [
             {"name": "xiaodu-iot", "enabled": True, "connected": True},
             {"name": "xiaodu", "enabled": False, "connected": False},
         ])
-        assert xiaodu_mod.XiaoduProvider().is_configured() is False
+        assert xiaodu_mod.XiaoduProvider().is_configured() is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("disabled", [False, True])
+    async def test_optional_source_absent_or_disabled_is_not_failure(self, env, monkeypatch, disabled):
+        from entities.smart_home.providers import xiaodu as module
+
+        provider, calls, _responses = env
+        await provider._sync_devices()
+        calls.clear()
+        statuses = [{"name": "xiaodu-iot", "enabled": True, "connected": True}]
+        if disabled:
+            statuses.append({"name": "xiaodu", "enabled": False, "connected": False})
+        monkeypatch.setattr(module, "bridge_server_status", lambda: statuses)
+
+        assert await provider._sync_devices()
+        assert provider.is_connected()
+        assert provider.status()["last_error"] is None
+        assert all(device.domain != "media_player" for device in provider.snapshot())
+        assert provider._speaker_meta == {}
+        assert [server for server, _tool, _args in calls] == ["xiaodu-iot"]
+
+    @pytest.mark.asyncio
+    async def test_duplicate_names_in_different_rooms_stay_addressable(self, env):
+        provider, calls, responses = env
+        source = responses[("xiaodu-iot", "GET_ALL_DEVICES_WITH_STATUS")]["return"]
+        source.append({**source[1], "roomName": "客厅"})
+        await provider._sync_devices()
+        lamps = [d for d in provider.snapshot() if d.name == "台灯"]
+        assert len({d.entity_id for d in lamps}) == 2
+        for lamp in lamps:
+            await SmartHomeManager().call_service(lamp.entity_id, "turn_on")
+        assert {c[2]["roomName"] for c in calls if c[1] == "IOT_CONTROL_DEVICES"} == {"书房", "客厅"}
+
+    @pytest.mark.asyncio
+    async def test_partial_source_failure_preserves_only_stale_snapshot(self, env, monkeypatch):
+        from entities.smart_home.providers import xiaodu as module
+        provider, _calls, _responses = env
+        await provider._sync_devices()
+        monkeypatch.setattr(module, "bridge_server_status", lambda: [
+            {"name": "xiaodu", "enabled": True, "connected": True},
+            {"name": "xiaodu-iot", "enabled": True, "connected": False},
+        ])
+        await provider._sync_devices()
+        assert provider.is_connected()
+        for device in provider.snapshot():
+            assert device.stale == (device.domain != "media_player")
+        lamp = next(d for d in provider.snapshot() if d.name == "台灯")
+        with pytest.raises(SmartHomeCallError) as error:
+            await SmartHomeManager().call_service(lamp.entity_id, "turn_on")
+        assert error.value.cause == ErrorCause.STATE
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["play", "pause", "stop", "set_volume"])
+async def test_xiaomi_false_ack_is_failure(method, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from entities.smart_home.providers.xiaomi.client import XiaomiClient
+    client = XiaomiClient()
+    remote_name = "player_set_volume" if method == "set_volume" else "player_" + method
+    remote = SimpleNamespace(**{remote_name: AsyncMock(return_value=False)})
+    monkeypatch.setattr(client, "_require_mina", lambda: remote)
+    with pytest.raises(RuntimeError, match="未接受"):
+        await getattr(client, method)("speaker", *([40] if method == "set_volume" else []))

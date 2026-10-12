@@ -13,13 +13,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
+from dataclasses import replace
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.log import log
 from entities._sdk import call_mcp_server_tool
 
-from ...models import DeviceState
+from ...models import ActionSpec, DeviceState
 from .. import home_provider
 from ..base import SmartHomeProvider
 
@@ -124,12 +126,12 @@ class XiaoduProvider(SmartHomeProvider):
     # ---- 状态 ----
 
     def is_configured(self) -> bool:
-        """两个小度 MCP server 均在配置中且启用（连接归桥管）。"""
+        """至少一个小度 MCP 服务已配置且启用，连接由桥管理。"""
         enabled = {
             str(s.get("name")): bool(s.get("enabled", True))
             for s in bridge_server_status()
         }
-        return enabled.get(IOT_SERVER, False) and enabled.get(TERMINAL_SERVER, False)
+        return enabled.get(IOT_SERVER, False) or enabled.get(TERMINAL_SERVER, False)
 
     def is_connected(self) -> bool:
         return self._connected
@@ -165,47 +167,74 @@ class XiaoduProvider(SmartHomeProvider):
         self._emit_connection()
 
     def _poll_interval(self) -> float:
-        return float(self.get_config("poll_interval", 30))
+        return max(5.0, min(600.0, float(self.get_config("poll_interval", 30))))
+
+    def max_state_age(self) -> Optional[float]:
+        return self._poll_interval() * 3
+
+    def actions_for(self, device: DeviceState) -> Dict[str, ActionSpec]:
+        if device.attributes.get("control_ambiguous"):
+            return {}
+        allowed = {
+            "light": {"turn_on", "turn_off", "set_brightness"},
+            "switch": {"turn_on", "turn_off"},
+            "climate": {"turn_on", "turn_off", "set_temperature", "set_hvac_mode"},
+            "media_player": {*_SPEAKER_COMMANDS, "set_volume", "speak"},
+        }.get(device.domain, set())
+        specs = {key: value for key, value in super().actions_for(device).items() if key in allowed}
+        if "set_hvac_mode" in specs:
+            specs["set_hvac_mode"] = replace(specs["set_hvac_mode"], options=("off", *_HVAC_MODES))
+        return specs
 
     async def _poll_loop(self) -> None:
         """轮询循环：桥连接态 → 设备同步 → 变更回调（异常不中断循环）。"""
         while True:
             try:
-                connected = self._bridge_connected()
-                if connected != self._connected:
-                    self._connected = connected
-                    if connected:
-                        self._last_error = ""
-                    self._emit_connection()
-                if connected and await self._sync_devices() and self.on_sync:
+                if await self._sync_devices() and self.on_sync:
                     self.on_sync()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 self._last_error = f"{type(exc).__name__}: {exc}".rstrip(": ")
+                self._connected = False
                 log(f"小度同步异常: {self._last_error}", "WARNING", tag=_LOG_TAG)
+            self._emit_connection()
             await asyncio.sleep(self._poll_interval())
 
-    def _bridge_connected(self) -> bool:
-        connected = {
-            str(s.get("name")): bool(s.get("connected"))
-            for s in bridge_server_status()
-        }
-        return connected.get(IOT_SERVER, False) and connected.get(
-            TERMINAL_SERVER, False,
-        )
-
     async def _sync_devices(self) -> bool:
-        """全量拉双 MCP 设备并重建缓存（返回是否有变更）。"""
+        """同步已启用的 MCP 设备，失败源保留过期快照，停用源移出缓存。"""
         devices: Dict[str, DeviceState] = {}
         iot_meta: Dict[str, Dict[str, str]] = {}
         speaker_meta: Dict[str, Dict[str, str]] = {}
-        for device, meta in await self._sync_iot():
-            devices[device.entity_id] = device
-            iot_meta[device.entity_id] = meta
-        for device, meta in await self._sync_terminal():
-            devices[device.entity_id] = device
-            speaker_meta[device.entity_id] = meta
+        connected = {str(s.get("name")): bool(s.get("connected"))
+                     for s in bridge_server_status() if s.get("enabled", True)}
+        healthy = 0
+        errors = []
+        for server, sync, old_meta, new_meta in (
+            (IOT_SERVER, self._sync_iot, self._iot_meta, iot_meta),
+            (TERMINAL_SERVER, self._sync_terminal, self._speaker_meta, speaker_meta),
+        ):
+            if server not in connected:
+                continue
+            try:
+                if not connected.get(server):
+                    raise ConnectionError(f"{server} 未连接")
+                entries = await sync()
+                ids = [device.entity_id for device, _meta in entries]
+                if len(set(ids)) != len(ids) or any(key in devices for key in ids):
+                    raise ValueError("平台返回重复设备标识")
+                for device, meta in entries:
+                    devices[device.entity_id] = device
+                    new_meta[device.entity_id] = meta
+                healthy += 1
+            except Exception as exc:
+                errors.append(f"{server}: {exc}")
+                for entity_id, meta in old_meta.items():
+                    if entity_id in self._devices:
+                        devices[entity_id] = replace(self._devices[entity_id], stale=True)
+                        new_meta[entity_id] = meta
+        self._connected = healthy > 0
+        self._last_error = "; ".join(errors)
         changed = {
             eid: d.to_dict() for eid, d in devices.items()
         } != {eid: d.to_dict() for eid, d in self._devices.items()}
@@ -217,43 +246,65 @@ class XiaoduProvider(SmartHomeProvider):
     async def _sync_iot(self) -> List[Tuple[DeviceState, Dict[str, str]]]:
         data = await _call(IOT_SERVER, "GET_ALL_DEVICES_WITH_STATUS", {})
         result: List[Tuple[DeviceState, Dict[str, str]]] = []
-        for appliance in data.get("return") or []:
+        if not isinstance(data, dict) or not isinstance(data.get("return"), list):
+            raise ValueError("小度家电清单格式无效")
+        identities: set[str] = set()
+        locations: Dict[Tuple[str, str], int] = {}
+        for appliance in data["return"]:
             types = appliance.get("applianceTypes") or []
             domain = _TYPE_DOMAIN.get(str(types[0]) if types else "")
             name = str(appliance.get("applianceName") or "").strip()
             if domain is None or not name:
                 continue
             room = str(appliance.get("roomName") or "").strip()
+            identity = str(appliance.get("applianceId") or "")
+            if not identity:
+                identity = json.dumps([domain, room, name], ensure_ascii=False)
+            entity_id = "xiaodu.iot." + hashlib.sha256(identity.encode()).hexdigest()[:24]
+            if entity_id in identities:
+                raise ValueError("小度返回无法区分的同名设备，请在平台中设置不同名称")
+            identities.add(entity_id)
+            locations[(room, name)] = locations.get((room, name), 0) + 1
             status = appliance.get("status") or {}
             reachable = str(status.get("connectivity") or "") == "REACHABLE"
             on = str(status.get("turnOnState") or "").upper() == "ON"
             attrs: Dict[str, Any] = {}
             if isinstance(status.get("targetTemperature"), (int, float)):
                 attrs["temperature"] = status["targetTemperature"]
+            if isinstance(status.get("brightness"), (int, float)):
+                attrs["brightness"] = max(0, min(255, status["brightness"] * 255 / 100))
             result.append((DeviceState(
-                entity_id=f"xiaodu.{name}",
+                entity_id=entity_id,
                 domain=domain,
                 name=name,
                 state=("on" if on else "off") if reachable else "unavailable",
                 attributes=attrs,
                 area=room,
             ), {"name": name, "room": room}))
+        for device, meta in result:
+            if locations[(meta["room"], meta["name"])] > 1:
+                device.attributes["control_ambiguous"] = True
         return result
 
     async def _sync_terminal(self) -> List[Tuple[DeviceState, Dict[str, str]]]:
         data = await _call(TERMINAL_SERVER, "list_user_devices", {})
-        entries = data if isinstance(data, list) else ([data] if data else [])
+        if isinstance(data, list):
+            entries = data
+        elif isinstance(data, dict) and data.get("cuid") and data.get("client_id"):
+            entries = [data]
+        else:
+            raise ValueError("小度音箱清单格式无效")
         result: List[Tuple[DeviceState, Dict[str, str]]] = []
         for entry in entries:
             cuid = str(entry.get("cuid") or "")
             client_id = str(entry.get("client_id") or "")
             if not cuid or not client_id:
                 continue
-            online = bool(entry.get("online_status"))
+            online = entry.get("online_status") in (True, 1, "1", "true", "online")
             location = entry.get("location") or {}
             meta = {"cuid": cuid, "client_id": client_id}
             result.append((DeviceState(
-                entity_id=f"xiaodu.{cuid}",
+                entity_id="xiaodu.speaker." + hashlib.sha256(cuid.encode()).hexdigest()[:24],
                 domain="media_player",
                 name=str(entry.get("device_name") or cuid),
                 state="idle" if online else "unavailable",

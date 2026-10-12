@@ -28,6 +28,10 @@ export interface DeviceInfo {
   area: string;
   available: boolean;
   attributes: Record<string, unknown>;
+  provider: string;
+  updated_at: number;
+  stale: boolean;
+  actions: Record<string, DomainActionInfo>;
 }
 
 /** 设备域控制动作描述（DeviceDomain.describe.actions） */
@@ -35,6 +39,10 @@ export interface DomainActionInfo {
   description: string;
   accepts_value: boolean;
   value_hint: string;
+  min: number | null;
+  max: number | null;
+  step: number | null;
+  options: string[];
 }
 
 /** 设备域配置项（DeviceDomain.describe.configs） */
@@ -78,6 +86,7 @@ export interface DomainsResponse {
 }
 
 export interface PreviewResponse {
+  activation_required?: boolean;
   injecting: boolean;
   content: string | null;
 }
@@ -88,6 +97,13 @@ export interface ControlResponse {
   name: string;
   action: string;
   service: string;
+  status: "accepted";
+}
+
+export interface CommandFeedback {
+  kind: "accepted" | "error";
+  message: string;
+  at: number;
 }
 
 /** SSE 事件载荷（manager 广播；connection 事件为单供应商状态） */

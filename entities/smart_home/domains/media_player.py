@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, Optional
 
 from core.tool_errors import ErrorCause
 
@@ -19,11 +19,11 @@ _PLAYER_STATES = {
 
 
 def _volume(raw: str) -> float:
-    """解析音量百分比并转为 0-1 电平。"""
-    value = int(float(raw))
+    """解析音量百分比。"""
+    value = float(raw)
     if not 0 <= value <= 100:
         raise ValueError("超出 0-100 范围")
-    return value / 100
+    return value
 
 
 @device_domain
@@ -65,8 +65,8 @@ class MediaPlayerDomain(DeviceDomain):
             "media_play": ActionSpec("media_play", "播放"),
             "media_pause": ActionSpec("media_pause", "暂停"),
             "set_volume": ActionSpec(
-                "volume_set", "设置音量", value_param="volume_level",
-                value_hint="音量百分比 0-100", convert=_volume,
+                "set_volume", "设置音量", value_param="volume_level",
+                value_hint="音量百分比 0-100", convert=_volume, minimum=0, maximum=100, step=1,
             ),
             # service 在 build_service_call 按 tts_service 配置动态解析，此处仅作声明
             "speak": ActionSpec(
@@ -79,12 +79,16 @@ class MediaPlayerDomain(DeviceDomain):
             ),
         }
 
-    def build_service_call(self, action: str, raw_value: str = "") -> ServiceCall:
+    def build_service_call(
+        self, action: str, raw_value: str = "", device: Optional[DeviceState] = None,
+    ) -> ServiceCall:
         """解析服务调用：speak 跨域走配置的 TTS 服务，play_media 补内容类型。"""
         name = action.strip()
         if name == "speak":
             return self._build_speak_call(raw_value)
-        call = super().build_service_call(action, raw_value)
+        call = super().build_service_call(action, raw_value, device)
+        if name == "set_volume":
+            call.data["volume_level"] /= 100
         if name == "play_media":
             call = ServiceCall(
                 call.ha_domain, call.service,

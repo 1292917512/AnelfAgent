@@ -1,114 +1,74 @@
-/**
- * 智能家居实体面板 — 薄壳：连接摘要条 + 三个模块页签。
- *
- * 页签即模块边界：设备（房间分组实时控制）/ 连接（外部接入平台组件卡）/
- * 组件与注入（设备域组件管理 + AI 注入预览）。数据与 SSE 实时推送收口在
- * panels/useSmartHomeData，各页签为独立子面板组件。
- *
- * i18n：locales/{zh,en}.json 由 lib/entity-plugin-locales.ts 启动时 eager
- * 注册（命名空间 smart_home）；_registry.groups/configSections 声明
- * 工具页与配置中心的分组名。
- */
+/** 智能家居控制台：设备、平台连接与 AI 感知设置。 */
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { AlertTriangle, Boxes, Home, PlugZap } from "lucide-react";
-import { Card } from "@/components/common/Card";
+import { AlertCircle, ArrowUpRight, Home, Layers3, PlugZap, RefreshCw, Sparkles } from "lucide-react";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
-import { Badge, Button, LoadingBlock } from "@/components/ui";
+import { Button, LoadingBlock } from "@/components/ui";
 import { DevicesPanel } from "./panels/DevicesPanel";
 import { DomainsPanel } from "./panels/DomainsPanel";
 import { ProvidersPanel } from "./panels/ProvidersPanel";
 import { useSmartHomeData } from "./panels/useSmartHomeData";
 
-type SmartHomeTab = "devices" | "providers" | "domains";
+type HomeTab = "devices" | "providers" | "domains";
 
 export default function SmartHomePanel() {
   const { t } = useTranslation("smart_home");
   const data = useSmartHomeData();
-  const [tab, setTab] = useState<SmartHomeTab>("devices");
-
-  if (data.isError) {
-    return (
-      <Card>
-        <div className="flex flex-col items-center gap-3 py-8 text-center">
-          <AlertTriangle className="h-6 w-6 text-danger" />
-          <p className="text-sm text-muted">{t("loadFailed")}</p>
-          <Button size="sm" onClick={data.refreshAll}>
-            {t("retry")}
-          </Button>
-        </div>
-      </Card>
-    );
-  }
-
-  if (data.isLoading || !data.status) {
-    return <LoadingBlock />;
-  }
-
-  // 模块页签按激活态显示：设备（有连接/设备）、连接（恒在）、组件与注入（已配置且有设备或注入）
-  const showDevices = data.status.connected || data.devices.length > 0;
-  const showDomains =
-    data.status.configured &&
-    (data.devices.length > 0 || Boolean(data.preview?.injecting));
-  const TABS: TabItem<SmartHomeTab>[] = [
-    ...(showDevices
-      ? [{ key: "devices" as const, label: t("tabs.devices"), icon: Home }]
-      : []),
-    { key: "providers" as const, label: t("tabs.providers"), icon: PlugZap },
-    ...(showDomains
-      ? [{ key: "domains" as const, label: t("tabs.domains"), icon: Boxes }]
-      : []),
+  const [tab, setTab] = useState<HomeTab>("devices");
+  if (data.isError) return (
+    <div className="rounded-2xl border border-border bg-card p-10 text-center">
+      <AlertCircle className="mx-auto mb-4 h-8 w-8 text-warn" />
+      <p className="mb-4 text-sm text-muted">{t("loadFailed")}</p>
+      <Button onClick={data.refreshAll}>{t("retry")}</Button>
+    </div>
+  );
+  if (data.isLoading || !data.status) return <LoadingBlock />;
+  const devices = data.devices.filter((device) => data.domainByHa.has(device.domain));
+  const presentDomains = data.domains.flatMap((domain) => {
+    const matching = devices.filter((device) => domain.ha_domains.includes(device.domain));
+    return matching.length ? [{ ...domain, device_count: matching.length, available_count: matching.filter((device) => device.available).length }] : [];
+  });
+  const activeProviders = data.status.providers.filter((provider) => provider.configured || provider.connected || provider.device_count > 0);
+  const online = devices.filter((device) => device.available).length;
+  const rooms = new Set(devices.map((device) => device.area).filter(Boolean)).size;
+  const active = devices.filter((device) => device.available && ["on", "playing", "cool", "heat", "open"].includes(device.state)).length;
+  const tabs: TabItem<HomeTab>[] = [
+    { key: "devices", label: t("tabs.devices"), icon: Home },
+    { key: "providers", label: t("tabs.providers"), icon: PlugZap },
+    { key: "domains", label: t("tabs.domains"), icon: Sparkles },
   ];
-  const activeTab: SmartHomeTab = TABS.some((item) => item.key === tab)
-    ? tab
-    : TABS[0]?.key ?? "providers";
-
   return (
-    <div className="space-y-4">
-      {/* 连接摘要条：各平台状态 + 设备总数 + 注入开关一目了然 */}
-      <div className="flex flex-wrap items-center gap-2">
-        {data.status.providers.map((provider) => (
-          <Badge
-            key={provider.provider}
-            variant={
-              provider.connected ? "ok" : provider.configured ? "warn" : "neutral"
-            }
-          >
-            <span className="h-1.5 w-1.5 rounded-full bg-current" />
-            {provider.provider_name}
-          </Badge>
-        ))}
-        <Badge variant="accent">
-          {t("summary.devices", { count: data.status.device_count })}
-        </Badge>
-        <Badge variant={data.preview?.injecting ? "accent2" : "neutral"}>
-          {data.preview?.injecting ? t("summary.injecting") : t("summary.injectOff")}
-        </Badge>
-      </div>
-
-      <TabBar tabs={TABS} activeTab={activeTab} onChange={setTab} />
-
-      {activeTab === "devices" && (
-        <DevicesPanel
-          devices={data.devices}
-          domains={data.domains}
-          domainByHa={data.domainByHa}
-          connected={data.status.connected}
-          pendingIds={data.pendingIds}
-          onControl={data.control}
-        />
-      )}
-      {activeTab === "providers" && (
-        <ProvidersPanel status={data.status} onChanged={data.refreshAll} />
-      )}
-      {activeTab === "domains" && (
-        <DomainsPanel
-          domains={data.domains}
-          preview={data.preview}
-          onRefreshPreview={data.refreshPreview}
-          onSaveConfig={data.saveConfig}
-        />
-      )}
+    <div className="space-y-6 pb-4">
+      <header className="overflow-hidden rounded-2xl border border-border bg-card">
+        <div className="flex flex-wrap items-start justify-between gap-4 p-5 sm:p-6">
+          <div className="flex items-center gap-3.5">
+            <div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-accent-subtle text-accent"><Home size={23} strokeWidth={1.6} /></div>
+            <div><h2 className="text-xl font-semibold tracking-tight text-heading">{t("home.title")}</h2><p className="mt-1 text-xs leading-relaxed text-muted">{t("home.subtitle")}</p></div>
+          </div>
+          <Button size="sm" variant="ghost" onClick={data.refreshAll} loading={data.refreshing}><RefreshCw size={14} />{t("home.refresh")}</Button>
+        </div>
+        {devices.length > 0 && <div className="grid grid-cols-3 divide-x divide-border border-y border-border bg-elevated/40">
+          {[[t("home.available"), String(online), "/ " + devices.length], [t("home.rooms"), String(rooms), ""], [t("home.active"), String(active), ""]].map(([label, value, suffix]) => (
+            <div key={label} className="px-4 py-4 sm:px-6"><p className="text-xs text-muted">{label}</p><p className="mt-1.5 text-2xl font-semibold tabular-nums tracking-tight text-heading">{value}<span className="ml-1.5 text-sm font-normal text-muted">{suffix}</span></p></div>
+          ))}
+        </div>}
+        {activeProviders.length > 0 && <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            {activeProviders.map((provider) => (
+              <button key={provider.provider} onClick={() => setTab("providers")} className="flex items-center gap-2 text-xs text-muted transition-colors hover:text-heading">
+                <span className={"h-1.5 w-1.5 rounded-full " + (provider.connected ? "bg-ok" : provider.configured ? "bg-warn" : "bg-border-strong")} />
+                {provider.provider_name}<ArrowUpRight size={12} />
+              </button>
+            ))}
+          </div>
+          <span className={"flex items-center gap-1.5 text-[11px] " + (data.streamConnected ? "text-muted" : "text-warn")}><Layers3 size={12} />{t(data.streamConnected ? "home.live" : "home.reconnecting")}</span>
+        </div>}
+      </header>
+      {data.hasRefreshError && <div role="status" className="rounded-xl border border-warn/30 bg-warn-subtle px-4 py-3 text-xs text-warn">{t("home.refreshFailed")}</div>}
+      <TabBar tabs={tabs} activeTab={tab} onChange={setTab} />
+      {tab === "devices" && <DevicesPanel devices={devices} domains={presentDomains} domainByHa={data.domainByHa} connected={data.status.connected} pendingIds={data.pendingIds} feedback={data.feedback} onControl={data.control} onConnect={() => setTab("providers")} />}
+      {tab === "providers" && <ProvidersPanel providers={activeProviders} availableProviders={data.status.providers.filter((provider) => !activeProviders.includes(provider))} onChanged={data.refreshAll} />}
+      {tab === "domains" && <DomainsPanel domains={presentDomains} preview={data.preview} onRefreshPreview={data.refreshPreview} onSaveConfig={data.saveConfig} />}
     </div>
   );
 }

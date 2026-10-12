@@ -99,7 +99,7 @@ class TestRender:
         domain = framework.get_domain("dummy_test")
         assert domain is not None
         line = domain.render([_device(), _device("dummy.beta", "乙设备", "off")])
-        assert line == "测试设备: 乙设备: 关 | 甲设备: 开"  # 按名称排序（乙 < 甲 码点序）
+        assert line == "测试设备: 甲设备: 开 | 乙设备: 关"
 
     def test_render_includes_area(self) -> None:
         domain = framework.get_domain("dummy_test")
@@ -213,13 +213,13 @@ class TestBuiltinDomainFormats:
         with pytest.raises(SmartHomeCallError):
             domain.build_service_call("set_brightness", "120")
         call = domain.build_service_call("set_brightness", "60")
-        assert (call.service, call.data) == ("turn_on", {"brightness_pct": 60})
+        assert (call.service, call.data) == ("set_brightness", {"brightness_pct": 60})
 
     def test_media_player_volume_mapped(self) -> None:
         domain = framework.get_domain("media_player")
         assert domain is not None
         call = domain.build_service_call("set_volume", "40")
-        assert (call.service, call.data) == ("volume_set", {"volume_level": 0.4})
+        assert (call.service, call.data) == ("set_volume", {"volume_level": 0.4})
 
     def test_media_player_speak_cross_domain(self) -> None:
         domain = framework.get_domain("media_player")
@@ -264,3 +264,32 @@ class TestBuiltinDomainFormats:
         device = _device("scene.movie", "观影模式", "2026-09-13T10:00:00",
                          domain="scene")
         assert domain.format_device(device) == "观影模式"
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf", "101"])
+def test_nonfinite_and_invalid_volume_rejected(value):
+    domain = framework.get_domain("media_player")
+    with pytest.raises(SmartHomeCallError):
+        domain.build_service_call("set_volume", value)
+
+
+def test_temperature_range_and_unit_follow_device():
+    domain = framework.get_domain("climate")
+    device = _device("climate.heat", "暖气", "heat", domain="climate", attributes={
+        "min_temp": 50, "max_temp": 90, "target_temp_step": 0.5, "temperature_unit": "°F", "temperature": 72,
+    })
+    assert domain.build_service_call("set_temperature", "72.5", device).data == {"temperature": 72.5}
+    assert "72°F" in domain.format_state(device)
+    with pytest.raises(SmartHomeCallError):
+        domain.build_service_call("set_temperature", "49", device)
+    device.attributes = {"min_temp": None, "max_temp": "bad", "target_temp_step": 0}
+    assert domain.actions_for(device)["set_temperature"].step == 1
+
+def test_light_color_range_follows_device():
+    domain = framework.get_domain("light")
+    device = _device("light.room", "灯", "on", domain="light", attributes={
+        "min_color_temp_kelvin": 2700, "max_color_temp_kelvin": 6500,
+    })
+    assert domain.build_service_call("set_color_temp", "3000", device).data == {"color_temp_kelvin": 3000}
+    with pytest.raises(SmartHomeCallError):
+        domain.build_service_call("set_color_temp", "7000", device)

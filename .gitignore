@@ -58,6 +58,7 @@ config/plugins.json
 config/hooks.json
 config/mcp_oauth.json
 config/calendar.json
+config/smart_home.json
 # 运行时配置
 config/heartbeat.json
 config/cognee.json
@@ -107,6 +108,7 @@ config/tmp/
 entities/*/config.json
 # Any nested config.json under an entity (e.g. entities/<name>/<name>/...) is also runtime-generated
 entities/**/config.json
+entities/**/config.json.migrated
 entities/ssh/connections.json
 entities/operation/operations.json
 

@@ -19,6 +19,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from core.config import register_configs_safe
 from core.entity import EntityRegistry, EntityType
+from core.file_utils import atomic_write_text
 from core.log import log
 from core.path import ConfigPaths
 
@@ -330,7 +331,25 @@ class MCPServerStore:
     def save_config(self, data: Dict[str, Any]) -> None:
         p = _writable_config_path()
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_text(p, json.dumps(data, ensure_ascii=False, indent=2))
+
+    def update_server_secrets(self, updates: Dict[str, Dict[str, Dict[str, str]]]) -> None:
+        """原子更新多台服务器的凭据键，保留其他 env/headers 字段并只热重载一次。"""
+        with _CONFIG_LOCK:
+            data = self.load_config()
+            servers = data.get("mcpServers", {})
+            for name, fields in updates.items():
+                existing = servers.get(name)
+                if not isinstance(existing, dict):
+                    raise ValueError(f"服务器 '{name}' 不存在")
+                current = dict(existing)
+                for field_name, values in fields.items():
+                    if field_name not in self._SECRET_FIELDS:
+                        raise ValueError(f"不支持的凭据字段: {field_name}")
+                    current[field_name] = {**(current.get(field_name) or {}), **values}
+                servers[name] = self._finalize_server_config(current)
+            self.save_config(data)
+        self._trigger_reload()
 
     @classmethod
     def get_server_config_schema(cls) -> Dict[str, Any]:

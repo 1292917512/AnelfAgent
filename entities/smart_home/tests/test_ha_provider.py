@@ -11,6 +11,7 @@ import aiohttp
 import pytest
 
 from core.config import ConfigManager
+from entities.smart_home.models import SmartHomeCallError
 from entities.smart_home.providers import get_provider
 from entities.smart_home.providers import homeassistant as ha_module
 from entities.smart_home.providers.homeassistant import HomeAssistantProvider
@@ -133,7 +134,7 @@ class TestDispatch:
         provider._pending[8] = future
         provider._dispatch({"type": "result", "id": 8, "success": False,
                             "error": {"message": "service not found"}})
-        with pytest.raises(RuntimeError, match="service not found"):
+        with pytest.raises(SmartHomeCallError, match="service not found"):
             await future
 
     def test_event_routes_state_changed(self,
@@ -283,3 +284,41 @@ class TestRunOnce:
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
             await provider._teardown()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_replays_newer_events(provider, monkeypatch):
+    commands = []
+    async def command(payload):
+        commands.append(payload["type"])
+        if payload["type"] == "get_states":
+            provider._apply_state_changed({"entity_id": "light.desk", "new_state": _state("light.desk", "off")})
+            provider._apply_state_changed({"entity_id": "light.removed", "new_state": None})
+            return [_state("light.desk", "on"), _state("light.removed", "on")]
+        return []
+    monkeypatch.setattr(provider, "_command", command)
+    await provider._full_sync()
+    assert commands[0] == "subscribe_events"
+    assert [(d.entity_id, d.state) for d in provider.snapshot()] == [("light.desk", "off")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("domain,action,service", [
+    ("light", "set_brightness", "turn_on"), ("media_player", "set_volume", "volume_set"),
+    ("cover", "set_position", "set_cover_position"), ("scene", "activate", "turn_on"),
+])
+async def test_canonical_actions_translate_at_transport(provider, monkeypatch, domain, action, service):
+    from unittest.mock import AsyncMock
+    command = AsyncMock()
+    monkeypatch.setattr(provider, "_command", command)
+    provider._connected = True
+    await provider.call_service(domain, action, domain + ".device", {})
+    assert command.await_args.args[0]["service"] == service
+
+
+def test_capabilities_hide_unsupported_controls(provider):
+    from entities.smart_home.models import DeviceState
+    device = DeviceState("light.binary", "light", "Simple bulb", "on", {"supported_color_modes": ["onoff"]})
+    assert "set_brightness" not in provider.actions_for(device)
+    player = DeviceState("media_player.basic", "media_player", "Player", "idle", {"supported_features": 4})
+    assert set(provider.actions_for(player)) == {"set_volume"}

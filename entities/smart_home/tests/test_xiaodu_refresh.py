@@ -17,9 +17,11 @@ class _FakeStore:
     def __init__(self) -> None:
         self.updates: List[tuple] = []
 
-    def update_server_config(self, name: str, patch: Dict[str, Any]) -> Dict[str, Any]:
-        self.updates.append((name, patch))
-        return {"before": {}, "after": patch}
+    def get_server_config(self, name: str) -> Dict[str, Any]:
+        return {"url": "http://test.invalid"}
+
+    def update_server_secrets(self, updates: Dict[str, Dict[str, Dict[str, str]]]) -> None:
+        self.updates.extend(updates.items())
 
 
 @pytest.fixture()
@@ -103,3 +105,16 @@ class TestXiaoduRefreshToken:
         assert "error" in out
         assert out["cause"] == "permission"
         assert "refresh_token 失效" in out.get("hint", "")
+
+
+@pytest.mark.asyncio
+async def test_rotation_survives_mcp_persistence_failure(env, monkeypatch):
+    _calls, saved, store = env
+    def fail(_updates):
+        assert ("smart_home_xiaodu_refresh_token", "new-refresh") in saved
+        raise OSError("disk full")
+    monkeypatch.setattr(store, "update_server_secrets", fail)
+    result = _result(await tools_mod.xiaodu_refresh_token())
+    assert "error" in result
+    assert "new-access" not in json.dumps(result)
+    assert "new-refresh" not in json.dumps(result)

@@ -9,6 +9,8 @@ cleanup 逆序断开。设备状态缓存在各 provider 内（平台为唯一�
 from __future__ import annotations
 
 import asyncio
+import time
+from dataclasses import replace
 from typing import Any, Dict, List, Optional
 
 from core.log import log
@@ -27,12 +29,17 @@ class SmartHomeManager:
 
     def __init__(self) -> None:
         self._subscribers: List["asyncio.Queue[Dict[str, Any]]"] = []
+        self._locks: Dict[str, asyncio.Lock] = {}
+        self._reconnect_tasks: Dict[str, asyncio.Task[None]] = {}
+        self._dirty: set[str] = set()
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     # ---- Lifecycle 钩子 ----
 
     async def start(self) -> None:
         """启动：注入事件回调并连接全部已配置的 provider（未配置则待机）。"""
         providers = all_providers()
+        self._loop = asyncio.get_running_loop()
         if not providers:
             log("智能家居平台连接未注册", "WARNING", tag=_LOG_TAG)
             return
@@ -48,8 +55,48 @@ class SmartHomeManager:
 
     async def close(self) -> None:
         """关停：断开全部 provider 连接。"""
-        for provider in all_providers():
-            await provider.close()
+        self._loop = None
+        tasks = list(self._reconnect_tasks.values())
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._reconnect_tasks.clear()
+        self._dirty.clear()
+        for provider in reversed(all_providers()):
+            async with self.operation_lock(provider.key):
+                try:
+                    await provider.close()
+                except Exception as exc:
+                    log(f"{provider.display_name} 关闭失败: {exc}", "WARNING", tag=_LOG_TAG)
+
+    def operation_lock(self, key: str) -> asyncio.Lock:
+        """同一平台的连接、控制与凭据轮换共享串行边界。"""
+        return self._locks.setdefault(key, asyncio.Lock())
+
+    def request_reconnect(self, key: str) -> None:
+        """合并配置通知到宿主循环，兼容来自工作线程的配置变更。"""
+        loop = self._loop
+        if loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(self._schedule_reconnect, key)
+
+    def _schedule_reconnect(self, key: str) -> None:
+        if self._loop is None:
+            return
+        self._dirty.add(key)
+        if key not in self._reconnect_tasks:
+            self._reconnect_tasks[key] = asyncio.create_task(self._drain_reconnects(key))
+
+    async def _drain_reconnects(self, key: str) -> None:
+        try:
+            while key in self._dirty:
+                await asyncio.sleep(0.15)
+                self._dirty.discard(key)
+                try:
+                    await self.reconnect(key)
+                except Exception as exc:
+                    log(f"{key} 配置重连失败: {exc}", "WARNING", tag=_LOG_TAG)
+        finally:
+            self._reconnect_tasks.pop(key, None)
 
     async def reconnect(self, key: str = "") -> None:
         """重连指定 provider（空为全部；连接配置变更后按新配置重建）。"""
@@ -57,10 +104,12 @@ class SmartHomeManager:
         for provider in targets:
             if provider is None:
                 continue
-            await provider.close()
-            self._wire(provider)
-            if provider.is_configured():
-                await provider.connect()
+            async with self.operation_lock(provider.key):
+                await provider.close()
+                self._wire(provider)
+                if provider.is_configured():
+                    await provider.connect()
+                self._broadcast({"event": "connection", "status": provider.status()})
 
     # ---- 供应商归属 ----
 
@@ -93,7 +142,11 @@ class SmartHomeManager:
         """设备快照聚合过滤查询（domain 支持组件 key 或平台域；area 精确；name 模糊）。"""
         result: List[DeviceState] = []
         for provider in all_providers():
-            result.extend(provider.snapshot())
+            max_age = provider.max_state_age()
+            for device in provider.snapshot():
+                stale = (device.stale or not provider.is_connected()
+                         or (max_age is not None and time.time() - device.updated_at > max_age))
+                result.append(replace(device, provider=provider.key, stale=stale))
         domain = domain.strip().lower()
         if domain:
             result = [
@@ -117,13 +170,28 @@ class SmartHomeManager:
                 return device
         return None
 
+    def describe_device(self, device: DeviceState) -> Dict[str, Any]:
+        """设备事实与能力的单一出站口（查询、SSE、AI 工具共用）。"""
+        provider = self.owner_of(device.entity_id)
+        actions = provider.actions_for(device) if provider is not None else {}
+        return {**device.to_dict(), "actions": {key: spec.to_dict() for key, spec in actions.items()}}
+
     # ---- 控制 ----
 
     async def call_service(
         self, entity_id: str, action: str, raw_value: str = "",
     ) -> Dict[str, Any]:
+        """将同一平台的控制与重连串行化，避免命令发送期间连接被关闭。"""
+        provider = self.owner_of(entity_id.strip())
+        async with self.operation_lock(provider.key if provider is not None else ""):
+            return await self._call_service(entity_id, action.strip(), raw_value)
+
+    async def _call_service(
+        self, entity_id: str, action: str, raw_value: str,
+    ) -> Dict[str, Any]:
         """控制设备：归属/配置/设备/域/动作逐层校验后分派调用。"""
         entity_id = entity_id.strip()
+        action = action.strip()
         provider = self.owner_of(entity_id)
         if provider is None or not provider.is_configured():
             raise SmartHomeCallError(
@@ -153,6 +221,13 @@ class SmartHomeManager:
                 f"未连接到{provider.display_name}（等待自动重连或检查连接配置）",
                 ErrorCause.NETWORK,
             )
+        if not device.available:
+            raise SmartHomeCallError("设备离线或状态已过期，请待状态恢复后重试", ErrorCause.STATE)
+        spec = provider.actions_for(device).get(action)
+        if spec is None:
+            raise SmartHomeCallError(f"设备不支持动作: {action}", ErrorCause.PARAM)
+        if spec.options and raw_value.strip() not in spec.options:
+            raise SmartHomeCallError(f"设备支持的值: {', '.join(spec.options)}", ErrorCause.PARAM)
         # 语音播报优先走供应商原生 TTS 通道，不支持则回落域级服务调用
         # （如 HA 经 tts_service 配置跨域调用 tts.*_say）
         if action.strip() == "speak" and provider.supports_speak(device):
@@ -163,6 +238,10 @@ class SmartHomeManager:
                 )
             try:
                 await provider.speak(device, text)
+            except SmartHomeCallError:
+                raise
+            except TimeoutError as exc:
+                raise SmartHomeCallError("播报超时，结果未知，请勿立即重复播报", ErrorCause.TIMEOUT) from exc
             except Exception as exc:
                 raise SmartHomeCallError(
                     f"播报失败: {exc}", ErrorCause.NETWORK,
@@ -172,13 +251,20 @@ class SmartHomeManager:
                 "name": device.name,
                 "action": "speak",
                 "service": f"{provider.key}.speak",
+                "status": "accepted",
             }
-        call = domain.build_service_call(action, raw_value)
+        call = domain.build_service_call(action, raw_value, device)
         ha_domain = call.ha_domain or device.domain
         try:
             await provider.call_service(
                 ha_domain, call.service, device.entity_id, call.data,
             )
+        except SmartHomeCallError:
+            raise
+        except (ValueError, TypeError) as exc:
+            raise SmartHomeCallError(f"控制参数不受支持: {exc}", ErrorCause.PARAM) from exc
+        except TimeoutError as exc:
+            raise SmartHomeCallError("控制超时，结果未知，请先查询状态再决定是否重试", ErrorCause.TIMEOUT) from exc
         except Exception as exc:
             raise SmartHomeCallError(
                 f"控制失败: {exc}", ErrorCause.NETWORK,
@@ -188,6 +274,7 @@ class SmartHomeManager:
             "name": device.name,
             "action": action.strip(),
             "service": f"{ha_domain}.{call.service}",
+            "status": "accepted",
         }
 
     # ---- 订阅广播（SSE 消费） ----
@@ -208,13 +295,18 @@ class SmartHomeManager:
             try:
                 queue.put_nowait(payload)
             except asyncio.QueueFull:
-                log("智能家居事件订阅队列已满，丢弃事件", "DEBUG", tag=_LOG_TAG)
+                while not queue.empty():
+                    queue.get_nowait()
+                queue.put_nowait({"event": "sync"})
 
     def _wire(self, provider: SmartHomeProvider) -> None:
         """把 provider 事件回调接入订阅广播。"""
-        provider.on_device_update = lambda d: self._broadcast(
-            {"event": "state", "device": d.to_dict()},
-        )
+        def updated(device: DeviceState) -> None:
+            current = self.get_device(device.entity_id)
+            if current is not None:
+                self._broadcast({"event": "state", "device": self.describe_device(current)})
+
+        provider.on_device_update = updated
         provider.on_sync = lambda: self._broadcast({"event": "sync"})
         provider.on_connection = lambda s: self._broadcast(
             {"event": "connection", "status": s},

@@ -10,52 +10,79 @@
   "loadFailed": "Failed to load smart home data (entity may be disabled or server needs a restart)",
   "retry": "Retry",
   "providers": {
-    "hint": "Providers ({{count}}) — device source platforms, auto-connect once configured",
-    "connected": "Connected · {{count}} devices",
+    "hint": "Manage your connections and account settings. Devices sync automatically.",
+    "connected": "{{count}} devices",
     "disconnected": "Disconnected",
     "unconfigured": "Not configured",
     "reconnect": "Reconnect",
-    "configHint": "Fill in this provider's connection info in the Config tab",
-    "configHint_ha": "Fill in the Home Assistant URL and long-lived access token in the Config tab",
-    "configHint_xiaomi": "Fill in your Xiaomi account and password in the Config tab (login token is cached and reused)",
-    "title": "Provider connections ({{count}})",
+    "configHint": "Open connection settings below to configure this platform.",
+    "configHint_ha": "Connect Home Assistant to manage devices across your home.",
+    "configHint_xiaomi": "Connect your Xiaomi account for playback, volume and speaker announcements.",
+    "title": "Your platforms",
     "summary": "{{connected}}/{{total}} connected",
     "statusConnected": "Connected",
-    "configHint_xiaodu": "Xiaodu connects via Baidu's official dual MCP servers (xiaodu-iot for devices / xiaodu for speakers) — enable both in MCP management with a shared ACCESS_TOKEN",
+    "configHint_xiaodu": "Configure a Xiaodu appliance or speaker service in MCP management to sync devices.",
     "config": "Connection settings",
-    "configSave": "Save & reconnect",
-    "configSaved": "Settings saved, reconnecting",
+    "configSave": "Save settings",
+    "configSaved": "Settings saved",
     "secretPlaceholder": "Leave blank to keep current value",
     "detailUrl": "URL",
     "detailAccount": "Account",
     "detailExpires": "Token expires",
     "connectedAt": "Connected at",
-    "mcpServers": "MCP servers"
+    "mcpServers": "MCP servers",
+    "empty": "No platforms added yet. Add one below.",
+    "add": "Add device platform",
+    "addHint": "Connect a platform you use. Its devices will appear automatically."
   },
   "preview": {
-    "title": "What the AI actually sees",
+    "title": "AI awareness preview",
     "refresh": "Refresh preview",
-    "empty": "No device state is being injected (disconnected or no available devices in enabled domains)",
-    "subtitle": "The device state text actually injected into the AI context",
+    "empty": "No device state is currently shared. Enable awareness or check connections.",
+    "subtitle": "The current device state shared with your AI.",
     "structured": "Structured",
-    "raw": "Raw"
+    "raw": "Raw",
+    "onDemand": "Preview after smart_home is activated. Other tasks receive no device snapshot; the AI can close the group when finished."
   },
   "devices": {
     "hint": "{{count}} devices, grouped by room (states pushed in real time over WebSocket)",
-    "empty": "No devices yet (none onboarded in Home Assistant)",
-    "emptyOffline": "Device overview and controls appear here once connected",
+    "empty": "Platform connected. No supported devices discovered yet.",
+    "emptyOffline": "Connect a platform to start managing your home.",
     "ungrouped": "Ungrouped",
     "title": "Device overview ({{count}})",
-    "search": "Search device name or entity ID…",
+    "search": "Search devices or rooms",
     "allDomains": "All",
     "hideUnavailable": "Hide unavailable",
     "viewRoom": "By room",
     "viewDomain": "By type",
     "noMatch": "No devices match the filters",
-    "clearFilter": "Clear filters"
+    "clearFilter": "Clear filters",
+    "allRooms": "Whole home",
+    "connect": "Connect a platform",
+    "unavailableHint": "{{count}} devices are offline or out of date. Controls return when their states recover."
   },
   "device": {
-    "unavailable": "Unavailable"
+    "unavailable": "Unavailable",
+    "stale": "Awaiting update",
+    "brightness": "Brightness",
+    "colorTemp": "Color temperature",
+    "volume": "Volume",
+    "position": "Open position",
+    "mode": "Operating mode",
+    "chooseMode": "Choose a mode",
+    "targetTemp": "Target temperature",
+    "currentTemp": "Room {{value}}{{unit}}",
+    "increase": "Increase target temperature",
+    "decrease": "Decrease target temperature",
+    "stop": "Stop",
+    "play": "Play",
+    "pause": "Pause",
+    "turnOn": "Turn on {{name}}",
+    "turnOff": "Turn off {{name}}",
+    "sending": "Sending",
+    "domainDisabled": "Controls for this device type are disabled",
+    "updatedAt": "Last synced {{time}}",
+    "noSnapshot": "No device state received yet"
   },
   "state": {
     "on": "On",
@@ -87,35 +114,70 @@
     "off": "Off",
     "on": "On",
     "speak": "Speak",
-    "speakPlaceholder": "Type a message and press Enter…"
+    "speakPlaceholder": "What should your speaker say?"
   },
   "scene": {
     "ready": "Ready",
     "activate": "Activate"
   },
   "domains": {
-    "hint": "Device domains ({{count}}) — enabling controls context injection and device control for that domain",
+    "hint": "Only types with discovered devices appear here. Manage their awareness and controls.",
     "deviceCount": "{{available}}/{{total}} available",
     "footerHint": "Domain toggles and settings are also available in the Config tab or the config center (entity/smart_home group); the AI can manage them via the smart_home_domains tool",
-    "title": "Device domains ({{count}})"
+    "title": "Device types",
+    "awareness": "Share home state with AI",
+    "awarenessHint": "On demand by default: your AI activates home tools when needed and closes them when that phase is complete.",
+    "empty": "Awareness settings appear automatically when devices are discovered."
   },
   "config": {
     "unsaved": "Unsaved changes",
     "invalidNumber": "Please enter a valid number",
-    "saveFailed": "Failed to save config"
+    "saveFailed": "Failed to save config",
+    "partialSave": "Some settings were not saved. Check configuration permissions and try again.",
+    "loadFailed": "Could not load settings. Please retry."
   },
   "messages": {
     "controlFailed": "Control failed",
-    "reconnectFailed": "Reconnect failed"
+    "reconnectFailed": "Reconnect failed",
+    "accepted": "Command accepted. Waiting for a device state update."
   },
   "tabs": {
     "devices": "Devices",
     "providers": "Connections",
-    "domains": "Domains & Injection"
+    "domains": "AI awareness"
   },
   "summary": {
     "devices": "{{count}} devices",
     "injecting": "Context injection on",
     "injectOff": "Context injection off"
+  },
+  "home": {
+    "title": "My home",
+    "subtitle": "Your rooms, device states and everyday controls in one place.",
+    "available": "Available devices",
+    "rooms": "Rooms",
+    "active": "Active now",
+    "refresh": "Refresh",
+    "live": "Live updates",
+    "reconnecting": "Reconnecting · periodic sync available",
+    "refreshFailed": "Some updates failed. Showing the last successfully synced data."
+  },
+  "domainNames": {
+    "light": "Lighting",
+    "climate": "Climate",
+    "switch": "Switches",
+    "cover": "Blinds",
+    "media_player": "Media",
+    "sensor": "Sensors",
+    "scene": "Scenes"
+  },
+  "providerNames": {
+    "ha": "Home Assistant",
+    "xiaomi": "Xiaomi speakers",
+    "xiaodu": "Xiaodu"
+  },
+  "configValues": {
+    "on_demand": "On demand (recommended)",
+    "always": "Always aware"
   }
 }

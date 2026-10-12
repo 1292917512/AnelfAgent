@@ -406,6 +406,35 @@ class ConfigManager:
         return None
 
     @classmethod
+    def has_external_store(cls, key: str) -> bool:
+        """配置键是否由模块注册的存储后端持有。"""
+        return cls._store_for(key) is not None
+
+    @classmethod
+    def unregister_by_module(cls, module_prefix: str) -> int:
+        """回收指定模块及子模块定义的存储与监听器，不删除持久化数据。"""
+        def owned(value: object) -> bool:
+            module = getattr(value, "__module__", type(value).__module__)
+            return isinstance(module, str) and (
+                module == module_prefix or module.startswith(module_prefix + ".")
+            )
+
+        removed = 0
+        with cls._lock:
+            for prefix, store in list(cls._stores.items()):
+                if owned(store):
+                    del cls._stores[prefix]
+                    removed += 1
+            for prefix, callbacks in list(cls._listeners.items()):
+                remaining = [callback for callback in callbacks if not owned(callback)]
+                removed += len(callbacks) - len(remaining)
+                if remaining:
+                    cls._listeners[prefix] = remaining
+                else:
+                    del cls._listeners[prefix]
+        return removed
+
+    @classmethod
     def add_listener(cls, prefix: str, callback: Callable[[str, Any], None]) -> None:
         """注册键前缀变更监听（set/update 命中前缀时回调 (key, value)，幂等去重）。
 

@@ -1,4 +1,10 @@
-"""智能家居 AI 工具 — 设备查询 / 设备控制 / 设备域组件管理 / 小度令牌续期。"""
+"""智能家居 AI 工具 — 设备查询 / 控制 / 设备域管理 / 小度令牌续期。
+
+Model Experience:
+    模型看到什么：设备来源、状态时效、设备级动作；控制成功表示平台已接受命令。
+    token 影响：设备查询分页，批量省略原始属性与重复动作描述；每页至多 100 台。
+    缓存影响：仅工具结果与 volatile 动态区，不改变稳定前缀。
+"""
 
 from __future__ import annotations
 
@@ -12,46 +18,58 @@ from core.tool_errors import ErrorCause
 from entities._sdk import save_config_value, tool, tool_error
 
 from . import framework
+from .context import context_content
 from .manager import get_smart_home_manager
 from .models import SmartHomeCallError
 
+_SLEEP_BRIEF = "智能家居设备查询、控制与状态感知；家居任务唤醒 smart_home，阶段结束可 deactivate_tool_group 关闭。"
 
-@tool(name="smart_home_devices", group="smart_home", concurrency_safe=True)
-def smart_home_devices(domain: str = "", area: str = "", name: str = "") -> str:
+
+@tool(allow_sleep=True, sleep_brief=_SLEEP_BRIEF, name="smart_home_devices", group="smart_home", concurrency_safe=True)
+def smart_home_devices(domain: str = "", area: str = "", name: str = "", offset: int = 0, limit: int = 50) -> str:
     """查询智能家居设备与实时状态（含平台连接状态），可按设备域、房间、名称过滤。
 
     Args:
         domain: 设备域过滤（组件 key 如 light、climate、sensor；留空查全部）
         area: 房间过滤（精确匹配区域名，如 客厅；留空查全部）
         name: 名称/实体 ID 模糊过滤（定位单台设备时用；留空查全部）
+        offset: 分页起点（从 0 开始）
+        limit: 每页设备数（1-100，默认 50）
     """
     manager = get_smart_home_manager()
     status = manager.status()
     devices = manager.devices(domain=domain, area=area, name=name)
     # 批量清单裁剪原始属性（控制 token），精确过滤少量设备时保留完整属性
+    total = len(devices)
+    if offset < 0 or not 1 <= limit <= 100:
+        return tool_error("offset 须非负，limit 须为 1-100", cause=ErrorCause.PARAM)
+    devices = sorted(devices, key=lambda d: d.entity_id)[offset:offset + limit]
     slim = len(devices) > 5
     items = []
     for device in devices:
-        item = device.to_dict()
+        item = manager.describe_device(device)
         if slim:
             item.pop("attributes", None)
+            item["actions"] = list(item["actions"])
         items.append(item)
     return json.dumps({
         "connection": status,
         "devices": items,
         "count": len(items),
+        "total": total,
+        "next_offset": offset + len(items) if offset + len(items) < total else None,
         "hint": None if status.get("connected") or not status.get("configured")
         else "当前未连接，设备状态为最后一次同步的快照",
     }, ensure_ascii=False, default=str)
 
 
-@tool(name="smart_home_control", group="smart_home", risk="MEDIUM")
+@tool(allow_sleep=True, sleep_brief=_SLEEP_BRIEF, name="smart_home_control", group="smart_home", risk="MEDIUM")
 async def smart_home_control(entity_id: str, action: str, value: str = "") -> str:
     """控制智能家居设备（开关灯/调亮度/调温度/开关窗帘/播放控制/激活场景等）。
 
     Args:
         entity_id: 设备实体 ID（如 light.living_room，经 smart_home_devices 查询获得）
-        action: 控制动作（如 turn_on/turn_off/toggle/set_brightness/set_temperature/set_hvac_mode/open_cover/close_cover/stop_cover/set_position/media_play/media_pause/set_volume/activate；各设备域可用动作经 smart_home_domains 查询）
+        action: 控制动作（从 smart_home_devices 返回的该设备 actions 中选择；success/status=accepted 表示命令已接受，设备最终状态须查询确认）
         value: 动作参数（需要值的动作必填：亮度 0-100、温度摄氏度、窗帘位置 0-100、音量 0-100、模式 cool/heat 等）
     """
     manager = get_smart_home_manager()
@@ -62,7 +80,7 @@ async def smart_home_control(entity_id: str, action: str, value: str = "") -> st
     return json.dumps({"success": True, **result}, ensure_ascii=False)
 
 
-@tool(name="smart_home_domains", group="smart_home", concurrency_safe=True)
+@tool(allow_sleep=True, sleep_brief=_SLEEP_BRIEF, name="smart_home_domains", group="smart_home", risk="MEDIUM")
 def smart_home_domains(
     action: str = "list", domain: str = "", name: str = "", value: str = "",
 ) -> str:
@@ -87,8 +105,7 @@ def smart_home_domains(
         )
 
     if action == "preview":
-        manager = get_smart_home_manager()
-        content = framework.render_context(manager.devices())
+        content = context_content(preview=True)
         return json.dumps(
             {"injecting": bool(content), "content": content or None},
             ensure_ascii=False,
@@ -179,7 +196,10 @@ async def _baidu_token_request(params: Dict[str, str]) -> Dict[str, Any]:
     timeout = aiohttp.ClientTimeout(total=15)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.post(BAIDU_TOKEN_URL, data=params) as resp:
-            return json.loads(await resp.text())
+            data = await resp.json(content_type=None)
+            if not isinstance(data, dict):
+                raise ValueError("百度 token 端点返回格式无效")
+            return data
 
 
 def _mcp_store():
@@ -198,7 +218,7 @@ def _mcp_store():
     return MCPServerStore(on_reload=_reload)
 
 
-@tool(name="xiaodu_refresh_token", group="smart_home", risk="MEDIUM")
+@tool(allow_sleep=True, sleep_brief=_SLEEP_BRIEF, name="xiaodu_refresh_token", group="smart_home", risk="MEDIUM")
 async def xiaodu_refresh_token(code: str = "") -> str:
     """刷新或换取小度（DuerOS）双 MCP 共用的 ACCESS_TOKEN，回写配置并热重载生效。
 
@@ -210,6 +230,12 @@ async def xiaodu_refresh_token(code: str = "") -> str:
     Args:
         code: 百度 OAuth 授权码（首接或 SecretKey 重置后用；留空则用配置中的 refresh_token 续期）
     """
+    async with get_smart_home_manager().operation_lock("xiaodu"):
+        return await _refresh_xiaodu_token(code)
+
+
+async def _refresh_xiaodu_token(code: str) -> str:
+    """轮换凭据先持久化，再原子更新双 MCP，失败可持新 refresh_token 重试。"""
     app_key, secret = _xiaodu_cfg("app_key"), _xiaodu_cfg("secret_key")
     refresh = _xiaodu_cfg("refresh_token")
     code = code.strip()
@@ -225,6 +251,13 @@ async def xiaodu_refresh_token(code: str = "") -> str:
             cause=ErrorCause.CONFIG,
             hint=f"请用户打开授权链接授权后回传页面授权码: {_xiaodu_auth_url(app_key)}",
         )
+    store = _mcp_store()
+    servers = [name for name in _XIAODU_MCP_SERVERS if store.get_server_config(name) is not None]
+    if not servers:
+        return tool_error("请先配置小度家电或音箱 MCP 服务器", cause=ErrorCause.CONFIG)
+    for key in ("smart_home_xiaodu_refresh_token", "smart_home_xiaodu_token_expires_at"):
+        if ConfigManager.environment_override(key) is not None:
+            return tool_error(f"{key} 由环境变量管理，无法安全保存轮换凭据", cause=ErrorCause.CONFIG)
     params = {
         "grant_type": "authorization_code" if code else "refresh_token",
         "client_id": app_key,
@@ -249,22 +282,22 @@ async def xiaodu_refresh_token(code: str = "") -> str:
             cause=ErrorCause.PERMISSION,
             hint=f"refresh_token 失效时请重新授权: {_xiaodu_auth_url(app_key)}",
         )
-    expires_at = (
-        datetime.now(timezone.utc).astimezone()
-        + timedelta(seconds=int(data.get("expires_in") or 0))
-    ).strftime("%Y-%m-%d")
-    store = _mcp_store()
-    updated = []
-    for name in _XIAODU_MCP_SERVERS:
-        field = "env" if name == "xiaodu-iot" else "headers"
-        store.update_server_config(name, {field: {"ACCESS_TOKEN": access}})
-        updated.append(name)
     new_refresh = str(data.get("refresh_token") or refresh)
-    save_config_value("smart_home_xiaodu_refresh_token", new_refresh)
-    save_config_value("smart_home_xiaodu_token_expires_at", expires_at)
+    try:
+        save_config_value("smart_home_xiaodu_refresh_token", new_refresh)
+        expires_at = (datetime.now(timezone.utc) + timedelta(seconds=int(data.get("expires_in") or 0))).isoformat()
+        save_config_value("smart_home_xiaodu_token_expires_at", expires_at)
+        updates = {
+            "xiaodu-iot": {"env": {"ACCESS_TOKEN": access}},
+            "xiaodu": {"headers": {"ACCESS_TOKEN": access}},
+        }
+        store.update_server_secrets({name: updates[name] for name in servers})
+    except Exception as exc:
+        log(f"小度凭据更新未完成: {type(exc).__name__}", "ERROR")
+        return tool_error("小度凭据保存或 MCP 更新失败，请检查配置存储后重试", cause=ErrorCause.CONFIG)
     return json.dumps({
         "success": True,
         "expires_at": expires_at,
-        "servers_updated": updated,
+        "servers_updated": servers,
         "refresh_token_rotated": new_refresh != refresh,
     }, ensure_ascii=False)

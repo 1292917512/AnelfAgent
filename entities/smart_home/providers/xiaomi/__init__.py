@@ -3,7 +3,7 @@
 小爱音箱映射为 ``xiaomi.<deviceID>`` 的 media_player 设备：状态/音量经
 周期轮询同步，播放控制映射 MiNA ubus，语音播报走小米云原生 TTS
 （supports_speak，不经 HA tts_service）。登录凭据为小米账号密码
-（password 脱敏），登录态 token 缓存于组件目录 .mi.token。
+（password 脱敏），登录态 token 缓存于 ConfigPaths 数据目录，按账号隔离。
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 
 from core.log import log
 
-from ...models import DeviceState
+from ...models import ActionSpec, DeviceState
 from .. import home_provider
 from ..base import SmartHomeProvider
 from .client import XiaomiClient
@@ -89,26 +89,44 @@ class XiaomiProvider(SmartHomeProvider):
     # ---- 生命周期 ----
 
     async def connect(self) -> None:
-        """登录小米云并同步音箱清单（幂等；失败仅记录错误，状态经 status 可见）。"""
-        if self._connected:
+        """启动后台连接与重试，避免登录阻塞应用生命周期。"""
+        if self._poll_task is not None and not self._poll_task.done():
             return
-        try:
-            await self._client.open(
-                str(self.get_config("username", "")).strip(),
-                str(self.get_config("password", "")).strip(),
-            )
-            await self._sync_devices()
-            self._connected = True
-            self._connected_at = time.time()
-            self._last_error = ""
-        except Exception as exc:
-            self._connected = False
-            self._last_error = str(exc)
-            log(f"小米云登录失败: {exc}", "WARNING", tag=_LOG_TAG)
-            await self._client.close()
-        self._emit_connection()
-        if self._connected and (self._poll_task is None or self._poll_task.done()):
-            self._poll_task = asyncio.create_task(self._poll_loop())
+        self._poll_task = asyncio.create_task(self._supervise())
+
+    async def _supervise(self) -> None:
+        delay = 1.0
+        while True:
+            try:
+                await self._client.open(
+                    str(self.get_config("username", "")).strip(),
+                    str(self.get_config("password", "")).strip(),
+                )
+                await self._sync_devices()
+                self._connected = True
+                self._connected_at = time.time()
+                self._last_error = ""
+                self._emit_connection()
+                delay = 1.0
+                await self._poll_loop()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._last_error = str(exc)
+                log(f"小米云连接异常: {exc}", "WARNING", tag=_LOG_TAG)
+            finally:
+                self._connected = False
+                await self._client.close()
+                self._emit_connection()
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 30.0)
+
+    def max_state_age(self) -> Optional[float]:
+        return _POLL_INTERVAL_SECONDS * 3
+
+    def actions_for(self, device: DeviceState) -> Dict[str, ActionSpec]:
+        allowed = {"media_play", "media_pause", "turn_off", "set_volume", "speak"}
+        return {key: spec for key, spec in super().actions_for(device).items() if key in allowed}
 
     async def close(self) -> None:
         """断开连接并停止轮询（幂等；保留末次设备缓存供展示）。"""
@@ -142,8 +160,10 @@ class XiaomiProvider(SmartHomeProvider):
                 entity_id=entity_id,
                 domain="media_player",
                 name=name,
-                state=previous.state if previous else "idle",
-                attributes=previous.attributes if previous else {},
+                state=previous.state if previous else "unknown",
+                attributes=dict(previous.attributes) if previous else {},
+                updated_at=previous.updated_at if previous else 0,
+                stale=previous.stale if previous else True,
             )
             device_ids[entity_id] = device_id
         self._devices = devices
@@ -154,13 +174,23 @@ class XiaomiProvider(SmartHomeProvider):
     async def _poll_loop(self) -> None:
         """周期轮询音箱播放状态（MiNA 无推送通道）。"""
         while True:
-            await asyncio.sleep(_POLL_INTERVAL_SECONDS)
+            failures = 0
             for entity_id, device_id in list(self._device_ids.items()):
                 try:
                     await self._refresh_device(entity_id, device_id)
                 except Exception as exc:
+                    failures += 1
+                    device = self._devices.get(entity_id)
+                    if device is not None:
+                        device.stale = True
+                        if self.on_device_update:
+                            self.on_device_update(device)
                     log(f"小爱音箱状态轮询失败: {entity_id} - {exc}",
                         "DEBUG", tag=_LOG_TAG)
+            if self._device_ids and failures == len(self._device_ids):
+                raise ConnectionError("全部小爱音箱状态同步失败")
+            await asyncio.sleep(_POLL_INTERVAL_SECONDS)
+            await self._sync_devices()
 
     async def _refresh_device(self, entity_id: str, device_id: str) -> None:
         """刷新单台音箱的播放状态与音量。"""
@@ -169,15 +199,19 @@ class XiaomiProvider(SmartHomeProvider):
             return
         status = await self._client.speaker_status(device_id)
         if not isinstance(status, dict):
-            return
-        playing = status.get("status") == 1
-        device.state = "playing" if playing else "idle"
+            raise ConnectionError("小米云未返回有效播放状态")
+        playback = status.get("status")
+        device.state = "playing" if playback == 1 else "paused" if playback == 2 else "idle"
+        device.updated_at = time.time()
+        device.stale = False
         volume = status.get("volume")
         if isinstance(volume, (int, float)):
             device.attributes["volume_level"] = max(0.0, min(volume / 100, 1.0))
         detail = status.get("play_song_detail")
         if isinstance(detail, dict) and detail.get("title"):
             device.attributes["media_title"] = str(detail["title"])
+        else:
+            device.attributes.pop("media_title", None)
         if self.on_device_update is not None:
             self.on_device_update(device)
 
@@ -191,7 +225,7 @@ class XiaomiProvider(SmartHomeProvider):
         device_id = self._device_ids.get(entity_id)
         if device_id is None:
             raise ValueError(f"未知设备: {entity_id}")
-        if service == "volume_set":
+        if service == "set_volume":
             level = float(data.get("volume_level", 0))
             await self._client.set_volume(device_id, round(level * 100))
             return
@@ -217,5 +251,5 @@ class XiaomiProvider(SmartHomeProvider):
         if self.on_connection is not None:
             try:
                 self.on_connection(self.status())
-            except Exception:
-                pass
+            except Exception as exc:
+                log(f"小米连接通知失败: {exc}", "DEBUG", tag=_LOG_TAG)

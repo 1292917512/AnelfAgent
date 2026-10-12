@@ -163,11 +163,13 @@ class EntityService:
         except ValueError:
             return False
 
-        ConfigManager.set(key, coerced)
-        ConfigManager.save()
+        if key not in {item["key"] for item in metadata.get_config_items()}:
+            return False
+        if ConfigManager.environment_override(key) is not None:
+            return False
+        ConfigManager.set_persisted({key: coerced})
 
-        # 同步写入实体目录的 config.json（如果存在）
-        self._sync_entity_config_file(metadata.group, key, coerced)
+        self._sync_entity_config_file_batch(metadata.group, {key: coerced})
         return True
 
     def update_entity_config_batch(
@@ -182,17 +184,19 @@ class EntityService:
 
         count = 0
         coerced_updates: Dict[str, Any] = {}
+        allowed = {item["key"] for item in metadata.get_config_items()}
         for key, value in updates.items():
+            if key not in allowed or ConfigManager.environment_override(key) is not None:
+                continue
             try:
                 coerced = self._coerce_item_value(key, value)
             except ValueError:
                 continue
-            ConfigManager.set(key, coerced)
             coerced_updates[key] = coerced
             count += 1
 
         if count:
-            ConfigManager.save()
+            ConfigManager.set_persisted(coerced_updates)
             # 批量同步到 config.json
             self._sync_entity_config_file_batch(metadata.group, coerced_updates)
 
@@ -238,19 +242,16 @@ class EntityService:
             return str(candidate)
         return None
 
-    def _sync_entity_config_file(
-        self, group: str, key: str, value: Any,
-    ) -> None:
-        """将单个配置项同步写入实体目录的 config.json。"""
-        entity_dir = self._find_entity_dir(group)
-        if not entity_dir:
-            return
-        self._write_config_json(entity_dir, {key: value})
-
     def _sync_entity_config_file_batch(
         self, group: str, updates: Dict[str, Any],
     ) -> None:
-        """将批量配置项同步写入实体目录的 config.json。"""
+        """将未注册独立存储的实体配置同步到模块目录。"""
+        from core.config import ConfigManager
+
+        updates = {key: value for key, value in updates.items()
+                   if not ConfigManager.has_external_store(key)}
+        if not updates:
+            return
         entity_dir = self._find_entity_dir(group)
         if not entity_dir:
             return

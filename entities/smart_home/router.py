@@ -20,6 +20,7 @@ from sse_starlette.sse import EventSourceResponse
 from core.tool_errors import ErrorCause
 
 from . import framework
+from .context import context_content, context_mode
 from .manager import get_smart_home_manager
 from .models import SmartHomeCallError
 from .schemas import ControlRequest, DevicesResult, ProviderStatus, StatusResult
@@ -61,7 +62,7 @@ def build_router() -> APIRouter:
         """设备全量清单与实时状态（可按设备域/房间/名称过滤）。"""
         manager = get_smart_home_manager()
         devices = [
-            d.to_dict()
+            manager.describe_device(d)
             for d in manager.devices(domain=domain, area=area, name=name)
         ]
         return {
@@ -80,10 +81,10 @@ def build_router() -> APIRouter:
 
     @router.get("/preview")
     async def preview_context() -> dict:
-        """当前注入 AI 上下文的聚合文本预览。"""
-        manager = get_smart_home_manager()
-        content = framework.render_context(manager.devices())
-        return {"injecting": bool(content), "content": content}
+        """展示当前策略下可用的快照；面板不代表某个会话已经唤醒。"""
+        content = context_content(preview=True)
+        return {"injecting": bool(content), "content": content,
+                "activation_required": context_mode() == "on_demand"}
 
     @router.post("/control")
     async def control_device(req: ControlRequest) -> dict:
@@ -106,6 +107,7 @@ def build_router() -> APIRouter:
 
         async def event_generator():
             try:
+                yield {"event": "sync", "data": json.dumps({"event": "sync"})}
                 while True:
                     if await request.is_disconnected():
                         break
