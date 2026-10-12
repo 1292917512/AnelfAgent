@@ -24,6 +24,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Type
 
+from pydantic import ValidationError
+
 from core.config import (
     ConfigManager,
     ConfigRegistry,
@@ -66,11 +68,12 @@ class ChannelConfigStore(ConfigStore):
     读取优先级：``ANELF_<CHANNEL_ID>_<FIELD>`` 环境变量 > 文件值 > 调用方默认值。
     """
 
-    def __init__(self, channel_id: str, path: Path) -> None:
+    def __init__(self, channel_id: str, path: Path, model: Type[ChannelConfig] | None = None) -> None:
         self._channel_id = channel_id
         self._prefix = f"{channel_id}_"
         self._path = path
         self._values: Dict[str, Any] = {}
+        self._model = model
 
     @property
     def path(self) -> Path:
@@ -80,16 +83,33 @@ class ChannelConfigStore(ConfigStore):
         return key[len(self._prefix):] if key.startswith(self._prefix) else key
 
     def load(self) -> None:
-        """从频道配置文件加载（缺失/损坏按空配置）。"""
-        self._values = {}
+        """读取并校验候选配置；失败保留当前有效值。"""
         if not self._path.exists():
+            self._validate({})
+            self._values = {}
             return
+        data = json.loads(self._path.read_text("utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError(f"频道 {self._channel_id} 配置必须是 JSON 对象")
+        self._validate(data)
+        self._values = data
+
+    def _validate(self, values: Dict[str, Any]) -> None:
+        if self._model is None:
+            return
+        effective = expand_env_refs(values)
+        for name in self._model.model_fields:
+            override = os.environ.get(f"ANELF_{self._prefix.upper()}{name.upper()}")
+            if override is not None:
+                effective[name] = parse_env_value(override)
         try:
-            data = json.loads(self._path.read_text("utf-8"))
-            if isinstance(data, dict):
-                self._values = data
-        except (json.JSONDecodeError, OSError) as exc:
-            log(f"频道配置解析失败 ({self._path}): {exc}", "WARNING", tag="通道")
+            self._model.model_validate(effective)
+        except ValidationError as exc:
+            details = "; ".join(
+                f"{'.'.join(map(str, error['loc']))}: {error['msg']}"
+                for error in exc.errors(include_input=False, include_url=False)[:5]
+            )
+            raise ValueError(f"频道 {self._channel_id} 配置无效: {details}") from None
 
     def get(self, key: str, default: Any = None) -> Any:
         env_val = os.environ.get(f"ANELF_{key.upper()}")
@@ -98,7 +118,12 @@ class ChannelConfigStore(ConfigStore):
         return expand_env_refs(self._values.get(self._field(key), default))
 
     def set(self, key: str, value: Any) -> None:
-        self._values[self._field(key)] = value
+        self.update({key: value})
+
+    def update(self, values: Dict[str, Any]) -> None:
+        candidate = {**self._values, **{self._field(key): value for key, value in values.items()}}
+        self._validate(candidate)
+        self._values = candidate
 
     def has(self, key: str) -> bool:
         return f"ANELF_{key.upper()}" in os.environ or self._field(key) in self._values
@@ -177,6 +202,8 @@ def register_channel_schema(channel_id: str) -> bool:
 
     幂等：重复调用仅刷新 schema 定义与重载配置文件，已有值不被默认值覆盖。
     """
+    from core.registration import registration_transaction
+
     from .config_watcher import get_config_watcher
 
     channel_dir = channels_dir() / channel_id
@@ -185,13 +212,19 @@ def register_channel_schema(channel_id: str) -> bool:
     model = load_channel_config_model(channel_id)
     if model is None:
         return False
-    store = ChannelConfigStore(channel_id, channel_dir / "channel_config.json")
-    ConfigManager.register_store(f"{channel_id}_", store)
-    register_model_configs(
-        f"adapter/{channel_id}", model,
-        key_prefix=channel_id, only_fields=_declared_fields(model),
-    )
-    get_config_watcher().watch(str(store.path), store.reload_notify)
+    store = ChannelConfigStore(channel_id, channel_dir / "channel_config.json", model)
+    try:
+        with registration_transaction("agent.channel"):
+            ConfigManager.register_store(f"{channel_id}_", store)
+            ConfigRegistry.unregister_group(f"adapter/{channel_id}")
+            register_model_configs(
+                f"adapter/{channel_id}", model,
+                key_prefix=channel_id, only_fields=_declared_fields(model),
+            )
+            get_config_watcher().watch(str(store.path), store.reload_notify)
+    except Exception as exc:
+        log(f"频道配置注册失败: {channel_id} - {exc}", "ERROR", tag="通道")
+        return False
     return True
 
 

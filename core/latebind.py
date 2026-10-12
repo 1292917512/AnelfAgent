@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Generic, List, TypeVar
 
+from core.registration import record_mapping
+
 T = TypeVar("T")
 
 # 端口名 -> 实例（声明序），供启动健康检查与测试复位遍历
@@ -43,6 +45,7 @@ class LateBinding(Generic[T]):
     def __init__(self, name: str) -> None:
         if name in _BINDINGS:
             raise ValueError(f"晚绑定端口名称冲突: {name}")
+        record_mapping(_BINDINGS, name)
         _BINDINGS[name] = self
         self._name = name
         self._box: List[T] = []

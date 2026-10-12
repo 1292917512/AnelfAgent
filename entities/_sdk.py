@@ -51,9 +51,13 @@ from core.tool_errors import ErrorCause, error_from_exception, tool_error
 from core.tool_registry import activate_group, deferred_tool, entity, tool
 from core.tool_schema import coerce_bool_arg
 
+__registration_bridge__ = True
+
 if TYPE_CHECKING:
     from agent.llm.llm_client import LLMClient as LLMClient
     from agent.llm.llm_manager import LLMManager as LLMManager
+    from agent.mind.background_tasks import BackgroundTaskRegistry
+    from agent.mind.think_session import ContextUsage
 
 __all__ = [
     "RecallPolicy", "recall_options", "set_turn_recall_policy",
@@ -112,7 +116,7 @@ async def call_mcp_server_tool(server_name: str, tool_name: str, arguments: Dict
 # ------------------------------------------------------------------
 
 
-def get_llm_manager() -> Any:
+def get_llm_manager() -> LLMManager:
     """获取 LLMManager 实例（延迟导入 agent.llm）。"""
     from agent.llm import get_llm_manager as _get
     return _get()
@@ -262,7 +266,7 @@ def is_mind_busy() -> bool:
         return False
 
 
-def get_background_registry() -> Any:
+def get_background_registry() -> BackgroundTaskRegistry | None:
     """获取后台任务注册表（延迟导入 agent.runtime，未初始化返回 None）。
 
     供 entities 层工具登记/完成后台任务（如后台 shell 执行）。
@@ -274,18 +278,10 @@ def get_background_registry() -> Any:
         return None
 
 
-def get_mind() -> Any:
-    """获取当前思维核心实例（延迟导入 agent.runtime，未初始化返回 None）。
-
-    供 entities 层工具只读查询思维侧状态（上下文窗口/用量等）；
-    返回值是 Mind 实例，调用方自行 getattr 防御属性差异。
-    """
-    try:
-        from agent.runtime.singleton import get_runtime
-        rt = get_runtime()
-        return rt.mind if rt is not None else None
-    except Exception:
-        return None
+def get_context_usage() -> ContextUsage | None:
+    """读取当前执行的上下文快照，不向实体暴露思维内核。"""
+    from agent.mind.think_session import current_context_usage
+    return current_context_usage.get()
 
 
 def push_notify(
@@ -700,7 +696,7 @@ from agent.capabilities import (  # noqa: E402  # 桥层再导出（组件实现
 )
 
 
-def register_visual_provider(provider: Any) -> None:
+def register_visual_provider(provider: CapabilityProvider) -> None:
     """注册视觉能力提供者（图片/视频理解、图像生成/编辑、视频生成组件）。
 
     provider 需满足 agent.capabilities.CapabilityProvider 协议
@@ -717,7 +713,7 @@ def unregister_visual_provider(name: str) -> None:
     get_visual_router().unregister(name)
 
 
-def register_sound_provider(provider: Any) -> None:
+def register_sound_provider(provider: CapabilityProvider) -> None:
     """注册声音能力提供者（一次性语音合成/音色管理/音乐生成组件）。
 
     provider 需满足 agent.capabilities.CapabilityProvider 协议，能力名:
@@ -733,7 +729,7 @@ def unregister_sound_provider(name: str) -> None:
     get_sound_router().unregister(name)
 
 
-def register_retrieval_provider(provider: Any) -> None:
+def register_retrieval_provider(provider: RetrievalProvider) -> None:
     """注册检索提供者（联网检索/网页读取/仓库文档组件）。
 
     provider 需继承 agent.retrieval.providers.base.Provider 并按需实现
@@ -745,6 +741,62 @@ def unregister_retrieval_provider(name: str) -> None:
     """注销检索提供者（组件热拔除时调用）。"""
     from agent.retrieval import providers
     providers.unregister(name)
+
+
+def assert_module_components_idle(module: str) -> None:
+    """在模块卸载前确认其钩子已经收束，保留在途任务与上下文。"""
+    from agent.hooks_llm.runtime import get_hook_runtime
+    from agent.hooks_llm.spec import HookRegistry
+    from core.registration import belongs_to
+
+    runtime = get_hook_runtime()
+    if runtime is None:
+        return
+    owned = {spec.name for spec in HookRegistry.list_all() if belongs_to(spec.handler.__module__, module)}
+    active = owned & runtime.executor.active_hook_names()
+    if active:
+        raise RuntimeError(f"模块 {module} 的钩子仍在执行或排队: {', '.join(sorted(active))}")
+
+
+def unregister_module_components(module: str) -> None:
+    """移除模块在能力路由中的声明；资源由 Lifecycle 先行关闭。"""
+    from agent.audio.capabilities import get_sound_router
+    from agent.audio.providers import get_audio_registry
+    from agent.audio.source_fetch import unregister_source_fetchers_by_module
+    from agent.hooks_llm.spec import HookRegistry
+    from agent.memory.embedding.worker import unregister_embedding_backlogs
+    from agent.retrieval import providers
+    from agent.tts.providers import get_tts_registry
+    from agent.vision.capabilities import get_visual_router
+    from agent.vision.framework import all_sources, unregister_source
+    from core.provider_keys import unregister_provider_keys_by_module
+    from core.registration import belongs_to
+
+    for router in (get_visual_router(), get_sound_router()):
+        for name in router.names():
+            provider = router.get(name)
+            if provider is not None and belongs_to(type(provider).__module__, module):
+                router.unregister(name)
+    audio = get_audio_registry()
+    for audio_provider in audio.list():
+        if belongs_to(type(audio_provider).__module__, module):
+            audio.unregister(audio_provider.kind, audio_provider.name)
+    tts = get_tts_registry()
+    for tts_provider in tts.list():
+        if belongs_to(type(tts_provider).__module__, module):
+            tts.unregister(tts_provider.name)
+    for retrieval_provider in providers.list_providers():
+        if belongs_to(type(retrieval_provider).__module__, module):
+            providers.unregister(retrieval_provider.name)
+    for source in all_sources():
+        if belongs_to(type(source).__module__, module):
+            unregister_source(source.key)
+    for spec in HookRegistry.list_all():
+        if belongs_to(spec.handler.__module__, module):
+            HookRegistry.unregister(spec.name)
+    unregister_source_fetchers_by_module(module)
+    unregister_embedding_backlogs(module)
+    unregister_provider_keys_by_module(module)
 
 
 # 检索组件实现契约（桥层再导出）：Provider 基类 + 凭据来源常量 + 凭据回退辅助

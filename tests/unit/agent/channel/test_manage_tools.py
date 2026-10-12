@@ -155,8 +155,9 @@ class TestActivateChannel:
 
         mod = types.ModuleType("channels.newbie.adapter")
         mod.CHANNEL_CLASS = NewbieChannel  # type: ignore[attr-defined]
+        monkeypatch.setattr(manager_mod, "register_channel_schema", lambda cid: True)
         monkeypatch.setattr(
-            manager_mod.importlib, "import_module", lambda _name: mod,
+            manager_mod, "import_registered_module", lambda _name, **kwargs: mod,
         )
 
         cm = ChannelManager()
@@ -170,8 +171,8 @@ class TestActivateChannel:
     ) -> None:
         _write_channel(channels_dir, "empty")
         monkeypatch.setattr(
-            manager_mod.importlib, "import_module",
-            lambda _name: types.ModuleType("channels.empty.adapter"),
+            manager_mod, "import_registered_module",
+            lambda _name, **kwargs: types.ModuleType("channels.empty.adapter"),
         )
         cm = ChannelManager()
         assert await cm.activate_channel("empty") is False

@@ -22,6 +22,7 @@ from __future__ import annotations
 from typing import Any, AsyncIterator, List, Optional, Protocol, runtime_checkable
 
 from core.log import log
+from core.registration import record_undo
 
 _LOG_TAG = "语音合成"
 
@@ -66,6 +67,12 @@ class TtsProviderRegistry:
         name = getattr(provider, "name", "")
         if not name:
             raise ValueError("TTS 提供者缺少 name")
+        previous = [p for p in self._providers if p.name == name]
+        def undo() -> None:
+            self.unregister(name)
+            self._providers.extend(previous)
+            self._providers.sort(key=lambda p: p.priority)
+        record_undo(undo, owner=type(provider).__module__)
         self._providers[:] = [p for p in self._providers if p.name != name]  # 同名覆盖
         self._providers.append(provider)
         self._providers.sort(key=lambda p: p.priority)

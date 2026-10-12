@@ -9,6 +9,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from typing import Any, Dict, List
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -47,6 +48,7 @@ def _isolate(monkeypatch: pytest.MonkeyPatch):
     """隔离 hotplug 全局态与配置面（不触碰真实 channels/ 目录与注册表）。"""
     monkeypatch.setattr(hotplug, "_sync_running", False)
     monkeypatch.setattr(hotplug, "_synced_channels", None)
+    monkeypatch.setattr(hotplug, "_failed_channels", set())
     monkeypatch.setattr(ConfigRegistry, "get_all_groups", classmethod(lambda cls: []))
     # 静默事件广播（测试无 web 订阅方）
     monkeypatch.setattr(hotplug, "_emit", lambda event, cid: None)
@@ -83,6 +85,39 @@ class TestScanChannelDirs:
 
 
 class TestSyncChannels:
+    async def test_failed_activation_is_reported_and_retried_with_registered_instance(self, monkeypatch):
+        _patch_schema_ops(monkeypatch)
+        manager = _FakeManager({})
+        monkeypatch.setattr(hotplug, "get_channel_manager", lambda: manager)
+        monkeypatch.setattr(hotplug, "scan_channel_dirs", lambda: {"c_new"})
+        ConfigManager.set("c_new_enabled", True)
+
+        async def fail(cid):
+            manager._channels[cid] = object()
+            return False
+
+        monkeypatch.setattr(manager, "activate_channel", fail)
+        result = await hotplug.sync_channels()
+        assert result["added"] == [] and result["failed"] == ["c_new"]
+        monkeypatch.setattr(manager, "activate_channel", AsyncMock(return_value=True))
+        result = await hotplug.sync_channels()
+        assert result["reloaded"] == ["c_new"] and result["failed"] == []
+
+    async def test_failed_stop_preserves_channel_and_schema(self, monkeypatch):
+        calls = _patch_schema_ops(monkeypatch)
+        instance = object()
+        manager = _FakeManager({"c_old": instance})
+        monkeypatch.setattr(hotplug, "get_channel_manager", lambda: manager)
+        monkeypatch.setattr(hotplug, "scan_channel_dirs", lambda: set())
+        monkeypatch.setattr(manager, "stop_channel", AsyncMock(return_value=False))
+        result = await hotplug.sync_channels()
+        assert result["removed"] == [] and result["failed"] == ["c_old"]
+        assert manager._channels["c_old"] is instance
+        assert calls["unregistered"] == []
+        monkeypatch.setattr(manager, "stop_channel", AsyncMock(return_value=True))
+        result = await hotplug.sync_channels()
+        assert result["removed"] == ["c_old"] and result["failed"] == []
+
     async def test_add_disabled_channel_registers_schema_only(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -170,7 +205,8 @@ class TestSyncChannels:
 
         fail = False
         result = await hotplug.sync_channels()
-        assert result["added"] == ["c_bad"]
+        assert result["reloaded"] == ["c_bad"]
+        assert result["failed"] == []
 
     async def test_singleflight_skip(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(hotplug, "_sync_running", True)

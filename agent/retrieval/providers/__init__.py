@@ -20,6 +20,7 @@ from agent.retrieval.providers.base import (
 )
 from agent.retrieval.providers.bigmodel import BigModelProvider
 from agent.retrieval.providers.builtin import BuiltinProvider
+from core.registration import record_mapping
 
 CAPABILITIES: List[str] = list(CAPABILITY_PROTOCOLS.keys())
 
@@ -31,6 +32,7 @@ def register(provider: Provider) -> None:
     """注册提供者（同名覆盖，组件热重载安全）。"""
     if not provider.name:
         raise ValueError("检索提供者缺少 name")
+    record_mapping(_PROVIDERS, provider.name, owner=type(provider).__module__)
     _PROVIDERS[provider.name] = provider
 
 

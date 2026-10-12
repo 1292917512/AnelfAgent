@@ -357,6 +357,15 @@ class HookExecutor:
         self._debounce_handle.clear()
         self._debounce_payload.clear()
 
+    def active_hook_names(self) -> set[str]:
+        """返回排队、执行或等待防抖触发的钩子名。"""
+        names = {spec.name for spec, _, _ in self._debounce_payload.values()}
+        names.update(
+            task.get_name().removeprefix("hooks_llm.")
+            for task in self._running if not task.done()
+        )
+        return names
+
     async def drain(self, timeout: float = 15.0) -> None:
         """关停 drain：取消防抖待发后等待在途钩子自然收尾，超时才取消。
 

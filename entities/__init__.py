@@ -63,7 +63,7 @@ async def discover_entity_lifecycles() -> int:
     实体没有该函数则跳过；调用失败仅 WARNING 不中断启动。
     """
     registered = 0
-    entity_dir = _hotplug.scan_entity_dirs()
+    entity_dir = _hotplug.scan_entity_dirs() & _hotplug._loaded_modules
     for name in sorted(entity_dir):
         if await _hotplug.register_entity_lifecycle(name):
             registered += 1

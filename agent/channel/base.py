@@ -101,7 +101,7 @@ class ChannelConfig(BaseModel):
     与统一配置系统（`core/config.py`）的集成方式：
     - 频道配置模型即声明源：`channels/<id>/config.py` 的 ``CONFIG_MODEL``
       经 ``agent/channel/config.py`` 派生注册进 ConfigRegistry，
-      值为 ``<channel_id>_<field>`` 键存入 ConfigManager（app_config.json）
+      值经 ``<channel_id>_<field>`` 路由至频道目录内的 channel_config.json
     - 运行时 ``BaseChannel.get_config()`` 从 ConfigManager 物化本模型实例
     - 配置写入（Web /config/meta 或 AI update_entity_config）经
       ConfigManager 变更监听即时重新物化，无需重启
@@ -184,8 +184,8 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
         self._status: ChannelStatus = ChannelStatus.STOPPED
         self._last_health_check: float = 0.0
         self._last_health_status: Optional[HealthStatus] = None
-        super().__init__()
         self._load_and_register_config()
+        super().__init__()
         # 配置变更监听：ConfigManager 写入命中本频道键前缀时即时重新物化
         try:
             from core.config import ConfigManager
@@ -678,7 +678,7 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
     def _load_and_register_config(self) -> None:
         """从 ConfigManager 物化频道配置（<channel_id>_<field> 键 → pydantic 模型）。
 
-        未写入过 ConfigManager 的字段取模型默认值；校验失败整体回退默认配置。
+        未配置字段取模型默认值；校验失败保留上一次有效配置并抛出错误。
         """
         from core.config import ConfigManager
 
@@ -687,15 +687,7 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
             key = self._config_key_prefix + name
             if ConfigManager.has(key):
                 values[name] = ConfigManager.get(key)
-        try:
-            self._config = self._Configs.model_validate(values)
-        except Exception as exc:
-            log(
-                f"频道配置校验失败 ({self.channel_id}): {exc}，使用默认配置",
-                "WARNING",
-                tag="通道",
-            )
-            self._config = self._Configs()
+        self._config = self._Configs.model_validate(values)
 
     def _on_config_changed(self, key: str, value: Any) -> None:
         """ConfigManager 变更监听回调：本频道配置键写入时重新物化。"""

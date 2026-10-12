@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple
 
 from core.log import log
+from core.registration import record_undo
 
 # mtime 轮询间隔（秒）
 POLL_INTERVAL_SECONDS = 1.0
@@ -44,9 +45,12 @@ class ConfigWatcher:
             callback: 变更时调用的回调函数（同步）
         """
         if file_path in self._callbacks:
-            log(f"配置文件已在监听: {file_path}", "DEBUG", tag="配置")
+            previous = self._callbacks[file_path]
+            record_undo(lambda: self._callbacks.__setitem__(file_path, previous))
+            self._callbacks[file_path] = callback
             return
 
+        record_undo(lambda: self.unwatch(file_path))
         self._callbacks[file_path] = callback
         # 首个监听注册时接入 Lifecycle 宿主，关停时统一回收轮询任务（幂等）
         from core.lifecycle import Lifecycle

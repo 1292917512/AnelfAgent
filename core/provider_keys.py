@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional
 
 from core.log import log
 from core.path import config_dir
+from core.registration import belongs_to, caller_module, record_mapping
 
 _LOG_TAG = "凭据"
 
@@ -60,8 +61,10 @@ def register_provider_key(
             缺省即 [domain]）
     """
     with _lock:
+        record_mapping(_registry, name)
         entries = _registry.setdefault(name, [])
         entry = {
+            "owner": caller_module(),
             "domain": domain,
             "title": title,
             "description": description,
@@ -70,6 +73,17 @@ def register_provider_key(
         }
         if entry not in entries:
             entries.append(entry)
+
+
+def unregister_provider_keys_by_module(module: str) -> None:
+    """移除模块的凭据声明，保留用户已经配置的值。"""
+    with _lock:
+        for name, entries in list(_registry.items()):
+            remaining = [entry for entry in entries if not belongs_to(entry["owner"], module)]
+            if remaining:
+                _registry[name] = remaining
+            else:
+                _registry.pop(name, None)
 
 
 def _load() -> Dict[str, Dict[str, Any]]:

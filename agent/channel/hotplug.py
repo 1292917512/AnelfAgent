@@ -38,6 +38,7 @@ _TAG = "热插拔"
 
 # 此前同步过的频道目录名（含未实例化的）；None 表示尚未做首次同步
 _synced_channels: Optional[Set[str]] = None
+_failed_channels: Set[str] = set()
 
 # 同步单飞标记（asyncio 单线程 check-then-set 无竞态；监听与手动触发共用）
 _sync_running = False
@@ -61,6 +62,7 @@ def _known_channels() -> Set[str]:
     known = set(get_channel_manager().list_channels())
     if _synced_channels is not None:
         known |= _synced_channels
+    known |= _failed_channels
     # 启动期 register_channel_schemas 注册过 schema 但未实例化的频道
     known |= {
         g.split("/", 1)[1] for g in ConfigRegistry.get_all_groups()
@@ -90,9 +92,11 @@ def _emit(event: str, channel_id: str) -> None:
 async def _add_channel(channel_id: str) -> None:
     """热插入频道目录：注册配置 schema，enabled 则激活启动，通知路由挂载。"""
     mgr = get_channel_manager()
-    register_channel_schema(channel_id)
+    if not register_channel_schema(channel_id):
+        raise RuntimeError(f"频道 {channel_id} 配置注册失败")
     if get_config_bool(config_key(channel_id, "enabled"), False):
-        await mgr.activate_channel(channel_id)
+        if not await mgr.activate_channel(channel_id):
+            raise RuntimeError(f"频道 {channel_id} 启动失败")
     _emit(EVENT_MODULE_ADDED, channel_id)
     log(f"频道已热插入: {channel_id}", tag=_TAG)
 
@@ -101,7 +105,8 @@ async def _remove_channel(channel_id: str) -> None:
     """热拔除频道目录：停止并注销实例 → 回收配置 schema → 清模块 → 通知路由摘除。"""
     mgr = get_channel_manager()
     if channel_id in mgr.list_channels():
-        await mgr.stop_channel(channel_id)
+        if not await mgr.stop_channel(channel_id):
+            raise RuntimeError(f"频道 {channel_id} 停止失败，保留实例供重试")
         mgr.unregister(channel_id)
     unregister_channel_schema(channel_id)
     _pop_channel_modules(channel_id)
@@ -114,12 +119,15 @@ async def _reload_channel(channel_id: str) -> None:
     mgr = get_channel_manager()
     was_enabled = get_config_bool(config_key(channel_id, "enabled"), False)
     if channel_id in mgr.list_channels():
-        await mgr.stop_channel(channel_id)
+        if not await mgr.stop_channel(channel_id):
+            raise RuntimeError(f"频道 {channel_id} 停止失败，保留实例供重试")
         mgr.unregister(channel_id)
     _pop_channel_modules(channel_id)
-    register_channel_schema(channel_id)
+    if not register_channel_schema(channel_id):
+        raise RuntimeError(f"频道 {channel_id} 配置注册失败")
     if was_enabled:
-        await mgr.activate_channel(channel_id)
+        if not await mgr.activate_channel(channel_id):
+            raise RuntimeError(f"频道 {channel_id} 启动失败")
     _emit(EVENT_MODULE_ADDED, channel_id)
     log(f"频道已热重载: {channel_id}", tag=_TAG)
 
@@ -172,9 +180,9 @@ async def _sync_channels_locked(reload_existing: bool) -> Dict[str, Any]:
             failed.append(cid)
             log(f"频道热拔除失败: {cid} - {e}", "ERROR", tag=_TAG)
 
-    if reload_existing:
+    if reload_existing or _failed_channels:
         # 覆盖全部已知存续频道（含未实例化的：刷新 schema 代码；enabled 的经激活重建）
-        for cid in sorted(current & known):
+        for cid in sorted(current & (known if reload_existing else _failed_channels)):
             try:
                 await _reload_channel(cid)
                 reloaded.append(cid)
@@ -184,6 +192,8 @@ async def _sync_channels_locked(reload_existing: bool) -> Dict[str, Any]:
 
     # 失败的目录不记入已知集合，下次同步自动重试
     _synced_channels = current - set(failed)
+    _failed_channels.clear()
+    _failed_channels.update(failed)
     if added or removed or reloaded:
         log(f"频道同步完成: +{len(added)} -{len(removed)} ~{len(reloaded)}", tag=_TAG)
     return {

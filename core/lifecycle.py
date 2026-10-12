@@ -18,6 +18,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 
 from core.config import register_configs_safe
 from core.log import log
+from core.registration import caller_module, record_mapping, record_undo
 
 CleanupFn = Union[Callable[[], None], Callable[[], Awaitable[None]]]
 HookFn = Union[Callable[[], None], Callable[[], Awaitable[None]]]
@@ -46,6 +47,7 @@ class Lifecycle:
     """全局单例生命周期管理。"""
 
     _instances: Dict[str, Any] = {}
+    _owners: Dict[str, str] = {}
     _cleanups: List[tuple[str, CleanupFn]] = []
     _start_hooks: List[tuple[str, HookFn]] = []
     _tick_hooks: List[tuple[str, HookFn]] = []
@@ -69,6 +71,26 @@ class Lifecycle:
 
         同名重复注册时替换旧实例并丢弃旧回调，避免关闭时重复清理。
         """
+        existed = name in cls._instances
+        previous = cls._instances.get(name)
+        if existed and cls._started and previous is not instance:
+            raise RuntimeError(f"组件 {name} 正在运行，必须先停止并注销再替换")
+        previous_hooks = {
+            attr: [(index, entry) for index, entry in enumerate(getattr(cls, attr)) if entry[0] == name]
+            for attr in ("_cleanups", "_start_hooks", "_tick_hooks")
+        }
+        previous_index = cls._order.index(name) if name in cls._order else 0
+        def undo() -> None:
+            cls._forget(name)
+            if existed:
+                cls._instances[name] = previous
+                cls._order.insert(previous_index, name)
+                for attr, entries in previous_hooks.items():
+                    for index, entry in entries:
+                        getattr(cls, attr).insert(index, entry)
+        record_mapping(cls._owners, name)
+        record_undo(undo)
+        cls._owners[name] = caller_module()
         cls._instances[name] = instance
         # 同名注册整体替换条目：无论新注册是否提供回调，旧回调一律丢弃
         cls._cleanups = [(n, fn) for n, fn in cls._cleanups if n != name]
@@ -127,7 +149,7 @@ class Lifecycle:
         """注销单个组件：执行其 cleanup 后从注册表摘除（模块热拔除回收用）。
 
         与 shutdown_all 的全量逆序语义不同，仅影响指定组件；
-        cleanup 异常仅记日志，组件仍被摘除。
+        cleanup 失败保留注册与回调，允许后续重试。
         """
         known = name in cls._instances or any(n == name for n, _ in cls._cleanups)
         if not known:
@@ -145,14 +167,22 @@ class Lifecycle:
                 log(f"已清理: {name}")
             except asyncio.TimeoutError:
                 log(f"清理超时（{per_timeout}s）: {name}", "ERROR")
+                return False
             except Exception as e:
                 log(f"清理失败: {name} - {e}", "WARNING")
+                return False
+        cls._forget(name)
+        return True
+
+    @classmethod
+    def _forget(cls, name: str) -> None:
+        """移除组件注册与钩子；调用方负责先完成资源清理。"""
         cls._instances.pop(name, None)
+        cls._owners.pop(name, None)
         cls._cleanups = [(n, fn) for n, fn in cls._cleanups if n != name]
         cls._start_hooks = [(n, fn) for n, fn in cls._start_hooks if n != name]
         cls._tick_hooks = [(n, fn) for n, fn in cls._tick_hooks if n != name]
         cls._order = [n for n in cls._order if n != name]
-        return True
 
     @classmethod
     async def tick_all(cls) -> None:
@@ -203,6 +233,7 @@ class Lifecycle:
             except Exception as e:
                 log(f"清理失败: {name} - {e}", "WARNING")
         cls._instances.clear()
+        cls._owners.clear()
         cls._cleanups.clear()
         cls._start_hooks.clear()
         cls._tick_hooks.clear()
@@ -218,6 +249,7 @@ class Lifecycle:
         return [
             {
                 "name": name,
+                "module": cls._owners.get(name, ""),
                 "order": index + 1,
                 "instance_type": type(cls._instances.get(name)).__name__,
                 "has_cleanup": name in cleanup_names,
@@ -231,6 +263,7 @@ class Lifecycle:
     def reset(cls) -> None:
         """重置所有注册（测试用）。"""
         cls._instances.clear()
+        cls._owners.clear()
         cls._cleanups.clear()
         cls._start_hooks.clear()
         cls._tick_hooks.clear()

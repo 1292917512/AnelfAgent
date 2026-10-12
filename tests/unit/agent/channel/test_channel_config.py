@@ -126,11 +126,12 @@ class TestChannelConfigStore:
         assert fired == ["ctest_enabled"]
         assert ConfigManager.get("ctest_enabled") is True
 
-    def test_corrupt_file_tolerated(self, tmp_path: Path) -> None:
+    def test_corrupt_file_rejected(self, tmp_path: Path) -> None:
         path = tmp_path / "channel_config.json"
         path.write_text("{broken", "utf-8")
         store = ChannelConfigStore("ctest", path)
-        store.load()
+        with pytest.raises(json.JSONDecodeError):
+            store.load()
         assert store.get("ctest_enabled", False) is False
 
 

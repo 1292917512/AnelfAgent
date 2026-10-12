@@ -745,6 +745,8 @@ async def _emit_context_usage(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> No
             ctx.base_messages + ctx.tool_chain)
         _threshold = compressor.threshold_tokens()
         _window = mind.get_model_context_length()
+        from agent.mind.think_session import ContextUsage, current_context_usage
+        current_context_usage.set(ContextUsage(context_window=_window, tokens_used=_tokens))
         if _threshold > 0:
             await event_bus.emit(EVENT_CONTEXT_USAGE, {
                 "scope": ctx.current_scope,

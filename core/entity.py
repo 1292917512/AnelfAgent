@@ -24,9 +24,12 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Type
 
+from pydantic import TypeAdapter, ValidationError
+
 from core.event_bus import EVENT_TRACE_CALL_END, EVENT_TRACE_CALL_START, event_bus
 from core.exceptions import catch_exceptions
 from core.log import log
+from core.registration import caller_module, record_mapping, record_undo
 from core.sanitizer import sanitize_text
 from core.tags import tag_label
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
@@ -119,6 +122,7 @@ class ToolParam:
     enum: Optional[List[str]] = None
     default: Any = inspect.Parameter.empty
     schema_extra: Optional[Dict[str, Any]] = None
+    adapter: Optional[TypeAdapter[Any]] = field(default=None, repr=False, compare=False)
 
 
 @dataclass
@@ -138,6 +142,7 @@ class EntityMetadata:
     enabled: bool = True
     group: str = ""
     source: str = "builtin"
+    owner: str = ""
     tags: List[str] = field(default_factory=list)
     # 显式配置分组（ConfigRegistry 组名）；空则按约定 entity/<group> 推导
     config_group_name: str = ""
@@ -297,7 +302,17 @@ def _validate_param_types(params: List[ToolParam], kwargs: Dict[str, Any]) -> st
     """
     if not params or not kwargs:
         return ""
-    type_map = {p.name: p.type for p in params}
+    for param in params:
+        if param.adapter is not None and param.name in kwargs:
+            try:
+                kwargs[param.name] = param.adapter.validate_json(json.dumps(kwargs[param.name]), strict=True)
+            except ValidationError as exc:
+                errors = exc.errors(include_url=False, include_input=False)
+                return "; ".join(
+                    f"{param.name}{''.join(f'[{part}]' for part in error['loc'])}: {error['msg']}"
+                    for error in errors[:3]
+                )
+    type_map = {p.name: p.type for p in params if p.adapter is None}
     for key, value in kwargs.items():
         declared = type_map.get(key)
         if declared == "integer":
@@ -510,6 +525,7 @@ class EntityRegistry:
     _types: Dict[EntityType, List[str]] = {}
     _groups: Dict[str, List[str]] = {}
     _group_descriptions: Dict[str, str] = {}
+    _group_modules: Dict[str, str] = {}
     _group_manifests: Dict[str, Dict[str, Any]] = {}
     # 分组排序权重（越小越靠前），经 register_group_order() 注册
     _group_order_weights: Dict[str, int] = {}
@@ -581,16 +597,24 @@ class EntityRegistry:
     @catch_exceptions(reraise=False, default_value=False, tag="entity")
     def register(cls, metadata: EntityMetadata) -> bool:
         """注册实体"""
-        overridden: Optional[EntityMetadata] = None
+        if not metadata.owner:
+            origin = getattr(metadata.func or metadata.entity_class, "__module__", "")
+            metadata.owner = f"{metadata.source}:{origin}"
+        existing = cls._entities.get(metadata.name)
+        if existing is not None and existing.owner != metadata.owner:
+            if not any(hook(existing, metadata) is True for hook in list(cls._override_hooks)):
+                log(f"实体名称冲突，保留原注册: {metadata.name} ({existing.owner} / {metadata.owner})", "ERROR")
+                return False
         with cls._lock:
+            if cls._entities.get(metadata.name) is not existing:
+                log(f"实体注册期间发生并发变更: {metadata.name}", "ERROR")
+                return False
             if metadata.name in cls._entities:
                 existing = cls._entities[metadata.name]
                 if (existing.entity_class and metadata.entity_class
                         and existing.entity_class != metadata.entity_class):
                     log(f"⚠️ 实体名称冲突: {metadata.name}", "WARNING")
                     return False
-                if existing.source != metadata.source:
-                    overridden = existing
                 cls._remove_from_indexes(metadata.name)
 
             cls._entities[metadata.name] = metadata
@@ -599,22 +623,12 @@ class EntityRegistry:
                 cls._groups.setdefault(metadata.group, []).append(metadata.name)
             cls.bump_version()
 
-        # 锁外通知覆盖监听（监听器可能回注册新实体，避免持锁重入）；
-        # 任一监听器接管保留旧实体时，覆盖结果由其说明，不再重复告警
-        if overridden is not None:
-            preserved = False
-            for hook in list(cls._override_hooks):
-                try:
-                    if hook(overridden, metadata) is True:
-                        preserved = True
-                except Exception as exc:
-                    log(f"实体覆盖监听回调失败 ({metadata.name}): {exc}", "WARNING")
-            if not preserved:
-                log(
-                    f"⚠️ 实体名称冲突，已覆盖: {metadata.name} "
-                    f"({overridden.source} → {metadata.source})",
-                    "WARNING",
-                )
+        def undo() -> None:
+            cls.unregister(metadata.name)
+            if existing is not None:
+                cls.register(existing)
+
+        record_undo(undo, owner=getattr(metadata.func or metadata.entity_class, "__module__", ""))
 
         log(f"✅ 实体注册: {metadata.name} [{metadata.entity_type.value}]", "DEBUG")
         return True
@@ -670,6 +684,7 @@ class EntityRegistry:
         check_fn: Optional[Callable] = None,
         allow_sleep: bool = False,
         sleep_brief: str = "",
+        owner: str = "",
     ) -> bool:
         """注册工具实体。
 
@@ -696,6 +711,7 @@ class EntityRegistry:
             enabled=True,
             group=group,
             source=source,
+            owner=owner,
             tags=tags or [],
             func=func,
             is_async=inspect.iscoroutinefunction(func),
@@ -705,6 +721,16 @@ class EntityRegistry:
     @classmethod
     def register_group(cls, group: str, description: str) -> None:
         """注册实体分组描述，供 AI 进行实体目录发现。"""
+        record_mapping(cls._group_modules, group)
+        cls._group_modules[group] = caller_module()
+        previous = cls._group_descriptions.get(group)
+        def undo() -> None:
+            if previous is None:
+                cls._group_descriptions.pop(group, None)
+            else:
+                cls._group_descriptions[group] = previous
+            cls.bump_version()
+        record_undo(undo)
         cls._group_descriptions[group] = description
         cls.bump_version()
         log(f"✅ 实体分组注册: {group}", "DEBUG")
@@ -712,6 +738,14 @@ class EntityRegistry:
     @classmethod
     def register_group_manifest(cls, group: str, manifest: Dict[str, Any]) -> None:
         """注册实体分组展示清单（display_name / icon / description / version）。"""
+        previous = cls._group_manifests.get(group)
+        def undo() -> None:
+            if previous is None:
+                cls._group_manifests.pop(group, None)
+            else:
+                cls._group_manifests[group] = previous
+            cls.bump_version()
+        record_undo(undo)
         cls._group_manifests[group] = manifest
         cls.bump_version()
 
@@ -724,6 +758,11 @@ class EntityRegistry:
     def get_group_description(cls, group: str) -> str:
         """获取分组描述"""
         return cls._group_descriptions.get(group, "")
+
+    @classmethod
+    def get_group_module(cls, group: str) -> str:
+        """返回分组声明的定义模块，供装卸载判定归属。"""
+        return cls._group_modules.get(group, "")
 
     @classmethod
     def list_groups(cls) -> List[str]:
@@ -750,6 +789,14 @@ class EntityRegistry:
         业务模块注册工具分组时可调用本方法覆盖默认顺序；
         未注册权重的分组按字母序排在末尾。
         """
+        previous = cls._group_order_weights.get(group)
+        def undo() -> None:
+            if previous is None:
+                cls._group_order_weights.pop(group, None)
+            else:
+                cls._group_order_weights[group] = previous
+            cls._catalog_cache = None
+        record_undo(undo)
         cls._group_order_weights[group] = weight
         cls._catalog_cache = None
 
@@ -1029,15 +1076,19 @@ class EntityRegistry:
         """单个 TOOL 实体 -> OpenAI function schema"""
         properties: Dict[str, Any] = {}
         required: List[str] = []
+        definitions: Dict[str, Any] = {}
 
         for p in entity.meta.get("params", []):
-            prop: Dict[str, Any] = {"type": p.type}
+            prop: Dict[str, Any] = {"type": p.type} if p.type else {}
             if p.description:
                 prop["description"] = p.description
             if p.enum:
                 prop["enum"] = p.enum
             if p.schema_extra:
+                if "anyOf" in p.schema_extra or "$ref" in p.schema_extra:
+                    prop.pop("type", None)
                 prop.update(p.schema_extra)
+            definitions.update(prop.pop("$defs", {}))
             properties[p.name] = prop
             if p.required:
                 required.append(p.name)
@@ -1049,6 +1100,8 @@ class EntityRegistry:
         }
 
         params_schema: Dict[str, Any] = {"type": "object", "properties": properties}
+        if definitions:
+            params_schema["$defs"] = definitions
         if required:
             params_schema["required"] = required
 
@@ -1299,6 +1352,7 @@ class EntityRegistry:
                 count += 1
         cls._groups.pop(group, None)
         cls._group_descriptions.pop(group, None)
+        cls._group_modules.pop(group, None)
         cls._group_manifests.pop(group, None)
         cls._group_order_weights.pop(group, None)
         cls._catalog_cache = None
@@ -1440,6 +1494,7 @@ class EntityRegistry:
         cls._types.clear()
         cls._groups.clear()
         cls._group_descriptions.clear()
+        cls._group_modules.clear()
         cls._group_manifests.clear()
         cls.bump_version()
         log("🧹 实体注册表已清空")

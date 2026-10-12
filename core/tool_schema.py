@@ -1,6 +1,9 @@
 """
 工具参数 Schema 提取（签名 → ToolParam 列表）。
 
+模型看到与 Python 类型一致的参数结构及约束；嵌套结构按声明增加必要的
+schema token，减少错误重试；注册时生成，运行时不改写稳定提示词。
+
 从函数/绑定方法签名与 docstring 自动推导 LLM 工具参数：
 - 跳过 self/cls 与 *args/**kwargs
 - 支持 `from __future__ import annotations` 产生的字符串注解
@@ -11,7 +14,9 @@
 from __future__ import annotations
 
 import inspect
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, get_type_hints
+
+from pydantic import TypeAdapter
 
 from core.entity import ToolParam
 
@@ -27,32 +32,6 @@ def get_first_line(docstring: str | None) -> str:
     return ""
 
 
-_PY_ANNOTATION_MAP = {
-    str: "string",
-    int: "integer",
-    float: "number",
-    bool: "boolean",
-    list: "array",
-    dict: "object",
-}
-
-# `from __future__ import annotations` 使注解懒加载为字符串，需额外映射
-_STR_ANNOTATION_MAP = {
-    "str": "string",
-    "int": "integer",
-    "float": "number",
-    "bool": "boolean",
-    "list": "array",
-    "dict": "object",
-    "List": "array",
-    "Dict": "object",
-    "Optional[str]": "string",
-    "Optional[int]": "integer",
-    "Optional[float]": "number",
-    "Optional[bool]": "boolean",
-}
-
-
 def extract_tool_params(func: Callable) -> List[ToolParam]:
     """从函数签名和 docstring 提取参数列表（含描述）。
 
@@ -60,6 +39,7 @@ def extract_tool_params(func: Callable) -> List[ToolParam]:
     对应参数的额外 JSON Schema 字段（如 items / minItems）会合并到 ToolParam。
     """
     sig = inspect.signature(func)
+    annotations = get_type_hints(func, include_extras=True)
     doc_params = parse_docstring_args(func.__doc__ or "")
     extras: Dict[str, dict] = getattr(func, "_schema_extra", {})
     params: List[ToolParam] = []
@@ -69,13 +49,16 @@ def extract_tool_params(func: Callable) -> List[ToolParam]:
         # *args / **kwargs 是容错性捕获参数，不应出现在 LLM schema 中
         if p.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
             continue
-        annotation = p.annotation
-        if annotation == inspect.Parameter.empty:
-            json_type = "string"
-        elif isinstance(annotation, str):
-            json_type = _STR_ANNOTATION_MAP.get(annotation, "string")
-        else:
-            json_type = _PY_ANNOTATION_MAP.get(annotation, "string")
+        annotation = annotations.get(p_name, str)
+        adapter: TypeAdapter[Any] = TypeAdapter(annotation)
+        schema = adapter.json_schema(ref_template=f"#/$defs/{p_name}_{{model}}")
+        definitions = schema.get("$defs", {})
+        if definitions:
+            schema["$defs"] = {f"{p_name}_{key}": value for key, value in definitions.items()}
+        schema.pop("title", None)
+        schema.update(extras.get(p_name, {}))
+        branches = [branch for branch in schema.get("anyOf", []) if branch.get("type") != "null"]
+        json_type = schema.get("type", branches[0].get("type", "") if len(branches) == 1 else "")
         required = p.default is inspect.Parameter.empty
         params.append(
             ToolParam(
@@ -84,7 +67,8 @@ def extract_tool_params(func: Callable) -> List[ToolParam]:
                 type=json_type,
                 required=required,
                 default=p.default,
-                schema_extra=extras.get(p_name),
+                schema_extra=schema,
+                adapter=adapter,
             )
         )
     return params

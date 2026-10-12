@@ -14,6 +14,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional
 
 from core.hooks import HookMode
+from core.registration import record_undo
 
 # 钩子可订阅的事件白名单（只开放有明确语义的生命周期事件，
 # 不把 event_bus 全量事件暴露成触发点——防任务面变成另一个事件总线）
@@ -164,6 +165,11 @@ class HookRegistry:
             raise ValueError("mode 必须是 HookMode")
         if spec.mode == HookMode.SYNC and spec.debounce_seconds > 0:
             raise ValueError("同步钩子不能声明防抖延迟")
+        def undo() -> None:
+            cls.unregister(spec.name)
+            if old is not None:
+                cls.register(old)
+        record_undo(undo, owner=spec.handler.__module__)
         if old is not None:
             cls.unregister(spec.name)
         cls._by_name[spec.name] = spec

@@ -126,13 +126,35 @@ async def test_unregister_runs_cleanup_and_removes_only_that_component():
     assert cleaned == ["victim"]
 
 
-async def test_unregister_cleanup_failure_still_detaches():
+async def test_unregister_cleanup_failure_preserves_for_retry():
     def boom() -> None:
         raise RuntimeError("cleanup failed")
 
-    Lifecycle.register("bad", None, cleanup=boom)
+    instance = object()
+    Lifecycle.register("bad", instance, cleanup=boom)
+    assert await Lifecycle.unregister("bad") is False
+    assert Lifecycle.get("bad") is instance
+    Lifecycle.register("bad", instance, cleanup=lambda: None)
     assert await Lifecycle.unregister("bad") is True
     assert Lifecycle.get("bad") is None
+
+
+async def test_failed_module_registration_restores_callback_order_and_instance():
+    from core.registration import registration_transaction
+
+    calls = []
+    original = object()
+    Lifecycle.register("first", original, cleanup=lambda: calls.append("first"))
+    Lifecycle.register("second", object(), cleanup=lambda: calls.append("second"))
+    snapshot = Lifecycle.snapshot()
+    with pytest.raises(RuntimeError, match="failed import"):
+        with registration_transaction(__name__):
+            Lifecycle.register("first", object(), cleanup=lambda: calls.append("wrong"))
+            raise RuntimeError("failed import")
+    assert Lifecycle.snapshot() == snapshot
+    assert Lifecycle.get("first") is original
+    await Lifecycle.shutdown_all()
+    assert calls == ["second", "first"]
 
 
 async def test_start_one_runs_hook_only_for_named_component():

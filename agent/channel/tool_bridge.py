@@ -217,7 +217,9 @@ def register_channel_tools(channel: Any) -> int:
 def unregister_channel_tools(channel_id: str) -> None:
     """注销频道的特有工具，并重算其参与的通用工具。"""
     for tool_name in _specific_tools.pop(channel_id, []):
-        EntityRegistry.unregister(tool_name)
+        entry = EntityRegistry.get(tool_name)
+        if entry is not None and entry.source == f"channel.{channel_id}":
+            EntityRegistry.unregister(tool_name)
 
     empty_caps: List[str] = []
     for cap_value, supporters in _common_methods.items():
@@ -229,7 +231,9 @@ def unregister_channel_tools(channel_id: str) -> None:
                 empty_caps.append(cap_value)
     for cap_value in empty_caps:
         del _common_methods[cap_value]
-        EntityRegistry.unregister(cap_value)
+        entry = EntityRegistry.get(cap_value)
+        if entry is not None and entry.source == "channel.auto":
+            EntityRegistry.unregister(cap_value)
 
 
 def get_channel_tool_info(channel_id: str) -> List[Dict[str, Any]]:
@@ -438,7 +442,6 @@ def _rebuild_common_tool(cap_value: str) -> bool:
     sensitive = any(meta.sensitive for _, meta in supporters.values())
     description = _common_description(cap_value, supporters)
 
-    EntityRegistry.unregister(cap_value)
     ok = EntityRegistry.register_tool(
         name=cap_value,
         func=_make_common_handler(cap_value, method_name),

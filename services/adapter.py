@@ -114,7 +114,10 @@ class AdapterService:
     async def _with_timeout(coro: Any, timeout: float, message: str) -> Any:
         """await 协程并施加超时，超时时抛出带明确原因的错误。"""
         try:
-            return await asyncio.wait_for(coro, timeout=timeout)
+            result = await asyncio.wait_for(coro, timeout=timeout)
+            if result is False:
+                raise RuntimeError("频道操作失败，请查看频道状态与运行日志")
+            return result
         except asyncio.TimeoutError:
             raise RuntimeError(message) from None
 

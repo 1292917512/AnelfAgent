@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Protocol, Tuple, runtime_checkable
 
 from core.log import log
+from core.registration import record_mapping
 from core.tool_errors import ErrorCause
 
 
@@ -127,6 +128,7 @@ class CapabilityRouter:
         caps = getattr(provider, "capabilities", None)
         if not caps:
             raise ValueError(f"能力提供者 {name} 未声明 capabilities")
+        record_mapping(self._providers, name, owner=type(provider).__module__)
         self._providers[name] = provider
         log(f"能力提供者已注册: {name} ({sorted(caps)})", "DEBUG", tag=self._log_tag)
 

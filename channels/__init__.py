@@ -11,13 +11,13 @@
 
 from __future__ import annotations
 
-import importlib
 import traceback
 from pathlib import Path
 from typing import List, Optional, Type
 
 from core.config import get_config_bool
 from core.log import log
+from core.registration import import_registered_module, registration_transaction
 
 
 def discover_channels() -> List:
@@ -39,7 +39,7 @@ def discover_channels() -> List:
 
         module_path = f"channels.{item.name}.adapter"
         try:
-            mod = importlib.import_module(module_path)
+            mod = import_registered_module(module_path, owner=f"channels.{item.name}")
         except Exception as e:
             failed.append(item.name)
             log(f"频道模块加载失败: {item.name} - {e}", "WARNING")
@@ -64,7 +64,8 @@ def discover_channels() -> List:
 
         # 实例化（配置在 __init__ 中从 ConfigManager 物化）
         try:
-            instance = channel_cls()
+            with registration_transaction(f"channels.{item.name}"):
+                instance = channel_cls()
             instance._deferred_start = get_config_bool(
                 config_key(item.name, "deferred_start"), False,
             )

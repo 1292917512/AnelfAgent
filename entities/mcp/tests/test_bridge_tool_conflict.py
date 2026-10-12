@@ -201,14 +201,14 @@ def test_register_server_tools_async_wrapper(bridge: MCPBridge) -> None:
     EntityRegistry.unregister(f"mcp:{_PROBE_SERVER_A}")
 
 
-def test_registry_cross_source_overwrite_replaces() -> None:
-    """跨来源同名注册仍覆盖（由 bridge 侧加前缀规避，注册表行为保持不变）。"""
+def test_registry_cross_source_collision_preserves_existing() -> None:
+    """无显式让位策略的跨来源重名不能替换现有工具。"""
     _register_internal_probe()
 
     def replacement(query: str) -> str:
         return "{}"
 
-    EntityRegistry.register_tool(
+    assert not EntityRegistry.register_tool(
         name=_PROBE,
         func=replacement,
         description="覆盖",
@@ -218,5 +218,5 @@ def test_registry_cross_source_overwrite_replaces() -> None:
 
     entity = EntityRegistry.get(_PROBE)
     assert entity is not None
-    assert entity.source == "mcp"
+    assert entity.source == "internal"
     EntityRegistry.unregister(_PROBE)

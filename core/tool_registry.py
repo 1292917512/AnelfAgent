@@ -56,7 +56,7 @@ def tool(
         if path_resolver is not None:
             meta["path_resolver"] = path_resolver
 
-        EntityRegistry.register_tool(
+        registered = EntityRegistry.register_tool(
             name=tool_name,
             func=func,
             description=tool_desc,
@@ -69,6 +69,8 @@ def tool(
             allow_sleep=allow_sleep,
             sleep_brief=sleep_brief,
         )
+        if not registered:
+            raise ValueError(f"工具注册失败: {tool_name} ({func.__module__})")
         return func
 
     return decorator
@@ -116,8 +118,7 @@ def deferred_tool(
         risk: 风险等级标记（如 CRITICAL），供规则与自动评审判断执行条件
         path_resolver: 将工具文件参数解析为绝对路径，供界面定位；不改变调用参数或授权
         schema_extra: 参数级额外 JSON Schema 字段（{参数名: {...}}，如
-            items/minItems），签名推导只到顶层类型，复杂数组/对象参数
-            的完整 wire schema 经此声明
+            items/minItems），用于补充类型声明未表达的结构约束
     """
     def decorator(func: F) -> F:
         tool_name = name or func.__name__
@@ -161,5 +162,6 @@ def activate_group(group: str, description: str = "") -> int:
     if description:
         EntityRegistry.register_group(group, description)
     for e in entries:
-        EntityRegistry.register_tool(**e)
+        if not EntityRegistry.register_tool(**e):
+            raise ValueError(f"工具注册失败: {e['name']}")
     return len(entries)

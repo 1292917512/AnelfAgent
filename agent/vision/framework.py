@@ -22,6 +22,7 @@ from __future__ import annotations
 from typing import ClassVar, Dict, List, Optional
 
 from core.config import get_config
+from core.registration import record_mapping
 
 from .capture import CapturedFrame
 
@@ -51,6 +52,7 @@ def register_source(source: VisualSource) -> None:
     """注册视觉源组件实例（同 key 覆盖）。"""
     if not source.key:
         raise ValueError(f"{type(source).__name__} 缺少 key 声明")
+    record_mapping(_SOURCES, source.key, owner=type(source).__module__)
     _SOURCES[source.key] = source
 
 

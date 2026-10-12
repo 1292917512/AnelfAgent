@@ -6,12 +6,12 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 from typing import Any, Dict, Optional, Type
 
 from core.config import get_config_bool
-from core.entity import BaseEntity, EntityType
+from core.entity import BaseEntity, EntityRegistry, EntityType
 from core.log import log
+from core.registration import import_registered_module, registration_transaction
 from core.tags import strip_message_meta_tags
 
 from .base import BaseChannel, ChannelStatus
@@ -43,8 +43,7 @@ def set_channel_enabled(channel_id: str, enabled: bool) -> bool:
     """
     from core.config import ConfigManager
 
-    ConfigManager.set(config_key(channel_id, "enabled"), bool(enabled))
-    ConfigManager.save()
+    ConfigManager.set_persisted({config_key(channel_id, "enabled"): bool(enabled)})
     return True
 
 
@@ -57,7 +56,7 @@ def load_channel_class(channel_id: str) -> Optional[Type[BaseChannel]]:
     if not (channels_dir() / channel_id / "adapter.py").exists():
         return None
     try:
-        mod = importlib.import_module(f"channels.{channel_id}.adapter")
+        mod = import_registered_module(f"channels.{channel_id}.adapter", owner=f"channels.{channel_id}")
     except Exception as exc:
         log(f"频道模块加载失败: {channel_id} - {exc}", "ERROR", tag="通道")
         return None
@@ -95,6 +94,8 @@ class ChannelManager(BaseEntity):
         self._channel_map: Dict[str, str] = {}
         self._channel_map_max: int = 1000
         self._group_targets: set[str] = set()
+        self._operation_locks: Dict[str, asyncio.Lock] = {}
+        self._desired_running: Dict[str, bool] = {}
         super().__init__()
 
     # ------------------------------------------------------------------
@@ -137,6 +138,11 @@ class ChannelManager(BaseEntity):
                 unregister_channel_tools(channel_id)
             except Exception as exc:
                 log(f"频道工具注销失败: {exc}", "WARNING", tag="通道")
+            if isinstance(channel, BaseEntity):
+                EntityRegistry.unregister(channel.get_entity_name())
+            self._desired_running.pop(channel_id, None)
+            self._channel_map = {key: cid for key, cid in self._channel_map.items() if cid != channel_id}
+            self._group_targets = {key for key in self._group_targets if not key.startswith(channel_id + ":")}
             log(f"频道已注销: {channel_id}", tag="通道")
 
     def get(self, channel_id: str) -> Optional[BaseChannel]:
@@ -153,56 +159,83 @@ class ChannelManager(BaseEntity):
         """并发启动所有已注册频道（跳过 deferred_start），总耗时由最慢的单个频道决定。"""
         import asyncio
         tasks = [
-            self._start_one(cid, ch)
+            self.start_channel(cid)
             for cid, ch in self._channels.items()
             if not getattr(ch, '_deferred_start', False)
         ]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def _start_one(self, cid: str, channel: BaseChannel) -> None:
-        """启动单个频道，捕获异常防止影响其他频道的并发启动。"""
-        try:
-            channel._status = ChannelStatus.STARTING
-            await channel.start()
-            if channel._status == ChannelStatus.STARTING:
-                channel._status = ChannelStatus.RUNNING
-            log(f"频道已启动: {cid} ({channel._status.value})", tag="通道")
-        except Exception as exc:
-            channel._status = ChannelStatus.ERROR
-            log(f"频道启动失败: {cid} -> {exc}", "ERROR", tag="通道")
-
     async def stop_all(self) -> None:
-        for cid, channel in self._channels.items():
-            try:
-                await channel.stop()
-                channel._status = ChannelStatus.STOPPED
-                log(f"频道已停止: {cid}", tag="通道")
-            except BaseException as exc:
-                if not isinstance(exc, asyncio.CancelledError):
-                    log(f"频道停止失败: {cid} -> {exc}", "ERROR", tag="通道")
+        for cid in list(self._channels):
+            await self.stop_channel(cid)
+
+    def should_restart(self, channel_id: str, channel: BaseChannel) -> bool:
+        """看门狗仅重试仍受管理且没有收到停止意图的实例。"""
+        return self._channels.get(channel_id) is channel and self._desired_running.get(channel_id, True)
+
+    def _operation_lock(self, channel_id: str) -> asyncio.Lock:
+        return self._operation_locks.setdefault(channel_id, asyncio.Lock())
 
     async def start_channel(self, channel_id: str) -> bool:
+        self._desired_running[channel_id] = True
+        async with self._operation_lock(channel_id):
+            if not self._desired_running.get(channel_id, False):
+                return False
+            return await self._start_channel(channel_id)
+
+    async def restart_channel(self, channel_id: str, expected: BaseChannel) -> bool:
+        """在锁内核对实例与停止意图，仅恢复仍需运行的故障频道。"""
+        async with self._operation_lock(channel_id):
+            if not self.should_restart(channel_id, expected):
+                return False
+            return await self._start_channel(channel_id)
+
+    async def _start_channel(self, channel_id: str) -> bool:
         channel = self._channels.get(channel_id)
         if not channel:
+            return False
+        initial_status = channel.status
+        if initial_status in (ChannelStatus.RUNNING, ChannelStatus.RECONNECTING):
+            return True
+        if initial_status == ChannelStatus.ERROR and not await self._stop_channel(channel_id):
             return False
         try:
             channel._status = ChannelStatus.STARTING
             await channel.start()
             if channel._status == ChannelStatus.STARTING:
                 channel._status = ChannelStatus.RUNNING
+            if channel.status not in (ChannelStatus.RUNNING, ChannelStatus.RECONNECTING):
+                raise RuntimeError(f"启动结束时频道状态为 {channel.status.value}")
             try:
                 from .tool_bridge import register_channel_tools
                 register_channel_tools(channel)
             except Exception as exc:
                 log(f"频道能力工具注册失败: {exc}", "WARNING", tag="通道")
             return True
+        except asyncio.CancelledError:
+            await self._cleanup_failed_start(channel_id)
+            raise
         except Exception as exc:
-            channel._status = ChannelStatus.ERROR
+            await self._cleanup_failed_start(channel_id)
             log(f"频道启动失败: {channel_id} -> {exc}", "ERROR", tag="通道")
             return False
 
+    async def _cleanup_failed_start(self, channel_id: str) -> None:
+        channel = self._channels[channel_id]
+        try:
+            await asyncio.wait_for(self._stop_channel(channel_id), timeout=5.0)
+        except asyncio.TimeoutError:
+            log(f"频道启动失败后的资源清理超时: {channel_id}", "ERROR", tag="通道")
+        finally:
+            channel._status = ChannelStatus.ERROR
+
     async def stop_channel(self, channel_id: str) -> bool:
+        self._desired_running[channel_id] = False
+        async with self._operation_lock(channel_id):
+            return await self._stop_channel(channel_id)
+
+    async def _stop_channel(self, channel_id: str) -> bool:
         channel = self._channels.get(channel_id)
         if not channel:
             return False
@@ -215,7 +248,11 @@ class ChannelManager(BaseEntity):
             except Exception as exc:
                 log(f"频道工具注销失败: {exc}", "WARNING", tag="通道")
             return True
+        except asyncio.CancelledError:
+            channel._status = ChannelStatus.ERROR
+            raise
         except Exception as exc:
+            channel._status = ChannelStatus.ERROR
             log(f"频道停止失败: {channel_id} -> {exc}", "ERROR", tag="通道")
             return False
 
@@ -224,9 +261,16 @@ class ChannelManager(BaseEntity):
 
         已注册时退化为 start_channel；目录/模块/频道类缺失或启动失败返回 False。
         """
+        self._desired_running[channel_id] = True
+        async with self._operation_lock(channel_id):
+            if not self._desired_running.get(channel_id, False):
+                return False
+            return await self._activate_channel(channel_id)
+
+    async def _activate_channel(self, channel_id: str) -> bool:
         registered = self._channels.get(channel_id)
         if registered is not None:
-            return await self.start_channel(channel_id)
+            return await self._start_channel(channel_id)
 
         channel_dir = channels_dir() / channel_id
         if not (channel_dir / "adapter.py").exists():
@@ -234,7 +278,8 @@ class ChannelManager(BaseEntity):
             return False
         # 确保配置 schema/store/watcher 已注册（幂等）——启动后被跳过的频道
         # 或运行时新增的频道目录可能尚未接入统一配置面
-        register_channel_schema(channel_id)
+        if not register_channel_schema(channel_id):
+            return False
         channel_cls = load_channel_class(channel_id)
         if channel_cls is None:
             log(f"频道类未找到: {channel_id}", "ERROR", tag="通道")
@@ -242,11 +287,13 @@ class ChannelManager(BaseEntity):
 
         try:
             # 配置在 BaseChannel.__init__ 中从 ConfigManager 物化（<id>_<field> 键）
-            self.register(channel_cls())
+            with registration_transaction(f"channels.{channel_id}"):
+                channel = channel_cls()
+            self.register(channel)
         except Exception as exc:
             log(f"频道实例化失败: {channel_id} - {exc}", "ERROR", tag="通道")
             return False
-        return await self.start_channel(channel_id)
+        return await self._start_channel(channel_id)
 
     # ------------------------------------------------------------------
     # 入站分发（平台 → AgentApp）

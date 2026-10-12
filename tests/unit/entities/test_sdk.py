@@ -2,12 +2,38 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
 
 from core.tool_schema import extract_tool_params
 from entities import _sdk
+
+
+async def test_context_usage_is_real_and_isolated_between_executions():
+    from agent.mind.think_session import think_session
+    from agent.mind.tools.round_helpers import _emit_context_usage, _ThinkRoundState
+
+    mind = SimpleNamespace(
+        pfc=SimpleNamespace(clear_dynamic_tools=lambda **kwargs: None),
+        compressor=SimpleNamespace(threshold_tokens=lambda: 8000, estimate_tokens=lambda messages: 999),
+        get_model_context_length=lambda: 10000,
+    )
+    async def execute(scope, tokens):
+        with think_session(mind, scope):
+            assert _sdk.get_context_usage() is None
+            await _emit_context_usage(
+                SimpleNamespace(mind=mind, current_scope=scope, base_messages=[], tool_chain=[]),
+                _ThinkRoundState(last_input_tokens=tokens),
+            )
+            await asyncio.sleep(0)
+            usage = _sdk.get_context_usage()
+            assert usage.context_window == 10000
+            assert usage.tokens_used == tokens
+        assert _sdk.get_context_usage() is None
+
+    await asyncio.gather(execute("user_qq:a", 200), execute("user_webui:a#chat", 700))
 
 # ------------------------------------------------------------------
 # extract_tool_params（**kwargs 容错参数不得生成虚假 schema 字段）

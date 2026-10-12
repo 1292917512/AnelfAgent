@@ -17,6 +17,7 @@ from typing import Awaitable, Callable, Dict, Optional
 from core.config import get_config_float, get_config_int, register_configs_safe
 from core.latebind import LateBinding
 from core.log import log
+from core.registration import belongs_to, record_mapping
 
 from ..memory_store import MemoryStore
 from .engine import Embedder
@@ -84,7 +85,20 @@ def register_embedding_backlog(name: str, handler: BacklogHandler) -> None:
     if worker:
         worker.register_backlog(name, handler)
     else:
+        record_mapping(_pending_backlogs, name, owner=handler.__module__)
         _pending_backlogs[name] = handler
+
+
+def unregister_embedding_backlogs(module: str) -> None:
+    """移除模块声明的回填任务，不影响其他存储来源。"""
+    worker = get_embedding_worker()
+    registries = [_pending_backlogs]
+    if worker is not None:
+        registries.append(worker._backlogs)
+    for registry in registries:
+        for name, handler in list(registry.items()):
+            if belongs_to(handler.__module__, module):
+                registry.pop(name, None)
 
 
 class EmbeddingWorker:
@@ -109,6 +123,7 @@ class EmbeddingWorker:
 
     def register_backlog(self, name: str, handler: BacklogHandler) -> None:
         """挂接一个 backlog 来源（同名覆盖）。"""
+        record_mapping(self._backlogs, name, owner=handler.__module__)
         self._backlogs[name] = handler
 
     @property

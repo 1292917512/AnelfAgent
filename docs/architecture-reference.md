@@ -88,6 +88,13 @@ in-function import 违层），实体里写 `from agent.` 之前先想到 _sdk �
 | DATABASE | MemoryStore |
 | MCP_SERVER | MCPBridge |
 
+工具参数由 Python 类型声明经 Pydantic `TypeAdapter` 生成 JSON Schema，同时用于执行入口校验；
+支持可空值、泛型集合、Literal 与嵌套模型。优先通过类型表达结构，`schema_extra` 只补充声明外的
+约束。错误在进入工具体前返回参数位置与调用追踪 ID。
+
+工具名称全局唯一，归属由来源和定义模块确定；同一模块可重注册，其他模块不得静默覆盖。
+跨来源让位须经显式仲裁（如 MCP 将原工具改为带服务器前缀的名称）；注册失败不会发布成功结果。
+
 ## 路径与配置（core/path.py + core/config.py）
 
 `ConfigPaths`（元类动态解析）是配置与数据路径的唯一入口，避免硬编码分散。默认布局
@@ -161,6 +168,7 @@ from entities._sdk import download_media_to_uploads         # URL 媒体落盘 u
 from entities._sdk import execute_send_action               # 频道统一发送管道
 from entities._sdk import set_default_model, get_active_llm_client, get_llm_client_class
 from entities._sdk import get_session_llm_params, canonical_efforts  # 会话参数 / 思考档位表
+from entities._sdk import get_context_usage                 # 当前执行的只读用量快照
 ```
 
 ## 晚绑定端口（core/latebind.py）
@@ -180,12 +188,21 @@ reconcile 对账范式（对齐插件装卸载）：监听目录结构（子目�
 防抖合并）或手动触发（实体/频道/工具页「热同步」按钮，`POST /tools/reload` / `/adapters/reload`）：
 
 - **新增目录**即时注册（工具/分组/配置 schema/lifecycle/路由）
-- **删除目录**完整拆除（注册表 unregister → 独占分组回收（含 manifest/权重）→ ConfigRegistry/Store
-  回收 → Lifecycle 组件注销 → sys.modules 清理 → 路由摘除）
+- **删除目录**先停止上下文采集，再按 Lifecycle 逆序关闭资源，随后移除工具、独占分组、配置、
+  能力提供者和模块，最后通知路由摘除。关闭失败保留资源句柄，后续同步重试；在途实体钩子和
+  进程级晚绑定端口不能直接拔除
 - **手动刷新**（reload_existing=True）对存续模块做代码热更（实体先按归属注销旧工具再 re-import，
   被删除的工具不回归；频道停→清模块→重建，连接断一次）
 - 路由挂载/摘除经 EVENT_MODULE_ADDED/REMOVED 事件总线通知 web 层；监听开关
-  `hotplug_watch_enabled`（system/hotplug 组）；失败目录不进已知集合下轮自动重试；两域各自单飞护栏防并发同步
+  `hotplug_watch_enabled`（system/hotplug 组）；失败操作单独保留重试状态，已存在的 schema 或失败
+  实例不代表加载成功；两域各自单飞护栏防并发同步
+
+导入使用 `core.registration` 撤销日志：加载失败回滚当前模块的工具、分组、配置、监听器、
+能力提供者和生命周期声明，删除本次导入的私有子模块，不回滚共享依赖。模块导入只做声明，
+连接与后台任务统一放在 Lifecycle 的启动/清理回调中；撤销日志不负责撤销任意文件或网络副作用。
+
+目录监听只处理增删。实体手动刷新只更新 tools/router 入口，状态模块、连接管理器和晚绑定
+端口保持身份；这些模块的代码修改须重启。频道手动刷新会断开并重新连接。
 
 ## 存储卷（core/storage_volume.py）
 

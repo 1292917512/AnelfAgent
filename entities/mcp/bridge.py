@@ -154,8 +154,9 @@ class MCPBridge:
         server_name = old.group[len("mcp:"):]
         original = self._tool_original_names.get(old.name, old.name)
         prefixed = _sanitize_tool_name(f"{server_name}__{original}")
-        if EntityRegistry.exists(prefixed):
-            return True  # 前缀名已在（此前已让位），旧工具无损
+        reserved = EntityRegistry.get(prefixed)
+        if reserved is not None:
+            return reserved.owner == f"mcp:{server_name}"
 
         bridge = self
 
@@ -165,7 +166,7 @@ class MCPBridge:
         meta = {"mcp_original_name": original}
         if "timeout" in old.meta:
             meta["timeout"] = old.meta["timeout"]
-        EntityRegistry.register_tool(
+        if not EntityRegistry.register_tool(
             name=prefixed,
             func=_proxy,
             description=old.description,
@@ -173,13 +174,23 @@ class MCPBridge:
             params=old.meta.get("params") or [],
             tags=list(old.tags),
             source="mcp",
+            owner=f"mcp:{server_name}",
             allow_sleep=old.allow_sleep,
             sleep_brief=old.sleep_brief,
             meta=meta,
-        )
+        ):
+            return False
         with self._lock:
             self._tool_server_map[prefixed] = server_name
             self._tool_original_names[prefixed] = original
+        from core.registration import record_undo
+
+        def undo() -> None:
+            EntityRegistry.unregister(prefixed)
+            with self._lock:
+                self._tool_server_map.pop(prefixed, None)
+                self._tool_original_names.pop(prefixed, None)
+        record_undo(undo, owner=getattr(new.func, "__module__", ""))
         log(f"MCP 工具让位改名: '{old.name}' → '{prefixed}'（原名由 {new.source} 来源保留）",
             "WARNING")
         return True
@@ -1174,7 +1185,7 @@ class MCPBridge:
             async def _proxy(_name: str = reg_name, **kwargs: Any) -> str:
                 return await bridge.call_tool(_name, kwargs)
 
-            EntityRegistry.register_tool(
+            if not EntityRegistry.register_tool(
                 name=reg_name,
                 func=_proxy,
                 description=clip_description(t.description or t_name),
@@ -1182,10 +1193,12 @@ class MCPBridge:
                 params=t_params,
                 tags=["mcp", server_name],
                 source="mcp",
+                owner=f"mcp:{server_name}",
                 allow_sleep=sleep,
                 sleep_brief=sleep_brief,
                 meta=tool_meta or None,
-            )
+            ):
+                continue
             with self._lock:
                 self._tool_server_map[reg_name] = server_name
                 if reg_name != t_name:

@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 
 from core.log import log
+from core.registration import record_undo
 
 # 提供者类别（注册表键）
 KIND_ASR = "asr"
@@ -81,6 +82,12 @@ class AudioProviderRegistry:
         if not name:
             raise ValueError("音频提供者缺少 name")
         entries = self._providers[kind]
+        previous = [p for p in entries if p.name == name]
+        def undo() -> None:
+            self.unregister(kind, name)
+            entries.extend(previous)
+            entries.sort(key=lambda p: p.priority)
+        record_undo(undo, owner=type(provider).__module__)
         entries[:] = [p for p in entries if p.name != name]  # 同名覆盖
         entries.append(provider)
         entries.sort(key=lambda p: p.priority)

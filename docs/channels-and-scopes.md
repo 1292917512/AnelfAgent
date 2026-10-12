@@ -28,12 +28,21 @@
 - **注册时机**：bootstrap `register_channels` 节点先调 `register_channel_schemas()`——扫描
   channels/ 注册各频道 store + schema（仅子类声明字段，基类通用字段不进配置面），幂等
 - **热更双路径**：进程内写入（Web /config/meta、AI update_entity_config、频道内部
-  `set_channel_config`）经 ConfigManager.set 命中前缀监听器即时热更；手工编辑
+  `set_channel_config`）经 ConfigManager.set_persisted 批量校验和持久化后通知前缀监听器；手工编辑
   channel_config.json 经 ConfigWatcher mtime 轮询 → store diff → `ConfigManager.notify_external`
   上报同一批监听器（无 diff 不重复触发）
 - **频道内部写配置**：一律 `set_channel_config(<id>, field=value)`（登录回填/直播开关等），禁止
   直写文件；频道需要对变更做 diff 应用时覆盖 `_on_config_changed`（参考 acfun/bilibili 委托
   reload_config 的写法）
+
+集合配置保持 JSON 数组/对象类型。一次提交先校验完整的频道模型（含跨字段约束），通过后
+原子写入文件，再发布变更；校验失败不改文件、不发布半份配置。无效的外部文件或运行时热更
+保留上一份有效配置并报告错误，首次启动无有效配置则明确失败。重复注册 schema 同时替换文件
+监听回调，确保文件变更作用于当前存储。
+
+频道启停由 ChannelManager 按频道串行化，重复启动不创建第二条连接。启动取消会清理已分配
+资源并进入 ERROR；主动停止意图先于等待锁登记，看门狗在锁内复核实例与意图，不能把正在
+停止或已经移除的频道重新拉起。停止失败不会注销实例，Web 与同步接口如实返回失败。
 
 ## 会话 scope（agent/messages/everything.py）
 

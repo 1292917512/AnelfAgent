@@ -6,13 +6,15 @@ import json
 import os
 import re
 import threading
+import types
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Annotated, Any, Callable, Dict, List, Optional, Tuple, Union, get_args, get_origin
 
 from core.log import log
 from core.path import ConfigPaths, PathManager
+from core.registration import caller_module, record_mapping
 
 _ENV_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
@@ -114,6 +116,11 @@ class ConfigStore:
         """键是否存在（含覆盖来源）。"""
         raise NotImplementedError
 
+    def update(self, values: Dict[str, Any]) -> None:
+        """写入同批配置；有模型约束的后端应先校验完整候选值。"""
+        for key, value in values.items():
+            self.set(key, value)
+
     def save(self) -> None:
         """持久化到存储介质（须原子写）。"""
         raise NotImplementedError
@@ -150,6 +157,8 @@ class ConfigItem:
     # 基本约束
     enum_options: Optional[List[str]] = None  # 枚举选项
     required: bool = False  # 是否必填
+    nullable: bool = False
+    module: str = ""
     # 展示与交互元数据
     advanced: bool = False  # 高级项（UI 折叠到高级区，基础项直接展示）
     min_value: Optional[float] = None  # RANGE 类型下界
@@ -180,12 +189,21 @@ class ConfigItem:
         """
         expected = self.type_name
         try:
+            if value is None:
+                if self.nullable:
+                    return None
+                raise ValueError("null is not allowed")
             if expected == "boolean":
                 if isinstance(value, bool):
                     return value
                 if isinstance(value, str):
-                    return value.lower() in ("true", "1", "yes")
-                return bool(value)
+                    if value.lower() in ("true", "1", "yes"):
+                        return True
+                    if value.lower() in ("false", "0", "no"):
+                        return False
+                if isinstance(value, int) and value in (0, 1):
+                    return bool(value)
+                raise ValueError("invalid boolean")
             if expected == "integer":
                 return int(value)
             if expected in ("float", "range"):
@@ -195,7 +213,10 @@ class ConfigItem:
                     return int(number)
                 return number
             if expected == "enum":
-                return str(value)
+                result = str(value)
+                if self.enum_options and result not in self.enum_options:
+                    raise ValueError("invalid enum")
+                return result
             if expected == "json":
                 return value
             return value if isinstance(value, str) else str(value)
@@ -249,7 +270,15 @@ class ConfigRegistry:
     @classmethod
     def register(cls, item: ConfigItem) -> None:
         """注册配置项（重复注册更新定义，分组索引不累积重复 key）"""
+        if not item.module:
+            item.module = caller_module()
         with cls._lock:
+            record_mapping(cls._registry, item.key)
+            record_mapping(cls._groups, item.group)
+            previous = cls._registry.get(item.key)
+            if previous is not None and previous.group != item.group:
+                record_mapping(cls._groups, previous.group)
+                cls._groups[previous.group] = [key for key in cls._groups[previous.group] if key != item.key]
             cls._registry[item.key] = item
             keys = cls._groups.setdefault(item.group, [])
             if item.key not in keys:
@@ -264,6 +293,9 @@ class ConfigRegistry:
     def unregister_group(cls, group: str) -> int:
         """注销整个配置组及其全部配置项（模块热拔除时回收），返回移除的配置项数。"""
         with cls._lock:
+            record_mapping(cls._groups, group)
+            for key in cls._groups.get(group, []):
+                record_mapping(cls._registry, key)
             keys = cls._groups.pop(group, [])
             count = 0
             for key in keys:
@@ -365,6 +397,8 @@ class ConfigManager:
             cls._notify_listeners(key, store.get(key))
             return
         with cls._lock:
+            record_mapping(cls._config, key)
+            record_mapping(cls._file_config, key)
             cls._config[key] = cls.resolve_value(key, value)
             cls._file_config[key] = value
         cls._notify_listeners(key, cls.get(key))
@@ -387,9 +421,10 @@ class ConfigManager:
 
         注册即 ``store.load()``；store 管的键不再进入 app_config.json。
         """
-        with cls._lock:
-            cls._stores[prefix] = store
         store.load()
+        with cls._lock:
+            record_mapping(cls._stores, prefix)
+            cls._stores[prefix] = store
 
     @classmethod
     def unregister_store(cls, prefix: str) -> bool:
@@ -400,9 +435,9 @@ class ConfigManager:
     @classmethod
     def _store_for(cls, key: str) -> "Optional[ConfigStore]":
         """按键前缀匹配外部存储后端（未命中返回 None）。"""
-        for prefix, store in cls._stores.items():
+        for prefix in sorted(cls._stores, key=len, reverse=True):
             if key.startswith(prefix):
-                return store
+                return cls._stores[prefix]
         return None
 
     @classmethod
@@ -441,6 +476,9 @@ class ConfigManager:
         回调在锁外同步执行；抛错仅记录日志不影响写入方。
         """
         with cls._lock:
+            target = getattr(callback, "__self__", None)
+            origin = type(target).__module__ if target is not None else callback.__module__
+            record_mapping(cls._listeners, prefix, owner=origin)
             callbacks = cls._listeners.setdefault(prefix, [])
             if callback not in callbacks:
                 callbacks.append(callback)
@@ -505,6 +543,10 @@ class ConfigManager:
         """原子保存同一后端的配置，成功后通知；失败恢复内存并向调用方抛错。"""
         if not values:
             return
+        values = {
+            key: item.clamp(item.coerce_value(value)) if (item := ConfigRegistry.get_item(key)) else value
+            for key, value in values.items()
+        }
         with cls._lock:
             stores = [cls._store_for(key) for key in values]
             store = stores[0]
@@ -512,8 +554,7 @@ class ConfigManager:
                 raise ValueError("一次配置提交必须属于同一存储后端")
             if store is not None:
                 try:
-                    for key, value in values.items():
-                        store.set(key, value)
+                    store.update(values)
                     store.save()
                 except BaseException:
                     store.load()
@@ -697,7 +738,9 @@ def _model_field_type(annotation: Any) -> Tuple[ConfigValueType, Optional[List[s
     origin = typing.get_origin(annotation)
     if origin is typing.Literal:
         return ConfigValueType.ENUM, [str(a) for a in typing.get_args(annotation)]
-    if origin is Union or str(origin) == "types.UnionType":
+    if origin is Annotated:
+        return _model_field_type(get_args(annotation)[0])
+    if origin in (Union, types.UnionType):
         # Optional[X] 解包取第一个非 None 分支
         args = [a for a in typing.get_args(annotation) if a is not type(None)]
         if len(args) == 1:
@@ -708,7 +751,7 @@ def _model_field_type(annotation: Any) -> Tuple[ConfigValueType, Optional[List[s
         return ConfigValueType.INTEGER, None
     if annotation is float:
         return ConfigValueType.FLOAT, None
-    if annotation in (dict, list):
+    if annotation in (dict, list) or get_origin(annotation) in (dict, list, set, tuple):
         return ConfigValueType.JSON, None
     return ConfigValueType.STRING, None
 
@@ -755,6 +798,7 @@ def register_model_configs(
             group=group,
             description=field.description or name,
             default_value=default,
+            nullable=type(None) in get_args(field.annotation),
             value_type=value_type,
             enum_options=options,
             advanced=bool(extras.get("advanced", False)),

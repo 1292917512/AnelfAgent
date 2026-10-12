@@ -19,10 +19,13 @@ def _channel(status: ChannelStatus) -> SimpleNamespace:
 class _FakeManager:
     def __init__(self, channels: Dict[str, SimpleNamespace]) -> None:
         self._channels = channels
-        self.start_channel = AsyncMock(return_value=True)
+        self.restart_channel = AsyncMock(return_value=True)
 
     def list_channels(self) -> Dict[str, SimpleNamespace]:
         return dict(self._channels)
+
+    def should_restart(self, channel_id: str, channel: SimpleNamespace) -> bool:
+        return self._channels.get(channel_id) is channel
 
 
 class TestInspectOnce:
@@ -34,7 +37,7 @@ class TestInspectOnce:
         # 重启经独立后台任务调度（不阻塞巡检循环），需等待任务完成
         assert "qq" in sup._restart_tasks
         await sup._restart_tasks["qq"]
-        mgr.start_channel.assert_awaited_once_with("qq")
+        mgr.restart_channel.assert_awaited_once_with("qq", ch)
 
     async def test_running_channel_resets_fail_count(self) -> None:
         ch = _channel(ChannelStatus.RUNNING)
@@ -43,7 +46,7 @@ class TestInspectOnce:
         sup._fail_counts["qq"] = 3
         await sup._inspect_once()
         assert "qq" not in sup._fail_counts
-        mgr.start_channel.assert_not_awaited()
+        mgr.restart_channel.assert_not_awaited()
 
     async def test_stopped_channel_not_touched(self) -> None:
         """主动停止的频道绝不重启（用户意图优先）。"""
@@ -51,7 +54,7 @@ class TestInspectOnce:
         mgr = _FakeManager({"qq": ch})
         sup = ChannelSupervisor(mgr, interval=999)
         await sup._inspect_once()
-        mgr.start_channel.assert_not_awaited()
+        mgr.restart_channel.assert_not_awaited()
 
     async def test_reconnecting_channel_not_touched(self) -> None:
         """适配器自愈中，看门狗不抢方向盘。"""
@@ -59,7 +62,7 @@ class TestInspectOnce:
         mgr = _FakeManager({"qq": ch})
         sup = ChannelSupervisor(mgr, interval=999)
         await sup._inspect_once()
-        mgr.start_channel.assert_not_awaited()
+        mgr.restart_channel.assert_not_awaited()
 
     async def test_degraded_channel_skipped(self) -> None:
         ch = _channel(ChannelStatus.ERROR)
@@ -67,7 +70,7 @@ class TestInspectOnce:
         sup = ChannelSupervisor(mgr, interval=999)
         sup._degraded.add("qq")
         await sup._inspect_once()
-        mgr.start_channel.assert_not_awaited()
+        mgr.restart_channel.assert_not_awaited()
 
 
 class TestRestartBackoff:
@@ -78,12 +81,12 @@ class TestRestartBackoff:
         sup._fail_counts["qq"] = 3
         await sup._restart_with_backoff("qq", ch)
         assert "qq" in sup._degraded
-        mgr.start_channel.assert_not_awaited()
+        mgr.restart_channel.assert_not_awaited()
 
     async def test_failed_restart_increments_count(self) -> None:
         ch = _channel(ChannelStatus.ERROR)
         mgr = _FakeManager({"qq": ch})
-        mgr.start_channel.return_value = False
+        mgr.restart_channel.return_value = False
         sup = ChannelSupervisor(mgr, interval=999, base_backoff=0)
         await sup._restart_with_backoff("qq", ch)
         assert sup._fail_counts["qq"] == 1
@@ -116,7 +119,7 @@ class TestRestartBackoff:
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(mod.asyncio, "sleep", _sleep)
             await sup._restart_with_backoff("qq", ch)
-        mgr.start_channel.assert_not_awaited()
+        mgr.restart_channel.assert_not_awaited()
 
 
 class TestStatusInfo:

@@ -11,6 +11,7 @@ import os
 from typing import Any, Awaitable, Callable, Dict, List, Tuple
 
 from core.log import log
+from core.registration import belongs_to, record_undo
 
 _LOG_TAG = "音频"
 
@@ -24,6 +25,12 @@ _FETCHERS: List[Dict[str, Any]] = []
 def register_source_fetcher(name: str, fetcher: SourceFetcher, priority: int = 50) -> None:
     """注册音源取回器（同名覆盖；priority 小值优先）。"""
     global _FETCHERS
+    previous = [entry for entry in _FETCHERS if entry["name"] == name]
+    def undo() -> None:
+        unregister_source_fetcher(name)
+        _FETCHERS.extend(previous)
+        _FETCHERS.sort(key=lambda entry: entry["priority"])
+    record_undo(undo, owner=fetcher.__module__)
     _FETCHERS[:] = [f for f in _FETCHERS if f["name"] != name]
     _FETCHERS.append({"name": name, "fetcher": fetcher, "priority": priority})
     _FETCHERS.sort(key=lambda f: f["priority"])
@@ -32,6 +39,11 @@ def register_source_fetcher(name: str, fetcher: SourceFetcher, priority: int = 5
 
 def unregister_source_fetcher(name: str) -> None:
     _FETCHERS[:] = [f for f in _FETCHERS if f["name"] != name]
+
+
+def unregister_source_fetchers_by_module(module: str) -> None:
+    """移除指定模块声明的音源取回器。"""
+    _FETCHERS[:] = [f for f in _FETCHERS if not belongs_to(f["fetcher"].__module__, module)]
 
 
 def list_source_fetchers() -> List[str]:

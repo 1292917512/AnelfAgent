@@ -210,6 +210,12 @@ class ContextProviderRegistry:
     @classmethod
     def register(cls, meta: ProviderMeta) -> None:
         """注册一个上下文提供者（同名覆盖）。"""
+        from core.registration import record_mapping
+
+        owner = type(meta.instance) if meta.instance is not None else meta.provide_fn
+        origin = getattr(owner, "__module__", "")
+        record_mapping(cls._providers, meta.name, owner=origin)
+        record_mapping(cls._call_counts, meta.name, owner=origin)
         cls._providers[meta.name] = meta
         cls._call_counts.setdefault(meta.name, 0)
         log(f"上下文提供者已注册: {meta.name} (priority={meta.priority})", "DEBUG", tag="Provider")
@@ -233,13 +239,10 @@ class ContextProviderRegistry:
             origin = getattr(owner, "__module__", "")
             if origin != module and not origin.startswith(module + "."):
                 continue
-            cls.unregister(meta.name)
             stop = getattr(meta.instance, "on_stop", None)
             if stop is not None:
-                try:
-                    await asyncio.wait_for(stop(), timeout=30.0)
-                except Exception as exc:
-                    log(f"上下文提供者停止失败: {meta.name} - {exc}", "WARNING", tag="Provider")
+                await asyncio.wait_for(stop(), timeout=30.0)
+            cls.unregister(meta.name)
 
     @classmethod
     def get_all(cls) -> List[ProviderMeta]:

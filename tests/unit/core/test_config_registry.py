@@ -15,6 +15,7 @@ from core.config import (
     ConfigItem,
     ConfigManager,
     ConfigRegistry,
+    ConfigStore,
     ConfigValueType,
     mask_secret,
     register_configs_safe,
@@ -152,7 +153,7 @@ class TestConfigListeners:
         assert ConfigManager.get("err_a") == 1
 
 
-class _MemoryStore:
+class _MemoryStore(ConfigStore):
     """ConfigStore 内存替身（协议同名方法即可，无需继承）。"""
 
     def __init__(self) -> None:

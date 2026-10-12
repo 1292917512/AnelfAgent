@@ -23,6 +23,7 @@ import traceback as _tb
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from core.log import log
+from core.registration import record_undo
 
 EventHandler = Callable[[Dict[str, Any]], Awaitable[None]]
 
@@ -85,6 +86,12 @@ class EventBus:
             subs = self._handlers.setdefault(event, [])
             subs.append(sub)
             subs.sort(key=lambda s: s.priority, reverse=True)
+            def undo() -> None:
+                current = self._handlers.get(event, [])
+                self._handlers[event] = [s for s in current if s is not sub]
+                if not self._handlers[event]:
+                    self._handlers.pop(event, None)
+            record_undo(undo, owner=getattr(fn, "__module__", ""))
             return fn
 
         if handler is not None:

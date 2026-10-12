@@ -106,6 +106,8 @@ class ChannelSupervisor:
 
     async def _inspect_once(self) -> None:
         for cid, channel in self._manager.list_channels().items():
+            if not self._manager.should_restart(cid, channel):
+                continue
             status = getattr(channel, "_status", None)
             if status == ChannelStatus.RUNNING:
                 # 健康频道：重置失败计数与降级标记
@@ -162,17 +164,11 @@ class ChannelSupervisor:
         if self._stopping:
             return
         # 退避期间状态可能已被其他路径改变（人工重启/适配器自愈），重新确认
-        if getattr(channel, "_status", None) != ChannelStatus.ERROR:
+        if (getattr(channel, "_status", None) != ChannelStatus.ERROR
+                or not self._manager.should_restart(cid, channel)):
             return
 
-        # 重启前先停掉旧实例：ERROR 状态下可能仍有半启动资源残留
-        # （Telegram 轮询线程/webhook 端口占用），直接 start 会双实例或端口冲突
-        try:
-            await channel.stop()
-        except Exception as exc:
-            log(f"看门狗重启前停止旧实例失败（继续重启）: {cid}: {exc}", "WARNING", tag="看门狗")
-
-        ok = await self._manager.start_channel(cid)
+        ok = await self._manager.restart_channel(cid, channel)
         if ok:
             self._fail_counts.pop(cid, None)
             log(f"频道看门狗重启成功: {cid}", tag="看门狗")

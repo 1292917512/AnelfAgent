@@ -31,6 +31,7 @@ from core.entity import EntityRegistry, EntityType
 from core.event_bus import EVENT_MODULE_ADDED, EVENT_MODULE_REMOVED
 from core.lifecycle import Lifecycle
 from core.log import log
+from core.registration import belongs_to, import_registered_module, registration_transaction
 
 _TAG = "热插拔"
 
@@ -77,15 +78,22 @@ def _snapshot() -> Tuple[Set[str], Set[str]]:
 
 def _record_diff(name: str, before: Tuple[Set[str], Set[str]]) -> None:
     groups, cfg_groups = _snapshot()
-    _entity_groups.setdefault(name, set()).update(groups - before[0])
-    _entity_config_groups.setdefault(name, set()).update(cfg_groups - before[1])
+    prefix = f"entities.{name}"
+    _entity_groups.setdefault(name, set()).update(
+        group for group in groups - before[0] if belongs_to(EntityRegistry.get_group_module(group), prefix)
+    )
+    _entity_config_groups.setdefault(name, set()).update(
+        group for group in cfg_groups - before[1]
+        if all(belongs_to(item.module, prefix) for item in ConfigRegistry.get_group_items(group))
+    )
 
 
 def load_entity(name: str) -> bool:
     """导入单个实体的 tools.py 并记录分组/配置组归属差集，返回是否成功。"""
     before = _snapshot()
+    prefix = f"entities.{name}"
     try:
-        importlib.import_module(f"entities.{name}.tools")
+        import_registered_module(f"{prefix}.tools", owner=prefix)
     except Exception as e:
         log(f"实体加载失败: {name} - {e}", "WARNING", tag=_TAG)
         return False
@@ -93,13 +101,13 @@ def load_entity(name: str) -> bool:
     return True
 
 
-async def register_entity_lifecycle(name: str) -> bool:
+async def register_entity_lifecycle(name: str) -> bool | None:
     """调用实体的 ``register_lifecycle()`` 并记录 Lifecycle 组件差集。
 
     无该函数则跳过；进程已 start_all 时对新增组件立即补执行 on_start。
     """
     if not (_entities_dir() / name / "__init__.py").exists():
-        return False
+        return None
     try:
         mod = importlib.import_module(f"entities.{name}")
     except Exception as e:
@@ -107,30 +115,36 @@ async def register_entity_lifecycle(name: str) -> bool:
         return False
     register = getattr(mod, "register_lifecycle", None)
     if not callable(register):
-        return False
+        return None
     before = {entry["name"] for entry in Lifecycle.snapshot()}
+    before_groups = _snapshot()
     try:
-        result = register()
-        if asyncio.iscoroutine(result):
-            await result
+        with registration_transaction(f"entities.{name}"):
+            result = register()
+            if asyncio.iscoroutine(result):
+                await result
+        added = {entry["name"] for entry in Lifecycle.snapshot()
+                 if belongs_to(entry["module"], f"entities.{name}")} - before
+        _entity_lifecycles.setdefault(name, set()).update(added)
+        _record_diff(name, before_groups)
+        if Lifecycle.started():
+            for entry in Lifecycle.snapshot():
+                if entry["name"] in added and entry["has_on_start"]:
+                    if not await Lifecycle.start_one(entry["name"]):
+                        raise RuntimeError(f"组件 {entry['name']} 启动失败")
     except Exception as e:
         log(f"实体 lifecycle 注册失败: {name} - {e}", "WARNING", tag="实体")
         return False
-    added = {entry["name"] for entry in Lifecycle.snapshot()} - before
-    _entity_lifecycles.setdefault(name, set()).update(added)
-    if Lifecycle.started():
-        for entry in Lifecycle.snapshot():
-            if entry["name"] in added:
-                await Lifecycle.start_one(entry["name"])
     log(f"实体 lifecycle 已注册: {name}", "DEBUG", tag="实体")
     return True
 
 
 async def unload_entity(name: str) -> None:
-    """完整拆除实体：注册表 → 分组 → 配置组 → Lifecycle 组件 → sys.modules → 路由事件。"""
+    """先停止采集与资源，再移除模块声明和路由；清理失败保留句柄供重试。"""
     from core.context_provider import ContextProviderRegistry
     from core.event_bus import event_bus
     from core.latebind import LateBinding
+    from entities._sdk import assert_module_components_idle, unregister_module_components
 
     prefix = f"entities.{name}"
     modules = [mod for key, mod in list(sys.modules.items())
@@ -138,8 +152,14 @@ async def unload_entity(name: str) -> None:
     # 由组合根施绑的端口有进程级消费者，运行期拆除会留下旧引用或名称冲突。
     if any(isinstance(value, LateBinding) for mod in modules for value in vars(mod).values()):
         raise RuntimeError(f"实体 {name} 含进程级端口，移除目录后须重启完成卸载")
-    event_bus.off_by_module(prefix)
+    assert_module_components_idle(prefix)
     await ContextProviderRegistry.unregister_by_module(prefix)
+    owned = _entity_lifecycles.get(name, set())
+    for entry in reversed(Lifecycle.snapshot()):
+        if entry["name"] in owned:
+            if not await Lifecycle.unregister(entry["name"]):
+                raise RuntimeError(f"实体 {name} 组件 {entry['name']} 清理失败，保留注册供重试")
+    event_bus.off_by_module(prefix)
     removed_tools = 0
     for tool_name in _entity_tool_names(name):
         if EntityRegistry.unregister(tool_name):
@@ -151,11 +171,13 @@ async def unload_entity(name: str) -> None:
             EntityRegistry.unregister_group(group)
     for cfg_group in sorted(_entity_config_groups.get(name, set())):
         ConfigRegistry.unregister_group(cfg_group)
-    owned = _entity_lifecycles.get(name, set())
-    for entry in reversed(Lifecycle.snapshot()):
-        if entry["name"] in owned:
-            await Lifecycle.unregister(entry["name"])
     ConfigManager.unregister_by_module(prefix)
+    unregister_module_components(prefix)
+    for entity in EntityRegistry.get_all():
+        if entity.entity_class is not None:
+            origin = entity.entity_class.__module__
+            if origin == prefix or origin.startswith(prefix + "."):
+                EntityRegistry.unregister(entity.name)
 
     for mod_name in [m for m in sys.modules if m == prefix or m.startswith(prefix + ".")]:
         sys.modules.pop(mod_name, None)
@@ -187,12 +209,13 @@ def reload_entity(name: str) -> bool:
     snapshots = [(module, dict(vars(module))) for module in (mod, router) if module is not None]
     before = _snapshot()
     try:
-        if mod is not None:
-            importlib.reload(mod)
-        else:
-            importlib.import_module(module_path)
-        if router is not None:
-            importlib.reload(router)
+        with registration_transaction(f"entities.{name}"):
+            if mod is not None:
+                importlib.reload(mod)
+            else:
+                importlib.import_module(module_path)
+            if router is not None:
+                importlib.reload(router)
     except Exception as e:
         for tool_name in _entity_tool_names(name):
             EntityRegistry.unregister(tool_name)
@@ -258,16 +281,25 @@ async def _sync_entities_locked(reload_existing: bool) -> Dict[str, Any]:
     failed: List[str] = []
 
     for name in sorted(current - _loaded_modules):
-        if load_entity(name):
-            _loaded_modules.add(name)
-            await register_entity_lifecycle(name)
-            _emit(EVENT_MODULE_ADDED, name)
-            added.append(name)
-            log(f"实体已热插入: {name}", tag=_TAG)
-        else:
+        try:
+            if name in _entity_lifecycles:
+                await unload_entity(name)
+            if load_entity(name):
+                if await register_entity_lifecycle(name) is False:
+                    await unload_entity(name)
+                    failed.append(name)
+                    continue
+                _loaded_modules.add(name)
+                _emit(EVENT_MODULE_ADDED, name)
+                added.append(name)
+                log(f"实体已热插入: {name}", tag=_TAG)
+            else:
+                failed.append(name)
+        except Exception as exc:
             failed.append(name)
+            log(f"实体接入失败: {name} - {exc}", "ERROR", tag=_TAG)
 
-    for name in sorted(_loaded_modules - current):
+    for name in sorted((_loaded_modules | set(_entity_lifecycles)) - current):
         try:
             await unload_entity(name)
             removed.append(name)

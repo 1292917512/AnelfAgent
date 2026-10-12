@@ -12,7 +12,7 @@ import platform
 import shutil
 
 from core.log import log
-from entities._sdk import entity, error_from_exception, get_mind, tool
+from entities._sdk import entity, error_from_exception, get_context_usage, tool
 
 # 耦合点：读取文件系统实体的沙箱配置需访问其模块级私有成员
 # （entities 内部允许直接 import 模块级私有成员，集中在此声明）
@@ -275,23 +275,17 @@ def query_logs(keyword: str = "", tag: str = "", level: str = "", limit: int = 2
 def get_context_remaining() -> str:
     """查询当前上下文窗口的剩余 token（无参数）。
 
-    长任务中在决定是否继续读取大文件/大段资料前自查；返回本轮最近一次真实
-    prompt_tokens 与估算用量的差值。数值为参考（不同供应商的计费口径略有差异）。
+    长任务读取大文件前自查。优先使用当前执行最近一次模型输入 token，供应商
+    未报告时使用估算值；后台任务与主会话分别计量。
     """
     try:
-        mind = get_mind()
-        window = mind.get_model_context_length() if mind is not None else 0
+        usage = get_context_usage()
+        window = usage.context_window if usage is not None else 0
         if not window or window <= 0:
             return json.dumps({"tokens_left": None,
                                "message": "当前模型的上下文窗口大小未知。"},
                               ensure_ascii=False)
-        compressor = getattr(mind, "compressor", None)
-        used = 0
-        if compressor is not None:
-            pfc = getattr(mind, "pfc", None)
-            base = getattr(pfc, "base_messages", None) or []
-            chain = getattr(pfc, "tool_chain", None) or []
-            used = compressor.estimate_tokens(list(base) + list(chain))
+        used = usage.tokens_used if usage is not None else 0
         left = max(0, window - int(used))
         return json.dumps({
             "tokens_left": left,

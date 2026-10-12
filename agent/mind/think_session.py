@@ -10,10 +10,23 @@ reply 与 reflect 共用本管理器，避免散落的 bind/reset 样板代码�
 from __future__ import annotations
 
 from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Iterator
 
 if TYPE_CHECKING:
     from agent.mind.mind import Mind
+
+
+@dataclass(frozen=True)
+class ContextUsage:
+    """当前执行的窗口与最近一次模型输入用量。"""
+
+    context_window: int
+    tokens_used: int
+
+
+current_context_usage: ContextVar[ContextUsage | None] = ContextVar("context_usage", default=None)
 
 
 @contextmanager
@@ -37,10 +50,12 @@ def think_session(
     from agent.security.session_token import bind_token, generate_token, reset_token
 
     scope_token = bind_scope(scope)
+    usage_token = current_context_usage.set(None)
     token_ctx = bind_token(generate_token()) if with_token else None
     try:
         yield scope
     finally:
+        current_context_usage.reset(usage_token)
         # 会话收尾：消耗一轮激活周期 → 复位绑定 → 清理动态工具
         tool_activation.consume_round(scope)
         reset_scope(scope_token)
