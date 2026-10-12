@@ -17,6 +17,14 @@ class MinecraftConfig(ChannelConfig):
         description="允许交互的玩家名，空列表表示本服全部玩家",
         json_schema_extra={"value_type": "json"},
     )
+    owner_player: str = Field(
+        default="",
+        description="Minecraft 世界房主名称；为空时不强行猜测房主",
+    )
+    auto_authorize_online_players: bool = Field(
+        default=False,
+        description="是否允许当前服务器在线玩家直接触发陪玩；关闭时仅房主和 allowed_players 生效",
+    )
     require_mention: bool = Field(
         default=False,
         description="公共聊天需要 @机器人才回应；陪玩建议关闭（玩家说话即唤醒）",
@@ -42,6 +50,31 @@ class MinecraftConfig(ChannelConfig):
     auto_connect: bool = Field(
         default=False,
         description="发现局域网世界且 bot 未连接时自动进服待命（进服会短暂占用游戏，发生在开世界时而非对话中途）",
+    )
+    autonomous_worker: bool = Field(
+        default=True,
+        description=(
+            "进服即自动开工：执行器确定性循环采集并按组向模型汇报，模型只裁决继续/停止；"
+            "玩家对话不打断作业，!stop 暂停、!resume 恢复。关闭时回退自主生活方式"
+        ),
+    )
+    worker_item: str = Field(
+        default="dirt",
+        pattern=r"^[a-z0-9_]{1,32}$",
+        description="自主作业的采集目标（执行器支持的资源名：dirt、cobblestone、各类原木等）",
+    )
+    worker_stack_size: int = Field(
+        default=64,
+        ge=1,
+        le=64,
+        description="每组汇报数量：每完成一组向模型汇报一次；执行器单任务时间预算可能提前结束一组，按实际入包数汇报",
+    )
+    worker_poll_seconds: float = Field(
+        default=3.0,
+        ge=1.0,
+        le=30.0,
+        description="自主作业进度轮询间隔",
+        json_schema_extra={"unit": "s", "min": 1, "max": 30, "advanced": True},
     )
     autonomous_lifestyle: bool = Field(
         default=True,
