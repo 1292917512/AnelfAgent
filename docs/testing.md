@@ -15,6 +15,11 @@
 目录归属由仓库根 `conftest.py` 自动打 `unit`/`integration` marker（模块内 tests/ 自动 unit）。
 根 conftest 全局隔离 ConfigManager（指向 tmp_path），**新测试不得读写真实 `config/`**。
 
+模块自带浏览器测试放在 `panels/e2e/` 或 `frontend/e2e/`，使用 `*.spec.mts` 显式声明 ESM。
+这些目录不在 `web/frontend/package.json` 的模块类型边界内，`.ts` 会被按 CommonJS 加载；
+与核心测试共同加载共享 fixture 时会出现命名导出错误。提交模块浏览器测试前需运行完整
+`npm run test:e2e`，单文件运行不能覆盖这种跨模块加载冲突。
+
 ```powershell
 uv run pytest                          # 全量
 uv run pytest tests/unit               # 分层单测
