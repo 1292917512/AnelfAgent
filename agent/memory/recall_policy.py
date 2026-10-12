@@ -97,10 +97,12 @@ def recall_options(policy: RecallPolicy) -> Iterator[None]:
 
 
 @asynccontextmanager
-async def recall_turn(scope: str, policy: RecallPolicy | None = None) -> AsyncIterator[RecallTurn]:
-    """持有单轮策略，结束时取消未完成的召回并清空动态结果。"""
+async def recall_turn(
+    scope: str, policy: RecallPolicy | None = None, *, default_policy: RecallPolicy | None = None,
+) -> AsyncIterator[RecallTurn]:
+    """按消息、SDK、入口默认、全局顺序选择策略，结束时回收本轮召回。"""
     from .probe import deep_probe_hub
-    state = RecallTurn(scope, policy or _override.get() or default_recall_policy())
+    state = RecallTurn(scope, policy or _override.get() or default_policy or default_recall_policy())
     token = _turn.set(state)
     probe = deep_probe_hub.begin_reply(scope, managed=True)
     try:

@@ -8,6 +8,7 @@ Cache effect: 经 channel_policy 尾部层注入，实时任务事实仍留在�
 from collections.abc import Sequence
 
 from agent.channel.reply_policy import ReplyPolicy, ReplyToolResult
+from agent.memory.recall_policy import RecallPolicy
 from core.entity import EntityRegistry, EntityType
 
 from .receipts import handed_to_game_events
@@ -52,8 +53,7 @@ def companion_policy(server: str) -> ReplyPolicy:
         direct_reply=True,
         tool_groups=(f"mcp:{server}",),
         initial_tools=COMPANION_DIALOGUE_TOOLS + initial_game_tools,
-        lean_context=True,
-        auto_send_text=True,
+        recall_policy=RecallPolicy(level="off", background=False),
         handoff_to_events=lambda results: handed_to_game_events(canonical_results(results)),
         instructions=(
             "[Minecraft 陪玩执行契约]\n"

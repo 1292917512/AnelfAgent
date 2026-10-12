@@ -1,8 +1,8 @@
 """频道声明的回复入口、工具分组和操作规则。
 
-Model Experience: 运行中频道声明入口工具与规则。
-Token effect: 精简目录省去无关 schema。
-Cache effect: 规则放在历史后的 channel_policy 层，精简目录仅随本 scope 显式发现扩展。
+Model Experience: 运行中频道声明入口工具、规则与默认召回强度；消息和 SDK 可覆盖召回。
+Token effect: 精简目录与按需召回减少无关 schema 和记忆，手动发现与召回仍可用。
+Cache effect: 规则放在历史后的 channel_policy 层，召回策略不改写 stable 前缀。
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from agent.channel.manager import ChannelManager
+    from agent.memory.recall_policy import RecallPolicy
 
 
 @dataclass(frozen=True)
@@ -32,11 +33,7 @@ class ReplyPolicy:
     instructions: str = ""
     # None 沿用全局目录；显式名单只自动注入这些工具，仍允许本会话发现/激活。
     initial_tools: tuple[str, ...] | None = None
-    # Use the lightweight context for channels that obtain live state through tools.
-    # It keeps permanent memory while skipping generic recall/profile injections.
-    lean_context: bool = False
-    # Deliver a short plain-text result immediately for latency-sensitive channels.
-    auto_send_text: bool = False
+    recall_policy: RecallPolicy | None = None
     handoff_to_events: Callable[[Sequence[ReplyToolResult]], bool] | None = None
 
 

@@ -1,8 +1,10 @@
 """动态执行事实的隔离、通知消费和缓存前缀纪律。"""
 
 from copy import deepcopy
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
+import pytest
 from helpers.think_loop_fakes import FakeMind, run_think_loop, tool_result
 
 from agent.mind.background_tasks import BackgroundTaskRegistry
@@ -11,6 +13,40 @@ from agent.mind.message_schema import normalize_for_send
 from agent.mind.runtime_context import background_context
 from agent.mind.tool_activation import bind_scope, reset_scope
 from agent.mind.tools.think_loop import ThinkMode
+
+
+@pytest.mark.parametrize("running", [True, False])
+async def test_reply_entry_applies_only_running_channel_recall_default(monkeypatch, running):
+    from agent.channel.channel_types import ChannelStatus
+    from agent.channel.reply_policy import ReplyPolicy
+    from agent.memory.recall_policy import RecallPolicy, current_recall_policy, default_recall_policy, has_recall_turn
+    from agent.messages.everything import Everything
+    from agent.mind.tools.think_loop import reply_loop
+
+    anything = Everything(adapter_key="game", uid=1, text_content="检查附近状态")
+    scope = anything.entity_scope
+    policy = RecallPolicy(level="off", background=False)
+    channel = SimpleNamespace(status=ChannelStatus.RUNNING if running else ChannelStatus.STOPPED,
+                              reply_policy=ReplyPolicy(recall_policy=policy))
+    manager = SimpleNamespace(get=lambda key: channel if key == "game" else None)
+    monkeypatch.setattr("agent.channel.manager.get_channel_manager", lambda: manager)
+    expected = policy if running else default_recall_policy()
+    async def collect(**kwargs):
+        assert current_recall_policy(scope) == expected
+        return [{"role": "system", "content": "固定前缀"}]
+    async def execute(*args, **kwargs):
+        assert current_recall_policy(scope) == expected
+        assert kwargs["base_messages"] == [{"role": "system", "content": "固定前缀"}]
+    loop = AsyncMock(side_effect=execute)
+    monkeypatch.setattr("agent.mind.tools.think_loop.think_loop", loop)
+    mind = SimpleNamespace(_get_mind_config=lambda: SimpleNamespace(max_tool_iterations=5),
+                           _resolve_entity_scope=lambda anything: anything.entity_scope,
+                           get_recollection=AsyncMock(side_effect=collect),
+                           pfc=SimpleNamespace(get_active_tool_schemas=AsyncMock(return_value=[]),
+                                               consume_scope_task=Mock(), clear_dynamic_tools=Mock()))
+    await reply_loop(mind, anything, adapter_key="game")
+    loop.assert_awaited_once()
+    assert not has_recall_turn(scope)
 
 
 def test_background_summary_is_bounded_and_scope_local():

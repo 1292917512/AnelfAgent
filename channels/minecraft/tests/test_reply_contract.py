@@ -5,6 +5,7 @@ import re
 import pytest
 
 from agent.channel.reply_policy import ReplyToolResult
+from agent.memory.recall_policy import RecallPolicy
 from channels.minecraft.reply_policy import COMPANION_GAME_TOOLS, COMPANION_INITIAL_GAME_TOOLS, companion_policy
 from channels.minecraft.scripts.check_minecraft import _REQUIRED_TOOLS
 from channels.minecraft.scripts.minecraft_contract import END, SKILL_PATH, START, render_contract
@@ -24,6 +25,7 @@ def test_policy_game_tools_are_checked_against_live_registry() -> None:
     assert tools <= _REQUIRED_TOOLS
     assert set(COMPANION_INITIAL_GAME_TOOLS) <= _REQUIRED_TOOLS
     assert companion_policy("custom-server").tool_groups == ("mcp:custom-server",)
+    assert companion_policy("custom-server").recall_policy == RecallPolicy(level="off", background=False)
 
 
 def test_policy_uses_only_its_server_registered_game_names(monkeypatch: pytest.MonkeyPatch) -> None:

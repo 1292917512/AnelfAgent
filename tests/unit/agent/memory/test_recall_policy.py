@@ -10,10 +10,44 @@ from agent.memory.recall_fast import recall_local
 from agent.memory.recall_policy import (
     RecallPolicy,
     current_recall_policy,
+    default_recall_policy,
     recall_options,
     recall_turn,
     set_turn_recall_policy,
 )
+
+
+@pytest.mark.asyncio
+async def test_entry_default_yields_to_explicit_and_sdk_policy():
+    channel = RecallPolicy(level="off", background=False)
+    sdk = RecallPolicy(level="fast")
+    message = RecallPolicy(level="tags", tags=("project:test",))
+    async with recall_turn("user_minecraft:1", default_policy=channel):
+        assert current_recall_policy("user_minecraft:1") == channel
+    with recall_options(sdk):
+        async with recall_turn("user_minecraft:1", default_policy=channel):
+            assert current_recall_policy("user_minecraft:1") == sdk
+        async with recall_turn("user_minecraft:1", message, default_policy=channel):
+            assert current_recall_policy("user_minecraft:1") == message
+    async with recall_turn("user_qq:1"):
+        assert current_recall_policy("user_qq:1") == default_recall_policy()
+
+
+@pytest.mark.asyncio
+async def test_channel_default_is_scoped_and_can_be_changed_during_turn():
+    ready = asyncio.Event()
+    async def game():
+        async with recall_turn("user_minecraft:1", default_policy=RecallPolicy(level="off", background=False)):
+            ready.set()
+            await asyncio.sleep(.02)
+            assert current_recall_policy("user_minecraft:1").level == "off"
+            set_turn_recall_policy(RecallPolicy(level="fast"), "user_minecraft:1")
+            assert current_recall_policy("user_minecraft:1").level == "fast"
+    async def chat():
+        await ready.wait()
+        async with recall_turn("user_qq:1"):
+            assert current_recall_policy("user_qq:1") == default_recall_policy()
+    await asyncio.gather(game(), chat())
 
 
 @pytest.mark.asyncio
