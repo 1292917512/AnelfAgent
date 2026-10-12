@@ -190,6 +190,11 @@ exec_context 本轮执行状态（每轮全量重建）
 （`agent/hooks`，同步阻塞守门，见[运维分册](operations.md)）分层——本面是**异步并行扩员**：
 同一事件可挂多个钩子：mode=async 默认后台执行，mode=sync 按优先级等待。
 LLM 钩子不设整体时间截止；单次模型/工具 I/O 仍走各自超时与重试。AI 经动态尾部获知排队、调用、耗时和最近进展，使用 check_background_tasks / terminate_background_task 检查及取消。同步模式不使用防抖延迟。
+`stall_seconds` 控制无进展提醒（0 关闭），一次停滞仅提醒一次，有新进展后重新计时，不终止任务。
+后台查询返回 `notification`：always 完成通知、on_result 有产出或失败通知、on_failure 仅失败通知、silent 不通知。
+通知属于 AI 内部事实，唤醒仍受路由和预算约束；频道回复必须显式发送。内部钩子不参与主回复的自动等待。
+`check_background_tasks(task_id, after_sequence)` 可读取脱敏操作证据；每任务保留最近 32 个事件，返回游标、截断和淘汰标记。
+动态尾部只保留最近五分钟内的钩子终态摘要，历史仍可按任务查询；模型观察不会消费完成通知。
 技能评审保持异步。事件订阅将超时治理交给钩子宿主，避免总线默认 5 秒提前取消。
 快照在调度时冻结，后台队列有界；执行模式和结果共用 core/hooks 观测。
 
@@ -199,7 +204,7 @@ LLM 钩子不设整体时间截止；单次模型/工具 I/O 仍走各自超时�
 | 钩子注册表与装饰器 | `agent/hooks_llm/spec.py`（`LLMHookSpec` / `HookRegistry` / `@llm_hook`） | 声明式注册：event（白名单 after_reply/context_pressure/delegation_resolved/llm_end）+ 上下文档位（none/lean/transcript）+ `when` 条件门控 + 治理参数（max_concurrent/cooldown/debounce/priority/model/tool_tags）+ owner/source 归属。**llm_end 是高频事件**：装饰器与 _sdk 桥都强制最小冷却 `LLM_END_MIN_COOLDOWN_SECONDS`（20s），防成本失控 |
 | llm_end 快照源 | `agent/mind/llm_invoker.py`（EVENT_THINKING_LLM_END payload 增 `messages/tools`） | 保留本次调用消息的缓存分层与工具目录；scope 从触发会话解析。tracer 剔除 messages/tools，不复制完整上下文到诊断记录 |
 | 上下文快照与护栏 | `agent/hooks_llm/snapshot.py` | 完整深拷贝消息、嵌套工具调用与结果，不按字符截去执行证据；保留 `_layer/_source` 至最终发送边界。transcript 受总开关门控，context 可选择 transcript / lean / none；模型窗口溢出仍交给统一压缩器 |
-| 并行执行与治理 | `executor.py`（dispatch 后台调度 + `_RecursionGuard` 防递归 + per-hook/per-scope cooldown/debounce + 全局池 semaphore）+ `runtime.py` + `configs.py`（`hooks_llm/*` 组） | 异步扩员：emit 方不被钩子 LLM 阻塞；防递归（钩子执行树 ContextVar 标 origin，跨 create_task 拦截派生事件）；并发（全局池默认 2 + per-hook 默认 1）；频控（cooldown 锚点在调度受理时同步记录；debounce 用 call_later 句柄 + 最新快照槽）；路由（route_output 默认 True 走 unclaimed→wake_budget 通道唤醒主思维；False 内部治理类钩子以 claimed 完成）。runtime 经 LateBinding 由 bootstrap 实例化、注册为 Lifecycle 组件——关停 drain（先停订阅，再等运行中钩子收尾，超时才取消） |
+| 并行执行与治理 | `executor.py`（dispatch 后台调度 + `_RecursionGuard` 防递归 + per-hook/per-scope cooldown/debounce + 全局池 semaphore）+ `runtime.py` + `configs.py`（`hooks_llm/*` 组） | 异步扩员：emit 方不被钩子 LLM 阻塞；防递归（钩子执行树 ContextVar 标 origin，跨 create_task 拦截派生事件）；并发（全局池默认 2 + per-hook 默认 1）；频控（cooldown 锚点在调度受理时同步记录；debounce 用 call_later 句柄 + 最新快照槽）；路由（route_output 默认 True 走 unclaimed→wake_budget 通道唤醒主思维；False 内部治理类钩子成功静默、失败通知 AI）。runtime 经 LateBinding 由 bootstrap 实例化、注册为 Lifecycle 组件——关停 drain（先停订阅，再等运行中钩子收尾，超时才取消） |
 | 技能后台评审 | `agent/skills/background_review.py`（`skill_review` 钩子） | event=after_reply + context=transcript + tool_tags=["skills"] + route_output=False + 6 轮上限；评审材料为完整 transcript + 四问框架 |
 | 任务事件触发 | `agent/task/event_trigger.py` + `agent/heartbeat/engine.py::_sync_event_triggers` + `agent/task/tools.py` | 任务的第五种触发方式（与 heartbeat/scheduled/idle/manual 正交）：带 trigger_event 的任务经钩子面注册 `task_event:<name>` 钩子（context=none），命中后调 `HeartbeatEngine.run_task`（复用 inflight 去重与执行历史落盘）；任务 CRUD 经 reload 即时重建、无孤儿钩子 |
 | 实体桥接 | `entities/_sdk.py::register_entity_llm_hook` | 实体经 _sdk 桥注册钩子（owner 缺省取实体模块名）；entities→agent 唯一豁免通道同 push_notify 模板 |

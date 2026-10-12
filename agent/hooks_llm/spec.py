@@ -76,8 +76,8 @@ class LLMHookSpec:
     """是否放开外发工具（默认禁止，内部派生语义）。"""
     route_output: bool = True
     """产出路由：True=登记后台任务完成并经 unclaimed→wake_budget 通道唤醒
-    主思维跟进处理；False=仅留完成记录（claimed 语义）供观测、不唤醒——
-    内部治理类钩子（产出是自省报告、无需主思维跟进）用 False。"""
+    主思维跟进处理；False=成功时仅留记录，失败仍通知 AI。
+    通知是内部执行事实，不会自动向频道用户发送正文。"""
     max_iterations: int = 6
     """reflect 轮次预算。"""
     model: str = ""
@@ -86,6 +86,8 @@ class LLMHookSpec:
     """该钩子的并发上限（同一钩子自身的并行实例数）。"""
     cooldown_seconds: float = 0.0
     """per-hook per-scope 最小触发间隔（防抖/限频）。"""
+    stall_seconds: float = 180.0
+    """连续无进展的提醒阈值，0 关闭；提醒不终止执行。"""
     debounce_seconds: float = 0.0
     """同 scope 高频触发合并窗口（取窗口内最后一次快照）。"""
     priority: int = 50
@@ -257,6 +259,7 @@ def llm_hook(
     model: str = "",
     max_concurrent: int = 1,
     cooldown_seconds: float = 0.0,
+    stall_seconds: float = 180.0,
     debounce_seconds: float = 0.0,
     priority: int = 50,
     owner: str = "",
@@ -299,6 +302,7 @@ def llm_hook(
             max_iterations=max_iterations, model=model,
             max_concurrent=max(1, max_concurrent),
             cooldown_seconds=max(0.0, cooldown_seconds),
+            stall_seconds=max(0.0, stall_seconds),
             debounce_seconds=max(0.0, debounce_seconds),
             priority=priority, owner=owner, description=description, source=source,
             enabled=enabled, config_key=config_key,

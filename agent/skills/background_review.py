@@ -2,16 +2,18 @@
 
 默认继承完整消息链及工具目录，评审指令与候选事实追加在尾部，
 保留稳定前缀的缓存机会。模型切换或工具目录变化仍可能降低缓存命中。
+仅依据本轮操作事实筛选评审，纯问答默认不启动模型；阈值可由 AI/Web 调整。
 同会话冷却限制触发频率；单钩子并发为 1，执行队列由钩子宿主管理。
 评审禁止对外发送消息，产出只用于观测，成功完成不唤醒新回复。
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from agent.hooks_llm import HookContext, HookRegistry, llm_hook
 from agent.skills.skill_index import SkillIndex
 from agent.skills.skill_store import SkillStore
+from core.config import get_config_int
 from core.log import log
 
 if TYPE_CHECKING:
@@ -67,6 +69,22 @@ _MIN_TRANSCRIPT_MESSAGES = 2
 # 同会话评审最小触发间隔，不限制单次执行时长
 _DEFAULT_COOLDOWN_SECONDS = 120.0
 
+_CONTROL_TOOLS = frozenset({"end_reply", "send_message", "send_file", "present_plan", "update_goal",
+                            "check_background_tasks", "list_entity_methods", "activate_tool_group",
+                            "deactivate_tool_group"})
+
+
+def needs_review(payload: dict[str, Any]) -> bool:
+    """按本轮操作量、失败证据和技能使用筛选材料，不判断经验是否值得写入。"""
+    messages = payload.get("messages")
+    if payload.get("error") or not isinstance(messages, list) or len(messages) < _MIN_TRANSCRIPT_MESSAGES:
+        return False
+    minimum = max(0, get_config_int("skills_review_min_operations", 3))
+    operations = [item for item in payload.get("executed_tools", [])
+                  if isinstance(item, dict) and item.get("name") not in _CONTROL_TOOLS]
+    return (len(operations) >= minimum or any(item.get("success") is False for item in operations)
+            or any(item.get("name") == "get_skill" for item in operations))
+
 
 class SkillReviewer:
     """技能后台评审器：经钩子面注册评审钩子，继承完整上下文异步评审。"""
@@ -98,22 +116,15 @@ class SkillReviewer:
         """注册 skill_review 钩子（transcript 档位 + 条件门控）。"""
         reviewer = self
 
-        def _when(payload: dict) -> bool:
-            # 无错误 + transcript 快照带出真实消息链才评审
-            if payload.get("error"):
-                return False
-            messages = payload.get("messages")
-            return isinstance(messages, list) and len(messages) >= _MIN_TRANSCRIPT_MESSAGES
-
         @llm_hook(
             _HOOK_NAME, event="after_reply", context="transcript",
-            when=_when, tool_tags=["skills"], allow_output_tools=False,
+            when=needs_review, tool_tags=["skills"], allow_output_tools=False,
             route_output=False,
             max_iterations=6, max_concurrent=1,
             cooldown_seconds=_DEFAULT_COOLDOWN_SECONDS,
             owner=_HOOK_OWNER, source="code",
             config_key="skills_review_enabled",
-            description="每轮对话后评审执行过程，自主决策技能沉淀/合并/治理",
+            description="按本轮操作证据评审执行过程，自主决策技能沉淀/合并/治理",
         )
         async def _skill_review_hook(ctx: HookContext) -> Optional[str]:
             return await reviewer._run(ctx)

@@ -192,10 +192,13 @@ class TestReflectPhaseReset:
         assert mind.phase is MindPhase.IDLE
 
     @pytest.mark.parametrize("needs_skill_tool", [False, True])
-    async def test_inherited_directory_keeps_order_and_required_tools(self, needs_skill_tool: bool) -> None:
+    async def test_inherited_directory_keeps_order_and_required_tools(self, needs_skill_tool: bool, monkeypatch) -> None:
         mind = _bare_mind()
         self._wire_reflect_fakes(mind)
         inherited = [{"type": "function", "function": {"name": name}} for name in ("send_message", "end_reply")]
+        from core.entity import EntityRegistry
+        monkeypatch.setattr(EntityRegistry, "get_active_tools", AsyncMock(return_value=[SimpleNamespace(name=name) for name in ("send_message", "end_reply")]))
+        monkeypatch.setattr(EntityRegistry, "get_tool_schema_by_names", lambda names: inherited)
         selected = [{"type": "function", "function": {"name": "end_reply"}}]
         if needs_skill_tool:
             selected.append({"type": "function", "function": {"name": "get_skill"}})

@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+from unittest.mock import AsyncMock
+
 from helpers.think_loop_fakes import FakeMind, run_think_loop, text_result, tool_result
 
 from agent.llm.prompt_cache import count_breakpoints, decorate_messages
@@ -30,6 +33,31 @@ def _loop_mind() -> FakeMind:
 
 
 class TestThinkLoopChainBreakpoint:
+    async def test_reflect_refresh_preserves_inherited_directory_across_rounds(self, monkeypatch):
+        from agent.mind.tools.think_loop import ThinkMode
+        from core.entity import EntityRegistry
+        for name in ("cache_parent", "cache_added"):
+            EntityRegistry.register_tool(name=name, func=lambda: "ok", group="cache_test")
+        try:
+            initial = EntityRegistry.get_tool_schema_by_names(["cache_parent"])
+            selected = EntityRegistry.get_tool_schema_by_names(["cache_added"])
+            mind = FakeMind(rounds=[tool_result("", ["recall"]), tool_result("", ["end_reply"])])
+            mind.pfc.tools_version = 0
+            monkeypatch.setattr(mind.pfc, "get_active_tool_schemas", AsyncMock(return_value=selected))
+            original_invoke = mind._invoke_llm_unified
+            catalogs = []
+            async def invoke(messages, tools, *args, **kwargs):
+                catalogs.append(deepcopy(tools))
+                mind.pfc.tools_version += 1
+                return await original_invoke(messages, tools, *args, **kwargs)
+            monkeypatch.setattr(mind, "_invoke_llm_unified", invoke)
+            await run_think_loop(mind, mode=ThinkMode.REFLECT, tools=initial)
+            assert catalogs[0] == initial
+            assert catalogs[1] == initial + selected
+        finally:
+            for name in ("cache_parent", "cache_added"):
+                EntityRegistry.unregister(name)
+
     async def test_async_recall_changes_only_uncached_tail(self, monkeypatch) -> None:
         text = ""
         monkeypatch.setattr(ContextProviderRegistry, "_providers", {})

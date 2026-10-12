@@ -317,7 +317,7 @@ _PROMPT_TASKS_STILL_RUNNING = (
     "[系统提示] 你等待的后台任务仍未完成（运行中：{tasks}）。\n"
     "请选择：\n"
     "1. 调用 check_background_tasks 查看最新进度\n"
-    "2. 调用 end_reply 结束本轮（任务完成时系统会自动通知你并触发新一轮回复）\n"
+    "2. 确认任务的 notification 策略后调用 end_reply 结束本轮；静默完成不会自动续轮\n"
     "3. 继续处理其他事务"
 )
 
@@ -471,14 +471,19 @@ async def _run_think_rounds(
         if cur_tools_version != last_tools_version:
             last_tools_version = cur_tools_version
             if mode is ThinkMode.REFLECT and ctx.reflect_tool_selectors:
-                ctx.active_tools = await mind.pfc.get_reflect_tool_schemas(
+                selected_tools = await mind.pfc.get_reflect_tool_schemas(
                     ctx.adapter_key, scope=ctx.current_scope,
                     selectors=list(ctx.reflect_tool_selectors),
                 )
             else:
-                ctx.active_tools = await mind.pfc.get_active_tool_schemas(
+                selected_tools = await mind.pfc.get_active_tool_schemas(
                     ctx.adapter_key, scope=ctx.current_scope,
                 )
+            if mode is ThinkMode.REFLECT:
+                from agent.mind.tool_assembly import inherit_tool_catalog
+                ctx.active_tools = await inherit_tool_catalog(ctx.active_tools, selected_tools, scope=ctx.current_scope)
+            else:
+                ctx.active_tools = selected_tools
             log(f"工具集版本变化，重建 active_tools: {len(ctx.active_tools)} 个", "DEBUG", tag="思维")
 
         await event_bus.emit(EVENT_THINKING_REPLY_ROUND, {
@@ -947,7 +952,7 @@ async def _handle_text_only_round(
         bg = ctx.background
         running_bg: List[BackgroundTaskInfo] = []
         if ctx.mode == ThinkMode.REPLY and ctx.anything and bg is not None:
-            running_bg = bg.running(ctx.current_scope)
+            running_bg = bg.running(ctx.current_scope, joinable_only=True)
 
         if bg is not None and ctx.anything is not None and running_bg and state.wait_budget > 0:
             # 等待挂起：后台任务运行中时的纯文本一律视为等待——挂起会合
@@ -1662,14 +1667,10 @@ async def execute_one_tool(
     })
     log(f"执行工具: {tc.name}", tag="思维")
 
-    # 工具执行前统一检查规则与 AI 评审
-    denied = await check_tool_permission(tc, anything, tool_scope, mind)
-    if denied is not None:
-        return denied
-
     t0 = time.time()
     try:
-        result = await mind.tool_executor(tc)  # type: ignore[misc]
+        denied = await check_tool_permission(tc, anything, tool_scope, mind)
+        result = denied if denied is not None else await mind.tool_executor(tc)  # type: ignore[misc]
         from core.tool_results import extract_error_text
         result_error = extract_error_text(result)
         elapsed_ms = (time.time() - t0) * 1000
@@ -1686,6 +1687,8 @@ async def execute_one_tool(
             "error": result_error,
             "success": not bool(result_error),
         })
+        if denied is not None:
+            return denied
         # 用户 hook（tool_post）：fire 型事件，阻塞语义对工具结果无意义，
         # 只投递预览（记录/通知类脚本的挂点）。空配置零开销短路
         from agent.hooks import hooks_active, run_event_hooks

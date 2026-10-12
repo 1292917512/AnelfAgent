@@ -95,3 +95,33 @@ async def test_reply_exception_is_reported_without_automatic_channel_delivery(an
     deliver_mock.assert_not_awaited()
     assert done.await_args.kwargs["error"] is True
     assert "工具不可用" in done.await_args.args[2]
+
+
+async def test_skill_review_evidence_only_counts_current_round(anything):
+    from agent.skills.background_review import needs_review
+    from core.event_bus import EVENT_AFTER_REPLY, event_bus
+    events = []
+    async def collect(payload):
+        events.append(payload)
+    event_bus.on(EVENT_AFTER_REPLY, collect, owner="test-review-evidence")
+    history = [{"role": "assistant", "tool_calls": [
+        {"id": f"old-{i}", "function": {"name": "read_file", "arguments": "{}"}} for i in range(5)
+    ]}, *[{"role": "tool", "tool_call_id": f"old-{i}", "content": "ok"} for i in range(5)]]
+    mind = FakeMind(rounds=[tool_result("", ["end_reply"])])
+    try:
+        await run_think_loop(mind, anything=anything, base_messages=history)
+    finally:
+        event_bus.off_by_owner("test-review-evidence")
+    assert events
+    assert all(item["name"] != "read_file" for item in events[-1]["executed_tools"])
+    assert not needs_review(events[-1])
+
+
+def test_old_hook_results_leave_dynamic_tail_but_remain_queryable(monkeypatch):
+    registry = BackgroundTaskRegistry()
+    task_id = registry.register("user_qq:1", "llm_hook", "review")
+    registry.complete(task_id, False, "old failure")
+    finished = registry.completed("user_qq:1")[0].finished_at
+    monkeypatch.setattr("agent.mind.runtime_context.time.time", lambda: finished + 301)
+    assert background_context(registry, "user_qq:1") == ""
+    assert registry.read_task_output("user_qq:1", task_id)["summary"] == "old failure"

@@ -43,7 +43,8 @@ class TestErrorFromException:
     def test_timeout(self) -> None:
         payload = _parse(error_from_exception(TimeoutError("timed out"), action="请求接口"))
         assert payload["cause"] == "timeout"
-        assert payload["retryable"] is True
+        assert payload["retryable"] is False
+        assert payload["outcome"] == "unknown"
         assert payload["error"].startswith("请求接口失败")
 
     def test_asyncio_timeout(self) -> None:
@@ -56,7 +57,7 @@ class TestErrorFromException:
 
         payload = _parse(error_from_exception(ConnectTimeout("pool timeout")))
         assert payload["cause"] == "timeout"
-        assert payload["retryable"] is True
+        assert payload["retryable"] is False
 
     def test_permission(self) -> None:
         payload = _parse(error_from_exception(PermissionError("/root/secret"), action="读取文件"))
@@ -76,7 +77,13 @@ class TestErrorFromException:
     def test_connection_error(self) -> None:
         payload = _parse(error_from_exception(ConnectionRefusedError("refused"), action="请求 https://a.b"))
         assert payload["cause"] == "network"
-        assert payload["retryable"] is True
+        assert payload["retryable"] is False
+
+    def test_declared_safe_retry_preserves_uncertain_outcome(self) -> None:
+        for exc in (TimeoutError(), ConnectionResetError()):
+            payload = _parse(error_from_exception(exc, retry_safe=True))
+            assert payload["retryable"] is True
+            assert payload["outcome"] == "unknown"
 
     def test_value_error_is_param(self) -> None:
         payload = _parse(error_from_exception(ValueError("bad value")))

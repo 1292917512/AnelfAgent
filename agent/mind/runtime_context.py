@@ -14,7 +14,8 @@ def background_context(registry: BackgroundTaskRegistry | None, scope: str) -> s
     if registry is None or not scope:
         return ""
     tasks = registry.running(scope)
-    recent = [result for result in registry.completed(scope) if result.kind == "llm_hook"][-3:]
+    recent = [result for result in registry.completed(scope)
+              if result.kind == "llm_hook" and time.time() - result.finished_at < 300][-3:]
     if not tasks and not recent:
         return ""
     lines = [f"[后台任务] 当前会话 {len(tasks)} 项运行中；受理不代表完成，勿重复启动。"]
@@ -26,6 +27,7 @@ def background_context(registry: BackgroundTaskRegistry | None, scope: str) -> s
         progress = registry.progress(task.task_id)
         phase = str(progress.get("phase", "running"))
         labels += tag_label("status", phase)
+        labels += tag_label("notification", task.notification.value)
         if task.task_id == own_id:
             labels += tag_label("current_task", "true")
         operation = " ".join(sanitize_text(str(progress.get("operation", ""))).split())[:120]

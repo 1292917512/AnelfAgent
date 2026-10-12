@@ -75,6 +75,7 @@ export interface LlmHookItem {
   max_iterations: number;
   max_concurrent: number;
   cooldown_seconds: number;
+  stall_seconds: number;
   debounce_seconds: number;
   model: string;
   allow_output_tools: boolean;

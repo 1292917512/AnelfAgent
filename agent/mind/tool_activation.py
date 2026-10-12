@@ -97,15 +97,18 @@ class ToolActivationManager:
         仅当确认本阶段不再使用该分组时关闭；频繁开关比常驻更伤缓存。
         """
         scope = scope or self.current_scope()
-        groups = self._scope_rounds.get(scope)
-        if not groups or group not in groups:
+        groups = self._scope_rounds.setdefault(scope, {})
+        if groups.get(group) == 0:
             return False
-        del groups[group]
-        if not groups:
-            self._scope_rounds.pop(scope, None)
+        was_active = groups.get(group, 0) > 0
+        groups[group] = 0
         self._version += 1
         log(f"工具分组已关闭: [{group}] scope={scope}", tag="门控")
-        return True
+        return was_active
+
+    def is_deactivated(self, group: str, scope: str = "") -> bool:
+        """当前会话是否明确关闭该分组，防止继承目录重新带回工具。"""
+        return self._scope_rounds.get(scope or self.current_scope(), {}).get(group) == 0
 
     def rounds_left(self, group: str, scope: str = "") -> int:
         """分组在当前 scope 下的剩余激活轮数（0 = 沉睡）。"""
@@ -115,7 +118,7 @@ class ToolActivationManager:
     def active_groups(self, scope: str = "") -> Dict[str, int]:
         """返回当前 scope 下所有激活分组及其剩余轮数。"""
         scope = scope or self.current_scope()
-        return dict(self._scope_rounds.get(scope, {}))
+        return {group: rounds for group, rounds in self._scope_rounds.get(scope, {}).items() if rounds > 0}
 
     def consume_round(self, scope: str = "") -> List[str]:
         """对话会话结束时消耗一轮激活周期，返回本轮到期沉睡的分组列表。
@@ -133,6 +136,8 @@ class ToolActivationManager:
             return []
         expired: List[str] = []
         for group in list(groups.keys()):
+            if groups[group] == 0:
+                continue
             groups[group] -= 1
             if groups[group] <= 0:
                 del groups[group]

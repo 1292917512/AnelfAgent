@@ -96,7 +96,7 @@ def _is_network(exc: BaseException) -> bool:
 
 
 def error_from_exception(exc: BaseException, *, action: Optional[str] = None,
-                         hint: Optional[str] = None) -> str:
+                         hint: Optional[str] = None, retry_safe: bool = False) -> str:
     """将异常转换为归因明确的工具错误 JSON。
 
     Args:
@@ -104,13 +104,19 @@ def error_from_exception(exc: BaseException, *, action: Optional[str] = None,
         action: 失败的操作描述（如 "读取文件"、"请求 https://..."），
             提供时消息为 "{action}失败: {归因描述}"，否则仅归因描述
         hint: 补充修复指引（覆盖默认 hint 时传入）
+        retry_safe: 调用方确认操作只读或具备幂等保障时，允许重试网络与超时错误。
     """
     prefix = f"{action}失败: " if action else ""
     detail = _exc_detail(exc)
+    network_hint = hint or (
+        "操作可安全重试；检查网络与目标状态后再试" if retry_safe else
+        "操作是否生效尚未确认。先查询目标状态或投递回执；确认未生效或具有幂等保障后再重试，勿直接重复写入或发送。"
+    )
 
     if _is_timeout(exc):
         return tool_error(f"{prefix}操作超时 ({detail})",
-                          cause=ErrorCause.TIMEOUT, retryable=True, hint=hint)
+                          cause=ErrorCause.TIMEOUT, retryable=retry_safe, hint=network_hint,
+                          outcome="unknown")
     if isinstance(exc, PermissionError):
         return tool_error(f"{prefix}权限不足 ({detail})",
                           cause=ErrorCause.PERMISSION, retryable=False,
@@ -125,8 +131,8 @@ def error_from_exception(exc: BaseException, *, action: Optional[str] = None,
                           hint=hint or "检查输入是否为合法 JSON")
     if _is_network(exc):
         return tool_error(f"{prefix}网络连接失败 ({detail})",
-                          cause=ErrorCause.NETWORK, retryable=True,
-                          hint=hint or "检查网络连通性与目标地址后重试")
+                          cause=ErrorCause.NETWORK, retryable=retry_safe,
+                          hint=network_hint, outcome="unknown")
     if isinstance(exc, (ValueError, KeyError)):
         return tool_error(f"{prefix}参数或数据无效 ({detail})",
                           cause=ErrorCause.PARAM, retryable=False,

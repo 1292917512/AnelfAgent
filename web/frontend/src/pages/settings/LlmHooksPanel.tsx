@@ -121,6 +121,7 @@ function HookRow({ hook, onToggle, toggling, onConfigure }: {
       )}
       <div className="mt-2 flex flex-wrap gap-x-4 gap-y-0.5 text-[10px] text-muted">
         <span>{t("llmHooks.noDeadline")}</span>
+        <span>{hook.stall_seconds > 0 ? t("llmHooks.stallNotice", { seconds: hook.stall_seconds }) : t("llmHooks.stallNoticeOff")}</span>
         <span>{t("llmHooks.iterations")}: {hook.max_iterations}</span>
         <span>{t("llmHooks.concurrent")}: {hook.max_concurrent}</span>
         {hook.cooldown_seconds > 0 && (

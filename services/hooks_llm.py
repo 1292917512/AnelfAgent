@@ -30,6 +30,7 @@ class HooksLlmService:
                 "max_iterations": spec.max_iterations,
                 "max_concurrent": spec.max_concurrent,
                 "cooldown_seconds": spec.cooldown_seconds,
+                "stall_seconds": spec.stall_seconds,
                 "debounce_seconds": spec.debounce_seconds,
                 "model": spec.model,
                 "allow_output_tools": spec.allow_output_tools,

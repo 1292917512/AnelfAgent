@@ -158,7 +158,9 @@
     "debounce": "防抖",
     "toolTags": "工具",
     "outputAllowed": "允许外发",
-    "outputNotRouted": "产出不唤醒",
+    "outputNotRouted": "成功静默，失败通知 AI",
+    "stallNotice": "无进展 {{seconds}} 秒提醒 AI",
+    "stallNoticeOff": "停滞提醒已关闭",
     "owner": "归属",
     "hint": "AI 可用 get_hooks 查看声明，通过 update_entity_config 修改参数；与此页共用配置，保存后热生效并保留。已受理的执行继续使用原参数。",
     "source": {

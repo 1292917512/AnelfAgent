@@ -200,12 +200,13 @@ def _validate_agent_name(agent_name: str) -> str:
     description="查看当前会话后台任务（子代理委托等）的运行状态与已完成结果。"
     "启动后台任务后用它查询进度，禁止凭空猜测任务状态。",
 )
-async def check_background_tasks(task_id: str = "") -> str:
+async def check_background_tasks(task_id: str = "", after_sequence: int = 0) -> str:
     """查看当前会话的后台任务状态（运行中 + 已完成）。
 
     Args:
         task_id: 可选，指定任务时改为增量读取其输出——每次只返回自上次
             读取以来的新增内容（消费型，不重复发送），适合轮询长任务进度。
+        after_sequence: 操作证据游标；传上次 evidence.next_sequence 获取后续证据。
     """
     manager = _manager_or_none()
     if manager is None:
@@ -215,7 +216,7 @@ async def check_background_tasks(task_id: str = "") -> str:
     scope = current_owner_scope()
     registry = getattr(manager._mind, "background_tasks", None) if manager._mind else None
     if task_id and registry is not None:
-        result = registry.read_task_output(scope, task_id)
+        result = registry.read_task_output(scope, task_id, after_sequence=after_sequence)
         if not result.get("ok"):
             from core.tool_errors import ErrorCause, tool_error
             return tool_error(
@@ -225,9 +226,9 @@ async def check_background_tasks(task_id: str = "") -> str:
         return json.dumps(result, ensure_ascii=False)
     snapshot = manager.background_tasks_snapshot(scope)
     snapshot["hint"] = (
-        "有运行中任务时：可稍后用本工具再查，或 end_reply 结束本轮——"
-        "任务完成时系统会自动通知你并触发新一轮回复。"
-        "长任务（后台 shell / 子代理委托）可传 task_id 增量读取新输出。"
+        "可传 task_id 查询进度与增量输出。notification 指明完成通知策略："
+        "always=完成即通知，on_result=有产出或失败通知，on_failure=仅失败通知，silent=不通知。"
+        "通知向 AI 提交内部事实，唤醒受路由与预算约束；需要结果时不要把静默任务当作自动续轮。"
         if snapshot["running"] else "当前没有运行中的后台任务。"
     )
     return json.dumps(snapshot, ensure_ascii=False)
@@ -238,7 +239,7 @@ async def check_background_tasks(task_id: str = "") -> str:
     group="delegation", tags=["always"], source="mind.delegation",
     description="终止一个运行中的后台任务（后台 shell / 后台委托）。"
     "任务超时（收到超时提醒）或确认不再需要时由你决策调用；"
-    "系统不会替你终止任务——终止后以终止态完成并照常通知。",
+    "终止请求受理后由执行方登记终态；可用 check_background_tasks 核对结果。",
 )
 async def terminate_background_task(task_id: str) -> str:
     """终止当前会话的一个运行中后台任务。

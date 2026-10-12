@@ -1091,7 +1091,8 @@ class EntityRegistry:
             })
             raise
         except Exception as exc:
-            result = error_from_exception(exc, action=f"工具 {name} 执行")
+            result = error_from_exception(exc, action=f"工具 {name} 执行",
+                                          retry_safe=bool(entity and entity.meta.get("concurrency_safe")))
         error = extract_error_text(result)
         if error:
             payload = parse_tool_result_json(result)

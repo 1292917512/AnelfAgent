@@ -41,6 +41,13 @@ def deliver_mock(monkeypatch):
 # ==================================================================
 
 class TestBackgroundTaskRegistry:
+    def test_internal_maintenance_is_observable_without_joining_reply(self) -> None:
+        registry = BackgroundTaskRegistry()
+        registry.register("user_qq:1", "llm_hook", "review", joinable=False)
+        task = registry.register("user_qq:1", "delegation", "requested work")
+        assert len(registry.running("user_qq:1")) == 2
+        assert [item.task_id for item in registry.running("user_qq:1", joinable_only=True)] == [task]
+
     def test_register_and_running(self) -> None:
         registry = BackgroundTaskRegistry()
         task_id = registry.register("user_1", "delegation", "生成图片")

@@ -124,6 +124,17 @@ async def finish_think(
     )
 
 
+def _execution_facts(tool_chain: Optional[List[Dict]]) -> list[dict[str, Any]]:
+    """提取本轮已返回结果的调用事实，不把历史调用算入本轮。"""
+    calls = {call.get("id"): call.get("function", {}).get("name", "")
+             for message in tool_chain or [] if message.get("role") == "assistant"
+             for call in message.get("tool_calls") or []}
+    return [{"name": calls[message["tool_call_id"]],
+             "success": not bool(extract_error_text(message.get("content", "")))}
+            for message in tool_chain or []
+            if message.get("role") == "tool" and message.get("tool_call_id") in calls]
+
+
 def _build_execution_summary(
     tool_chain: Optional[List[Dict]],
     execution_steps: List[str],
@@ -298,6 +309,7 @@ async def complete_reply(
         "iterations": iterations,
         "error": error,
         "execution_summary": execution_summary,
+        "executed_tools": _execution_facts(tool_chain),
         "messages": reply_messages,
         "tools": (completion or {}).get("tools"),
         "turn_id": turn_id,

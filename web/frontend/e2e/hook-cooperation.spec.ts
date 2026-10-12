@@ -54,10 +54,12 @@ test("hooks page opens the same execution details and explains expired memory", 
 
 test("LLM hook configuration reuses the shared metadata writer", async ({ page }) => {
   let context = "transcript";
-  await page.route("**/api/hooks-llm", (route) => route.fulfill({ json: { enabled: true, runtime_started: true, events: ["after_reply"], governance: { max_concurrent: 2, transcript_enabled: true }, hooks: [{ name: "skill_review", event: "after_reply", context, mode: "async", source: "code", enabled: true, max_iterations: 6, max_concurrent: 1, cooldown_seconds: 120, debounce_seconds: 0, tool_tags: ["skills"], owner: "skills.review", config_group: "hooks_llm/skill_review" }] } }));
+  await page.route("**/api/hooks-llm", (route) => route.fulfill({ json: { enabled: true, runtime_started: true, events: ["after_reply"], governance: { max_concurrent: 2, transcript_enabled: true }, hooks: [{ name: "skill_review", event: "after_reply", context, mode: "async", source: "code", enabled: true, max_iterations: 6, max_concurrent: 1, cooldown_seconds: 120, stall_seconds: 180, route_output: false, debounce_seconds: 0, tool_tags: ["skills"], owner: "skills.review", config_group: "hooks_llm/skill_review" }] } }));
   await page.route("**/api/config/meta", (route) => route.fulfill({ json: { groups: [{ group: "hooks_llm/skill_review", items: [{ key: "llm_hook_skill_review_context", description: "Context inheritance", type: "enum", value: context, default: "transcript", options: ["transcript", "lean", "none"], editable: true }] }] } }));
   await page.route("**/api/config/meta/llm_hook_skill_review_context", (route) => { context = route.request().postDataJSON().value; return route.fulfill({ json: { saved: true } }); });
   await page.goto("/webui/hooks?tab=llm");
+  await expect(page.getByText("Notify AI after 180s without progress", { exact: true })).toBeVisible();
+  await expect(page.getByText("Quiet on success; notify AI on failure", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Configure", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Configure" });
   await dialog.getByRole("combobox").selectOption("none");

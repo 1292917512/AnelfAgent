@@ -15,7 +15,13 @@ from agent.hooks_llm.spec import HookContextMode
 from agent.mind.background_tasks import BackgroundTaskRegistry
 from agent.mind.runtime_context import background_context
 from core.activity import activity_scope
-from core.event_bus import EVENT_THINKING_LLM_END, EVENT_THINKING_LLM_START, EVENT_THINKING_TOOL_START, event_bus
+from core.event_bus import (
+    EVENT_THINKING_LLM_END,
+    EVENT_THINKING_LLM_START,
+    EVENT_THINKING_TOOL_END,
+    EVENT_THINKING_TOOL_START,
+    event_bus,
+)
 from core.hooks import HookMode, hook_journal
 from services.workspace_activity import WorkspaceActivityService
 
@@ -54,6 +60,7 @@ async def test_running_hook_is_inspectable_cancellable_and_scope_local():
         assert progress["progress"]["operation"] == "get_skill"
         assert progress["progress"]["model_calls"] == 1
         assert progress["progress"]["activity_ids"] == ["review-child"]
+        assert progress["evidence"]["events"][0]["activity_id"] == "review-child"
         assert "get_skill" in background_context(registry, "user_qq:1")
         assert background_context(registry, "user_webui:1") == ""
         assert not registry.terminate("user_webui:1", task.task_id)["ok"]
@@ -149,6 +156,68 @@ async def test_budget_exhaustion_is_not_reported_as_success():
     assert record["status"] == "error" and "budget_exhausted" in record["detail"]
 
 
+async def test_hook_evidence_is_scoped_sanitized_and_cursor_readable():
+    registry = BackgroundTaskRegistry()
+
+    async def handler(ctx):
+        await event_bus.emit(EVENT_THINKING_TOOL_START, {
+            "tool_id": "read", "tool_name": "get_skill", "arguments": '{"password":"private-value"}',
+        })
+        await event_bus.emit(EVENT_THINKING_TOOL_END, {
+            "tool_id": "read", "tool_name": "get_skill", "result": "x" * 5000,
+            "error": "missing skill", "success": False, "duration_ms": 12,
+        })
+
+    executor = HookExecutor(SimpleNamespace(background_tasks=registry))
+    await executor.dispatch("after_reply", [LLMHookSpec("review", "after_reply", handler, mode=HookMode.SYNC)], {"scope": "user_qq:1"})
+    task_id = registry.completed("user_qq:1")[0].task_id
+    result = registry.read_task_output("user_qq:1", task_id)
+    events = result["evidence"]["events"]
+    assert len(events) == 2
+    assert "private-value" not in str(events)
+    assert events[1]["error"] == "missing skill" and events[1]["duration_ms"] == 12
+    assert events[1]["truncated"] is True
+    assert not registry.read_task_output("user_webui:1", task_id)["ok"]
+    assert registry.read_task_output("user_qq:1", task_id, after_sequence=result["evidence"]["next_sequence"])["evidence"]["events"] == []
+
+
+async def test_stall_alert_is_coalesced_does_not_cancel_and_stops_on_completion():
+    import time
+    registry = BackgroundTaskRegistry()
+    alerted = asyncio.Event()
+    alerts = []
+    def alert(*args):
+        alerts.append(args)
+        alerted.set()
+    registry.set_alert_callback(alert)
+    task_id = registry.register("user_qq:1", "llm_hook", "review")
+    progress = {"phase": "queued", "updated_at": time.time() - 10}
+    registry.attach_progress(task_id, lambda: progress)
+    registry.watch_stall(task_id, .02)
+    try:
+        await asyncio.wait_for(alerted.wait(), 1)
+        assert len(registry.running("user_qq:1")) == 1
+        await asyncio.sleep(.06)
+        assert len(alerts) == 1
+        alerted.clear()
+        progress["updated_at"] = time.time() - 1
+        await asyncio.wait_for(alerted.wait(), 1)
+        assert len(alerts) == 2
+    finally:
+        registry.complete(task_id, True, "done")
+    assert registry._records[task_id].stall_timer is None
+
+
+def test_evidence_eviction_is_explicit_and_reads_do_not_steal_other_readers():
+    registry = BackgroundTaskRegistry()
+    task_id = registry.register("user_qq:1", "llm_hook", "review")
+    for index in range(40):
+        registry.record_evidence(task_id, "tool_end", result=str(index))
+    first = registry.read_task_output("user_qq:1", task_id)["evidence"]
+    assert first["history_evicted"] and len(first["events"]) == 32
+    assert registry.read_task_output("user_qq:1", task_id)["evidence"] == first
+
+
 def test_registered_config_is_live_persistent_and_shared_with_web():
     from agent.config import save_config_value
     from core.config import ConfigManager, ConfigRegistry
@@ -170,6 +239,19 @@ def test_registered_config_is_live_persistent_and_shared_with_web():
     assert not ConfigRegistry.get_group_items("hooks_llm/review")
     HookRegistry.register(spec)
     assert not HookRegistry.get("review").enabled
+
+
+def test_entity_sdk_exposes_stall_policy_through_shared_configuration():
+    from entities._sdk import register_entity_llm_hook
+    from services.hooks_llm import hooks_llm_service
+
+    async def handler(ctx):
+        return None
+
+    assert register_entity_llm_hook("entity_review", "after_reply", handler, stall_seconds=45)
+    hook = hooks_llm_service.get_overview()["hooks"][0]
+    assert hook["stall_seconds"] == 45
+    assert "stall_seconds" in hook["config_keys"]
 
 
 @pytest.mark.parametrize("mode, expected", [(HookContextMode.NONE, []), (HookContextMode.LEAN, [{"role": "system", "content": "fixed instructions"}])])

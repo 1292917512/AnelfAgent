@@ -550,10 +550,10 @@ class Mind:
         prompt = (
             f"[后台任务进度报告] {description}\n"
             f"{detail}\n"
-            "是这活儿本来就费时（大下载、大构建慢得有道理），还是它在摸鱼卡住了？"
-            f"你说了算：想多看点就 check_background_tasks(task_id=\"{task_id}\")，"
-            f"确认摸鱼了就 terminate_background_task(task_id=\"{task_id}\")；"
-            "不吭声也行——它跑完时你会再收到完成报告。"
+            "耗时不代表失败。"
+            f"用 check_background_tasks(task_id=\"{task_id}\") 查看阶段、操作证据与通知策略；"
+            f"确认无需继续时可 terminate_background_task(task_id=\"{task_id}\")。"
+            "这是内部进度事实，是否跟进或通过 send_message 告知用户由你判断。"
         )
         if not scope.startswith(("user_", "group_")):
             self.pfc.add_temporary({"role": "system", "content": prompt})
@@ -1113,11 +1113,8 @@ class Mind:
                 )
 
             if inherited_tools is not None:
-                from copy import deepcopy
-                inherited_names = {tool.get("function", {}).get("name") for tool in inherited_tools}
-                active_tools = deepcopy(inherited_tools) + [
-                    tool for tool in active_tools if tool.get("function", {}).get("name") not in inherited_names
-                ]
+                from agent.mind.tool_assembly import inherit_tool_catalog
+                active_tools = await inherit_tool_catalog(inherited_tools, active_tools, scope=reflect_scope)
 
             collected_text: List[str] = []
             execution_steps: List[str] = []

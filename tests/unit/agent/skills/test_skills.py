@@ -1141,6 +1141,13 @@ class TestSkillReviewerContract:
             assert spec.when({"error": False, "messages": [{"role": "user", "content": "x"}]}) is False
             assert spec.when({"error": False, "messages": [
                 {"role": "user", "content": "a"}, {"role": "assistant", "content": "b"},
-            ]}) is True
+            ]}) is False
+            payload = {"messages": [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]}
+            assert not spec.when({**payload, "executed_tools": [{"name": "send_message", "success": True}] * 5})
+            assert spec.when({**payload, "executed_tools": [{"name": "read_file", "success": True}] * 3})
+            assert spec.when({**payload, "executed_tools": [{"name": "read_file", "success": False}]})
+            assert spec.when({**payload, "executed_tools": [{"name": "get_skill", "success": True}]})
+            monkeypatch.setattr("agent.skills.background_review.get_config_int", lambda *args: 0)
+            assert spec.when(payload)
         finally:
             reviewer.stop()

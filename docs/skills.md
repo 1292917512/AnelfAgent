@@ -37,9 +37,11 @@ create/update 在事实层检测到显著信号时**不拒绝**，返回 needs_d
 
 ## 后台评审与策展
 
+自动评审仅统计本轮已返回结果的操作，不扫描历史调用。`skills_review_min_operations` 控制有效操作数门槛（默认 3，0 为每轮）；操作失败或读取技能可直接触发，控制与发送工具不计入门槛。门控只筛选材料，是否沉淀仍由 AI 判断；纯文本经验可直接通过技能工具维护。
+
 - **后台评审**（background_review.py）：经 LLM 钩子面注册 `skill_review` 钩子（after_reply +
   transcript 档 + route_output=False + 6 轮上限）——评审材料为完整 transcript + 四问框架，
-  工具结果细节不被摘要蒸馏丢弃；评审报告只留完成记录、不唤醒主回复周期。带 per-scope 冷却
+  工具结果细节不被摘要蒸馏丢弃；成功评审只留完成记录，失败经内部通知交给 AI 判断。带 per-scope 冷却
   （`llm_hook_skill_review_cooldown_seconds`，默认 120s），不限制执行总时长。
   上下文、模型和轮次预算统一在 `hooks_llm/skill_review` 配置；不继承对话时只检查技能库事实。
   transcript 保留完整消息、缓存分层及原工具顺序，补齐必需工具；模型或工具目录变化仍会影响缓存。

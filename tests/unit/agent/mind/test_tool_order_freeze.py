@@ -188,6 +188,40 @@ class TestReflectToolSchemas:
         assert "ra_core" not in names   # 非常态标签不进精简目录
         assert "ra_sleep" not in names  # 沉睡分组未激活（门控与回复路径同纪律）
 
+    async def test_inherited_catalog_survives_discovery_but_not_revocation(self) -> None:
+        from agent.mind.tool_assembly import inherit_tool_catalog
+        from core.entity import EntityRegistry
+        ta = ToolAssembly()
+        parent = EntityRegistry.get_tool_schema_by_names(["ra_core", "ra_always"])
+        selected = await ta.get_reflect_tool_schemas(scope="review", selectors=["heartbeat"])
+        first = await inherit_tool_catalog(parent, selected)
+        assert _names(first)[:2] == ["ra_core", "ra_always"]
+        ta._scope_discovered_tools["review"] = {"ra_sleep"}
+        second = await inherit_tool_catalog(first, await ta.get_reflect_tool_schemas(scope="review", selectors=["g_sleep"]))
+        assert second[:len(first)] == first
+        assert _names(second)[-1] == "ra_sleep"
+        EntityRegistry.unregister("ra_core")
+        refreshed = await inherit_tool_catalog(second, selected)
+        assert "ra_core" not in _names(refreshed)
+        first[0]["function"]["name"] = "mutated"
+        assert parent[0]["function"]["name"] == "ra_core"
+
+    async def test_explicit_close_overrides_inherited_catalog_until_reactivated(self) -> None:
+        from agent.mind.tool_activation import tool_activation
+        from agent.mind.tool_assembly import inherit_tool_catalog
+        from core.entity import EntityRegistry
+        inherited = EntityRegistry.get_tool_schema_by_names(["ra_sleep"])
+        try:
+            assert await inherit_tool_catalog(inherited, [], scope="hook-close") == inherited
+            tool_activation.deactivate("g_sleep", scope="hook-close")
+            assert await inherit_tool_catalog(inherited, inherited, scope="hook-close") == []
+            assert await inherit_tool_catalog(inherited, [], scope="other-hook") == inherited
+            assert tool_activation.active_groups("hook-close") == {}
+            tool_activation.activate("g_sleep", scope="hook-close")
+            assert await inherit_tool_catalog(inherited, [], scope="hook-close") == inherited
+        finally:
+            tool_activation.clear_scope("hook-close")
+
     async def test_selector_matches_tag_and_group(self) -> None:
         ta = ToolAssembly()
         by_tag = _names(await ta.get_reflect_tool_schemas(scope="t_reflect_sel", selectors=["core"]))

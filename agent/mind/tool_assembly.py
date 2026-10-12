@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import TYPE_CHECKING, Optional
 
 from core.entity import EntityRegistry
@@ -20,6 +21,26 @@ from core.log import log
 
 if TYPE_CHECKING:
     from agent.channel.manager import ChannelManager
+
+
+async def inherit_tool_catalog(previous: list[dict], selected: list[dict], *, scope: str = "") -> list[dict]:
+    """延续已见工具的顺序，刷新注册定义并追加新工具；失效工具立即移除。
+
+    模型可见的目录在轮内保持稳定，降低前缀漂移；不改变执行权限或增加上下文消息。
+    """
+    names = list(dict.fromkeys(tool.get("function", {}).get("name", "") for tool in previous))
+    active = {entity.name for entity in await EntityRegistry.get_active_tools(names)}
+    current = {tool["function"]["name"]: tool for tool in EntityRegistry.get_tool_schema_by_names(names)}
+    catalog = [current[name] for name in names if name in active and name in current]
+    retained = {tool["function"]["name"] for tool in catalog}
+    catalog.extend(tool for tool in selected if tool.get("function", {}).get("name") not in retained)
+    from agent.mind.tool_activation import tool_activation
+    return deepcopy([
+        tool for tool in catalog
+        if not ((entity := EntityRegistry.get(tool["function"]["name"]))
+                and entity.allow_sleep and entity.sleep_brief
+                and tool_activation.is_deactivated(entity.group, scope))
+    ])
 
 
 class ToolAssembly:

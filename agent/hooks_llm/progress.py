@@ -10,7 +10,8 @@ import time
 from contextlib import contextmanager
 from typing import Any, Iterator
 
-from core.activity import EVENT_ACTIVITY_FINISHED, EVENT_ACTIVITY_STARTED
+from agent.mind.background_tasks import BackgroundTaskRegistry
+from core.activity import EVENT_ACTIVITY_FINISHED, EVENT_ACTIVITY_STARTED, current_activity_id
 from core.event_bus import (
     EVENT_THINKING_LLM_END,
     EVENT_THINKING_LLM_START,
@@ -23,10 +24,11 @@ from core.stream_events import EVENT_ASSISTANT_DELTA
 
 
 class HookProgress:
-    """只观察本次钩子的执行树，保留阶段事实而不持有事件正文。"""
+    """观察本次钩子的执行树，投影实时阶段和有界操作证据。"""
 
-    def __init__(self, run: HookRun) -> None:
+    def __init__(self, run: HookRun, registry: BackgroundTaskRegistry | None = None) -> None:
         self.run = run
+        self._registry = registry
         self._tools: dict[str, str] = {}
         self.terminal_status = "completed"
 
@@ -61,12 +63,24 @@ class HookProgress:
 
     async def tool_start(self, payload: dict[str, Any]) -> None:
         if current_hook_run.get() is self.run:
+            if self._registry is not None:
+                self._registry.record_evidence(self.run.task_id, "tool_start", tool_id=payload.get("tool_id"),
+                                               activity_id=current_activity_id.get(),
+                                               tool=payload.get("tool_name"), arguments=payload.get("arguments"),
+                                               truncated=payload.get("arguments_truncated", False))
             self._tools[str(payload.get("tool_id", ""))] = str(payload.get("tool_name", ""))
             self.run.tool_calls += 1
             await self.update("tool", str(payload.get("tool_name", "")))
 
     async def tool_end(self, payload: dict[str, Any]) -> None:
         if current_hook_run.get() is self.run:
+            if self._registry is not None:
+                self._registry.record_evidence(self.run.task_id, "tool_end", tool_id=payload.get("tool_id"),
+                                               activity_id=current_activity_id.get(),
+                                               tool=payload.get("tool_name"), result=payload.get("result"),
+                                               error=payload.get("error"), success=payload.get("success"),
+                                               duration_ms=payload.get("duration_ms"),
+                                               truncated=payload.get("result_truncated", False))
             self._tools.pop(str(payload.get("tool_id", "")), None)
             await self.update("tool" if self._tools else "processing", next(iter(self._tools.values()), ""))
 

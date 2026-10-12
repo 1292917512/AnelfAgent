@@ -188,8 +188,8 @@ class TestBgTaskAlert:
         content = mind.pfc.add_temporary.call_args[0][0]["content"]
         assert "[后台任务进度报告]" in content
         # 先甄别真假超时，而不是推向终止
-        assert "本来就费时" in content and "摸鱼" in content
-        assert "不吭声也行" in content
+        assert "耗时不代表失败" in content and "通知策略" in content
+        assert "由你判断" in content
         assert "check_background_tasks(task_id=\"ab12cd34\")" in content
         assert "terminate_background_task(task_id=\"ab12cd34\")" in content
         assert mind.wake_budget.count("user_qq:1") == 1

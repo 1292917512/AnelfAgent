@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from agent.hooks_llm.progress import HookProgress
 from agent.hooks_llm.snapshot import freeze_messages
 from agent.hooks_llm.spec import HookContext, HookContextMode, LLMHookSpec
-from agent.mind.background_tasks import current_background_task_id
+from agent.mind.background_tasks import CompletionNotification, current_background_task_id
 from core.activity import activity_owner
 from core.hooks import HookMode, hook_execution
 from core.log import bind_log_actor, log, reset_log_actor
@@ -271,11 +271,15 @@ class HookExecutor:
         try:
             async with hook_execution(spec.name, spec.event, spec.mode, source=spec.source, scope=ctx.scope) as run:
                 registry = getattr(self._mind, "background_tasks", None)
-                progress = HookProgress(run)
+                progress = HookProgress(run, registry)
                 task = asyncio.current_task()
                 loop = asyncio.get_running_loop()
                 if registry is not None:
-                    run.task_id = registry.register(ctx.scope or "_global", "llm_hook", f"{spec.name}: {spec.event}")
+                    run.task_id = registry.register(
+                        ctx.scope or "_global", "llm_hook", f"{spec.name}: {spec.event}",
+                        notification=CompletionNotification.ON_RESULT if spec.route_output else CompletionNotification.ON_FAILURE,
+                        joinable=False,
+                    )
                     registry.attach_progress(run.task_id, progress.snapshot)
 
                     def cancel() -> bool:
@@ -291,6 +295,8 @@ class HookExecutor:
                 summary = ""
                 try:
                     await progress.update("queued", "")
+                    if registry is not None:
+                        registry.watch_stall(run.task_id, spec.stall_seconds)
                     # 同类等待不占用全局并发槽，其他钩子仍可运行。
                     async with self._sem_for(spec), self._pool:
                         await progress.update("preparing", "")
@@ -321,8 +327,8 @@ class HookExecutor:
                 finally:
                     current_background_task_id.reset(background_token)
                     if registry is not None and run.task_id:
-                        registry.complete(run.task_id, success, summary,
-                                          claimed=None if spec.route_output and (output or not success) else True)
+                        registry.complete(run.task_id, success, summary, has_output=bool(output),
+                                          claimed=True if run.phase == "cancelled" else None)
             log(f"钩子 {spec.name} 完成 (event={spec.event})", "DEBUG", tag="钩子")
         except asyncio.CancelledError:
             log(f"钩子 {spec.name} 被取消", "DEBUG", tag="钩子")

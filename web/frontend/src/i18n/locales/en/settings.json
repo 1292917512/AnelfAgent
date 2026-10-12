@@ -158,7 +158,9 @@
     "debounce": "Debounce",
     "toolTags": "Tools",
     "outputAllowed": "Output allowed",
-    "outputNotRouted": "Output not routed",
+    "outputNotRouted": "Quiet on success; notify AI on failure",
+    "stallNotice": "Notify AI after {{seconds}}s without progress",
+    "stallNoticeOff": "Stall alerts off",
     "owner": "Owner",
     "hint": "AI can inspect get_hooks and edit parameters with update_entity_config. Changes are persisted and apply to future runs; accepted runs keep their original parameters.",
     "source": {

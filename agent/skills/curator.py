@@ -146,6 +146,12 @@ _CURATOR_CONFIGS = {
             "description": "是否启用对话后后台技能评审",
             "default": True,
         },
+        "skills_review_min_operations": {
+            "description": "自动技能评审所需的本轮有效操作数；失败或读取技能时直接评审，0 表示每轮评审。纯文本经验也可由 AI 主动写入技能",
+            "default": 3,
+            "min": 0,
+            "max": 100,
+        },
         "skills_stale_after_days": {
             "description": "技能无真实活动降级为 stale 的天数（检索注入不算活动）",
             "default": 30,

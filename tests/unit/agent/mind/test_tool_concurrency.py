@@ -7,6 +7,7 @@ import json
 import time
 from types import SimpleNamespace
 from typing import List
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -40,6 +41,26 @@ class TestPartition:
         calls = [_tc("write_file", "1"), _tc("edit_file", "2")]
         parts = tl._partition_tool_calls(calls)
         assert all(not p[0] for p in parts) and len(parts) == 2
+
+
+async def test_permission_denial_closes_tool_progress_without_execution(monkeypatch):
+    from core.tool_errors import ErrorCause, tool_error
+
+    denied = tool_error("当前上下文不允许执行", cause=ErrorCause.PERMISSION, retryable=False)
+    monkeypatch.setattr(tl, "check_tool_permission", AsyncMock(return_value=denied))
+    emit = AsyncMock()
+    monkeypatch.setattr(tl.event_bus, "emit", emit)
+    execute = AsyncMock()
+    mind = SimpleNamespace(_set_phase=lambda phase: None, tool_executor=execute)
+
+    assert await tl.execute_one_tool(mind, _tc("write_file", "denied-call"), 1) == denied
+    execute.assert_not_awaited()
+    endings = [call.args[1] for call in emit.await_args_list if call.args[0] == tl.EVENT_THINKING_TOOL_END]
+    assert len(endings) == 1
+    assert endings[0]["tool_id"] == "denied-call"
+    assert endings[0]["success"] is False
+    assert endings[0]["result"] == denied
+    assert endings[0]["duration_ms"] >= 0
 
 
 class TestExecuteToolCalls:

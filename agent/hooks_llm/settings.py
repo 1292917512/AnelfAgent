@@ -14,8 +14,8 @@ if TYPE_CHECKING:
 
 
 def config_keys(spec: LLMHookSpec) -> dict[str, str]:
-    fields = ("enabled", "mode", "cooldown_seconds") if spec.source == "task" else (
-        "enabled", "mode", "context", "model", "max_iterations", "cooldown_seconds")
+    fields = ("enabled", "mode", "cooldown_seconds", "stall_seconds") if spec.source == "task" else (
+        "enabled", "mode", "context", "model", "max_iterations", "cooldown_seconds", "stall_seconds")
     return {field: spec.config_key if field == "enabled" and spec.config_key else f"llm_hook_{spec.name}_{field}"
             for field in fields}
 
@@ -29,6 +29,7 @@ def register_settings(spec: LLMHookSpec) -> None:
         "model": ("执行模型，留空跟随默认模型", ConfigValueType.MODEL, None, None, None),
         "max_iterations": ("单次执行的最大思考轮数；不设置整体时间截止", ConfigValueType.INTEGER, None, 1, 100),
         "cooldown_seconds": ("同一会话两次触发的最小间隔，非执行超时", ConfigValueType.FLOAT, None, 0, 86400),
+        "stall_seconds": ("连续无进展时提醒 AI；不终止任务，0 关闭提醒", ConfigValueType.FLOAT, None, 0, 86400),
     }
     for field, key in config_keys(spec).items():
         if field == "enabled" and spec.config_key and ConfigRegistry.get_item(key):
