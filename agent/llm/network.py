@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -43,15 +44,33 @@ class ModelHTTPHandler(litellm.AsyncHTTPHandler):
 
 _active_transport: ContextVar[httpx.AsyncBaseTransport | None] = ContextVar("model_network", default=None)
 _session_lock = Lock()
+_shared_slot: tuple[asyncio.AbstractEventLoop, AsyncNetworkTransport] | None = None
+
+
+def _shared_transport() -> AsyncNetworkTransport:
+    """无模型上下文调用方的共享传输：按全局代理策略路由，按事件循环缓存。
+
+    传输的连接池绑定创建它的事件循环，循环更替时整体换新（旧循环已死，
+    其池无需也不能跨循环关闭）。
+    """
+    global _shared_slot
+    loop = asyncio.get_running_loop()
+    with _session_lock:
+        if _shared_slot is None or _shared_slot[0] is not loop:
+            _shared_slot = (loop, AsyncNetworkTransport("system"))
+        return _shared_slot[1]
 
 
 class _SessionTransport(httpx.AsyncBaseTransport):
-    """把 LiteLLM SDK 的共享 HTTP 会话转接到当前模型持有的连接池。"""
+    """把 LiteLLM SDK 的共享 HTTP 会话转接到当前模型持有的连接池。
+
+    SDK 会话是进程级全局：绑定模型上下文的请求走各自的传输（保持策略隔离
+    与节点缓存亲和），上下文之外直用 litellm 的组件（记忆投影、后台评审等）
+    回退到全局代理策略的共享传输。
+    """
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        transport = _active_transport.get()
-        if transport is None:
-            raise RuntimeError("模型请求缺少网络上下文")
+        transport = _active_transport.get() or _shared_transport()
         return await transport.handle_async_request(request)
 
 

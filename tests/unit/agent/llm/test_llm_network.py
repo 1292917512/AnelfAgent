@@ -82,6 +82,38 @@ async def test_openai_protocols_share_transport(settings, monkeypatch, operation
     assert not {"client", "http_client", "proxy_mode"}.intersection(requests[0][2])
 
 
+async def test_unbound_litellm_callers_route_via_system_policy(settings, monkeypatch):
+    """无模型上下文的 litellm 直调方（cognee 记忆投影等）仍可用且按全局代理策略路由。"""
+    import litellm
+
+    from agent.llm.network import _SessionClient
+
+    settings["proxy_default_mode"] = "proxy"
+    captured = []
+    def factory(*, proxy=None, **kwargs):
+        def respond(request):
+            captured.append((proxy, request.url.host))
+            return httpx.Response(200, json={"id": "chatcmpl_1", "object": "chat.completion", "created": 1,
+                "model": "gpt-4.1", "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}})
+        return httpx.MockTransport(respond)
+    monkeypatch.setattr(httpx, "AsyncHTTPTransport", factory)
+
+    previous = litellm.aclient_session
+    litellm.aclient_session = _SessionClient()
+    try:
+        response = await litellm.acompletion(
+            model="openai/gpt-4.1",
+            api_base="https://cognee.example.test/v1",
+            api_key="test-fixture-mock-key-001",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+    finally:
+        litellm.aclient_session = previous
+    assert response.choices[0].message.content == "ok"
+    assert captured == [(settings["http_proxy"], "cognee.example.test")]
+
+
 async def test_cached_sdk_clients_keep_concurrent_model_policies_isolated(settings, monkeypatch):
     routes = []
     def factory(*, proxy=None, **kwargs):

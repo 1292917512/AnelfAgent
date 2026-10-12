@@ -77,7 +77,9 @@ with network_client(proxy_mode="direct", timeout=10) as client:
 Anthropic handler 与 OpenAI 客户端共用此路由，保留缓存连接亲和，不用环境变量租约。
 LiteLLM 的 SDK 通道通过 `aclient_session` 注入无连接资源的转接客户端，使用 ContextVar
 选择当前模型拥有的连接池，避免 LiteLLM 缓存的 SDK 客户端串用其他模型的网络策略；
-原生 HTTP 通道使用请求级 handler。流式读取只在获取事件时绑定上下文，不泄漏给消费方。
+模型上下文之外直用 litellm 的组件（如 cognee 记忆投影）回退到全局代理策略的共享
+传输，共享传输按事件循环缓存。原生 HTTP 通道使用请求级 handler。流式读取只在获取
+事件时绑定上下文，不泄漏给消费方。
 
 需要自定义 HTTPX 客户端时使用 `NetworkTransport` / `AsyncNetworkTransport`，同时设置
 `trust_env=False`，并将连接池限制等传输参数传给 transport。MCP 的 HTTPX2 接口通过
