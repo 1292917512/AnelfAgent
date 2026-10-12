@@ -505,12 +505,9 @@ async def recall(
         if mem_ids:
             await store.record_access(mem_ids)
 
-        # 主动检索入召回账本：同一回复内异步深探不重复注入 AI 已取回的内容
-        #（scope 未知时广播到全部活跃账本，防与回复账本隔离）
-        try:
-            deep_probe_hub.record(entity_scope, results=results)
-        except Exception:
-            pass
+        from core.conversation_scope import current_scope
+        consumer_scope = current_scope()
+        deep_probe_hub.record(consumer_scope, results=results)
 
         items = [{
             "id": r.id,
@@ -549,7 +546,7 @@ async def recall(
             relations = [format_triple(e) for e in edges]
             # 工具返回的关系边同样入账本：异步深探不重复注入 AI 已取回的关系
             deep_probe_hub.record(
-                entity_scope, edge_ids=(int(e["id"]) for e in edges),
+                consumer_scope, edge_ids=(int(e["id"]) for e in edges),
             )
 
         return json.dumps({

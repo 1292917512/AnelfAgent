@@ -123,7 +123,7 @@ async def _collect_provider_messages(mind: "Mind", scope: str) -> List[Dict]:
     """
     try:
         from core.context_provider import ContextProviderRegistry
-        clips, _metrics = await ContextProviderRegistry.collect(scope)
+        clips, _metrics = await ContextProviderRegistry.collect(scope, fresh=True)
         config = getattr(getattr(mind, "llm", None), "config", None)
         vision = bool(config is not None and getattr(config, "supports_vision", False))
 

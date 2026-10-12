@@ -545,20 +545,13 @@ class MemoryRetriever:
             return []
         if not edges:
             return []
-        # 关系快照入召回账本：异步深探按边 id 去重，同一关系不重复注入
-        try:
-            deep_probe_hub.record(
-                scopes[0] if scopes else "", edge_ids=(int(e["id"]) for e in edges),
-            )
-        except Exception:
-            pass
-
         from .graph import format_triple
         lines = [
             "[系统注入·关系网络] 以下为当前会话相关实体的已知关系"
             "（结构化事实，非用户消息；完整网络可用 graph_query 查询）："
         ]
         used = len(lines[0])
+        rendered_ids: list[int] = []
         for edge in edges:
             line = f"- {format_triple(edge)}"
             if edge["evidence"]:
@@ -568,6 +561,8 @@ class MemoryRetriever:
                 break
             lines.append(line)
             used += len(line)
+            rendered_ids.append(int(edge["id"]))
+        deep_probe_hub.record(scopes[0], edge_ids=rendered_ids)
 
         from core.sanitizer import sanitize_for_context
         log(f"关系网络注入: {len(scopes)} 个 scope, {len(lines) - 1} 条关系", tag="思维")

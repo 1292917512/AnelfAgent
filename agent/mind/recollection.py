@@ -129,7 +129,7 @@ async def _get_recollection(
                 )
             run.detail = f"{policy.level} · {len(profile_msgs)} 个画像块 · {len(recall_msgs)} 个记忆块"
         from agent.memory.probe import deep_probe_hub
-        deep_probe_hub.prepare(entity_scope, tail, mind.retriever, planned=policy.level == "deep")
+        deep_probe_hub.prepare(entity_scope, tail, mind.retriever)
         log(f"语义召回: {len(recall_msgs)} 条, 画像: {len(profile_msgs)} 条", tag="思维")
         return profile_msgs, recall_msgs
 

@@ -76,9 +76,14 @@ def set_turn_recall_policy(policy: RecallPolicy, scope: str) -> None:
     turn = _turn.get()
     if turn is None or not turn.active or turn.scope != scope:
         raise ValueError("当前没有可调整的对话轮次")
+    if turn.policy == policy:
+        return
     turn.policy = policy
     from .probe import deep_probe_hub
-    deep_probe_hub.stop(scope, clear=True)
+    deep_probe_hub.stop(scope)
+    probe = deep_probe_hub.state_for(scope)
+    if probe is not None:
+        probe.queries.clear()
 
 
 @contextmanager
@@ -97,13 +102,15 @@ async def recall_turn(scope: str, policy: RecallPolicy | None = None) -> AsyncIt
     from .probe import deep_probe_hub
     state = RecallTurn(scope, policy or _override.get() or default_recall_policy())
     token = _turn.set(state)
-    deep_probe_hub.begin_reply(scope)
+    probe = deep_probe_hub.begin_reply(scope, managed=True)
     try:
         yield state
     finally:
         state.active = False
-        await deep_probe_hub.end_reply(scope)
-        _turn.reset(token)
+        try:
+            await deep_probe_hub.end_reply(scope, expected=probe)
+        finally:
+            _turn.reset(token)
 
 
 register_configs_safe({"memory/recall": {

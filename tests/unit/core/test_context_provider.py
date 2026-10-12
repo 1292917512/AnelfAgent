@@ -31,6 +31,37 @@ def _register(name: str = "demo") -> None:
 
 
 class TestGetStatusScopeAggregation:
+    async def test_fresh_collection_bypasses_cached_turn_and_inflight_context(self) -> None:
+        from contextvars import ContextVar
+
+        turn = ContextVar("provider_test_turn", default="old")
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def provide(scope: str) -> str:
+            if turn.get() == "old":
+                entered.set()
+                await release.wait()
+            return turn.get()
+
+        ContextProviderRegistry.register(ProviderMeta(name="turn", provide_fn=provide))
+        old = asyncio.create_task(ContextProviderRegistry.collect("same-scope"))
+        await entered.wait()
+        token = turn.set("new")
+        try:
+            fresh, _ = await ContextProviderRegistry.collect("same-scope", fresh=True)
+            assert [clip.text for clip in fresh] == ["new"]
+            fresh.clear()
+            cached, _ = await ContextProviderRegistry.collect("same-scope")
+            assert [clip.text for clip in cached] == ["new"]
+            release.set()
+            await old
+            fresh, _ = await ContextProviderRegistry.collect("same-scope", fresh=True)
+            assert [clip.text for clip in fresh] == ["new"]
+        finally:
+            turn.reset(token)
+            release.set()
+            await old
+
     async def test_concurrent_budgets_do_not_share_filtered_results(self) -> None:
         async def provide(scope: str) -> ProviderSnapshot:
             await asyncio.sleep(0)

@@ -19,13 +19,29 @@ if TYPE_CHECKING:
     from .memory_retriever import MemoryRetriever
 
 
+async def search_local(retriever: MemoryRetriever, query: str, *,
+                       tags: tuple[str, ...] = ()) -> list[MemorySearchResult]:
+    """有界向量等待后执行本地混合检索，精确标签同时约束全文与向量结果。"""
+    k, min_score = retriever.recall_limits()
+    try:
+        async with asyncio.timeout(2):
+            vector = await retriever._embedder.embed_query(query)
+    except Exception as exc:
+        log(f"快速召回向量不可用，采用本地文本检索: {type(exc).__name__}", "DEBUG", tag="记忆")
+        vector = None
+    return await retriever._store.search_unified(
+        query=query, query_vec=vector, query_tags=list(tags) or None,
+        require_tags=list(tags) or None, limit=k, min_score=min_score,
+    )
+
+
 async def recall_local(retriever: MemoryRetriever, conversation: list[dict], *, scope: str,
                        related_scopes: list[str], policy: RecallPolicy) -> tuple[list[dict], list[dict]]:
     """按强度选择本地召回路径，标签采用精确交集并保留来源。"""
     store = retriever._store
     profiles: list[dict] = []
     results: list[MemorySearchResult] = []
-    k, min_score = retriever.recall_limits()
+    k, _ = retriever.recall_limits()
     if policy.level != "off":
         if not policy.tags:
             profiles = await retriever._load_entity_profiles([scope, *related_scopes])
@@ -39,15 +55,7 @@ async def recall_local(retriever: MemoryRetriever, conversation: list[dict], *, 
         if policy.level == "fast":
             query = retriever._extract_query(conversation)
             if query and not retriever._is_trivial_turn(conversation):
-                try:
-                    async with asyncio.timeout(2):
-                        vector = await retriever._embedder.embed_query(query)
-                except Exception as exc:
-                    log(f"快速召回向量不可用，采用本地文本检索: {type(exc).__name__}", "DEBUG", tag="记忆")
-                    vector = None
-                found = await store.search_unified(query=query, query_vec=vector,
-                    query_tags=list(policy.tags) or None, require_tags=list(policy.tags) or None,
-                    limit=k, min_score=min_score)
+                found = await search_local(retriever, query, tags=policy.tags)
                 results = list({item.id: item for item in [*results, *found]}.values())[:k]
     pins = await retriever._load_permanent_pins(results)
     deep_probe_hub.record(scope, results=[*results, *pins])

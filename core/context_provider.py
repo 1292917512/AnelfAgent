@@ -255,6 +255,8 @@ class ContextProviderRegistry:
         cls,
         scope: str = "",
         budget: int = DEFAULT_COLLECT_BUDGET,
+        *,
+        fresh: bool = False,
     ) -> Tuple[List[VolatileClip], List[ProviderMetric]]:
         """返回当前最新快照；缓存超过新鲜度阈值时内联并发重收。
 
@@ -265,10 +267,14 @@ class ContextProviderRegistry:
         Args:
             scope: 当前对话 scope（用于过滤）。
             budget: token 预算上限，收集超限日志警告并截断。
+            fresh: 本次调用独立采集，避免复用其他轮次的上下文变量与快照。
 
         Returns:
             (clips, metrics) — clips 是注入单元（文本+可选媒体附件）列表，metrics 是监督指标。
         """
+        if fresh:
+            clips, metrics = await cls._collect_background(scope, budget)
+            return list(clips), list(metrics)
         last = cls._last_collect.get(scope, {})
         stale = (
             time.time() - float(last.get("collected_at", 0))

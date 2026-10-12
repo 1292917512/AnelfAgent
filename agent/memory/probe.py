@@ -1,20 +1,7 @@
-"""异步深探（Deep Probe）：回复期间与 LLM 思考并行的深度记忆/图谱检索。
+"""轮内异步召回：新话题先查本地记忆，深入档再补充图谱。
 
-检索规划（``RetrievalPlan``，retriever 产出）判定需要深度检索或已解析出
-查询相关实体时，被动召回完成后异步启动，分两阶段刷新持久渲染缓存
-（类脑唤醒机制：快唤醒 → 慢巩固）——
-
-- 快段：原生图谱邻域（毫秒级直查权威库，无 LLM），先行渲染注入；
-- 慢段：cognee 图谱综合与定向实体检索（经 fusion 统一拼装，LLM 参与），
-  完成后并入更新渲染。
-
-产物经召回账本去重、经 recall_format 行格式化后写入持久渲染缓存，经
-上下文提供者（memory_deep_probe）每轮读取注入——LLM 思考期间即可看到
-首轮召回之外的补充记忆；缓存持有最新渲染（异步完成前为空，完成后每轮
-在场且字节稳定，新回复开账重置）。
-
-召回账本（RecallLedger）：per-reply 防重复，被动召回注入、AI recall
-工具返回、异步深探产出三条通道共用——同一事实在一次回复中只出现一次。
+首轮深入召回复用已有规划启动图谱探测；后续新话题最多补查两次。
+所有结果按消费会话去重，在整轮预算内追加，结束时取消检索并回收。
 
 Model Experience:
 - 模型看到什么：至多一条 `[系统注入·记忆召回·续]` provider 消息（相关
@@ -29,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Dict, Iterable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Iterable, List, Optional
 
 from core.async_helper import spawn
 from core.config import get_config_bool, get_config_float, get_config_int, register_configs_safe
@@ -38,6 +25,7 @@ from core.hooks import HookMode, hook_execution
 from core.log import log
 
 from .memory_types import RetrievalPlan, normalized_content_key
+from .probe_render import RecallBuffer, RecallDelta
 
 if TYPE_CHECKING:
     from .memory_retriever import MemoryRetriever
@@ -46,32 +34,6 @@ if TYPE_CHECKING:
 
 _PROBE_TTL_SECONDS = 600.0
 _RENDERED_TTL_SECONDS = 86400.0
-
-_DELTA_HEADER = (
-    "[系统注入·记忆召回·续] 回复期间异步补充的深度检索"
-    "（与此前注入的记忆已去重，仅作参考，不代表当前任务进程）："
-)
-
-
-def _section(title: str, note: str, lines: List[str]) -> str:
-    """深探增量的分节渲染：``▸ 标题 · 说明`` + 缩进行条目。"""
-    body = "\n".join(f"  - {line}" for line in lines)
-    return f"▸ {title} · {note}\n{body}"
-
-
-def _render_delta(sections: List[str], max_chars: int) -> str:
-    """组装增量消息（头部 + 分节，预算超限时截断并引导主动检索）；空分节返回空。"""
-    if not sections:
-        return ""
-    used = len(_DELTA_HEADER)
-    kept: List[str] = []
-    for section in sections:
-        if used + len(section) > max_chars:
-            kept.append("（其余增量因预算截断，可经 recall(depth=deep) 主动获取）")
-            break
-        kept.append(section)
-        used += len(section)
-    return _DELTA_HEADER + "\n" + "\n".join(kept)
 
 
 @dataclass
@@ -135,6 +97,11 @@ class _ProbeState:
     created_at: float = field(default_factory=time.monotonic)
     queries: set[str] = field(default_factory=set)
     retriever: MemoryRetriever | None = None
+    revision: int = 0
+    managed: bool = False
+    buffer: RecallBuffer = field(default_factory=lambda: RecallBuffer(
+        get_config_int("memory_probe_max_chars", 1600),
+    ))
 
 
 class DeepProbeHub:
@@ -144,10 +111,10 @@ class DeepProbeHub:
         self._states: Dict[str, _ProbeState] = {}
         self._ttl = ttl_seconds
 
-    def begin_reply(self, scope: str) -> _ProbeState:
+    def begin_reply(self, scope: str, *, managed: bool = False) -> _ProbeState:
         """新回复开账：重置该 scope 的账本并取消上一回复的残留任务。"""
         self._sweep()
-        state = _ProbeState(scope=scope)
+        state = _ProbeState(scope=scope, managed=managed)
         old = self._states.get(scope)
         if old is not None and old.task is not None and not old.task.done():
             old.task.cancel()
@@ -157,20 +124,20 @@ class DeepProbeHub:
     def state_for(self, scope: str) -> Optional[_ProbeState]:
         return self._states.get(scope)
 
-    def stop(self, scope: str, *, clear: bool = False) -> Optional[asyncio.Task]:
-        """取消当前轮次的补充检索，可同时清除待注入结果。"""
+    def stop(self, scope: str) -> Optional[asyncio.Task]:
+        """取消当前轮次的补充检索并拒绝迟到结果，保留已经呈现的事实。"""
         state = self._states.get(scope)
         if state is None:
             return None
-        if clear:
-            state.rendered = ""
-            state.queries.clear()
+        state.revision += 1
         if state.task is not None and not state.task.done():
             state.task.cancel()
         return state.task
 
-    async def end_reply(self, scope: str) -> None:
+    async def end_reply(self, scope: str, *, expected: _ProbeState | None = None) -> None:
         """回收本轮后台检索，禁止旧结果流入后续对话。"""
+        if expected is not None and self._states.get(scope) is not expected:
+            return
         task = self.stop(scope)
         state = self._states.pop(scope, None)
         if task is not None:
@@ -178,16 +145,15 @@ class DeepProbeHub:
         if state is not None:
             state.rendered = ""
 
-    def prepare(self, scope: str, conversation: List[Dict], retriever: MemoryRetriever, *, planned: bool) -> None:
-        """绑定本轮检索依赖，已规划的首轮查询不再重复规划。"""
+    def prepare(self, scope: str, conversation: List[Dict], retriever: MemoryRetriever) -> None:
+        """绑定本轮检索依赖，首轮已处理的话题不再后台重复检索。"""
         state = self.state_for(scope)
         if state is not None:
             state.retriever = retriever
-            if planned:
-                state.queries.add(retriever._extract_focus_query(conversation))
+            state.queries.add(retriever._extract_focus_query(conversation))
 
     def refresh(self, scope: str, conversation: List[Dict]) -> None:
-        """按当前策略和新话题启动有限次异步规划；无话题变化不重复调用。"""
+        """按当前策略和新话题启动有限次异步检索；无话题变化不重复调用。"""
         from .recall_policy import current_recall_policy
         policy = current_recall_policy(scope)
         state = self.state_for(scope)
@@ -202,15 +168,24 @@ class DeepProbeHub:
         if not query or retriever._is_trivial_turn(conversation) or query in state.queries or len(state.queries) >= 3:
             return
         state.queries.add(query)
+        revision = state.revision
 
         async def execute() -> None:
             async with hook_execution("memory.probe", "context_refresh", HookMode.ASYNC, scope=scope) as run:
                 try:
                     async with asyncio.timeout(max(5, get_config_float("memory_probe_timeout_seconds", 60))):
-                        plan = await retriever.plan_retrieval(query, timeout=5)
-                        if plan.deep_needed or plan.node_keys:
-                            await self._probe(state, plan, retriever._store)
-                        run.detail = f"新增上下文 {len(state.rendered)} 字符" if state.rendered else "当前话题无需补充记忆"
+                        from .recall_fast import search_local
+                        before = len(state.rendered)
+                        results = await search_local(retriever, query)
+                        deltas = await self._memory_deltas(results, retriever._store, "补充记忆")
+                        if not self._publish(state, revision, deltas):
+                            return
+                        if policy.level == "deep":
+                            plan = await retriever.plan_retrieval(query, timeout=5)
+                            if self._is_current(state, revision) and (plan.deep_needed or plan.node_keys):
+                                await self._probe(state, plan, retriever._store, revision=revision)
+                        added = len(state.rendered) - before
+                        run.detail = f"新增上下文 {added} 字符" if added > 0 else "当前话题无需补充记忆"
                 except Exception as exc:
                     run.status = "error"
                     run.detail = f"{type(exc).__name__}: {exc}"
@@ -231,24 +206,14 @@ class DeepProbeHub:
         results: Optional[Iterable["MemorySearchResult"]] = None,
         edge_ids: Optional[Iterable[int]] = None,
     ) -> None:
-        """召回记账唯一入口：三条通道（基底层注入 / AI 工具 / 关系快照）共用。
-
-        scope 已知时定向记入该账本；未知（工具未携带实体标签等）广播到
-        全部活跃账本——定向记账会与进行中回复的账本隔离，广播保证深探
-        仍能感知 AI 已取回的内容。结果与边可同批记入。
-        """
-        # 一次性物化：广播到多个账本时生成器只能被消费一次，
-        # 调用方（工具层）传的是生成器表达式
-        result_list = list(results) if results is not None else None
-        edge_list = list(edge_ids) if edge_ids is not None else None
-        ledgers = [self.ledger(scope)] if scope else [
-            state.ledger for state in self._states.values()
-        ]
-        for ledger in ledgers:
-            if result_list is not None:
-                ledger.record_results(result_list)
-            if edge_list is not None:
-                ledger.record_edges(edge_list)
+        """仅为实际消费结果的活跃会话记账，无归属或无回复时不创建状态。"""
+        state = self.state_for(scope) if scope else None
+        if state is None:
+            return
+        if results is not None:
+            state.ledger.record_results(results)
+        if edge_ids is not None:
+            state.ledger.record_edges(edge_ids)
 
     def start(
         self,
@@ -270,7 +235,7 @@ class DeepProbeHub:
             return  # 单飞：本回复已有深探在途
         self._metrics("probe.started")
         state.task = spawn(
-            self._run(state, plan, store),
+            self._run(state, plan, store, state.revision),
             name=f"memory.probe.{scope or 'global'}",
         )
 
@@ -293,11 +258,11 @@ class DeepProbeHub:
             for state in self._states.values()
         ]
 
-    async def _run(self, state: _ProbeState, plan: RetrievalPlan, store: "MemoryStore") -> None:
+    async def _run(self, state: _ProbeState, plan: RetrievalPlan, store: "MemoryStore", revision: int) -> None:
         timeout = max(5.0, get_config_float("memory_probe_timeout_seconds", 60.0))
         try:
             async with hook_execution("memory.probe", "context_refresh", HookMode.ASYNC, scope=state.scope) as run:
-                await asyncio.wait_for(self._probe(state, plan, store), timeout=timeout)
+                await asyncio.wait_for(self._probe(state, plan, store, revision=revision), timeout=timeout)
                 run.detail = f"新增上下文 {len(state.rendered)} 字符"
             self._metrics("probe.completed")
         except asyncio.CancelledError:
@@ -308,47 +273,61 @@ class DeepProbeHub:
         except Exception as exc:
             log(f"深探执行失败（不影响回复）: {exc}", "DEBUG", tag="记忆")
 
-    async def _probe(self, state: _ProbeState, plan: RetrievalPlan, store: "MemoryStore") -> None:
-        """深探主体：快段（图谱邻域，无 LLM）先渲染，慢段（cognee）并入更新。
+    def _is_current(self, state: _ProbeState, revision: int) -> bool:
+        return self._states.get(state.scope) is state and state.revision == revision
 
-        分阶段刷新持久渲染缓存：快段毫秒级完成即注入（第一轮被动召回
-        之后的最早补充），慢段 LLM 检索完成后整体重渲染——provider 每轮
-        读最新值，两阶段对模型表现为"先有关系事实，再有深层记忆/综合"。
-        """
-        max_chars = max(400, get_config_int("memory_probe_max_chars", 1600))
-        sections: List[str] = []
-        injected = False
+    def _publish(self, state: _ProbeState, revision: int, deltas: Iterable[RecallDelta]) -> bool:
+        """仅接纳当前检索版本的结果，在同一无等待步骤内渲染并记账。"""
+        if not self._is_current(state, revision):
+            return False
+        previous = state.rendered
+        for delta in deltas:
+            if (delta.edge_id is not None and state.ledger.seen_edge(delta.edge_id)) or (
+                state.ledger.seen_result(delta.result_id) or state.ledger.seen_content(delta.snippet)
+            ):
+                continue
+            if state.buffer.append(delta):
+                if delta.edge_id is not None:
+                    state.ledger.record_edges([delta.edge_id])
+                state.ledger.record_result(delta.result_id, delta.snippet)
+        state.rendered = state.buffer.render()
+        if state.rendered and state.rendered != previous:
+            self._metrics("probe.injected")
+        return True
 
-        def _publish() -> None:
-            nonlocal injected
-            rendered = _render_delta(sections, max_chars)
-            if not rendered:
-                return
-            from core.sanitizer import sanitize_for_context
-            state.rendered = sanitize_for_context(rendered)
-            if not injected:
-                injected = True
-                self._metrics("probe.injected")
+    async def _probe(self, state: _ProbeState, plan: RetrievalPlan, store: "MemoryStore",
+                     *, revision: int | None = None) -> None:
+        """先呈现本地图谱，再追加远端记忆；旧策略或旧回复的结果不得回写。"""
+        revision = state.revision if revision is None else revision
+        if not self._is_current(state, revision):
+            return
+        relations = await self._collect_relations(state, plan, store)
+        if not self._publish(state, revision, relations):
+            return
+        memories = await self._collect_cognee(state, plan, store)
+        self._publish(state, revision, memories)
 
-        # 快段：原生图谱邻域（毫秒级直查权威库，无 LLM）
-        relation_lines = await self._collect_relations(state, plan, store)
-        if relation_lines:
-            sections.append(_section("相关关系", "graph_query 可查全量", relation_lines))
-            _publish()
-        # 慢段：cognee 深检索（LLM 参与通道），完成后并入更新渲染
-        memory_lines, graph_answer = await self._collect_cognee(state, plan, store)
-        if memory_lines:
-            sections.append(_section("深层记忆", "与首轮召回已去重", memory_lines))
-        if graph_answer:
-            sections.append(_section("图谱综合", "知识图谱对当前话题的回答", [graph_answer]))
-        if memory_lines or graph_answer:
-            _publish()
-        if sections:
-            log(f"深探完成: {len(sections)} 个增量分节（快段先出，慢段更新）", tag="记忆")
+    @staticmethod
+    async def _memory_deltas(results: Iterable["MemorySearchResult"], store: "MemoryStore",
+                             section: str) -> list[RecallDelta]:
+        """沿用同步召回的实体标签、时间与隐私标记格式。"""
+        from .recall_format import format_memory_line
+        deltas: list[RecallDelta] = []
+        for result in results:
+            text = result.snippet.strip()
+            if not text:
+                continue
+            graph_answer = result.source == "cognee_graph"
+            line = await format_memory_line(
+                store.graph, snippet=text[:800 if graph_answer else 300], tags=result.tags,
+                provenance=result.provenance, timestamp=result.timestamp, sensitivity=result.sensitivity,
+            )
+            deltas.append(RecallDelta("图谱综合" if graph_answer else section, line, result.id, text))
+        return deltas
 
     async def _collect_relations(
         self, state: _ProbeState, plan: RetrievalPlan, store: "MemoryStore",
-    ) -> List[str]:
+    ) -> List[RecallDelta]:
         """原生图谱邻域：查询相关实体的一跳活跃边（毫秒级直查权威库，无 LLM）。"""
         if not plan.node_keys:
             return []
@@ -358,25 +337,22 @@ class DeepProbeHub:
             log(f"深探图谱邻域查询失败: {exc}", "DEBUG", tag="记忆")
             return []
         from .graph import format_triple
-        lines: List[str] = []
-        fresh_ids: List[int] = []
+        deltas: List[RecallDelta] = []
         for edge in edges:
             if state.ledger.seen_edge(int(edge["id"])):
                 continue
-            fresh_ids.append(int(edge["id"]))
             line = format_triple(edge)
             if edge.get("evidence"):
                 line += f"（{str(edge['evidence'])[:80]}）"
-            lines.append(line)
-        state.ledger.record_edges(fresh_ids)
-        return lines
+            deltas.append(RecallDelta("相关关系", line, edge_id=int(edge["id"])))
+        return deltas
 
     async def _collect_cognee(
         self, state: _ProbeState, plan: RetrievalPlan, store: "MemoryStore",
-    ) -> Tuple[List[str], str]:
+    ) -> List[RecallDelta]:
         """cognee 深检索（经 fusion 统一拼装）：定向实体事实 + 图谱综合答案。"""
         if not plan.queries:
-            return [], ""
+            return []
         try:
             from .cognee.config import load_cognee_config
             from .cognee.fusion import datasets_for_scope, search_cognee
@@ -384,9 +360,9 @@ class DeepProbeHub:
             config = load_cognee_config()
             client = get_cognee_client()
         except Exception:
-            return [], ""
+            return []
         if client is None or not config.enabled or not config.recall_enabled:
-            return [], ""
+            return []
         query = plan.queries[0]
         # node_keys（user:适配器:uid 形态）与记忆实体标签同构：除当前会话
         # scope 外，把查询提及实体的数据集也纳入路由（与被动召回同一语义）
@@ -399,35 +375,16 @@ class DeepProbeHub:
             )
         except Exception as exc:
             log(f"深探 cognee 检索失败: {exc}", "DEBUG", tag="记忆")
-            return [], ""
+            return []
 
-        from .recall_format import format_memory_line
-        memory_lines: List[str] = []
-        graph_answer = ""
-        for r in results:
-            text = r.snippet.strip()
-            if not text or state.ledger.seen_content(text):
-                continue
-            state.ledger.record_result(r.id, text)
-            if r.source == "cognee_graph" and not graph_answer:
-                graph_answer = text[:800]
-            elif r.source == "cognee_chunk" and len(memory_lines) < 5:
-                # 行格式与基底层召回同构（💡 归属标注 正文（时间 记））——
-                # fusion 已解析投影文档：snippet 是干净正文、tags 已回填
-                memory_lines.append(await format_memory_line(
-                    store.graph, snippet=text[:300], tags=r.tags,
-                    provenance=r.provenance, timestamp=r.timestamp,
-                    sensitivity=r.sensitivity,
-                ))
-        return memory_lines, graph_answer
+        return await self._memory_deltas(results, store, "深层记忆")
 
     def _sweep(self) -> None:
-        """惰性清扫：空态按 TTL 清；持渲染态放宽到日级（超长回复中途不丢失，
-        死 scope 的残留上限一天——正常路径由下一回复 begin_reply 重置）。"""
+        """回收未托管的过期状态；由 recall_turn 托管的回复只在轮次结束时清理。"""
         now = time.monotonic()
         stale = [
             scope for scope, state in self._states.items()
-            if now - state.created_at > self._ttl
+            if not state.managed and now - state.created_at > self._ttl
             and (not state.rendered or now - state.created_at > _RENDERED_TTL_SECONDS)
         ]
         for scope in stale:

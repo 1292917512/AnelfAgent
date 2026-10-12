@@ -79,7 +79,7 @@ async def test_hub_start_single_flight() -> None:
     hub.begin_reply("user_qq:1")
     plan = RetrievalPlan(queries=["q"], deep_needed=True)
 
-    async def _hang_probe(state, plan, store):
+    async def _hang_probe(state, plan, store, revision):
         await asyncio.sleep(3600)
 
     hub._run = _hang_probe  # type: ignore[method-assign]
@@ -189,7 +189,7 @@ async def test_recall_split_fires_probe_and_drains_delta(store, monkeypatch) -> 
 
     content = hub.current_render("user_qq:1")
     assert content.startswith("[系统注入·记忆召回·续]")
-    assert "▸ 相关关系 · graph_query 可查全量" in content
+    assert "▸ 相关关系" in content
     assert "  - 阿辰" in content and "朋友" in content and "老王" in content
     # 持久在场：provider 每轮读取同一渲染（字节稳定，不消失）
     assert hub.current_render("user_qq:1") == content
@@ -316,8 +316,8 @@ async def test_recall_partial_timeout_harvests_landed_lanes(store, monkeypatch) 
     assert "火锅" in _recall_text(memory_msgs)
 
 
-def test_record_broadcasts_when_scope_unknown() -> None:
-    """记账无 scope 时广播：进行中回复的账本也能感知（防隔离漏去重）。"""
+def test_record_without_scope_never_changes_active_ledgers() -> None:
+    """无消费会话的检索不能改变其他正在回复的去重账本。"""
     from agent.memory.memory_types import MemorySearchResult
 
     hub = DeepProbeHub()
@@ -325,8 +325,8 @@ def test_record_broadcasts_when_scope_unknown() -> None:
     hub.record("", results=[
         MemorySearchResult(id="mem:9", snippet="阿辰 喜欢 火锅", score=0.9),
     ])
-    assert reply_state.ledger.seen_result("mem:9")
-    assert reply_state.ledger.seen_content("阿辰喜欢火锅")
+    assert not reply_state.ledger.seen_result("mem:9")
+    assert not reply_state.ledger.seen_content("阿辰喜欢火锅")
     # scope 已知时定向记账，不影响其他账本
     other = hub.begin_reply("user_qq:2")
     hub.record("user_qq:1", results=[
@@ -384,7 +384,7 @@ async def test_probe_staged_fast_section_publishes_before_slow(store) -> None:
 
     async def _slow_cognee(state_arg, plan_arg, store_arg):
         seen_at_slow_start.append(hub.current_render("user_qq:1"))
-        return [], ""
+        return []
 
     hub._collect_cognee = _slow_cognee  # type: ignore[method-assign]
     await hub._probe(state, plan, store)
@@ -462,7 +462,12 @@ async def test_tool_edges_alone_block_probe_duplication(store, monkeypatch) -> N
 
     from agent.memory.tools import recall as recall_tool
     mem_tools.memory_tools_port.set(mem_tools.MemoryToolDeps(store, None))
-    out = json.loads(await recall_tool("朋友", tags="user:qq:1", depth="deep"))
+    from core.conversation_scope import bind_scope, reset_scope
+    token = bind_scope("user_qq:1")
+    try:
+        out = json.loads(await recall_tool("朋友", tags="user:qq:1", depth="deep"))
+    finally:
+        reset_scope(token)
     assert out.get("relations")
 
     hub.start(
@@ -476,18 +481,20 @@ async def test_tool_edges_alone_block_probe_duplication(store, monkeypatch) -> N
     assert "相关关系" not in hub.current_render("user_qq:1")
 
 
-def test_record_broadcast_supports_generator_iterables() -> None:
-    """广播记账对生成器入参完整：多账本各得全量（生成器只能消费一次的回归锁）。"""
+def test_record_keeps_generator_results_in_consumer_scope() -> None:
+    """流式记账仅消费一次且不影响另一会话。"""
     from agent.memory.memory_types import MemorySearchResult
 
     hub = DeepProbeHub()
     hub.begin_reply("user_qq:1")
     hub.begin_reply("user_qq:2")
-    hub.record("", results=(r for r in [
+    hub.record("user_qq:1", results=(r for r in [
         MemorySearchResult(id="mem:1", snippet="内容", score=0.9),
     ]))
-    hub.record("", edge_ids=(i for i in [3, 7]))
-    for scope in ("user_qq:1", "user_qq:2"):
-        ledger = hub.ledger(scope)
-        assert ledger.seen_result("mem:1")
-        assert ledger.seen_edge(3) and ledger.seen_edge(7)
+    hub.record("user_qq:1", edge_ids=(i for i in [3, 7]))
+    ledger = hub.ledger("user_qq:1")
+    assert ledger.seen_result("mem:1")
+    assert ledger.seen_edge(3) and ledger.seen_edge(7)
+    other = hub.ledger("user_qq:2")
+    assert not other.seen_result("mem:1")
+    assert not other.edge_ids

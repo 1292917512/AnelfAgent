@@ -96,16 +96,18 @@ def llm_manager():
     return LLMManager()
 
 
-async def _call_once(client: Any) -> Optional[UsageInfo]:
+async def _call_once(client: Any, messages: Optional[List[Dict[str, Any]]] = None) -> Optional[UsageInfo]:
     """经真实管线（含 usage 旁路）发一次流式调用，返回 usage。"""
     usage: Optional[UsageInfo] = None
-    async for delta in client.chat_stream(_MESSAGES, options={"max_tokens": 8}):
+    async for delta in client.chat_stream(messages or _MESSAGES, options={"max_tokens": 8}):
         if delta.usage is not None:
             usage = delta.usage
     return usage
 
 
-async def _call_cold_then_warm(client: Any) -> tuple[Optional[UsageInfo], Optional[UsageInfo]]:
+async def _call_cold_then_warm(
+    client: Any, warm_messages: Optional[List[Dict[str, Any]]] = None,
+) -> tuple[Optional[UsageInfo], Optional[UsageInfo]]:
     """冷调用写缓存后按递增窗口暖调用，取命中最佳的一次。
 
     供应商缓存写入→可读传播延迟方差大（实测 8s~20s+），只暖一次会把
@@ -115,7 +117,7 @@ async def _call_cold_then_warm(client: Any) -> tuple[Optional[UsageInfo], Option
     best: Optional[UsageInfo] = None
     for wait in (2, 4, 8):
         await asyncio.sleep(wait)
-        warm = await _call_once(client)
+        warm = await _call_once(client, warm_messages)
         if warm is not None and (
                 best is None or warm.cache_hit_rate > best.cache_hit_rate):
             best = warm
@@ -125,15 +127,22 @@ async def _call_cold_then_warm(client: Any) -> tuple[Optional[UsageInfo], Option
 
 
 @pytest.mark.parametrize("model_id", _chat_model_ids())
-async def test_model_cache_and_usage_health(model_id: str, llm_manager) -> None:
+@pytest.mark.parametrize("dynamic_tail", [False, True], ids=["stable", "recall-tail"])
+async def test_model_cache_and_usage_health(model_id: str, dynamic_tail: bool, llm_manager) -> None:
     client = llm_manager.get_enabled_client(model_id)
     assert client is not None, f"模型 {model_id} 未启用或不存在"
 
-    cold, warm = await _call_cold_then_warm(client)
+    warm_messages = [*_MESSAGES, {
+        "role": "system",
+        "content": "[系统注入·记忆召回·续] [channel:qq][uid:42] 项目使用本地混合检索，补充事实仅供参考。",
+    }] if dynamic_tail else None
+    cold, warm = await _call_cold_then_warm(client, warm_messages)
 
     assert cold is not None and warm is not None, (
         f"{model_id} 端点未回报 usage——记账/压缩/缓存观测全部失真"
     )
+    print(f"{model_id} tail={dynamic_tail}: input={warm.total_input_tokens} "
+          f"cached={warm.cache_read_input_tokens} hit={warm.cache_hit_rate:.2%}")
     assert warm.completion_tokens > 0, (
         f"{model_id} completion_tokens=0（litellm 伪造 usage 指纹："
         "估算路径清零 completion）"

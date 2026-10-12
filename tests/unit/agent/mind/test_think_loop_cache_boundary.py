@@ -8,6 +8,9 @@ from __future__ import annotations
 from helpers.think_loop_fakes import FakeMind, run_think_loop, text_result, tool_result
 
 from agent.llm.prompt_cache import count_breakpoints, decorate_messages
+from agent.mind.message_schema import normalize_for_send
+from agent.mind.tools.think_loop import _collect_provider_messages
+from core.context_provider import ContextProviderRegistry, ProviderMeta
 
 
 def _base() -> list:
@@ -27,6 +30,25 @@ def _loop_mind() -> FakeMind:
 
 
 class TestThinkLoopChainBreakpoint:
+    async def test_async_recall_changes_only_uncached_tail(self, monkeypatch) -> None:
+        text = ""
+        monkeypatch.setattr(ContextProviderRegistry, "_providers", {})
+        ContextProviderRegistry.register(ProviderMeta(name="memory", provide_fn=lambda scope: text))
+        mind = _loop_mind()
+        chain = [{"role": "assistant", "content": "查询记忆", "tool_calls": [
+            {"id": "recall-1", "type": "function", "function": {"name": "recall", "arguments": "{}"}},
+        ]}, {"role": "tool", "tool_call_id": "recall-1", "content": "已找到事实"}]
+        prefix = [*_base(), *chain]
+        empty = await _collect_provider_messages(mind, "scope")
+        assert empty == []
+        wire_prefix = normalize_for_send(decorate_messages(prefix, anthropic=True))
+        for text in ("补充事实一", "补充事实一\n补充事实二", ""):
+            tail = await _collect_provider_messages(mind, "scope")
+            messages = decorate_messages([*prefix, *tail], anthropic=True)
+            assert normalize_for_send(messages)[:len(prefix)] == wire_prefix
+            assert all(not m.get("cache_control") for m in messages[len(prefix):])
+            assert [m["content"] for m in tail] == ([text] if text else [])
+
     async def test_think_loop_never_marks_messages(self, anything, deliver_mock) -> None:
         """think_loop 不再触碰断点：发送给 invoker 的消息零 cache_control，
         装饰统一发生在真实 _invoke_llm_unified 内（本 fake 绕过了它）。"""
