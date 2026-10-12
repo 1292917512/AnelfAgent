@@ -20,8 +20,9 @@ class TelegramConfig(ChannelConfig):
     bot_token: str = Field(
         default="", description="Bot Token（从 @BotFather 获取）",
         json_schema_extra={"value_type": "password"})
-    proxy_host: str = Field(default="", description="代理地址（留空不使用代理）")
-    proxy_port: int = Field(default=7890, description="代理端口")
+    proxy_mode: Literal["system", "direct", "proxy"] = Field(
+        default="system", description="网络策略：system 全局规则 / direct 直连 / proxy 全局代理",
+        json_schema_extra={"related_key": "proxy_enabled"})
     require_mention: bool = Field(
         default=False, description="群聊中是否需要 @Bot 才触发思考（不配置则所有消息均触发）")
     channel_post_trigger: bool = Field(

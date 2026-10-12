@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 from agent.llm.protocol import CHAT_PROTOCOLS, ChatProtocol
 from agent.llm.reasoning import normalize_effort, parse_thinking_spec
 from core.log import log
+from core.network import ProxyMode
 
 _DEFAULT_BASE_URL = "http://127.0.0.1:11434/v1"
 _DEFAULT_API_KEY = ""
@@ -138,7 +139,7 @@ class LLMClientConfig:
     frequency_penalty: float = 0.0
     presence_penalty: float = 0.0
     timeout: float = DEFAULT_TIMEOUT
-    proxy_url: str = ""
+    proxy_mode: ProxyMode = "system"
     supports_vision: bool = False
     # 视频理解能力（端点接受 video content block）；需在 supports_vision 之上单独声明，
     # 视频识别链按此过滤候选，避免把整段视频 base64 发给不吃视频的模型空烧
@@ -192,6 +193,8 @@ class LLMClientConfig:
     enabled: bool = True
 
     def __post_init__(self) -> None:
+        if self.proxy_mode not in {"system", "direct", "proxy"}:
+            raise ValueError("proxy_mode 须为 system、direct 或 proxy")
         if self.api_type not in API_TYPES:
             raise ValueError(f"不支持的 api_type: {self.api_type}")
         if not isinstance(self.model_types, list) or not all(
@@ -281,16 +284,6 @@ class LLMClientConfig:
             log(f"声明 adaptive thinking 失败（不影响主流程）: {exc}", "DEBUG", tag="模型")
 
     @property
-    def effective_proxy(self) -> str:
-        """规范化代理地址：纯 ip:port 自动补全 http:// 前缀。"""
-        url = self.proxy_url.strip()
-        if not url:
-            return ""
-        if not url.startswith(("http://", "https://", "socks5://", "socks4://")):
-            url = f"http://{url}"
-        return url
-
-    @property
     def litellm_model(self) -> str:
         """计算 litellm 聊天模型标识符（provider_prefix/model）。"""
         prefix = _LITELLM_PREFIX_MAP.get(self.api_type, "openai")
@@ -354,7 +347,7 @@ class LLMClientConfig:
             "frequency_penalty": self.frequency_penalty,
             "presence_penalty": self.presence_penalty,
             "timeout": self.timeout,
-            "proxy_url": self.proxy_url,
+            "proxy_mode": self.proxy_mode,
             "supports_vision": self.supports_vision,
             "supports_video": self.supports_video,
             "supports_tools": self.supports_tools,

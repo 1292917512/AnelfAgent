@@ -28,7 +28,7 @@ import shutil
 from typing import TYPE_CHECKING, Any
 
 from core.config import expand_env_refs, is_masked_secret, mask_secret
-from entities._sdk import ErrorCause, entity, error_from_exception, tool, tool_error
+from entities._sdk import ErrorCause, ProxyMode, entity, error_from_exception, tool, tool_error
 
 if TYPE_CHECKING:
     from entities._sdk import LLMManager
@@ -408,7 +408,7 @@ def _provider_brief(manager: "LLMManager", pid: str) -> dict:
       description="新增模型供应商（base_url/api_key/api_type 等连接信息），持久化并立即热生效。"
                   "api_key 支持 ${ENV_VAR} 引用语法（密钥外置到环境变量，配置文件只存引用）")
 def add_provider(provider_id: str, base_url: str, api_key: str = "", api_type: str = "openai",
-                 name: str = "", proxy_url: str = "", media_protocol: str = "") -> str:
+                 name: str = "", proxy_mode: ProxyMode = "system", media_protocol: str = "") -> str:
     """新增供应商并持久化，立即生效（无需重启）。
 
     Args:
@@ -417,7 +417,7 @@ def add_provider(provider_id: str, base_url: str, api_key: str = "", api_type: s
         api_key: API 密钥；支持 "${ENV_VAR}" 引用（推荐，避免明文落盘）；空 = 无密钥（本地服务）
         api_type: 接口协议类型（非法值会报错并列出可选值）
         name: 显示名（可选，默认同 provider_id）
-        proxy_url: 代理地址（可选）
+        proxy_mode: system 跟随全局规则 / direct 直连 / proxy 全局代理
         media_protocol: 媒体协议适配器名（可选，空 = 按 host 自动匹配）
     """
     try:
@@ -444,13 +444,13 @@ def add_provider(provider_id: str, base_url: str, api_key: str = "", api_type: s
             # 两步写盘保留引用语法：先以引用串建档落盘，再写入展开值——
             # save_config 的引用恢复机制比对后磁盘保留 ${VAR}、内存持有真值
             manager.create_provider(pid, name=name, base_url=base_url, api_key=api_key.strip(),
-                                    api_type=api_type, proxy_url=proxy_url,
+                                    api_type=api_type, proxy_mode=proxy_mode,
                                     media_protocol=media_protocol)
             manager.save_config()
             manager.update_provider(pid, api_key=resolved_key)
         else:
             manager.create_provider(pid, name=name, base_url=base_url, api_key=resolved_key,
-                                    api_type=api_type, proxy_url=proxy_url,
+                                    api_type=api_type, proxy_mode=proxy_mode,
                                     media_protocol=media_protocol)
             manager.save_config()
 
@@ -471,7 +471,7 @@ def add_provider(provider_id: str, base_url: str, api_key: str = "", api_type: s
       description="修改供应商连接信息（换密钥/base_url/协议/代理等），空参数保持不变，"
                   "密钥与地址修改立即传播到该供应商下所有模型，持久化生效")
 def update_provider(provider_id: str, base_url: str = "", api_key: str = "", api_type: str = "",
-                    name: str = "", proxy_url: str = "", media_protocol: str = "") -> str:
+                    name: str = "", proxy_mode: ProxyMode | None = None, media_protocol: str = "") -> str:
     """修改供应商配置并持久化，立即生效。
 
     Args:
@@ -480,7 +480,7 @@ def update_provider(provider_id: str, base_url: str = "", api_key: str = "", api
         api_key: 新密钥（空或掩码值 = 不变；支持 "${ENV_VAR}" 引用）
         api_type: 新协议类型（空 = 不变）
         name: 新显示名（空 = 不变）
-        proxy_url: 新代理地址（空 = 不变）
+        proxy_mode: system 跟随全局规则 / direct 直连 / proxy 全局代理；省略不变
         media_protocol: 新媒体协议适配器名（空 = 不变）
     """
     try:
@@ -497,7 +497,7 @@ def update_provider(provider_id: str, base_url: str = "", api_key: str = "", api
 
         updates: dict[str, str] = {}
         for field, value in (("base_url", base_url), ("api_type", api_type), ("name", name),
-                             ("proxy_url", proxy_url), ("media_protocol", media_protocol)):
+                             ("proxy_mode", proxy_mode), ("media_protocol", media_protocol)):
             if value:
                 updates[field] = value
 

@@ -1,21 +1,17 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { modelsApi } from "@/lib/api";
 import { Card } from "@/components/common/Card";
 import { cn } from "@/lib/utils";
-import { Button, Input } from "@/components/ui";
+import { NetworkConfigLink } from "@/components/common/NetworkSettings";
+import { Button } from "@/components/ui";
 import { Check, RefreshCw, AlertCircle } from "lucide-react";
 
-export function LiteLLMCostMapCard({ defaultProxy }: { defaultProxy: string }) {
+export function LiteLLMCostMapCard() {
   const { t } = useTranslation("appconfig");
-  const [proxy, setProxy] = useState(defaultProxy);
   const [error, setError] = useState("");
   const [resultCount, setResultCount] = useState<number | null>(null);
-
-  useEffect(() => {
-    setProxy(defaultProxy);
-  }, [defaultProxy]);
 
   const { data: info } = useQuery({
     queryKey: ["costMapInfo"],
@@ -23,7 +19,7 @@ export function LiteLLMCostMapCard({ defaultProxy }: { defaultProxy: string }) {
   });
 
   const updateMutation = useMutation({
-    mutationFn: () => modelsApi.updateCostMap(proxy),
+    mutationFn: () => modelsApi.updateCostMap(),
     onSuccess: (r) => {
       setError("");
       setResultCount(r.data.model_count);
@@ -38,8 +34,8 @@ export function LiteLLMCostMapCard({ defaultProxy }: { defaultProxy: string }) {
     <Card title={t("costMap.title")} subtitle={info ? t("costMap.subtitle", { count: info.model_count }) : undefined}>
       <div className="space-y-3">
         <p className="text-xs text-muted">{t("costMap.description")}</p>
-        <div className="flex items-center gap-2">
-          <Input type="text" placeholder={t("costMap.proxyPlaceholder")} value={proxy} onChange={(e) => setProxy(e.target.value)} />
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <NetworkConfigLink />
           <Button
             variant="primary"
             size="sm"

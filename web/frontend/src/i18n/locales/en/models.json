@@ -159,8 +159,8 @@
     "base_url": "API URL",
     "api_key": "API Key",
     "api_type": "API Type",
-    "proxy_url": "Proxy URL",
-    "media_protocol": "Image Gen Protocol"
+    "media_protocol": "Image Gen Protocol",
+    "proxy_mode": "Network policy"
   },
   "subagents": {
     "desc": "Unified sub-agent profiles: model pool + execution facets (instructions / tool tags / blocked tools / output schema). delegate_task with agent_name uses the profile (pool order = priority, fallback on failure).",

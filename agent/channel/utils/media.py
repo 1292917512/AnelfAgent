@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from core.log import log
+from core.network import async_network_client
 
 # 全局媒体临时目录（所有频道共享）
 MEDIA_TEMP_DIR = os.path.join(tempfile.gettempdir(), "anelf_media")
@@ -117,13 +118,7 @@ async def download_url_to_temp(
         LocalMedia（成功）或 None（失败/超限）。
     """
     try:
-        import httpx
-    except ImportError:
-        log("httpx 未安装，无法下载 URL", "WARNING", tag="媒体")
-        return None
-
-    try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        async with async_network_client(timeout=timeout, follow_redirects=True) as client:
             async with client.stream("GET", url) as resp:
                 if resp.status_code != 200:
                     log(f"下载失败: HTTP {resp.status_code} {url}", "WARNING", tag="媒体")

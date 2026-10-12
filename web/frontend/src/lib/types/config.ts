@@ -1,3 +1,5 @@
+export type ProxyMode = "system" | "direct" | "proxy";
+
 export type ReasoningEffort = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface HeartbeatConfig {
@@ -101,6 +103,7 @@ export interface ConfigMetaItem {
   unit: string;
   /** 条件显示标记（如频道 ws_mode 的 forward/reverse，仅供卡片分组过滤） */
   tag: string;
+  related_key?: string;
   source: "mind" | "config_manager";
   value_source: "environment" | "configured" | "default";
   environment_variable: string | null;

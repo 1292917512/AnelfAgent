@@ -192,6 +192,6 @@ export const retrievalApi = {
   test: (name: string, capability: string, input = "") =>
     api.post<RetrievalTestResult>(`/retrieval/providers/${name}/test`, { capability, input }),
   settings: () => api.get<RetrievalSettings>("/retrieval/settings"),
-  saveSettings: (data: { proxy?: string; ssrf_protection?: boolean }) =>
+  saveSettings: (data: { ssrf_protection?: boolean }) =>
     api.put<RetrievalSettings>("/retrieval/settings", data),
 };

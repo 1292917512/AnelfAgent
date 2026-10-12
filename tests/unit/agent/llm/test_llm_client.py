@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock
 import pytest
 
 from agent.llm.llm_client import (
-    _PROXY_ENV_KEYS,
     API_TYPES,
     LLMClient,
     LLMClientConfig,
@@ -331,12 +330,10 @@ def test_drop_learned_params_no_op_when_empty() -> None:
 async def test_embedding_uses_proxy_and_provider_params(monkeypatch: pytest.MonkeyPatch) -> None:
     client = LLMClient(LLMClientConfig(
         model="text-embedding-3-small",
-        proxy_url="http://proxy.local:8080",
+        proxy_mode="proxy",
         request_params={"dimensions": 256},
         extra_body={"custom": "value"},
     ))
-    proxy = object()
-    monkeypatch.setattr(client, "_get_proxy_client", lambda: proxy)
     call = AsyncMock(return_value=SimpleNamespace(
         data=[{"embedding": [0.1, 0.2]}],
     ))
@@ -346,7 +343,8 @@ async def test_embedding_uses_proxy_and_provider_params(monkeypatch: pytest.Monk
 
     assert result == [[0.1, 0.2]]
     kwargs = call.await_args.kwargs
-    assert kwargs["http_client"] is proxy
+    assert "http_client" not in kwargs
+    await client.close()
     assert kwargs["dimensions"] == 256
     assert kwargs["extra_body"] == {"custom": "value"}
 
@@ -533,65 +531,41 @@ async def test_stream_consumer_cancel_closes_underlying_stream(
 
 
 @pytest.mark.asyncio
-async def test_anthropic_proxy_environment_is_serialized_and_restored(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_anthropic_network_modes_are_concurrent_without_environment_mutation(monkeypatch):
     import os
 
-    for key in _PROXY_ENV_KEYS:
-        monkeypatch.delenv(key, raising=False)
-    observed: list[str] = []
-    response = _response(choices=[
-        SimpleNamespace(
-            message=SimpleNamespace(content="ok", tool_calls=None),
-            finish_reason="stop",
-        ),
-    ])
-
-    async def fake_completion(**_kwargs: Any) -> Any:
-        observed.append(os.environ["HTTPS_PROXY"])
-        await asyncio.sleep(0.01)
-        assert os.environ["HTTPS_PROXY"] == observed[-1]
+    monkeypatch.setenv("HTTPS_PROXY", "http://unrelated:7890")
+    arrived = asyncio.Event()
+    observed = []
+    response = _response(choices=[SimpleNamespace(
+        message=SimpleNamespace(content="ok", tool_calls=None), finish_reason="stop",
+    )])
+    async def complete(**kwargs):
+        observed.append(kwargs["client"].client._transport.mode())
+        if len(observed) == 2:
+            arrived.set()
+        await asyncio.wait_for(arrived.wait(), 2)
+        assert os.environ["HTTPS_PROXY"] == "http://unrelated:7890"
         return response
-
-    monkeypatch.setattr(
-        "agent.llm.llm_client.litellm.acompletion",
-        fake_completion,
-    )
-    first = LLMClient(LLMClientConfig(
-        model="claude",
-        api_type="anthropic",
-        proxy_url="http://proxy-a:8080",
-    ))
-    second = LLMClient(LLMClientConfig(
-        model="claude",
-        api_type="anthropic",
-        proxy_url="http://proxy-b:8080",
-    ))
-
-    await asyncio.gather(
-        first.chat([{"role": "user", "content": "a"}]),
-        second.chat([{"role": "user", "content": "b"}]),
-    )
-
-    assert observed == ["http://proxy-a:8080", "http://proxy-b:8080"]
-    assert all(key not in os.environ for key in _PROXY_ENV_KEYS)
+    monkeypatch.setattr("agent.llm.llm_client.litellm.acompletion", complete)
+    clients = [LLMClient(LLMClientConfig(model="claude", api_type="anthropic", proxy_mode=mode))
+               for mode in ("direct", "proxy")]
+    try:
+        await asyncio.gather(*(client.chat([{"role": "user", "content": "hi"}]) for client in clients))
+        assert observed == ["direct", "proxy"]
+    finally:
+        await asyncio.gather(*(client.close() for client in clients))
 
 
 @pytest.mark.asyncio
-async def test_proxy_update_closes_stale_client() -> None:
-    client = LLMClient(LLMClientConfig(
-        model="gpt-4.1",
-        proxy_url="http://old-proxy:8080",
-    ))
-    stale = SimpleNamespace(is_closed=False, aclose=AsyncMock())
-    client._proxy_client = stale
-
-    client.update_config(proxy_url="http://new-proxy:8080")
-    await asyncio.sleep(0)
-
-    stale.aclose.assert_awaited_once()
-    assert client._proxy_client is None
+async def test_network_mode_update_reuses_client_with_current_policy() -> None:
+    client = LLMClient(LLMClientConfig(model="gpt-4.1", proxy_mode="direct"))
+    http = client._get_http_client()
+    client.update_config(proxy_mode="proxy")
+    assert client._get_http_client() is http
+    assert http._transport.mode() == "proxy"
+    await client.close()
+    assert http.is_closed
 
 
 def _tool() -> list[dict[str, Any]]:

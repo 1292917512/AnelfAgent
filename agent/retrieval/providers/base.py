@@ -14,6 +14,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Coroutine, Dict, List, Protocol, Tuple, runtime_checkable
 
 from core.log import log
+from core.network import ProxyMode
 from core.tool_errors import error_from_exception
 
 # 能力标识（注册表 / 配置 / API 的统一词汇）
@@ -44,7 +45,7 @@ class SearchCap(Protocol):
 class ReaderCap(Protocol):
     """网页读取能力：URL → 可读正文（完整内容，分块由工具层统一施加）。
 
-    use_proxy / respect_robots / extract_mode=raw 为直连语义，远程实现可忽略或不支持。
+    proxy_mode 控制到网站或提供者的本机请求路径；respect_robots / raw 提取由实现声明支持。
     """
 
     def read(
@@ -53,7 +54,7 @@ class ReaderCap(Protocol):
         *,
         timeout: int = 15,
         extract_mode: str = "markdown",
-        use_proxy: bool = False,
+        proxy_mode: ProxyMode = "system",
         respect_robots: bool = False,
     ) -> Dict[str, Any]: ...
 

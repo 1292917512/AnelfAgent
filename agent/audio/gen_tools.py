@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 from agent.audio.capabilities import SOUND_CAPABILITIES, get_sound_router
 from agent.utils import workspace as ws
 from core.config import get_config_bool
+from core.network import async_network_client
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
 from core.tool_registry import deferred_tool
 
@@ -252,9 +253,8 @@ async def clone_voice(
         return err
 
     if audio_path.startswith(("http://", "https://")):
-        import httpx
         try:
-            async with httpx.AsyncClient(timeout=60.0) as hc:
+            async with async_network_client(timeout=60.0) as hc:
                 resp = await hc.get(audio_path, follow_redirects=True)
                 resp.raise_for_status()
             resolved = os.path.abspath(ws.save_audio(resp.content, fmt="mp3", prefix="clone_src"))

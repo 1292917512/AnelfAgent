@@ -28,25 +28,23 @@ class TestGitEnv:
         """剥离 GIT_DIR 等仓库环境变量，防止重定向到非预期仓库。"""
         monkeypatch.setenv("GIT_DIR", "/evil/repo")
         monkeypatch.setenv("GIT_WORK_TREE", "/evil/tree")
-        monkeypatch.setattr(sources, "_configured_proxy", lambda: "")
         env = sources._git_env()
         assert "GIT_DIR" not in env
         assert "GIT_WORK_TREE" not in env
         assert env["GIT_TERMINAL_PROMPT"] == "0"
 
     def test_proxy_injected_when_configured(self, monkeypatch):
-        """配置 plugin_proxy 时注入全套代理环境变量。"""
+        """代理只通过 git 子进程配置注入。"""
         monkeypatch.delenv("http_proxy", raising=False)
-        monkeypatch.setattr(sources, "_configured_proxy", lambda: "http://127.0.0.1:7890")
-        env = sources._git_env()
-        assert env["http_proxy"] == "http://127.0.0.1:7890"
-        assert env["HTTPS_PROXY"] == "http://127.0.0.1:7890"
-        assert env["ALL_PROXY"] == "http://127.0.0.1:7890"
+        env = sources._git_env("http://127.0.0.1:7890")
+        index = int(env["GIT_CONFIG_COUNT"]) - 1
+        assert env[f"GIT_CONFIG_KEY_{index}"] == "http.proxy"
+        assert env[f"GIT_CONFIG_VALUE_{index}"] == "http://127.0.0.1:7890"
+        assert "HTTPS_PROXY" not in env
 
     def test_no_proxy_by_default(self, monkeypatch):
-        """未配置代理时不注入（系统环境变量自然透传，不做覆盖）。"""
+        """未选择代理时不继承进程代理环境。"""
         monkeypatch.delenv("http_proxy", raising=False)
-        monkeypatch.setattr(sources, "_configured_proxy", lambda: "")
         env = sources._git_env()
         assert "http_proxy" not in env
 

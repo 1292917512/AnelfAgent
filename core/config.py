@@ -166,6 +166,8 @@ class ConfigItem:
     step: Optional[float] = None  # RANGE 类型步进
     unit: str = ""  # 单位展示（秒/%/条/分钟…）
     tag: str = ""  # 条件显示标记（如频道 ws_mode 的 forward/reverse，仅供 UI 分组过滤）
+    validator: Optional[Callable[[Any], Any]] = None
+    related_key: str = ""
 
     def __post_init__(self) -> None:
         if self.value_type == ConfigValueType.AUTO or self.value_type == "auto":
@@ -183,6 +185,15 @@ class ConfigItem:
         return self.type_name == ConfigValueType.PASSWORD.value
 
     def coerce_value(self, value: Any) -> Any:
+        """转换类型并运行所属模块的值校验，供 Web 与 AI 写入口共用。"""
+        value = self._coerce_value(value)
+        if self.validator is None:
+            return value
+        expanded = expand_env_refs(value)
+        validated = self.validator(expanded)
+        return validated if expanded == value else value
+
+    def _coerce_value(self, value: Any) -> Any:
         """按声明类型校验并转换外部输入值，非法值抛 ValueError。
 
         供 Web PUT 与 AI 配置工具共用的统一入口（转换后调用方应再经 clamp 收敛）。
@@ -668,6 +679,8 @@ def register_configs(configs: Dict[str, Dict[str, Any]]) -> None:
                 step=config_info.get("step"),
                 unit=config_info.get("unit", ""),
                 tag=config_info.get("tag", ""),
+                validator=config_info.get("validator"),
+                related_key=config_info.get("related_key", ""),
             )
 
             # 注册配置项并初始化默认值
@@ -807,6 +820,7 @@ def register_model_configs(
             step=extras.get("step"),
             unit=str(extras.get("unit", "")),
             tag=str(extras.get("tag", "")),
+            related_key=str(extras.get("related_key", "")),
         ))
         if not ConfigManager.has(key):
             ConfigManager.set(key, default)

@@ -34,6 +34,7 @@ from agent.llm.video_adapters import (
     resolve_video_adapter,
 )
 from core.log import log
+from core.network import ProxyMode, async_network_client
 
 _TIMEOUT = 120.0
 # 同步图片生成/编辑单请求耗时可达数分钟（高步数/排队），长于通用超时
@@ -54,7 +55,7 @@ class MediaClient:
         api_key: str,
         *,
         timeout: float = _TIMEOUT,
-        proxy_url: str = "",
+        proxy_mode: ProxyMode = "system",
         media_protocol: str = "",
     ) -> None:
         self._base_url = base_url.rstrip("/")
@@ -63,15 +64,12 @@ class MediaClient:
             raise ValueError(f"媒体端点 base_url 缺少 http(s):// 前缀: {base_url!r}")
         self._api_key = api_key
         self._timeout = timeout
-        self._proxy_url = proxy_url
+        self._proxy_mode = proxy_mode
         self._media_protocol = media_protocol
 
     def _http_client(self, timeout: Optional[float] = None) -> httpx.AsyncClient:
         """创建 httpx 异步客户端（若配置了代理则自动应用）。"""
-        kw: Dict[str, Any] = {"timeout": timeout or self._timeout}
-        if self._proxy_url:
-            kw["proxy"] = self._proxy_url
-        return httpx.AsyncClient(**kw)
+        return async_network_client(proxy_mode=self._proxy_mode, timeout=timeout or self._timeout)
 
     def _headers(self) -> Dict[str, str]:
         h: Dict[str, str] = {"Authorization": f"Bearer {self._api_key}"}

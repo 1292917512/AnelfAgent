@@ -1,4 +1,5 @@
-import { Check, Loader2, RotateCcw } from "lucide-react";
+import { Link } from "react-router-dom";
+import { ArrowUpRight, Check, Loader2, RotateCcw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { ConfigMetaItem } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -93,7 +94,8 @@ export function ConfigItemRow({ item, highlight, onOpenDetail }: ConfigItemRowPr
         <ConfigSource item={item} />
       </button>
 
-      <div className="config-item-control flex max-w-full items-center gap-2">
+      {item.related_key && <Link target="_blank" rel="noreferrer" to={`/config?key=${encodeURIComponent(item.related_key)}`} className="inline-flex items-center gap-1 text-xs text-accent hover:underline">{t("relatedSetting")}<ArrowUpRight size={13} /></Link>}
+      <div className={cn("config-item-control flex max-w-full items-start gap-2", item.type === "text" && "w-full")}>
         {control}
         {saving && <Loader2 size={14} className="animate-spin text-muted" />}
         {saved && !saving && !error && <Check size={16} className="text-ok" />}

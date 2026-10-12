@@ -65,29 +65,7 @@ def create_bootstrap() -> FlowMachine:
         log("DataCenter 已创建")
         return data_center
 
-    @machine.node(skip_on_error=True, depends_on=[])
-    async def init_proxy():
-        """将应用代理配置同步到环境变量，供 litellm 等库使用。"""
-        import os
-
-        from core.config import ConfigManager
-
-        if not ConfigManager.get('proxy_enabled', False):
-            return
-
-        http_proxy: str = ConfigManager.get('http_proxy', '')
-        https_proxy: str = ConfigManager.get('https_proxy', '')
-
-        if http_proxy:
-            os.environ['HTTP_PROXY'] = http_proxy
-            os.environ['http_proxy'] = http_proxy
-        if https_proxy:
-            os.environ['HTTPS_PROXY'] = https_proxy
-            os.environ['https_proxy'] = https_proxy
-
-        log(f"代理已启用: http={http_proxy or '(未设置)'}, https={https_proxy or '(未设置)'}")
-
-    @machine.node(skip_on_error=False, depends_on=["init_proxy"])
+    @machine.node(skip_on_error=False, depends_on=[])
     async def init_llm():
         from agent.llm import get_llm_manager
         from core.lifecycle import Lifecycle

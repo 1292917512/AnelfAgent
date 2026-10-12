@@ -3,7 +3,7 @@
 封装 MiniMax 平台的语音合成、图片生成、音色管理等 API，
 使用 httpx 异步客户端。凭据（api_key / coding plan）经组件凭据中心
 （config/provider_keys.json，Web/AI/文件三面可配）；非凭据参数
-（默认音色/模型/代理）从实体级 config.json 加载。
+（默认音色/模型）从实体级 config.json 加载。
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from core.log import log
+from entities._sdk import ProxyMode, async_network_client
 
 _BASE_URL = "https://api.minimaxi.com"
 _TIMEOUT = 120.0
@@ -95,21 +96,18 @@ def normalize_search_results(data: Dict[str, Any], query: str, max_results: int)
 class MiniMaxClient:
     """MiniMax 平台 API 客户端。"""
 
-    def __init__(self, api_key: str = "", proxy_url: str = "") -> None:
+    def __init__(self, api_key: str = "", proxy_mode: ProxyMode = "system") -> None:
         from entities._sdk import get_provider_key
 
         self._api_key = api_key or get_provider_key("minimax")
-        self._proxy_url = proxy_url or get_config("proxy")
+        self._proxy_mode = proxy_mode
 
     @property
     def configured(self) -> bool:
         return bool(self._api_key)
 
     def _http_client(self, timeout: float = _TIMEOUT) -> httpx.AsyncClient:
-        kw: Dict[str, Any] = {"timeout": timeout}
-        if self._proxy_url:
-            kw["proxy"] = self._proxy_url
-        return httpx.AsyncClient(**kw)
+        return async_network_client(proxy_mode=self._proxy_mode, timeout=timeout)
 
     def _auth_headers(self) -> Dict[str, str]:
         return {"Authorization": f"Bearer {self._api_key}"}
@@ -605,7 +603,7 @@ async def image_to_data_url(image_source: str) -> str:
         return src
 
     if src.startswith(("http://", "https://")):
-        async with httpx.AsyncClient(timeout=60.0) as hc:
+        async with async_network_client(timeout=60.0) as hc:
             try:
                 resp = await hc.get(src, follow_redirects=True)
                 resp.raise_for_status()

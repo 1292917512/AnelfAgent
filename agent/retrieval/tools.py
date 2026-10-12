@@ -2,7 +2,10 @@
 
 接口层：本文件只做工具注册与参数校验，能力实现在 providers/ 模块
 （能力 × 提供者矩阵：Provider 抽象 + builtin/bigmodel 内置实现 + 组件注册），
-经 providers.resolve 统一解析；直连抓取设施在 fetcher.py。
+经 providers.resolve 统一解析；本机抓取设施在 fetcher.py。
+模型可见：工具参数 proxy_mode 选择全局网络策略，错误经工具结果返回。
+token 影响：仅参数说明增加少量 token。
+缓存影响：不注入运行状态或代理配置到稳定上下文前缀。
 
 工具面：
 - web_search:        检索关键词，返回结构化结果列表（可指定提供者）
@@ -21,6 +24,7 @@ import json
 from typing import Optional
 
 from core.entity import EntityRegistry
+from core.network import ProxyMode
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
 from core.tool_registry import deferred_tool
 
@@ -82,7 +86,7 @@ def web_fetch(
     extract_mode: str = "markdown",
     max_chars: int = 8000,
     timeout: int = 15,
-    use_proxy: bool = False,
+    proxy_mode: ProxyMode = "system",
     start_index: int = 0,
     respect_robots: bool = False,
     provider: str = "",
@@ -97,10 +101,10 @@ def web_fetch(
         extract_mode:   输出格式：markdown（默认，保留结构）、text（纯文本）或 raw（原始内容，仅 builtin 提供者支持）
         max_chars:      最大返回字符数，默认 8000
         timeout:        超时秒数，默认 15
-        use_proxy:      是否使用代理（仅 builtin 提供者生效），默认 False
+        proxy_mode:     system 按全局规则，direct 直连，proxy 使用全局代理（选择本机到提供者/网站的网络路径）
         start_index:    从该字符索引开始返回，默认 0，用于长页面分块续读
-        respect_robots: 是否遵守目标站点 robots.txt 合规检查（仅 builtin 提供者生效），默认 False
-        provider:       指定读取提供者（builtin 本地直连 / bigmodel 智谱），留空用系统当前选择
+        respect_robots: 是否遵守目标站点 robots.txt 合规检查（仅 builtin 提供者生效），默认 system
+        provider:       指定读取提供者（builtin 本机抓取 / bigmodel 智谱），留空用系统当前选择
     """
     from agent.retrieval import providers
     from agent.retrieval.extractor import truncate_text
@@ -121,7 +125,7 @@ def web_fetch(
     try:
         result = selected.read(
             url, timeout=int(timeout), extract_mode=extract_mode,
-            use_proxy=use_proxy, respect_robots=respect_robots,
+            proxy_mode=proxy_mode, respect_robots=respect_robots,
         )
     except Exception as e:
         return selected.error_response(e, f"读取 {url}")
@@ -334,7 +338,7 @@ def _providers_matrix() -> dict:
 
 
 # ==================================================================
-# 页面链接提取（直连语义）
+# 页面链接提取（本机请求）
 # ==================================================================
 
 
@@ -343,7 +347,7 @@ def extract_page_links(
     url: str,
     max_links: int = 50,
     timeout: int = 15,
-    use_proxy: bool = False,
+    proxy_mode: ProxyMode = "system",
 ) -> str:
     """提取指定网页中的所有超链接（URL + 链接文本）。
 
@@ -351,7 +355,7 @@ def extract_page_links(
         url:       要分析的网页 URL
         max_links: 最多返回链接数，默认 50
         timeout:   超时秒数，默认 15
-        use_proxy: 是否使用代理，默认 False
+        proxy_mode: system 按全局规则，direct 直连，proxy 使用全局代理，默认 system
     """
     import httpx
 
@@ -361,7 +365,7 @@ def extract_page_links(
         return json.dumps({"error": "仅支持 http/https"}, ensure_ascii=False)
     try:
         _status, final_url, content_type, body = fetch(
-            url, timeout=float(timeout), use_proxy=use_proxy)
+            url, timeout=float(timeout), proxy_mode=proxy_mode)
         if "text/html" not in content_type:
             return json.dumps({"error": f"非 HTML 页面: {content_type}"}, ensure_ascii=False)
         from agent.retrieval.extractor import extract_links
@@ -375,7 +379,7 @@ def extract_page_links(
 
 
 # ==================================================================
-# 通用 HTTP 请求（直连语义）
+# 通用 HTTP 请求（本机请求）
 # ==================================================================
 
 
@@ -387,7 +391,7 @@ def web_request(
     headers: str = "",
     timeout: int = 15,
     max_chars: int = 5000,
-    use_proxy: bool = False,
+    proxy_mode: ProxyMode = "system",
 ) -> str:
     """发送 HTTP 请求，返回状态码和响应体。
 
@@ -400,7 +404,7 @@ def web_request(
         headers:   额外请求头（JSON 格式，如 {\"Authorization\": \"Bearer token\"}）
         timeout:   超时秒数，默认 15
         max_chars: 响应体最大字符数，默认 5000
-        use_proxy: 是否使用代理，默认 False
+        proxy_mode: system 按全局规则，direct 直连，proxy 使用全局代理，默认 system
     """
     import httpx
 
@@ -419,7 +423,7 @@ def web_request(
     try:
         _status, _final_url, content_type, text = fetch(
             url, method=method, content=req_body,
-            headers=req_headers or None, timeout=float(timeout), use_proxy=use_proxy,
+            headers=req_headers or None, timeout=float(timeout), proxy_mode=proxy_mode,
         )
         truncated = len(text) > max_chars
         if truncated:
@@ -439,7 +443,7 @@ def web_request(
 
 
 # ==================================================================
-# 文件下载（直连语义）
+# 文件下载（本机请求）
 # ==================================================================
 
 
@@ -454,7 +458,7 @@ def web_download(
     filename: str = "",
     max_mb: int = 50,
     timeout: int = 30,
-    use_proxy: bool = False,
+    proxy_mode: ProxyMode = "system",
 ) -> str:
     """下载远程文件到本地 workspace/uploads/file/，返回本地路径。
 
@@ -467,7 +471,7 @@ def web_download(
         filename:  期望保存的文件名（可选，默认从 URL 推断）
         max_mb:    允许的最大文件大小（MB），默认 50
         timeout:   超时秒数，默认 30
-        use_proxy: 是否使用代理，默认 False
+        proxy_mode: system 按全局规则，direct 直连，proxy 使用全局代理，默认 system
     """
     import os
     import time
@@ -497,7 +501,7 @@ def web_download(
 
     try:
         _status, final_url, written = download_to_file(
-            url, local_path, max_bytes, timeout=float(timeout), use_proxy=use_proxy)
+            url, local_path, max_bytes, timeout=float(timeout), proxy_mode=proxy_mode)
     except httpx.TimeoutException as e:
         return error_from_exception(e, action=f"下载 {url}")
     except PermissionError as e:

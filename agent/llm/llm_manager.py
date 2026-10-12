@@ -44,6 +44,7 @@ from agent.llm.llm_client import (
 from agent.llm.types import ChatResult
 from core.entity import BaseEntity, EntityType
 from core.log import error, info, log, warning
+from core.network import ProxyMode
 from core.path import ConfigPaths
 
 if TYPE_CHECKING:
@@ -62,11 +63,13 @@ class ProviderConfig:
     base_url: str = ""
     api_key: str = ""
     api_type: str = "openai"
-    proxy_url: str = ""
+    proxy_mode: ProxyMode = "system"
     # 媒体协议适配器名（image/speech/video/music 共用注册表），空表示按 host 自动匹配。
     media_protocol: str = ""
 
     def __post_init__(self) -> None:
+        if self.proxy_mode not in {"system", "direct", "proxy"}:
+            raise ValueError("proxy_mode 须为 system、direct 或 proxy")
         if not self.id.strip():
             raise ValueError("供应商 id 不能为空")
         if self.api_type not in API_TYPES:
@@ -79,7 +82,7 @@ class ProviderConfig:
             "base_url": self.base_url,
             "api_key": self.api_key,
             "api_type": self.api_type,
-            "proxy_url": self.proxy_url,
+            "proxy_mode": self.proxy_mode,
             "media_protocol": self.media_protocol,
         }
 
@@ -91,7 +94,7 @@ class ProviderConfig:
             base_url=data.get("base_url", ""),
             api_key=data.get("api_key", ""),
             api_type=data.get("api_type", "openai"),
-            proxy_url=data.get("proxy_url", ""),
+            proxy_mode=data.get("proxy_mode", "system"),
             media_protocol=data.get("media_protocol", ""),
         )
 
@@ -228,7 +231,7 @@ class LLMManager(BaseEntity):
                         frequency_penalty=mdata.get("frequency_penalty", 0.0),
                         presence_penalty=mdata.get("presence_penalty", 0.0),
                         timeout=mdata.get("timeout", DEFAULT_TIMEOUT),
-                        proxy_url=prov.proxy_url,
+                        proxy_mode=prov.proxy_mode,
                         supports_vision=mdata.get("supports_vision", False),
                         supports_video=mdata.get("supports_video", False),
                         supports_tools=mdata.get("supports_tools", True),
@@ -681,7 +684,7 @@ class LLMManager(BaseEntity):
                     base_url=client.config.base_url,
                     api_key=client.config.api_key,
                     timeout=client.config.timeout,
-                    proxy_url=client.config.effective_proxy,
+                    proxy_mode=client.config.proxy_mode,
                     media_protocol=client.config.media_protocol,
                 )
         return None
@@ -730,7 +733,7 @@ class LLMManager(BaseEntity):
                 base_url=client.config.base_url,
                 api_key=client.config.api_key,
                 timeout=client.config.timeout,
-                proxy_url=client.config.effective_proxy,
+                proxy_mode=client.config.proxy_mode,
                 media_protocol=client.config.media_protocol,
             )
             result.append((client.config.model, mc))
@@ -1181,14 +1184,14 @@ class LLMManager(BaseEntity):
         base_url: str = "",
         api_key: str = "",
         api_type: str = "openai",
-        proxy_url: str = "",
+        proxy_mode: ProxyMode = "system",
         media_protocol: str = "",
     ) -> ProviderConfig:
         if pid in self._providers:
             warning(f"供应商 '{pid}' 已存在，将被覆盖", tag="模型")
         prov = ProviderConfig(
             id=pid, name=name or pid, base_url=base_url,
-            api_key=api_key, api_type=api_type, proxy_url=proxy_url,
+            api_key=api_key, api_type=api_type, proxy_mode=proxy_mode,
             media_protocol=media_protocol,
         )
         self._providers[pid] = prov
@@ -1210,7 +1213,7 @@ class LLMManager(BaseEntity):
                 base_url=updated.base_url,
                 api_key=updated.api_key,
                 api_type=updated.api_type,
-                proxy_url=updated.proxy_url,
+                proxy_mode=updated.proxy_mode,
                 media_protocol=updated.media_protocol,
             )
         self.save_config()
@@ -1284,7 +1287,7 @@ class LLMManager(BaseEntity):
             api_key=prov.api_key,
             model=model,
             api_type=prov.api_type,
-            proxy_url=prov.proxy_url,
+            proxy_mode=prov.proxy_mode,
             provider_id=provider_id,
             **{
                 k: v for k, v in kwargs.items()
@@ -1420,7 +1423,7 @@ class LLMManager(BaseEntity):
         old_types = set(client.config.model_types)
         old_supports_vision = client.config.supports_vision
         allowed = set(LLMClientConfig.__dataclass_fields__) - {
-            "provider_id", "base_url", "api_key", "api_type", "proxy_url",
+            "provider_id", "base_url", "api_key", "api_type", "proxy_mode",
         }
         client.update_config(**{k: v for k, v in kwargs.items() if k in allowed})
         self._sync_priority_delta(model_id, old_types, old_supports_vision, client.config)

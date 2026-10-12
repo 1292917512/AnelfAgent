@@ -50,10 +50,6 @@ register_configs_safe({
             "description": "插件工具默认沉睡（不驻留完整 schema，需要时激活分组使用）",
             "default": True,
         },
-        "plugin_proxy": {
-            "description": "插件 git 操作（市场订阅/安装/升级）使用的代理地址，如 http://127.0.0.1:7890；留空走系统环境",
-            "default": "",
-        },
     },
 })
 

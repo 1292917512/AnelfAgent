@@ -7,6 +7,7 @@ from typing import Annotated, Any, Dict, List, Literal, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import AfterValidator, BaseModel, Field
 
+from core.network import ProxyMode
 from services import ModelService
 
 router = APIRouter(prefix="/models", tags=["models"])
@@ -111,7 +112,7 @@ class CreateProviderReq(BaseModel):
     base_url: str = ""
     api_key: str = ""
     api_type: ApiType = "openai"
-    proxy_url: str = ""
+    proxy_mode: ProxyMode = "system"
     media_protocol: str = ""
 
 
@@ -119,7 +120,7 @@ class CreateProviderReq(BaseModel):
 async def create_provider(req: CreateProviderReq) -> Dict[str, Any]:
     ok = _svc.add_provider(
         req.id, name=req.name, base_url=req.base_url,
-        api_key=req.api_key, api_type=req.api_type, proxy_url=req.proxy_url,
+        api_key=req.api_key, api_type=req.api_type, proxy_mode=req.proxy_mode,
         media_protocol=req.media_protocol,
     )
     if not ok:
@@ -132,7 +133,7 @@ class UpdateProviderReq(BaseModel):
     base_url: Optional[str] = None
     api_key: Optional[str] = None
     api_type: Optional[ApiType] = None
-    proxy_url: Optional[str] = None
+    proxy_mode: Optional[ProxyMode] = None
     media_protocol: Optional[str] = None
 
 
@@ -372,6 +373,7 @@ async def delete_sub_agent(name: str) -> Dict[str, str]:
 
 
 class TestConnectionReq(BaseModel):
+    proxy_mode: ProxyMode = "system"
     base_url: str
     api_key: str = ""
     provider_id: str = ""
@@ -389,7 +391,7 @@ async def test_connection(req: TestConnectionReq) -> Dict[str, str]:
             if prov is not None:
                 api_type = prov.get("api_type", api_type)
         result = await _svc.test_connection(
-            req.base_url, api_key, api_type, req.extra_headers or None,
+            req.base_url, api_key, api_type, req.extra_headers or None, proxy_mode=req.proxy_mode,
         )
         return {"result": result}
     except ValueError as e:
@@ -440,14 +442,14 @@ async def get_cost_map_info() -> Dict[str, Any]:
 
 
 class CostMapUpdateReq(BaseModel):
-    proxy_url: str = ""
+    proxy_mode: ProxyMode = "system"
 
 
 @router.post("/cost-map/update")
 async def update_cost_map(req: CostMapUpdateReq) -> Dict[str, Any]:
     """从 GitHub 拉取最新 LiteLLM 模型价格表并合并（保留自定义注册模型），支持代理。"""
     try:
-        return await _svc.update_cost_map(req.proxy_url)
+        return await _svc.update_cost_map(req.proxy_mode)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"更新失败: {e}") from e
 

@@ -35,7 +35,6 @@ class TestRequest(BaseModel):
 
 
 class SettingsRequest(BaseModel):
-    proxy: Optional[str] = None
     ssrf_protection: Optional[bool] = None
 
 
@@ -89,4 +88,4 @@ async def get_settings() -> Dict[str, Any]:
 async def save_settings(req: SettingsRequest) -> Dict[str, Any]:
     """保存抓取设置（None 字段不变更）。"""
     return get_retrieval_service().save_settings(
-        proxy=req.proxy, ssrf_protection=req.ssrf_protection)
+        ssrf_protection=req.ssrf_protection)

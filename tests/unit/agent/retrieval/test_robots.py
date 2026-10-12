@@ -13,6 +13,8 @@ class _FakeResp:
     def __init__(self, status_code: int, text: str = "") -> None:
         self.status_code = status_code
         self.text = text
+        self.headers = {"content-type": "text/plain"}
+        self.url = "https://example.com/robots.txt"
 
 
 class _FakeClient:
@@ -31,7 +33,7 @@ class _FakeClient:
     def __exit__(self, *args) -> bool:
         return False
 
-    def get(self, url: str) -> _FakeResp:
+    def request(self, method: str, url: str, **kwargs) -> _FakeResp:
         type(self).call_count += 1
         if type(self).error is not None:
             raise type(self).error

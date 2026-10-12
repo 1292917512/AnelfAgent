@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple
 from urllib.parse import urlsplit
 from urllib.robotparser import RobotFileParser
 
 from core.log import log
+from core.network import ProxyMode
 
 _ROBOTS_TTL = 3600.0  # robots.txt 缓存 1 小时
 _ROBOTS_TIMEOUT = 10.0
@@ -22,55 +23,36 @@ _cache: Dict[str, Tuple[float, Optional[RobotFileParser], str]] = {}
 _lock = threading.Lock()
 
 
-def _load_robots(host_key: str, use_proxy: bool) -> Tuple[Optional[RobotFileParser], str]:
+def _load_robots(host_key: str, proxy_mode: ProxyMode) -> Tuple[Optional[RobotFileParser], str]:
     """抓取并解析 robots.txt，返回 (parser, 状态)。
 
     状态：ok（解析成功）/ forbidden（401·403，全站禁止）/ open（抓取失败，放行）。
     """
-    import httpx
-
-    from agent.retrieval.fetcher import (
-        _USER_AGENT,
-        check_ssrf_url,
-        proxy_kwargs,
-        ssrf_protection_enabled,
-    )
+    from agent.retrieval.fetcher import fetch
 
     robots_url = f"{host_key}/robots.txt"
     try:
-        if ssrf_protection_enabled():
-            err = check_ssrf_url(robots_url)
-            if err:
-                log(f"robots.txt 目标被 SSRF 拦截（放行）: {err}", "DEBUG", tag="web")
-                return None, "open"
-        client_kwargs: Dict[str, Any] = {
-            "timeout": _ROBOTS_TIMEOUT,
-            "follow_redirects": True,
-            "headers": {"User-Agent": _USER_AGENT},
-            **proxy_kwargs(use_proxy),
-        }
-        with httpx.Client(**client_kwargs) as client:
-            resp = client.get(robots_url)
+        status_code, _, _, body = fetch(robots_url, timeout=_ROBOTS_TIMEOUT, proxy_mode=proxy_mode)
     except Exception as e:
         log(f"robots.txt 抓取失败（放行）: {robots_url}: {e}", "DEBUG", tag="web")
         return None, "open"
 
-    if resp.status_code in (401, 403):
+    if status_code in (401, 403):
         return None, "forbidden"
-    if resp.status_code >= 400:
+    if status_code >= 400:
         return None, "open"
     parser = RobotFileParser(robots_url)
-    parser.parse(resp.text.splitlines())
+    parser.parse(body.splitlines())
     return parser, "ok"
 
 
-def is_allowed(url: str, user_agent: str = "*", use_proxy: bool = False) -> Tuple[bool, str]:
+def is_allowed(url: str, user_agent: str = "*", proxy_mode: ProxyMode = "system") -> Tuple[bool, str]:
     """检查目标站点 robots.txt 是否允许抓取指定 URL。
 
     Args:
         url: 待抓取的页面地址
         user_agent: 用于匹配 robots 规则的 User-Agent，默认 "*" 通配组
-        use_proxy: 抓取 robots.txt 时是否使用代理
+        proxy_mode: 抓取 robots.txt 使用的全局代理策略
 
     Returns:
         (allowed, detail)：allowed 为 False 时 detail 说明禁止原因
@@ -85,7 +67,7 @@ def is_allowed(url: str, user_agent: str = "*", use_proxy: bool = False) -> Tupl
     if entry is not None and time.monotonic() - entry[0] < _ROBOTS_TTL:
         _, parser, status = entry
     else:
-        parser, status = _load_robots(host_key, use_proxy)
+        parser, status = _load_robots(host_key, proxy_mode)
         with _lock:
             _cache[host_key] = (time.monotonic(), parser, status)
 

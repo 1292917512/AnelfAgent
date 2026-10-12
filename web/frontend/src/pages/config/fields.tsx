@@ -67,7 +67,7 @@ export function TextField({ value, multiline, password, label, disabled, onCommi
   const commit = () => { if (text !== value) onCommit(text); };
   const props = { "aria-label": label, value: text, disabled, onBlur: commit, className: cn(INPUT_CLS, "w-48 max-w-full") };
   return multiline
-    ? <textarea {...props} rows={3} onChange={(event) => setText(event.target.value)} />
+    ? <textarea {...props} className={cn(INPUT_CLS, "min-h-32 w-full resize-y font-mono leading-relaxed")} rows={5} onChange={(event) => setText(event.target.value)} />
     : <input {...props} type={password ? "password" : "text"} autoComplete={password ? "new-password" : "off"}
       onChange={(event) => setText(event.target.value)}
       onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} />;

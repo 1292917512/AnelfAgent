@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any, Dict, Tuple
 
 from agent.retrieval.providers.base import Provider
+from core.network import ProxyMode
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
 
 
@@ -32,13 +33,13 @@ class BuiltinProvider(Provider):
         *,
         timeout: int = 15,
         extract_mode: str = "markdown",
-        use_proxy: bool = False,
+        proxy_mode: ProxyMode = "system",
         respect_robots: bool = False,
     ) -> Dict[str, Any]:
         from agent.retrieval.fetcher import read_page
         return read_page(
             url, timeout=timeout, extract_mode=extract_mode,
-            use_proxy=use_proxy, respect_robots=respect_robots,
+            proxy_mode=proxy_mode, respect_robots=respect_robots,
         )
 
     def error_response(self, exc: Exception, action: str, hint: str = "") -> str:

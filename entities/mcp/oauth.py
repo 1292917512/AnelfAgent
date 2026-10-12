@@ -54,6 +54,7 @@ from pydantic import ValidationError
 from core.file_utils import atomic_write_text
 from core.log import log
 from core.path import ConfigPaths
+from entities._sdk import async_network_client
 
 _TAG = "MCP-OAuth"
 
@@ -403,7 +404,7 @@ async def _discover_server_meta(server_url: str,
     （服务器 advertise 错误/缺失元数据时的逃生门）；显式配置的文档取不到
     或无效是配置错误，响亮失败而非静默回落。其 issuer 按文档声明采信。
     """
-    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, follow_redirects=True) as http:
+    async with async_network_client(timeout=_HTTP_TIMEOUT, follow_redirects=True) as http:
         # 1) 保护资源元数据（RFC 9728）：定位授权服务器 + resource（RFC 8707）
         auth_server = _origin(server_url)
         resource = _canonical_resource(server_url)
@@ -582,7 +583,7 @@ class AuthorizationSession:
 
     async def prepare(self, extra_scopes: str = "") -> str:
         """发现 + 客户端解析 + 授权 URL 构造 + 待授权登记。"""
-        self._http = httpx.AsyncClient(timeout=_HTTP_TIMEOUT, follow_redirects=True)
+        self._http = async_network_client(timeout=_HTTP_TIMEOUT, follow_redirects=True)
         entry = _load_entry(self._server)
         self._server_meta = entry.get("server_meta")
         # 显式配置元数据覆盖时禁用持久化的旧 server_meta：以配置文档为准重新发现
@@ -870,7 +871,7 @@ class McpOAuthProvider(httpx2.Auth):
         data, headers = _apply_client_auth(data, headers, client)
 
         try:
-            async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as http:
+            async with async_network_client(timeout=_HTTP_TIMEOUT) as http:
                 response = await http.post(str(meta["token_endpoint"]), data=data, headers=headers)
         except httpx.HTTPError as exc:
             raise OAuthTemporaryError(f"token 刷新请求失败: {exc}") from exc

@@ -102,5 +102,14 @@
   "environmentManaged": "Managed by environment variable {{name}}",
   "selectGroup": "Choose configuration group",
   "groupLabel": "Group",
-  "filterGroups": "Find a module or group…"
+  "filterGroups": "Find a module or group…",
+  "relatedSetting": "Related setting",
+  "network": {
+    "configure": "Global proxy and routing rules",
+    "mode": "Network policy",
+    "system": "Follow global rules",
+    "direct": "Always direct",
+    "proxy": "Use global proxy",
+    "hint": "Proxy addresses and site rules are managed centrally. The default tries direct first; sent write requests are not replayed."
+  }
 }

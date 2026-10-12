@@ -275,20 +275,6 @@ _MIND_CONFIGS = {
 
 # 网络与工作区配置（原 Settings 页直改 app_config，收编进统一配置注册表）
 _NETWORK_CONFIGS = {
-    "network/proxy": {
-        "proxy_enabled": {
-            "description": "是否启用全局网络代理（启动时写入 HTTP(S)_PROXY 环境变量）",
-            "default": False,
-        },
-        "http_proxy": {
-            "description": "HTTP 代理地址（如 http://127.0.0.1:7890）",
-            "default": "",
-        },
-        "https_proxy": {
-            "description": "HTTPS 代理地址（留空则复用 HTTP 代理）",
-            "default": "",
-        },
-    },
     "system/workspace": {
         "workspace_root": {
             "description": "工作区根目录（相对路径基于进程启动目录解析）",

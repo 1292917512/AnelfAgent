@@ -11,7 +11,6 @@ LLMClient — 统一 LLM 客户端（基于 litellm）。
 
 from __future__ import annotations
 
-import asyncio
 import re
 from typing import Any, AsyncGenerator, Dict, List, Optional, Set
 
@@ -50,8 +49,8 @@ from agent.llm.config import (
     LLMClientConfig,
     ModelType,
 )
+from agent.llm.network import ModelHTTPClient, ModelHTTPHandler, model_network, network_stream
 from agent.llm.protocol import ChatProtocol, is_native_responses_provider, resolve_chat_protocol
-from agent.llm.proxy import _PROXY_ENV_KEYS, _ProxyEnvLease, _ProxyHttpClient
 from agent.llm.reasoning import (
     normalize_effort,
     parse_thinking_spec,
@@ -105,43 +104,11 @@ __all__ = [
     "LLMClientConfig",
     "LLMNotConfiguredError",
     "ModelType",
-    "_PROXY_ENV_KEYS",
 ]
 
 
 class LLMNotConfiguredError(RuntimeError):
     """未配置可调用模型时抛出的明确异常。"""
-
-
-class _CacheAffinityHTTPHandler(litellm.AsyncHTTPHandler):
-    """小连接池 AsyncHTTPHandler（Anthropic 兼容端点的节点级缓存亲和）。
-
-    kimi coding 等 anthropic 兼容网关的 prompt 缓存是**节点本地**的，
-    按 TCP 连接亲和路由（实测：保活复用 100% 命中；每次新连接 8/8 全失）。
-    litellm 默认池（100 连接 / 20 保活）在并发下不断开新连接——每个
-    新连接大概率落到冷节点，整个前缀（含稳定层）全量 miss。限制池
-    大小即限制触达节点数，保活复用维持亲和；超出并发上限时排队。
-    """
-
-    def __init__(self, pool_size: int, timeout: Optional[float] = None) -> None:
-        self._pool_size = max(1, pool_size)
-        super().__init__(timeout=timeout)
-
-    def create_client(
-        self,
-        timeout: Any,
-        event_hooks: Any = None,
-        ssl_verify: Any = None,
-        shared_session: Any = None,
-    ) -> httpx.AsyncClient:
-        return httpx.AsyncClient(
-            limits=httpx.Limits(
-                max_connections=self._pool_size,
-                max_keepalive_connections=self._pool_size,
-            ),
-            timeout=timeout or DEFAULT_TIMEOUT,
-            follow_redirects=True,
-        )
 
 
 def _cache_affinity_pool_size() -> int:
@@ -208,11 +175,9 @@ class LLMClient(BaseEntity):
         self._entity_tags = [
             "AI Services", "LLM", f"model:{self.config.model}",
         ]
-        self._proxy_client: Optional[_ProxyHttpClient] = None
-        # 缓存亲和小连接池（懒创建，随 close 关闭；见 _CacheAffinityHTTPHandler）
-        self._cache_affinity_handler: Optional[_CacheAffinityHTTPHandler] = None
-        # DashScope 多模态向量专用 HTTP 客户端（懒创建，随 close 关闭）
-        self._embed_http_client: Optional[httpx.AsyncClient] = None
+        self._http_client: Optional[ModelHTTPClient] = None
+        # 缓存亲和小连接池（懒创建，随 close 关闭；见 ModelHTTPHandler）
+        self._http_handler: Optional[ModelHTTPHandler] = None
         # 从端点 400 报错中学习到的 max_tokens 实际上限（本次运行内有效）
         self._learned_output_cap: Optional[int] = None
         # 从端点 400 报错中学习到的「不支持强制 tool_choice」（本次运行内有效）
@@ -225,12 +190,11 @@ class LLMClient(BaseEntity):
         # chat_completions；显式 chat_protocol=responses 不触发（绝对 native）
         self._responses_native_blocked: bool = False
         super().__init__()
-        proxy = self.config.effective_proxy
         info(
             f"LLMClient [{self.config.name}] 已创建: "
             f"model={self.config.litellm_model}, "
             f"base_url={self.config.base_url}"
-            f"{f', proxy={proxy}' if proxy else ''}",
+            f", network={self.config.proxy_mode}",
             tag="模型",
         )
 
@@ -293,22 +257,6 @@ class LLMClient(BaseEntity):
         self._drop_learned_params(params)
         return params
 
-    def _anthropic_proxy_lease(self) -> "_ProxyEnvLease | None":
-        """Anthropic 专用：返回代理环境变量租约，无代理时返回 None。
-
-        已知限制：litellm 的 anthropic 通道不接受 httpx 客户端注入
-        （其 handler 仅接受 litellm 自有 AsyncHTTPHandler，且该类不支持
-        proxy 参数），无法像其他 provider 一样通过 http_client 显式传代理，
-        因此保留环境变量方案，经 _ProxyEnvLease 读写分离：
-        同代理请求并发，不同代理请求串行。
-        """
-        if self.config.api_type != API_TYPE_ANTHROPIC:
-            return None
-        proxy = self.config.effective_proxy
-        return _ProxyEnvLease(proxy) if proxy else None
-
-    # 未知模型的默认输出预算：激进取值（新模型输出能力通常只增不减），
-    # 超出端点限制时会从报错中解析真实上限并缓存，后续请求自动钳制。
     _ANTHROPIC_DEFAULT_MAX_TOKENS = 65536
 
     def _describe_output_budget(self) -> int:
@@ -450,7 +398,8 @@ class LLMClient(BaseEntity):
         """
         while True:
             try:
-                return await litellm.acompletion(**kwargs)
+                with model_network(self._get_http_client()):
+                    return await litellm.acompletion(**kwargs)
             except Exception as exc:
                 if self._learn_tool_choice_rejection(exc, kwargs):
                     kwargs["tool_choice"] = "auto"
@@ -487,34 +436,27 @@ class LLMClient(BaseEntity):
         )
         return True
 
-    def _get_proxy_client(self) -> Optional[_ProxyHttpClient]:
-        """按需返回当前 Provider 的代理客户端（懒初始化）。"""
-        proxy = self.config.effective_proxy
-        if not proxy:
-            return None
-        if self._proxy_client is None or self._proxy_client.is_closed:
-            self._proxy_client = _ProxyHttpClient(proxy)
-        return self._proxy_client
+    def _get_http_client(self) -> ModelHTTPClient:
+        """返回复用连接池、实时读取全局路由的模型客户端。"""
+        if self._http_client is None or self._http_client.is_closed:
+            self._http_client = ModelHTTPClient(
+                lambda: self.config.proxy_mode, self.config.timeout,
+                _cache_affinity_pool_size() if self.config.cache_affinity else 100,
+            )
+        self._http_client.timeout = httpx.Timeout(self.config.timeout)
+        return self._http_client
 
-    def _get_cache_affinity_handler(self) -> Optional[_CacheAffinityHTTPHandler]:
-        """节点本地缓存的亲和 handler（懒初始化；代理场景走 env lease，不接管）。
-
-        配置 cache_affinity 显式开关优先；缺省 anthropic 线开启（kimi coding
-        等网关的 prompt 缓存是节点本地的，按 TCP 连接亲和路由）。
-        """
+    def _get_http_handler(self) -> ModelHTTPHandler:
         affinity = self.config.cache_affinity
         if affinity is None:
             affinity = self.config.api_type == API_TYPE_ANTHROPIC
-        if not affinity:
-            return None
-        if self.config.effective_proxy:
-            return None
-        if self._cache_affinity_handler is None:
-            self._cache_affinity_handler = _CacheAffinityHTTPHandler(
-                pool_size=_cache_affinity_pool_size(),
-                timeout=self.config.timeout,
+        if self._http_handler is None:
+            self._http_handler = ModelHTTPHandler(
+                lambda: self.config.proxy_mode,
+                _cache_affinity_pool_size() if affinity else 100,
+                self.config.timeout,
             )
-        return self._cache_affinity_handler
+        return self._http_handler
 
     def _build_kwargs(
             self,
@@ -557,14 +499,8 @@ class LLMClient(BaseEntity):
         if stream:
             kwargs["stream"] = True
 
-        proxy_url = self.config.effective_proxy
-        if proxy_url and self.config.api_type != API_TYPE_ANTHROPIC:
-            proxy_client = self._get_proxy_client()
-            if proxy_client:
-                kwargs["http_client"] = proxy_client
-        affinity_handler = self._get_cache_affinity_handler()
-        if affinity_handler is not None:
-            kwargs["client"] = affinity_handler
+        if self.config.api_type not in {API_TYPE_OPENAI, API_TYPE_AZURE}:
+            kwargs["client"] = self._get_http_handler()
 
         from agent.llm.prompt_cache import session_cache_key
         cache_key = session_cache_key()
@@ -894,9 +830,7 @@ class LLMClient(BaseEntity):
         from agent.llm.responses.client import ResponsesClient
 
         self._ensure_configured()
-        http_client = None
-        if self.config.api_type != API_TYPE_ANTHROPIC:
-            http_client = self._get_proxy_client()
+        http_client = self._get_http_client()
         return ResponsesClient(
             model=self.config.litellm_model,
             api_type=self.config.api_type,
@@ -907,47 +841,35 @@ class LLMClient(BaseEntity):
             extra_body={**self.config.extra_params, **self.config.extra_body},
             extra_headers=self.config.extra_headers or None,
             http_client=http_client,
+            http_handler=self._get_http_handler(),
         )
 
     async def responses_create(self, **kwargs: Any) -> Any:
         """创建 Responses 调用。"""
         client = self.responses_client()
-        return await self._call_with_proxy(client.create(**kwargs))
+        return await client.create(**kwargs)
 
     async def responses_stream(self, **kwargs: Any) -> AsyncGenerator[Any, None]:
         """流式 Responses 调用。"""
         client = self.responses_client()
-        lease = self._anthropic_proxy_lease()
-        if lease:
-            async with lease:
-                async for event in client.stream(**kwargs):
-                    yield event
-        else:
-            async for event in client.stream(**kwargs):
-                yield event
+        async for event in client.stream(**kwargs):
+            yield event
 
     async def responses_get(self, response_id: str) -> Any:
         client = self.responses_client()
-        return await self._call_with_proxy(client.get(response_id))
+        return await client.get(response_id)
 
     async def responses_delete(self, response_id: str) -> Dict[str, Any]:
         client = self.responses_client()
-        return await self._call_with_proxy(client.delete(response_id))
+        return await client.delete(response_id)
 
     async def responses_cancel(self, response_id: str) -> Any:
         client = self.responses_client()
-        return await self._call_with_proxy(client.cancel(response_id))
+        return await client.cancel(response_id)
 
     async def responses_compact(self, **kwargs: Any) -> Any:
         client = self.responses_client()
-        return await self._call_with_proxy(client.compact(**kwargs))
-
-    async def _call_with_proxy(self, awaitable: Any) -> Any:
-        lease = self._anthropic_proxy_lease()
-        if lease:
-            async with lease:
-                return await awaitable
-        return await awaitable
+        return await client.compact(**kwargs)
 
     def _build_responses_kwargs(
             self,
@@ -1152,12 +1074,7 @@ class LLMClient(BaseEntity):
             f"LLM chat: {self.config.litellm_model}, msgs={len(kwargs['messages'])}",
             tag="模型",
         )
-        lease = self._anthropic_proxy_lease()
-        if lease:
-            async with lease:
-                resp = await self._start_completion(kwargs)
-        else:
-            resp = await self._start_completion(kwargs)
+        resp = await self._start_completion(kwargs)
         return self._parse_response(resp)
 
     # ------------------------------------------------------------------
@@ -1206,22 +1123,12 @@ class LLMClient(BaseEntity):
         tc_bufs: Dict[int, Dict[str, str]] = {}
         last_finish = ""
         try:
-            lease = self._anthropic_proxy_lease()
-            if lease:
-                async with lease:
-                    stream = await self._start_completion(kwargs)
-                    sink = _rp.install_usage_tap(stream)
-                    async for delta in self._iter_stream(stream, tc_bufs, sink):
-                        if delta.finish_reason:
-                            last_finish = delta.finish_reason
-                        yield delta
-            else:
-                stream = await self._start_completion(kwargs)
-                sink = _rp.install_usage_tap(stream)
-                async for delta in self._iter_stream(stream, tc_bufs, sink):
-                    if delta.finish_reason:
-                        last_finish = delta.finish_reason
-                    yield delta
+            stream = await self._start_completion(kwargs)
+            sink = _rp.install_usage_tap(stream)
+            async for delta in network_stream(self._get_http_client(), self._iter_stream(stream, tc_bufs, sink)):
+                if delta.finish_reason:
+                    last_finish = delta.finish_reason
+                yield delta
         finally:
             if stream is not None:
                 close_fn = getattr(stream, "aclose", None)
@@ -1361,12 +1268,7 @@ class LLMClient(BaseEntity):
 
     def _direct_http(self) -> httpx.AsyncClient:
         """绕过 litellm 的直连请求共享连接池（原生向量 / 视频识别复用）。"""
-        if self._embed_http_client is None or self._embed_http_client.is_closed:
-            self._embed_http_client = httpx.AsyncClient(
-                timeout=self.config.timeout,
-                proxy=self.config.effective_proxy or None,
-            )
-        return self._embed_http_client
+        return self._get_http_client()
 
     # ------------------------------------------------------------------
     # Embedding
@@ -1431,14 +1333,7 @@ class LLMClient(BaseEntity):
         if body:
             kwargs["extra_body"] = body
         self._apply_extra_headers(kwargs)
-        proxy_client = self._get_proxy_client()
-        if proxy_client and self.config.api_type != API_TYPE_ANTHROPIC:
-            kwargs["http_client"] = proxy_client
-        lease = self._anthropic_proxy_lease()
-        if lease:
-            async with lease:
-                resp = await litellm.aembedding(**kwargs)
-        else:
+        with model_network(self._get_http_client()):
             resp = await litellm.aembedding(**kwargs)
         return [item["embedding"] for item in resp.data]
 
@@ -1515,14 +1410,7 @@ class LLMClient(BaseEntity):
         if body:
             kwargs["extra_body"] = body
         self._apply_extra_headers(kwargs)
-        proxy_client = self._get_proxy_client()
-        if proxy_client and self.config.api_type != API_TYPE_ANTHROPIC:
-            kwargs["http_client"] = proxy_client
-        lease = self._anthropic_proxy_lease()
-        if lease:
-            async with lease:
-                resp = await litellm.atext_completion(**kwargs)
-        else:
+        with model_network(self._get_http_client()):
             resp = await litellm.atext_completion(**kwargs)
         choices = getattr(resp, "choices", None) or []
         choice = choices[0] if choices else None
@@ -1563,16 +1451,12 @@ class LLMClient(BaseEntity):
 
     async def close(self) -> None:
         """关闭按客户端持有的代理连接池与多模态向量客户端。"""
-        client = self._proxy_client
-        self._proxy_client = None
+        client = self._http_client
+        self._http_client = None
         if client is not None and not client.is_closed:
             await client.aclose()
-        embed_client = self._embed_http_client
-        self._embed_http_client = None
-        if embed_client is not None and not embed_client.is_closed:
-            await embed_client.aclose()
-        affinity_handler = self._cache_affinity_handler
-        self._cache_affinity_handler = None
+        affinity_handler = self._http_handler
+        self._http_handler = None
         if affinity_handler is not None:
             # litellm>=1.96 的 client 属性在已关闭时会惰性重建，单次取用后关闭
             pool = affinity_handler.client
@@ -1580,7 +1464,6 @@ class LLMClient(BaseEntity):
                 await pool.aclose()
 
     def update_config(self, **kwargs: Any) -> None:
-        old_proxy = self.config.effective_proxy
         original = {
             k: getattr(self.config, k)
             for k in kwargs
@@ -1595,25 +1478,6 @@ class LLMClient(BaseEntity):
             for k, v in original.items():
                 setattr(self.config, k, v)
             raise
-        if self.config.effective_proxy != old_proxy and self._proxy_client is not None:
-            stale_client = self._proxy_client
-            self._proxy_client = None
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(stale_client.aclose())
-            except RuntimeError:
-                # 无运行事件循环时，下次生命周期关闭仍无法复用旧客户端；
-                # httpx 会在对象回收时释放底层资源。
-                pass
-        if self._embed_http_client is not None:
-            # 代理/超时等连接参数可能已变化，丢弃旧客户端下次重建
-            stale_embed = self._embed_http_client
-            self._embed_http_client = None
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(stale_embed.aclose())
-            except RuntimeError:
-                pass
         # 端点学习状态随配置重置：换模型/换端点后旧限制（max_tokens 上限、
         # 强制 tool_choice 不支持、参数拒收、Responses 回退）不应继续钳制新配置
         self._learned_output_cap = None

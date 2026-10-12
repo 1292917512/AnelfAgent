@@ -164,18 +164,20 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
         if not token:
             raise RuntimeError("Telegram Bot Token 未配置，频道无法启动")
 
-        proxy_host: str = self.config.proxy_host
-        proxy_port: int = int(self.config.proxy_port)
+        import httpx
+
+        from agent.channel import AsyncNetworkTransport
 
         self._thread = None
         self._requests = ()
-        proxy_url = f"http://{proxy_host}:{proxy_port}" if proxy_host else None
         request = HTTPXRequest(
-            connect_timeout=15, read_timeout=30, proxy=proxy_url,
+            connect_timeout=15, read_timeout=30,
+            httpx_kwargs={"transport": AsyncNetworkTransport(lambda: self.config.proxy_mode, limits=httpx.Limits(max_connections=256)), "trust_env": False},
         )
         self._requests = (request,)
         polling_request = HTTPXRequest(
-            connection_pool_size=1, proxy=proxy_url,
+            connection_pool_size=1,
+            httpx_kwargs={"transport": AsyncNetworkTransport(lambda: self.config.proxy_mode, limits=httpx.Limits(max_connections=1, max_keepalive_connections=1)), "trust_env": False},
         )
         self._requests = (request, polling_request)
         self._app = (Application.builder().token(token)

@@ -140,11 +140,11 @@ class TestAPISchemaMatrix:
     def test_create_provider_req(self) -> None:
         CreateProviderReq(
             id="p1", name="P", base_url="https://api.openai.com/v1",
-            api_key="sk-test", api_type="openai", proxy_url="",
+            api_key="sk-test", api_type="openai", proxy_mode="system",
         )
 
     def test_update_provider_req_partial(self) -> None:
-        UpdateProviderReq(name="N", proxy_url="127.0.0.1:7890")
+        UpdateProviderReq(name="N", proxy_mode="proxy")
 
     def test_create_model_req_full(self) -> None:
         CreateModelReq(**{
@@ -266,7 +266,7 @@ class TestHTTPRoundtrip:
             "base_url": "https://api.openai.com/v1",
             "api_key": "sk-real-secret-key-for-mask-test",
             "api_type": "openai",
-            "proxy_url": "",
+            "proxy_mode": "system",
         })
         assert r.status_code == 200, r.text
 

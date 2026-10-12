@@ -29,6 +29,7 @@ from agent.retrieval.providers.base import (
     normalize_references,
     run_coro_sync,
 )
+from core.network import ProxyMode
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
 
 _MCP_BASE = "https://open.bigmodel.cn/api/mcp"
@@ -72,15 +73,19 @@ def _payload_from_result(result: CallToolResult) -> Any:
 
 async def _call_mcp(
     server_path: str, tool: str, args: Dict[str, Any], api_key: str, timeout: float,
+    proxy_mode: ProxyMode = "system",
 ) -> Any:
     """短会话调用智谱 MCP 工具（initialize → call），返回解析后的负载。"""
     import httpx2
     from mcp import ClientSession
     from mcp.client.streamable_http import streamable_http_client
 
+    from core.network.httpx2 import AsyncNetworkTransport2
+
     # mcp 2.x：headers/timeout 经 http_client 传入（读超时 = 工具调用预算），
     # 外部 client 自持生命周期；yield 为二元组（get_session_id 已收进 SDK）
     async with httpx2.AsyncClient(
+        transport=AsyncNetworkTransport2(proxy_mode), trust_env=False,
         headers={"Authorization": f"Bearer {api_key}"},
         timeout=httpx2.Timeout(_CONNECT_TIMEOUT, read=timeout),
     ) as http_client:
@@ -205,7 +210,7 @@ class BigModelProvider(Provider):
         *,
         timeout: int = 15,
         extract_mode: str = "markdown",
-        use_proxy: bool = False,
+        proxy_mode: ProxyMode = "system",
         respect_robots: bool = False,
     ) -> Dict[str, Any]:
         if extract_mode == "raw":
@@ -217,7 +222,7 @@ class BigModelProvider(Provider):
                 "timeout": min(max(5, timeout), 60),
                 "return_format": "text" if extract_mode == "text" else "markdown",
             },
-            self._require_key(), float(timeout) + 15,
+            self._require_key(), float(timeout) + 15, proxy_mode=proxy_mode,
         ))
         result: Dict[str, Any] = {"url": url, "extract_mode": extract_mode}
         if isinstance(payload, dict):

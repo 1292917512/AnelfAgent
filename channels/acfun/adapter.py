@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from pydantic import BaseModel
 
+from agent.channel import async_network_client
 from agent.channel.base import BaseChannel, ChannelMetadata
 from agent.channel.channel_types import ChannelCapability, ChannelStatus
 from agent.channel.schemas import (
@@ -518,11 +519,10 @@ def build_router() -> Any:
     @router.get("/login/captcha")
     async def login_captcha() -> Dict[str, Any]:
         """获取账密登录的图形验证码（id.app.acfun.cn 代理，返回 {image, key}）。"""
-        import httpx
         from fastapi import HTTPException
 
         try:
-            async with httpx.AsyncClient(timeout=15.0, headers={
+            async with async_network_client(timeout=15.0, headers={
                 "Referer": "https://www.acfun.cn/login/",
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
             }) as client:

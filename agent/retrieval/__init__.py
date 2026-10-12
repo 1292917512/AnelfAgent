@@ -16,10 +16,6 @@ from core.config import register_configs_safe
 # 核心配置项：分组名 retrieval，配置中心与检索页签自动可见
 register_configs_safe({
     "retrieval": {
-        "retrieval_proxy": {
-            "description": "网页抓取代理地址（空=不使用代理；仅直连抓取生效）",
-            "default": "",
-        },
         "retrieval_active": {
             "description": "能力 × 固定提供者选择（JSON 字典，如 {\"search\": \"bigmodel\"}；缺省 auto 自动选择）",
             "default": {},

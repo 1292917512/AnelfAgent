@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from core.config import get_config
+from entities._sdk import async_network_client
 
 
 class OpenListError(RuntimeError):
@@ -50,7 +51,7 @@ async def check_status() -> Dict[str, Any]:
         return {"configured": False, "reachable": False, "latency_ms": 0, "error": ""}
     start = time.monotonic()
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with async_network_client(timeout=10.0) as client:
             await _post(client, "/api/fs/list", {
                 "path": configured_root(), "page": 1, "per_page": 1, "refresh": False,
             })
@@ -106,7 +107,7 @@ async def list_dir(path: str) -> Dict[str, List[Dict[str, Any]]]:
     """
     dirs: List[Dict[str, Any]] = []
     files: List[Dict[str, Any]] = []
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with async_network_client(timeout=30.0) as client:
         page = 1
         while True:
             data = await _post(client, "/api/fs/list", {
@@ -134,7 +135,7 @@ async def download(remote_path: str, dest_dir: Optional[str] = None) -> str:
     """下载远程文件到本地临时目录，返回本地路径（调用方负责删除）。"""
     import tempfile
 
-    async with httpx.AsyncClient(timeout=300.0, follow_redirects=True) as client:
+    async with async_network_client(timeout=300.0, follow_redirects=True) as client:
         raw_url = ""
         try:
             data = await _post(client, "/api/fs/get", {"path": remote_path})

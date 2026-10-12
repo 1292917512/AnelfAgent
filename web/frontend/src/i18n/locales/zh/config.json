@@ -102,5 +102,14 @@
   "environmentManaged": "由环境变量 {{name}} 管理",
   "selectGroup": "选择配置分组",
   "groupLabel": "当前分组",
-  "filterGroups": "搜索模块或分组…"
+  "filterGroups": "搜索模块或分组…",
+  "relatedSetting": "相关配置",
+  "network": {
+    "configure": "配置全局代理与站点规则",
+    "mode": "网络策略",
+    "system": "跟随全局规则",
+    "direct": "始终直连",
+    "proxy": "使用全局代理",
+    "hint": "地址与站点规则集中管理。默认直连失败后使用代理；不重复提交已发送的写请求。"
+  }
 }

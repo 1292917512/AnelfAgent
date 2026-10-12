@@ -52,6 +52,7 @@ def _serialize_item(item: ConfigItem) -> Dict[str, Any]:
         "step": item.step,
         "unit": item.unit,
         "tag": item.tag,
+        "related_key": item.related_key,
         "source": "mind" if item.key in _mind_fields() else "config_manager",
     }
 

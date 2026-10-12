@@ -59,7 +59,21 @@ if TYPE_CHECKING:
     from agent.mind.background_tasks import BackgroundTaskRegistry
     from agent.mind.think_session import ContextUsage
 
+from core.network import (
+    AsyncNetworkTransport,
+    NetworkRoute,
+    NetworkTransport,
+    ProxyMode,
+    async_network_client,
+    get_proxy_url,
+    network_client,
+    resolve_network_route,
+)
+from core.network.httpx2 import async_network_client2
+
 __all__ = [
+    "AsyncNetworkTransport", "NetworkTransport", "NetworkRoute", "ProxyMode",
+    "async_network_client", "async_network_client2", "network_client", "get_proxy_url", "resolve_network_route",
     "RecallPolicy", "recall_options", "set_turn_recall_policy",
     "tool", "deferred_tool", "entity", "activate_group",
     "entity_manifest", "entity_config", "context_provider",

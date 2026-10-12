@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from core.config import MASK_TOKEN, is_masked_secret, mask_secret
+from core.network import ProxyMode, async_network_client
 from services._runtime import get_runtime
 
 if TYPE_CHECKING:
@@ -184,19 +185,11 @@ class ModelService:
         import litellm
         return {"model_count": len(litellm.model_cost)}
 
-    async def update_cost_map(self, proxy_url: str = "") -> Dict[str, Any]:
+    async def update_cost_map(self, proxy_mode: ProxyMode = "system") -> Dict[str, Any]:
         """从 GitHub 拉取最新 LiteLLM 模型价格表并合并（保留自定义注册模型），支持代理。"""
-        import httpx
         import litellm
 
-        proxy: Optional[str] = None
-        if proxy_url:
-            url = proxy_url.strip()
-            if not url.startswith(("http://", "https://", "socks5://")):
-                url = f"http://{url}"
-            proxy = url
-
-        async with httpx.AsyncClient(proxy=proxy, timeout=30.0) as client:
+        async with async_network_client(proxy_mode=proxy_mode, timeout=30.0) as client:
             response = await client.get(self._COST_MAP_URL)
             response.raise_for_status()
             data: Dict[str, Any] = response.json()
@@ -324,9 +317,8 @@ class ModelService:
     async def test_connection(
         self, base_url: str, api_key: str, api_type: str = "openai",
         extra_headers: Optional[Dict[str, str]] = None,
+        proxy_mode: ProxyMode = "system",
     ) -> str:
-        import httpx
-
         from agent.llm.url_utils import models_endpoint_candidates
 
         self._validate_remote_url(base_url, bool(api_key))
@@ -334,7 +326,7 @@ class ModelService:
         candidates = models_endpoint_candidates(base_url)
         if not candidates:
             raise ValueError(f"非法的 base_url: {base_url!r}")
-        async with httpx.AsyncClient(timeout=10.0) as c:
+        async with async_network_client(timeout=10.0, proxy_mode=proxy_mode) as c:
             r = None
             for url in candidates:
                 r = await c.get(url, headers=headers)
@@ -383,7 +375,7 @@ class ModelService:
 
     async def fetch_remote_models(
         self, base_url: str, api_key: str, api_type: str = "openai",
-        proxy_url: str = "",
+        proxy_mode: ProxyMode = "system",
         extra_headers: Optional[Dict[str, str]] = None,
     ) -> List[Dict[str, Any]]:
         """从供应商 API 拉取远程可用模型列表，自动适配不同 api_type。
@@ -391,7 +383,6 @@ class ModelService:
         端点候选回退（/models → /v1/models）；Anthropic 协议自动游标分页
         （limit=1000 + after_id，has_more/last_id 驱动，最多 50 页）。
         """
-        import httpx
 
         from agent.llm.url_utils import models_endpoint_candidates
 
@@ -402,15 +393,8 @@ class ModelService:
 
         headers = self._auth_headers(api_key, api_type, extra_headers)
 
-        proxy: Optional[str] = None
-        if proxy_url:
-            p = proxy_url.strip()
-            if p and not p.startswith(("http://", "https://", "socks5://", "socks4://")):
-                p = f"http://{p}"
-            proxy = p
-
         candidates = models_endpoint_candidates(effective_url)
-        async with httpx.AsyncClient(timeout=15.0, proxy=proxy) as c:
+        async with async_network_client(timeout=15.0, proxy_mode=proxy_mode) as c:
             r = None
             for url in candidates:
                 r = await c.get(url, headers=headers)
@@ -465,7 +449,7 @@ class ModelService:
         if prov is None:
             return []
         return await self.fetch_remote_models(
-            prov.base_url, prov.api_key, prov.api_type, prov.proxy_url,
+            prov.base_url, prov.api_key, prov.api_type, prov.proxy_mode,
         )
 
     @staticmethod
@@ -501,12 +485,12 @@ class ModelService:
         provider_id: str = "",
     ) -> Dict[str, Any]:
         from agent.llm.llm_client import LLMClient as _LC
-        proxy_url = ""
+        proxy_mode: ProxyMode = "system"
         if provider_id:
             provider = self._manager().get_provider(provider_id)
-            proxy_url = provider.proxy_url if provider is not None else ""
+            proxy_mode = provider.proxy_mode if provider is not None else "system"
         return await _LC.probe_capabilities(
-            base_url, api_key, model, api_type=api_type, proxy_url=proxy_url,
+            base_url, api_key, model, api_type=api_type, proxy_mode=proxy_mode,
         )
 
     # 保存并测试的固定探针 prompt（测的就是生产流式链路，而非单独的 ping）
@@ -522,7 +506,7 @@ class ModelService:
 
         draft 为前端编辑中的模型草稿（模型级字段），与已保存配置合并后
         构造临时客户端——测的就是用户即将保存的那份配置，而非线上旧配置。
-        连接参数（base_url/api_key/api_type/proxy_url）始终以供应商为准。
+        连接参数（base_url/api_key/api_type/proxy_mode）始终以供应商为准。
         """
         import time
 
@@ -547,14 +531,14 @@ class ModelService:
             "base_url": prov.base_url,
             "api_key": prov.api_key,
             "api_type": prov.api_type,
-            "proxy_url": prov.proxy_url,
+            "proxy_mode": prov.proxy_mode,
             "provider_id": provider_id,
         })
         if draft:
             cfg_dict.update({
                 k: v for k, v in draft.items()
                 if k in LLMClientConfig.__dataclass_fields__
-                and k not in ("name", "base_url", "api_key", "api_type", "proxy_url")
+                and k not in ("name", "base_url", "api_key", "api_type", "proxy_mode")
             })
         if not str(cfg_dict.get("model") or "").strip():
             return {"ok": False, "error": "尚未填写模型标识"}

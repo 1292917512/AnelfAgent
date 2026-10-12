@@ -101,7 +101,7 @@ class TestWebConfigMigration:
 
         config_migrate.migrate_legacy_entity_configs(str(tmp_path))
 
-        assert mem_config["retrieval_proxy"] == "http://127.0.0.1:7890"
+        assert "retrieval_proxy" not in mem_config
         # auto 项不迁移（缺省语义）
         assert mem_config["retrieval_active"] == {"search": "bigmodel"}
         assert mem_config["retrieval_disabled_providers"] == ["minimax"]

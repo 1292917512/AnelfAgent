@@ -10,6 +10,7 @@ from typing import Any, AsyncGenerator, Dict, Optional, Union
 
 import litellm
 
+from agent.llm.network import ModelHTTPClient, model_network, network_stream
 from agent.llm.protocol import TransportMode
 from agent.llm.responses.router import (
     ResponsesCapabilityError,
@@ -345,7 +346,8 @@ class ResponsesClient:
         request_params: Optional[dict[str, Any]] = None,
         extra_body: Optional[dict[str, Any]] = None,
         extra_headers: Optional[dict[str, str]] = None,
-        http_client: Any = None,
+        http_client: ModelHTTPClient | None = None,
+        http_handler: Any = None,
     ) -> None:
         self.model = model
         self.api_type = api_type
@@ -356,6 +358,7 @@ class ResponsesClient:
         self.extra_body = dict(extra_body or {})
         self.extra_headers = dict(extra_headers or {})
         self.http_client = http_client
+        self.http_handler = http_handler
         self.route = resolve_responses_route(api_type=api_type)
 
     def ensure_create_supported(self, tools: Optional[list[Any]] = None) -> ResponsesRoute:
@@ -377,8 +380,8 @@ class ResponsesClient:
             kwargs["api_base"] = self.api_base
         if self.api_key:
             kwargs["api_key"] = self.api_key
-        if self.http_client is not None:
-            kwargs["http_client"] = self.http_client
+        if self.http_handler is not None:
+            kwargs["client"] = self.http_handler
         if self.route.force_chat_completions_api:
             kwargs["use_chat_completions_api"] = True
         kwargs.update(self.request_params)
@@ -435,7 +438,8 @@ class ResponsesClient:
             f"Responses create: model={self.model}, transport={self.route.transport.value}",
             tag="模型",
         )
-        resp = await litellm.aresponses(**kwargs)
+        with model_network(self.http_client):
+            resp = await litellm.aresponses(**kwargs)
         return parse_responses_payload(resp, transport=self.route.transport.value)
 
     async def stream(
@@ -483,12 +487,13 @@ class ResponsesClient:
         if extra:
             kwargs.update(extra)
 
-        stream = await litellm.aresponses(**kwargs)
+        with model_network(self.http_client):
+            stream = await litellm.aresponses(**kwargs)
         if not isinstance(stream, AsyncIterable):
             raise TypeError("Responses 流式调用未返回异步流")
         saw_terminal = False
         try:
-            async for event in stream:
+            async for event in network_stream(self.http_client, aiter(stream)):
                 normalized = normalize_stream_event(event)
                 if normalized.is_terminal:
                     saw_terminal = True
@@ -504,21 +509,24 @@ class ResponsesClient:
         require_operation(self.route, "retrieve")
         kwargs = self._base_kwargs()
         kwargs.pop("model", None)
-        resp = await litellm.aget_responses(response_id=response_id, **kwargs)
+        with model_network(self.http_client):
+            resp = await litellm.aget_responses(response_id=response_id, **kwargs)
         return parse_responses_payload(resp, transport=self.route.transport.value)
 
     async def delete(self, response_id: str) -> dict[str, Any]:
         require_operation(self.route, "delete")
         kwargs = self._base_kwargs()
         kwargs.pop("model", None)
-        resp = await litellm.adelete_responses(response_id=response_id, **kwargs)
+        with model_network(self.http_client):
+            resp = await litellm.adelete_responses(response_id=response_id, **kwargs)
         return _as_dict(resp)
 
     async def cancel(self, response_id: str) -> ResponseResult:
         require_operation(self.route, "cancel")
         kwargs = self._base_kwargs()
         kwargs.pop("model", None)
-        resp = await litellm.acancel_responses(response_id=response_id, **kwargs)
+        with model_network(self.http_client):
+            resp = await litellm.acancel_responses(response_id=response_id, **kwargs)
         return parse_responses_payload(resp, transport=self.route.transport.value)
 
     async def compact(
@@ -538,5 +546,6 @@ class ResponsesClient:
             kwargs["previous_response_id"] = previous_response_id
         if extra:
             kwargs.update(extra)
-        resp = await litellm.acompact_responses(**kwargs)
+        with model_network(self.http_client):
+            resp = await litellm.acompact_responses(**kwargs)
         return parse_responses_payload(resp, transport=self.route.transport.value)

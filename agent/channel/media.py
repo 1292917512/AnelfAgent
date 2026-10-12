@@ -10,9 +10,8 @@ import os
 import time
 import uuid
 
-import httpx
-
 from core.log import log
+from core.network import async_network_client
 
 from .schemas import SegmentType
 
@@ -84,7 +83,7 @@ async def download_to_uploads(
     local_path = os.path.join(dl_dir, filename)
 
     try:
-        async with httpx.AsyncClient(timeout=DOWNLOAD_TIMEOUT, follow_redirects=True) as client:
+        async with async_network_client(timeout=DOWNLOAD_TIMEOUT, follow_redirects=True) as client:
             resp = await client.get(url)
             resp.raise_for_status()
 

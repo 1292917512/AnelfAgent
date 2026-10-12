@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { useId } from "react";
 import { useTranslation } from "react-i18next";
 import type { ConfigMetaItem } from "@/lib/types";
@@ -21,6 +22,7 @@ export function ConfigField({ meta, prefix, value, onChange }: {
       <span className="text-[10px] font-mono text-muted">{shortKey}</span>
     </div>
     <ConfigSource item={meta} />
+    {meta.related_key && <Link target="_blank" rel="noreferrer" className="inline-flex text-xs text-accent hover:underline" to={`/config?key=${encodeURIComponent(meta.related_key)}`}>{t("config:relatedSetting")}</Link>}
     {meta.type === "boolean" ? <Switch label={label} checked={!!value} disabled={disabled} onChange={onChange} />
       : meta.type === "text" ? <Textarea {...field} value={text} rows={3} onChange={(event) => onChange(event.target.value)} />
       : meta.type === "model" ? <ModelSelect id={id} label={label} value={text} allowEmpty allowPin={false} disabled={disabled} onChange={onChange} />

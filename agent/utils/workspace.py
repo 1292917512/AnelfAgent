@@ -14,6 +14,7 @@ import time
 from typing import Callable, List, NamedTuple
 
 from core.latebind import LateBinding
+from core.network import async_network_client
 
 
 class WorkspacePathFns(NamedTuple):
@@ -109,7 +110,6 @@ def save_audio(audio_bytes: bytes, fmt: str = "mp3", prefix: str = "gen", kind: 
 
 async def save_images(image_results: List[str], prefix: str = "gen") -> List[str]:
     """下载/解码图片结果（URL 或 data:base64）保存到 workspace/uploads/image/。"""
-    import httpx
 
     saved: List[str] = []
     for i, src in enumerate(image_results):
@@ -118,7 +118,7 @@ async def save_images(image_results: List[str], prefix: str = "gen") -> List[str
             img_bytes = base64.b64decode(b64)
             ext = ".png" if "png" in header else ".jpg"
         else:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with async_network_client(timeout=60.0) as client:
                 resp = await client.get(src, follow_redirects=True)
                 resp.raise_for_status()
                 img_bytes = resp.content
@@ -134,9 +134,8 @@ async def save_images(image_results: List[str], prefix: str = "gen") -> List[str
 
 async def save_video(video_url: str, prefix: str = "gen") -> str:
     """下载视频保存到 workspace/uploads/video/，返回相对路径。"""
-    import httpx
 
-    async with httpx.AsyncClient(timeout=300.0) as client:
+    async with async_network_client(timeout=300.0) as client:
         resp = await client.get(video_url, follow_redirects=True)
         resp.raise_for_status()
         data = resp.content

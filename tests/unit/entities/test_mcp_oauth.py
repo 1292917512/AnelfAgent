@@ -212,7 +212,7 @@ class TestProviderAssembly:
 # ------------------------------------------------------------------
 
 def install_mock_http(monkeypatch, handler):
-    """把 oauth 模块内的 httpx.AsyncClient 替换为 MockTransport 假客户端。"""
+    """使用 MockTransport 隔离 OAuth 请求。"""
     real = httpx
 
     class _Factory:
@@ -231,8 +231,7 @@ def install_mock_http(monkeypatch, handler):
         def __getattr__(self, name):
             return getattr(self._client, name)
 
-    fake = types.SimpleNamespace(AsyncClient=_Factory, HTTPError=real.HTTPError)
-    monkeypatch.setattr(oauth, "httpx", fake)
+    monkeypatch.setattr(oauth, "async_network_client", _Factory)
 
 
 def _json_response(status, payload):

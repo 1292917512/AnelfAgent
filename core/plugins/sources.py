@@ -28,52 +28,47 @@ _GIT_ENV_BLOCKLIST = (
 _DEFAULT_GIT_TIMEOUT = 120.0
 
 
-def _git_env() -> dict:
-    """构造 git 子进程环境：剥离仓库环境变量，按需注入代理。
-
-    代理取 plugin_proxy 配置（配置中心可改，改后下次 git 操作即生效）；
-    未配置时继承进程环境（系统 http_proxy 等变量自然透传）。
-    """
+def _git_env(proxy: str | None = None) -> dict[str, str]:
+    """隔离仓库环境与代理环境，代理只作用于当前 git 子进程。"""
     env = dict(os.environ)
-    for key in _GIT_ENV_BLOCKLIST:
+    for key in (*_GIT_ENV_BLOCKLIST, "http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
+                "all_proxy", "ALL_PROXY", "no_proxy", "NO_PROXY"):
         env.pop(key, None)
     env["GIT_TERMINAL_PROMPT"] = "0"
-    proxy = _configured_proxy()
-    if proxy:
-        for key in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
-                    "all_proxy", "ALL_PROXY"):
-            env[key] = proxy
+    count = int(env.get("GIT_CONFIG_COUNT", "0"))
+    env[f"GIT_CONFIG_KEY_{count}"] = "http.proxy"
+    env[f"GIT_CONFIG_VALUE_{count}"] = proxy or ""
+    env["GIT_CONFIG_COUNT"] = str(count + 1)
     return env
 
 
-def _configured_proxy() -> str:
-    """读取插件代理配置（每次 git 操作实时读取，配置修改即时生效）。"""
-    try:
-        from core.config import get_config
-        return str(get_config("plugin_proxy", "") or "").strip()
-    except Exception:
-        return ""
+def _run_git(args: list[str], cwd: Optional[Path] = None,
+             timeout: float = _DEFAULT_GIT_TIMEOUT, *, url: str = "") -> str:
+    """执行 git 命令；远程只读操作连接失败时按全局规则尝试代理。"""
+    from core.network import resolve_network_route
+    from core.sanitizer import sanitize_text
 
-
-def _run_git(args: list, cwd: Optional[Path] = None, timeout: float = _DEFAULT_GIT_TIMEOUT) -> str:
-    """执行 git 命令，失败抛 PluginError；成功返回 stdout 摘要。"""
-    try:
-        result = subprocess.run(
-            ["git", *args],
-            cwd=str(cwd) if cwd else None,
-            env=_git_env(),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except FileNotFoundError as e:
-        raise PluginError("未找到 git 可执行文件，无法从 git 源安装插件") from e
-    except subprocess.TimeoutExpired as e:
-        raise PluginError(f"git 操作超时（{timeout}s）: git {' '.join(args[:2])}") from e
-    if result.returncode != 0:
+    proxies = resolve_network_route(url).proxies if url.startswith(("https://", "http://")) else (None,)
+    for index, proxy in enumerate(proxies):
+        try:
+            result = subprocess.run(
+                ["git", *args], cwd=str(cwd) if cwd else None, env=_git_env(proxy),
+                capture_output=True, text=True, timeout=timeout,
+            )
+        except FileNotFoundError as exc:
+            raise PluginError("未找到 git 可执行文件，无法从 git 源安装插件") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise PluginError(f"git 操作超时（{timeout}s）: git {args[0]}") from exc
+        if result.returncode == 0:
+            return (result.stdout or "").strip()
         detail = (result.stderr or result.stdout or "").strip()
-        raise PluginError(f"git {' '.join(args[:2])} 失败: {detail}")
-    return (result.stdout or "").strip()
+        connect_failure = any(message in detail.lower() for message in (
+            "could not resolve host", "couldn't resolve host", "failed to connect", "couldn't connect to server",
+        ))
+        if index + 1 < len(proxies) and connect_failure:
+            continue
+        raise PluginError(f"git {args[0]} 失败: {sanitize_text(detail)}")
+    raise PluginError("git 网络路由为空")
 
 
 def new_staging_dir() -> Path:
@@ -155,15 +150,15 @@ def fetch_git(url: str, ref: str, staging: Path, *, subdir: str = "",
     if not payload.resolve().is_relative_to(clone_dir.resolve()):
         raise PluginError(f"插件子目录越出仓库: {subdir}")
     if ref and _is_commit_sha(ref):
-        _run_git(["clone", "--depth", "1", url, str(clone_dir)], timeout=timeout)
-        _run_git(["fetch", "--depth", "1", "origin", ref], cwd=clone_dir, timeout=timeout)
+        _run_git(["clone", "--depth", "1", url, str(clone_dir)], timeout=timeout, url=url)
+        _run_git(["fetch", "--depth", "1", "origin", ref], cwd=clone_dir, timeout=timeout, url=url)
         _run_git(["checkout", "--detach", "FETCH_HEAD"], cwd=clone_dir, timeout=timeout)
     else:
         args = ["clone", "--depth", "1"]
         if ref:
             args += ["--branch", ref]
         args += [url, str(clone_dir)]
-        _run_git(args, timeout=timeout)
+        _run_git(args, timeout=timeout, url=url)
     sha = _run_git(["rev-parse", "HEAD"], cwd=clone_dir)
     if not payload.resolve().is_relative_to(clone_dir.resolve()):
         raise PluginError(f"插件子目录越出仓库: {subdir}")
@@ -174,7 +169,8 @@ def fetch_git(url: str, ref: str, staging: Path, *, subdir: str = "",
 
 def git_pull(repo_dir: Path, *, timeout: float = _DEFAULT_GIT_TIMEOUT) -> str:
     """在已有克隆上拉取最新代码，返回最新 commit sha。"""
-    _run_git(["fetch", "--depth", "1", "origin"], cwd=repo_dir, timeout=timeout)
+    url = _run_git(["remote", "get-url", "origin"], cwd=repo_dir)
+    _run_git(["fetch", "--depth", "1", "origin"], cwd=repo_dir, timeout=timeout, url=url)
     _run_git(["reset", "--hard", "FETCH_HEAD"], cwd=repo_dir, timeout=timeout)
     return _run_git(["rev-parse", "HEAD"], cwd=repo_dir)
 

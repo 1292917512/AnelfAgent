@@ -25,6 +25,7 @@ from agent.judgment.types import (
     ScoreQuestion,
     question_payload,
 )
+from core.network import async_network_client
 from core.tool_errors import ErrorCause
 
 _ENDPOINT = "/v1/systemone"
@@ -56,7 +57,7 @@ class TypeSafeClient:
 
     async def _post(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         try:
-            async with httpx.AsyncClient(
+            async with async_network_client(
                 base_url=self._base_url,
                 timeout=self._timeout,
                 headers={"Authorization": f"Bearer {self._api_key}"},

@@ -94,7 +94,6 @@ def _migrate_web_config(path: str) -> int:
     if not data:
         return 0
     count = 0
-    count += _set_if_empty("retrieval_proxy", str(data.get("proxy", "") or ""))
     active = data.get("active")
     if isinstance(active, dict):
         cleaned = {k: v for k, v in active.items() if v and v != "auto"}

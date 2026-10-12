@@ -13,6 +13,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, Optional
 
+from entities._sdk import async_network_client2
 from entities.mcp.config import MCPServerConfig
 
 # stdio 子进程环境变量白名单（防止敏感 env 泄露给第三方 MCP server）
@@ -220,7 +221,7 @@ def _create_transport(srv: MCPServerConfig) -> Any:
         # timeout 映射与 2.x sse_client 内部一致（连接/写/池 = timeout，读 = sse_read_timeout）
         import httpx2
         from mcp.client.streamable_http import streamable_http_client
-        http_client = httpx2.AsyncClient(
+        http_client = async_network_client2(
             headers=srv.headers or None,
             timeout=httpx2.Timeout(srv.timeout, read=srv.sse_read_timeout),
             auth=_oauth_provider(srv),
@@ -241,6 +242,7 @@ def _create_transport(srv: MCPServerConfig) -> Any:
             headers=srv.headers or None,
             timeout=srv.timeout,
             sse_read_timeout=srv.sse_read_timeout,
+            httpx_client_factory=async_network_client2,
             auth=_oauth_provider(srv),
         )
 

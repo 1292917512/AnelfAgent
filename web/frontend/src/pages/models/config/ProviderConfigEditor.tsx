@@ -22,7 +22,7 @@ function ProviderEditor({ provider, onClose }: { provider: ProviderConfig; onClo
       onClose();
     },
   });
-  const test = useMutation({ mutationFn: () => modelsApi.test(draft.base_url, draft.api_key, provider.id, draft.api_type).then((response) => response.data.result) });
+  const test = useMutation({ mutationFn: () => modelsApi.test(draft.base_url, draft.api_key, provider.id, draft.api_type, draft.proxy_mode).then((response) => response.data.result) });
   const busy = save.isPending || test.isPending;
   const guard = useDiscardChanges(dirty, onClose, busy);
   return <>
@@ -48,9 +48,9 @@ export function ProviderConfigEditor({ provider }: { provider: ProviderConfig })
       <Button size="sm" onClick={() => setEditing(true)}><Pencil size={13} />{t("common:edit")}</Button>
     </div>
     <dl className="mt-3 grid gap-3 text-xs sm:grid-cols-2">
-      {(["name", "base_url", "api_type", "proxy_url", "media_protocol"] as const).map((key) => <div key={key} className="min-w-0">
+      {(["name", "base_url", "api_type", "proxy_mode", "media_protocol"] as const).map((key) => <div key={key} className="min-w-0">
         <dt className="text-muted">{t(`providerFields.${key}`)}</dt>
-        <dd className="mt-1 break-words text-foreground">{provider[key] || "—"}</dd>
+        <dd className="mt-1 break-words text-foreground">{key === "proxy_mode" ? t(`config:network.${provider.proxy_mode}`) : provider[key] || "—"}</dd>
       </div>)}
     </dl>
     {editing && <ProviderEditor provider={provider} onClose={() => setEditing(false)} />}

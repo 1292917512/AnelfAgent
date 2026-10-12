@@ -3,7 +3,7 @@
 资产登记（来源/版本/SHA-256 固定），落盘 ``workspace/models/``（AI
 工作路径内，文件工具可直接查看）；下载为流式落盘 + 哈希校验 + 原子
 替换，进度带阶段（connecting/fetching/verifying）可查询。下载走全局
-网络代理（配置页 proxy_enabled 启动时写入的环境变量，回环地址豁免），
+网络路由（全局代理规则，回环地址默认直连），
 直连受限时自动回退镜像源。AI 经 list/download/delete_local_model 工具
 自主安装维护，Web 经 services/model_assets 提供同一能力。
 
@@ -29,27 +29,6 @@ from core.tool_registry import deferred_tool
 _LOG_TAG = "模型资产"
 
 _PART_SUFFIX = ".part"
-
-_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
-
-
-def _proxy_for(url: str) -> Optional[str]:
-    """按全局代理环境变量取该 URL 的代理（回环地址豁免，返回 None 直连）。
-
-    环境变量由启动流程从配置页的网络代理（proxy_enabled/http_proxy/
-    https_proxy）写入——模型下载与全项目共用同一代理开关。
-    """
-    import os
-    from urllib.parse import urlsplit
-
-    host = (urlsplit(url).hostname or "").strip("[]")
-    if host.lower() in _LOOPBACK_HOSTS:
-        return None
-    env = os.environ
-    if url.startswith("https:"):
-        return env.get("https_proxy") or env.get("HTTPS_PROXY") or None
-    return env.get("http_proxy") or env.get("HTTP_PROXY") or None
-
 
 @dataclass(frozen=True)
 class ModelAsset:
@@ -242,18 +221,18 @@ class ModelAssetManager:
             "received": 0, "total": 0}
         os.makedirs(os.path.dirname(path), exist_ok=True)
         try:
-            import aiohttp
+            import httpx
+
+            from core.network import async_network_client
 
             digest = hashlib.sha256()
-            timeout = aiohttp.ClientTimeout(connect=15, sock_read=120)
+            timeout = httpx.Timeout(120, connect=15)
             last_exc: Exception | None = None
-            async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with async_network_client(timeout=timeout, follow_redirects=True) as session:
                 for url in self._sources(asset):
-                    proxy = _proxy_for(url)
-                    if proxy:
-                        log(f"模型下载经代理: {proxy}", "DEBUG", tag=_LOG_TAG)
+                    digest = hashlib.sha256()
                     try:
-                        async with session.get(url, proxy=proxy) as resp:
+                        async with session.stream("GET", url) as resp:
                             resp.raise_for_status()
                             total = int(resp.headers.get("Content-Length") or 0)
                             received = 0
@@ -261,7 +240,7 @@ class ModelAssetManager:
                                 "status": "downloading", "phase": "fetching",
                                 "received": 0, "total": total}
                             with open(part, "wb") as fh:
-                                async for chunk in resp.content.iter_chunked(1024 * 256):
+                                async for chunk in resp.aiter_bytes(1024 * 256):
                                     fh.write(chunk)
                                     digest.update(chunk)
                                     received += len(chunk)
@@ -271,7 +250,7 @@ class ModelAssetManager:
                                     }
                         last_exc = None
                         break
-                    except (aiohttp.ClientConnectionError, asyncio.TimeoutError) as exc:
+                    except (httpx.TransportError, asyncio.TimeoutError) as exc:
                         last_exc = exc
                         log(f"模型源不可达，尝试下一候选: {url} - {exc}",
                             "DEBUG", tag=_LOG_TAG)

@@ -56,7 +56,7 @@
   },
   "settings": {
     "proxy": "Fetch Proxy",
-    "proxySubtitle": "Proxy used by direct fetching (page reader / HTTP request / download)",
+    "proxySubtitle": "Search and fetching follow global site rules, with direct-first fallback by default. Tools may select a policy per call.",
     "proxyPlaceholder": "http://127.0.0.1:7890 (optional, empty = direct)",
     "ssrf": "SSRF Protection",
     "ssrfSubtitle": "Block requests to loopback/private/link-local addresses (recommended)",

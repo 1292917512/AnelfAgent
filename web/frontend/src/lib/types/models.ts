@@ -1,3 +1,4 @@
+import type { ProxyMode } from "./config";
 import type { JsonObject } from "./json";
 
 export interface ProviderConfig {
@@ -6,7 +7,7 @@ export interface ProviderConfig {
   base_url: string;
   api_key: string;
   api_type: string;
-  proxy_url: string;
+  proxy_mode: ProxyMode;
   media_protocol: string;
   model_count: number;
 }

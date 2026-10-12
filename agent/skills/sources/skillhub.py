@@ -15,6 +15,7 @@ from typing import List, Optional
 from agent.skills.skill_store import SkillStore
 from agent.skills.sources.base import ExternalSkill, InstallResult, SkillSource
 from core.log import log
+from core.network import async_network_client
 
 _SEARCH_URL = "https://api.skillhub.cn/api/skills"
 _CLI_INSTALL_HINT = (
@@ -45,7 +46,6 @@ class SkillHubSource(SkillSource):
             raise ValueError(
                 f"SkillHub 不支持分类 '{category}'，可选: {', '.join(self.categories)}"
             )
-        import httpx
 
         params: dict = {
             "keyword": query,
@@ -54,7 +54,7 @@ class SkillHubSource(SkillSource):
         }
         if category:
             params["category"] = category
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with async_network_client(timeout=15.0) as client:
             resp = await client.get(_SEARCH_URL, params=params)
             resp.raise_for_status()
             payload = resp.json()

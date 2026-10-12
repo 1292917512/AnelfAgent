@@ -415,37 +415,37 @@ class TestCacheAffinityHandler:
         kwargs = client._build_kwargs([{"role": "user", "content": "hi"}], None)
         handler = kwargs.get("client")
         assert handler is not None
-        pool = handler.client._transport._pool  # httpx 内部，仅测试断言用
-        assert pool._max_connections == 4
-        assert pool._max_keepalive_connections == 4
+        pool = handler.client._transport.options["limits"]
+        assert pool.max_connections == 4
+        assert pool.max_keepalive_connections == 4
 
     def test_non_anthropic_no_handler(self) -> None:
         client = _openai_client()
         kwargs = client._build_kwargs([{"role": "user", "content": "hi"}], None)
         assert "client" not in kwargs
 
-    def test_proxy_anthropic_skips_handler(self) -> None:
-        """代理场景沿用 env lease，不注入 handler（避免代理配置被绕过）。"""
+    def test_proxy_anthropic_keeps_affinity_handler(self) -> None:
+        """代理场景仍复用缓存亲和连接池。"""
         client = LLMClient(LLMClientConfig(
-            model="claude-sonnet-4", api_type="anthropic", proxy_url="http://127.0.0.1:7890",
+            model="claude-sonnet-4", api_type="anthropic", proxy_mode="proxy",
         ))
         kwargs = client._build_kwargs([{"role": "user", "content": "hi"}], None)
-        assert "client" not in kwargs
+        assert kwargs["client"].client._transport.mode() == "proxy"
 
     def test_handler_reused_and_closed(self) -> None:
         """handler 按客户端实例复用；close 释放底层连接池。"""
         import asyncio
 
         client = _anthropic_client()
-        h1 = client._get_cache_affinity_handler()
-        h2 = client._get_cache_affinity_handler()
+        h1 = client._get_http_handler()
+        h2 = client._get_http_handler()
         assert h1 is h2
         # litellm>=1.96 的 client 属性在已关闭时会惰性重建新池，
         # 必须取当时的实例引用再断言关闭
         pool = h1.client
         asyncio.run(client.close())
         assert pool.is_closed
-        assert client._cache_affinity_handler is None
+        assert client._http_handler is None
 
 
 class TestFallbackStrip:

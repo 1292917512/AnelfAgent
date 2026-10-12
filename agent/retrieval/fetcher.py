@@ -1,15 +1,16 @@
-"""网页直连抓取设施：SSRF 防护、受限读取、正文提取。
+"""网页抓取设施：SSRF 防护、受限读取、正文提取。
 
 builtin 读取提供者的实现底座，同时供 web_request / extract_page_links /
-web_download 工具复用（这些工具只支持直连语义，不经提供者矩阵）。
+web_download 工具复用（这些工具在本机发起请求，不经提供者矩阵）。
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple, TypedDict
+from typing import Any, Dict, Optional, Tuple
 
 from core.config import ConfigManager
 from core.log import log
+from core.network import ProxyMode
 
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -23,23 +24,6 @@ _SSRF_MAX_BODY_BYTES = 4 * 1024 * 1024
 
 class RobotsDisallowed(Exception):
     """robots.txt 合规检查未通过。"""
-
-
-class ProxyOptions(TypedDict, total=False):
-    trust_env: bool
-    proxy: str
-
-
-def proxy_kwargs(use_proxy: bool) -> ProxyOptions:
-    """构建 httpx 代理参数。始终禁止读取环境变量代理，避免被 LLM 代理污染。"""
-    if not use_proxy:
-        return {"trust_env": False}
-    from agent.retrieval.config import get_proxy
-    result: ProxyOptions = {"trust_env": False}
-    proxy = get_proxy()
-    if proxy:
-        result["proxy"] = proxy
-    return result
 
 
 def ssrf_protection_enabled() -> bool:
@@ -95,15 +79,15 @@ def fetch(
     content: Optional[str] = None,
     headers: Optional[Dict[str, str]] = None,
     timeout: float = 15.0,
-    use_proxy: bool = False,
+    proxy_mode: ProxyMode = "system",
     max_redirects: int = 5,
 ) -> Tuple[int, str, str, str]:
-    """直连请求（SSRF 开启时逐跳校验重定向、流式读取按字节上限截断）。
+    """按网络规则请求（SSRF 开启时逐跳校验重定向、流式读取按字节上限截断）。
 
     Returns:
         (status_code, final_url, content_type, body_text)
     """
-    import httpx
+    from core.network import network_client
     ssrf = ssrf_protection_enabled()
     if ssrf:
         err = check_ssrf_url(url)
@@ -112,11 +96,11 @@ def fetch(
     req_headers = {"User-Agent": _USER_AGENT}
     if headers:
         req_headers.update(headers)
-    with httpx.Client(
+    with network_client(
         timeout=float(timeout),
         follow_redirects=not ssrf,
         headers=req_headers,
-        **proxy_kwargs(use_proxy),
+        proxy_mode=proxy_mode,
     ) as client:
         if not ssrf:
             resp = client.request(method, url, content=content)
@@ -146,7 +130,7 @@ def download_to_file(
     max_bytes: int,
     *,
     timeout: float = 30.0,
-    use_proxy: bool = False,
+    proxy_mode: ProxyMode = "system",
     max_redirects: int = 5,
 ) -> Tuple[int, str, int]:
     """流式下载 URL 到本地文件（SSRF 开启时逐跳校验），按字节上限截断。
@@ -157,17 +141,17 @@ def download_to_file(
     import os
     from urllib.parse import urljoin
 
-    import httpx
+    from core.network import network_client
     ssrf = ssrf_protection_enabled()
     if ssrf:
         err = check_ssrf_url(url)
         if err:
             raise PermissionError(err)
-    with httpx.Client(
+    with network_client(
         timeout=float(timeout),
         follow_redirects=False,
         headers={"User-Agent": _USER_AGENT},
-        **proxy_kwargs(use_proxy),
+        proxy_mode=proxy_mode,
     ) as client:
         for _ in range(max_redirects):
             if ssrf:
@@ -210,7 +194,7 @@ def read_page(
     *,
     timeout: int = 15,
     extract_mode: str = "markdown",
-    use_proxy: bool = False,
+    proxy_mode: ProxyMode = "system",
     respect_robots: bool = False,
 ) -> Dict[str, Any]:
     """直连抓取并提取可读正文（builtin 读取提供者实现），返回完整内容不分块。
@@ -219,12 +203,12 @@ def read_page(
     """
     if respect_robots:
         from agent.retrieval.robots import is_allowed
-        allowed, detail = is_allowed(url, use_proxy=use_proxy)
+        allowed, detail = is_allowed(url, proxy_mode=proxy_mode)
         if not allowed:
             raise RobotsDisallowed(f"robots.txt 合规检查未通过: {detail}")
 
     _status, final_url, content_type, body = fetch(
-        url, timeout=float(timeout), use_proxy=use_proxy)
+        url, timeout=float(timeout), proxy_mode=proxy_mode)
 
     if "application/json" in content_type or extract_mode == "raw":
         return {

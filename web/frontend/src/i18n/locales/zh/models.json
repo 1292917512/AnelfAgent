@@ -159,8 +159,8 @@
     "base_url": "API 地址",
     "api_key": "API 密钥",
     "api_type": "API 类型",
-    "proxy_url": "代理地址",
-    "media_protocol": "图片生成协议"
+    "media_protocol": "图片生成协议",
+    "proxy_mode": "网络策略"
   },
   "subagents": {
     "desc": "子代理统一档案：模型面（有序候选池）+ 执行面（专职守则/工具面/输出契约），delegate_task 指定 agent_name 即使用对应档案（池内顺序即优先级，前者不可用依次回退）。",

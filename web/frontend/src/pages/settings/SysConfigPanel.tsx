@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, Copy, KeyRound, RefreshCw, Shield, Trash2 } from "lucide-react";
-import { authApi, configApi } from "@/lib/api";
+import { authApi } from "@/lib/api";
 import type { ApiKeyCreated, ApiKeyInfo } from "@/lib/types";
 import { Card } from "@/components/common/Card";
 import { cn } from "@/lib/utils";
@@ -15,18 +15,11 @@ import { useCopyFeedback } from "@/hooks/useCopyFeedback";
 export function SysConfigPanel() {
   const { t } = useTranslation("appconfig");
 
-  const { data } = useQuery({
-    queryKey: ["appConfig"],
-    queryFn: () => configApi.getApp().then((r) => r.data),
-  });
-
-  const proxyUrl = typeof data?.["https_proxy"] === "string" ? (data["https_proxy"] as string) : "";
-
   return (
     <div className="space-y-4">
       <PasswordCard />
       <ApiKeysCard />
-      <LiteLLMCostMapCard defaultProxy={proxyUrl} />
+      <LiteLLMCostMapCard />
       <Card title={t("sections.network")} subtitle={t("sections.networkMoved")}>
         <Link
           to="/config?key=proxy_enabled"

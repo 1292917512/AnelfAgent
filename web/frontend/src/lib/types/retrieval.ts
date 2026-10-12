@@ -27,7 +27,6 @@ export interface RetrievalTestResult {
 }
 
 export interface RetrievalSettings {
-  proxy: string;
   active: Record<string, string>;
   disabled_providers: string[];
   ssrf_protection: boolean;

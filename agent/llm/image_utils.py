@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from agent.llm.types import ImageContent, VideoContent
+from core.network import async_network_client
 
 _MAX_LONG_EDGE = 1568
 _MAX_IMAGE_KB = 1024
@@ -65,10 +66,9 @@ _MAX_VIDEO_DOWNLOAD_BYTES = 256 * 1024 * 1024  # 视频 256MB
 
 async def download_image_to_base64(url: str, timeout: float = 30.0) -> Optional[ImageContent]:
     """下载 URL 图片并转为 base64 ImageContent（超体积上限放弃）。"""
-    import httpx
 
     try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        async with async_network_client(timeout=timeout, follow_redirects=True) as client:
             resp = await client.get(url)
             resp.raise_for_status()
             if len(resp.content) > _MAX_IMAGE_DOWNLOAD_BYTES:
@@ -116,10 +116,9 @@ def load_video_from_path(path: str | Path) -> VideoContent:
 
 async def download_video_to_base64(url: str, timeout: float = 120.0) -> Optional[VideoContent]:
     """下载 URL 视频并转为 base64 VideoContent。"""
-    import httpx
 
     try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        async with async_network_client(timeout=timeout, follow_redirects=True) as client:
             resp = await client.get(url)
             resp.raise_for_status()
             content_type = resp.headers.get("content-type", "")

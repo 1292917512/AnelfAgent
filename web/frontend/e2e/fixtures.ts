@@ -8,7 +8,7 @@ export const task = {
 };
 export const metadata = { groups: [{ group: "adapter/telegram", items: [
   { key: "telegram_bot_token", type: "password", description: "Bot token", value: "abcd****5678", default: "", editable: true, options: [] },
-  { key: "telegram_proxy_url", type: "string", description: "Proxy URL", value: "", default: "", editable: true, options: [] },
+  { key: "telegram_proxy_mode", type: "enum", description: "Network policy", value: "system", default: "system", editable: true, options: ["system", "direct", "proxy"], related_key: "proxy_enabled" },
 ] }] };
 
 export async function mockApi(page: Page) {

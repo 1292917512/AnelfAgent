@@ -5,11 +5,9 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Dict
 
-import httpx
-
 from core.config import get_config
 from core.log import log
-from entities._sdk import IngestPayload, IngestResult
+from entities._sdk import IngestPayload, IngestResult, async_network_client
 
 _LOG_TAG = "音源同步"
 
@@ -39,7 +37,7 @@ def notify_ingested(payload: IngestPayload, result: IngestResult) -> None:
 
     async def _post() -> None:
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
+            async with async_network_client(timeout=15.0) as client:
                 await client.post(url, json=body)
         except Exception as exc:
             log(f"出站 webhook 推送失败 [{url}]: {exc}", "WARNING", tag=_LOG_TAG)

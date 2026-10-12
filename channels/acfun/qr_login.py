@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional
 
 import httpx
 
+from agent.channel import async_network_client
 from agent.channel.qr_login import (
     QR_CONFIRMED,
     QR_ERROR,
@@ -65,7 +66,7 @@ class AcfunQrLoginManager:
     async def start(self) -> Dict[str, Any]:
         """拉取登录二维码 → {session_id, qr_png(data URL), expire_seconds}。"""
         self._store.gc()
-        async with httpx.AsyncClient(headers=_HEADERS, timeout=15.0) as client:
+        async with async_network_client(headers=_HEADERS, timeout=15.0) as client:
             resp = await client.get(f"{_QR_BASE}/start", params={"type": "WEB_LOGIN"})
             data = resp.json()
         if data.get("result") != _RESULT_CONFIRMED or not data.get("qrLoginToken"):
@@ -96,7 +97,7 @@ class AcfunQrLoginManager:
             return qr_result(session)
 
         try:
-            async with httpx.AsyncClient(headers=_HEADERS, timeout=_SCAN_TIMEOUT) as client:
+            async with async_network_client(headers=_HEADERS, timeout=_SCAN_TIMEOUT) as client:
                 resp = await client.get(f"{_QR_BASE}/scanResult", params={
                     "qrLoginToken": session.token,
                     "qrLoginSignature": session.signature,
@@ -130,7 +131,7 @@ class AcfunQrLoginManager:
     async def _accept(self, token: str, signature: str) -> Optional[Dict[str, str]]:
         """确认登录并采集会话 cookie（Set-Cookie 原文解析，与 acfunsdk cookie 注入同构）。"""
         try:
-            async with httpx.AsyncClient(headers=_HEADERS, timeout=15.0) as client:
+            async with async_network_client(headers=_HEADERS, timeout=15.0) as client:
                 resp = await client.get(f"{_QR_BASE}/acceptResult", params={
                     "qrLoginToken": token,
                     "qrLoginSignature": signature,

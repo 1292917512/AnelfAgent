@@ -43,19 +43,20 @@ test("channel partial saves retain failed fields and changes made during saving"
     await wait;
     await route.fulfill({ json: { status: "ok", key: "telegram_bot_token", value: "new-****cret" } });
   });
-  await page.route("**/api/config/meta/telegram_proxy_url", (route) => route.fulfill({ status: 400, json: { detail: "Invalid proxy" } }));
+  await page.route("**/api/config/meta/telegram_proxy_mode", (route) => route.fulfill({ status: 400, json: { detail: "Invalid proxy" } }));
   await page.goto("/webui/channels");
   await page.getByRole("button", { name: /Telegram.*Stopped/ }).click();
   const tokenInput = page.getByLabel("Bot token", { exact: true });
-  const proxyInput = page.getByLabel("Proxy URL", { exact: true });
+  const proxyInput = page.getByLabel("Network policy", { exact: true });
   await tokenInput.fill("new-secret");
-  await proxyInput.fill("bad-proxy");
+  await proxyInput.selectOption("proxy");
+  await expect(page.getByRole("link", { name: "Related setting" })).toHaveAttribute("href", "/webui/config?key=proxy_enabled");
   await page.getByRole("button", { name: /Save Config|Save config|Save configuration/ }).click();
   await tokenInput.fill("newer-secret");
   release?.();
   await expect(page.getByText("Invalid proxy")).toBeVisible();
   await expect(tokenInput).toHaveValue("newer-secret");
-  await expect(proxyInput).toHaveValue("bad-proxy");
+  await expect(proxyInput).toHaveValue("proxy");
   await expect(page.getByRole("button", { name: /Save Config|Save config|Save configuration/ })).toContainText("(2)");
 });
 

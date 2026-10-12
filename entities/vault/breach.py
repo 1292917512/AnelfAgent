@@ -15,6 +15,7 @@ import httpx
 
 from core.config import get_config_bool
 from core.log import log
+from entities._sdk import async_network_client
 
 from .generator import assess_strength
 
@@ -77,7 +78,7 @@ async def breach_report(
     hibp_error = ""
     if get_config_bool("vault_breach_check_enabled", True):
         try:
-            async with httpx.AsyncClient(
+            async with async_network_client(
                 headers={"User-Agent": "AnelfAgent-Vault"},
                 follow_redirects=True,
             ) as client:

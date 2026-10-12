@@ -20,6 +20,8 @@ from typing import Any, Dict, Optional
 
 import httpx
 
+from entities._sdk import async_network_client
+
 
 class DifyApiError(Exception):
     """Dify API 错误（含 HTTP 状态码与响应摘要）。"""
@@ -98,7 +100,7 @@ class DifyConsoleClient:
 
     def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None:
-            self._client = httpx.AsyncClient(
+            self._client = async_network_client(
                 base_url=self._base,
                 timeout=self._timeout,
                 follow_redirects=False,
@@ -377,7 +379,7 @@ class DifyServiceClient:
             "response_mode": response_mode,
             "user": user,
         }
-        async with httpx.AsyncClient(base_url=self._base, timeout=self._timeout) as client:
+        async with async_network_client(base_url=self._base, timeout=self._timeout) as client:
             try:
                 resp = await client.post("/v1/workflows/run", json=payload,
                                          headers=self._headers())
@@ -398,7 +400,7 @@ class DifyServiceClient:
         }
         if conversation_id:
             payload["conversation_id"] = conversation_id
-        async with httpx.AsyncClient(base_url=self._base, timeout=self._timeout) as client:
+        async with async_network_client(base_url=self._base, timeout=self._timeout) as client:
             try:
                 resp = await client.post("/v1/chat-messages", json=payload,
                                          headers=self._headers())
@@ -410,7 +412,7 @@ class DifyServiceClient:
 
     async def stop_task(self, task_id: str, user: str = "anelf-agent") -> None:
         """POST /v1/chat-messages/<task_id>/stop。"""
-        async with httpx.AsyncClient(base_url=self._base, timeout=30.0) as client:
+        async with async_network_client(base_url=self._base, timeout=30.0) as client:
             resp = await client.post(f"/v1/chat-messages/{task_id}/stop",
                                      json={"user": user}, headers=self._headers())
             _raise_for(resp, "停止任务")

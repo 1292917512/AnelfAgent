@@ -5,6 +5,7 @@
  * Vite import.meta.glob 自动发现并懒加载；数据面走 /api/entity/plugins
  * （entities/plugins/router.py），与 AI 管理工具共用同一插件引擎。
  */
+import { NetworkConfigLink } from "@/components/common/NetworkSettings";
 import { useQuery } from "@tanstack/react-query";
 import { pluginsApi } from "./panels/api";
 import { InstalledSection } from "./panels/InstalledSection";
@@ -19,6 +20,7 @@ export default function PluginsPanel() {
 
   return (
     <div className="space-y-4 max-w-4xl">
+      <div className="flex justify-end"><NetworkConfigLink /></div>
       <InstalledSection plugins={plugins ?? []} />
       <MarketplaceSection />
       <BrowseSection />

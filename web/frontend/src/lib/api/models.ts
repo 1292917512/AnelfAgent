@@ -11,6 +11,7 @@ import type {
   ModelInfoResult,
   ModelPriorityItem,
   ProbeResult,
+  ProxyMode,
   ProviderConfig,
   ProviderKeyEntry,
   RemoteModelInfo,
@@ -54,8 +55,8 @@ export const modelsApi = {
     api.put(`/models/priorities/${encodeURIComponent(modelType)}`, { model_ids: modelIds }),
   movePriority: (modelId: string, modelType: string, direction: number) =>
     api.put(`/models/${encodeURIComponent(modelId)}/priority-move/${encodeURIComponent(modelType)}`, { direction }),
-  test: (baseUrl: string, apiKey: string, providerId = "", apiType = "openai") =>
-    api.post("/models/test", { base_url: baseUrl, api_key: apiKey, provider_id: providerId, api_type: apiType }),
+  test: (baseUrl: string, apiKey: string, providerId = "", apiType = "openai", proxyMode: ProxyMode = "system") =>
+    api.post("/models/test", { base_url: baseUrl, api_key: apiKey, provider_id: providerId, api_type: apiType, proxy_mode: proxyMode }),
   /** 真实链路对话测试（保存并测试）：draft 为编辑中的模型草稿 */
   testChat: (providerId: string, modelId = "", draft?: UpdateModelConfig) =>
     api.post<TestChatResult>("/models/test-chat", {
@@ -73,8 +74,8 @@ export const modelsApi = {
       provider_id: providerId,
     }),
   costMapInfo: () => api.get<{ model_count: number }>("/models/cost-map/info"),
-  updateCostMap: (proxyUrl = "") =>
-    api.post<{ status: string; model_count: number }>("/models/cost-map/update", { proxy_url: proxyUrl }),
+  updateCostMap: () =>
+    api.post<{ status: string; model_count: number }>("/models/cost-map/update", {}),
   /** 从磁盘热重载模型配置（手改 llm_clients.json 后无需重启生效） */
   reload: () => api.post<ReloadSummary>("/models/reload"),
 };

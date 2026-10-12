@@ -342,10 +342,10 @@ class TestRetrievalService:
     def test_settings_roundtrip(self, mem_config):
         from services.retrieval import get_retrieval_service
         svc = get_retrieval_service()
-        out = svc.save_settings(proxy="http://127.0.0.1:7890", ssrf_protection=False)
-        assert out["proxy"] == "http://127.0.0.1:7890"
+        out = svc.save_settings(ssrf_protection=False)
+        assert "proxy" not in out
         assert out["ssrf_protection"] is False
-        assert svc.settings()["proxy"] == "http://127.0.0.1:7890"
+        assert "proxy" not in svc.settings()
 
 
 class TestBigModelMcpResultShapes:

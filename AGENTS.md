@@ -192,6 +192,7 @@ npm run build
 | [operations.md](docs/operations.md) | 进程守护、崩溃恢复、重启交接、组件凭据中心、本地模型资产、操作实体、用户钩子 |
 | [frontend.md](docs/frontend.md) | 前端结构、模块插件体系、工作区对话联动与展示层细节 |
 | [context-cache.md](docs/context-cache.md) | 上下文缓存与用量排查（三层定位法）、上下文层红线清单、litellm 升级门禁 |
+| [network.md](docs/network.md) | 全局网络规则、代理策略、SDK 接入与安全回退边界 |
 | [mcp-architecture.md](docs/mcp-architecture.md) | MCP 桥接：模块职责、稳定契约、mcp 2.x 适配、OAuth 全链路 |
 | [design-decisions.md](docs/design-decisions.md) | 已否决的设计方案与重审条件（防重新发明轮子） |
 | [testing.md](docs/testing.md) | 测试体系、防膨胀规约、CI 模块矩阵与教训 |

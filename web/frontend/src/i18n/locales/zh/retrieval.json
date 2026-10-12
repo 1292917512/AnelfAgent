@@ -56,7 +56,7 @@
   },
   "settings": {
     "proxy": "网页抓取代理",
-    "proxySubtitle": "直连抓取（网页读取/HTTP 请求/下载）使用的代理地址",
+    "proxySubtitle": "检索与网页抓取遵循全局站点规则。默认直连失败后回退代理，也可在工具调用中选择策略。",
     "proxyPlaceholder": "http://127.0.0.1:7890（可选，留空直连）",
     "ssrf": "SSRF 防护",
     "ssrfSubtitle": "拒绝访问回环/内网/链路本地等受限地址（建议保持开启）",

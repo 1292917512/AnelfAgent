@@ -160,13 +160,9 @@ class RetrievalServiceFacade:
         from agent.retrieval.config import full_config
         return full_config()
 
-    def save_settings(self, *, proxy: "str | None" = None,
-                      ssrf_protection: "bool | None" = None) -> Dict[str, Any]:
+    def save_settings(self, *, ssrf_protection: "bool | None" = None) -> Dict[str, Any]:
         """保存抓取设置（None 字段不变更）。"""
-        from agent.retrieval.config import set_proxy
         from core.config import ConfigManager
-        if proxy is not None:
-            set_proxy(proxy)
         if ssrf_protection is not None:
             ConfigManager.set("retrieval_ssrf_protection", bool(ssrf_protection))
             ConfigManager.save()

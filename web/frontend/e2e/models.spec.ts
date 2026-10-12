@@ -2,7 +2,7 @@ import { test, expect } from "./fixtures";
 import type { ModelConfig, ModelPriorityItem, ProviderConfig } from "../src/lib/types";
 
 const provider: ProviderConfig = { id: "demo", name: "Demo provider", base_url: "https://example.test/v1",
-  api_key: "masked-key", api_type: "openai", proxy_url: "", media_protocol: "", model_count: 1 };
+  api_key: "masked-key", api_type: "openai", proxy_mode: "system", media_protocol: "", model_count: 1 };
 const model: ModelConfig = { id: "demo-model", name: "", model: "remote-model", enabled: true, is_default: true, model_types: ["chat"],
   supports_vision: false, supports_video: false, supports_tools: true, supports_forced_tool_choice: true, supports_reasoning: false,
   vision_format: "base64", temperature: null, top_p: null, max_tokens: null, frequency_penalty: 0, presence_penalty: 0,
@@ -50,9 +50,11 @@ test("provider edits are guarded and connection tests use the edited URL", async
   await page.getByRole("button", { name: "Edit", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Provider Config", exact: true });
   await dialog.getByLabel("API URL", { exact: true }).fill("https://changed.example/v1");
+  await dialog.getByLabel("Network policy", { exact: true }).selectOption("proxy");
+  await expect(dialog.getByRole("link", { name: "Global proxy and routing rules" })).toHaveAttribute("href", "/webui/config?key=proxy_enabled");
   const request = page.waitForRequest((item) => item.url().endsWith("/models/test") && item.method() === "POST");
   await dialog.getByRole("button", { name: "Test", exact: true }).click();
-  expect((await request).postDataJSON()).toMatchObject({ base_url: "https://changed.example/v1" });
+  expect((await request).postDataJSON()).toMatchObject({ base_url: "https://changed.example/v1", proxy_mode: "proxy" });
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await page.getByRole("button", { name: "Keep editing", exact: true }).click();
   await expect(dialog.getByLabel("API URL", { exact: true })).toHaveValue("https://changed.example/v1");

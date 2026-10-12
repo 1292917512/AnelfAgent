@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import litellm
 
@@ -14,7 +14,8 @@ from agent.llm.config import (
     API_TYPE_OLLAMA,
     API_TYPE_OPENAI,
 )
-from agent.llm.proxy import _ProxyEnvLease, _ProxyHttpClient
+from agent.llm.network import ModelHTTPClient, ModelHTTPHandler, model_network
+from core.network import ProxyMode
 from core.sanitizer import sanitize_text
 
 
@@ -44,12 +45,11 @@ async def probe_capabilities(
         model: str,
         api_type: str = API_TYPE_OLLAMA,
         timeout: float = 120.0,
-        proxy_url: str = "",
+        proxy_mode: ProxyMode = "system",
 ) -> Dict[str, Any]:
     """探测模型是否支持 tools 和 vision（通过 litellm）。
 
-    配置代理时：非 anthropic 通道注入 http_client，anthropic 通道
-    （litellm 不接受客户端注入）经 _ProxyEnvLease 环境变量租约。
+    HTTP 客户端与 Anthropic handler 共用核心请求级网络路由。
     返回的详情文本一律经脱敏，避免异常中夹带的凭证泄露到 Web 层。
     """
     prefix = _LITELLM_PREFIX_MAP.get(api_type, "openai")
@@ -63,10 +63,10 @@ async def probe_capabilities(
         "temperature": 0.7,
     }
 
-    proxy_client: Optional[_ProxyHttpClient] = None
-    if proxy_url and api_type != API_TYPE_ANTHROPIC:
-        proxy_client = _ProxyHttpClient(proxy_url)
-        probe_kw["http_client"] = proxy_client
+    client = ModelHTTPClient(lambda: proxy_mode, timeout)
+    handler = ModelHTTPHandler(lambda: proxy_mode, 1, timeout) if api_type not in {API_TYPE_OPENAI, API_TYPE_AZURE} else None
+    if handler is not None:
+        probe_kw["client"] = handler
 
     result: Dict[str, Any] = {
         "supports_tools": False,
@@ -75,18 +75,14 @@ async def probe_capabilities(
         "vision_detail": "",
     }
 
-    lease = _ProxyEnvLease(proxy_url) if proxy_url and api_type == API_TYPE_ANTHROPIC else None
     try:
-        if lease:
-            async with lease:
-                result.update(await _probe_tools(litellm_model, probe_kw))
-                result.update(await _probe_vision(litellm_model, probe_kw, flat_url, api_type))
-        else:
+        with model_network(client):
             result.update(await _probe_tools(litellm_model, probe_kw))
             result.update(await _probe_vision(litellm_model, probe_kw, flat_url, api_type))
     finally:
-        if proxy_client is not None and not proxy_client.is_closed:
-            await proxy_client.aclose()
+        await client.aclose()
+        if handler is not None:
+            await handler.client.aclose()
     return result
 
 

@@ -1,7 +1,6 @@
 """检索核心配置 — 统一配置体系（ConfigManager）存取。
 
 配置键（retrieval 组，配置中心/检索页签可见）：
-- retrieval_proxy：抓取代理地址（空=不使用）
 - retrieval_active：能力 × 固定提供者选择（JSON 字典，缺省 auto 自动选择）
 - retrieval_disabled_providers：停用的提供者（JSON 数组）
 - retrieval_bigmodel_api_key：智谱 BigModel 凭据（password 类型，掩码展示）
@@ -18,15 +17,6 @@ from core.config import ConfigManager
 def _save(key: str, value: Any) -> None:
     ConfigManager.set(key, value)
     ConfigManager.save()
-
-
-def get_proxy() -> str:
-    """抓取代理地址（空字符串表示不使用代理）。"""
-    return str(ConfigManager.get("retrieval_proxy", "") or "")
-
-
-def set_proxy(proxy: str) -> None:
-    _save("retrieval_proxy", proxy.strip())
 
 
 def get_active(capability: str) -> str:
@@ -75,7 +65,6 @@ def set_provider_key(name: str, api_key: str) -> None:
 def full_config() -> Dict[str, Any]:
     """检索配置快照（凭据不回显，仅返回是否已配置）。"""
     return {
-        "proxy": get_proxy(),
         "active": ConfigManager.get("retrieval_active", {}),
         "disabled_providers": ConfigManager.get("retrieval_disabled_providers", []),
         "ssrf_protection": bool(ConfigManager.get("retrieval_ssrf_protection", True)),

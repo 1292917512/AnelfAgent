@@ -222,11 +222,12 @@ async def test_unfinished_thread_is_retained_and_blocks_replacement(channel) -> 
 async def test_both_request_pools_receive_proxy(channel) -> None:
     adapter, _, requests, _ = channel
     adapter._config = TelegramConfig(
-        bot_token="123456:TEST_TOKEN", proxy_host="proxy.internal", proxy_port=8080,
+        bot_token="123456:TEST_TOKEN", proxy_mode="proxy",
     )
     await adapter.start()
     for request in requests:
-        assert request.options["proxy"] == "http://proxy.internal:8080"
+        assert request.options["httpx_kwargs"]["transport"].mode() == "proxy"
+        assert request.options["httpx_kwargs"]["trust_env"] is False
 
 
 async def test_startup_error_redacts_token_and_keeps_error_type(channel) -> None:
@@ -272,6 +273,7 @@ async def test_real_sdk_timeout_closes_both_http_clients(
         }})
 
     def request_factory(**kwargs: Any) -> HTTPXRequest:
+        kwargs.pop("httpx_kwargs", None)
         request = HTTPXRequest(**kwargs, httpx_kwargs={
             "transport": httpx.MockTransport(respond), "trust_env": False,
         })
