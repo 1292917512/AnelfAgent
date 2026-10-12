@@ -57,7 +57,7 @@ class HookProgress:
 
     async def model_end(self, payload: dict[str, Any]) -> None:
         if current_hook_run.get() is self.run:
-            await self.update("processing", "")
+            await self.update("tool" if self._tools else "processing", next(iter(self._tools.values()), ""))
 
     async def tool_start(self, payload: dict[str, Any]) -> None:
         if current_hook_run.get() is self.run:

@@ -15,7 +15,7 @@ from agent.hooks_llm.spec import HookContextMode
 from agent.mind.background_tasks import BackgroundTaskRegistry
 from agent.mind.runtime_context import background_context
 from core.activity import activity_scope
-from core.event_bus import EVENT_THINKING_LLM_START, EVENT_THINKING_TOOL_START, event_bus
+from core.event_bus import EVENT_THINKING_LLM_END, EVENT_THINKING_LLM_START, EVENT_THINKING_TOOL_START, event_bus
 from core.hooks import HookMode, hook_journal
 from services.workspace_activity import WorkspaceActivityService
 
@@ -39,6 +39,7 @@ async def test_running_hook_is_inspectable_cancellable_and_scope_local():
         async with activity_scope("review-child", "reflect:review"):
             await event_bus.emit(EVENT_THINKING_LLM_START, {"model": "review-model"})
             await event_bus.emit(EVENT_THINKING_TOOL_START, {"tool_id": "read-1", "tool_name": "get_skill"})
+            await event_bus.emit(EVENT_THINKING_LLM_END, {"model": "review-model"})
             ready.set()
             await asyncio.Event().wait()
 
