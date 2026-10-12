@@ -10,7 +10,8 @@ from helpers.think_loop_fakes import FakeMind, run_think_loop, text_result, tool
 
 from agent.messages.everything import EverythingGroup
 
-_SEND_MESSAGE_RESULT = '{"success": true, "target_id": "1", "message_id": "m1"}'
+_SEND_MESSAGE_RESULT = ('{"success": true, "target_id": "1", "message_id": "m1", '
+                        '"delivery": "[delivery_mode:channel][delivery_status:sent][delivery_scope:_global]"}')
 
 
 @pytest.mark.parametrize("accepted", [True, False])
@@ -46,17 +47,19 @@ def _run(mind, anything, steps=None, chain=None, tools=None):
 # ==================================================================
 
 async def test_bare_text_dropped_at_end_reply(anything, deliver_mock) -> None:
-    """独白暂存后调 end_reply：静默收束，暂存独白不投递。"""
+    """未投递独白拦截结束，AI 明确选择静默后收束。"""
     mind = _mind()
     mind._rounds = [
         text_result("我先说两句～"),
         tool_result("", ["end_reply"]),
+        tool_result("", ["end_reply"], '{"silent": true}'),
     ]
     steps: List[str] = []
     await _run(mind, anything, steps)
 
     deliver_mock.assert_not_awaited()
-    assert mind.llm_calls == 2
+    assert mind.llm_calls == 3
+    assert any("结束未生效" in s for s in steps)
     assert any("静默收束" in s for s in steps)
 
 
@@ -155,18 +158,19 @@ async def test_send_message_no_sent_ack(anything, deliver_mock) -> None:
 
 
 async def test_tool_then_bare_text_dropped_at_end_reply(anything, deliver_mock) -> None:
-    """非输出工具后输出最终纯文本再 end_reply：静默收束，独白不投递。"""
+    """工具后未发送的正文同样需要投递或明确选择静默。"""
     mind = _mind()
     mind._rounds = [
         tool_result("", ["recall"]),
         text_result("查到了，结果是这样～"),
         tool_result("", ["end_reply"]),
+        tool_result("", ["end_reply"], '{"silent": true}'),
     ]
     steps: List[str] = []
     await _run(mind, anything, steps)
 
     deliver_mock.assert_not_awaited()
-    assert mind.llm_calls == 3
+    assert mind.llm_calls == 4
 
 
 async def test_send_message_then_bare_text_not_delivered(anything, deliver_mock) -> None:

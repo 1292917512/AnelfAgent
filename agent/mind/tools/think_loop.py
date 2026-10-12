@@ -22,6 +22,7 @@ import uuid
 from contextlib import nullcontext
 from typing import TYPE_CHECKING, AbstractSet, Any, Dict, List, Optional, Set
 
+from agent.channel.delivery import capture_deliveries, delivery_count, delivery_tags
 from agent.channel.reply_policy import ReplyToolResult
 from agent.llm import LLMCallAborted
 from agent.mind.message_schema import preserve_reasoning_fields
@@ -56,7 +57,6 @@ from agent.mind.tools.round_helpers import (
     _partition_tool_calls,
     _precompact_flush,
     _prepare_think_context,
-    _round_output_sent_successfully,
     _StageOutcome,
     _streaming_enabled,
     _strip_think_blocks,
@@ -290,8 +290,8 @@ _PROMPT_REPLY_GUIDE = (
     "可并行的独立工具同一轮一并发起。\n"
     "2. 回复用户一律调用 send_message：中途进度、阶段性结论随时可发，"
     "不结束本轮，发完继续干活，不必等全部完成。\n"
-    "3. 完成/无需回复 → 调用 end_reply（参数留空）静默收束："
-    "同批正文不会投递给用户，回复必须经 send_message 发出。"
+    "3. 回复已送达后调用 end_reply 收束；已有正文但确认无需回复时，"
+    "调用 end_reply(silent=true) 明确放弃投递。同批正文也不会自动发送。"
 )
 
 # 查资料等非输出工具后：结果仅自己可见；未完成则继续调工具，完成后再回用户
@@ -299,7 +299,7 @@ _PROMPT_AFTER_NON_OUTPUT_TOOLS = (
     "[系统提示] 工具结果仅你可见，不会自动发给用户。\n"
     "若任务尚未完成 → 继续调用工具，不要输出过程话术。\n"
     "若已全部完成 → 调用 send_message 发送最终回复；"
-    "无需回复则调用 end_reply（参数留空）。"
+    "已有正文但确认无需回复，则调用 end_reply(silent=true)。"
 )
 
 # 反思模式的输出纪律（无 send_message，产出文本即反思结果，但动作必须走工具）
@@ -399,7 +399,8 @@ async def think_loop(
     )
     async with manager as activity:
         try:
-            await _run_think_rounds(ctx, state, safety_limit, start_time)
+            with capture_deliveries(ctx.current_scope):
+                await _run_think_rounds(ctx, state, safety_limit, start_time)
         finally:
             activity.status = "cancelled" if state.interrupted else state.completion_reason
             # 结束原因收口（调用方传入 completion 容器时写出）：
@@ -536,11 +537,7 @@ async def _run_think_rounds(
         if task_context:
             exec_context["content"] += "\n" + task_context
         if mode == ThinkMode.REPLY:
-            exec_context["content"] += "\n[投递状态] " + (
-                "本轮已有消息成功送达当前回复流程。"
-                if state.output_sent else
-                "本轮尚无消息成功送达；过程正文和工具结果不等于回复。若用户在等待答复，先 send_message，再 end_reply。"
-            )
+            exec_context["content"] += "\n" + _reply_delivery_status(ctx, state)
         # 纯工具模式（可选）且有可用工具时，API 级强制工具选择
         require_tools = bool(ctx.active_tools) and ctx.pure_tool_mode and not ctx.summary_only
         # 输出方式说明随执行上下文每轮注入
@@ -648,8 +645,7 @@ async def _handle_summary_round(
     if merge_after_messages(ctx, state):
         state.iteration += 1
         return _StageOutcome.CONTINUE
-    await _finish_round(ctx, state)
-    return _StageOutcome.BREAK
+    return await _finish_round(ctx, state)
 
 
 async def _handle_interrupt(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> bool:
@@ -762,8 +758,45 @@ def _append_assistant_msg(
     tool_chain.append(assistant_msg)
 
 
-async def _finish_round(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> None:
+def _reply_delivery_status(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> str:
+    """当前会话的发送事实与尚未投递的正文状态。"""
+    tags = delivery_tags("channel", "sent" if state.output_sent else "pending", ctx.current_scope)
+    status = "当前会话已有成功发送回执。" if state.output_sent else "当前会话尚无成功发送回执。"
+    if state.reply_text_pending:
+        tags = delivery_tags("internal", "pending", ctx.current_scope)
+        status += (
+            "你随后生成的正文仅为内部过程，尚未投递，不能据此认为用户已收到答复。"
+            "若正文用于回复，请调用 send_message 并核对目标及回执；"
+            "若只是内部备注或确认无需回复，调用 end_reply(silent=true)，不要重复发送已送达的内容。"
+        )
+    else:
+        status += "过程正文和工具结果不等于回复；需要答复时使用 send_message。"
+    return "[投递状态] " + tags + status
+
+
+async def _finish_round(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> _StageOutcome:
     """收敛计划、记录执行摘要和完成状态，不向频道自动发送内容。"""
+    if ctx.mode == ThinkMode.REPLY and state.reply_text_pending:
+        if state.completion_reason == "completed" and not state.delivery_recovery_attempted:
+            state.delivery_recovery_attempted = True
+            ctx.tool_chain.append({
+                "role": "system",
+                "content": "[结束未生效] " + _reply_delivery_status(ctx, state),
+                "_source": {"origin": "delivery_recovery"},
+            })
+            ctx.execution_steps.append("→ 正文尚未确认投递，结束未生效，已反馈 AI 处理")
+            state.iteration += 1
+            return _StageOutcome.CONTINUE
+        state.completion_reason = "failed"
+        ctx.execution_steps.append("→ 回复未完成：正文尚未投递，且未明确选择静默结束")
+        if ctx.anything:
+            await ctx.mind._add_system_context(
+                ctx.anything,
+                delivery_tags("internal", "pending", ctx.current_scope)
+                + "[投递未完成] 本轮部分正文仅出现在内部过程，未确认送达当前会话，"
+                "不能视为已回复。下次处理时先核对真实发送记录，避免漏答或重复发送。",
+                role="system",
+            )
     try:
         from agent.planning import tracker as _plan_tracker
         await _plan_tracker.finalize_plan(ctx.current_scope, "completed" if state.completion_reason == "completed" else "cancelled")
@@ -774,13 +807,14 @@ async def _finish_round(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> None:
         # 正常结束的唯一收口点：消息链已是终态，先写入 completion 再发完成事件
         # （complete_reply 读取该字段组装 EVENT_AFTER_REPLY 的 messages 快照；
         # think_loop finally 的写入面向 SubAgent 续跑场景，时机晚于本路径）
-        if ctx.completion is not None:
-            ctx.completion["reason"] = state.completion_reason
-            ctx.completion["messages"] = ctx.base_messages + ctx.tool_chain
+        completion = ctx.completion if ctx.completion is not None else {}
+        completion["reason"] = state.completion_reason
+        completion["messages"] = ctx.base_messages + ctx.tool_chain
         await finish_think(
             ctx.mind, ctx.anything, ctx.execution_steps, state.iteration + 1, ctx.tool_chain,
-            completion=ctx.completion, turn_id=ctx.turn_id,
+            completion=completion, turn_id=ctx.turn_id,
         )
+    return _StageOutcome.BREAK
 
 
 def _reply_tool_results(tool_chain: List[Dict]) -> list[ReplyToolResult]:
@@ -820,10 +854,10 @@ async def _handle_security_leak(
         "WARNING", tag="安全",
     )
     if state.consecutive_security_leaks >= 2:
+        state.completion_reason = "failed"
         log("连续令牌泄露，强制结束本轮", "WARNING", tag="安全")
         ctx.execution_steps.append(f"→ 第{state.iteration + 1}轮: 连续安全泄露，强制结束")
-        await _finish_round(ctx, state)
-        return _StageOutcome.BREAK
+        return await _finish_round(ctx, state)
     # 本轮 tool_calls 因安全原因一并丢弃，显式告知 LLM 避免下轮误以为已执行
     prompt = _PROMPT_SECURITY_LEAK
     if tool_calls:
@@ -864,15 +898,13 @@ async def _handle_text_only_round(
             execution_steps.append(
                 f"→ 第{state.iteration + 1}轮: 连续空输出 {state.consecutive_empty_calls} 次，结束"
             )
-            await _finish_round(ctx, state)
-            return _StageOutcome.BREAK
+            return await _finish_round(ctx, state)
     elif ctx.mode == ThinkMode.REPLY and should_suppress(raw_text):
         # [SILENT] 精确匹配 / 幻觉沉默旁白：AI 决定不回复，直接结束本轮
         log(f"AI 选择沉默（{raw_text[:30]}），结束本轮", "DEBUG", tag="思维")
         _append_assistant_msg(tool_chain, result, raw_text)
         execution_steps.append(f"→ 第{state.iteration + 1}轮: AI 选择沉默，结束")
-        await _finish_round(ctx, state)
-        return _StageOutcome.BREAK
+        return await _finish_round(ctx, state)
     else:
         state.consecutive_empty_calls = 0
         # REPLY：弱模型把 end_reply 写成文本——按结束意图处理，并以规范
@@ -899,10 +931,11 @@ async def _handle_text_only_round(
             execution_steps.append(
                 f"→ 第{state.iteration + 1}轮: 文本形态 end_reply，按结束处理"
             )
-            await _finish_round(ctx, state)
-            return _StageOutcome.BREAK
+            return await _finish_round(ctx, state)
         _append_assistant_msg(tool_chain, result, raw_text)
         ctx.collected_text.append(raw_text)
+        if ctx.mode == ThinkMode.REPLY:
+            state.reply_text_pending = True
 
         bg = ctx.background
         running_bg: List[BackgroundTaskInfo] = []
@@ -960,8 +993,7 @@ async def _handle_text_only_round(
                 execution_steps.append(
                     f"→ 第{state.iteration + 1}轮: 反思连续纯文本 {state.reflect_text_rounds} 次，结束"
                 )
-                await _finish_round(ctx, state)
-                return _StageOutcome.BREAK
+                return await _finish_round(ctx, state)
             tool_chain.append({"role": "system", "content": _PROMPT_CONTINUE})
             execution_steps.append(f"→ 第{state.iteration + 1}轮: {ctx.mode_label}中")
         else:
@@ -977,8 +1009,7 @@ async def _handle_text_only_round(
                     "（未调用工具），掐断结束"
                 )
                 state.completion_reason = "failed"
-                await _finish_round(ctx, state)
-                return _StageOutcome.BREAK
+                return await _finish_round(ctx, state)
             execution_steps.append(f"→ 第{state.iteration + 1}轮: 纯文本独白（未投递，等待动作）")
 
     state.iteration += 1
@@ -1011,6 +1042,11 @@ async def _handle_tool_round(
     # end_reply 是收束信号而非工作工具：纯 end_reply 批次不构成"打断"，
     # 已收集的连续文本段即最终结论，必须保留（同批正文在下方收束处理纳入）
     pure_end_reply = all(tc.name == _END_REPLY_TOOL_NAME for tc in tool_calls)
+    if ctx.mode == ThinkMode.REPLY and (
+        _strip_think_blocks(result.content or "").strip()
+        or any(tc.name in _OUTPUT_TOOL_NAMES for tc in tool_calls)
+    ):
+        state.reply_text_pending = True
     if ctx.mode == ThinkMode.REFLECT and ctx.collected_text and not pure_end_reply:
         dropped_chars = sum(len(s) for s in ctx.collected_text)
         execution_steps.append(
@@ -1018,6 +1054,7 @@ async def _handle_tool_round(
             "（产出以最终总结段为准）"
         )
         ctx.collected_text.clear()
+    sent_before = delivery_count()
     partial_abort = await execute_tool_calls(
         mind, tool_chain, result, tool_calls, state.iteration, ctx.anything,
         guardrail=guardrail, pipeline=ctx.pipeline, blocked_tools=ctx.blocked_tools,
@@ -1025,6 +1062,9 @@ async def _handle_tool_round(
     )
     if partial_abort:
         state.partial_tool_abort = True
+    if delivery_count() > sent_before:
+        state.output_sent = True
+        state.reply_text_pending = False
 
     # 记录目标工具使用（goal nag 提醒的计数依据）
     try:
@@ -1035,11 +1075,11 @@ async def _handle_tool_round(
 
     # 守卫 halt：同工具连续失败达到上限，强制结束本轮
     if guardrail.halt_decision is not None:
+        state.completion_reason = "failed"
         halt = guardrail.halt_decision
         log(f"工具守卫强制结束: {halt.message}", "WARNING", tag="思维")
         execution_steps.append(f"→ 第{state.iteration + 1}轮: {halt.message}")
-        await _finish_round(ctx, state)
-        return _StageOutcome.BREAK
+        return await _finish_round(ctx, state)
 
     # 检测本轮工具结果是否全部为错误
     all_errors = _check_tool_results_all_errors(tool_chain, tool_calls)
@@ -1066,18 +1106,17 @@ async def _handle_tool_round(
 
     called = {tc.name for tc in tool_calls}
 
-    # 投递状态仅以输出工具的实际成功回执为准。
-    if _round_output_sent_successfully(tool_chain, tool_calls):
-        state.output_sent = True
-
     if ctx.mode == ThinkMode.REPLY:
         from agent.channel.reply_policy import get_reply_policy
 
         handoff = get_reply_policy(ctx.adapter_key).handoff_to_events
         if handoff is not None and handoff(_reply_tool_results(tool_chain)):
-            execution_steps.append("→ 任务已受理，交给频道终态事件汇报")
-            await _finish_round(ctx, state)
-            return _StageOutcome.BREAK
+            state.reply_text_pending = False
+            handoff_note = delivery_tags("event", "pending", ctx.current_scope) + "任务已受理，交给频道终态事件汇报"
+            tool_chain.append({"role": "system", "content": handoff_note,
+                               "_source": {"origin": "delivery_handoff"}})
+            execution_steps.append("→ " + handoff_note)
+            return await _finish_round(ctx, state)
 
     # 非输出工具伴随文本独白时提醒"结果仅自己可见"——独白是模型误以为
     # 文字可达用户的信号；纯工具轮无需提示（exec_context 每轮已有输出契约）
@@ -1102,8 +1141,7 @@ async def _handle_tool_round(
         execution_steps.append(
             f"→ 第{state.iteration + 1}轮: 连续 {state.consecutive_tool_errors} 轮工具全部失败，强制结束"
         )
-        await _finish_round(ctx, state)
-        return _StageOutcome.BREAK
+        return await _finish_round(ctx, state)
 
     # 连续错误达到阈值时注入警告
     if state.consecutive_tool_errors >= 2:
@@ -1155,13 +1193,21 @@ async def _handle_tool_round(
             state.iteration += 1
             return _StageOutcome.CONTINUE
         if ctx.mode == ThinkMode.REPLY:
-            execution_steps.append(f"→ 第{state.iteration + 1}轮: end_reply 静默收束，过程正文不投递")
+            for tc in tool_calls:
+                if tc.name == _END_REPLY_TOOL_NAME:
+                    try:
+                        args = json.loads(tc.arguments)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                    if isinstance(args, dict) and args.get("silent") is True:
+                        state.reply_text_pending = False
+                        execution_steps.append("→ AI 明确选择静默结束，未发送的正文仅保留为内部过程")
+            execution_steps.append(f"→ 第{state.iteration + 1}轮: end_reply 请求静默收束，过程正文不投递")
         elif end_text:
             ctx.collected_text.append(end_text)
-        log(f"AI 主动结束{ctx.mode_label} (轮次 {state.iteration + 1})", tag="思维")
+        log(f"AI 请求结束{ctx.mode_label} (轮次 {state.iteration + 1})", tag="思维")
         # Plan 收敛由 finish_think 统一处理（所有正常结束路径的必经之地）
-        await _finish_round(ctx, state)
-        return _StageOutcome.BREAK
+        return await _finish_round(ctx, state)
 
     state.iteration += 1
     return _StageOutcome.CONTINUE

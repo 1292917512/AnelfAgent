@@ -10,12 +10,15 @@ deliver 拦截 + 10 个 kwargs 的 think_loop 调用），此处收敛为唯一�
 
 from __future__ import annotations
 
+import json
 import time
 from types import SimpleNamespace
 from typing import Any, List, Optional
 from unittest.mock import AsyncMock
 
 from agent.mind.tools.think_loop import ThinkMode, think_loop
+from core.tags import etag_all
+from core.tool_results import extract_error_text
 
 DEFAULT_TOOL_RESULT = '{"ok": true}'
 
@@ -166,7 +169,15 @@ class FakeMind:
     def tool_executor(self):
         async def _exec(tc) -> str:
             self.executed_tools.append(tc.name)
-            return self.tool_results.get(tc.name, DEFAULT_TOOL_RESULT)
+            result = self.tool_results.get(tc.name, DEFAULT_TOOL_RESULT)
+            if tc.name in {"send_message", "send_photo", "send_voice", "send_file"}:
+                from agent.channel.delivery import record_delivery
+                payload = json.loads(result)
+                if isinstance(payload, dict) and payload.get("success") is True and not extract_error_text(payload):
+                    tags = dict(etag_all(str(payload.get("delivery", ""))))
+                    if tags.get("delivery_status") == "sent" and payload.get("outcome") != "unknown":
+                        record_delivery(tags.get("delivery_scope", ""))
+            return result
         return _exec
 
     def _set_phase(self, phase) -> None:

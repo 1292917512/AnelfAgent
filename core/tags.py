@@ -87,7 +87,7 @@ def replace_tags(text: str, replace: Callable[[str, str], str]) -> str:
 _META_TAG_NAMES = (
     "time", "channel", "session_id", "message_id",
     "group_id", "uid", "name", "nickname", "reply_to", "to_me", "kind", "push",
-    "speaker_scope", "face_scope",
+    "speaker_scope", "face_scope", "delivery_mode", "delivery_status", "delivery_scope",
 )
 
 

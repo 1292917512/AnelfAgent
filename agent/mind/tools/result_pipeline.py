@@ -360,9 +360,10 @@ def _truncate_json_output(tool_name: str, output: str, limit: int) -> Optional[s
         return None
 
     trimmed_obj = _trim_json_value(parsed)
-    # 保留关键结束标记，避免影响 should_end_reply 判定。
-    if isinstance(parsed, dict) and isinstance(trimmed_obj, dict) and "_end_reply" in parsed:
-        trimmed_obj["_end_reply"] = parsed.get("_end_reply")
+    if isinstance(parsed, dict) and isinstance(trimmed_obj, dict):
+        for key in ("_end_reply", "success", "ok", "outcome", "delivery"):
+            if key in parsed:
+                trimmed_obj[key] = parsed[key]
 
     trimmed_text = json.dumps(trimmed_obj, ensure_ascii=False)
     if len(trimmed_text) <= limit:
@@ -376,7 +377,7 @@ def _truncate_json_output(tool_name: str, output: str, limit: int) -> Optional[s
         "_json_compacted": True,
     }
     if isinstance(parsed, dict):
-        for k in ("error", "cause", "hint", "retryable", "code", "diagnostic", "outcome", "background_may_continue", "success", "status", "total", "completed", "failed", "group_id", "_end_reply"):
+        for k in ("error", "cause", "hint", "retryable", "code", "diagnostic", "outcome", "background_may_continue", "success", "ok", "delivery", "status", "total", "completed", "failed", "group_id", "_end_reply"):
             if k in parsed:
                 summary[k] = parsed[k][:500] if isinstance(parsed[k], str) else _trim_json_value(parsed[k])
         summary["keys"] = list(parsed.keys())[:20]

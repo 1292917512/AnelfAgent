@@ -21,6 +21,7 @@ from helpers.think_loop_fakes import (
     end_reply_result,
     run_think_loop,
     text_result,
+    tool_result,
 )
 
 from agent.mind.background_tasks import BackgroundTaskRegistry
@@ -242,6 +243,7 @@ class TestWaitSuspension:
         mind = _WaitMind()
         # 注册后台任务（scope="_global"，测试无 think_session 绑定）
         task_id = mind.background_tasks.register("_global", "delegation", "生成图片")
+        mind._queue = [tool_result("", ["end_reply"], '{"silent": true}')]
 
         async def finisher() -> None:
             # 等循环真正进入挂起（_waiting 登记）再完成任务——

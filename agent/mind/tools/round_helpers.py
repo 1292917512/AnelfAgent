@@ -94,6 +94,8 @@ class _ThinkRoundState:
     consecutive_text_rounds: int = 0
     # 当前回复流程是否已有输出工具成功送达。
     output_sent: bool = False
+    reply_text_pending: bool = False
+    delivery_recovery_attempted: bool = False
     max_output_recoveries: int = 0
     # 上轮真实输入占用（口径归一：prompt 含/不含缓存两种记账下均为真实占用；
     # 独占口径——原生 Anthropic——下原始 prompt_tokens 不含缓存读/写，
@@ -1136,31 +1138,6 @@ def _collect_round_failures(tool_chain: List[Dict], tool_calls: List["ToolCall"]
 # - finish_think → tracker.finalize_plan（收敛终态，诚实语义）
 # - cancel-plan 路由 → tracker.cancel_plan
 # ------------------------------------------------------------------
-
-def _round_output_sent_successfully(
-        tool_chain: List[Dict], tool_calls: List["ToolCall"],
-) -> bool:
-    """本轮是否已通过输出类工具成功发送（send_message / 媒体发送）。"""
-    tc_ids = {
-        tc.id for tc in tool_calls if tc.name in _OUTPUT_TOOL_NAMES
-    }
-    if not tc_ids:
-        return False
-    found_tool = False
-    for msg in reversed(tool_chain):
-        if msg.get("role") != "tool":
-            # 尾部多模态注入的 user 消息跳过；遇到轮次边界（已见 tool 消息）停止
-            if found_tool:
-                break
-            continue
-        found_tool = True
-        if msg.get("tool_call_id") not in tc_ids:
-            continue
-        parsed = parse_tool_result_json(msg.get("content", ""))
-        if isinstance(parsed, dict) and parsed.get("success") is not False:
-            return True
-    return False
-
 
 def _streaming_enabled() -> bool:
     """流式内核开关（配置 mind_streaming_enabled，默认开）。

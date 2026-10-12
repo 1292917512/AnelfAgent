@@ -20,7 +20,8 @@ def _base() -> list:
 def _loop_mind() -> FakeMind:
     """第 1 轮工具调用，第 2 轮纯文本独白，第 3 轮 end_reply 收敛。"""
     return FakeMind(
-        rounds=[tool_result("", ["recall"]), text_result("想起来了～"), tool_result("", ["end_reply"])],
+        rounds=[tool_result("", ["recall"]), text_result("想起来了～"),
+                tool_result("", ["end_reply"], '{"silent": true}')],
         default_text=None,
     )
 

@@ -11,6 +11,8 @@ import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from core.event_bus import EVENT_AFTER_REPLY, event_bus
+from core.tags import etag_all
+from core.tool_results import extract_error_text, parse_tool_result_json
 
 from . import execution_log
 
@@ -211,15 +213,16 @@ def _summarize_tool_result_for_log(call_sig: str, result: str) -> str:
     此处只保留发送状态，避免与 assistant 记录重复。
     """
     if call_sig.startswith("send_message"):
-        try:
-            parsed = json.loads(result)
-            if isinstance(parsed, dict):
-                ok = parsed.get("success") is not False
-                target = parsed.get("target_id", "")
-                return f"{'已发送' if ok else '发送失败'}" + (f" -> {target}" if target else "")
-        except (json.JSONDecodeError, TypeError):
-            pass
-        return "已发送"
+        parsed = parse_tool_result_json(result)
+        if isinstance(parsed, dict):
+            error = extract_error_text(parsed)
+            ok = parsed.get("success") is True and not error and parsed.get("outcome") != "unknown"
+            tags = dict(etag_all(str(parsed.get("delivery", ""))))
+            target = tags.get("delivery_scope") or parsed.get("target_id", "")
+            status = "已发送" if ok else "未确认送达"
+            detail = f"：{error[:160]}" if error else ""
+            return status + (f" -> {target}" if target else "") + detail
+        return "未确认送达"
     return result[:200]
 
 

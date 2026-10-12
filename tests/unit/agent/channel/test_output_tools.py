@@ -6,8 +6,34 @@
 
 from __future__ import annotations
 
+import pytest
+
 import agent.channel.output_tools as output_tools
 from agent.channel.output_tools import _normalize_target_id, _resolve_send_target
+
+
+@pytest.mark.parametrize("raw", [None, "not json", {}, {"status": "queued"}, {"success": True, "outcome": "unknown"}])
+def test_missing_receipt_is_unknown_and_not_retryable(raw):
+    payload, ok = output_tools._check_send_result(raw, "qq", "123")
+    assert not ok
+    assert payload["success"] is False
+    assert payload["outcome"] == "unknown"
+    assert payload["retryable"] is False
+    assert "先核验" in payload["hint"]
+
+
+@pytest.mark.parametrize("raw", [{"ok": False}, {"error": "denied"}, {"success": True, "ok": False}])
+def test_error_receipt_never_counts_as_success(raw):
+    payload, ok = output_tools._check_send_result(raw, "qq", "123")
+    assert not ok
+    assert payload["success"] is False
+
+
+@pytest.mark.parametrize("raw", [{"success": True}, {"ok": True}])
+def test_explicit_receipt_is_normalized(raw):
+    payload, ok = output_tools._check_send_result(raw, "qq", "123")
+    assert ok
+    assert payload["success"] is True
 
 
 class TestNormalizeTargetId:

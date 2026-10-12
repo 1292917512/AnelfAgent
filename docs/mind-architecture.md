@@ -42,7 +42,7 @@
 ## 二、回复与工具循环
 
 `Mind.reply()` 进入 `agent/mind/tools/think_loop.py`。一次回复通常重复以下步骤，直到模型给出
-正文、调用 `end_reply` 或达到停止条件：
+结束请求或达到停止条件；正文自身不代表已回复：
 
 1. 从当前 scope 取得上下文和可用工具
 2. 调用统一 LLM 入口，保留必要的工具调用和 reasoning 字段
@@ -52,13 +52,16 @@
 
 ### end_reply 与产出语义
 
-- **REPLY 模式**：end_reply/[SILENT] 为静默收束——同批正文与暂存独白一律不投递，回复必须经
-  send_message 发出；纯文本保底投递仅剩独白掐断/守卫中止/安全上限等强制收尾路径
+- **REPLY 模式**：回复必须经 `send_message` 等显式发送工具，同批正文与暂存独白不自动投递，
+  强制收尾也不补发。动态执行上下文携带投递方式、状态与目标标签，发送事实只认当前会话的真实
+  管道回执。生成正文后尚未发送就请求结束时，最多反馈一次供 AI 处理；仍未发送且未明确选择静默，
+  本轮以 `failed` 结束并保留未投递事实。AI 确认正文仅供内部使用时调用 `end_reply(silent=true)`；
+  没有待投递正文时，普通 `end_reply` 或 `[SILENT]` 可直接收束。已经发过进度不等于随后正文已送达
 - **REFLECT 模式**：模型发起**工作工具**调用即判定此前纯文本为中间独白——从 collected_text 移除
   （字符数归档进 execution_steps 可追溯），产出只保留收束前最后一个未被工具调用打断的连续文本段。
   **end_reply 是收束信号而非工作工具**：纯 end_reply 批次不构成「打断」，其同批正文即最终连续
   文本段纳入产出
-- 结束原因经 completion 容器贯通：completed / budget_exhausted（轮次预算用尽）/ interrupted，
+- 结束原因经 completion 容器贯通：completed / failed / budget_exhausted（轮次预算用尽）/ interrupted，
   空产出 no_output
 
 ### 思维循环防护

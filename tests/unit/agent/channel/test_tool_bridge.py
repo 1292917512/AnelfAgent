@@ -31,6 +31,7 @@ from agent.channel.tool_bridge import (
 )
 from core.config import ConfigManager
 from core.entity import EntityRegistry
+from core.tool_gate import tool_gate
 
 
 class _FakeConfig(ChannelConfig):
@@ -121,6 +122,7 @@ class FakeChannel2(FakeChannel):
 def channel_manager():
     """提供干净的 ChannelManager 单例与桥接状态，并在测试后清理。"""
     old = mgr._channel_manager
+    tool_gate.invalidate()
     mgr._channel_manager = mgr.ChannelManager()
     cm = mgr.get_channel_manager()
     created: list[FakeChannel] = []
@@ -128,6 +130,7 @@ def channel_manager():
     for ch in created:
         unregister_channel_tools(ch.channel_id)
     mgr._channel_manager = old
+    tool_gate.invalidate()
 
 
 def _make(cm: Any, created: list, cls: Any = FakeChannel) -> Any:

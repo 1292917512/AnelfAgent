@@ -19,7 +19,9 @@ from core.log import log
 from core.tags import strip_message_meta_tags
 from core.tool_errors import ErrorCause, error_from_exception
 from core.tool_registry import deferred_tool
+from core.tool_results import extract_error_text
 
+from .delivery import delivery_tags, record_delivery
 from .outbound_guard import guard_empty_conversation, guard_outbound, note_outbound
 
 EntityRegistry.register_group_order("output", 0)
@@ -255,12 +257,27 @@ def _check_send_result(raw: Any, channel_id: str, target_id: str) -> tuple[dict,
         parsed = {"raw": str(parsed)}
     parsed["channel_id"] = channel_id
     parsed["target_id"] = target_id
-    ok = parsed.get("success") is not False
-    if not ok and _is_network_unavailable(parsed.get("error", "")):
+    error = extract_error_text(parsed)
+    confirmed = parsed.get("success") is True or parsed.get("ok") is True
+    ok = confirmed and not error and parsed.get("outcome") != "unknown"
+    parsed["success"] = ok
+    if not ok and not error:
+        parsed["error"] = "频道未返回可确认的发送回执，消息是否送达未知"
+        parsed["outcome"] = "unknown"
+        parsed["retryable"] = False
+        parsed["hint"] = "先核验目标会话或频道状态，不要把本次调用视为已送达，也不要盲目重发"
+    if not ok and _is_network_unavailable(str(parsed.get("error", ""))):
         parsed.setdefault("cause", ErrorCause.NETWORK.value)
         parsed["retryable"] = False
-        parsed["hint"] = "频道网络连接不可达，请勿重复发送，直接告知用户当前消息无法送达"
+        parsed["hint"] = "频道网络连接不可达，请先恢复连接；不要重复发送或把内部正文视为已送达"
     return parsed, ok
+
+
+def _delivery_rejection(result: str, scope: str = "") -> str:
+    """为尚未进入频道发送的拒绝结果附加投递状态。"""
+    payload = json.loads(result)
+    payload["delivery"] = delivery_tags("channel", "failed", scope)
+    return json.dumps(payload, ensure_ascii=False)
 
 
 async def execute_send_action(
@@ -283,8 +300,9 @@ async def execute_send_action(
     """
     ch, err = _validate_channel(channel_id)
     if err:
-        return err
+        return _delivery_rejection(err)
 
+    target_scope = ""
     try:
         resolved_target_id, channel_type = _resolve_send_target(channel_id, target_id)
         # 未显式带 session 时从当前思维 scope 继承（多会话窗口路由 + 持久化对齐）
@@ -298,14 +316,18 @@ async def execute_send_action(
         thinker = ToolActivationManager.current_scope()
         rejection = guard_outbound(target_scope, thinker)
         if rejection:
-            return rejection
+            return _delivery_rejection(rejection, target_scope)
         # 空会话拦截：目标会话从未收到过对方消息时拒绝（对空会话发起
         # 对话是突兀的；回复周期由真实用户消息触发，命中即为主动搭话）
         rejection = await guard_empty_conversation(target_scope, thinker)
         if rejection:
-            return rejection
+            return _delivery_rejection(rejection, target_scope)
         raw = await invoke(ch, resolved_target_id, channel_type)
         parsed, ok = _check_send_result(raw, channel_id, target_id)
+        parsed["delivery"] = delivery_tags(
+            "channel", "sent" if ok else "unknown" if parsed.get("outcome") == "unknown" else "failed",
+            target_scope,
+        )
         _attach_target_resolution_meta(
             parsed,
             original_target_id=target_id,
@@ -316,6 +338,7 @@ async def execute_send_action(
             enrich(parsed, ok)
 
         if ok:
+            record_delivery(target_scope)
             note_outbound(target_scope, thinker, outbound_preview or operation)
             if record_content:
                 await _record_sent_reply(
@@ -331,9 +354,10 @@ async def execute_send_action(
         payload["success"] = False
         payload["channel_id"] = channel_id
         payload["target_id"] = target_id
+        payload["delivery"] = delivery_tags("channel", "failed", target_scope)
         if payload.get("cause") == ErrorCause.NETWORK.value:
             payload["retryable"] = False
-            payload["hint"] = "频道网络连接不可达，请勿重复发送，直接告知用户当前消息无法送达"
+            payload["hint"] = "频道网络连接不可达，请先恢复连接；不要重复发送或把内部正文视为已送达"
         return json.dumps(payload, ensure_ascii=False)
 
 
@@ -396,6 +420,7 @@ async def send_message(
             "success": False,
             "error": "content 参数不能为空，请提供要发送的消息内容",
             "cause": ErrorCause.PARAM.value,
+            "delivery": delivery_tags("channel", "failed"),
         }, ensure_ascii=False)
 
     resolved_channel_type = "private"
@@ -434,7 +459,7 @@ async def send_message(
     # 通话自动语音路由：该会话正在实时通话中时，消息同时 TTS 播给电话
     spoken_note = ""
     try:
-        if json.loads(result).get("success") is not False:
+        if json.loads(result).get("success") is True:
             spoken_note = await _speak_if_on_call(channel_id, resolved_target, content)
     except (json.JSONDecodeError, TypeError):
         log("_speak_if_on_call 判定异常已忽略", "DEBUG")

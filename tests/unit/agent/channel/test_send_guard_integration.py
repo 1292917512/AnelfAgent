@@ -14,8 +14,10 @@ import pytest
 
 import agent.channel.outbound_guard as outbound_guard
 import agent.channel.output_tools as output_tools
+from agent.channel.delivery import capture_deliveries, delivery_count
 from agent.channel.output_tools import execute_send_action
 from agent.mind.tool_activation import bind_scope, reset_scope
+from core.tags import etag_all
 
 _SCOPE = "user_qq:1292917512"
 
@@ -96,7 +98,53 @@ class TestGuardIntegration:
             reset_scope(token)
         payload = json.loads(result)
         assert payload["success"] is True
+        assert dict(etag_all(payload["delivery"])) == {
+            "delivery_scope": _SCOPE, "delivery_mode": "channel", "delivery_status": "sent",
+        }
         assert ch.sent == ["补充说明"]
+
+    async def test_pipeline_records_real_delivery_for_nested_tool(self) -> None:
+        token = bind_scope(_SCOPE)
+        try:
+            with capture_deliveries(_SCOPE):
+                result, _ = await _send()
+                assert json.loads(result)["success"] is True
+                assert delivery_count() == 1
+            with capture_deliveries("user_telegram:1292917512"):
+                await _send()
+                assert delivery_count() == 0
+        finally:
+            reset_scope(token)
+
+    @pytest.mark.parametrize("receipt, status", [
+        ({"status": "queued"}, "unknown"),
+        ({"success": True, "outcome": "unknown"}, "unknown"),
+        ({"success": False, "error": "频道断开"}, "failed"),
+    ])
+    async def test_unconfirmed_delivery_has_no_receipt_or_history(
+        self, monkeypatch: pytest.MonkeyPatch, receipt: dict, status: str,
+    ) -> None:
+        from unittest.mock import AsyncMock
+
+        record = AsyncMock()
+        monkeypatch.setattr(output_tools, "_record_sent_reply", record)
+        token = bind_scope(_SCOPE)
+        try:
+            with capture_deliveries(_SCOPE):
+                result = await execute_send_action(
+                    channel_id="qq", target_id="1292917512", operation="消息",
+                    invoke=AsyncMock(return_value=receipt), record_content="答复正文",
+                )
+                assert delivery_count() == 0
+        finally:
+            reset_scope(token)
+        payload = json.loads(result)
+        assert payload["success"] is False
+        assert dict(etag_all(payload["delivery"])) == {
+            "delivery_scope": _SCOPE, "delivery_mode": "channel", "delivery_status": status,
+        }
+        assert _SCOPE not in outbound_guard._recent
+        record.assert_not_awaited()
 
     async def test_reflect_allowed_when_clear(self) -> None:
         token = bind_scope("reflect:cccc3333")

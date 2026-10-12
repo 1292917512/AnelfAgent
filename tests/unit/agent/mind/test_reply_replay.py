@@ -47,7 +47,7 @@ class TestScenarioPureText:
     """场景 1：纯文本独白 + end_reply 收敛。"""
 
     async def test_replay(self, replay_anything, deliver_mock) -> None:
-        mind = _ReplayMind([text_result("你好呀～"), tool_result("", ["end_reply"])])
+        mind = _ReplayMind([text_result("你好呀～"), tool_result("", ["end_reply"], '{"silent": true}')])
         await run_think_loop(
             mind, anything=replay_anything, base_messages=_base(), adapter_key="test",
         )
@@ -68,7 +68,7 @@ class TestScenarioSingleTool:
         mind = _ReplayMind([
             tool_result("", ["recall"]),
             text_result("查到了"),
-            tool_result("", ["end_reply"]),
+            tool_result("", ["end_reply"], '{"silent": true}'),
         ])
         await run_think_loop(
             mind, anything=replay_anything, base_messages=_base(), adapter_key="test",
@@ -92,7 +92,7 @@ class TestScenarioMultiToolChain:
             tool_result("", ["recall"]),
             tool_result("", ["get_conversation"]),
             text_result("都办好了"),
-            tool_result("", ["end_reply"]),
+            tool_result("", ["end_reply"], '{"silent": true}'),
         ])
         await run_think_loop(
             mind, anything=replay_anything, base_messages=_base(), adapter_key="test",
