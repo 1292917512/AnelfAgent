@@ -32,6 +32,11 @@ class ReplyPolicy:
     instructions: str = ""
     # None 沿用全局目录；显式名单只自动注入这些工具，仍允许本会话发现/激活。
     initial_tools: tuple[str, ...] | None = None
+    # Use the lightweight context for channels that obtain live state through tools.
+    # It keeps permanent memory while skipping generic recall/profile injections.
+    lean_context: bool = False
+    # Deliver a short plain-text result immediately for latency-sensitive channels.
+    auto_send_text: bool = False
     handoff_to_events: Callable[[Sequence[ReplyToolResult]], bool] | None = None
 
 
