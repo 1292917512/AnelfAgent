@@ -24,6 +24,7 @@ import { SurvivalController } from './anelf-survival.mjs'
  * finishedAt:number|null,elapsedMs:number,stopLatencyMs:number|null,reason:string,
  * cleanupErrors:string[],origin:Origin|null,taskId:string|null,world:string|null}} Snapshot */
 
+/** Temporary cancellation tracer for live root-cause capture; dropped once confirmed. */
 export class ActionController extends ActionLocks {
   /** @param {{push:(type:string,data:unknown)=>unknown}} events */
   constructor (events) {

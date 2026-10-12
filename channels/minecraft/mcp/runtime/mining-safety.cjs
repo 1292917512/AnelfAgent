@@ -10,6 +10,8 @@ const floors = new WeakMap()
 const installed = new WeakSet()
 /** @type {WeakSet<Movements>} */
 const restricted = new WeakSet()
+/** @type {WeakMap<Bot, Block>} */
+const temporaryDescent = new WeakMap()
 
 class MiningError extends Error {
   /** @param {string} code @param {string} message */
@@ -64,24 +66,51 @@ function protectFloor (bot, p) {
   protectedFloors.add(key(p))
 }
 
+/** Whether the block is part of the support the bot currently stands on.
+ * @param {Bot} bot @param {{x:number,y:number,z:number}} b
+ */
+function isOwnSupport (bot, b) {
+  const p = bot.entity.position
+  const half = (bot.entity.width || 0.6) / 2
+  return b.y < p.y && b.y + 1 >= p.y - 0.1 &&
+    b.x < p.x + half && b.x + 1 > p.x - half &&
+    b.z < p.z + half && b.z + 1 > p.z - half
+}
+
 /** @param {Bot} bot @param {Block} block */
 function assertFloorSafe (bot, block) {
   const p = bot.entity.position
   const b = block.position
-  const half = (bot.entity.width || 0.6) / 2
-  const supportsBot = b.y < p.y && b.y + 1 >= p.y - 0.1 &&
-    b.x < p.x + half && b.x + 1 > p.x - half &&
-    b.z < p.z + half && b.z + 1 > p.z - half
-  if (supportsBot || floors.get(bot)?.has(key(b))) {
+  if (temporaryDescent.get(bot) === block && !floors.get(bot)?.has(key(b)) &&
+      bot.entity.onGround && Math.abs(p.x - b.x - 0.5) < 0.2 && Math.abs(p.z - b.z - 0.5) < 0.2 &&
+      Math.abs(p.y - b.y - 1) < 0.1 && bot.blockAt(b.offset(0, -1, 0))?.boundingBox === 'block') return
+  if (isOwnSupport(bot, b) || floors.get(bot)?.has(key(b))) {
     throw new MiningError('MINING_PROTECTED_FLOOR', `Do not dig the bot's support or a mine return-path floor at ${b}. Use mine_resources to build an accessible passage.`)
   }
 }
 
-/** Actual collection may break a target; travelling to it may not break a path.
- * @param {Bot} bot @param {Block} block @returns {boolean}
+/** Remove a recorded temporary support with at most one block of descent.
+ * Caller must establish placement ownership and check a safe landing block.
+ * The exception exists only for this block during this awaited operation.
+ * @param {Bot} bot @param {Block} block @param {AbortSignal} signal
  */
-function canHarvestBlock (bot, block) {
-  try { assertFloorSafe(bot, block) } catch { return false }
+async function descendTemporarySupport (bot, block, signal) {
+  signal.throwIfAborted()
+  temporaryDescent.set(bot, block)
+  try { await bot.dig(block, true, 'raycast'); signal.throwIfAborted() } finally { temporaryDescent.delete(bot) }
+}
+
+/** Actual collection may break a target; travelling to it may not break a path.
+ * A surface soil strip order digs its own standing floor to descend one layer
+ * at a time; the allowance applies only while the bot is grounded on it, and
+ * the dig itself still goes through the strict temporary-descent gate.
+ * @param {Bot} bot @param {Block} block @param {boolean} [allowOwnSupport]
+ * @returns {boolean}
+ */
+function canHarvestBlock (bot, block, allowOwnSupport = false) {
+  if (!(allowOwnSupport && bot.entity.onGround && isOwnSupport(bot, block.position))) {
+    try { assertFloorSafe(bot, block) } catch { return false }
+  }
   const checks = new Movements(bot)
   return checks.safeToBreak(checks.getBlock(block.position, 0, 0, 0))
 }
@@ -102,4 +131,4 @@ function installSafety (bot) {
   }
 }
 
-module.exports = { MiningError, key, restrictMovements, protectFloor, assertFloorSafe, canHarvestBlock, installSafety }
+module.exports = { MiningError, key, restrictMovements, protectFloor, assertFloorSafe, isOwnSupport, canHarvestBlock, installSafety, descendTemporarySupport }

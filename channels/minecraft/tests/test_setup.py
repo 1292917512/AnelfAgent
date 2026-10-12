@@ -382,7 +382,11 @@ def test_crafting_patch_requires_window_sync_interface(tmp_path: Path) -> None:
 
 
 def test_placement_patch_is_idempotent(tmp_path: Path) -> None:
-    source = minecraft_placement._DESCRIPTION_ORIGINAL + "\n" + minecraft_placement._HANDLER_ORIGINAL
+    source = "\n".join((
+        minecraft_placement._DESCRIPTION_ORIGINAL,
+        minecraft_placement._SCHEMA_ORIGINAL,
+        minecraft_placement._HANDLER_ORIGINAL,
+    ))
     _write_fake_package_file(tmp_path, "awesome-mineflayer-mcp", "dist/tools/digging.js", source)
     assert minecraft_placement.patch_placement(tmp_path) == "patched"
     target = tmp_path / "node_modules/awesome-mineflayer-mcp/dist/tools/digging.js"
