@@ -33,6 +33,12 @@
 精确标签只允许 tags/fast，带标签时不做越界后台深探。记忆结果沿用统一归属标签、
 mem ID 和召回账本；后台结果在 provider 尾部注入，不修改 stable/summary/历史前缀。
 
+自动后台深探只读取 CHUNKS 与 GRAPH_COMPLETION 的上下文，不执行多轮生成式上下文扩展；
+仅解析出实体、规划未要求深入检索时只查本地图谱。AI 显式 `recall(depth="deep")` 仍使用
+Cognee 深检索配置，可选择多轮扩展。并发检索通道完成即发布增量，不等待最慢通道；达到
+`memory_probe_timeout_seconds` 预算时取消剩余检索，保留已经注入的事实。钩子详情记录未完成
+阶段，日志逐通道记录类型、数据集、耗时与结果数；未接入调用统计的内部流程不显示虚假的零次调用。
+
 SDK 可导入 `RecallPolicy`、`recall_options`、`set_turn_recall_policy`。
 直接调用回复入口时使用 `with recall_options(RecallPolicy(level="fast"))`；对于入队消息，
 应在 `Everything.recall_policy` 上设置策略，确保消息出队后仍带有覆盖。此字段不序列化

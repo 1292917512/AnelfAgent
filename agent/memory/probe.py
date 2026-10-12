@@ -5,7 +5,7 @@
 
 Model Experience:
 - 模型看到什么：至多一条 `[系统注入·记忆召回·续]` provider 消息（相关
-  关系 / 新增记忆 / 图谱综合分节），仅当深探发现账本外增量时出现
+  关系 / 新增记忆 / 图谱上下文分节），仅当深探发现账本外增量时出现
 - token 影响：每回复 ≤memory_probe_max_chars（默认 1600 字符）；无增量零注入
 - 缓存影响：provider 层每轮新鲜段（与桌面环境时间天气同区），不触碰
   任何 prompt 前缀缓存层
@@ -15,13 +15,14 @@ from __future__ import annotations
 
 import asyncio
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Dict, Iterable, List, Optional
+from typing import TYPE_CHECKING, AsyncIterator, Dict, Iterable, List, Optional
 
 from core.async_helper import spawn
 from core.config import get_config_bool, get_config_float, get_config_int, register_configs_safe
 from core.context_provider import ContextProviderRegistry, ProviderMeta
-from core.hooks import HookMode, hook_execution
+from core.hooks import HookMode, current_hook_run, hook_execution
 from core.log import log
 
 from .memory_types import RetrievalPlan, normalized_content_key
@@ -171,24 +172,18 @@ class DeepProbeHub:
         revision = state.revision
 
         async def execute() -> None:
-            async with hook_execution("memory.probe", "context_refresh", HookMode.ASYNC, scope=scope) as run:
-                try:
-                    async with asyncio.timeout(max(5, get_config_float("memory_probe_timeout_seconds", 60))):
-                        from .recall_fast import search_local
-                        before = len(state.rendered)
-                        results = await search_local(retriever, query)
-                        deltas = await self._memory_deltas(results, retriever._store, "补充记忆")
-                        if not self._publish(state, revision, deltas):
-                            return
-                        if policy.level == "deep":
-                            plan = await retriever.plan_retrieval(query, timeout=5)
-                            if self._is_current(state, revision) and (plan.deep_needed or plan.node_keys):
-                                await self._probe(state, plan, retriever._store, revision=revision)
-                        added = len(state.rendered) - before
-                        run.detail = f"新增上下文 {added} 字符" if added > 0 else "当前话题无需补充记忆"
-                except Exception as exc:
-                    run.status = "error"
-                    run.detail = f"{type(exc).__name__}: {exc}"
+            async with self._observe(state):
+                from .recall_fast import search_local
+                await self._stage("本地记忆检索")
+                results = await search_local(retriever, query)
+                deltas = await self._memory_deltas(results, retriever._store, "补充记忆")
+                if not self._publish(state, revision, deltas):
+                    return
+                if policy.level == "deep":
+                    await self._stage("检索规划（最多 5 秒，超时回退原查询）")
+                    plan = await retriever.plan_retrieval(query, timeout=5)
+                    if self._is_current(state, revision) and (plan.deep_needed or plan.node_keys):
+                        await self._probe(state, plan, retriever._store, revision=revision)
         state.task = spawn(execute(), name=f"memory.probe.{scope}")
 
     def ledger(self, scope: str) -> RecallLedger:
@@ -233,7 +228,6 @@ class DeepProbeHub:
             self._states[scope] = state
         if state.task is not None and not state.task.done():
             return  # 单飞：本回复已有深探在途
-        self._metrics("probe.started")
         state.task = spawn(
             self._run(state, plan, store, state.revision),
             name=f"memory.probe.{scope or 'global'}",
@@ -259,19 +253,39 @@ class DeepProbeHub:
         ]
 
     async def _run(self, state: _ProbeState, plan: RetrievalPlan, store: "MemoryStore", revision: int) -> None:
+        async with self._observe(state):
+            await self._probe(state, plan, store, revision=revision)
+
+    @asynccontextmanager
+    async def _observe(self, state: _ProbeState) -> AsyncIterator[None]:
+        """统一记录检索阶段与预算截止，超时保留已经发布的增量。"""
+        self._metrics("probe.started")
         timeout = max(5.0, get_config_float("memory_probe_timeout_seconds", 60.0))
-        try:
-            async with hook_execution("memory.probe", "context_refresh", HookMode.ASYNC, scope=state.scope) as run:
-                await asyncio.wait_for(self._probe(state, plan, store, revision=revision), timeout=timeout)
-                run.detail = f"新增上下文 {len(state.rendered)} 字符"
-            self._metrics("probe.completed")
-        except asyncio.CancelledError:
-            raise
-        except asyncio.TimeoutError:
-            log(f"深探超时（>{timeout:.0f}s），本轮放弃增量注入", "DEBUG", tag="记忆")
-            self._metrics("probe.timeout")
-        except Exception as exc:
-            log(f"深探执行失败（不影响回复）: {exc}", "DEBUG", tag="记忆")
+        before = len(state.rendered)
+        async with hook_execution("memory.probe", "context_refresh", HookMode.ASYNC, scope=state.scope) as run:
+            budget = asyncio.timeout(timeout)
+            try:
+                async with budget:
+                    yield
+            except Exception as exc:
+                run.status = "error"
+                if isinstance(exc, TimeoutError) and budget.expired():
+                    run.detail = f"检索预算 {timeout:g} 秒已用尽；未完成阶段：{run.operation or '准备'}。已保留 {len(state.rendered)} 字符补充记忆，主回复继续。"
+                    self._metrics("probe.timeout")
+                else:
+                    run.detail = f"{run.operation}: {type(exc).__name__}: {str(exc) or '检索未完成'}；已保留 {len(state.rendered)} 字符补充记忆。"
+                log(f"深探失败 scope={state.scope}: {run.detail}", "DEBUG", tag="记忆")
+            else:
+                added = len(state.rendered) - before
+                run.detail = f"新增上下文 {added} 字符" if added > 0 else "当前话题无需补充记忆"
+                self._metrics("probe.completed")
+
+    @staticmethod
+    async def _stage(operation: str) -> None:
+        run = current_hook_run.get()
+        if run is not None and run.name == "memory.probe":
+            run.phase, run.operation, run.updated_at = "retrieval", operation, time.time()
+            await run.publish()
 
     def _is_current(self, state: _ProbeState, revision: int) -> bool:
         return self._states.get(state.scope) is state and state.revision == revision
@@ -301,11 +315,11 @@ class DeepProbeHub:
         revision = state.revision if revision is None else revision
         if not self._is_current(state, revision):
             return
+        await self._stage("本地图谱关系检索")
         relations = await self._collect_relations(state, plan, store)
         if not self._publish(state, revision, relations):
             return
-        memories = await self._collect_cognee(state, plan, store)
-        self._publish(state, revision, memories)
+        await self._collect_cognee(state, plan, store)
 
     @staticmethod
     async def _memory_deltas(results: Iterable["MemorySearchResult"], store: "MemoryStore",
@@ -317,12 +331,12 @@ class DeepProbeHub:
             text = result.snippet.strip()
             if not text:
                 continue
-            graph_answer = result.source == "cognee_graph"
+            graph_context = result.source == "cognee_graph"
             line = await format_memory_line(
-                store.graph, snippet=text[:800 if graph_answer else 300], tags=result.tags,
+                store.graph, snippet=text[:800 if graph_context else 300], tags=result.tags,
                 provenance=result.provenance, timestamp=result.timestamp, sensitivity=result.sensitivity,
             )
-            deltas.append(RecallDelta("图谱综合" if graph_answer else section, line, result.id, text))
+            deltas.append(RecallDelta("图谱上下文" if graph_context else section, line, result.id, text))
         return deltas
 
     async def _collect_relations(
@@ -349,35 +363,50 @@ class DeepProbeHub:
 
     async def _collect_cognee(
         self, state: _ProbeState, plan: RetrievalPlan, store: "MemoryStore",
-    ) -> List[RecallDelta]:
-        """cognee 深检索（经 fusion 统一拼装）：定向实体事实 + 图谱综合答案。"""
-        if not plan.queries:
-            return []
+    ) -> None:
+        """自动补充只取事实与图谱上下文，按通道即时发布，不启动多轮生成扩展。"""
+        if not plan.queries or not plan.deep_needed:
+            return
         try:
             from .cognee.config import load_cognee_config
-            from .cognee.fusion import datasets_for_scope, search_cognee
+            from .cognee.fusion import CogneeSearchBatch, datasets_for_scope, search_cognee
             from .cognee.runtime import get_cognee_client
             config = load_cognee_config()
             client = get_cognee_client()
-        except Exception:
-            return []
+        except Exception as exc:
+            log(f"深探后端不可用: {exc}", "DEBUG", tag="记忆")
+            return
         if client is None or not config.enabled or not config.recall_enabled:
-            return []
+            return
         query = plan.queries[0]
         # node_keys（user:适配器:uid 形态）与记忆实体标签同构：除当前会话
         # scope 外，把查询提及实体的数据集也纳入路由（与被动召回同一语义）
         datasets = datasets_for_scope(config, state.scope, plan.node_keys)
-        try:
-            results = await search_cognee(
-                client, config, query, datasets, 5,
-                ["GRAPH_COMPLETION", "GRAPH_COMPLETION_CONTEXT_EXTENSION", "CHUNKS"],
-                node_names=plan.node_labels or None,
-            )
-        except Exception as exc:
-            log(f"深探 cognee 检索失败: {exc}", "DEBUG", tag="记忆")
-            return []
+        revision = state.revision
+        pending: set[str] = set()
+        failures: list[str] = []
 
-        return await self._memory_deltas(results, store, "深层记忆")
+        async def consume(batch: CogneeSearchBatch) -> None:
+            if batch.status == "running":
+                pending.add(batch.lane)
+            else:
+                pending.discard(batch.lane)
+                if batch.error:
+                    failures.append(f"{batch.lane}: {batch.error}")
+                if self._is_current(state, revision) and batch.results:
+                    deltas = await self._memory_deltas(batch.results, store, "深层记忆")
+                    self._publish(state, revision, deltas)
+            waiting = ", ".join(sorted(pending))
+            await self._stage(f"Cognee 检索：{len(pending)} 通道待完成；{waiting}" if pending else "Cognee 检索完成")
+
+        await self._stage("Cognee 初始化与检索")
+        await search_cognee(
+            client, config, query, datasets, 5,
+            ["CHUNKS", "GRAPH_COMPLETION"],
+            node_names=plan.node_labels or None, on_batch=consume,
+        )
+        if failures:
+            raise RuntimeError(f"{len(failures)} 个检索通道失败；{failures[0]}")
 
     def _sweep(self) -> None:
         """回收未托管的过期状态；由 recall_turn 托管的回复只在轮次结束时清理。"""
@@ -414,7 +443,7 @@ def _provide_probe(scope: str) -> str:
 
 
 # 深探增量经 provider 层注入（priority 34 会话操作态势档；变动率语义：
-# 回复内通常零变化，异步完成时一次性切换到新渲染）。provider 消息
+# 回复内按检索通道到达追加事实，无新增时保持原字节）。provider 消息
 # 不进压缩历史（每轮重新收集、逐字存活），不触碰任何前缀缓存层。
 ContextProviderRegistry.register(ProviderMeta(
     name="memory_deep_probe",
@@ -449,7 +478,7 @@ _PROBE_CONFIGS = {
             "unit": "字符",
         },
         "memory_probe_timeout_seconds": {
-            "description": "深探整体超时（含 cognee 图谱综合 LLM 调用）",
+            "description": "动态记忆补充的整体检索预算；截止后保留已返回结果，不影响主回复",
             "default": 60.0,
             "advanced": True,
             "unit": "秒",

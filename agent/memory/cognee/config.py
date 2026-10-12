@@ -143,10 +143,8 @@ class CogneeConfig:
     search_types: list[str] = field(
         default_factory=lambda: ["CHUNKS", "CHUNKS_LEXICAL"],
     )
-    # 深度召回（recall depth=deep / 异步深探）使用的搜索类型：在浅召回
-    # 基础上追加图谱类检索。不支持的类型在运行时被静默跳过，保持向后兼容。
-    # GRAPH_COMPLETION：图谱合成答案；CONTEXT_EXTENSION：迭代图上下文
-    # 扩展；SUMMARIES：实体摘要卡。均为 LLM 参与通道，只经显式深检发生。
+    # 显式 recall depth=deep 的搜索类型；自动补充独立选择非生成式通道。
+    # only_context 仅跳过最终回答生成，CONTEXT_EXTENSION 的迭代检索仍调用 LLM。
     deep_search_types: list[str] = field(
         default_factory=lambda: [
             "CHUNKS",

@@ -28,6 +28,7 @@ class HookProgress:
 
     def __init__(self, run: HookRun, registry: BackgroundTaskRegistry | None = None) -> None:
         self.run = run
+        self.run.model_calls = self.run.tool_calls = 0
         self._registry = registry
         self._tools: dict[str, str] = {}
         self.terminal_status = "completed"
@@ -54,7 +55,7 @@ class HookProgress:
 
     async def model_start(self, payload: dict[str, Any]) -> None:
         if current_hook_run.get() is self.run:
-            self.run.model_calls += 1
+            self.run.model_calls = (self.run.model_calls or 0) + 1
             await self.update("model", str(payload.get("model", "")))
 
     async def model_end(self, payload: dict[str, Any]) -> None:
@@ -69,7 +70,7 @@ class HookProgress:
                                                tool=payload.get("tool_name"), arguments=payload.get("arguments"),
                                                truncated=payload.get("arguments_truncated", False))
             self._tools[str(payload.get("tool_id", ""))] = str(payload.get("tool_name", ""))
-            self.run.tool_calls += 1
+            self.run.tool_calls = (self.run.tool_calls or 0) + 1
             await self.update("tool", str(payload.get("tool_name", "")))
 
     async def tool_end(self, payload: dict[str, Any]) -> None:

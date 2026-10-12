@@ -96,7 +96,9 @@ export function HookExecutionRow({ run }: { run: HookExecution }) {
           {run.phase && <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg bg-elevated/60 px-3 py-2.5">
             <span className="font-medium text-foreground">{t(`hookFlow.phases.${run.phase}`, { defaultValue: t(`hookFlow.status.${run.status}`) })}</span>
             {run.operation && <code className="break-all text-accent">{run.operation}</code>}
-            <span className="text-muted">{t("hookFlow.calls", { models: run.model_calls ?? 0, tools: run.tool_calls ?? 0 })}</span>
+            <span className="text-muted">{run.model_calls != null && run.tool_calls != null
+              ? t("hookFlow.calls", { models: run.model_calls, tools: run.tool_calls })
+              : t("hookFlow.callsUntracked")}</span>
           </div>}
           <p className="whitespace-pre-wrap break-words leading-relaxed text-foreground">
             {run.detail || t("hookFlow.noDetail")}

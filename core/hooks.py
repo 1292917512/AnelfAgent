@@ -48,8 +48,8 @@ class HookRun:
     phase: str = "running"
     operation: str = ""
     updated_at: float = field(default_factory=time.time)
-    model_calls: int = 0
-    tool_calls: int = 0
+    model_calls: int | None = None
+    tool_calls: int | None = None
     context_mode: str = ""
     context_messages: int = 0
 

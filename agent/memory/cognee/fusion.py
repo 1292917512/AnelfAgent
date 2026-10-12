@@ -5,19 +5,34 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
-from collections.abc import Awaitable
-from typing import Optional
+import time
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+from functools import partial
+from typing import Literal, Optional
 
 from core.log import log
 
 from ..memory_types import MemorySearchResult
 from .client import CogneeClient
 from .config import CogneeConfig
+from .types import CogneeRecallItem
 
 _WHITESPACE_RE = re.compile(r"\s+")
 
 #: 投影文档头字段（coordinator._render_memory 的输出格式）
 _PROJECTION_HEADER_KEYS = ("Memory type", "Source", "Importance", "Tags", "Metadata")
+
+
+@dataclass
+class CogneeSearchBatch:
+    """单条检索通道的状态与结果，不携带查询原文。"""
+
+    lane: str
+    status: Literal["running", "done", "error"]
+    elapsed: float = 0.0
+    results: list[MemorySearchResult] = field(default_factory=list)
+    error: str = ""
 
 
 def parse_memory_projection(text: str) -> tuple[str, list[str]]:
@@ -99,18 +114,19 @@ async def search_cognee(
     search_types: Optional[list[str]] = None,
     *,
     node_names: Optional[list[str]] = None,
+    on_batch: Callable[[CogneeSearchBatch], Awaitable[None]] | None = None,
 ) -> list[MemorySearchResult]:
     """cognee 检索的统一拼装点：类型 × 数据集并行 recall + 定向通道 + 归一化。
 
     联邦召回（federated_search）与异步深探（probe）共用本入口——
     cognee 调用模式只在此处拼装，外层不再各自组 client.recall。
-    不支持的检索类型静默跳过（向后兼容）。
+    每条通道完成即可通过 on_batch 消费，慢通道不阻塞已完成结果的呈现。
     """
     availability = await client.initialize()
     if not availability.ready:
         return []
     pool_size = max(limit, limit * config.recall_pool_multiplier)
-    tasks: list[Awaitable] = []
+    lanes: list[tuple[str, Callable[[], Awaitable[list[CogneeRecallItem]]]]] = []
     targeted_type = None
     if node_names:
         try:
@@ -123,7 +139,7 @@ async def search_cognee(
         except (AttributeError, RuntimeError):
             continue
         for dataset_name in datasets:
-            tasks.append(client.recall(
+            lanes.append((f"{search_type_name}/{dataset_name}", partial(client.recall,
                 query,
                 query_type=search_type,
                 datasets=[dataset_name],
@@ -131,12 +147,12 @@ async def search_cognee(
                 auto_route=False,
                 only_context=True,
                 include_references=True,
-            ))
+            )))
     # 定向检索通道：node_name 限定到提及实体的事实块（每数据集一次，
     # 不随 search_types 翻倍——定向精度来自节点过滤而非查询类型）
     if targeted_type is not None:
         for dataset_name in datasets:
-            tasks.append(client.recall(
+            lanes.append((f"CHUNKS:targeted/{dataset_name}", partial(client.recall,
                 query,
                 query_type=targeted_type,
                 datasets=[dataset_name],
@@ -145,23 +161,33 @@ async def search_cognee(
                 auto_route=False,
                 only_context=True,
                 include_references=True,
-            ))
-    if not tasks:
+            )))
+    if not lanes:
         for dataset_name in datasets:
-            tasks.append(client.recall(
+            lanes.append((f"AUTO/{dataset_name}", partial(client.recall,
                 query,
                 datasets=[dataset_name],
                 top_k=pool_size,
                 auto_route=True,
                 only_context=True,
                 include_references=True,
-            ))
-    batches = await asyncio.gather(*tasks, return_exceptions=True)
-    results: list[MemorySearchResult] = []
-    for batch in batches:
-        if isinstance(batch, BaseException):
-            continue
-        for item in batch:
+            )))
+
+    async def consume(lane: str, call: Callable[[], Awaitable[list[CogneeRecallItem]]]) -> list[MemorySearchResult]:
+        started = time.monotonic()
+        if on_batch is not None:
+            await on_batch(CogneeSearchBatch(lane, "running"))
+        try:
+            items = await call()
+        except Exception as exc:
+            detail = f"{type(exc).__name__}: {str(exc) or '检索未完成'}"
+            elapsed = time.monotonic() - started
+            log(f"Cognee 检索通道失败: {lane}, {elapsed:.1f}s, {detail}", "DEBUG", tag="记忆")
+            if on_batch is not None:
+                await on_batch(CogneeSearchBatch(lane, "error", elapsed, error=detail))
+            return []
+        results: list[MemorySearchResult] = []
+        for item in items:
             content, tags = parse_memory_projection(item.content)
             results.append(MemorySearchResult(
                 id=item.id,
@@ -173,7 +199,21 @@ async def search_cognee(
                 dataset_name=item.dataset_name,
                 provenance=item.metadata,
             ))
-    return results
+        elapsed = time.monotonic() - started
+        log(f"Cognee 检索通道完成: {lane}, {elapsed:.1f}s, {len(results)} 条", "DEBUG", tag="记忆")
+        if on_batch is not None:
+            await on_batch(CogneeSearchBatch(lane, "done", elapsed, results))
+        return results
+
+    tasks = [asyncio.create_task(consume(lane, call), name=f"cognee.search.{lane}") for lane, call in lanes]
+    try:
+        batches = await asyncio.gather(*tasks)
+        return [result for batch in batches for result in batch]
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def reciprocal_rank_fusion(

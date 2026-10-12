@@ -101,8 +101,8 @@ export interface HookExecution {
   phase?: string;
   operation?: string;
   updated_at?: number;
-  model_calls?: number;
-  tool_calls?: number;
+  model_calls?: number | null;
+  tool_calls?: number | null;
   context_mode?: string;
   context_messages?: number;
 }
