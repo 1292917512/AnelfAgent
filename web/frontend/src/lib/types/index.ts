@@ -4,6 +4,7 @@
  * 所有现有 import 路径（"@/lib/types"、"./types"）保持不变。
  */
 export * from "./json";
+export * from "./network";
 export * from "./models";
 export * from "./memory";
 export * from "./mcp";

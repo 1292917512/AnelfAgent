@@ -1,4 +1,50 @@
 {
+  "networkCheck": {
+    "title": "代理与连接检测",
+    "description": "使用服务端已保存的配置，对比规则、直连和代理。每次建立独立连接，仅请求响应头，不携带认证、不跟随跳转。",
+    "url": "检测地址",
+    "samples": "每条路径采样",
+    "sampleCount": "{{count}} 次",
+    "start": "开始检测",
+    "running": "检测中",
+    "progress": "正在采样，最多约 {{seconds}} 秒。",
+    "failed": "检测请求失败",
+    "changed": "检测期间配置发生变化，请重新检测后比较结果。",
+    "limitation": "结果仅代表当前目标和本次采样。响应头可达不代表下载、长连接或长期稳定；HTTP 错误也可能来自目标站点。",
+    "reached": "收到响应 {{count}} / {{total}} 次",
+    "median": "中位耗时",
+    "spread": "耗时极差",
+    "rule": "规则 #{{index}}",
+    "modes": {
+      "system": "按规则",
+      "direct": "直连",
+      "proxy": "代理"
+    },
+    "status": {
+      "passed": "本次采样通过",
+      "partial": "部分采样异常",
+      "failed": "连接失败",
+      "http_error": "已响应 · HTTP 异常",
+      "unavailable": "当前配置不可用"
+    },
+    "sources": {
+      "component": "指定路径",
+      "disabled": "代理未启用",
+      "default": "默认策略",
+      "local": "内网直连",
+      "unconfigured": "未配置代理"
+    },
+    "errors": {
+      "configuration": "请检查代理开关、地址和站点规则后重试。",
+      "timeout": "请求超时，请检查连接和目标响应速度。",
+      "proxy_error": "代理连接或隧道建立失败。",
+      "proxy_auth": "代理认证失败，请检查代理凭据。",
+      "connect_error": "连接建立失败，请检查 DNS、端口或 TLS 证书。",
+      "transport_error": "传输失败或响应协议异常。",
+      "client_error": "请求未完成，请检查网络客户端配置。",
+      "http_status": "目标或代理返回 HTTP 错误；请结合状态码判断，不能直接归因于线路。"
+    }
+  },
   "title": "配置中心",
   "subtitle": "全部运行参数一处管理，即改即存，热更生效",
   "searchPlaceholder": "搜索配置（key / 描述）",

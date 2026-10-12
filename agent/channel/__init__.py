@@ -6,10 +6,12 @@ AI 通过两级发现机制按需使用频道功能。
 
 from core.network import (
     AsyncNetworkTransport,
+    NetworkProbeRequest,
     NetworkRoute,
     NetworkTransport,
     ProxyMode,
     async_network_client,
+    diagnose_network,
     get_proxy_url,
     network_client,
     resolve_network_route,
@@ -39,6 +41,7 @@ from .schemas import (
 from .tool_bridge import channel_tool
 
 __all__ = [
+    "NetworkProbeRequest", "diagnose_network",
     "AsyncNetworkTransport", "NetworkTransport", "NetworkRoute", "ProxyMode",
     "async_network_client", "network_client", "get_proxy_url", "resolve_network_route",
     "AdapterChannel",

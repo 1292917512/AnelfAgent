@@ -23,6 +23,7 @@ from web.routers.mcp import router as mcp_router
 from web.routers.memory import router as memory_router
 from web.routers.model_assets import router as model_assets_router
 from web.routers.models import router as models_router
+from web.routers.network import router as network_router
 from web.routers.personas import router as personas_router
 from web.routers.provider_keys import router as provider_keys_router
 from web.routers.retrieval import router as retrieval_router
@@ -47,6 +48,7 @@ api_router.include_router(chat_router)
 api_router.include_router(chat_ws_router)
 api_router.include_router(status_router)
 api_router.include_router(models_router)
+api_router.include_router(network_router)
 api_router.include_router(tools_router)
 api_router.include_router(tags_router)
 api_router.include_router(personas_router)

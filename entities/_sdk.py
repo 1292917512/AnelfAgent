@@ -61,10 +61,12 @@ if TYPE_CHECKING:
 
 from core.network import (
     AsyncNetworkTransport,
+    NetworkProbeRequest,
     NetworkRoute,
     NetworkTransport,
     ProxyMode,
     async_network_client,
+    diagnose_network,
     get_proxy_url,
     network_client,
     resolve_network_route,
@@ -72,6 +74,7 @@ from core.network import (
 from core.network.httpx2 import async_network_client2
 
 __all__ = [
+    "NetworkProbeRequest", "diagnose_network",
     "AsyncNetworkTransport", "NetworkTransport", "NetworkRoute", "ProxyMode",
     "async_network_client", "async_network_client2", "network_client", "get_proxy_url", "resolve_network_route",
     "RecallPolicy", "recall_options", "set_turn_recall_policy",

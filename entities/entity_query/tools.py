@@ -18,6 +18,8 @@ from entities._sdk import (
     tool_group_rounds_left,
 )
 
+from .network import check_network_proxy as check_network_proxy
+
 entity("entity", "实体系统自省 - 查询实体目录、方法详情和配置管理")
 
 

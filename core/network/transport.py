@@ -78,6 +78,7 @@ class NetworkTransport(httpx.BaseTransport):
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         route = resolve_network_route(str(request.url), self.mode() if callable(self.mode) else self.mode)
         for index, proxy in enumerate(route.proxies):
+            request.extensions["network_route"] = {"path": "proxy" if proxy else "direct", "source": route.source, "attempts": index + 1}
             with self._lock:
                 if self._closed:
                     raise RuntimeError("网络传输已关闭")
@@ -100,7 +101,7 @@ class NetworkTransport(httpx.BaseTransport):
                 if fallback and isinstance(exc, httpx.TransportError) and _can_fallback(exc, request):
                     continue
                 raise
-            response.extensions["network_route"] = {"path": "proxy" if proxy else "direct", "source": route.source, "attempts": index + 1}
+            response.extensions["network_route"] = request.extensions["network_route"]
             assert isinstance(response.stream, httpx.SyncByteStream)
             response.stream = _SyncStream(response.stream, release)
             return response
@@ -152,6 +153,7 @@ class AsyncNetworkTransport(httpx.AsyncBaseTransport):
         for old in retired:
             await old.transport.aclose()
         for index, proxy in enumerate(route.proxies):
+            request.extensions["network_route"] = {"path": "proxy" if proxy else "direct", "source": route.source, "attempts": index + 1}
             if self._closed:
                 raise RuntimeError("网络传输已关闭")
             pool = self._pools.get(proxy)
@@ -168,7 +170,7 @@ class AsyncNetworkTransport(httpx.AsyncBaseTransport):
                 if fallback and isinstance(exc, httpx.TransportError) and _can_fallback(exc, request):
                     continue
                 raise
-            response.extensions["network_route"] = {"path": "proxy" if proxy else "direct", "source": route.source, "attempts": index + 1}
+            response.extensions["network_route"] = request.extensions["network_route"]
             assert isinstance(response.stream, httpx.AsyncByteStream)
             response.stream = _AsyncStream(response.stream, release)
             return response

@@ -1,4 +1,50 @@
 {
+  "networkCheck": {
+    "title": "Proxy & connection check",
+    "description": "Compare saved routing rules, direct access and proxy access from the server. Each sample opens a fresh connection and requests headers only, without authentication or redirects.",
+    "url": "Test URL",
+    "samples": "Samples per route",
+    "sampleCount": "{{count}} samples",
+    "start": "Run check",
+    "running": "Checking",
+    "progress": "Sampling connections, up to about {{seconds}} seconds.",
+    "failed": "Check request failed",
+    "changed": "Configuration changed during this check. Run it again to compare results.",
+    "limitation": "Results cover this target and these samples only. Header reachability does not verify downloads, persistent connections or long-term stability. HTTP errors may originate at the target.",
+    "reached": "Responses received {{count}} / {{total}}",
+    "median": "Median",
+    "spread": "Range",
+    "rule": "Rule #{{index}}",
+    "modes": {
+      "system": "Routing rules",
+      "direct": "Direct",
+      "proxy": "Proxy"
+    },
+    "status": {
+      "passed": "Samples passed",
+      "partial": "Some samples failed",
+      "failed": "Connection failed",
+      "http_error": "Responded · HTTP error",
+      "unavailable": "Configuration unavailable"
+    },
+    "sources": {
+      "component": "Selected route",
+      "disabled": "Proxy disabled",
+      "default": "Default policy",
+      "local": "Local direct access",
+      "unconfigured": "No proxy configured"
+    },
+    "errors": {
+      "configuration": "Check the proxy switch, address and routing rules before retrying.",
+      "timeout": "Request timed out. Check connectivity and target response speed.",
+      "proxy_error": "Proxy connection or tunnel setup failed.",
+      "proxy_auth": "Proxy authentication failed. Check proxy credentials.",
+      "connect_error": "Connection failed. Check DNS, port or TLS certificates.",
+      "transport_error": "Transport or response protocol error.",
+      "client_error": "Request could not complete. Check network client configuration.",
+      "http_status": "The target or proxy returned an HTTP error; this alone does not identify a route failure."
+    }
+  },
   "title": "Configuration",
   "subtitle": "All runtime parameters in one place, saved instantly and applied hot",
   "searchPlaceholder": "Search config (key / description)",

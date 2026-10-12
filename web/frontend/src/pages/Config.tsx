@@ -11,6 +11,7 @@ import { ConfigGroupPicker } from "@/pages/config/ConfigGroupPicker";
 import { ConfigSection } from "@/pages/config/ConfigSection";
 import { ConfigDetailDrawer } from "@/pages/config/ConfigDetailDrawer";
 import { ConversationWindowRow } from "@/pages/config/ConversationWindowRow";
+import { NetworkDiagnostics } from "@/pages/config/NetworkDiagnostics";
 
 /** 对话窗口复合行收编的键（一行配置：总条数 + 保留比例滑条） */
 const WINDOW_KEYS = new Set(["max_conversation_size", "conversation_raw_keep_percent"]);
@@ -150,6 +151,7 @@ export default function Config() {
             </div>
           ) : currentGroup ? (
             <div className="space-y-2.5">
+              {currentGroup.group === "network/proxy" && <NetworkDiagnostics />}
               {windowItems && (
                 <div id="config-item-max_conversation_size">
                   <ConversationWindowRow
