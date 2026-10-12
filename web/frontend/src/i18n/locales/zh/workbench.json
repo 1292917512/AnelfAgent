@@ -292,6 +292,7 @@
       "content": "内容",
       "output": "结果",
       "message": "说明"
-    }
+    },
+    "recallScore": "相关度 {{score}}"
   }
 }

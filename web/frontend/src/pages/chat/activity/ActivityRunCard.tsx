@@ -7,6 +7,7 @@ import type { ActivityRun } from "@/lib/types/activity";
 import { cn } from "@/lib/utils";
 import { ActivityEntryView } from "./ActivityEntryView";
 import { ActivitySourceLabel, TaggedText } from "./ActivityReferences";
+import { SkillEvidence } from "@/components/common/SkillEvidence";
 
 export const ActivityRunCard = memo(function ActivityRunCard({ run, open, onToggle, onReveal }: { run: ActivityRun; open: boolean; onToggle: (id: string, open: boolean) => void; onReveal: (id: string) => void }) {
   const { t } = useTranslation("workbench");
@@ -25,6 +26,7 @@ export const ActivityRunCard = memo(function ActivityRunCard({ run, open, onTogg
       {running ? <span className="activity-live-dot" aria-label={t("activity.working")} /> : hasError ? <AlertCircle size={14} className="text-warn" aria-label={t("activity.needsAttention")} /> : stopped ? <Pause size={14} className="text-muted" aria-label={t("activity.interrupted")} /> : <Check size={14} className="text-muted" aria-label={t("activity.status.completed")} />}
       <ChevronDown size={14} className={cn("text-muted transition-transform", open && "rotate-180")} />
     </button>
+    <SkillEvidence skills={run.skills ?? []} compact />
     {open ? <div className="activity-run-content" onClickCapture={() => onToggle(run.id, true)}>
       {run.input && <details className="activity-input"><summary>{t(run.kind === "conversation" ? "activity.request" : "activity.goal")}</summary><div><TaggedText content={run.input} /></div></details>}
       {run.truncated && <p className="activity-note">{t("activity.truncated")}</p>}

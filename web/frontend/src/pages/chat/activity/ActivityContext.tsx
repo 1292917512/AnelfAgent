@@ -6,6 +6,7 @@ import { useNow } from "@/hooks/useNow";
 import { formatElapsedCompact } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { TaggedText } from "./ActivityReferences";
+import { SkillEvidence } from "@/components/common/SkillEvidence";
 
 /** 展示实际进入本轮模型上下文的记忆、关联与技能候选。 */
 export function ActivityContext({ entry }: { entry: Extract<ActivityEntry, { kind: "context" }> }) {
@@ -24,6 +25,7 @@ export function ActivityContext({ entry }: { entry: Extract<ActivityEntry, { kin
     {entry.error && <p className="activity-note text-warn" role="alert">{entry.error}</p>}
     {open && <div className="activity-context-detail">
       <p className="activity-note">{t("activity.contextHint")}</p>
+      <SkillEvidence skills={entry.skills ?? []} />
       {entry.truncated && <p className="activity-note">{t("activity.truncated")}</p>}
       {entry.blocks.map((block, index) => <details key={`${block.layer}:${index}`}>
         <summary><ChevronDown size={13} aria-hidden="true" />{block.label}<span>{t("activity.contextChars", { count: block.content.length })}</span></summary>

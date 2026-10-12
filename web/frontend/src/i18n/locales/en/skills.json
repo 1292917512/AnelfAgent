@@ -9,10 +9,10 @@
   "content": "Content (Markdown)",
   "triggerPatterns": "Trigger patterns (comma separated)",
   "state": "State",
-  "stateActive": "Active",
-  "stateStale": "Stale",
+  "stateActive": "Available",
+  "stateStale": "Idle",
   "stateArchived": "Archived",
-  "useCount": "Uses",
+  "useCount": "Reads / explicit calls",
   "patchCount": "Patches",
   "pinned": "Pinned",
   "pin": "Pin",
@@ -30,7 +30,7 @@
   "createdByAgent": "Agent",
   "createdByUser": "Manual",
   "lastActivity": "Last activity",
-  "matchCount": "Matches",
+  "matchCount": "Recall matches",
   "rationale": "Write rationale",
   "mergedInto": "Merged into {{name}}",
   "healthCapacity": "{{active}} active / {{stale}} stale (ref {{ref}})",
@@ -55,5 +55,54 @@
   "embeddingGenerate": "Generate vector",
   "embeddingRegenerate": "Regenerate vector",
   "vectorBuildRebuildConfirm": "This wipes ALL skill vectors and rebuilds with the current model (skill semantic matching degrades to keyword-only until done). Usually only needed after switching the embedding model. Continue?",
-  "healthParseErrors": "{{count}} parse errors"
+  "healthParseErrors": "{{count}} parse errors",
+  "evidence": {
+    "title": "Skills in this run",
+    "candidate": "Suggested",
+    "explicit": "Explicit call",
+    "read": "Content read",
+    "partial": "Partial content shown",
+    "score": "Match {{score}}",
+    "hint": "Suggestions are recommendations. Read or explicit skills were provided to the AI; this does not confirm that their steps were completed."
+  },
+  "recent": {
+    "more": "Show {{count}} more runs",
+    "less": "Collapse earlier runs",
+    "title": "Recent skill activity",
+    "memoryOnly": "In memory · cleared on restart",
+    "loading": "Loading execution records…",
+    "empty": "No skill suggestions or reads in recent runs. Skills can still be opened from the catalog on demand.",
+    "running": "Running",
+    "ended": "Ended",
+    "system": "System task"
+  },
+  "library": {
+    "title": "Skill catalog",
+    "hint": "Available, idle and archived describe library state, independently of use in a run.",
+    "sort": "Sort skills",
+    "sorts": {
+      "recent": "Recent activity",
+      "used": "Most read",
+      "matched": "Most matched",
+      "name": "Name"
+    },
+    "filters": {
+      "all": "All",
+      "active": "Available",
+      "stale": "Idle",
+      "archived": "Archived"
+    },
+    "maintenance": "Retrieval index and library health",
+    "markdownSource": "View Markdown source",
+    "noMatches": "No skills match these filters",
+    "missing": "Skill {{name}} was deleted or is unavailable."
+  },
+  "node": {
+    "skill": "Skill",
+    "query": "Search",
+    "tags": "Weighted tags",
+    "filterTags": "Required tags",
+    "group": "Tool group",
+    "results": "{{count}} results"
+  }
 }

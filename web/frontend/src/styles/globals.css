@@ -2,6 +2,7 @@
 @import "./shell.css";
 @import "./workbench.css";
 @import "./activity.css";
+@import "./skills.css";
 @import "./management.css";
 @import "./dashboard.css";
 @source not "../**/*.test.{ts,tsx}";
@@ -55,6 +56,8 @@
   --color-warn: var(--warn);
   --color-warn-subtle: var(--warn-subtle);
   --color-danger: var(--danger);
+  --color-danger-solid: #b91c1c;
+  --color-danger-solid-hover: #991b1b;
   --color-danger-subtle: var(--danger-subtle);
   --color-info: var(--info);
 

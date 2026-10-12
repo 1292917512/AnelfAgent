@@ -292,6 +292,7 @@
       "content": "Content",
       "output": "Result",
       "message": "Message"
-    }
+    },
+    "recallScore": "Relevance {{score}}"
   }
 }

@@ -314,7 +314,7 @@ async def _match_skills(
         scope: str = "",
         planned_queries: Optional[List[str]] = None,
 ) -> List[Dict]:
-    """匹配当前对话相关的技能（并记录使用次数），返回注入消息列表。
+    """匹配当前对话相关技能，分别记录候选匹配与显式调用，返回注入消息。
 
     查询车道 = 对话尾部基查询（与记忆召回同源的 _extract_query 提取，
     query_vec 与之对应）+ 记忆召回规划产出的互补查询（刚被召回车道嵌入过，
@@ -386,6 +386,7 @@ async def _match_skills(
             "不适用则忽略。",
         ]
         archived_hit = False
+        skill_facts: list[dict[str, Any]] = []
         for skill, _score in matched_skills:
             # 信号分离：手势命中 = 真实使用（计数 + 刷新活动）；评分命中 = 检索注入
             # （只计匹配，不刷新活动——被匹配不等于被消费，不能阻断闲置降级）
@@ -402,7 +403,6 @@ async def _match_skills(
                 )
                 if notice:
                     entry_text += f"\n{notice}"
-                skill_lines.append(entry_text)
             else:
                 mind.skill_store.record_match(skill.name)
                 triggers = "、".join(skill.trigger_patterns[:6])
@@ -414,7 +414,18 @@ async def _match_skills(
                     entry = f"## {skill.name} — {desc}"
                 if triggers:
                     entry += f"\n触发词: {triggers}"
-                skill_lines.append(entry)
+                entry_text = entry
+            start = len("\n\n".join(skill_lines)) + 2
+            skill_facts.append({
+                "name": skill.name, "description": skill.description,
+                "state": skill.state.value,
+                "mode": "explicit" if skill.name in forced_names else "candidate",
+                "score": None if skill.name in forced_names else round(_score, 4),
+                "heading_end": start + len(entry_text.split("\n", 1)[0]),
+                "end": start + len(entry_text),
+                "truncated": skill.name in forced_names and len(skill.content) > inject_max,
+            })
+            skill_lines.append(entry_text)
         if archived_hit:
             skill_lines.append(
                 "已归档技能是历史沉淀的方法（长期未用移出目录，不代表失效）；"
@@ -424,7 +435,7 @@ async def _match_skills(
         return [{
             "role": "system",
             "content": "\n\n".join(skill_lines),
-            "_source": {"origin": "skill_match"},
+            "_source": {"origin": "skill_match", "skills": skill_facts},
         }]
     except Exception as exc:
         log(f"技能匹配失败: {exc}", "DEBUG", tag="技能")

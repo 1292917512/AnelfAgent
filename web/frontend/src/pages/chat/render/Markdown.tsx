@@ -5,7 +5,8 @@ import { Check, Copy, ExternalLink, Link2 } from "lucide-react";
 import { useLightbox } from "./Lightbox";
 import { highlightCode } from "@/lib/shiki";
 import { useCopyFeedback } from "@/hooks/useCopyFeedback";
-import { parseFileReference } from "@/lib/file-reference";
+import { resolveDocumentReference } from "@/lib/file-reference";
+import type { WorkspaceFileRef } from "@/lib/workspace-file";
 import { FileReferenceLink } from "./FileReferenceLink";
 
 /** 从 URL 提取域名（失败返回空串） */
@@ -18,12 +19,12 @@ function domainOf(href: string): string {
 }
 
 /** 链接卡片：favicon + 域名 + 新窗口打开 */
-function LinkCard({ href, children }: { href?: string; children?: ReactNode }) {
+function LinkCard({ href, children, fileBase }: { href?: string; children?: ReactNode; fileBase?: WorkspaceFileRef }) {
   const [faviconFailed, setFaviconFailed] = useState(false);
   const url = href || "";
   const domain = domainOf(url);
   const isExternal = /^https?:\/\//.test(url);
-  const reference = parseFileReference(url);
+  const reference = resolveDocumentReference(url, fileBase);
   if (reference) return <FileReferenceLink reference={reference}>{children}</FileReferenceLink>;
 
   if (!isExternal) {
@@ -112,10 +113,11 @@ function CodeBlock({ className, children }: { className?: string; children?: Rea
 interface MarkdownProps {
   content: string;
   renderText?: (text: string) => ReactNode;
+  fileBase?: WorkspaceFileRef;
 }
 
 /** 统一 Markdown 渲染：GFM + 代码高亮 + 链接卡片 + 图片灯箱（memo：content 稳定时不重解析） */
-export const Markdown = memo(function Markdown({ content, renderText }: MarkdownProps) {
+export const Markdown = memo(function Markdown({ content, renderText, fileBase }: MarkdownProps) {
   const { lightbox, openLightbox } = useLightbox();
   const text = (children: ReactNode) => renderText
     ? Children.map(children, (child) => typeof child === "string" ? renderText(child) : child)
@@ -145,7 +147,7 @@ export const Markdown = memo(function Markdown({ content, renderText }: Markdown
           td: ({ children }) => <td>{text(children)}</td>,
           th: ({ children }) => <th>{text(children)}</th>,
           table: ({ children }) => <div className="markdown-table"><table>{children}</table></div>,
-          a: ({ href, children }) => <LinkCard href={href}>{children}</LinkCard>,
+          a: ({ href, children }) => <LinkCard href={href} fileBase={fileBase}>{children}</LinkCard>,
           pre: ({ children }) => {
             // react-markdown 将代码块渲染为 pre > code
             const child = Array.isArray(children) ? children[0] : children;

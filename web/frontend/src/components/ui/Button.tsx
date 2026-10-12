@@ -20,7 +20,7 @@ const VARIANT_CLASSES: Record<ButtonVariant, string> = {
   ghost:
     "text-muted hover:text-foreground hover:bg-hover",
   danger:
-    "bg-danger text-white hover:opacity-90",
+    "bg-danger-solid text-white hover:bg-danger-solid-hover",
 };
 
 const SIZE_CLASSES: Record<ButtonSize, string> = {

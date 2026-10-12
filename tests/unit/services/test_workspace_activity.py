@@ -34,6 +34,40 @@ async def test_context_and_blocked_tools_are_visible_with_terminal_truth(activit
     assert "调整参数" in entries[1]["result"]
 
 
+async def test_skill_facts_survive_entry_eviction_and_only_promote_successful_reads(activity, monkeypatch):
+    service, _ = activity
+    monkeypatch.setattr("services.workspace_activity.MAX_ENTRIES", 2)
+    async with activity_scope("skill-run", "user_qq:1"):
+        facts = [{"name": "deploy-check", "mode": "candidate", "description": "Inspect first", "score": 0.4},
+                 {"name": "not-used", "mode": "candidate", "description": "Candidate only"}]
+        await event_bus.emit("activity_context", {"status": "done", "skills": facts})
+        for call, name, success, result in [
+            ("running", "not-used", None, ""), ("failure", "not-used", False, '{"error":"Missing"}'),
+            ("read", "deploy-check", True, '{"ok":true,"name":"deploy-check","content":"long'),
+        ]:
+            await event_bus.emit("thinking_tool_start", {"tool_id": call, "tool_name": "get_skill", "arguments": json.dumps({"name": name})})
+            if success is not None:
+                await event_bus.emit("thinking_tool_end", {"tool_id": call, "success": success, "result": result, "result_truncated": success})
+        await event_bus.emit("activity_context", {"status": "done", "skills": facts})
+    run = service.snapshot()["runs"][0]
+    assert len(run["entries"]) == 2 and run["truncated"]
+    assert run["skills"][0] == {"name": "deploy-check", "mode": "read", "description": "Inspect first", "score": 0.4, "state": "", "truncated": True}
+    assert run["skills"][1]["mode"] == "candidate"
+    assert facts[0]["mode"] == "candidate"
+
+
+async def test_skill_summary_has_a_per_run_bound(activity):
+    service, _ = activity
+    async with activity_scope("bound", "reflect:test"):
+        for batch in range(4):
+            await event_bus.emit("activity_context", {"status": "done", "skills": [
+                {"name": f"skill-{batch}-{i}", "mode": "candidate", "description": "x" * 1000}
+                for i in range(16)]})
+    run = service.snapshot()["runs"][0]
+    assert len(run["skills"]) == 32 and run["truncated"]
+    assert all(len(skill["description"]) == 300 for skill in run["skills"])
+
+
 async def test_child_without_final_output_is_not_marked_completed(activity):
     service, _ = activity
     async with activity_scope("parent", "user_qq:1"):

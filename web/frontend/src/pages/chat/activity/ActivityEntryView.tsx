@@ -13,6 +13,7 @@ import { ActivityContext } from "./ActivityContext";
 import { ActivityModel } from "./ActivityModel";
 import { ActivityToolResult } from "./ActivityToolResult";
 import { HookExecutionRow } from "@/components/common/HookExecutionRow";
+import { ActivityToolSummary } from "./ActivityToolSummary";
 
 function readableJson(value: string): string {
   try { return JSON.stringify(JSON.parse(value), null, 2); } catch { return value; }
@@ -64,6 +65,7 @@ export function ActivityEntryView({ entry, live, onReveal }: { entry: ActivityEn
       <ChevronDown size={14} className={cn("text-muted transition-transform", open && "rotate-180")} />
     </button>
     <ActivityTargets targets={entry.targets} />
+    <ActivityToolSummary entry={entry} />
     {open && <div className="activity-tool-detail">{entry.truncated && <p className="activity-note">{t("activity.truncated")}</p>}{entry.arguments && <section aria-label={t("activity.arguments")}><h3>{t("activity.arguments")}</h3><pre>{readableJson(entry.arguments)}</pre></section>}{entry.result && <section aria-label={t("activity.result")}><h3>{t("activity.result")}</h3><ActivityToolResult result={entry.result} /></section>}<p className="activity-trace-id">{t("activity.callId")}: {entry.id}{entry.request_id && ` · ${t("activity.requestId")}: ${entry.request_id}`}</p></div>}
   </div>;
 }

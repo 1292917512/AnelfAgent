@@ -9,10 +9,10 @@
   "content": "技能内容（Markdown）",
   "triggerPatterns": "触发关键词（逗号分隔）",
   "state": "状态",
-  "stateActive": "活跃",
-  "stateStale": "沉睡",
+  "stateActive": "可用",
+  "stateStale": "闲置",
   "stateArchived": "已归档",
-  "useCount": "使用次数",
+  "useCount": "正文读取 / 显式调用",
   "patchCount": "修订次数",
   "pinned": "置顶",
   "pin": "置顶",
@@ -30,7 +30,7 @@
   "createdByAgent": "AI 创建",
   "createdByUser": "手动创建",
   "lastActivity": "最近活动",
-  "matchCount": "匹配次数",
+  "matchCount": "召回匹配",
   "rationale": "写入理由",
   "mergedInto": "已合并至 {{name}}",
   "healthCapacity": "库容 {{active}} 活跃 / {{stale}} 沉睡（参考水位 {{ref}}）",
@@ -55,5 +55,54 @@
   "embeddingGenerate": "生成向量",
   "embeddingRegenerate": "重新生成向量",
   "vectorBuildRebuildConfirm": "将清空全部技能向量并按当前模型全量重建（期间技能语义匹配退化为纯关键词，完成后自动恢复）。通常仅在切换 embedding 模型后需要，确定继续？",
-  "healthParseErrors": "解析失败 {{count}} 个"
+  "healthParseErrors": "解析失败 {{count}} 个",
+  "evidence": {
+    "title": "本轮技能",
+    "candidate": "召回候选",
+    "explicit": "显式调用",
+    "read": "已读取正文",
+    "partial": "内容部分展示",
+    "score": "匹配分 {{score}}",
+    "hint": "候选只表示被推荐；已读取或显式调用表示正文已提供给 AI，不等于技能步骤已执行完成。"
+  },
+  "recent": {
+    "more": "查看另外 {{count}} 轮",
+    "less": "收起较早记录",
+    "title": "近期技能参与",
+    "memoryOnly": "进程内记录 · 重启清空",
+    "loading": "正在加载执行记录…",
+    "empty": "近期执行中暂无技能召回或读取记录。技能仍可从目录按需调用。",
+    "running": "执行中",
+    "ended": "已结束",
+    "system": "系统任务"
+  },
+  "library": {
+    "title": "技能目录",
+    "hint": "可用、闲置和归档是库状态，与本轮是否调用独立。",
+    "sort": "技能排序",
+    "sorts": {
+      "recent": "最近参与",
+      "used": "正文读取最多",
+      "matched": "召回匹配最多",
+      "name": "名称排序"
+    },
+    "filters": {
+      "all": "全部",
+      "active": "可用",
+      "stale": "闲置",
+      "archived": "归档"
+    },
+    "maintenance": "检索索引与库健康",
+    "markdownSource": "查看 Markdown 源文",
+    "noMatches": "没有符合筛选条件的技能",
+    "missing": "技能 {{name}} 已被删除或当前不可用。"
+  },
+  "node": {
+    "skill": "技能",
+    "query": "检索",
+    "tags": "加权标签",
+    "filterTags": "限定标签",
+    "group": "工具组",
+    "results": "{{count}} 条结果"
+  }
 }

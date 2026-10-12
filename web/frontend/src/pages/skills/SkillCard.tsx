@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Archive, ArchiveRestore, Boxes, ChevronDown, CircleDashed, GitMerge, Pin, PinOff, Trash2 } from "lucide-react";
@@ -8,12 +8,16 @@ import { cn } from "@/lib/utils";
 import { Badge, Button } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ui/Modal";
 import { AsyncState, QueryError } from "@/components/common/AsyncState";
+import { Markdown } from "@/pages/chat/render/Markdown";
+import { formatRelativeTimestamp } from "@/lib/format";
 
 export function SkillCard({ skill, expanded, onToggle, onEdit, onChanged, onDeleted }: {
   skill: SkillItem; expanded: boolean; onToggle: () => void; onEdit: (skill: SkillItem) => void;
   onChanged: () => void; onDeleted: () => void;
 }) {
   const { t } = useTranslation("skills");
+  const article = useRef<HTMLElement>(null);
+  useEffect(() => { if (expanded) article.current?.scrollIntoView({ block: "nearest", behavior: "instant" }); }, [expanded]);
   const [deleting, setDeleting] = useState(false);
   const query = useQuery({ queryKey: ["skill", skill.name], queryFn: () => skillsApi.get(skill.name).then((r) => r.data), enabled: expanded, throwOnError: false });
   const action = useMutation({
@@ -25,15 +29,15 @@ export function SkillCard({ skill, expanded, onToggle, onEdit, onChanged, onDele
   });
   const remove = useMutation({ mutationFn: () => skillsApi.remove(skill.name), onSuccess: onDeleted });
   const detail = query.data;
-  return <article className={cn("overflow-hidden rounded-xl border bg-card", expanded ? "border-accent/50" : "border-border")}>
+  return <article ref={article} data-skill={skill.name} className={cn("skill-library-card overflow-hidden rounded-xl border bg-card", expanded ? "border-accent/50" : "border-border")}>
     <div className="flex items-center gap-2 p-3 sm:p-4">
       <button type="button" onClick={onToggle} aria-expanded={expanded} className="flex min-w-0 flex-1 items-center gap-3 text-left">
         <ChevronDown size={16} className={cn("shrink-0 text-muted transition-transform", !expanded && "-rotate-90")} />
         <div className="min-w-0 flex-1"><div className="flex items-center gap-2">
-          <span className="truncate font-medium">{skill.name}</span>
+          <span className="break-all font-medium">{skill.name}</span>
           {skill.pinned && <Pin size={13} className="shrink-0 text-warn" />}
           {skill.merged_into && <GitMerge size={13} className="shrink-0 text-muted" aria-label={t("mergedInto", { name: skill.merged_into })} />}
-        </div><p className="mt-1 truncate text-xs text-muted">{skill.description}</p></div>
+        </div><p className="mt-1 line-clamp-2 text-xs leading-5 text-muted">{skill.description}</p></div>
         <Badge variant={skill.state === "active" ? "ok" : skill.state === "stale" ? "warn" : "neutral"}>
           {skill.state === "active" ? t("stateActive") : skill.state === "stale" ? t("stateStale") : t("stateArchived")}
         </Badge>
@@ -43,11 +47,12 @@ export function SkillCard({ skill, expanded, onToggle, onEdit, onChanged, onDele
         {skill.embedded ? <Boxes size={15} className="text-ok" /> : <CircleDashed size={15} />}
       </Button>}
     </div>
+    <div className="skill-card-facts"><span>{t("matchCount")} <b>{skill.match_count}</b></span><span>{t("useCount")} <b>{skill.use_count}</b></span><span>{t("patchCount")} <b>{skill.patch_count}</b></span>
+      {skill.last_activity_at > 0 && <span className="ml-auto">{t("lastActivity")} {formatRelativeTimestamp(skill.last_activity_at)}</span>}
+    </div>
+    {!expanded && !!skill.trigger_patterns.length && <div className="skill-card-triggers">{skill.trigger_patterns.slice(0, 4).map((pattern) => <span key={pattern}>{pattern}</span>)}{skill.trigger_patterns.length > 4 && <span>+{skill.trigger_patterns.length - 4}</span>}</div>}
     {action.error && <div className="px-4 pb-3"><QueryError compact error={action.error} /></div>}
     {expanded && <div className="space-y-4 border-t border-border p-4">
-      <div className="flex flex-wrap gap-4 text-xs text-muted">
-        <span>{t("useCount")}: {skill.use_count}</span><span>{t("matchCount")}: {skill.match_count}</span><span>{t("patchCount")}: {skill.patch_count}</span>
-      </div>
       <AsyncState pending={query.isPending} error={query.error} retry={() => void query.refetch()}>
         {detail && <>
           <div className="flex flex-wrap gap-3 text-xs text-muted">
@@ -56,7 +61,8 @@ export function SkillCard({ skill, expanded, onToggle, onEdit, onChanged, onDele
           </div>
           {!!detail.trigger_patterns.length && <div className="flex flex-wrap gap-2">{detail.trigger_patterns.map((pattern) => <Badge key={pattern}>{pattern}</Badge>)}</div>}
           {detail.rationale && <p className="rounded-lg bg-elevated p-3 text-xs text-muted">{t("rationale")}: {detail.rationale}</p>}
-          <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-elevated p-4 font-mono text-sm leading-6">{detail.content}</pre>
+          <div className="skill-content-preview"><Markdown content={detail.content ?? ""} fileBase={{ root: "workspace", path: `skills/${skill.name}` }} /></div>
+          <details className="skill-source"><summary>{t("library.markdownSource")}</summary><pre>{detail.content}</pre></details>
           <div className="flex flex-wrap gap-2">
             <Button size="sm" onClick={() => onEdit(detail)}>{t("edit")}</Button>
             <Button size="sm" disabled={action.isPending} onClick={() => action.mutate("pin")}>{skill.pinned ? <PinOff size={14} /> : <Pin size={14} />}{skill.pinned ? t("unpin") : t("pin")}</Button>

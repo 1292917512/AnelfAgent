@@ -3,9 +3,17 @@ import type { ChatStreamingDiff } from "./chat";
 interface EntryBase { id: string; ts: number }
 export interface ActivityTag { key: string; value: string; root?: string; path?: string }
 export interface ActivitySource { scope: string; kind: string; channel: string; target: string; session: string }
+export interface ActivitySkill {
+  name: string;
+  description: string;
+  mode: "candidate" | "explicit" | "read";
+  state?: string;
+  score?: number | null;
+  truncated?: boolean;
+}
 export type ActivityEntry =
   | EntryBase & { kind: "hook"; name: string; event: string; mode: "sync" | "async"; source: string; scope: string; status: string; detail: string; duration_ms: number }
-  | EntryBase & { kind: "context"; status: string; duration_ms: number; blocks: { layer: string; label: string; content: string }[]; block_count: number; error?: string; truncated?: boolean }
+  | EntryBase & { kind: "context"; status: string; duration_ms: number; blocks: { layer: string; label: string; content: string }[]; block_count: number; skills?: ActivitySkill[]; error?: string; truncated?: boolean }
   | EntryBase & { kind: "thinking"; content: string; truncated?: boolean }
   | EntryBase & { kind: "text"; content: string; truncated?: boolean }
   | EntryBase & { kind: "tool"; name: string; arguments: string; targets: ActivityTag[]; request_id: string; truncated?: boolean; status: "running" | "done" | "error" | "interrupted"; result?: string; duration_ms?: number }
@@ -32,6 +40,7 @@ export interface ActivityRun {
   ended_at: number | null;
   revision: number;
   entries: ActivityEntry[];
+  skills?: ActivitySkill[];
   entry_count: number;
   truncated: boolean;
 }

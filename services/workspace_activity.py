@@ -34,6 +34,7 @@ from core.realtime_hub import publish
 from core.sanitizer import sanitize_text
 from core.stream_events import EVENT_ASSISTANT_DELTA, EVENT_FILE_DIFF
 from services.activity_presentation import presentation_label, relative_workspace_path, source_reference, tool_targets
+from services.activity_skills import merge_skill_evidence, record_skill_read
 
 MAX_RUNS = 20
 MAX_ENTRIES = 120
@@ -193,7 +194,7 @@ class WorkspaceActivityService:
             "input": sanitize_text(str(payload.get("label", "")))[:MAX_TEXT],
             "generation": 0,
             "status": "running", "started_at": time.time(), "ended_at": None,
-            "entries": [], "entry_count": 0, "truncated": False,
+            "entries": [], "skills": [], "entry_count": 0, "truncated": False,
         }
         self._runs[run_id] = run
         if run["owner_id"]:
@@ -261,10 +262,15 @@ class WorkspaceActivityService:
                            "content": content[:remaining]})
             remaining -= len(content)
         entry.update(status=payload["status"], blocks=blocks,
+                     skills=[{**fact, "name": sanitize_text(str(fact["name"]))[:200],
+                              "description": sanitize_text(str(fact.get("description", "")))[:300]}
+                             for fact in payload.get("skills", [])[:16]],
                      block_count=payload.get("block_count", 0),
                      duration_ms=payload.get("duration_ms", 0),
                      error=sanitize_text(str(payload.get("error", "")))[:MAX_TEXT],
                      truncated=bool(payload.get("truncated")) or remaining < 0)
+        if entry["status"] == "done":
+            merge_skill_evidence(run, entry["skills"])
         self._changed(run)
 
     async def _delta(self, payload: dict[str, Any]) -> None:
@@ -341,6 +347,7 @@ class WorkspaceActivityService:
         entry.update(status="done" if payload.get("success") else "error", result=result[:MAX_TEXT],
                      truncated=entry.get("truncated", False) or bool(payload.get("result_truncated")) or len(result) > MAX_TEXT,
                      duration_ms=payload.get("duration_ms", 0))
+        record_skill_read(run, entry)
         self._changed(run)
 
     async def _file(self, payload: dict[str, Any]) -> None:
