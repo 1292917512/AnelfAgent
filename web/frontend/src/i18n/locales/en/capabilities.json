@@ -1,0 +1,8 @@
+{
+  "hint": "Automatic mode follows registered components. Reordering or changing members creates a custom chain. Failed calls try the next provider. Configured means prerequisites are present, not that a remote service is currently reachable.",
+  "automatic": "Automatic", "custom": "Custom order", "readyChain": "First: {{name}} · {{count}} configured",
+  "unavailable": "No configured providers in this chain", "configured": "Configured", "notConfigured": "Needs configuration",
+  "missing": "Component not registered", "moveUp": "Move {{name}} up", "moveDown": "Move {{name}} down", "remove": "Remove {{name}} from chain",
+  "add": "Add provider", "empty": "No providers. Connect a component or configure a model first.", "restoreAuto": "Restore automatic",
+  "unsaved": "Priority changes are not saved", "discard": "Discard", "save": "Save priority"
+}

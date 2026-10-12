@@ -1,0 +1,8 @@
+{
+  "hint": "自动模式随已注册组件选择提供者。调整顺序或成员后使用自定义链；调用失败时按顺序尝试后续提供者。已配置表示具备调用条件，不代表远端服务实时可达。",
+  "automatic": "自动选择", "custom": "自定义顺序", "readyChain": "首选 {{name}} · {{count}} 个已配置",
+  "unavailable": "当前链上没有已配置的提供者", "configured": "已配置", "notConfigured": "待配置",
+  "missing": "组件未注册", "moveUp": "上移 {{name}}", "moveDown": "下移 {{name}}", "remove": "从链中移除 {{name}}",
+  "add": "添加提供者", "empty": "暂无提供者，请先接入组件或配置模型。", "restoreAuto": "恢复自动",
+  "unsaved": "优先级尚未保存", "discard": "放弃修改", "save": "保存优先级"
+}

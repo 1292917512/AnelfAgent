@@ -14,7 +14,8 @@
     "auto": "Auto",
     "activeNow": "Active",
     "noneAvailable": "No provider available",
-    "autoDesc": "Use the first enabled + credential-configured provider by priority"
+    "autoDesc": "Use the first enabled + credential-configured provider by priority",
+    "missing": "Provider no longer registered"
   },
   "provider": {
     "enable": "Enable",
@@ -33,7 +34,12 @@
     "keyPlaceholderSet": "Credential saved; enter a new key to replace",
     "keyPlaceholderEmpty": "Enter API Key",
     "saveKey": "Save",
-    "clearKey": "Clear"
+    "clearKey": "Clear",
+    "title": "Providers",
+    "count": "{{ready}} / {{total}} configured and enabled",
+    "toggle": "Enable {{name}}",
+    "manage": "Configuration & connection test",
+    "credential": "API credential"
   },
   "test": {
     "run": "Test",
@@ -43,7 +49,10 @@
       "reader": "Test URL (optional)",
       "repo": "owner/repo (optional)"
     },
-    "failed": "Test failed"
+    "failed": "Test failed",
+    "title": "Connection test",
+    "capability": "Capability to test",
+    "input": "Test input"
   },
   "settings": {
     "proxy": "Fetch Proxy",

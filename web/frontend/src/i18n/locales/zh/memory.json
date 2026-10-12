@@ -144,7 +144,7 @@
     "write_breaker_cooldown_seconds": "熔断冷却时长 (秒)"
   },
   "cogneeDescs": {
-    "enabled": "启用可选 Cognee 后端；未安装依赖时自动降级",
+    "enabled": "默认启用；模型未配置时等待，基础记忆与原生检索仍可使用",
     "sync_enabled": "将新增、更新和删除异步投影到 Cognee",
     "recall_enabled": "并行查询 Cognee 并与原生结果融合",
     "dataset_prefix": "用于隔离 global、user 和 group 数据集",
@@ -198,6 +198,10 @@
   "markActive": "恢复进行",
   "cognee": {
     "statusTitle": "Cognee 运行状态",
+    "setupHint": "Cognee 默认启用。先在模型管理中配置聊天与 Embedding 模型，即可自动接入；也可以在下方分别指定模型。",
+    "configureModels": "前往模型管理",
+    "waitingForConfig": "待配置",
+    "usageHint": "配置就绪后，记忆同步会调用抽取与向量化模型，消耗所选服务的额度。可在下方关闭 Cognee 或异步同步。",
     "statusSubtitle": "知识图谱后端的可用性、模型映射与同步状态",
     "syncWorker": "同步 Worker",
     "running": "运行中",
@@ -220,7 +224,7 @@
     "source_auto": "自动映射",
     "source_model": "指定模型",
     "source_custom": "自定义",
-    "sourceAutoDesc": "自动从模型管理中选择兼容模型（优先 openai 协议），随主模型变化",
+    "sourceAutoDesc": "从模型管理中自动选择兼容模型；首次配置齐后自动接入。已有索引切换向量化模型后需要清空重建。",
     "sourceModelDesc": "固定使用模型管理中的某个模型，切换主对话模型不影响 Cognee",
     "sourceCustomDesc": "完全自定义 provider / 端点 / 密钥",
     "selectModel": "选择模型",

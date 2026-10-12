@@ -17,6 +17,7 @@ class CogneeAvailability(BaseModel):
     installed: bool
     enabled: bool
     ready: bool
+    configuration_required: bool = False
     version: str = ""
     reason: str = ""
 

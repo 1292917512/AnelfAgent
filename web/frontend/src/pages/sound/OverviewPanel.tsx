@@ -1,262 +1,86 @@
-import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
+import { RefreshCw } from "lucide-react";
 import { InlineContributions } from "@/components/extensions/ContributionSlot";
 import { audioApi } from "@/lib/api";
-import type { AudioStatus } from "@/lib/types";
-import {
-  Badge, Button, ConfirmDialog, Input, LoadingBlock, toast,
-} from "@/components/ui";
-import {
-  AudioLines, CheckCircle2, Database, FileAudio, FolderSync, Mic, Phone,
-  Radio, XCircle,
-} from "lucide-react";
+import { Badge, Button } from "@/components/ui";
+import { AsyncState, QueryError } from "@/components/common/AsyncState";
+import { Card } from "@/components/common/Card";
+import { AudioIntakePanel } from "./AudioIntakePanel";
+import { RecordingsPanel } from "./RecordingsPanel";
 
-/** 音频总览：提供者链状态 + FunASR 服务 + 音频库统计 + 上下文注入情况 + 文件解析入库 */
 export function AudioOverviewPanel() {
   const { t } = useTranslation("sound");
-  const queryClient = useQueryClient();
-  const [path, setPath] = useState("");
-
-  const { data: status, isLoading } = useQuery({
-    queryKey: ["audioStatus"],
-    queryFn: () => audioApi.status().then((r) => r.data as AudioStatus),
-    refetchInterval: 8000,
+  const query = useQuery({
+    queryKey: ["audioStatus"], queryFn: () => audioApi.status().then((r) => r.data),
+    refetchInterval: 8000, throwOnError: false,
   });
-  const analyzeMut = useMutation({
-    mutationFn: (p: string) => audioApi.analyze(p).then((r) => r.data),
-    onSuccess: (data) => {
-      toast.success(t("analyzeDone", { count: (data as { segments?: number }).segments ?? 0 }));
-      queryClient.invalidateQueries({ queryKey: ["audioStatus"] });
-    },
-    onError: (e: unknown) => {
-      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      toast.error(detail || t("analyzeFailed"));
-    },
-  });
-
-  const { data: recordings } = useQuery({
-    queryKey: ["audioRecordings"],
-    queryFn: () => audioApi.recordings({ limit: 50 }).then((r) => r.data),
-  });
-
-  const [deleteRecTarget, setDeleteRecTarget] = useState<string | null>(null);
-
-  const deleteRecMut = useMutation({
-    mutationFn: (p: string) => audioApi.deleteRecording(p).then((r) => r.data),
-    onSuccess: () => {
-      toast.success(t("messages.deleteSuccess"));
-      setDeleteRecTarget(null);
-      queryClient.invalidateQueries({ queryKey: ["audioRecordings"] });
-      queryClient.invalidateQueries({ queryKey: ["audioStatus"] });
-    },
-    onError: (e: unknown) => {
-      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      toast.error(detail || t("messages.opFailed"));
-    },
-  });
-
-  if (isLoading || !status) return <LoadingBlock label={t("common:loading")} />;
-
-  const lib = status.library ?? {};
-  const audioMinutes = Math.round((lib.audio_ms ?? 0) / 6000) / 10;
-  const injection = status.injection;
-
-  return (
-    <div className="space-y-4 max-w-3xl">
-      {/* 提供者链 */}
-      <div className="rounded-md border border-border bg-card p-4 space-y-2">
-        <div className="flex items-center gap-2">
-          <AudioLines size={15} className="text-accent" />
-          <span className="text-sm font-semibold text-heading">{t("providers")}</span>
-          <span className="ml-auto text-xs text-muted">
-            {t("asr")}: {status.asr_available ? t("ready") : t("notConfigured")} ·{" "}
-            {t("voiceprint")}: {status.voiceprint_available ? t("ready") : t("notConfigured")}
-          </span>
-        </div>
-        <div className="space-y-1.5">
-          {status.providers.map((p, i) => (
-            <div key={`${p.kind}/${p.name}`}>
-              {(i === 0 || status.providers[i - 1]?.kind !== p.kind) && (
-                <p className="text-[11px] font-medium text-muted mt-2 mb-0.5">
-                  {t(`kind.${p.kind}`, { defaultValue: p.kind })}
-                </p>
-              )}
-              <div className="flex items-center gap-3 rounded-md bg-elevated px-3 py-2">
-                {p.available ? (
-                  <CheckCircle2 size={14} className="text-green-500 shrink-0" />
-                ) : (
-                  <XCircle size={14} className="text-muted shrink-0" />
-                )}
-                <span className="text-sm text-foreground">{p.name}</span>
-                <span className="ml-auto text-[11px] text-muted">priority {p.priority}</span>
+  const status = query.data;
+  const library = status?.library ?? {};
+  const providers = [...(status?.providers ?? []), ...(status?.tts_providers ?? []).map((p) => ({ ...p, kind: "tts" }))];
+  return <AsyncState pending={query.isPending} error={!status && query.error} retry={() => void query.refetch()}>
+    {status && <div className="space-y-4">
+      {query.isError && <QueryError compact error={query.error} retry={() => void query.refetch()} />}
+      <div className="grid gap-3 sm:grid-cols-3">
+        {[
+          { name: "asr", ready: status.asr_available },
+          { name: "voiceprint", ready: status.voiceprint_available },
+          { name: "tts", ready: status.tts_available },
+        ].map((cap) => <Card key={cap.name} title={t(cap.name)} className="!p-4">
+          <Badge variant={cap.ready ? "ok" : "neutral"}>{t(cap.ready ? "ready" : "unavailable")}</Badge>
+        </Card>)}
+      </div>
+      <div className="grid items-start gap-4 xl:grid-cols-2">
+        <div className="space-y-4">
+        <Card title={t("providersTitle")} subtitle={t("providersHint")} actions={
+          <Button size="icon" variant="ghost" aria-label={t("common:refresh")} disabled={query.isFetching} onClick={() => void query.refetch()}><RefreshCw size={15} /></Button>
+        }>
+          <div className="divide-y divide-border">
+            {providers.map((p) => <div key={p.kind + "/" + p.name} className="py-3 first:pt-0 last:pb-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className={"size-2 shrink-0 rounded-full " + (p.available ? "bg-ok" : "bg-muted")} />
+                <span className="min-w-0 flex-1 break-words text-sm font-medium text-heading">{p.name}</span>
+                <span className="text-xs text-muted">{t("kind." + p.kind, { defaultValue: p.kind })}</span>
+                <Badge variant={p.available ? "ok" : p.state === "error" ? "danger" : "neutral"}>{t("providerState." + (p.state ?? (p.available ? "ready" : "unavailable")))}</Badge>
               </div>
-              {!p.available && p.hint && (
-                <p className="text-[11px] text-muted mt-0.5 ml-6">{p.hint}</p>
-              )}
-            </div>
-          ))}
-          {status.providers.length === 0 && (
-            <p className="text-xs text-muted">{t("noProviders")}</p>
-          )}
-        </div>
-      </div>
-
-      <InlineContributions slot="audio.overview.cards" componentProps={{}} />
-
-      {/* TTS 提供者链 */}
-      <div className="rounded-md border border-border bg-card p-4 space-y-2">
-        <div className="flex items-center gap-2">
-          <Mic size={15} className="text-accent" />
-          <span className="text-sm font-semibold text-heading">{t("ttsProviders")}</span>
-          <span className="ml-auto text-xs text-muted">
-            {status.tts_available ? t("ready") : t("notConfigured")}
-          </span>
-        </div>
-        <div className="flex flex-wrap gap-1.5">
-          {(status.tts_providers ?? []).map((p) => (
-            <Badge key={p.name} variant={p.available ? "ok" : "neutral"}>
-              {p.name} {p.available ? "✓" : "✗"}
-            </Badge>
-          ))}
-          {(status.tts_providers ?? []).length === 0 && (
-            <p className="text-xs text-muted">{t("noProviders")}</p>
-          )}
-        </div>
-      </div>
-
-      {/* 实时语音状态 */}
-      <div className="rounded-md border border-border bg-card p-4 space-y-2">
-        <div className="flex items-center gap-2">
-          <Phone size={15} className="text-accent" />
-          <span className="text-sm font-semibold text-heading">{t("realtimeStatus")}</span>
-          <Badge variant={status.realtime?.enabled ? "ok" : "neutral"}>
-            {status.realtime?.mode ?? "cascade"}
-          </Badge>
-          <span className="ml-auto text-xs text-muted">
-            {t("realtimeSessions", { count: status.realtime?.sessions ?? 0 })}
-          </span>
-        </div>
-        {(status.realtime?.sessions ?? 0) > 0 && (
-          <div className="flex flex-wrap gap-1.5">
-            {Object.entries(status.realtime?.states ?? {}).map(([owner, st]) => (
-              <Badge key={owner} variant="accent">{st}</Badge>
-            ))}
+              {p.hint && <p className="mt-2 break-words text-xs leading-relaxed text-muted">{p.hint}</p>}
+            </div>)}
           </div>
-        )}
-      </div>
-
-      {/* 音频库统计 */}
-      <div className="rounded-md border border-border bg-card p-4 space-y-2">
-        <div className="flex items-center gap-2">
-          <Database size={15} className="text-accent" />
-          <span className="text-sm font-semibold text-heading">{t("libraryStats")}</span>
+          {!providers.length && <p className="text-sm text-muted">{t("noProviders")}</p>}
+        </Card>
+        <AudioIntakePanel available={status.asr_available} />
         </div>
-        <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm">
-          <span className="text-muted">{t("segments")}: <b className="text-foreground">{lib.segments ?? 0}</b></span>
-          <span className="text-muted">{t("speakers")}: <b className="text-foreground">{lib.speakers ?? 0}</b></span>
-          <span className="text-muted">{t("stats.pending")}: <b className="text-foreground">{lib.pending_speakers ?? 0}</b></span>
-          <span className="text-muted">{t("stats.bound")}: <b className="text-foreground">{lib.bound_speakers ?? 0}</b></span>
-          <span className="text-muted">{t("stats.unread")}: <b className="text-foreground">{lib.unread_segments ?? 0}</b></span>
-          <span className="text-muted">{t("audioMinutes")}: <b className="text-foreground">{audioMinutes}</b></span>
-          {(lib.voiceprint_dims ?? 0) > 0 && (
-            <span className="text-muted">{t("stats.vpDims")}: <b className="text-foreground">{lib.voiceprint_dims}</b></span>
-          )}
-        </div>
-        {lib.db_path && <p className="text-[11px] font-mono text-muted break-all">{lib.db_path}</p>}
-      </div>
-
-      {/* 录制单元（音源重建入口） */}
-      <div className="rounded-md border border-border bg-card p-4 space-y-2">
-        <div className="flex items-center gap-2">
-          <FolderSync size={15} className="text-accent" />
-          <span className="text-sm font-semibold text-heading">{t("recordings.title")}</span>
-          <span className="ml-auto text-xs text-muted">
-            {t("recordings.count", { count: recordings?.total ?? 0 })}
-          </span>
-        </div>
-        <p className="text-xs text-muted">{t("recordings.hint")}</p>
-        <div className="space-y-1.5">
-          {(recordings?.items ?? []).map((rec) => (
-            <div
-              key={rec.path}
-              className="flex items-center gap-3 rounded-md bg-elevated px-3 py-2"
-            >
-              <div className="min-w-0 flex-1">
-                <p className="text-xs font-mono text-foreground truncate" title={rec.path}>
-                  {rec.path}
-                </p>
-                <p className="text-[11px] text-muted">
-                  {t("recordings.meta", {
-                    files: rec.file_count,
-                    segments: rec.segments,
-                  })}
-                  {" · "}
-                  <Badge variant={rec.status === "done" ? "ok" : rec.status === "error" ? "danger" : "neutral"}>
-                    {t(`recordings.status.${rec.status}`, { defaultValue: rec.status })}
-                  </Badge>
-                </p>
+        <div className="space-y-4">
+          <Card title={t("libraryStats")}>
+            <dl className="grid grid-cols-2 gap-x-5 gap-y-4 sm:grid-cols-3">
+              {[
+                ["segments", library.segments], ["speakers", library.speakers], ["stats.pending", library.pending_speakers],
+                ["stats.bound", library.bound_speakers], ["stats.unread", library.unread_segments],
+                ["audioMinutes", Math.round((library.audio_ms ?? 0) / 6000) / 10],
+              ].map(([label, value]) => <div key={label}>
+                <dt className="text-xs text-muted">{t(String(label))}</dt><dd className="mt-1 text-xl font-semibold tabular-nums text-heading">{value ?? 0}</dd>
+              </div>)}
+            </dl>
+            {!!library.voiceprint_dims && <p className="mt-4 text-xs text-muted">{t("stats.vpDims")}: {library.voiceprint_dims}</p>}
+            {library.db_path && <p className="mt-3 break-all font-mono text-xs text-muted">{library.db_path}</p>}
+          </Card>
+          <Card title={t("injection.title")} actions={<Badge variant={status.injection.active ? "ok" : "neutral"}>{t(status.injection.active ? "injection.active" : "injection.inactive")}</Badge>}>
+            <p className="text-xs leading-relaxed text-muted">{t("injection.hint")}</p>
+            <div className="mt-4 border-t border-border pt-4">
+              <div className="flex flex-wrap items-center gap-2 text-sm text-heading">
+                <span className="flex-1">{t("realtimeStatus")}</span>
+                <Badge variant={status.realtime.enabled ? "accent" : "neutral"}>{status.realtime.mode}</Badge>
+                <span className="text-xs text-muted">{t("realtimeSessions", { count: status.realtime.sessions })}</span>
               </div>
-              <InlineContributions slot="audio.recording.actions" componentProps={{ path: rec.path }} />
-              <Button
-                size="sm" variant="ghost" className="shrink-0 text-danger"
-                onClick={() => setDeleteRecTarget(rec.path)}
-              >
-                {t("recordings.delete")}
-              </Button>
+              <div className="mt-2 space-y-1">
+                {Object.entries(status.realtime.states).map(([owner, state]) => <p key={owner} className="flex flex-wrap justify-between gap-2 text-xs text-muted"><span className="break-all">{owner}</span><span>{state}</span></p>)}
+              </div>
             </div>
-          ))}
-          {(recordings?.items ?? []).length === 0 && (
-            <p className="text-xs text-muted">{t("recordings.empty")}</p>
-          )}
+          </Card>
         </div>
       </div>
-
-      <ConfirmDialog
-        open={deleteRecTarget !== null}
-        onClose={() => setDeleteRecTarget(null)}
-        onConfirm={() => deleteRecTarget && deleteRecMut.mutate(deleteRecTarget)}
-        title={t("recordings.deleteTitle")}
-        message={t("recordings.deleteConfirm")}
-        danger
-        loading={deleteRecMut.isPending}
-      />
-
-      {/* 上下文注入情况 */}
-      <div className="rounded-md border border-border bg-card p-4 space-y-2">
-        <div className="flex items-center gap-2">
-          <Radio size={15} className="text-accent" />
-          <span className="text-sm font-semibold text-heading">{t("injection.title")}</span>
-          <Badge variant={injection?.active ? "ok" : "neutral"}>
-            {injection?.active ? t("injection.active") : t("injection.inactive")}
-          </Badge>
-        </div>
-        <p className="text-xs text-muted">{t("injection.hint")}</p>
-      </div>
-
-      {/* 文件解析入库 */}
-      <div className="rounded-md border border-border bg-card p-4 space-y-3">
-        <div className="flex items-center gap-2">
-          <FileAudio size={15} className="text-accent" />
-          <span className="text-sm font-semibold text-heading">{t("analyzeTitle")}</span>
-        </div>
-        <p className="text-xs text-muted">{t("analyzeHint")}</p>
-        <div className="flex gap-2">
-          <Input
-            value={path}
-            onChange={(e) => setPath(e.target.value)}
-            placeholder="workspace/uploads/voice/xxx.wav"
-            className="flex-1 font-mono text-xs"
-          />
-          <Button
-            size="sm"
-            disabled={!path.trim() || analyzeMut.isPending || !status.asr_available}
-            onClick={() => analyzeMut.mutate(path.trim())}
-          >
-            {t("analyze")}
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
+      <InlineContributions slot="audio.overview.cards" componentProps={{}} />
+      <RecordingsPanel />
+    </div>}
+  </AsyncState>;
 }

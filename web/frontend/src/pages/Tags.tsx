@@ -1,182 +1,64 @@
-import { useState, useMemo } from "react";
+import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { tagsApi } from "@/lib/api";
-import type { UnifiedTag } from "@/lib/types";
-import { PageContainer } from "@/components/common/PageContainer";
-import { Button, ConfirmDialog, Input, LoadingBlock } from "@/components/ui";
-import { Tag, Plus, Lock, Search } from "lucide-react";
+import { tagsApi, apiErrorMessage } from "@/lib/api";
+import { PageContainer, PageHeader } from "@/components/common/PageContainer";
+import { AsyncState, QueryError } from "@/components/common/AsyncState";
+import { Button, ConfirmDialog, Input } from "@/components/ui";
+import { Tag, Plus, Search } from "lucide-react";
 import { TagCard } from "./tags/TagCard";
 import { CreateTagModal } from "./tags/CreateTagModal";
 
+const FILTERS = ["all", "message", "tool", "custom"] as const;
+type Filter = typeof FILTERS[number];
+
 export default function Tags() {
   const { t } = useTranslation(["tags", "common"]);
-  const queryClient = useQueryClient();
+  const client = useQueryClient();
   const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<Filter>("all");
   const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState({ name: "", description: "" });
-  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
-
-  const { data: allTags = [], isLoading } = useQuery<UnifiedTag[]>({
-    queryKey: ["unified-tags"],
-    queryFn: () => tagsApi.unified().then((r) => r.data),
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const query = useQuery({ queryKey: ["unified-tags"], queryFn: () => tagsApi.unified().then((r) => r.data), throwOnError: false });
+  const create = useMutation({
+    mutationFn: () => tagsApi.createMessageTag(form.name.trim(), form.description.trim()),
+    onSuccess: async () => { setShowCreate(false); setForm({ name: "", description: "" }); await client.invalidateQueries({ queryKey: ["unified-tags"] }); },
   });
-
-  const createMut = useMutation({
-    mutationFn: () =>
-      tagsApi.createMessageTag(form.name.trim(), form.description.trim()),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["unified-tags"] });
-      setShowCreate(false);
-      setForm({ name: "", description: "" });
-    },
-  });
-
-  const deleteMut = useMutation({
+  const remove = useMutation({
     mutationFn: (name: string) => tagsApi.deleteMessageTag(name),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["unified-tags"] });
-      setDeleteConfirm(null);
-    },
+    onSuccess: async () => { setDeleteTarget(null); await client.invalidateQueries({ queryKey: ["unified-tags"] }); },
   });
-
-  const kw = search.toLowerCase();
-  const filtered = useMemo(() => {
-    if (!kw) return allTags;
-    return allTags.filter(
-      (tag) =>
-        tag.name.toLowerCase().includes(kw) ||
-        tag.description.toLowerCase().includes(kw),
-    );
-  }, [allTags, kw]);
-
-  const builtinTags = filtered.filter((tag) => tag.builtin);
-  const customTags = filtered.filter((tag) => !tag.builtin);
-  const totalBuiltin = allTags.filter((tag) => tag.builtin).length;
-  const totalCustom = allTags.filter((tag) => !tag.builtin).length;
-
-  const closeCreate = () => {
-    setShowCreate(false);
-    setForm({ name: "", description: "" });
-  };
-
-  return (
-    <PageContainer>
-      {/* 统计 + 创建 */}
-      <div className="flex items-start justify-between gap-4">
-        <div className="space-y-1.5 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-xs px-2 py-0.5 rounded-full bg-secondary text-muted border border-border">
-              {t("statsTotal", { count: allTags.length })}
-            </span>
-            <span className="text-xs px-2 py-0.5 rounded-full bg-secondary text-muted border border-border">
-              {t("statsBuiltin", { count: totalBuiltin })}
-            </span>
-            {totalCustom > 0 && (
-              <span className="text-xs px-2 py-0.5 rounded-full bg-accent/10 text-accent border border-accent/20">
-                {t("statsCustom", { count: totalCustom })}
-              </span>
-            )}
-          </div>
-          <p className="text-xs text-muted max-w-xl">{t("subtitle")}</p>
-        </div>
-        <Button variant="primary" size="sm" onClick={() => setShowCreate(true)} className="shrink-0">
-          <Plus size={14} />
-          {t("createTag")}
-        </Button>
+  const tags = query.data ?? [];
+  const keyword = search.trim().toLowerCase();
+  const filtered = tags.filter((tag) => (filter === "all" || tag.sources.includes(filter))
+    && [tag.name, tag.description, ...tag.tools].some((value) => value.toLowerCase().includes(keyword)));
+  return <PageContainer>
+    <PageHeader icon={<Tag size={20} className="text-accent" />} title={t("title")} subtitle={t("subtitle")}
+      actions={<Button size="sm" variant="primary" onClick={() => { create.reset(); setShowCreate(true); }}><Plus size={14} />{t("createTag")}</Button>} />
+    <div className="flex flex-col gap-3 xl:flex-row xl:items-center">
+      <div className="relative min-w-0 flex-1">
+        <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+        <Input value={search} onChange={(e) => setSearch(e.target.value)} aria-label={t("searchPlaceholder")} placeholder={t("searchPlaceholder")} className="pl-9" />
       </div>
-
-      {/* 搜索 */}
-      <div className="relative">
-        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
-        <Input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder={t("searchPlaceholder")}
-          className="pl-9"
-        />
+      <div className="flex flex-wrap gap-1.5" aria-label={t("filterLabel")}>
+        {FILTERS.map((value) => <Button key={value} size="sm" variant={filter === value ? "primary" : "secondary"} aria-pressed={filter === value} onClick={() => setFilter(value)}>
+          {t("filters." + value)}<span className="tabular-nums opacity-70">{value === "all" ? tags.length : tags.filter((tag) => tag.sources.includes(value)).length}</span>
+        </Button>)}
       </div>
-
-      {isLoading ? (
-        <LoadingBlock label={t("common:loading")} />
-      ) : filtered.length === 0 ? (
-        <p className="text-sm text-muted text-center py-10">
-          {search ? t("noMatch") : t("noTags")}
-        </p>
-      ) : (
-        <div className="space-y-6">
-          {/* 内置标签 */}
-          {builtinTags.length > 0 && (
-            <section className="space-y-2">
-              <div className="flex items-center gap-2 flex-wrap">
-                <Lock size={13} className="text-muted" />
-                <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-strong">
-                  {t("sectionBuiltin")}
-                </h2>
-                <span className="text-[11px] text-muted">
-                  — {t("sectionBuiltinDesc")}
-                </span>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-                {builtinTags.map((tag) => (
-                  <TagCard key={tag.name} tag={tag} t={t} />
-                ))}
-              </div>
-            </section>
-          )}
-
-          {/* 自定义标签 */}
-          <section className="space-y-2">
-            <div className="flex items-center gap-2 flex-wrap">
-              <Tag size={13} className="text-accent" />
-              <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-strong">
-                {t("sectionCustom")}
-              </h2>
-              <span className="text-[11px] text-muted">
-                — {t("sectionCustomDesc")}
-              </span>
-            </div>
-            {customTags.length === 0 ? (
-              <div className="rounded-md border border-dashed border-border p-6 text-center">
-                <p className="text-xs text-muted">{t("noCustomTags")}</p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-                {customTags.map((tag) => (
-                  <TagCard
-                    key={tag.name}
-                    tag={tag}
-                    onDelete={() => setDeleteConfirm(tag.name)}
-                    t={t}
-                  />
-                ))}
-              </div>
-            )}
-          </section>
-        </div>
-      )}
-
-      <CreateTagModal
-        open={showCreate}
-        onClose={closeCreate}
-        form={form}
-        setForm={setForm}
-        pending={createMut.isPending}
-        onSubmit={() => createMut.mutate()}
-      />
-
-      {/* 删除确认 */}
-      <ConfirmDialog
-        open={!!deleteConfirm}
-        onClose={() => setDeleteConfirm(null)}
-        onConfirm={() => deleteConfirm && deleteMut.mutate(deleteConfirm)}
-        title={t("common:delete")}
-        message={t("deleteConfirm", { name: deleteConfirm ?? "" })}
-        confirmText={deleteMut.isPending ? t("common:saving") : t("common:delete")}
-        cancelText={t("common:cancel")}
-        danger
-        loading={deleteMut.isPending}
-      />
-    </PageContainer>
-  );
+    </div>
+    <AsyncState pending={query.isPending} error={!query.data && query.error} retry={() => void query.refetch()}>
+      {query.isError && query.data && <QueryError compact error={query.error} retry={() => void query.refetch()} />}
+      <div className="grid items-start gap-3 md:grid-cols-2 2xl:grid-cols-3">
+        {filtered.map((tag) => <TagCard key={tag.name} tag={tag} onDelete={() => { remove.reset(); setDeleteTarget(tag.name); }} t={t} />)}
+      </div>
+      {!filtered.length && <p className="rounded-xl border border-dashed border-border p-8 text-center text-sm text-muted">{t(keyword || filter !== "all" ? "noMatch" : "noTags")}</p>}
+    </AsyncState>
+    {remove.isError && <p role="alert" className="text-sm text-danger">{apiErrorMessage(remove.error, t("common:requestFailed"))}</p>}
+    <CreateTagModal open={showCreate} onClose={() => { if (!create.isPending) setShowCreate(false); }}
+      form={form} setForm={setForm} pending={create.isPending} onSubmit={() => create.mutate()} error={create.error} />
+    <ConfirmDialog open={deleteTarget !== null} onClose={() => { if (!remove.isPending) setDeleteTarget(null); }}
+      onConfirm={() => { if (deleteTarget) remove.mutate(deleteTarget); }} title={t("common:delete")}
+      message={t("deleteConfirm", { name: deleteTarget ?? "" })} danger loading={remove.isPending} />
+  </PageContainer>;
 }

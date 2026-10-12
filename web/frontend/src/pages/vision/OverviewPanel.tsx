@@ -1,168 +1,90 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { visionApi } from "@/lib/api";
-import type { VisionSourceStatus } from "@/lib/types";
+import { Camera, MonitorPlay, Play, Radio, RefreshCw, Square } from "lucide-react";
+import { apiErrorMessage, visionApi } from "@/lib/api";
 import { formatAge } from "@/lib/utils";
-import { Badge, Button, LoadingBlock, Switch, toast } from "@/components/ui";
-import { Camera, Eye, MonitorPlay, Play, Radio, Square } from "lucide-react";
+import { Badge, Button, Select, Switch } from "@/components/ui";
+import { AsyncState, QueryError } from "@/components/common/AsyncState";
+import { Card } from "@/components/common/Card";
 
-/** 视觉总览：视觉源清单 + 监视开关 + 最新画面预览 */
 export function VisionOverviewPanel() {
   const { t } = useTranslation("vision");
-  const queryClient = useQueryClient();
-  const [previewTick, setPreviewTick] = useState(0);
-
-  const { data: status, isLoading } = useQuery({
-    queryKey: ["visionStatus"],
-    queryFn: () => visionApi.status().then((r) => r.data),
-    refetchInterval: 5000,
+  const client = useQueryClient();
+  const [source, setSource] = useState("");
+  const [revision, setRevision] = useState(0);
+  const [failedUrl, setFailedUrl] = useState("");
+  const query = useQuery({ queryKey: ["visionStatus"], queryFn: () => visionApi.status().then((r) => r.data), refetchInterval: 5000, throwOnError: false });
+  const sources = useQuery({ queryKey: ["visionSources"], queryFn: () => visionApi.sources().then((r) => r.data.sources), throwOnError: false });
+  const watch = useMutation({
+    mutationFn: (data: { action: string; source: string }) => visionApi.watch(data.action, data.source),
+    onSuccess: async () => { await Promise.all([client.invalidateQueries({ queryKey: ["visionStatus"] }), client.invalidateQueries({ queryKey: ["visionSources"] })]); },
   });
-  const { data: sources } = useQuery({
-    queryKey: ["visionSources"],
-    queryFn: () => visionApi.sources().then((r) => r.data.sources),
-  });
-
-  const watchMut = useMutation({
-    mutationFn: ({ action, source }: { action: string; source: string }) =>
-      visionApi.watch(action, source).then((r) => r.data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["visionStatus"] });
-      queryClient.invalidateQueries({ queryKey: ["visionSources"] });
-    },
-    onError: (err: unknown) => {
-      const detail = (err as { response?: { data?: { detail?: string } } })
-        ?.response?.data?.detail;
-      toast.error(detail || t("watchFailed"));
-    },
-  });
-
-  if (isLoading || !status) return <LoadingBlock label={t("common:loading")} />;
-
-  const watching = new Set(status.watching);
-  const injection = status.injection;
-
-  return (
-    <div className="space-y-4 max-w-4xl">
-      {/* 上下文注入情况 */}
-      <div className="rounded-md border border-border bg-card px-4 py-3 flex flex-wrap items-center gap-2 text-xs">
-        <Radio size={14} className="text-accent" />
-        <span className="text-sm font-semibold text-heading">{t("injection.title")}</span>
-        <Badge variant={injection?.active ? "ok" : "neutral"}>
-          {injection?.active ? t("injection.active") : t("injection.inactive")}
-        </Badge>
-        {injection?.last_media_inject && (
-          <span className="text-muted">
-            {t("injection.lastMedia")}: {injection.last_media_inject.source} ·{" "}
-            {(injection.last_media_inject.at ? formatAge(injection.last_media_inject.at) : "-")}
-          </span>
-        )}
-        {injection?.last_text_inject_at ? (
-          <span className="text-muted">
-            {t("injection.lastText")}: {(injection.last_text_inject_at ? formatAge(injection.last_text_inject_at) : "-")}
-          </span>
-        ) : null}
-      </div>
-
-      {/* 最新画面预览 */}
-      <div className="rounded-md border border-border bg-card p-4 space-y-3">
-        <div className="flex items-center gap-2">
-          <Camera size={15} className="text-accent" />
-          <span className="text-sm font-semibold text-heading">{t("latestFrame")}</span>
-          <span className="ml-auto text-xs text-muted">
-            {status.latest
-              ? `${status.latest.source} · ${(status.latest.captured_at ? formatAge(status.latest.captured_at) : "-")}`
-              : t("noFrame")}
-          </span>
-          <Button size="sm" variant="ghost" onClick={() => setPreviewTick(Date.now())}>
-            {t("refresh")}
-          </Button>
-        </div>
-        {status.latest ? (
-          <img
-            src={`${visionApi.latestUrl()}&t=${previewTick}`}
-            alt={t("latestFrame")}
-            className="w-full max-w-xl rounded-md border border-border"
-          />
-        ) : (
-          <p className="text-xs text-muted">{t("noFrameHint")}</p>
-        )}
-      </div>
-
-      {/* 视觉源清单 */}
-      <div className="rounded-md border border-border bg-card p-4 space-y-2">
-        <div className="flex items-center gap-2">
-          <Eye size={15} className="text-accent" />
-          <span className="text-sm font-semibold text-heading">{t("sources")}</span>
-        </div>
-        <div className="space-y-1.5">
-          {(sources ?? []).map((src) => {
-            const st: VisionSourceStatus = status.sources?.[src.key] ?? {};
-            const active = watching.has(src.key);
-            const enabled = src.enabled !== false;
-            return (
-              <div
-                key={src.key}
-                className={`flex items-center gap-3 rounded-md bg-elevated px-3 py-2 ${
-                  enabled ? "" : "opacity-55"
-                }`}
-              >
-                <MonitorPlay size={14} className="text-muted shrink-0" />
-                <div className="min-w-0">
-                  <div className="text-sm text-foreground">
-                    {src.display_name}
-                    <span className="ml-2 text-[11px] font-mono text-muted">{src.key}</span>
-                    {!enabled && (
-                      <Badge variant="neutral" className="ml-2">{t("sourceDisabled")}</Badge>
-                    )}
-                    {active && (
-                      <Badge variant="ok" className="ml-2">{t("watching")}</Badge>
-                    )}
-                  </div>
-                  <div className="text-[11px] text-muted truncate">
-                    {src.description}
-                    {st.capture_count ? ` · ${t("captures", { count: st.capture_count })}` : ""}
-                    {st.last_capture_at
-                      ? ` · ${t("lastCapture")} ${(st.last_capture_at ? formatAge(st.last_capture_at) : "-")}`
-                      : ""}
-                    {st.last_error ? ` · ⚠ ${st.last_error}` : ""}
-                  </div>
-                </div>
-                <div className="ml-auto flex items-center gap-2 shrink-0">
-                  {enabled && src.pollable &&
-                    (active ? (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => watchMut.mutate({ action: "stop", source: src.key })}
-                      >
-                        <Square size={12} className="mr-1" />
-                        {t("stopWatch")}
-                      </Button>
-                    ) : (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => watchMut.mutate({ action: "start", source: src.key })}
-                      >
-                        <Play size={12} className="mr-1" />
-                        {t("startWatch")}
-                      </Button>
-                    ))}
-                  {enabled && !src.pollable && (
-                    <span className="text-[11px] text-muted">{t("externalSource")}</span>
-                  )}
-                  <Switch
-                    checked={enabled}
-                    onChange={(v) =>
-                      watchMut.mutate({ action: v ? "enable" : "disable", source: src.key })}
-                  />
-                </div>
-              </div>
-            );
-          })}
+  const status = query.data;
+  const frame = source ? status?.frames[source] : status?.latest;
+  const url = frame ? visionApi.latestUrl(frame.source, `${frame.captured_at}-${revision}`) : "";
+  const injection = status?.injection;
+  return <AsyncState pending={query.isPending} error={!status && query.error} retry={() => void query.refetch()}>
+    {status && <div className="space-y-4">
+      {query.isError && <QueryError compact error={query.error} retry={() => void query.refetch()} />}
+      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(260px,1fr)]">
+        <Card title={t("latestFrame")} actions={<Button size="icon" variant="ghost" title={t("refresh")} onClick={() => { setRevision((n) => n + 1); void query.refetch(); }}><RefreshCw size={15} /></Button>}>
+          <Select className="mb-3 w-full" aria-label={t("previewSource")} value={source} onChange={(event) => setSource(event.target.value)}>
+            <option value="">{t("followLatest")}</option>
+            {[...new Set([...(sources.data ?? []).map((s) => s.key), ...Object.keys(status.frames), ...(source ? [source] : [])])].map((key) =>
+              <option key={key} value={key}>{sources.data?.find((s) => s.key === key)?.display_name ?? key}</option>)}
+          </Select>
+          <div className="grid min-h-52 place-items-center overflow-hidden rounded-lg border border-border bg-secondary sm:min-h-72">
+            {frame && failedUrl !== url ? <img src={url} alt={t("latestFrame")} onError={() => setFailedUrl(url)}
+              className="max-h-[26rem] w-full object-contain" /> : <div className="max-w-sm space-y-3 p-6 text-center text-sm text-muted">
+              <Camera size={28} className="mx-auto opacity-50" /><p>{t(frame ? "previewUnavailable" : "noFrameHint")}</p>
+            </div>}
+          </div>
+          {frame && <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-muted">
+            <span className="break-all">{frame.source}</span><span className="tabular-nums">{frame.width > 0 && `${frame.width} × ${frame.height} · `}{formatAge(frame.captured_at)}</span>
+          </div>}
+        </Card>
+        <div className="space-y-4">
+          <Card title={t("perceptionStatus")}>
+            <dl className="space-y-3 text-sm">
+              <div className="flex items-center justify-between gap-3"><dt className="text-muted">{t("sources")}</dt><dd className="tabular-nums text-heading">{sources.data?.length ?? "—"}</dd></div>
+              <div className="flex items-center justify-between gap-3"><dt className="text-muted">{t("watching")}</dt><dd className="tabular-nums text-heading">{status.watching.length}</dd></div>
+              <div className="flex items-center justify-between gap-3"><dt className="text-muted">{t("lastChange")}</dt><dd className="text-heading">{status.last_change_at ? formatAge(status.last_change_at) : "—"}</dd></div>
+            </dl>
+          </Card>
+          <Card title={t("injection.title")} actions={<Radio size={16} className="text-accent" />}>
+            <Badge variant={injection?.active ? "ok" : "neutral"}>{t(injection?.active ? "injection.active" : "injection.inactive")}</Badge>
+            <p className="mt-3 text-xs leading-relaxed text-muted">{t("injection.hint")}</p>
+            {injection?.last_media_inject && <p className="mt-3 break-words text-xs text-muted">{t("injection.lastMedia")}: {injection.last_media_inject.source} · {formatAge(injection.last_media_inject.at)}</p>}
+            {injection?.last_text_inject_at ? <p className="mt-2 text-xs text-muted">{t("injection.lastText")}: {formatAge(injection.last_text_inject_at)}</p> : null}
+          </Card>
         </div>
       </div>
-    </div>
-  );
+      <h2 className="text-sm font-semibold text-heading">{t("sources")}</h2>
+      {sources.isError && <QueryError compact error={sources.error} retry={() => void sources.refetch()} />}
+      {watch.isError && <p role="alert" className="text-sm text-danger">{apiErrorMessage(watch.error, t("common:requestFailed"))}</p>}
+      <div className="grid items-start gap-3 lg:grid-cols-2">
+        {sources.data?.map((item) => {
+          const st = status.sources[item.key];
+          const watching = status.watching.includes(item.key);
+          return <Card key={item.key} title={item.display_name} subtitle={item.description}
+            actions={<Switch label={t("toggleSource", { name: item.display_name })} checked={item.enabled} disabled={watch.isPending}
+              onChange={(enabled) => watch.mutate({ action: enabled ? "enable" : "disable", source: item.key })} />}>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
+              <MonitorPlay size={14} /><code className="break-all">{item.key}</code>
+              <Badge variant={watching ? "ok" : "neutral"}>{t(!item.enabled ? "sourceDisabled" : watching ? "watching" : "idle")}</Badge>
+              {item.pollable && <Button size="sm" className="ml-auto" disabled={!item.enabled || watch.isPending}
+                onClick={() => watch.mutate({ action: watching ? "stop" : "start", source: item.key })}>
+                {watching ? <Square size={12} /> : <Play size={12} />}{t(watching ? "stopWatch" : "startWatch")}
+              </Button>}
+              {!item.pollable && <span className="ml-auto">{t("externalSource")}</span>}
+            </div>
+            <p className="mt-3 text-xs text-muted">{t("captures", { count: st?.capture_count ?? 0 })}{st?.last_capture_at ? ` · ${formatAge(st.last_capture_at)}` : ""}</p>
+            {st?.last_error && <p className="mt-2 break-words text-xs text-danger">{st.last_error}</p>}
+          </Card>;
+        })}
+      </div>
+      {sources.data?.length === 0 && <p className="rounded-xl border border-dashed border-border p-6 text-sm text-muted">{t("noSources")}</p>}
+    </div>}
+  </AsyncState>;
 }

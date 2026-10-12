@@ -7,9 +7,11 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Set
 
+from core.file_utils import atomic_write_text
 from core.log import log
 from core.path import ConfigPaths
 
@@ -26,7 +28,7 @@ def _save_tags_file(data: Dict[str, Any]) -> None:
     """写入 config/tags.json。"""
     p = Path(ConfigPaths.CUSTOM_TAGS)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_text(p, json.dumps(data, ensure_ascii=False, indent=2))
 
 
 def _ensure_custom_tags_loaded() -> None:
@@ -38,10 +40,13 @@ def _ensure_custom_tags_loaded() -> None:
 
 
 def get_all_tag_names() -> Set[str]:
-    """返回标签系统中所有已注册标签名称（内置 + 自定义）。"""
+    """返回消息、自定义及已注册工具声明的全部标签名称。"""
     _ensure_custom_tags_loaded()
+    from core.entity import EntityRegistry, EntityType
     from core.tags import tag_list
-    return {t.tag_name for t in tag_list}
+    return {t.tag_name for t in tag_list} | {
+        name for entity in EntityRegistry.get_by_type(EntityType.TOOL) for name in entity.tags
+    }
 
 
 class TagService:
@@ -49,31 +54,29 @@ class TagService:
     def create_tag(self, name: str, description: str) -> Dict[str, Any]:
         """创建自定义标签，注册到标签系统并持久化到 config/tags.json。"""
         _ensure_custom_tags_loaded()
-        import re
-
-        from core.tags import Tag, tag_list
+        from core.tags import Tag
 
         if not name or not re.fullmatch(r"[a-z0-9_:\-]+", name):
             raise ValueError(f"标签名称 '{name}' 格式非法，只能包含小写字母、数字、下划线、连字符、冒号")
 
         existing_data = _load_tags_file()
-        existing_names = {t.tag_name for t in tag_list}
+        existing_names = get_all_tag_names()
 
         if name in existing_names and name not in existing_data:
             raise ValueError(f"'{name}' 是内置标签，无法创建同名自定义标签")
         if name in existing_data:
             raise ValueError(f"自定义标签 '{name}' 已存在")
 
-        Tag(tag_name=name, tag_name_desc=description)
-
         existing_data[name] = {"description": description}
         _save_tags_file(existing_data)
+        Tag(tag_name=name, tag_name_desc=description)
 
         log(f"自定义标签已创建: {name}", tag="Tags")
         return {"name": name, "description": description, "builtin": False, "sources": ["custom"]}
 
     def delete_tag(self, name: str) -> bool:
         """删除自定义标签（内置标签不可删除）。返回是否成功删除。"""
+        from core.entity import EntityRegistry, EntityType
         from core.tags import tag_list
 
         existing_data = _load_tags_file()
@@ -83,6 +86,10 @@ class TagService:
                 if t.tag_name == name:
                     raise ValueError(f"内置标签 '{name}' 不可删除")
             return False
+
+        users = [entity.name for entity in EntityRegistry.get_by_type(EntityType.TOOL) if name in entity.tags]
+        if users:
+            raise ValueError(f"标签 '{name}' 仍被 {len(users)} 个工具使用，请先调整工具标签")
 
         del existing_data[name]
         _save_tags_file(existing_data)
@@ -119,19 +126,21 @@ class TagService:
         custom_tag_names: set[str] = set(_load_tags_file().keys())
 
         # 收集工具使用的标签名
-        tool_used_tags: set[str] = set()
+        tools_by_tag: dict[str, list[str]] = {}
         for e in EntityRegistry.get_by_type(EntityType.TOOL):
-            tool_used_tags.update(e.tags)
+            for name in set(e.tags):
+                tools_by_tag.setdefault(name, []).append(e.name)
 
         result: List[Dict[str, Any]] = []
         for tag in tag_list:
             is_custom = tag.tag_name in custom_tag_names
             sources: List[str] = []
+            message_key = bool(re.fullmatch(r"\w+", tag.tag_name))
+            if tag.visible_to_llm and message_key:
+                sources.append("message")
             if is_custom:
                 sources.append("custom")
-            else:
-                sources.append("message")
-            if tag.tag_name in tool_used_tags:
+            if tag.tag_name in tools_by_tag or not (tag.visible_to_llm and message_key):
                 sources.append("tool")
 
             result.append({
@@ -139,7 +148,16 @@ class TagService:
                 "description": tag.tag_name_desc,
                 "builtin": not is_custom,
                 "sources": sources,
+                "tool_count": len(tools_by_tag.get(tag.tag_name, [])),
+                "tools": sorted(tools_by_tag.get(tag.tag_name, [])),
+                "message_key": message_key and tag.visible_to_llm,
             })
+
+        declared = {tag.tag_name for tag in tag_list}
+        for name in sorted(tools_by_tag.keys() - declared):
+            result.append({"name": name, "description": "", "builtin": True, "sources": ["tool"],
+                           "tool_count": len(tools_by_tag[name]), "tools": sorted(tools_by_tag[name]),
+                           "message_key": False})
 
         def _sort(item: Dict[str, Any]) -> tuple:
             return (0 if item["builtin"] else 1, item["name"])

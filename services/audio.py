@@ -6,9 +6,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Protocol
 
 from agent.audio import (
     KIND_ASR,
@@ -29,8 +30,34 @@ from agent.audio.schemas import (  # noqa: F401  # 门面再导出（web 层请�
 )
 from core.config import ConfigManager
 from core.log import log
+from core.sanitizer import sanitize_text
 
 _LOG_TAG = "音频"
+_STATUS_PROBE_SECONDS = 3.0
+
+
+class _HealthProvider(Protocol):
+    name: str
+    priority: int
+
+    async def check_available(self) -> bool: ...
+
+
+async def _probe_provider(provider: _HealthProvider) -> Dict[str, Any]:
+    """限时探测单个提供者，保留不可用与探测异常的区别。"""
+    hint = ""
+    try:
+        available = await asyncio.wait_for(provider.check_available(), _STATUS_PROBE_SECONDS)
+        state = "ready" if available else "unavailable"
+        if not available:
+            hint = str(getattr(provider, "unavailable_hint", "") or "")
+    except asyncio.TimeoutError:
+        available, state, hint = False, "timeout", "状态探测超时；不代表能力调用失败，可刷新重试"
+    except Exception as exc:
+        available, state = False, "error"
+        hint = sanitize_text(str(exc).strip() or type(exc).__name__)[:300]
+    return {"name": provider.name, "priority": provider.priority,
+            "available": available, "state": state, "hint": hint}
 
 
 class AudioServiceFacade:
@@ -41,18 +68,14 @@ class AudioServiceFacade:
     # ------------------------------------------------------------------
 
     async def status(self) -> Dict[str, Any]:
-        registry = get_audio_registry()
-        providers: List[Dict[str, Any]] = []
-        for p in registry.list():
-            try:
-                available = await p.check_available()
-            except Exception:
-                available = False
-            providers.append({
-                "name": p.name, "kind": p.kind, "priority": p.priority,
-                "available": available,
-                "hint": "" if available else str(getattr(p, "unavailable_hint", "") or ""),
-            })
+        from agent.tts import get_tts_registry
+
+        audio_providers = get_audio_registry().list()
+        speech_providers = get_tts_registry().list()
+        reports = await asyncio.gather(*(_probe_provider(p) for p in [*audio_providers, *speech_providers]))
+        providers = [{**report, "kind": provider.kind}
+                     for provider, report in zip(audio_providers, reports[:len(audio_providers)], strict=True)]
+        tts_providers = reports[len(audio_providers):]
         # 按能力分组、组内优先级升序（小值优先与链解析一致）
         providers.sort(key=lambda e: (e["kind"], e["priority"]))
 
@@ -70,18 +93,6 @@ class AudioServiceFacade:
         except Exception as exc:
             log(f"音频库统计失败: {exc}", "DEBUG", tag=_LOG_TAG)
             stats = {}
-        # TTS 提供者链（语音合成）
-        tts_providers: List[Dict[str, Any]] = []
-        from agent.tts import get_tts_registry
-        for p in get_tts_registry().list():
-            try:
-                available = await p.check_available()
-            except Exception:
-                available = False
-            tts_providers.append({
-                "name": p.name, "priority": p.priority, "available": available,
-            })
-
         # 实时语音会话状态
         from agent.realtime import get_realtime_engine
         realtime = {

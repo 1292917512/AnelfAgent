@@ -150,7 +150,7 @@ class TestStatsSummary:
         assert stats["persons"] == 2
         assert stats["pending_persons"] == 1
         summary = await store.summary()
-        assert "张三" in summary["confirmed_names"]
+        assert "张三" in [item["name"] for item in summary["identities"]]
 
 
 class TestImageGc:

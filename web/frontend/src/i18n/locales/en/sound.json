@@ -293,7 +293,8 @@
   "kind": {
     "asr": "Transcription (ASR)",
     "asr_stream": "Streaming ASR (realtime)",
-    "voiceprint": "Voiceprint embedding"
+    "voiceprint": "Voiceprint embedding",
+    "tts": "Speech synthesis"
   },
   "channels": {
     "mic": "Mic",
@@ -317,7 +318,11 @@
       "no_speech": "no speech",
       "error": "error",
       "pending": "pending"
-    }
+    },
+    "browse": "Browse recordings",
+    "collapse": "Collapse",
+    "onDemand": "Load recordings on demand to inspect transcripts, processing status and errors.",
+    "more": "Load more"
   },
   "voiceConfig": {
     "voice_silence_ms": "Silence endpoint threshold (ms)",
@@ -325,5 +330,17 @@
     "voice_max_utterance_s": "Max utterance length (s)",
     "voice_vad_floor_min": "VAD noise floor min (RMS)"
   },
-  "matchSummary": "{{count}}×/{{seconds}}s"
+  "matchSummary": "{{count}}×/{{seconds}}s",
+  "providersTitle": "Audio providers",
+  "providersHint": "Live health checks. Refresh to retry a failed probe.",
+  "unavailable": "Unavailable",
+  "tts": "Speech synthesis",
+  "providerState": {
+    "ready": "Ready",
+    "unavailable": "Unavailable",
+    "timeout": "Probe timed out",
+    "error": "Probe failed"
+  },
+  "audioPath": "Server audio path",
+  "analyzeUnavailable": "A ready transcription provider is required to analyze a file."
 }

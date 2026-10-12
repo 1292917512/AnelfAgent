@@ -307,6 +307,18 @@ class TestRerankSearch:
 
 
 class TestRetrievalService:
+    @pytest.mark.parametrize("capability", ["search", "reader"])
+    def test_semantic_provider_failure_is_not_a_successful_probe(self, fake_registry, capability):
+        payload = {"success": False, "error": "quota exceeded"}
+        fake_registry({"p1": FakeProvider("p1", search_payload=payload, read_payload=payload)})
+        from services.retrieval import get_retrieval_service
+        result = get_retrieval_service().test_provider("p1", capability, "")
+        assert result["ok"] is False
+        assert result["error"] == "quota exceeded"
+        assert result["provider"] == "p1"
+        assert result["capability"] == capability
+        assert result["latency_ms"] >= 0
+
     def test_matrix_masks_credentials(self, fake_registry):
         fake_registry({"p1": FakeProvider("p1")})
         from services.retrieval import get_retrieval_service

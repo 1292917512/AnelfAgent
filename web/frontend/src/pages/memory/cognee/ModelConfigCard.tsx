@@ -10,6 +10,7 @@ import type {
   CogneeEmbeddingModelConfig,
   CogneeModelSource,
   CogneeReasoningEffort,
+  CogneeResolvedInfo,
 } from "@/lib/types";
 import { Button, Input, Select } from "@/components/ui";
 import { ModelSelect, usePriorities } from "@/components/models/ModelSelect";
@@ -17,6 +18,24 @@ import { useCopyFeedback } from "@/hooks/useCopyFeedback";
 
 type ModelKind = "chat" | "embedding";
 type KindConfig = CogneeChatModelConfig | CogneeEmbeddingModelConfig;
+
+export function ResolvedModelLine({ label, info }: { label: string; info?: CogneeResolvedInfo }) {
+  const { t } = useTranslation("memory");
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-xs">
+      <span className="text-muted w-20 flex-shrink-0">{label}</span>
+      {info?.model ? <>
+        <span className="min-w-0 break-all font-mono text-heading">{info.provider}/{info.model}</span>
+        {info.instructor_mode && (
+          <span className="px-1.5 py-0.5 rounded bg-elevated border border-border text-muted">
+            {info.instructor_mode}
+          </span>
+        )}
+        {info.endpoint && <span className="text-muted truncate max-w-64">{info.endpoint}</span>}
+      </> : <span className="text-muted">{t("cognee.notResolved")}</span>}
+    </div>
+  );
+}
 
 
 function Field({ label, desc, children }: { label: string; desc?: string; children: React.ReactNode }) {

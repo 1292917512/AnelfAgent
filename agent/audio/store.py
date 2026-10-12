@@ -1660,24 +1660,19 @@ class AudioStore:
             return self._summary_cache
         db = await self._get_db()
         cursor = await db.execute(
-            "SELECT name, role, entity_scope FROM speakers "
+            "SELECT id, speaker_key, name, role, entity_scope FROM speakers "
             "WHERE archived=0 AND status='confirmed' AND name != '' "
             "ORDER BY last_seen_ns DESC LIMIT ?", (_SUMMARY_NAMES_LIMIT,))
-        names: List[str] = []
-        bindings: List[str] = []
-        for r in await cursor.fetchall():
-            label = f"{r['name']}({r['role']})" if r["role"] else r["name"]
-            names.append(label)
-            scope = str(r["entity_scope"] or "")
-            if scope:
-                bindings.append(f"{label}→{scope}")
+        identities = [{"id": int(row["id"]), "key": row["speaker_key"],
+                       "name": row["name"], "role": row["role"],
+                       "entity_scope": str(row["entity_scope"] or "")}
+                      for row in await cursor.fetchall()]
         cursor = await db.execute(
             "SELECT COUNT(*) AS c FROM speakers WHERE archived=0 AND status='pending'")
         pending = int(_scalar(await cursor.fetchone(), "c"))
         unread = await self.unread_count()
         self._summary_cache = {
-            "confirmed_names": names,
-            "entity_bindings": bindings,
+            "identities": identities,
             "pending_count": pending,
             "unread_count": unread,
         }

@@ -1,12 +1,14 @@
+import { lazy, Suspense } from "react";
+import { PageSkeleton } from "@/components/common/AsyncState";
 import { useRouteTab } from "@/hooks/useRouteTab";
 import { useTranslation } from "react-i18next";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
 import { PageContainer, PageHeader } from "@/components/common/PageContainer";
 import { Eye, LayoutGrid, ScanFace, SlidersHorizontal, Wand2 } from "lucide-react";
-import { VisionOverviewPanel } from "@/pages/vision/OverviewPanel";
-import { VisionCapabilitiesPanel } from "@/pages/vision/CapabilitiesPanel";
-import { VisionConfigPanel } from "@/pages/vision/ConfigPanel";
-import { FacePanel } from "@/pages/vision/face/FacePanel";
+const VisionOverviewPanel = lazy(() => import("@/pages/vision/OverviewPanel").then((module) => ({ default: module.VisionOverviewPanel })));
+const VisionCapabilitiesPanel = lazy(() => import("@/pages/vision/CapabilitiesPanel").then((module) => ({ default: module.VisionCapabilitiesPanel })));
+const VisionConfigPanel = lazy(() => import("@/pages/vision/ConfigPanel").then((module) => ({ default: module.VisionConfigPanel })));
+const FacePanel = lazy(() => import("@/pages/vision/face/FacePanel").then((module) => ({ default: module.FacePanel })));
 
 type VisionTab = "overview" | "face" | "capabilities" | "config";
 
@@ -30,10 +32,12 @@ export default function Vision() {
         subtitle={t("subtitle")}
       />
       <TabBar tabs={TABS} activeTab={tab} onChange={setTab} />
+      <Suspense fallback={<PageSkeleton />}>
       {tab === "overview" && <VisionOverviewPanel />}
       {tab === "face" && <FacePanel />}
       {tab === "capabilities" && <VisionCapabilitiesPanel />}
       {tab === "config" && <VisionConfigPanel />}
+      </Suspense>
     </PageContainer>
   );
 }

@@ -140,7 +140,9 @@
       "asr": "SenseVoice 转写",
       "diarize": "说话人分离",
       "embedder": "声纹嵌入 (cam++)"
-    }
+    },
+    "unknown": "状态未知",
+    "unavailable": "服务尚未就绪，暂无法读取 GPU 模型状态。"
   },
   "pipelineTitle": "上游 pipeline 对接契约",
   "operationFailed": "操作失败"

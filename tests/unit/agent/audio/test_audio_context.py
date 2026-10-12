@@ -19,5 +19,7 @@ class TestAudioStatusProvider:
         snap = await AudioStatusProvider().provide("user_webui:u1")
         assert snap is not None
         assert "张三(家人)" in snap.content
-        assert "张三(家人)→user:webui:u1" in snap.content
+        assert "[speaker_scope:user:webui:u1]" in snap.content
+        assert snap.content.count("张三") == 1
+        assert f"#{speaker['id']}" in snap.content
         assert "实体画像" in snap.content

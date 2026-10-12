@@ -15,6 +15,7 @@ from core.log import log
 from . import ladybug_guard
 from .config import CogneeConfig
 from .llm_bridge import (
+    CogneeConfigError,
     anthropic_env_bridge,
     resolve_chat_llm_config,
     resolve_embedding_llm_config,
@@ -31,6 +32,8 @@ class CogneeClient:
         self._module: Optional[Any] = None
         self._configured = False
         self._import_error = ""
+        self._configuration_required = False
+        self._initialize_lock = asyncio.Lock()
         self._resolved_chat: dict[str, Any] = {}
         self._resolved_embedding: dict[str, Any] = {}
 
@@ -59,20 +62,32 @@ class CogneeClient:
         self.config = config.normalized()
         self._configured = False
         self._import_error = ""
+        self._configuration_required = False
         self._resolved_chat = {}
         self._resolved_embedding = {}
 
     async def initialize(self) -> CogneeAvailability:
+        """串行解析并应用配置，并发调用复用已就绪的客户端。"""
+        async with self._initialize_lock:
+            return await self._initialize()
+
+    async def _initialize(self) -> CogneeAvailability:
         if not self.config.enabled:
             return self.availability(reason="未启用")
         if not self.installed:
-            return self.availability(reason="未安装可选依赖 cognee")
+            return self.availability(reason="缺少 cognee 依赖，请在项目目录执行 uv sync")
         try:
-            module = await asyncio.to_thread(self._import_cognee)
-            await self._configure(module)
+            await self._configure()
+            self._import_error = ""
+            self._configuration_required = False
+            return self.availability()
+        except CogneeConfigError as exc:
+            self._import_error = str(exc)
+            self._configuration_required = True
             return self.availability()
         except Exception as exc:
             self._import_error = str(exc)
+            self._configuration_required = False
             log(f"Cognee 初始化失败，保持原记忆后端: {exc}", "WARNING")
             return self.availability(reason=self._import_error)
 
@@ -83,6 +98,7 @@ class CogneeClient:
             installed=self.installed,
             enabled=self.config.enabled,
             ready=ready,
+            configuration_required=self.config.enabled and self._configuration_required,
             version=version,
             reason=reason or ("" if ready else self._import_error),
         )
@@ -111,31 +127,39 @@ class CogneeClient:
         ladybug_guard.install(lambda: self.config)
         return self._module
 
-    async def _configure(self, module: Any) -> None:
-        if self._configured:
-            return
-        root = Path(self.config.absolute_data_root)
-        root.mkdir(parents=True, exist_ok=True)
-        module.config.system_root_directory(str(root / "system"))
-        module.config.data_root_directory(str(root / "data"))
+    async def _configure(self) -> None:
+        while not self._configured and self.config.enabled:
+            config = self.config
+            try:
+                from agent.llm import get_llm_manager
 
-        try:
-            from agent.llm import get_llm_manager
+                manager = get_llm_manager()
+                chat_payload = resolve_chat_llm_config(config.chat, manager)
+                self._resolved_chat = summarize_resolved(chat_payload, kind="chat")
+                embedding_payload = resolve_embedding_llm_config(config.embedding, manager)
+                if embedding_payload is None:
+                    raise CogneeConfigError(
+                        "尚未配置 Embedding 模型，请在 Web 模型管理中添加，"
+                        "或在 Cognee 向量化模型配置中指定"
+                    )
+                self._resolved_embedding = summarize_resolved(embedding_payload, kind="embedding")
+            except CogneeConfigError:
+                raise
+            except Exception as exc:
+                raise RuntimeError(f"无法映射 AnelfAgent 模型配置: {exc}") from exc
 
-            manager = get_llm_manager()
-            chat_payload = resolve_chat_llm_config(self.config.chat, manager)
+            module = await asyncio.to_thread(self._import_cognee)
+            if config is not self.config:
+                continue
+            root = Path(config.absolute_data_root)
+            root.mkdir(parents=True, exist_ok=True)
+            module.config.system_root_directory(str(root / "system"))
+            module.config.data_root_directory(str(root / "data"))
             anthropic_env_bridge(chat_payload)
             module.config.set_llm_config(chat_payload)
-            self._resolved_chat = summarize_resolved(chat_payload, kind="chat")
-
-            embedding_payload = resolve_embedding_llm_config(self.config.embedding, manager)
-            if embedding_payload:
-                module.config.set_embedding_config(embedding_payload)
-                self._sanitize_embedding_dimensions()
-            self._resolved_embedding = summarize_resolved(embedding_payload, kind="embedding")
-        except Exception as exc:
-            raise RuntimeError(f"无法映射 AnelfAgent 模型配置: {exc}") from exc
-        self._configured = True
+            module.config.set_embedding_config(embedding_payload)
+            self._sanitize_embedding_dimensions()
+            self._configured = True
 
     def _sanitize_embedding_dimensions(self) -> None:
         """为 cognee 的 embedding 调用启用 litellm drop_params。

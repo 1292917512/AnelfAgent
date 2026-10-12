@@ -1,185 +1,64 @@
-/** 单个提供者卡片：启停开关、能力徽章、凭据配置、按能力连通性测试。 */
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { FlaskConical, KeyRound, Loader2, Power, Trash2 } from "lucide-react";
-import { retrievalApi } from "@/lib/api";
-import type { RetrievalProviderInfo, RetrievalTestResult } from "@/lib/types";
+import { FlaskConical, Settings2, Trash2 } from "lucide-react";
+import { apiErrorMessage, retrievalApi } from "@/lib/api";
+import type { RetrievalProviderInfo } from "@/lib/types";
 import { Card } from "@/components/common/Card";
-import { StatusDot } from "@/components/common/StatusDot";
-import { cn } from "@/lib/utils";
+import { Badge, Button, Input, Select, Switch } from "@/components/ui";
 
-export function RetrievalProviderCard({
-  provider,
-  onChanged,
-}: {
-  provider: RetrievalProviderInfo;
-  onChanged: () => void;
-}) {
+export function RetrievalProviderCard({ provider, onChanged }: { provider: RetrievalProviderInfo; onChanged: () => void }) {
   const { t } = useTranslation("retrieval");
   const [apiKey, setApiKey] = useState("");
   const [testCap, setTestCap] = useState(provider.capabilities[0] ?? "");
   const [testInput, setTestInput] = useState("");
-  const [testResult, setTestResult] = useState<RetrievalTestResult | null>(null);
-
-  const toggleMutation = useMutation({
-    mutationFn: () => retrievalApi.setEnabled(provider.name, !provider.enabled),
-    onSuccess: onChanged,
-  });
-  const keyMutation = useMutation({
+  const toggle = useMutation({ mutationFn: () => retrievalApi.setEnabled(provider.name, !provider.enabled), onSuccess: onChanged });
+  const credential = useMutation({
     mutationFn: (key: string) => retrievalApi.setCredential(provider.name, key),
-    onSuccess: () => {
-      setApiKey("");
-      onChanged();
-    },
+    onSuccess: () => { setApiKey(""); onChanged(); },
   });
-  const testMutation = useMutation({
-    mutationFn: () => retrievalApi.test(provider.name, testCap, testInput).then((r) => r.data),
-    onSuccess: setTestResult,
-  });
-
-  const sourceLabel = provider.credential_source
-    ? t(`provider.source.${provider.credential_source}`, { defaultValue: provider.credential_source })
-    : "";
+  const test = useMutation({ mutationFn: () => retrievalApi.test(provider.name, testCap, testInput).then((r) => r.data) });
+  const busy = toggle.isPending || credential.isPending || test.isPending;
   const usable = provider.enabled && provider.configured;
-
-  return (
-    <Card
-      title={provider.display_name}
-      subtitle={provider.description}
-      className={cn(!provider.enabled && "opacity-60")}
-      actions={
-        <button
-          onClick={() => toggleMutation.mutate()}
-          disabled={toggleMutation.isPending}
-          className={cn(
-            "flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs transition-colors disabled:opacity-50",
-            provider.enabled
-              ? "border-border text-muted hover:text-danger hover:border-danger"
-              : "border-accent text-accent hover:bg-accent/10",
-          )}
-        >
-          <Power size={12} />
-          {provider.enabled ? t("provider.disable") : t("provider.enable")}
-        </button>
-      }
-    >
-      <div className="space-y-3">
-        <div className="flex items-center gap-2 text-xs flex-wrap">
-          <StatusDot status={!provider.enabled ? "offline" : usable ? "ok" : "warn"} />
-          <span className="text-foreground">
-            {!provider.enabled
-              ? t("provider.disabledBadge")
-              : provider.requires_credential
-                ? provider.configured
-                  ? t("provider.configured")
-                  : t("provider.notConfigured")
-                : t("provider.noCredential")}
-          </span>
-          {sourceLabel && (
-            <span className="text-muted">· {t("provider.sourcePrefix")}: {sourceLabel}</span>
-          )}
-          <span className="flex gap-1 ml-auto">
-            {(["search", "reader", "repo"] as const).map((cap) => (
-              <span
-                key={cap}
-                className={cn(
-                  "px-1.5 py-0.5 rounded text-[10px] border",
-                  provider.capabilities.includes(cap)
-                    ? "border-accent/40 text-accent"
-                    : "border-border text-muted/50",
-                )}
-              >
-                {t(`caps.${cap}`)}
-                {!provider.capabilities.includes(cap) && ` · ${t("provider.unsupported")}`}
-              </span>
-            ))}
-          </span>
-        </div>
-
-        {provider.requires_credential && (
-          <div className="flex items-center gap-2">
-            <KeyRound size={13} className="text-muted shrink-0" />
-            <input
-              type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder={t(provider.credential_source === "config" ? "provider.keyPlaceholderSet" : "provider.keyPlaceholderEmpty")}
-              className="flex-1 px-2 py-1.5 rounded-md border border-border bg-elevated text-xs text-foreground font-mono"
-            />
-            <button
-              onClick={() => keyMutation.mutate(apiKey)}
-              disabled={!apiKey.trim() || keyMutation.isPending}
-              className="px-2.5 py-1.5 rounded-md bg-accent text-white text-xs font-medium hover:opacity-90 disabled:opacity-50"
-            >
-              {t("provider.saveKey")}
-            </button>
-            {provider.credential_source === "config" && (
-              <button
-                onClick={() => keyMutation.mutate("")}
-                disabled={keyMutation.isPending}
-                title={t("provider.clearKey")}
-                className="p-1.5 rounded-md border border-border text-muted hover:text-danger hover:border-danger disabled:opacity-50"
-              >
-                <Trash2 size={13} />
-              </button>
-            )}
+  const error = toggle.error || credential.error || test.error;
+  return <Card title={provider.display_name} subtitle={provider.description}
+    actions={<Switch checked={provider.enabled} label={t("provider.toggle", { name: provider.display_name })} disabled={busy} onChange={() => toggle.mutate()} />}>
+    <div className="flex flex-wrap items-center gap-2">
+      <Badge variant={!provider.enabled ? "neutral" : usable ? "ok" : "warn"}>{t(!provider.enabled ? "provider.disabledBadge" : provider.configured ? "provider.configured" : "provider.notConfigured")}</Badge>
+      {provider.capabilities.map((cap) => <span key={cap} className="rounded-md bg-secondary px-2 py-1 text-xs text-muted">{t(`caps.${cap}`)}</span>)}
+    </div>
+    <details className="group mt-4 border-t border-border pt-3">
+      <summary className="flex min-h-9 cursor-pointer list-none items-center gap-2 text-xs font-medium text-muted hover:text-heading"><Settings2 size={14} />{t("provider.manage")}</summary>
+      <div className="mt-3 space-y-4">
+        {provider.requires_credential && <div className="space-y-2">
+          <label className="block text-xs text-muted" htmlFor={`key-${provider.name}`}>{t("provider.credential")}</label>
+          <div className="flex flex-wrap gap-2">
+            <Input id={`key-${provider.name}`} type="password" autoComplete="new-password" value={apiKey} disabled={busy}
+              onChange={(event) => setApiKey(event.target.value)} className="min-w-0 flex-1 font-mono text-xs"
+              placeholder={t(provider.credential_source === "config" ? "provider.keyPlaceholderSet" : "provider.keyPlaceholderEmpty")} />
+            <Button size="sm" disabled={!apiKey.trim() || busy} onClick={() => credential.mutate(apiKey.trim())}>{t("provider.saveKey")}</Button>
+            {provider.credential_source === "config" && <Button size="icon" variant="ghost" title={t("provider.clearKey")} disabled={busy} onClick={() => credential.mutate("")}><Trash2 size={14} /></Button>}
           </div>
-        )}
-
-        {provider.capabilities.length > 0 && (
-          <div className="flex items-center gap-2">
-            <select
-              value={testCap}
-              onChange={(e) => setTestCap(e.target.value)}
-              className="px-2 py-1.5 rounded-md border border-border bg-elevated text-xs text-foreground"
-            >
-              {provider.capabilities.map((cap) => (
-                <option key={cap} value={cap}>{t(`caps.${cap}`)}</option>
-              ))}
-            </select>
-            <input
-              type="text"
-              value={testInput}
-              onChange={(e) => setTestInput(e.target.value)}
-              placeholder={t(`test.inputPlaceholder.${testCap}`, { defaultValue: "" })}
-              className="flex-1 px-2 py-1.5 rounded-md border border-border bg-elevated text-xs text-foreground"
-            />
-            <button
-              onClick={() => testMutation.mutate()}
-              disabled={!usable || testMutation.isPending}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-border text-xs text-foreground hover:border-accent hover:text-accent disabled:opacity-50"
-            >
-              {testMutation.isPending ? <Loader2 size={12} className="animate-spin" /> : <FlaskConical size={12} />}
-              {testMutation.isPending ? t("test.testing") : t("test.run")}
-            </button>
+          {provider.credential_source && <p className="text-xs text-muted">{t("provider.sourcePrefix")}: {t(`provider.source.${provider.credential_source}`, { defaultValue: provider.credential_source })}</p>}
+        </div>}
+        {!!provider.capabilities.length && <div className="space-y-2">
+          <div className="flex items-center gap-2"><FlaskConical size={14} className="text-muted" /><span className="text-xs text-muted">{t("test.title")}</span></div>
+          <div className="flex flex-wrap gap-2">
+            <Select value={testCap} aria-label={t("test.capability")} disabled={busy} onChange={(event) => { setTestCap(event.target.value); test.reset(); }}>
+              {provider.capabilities.map((cap) => <option key={cap} value={cap}>{t(`caps.${cap}`)}</option>)}
+            </Select>
+            <Input className="min-w-0 flex-1 basis-40 text-xs" aria-label={t("test.input")} value={testInput} disabled={busy}
+              placeholder={t(`test.inputPlaceholder.${testCap}`)} onChange={(event) => { setTestInput(event.target.value); test.reset(); }} />
+            <Button size="sm" disabled={!usable || busy} loading={test.isPending} onClick={() => { test.reset(); test.mutate(); }}>{t("test.run")}</Button>
           </div>
-        )}
-
-        {testResult && (
-          <div
-            className={cn(
-              "rounded-md border px-3 py-2 text-xs",
-              testResult.ok ? "border-ok/40 bg-ok/5" : "border-danger/40 bg-danger/5",
-            )}
-          >
-            {testResult.ok ? (
-              <div className="space-y-1">
-                <div className="text-foreground font-medium">
-                  {testResult.latency_ms} ms · {testResult.summary}
-                </div>
-                {testResult.excerpt && (
-                  <pre className="text-muted whitespace-pre-wrap break-all font-mono text-[11px] max-h-32 overflow-y-auto">
-                    {testResult.excerpt}
-                  </pre>
-                )}
-              </div>
-            ) : (
-              <div className="text-danger">{t("test.failed")}: {testResult.error}</div>
-            )}
-          </div>
-        )}
+        </div>}
       </div>
-    </Card>
-  );
+    </details>
+    {error && <p role="alert" className="mt-3 break-words text-xs text-danger">{apiErrorMessage(error, t("common:requestFailed"))}</p>}
+    {test.data && <div role="status" className={`mt-3 rounded-lg border p-3 text-xs ${test.data.ok ? "border-ok/25 bg-ok-subtle" : "border-danger/25 bg-danger-subtle"}`}>
+      <div className="flex flex-wrap justify-between gap-2"><span className="font-medium">{test.data.ok ? test.data.summary : t("test.failed")}</span><span className="tabular-nums text-muted">{test.data.latency_ms ?? 0} ms</span></div>
+      {test.data.error && <p className="mt-2 break-words text-danger">{test.data.error}</p>}
+      {test.data.excerpt && <pre className="mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap break-words font-sans leading-relaxed text-muted">{test.data.excerpt}</pre>}
+    </div>}
+  </Card>;
 }

@@ -1,45 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router-dom";
 import { RefreshCw, Database, Sparkles, Upload, Shrink } from "lucide-react";
 import { Card } from "@/components/common/Card";
 import { StatCard } from "@/components/common/StatCard";
 import { Spinner, toast } from "@/components/ui";
 import { ConfigFormPanel } from "@/pages/config/ConfigFormPanel";
 import { type FieldMeta } from "@/pages/config/AppField";
-import { ModelConfigCard } from "@/pages/memory/cognee/ModelConfigCard";
+import { ModelConfigCard, ResolvedModelLine } from "@/pages/memory/cognee/ModelConfigCard";
 import { RecallTester } from "@/pages/memory/RecallTester";
 import { memoryApi } from "@/lib/api";
 import { InlineContributions } from "@/components/extensions/ContributionSlot";
 import { formatSize } from "@/lib/utils";
-import type { CogneeResolvedInfo, ConfigValues } from "@/lib/types";
-
-function ResolvedLine({ label, info }: { label: string; info?: CogneeResolvedInfo }) {
-  const { t } = useTranslation("memory");
-  if (!info || !info.model) {
-    return (
-      <div className="flex items-center gap-2 text-xs">
-        <span className="text-muted w-20 flex-shrink-0">{label}</span>
-        <span className="text-muted">{t("cognee.notResolved")}</span>
-      </div>
-    );
-  }
-  return (
-    <div className="flex items-center gap-2 text-xs">
-      <span className="text-muted w-20 flex-shrink-0">{label}</span>
-      <span className="font-mono text-heading">
-        {info.provider}/{info.model}
-      </span>
-      {info.instructor_mode && (
-        <span className="px-1.5 py-0.5 rounded bg-elevated border border-border text-muted">
-          {info.instructor_mode}
-        </span>
-      )}
-      {info.endpoint && (
-        <span className="text-muted truncate max-w-64">{info.endpoint}</span>
-      )}
-    </div>
-  );
-}
+import type { ConfigValues } from "@/lib/types";
 
 export function CogneePanel() {
   const { t } = useTranslation("memory");
@@ -53,6 +26,7 @@ export function CogneePanel() {
   const { data: datasets } = useQuery({
     queryKey: ["cogneeDatasets"],
     queryFn: () => memoryApi.cognee.datasets().then((r) => r.data),
+    enabled: status?.availability.ready === true,
   });
   const { data: probe } = useQuery({
     queryKey: ["memoryProbeStatus"],
@@ -122,6 +96,11 @@ export function CogneePanel() {
 
   return (
     <div className="space-y-4">
+      <div className="rounded-xl border border-border bg-elevated p-3 space-y-2 text-sm">
+        <p className="text-heading">{t("cognee.setupHint")}</p>
+        <Link to="/models" className="text-accent hover:underline">{t("cognee.configureModels")}</Link>
+        <p className="text-xs text-muted">{t("cognee.usageHint")}</p>
+      </div>
       {rebuildMutation.data?.data.restart_required && <div className="rounded-xl border border-warning/30 bg-warning/10 p-3 space-y-2">
         <p className="text-sm text-warning">{t("cognee.rebuildRestartConfirm")}</p>
         <InlineContributions slot="system.restart" componentProps={{}} />
@@ -183,10 +162,11 @@ export function CogneePanel() {
         title={t("cognee.statusTitle")}
         subtitle={availability?.reason || t("cognee.statusSubtitle")}
         actions={
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             {(sync?.failed || 0) > 0 && (
               <button
                 onClick={() => retryMutation.mutate()}
+                disabled={retryMutation.isPending}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all"
               >
                 <RefreshCw size={14} /> {t("retryFailedSync")}
@@ -194,20 +174,21 @@ export function CogneePanel() {
             )}
             <button
               onClick={() => compactMutation.mutate()}
-              disabled={compactMutation.isPending}
+              disabled={!availability?.ready || compactMutation.isPending}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all"
             >
               <Shrink size={14} /> {t("cognee.compact")}
             </button>
             <button
               onClick={() => { if (window.confirm(t("cognee.backfillConfirm"))) backfillMutation.mutate(); }}
+              disabled={backfillMutation.isPending}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all"
             >
               <Upload size={14} /> {t("cognee.backfill")}
             </button>
             <button
               onClick={() => { if (window.confirm(t("cognee.rebuildConfirm"))) rebuildMutation.mutate(); }}
-              disabled={rebuildMutation.isPending}
+              disabled={!availability?.ready || rebuildMutation.isPending}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-danger-subtle text-danger hover:bg-[rgba(239,68,68,0.15)] transition-all"
             >
               <RefreshCw size={14} /> {t("cognee.rebuild")}
@@ -223,13 +204,13 @@ export function CogneePanel() {
           />
           <StatCard
             label={t("cogneeReady")}
-            value={availability?.ready ? t("common:available") : t("common:unavailable")}
+            value={availability?.configuration_required ? t("cognee.waitingForConfig") : availability?.ready ? t("common:available") : t("common:unavailable")}
             variant={availability?.ready ? "ok" : "default"}
           />
           <StatCard
             label={t("cognee.syncWorker")}
-            value={sync?.running ? t("cognee.running") : t("cognee.stopped")}
-            variant={sync?.running ? "ok" : "default"}
+            value={availability?.configuration_required ? t("cognee.waitingForConfig") : sync?.running ? t("cognee.running") : t("cognee.stopped")}
+            variant={sync?.running && availability?.ready ? "ok" : "default"}
           />
           <StatCard label={t("cognee.synced")} value={String(sync?.synced || 0)} />
           <StatCard label={t("syncPending")} value={String(sync?.pending || 0)} />
@@ -260,8 +241,8 @@ export function CogneePanel() {
           </div>
         )}
         <div className="space-y-1.5 pt-2 border-t border-border">
-          <ResolvedLine label={t("cognee.chatModel")} info={status?.resolved?.chat} />
-          <ResolvedLine label={t("cognee.embeddingModel")} info={status?.resolved?.embedding} />
+          <ResolvedModelLine label={t("cognee.chatModel")} info={status?.resolved?.chat} />
+          <ResolvedModelLine label={t("cognee.embeddingModel")} info={status?.resolved?.embedding} />
         </div>
         {sync?.last_error && (
           <div className="mt-3 p-3 rounded-md bg-danger-subtle border border-danger text-xs text-danger">
@@ -279,16 +260,16 @@ export function CogneePanel() {
             {datasets.map((ds) => (
               <div
                 key={ds.id}
-                className="flex items-center justify-between px-3 py-2 rounded-md bg-elevated border border-border"
+                className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-md bg-elevated border border-border"
               >
-                <div className="flex items-center gap-2 text-sm">
+                <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm">
                   <Database size={14} className="text-muted" />
-                  <span className="text-heading">{ds.name}</span>
-                  <span className="text-xs text-muted font-mono">{ds.id}</span>
+                  <span className="break-all text-heading">{ds.name}</span>
+                  <span className="break-all text-xs text-muted font-mono">{ds.id}</span>
                 </div>
                 <button
                   onClick={() => improveMutation.mutate(ds.name)}
-                  disabled={improveMutation.isPending}
+                  disabled={!availability?.ready || improveMutation.isPending}
                   className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all"
                 >
                   <Sparkles size={14} /> {t("cognee.improve")}

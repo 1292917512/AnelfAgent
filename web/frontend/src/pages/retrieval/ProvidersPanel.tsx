@@ -1,75 +1,56 @@
-/** 能力 × 提供者矩阵面板：每个能力的实现切换 + 提供者卡片列表。 */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { Check } from "lucide-react";
-import { retrievalApi } from "@/lib/api";
-import { cn } from "@/lib/utils";
+import { ArrowRight, Globe2 } from "lucide-react";
+import { apiErrorMessage, retrievalApi } from "@/lib/api";
+import { AsyncState, QueryError } from "@/components/common/AsyncState";
+import { Badge, Select } from "@/components/ui";
 import { RetrievalProviderCard } from "./ProviderCard";
 
 export function RetrievalProvidersPanel() {
   const { t } = useTranslation("retrieval");
-  const queryClient = useQueryClient();
-  const { data } = useQuery({
-    queryKey: ["retrievalProvidersMatrix"],
-    queryFn: () => retrievalApi.matrix().then((r) => r.data),
+  const client = useQueryClient();
+  const query = useQuery({
+    queryKey: ["retrievalProvidersMatrix"], queryFn: () => retrievalApi.matrix().then((r) => r.data), throwOnError: false,
   });
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["retrievalProvidersMatrix"] });
-
-  const activeMutation = useMutation({
-    mutationFn: ({ capability, provider }: { capability: string; provider: string }) =>
-      retrievalApi.setActive(capability, provider),
+  const invalidate = () => client.invalidateQueries({ queryKey: ["retrievalProvidersMatrix"] });
+  const active = useMutation({
+    mutationFn: ({ capability, provider }: { capability: string; provider: string }) => retrievalApi.setActive(capability, provider),
     onSuccess: invalidate,
   });
-
-  if (!data) return null;
-
-  return (
-    <div className="space-y-4 max-w-3xl">
-      <div className="rounded-lg border border-border bg-card divide-y divide-border">
+  const data = query.data;
+  return <AsyncState pending={query.isPending} error={!data && query.error} retry={() => void query.refetch()}>
+    {data && <div className="space-y-6">
+      {query.isError && <QueryError compact error={query.error} retry={() => void query.refetch()} />}
+      <div className="grid gap-3 lg:grid-cols-3">
         {data.capabilities.map((cap) => {
           const capable = data.providers.filter((p) => p.capabilities.includes(cap));
-          const selection = data.selection[cap] ?? "auto";
-          const active = data.active[cap];
-          return (
-            <div key={cap} className="flex flex-wrap items-center gap-3 px-4 py-3">
-              <div className="w-20 shrink-0 text-sm font-medium text-heading">{t(`caps.${cap}`)}</div>
-              <div className="flex min-w-0 flex-1 items-center gap-1 flex-wrap">
-                {["auto", ...capable.map((p) => p.name)].map((name) => {
-                  const selected = selection === name;
-                  return (
-                    <button
-                      key={name}
-                      onClick={() => activeMutation.mutate({ capability: cap, provider: name })}
-                      disabled={activeMutation.isPending}
-                      aria-pressed={selected}
-                      className={cn(
-                        "px-2.5 py-1 rounded-md border text-xs transition-colors disabled:opacity-50",
-                        selected
-                          ? "border-accent bg-accent/10 text-accent"
-                          : "border-border text-muted hover:text-foreground hover:border-border-strong",
-                      )}
-                    >
-                      {name === "auto"
-                        ? t("matrix.auto")
-                        : data.providers.find((p) => p.name === name)?.display_name ?? name}
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="w-full text-xs text-muted sm:ml-auto sm:w-auto">
-                {active
-                  ? `${t("matrix.activeNow")}: ${data.providers.find((p) => p.name === active)?.display_name ?? active}`
-                  : t("matrix.noneAvailable")}
-                {selection === "auto" && active && <Check size={12} className="inline ml-1 text-accent" />}
-              </div>
+          const selection = data.selection[cap] || "auto";
+          const current = data.providers.find((p) => p.name === data.active[cap]);
+          return <section key={cap} className="min-w-0 rounded-xl border border-border bg-card p-4">
+            <div className="mb-4 flex items-center gap-2 text-heading"><Globe2 size={16} className="text-accent" /><h2 className="text-sm font-semibold">{t(`caps.${cap}`)}</h2></div>
+            <Select className="w-full" aria-label={t(`caps.${cap}`)} value={selection} disabled={active.isPending}
+              onChange={(event) => active.mutate({ capability: cap, provider: event.target.value })}>
+              <option value="auto">{t("matrix.auto")}</option>
+              {!capable.some((p) => p.name === selection) && selection !== "auto" && <option value={selection} disabled>{selection} · {t("matrix.missing")}</option>}
+              {capable.map((p) => <option key={p.name} value={p.name} disabled={!p.enabled || !p.configured}>
+                {p.display_name}{!p.enabled ? ` · ${t("provider.disabledBadge")}` : !p.configured ? ` · ${t("provider.notConfigured")}` : ""}
+              </option>)}
+            </Select>
+            <div className="mt-3 flex items-center gap-2 text-xs text-muted"><ArrowRight size={13} className="shrink-0" />
+              <span className="min-w-0 break-words">{current ? current.display_name : t("matrix.noneAvailable")}</span>
+              {current && <Badge variant="ok" className="ml-auto shrink-0">{t("matrix.activeNow")}</Badge>}
             </div>
-          );
+          </section>;
         })}
       </div>
-
-      {data.providers.map((provider) => (
-        <RetrievalProviderCard key={provider.name} provider={provider} onChanged={invalidate} />
-      ))}
-    </div>
-  );
+      {active.isError && <p role="alert" className="text-sm text-danger">{apiErrorMessage(active.error, t("common:requestFailed"))}</p>}
+      <div className="flex flex-wrap items-end justify-between gap-2">
+        <div><h2 className="text-sm font-semibold text-heading">{t("provider.title")}</h2><p className="mt-1 text-xs text-muted">{t("matrix.autoDesc")}</p></div>
+        <span className="text-xs tabular-nums text-muted">{t("provider.count", { ready: data.providers.filter((p) => p.enabled && p.configured).length, total: data.providers.length })}</span>
+      </div>
+      <div className="grid items-start gap-4 xl:grid-cols-2">
+        {data.providers.map((provider) => <RetrievalProviderCard key={provider.name} provider={provider} onChanged={invalidate} />)}
+      </div>
+    </div>}
+  </AsyncState>;
 }

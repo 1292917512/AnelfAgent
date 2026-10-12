@@ -1,16 +1,18 @@
+import { lazy, Suspense } from "react";
+import { PageSkeleton } from "@/components/common/AsyncState";
 import { useRouteTab } from "@/hooks/useRouteTab";
 import { useTranslation } from "react-i18next";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
 import { PageContainer, PageHeader } from "@/components/common/PageContainer";
 import { AudioLines, AudioWaveform, Clock3, Mic, LayoutGrid, Search, Sparkles, Upload, Users } from "lucide-react";
-import { AudioOverviewPanel } from "@/pages/sound/OverviewPanel";
-import { VoiceSessionPanel } from "@/pages/sound/VoiceSessionPanel";
-import { SpeakersPanel } from "@/pages/sound/SpeakersPanel";
-import { TimelinePanel } from "@/pages/sound/TimelinePanel";
-import { TranscriptsPanel } from "@/pages/sound/TranscriptsPanel";
-import { IdentifyPanel } from "@/pages/sound/IdentifyPanel";
-import { SoundGenerationPanel } from "@/pages/sound/GenerationPanel";
-import { VoicePresetPanel } from "@/pages/sound/VoicePresetPanel";
+const AudioOverviewPanel = lazy(() => import("@/pages/sound/OverviewPanel").then((module) => ({ default: module.AudioOverviewPanel })));
+const VoiceSessionPanel = lazy(() => import("@/pages/sound/VoiceSessionPanel").then((module) => ({ default: module.VoiceSessionPanel })));
+const SpeakersPanel = lazy(() => import("@/pages/sound/SpeakersPanel").then((module) => ({ default: module.SpeakersPanel })));
+const TimelinePanel = lazy(() => import("@/pages/sound/TimelinePanel").then((module) => ({ default: module.TimelinePanel })));
+const TranscriptsPanel = lazy(() => import("@/pages/sound/TranscriptsPanel").then((module) => ({ default: module.TranscriptsPanel })));
+const IdentifyPanel = lazy(() => import("@/pages/sound/IdentifyPanel").then((module) => ({ default: module.IdentifyPanel })));
+const SoundGenerationPanel = lazy(() => import("@/pages/sound/GenerationPanel").then((module) => ({ default: module.SoundGenerationPanel })));
+const VoicePresetPanel = lazy(() => import("@/pages/sound/VoicePresetPanel").then((module) => ({ default: module.VoicePresetPanel })));
 
 type SoundTab = "overview" | "presets" | "generation" | "speakers" | "timeline" | "transcripts" | "identify" | "voice";
 
@@ -38,6 +40,7 @@ export default function Sound() {
         subtitle={t("subtitle")}
       />
       <TabBar tabs={TABS} activeTab={tab} onChange={setTab} />
+      <Suspense fallback={<PageSkeleton />}>
       {tab === "overview" && <AudioOverviewPanel />}
       {tab === "presets" && <VoicePresetPanel />}
       {tab === "generation" && <SoundGenerationPanel />}
@@ -46,6 +49,7 @@ export default function Sound() {
       {tab === "transcripts" && <TranscriptsPanel />}
       {tab === "identify" && <IdentifyPanel />}
       {tab === "voice" && <VoiceSessionPanel />}
+      </Suspense>
     </PageContainer>
   );
 }

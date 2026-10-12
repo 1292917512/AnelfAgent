@@ -24,7 +24,7 @@ export const audioApi = {
   status: () => api.get<AudioStatus>("/audio/status"),
   stats: () => api.get<AudioLibraryStats>("/audio/stats"),
   capabilities: () => api.get<CapabilityStatus>("/audio/capabilities"),
-  analyze: (path: string) => api.post("/audio/analyze", { path }),
+  analyze: (path: string) => api.post<{ segments: number }>("/audio/analyze", { path }),
   // 声纹身份
   speakers: (params?: { status?: string; keyword?: string; limit?: number; offset?: number }) =>
     api.get<AudioSpeakerListResult>("/audio/speakers", { params }),

@@ -9,7 +9,9 @@
   `_sdk.register_vision_source` 接入，外部帧经 POST /api/vision/push 汇入统一缓冲
 - **buffer**（分源判变）/ **watcher**（轮询循环）/ **capture**（帧契约 + 分块 dHash）/ **context**
   （变化驱动注入 + 注入轨迹）：视觉状态行与变化帧经 vision provider 注入（vision_context_inject
-  可关），变化帧仅变化轮携带
+  可关），按会话与执行请求独立记录已见帧。首次读取或内容变化时最多补充三个源的画面，
+  后续轮次补齐尚未呈现的源；同一请求不重发静态帧。轨迹仅存内存，最多保留 200 个请求。
+  外部推送的活跃时间看最新接收帧，静态画面持续推送时不会因未变化而被误判离线
 - **工具**（vision 组，deferred bootstrap 激活）：vision_look/watch/sources + 生成系列
   （recognize_image/recognize_video/generate_image/edit_image/generate_video 常驻 always + 任务管理
   与 vision_config 配置工具 core）
@@ -47,6 +49,11 @@ CapabilityProvider 协议（name/capabilities/is_configured/run）+ CapabilityRo
 配置化优先级链 + 失败降级 + 错误聚合归因）。链语义：配置键（JSON 字典 {能力: [提供者]}）显式给出
 非空链时严格按配置；否则默认链 + 声明该能力的已注册组件自动入链（即插即用）。
 
+状态接口区分 `defaults`（自动发现）、`overrides`（显式配置）与 `chains`（生效链）。
+界面只回写覆盖项，修改一种能力不会冻结其他能力的自动发现；恢复自动即删除该覆盖项。
+提供者返回失败字典与抛异常同样属于失败，不能被路由器包装成成功。显式指定的提供者失败时
+返回原有诊断；结果声明 `outcome=unknown` 时保留任务编号并停止回退，避免重复创建远端任务。
+
 - 内部模型利用 = 各领域内置 `models` 提供者桥接 llm_clients.json 对应类型模型优先级链
 - 第三方组件经 `_sdk` 注册桥接入同一路由
 - **领域分层**：声音/视觉域只提炼能力接口，具体平台由组件实现并登记凭据（见
@@ -78,3 +85,7 @@ CapabilityProvider 协议（name/capabilities/is_configured/run）+ CapabilityRo
 - **数据面**：`services/retrieval.py` + `/api/retrieval/*` + 视觉/声音能力状态端点；检索页
   （/retrieval）能力×提供者矩阵 + 抓取设置；视觉页「生成能力」页签 + 声音页「生成」页签共用
   `components/common/CapabilityChainPanel.tsx`
+
+视觉预览按来源与帧时间生成资源 URL，停用源不参与预览。视觉配置沿用配置元数据控件，
+字符串、JSON、枚举与数值保持声明类型；声音和视觉子页签按需加载。检索连通测试检查提供者
+返回的语义错误，同时返回能力、提供者及耗时，HTTP 请求成功不等于检索成功。

@@ -144,7 +144,7 @@
     "write_breaker_cooldown_seconds": "Breaker Cooldown (s)"
   },
   "cogneeDescs": {
-    "enabled": "Enable the optional Cognee backend; automatically falls back when unavailable",
+    "enabled": "Enabled by default; waits for model configuration while native memory and search remain available",
     "sync_enabled": "Project memory creates, updates, and deletes to Cognee asynchronously",
     "recall_enabled": "Query Cognee in parallel and fuse results with native recall",
     "dataset_prefix": "Prefix used to isolate global, user, and group datasets",
@@ -198,6 +198,10 @@
   "markActive": "Resume",
   "cognee": {
     "statusTitle": "Cognee Status",
+    "setupHint": "Cognee is enabled by default. Configure a chat model and an embedding model in Model Management to connect automatically, or select models below.",
+    "configureModels": "Open Model Management",
+    "waitingForConfig": "Awaiting configuration",
+    "usageHint": "Once configured, memory sync calls the extraction and embedding models and consumes your provider quota. You can disable Cognee or async projection below.",
     "statusSubtitle": "Availability, model mapping and sync state of the knowledge-graph backend",
     "syncWorker": "Sync Worker",
     "running": "Running",
@@ -220,7 +224,7 @@
     "source_auto": "Auto",
     "source_model": "Pinned model",
     "source_custom": "Custom",
-    "sourceAutoDesc": "Automatically picks a compatible model from Model Management (prefers openai protocol); follows main model changes",
+    "sourceAutoDesc": "Selects compatible models from Model Management and connects once initial setup is complete. Changing the embedding model for an existing index requires a rebuild.",
     "sourceModelDesc": "Pins a model from Model Management; switching the main chat model does not affect Cognee",
     "sourceCustomDesc": "Fully custom provider / endpoint / API key",
     "selectModel": "Select model",

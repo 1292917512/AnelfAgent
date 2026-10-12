@@ -1,14 +1,15 @@
 """视觉上下文提供者 — 各视觉源状态与最新画面注入 PFC volatile 层。
 
-变化驱动注入：仅当画面自上次注入后有变化才附带图片（静态画面只注入
-状态行文本，不重复烧图片 token）；无活跃源时完全不注入（零成本）。
+变化驱动注入：每个执行请求独立记录已见画面，同一请求内只补充变化帧；
+首次读取最多附带三个活跃源，后续逐轮补齐，最多保留 200 个请求的轨迹。
+无活跃源时不注入；静态推送按接收时间判活，不因长期未变化而消失。
 注入轨迹（最近注入时间/来源/帧）记录于 provider 实例，供视觉页签展示。
 
 Model Experience：
 - 模型看到什么：有活跃视觉源时每轮看到"[视觉]"状态行（system 消息），
-  画面变化时视觉模型额外看到一条 user 角色画面消息（最新一帧）；
+  首次读取或画面变化时看到带来源标签的图片（每轮最多三帧）；
 - token 影响：状态行约 30-80 token；画面帧经 ensure_base64_report 压缩，
-  仅变化轮携带；
+  同一请求不重复携带未变化的画面；
 - 缓存影响：位于 volatile 尾部动态区（工具链后、exec_context 前），
   不触碰 stable/conversation 前缀缓存。
 """
@@ -16,9 +17,12 @@ Model Experience：
 from __future__ import annotations
 
 import time
+from collections import OrderedDict
 from typing import Any, Dict, Optional
 
 from core.context_provider import ContextMedia, ProviderSnapshot, context_provider
+from core.tags import tag_label
+from core.tool_context import request_trace
 
 from .buffer import get_vision_buffer
 from .watcher import get_vision_watcher
@@ -32,7 +36,7 @@ class VisionProvider:
     """注入视觉源状态与最新画面（有活跃源时）。"""
 
     def __init__(self) -> None:
-        self._last_injected_path: str = ""
+        self._seen: OrderedDict[tuple[str, str], dict[str, tuple[str, float]]] = OrderedDict()
         # 注入轨迹（页签"注入情况"展示）：最近一次文本/画面注入
         self._last_text_inject_at: float = 0.0
         self._last_media_inject: Dict[str, Any] = {}
@@ -53,7 +57,9 @@ class VisionProvider:
         # 已停用源不参与注入
         active = set(watching)
         for src, frame in buffer.latest_by_source.items():
-            if is_enabled(src) and time.time() - frame.captured_at < 600:
+            received = buffer.rings.get(src)
+            last_seen = received[-1].captured_at if received else frame.captured_at
+            if is_enabled(src) and time.time() - last_seen < 600:
                 active.add(src)
         if not active:
             return None
@@ -72,17 +78,28 @@ class VisionProvider:
                     line += f"；最近捕获错误: {err}"
             parts.append(line)
         text = "[视觉] 活跃视觉源 —— " + "；".join(parts)
-        if buffer.last_change_at:
-            text += f"；最近画面变化于 {max(0, int(time.time() - buffer.last_change_at))} 秒前"
+        last_change = max((frame.captured_at for src, frame in buffer.latest_by_source.items() if src in active), default=0)
+        if last_change:
+            text += f"；最近画面变化于 {max(0, int(time.time() - last_change))} 秒前"
 
-        # 变化驱动：全局最新帧自上次注入未变则不重复携带图片
-        media = []
-        latest = buffer.latest
-        if latest is not None and latest.path != self._last_injected_path:
-            media = [ContextMedia.image(latest.path)]
-            self._last_injected_path = latest.path
+        identity = (scope, request_trace().get("request_id", ""))
+        seen = self._seen.setdefault(identity, {})
+        self._seen.move_to_end(identity)
+        while len(self._seen) > 200:
+            self._seen.popitem(last=False)
+        frames = sorted(
+            (frame for src, frame in buffer.latest_by_source.items() if src in active),
+            key=lambda frame: frame.captured_at, reverse=True,
+        )
+        changed = [frame for frame in frames if seen.get(frame.source) != (frame.path, frame.captured_at)][:3]
+        media = [ContextMedia.image(frame.path) for frame in changed]
+        for frame in changed:
+            seen[frame.source] = (frame.path, frame.captured_at)
+            text += f"\n{frame.source} " + tag_label("media_type", "image") + tag_label("media_path", frame.path)
+        if changed:
             self._last_media_inject = {
-                "at": time.time(), "source": latest.source, "path": latest.path,
+                "at": time.time(), "source": changed[0].source, "path": changed[0].path,
+                "scope": scope, "sources": [frame.source for frame in changed],
             }
         self._last_text_inject_at = time.time()
         return ProviderSnapshot(content=text, media=media, ready=True)

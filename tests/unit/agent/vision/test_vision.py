@@ -192,6 +192,62 @@ class TestTools:
 
 
 class TestContextProvider:
+    async def test_parallel_scopes_and_new_requests_each_receive_frames(self, fake_hash):
+        import asyncio
+
+        from agent.vision.context import VisionProvider
+        from core.tool_context import tool_request
+
+        await get_vision_buffer().ingest("/tmp/fake_1.jpg", "fake")
+        provider = VisionProvider()
+
+        async def observe(scope):
+            with tool_request(scope):
+                first = await provider.provide(scope)
+                again = await provider.provide(scope)
+                assert first and len(first.media) == 1
+                assert "[media_type:image][media_path:/tmp/fake_1.jpg]" in first.content
+                assert again and not again.media
+
+        await asyncio.gather(observe("user_qq:1"), observe("user_webui:1"))
+        await observe("user_qq:1")
+
+    async def test_disabled_newest_does_not_hide_enabled_frame(self, fake_hash):
+        from agent.vision.context import VisionProvider
+        from services.vision import VisionServiceFacade
+        await get_vision_buffer().ingest("/tmp/fake_1.jpg", "active")
+        await get_vision_buffer().ingest("/tmp/fake_2.jpg", "disabled")
+        framework_mod.set_enabled("disabled", False)
+        snapshot = await VisionProvider().provide("scope")
+        assert snapshot and len(snapshot.media) == 1
+        assert "fake_1.jpg" in snapshot.content and "fake_2.jpg" not in snapshot.content
+        status = VisionServiceFacade().status()
+        assert set(status["frames"]) == {"active"}
+        assert status["latest"]["source"] == "active"
+
+    async def test_static_receiving_source_remains_active(self, fake_hash):
+        from agent.vision.context import VisionProvider
+        buffer = get_vision_buffer()
+        await buffer.ingest("/tmp/fake_1.jpg", "static", captured_at=time.time() - 700)
+        await buffer.ingest("/tmp/fake_1.jpg", "static")
+        snapshot = await VisionProvider().provide("scope")
+        assert snapshot and snapshot.media
+
+    async def test_frame_batch_and_request_history_are_bounded(self, fake_hash):
+        from agent.vision.context import VisionProvider
+        provider = VisionProvider()
+        for i in range(5):
+            await get_vision_buffer().ingest("/tmp/fake_1.jpg", f"source_{i}")
+        first = await provider.provide("scope")
+        second = await provider.provide("scope")
+        third = await provider.provide("scope")
+        assert first and len(first.media) == 3
+        assert second and len(second.media) == 2
+        assert third and not third.media
+        for i in range(210):
+            await provider.provide(f"scope_{i}")
+        assert len(provider._seen) == 200
+
     async def test_no_active_source_no_injection(self) -> None:
         from agent.vision.context import VisionProvider
         provider = VisionProvider()

@@ -32,6 +32,7 @@ class _FakeClientConfig:
         extra_body: dict | None = None,
     ) -> None:
         self.name = name
+        self.enabled = True
         self.api_type = api_type
         self.model = model
         self.base_url = "https://example.com/v1"
@@ -126,9 +127,18 @@ def test_auto_falls_back_to_supported_provider() -> None:
 
 def test_auto_raises_when_no_compatible_client() -> None:
     manager = _FakeManager({}, [])
-    manager.get_default = lambda: None  # type: ignore[method-assign]
     with pytest.raises(CogneeConfigError, match="没有可用的 cognee 兼容"):
         resolve_chat_llm_config(CogneeChatModelConfig().normalized(), manager)
+
+
+def test_auto_skips_disabled_chat_models() -> None:
+    manager = _manager()
+    manager._clients["sf-chat"].config.enabled = False
+    payload = resolve_chat_llm_config(CogneeChatModelConfig(), manager)
+    assert payload["llm_provider"] == "custom"
+    manager._clients["qwen-thinking"].config.enabled = False
+    with pytest.raises(CogneeConfigError, match="没有可用的 cognee 兼容"):
+        resolve_chat_llm_config(CogneeChatModelConfig(), manager)
 
 
 def test_model_source_pins_client_and_json_mode_fallback() -> None:

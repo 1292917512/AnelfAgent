@@ -1,4 +1,8 @@
-"""实体系统自省工具 — 查询实体目录和方法详情。"""
+"""实体系统自省工具 — 查询实体目录和方法详情。
+
+Model Experience：方法详情复用执行端 JSON Schema，模糊查询歧义返回候选。
+按需结果增加嵌套参数约束，减少参数试错；不修改稳定提示词与缓存前缀。
+"""
 
 from __future__ import annotations
 
@@ -100,20 +104,8 @@ def list_entity_methods(group: str) -> str:
 
         description = EntityRegistry.get_group_description(group)
         methods = []
-        for t in tools:
-            params_info = []
-            for p in t.meta.get("params", []):
-                params_info.append({
-                    "name": p.name,
-                    "type": p.type,
-                    "required": p.required,
-                    "description": p.description,
-                })
-            methods.append({
-                "name": t.name,
-                "description": t.description,
-                "params": params_info,
-            })
+        for schema in EntityRegistry.get_tool_schema_by_names([tool.name for tool in tools]):
+            methods.append(schema["function"])
 
         return json.dumps({
             "group": group,
@@ -216,6 +208,11 @@ def get_entity_config(entity_name: str) -> str:
                 return tool_error(f"未找到实体 '{entity_name}' 或该实体无配置",
                                   cause=ErrorCause.NOT_FOUND, retryable=False,
                                   hint="可用 list_config_groups 按分类浏览全部配置")
+            groups = sorted({e.config_group for e in with_config})
+            if len(groups) > 1:
+                return tool_error(f"'{entity_name}' 匹配多个配置组", cause=ErrorCause.PARAM,
+                                  retryable=False, candidates=groups,
+                                  hint="用 candidates 中的完整配置组名重新查询")
             metadata = with_config[0]
 
         return json.dumps({
@@ -291,6 +288,10 @@ def get_entity_status(entity_name: str = "") -> str:
                 return tool_error(f"未找到实体 '{entity_name}'",
                                   cause=ErrorCause.NOT_FOUND, retryable=False,
                                   hint="可用 query_entities 搜索可用实体")
+            if len(results) > 1:
+                return tool_error(f"'{entity_name}' 匹配多个实体", cause=ErrorCause.PARAM,
+                                  retryable=False, candidates=[e.name for e in results[:20]],
+                                  hint="用 candidates 中的完整实体名重新查询")
             metadata = results[0]
 
         info: Dict[str, Any] = {

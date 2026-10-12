@@ -8,6 +8,8 @@ export interface CapabilityStatus {
     details: Record<string, Record<string, unknown>>;
   }[];
   chains: Record<string, string[]>;
+  overrides: Record<string, string[]>;
+  defaults: Record<string, string[]>;
 }
 
 export interface VisionSourceInfo {
@@ -194,10 +196,19 @@ export interface VisionSourceStatus {
 }
 
 /** GET /vision/status 的视觉系统状态 */
+export interface VisionFrameInfo {
+  path: string;
+  source: string;
+  captured_at: number;
+  width: number;
+  height: number;
+}
+
 export interface VisionStatus {
   watching: string[];
   sources: Record<string, VisionSourceStatus>;
-  latest?: { path: string; source: string; captured_at: number } | null;
+  latest?: VisionFrameInfo | null;
+  frames: Record<string, VisionFrameInfo>;
   last_change_at?: number | null;
   injection?: {
     provider: string;

@@ -30,14 +30,20 @@ class VisionServiceFacade:
     """视觉页签的数据聚合（监视状态 + 源清单 + 帧推送 + 注入情况）。"""
 
     def status(self) -> Dict[str, Any]:
+        from agent.vision.framework import is_enabled
+
         buffer = get_vision_buffer()
+        available = {source: frame for source, frame in buffer.latest_by_source.items() if is_enabled(source)}
+        latest_frame = max(available.values(), key=lambda frame: frame.captured_at, default=None)
+        frames = {source: {"path": frame.path, "source": source, "captured_at": frame.captured_at,
+                           "width": frame.width, "height": frame.height}
+                  for source, frame in available.items()}
+        latest = frames.get(latest_frame.source) if latest_frame else None
         return {
             **get_vision_watcher().status(),
-            "latest": {
-                "path": buffer.latest.path, "source": buffer.latest.source,
-                "captured_at": buffer.latest.captured_at,
-            } if buffer.latest else None,
-            "last_change_at": buffer.last_change_at or None,
+            "latest": latest,
+            "frames": frames,
+            "last_change_at": latest["captured_at"] if latest else None,
             "injection": self.injection_status(),
         }
 
@@ -73,8 +79,15 @@ class VisionServiceFacade:
 
     def latest_frame(self, source: str = "") -> Optional[str]:
         """最新一帧的文件路径（source 指定源；不存在/文件已删返回 None）。"""
+        from agent.vision.framework import is_enabled
+
         buffer = get_vision_buffer()
-        frame = buffer.latest_by_source.get(source) if source else buffer.latest
+        if source and not is_enabled(source):
+            return None
+        frame = buffer.latest_by_source.get(source) if source else max(
+            (frame for name, frame in buffer.latest_by_source.items() if is_enabled(name)),
+            key=lambda frame: frame.captured_at, default=None,
+        )
         if frame is None or not os.path.isfile(frame.path):
             return None
         return frame.path

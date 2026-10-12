@@ -3,16 +3,20 @@ import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge, Button, ConfirmDialog, toast } from "@/components/ui";
 import { ServerCog, Zap } from "lucide-react";
+import { apiErrorMessage } from "@/lib/api";
+import { QueryError } from "@/components/common/AsyncState";
 import { audiosyncApi } from "./api";
 const GPU_WORKERS = ["moss", "asr", "diarize", "embedder"] as const;
 
 export default function ServiceStatus() {
   const { t } = useTranslation("audiosync");
   const queryClient = useQueryClient();
-  const { data: funasr } = useQuery({
+  const serviceQuery = useQuery({
     queryKey: ["funasrStatus"],
     queryFn: () => audiosyncApi.funasrStatus().then((r) => r.data),
+    throwOnError: false,
   });
+  const funasr = serviceQuery.data;
   const funasrCheck = useMutation({
     mutationFn: () => audiosyncApi.funasrStatus(true).then((r) => r.data),
     onSuccess: (data) => {
@@ -28,30 +32,30 @@ export default function ServiceStatus() {
     enabled: Boolean(funasr?.reachable),
     refetchInterval: 15_000,
     retry: false,
+    throwOnError: false,
   });
   const [unloadAllOpen, setUnloadAllOpen] = useState(false);
   const gpuUnload = useMutation({
     mutationFn: (targets?: string[]) => audiosyncApi.gpuUnload(targets).then((r) => r.data),
     onSuccess: (data) => {
       setUnloadAllOpen(false);
-      const failed = Object.entries(data).filter(([, v]) => v.error);
+      const failed = Object.entries(data).filter(([, v]) => v.error || v.ok === false);
       if (failed.length) {
-        toast.error(failed.map(([k, v]) => `${k}: ${v.error}`).join("; "));
+        toast.error(failed.map(([k, v]) => `${k}: ${v.error || t("operationFailed")}`).join("; "));
       } else {
         toast.success(t("gpu.unloaded"));
       }
       queryClient.invalidateQueries({ queryKey: ["funasrGpu"] });
     },
     onError: (e: unknown) => {
-      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      toast.error(detail || t("operationFailed"));
+      toast.error(apiErrorMessage(e, t("operationFailed")));
     },
   });
 
   return <>
       {/* FunASR 转写服务（只读状态；地址配置在 模型页 → 组件凭据） */}
-      <div className="rounded-md border border-border bg-card p-4 space-y-2">
-        <div className="flex items-center gap-2">
+      <div className="rounded-xl border border-border bg-card p-4 space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
           <ServerCog size={15} className="text-accent" />
           <span className="text-sm font-semibold text-heading">{t("funasr.title")}</span>
           {funasr && (
@@ -81,32 +85,34 @@ export default function ServiceStatus() {
         )}
         <p className="text-[11px] text-muted">{t("funasr.modelNote")}</p>
       </div>
+      {serviceQuery.isError && <QueryError compact error={serviceQuery.error} retry={() => void serviceQuery.refetch()} />}
+      {funasrCheck.isError && <p role="alert" className="text-sm text-danger">{apiErrorMessage(funasrCheck.error, t("operationFailed"))}</p>}
 
       {/* GPU 模型显存（voicehub 模型层启停；释放后下次推理自动重载） */}
-      <div className="rounded-md border border-border bg-card p-4 space-y-2">
-        <div className="flex items-center gap-2">
+      <div className="rounded-xl border border-border bg-card p-4 space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
           <Zap size={15} className="text-accent" />
           <span className="text-sm font-semibold text-heading">{t("gpu.title")}</span>
           <Button
             size="sm"
             variant="secondary"
             className="ml-auto"
-            disabled={gpuQuery.isError || gpuUnload.isPending}
+            disabled={!funasr?.reachable || !gpuQuery.isSuccess || gpuQuery.isFetching || gpuUnload.isPending || !GPU_WORKERS.some((key) => gpuQuery.data?.[key]?.loaded === true)}
             onClick={() => setUnloadAllOpen(true)}
           >
             {t("gpu.unloadAll")}
           </Button>
         </div>
         <p className="text-xs text-muted">{t("gpu.hint")}</p>
-        {gpuQuery.isError ? (
+        {!funasr?.reachable ? <p className="text-xs text-muted">{t("gpu.unavailable")}</p> : gpuQuery.isPending ? <p role="status" className="text-xs text-muted">{t("common:loading")}</p> : gpuQuery.isError ? (
           <p className="text-xs text-muted">{t("gpu.unsupported")}</p>
         ) : (
           <div className="space-y-1.5">
             {GPU_WORKERS.map((key) => {
               const worker = gpuQuery.data?.[key];
-              const loaded = Boolean(worker?.loaded);
+              const loaded = worker?.loaded;
               return (
-                <div key={key} className="flex items-center gap-3 rounded-md bg-elevated px-3 py-2">
+                <div key={key} className="flex flex-wrap items-center gap-3 rounded-lg bg-elevated px-3 py-2">
                   <span className="text-sm text-foreground">{t(`gpu.worker.${key}`)}</span>
                   {worker?.model && (
                     <span className="text-[11px] text-muted font-mono">{worker.model}</span>
@@ -115,7 +121,7 @@ export default function ServiceStatus() {
                     <span className="text-[11px] text-muted">{worker.vram_gb.toFixed(1)} GB</span>
                   )}
                   <Badge variant={loaded ? "ok" : "neutral"}>
-                    {loaded ? t("gpu.loaded") : t("gpu.released")}
+                    {t(loaded === true ? "gpu.loaded" : loaded === false ? "gpu.released" : "gpu.unknown")}
                   </Badge>
                   {loaded && (
                     <Button
@@ -123,6 +129,7 @@ export default function ServiceStatus() {
                       variant="ghost"
                       className="ml-auto"
                       loading={gpuUnload.isPending}
+                      disabled={gpuQuery.isFetching || !funasr?.reachable}
                       onClick={() => gpuUnload.mutate([key])}
                     >
                       {t("gpu.release")}

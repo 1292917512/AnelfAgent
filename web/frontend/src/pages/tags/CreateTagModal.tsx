@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { Plus } from "lucide-react";
 import { Button, Input, Modal, Textarea } from "@/components/ui";
+import { apiErrorMessage } from "@/lib/api";
 
 export interface TagFormState {
   name: string;
@@ -15,6 +16,7 @@ export function CreateTagModal({
   setForm,
   pending,
   onSubmit,
+  error,
 }: {
   open: boolean;
   onClose: () => void;
@@ -22,6 +24,7 @@ export function CreateTagModal({
   setForm: (f: TagFormState) => void;
   pending: boolean;
   onSubmit: () => void;
+  error?: unknown;
 }) {
   const { t } = useTranslation("tags");
   return (
@@ -54,8 +57,10 @@ export function CreateTagModal({
     >
       <div className="space-y-4">
         <div>
-          <label className="block text-xs font-medium text-muted mb-1">{t("tagName")}</label>
+          <label htmlFor="tag-name" className="block text-xs font-medium text-muted mb-1">{t("tagName")}</label>
           <Input
+            id="tag-name"
+            disabled={pending}
             value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
             placeholder={t("tagNamePlaceholder")}
@@ -64,8 +69,10 @@ export function CreateTagModal({
           <p className="text-[10px] text-muted mt-1">{t("tagNameHint")}</p>
         </div>
         <div>
-          <label className="block text-xs font-medium text-muted mb-1">{t("tagDescription")}</label>
+          <label htmlFor="tag-description" className="block text-xs font-medium text-muted mb-1">{t("tagDescription")}</label>
           <Textarea
+            id="tag-description"
+            disabled={pending}
             value={form.description}
             onChange={(e) => setForm({ ...form, description: e.target.value })}
             placeholder={t("tagDescriptionPlaceholder")}
@@ -77,10 +84,11 @@ export function CreateTagModal({
           <div className="p-2.5 rounded-md bg-secondary border border-border">
             <p className="text-[10px] text-muted mb-1">{t("preview")}</p>
             <code className="text-xs font-mono text-heading">
-              [{form.name}:{t("previewValue")}]
+              {/^[a-z0-9_]+$/.test(form.name) ? "[" + form.name + ":" + t("previewValue") + "]" : form.name}
             </code>
           </div>
         )}
+        {!!error && <p role="alert" className="text-sm text-danger">{apiErrorMessage(error, t("common:requestFailed"))}</p>}
       </div>
     </Modal>
   );

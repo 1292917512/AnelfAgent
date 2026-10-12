@@ -29,6 +29,7 @@ export interface AudioProviderInfo {
   priority: number;
   available: boolean;
   hint?: string;
+  state?: "ready" | "unavailable" | "timeout" | "error";
 }
 
 export interface AudioInjectionStatus {
@@ -48,7 +49,7 @@ export interface AudioStatus {
   providers: AudioProviderInfo[];
   asr_available: boolean;
   voiceprint_available: boolean;
-  tts_providers: Array<{ name: string; priority: number; available: boolean }>;
+  tts_providers: Array<Omit<AudioProviderInfo, "kind">>;
   tts_available: boolean;
   realtime: {
     enabled: boolean; mode: string; sessions: number;

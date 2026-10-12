@@ -293,7 +293,8 @@
   "kind": {
     "asr": "转写（ASR）",
     "asr_stream": "流式转写（实时通话）",
-    "voiceprint": "声纹提取"
+    "voiceprint": "声纹提取",
+    "tts": "语音合成"
   },
   "channels": {
     "mic": "麦克风",
@@ -317,7 +318,11 @@
       "no_speech": "无语音",
       "error": "失败",
       "pending": "处理中"
-    }
+    },
+    "browse": "浏览记录",
+    "collapse": "收起",
+    "onDemand": "按需加载录制记录，查看转写数量、处理状态与失败原因。",
+    "more": "加载更多"
   },
   "voiceConfig": {
     "voice_silence_ms": "静音判段阈值（毫秒）",
@@ -325,5 +330,17 @@
     "voice_max_utterance_s": "单段语音最长时长（秒）",
     "voice_vad_floor_min": "端点检测噪声地板下限（RMS）"
   },
-  "matchSummary": "{{count}}次/{{seconds}}s"
+  "matchSummary": "{{count}}次/{{seconds}}s",
+  "providersTitle": "声音提供者",
+  "providersHint": "查看实际连通状态；探测异常时可刷新重试。",
+  "unavailable": "暂不可用",
+  "tts": "语音合成",
+  "providerState": {
+    "ready": "就绪",
+    "unavailable": "不可用",
+    "timeout": "探测超时",
+    "error": "探测失败"
+  },
+  "audioPath": "服务端音频路径",
+  "analyzeUnavailable": "需要可用的转写提供者才能解析文件。"
 }

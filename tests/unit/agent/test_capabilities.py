@@ -81,6 +81,28 @@ class TestChainSemantics:
 
 
 class TestChainRouting:
+    async def test_failure_payload_falls_back_without_claiming_success(self, router):
+        router.register(_FakeProvider("models", frozenset({"tts"}), result={"error": "HTTP 503"}))
+        router.register(_FakeProvider("minimax", frozenset({"tts"}), result={"audio": "ok"}))
+        result = await router.run("tts", "语音合成")
+        assert result["success"] is True
+        assert result["provider"] == "minimax"
+        assert result["fallback_from"] == ["models"]
+
+    @pytest.mark.parametrize("explicit,unknown", [(True, False), (False, True)])
+    async def test_explicit_failure_or_unknown_outcome_does_not_replay(self, router, explicit, unknown):
+        payload = {"success": False, "error": "job status unavailable", "job_id": "job-1"}
+        if unknown:
+            payload["outcome"] = "unknown"
+        router.register(_FakeProvider("models", frozenset({"video"}), result=payload))
+        fallback = _FakeProvider("minimax", frozenset({"video"}))
+        router.register(fallback)
+        result = await router.run("video", "生成", provider="models" if explicit else "auto")
+        assert result["success"] is False
+        assert result["job_id"] == "job-1"
+        assert result["capability"] == "video"
+        assert fallback.calls == []
+
     async def test_primary_success(self, router):
         models = _FakeProvider("models", frozenset({"tts"}), result={"audio": 1})
         minimax = _FakeProvider("minimax", frozenset({"tts"}))
@@ -197,6 +219,16 @@ class TestErrorAggregation:
 
 
 class TestStatus:
+    def test_automatic_chains_remain_distinct_from_overrides(self, router, monkeypatch):
+        from core.config import ConfigManager
+        monkeypatch.setattr(ConfigManager, "get", staticmethod(lambda k, d=None: {"tts": ["minimax", "minimax"]}))
+        router.register(_FakeProvider("models", frozenset({"tts", "music"})))
+        router.register(_FakeProvider("minimax", frozenset({"tts"})))
+        status = router.status(["tts", "music"])
+        assert status["overrides"] == {"tts": ["minimax"]}
+        assert status["defaults"]["tts"] == ["models", "minimax"]
+        assert status["chains"]["tts"] == ["minimax"]
+
     def test_status_reports_providers_and_chains(self, router):
         router.register(_FakeProvider("models", frozenset({"tts", "music"}), configured=True))
         router.register(_FakeProvider("minimax", frozenset({"tts"}), configured=False))

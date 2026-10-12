@@ -14,7 +14,8 @@
     "auto": "自动",
     "activeNow": "生效",
     "noneAvailable": "无可用提供者",
-    "autoDesc": "按优先级使用首个 已启用 + 已配置凭据 的提供者"
+    "autoDesc": "按优先级使用首个 已启用 + 已配置凭据 的提供者",
+    "missing": "已移除的提供者"
   },
   "provider": {
     "enable": "启用",
@@ -33,7 +34,12 @@
     "keyPlaceholderSet": "已保存凭据，输入新 Key 更换",
     "keyPlaceholderEmpty": "输入 API Key",
     "saveKey": "保存",
-    "clearKey": "清除"
+    "clearKey": "清除",
+    "title": "提供者",
+    "count": "{{ready}} / {{total}} 已配置并启用",
+    "toggle": "启用 {{name}}",
+    "manage": "配置与连通测试",
+    "credential": "访问凭据"
   },
   "test": {
     "run": "测试",
@@ -43,7 +49,10 @@
       "reader": "测试 URL（可选）",
       "repo": "owner/repo（可选）"
     },
-    "failed": "测试失败"
+    "failed": "测试失败",
+    "title": "连通测试",
+    "capability": "测试能力",
+    "input": "测试内容"
   },
   "settings": {
     "proxy": "网页抓取代理",

@@ -51,7 +51,9 @@ audiosync/dashscope 实体时按需阅读；实时通话链路见[实时语音�
 
 - **实体关联**：`speakers.entity_scope` 绑定（speaker_bind AI/Web 双面，user:/group:/agent: 前缀
   校验）双向可查；片段查询结果 JOIN 携带 entity_scope——AI 检索话语即知「这是哪个实体说的」；
-  每轮注入「声纹关联实体」清单（有声纹绑定时）
+  动态上下文以编号、姓名与 `speaker_scope` 标签合并呈现身份，避免姓名及绑定重复注入。
+  待确认/未读计数优先，仍受 300 token 预算约束；身份摘要按写失效缓存，未变时不查库。
+  登记清单与当前发声事实分别描述，不将已登记身份推断为当前说话人。
 - **speaker_scope 标签召回**（`core/tags.py` + `recollection._speaker_scopes`）：通话中声纹命中且
   说话人绑定了实体时，标注追加机器可解析的 `[speaker_scope:user:qq:456]`；召回层解析并归一为
   权威 entity_scope 格式（绑定格式 ↔ 思维层 scope 方言的单点转换）——**私聊/通话同样生效**，
@@ -64,6 +66,9 @@ audiosync/dashscope 实体时按需阅读；实时通话链路见[实时语音�
   （speaker_merge）
 - **格式纪律**：音频库绑定用 `user:qq:123`（记忆图谱节点 key 同族），思维层 scope 用
   `user_qq:123`，转换只发生在 `_speaker_scopes` 单点
+
+声音状态面并发探测 ASR、声纹和 TTS 提供者，每个探测独立限时；超时仅代表健康探测未完成，
+不改变真实能力调用的超时配置。录制记录按需分页加载，模块操作继续通过贡献点挂载。
 
 ## 音色预设制
 

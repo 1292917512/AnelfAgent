@@ -89,6 +89,13 @@ SDK 可导入 `RecallPolicy`、`recall_options`、`set_turn_recall_policy`。
 
 ## cognee 集成与写盘防护
 
+Cognee 默认安装并启用：依赖由 `uv sync` 按锁文件安装，默认使用本地 SQLite / Ladybug / LanceDB。
+聊天与 Embedding 模型默认从模型管理映射，也可在 Web 的 Cognee 面板单独配置。
+配置未齐时客户端返回 `configuration_required=true`，不导入 Cognee、不回落到库的隐式模型；
+协调器在就绪前不认领同步队列，记录保持 pending，不消耗重试次数。首次配置完成后后台循环自动恢复，
+Cognee 面板保存配置则即时重映射。既有 `enabled=false` 保留，图谱抽取与向量化按所选模型计费。
+客户端初始化串行执行；导入期间发生配置变更时重新解析最新配置，避免后台同步与召回重复初始化或应用旧配置。
+
 | 机制 | 位置 | 说明 |
 |------|------|------|
 | 投影内容指纹跳过 | `store/_shared.py::projection_content_hash` + `cognee_queue.enqueue_sync` | 防记忆写入风暴打爆磁盘写盘配额。`cognee_entry_map` 的 content_hash（type/content/source/metadata/tags 的 canonical sha256，**刻意不含 importance**——召回强化/松弛回归不再触发重投影）一致 → 不入队；在途 processing 批次持有更新负载时不跳过（防「改 B→回退 A」竞态）；`enqueue_backfill` 走 force=True 保持显式修复语义。graph_node 载荷消费时渲染邻域文档 + **结构指纹**（节点身份 + 各边谓词/方向/对端，不含强度与证据文本）——重复提及的强化/证据刷新不触发整篇重投影 |

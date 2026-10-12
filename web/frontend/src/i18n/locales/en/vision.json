@@ -29,7 +29,8 @@
     "active": "Injecting",
     "inactive": "Inactive",
     "lastMedia": "Last frame injected",
-    "lastText": "Last status injected"
+    "lastText": "Last status injected",
+    "hint": "Images are attached on first observation in a run or when a frame changes. Sessions track observations independently; status is supplied in dynamic context."
   },
   "sourceDisabled": "Disabled",
   "watching": "Watching",
@@ -58,7 +59,9 @@
     "empty": "No presets yet",
     "namePlaceholder": "Preset name",
     "descPlaceholder": "Style description (appended to the prompt)",
-    "add": "Add"
+    "add": "Add",
+    "remove": "Delete preset {{name}}",
+    "duplicate": "This preset name already exists. Choose another name."
   },
   "face": {
     "tabs": {
@@ -200,5 +203,13 @@
     },
     "matchCount": "{{count}}×",
     "facesCount": "{{count}} faces"
-  }
+  },
+  "previewSource": "Preview source",
+  "followLatest": "Follow latest frame",
+  "previewUnavailable": "Frame unavailable. Refresh or wait for the next frame.",
+  "perceptionStatus": "Perception status",
+  "lastChange": "Last frame change",
+  "toggleSource": "Enable {{name}}",
+  "idle": "Idle",
+  "noSources": "No vision sources. Enable an entity that provides visual input to view it here."
 }

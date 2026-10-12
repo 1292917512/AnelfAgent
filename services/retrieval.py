@@ -110,9 +110,13 @@ class RetrievalServiceFacade:
             summary, excerpt = self._run_capability_test(provider, cap, user_input.strip())
         except Exception as e:
             log(f"提供者能力测试失败 [{name}/{cap}]: {e}", "WARNING", tag="检索")
-            return {"ok": False, "error": sanitize_text(str(e))[:500]}
+            return {"ok": False, "error": sanitize_text(str(e).strip() or type(e).__name__)[:500],
+                    "provider": name, "capability": cap,
+                    "latency_ms": int((time.monotonic() - started) * 1000)}
         return {
             "ok": True,
+            "provider": name,
+            "capability": cap,
             "latency_ms": int((time.monotonic() - started) * 1000),
             "summary": summary,
             "excerpt": excerpt,
@@ -131,11 +135,15 @@ class RetrievalServiceFacade:
         )
         if capability == CAP_SEARCH and isinstance(provider, SearchCap):
             output = provider.search(user_input or "今日新闻", 3)
+            if output.get("error") or output.get("success") is False:
+                raise ValueError(output.get("error") or "提供者返回失败")
             refs = output.get("references", [])
             excerpt = "\n".join(f"{r.get('title', '')} — {r.get('url', '')}" for r in refs[:3])
             return f"{output.get('sources', 0)} 条结果", excerpt
         if capability == CAP_READER and isinstance(provider, ReaderCap):
             output = provider.read(user_input or "https://example.com", timeout=20)
+            if output.get("error") or output.get("success") is False:
+                raise ValueError(output.get("error") or "提供者返回失败")
             content = str(output.get("content", ""))
             return str(output.get("title") or output.get("url", "")), content[:300]
         if capability == CAP_REPO and isinstance(provider, RepoCap):

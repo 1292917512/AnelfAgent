@@ -94,6 +94,7 @@ export interface CogneeStatus {
     installed: boolean;
     enabled: boolean;
     ready: boolean;
+    configuration_required: boolean;
     version: string;
     reason: string;
   };
@@ -258,4 +259,7 @@ export interface UnifiedTag {
   description: string;
   builtin: boolean;
   sources: Array<"message" | "tool" | "custom">;
+  tool_count: number;
+  tools: string[];
+  message_key: boolean;
 }

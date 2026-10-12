@@ -20,8 +20,12 @@ export const visionApi = {
   sources: () => api.get<{ sources: VisionSourceInfo[] }>("/vision/sources"),
   watch: (action: string, source = "screen", interval = 0) =>
     api.post<{ watching: string[] }>("/vision/watch", { action, source, interval }),
-  latestUrl: (source = "") =>
-    `/api/vision/latest${source ? `?source=${encodeURIComponent(source)}` : ""}`,
+  latestUrl: (source = "", revision = "") => {
+    const params = new URLSearchParams();
+    if (source) params.set("source", source);
+    if (revision) params.set("v", revision);
+    return `/api/vision/latest${params.size ? `?${params}` : ""}`;
+  },
   capabilities: () => api.get<CapabilityStatus>("/vision/capabilities"),
 };
 

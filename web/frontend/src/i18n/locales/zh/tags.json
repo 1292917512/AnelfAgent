@@ -1,12 +1,12 @@
 {
-  "title": "标签系统",
-  "subtitle": "统一管理消息上下文标签与工具路由标签，两者共享同一套注册表",
-  "searchPlaceholder": "搜索标签名称或描述...",
+  "title": "标签",
+  "subtitle": "区分消息中的结构化标记与工具路由标签，查看用途及关联工具。",
+  "searchPlaceholder": "搜索标签、描述或关联工具…",
   "createTag": "创建标签",
   "createTagTitle": "创建自定义标签",
   "tagName": "标签名称",
   "tagNamePlaceholder": "如: urgent, custom_event",
-  "tagNameHint": "只能包含小写字母、数字、下划线、连字符、冒号",
+  "tagNameHint": "小写字母、数字、下划线可作消息标记；包含冒号或连字符的名称仅用于工具路由。",
   "tagDescription": "标签描述",
   "tagDescriptionPlaceholder": "描述该标签代表的含义...",
   "deleteConfirm": "确认删除标签「{{name}}」？",
@@ -34,5 +34,16 @@
   "noAvailableTags": "所有标签均已选中",
   "goCreateTag": "前往标签系统创建新标签",
   "preview": "预览",
-  "previewValue": "值"
+  "previewValue": "值",
+  "filterLabel": "按用途筛选",
+  "filters": {
+    "all": "全部",
+    "message": "消息标记",
+    "tool": "工具路由",
+    "custom": "自定义"
+  },
+  "deleteNamed": "删除标签 {{name}}",
+  "inUse": "仍有关联工具，请先调整工具标签。",
+  "routingHint": "工具发现与能力分组使用的路由标签。",
+  "linkedTools": "关联 {{count}} 个工具"
 }

@@ -4,6 +4,11 @@ AI 每轮推理时即可感知"音频库里有哪些已确认说话人、谁的�
 哪个实体画像、有多少待确认新声纹、有多少条未读语音记录"，无需主动
 调用工具就能自然地引用音频库。摘要走 store 内存缓存（写路径置脏），
 稳态零 I/O。
+
+Model Experience：
+- 模型看到身份编号、名称、speaker_scope 绑定及待处理计数，工具按编号精确查询。
+- 名称与绑定只渲染一次，总预算仍为 300 token；待处理计数优先。
+- 位于工具链后的动态区，摘要未变时复用内存，不改稳定前缀。
 """
 
 from __future__ import annotations
@@ -11,6 +16,7 @@ from __future__ import annotations
 from typing import Optional
 
 from core.context_provider import ProviderSnapshot, context_provider
+from core.tags import tag_label
 
 from .store import get_audio_store
 
@@ -25,20 +31,13 @@ class AudioStatusProvider:
     async def provide(self, scope: str) -> Optional[ProviderSnapshot]:
         store = get_audio_store()
         summary = await store.summary()
-        names = summary["confirmed_names"]
-        bindings = summary.get("entity_bindings", [])
+        identities = summary["identities"]
         pending = summary["pending_count"]
         unread = summary["unread_count"]
-        if not names and not pending and not unread:
+        if not identities and not pending and not unread:
             return None
 
         lines = []
-        if names:
-            lines.append(f"[音频库] 已登记说话人 {len(names)} 人: {', '.join(names)}")
-        if bindings:
-            lines.append(
-                f"[音频库] 声纹关联实体: {'；'.join(bindings)} —— "
-                f"语音检索/通话标注按此归属实体画像")
         parts = []
         if pending:
             parts.append(f"待确认新声纹 {pending} 人")
@@ -49,4 +48,11 @@ class AudioStatusProvider:
             lines.append(
                 f"[音频库] {hint} —— 可用 transcript_search / speaker_segments 检索，"
                 f"speaker_update 确认归属")
+        if identities:
+            roster = []
+            for identity in identities:
+                label = identity["name"] + (f"({identity['role']})" if identity["role"] else "")
+                binding = tag_label("speaker_scope", identity["entity_scope"]) if identity["entity_scope"] else ""
+                roster.append(f"#{identity['id']} {label}{binding}")
+            lines.append("[音频库] 近期登记身份（绑定关联实体画像，不代表当前正在说话）: " + "；".join(roster))
         return ProviderSnapshot(content="\n".join(lines), ready=True)

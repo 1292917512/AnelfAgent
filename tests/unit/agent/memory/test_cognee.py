@@ -2,16 +2,30 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import json
+import threading
 import time
+from collections.abc import Awaitable, Callable
+from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from agent.memory.cognee.client import CogneeClient
-from agent.memory.cognee.config import CogneeConfig
+from agent.memory.cognee.config import (
+    CogneeChatModelConfig,
+    CogneeConfig,
+    CogneeEmbeddingModelConfig,
+    load_cognee_config,
+)
 from agent.memory.cognee.coordinator import CogneeCoordinator
 from agent.memory.cognee.fusion import datasets_for_scope, reciprocal_rank_fusion
+from agent.memory.cognee.llm_bridge import CogneeConfigError
+from agent.memory.cognee.types import CogneeAvailability
 from agent.memory.memory_store import MemoryStore
 from agent.memory.memory_types import MemoryEntry, MemorySearchResult, MemoryType
 
@@ -33,8 +47,10 @@ class _FakeConfig:
         return None
 
 
-def _configure_without_models(client: CogneeClient):
-    async def configure(module) -> None:
+def _configure_without_models(
+    client: CogneeClient, module: SimpleNamespace,
+) -> Callable[[], Awaitable[None]]:
+    async def configure() -> None:
         client._module = module
         client._configured = True
 
@@ -68,7 +84,7 @@ async def test_client_normalizes_public_recall(monkeypatch, tmp_path) -> None:
         property(lambda _self: True),
     )
     monkeypatch.setattr(client, "_import_cognee", lambda: fake)
-    monkeypatch.setattr(client, "_configure", _configure_without_models(client))
+    monkeypatch.setattr(client, "_configure", _configure_without_models(client, fake))
 
     availability = await client.initialize()
     results = await client.recall("query")
@@ -104,7 +120,7 @@ async def test_list_datasets_degrades_when_database_not_created(monkeypatch, tmp
         property(lambda _self: True),
     )
     monkeypatch.setattr(client, "_import_cognee", lambda: fake)
-    monkeypatch.setattr(client, "_configure", _configure_without_models(client))
+    monkeypatch.setattr(client, "_configure", _configure_without_models(client, fake))
 
     await client.initialize()
 
@@ -174,9 +190,121 @@ def test_config_resolves_absolute_windows_storage_path(tmp_path) -> None:
     assert config.absolute_data_root == str(tmp_path.resolve())
 
 
+@pytest.mark.parametrize("saved", [None, {}, {"enabled": False}, {"enabled": True}])
+def test_config_defaults_on_and_preserves_explicit_choice(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, saved: dict[str, bool] | None,
+) -> None:
+    path = tmp_path / "cognee.json"
+    monkeypatch.setattr("core.path.ConfigPaths.COGNEE_CONFIG", str(path))
+    if saved is not None:
+        path.write_text(json.dumps(saved), encoding="utf-8")
+
+    config = load_cognee_config()
+
+    assert config.enabled is (saved or {}).get("enabled", True)
+    assert config.chat.source == config.embedding.source == "auto"
+
+
+@pytest.mark.asyncio
+async def test_client_waits_for_models_then_initializes_without_restart(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    client = CogneeClient(CogneeConfig(data_root=str(tmp_path / "cognee")))
+    fake = SimpleNamespace(__version__="1.6.2", config=_FakeConfig())
+
+    def import_cognee() -> SimpleNamespace:
+        client._module = fake
+        return fake
+
+    importer = Mock(side_effect=import_cognee)
+    chat = Mock(side_effect=CogneeConfigError("请配置聊天模型"))
+    embedding = Mock(return_value=None)
+    monkeypatch.setattr(CogneeClient, "installed", property(lambda _self: True))
+    monkeypatch.setattr("agent.llm.get_llm_manager", lambda: object())
+    monkeypatch.setattr("agent.memory.cognee.client.resolve_chat_llm_config", chat)
+    monkeypatch.setattr("agent.memory.cognee.client.resolve_embedding_llm_config", embedding)
+    monkeypatch.setattr(client, "_import_cognee", importer)
+    monkeypatch.setattr(client, "_sanitize_embedding_dimensions", lambda: None)
+
+    availability = await client.initialize()
+    assert availability.enabled and availability.configuration_required
+    assert not availability.ready
+    importer.assert_not_called()
+
+    chat.side_effect = None
+    chat.return_value = {"llm_provider": "openai", "llm_model": "test-chat"}
+    availability = await client.initialize()
+    assert availability.configuration_required
+    assert "Embedding" in availability.reason
+    importer.assert_not_called()
+    assert not (tmp_path / "cognee").exists()
+
+    embedding.return_value = {"embedding_provider": "openai", "embedding_model": "test-embed"}
+    availability = await client.initialize()
+    assert availability.ready and not availability.configuration_required
+    assert availability.reason == ""
+    importer.assert_called_once()
+    assert client.resolved_info["embedding"]["model"] == "test-embed"
+
+
+@pytest.mark.parametrize("reconfigure", [False, True])
+async def test_client_serializes_initialization_and_applies_latest_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, reconfigure: bool,
+) -> None:
+    def config(model: str) -> CogneeConfig:
+        return CogneeConfig(
+            data_root=str(tmp_path / model),
+            chat=CogneeChatModelConfig(source="custom", provider="openai", model=model),
+            embedding=CogneeEmbeddingModelConfig(source="custom", model="embedding"),
+        )
+
+    client = CogneeClient(config("initial"))
+    module = SimpleNamespace(config=Mock())
+    started = asyncio.Event()
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+    imports = []
+
+    def load() -> SimpleNamespace:
+        if client._module is None:
+            imports.append(True)
+            loop.call_soon_threadsafe(started.set)
+            if not release.wait(5):
+                raise TimeoutError("test import was not released")
+            client._module = module
+        return module
+
+    monkeypatch.setattr(CogneeClient, "installed", property(lambda _self: True))
+    monkeypatch.setattr("agent.llm.get_llm_manager", lambda: object())
+    monkeypatch.setattr(client, "_import_cognee", load)
+    monkeypatch.setattr(client, "_sanitize_embedding_dimensions", lambda: None)
+    first = asyncio.create_task(client.initialize())
+    second = asyncio.create_task(client.initialize())
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        if reconfigure:
+            client.reconfigure(config("updated"))
+        release.set()
+        results = await asyncio.wait_for(asyncio.gather(first, second), timeout=5)
+        assert all(result.ready for result in results)
+        assert len(imports) == 1
+        module.config.set_llm_config.assert_called_once()
+        payload = module.config.set_llm_config.call_args.args[0]
+        expected = "updated" if reconfigure else "initial"
+        assert payload["llm_model"] == expected
+        module.config.system_root_directory.assert_called_once_with(str(tmp_path / expected / "system"))
+    finally:
+        release.set()
+        for task in (first, second):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(first, second, return_exceptions=True)
+
+
 # ==================================================================
 # 同步 outbox（MemoryStore cognee 投影队列）
 # ==================================================================
+
 
 @pytest.mark.asyncio
 async def test_memory_write_and_projection_are_persisted_together(tmp_path) -> None:
@@ -298,11 +426,16 @@ async def test_reset_cognee_projection_clears_queue_and_mappings(tmp_path) -> No
 
 class _FakeCogneeClient:
     def __init__(self) -> None:
+        self.ready = True
         self.items: list[dict] = []
         self.deleted: list[tuple[str, str]] = []
 
-    async def initialize(self):
-        return SimpleNamespace(ready=True, reason="")
+    async def initialize(self) -> CogneeAvailability:
+        return CogneeAvailability(
+            installed=True, enabled=True, ready=self.ready,
+            configuration_required=not self.ready,
+            reason="" if self.ready else "请配置模型",
+        )
 
     async def make_data_item(self, data: str, *, label: str, external_metadata: dict):
         return {"data": data, "label": label, "external_metadata": external_metadata}
@@ -330,6 +463,49 @@ class _FakeCogneeClient:
 
     async def delete_data(self, dataset_id, data_id, **_kwargs):
         self.deleted.append((str(dataset_id), str(data_id)))
+
+
+@pytest.mark.asyncio
+async def test_worker_preserves_pending_until_models_are_ready(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, store: MemoryStore,
+) -> None:
+    store.set_cognee_projection_enabled(True)
+    memory_id = await store.add(MemoryEntry(memory_type=MemoryType.SEMANTIC, content="waiting"))
+    client = _FakeCogneeClient()
+    client.ready = False
+    coordinator = CogneeCoordinator(store, client, CogneeConfig(data_root=str(tmp_path)))
+    idle = asyncio.Event()
+    projected = asyncio.Event()
+    process_batch = coordinator._process_batch
+
+    async def mark_idle() -> None:
+        idle.set()
+
+    async def process_and_notify(batch: list[dict[str, Any]]) -> None:
+        await process_batch(batch)
+        projected.set()
+
+    claim = AsyncMock(wraps=store.claim_cognee_sync_batch)
+    monkeypatch.setattr(store, "claim_cognee_sync_batch", claim)
+    monkeypatch.setattr(coordinator, "_run_idle_job", mark_idle)
+    monkeypatch.setattr(coordinator, "_process_batch", process_and_notify)
+    monkeypatch.setattr(coordinator, "_maybe_compact", AsyncMock())
+    monkeypatch.setattr("agent.memory.cognee.coordinator.cognee_storage_stats.schedule_refresh", Mock())
+    try:
+        await coordinator.start()
+        await asyncio.wait_for(idle.wait(), timeout=5)
+        claim.assert_not_awaited()
+        status = await coordinator.status()
+        assert status.pending == 1 and status.failed == 0 and status.last_error == ""
+
+        client.ready = True
+        coordinator.wake()
+        await asyncio.wait_for(projected.wait(), timeout=5)
+        mapping = await store.get_cognee_mapping(memory_id)
+        assert mapping is not None
+        assert mapping["data_id"] == f"data-{memory_id}"
+    finally:
+        await coordinator.close()
 
 
 @pytest.mark.asyncio

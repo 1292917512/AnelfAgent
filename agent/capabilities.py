@@ -12,6 +12,9 @@
 - 显式指定 provider 不做隐式回退，不可用即报明原因；
 - 优先级链经配置键（JSON 字典 {能力: [provider 名]}）调整，留空/缺失时
   为默认链 + 已注册组件（注册顺序）。
+
+Model Experience：能力状态区分自动链与显式配置，失败结果保留提供者与能力归属。
+仅按需工具结果增加少量诊断字段，不注入提示词，不改变缓存前缀。
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ from typing import Any, Dict, List, Optional, Protocol, Tuple, runtime_checkable
 
 from core.log import log
 from core.registration import record_mapping
+from core.sanitizer import sanitize_text
 from core.tool_errors import ErrorCause
 
 
@@ -68,7 +72,7 @@ def error_payload(
     **context: Any,
 ) -> Dict[str, Any]:
     """构造与 core.tool_errors.tool_error 同构的错误 dict（路由内部 dict 流使用）。"""
-    payload: Dict[str, Any] = {"error": message}
+    payload: Dict[str, Any] = {"success": False, "error": message}
     if cause is not None:
         payload["cause"] = cause.value
     if hint:
@@ -157,7 +161,11 @@ class CapabilityRouter:
         if isinstance(configured, dict):
             chain = configured.get(capability)
             if isinstance(chain, list) and chain:
-                return [str(p) for p in chain]
+                return list(dict.fromkeys(str(p) for p in chain))
+        return self.default_chain(capability)
+
+    def default_chain(self, capability: str) -> List[str]:
+        """返回自动模式下的提供者顺序，不读取显式覆盖。"""
         base = list(self._default_chain)
         for name, provider in self._providers.items():
             if name not in base and capability in getattr(provider, "capabilities", ()):
@@ -166,6 +174,13 @@ class CapabilityRouter:
 
     def status(self, capabilities: List[str]) -> Dict[str, Any]:
         """各提供者的能力配置状态 + 各能力生效链（面板展示与排障）。"""
+        from core.config import ConfigManager
+
+        configured = ConfigManager.get(self._config_key, {})
+        overrides = {
+            cap: list(dict.fromkeys(str(name) for name in chain))
+            for cap, chain in configured.items() if isinstance(chain, list) and chain
+        } if isinstance(configured, dict) else {}
         providers: List[Dict[str, Any]] = []
         for name, provider in self._providers.items():
             caps: Dict[str, bool] = {}
@@ -190,6 +205,8 @@ class CapabilityRouter:
         return {
             "providers": providers,
             "chains": {cap: self.chain(cap) for cap in capabilities},
+            "overrides": overrides,
+            "defaults": {cap: self.default_chain(cap) for cap in capabilities},
         }
 
     # ------------------------------------------------------------------
@@ -244,8 +261,15 @@ class CapabilityRouter:
                 continue
             try:
                 result = await impl.run(capability, **kwargs)
-                result.setdefault("provider", name)
-                result.setdefault("success", True)
+                if result.get("error") or result.get("success") is False:
+                    detail = sanitize_text(str(result.get("error") or "提供者返回失败，但未说明原因"))[:200]
+                    errors[name] = detail
+                    if (provider and provider != "auto") or result.get("outcome") == "unknown":
+                        return {**result, "success": False, "error": detail,
+                                "provider": name, "capability": capability}
+                    continue
+                result["provider"] = name
+                result["success"] = True
                 if errors:
                     # 主链路失败后降级成功：附带失败原因，便于 AI 感知主链路健康状况
                     result["fallback_from"] = list(errors)
@@ -254,16 +278,16 @@ class CapabilityRouter:
                     )[:200]
                 return result
             except (CapabilityNotSupported, ProviderUnavailable) as exc:
-                skipped[name] = str(exc)[:200]
+                skipped[name] = sanitize_text(str(exc))[:200]
                 continue
             except NotImplementedError as exc:
                 skipped[name] = f"协议不支持: {exc}"[:200]
                 continue
             except Exception as exc:
-                detail = str(exc).strip() or type(exc).__name__
+                detail = sanitize_text(str(exc).strip() or type(exc).__name__)
                 errors[name] = detail[:200]
                 if isinstance(exc, ProviderChainError):
-                    errors.update(exc.model_errors)
+                    errors.update({key: sanitize_text(value)[:200] for key, value in exc.model_errors.items()})
                 log(f"{label} 提供者 '{name}' 调用失败，尝试下一提供者: {detail}",
                     "WARNING", tag=self._log_tag)
                 continue

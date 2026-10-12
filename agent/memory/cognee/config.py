@@ -1,4 +1,9 @@
-"""Cognee 可选记忆后端配置。"""
+"""Cognee 记忆后端配置：默认启用，模型未配置时等待 Web 配置。
+
+模型看到什么：就绪后沿用既有投影与联邦召回通道提供记忆，不新增提示词。
+token 影响：图谱抽取与向量化随新增记忆量产生调用；待配置时不调用模型。
+缓存影响：召回沿用动态上下文，不修改稳定前缀。
+"""
 
 from __future__ import annotations
 
@@ -93,7 +98,7 @@ class CogneeEmbeddingModelConfig:
 class CogneeConfig:
     """Cognee 投影与联邦召回配置。"""
 
-    enabled: bool = False
+    enabled: bool = True
     sync_enabled: bool = True
     recall_enabled: bool = True
     # 投影开关：memory 投影与主向量库内容同源（重复嵌入一份），

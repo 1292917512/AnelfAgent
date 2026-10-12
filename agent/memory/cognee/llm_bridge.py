@@ -112,13 +112,14 @@ def _resolve_auto_chat(chat_cfg: CogneeChatModelConfig, manager: Any) -> dict[st
     """自动映射：优先 openai 协议（兼容性最好），其次 cognee 支持的其他协议。"""
     from agent.llm.llm_client import ModelType
 
-    default = manager.get_default()
-    candidates: list[Any] = []
-    if default is not None:
-        candidates.append(default)
-    for client in manager.get_all_by_type(ModelType.CHAT):
-        if client is not None and client not in candidates:
-            candidates.append(client)
+    candidates = [
+        client for client in manager.get_all_by_type(ModelType.CHAT)
+        if client is not None and client.config.enabled
+    ]
+    default = manager.get_default() if candidates else None
+    if default in candidates:
+        candidates.remove(default)
+        candidates.insert(0, default)
 
     fallback: Optional[Any] = None
     for client in candidates:

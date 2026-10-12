@@ -59,6 +59,8 @@ Visit: **http://127.0.0.1:8092/webui/**
 
 From the WebUI you can chat with the AI, add/switch models, enable channels, schedule heartbeat tasks, inspect memory and skills, and manage permissions — **almost everything is point-and-click with hot-reload on save**.
 
+Built-in Cognee knowledge graphs are enabled by default with dependencies installed automatically. Configure chat and embedding models in the WebUI to get started.
+
 ### Daily Operations
 
 ```bash

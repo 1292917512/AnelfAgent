@@ -140,7 +140,9 @@
       "asr": "SenseVoice ASR",
       "diarize": "Speaker diarization",
       "embedder": "Voiceprint embedder (cam++)"
-    }
+    },
+    "unknown": "Unknown",
+    "unavailable": "Service unavailable. GPU model status cannot be determined."
   },
   "pipelineTitle": "Upstream pipeline contract",
   "operationFailed": "Operation failed"

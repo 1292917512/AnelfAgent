@@ -29,7 +29,8 @@
     "active": "注入中",
     "inactive": "未注入",
     "lastMedia": "最近画面注入",
-    "lastText": "最近状态注入"
+    "lastText": "最近状态注入",
+    "hint": "只在当前执行首次读取或画面变化时附带图片；各会话独立记录，状态更新置于动态上下文。"
   },
   "sourceDisabled": "已停用",
   "watching": "监视中",
@@ -58,7 +59,9 @@
     "empty": "暂无预设",
     "namePlaceholder": "预设名",
     "descPlaceholder": "风格描述（拼接在提示词末尾）",
-    "add": "添加"
+    "add": "添加",
+    "remove": "删除预设 {{name}}",
+    "duplicate": "已有同名预设，请使用不同名称。"
   },
   "face": {
     "tabs": {
@@ -200,5 +203,13 @@
     },
     "matchCount": "{{count}}次",
     "facesCount": "{{count}} 脸"
-  }
+  },
+  "previewSource": "预览来源",
+  "followLatest": "跟随最新画面",
+  "previewUnavailable": "画面暂不可用，请刷新或等待下一帧。",
+  "perceptionStatus": "感知状态",
+  "lastChange": "最近画面变化",
+  "toggleSource": "启用 {{name}}",
+  "idle": "待机",
+  "noSources": "暂无视觉源，启用提供视觉能力的实体后可在此查看。"
 }

@@ -351,10 +351,10 @@ class TestSegmentSplit:
 class TestSummaryCache:
     async def test_dirty_refresh(self, store: AudioStore) -> None:
         first = await store.summary()
-        assert first["confirmed_names"] == []
+        assert first["identities"] == []
         await store.create_speaker(name="张三")
         second = await store.summary()
-        assert second["confirmed_names"] == ["张三"]
+        assert [entry["name"] for entry in second["identities"]] == ["张三"]
         # 未写操作时应命中缓存（同一对象）
         assert await store.summary() is second
 
@@ -501,6 +501,7 @@ class TestSummaryBindings:
         await store.bind_entity(int(s["id"]), "user:webui:u1")
         lonely = await store.create_speaker(name="李四")
         summary = await store.summary()
-        assert "张三(家人)" in summary["confirmed_names"]
-        assert summary["entity_bindings"] == ["张三(家人)→user:webui:u1"]
+        identity = next(item for item in summary["identities"] if item["id"] == s["id"])
+        assert identity["name"] == "张三" and identity["role"] == "家人"
+        assert identity["entity_scope"] == "user:webui:u1"
         assert lonely["name"] in "李四"

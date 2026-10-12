@@ -14,6 +14,7 @@ import type {
   MemoryDocument,
   MemoryFileInfo,
   ProbeStatus,
+  UnifiedTag,
 } from "@/lib/types";
 
 export const memoryApi = {
@@ -150,7 +151,7 @@ export const memoryApi = {
 // MCP
 
 export const tagsApi = {
-  unified: () => api.get("/tags/unified"),
+  unified: () => api.get<UnifiedTag[]>("/tags/unified"),
   toolTags: () => api.get<string[]>("/tags/tool"),
   createMessageTag: (name: string, description: string) =>
     api.post("/tags/message", { name, description }),

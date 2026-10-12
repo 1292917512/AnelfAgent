@@ -1,12 +1,12 @@
 {
-  "title": "Tag System",
-  "subtitle": "Unified registry for both message context tags and tool routing tags",
-  "searchPlaceholder": "Search tag name or description...",
+  "title": "Tags",
+  "subtitle": "Explore structured message markers, tool routing labels and the tools that use them.",
+  "searchPlaceholder": "Search tags, descriptions or linked tools…",
   "createTag": "Create Tag",
   "createTagTitle": "Create Custom Tag",
   "tagName": "Tag Name",
   "tagNamePlaceholder": "e.g. urgent, custom_event",
-  "tagNameHint": "Only lowercase letters, digits, underscores, hyphens, and colons allowed",
+  "tagNameHint": "Lowercase letters, digits and underscores work as message keys. Names with colons or hyphens are only for tool routing.",
   "tagDescription": "Description",
   "tagDescriptionPlaceholder": "Describe what this tag represents...",
   "deleteConfirm": "Delete tag \"{{name}}\"?",
@@ -34,5 +34,16 @@
   "noAvailableTags": "All tags already selected",
   "goCreateTag": "Go to Tag System to create new tags",
   "preview": "Preview",
-  "previewValue": "value"
+  "previewValue": "value",
+  "filterLabel": "Filter by purpose",
+  "filters": {
+    "all": "All",
+    "message": "Message",
+    "tool": "Tool routing",
+    "custom": "Custom"
+  },
+  "deleteNamed": "Delete tag {{name}}",
+  "inUse": "Still referenced by tools. Update their tags before deleting.",
+  "routingHint": "Routing label for tool discovery and capability grouping.",
+  "linkedTools": "{{count}} linked tools"
 }

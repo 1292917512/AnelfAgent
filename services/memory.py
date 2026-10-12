@@ -653,6 +653,7 @@ class MemoryService:
                 "ready": False,
                 "version": "",
                 "reason": "运行时未初始化",
+                "configuration_required": False,
             }
         )
         availability_data = (

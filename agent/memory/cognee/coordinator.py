@@ -71,7 +71,7 @@ class CogneeCoordinator:
         if not self.config.enabled:
             return
         availability = await self.client.initialize()
-        if not availability.ready:
+        if not availability.ready and not availability.configuration_required:
             self._last_error = availability.reason
         # 启动时回收上次异常退出遗留的卡死任务（processing → pending）
         try:
@@ -142,7 +142,9 @@ class CogneeCoordinator:
         # 立即按新配置做一次初始化，让状态接口即时反馈解析结果
         if self.config.enabled:
             availability = await self.client.initialize()
-            self._last_error = "" if availability.ready else availability.reason
+            self._last_error = (
+                "" if availability.ready or availability.configuration_required else availability.reason
+            )
         else:
             self._last_error = ""
 
@@ -272,7 +274,9 @@ class CogneeCoordinator:
             try:
                 # 每轮先回收卡死任务（worker 崩溃/取消导致的中断），再认领新批次
                 await self.store.requeue_stale_cognee_sync(self._stale_after_seconds())
-                if self._projection_allowed():
+                # 模型待配置时保留 pending，不消耗条目的重试次数；配置齐后自动恢复。
+                availability = await self.client.initialize()
+                if availability.ready and self._projection_allowed():
                     batch = await self.store.claim_cognee_sync_batch(
                         self.config.sync_batch_size,
                     )
