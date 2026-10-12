@@ -15,6 +15,8 @@ from core.conversation_scope import bind_scope, reset_scope
 
 
 class NullEmbedder:
+    available = False
+
     async def embed_query(self, query: str):
         return None
 
@@ -181,3 +183,28 @@ async def test_reapplying_policy_keeps_existing_probe_and_query_budget(monkeypat
         await asyncio.sleep(0)
         assert not state.task.done()
         assert state.queries == {"当前话题"}
+
+
+async def test_fallback_facts_are_in_ledger_before_probe_starts(store, monkeypatch):
+    import agent.memory.memory_retriever as retriever_module
+
+    hub = DeepProbeHub()
+    monkeypatch.setattr(retriever_module, "deep_probe_hub", hub)
+    pin_id = await store.add(MemoryEntry(memory_type=MemoryType.PERMANENT, content="固定纪律"))
+    recent_id = await store.add(MemoryEntry(memory_type=MemoryType.SEMANTIC, content="项目近期事实"))
+    monkeypatch.setattr(store, "search_unified", AsyncMock(return_value=[]))
+    retriever = MemoryRetriever(store, NullEmbedder())
+    monkeypatch.setattr(retriever, "plan_retrieval", AsyncMock(return_value=RetrievalPlan(
+        queries=["不相关的全新话题"], deep_needed=True)))
+    seen: list[set[str]] = []
+
+    async def probe(state, plan, store, revision):
+        seen.append(set(state.ledger.result_ids))
+
+    monkeypatch.setattr(hub, "_run", probe)
+    await retriever.recall_split([{"role": "user", "content": "不相关的全新话题需要调查"}],
+        entity_scope="user_qq:1", fire_probe=True)
+    state = hub.state_for("user_qq:1")
+    await state.task
+    assert seen and {f"mem:{pin_id}", f"mem:{recent_id}"} <= seen[0]
+    await hub.end_reply(state.scope)

@@ -208,8 +208,9 @@ class MemoryRetriever:
             if not query:
                 log("💾 被动召回: 无有效查询，回退近期记忆", tag="思维")
                 pinned = await self._load_permanent_pins([])
-                entity_msgs, fallback = await asyncio.gather(profiles_task, self._fallback_recent(k))
+                entity_msgs, fallback = await asyncio.gather(profiles_task, self._fallback_recent(k, scope=entity_scope))
                 pinned_msgs = await self._format_unified_results(pinned) if pinned else []
+                deep_probe_hub.record(entity_scope, results=pinned)
                 return entity_msgs, pinned_msgs + fallback
 
             # 平凡消息节流：纯客套/短回复轮跳过检索与改写（省一次改写 LLM 调用
@@ -219,6 +220,7 @@ class MemoryRetriever:
                 pinned = await self._load_permanent_pins([])
                 entity_msgs = await profiles_task
                 pinned_msgs = await self._format_unified_results(pinned) if pinned else []
+                deep_probe_hub.record(entity_scope, results=pinned)
                 return entity_msgs, pinned_msgs
 
             log(f"💾 被动召回: \"{query[:50]}\" (embedding={'是' if self._embedder.available else '否'})", tag="思维")
@@ -392,12 +394,10 @@ class MemoryRetriever:
 
             if not results:
                 log("💾 统一搜索无结果，回退近期记忆", tag="思维")
-                # 首轮无结果正是深探最有价值的场景（表层检索挖不到 → 深层图检索补充），
-                # 回退前先按计划启动探针（账本只含本分支的空基线）
-                _fire_probe(results)
                 pinned = await self._load_permanent_pins([])
-                fallback = await self._fallback_recent(k)
+                fallback = await self._fallback_recent(k, scope=entity_scope)
                 pinned_msgs = await self._format_unified_results(pinned) if pinned else []
+                _fire_probe(pinned)
                 return entity_msgs, pinned_msgs + fallback
 
             # Rerank if available
@@ -568,7 +568,7 @@ class MemoryRetriever:
         log(f"关系网络注入: {len(scopes)} 个 scope, {len(lines) - 1} 条关系", tag="思维")
         return [{"role": "system", "content": sanitize_for_context("\n".join(lines))}]
 
-    async def _fallback_recent(self, limit: int) -> List[Dict]:
+    async def _fallback_recent(self, limit: int, *, scope: str = "") -> List[Dict]:
         entries = await self._store.list_recent(limit=limit)
         if entries:
             log(f"💾 回退: 取最近 {len(entries)} 条记忆", tag="思维")
@@ -580,6 +580,10 @@ class MemoryRetriever:
             tags = await self._humanize_entity_tags(e.tags) if e.tags else []
             head = f"{'·'.join(tags)} " if tags else ""
             lines.append(f"{head}{e.content}")
+        deep_probe_hub.record(scope, results=(
+            MemorySearchResult(id=f"mem:{entry.id}", snippet=entry.content, score=1)
+            for entry in entries
+        ))
         from core.sanitizer import sanitize_for_context
         return [{"role": "system", "content": sanitize_for_context(
             "[近期记忆]（归属标注：称呼[uid:xxx] 指明记忆涉及谁）\n"
