@@ -21,15 +21,16 @@ export function JsonSection({
 }) {
   const { t } = useTranslation("models");
   return (
-    <div className={cn("rounded-md border p-3 space-y-2", enabled ? "border-accent2/50" : "border-border")}>
+    <div className={cn("rounded-lg border p-3 space-y-2", enabled ? "border-accent/30" : "border-border")}>
       <div className="flex items-center justify-between">
         <span className="text-xs font-medium text-muted" title={hint}>{label}</span>
         <label className="flex items-center gap-1.5 cursor-pointer text-xs text-muted">
           <input
             type="checkbox"
+            aria-label={`${t("enableLabel")} ${label}`}
             checked={enabled}
             onChange={(e) => onEnabledChange(e.target.checked)}
-            className="accent-accent2 w-3.5 h-3.5"
+            className="accent-accent w-4 h-4"
           />
           {t("enableLabel")}
         </label>

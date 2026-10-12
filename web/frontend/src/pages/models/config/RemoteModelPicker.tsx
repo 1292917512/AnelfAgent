@@ -3,10 +3,10 @@ import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Check, Eye, Layers, Plus, RefreshCw, Search, Wrench } from "lucide-react";
 import { providersApi } from "@/lib/api";
-import type { RemoteModelInfo } from "@/lib/types";
 import type { CreateModelConfig, ModelInfoResult } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Button, Input, LoadingBlock } from "@/components/ui";
+import { remoteModelsQuery } from "./remote-models-query";
 
 /** 有限并发映射：批量添加时最多 3 个并发请求，避免打满连接 */
 async function mapLimit<T, R>(
@@ -63,22 +63,18 @@ export function RemoteModelPicker({
   const existing = useMemo(() => new Set(existingIds), [existingIds]);
   const isAdded = (id: string) => existing.has(id) || existing.has(shortNameOf(id));
 
-  const modelsQuery = useQuery<{ models: RemoteModelInfo[] }>({
-    queryKey: ["remoteModels", providerId],
-    queryFn: () => providersApi.remoteModels(providerId).then((r) => r.data),
-    staleTime: 60_000,
-    retry: false,
-  });
+  const modelsQuery = useQuery(remoteModelsQuery(providerId));
   const remoteModels = modelsQuery.data?.models ?? [];
 
   // 批量能力信息：litellm 本地表一次往返，供行内徽标与添加时回填
   const infoQuery = useQuery({
-    queryKey: ["remoteModelInfo", providerId, apiType, remoteModels.length],
+    queryKey: ["remoteModelInfo", providerId, apiType, remoteModels.map((model) => model.id)],
     queryFn: () =>
       providersApi.modelInfoBatch(remoteModels.map((m) => m.id), apiType).then((r) => r.data.info),
     enabled: remoteModels.length > 0,
     staleTime: 300_000,
     retry: false,
+    throwOnError: false,
   });
   const infoMap: Record<string, ModelInfoResult> = infoQuery.data ?? {};
 

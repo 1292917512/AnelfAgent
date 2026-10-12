@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { modelsApi, providersApi } from "@/lib/api";
+import { modelsApi } from "@/lib/api";
 import type { ModelConfig, ProviderConfig, TestChatResult, UpdateModelConfig } from "@/lib/types";
 import { highestContractEffort } from "@/components/common/ReasoningEffortSelect";
-import { parseBuiltinTools, parseHeaders, parseJsonObject } from "./model-editor-data";
+import { parseBuiltinTools, parseHeaders, parseJsonObject, validateModelFields, type ModelFieldErrors } from "./model-editor-data";
+import { remoteModelsQuery } from "./remote-models-query";
 
 type JsonField = "request_params" | "extra_body" | "extra_headers" | "thinking";
 export interface ModelTestState { status: "idle" | "running" | "success" | "error"; result?: TestChatResult; snapshot?: string }
@@ -25,14 +26,17 @@ export function useModelEditor(provider: ProviderConfig, model: ModelConfig, onS
     supports_tools: model.supports_tools,
     supports_forced_tool_choice: model.supports_forced_tool_choice,
     supports_reasoning: model.supports_reasoning,
-    // 历史空档（跟随已移除的全局配置）按模型思考契约最高档归一，保存时固化
     reasoning_effort: model.supports_reasoning
       ? model.reasoning_effort || highestContractEffort(model.thinking)
       : model.reasoning_effort ?? "",
     model_types: model.model_types,
     enabled: model.enabled,
   }));
-  const patch = (p: Partial<UpdateModelConfig>) => setDraft((d) => ({ ...d, ...p }));
+  const [fieldErrors, setFieldErrors] = useState<ModelFieldErrors>({});
+  const patch = (p: Partial<UpdateModelConfig>) => {
+    setDraft((d) => ({ ...d, ...p }));
+    setFieldErrors({});
+  };
 
   const [jsonDrafts, setJsonDrafts] = useState<Record<JsonField, string>>(() => ({
     request_params: JSON.stringify(model.request_params ?? {}, null, 2),
@@ -53,9 +57,8 @@ export function useModelEditor(provider: ProviderConfig, model: ModelConfig, onS
   const snapshot = JSON.stringify({ draft, jsonDrafts, jsonEnabled, builtinToolsText });
   const [savedSnapshot, setSavedSnapshot] = useState(snapshot);
   const [test, setTest] = useState<ModelTestState>({ status: "idle" });
-  const remoteQuery = useQuery({ queryKey: ["remoteModels", provider.id],
-    queryFn: () => providersApi.remoteModels(provider.id).then((response) => response.data.models),
-    staleTime: 60_000, retry: false, throwOnError: false });
+  const saving = useRef(false);
+  const remoteQuery = useQuery({ ...remoteModelsQuery(provider.id), enabled: false });
   const update = useMutation({
     mutationFn: (payload: UpdateModelConfig) => modelsApi.update(model.id, payload),
     onSuccess: async () => {
@@ -66,7 +69,9 @@ export function useModelEditor(provider: ProviderConfig, model: ModelConfig, onS
   const busy = update.isPending || test.status === "running";
   const buildPayload = (): UpdateModelConfig | null => {
     const errors: Partial<Record<JsonField, string>> = {};
-    const payload: UpdateModelConfig = { ...draft };
+    const invalidFields = validateModelFields(draft);
+    setFieldErrors(invalidFields);
+    const payload: UpdateModelConfig = { ...draft, model: draft.model?.trim() };
     for (const field of ["request_params", "extra_body", "extra_headers", "thinking"] as const) {
       try {
         const text = jsonEnabled[field] ? jsonDrafts[field] : "{}";
@@ -81,28 +86,33 @@ export function useModelEditor(provider: ProviderConfig, model: ModelConfig, onS
     try { payload.builtin_tools = parseBuiltinTools(builtinToolsText); }
     catch (error) { builtinError = t(error instanceof SyntaxError ? "invalidJson" : error instanceof Error ? error.message : "invalidJson"); }
     setBuiltinToolsError(builtinError);
-    return Object.keys(errors).length || builtinError ? null : payload;
+    return Object.keys(errors).length || Object.keys(invalidFields).length || builtinError ? null : payload;
   };
   const save = async (withTest: boolean) => {
-    if (busy) return;
+    if (saving.current || busy) return;
     const payload = buildPayload();
     if (!payload) return;
+    saving.current = true;
     const submitted = snapshot;
-    try { await update.mutateAsync(payload); }
-    catch { return; }
-    setSavedSnapshot(submitted);
-    if (!withTest) { onSaved(); return; }
-    setTest({ status: "running", snapshot: submitted });
     try {
-      const { data } = await modelsApi.testChat(provider.id, model.id);
-      setTest({ status: data.ok ? "success" : "error", result: data, snapshot: submitted });
-    } catch (error) {
-      setTest({ status: "error", snapshot: submitted, result: { ok: false, error: error instanceof Error ? error.message : String(error) } });
+      try { await update.mutateAsync(payload); }
+      catch { return; }
+      setSavedSnapshot(submitted);
+      if (!withTest) { onSaved(); return; }
+      setTest({ status: "running", snapshot: submitted });
+      try {
+        const { data } = await modelsApi.testChat(provider.id, model.id);
+        setTest({ status: data.ok ? "success" : "error", result: data, snapshot: submitted });
+      } catch (error) {
+        setTest({ status: "error", snapshot: submitted, result: { ok: false, error: error instanceof Error ? error.message : String(error) } });
+      }
+    } finally {
+      saving.current = false;
     }
   };
-  return { draft, patch, jsonDrafts, setJsonDrafts, jsonEnabled, setJsonEnabled, jsonErrors, setJsonErrors,
+  return { draft, patch, fieldErrors, jsonDrafts, setJsonDrafts, jsonEnabled, setJsonEnabled, jsonErrors, setJsonErrors,
     builtinToolsText, setBuiltinToolsText, builtinToolsError, setBuiltinToolsError, remoteQuery,
-    remoteIds: (remoteQuery.data ?? []).map((item) => item.id), test, busy, save, error: update.error,
+    remoteIds: (remoteQuery.data?.models ?? []).map((item) => item.id), test, busy, save, error: update.error,
     dirty: snapshot !== savedSnapshot, stale: test.snapshot !== undefined && test.snapshot !== snapshot };
 }
 export type ModelEditorState = ReturnType<typeof useModelEditor>;

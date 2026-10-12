@@ -13,15 +13,14 @@ export function ModelEditorDialog({ provider, model, onClose }: { provider: Prov
   const editor = useModelEditor(provider, model, onClose);
   const guard = useDiscardChanges(editor.dirty, onClose, editor.busy);
   return <>
-    <Modal open onClose={guard.requestClose} dismissible={!editor.busy} width="max-w-2xl"
-      title={<span>{t("editModel")} <span className="text-xs font-normal text-muted">· {model.id}</span></span>}
+    <Modal open onClose={guard.requestClose} dismissible={!editor.busy} width="max-w-3xl"
+      title={<span className="min-w-0">{t("editModel")} <span className="mt-1 block break-all text-xs font-normal text-muted">{model.id}</span></span>}
       footer={<>
         <Button size="sm" disabled={editor.busy} onClick={guard.requestClose}>{t("common:cancel")}</Button>
         <Button size="sm" disabled={editor.busy} onClick={() => void editor.save(true)}><FlaskConical size={14} />{t("saveAndTest")}</Button>
         <Button size="sm" variant="primary" loading={editor.busy} onClick={() => void editor.save(false)}><Save size={14} />{t("common:save")}</Button>
       </>}>
       <fieldset disabled={editor.busy}><ModelEditorFields provider={provider} model={model} editor={editor} /></fieldset>
-      {editor.remoteQuery.error && <div className="mt-4"><QueryError compact error={editor.remoteQuery.error} retry={() => void editor.remoteQuery.refetch()} /></div>}
       {editor.error && <div className="mt-4"><QueryError compact error={editor.error} /></div>}
       <div className="mt-4"><ModelTestResult test={editor.test} stale={editor.stale} /></div>
     </Modal>

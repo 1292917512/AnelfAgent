@@ -233,5 +233,20 @@
   "confirmDeleteModel": "确定删除模型 {{name}}？引用此模型的配置需要重新选择。",
   "fetchModels": "获取远端模型列表",
   "modelIdPlaceholder": "输入远端模型标识",
-  "headerValuesRequired": "请求头的值必须是字符串"
+  "headerValuesRequired": "请求头的值必须是字符串",
+  "editorBasics": "基本设置",
+  "editorBasicsHint": "指定远端模型、上下文容量与请求端点。",
+  "editorCapabilities": "模型能力",
+  "editorCapabilitiesHint": "按供应商实际支持情况配置视觉、工具与思考能力。",
+  "editorAdvanced": "高级请求参数",
+  "editorAdvancedHint": "采样、内置工具与自定义 JSON 参数",
+  "remoteOptionalHint": "可直接输入模型标识；右侧按钮用于按需获取供应商列表。",
+  "remoteOptionalFailed": "暂时无法获取远端列表，仍可手动编辑并保存模型。",
+  "responsesThinkingHint": "Responses 使用标准 reasoning.effort 参数；下方 JSON 思考契约用于 Chat Completions 路径。",
+  "visionFormat": "图像传输格式",
+  "modelIdRequired": "请输入远端模型标识",
+  "tokenBudgetInvalid": "请输入大于或等于 0 的整数",
+  "temperatureInvalid": "temperature 必须在 0–2 之间",
+  "topPInvalid": "top_p 必须在 0–1 之间",
+  "builtinToolTypeRequired": "内置工具 JSON 必须包含非空的 type 字符串"
 }

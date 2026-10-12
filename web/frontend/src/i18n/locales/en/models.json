@@ -233,5 +233,20 @@
   "confirmDeleteModel": "Delete model {{name}}? Settings referencing this model will need another selection.",
   "fetchModels": "Fetch remote models",
   "modelIdPlaceholder": "Enter a remote model ID",
-  "headerValuesRequired": "Header values must be strings"
+  "headerValuesRequired": "Header values must be strings",
+  "editorBasics": "Basic settings",
+  "editorBasicsHint": "Set the remote model, context capacity and request endpoint.",
+  "editorCapabilities": "Model capabilities",
+  "editorCapabilitiesHint": "Match vision, tools and thinking to what the provider supports.",
+  "editorAdvanced": "Advanced request settings",
+  "editorAdvancedHint": "Sampling, built-in tools and custom JSON parameters",
+  "remoteOptionalHint": "Enter a model ID directly, or use the button to fetch the provider's list.",
+  "remoteOptionalFailed": "The remote list is unavailable. You can still edit and save this model.",
+  "responsesThinkingHint": "Responses uses the standard reasoning.effort parameter. The JSON thinking contract below applies to Chat Completions.",
+  "visionFormat": "Image transport format",
+  "modelIdRequired": "Enter a remote model ID",
+  "tokenBudgetInvalid": "Enter an integer greater than or equal to 0",
+  "temperatureInvalid": "temperature must be between 0 and 2",
+  "topPInvalid": "top_p must be between 0 and 1",
+  "builtinToolTypeRequired": "Built-in tool JSON must include a non-empty type string"
 }

@@ -1,4 +1,22 @@
-import type { JsonObject, JsonValue } from "@/lib/types";
+import type { JsonObject, JsonValue, UpdateModelConfig } from "@/lib/types";
+
+export type ModelFieldErrors = Partial<Record<"model" | "context_window" | "max_tokens" | "temperature" | "top_p", string>>;
+
+export function validateModelFields(draft: UpdateModelConfig): ModelFieldErrors {
+  const errors: ModelFieldErrors = {};
+  if (!draft.model?.trim()) errors.model = "modelIdRequired";
+  for (const key of ["context_window", "max_tokens"] as const) {
+    const value = draft[key];
+    if (value != null && (!Number.isInteger(value) || value < 0)) errors[key] = "tokenBudgetInvalid";
+  }
+  for (const [key, max] of [["temperature", 2], ["top_p", 1]] as const) {
+    const value = draft[key];
+    if (value != null && (!Number.isFinite(value) || value < 0 || value > max)) {
+      errors[key] = key === "temperature" ? "temperatureInvalid" : "topPInvalid";
+    }
+  }
+  return errors;
+}
 
 function isJsonValue(value: unknown): value is JsonValue {
   return value === null || typeof value === "string" || typeof value === "boolean" ||
@@ -46,5 +64,10 @@ export function parseBuiltinTools(text: string): Array<string | JsonObject> {
   }
   if (depth !== 0 || inString) throw new Error("invalidJson");
   tokens.push(token.trim());
-  return tokens.filter(Boolean).map((value) => value.startsWith("{") ? parseJsonObject(value) : value);
+  return tokens.filter(Boolean).map((value) => {
+    if (!value.startsWith("{")) return value;
+    const tool = parseJsonObject(value);
+    if (typeof tool.type !== "string" || !tool.type.trim()) throw new Error("builtinToolTypeRequired");
+    return tool;
+  });
 }
