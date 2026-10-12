@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
+from pathlib import Path
 
+import aiosqlite
 import pytest
 
 from agent.vision.face.store import FaceStore
@@ -36,6 +39,76 @@ class TestVolumeRegistration:
         from core.storage_volume import get_volume_registry
         reg = get_volume_registry()
         assert "face" in {d.volume_id for d in reg.list()}
+
+
+class TestConnectionLifecycle:
+    @pytest.mark.parametrize("cancel", [False, True], ids=["schema-error", "cancelled"])
+    async def test_interrupted_initialization_closes_connection_and_can_retry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancel: bool,
+    ) -> None:
+        store = FaceStore(str(tmp_path / "face.sqlite3"))
+        entered = asyncio.Event()
+        connections: list[aiosqlite.Connection] = []
+        sync_schema = store._sync_schema
+
+        async def interrupted_schema(db: aiosqlite.Connection) -> None:
+            connections.append(db)
+            entered.set()
+            if cancel:
+                await asyncio.Event().wait()
+            raise RuntimeError("schema unavailable")
+
+        monkeypatch.setattr(store, "_sync_schema", interrupted_schema)
+        task = asyncio.create_task(store.initialize())
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            if cancel:
+                task.cancel()
+            with pytest.raises(asyncio.CancelledError if cancel else RuntimeError):
+                await task
+            assert store._db is None
+            with pytest.raises(ValueError, match="no active connection"):
+                await connections[0].execute("SELECT 1")
+            monkeypatch.setattr(store, "_sync_schema", sync_schema)
+            await store.initialize()
+            person = await store.create_person(name="重试成功")
+            assert person["name"] == "重试成功"
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            for db in connections:
+                await db.close()
+            await store.close()
+
+    async def test_close_waits_for_initialization(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store = FaceStore(str(tmp_path / "face.sqlite3"))
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        sync_schema = store._sync_schema
+
+        async def paused_schema(db: aiosqlite.Connection) -> None:
+            entered.set()
+            await release.wait()
+            await sync_schema(db)
+
+        monkeypatch.setattr(store, "_sync_schema", paused_schema)
+        opening = asyncio.create_task(store.initialize())
+        closing: asyncio.Task[None] | None = None
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            closing = asyncio.create_task(store.close())
+            await asyncio.sleep(0)
+            assert not closing.done()
+            release.set()
+            await opening
+            await closing
+            assert store._db is None
+        finally:
+            release.set()
+            await asyncio.gather(opening, *([closing] if closing else []), return_exceptions=True)
+            await store.close()
 
 
 class TestPersonCrud:
