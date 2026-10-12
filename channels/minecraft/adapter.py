@@ -37,6 +37,7 @@ from core.tracer import NodeType, thinking_tracer
 from entities._sdk import call_mcp_server_tool
 
 from . import discovery as _discovery  # noqa: F401  导入即注册全局发现工具
+from .access import MinecraftAccessPolicy
 from .autoconnect import _CONNECT_STATE, AutoConnector
 from .config import MinecraftConfig
 from .lifestyle import MinecraftLifestyle
@@ -54,6 +55,7 @@ from .protocol import (
 from .reflexes import SurvivalBridge
 from .reply_policy import companion_policy
 from .session import record_game_event, stop_companion_work
+from .worker import MinecraftWorker
 
 _COMMAND_SEQ: ContextVar[int | None] = ContextVar("minecraft_command_seq", default=None)
 
@@ -99,11 +101,25 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             enabled=lambda: self.get_config().autonomous_lifestyle,
             interval_seconds=lambda: self.get_config().autonomous_interval_seconds,
             idle_seconds=lambda: self.get_config().autonomous_idle_seconds,
+            call_tool=self._call,
+        )
+        self._worker = MinecraftWorker(
+            self._call,
+            server_id=lambda: self.get_config().server_id,
+            online=lambda: (self._connection.state if self._connection else "") == "online",
+            enabled=lambda: self.get_config().autonomous_worker,
+            item=lambda: self.get_config().worker_item,
+            stack_size=lambda: self.get_config().worker_stack_size,
+            poll_seconds=lambda: self.get_config().worker_poll_seconds,
+            record=self._record_reflex,
+            announce=self._announce_reflex,
         )
         self._home: dict[str, Any] | None = None
         self._marks: dict[str, dict[str, Any]] = {}
         self._last_success: float | None = None
         self._last_error = ""
+        self._access = MinecraftAccessPolicy()
+        self._last_player_refresh = 0.0
 
     def _world_signature(self) -> str:
         connection = self._connection
@@ -134,6 +150,7 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
                 await task
         await self._auto.stop()
         await self._lifestyle.stop()
+        await self._worker.stop()
         await self._survival.stop()
         pending = list(self._background | self._commands)
         for bg in pending:
@@ -228,7 +245,12 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
                 self._last_error = detail
             await self._auto_tick()
             if not self._last_error:
-                self._lifestyle.tick(self._connection.state if self._connection is not None else None)
+                state = self._connection.state if self._connection is not None else None
+                if self.get_config().autonomous_worker:
+                    # 作业循环接管自主活动；两者互斥，避免两个系统抢同一个 bot。
+                    self._worker.tick(state)
+                else:
+                    self._lifestyle.tick(state)
             await asyncio.sleep(self.get_config().poll_interval_seconds)
 
     async def _auto_tick(self) -> None:
@@ -252,6 +274,17 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             self._server_entity = entity
             self._cursor = None
         self._connection = ConnectionStatus.model_validate(await self._call("get_connection_status", {}))
+        cfg = self.get_config()
+        self._access.configure(owner=cfg.owner_player, grants=cfg.allowed_players)
+        if self._connection.state != "online" and self._access.online:
+            self._access.observe([])
+            log("Minecraft 已离线，清除过期在线玩家授权", "DEBUG", tag="Minecraft")
+        if (
+            self._connection.state == "online"
+            and (cfg.auto_authorize_online_players or cfg.owner_player)
+            and time.time() - self._last_player_refresh >= 5
+        ):
+            await self._refresh_players()
         self._survival.sync(
             self._connection.survival, enabled=cfg.reflexes_enabled,
             interval_seconds=cfg.reflex_interval_seconds,
@@ -311,11 +344,32 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             log(f"Minecraft 忽略非法玩家聊天事件: seq={event.seq}", "WARNING", tag="Minecraft")
             return
         cfg = self.get_config()
+        self._access.configure(owner=cfg.owner_player, grants=cfg.allowed_players)
         bot_name = (self._connection.username if self._connection else None) or cfg.bot_username
         if chat.username.casefold() == bot_name.casefold():
             return
-        if cfg.allowed_players and chat.username.casefold() not in {p.casefold() for p in cfg.allowed_players}:
+        received_at = time.time()
+        role = self._access.role(chat.username, auto_authorize_online=cfg.auto_authorize_online_players)
+        allowed = self._access.allow(chat.username, auto_authorize_online=cfg.auto_authorize_online_players)
+        if (
+            not allowed
+            and cfg.auto_authorize_online_players
+            and self._connection is not None
+            and self._connection.state == "online"
+        ):
+            await self._refresh_players()
+            role = self._access.role(chat.username, auto_authorize_online=True)
+            allowed = self._access.allow(chat.username, auto_authorize_online=True)
+        if not allowed:
+            log(
+                f"MC_CHAT_REJECTED username={chat.username} role={role} event_ts={event.ts / 1000:.3f} received_at={received_at:.3f}",
+                "DEBUG", tag="Minecraft",
+            )
             return
+        log(
+            f"MC_CHAT_ACCEPTED username={chat.username} role={role} event_ts={event.ts / 1000:.3f} received_at={received_at:.3f} latency_ms={(received_at - event.ts / 1000) * 1000:.1f}",
+            "DEBUG", tag="Minecraft",
+        )
         self._lifestyle.note_player_activity()
         private = event.type == "whisper"
         mention_pattern = rf"(?<![A-Za-z0-9_])@{re.escape(bot_name)}(?![A-Za-z0-9_])"
@@ -363,6 +417,18 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             await self.on_message(message.model_copy(update={"trigger_mind": False}))
             return
         await self.on_message(message)
+
+    async def _refresh_players(self) -> None:
+        """Refresh the server tab-list without blocking normal chat parsing."""
+        try:
+            result = await self._call("list_players", {})
+            players = result.get("players", [])
+            names = [item.get("username", "") for item in players if isinstance(item, dict)]
+            self._access.observe([name for name in names if name])
+            self._last_player_refresh = time.time()
+            log(f"MC_PLAYERS online={','.join(sorted(self._access.online))}", "DEBUG", tag="Minecraft")
+        except Exception as exc:
+            log(f"Minecraft 玩家列表刷新失败: {exc}", "DEBUG", tag="Minecraft")
 
     # 快捷指令：确定性直执行（零模型调用），设计参考 mindcraft
     # 的 !command 面。两种触发方式：
@@ -488,6 +554,7 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
 
     async def _cmd_stop(self, username: str, channel: AdapterChannel, *, pause: bool = False) -> str:
         self._lifestyle.pause()
+        self._worker.pause()
         failures: list[str] = []
         current = asyncio.current_task()
         tasks = [task for task in self._background | self._commands if task is not current]
@@ -544,6 +611,7 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             log(f"Minecraft 恢复被拒绝: {exc}", "INFO", tag="Minecraft")
             return f"任务恢复失败，自主生活仍保持暂停：{exc}"
         self._lifestyle.resume()
+        self._worker.resume()
         if result.get("supported") is False:
             return "没有待恢复的任务；自主生活已恢复，满足空闲和安全条件后继续。"
         return "已重新检查并恢复任务。"

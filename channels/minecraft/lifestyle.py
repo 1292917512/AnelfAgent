@@ -6,13 +6,23 @@ import asyncio
 import json
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from agent.messages import build_entity_scope
 from core.log import log
 from core.tool_context import tool_request
 
+from .scripted_lifestyle import FOCUSES, MinecraftScriptedLifestyle, focus_index
 from .world_plan import WorldPlan, WorldPlanStore
+
+# A reflection is only the scheduler hand-off.  Long running MCP actions own
+# the bot after the reflection returns, so the next scheduler pass must be
+# soon enough to observe their terminal event without creating a visible idle
+# gap.  Keep a small floor to avoid a tight LLM loop when an action is stuck.
+_LIFESTYLE_HANDOFF_COOLDOWN_SECONDS = 15.0
+_LIFESTYLE_HANDOFF_MIN_SECONDS = 5.0
+ToolCall = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
 class MinecraftLifestyle:
@@ -28,6 +38,7 @@ class MinecraftLifestyle:
         interval_seconds: Callable[[], float],
         idle_seconds: Callable[[], float],
         plan_store: WorldPlanStore | None = None,
+        call_tool: ToolCall | None = None,
     ) -> None:
         self._server_id = server_id
         self._mcp_server = mcp_server
@@ -36,6 +47,8 @@ class MinecraftLifestyle:
         self._interval_seconds = interval_seconds
         self._idle_seconds = idle_seconds
         self._plan_store = plan_store or WorldPlanStore()
+        self._call_tool = call_tool
+        self._scripted: MinecraftScriptedLifestyle | None = None
         self._last_player_activity = time.monotonic()
         self._next_run = 0.0
         self._running: asyncio.Task[None] | None = None
@@ -44,6 +57,15 @@ class MinecraftLifestyle:
     def note_player_activity(self) -> None:
         """记录玩家输入，避免对话期间启动自主动作。"""
         self._last_player_activity = time.monotonic()
+        task = self._running
+        if task is not None and not task.done():
+            # A player message takes priority over the planning reflection.  A
+            # background MCP action already admitted by that reflection owns
+            # its own executor task and continues safely; cancelling this
+            # scheduler task only releases the model and prevents a second
+            # decision from racing the reply.
+            task.cancel()
+            log("Minecraft 玩家发言，取消未交接的自主反思以优先处理对话", "DEBUG", tag="Minecraft")
 
     def pause(self) -> None:
         """停止并抑制自主生活，直到玩家明确恢复。"""
@@ -85,15 +107,21 @@ class MinecraftLifestyle:
     def _clear_task(self, task: asyncio.Task[None]) -> None:
         if self._running is task:
             self._running = None
+            # A completed life action is a hand-off point, not the end of the
+            # character's life loop. Keep a short cooldown so the next bounded
+            # activity can start without waiting for the full idle interval.
+            self._next_run = time.monotonic() + min(
+                _LIFESTYLE_HANDOFF_COOLDOWN_SECONDS,
+                max(_LIFESTYLE_HANDOFF_MIN_SECONDS, self._interval_seconds()),
+            )
+            if task.cancelled():
+                log("Minecraft 自主生活反思已取消，保留玩家活动时间", "DEBUG", tag="Minecraft")
+            else:
+                log("Minecraft 自主生活动作已收尾，进入下一轮有界活动冷却", "DEBUG", tag="Minecraft")
         if not task.cancelled() and task.exception() is not None:
             log(f"Minecraft 自主生活轮次异常: {task.exception()}", "WARNING", tag="Minecraft")
 
     async def _run(self) -> None:
-        from agent.runtime.singleton import get_runtime
-
-        runtime = get_runtime()
-        if runtime is None:
-            return
         world = self._server_id()
         scope = build_entity_scope("group", "minecraft", world)
         plan = self._plan_store.load(world)
@@ -101,23 +129,45 @@ class MinecraftLifestyle:
         if plan is not None and signature and plan.world_signature != signature:
             log(f"Minecraft 世界规划指纹不匹配，放弃旧规划: world={world}", "INFO", tag="Minecraft")
             plan = None
+        if plan is not None and self._call_tool is not None:
+            if self._scripted is None:
+                self._scripted = MinecraftScriptedLifestyle(self._call_tool, world=world)
+            with tool_request(scope, "@script"):
+                scripted = await self._scripted.run(plan)
+            log(
+                f"Minecraft script loop: focus={self._scripted_focus(plan)} "
+                f"advance={scripted.advance} handled={scripted.handled} reason={scripted.reason}",
+                "DEBUG", tag="Minecraft",
+            )
+            if scripted.handled:
+                if scripted.advance:
+                    plan.activity_index += 1
+                    self._plan_store.save(plan)
+                return
+
+        from agent.runtime.singleton import get_runtime
+
+        runtime = get_runtime()
+        if runtime is None:
+            return
         next_activity_index: int | None = None
         if plan is None:
             focus = "base_planning"
         elif plan.mine_entrance is None or plan.mine_direction is None:
             focus = "mine_planning"
         else:
-            focuses = ("survival", "wood", "equipment", "shelter", "mining", "exploration")
-            index = plan.activity_index % len(focuses)
-            if focuses[index] == "shelter" and plan.home_phase == "complete":
-                index += 1
-            focus = focuses[index]
+            index = focus_index(plan.activity_index, plan.home_phase == "complete")
+            focus = FOCUSES[index]
             next_activity_index = index + 1
         plan_snapshot = plan.prompt_json() if plan is not None else "{}"
         prompt = (
             "这是一轮 Minecraft 自主生活；只在在线、存活、健康、食物充足、背包有空间且没有其他动作时推进。"
             "先读取连接、生存、当前状态和背包。只用当前 MCP 服务的实际注册工具名，内部结果不要发聊天。"
             "每轮只推进一个活动，工具受阻就保留进度并结束，不换地址、不扩大授权、不重做旧任务。\n"
+            "后台动作（gather_resources、mine_resources、prepare_item、manage_supplies 等）返回 active=true "
+            "只表示已受理，动作仍由执行器在本轮之外运行；反思轮不要等待它完成，也不要每轮重复查询状态。"
+            "启动后台动作后最多查询一次对应的 *_status 或 action_status，然后立刻 end_reply；下一轮再核对终态。"
+            "active=true 时严禁用重复状态查询占满轮次，active=false 且有终态事实后才安排下一项活动。\n"
             "base_planning：调用 find_build_site，只从成功结果保存 home；本轮不改动世界。"
             "mine_planning：在 home 附近 6~12 格选固定矿口和方向，验证往返路线，本轮不挖掘。"
             "mining：到固定 mine_entrance 后沿 mine_direction 继续已有矿道，禁止因延伸失败另开矿道。"
@@ -160,6 +210,11 @@ class MinecraftLifestyle:
             raise
         except Exception as exc:
             log(f"Minecraft 自主生活轮次失败: {exc}", "WARNING", tag="Minecraft")
+
+    @staticmethod
+    def _scripted_focus(plan: WorldPlan) -> str:
+        """Return the stable focus label used by the deterministic runner."""
+        return FOCUSES[focus_index(plan.activity_index, plan.home_phase == "complete")]
 
     def _save_plan_marker(self, world: str, result: str) -> None:
         """提取模型提交的规划标记，只有完整校验通过才落盘。"""

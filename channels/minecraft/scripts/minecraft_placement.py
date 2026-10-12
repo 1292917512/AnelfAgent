@@ -16,6 +16,13 @@ _DESCRIPTION_PATCHED = (
     " beside the bot, not its feet or body. A crafting table in inventory must be placed before use."
 )
 
+_SCHEMA_ORIGINAL = """faceVector: z
+                .object({ x: z.number(), y: z.number(), z: z.number() })
+                .describe("Unit face direction, e.g. {x:0,y:1,z:0} for the top face"),"""
+_SCHEMA_PATCHED = """faceVector: z
+                .object({ x: z.coerce.number(), y: z.coerce.number(), z: z.coerce.number() })
+                .describe("Unit face direction, e.g. {x:0,y:1,z:0} for the top face"),"""
+
 _HANDLER_ORIGINAL = """            if (args.itemName !== undefined) {
                 const resolved = resolveItem(bot.registry, args.itemName);
                 await bot.equip(resolved.id, "hand");
@@ -69,6 +76,7 @@ def patch_placement(payload: Path) -> str:
     updated = source
     for original, patched in (
         (_DESCRIPTION_ORIGINAL, _DESCRIPTION_PATCHED),
+        (_SCHEMA_ORIGINAL, _SCHEMA_PATCHED),
         (_HANDLER_ORIGINAL, _HANDLER_PATCHED),
     ):
         if updated.count(patched) == 1:

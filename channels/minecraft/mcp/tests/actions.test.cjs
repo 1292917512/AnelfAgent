@@ -378,6 +378,25 @@ test('the real flee tool has a finite goal and releases ownership on arrival', a
   await locks.run('equip_item', 1, async () => {})
 })
 
+test('goto rejects a pathfinder promise that resolves before reaching its goal', async t => {
+  const { locks, bot } = await fixture(t)
+  const { registerMovement } = await load('tools/movement.js')
+  bot.entity = { position: new Vec3(0, 64, 0) }
+  let stopped = 0
+  bot.pathfinder.goto = async () => 'resolved-without-moving'
+  bot.pathfinder.stop = () => { stopped++ }
+  const defs = new Map()
+  registerMovement(def => defs.set(def.name, def))
+
+  await assert.rejects(
+    defs.get('goto').handler({ goalType: 'near', x: 10, y: 64, z: 0, range: 1 }, {
+      locks, manager: { requireBot: () => bot },
+    }),
+    error => error.code === 'NOT_ARRIVED',
+  )
+  assert.equal(stopped, 1)
+})
+
 test('an unreachable persistent goal fails and clears movement', async t => {
   const { locks, bot, tool } = await fixture(t)
   await tool('follow_entity', () => { bot.pathfinder.setGoal({ target: 4 }) })({ entityId: 4 })

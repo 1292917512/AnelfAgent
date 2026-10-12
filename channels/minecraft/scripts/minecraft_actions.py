@@ -37,6 +37,52 @@ _PATCHES: dict[str, tuple[tuple[str, str], ...]] = {
     "awesome-mineflayer-mcp/dist/tools/movement.js": (
         ("bot.pathfinder.setGoal(new goals.GoalInvert(new goals.GoalNear(args.x, args.y, args.z, args.distance)), true);",
          "bot.pathfinder.setGoal(new goals.GoalInvert(new goals.GoalNear(args.x, args.y, args.z, args.distance)), false);"),
+        ("            const goal = buildGoal(args, bot);\n            const timeoutMs = args.timeout ?? 60000;",
+         "            const goal = buildGoal(args, bot);\n"
+         "            const fallbackGoal = args.goalType === \"block\"\n"
+         "                ? new goals.GoalNear(reqNum(args.x, \"x\", \"block\"), reqNum(args.y, \"y\", \"block\"), reqNum(args.z, \"z\", \"block\"), 1)\n"
+         "                : null;\n"
+         "            const timeoutMs = args.timeout ?? 60000;\n"
+         "            const assertArrived = target => {\n"
+         "                const position = bot.entity?.position;\n"
+         "                if (!position || typeof target?.isEnd !== \"function\" || !target.isEnd(position.floored())) {\n"
+         "                    try { bot.pathfinder.stop(); } catch { /* ignore */ }\n"
+         "                    throw new ToolError(\"NOT_ARRIVED\", \"Pathfinder completed without reaching the requested goal.\");\n"
+         "                }\n"
+         "                return serializeVec3(position);\n"
+         "            };"),
+        ("            let timer;\n            try {\n                const result = await Promise.race([\n                    bot.pathfinder.goto(goal).then(() => \"arrived\"),\n                    new Promise((_resolve, reject) => {\n                        timer = setTimeout(() => reject(new ToolError(\"TIMEOUT\", `goto exceeded ${timeoutMs}ms`)), timeoutMs);\n                    }),\n                ]);",
+         "            const runGoal = async target => {\n"
+         "                let timer;\n"
+         "                try {\n"
+         "                    return await Promise.race([\n"
+         "                        bot.pathfinder.goto(target).then(() => \"arrived\"),\n"
+         "                        new Promise((_resolve, reject) => {\n"
+         "                            timer = setTimeout(() => reject(new ToolError(\"TIMEOUT\", `goto exceeded ${timeoutMs}ms`)), timeoutMs);\n"
+         "                        }),\n"
+         "                    ]);\n"
+         "                } finally {\n"
+         "                    if (timer) clearTimeout(timer);\n"
+         "                }\n"
+         "            };\n"
+         "            try {\n"
+         "                const result = await runGoal(goal);"),
+        ("                void result;\n                return { ok: true, arrivedAt: serializeVec3(bot.entity.position) };",
+         "                void result;\n"
+         "                return { ok: true, arrivedAt: assertArrived(goal) };"),
+        ("            }\n            catch (e) {\n                if (h.signal.aborted)",
+         "            }\n            catch (e) {\n"
+         "                if (fallbackGoal && (e?.code === \"NOT_ARRIVED\" || e?.name === \"NoPath\" || /no path/i.test(String(e?.message ?? e)))) {\n"
+         "                    try {\n"
+         "                        await runGoal(fallbackGoal);\n"
+         "                        return { ok: true, arrivedAt: assertArrived(fallbackGoal), recovery: \"near_goal\" };\n"
+         "                    } catch (fallbackError) {\n"
+         "                        e = fallbackError;\n"
+         "                    }\n"
+         "                }\n"
+         "                if (h.signal.aborted)"),
+        ("            finally {\n                if (timer)\n                    clearTimeout(timer);\n                h.release();\n",
+         "            finally {\n                h.release();\n"),
     ),
     "awesome-mineflayer-mcp/dist/bot/plugins.js": (
         ('    bot.loadPlugin(armorManager);',
@@ -113,6 +159,36 @@ def patch_actions(payload: Path) -> str:
                 'import { wrapActionTools } from "./anelf-actions.mjs";',
                 'import { wrapActionTools, withActionRequest } from "./anelf-actions.mjs";',
             )
+        if relative.endswith("tools/movement.js"):
+            # Migrate the previously installed movement patch before applying
+            # the stricter postcondition below. This keeps the installer
+            # repeatable after an agent restart or dependency refresh.
+            legacy_movement = (
+                "            const goal = buildGoal(args, bot);\n"
+                "            const fallbackGoal = args.goalType === \"block\"\n"
+                "                ? new goals.GoalNear(reqNum(args.x, \"x\", \"block\"), reqNum(args.y, \"y\", \"block\"), reqNum(args.z, \"z\", \"block\"), 1)\n"
+                "                : null;\n"
+                "            const timeoutMs = args.timeout ?? 60000;"
+            )
+            current_movement = replacements[1][1]
+            if updated.count(current_movement) != 1 and updated.count(legacy_movement) == 1:
+                updated = updated.replace(legacy_movement, current_movement, 1)
+            legacy_catch = (
+                "            }\n"
+                "            catch (e) {\n"
+                "                if (fallbackGoal && (e?.name === \"NoPath\" || /no path/i.test(String(e?.message ?? e)))) {\n"
+                "                    try {\n"
+                "                        await runGoal(fallbackGoal);\n"
+                "                        return { ok: true, arrivedAt: serializeVec3(bot.entity.position), recovery: \"near_goal\" };\n"
+                "                    } catch (fallbackError) {\n"
+                "                        e = fallbackError;\n"
+                "                    }\n"
+                "                }\n"
+                "                if (h.signal.aborted)"
+            )
+            current_catch = replacements[4][1]
+            if updated.count(current_catch) != 1 and updated.count(legacy_catch) == 1:
+                updated = updated.replace(legacy_catch, current_catch, 1)
         for original, patched in replacements:
             if updated.count(patched) == 1:
                 continue

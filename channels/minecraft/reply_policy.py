@@ -52,6 +52,8 @@ def companion_policy(server: str) -> ReplyPolicy:
         direct_reply=True,
         tool_groups=(f"mcp:{server}",),
         initial_tools=COMPANION_DIALOGUE_TOOLS + initial_game_tools,
+        lean_context=True,
+        auto_send_text=True,
         handoff_to_events=lambda results: handed_to_game_events(canonical_results(results)),
         instructions=(
             "[Minecraft 陪玩执行契约]\n"
@@ -60,8 +62,8 @@ def companion_policy(server: str) -> ReplyPolicy:
             "只用真实工具名：`get_inventory`、`get_state`；worker 的低层工具为 `get_block_at`、"
             "`place_block`、`craft_item`。重名时按本服务注册名映射调用，委托也使用实际目录名，禁止猜测前缀。"
             "查询和停止后必须用 send_message 报告实际结果，再 end_reply；独白与结束备注不会发到游戏。\n"
-            "prepare_item / manage_supplies / gather_resources 是单任务交接入口：真实受理后本次主会话结束，"
-            "由执行器终态事件报告结果；需要告知接单时在同批调用 send_message，不再查询、轮询或另发完成总结。"
+            "prepare_item / manage_supplies / gather_resources 是一次明确指令对应的一段连续任务：玩家说出制作、补给或采集的明确动词，"
+            "就视为已授权该指令允许范围内的全部执行步骤；不得在找到目标、走到目标或开始挖掘时再次询问授权。由执行器完成并报告终态。"
             "如果玩家要求制作后跟随、采集后再执行其他操作等组合任务，先将完整请求及全部限制委托给 mc-worker，"
             "不要在主会话先启动其中一个交接任务而遗漏后续目标。启动失败则继续核对并解释，不作成功交接。\n"
             "木制/石制工具、盾牌、工作台和木棍的准备优先直接调用 `prepare_item`：自动核算背包材料、准备中间产物和可操作的工作台。"
@@ -80,20 +82,21 @@ def companion_policy(server: str) -> ReplyPolicy:
             "withdraw.count 是背包应补到的总数。整批缺料或空间不足则不搬物品，工具/食物/火把有最低保留量。"
             "等待补给终态播报或查询 `supply_status`；按 confirmed/items 的双方库存对账及 inventoryClean 汇报，"
             "部分完成或取消不重做，也不擅自接着采集或制作。\n"
-            "附近表面原木/圆石采集优先 `gather_resources`：先确定玩家允许采集区域的中心坐标，半径最多四格，"
-            "只走已有平坦通路，绝不挖脚下或开路。count 是本次新增入包，不含旧库存/出发补给。"
+            "附近表面原木/圆石采集优先 `gather_resources`：玩家明确说‘采集/砍/挖附近或当前可见的某种资源’时，"
+            "当前 bot 位置和当前可见目标即构成这一次授权区域；先确定中心坐标，半径最多四格，"
+            "允许目标附近一格高度差的已有安全路线，绝不挖脚下或任意开路。count 是本次新增入包，不含旧库存/出发补给。"
             "默认 mode=count 严守数量；明确整树采集才用 mode=tree，此时 count 为整树原木上限，超限先拒绝，不能追加采邻树。"
-            "可用明确授权且出发点可见四格内的 chest 坐标组合 withdraw 补给和 deposit=true 返程存货；不猜箱子。"
-            "等待终态或查 `gathering_status`，分别看 dug/gained/remaining/returned/deposited；缺拾取即停挖，停止或断线不自续。"
+            "只有箱子补给/卸货、扩大区域、进入建筑或破坏可能属于玩家的方块仍需要额外明确授权；不猜箱子。"
+            "执行器内部等待终态并核对 `gathering_status` 的 `dug/gained/remaining/returned/deposited`；缺拾取即停挖并报告原因，停止或断线不自续。"
             "不能识别人造建筑，采集区域必须获准；地形高差、地下目标用 `mine_resources` 或准确解释限制。\n"
             "单步查询、跟随、停止和启动 `mine_resources` 可直接做；超出上述制作、补给和表面采集入口的交付和其他多步任务，"
             "第一轮实际调用 delegate_task(agent_name='mc-worker', background=true)。"
             "必须读取本次工具返回的成功状态和 delegation_id，确认任务成功启动后，才可用 send_message 告知已派工。"
             "没有本次委托成功的工具结果就是尚未派工；文字承诺、历史任务和自己的独白均不算派工事实。"
             "不要在主会话先查背包、预演、present_plan 或执行同一组动作；委托失败才如实解释。"
-            "成功委托后无需再建计划或定时提醒；此时才结束本轮等待后台完成通知，不轮询。\n"
+            "成功执行后无需再次请求同一任务的授权；终态汇报后继续按已启用的自主生活循环推进下一项有界活动，不把普通完成误判成需要玩家重新下令。\n"
             "后台任务完成/失败/取消通知只用于核对并汇报，不能当成玩家的新请求再次 delegate_task，"
-            "更不能从头重做消耗材料；没有玩家新指令就待命。\n"
+            "更不能从头重做消耗材料；没有新指令时保持安全待命，并由已启用的自主生活循环在冷却后推进下一项有界活动。\n"
             "委托的 task/context 必须保留玩家原始目标、世界和全部约束，并带上以下执行规则："
             "只用指定游戏 MCP 工具，不调用 shell/记忆/规划工具；首轮并行 get_inventory 和 get_state，"
             "同一机器人的写动作串行。已有工作台可复用；新台先确认背包到账，再选身体外的空位和可见实心支撑面，"

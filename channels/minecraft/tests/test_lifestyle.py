@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -41,6 +42,72 @@ async def test_lifestyle_waits_for_idle_and_runs_one_reflection(monkeypatch: pyt
     assert calls[0]["adapter_key"] == "minecraft"
     assert calls[0]["tool_tags"] == ["mcp:custom-game"]
     assert calls[0]["allow_output_tools"] is False
+
+
+@pytest.mark.asyncio
+async def test_player_activity_cancels_only_lifestyle_reflection() -> None:
+    lifestyle = MinecraftLifestyle(
+        mcp_server=lambda: "custom-game",
+        server_id=lambda: "local",
+        enabled=lambda: True,
+        interval_seconds=lambda: 300,
+        idle_seconds=lambda: 30,
+    )
+    task = asyncio.create_task(asyncio.sleep(60))
+    lifestyle._running = task
+
+    lifestyle.note_player_activity()
+    await asyncio.sleep(0)
+    lifestyle._clear_task(task)
+
+    assert task.cancelled()
+    assert time.monotonic() - lifestyle._last_player_activity < 1
+
+
+@pytest.mark.asyncio
+async def test_lifestyle_hands_off_background_actions_without_polling_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prompts: list[str] = []
+
+    class Mind:
+        async def reflect(self, messages, **_kwargs):
+            prompts.append(messages[0]["content"])
+            return "done"
+
+    monkeypatch.setattr("agent.runtime.singleton.get_runtime", lambda: SimpleNamespace(mind=Mind()))
+    lifestyle = MinecraftLifestyle(
+        mcp_server=lambda: "custom-game",
+        server_id=lambda: "local",
+        enabled=lambda: True,
+        interval_seconds=lambda: 300,
+        idle_seconds=lambda: 30,
+    )
+
+    await lifestyle._run()
+
+    assert prompts
+    assert "active=true 只表示已受理" in prompts[0]
+    assert "最多查询一次对应的 *_status 或 action_status，然后立刻 end_reply" in prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_lifestyle_handoff_cooldown_is_bounded() -> None:
+    lifestyle = MinecraftLifestyle(
+        mcp_server=lambda: "custom-game",
+        server_id=lambda: "local",
+        enabled=lambda: True,
+        interval_seconds=lambda: 300,
+        idle_seconds=lambda: 30,
+    )
+    lifestyle._next_run = 0
+    task = asyncio.create_task(asyncio.sleep(0))
+    await task
+    lifestyle._running = task
+
+    lifestyle._clear_task(task)
+
+    assert 0 < lifestyle._next_run - time.monotonic() <= 15
 
 
 @pytest.mark.asyncio
