@@ -7,6 +7,7 @@ from typing import List, Optional, Union
 from pydantic import BaseModel, Field, PrivateAttr
 
 from agent.llm.types import ImageContent
+from agent.memory.recall_policy import RecallPolicy
 from core.tags import (
     Tag,
     get_time_tag,
@@ -66,6 +67,7 @@ class Everything(Nothing):
     reply_to_id: str = ""
     reply_content: str = ""
     trigger_mind: bool = True
+    recall_policy: RecallPolicy | None = Field(default=None, exclude=True)
     # 消息类别（chat/notification/event/system，对应 MessageKind）：
     # 非 chat 时在历史文本渲染 [kind:xxx] 标签，区分平台推送与真人聊天
     message_kind: str = "chat"

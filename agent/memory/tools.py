@@ -95,6 +95,25 @@ def _current_scope_tag() -> str:
 # ------------------------------------------------------------------
 
 @deferred_tool(
+    group="memory", tags=["always"], source="mind.memory",
+    description="调整当前对话轮次的自动召回强度 off/tags/fast/deep 及异步补充；不影响手动 recall。全局默认通过 update_entity_config 修改 memory_recall_level。",
+)
+async def set_recall_policy(level: str, tags: str = "", background: bool = True) -> str:
+    """调整本轮后续召回；已有上下文保留，tags 为逗号分隔的精确记忆标签。"""
+    from core.conversation_scope import current_scope
+
+    from .recall_policy import RecallPolicy, set_turn_recall_policy
+    try:
+        policy = RecallPolicy.model_validate({"level": level, "tags": [t.strip() for t in tags.split(",") if t.strip()],
+                                              "background": background})
+        set_turn_recall_policy(policy, current_scope())
+        return json.dumps({"policy": policy.model_dump(), "scope": current_scope(),
+                           "effect": "仅作用于本轮后续自动召回；已注入内容保留。需要立即查询请调用 recall。"}, ensure_ascii=False)
+    except ValueError as exc:
+        return tool_error(str(exc), cause=ErrorCause.PARAM, retryable=False,
+                          hint="在对话轮次内使用 off/tags/fast/deep；标签采用记忆系统中的完整标签")
+
+@deferred_tool(
     group="memory", tags=["always"], source="mind.memory", timeout=300.0,
     description="将一条关键信息存入长期记忆（内容简洁精炼；type:permanent 为永久记忆）。"
     "返回 verdict 落盘裁决，落盘纪律见「记忆体系铁律」。",

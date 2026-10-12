@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -22,6 +24,8 @@ from agent.hooks_llm.snapshot import (
     prepare_hook_messages,
 )
 from agent.hooks_llm.spec import LLMHookSpec
+from core.event_bus import EVENT_AFTER_REPLY, EventBus
+from core.hooks import HookMode, hook_journal
 
 
 @pytest.fixture(autouse=True)
@@ -158,7 +162,7 @@ async def test_dispatch_runs_all_matched_hooks_in_parallel():
 
     specs = [_mk("h1"), _mk("h2"), _mk("h3")]
     executor = _make_executor()
-    executor.dispatch("after_reply", specs, {"scope": "user_q:1"})
+    await executor.dispatch("after_reply", specs, {"scope": "user_q:1"})
     await _drain(executor)
     assert sorted(ran) == ["h1", "h2", "h3"]
 
@@ -175,7 +179,7 @@ async def test_dispatch_respects_when_gate():
     no = LLMHookSpec(name="no", event="after_reply", handler=_h,
                      when=lambda p: False)
     executor = _make_executor()
-    executor.dispatch("after_reply", [yes, no], {})
+    await executor.dispatch("after_reply", [yes, no], {})
     await _drain(executor)
     assert ran == ["yes"]
 
@@ -192,7 +196,7 @@ async def test_dispatch_skips_when_inside_hook_recursion_guard():
     executor = _make_executor()
     token = _RecursionGuard.enter()
     try:
-        executor.dispatch("after_reply", [spec], {})
+        await executor.dispatch("after_reply", [spec], {})
         await _drain(executor)
     finally:
         _RecursionGuard.exit(token)
@@ -210,7 +214,7 @@ async def test_transcript_disabled_drops_snapshot(monkeypatch):
                        context=HookContextMode.TRANSCRIPT)
     executor = _make_executor()
     monkeypatch.setattr(HookExecutor, "_transcript_enabled", staticmethod(lambda: False))
-    executor.dispatch("after_reply", [spec],
+    await executor.dispatch("after_reply", [spec],
                       {"messages": [{"role": "user", "content": "x"}]})
     await _drain(executor)
     assert captured["messages"] == []
@@ -227,7 +231,7 @@ async def test_transcript_enabled_builds_snapshot(monkeypatch):
                        context=HookContextMode.TRANSCRIPT)
     executor = _make_executor()
     monkeypatch.setattr(HookExecutor, "_transcript_enabled", staticmethod(lambda: True))
-    executor.dispatch("after_reply", [spec],
+    await executor.dispatch("after_reply", [spec],
                       {"messages": [{"role": "user", "content": "x"}]})
     await _drain(executor)
     assert len(captured["messages"]) == 1
@@ -244,8 +248,8 @@ async def test_cooldown_skips_within_window():
     spec = LLMHookSpec(name="c", event="after_reply", handler=_h,
                        cooldown_seconds=60.0)
     executor = _make_executor()
-    executor.dispatch("after_reply", [spec], {"scope": "user_q:1"})
-    executor.dispatch("after_reply", [spec], {"scope": "user_q:1"})
+    await executor.dispatch("after_reply", [spec], {"scope": "user_q:1"})
+    await executor.dispatch("after_reply", [spec], {"scope": "user_q:1"})
     await _drain(executor)
     assert ran == ["x"]  # 第二次在冷却期内被跳过
 
@@ -264,7 +268,7 @@ async def test_one_hook_failure_does_not_affect_others():
     good = LLMHookSpec(name="good", event="after_reply", handler=_ok)
     executor = _make_executor()
     # 后台 task 独立隔离：坏钩子异常不影响好钩子
-    executor.dispatch("after_reply", [bad, good], {})
+    await executor.dispatch("after_reply", [bad, good], {})
     await _drain(executor)
     assert ran == ["ok"]
 
@@ -313,7 +317,7 @@ async def test_llm_end_transcript_uses_payload_messages(monkeypatch):
         "model": "m1", "duration_ms": 120, "tool_calls": ["recall"],
         "messages": [{"role": "user", "content": "本轮输入"}],
     }
-    executor.dispatch("llm_end", [spec], payload)
+    await executor.dispatch("llm_end", [spec], payload)
     await _drain(executor)
     assert len(captured["messages"]) == 1
     assert captured["messages"][0]["content"] == "本轮输入"
@@ -332,7 +336,7 @@ async def test_llm_end_scope_fallback_to_contextvar(monkeypatch):
     from agent.mind.tool_activation import bind_scope, reset_scope
     token = bind_scope("user_q:42")
     try:
-        executor.dispatch("llm_end", [spec], {"model": "m"})
+        await executor.dispatch("llm_end", [spec], {"model": "m"})
         await _drain(executor)
     finally:
         reset_scope(token)
@@ -367,7 +371,7 @@ async def test_debounce_merges_window_triggers_to_latest():
                        debounce_seconds=0.08)
     executor = _make_executor()
     for i in range(1, 6):
-        executor.dispatch("after_reply", [spec], {"scope": "s", "seq": i})
+        await executor.dispatch("after_reply", [spec], {"scope": "s", "seq": i})
         await asyncio.sleep(0.03)
     await asyncio.sleep(0.3)
     assert ran == [5]
@@ -384,7 +388,7 @@ async def test_dispatch_is_non_blocking():
     spec = LLMHookSpec(name="slow", event="after_reply", handler=_slow)
     executor = _make_executor()
     t0 = _time.monotonic()
-    executor.dispatch("after_reply", [spec], {})
+    await executor.dispatch("after_reply", [spec], {})
     assert _time.monotonic() - t0 < 0.05  # 立即返回，不等 0.2s 的钩子
     await _drain(executor)
 
@@ -402,8 +406,8 @@ async def test_cancel_pending_stops_debounced_not_running():
     debounced = LLMHookSpec(name="deb", event="after_reply", handler=_h,
                             debounce_seconds=5.0)
     executor = _make_executor()
-    executor.dispatch("after_reply", [running], {})
-    executor.dispatch("after_reply", [debounced], {})
+    await executor.dispatch("after_reply", [running], {})
+    await executor.dispatch("after_reply", [debounced], {})
     await asyncio.wait_for(started.wait(), timeout=1.0)
     assert len(executor._running) == 1          # run 在途
     assert len(executor._debounce_handle) == 1  # deb 防抖待发
@@ -433,8 +437,8 @@ async def test_cooldown_not_leaked_by_back_to_back_dispatch():
     spec = LLMHookSpec(name="c", event="after_reply", handler=_h,
                        cooldown_seconds=60.0)
     executor = _make_executor()
-    executor.dispatch("after_reply", [spec], {"scope": "s"})
-    executor.dispatch("after_reply", [spec], {"scope": "s"})
+    await executor.dispatch("after_reply", [spec], {"scope": "s"})
+    await executor.dispatch("after_reply", [spec], {"scope": "s"})
     await _drain(executor)
     assert ran == [1]
 
@@ -452,8 +456,8 @@ async def test_drain_waits_running_cancels_debounced():
     debounced = LLMHookSpec(name="deb", event="after_reply", handler=_slow,
                             debounce_seconds=5.0)
     executor = HookExecutor(SimpleNamespace(background_tasks=None), pool_size=2)
-    executor.dispatch("after_reply", [running], {})
-    executor.dispatch("after_reply", [debounced], {})
+    await executor.dispatch("after_reply", [running], {})
+    await executor.dispatch("after_reply", [debounced], {})
     await asyncio.sleep(0.05)  # review 已开始，deb 仍在防抖窗口
     await executor.drain(timeout=5.0)
     assert finished == ["review"]  # 运行中的被执行完；防抖待发被取消
@@ -470,7 +474,7 @@ async def test_drain_timeout_cancels_overrun():
 
     spec = LLMHookSpec(name="hang", event="after_reply", handler=_hang)
     executor = HookExecutor(SimpleNamespace(background_tasks=None), pool_size=1)
-    executor.dispatch("after_reply", [spec], {})
+    await executor.dispatch("after_reply", [spec], {})
     await asyncio.wait_for(started.wait(), timeout=1.0)
     import time as _time
     t0 = _time.monotonic()
@@ -496,7 +500,7 @@ async def test_context_carries_exec_params_from_spec():
         allow_output_tools=True, model="light",
     )
     executor = _make_executor()
-    executor.dispatch("after_reply", [spec], {"scope": "user_q:1"})
+    await executor.dispatch("after_reply", [spec], {"scope": "user_q:1"})
     await _drain(executor)
     assert seen == {
         "tool_tags": ("skills",), "max_iterations": 9,
@@ -538,7 +542,7 @@ async def test_route_output_default_goes_unclaimed_path():
         return "钩子报告"
 
     executor = _make_executor_with_registry(registry)
-    executor.dispatch(
+    await executor.dispatch(
         "after_reply",
         [LLMHookSpec(name="r", event="after_reply", handler=_h)],
         {"scope": "user_q:1"},
@@ -558,7 +562,7 @@ async def test_route_output_false_records_without_wake():
         return "评审报告"
 
     executor = _make_executor_with_registry(registry)
-    executor.dispatch(
+    await executor.dispatch(
         "after_reply",
         [LLMHookSpec(name="r", event="after_reply", handler=_h, route_output=False)],
         {"scope": "user_q:1"},
@@ -577,7 +581,7 @@ async def test_empty_output_never_registers():
         return ""
 
     executor = _make_executor_with_registry(registry)
-    executor.dispatch(
+    await executor.dispatch(
         "after_reply",
         [LLMHookSpec(name="r", event="after_reply", handler=_h, route_output=False)],
         {"scope": "user_q:1"},
@@ -598,3 +602,92 @@ def test_llm_hook_decorator_route_output():
         return None
 
     assert HookRegistry.get("default_route").route_output is True  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_llm_sync_waits_async_does_not_and_snapshot_is_frozen():
+    entered, release = asyncio.Event(), asyncio.Event()
+    seen = []
+
+    async def handler(ctx):
+        entered.set()
+        await release.wait()
+        seen.append(ctx.payload["nested"]["value"])
+
+    executor = HookExecutor(SimpleNamespace(background_tasks=None))
+    spec = LLMHookSpec("review", "after_reply", handler, mode=HookMode.SYNC)
+    task = asyncio.create_task(executor.dispatch("after_reply", [spec], {"nested": {"value": 1}}))
+    await entered.wait()
+    assert not task.done()
+    release.set()
+    await task
+    entered.clear()
+    release.clear()
+    payload = {"nested": {"value": 2}}
+    await executor.dispatch("after_reply", [replace(spec, mode=HookMode.ASYNC)], payload)
+    payload["nested"]["value"] = 3
+    await entered.wait()
+    release.set()
+    await executor.drain()
+    assert seen == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_llm_timeout_is_reported_and_does_not_block_following_hooks():
+    hook_journal.clear()
+    async def stuck(ctx):
+        await asyncio.Event().wait()
+    done = AsyncMock(return_value="ok")
+    executor = HookExecutor(SimpleNamespace(background_tasks=None))
+    await executor.dispatch("after_reply", [
+        LLMHookSpec("slow", "after_reply", stuck, mode=HookMode.SYNC, timeout_seconds=.02),
+        LLMHookSpec("next", "after_reply", done, mode=HookMode.SYNC),
+    ], {})
+    done.assert_awaited_once()
+    records = hook_journal.snapshot()["recent"]
+    assert any(r["name"] == "slow" and r["status"] == "error" for r in records)
+
+
+@pytest.mark.asyncio
+async def test_sync_runtime_uses_hook_budget_instead_of_event_bus_budget(monkeypatch):
+    from agent.hooks_llm.runtime import HookRuntime
+    bus = EventBus()
+    monkeypatch.setattr("agent.hooks_llm.runtime.event_bus", bus)
+    monkeypatch.setattr("core.event_bus.HANDLER_TIMEOUT_SECONDS", .01)
+    completed = []
+
+    async def handler(ctx):
+        await asyncio.sleep(.04)
+        completed.append(True)
+
+    HookRegistry.register(LLMHookSpec("wait", "after_reply", handler, mode=HookMode.SYNC, timeout_seconds=1))
+    runtime = HookRuntime(SimpleNamespace(background_tasks=None))
+    runtime.start()
+    try:
+        await bus.emit(EVENT_AFTER_REPLY, {})
+        assert completed == [True]
+    finally:
+        await runtime.drain()
+
+
+@pytest.mark.asyncio
+async def test_sync_budget_includes_wait_for_busy_pool():
+    entered = asyncio.Event()
+
+    async def busy(ctx):
+        entered.set()
+        await asyncio.Event().wait()
+
+    pending = AsyncMock()
+    executor = HookExecutor(SimpleNamespace(background_tasks=None), pool_size=1)
+    await executor.dispatch("after_reply", [LLMHookSpec("busy", "after_reply", busy)], {})
+    await entered.wait()
+    try:
+        await asyncio.wait_for(executor.dispatch("after_reply", [
+            LLMHookSpec("queued", "after_reply", pending, mode=HookMode.SYNC, timeout_seconds=.02),
+        ], {}), timeout=.5)
+        pending.assert_not_awaited()
+        assert any(run["name"] == "queued" and run["status"] == "error"
+                   for run in hook_journal.snapshot()["recent"])
+    finally:
+        await executor.drain(timeout=0)

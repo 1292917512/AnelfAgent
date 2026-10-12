@@ -95,7 +95,7 @@
     "matcherPlaceholder": "工具名 glob，如 delete_* 或 *",
     "timeout": "超时(秒)",
     "command": "命令",
-    "commandPlaceholder": "shell 命令；payload JSON 经 stdin 传入，exit 2 可阻断工具调用",
+    "commandPlaceholder": "shell 命令；事件 JSON 通过 stdin 传入",
     "hint": "payload 经 stdin 以 JSON 传入，并镜像到环境变量 HOOK_EVENT/HOOK_TOOL；exit 2 = 阻断（stderr 为理由）；reply_end 可用 stdout 输出 REPLACE:<json-string> 改写最终回复。",
     "events": {
       "tool_pre": "工具执行前",
@@ -192,5 +192,86 @@
     "phaseConnecting": "连接源站中…（直连慢时自动切换镜像）",
     "phaseVerifying": "SHA-256 校验中…",
     "proxyHint": "下载慢/失败？配置页开全局网络代理"
+  },
+  "hookFlow": {
+    "title": "执行流程",
+    "mode": "执行方式",
+    "sync": "同步等待",
+    "async": "异步后台",
+    "syncHint": "按顺序等待完成。只有工具执行前的同步钩子可以通过 exit 2 阻止调用。",
+    "asyncHint": "后台执行，主流程继续。结果可在运行记录中查看，不会撤销已执行的操作。",
+    "recent": "最近执行",
+    "retention": "当前进程内保留最近 100 条；展开查看状态、归属与结果。",
+    "empty": "钩子触发后，执行过程会显示在这里",
+    "noDetail": "暂无输出",
+    "saveFirst": "先保存修改，再测试已保存的脚本。",
+    "testHint": "测试会真实执行匹配的已启用脚本，并等待后台钩子完成。",
+    "scriptHint": "同步适合前置校验，异步适合审计与通知。脚本通过 stdin 接收 JSON 事件；后台最多并行 4 条，排队上限 64 条。",
+    "invalid": "请填写命令，并将超时设置为 1–60 秒。",
+    "names": {
+      "memory": {
+        "recall": "首轮记忆召回",
+        "probe": "动态记忆补充"
+      }
+    },
+    "events": {
+      "context_prepare": "上下文准备",
+      "context_refresh": "动态上下文",
+      "tool_pre": "工具执行前",
+      "tool_post": "工具执行后",
+      "reply_end": "回复结束",
+      "after_reply": "回复结束"
+    },
+    "eventsHint": {
+      "tool_pre": "调用之前检查参数与执行条件。",
+      "tool_post": "处理执行结果，记录审计或触发后续工作。",
+      "reply_end": "处理回复完成事件；不会改写或自动投递消息。"
+    },
+    "status": {
+      "running": "执行中",
+      "done": "已完成",
+      "error": "失败",
+      "blocked": "已阻止",
+      "cancelled": "已取消"
+    },
+    "stages": {
+      "prepare": {
+        "title": "准备上下文",
+        "body": "首轮同步召回。按任务选择强度，固定纪律与标签归属保留。"
+      },
+      "tools": {
+        "title": "思考与工具执行",
+        "body": "前置校验 → 工具执行 → 结果钩子。异步记忆只补充动态区，不重写前缀。"
+      },
+      "complete": {
+        "title": "回复后续处理",
+        "body": "技能检查等后台工作独立执行；状态与耗时在工作区和这里同步可见。"
+      }
+    }
+  },
+  "recallPolicy": {
+    "title": "自动召回",
+    "subtitle": "按任务的时效与记忆需求选择召回强度。",
+    "background": "异步补充记忆",
+    "backgroundHint": "仅对快速 / 深入档生效。按需判断是否深探，在后续模型轮次的动态区注入；回复结束即回收。",
+    "scope": "这里修改全局默认。AI 可用 set_recall_policy 调整本轮；SDK 可覆盖输入消息的 recall_policy。关闭自动召回仍保留固定纪律，手动 recall 始终可用。",
+    "levels": {
+      "off": {
+        "title": "关闭",
+        "body": "不自动检索。适合明确指令和对延迟敏感的任务。"
+      },
+      "tags": {
+        "title": "仅标签",
+        "body": "精确查询指定标签；未指定时读取当前会话画像，不调用向量或规划模型。"
+      },
+      "fast": {
+        "title": "快速",
+        "body": "本地文本与向量混合检索。慢向量有时限，深入分析放到后台。"
+      },
+      "deep": {
+        "title": "深入",
+        "body": "保留多查询规划、跨频道与联邦检索，适合复杂历史与关系问题。"
+      }
+    }
   }
 }

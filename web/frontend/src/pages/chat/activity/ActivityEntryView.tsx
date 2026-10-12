@@ -12,6 +12,7 @@ import { PlanMeta } from "@/components/plan/PlanMeta";
 import { ActivityContext } from "./ActivityContext";
 import { ActivityModel } from "./ActivityModel";
 import { ActivityToolResult } from "./ActivityToolResult";
+import { HookExecutionRow } from "@/components/common/HookExecutionRow";
 
 function readableJson(value: string): string {
   try { return JSON.stringify(JSON.parse(value), null, 2); } catch { return value; }
@@ -27,6 +28,7 @@ export function ActivityEntryView({ entry, live, onReveal }: { entry: ActivityEn
   const [expanded, setExpanded] = useState<boolean | null>(null);
   const now = useNow("status" in entry && (entry.status === "running" || entry.status === "queued"));
   if (entry.kind === "context") return <ActivityContext entry={entry} />;
+  if (entry.kind === "hook") return <HookExecutionRow run={{ ...entry, started_at: entry.ts }} />;
   if (entry.kind === "file") return <DiffView {...entry} />;
   if (entry.kind === "model") return <ActivityModel entry={entry} />;
   if (entry.kind === "text") return <div className="activity-output">{entry.truncated && <p className="activity-note">{t("activity.truncated")}</p>}<Markdown content={entry.content} renderText={renderTaggedText} /></div>;

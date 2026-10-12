@@ -17,19 +17,21 @@ import { RulesPanel } from "@/pages/memory/RulesPanel";
 import { DailyNotesPanel } from "@/pages/memory/DailyNotesPanel";
 import { DocsPanel } from "@/pages/memory/DocsPanel";
 import { CogneePanel } from "@/pages/memory/cognee/CogneePanel";
+import { RecallPolicyPanel } from "@/pages/memory/RecallPolicyPanel";
 const GraphPanel = lazy(() => import("@/pages/memory/graph/GraphPanel").then((module) => ({ default: module.GraphPanel })));
 
-type MemTab = "overview" | "stm" | "goals" | "conv" | "notes" | "daily" | "docs" | "entity" | "ltm" | "graph" | "cognee" | "rules";
+type MemTab = "overview" | "recall" | "stm" | "goals" | "conv" | "notes" | "daily" | "docs" | "entity" | "ltm" | "graph" | "cognee" | "rules";
 
 /** 工作区式面板（列表 + 内容区）：md 及以上占满视口剩余高度，内部滚动 */
 const FULL_HEIGHT_TABS = new Set<MemTab>(["conv", "notes", "rules"]);
 
 export default function Memory() {
   const { t } = useTranslation("memory");
-  const [tab, setTab] = useRouteTab<MemTab>(["overview", "stm", "goals", "conv", "notes", "daily", "docs", "entity", "ltm", "graph", "cognee", "rules"], "overview");
+  const [tab, setTab] = useRouteTab<MemTab>(["overview", "recall", "stm", "goals", "conv", "notes", "daily", "docs", "entity", "ltm", "graph", "cognee", "rules"], "overview");
 
   const TAB_KEYS: TabItem<MemTab>[] = [
     { key: "overview", label: t("tabs.overview"), icon: Activity },
+    { key: "recall", label: t("settings:recallPolicy.title"), icon: Activity },
     { key: "stm", label: t("tabs.stm"), icon: HardDrive },
     { key: "goals", label: t("tabs.goals"), icon: Target },
     { key: "conv", label: t("tabs.conv"), icon: MessageSquare },
@@ -49,6 +51,7 @@ export default function Memory() {
       <TabBar tabs={TAB_KEYS} activeTab={tab} onChange={setTab} />
       <div className={cn(FULL_HEIGHT_TABS.has(tab) && "md:flex-1 md:min-h-0 md:flex md:flex-col")}>
         {tab === "overview" && <OverviewPanel />}
+        {tab === "recall" && <RecallPolicyPanel />}
         {tab === "stm" && <STMPanel />}
         {tab === "goals" && <GoalsPanel />}
         {tab === "conv" && <ConvPanel />}

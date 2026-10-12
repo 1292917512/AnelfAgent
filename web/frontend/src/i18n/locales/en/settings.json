@@ -95,7 +95,7 @@
     "matcherPlaceholder": "Tool name glob, e.g. delete_* or *",
     "timeout": "Timeout (s)",
     "command": "Command",
-    "commandPlaceholder": "shell command; payload JSON via stdin, exit 2 blocks the tool call",
+    "commandPlaceholder": "Shell command; event JSON arrives on stdin",
     "hint": "Payload is passed via stdin as JSON and mirrored to HOOK_EVENT/HOOK_TOOL env vars; exit 2 = block (stderr as reason); reply_end may rewrite the final reply by printing REPLACE:<json-string> on stdout.",
     "events": {
       "tool_pre": "Before Tool",
@@ -192,5 +192,86 @@
     "phaseConnecting": "Connecting to source… (falls back to mirror if slow)",
     "phaseVerifying": "Verifying SHA-256…",
     "proxyHint": "Slow or failing? Enable the global proxy in Config"
+  },
+  "hookFlow": {
+    "title": "Execution flow",
+    "mode": "Execution mode",
+    "sync": "Wait",
+    "async": "Background",
+    "syncHint": "Waits in order. Only synchronous pre-tool hooks can veto a call with exit 2.",
+    "asyncHint": "Runs in the background. Results appear in execution history and cannot undo an operation.",
+    "recent": "Recent executions",
+    "retention": "The latest 100 executions in this process. Expand for scope, status and results.",
+    "empty": "Executions will appear here when a hook runs",
+    "noDetail": "No output",
+    "saveFirst": "Save changes before testing the saved scripts.",
+    "testHint": "Tests execute enabled matching scripts and wait for background hooks.",
+    "scriptHint": "Use wait for validation, background for audits and notifications. Scripts receive JSON on stdin; up to 4 background workers and 64 pending tasks.",
+    "invalid": "Enter a command and a timeout between 1 and 60 seconds.",
+    "names": {
+      "memory": {
+        "recall": "Initial recall",
+        "probe": "Memory enrichment"
+      }
+    },
+    "events": {
+      "context_prepare": "Prepare context",
+      "context_refresh": "Dynamic context",
+      "tool_pre": "Before tool",
+      "tool_post": "After tool",
+      "reply_end": "Reply complete",
+      "after_reply": "Reply complete"
+    },
+    "eventsHint": {
+      "tool_pre": "Check arguments and conditions before execution.",
+      "tool_post": "Process results, audit or trigger follow-up work.",
+      "reply_end": "Handle completion; does not rewrite or automatically deliver messages."
+    },
+    "status": {
+      "running": "Running",
+      "done": "Completed",
+      "error": "Failed",
+      "blocked": "Blocked",
+      "cancelled": "Cancelled"
+    },
+    "stages": {
+      "prepare": {
+        "title": "Prepare context",
+        "body": "Initial recall waits for results. Choose depth per task while retaining fixed instructions and provenance."
+      },
+      "tools": {
+        "title": "Reason and execute",
+        "body": "Validation → tool → result hooks. Memory enrichment uses the dynamic tail, preserving cached prefixes."
+      },
+      "complete": {
+        "title": "After the reply",
+        "body": "Skill review and other background work run independently, with status and timing visible here and in the workbench."
+      }
+    }
+  },
+  "recallPolicy": {
+    "title": "Automatic recall",
+    "subtitle": "Balance response time and memory depth for each task.",
+    "background": "Background enrichment",
+    "backgroundHint": "For fast / deep modes. Plans enrichment on demand and injects the dynamic tail; stops when the reply ends.",
+    "scope": "Sets the global default. AI can use set_recall_policy for this turn; SDK can set recall_policy on an input. Fixed instructions and manual recall remain available.",
+    "levels": {
+      "off": {
+        "title": "Off",
+        "body": "No automatic search. For precise instructions and latency-sensitive tasks."
+      },
+      "tags": {
+        "title": "Tags only",
+        "body": "Exact tag lookup; defaults to participant profiles. No embedding or planning calls."
+      },
+      "fast": {
+        "title": "Fast",
+        "body": "Local hybrid search with bounded embedding latency. Deep analysis runs in the background."
+      },
+      "deep": {
+        "title": "Deep",
+        "body": "Multi-query planning, cross-channel and federated search for complex history and relationships."
+      }
+    }
   }
 }

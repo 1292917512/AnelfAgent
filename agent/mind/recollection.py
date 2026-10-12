@@ -10,6 +10,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
+from agent.memory import recall_context  # noqa: F401
 from agent.memory.memory_retriever import MemoryRetriever
 from agent.memory.notes import (
     build_dynamic_notes,
@@ -21,9 +22,11 @@ from agent.memory.notes import (
     get_memory_dir,
     get_notes_path,
 )
+from agent.memory.recall_policy import current_recall_policy
 from agent.mind.context_observation import emit_context_summary
 from core.activity import EVENT_ACTIVITY_CONTEXT
 from core.event_bus import EVENT_THINKING_CONTEXT_BUILD, event_bus
+from core.hooks import HookMode, hook_execution
 from core.log import log
 
 if TYPE_CHECKING:
@@ -83,16 +86,21 @@ async def _get_recollection(
     entity_scope = mind._resolve_entity_scope(anything)
     tail = conversation_list[-10:] if len(conversation_list) > 10 else conversation_list
     current_adapter = getattr(anything, "adapter_key", "") or ""
+    policy = current_recall_policy(entity_scope)
 
     # 明确寒暄跳过远端查询，保留画像、永久记忆和显式技能手势。
     trivial = MemoryRetriever._is_trivial_turn(tail)
     # 三条召回路径（语义/跨频道/技能）共享查询向量。
     query_vec: Optional[List[float]] = None
     base_query = ""
-    if not lean and not trivial:
+    if not lean and not trivial and policy.level == "deep":
         base_query = MemoryRetriever._extract_query(tail) if tail else ""
         if base_query:
-            query_vec = await mind.embedder.embed_query(base_query)
+            try:
+                async with asyncio.timeout(2):
+                    query_vec = await mind.embedder.embed_query(base_query)
+            except Exception as exc:
+                log(f"上下文向量预取失败，召回使用各自预算: {type(exc).__name__}", "DEBUG", tag="记忆")
 
     # 相关实体 scope（画像注入与关系网络注入共用同一份参与人集合）
     scope_source = conversation_list[-30:] if len(conversation_list) > 30 else conversation_list
@@ -109,16 +117,25 @@ async def _get_recollection(
     async def _recall_memory() -> Tuple[List[Dict], List[Dict]]:
         if not mind.retriever:
             return [], []
-        profile_msgs, recall_msgs = await mind.retriever.recall_split(
-            tail, entity_scope=entity_scope, related_scopes=related_scopes,
-            query_vec=query_vec, fire_probe=not lean, plan_out=plan_holder,
-        )
+        async with hook_execution("memory.recall", "context_prepare", HookMode.SYNC, scope=entity_scope) as run:
+            if policy.level != "deep":
+                from agent.memory.recall_fast import recall_local
+                profile_msgs, recall_msgs = await recall_local(
+                    mind.retriever, tail, scope=entity_scope, related_scopes=related_scopes, policy=policy)
+            else:
+                profile_msgs, recall_msgs = await mind.retriever.recall_split(
+                    tail, entity_scope=entity_scope, related_scopes=related_scopes,
+                    query_vec=query_vec, fire_probe=not lean and policy.background, plan_out=plan_holder,
+                )
+            run.detail = f"{policy.level} · {len(profile_msgs)} 个画像块 · {len(recall_msgs)} 个记忆块"
+        from agent.memory.probe import deep_probe_hub
+        deep_probe_hub.prepare(entity_scope, tail, mind.retriever, planned=policy.level == "deep")
         log(f"语义召回: {len(recall_msgs)} 条, 画像: {len(profile_msgs)} 条", tag="思维")
         return profile_msgs, recall_msgs
 
     async def _load_relations() -> List[Dict]:
         """关系网络快照：当前会话参与实体之间的已知关系（独立注入块，不吃记忆预算）。"""
-        if not mind.retriever:
+        if not mind.retriever or policy.tags or policy.level in {"off", "tags"}:
             return []
         all_scopes = ([entity_scope] if entity_scope else []) + [
             s for s in related_scopes if s != entity_scope
@@ -126,7 +143,7 @@ async def _get_recollection(
         return await mind.retriever.load_relation_snippets(all_scopes)
 
     async def _recall_channels() -> Tuple[List[Dict], set[str]]:
-        if trivial:
+        if trivial or policy.level != "deep":
             return [], set()
         return await mind._recall_cross_channel(tail, current_adapter, entity_scope, query_vec=query_vec)
 
@@ -179,7 +196,7 @@ async def _get_recollection(
 
         # 自我画像（agent:self）随画像层注入：置于画像块首位
         # （自我认知优先于他人画像；低频变化，内容寻址缓存友好）
-        if mind.memory_store is not None:
+        if mind.memory_store is not None and not policy.tags and policy.level not in {"off", "tags"}:
             try:
                 from agent.memory.self_profile import (
                     load_self_profile,

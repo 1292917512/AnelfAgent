@@ -2,12 +2,14 @@
   "tool_pre": [
     {
       "matcher": "delete_*",
+      "mode": "sync",
       "command": "echo '{\"note\": \"删除操作前记录\"}' >> /tmp/anelf-hook.log",
       "timeout": 5
     }
   ],
   "tool_post": [
     {
+      "mode": "async",
       "matcher": "*",
       "command": "wc -c >> /tmp/anelf-hook-metrics.log",
       "timeout": 5
@@ -15,6 +17,7 @@
   ],
   "reply_end": [
     {
+      "mode": "async",
       "matcher": "*",
       "command": "cat > /dev/null",
       "timeout": 5

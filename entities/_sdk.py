@@ -37,6 +37,7 @@ import inspect
 import json
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, TypeVar
 
+from agent.memory.recall_policy import RecallPolicy, recall_options, set_turn_recall_policy
 from core.context_provider import context_provider
 from core.entity import EntityRegistry
 from core.log import log
@@ -55,6 +56,7 @@ if TYPE_CHECKING:
     from agent.llm.llm_manager import LLMManager as LLMManager
 
 __all__ = [
+    "RecallPolicy", "recall_options", "set_turn_recall_policy",
     "tool", "deferred_tool", "entity", "activate_group",
     "entity_manifest", "entity_config", "context_provider",
     "push_notify", "register_entity_llm_hook", "emit_chat_extension",
@@ -328,11 +330,11 @@ def register_entity_llm_hook(
     handler: Callable[..., Any],
     **spec_overrides: Any,
 ) -> bool:
-    """实体注册一个 LLM 钩子（达到事件条件即并行拉起一段 LLM 工作，不卡主思考）。
+    """实体注册一个 LLM 钩子，mode=async 后台执行，mode=sync 等待结束。
 
     经 LLM 钩子面（agent/hooks_llm）注册——同一事件可挂多个钩子并发执行，
     各自独立的并发/频控/防递归治理；钩子 LLM 产出经后台任务注册表路由，
-    不阻塞、不打扰主对话。
+    同步模式等待 handler，异步模式不阻塞主对话。
 
     Args:
         name: 全局唯一钩子名（建议带实体前缀，如 weather_analyze）。
@@ -344,7 +346,7 @@ def register_entity_llm_hook(
         spec_overrides: LLMHookSpec 治理字段直转（context/tool_tags/
             allow_output_tools/route_output/max_iterations/model/max_concurrent/
             cooldown_seconds/debounce_seconds/priority/description/when/
-            owner），未列键由 spec 构造器拒绝（注册失败返回 False）。
+            owner/mode/timeout_seconds），未列键由 spec 构造器拒绝（注册失败返回 False）。
             context 接受字符串档位（none/lean/transcript），tool_tags 接受 list；
             owner 缺省取调用方实体模块名（热拔卸载按 owner 批量清理）。
 
@@ -357,6 +359,7 @@ def register_entity_llm_hook(
             HOOK_EVENT_LLM_END,
             LLM_END_MIN_COOLDOWN_SECONDS,
         )
+        from core.hooks import HookMode
 
         owner = spec_overrides.pop("owner", "")
         if not owner:
@@ -374,6 +377,7 @@ def register_entity_llm_hook(
         spec = LLMHookSpec(
             name=name, event=event, handler=handler,
             context=context,
+            mode=HookMode(spec_overrides.pop("mode", "async")),
             tool_tags=tuple(spec_overrides.pop("tool_tags", ())),
             max_concurrent=max(1, int(spec_overrides.pop("max_concurrent", 1))),
             cooldown_seconds=cooldown,

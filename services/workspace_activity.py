@@ -29,6 +29,7 @@ from core.event_bus import (
     EVENT_THINKING_TOOL_START,
     event_bus,
 )
+from core.hooks import EVENT_HOOK_EXECUTION
 from core.realtime_hub import publish
 from core.sanitizer import sanitize_text
 from core.stream_events import EVENT_ASSISTANT_DELTA, EVENT_FILE_DIFF
@@ -70,6 +71,7 @@ class WorkspaceActivityService:
             (EVENT_ACTIVITY_STARTED, self._start),
             (EVENT_ACTIVITY_FINISHED, self._finish),
             (EVENT_ACTIVITY_CONTEXT, self._context),
+            (EVENT_HOOK_EXECUTION, self._hook),
             (EVENT_ASSISTANT_DELTA, self._delta),
             (EVENT_THINKING_LLM_START, self._llm_start),
             (EVENT_THINKING_LLM_END, self._llm_end),
@@ -113,7 +115,8 @@ class WorkspaceActivityService:
             return self.snapshot()
         runs = list(self._runs.values())
         latest = max(runs, key=lambda run: (run["started_at"], run["id"]))
-        kept = {latest["id"]} | {run["id"] for run in runs if run["status"] == "running"}
+        kept = {latest["id"]} | {run["id"] for run in runs if run["status"] == "running"
+                or any(e.get("status") == "running" for e in run["entries"])}
 
         def end(run: dict[str, Any]) -> float:
             return float("inf") if run["status"] == "running" else float(run["ended_at"] or run["updated_at"])
@@ -223,6 +226,20 @@ class WorkspaceActivityService:
         if run["kind"] == "delegation" and run["status"] in {"failed", "cancelled", "interrupted"}:
             await self._delegation_end({"delegation_id": run["owner_id"], "success": False,
                                         "cancelled": run["status"] != "failed", "error": run["error"]})
+
+    async def _hook(self, payload: dict[str, Any]) -> None:
+        run = self._get(payload)
+        if run is None:
+            return
+        entry = next((item for item in run["entries"]
+                      if item["kind"] == "hook" and item["id"] == payload["id"]), None)
+        if entry is None:
+            entry = {"kind": "hook", "id": str(payload["id"]), "ts": payload["started_at"]}
+            self._append(run, entry)
+        entry.update({key: sanitize_text(str(payload.get(key, "")))[:1200]
+                      for key in ("name", "event", "mode", "status", "detail", "source", "scope")})
+        entry["duration_ms"] = payload.get("duration_ms", 0)
+        self._changed(run)
 
     async def _context(self, payload: dict[str, Any]) -> None:
         run = self._get(payload)

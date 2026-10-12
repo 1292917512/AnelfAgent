@@ -1,6 +1,7 @@
 /** 钩子配置类型（/hooks、/hooks-llm API）。 */
 
 export interface HookEntry {
+  mode?: "sync" | "async";
   matcher: string;
   command: string;
   timeout?: number;
@@ -36,6 +37,7 @@ export interface HookEventStats {
 }
 
 export interface HooksConfig {
+  execution: { active: HookExecution[]; recent: HookExecution[] };
   path: string;
   exists: boolean;
   /** 总开关（配置项 hooks_enabled 的热读值） */
@@ -60,6 +62,8 @@ export interface HooksTestResult {
 }
 
 export interface LlmHookItem {
+  mode: "sync" | "async";
+  timeout_seconds: number;
   name: string;
   event: string;
   context: string;
@@ -77,6 +81,19 @@ export interface LlmHookItem {
   tool_tags: string[];
   /** 启用状态（运行期开关，重启恢复代码声明初始值） */
   enabled: boolean;
+}
+
+export interface HookExecution {
+  id: string;
+  name: string;
+  event: string;
+  mode: "sync" | "async";
+  source: string;
+  scope: string;
+  status: string;
+  started_at: number;
+  duration_ms: number;
+  detail: string;
 }
 
 export interface LlmHooksOverview {

@@ -216,6 +216,7 @@ async def reply_loop(
     if not adapter_key:
         adapter_key = mind._resolve_adapter_key()
     scope = mind._resolve_entity_scope(anything) if anything else ""
+    from agent.memory.recall_policy import recall_turn
     from core.tool_context import tool_request
 
     with think_session(mind, scope), tool_request(
@@ -223,7 +224,8 @@ async def reply_loop(
         message_id=str(getattr(anything, "_trace_message_id", "") or getattr(anything, "adapter_message_id", "") or ""),
     ):
         label = anything.get_text_content() or anything._trace_input_preview
-        async with activity_scope(uuid.uuid4().hex[:8], scope, label=label, kind="conversation") as activity:
+        async with activity_scope(uuid.uuid4().hex[:8], scope, label=label, kind="conversation") as activity, \
+                recall_turn(scope, anything.recall_policy):
             # 会话开始清理历史中断信号，避免上一轮遗留请求误杀新会话；
             # 只清激活时刻之前的——启动窗口内用户发的"停止"是合法中断
             _interrupts = getattr(mind, "interrupts", None)
@@ -550,6 +552,9 @@ async def _run_think_rounds(
         # （缓存断点不在此注入——发送边界由 llm/prompt_cache 按 _layer 统一装饰，
         # 链尾锚点天然随链增长前移）
         # provider 实时注入：每轮收集最新快照，置于工具链之后、exec_context 之前
+        if mode == ThinkMode.REPLY:
+            from agent.memory.probe import deep_probe_hub
+            deep_probe_hub.refresh(ctx.current_scope, ctx.base_messages + ctx.tool_chain)
         provider_msgs = await _collect_provider_messages(mind, ctx.current_scope)
         llm_messages = (
             ctx.base_messages + ctx.tool_chain + provider_msgs + [exec_context]

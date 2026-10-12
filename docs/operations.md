@@ -119,15 +119,20 @@ stdin/stdout JSON 行协议桥接注册表工具（runner.py 纯 stdlib 按路�
 
 ## 用户 hook 事件面（agent/hooks/ + services/hooks.py + web/routers/hooks.py）
 
-`config/hooks.json` 声明 tool_pre/tool_post/reply_end 脚本；exit 2 阻塞（stderr 为理由）、串行、
-deny 胜过一切；空配置零开销。条目字段：matcher（工具名 glob）/command/timeout（1~60s）/
-enabled（行级停用，缺省 true）；总开关 `hooks_enabled`（system/hooks 组）关闭即全部短路。
-管理面：设置页「钩子」标签——可视化编辑（保存即热生效）、总开关与行级开关、事件集成点
-（触发源文件）、每事件运行统计与最近执行明细（内存观测，重启清零）、事件级测试运行
-（`POST /api/hooks/test`，合成 payload 逐条回报 exit/耗时/阻塞，不受总开关影响）。
-样例 `config/hooks.example.json`；校验与运行时同源（`parse_hooks_data`）。
+`config/hooks.json` 声明 tool_pre/tool_post/reply_end 脚本。条目字段为
+matcher（工具名 glob）、command、timeout（1–60 秒）、enabled、mode（sync/async）。
+同步脚本按顺序等待；只有同步 tool_pre 的 exit 2 能阻止调用（stderr 为理由，deny 优先）。
+异步脚本进入有界队列，不阻塞主流程，也不改写或撤销已投递的消息。
+总开关 `hooks_enabled` 在 system/hooks 组，空配置零开销。
 
-- hook stdout 输出一行前缀 `REPLACE:<json-string>` 即返回替换内容（`HookOutcome.replace`，串行取
-  第一个）；非字符串/非 JSON 静默忽略。当前无消费方，解析层保留供未来 tool_post 场景复用
-- 与 LLM 钩子面（`agent/hooks_llm/`，异步并行扩员）分层：本面是同步阻塞守门，见
-  [思维分册](mind-architecture.md)
+脚本 stdin 收到 JSON 事件，同时提供 HOOK_EVENT/HOOK_TOOL 环境变量。
+后台最多 4 条并发、64 条在途；输出各保留 16 KiB，超时/取消回收所创建的进程树。
+宿主由 Lifecycle 管理，关停取消未完成脚本。后台失败写入执行记录，不误作工具拒绝。
+
+钩子页提供执行流程、自动召回、脚本配置和 LLM 钩子观测。脚本保存时沿用运行时
+校验并规范化写盘；测试实际执行已保存脚本，并等待后台脚本结果。测试不受总开关影响，
+事件的 enabled=false 条目仍跳过。样例见 `config/hooks.example.json`。
+
+`core/hooks.py` 统一发布运行模式、来源会话、轮次、耗时和结果。工作区按轮次展示，
+钩子页在内存保留最近 100 次执行；进程重启后清空。消息正文不经钩子自动投递。
+LLM 钩子由独立宿主负责上下文与模型预算，见[思维分册](mind-architecture.md)。

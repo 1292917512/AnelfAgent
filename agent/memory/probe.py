@@ -34,11 +34,13 @@ from typing import TYPE_CHECKING, Dict, Iterable, List, Optional, Tuple
 from core.async_helper import spawn
 from core.config import get_config_bool, get_config_float, get_config_int, register_configs_safe
 from core.context_provider import ContextProviderRegistry, ProviderMeta
+from core.hooks import HookMode, hook_execution
 from core.log import log
 
 from .memory_types import RetrievalPlan, normalized_content_key
 
 if TYPE_CHECKING:
+    from .memory_retriever import MemoryRetriever
     from .memory_store import MemoryStore
     from .memory_types import MemorySearchResult
 
@@ -131,6 +133,8 @@ class _ProbeState:
     task: Optional[asyncio.Task] = None
     rendered: str = ""
     created_at: float = field(default_factory=time.monotonic)
+    queries: set[str] = field(default_factory=set)
+    retriever: MemoryRetriever | None = None
 
 
 class DeepProbeHub:
@@ -152,6 +156,65 @@ class DeepProbeHub:
 
     def state_for(self, scope: str) -> Optional[_ProbeState]:
         return self._states.get(scope)
+
+    def stop(self, scope: str, *, clear: bool = False) -> Optional[asyncio.Task]:
+        """取消当前轮次的补充检索，可同时清除待注入结果。"""
+        state = self._states.get(scope)
+        if state is None:
+            return None
+        if clear:
+            state.rendered = ""
+            state.queries.clear()
+        if state.task is not None and not state.task.done():
+            state.task.cancel()
+        return state.task
+
+    async def end_reply(self, scope: str) -> None:
+        """回收本轮后台检索，禁止旧结果流入后续对话。"""
+        task = self.stop(scope)
+        state = self._states.pop(scope, None)
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+        if state is not None:
+            state.rendered = ""
+
+    def prepare(self, scope: str, conversation: List[Dict], retriever: MemoryRetriever, *, planned: bool) -> None:
+        """绑定本轮检索依赖，已规划的首轮查询不再重复规划。"""
+        state = self.state_for(scope)
+        if state is not None:
+            state.retriever = retriever
+            if planned:
+                state.queries.add(retriever._extract_focus_query(conversation))
+
+    def refresh(self, scope: str, conversation: List[Dict]) -> None:
+        """按当前策略和新话题启动有限次异步规划；无话题变化不重复调用。"""
+        from .recall_policy import current_recall_policy
+        policy = current_recall_policy(scope)
+        state = self.state_for(scope)
+        if state is None or policy.tags or not policy.background or policy.level not in {"fast", "deep"}:
+            return
+        retriever = state.retriever
+        if retriever is None:
+            return
+        if not get_config_bool("memory_probe_enabled", True) or (state.task and not state.task.done()):
+            return
+        query = retriever._extract_focus_query(conversation)
+        if not query or retriever._is_trivial_turn(conversation) or query in state.queries or len(state.queries) >= 3:
+            return
+        state.queries.add(query)
+
+        async def execute() -> None:
+            async with hook_execution("memory.probe", "context_refresh", HookMode.ASYNC, scope=scope) as run:
+                try:
+                    async with asyncio.timeout(max(5, get_config_float("memory_probe_timeout_seconds", 60))):
+                        plan = await retriever.plan_retrieval(query, timeout=5)
+                        if plan.deep_needed or plan.node_keys:
+                            await self._probe(state, plan, retriever._store)
+                        run.detail = f"新增上下文 {len(state.rendered)} 字符" if state.rendered else "当前话题无需补充记忆"
+                except Exception as exc:
+                    run.status = "error"
+                    run.detail = f"{type(exc).__name__}: {exc}"
+        state.task = spawn(execute(), name=f"memory.probe.{scope}")
 
     def ledger(self, scope: str) -> RecallLedger:
         """取（或建）该 scope 的账本——供基底层注入与工具返回时记账。"""
@@ -233,7 +296,9 @@ class DeepProbeHub:
     async def _run(self, state: _ProbeState, plan: RetrievalPlan, store: "MemoryStore") -> None:
         timeout = max(5.0, get_config_float("memory_probe_timeout_seconds", 60.0))
         try:
-            await asyncio.wait_for(self._probe(state, plan, store), timeout=timeout)
+            async with hook_execution("memory.probe", "context_refresh", HookMode.ASYNC, scope=state.scope) as run:
+                await asyncio.wait_for(self._probe(state, plan, store), timeout=timeout)
+                run.detail = f"新增上下文 {len(state.rendered)} 字符"
             self._metrics("probe.completed")
         except asyncio.CancelledError:
             raise

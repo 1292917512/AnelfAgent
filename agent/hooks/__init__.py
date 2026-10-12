@@ -1,7 +1,7 @@
 """用户 hook 事件面 — 工具调用/回复完成事件的用户脚本扩展点。
 
 让用户不改 Python 就能自定义行为：``config/hooks.json`` 按 event 声明 shell
-命令，事件触发时串行执行。
+命令，mode=sync 串行等待；mode=async 有界后台执行。
 
 事件清单（三个，刻意收窄）：
 - ``tool_pre``：工具执行前（可与审批规则叠加，hook 只能收紧不能放宽）
@@ -13,7 +13,7 @@
 明细）由 runner 内存维护，web 面板「最近执行」据此判断钩子是否真的在跑。
 
 退出码语义：0 = 放行；2 = 阻塞（stderr 作为原因，
-仅 tool_pre 有意义）；其他 = 非阻塞错误（WARNING 日志，不影响主流程）。
+仅同步 tool_pre 生效）；其他 = 非阻塞错误（WARNING 日志，不影响主流程）。
 超时视为非阻塞错误。合并语义：串行执行，**deny 胜过一切**。
 
 Model Experience：hook 的阻塞结果经工具结果通道返回（tool_error，

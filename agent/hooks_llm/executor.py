@@ -1,6 +1,6 @@
 """钩子并行执行器：事件命中 → 多钩子并发拉起 + 治理。
 
-同一钩子位置（event）可挂多个钩子，命中后 asyncio.gather 并发执行，
+同一钩子位置（event）可挂多个钩子，同步按顺序等待、异步后台执行，
 每个钩子独立的治理桶：per-hook 并发信号量、per-hook-per-scope
 cooldown/debounce、独立日志归因 / 用量归属 / 进度流 / 后台任务条目。
 单钩子失败或超时不影响同事件其他钩子（各自 try/except 隔离）。
@@ -15,11 +15,13 @@ cooldown/debounce、独立日志归因 / 用量归属 / 进度流 / 后台任务
 from __future__ import annotations
 
 import asyncio
+import copy
 import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.hooks_llm.snapshot import prepare_hook_messages
 from agent.hooks_llm.spec import HookContext, HookContextMode, LLMHookSpec
+from core.hooks import HookMode, hook_execution
 from core.log import bind_log_actor, log, reset_log_actor
 
 if TYPE_CHECKING:
@@ -78,18 +80,9 @@ class HookExecutor:
     # 事件入口（同事件多钩子并行）
     # ------------------------------------------------------------------
 
-    def dispatch(self, event: str, specs: List[LLMHookSpec],
+    async def dispatch(self, event: str, specs: List[LLMHookSpec],
                  payload: Dict[str, Any]) -> None:
-        """分发事件到全部命中钩子（后台调度，立即返回）。
-
-        不 await 任何钩子执行——钩子经 event_bus.emit 的 handler 链触发，
-        若在调用栈里 await 会让 emit 方（如 complete_reply）同步阻塞到钩子
-        LLM 跑完，违背"异步扩员"语义。每个钩子的真实执行在独立 task 中，
-        登记到 _running 供关停回收。
-
-        防递归前置：当前已在钩子执行树内（钩子的 LLM 产出派生的事件）
-        时整批跳过，阻断自我激励循环。
-        """
+        """同步钩子按声明顺序等待，异步钩子后台调度；派生事件不递归触发。"""
         if self._draining:
             return  # 关停中：不再受理新工作
         if _RecursionGuard.active():
@@ -100,7 +93,15 @@ class HookExecutor:
             return  # 全部停用：零开销短路
         for spec in enabled:
             if self._passes_when(spec, payload):
-                self._schedule(spec, payload)
+                snapshot = copy.deepcopy(payload)
+                if spec.mode == HookMode.SYNC:
+                    scope = self._resolve_scope(spec, snapshot)
+                    if not self._on_cooldown(spec, scope):
+                        task = self._spawn(spec, snapshot, scope)
+                        if task is not None:
+                            await task
+                else:
+                    self._schedule(spec, snapshot)
 
     @staticmethod
     def _passes_when(spec: LLMHookSpec, payload: Dict[str, Any]) -> bool:
@@ -155,6 +156,9 @@ class HookExecutor:
         因此"窗口内合并为一次、取最后快照"是结构保证而非时序运气。
         """
         key = self._throttle_key(spec, scope)
+        if key not in self._debounce_payload and len(self._debounce_payload) >= 64:
+            log(f"钩子防抖队列已满: {spec.name}", "WARNING", tag="钩子")
+            return
         self._debounce_payload[key] = (spec, payload, scope)
         handle = self._debounce_handle.get(key)
         if handle is not None:
@@ -173,7 +177,7 @@ class HookExecutor:
         spec, payload, scope = entry
         self._spawn(spec, payload, scope)
 
-    def _spawn(self, spec: LLMHookSpec, payload: Dict[str, Any], scope: str) -> None:
+    def _spawn(self, spec: LLMHookSpec, payload: Dict[str, Any], scope: str) -> asyncio.Task | None:
         """后台拉起钩子执行（独立 task，登记回收）。
 
         冷却锚点在此（调度受理时刻）同步记录：连续同步触发时第一个后台
@@ -181,6 +185,12 @@ class HookExecutor:
         不造成语义偏差——同一钩子的实例本就由 per-hook 信号量串行执行，
         冷却针对的是"该钩子已受理/在忙"的窗口，排队等待属于该窗口。
         """
+        if self._draining or len(self._running) >= 64:
+            log(f"钩子执行队列已满或关停: {spec.name}", "WARNING", tag="钩子")
+            return None
+        if len(self._last_fired) >= 2048:
+            oldest = min(self._last_fired, key=lambda key: self._last_fired[key])
+            self._last_fired.pop(oldest)
         self._last_fired[self._throttle_key(spec, scope)] = time.monotonic()
         task = asyncio.create_task(
             self._fire(spec, payload, scope),
@@ -188,6 +198,7 @@ class HookExecutor:
         )
         self._running.add(task)
         task.add_done_callback(self._running.discard)
+        return task
 
     @staticmethod
     def _resolve_scope(spec: LLMHookSpec, payload: Dict[str, Any]) -> str:
@@ -217,10 +228,7 @@ class HookExecutor:
             allow_output_tools=spec.allow_output_tools,
             model=spec.model,
         )
-        hook_sem = self._sem_for(spec)
-        async with self._pool:
-            async with hook_sem:
-                await self._execute(spec, ctx)
+        await self._execute(spec, ctx)
 
     def _build_messages(self, spec: LLMHookSpec,
                         payload: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -260,7 +268,11 @@ class HookExecutor:
             from agent.mind.scope_usage import bind_usage_scope
             usage_token = bind_usage_scope(ctx.scope)
         try:
-            output = await spec.handler(ctx)
+            async with hook_execution(spec.name, spec.event, spec.mode, source=spec.source, scope=ctx.scope) as run:
+                async with asyncio.timeout(spec.timeout_seconds):
+                    async with self._pool, self._sem_for(spec):
+                        output = await spec.handler(ctx)
+                run.detail = str(output or "")[:1200]
             log(f"钩子 {spec.name} 完成 (event={spec.event})", "DEBUG", tag="钩子")
             self._route_result(spec, ctx, output)
         except asyncio.CancelledError:

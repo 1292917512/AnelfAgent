@@ -65,6 +65,7 @@ class EventBus:
         priority: int = 0,
         once: bool = False,
         owner: str = "",
+        timeout: float | None = 0,
     ) -> Callable:
         """订阅事件。可作为装饰器使用::
 
@@ -77,9 +78,10 @@ class EventBus:
 
         Args:
             owner: 处理器归属标识，用于 ``off_by_owner()`` 批量清理。
+            timeout: 0 使用总线默认；None 由宿主管理超时；正数为订阅独立时限。
         """
         def _register(fn: EventHandler) -> EventHandler:
-            sub = _Subscription(handler=fn, priority=priority, once=once, owner=owner)
+            sub = _Subscription(handler=fn, priority=priority, once=once, owner=owner, timeout=timeout)
             subs = self._handlers.setdefault(event, [])
             subs.append(sub)
             subs.sort(key=lambda s: s.priority, reverse=True)
@@ -144,10 +146,10 @@ class EventBus:
         超时/异常记 WARNING 并返回 None，不影响其他处理器。
         """
         try:
-            return await asyncio.wait_for(sub.handler(payload), timeout=HANDLER_TIMEOUT_SECONDS)
+            return await asyncio.wait_for(sub.handler(payload), timeout=sub.timeout if sub.timeout != 0 else HANDLER_TIMEOUT_SECONDS)
         except asyncio.TimeoutError:
             log(
-                f"事件处理器超时 ({HANDLER_TIMEOUT_SECONDS}s): "
+                f"事件处理器超时 ({sub.timeout or HANDLER_TIMEOUT_SECONDS}s): "
                 f"event={event} handler={_handler_name(sub.handler)}",
                 "WARNING",
             )
@@ -223,7 +225,7 @@ class EventBus:
 
 
 class _Subscription:
-    __slots__ = ("handler", "priority", "once", "owner")
+    __slots__ = ("handler", "priority", "once", "owner", "timeout")
 
     def __init__(
         self,
@@ -231,11 +233,13 @@ class _Subscription:
         priority: int = 0,
         once: bool = False,
         owner: str = "",
+        timeout: float | None = 0,
     ) -> None:
         self.handler = handler
         self.priority = priority
         self.once = once
         self.owner = owner
+        self.timeout = timeout
 
 
 # 全局单例

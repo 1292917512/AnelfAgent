@@ -16,6 +16,32 @@
   裁决返回前映射回真实 id
 - **recall 工具**：source 标志 + depth 浅深 + filter_tags 硬过滤 + forgotten 字段（见遗忘层兜底召回）
 
+## 自动召回策略
+
+全局默认来自 `memory/recall`：`memory_recall_level`（默认 deep）与
+`memory_recall_background`。Web 的记忆页和钩子页共用配置入口；AI 的全局修改沿用
+`update_entity_config`，单轮修改用 `set_recall_policy`。
+
+| 档位 | 同步准备 | 后台补充 |
+|---|---|---|
+| off | 只保留固定纪律、主标签索引与永久记忆 | 无 |
+| tags | 指定标签精确交集；未指定时取参与实体画像 | 无 |
+| fast | 本地混合检索，向量预取最多 2 秒后退回文本检索 | 按需规划关系/深探 |
+| deep | 完整规划、跨频道、联邦检索与技能匹配 | 沿用首轮计划，后续新话题可补充 |
+
+低延迟档不进行语义技能匹配；显式 `/技能名` 和手动 recall 保持可用。
+精确标签只允许 tags/fast，带标签时不做越界后台深探。记忆结果沿用统一归属标签、
+mem ID 和召回账本；后台结果在 provider 尾部注入，不修改 stable/summary/历史前缀。
+
+SDK 可导入 `RecallPolicy`、`recall_options`、`set_turn_recall_policy`。
+直接调用回复入口时使用 `with recall_options(RecallPolicy(level="fast"))`；对于入队消息，
+应在 `Everything.recall_policy` 上设置策略，确保消息出队后仍带有覆盖。此字段不序列化
+为用户正文，也不从用户文本标签解析。覆盖仅限本轮，不改变其他频道/身份/子会话。
+
+回复开始建立独立账本，结束取消并等待在途召回，清空动态结果。每轮最多为三个不同
+焦点查询启动补充，同查询不重复规划；手动改档可取消已有后台检索。已进入模型历史
+的记忆不会被改档抹掉。思考循环只通知记忆模块更新，检索决策与存储留在记忆模块。
+
 ## 召回枢纽：LLM 检索规划 + 异步深探
 
 首轮同步召回由 LLM 规划驱动（非被动关键词匹配），LLM 思考期间异步深检索增量注入（一块连续记忆面、

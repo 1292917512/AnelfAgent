@@ -448,7 +448,14 @@ def create_bootstrap() -> FlowMachine:
         hooks_llm_runtime.start()
         # 注册为 Lifecycle 组件：关停时经 cleanup 做 drain——先停订阅切断新触发
         # （进水口），再等运行中的钩子收尾（思考后收），与全局 drain 语义一致
+        from agent.hooks.runner import script_hook_runtime
+        from core.hooks import hook_journal
         from core.lifecycle import Lifecycle
+        Lifecycle.register("hook_journal", hook_journal, cleanup=hook_journal.clear)
+        Lifecycle.register(
+            "script_hooks", script_hook_runtime,
+            on_start=script_hook_runtime.start, cleanup=script_hook_runtime.drain,
+        )
         Lifecycle.register(
             "hooks_llm", hooks_llm_runtime,
             cleanup=hooks_llm_runtime.drain,

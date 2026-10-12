@@ -4,7 +4,7 @@ import { Zap } from "lucide-react";
 import { hooksLlmApi } from "@/lib/api";
 import type { LlmHookItem } from "@/lib/types";
 import { Card } from "@/components/common/Card";
-import { Badge, EmptyState, LoadingBlock, Switch } from "@/components/ui";
+import { Badge, Button, EmptyState, LoadingBlock, Switch } from "@/components/ui";
 import { toast } from "@/stores/toast-store";
 
 const SOURCE_VARIANT: Record<string, "accent" | "info" | "warn" | "neutral"> = {
@@ -17,7 +17,7 @@ const SOURCE_VARIANT: Record<string, "accent" | "info" | "warn" | "neutral"> = {
 export function LlmHooksPanel() {
   const { t } = useTranslation("settings");
   const queryClient = useQueryClient();
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["hooks-llm"],
     queryFn: () => hooksLlmApi.get().then((r) => r.data),
     refetchInterval: 8000,
@@ -30,12 +30,10 @@ export function LlmHooksPanel() {
       toast.success(t("llmHooks.toggleSaved", { name: vars.name }));
       queryClient.invalidateQueries({ queryKey: ["hooks-llm"] });
     },
-    onError: (exc) => {
-      const detail = (exc as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      toast.error(detail || t("llmHooks.toggleSaveFailed"));
-    },
+    onError: () => toast.error(t("llmHooks.toggleSaveFailed")),
   });
 
+  if (isError) return <Button onClick={() => refetch()}>{t("common:retry")}</Button>;
   if (isLoading || !data) return <LoadingBlock label={t("common:loading")} />;
 
   return (
@@ -72,7 +70,7 @@ export function LlmHooksPanel() {
               key={hook.name}
               hook={hook}
               onToggle={(enabled) => toggle.mutate({ name: hook.name, enabled })}
-              toggling={toggle.isPending}
+              toggling={toggle.isPending && toggle.variables?.name === hook.name}
             />
           ))}
         </ul>
@@ -100,6 +98,7 @@ function HookRow({ hook, onToggle, toggling }: {
         <span className="text-sm font-medium text-foreground">{hook.name}</span>
         <span className="font-mono text-[10px] text-muted">{hook.event}</span>
         <Badge variant="neutral">{hook.context}</Badge>
+        <Badge variant={hook.mode === "sync" ? "neutral" : "info"}>{t(`hookFlow.${hook.mode}`)}</Badge>
         <Badge variant={SOURCE_VARIANT[hook.source] ?? "neutral"}>
           {t(`llmHooks.source.${hook.source}`, { defaultValue: hook.source })}
         </Badge>
@@ -110,6 +109,7 @@ function HookRow({ hook, onToggle, toggling }: {
         <p className="mt-1 text-xs text-muted">{hook.description}</p>
       )}
       <div className="mt-2 flex flex-wrap gap-x-4 gap-y-0.5 text-[10px] text-muted">
+        <span>{t("hooks.timeout")}: {hook.timeout_seconds}s</span>
         <span>{t("llmHooks.iterations")}: {hook.max_iterations}</span>
         <span>{t("llmHooks.concurrent")}: {hook.max_concurrent}</span>
         {hook.cooldown_seconds > 0 && (

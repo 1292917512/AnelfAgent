@@ -11,6 +11,7 @@ import pytest
 
 from core.activity import activity_owner, activity_scope, current_activity_id
 from core.event_bus import event_bus
+from core.hooks import HookMode, hook_execution
 from core.realtime_hub import TERMINAL_EVENTS
 from core.tags import tag_label
 from services.activity_presentation import tool_targets
@@ -45,6 +46,29 @@ async def test_child_without_final_output_is_not_marked_completed(activity):
     assert runs[0]["entries"][0]["status"] == "error"
     assert runs[1]["status"] == "failed"
     assert runs[1]["error"] == "未提交总结"
+
+
+async def test_background_hook_keeps_parent_until_finished(activity):
+    service, _ = activity
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def work():
+        async with hook_execution("review", "after_reply", HookMode.ASYNC):
+            started.set()
+            await release.wait()
+
+    async with activity_scope("hook-parent", "user_qq:1", kind="conversation"):
+        task = asyncio.create_task(work())
+        await started.wait()
+    async with activity_scope("next-turn", "user_webui:1", kind="conversation"):
+        pass
+    snapshot = service.clear_history()
+    assert {run["id"] for run in snapshot["runs"]} == {"hook-parent", "next-turn"}
+    release.set()
+    await task
+    parent = next(run for run in service.snapshot()["runs"] if run["id"] == "hook-parent")
+    assert parent["entries"][0]["status"] == "done"
+    assert parent["entries"][0]["mode"] == "async"
 
 
 @pytest.fixture

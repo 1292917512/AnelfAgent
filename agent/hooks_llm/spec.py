@@ -9,9 +9,11 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional
+
+from core.hooks import HookMode
 
 # 钩子可订阅的事件白名单（只开放有明确语义的生命周期事件，
 # 不把 event_bus 全量事件暴露成触发点——防任务面变成另一个事件总线）
@@ -64,6 +66,8 @@ class LLMHookSpec:
     """订阅的生命周期事件（须在 HOOK_EVENTS 白名单内）。"""
     handler: HookHandler
     """执行体：以 HookContext 为输入的协程。"""
+    mode: HookMode = HookMode.ASYNC
+    timeout_seconds: float = 120.0
     context: HookContextMode = HookContextMode.NONE
     """继承的上下文档位。"""
     when: Optional[HookWhen] = None
@@ -87,7 +91,7 @@ class LLMHookSpec:
     debounce_seconds: float = 0.0
     """同 scope 高频触发合并窗口（取窗口内最后一次快照）。"""
     priority: int = 50
-    """同事件多钩子的拉起顺序（值大先拉起；执行仍并行）。"""
+    """同事件多钩子的调度顺序（值大先调度，同步钩子等待结束）。"""
     owner: str = ""
     """注册归属（模块/实体标识，便于审计与批量清理）。"""
     description: str = ""
@@ -135,8 +139,8 @@ class HookContext:
 class HookRegistry:
     """钩子注册表：按 event 多值索引，全 classmethod 风格（仿 ContextProviderRegistry）。
 
-    同一钩子位置（event）支持多钩子并行拉起；同 event 内按 priority
-    降序排序（拉起顺序，执行仍并行）。注册同名钩子按「后者覆盖前者」
+    同一钩子位置（event）支持多个钩子；同 event 内按 priority
+    降序调度，是否等待由 mode 决定。注册同名钩子按「后者覆盖前者」
     （幂等，便于热重载/重复装配）。enabled 为运行期开关：spec frozen 不可变，
     注册表内部维护 _enabled_overrides 覆盖层，register 时按 config_key 初始值
     或默认 True 写入。
@@ -154,10 +158,17 @@ class HookRegistry:
                 f"非法钩子事件: {spec.event!r}（须为 {sorted(HOOK_EVENTS)} 之一）"
             )
         old = cls._by_name.get(spec.name)
+        enabled = cls._enabled_overrides.get(spec.name, spec.enabled)
+        if not isinstance(spec.mode, HookMode):
+            raise ValueError("mode 必须是 HookMode")
+        if not 0 < spec.timeout_seconds <= 1800:
+            raise ValueError("timeout_seconds 必须在 (0, 1800] 内")
+        if spec.mode == HookMode.SYNC and spec.debounce_seconds > 0:
+            raise ValueError("同步钩子不能声明防抖延迟")
         if old is not None:
             cls.unregister(spec.name)
         cls._by_name[spec.name] = spec
-        cls._enabled_overrides.setdefault(spec.name, spec.enabled)
+        cls._enabled_overrides[spec.name] = enabled
         bucket = cls._by_event.setdefault(spec.event, [])
         bucket.append(spec)
         bucket.sort(key=lambda s: s.priority, reverse=True)
@@ -239,12 +250,7 @@ class HookRegistry:
 
 def _replace_enabled(spec: LLMHookSpec, enabled: bool) -> LLMHookSpec:
     """返回 enabled 被覆盖的 spec 副本（frozen 不可变语义的运行期开关实现）。"""
-    # dataclasses.replace 在 frozen+slots 上不可行（__setattr__ 被冻结），
-    # 用 object.__setattr__ 绕过（仅注册表内部使用，对外保持 spec 不可变语义）
-    import copy
-    new = copy.copy(spec)
-    object.__setattr__(new, "enabled", enabled)
-    return new
+    return replace(spec, enabled=enabled)
 
 
 def llm_hook(
@@ -252,6 +258,8 @@ def llm_hook(
     event: str,
     *,
     context: str = "none",
+    mode: str = "async",
+    timeout_seconds: float = 120.0,
     when: Optional[HookWhen] = None,
     tool_tags: Optional[List[str]] = None,
     allow_output_tools: bool = False,
@@ -278,7 +286,7 @@ def llm_hook(
     装饰即注册进 HookRegistry（事件白名单校验）；handler 原样返回不影响
     其作为普通协程被测试/复用。
     """
-    mode = HookContextMode(context)
+    context_mode = HookContextMode(context)
     # llm_end 高频护栏：强制最小冷却，声明更小值（含 0）也钳到下限，
     # 防"每轮 LLM 后都拉起 LLM 工作"的成本失控
     if event == HOOK_EVENT_LLM_END:
@@ -295,7 +303,8 @@ def llm_hook(
             except Exception:
                 enabled = True
         spec = LLMHookSpec(
-            name=name, event=event, handler=fn, context=mode, when=when,
+            name=name, event=event, handler=fn, context=context_mode, when=when,
+            mode=HookMode(mode), timeout_seconds=timeout_seconds,
             tool_tags=tuple(tool_tags or ()), allow_output_tools=allow_output_tools,
             route_output=route_output,
             max_iterations=max_iterations, model=model,

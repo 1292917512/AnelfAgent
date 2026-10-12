@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
+import copy
 import fnmatch
 import json
+import math
 import os
-import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Deque, Dict, List, Optional
+from typing import Any, Deque, Dict, List
 
-from core.command import run_command
+from core.command import CommandResult
+from core.hooks import HookMode, hook_execution
 from core.log import log
+
+from .process import run_hook_command
 
 # 支持的事件（封闭集合：新增事件须同步更新 __init__ docstring 与文档）
 HOOK_EVENTS = ("tool_pre", "tool_post", "reply_end")
@@ -31,7 +36,7 @@ HOOK_INTEGRATIONS: List[Dict[str, str]] = [
     {
         "event": "reply_end",
         "where": "agent/mind/tools/reply_finalize.py",
-        "note": "一次回复完成后触发；stdout 输出 REPLACE:<json-string> 可改写最终回复",
+        "note": "一次回复完成后触发，用于审计与通知，不改写已发送内容",
     },
 ]
 
@@ -49,6 +54,7 @@ class HookSpec:
     command: str
     timeout: float = _DEFAULT_TIMEOUT_SEC
     enabled: bool = True    # 停用保留配置但不执行（web 面板开关）
+    mode: HookMode = HookMode.SYNC
 
     def matches_tool(self, tool_name: str) -> bool:
         return fnmatch.fnmatchcase(tool_name or "*", self.matcher or "*")
@@ -58,7 +64,7 @@ class HookSpec:
 class HookOutcome:
     """一次事件的 hook 合并结果。
 
-    合并语义（deny 优先）：任一 hook exit 2 → allowed=False
+    合并语义（deny 优先）：同步 tool_pre exit 2 → allowed=False
     （reason 取第一个阻塞理由）；否则 allowed=True。executed 为实际运行的
     hook 数（含非阻塞失败）。
     """
@@ -66,35 +72,11 @@ class HookOutcome:
     allowed: bool = True
     reason: str = ""
     executed: int = 0
+    scheduled: int = 0
     blocked_by: List[str] = field(default_factory=list)
     # 每条实际运行 hook 的执行明细（matcher/exit code/耗时/阻塞与否），
     # 供 web 测试运行与观测展示
     results: List[Dict[str, Any]] = field(default_factory=list)
-    # hook 主动返回的替换内容（reply_end 场景：脱敏/纠偏改写最终文本）。
-    # hook 在 stdout 输出一行前缀 REPLACE:<json-string> 即返回；多 hook 时
-    # 取第一个（后续 hook 仍照常执行——串行合并语义不变）
-    replace: str = ""
-
-
-_REPLACE_PREFIX = "REPLACE:"
-
-
-def _extract_replace(stdout: str) -> Optional[str]:
-    """从 hook stdout 提取替换内容（最后一行以 REPLACE: 开头的 JSON 字符串）。
-
-    JSON 字符串保持 hook 意图的可选性：多行文本以转义形式携带；
-    解析失败（非 JSON/非字符串）按无替换处理（向后兼容：stdout 是日志通道）。
-    """
-    for line in reversed(stdout.splitlines()):
-        line = line.strip()
-        if line.startswith(_REPLACE_PREFIX):
-            raw = line[len(_REPLACE_PREFIX):].strip()
-            try:
-                value = json.loads(raw)
-            except (json.JSONDecodeError, TypeError):
-                return None
-            return value if isinstance(value, str) else None
-    return None
 
 
 def parse_hooks_data(raw: Any) -> Dict[str, List[HookSpec]]:
@@ -115,6 +97,18 @@ def parse_hooks_data(raw: Any) -> Dict[str, List[HookSpec]]:
         for entry in entries:
             if not isinstance(entry, dict) or not entry.get("command"):
                 raise ValueError(f"hooks.json[{event}] 条目缺少 command")
+            if not isinstance(entry["command"], str) or not entry["command"].strip():
+                raise ValueError(f"hooks.json[{event}] command 应为非空字符串")
+            if not isinstance(entry.get("matcher", "*"), str):
+                raise ValueError(f"hooks.json[{event}] matcher 应为字符串")
+            try:
+                timeout = float(entry.get("timeout", _DEFAULT_TIMEOUT_SEC))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("timeout 应为有限数值") from exc
+            if not math.isfinite(timeout):
+                raise ValueError("timeout 应为有限数值")
+            if not isinstance(entry.get("mode", "sync"), str) or entry.get("mode", "sync") not in {"sync", "async"}:
+                raise ValueError("mode 应为 sync 或 async")
             enabled = entry.get("enabled", True)
             if not isinstance(enabled, bool):
                 raise ValueError(f"hooks.json[{event}] 条目 enabled 应为布尔")
@@ -122,8 +116,9 @@ def parse_hooks_data(raw: Any) -> Dict[str, List[HookSpec]]:
                 event=event,
                 matcher=str(entry.get("matcher", "*")),
                 command=str(entry["command"]),
-                timeout=max(1.0, min(float(entry.get("timeout", _DEFAULT_TIMEOUT_SEC)), _MAX_TIMEOUT_SEC)),
+                timeout=max(1.0, min(timeout, _MAX_TIMEOUT_SEC)),
                 enabled=enabled,
+                mode=HookMode(entry.get("mode", "sync")),
             ))
     return hooks
 
@@ -140,6 +135,7 @@ def hooks_data_from_specs(hooks: Dict[str, List[HookSpec]]) -> Dict[str, Any]:
                 "matcher": spec.matcher,
                 "command": spec.command,
                 "timeout": spec.timeout,
+                "mode": spec.mode.value,
             }
             if not spec.enabled:
                 row["enabled"] = False
@@ -249,8 +245,79 @@ def reload_hooks(path: str) -> int:
         return -1
 
 
-async def run_event_hooks(event: str, **payload: Any) -> HookOutcome:
-    """执行匹配该事件的 hooks（串行），返回合并结果。
+async def _run_spec(spec: HookSpec, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """执行单条脚本；只有同步工具前置钩子能够拒绝调用。"""
+    async with hook_execution(spec.matcher, spec.event, spec.mode, source="script") as run:
+        try:
+            result = await run_hook_command(
+                spec.command, timeout=spec.timeout,
+                env={"HOOK_EVENT": spec.event, "HOOK_TOOL": str(payload.get("tool_name", ""))},
+                stdin=json.dumps({**payload, "event": spec.event}, ensure_ascii=False, default=str),
+            )
+        except Exception as exc:
+            result = CommandResult(False, "", f"{type(exc).__name__}: {exc}")
+        blocked = spec.event == "tool_pre" and spec.mode == HookMode.SYNC and result.returncode == 2
+        run.status = "blocked" if blocked else "done" if result.ok else "error"
+        run.detail = (result.stderr or result.stdout).strip()[:1200]
+        if not result.ok and not run.detail:
+            run.detail = f"exit {result.returncode}"
+    record = {
+        "at": run.started_at, "event": spec.event, "mode": spec.mode.value,
+        "matcher": spec.matcher, "command": spec.command[:80], "ok": result.ok,
+        "returncode": result.returncode, "duration_ms": run.duration_ms,
+        "blocked": blocked, "test": bool(payload.get("test")), "detail": run.detail,
+    }
+    _record_run(record)
+    if not result.ok:
+        log(f"hook {run.status} {spec.event}/{spec.matcher}: {run.detail[:200]}", "WARNING", tag="Hook")
+    return record
+
+
+class ScriptHookRuntime:
+    """持有有界的后台脚本任务并在关停时回收进程。"""
+
+    def __init__(self) -> None:
+        self._tasks: set[asyncio.Task[Dict[str, Any]]] = set()
+        self._pool: asyncio.Semaphore | None = None
+        self._closing = False
+
+    async def start(self) -> None:
+        self._closing = False
+        self._pool = asyncio.Semaphore(4)
+
+    def submit(self, spec: HookSpec, payload: Dict[str, Any]) -> asyncio.Task[Dict[str, Any]] | None:
+        if self._closing or len(self._tasks) >= 64:
+            log(f"异步 hook 未调度（关停或队列已满）: {spec.event}/{spec.matcher}", "WARNING", tag="Hook")
+            return None
+        if self._pool is None:
+            self._pool = asyncio.Semaphore(4)
+        pool = self._pool
+
+        async def execute() -> Dict[str, Any]:
+            async with pool:
+                return await _run_spec(spec, payload)
+
+        task = asyncio.create_task(execute(), name=f"hook.script.{spec.event}")
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
+
+    async def drain(self) -> None:
+        self._closing = True
+        tasks = list(self._tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._tasks.clear()
+        self._pool = None
+
+
+script_hook_runtime = ScriptHookRuntime()
+
+
+async def run_event_hooks(event: str, *, wait_async: bool = False, **payload: Any) -> HookOutcome:
+    """同步执行或后台调度匹配脚本；wait_async 用于管理面的完整测试回执。
 
     payload 以 JSON 写入 stdin，并镜像到环境变量 HOOK_EVENT/HOOK_TOOL
     （便于简单脚本免解析）。调用方负责先经 hooks_active(event) 短路；
@@ -258,68 +325,29 @@ async def run_event_hooks(event: str, **payload: Any) -> HookOutcome:
     """
     outcome = HookOutcome()
     tool_name = str(payload.get("tool_name", ""))
-    is_test = bool(payload.get("test", False))
-    env = {
-        "HOOK_EVENT": event,
-        "HOOK_TOOL": tool_name,
-    }
-    stdin_text = json.dumps({**payload, "event": event}, ensure_ascii=False, default=str)
+    pending: list[asyncio.Task[Dict[str, Any]]] = []
     for spec in _registry.for_event(event):
         if tool_name and not spec.matches_tool(tool_name):
             continue
         if not spec.enabled:
             continue
-        outcome.executed += 1
-        started = time.time()
-        result = await run_command.async_version(
-            spec.command,
-            timeout_sec=int(spec.timeout),
-            env_vars=env,
-            stdin_data=stdin_text,
-        )
-        duration_ms = int((time.time() - started) * 1000)
-        blocked = (not result.ok) and result.returncode == 2
-        detail = (result.stderr or "").strip()[:200] or (
-            f"exit {result.returncode}" if not result.ok else ""
-        )
-        _record_run({
-            "at": round(started, 3),
-            "event": event,
-            "matcher": spec.matcher,
-            "command": spec.command[:80],
-            "ok": result.ok,
-            "returncode": result.returncode,
-            "duration_ms": duration_ms,
-            "blocked": blocked,
-            "test": is_test,
-            "detail": detail,
-        })
-        outcome.results.append({
-            "matcher": spec.matcher,
-            "command": spec.command[:80],
-            "ok": result.ok,
-            "returncode": result.returncode,
-            "duration_ms": duration_ms,
-            "blocked": blocked,
-            "detail": detail,
-        })
-        if result.ok:
-            if not outcome.replace:
-                replace = _extract_replace(result.stdout)
-                if replace is not None:
-                    outcome.replace = replace
+        if spec.mode == HookMode.ASYNC:
+            task = script_hook_runtime.submit(spec, copy.deepcopy(payload))
+            if task is not None:
+                outcome.scheduled += 1
+                pending.append(task)
             continue
-        # exit 2 = 阻塞（stderr 作为理由）；
-        # 超时/其他退出码/异常 = 非阻塞错误（WARNING，不影响主流程）
-        if result.returncode == 2:
+        record = await _run_spec(spec, payload)
+        outcome.executed += 1
+        outcome.results.append(record)
+        if record["blocked"]:
             outcome.allowed = False
             outcome.blocked_by.append(spec.command[:60])
             if not outcome.reason:
-                outcome.reason = result.stderr[:300] or "hook 拒绝（exit 2，无理由输出）"
-            log(f"hook 阻塞 {event}/{tool_name or '-'}: {result.stderr[:120]}", "WARNING", tag="Hook")
-        else:
-            log(f"hook 非阻塞失败 {event}/{tool_name or '-'}: "
-                f"{result.stderr[:120] or f'exit {result.returncode}'}", "WARNING", tag="Hook")
+                outcome.reason = str(record["detail"])[:300] or "hook 拒绝（exit 2，无理由输出）"
+    if wait_async and pending:
+        outcome.results.extend(await asyncio.gather(*pending))
+        outcome.executed += len(pending)
     return outcome
 
 

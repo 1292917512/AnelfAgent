@@ -35,6 +35,7 @@ class HookService:
             get_hook_stats,
         )
         from core.config import get_config_bool
+        from core.hooks import hook_journal
 
         path = self._path()
         raw: Dict[str, Any] = {}
@@ -57,6 +58,7 @@ class HookService:
                 for event in HOOK_EVENTS
             },
             "stats": get_hook_stats(),
+            "execution": hook_journal.snapshot(),
         }
 
     def save_hooks(self, raw: Any) -> Dict[str, Any]:
@@ -64,7 +66,7 @@ class HookService:
 
         非法内容抛 ValueError（不落盘）；空对象删除文件（恢复无 hook 状态）。
         """
-        from agent.hooks.runner import parse_hooks_data, reload_hooks
+        from agent.hooks.runner import hooks_data_from_specs, parse_hooks_data, reload_hooks
 
         specs = parse_hooks_data(raw)  # 校验（全量，非法抛错）
         path = self._path()
@@ -75,7 +77,7 @@ class HookService:
             return {"saved": True, "count": 0}
         atomic_write_text(
             Path(path),
-            json.dumps(raw, ensure_ascii=False, indent=2) + "\n",
+            json.dumps(hooks_data_from_specs(specs), ensure_ascii=False, indent=2) + "\n",
         )
         count = reload_hooks(path)
         return {"saved": True, "count": count}
@@ -94,7 +96,7 @@ class HookService:
         payload: Dict[str, Any] = {"test": True, "source": "web"}
         if event != "reply_end":
             payload["tool_name"] = tool_name or "*"
-        outcome = await run_event_hooks(event, **payload)
+        outcome = await run_event_hooks(event, wait_async=True, **payload)
         return {
             "event": event,
             "enabled": get_config_bool("hooks_enabled", True),

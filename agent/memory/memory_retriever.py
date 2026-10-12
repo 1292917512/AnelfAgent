@@ -15,7 +15,7 @@ Model Experience（召回归属标注）:
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Coroutine, Dict, List, Optional, Tuple, TypeVar
 
 from core.log import log
 
@@ -37,6 +37,7 @@ if TYPE_CHECKING:
 
 DEFAULT_TOP_K = 5
 DEFAULT_MIN_SCORE = 0.1
+_T = TypeVar("_T")
 
 _PLAN_PROMPT = (
     "分析以下对话上下文，为记忆检索制定计划，只输出 JSON（不要解释）：\n"
@@ -97,6 +98,15 @@ class MemoryRetriever:
     def set_rerank_client(self, client: object) -> None:
         """Set reranker (MediaClient instance) for post-search reranking."""
         self._rerank_client = client
+
+    def recall_limits(self, top_k: int | None = None) -> tuple[int, float]:
+        """读取各自动召回档位共用的数量与评分阈值。"""
+        try:
+            from agent.config import get_mind_config
+            config = get_mind_config()
+            return top_k or config.memory_recall_top_k, config.memory_recall_min_score
+        except Exception:
+            return top_k or self._top_k, self._min_score
 
     @property
     def _graph(self):
@@ -171,14 +181,7 @@ class MemoryRetriever:
         plan_box: Optional[List[Optional[RetrievalPlan]]] = None,
     ) -> Tuple[List[Dict], List[Dict]]:
         """recall_split 实现体（plan_box 带出最终计划，供包装层落笔 plan_out）。"""
-        try:
-            from agent.config import get_mind_config
-            mind_config = get_mind_config()
-            k = top_k or mind_config.memory_recall_top_k
-            min_score = mind_config.memory_recall_min_score
-        except Exception:
-            k = top_k or self._top_k
-            min_score = self._min_score
+        k, min_score = self.recall_limits(top_k)
 
         all_scopes: List[str] = []
         if entity_scope:
@@ -188,236 +191,251 @@ class MemoryRetriever:
                 all_scopes.append(s)
         # 回复路径开账：重置召回账本（防重复三键集合），后续基底层注入/
         # 工具返回/异步深探共用——一次回复内同一事实只出现一次
-        if fire_probe:
+        if fire_probe and deep_probe_hub.state_for(entity_scope) is None:
             deep_probe_hub.begin_reply(entity_scope)
         # 实体画像加载与检索并行（独立的 DB 读取，不依赖查询结果）
-        profiles_task = asyncio.create_task(self._load_entity_profiles(all_scopes))
+        owned: list[asyncio.Task] = []
 
-        query = self._extract_query(conversation)
-        if not query:
-            log("💾 被动召回: 无有效查询，回退近期记忆", tag="思维")
-            pinned = await self._load_permanent_pins([])
-            entity_msgs, fallback = await asyncio.gather(profiles_task, self._fallback_recent(k))
-            pinned_msgs = await self._format_unified_results(pinned) if pinned else []
-            return entity_msgs, pinned_msgs + fallback
+        def track(coro: Coroutine[Any, Any, _T]) -> asyncio.Task[_T]:
+            task = asyncio.create_task(coro)
+            owned.append(task)
+            return task
 
-        # 平凡消息节流：纯客套/短回复轮跳过检索与改写（省一次改写 LLM 调用
-        # + embedding + 多路检索），画像与永久记忆照常注入
-        if self._is_trivial_turn(conversation):
-            log("💾 被动召回: 平凡消息轮，跳过检索", "DEBUG", tag="思维")
-            pinned = await self._load_permanent_pins([])
-            entity_msgs = await profiles_task
-            pinned_msgs = await self._format_unified_results(pinned) if pinned else []
-            return entity_msgs, pinned_msgs
-
-        log(f"💾 被动召回: \"{query[:50]}\" (embedding={'是' if self._embedder.available else '否'})", tag="思维")
-
-        # 召回总时限：规划与检索串行共享一个预算（规划段独立预算见
-        # _plan_budget_seconds，超预算回退原查询保住检索段），整体超时走
-        # 回退，不阻塞对话主流程
-        recall_timeout = 5.0
         try:
-            from core.config import get_config_float
-            recall_timeout = max(1.0, get_config_float("memory_recall_timeout_seconds", 5.0))
-        except Exception:
-            pass
-        plan_budget = _plan_budget_seconds(recall_timeout)
-        # 召回墙钟锚点：总时限从召回入口起算（规划/检索并行共享）
-        loop = asyncio.get_running_loop()
-        t0 = loop.time()
+            profiles_task = track(self._load_entity_profiles(all_scopes))
 
-        plan = RetrievalPlan(queries=[query] if query else [])
-        mention_tags: List[str] = []
+            query = self._extract_query(conversation)
+            if not query:
+                log("💾 被动召回: 无有效查询，回退近期记忆", tag="思维")
+                pinned = await self._load_permanent_pins([])
+                entity_msgs, fallback = await asyncio.gather(profiles_task, self._fallback_recent(k))
+                pinned_msgs = await self._format_unified_results(pinned) if pinned else []
+                return entity_msgs, pinned_msgs + fallback
 
-        # 检索规划 + 查询提及识别 + 多路检索并行（都在检索关键路径上）
-        # 规划：轻量 LLM 把对话尾部转成结构化计划（多查询/实体/是否深探，
-        # 含实体→图谱节点解析），失败/超预算回退原查询单发——召回由 LLM 决策
-        # 而非被动关键词匹配
-        # 提及识别：对话中提到的已知实体/话题 → 标签（主评分与联想种子）
-        async def _mentions() -> List[str]:
+            # 平凡消息节流：纯客套/短回复轮跳过检索与改写（省一次改写 LLM 调用
+            # + embedding + 多路检索），画像与永久记忆照常注入
+            if self._is_trivial_turn(conversation):
+                log("💾 被动召回: 平凡消息轮，跳过检索", "DEBUG", tag="思维")
+                pinned = await self._load_permanent_pins([])
+                entity_msgs = await profiles_task
+                pinned_msgs = await self._format_unified_results(pinned) if pinned else []
+                return entity_msgs, pinned_msgs
+
+            log(f"💾 被动召回: \"{query[:50]}\" (embedding={'是' if self._embedder.available else '否'})", tag="思维")
+
+            # 召回总时限：规划与检索串行共享一个预算（规划段独立预算见
+            # _plan_budget_seconds，超预算回退原查询保住检索段），整体超时走
+            # 回退，不阻塞对话主流程
+            recall_timeout = 5.0
             try:
-                return await self._store.extract_query_mentions(query)
-            except Exception as exc:
-                log(f"查询提及识别失败: {exc}", "DEBUG", tag="思维")
-                return []
+                from core.config import get_config_float
+                recall_timeout = max(1.0, get_config_float("memory_recall_timeout_seconds", 5.0))
+            except Exception:
+                pass
+            plan_budget = _plan_budget_seconds(recall_timeout)
+            # 召回墙钟锚点：总时限从召回入口起算（规划/检索并行共享）
+            loop = asyncio.get_running_loop()
+            t0 = loop.time()
 
-        async def _planned_recall() -> List[MemorySearchResult]:
-            nonlocal plan, mention_tags
-            # 规划与检索并行：原查询 lane 先行（复用预计算 query_vec，零
-            # embed 成本），规划慢/超预算只损失多查询增强，不再挤占检索
-            # 预算；计划 lanes 在规划完成后增量追加
-            plan_task = asyncio.ensure_future(
-                self.plan_retrieval(query, timeout=plan_budget))
-            # 提及识别是本地 FTS 查询（毫秒级），先完成供全部 lane 共享标签
-            mention_tags = await _mentions()
-            focus_query = self._extract_focus_query(conversation)
+            plan = RetrievalPlan(queries=[query] if query else [])
+            mention_tags: List[str] = []
 
-            async def _query_search(q: str, *, targeted: bool = False) -> List[MemorySearchResult]:
-                vec = query_vec if (query_vec is not None and q == query) else await self._embedder.embed_query(q)
-                from .cognee.fusion import federated_search
-                from .cognee.runtime import get_cognee_client
-                cognee_config = self._cognee_config()
-                return await federated_search(
-                    self._store.search_unified(
+            # 检索规划 + 查询提及识别 + 多路检索并行（都在检索关键路径上）
+            # 规划：轻量 LLM 把对话尾部转成结构化计划（多查询/实体/是否深探，
+            # 含实体→图谱节点解析），失败/超预算回退原查询单发——召回由 LLM 决策
+            # 而非被动关键词匹配
+            # 提及识别：对话中提到的已知实体/话题 → 标签（主评分与联想种子）
+            async def _mentions() -> List[str]:
+                try:
+                    return await self._store.extract_query_mentions(query)
+                except Exception as exc:
+                    log(f"查询提及识别失败: {exc}", "DEBUG", tag="思维")
+                    return []
+
+            async def _planned_recall() -> List[MemorySearchResult]:
+                nonlocal plan, mention_tags
+                # 规划与检索并行：原查询 lane 先行（复用预计算 query_vec，零
+                # embed 成本），规划慢/超预算只损失多查询增强，不再挤占检索
+                # 预算；计划 lanes 在规划完成后增量追加
+                plan_task = track(
+                    self.plan_retrieval(query, timeout=plan_budget))
+                # 提及识别是本地 FTS 查询（毫秒级），先完成供全部 lane 共享标签
+                mention_tags = await _mentions()
+                focus_query = self._extract_focus_query(conversation)
+
+                async def _query_search(q: str, *, targeted: bool = False) -> List[MemorySearchResult]:
+                    vec = query_vec if (query_vec is not None and q == query) else await self._embedder.embed_query(q)
+                    from .cognee.fusion import federated_search
+                    from .cognee.runtime import get_cognee_client
+                    cognee_config = self._cognee_config()
+                    return await federated_search(
+                        self._store.search_unified(
+                            query=q,
+                            query_vec=vec,
+                            query_tags=mention_tags or None,
+                            limit=k * cognee_config.recall_pool_multiplier,
+                            min_score=min_score,
+                        ),
                         query=q,
-                        query_vec=vec,
+                        client=get_cognee_client(),
+                        config=cognee_config,
+                        limit=k,
+                        entity_scope=entity_scope,
                         query_tags=mention_tags or None,
-                        limit=k * cognee_config.recall_pool_multiplier,
+                        node_names=plan.node_labels if targeted else None,
+                    )
+
+                # 多窗口补充：以最近一条用户消息为焦点查询（即时窗口，捕捉当前
+                # 话题）；焦点不参与共识计数，与计划查询重复时仅多一次 embed
+                # （融合按 key 去重，重复无害）
+                async def _focus_search() -> List[MemorySearchResult]:
+                    focus_vec = await self._embedder.embed_query(focus_query)
+                    return await self._store.search_unified(
+                        query=focus_query,
+                        query_vec=focus_vec,
+                        limit=k,
                         min_score=min_score,
-                    ),
-                    query=q,
-                    client=get_cognee_client(),
-                    config=cognee_config,
-                    limit=k,
-                    entity_scope=entity_scope,
-                    query_tags=mention_tags or None,
-                    node_names=plan.node_labels if targeted else None,
-                )
+                    )
 
-            # 多窗口补充：以最近一条用户消息为焦点查询（即时窗口，捕捉当前
-            # 话题）；焦点不参与共识计数，与计划查询重复时仅多一次 embed
-            # （融合按 key 去重，重复无害）
-            async def _focus_search() -> List[MemorySearchResult]:
-                focus_vec = await self._embedder.embed_query(focus_query)
-                return await self._store.search_unified(
-                    query=focus_query,
-                    query_vec=focus_vec,
-                    limit=k,
-                    min_score=min_score,
-                )
+                # 基础 lane：原查询恒先行（计划全换词也只做增强，不替换基础
+                # 检索角度）
+                base_task = track(_query_search(query))
+                focus_task = (
+                    track(_focus_search())
+                    if focus_query and focus_query != query else None)
 
-            # 基础 lane：原查询恒先行（计划全换词也只做增强，不替换基础
-            # 检索角度）
-            base_task = asyncio.ensure_future(_query_search(query))
-            focus_task = (
-                asyncio.ensure_future(_focus_search())
-                if focus_query and focus_query != query else None)
-
-            try:
-                # 外兜底比 plan_retrieval 内预算宽 1s：内部超时正常自收口，
-                # 此层仅防规划自身失控（内部机制失效/被替换）
-                plan = await asyncio.wait_for(plan_task, timeout=plan_budget + 1.0)
-            except asyncio.TimeoutError:
-                log(f"💾 检索规划超时（{plan_budget:.1f}s），回退原查询",
-                    "WARNING", tag="思维")
-                plan = RetrievalPlan(queries=[query] if query else [])
-            # 计划 lanes：同串已由基础 lane 覆盖（query_vec 复用零开销），
-            # 跳过；首条异于原查询的计划查询带实体定向（首条即原查询时
-            # 本轮放弃定向，node_keys 邻域仍供深探）
-            targeted_used = False
-            plan_lane_tasks: List[asyncio.Future] = []
-            for q in plan.queries[:3]:
-                if not q or len(q.strip()) < 4 or q == query:
-                    continue
-                plan_lane_tasks.append(asyncio.ensure_future(
-                    _query_search(q, targeted=not targeted_used)))
-                targeted_used = True
-            # 共识段在前（merge_consensus 按前 N 条 lane 计数），基础与
-            # 焦点 lane 只参与合并竞争
-            all_lanes: List[asyncio.Future] = [
-                *plan_lane_tasks, base_task,
-                *([] if focus_task is None else [focus_task])]
-            # 非破坏式收尾：到点只收割已落地 lane（asyncio.wait 不取消在途
-            # 任务，取消动作显式做），慢路/挂死路不再拖垮或丢弃整轮召回
-            _done, pending = await asyncio.wait(
-                all_lanes, timeout=max(0.5, recall_timeout - (loop.time() - t0)))
-            lanes: List[List[MemorySearchResult]] = []
-            n_plan_landed = 0
-            for i, t in enumerate(all_lanes):
-                if t in pending:
-                    continue
-                exc = t.exception()
-                if exc is not None:
-                    log(f"召回检索 lane 失败: {exc}", "DEBUG", tag="思维")
-                    continue
-                lanes.append(t.result())
-                if i < len(plan_lane_tasks):
-                    n_plan_landed += 1
-            if pending:
-                for t in pending:
-                    t.cancel()
-                if lanes:
-                    log(f"💾 被动召回部分超时（{recall_timeout}s）："
-                        f"{len(lanes)}/{len(all_lanes)} 路检索完成，取已落地结果",
-                        "DEBUG", tag="思维")
-                else:
-                    log(f"💾 被动召回超时（{recall_timeout}s），回退近期记忆",
+                try:
+                    # 外兜底比 plan_retrieval 内预算宽 1s：内部超时正常自收口，
+                    # 此层仅防规划自身失控（内部机制失效/被替换）
+                    plan = await asyncio.wait_for(plan_task, timeout=plan_budget + 1.0)
+                except asyncio.TimeoutError:
+                    log(f"💾 检索规划超时（{plan_budget:.1f}s），回退原查询",
                         "WARNING", tag="思维")
-                    try:
-                        from . import metrics
-                        metrics.incr("recall.timeout")
-                    except Exception:
-                        pass
-            return self.merge_consensus(
-                lanes, limit=k * 2, consensus_lanes=n_plan_landed)
+                    plan = RetrievalPlan(queries=[query] if query else [])
+                # 计划 lanes：同串已由基础 lane 覆盖（query_vec 复用零开销），
+                # 跳过；首条异于原查询的计划查询带实体定向（首条即原查询时
+                # 本轮放弃定向，node_keys 邻域仍供深探）
+                targeted_used = False
+                plan_lane_tasks: List[asyncio.Future] = []
+                for q in plan.queries[:3]:
+                    if not q or len(q.strip()) < 4 or q == query:
+                        continue
+                    plan_lane_tasks.append(track(
+                        _query_search(q, targeted=not targeted_used)))
+                    targeted_used = True
+                # 共识段在前（merge_consensus 按前 N 条 lane 计数），基础与
+                # 焦点 lane 只参与合并竞争
+                all_lanes: List[asyncio.Future] = [
+                    *plan_lane_tasks, base_task,
+                    *([] if focus_task is None else [focus_task])]
+                # 非破坏式收尾：到点只收割已落地 lane（asyncio.wait 不取消在途
+                # 任务，取消动作显式做），慢路/挂死路不再拖垮或丢弃整轮召回
+                _done, pending = await asyncio.wait(
+                    all_lanes, timeout=max(0.5, recall_timeout - (loop.time() - t0)))
+                lanes: List[List[MemorySearchResult]] = []
+                n_plan_landed = 0
+                for i, t in enumerate(all_lanes):
+                    if t in pending:
+                        continue
+                    exc = t.exception()
+                    if exc is not None:
+                        log(f"召回检索 lane 失败: {exc}", "DEBUG", tag="思维")
+                        continue
+                    lanes.append(t.result())
+                    if i < len(plan_lane_tasks):
+                        n_plan_landed += 1
+                if pending:
+                    for t in pending:
+                        t.cancel()
+                    await asyncio.gather(*pending, return_exceptions=True)
+                    if lanes:
+                        log(f"💾 被动召回部分超时（{recall_timeout}s）："
+                            f"{len(lanes)}/{len(all_lanes)} 路检索完成，取已落地结果",
+                            "DEBUG", tag="思维")
+                    else:
+                        log(f"💾 被动召回超时（{recall_timeout}s），回退近期记忆",
+                            "WARNING", tag="思维")
+                        try:
+                            from . import metrics
+                            metrics.incr("recall.timeout")
+                        except Exception:
+                            pass
+                return self.merge_consensus(
+                    lanes, limit=k * 2, consensus_lanes=n_plan_landed)
 
-        results = await _planned_recall()
-        if plan_box is not None:
-            plan_box[0] = plan
-        entity_msgs = await profiles_task
+            results = await _planned_recall()
+            if plan_box is not None:
+                plan_box[0] = plan
+            entity_msgs = await profiles_task
 
-        # 时间感知：检测到时间引用词时，提升事件记忆与近期记忆权重
-        if self._detect_time_reference(query):
-            results = self._apply_temporal_boost(results)
+            # 时间感知：检测到时间引用词时，提升事件记忆与近期记忆权重
+            if self._detect_time_reference(query):
+                results = self._apply_temporal_boost(results)
 
-        # 上下文加权：与当前对话实体（用户/群）标签匹配的记忆加权
-        results = self._apply_scope_boost(results, all_scopes)
+            # 上下文加权：与当前对话实体（用户/群）标签匹配的记忆加权
+            results = self._apply_scope_boost(results, all_scopes)
 
-        # 关联扩展：沿标签网络发现一跳关联记忆（想到一件事 → 联想到相关的事）
-        results = await self._expand_associations(results, limit=k, extra_seeds=mention_tags)
+            # 关联扩展：沿标签网络发现一跳关联记忆（想到一件事 → 联想到相关的事）
+            results = await self._expand_associations(results, limit=k, extra_seeds=mention_tags)
 
-        # 回复路径收尾钩子：基底层产物入召回账本 + 按需启动异步深探
-        # （LLM 思考期间完成的深度检索经 think_loop 轮顶增量注入，与基底层去重）
-        def _fire_probe(base_results: List[MemorySearchResult]) -> None:
-            if not fire_probe:
-                return
-            try:
-                deep_probe_hub.record(entity_scope, results=base_results)
-                deep_probe_hub.start(scope=entity_scope, plan=plan, store=self._store)
-            except Exception as exc:
-                log(f"深探启动失败: {exc}", "DEBUG", tag="记忆")
+            # 回复路径收尾钩子：基底层产物入召回账本 + 按需启动异步深探
+            # （LLM 思考期间完成的深度检索经 think_loop 轮顶增量注入，与基底层去重）
+            def _fire_probe(base_results: List[MemorySearchResult]) -> None:
+                if deep_probe_hub.state_for(entity_scope) is not None:
+                    deep_probe_hub.record(entity_scope, results=base_results)
+                if not fire_probe:
+                    return
+                try:
+                    deep_probe_hub.start(scope=entity_scope, plan=plan, store=self._store)
+                except Exception as exc:
+                    log(f"深探启动失败: {exc}", "DEBUG", tag="记忆")
 
-        if not results:
-            log("💾 统一搜索无结果，回退近期记忆", tag="思维")
-            # 首轮无结果正是深探最有价值的场景（表层检索挖不到 → 深层图检索补充），
-            # 回退前先按计划启动探针（账本只含本分支的空基线）
+            if not results:
+                log("💾 统一搜索无结果，回退近期记忆", tag="思维")
+                # 首轮无结果正是深探最有价值的场景（表层检索挖不到 → 深层图检索补充），
+                # 回退前先按计划启动探针（账本只含本分支的空基线）
+                _fire_probe(results)
+                pinned = await self._load_permanent_pins([])
+                fallback = await self._fallback_recent(k)
+                pinned_msgs = await self._format_unified_results(pinned) if pinned else []
+                return entity_msgs, pinned_msgs + fallback
+
+            # Rerank if available
+            if self._rerank_client and len(results) > 1:
+                results = await self._apply_rerank(query, results, k)
+
+            # 隐式反馈：仅对 memories 表结果更新访问计数
+            mem_ids = [
+                int(r.id.split(":")[1])
+                for r in results
+                if r.source == "memory" and r.id.startswith("mem:")
+            ]
+            if mem_ids:
+                await self._store.record_access(mem_ids)
+
+            # 永久记忆置顶：主人教导/规则类记忆不参与打分竞争，每轮固定注入
+            pinned = await self._load_permanent_pins(results)
+            if pinned:
+                results = pinned + results
+
             _fire_probe(results)
-            pinned = await self._load_permanent_pins([])
-            fallback = await self._fallback_recent(k)
-            pinned_msgs = await self._format_unified_results(pinned) if pinned else []
-            return entity_msgs, pinned_msgs + fallback
 
-        # Rerank if available
-        if self._rerank_client and len(results) > 1:
-            results = await self._apply_rerank(query, results, k)
+            for r in results:
+                src_label = (
+                    f"[{r.source}]"
+                    if r.source != "memory"
+                    else f"[{r.memory_type or 'memory'}]"
+                )
+                tag_str = f" [{','.join(r.tags)}]" if r.tags else ""
+                path_str = f" {r.path}" if r.path else ""
+                log(f"  💡 {src_label}{tag_str}{path_str} score={r.score:.2f}: {r.snippet[:50]}", tag="思维")
 
-        # 隐式反馈：仅对 memories 表结果更新访问计数
-        mem_ids = [
-            int(r.id.split(":")[1])
-            for r in results
-            if r.source == "memory" and r.id.startswith("mem:")
-        ]
-        if mem_ids:
-            await self._store.record_access(mem_ids)
-
-        # 永久记忆置顶：主人教导/规则类记忆不参与打分竞争，每轮固定注入
-        pinned = await self._load_permanent_pins(results)
-        if pinned:
-            results = pinned + results
-
-        _fire_probe(results)
-
-        for r in results:
-            src_label = (
-                f"[{r.source}]"
-                if r.source != "memory"
-                else f"[{r.memory_type or 'memory'}]"
-            )
-            tag_str = f" [{','.join(r.tags)}]" if r.tags else ""
-            path_str = f" {r.path}" if r.path else ""
-            log(f"  💡 {src_label}{tag_str}{path_str} score={r.score:.2f}: {r.snippet[:50]}", tag="思维")
-
-        return entity_msgs, await self._format_unified_results(results)
+            return entity_msgs, await self._format_unified_results(results)
+        finally:
+            for task in owned:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*owned, return_exceptions=True)
 
     @staticmethod
     async def _resolve_scope_alias(scope: str) -> str:

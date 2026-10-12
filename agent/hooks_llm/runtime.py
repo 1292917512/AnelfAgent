@@ -73,19 +73,16 @@ class HookRuntime:
         """装配事件订阅（幂等）。"""
         if self._started:
             return
-        if not self._enabled():
-            log("LLM 钩子面已禁用（hooks_llm_enabled=false）", "DEBUG", tag="钩子")
-            return
         event_bus.on(EVENT_AFTER_REPLY, self._on_after_reply,
-                     priority=_SUBSCRIBE_PRIORITY, owner=_OWNER)
+                     priority=_SUBSCRIBE_PRIORITY, owner=_OWNER, timeout=None)
         event_bus.on(EVENT_CONTEXT_USAGE, self._on_context_pressure,
-                     priority=_SUBSCRIBE_PRIORITY, owner=_OWNER)
+                     priority=_SUBSCRIBE_PRIORITY, owner=_OWNER, timeout=None)
         event_bus.on(EVENT_DELEGATION_RESOLVED, self._on_delegation_resolved,
-                     priority=_SUBSCRIBE_PRIORITY, owner=_OWNER)
+                     priority=_SUBSCRIBE_PRIORITY, owner=_OWNER, timeout=None)
         # llm_end 高频事件：仅当有钩子注册时才有实际消费（_forward 空注册短路），
         # 订阅本身零开销
         event_bus.on(EVENT_THINKING_LLM_END, self._on_llm_end,
-                     priority=_SUBSCRIBE_PRIORITY, owner=_OWNER)
+                     priority=_SUBSCRIBE_PRIORITY, owner=_OWNER, timeout=None)
         self._started = True
         log(f"LLM 钩子面已启动（{len(HookRegistry.list_all())} 个钩子）", tag="钩子")
 
@@ -129,16 +126,14 @@ class HookRuntime:
         await self._forward(HOOK_EVENT_LLM_END, payload)
 
     async def _forward(self, hook_event: str, payload: Dict[str, Any]) -> None:
-        """转发事件到命中钩子（后台调度，立即返回）；无注册时零开销短路。
-
-        dispatch 只做条件门控与后台 task 调度，不 await 钩子执行——
-        emit 方（complete_reply / llm_invoker）不会因钩子 LLM 而阻塞。
-        """
+        """按声明的执行模式转发事件，开关热读，执行超时由钩子宿主管理。"""
+        if not self._enabled():
+            return
         specs = HookRegistry.for_event(hook_event)
         if not specs:
             return
         try:
-            self._executor.dispatch(hook_event, specs, payload)
+            await self._executor.dispatch(hook_event, specs, payload)
         except Exception as exc:
             log(f"钩子事件 {hook_event} 分发异常: {exc}", "WARNING", tag="钩子")
 

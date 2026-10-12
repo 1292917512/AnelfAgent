@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import subprocess
 import sys
 
 import pytest
 
 from agent.hooks import get_hook_registry, hooks_active, reload_hooks, run_event_hooks
-from agent.hooks.runner import HookRegistry, get_hook_stats, reset_hook_stats
-from core.command import run_command
+from agent.hooks.process import run_hook_command
+from agent.hooks.runner import HookRegistry, get_hook_stats, reset_hook_stats, script_hook_runtime
+from core.command import CommandResult, run_command
 
 
 def _write_hooks(path, data: dict) -> None:
@@ -211,3 +214,50 @@ class TestRunEventHooks:
             assert stats["recent"][0]["test"] is True
         finally:
             reset_hook_stats()
+
+
+@pytest.mark.asyncio
+async def test_script_background_returns_before_execution_and_cannot_veto(tmp_path, monkeypatch):
+    started, release = asyncio.Event(), asyncio.Event()
+    received = []
+
+    async def command(*args, **kwargs):
+        received.append(json.loads(kwargs["stdin"]))
+        started.set()
+        await release.wait()
+        return CommandResult(False, "", "denied", 2)
+
+    monkeypatch.setattr("agent.hooks.runner.run_hook_command", command)
+    path = tmp_path / "hooks.json"
+    path.write_text(json.dumps({"tool_pre": [{"command": "check", "mode": "async"}]}))
+    reload_hooks(str(path))
+    await script_hook_runtime.start()
+    try:
+        arguments = {"path": "before"}
+        out = await run_event_hooks("tool_pre", tool_name="delete_file", arguments=arguments)
+        arguments["path"] = "after"
+        assert out.allowed and out.executed == 0 and out.scheduled == 1
+        await started.wait()
+        assert received[0]["arguments"] == {"path": "before"}
+        release.set()
+        out = await run_event_hooks("tool_pre", wait_async=True, tool_name="delete_file")
+        assert out.allowed and not out.results[0]["blocked"]
+        assert out.results[0]["mode"] == "async"
+    finally:
+        await script_hook_runtime.drain()
+        reload_hooks(str(tmp_path / "absent.json"))
+
+
+@pytest.mark.asyncio
+async def test_script_process_stdin_and_cancellation(tmp_path):
+    path = tmp_path / "worker.py"
+    path.write_text("import sys,time\nprint(sys.stdin.read(),flush=True)\ntime.sleep(60)\n")
+    command = subprocess.list2cmdline([sys.executable, str(path)]) if sys.platform == "win32" else f'"{sys.executable}" "{path}"'
+    task = asyncio.create_task(run_hook_command(command, timeout=60, env={}, stdin="payload"))
+    await asyncio.sleep(.15)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 8)
+    path.write_text("import sys\nprint(sys.stdin.read())\n")
+    result = await run_hook_command(command, timeout=3, env={}, stdin="payload")
+    assert result.ok and "payload" in result.stdout

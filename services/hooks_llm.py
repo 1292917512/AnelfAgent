@@ -27,6 +27,8 @@ class HooksLlmService:
                 "name": spec.name,
                 "event": spec.event,
                 "context": spec.context.value,
+                "mode": spec.mode.value,
+                "timeout_seconds": spec.timeout_seconds,
                 "description": spec.description,
                 "owner": spec.owner,
                 "source": spec.source,
