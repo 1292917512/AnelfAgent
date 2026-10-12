@@ -388,7 +388,9 @@ class MemoryRetriever:
                 if not fire_probe:
                     return
                 try:
-                    deep_probe_hub.start(scope=entity_scope, plan=plan, store=self._store)
+                    deep_probe_hub.start(scope=entity_scope, plan=plan, store=self._store,
+                                         conversation=conversation,
+                                         recalled=[{"content": item.snippet[:400], "tags": list(item.tags)} for item in base_results[:8]])
                 except Exception as exc:
                     log(f"深探启动失败: {exc}", "DEBUG", tag="记忆")
 

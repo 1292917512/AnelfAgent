@@ -18,6 +18,11 @@
 
 ## 自动召回策略
 
+自动深探在执行前经 [Jev 可选工作预判](llm-and-models.md#可选工作的原生预判)。首轮复用
+已有查询计划和已召回事实；轮中先保留快速本地结果，再判断是否需要后续规划与深层检索。
+未配置 Jev 或判断不可用时仍沿用原有召回策略、预算与计划门控；手动 `recall` 不受影响。
+预判与深探同属当前 scope 和轮次，轮次结束或策略改变后不接纳迟到结果。
+
 全局默认来自 `memory/recall`：`memory_recall_level`（默认 deep）与
 `memory_recall_background`。Web 的记忆页和钩子页共用配置入口；AI 的全局修改沿用
 `update_entity_config`，单轮修改用 `set_recall_policy`。

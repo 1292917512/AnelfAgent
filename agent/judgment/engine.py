@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, Optional
 
 from agent.judgment.bridge import judge_via_llm
@@ -71,9 +71,14 @@ class JudgmentEngine:
         self,
         state: JsonValue,
         questions: Dict[str, Question],
+        *,
+        native_only: bool = False,
+        timeout: float | None = None,
     ) -> JudgmentReport:
-        """批量评判问题。失败抛 JudgmentError（归因齐备，供工具层/调用方决策）。"""
+        """批量评判；native_only 禁止普通模型回退，timeout 可缩短通道预算。"""
         cfg = load_config()
+        if timeout is not None:
+            cfg = replace(cfg, timeout=min(cfg.timeout, timeout))
         if not cfg.enabled:
             raise JudgmentError(
                 "判断能力已停用（judgment_enabled=false）",
@@ -87,15 +92,15 @@ class JudgmentEngine:
             try:
                 return await self._judge_native(cfg, state, questions)
             except JudgmentError as exc:
-                if not cfg.fallback_enabled:
+                if native_only or not cfg.fallback_enabled:
                     raise
                 log(
                     f"TypeSafe 原生通道失败，降级普通模型通道: {exc}",
                     "WARNING", tag="判断",
                 )
-        elif not cfg.fallback_enabled:
+        elif native_only or not cfg.fallback_enabled:
             raise JudgmentError(
-                "未配置 TypeSafe API Key 且回退通道已关闭",
+                "未配置 TypeSafe API Key，当前请求不允许普通模型回退",
                 cause=ErrorCause.CONFIG,
                 retryable=False,
             )

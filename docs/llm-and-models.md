@@ -3,6 +3,18 @@
 模型配置管理、调用协议、韧性重试、用量口径与内部辅助调用的现状说明。修改 `agent/llm/`、
 `entities/model_control/` 或用量统计时按需阅读；缓存排查见[上下文缓存分册](context-cache.md)。
 
+## 可选工作的原生预判
+
+`agent.judgment.gate.assess_optional_work` 用 Jev 判断自动深探与技能评审是否值得执行。
+仅在原生判断已启用并配置密钥时调用；未配置、停用、超时、无效答案或不确定时保留原流程，
+此入口不走普通聊天模型回退。只有必要概率不高于 `judgment_gate_skip_threshold`
+（默认 0.1）的原生结果才跳过。`judgment_gate_timeout` 默认 2 秒，是整体等待预算；
+`judgment_gate_enabled` 可关闭这层优化，三项均由 `judgment/core` 配置面供 AI/Web 编辑。
+
+输入是有界对话事实、会话 scope、已召回内容及其归属标签或技能库状态。系统前缀不进入
+预判，敏感字段经清洗；预判不修改主模型上下文。执行记录显示 Jev 判断阶段、调用数与结果。
+它只决定是否启动可选工作，不替代技能写入决策或记忆内容判断。
+
 ## 模型配置与管理（llm_clients.json）
 
 - **AI 可全生命周期管理模型配置**：add/update/remove_provider + add/remove_model（CRITICAL 走

@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Optional
 
 from agent.hooks_llm import HookContext, HookRegistry, llm_hook
+from agent.judgment.gate import assess_optional_work, conversation_evidence
 from agent.skills.skill_index import SkillIndex
 from agent.skills.skill_store import SkillStore
 from core.config import get_config_int
@@ -196,6 +197,18 @@ class SkillReviewer:
         执行参数（工具面/轮次预算）透传钩子声明，不在执行体另立常量。
         返回产出文本供钩子面登记（None/空 = 无沉淀）。
         """
+        health = self._build_health()
+        decision = await assess_optional_work(
+            "技能评审",
+            "是否值得启动完整技能评审？新方法、排障经验、失败后修正、现有技能修订或技能库治理问题均应继续；"
+            "纯例行成功操作且没有可复用经验或治理线索时可跳过。这里只决定是否评审，不决定写入技能。",
+            {"scope": ctx.scope, "transcript_available": ctx.transcript_available(),
+             "conversation": conversation_evidence(ctx.messages) if ctx.transcript_available() else [],
+             "execution_summary": str(ctx.payload.get("execution_summary") or "")[:4000] if ctx.transcript_available() else "",
+             "library_health": health},
+        )
+        if not decision.run:
+            return decision.describe() + "：本轮无需技能评审"
         if ctx.transcript_available():
             context_description = "以上是本轮对话的完整执行上下文（你的回复、工具调用与结果原文）。"
             execution_summary = str(ctx.payload.get("execution_summary") or "")
@@ -204,7 +217,6 @@ class SkillReviewer:
             context_description = "本次未继承原对话执行过程。仅按下面的技能库事实检查重复与失效内容；不得推测原对话或据此沉淀新经验。"
             seed = ""
         candidates = await self._build_candidates(seed)
-        health = self._build_health()
         instruction = _REVIEW_INSTRUCTION.format(context_description=context_description, candidates=candidates, health=health)
 
         messages = list(ctx.messages) + [{"role": "user", "content": instruction}]

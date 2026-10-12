@@ -35,6 +35,18 @@ _JUDGMENT_CONFIGS = {
             "description": "未配置密钥或原生通道失败时，是否回退到普通聊天模型完成判断",
             "default": True,
         },
+        "judgment_gate_enabled": {
+            "description": "用原生 Jev 预判自动深探与技能评审是否必要；未配置、失败或不确定时照常执行，不调用普通模型回退",
+            "default": True,
+        },
+        "judgment_gate_timeout": {
+            "description": "可选工作预判的总等待预算；到期立即保留原流程",
+            "default": 2.0, "min": 0.1, "max": 10.0, "unit": "秒", "advanced": True,
+        },
+        "judgment_gate_skip_threshold": {
+            "description": "必要概率不高于此值才跳过可选工作；越低越保守",
+            "default": 0.1, "min": 0.0, "max": 0.49, "advanced": True,
+        },
         "judgment_fallback_model": {
             "description": "回退判断专用模型 ID（留空走默认聊天模型链；判断是轻量任务，建议小快模型）",
             "default": "",

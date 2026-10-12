@@ -19,6 +19,8 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, AsyncIterator, Dict, Iterable, List, Optional
 
+from agent.judgment.gate import assess_optional_work, conversation_evidence
+from agent.judgment.types import JsonValue
 from core.async_helper import spawn
 from core.config import get_config_bool, get_config_float, get_config_int, register_configs_safe
 from core.context_provider import ContextProviderRegistry, ProviderMeta
@@ -100,6 +102,8 @@ class _ProbeState:
     retriever: MemoryRetriever | None = None
     revision: int = 0
     managed: bool = False
+    evidence: list[JsonValue] = field(default_factory=list)
+    recalled: list[JsonValue] = field(default_factory=list)
     buffer: RecallBuffer = field(default_factory=lambda: RecallBuffer(
         get_config_int("memory_probe_max_chars", 1600),
     ))
@@ -180,6 +184,10 @@ class DeepProbeHub:
                 if not self._publish(state, revision, deltas):
                     return
                 if policy.level == "deep":
+                    state.evidence = conversation_evidence(conversation)
+                    state.recalled = [{"content": item.snippet[:400], "tags": list(item.tags)} for item in results[:8]]
+                    if not await self._allow_deep(state, [query]) or not self._is_current(state, revision):
+                        return
                     await self._stage("检索规划（最多 5 秒，超时回退原查询）")
                     plan = await retriever.plan_retrieval(query, timeout=5)
                     if self._is_current(state, revision) and (plan.deep_needed or plan.node_keys):
@@ -216,6 +224,8 @@ class DeepProbeHub:
         scope: str,
         plan: RetrievalPlan,
         store: "MemoryStore",
+        conversation: List[Dict] | None = None,
+        recalled: list[JsonValue] | None = None,
     ) -> None:
         """异步启动深探（按需触发：规划判定 deep_needed 或已解析出实体节点）。"""
         if not plan.deep_needed and not plan.node_keys:
@@ -228,6 +238,8 @@ class DeepProbeHub:
             self._states[scope] = state
         if state.task is not None and not state.task.done():
             return  # 单飞：本回复已有深探在途
+        state.evidence = conversation_evidence(conversation or [])
+        state.recalled = list((recalled or [])[:8])
         state.task = spawn(
             self._run(state, plan, store, state.revision),
             name=f"memory.probe.{scope or 'global'}",
@@ -254,7 +266,22 @@ class DeepProbeHub:
 
     async def _run(self, state: _ProbeState, plan: RetrievalPlan, store: "MemoryStore", revision: int) -> None:
         async with self._observe(state):
+            if plan.deep_needed and plan.queries and not await self._allow_deep(state, plan.queries, plan.node_keys):
+                return
+            if not self._is_current(state, revision):
+                return
             await self._probe(state, plan, store, revision=revision)
+
+    @staticmethod
+    async def _allow_deep(state: _ProbeState, queries: list[str], nodes: list[str] | None = None) -> bool:
+        decision = await assess_optional_work(
+            "深度记忆召回",
+            "是否仍需要深层记忆或关系检索？比较当前请求、已有召回和待查问题。需要历史细节、跨实体关联、"
+            "已有事实不足或明确要求回忆时执行；只有已有证据足够或明确与记忆无关时才跳过。不得把不同身份的事实混用。",
+            {"scope": state.scope, "conversation": state.evidence, "queries": list(queries),
+             "already_recalled": list(state.recalled), "entity_nodes": list(nodes or [])},
+        )
+        return decision.run
 
     @asynccontextmanager
     async def _observe(self, state: _ProbeState) -> AsyncIterator[None]:
@@ -277,7 +304,8 @@ class DeepProbeHub:
                 log(f"深探失败 scope={state.scope}: {run.detail}", "DEBUG", tag="记忆")
             else:
                 added = len(state.rendered) - before
-                run.detail = f"新增上下文 {added} 字符" if added > 0 else "当前话题无需补充记忆"
+                summary = f"新增上下文 {added} 字符" if added > 0 else "当前话题无需补充记忆"
+                run.detail = f"{run.detail}；{summary}" if run.detail else summary
                 self._metrics("probe.completed")
 
     @staticmethod
