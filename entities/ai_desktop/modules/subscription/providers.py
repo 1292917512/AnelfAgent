@@ -9,8 +9,8 @@
 
 另支持按量计费供应商的账户余额查询（DeepSeek）——窗口条目改用
 ``{"label": "账户余额", "balance": 68.49, "currency": "CNY"}``（无余量百分比
-与重置时间）。硅基流动的 /v1/user/info 已 410 弃用且无公开替代、阿里云
-百炼需 AccessKey 签名体系，均暂不接入。
+与重置时间）。百炼经官方 CLI 控制台会话查询 Token Plan 额度，
+无需 AccessKey，也不把模型 API Key 当作控制台凭据。
 
 凭据链：llm_clients.json 中按 base_url 关键字匹配的首个带 api_key 供应商
 （Kimi 的 Coding OAuth access token 亦存于该字段）；本模块自持实现以保持
@@ -22,9 +22,14 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from functools import partial
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
+
+import httpx
 
 from core.log import log
+
+from .bailian import cli_credential, fetch_usage
 
 HTTP_TIMEOUT = 15.0
 
@@ -33,13 +38,29 @@ _LOG_TAG = "AI桌面"
 
 @dataclass(frozen=True)
 class ProviderSpec:
-    """订阅供应商声明（凭据匹配关键字 + 端点 + 响应解析器）。"""
+    """额度来源声明：凭据解析和采集返回统一快照。"""
 
     key: str
     display_name: str
-    host_keywords: Tuple[str, ...]
-    endpoint: str
-    parse: Callable[[Dict[str, Any]], Dict[str, Any]]
+    credential: Callable[[], Tuple[str, str]]
+    fetch: Callable[[str], Dict[str, Any]]
+    auth_type: Literal["api_key", "console"] = "api_key"
+
+
+def _http_provider(
+    key: str, display_name: str, host_keywords: Tuple[str, ...], endpoint: str,
+    parse: Callable[[Dict[str, Any]], Dict[str, Any]],
+) -> ProviderSpec:
+    """将 Bearer HTTP 查询装配为统一额度来源。"""
+    def fetch(api_key: str) -> Dict[str, Any]:
+        with httpx.Client(timeout=HTTP_TIMEOUT, trust_env=False) as client:
+            response = client.get(endpoint, headers={
+                "Authorization": f"Bearer {api_key}", "Accept": "application/json",
+            })
+        response.raise_for_status()
+        return parse(response.json())
+
+    return ProviderSpec(key, display_name, partial(resolve_credential, *host_keywords), fetch)
 
 
 def resolve_credential(*host_keywords: str) -> Tuple[str, str]:
@@ -264,27 +285,31 @@ def parse_deepseek(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 PROVIDERS: Tuple[ProviderSpec, ...] = (
     ProviderSpec(
+        key="bailian", display_name="阿里百炼", credential=cli_credential,
+        fetch=fetch_usage, auth_type="console",
+    ),
+    _http_provider(
         key="glm",
         display_name="智谱 GLM",
         host_keywords=("bigmodel.cn", "z.ai"),
         endpoint="https://open.bigmodel.cn/api/monitor/usage/quota/limit",
         parse=parse_glm,
     ),
-    ProviderSpec(
+    _http_provider(
         key="minimax",
         display_name="MiniMax",
         host_keywords=("minimaxi.com", "minimax.io"),
         endpoint="https://api.minimaxi.com/v1/token_plan/remains",
         parse=parse_minimax,
     ),
-    ProviderSpec(
+    _http_provider(
         key="kimi",
         display_name="Kimi",
         host_keywords=("kimi.com", "moonshot"),
         endpoint="https://api.kimi.com/coding/v1/usages",
         parse=parse_kimi,
     ),
-    ProviderSpec(
+    _http_provider(
         key="deepseek",
         display_name="DeepSeek",
         host_keywords=("deepseek.com",),

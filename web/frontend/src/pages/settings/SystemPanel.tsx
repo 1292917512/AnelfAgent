@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import { Check, X } from "lucide-react";
 import { systemApi } from "@/lib/api";
+import type { DevTool } from "@/lib/types";
 import { Card } from "@/components/common/Card";
 import { StatCard } from "@/components/common/StatCard";
 import { LoadingBlock } from "@/components/ui";
@@ -23,7 +24,7 @@ export function SystemPanel() {
 
   const sys = data?.system;
   const py = data?.python;
-  const tools: Array<{ name: string; installed: boolean; version?: string }> = data?.tools ?? [];
+  const tools: DevTool[] = data?.tools ?? [];
   const installed = tools.filter((tool) => tool.installed);
   const missing = tools.filter((tool) => !tool.installed);
 
@@ -72,6 +73,11 @@ export function SystemPanel() {
               <div className="min-w-0">
                 <p className="text-sm font-medium text-heading">{tool.name}</p>
                 {tool.version && <p className="text-[11px] text-muted truncate">{tool.version}</p>}
+                {tool.install_url && (
+                  <a href={tool.install_url} target="_blank" rel="noreferrer" className="text-[11px] text-accent">
+                    {t("optionalToolGuide")}
+                  </a>
+                )}
               </div>
             </div>
           ))}

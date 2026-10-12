@@ -15,7 +15,11 @@
       "unavailable": "Not Configured"
     },
     "keyConfigured": "Key configured",
-    "testChannel": "Test Channel",
+    "testChannel": "Test connection & speed",
+    "testHint": "Sends a small batch from the Anelf server, including network round-trip time. With a native key configured, tests Jev without masking failures with an LLM fallback.",
+    "slow": "Slow response: {{ms}}ms; warning threshold {{threshold}}ms. Check the network, proxy rules and model service.",
+    "overBudget": "Exceeds the {{ms}}ms assessment budget: this latency causes background assessments to fall back and continue, saving no downstream calls.",
+    "speedHint": "One small sample does not represent all workloads. Actual assessment latency and slow-response warnings also appear in the workspace.",
     "testFailed": "Test failed",
     "sourceTypesafe": "TypeSafe native",
     "sourceFallback": "LLM fallback",

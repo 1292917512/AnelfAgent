@@ -90,3 +90,30 @@ async def test_attribution_keeps_channel_and_full_id_with_stable_order() -> None
     assert "[channel:telegram][uid:123]" in result
     assert result.count("[channel:qq][uid:123]") == 1
     assert "[channel:webui][group_id:a:b]" in result
+
+
+@pytest.mark.parametrize("unavailable", [False, True])
+async def test_batch_attribution_looks_up_each_identity_once(store, monkeypatch, unavailable):
+    from unittest.mock import AsyncMock
+
+    from agent.memory.memory_retriever import MemoryRetriever
+    from agent.memory.memory_types import MemorySearchResult
+    from agent.memory.probe import DeepProbeHub
+
+    nodes = {"user:qq:1": {"label": "甲"}, "user:webui:1": {"label": "乙"}}
+    lookup = AsyncMock(return_value=nodes, side_effect=RuntimeError("unavailable") if unavailable else None)
+    monkeypatch.setattr(store.graph, "get_nodes_by_keys", lookup)
+    results = [MemorySearchResult(
+        id=f"mem:{i}", snippet=f"事实{i}", score=.9,
+        tags=["user:qq:1", "user:webui:1", "topic:项目"], sensitivity="private",
+    ) for i in range(5)]
+    expected = [await format_memory_line(store.graph, snippet=r.snippet, tags=r.tags,
+                                        sensitivity=r.sensitivity) for r in results]
+    lookup.reset_mock()
+    messages = await MemoryRetriever(store, None)._format_unified_results(results)
+    lookup.assert_awaited_once_with(["user:qq:1", "user:webui:1"])
+    assert "\n".join(expected) in messages[0]["content"]
+    lookup.reset_mock()
+    deltas = await DeepProbeHub._memory_deltas(iter(results), store, "补充记忆")
+    lookup.assert_awaited_once_with(["user:qq:1", "user:webui:1"])
+    assert [delta.text for delta in deltas] == expected

@@ -45,6 +45,9 @@ export interface JudgmentTestResult {
   source?: "typesafe" | "llm_fallback";
   model?: string;
   latency_ms: number;
+  slow: boolean;
+  slow_after_ms: number;
+  gate_budget_ms: number;
   answers?: Record<string, JudgmentAnswer>;
   missing?: string[];
   usage?: { input_tokens: number; output_tokens: number };

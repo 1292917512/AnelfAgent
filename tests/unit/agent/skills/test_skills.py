@@ -403,6 +403,38 @@ class TestSkillCatalog:
 
 
 class TestSkillMatcher:
+    async def test_query_lanes_overlap_and_do_not_retry_shared_failure(self, store, monkeypatch):
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        store.create("code-review", "代码审查", "步骤", ["审查"])
+        matcher = SkillMatcher(store)
+        started, release = set(), asyncio.Event()
+        ready = asyncio.Event()
+        vector = asyncio.get_running_loop().create_future()
+        vector.set_result(None)
+
+        async def embed(query):
+            started.add(query)
+            if len(started) == 2:
+                ready.set()
+            await release.wait()
+            return None
+
+        embed_mock = AsyncMock(side_effect=embed)
+        monkeypatch.setattr(matcher.index, "text_vector", embed_mock)
+        task = asyncio.create_task(matcher.match(["审查", "计划甲", "计划乙"], query_vec_task=vector))
+        try:
+            await asyncio.wait_for(ready.wait(), 2)
+            assert started == {"计划甲", "计划乙"}
+            release.set()
+            matched = await task
+            assert matched[0][0].name == "code-review"
+            assert embed_mock.await_count == 2
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
     async def test_keyword_match(self, store: SkillStore) -> None:
         store.create("web-research", "网络调研", "内容", ["调研", "搜索"])
         store.create("code-review", "代码审查", "内容", ["审查", "review"])

@@ -9,7 +9,6 @@
  * 注册（命名空间 ai_desktop），无需在本文件自行 registerPluginI18n；
  * _registry.groups/configSections 声明工具页与配置中心的分组名。
  */
-import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Eye, Puzzle, RefreshCw, ToggleRight, Zap } from "lucide-react";
@@ -24,7 +23,6 @@ import type { DesktopModuleInfo } from "./panels/types";
 export default function AiDesktopPanel() {
   const { t } = useTranslation("ai_desktop");
   const queryClient = useQueryClient();
-  const [refreshingKey, setRefreshingKey] = useState<string | null>(null);
 
   const modulesQuery = useQuery({
     queryKey: ["ai-desktop-modules"],
@@ -33,29 +31,29 @@ export default function AiDesktopPanel() {
   });
   const modulesData = modulesQuery.data;
 
-  const { data: preview, refetch: refetchPreview } = useQuery({
+  const previewQuery = useQuery({
     queryKey: ["ai-desktop-preview"],
     queryFn: () => aiDesktopApi.preview().then((r) => r.data),
     refetchInterval: 15000,
   });
+  const preview = previewQuery.data;
 
-  const reloadModules = () =>
-    queryClient.invalidateQueries({ queryKey: ["ai-desktop-modules"] });
+  const reload = () => Promise.all([
+    queryClient.invalidateQueries({ queryKey: ["ai-desktop-modules"] }),
+    queryClient.invalidateQueries({ queryKey: ["ai-desktop-preview"] }),
+  ]);
 
   const saveConfig = async (key: string, value: unknown) => {
     await aiDesktopApi.updateConfig(key, value);
-    await reloadModules();
-    await refetchPreview();
+    await reload();
   };
 
-  const toggleModule = (mod: DesktopModuleInfo, enabled: boolean) => {
+  const toggleModule = (mod: DesktopModuleInfo, enabled: boolean) =>
     saveConfig(`ai_desktop_${mod.key}_enabled`, enabled)
       .then(() => toast.success(t("messages.toggleSuccess", { name: mod.display_name })))
       .catch(() => toast.error(t("messages.toggleFailed")));
-  };
 
   const refreshModule = async (mod: DesktopModuleInfo) => {
-    setRefreshingKey(mod.key);
     try {
       const resp = await aiDesktopApi.refresh(mod.key);
       if (!resp.data.success) {
@@ -63,16 +61,13 @@ export default function AiDesktopPanel() {
       } else {
         toast.success(t("messages.refreshSuccess", { name: mod.display_name }));
       }
-      await reloadModules();
-      await refetchPreview();
+      await reload();
     } catch {
       toast.error(t("messages.refreshFailed"));
-    } finally {
-      setRefreshingKey(null);
     }
   };
 
-  if (modulesQuery.isError) {
+  if (modulesQuery.isError && !modulesData) {
     return (
       <Card>
         <div className="flex flex-col items-center gap-3 py-8 text-center">
@@ -93,10 +88,16 @@ export default function AiDesktopPanel() {
   const modules = modulesData.modules;
   const enabledCount = modules.filter((m) => m.enabled).length;
   const injectingCount = modules.filter((m) => m.enabled && m.current_content).length;
-  const errorCount = modules.filter((m) => m.last_error).length;
+  const errorCount = modules.filter((m) => m.last_error || m.detail.providers?.some((p) => p.state === "error")).length;
 
   return (
     <div className="space-y-4">
+      {modulesQuery.isError && (
+        <div role="status" className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-warn-subtle p-3 text-xs text-warn">
+          {t("staleData")}
+          <Button variant="ghost" size="sm" onClick={() => void modulesQuery.refetch()}>{t("retry")}</Button>
+        </div>
+      )}
       {/* 统计概览 */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <StatCard label={t("stats.total")} value={modulesData.count} />
@@ -124,10 +125,11 @@ export default function AiDesktopPanel() {
             <Eye className="h-4 w-4 text-accent" />
             {t("preview.title")}
           </h3>
-          <Button variant="ghost" size="icon" onClick={() => void refetchPreview()} title={t("preview.refresh")}>
-            <RefreshCw className="h-3.5 w-3.5" />
+          <Button variant="ghost" size="icon" disabled={previewQuery.isFetching} onClick={() => void previewQuery.refetch()} title={t("preview.refresh")} aria-label={t("preview.refresh")}>
+            <RefreshCw className={`h-3.5 w-3.5 ${previewQuery.isFetching ? "animate-spin" : ""}`} />
           </Button>
         </div>
+        {previewQuery.isError && <p role="status" className="mb-2 text-xs text-warn">{t("preview.loadFailed")}</p>}
         {preview?.injecting ? (
           <pre className="whitespace-pre-wrap break-all rounded-md border border-accent/30 bg-accent/5 px-3 py-2 text-[13px] leading-relaxed text-foreground">
             {preview.content}
@@ -149,10 +151,9 @@ export default function AiDesktopPanel() {
           <ModuleCard
             key={mod.key}
             mod={mod}
-            refreshing={refreshingKey === mod.key}
             onToggle={toggleModule}
             onSaveConfig={saveConfig}
-            onRefresh={(m) => void refreshModule(m)}
+            onRefresh={refreshModule}
           />
         ))}
       </div>

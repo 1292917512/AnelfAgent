@@ -1,16 +1,16 @@
 """订阅额度组件 — Coding Plan 用量与按量账户余额监控注入。
 
 轮询型组件：后台按 ``refresh_minutes``（默认 30 分钟）轮询订阅供应商
-（智谱 GLM / MiniMax / Kimi）的用量查询接口与按量供应商（DeepSeek）的
+（百炼 Token Plan / 智谱 GLM / MiniMax / Kimi）的用量查询接口与按量供应商（DeepSeek）的
 账户余额接口，凭据自动匹配自 llm_clients.json 的供应商配置（base_url
 关键字识别，Kimi 的 OAuth access token 同样存于 api_key 字段）。
-无凭据的供应商自动跳过，单家失败收敛为该家 error 条目不扩散。
+百炼使用官方 CLI 控制台会话。无凭据的供应商自动跳过，单家失败不扩散。
 render 只读缓存快照，每家一行注入文本。
 
 Model Experience:
     模型看到什么 —— 各有凭据供应商一行 ``[订阅] 名称（档位）：窗口余量/重置时间``，
         查询失败时该行如实标注失败原因（凭据过期等需 AI 告知主人处理）；
-    token 影响 —— 每轮增量注入，每家约 30~60 token，三家全配约百余 token；
+    token 影响 —— 每轮增量注入，每家约 30~60 token；未登录的百炼不注入；
     缓存影响 —— 走 volatile 尾部动态区（ai_desktop provider 聚合），不触碰
         stable/conversation 前缀缓存。
 """
@@ -25,7 +25,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
 from ...framework import DesktopModule, desktop_module
-from .providers import HTTP_TIMEOUT, PROVIDERS, ProviderSpec, resolve_credential
+from .bailian import ConsoleLoginRequired
+from .providers import PROVIDERS, ProviderSpec
 
 # 凭据解析结果缓存 TTL（避免调度循环每拍重读 llm_clients.json）
 _CREDENTIAL_CACHE_TTL = 60.0
@@ -33,11 +34,11 @@ _CREDENTIAL_CACHE_TTL = 60.0
 
 @desktop_module
 class SubscriptionModule(DesktopModule):
-    """注入 Coding Plan 订阅额度状态（5 小时/周窗口余量与重置时间）。"""
+    """轮询订阅余量与余额，将缓存快照提供给桌面和动态上下文。"""
 
     key = "subscription"
     display_name = "订阅额度"
-    description = "订阅用量与账户余额监控（智谱 GLM / MiniMax / Kimi / DeepSeek，凭据取自 LLM 供应商配置）"
+    description = "订阅用量与账户余额监控（阿里百炼 / GLM / MiniMax / Kimi / DeepSeek）"
     priority = 30
     refresh_interval = 1800.0
     config_schema = {
@@ -59,6 +60,7 @@ class SubscriptionModule(DesktopModule):
         # 供应商 key -> (api_key, provider_id)；带 TTL 的凭据解析缓存
         self._credentials: Dict[str, Tuple[str, str]] = {}
         self._credentials_at: float = 0.0
+        self._refresh_lock = asyncio.Lock()
 
     # ---- 凭据 ----
 
@@ -66,7 +68,7 @@ class SubscriptionModule(DesktopModule):
         """解析供应商凭据（60s TTL 缓存，热跟随 LLM 配置修改）。"""
         if time.time() - self._credentials_at > _CREDENTIAL_CACHE_TTL:
             self._credentials = {
-                spec.key: resolve_credential(*spec.host_keywords)
+                spec.key: spec.credential()
                 for spec in PROVIDERS
             }
             self._credentials_at = time.time()
@@ -90,15 +92,18 @@ class SubscriptionModule(DesktopModule):
         return any(spec.key not in self._data for spec in self._active_specs())
 
     async def refresh(self) -> None:
-        """后台轮询全部有凭据供应商（网络 I/O 放线程执行，单家失败不扩散）。"""
-        specs = self._active_specs()
-        if specs:
-            results = await asyncio.to_thread(self._fetch_all, specs)
-            self._data.update(results)
-        # 清理凭据已消失供应商的缓存数据
-        active_keys = {spec.key for spec in specs}
-        for key in [k for k in self._data if k not in active_keys]:
-            del self._data[key]
+        """并发采集额度，重叠刷新共用结果，单家失败不影响其他来源。"""
+        if self._refresh_lock.locked():
+            async with self._refresh_lock:
+                return
+        async with self._refresh_lock:
+            self._credentials_at = 0.0
+            specs = self._active_specs()
+            results = await asyncio.gather(*(
+                asyncio.to_thread(self._fetch_one, spec, self._credential(spec)[0])
+                for spec in specs
+            ))
+            self._data = {spec.key: result for spec, result in zip(specs, results, strict=True)}
 
     # ---- 渲染 ----
 
@@ -107,7 +112,7 @@ class SubscriptionModule(DesktopModule):
         lines: List[str] = []
         for spec in self._active_specs():
             data = self._data.get(spec.key)
-            if not data:
+            if not data or data.get("needs_auth"):
                 continue
             name = spec.display_name
             if data.get("plan"):
@@ -156,8 +161,9 @@ class SubscriptionModule(DesktopModule):
                 "key": spec.key,
                 "name": spec.display_name,
                 "source": source or None,
+                "auth_type": spec.auth_type,
             }
-            if not _key:
+            if not _key or (data and data.get("needs_auth")):
                 entry["state"] = "no_credential"
             elif data is None:
                 entry["state"] = "pending"
@@ -175,19 +181,6 @@ class SubscriptionModule(DesktopModule):
             "refresh_minutes": self.get_config("refresh_minutes", 30),
         }
 
-    # ---- 以下为同步采集实现（经 asyncio.to_thread 调用） ----
-
-    def _fetch_all(self, specs: List[ProviderSpec]) -> Dict[str, Dict[str, Any]]:
-        """逐供应商采集（共享连接；单家异常收敛为该家的 error 条目）。"""
-        results: Dict[str, Dict[str, Any]] = {}
-        with httpx.Client(timeout=HTTP_TIMEOUT, trust_env=False) as client:
-            for spec in specs:
-                try:
-                    results[spec.key] = self._fetch_one(client, spec)
-                except Exception as exc:
-                    results[spec.key] = {"error": self._short_error(exc)}
-        return results
-
     @staticmethod
     def _short_error(exc: Exception) -> str:
         """异常收敛为简短错误描述（注入文本与面板共用）。"""
@@ -200,17 +193,13 @@ class SubscriptionModule(DesktopModule):
             return "请求超时"
         return str(exc)[:60]
 
-    def _fetch_one(self, client: httpx.Client, spec: ProviderSpec) -> Dict[str, Any]:
-        """单供应商用量采集与归一化。"""
-        api_key, _source = self._credential(spec)
-        resp = client.get(
-            spec.endpoint,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Accept": "application/json",
-            },
-        )
-        resp.raise_for_status()
-        snapshot = spec.parse(resp.json())
-        snapshot["fetched_at"] = time.time()
-        return snapshot
+    def _fetch_one(self, spec: ProviderSpec, credential: str) -> Dict[str, Any]:
+        """采集单家额度，并将登录状态和错误收敛为快照。"""
+        try:
+            snapshot = spec.fetch(credential)
+            snapshot["fetched_at"] = time.time()
+            return snapshot
+        except ConsoleLoginRequired:
+            return {"needs_auth": True}
+        except Exception as exc:
+            return {"error": self._short_error(exc)}

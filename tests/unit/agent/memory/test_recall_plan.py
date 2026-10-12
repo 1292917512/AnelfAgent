@@ -30,6 +30,47 @@ def _patch_light_llm(monkeypatch, payload):
     monkeypatch.setattr(dedup_mod, "light_llm", _fake)
 
 
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_planning_overlaps_shared_embedding_and_does_not_own_it(store, monkeypatch, cancel):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from agent.memory.memory_types import MemoryEntry, MemoryType
+
+    await store.add(MemoryEntry(memory_type=MemoryType.SEMANTIC, content="航海项目发布地点是青岛"))
+    retriever = _retriever(store)
+    query = "航海项目发布地点是哪里"
+    started = asyncio.Event()
+    vector = asyncio.get_running_loop().create_future()
+
+    async def plan(*args, **kwargs):
+        started.set()
+        return RetrievalPlan(queries=[query])
+
+    monkeypatch.setattr(retriever, "plan_retrieval", plan)
+    monkeypatch.setattr(retriever._embedder, "embed_query", AsyncMock(side_effect=AssertionError("重复向量请求")))
+    task = asyncio.create_task(retriever.recall_split(
+        [{"role": "user", "content": query}], query_vec_task=vector,
+    ))
+    try:
+        await asyncio.wait_for(started.wait(), 2)
+        assert not vector.done() and not task.done()
+        if cancel:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert not vector.done()
+        else:
+            vector.set_result(None)
+            _, messages = await asyncio.wait_for(task, 2)
+            assert "青岛" in str(messages)
+        retriever._embedder.embed_query.assert_not_awaited()
+    finally:
+        task.cancel()
+        vector.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
 # ==================================================================
 # 计划 JSON 宽松解析
 # ==================================================================

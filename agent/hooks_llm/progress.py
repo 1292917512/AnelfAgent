@@ -37,7 +37,11 @@ class HookProgress:
         run = self.run
         return {"hook_id": run.id, "phase": run.phase, "operation": run.operation,
                 "updated_at": run.updated_at, "model_calls": run.model_calls,
-                "tool_calls": run.tool_calls, "activity_ids": list(run.activity_ids)}
+                "tool_calls": run.tool_calls, "activity_ids": list(run.activity_ids),
+                "judgments": [{"task": item.task, "status": item.status, "reason": item.reason,
+                               "probability": item.probability, "duration_ms": item.duration_ms,
+                               "slow": item.slow}
+                              for item in run.judgments[-8:]]}
 
     async def finished(self, payload: dict[str, Any]) -> None:
         if current_hook_run.get() is self.run and payload.get("turn_id") in self.run.activity_ids:

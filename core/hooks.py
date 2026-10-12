@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
-from typing import AsyncIterator
+from typing import AsyncIterator, Literal
 
 from core.activity import current_activity_id
 from core.conversation_scope import current_scope
@@ -28,6 +28,30 @@ EVENT_HOOK_EXECUTION = "hook_execution"
 class HookMode(StrEnum):
     SYNC = "sync"
     ASYNC = "async"
+
+
+@dataclass
+class HookJudgment:
+    """钩子内的结构化判断事实，独立保留结论、用量与耗时。"""
+
+    id: str
+    provider: str
+    task: str
+    started_at: float
+    threshold: float
+    status: Literal["running", "proceed", "skip", "fallback", "cancelled"] = "running"
+    duration_ms: int = 0
+    reason: str = ""
+    probability: float | None = None
+    basis: str = ""
+    basis_probability: float | None = None
+    model: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    input_chars: int = 0
+    input_truncated: bool = False
+    slow_after_ms: int = 0
+    slow: bool = False
 
 
 @dataclass
@@ -52,11 +76,16 @@ class HookRun:
     tool_calls: int | None = None
     context_mode: str = ""
     context_messages: int = 0
+    judgments: list[HookJudgment] = field(default_factory=list)
 
     async def publish(self) -> None:
         """发布脱敏的执行快照，不复制工具结果或思考正文。"""
         self.detail = sanitize_text(self.detail)[:1200]
         self.operation = sanitize_text(self.operation)[:160]
+        self.judgments = self.judgments[-8:]
+        for judgment in self.judgments:
+            for key in ("provider", "task", "reason", "basis", "model"):
+                setattr(judgment, key, sanitize_text(getattr(judgment, key))[:300])
         await event_bus.emit(EVENT_HOOK_EXECUTION, asdict(self))
 
 

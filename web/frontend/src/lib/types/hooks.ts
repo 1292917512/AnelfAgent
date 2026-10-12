@@ -85,6 +85,27 @@ export interface LlmHookItem {
   enabled: boolean;
 }
 
+export interface HookJudgment {
+  id: string;
+  provider: string;
+  task: string;
+  started_at: number;
+  threshold: number;
+  status: "running" | "proceed" | "skip" | "fallback" | "cancelled";
+  duration_ms: number;
+  reason: string;
+  probability: number | null;
+  basis: string;
+  basis_probability: number | null;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  input_chars: number;
+  input_truncated: boolean;
+  slow_after_ms: number;
+  slow: boolean;
+}
+
 export interface HookExecution {
   id: string;
   name: string;
@@ -105,6 +126,7 @@ export interface HookExecution {
   tool_calls?: number | null;
   context_mode?: string;
   context_messages?: number;
+  judgments?: HookJudgment[];
 }
 
 export interface LlmHooksOverview {

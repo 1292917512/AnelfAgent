@@ -1177,12 +1177,13 @@ class Mind:
             base_query: str,
             *,
             query_vec: Optional[List[float]] = None,
+            query_vec_task: asyncio.Future[list[float] | None] | None = None,
             scope: str = "",
             planned_queries: Optional[List[str]] = None,
     ) -> List[Dict]:
         """匹配当前对话相关的技能（委托 recollection 模块）。"""
         return await _recollection._match_skills(
-            self, base_query, query_vec=query_vec, scope=scope,
+            self, base_query, query_vec=query_vec, query_vec_task=query_vec_task, scope=scope,
             planned_queries=planned_queries,
         )
 
@@ -1284,10 +1285,11 @@ class Mind:
         current_adapter_key: str,
         current_scope: str,
         query_vec: Optional[List[float]] = None,
+        query_vec_task: asyncio.Future[list[float] | None] | None = None,
     ) -> Tuple[List[Dict], Set[str]]:
         """搜索其他频道的语义相关对话，返回 (注入消息列表, 已召回 scope 集合)。"""
         return await _cc_recall(
-            self, query_conversation, current_adapter_key, current_scope, query_vec=query_vec,
+            self, query_conversation, current_adapter_key, current_scope, query_vec=query_vec, query_vec_task=query_vec_task,
         )
 
     def _build_cross_channel_narrative(

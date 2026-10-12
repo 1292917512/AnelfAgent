@@ -44,8 +44,12 @@ _JUDGMENT_CONFIGS = {
             "default": 2.0, "min": 0.1, "max": 10.0, "unit": "秒", "advanced": True,
         },
         "judgment_gate_skip_threshold": {
-            "description": "必要概率不高于此值才跳过可选工作；越低越保守",
+            "description": "必要概率不高于此值，且无需执行的依据概率不低于 1−此值，才跳过可选工作",
             "default": 0.1, "min": 0.0, "max": 0.49, "advanced": True,
+        },
+        "judgment_slow_seconds": {
+            "description": "Jev 响应偏慢警告阈值；超过此值或预判等待预算的八成即提示，计入网络耗时",
+            "default": 1.0, "min": 0.1, "max": 30.0, "unit": "秒", "advanced": True,
         },
         "judgment_fallback_model": {
             "description": "回退判断专用模型 ID（留空走默认聊天模型链；判断是轻量任务，建议小快模型）",

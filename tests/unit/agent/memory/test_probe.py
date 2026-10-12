@@ -369,8 +369,8 @@ def test_begin_reply_keeps_old_task_from_serving() -> None:
 
 
 @pytest.mark.asyncio
-async def test_probe_staged_fast_section_publishes_before_slow(store) -> None:
-    """分阶段渲染（快唤醒→慢巩固）：慢段执行时快段已在缓存中可见。"""
+async def test_probe_staged_fast_section_publishes_before_slow(store, monkeypatch) -> None:
+    """本地与远端同时读取，远端未结束时本地事实已可消费。"""
     from agent.memory.memory_types import RetrievalPlan
 
     await store.graph.add_relation(
@@ -380,18 +380,81 @@ async def test_probe_staged_fast_section_publishes_before_slow(store) -> None:
     state = hub.begin_reply("user_qq:1")
     plan = RetrievalPlan(queries=["q"], deep_needed=True, node_keys=["user:qq:1"])
 
-    seen_at_slow_start: list[str] = []
+    remote_started, local_published = asyncio.Event(), asyncio.Event()
+    release = asyncio.Event()
+    collect_relations, publish = hub._collect_relations, hub._publish
 
-    async def _slow_cognee(state_arg, plan_arg, store_arg):
-        seen_at_slow_start.append(hub.current_render("user_qq:1"))
+    async def local(*args):
+        await remote_started.wait()
+        return await collect_relations(*args)
+
+    def on_publish(*args):
+        accepted = publish(*args)
+        local_published.set()
+        return accepted
+
+    async def _slow_cognee(state_arg, plan_arg, store_arg, *, revision):
+        remote_started.set()
+        await release.wait()
+
+    monkeypatch.setattr(hub, "_collect_relations", local)
+    monkeypatch.setattr(hub, "_collect_cognee", _slow_cognee)
+    monkeypatch.setattr(hub, "_publish", on_publish)
+    task = asyncio.create_task(hub._probe(state, plan, store))
+    try:
+        await asyncio.wait_for(local_published.wait(), 2)
+        assert not task.done()
+        assert "相关关系" in hub.current_render("user_qq:1")
+        assert "阿辰" in hub.current_render("user_qq:1")
+        release.set()
+        await task
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_probe_rejects_revision_changed_before_remote_starts(store, monkeypatch):
+    from unittest.mock import Mock
+
+    hub = DeepProbeHub()
+    state = hub.begin_reply("user_qq:1")
+
+    async def changed(*args):
+        state.revision += 1
         return []
 
-    hub._collect_cognee = _slow_cognee  # type: ignore[method-assign]
-    await hub._probe(state, plan, store)
+    config = Mock(side_effect=AssertionError("旧版本不应访问远端"))
+    monkeypatch.setattr(hub, "_collect_relations", changed)
+    monkeypatch.setattr("agent.memory.cognee.config.load_cognee_config", config)
+    await hub._probe(state, RetrievalPlan(queries=["过期查询"], deep_needed=True), store)
+    config.assert_not_called()
+    assert not state.rendered
 
-    # 慢段启动时，快段（图谱邻域，无 LLM）已渲染在场
-    assert "相关关系" in seen_at_slow_start[0]
-    assert "阿辰" in seen_at_slow_start[0]
+
+async def test_probe_cancellation_drains_both_lanes(store, monkeypatch):
+    hub = DeepProbeHub()
+    state = hub.begin_reply("user_qq:1")
+    started, closed = set(), set()
+    ready = asyncio.Event()
+
+    async def waiting(name):
+        started.add(name)
+        if len(started) == 2:
+            ready.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            closed.add(name)
+
+    monkeypatch.setattr(hub, "_collect_relations", lambda *args: waiting("local"))
+    monkeypatch.setattr(hub, "_collect_cognee", lambda *args, **kwargs: waiting("remote"))
+    task = asyncio.create_task(hub._probe(state, RetrievalPlan(queries=["查询"]), store))
+    try:
+        await asyncio.wait_for(ready.wait(), 2)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert closed == {"local", "remote"}
 
 
 # ==================================================================

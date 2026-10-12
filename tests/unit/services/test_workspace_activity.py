@@ -11,7 +11,7 @@ import pytest
 
 from core.activity import activity_owner, activity_scope, current_activity_id
 from core.event_bus import event_bus
-from core.hooks import HookMode, hook_execution
+from core.hooks import HookJudgment, HookMode, hook_execution, hook_journal
 from core.realtime_hub import TERMINAL_EVENTS
 from core.tags import tag_label
 from services.activity_presentation import tool_targets
@@ -103,6 +103,34 @@ async def test_background_hook_keeps_parent_until_finished(activity):
     parent = next(run for run in service.snapshot()["runs"] if run["id"] == "hook-parent")
     assert parent["entries"][0]["status"] == "done"
     assert parent["entries"][0]["mode"] == "async"
+
+
+async def test_judgment_records_survive_hook_updates_with_scope_isolation(activity):
+    service, _ = activity
+
+    async def work(scope):
+        async with activity_scope(scope, scope):
+            async with hook_execution("review", "after_reply", HookMode.ASYNC) as hook:
+                for index in range(10):
+                    item = HookJudgment(str(index), "Jev", scope, 1, 0.1, status="skip", duration_ms=24)
+                    item.reason = 'password="do-not-expose"'
+                    hook.judgments.append(item)
+                    await hook.publish()
+                    await asyncio.sleep(0)
+                hook.phase, hook.operation, hook.detail = "model", "get_skill", "Done"
+                await hook.publish()
+                return hook.id
+
+    ids = await asyncio.gather(work("user_qq:42"), work("user_webui:42"))
+    runs = service.snapshot()["runs"]
+    for run in runs:
+        entry = run["entries"][0]
+        assert entry["status"] == "done" and entry["detail"] == "Done"
+        assert len(entry["judgments"]) == 8
+        assert all(item["task"] == run["scope"] and item["status"] == "skip" for item in entry["judgments"])
+        assert "do-not-expose" not in str(entry)
+    recent = hook_journal.snapshot()["recent"]
+    assert all(any(item["id"] == key and len(item["judgments"]) == 8 for item in recent) for key in ids)
 
 
 @pytest.fixture

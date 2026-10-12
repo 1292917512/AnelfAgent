@@ -99,6 +99,17 @@ DuerOS 控制台（dueros.baidu.com/dbp/mcp/console）重新授权并同步更�
 - **二进制嗅探**（`looks_binary`，前 8KB NUL 采样）：read_file 扩展名表之外的内容级防线——文本
   读取走 `errors="replace"` 永不抛解码异常；命中返回 `{"type":"binary"}` JSON 引导媒体工具
 
+## AI 桌面订阅额度
+
+百炼 Token Plan 额度由 `entities/ai_desktop/modules/subscription/bailian.py` 调用官方
+`bl usage token-plan --output json` 只读查询。Bailian CLI 是可选依赖，环境设置显示安装状态与
+[安装指南](https://bailian.aliyun.com/cli/install.md)。在运行应用的同一系统用户下执行
+`bl auth login --console`，然后在 AI 桌面刷新订阅额度；无需给项目配置百炼 API Key。
+控制台会话及续期由 CLI 管理，项目不读取或复制登录令牌。
+
+供应商通过各自的凭据解析与采集函数返回统一快照；并发查询、单家失败隔离。界面与模型注入
+共享缓存，百炼未登录时只显示登录提示。月度用量比例按 0～1 转为剩余百分比，缺失值保持未知。
+
 ## 工具面纪律
 
 - **python_exec 输出落盘**：stdout 超 30000 字符经 `shell_state.truncate_or_persist` 落盘

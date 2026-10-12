@@ -52,6 +52,57 @@ test("hooks page opens the same execution details and explains expired memory", 
   await expect(page.getByRole("dialog")).toContainText("These execution details have left memory");
 });
 
+test("Jev decisions remain visible after later work and expose slow responses", async ({ page }, info) => {
+  const assessment = { id: "jev-1", provider: "Jev", task: "Deep memory recall", started_at: now - 5, threshold: 0.1,
+    status: "skip" as const, duration_ms: 245, reason: "Existing facts fully cover the request", probability: 0.02,
+    basis: "Already covered", basis_probability: 0.98, model: "jev-test", input_tokens: 600, output_tokens: 40,
+    input_chars: 1500, input_truncated: false, slow_after_ms: 1000, slow: false };
+  const review = { ...hook, name: "memory.probe", status: "done", phase: "done", operation: "Later retrieval completed", detail: "Subsequent work finished", judgments: [assessment,
+    { ...assessment, id: "jev-2", task: "Skill review", status: "fallback" as const, probability: null, basis: "", basis_probability: null,
+      input_tokens: 0, output_tokens: 0, duration_ms: 2001, slow: true, reason: "Request timed out; original work continues" }] };
+  await page.route("**/api/workspace/activity", (route) => route.fulfill({ json: { epoch: "jev", revision: 1, runs: [
+    { ...parent, entries: [{ ...review, ts: review.started_at, kind: "hook" }] },
+  ] } }));
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.goto("/webui/");
+  const judgment = page.locator('[data-judgment="jev-1"]');
+  await expect(judgment.getByText("Skip this task", { exact: true })).toBeVisible();
+  await expect(judgment.getByText("Need to execute 2%")).toBeVisible();
+  await expect(judgment.getByText("245ms", { exact: true })).toBeVisible();
+  await expect(page.getByText("Subsequent work finished")).not.toBeVisible();
+  await judgment.getByRole("button").click();
+  await expect(judgment.getByText("Existing facts fully cover the request")).toBeVisible();
+  await expect(judgment.getByText("Input 600 · output 40 tokens")).toBeVisible();
+  const slow = page.locator('[data-judgment="jev-2"]');
+  await expect(slow.getByRole("status")).toContainText("Slow response");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  const audit = await new AxeBuilder({ page }).include('[data-judgment]').withTags(["wcag2a", "wcag2aa", "wcag21aa"]).analyze();
+  expect(audit.violations).toEqual([]);
+  await page.screenshot({ path: info.outputPath("jev-decisions.png"), animations: "disabled" });
+  await slow.getByRole("link", { name: "Check channel speed" }).click();
+  await expect(page).toHaveURL(/models\?tab=judgment/);
+  expect(errors).toEqual([]);
+});
+
+test("Jev channel test reports a slow native request without hiding it", async ({ page }, info) => {
+  await page.route("**/api/judgment/status", (route) => route.fulfill({ json: {
+    enabled: true, channel: "typesafe", api_key_configured: true, base_url: "https://judge.test", model: "jev-test",
+    timeout: 30, fallback_enabled: true, fallback_model: "", fallback_effort: "low",
+  } }));
+  await page.route("**/api/config/meta", (route) => route.fulfill({ json: { groups: [] } }));
+  await page.route("**/api/judgment/test", (route) => route.fulfill({ json: {
+    ok: true, source: "typesafe", model: "jev-test", latency_ms: 2500, slow: true, slow_after_ms: 1000, gate_budget_ms: 2000,
+    answers: { needed: { type: "noul", noul: 0.1 } }, missing: [], usage: { input_tokens: 80, output_tokens: 20 },
+  } }));
+  await page.goto("/webui/models?tab=judgment");
+  await page.getByRole("button", { name: "Test connection & speed" }).click();
+  await expect(page.getByRole("status")).toContainText("Slow response: 2500ms");
+  await expect(page.getByText(/Exceeds the 2000ms assessment budget/)).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath("jev-speed.png"), animations: "disabled" });
+});
+
 test("LLM hook configuration reuses the shared metadata writer", async ({ page }) => {
   let context = "transcript";
   await page.route("**/api/hooks-llm", (route) => route.fulfill({ json: { enabled: true, runtime_started: true, events: ["after_reply"], governance: { max_concurrent: 2, transcript_enabled: true }, hooks: [{ name: "skill_review", event: "after_reply", context, mode: "async", source: "code", enabled: true, max_iterations: 6, max_concurrent: 1, cooldown_seconds: 120, stall_seconds: 180, route_output: false, debounce_seconds: 0, tool_tags: ["skills"], owner: "skills.review", config_group: "hooks_llm/skill_review" }] } }));

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import re
 import time
@@ -107,11 +108,12 @@ async def recall_cross_channel(
     current_adapter_key: str,
     current_scope: str,
     query_vec: Optional[List[float]] = None,
+    query_vec_task: asyncio.Future[list[float] | None] | None = None,
 ) -> Tuple[List[Dict], Set[str]]:
     """搜索其他频道的语义相关对话，返回 (注入消息列表, 已召回 scope 集合)。
 
     query_vec 为调用方预计算的查询向量（与语义召回共享一次 embedding），
-    为 None 时内部按需自行计算。
+    无预计算向量或在途任务时按需计算；借用任务返回 None 时直接降级，不重复请求。
     """
     recalled_scopes: Set[str] = set()
     mc = get_mind_config()
@@ -144,7 +146,9 @@ async def recall_cross_channel(
     if not other_scopes:
         return [], recalled_scopes
 
-    if query_vec is None:
+    if query_vec_task is not None:
+        query_vec = await asyncio.shield(query_vec_task)
+    elif query_vec is None:
         query_vec = await mind.embedder.embed_query(query)
     if not query_vec:
         return [], recalled_scopes

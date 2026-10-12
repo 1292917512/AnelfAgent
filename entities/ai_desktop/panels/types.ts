@@ -101,8 +101,9 @@ export interface QuotaWindow {
 export interface SubscriptionProvider {
   key: string;
   name: string;
-  /** 凭据来源（llm_clients.json 供应商 id） */
+  /** 凭据来源：LLM 供应商 id 或控制台客户端名称 */
   source?: string | null;
+  auth_type: "api_key" | "console";
   state: "ok" | "pending" | "error" | "no_credential";
   plan?: string | null;
   windows?: QuotaWindow[];

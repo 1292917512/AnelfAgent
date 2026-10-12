@@ -67,7 +67,7 @@ def _fake_mind(store_map: dict, pending: dict):
         restore=MagicMock(side_effect=lambda name: store_map.get(name)),
     )
 
-    async def match(queries, *, top_k=3, min_score=None, query_vec=None):
+    async def match(queries, *, top_k=3, min_score=None, query_vec=None, query_vec_task=None):
         return []
 
     return SimpleNamespace(

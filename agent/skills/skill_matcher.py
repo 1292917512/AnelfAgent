@@ -19,6 +19,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import List, Optional, Sequence, Tuple
 
@@ -92,6 +93,7 @@ class SkillMatcher:
             top_k: int = 3,
             min_score: Optional[float] = None,
             query_vec: Optional[List[float]] = None,
+            query_vec_task: asyncio.Future[list[float] | None] | None = None,
     ) -> List[Tuple[Skill, float]]:
         """匹配相关技能，返回 [(技能, 得分)] 按得分降序。
 
@@ -102,6 +104,7 @@ class SkillMatcher:
             min_score: 最低得分阈值（None 读配置 skills_match_min_score）
             query_vec: 首条车道的预计算查询向量（与记忆召回共享一次 embedding），
                 为 None 时内部按需自行计算
+            query_vec_task: 首条车道的共享在途向量；失败时保留关键词评分，不重复请求
         """
         skills = self.index.match_surface(include_archived=_include_archived())
         lanes = [q.strip() for q in queries if q and q.strip()]
@@ -110,15 +113,17 @@ class SkillMatcher:
         if min_score is None:
             min_score = _min_score()
 
-        # 各车道查询向量：首条复用调用方预计算，其余按需嵌入
-        # （记忆召回刚嵌入过规划查询时命中 Embedder 查询缓存，零额外成本）；
-        # embed_query 内部自带降级，不可用时返回 None 该车道语义路得 0 分
-        lane_vecs: List[Optional[List[float]]] = []
-        for i, lane in enumerate(lanes):
-            if i == 0 and query_vec is not None:
-                lane_vecs.append(query_vec)
-            else:
-                lane_vecs.append(await self.index.text_vector(lane))
+        async def lane_vector(index: int, lane: str) -> list[float] | None:
+            if index == 0:
+                if query_vec_task is not None:
+                    return await asyncio.shield(query_vec_task)
+                if query_vec is not None:
+                    return query_vec
+            return await self.index.text_vector(lane)
+
+        async with asyncio.TaskGroup() as tasks:
+            vectors_pending = [tasks.create_task(lane_vector(i, lane)) for i, lane in enumerate(lanes)]
+        lane_vecs = [task.result() for task in vectors_pending]
 
         # 技能向量预算化补算：embed_query 单条串行，全库冷缓存时逐个补算会拖垮
         # 首轮检索——预算内补算、其余本轮走关键词分，由心跳 warm() 批量预热

@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+import threading
 import time
+from typing import Any
+from unittest.mock import Mock
 
+import httpx
 import pytest
 
+from core.command import CommandResult
+from entities.ai_desktop.modules.subscription import bailian
+from entities.ai_desktop.modules.subscription import module as subscription_module
 from entities.ai_desktop.modules.subscription.module import SubscriptionModule
 from entities.ai_desktop.modules.subscription.providers import (
+    PROVIDERS,
+    ProviderSpec,
     _glm_window_label,
     _kimi_window_label,
     iso_to_sec,
@@ -180,7 +191,7 @@ class TestDetail:
             "kimi": {"error": "请求超时"},
         }
         states = {p["key"]: p["state"] for p in module.detail()["providers"]}
-        assert states == {"glm": "ok", "minimax": "no_credential",
+        assert states == {"bailian": "no_credential", "glm": "ok", "minimax": "no_credential",
                           "kimi": "error", "deepseek": "no_credential"}
 
 
@@ -288,3 +299,104 @@ class TestBalanceRender:
         module._data = {"deepseek": parse_deepseek(_DEEPSEEK_PAYLOAD)
                         | {"fetched_at": time.time()}}
         assert module.render() == "[订阅] DeepSeek（可用）：账户余额 ¥68.49"
+
+
+class TestBailian:
+    @pytest.mark.parametrize(("used", "remaining"), [
+        (0, 100), (0.25, 75), (1, 0), (None, None), (True, None),
+        ("NaN", None), (float("inf"), None), (-1, None), (100, None),
+    ])
+    def test_usage_ratio(self, used: Any, remaining: float | None) -> None:
+        window = bailian.parse_plan({
+            "per1MonthPercentage": used, "per1MonthResetTime": 1789061613921,
+        })["windows"][0]
+        assert window["remaining_percent"] == remaining
+        assert window["reset_at"] == 1789061613.921
+        assert bailian.parse_plan({})["windows"][0]["reset_at"] is None
+
+    def test_read_only_cli_query(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        command = Mock(return_value=CommandResult(True, json.dumps({"per1MonthPercentage": 0.5}), "", 0))
+        monkeypatch.setattr(bailian, "run_command", command)
+        result = bailian.fetch_usage("/tools/bl")
+        assert result["windows"][0]["remaining_percent"] == 50
+        command.assert_called_once_with(
+            ["/tools/bl", "usage", "token-plan", "--output", "json", "--timeout", "15", "--quiet"],
+            timeout_sec=20, shell=False,
+        )
+
+    @pytest.mark.parametrize(("result", "exception"), [
+        (CommandResult(False, "sensitive", "sensitive", 3), bailian.ConsoleLoginRequired),
+        (CommandResult(False, "sensitive", "sensitive", None), ValueError),
+        (CommandResult(True, "sensitive", "", 0), ValueError),
+        (CommandResult(True, '[]', "", 0), ValueError),
+        (CommandResult(True, '{"error":"sensitive"}', "", 0), ValueError),
+    ])
+    def test_safe_failures(
+        self, monkeypatch: pytest.MonkeyPatch, result: CommandResult, exception: type[Exception],
+    ) -> None:
+        monkeypatch.setattr(bailian, "run_command", Mock(return_value=result))
+        with pytest.raises(exception) as error:
+            bailian.fetch_usage("/tools/bl")
+        assert "sensitive" not in str(error.value)
+
+    def test_cli_discovery(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(bailian.shutil, "which", lambda name: "/tools/bailian" if name == "bailian" else None)
+        assert bailian.cli_credential() == ("/tools/bailian", "Bailian CLI")
+        monkeypatch.setattr(bailian.shutil, "which", lambda name: None)
+        assert bailian.cli_credential() == ("", "")
+
+    def test_login_state_is_not_injected(self) -> None:
+        module = SubscriptionModule()
+        module._credentials_at = time.time()
+        module._credentials = {"bailian": ("/tools/bl", "Bailian CLI")}
+        module._data = {"bailian": {"needs_auth": True}}
+        assert module.render() is None
+        entry = module.detail()["providers"][0]
+        assert entry["state"] == "no_credential"
+        assert entry["auth_type"] == "console"
+        assert "/tools/bl" not in json.dumps(entry)
+        module._data["bailian"] = bailian.parse_plan({"per1MonthPercentage": 0.25})
+        assert module.detail()["providers"][0]["state"] == "ok"
+        assert "每月 剩 75%" in (module.render() or "")
+
+
+async def test_parallel_refresh_isolated_and_coalesced(monkeypatch: pytest.MonkeyPatch) -> None:
+    barrier = threading.Barrier(2, timeout=3)
+
+    def collect(_credential: str) -> dict[str, Any]:
+        barrier.wait()
+        return {"plan": "test", "windows": []}
+
+    def expired(_credential: str) -> dict[str, Any]:
+        barrier.wait()
+        raise bailian.ConsoleLoginRequired()
+
+    good, login = Mock(side_effect=collect), Mock(side_effect=expired)
+    providers = (
+        ProviderSpec("good", "Good", lambda: ("key", "source"), good),
+        ProviderSpec("login", "Login", lambda: ("cli", "source"), login, "console"),
+        ProviderSpec("failed", "Failed", lambda: ("key", "source"), Mock(side_effect=httpx.ReadTimeout("timeout"))),
+    )
+    monkeypatch.setattr(subscription_module, "PROVIDERS", providers)
+    module = SubscriptionModule()
+    module._data = {"removed": {"plan": "stale"}}
+    await asyncio.gather(module.refresh(), module.refresh())
+    good.assert_called_once()
+    login.assert_called_once()
+    assert set(module._data) == {"good", "login", "failed"}
+    assert module._data["good"]["fetched_at"] > 0
+    assert module._data["login"] == {"needs_auth": True}
+    assert module._data["failed"] == {"error": "请求超时"}
+
+
+def test_http_provider_keeps_bearer_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    response = httpx.Response(200, json=_GLM_PAYLOAD, request=httpx.Request("GET", "https://example.test"))
+    client = Mock()
+    client.get.return_value = response
+    factory = Mock()
+    factory.return_value.__enter__ = Mock(return_value=client)
+    factory.return_value.__exit__ = Mock(return_value=False)
+    monkeypatch.setattr(subscription_module.httpx, "Client", factory)
+    spec = next(spec for spec in PROVIDERS if spec.key == "glm")
+    assert spec.fetch("test-key") == parse_glm(_GLM_PAYLOAD)
+    assert client.get.call_args.kwargs["headers"]["Authorization"] == "Bearer test-key"

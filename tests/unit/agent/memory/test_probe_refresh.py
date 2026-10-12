@@ -78,7 +78,7 @@ async def test_policy_change_rejects_late_result_and_keeps_presented_context(sto
     monkeypatch.setattr(probe_module, "deep_probe_hub", hub)
     entered = asyncio.Event()
 
-    async def slow_cognee(*args):
+    async def slow_cognee(*args, revision):
         entered.set()
         try:
             await asyncio.Event().wait()

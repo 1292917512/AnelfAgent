@@ -18,6 +18,13 @@ export interface PythonPackage {
   version: string;
 }
 
+export interface DevTool {
+  name: string;
+  installed: boolean;
+  version?: string;
+  install_url?: string;
+}
+
 export interface PfcSnapshot {
   tool_recall?: { name: string; count: number }[];
   tool_recall_top_n?: number;

@@ -5,12 +5,16 @@
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any, Dict
 
 from agent.judgment import get_judgment_engine
 from agent.judgment.engine import load_config
+from agent.judgment.latency import slow_threshold_ms
 from agent.judgment.types import JudgmentError, parse_questions
+from core.config import get_config_float
+from core.sanitizer import sanitize_text
 
 # 通道自检样例（三题型各一，覆盖完整输出结构）
 _TEST_STATE = "用户反馈：导出按钮点击后一直转圈，换了浏览器也一样，这已经是我第三次报这个问题了。"
@@ -57,29 +61,34 @@ class JudgmentService:
 
     @staticmethod
     async def test() -> Dict[str, Any]:
-        """用固定样例经引擎跑一次完整判断，验证当前通道可用性。"""
+        """测试当前通道与端到端延迟；已配置原生通道时不以回退成功掩盖故障。"""
+        cfg = load_config()
+        budget = max(0.1, min(cfg.timeout, get_config_float("judgment_gate_timeout", 2.0)))
+        slow_after_ms = slow_threshold_ms(budget)
         started = time.monotonic()
         try:
-            report = await get_judgment_engine().judge(
-                _TEST_STATE, parse_questions(_TEST_QUESTIONS)
-            )
-        except JudgmentError as exc:
-            return {
+            async with asyncio.timeout(cfg.timeout):
+                report = await get_judgment_engine().judge(
+                    _TEST_STATE, parse_questions(_TEST_QUESTIONS), native_only=bool(cfg.api_key),
+                )
+        except (JudgmentError, TimeoutError) as exc:
+            result: Dict[str, Any] = {
                 "ok": False,
-                "error": str(exc),
-                "cause": exc.cause.value,
-                "retryable": exc.retryable,
-                "latency_ms": round((time.monotonic() - started) * 1000),
+                "error": sanitize_text(str(exc)) or "判断请求超过等待预算",
+                "cause": exc.cause.value if isinstance(exc, JudgmentError) else "timeout",
+                "retryable": exc.retryable if isinstance(exc, JudgmentError) else True,
             }
-        return {
-            "ok": True,
-            "source": report.source.value,
-            "model": report.model,
-            "latency_ms": round((time.monotonic() - started) * 1000),
-            "answers": {qid: answer.model_dump() for qid, answer in report.answers.items()},
-            "missing": report.missing,
-            "usage": report.usage.model_dump(),
-        }
+        else:
+            result = {
+                "ok": True, "source": report.source.value, "model": report.model,
+                "answers": {qid: answer.model_dump() for qid, answer in report.answers.items()},
+                "missing": report.missing, "usage": report.usage.model_dump(),
+            }
+        elapsed = max(0, round((time.monotonic() - started) * 1000))
+        result.setdefault("source", "typesafe" if cfg.api_key else "llm_fallback")
+        result.update(latency_ms=elapsed, slow=bool(cfg.api_key) and elapsed >= slow_after_ms,
+                      slow_after_ms=slow_after_ms, gate_budget_ms=round(budget * 1000))
+        return result
 
 
 judgment_service = JudgmentService()

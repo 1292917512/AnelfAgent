@@ -29,7 +29,7 @@ from .memory_types import (
     normalized_content_key,
 )
 from .probe import deep_probe_hub
-from .recall_format import format_memory_line
+from .recall_format import format_memory_line, load_entity_nodes
 from .store.tag_intel import ASSOC_PREFIXES
 
 if TYPE_CHECKING:
@@ -140,6 +140,7 @@ class MemoryRetriever:
         entity_scope: str = "",
         related_scopes: Optional[List[str]] = None,
         query_vec: Optional[List[float]] = None,
+        query_vec_task: asyncio.Future[list[float] | None] | None = None,
         fire_probe: bool = False,
         plan_out: Optional[Dict[str, Any]] = None,
     ) -> Tuple[List[Dict], List[Dict]]:
@@ -152,7 +153,8 @@ class MemoryRetriever:
         同时搜索 memories 表和 MD 文件 chunks（双轨统一召回）。
         related_scopes 用于群聊场景下加载活跃成员的画像。
         query_vec 为调用方预计算的查询向量（三条召回路径共享一次 embedding），
-        为 None 时内部按需自行计算。
+        为 None 时内部按需自行计算。query_vec_task 可借用调用方正在准备的向量，
+        与规划并行等待；借用失败不重复请求，任务生命周期由调用方管理。
         plan_out 非 None 时，返回前把本次召回最终采用的计划查询写入
         plan_out["queries"]（LLM 规划的多查询；规划失败/平凡轮早退时为
         基查询或空）——技能匹配等旁路召回复用同一规划，不重复支付规划调用。
@@ -162,7 +164,7 @@ class MemoryRetriever:
             return await self._recall_split(
                 conversation, top_k=top_k, entity_scope=entity_scope,
                 related_scopes=related_scopes, query_vec=query_vec,
-                fire_probe=fire_probe, plan_box=plan_box,
+                fire_probe=fire_probe, plan_box=plan_box, query_vec_task=query_vec_task,
             )
         finally:
             if plan_out is not None:
@@ -177,6 +179,7 @@ class MemoryRetriever:
         entity_scope: str = "",
         related_scopes: Optional[List[str]] = None,
         query_vec: Optional[List[float]] = None,
+        query_vec_task: asyncio.Future[list[float] | None] | None = None,
         fire_probe: bool = False,
         plan_box: Optional[List[Optional[RetrievalPlan]]] = None,
     ) -> Tuple[List[Dict], List[Dict]]:
@@ -266,7 +269,10 @@ class MemoryRetriever:
                 focus_query = self._extract_focus_query(conversation)
 
                 async def _query_search(q: str, *, targeted: bool = False) -> List[MemorySearchResult]:
-                    vec = query_vec if (query_vec is not None and q == query) else await self._embedder.embed_query(q)
+                    if q == query and query_vec_task is not None:
+                        vec = await asyncio.shield(query_vec_task)
+                    else:
+                        vec = query_vec if (query_vec is not None and q == query) else await self._embedder.embed_query(q)
                     from .cognee.fusion import federated_search
                     from .cognee.runtime import get_cognee_client
                     cognee_config = self._cognee_config()
@@ -1067,6 +1073,9 @@ class MemoryRetriever:
         file_lines: list[str] = []
         seen: set[str] = set()
         deduped = 0
+        nodes = await load_entity_nodes(
+            self._graph, (tag for result in results if result.source != "file" for tag in result.tags),
+        )
 
         for r in results:
             snippet = r.snippet[:500]
@@ -1088,7 +1097,7 @@ class MemoryRetriever:
             line = await format_memory_line(
                 self._graph, snippet=snippet, tags=r.tags,
                 provenance=r.provenance, timestamp=r.timestamp,
-                sensitivity=r.sensitivity, marker=marker,
+                sensitivity=r.sensitivity, marker=marker, nodes=nodes,
             )
             if pinned:
                 pinned_lines.append(line)

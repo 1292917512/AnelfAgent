@@ -35,6 +35,7 @@
   "devTools": "Dev Tools",
   "installed": "Installed",
   "notInstalled": "Not Installed",
+  "optionalToolGuide": "Optional tool · Install guide",
   "pythonEnvStatus": "Python Environment Status",
   "pipMirror": "pip Mirror",
   "installedPackages": "Installed Packages",
@@ -197,6 +198,28 @@
     "phaseVerifying": "Verifying SHA-256…",
     "proxyHint": "Slow or failing? Enable the global proxy in Config"
   },
+  "hookJudgment": {
+    "title": "{{provider}} assessment",
+    "status": {
+      "running": "Assessing",
+      "proceed": "Proceed",
+      "skip": "Skip this task",
+      "fallback": "Fallback · proceed",
+      "cancelled": "Cancelled"
+    },
+    "probability": "Need to execute {{value}}",
+    "slow": "Slow response (threshold {{ms}}ms) may offset the time saved by this assessment.",
+    "testSpeed": "Check channel speed",
+    "evaluating": "Assessing necessity and evidence category in parallel…",
+    "basis": "Evidence category: {{value}}",
+    "model": "Judgment model",
+    "input": "Evidence input",
+    "chars": "{{count}} characters",
+    "usage": "Measured usage",
+    "tokens": "Input {{input}} · output {{output}} tokens",
+    "policy": "Skip only when necessity ≤ {{threshold}} and the unnecessary-work basis probability ≥ {{confidence}}; otherwise proceed.",
+    "truncated": "Evidence exceeded the assessment budget. No judgment call was made; original work continues to avoid missing facts."
+  },
   "hookFlow": {
     "title": "Execution flow",
     "mode": "Execution mode",
@@ -257,6 +280,7 @@
     "calls": "{{models}} model calls · {{tools}} tool calls",
     "callsUntracked": "Model and tool calls are not counted for this internal process",
     "phases": {
+      "judgment": "Structured assessment",
       "queued": "Queued",
       "preparing": "Preparing context",
       "model": "Model reasoning",

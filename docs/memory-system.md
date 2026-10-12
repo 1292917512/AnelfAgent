@@ -23,6 +23,16 @@
 未配置 Jev 或判断不可用时仍沿用原有召回策略、预算与计划门控；手动 `recall` 不受影响。
 预判与深探同属当前 scope 和轮次，轮次结束或策略改变后不接纳迟到结果。
 
+首轮上下文读取由 `mind/recollection_inputs.py` 统一管理生命周期：查询向量、检索规划、
+关系、主标签索引、画像补充和会话摘要同时准备；技能只等待记忆计划，不等待其他频道检索。
+语义召回、跨频道与技能复用同一个在途查询向量，失败后各自降级，不重复发起同一向量请求。
+技能的互补查询向量并行准备。结果始终按既定分层与来源顺序装配，不按完成先后重排；
+调用方中断或关键读取失败时取消并等待所属任务，借用向量的子任务不取消共享请求。
+
+低延迟召回的画像/精确标签读取与本地混合检索并行，标签过滤与固定记忆规则保持一致。
+每批结果的身份名称统一批量查询，同步召回与后台补充共用格式化实现；查询失败仍保留
+频道、身份 ID、时间和隐私标记。不跨轮缓存身份映射，避免名称或归属变更后继续使用旧值。
+
 全局默认来自 `memory/recall`：`memory_recall_level`（默认 deep）与
 `memory_recall_background`。Web 的记忆页和钩子页共用配置入口；AI 的全局修改沿用
 `update_entity_config`，单轮修改用 `set_recall_policy`。
@@ -40,7 +50,8 @@ mem ID 和召回账本；后台结果在 provider 尾部注入，不修改 stabl
 
 自动后台深探只读取 CHUNKS 与 GRAPH_COMPLETION 的上下文，不执行多轮生成式上下文扩展；
 仅解析出实体、规划未要求深入检索时只查本地图谱。AI 显式 `recall(depth="deep")` 仍使用
-Cognee 深检索配置，可选择多轮扩展。并发检索通道完成即发布增量，不等待最慢通道；达到
+Cognee 深检索配置，可选择多轮扩展。本地图谱与远端读取同时启动，各通道完成即发布增量，
+不等待最慢通道；达到
 `memory_probe_timeout_seconds` 预算时取消剩余检索，保留已经注入的事实。钩子详情记录未完成
 阶段，日志逐通道记录类型、数据集、耗时与结果数；未接入调用统计的内部流程不显示虚假的零次调用。
 
@@ -64,7 +75,7 @@ SDK 可导入 `RecallPolicy`、`recall_options`、`set_turn_recall_policy`。
 |------|------|------|
 | LLM 检索规划 | `memory_retriever.plan_retrieval`（公开 API，受 `memory_query_rewrite_enabled` 门控） | 轻量 LLM（light_llm 通道，可经 `memory_light_model` 指定）把对话尾部转成结构化计划 `{queries(1-3 互补), entities, deep_needed, rationale}`，失败/超时回退原查询单发（预算 `memory_plan_budget_seconds`，0 = 按召回总超时 40% 份额派生）。多计划查询并行经 federated_search 后 `merge_consensus` 融合：同键（anelf_memory_id / 内容哈希）取最高分，≥2 查询命中 ×1.1 共识加成。计划实体经 `GraphStore.resolve_nodes_for_tags` 解析为图谱节点 → 原生一跳邻域 + cognee `node_name` 定向检索 |
 | 召回预算与规划并行 | `memory_retriever` recall 路径 | 检索规划与多路检索**并行**：原查询 lane 先行（复用预计算 query_vec 零 embed），规划慢/超预算只损失多查询增强；总时限经 `asyncio.wait` **非破坏式收尾**——到点只收割已落地 lane，已落地的基础/焦点/计划 lane 照常融合返回，全空才回退近期记忆。超时不再丢弃整轮召回 |
-| 异步深探 + provider 注入 | `agent/memory/probe.py`（DeepProbeHub + RecallLedger + provider `memory_deep_probe`） | 回复路径（recollection `fire_probe=True`，心跳/任务/子代理零影响）检索完成后：规划判定 `deep_needed` 或已解析实体节点时 `spawn()` 异步深探（在 5s 召回超时之外与 LLM 首轮思考并行）：cognee GRAPH_COMPLETION / GRAPH_COMPLETION_CONTEXT_EXTENSION / node_name 定向 + 原生图谱邻域。分两阶段刷新（快段原生图谱邻域毫秒级先渲染，慢段 cognee LLM 检索完成后并入）；完成后写入 hub 持久渲染缓存，经 provider `memory_deep_probe`（priority 34、`memory_probe_inject` 门控）每轮读取注入——完成前为空零注入，完成后每轮在场且字节稳定，新回复 begin_reply 重置。provider 消息不进压缩历史（每轮重新收集），位于最新工具结果之后注意力最强处。配置 `memory/probe` 组（enabled/max_chars 1600/timeout 60s） |
+| 异步深探 + provider 注入 | `agent/memory/probe.py`（DeepProbeHub + RecallLedger + provider `memory_deep_probe`） | 回复路径（`fire_probe=True`）检索完成后，规划要求深探或已解析实体节点时启动异步补充，与 LLM 首轮思考并行。原生图谱邻域与 Cognee CHUNKS / GRAPH_COMPLETION 同时读取，按完成顺序追加事实；超时或部分失败保留已呈现事实。provider `memory_deep_probe`（priority 34、`memory_probe_inject` 门控）读取本轮内存快照，无新事实时字节稳定，回复结束清理。provider 消息不进压缩历史，不改变稳定前缀。配置 `memory/probe` 组（enabled/max_chars/timeout） |
 | 召回账本（三键防重复） | `probe.RecallLedger`（键归一权威 `memory_types.normalized_content_key`） | per-reply 三键集合（结果 id / 图谱边 id / 内容归一前缀），三条召回通道共用：基底层注入、AI recall 工具返回（tools.py 记账）、异步深探渲染前查账——一次回复内同一事实只出现一次；`begin_reply` 重置 |
 | cognee 检索面 | `cognee/fusion.py` + `cognee/config.py` | `federated_search`/`search_cognee` 支持 `node_names` → cognee `recall(node_name=...)` 定向检索；`parse_memory_projection` 在边界解析投影文档头（归属标注/上下文加权/联想种子对 cognee 结果同样生效）；深类型（GRAPH_COMPLETION 等）只经探针（异步）与 recall 工具（显式）发生，被动召回保持轻量 |
 | 召回测试面板 | `POST /api/memory/recall-test` + 前端 `pages/memory/RecallTester.tsx` | 与真实召回同管线（规划→多查询共识融合→关系/遗忘层）的无副作用执行：展示检索计划、通道与数据集、按来源分组结果、关系网络、遗忘层、各阶段耗时；不记访问不触发探针 |

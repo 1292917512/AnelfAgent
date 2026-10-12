@@ -15,7 +15,11 @@
       "unavailable": "未配置"
     },
     "keyConfigured": "密钥已配置",
-    "testChannel": "测试通道",
+    "testChannel": "连通与测速",
+    "testHint": "从 Anelf 服务端发送一组小样例，包含网络往返耗时。配置了原生密钥时只测 Jev，不以普通模型回退掩盖故障。",
+    "slow": "响应偏慢：{{ms}}ms，警告阈值 {{threshold}}ms。请检查网络、代理规则和模型服务。",
+    "overBudget": "已超过预判预算 {{ms}}ms：这种延迟会使后台预判回退继续，无法节省后续调用。",
+    "speedHint": "单次小样例结果不代表所有负载；实际预判的耗时与偏慢警告同步显示在工作区。",
     "testFailed": "测试失败",
     "sourceTypesafe": "TypeSafe 原生",
     "sourceFallback": "普通模型回退",

@@ -1,4 +1,5 @@
 import { useTranslation } from "react-i18next";
+import { useMutation } from "@tanstack/react-query";
 import { Box, CalendarDays, Clock, CloudSun, CreditCard, RefreshCw } from "lucide-react";
 import { Card } from "@/components/common/Card";
 import { Button, Switch } from "@/components/ui";
@@ -23,16 +24,14 @@ const MANAGED_CONFIGS: Record<string, string[]> = {
 
 interface ModuleCardProps {
   mod: DesktopModuleInfo;
-  refreshing: boolean;
-  onToggle: (mod: DesktopModuleInfo, enabled: boolean) => void;
+  onToggle: (mod: DesktopModuleInfo, enabled: boolean) => Promise<unknown>;
   onSaveConfig: (key: string, value: unknown) => Promise<void>;
-  onRefresh: (mod: DesktopModuleInfo) => void;
+  onRefresh: (mod: DesktopModuleInfo) => Promise<void>;
 }
 
 /** 单个桌面组件卡片：实时状态 + 地区/时区管理 + 注入文本 + 配置编辑 + 启停/刷新 */
 export function ModuleCard({
   mod,
-  refreshing,
   onToggle,
   onSaveConfig,
   onRefresh,
@@ -42,16 +41,17 @@ export function ModuleCard({
   const pollable = mod.refresh_interval > 0;
   const managed = MANAGED_CONFIGS[mod.key] ?? [];
   const genericConfigs = mod.configs.filter((c) => !managed.includes(c.name));
+  const refresh = useMutation({ mutationFn: () => onRefresh(mod) });
+  const toggle = useMutation({ mutationFn: (enabled: boolean) => onToggle(mod, enabled) });
 
   return (
     <Card>
       {/* 头部：图标 + 名称 + 操作 */}
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
         <div className="min-w-0">
-          <h3 className="flex items-center gap-2 text-[15px] font-semibold tracking-tight text-heading">
+          <h3 className="flex flex-wrap items-center gap-2 text-[15px] font-semibold tracking-tight text-heading">
             <Icon className="h-4 w-4 text-accent" />
             {mod.display_name}
-            <span className="text-xs font-normal text-muted">{mod.key}</span>
             <span
               className={`text-[10px] px-1.5 py-0.5 rounded ${
                 mod.enabled ? "bg-ok-subtle text-ok" : "bg-border/40 text-muted"
@@ -67,14 +67,15 @@ export function ModuleCard({
             <Button
               variant="ghost"
               size="icon"
-              disabled={!mod.enabled || refreshing}
-              onClick={() => onRefresh(mod)}
+              disabled={!mod.enabled || refresh.isPending || toggle.isPending}
+              onClick={() => refresh.mutate()}
               title={t("module.refresh")}
+              aria-label={t("module.refresh")}
             >
-              <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />
+              <RefreshCw className={`h-3.5 w-3.5 ${refresh.isPending ? "animate-spin" : ""}`} />
             </Button>
           )}
-          <Switch checked={mod.enabled} onChange={(v) => onToggle(mod, v)} />
+          <Switch checked={mod.enabled} label={mod.display_name} disabled={toggle.isPending} onChange={(v) => toggle.mutate(v)} />
         </div>
       </div>
 
@@ -97,19 +98,19 @@ export function ModuleCard({
 
       {/* 天气：地区管理器（逐地区数据 + 增删启停） */}
       {mod.key === "weather" && mod.enabled && (
-        <WeatherLocations mod={mod} onSave={onSaveConfig} onRefresh={onRefresh} />
+        <WeatherLocations mod={mod} onSave={onSaveConfig} onRefresh={() => { if (!refresh.isPending) refresh.mutate(); }} />
       )}
 
       {/* 实际注入 AI 的文本 */}
       {mod.enabled && mod.current_content && (
-        <div className="mt-3">
-          <div className="mb-1 text-[11px] font-medium uppercase tracking-wider text-muted">
+        <details className="mt-3">
+          <summary className="mb-1 cursor-pointer text-[11px] font-medium text-muted">
             {t("module.injectedText")}
-          </div>
+          </summary>
           <pre className="whitespace-pre-wrap break-all rounded-md border border-accent/30 bg-accent/5 px-3 py-2 text-xs leading-relaxed text-foreground">
             {mod.current_content}
           </pre>
-        </div>
+        </details>
       )}
 
       {/* 设置：通用配置项 + 组件专属编辑器 */}

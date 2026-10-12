@@ -19,12 +19,13 @@
     "title": "AI 实际看到的注入内容",
     "refresh": "刷新预览",
     "empty": "当前没有启用的组件产生注入内容",
-    "hint": "以上内容在每个回复轮次注入 AI 的动态上下文（volatile 层），随组件启停与数据刷新实时变化"
+    "hint": "随组件启停和数据刷新更新，在每轮回复时供 AI 参考。",
+    "loadFailed": "预览更新失败，请重试。"
   },
   "modules": {
-    "hint": "共 {{count}} 个上下文组件，新增后端组件自动出现在此处",
+    "hint": "{{count}} 个上下文组件",
     "empty": "暂无已注册的上下文组件",
-    "footerHint": "组件的启停与配置也可在「配置」页签或配置中心（entity/ai_desktop 组）中修改，AI 亦可通过工具管理"
+    "footerHint": "也可在配置中心或通过 AI 工具管理组件。"
   },
   "module": {
     "enabled": "已启用",
@@ -56,13 +57,13 @@
   },
   "config": {
     "unsaved": "有未保存的修改",
-    "invalidNumber": "请输入合法数字",
+    "invalidNumber": "请输入范围内的有效数字，整数项不接受小数。",
     "saveFailed": "配置保存失败"
   },
   "messages": {
     "toggleSuccess": "「{{name}}」状态已更新",
     "toggleFailed": "组件启停失败",
-    "refreshSuccess": "「{{name}}」数据已刷新",
+    "refreshSuccess": "「{{name}}」刷新完成，请查看各来源状态。",
     "refreshFailed": "数据刷新失败"
   },
   "weather": {
@@ -87,7 +88,13 @@
     "noCredential": "未在 LLM 供应商配置中找到凭据",
     "pending": "等待首次采集",
     "resetAt": "重置",
-    "lowQuota": "有窗口余量不足 10%，请注意节省使用"
+    "consoleRequired": "请在应用所在设备登录百炼控制台。",
+    "lowQuota": "有窗口余量不超过 10%。",
+    "remaining": "剩余",
+    "unknown": "未知",
+    "cliRequired": "尚未安装可选的 Bailian CLI。",
+    "installGuide": "安装指南",
+    "refreshAfterLogin": "登录后点击刷新即可读取订阅额度，无需配置 API Key。"
   },
   "calendar": {
     "today": "今天",
@@ -97,5 +104,6 @@
     "remind": "提前{{minutes}}分钟提醒",
     "subCount": "{{count}} 项",
     "subFailed": "同步失败"
-  }
+  },
+  "staleData": "暂时无法更新，当前显示上次获取的数据。"
 }

@@ -339,21 +339,30 @@ class DeepProbeHub:
 
     async def _probe(self, state: _ProbeState, plan: RetrievalPlan, store: "MemoryStore",
                      *, revision: int | None = None) -> None:
-        """先呈现本地图谱，再追加远端记忆；旧策略或旧回复的结果不得回写。"""
+        """本地与远端检索同时启动，独立发布增量，退出时回收未完成的读取。"""
         revision = state.revision if revision is None else revision
         if not self._is_current(state, revision):
             return
         await self._stage("本地图谱关系检索")
-        relations = await self._collect_relations(state, plan, store)
-        if not self._publish(state, revision, relations):
-            return
-        await self._collect_cognee(state, plan, store)
+        local = asyncio.create_task(self._collect_relations(state, plan, store))
+        remote = asyncio.create_task(self._collect_cognee(state, plan, store, revision=revision))
+        try:
+            relations = await local
+            if self._publish(state, revision, relations):
+                await remote
+        finally:
+            for task in (local, remote):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(local, remote, return_exceptions=True)
 
     @staticmethod
     async def _memory_deltas(results: Iterable["MemorySearchResult"], store: "MemoryStore",
                              section: str) -> list[RecallDelta]:
         """沿用同步召回的实体标签、时间与隐私标记格式。"""
-        from .recall_format import format_memory_line
+        from .recall_format import format_memory_line, load_entity_nodes
+        results = list(results)
+        nodes = await load_entity_nodes(store.graph, (tag for result in results for tag in result.tags))
         deltas: list[RecallDelta] = []
         for result in results:
             text = result.snippet.strip()
@@ -362,7 +371,7 @@ class DeepProbeHub:
             graph_context = result.source == "cognee_graph"
             line = await format_memory_line(
                 store.graph, snippet=text[:800 if graph_context else 300], tags=result.tags,
-                provenance=result.provenance, timestamp=result.timestamp, sensitivity=result.sensitivity,
+                provenance=result.provenance, timestamp=result.timestamp, sensitivity=result.sensitivity, nodes=nodes,
             )
             deltas.append(RecallDelta("图谱上下文" if graph_context else section, line, result.id, text))
         return deltas
@@ -391,9 +400,10 @@ class DeepProbeHub:
 
     async def _collect_cognee(
         self, state: _ProbeState, plan: RetrievalPlan, store: "MemoryStore",
+        *, revision: int,
     ) -> None:
         """自动补充只取事实与图谱上下文，按通道即时发布，不启动多轮生成扩展。"""
-        if not plan.queries or not plan.deep_needed:
+        if not self._is_current(state, revision) or not plan.queries or not plan.deep_needed:
             return
         try:
             from .cognee.config import load_cognee_config
@@ -410,7 +420,6 @@ class DeepProbeHub:
         # node_keys（user:适配器:uid 形态）与记忆实体标签同构：除当前会话
         # scope 外，把查询提及实体的数据集也纳入路由（与被动召回同一语义）
         datasets = datasets_for_scope(config, state.scope, plan.node_keys)
-        revision = state.revision
         pending: set[str] = set()
         failures: list[str] = []
 

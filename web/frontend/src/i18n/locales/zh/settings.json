@@ -35,6 +35,7 @@
   "devTools": "开发工具",
   "installed": "已安装",
   "notInstalled": "未安装",
+  "optionalToolGuide": "可选工具 · 安装说明",
   "pythonEnvStatus": "Python 环境状态",
   "pipMirror": "pip 镜像源",
   "installedPackages": "已安装包",
@@ -197,6 +198,28 @@
     "phaseVerifying": "SHA-256 校验中…",
     "proxyHint": "下载慢/失败？配置页开全局网络代理"
   },
+  "hookJudgment": {
+    "title": "{{provider}} 预判",
+    "status": {
+      "running": "判断中",
+      "proceed": "继续执行",
+      "skip": "跳过本项",
+      "fallback": "回退继续",
+      "cancelled": "已取消"
+    },
+    "probability": "执行必要性 {{value}}",
+    "slow": "响应偏慢（阈值 {{ms}}ms），可能抵消预判节省的时间。",
+    "testSpeed": "检查通道速度",
+    "evaluating": "正在并行评估必要性与依据类别…",
+    "basis": "依据类别：{{value}}",
+    "model": "判断模型",
+    "input": "事实输入",
+    "chars": "{{count}} 字符",
+    "usage": "实际用量",
+    "tokens": "输入 {{input}} · 输出 {{output}} token",
+    "policy": "仅必要性 ≤ {{threshold}} 且无需执行的依据概率 ≥ {{confidence}} 才跳过；其余继续。",
+    "truncated": "事实超出预判预算，未调用判断模型，保留原流程以避免遗漏。"
+  },
   "hookFlow": {
     "title": "执行流程",
     "mode": "执行方式",
@@ -257,6 +280,7 @@
     "calls": "{{models}} 次模型调用 · {{tools}} 次工具调用",
     "callsUntracked": "此内部流程未统计模型与工具调用次数",
     "phases": {
+      "judgment": "结构化预判",
       "queued": "等待执行",
       "preparing": "准备上下文",
       "model": "模型思考",

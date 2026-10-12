@@ -78,6 +78,7 @@ _DEV_TOOLS = {
     "conda": "conda",
     "pipx": "pipx",
     "uv": "uv",
+    "Bailian CLI": "bl",
 }
 
 
@@ -86,6 +87,8 @@ def get_dev_tools() -> List[Dict[str, Any]]:
     results: List[Dict[str, Any]] = []
     for name, command in _DEV_TOOLS.items():
         entry: Dict[str, Any] = {"name": name, "command": command, "installed": False}
+        if command == "bl":
+            entry["install_url"] = "https://bailian.aliyun.com/cli/install.md"
         try:
             path = which_tool(command)
             if path:

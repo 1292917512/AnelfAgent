@@ -79,7 +79,7 @@ def _mind_with_matcher(matched=None, captured: dict | None = None):
         restore=MagicMock(),
     )
 
-    async def match(queries, *, top_k=3, min_score=None, query_vec=None):
+    async def match(queries, *, top_k=3, min_score=None, query_vec=None, query_vec_task=None):
         if captured is not None:
             captured["queries"] = list(queries)
             captured["query_vec"] = query_vec

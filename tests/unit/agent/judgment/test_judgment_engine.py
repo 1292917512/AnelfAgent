@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+import httpx
 import pytest
 
 from agent.judgment import engine as engine_mod
+from agent.judgment.client import TypeSafeClient
 from agent.judgment.engine import JudgmentConfig, JudgmentEngine
 from agent.judgment.types import (
     JudgmentError,
@@ -16,6 +18,18 @@ from agent.judgment.types import (
     parse_questions,
 )
 from core.tool_errors import ErrorCause
+
+
+@pytest.mark.parametrize("body", [[], "bad gateway", {"error": "busy"}])
+def test_non_object_http_error_keeps_structured_failure(body):
+    error = TypeSafeClient._http_error(httpx.Response(503, json=body))
+    assert error.cause == ErrorCause.NETWORK and error.retryable
+
+
+@pytest.mark.parametrize("usage", [[1], {"input_tokens": "broken"}])
+def test_invalid_usage_is_a_judgment_error(usage):
+    with pytest.raises(JudgmentError):
+        TypeSafeClient._parse_response({"answers": {"q": {"type": "noul", "noul": 0.5}}, "usage": usage}, _questions())
 
 
 def _cfg(**overrides: Any) -> JudgmentConfig:

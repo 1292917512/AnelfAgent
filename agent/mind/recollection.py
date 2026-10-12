@@ -11,7 +11,6 @@ import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from agent.memory import recall_context  # noqa: F401
-from agent.memory.memory_retriever import MemoryRetriever
 from agent.memory.notes import (
     build_dynamic_notes,
     build_file_index_block,
@@ -22,11 +21,10 @@ from agent.memory.notes import (
     get_memory_dir,
     get_notes_path,
 )
-from agent.memory.recall_policy import current_recall_policy
 from agent.mind.context_observation import emit_context_summary
+from agent.mind.recollection_inputs import collect_recollection_inputs
 from core.activity import EVENT_ACTIVITY_CONTEXT
 from core.event_bus import EVENT_THINKING_CONTEXT_BUILD, event_bus
-from core.hooks import HookMode, hook_execution
 from core.log import log
 
 if TYPE_CHECKING:
@@ -82,166 +80,31 @@ async def _get_recollection(
     if conversation_list is None:
         conversation_list = await mind.get_conversation(anything) if anything else []
 
-    # 语义记忆召回（用最新对话尾部作为查询上下文）
     entity_scope = mind._resolve_entity_scope(anything)
-    tail = conversation_list[-10:] if len(conversation_list) > 10 else conversation_list
     current_adapter = getattr(anything, "adapter_key", "") or ""
-    policy = current_recall_policy(entity_scope)
-
-    # 明确寒暄跳过远端查询，保留画像、永久记忆和显式技能手势。
-    trivial = MemoryRetriever._is_trivial_turn(tail)
-    # 三条召回路径（语义/跨频道/技能）共享查询向量。
-    query_vec: Optional[List[float]] = None
-    base_query = ""
-    if not lean and not trivial and policy.level == "deep":
-        base_query = MemoryRetriever._extract_query(tail) if tail else ""
-        if base_query:
-            try:
-                async with asyncio.timeout(2):
-                    query_vec = await mind.embedder.embed_query(base_query)
-            except Exception as exc:
-                log(f"上下文向量预取失败，召回使用各自预算: {type(exc).__name__}", "DEBUG", tag="记忆")
-
-    # 相关实体 scope（画像注入与关系网络注入共用同一份参与人集合）
-    scope_source = conversation_list[-30:] if len(conversation_list) > 30 else conversation_list
-    related_scopes = mind._extract_related_scopes(scope_source, entity_scope)
-    if anything:
-        for s in mind._extract_scopes_from_anything(anything, entity_scope):
-            if s not in related_scopes:
-                related_scopes.insert(0, s)
-
-    # 记忆召回带出的检索计划容器（recall_split 经 plan_out 落笔）：
-    # 技能匹配复用同一规划做查询车道，不重复支付规划调用
-    plan_holder: Dict[str, Any] = {}
-
-    async def _recall_memory() -> Tuple[List[Dict], List[Dict]]:
-        if not mind.retriever:
-            return [], []
-        async with hook_execution("memory.recall", "context_prepare", HookMode.SYNC, scope=entity_scope) as run:
-            if policy.level != "deep":
-                from agent.memory.recall_fast import recall_local
-                profile_msgs, recall_msgs = await recall_local(
-                    mind.retriever, tail, scope=entity_scope, related_scopes=related_scopes, policy=policy)
-            else:
-                profile_msgs, recall_msgs = await mind.retriever.recall_split(
-                    tail, entity_scope=entity_scope, related_scopes=related_scopes,
-                    query_vec=query_vec, fire_probe=not lean and policy.background, plan_out=plan_holder,
-                )
-            run.detail = f"{policy.level} · {len(profile_msgs)} 个画像块 · {len(recall_msgs)} 个记忆块"
-        from agent.memory.probe import deep_probe_hub
-        deep_probe_hub.prepare(entity_scope, tail, mind.retriever)
-        log(f"语义召回: {len(recall_msgs)} 条, 画像: {len(profile_msgs)} 条", tag="思维")
-        return profile_msgs, recall_msgs
-
-    async def _load_relations() -> List[Dict]:
-        """关系网络快照：当前会话参与实体之间的已知关系（独立注入块，不吃记忆预算）。"""
-        if not mind.retriever or policy.tags or policy.level in {"off", "tags"}:
-            return []
-        all_scopes = ([entity_scope] if entity_scope else []) + [
-            s for s in related_scopes if s != entity_scope
-        ]
-        return await mind.retriever.load_relation_snippets(all_scopes)
-
-    async def _recall_channels() -> Tuple[List[Dict], set[str]]:
-        if trivial or policy.level != "deep":
-            return [], set()
-        return await mind._recall_cross_channel(tail, current_adapter, entity_scope, query_vec=query_vec)
-
-    # 主标签记忆（main:hub）：索引中枢与长工作流工作窗口，完整/精简模式均注入
-    # （精简模式砍掉的是召回与环境便签；主标签是 AI 自己的维护面，与 pins 同口径）
-    hub_text = ""
-    if mind.memory_store is not None:
-        from agent.memory.hub import load_hub_block
-        hub_text = await load_hub_block(mind.memory_store)
-
-    # 话题纪律与新鲜度：指令（ban-topic）两种模式都注入——主动消息更不能踩线；
-    # 复读软提示仅需对话回复路径（任务由发送侧闸门兜底）
-    directives_text = ""
-    repeat_hint_text = ""
-    if entity_scope:
-        try:
-            from agent.memory.user_directives import build_directives_block
-            directives_text = build_directives_block(entity_scope)
-        except Exception:
-            directives_text = ""
-        if not lean:
-            try:
-                from agent.memory.anti_repeat import build_repeat_hint
-                repeat_hint_text = await build_repeat_hint(entity_scope)
-            except Exception:
-                repeat_hint_text = ""
-
+    inputs = await collect_recollection_inputs(
+        mind, conversation_list, anything, scope=entity_scope, adapter=current_adapter, lean=lean,
+    )
+    profile_msgs, memory_msgs, relation_msgs = inputs.profiles, inputs.memories, inputs.relations
     if lean:
-        memory_msgs, profile_msgs, relation_msgs = [], [], []
-        # 永久记忆直接取 pins（不跑检索）：内容字节稳定，并入 context 层
-        pin_msgs: List[Dict] = []
-        if mind.retriever is not None:
-            pinned = await mind.retriever._load_permanent_pins([])
-            pin_msgs = await mind.retriever._format_unified_results(pinned) if pinned else []
-        permanent_text = str(pin_msgs[0]["content"]) if pin_msgs else ""
+        permanent_text = str(memory_msgs[0]["content"]) if memory_msgs else ""
+        memory_msgs = []
     else:
-        # 三条召回路径互相独立（各自读 DB/检索，无共享状态），并行执行；
-        # 技能匹配排在记忆召回之后：复用其检索计划做查询车道（规划查询刚被
-        # 召回车道嵌入过，Embedder 查询缓存命中，技能侧嵌入近乎零成本），
-        # 技能匹配复用计划，仍计入本轮上下文准备耗时。
-        (profile_msgs, memory_msgs), relation_msgs, (cross_recall_msgs, recalled_scopes) = await asyncio.gather(
-            _recall_memory(),
-            _load_relations(),
-            _recall_channels(),
-        )
-        skill_msgs = await mind._match_skills(
-            base_query, query_vec=query_vec, scope=entity_scope,
-            planned_queries=plan_holder.get("queries"),
-        )
-
-        # 自我画像（agent:self）随画像层注入：置于画像块首位
-        # （自我认知优先于他人画像；低频变化，内容寻址缓存友好）
-        if mind.memory_store is not None and not policy.tags and policy.level not in {"off", "tags"}:
-            try:
-                from agent.memory.self_profile import (
-                    load_self_profile,
-                    render_self_profile_block,
-                )
-                self_block = render_self_profile_block(
-                    await load_self_profile(mind.memory_store)
-                )
-                if self_block:
-                    profile_msgs.insert(0, {"role": "system", "content": self_block})
-                # 反思族随画像区呈现（可见性按会话参与实体过滤）：
-                # 已确认（可自然引用）→ 待验证（AI 自然求证，回应回流证据）
-                from agent.memory.reflection_lifecycle import (
-                    load_confirmed_block,
-                    load_verification_block,
-                    scope_tags_from_entity_scopes,
-                )
-                visible_tags = scope_tags_from_entity_scopes(
-                    ([entity_scope] if entity_scope else []) + related_scopes
-                )
-                confirmed_block = await load_confirmed_block(
-                    mind.memory_store, visible_tags=visible_tags,
-                )
-                if confirmed_block:
-                    profile_msgs.insert(1, {"role": "system", "content": confirmed_block})
-                verification_block = await load_verification_block(
-                    mind.memory_store, visible_tags=visible_tags,
-                )
-                if verification_block:
-                    profile_msgs.insert(2, {"role": "system", "content": verification_block})
-            except Exception as exc:
-                log(f"自我画像注入失败: {exc}", "DEBUG", tag="思维")
-
+        for position, block in enumerate(inputs.profile_blocks):
+            if block:
+                profile_msgs.insert(position, {"role": "system", "content": block})
         # 跨频道语义召回 + 叙事面包屑
         memory_msgs = [{**msg, "_source": {"origin": "memory_recall"}} for msg in memory_msgs]
-        memory_msgs.extend({**msg, "_source": {"origin": "cross_channel_recall"}} for msg in cross_recall_msgs)
+        memory_msgs.extend({**msg, "_source": {"origin": "cross_channel_recall"}} for msg in inputs.cross_channel)
         narrative = mind._build_cross_channel_narrative(
-            current_adapter, entity_scope, recalled_scopes,
+            current_adapter, entity_scope, inputs.recalled_scopes,
         )
         if narrative:
             memory_msgs.append({"role": "system", "content": narrative,
                                 "_source": {"origin": "cross_channel_narrative"}})
 
         # 技能匹配注入（volatile 层）：当前对话语义匹配到的经验技能
-        memory_msgs.extend(skill_msgs)
+        memory_msgs.extend(inputs.skills)
 
         # 永久记忆置顶块从每轮重建的会话区剥离：其内容字节稳定（仅 permanent
         # 增删时变化），移交 context 层走内容寻址缓存，不再每轮占用未缓存区段
@@ -261,14 +124,6 @@ async def _get_recollection(
         combined = mind._apply_memory_budget(profile_msgs + memory_msgs)
         profile_msgs = combined[:len(profile_msgs)]
         memory_msgs = combined[len(profile_msgs):]
-
-    # 对话摘要窗口：固定摘要块（折叠周期内字节稳定，作历史前缀缓存锚点）
-    summary_row: Optional[Dict] = None
-    if anything:
-        try:
-            summary_row = await mind.conversation_data.get_conversation_summary(anything)
-        except Exception as exc:
-            log(f"对话摘要获取失败: {exc}", "DEBUG", tag="思维")
 
     # Prompt 分层构建：
     # stable 人设块（人设+环境+静态指南）长期冻结，stable 工具块（目录+规则）随工具集重建，
@@ -297,12 +152,12 @@ async def _get_recollection(
         scope=entity_scope,
         profile_msgs=profile_msgs,
         relation_msgs=relation_msgs,
-        summary_row=summary_row,
+        summary_row=inputs.summary,
         status_text=status_text,
         heartbeat_text=heartbeat_text,
-        hub_text=hub_text,
-        directives_text=directives_text,
-        repeat_hint_text=repeat_hint_text,
+        hub_text=inputs.hub,
+        directives_text=inputs.directives,
+        repeat_hint_text=inputs.repeat_hint,
     )
 
 
@@ -311,6 +166,7 @@ async def _match_skills(
         base_query: str,
         *,
         query_vec: Optional[List[float]] = None,
+        query_vec_task: asyncio.Future[list[float] | None] | None = None,
         scope: str = "",
         planned_queries: Optional[List[str]] = None,
 ) -> List[Dict]:
@@ -366,6 +222,7 @@ async def _match_skills(
         top_k = get_config_int("skills_match_top_k", 3)
         matched_skills = await mind.skill_matcher.match(
             lanes, top_k=top_k, query_vec=query_vec,
+            query_vec_task=query_vec_task,
         ) if lanes else []
         # 手势命中优先置顶（不与评分结果去重冲突：按名剔除重复）
         forced_names: set = set()

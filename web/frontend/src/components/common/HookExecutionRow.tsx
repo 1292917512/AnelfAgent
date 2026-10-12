@@ -14,6 +14,7 @@ import { Badge, Button } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import { formatElapsedCompact } from "@/lib/format";
 import { ActivityInspection } from "./ActivityInspection";
+import { HookJudgmentRow } from "./HookJudgmentRow";
 
 /** 同一执行记录在钩子页和工作区中共享状态、耗时与详情展示。 */
 export function HookExecutionRow({ run }: { run: HookExecution }) {
@@ -82,6 +83,9 @@ export function HookExecutionRow({ run }: { run: HookExecution }) {
           )}
         />
       </button>
+      {!!run.judgments?.length && <div className="space-y-2 px-3 pb-3">
+        {run.judgments.map((judgment) => <HookJudgmentRow key={judgment.id} judgment={judgment} />)}
+      </div>}
       {expanded && (
         <div className="space-y-2 border-t border-border/60 px-3 py-3 text-xs">
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-muted">

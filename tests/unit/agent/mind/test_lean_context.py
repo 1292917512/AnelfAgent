@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace as SN
 from unittest.mock import AsyncMock
 
@@ -9,6 +10,7 @@ import pytest
 
 from agent.memory.memory_retriever import MemoryRetriever
 from agent.mind import recollection
+from agent.mind.recollection_inputs import collect_recollection_inputs
 
 
 class _FileCache:
@@ -146,3 +148,124 @@ class TestLeanRecollection:
         assert kwargs["heartbeat_text"] == ""
         assert kwargs["hub_text"] == ""  # 无记忆库时主标签记忆位为空
         assert mind._build_layered_prompts.call_args.kwargs["lean"] is True
+
+
+async def test_context_reads_overlap_and_skills_only_wait_for_memory(monkeypatch) -> None:
+    mind = _fake_mind()
+    started = {key: asyncio.Event() for key in ("embed", "memory", "relations", "hub", "summary", "skills", "cross")}
+    release_vector, release_cross = asyncio.Event(), asyncio.Event()
+
+    async def embed(query):
+        started["embed"].set()
+        await release_vector.wait()
+        return [1.0]
+
+    async def recall(tail, *, query_vec_task, plan_out, **kwargs):
+        started["memory"].set()
+        assert await asyncio.shield(query_vec_task) == [1.0]
+        plan_out["queries"] = ["复用计划"]
+        return [{"content": "画像"}], [{"content": "记忆"}]
+
+    async def skills(query, *, query_vec_task, planned_queries, **kwargs):
+        assert planned_queries == ["复用计划"]
+        assert await query_vec_task == [1.0]
+        started["skills"].set()
+        return [{"content": "技能"}]
+
+    async def cross(*args, query_vec_task):
+        assert await asyncio.shield(query_vec_task) == [1.0]
+        started["cross"].set()
+        await release_cross.wait()
+        return [{"content": "跨频道"}], {"user_webui:1"}
+
+    async def read(key, value):
+        started[key].set()
+        return value
+
+    mind.embedder = SN(embed_query=AsyncMock(side_effect=embed))
+    mind.retriever.recall_split = recall
+    mind.retriever.load_relation_snippets = lambda scopes: read("relations", [{"content": "关系"}])
+    mind._extract_related_scopes = lambda *args: []
+    mind._extract_scopes_from_anything = lambda *args: []
+    mind._match_skills = skills
+    mind._recall_cross_channel = cross
+    mind.memory_store = object()
+    mind.conversation_data = SN(get_conversation_summary=lambda anything: read("summary", {"summary": "摘要"}))
+    monkeypatch.setattr("agent.memory.hub.load_hub_block", lambda store: read("hub", "主标签"))
+    monkeypatch.setattr("agent.memory.self_profile.load_self_profile", AsyncMock(return_value=None))
+    monkeypatch.setattr("agent.memory.self_profile.render_self_profile_block", lambda _: "自身")
+    monkeypatch.setattr("agent.memory.reflection_lifecycle.load_confirmed_block", AsyncMock(return_value="确认"))
+    monkeypatch.setattr("agent.memory.reflection_lifecycle.load_verification_block", AsyncMock(return_value="求证"))
+    task = asyncio.create_task(collect_recollection_inputs(
+        mind, [{"role": "user", "content": "帮我查询之前记录的详细项目设计方案"}], SN(),
+        scope="user_qq:1", adapter="qq", lean=False,
+    ))
+    try:
+        async with asyncio.timeout(2):
+            await asyncio.gather(*(started[key].wait() for key in ("embed", "memory", "relations", "hub", "summary")))
+            assert not task.done()
+            release_vector.set()
+            await asyncio.gather(started["skills"].wait(), started["cross"].wait())
+            assert not task.done()
+            release_cross.set()
+            result = await task
+        assert result.profile_blocks == ["自身", "确认", "求证"]
+        assert result.memories == [{"content": "记忆"}]
+        assert result.skills == [{"content": "技能"}]
+        assert result.recalled_scopes == {"user_webui:1"}
+        assert result.hub == "主标签" and result.summary == {"summary": "摘要"}
+        mind.embedder.embed_query.assert_awaited_once()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("fail", [False, True])
+async def test_context_exit_drains_sibling_reads(monkeypatch, fail) -> None:
+    mind = _fake_mind()
+    started, closed = set(), set()
+    ready, trigger = asyncio.Event(), asyncio.Event()
+
+    async def wait(name):
+        started.add(name)
+        if len(started) == 3:
+            ready.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            closed.add(name)
+
+    async def hub(store):
+        await trigger.wait()
+        raise RuntimeError("hub unavailable")
+
+    mind.embedder = SN(embed_query=lambda query: wait("embed"))
+    mind.retriever.recall_split = lambda *args, **kwargs: wait("memory")
+    mind.retriever.load_relation_snippets = lambda *args: wait("relations")
+    mind._extract_related_scopes = lambda *args: []
+    mind._recall_cross_channel = AsyncMock(return_value=([], set()))
+    mind._match_skills = AsyncMock(return_value=[])
+    mind.memory_store = object()
+    monkeypatch.setattr("agent.memory.hub.load_hub_block", hub)
+    monkeypatch.setattr("agent.memory.self_profile.load_self_profile", AsyncMock(return_value=None))
+    monkeypatch.setattr("agent.memory.self_profile.render_self_profile_block", lambda _: "")
+    monkeypatch.setattr("agent.memory.reflection_lifecycle.load_confirmed_block", AsyncMock(return_value=""))
+    monkeypatch.setattr("agent.memory.reflection_lifecycle.load_verification_block", AsyncMock(return_value=""))
+    task = asyncio.create_task(collect_recollection_inputs(
+        mind, [{"role": "user", "content": "请查找之前讨论的完整方案"}], None,
+        scope="user_qq:1", adapter="qq", lean=False,
+    ))
+    try:
+        await asyncio.wait_for(ready.wait(), 2)
+        if fail:
+            trigger.set()
+            with pytest.raises(ExceptionGroup, match="TaskGroup"):
+                await task
+        else:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert closed == started == {"embed", "memory", "relations"}
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

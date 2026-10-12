@@ -19,12 +19,13 @@
     "title": "What the AI Actually Sees",
     "refresh": "Refresh preview",
     "empty": "No enabled module is producing context right now",
-    "hint": "This content is injected into the AI's dynamic context (volatile layer) every reply turn, changing with module toggles and data refreshes"
+    "hint": "Updated with module settings and data, and provided to the AI on each reply.",
+    "loadFailed": "Could not update the preview. Please retry."
   },
   "modules": {
-    "hint": "{{count}} context modules in total; new backend modules appear here automatically",
+    "hint": "{{count}} context modules",
     "empty": "No context modules registered",
-    "footerHint": "Module toggles and settings are also available in the Config tab or the config center (entity/ai_desktop group); the AI can manage them via tools too"
+    "footerHint": "Modules can also be managed in settings or through AI tools."
   },
   "module": {
     "enabled": "Enabled",
@@ -56,13 +57,13 @@
   },
   "config": {
     "unsaved": "Unsaved changes",
-    "invalidNumber": "Please enter a valid number",
+    "invalidNumber": "Enter a number within the allowed range; integer fields require whole numbers.",
     "saveFailed": "Failed to save config"
   },
   "messages": {
     "toggleSuccess": "\"{{name}}\" state updated",
     "toggleFailed": "Failed to toggle module",
-    "refreshSuccess": "\"{{name}}\" data refreshed",
+    "refreshSuccess": "\"{{name}}\" refresh completed. Check each source for its status.",
     "refreshFailed": "Failed to refresh data"
   },
   "weather": {
@@ -87,7 +88,13 @@
     "noCredential": "No credential found in LLM provider config",
     "pending": "Waiting for first fetch",
     "resetAt": "Resets",
-    "lowQuota": "A window is below 10% remaining — use sparingly"
+    "consoleRequired": "Sign in to the Bailian console on the device running this app.",
+    "lowQuota": "A window has 10% or less remaining.",
+    "remaining": "Remaining",
+    "unknown": "Unknown",
+    "cliRequired": "Optional Bailian CLI is not installed.",
+    "installGuide": "Installation guide",
+    "refreshAfterLogin": "Refresh after signing in to read subscription usage. No API key is needed."
   },
   "calendar": {
     "today": "Today",
@@ -97,5 +104,6 @@
     "remind": "Remind {{minutes}}min ahead",
     "subCount": "{{count}} events",
     "subFailed": "sync failed"
-  }
+  },
+  "staleData": "Unable to update. Showing the last available data."
 }

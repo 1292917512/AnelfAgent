@@ -92,7 +92,7 @@ class TypeSafeClient:
         detail = ""
         try:
             body = resp.json()
-            detail = str(body.get("detail") or body.get("error") or body)[:200]
+            detail = str(body.get("detail") or body.get("error") or body)[:200] if isinstance(body, dict) else str(body)[:200]
         except ValueError:
             detail = resp.text[:200]
         if resp.status_code in (401, 403):
@@ -132,11 +132,10 @@ class TypeSafeClient:
                     f"TypeSafe 响应缺少答案 '{qid}'", cause=ErrorCause.INTERNAL, retryable=True
                 )
             answers[qid] = _parse_answer(question, raw, qid)
-        raw_usage = data.get("usage") or {}
-        usage = JudgmentUsage(
-            input_tokens=int(raw_usage.get("input_tokens") or 0),
-            output_tokens=int(raw_usage.get("output_tokens") or 0),
-        )
+        try:
+            usage = JudgmentUsage.model_validate(data.get("usage") or {})
+        except ValidationError as exc:
+            raise JudgmentError("TypeSafe 用量结构无效", cause=ErrorCause.INTERNAL, retryable=True) from exc
         return answers, str(data.get("model") or ""), usage
 
 

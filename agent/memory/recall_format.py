@@ -15,6 +15,7 @@ Model Experience：归属沿用 channel/uid/group_id/name 标签，保留跨频�
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from core.tags import tag_label
@@ -26,7 +27,22 @@ if TYPE_CHECKING:
     from .graph.store import GraphStore
 
 
-async def humanize_entity_tags(graph: Optional["GraphStore"], tags: List[str]) -> List[str]:
+async def load_entity_nodes(
+    graph: GraphStore | None, tags: Iterable[str],
+) -> dict[str, Any]:
+    """一次查询整批记忆涉及的身份，查询失败时保留裸频道与身份标记。"""
+    keys = sorted({tag for tag in tags if tag.startswith(ENTITY_PREFIXES)})
+    if graph is not None and keys:
+        try:
+            return await graph.get_nodes_by_keys(keys)
+        except Exception:
+            return {}
+    return {}
+
+
+async def humanize_entity_tags(
+    graph: Optional["GraphStore"], tags: List[str], *, nodes: Mapping[str, Any] | None = None,
+) -> List[str]:
     """将记忆标签转为 AI 可读的归属标注：实体标签带明确身份 ID，主题标签去前缀。
 
     实体标签保留 channel 与 uid/group_id，图谱有称呼时增加 name 标签。
@@ -44,13 +60,7 @@ async def humanize_entity_tags(graph: Optional["GraphStore"], tags: List[str]) -
             if value and value not in display:
                 display.append(value)
         # 内部标签（type: 等）对 AI 无信息量，不注入
-    # 批量取节点（单条 IN 查询），替代逐标签串行往返
-    node_map: Dict[str, Any] = {}
-    if entity_tags and graph is not None:
-        try:
-            node_map = await graph.get_nodes_by_keys(entity_tags)
-        except Exception:
-            node_map = {}
+    node_map = await load_entity_nodes(graph, entity_tags) if nodes is None else nodes
     # 归属主体排在主题之前（行首先看"是谁的事"，再看话题）
     labels: List[str] = []
     for tag in entity_tags:
@@ -90,6 +100,7 @@ async def format_memory_line(
     timestamp: float = 0.0,
     sensitivity: str = "normal",
     marker: str = "💡",
+    nodes: Mapping[str, Any] | None = None,
 ) -> str:
     """组装单条记忆注入行：``{marker} {归属标注}{正文}（时间 记，私事）``。
 
@@ -97,7 +108,7 @@ async def format_memory_line(
     记录时间；score/内部类型/数据集等调试信息不进上下文。归属标注自带
     方括号，不再外层包裹（避免括号嵌套）。
     """
-    humanized = await humanize_entity_tags(graph, list(tags or []))
+    humanized = await humanize_entity_tags(graph, list(tags or []), nodes=nodes)
     head = f"{'·'.join(humanized)} " if humanized else ""
     ts = timestamp or ((provenance or {}).get("timestamp", 0) or 0)
     tail_parts: List[str] = []

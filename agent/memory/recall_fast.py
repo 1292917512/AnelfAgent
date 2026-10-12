@@ -40,23 +40,33 @@ async def recall_local(retriever: MemoryRetriever, conversation: list[dict], *, 
     """按强度选择本地召回路径，标签采用精确交集并保留来源。"""
     store = retriever._store
     profiles: list[dict] = []
-    results: list[MemorySearchResult] = []
+    tagged: list[MemorySearchResult] = []
+    found: list[MemorySearchResult] = []
     k, _ = retriever.recall_limits()
-    if policy.level != "off":
-        if not policy.tags:
-            profiles = await retriever._load_entity_profiles([scope, *related_scopes])
-        if policy.tags:
-            entries = await store.search_by_tags(list(policy.tags), limit=k)
-            results = [MemorySearchResult(
-                id=f"mem:{entry.id}", snippet=entry.content, score=1,
-                tags=entry.tags, memory_type=entry.memory_type.value, timestamp=entry.timestamp,
-                sensitivity=str(entry.metadata.get("sensitivity", "normal")),
-            ) for entry in entries]
-        if policy.level == "fast":
-            query = retriever._extract_query(conversation)
-            if query and not retriever._is_trivial_turn(conversation):
-                found = await search_local(retriever, query, tags=policy.tags)
-                results = list({item.id: item for item in [*results, *found]}.values())[:k]
+
+    async def load_profiles() -> None:
+        nonlocal profiles
+        profiles = await retriever._load_entity_profiles([scope, *related_scopes])
+
+    async def load_tags() -> None:
+        entries = await store.search_by_tags(list(policy.tags), limit=k)
+        tagged.extend(MemorySearchResult(
+            id=f"mem:{entry.id}", snippet=entry.content, score=1,
+            tags=entry.tags, memory_type=entry.memory_type.value, timestamp=entry.timestamp,
+            sensitivity=str(entry.metadata.get("sensitivity", "normal")),
+        ) for entry in entries)
+
+    async def search() -> None:
+        query = retriever._extract_query(conversation)
+        if query and not retriever._is_trivial_turn(conversation):
+            found.extend(await search_local(retriever, query, tags=policy.tags))
+
+    async with asyncio.TaskGroup() as tasks:
+        if policy.level != "off":
+            tasks.create_task(load_tags() if policy.tags else load_profiles())
+            if policy.level == "fast":
+                tasks.create_task(search())
+    results = list({item.id: item for item in [*tagged, *found]}.values())[:k]
     pins = await retriever._load_permanent_pins(results)
     deep_probe_hub.record(scope, results=[*results, *pins])
     messages: list[dict[str, Any]] = await retriever._format_unified_results([*pins, *results])
