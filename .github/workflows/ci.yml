@@ -49,7 +49,7 @@ jobs:
           fi
           py=$(grep -E '\.py$|^pyproject\.toml$|^uv\.lock$|^\.github/workflows/ci\.yml$' <<<"$changed" || true)
           # 模块前端（频道 frontend/ 与实体面板 tsx）软链进 web/frontend 参与构建，同属前端改动面
-          fe=$(grep -E '^web/frontend/|^channels/[^/]+/frontend/|^entities/.+\.(tsx|ts|css)$|^\.github/workflows/ci\.yml$' <<<"$changed" || true)
+          fe=$(grep -E '^web/frontend/|^channels/[^/]+/frontend/|^entities/.+\.(tsx|ts|mts|css)$|^\.github/workflows/ci\.yml$' <<<"$changed" || true)
 
           # 模块测试腿只跟随 Python 改动面（纯前端/文档改动不触发后端测试）
           changed_py=$(grep -E '\.py$' <<<"$changed" || true)

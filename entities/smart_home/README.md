@@ -41,4 +41,4 @@ SSE 提供状态更新、发现和连接事件；客户端重连后全量同步�
 
 后端：`uv run pytest entities/smart_home/tests entities/mcp/tests tests/unit/services/test_entity_config.py`。
 
-前端在 `web/frontend` 运行 lint、typecheck、test 和 build；浏览器回归覆盖 `entities/smart_home/panels/e2e/smart-home.spec.ts`，包含桌面、手机、明暗主题与控制失败反馈。自动化用模拟服务覆盖协议和交互，不替代真实设备及账号联调。
+前端在 `web/frontend` 运行 lint、typecheck、test 和 build；浏览器回归覆盖 `entities/smart_home/panels/e2e/smart-home.spec.mts`，包含桌面、手机、明暗主题与控制失败反馈。自动化用模拟服务覆盖协议和交互，不替代真实设备及账号联调。
