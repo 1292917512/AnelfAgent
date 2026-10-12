@@ -238,7 +238,8 @@
       "conversation": "Conversation",
       "reflection": "Reflection",
       "delegation": "Sub-agent",
-      "task": "Task"
+      "task": "Task",
+      "hook": "Background hook"
     },
     "status": {
       "running": "Running",

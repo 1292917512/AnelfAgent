@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useContext, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Check,
@@ -6,16 +6,21 @@ import {
   CircleAlert,
   Loader2,
   Webhook,
+  ArrowUpRight,
 } from "lucide-react";
 import { useNow } from "@/hooks/useNow";
 import type { HookExecution } from "@/lib/types/hooks";
-import { Badge } from "@/components/ui";
+import { Badge, Button } from "@/components/ui";
 import { cn } from "@/lib/utils";
+import { formatElapsedCompact } from "@/lib/format";
+import { ActivityInspection } from "./ActivityInspection";
 
 /** 同一执行记录在钩子页和工作区中共享状态、耗时与详情展示。 */
 export function HookExecutionRow({ run }: { run: HookExecution }) {
   const { t } = useTranslation("settings");
   const [expanded, setExpanded] = useState(false);
+  const inspect = useContext(ActivityInspection);
+  const activityIds = run.activity_ids ?? [];
   const running = run.status === "running";
   const now = useNow(running);
   const failed = run.status === "error" || run.status === "blocked";
@@ -67,7 +72,7 @@ export function HookExecutionRow({ run }: { run: HookExecution }) {
         <span className="shrink-0 text-xs tabular-nums text-muted">
           {duration < 1000
             ? `${Math.round(duration)}ms`
-            : `${(duration / 1000).toFixed(1)}s`}
+            : formatElapsedCompact(duration)}
         </span>
         <ChevronDown
           size={14}
@@ -87,10 +92,17 @@ export function HookExecutionRow({ run }: { run: HookExecution }) {
             <span className="break-all">{run.scope}</span>
             <time>{new Date(run.started_at * 1000).toLocaleTimeString()}</time>
           </div>
+          {run.context_mode && <p className="text-muted">{t(`hookFlow.context.${run.context_mode}`, { count: run.context_messages ?? 0 })}</p>}
+          {run.phase && <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg bg-elevated/60 px-3 py-2.5">
+            <span className="font-medium text-foreground">{t(`hookFlow.phases.${run.phase}`, { defaultValue: t(`hookFlow.status.${run.status}`) })}</span>
+            {run.operation && <code className="break-all text-accent">{run.operation}</code>}
+            <span className="text-muted">{t("hookFlow.calls", { models: run.model_calls ?? 0, tools: run.tool_calls ?? 0 })}</span>
+          </div>}
           <p className="whitespace-pre-wrap break-words leading-relaxed text-foreground">
             {run.detail || t("hookFlow.noDetail")}
           </p>
-          <p className="break-all font-mono text-[10px] text-muted">{run.id}</p>
+          {activityIds.length > 0 && inspect && <Button variant="secondary" size="sm" onClick={() => inspect(activityIds)}><ArrowUpRight size={14} />{t("hookFlow.executionDetails")}</Button>}
+          <p className="break-all font-mono text-[10px] text-muted">{run.task_id ? `task:${run.task_id} · ` : ""}{run.id}</p>
         </div>
       )}
     </div>

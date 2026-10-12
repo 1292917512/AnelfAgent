@@ -673,10 +673,8 @@ class Tracer:
             label_suffix = f" → {', '.join(tool_calls)}" if tool_calls else ""
             reasoning_badge = " [推理]" if has_reasoning else ""
             error_badge = " [失败]" if not success else ""
-            # 节点 data 剔除完整消息链（messages 仅供 llm_end 钩子面作快照源）：
-            # 逐轮一份完整上下文驻留内存并经 SSE 广播到思维面板是不可接受的
-            # 副作用；诊断字段（model/usage/duration/tool_calls…）全保留
-            node_data = {k: v for k, v in payload.items() if k != "messages"}
+            # 完整消息与工具目录仅供钩子继承，不复制到诊断节点或 SSE。
+            node_data = {k: v for k, v in payload.items() if k not in {"messages", "tools"}}
             self._update_node(
                 nid,
                 status=NodeStatus.COMPLETED if success else NodeStatus.ERROR,

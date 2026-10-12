@@ -59,6 +59,34 @@ async def _capture(result: ChatResult) -> dict:
 
 
 class TestReasoningTracePayload:
+    async def test_hook_snapshot_preserves_layers_without_expanding_trace(self, monkeypatch):
+        from core.trace_session import thinking_session
+        from core.tracer import NodeType, Tracer
+
+        monkeypatch.setattr("agent.mind.llm_invoker._llm_end_transcript_hook_registered", lambda: True)
+        messages = [{"role": "system", "content": "stable", "_layer": "stable"},
+                    {"role": "user", "content": "review"}]
+        tools = [{"type": "function", "function": {"name": "get_skill", "parameters": {"type": "object"}}}]
+        seen = []
+        async def capture(payload):
+            seen.append(payload)
+        tracer = Tracer()
+        tracer.set_enabled(True)
+        queue = tracer.subscribe()
+        event_bus.on(EVENT_THINKING_LLM_END, capture, owner="test:hook-snapshot")
+        try:
+            async with thinking_session({"scope": "user_qq:1"}):
+                await _invoke_llm_unified(_mind_stub(_result("thought")), messages, tools)
+            assert seen[-1]["messages"] == messages
+            assert seen[-1]["tools"] == tools
+            session = next(iter(tracer._sessions.values()))
+            node = next(node for node in session.nodes if node.type == NodeType.LLM_CALL)
+            assert "messages" not in node.data and "tools" not in node.data
+        finally:
+            event_bus.off_by_owner("test:hook-snapshot")
+            tracer.unsubscribe(queue)
+            tracer.set_enabled(False)
+
     async def test_request_and_cache_accounting_survive_end_payload(self):
         result = _result("")
         result.usage = UsageInfo(prompt_tokens=5, cache_read_input_tokens=7,

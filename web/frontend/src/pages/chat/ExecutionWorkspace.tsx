@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Activity, ArrowDown, ArrowUp, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useActivityStore } from "@/stores/activity-store";
@@ -8,20 +8,23 @@ import { Button } from "@/components/ui";
 import type { ActivityRun } from "@/lib/types/activity";
 import { ActivityRunCard } from "./activity/ActivityRunCard";
 import { activityPages } from "./activity/activity-pages";
+import { ActivityDetailsProvider } from "./activity/ActivityDetailsProvider";
+import { ActivityInspection } from "@/components/common/ActivityInspection";
 
 /** 当前执行轮次优先展示；更早的过程只在主动上翻时挂载。 */
 export default function ExecutionWorkspace() {
   const { t } = useTranslation("workbench");
   const { epoch, runs, loaded, error, load, clearing, clearHistory } = useActivityStore();
   useEffect(() => { if (!loaded) void load(); }, [loaded, load]);
-  return <section aria-label={t("execution.region")} className="activity-pane flex h-full min-h-0 flex-col">
+  return <ActivityDetailsProvider><section aria-label={t("execution.region")} className="activity-pane flex h-full min-h-0 flex-col">
     {error != null && <div className="p-3"><QueryError compact error={error} retry={() => void load()} /></div>}
     <ActivityFeed key={epoch} runs={runs} clearing={clearing} onClear={() => void clearHistory()} />
-  </section>;
+  </section></ActivityDetailsProvider>;
 }
 
 function ActivityFeed({ runs, clearing, onClear }: { runs: ActivityRun[]; clearing: boolean; onClear: () => void }) {
   const { t } = useTranslation("workbench");
+  const inspect = useContext(ActivityInspection);
   const connected = useChatStore((state) => state.sseConnected);
   const pages = useMemo(() => activityPages(runs), [runs]);
   const [selected, setSelected] = useState<string | null>(null);
@@ -54,6 +57,7 @@ function ActivityFeed({ runs, clearing, onClear }: { runs: ActivityRun[]; cleari
     });
   };
   const revealRun = (id: string) => {
+    if (runs.some((run) => run.id === id && run.kind === "hook") && inspect) { inspect([id]); return; }
     const targetPage = pages.find((item) => item.runs.some((run) => run.id === id));
     if (!targetPage) return;
     toggleRun(id, true); pauseFollowing(); setSelected(targetPage.id);
@@ -94,7 +98,7 @@ function ActivityFeed({ runs, clearing, onClear }: { runs: ActivityRun[]; cleari
         {index > 0 && <button className="activity-history-link" onClick={older}><ArrowUp size={13} />{t("activity.previousRound")}</button>}
         {index < pages.length - 1 && <div className="activity-history-caption"><span>{t("activity.historyRound")}</span><button onClick={() => openPage(index + 1)}>{t("activity.nextRound")} <ArrowDown size={12} /></button></div>}
         {!page && <div className="activity-empty"><span className="welcome-orbit" aria-hidden="true"><span /></span><h3>{t("activity.empty")}</h3><p>{t("activity.emptyHint")}</p></div>}
-        {page?.runs.map((run) => <ActivityRunCard key={run.id} run={run} open={expanded[run.id] ?? true} onToggle={toggleRun} onReveal={revealRun} />)}
+        {page?.runs.filter((run) => run.kind !== "hook" || !page.runs.some((parent) => parent.entries.some((entry) => entry.kind === "hook" && entry.activity_ids?.includes(run.id)))).map((run) => <ActivityRunCard key={run.id} run={run} open={expanded[run.id] ?? true} onToggle={toggleRun} onReveal={revealRun} />)}
         {page && <p className="activity-retention-note">{t("activity.retention")}</p>}
       </div>
       {(behind || index < pages.length - 1) && <Button className="activity-follow" size="sm" onClick={() => {

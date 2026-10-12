@@ -153,6 +153,7 @@ async def _invoke_llm_unified(
     # 缓存断点装饰（唯一装饰点，_layer 标签尚存时按锚点表放置；
     # 按主客户端线型判定，回退候选的供应商适配在 llm_manager）
     from agent.llm.prompt_cache import decorate_messages, is_anthropic_wire, observe_scope_idle
+    hook_messages = messages
     _llm = getattr(mind, "llm", None)
     _llm_cfg = getattr(_llm, "config", None)
     messages = decorate_messages(messages, anthropic=is_anthropic_wire(
@@ -336,7 +337,8 @@ async def _invoke_llm_unified(
     # 它是钩子面的快照源，无条件携带会让每次 LLM 调用都为潜在消费者
     # 付常驻成本（一次多轮回复十余次调用）；零钩子时完全零开销
     if _llm_end_transcript_hook_registered():
-        payload["messages"] = messages
+        payload["messages"] = hook_messages
+        payload["tools"] = tools
     await event_bus.emit(EVENT_THINKING_LLM_END, payload)
     return result
 

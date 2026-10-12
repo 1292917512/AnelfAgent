@@ -1,8 +1,4 @@
-"""hooks_llm 管理路由（/api/hooks-llm）— LLM 钩子面的注册表观测与运行期启停。
-
-钩子的开关与治理参数经统一配置面（/api/config/meta，hooks_llm/* 组）热调，
-本路由只提供面板观测数据与运行期启停（注册表内存态），不另设写路径。
-"""
+"""LLM 钩子声明观测及统一配置开关入口。"""
 
 from __future__ import annotations
 
@@ -30,7 +26,7 @@ async def get_hooks_llm() -> Dict[str, Any]:
 
 @router.post("/{name}/enabled")
 async def set_hook_enabled(name: str, body: HooksLlmToggleBody) -> Dict[str, Any]:
-    """运行期启停指定钩子（注册表内存态，热生效；重启恢复代码声明初始值）。"""
+    """保存钩子开关，后续调度按最新配置执行。"""
     try:
         return hooks_llm_service.set_enabled(name, body.enabled)
     except ValueError as e:

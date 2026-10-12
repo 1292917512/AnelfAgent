@@ -240,6 +240,9 @@ class WorkspaceActivityService:
         entry.update({key: sanitize_text(str(payload.get(key, "")))[:1200]
                       for key in ("name", "event", "mode", "status", "detail", "source", "scope")})
         entry["duration_ms"] = payload.get("duration_ms", 0)
+        for key in ("task_id", "activity_ids", "phase", "operation", "updated_at", "model_calls", "tool_calls", "context_mode", "context_messages"):
+            if key in payload:
+                entry[key] = deepcopy(payload[key])
         self._changed(run)
 
     async def _context(self, payload: dict[str, Any]) -> None:

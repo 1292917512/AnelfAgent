@@ -1,11 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { lazy, Suspense, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Zap } from "lucide-react";
 import { hooksLlmApi } from "@/lib/api";
 import type { LlmHookItem } from "@/lib/types";
 import { Card } from "@/components/common/Card";
-import { Badge, Button, EmptyState, LoadingBlock, Switch } from "@/components/ui";
+import { Badge, Button, EmptyState, LoadingBlock, Switch, Modal } from "@/components/ui";
 import { toast } from "@/stores/toast-store";
+
+const RegisteredConfigPanel = lazy(() => import("../config/RegisteredConfigPanel").then((module) => ({ default: module.RegisteredConfigPanel })));
 
 const SOURCE_VARIANT: Record<string, "accent" | "info" | "warn" | "neutral"> = {
   code: "accent",
@@ -13,10 +16,11 @@ const SOURCE_VARIANT: Record<string, "accent" | "info" | "warn" | "neutral"> = {
   entity: "warn",
 };
 
-/** LLM 钩子面观测面板：全部已注册钩子 + 治理配置 + 运行期启停（注册表内存态）。 */
+/** LLM 钩子面观测面板：已注册钩子、执行策略与持久化配置。 */
 export function LlmHooksPanel() {
   const { t } = useTranslation("settings");
   const queryClient = useQueryClient();
+  const [configGroup, setConfigGroup] = useState("");
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["hooks-llm"],
     queryFn: () => hooksLlmApi.get().then((r) => r.data),
@@ -29,6 +33,7 @@ export function LlmHooksPanel() {
     onSuccess: (_, vars) => {
       toast.success(t("llmHooks.toggleSaved", { name: vars.name }));
       queryClient.invalidateQueries({ queryKey: ["hooks-llm"] });
+      queryClient.invalidateQueries({ queryKey: ["configMeta"] });
     },
     onError: () => toast.error(t("llmHooks.toggleSaveFailed")),
   });
@@ -55,7 +60,7 @@ export function LlmHooksPanel() {
         <span>{t("llmHooks.govConcurrent")}: {data.governance.max_concurrent}</span>
         <span>
           {t("llmHooks.govTranscript")}: {data.governance.transcript_enabled
-            ? t("llmHooks.transcriptOn", { chars: data.governance.transcript_max_chars })
+            ? t("llmHooks.transcriptOn")
             : t("llmHooks.transcriptOff")}
         </span>
         <span>{t("llmHooks.eventsLabel")}: {data.events.join(" / ")}</span>
@@ -71,19 +76,24 @@ export function LlmHooksPanel() {
               hook={hook}
               onToggle={(enabled) => toggle.mutate({ name: hook.name, enabled })}
               toggling={toggle.isPending && toggle.variables?.name === hook.name}
+              onConfigure={() => setConfigGroup(hook.config_group)}
             />
           ))}
         </ul>
       )}
       <p className="mt-3 text-[11px] text-muted">{t("llmHooks.hint")}</p>
+      {configGroup && <Modal open onClose={() => { setConfigGroup(""); void refetch(); }} title={t("llmHooks.configure")} width="max-w-2xl">
+        <Suspense fallback={<LoadingBlock />}><RegisteredConfigPanel group={configGroup} /></Suspense>
+      </Modal>}
     </Card>
   );
 }
 
-function HookRow({ hook, onToggle, toggling }: {
+function HookRow({ hook, onToggle, toggling, onConfigure }: {
   hook: LlmHookItem;
   onToggle: (enabled: boolean) => void;
   toggling: boolean;
+  onConfigure: () => void;
 }) {
   const { t } = useTranslation("settings");
   return (
@@ -104,12 +114,13 @@ function HookRow({ hook, onToggle, toggling }: {
         </Badge>
         {!hook.enabled && <Badge variant="neutral">{t("llmHooks.rowDisabled")}</Badge>}
         {hook.model && <Badge variant="info">{hook.model}</Badge>}
+        <Button variant="ghost" size="sm" className="ml-auto" onClick={onConfigure}>{t("llmHooks.configure")}</Button>
       </div>
       {hook.description && (
         <p className="mt-1 text-xs text-muted">{hook.description}</p>
       )}
       <div className="mt-2 flex flex-wrap gap-x-4 gap-y-0.5 text-[10px] text-muted">
-        <span>{t("hooks.timeout")}: {hook.timeout_seconds}s</span>
+        <span>{t("llmHooks.noDeadline")}</span>
         <span>{t("llmHooks.iterations")}: {hook.max_iterations}</span>
         <span>{t("llmHooks.concurrent")}: {hook.max_concurrent}</span>
         {hook.cooldown_seconds > 0 && (

@@ -11,11 +11,9 @@ Model Experience：本面只做配置与观测，不注入任何模型上下文�
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any, Dict
 
-from core.file_utils import atomic_write_text
 from core.path import ConfigPaths
 
 
@@ -27,60 +25,14 @@ class HookService:
         return str(ConfigPaths.HOOKS)
 
     def get_hooks(self) -> Dict[str, Any]:
-        """返回当前 hooks 配置（含启用状态、集成点与运行统计）。"""
-        from agent.hooks.runner import (
-            HOOK_EVENTS,
-            HOOK_INTEGRATIONS,
-            get_hook_registry,
-            get_hook_stats,
-        )
-        from core.config import get_config_bool
-        from core.hooks import hook_journal
-
-        path = self._path()
-        raw: Dict[str, Any] = {}
-        if os.path.isfile(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    raw = json.load(f)
-            except (OSError, json.JSONDecodeError):
-                raw = {}
-        registry = get_hook_registry()
-        return {
-            "path": path,
-            "exists": os.path.isfile(path),
-            "enabled": get_config_bool("hooks_enabled", True),
-            "events": list(HOOK_EVENTS),
-            "integrations": [dict(item) for item in HOOK_INTEGRATIONS],
-            "hooks": raw,
-            "active": {
-                event: sum(1 for s in registry.for_event(event) if s.enabled)
-                for event in HOOK_EVENTS
-            },
-            "stats": get_hook_stats(),
-            "execution": hook_journal.snapshot(),
-        }
+        """读取钩子配置及有界执行记录。"""
+        from agent.hooks.configuration import hook_configuration
+        return hook_configuration.get_hooks()
 
     def save_hooks(self, raw: Any) -> Dict[str, Any]:
-        """校验并全量写入 hooks.json，成功后立即重载生效。
-
-        非法内容抛 ValueError（不落盘）；空对象删除文件（恢复无 hook 状态）。
-        """
-        from agent.hooks.runner import hooks_data_from_specs, parse_hooks_data, reload_hooks
-
-        specs = parse_hooks_data(raw)  # 校验（全量，非法抛错）
-        path = self._path()
-        if not any(specs.values()):
-            if os.path.isfile(path):
-                os.unlink(path)
-            reload_hooks(path)
-            return {"saved": True, "count": 0}
-        atomic_write_text(
-            Path(path),
-            json.dumps(hooks_data_from_specs(specs), ensure_ascii=False, indent=2) + "\n",
-        )
-        count = reload_hooks(path)
-        return {"saved": True, "count": count}
+        """通过统一入口校验并保存脚本钩子。"""
+        from agent.hooks.configuration import hook_configuration
+        return hook_configuration.save_hooks(raw)
 
     async def run_hooks_test(self, event: str, tool_name: str = "*") -> Dict[str, Any]:
         """手动触发一次事件（合成 payload），逐条返回执行结果。

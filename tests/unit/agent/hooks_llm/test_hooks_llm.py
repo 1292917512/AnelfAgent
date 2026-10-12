@@ -6,7 +6,6 @@ import asyncio
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -19,13 +18,11 @@ from agent.hooks_llm import (
 )
 from agent.hooks_llm.executor import HookExecutor
 from agent.hooks_llm.snapshot import (
-    cap_snapshot_chars,
     freeze_messages,
-    prepare_hook_messages,
 )
 from agent.hooks_llm.spec import LLMHookSpec
 from core.event_bus import EVENT_AFTER_REPLY, EventBus
-from core.hooks import HookMode, hook_journal
+from core.hooks import HookMode
 
 
 @pytest.fixture(autouse=True)
@@ -110,27 +107,20 @@ def test_freeze_messages_copies_and_filters():
     assert original[0]["content"] == "a"  # 原消息不受快照改写影响
 
 
-def test_cap_snapshot_chars_truncates_with_marker():
-    messages = [{"role": "user", "content": "x" * 1000} for _ in range(100)]
-    capped = cap_snapshot_chars(messages, max_chars=10_000)
-    total = sum(len(m["content"]) for m in capped)
-    assert total <= 10_000 + 200  # 省略标记自身字符另计（小）
-    assert any("已省略" in str(m.get("content", "")) for m in capped)
-
-
-def test_prepare_hook_messages_strips_internal_keys():
+def test_snapshot_preserves_cache_layers_until_send():
     messages = [
         {"role": "system", "content": "s", "_layer": "stable", "_source": {"origin": "x"}},
         {"role": "user", "content": "hi"},
     ]
-    out = prepare_hook_messages(messages)
-    assert all("_layer" not in m and "_source" not in m for m in out)
+    out = freeze_messages(messages)
+    assert out == messages
+    assert out is not messages
     assert out[0]["content"] == "s"
 
 
 def test_prepare_hook_messages_empty():
-    assert prepare_hook_messages(None) == []
-    assert prepare_hook_messages([]) == []
+    assert freeze_messages(None) == []
+    assert freeze_messages([]) == []
 
 
 # ==================================================================
@@ -521,6 +511,12 @@ class _RecordingRegistry:
     def register(self, scope: str, kind: str, description: str) -> str:
         return "tid-1"
 
+    def attach_progress(self, task_id, reader):
+        pass
+
+    def attach_killer(self, task_id, killer):
+        pass
+
     def complete(self, task_id, success, summary, *, claimed=None):
         self.completions.append({
             "task_id": task_id, "success": success,
@@ -573,7 +569,7 @@ async def test_route_output_false_records_without_wake():
     }]
 
 
-async def test_empty_output_never_registers():
+async def test_empty_output_records_without_wake():
     """空产出不登记不路由（既有语义不变）。"""
     registry = _RecordingRegistry()
 
@@ -587,7 +583,7 @@ async def test_empty_output_never_registers():
         {"scope": "user_q:1"},
     )
     await _drain(executor)
-    assert registry.completions == []
+    assert registry.completions == [{"task_id": "tid-1", "success": True, "summary": "钩子已完成，无需跟进", "claimed": True}]
 
 
 def test_llm_hook_decorator_route_output():
@@ -633,22 +629,6 @@ async def test_llm_sync_waits_async_does_not_and_snapshot_is_frozen():
 
 
 @pytest.mark.asyncio
-async def test_llm_timeout_is_reported_and_does_not_block_following_hooks():
-    hook_journal.clear()
-    async def stuck(ctx):
-        await asyncio.Event().wait()
-    done = AsyncMock(return_value="ok")
-    executor = HookExecutor(SimpleNamespace(background_tasks=None))
-    await executor.dispatch("after_reply", [
-        LLMHookSpec("slow", "after_reply", stuck, mode=HookMode.SYNC, timeout_seconds=.02),
-        LLMHookSpec("next", "after_reply", done, mode=HookMode.SYNC),
-    ], {})
-    done.assert_awaited_once()
-    records = hook_journal.snapshot()["recent"]
-    assert any(r["name"] == "slow" and r["status"] == "error" for r in records)
-
-
-@pytest.mark.asyncio
 async def test_sync_runtime_uses_hook_budget_instead_of_event_bus_budget(monkeypatch):
     from agent.hooks_llm.runtime import HookRuntime
     bus = EventBus()
@@ -660,7 +640,7 @@ async def test_sync_runtime_uses_hook_budget_instead_of_event_bus_budget(monkeyp
         await asyncio.sleep(.04)
         completed.append(True)
 
-    HookRegistry.register(LLMHookSpec("wait", "after_reply", handler, mode=HookMode.SYNC, timeout_seconds=1))
+    HookRegistry.register(LLMHookSpec("wait", "after_reply", handler, mode=HookMode.SYNC))
     runtime = HookRuntime(SimpleNamespace(background_tasks=None))
     runtime.start()
     try:
@@ -668,26 +648,3 @@ async def test_sync_runtime_uses_hook_budget_instead_of_event_bus_budget(monkeyp
         assert completed == [True]
     finally:
         await runtime.drain()
-
-
-@pytest.mark.asyncio
-async def test_sync_budget_includes_wait_for_busy_pool():
-    entered = asyncio.Event()
-
-    async def busy(ctx):
-        entered.set()
-        await asyncio.Event().wait()
-
-    pending = AsyncMock()
-    executor = HookExecutor(SimpleNamespace(background_tasks=None), pool_size=1)
-    await executor.dispatch("after_reply", [LLMHookSpec("busy", "after_reply", busy)], {})
-    await entered.wait()
-    try:
-        await asyncio.wait_for(executor.dispatch("after_reply", [
-            LLMHookSpec("queued", "after_reply", pending, mode=HookMode.SYNC, timeout_seconds=.02),
-        ], {}), timeout=.5)
-        pending.assert_not_awaited()
-        assert any(run["name"] == "queued" and run["status"] == "error"
-                   for run in hook_journal.snapshot()["recent"])
-    finally:
-        await executor.drain(timeout=0)

@@ -5,6 +5,7 @@ import { hooksApi } from "@/lib/api";
 import { Card } from "@/components/common/Card";
 import { HookExecutionRow } from "@/components/common/HookExecutionRow";
 import { Button, EmptyState, LoadingBlock } from "@/components/ui";
+import { ActivityDetailsProvider } from "../chat/activity/ActivityDetailsProvider";
 
 export function HookOverview() {
   const { t } = useTranslation("settings");
@@ -23,7 +24,7 @@ export function HookOverview() {
     ...(query.data?.execution?.recent ?? []),
   ];
   return (
-    <div className="space-y-5">
+    <ActivityDetailsProvider><div className="space-y-5">
       <div className="grid gap-3 lg:grid-cols-3">
         {stages.map(({ key, icon: Icon }, index) => (
           <Card key={key} className="p-5">
@@ -61,6 +62,6 @@ export function HookOverview() {
           <EmptyState icon={Workflow} title={t("hookFlow.empty")} />
         )}
       </Card>
-    </div>
+    </div></ActivityDetailsProvider>
   );
 }

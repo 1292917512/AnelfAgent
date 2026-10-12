@@ -150,7 +150,7 @@
     "eventsLabel": "事件",
     "govConcurrent": "全局并发",
     "govTranscript": "transcript 快照",
-    "transcriptOn": "开启（≤{{chars}} 字符）",
+    "transcriptOn": "完整继承",
     "transcriptOff": "关闭",
     "iterations": "轮次",
     "concurrent": "并发",
@@ -160,7 +160,7 @@
     "outputAllowed": "允许外发",
     "outputNotRouted": "产出不唤醒",
     "owner": "归属",
-    "hint": "钩子由代码（@llm_hook）、任务（trigger_event）与实体注册；开关与治理参数经配置中心 hooks_llm 组热调。",
+    "hint": "AI 可用 get_hooks 查看声明，通过 update_entity_config 修改参数；与此页共用配置，保存后热生效并保留。已受理的执行继续使用原参数。",
     "source": {
       "code": "代码",
       "task": "任务",
@@ -169,7 +169,9 @@
     "rowToggle": "停用/启用该钩子",
     "rowDisabled": "已停用",
     "toggleSaved": "钩子 {{name}} 已更新",
-    "toggleSaveFailed": "钩子启停更新失败"
+    "toggleSaveFailed": "钩子启停更新失败",
+    "noDeadline": "无整体时间截止",
+    "configure": "调整参数"
   },
   "localModels": {
     "title": "本地模型资产",
@@ -247,6 +249,25 @@
         "title": "回复后续处理",
         "body": "技能检查等后台工作独立执行；状态与耗时在工作区和这里同步可见。"
       }
+    },
+    "executionDetails": "查看完整执行过程",
+    "expiredDetails": "这段执行详情已从内存清理，或尚未进入模型执行阶段。钩子的最终状态仍保留在记录中。",
+    "calls": "{{models}} 次模型调用 · {{tools}} 次工具调用",
+    "phases": {
+      "queued": "等待执行",
+      "preparing": "准备上下文",
+      "model": "模型思考",
+      "tool": "执行工具",
+      "processing": "处理结果",
+      "running": "运行中",
+      "done": "已完成",
+      "error": "失败",
+      "cancelled": "已取消"
+    },
+    "context": {
+      "transcript": "继承完整过程 · {{count}} 条消息",
+      "lean": "精简上下文 · {{count}} 条消息",
+      "none": "未继承上下文"
     }
   },
   "recallPolicy": {

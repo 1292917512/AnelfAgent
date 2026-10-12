@@ -19,12 +19,6 @@ _HOOKS_LLM_CONFIGS = {
             "description": "是否允许钩子继承完整 transcript 快照（关闭则 transcript 档位降级为无快照，防大上下文成本）",
             "default": True,
         },
-        "hooks_llm_transcript_max_chars": {
-            "description": "transcript 快照字符护栏（超限保头保尾截断，防异常巨型上下文撑爆钩子预算）",
-            "default": 60000,
-            "advanced": True,
-            "unit": "字符",
-        },
     },
 }
 

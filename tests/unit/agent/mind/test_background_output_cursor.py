@@ -87,7 +87,7 @@ class TestReadTaskOutput:
         reg = BackgroundTaskRegistry()
         tid = reg.register("user_qq:1", "delegation", "子代理")
         r = reg.read_task_output("user_qq:1", tid)
-        assert not r["ok"] and "无关联输出文件" in r["error"]
+        assert r["ok"] and r["progress"] == {} and not r["done"]
 
     def test_done_flag_visible(self, tmp_path) -> None:
         reg = BackgroundTaskRegistry()

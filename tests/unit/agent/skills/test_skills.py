@@ -1067,6 +1067,24 @@ class TestSkillReviewerContract:
         yield
         HookRegistry.clear()
 
+    @pytest.mark.parametrize("mode", ["none", "lean"])
+    async def test_review_without_transcript_does_not_claim_conversation_evidence(self, store: SkillStore, mode: str) -> None:
+        from unittest.mock import AsyncMock
+
+        from agent.hooks_llm import HookContext, HookContextMode
+        from agent.skills.background_review import SkillReviewer
+
+        mind = SimpleNamespace(reflect=AsyncMock(return_value="库事实已核验"))
+        reviewer = SkillReviewer(mind, store)
+        ctx = HookContext(name="skill_review", event="after_reply", scope="user_qq:1",
+                          context_mode=HookContextMode(mode), payload={"execution_summary": "private conversation"},
+                          messages=[{"role": "system", "content": "fixed instructions"}] if mode == "lean" else [])
+        await reviewer._run(ctx)
+        sent = mind.reflect.await_args.args[0]
+        assert "未继承原对话" in sent[-1]["content"]
+        assert "private conversation" not in str(sent)
+        assert "以上是本轮对话的完整" not in str(sent)
+
     async def test_registers_hook_and_reflects_with_transcript(self, store: SkillStore, monkeypatch) -> None:
         from unittest.mock import AsyncMock
 
@@ -1075,7 +1093,6 @@ class TestSkillReviewerContract:
 
         mind = SimpleNamespace(reflect=AsyncMock(return_value="沉淀了一个技能"))
         reviewer = SkillReviewer(mind, store)
-        monkeypatch.setattr(SkillReviewer, "_enabled", staticmethod(lambda: True))
         reviewer.start()
         try:
             spec = HookRegistry.get(_HOOK_NAME)
@@ -1083,8 +1100,7 @@ class TestSkillReviewerContract:
             assert spec.event == "after_reply"
             assert spec.context is HookContextMode.TRANSCRIPT
             assert spec.tool_tags == ("skills",)
-            # 冷却已装配（默认 120s，可经 skills_review_cooldown_seconds 调整）：
-            # 评审 transcript 每轮全新，冷却是压低不可缓存输入总量的治理位
+            # 冷却限制同一会话的触发频率，不截断单次执行。
             assert spec.cooldown_seconds > 0
 
             ctx = HookContext(
@@ -1115,7 +1131,6 @@ class TestSkillReviewerContract:
 
         mind = SimpleNamespace()
         reviewer = SkillReviewer(mind, store)
-        monkeypatch.setattr(SkillReviewer, "_enabled", staticmethod(lambda: True))
         reviewer.start()
         try:
             spec = HookRegistry.get(_HOOK_NAME)

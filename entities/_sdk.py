@@ -347,7 +347,7 @@ def register_entity_llm_hook(
         spec_overrides: LLMHookSpec 治理字段直转（context/tool_tags/
             allow_output_tools/route_output/max_iterations/model/max_concurrent/
             cooldown_seconds/debounce_seconds/priority/description/when/
-            owner/mode/timeout_seconds），未列键由 spec 构造器拒绝（注册失败返回 False）。
+            owner/mode），未列键由 spec 构造器拒绝（注册失败返回 False）。
             context 接受字符串档位（none/lean/transcript），tool_tags 接受 list；
             owner 缺省取调用方实体模块名（热拔卸载按 owner 批量清理）。
 
@@ -369,7 +369,7 @@ def register_entity_llm_hook(
             module = getattr(handler, "__module__", "") or ""
             parts = module.split(".")
             owner = parts[1] if len(parts) >= 2 and parts[0] == "entities" and parts[1] else "entity"
-        context = spec_overrides.pop("context", HookContextMode.NONE)
+        context = spec_overrides.pop("context", HookContextMode.TRANSCRIPT)
         if isinstance(context, str):
             context = HookContextMode(context)
         cooldown = max(0.0, float(spec_overrides.pop("cooldown_seconds", 0.0)))

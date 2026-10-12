@@ -238,7 +238,8 @@
       "conversation": "对话",
       "reflection": "自主思考",
       "delegation": "子代理",
-      "task": "任务"
+      "task": "任务",
+      "hook": "后台钩子"
     },
     "status": {
       "running": "执行中",

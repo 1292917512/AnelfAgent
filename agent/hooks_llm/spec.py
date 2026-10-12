@@ -9,7 +9,7 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional
 
@@ -56,8 +56,7 @@ else:
 class LLMHookSpec:
     """一个 LLM 钩子的完整声明（注册即生效）。
 
-    enabled 为运行期开关：spec frozen 不可变，注册表内部维护 _enabled_overrides
-    覆盖层，register 时按 config_key 初始值或默认 True 写入。
+    声明保持不可变；每次调度读取统一配置面的覆盖值。
     """
 
     name: str
@@ -67,8 +66,7 @@ class LLMHookSpec:
     handler: HookHandler
     """执行体：以 HookContext 为输入的协程。"""
     mode: HookMode = HookMode.ASYNC
-    timeout_seconds: float = 120.0
-    context: HookContextMode = HookContextMode.NONE
+    context: HookContextMode = HookContextMode.TRANSCRIPT
     """继承的上下文档位。"""
     when: Optional[HookWhen] = None
     """条件门控：None 恒触发；返回 False 零开销跳过。"""
@@ -99,8 +97,9 @@ class LLMHookSpec:
     source: str = "code"
     """注册来源：code=代码装饰器 / entity=实体桥接 / task=任务事件触发。"""
     enabled: bool = True
-    """启用状态：False 时注册表保留声明但 dispatcher 跳过（运行期开关，
-    web 面板热调；代码注册的钩子可通过 config_key 参数自动读配置值）。"""
+    """声明的默认启用状态。"""
+    config_key: str = ""
+    """复用模块已有的启用配置键；为空时由注册表生成。"""
 
 
 @dataclass(slots=True)
@@ -118,8 +117,12 @@ class HookContext:
     """触发来源会话 scope（非会话事件为空串）。"""
     payload: Dict[str, Any]
     """事件原始 payload（只读）。"""
+    context_mode: HookContextMode = HookContextMode.TRANSCRIPT
+    """本次采用的上下文档位。"""
     messages: List[Dict[str, Any]] = field(default_factory=list)
-    """按档位构建的上下文快照（已冻结 + 规整，可直接作 reflect base_messages）。"""
+    """按档位冻结的上下文快照，可直接作为 reflect 的 base_messages。"""
+    inherited_tools: List[Dict[str, Any]] | None = None
+    """触发轮的工具目录，保留顺序与内容以复用模型缓存。"""
     trigger: str = ""
     """触发来源标记（event 名 / 手动 / 任务事件）。"""
     tool_tags: tuple[str, ...] = ()
@@ -133,7 +136,7 @@ class HookContext:
 
     def transcript_available(self) -> bool:
         """transcript 档位快照是否真实带出了消息链。"""
-        return bool(self.messages)
+        return self.context_mode is HookContextMode.TRANSCRIPT and bool(self.messages)
 
 
 class HookRegistry:
@@ -141,14 +144,11 @@ class HookRegistry:
 
     同一钩子位置（event）支持多个钩子；同 event 内按 priority
     降序调度，是否等待由 mode 决定。注册同名钩子按「后者覆盖前者」
-    （幂等，便于热重载/重复装配）。enabled 为运行期开关：spec frozen 不可变，
-    注册表内部维护 _enabled_overrides 覆盖层，register 时按 config_key 初始值
-    或默认 True 写入。
+    （幂等，便于热重载）。配置覆盖值持久化，注销只移除运行声明。
     """
 
     _by_event: Dict[str, List[LLMHookSpec]] = {}
     _by_name: Dict[str, LLMHookSpec] = {}
-    _enabled_overrides: Dict[str, bool] = {}
 
     @classmethod
     def register(cls, spec: LLMHookSpec) -> None:
@@ -158,17 +158,15 @@ class HookRegistry:
                 f"非法钩子事件: {spec.event!r}（须为 {sorted(HOOK_EVENTS)} 之一）"
             )
         old = cls._by_name.get(spec.name)
-        enabled = cls._enabled_overrides.get(spec.name, spec.enabled)
         if not isinstance(spec.mode, HookMode):
             raise ValueError("mode 必须是 HookMode")
-        if not 0 < spec.timeout_seconds <= 1800:
-            raise ValueError("timeout_seconds 必须在 (0, 1800] 内")
         if spec.mode == HookMode.SYNC and spec.debounce_seconds > 0:
             raise ValueError("同步钩子不能声明防抖延迟")
         if old is not None:
             cls.unregister(spec.name)
         cls._by_name[spec.name] = spec
-        cls._enabled_overrides[spec.name] = enabled
+        from .settings import register_settings
+        register_settings(spec)
         bucket = cls._by_event.setdefault(spec.event, [])
         bucket.append(spec)
         bucket.sort(key=lambda s: s.priority, reverse=True)
@@ -179,7 +177,8 @@ class HookRegistry:
         spec = cls._by_name.pop(name, None)
         if spec is None:
             return False
-        cls._enabled_overrides.pop(name, None)
+        from core.config import ConfigRegistry
+        ConfigRegistry.unregister_group(f"hooks_llm/{name}")
         bucket = cls._by_event.get(spec.event)
         if bucket is not None:
             cls._by_event[spec.event] = [s for s in bucket if s.name != name]
@@ -201,17 +200,18 @@ class HookRegistry:
         spec = cls._by_name.get(name)
         if spec is None:
             return None
-        # 运行期开关以覆盖层为准（面板热调写入），spec.enabled 仅为注册初始值
-        return spec if name not in cls._enabled_overrides else _replace_enabled(
-            spec, cls._enabled_overrides[name]
-        )
+        from .settings import effective_spec
+        return effective_spec(spec)
 
     @classmethod
     def set_enabled(cls, name: str, enabled: bool) -> bool:
         """按名启停钩子（运行期热调，web 面板开关）；返回是否找到该钩子。"""
         if name not in cls._by_name:
             return False
-        cls._enabled_overrides[name] = bool(enabled)
+        from agent.config import save_config_value
+
+        from .settings import config_keys
+        save_config_value(config_keys(cls._by_name[name])["enabled"], bool(enabled))
         return True
 
     @classmethod
@@ -220,12 +220,8 @@ class HookRegistry:
         specs = cls._by_event.get(event, [])
         if not specs:
             return []
-        return [
-            s if s.name not in cls._enabled_overrides else _replace_enabled(
-                s, cls._enabled_overrides[s.name]
-            )
-            for s in specs
-        ]
+        from .settings import effective_spec
+        return [effective_spec(spec) for spec in specs]
 
     @classmethod
     def for_event_enabled(cls, event: str) -> List[LLMHookSpec]:
@@ -243,23 +239,16 @@ class HookRegistry:
     @classmethod
     def clear(cls) -> None:
         """清空注册表（测试用）。"""
-        cls._by_event.clear()
-        cls._by_name.clear()
-        cls._enabled_overrides.clear()
-
-
-def _replace_enabled(spec: LLMHookSpec, enabled: bool) -> LLMHookSpec:
-    """返回 enabled 被覆盖的 spec 副本（frozen 不可变语义的运行期开关实现）。"""
-    return replace(spec, enabled=enabled)
+        for name in list(cls._by_name):
+            cls.unregister(name)
 
 
 def llm_hook(
     name: str,
     event: str,
     *,
-    context: str = "none",
+    context: str = "transcript",
     mode: str = "async",
-    timeout_seconds: float = 120.0,
     when: Optional[HookWhen] = None,
     tool_tags: Optional[List[str]] = None,
     allow_output_tools: bool = False,
@@ -304,7 +293,7 @@ def llm_hook(
                 enabled = True
         spec = LLMHookSpec(
             name=name, event=event, handler=fn, context=context_mode, when=when,
-            mode=HookMode(mode), timeout_seconds=timeout_seconds,
+            mode=HookMode(mode),
             tool_tags=tuple(tool_tags or ()), allow_output_tools=allow_output_tools,
             route_output=route_output,
             max_iterations=max_iterations, model=model,
@@ -312,7 +301,7 @@ def llm_hook(
             cooldown_seconds=max(0.0, cooldown_seconds),
             debounce_seconds=max(0.0, debounce_seconds),
             priority=priority, owner=owner, description=description, source=source,
-            enabled=enabled,
+            enabled=enabled, config_key=config_key,
         )
         HookRegistry.register(spec)
         return fn

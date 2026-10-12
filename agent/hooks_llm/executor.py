@@ -3,7 +3,7 @@
 同一钩子位置（event）可挂多个钩子，同步按顺序等待、异步后台执行，
 每个钩子独立的治理桶：per-hook 并发信号量、per-hook-per-scope
 cooldown/debounce、独立日志归因 / 用量归属 / 进度流 / 后台任务条目。
-单钩子失败或超时不影响同事件其他钩子（各自 try/except 隔离）。
+单钩子失败不影响同事件其他钩子。执行无整体时间截止，AI 可查询与取消。
 
 治理件全部复用既有原语，不重造：
 - 并发：全局池 semaphore（总量护栏）+ per-hook semaphore；
@@ -19,8 +19,11 @@ import copy
 import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from agent.hooks_llm.snapshot import prepare_hook_messages
+from agent.hooks_llm.progress import HookProgress
+from agent.hooks_llm.snapshot import freeze_messages
 from agent.hooks_llm.spec import HookContext, HookContextMode, LLMHookSpec
+from agent.mind.background_tasks import current_background_task_id
+from core.activity import activity_owner
 from core.hooks import HookMode, hook_execution
 from core.log import bind_log_actor, log, reset_log_actor
 
@@ -208,8 +211,8 @@ class HookExecutor:
         if scope:
             return scope
         try:
-            from agent.mind.tool_activation import ToolActivationManager
-            return ToolActivationManager.current_scope() or ""
+            from agent.mind.tool_activation import current_owner_scope
+            return current_owner_scope() or ""
         except Exception:
             return ""
 
@@ -222,7 +225,7 @@ class HookExecutor:
         ctx = HookContext(
             name=spec.name, event=spec.event, scope=scope,
             payload=payload, trigger=spec.event,
-            messages=self._build_messages(spec, payload),
+            context_mode=spec.context,
             tool_tags=spec.tool_tags,
             max_iterations=spec.max_iterations,
             allow_output_tools=spec.allow_output_tools,
@@ -230,7 +233,7 @@ class HookExecutor:
         )
         await self._execute(spec, ctx)
 
-    def _build_messages(self, spec: LLMHookSpec,
+    async def _build_messages(self, spec: LLMHookSpec,
                         payload: Dict[str, Any]) -> List[Dict[str, Any]]:
         """按档位构建上下文快照（transcript 取 payload.messages）。
 
@@ -243,11 +246,9 @@ class HookExecutor:
         if spec.context is HookContextMode.TRANSCRIPT:
             if not self._transcript_enabled():
                 return []
-            return prepare_hook_messages(payload.get("messages"))
+            return freeze_messages(payload.get("messages"))
         if spec.context is HookContextMode.LEAN:
-            # lean 前缀（人设+工具+永久记忆）由执行体经 mind.get_recollection
-            # 现取——快照层不预构建，避免为不消费它的钩子白付组装成本
-            return []
+            return await self._mind.get_recollection(lean=True)
         return []
 
     @staticmethod
@@ -269,12 +270,60 @@ class HookExecutor:
             usage_token = bind_usage_scope(ctx.scope)
         try:
             async with hook_execution(spec.name, spec.event, spec.mode, source=spec.source, scope=ctx.scope) as run:
-                async with asyncio.timeout(spec.timeout_seconds):
-                    async with self._pool, self._sem_for(spec):
-                        output = await spec.handler(ctx)
-                run.detail = str(output or "")[:1200]
+                registry = getattr(self._mind, "background_tasks", None)
+                progress = HookProgress(run)
+                task = asyncio.current_task()
+                loop = asyncio.get_running_loop()
+                if registry is not None:
+                    run.task_id = registry.register(ctx.scope or "_global", "llm_hook", f"{spec.name}: {spec.event}")
+                    registry.attach_progress(run.task_id, progress.snapshot)
+
+                    def cancel() -> bool:
+                        if task is None or task.done():
+                            return False
+                        loop.call_soon_threadsafe(task.cancel)
+                        return True
+
+                    registry.attach_killer(run.task_id, cancel)
+                background_token = current_background_task_id.set(run.task_id)
+                output: Optional[str] = None
+                success = False
+                summary = ""
+                try:
+                    await progress.update("queued", "")
+                    # 同类等待不占用全局并发槽，其他钩子仍可运行。
+                    async with self._sem_for(spec), self._pool:
+                        await progress.update("preparing", "")
+                        with activity_owner(kind="hook", label=spec.name, owner_id=run.id, scope=ctx.scope), progress.observe():
+                            ctx.messages = await self._build_messages(spec, ctx.payload)
+                            tools = ctx.payload.get("tools")
+                            if spec.context is HookContextMode.TRANSCRIPT and ctx.messages and isinstance(tools, list):
+                                ctx.inherited_tools = copy.deepcopy(tools)
+                            run.context_mode = spec.context.value
+                            run.context_messages = len(ctx.messages)
+                            await run.publish()
+                            output = await spec.handler(ctx)
+                    success = progress.terminal_status == "completed"
+                    summary = str(output or "钩子已完成，无需跟进")[:1200]
+                    if not success:
+                        summary = f"执行未完成（{progress.terminal_status}）：{str(output or '')[:1000]}"
+                        run.status = "cancelled" if progress.terminal_status in {"cancelled", "interrupted"} else "error"
+                    run.detail = summary
+                    run.phase = "done" if success else run.status
+                except asyncio.CancelledError:
+                    summary = "钩子已取消"
+                    run.phase = "cancelled"
+                    raise
+                except Exception as exc:
+                    summary = f"{type(exc).__name__}: {str(exc) or '操作未完成，请查看关联执行记录'}"
+                    run.phase = "error"
+                    raise
+                finally:
+                    current_background_task_id.reset(background_token)
+                    if registry is not None and run.task_id:
+                        registry.complete(run.task_id, success, summary,
+                                          claimed=None if spec.route_output and (output or not success) else True)
             log(f"钩子 {spec.name} 完成 (event={spec.event})", "DEBUG", tag="钩子")
-            self._route_result(spec, ctx, output)
         except asyncio.CancelledError:
             log(f"钩子 {spec.name} 被取消", "DEBUG", tag="钩子")
             raise
@@ -287,31 +336,6 @@ class HookExecutor:
                 reset_usage_scope(usage_token)
             reset_log_actor(actor)
             _RecursionGuard.exit(token)
-
-    def _route_result(self, spec: LLMHookSpec, ctx: HookContext,
-                      output: Optional[str]) -> None:
-        """产出路由：登记后台任务完成（走既有 unclaimed → wake_budget 通道）。
-
-        仅当钩子产出非空且宿主有后台任务注册表时登记；登记失败仅记日志，
-        绝不影响主对话。route_output=False 的钩子（内部治理类，产出仅供
-        观测）以 claimed 完成——记录保留、跳过 unclaimed 唤醒。
-        """
-        if not output:
-            return
-        registry = getattr(self._mind, "background_tasks", None)
-        if registry is None:
-            return
-        try:
-            task_id = registry.register(
-                ctx.scope or "_global", "llm_hook",
-                f"{spec.name}: {spec.event}",
-            )
-            registry.complete(
-                task_id, True, str(output)[:1500],
-                claimed=None if spec.route_output else True,
-            )
-        except Exception as exc:
-            log(f"钩子 {spec.name} 结果登记失败: {exc}", "DEBUG", tag="钩子")
 
     # ------------------------------------------------------------------
     # 关停

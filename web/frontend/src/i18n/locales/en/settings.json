@@ -150,7 +150,7 @@
     "eventsLabel": "Events",
     "govConcurrent": "Global concurrency",
     "govTranscript": "Transcript snapshot",
-    "transcriptOn": "On (≤{{chars}} chars)",
+    "transcriptOn": "Full transcript",
     "transcriptOff": "Off",
     "iterations": "Iterations",
     "concurrent": "Concurrency",
@@ -160,7 +160,7 @@
     "outputAllowed": "Output allowed",
     "outputNotRouted": "Output not routed",
     "owner": "Owner",
-    "hint": "Hooks are registered by code (@llm_hook), tasks (trigger_event) and entities; toggle and governance via the hooks_llm group in Config.",
+    "hint": "AI can inspect get_hooks and edit parameters with update_entity_config. Changes are persisted and apply to future runs; accepted runs keep their original parameters.",
     "source": {
       "code": "Code",
       "task": "Task",
@@ -169,7 +169,9 @@
     "rowToggle": "Disable/enable this hook",
     "rowDisabled": "Disabled",
     "toggleSaved": "Hook {{name}} updated",
-    "toggleSaveFailed": "Failed to update hook"
+    "toggleSaveFailed": "Failed to update hook",
+    "noDeadline": "No overall deadline",
+    "configure": "Configure"
   },
   "localModels": {
     "title": "Local Model Assets",
@@ -247,6 +249,25 @@
         "title": "After the reply",
         "body": "Skill review and other background work run independently, with status and timing visible here and in the workbench."
       }
+    },
+    "executionDetails": "View execution details",
+    "expiredDetails": "These execution details have left memory or model execution has not started yet. The hook record retains its final status.",
+    "calls": "{{models}} model calls · {{tools}} tool calls",
+    "phases": {
+      "queued": "Queued",
+      "preparing": "Preparing context",
+      "model": "Model reasoning",
+      "tool": "Executing tool",
+      "processing": "Processing result",
+      "running": "Running",
+      "done": "Completed",
+      "error": "Failed",
+      "cancelled": "Cancelled"
+    },
+    "context": {
+      "transcript": "Full transcript · {{count}} messages",
+      "lean": "Lean context · {{count}} messages",
+      "none": "No inherited context"
     }
   },
   "recallPolicy": {

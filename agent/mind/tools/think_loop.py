@@ -415,6 +415,7 @@ async def think_loop(
                 # transcript 供 follow_up 续跑。中断路径消息不完整，同样带出
                 # （是否可续跑由 messages 是否存在决定，收束路径恒有值）。
                 ctx.completion["messages"] = ctx.base_messages + ctx.tool_chain
+                ctx.completion["tools"] = ctx.active_tools
             # 正常结束由 _finish_round 收敛；未走正常出口的中断、异常和预算耗尽只可取消。
             if not state.plan_finalized:
                 try:
@@ -535,7 +536,8 @@ async def _run_think_rounds(
             budget_hint=_token_budget_hint(ctx, state),
             cache_hint=_cache_status_hint(state),
         )
-        task_context = background_context(ctx.background, ctx.current_scope)
+        from agent.mind.tool_activation import current_owner_scope
+        task_context = background_context(ctx.background, current_owner_scope() or ctx.current_scope)
         if task_context:
             exec_context["content"] += "\n" + task_context
         if mode == ThinkMode.REPLY:

@@ -1,4 +1,5 @@
 import type { ChatStreamingDiff } from "./chat";
+import type { HookExecution } from "./hooks";
 
 interface EntryBase { id: string; ts: number }
 export interface ActivityTag { key: string; value: string; root?: string; path?: string }
@@ -12,7 +13,7 @@ export interface ActivitySkill {
   truncated?: boolean;
 }
 export type ActivityEntry =
-  | EntryBase & { kind: "hook"; name: string; event: string; mode: "sync" | "async"; source: string; scope: string; status: string; detail: string; duration_ms: number }
+  | EntryBase & Omit<HookExecution, "started_at"> & { kind: "hook" }
   | EntryBase & { kind: "context"; status: string; duration_ms: number; blocks: { layer: string; label: string; content: string }[]; block_count: number; skills?: ActivitySkill[]; error?: string; truncated?: boolean }
   | EntryBase & { kind: "thinking"; content: string; truncated?: boolean }
   | EntryBase & { kind: "text"; content: string; truncated?: boolean }

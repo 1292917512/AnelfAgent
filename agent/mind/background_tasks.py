@@ -18,6 +18,7 @@ import inspect
 import threading
 import time
 import uuid
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
@@ -27,6 +28,7 @@ from core.log import log
 _POLL_INTERVAL = 1.0
 # 每个 scope 保留的已完成记录上限（供 check 工具回看，超出丢弃最旧的）
 _MAX_COMPLETED_PER_SCOPE = 20
+current_background_task_id: ContextVar[str] = ContextVar("background_task_id", default="")
 
 
 @dataclass
@@ -75,6 +77,8 @@ class _TaskRecord:
     # 终止句柄（可选）：AI 经 terminate_background_task 决策终止时调用，
     # 返回是否受理；终态仍由生产者的完成路径登记（终态通知照常送达）
     killer: Optional[Callable[[], bool]] = None
+    progress_reader: Callable[[], Dict[str, Any]] | None = None
+    progress: Dict[str, Any] = field(default_factory=dict)
 
     def to_completion(self) -> TaskCompletion:
         return TaskCompletion(
@@ -168,6 +172,19 @@ class BackgroundTaskRegistry:
         if rec is not None and callable(killer):
             rec.killer = killer
 
+    def attach_progress(self, task_id: str, reader: Callable[[], Dict[str, Any]]) -> None:
+        """关联内存进度快照；完成后冻结数据并释放执行体引用。"""
+        rec = self._records.get(task_id)
+        if rec is not None and not rec.done:
+            rec.progress_reader = reader
+
+    def progress(self, task_id: str) -> Dict[str, Any]:
+        """读取生产者提供的阶段事实，不消费输出或完成通知。"""
+        rec = self._records.get(task_id)
+        if rec is None:
+            return {}
+        return dict(rec.progress_reader() if rec.progress_reader else rec.progress)
+
     # ------------------------------------------------------------------
     # 增量输出读取（单游标消费型：每次只返回上次读取之后的新增输出）
     # ------------------------------------------------------------------
@@ -225,7 +242,11 @@ class BackgroundTaskRegistry:
         if rec.info.scope != (scope or "_global"):
             return {"ok": False, "error": f"任务 {task_id} 不属于当前会话"}
         if not rec.output_file:
-            return {"ok": False, "error": f"任务 {task_id} 无关联输出文件（仅 shell/子代理委托类任务支持增量读取）"}
+            return {"ok": True, "task_id": task_id, "done": rec.done,
+                    "elapsed_seconds": max(0, int((rec.finished_at or time.time()) - rec.info.started_at)),
+                    "progress": self.progress(task_id), "summary": rec.summary,
+                    "success": rec.success if rec.done else None,
+                    "hint": "内存状态快照；没有输出文件。耗时或暂无进展不代表失败，可自行判断是否继续或终止。"}
         offset = self._output_cursors.get(task_id, 0)
         try:
             with open(rec.output_file, "rb") as f:
@@ -285,12 +306,15 @@ class BackgroundTaskRegistry:
         rec.success = success
         rec.summary = summary
         rec.finished_at = time.time()
+        rec.progress = self.progress(task_id)
+        rec.progress_reader = None
+        rec.killer = None
 
         claimed = (
             self._waiting.get(rec.info.scope, 0) > 0
             if claimed_override is None else claimed_override
         )
-        if not claimed:
+        if not claimed or claimed_override is True:
             rec.delivered = True
         event = self._events.get(rec.info.scope)
         if event is not None:
@@ -399,6 +423,7 @@ class BackgroundTaskRegistry:
                     "elapsed_seconds": int(t.elapsed),
                     # 预期时长（0=未声明）：超出即已/将收到超时提醒
                     "expected_seconds": int(t.expected_seconds),
+                    "progress": self.progress(t.task_id),
                 }
                 for t in self.running(scope)
             ],

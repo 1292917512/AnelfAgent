@@ -299,5 +299,6 @@ async def complete_reply(
         "error": error,
         "execution_summary": execution_summary,
         "messages": reply_messages,
+        "tools": (completion or {}).get("tools"),
         "turn_id": turn_id,
     })

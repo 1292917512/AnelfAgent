@@ -12,7 +12,8 @@ import time
 import uuid
 from collections import deque
 from contextlib import asynccontextmanager
-from dataclasses import asdict, dataclass
+from contextvars import ContextVar
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import AsyncIterator
 
@@ -42,6 +43,24 @@ class HookRun:
     status: str = "running"
     duration_ms: int = 0
     detail: str = ""
+    task_id: str = ""
+    activity_ids: list[str] = field(default_factory=list)
+    phase: str = "running"
+    operation: str = ""
+    updated_at: float = field(default_factory=time.time)
+    model_calls: int = 0
+    tool_calls: int = 0
+    context_mode: str = ""
+    context_messages: int = 0
+
+    async def publish(self) -> None:
+        """发布脱敏的执行快照，不复制工具结果或思考正文。"""
+        self.detail = sanitize_text(self.detail)[:1200]
+        self.operation = sanitize_text(self.operation)[:160]
+        await event_bus.emit(EVENT_HOOK_EXECUTION, asdict(self))
+
+
+current_hook_run: ContextVar[HookRun | None] = ContextVar("hook_run", default=None)
 
 
 class HookJournal:
@@ -71,8 +90,9 @@ async def hook_execution(name: str, event: str, mode: HookMode, *, source: str =
                   scope or current_scope(), current_activity_id.get(), time.time())
     started = time.monotonic()
     hook_journal._active[run.id] = run
+    token = current_hook_run.set(run)
     try:
-        await event_bus.emit(EVENT_HOOK_EXECUTION, asdict(run))
+        await run.publish()
         yield run
         if run.status == "running":
             run.status = "done"
@@ -81,12 +101,17 @@ async def hook_execution(name: str, event: str, mode: HookMode, *, source: str =
         raise
     except BaseException as exc:
         run.status = "error"
-        run.detail = f"{type(exc).__name__}: {exc}"
+        run.detail = f"{type(exc).__name__}: {str(exc) or '操作未完成，请查看关联的模型或工具执行记录'}"
         raise
     finally:
         run.duration_ms = max(0, round((time.monotonic() - started) * 1000))
+        run.phase = run.status
+        run.updated_at = time.time()
         run.detail = sanitize_text(run.detail)[:1200]
         hook_journal._active.pop(run.id, None)
         record = asdict(run)
         hook_journal._recent.append(record)
-        await event_bus.emit(EVENT_HOOK_EXECUTION, record)
+        try:
+            await event_bus.emit(EVENT_HOOK_EXECUTION, record)
+        finally:
+            current_hook_run.reset(token)

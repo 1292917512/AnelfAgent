@@ -191,6 +191,27 @@ class TestReflectPhaseReset:
         assert mind._reflect_depth == 0
         assert mind.phase is MindPhase.IDLE
 
+    @pytest.mark.parametrize("needs_skill_tool", [False, True])
+    async def test_inherited_directory_keeps_order_and_required_tools(self, needs_skill_tool: bool) -> None:
+        mind = _bare_mind()
+        self._wire_reflect_fakes(mind)
+        inherited = [{"type": "function", "function": {"name": name}} for name in ("send_message", "end_reply")]
+        selected = [{"type": "function", "function": {"name": "end_reply"}}]
+        if needs_skill_tool:
+            selected.append({"type": "function", "function": {"name": "get_skill"}})
+        mind.pfc.get_reflect_tool_schemas = AsyncMock(return_value=selected)
+        loop = AsyncMock()
+        mind._think_loop = loop
+        await mind.reflect([{"role": "user", "content": "review"}], tool_tags=["skills"],
+                           inherited_tools=inherited, extra_blocked_tools={"send_message"})
+        sent = loop.await_args.kwargs
+        assert sent["active_tools"][:2] == inherited
+        assert len(sent["active_tools"]) == 2 + needs_skill_tool
+        assert "send_message" in sent["blocked_tools"]
+        assert sent["reflect_tool_selectors"] == ["skills"]
+        sent["active_tools"][0]["function"]["name"] = "mutated"
+        assert inherited[0]["function"]["name"] == "send_message"
+
     async def test_concurrent_reflects_reset_only_after_last(self) -> None:
         """并发 reflect：先结束的不归零（深度仍存活），最后一个收尾才归零。"""
         mind = _bare_mind()

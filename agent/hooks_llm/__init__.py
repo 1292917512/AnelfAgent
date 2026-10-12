@@ -28,9 +28,7 @@ from agent.hooks_llm.runtime import (
     hooks_llm_runtime_port,
 )
 from agent.hooks_llm.snapshot import (
-    cap_snapshot_chars,
     freeze_messages,
-    prepare_hook_messages,
 )
 from agent.hooks_llm.spec import (
     HOOK_EVENTS,
@@ -54,6 +52,4 @@ __all__ = [
     "get_hook_runtime",
     "hooks_llm_runtime_port",
     "freeze_messages",
-    "cap_snapshot_chars",
-    "prepare_hook_messages",
 ]

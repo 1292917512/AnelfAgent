@@ -62,8 +62,9 @@ export interface HooksTestResult {
 }
 
 export interface LlmHookItem {
+  config_group: string;
+  config_keys: Record<string, string>;
   mode: "sync" | "async";
-  timeout_seconds: number;
   name: string;
   event: string;
   context: string;
@@ -94,6 +95,15 @@ export interface HookExecution {
   started_at: number;
   duration_ms: number;
   detail: string;
+  task_id?: string;
+  activity_ids?: string[];
+  phase?: string;
+  operation?: string;
+  updated_at?: number;
+  model_calls?: number;
+  tool_calls?: number;
+  context_mode?: string;
+  context_messages?: number;
 }
 
 export interface LlmHooksOverview {
@@ -104,6 +114,5 @@ export interface LlmHooksOverview {
   governance: {
     max_concurrent: number;
     transcript_enabled: boolean;
-    transcript_max_chars: number;
   };
 }

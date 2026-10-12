@@ -1,25 +1,9 @@
-"""技能后台评审。
+"""对话结束后异步评审技能沉淀，事实归系统、决策归 AI。
 
-每轮对话结束后，经 LLM 钩子面（agent/hooks_llm）派生一个后台评审任务，
-继承本轮完整上下文（transcript），由 LLM 自主决策是否沉淀/合并/治理技能
-（异步并行，不影响主对话与下一轮）。
-
-设计定位（决策导向，非禁止导向）：评审的上下文由事实层（SkillIndex）供给——
-语义相近候选 + 库健康摘要。过去的失败不是 LLM 不会判断，而是它看不见库
-（只给最近活动的 20 条）；把现状算清楚呈现给它，判断交给它。
-
-评审材料契约：钩子面以 transcript 档位带入本轮完整消息链（base + tool_chain），
-替代旧版仅 ~3K 字符的执行摘要——工具结果细节不再被摘要蒸馏丢弃，"任务方法/
-排障经验"类技能的沉淀判断材料更完整。transcript 快照经 hooks_llm 护栏截断
-（保头保尾），成本受 hooks_llm_transcript_max_chars 约束。
-
-防失控设计（钩子面治理 + 本层语义）：
-- 上一轮评审未完成时跳过本次（钩子 per-hook 并发=1，单飞不堆积）
-- 评审冷却（skills_review_cooldown_seconds，默认 120s）：评审 prompt 继承
-  整轮 transcript、每轮全新，前缀缓存几乎不可复用——冷却直接压低高频对话
-  下的不可缓存输入总量（缓存命中低是该机制的固有代价，见 docs/context-cache.md）
-- 评审使用受限工具集（仅 skills 组），禁止外发消息
-- 评审轮次上限小（默认 6 轮，含决策协议的回执往返），无价值时 LLM 直接 end_reply
+默认继承完整消息链及工具目录，评审指令与候选事实追加在尾部，
+保留稳定前缀的缓存机会。模型切换或工具目录变化仍可能降低缓存命中。
+同会话冷却限制触发频率；单钩子并发为 1，执行队列由钩子宿主管理。
+评审禁止对外发送消息，产出只用于观测，成功完成不唤醒新回复。
 """
 from __future__ import annotations
 
@@ -36,7 +20,7 @@ if TYPE_CHECKING:
 _HOOK_NAME = "skill_review"
 _HOOK_OWNER = "skills.review"
 
-_REVIEW_INSTRUCTION = """以上是本轮对话的完整执行上下文（你的回复、工具调用与结果原文）。
+_REVIEW_INSTRUCTION = """{context_description}
 
 你现在是技能评审员，负责技能库的沉淀与治理。请基于上方真实执行过程评审：
 
@@ -80,16 +64,8 @@ _REVIEW_INSTRUCTION = """以上是本轮对话的完整执行上下文（你的�
 _MAX_CANDIDATES = 10
 # 评审触发最小材料：transcript 快照至少包含非空消息链才评审
 _MIN_TRANSCRIPT_MESSAGES = 2
-# 评审冷却默认值（秒）：评审继承整轮 transcript，prompt 每轮全新、前缀缓存
-# 几乎不可复用；冷却限制同会话评审频率，直接压低不可缓存输入总量
+# 同会话评审最小触发间隔，不限制单次执行时长
 _DEFAULT_COOLDOWN_SECONDS = 120.0
-
-
-def _review_cooldown_seconds() -> float:
-    """评审冷却（注册时读配置，生效值见 skills_review_cooldown_seconds）。"""
-    from core.config import get_config_float
-
-    return max(0.0, get_config_float("skills_review_cooldown_seconds", _DEFAULT_COOLDOWN_SECONDS))
 
 
 class SkillReviewer:
@@ -109,8 +85,6 @@ class SkillReviewer:
         """
         if self._started:
             return
-        if not self._enabled():
-            return
         self._register_hook()
         self._started = True
         log("技能后台评审已启动（经 LLM 钩子面）", "DEBUG", tag="技能")
@@ -119,11 +93,6 @@ class SkillReviewer:
         """停止评审（注销钩子）。"""
         HookRegistry.unregister(_HOOK_NAME)
         self._started = False
-
-    @staticmethod
-    def _enabled() -> bool:
-        from core.config import get_config_bool
-        return get_config_bool("skills_review_enabled", True)
 
     def _register_hook(self) -> None:
         """注册 skill_review 钩子（transcript 档位 + 条件门控）。"""
@@ -141,7 +110,7 @@ class SkillReviewer:
             when=_when, tool_tags=["skills"], allow_output_tools=False,
             route_output=False,
             max_iterations=6, max_concurrent=1,
-            cooldown_seconds=_review_cooldown_seconds(),
+            cooldown_seconds=_DEFAULT_COOLDOWN_SECONDS,
             owner=_HOOK_OWNER, source="code",
             config_key="skills_review_enabled",
             description="每轮对话后评审执行过程，自主决策技能沉淀/合并/治理",
@@ -216,21 +185,26 @@ class SkillReviewer:
         执行参数（工具面/轮次预算）透传钩子声明，不在执行体另立常量。
         返回产出文本供钩子面登记（None/空 = 无沉淀）。
         """
-        if not ctx.transcript_available():
-            return None
-        execution_summary = str(ctx.payload.get("execution_summary") or "")
-        seed = execution_summary[:2000] or self._transcript_seed(ctx)
+        if ctx.transcript_available():
+            context_description = "以上是本轮对话的完整执行上下文（你的回复、工具调用与结果原文）。"
+            execution_summary = str(ctx.payload.get("execution_summary") or "")
+            seed = execution_summary[:2000] or self._transcript_seed(ctx)
+        else:
+            context_description = "本次未继承原对话执行过程。仅按下面的技能库事实检查重复与失效内容；不得推测原对话或据此沉淀新经验。"
+            seed = ""
         candidates = await self._build_candidates(seed)
         health = self._build_health()
-        instruction = _REVIEW_INSTRUCTION.format(candidates=candidates, health=health)
+        instruction = _REVIEW_INSTRUCTION.format(context_description=context_description, candidates=candidates, health=health)
 
         messages = list(ctx.messages) + [{"role": "user", "content": instruction}]
-        log("技能后台评审开始（transcript 上下文）", "DEBUG", tag="技能")
+        log(f"技能后台评审开始（{ctx.context_mode.value} 上下文）", "DEBUG", tag="技能")
         output = await self._mind.reflect(
             messages,
             max_iterations=ctx.max_iterations,
             tool_tags=list(ctx.tool_tags),
             allow_output_tools=ctx.allow_output_tools,
+            options={"_model_id": ctx.model} if ctx.model else None,
+            inherited_tools=ctx.inherited_tools,
         )
         log("技能后台评审完成", "DEBUG", tag="技能")
         return (output or "").strip() or None

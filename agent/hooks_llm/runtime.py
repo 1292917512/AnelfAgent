@@ -126,7 +126,7 @@ class HookRuntime:
         await self._forward(HOOK_EVENT_LLM_END, payload)
 
     async def _forward(self, hook_event: str, payload: Dict[str, Any]) -> None:
-        """按声明的执行模式转发事件，开关热读，执行超时由钩子宿主管理。"""
+        """按声明的执行模式转发事件，开关与配置每次调度现读。"""
         if not self._enabled():
             return
         specs = HookRegistry.for_event(hook_event)

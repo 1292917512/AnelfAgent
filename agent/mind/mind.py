@@ -322,6 +322,8 @@ class Mind:
 
     def _register_core_tools(self) -> None:
         """激活 Mind 核心层工具（end_reply 等）。"""
+        import agent.hooks.tools  # noqa: F401
+        activate_group("hooks", "钩子管理 — 声明、配置和执行模式")
         if _END_REPLY_TOOL_NAME not in EntityRegistry.get_all_names():
             activate_group("thinking", "思维工具 - 对话流程控制与工具编排")
             log("思维工具已注册 (end_reply)", "DEBUG", tag="思维")
@@ -1052,6 +1054,7 @@ class Mind:
             extra_blocked_tools: Optional[Set[str]] = None,
             completion: Optional[Dict] = None,
             require_output: bool = False,
+            inherited_tools: Optional[List[Dict]] = None,
     ) -> str:
         """内部任务循环：与对话共享统一思维流程，默认禁止对外发送消息。
 
@@ -1066,6 +1069,8 @@ class Mind:
         默认过滤 output 类工具（send_message/send_file 等），可按任务配置放开。
         extra_blocked_tools 可追加屏蔽特定工具（如子代理 leaf 角色屏蔽 delegate_task）。
         require_output 要求结束前提交总结：空结束只在剩余预算内补一个禁止操作的总结轮。
+        inherited_tools 保留触发轮的工具顺序，缺少的选择器工具追加到尾部；
+        相同目录有利于复用缓存，执行权限仍由 blocked_tools 与统一门控约束。
 
         Returns:
             LLM 产出的文本内容（所有轮次输出的合并）。
@@ -1106,6 +1111,13 @@ class Mind:
                 active_tools = await self.pfc.get_active_tool_schemas(
                     adapter_key, scope=reflect_scope,
                 )
+
+            if inherited_tools is not None:
+                from copy import deepcopy
+                inherited_names = {tool.get("function", {}).get("name") for tool in inherited_tools}
+                active_tools = deepcopy(inherited_tools) + [
+                    tool for tool in active_tools if tool.get("function", {}).get("name") not in inherited_names
+                ]
 
             collected_text: List[str] = []
             execution_steps: List[str] = []
