@@ -1211,12 +1211,8 @@ async def test_storage_stats_never_blocks_on_cold_cache(tmp_path) -> None:
     first = await tracker.get(str(tmp_path))
     assert first["total_bytes"] == 0  # 冷缓存不等待遍历
 
-    for _ in range(100):
-        await asyncio.sleep(0.05)
-        if (await tracker.get(str(tmp_path)))["total_bytes"] == 100:
-            break
-    else:
-        pytest.fail("后台存储统计刷新未完成")
+    await asyncio.wait_for(asyncio.gather(*tracker._tasks), timeout=5)
+    assert (await tracker.get(str(tmp_path)))["total_bytes"] == 100
     assert (tmp_path / "storage_stats.json").exists()
 
 
@@ -1242,16 +1238,13 @@ async def test_storage_stats_snapshot_restores_after_restart(tmp_path) -> None:
     assert stats["total_bytes"] == 500  # 来自快照而非重新遍历
 
     # 后台刷新完成后会用真实遍历值覆盖快照
-    for _ in range(100):
-        await asyncio.sleep(0.05)
-        if (await tracker.get(str(tmp_path)))["total_bytes"] != 500:
-            break
-    else:
-        pytest.fail("后台存储统计刷新未完成")
+    await asyncio.wait_for(asyncio.gather(*tracker._tasks), timeout=5)
+    assert (await tracker.get(str(tmp_path)))["total_bytes"] != 500
 
     tracker.invalidate(str(tmp_path))
     assert not (tmp_path / "storage_stats.json").exists()
     assert (await tracker.get(str(tmp_path)))["total_bytes"] == 0
+    await asyncio.wait_for(asyncio.gather(*tracker._tasks), timeout=5)
 
 
 @pytest.mark.asyncio
@@ -1265,8 +1258,11 @@ async def test_storage_stats_adopt_wins_over_inflight_refresh(
     from agent.memory.cognee import storage
 
     gate = threading.Event()
+    started = asyncio.Event()
+    loop = asyncio.get_running_loop()
 
     def slow_compute(_root):
+        loop.call_soon_threadsafe(started.set)
         gate.wait(10)
         return storage.StorageStatsDict(
             total_bytes=100, data_bytes=0, lance_bytes=100,
@@ -1278,22 +1274,17 @@ async def test_storage_stats_adopt_wins_over_inflight_refresh(
     root = str(tmp_path)
 
     tracker.schedule_refresh(root)
-    for _ in range(100):
-        await asyncio.sleep(0.02)
-        if root in tracker._refreshing:
-            break
+    await asyncio.wait_for(started.wait(), timeout=5)
     fresh = storage.StorageStatsDict(
         total_bytes=500, data_bytes=0, lance_bytes=500,
         graph_bytes=0, metadata_bytes=0, other_bytes=0,
     )
     tracker.adopt(root, fresh)
     gate.set()
-    for _ in range(100):
-        await asyncio.sleep(0.02)
-        if root not in tracker._refreshing:
-            break
+    await asyncio.wait_for(asyncio.gather(*tracker._tasks), timeout=5)
 
     assert tracker._cache[root][1]["total_bytes"] == 500  # 未被在途旧遍历覆盖
+    assert json.loads((tmp_path / "storage_stats.json").read_text())["stats"]["total_bytes"] == 500
 
 
 class _CompactFakeClient:
