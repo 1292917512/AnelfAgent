@@ -5,6 +5,8 @@
 汇报一次事实，模型只输出 WORK_VERDICT 裁决（continue / stop），不编排动作。
 汇报（历史写入 + 裁决轮）整体是后台任务，作业循环从不等待汇报——一组终态后
 立即受理下一组，执行器终态本身已含返程与库存收尾，无需任何额外间歇。
+开启 worker_judgment_gate 时，汇报先经 Jev 门卫预判（judgment_gate.py），
+例行进展高置信跳过裁决轮，异常或值得播报的才进入模型。
 玩家聊天不打断作业（大模型思考期间脚本不停）；只有 !stop / !pause、模型
 stop 裁决、连续受阻保护或频道关停会暂停它。
 
@@ -29,6 +31,8 @@ from typing import Any
 from agent.messages import build_entity_scope
 from core.log import log
 from core.tool_context import tool_request
+
+from .judgment_gate import verdict_needed
 
 ToolCall = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 
@@ -132,6 +136,7 @@ class MinecraftWorker:
         poll_seconds: Callable[[], float],
         record: Callable[[str], Awaitable[None]],
         announce: Callable[[str], Awaitable[None]],
+        judgment_gate: Callable[[], bool] | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._call_tool = call_tool
@@ -143,6 +148,7 @@ class MinecraftWorker:
         self._poll_seconds = poll_seconds
         self._record = record
         self._announce = announce
+        self._judgment_gate = judgment_gate or (lambda: True)
         self._clock = clock
         self._session: asyncio.Task[None] | None = None
         self._reports: set[asyncio.Task[None]] = set()
@@ -388,11 +394,15 @@ class MinecraftWorker:
     async def _verdict_turn(self, report_line: str) -> None:
         """每组一次的监督快车道：模型只输出裁决与一句播报，不编排任何动作。
 
-        召回策略钉 off 档、整轮墙钟限时——供应商回退链卡死时到点放弃，
-        等价 continue，绝不阻塞作业循环。
+        开启门卫时先经 Jev 预判，例行汇报高置信跳过本轮。召回策略钉 off 档、
+        整轮墙钟限时——供应商回退链卡死时到点放弃，等价 continue，绝不阻塞作业循环。
         """
         from agent.runtime.singleton import get_runtime
 
+        if self._judgment_gate() and not await verdict_needed(
+            report_line, blocked_reason=self._last_block_reason
+        ):
+            return
         runtime = get_runtime()
         if runtime is None:
             return

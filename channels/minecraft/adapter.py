@@ -108,6 +108,7 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
             server_id=lambda: self.get_config().server_id,
             online=lambda: (self._connection.state if self._connection else "") == "online",
             enabled=lambda: self.get_config().autonomous_worker,
+            judgment_gate=lambda: self.get_config().worker_judgment_gate,
             item=lambda: self.get_config().worker_item,
             stack_size=lambda: self.get_config().worker_stack_size,
             poll_seconds=lambda: self.get_config().worker_poll_seconds,

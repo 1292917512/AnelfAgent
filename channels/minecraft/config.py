@@ -76,6 +76,13 @@ class MinecraftConfig(ChannelConfig):
         description="自主作业进度轮询间隔",
         json_schema_extra={"unit": "s", "min": 1, "max": 30, "advanced": True},
     )
+    worker_judgment_gate: bool = Field(
+        default=True,
+        description=(
+            "自主作业汇报先经 Jev 判断门卫预判：例行完成汇报高置信跳过模型裁决轮"
+            "（也不再逐组播报），异常或值得播报的仍交模型；未配置判断服务时自动休眠"
+        ),
+    )
     autonomous_lifestyle: bool = Field(
         default=True,
         description="玩家空闲时允许角色自主生活：补给、完整砍树、制作装备、短程挖矿、建造和探索；!stop 会暂停，!resume 恢复",

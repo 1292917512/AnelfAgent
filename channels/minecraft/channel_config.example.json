@@ -12,6 +12,7 @@
   "worker_item": "dirt",
   "worker_stack_size": 64,
   "worker_poll_seconds": 3.0,
+  "worker_judgment_gate": true,
   "autonomous_lifestyle": true,
   "autonomous_interval_seconds": 300.0,
   "autonomous_idle_seconds": 90.0

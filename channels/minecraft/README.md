@@ -92,6 +92,8 @@ uv run python -m channels.minecraft.scripts.setup_minecraft --download-node --ho
 
 频道配置在配置中心的 `adapter/minecraft` 管理，文件为 `channels/minecraft/channel_config.json`。MCP 连接参数在 MCP 管理页保存；每个世界使用独立 `server_id`，公共聊天按世界隔离。
 
+自主作业支持 `worker_judgment_gate`（默认开启）：每组汇报先经判断平台（Jev）预判，例行完成汇报高置信跳过模型裁决轮且不再逐组播报，异常或值得播报的仍交模型。未配置判断服务时门卫自动休眠，行为与关闭时一致。
+
 检查已安装执行器和工具契约：
 
 ```powershell
