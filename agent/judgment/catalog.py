@@ -1,7 +1,7 @@
 """判断服务商与模型目录；Web、AI 和运行时共享校验与原子存储。
 
 模型看到：选定模型接收原有 System One 请求，配置操作仅返回脱敏目录。
-Token：不增加判断请求，不自动遍历多个服务；按默认或显式模型选择。
+Token：仅故障时按显式配置的优先级切换服务，不重复评判已有答案。
 缓存：目录按文件签名缓存，不参与主模型上下文与前缀构建。
 """
 from __future__ import annotations
@@ -20,7 +20,7 @@ from core.config import expand_env_refs, is_masked_secret, mask_secret
 from core.file_utils import atomic_write_text, file_write_lock
 from core.path import ConfigPaths
 
-CatalogAction = Literal["save_provider", "delete_provider", "save_model", "delete_model", "set_default"]
+CatalogAction = Literal["save_provider", "delete_provider", "save_model", "delete_model", "set_default", "set_priority"]
 
 
 def _validate_id(value: str) -> str:
@@ -56,6 +56,7 @@ class JudgmentCatalog(BaseModel):
     model_config = ConfigDict(extra="forbid")
     providers: dict[str, DecisionProvider] = Field(default_factory=dict, max_length=32)
     default_model: str = ""
+    fallback_models: list[str] = Field(default_factory=list, max_length=64)
 
     @model_validator(mode="after")
     def validate_references(self) -> JudgmentCatalog:
@@ -69,7 +70,20 @@ class JudgmentCatalog(BaseModel):
                 models.add(mid)
         if self.default_model and self.default_model not in models:
             raise ValueError("默认判断模型不存在")
+        if len(set(self.fallback_models)) != len(self.fallback_models):
+            raise ValueError("判断回退模型不能重复")
+        if any(mid not in models or mid == self.default_model for mid in self.fallback_models):
+            raise ValueError("判断回退模型须存在，且不能包含默认模型")
+        if self.fallback_models and not self.default_model:
+            raise ValueError("设置回退模型前须选择默认模型")
         return self
+
+    def prune_selection(self) -> None:
+        """删除模型后保留仍存在的候选顺序，首选缺失时提升下一候选。"""
+        models = {mid for provider in self.providers.values() for mid in provider.models}
+        order = [mid for mid in [self.default_model, *self.fallback_models] if mid in models]
+        self.default_model = order[0] if order else ""
+        self.fallback_models = order[1:]
 
 
 def _parse(raw: Any) -> JudgmentCatalog:
@@ -106,9 +120,9 @@ def public_catalog(catalog: JudgmentCatalog | None = None) -> dict[str, Any]:
     return result
 
 
-def select_model(model_id: str = "") -> tuple[str, str, DecisionProvider, DecisionModel] | None:
+def select_model(model_id: str = "", *, catalog: JudgmentCatalog | None = None) -> tuple[str, str, DecisionProvider, DecisionModel] | None:
     """解析显式或默认模型，密钥仅在请求前展开环境变量。"""
-    catalog = load_catalog()
+    catalog = catalog if catalog is not None else load_catalog()
     selected = model_id or catalog.default_model
     if not selected:
         return None
@@ -124,15 +138,24 @@ def update_catalog(action: CatalogAction, identifier: str, data: dict[str, Any] 
     path = Path(ConfigPaths.JUDGMENT)
     with file_write_lock(path):
         catalog = load_catalog()
-        affected = set(catalog.providers[identifier].models) if identifier in catalog.providers and action in {"save_provider", "delete_provider"} else set()
+        before = {mid: (p.base_url, p.api_key, model.model)
+                  for p in catalog.providers.values() for mid, model in p.models.items()}
         if action == "set_default":
             catalog.default_model = identifier
+            catalog.fallback_models = [mid for mid in catalog.fallback_models if mid != identifier] if identifier else []
+        elif action == "set_priority":
+            order = (data or {}).get("model_ids")
+            if not isinstance(order, list) or not all(isinstance(mid, str) and mid for mid in order):
+                raise ValueError("model_ids 须为按优先级排列的模型 ID 数组，空数组关闭原生模型选择")
+            if len(set(order)) != len(order):
+                raise ValueError("判断模型优先级不能重复")
+            catalog.default_model = order[0] if order else ""
+            catalog.fallback_models = order[1:]
         elif action == "delete_provider":
             if identifier not in catalog.providers:
                 raise ValueError("判断服务商不存在")
-            removed = catalog.providers.pop(identifier)
-            if catalog.default_model in removed.models:
-                catalog.default_model = ""
+            catalog.providers.pop(identifier)
+            catalog.prune_selection()
         elif action == "save_provider":
             _validate_id(identifier)
             if data is None:
@@ -144,19 +167,19 @@ def update_catalog(action: CatalogAction, identifier: str, data: dict[str, Any] 
                 values["api_key"] = old.api_key if old else ""
             raw = catalog.model_dump()
             raw["providers"][identifier] = values
-            if old and catalog.default_model in old.models and catalog.default_model not in values.get("models", {}):
-                raw["default_model"] = ""
-            catalog = _parse(raw)
+            raw["default_model"], raw["fallback_models"] = "", []
+            updated = _parse(raw)
+            updated.default_model, updated.fallback_models = catalog.default_model, catalog.fallback_models
+            updated.prune_selection()
+            catalog = updated
         elif action in {"save_model", "delete_model"}:
             _validate_id(identifier)
-            affected.add(identifier)
             owner = next((p for p in catalog.providers.values() if identifier in p.models), None)
             if action == "delete_model":
                 if owner is None:
                     raise ValueError("判断模型不存在")
                 owner.models.pop(identifier)
-                if catalog.default_model == identifier:
-                    catalog.default_model = ""
+                catalog.prune_selection()
             else:
                 values = dict(data or {})
                 pid = values.pop("provider_id", "")
@@ -170,8 +193,10 @@ def update_catalog(action: CatalogAction, identifier: str, data: dict[str, Any] 
         else:
             raise ValueError(f"未知操作: {action}")
         catalog = _parse(catalog.model_dump())
+        after = {mid: (p.base_url, p.api_key, model.model)
+                 for p in catalog.providers.values() for mid, model in p.models.items()}
         atomic_write_text(path, catalog.model_dump_json(indent=2) + "\n")
         _read.cache_clear()
         from agent.judgment.health import judgment_health
-        judgment_health.invalidate(affected)
+        judgment_health.invalidate({mid for mid in before.keys() | after.keys() if before.get(mid) != after.get(mid)})
         return public_catalog(catalog)

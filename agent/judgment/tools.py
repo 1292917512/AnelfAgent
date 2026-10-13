@@ -40,26 +40,28 @@ async def list_judgment_models() -> str:
 
 
 @deferred_tool(name="configure_judgment", group="judgment", source="mind.judgment", risk="CRITICAL",
-               description="判断模型增删改：save_provider 保存服务商，save_model 保存单个模型，delete_provider/delete_model 删除，set_default 选择默认模型（空 ID 取消默认）。",
+               description="判断模型增删改：save_provider/save_model 保存，delete_provider/delete_model 删除，set_default 选首选，set_priority 用 config.model_ids 设置优先级（故障跳过、恢复回切）。",
                schema_extra={"config": {"type": "object", "properties": {
                    "name": {"type": "string"}, "base_url": {"type": "string"}, "api_key": {"type": "string"},
                    "provider_id": {"type": "string"}, "model": {"type": "string"},
+                   "model_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 65},
                    "models": {"type": "object", "additionalProperties": {"type": "object", "properties": {
                        "model": {"type": "string"}, "name": {"type": "string"}}, "required": ["model"], "additionalProperties": False}},
                }, "additionalProperties": False}})
 async def configure_judgment(
-    action: Literal["save_provider", "delete_provider", "save_model", "delete_model", "set_default"],
+    action: Literal["save_provider", "delete_provider", "save_model", "delete_model", "set_default", "set_priority"],
     identifier: str,
     config: dict[str, Any] | None = None,
 ) -> str:
     """原子修改判断目录，保存后下一次调用生效。
 
     Args:
-        action: save_provider/delete_provider/save_model/delete_model/set_default
-        identifier: 服务商或模型 ID；set_default 空 ID 取消默认
+        action: save_provider/delete_provider/save_model/delete_model/set_default/set_priority
+        identifier: 服务商或模型 ID；set_default 空 ID 取消默认；set_priority 传空字符串
         config: save_provider 传 name、base_url、api_key、models（模型 ID 到 {model,name} 的字典）。
             Key 省略或掩码保留现值，空字符串清除；models 为服务商的完整定义。
             save_model 只传 provider_id、model、name（可选），仅修改该模型
+            set_priority 传 model_ids（按优先级排列，首个为默认，空数组关闭原生模型选择）
     """
     from agent.judgment.catalog import update_catalog
     try:
@@ -69,11 +71,12 @@ async def configure_judgment(
 
 
 @deferred_tool(name="test_judgment_model", group="judgment", source="mind.judgment",
-               description="测试指定或默认判断模型的三种题型、实际耗时和慢响应警告，不切换默认模型。")
-async def test_judgment_model(model_id: str = "") -> str:
-    """执行与 Web 同源的连接诊断。"""
-    from agent.judgment.diagnostics import test_connection
-    return json.dumps(await test_connection(model_id), ensure_ascii=False)
+               description="默认仅 HEAD 检查指定或首选判断服务连通性，零推理额度；inference=true 才执行三题型测速（消耗模型额度）。不改变优先级。")
+async def test_judgment_model(model_id: str = "", inference: bool = False) -> str:
+    """执行连接检查；显式 inference 才运行模型测试。"""
+    from agent.judgment.diagnostics import check_connection, test_inference
+    result = await test_inference(model_id) if inference else await check_connection(model_id)
+    return json.dumps(result, ensure_ascii=False)
 
 
 def _judgment_enabled() -> bool:
@@ -178,7 +181,7 @@ async def judge(questions: list, state: str = "", context_mode: str = "none", mo
     拆成多题一次问完（并行评判，题数几乎不影响耗时）。
 
     Args:
-        model_id: 判断模型 ID，留空使用默认模型；通过 list_judgment_models 查询、configure_judgment 管理
+        model_id: 判断模型 ID，留空按优先级自动回退；显式指定则只用该原生模型。通过 list_judgment_models 查询、configure_judgment 管理
         questions: 问题数组，每项 {"id", "type", "instructions", "criteria"}：
             id 自取（结果按此键返回，不发给模型）；
             type 为 choice/score/noul；

@@ -10,7 +10,7 @@ _JUDGMENT_CONFIGS = {
             "default": True,
         },
         "judgment_timeout": {
-            "description": "单次判断调用的超时时间（每条通道独立计时）",
+            "description": "单次判断的总等待预算，原生候选与普通模型回退共用，不按模型数量叠加",
             "default": 30.0,
             "value_type": "range",
             "min": 5.0,
@@ -27,10 +27,14 @@ _JUDGMENT_CONFIGS = {
         },
         "judgment_gate_timeout": {
             "description": "自动回复审核与可选工作预判的等待预算；到期不自动投递，可选工作保留原流程",
+            "default": 5.0, "min": 0.1, "max": 30.0, "unit": "秒", "advanced": True,
+        },
+        "judgment_connect_timeout": {
+            "description": "判断服务建立连接及无推理 HEAD 检查的等待上限；正常服务不周期检查，不消耗模型额度",
             "default": 2.0, "min": 0.1, "max": 10.0, "unit": "秒", "advanced": True,
         },
         "judgment_recheck_seconds": {
-            "description": "不可达判断模型的后台复查间隔；期间前台直接跳过，恢复或手动测试成功后重新启用",
+            "description": "不可达判断模型的后台连通复查间隔；仅 HEAD，不调用模型。恢复后重按优先级选用，凭据错误须修正配置",
             "default": 300.0, "min": 30.0, "max": 3600.0, "unit": "秒",
         },
         "judgment_delivery_confidence": {

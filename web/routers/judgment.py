@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from services.judgment import judgment_service
 
@@ -14,6 +14,15 @@ router = APIRouter(prefix="/judgment", tags=["judgment"])
 class ModelSelection(BaseModel):
     model_config = ConfigDict(extra="forbid")
     model_id: str = ""
+
+
+class ModelPriority(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    model_ids: list[str] = Field(max_length=65)
+
+
+class ModelTest(ModelSelection):
+    inference: bool = False
 
 
 @router.get("/providers")
@@ -56,6 +65,14 @@ async def save_judgment_model(model_id: str, body: Dict[str, Any]) -> Dict[str, 
         raise HTTPException(400, str(exc)) from exc
 
 
+@router.put("/priority")
+async def set_judgment_priority(body: ModelPriority) -> Dict[str, Any]:
+    try:
+        return judgment_service.update("set_priority", "", {"model_ids": body.model_ids})
+    except (ValueError, OSError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @router.delete("/models/{model_id}")
 async def delete_judgment_model(model_id: str) -> Dict[str, Any]:
     try:
@@ -71,9 +88,9 @@ async def get_judgment_status() -> Dict[str, Any]:
 
 
 @router.post("/test")
-async def test_judgment(body: ModelSelection | None = None) -> Dict[str, Any]:
-    """用固定样例经当前通道跑一次判断（三题型各一），返回来源/答案/耗时。"""
+async def test_judgment(body: ModelTest | None = None) -> Dict[str, Any]:
+    """默认仅检查连通性；inference=true 显式调用模型进行三题型测速。"""
     try:
-        return await judgment_service.test(body.model_id if body else "")
+        return await judgment_service.test(body.model_id if body else "", inference=body.inference if body else False)
     except (ValueError, OSError) as exc:
         raise HTTPException(400, str(exc)) from exc

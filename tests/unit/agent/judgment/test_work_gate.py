@@ -72,7 +72,7 @@ async def test_only_confident_valid_negative_skips(engine, monkeypatch, probabil
         item = record.judgments[0]
         assert item.status == ("skip" if not run else "fallback")
         assert item.input_tokens == 120 and item.output_tokens == 20
-    assert native.await_args.args[0].timeout == 2
+    assert 4.5 < native.await_args.args[0].timeout <= 5
     engine._judge_fallback.assert_not_awaited()
     assert set(native.await_args.args[2]) == {"needed", "basis"}
     assert native.await_args.args[1]["evidence"]["scope"] == "user_qq:42"
@@ -105,7 +105,7 @@ async def test_timeout_and_external_cancellation(engine, monkeypatch):
     assert cancelled == [True]
     assert (await gate.assess_optional_work("work", "needed?", {})).run
     assert cancelled == [True]
-    await gate.judgment_health.close()
+    await engine_module.judgment_health.close()
     entered.clear()
     async with hook_execution("cancel", "test", HookMode.ASYNC) as record:
         task = asyncio.create_task(gate.assess_optional_work("work", "needed?", {}))

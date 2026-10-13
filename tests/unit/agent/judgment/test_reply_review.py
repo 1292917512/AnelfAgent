@@ -40,7 +40,7 @@ async def test_both_answers_must_clearly_agree(engine, monkeypatch, probability,
     result = await delivery.assess_reply("答复", "user_webui:1#a", [{"role": "user", "content": "问题"}])
     assert result.approved is approved
     assert native.await_count == 1
-    assert native.await_args.args[0].timeout == 2
+    assert 4.5 < native.await_args.args[0].timeout <= 5
     assert native.await_args.args[1]["target_scope"] == "user_webui:1#a"
     engine._judge_fallback.assert_not_awaited()
 

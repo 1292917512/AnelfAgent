@@ -1,4 +1,4 @@
-"""判断服务连通与测速，AI 与 Web 共用同一三题型探测。"""
+"""判断服务诊断：默认仅检查连接，显式推理测试才提交三题型样例。"""
 from __future__ import annotations
 
 import asyncio
@@ -37,7 +37,24 @@ _TEST_QUESTIONS = [
 ]
 
 
-async def test_connection(model_id: str = "") -> Dict[str, Any]:
+async def check_connection(model_id: str = "") -> dict[str, Any]:
+    """检查指定或首选服务是否可达，不发送密钥、会话内容或推理问题。"""
+    started = time.monotonic()
+    result: dict[str, Any] = {"kind": "connectivity", "slow": False, "slow_after_ms": 0, "gate_budget_ms": 0}
+    try:
+        cfg = load_config(model_id) if model_id else load_config()
+        if not cfg.native_configured:
+            raise JudgmentError("未选择判断服务", cause=ErrorCause.CONFIG, retryable=False)
+        result.update(model=cfg.model, model_id=cfg.model_id)
+        await judgment_health.check_connectivity(cfg)
+        result["ok"] = True
+    except JudgmentError as exc:
+        result.update(ok=False, error=sanitize_text(str(exc)), cause=exc.cause.value, retryable=exc.retryable)
+    result["latency_ms"] = max(0, round((time.monotonic() - started) * 1000))
+    return result
+
+
+async def test_inference(model_id: str = "") -> Dict[str, Any]:
     """测试当前通道与端到端延迟；已配置原生通道时不以回退成功掩盖故障。"""
     try:
         cfg = load_config(model_id) if model_id else load_config()
@@ -45,7 +62,7 @@ async def test_connection(model_id: str = "") -> Dict[str, Any]:
         return {"ok": False, "error": sanitize_text(str(exc)), "cause": exc.cause.value,
                 "retryable": False, "source": "unavailable", "latency_ms": 0,
                 "slow": False, "slow_after_ms": 0, "gate_budget_ms": 0}
-    budget = max(0.1, min(cfg.timeout, get_config_float("judgment_gate_timeout", 2.0)))
+    budget = max(0.1, min(cfg.timeout, get_config_float("judgment_gate_timeout", 5.0)))
     slow_after_ms = slow_threshold_ms(budget)
     started = time.monotonic()
     try:
@@ -53,7 +70,7 @@ async def test_connection(model_id: str = "") -> Dict[str, Any]:
             report = await get_judgment_engine().judge(
                 _TEST_STATE, parse_questions(_TEST_QUESTIONS), native_only=cfg.native_configured,
                 probe=True,
-                model_id=model_id,
+                model_id=cfg.model_id or model_id,
             )
     except (JudgmentError, TimeoutError) as exc:
         if isinstance(exc, TimeoutError):
@@ -72,6 +89,6 @@ async def test_connection(model_id: str = "") -> Dict[str, Any]:
         }
     elapsed = max(0, round((time.monotonic() - started) * 1000))
     result.setdefault("source", cfg.channel)
-    result.update(latency_ms=elapsed, slow=cfg.native_configured and elapsed >= slow_after_ms,
+    result.update(kind="inference", latency_ms=elapsed, slow=cfg.native_configured and elapsed >= slow_after_ms,
                   slow_after_ms=slow_after_ms, gate_budget_ms=round(budget * 1000))
     return result

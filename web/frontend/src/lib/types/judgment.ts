@@ -20,8 +20,8 @@ export interface JudgmentStatus {
 
 export interface DecisionModel { name: string; model: string }
 export interface DecisionProvider { name: string; base_url: string; api_key: string; models: Record<string, DecisionModel> }
-export interface JudgmentHealth { status: "unknown" | "ready" | "offline" | "checking"; checked_at: number; retry_at: number; latency_ms: number; error: string }
-export interface JudgmentCatalog { providers: Record<string, DecisionProvider>; default_model: string; revision: string; health?: Record<string, JudgmentHealth> }
+export interface JudgmentHealth { status: "unknown" | "ready" | "offline" | "checking"; checked_at: number; retry_at: number; latency_ms: number; error: string; cause?: string; check_kind?: "inference" | "connectivity" }
+export interface JudgmentCatalog { providers: Record<string, DecisionProvider>; default_model: string; fallback_models: string[]; revision: string; health?: Record<string, JudgmentHealth> }
 
 export interface JudgmentChoiceAnswer {
   type: "choice";
@@ -46,6 +46,7 @@ export interface JudgmentNoulAnswer {
 export type JudgmentAnswer = JudgmentChoiceAnswer | JudgmentScoreAnswer | JudgmentNoulAnswer;
 
 export interface JudgmentTestResult {
+  kind?: "connectivity" | "inference";
   ok: boolean;
   error?: string;
   cause?: string;

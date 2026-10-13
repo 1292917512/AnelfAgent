@@ -8,7 +8,7 @@ import pytest
 
 EXPECTED_CONFIG_KEYS = {
     "judgment_enabled",
-    "judgment_timeout",
+    "judgment_timeout", "judgment_connect_timeout",
     "judgment_gate_enabled",
     "judgment_gate_timeout",
     "judgment_recheck_seconds",
@@ -75,7 +75,7 @@ class TestToolRegistration:
         assert required == ["questions"]
         configure = next(s for s in schemas if s.get("function", {}).get("name") == "configure_judgment")
         assert set(configure["function"]["parameters"]["properties"]["action"]["enum"]) == {
-            "save_provider", "save_model", "delete_provider", "delete_model", "set_default",
+            "save_provider", "save_model", "delete_provider", "delete_model", "set_default", "set_priority",
         }
 
 

@@ -25,6 +25,7 @@ from agent.judgment.types import (
     ScoreQuestion,
     question_payload,
 )
+from core.config import get_config_float
 from core.network import async_network_client
 from core.tool_errors import ErrorCause
 
@@ -77,7 +78,7 @@ class SystemOneClient:
     async def _post(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         try:
             async with async_network_client(
-                timeout=self._timeout,
+                timeout=httpx.Timeout(self._timeout, connect=min(self._timeout, get_config_float("judgment_connect_timeout", 2.0))),
                 headers={"Authorization": f"Bearer {self._api_key}"} if self._api_key else {},
             ) as client:
                 resp = await client.post(self._endpoint, json=payload)
@@ -105,6 +106,21 @@ class SystemOneClient:
                 )
             return data
         raise self._http_error(resp)
+
+    async def check_connectivity(self) -> None:
+        """仅发送无凭据、无正文的 HEAD 检查服务可达性，不调用推理端点的 POST。"""
+        try:
+            async with async_network_client(timeout=self._timeout, follow_redirects=False) as client:
+                response = await client.head(self._endpoint)
+        except httpx.TimeoutException as exc:
+            raise JudgmentError("判断服务连接检查超时", cause=ErrorCause.TIMEOUT, retryable=True) from exc
+        except httpx.HTTPError as exc:
+            raise JudgmentError(f"判断服务连接失败: {exc}", cause=ErrorCause.NETWORK, retryable=True) from exc
+        except ValueError as exc:
+            raise JudgmentError(f"判断服务网络配置无效: {exc}", cause=ErrorCause.CONFIG, retryable=False) from exc
+        # 认证/方法限制仍证明 HTTP 服务已响应，网关和过载错误不能作为恢复依据。
+        if response.status_code == 429 or response.status_code >= 500:
+            raise JudgmentError(f"判断服务暂不可达 (HTTP {response.status_code})", cause=ErrorCause.NETWORK, retryable=True)
 
     @staticmethod
     def _http_error(resp: httpx.Response) -> JudgmentError:

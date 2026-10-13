@@ -56,6 +56,8 @@ def test_secret_refs_preserved_by_partial_updates_and_masked_edit(monkeypatch):
     ("save_provider", "other", provider()),
     ("save_provider", "pc", {"base_url": "https://user:password@host"}),
     ("save_provider", "pc", {"models": {"bad": {"model": ""}}}),
+    ("save_provider", "pc", {"models": None}),
+    ("save_provider", "pc", {"models": ["invalid"]}),
     ("save_model", "missing", {"provider_id": "missing", "model": "abc"}),
     ("set_default", "missing", None),
     ("delete_provider", "missing", None),

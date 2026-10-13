@@ -12,7 +12,7 @@ from dataclasses import dataclass, replace
 from typing import Dict, Optional
 
 from agent.judgment.bridge import judge_via_llm
-from agent.judgment.catalog import select_model
+from agent.judgment.catalog import load_catalog, select_model
 from agent.judgment.client import SystemOneClient
 from agent.judgment.health import judgment_health
 from agent.judgment.types import (
@@ -41,6 +41,7 @@ class JudgmentConfig:
     fallback_effort: str
     model_id: str = ""
     provider_id: str = ""
+    fallback_models: tuple[str, ...] = ()
 
     @property
     def native_configured(self) -> bool:
@@ -62,7 +63,9 @@ class JudgmentConfig:
 def load_config(model_id: str = "") -> JudgmentConfig:
     """从模型目录与统一策略配置构建调用快照。"""
     try:
-        selected = select_model(model_id)
+        catalog = load_catalog()
+        selected = select_model(model_id, catalog=catalog)
+        fallback_models = tuple(catalog.fallback_models) if not model_id else ()
     except (ValueError, OSError) as exc:
         raise JudgmentError(str(exc), cause=ErrorCause.CONFIG, retryable=False) from exc
     mid, pid, provider, model = selected if selected else ("", "", None, None)
@@ -76,11 +79,12 @@ def load_config(model_id: str = "") -> JudgmentConfig:
         fallback_model=str(get_config("judgment_fallback_model", "") or "").strip(),
         fallback_effort=str(get_config("judgment_fallback_effort", "low") or "low").strip(),
         model_id=mid, provider_id=pid,
+        fallback_models=fallback_models,
     )
 
 
 class JudgmentEngine:
-    """判断编排器：原生优先，失败按回退开关降级到普通模型通道。"""
+    """在总等待预算内按优先级选择原生服务，普通模型回退独立受开关控制。"""
 
     async def judge(
         self,
@@ -92,7 +96,7 @@ class JudgmentEngine:
         model_id: str = "",
         probe: bool = False,
     ) -> JudgmentReport:
-        """批量评判；native_only 禁止普通模型回退，timeout 可缩短通道预算。"""
+        """批量评判；显式模型不切换其他原生模型，有效答案不因判断结果而重试。"""
         cfg = load_config(model_id) if model_id else load_config()
         if timeout is not None:
             cfg = replace(cfg, timeout=min(cfg.timeout, timeout))
@@ -105,43 +109,56 @@ class JudgmentEngine:
         if not questions:
             raise JudgmentError("questions 不能为空", cause=ErrorCause.PARAM, retryable=False)
 
-        if cfg.native_configured:
+        deadline = time.monotonic() + cfg.timeout
+        last_error: JudgmentError | None = None
+        candidates = [cfg, *(load_config(mid) for mid in cfg.fallback_models)] if cfg.native_configured else []
+        for candidate in candidates:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            attempt = replace(candidate, timeout=min(candidate.timeout, remaining))
+            exhausted = False
             try:
-                judgment_health.begin(cfg, probe=probe)
+                judgment_health.begin(attempt, probe=probe)
                 started = time.monotonic()
                 try:
-                    async with asyncio.timeout(cfg.timeout):
-                        report = await self._judge_native(cfg, state, questions)
+                    async with asyncio.timeout(attempt.timeout):
+                        report = await self._judge_native(attempt, state, questions)
                 except TimeoutError as exc:
+                    exhausted = True
                     error = JudgmentError("判断服务请求超时", cause=ErrorCause.TIMEOUT, retryable=True)
-                    judgment_health.failure(cfg, error, time.monotonic() - started)
+                    judgment_health.failure(attempt, error, time.monotonic() - started)
                     raise error from exc
                 except JudgmentError as exc:
-                    judgment_health.failure(cfg, exc, time.monotonic() - started)
+                    judgment_health.failure(attempt, exc, time.monotonic() - started)
                     raise
                 except asyncio.CancelledError:
-                    judgment_health.cancel(cfg)
+                    judgment_health.cancel(attempt)
                     raise
                 except Exception:
-                    judgment_health.cancel(cfg)
+                    judgment_health.cancel(attempt)
                     raise
-                judgment_health.success(cfg, time.monotonic() - started)
+                judgment_health.success(attempt, time.monotonic() - started)
                 return report
             except JudgmentError as exc:
-                if native_only or not cfg.fallback_enabled:
+                if exc.cause == ErrorCause.PARAM:
                     raise
-                log(
-                    f"System One 原生通道失败，降级普通模型通道: {exc}",
-                    "WARNING", tag="判断",
-                )
-        elif native_only or not cfg.fallback_enabled:
-            raise JudgmentError(
-                "未选择默认判断模型，当前请求不允许普通模型回退",
-                cause=ErrorCause.CONFIG,
-                retryable=False,
-            )
+                last_error = exc
+                if exhausted:
+                    raise
 
-        return await self._judge_fallback(cfg, state, questions)
+        if native_only or not cfg.fallback_enabled:
+            raise last_error or JudgmentError(
+                "未选择可用判断模型，当前请求不允许普通模型回退",
+                cause=ErrorCause.CONFIG, retryable=False,
+            )
+        if last_error is not None:
+            log(f"判断候选均不可用，降级普通模型通道: {last_error}", "WARNING", tag="判断")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise last_error or JudgmentError("判断等待预算已耗尽", cause=ErrorCause.TIMEOUT, retryable=True)
+
+        return await self._judge_fallback(replace(cfg, timeout=remaining), state, questions)
 
     async def _judge_native(
         self, cfg: JudgmentConfig, state: JsonValue, questions: Dict[str, Question]

@@ -10,7 +10,8 @@ import pytest
 
 from agent.judgment import engine as engine_module
 from agent.judgment.catalog import update_catalog
-from agent.judgment.diagnostics import test_connection as probe_connection
+from agent.judgment.client import SystemOneClient
+from agent.judgment.diagnostics import test_inference as probe_connection
 from agent.judgment.engine import get_judgment_engine, load_config
 from agent.judgment.gate import assess_optional_work
 from agent.judgment.health import judgment_health
@@ -41,7 +42,8 @@ async def test_failed_optional_model_is_not_retried_in_foreground(engine, monkey
         assert (await assess_optional_work("recall", "needed?", {})).run
     native.assert_awaited_once()
     status = judgment_health.snapshot()["local"]
-    assert status["status"] == "offline" and status["retry_at"] >= time.time() + 299
+    assert status["status"] == "offline"
+    assert status["retry_at"] == 0 if cause == ErrorCause.CONFIG else status["retry_at"] >= time.time() + 299
     assert "other" not in judgment_health.snapshot()
 
 
@@ -88,7 +90,7 @@ async def test_background_recheck_waits_for_due_time_and_recovers(engine, monkey
         recovered.set()
         return REPORT
 
-    monkeypatch.setattr(engine, "_judge_native", ready)
+    monkeypatch.setattr(SystemOneClient, "check_connectivity", ready)
     judgment_health._states["local"].retry_at = time.time() - 1
     judgment_health._changed.set()
     await asyncio.wait_for(recovered.wait(), 1)
@@ -101,7 +103,7 @@ async def test_background_shutdown_cancels_pending_request(engine, monkeypatch):
     cfg = load_config()
     judgment_health.begin(cfg, probe=False)
     judgment_health.failure(cfg, JudgmentError("offline", cause=ErrorCause.NETWORK, retryable=True), 0)
-    judgment_health._states["local"].retry_at = 0
+    judgment_health._states["local"].retry_at = time.time() - 1
     entered, cancelled = asyncio.Event(), asyncio.Event()
 
     async def pending(*args):
@@ -111,7 +113,7 @@ async def test_background_shutdown_cancels_pending_request(engine, monkeypatch):
         finally:
             cancelled.set()
 
-    monkeypatch.setattr(engine, "_judge_native", pending)
+    monkeypatch.setattr(SystemOneClient, "check_connectivity", pending)
     judgment_health.start()
     await asyncio.wait_for(entered.wait(), 1)
     await asyncio.wait_for(judgment_health.close(), 1)
@@ -137,8 +139,11 @@ async def test_background_failures_reschedule_and_other_models_still_work(engine
     monkeypatch.setattr(engine, "_judge_native", native)
     await assess_optional_work("work", "needed?", {})
     state = judgment_health._states["local"]
-    state.retry_at = 0
+    state.retry_at = time.time() - 1
+    ping = AsyncMock(side_effect=JudgmentError("offline", cause=ErrorCause.NETWORK, retryable=True))
+    monkeypatch.setattr(SystemOneClient, "check_connectivity", ping)
     await judgment_health._recheck("local", state)
+    ping.assert_awaited_once()
     assert state.retry_at >= time.time() + 299 and state.status == "offline"
     native.side_effect, native.return_value = None, REPORT
     await engine.judge("facts", QUESTIONS, model_id="other", native_only=True)
@@ -176,7 +181,7 @@ async def test_disabled_model_and_parameter_failures_do_not_trigger_background_l
     assert judgment_health.snapshot()["local"]["status"] == "unknown"
     judgment_health.failure(cfg, JudgmentError("offline", cause=ErrorCause.NETWORK, retryable=True), 0)
     state = judgment_health._states["local"]
-    state.retry_at = 0
+    state.retry_at = time.time() - 1
     ConfigManager.set("judgment_enabled", False)
     native = AsyncMock()
     monkeypatch.setattr(engine, "_judge_native", native)

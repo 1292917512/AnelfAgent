@@ -5,17 +5,20 @@ import { expect, test } from "./fixtures";
 test("judgment providers support local models, isolated health and complete editing", async ({ page }, info) => {
   const catalog: JudgmentCatalog = {
     providers: { cloud: { name: "Cloud decision", base_url: "https://api.typesafe.ai", api_key: "********", models: { cloud: { name: "Cloud Jev", model: "jev-latest" } } } },
-    default_model: "cloud", revision: "0", health: {},
+    default_model: "cloud", fallback_models: [], revision: "0", health: {},
   };
   let revision = 0;
   let testCalls = 0;
   const testedIds: string[] = [];
+  const inferenceModes: boolean[] = [];
   await page.route("**/api/judgment/providers", (route) => route.fulfill({ json: catalog }));
   await page.route("**/api/judgment/providers/*", (route) => {
     const id = route.request().url().split("/").pop()!;
     if (route.request().method() === "DELETE") {
-      if (catalog.providers[id]?.models[catalog.default_model]) catalog.default_model = "";
       delete catalog.providers[id];
+      const remaining = [catalog.default_model, ...catalog.fallback_models].filter((mid) => Object.values(catalog.providers).some((provider) => mid in provider.models));
+      catalog.default_model = remaining[0] || "";
+      catalog.fallback_models = remaining.slice(1);
     } else {
       const provider: DecisionProvider = route.request().postDataJSON();
       catalog.providers[id] = { ...provider, api_key: provider.api_key ? "********" : "" };
@@ -23,8 +26,10 @@ test("judgment providers support local models, isolated health and complete edit
     catalog.revision = String(++revision);
     return route.fulfill({ json: catalog });
   });
-  await page.route("**/api/judgment/default", (route) => {
-    catalog.default_model = route.request().postDataJSON().model_id;
+  await page.route("**/api/judgment/priority", (route) => {
+    const order: string[] = route.request().postDataJSON().model_ids;
+    catalog.default_model = order[0] || "";
+    catalog.fallback_models = order.slice(1);
     catalog.revision = String(++revision);
     return route.fulfill({ json: catalog });
   });
@@ -37,12 +42,14 @@ test("judgment providers support local models, isolated health and complete edit
   await page.route("**/api/judgment/test", (route) => {
     const id = route.request().postDataJSON().model_id || catalog.default_model;
     testedIds.push(id);
+    const inference: boolean = route.request().postDataJSON().inference;
+    inferenceModes.push(inference);
     const offline = ++testCalls === 1;
     catalog.health![id] = { status: offline ? "offline" : "ready", checked_at: Date.now() / 1000, retry_at: offline ? Date.now() / 1000 + 300 : 0, error: offline ? "Connection refused" : "", latency_ms: 40 };
     return route.fulfill({ json: { ok: !offline, source: "typesafe", model: "StartLux-Decision-27B", latency_ms: 40,
       error: offline ? "Connection refused" : undefined, cause: offline ? "network" : undefined,
-      slow: false, slow_after_ms: 1000, gate_budget_ms: 2000, answers: { needed: { type: "noul", noul: 0.9 } },
-      missing: [], usage: { input_tokens: 100, output_tokens: 0 } } });
+      kind: inference ? "inference" : "connectivity", slow: false, slow_after_ms: 1000, gate_budget_ms: 5000,
+      answers: inference ? { needed: { type: "noul", noul: 0.9 } } : undefined } });
   });
   await page.goto("/webui/models?tab=judgment");
   await page.getByRole("button", { name: "Add judgment provider" }).click();
@@ -63,25 +70,36 @@ test("judgment providers support local models, isolated health and complete edit
   await expect(dialog).not.toBeVisible();
   const local = page.getByRole("article", { name: "Local workstation" });
   await expect(local.getByText("No authentication", { exact: true })).toBeVisible();
-  await expect(page.getByLabel("Default judgment model")).toHaveValue("cloud");
+  await expect(page.getByRole("list", { name: "Model priority" }).getByRole("listitem").first()).toContainText("Cloud Jev");
   await local.getByRole("button", { name: "Test", exact: true }).first().click();
-  dialog = page.getByRole("dialog", { name: "Test connection & speed · local" });
-  await dialog.getByRole("button", { name: "Test connection & speed", exact: true }).click();
+  dialog = page.getByRole("dialog", { name: "Check connectivity · local" });
+  await dialog.getByRole("button", { name: "Check connectivity", exact: true }).click();
   await expect(dialog.getByText("Test failed", { exact: true })).toBeVisible();
   await dialog.getByRole("button", { name: "Close", exact: true }).click();
   await expect(local.getByText("Unavailable · skipped", { exact: true })).toBeVisible();
   await expect(local.getByText(/next background check/)).toBeVisible();
-  await expect(page.getByLabel("Default judgment model")).toHaveValue("cloud");
-  await page.getByLabel("Default judgment model").selectOption("local");
-  await expect(page.getByLabel("Default judgment model")).toHaveValue("local");
+  await expect(page.getByRole("list", { name: "Model priority" }).getByRole("listitem").first()).toContainText("Cloud Jev");
+  await page.getByLabel("Add candidate model", { exact: true }).selectOption("local");
+  await page.getByRole("button", { name: "Move Local decision up", exact: true }).click();
+  await expect(page.getByRole("list", { name: "Model priority" }).getByRole("listitem").first()).toContainText("Local decision");
+  expect(catalog.fallback_models).toEqual(["cloud"]);
   await page.screenshot({ path: info.outputPath("judgment-offline.png"), animations: "disabled" });
   await local.getByRole("button", { name: "Test", exact: true }).first().click();
-  dialog = page.getByRole("dialog", { name: "Test connection & speed · local" });
-  await dialog.getByRole("button", { name: "Test connection & speed", exact: true }).click();
+  dialog = page.getByRole("dialog", { name: "Check connectivity · local" });
+  await dialog.getByRole("button", { name: "Check connectivity", exact: true }).click();
   await expect(dialog.getByText("40ms", { exact: true })).toBeVisible();
   await dialog.getByRole("button", { name: "Close", exact: true }).click();
   await expect(local.getByText("Available", { exact: true })).toBeVisible();
   expect(testedIds).toEqual(["local", "local"]);
+  expect(inferenceModes).toEqual([false, false]);
+  await local.getByRole("button", { name: "Test", exact: true }).first().click();
+  dialog = page.getByRole("dialog", { name: "Check connectivity · local" });
+  await dialog.getByRole("button", { name: "Test inference (uses quota)", exact: true }).click();
+  await expect(dialog.getByText('"needed":', { exact: false })).toBeVisible();
+  expect(inferenceModes).toEqual([false, false, true]);
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await page.screenshot({ path: info.outputPath("judgment-priority.png"), animations: "disabled" });
+  await page.getByRole("list", { name: "Model priority" }).screenshot({ path: info.outputPath("priority-detail.png"), animations: "disabled" });
   const cloud = page.getByRole("article", { name: "Cloud decision" });
   await cloud.getByRole("button", { name: "Edit Cloud decision", exact: true }).click();
   dialog = page.getByRole("dialog", { name: "Edit judgment provider" });
@@ -96,6 +114,6 @@ test("judgment providers support local models, isolated health and complete edit
   await local.getByRole("button", { name: "Delete Local workstation", exact: true }).click();
   await page.getByRole("dialog", { name: "Delete judgment provider", exact: true }).getByRole("button", { name: "Confirm", exact: true }).click();
   await expect(local).not.toBeVisible();
-  await expect(page.getByLabel("Default judgment model")).toHaveValue("");
+  await expect(page.getByRole("list", { name: "Model priority" }).getByRole("listitem").first()).toContainText("Cloud Jev");
   await expect(page.getByRole("article", { name: "Renamed cloud" })).toBeVisible();
 });

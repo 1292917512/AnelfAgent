@@ -30,7 +30,7 @@ export async function mockApi(page: Page) {
       "/adapters": { ready: true, adapters: [{ key: "telegram", name: "Telegram", status: "stopped", status_display: "Stopped", detail: "" }] },
       "/models/priorities": {},
       "/models/providers": [],
-      "/judgment/providers": { providers: {}, default_model: "", revision: "0", health: {} },
+      "/judgment/providers": { providers: {}, default_model: "", fallback_models: [], revision: "0", health: {} },
       "/memory/files": [{ path: "memory/ideas.md", lines: "2", size: "32 B" }],
       "/memory/notes": { content: "# Notes\nOriginal note", path: "memory/memory.md" },
       "/memory/files/content": { content: "Research notes" },

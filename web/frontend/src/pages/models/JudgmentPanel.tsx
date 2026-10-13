@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, ChevronRight, FlaskConical } from "lucide-react";
 import { configMetaApi, judgmentApi } from "@/lib/api";
@@ -23,12 +23,14 @@ const CHANNEL_VARIANT: Record<JudgmentChannel, BadgeVariant> = {
 /** 服务状态与测速结果绑定当前配置，切换连接后重新获取。 */
 function JudgmentConnection({ revision }: { revision: string }) {
   const { t } = useTranslation("models");
+  const cache = useQueryClient();
   const statusQuery = useQuery({
     queryKey: ["judgmentStatus", revision],
     queryFn: () => judgmentApi.status().then((r) => r.data),
   });
   const testMutation = useMutation({
     mutationFn: () => judgmentApi.test().then((r) => r.data),
+    onSettled: () => cache.invalidateQueries({ queryKey: ["judgmentCatalog"] }),
   });
 
   const status = statusQuery.data;

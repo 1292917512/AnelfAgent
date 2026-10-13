@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from agent.judgment.catalog import CatalogAction, public_catalog, update_catalog
-from agent.judgment.diagnostics import test_connection
+from agent.judgment.diagnostics import check_connection, test_inference
 from agent.judgment.engine import load_config
 from agent.judgment.health import judgment_health
 from agent.judgment.types import JudgmentError
@@ -37,8 +37,8 @@ class JudgmentService:
         return update_catalog(action, identifier, data)
 
     @staticmethod
-    async def test(model_id: str = "") -> dict[str, Any]:
-        return await test_connection(model_id)
+    async def test(model_id: str = "", *, inference: bool = False) -> dict[str, Any]:
+        return await test_inference(model_id) if inference else await check_connection(model_id)
 
 
 judgment_service = JudgmentService()
