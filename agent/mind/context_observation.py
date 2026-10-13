@@ -6,9 +6,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping, Sequence
+from typing import Any, Literal
 
-from core.activity import ACTIVITY_TEXT_LIMIT, EVENT_ACTIVITY_CONTEXT
+from core.activity import ACTIVITY_TEXT_LIMIT, EVENT_ACTIVITY_CONTEXT, EVENT_ACTIVITY_UPDATE
 from core.event_bus import event_bus
 from core.sanitizer import sanitize_text
 
@@ -20,6 +21,55 @@ _SOURCE_LABELS = {
     "memory_recall": "记忆召回", "cross_channel_recall": "跨频道召回",
     "cross_channel_narrative": "跨频道关联", "skill_match": "技能匹配与显式调用",
 }
+
+
+async def emit_context_update(
+    messages: Sequence[Mapping[str, Any]], *, origin: Literal["conversation", "push", "cross_channel"],
+    scope: str, iteration: int, deferred: int = 0,
+) -> None:
+    """展示实际并入的消息及通知；限额和脱敏只作用于观测副本。"""
+    if not messages:
+        return
+    items: list[dict[str, Any]] = []
+    remaining = ACTIVITY_TEXT_LIMIT
+    for message in messages:
+        if remaining <= 0 or len(items) >= 20:
+            break
+        source = message.get("_source") or {}
+        content = sanitize_text(str(message.get("content", "")))
+        items.append({
+            "scope": str(source.get("scope") or scope),
+            "role": str(source.get("role") or message.get("role", "system")),
+            "message_id": str(source.get("id") or message.get("id") or ""),
+            "content": content[:remaining],
+            "ts": int(source.get("ts_ns") or message.get("ts_ns") or 0) / 1_000_000_000,
+        })
+        remaining -= len(content)
+    await event_bus.emit(EVENT_ACTIVITY_UPDATE, {
+        "origin": origin, "iteration": iteration, "items": items,
+        "count": len(messages), "deferred": deferred,
+        "truncated": remaining < 0 or len(items) < len(messages),
+    })
+
+
+async def emit_cross_channel_updates(messages: list[dict[str, Any]], seen: dict[str, int], iteration: int) -> None:
+    """按会话消息水位展示跨频道感知变化，不重复展示相同的逐轮快照。"""
+    updates: list[dict[str, Any]] = []
+    latest: dict[str, int] = {}
+    for message in messages:
+        source = message.get("_source") or {}
+        scope, message_id = str(source.get("scope", "")), int(source.get("id", 0))
+        if not scope or not message_id:
+            continue
+        latest[scope] = max(latest.get(scope, 0), message_id)
+        if message_id > seen.get(scope, 0):
+            updates.append(message)
+    for scope, message_id in latest.items():
+        previous = seen.pop(scope, 0)
+        seen[scope] = max(previous, message_id)
+    while len(seen) > 128:
+        seen.pop(next(iter(seen)))
+    await emit_context_update(updates, origin="cross_channel", scope="", iteration=iteration)
 
 
 def context_skills(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

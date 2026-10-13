@@ -395,7 +395,7 @@ class _DelegationMind:
             add_temporary=lambda clip, scope="": None,
             pending_user=[],
             pending_group=[],
-            set_message_preview=lambda scope, preview: None,
+            set_message_preview=lambda scope, preview, **kwargs: None,
             set_adapter_key=lambda scope, key: None,
             get_adapter_key=lambda scope: "test",
         )

@@ -243,6 +243,51 @@ class _MergeMind(FakeMind):
 
 
 class TestThinkLoopMerge:
+    async def test_cross_reply_acknowledges_the_input_seen_by_the_model(self, conv_data, monkeypatch) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        from agent.channel.output_tools import execute_send_action
+        from agent.config import MindConfig
+        from agent.mind.cross_channel import update_channel_snapshot
+        from agent.mind.tool_activation import bind_scope, reset_scope
+        from agent.mind.work_memory import PendingSignal, WorkMemory
+        from agent.storage.data_center import EverythingData
+
+        current = MessageUser(uid="1", adapter_key="webui", session_id="a", text_content="A 的请求")
+        other = MessageUser(uid="1", adapter_key="qq", text_content="B 的请求")
+        monkeypatch.setattr("agent.mind.cross_channel.get_mind_config", lambda: MindConfig())
+        monkeypatch.setattr("agent.channel.outbound_guard._recent", {})
+        monkeypatch.setattr("agent.channel.output_tools._validate_channel", lambda key: (object(), None))
+        monkeypatch.setattr("agent.channel.output_tools._resolve_send_target", lambda *args: ("1", "private"))
+        monkeypatch.setattr("agent.channel.output_tools.guard_outbound", lambda *args: None)
+        monkeypatch.setattr("agent.channel.output_tools.guard_empty_conversation", AsyncMock(return_value=None))
+        work = WorkMemory(MagicMock(spec=EverythingData))
+        work.pending_user.append(other.entity_scope)
+        work._pending_signals[other.entity_scope] = PendingSignal(created_ts_ns=other.created_ts_ns)
+
+        class CrossReplyMind(_MergeMind):
+            async def _invoke_llm_unified(self, *args, **kwargs):
+                result = await super()._invoke_llm_unified(*args, **kwargs)
+                await execute_send_action(channel_id="qq", target_id="1", operation="消息",
+                                          invoke=AsyncMock(return_value={"success": True}))
+                return result
+
+        mind = CrossReplyMind(conv_data)
+        mind._resolve_entity_scope = lambda message: message.entity_scope
+        mind._channel_snapshots = {}
+        mind.pfc.consume_scope_task = work.consume_scope_task
+        for message in (current, other):
+            await conv_data.add_conversation_record_by_everything(message)
+            update_channel_snapshot(mind, message)
+        token = bind_scope(current.entity_scope)
+        try:
+            await run_think_loop(mind, anything=current,
+                                 base_messages=await conv_data.get_conversation_record_by_everything(current))
+        finally:
+            reset_scope(token)
+        assert any("B 的请求" in str(message) for message in mind.sent_messages[0])
+        assert other.entity_scope not in work.pending_user.queue
+
     async def test_one_unavailable_scope_does_not_hide_other_live_conversations(self, conv_data, monkeypatch) -> None:
         from unittest.mock import AsyncMock
 

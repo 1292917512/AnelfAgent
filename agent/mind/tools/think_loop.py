@@ -22,7 +22,7 @@ import uuid
 from contextlib import nullcontext
 from typing import TYPE_CHECKING, AbstractSet, Any, Dict, List, Optional, Set
 
-from agent.channel.delivery import capture_deliveries, delivery_count, delivery_tags
+from agent.channel.delivery import capture_deliveries, delivery_count, delivery_tags, observe_delivery_context
 from agent.channel.reply_policy import ReplyToolResult
 from agent.llm import LLMCallAborted
 from agent.mind.message_schema import preserve_reasoning_fields
@@ -404,7 +404,7 @@ async def think_loop(
     )
     async with manager as activity:
         try:
-            with capture_deliveries(ctx.current_scope):
+            with capture_deliveries(ctx.current_scope, acknowledge=lambda scope, ts: mind.pfc.consume_scope_task(scope, through_ts=ts)):
                 await _run_think_rounds(ctx, state, safety_limit, start_time)
         finally:
             activity.status = "cancelled" if state.interrupted else state.completion_reason
@@ -568,12 +568,16 @@ async def _run_think_rounds(
         provider_msgs = await _collect_provider_messages(mind, ctx.current_scope)
         from agent.mind.cross_channel import build_cross_channel_narrative
         try:
-            provider_msgs = await build_cross_channel_narrative(mind, ctx.current_scope) + provider_msgs
+            cross_messages = await build_cross_channel_narrative(mind, ctx.current_scope)
+            provider_msgs = cross_messages + provider_msgs
+            from agent.mind.context_observation import emit_cross_channel_updates
+            await emit_cross_channel_updates(cross_messages, state.observed_cross_messages, state.iteration + 1)
         except Exception as exc:
             log(f"跨会话上下文读取失败: {exc}", "WARNING", tag="思维")
         llm_messages = (
             ctx.base_messages + ctx.tool_chain + provider_msgs + [exec_context]
         )
+        observe_delivery_context(provider_msgs)
 
         mind._set_phase(MindPhase.LLM_CALLING)
         # 流中早执行：只读调用在流继续生成时提前分发，工具轮按 id 回收

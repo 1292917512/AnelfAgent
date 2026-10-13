@@ -14,6 +14,8 @@ import { ActivityModel } from "./ActivityModel";
 import { ActivityToolResult } from "./ActivityToolResult";
 import { HookExecutionRow } from "@/components/common/HookExecutionRow";
 import { ActivityToolSummary } from "./ActivityToolSummary";
+import { ActivityInspector } from "./ActivityInspector";
+import { ActivityNotice } from "./ActivityNotice";
 
 function readableJson(value: string): string {
   try { return JSON.stringify(JSON.parse(value), null, 2); } catch { return value; }
@@ -23,11 +25,22 @@ function durationLabel(ms: number): string {
   return ms < 1000 ? `${Math.max(0, Math.round(ms))}ms` : formatElapsedCompact(ms);
 }
 
+function ToolDetails({ entry }: { entry: Extract<ActivityEntry, { kind: "tool" }> }) {
+  const { t } = useTranslation("workbench");
+  return <>
+    {entry.truncated && <p className="activity-note">{t("activity.truncated")}</p>}
+    {entry.arguments && <section aria-label={t("activity.arguments")}><h3>{t("activity.arguments")}</h3><pre>{readableJson(entry.arguments)}</pre></section>}
+    {entry.result && <section aria-label={t("activity.result")}><h3>{t("activity.result")}</h3><ActivityToolResult result={entry.result} /></section>}
+    <p className="activity-trace-id">{t("activity.callId")}: {entry.id}{entry.request_id && ` · ${t("activity.requestId")}: ${entry.request_id}`}</p>
+  </>;
+}
+
 /** 思考正文、工具状态和文件改动的统一过程行。 */
 export function ActivityEntryView({ entry, live, onReveal }: { entry: ActivityEntry; live: boolean; onReveal: (id: string) => void }) {
   const { t } = useTranslation("workbench");
   const [expanded, setExpanded] = useState<boolean | null>(null);
   const now = useNow("status" in entry && (entry.status === "running" || entry.status === "queued"));
+  if (entry.kind === "notice") return <ActivityNotice entry={entry} />;
   if (entry.kind === "context") return <ActivityContext entry={entry} />;
   if (entry.kind === "hook") return <HookExecutionRow run={{ ...entry, started_at: entry.ts }} />;
   if (entry.kind === "file") return <DiffView {...entry} />;
@@ -36,8 +49,14 @@ export function ActivityEntryView({ entry, live, onReveal }: { entry: ActivityEn
   if (entry.kind === "thinking") {
     const open = expanded ?? false;
     return <div className={cn("activity-thought", live && "is-live")}>
-      <button aria-expanded={open} onClick={() => setExpanded(!open)} className="activity-entry-toggle"><Brain size={15} /><span>{t(live ? "activity.thinking" : "activity.thought")}</span><ChevronDown size={14} className={cn("ml-auto transition-transform", open && "rotate-180")} /></button>
-      <div className={cn("activity-thought-content", !open && "activity-thought-preview")}>{entry.truncated && open && <p className="activity-note">{t("activity.truncated")}</p>}<TaggedText content={entry.content} /></div>
+      <div className="activity-entry-heading">
+        <button aria-expanded={open} onClick={() => setExpanded(!open)} className="activity-entry-toggle"><Brain size={15} /><span>{t(live ? "activity.thinking" : "activity.thought")}</span><ChevronDown size={14} className={cn("ml-auto transition-transform", open && "rotate-180")} /></button>
+        <ActivityInspector title={t("activity.thought")} preview={entry.content.slice(0, 400)}>
+          {entry.truncated && <p className="activity-note">{t("activity.truncated")}</p>}
+          <Markdown content={entry.content} renderText={renderTaggedText} />
+        </ActivityInspector>
+      </div>
+      <div className={cn("activity-thought-content", !open && "activity-thought-preview")}>{entry.truncated && open && <p className="activity-note">{t("activity.truncated")}</p>}<TaggedText content={open ? entry.content : entry.content.slice(0, 500)} /></div>
     </div>;
   }
   if (entry.kind === "plan") {
@@ -58,14 +77,21 @@ export function ActivityEntryView({ entry, live, onReveal }: { entry: ActivityEn
   const open = expanded ?? entry.status === "error";
   const duration = entry.status === "running" ? Math.max(0, now - entry.ts * 1000) : entry.duration_ms;
   return <div className={cn("activity-tool", entry.status === "error" && "is-error")}>
+    <div className="activity-entry-heading">
     <button className="activity-entry-toggle" aria-expanded={open} onClick={() => setExpanded(!open)}>
       {entry.status === "running" ? <Loader2 size={15} className="animate-spin text-accent" /> : entry.status === "done" ? <Check size={15} className="text-ok" /> : <AlertCircle size={15} className="text-warn" />}
       <span className="min-w-0 flex-1 truncate font-mono" title={entry.name}>{entry.name}</span>
       <span className="text-xs tabular-nums text-muted">{t(`activity.status.${entry.status}`)}{duration != null && ` · ${durationLabel(duration)}`}</span>
       <ChevronDown size={14} className={cn("text-muted transition-transform", open && "rotate-180")} />
     </button>
+      <ActivityInspector title={entry.name} preview={(entry.result || entry.arguments).slice(0, 400)}>
+        <div className="activity-inspection-meta"><span>{t(`activity.status.${entry.status}`)}</span>{duration != null && <span>{durationLabel(duration)}</span>}</div>
+        <ActivityTargets targets={entry.targets} />
+        <ToolDetails entry={entry} />
+      </ActivityInspector>
+    </div>
     <ActivityTargets targets={entry.targets} />
     <ActivityToolSummary entry={entry} />
-    {open && <div className="activity-tool-detail">{entry.truncated && <p className="activity-note">{t("activity.truncated")}</p>}{entry.arguments && <section aria-label={t("activity.arguments")}><h3>{t("activity.arguments")}</h3><pre>{readableJson(entry.arguments)}</pre></section>}{entry.result && <section aria-label={t("activity.result")}><h3>{t("activity.result")}</h3><ActivityToolResult result={entry.result} /></section>}<p className="activity-trace-id">{t("activity.callId")}: {entry.id}{entry.request_id && ` · ${t("activity.requestId")}: ${entry.request_id}`}</p></div>}
+    {open && <div className="activity-tool-detail"><ToolDetails entry={entry} /></div>}
   </div>;
 }

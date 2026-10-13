@@ -241,7 +241,8 @@ async def build_cross_channel_narrative(mind: Any, current_scope: str) -> List[D
             content = (tag_label("scope", scope) + tag_label("channel", adapter)
                        + tag_label("role", row["role"]) + "\n" + row["content"])
             messages.append({"role": "user", "content": content, "_layer": "provider",
-                             "_source": {"origin": "cross_channel_narrative"}})
+                             "_source": {"origin": "cross_channel_narrative", "scope": scope,
+                                         "id": row["id"], "ts_ns": row["ts_ns"], "role": row["role"]}})
         return messages
 
     if not active:

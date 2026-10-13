@@ -11,7 +11,7 @@ import re
 import time
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Protocol, Set
 
@@ -117,6 +117,7 @@ class _ThinkRoundState:
     last_merged_id: int = 0
     # 实体推送并入水位（快照后到达的推送才轮内注入，之前的已随短期记忆进 base）
     push_watermark: int = 0
+    observed_cross_messages: dict[str, int] = field(default_factory=dict)
     # plan 收敛标记：正常结束路径（_finish_round）已收敛时置位，finally 不重复收敛
     plan_finalized: bool = False
     # 本次会话是否被协作式中断终止（决定 finally 收敛 outcome）
@@ -639,6 +640,9 @@ async def _merge_new_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> bo
     ctx.execution_steps.append(
         f"→ 第{state.iteration + 1}轮前: 并入 {len(merged)} 条新消息{deferred_note}"
     )
+    from agent.mind.context_observation import emit_context_update
+    await emit_context_update(merged, origin="conversation", scope=ctx.current_scope,
+                              iteration=state.iteration + 1, deferred=deferred)
 
     return any(m["role"] == "user" for m in merged)
 
@@ -658,6 +662,11 @@ async def _merge_pushes(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> None:
     texts = push_hub.drain_inflight(ctx.current_scope, since=state.push_watermark)
     if not texts:
         return
+    known = {m["content"] for m in ctx.base_messages + ctx.tool_chain
+             if m.get("role") == "system" and isinstance(m.get("content"), str)}
+    texts = [text for text in texts if text not in known]
+    if not texts:
+        return
     lines = ["[实体推送] 以下系统通知在你回复过程中到达（[push:来源] 标签，非用户消息）："]
     lines.extend(f"- {text}" for text in texts)
     lines.append("可按需响应，或继续完成当前对话；无需处理则忽略并继续。")
@@ -665,11 +674,14 @@ async def _merge_pushes(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> None:
                            "_source": {"origin": "push"}})
     # 消费对应的待处理队列条目，避免当前轮结束后又空转一个周期
     try:
-        mind.pfc.consume_scope_task(ctx.current_scope)
+        mind.pfc.consume_scope_task(ctx.current_scope, through_ts=state.last_merged_ts)
     except Exception as exc:
         log(f"消费推送待处理队列失败: {exc}", "DEBUG", tag="思维")
     log(f"并入 {len(texts)} 条实体推送到当前上下文", tag="思维")
     ctx.execution_steps.append(f"→ 第{state.iteration + 1}轮前: 并入 {len(texts)} 条实体推送")
+    from agent.mind.context_observation import emit_context_update
+    await emit_context_update([{"role": "system", "content": text} for text in texts],
+                              origin="push", scope=ctx.current_scope, iteration=state.iteration + 1)
 
 
 def _merge_steered_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> None:

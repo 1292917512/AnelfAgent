@@ -5,7 +5,14 @@ import json
 
 import pytest
 
-from agent.channel.delivery import capture_deliveries, delivery_count, delivery_tags, record_delivery
+from agent.channel.delivery import (
+    capture_deliveries,
+    delivery_count,
+    delivery_tags,
+    delivery_watermark,
+    observe_delivery_context,
+    record_delivery,
+)
 from agent.mind.tools.result_pipeline import _truncate_json_output
 from core.tags import etag_all, strip_message_meta_tags
 
@@ -72,6 +79,62 @@ async def test_late_background_delivery_cannot_update_finished_capture():
         release.set()
         assert await task == 0
         assert delivery_count() == 0
+
+
+async def test_cross_reply_watermarks_are_request_scoped_and_ignore_late_delivery():
+    from unittest.mock import Mock
+
+    acknowledge = Mock()
+    target = "user_webui:1#second"
+    release = asyncio.Event()
+    async def late_send():
+        timestamp = delivery_watermark(target)
+        await release.wait()
+        record_delivery(target, through_ts=timestamp)
+
+    with capture_deliveries("user_webui:1#first", acknowledge=acknowledge):
+        observe_delivery_context([{"_source": {"origin": "cross_channel_narrative", "scope": target,
+                                               "role": "user", "ts_ns": 100}}])
+        assert delivery_watermark("user_webui:1#first") is None
+        task = asyncio.create_task(late_send())
+        await asyncio.sleep(0)
+        observe_delivery_context([])
+        assert delivery_watermark(target) is None
+    release.set()
+    await task
+    acknowledge.assert_not_called()
+
+
+def test_acknowledgement_failure_does_not_turn_successful_send_into_retry():
+    def broken(scope, ts):
+        raise RuntimeError("queue unavailable")
+    with capture_deliveries("user_qq:1", acknowledge=broken):
+        record_delivery("user_webui:1", through_ts=100)
+        record_delivery("user_qq:1")
+        record_delivery("user_qq:1")
+        assert delivery_count() == 2
+
+
+async def test_background_send_cannot_acknowledge_a_later_model_input():
+    from unittest.mock import Mock
+
+    acknowledge = Mock()
+    target = "user_webui:1#other"
+    release = asyncio.Event()
+    async def send():
+        await release.wait()
+        record_delivery(target, through_ts=delivery_watermark(target))
+
+    def messages(ts):
+        return [{"_source": {"origin": "cross_channel_narrative", "scope": target, "role": "user", "ts_ns": ts}}]
+
+    with capture_deliveries("user_qq:1", acknowledge=acknowledge):
+        observe_delivery_context(messages(100))
+        task = asyncio.create_task(send())
+        observe_delivery_context(messages(200))
+        release.set()
+        await task
+        acknowledge.assert_called_once_with(target, 100)
 
 
 @pytest.mark.parametrize("limit", [600, 10000])

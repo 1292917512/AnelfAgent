@@ -16,6 +16,50 @@ function activity(id: string, patch: Partial<ActivityRun> = {}): ActivityRun {
   };
 }
 
+test("live notifications and tool inspections support hover, touch and keyboard", async ({ page, isMobile }, info) => {
+  const run = activity("notifications");
+  run.entries = run.entries.slice(0, 3);
+  run.entries.push({ id: "new-context", kind: "notice", origin: "cross_channel", iteration: 2, count: 2, deferred: 1, ts: Date.now() / 1000,
+    items: [
+      { source: { scope: "user_qq:9", kind: "user", channel: "qq", target: "9", session: "" }, role: "user", message_id: "message-9", ts: Date.now() / 1000,
+        content: "[channel:qq][uid:9][message_id:message-9] Please pause deployment and check the new requirement." },
+      { source: { scope: "user_webui:web_user#review", kind: "user", channel: "webui", target: "web_user", session: "review" }, role: "assistant", message_id: "message-10", ts: Date.now() / 1000,
+        content: "[channel:webui][session_id:review] Deployment is paused. Inspecting service settings." },
+    ] });
+  await page.route("**/api/workspace/activity", (route) => route.fulfill({ json: { epoch: "test", revision: 2, runs: [run] } }));
+  await page.goto("/webui/");
+  const notice = page.getByRole("button", { name: "View details: Cross-conversation awareness", exact: true });
+  await expect(notice).toContainText("Round 2 context");
+  await notice.click();
+  const dialog = page.getByRole("dialog", { name: "Cross-conversation awareness", exact: true });
+  await expect(dialog).toContainText("Inclusion does not mean they have been handled or answered");
+  await expect(dialog).toContainText("Received message");
+  await expect(dialog).toContainText("Sent message");
+  await expect(dialog).toContainText("At least 1 more messages");
+  await expect(dialog.locator('[title="message_id: message-9"]')).toBeVisible();
+  expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath("notification-inspection.png"), animations: "disabled" });
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(notice).toBeFocused();
+  const tool = page.getByRole("button", { name: "View details: inspect_service", exact: true });
+  if (!isMobile) {
+    await tool.hover();
+    await expect(page.getByRole("dialog", { name: "Preview: inspect_service", exact: true })).toContainText("Service is healthy");
+  }
+  await tool.click();
+  const toolDialog = page.getByRole("dialog", { name: "inspect_service", exact: true });
+  await expect(toolDialog.getByRole("region", { name: "Result", exact: true })).toContainText("Service is healthy");
+  await expect(toolDialog).toContainText("request-review-1");
+  const accessibility = await new AxeBuilder({ page }).include('[role="dialog"]').analyze();
+  expect(accessibility.violations).toEqual([]);
+  await page.keyboard.press("Escape");
+  await expect(toolDialog).toHaveCount(0);
+  await expect(tool).toBeFocused();
+  await page.evaluate(() => { document.documentElement.dataset.theme = "dark"; document.documentElement.classList.add("dark"); });
+  await page.screenshot({ path: info.outputPath("notifications-dark.png"), animations: "disabled" });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
 test("memory tool references open the resolved project file instead of a workspace namesake", async ({ page }) => {
   const run = activity("notes", { entries: [
     { id: "read-note", kind: "tool", name: "read_memory_file", status: "done", ts: Date.now() / 1000, duration_ms: 24,
@@ -29,7 +73,10 @@ test("memory tool references open the resolved project file instead of a workspa
   await page.goto("/webui/");
   const execution = page.getByRole("region", { name: "Global execution", exact: true });
   await expect(execution.getByRole("button", { name: /memory\/external.md/ })).toHaveCount(0);
-  await execution.getByRole("button", { name: "memory/note.md Project", exact: true }).click();
+  await execution.locator(".activity-tool").filter({ hasText: "memory/note.md" }).getByRole("button", { name: "View details: read_memory_file", exact: true }).click();
+  const details = page.getByRole("dialog", { name: "read_memory_file", exact: true });
+  await details.getByRole("button", { name: "memory/note.md Project", exact: true }).click();
+  await expect(details).toHaveCount(0);
   await expect(page.getByText("project content", { exact: true })).toBeVisible();
   expect(reads).toHaveLength(1);
   const read = reads[0];

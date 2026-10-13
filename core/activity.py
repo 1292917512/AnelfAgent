@@ -15,6 +15,7 @@ from core.tool_context import request_trace
 EVENT_ACTIVITY_STARTED = "activity_started"
 EVENT_ACTIVITY_FINISHED = "activity_finished"
 EVENT_ACTIVITY_CONTEXT = "activity_context"
+EVENT_ACTIVITY_UPDATE = "activity_context_update"
 ACTIVITY_TEXT_LIMIT = 16000
 current_activity_id: ContextVar[str] = ContextVar("activity_id", default="")
 current_activity_owner: ContextVar[dict[str, str] | None] = ContextVar("activity_owner", default=None)

@@ -603,10 +603,14 @@ class WorkMemory:
         )
         return scopes
 
-    def set_message_preview(self, scope: str, preview: str) -> None:
-        """登记 scope 的待处理消息预览（供态势收集与提示注入）。"""
+    def set_message_preview(self, scope: str, preview: str, *, created_ts_ns: int | None = None) -> None:
+        """登记待处理预览与到达水位，保留异步写入期间更新的消息。"""
         if scope:
             signal = self._pending_signals.get(scope) or PendingSignal()
+            if created_ts_ns is not None:
+                if signal.created_ts_ns > created_ts_ns:
+                    return
+                signal.created_ts_ns = created_ts_ns
             signal.preview = preview
             self._pending_signals[scope] = signal
 

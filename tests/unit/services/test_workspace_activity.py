@@ -18,6 +18,40 @@ from services.activity_presentation import tool_targets
 from services.workspace_activity import WorkspaceActivityService
 
 
+async def test_context_updates_preserve_source_and_only_observe_new_cross_messages(activity):
+    from copy import deepcopy
+
+    from agent.mind.context_observation import emit_context_update, emit_cross_channel_updates
+    from core.activity import ACTIVITY_TEXT_LIMIT
+
+    service, frames = activity
+    messages = [{"role": "user", "content": "[channel:qq][uid:1] 新消息",
+                 "_source": {"origin": "cross_channel_narrative", "scope": "user_qq:1", "id": 2,
+                             "ts_ns": 1000000000, "role": "user"}}]
+    original = deepcopy(messages)
+    seen = {}
+    async with activity_scope("run", "user_webui:1#main"):
+        await emit_cross_channel_updates(messages, seen, 1)
+        await emit_cross_channel_updates(messages, seen, 2)
+        async with activity_scope("child", "reflect:child"):
+            await emit_context_update([{"role": "system", "content": "[push:devops] 完成"}],
+                                      origin="push", scope="user_webui:1#main", iteration=3)
+        await emit_context_update([{"role": "user", "content": "x" * (ACTIVITY_TEXT_LIMIT + 5)}],
+                                  origin="conversation", scope="user_webui:1#main", iteration=3, deferred=2)
+    assert messages == original
+    runs = {run["id"]: run for run in service.snapshot()["runs"]}
+    entries = runs["run"]["entries"]
+    assert len(entries) == 2
+    assert entries[0]["kind"] == "notice" and entries[0]["iteration"] == 1
+    assert entries[0]["items"][0]["source"]["scope"] == "user_qq:1"
+    assert entries[0]["items"][0]["role"] == "user"
+    assert entries[0]["items"][0]["message_id"] == "2"
+    assert entries[1]["truncated"] and entries[1]["deferred"] == 2
+    assert len(entries[1]["items"][0]["content"]) == ACTIVITY_TEXT_LIMIT
+    assert runs["child"]["entries"][0]["origin"] == "push"
+    assert frames
+
+
 async def test_context_and_blocked_tools_are_visible_with_terminal_truth(activity):
     service, _ = activity
     async with activity_scope("run", "user_qq:1"):

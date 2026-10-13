@@ -4,6 +4,7 @@ import type { HookExecution } from "./hooks";
 interface EntryBase { id: string; ts: number }
 export interface ActivityTag { key: string; value: string; root?: string; path?: string }
 export interface ActivitySource { scope: string; kind: string; channel: string; target: string; session: string }
+export interface ActivityNoticeItem { source: ActivitySource; role: string; message_id: string; ts: number; content: string }
 export interface ActivitySkill {
   name: string;
   description: string;
@@ -13,6 +14,7 @@ export interface ActivitySkill {
   truncated?: boolean;
 }
 export type ActivityEntry =
+  | EntryBase & { kind: "notice"; origin: "conversation" | "push" | "cross_channel"; iteration: number; items: ActivityNoticeItem[]; count: number; deferred: number; truncated?: boolean }
   | EntryBase & Omit<HookExecution, "started_at"> & { kind: "hook" }
   | EntryBase & { kind: "context"; status: string; duration_ms: number; blocks: { layer: string; label: string; content: string }[]; block_count: number; skills?: ActivitySkill[]; error?: string; truncated?: boolean }
   | EntryBase & { kind: "thinking"; content: string; truncated?: boolean }

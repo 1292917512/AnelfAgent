@@ -14,7 +14,7 @@ import pytest
 
 import agent.channel.outbound_guard as outbound_guard
 import agent.channel.output_tools as output_tools
-from agent.channel.delivery import capture_deliveries, delivery_count
+from agent.channel.delivery import capture_deliveries, delivery_count, observe_delivery_context
 from agent.channel.output_tools import execute_send_action
 from agent.mind.tool_activation import bind_scope, reset_scope
 from core.tags import etag_all
@@ -74,6 +74,53 @@ async def _send(content: str = "hello", *, record_content: str = "") -> tuple[st
 
 
 class TestGuardIntegration:
+    async def test_target_starting_during_history_check_is_not_answered_twice(self, monkeypatch) -> None:
+        async def check(*args):
+            outbound_guard.bind_reply_scopes(lambda: frozenset({_SCOPE}))
+            return ""
+        monkeypatch.setattr(output_tools, "guard_empty_conversation", check)
+        token = bind_scope("user_webui:web_user#one")
+        try:
+            result, channel = await _send()
+        finally:
+            reset_scope(token)
+        assert json.loads(result)["guard"] == "reply_active"
+        assert not channel.sent
+
+    @pytest.mark.parametrize("new_message, receipt, observed_role", [
+        (False, {"success": True}, "user"),
+        (True, {"success": True}, "user"),
+        (False, {"success": False}, "user"),
+        (False, {"status": "queued"}, "user"),
+        (False, {"success": True}, "assistant"),
+    ])
+    async def test_cross_reply_consumes_only_answered_pending_scope(self, new_message, receipt, observed_role) -> None:
+        from unittest.mock import MagicMock
+
+        from agent.mind.work_memory import PendingSignal, WorkMemory
+        from agent.storage.data_center import EverythingData
+
+        work = WorkMemory(MagicMock(spec=EverythingData))
+        owner = "user_webui:web_user#one"
+        for scope in (owner, _SCOPE):
+            work.pending_user.append(scope)
+            work._pending_signals[scope] = PendingSignal(created_ts_ns=100)
+        async def invoke(*_args):
+            if new_message:
+                work._pending_signals[_SCOPE] = PendingSignal(created_ts_ns=200)
+                observe_delivery_context([{"_source": {"origin": "cross_channel_narrative", "scope": _SCOPE,
+                                                       "role": "user", "ts_ns": 200}}])
+            return receipt
+
+        with capture_deliveries(owner, acknowledge=lambda scope, ts: work.consume_scope_task(scope, through_ts=ts)):
+            observe_delivery_context([{"_source": {"origin": "cross_channel_narrative", "scope": _SCOPE,
+                                                   "role": observed_role, "ts_ns": 100}}])
+            await execute_send_action(channel_id="qq", target_id="1292917512", operation="消息", invoke=invoke)
+            assert delivery_count() == 0
+        answered = not new_message and receipt.get("success") is True and observed_role == "user"
+        assert (_SCOPE not in work.pending_user.queue) is answered
+        assert owner in work.pending_user.queue
+
     async def test_reflect_blocked_by_active_reply(self) -> None:
         outbound_guard.bind_reply_scopes(lambda: frozenset({_SCOPE}))
         token = bind_scope("reflect:aaaa1111")

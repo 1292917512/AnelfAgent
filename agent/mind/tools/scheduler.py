@@ -264,7 +264,7 @@ async def remove_scope_reminders(scopes: set[str]) -> int:
 
 
 async def _append_one_shot_history(
-        pfc: Any, scope: str, channel: str, prompt: str) -> bool:
+        pfc: Any, scope: str, channel: str, prompt: str, *, ts_ns: int | None = None) -> bool:
     """一次性事件通知写入目标会话的对话历史（system 角色，不触发思维）。
 
     一次性事实（任务完成/推送/提醒到期）的正确归宿是历史而非短期记忆：
@@ -287,7 +287,7 @@ async def _append_one_shot_history(
         await router.append(
             StorageDomain.CONVERSATION,
             scope_type=scope_type, scope_id=scope_id,
-            role="system", content=prompt,
+            role="system", content=prompt, ts_ns=ts_ns if ts_ns is not None else time.time_ns(),
             adapter_key=channel or "", trigger_mind=False,
         )
         return True
@@ -318,13 +318,14 @@ async def enqueue_scope_reply(
         )
         pfc.add_temporary({"role": "system", "content": prompt})
         return
-    if not await _append_one_shot_history(pfc, scope, channel, prompt):
+    timestamp = time.time_ns()
+    if not await _append_one_shot_history(pfc, scope, channel, prompt, ts_ns=timestamp):
         pfc.add_temporary({"role": "system", "content": prompt}, scope=scope)
     if scope.startswith("group_"):
         pfc.pending_group.append(scope)
     else:
         pfc.pending_user.append(scope)
-    pfc.set_message_preview(scope, preview)
+    pfc.set_message_preview(scope, preview, created_ts_ns=timestamp)
     if channel:
         pfc.set_adapter_key(scope, channel)
 

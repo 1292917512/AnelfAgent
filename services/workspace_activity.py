@@ -13,6 +13,7 @@ from core.activity import (
     EVENT_ACTIVITY_CONTEXT,
     EVENT_ACTIVITY_FINISHED,
     EVENT_ACTIVITY_STARTED,
+    EVENT_ACTIVITY_UPDATE,
     current_activity_id,
 )
 from core.event_bus import (
@@ -72,6 +73,7 @@ class WorkspaceActivityService:
             (EVENT_ACTIVITY_STARTED, self._start),
             (EVENT_ACTIVITY_FINISHED, self._finish),
             (EVENT_ACTIVITY_CONTEXT, self._context),
+            (EVENT_ACTIVITY_UPDATE, self._context_update),
             (EVENT_HOOK_EXECUTION, self._hook),
             (EVENT_ASSISTANT_DELTA, self._delta),
             (EVENT_THINKING_LLM_START, self._llm_start),
@@ -274,6 +276,30 @@ class WorkspaceActivityService:
                      truncated=bool(payload.get("truncated")) or remaining < 0)
         if entry["status"] == "done":
             merge_skill_evidence(run, entry["skills"])
+        self._changed(run)
+
+    async def _context_update(self, payload: dict[str, Any]) -> None:
+        """按当前执行归属记录增量上下文，保留来源与截断事实。"""
+        run = self._get(payload)
+        if run is None or run["status"] != "running":
+            return
+        remaining = MAX_TEXT
+        items = []
+        for item in payload.get("items", [])[:20]:
+            if remaining <= 0:
+                break
+            content = sanitize_text(str(item.get("content", "")))
+            items.append({"source": source_reference(str(item.get("scope", ""))),
+                          "role": str(item.get("role", "system")),
+                          "message_id": sanitize_text(str(item.get("message_id", "")))[:100],
+                          "ts": item.get("ts", 0), "content": content[:remaining]})
+            remaining -= len(content)
+        if not items:
+            return
+        self._append(run, {"kind": "notice", "origin": payload["origin"],
+                           "iteration": payload["iteration"], "items": items,
+                           "count": payload["count"], "deferred": payload.get("deferred", 0),
+                           "truncated": bool(payload.get("truncated")) or remaining < 0})
         self._changed(run)
 
     async def _delta(self, payload: dict[str, Any]) -> None:

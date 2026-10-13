@@ -21,7 +21,7 @@ from core.tool_errors import ErrorCause, error_from_exception
 from core.tool_registry import deferred_tool
 from core.tool_results import extract_error_text
 
-from .delivery import delivery_tags, record_delivery
+from .delivery import delivery_tags, delivery_watermark, record_delivery
 from .outbound_guard import guard_empty_conversation, guard_outbound, note_outbound
 
 EntityRegistry.register_group_order("output", 0)
@@ -314,14 +314,15 @@ async def execute_send_action(
         target_scope = f"{scope_type}_{scope_id}"
         from agent.mind.tool_activation import ToolActivationManager
         thinker = ToolActivationManager.current_scope()
-        rejection = guard_outbound(target_scope, thinker)
-        if rejection:
-            return _delivery_rejection(rejection, target_scope)
         # 空会话拦截：目标会话从未收到过对方消息时拒绝（对空会话发起
         # 对话是突兀的；回复周期由真实用户消息触发，命中即为主动搭话）
         rejection = await guard_empty_conversation(target_scope, thinker)
         if rejection:
             return _delivery_rejection(rejection, target_scope)
+        rejection = guard_outbound(target_scope, thinker)
+        if rejection:
+            return _delivery_rejection(rejection, target_scope)
+        seen_through = delivery_watermark(target_scope)
         raw = await invoke(ch, resolved_target_id, channel_type)
         parsed, ok = _check_send_result(raw, channel_id, target_id)
         parsed["delivery"] = delivery_tags(
@@ -338,7 +339,7 @@ async def execute_send_action(
             enrich(parsed, ok)
 
         if ok:
-            record_delivery(target_scope)
+            record_delivery(target_scope, through_ts=seen_through)
             note_outbound(target_scope, thinker, outbound_preview or operation)
             if record_content:
                 await _record_sent_reply(

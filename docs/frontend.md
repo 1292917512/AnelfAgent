@@ -73,6 +73,12 @@ import.meta.glob 按文件名懒加载）② `lib/core-routes.ts` 加路由行 �
 
 ## 工作区展示层
 
+工作区实时过程经 `core.activity` 事件投影到 `services.workspace_activity` 的有界内存记录。
+轮内收到的消息、实体通知及跨会话感知增量在实际并入上下文时展示，跨会话快照按会话消息水位去重。
+展示副本脱敏并限制长度，不改模型输入；卡片区分来源、收发角色与进入轮次，进入上下文不等于已处理。
+思考和工具行保留就地展开，详情入口支持鼠标悬停预览、点击完整阅读和键盘操作，手机使用底部详情页。
+大段 Markdown 仅在展开详情时挂载，沿用统一弹层、动效和 reduced-motion 规则。
+
 | 机制 | 位置 | 说明 |
 |------|------|------|
 | 树的活性（变更装饰） | `stores/tree-changes-store.ts` + FileTreeNode 徽章/闪现 | file_diff SSE → 树装饰 store（path→+a/-r 累计，200 条 FIFO；与 changes-store 分工：后者面向「一轮回复」turn 结束清空，本 store 面向「工作区当前状态」不消退）。文件行尾 +a/-r、目录聚合子树计数、变更节点高亮闪现（reduced-motion 降级）、已加载目录防抖 600ms 局部刷新（上限 8 目录/批）、「只看变更」过滤。**AI 编辑只落 workspace 根，project 根一律不装饰**（防同名路径误标） |

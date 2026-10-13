@@ -41,7 +41,7 @@ def _pfc(router: _FakeRouter | None) -> SimpleNamespace:
         previews={},
         adapter_keys={},
         conversation_data=conversation_data,
-        set_message_preview=lambda s, p: None,
+        set_message_preview=lambda s, p, **kwargs: None,
         set_adapter_key=lambda s, k: None,
     )
 
@@ -71,6 +71,35 @@ async def test_enqueue_writes_history_not_temporary() -> None:
     assert pfc.temporary == []
     # 入队与路由登记照旧
     assert pfc.pending_user == [_SCOPE]
+
+
+@pytest.mark.parametrize("interleaved_user", [False, True])
+async def test_notification_watermark_preserves_new_work_during_a_cross_reply(monkeypatch, interleaved_user) -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from agent.mind.work_memory import PendingSignal, WorkMemory
+    from agent.storage.data_center import EverythingData
+
+    work = WorkMemory(MagicMock(spec=EverythingData))
+    work._pending_signals[_SCOPE] = PendingSignal(created_ts_ns=100, preview="已读请求")
+    captured = []
+    async def append(_domain, **kwargs):
+        captured.append(kwargs)
+        if interleaved_user:
+            work._pending_signals[_SCOPE] = PendingSignal(created_ts_ns=300, preview="新用户消息")
+
+    pfc = _pfc(None)
+    pfc.pending_user = work.pending_user
+    pfc.set_message_preview = work.set_message_preview
+    pfc.conversation_data = SimpleNamespace(router=SimpleNamespace(append=AsyncMock(side_effect=append)))
+    monkeypatch.setattr("agent.mind.tools.scheduler.time.time_ns", lambda: 200)
+    await enqueue_scope_reply(pfc, _SCOPE, "qq", "后台完成", "[push:devops] 构建完成")
+    assert captured[0]["ts_ns"] == 200
+    assert not work.consume_scope_task(_SCOPE, through_ts=100)
+    signal = work.get_pending_signal(_SCOPE)
+    assert signal.created_ts_ns == (300 if interleaved_user else 200)
+    assert signal.preview == ("新用户消息" if interleaved_user else "后台完成")
+    assert work.consume_scope_task(_SCOPE, through_ts=200) is (not interleaved_user)
 
 
 @pytest.mark.asyncio

@@ -151,8 +151,8 @@ class PrefrontalCortex:
     def known_scopes(self) -> set[str]:
         return self.work_memory.known_scopes()
 
-    def set_message_preview(self, scope: str, preview: str) -> None:
-        self.work_memory.set_message_preview(scope, preview)
+    def set_message_preview(self, scope: str, preview: str, *, created_ts_ns: int | None = None) -> None:
+        self.work_memory.set_message_preview(scope, preview, created_ts_ns=created_ts_ns)
 
     def add_temporary(self, temporary_clip: Dict, scope: str = "") -> None:
         self.work_memory.add_temporary(temporary_clip, scope)

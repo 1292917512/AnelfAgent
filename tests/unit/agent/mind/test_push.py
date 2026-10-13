@@ -32,13 +32,13 @@ class FakePFC:
     def add_temporary(self, clip: dict, scope: str = "") -> None:
         self.temporary.append((clip, scope))
 
-    def set_message_preview(self, scope: str, preview: str) -> None:
+    def set_message_preview(self, scope: str, preview: str, *, created_ts_ns: int) -> None:
         self.previews[scope] = preview
 
     def set_adapter_key(self, scope: str, channel: str) -> None:
         self.adapter_keys[scope] = channel
 
-    def consume_scope_task(self, scope: str) -> None:
+    def consume_scope_task(self, scope: str, *, through_ts: int) -> None:
         self.consumed.append(scope)
 
 
@@ -192,6 +192,7 @@ def _make_ctx(mind: FakeMind, scope: str) -> SimpleNamespace:
         anything=object(),
         mind=mind,
         current_scope=scope,
+        base_messages=[],
         tool_chain=[],
         execution_steps=[],
     )
@@ -206,7 +207,7 @@ async def test_merge_pushes_injects_into_tool_chain() -> None:
     await _deliver_all()
 
     ctx = _make_ctx(mind, _SCOPE)
-    state = SimpleNamespace(iteration=0, push_watermark=0)
+    state = SimpleNamespace(iteration=0, push_watermark=0, last_merged_ts=0)
     await _merge_pushes(ctx, state)
 
     assert len(ctx.tool_chain) == 1
@@ -222,6 +223,31 @@ async def test_merge_pushes_injects_into_tool_chain() -> None:
     # 一次性消费：下一轮不再重复注入
     await _merge_pushes(ctx, state)
     assert len(ctx.tool_chain) == 1
+
+
+@pytest.mark.parametrize("already_in_context", [False, True])
+async def test_push_does_not_repeat_history_or_consume_unseen_user_message(already_in_context) -> None:
+    from unittest.mock import MagicMock
+
+    from agent.mind.work_memory import PendingSignal, WorkMemory
+    from agent.storage.data_center import EverythingData
+
+    mind = FakeMind()
+    mind.push_hub = PushHub(mind)
+    mind.push_hub.push(_SCOPE, "devops", "构建完成", trigger=False)
+    await _deliver_all()
+    text = mind.pfc.temporary[0][0]["content"]
+    mind.pfc = WorkMemory(MagicMock(spec=EverythingData))
+    mind.pfc.pending_user.append(_SCOPE)
+    mind.pfc._pending_signals[_SCOPE] = PendingSignal(created_ts_ns=200)
+    ctx = _make_ctx(mind, _SCOPE)
+    if already_in_context:
+        ctx.tool_chain.append({"role": "system", "content": text})
+    state = SimpleNamespace(iteration=0, push_watermark=0, last_merged_ts=100)
+    await _merge_pushes(ctx, state)
+    assert len(ctx.tool_chain) == 1
+    assert _SCOPE in mind.pfc.pending_user.queue
+    assert mind.push_hub.drain_inflight(_SCOPE) == []
 
 
 @pytest.mark.asyncio
