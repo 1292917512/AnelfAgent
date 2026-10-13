@@ -1,0 +1,23 @@
+{
+  "enabled": false,
+  "ws_url": "ws://192.168.1.100:8655/wcauto/ws",
+  "access_token": "",
+  "reconnect_interval": 5,
+  "max_reconnect_attempts": 0,
+  "rpc_timeout": 90.0,
+  "dm_policy": "open",
+  "dm_allow_from": "",
+  "group_policy": "open",
+  "group_allow_from": "",
+  "require_mention": true,
+  "self_names": "",
+  "ignore_chats": "",
+  "send_verify": true,
+  "text_chunk_length": 1500,
+  "auto_download_image": true,
+  "auto_download_voice": true,
+  "auto_download_file": false,
+  "auto_download_video": false,
+  "recall_notify": true,
+  "allow_write": false
+}

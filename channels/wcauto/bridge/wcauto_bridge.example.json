@@ -1,0 +1,13 @@
+{
+  "host": "0.0.0.0",
+  "port": 8655,
+  "token": "换成一段足够长的随机串",
+  "account": "",
+  "ignore_chats": [],
+  "media_max_mb": 25,
+  "event_buffer": 2000,
+  "enable_recall_guard": true,
+  "recall_mirror_dir": "",
+  "enable_moments": true,
+  "data_dir": ""
+}
