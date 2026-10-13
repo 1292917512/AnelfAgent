@@ -134,6 +134,7 @@ async def test_waiting_progress_is_delivered_before_join_and_final_after_complet
     ConfigManager.set("send_interim_text", True)
     mind = FakeMind(rounds=[text_result("任务已启动，正在等结果。"), text_result("任务结果是 42。")], default_text=None)
     data = ConversationData(StorageRouter(sqlite=sqlite))
+    await sqlite._ensure_init()
     mind.conversation_data = data
     anything.scope_type, anything.scope_id = "user", "qq:1"
     channel = SimpleNamespace(status=ChannelStatus.RUNNING, send_text=AsyncMock(return_value={"ok": True}),
