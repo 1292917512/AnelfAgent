@@ -1261,14 +1261,16 @@ class Mind:
     async def _recall_cross_channel(
         self,
         query_conversation: List[Dict],
-        current_adapter_key: str,
         current_scope: str,
+        *,
+        user_scope: str = "",
         query_vec: Optional[List[float]] = None,
         query_vec_task: asyncio.Future[list[float] | None] | None = None,
     ) -> List[Dict]:
         """搜索其他频道的语义相关对话，返回注入消息列表。"""
         return await _cc_recall(
-            self, query_conversation, current_adapter_key, current_scope, query_vec=query_vec, query_vec_task=query_vec_task,
+            self, query_conversation, current_scope, user_scope=user_scope,
+            query_vec=query_vec, query_vec_task=query_vec_task,
         )
 
     def _get_models_summary(self) -> str:

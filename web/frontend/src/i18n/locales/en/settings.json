@@ -238,6 +238,7 @@
     "names": {
       "memory": {
         "recall": "Initial recall",
+        "cross_channel": "Related conversations",
         "probe": "Memory enrichment"
       }
     },

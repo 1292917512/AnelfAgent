@@ -55,11 +55,15 @@ def extract_tag_brackets(text: str) -> List[str]:
     return [f"[{m}]" for m in matches if m]
 
 
-def etag_all(text: str) -> List[Tuple[str, str]]:
-    """提取所有 tag（支持转义字符），跳过非 key:value 格式的方括号。"""
+def etag_all(text: str, *, prefix_only: bool = False) -> List[Tuple[str, str]]:
+    """提取转义标签；prefix_only 只读取连续开头的标签，不将正文中的标签当作元数据。"""
     seen: set[Tuple[str, str]] = set()
     result: List[Tuple[str, str]] = []
+    end = 0
     for match in _tag_pattern.finditer(text):
+        if prefix_only and match.start() != end:
+            break
+        end = match.end()
         tag_tuple = (match[1], _decode_tag_value(match[2]))
         if tag_tuple not in seen:
             seen.add(tag_tuple)

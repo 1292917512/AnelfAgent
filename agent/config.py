@@ -194,7 +194,7 @@ _MIND_CONFIGS = {
             "default": True,
         },
         "cross_channel_window_minutes": {
-            "description": "活动感知时间窗口（分钟）",
+            "description": "跨会话历史召回的近期活动窗口；新消息感知按待回复状态判断",
             "default": 30,
             "advanced": True,
             "unit": "分钟",
@@ -220,7 +220,7 @@ _MIND_CONFIGS = {
             "advanced": True,
         },
         "cross_channel_narrative_max_items": {
-            "description": "实时感知的其他会话数上限（每个会话沿用对话历史窗口）",
+            "description": "实时感知的其他待回复会话数上限（群聊仅 @ AI，私聊正常感知）",
             "default": 3,
             "advanced": True,
             "unit": "会话",

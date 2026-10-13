@@ -7,8 +7,11 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+
+import pytest
 
 from agent.messages.presets import MessageGroupUser, MessageUser
 from agent.mind.prefrontal_cortex import PrefrontalCortex
@@ -139,3 +142,146 @@ class TestCrossChannelIsolation:
         assert "user_webui:web_user" in mind._channel_snapshots["webui"].active_scopes
         # 两频道快照互相独立
         assert "user_webui:web_user" not in mind._channel_snapshots["qq"].active_scopes
+
+
+async def test_live_awareness_only_includes_unhandled_directed_messages(sqlite, monkeypatch):
+    from agent.config import MindConfig
+    from agent.mind.cross_channel import build_cross_channel_narrative
+    from agent.storage.data_center import ConversationData
+    from agent.storage.storage_router import StorageRouter
+
+    monkeypatch.setattr("agent.mind.cross_channel.get_mind_config", lambda: MindConfig())
+    mind = SimpleNamespace(pfc=_pfc(), conversation_data=ConversationData(StorageRouter(sqlite=sqlite)))
+    arrival = time.time_ns()
+
+    async def arrive(message):
+        nonlocal arrival
+        arrival += 1
+        message.created_ts_ns = arrival
+        await mind.conversation_data.add_conversation_record_by_everything(message)
+        await mind.pfc.add_task(message)
+        return message
+
+    old = await arrive(MessageGroupUser(uid="1", group_id="100", adapter_key="qq", to_me=True, text_content="已回答旧问题"))
+    mind.pfc.consume_scope_task(old.entity_scope)
+    await arrive(MessageGroupUser(uid="1", group_id="100", adapter_key="qq", text_content="普通群聊闲谈"))
+    await arrive(MessageUser(uid="2", adapter_key="qq", message_kind="notification", text_content="非用户平台通知"))
+    assert await build_cross_channel_narrative(mind, "user_webui:web_user#a") == []
+    mention = await arrive(MessageGroupUser(uid="1", group_id="100", adapter_key="qq", to_me=True, text_content="请看新问题"))
+    await arrive(MessageGroupUser(uid="2", group_id="100", adapter_key="qq", text_content="后来的群聊闲谈 [to_me:1]"))
+    direct = await arrive(MessageUser(uid="1", adapter_key="telegram", text_content="新私聊问题：请解释 [push:notice]"))
+    narrative = await build_cross_channel_narrative(mind, "user_webui:web_user#a")
+    text = str(narrative)
+    assert "请看新问题" in text and "新私聊问题" in text
+    assert "群聊闲谈" not in text and "已回答旧问题" not in text and "非用户平台通知" not in text
+    sources = [m["_source"] for m in narrative if m["_source"].get("id")]
+    assert {(s["scope"], s["ts_ns"]) for s in sources} == {
+        (mention.entity_scope, mention.created_ts_ns), (direct.entity_scope, direct.created_ts_ns)}
+    assert mind.pfc.get_unread_count(mention.entity_scope) == 3
+    assert not mind.pfc.consume_scope_task(mention.entity_scope, through_ts=mention.created_ts_ns)
+    narrative = await build_cross_channel_narrative(mind, "user_webui:web_user#a")
+    assert "请看新问题" not in str(narrative) and "新私聊问题" in str(narrative)
+    mind.pfc.consume_scope_task(direct.entity_scope, through_ts=direct.created_ts_ns)
+    assert await build_cross_channel_narrative(mind, "user_webui:web_user#a") == []
+    await arrive(MessageGroupUser(uid="1", group_id="100", adapter_key="qq", to_me=True, text_content="再次提问"))
+    assert "再次提问" in str(await build_cross_channel_narrative(mind, "user_webui:web_user#a"))
+
+
+async def test_history_candidates_use_explicit_aliases_and_recent_topics(sqlite, monkeypatch):
+    from agent.config import MindConfig
+    from agent.mind.cross_channel import ChannelSnapshot, ScopeActivity, _recall_candidates
+    from agent.storage.data_center import ConversationData
+    from agent.storage.storage_router import StorageRouter
+
+    monkeypatch.setattr("agent.mind.cross_channel.get_mind_config", lambda: MindConfig())
+    await sqlite.set_alias(scope_type="user", scope_id="telegram:remote", primary_scope_type="user", primary_scope_id="qq:123")
+    mind = SimpleNamespace(conversation_data=ConversationData(StorageRouter(sqlite=sqlite)), _channel_snapshots={
+        "webui": ChannelSnapshot(active_scopes={"user_webui:123#b": ScopeActivity(time.time(), "相关项目")}),
+        "qq": ChannelSnapshot(active_scopes={"group_qq:5": ScopeActivity(time.time() - 7200, "过期话题")}),
+    })
+    candidates = await _recall_candidates(mind, "group_qq:100", "user_qq:123")
+    linked = {scope for scope, _, same_user in candidates if same_user}
+    assert linked == {"user_qq:123", "user_telegram:remote"}
+    assert "user_webui:123#b" in {scope for scope, _, _ in candidates}
+    assert "group_qq:5" not in {scope for scope, _, _ in candidates}
+    assert "user_webui:123#b" not in linked
+
+
+@pytest.mark.parametrize("proceed", [False, True])
+async def test_history_gate_uses_conversation_and_concurrent_searches(proceed, monkeypatch):
+    from agent.config import MindConfig
+    from agent.judgment.gate import WorkDecision
+    from agent.mind.cross_channel import ChannelSnapshot, ScopeActivity, recall_cross_channel
+    from core.hooks import hook_journal
+
+    monkeypatch.setattr("agent.mind.cross_channel.get_mind_config", lambda: MindConfig())
+    decision = AsyncMock(return_value=WorkDecision(proceed, "测试判断"))
+    monkeypatch.setattr("agent.mind.cross_channel.assess_optional_work", decision)
+    started = {name: asyncio.Event() for name in ("qq:1", "telegram:1")}
+
+    async def search(kind, scope, vector, **kwargs):
+        assert vector == [0.1, 0.2]
+        started[scope].set()
+        async with asyncio.timeout(2):
+            await asyncio.gather(*(event.wait() for event in started.values()))
+        if scope == "telegram:1":
+            raise OSError("one source unavailable")
+        return [{"content": "已在当前上下文的项目事实", "role": "assistant", "score": .99, "ts_ns": 1},
+                {"content": "其他会话中的项目实施依据", "role": "user", "score": .9, "ts_ns": 2}]
+
+    storage = SimpleNamespace(related_conversation_scopes=AsyncMock(return_value=[]),
+                              search_conversation_vector=AsyncMock(side_effect=search))
+    mind = SimpleNamespace(conversation_data=storage, embedder=SimpleNamespace(available=True, embed_query=AsyncMock()),
+        _channel_snapshots={adapter: ChannelSnapshot(active_scopes={
+            f"user_{adapter}:1": ScopeActivity(time.time(), "项目实施依据")}) for adapter in ("qq", "telegram")})
+    conversation = [{"role": "user", "content": "请帮我结合之前的记录完善项目实施方案"},
+                    {"role": "assistant", "content": "已在当前上下文的项目事实"},
+                    {"role": "tool", "content": "本轮检索缺少实施依据"}]
+    future = asyncio.get_running_loop().create_future()
+    future.set_result([0.1, 0.2])
+    result = await recall_cross_channel(mind, conversation, "user_webui:other#a", query_vec_task=future)
+    state = decision.call_args.args[2]
+    assert state["current_scope"] == "user_webui:other#a"
+    assert state["conversation"] == conversation
+    mind.embedder.embed_query.assert_not_called()
+    if proceed:
+        assert storage.search_conversation_vector.await_count == 2
+        assert "其他会话中的项目实施依据" in str(result)
+        assert "已在当前上下文的项目事实" not in str(result)
+        assert "[scope:user_qq:1][channel:qq][role:user][time:" in str(result)
+    else:
+        assert result == []
+        storage.search_conversation_vector.assert_not_called()
+    assert any(run["name"] == "memory.cross_channel" for run in hook_journal.snapshot()["recent"])
+
+
+async def test_cancelling_cross_recall_preserves_shared_embedding(monkeypatch):
+    from agent.config import MindConfig
+    from agent.judgment.gate import WorkDecision
+    from agent.mind.cross_channel import ChannelSnapshot, ScopeActivity, recall_cross_channel
+
+    monkeypatch.setattr("agent.mind.cross_channel.get_mind_config", lambda: MindConfig())
+    judged = asyncio.Event()
+
+    async def judge(*args):
+        judged.set()
+        return WorkDecision(True, "需要相关历史")
+
+    monkeypatch.setattr("agent.mind.cross_channel.assess_optional_work", judge)
+    vector = asyncio.get_running_loop().create_future()
+    mind = SimpleNamespace(embedder=SimpleNamespace(available=True),
+        conversation_data=SimpleNamespace(related_conversation_scopes=AsyncMock(return_value=[])),
+        _channel_snapshots={"qq": ChannelSnapshot(active_scopes={"user_qq:1": ScopeActivity(time.time(), "项目")})})
+    task = asyncio.create_task(recall_cross_channel(
+        mind, [{"role": "user", "content": "帮我查询之前项目实施方案的相关资料"}], "group_webui:1", query_vec_task=vector))
+    try:
+        async with asyncio.timeout(2):
+            await judged.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not vector.cancelled()
+    finally:
+        vector.cancel()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

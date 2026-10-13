@@ -195,7 +195,7 @@ class ConversationData:
 
     async def get_conversation_record_by_everything(self, anything: Everything) -> list[dict]:
         scope_type, scope_id = self._scope_of(anything)
-        scopes = await self._alias_merged_scopes(scope_type, scope_id)
+        scopes = await self.related_conversation_scopes(scope_type, scope_id)
         rows = await self._fetch_window_rows(scope_type, scope_id, scopes)
         return [
             {"role": row["role"], "content": row["content"], "_source": {
@@ -322,7 +322,7 @@ class ConversationData:
             log(f"对话摘要读取失败: {exc}", "DEBUG", tag="存储")
             return None
 
-    async def _alias_merged_scopes(self, scope_type: str, scope_id: str) -> list[tuple[str, str]]:
+    async def related_conversation_scopes(self, scope_type: str, scope_id: str) -> list[tuple[str, str]]:
         """解析别名关联，返回 (primary + 全部 alias) 的 scope 列表（当前 scope 在前）。
 
         未启用或无别名时返回仅含自身的单元素列表。
@@ -371,7 +371,7 @@ class ConversationData:
 
     async def scope_backlog(self, scope_type: str, scope_id: str) -> int:
         """该 scope 水位线后的未折叠消息数（别名合并口径）。"""
-        scopes = await self._alias_merged_scopes(scope_type, scope_id)
+        scopes = await self.related_conversation_scopes(scope_type, scope_id)
         from agent.storage.scope_migrate import resolve_summary_scope
         sum_type, sum_id = await resolve_summary_scope(
             self.router.sqlite, scope_type, scope_id,
@@ -388,7 +388,7 @@ class ConversationData:
     async def schedule_fold(self, scope_type: str, scope_id: str) -> bool:
         """调度一次后台折叠（别名合并 + 水位线解析在此收敛）；已在折叠/退避中返回 False。"""
         from agent.storage.conversation_fold import conversation_folder
-        scopes = await self._alias_merged_scopes(scope_type, scope_id)
+        scopes = await self.related_conversation_scopes(scope_type, scope_id)
         from agent.storage.scope_migrate import resolve_summary_scope
         sum_type, sum_id = await resolve_summary_scope(
             self.router.sqlite, scope_type, scope_id,

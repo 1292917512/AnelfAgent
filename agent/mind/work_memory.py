@@ -41,6 +41,7 @@ class PendingSignal:
 
     to_me/kind 为元决策态势提供直接判据（群消息是否 @ 了机器人、
     是否平台推送而非真人聊天），与消息渲染的 [to_me:]/[kind:] 标签同源。
+    未读起点与最近定向消息时间用于动态感知筛选，不保存消息正文副本。
     """
 
     preview: str = ""
@@ -49,6 +50,8 @@ class PendingSignal:
     kind: str = ""
     message_id: str = ""
     created_ts_ns: int = 0
+    first_unread_ts_ns: int = 0
+    last_addressed_ts_ns: int = 0
 
 
 def _pfc_persist_enabled() -> bool:
@@ -323,6 +326,7 @@ class WorkMemory:
         preview = anything.get_text_content()[:300] if hasattr(anything, "get_text_content") else str(anything)[:300]
         adapter_key = getattr(anything, "adapter_key", "") or ""
         message_kind = getattr(anything, "message_kind", "chat") or "chat"
+        previous = self._pending_signals.get(scope)
         signal = PendingSignal(
             message_id=anything.adapter_message_id,
             created_ts_ns=anything.created_ts_ns,
@@ -330,7 +334,11 @@ class WorkMemory:
             adapter_key=adapter_key,
             to_me=bool(getattr(anything, "to_me", False)),
             kind="" if message_kind == "chat" else message_kind,
+            first_unread_ts_ns=(previous.first_unread_ts_ns if previous else 0) or anything.created_ts_ns,
+            last_addressed_ts_ns=previous.last_addressed_ts_ns if previous else 0,
         )
+        if message_kind == "chat" and (anything.scope_type != "group" or signal.to_me):
+            signal.last_addressed_ts_ns = max(signal.last_addressed_ts_ns, anything.created_ts_ns)
 
         self._unread_counts[scope] = self._unread_counts.get(scope, 0) + 1
         if isinstance(anything, EverythingGroup) and anything.is_group_scope:
@@ -550,6 +558,7 @@ class WorkMemory:
             return False
         signal = self._pending_signals.get(scope)
         if through_ts is not None and signal and signal.created_ts_ns > through_ts:
+            signal.first_unread_ts_ns = max(signal.first_unread_ts_ns, through_ts + 1)
             return False
         self._clear_scope_state(scope)
         removed_user = self._consume_from_queue(self.pending_user, scope)

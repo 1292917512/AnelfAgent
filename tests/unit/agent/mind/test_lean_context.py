@@ -149,7 +149,8 @@ class TestLeanRecollection:
         assert mind._build_layered_prompts.call_args.kwargs["lean"] is True
 
 
-async def test_context_reads_overlap_and_skills_only_wait_for_memory(monkeypatch) -> None:
+@pytest.mark.parametrize("group", [False, True])
+async def test_context_reads_overlap_and_skills_only_wait_for_memory(monkeypatch, group) -> None:
     mind = _fake_mind()
     started = {key: asyncio.Event() for key in ("embed", "memory", "relations", "hub", "summary", "skills", "cross")}
     release_vector, release_cross = asyncio.Event(), asyncio.Event()
@@ -171,7 +172,8 @@ async def test_context_reads_overlap_and_skills_only_wait_for_memory(monkeypatch
         started["skills"].set()
         return [{"content": "技能"}]
 
-    async def cross(*args, query_vec_task):
+    async def cross(*args, query_vec_task, user_scope):
+        assert user_scope == "user_qq:1"
         assert await asyncio.shield(query_vec_task) == [1.0]
         started["cross"].set()
         await release_cross.wait()
@@ -195,9 +197,10 @@ async def test_context_reads_overlap_and_skills_only_wait_for_memory(monkeypatch
     monkeypatch.setattr("agent.memory.self_profile.render_self_profile_block", lambda _: "自身")
     monkeypatch.setattr("agent.memory.reflection_lifecycle.load_confirmed_block", AsyncMock(return_value="确认"))
     monkeypatch.setattr("agent.memory.reflection_lifecycle.load_verification_block", AsyncMock(return_value="求证"))
+    query = ("[channel:qq][group_id:100][uid:1]" if group else "") + "帮我查询之前记录的详细项目设计方案"
     task = asyncio.create_task(collect_recollection_inputs(
-        mind, [{"role": "user", "content": "帮我查询之前记录的详细项目设计方案"}], SN(),
-        scope="user_qq:1", adapter="qq", lean=False,
+        mind, [{"role": "user", "content": query}], SN(uid=0 if group else "1"),
+        scope="group_qq:100" if group else "user_qq:1", adapter="qq", lean=False,
     ))
     try:
         async with asyncio.timeout(2):

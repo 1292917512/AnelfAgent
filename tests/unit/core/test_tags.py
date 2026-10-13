@@ -24,6 +24,14 @@ def test_json_arrays_are_not_message_tags() -> None:
     assert etag_all('[file:one] ["kind:system"] [file:one]') == [("file", "one")]
 
 
+def test_prefix_tags_do_not_read_metadata_examples_in_body() -> None:
+    header = tag_label("channel", "qq") + tag_label("name", "测试 [uid:other]")
+    text = header + "请解释 [to_me:1] 和 [push:notice]"
+    assert etag_all(text, prefix_only=True) == [("channel", "qq"), ("name", "测试 [uid:other]")]
+    assert ("to_me", "1") in etag_all(text)
+    assert etag_all("正文 [uid:1]", prefix_only=True) == []
+
+
 @pytest.mark.parametrize("key", ["bad key", "key:other", "[key", "key]", "", "key\n"])
 def test_tag_encoder_and_parser_use_the_same_key_grammar(key: str) -> None:
     with pytest.raises(ValueError):

@@ -87,8 +87,20 @@ async def collect_recollection_inputs(
 
     async def cross_channel() -> None:
         if not trivial and policy.level == "deep":
+            from agent.messages import build_entity_scope
+            user_scope = (build_entity_scope("user", adapter, str(anything.uid))
+                          if anything and adapter and anything.uid not in (None, 0, "0", "") else "")
+            if not user_scope and scope.startswith("group_"):
+                from core.tags import etag_all
+                for message in reversed(tail):
+                    if message.get("role") != "user" or not isinstance(message.get("content"), str):
+                        continue
+                    tags = dict(reversed(etag_all(message["content"], prefix_only=True)))
+                    if tags.get("channel") == adapter and tags.get("uid") not in (None, "0", ""):
+                        user_scope = build_entity_scope("user", adapter, tags["uid"])
+                        break
             result.cross_channel = await mind._recall_cross_channel(
-                tail, adapter, scope, query_vec_task=vector_task)
+                conversation, scope, user_scope=user_scope, query_vec_task=vector_task)
 
     async def pins() -> None:
         if mind.retriever is not None:

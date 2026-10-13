@@ -242,16 +242,27 @@ class _MergeMind(FakeMind):
         )
 
 
+def _attach_pending_work(mind):
+    from unittest.mock import AsyncMock
+
+    from agent.mind.work_memory import WorkMemory
+
+    entity = SimpleNamespace(add_conversations_num=lambda: 0, personality={})
+    work = WorkMemory(SimpleNamespace(get_anything=AsyncMock(return_value=entity)))
+    mind.pfc.add_task = work.add_task
+    mind.pfc.peek_all_tasks = work.peek_all_tasks
+    mind.pfc.get_pending_signal = work.get_pending_signal
+    return work
+
+
 class TestThinkLoopMerge:
     async def test_cross_reply_acknowledges_the_input_seen_by_the_model(self, conv_data, monkeypatch) -> None:
-        from unittest.mock import AsyncMock, MagicMock
+        from unittest.mock import AsyncMock
 
         from agent.channel.output_tools import execute_send_action
         from agent.config import MindConfig
         from agent.mind.cross_channel import update_channel_snapshot
         from agent.mind.tool_activation import bind_scope, reset_scope
-        from agent.mind.work_memory import PendingSignal, WorkMemory
-        from agent.storage.data_center import EverythingData
 
         current = MessageUser(uid="1", adapter_key="webui", session_id="a", text_content="A 的请求")
         other = MessageUser(uid="1", adapter_key="qq", text_content="B 的请求")
@@ -261,9 +272,6 @@ class TestThinkLoopMerge:
         monkeypatch.setattr("agent.channel.output_tools._resolve_send_target", lambda *args: ("1", "private"))
         monkeypatch.setattr("agent.channel.output_tools.guard_outbound", lambda *args: None)
         monkeypatch.setattr("agent.channel.output_tools.guard_empty_conversation", AsyncMock(return_value=None))
-        work = WorkMemory(MagicMock(spec=EverythingData))
-        work.pending_user.append(other.entity_scope)
-        work._pending_signals[other.entity_scope] = PendingSignal(created_ts_ns=other.created_ts_ns)
 
         class CrossReplyMind(_MergeMind):
             async def _invoke_llm_unified(self, *args, **kwargs):
@@ -275,6 +283,8 @@ class TestThinkLoopMerge:
         mind = CrossReplyMind(conv_data)
         mind._resolve_entity_scope = lambda message: message.entity_scope
         mind._channel_snapshots = {}
+        work = _attach_pending_work(mind)
+        await work.add_task(other)
         mind.pfc.consume_scope_task = work.consume_scope_task
         for message in (current, other):
             await conv_data.add_conversation_record_by_everything(message)
@@ -299,9 +309,11 @@ class TestThinkLoopMerge:
         mind = _MergeMind(conv_data)
         mind._resolve_entity_scope = lambda message: message.entity_scope
         mind._channel_snapshots = {}
+        _attach_pending_work(mind)
         messages = [MessageUser(uid="1", adapter_key=adapter, text_content=text)
                     for adapter, text in [("qq", "仍可感知的消息"), ("telegram", "暂时无法恢复的消息")]]
         for message in messages:
+            await mind.pfc.add_task(message)
             await conv_data.add_conversation_record_by_everything(message)
             update_channel_snapshot(mind, message)
         sqlite = conv_data.router.sqlite
@@ -353,9 +365,11 @@ class TestThinkLoopMerge:
             async def _invoke_llm_unified(self, *args, **kwargs):
                 result = await super()._invoke_llm_unified(*args, **kwargs)
                 if self.llm_calls == 1:
-                    for role, text in [("user", "QQ 更新了要求"), ("assistant", "QQ 已收到进度")]:
-                        await conv_data.router.append(StorageDomain.CONVERSATION,
-                            scope_type="user", scope_id="qq:1", role=role, content=text)
+                    incoming = MessageUser(uid="1", adapter_key="qq", text_content="QQ 更新了要求")
+                    await conv_data.add_conversation_record_by_everything(incoming)
+                    await self.pfc.add_task(incoming)
+                    await conv_data.router.append(StorageDomain.CONVERSATION,
+                        scope_type="user", scope_id="qq:1", role="assistant", content="QQ 已收到进度")
                     await conv_data.router.append(StorageDomain.CONVERSATION,
                         scope_type=current.scope_type, scope_id=current.scope_id, role="user", content="继续")
                     await conv_data.router.append(StorageDomain.CONVERSATION,
@@ -365,11 +379,13 @@ class TestThinkLoopMerge:
                 return result
 
         mind = ConcurrentMind(conv_data)
+        _attach_pending_work(mind)
         mind._channel_snapshots = {}
         mind._resolve_entity_scope = lambda anything: anything.entity_scope if anything else ""
         for message in [current, *others]:
             if message is not current:
                 await conv_data.add_conversation_record_by_everything(message)
+                await mind.pfc.add_task(message)
             update_channel_snapshot(mind, message)
         sqlite = conv_data.router.sqlite
         for scope_id in [current.scope_id, *(message.scope_id for message in others), "telegram:1"]:
@@ -394,9 +410,9 @@ class TestThinkLoopMerge:
             assert "[scope:user_webui:1#b]" in text
             assert "[scope:user_webui:1#a]" not in text
         assert "QQ 更新了要求" not in str(mind.sent_messages[0])
-        assert any("[role:assistant]\nQQ 已收到进度" in m.get("content", "") for m in mind.sent_messages[1])
+        assert "QQ 已收到进度" not in str(mind.sent_messages[1])
         assert "QQ 更新了要求" in str(mind.sent_messages[1])
-        assert "[scope:user_telegram:1][channel:telegram][role:assistant]\n主动投递的完整内容" in "\n".join(
+        assert "主动投递的完整内容" not in "\n".join(
             m.get("content", "") for m in mind.sent_messages[1] if isinstance(m.get("content"), str))
         assert all(scope == current.entity_scope for scope in mind.pfc.consumed)
 

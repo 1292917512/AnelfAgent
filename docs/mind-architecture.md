@@ -73,7 +73,7 @@
   自主反思和新建任务默认允许显式发送；任务 `allow_output_tools=false`、技能核验与子代理的
   限制仍由调用方声明。已有明确禁用的任务配置保持有效，可从任务页或 AI `update_task` 修改。
   `send_message` 不经过 Jev 正文审核，仍需通过目标校验并取得真实频道回执。
-- **跨会话感知**：其他会话的消息、已发送内容和待处理通知每轮刷新到 provider 动态区，位于
+- **跨会话感知**：其他会话待回复的新私聊与群聊 @ 每轮刷新到 provider 动态区，位于
   工具链之后、执行状态之前，不在末尾执行提示中重复追加。它们不改变当前空间或默认收件人，
   也不会被写入当前会话历史。`switch_session` 打开目标 scope 的独立回复；当前执行仍属于原 scope。
 - 结束原因经 completion 容器贯通：completed / failed / budget_exhausted（轮次预算用尽）/ interrupted，
