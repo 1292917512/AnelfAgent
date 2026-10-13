@@ -157,7 +157,8 @@ class WorkflowEngine:
     # 启动 / 续跑 / 停止
     # ------------------------------------------------------------------
 
-    async def start(self, spec_data: Any, *, scope: str = "", resume_of: str = "") -> Dict[str, Any]:
+    async def start(self, spec_data: Any = None, *, scope: str = "", resume_of: str = "",
+                    workflow_id: str = "") -> Dict[str, Any]:
         """启动工作流（后台执行，立即返回 run 概要）。
 
         resume_of 非空时为修订运行：父 run 必须已终结，其每步最新
@@ -165,22 +166,28 @@ class WorkflowEngine:
         """
         if not get_config_bool("workflow_enabled", True):
             raise WorkflowSpecError("工作流引擎已禁用（workflow_enabled）")
-        spec = parse_spec(spec_data)
+        if (spec_data is None) == (not workflow_id):
+            raise ValueError("spec 与 workflow_id 必须且只能提供一个")
         run_id = uuid.uuid4().hex[:12]
         async with self._lifecycle_lock:
             if self._closing:
                 raise RuntimeError("工作流引擎正在关闭")
+            if workflow_id:
+                definition = await self._journal.get_definition(workflow_id)
+                spec_data = definition["spec"]
+            spec = parse_spec(spec_data)
             if resume_of:
                 parent = await self._journal.get_run(resume_of)
                 if parent is None:
                     raise ValueError(f"修订源 run 不存在: {resume_of}")
-                if parent["status"] == wf_journal.RUNNING:
+                if parent["status"] == wf_journal.RUNNING or resume_of in self._runs:
                     raise ValueError(f"修订源 run 尚未终结: {resume_of}")
             await self._journal.create_run(
                 run_id, spec.name, canonical_spec(spec), spec_hash(spec), scope, resume_of,
             )
             self._spawn(run_id, scope, spec.name)
-            await self._journal.purge_expired(get_config_int("workflow_retention_days", 30))
+            await self._journal.purge_expired(
+                get_config_int("workflow_retention_days", 30), protected_ids=self.running_ids())
             summary = self._run_summary(await self._journal.get_run(run_id))
         log(f"工作流已启动: {run_id} [{spec.name}] {len(spec.steps)} 步"
             + (f"（修订自 {resume_of}）" if resume_of else ""), tag=_TAG)
@@ -739,8 +746,44 @@ class WorkflowEngine:
     # 查询
     # ------------------------------------------------------------------
 
-    async def list_runs(self, limit: int = 30) -> List[Dict[str, Any]]:
-        runs = await self._journal.list_runs(limit)
+    async def save_definition(self, spec_data: Any, workflow_id: str = "") -> Dict[str, Any]:
+        """创建或替换可复用定义；编辑不影响已启动运行的规格快照。"""
+        spec = parse_spec(spec_data)
+        create = not workflow_id
+        workflow_id = workflow_id or uuid.uuid4().hex[:12]
+        async with self._lifecycle_lock:
+            await self._journal.save_definition(workflow_id, spec.name, canonical_spec(spec), create=create)
+            return await self._journal.get_definition(workflow_id)
+
+    async def list_definitions(self, limit: int = 30, offset: int = 0) -> List[Dict[str, Any]]:
+        return await self._journal.list_definitions(max(1, min(limit, 100)), max(0, offset))
+
+    async def definition_detail(self, workflow_id: str) -> Dict[str, Any]:
+        return await self._journal.get_definition(workflow_id)
+
+    async def delete_definition(self, workflow_id: str) -> Dict[str, Any]:
+        """仅删除可复用定义，保留所有运行及其规格快照。"""
+        async with self._lifecycle_lock:
+            await self._journal.delete_definition(workflow_id)
+        return {"ok": True, "workflow_id": workflow_id}
+
+    async def delete_run(self, run_id: str) -> Dict[str, Any]:
+        """与启动/续跑互斥，等待执行任务完全收敛后才允许删除。"""
+        async with self._lifecycle_lock:
+            if run_id in self._runs:
+                raise ValueError("工作流仍在执行或结算中，请停止并等待结算后再删除")
+            await self._journal.delete_run(run_id)
+        return {"ok": True, "run_id": run_id}
+
+    async def cleanup_runs(self, days: int = 30, *, include_stopped: bool = False) -> Dict[str, Any]:
+        """按保留天数清理运行历史，始终保护在飞运行及恢复所需的源记录。"""
+        async with self._lifecycle_lock:
+            count = await self._journal.cleanup_runs(
+                days, include_stopped=include_stopped, protected_ids=self.running_ids())
+        return {"ok": True, "deleted": count}
+
+    async def list_runs(self, limit: int = 30, offset: int = 0) -> List[Dict[str, Any]]:
+        runs = await self._journal.list_runs(max(1, min(limit, 100)), max(0, offset))
         for item in runs:
             # journal 行键为 id；对外契约统一 run_id（与 _run_summary/start/resume 一致）
             item["run_id"] = item.pop("id")

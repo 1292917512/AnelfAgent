@@ -271,7 +271,7 @@ def test_error_redaction_removes_api_key(tmp_path) -> None:
         model="model",
         api_key="top-secret-key",
     ))
-    redacted = manager._safe_error(
+    redacted = manager.safe_error(
         RuntimeError("request failed with top-secret-key"),
         client,
     )

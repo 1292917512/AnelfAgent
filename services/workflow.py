@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from agent.workflow.engine import WorkflowEngine
 from services._runtime import get_runtime
 
 
@@ -19,12 +20,19 @@ class WorkflowRuntimeError(Exception):
     """运行时未就绪（引擎不可用），路由层映射 503。"""
 
 
-def _engine():
+def _engine() -> WorkflowEngine | None:
     """解析工作流引擎（runtime 未就绪返回 None）。"""
     rt = get_runtime()
     if rt is None:
         return None
     return getattr(rt.mind, "workflow_engine", None)
+
+
+def _require_engine() -> WorkflowEngine:
+    engine = _engine()
+    if engine is None:
+        raise WorkflowRuntimeError("运行时未就绪，工作流引擎不可用")
+    return engine
 
 
 class WorkflowService:
@@ -38,14 +46,14 @@ class WorkflowService:
             raise WorkflowServiceError(str(exc)) from exc
         return {"spec": parsed.model_dump(mode="json"), "layers": topo_layers(parsed)}
 
-    async def start(self, spec: Dict[str, Any], *, scope: str = "",
-                    resume_of: str = "") -> Dict[str, Any]:
+    async def start(self, spec: Dict[str, Any] | None = None, *, scope: str = "",
+                    resume_of: str = "", workflow_id: str = "") -> Dict[str, Any]:
         """启动工作流（后台执行）。"""
         engine = _engine()
         if engine is None:
             raise WorkflowRuntimeError("运行时未就绪，工作流引擎不可用")
         try:
-            return await engine.start(spec, scope=scope, resume_of=resume_of)
+            return await engine.start(spec, scope=scope, resume_of=resume_of, workflow_id=workflow_id)
         except ValueError as exc:
             raise WorkflowServiceError(str(exc)) from exc
 
@@ -69,9 +77,42 @@ class WorkflowService:
             raise WorkflowServiceError(str(result.get("error", "停止失败")))
         return result
 
-    async def list_runs(self, limit: int = 30) -> List[Dict[str, Any]]:
+    async def list_runs(self, limit: int = 30, offset: int = 0) -> List[Dict[str, Any]]:
         engine = _engine()
-        return await engine.list_runs(limit) if engine is not None else []
+        return await engine.list_runs(limit, offset) if engine is not None else []
+
+    async def list_definitions(self, limit: int = 30, offset: int = 0) -> List[Dict[str, Any]]:
+        return await _require_engine().list_definitions(limit, offset)
+
+    async def definition_detail(self, workflow_id: str) -> Dict[str, Any]:
+        try:
+            return await _require_engine().definition_detail(workflow_id)
+        except ValueError as exc:
+            raise WorkflowServiceError(str(exc)) from exc
+
+    async def save_definition(self, spec: Dict[str, Any], workflow_id: str = "") -> Dict[str, Any]:
+        try:
+            return await _require_engine().save_definition(spec, workflow_id)
+        except ValueError as exc:
+            raise WorkflowServiceError(str(exc)) from exc
+
+    async def delete_definition(self, workflow_id: str) -> Dict[str, Any]:
+        try:
+            return await _require_engine().delete_definition(workflow_id)
+        except ValueError as exc:
+            raise WorkflowServiceError(str(exc)) from exc
+
+    async def delete_run(self, run_id: str) -> Dict[str, Any]:
+        try:
+            return await _require_engine().delete_run(run_id)
+        except ValueError as exc:
+            raise WorkflowServiceError(str(exc)) from exc
+
+    async def cleanup_runs(self, days: int = 30, *, include_stopped: bool = False) -> Dict[str, Any]:
+        try:
+            return await _require_engine().cleanup_runs(days, include_stopped=include_stopped)
+        except ValueError as exc:
+            raise WorkflowServiceError(str(exc)) from exc
 
     async def run_detail(self, run_id: str) -> Dict[str, Any]:
         engine = _engine()

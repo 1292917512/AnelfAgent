@@ -402,7 +402,10 @@ async def send_message(
         content: str = "",
         reply_to_message_id: str = "",
 ) -> str:
-    """向指定频道发送文本消息。content 不能为空。
+    """向指定频道发送文本消息，是答复、澄清和告知进度的默认方式。content 不能为空。
+
+    不经过普通正文的自动审核，不结束当前执行。以返回的目标会话与送达状态确认成功；
+    失败应处理原因，结果未知先核对会话。发送成功后不要再输出同一份普通正文。
 
     在 content 中使用 [at_uid:用户uid] 格式可 @ 提及用户，
     uid 取自消息标签中的 [uid:xxx]。例如 [at_uid:12345]。

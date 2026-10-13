@@ -36,7 +36,7 @@ class TestModelEnableSwitch:
         # 默认/按类型/回退均跳过禁用模型
         assert mgr.get_default().config.name == "mid"
         assert mgr.get_by_type(ModelType.CHAT).config.name == "mid"
-        names = [c.config.name for c in mgr.get_fallback_chat_clients()]
+        names = [c.config.name for c in mgr.get_fallback_clients()]
         assert "cheap" not in names
 
     def test_disabled_default_falls_to_next_enabled(self, tmp_path):

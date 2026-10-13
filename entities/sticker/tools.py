@@ -134,22 +134,16 @@ def import_to_stickers_dir(local_path: str, content_hash: str) -> str:
 
 
 async def describe_sticker(local_path: str) -> str:
-    """VLM 生成表情包描述（遍历视觉客户端直到成功，失败返回空串）。"""
+    """通过模型 SDK 生成表情包描述，失败返回空串。"""
     try:
         from entities._sdk import (
-            get_llm_manager,
-            get_model_type_enum,
+            get_model_api,
             load_image_from_path,
         )
-        mgr = get_llm_manager()
-        ModelType = get_model_type_enum()
-        for vc in mgr.get_all_by_type(ModelType.VISION):
-            try:
-                img = load_image_from_path(local_path)
-                return await vc.describe_images([img], prompt=_COLLECT_DESCRIBE_PROMPT)
-            except Exception as exc:
-                log(f"表情包描述模型 {vc.config.name} 失败: {exc}", "DEBUG", tag="贴纸")
-                continue
+        result = await get_model_api().describe_images(
+            [load_image_from_path(local_path)], prompt=_COLLECT_DESCRIBE_PROMPT,
+        )
+        return result.value
     except Exception as exc:
         log(f"视觉模型不可用: {exc}", "DEBUG", tag="贴纸")
     return ""

@@ -4,6 +4,26 @@
 AI 通过两级发现机制按需使用频道功能。
 """
 
+from agent.llm.model_api import (
+    ChatResult,
+    ChoiceQuestion,
+    ImageContent,
+    JsonValue,
+    JudgmentError,
+    JudgmentReport,
+    LLMNotConfiguredError,
+    ModelAPI,
+    ModelCallError,
+    ModelResult,
+    ModelType,
+    MusicResult,
+    NoulCriteria,
+    NoulQuestion,
+    Question,
+    ScoreQuestion,
+    VideoContent,
+    get_model_api,
+)
 from core.network import (
     AsyncNetworkTransport,
     NetworkProbeRequest,
@@ -43,6 +63,10 @@ from .schemas import (
 from .tool_bridge import channel_tool
 
 __all__ = [
+    "get_model_api", "ModelAPI", "ModelType", "ModelResult", "ModelCallError", "LLMNotConfiguredError",
+    "ChatResult", "ImageContent", "VideoContent", "MusicResult",
+    "ChoiceQuestion", "NoulQuestion", "NoulCriteria", "ScoreQuestion", "Question",
+    "JsonValue", "JudgmentReport", "JudgmentError",
     "NetworkProbeRequest", "diagnose_network",
     "AsyncNetworkTransport", "NetworkTransport", "NetworkRoute", "ProxyMode",
     "async_network_client", "network_client", "get_proxy_url", "resolve_network_route",

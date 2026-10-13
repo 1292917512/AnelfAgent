@@ -166,192 +166,200 @@ class SqliteBackend:
             path.parent.mkdir(parents=True, exist_ok=True)
 
             db = await aiosqlite.connect(self.db_path)
-            await db.execute("PRAGMA journal_mode=WAL;")
-            await db.execute("PRAGMA synchronous=NORMAL;")
-            await db.execute("PRAGMA busy_timeout=5000;")
-
-            if not self._initialized:
-                await db.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS conversation_messages (
-                      id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      scope_type TEXT NOT NULL,
-                      scope_id TEXT NOT NULL,
-                      role TEXT NOT NULL,
-                      content TEXT NOT NULL,
-                      ts_ns INTEGER NOT NULL,
-                      adapter_key TEXT NOT NULL DEFAULT '',
-                      trigger_mind INTEGER NOT NULL DEFAULT 1,
-                      embedding_blob BLOB
-                    );
-                    """
-                )
-                await db.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_conversation_scope_ts "
-                    "ON conversation_messages(scope_type, scope_id, ts_ns);"
-                )
-                await db.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS entity_profile (
-                      scope_type TEXT NOT NULL,
-                      scope_id TEXT NOT NULL,
-                      personality TEXT,
-                      updated_ts_ns INTEGER NOT NULL DEFAULT 0,
-                      conv_num INTEGER NOT NULL DEFAULT 0,
-                      conv_update_num INTEGER NOT NULL DEFAULT 0,
-                      PRIMARY KEY(scope_type, scope_id)
-                    );
-                    """
-                )
-                await db.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS entity_alias (
-                      scope_type TEXT NOT NULL,
-                      scope_id TEXT NOT NULL,
-                      primary_scope_type TEXT NOT NULL,
-                      primary_scope_id TEXT NOT NULL,
-                      created_ts_ns INTEGER NOT NULL DEFAULT 0,
-                      PRIMARY KEY(scope_type, scope_id)
-                    );
-                    """
-                )
-                await db.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS pending_tasks (
-                      id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      scope TEXT NOT NULL,
-                      kind TEXT NOT NULL,
-                      payload_json TEXT NOT NULL DEFAULT '{}',
-                      ts_ns INTEGER NOT NULL
-                    );
-                    """
-                )
-                # 回复检查点（崩溃尾部修复）：think_loop 进行中按 scope 写一行，
-                # 正常/协作中断结束在 finally 清除；进程崩溃/SIGKILL 残留的行，
-                # 下次启动由 recover_interrupted 扫描并向会话注入"上次被中断"元消息
-                await db.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS reply_checkpoints (
-                      scope_key TEXT PRIMARY KEY,
-                      adapter_key TEXT NOT NULL DEFAULT '',
-                      phase TEXT NOT NULL DEFAULT '',
-                      iteration INTEGER NOT NULL DEFAULT 0,
-                      started_ns INTEGER NOT NULL
-                    );
-                    """
-                )
-                # 主回复工具日志（崩溃尾部账本）：REPLY 模式逐调用追加，
-                # 收束清除；崩溃残留的行随检查点恢复一并渲染注入——
-                # 模型据此知道上次执行到哪，不再对已发生的副作用盲试
-                await db.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS reply_tool_journal (
-                      id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      scope_key TEXT NOT NULL,
-                      tool_name TEXT NOT NULL,
-                      arguments TEXT NOT NULL DEFAULT '',
-                      result_head TEXT NOT NULL DEFAULT '',
-                      status TEXT NOT NULL DEFAULT 'ok',
-                      recorded_ns INTEGER NOT NULL
-                    );
-                    """
-                )
-                await db.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_reply_tool_journal_scope "
-                    "ON reply_tool_journal(scope_key, id)"
-                )
-                # 会话级用量统计（增量累加账本）：per-scope 累计 LLM 调用与 token
-                # 用量，complete_reply / 每 N 次调用经 upsert_scope_usage 累加写入
-                await db.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS scope_usage (
-                      scope_key TEXT PRIMARY KEY,
-                      turns INTEGER NOT NULL DEFAULT 0,
-                      llm_calls INTEGER NOT NULL DEFAULT 0,
-                      prompt_tokens INTEGER NOT NULL DEFAULT 0,
-                      completion_tokens INTEGER NOT NULL DEFAULT 0,
-                      total_tokens INTEGER NOT NULL DEFAULT 0,
-                      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-                      updated_ns INTEGER NOT NULL DEFAULT 0
-                    );
-                    """
-                )
-                await db.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS conversation_summary (
-                      scope_type TEXT NOT NULL,
-                      scope_id TEXT NOT NULL,
-                      summary TEXT NOT NULL DEFAULT '',
-                      watermarks_json TEXT NOT NULL DEFAULT '{}',
-                      folded_count INTEGER NOT NULL DEFAULT 0,
-                      dropped_count INTEGER NOT NULL DEFAULT 0,
-                      updated_ts_ns INTEGER NOT NULL DEFAULT 0,
-                      PRIMARY KEY(scope_type, scope_id)
-                    );
-                    """
-                )
-                # 权限与 AI 评审的持久裁决账本。
-                await db.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS approval_audit (
-                      id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      ts_ns INTEGER NOT NULL,
-                      tool_name TEXT NOT NULL,
-                      outcome TEXT NOT NULL,
-                      decided_by TEXT NOT NULL DEFAULT '',
-                      reason TEXT NOT NULL DEFAULT '',
-                      channel_id TEXT NOT NULL DEFAULT '',
-                      chat_id TEXT NOT NULL DEFAULT '',
-                      user_id TEXT NOT NULL DEFAULT '',
-                      risk_level TEXT NOT NULL DEFAULT '',
-                      matched_rule TEXT NOT NULL DEFAULT '',
-                      args_json TEXT NOT NULL DEFAULT ''
-                    );
-                    """
-                )
-                await db.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_approval_audit_tool_user "
-                    "ON approval_audit(tool_name, user_id, outcome);"
-                )
-                # id 水位线列：同 ts_ns 并列的消息靠 id 决胜，避免边界消息永久不可见
-                cursor = await db.execute("PRAGMA table_info(conversation_summary)")
-                summary_cols = {row[1] for row in await cursor.fetchall()}
-                if "watermark_ids_json" not in summary_cols:
-                    await db.execute(
-                        "ALTER TABLE conversation_summary "
-                        "ADD COLUMN watermark_ids_json TEXT NOT NULL DEFAULT '{}'"
-                    )
-                # 换向折叠：用户从某条消息换方向后，其后的消息段标记为折叠——
-                # 装配上下文时过滤（可检索不回放），DB 保留可恢复；
-                # active=0 即恢复（消息重新进入上下文）
-                await db.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS conversation_folds (
-                      id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      scope_type TEXT NOT NULL,
-                      scope_id TEXT NOT NULL,
-                      from_msg_id INTEGER NOT NULL,
-                      to_msg_id INTEGER NOT NULL,
-                      summary TEXT NOT NULL DEFAULT '',
-                      folded_count INTEGER NOT NULL DEFAULT 0,
-                      active INTEGER NOT NULL DEFAULT 1,
-                      created_ns INTEGER NOT NULL
-                    );
-                    """
-                )
-                await db.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_conversation_folds_scope "
-                    "ON conversation_folds(scope_type, scope_id, active);"
-                )
-                await db.commit()
-                self._initialized = True
-
-            # scope 迁移（user_version 幂等）：旧格式键统一回填 adapter 维度
-            await self._retry_scope_migration(db)
+            try:
+                await self._initialize_connection(db)
+            except BaseException:
+                await db.close()
+                raise
 
             self._db = db
             self._last_health_check = time.monotonic()
             return db
+
+    async def _initialize_connection(self, db: aiosqlite.Connection) -> None:
+        """准备连接、创建表并完成迁移；成功后由调用方发布为可用连接。"""
+        await db.execute("PRAGMA journal_mode=WAL;")
+        await db.execute("PRAGMA synchronous=NORMAL;")
+        await db.execute("PRAGMA busy_timeout=5000;")
+
+        if not self._initialized:
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS conversation_messages (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  scope_type TEXT NOT NULL,
+                  scope_id TEXT NOT NULL,
+                  role TEXT NOT NULL,
+                  content TEXT NOT NULL,
+                  ts_ns INTEGER NOT NULL,
+                  adapter_key TEXT NOT NULL DEFAULT '',
+                  trigger_mind INTEGER NOT NULL DEFAULT 1,
+                  embedding_blob BLOB
+                );
+                """
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_conversation_scope_ts "
+                "ON conversation_messages(scope_type, scope_id, ts_ns);"
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS entity_profile (
+                  scope_type TEXT NOT NULL,
+                  scope_id TEXT NOT NULL,
+                  personality TEXT,
+                  updated_ts_ns INTEGER NOT NULL DEFAULT 0,
+                  conv_num INTEGER NOT NULL DEFAULT 0,
+                  conv_update_num INTEGER NOT NULL DEFAULT 0,
+                  PRIMARY KEY(scope_type, scope_id)
+                );
+                """
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS entity_alias (
+                  scope_type TEXT NOT NULL,
+                  scope_id TEXT NOT NULL,
+                  primary_scope_type TEXT NOT NULL,
+                  primary_scope_id TEXT NOT NULL,
+                  created_ts_ns INTEGER NOT NULL DEFAULT 0,
+                  PRIMARY KEY(scope_type, scope_id)
+                );
+                """
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pending_tasks (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  scope TEXT NOT NULL,
+                  kind TEXT NOT NULL,
+                  payload_json TEXT NOT NULL DEFAULT '{}',
+                  ts_ns INTEGER NOT NULL
+                );
+                """
+            )
+            # 回复检查点（崩溃尾部修复）：think_loop 进行中按 scope 写一行，
+            # 正常/协作中断结束在 finally 清除；进程崩溃/SIGKILL 残留的行，
+            # 下次启动由 recover_interrupted 扫描并向会话注入"上次被中断"元消息
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS reply_checkpoints (
+                  scope_key TEXT PRIMARY KEY,
+                  adapter_key TEXT NOT NULL DEFAULT '',
+                  phase TEXT NOT NULL DEFAULT '',
+                  iteration INTEGER NOT NULL DEFAULT 0,
+                  started_ns INTEGER NOT NULL
+                );
+                """
+            )
+            # 主回复工具日志（崩溃尾部账本）：REPLY 模式逐调用追加，
+            # 收束清除；崩溃残留的行随检查点恢复一并渲染注入——
+            # 模型据此知道上次执行到哪，不再对已发生的副作用盲试
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS reply_tool_journal (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  scope_key TEXT NOT NULL,
+                  tool_name TEXT NOT NULL,
+                  arguments TEXT NOT NULL DEFAULT '',
+                  result_head TEXT NOT NULL DEFAULT '',
+                  status TEXT NOT NULL DEFAULT 'ok',
+                  recorded_ns INTEGER NOT NULL
+                );
+                """
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_reply_tool_journal_scope "
+                "ON reply_tool_journal(scope_key, id)"
+            )
+            # 会话级用量统计（增量累加账本）：per-scope 累计 LLM 调用与 token
+            # 用量，complete_reply / 每 N 次调用经 upsert_scope_usage 累加写入
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS scope_usage (
+                  scope_key TEXT PRIMARY KEY,
+                  turns INTEGER NOT NULL DEFAULT 0,
+                  llm_calls INTEGER NOT NULL DEFAULT 0,
+                  prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                  completion_tokens INTEGER NOT NULL DEFAULT 0,
+                  total_tokens INTEGER NOT NULL DEFAULT 0,
+                  cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                  updated_ns INTEGER NOT NULL DEFAULT 0
+                );
+                """
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS conversation_summary (
+                  scope_type TEXT NOT NULL,
+                  scope_id TEXT NOT NULL,
+                  summary TEXT NOT NULL DEFAULT '',
+                  watermarks_json TEXT NOT NULL DEFAULT '{}',
+                  folded_count INTEGER NOT NULL DEFAULT 0,
+                  dropped_count INTEGER NOT NULL DEFAULT 0,
+                  updated_ts_ns INTEGER NOT NULL DEFAULT 0,
+                  PRIMARY KEY(scope_type, scope_id)
+                );
+                """
+            )
+            # 权限与 AI 评审的持久裁决账本。
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS approval_audit (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  ts_ns INTEGER NOT NULL,
+                  tool_name TEXT NOT NULL,
+                  outcome TEXT NOT NULL,
+                  decided_by TEXT NOT NULL DEFAULT '',
+                  reason TEXT NOT NULL DEFAULT '',
+                  channel_id TEXT NOT NULL DEFAULT '',
+                  chat_id TEXT NOT NULL DEFAULT '',
+                  user_id TEXT NOT NULL DEFAULT '',
+                  risk_level TEXT NOT NULL DEFAULT '',
+                  matched_rule TEXT NOT NULL DEFAULT '',
+                  args_json TEXT NOT NULL DEFAULT ''
+                );
+                """
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_approval_audit_tool_user "
+                "ON approval_audit(tool_name, user_id, outcome);"
+            )
+            # id 水位线列：同 ts_ns 并列的消息靠 id 决胜，避免边界消息永久不可见
+            cursor = await db.execute("PRAGMA table_info(conversation_summary)")
+            summary_cols = {row[1] for row in await cursor.fetchall()}
+            if "watermark_ids_json" not in summary_cols:
+                await db.execute(
+                    "ALTER TABLE conversation_summary "
+                    "ADD COLUMN watermark_ids_json TEXT NOT NULL DEFAULT '{}'"
+                )
+            # 换向折叠：用户从某条消息换方向后，其后的消息段标记为折叠——
+            # 装配上下文时过滤（可检索不回放），DB 保留可恢复；
+            # active=0 即恢复（消息重新进入上下文）
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS conversation_folds (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  scope_type TEXT NOT NULL,
+                  scope_id TEXT NOT NULL,
+                  from_msg_id INTEGER NOT NULL,
+                  to_msg_id INTEGER NOT NULL,
+                  summary TEXT NOT NULL DEFAULT '',
+                  folded_count INTEGER NOT NULL DEFAULT 0,
+                  active INTEGER NOT NULL DEFAULT 1,
+                  created_ns INTEGER NOT NULL
+                );
+                """
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_conversation_folds_scope "
+                "ON conversation_folds(scope_type, scope_id, active);"
+            )
+            await db.commit()
+            self._initialized = True
+
+        # scope 迁移（user_version 幂等）：旧格式键统一回填 adapter 维度
+        await self._retry_scope_migration(db)
 
     async def close(self) -> None:
         """关闭持久连接（与 _get_db 的健康检查/重建互斥，防关闭途中被复用）。"""

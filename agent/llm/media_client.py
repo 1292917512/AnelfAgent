@@ -20,6 +20,7 @@ import httpx
 
 from agent.llm.adapter_base import AdapterRequest
 from agent.llm.asr_adapters import AsrAdapter, resolve_asr_adapter
+from agent.llm.config import LLMClientConfig
 from agent.llm.image_adapters import ImageGenAdapter, resolve_image_adapter
 from agent.llm.music_adapters import MusicAdapter, MusicParams, MusicResult, resolve_music_adapter
 from agent.llm.speech_adapters import (
@@ -49,6 +50,15 @@ _TTS_ASYNC_MAX_POLL = 100
 class MediaClient:
     """媒体 API 客户端（语音/视频/图片等非聊天接口）。"""
 
+    @classmethod
+    def from_config(cls, config: LLMClientConfig) -> MediaClient:
+        """从项目模型配置构建媒体客户端。"""
+        return cls(
+            base_url=config.base_url, api_key=config.api_key,
+            timeout=config.timeout, proxy_mode=config.proxy_mode,
+            media_protocol=config.media_protocol, extra_headers=config.extra_headers,
+        )
+
     def __init__(
         self,
         base_url: str,
@@ -57,6 +67,7 @@ class MediaClient:
         timeout: float = _TIMEOUT,
         proxy_mode: ProxyMode = "system",
         media_protocol: str = "",
+        extra_headers: Dict[str, str] | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         # host 规则匹配的适配器依赖 netloc 非空；缺 scheme 会静默落到兜底适配器
@@ -66,13 +77,15 @@ class MediaClient:
         self._timeout = timeout
         self._proxy_mode = proxy_mode
         self._media_protocol = media_protocol
+        self._extra_headers = dict(extra_headers or {})
 
     def _http_client(self, timeout: Optional[float] = None) -> httpx.AsyncClient:
         """创建 httpx 异步客户端（若配置了代理则自动应用）。"""
         return async_network_client(proxy_mode=self._proxy_mode, timeout=timeout or self._timeout)
 
     def _headers(self) -> Dict[str, str]:
-        h: Dict[str, str] = {"Authorization": f"Bearer {self._api_key}"}
+        h: Dict[str, str] = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
+        h.update(self._extra_headers)
         return h
 
     @staticmethod

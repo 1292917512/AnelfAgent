@@ -104,31 +104,21 @@ class ImageIndexWorker:
         return path_or_url if os.path.exists(path_or_url) else ""
 
     async def _describe(self, local_path: str) -> str:
-        """VLM 生成描述（可配置关闭；遍历全部视觉客户端直到成功）。"""
+        """通过模型 SDK 生成图片描述，遵循索引开关与调用时限。"""
         if not get_config_bool("image_index_describe_enabled", True):
             return ""
         try:
             from entities._sdk import (
-                get_llm_manager,
-                get_model_type_enum,
+                get_model_api,
                 load_image_from_path,
             )
-            mgr = get_llm_manager()
-            ModelType = get_model_type_enum()
-            vision_clients = mgr.get_all_by_type(ModelType.VISION)
-            if not vision_clients:
+            models = get_model_api()
+            if not models.list_models("vision"):
                 return ""
             img = load_image_from_path(local_path)
             timeout = get_config_float("image_index_describe_timeout", 120.0)
-            for vc in vision_clients:
-                try:
-                    return await asyncio.wait_for(
-                        vc.describe_images([img], prompt=_DESCRIBE_PROMPT),
-                        timeout=timeout,
-                    )
-                except Exception as exc:
-                    log(f"索引描述模型 {vc.config.name} 失败: {exc}", "DEBUG", tag="贴纸")
-                    continue
+            result = await models.describe_images([img], prompt=_DESCRIBE_PROMPT, timeout=timeout)
+            return result.value
         except Exception as exc:
             log(f"图片描述不可用: {exc}", "DEBUG", tag="贴纸")
         return ""

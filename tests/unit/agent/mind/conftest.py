@@ -2,10 +2,29 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+async def isolate_context_providers() -> AsyncIterator[None]:
+    """思维单测只采集本用例注册的提供者，结束前回收后台采集任务。"""
+    from core.context_provider import ContextProviderRegistry
+
+    providers = dict(ContextProviderRegistry._providers)
+    ContextProviderRegistry.reset()
+    try:
+        yield
+    finally:
+        pending = list(ContextProviderRegistry._inflight.values())
+        ContextProviderRegistry.reset()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        ContextProviderRegistry._providers.update(providers)
 
 
 @pytest.fixture

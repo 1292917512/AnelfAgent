@@ -13,7 +13,7 @@ entities._sdk.register_visual_provider 挂入同一路由（即插即用）。
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional
 
 from agent.capabilities import (
     CapabilityNotSupported,
@@ -92,7 +92,7 @@ class ModelsVisualProvider:
         handler = dispatch.get(capability)
         if handler is None:
             raise CapabilityNotSupported(f"models 提供者不支持能力 '{capability}'")
-        return await self._with_model_fallback(model_type, capability, handler, kwargs)
+        return await self._with_model_fallback(model_type, handler, kwargs)
 
     # ------------------------------------------------------------------
     # 模型链回退骨架
@@ -101,30 +101,25 @@ class ModelsVisualProvider:
     async def _with_model_fallback(
         self,
         model_type: str,
-        capability: str,
         handler: Callable[..., Awaitable[Any]],
         kwargs: Dict[str, Any],
     ) -> Dict[str, Any]:
-        pairs = _mgr().iter_media_for_type(model_type)
-        if not pairs:
-            raise ProviderUnavailable(f"未配置 {model_type} 类型模型")
-        errors: Dict[str, str] = {}
-        for model_name, client in pairs:
-            try:
-                result = await handler(model_name, client, **kwargs)
-                if isinstance(result, dict):
-                    result.setdefault("model", model_name)
-                return result
-            except NotImplementedError:
-                # 协议本身不支持该操作（非单个模型故障），上抛由路由器转交下一提供者
-                raise
-            except Exception as exc:
-                detail = str(exc).strip() or type(exc).__name__
-                errors[model_name] = detail[:200]
-                log(f"{capability} 模型 {model_name} 调用失败，尝试下一个: {detail}",
-                    "WARNING", tag=_LOG_TAG)
-                continue
-        raise ProviderChainError(f"所有 {model_type} 模型均调用失败", errors)
+        from agent.llm.config import ModelType
+        from agent.llm.llm_client import LLMNotConfiguredError
+        from agent.llm.model_execution import ModelCallError, execute_media
+
+        try:
+            result = await execute_media(
+                _mgr(), ModelType(model_type),
+                lambda model, client: handler(model, client, **kwargs),
+            )
+        except LLMNotConfiguredError as exc:
+            raise ProviderUnavailable(str(exc)) from exc
+        except ModelCallError as exc:
+            raise ProviderChainError(str(exc), exc.errors) from exc
+        output: Dict[str, Any] = result.value
+        output.setdefault("model", result.model)
+        return output
 
     # ------------------------------------------------------------------
     # 图片/视频理解
@@ -140,110 +135,45 @@ class ModelsVisualProvider:
             load_image_from_path,
             optimize_for_vision,
         )
-        from agent.llm.llm_manager import ModelType
-        from agent.llm.resilience import ErrorCategory, classify_llm_error
+        from agent.llm.llm_client import LLMNotConfiguredError
+        from agent.llm.model_api import ModelAPI
 
-        all_vision = _mgr().get_all_by_type(ModelType.VISION)
-        if not all_vision:
+        models = ModelAPI(_mgr())
+        if not models.list_models("vision"):
             raise ProviderUnavailable("未配置视觉模型")
-
-        last_err = ""
-        attempts = 0
-        policy_rejects = 0
-
-        async def _try_candidates(candidates: List[Any], img: Any) -> Optional[Dict[str, Any]]:
-            nonlocal last_err, attempts, policy_rejects
-            for vc in candidates:
-                attempts += 1
-                try:
-                    description = await vc.describe_images([img], prompt=prompt)
-                    return {"description": description, "model": vc.config.name}
-                except Exception as exc:
-                    last_err = str(exc)
-                    # 内容审核是同模型确定性拒绝，但不同供应商审核尺度不同，继续回退
-                    if classify_llm_error(exc).category is ErrorCategory.CONTENT_POLICY:
-                        policy_rejects += 1
-                    log(f"视觉模型 {vc.config.name} 识别失败，尝试下一个: {last_err}",
-                        "WARNING", tag=_LOG_TAG)
-                    continue
-            return None
-
         if image_path.startswith(("http://", "https://")):
-            # URL 一律下载优先：端点直抓远程链接不稳定且超时不可控
-            b64_img = await download_image_to_base64(image_path)
-            if not b64_img:
+            img = await download_image_to_base64(image_path)
+            if not img:
                 raise RuntimeError(f"无法下载图片（链接可能已过期）: {image_path[:100]}")
-            candidates = [c for c in all_vision if c.config.supports_base64_vision] or all_vision
-            result = await _try_candidates(candidates, optimize_for_vision(b64_img))
-            if result is not None:
-                return result
         else:
-            # 候选循环外优化一次：describe_images 内部优化对已优化图幂等直通
-            img = optimize_for_vision(load_image_from_path(image_path))
-            candidates = [c for c in all_vision if c.config.supports_base64_vision] or all_vision
-            result = await _try_candidates(candidates, img)
-            if result is not None:
-                return result
-        if attempts and policy_rejects == attempts:
-            raise RuntimeError(f"所有视觉模型均因内容审核拒绝处理该图片: {last_err}")
-        raise RuntimeError(f"所有视觉模型均调用失败: {last_err}")
+            img = load_image_from_path(image_path)
+        try:
+            result = await models.describe_images([optimize_for_vision(img)], prompt=prompt)
+        except LLMNotConfiguredError as exc:
+            raise ProviderUnavailable(str(exc)) from exc
+        return {"description": result.value, "model": result.model_id}
 
     async def _run_video_understand(self, video_path: str, prompt: str) -> Dict[str, Any]:
-        """视频理解：按视觉模型优先级链逐个尝试 describe_video。
-
-        严格候选过滤：仅投送声明 supports_video 的模型——整段视频 base64 体积大，
-        而多数视觉端点并不接受 video block，未声明即视为不支持，不做全链喷洒试错；
-        无声明模型时直接报配置缺失，引导在模型配置中显式开启。
-        """
+        """下载或读取视频后交给统一模型接口，仅使用支持视频理解的视觉候选。"""
         from agent.llm.image_utils import download_video_to_base64, load_video_from_path
+        from agent.llm.llm_client import LLMNotConfiguredError
         from agent.llm.llm_manager import ModelType
-        from agent.llm.resilience import ErrorCategory, classify_llm_error
+        from agent.llm.model_api import ModelAPI
 
-        all_vision = _mgr().get_all_by_type(ModelType.VISION)
-        if not all_vision:
-            raise ProviderUnavailable("未配置视觉模型")
-        candidates = [c for c in all_vision if getattr(c.config, "supports_video", False)]
-        if not candidates:
-            raise ProviderUnavailable(
-                "未配置支持视频理解的模型（请在模型配置中为支持视频的模型开启 supports_video）"
-            )
-
-        last_err = ""
-        attempts = 0
-        policy_rejects = 0
-
-        async def _try_candidates(cands: List[Any], vid: Any) -> Optional[Dict[str, Any]]:
-            nonlocal last_err, attempts, policy_rejects
-            for vc in cands:
-                attempts += 1
-                try:
-                    description = await vc.describe_video(vid, prompt=prompt)
-                    return {"description": description, "model": vc.config.name}
-                except Exception as exc:
-                    last_err = str(exc)
-                    if classify_llm_error(exc).category is ErrorCategory.CONTENT_POLICY:
-                        policy_rejects += 1
-                    log(f"视觉模型 {vc.config.name} 视频识别失败，尝试下一个: {last_err}",
-                        "WARNING", tag=_LOG_TAG)
-                    continue
-            return None
-
+        manager = _mgr()
+        if not any(client.config.supports_video for client in manager.get_all_by_type(ModelType.VISION)):
+            raise ProviderUnavailable("未配置支持视频理解的模型，请在模型配置中开启 supports_video")
         if video_path.startswith(("http://", "https://")):
-            # URL 一律下载优先：端点直抓远程链接不稳定且超时不可控
-            b64_vid = await download_video_to_base64(video_path)
-            if not b64_vid:
+            video = await download_video_to_base64(video_path)
+            if not video:
                 raise RuntimeError(f"无法下载视频（链接可能已过期）: {video_path[:100]}")
-            result = await _try_candidates(candidates, b64_vid)
-            if result is not None:
-                return result
         else:
-            vid = load_video_from_path(video_path)
-            result = await _try_candidates(candidates, vid)
-            if result is not None:
-                return result
-        if attempts and policy_rejects == attempts:
-            raise RuntimeError(f"所有视觉模型均因内容审核拒绝处理该视频: {last_err}")
-        raise RuntimeError(f"所有视觉模型均调用失败: {last_err}")
+            video = load_video_from_path(video_path)
+        try:
+            result = await ModelAPI(manager).describe_video(video, prompt=prompt)
+        except LLMNotConfiguredError as exc:
+            raise ProviderUnavailable(str(exc)) from exc
+        return {"description": result.value, "model": result.model_id}
 
     # ------------------------------------------------------------------
     # 图像生成 / 编辑 / 视频生成
