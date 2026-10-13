@@ -31,7 +31,7 @@ class _FakeVisionClient:
 
     def __init__(self, name: str, error: Exception | None = None) -> None:
         self.config = SimpleNamespace(
-            name=name, supports_url_vision=True, supports_base64_vision=True,
+            name=name, model=name, supports_url_vision=True, supports_base64_vision=True,
         )
         self._error = error
         self.calls = 0
@@ -49,7 +49,7 @@ def _patch_mgr(monkeypatch: pytest.MonkeyPatch, clients: list) -> None:
     """装配最小模型管理器桩。"""
     monkeypatch.setattr(
         caps_mod, "_mgr",
-        lambda: SimpleNamespace(get_all_by_type=lambda _t: clients),
+        lambda: SimpleNamespace(get_all_by_type=lambda _t: clients, safe_error=lambda exc, _c: str(exc)),
     )
 
 
@@ -192,7 +192,7 @@ class _FakeVideoClient:
     """可编排 describe_video 行为的假视觉客户端。"""
 
     def __init__(self, name: str, supports_video: bool, error: Exception | None = None) -> None:
-        self.config = SimpleNamespace(name=name, supports_video=supports_video)
+        self.config = SimpleNamespace(name=name, model=name, supports_video=supports_video)
         self._error = error
         self.calls = 0
 
@@ -210,7 +210,7 @@ class TestVideoCandidateFilter:
     def _patch_env(monkeypatch: pytest.MonkeyPatch, clients: list) -> None:
         monkeypatch.setattr(
             caps_mod, "_mgr",
-            lambda: SimpleNamespace(get_all_by_type=lambda _mt: clients),
+            lambda: SimpleNamespace(get_all_by_type=lambda _mt: clients, safe_error=lambda exc, _c: str(exc)),
         )
         monkeypatch.setattr(
             image_utils, "load_video_from_path", lambda _p: SimpleNamespace(data="x"),

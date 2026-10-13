@@ -73,7 +73,7 @@ class ModelsSoundProvider:
         handler = dispatch.get(capability)
         if handler is None:
             raise CapabilityNotSupported(f"models 提供者不支持能力 '{capability}'")
-        return await self._with_model_fallback(model_type, capability, handler, kwargs)
+        return await self._with_model_fallback(model_type, handler, kwargs)
 
     # ------------------------------------------------------------------
     # 模型链回退骨架
@@ -82,30 +82,25 @@ class ModelsSoundProvider:
     async def _with_model_fallback(
         self,
         model_type: str,
-        capability: str,
         handler: Callable[..., Awaitable[Any]],
         kwargs: Dict[str, Any],
     ) -> Dict[str, Any]:
-        pairs = _mgr().iter_media_for_type(model_type)
-        if not pairs:
-            raise ProviderUnavailable(f"未配置 {model_type} 类型模型")
-        errors: Dict[str, str] = {}
-        for model_name, client in pairs:
-            try:
-                result = await handler(model_name, client, **kwargs)
-                if isinstance(result, dict):
-                    result.setdefault("model", model_name)
-                return result
-            except NotImplementedError:
-                # 协议本身不支持该操作（非单个模型故障），上抛由路由器转交下一提供者
-                raise
-            except Exception as exc:
-                detail = str(exc).strip() or type(exc).__name__
-                errors[model_name] = detail[:200]
-                log(f"{capability} 模型 {model_name} 调用失败，尝试下一个: {detail}",
-                    "WARNING", tag=_LOG_TAG)
-                continue
-        raise ProviderChainError(f"所有 {model_type} 模型均调用失败", errors)
+        from agent.llm.config import ModelType
+        from agent.llm.llm_client import LLMNotConfiguredError
+        from agent.llm.model_execution import ModelCallError, execute_media
+
+        try:
+            result = await execute_media(
+                _mgr(), ModelType(model_type),
+                lambda model, client: handler(model, client, **kwargs),
+            )
+        except LLMNotConfiguredError as exc:
+            raise ProviderUnavailable(str(exc)) from exc
+        except ModelCallError as exc:
+            raise ProviderChainError(str(exc), exc.errors) from exc
+        output: Dict[str, Any] = result.value
+        output.setdefault("model", result.model)
+        return output
 
     # ------------------------------------------------------------------
     # 各能力的单模型调用

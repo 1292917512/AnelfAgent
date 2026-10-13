@@ -1,5 +1,46 @@
 # 模型与 LLM 层
 
+## 模块模型 SDK
+
+实体与组件从 `entities._sdk` 导入 `get_model_api`，频道从 `agent.channel` 导入同名接口。
+两者使用同一个进程内 `ModelAPI`，直接复用项目模型配置；不访问本机 Web API，不自行复制供应商
+密钥、客户端或回退循环。`get_llm_manager` 留给模型配置管理，普通调用使用此 SDK。
+
+```python
+from entities._sdk import NoulQuestion, get_model_api
+# 频道使用：from agent.channel import NoulQuestion, get_model_api
+
+models = get_model_api()
+reply = await models.chat(
+    [{"role": "user", "content": "概括这段文字"}],
+    purpose="my_component.summary",
+)
+text = reply.content
+assessment = await models.judge(
+    {"message": text},
+    {"relevant": NoulQuestion(instructions="这段内容是否与当前任务有关？")},
+    native_only=True,
+)
+audio = await models.text_to_speech(text, voice="configured-voice")
+audio_bytes = audio.value
+```
+
+- `chat` 支持工具 schema、多模态消息、生成参数和 `stream=True` 流式聚合，复用已有重试、协议路由
+  与用量记账；只返回 `ChatResult`，不会执行返回的工具调用、发送频道消息或写入会话历史。
+- `describe_images` / `describe_video`、`embed` / `embed_multimodal`、`transcribe` /
+  `text_to_speech`、`rerank`、`generate_image` / `edit_image`、`generate_video`、`generate_music`
+  覆盖模型配置中的能力类型。结果为 `ModelResult(value, model_id, model)`，携带真实模型归属。
+- 不传 `model_id` 时，逐次读取对应类型的优先级，跳过停用或能力不匹配的模型，失败尝试下一候选。
+  显式传入配置 ID 时固定该模型；不存在、停用或类型不符直接报错，不隐式换供应商。
+  持久化向量索引必须固定嵌入模型，不同模型即使维度相同也不能混用向量空间。
+- 媒体调用继承所选模型的凭据、自定义请求头、协议和代理配置，每个候选只尝试一次；
+  `ModelCallError.errors` 提供按尝试顺序排列的脱敏错误。取消立即传播，不触发下一候选。
+  可选 `timeout` 限制每个媒体候选的完整操作；不设置时沿用客户端自身的请求、流式空闲或任务轮询时限。
+- `judge` 接受显式状态和类型化问题，复用判断引擎的候选排序、离线跳过与恢复。
+  `native_only=True` 禁止普通聊天模型回退；不设置时遵循判断配置。SDK 不自动注入当前会话，
+  调用方按任务提供必要上下文，不跨会话读取隐含状态。判断答案的否定不是故障，不会因答案为否而重试。
+- `list_models("vision")` 等接口仅列出按优先级排列的已启用配置 ID，不暴露密钥或发起联网检查。
+
 模型配置管理、调用协议、韧性重试、用量口径与内部辅助调用的现状说明。修改 `agent/llm/`、
 `entities/model_control/` 或用量统计时按需阅读；缓存排查见[上下文缓存分册](context-cache.md)。
 

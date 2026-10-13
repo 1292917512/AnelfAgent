@@ -468,7 +468,7 @@ class TestFallbackStrip:
         ))
         primary.chat = AsyncMock(side_effect=RuntimeError("boom"))
         fallback.chat = AsyncMock(return_value=ChatResult(content="ok"))
-        monkeypatch.setattr(manager, "get_fallback_chat_clients", lambda **kw: [fallback])
+        monkeypatch.setattr(manager, "get_fallback_clients", lambda **kw: [fallback])
         monkeypatch.setattr("agent.llm.llm_manager.asyncio.sleep", AsyncMock())
 
         marker = cache_marker()
@@ -507,7 +507,7 @@ class TestFallbackStrip:
         ))
         primary.chat = AsyncMock(side_effect=RuntimeError("boom"))
         fallback.chat = AsyncMock(return_value=ChatResult(content="ok"))
-        monkeypatch.setattr(manager, "get_fallback_chat_clients", lambda **kw: [fallback])
+        monkeypatch.setattr(manager, "get_fallback_clients", lambda **kw: [fallback])
         monkeypatch.setattr("agent.llm.llm_manager.asyncio.sleep", AsyncMock())
 
         messages = [

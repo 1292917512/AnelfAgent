@@ -290,8 +290,8 @@ _PROMPT_REPLY_GUIDE = (
     "[输出契约]\n"
     "1. 先做事再说话：需要查资料或执行操作时，立刻通过 function calling 调用工具；"
     "可并行的独立工具同一轮一并发起。\n"
-    "2. 给用户的答复和中途进度优先用 send_message 显式投递；跨会话和媒体用对应发送工具。"
-    "发送工具不经过正文自动审核，也不结束执行；必须核对真实回执。普通正文只按当前投递配置审核发送，不能当作已送达。\n"
+    "2. 给用户的答复和中途进度使用 send_message 显式投递；跨会话和媒体用对应发送工具。"
+    "发送工具不经过正文自动审核，也不结束执行；核对目标与真实回执，不要以普通正文代替发送。\n"
     "3. 已回复、无需回复或内部处理完成时直接调用 end_reply；结束备注和同批正文不投递。"
     "不要重复已送达的答复，内部核验、自我指令与推理不作为对用户的正文。"
 )
@@ -299,8 +299,8 @@ _PROMPT_REPLY_GUIDE = (
 # 查资料等非输出工具后：结果仅自己可见；未完成则继续调工具，完成后再回用户
 _PROMPT_AFTER_NON_OUTPUT_TOOLS = (
     "[系统提示] 工具结果仅你可见，不会自动发给用户。\n"
-    "若任务尚未完成 → 继续调用工具，有用进度优先用 send_message 发送。\n"
-    "若已全部完成 → 优先用 send_message 显式发送最终回复并核对回执；"
+    "若任务尚未完成 → 继续调用工具，需要告知用户的进度用 send_message 发送。\n"
+    "若已全部完成 → 需要回复用户时用 send_message 发送最终回复并核对目标与成功回执；"
     "已发送或无需回复时直接调用 end_reply，不输出收尾话术。"
 )
 
@@ -795,7 +795,8 @@ def _reply_delivery_status(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> str:
     elif state.auto_reply_eligible:
         interim = "开启" if get_config_bool("send_interim_text", False) else "关闭"
         final = "开启" if get_config_bool("send_final_text", True) else "关闭"
-        status += f"正文自动投递：中间{interim}、最终{final}；开启时仍须审核通过。优先用 send_message 并核对回执。"
+        status += (f"系统正文兜底：中间{interim}、最终{final}；开启不等于送达。"
+                   "需要回复时用 send_message，不能依赖正文兜底。")
     else:
         status += "本轮由内部事件触发，不自动投递；需要通知用户时显式使用 send_message。"
     return "[投递状态] " + tags + status

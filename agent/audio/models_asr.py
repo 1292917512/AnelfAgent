@@ -12,9 +12,6 @@ from typing import Any, Dict, List
 
 from agent.audio.providers import KIND_ASR
 from core.config import get_config_int
-from core.log import log
-
-_LOG_TAG = "音频"
 
 
 class ModelsAsrProvider:
@@ -29,33 +26,21 @@ class ModelsAsrProvider:
 
     async def check_available(self) -> bool:
         try:
-            from agent.llm import get_llm_manager
-            return bool(get_llm_manager().iter_media_for_type("asr"))
+            from agent.llm.model_api import get_model_api
+            return bool(get_model_api().list_models("asr"))
         except Exception:
             return False
 
     async def transcribe(
         self, audio_path: str, source_time: str = "",
     ) -> List[Dict[str, Any]]:
-        from agent.llm import get_llm_manager
-        pairs = get_llm_manager().iter_media_for_type("asr")
-        if not pairs:
-            raise RuntimeError("未配置 asr 类型模型")
+        from agent.llm.model_api import get_model_api
         with open(audio_path, "rb") as f:
             audio_data = f.read()
         file_name = os.path.basename(audio_path)
-        last_err = ""
-        for model_name, client in pairs:
-            try:
-                text = await client.transcribe(audio_data, model=model_name, file_name=file_name)
-                return [{"start_ms": 0, "end_ms": 0, "text": text, "vector": None,
-                         "abs_start_ms": None, "abs_end_ms": None}]
-            except Exception as exc:
-                last_err = str(exc).strip() or type(exc).__name__
-                log(f"ASR 模型 {model_name} 转写失败，尝试下一个: {last_err}",
-                    "WARNING", tag=_LOG_TAG)
-                continue
-        raise RuntimeError(f"所有 asr 模型均调用失败: {last_err}")
+        result = await get_model_api().transcribe(audio_data, file_name=file_name)
+        return [{"start_ms": 0, "end_ms": 0, "text": result.value, "vector": None,
+                 "abs_start_ms": None, "abs_end_ms": None}]
 
 
 def register_models_asr() -> None:

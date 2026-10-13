@@ -620,11 +620,11 @@ class LLMManager(BaseEntity):
         return None
 
     def get_all_by_type(self, model_type: ModelType) -> List[LLMClient]:
-        """获取指定类型的所有客户端（按优先级）。"""
+        """获取指定类型的已启用客户端（按配置优先级）。"""
         result: List[LLMClient] = []
         for mid in self._iter_by_type(model_type):
             client = self._clients.get(mid)
-            if client:
+            if client and client.config.enabled:
                 result.append(client)
         return result
 
@@ -680,13 +680,7 @@ class LLMManager(BaseEntity):
                 client = self._clients.get(mid)
                 if not client or not client.config.enabled:
                     continue
-                return MediaClient(
-                    base_url=client.config.base_url,
-                    api_key=client.config.api_key,
-                    timeout=client.config.timeout,
-                    proxy_mode=client.config.proxy_mode,
-                    media_protocol=client.config.media_protocol,
-                )
+                return MediaClient.from_config(client.config)
         return None
 
     def get_image_gen_client(self) -> Optional["MediaClient"]:
@@ -729,13 +723,7 @@ class LLMManager(BaseEntity):
             client = self._clients.get(mid)
             if not client or not client.config.enabled:
                 continue
-            mc = MediaClient(
-                base_url=client.config.base_url,
-                api_key=client.config.api_key,
-                timeout=client.config.timeout,
-                proxy_mode=client.config.proxy_mode,
-                media_protocol=client.config.media_protocol,
-            )
+            mc = MediaClient.from_config(client.config)
             result.append((client.config.model, mc))
         return result
 
@@ -754,16 +742,17 @@ class LLMManager(BaseEntity):
                 return client.config.model
         return None
 
-    def get_fallback_chat_clients(
+    def get_fallback_clients(
         self,
         *,
+        model_type: ModelType = ModelType.CHAT,
         exclude: Optional[str] = None,
         require_tools: bool = False,
         require_vision: bool = False,
     ) -> List[LLMClient]:
-        """获取可用于回退的 chat 客户端列表（按优先级，跳过已停用）。"""
+        """按类型获取符合请求能力的有序回退候选，跳过已停用模型。"""
         result: List[LLMClient] = []
-        for mid in self._iter_by_type(ModelType.CHAT):
+        for mid in self._iter_by_type(model_type):
             if mid == exclude:
                 continue
             client = self._clients.get(mid)
@@ -789,6 +778,8 @@ class LLMManager(BaseEntity):
         purpose: str = "internal",
         stream: bool = False,
         record_usage: bool = True,
+        model_type: ModelType = ModelType.CHAT,
+        allow_fallback: bool = True,
     ) -> ChatResult:
         """带重试和模型回退的统一聊天调用。
 
@@ -814,11 +805,12 @@ class LLMManager(BaseEntity):
         - 缓存影响：内部调用为独立请求，不触碰主对话前缀层。
         """
         primary = client or self.get_default()
-        candidates = [primary, *self.get_fallback_chat_clients(
-            exclude=primary.config.name,
-            require_tools=bool(tools),
-            require_vision=self._messages_contain_images(messages),
-        )]
+        candidates = [primary]
+        if allow_fallback:
+            candidates.extend(self.get_fallback_clients(
+                model_type=model_type, exclude=primary.config.name,
+                require_tools=bool(tools), require_vision=self._messages_contain_images(messages),
+            ))
         last_exc: Optional[Exception] = None
         first_exc: Optional[Exception] = None
         index = 0
@@ -864,7 +856,7 @@ class LLMManager(BaseEntity):
                 if first_exc is None:
                     first_exc = exc
                 # TimeoutError 等异常 str() 为空，补类型名保证日志可诊断
-                safe = self._safe_error(exc, candidate) or type(exc).__name__
+                safe = self.safe_error(exc, candidate) or type(exc).__name__
                 warning(
                     f"LLM [{candidate.config.name}] 最终失败: "
                     f"{type(exc).__name__}: {safe}",
@@ -1036,7 +1028,7 @@ class LLMManager(BaseEntity):
                     server_wait = parse_retry_after(exc)
                     if server_wait is not None:
                         if server_wait > RETRY_AFTER_WAIT_CAP:
-                            safe = self._safe_error(exc, client) or type(exc).__name__
+                            safe = self.safe_error(exc, client) or type(exc).__name__
                             warning(
                                 f"LLM [{name}] 服务端限流要求等待 {server_wait:.0f}s "
                                 f"（超过采信上限 {RETRY_AFTER_WAIT_CAP:.0f}s），"
@@ -1049,7 +1041,7 @@ class LLMManager(BaseEntity):
                     delay = jittered_backoff(attempt + 1, base_delay=2.0, max_delay=30.0)
                 remaining = deadline - asyncio.get_running_loop().time()
                 if remaining <= delay:
-                    safe = self._safe_error(exc, client) or type(exc).__name__
+                    safe = self.safe_error(exc, client) or type(exc).__name__
                     raise asyncio.TimeoutError(
                         f"LLM [{name}] 重试预算不足，根因: "
                         f"{type(exc).__name__}: {safe}"
@@ -1057,7 +1049,7 @@ class LLMManager(BaseEntity):
                 warning(
                     f"LLM [{name}] 调用失败 ({classified.category.value})，"
                     f"退避 {delay:.1f}s 后重试 {attempt + 1}/{max_retries}: "
-                    f"{type(exc).__name__}: {self._safe_error(exc, client)}",
+                    f"{type(exc).__name__}: {self.safe_error(exc, client)}",
                     tag="模型",
                 )
                 await asyncio.sleep(delay)
@@ -1105,7 +1097,7 @@ class LLMManager(BaseEntity):
                 return True
         return False
 
-    def _safe_error(self, exc: Exception, client: LLMClient) -> str:
+    def safe_error(self, exc: Exception, client: LLMClient) -> str:
         """错误消息脱敏：替换所有供应商 key（错误体可能夹带非当前客户端的凭证），
         再走统一脱敏管线兜底（URL 内联凭证等）。"""
         message = str(exc)

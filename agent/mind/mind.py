@@ -122,7 +122,7 @@ from core.tool_registry import activate_group, deferred_tool
     group="thinking", tags=["always"], source="mind.core",
     description=(
         "结束本轮操作，不再执行后续工具或生成回复。已回复或无需回复时调用；"
-        "reason 及同批正文仅为内部记录，不发给用户。需回复时先 send_message，或单独输出最终正文。"
+        "reason 及同批正文仅为内部记录，不发给用户。需回复时先调用 send_message 并确认目标会话的成功回执。"
     ),
 )
 def _end_reply_tool(reason: str = "") -> str:

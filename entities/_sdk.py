@@ -37,6 +37,26 @@ import inspect
 import json
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, TypeVar
 
+from agent.llm.model_api import (
+    ChatResult,
+    ChoiceQuestion,
+    ImageContent,
+    JsonValue,
+    JudgmentError,
+    JudgmentReport,
+    LLMNotConfiguredError,
+    ModelAPI,
+    ModelCallError,
+    ModelResult,
+    ModelType,
+    MusicResult,
+    NoulCriteria,
+    NoulQuestion,
+    Question,
+    ScoreQuestion,
+    VideoContent,
+    get_model_api,
+)
 from agent.memory.recall_policy import RecallPolicy, recall_options, set_turn_recall_policy
 from core.context_provider import context_provider
 from core.entity import EntityRegistry
@@ -76,6 +96,10 @@ from core.network import (
 from core.network.httpx2 import async_network_client2
 
 __all__ = [
+    "get_model_api", "ModelAPI", "ModelType", "ModelResult", "ModelCallError", "LLMNotConfiguredError",
+    "ChatResult", "ImageContent", "VideoContent", "MusicResult",
+    "ChoiceQuestion", "NoulQuestion", "NoulCriteria", "ScoreQuestion", "Question",
+    "JsonValue", "JudgmentReport", "JudgmentError",
     "open_proxy_socket", "resolve_socket_route",
     "NetworkProbeRequest", "diagnose_network",
     "AsyncNetworkTransport", "NetworkTransport", "NetworkRoute", "ProxyMode",
@@ -443,13 +467,13 @@ async def cancel_persistent_reminder(reminder_id: str) -> bool:
         return False
 
 
-def load_image_from_path(path: str) -> Any:
+def load_image_from_path(path: str) -> ImageContent:
     """从本地路径加载图片为 base64 ImageContent。"""
     from agent.llm.image_utils import load_image_from_path as _load
     return _load(path)
 
 
-def optimize_image_for_vision(image: Any) -> Any:
+def optimize_image_for_vision(image: ImageContent) -> ImageContent:
     """对发送给视觉模型的图片做分辨率/体积优化（幂等）。"""
     from agent.llm.image_utils import optimize_for_vision
     return optimize_for_vision(image)
@@ -461,16 +485,10 @@ def is_content_policy_error(exc: BaseException) -> bool:
     return classify_llm_error(exc).category is ErrorCategory.CONTENT_POLICY
 
 
-def download_image_to_base64(url: str) -> Any:
+async def download_image_to_base64(url: str) -> ImageContent | None:
     """下载 URL 图片并转为 base64 ImageContent。"""
     from agent.llm.image_utils import download_image_to_base64 as _dl
-    return _dl(url)
-
-
-def get_image_content_class() -> type:
-    """获取 ImageContent 类型。"""
-    from agent.llm.types import ImageContent
-    return ImageContent
+    return await _dl(url)
 
 
 def is_video_path(path: str) -> bool:
@@ -479,28 +497,16 @@ def is_video_path(path: str) -> bool:
     return _is_video(path)
 
 
-def load_video_from_path(path: str) -> Any:
+def load_video_from_path(path: str) -> VideoContent:
     """从本地路径加载视频为 base64 VideoContent。"""
     from agent.llm.image_utils import load_video_from_path as _load
     return _load(path)
 
 
-def download_video_to_base64(url: str) -> Any:
+async def download_video_to_base64(url: str) -> VideoContent | None:
     """下载 URL 视频并转为 base64 VideoContent。"""
     from agent.llm.image_utils import download_video_to_base64 as _dl
-    return _dl(url)
-
-
-def get_video_content_class() -> type:
-    """获取 VideoContent 类型。"""
-    from agent.llm.types import VideoContent
-    return VideoContent
-
-
-def get_model_type_enum() -> Any:
-    """获取 ModelType 枚举。"""
-    from agent.llm.llm_manager import ModelType
-    return ModelType
+    return await _dl(url)
 
 
 # ------------------------------------------------------------------
