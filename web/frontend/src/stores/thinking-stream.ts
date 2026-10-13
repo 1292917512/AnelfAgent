@@ -1,3 +1,4 @@
+import { EventStream } from "@/lib/event-stream";
 import type { SessionSummary, TraceNode } from "@/lib/types";
 
 export interface ThinkingEvents {
@@ -10,65 +11,27 @@ export interface ThinkingEvents {
 
 type EventHandlers = { [K in keyof ThinkingEvents]: (data: ThinkingEvents[K]) => void };
 
-/** Maintains one trace stream and resynchronizes after an interrupted connection. */
+/** Parses trace events and restores snapshots when frames are lost. */
 export class ThinkingStream {
-  private source: EventSource | null = null;
-  private timer: ReturnType<typeof setTimeout> | undefined;
-  private stopped = true;
-  private opened = false;
+  private readonly stream: EventStream;
 
-  constructor(
-    private readonly handlers: EventHandlers,
-    private readonly connectionChanged: (connected: boolean) => void,
-    private readonly reconnect: () => void,
-  ) {}
-
-  start(): void {
-    this.stopped = false;
-    if (this.source) return;
-    const source = new EventSource("/api/thinking/stream");
-    this.source = source;
-    source.addEventListener("resync", () => { if (this.source === source) this.reconnect(); });
-    source.onopen = () => {
-      if (this.source !== source) return;
-      this.connectionChanged(true);
-      if (this.opened) this.reconnect();
-      this.opened = true;
+  constructor(handlers: EventHandlers, connectionChanged: (connected: boolean) => void, reconnect: () => void) {
+    const listen = <K extends keyof ThinkingEvents>(source: EventSource, event: K, isCurrent: () => boolean) => {
+      source.addEventListener(event, (message: MessageEvent<string>) => {
+        if (!isCurrent()) return;
+        try { handlers[event](JSON.parse(message.data)); }
+        catch { reconnect(); }
+      });
     };
-    source.onerror = () => {
-      if (this.source !== source) return;
-      this.connectionChanged(false);
-      if (source.readyState === EventSource.CLOSED) {
-        source.close();
-        this.source = null;
-        this.timer = setTimeout(() => { if (!this.stopped) this.start(); }, 5000);
-      }
-    };
-    this.listen(source, "session_start");
-    this.listen(source, "session_end");
-    this.listen(source, "node_added");
-    this.listen(source, "node_updated");
-    this.listen(source, "tools_updated");
+    this.stream = new EventStream("/api/thinking/stream", (source, isCurrent) => {
+      listen(source, "session_start", isCurrent);
+      listen(source, "session_end", isCurrent);
+      listen(source, "node_added", isCurrent);
+      listen(source, "node_updated", isCurrent);
+      listen(source, "tools_updated", isCurrent);
+    }, connectionChanged, (reconnected) => { if (reconnected) reconnect(); }, reconnect);
   }
 
-  private listen<K extends keyof ThinkingEvents>(source: EventSource, event: K): void {
-    source.addEventListener(event, (message: MessageEvent<string>) => {
-      if (this.source !== source) return;
-      try {
-        const data: ThinkingEvents[K] = JSON.parse(message.data);
-        this.handlers[event](data);
-      } catch {
-        this.reconnect();
-      }
-    });
-  }
-
-  stop(): void {
-    this.stopped = true;
-    clearTimeout(this.timer);
-    this.source?.close();
-    this.source = null;
-    this.opened = false;
-    this.connectionChanged(false);
-  }
+  start(): void { this.stream.start(); }
+  stop(): void { this.stream.stop(); }
 }

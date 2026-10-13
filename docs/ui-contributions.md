@@ -29,6 +29,7 @@ export default defineUiContributions([
 - `system.restart`：需要重启的界面只挂载该控件，重启 API、确认和进度由提供模块持有。
 - `audio.overview.cards` / `audio.identify.after`：音频总览与识别页的扩展区域。
 - `audio.recording.actions`：录制单元操作；组件收到类型明确的 `{ path: string }`。
+- `activity.tool`：本模块的工具执行渲染器，每个模块最多一个；接收 `ToolRendererProps`（脱敏的 `entry`、`summary/detail` 视图和通用 `fallback`）。
 - `chat.message`：模块消息渲染器；声明 `messageType`，组件收到 `{ payload: JsonObject }` 并自行校验业务字段。
 - `id` 在模块内唯一，使用小写字母、数字和连字符；不同模块自动加归属前缀。
 - `order` 默认 100，小值在前，同序按归属和 ID 排序。
@@ -46,3 +47,28 @@ export default defineUiContributions([
 运维实现参考 `entities/devops/panels/`：同一组件装配到工作区、总览和实体详情。更新操作后台执行，服务端串行处理更新、构建和重启；前端通过操作 ID 跟踪，并确认进程 ID 变化后提示手动刷新以保留草稿。
 
 模块的 Vitest 测试放在 `panels/**/*.test.ts(x)` 或 `frontend/**/*.test.ts(x)`；Playwright 用例放在对应的 `e2e/*.spec.mts`（模块目录用 ESM 与前端共享测试设施）。统一测试命令自动发现，不需修改核心测试文件。
+
+## 工具执行视图
+
+实体和频道在同一清单中注册 `activity.tool`。服务端从 EntityRegistry 中实际工具函数的模块路径生成 `entity:<id>` / `channel:<id>` 归属；频道桥接工具读取注册来源。前端不根据工具名或用户参数猜测来源，不影响工具路由和执行。
+
+```tsx
+// contributions.ts
+export default defineUiContributions([
+  { id: "execution", slot: "activity.tool", title: { ns: "workbench", key: "activity.result" },
+    load: () => import("./ExecutionView") },
+]);
+
+// ExecutionView.tsx
+import type { ToolRendererProps } from "@/lib/ui-contributions";
+import { ToolPresentation } from "@/components/activity/ToolPresentation";
+
+export default function ExecutionView(props: ToolRendererProps) {
+  return <ToolPresentation {...props} fields={[{ key: "path" }, { key: "pattern" }]} />;
+}
+```
+
+摘要只选对操作有帮助的字段；业务含义由模块持有。命令类视图可复用 `CommandExecution`，原样呈现命令、标准输出、错误输出、目标、工作目录和退出码，输出不解释为 Markdown。宿主始终保留标签指代、耗时、调用标识和完整参数/回执入口。模块缺失、加载失败或渲染失败时使用通用视图，不隐藏记录。
+
+开发服务中，组件源码修改交给 Vite Fast Refresh；清单、入口和语言资源变动重新发现并刷新页面。生产构建的前端资源仍需重新构建并刷新页面，Python 模块热重载不会把 TypeScript 编译到已发布资源中。
+生产构建将启动必读的轻量扩展清单合并为一个资源，组件实现保持按需加载；增加模块不会逐个增加首屏清单请求。

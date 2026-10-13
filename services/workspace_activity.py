@@ -34,7 +34,13 @@ from core.hooks import EVENT_HOOK_EXECUTION
 from core.realtime_hub import publish
 from core.sanitizer import sanitize_text
 from core.stream_events import EVENT_ASSISTANT_DELTA, EVENT_FILE_DIFF
-from services.activity_presentation import presentation_label, relative_workspace_path, source_reference, tool_targets
+from services.activity_presentation import (
+    presentation_label,
+    relative_workspace_path,
+    source_reference,
+    tool_presentation_owner,
+    tool_targets,
+)
 from services.activity_skills import merge_skill_evidence, record_skill_read
 
 MAX_RUNS = 20
@@ -117,19 +123,15 @@ class WorkspaceActivityService:
         if not self._runs:
             return self.snapshot()
         runs = list(self._runs.values())
-        latest = max(runs, key=lambda run: (run["started_at"], run["id"]))
+        roots = [run for run in runs if run["parent_id"] not in self._runs]
+        latest = max(roots or runs, key=lambda run: (run["started_at"], run["id"]))
         kept = {latest["id"]} | {run["id"] for run in runs if run["status"] == "running"
                 or any(e.get("status") == "running" for e in run["entries"])}
 
-        def end(run: dict[str, Any]) -> float:
-            return float("inf") if run["status"] == "running" else float(run["ended_at"] or run["updated_at"])
-
         while True:
             current = [run for run in runs if run["id"] in kept]
-            start, finish = min(run["started_at"] for run in current), max(map(end, current))
             parents = {run["parent_id"] for run in current}
-            connected = {run["id"] for run in runs if run["parent_id"] in kept or run["id"] in parents
-                         or (run["started_at"] < finish and end(run) > start)}
+            connected = {run["id"] for run in runs if run["parent_id"] in kept or run["id"] in parents}
             if connected <= kept:
                 break
             kept |= connected
@@ -356,6 +358,7 @@ class WorkspaceActivityService:
         if run is None or not payload.get("tool_id") or not payload.get("tool_name") or payload["tool_name"] == "end_reply":
             return
         self._append(run, {"id": str(payload["tool_id"]), "kind": "tool", "name": str(payload["tool_name"]),
+                           "owner": tool_presentation_owner(str(payload["tool_name"])),
                            "arguments": sanitize_text(str(payload.get("arguments") or payload.get("arguments_preview", "")))[:MAX_TEXT],
                            "targets": tool_targets(str(payload.get("arguments") or payload.get("arguments_preview", "")), str(payload["tool_name"])),
                            "request_id": str((payload.get("request") or {}).get("request_id", "")),

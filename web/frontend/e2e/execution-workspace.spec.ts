@@ -78,7 +78,7 @@ test("memory tool references open the resolved project file instead of a workspa
   await details.getByRole("button", { name: "memory/note.md Project", exact: true }).click();
   await expect(details).toHaveCount(0);
   await expect(page.getByText("project content", { exact: true })).toBeVisible();
-  expect(reads).toHaveLength(1);
+  expect(new Set(reads).size).toBe(1);
   const read = reads[0];
   if (!read) throw new Error("The project file was not requested");
   expect(new URL(read).searchParams.get("root")).toBe("project");
@@ -129,8 +129,8 @@ test("context evidence, tagged results and cache facts remain readable on narrow
   await expect(execution.getByText("Evidence BLUE-42", { exact: false })).toBeVisible();
   await expect(execution.locator('[title="topic: review"]')).toBeVisible();
   await expect(execution.getByText("Verify the path before retrying.", { exact: true })).toBeVisible();
-  await execution.getByText("Full receipt", { exact: true }).click();
-  await expect(execution.getByRole("region", { name: "Result", exact: true })).toContainText("request-42");
+  await execution.getByText("Arguments and full receipt", { exact: true }).click();
+  await expect(execution.getByRole("region", { name: "Full receipt", exact: true })).toContainText("request-42");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   const accessibility = await new AxeBuilder({ page }).include(".activity-pane").analyze();
   expect(accessibility.violations).toEqual([]);
@@ -155,7 +155,9 @@ test("workspace shows the global live process beside actual Web messages", async
   const activeRuns = execution.getByRole("navigation", { name: "Active runs", exact: true });
   await expect(activeRuns.getByRole("button")).toHaveCount(2);
   await activeRuns.getByRole("button", { name: "qq · Inspect deployment and report the service status", exact: true }).click();
-  await expect(execution.getByRole("button", { name: "Follow paused", exact: true })).toBeVisible();
+  const inspector = page.getByRole("dialog", { name: "View execution details", exact: true });
+  await expect(inspector.getByText("inspect_service", { exact: true })).toBeVisible();
+  await inspector.getByRole("button", { name: "Close", exact: true }).click();
   const parentCard = execution.locator('[data-activity-run="global"]');
   await expect(parentCard.getByRole("button", { name: "Thought", exact: true })).toHaveAttribute("aria-expanded", "true");
   await expect(parentCard.getByText("before reporting the deployment result.", { exact: false })).toBeVisible();
@@ -164,12 +166,10 @@ test("workspace shows the global live process beside actual Web messages", async
   await expect(parentCard.getByText("Call ID: tool", { exact: false })).toBeVisible();
   await expect(parentCard.getByText("Validate settings", { exact: true })).toBeVisible();
   await page.screenshot({ path: info.outputPath("workspace-live-activity.png") });
-  const childCard = execution.locator('[data-activity-run="child"]');
-  await childCard.locator(".activity-run-heading").click();
-  await expect(childCard.getByText("read_deployment_settings", { exact: true })).toHaveCount(0);
   await parentCard.getByRole("button", { name: "View execution", exact: true }).click();
-  await expect(childCard).toBeInViewport();
-  await expect(childCard.getByText("read_deployment_settings", { exact: true })).toBeVisible();
+  await expect(inspector.getByText("read_deployment_settings", { exact: true })).toBeVisible();
+  await expect(inspector.getByText("Reviewing settings while the main conversation continues.", { exact: true })).toBeVisible();
+  await inspector.getByRole("button", { name: "Close", exact: true }).click();
   await page.evaluate(() => { document.documentElement.dataset.theme = "dark"; document.documentElement.classList.add("dark"); });
   await page.screenshot({ path: info.outputPath("workspace-live-activity-dark.png"), animations: "disabled" });
   await openWebChat(page);

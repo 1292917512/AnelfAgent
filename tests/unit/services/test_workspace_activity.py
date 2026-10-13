@@ -14,7 +14,7 @@ from core.event_bus import event_bus
 from core.hooks import HookJudgment, HookMode, hook_execution, hook_journal
 from core.realtime_hub import TERMINAL_EVENTS
 from core.tags import tag_label
-from services.activity_presentation import tool_targets
+from services.activity_presentation import tool_presentation_owner, tool_targets
 from services.workspace_activity import WorkspaceActivityService
 
 
@@ -335,6 +335,45 @@ async def test_clear_history_keeps_last_completed_round(activity, monkeypatch):
     snapshot = service.clear_history()
     assert [run["id"] for run in snapshot["runs"]] == ["3.0"]
     assert service.clear_history() == snapshot
+
+
+async def test_long_background_run_does_not_keep_unrelated_finished_history(activity, monkeypatch):
+    service, _ = activity
+    monkeypatch.setattr("services.workspace_activity.time.time", lambda: 1.0)
+    await service._start({"turn_id": "background", "scope": "reflect:job"})
+    for clock in (2.0, 3.0, 4.0):
+        monkeypatch.setattr("services.workspace_activity.time.time", lambda: clock)
+        async with activity_scope(str(clock), "user_webui:1"):
+            pass
+    assert [run["id"] for run in service.clear_history()["runs"]] == ["background", "4.0"]
+
+
+@pytest.mark.parametrize(("module", "expected"), [
+    ("entities.filesystem.tools", "entity:filesystem"),
+    ("channels.demo.tools", "channel:demo"),
+    ("agent.mind.tools.memory", ""),
+])
+def test_tool_render_owner_comes_from_registration_not_arguments(monkeypatch, module, expected):
+    from core.entity import EntityRegistry
+
+    def handler():
+        pass
+
+    handler.__module__ = module
+    monkeypatch.setattr(EntityRegistry, "get", lambda name: SimpleNamespace(func=handler, entity_class=None))
+    assert tool_presentation_owner("any_tool") == expected
+
+
+@pytest.mark.parametrize(("source", "expected"), [("channel.demo", "channel:demo"), ("channel.auto", "")])
+def test_channel_bridge_owner_uses_registered_source(monkeypatch, source, expected):
+    from core.entity import EntityRegistry
+
+    def handler():
+        pass
+
+    handler.__module__ = "agent.channel.tool_bridge"
+    monkeypatch.setattr(EntityRegistry, "get", lambda name: SimpleNamespace(func=handler, source=source))
+    assert tool_presentation_owner("specific_channel_tool") == expected
 
 
 async def test_structured_tool_failure_is_rendered_as_failure(activity, monkeypatch):

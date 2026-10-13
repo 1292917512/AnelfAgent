@@ -1,6 +1,6 @@
 import { chatApi } from "@/lib/api";
 import type { ChatBucket, ChatHistoryMessage, ChatMessage } from "@/lib/types";
-import { DEFAULT_CHAT_ID } from "./chat-shared";
+import { clearSendWatchdog, DEFAULT_CHAT_ID } from "./chat-shared";
 
 export const HISTORY_PAGE_SIZE = 100;
 type HistoryMode = "initial" | "earlier" | "refresh";
@@ -27,13 +27,19 @@ function mergeHistory(local: ChatMessage[], incoming: ChatHistoryMessage[]): Cha
 
 /** Serializes history requests per conversation and preserves messages received during loading. */
 export function createChatHistory(context: HistoryContext) {
-  const requests = new Map<string, object>();
+  const requests = new Map<string, { refresh: boolean }>();
   async function load(chatId: string | undefined, mode: HistoryMode): Promise<void> {
     const id = chatId ?? context.activeId();
     const original = context.bucket(id);
-    if (!original || requests.has(id) || (mode === "initial" && original.historyLoaded)) return;
+    const inflight = requests.get(id);
+    if (!original) return;
+    if (inflight) {
+      if (mode === "refresh") inflight.refresh = true;
+      return;
+    }
+    if (mode === "initial" && original.historyLoaded) return;
     if (mode === "earlier" && (!original.hasMore || original.earliestId == null)) return;
-    const ticket = {};
+    const ticket = { refresh: false };
     const snapshot = new Set(original.messages);
     requests.set(id, ticket);
     context.update(id, () => mode === "earlier"
@@ -49,8 +55,12 @@ export function createChatHistory(context: HistoryContext) {
           ? bucket.messages.filter((message) => message.id != null || message.role === "user" || message.kind === "system_notice" || !snapshot.has(message))
           : bucket.messages;
         const messages = mergeHistory(local, data);
+        const pendingId = [...bucket.messages].reverse().find((message) => message.role === "user")?.cid;
+        const requestIndex = pendingId ? data.findIndex((message) => message.cid === pendingId) : -1;
+        const answered = bucket.sending && requestIndex >= 0 && data.slice(requestIndex + 1).some((message) => message.role === "assistant");
+        if (answered) clearSendWatchdog(id);
         const ids = messages.flatMap((message) => message.id != null ? [message.id] : []);
-        return { messages, earliestId: ids.length ? Math.min(...ids) : undefined,
+        return { ...(answered ? { sending: false, sendingSince: null } : {}), messages, earliestId: ids.length ? Math.min(...ids) : undefined,
           historyLoaded: true,
           hasMore: mode === "refresh" && original.historyLoaded ? bucket.hasMore : data.length >= HISTORY_PAGE_SIZE };
       });
@@ -62,6 +72,7 @@ export function createChatHistory(context: HistoryContext) {
       if (requests.get(id) === ticket) {
         requests.delete(id);
         if (context.bucket(id)) context.update(id, () => ({ historyLoading: false, loadingEarlier: false }));
+        if (ticket.refresh) await load(id, "refresh");
       }
     }
   }

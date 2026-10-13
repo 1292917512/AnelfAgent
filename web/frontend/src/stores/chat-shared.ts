@@ -64,12 +64,7 @@ export function genChatId(): string {
   return Math.random().toString(36).slice(2, 10);
 }
 
-// ── 发送看门狗：120s 完全无输出（delta/tool_call/reply…）则复位发送态 ──
-// 语义是停滞判定而非总时长上限：回合内任何活动都重置计时，持续有输出的
-// 长回合不会触发；仅在彻底静默超过窗口时判定挂死。
-// 按 chatId 独立计时：多会话并发发送互不覆盖（单例实现会让后发的会话
-// 顶掉先发会话的兜底，其输入框永久停在"发送中"）。
-
+/** Per-conversation inactivity timers request authoritative state reconciliation. */
 type WatchdogEntry = { timer: ReturnType<typeof setTimeout>; onTimeout: (chatId: string) => void };
 const _watchdogs = new Map<string, WatchdogEntry>();
 const SEND_TIMEOUT_MS = 120_000;

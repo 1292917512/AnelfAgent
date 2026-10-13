@@ -1,12 +1,11 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { ThinkingStream } from "./thinking-stream";
 
-class FakeSource {
+class FakeSource extends EventTarget {
   static CLOSED = 2;
   readyState = 1;
   onopen: (() => void) | null = null;
   onerror: (() => void) | null = null;
-  addEventListener = vi.fn();
   close = vi.fn();
 }
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
@@ -37,4 +36,20 @@ it("marks reconnecting as disconnected, resyncs after reconnect and cancels retr
   stream.stop();
   vi.advanceTimersByTime(5000);
   expect(sources).toHaveLength(2);
+});
+
+it("ignores late data and parse failures from a closed stream", () => {
+  const sources: FakeSource[] = [];
+  vi.stubGlobal("EventSource", class extends FakeSource { constructor() { super(); sources.push(this); } });
+  const nodeAdded = vi.fn();
+  const reconnect = vi.fn();
+  const stream = new ThinkingStream({ session_start: vi.fn(), session_end: vi.fn(), node_added: nodeAdded, node_updated: vi.fn(), tools_updated: vi.fn() }, vi.fn(), reconnect);
+  stream.start();
+  sources[0]?.dispatchEvent(new MessageEvent("node_added", { data: "{}" }));
+  expect(nodeAdded).toHaveBeenCalledOnce();
+  stream.stop();
+  sources[0]?.dispatchEvent(new MessageEvent("node_added", { data: "{}" }));
+  sources[0]?.dispatchEvent(new MessageEvent("node_added", { data: "invalid JSON" }));
+  expect(nodeAdded).toHaveBeenCalledOnce();
+  expect(reconnect).not.toHaveBeenCalled();
 });

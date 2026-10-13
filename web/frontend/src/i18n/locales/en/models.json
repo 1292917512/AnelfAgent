@@ -63,6 +63,9 @@
       "unknown": "Not checked",
       "ready": "Available",
       "offline": "Unavailable · skipped",
+      "requestTimeout": "Request timed out · skipped",
+      "networkUnavailable": "Connection failed · skipped",
+      "configurationError": "Configuration error",
       "checking": "Checking"
     },
     "priority": "Model priority",
@@ -74,7 +77,8 @@
     "addCandidate": "Add candidate model",
     "testInference": "Test inference (uses quota)",
     "reachable": "Service reachable",
-    "reachableHint": "Connectivity only; model inference and credentials have not been validated."
+    "reachableHint": "Connectivity only; model inference and credentials have not been validated.",
+    "requestTimeoutHint": "The last judgment request exceeded its time budget. This does not establish that the service is offline; connectivity will be checked before retrying."
   },
   "disabled": "Disabled",
   "enableHint": "Enabled (disabled models are excluded from task execution)",

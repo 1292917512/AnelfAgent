@@ -2,15 +2,15 @@ import { test, expect, openWebChat } from "./fixtures";
 import type { WorkflowDefinition, WorkflowRun, WorkflowSpec } from "../src/lib/types";
 
 test("history outages remain retryable without presenting a false empty conversation", async ({ page }) => {
-  let reads = 0;
+  let unavailable = true;
   await page.route("**/api/chat/history*", (route) => {
-    reads++;
-    return reads === 1 ? route.fulfill({ status: 503, json: { detail: "History temporarily unavailable" } })
+    return unavailable ? route.fulfill({ status: 503, json: { detail: "History temporarily unavailable" } })
       : route.fulfill({ json: [{ id: 1, role: "assistant", content: "Recovered history", ts: 1 }] });
   });
   await page.goto("/webui/");
   await openWebChat(page);
   await expect(page.getByRole("alert")).toContainText("History temporarily unavailable");
+  unavailable = false;
   await page.getByRole("alert").getByRole("button", { name: "Retry", exact: true }).click();
   await expect(page.getByText("Recovered history", { exact: true })).toBeVisible();
   await expect(page.getByRole("alert")).not.toBeVisible();

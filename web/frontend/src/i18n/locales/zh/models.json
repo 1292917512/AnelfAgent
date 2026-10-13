@@ -63,6 +63,9 @@
       "unknown": "尚未检查",
       "ready": "可用",
       "offline": "暂不可用 · 已跳过",
+      "requestTimeout": "判断请求超时 · 暂时跳过",
+      "networkUnavailable": "连接失败 · 暂时跳过",
+      "configurationError": "配置异常",
       "checking": "检查中"
     },
     "priority": "模型优先级",
@@ -74,7 +77,8 @@
     "addCandidate": "添加候选模型",
     "testInference": "判断测速（消耗额度）",
     "reachable": "服务可达",
-    "reachableHint": "仅确认服务连接，不代表模型推理或凭据已通过验证。"
+    "reachableHint": "仅确认服务连接，不代表模型推理或凭据已通过验证。",
+    "requestTimeoutHint": "上次判断请求超出了时间预算，不能据此确认服务离线；后续先检查连通性，再恢复调用。"
   },
   "disabled": "已停用",
   "enableHint": "启用（停用后不参与任务执行）",

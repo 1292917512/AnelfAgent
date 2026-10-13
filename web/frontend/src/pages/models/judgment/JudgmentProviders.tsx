@@ -13,11 +13,16 @@ import { JudgmentTestResultCard } from "./JudgmentTestResultCard";
 function ModelHealth({ health }: { health?: JudgmentHealth }) {
   const { t } = useTranslation("models");
   const status = health?.status ?? "unknown";
+  const timeout = status === "offline" && health?.cause === "timeout" && health.check_kind === "inference";
+  const reachable = status === "ready" && health?.check_kind === "connectivity";
+  const label = timeout ? "requestTimeout" : status === "offline" && health?.cause === "network" ? "networkUnavailable"
+    : status === "offline" && health?.cause === "config" ? "configurationError" : status;
   return <div className="mt-2 space-y-1 text-xs">
-    <Badge variant={status === "ready" ? "ok" : status === "offline" ? "danger" : "neutral"}>{t(`judgment.health.${status}`)}</Badge>
+    <Badge variant={status === "ready" ? "ok" : timeout ? "warn" : status === "offline" ? "danger" : "neutral"}>{t(reachable ? "judgment.reachable" : `judgment.health.${label}`)}</Badge>
     {health?.checked_at ? <span className="ml-2 text-muted">{t("judgment.lastCheck", { time: new Date(health.checked_at * 1000).toLocaleTimeString() })}</span> : null}
-    {status === "ready" && health?.check_kind === "connectivity" && <p className="text-muted">{t("judgment.reachableHint")}</p>}
-    {health?.error && <p className="break-words text-danger">{health.error}</p>}
+    {reachable && <p className="text-muted">{t("judgment.reachableHint")}</p>}
+    {timeout && <p className="text-muted">{t("judgment.requestTimeoutHint")}</p>}
+    {status === "offline" && health?.error && <p className={`break-words ${timeout ? "text-warn" : "text-danger"}`}>{health.error}</p>}
     {health?.retry_at ? <p className="text-muted">{t("judgment.nextCheck", { time: new Date(health.retry_at * 1000).toLocaleTimeString() })}</p> : null}
   </div>;
 }

@@ -33,4 +33,13 @@ describe("module UI contributions", () => {
     expect(await loadUiContributions({})).toEqual([]);
     expect(() => defineUiContributions([{ ...entry, slot: "app.routes", path: "/../data", group: "system" }])).toThrow("route");
   });
+  it("allows independent tool renderers per owner and rejects duplicates within a module", async () => {
+    const renderer: UiContribution = { ...entry, slot: "activity.tool", load };
+    const result = await loadUiContributions({
+      "entity:first": async () => ({ default: [renderer, { ...renderer, id: "duplicate" }] }),
+      "channel:first": async () => ({ default: [renderer] }),
+    });
+    expect(result.map((item) => item.key)).toEqual(["channel:first/controls", "entity:first/controls"]);
+    expect(load).not.toHaveBeenCalled();
+  });
 });

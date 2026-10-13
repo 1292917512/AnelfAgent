@@ -8,7 +8,8 @@ import { Button } from "@/components/ui";
 import type { ActivityRun } from "@/lib/types/activity";
 import { ActivityRunCard } from "./activity/ActivityRunCard";
 import { useActivityFollow } from "./activity/useActivityFollow";
-import { activityPages } from "./activity/activity-pages";
+import { activityFamilies, activityPages } from "./activity/activity-pages";
+import { ActivityStream } from "./activity/ActivityStream";
 import { ActivityDetailsProvider } from "./activity/ActivityDetailsProvider";
 import { ActivityInspection } from "@/components/common/ActivityInspection";
 
@@ -29,6 +30,7 @@ function ActivityFeed({ runs, clearing, onClear }: { runs: ActivityRun[]; cleari
   const connected = useChatStore((state) => state.sseConnected);
   const pages = useMemo(() => activityPages(runs), [runs]);
   const [selected, setSelected] = useState<string | null>(null);
+  const [family, setFamily] = useState<string | null>(null);
   const selectedIndex = pages.findIndex((page) => page.id === selected);
   const index = selectedIndex < 0 ? pages.length - 1 : selectedIndex;
   const page = pages[index];
@@ -37,10 +39,11 @@ function ActivityFeed({ runs, clearing, onClear }: { runs: ActivityRun[]; cleari
   const [expanded, setExpanded] = useState<Record<string, { current: boolean; open: boolean }>>({});
   const activeRuns = runs.filter((run) => run.status === "running");
   const currentPage = index === pages.length - 1;
-  const visibleRuns = page?.runs.filter((run) => run.kind !== "hook" || !page.runs.some((parent) => parent.entries.some((entry) => entry.kind === "hook" && entry.activity_ids?.includes(run.id)))) ?? [];
-  const latestRun = visibleRuns.reduce<ActivityRun | undefined>((latest, run) => !latest || run.updated_at >= latest.updated_at ? run : latest, undefined);
+  const families = useMemo(() => activityFamilies(page?.runs ?? []), [page]);
+  const selectedFamily = families.find((item) => item.id === family);
+  const visibleRuns = (selectedFamily?.runs ?? page?.runs ?? []).filter((run) => run.kind !== "hook" || !page?.runs.some((parent) => parent.entries.some((entry) => entry.kind === "hook" && entry.activity_ids?.includes(run.id))));
   const pinPage = useCallback(() => { if (page) setSelected(page.id); }, [page]);
-  const { scroll, content, following, pause: pauseFollowing, resume, handlers } = useActivityFollow(latestRun?.id, latestRun?.revision ?? 0, pinPage);
+  const { scroll, content, following, pause: pauseFollowing, resume, handlers } = useActivityFollow(`${page?.id}:${family}:${Math.max(0, ...visibleRuns.map((run) => run.revision))}`, pinPage);
   const toggleRun = useCallback((id: string, open: boolean) => {
     setExpanded((previous) => {
       const retained = Object.fromEntries(Object.entries(previous).filter(([key]) => runs.some((run) => run.id === key)));
@@ -52,23 +55,13 @@ function ActivityFeed({ runs, clearing, onClear }: { runs: ActivityRun[]; cleari
     const target = pages[next];
     if (!target) return;
     pauseFollowing(); paging.current = true;
-    setSelected(target.id);
+    setSelected(target.id); setFamily(null);
     requestAnimationFrame(() => {
       if (scroll.current) scroll.current.scrollTop = next < index ? scroll.current.scrollHeight : 0;
       paging.current = false;
     });
   };
-  const revealRun = (id: string) => {
-    if (runs.some((run) => run.id === id && run.kind === "hook") && inspect) { inspect([id]); return; }
-    const targetPage = pages.find((item) => item.runs.some((run) => run.id === id));
-    if (!targetPage) return;
-    toggleRun(id, true); pauseFollowing(); setSelected(targetPage.id);
-    requestAnimationFrame(() => {
-      const container = scroll.current;
-      const target = document.getElementById(`activity-${id}`);
-      if (container && target) container.scrollTo({ top: container.scrollTop + target.getBoundingClientRect().top - container.getBoundingClientRect().top - 18, behavior: "instant" });
-    });
-  };
+  const revealRun = useCallback((id: string) => { inspect?.([id]); }, [inspect]);
   const older = () => { if (!paging.current && index > 0) openPage(index - 1); };
   const nestedContent = (target: EventTarget | null) => {
     const element = target instanceof Element ? target.closest("pre, .activity-thought-content, .activity-result-text, .activity-context-detail details > div") : null;
@@ -85,6 +78,10 @@ function ActivityFeed({ runs, clearing, onClear }: { runs: ActivityRun[]; cleari
         <span className="activity-live-dot" /><span>{run.source.channel || t("activity.system")} · {run.label || t(`activity.kinds.${run.kind}`, { defaultValue: run.kind })}</span>
       </button>)}
     </nav>}
+    {families.length > 1 && <nav className="activity-sessions" aria-label={t("activity.sessions")}>
+      <button aria-pressed={!selectedFamily} onClick={() => setFamily(null)}>{t("activity.allSessions")}</button>
+      {families.map((item) => { const root = item.runs.find((run) => run.id === item.id) ?? item.runs[0]!; return <button key={item.id} aria-pressed={selectedFamily?.id === item.id} title={root.label} onClick={() => setFamily(item.id)}>{root.source.channel || t("activity.system")} · {root.source.target || root.actor || t(`activity.kinds.${root.kind}`, { defaultValue: root.kind })}{root.source.session && ` · ${root.source.session}`}<span>{item.runs.length}</span></button>; })}
+    </nav>}
     <div className="relative min-h-0 flex-1">
       <div ref={scroll} className="activity-feed h-full overflow-y-auto overscroll-contain" data-following={following} tabIndex={0} aria-label={t("activity.timeline")}
         {...handlers}
@@ -95,7 +92,7 @@ function ActivityFeed({ runs, clearing, onClear }: { runs: ActivityRun[]; cleari
         {index > 0 && <button className="activity-history-link" onClick={older}><ArrowUp size={13} />{t("activity.previousRound")}</button>}
         {index < pages.length - 1 && <div className="activity-history-caption"><span>{t("activity.historyRound")}</span><button onClick={() => openPage(index + 1)}>{t("activity.nextRound")} <ArrowDown size={12} /></button></div>}
         {!page && <div className="activity-empty"><span className="welcome-orbit" aria-hidden="true"><span /></span><h3>{t("activity.empty")}</h3><p>{t("activity.emptyHint")}</p></div>}
-        {visibleRuns.map((run) => <ActivityRunCard key={run.id} run={run} current={currentPage}
+        {currentPage ? <ActivityStream runs={visibleRuns} onReveal={revealRun} /> : visibleRuns.map((run) => <ActivityRunCard key={run.id} run={run} current={false}
           open={expanded[run.id]?.current === currentPage ? (expanded[run.id]?.open ?? currentPage) : currentPage}
           onToggle={toggleRun} onReveal={revealRun} />)}
         {page && <p className="activity-retention-note">{t("activity.retention")}</p>}

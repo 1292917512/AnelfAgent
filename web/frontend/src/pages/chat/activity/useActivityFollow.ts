@@ -4,8 +4,8 @@ function withinFeed(event: React.SyntheticEvent<HTMLDivElement>): boolean {
   return event.target instanceof Node && event.currentTarget.contains(event.target);
 }
 
-/** 跟随最新更新的执行；只有滚动意图或显式暂停才解除跟随。 */
-export function useActivityFollow(targetId: string | undefined, revision: number, onPause: () => void) {
+/** 跟随时间流末尾及异步布局；只有用户滚动或显式暂停才停止跟随。 */
+export function useActivityFollow(revision: string, onPause: () => void) {
   const scroll = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const enabled = useRef(true);
@@ -20,12 +20,10 @@ export function useActivityFollow(targetId: string | undefined, revision: number
   const align = useCallback(() => {
     const container = scroll.current;
     if (!enabled.current || !container) return;
-    const target = targetId ? content.current?.querySelector<HTMLElement>(`[data-activity-run="${CSS.escape(targetId)}"]`) : null;
-    const bottom = target ? container.scrollTop + target.getBoundingClientRect().bottom - container.getBoundingClientRect().top + 24 : container.scrollHeight;
-    container.scrollTop = Math.max(0, bottom - container.clientHeight);
-  }, [targetId]);
+    container.scrollTop = container.scrollHeight;
+  }, []);
   const schedule = useCallback(() => {
-    if (frame.current != null) cancelAnimationFrame(frame.current);
+    if (frame.current != null) return;
     frame.current = requestAnimationFrame(() => { frame.current = null; align(); });
   }, [align]);
   const resume = useCallback(() => {
@@ -41,6 +39,7 @@ export function useActivityFollow(targetId: string | undefined, revision: number
     return () => {
       observer.disconnect();
       if (frame.current != null) cancelAnimationFrame(frame.current);
+      frame.current = null;
     };
   }, [schedule]);
   return { scroll, content, following, pause, resume, handlers: {

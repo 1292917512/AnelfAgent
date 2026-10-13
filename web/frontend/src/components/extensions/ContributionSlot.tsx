@@ -11,25 +11,28 @@ class ContributionBoundary extends Component<{ children: ReactNode; fallback: Re
   render() { return this.state.failed ? this.props.fallback : this.props.children; }
 }
 
-type ContextSlot = "audio.recording.actions" | "chat.message";
+type ContextSlot = "audio.recording.actions" | "chat.message" | "activity.tool";
 type ContentProps = { [S in ContextSlot]: { entry: RegisteredContribution<S>; componentProps: UiSlotProps[S] } }[ContextSlot]
   | { entry: RegisteredContribution<Exclude<UiSlot, ContextSlot>>; componentProps: Record<string, never> };
 
-export function ContributionContent({ entry, componentProps }: ContentProps) {
+export function ContributionContent({ entry, componentProps, fallback }: ContentProps & { fallback?: ReactNode }) {
   const { t } = useTranslation("extensions");
   let content: ReactNode;
-  if (entry.slot === "chat.message" && "payload" in componentProps) {
+  if (entry.slot === "activity.tool" && "entry" in componentProps && "view" in componentProps && "fallback" in componentProps) {
+    const Content = entry.Component;
+    content = <Content entry={componentProps.entry} view={componentProps.view} fallback={componentProps.fallback} />;
+  } else if (entry.slot === "chat.message" && "payload" in componentProps) {
     const Content = entry.Component;
     content = <Content payload={componentProps.payload} />;
   } else if (entry.slot === "audio.recording.actions" && "path" in componentProps) {
     const Content = entry.Component;
     content = <Content path={componentProps.path} />;
-  } else if (entry.slot !== "chat.message" && entry.slot !== "audio.recording.actions") {
+  } else if (entry.slot !== "chat.message" && entry.slot !== "audio.recording.actions" && entry.slot !== "activity.tool") {
     const Content = entry.Component;
     content = <Content />;
   }
-  return <ContributionBoundary fallback={<p role="alert" className="text-sm text-muted">{t("unavailable")}</p>}>
-    <Suspense fallback={<span role="status" className="text-xs text-muted">{t("common:loading")}</span>}>{content}</Suspense>
+  return <ContributionBoundary key={entry.key} fallback={fallback ?? <p role="alert" className="text-sm text-muted">{t("unavailable")}</p>}>
+    <Suspense fallback={fallback ?? <span role="status" className="text-xs text-muted">{t("common:loading")}</span>}>{content}</Suspense>
   </ContributionBoundary>;
 }
 

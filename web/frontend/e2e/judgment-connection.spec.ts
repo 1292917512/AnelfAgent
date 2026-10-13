@@ -45,7 +45,7 @@ test("judgment providers support local models, isolated health and complete edit
     const inference: boolean = route.request().postDataJSON().inference;
     inferenceModes.push(inference);
     const offline = ++testCalls === 1;
-    catalog.health![id] = { status: offline ? "offline" : "ready", checked_at: Date.now() / 1000, retry_at: offline ? Date.now() / 1000 + 300 : 0, error: offline ? "Connection refused" : "", latency_ms: 40 };
+    catalog.health![id] = { status: offline ? "offline" : "ready", checked_at: Date.now() / 1000, retry_at: offline ? Date.now() / 1000 + 300 : 0, error: offline ? "Connection refused" : "", latency_ms: 40, cause: offline ? "network" : "", check_kind: inference ? "inference" : "connectivity" };
     return route.fulfill({ json: { ok: !offline, source: "typesafe", model: "StartLux-Decision-27B", latency_ms: 40,
       error: offline ? "Connection refused" : undefined, cause: offline ? "network" : undefined,
       kind: inference ? "inference" : "connectivity", slow: false, slow_after_ms: 1000, gate_budget_ms: 5000,
@@ -69,6 +69,7 @@ test("judgment providers support local models, isolated health and complete edit
   await dialog.getByRole("button", { name: "Save", exact: true }).click();
   await expect(dialog).not.toBeVisible();
   const local = page.getByRole("article", { name: "Local workstation" });
+  await expect(local.getByText("Not checked", { exact: true })).toHaveCount(2);
   await expect(local.getByText("No authentication", { exact: true })).toBeVisible();
   await expect(page.getByRole("list", { name: "Model priority" }).getByRole("listitem").first()).toContainText("Cloud Jev");
   await local.getByRole("button", { name: "Test", exact: true }).first().click();
@@ -76,7 +77,7 @@ test("judgment providers support local models, isolated health and complete edit
   await dialog.getByRole("button", { name: "Check connectivity", exact: true }).click();
   await expect(dialog.getByText("Test failed", { exact: true })).toBeVisible();
   await dialog.getByRole("button", { name: "Close", exact: true }).click();
-  await expect(local.getByText("Unavailable · skipped", { exact: true })).toBeVisible();
+  await expect(local.getByText("Connection failed · skipped", { exact: true })).toBeVisible();
   await expect(local.getByText(/next background check/)).toBeVisible();
   await expect(page.getByRole("list", { name: "Model priority" }).getByRole("listitem").first()).toContainText("Cloud Jev");
   await page.getByLabel("Add candidate model", { exact: true }).selectOption("local");
@@ -89,7 +90,8 @@ test("judgment providers support local models, isolated health and complete edit
   await dialog.getByRole("button", { name: "Check connectivity", exact: true }).click();
   await expect(dialog.getByText("40ms", { exact: true })).toBeVisible();
   await dialog.getByRole("button", { name: "Close", exact: true }).click();
-  await expect(local.getByText("Available", { exact: true })).toBeVisible();
+  await expect(local.getByText("Service reachable", { exact: true })).toBeVisible();
+  await expect(local.getByText("Connection refused", { exact: true })).not.toBeVisible();
   expect(testedIds).toEqual(["local", "local"]);
   expect(inferenceModes).toEqual([false, false]);
   await local.getByRole("button", { name: "Test", exact: true }).first().click();
@@ -98,6 +100,7 @@ test("judgment providers support local models, isolated health and complete edit
   await expect(dialog.getByText('"needed":', { exact: false })).toBeVisible();
   expect(inferenceModes).toEqual([false, false, true]);
   await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(local.getByText("Available", { exact: true })).toBeVisible();
   await page.screenshot({ path: info.outputPath("judgment-priority.png"), animations: "disabled" });
   await page.getByRole("list", { name: "Model priority" }).screenshot({ path: info.outputPath("priority-detail.png"), animations: "disabled" });
   const cloud = page.getByRole("article", { name: "Cloud decision" });
@@ -116,4 +119,22 @@ test("judgment providers support local models, isolated health and complete edit
   await expect(local).not.toBeVisible();
   await expect(page.getByRole("list", { name: "Model priority" }).getByRole("listitem").first()).toContainText("Cloud Jev");
   await expect(page.getByRole("article", { name: "Renamed cloud" })).toBeVisible();
+});
+
+test("judgment request timeouts do not claim the network is offline", async ({ page }) => {
+  const catalog: JudgmentCatalog = {
+    providers: { cloud: { name: "Cloud decision", base_url: "https://api.typesafe.ai", api_key: "********", models: { cloud: { name: "Cloud Jev", model: "jev-latest" } } } },
+    default_model: "cloud", fallback_models: [], revision: "1",
+    health: { cloud: { status: "offline", cause: "timeout", check_kind: "inference", checked_at: Date.now() / 1000,
+      retry_at: Date.now() / 1000 + 300, latency_ms: 2000, error: "Assessment deadline exceeded", } },
+  };
+  let modelCalls = 0;
+  await page.route("**/api/judgment/providers", (route) => route.fulfill({ json: catalog }));
+  await page.route("**/api/judgment/test", (route) => { modelCalls++; return route.fulfill({ json: {} }); });
+  await page.goto("/webui/models?tab=judgment");
+  const provider = page.getByRole("article", { name: "Cloud decision" });
+  await expect(provider.getByText("Request timed out · skipped", { exact: true })).toBeVisible();
+  await expect(provider.getByText(/does not establish that the service is offline/)).toBeVisible();
+  await expect(provider.getByText("Connection failed · skipped", { exact: true })).not.toBeVisible();
+  expect(modelCalls).toBe(0);
 });

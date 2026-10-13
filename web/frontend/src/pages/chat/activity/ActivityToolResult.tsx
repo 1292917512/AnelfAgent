@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { Markdown } from "../render/Markdown";
 import { renderTaggedText, TaggedText } from "./ActivityReferences";
+import { TerminalBlock, toolText } from "@/components/activity/ToolPresentation";
 
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -15,16 +16,17 @@ export function ActivityToolResult({ result }: { result: string }) {
   const fields = ["error", "hint", "stdout", "stderr", "content", "output", "message"]
     .flatMap((key) => typeof payload[key] === "string" && payload[key] ? [{ key, value: payload[key] }] : []);
   const matches = Array.isArray(payload.results) ? payload.results.filter((item): item is Record<string, unknown> => record(item) && typeof item.id === "string" && typeof item.content === "string") : [];
-  if (!fields.length && !matches.length) return <pre>{JSON.stringify(payload, null, 2)}</pre>;
+  const facts = Object.entries(payload).filter(([key, value]) => !fields.some((field) => field.key === key) && toolText(value) !== "");
+  if (!fields.length && !matches.length && !facts.length) return <pre>{JSON.stringify(payload, null, 2)}</pre>;
   return <>
+    {facts.length > 0 && <dl className="tool-facts">{facts.map(([key, value]) => <div key={key}><dt>{t(`toolFields.${key}`, { defaultValue: key })}</dt><dd>{toolText(value)}</dd></div>)}</dl>}
     {!!matches.length && <div className="activity-recall-results">{matches.map((item, index) => <article key={index}>
       <header><span>{String(item.id)}</span>{typeof item.score === "number" && <span>{t("activity.recallScore", { score: item.score.toFixed(2) })}</span>}</header>
       <p><TaggedText content={String(item.content)} /></p>
       {Array.isArray(item.tags) && <div className="activity-recall-tags">{item.tags.filter((tag): tag is string => typeof tag === "string").map((tag, i) => <span key={i}>{tag}</span>)}</div>}
     </article>)}</div>}
-    <div className="activity-result-text">{fields.map(({ key, value }) => <div key={key} className={key === "error" || key === "stderr" ? "text-warn" : undefined}>
+    <div className="activity-result-text">{fields.map(({ key, value }) => key === "stdout" || key === "stderr" ? <TerminalBlock key={key} label={key} text={value} warning={key === "stderr"} /> : <div key={key} className={key === "error" ? "text-warn" : undefined}>
       <h4>{t(`activity.resultFields.${key}`)}</h4><Markdown content={value} renderText={renderTaggedText} />
     </div>)}</div>
-    <details className="activity-result-raw"><summary>{t("activity.rawResult")}</summary><pre>{JSON.stringify(payload, null, 2)}</pre></details>
   </>;
 }

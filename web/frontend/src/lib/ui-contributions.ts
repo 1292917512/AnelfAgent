@@ -1,4 +1,5 @@
-import { lazy, type ComponentType, type LazyExoticComponent } from "react";
+import { lazy, type ComponentType, type LazyExoticComponent, type ReactNode } from "react";
+import type { ActivityEntry } from "./types/activity";
 import type { LucideIcon } from "lucide-react";
 import type { JsonObject } from "./types/json";
 import type { NavigationGroup } from "./core-routes";
@@ -15,7 +16,9 @@ export interface UiSlotProps {
   "audio.identify.after": Record<string, never>;
   "audio.recording.actions": { path: string };
   "chat.message": { payload: JsonObject };
+  "activity.tool": { entry: Extract<ActivityEntry, { kind: "tool" }>; view: "summary" | "detail"; fallback: ReactNode };
 }
+export type ToolRendererProps = UiSlotProps["activity.tool"];
 export type UiSlot = keyof UiSlotProps;
 export interface UiText { ns: string; key: string }
 interface ContributionBase {
@@ -37,7 +40,7 @@ type RegisteredContributions = { [K in UiSlot]: UiContribution<K> & {
 } }[UiSlot];
 export type RegisteredContribution<S extends UiSlot = UiSlot> = Extract<RegisteredContributions, { slot: S }>;
 
-const SLOTS: readonly UiSlot[] = ["workspace.tools", "dashboard.cards", "dashboard.actions", "data.tabs", "app.routes", "system.restart", "audio.identify.after", "audio.overview.cards", "audio.recording.actions", "chat.message"];
+const SLOTS: readonly UiSlot[] = ["workspace.tools", "dashboard.cards", "dashboard.actions", "data.tabs", "app.routes", "system.restart", "audio.identify.after", "audio.overview.cards", "audio.recording.actions", "chat.message", "activity.tool"];
 
 /** 声明模块向公共界面提供的内容，组件在挂载位置可见时才加载。 */
 export function defineUiContributions(entries: readonly UiContribution[]): readonly UiContribution[] {
@@ -61,6 +64,7 @@ export async function loadUiContributions(loaders: Record<string, () => Promise<
     try {
       return defineUiContributions((await load()).default).map((entry) => {
         const identity = { owner, key: `${owner}/${entry.id}` };
+        if (entry.slot === "activity.tool") return { ...entry, ...identity, Component: lazy(entry.load) };
         if (entry.slot === "chat.message") return { ...entry, ...identity, Component: lazy(entry.load) };
         if (entry.slot === "audio.recording.actions") return { ...entry, ...identity, Component: lazy(entry.load) };
         return { ...entry, ...identity, Component: lazy(entry.load) };
@@ -72,7 +76,7 @@ export async function loadUiContributions(loaders: Record<string, () => Promise<
   }));
   const claimed = new Set(reserved);
   return modules.flat().sort((a, b) => (a.order ?? 100) - (b.order ?? 100) || a.key.localeCompare(b.key, "en")).filter((entry) => {
-    const target = entry.slot === "app.routes" ? entry.path : entry.slot === "data.tabs" ? entry.tab : entry.slot === "chat.message" ? entry.messageType : entry.slot === "system.restart" ? "default" : undefined;
+    const target = entry.slot === "app.routes" ? entry.path : entry.slot === "data.tabs" ? entry.tab : entry.slot === "chat.message" ? entry.messageType : entry.slot === "system.restart" ? "default" : entry.slot === "activity.tool" ? entry.owner : undefined;
     if (!target) return true;
     const key = `${entry.slot}:${target}`;
     const overlapsRoute = entry.slot === "app.routes" && [...claimed].some((path) => path.startsWith("app.routes:") && matchPath({ path: path.slice("app.routes:".length), end: true }, entry.path));

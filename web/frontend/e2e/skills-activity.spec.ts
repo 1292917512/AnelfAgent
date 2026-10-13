@@ -36,7 +36,7 @@ test("skill evidence distinguishes suggestions from reads and links to a readabl
   });
   await page.goto("/webui/");
   const execution = page.locator('[data-activity-run="skills-review"]');
-  const evidence = execution.locator(":scope > .skill-evidence");
+  const evidence = execution.locator(".activity-run-content > .skill-evidence");
   await expect(evidence.getByRole("link", { name: /deployment-check Content read Match 0.68/ })).toBeVisible();
   await expect(evidence.getByRole("link", { name: /legacy-check Suggested Match 0.31 Archived/ })).toBeVisible();
   await expect(evidence.getByText("missing-check")).toHaveCount(0);

@@ -7,9 +7,14 @@ function run(id: string, start: number, end: number | null, parent_id = ""): Act
     revision: 1, kind: "conversation", scope: "user_test:1", origin_scope: "user_test:1", source: { scope: "user_test:1", channel: "test", kind: "user", target: "1", session: "" }, actor: "", label: id, input: "", owner_id: "", entries: [], entry_count: 0, truncated: false };
 }
 
-it("keeps concurrent channels and late children together while separating older rounds", () => {
+it("keeps parent and late children together without merging unrelated sessions by time", () => {
   const pages = activityPages([run("old", 1, 2), run("qq", 10, 20), run("telegram", 11, 15), run("child", 21, 30, "qq"), run("new", 35, null)]);
-  expect(pages.map((page) => page.runs.map((item) => item.id))).toEqual([["old"], ["qq", "telegram", "child"], ["new"]]);
+  expect(pages.map((page) => page.runs.map((item) => item.id))).toEqual([["old"], ["qq", "child"], ["telegram"], ["new"]]);
+});
+
+it("lets finished unrelated rounds leave the live page while a background child is still running", () => {
+  const pages = activityPages([run("parent", 10, 12), run("child", 11, null, "parent"), run("web-old", 20, 21), run("web-new", 30, null)]);
+  expect(pages.map((page) => page.runs.map((item) => item.id))).toEqual([["web-old"], ["parent", "child", "web-new"]]);
 });
 
 it("retains a background child in the live round after its parent has completed", () => {

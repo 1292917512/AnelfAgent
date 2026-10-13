@@ -16,6 +16,7 @@ import { HookExecutionRow } from "@/components/common/HookExecutionRow";
 import { ActivityToolSummary } from "./ActivityToolSummary";
 import { ActivityInspector } from "./ActivityInspector";
 import { ActivityNotice } from "./ActivityNotice";
+import { ToolContribution } from "@/components/extensions/ToolContribution";
 
 function readableJson(value: string): string {
   try { return JSON.stringify(JSON.parse(value), null, 2); } catch { return value; }
@@ -27,10 +28,14 @@ function durationLabel(ms: number): string {
 
 function ToolDetails({ entry }: { entry: Extract<ActivityEntry, { kind: "tool" }> }) {
   const { t } = useTranslation("workbench");
+  const [rawOpen, setRawOpen] = useState(false);
   return <>
     {entry.truncated && <p className="activity-note">{t("activity.truncated")}</p>}
-    {entry.arguments && <section aria-label={t("activity.arguments")}><h3>{t("activity.arguments")}</h3><pre>{readableJson(entry.arguments)}</pre></section>}
-    {entry.result && <section aria-label={t("activity.result")}><h3>{t("activity.result")}</h3><ActivityToolResult result={entry.result} /></section>}
+    <ToolContribution entry={entry} view="detail" fallback={entry.result ? <section aria-label={t("activity.result")}><h3>{t("activity.result")}</h3><ActivityToolResult result={entry.result} /></section> : null} />
+    <details className="activity-result-raw" onToggle={(event) => setRawOpen(event.currentTarget.open)}><summary>{t("toolView.rawData")}</summary>
+      {rawOpen && entry.arguments && <section aria-label={t("activity.arguments")}><h3>{t("activity.arguments")}</h3><pre>{readableJson(entry.arguments)}</pre></section>}
+      {rawOpen && entry.result && <section aria-label={t("activity.rawResult")}><h3>{t("activity.rawResult")}</h3><pre>{readableJson(entry.result)}</pre></section>}
+    </details>
     <p className="activity-trace-id">{t("activity.callId")}: {entry.id}{entry.request_id && ` · ${t("activity.requestId")}: ${entry.request_id}`}</p>
   </>;
 }
@@ -87,11 +92,12 @@ export function ActivityEntryView({ entry, live, current, onReveal }: { entry: A
       <ActivityInspector title={entry.name} preview={(entry.result || entry.arguments).slice(0, 400)}>
         <div className="activity-inspection-meta"><span>{t(`activity.status.${entry.status}`)}</span>{duration != null && <span>{durationLabel(duration)}</span>}</div>
         <ActivityTargets targets={entry.targets} />
+        <ToolContribution entry={entry} view="summary" fallback={<ActivityToolSummary entry={entry} />} />
         <ToolDetails entry={entry} />
       </ActivityInspector>
     </div>
     <ActivityTargets targets={entry.targets} />
-    <ActivityToolSummary entry={entry} />
+    <ToolContribution entry={entry} view="summary" fallback={<ActivityToolSummary entry={entry} />} />
     {open && <div className="activity-tool-detail"><ToolDetails entry={entry} /></div>}
   </div>;
 }

@@ -10,6 +10,7 @@
  *
  */
 import { create } from "zustand";
+import { EventStream } from "@/lib/event-stream";
 import { useActivityStore } from "./activity-store";
 import { captureWorkspaceContext } from "@/lib/workspace-context";
 import { fileReferenceMarkdown } from "@/lib/file-reference";
@@ -40,11 +41,6 @@ import {
   makePendingFile,
   uploadPendingFiles,
 } from "./chat-upload";
-
-// ── SSE 单例 ──────────────────────────────────────────────────
-let _eventSource: EventSource | null = null;
-/** 曾成功连上过：区分"初次连接"与"断线后重连"（重连需补拉错过的帧） */
-let _wasConnected = false;
 
 interface ChatState {
   buckets: Record<string, ChatBucket>;
@@ -133,6 +129,43 @@ export const useChatStore = create<ChatState>((set, get) => {
       }).catch(() => {});
     },
   });
+
+  function resync(): void {
+    void useActivityStore.getState().load();
+    const state = get();
+    const ids = new Set([state.activeChatId, ...Object.keys(state.buckets).filter((id) => state.buckets[id]?.sending)]);
+    for (const id of ids) {
+      if (state.buckets[id]?.sending) armSendWatchdog(id, checkPendingReply);
+      void history.refresh(id);
+    }
+  }
+
+  const stream = new EventStream("/api/chat/stream", (source) => {
+    attachChatSseHandlers(source, {
+      updateBucket, getActiveChatId: () => get().activeChatId,
+      setContextUsage: (usage) => set({ contextUsage: usage }),
+    });
+  }, (sseConnected) => set({ sseConnected }), () => resync(), resync);
+
+  async function checkPendingReply(chatId: string): Promise<void> {
+    const pending = get().buckets[chatId];
+    if (!pending?.sending) return;
+    await Promise.all([history.refresh(chatId), useActivityStore.getState().load()]);
+    const current = get().buckets[chatId];
+    if (!stream.active || !current?.sending || current.sendingSince !== pending.sendingSince) return;
+    const activity = useActivityStore.getState();
+    const running = activity.runs.some((run) => run.status === "running" && run.source.channel === "webui"
+      && (run.source.session || DEFAULT_CHAT_ID) === chatId);
+    if (!get().sseConnected || current.historyLoading || current.historyError || activity.loading || activity.error || running) {
+      armSendWatchdog(chatId, checkPendingReply);
+      return;
+    }
+    updateBucket(chatId, (bucket) => ({
+      sending: false, sendingSince: null,
+      messages: [...bucket.messages, { role: "system", kind: "system_notice", tone: "warn",
+        content: i18n.t("sendTimeout", { ns: "chat" }), cid: nextCid(), ts: Date.now() / 1000 }],
+    }));
+  }
 
   return {
     buckets: initialBuckets,
@@ -301,42 +334,12 @@ export const useChatStore = create<ChatState>((set, get) => {
       }
     },
 
-    startSSE: () => {
-      if (_eventSource) return; // 幂等：重复调用不重建连接
-      const es = new EventSource("/api/chat/stream");
-      _eventSource = es;
-
-      attachChatSseHandlers(es, {
-        updateBucket,
-        getActiveChatId: () => get().activeChatId,
-        setContextUsage: (usage) => set({ contextUsage: usage }),
-      });
-
-      es.onopen = () => {
-        set({ sseConnected: true });
-        void useActivityStore.getState().load();
-        if (_wasConnected) {
-          // 断线重连：补拉当前会话最近一页历史——断线窗口内落地的回复
-          // reply/turn_end 帧不会重发，刷新历史补齐实际交流内容。
-          const chatId = get().activeChatId;
-          void get().refreshAfterReconnect(chatId);
-        }
-        _wasConnected = true;
-      };
-      es.onerror = () => {
-        set({ sseConnected: false });
-        if (es.readyState === EventSource.CLOSED) _eventSource = null;
-      };
-    },
-
+    startSSE: () => stream.start(),
     refreshAfterReconnect: history.refresh,
-
     stopSSE: () => {
       history.cancel();
       clearSendWatchdog();
-      _eventSource?.close();
-      _eventSource = null;
-      set({ sseConnected: false });
+      stream.stop();
     },
 
     clearMessages: () => {
@@ -474,19 +477,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         sendingSince: submittedAt,
       }));
 
-      armSendWatchdog(chatId, (cid) => {
-        const s = get();
-        const b = s.buckets[cid];
-        if (!b?.sending) return;
-        updateBucket(cid, (cur) => ({
-          sending: false,
-          sendingSince: null,
-          messages: [
-            ...cur.messages,
-            { role: "system", kind: "system_notice", tone: "warn", content: i18n.t("sendTimeout", { ns: "chat" }), cid: nextCid(), ts: Date.now() / 1000 },
-          ],
-        }));
-      });
+      armSendWatchdog(chatId, checkPendingReply);
 
       try {
         await chatApi.send(

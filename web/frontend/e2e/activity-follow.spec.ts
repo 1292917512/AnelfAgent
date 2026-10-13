@@ -44,8 +44,8 @@ test("live process follows streamed content and concurrent tools until explicitl
   await expect(feed).toHaveAttribute("data-following", "true");
   await expect(card.locator(".activity-thought button[aria-expanded]")).toHaveAttribute("aria-expanded", "true");
   await expect.poll(() => card.locator(".activity-thought-content").evaluate((element) => element.scrollHeight - element.clientHeight)).toBeLessThan(2);
+  await expect.poll(() => feed.evaluate((element) => element.scrollTop)).toBeGreaterThan(100);
   const initialScroll = await feed.evaluate((element) => element.scrollTop);
-  expect(initialScroll).toBeGreaterThan(100);
 
   current = { ...current, updated_at: start + 1, entries: current.entries.map((entry) => entry.kind === "thinking" ? { ...entry, content: entry.content + "\n\n" + "New evidence arrived.\n\n".repeat(30) + "LATEST-THOUGHT" } : entry) };
   await publish(current);
@@ -115,4 +115,40 @@ test("current steps stay open until the round becomes history and delivery recei
   await expect(first.locator(".activity-thought button[aria-expanded]")).toHaveAttribute("aria-expanded", "false");
   await page.getByRole("button", { name: "Follow paused", exact: true }).click();
   await expect(page.locator('[data-activity-run="second"] .activity-thought button[aria-expanded]')).toHaveAttribute("aria-expanded", "true");
+});
+
+test("concurrent channels keep tool ownership, terminal receipts and subagent ancestry readable", async ({ page }, info) => {
+  const start = Date.now() / 1000 - 12;
+  const qq = run("qq", start, { entries: [{ id: "shell", kind: "tool", owner: "entity:filesystem", name: "run_shell_command", arguments: JSON.stringify({ command: "printf '# literal <b>output</b>'", run_in_background: false }), targets: [], request_id: "local-request", ts: start + 1, status: "done", duration_ms: 140, result: JSON.stringify({ ok: true, returncode: 0, stdout: "# literal <b>output</b>", stderr: "", cwd: "/workspace", shell_cwd: "/workspace/build" }) }] });
+  const web = run("web", start + 2, { scope: "user_webui:web_user#one", source: { scope: "user_webui:web_user#one", channel: "webui", target: "web_user", session: "one", kind: "user" }, entries: [{ id: "web-text", kind: "text", ts: start + 3, content: "WEB-CHANNEL-PROGRESS" }] });
+  const child = run("review", start + 4, { parent_id: qq.id, kind: "delegation", actor: "Remote reviewer", entries: [{ id: "ssh", kind: "tool", owner: "entity:ssh", name: "ssh_exec", arguments: JSON.stringify({ name: "production", command: "journalctl --no-pager -n 10", work_dir: "/srv/app" }), targets: [], request_id: "remote-request", ts: start + 5, status: "error", duration_ms: 2400, result: JSON.stringify({ exit_code: 2, stdout: "", stderr: "service: unavailable", connection: "production", work_dir: "/srv/app", hint: "Verify the service name" }) }] });
+  const publish = await liveFixture(page, [qq, web, child]);
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.goto("/webui/");
+  await expect(page.locator('.tool-command-summary').filter({ hasText: "Exit 0" })).toBeVisible();
+  await expect(page.locator('[data-activity-run="qq"] .tool-terminal code')).toContainText(["# literal <b>output</b>"]);
+  await expect(page.locator('[data-activity-run="qq"] .tool-terminal b')).toHaveCount(0);
+  await expect(page.locator('[data-activity-run="review"]')).toContainText("SSH · production");
+  await expect(page.locator('[data-activity-run="review"]')).toContainText("Exit 2");
+  await expect(page.locator('.activity-segment-parent')).toContainText("Inspect qq");
+  await expect(page.locator('[data-activity-run="review"] .tool-terminal').filter({ hasText: "service: unavailable" })).toBeInViewport();
+  const initialOrder = await page.locator("[data-activity-entry]").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-activity-entry")));
+  await publish({ ...qq, updated_at: start + 9, entries: qq.entries.map((entry) => entry.kind === "tool" ? { ...entry, result: '{"ok":true,"returncode":0,"stdout":"LATE RESULT"}' } : entry) });
+  expect(await page.locator("[data-activity-entry]").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-activity-entry")))).toEqual(initialOrder);
+  const sessions = page.getByRole("navigation", { name: "Filter conversations" });
+  await sessions.getByRole("button", { name: /webui/ }).click();
+  await expect(page.getByText("WEB-CHANNEL-PROGRESS", { exact: true })).toBeVisible();
+  await expect(page.locator('[data-activity-run="review"]')).toHaveCount(0);
+  await sessions.getByRole("button", { name: "All conversations" }).click();
+  await expect(page.locator('[data-activity-run="review"]')).toBeVisible();
+  await page.locator('[data-activity-run="review"]').getByRole("button", { name: "View details: ssh_exec", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "ssh_exec", exact: true });
+  await dialog.getByText("Arguments and full receipt", { exact: true }).click();
+  await expect(dialog.getByRole("region", { name: "Arguments", exact: true })).toContainText('"work_dir": "/srv/app"');
+  await expect(dialog.getByText(/remote-request/)).toBeVisible();
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath("concurrent-tools.png"), animations: "disabled" });
+  expect(errors).toEqual([]);
 });

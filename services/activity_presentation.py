@@ -21,6 +21,21 @@ def source_reference(scope: str) -> dict[str, str]:
     return {"scope": scope, "kind": kind, "channel": channel, "target": target, "session": session}
 
 
+def tool_presentation_owner(tool_name: str) -> str:
+    """从工具注册事实识别前端模块归属，不改变工具执行或路由。"""
+    entity = EntityRegistry.get(tool_name)
+    if entity is None:
+        return ""
+    module = getattr(entity.func or entity.entity_class, "__module__", "")
+    parts = module.split(".")
+    if len(parts) > 1 and parts[0] in {"entities", "channels"}:
+        return f'{"entity" if parts[0] == "entities" else "channel"}:{parts[1]}'
+    source = getattr(entity, "source", "")
+    if module == "agent.channel.tool_bridge" and source.startswith("channel.") and source != "channel.auto":
+        return f'channel:{source.removeprefix("channel.")}'
+    return ""
+
+
 def presentation_label(text: str) -> str:
     """移除消息信封，保留可读主题；原始内容由执行记录另行保存。"""
     return sanitize_text(strip_message_meta_tags(strip_workspace_context(text))).strip()[:200]

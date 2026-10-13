@@ -18,8 +18,7 @@ import { syncEntityPanels, syncModuleLinks } from "./scripts/module-links.mjs";
  *   → codegen src/generated/channel-plugins.ts (consumed via @channels alias)
  *
  * - build: runs once at buildStart (prebuild 已先行同步，此处兜底)
- * - dev: fs.watch on entities/ + channels/ dirs, re-sync + full reload
- *   (模块源码在 vite root 之外，变更统一全量重载)
+ * - dev: 入口与语言资源变化时重建清单；组件源码交给 Vite Fast Refresh
  */
 function moduleFrontendsPlugin(): Plugin {
   const root = path.resolve(__dirname, "../..");
@@ -55,8 +54,12 @@ function moduleFrontendsPlugin(): Plugin {
       const pending = new Set<() => void>();
       const watch = (dir: string, pattern: RegExp, sync: () => void) => {
         if (!fs.existsSync(dir)) return;
-        watchers.push(fs.watch(dir, { recursive: true }, (_event, filename) => {
+        watchers.push(fs.watch(dir, { recursive: true }, (event, filename) => {
           if (!filename || !pattern.test(normalizePath(filename))) return;
+          const file = normalizePath(filename);
+          const declaration = /(?:^|\/)(?:contributions\.ts|index\.ts)$/.test(file);
+          const locale = /\/locales\/[^/]+\.json$/.test(file);
+          if (!declaration && !locale && event !== "rename") return;
           pending.add(sync);
           if (debounce) clearTimeout(debounce);
           debounce = setTimeout(() => {
@@ -79,6 +82,12 @@ function moduleFrontendsPlugin(): Plugin {
 }
 
 const projectRoot = normalizePath(path.resolve(__dirname, "../.."));
+const vendorChunks: Record<string, readonly string[]> = {
+  "icons": ["lucide-react"],
+  "i18n-vendor": ["i18next", "react-i18next", "i18next-browser-languagedetector"],
+  "query-vendor": ["axios", "@tanstack/react-query"],
+  "react-vendor": ["react", "react-dom", "react-router-dom"],
+};
 
 export default defineConfig({
   plugins: [moduleFrontendsPlugin(), react()],
@@ -118,16 +127,12 @@ export default defineConfig({
     emptyOutDir: true,
     rollupOptions: {
       output: {
-        manualChunks: {
-          "icons": ["lucide-react"],
-          "i18n-vendor": ["i18next", "react-i18next", "i18next-browser-languagedetector"],
-          "query-vendor": ["axios", "@tanstack/react-query"],
-          "react-vendor": [
-            "react",
-            "react-dom",
-            "react-router-dom",
-            "react/jsx-runtime",
-          ],
+        manualChunks(id) {
+          const file = normalizePath(id);
+          if (/\/(?:entities\/[^/]+\/panels|channels\/[^/]+\/frontend)\/contributions\.ts$/.test(file)) return "module-manifests";
+          for (const [chunk, packages] of Object.entries(vendorChunks)) {
+            if (packages.some((name) => file.includes(`/node_modules/${name}/`))) return chunk;
+          }
         },
       },
     },

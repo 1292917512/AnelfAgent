@@ -38,7 +38,7 @@
   },
   "fileLimit": "最多附加 {{max}} 个文件",
   "fileTooLarge": "文件 {{name}} 超过 {{max}}MB 大小上限",
-  "sendTimeout": "响应超时，请重新发送",
+  "sendTimeout": "暂未发现新的回复或进行中的执行，请先查看实时过程，再决定是否重发。",
   "defaultChat": "默认会话",
   "newChat": "新会话",
   "tabs": {

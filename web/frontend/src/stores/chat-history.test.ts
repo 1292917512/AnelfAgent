@@ -50,6 +50,33 @@ it("reconciles a submitted message by its client id without duplicating it or lo
   expect(buckets.A?.messages).toEqual([expect.objectContaining({ id: 8, cid: "client", content: "Message [note](./note.txt)" })]);
 });
 
+it("coalesces reconnect refreshes after an in-flight history response", async () => {
+  const history = makeHistory();
+  let release!: (data: AxiosResponse<ChatHistoryMessage[]>) => void;
+  vi.mocked(chatApi.history).mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }))
+    .mockResolvedValueOnce(response([{ id: 1, role: "assistant", content: "Arrived during reconnect", ts: 1 }]));
+  const pending = history.load();
+  await history.refresh();
+  await history.refresh();
+  expect(chatApi.history).toHaveBeenCalledOnce();
+  release(response([]));
+  await pending;
+  expect(chatApi.history).toHaveBeenCalledTimes(2);
+  expect(buckets.A?.messages[0]?.content).toBe("Arrived during reconnect");
+});
+
+it("cancels queued reconnect refreshes with the conversation", async () => {
+  const history = makeHistory();
+  let release!: (data: AxiosResponse<ChatHistoryMessage[]>) => void;
+  vi.mocked(chatApi.history).mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+  const pending = history.load();
+  await history.refresh();
+  history.cancel("A");
+  release(response([]));
+  await pending;
+  expect(chatApi.history).toHaveBeenCalledOnce();
+});
+
 it("does not restore cleared messages or a removed conversation from a late response", async () => {
   const history = makeHistory();
   let release!: (data: AxiosResponse<ChatHistoryMessage[]>) => void;
@@ -83,4 +110,19 @@ it("keeps pagination failures separate and preserves the existing history", asyn
   expect(buckets.A.earlierError).toBeInstanceOf(Error);
   expect(buckets.A.historyLoaded).toBe(true);
   expect(buckets.A.loadingEarlier).toBe(false);
+});
+
+it("does not treat a reply to an older message as acknowledgement of newer input", async () => {
+  const history = makeHistory();
+  buckets.A = { ...emptyBucket(), sending: true, sendingSince: 3, messages: [
+    { role: "user", content: "Old", cid: "old", ts: 1 },
+    { role: "user", content: "New", cid: "new", ts: 3 },
+  ] };
+  vi.mocked(chatApi.history).mockResolvedValueOnce(response([
+    { id: 1, role: "user", content: "Old", cid: "old", ts: 1 },
+    { id: 2, role: "assistant", content: "Older reply", ts: 2 },
+  ]));
+  await history.refresh();
+  expect(buckets.A.sending).toBe(true);
+  expect(buckets.A.messages[buckets.A.messages.length - 1]?.cid).toBe("new");
 });
