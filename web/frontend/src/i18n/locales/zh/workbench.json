@@ -232,7 +232,6 @@
     "reconnecting": "正在重连",
     "empty": "等待新的思考",
     "emptyHint": "各频道的思考、工具调用和任务进展会集中呈现在这里。",
-    "latest": "回到最新",
     "background": "后台执行",
     "system": "系统",
     "group": "群组",
@@ -331,6 +330,11 @@
       "unknown": "送达未知",
       "skipped": "未投递",
       "pending": "待投递"
-    }
+    },
+    "following": "跟随中",
+    "followPaused": "跟随已暂停",
+    "pauseFollow": "暂停自动跟随",
+    "resumeFollow": "回到当前轮次并恢复自动跟随",
+    "timeline": "执行时间线"
   }
 }

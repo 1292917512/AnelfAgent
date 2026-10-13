@@ -232,7 +232,6 @@
     "reconnecting": "Reconnecting",
     "empty": "Ready for the next thought",
     "emptyHint": "Thoughts, tool calls and task progress from every channel appear here.",
-    "latest": "Jump to latest",
     "background": "Background activity",
     "system": "System",
     "group": "Group",
@@ -331,6 +330,11 @@
       "unknown": "Unconfirmed",
       "skipped": "Not sent",
       "pending": "Pending"
-    }
+    },
+    "following": "Following",
+    "followPaused": "Follow paused",
+    "pauseFollow": "Pause automatic following",
+    "resumeFollow": "Return to the current round and resume following",
+    "timeline": "Execution timeline"
   }
 }

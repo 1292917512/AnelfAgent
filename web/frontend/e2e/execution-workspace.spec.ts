@@ -124,7 +124,7 @@ test("context evidence, tagged results and cache facts remain readable on narrow
   const execution = page.getByRole("region", { name: "Global execution", exact: true });
   await expect(execution.getByText("Cache not reported", { exact: true })).toBeVisible();
   await expect(execution.getByText("Cached 0%", { exact: true })).toHaveCount(0);
-  await execution.getByRole("button", { name: "Memory and context 2s", exact: true }).click();
+  await expect(execution.getByRole("button", { name: "Memory and context 2s", exact: true })).toHaveAttribute("aria-expanded", "true");
   await execution.locator(".activity-context-detail summary").click();
   await expect(execution.getByText("Evidence BLUE-42", { exact: false })).toBeVisible();
   await expect(execution.locator('[title="topic: review"]')).toBeVisible();
@@ -155,11 +155,11 @@ test("workspace shows the global live process beside actual Web messages", async
   const activeRuns = execution.getByRole("navigation", { name: "Active runs", exact: true });
   await expect(activeRuns.getByRole("button")).toHaveCount(2);
   await activeRuns.getByRole("button", { name: "qq · Inspect deployment and report the service status", exact: true }).click();
-  await expect(execution.getByRole("button", { name: "Jump to latest", exact: true })).toBeVisible();
+  await expect(execution.getByRole("button", { name: "Follow paused", exact: true })).toBeVisible();
   const parentCard = execution.locator('[data-activity-run="global"]');
-  await parentCard.getByRole("button", { name: "Thought", exact: true }).click();
+  await expect(parentCard.getByRole("button", { name: "Thought", exact: true })).toHaveAttribute("aria-expanded", "true");
   await expect(parentCard.getByText("before reporting the deployment result.", { exact: false })).toBeVisible();
-  await parentCard.getByRole("button", { name: /inspect_service Completed/ }).click();
+  await expect(parentCard.getByRole("button", { name: /inspect_service Completed/ })).toHaveAttribute("aria-expanded", "true");
   await expect(parentCard.getByRole("region", { name: "Result", exact: true })).toContainText("Service is healthy");
   await expect(parentCard.getByText("Call ID: tool", { exact: false })).toBeVisible();
   await expect(parentCard.getByText("Validate settings", { exact: true })).toBeVisible();
@@ -241,7 +241,7 @@ test("only the current round mounts until the user scrolls into transient histor
   } else await feed.dispatchEvent("wheel", { deltaY: -120 });
   await expect(execution.locator('[data-activity-run="old"]')).toBeVisible();
   await expect(execution.locator('[data-activity-run="current"]')).toHaveCount(0);
-  await execution.getByRole("button", { name: "Jump to latest", exact: true }).click();
+  await execution.getByRole("button", { name: "Follow paused", exact: true }).click();
   await expect(execution.locator('[data-activity-run="current"]')).toBeVisible();
   await expect(execution.locator('[data-activity-run="old"]')).toHaveCount(0);
   restarted = true;

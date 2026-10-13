@@ -9,9 +9,9 @@ import { TaggedText } from "./ActivityReferences";
 import { SkillEvidence } from "@/components/common/SkillEvidence";
 
 /** 展示实际进入本轮模型上下文的记忆、关联与技能候选。 */
-export function ActivityContext({ entry }: { entry: Extract<ActivityEntry, { kind: "context" }> }) {
+export function ActivityContext({ entry, defaultExpanded = false }: { entry: Extract<ActivityEntry, { kind: "context" }>; defaultExpanded?: boolean }) {
   const { t } = useTranslation("workbench");
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultExpanded);
   const running = entry.status === "running";
   const now = useNow(running);
   return <div className="activity-context">

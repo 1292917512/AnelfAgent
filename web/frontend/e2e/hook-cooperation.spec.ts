@@ -20,7 +20,7 @@ test("background hook details show real execution and update without cluttering 
   await page.goto("/webui/");
   const feed = page.getByRole("region", { name: "Global execution" });
   await expect(page.locator('.activity-feed [data-activity-run="hook-child"]')).toHaveCount(0);
-  await page.getByRole("button", { name: /skill_review Reply complete/ }).click();
+  await expect(page.getByRole("button", { name: /skill_review Reply complete/ })).toHaveAttribute("aria-expanded", "true");
   await expect(page.getByText("Full transcript · 109 messages")).toBeVisible();
   await page.getByRole("button", { name: "View execution details", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "View execution details" });
@@ -70,7 +70,7 @@ test("Jev decisions remain visible after later work and expose slow responses", 
   await expect(judgment.getByText("Skip this task", { exact: true })).toBeVisible();
   await expect(judgment.getByText("Need to execute 2%")).toBeVisible();
   await expect(judgment.getByText("245ms", { exact: true })).toBeVisible();
-  await expect(page.getByText("Subsequent work finished")).not.toBeVisible();
+  await expect(page.getByText("Subsequent work finished")).toBeVisible();
   await judgment.getByRole("button").click();
   await expect(judgment.getByText("Existing facts fully cover the request")).toBeVisible();
   await expect(judgment.getByText("Input 600 · output 40 tokens")).toBeVisible();

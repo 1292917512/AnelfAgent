@@ -42,7 +42,7 @@ test("skill evidence distinguishes suggestions from reads and links to a readabl
   await expect(evidence.getByText("missing-check")).toHaveCount(0);
   await expect(execution.locator(".activity-tool-summary").filter({ hasText: "service deployment status" })).toContainText("Required tags: topic:deployment");
   await expect(execution.locator(".activity-tool-summary").filter({ hasText: "service deployment status" })).toContainText("2 results");
-  await execution.getByRole("button", { name: /recall Completed/ }).click();
+  await expect(execution.getByRole("button", { name: /recall Completed/ })).toHaveAttribute("aria-expanded", "true");
   await expect(execution.locator(".activity-recall-results")).toContainText("The last deployment passed health checks.");
   await expect(execution.locator(".activity-recall-tags").first()).toContainText("topic:deployment");
   await execution.getByRole("button", { name: /recall Completed/ }).click();

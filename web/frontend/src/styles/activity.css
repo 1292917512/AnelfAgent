@@ -1,5 +1,8 @@
 .activity-pane { container-type: inline-size; background: var(--card); overflow: hidden; }
 .activity-heading { display: flex; align-items: center; gap: 9px; flex-shrink: 0; min-height: 65px; padding: 12px 20px; border-bottom: 1px solid var(--border); }
+.activity-heading-title { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.activity-follow-toggle[aria-pressed="true"] { color: var(--accent); background: var(--accent-subtle); }
+.activity-feed[data-following="true"] { overflow-anchor: none; scroll-behavior: auto; }
 .activity-heading h2 { color: var(--text-strong); font-size: 14px; font-weight: 600; }
 .activity-active-runs { display: flex; flex-shrink: 0; gap: 7px; padding: 8px 12px; overflow-x: auto; border-bottom: 1px solid var(--border); scrollbar-width: thin; }
 .activity-active-runs button { display: flex; align-items: center; gap: 7px; min-height: 34px; padding: 5px 10px; flex-shrink: 0; max-width: 210px; border-radius: 8px; background: var(--panel); color: var(--muted); font-size: 11px; }
@@ -69,6 +72,7 @@
 .activity-thought { background: transparent; border-color: transparent; color: var(--muted); }
 .activity-thought.is-live { border-color: color-mix(in srgb, var(--accent) 20%, var(--border)); background: color-mix(in srgb, var(--accent) 3%, var(--card)); }
 .activity-thought-content { padding: 4px 12px 14px 34px; font-size: 13px; line-height: 1.85; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 340px; overflow-y: auto; }
+.activity-run.is-current .activity-thought-content:not(.activity-thought-preview), .activity-run.is-current .activity-tool-detail .activity-result-text { max-height: none; overflow: visible; }
 .activity-thought-preview { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; max-height: 80px; margin-bottom: 10px; padding-bottom: 0; }
 .activity-output { padding: 8px 0; font-size: 14px; line-height: 1.8; color: var(--text); }
 .activity-model { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; color: var(--muted); font-size: 11px; padding: 5px 1px; }
@@ -115,10 +119,12 @@
 .activity-empty { display: flex; min-height: 85%; align-items: center; justify-content: center; flex-direction: column; padding: 32px 16px; text-align: center; }
 .activity-empty h3 { margin-top: 24px; color: var(--text-strong); font-size: 22px; font-weight: 500; letter-spacing: -.025em; }
 .activity-empty p { max-width: 300px; margin-top: 10px; color: var(--muted); font-size: 13px; line-height: 1.8; }
-.activity-follow { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); box-shadow: var(--shadow-md); border-radius: 999px; }
 @keyframes activity-breathe { 50% { opacity: .35; } }
 @container (max-width: 540px) {
-  .activity-heading { padding-inline: 14px; }
+  .activity-heading { display: grid; grid-template-columns: minmax(0, 1fr) auto; padding: 10px 12px; gap: 6px 10px; }
+  .activity-heading > button { min-height: 36px; }
+  .activity-heading > button:last-child { justify-self: end; }
+  .activity-follow-toggle { justify-self: start; }
   .activity-feed { padding: 16px 12px 28px; }
   .activity-run-content { margin-left: 0; }
   .activity-run-meta { gap: 6px 8px; }

@@ -17,9 +17,9 @@ import { ActivityInspection } from "./ActivityInspection";
 import { HookJudgmentRow } from "./HookJudgmentRow";
 
 /** 同一执行记录在钩子页和工作区中共享状态、耗时与详情展示。 */
-export function HookExecutionRow({ run }: { run: HookExecution }) {
+export function HookExecutionRow({ run, defaultExpanded = false }: { run: HookExecution; defaultExpanded?: boolean }) {
   const { t } = useTranslation("settings");
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const inspect = useContext(ActivityInspection);
   const activityIds = run.activity_ids ?? [];
   const running = run.status === "running";
