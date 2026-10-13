@@ -1,4 +1,5 @@
 import { test, expect, openWebChat } from "./fixtures";
+import type { WorkflowDefinition, WorkflowRun, WorkflowSpec } from "../src/lib/types";
 
 test("history outages remain retryable without presenting a false empty conversation", async ({ page }) => {
   let reads = 0;
@@ -114,6 +115,91 @@ test("workflow completion fetches final output and revision brings back the full
   await expect(page.getByText("Full final report", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Revise & restart", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Workflow specification", exact: true })).toHaveValue(JSON.stringify(spec, null, 2));
+});
+
+test("workflow definitions can be saved, edited, run repeatedly and deleted independently of history", async ({ page }) => {
+  let definition: WorkflowDefinition | null = null;
+  let runs: WorkflowRun[] = [];
+  const snapshots = new Map<string, WorkflowSpec>();
+  let rejectDelete = true;
+  await page.route("**/api/workflow/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const method = route.request().method();
+    if (path.endsWith("/definitions") && method === "GET") return route.fulfill({ json: { definitions: definition ? [definition] : [] } });
+    if (path.endsWith("/definitions") && method === "POST" || path.endsWith("/definitions/saved") && method === "PUT") {
+      const { spec } = route.request().postDataJSON() as { spec: WorkflowSpec };
+      definition = { workflow_id: "saved", name: spec.name, spec, created_at: 1, updated_at: 2 };
+      return route.fulfill({ json: definition });
+    }
+    if (path.endsWith("/definitions/saved")) {
+      if (method === "DELETE") { definition = null; return route.fulfill({ json: { ok: true } }); }
+      return route.fulfill({ json: definition });
+    }
+    if (path.endsWith("/runs") && method === "POST") {
+      expect(route.request().postDataJSON()).toEqual({ workflow_id: "saved" });
+      if (!definition) throw new Error("Definition missing");
+      const run: WorkflowRun = { run_id: `run-${runs.length + 1}`, name: definition.name, status: "completed", running: false, created_at: 1 };
+      snapshots.set(run.run_id, structuredClone(definition.spec)); runs.push(run);
+      return route.fulfill({ json: run });
+    }
+    if (path.endsWith("/runs/cleanup")) {
+      expect(route.request().postDataJSON()).toEqual({ days: 0, include_stopped: false });
+      const deleted = runs.length; runs = []; return route.fulfill({ json: { ok: true, deleted } });
+    }
+    if (path.endsWith("/runs")) return route.fulfill({ json: { runs } });
+    const run = runs.find((item) => path.endsWith(`/runs/${item.run_id}`));
+    if (run && method === "DELETE") {
+      if (rejectDelete) { rejectDelete = false; return route.fulfill({ status: 400, json: { detail: "Source still needed" } }); }
+      runs = runs.filter((item) => item !== run); return route.fulfill({ json: { ok: true } });
+    }
+    if (run) return route.fulfill({ json: { run, spec: snapshots.get(run.run_id), nodes: [], events: [], events_truncated: false } });
+    return route.fulfill({ status: 404, json: { detail: "Missing workflow" } });
+  });
+  const spec: WorkflowSpec = { name: "Reusable report", steps: [{ key: "research", kind: "ask", goal: "Original goal" }] };
+  await page.goto("/webui/workflow");
+  await page.getByRole("button", { name: "New definition", exact: true }).click();
+  await page.getByRole("textbox", { name: "Workflow specification", exact: true }).fill(JSON.stringify(spec));
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByRole("heading", { name: spec.name, exact: true })).toBeVisible();
+  expect(runs).toHaveLength(0);
+  await page.getByRole("button", { name: "Edit", exact: true }).click();
+  spec.steps = spec.steps.map((step) => ({ ...step, goal: "Edited goal" }));
+  await page.getByRole("textbox", { name: "Workflow specification", exact: true }).fill(JSON.stringify(spec));
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.locator("pre")).toContainText("Edited goal");
+  await page.getByRole("button", { name: "Start", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "Runs", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("button", { name: "Delete run", exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "Definitions", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "Definitions", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.getByRole("button", { name: /Reusable report/ }).click();
+  await page.getByRole("button", { name: "Start", exact: true }).click();
+  await expect.poll(() => runs.length).toBe(2);
+  await expect(page.getByRole("tab", { name: "Runs", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("button", { name: /run-2/ })).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("tab", { name: "Definitions", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "Definitions", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.getByRole("button", { name: /Reusable report/ }).click();
+  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Confirm", exact: true }).click();
+  await expect(page.getByText("No saved workflows", { exact: true })).toBeVisible();
+  expect(runs).toHaveLength(2);
+  await page.getByRole("tab", { name: "Runs", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "Runs", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.getByRole("button", { name: /run-1/ }).click();
+  await page.getByRole("button", { name: "Delete run", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Delete run", exact: true });
+  await dialog.getByRole("button", { name: "Confirm", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toContainText("Source still needed");
+  expect(runs).toHaveLength(2);
+  await dialog.getByRole("button", { name: "Confirm", exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  await expect(page.getByRole("button", { name: /run-1/ })).not.toBeVisible();
+  await page.getByRole("button", { name: "Clean up history", exact: true }).click();
+  await page.getByRole("spinbutton").fill("0");
+  await page.getByRole("button", { name: "Permanently clean up", exact: true }).click();
+  await expect(page.getByRole("status")).toHaveText("Deleted 1 run records");
+  await expect(page.getByText("No workflow runs yet", { exact: true })).toBeVisible();
 });
 
 test("message context can be inspected and excluded without hiding the submitted message", async ({ page }) => {

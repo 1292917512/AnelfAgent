@@ -121,3 +121,43 @@ async def test_list_non_terminal_and_purge(journal: WorkflowJournal):
     conn.close()
     assert await journal.purge_expired(30) == 2
     assert await journal.get_run("done") is None
+
+
+async def test_cleanup_preserves_running_resumable_sources_and_definitions(journal: WorkflowJournal):
+    for run_id, status in [("source", "completed"), ("stopped", "stopped"), ("failed", "failed"), ("live", "running")]:
+        await journal.create_run(run_id, run_id, "{}", "h", "", "source" if run_id == "stopped" else "")
+        await journal.admit_node(run_id, "a", 1, "ask", "h")
+        await journal.append_event(run_id, "run-started")
+        if status != "running":
+            await journal.settle_run(run_id, status)
+    await journal.save_definition("definition", "saved", "{}", create=True)
+    with pytest.raises(ValueError, match="引用"):
+        await journal.delete_run("source")
+    with pytest.raises(ValueError, match="运行中"):
+        await journal.delete_run("live")
+    with pytest.raises(ValueError):
+        await journal.cleanup_runs(-1)
+    assert await journal.cleanup_runs(0) == 1
+    assert await journal.nodes_of_run("failed") == []
+    assert await journal.list_events("failed", -1) == []
+    assert await journal.cleanup_runs(0, include_stopped=True) == 2
+    assert await journal.cleanup_runs(0) == 0
+    assert [run["id"] for run in await journal.list_runs()] == ["live"]
+    assert (await journal.get_definition("definition"))["name"] == "saved"
+
+
+async def test_run_delete_rolls_back_all_three_tables_on_failure(journal: WorkflowJournal):
+    import sqlite3
+
+    await journal.create_run("r", "r", "{}", "h", "")
+    await journal.admit_node("r", "a", 1, "ask", "h")
+    await journal.append_event("r", "run-started")
+    await journal.settle_run("r", "completed")
+    with sqlite3.connect(journal._db_path) as conn:
+        conn.execute("CREATE TRIGGER reject_delete BEFORE DELETE ON workflow_event"
+                     " BEGIN SELECT RAISE(ABORT, 'test failure'); END")
+    with pytest.raises(sqlite3.IntegrityError):
+        await journal.delete_run("r")
+    assert await journal.get_run("r") is not None
+    assert len(await journal.nodes_of_run("r")) == 1
+    assert len(await journal.list_events("r", -1)) == 1

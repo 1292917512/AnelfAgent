@@ -42,6 +42,14 @@ NODE_COMPLETED = "completed"
 NODE_FAILED = "failed"
 
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS workflow_definition (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    spec_json TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS workflow_run (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -131,6 +139,57 @@ class WorkflowJournal:
                 self._conn = None
 
     # ------------------------------------------------------------------
+    # 可复用定义（运行保存独立规格快照）
+    # ------------------------------------------------------------------
+
+    async def save_definition(self, workflow_id: str, name: str, spec_json: str,
+                              *, create: bool) -> None:
+        db = await self._get_db()
+        now = time.time()
+        async with self._write_lock:
+            if create:
+                await db.execute(
+                    "INSERT INTO workflow_definition (id, name, spec_json, created_at, updated_at)"
+                    " VALUES (?, ?, ?, ?, ?)",
+                    (workflow_id, name, spec_json, now, now),
+                )
+            else:
+                cur = await db.execute(
+                    "UPDATE workflow_definition SET name = ?, spec_json = ?, updated_at = ? WHERE id = ?",
+                    (name, spec_json, now, workflow_id),
+                )
+                if not cur.rowcount:
+                    await db.rollback()
+                    raise ValueError(f"工作流定义不存在: {workflow_id}")
+            await db.commit()
+
+    async def get_definition(self, workflow_id: str) -> Dict[str, Any]:
+        db = await self._get_db()
+        async with db.execute("SELECT * FROM workflow_definition WHERE id = ?", (workflow_id,)) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            raise ValueError(f"工作流定义不存在: {workflow_id}")
+        item = _row_to_dict(row)
+        item["workflow_id"] = item.pop("id")
+        item["spec"] = json.loads(item.pop("spec_json"))
+        return item
+
+    async def list_definitions(self, limit: int = 30, offset: int = 0) -> List[Dict[str, Any]]:
+        db = await self._get_db()
+        async with db.execute(
+                "SELECT id AS workflow_id, name, created_at, updated_at FROM workflow_definition"
+                " ORDER BY updated_at DESC, id LIMIT ? OFFSET ?", (limit, offset)) as cur:
+            return [_row_to_dict(row) for row in await cur.fetchall()]
+
+    async def delete_definition(self, workflow_id: str) -> None:
+        db = await self._get_db()
+        async with self._write_lock:
+            cur = await db.execute("DELETE FROM workflow_definition WHERE id = ?", (workflow_id,))
+            await db.commit()
+            if not cur.rowcount:
+                raise ValueError(f"工作流定义不存在: {workflow_id}")
+
+    # ------------------------------------------------------------------
     # run
     # ------------------------------------------------------------------
 
@@ -190,12 +249,12 @@ class WorkflowJournal:
             await db.commit()
             return cur.rowcount > 0
 
-    async def list_runs(self, limit: int = 30) -> List[Dict[str, Any]]:
+    async def list_runs(self, limit: int = 30, offset: int = 0) -> List[Dict[str, Any]]:
         db = await self._get_db()
         sql = "SELECT id, name, status, stop_reason, scope, parent_run_id, spec_hash," \
               " created_at, updated_at, finished_at FROM workflow_run" \
-              " ORDER BY updated_at DESC LIMIT ?"
-        async with db.execute(sql, (max(1, limit),)) as cur:
+              " ORDER BY updated_at DESC, id LIMIT ? OFFSET ?"
+        async with db.execute(sql, (max(1, limit), max(0, offset))) as cur:
             rows = await cur.fetchall()
         return [_row_to_dict(r) for r in rows]
 
@@ -345,23 +404,63 @@ class WorkflowJournal:
     # retention
     # ------------------------------------------------------------------
 
-    async def purge_expired(self, days: int) -> int:
+    async def purge_expired(self, days: int, *, protected_ids: List[str] | None = None) -> int:
         """清理超期终态 run（连带节点与事件；幂等）。"""
         if days <= 0:
             return 0
+        return await self.cleanup_runs(days, include_stopped=True, protected_ids=protected_ids)
+
+    async def delete_run(self, run_id: str) -> None:
+        """删除终态运行及其节点、事件；仍被运行/续跑引用的源运行拒绝删除。"""
+        db = await self._get_db()
+        async with self._write_lock:
+            run = await self.get_run(run_id)
+            if run is None:
+                raise ValueError(f"工作流运行不存在: {run_id}")
+            if run["status"] == RUNNING:
+                raise ValueError("运行中的工作流不能删除，请先停止并等待结算")
+            async with db.execute(
+                    "SELECT id FROM workflow_run WHERE parent_run_id = ?"
+                    " AND status IN ('running', 'stopped') LIMIT 1", (run_id,)) as cur:
+                if await cur.fetchone() is not None:
+                    raise ValueError("该运行仍被运行中或可续跑的修订引用，请先处理这些修订")
+            await self._delete_run_rows(db, [run_id])
+
+    async def cleanup_runs(self, days: int = 30, *, include_stopped: bool = False,
+                           protected_ids: List[str] | None = None) -> int:
+        """清理指定天数以前的终态运行；0 表示全部，默认保留可续跑记录。"""
+        if days < 0:
+            raise ValueError("保留天数不能为负数")
         db = await self._get_db()
         cutoff = time.time() - days * 86400
+        protected = protected_ids or []
+        placeholders = ",".join("?" for _ in protected) or "NULL"
         async with self._write_lock:
-            cur = await db.execute(
-                "DELETE FROM workflow_run WHERE status != 'running' AND finished_at < ?",
-                (cutoff,),
-            )
-            deleted = cur.rowcount
-            await db.execute(
-                "DELETE FROM workflow_node WHERE run_id NOT IN (SELECT id FROM workflow_run)")
-            await db.execute(
-                "DELETE FROM workflow_event WHERE run_id NOT IN (SELECT id FROM workflow_run)")
+            async with db.execute(
+                    "WITH RECURSIVE protected(id) AS ("
+                    " SELECT id FROM workflow_run WHERE status = 'running'"
+                    f" OR id IN ({placeholders})"
+                    " OR (status = 'stopped' AND (? = 0 OR finished_at IS NULL OR finished_at >= ?))"
+                    " UNION SELECT r.parent_run_id FROM workflow_run r JOIN protected p ON r.id = p.id"
+                    " WHERE r.parent_run_id IS NOT NULL)"
+                    " SELECT id FROM workflow_run WHERE status != 'running'"
+                    " AND (? OR status != 'stopped') AND finished_at < ?"
+                    " AND id NOT IN (SELECT id FROM protected)",
+                    (*protected, include_stopped, cutoff, include_stopped, cutoff)) as cur:
+                ids = [str(row["id"]) for row in await cur.fetchall()]
+            await self._delete_run_rows(db, ids)
+        if ids:
+            log(f"工作流 journal 清理: {len(ids)} 个 run", "DEBUG", tag="工作流")
+        return len(ids)
+
+    async def _delete_run_rows(self, db: aiosqlite.Connection, run_ids: List[str]) -> None:
+        """调用方持有写锁，三表在同一事务中清理，失败或取消时回滚。"""
+        try:
+            params = [(run_id,) for run_id in run_ids]
+            await db.executemany("DELETE FROM workflow_node WHERE run_id = ?", params)
+            await db.executemany("DELETE FROM workflow_event WHERE run_id = ?", params)
+            await db.executemany("DELETE FROM workflow_run WHERE id = ?", params)
             await db.commit()
-        if deleted:
-            log(f"工作流 journal 清理: {deleted} 个超期 run", "DEBUG", tag="工作流")
-        return int(deleted)
+        except BaseException:
+            await db.rollback()
+            raise

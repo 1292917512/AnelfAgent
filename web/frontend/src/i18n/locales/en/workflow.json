@@ -17,10 +17,13 @@
     "layer": "Layer {{count}}"
   },
   "list": {
-    "title": "Recent runs",
+    "title": "Runs",
     "loading": "Loading…",
     "empty": "No workflow runs yet",
-    "elapsed": "running {{sec}}s"
+    "elapsed": "running {{sec}}s",
+    "previous": "Previous",
+    "next": "Next",
+    "page": "Page {{page}}"
   },
   "detail": {
     "loading": "Loading run detail…",
@@ -58,7 +61,8 @@
   "action": {
     "stop": "Stop",
     "resume": "Resume",
-    "revise": "Revise & restart"
+    "revise": "Revise & restart",
+    "delete": "Delete run"
   },
   "toast": {
     "started": "Workflow \"{{name}}\" started",
@@ -66,5 +70,26 @@
     "resumed": "Workflow resumed",
     "revisionHint": "Revision source {{id}} filled — edit the spec and start to import completed steps",
     "requestFailed": "Request failed"
+  },
+  "definitions": {
+    "title": "Definitions",
+    "create": "New definition",
+    "edit": "Edit definition",
+    "empty": "No saved workflows",
+    "select": "Select a workflow to view its definition",
+    "help": "Save reusable steps and dependencies, then start them separately. Saving and editing do not execute the workflow.",
+    "deleteTitle": "Delete workflow definition",
+    "deleteMessage": "Delete the definition \"{{name}}\"? Existing runs and their history will be kept.",
+    "saveFromRun": "Save as definition",
+    "saved": "Saved as a reusable definition. View and start it in Definitions."
+  },
+  "cleanup": {
+    "title": "Clean up history",
+    "submit": "Permanently clean up",
+    "days": "Days to keep (0 clears all history)",
+    "includeStopped": "Include stopped runs (they can no longer be resumed)",
+    "help": "Permanently delete matching runs, step results and events. By default, only completed and failed runs are removed. Active runs and sources needed by running or resumable revisions are kept. Definitions are unaffected.",
+    "deleteMessage": "Permanently delete this run of \"{{name}}\", its step results and events? It can no longer be resumed or imported. The workflow definition is unaffected.",
+    "done": "Deleted {{count}} run records"
   }
 }

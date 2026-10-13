@@ -17,10 +17,13 @@
     "layer": "第 {{count}} 层"
   },
   "list": {
-    "title": "最近运行",
+    "title": "运行记录",
     "loading": "加载中…",
     "empty": "暂无工作流运行",
-    "elapsed": "已运行 {{sec}} 秒"
+    "elapsed": "已运行 {{sec}} 秒",
+    "previous": "上一页",
+    "next": "下一页",
+    "page": "第 {{page}} 页"
   },
   "detail": {
     "loading": "加载运行详情…",
@@ -58,7 +61,8 @@
   "action": {
     "stop": "停止",
     "resume": "续跑",
-    "revise": "修订重启"
+    "revise": "修订重启",
+    "delete": "删除运行"
   },
   "toast": {
     "started": "工作流「{{name}}」已启动",
@@ -66,5 +70,26 @@
     "resumed": "工作流已续跑",
     "revisionHint": "已填入修订源 {{id}}，编辑规格后启动即可导入已完成步骤",
     "requestFailed": "请求失败"
+  },
+  "definitions": {
+    "title": "工作流定义",
+    "create": "新建定义",
+    "edit": "编辑定义",
+    "empty": "暂无已保存的工作流",
+    "select": "选择工作流查看定义",
+    "help": "保存可复用的步骤和依赖关系，之后可单独启动；保存与编辑不会执行工作流。",
+    "deleteTitle": "删除工作流定义",
+    "deleteMessage": "删除「{{name}}」的定义？已有运行及其历史记录会保留。",
+    "saveFromRun": "保存为定义",
+    "saved": "已保存为可复用定义，可在“工作流定义”中查看和启动。"
+  },
+  "cleanup": {
+    "title": "清理历史",
+    "submit": "永久清理",
+    "days": "保留最近多少天（0 表示清理全部历史）",
+    "includeStopped": "同时清理已停止的记录（清理后无法续跑）",
+    "help": "永久删除符合条件的运行、步骤结果和事件。默认仅清理已完成和失败记录；运行中及仍被运行中或可续跑修订依赖的源记录会保留。工作流定义不受影响。",
+    "deleteMessage": "永久删除「{{name}}」的这次运行、步骤结果和事件？删除后无法续跑或导入结果；工作流定义不受影响。",
+    "done": "已清理 {{count}} 条运行记录"
   }
 }

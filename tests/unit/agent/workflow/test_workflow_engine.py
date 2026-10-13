@@ -13,6 +13,79 @@ from agent.workflow import journal as wf_journal
 from agent.workflow.spec import WorkflowSpecError
 
 
+async def test_saved_definition_is_durable_and_runs_use_independent_snapshots(engine, fake_manager):
+    from agent.workflow.journal import WorkflowJournal
+
+    spec = {"name": "saved", "steps": [{"key": "a", "goal": "original"}]}
+    definition = await engine.save_definition(spec)
+    workflow_id = definition["workflow_id"]
+    assert not fake_manager.calls
+    reopened = WorkflowJournal()
+    try:
+        assert (await reopened.get_definition(workflow_id))["spec"] == definition["spec"]
+    finally:
+        await reopened.aclose()
+    first = await engine.start(workflow_id=workflow_id)
+    await wait_until(lambda: not engine.is_running(first["run_id"]))
+    edited = {"name": "edited", "steps": [{"key": "a", "goal": "updated"}]}
+    await engine.save_definition(edited, workflow_id)
+    second = await engine.start(workflow_id=workflow_id)
+    await wait_until(lambda: not engine.is_running(second["run_id"]))
+    assert first["run_id"] != second["run_id"]
+    await engine.delete_definition(workflow_id)
+    assert await engine.list_definitions() == []
+    assert (await engine.run_detail(first["run_id"]))["spec"]["steps"][0]["goal"] == "original"
+    assert (await engine.run_detail(second["run_id"]))["spec"]["steps"][0]["goal"] == "updated"
+    assert [call["goal"] for call in fake_manager.calls] == ["original", "updated"]
+    with pytest.raises(ValueError):
+        await engine.save_definition(edited, workflow_id)
+    with pytest.raises(ValueError):
+        await engine.start(workflow_id=workflow_id)
+    with pytest.raises(ValueError):
+        await engine.start(spec, workflow_id="ambiguous")
+
+
+async def test_cleanup_and_delete_protect_run_until_final_event_is_written(engine, monkeypatch):
+    entered, release = asyncio.Event(), asyncio.Event()
+    append = engine.journal.append_event
+
+    async def delayed_append(run_id, event_type, payload=None):
+        if event_type == "run-settled":
+            entered.set()
+            await release.wait()
+        return await append(run_id, event_type, payload)
+
+    monkeypatch.setattr(engine.journal, "append_event", delayed_append)
+    run = await engine.start({"name": "settling", "steps": [{"key": "a", "goal": "work"}]})
+    await asyncio.wait_for(entered.wait(), 5)
+    with pytest.raises(ValueError, match="结算"):
+        await engine.delete_run(run["run_id"])
+    assert (await engine.cleanup_runs(0))["deleted"] == 0
+    release.set()
+    await wait_until(lambda: not engine.is_running(run["run_id"]))
+    assert (await engine.delete_run(run["run_id"]))["ok"]
+    assert await engine.journal.nodes_of_run(run["run_id"]) == []
+    assert await engine.journal.list_events(run["run_id"], -1) == []
+
+
+async def test_retention_keeps_expired_revision_source_for_import(engine, fake_manager):
+    import sqlite3
+    import time
+
+    spec = {"name": "revision", "steps": [{"key": "a", "goal": "paid work"}]}
+    parent = await engine.start(spec)
+    await wait_until(lambda: not engine.is_running(parent["run_id"]))
+    with sqlite3.connect(engine.journal._db_path) as conn:
+        conn.execute("UPDATE workflow_run SET finished_at = ? WHERE id = ?",
+                     (time.time() - 86400 * 40, parent["run_id"]))
+    child = await engine.start(spec, resume_of=parent["run_id"])
+    await wait_until(lambda: not engine.is_running(child["run_id"]))
+    assert len(fake_manager.calls) == 1
+    assert await engine.journal.get_run(parent["run_id"]) is not None
+    assert (await engine.cleanup_runs(30))["deleted"] == 1
+    assert (await engine.run_detail(child["run_id"]))["nodes"][0]["result"] == "out[paid work]"
+
+
 @pytest.mark.parametrize(("reason", "schema_ok"), [
     ("budget_exhausted", None), ("completed", False),
 ])
