@@ -168,8 +168,10 @@ class TestBargeInEchoGuard:
                 await engine.accept_pcm("c1", pcm_tone(20))
             await _wait_for(lambda: session.turn_id > old_turn)
             assert session.state is SessionState.LISTENING
-            assert any(e[0] == "audio_done" and e[1].get("interrupted")
-                       for e in sink.events)
+            await _wait_for(lambda: any(
+                name == "audio_done" and payload.get("interrupted")
+                for name, payload in sink.events
+            ))
         finally:
             ConfigManager.set("realtime_barge_in_onset_ms", 250)
             await engine.stop("c1")
