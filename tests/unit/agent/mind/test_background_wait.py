@@ -285,7 +285,7 @@ class TestWaitSuspension:
         assert injected
 
     async def test_wait_timeout_zeroes_budget_without_delivery(self, anything, deliver_mock) -> None:
-        """挂起超时后预算清零：后续纯文本回落独白路径，独白上限掐断后保持静默。"""
+        """等待预算耗尽后收束正文，无可路由会话时不投递。"""
         mind = _WaitMind()
         mind.background_tasks.register("_global", "delegation", "生成图片")
         mind._queue = [text_result(mind._wait_text) for _ in range(5)]
@@ -294,9 +294,9 @@ class TestWaitSuspension:
         await _run_reply(mind, anything, steps, chain)
 
         assert any("等待后台任务（timeout" in s for s in steps)
-        # 第 1 次挂起超时；预算清零后连续独白达上限掐断，独白不得投递
-        assert any("掐断结束" in s for s in steps)
-        assert mind.llm_calls == 6
+        # 第一次挂起超时，下一轮交回控制权；无路由时跳过投递
+        assert any("delivery_status:skipped" in s for s in steps)
+        assert mind.llm_calls == 2
         deliver_mock.assert_not_awaited()
         assert not any(
             "未调用工具" in m.get("content", "")
@@ -304,7 +304,7 @@ class TestWaitSuspension:
         )
 
     async def test_any_text_with_tasks_suspends_once(self, anything) -> None:
-        """有后台任务时任意纯文本都先挂起一次；预算耗尽后独白上限掐断收尾。"""
+        """有后台任务时纯文本先会合一次，超时后不反复调用模型。"""
         mind = _WaitMind(wait_text="我今天心情不太好喵，想随便聊聊")
         mind.background_tasks.register("_global", "delegation", "生成图片")
         mind._queue = [text_result("我还是不太舒服") for _ in range(5)]
@@ -316,18 +316,18 @@ class TestWaitSuspension:
         # 超时提示含任务查询路径
         hints = [m for m in chain if m.get("role") == "system" and "check_background_tasks" in m.get("content", "")]
         assert hints
-        assert any("掐断结束" in s for s in steps)
+        assert any("delivery_status:skipped" in s for s in steps)
 
     async def test_no_tasks_text_ends_without_delivery(self, anything, deliver_mock) -> None:
-        """无后台任务时纯文本为独白：连续上限掐断，不自动投递。"""
+        """无后台任务时直接收束，无路由会话不投递。"""
         mind = _WaitMind()
         mind._queue = [text_result(mind._wait_text) for _ in range(6)]
         steps: List[str] = []
         chain: List = []
         await _run_reply(mind, anything, steps, chain)
 
-        assert mind.llm_calls == 5  # text_without_tool_limit
-        assert any("掐断结束" in s for s in steps)
+        assert mind.llm_calls == 1
+        assert any("delivery_status:skipped" in s for s in steps)
         deliver_mock.assert_not_awaited()
         assert not any(
             "未调用工具" in m.get("content", "")

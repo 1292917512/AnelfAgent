@@ -26,12 +26,16 @@ _JUDGMENT_CONFIGS = {
             "default": True,
         },
         "judgment_gate_timeout": {
-            "description": "可选工作预判的总等待预算；到期立即保留原流程",
+            "description": "自动回复审核与可选工作预判的等待预算；到期不自动投递，可选工作保留原流程",
             "default": 2.0, "min": 0.1, "max": 10.0, "unit": "秒", "advanced": True,
         },
         "judgment_recheck_seconds": {
             "description": "不可达判断模型的后台复查间隔；期间前台直接跳过，恢复或手动测试成功后重新启用",
             "default": 300.0, "min": 30.0, "max": 3600.0, "unit": "秒",
+        },
+        "judgment_delivery_confidence": {
+            "description": "自动回复审核最低概率；配置 Jev 后仅一致通过才投递，故障或不确定不投递；未配置 Jev 按普通回复投递",
+            "default": 0.8, "min": 0.5, "max": 1.0, "advanced": True,
         },
         "judgment_gate_skip_threshold": {
             "description": "必要概率不高于此值，且无需执行的依据概率不低于 1−此值，才跳过可选工作",

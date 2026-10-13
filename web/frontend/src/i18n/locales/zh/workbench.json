@@ -208,8 +208,17 @@
     "updateHint": "这些内容已并入第 {{count}} 轮的执行上下文；并入不代表已经处理或回复。",
     "updateDeferred": "至少还有 {{count}} 条消息留待后续轮次并入。",
     "updateTagged": "查看带标签的完整内容",
-    "updates": { "conversation": "会话消息更新", "push": "收到实体通知", "cross_channel": "跨会话感知" },
-    "updateRoles": { "user": "收到的消息", "assistant": "已发送的消息", "system": "系统通知" },
+    "updates": {
+      "conversation": "会话消息更新",
+      "push": "收到实体通知",
+      "cross_channel": "跨会话感知",
+      "delivery": "回复投递"
+    },
+    "updateRoles": {
+      "user": "收到的消息",
+      "assistant": "已发送的消息",
+      "system": "系统通知"
+    },
     "title": "实时过程",
     "clearHistory": "清除历史",
     "clearHistoryHint": "仅清除之前轮次的临时记录，保留当前轮次和子代理，不中断执行",
@@ -283,7 +292,10 @@
       "kind": "类型",
       "media_type": "媒体",
       "to_me": "指向 AI",
-      "push": "通知"
+      "push": "通知",
+      "delivery_mode": "投递方式",
+      "delivery_status": "投递状态",
+      "delivery_scope": "目标会话"
     },
     "contextPreparing": "正在准备记忆与上下文",
     "contextReady": "记忆与上下文",
@@ -304,6 +316,21 @@
       "output": "结果",
       "message": "说明"
     },
-    "recallScore": "相关度 {{score}}"
+    "recallScore": "相关度 {{score}}",
+    "deliveryHint": "正文审核与频道发送回执。仅已送达表示用户收到消息；跳过和失败不会冒充成功。",
+    "deliveryModes": {
+      "auto": "自动回复",
+      "channel": "显式发送",
+      "event": "事件通知",
+      "silent": "静默结束",
+      "internal": "内部过程"
+    },
+    "deliveryStates": {
+      "sent": "已送达",
+      "failed": "发送失败",
+      "unknown": "送达未知",
+      "skipped": "未投递",
+      "pending": "待投递"
+    }
   }
 }

@@ -1,7 +1,7 @@
 """投递事实标签与当前执行链的发送回执。
 
 模型可见：执行上下文与工具结果中的投递方式、状态和目标会话。
-Token 影响：每轮一条短状态；未发送就结束时最多追加一次恢复反馈。
+Token 影响：每轮一条短状态；审核与发送结果作为有界动态事实追加。
 缓存影响：状态置于动态尾部或工具结果，不改 stable/summary/历史前缀。
 """
 
@@ -16,7 +16,7 @@ from typing import Literal
 from core.log import log
 from core.tags import tag_label
 
-DeliveryMode = Literal["internal", "channel", "event", "silent"]
+DeliveryMode = Literal["internal", "channel", "auto", "event", "silent"]
 DeliveryStatus = Literal["pending", "sent", "failed", "unknown", "skipped"]
 
 

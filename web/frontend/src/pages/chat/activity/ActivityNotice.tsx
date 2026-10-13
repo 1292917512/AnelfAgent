@@ -1,4 +1,4 @@
-import { Bell, MessagesSquare, Radio, ArrowUpRight } from "lucide-react";
+import { Bell, Send, MessagesSquare, Radio, ArrowUpRight } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { ActivityEntry } from "@/lib/types/activity";
 import { parseMessageTags } from "@/lib/message-tags";
@@ -10,7 +10,7 @@ import { Markdown } from "../render/Markdown";
 export function ActivityNotice({ entry }: { entry: Extract<ActivityEntry, { kind: "notice" }> }) {
   const { t } = useTranslation("workbench");
   const title = t(`activity.updates.${entry.origin}`);
-  const Icon = entry.origin === "push" ? Bell : entry.origin === "cross_channel" ? Radio : MessagesSquare;
+  const Icon = entry.origin === "delivery" ? Send : entry.origin === "push" ? Bell : entry.origin === "cross_channel" ? Radio : MessagesSquare;
   const content = entry.items[0]?.content ?? "";
   const tags = parseMessageTags(content);
   const segments = tags.map((tag, index) => content.slice(tags[index - 1]?.end ?? 0, tag.start));
@@ -24,7 +24,7 @@ export function ActivityNotice({ entry }: { entry: Extract<ActivityEntry, { kind
         <span className="activity-notice-meta">{t("activity.updateRound", { count: entry.iteration })}{sources.length > 0 && ` · ${sources.join(" / ")}`}</span>
       </span><ArrowUpRight size={15} className="shrink-0 text-muted" />
     </>}>
-      <p className="activity-note">{t("activity.updateHint", { count: entry.iteration })}</p>
+      <p className="activity-note">{t(entry.origin === "delivery" ? "activity.deliveryHint" : "activity.updateHint", { count: entry.iteration })}</p>
       {entry.truncated && <p className="activity-note">{t("activity.truncated")}</p>}
       {entry.deferred > 0 && <p className="activity-note">{t("activity.updateDeferred", { count: entry.deferred })}</p>}
       <div className="activity-notice-items">{entry.items.map((item, index) => <article key={`${item.source.scope}:${item.message_id}:${index}`}>

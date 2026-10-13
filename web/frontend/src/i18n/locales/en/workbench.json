@@ -208,8 +208,17 @@
     "updateHint": "These items entered the context for round {{count}}. Inclusion does not mean they have been handled or answered.",
     "updateDeferred": "At least {{count}} more messages await a later round.",
     "updateTagged": "Read the full tagged content",
-    "updates": { "conversation": "Conversation update", "push": "Entity notification", "cross_channel": "Cross-conversation awareness" },
-    "updateRoles": { "user": "Received message", "assistant": "Sent message", "system": "System notification" },
+    "updates": {
+      "conversation": "Conversation update",
+      "push": "Entity notification",
+      "cross_channel": "Cross-conversation awareness",
+      "delivery": "Reply delivery"
+    },
+    "updateRoles": {
+      "user": "Received message",
+      "assistant": "Sent message",
+      "system": "System notification"
+    },
     "title": "Live activity",
     "clearHistory": "Clear previous",
     "clearHistoryHint": "Clear earlier temporary records, keeping the current round and subagents running",
@@ -283,7 +292,10 @@
       "kind": "Kind",
       "media_type": "Media",
       "to_me": "To AI",
-      "push": "Notification"
+      "push": "Notification",
+      "delivery_mode": "Delivery mode",
+      "delivery_status": "Delivery status",
+      "delivery_scope": "Target conversation"
     },
     "contextPreparing": "Preparing memory and context",
     "contextReady": "Memory and context",
@@ -304,6 +316,21 @@
       "output": "Result",
       "message": "Message"
     },
-    "recallScore": "Relevance {{score}}"
+    "recallScore": "Relevance {{score}}",
+    "deliveryHint": "Content review and channel receipt. Only sent confirms delivery; skipped or failed does not.",
+    "deliveryModes": {
+      "auto": "Automatic reply",
+      "channel": "Explicit send",
+      "event": "Event notification",
+      "silent": "Silent end",
+      "internal": "Internal"
+    },
+    "deliveryStates": {
+      "sent": "Sent",
+      "failed": "Failed",
+      "unknown": "Unconfirmed",
+      "skipped": "Not sent",
+      "pending": "Pending"
+    }
   }
 }

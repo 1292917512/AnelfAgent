@@ -23,7 +23,9 @@ export function ActivityTagLabel({ tag, root = "workspace" }: { tag: ActivityTag
     const ref = parseFileReference(`./${fileRoot === "project" ? "project:" : ""}${["directory", "dir"].includes(tag.key) ? "dir:" : ""}${encodeURIComponent(tag.path ?? tag.value)}`);
     if (ref) return <FileReferenceLink reference={ref}>{tag.value}</FileReferenceLink>;
   }
-  return <span className="activity-tag" title={`${tag.key}: ${tag.path ?? tag.value}`}><span>{t(`activity.tags.${tag.key}`, { defaultValue: tag.key })}</span><b>{tag.value}</b></span>;
+  const value = tag.key === "delivery_mode" ? t(`activity.deliveryModes.${tag.value}`, { defaultValue: tag.value })
+    : tag.key === "delivery_status" ? t(`activity.deliveryStates.${tag.value}`, { defaultValue: tag.value }) : tag.value;
+  return <span className="activity-tag" title={`${tag.key}: ${tag.path ?? tag.value}`}><span>{t(`activity.tags.${tag.key}`, { defaultValue: tag.key })}</span><b>{value}</b></span>;
 }
 
 export function ActivityTargets({ targets }: { targets: ActivityTag[] }) {

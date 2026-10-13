@@ -45,11 +45,11 @@ def test_explicit_silence_is_scoped_and_does_not_claim_sent():
     token = bind_scope(scope)
     try:
         with capture_deliveries(scope):
-            result = json.loads(_end_reply_tool(silent=True))
+            result = json.loads(_end_reply_tool())
             assert delivery_count() == 0
     finally:
         reset_scope(token)
-    assert result["silent"] is True
+    assert result["action"] == "end_reply"
     assert dict(etag_all(result["delivery"])) == {
         "delivery_mode": "silent", "delivery_status": "skipped", "delivery_scope": scope,
     }

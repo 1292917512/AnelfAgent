@@ -12,7 +12,7 @@ EXPECTED_CONFIG_KEYS = {
     "judgment_gate_enabled",
     "judgment_gate_timeout",
     "judgment_recheck_seconds",
-    "judgment_gate_skip_threshold",
+    "judgment_gate_skip_threshold", "judgment_delivery_confidence",
     "judgment_slow_seconds",
     "judgment_fallback_enabled",
     "judgment_fallback_model",

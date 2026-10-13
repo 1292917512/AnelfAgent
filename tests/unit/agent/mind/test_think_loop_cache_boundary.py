@@ -83,7 +83,7 @@ class TestThinkLoopChainBreakpoint:
         mind = _loop_mind()
         base = _base()
         await run_think_loop(mind, anything=anything, base_messages=base)
-        assert len(mind.sent_messages) == 3
+        assert len(mind.sent_messages) == 2
         for messages in mind.sent_messages:
             assert count_breakpoints(messages) == 0
         # 共享的 base 消息不被任何装饰改写

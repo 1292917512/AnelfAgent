@@ -121,28 +121,19 @@ from core.tool_registry import activate_group, deferred_tool
     name=_END_REPLY_TOOL_NAME,
     group="thinking", tags=["always"], source="mind.core",
     description=(
-        "请求结束本轮操作。任务已全部完成或无需继续时调用；"
-        "同批正文不会投递给用户（回复请先调用 send_message 送达）；"
-        "已有正文却尚未发送时会反馈未投递状态；确认无需回复或仅为内部备注时，"
-        "使用 silent=true 明确放弃投递（reason 仅内部日志，不发给用户）。"
-        "若同批或同轮存在失败工具，结束将不生效并反馈失败原因，修正后需重新调用。"
+        "结束本轮操作，不再执行后续工具或生成回复。已回复或无需回复时调用；"
+        "reason 及同批正文仅为内部记录，不发给用户。需回复时先 send_message，或单独输出最终正文。"
     ),
 )
-def _end_reply_tool(reason: str = "", silent: bool = False) -> str:
-    """结束本轮操作。
+def _end_reply_tool(reason: str = "") -> str:
+    """静默结束当前执行，reason 仅作为内部备注。"""
+    from agent.channel.delivery import delivery_tags
+    from core.conversation_scope import current_scope
 
-    Args:
-        reason: 可选备注，仅内部日志，不会发给用户，通常留空
-        silent: 明确选择不投递当前未发送的正文；不会将正文标记为已送达
-    """
     if reason:
         log(f"AI 结束操作: {reason}", tag="思维")
-    payload = {"ok": True, "action": "end_reply", "silent": silent}
-    if silent:
-        from agent.channel.delivery import delivery_tags
-        from core.conversation_scope import current_scope
-        payload["delivery"] = delivery_tags("silent", "skipped", current_scope())
-    return json.dumps(payload, ensure_ascii=False)
+    return json.dumps({"ok": True, "action": "end_reply",
+                       "delivery": delivery_tags("silent", "skipped", current_scope())}, ensure_ascii=False)
 
 
 def _normalize_message_roles(messages: List[Dict]) -> List[Dict]:

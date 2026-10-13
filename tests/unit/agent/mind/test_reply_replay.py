@@ -47,7 +47,7 @@ class TestScenarioPureText:
     """场景 1：纯文本独白 + end_reply 收敛。"""
 
     async def test_replay(self, replay_anything, deliver_mock) -> None:
-        mind = _ReplayMind([text_result("你好呀～"), tool_result("", ["end_reply"], '{"silent": true}')])
+        mind = _ReplayMind([text_result("你好呀～")])
         await run_think_loop(
             mind, anything=replay_anything, base_messages=_base(), adapter_key="test",
         )
@@ -55,9 +55,9 @@ class TestScenarioPureText:
         round1 = mind.sent_messages[0]
         assert [m.get("_layer") for m in round1[:2]] == ["stable", "conversation"]
         assert round1[-1].get("_layer") == "exec_context"
-        # 无业务工具执行（仅 end_reply 收敛）
-        assert mind.executed_tools == ["end_reply"]
-        # end_reply 静默收束：暂存独白不投递
+        # 无工具执行
+        assert mind.executed_tools == []
+        # 无可路由会话，不投递
         deliver_mock.assert_not_awaited()
 
 
@@ -68,19 +68,18 @@ class TestScenarioSingleTool:
         mind = _ReplayMind([
             tool_result("", ["recall"]),
             text_result("查到了"),
-            tool_result("", ["end_reply"], '{"silent": true}'),
         ])
         await run_think_loop(
             mind, anything=replay_anything, base_messages=_base(), adapter_key="test",
         )
-        # 三轮 LLM 调用
-        assert len(mind.sent_messages) == 3
+        # 两轮 LLM 调用
+        assert len(mind.sent_messages) == 2
         # 工具序列：recall 恰好执行一次
-        assert mind.executed_tools == ["recall", "end_reply"]
+        assert mind.executed_tools == ["recall"]
         # 第 2 轮上下文含第 1 轮的 assistant + tool 结果（工具链并入）
         roles2 = [m.get("role") for m in mind.sent_messages[1]]
         assert "tool" in roles2
-        # end_reply 静默收束：暂存独白不投递
+        # 无可路由会话，不投递
         deliver_mock.assert_not_awaited()
 
 
@@ -92,14 +91,13 @@ class TestScenarioMultiToolChain:
             tool_result("", ["recall"]),
             tool_result("", ["get_conversation"]),
             text_result("都办好了"),
-            tool_result("", ["end_reply"], '{"silent": true}'),
         ])
         await run_think_loop(
             mind, anything=replay_anything, base_messages=_base(), adapter_key="test",
         )
-        # 四轮 LLM 调用
-        assert len(mind.sent_messages) == 4
+        # 三轮 LLM 调用
+        assert len(mind.sent_messages) == 3
         # 工具序列按轮次顺序执行
-        assert mind.executed_tools == ["recall", "get_conversation", "end_reply"]
-        # end_reply 静默收束：暂存独白不投递
+        assert mind.executed_tools == ["recall", "get_conversation"]
+        # 无可路由会话，不投递
         deliver_mock.assert_not_awaited()

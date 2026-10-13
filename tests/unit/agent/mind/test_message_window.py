@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from typing import List
 
 import pytest
-from helpers.think_loop_fakes import FakeMind, FakePfc, run_think_loop
+from helpers.think_loop_fakes import FakeMind, FakePfc, run_think_loop, text_result, tool_result
 
 from agent.llm.types import ImageContent, ToolCall
 from agent.messages import MessageUser
@@ -361,6 +361,7 @@ class TestThinkLoopMerge:
                     await conv_data.router.append(StorageDomain.CONVERSATION,
                         scope_type="user", scope_id="telegram:1", role="assistant", content="主动投递的完整内容")
                     note_outbound("user_telegram:1", current.entity_scope, "主动投递")
+                    return tool_result("", ["recall"])
                 return result
 
         mind = ConcurrentMind(conv_data)
@@ -422,6 +423,7 @@ class TestThinkLoopMerge:
                 if self.llm_calls == 1:
                     await conv_data.router.append(StorageDomain.CONVERSATION,
                         scope_type="user", scope_id="1", role="user", content="还有一件事")
+                    return text_result("已完成前一项。")
                 return result
 
         mind = InterjectedMind(conv_data)

@@ -257,7 +257,7 @@ class TestRequiredOutput:
 
 class TestCompletionReason:
     async def test_reply_budget_records_unfinished_without_delivery(self, anything, deliver_mock) -> None:
-        mind = FakeMind(rounds=[text_result("我马上去制作，做好告诉你。")], default_text=None)
+        mind = FakeMind(rounds=[tool_result("我马上去制作", ["recall"])], default_text=None)
         completion: dict = {}
         await run_think_loop(
             mind, mode=ThinkMode.REPLY, anything=anything, base_messages=_base(),

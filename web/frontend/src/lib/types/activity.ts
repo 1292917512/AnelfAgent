@@ -14,7 +14,7 @@ export interface ActivitySkill {
   truncated?: boolean;
 }
 export type ActivityEntry =
-  | EntryBase & { kind: "notice"; origin: "conversation" | "push" | "cross_channel"; iteration: number; items: ActivityNoticeItem[]; count: number; deferred: number; truncated?: boolean }
+  | EntryBase & { kind: "notice"; origin: "conversation" | "push" | "cross_channel" | "delivery"; iteration: number; items: ActivityNoticeItem[]; count: number; deferred: number; truncated?: boolean }
   | EntryBase & Omit<HookExecution, "started_at"> & { kind: "hook" }
   | EntryBase & { kind: "context"; status: string; duration_ms: number; blocks: { layer: string; label: string; content: string }[]; block_count: number; skills?: ActivitySkill[]; error?: string; truncated?: boolean }
   | EntryBase & { kind: "thinking"; content: string; truncated?: boolean }

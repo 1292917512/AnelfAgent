@@ -71,7 +71,7 @@ _MIND_CONFIGS = {
             "unit": "轮",
         },
         "force_tool_use": {
-            "description": "纯工具模式：强制 LLM 工具选择（tool_choice=required）；纯文本轮末仍会兜底投递，通常无需开启",
+            "description": "纯工具模式：强制 LLM 工具选择（tool_choice=required）；普通回复通常无需开启",
             "default": False,
             "advanced": True,
         },
@@ -82,16 +82,10 @@ _MIND_CONFIGS = {
             "unit": "秒",
         },
         "background_wait_budget": {
-            "description": "后台任务等待：单轮累计挂起预算，耗尽后纯文本回落独白路径",
+            "description": "后台任务等待：单轮累计挂起预算，耗尽后将控制权交回 AI",
             "default": 120.0,
             "advanced": True,
             "unit": "秒",
-        },
-        "text_without_tool_limit": {
-            "description": "连续纯文本独白（无工具调用）上限，超过则掐断本轮并轮末投递未送达文本",
-            "default": 5,
-            "advanced": True,
-            "unit": "轮",
         },
         "log_ai_output": {
             "description": "是否记录 AI 输出日志",
@@ -323,13 +317,11 @@ class MindConfig:
     conversation_analysis_threshold: int = 5
     max_tool_iterations: int = 8
     # 纯工具模式：思维循环中 LLM 调用强制工具选择（tool_choice=required）。
-    # 默认关闭，允许内部分析；对外回复仍须调用输出工具。
+    # 默认关闭，允许独立最终正文交给统一投递管道。
     force_tool_use: bool = False
     # 后台任务等待：等待意图挂起的单次上限 / 单轮回复累计预算（秒）
     background_wait_timeout: float = 30.0
     background_wait_budget: float = 120.0
-    # 纯文本（无工具调用）连续上限：超过则强制结束本轮
-    text_without_tool_limit: int = 5
     log_ai_output: bool = True
     send_interim_text: bool = False
     # 记忆搜索配置

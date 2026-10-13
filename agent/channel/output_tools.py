@@ -21,7 +21,7 @@ from core.tool_errors import ErrorCause, error_from_exception
 from core.tool_registry import deferred_tool
 from core.tool_results import extract_error_text
 
-from .delivery import delivery_tags, delivery_watermark, record_delivery
+from .delivery import DeliveryMode, delivery_tags, delivery_watermark, record_delivery
 from .outbound_guard import guard_empty_conversation, guard_outbound, note_outbound
 
 EntityRegistry.register_group_order("output", 0)
@@ -273,10 +273,10 @@ def _check_send_result(raw: Any, channel_id: str, target_id: str) -> tuple[dict,
     return parsed, ok
 
 
-def _delivery_rejection(result: str, scope: str = "") -> str:
+def _delivery_rejection(result: str, scope: str = "", mode: DeliveryMode = "channel") -> str:
     """为尚未进入频道发送的拒绝结果附加投递状态。"""
     payload = json.loads(result)
-    payload["delivery"] = delivery_tags("channel", "failed", scope)
+    payload["delivery"] = delivery_tags(mode, "failed", scope)
     return json.dumps(payload, ensure_ascii=False)
 
 
@@ -291,6 +291,7 @@ async def execute_send_action(
         outbound_preview: str = "",
         record_content: str = "",
         session_id: str = "",
+        delivery_mode: DeliveryMode = "channel",
 ) -> str:
     """统一发送执行管道：校验 → 目标解析 → 出站事实面 → 调用频道 → 历史固化 → 日志。
 
@@ -300,7 +301,7 @@ async def execute_send_action(
     """
     ch, err = _validate_channel(channel_id)
     if err:
-        return _delivery_rejection(err)
+        return _delivery_rejection(err, mode=delivery_mode)
 
     target_scope = ""
     try:
@@ -318,15 +319,15 @@ async def execute_send_action(
         # 对话是突兀的；回复周期由真实用户消息触发，命中即为主动搭话）
         rejection = await guard_empty_conversation(target_scope, thinker)
         if rejection:
-            return _delivery_rejection(rejection, target_scope)
+            return _delivery_rejection(rejection, target_scope, delivery_mode)
         rejection = guard_outbound(target_scope, thinker)
         if rejection:
-            return _delivery_rejection(rejection, target_scope)
+            return _delivery_rejection(rejection, target_scope, delivery_mode)
         seen_through = delivery_watermark(target_scope)
         raw = await invoke(ch, resolved_target_id, channel_type)
         parsed, ok = _check_send_result(raw, channel_id, target_id)
         parsed["delivery"] = delivery_tags(
-            "channel", "sent" if ok else "unknown" if parsed.get("outcome") == "unknown" else "failed",
+            delivery_mode, "sent" if ok else "unknown" if parsed.get("outcome") == "unknown" else "failed",
             target_scope,
         )
         _attach_target_resolution_meta(
@@ -355,7 +356,7 @@ async def execute_send_action(
         payload["success"] = False
         payload["channel_id"] = channel_id
         payload["target_id"] = target_id
-        payload["delivery"] = delivery_tags("channel", "failed", target_scope)
+        payload["delivery"] = delivery_tags(delivery_mode, "failed", target_scope)
         if payload.get("cause") == ErrorCause.NETWORK.value:
             payload["retryable"] = False
             payload["hint"] = "频道网络连接不可达，请先恢复连接；不要重复发送或把内部正文视为已送达"
@@ -413,6 +414,14 @@ async def send_message(
         content: 消息文本内容（支持 [at_uid:xxx] 格式 @ 提及用户）
         reply_to_message_id: 可选，指定回复引用的消息 ID（为空则普通发送）
     """
+    return await send_text_to_channel(channel_id, target_id, content, reply_to_message_id)
+
+
+async def send_text_to_channel(
+    channel_id: str, target_id: str, content: str, reply_to_message_id: str = "", *,
+    session_id: str = "", delivery_mode: DeliveryMode = "channel",
+) -> str:
+    """工具与会话正文共用的文本出口，统一清洗、路由、回执、历史与语音。"""
     # 剥离 LLM 可能模仿历史格式带入的元数据标签（[message_id:xxx] 等），
     # 清洗结果同时用于发送与对话历史入库，保证所见即所存
     content = strip_message_meta_tags(content or "").strip()
@@ -421,7 +430,7 @@ async def send_message(
             "success": False,
             "error": "content 参数不能为空，请提供要发送的消息内容",
             "cause": ErrorCause.PARAM.value,
-            "delivery": delivery_tags("channel", "failed"),
+            "delivery": delivery_tags(delivery_mode, "failed"),
         }, ensure_ascii=False)
 
     resolved_channel_type = "private"
@@ -436,7 +445,7 @@ async def send_message(
         if reply_to_message_id:
             kwargs["reply_to"] = reply_to_message_id
         # 多会话窗口路由（webui chat_id）：未显式带 session 时继承当前会话
-        session = inherit_current_session(channel_id, resolved_target_id)
+        session = session_id or inherit_current_session(channel_id, resolved_target_id)
         if session:
             kwargs["session_id"] = session
         return await ch.send_text(resolved_target_id, content, **kwargs)
@@ -455,6 +464,8 @@ async def send_message(
         success_suffix=f" ({len(content)}字)",
         outbound_preview=content[:80],
         record_content=content,
+        session_id=session_id,
+        delivery_mode=delivery_mode,
     )
 
     # 通话自动语音路由：该会话正在实时通话中时，消息同时 TTS 播给电话

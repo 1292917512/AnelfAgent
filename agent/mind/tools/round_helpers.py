@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Protocol, Set
 
+from agent.channel.delivery import DeliveryStatus
 from agent.mind.message_schema import is_genuine_user_message
 from agent.mind.tools.result_pipeline import ToolResultPipeline
 from agent.mind.tools.vision import apply_vision
@@ -90,14 +91,11 @@ class _ThinkRoundState:
     consecutive_security_leaks: int = 0
     consecutive_overflow_compressions: int = 0
     reflect_text_rounds: int = 0
-    end_reply_interceptions: int = 0
-    # 独白计数：REPLY 模式连续纯文本（无工具调用）轮数，达到
-    # text_without_tool_limit 掐断本轮（纯文本非终局，独白不结束循环）
-    consecutive_text_rounds: int = 0
     # 当前回复流程是否已有输出工具成功送达。
     output_sent: bool = False
-    reply_text_pending: bool = False
-    delivery_recovery_attempted: bool = False
+    auto_reply_eligible: bool = False
+    auto_reply_blocked: bool = False
+    reply_delivery_status: DeliveryStatus = "pending"
     max_output_recoveries: int = 0
     # 上轮真实输入占用（口径归一：prompt 含/不含缓存两种记账下均为真实占用；
     # 独占口径——原生 Anthropic——下原始 prompt_tokens 不含缓存读/写，
@@ -334,12 +332,24 @@ async def _prepare_think_context(
         reflect_tool_selectors=tuple(reflect_tool_selectors or ()),
     )
     state = _ThinkRoundState(
+        auto_reply_eligible=mode == ThinkMode.REPLY and _user_initiated(base_messages),
         wait_budget=wait_budget,
         last_merged_ts=last_merged_ts,
         last_merged_id=last_merged_id,
         push_watermark=push_watermark,
     )
     return ctx, state
+
+
+def _user_initiated(messages: List[Dict]) -> bool:
+    """以当前会话最新输入判定用户轮次；系统唤醒和动态注入不冒充用户。"""
+    for message in reversed(messages):
+        source = message.get("_source") or {}
+        if source.get("origin") == "conversation" and message.get("role") in {"user", "system"}:
+            return message["role"] == "user"
+        if not source and not message.get("_layer") and message.get("role") == "user":
+            return True
+    return False
 
 
 # ==================================================================
@@ -521,7 +531,7 @@ def _format_task_completions(
         lines.append(f"仍有 {len(running)} 个任务运行中：{_format_running_tasks(running)}")
     lines.append(
         "请根据结果继续处理："
-        "任务全程用工具推进；回复与中途同步一律 send_message（不结束本轮）；"
+        "任务用工具推进；用户会话的最终正文按输出契约投递，中途同步或内部事件通知用 send_message；"
         "无需回复或无需继续操作时 end_reply。"
     )
     return "\n".join(lines)
@@ -644,7 +654,11 @@ async def _merge_new_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> bo
     await emit_context_update(merged, origin="conversation", scope=ctx.current_scope,
                               iteration=state.iteration + 1, deferred=deferred)
 
-    return any(m["role"] == "user" for m in merged)
+    new_user = any(m["role"] == "user" for m in merged)
+    if new_user:
+        state.auto_reply_eligible = True
+        state.auto_reply_blocked = False
+    return new_user
 
 
 async def _merge_pushes(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> None:
@@ -956,7 +970,7 @@ def should_end_reply(tool_calls: List["ToolCall"]) -> bool:
     return any(tc.name == _END_REPLY_TOOL_NAME for tc in tool_calls)
 
 
-_THINK_BLOCK_RE = re.compile(r"<think(?:ing)?>.*?</think(?:ing)?>", re.DOTALL | re.IGNORECASE)
+_THINK_BLOCK_RE = re.compile(r"<think(?:ing)?>.*?(?:</think(?:ing)?>|$)", re.DOTALL | re.IGNORECASE)
 
 
 def _strip_think_blocks(text: str) -> str:
@@ -1079,51 +1093,6 @@ def _collect_round_error_briefs(
     return briefs
 
 
-_PROMPT_END_BLOCKED_FAILURE = (
-    "[系统拦截] 结束请求未生效：本轮以下工具执行失败，相关操作未完成：\n"
-    "{failures}\n"
-    "请根据错误原因修正后重新调用失败的工具"
-    "（注意：target_id 等 ID 类参数必须按 schema 声明传字符串类型，不要传数字），"
-    "全部成功后再调用 end_reply 结束。若确认无法修复，可再次调用 end_reply 强制结束。"
-)
-
-
-def _collect_round_failures(tool_chain: List[Dict], tool_calls: List["ToolCall"]) -> str:
-    """收集本轮工具结果中的失败项，生成结束拦截反馈。无失败时返回空串。"""
-    tc_ids = {tc.id for tc in tool_calls}
-    if not tc_ids:
-        return ""
-    tc_names = {tc.id: tc.name for tc in tool_calls}
-
-    failures: List[str] = []
-    matched_any = False
-    for msg in reversed(tool_chain):
-        if msg.get("role") != "tool":
-            # 跳过尾部多模态注入的 user 消息；已遇本轮结果后再出链即收尾
-            if matched_any:
-                break
-            continue
-        tc_id = msg.get("tool_call_id")
-        if tc_id not in tc_ids:
-            continue
-        matched_any = True
-        content = msg.get("content", "")
-        if not isinstance(content, str):
-            continue
-        parsed = parse_tool_result_json(content)
-        if not isinstance(parsed, dict):
-            continue
-
-        err = extract_error_text(parsed)
-        if err:
-            failures.append(f"{tc_names.get(tc_id, '?')}: {err}")
-
-    if not failures:
-        return ""
-    lines = "\n".join(f"- {f}" for f in failures)
-    return _PROMPT_END_BLOCKED_FAILURE.format(failures=lines)
-
-
 # ------------------------------------------------------------------
 # Plan 显式进度与终态收敛
 #
@@ -1139,8 +1108,7 @@ def _collect_round_failures(tool_chain: List[Dict], tool_calls: List["ToolCall"]
 def _streaming_enabled() -> bool:
     """流式内核开关（配置 mind_streaming_enabled，默认开）。
 
-    流式只产生过程事件（assistant_delta），回复出口仍是
-    send_message/end_reply —— 多频道语义不受影响。
+    流式只产生过程事件（assistant_delta），回复出口为统一频道管道；end_reply 只结束 —— 多频道语义不受影响。
     """
     try:
         from core.config import get_config_bool

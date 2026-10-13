@@ -25,7 +25,6 @@ DEFAULT_TOOL_RESULT = '{"ok": true}'
 DEFAULT_MIND_CONFIG: dict = {
     "llm_timeout": 10.0,
     "force_tool_use": False,
-    "text_without_tool_limit": 5,
     "background_wait_timeout": 30.0,
     "background_wait_budget": 120.0,
 }

@@ -22,7 +22,7 @@
 会话历史和实时执行上下文，并跳过自动检索；AI 仍能手动调用 `recall` 或调整本轮召回强度。
 召回策略不改写稳定前缀，不另设精简开关。
 
-回复正文只经显式发送工具投递；频道不能把模型独白自动变成用户消息。
+普通会话的独立最终正文由内核审核并经统一管道投递；显式发送工具保留。频道本身不把工具过程、钩子产出或结束备注变成用户消息。
 `handoff_to_events` 只接受本轮真实工具回执，交给频道事件续报时保持静默收束。
 
 ## 频道配置统一接入（agent/channel/config.py）
@@ -73,7 +73,7 @@
 
 ## 统一出站管道与出站事实面
 
-所有 AI 出站（手写 output 工具 / `deliver_text` 纯文本投递 / tool_bridge 发送类工具
+所有 AI 出站（手写 output 工具 / `send_text_to_channel` 自动正文投递 / tool_bridge 发送类工具
 （`@channel_tool(outbound=True)` + 发送类 capability）/ 决策执行器 PROACTIVE 与工具操作结果投递）
 统一经 `execute_send_action`（校验/目标解析/结果归因；entities 经 `_sdk` 导出）：
 
@@ -107,7 +107,7 @@
 
 | 标签 | 取值与含义 |
 |------|------------|
-| `delivery_mode` | `internal` 内部正文；`channel` 显式频道发送；`event` 已交给频道终态事件；`silent` AI 明确选择不投递 |
+| `delivery_mode` | `internal` 内部正文；`channel` 显式频道发送；`auto` 审核后的普通回复；`event` 已交给频道终态事件；`silent` AI 明确选择不投递 |
 | `delivery_status` | `pending` 待处理；`sent` 已确认发送；`failed` 失败；`unknown` 回执不确定；`skipped` 明确跳过 |
 | `delivery_scope` | 规范会话 scope，包含频道、用户/群与子会话维度 |
 
