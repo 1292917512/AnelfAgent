@@ -772,10 +772,12 @@ class MemoryService:
         config = CogneeConfig(**{
             key: value for key, value in current.items() if key in allowed
         }).normalized()
+        coordinator = get_cognee_coordinator()
+        if coordinator:
+            coordinator.client.validate_configuration(config)
         save_cognee_config(config)
 
         # 热更新运行时，保存即生效（worker 启停 + 模型重映射）
-        coordinator = get_cognee_coordinator()
         if coordinator:
             await coordinator.reconfigure(config)
         return MemoryService._cognee_config_response(config)

@@ -141,12 +141,12 @@ def test_auto_skips_disabled_chat_models() -> None:
         resolve_chat_llm_config(CogneeChatModelConfig(), manager)
 
 
-def test_model_source_pins_client_and_json_mode_fallback() -> None:
-    """thinking 端点（不支持强制 tool_choice）自动回退 json_mode。"""
+def test_model_source_pins_client_and_uses_native_structured_output() -> None:
+    """未显式指定 Instructor 时使用原生结构化输出，不强制工具调用。"""
     cfg = CogneeChatModelConfig(source="model", model_id="qwen-thinking").normalized()
     payload = resolve_chat_llm_config(cfg, _manager())
     assert payload["llm_provider"] == "custom"
-    assert payload["llm_instructor_mode"] == "json_mode"
+    assert payload["structured_output_framework"] == "litellm_native"
 
 
 def test_model_source_explicit_instructor_mode_wins() -> None:
@@ -188,15 +188,17 @@ def test_custom_source_payload() -> None:
     assert payload["llm_model"] == "openai/gpt-4o-mini"
     assert payload["llm_instructor_mode"] == "json_mode"
     assert payload["llm_max_completion_tokens"] == 4096
+    assert payload["llm_args"]["max_tokens"] == 4096
+    assert payload["structured_output_framework"] == "instructor"
 
 
-def test_custom_anthropic_requires_sdk() -> None:
-    """显式选择 anthropic provider 但未安装 SDK 时，配置期快速失败。"""
+def test_custom_anthropic_native_does_not_require_sdk() -> None:
+    """Anthropic 原生结构化输出经 LiteLLM 路由。"""
     cfg = CogneeChatModelConfig(
         source="custom", provider="anthropic", model="claude-sonnet-4-5",
     ).normalized()
-    with pytest.raises(CogneeConfigError, match="anthropic"):
-        resolve_chat_llm_config(cfg, _manager())
+    payload = resolve_chat_llm_config(cfg, _manager())
+    assert payload["structured_output_framework"] == "litellm_native"
 
 
 # ==================================================================
@@ -406,3 +408,30 @@ def test_summarize_resolved_masks_key() -> None:
     assert summary["api_key_set"] is True
     assert "sk-secret" not in str(summary)
     assert summary["instructor_mode"] == "json_mode"
+
+
+@pytest.mark.parametrize("source", ["auto", "model", "custom"])
+def test_all_sources_forward_explicit_budget_and_preserve_config(source):
+    cfg = CogneeChatModelConfig(source=source, model_id="sf-chat", model="openai/test",
+        max_completion_tokens=4096, extra_args={"max_tokens": 9999})
+    payload = resolve_chat_llm_config(cfg, _manager())
+    assert payload["llm_max_completion_tokens"] == payload["llm_args"]["max_tokens"] == 4096
+    assert cfg.extra_args == {"max_tokens": 9999}
+
+
+def test_custom_reasoning_uses_litellm_parameter_and_model_uses_declared_contract():
+    custom = resolve_chat_llm_config(CogneeChatModelConfig(
+        source="custom", model="openai/test", reasoning_effort="off"), _manager())
+    assert custom["llm_args"]["reasoning_effort"] == "none"
+    manager = _manager()
+    manager._clients["sf-chat"].config.thinking = {
+        "param": "reasoning_effort", "map": {"low": "low"}, "off": "none"}
+    model = resolve_chat_llm_config(CogneeChatModelConfig(
+        source="model", model_id="sf-chat", reasoning_effort="low"), manager)
+    assert model["llm_args"]["reasoning_effort"] == "low"
+
+
+def test_thinking_budget_cannot_consume_entire_completion_budget():
+    with pytest.raises(CogneeConfigError, match="思考预算"):
+        resolve_chat_llm_config(CogneeChatModelConfig(source="model", model_id="qwen-thinking",
+            reasoning_effort="high", max_completion_tokens=4096), _manager())

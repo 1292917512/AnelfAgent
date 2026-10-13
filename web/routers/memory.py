@@ -57,9 +57,12 @@ async def get_cognee_config() -> Dict[str, Any]:
 
 @router.put("/cognee/config")
 async def save_cognee_config(req: CogneeConfigUpdate) -> Dict[str, Any]:
-    return await _mem_svc.save_cognee_config(
-        req.model_dump(exclude_none=True),
-    )
+    try:
+        return await _mem_svc.save_cognee_config(
+            req.model_dump(exclude_none=True),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/cognee/retry")

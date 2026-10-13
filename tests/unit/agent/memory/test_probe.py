@@ -283,7 +283,8 @@ async def test_plan_slowness_doesnt_starve_search(store, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_recall_partial_timeout_harvests_landed_lanes(store, monkeypatch) -> None:
+@pytest.mark.parametrize("slow_remote", [False, True])
+async def test_recall_partial_timeout_harvests_landed_lanes(store, monkeypatch, slow_remote) -> None:
     """总时限到点只收割已落地 lane：挂死的检索路被取消，不拖垮也不丢弃整轮召回。"""
     from agent.memory.memory_retriever import MemoryRetriever
     from agent.memory.memory_types import MemoryEntry, MemoryType, RetrievalPlan
@@ -302,7 +303,21 @@ async def test_recall_partial_timeout_harvests_landed_lanes(store, monkeypatch) 
     monkeypatch.setattr(store, "search_unified", _hang_search)
 
     async def _plan(self, query: str, *, timeout: float | None = None) -> RetrievalPlan:
-        return RetrievalPlan(queries=["挂死的检索词组一二三四"])
+        return RetrievalPlan(queries=[query if slow_remote else "挂死的检索词组一二三四"])
+
+    if slow_remote:
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        async def remote(*args, **kwargs):
+            await asyncio.Event().wait()
+
+        client = SimpleNamespace(
+            initialize=AsyncMock(return_value=SimpleNamespace(ready=True)),
+            available_datasets=AsyncMock(side_effect=lambda names: names),
+            search_type=str, recall=remote,
+        )
+        monkeypatch.setattr("agent.memory.cognee.runtime.get_cognee_client", lambda: client)
 
     monkeypatch.setattr(MemoryRetriever, "plan_retrieval", _plan)
     monkeypatch.setattr(
@@ -310,6 +325,11 @@ async def test_recall_partial_timeout_harvests_landed_lanes(store, monkeypatch) 
         lambda key, default: 1.5 if key == "memory_recall_timeout_seconds" else default,
     )
     retriever = MemoryRetriever(store, _NullEmbedder())
+
+    async def unexpected_fallback(*args, **kwargs):
+        raise AssertionError("已完成的原生证据不应被慢通道丢弃")
+
+    monkeypatch.setattr(retriever, "_fallback_recent", unexpected_fallback)
     conversation = [{"role": "user", "content": "阿辰喜欢吃什么呀，我记得之前聊过"}]
     _profile, memory_msgs = await retriever.recall_split(conversation)
     # 基础 lane 已落地被收割（挂死的计划 lane 被取消，不回退近期记忆）

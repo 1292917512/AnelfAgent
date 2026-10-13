@@ -48,7 +48,7 @@
 精确标签只允许 tags/fast，带标签时不做越界后台深探。记忆结果沿用统一归属标签、
 mem ID 和召回账本；后台结果在 provider 尾部注入，不修改 stable/summary/历史前缀。
 
-自动后台深探只读取 CHUNKS 与 GRAPH_COMPLETION 的上下文，不执行多轮生成式上下文扩展；
+自动后台深探读取 CHUNKS 的逐条证据与 GRAPH_COMPLETION 的上下文，不执行多轮生成式上下文扩展；
 仅解析出实体、规划未要求深入检索时只查本地图谱。AI 显式 `recall(depth="deep")` 仍使用
 Cognee 深检索配置，可选择多轮扩展。本地图谱与远端读取同时启动，各通道完成即发布增量，
 不等待最慢通道；达到
@@ -74,7 +74,7 @@ SDK 可导入 `RecallPolicy`、`recall_options`、`set_turn_recall_policy`。
 | 机制 | 位置 | 说明 |
 |------|------|------|
 | LLM 检索规划 | `memory_retriever.plan_retrieval`（公开 API，受 `memory_query_rewrite_enabled` 门控） | 轻量 LLM（light_llm 通道，可经 `memory_light_model` 指定）把对话尾部转成结构化计划 `{queries(1-3 互补), entities, deep_needed, rationale}`，失败/超时回退原查询单发（预算 `memory_plan_budget_seconds`，0 = 按召回总超时 40% 份额派生）。多计划查询并行经 federated_search 后 `merge_consensus` 融合：同键（anelf_memory_id / 内容哈希）取最高分，≥2 查询命中 ×1.1 共识加成。计划实体经 `GraphStore.resolve_nodes_for_tags` 解析为图谱节点 → 原生一跳邻域 + cognee `node_name` 定向检索 |
-| 召回预算与规划并行 | `memory_retriever` recall 路径 | 检索规划与多路检索**并行**：原查询 lane 先行（复用预计算 query_vec 零 embed），规划慢/超预算只损失多查询增强；总时限经 `asyncio.wait` **非破坏式收尾**——到点只收割已落地 lane，已落地的基础/焦点/计划 lane 照常融合返回，全空才回退近期记忆。超时不再丢弃整轮召回 |
+| 召回预算与规划并行 | `memory_retriever` recall 路径 | 检索规划与多路检索**并行**：原查询 lane 先行（复用预计算 query_vec 零 embed），规划慢/超预算只损失多查询增强；总时限经 `asyncio.wait` **非破坏式收尾**——到点只收割已落地 lane，已落地的基础/焦点/计划 lane 照常融合返回；联邦 lane 通过增量快照保留先完成的原生/远端结果，慢通道取消不丢弃已完成事实，全空才回退近期记忆 |
 | 异步深探 + provider 注入 | `agent/memory/probe.py`（DeepProbeHub + RecallLedger + provider `memory_deep_probe`） | 回复路径（`fire_probe=True`）检索完成后，规划要求深探或已解析实体节点时启动异步补充，与 LLM 首轮思考并行。原生图谱邻域与 Cognee CHUNKS / GRAPH_COMPLETION 同时读取，按完成顺序追加事实；超时或部分失败保留已呈现事实。provider `memory_deep_probe`（priority 34、`memory_probe_inject` 门控）读取本轮内存快照，无新事实时字节稳定，回复结束清理。provider 消息不进压缩历史，不改变稳定前缀。配置 `memory/probe` 组（enabled/max_chars/timeout） |
 | 召回账本（三键防重复） | `probe.RecallLedger`（键归一权威 `memory_types.normalized_content_key`） | per-reply 三键集合（结果 id / 图谱边 id / 内容归一前缀），三条召回通道共用：基底层注入、AI recall 工具返回（tools.py 记账）、异步深探渲染前查账——一次回复内同一事实只出现一次；`begin_reply` 重置 |
 | cognee 检索面 | `cognee/fusion.py` + `cognee/config.py` | `federated_search`/`search_cognee` 支持 `node_names` → cognee `recall(node_name=...)` 定向检索；`parse_memory_projection` 在边界解析投影文档头（归属标注/上下文加权/联想种子对 cognee 结果同样生效）；深类型（GRAPH_COMPLETION 等）只经探针（异步）与 recall 工具（显式）发生，被动召回保持轻量 |
@@ -112,6 +112,39 @@ Cognee 默认安装并启用：依赖由 `uv sync` 按锁文件安装，默认�
 Cognee 面板保存配置则即时重映射。既有 `enabled=false` 保留，图谱抽取与向量化按所选模型计费。
 客户端初始化串行执行；导入期间发生配置变更时重新解析最新配置，避免后台同步与召回重复初始化或应用旧配置。
 
+### 召回与模型预算
+
+- 同步召回由原生 FTS/向量检索与 Cognee `CHUNKS` 互补；旧的默认
+  `CHUNKS + CHUNKS_LEXICAL` 配置读取时迁移为 `CHUNKS`。Cognee 词法检索会全量读取
+  数据集并计算 BM25，保留为显式深检索选项，不在默认同步路径重复原生 FTS。
+- `CHUNKS`、`CHUNKS_LEXICAL`、`SUMMARIES` 返回逐条证据；生成式检索使用 `only_context`
+  跳过最终回答。同一通道的重复结果只计一次，跨通道逐榜计算 RRF。单条证据沿用 700 字符预算，
+  不把全部 chunk 拼接后截断；外部元数据回填原记忆 ID，已有 chunk 可直接复用。
+- 数据集目录短缓存并随摄入/删除失效；不存在的数据集不发起检索。远端读取最多 4 路并发，
+  同次召回内同一 embedding 引擎与文本复用在途向量，取消单路不取消共享请求；结束时统一回收。
+- 结构化输出默认 `litellm_native`，显式选择 `instructor_mode` 时才启用 Instructor。
+  自动映射、指定模型、自定义来源共用输出预算；默认保持 16384 token，显式上限同步传到实际请求。
+  输出上限不是目标输出长度，过低会截断 JSON。切片、模型能力与思考预算应共同评估，不能仅降低上限。
+  映射来源遵循模型思考契约，自定义来源使用 LiteLLM 的规范思考参数。
+- 适配边界复用 Tenacity，暂时性失败最多 3 次且受 60 秒重试窗口约束；每次结构化操作
+  包含内部自修复的总预算为 90 秒，最多 4 路生成并发。鉴权、参数、校验等永久失败不进行外层
+  重试；投影队列将其标记 failed，修正配置后可显式重试。整个批次仍受原流水线时限约束。
+
+### 已有数据与模型变更
+
+上述召回、融合、输出限制和重试调整都不要求重新生成已有图谱或向量，也不自动回填历史数据。
+投影内容指纹与原 ID 映射继续使用；内容变更才生成新投影。新文档 ID 按数据集、条目身份与内容
+稳定派生，重试可复用；先完成新投影再清理旧投影并更新映射。摄入返回的数据集 ID 与输入文档 ID
+直接回填映射，不再每批读取整个数据集。记忆与关系投影共用此管线；配置切换等待在途投影批次结束，避免一批数据跨卷或跨模型写入。
+
+数据卷的 `anelf-embedding.json` 仅记录向量空间身份（provider/model/endpoint/dimensions），
+不保存 API key。旧卷首次沿用当前有效模型登记，已有数据原样保留；历史上未记录的模型切换
+无法仅凭向量反推，维护者仍需确保首次接入时所选模型与旧数据一致。后续保存不兼容模型时拒绝
+混写并保留原配置；启动时也检查身份。API key 轮换、聊天模型与召回参数调整无需重建。
+若确需改 embedding，可选独立数据目录保留旧卷；只有用户显式执行整卷清空重建时才删除身份记录，
+沿用原重建入口的重启要求。自动维度探测后记录实际维度，不因由显式维度切回自动而误要求重建。
+
+
 | 机制 | 位置 | 说明 |
 |------|------|------|
 | 投影内容指纹跳过 | `store/_shared.py::projection_content_hash` + `cognee_queue.enqueue_sync` | 防记忆写入风暴打爆磁盘写盘配额。`cognee_entry_map` 的 content_hash（type/content/source/metadata/tags 的 canonical sha256，**刻意不含 importance**——召回强化/松弛回归不再触发重投影）一致 → 不入队；在途 processing 批次持有更新负载时不跳过（防「改 B→回退 A」竞态）；`enqueue_backfill` 走 force=True 保持显式修复语义。graph_node 载荷消费时渲染邻域文档 + **结构指纹**（节点身份 + 各边谓词/方向/对端，不含强度与证据文本）——重复提及的强化/证据刷新不触发整篇重投影 |
@@ -124,7 +157,7 @@ Cognee 面板保存配置则即时重映射。既有 `enabled=false` 保留，�
 | embedding 用量账本 | `agent/memory/embedding/usage.py` + `GET /status/usage` 的 embedding 段 | 引擎级埋点（查询/批量/多模态）：日级 calls/texts/chars，内存累加 + 防抖落盘。cognee 自带引擎不在此口径 |
 | 批量对齐与缓存 | `embedding/worker._batch_size` + `engine.max_batch_size` + `embed_query_cache_size` | worker 批次取 min(配置, 客户端 embedding_max_batch)，避免 llm_client 内部拆批；查询向量缓存容量/TTL 可配 |
 | 向量索引清理 | `scripts/dedupe_cognee_vector_index.py` | 一次性治理脚本（幂等，应用运行中可执行）：EdgeType/Entity 等索引按 text 精确去重 + 存量 goal 投影退场 |
-| 版本注记 | `pyproject.toml` + `[tool.uv] override-dependencies` | cognee 1.6.0 与 litellm 1.100.1 + onnxruntime 经 override 共存（override 仅针对上游矩阵保守钉，上游放开后可移除）；ladybug 0.19.0 native 监督补丁锚点存续 |
+| 版本注记 | `pyproject.toml` + `[tool.uv] override-dependencies` | cognee 1.6.2 与 litellm 1.104.0 + onnxruntime 经 override 共存（override 仅针对上游矩阵保守钉，上游放开后可移除）；ladybug 0.19.0 native 监督补丁锚点存续 |
 
 ## 遗忘治理
 

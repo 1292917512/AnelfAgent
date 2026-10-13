@@ -81,6 +81,8 @@ dependencies = [
     # 桌面操控执行器（entities/operation/desktop.py；实体能力声明依赖，
     # macOS 另需系统辅助功能授权，Linux 无显示环境时动作返回结构化失败）
     "pyautogui>=0.9.54",
+    # Cognee 适配器的有限重试策略（复用库已有依赖，不另建重试循环）。
+    "tenacity>=9.1.4,<10",
 ]
 
 [[tool.uv.index]]

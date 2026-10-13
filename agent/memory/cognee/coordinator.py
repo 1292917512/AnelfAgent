@@ -15,6 +15,7 @@ from core.log import log
 from ..memory_store import MemoryStore
 from ..store._shared import projection_content_hash
 from ..store.cognee_queue import ENTRY_KIND_GRAPH_NODE
+from .adapters import retryable
 from .client import CogneeClient
 from .config import CogneeConfig
 from .storage import cognee_storage_stats
@@ -39,6 +40,7 @@ class CogneeCoordinator:
         self._task: Optional[asyncio.Task[None]] = None
         self._wake = asyncio.Event()
         self._closing = False
+        self._projection_lock = asyncio.Lock()
         self._last_error = ""
         self._last_improve_ns: dict[str, int] = {}
         self._compact_requested = False
@@ -115,6 +117,11 @@ class CogneeCoordinator:
 
     async def reconfigure(self, config: CogneeConfig) -> None:
         """热更新配置：按启停状态调整 worker，并重映射 Cognee 模型配置。"""
+        # 数据卷与模型配置不能在一个投影批次中途切换。
+        async with self._projection_lock:
+            await self._apply_configuration(config)
+
+    async def _apply_configuration(self, config: CogneeConfig) -> None:
         self.config = config.normalized()
         self.store.set_cognee_projection_enabled(
             self.config.enabled and self.config.sync_enabled,
@@ -358,6 +365,10 @@ class CogneeCoordinator:
         return result
 
     async def _process_batch(self, batch: list[dict[str, Any]]) -> None:
+        async with self._projection_lock:
+            await self._process_entries(batch)
+
+    async def _process_entries(self, batch: list[dict[str, Any]]) -> None:
         availability = await self.client.initialize()
         if not availability.ready:
             for item in batch:
@@ -416,77 +427,16 @@ class CogneeCoordinator:
                 entry_kind=item["entry_kind"], delete_mapping=True,
             )
         except Exception as exc:
-            await self._fail(item, _error_text(exc))
+            await self._fail(item, exc)
 
     async def _process_upsert_group(
         self,
         dataset_name: str,
         items: list[dict[str, Any]],
     ) -> None:
-        # 先删后加实现更新语义；单条目删除失败仅隔离该条目，不毒化整组
-        active: list[dict[str, Any]] = []
-        for item in items:
-            mapping = await self.store.get_cognee_mapping(
-                item["entry_id"], entry_kind=item["entry_kind"],
-            )
-            if mapping and mapping.get("dataset_id") and mapping.get("data_id"):
-                try:
-                    await self.client.delete_data(
-                        mapping["dataset_id"],
-                        mapping["data_id"],
-                        delete_dataset_if_empty=False,
-                    )
-                except Exception as exc:
-                    await self._fail(item, f"清理旧投影失败: {_error_text(exc)}")
-                    continue
-            active.append(item)
-        if not active:
-            return
-
-        try:
-            data_items: list[Any] = []
-            for item in active:
-                payload = item["payload"]
-                data_items.append(await self.client.make_data_item(
-                    self._render_memory(payload),
-                    label=f"anelf-memory-{item['entry_id']}",
-                    external_metadata={
-                        "anelf_memory_id": str(item["entry_id"]),
-                        "memory_type": str(payload.get("type", "semantic")),
-                        "source": str(payload.get("source", "")),
-                    },
-                ))
-
-            self._breaker.observe()
-            await self.client.add(
-                data_items,
-                dataset_name=dataset_name,
-                incremental_loading=True,
-            )
-            await self.client.cognify(datasets=[dataset_name], incremental_loading=True)
-            self._breaker.observe()
-            await self._maybe_improve(dataset_name)
-            identifiers = await self._resolve_data_ids(dataset_name, "anelf_memory_id")
-
-            for item in active:
-                ids = identifiers.get(str(item["entry_id"]))
-                if not ids:
-                    await self._fail(item, "无法解析 Cognee 数据 ID")
-                    continue
-                await self.store.complete_cognee_sync(
-                    item["queue_id"],
-                    item["entry_id"],
-                    entry_kind=item["entry_kind"],
-                    dataset_name=dataset_name,
-                    dataset_id=ids[0],
-                    data_id=ids[1],
-                    content_hash=projection_content_hash(item["payload"]),
-                )
-            self._last_error = ""
-        except Exception as exc:
-            self._last_error = _error_text(exc)
-            for item in active:
-                await self._fail(item, self._last_error)
+        entries = [(item, self._render_memory(item["payload"]),
+                    projection_content_hash(item["payload"])) for item in items]
+        await self._push_projection_group(dataset_name, entries, graph=False)
 
     @property
     def relations_dataset(self) -> str:
@@ -540,69 +490,73 @@ class CogneeCoordinator:
                     entry_kind=item["entry_kind"],
                 )
                 continue
-            if mapping and mapping.get("dataset_id") and mapping.get("data_id"):
-                try:
-                    await self.client.delete_data(
-                        mapping["dataset_id"],
-                        mapping["data_id"],
-                        delete_dataset_if_empty=False,
-                    )
-                except Exception as exc:
-                    await self._fail(item, f"清理旧投影失败: {_error_text(exc)}")
-                    continue
             node = await self.store.graph.get_node_by_id(item["entry_id"])
             dataset = self.graph_dataset_for_node(node or {})
             grouped[dataset].append((item, document, fingerprint))
         for dataset_name, entries in grouped.items():
-            await self._push_graph_group(dataset_name, entries)
+            await self._push_projection_group(dataset_name, entries, graph=True)
 
-    async def _push_graph_group(
+    async def _push_projection_group(
         self,
         dataset_name: str,
         entries: list[tuple[dict[str, Any], str, str]],
+        *,
+        graph: bool,
     ) -> None:
-        """把一组图谱投影推入指定数据集（add → cognify → 映射回填）。"""
+        """先完成新投影再替换旧映射；稳定文档 ID 使失败重试不新增副本。"""
+        metadata_key = "anelf_graph_node_id" if graph else "anelf_memory_id"
+        label_kind = "graph-node" if graph else "memory"
         try:
             data_items: list[Any] = []
             for item, document, _fingerprint in entries:
+                payload = item["payload"]
                 data_items.append(await self.client.make_data_item(
                     document,
-                    label=f"anelf-graph-node-{item['entry_id']}",
+                    label=f"anelf-{label_kind}-{item['entry_id']}",
+                    dataset_name=dataset_name,
                     external_metadata={
-                        "anelf_graph_node_id": str(item["entry_id"]),
-                        "memory_type": "graph_relation",
-                        "source": "graph",
+                        metadata_key: str(item["entry_id"]),
+                        "memory_type": "graph_relation" if graph else str(payload.get("type", "semantic")),
+                        "source": "graph" if graph else str(payload.get("source", "")),
                     },
                 ))
             self._breaker.observe()
-            await self.client.add(
-                data_items,
-                dataset_name=dataset_name,
-                incremental_loading=True,
+            ingestion = await self.client.add(
+                data_items, dataset_name=dataset_name, incremental_loading=True,
             )
+            dataset_id = str(_value(ingestion, "dataset_id", ""))
+            if not dataset_id:
+                raise RuntimeError("Cognee 摄入未返回 dataset_id，保留旧投影")
             await self.client.cognify(datasets=[dataset_name], incremental_loading=True)
             self._breaker.observe()
             await self._maybe_improve(dataset_name)
-            identifiers = await self._resolve_data_ids(dataset_name, "anelf_graph_node_id")
-            for item, _doc, fingerprint in entries:
-                ids = identifiers.get(str(item["entry_id"]))
-                if not ids:
-                    await self._fail(item, "无法解析 Cognee 数据 ID")
-                    continue
+            for (item, _document, fingerprint), data_item in zip(entries, data_items, strict=True):
+                data_id = str(_value(data_item, "data_id", ""))
+                if not data_id:
+                    raise RuntimeError("Cognee 投影缺少稳定文档 ID")
+                previous = await self.store.get_cognee_mapping(
+                    item["entry_id"], entry_kind=item["entry_kind"],
+                )
+                if (previous and previous.get("data_id") and previous.get("dataset_id")
+                        and (previous["dataset_id"], previous["data_id"]) != (dataset_id, data_id)):
+                    try:
+                        await self.client.delete_data(
+                            previous["dataset_id"], previous["data_id"],
+                            delete_dataset_if_empty=False,
+                        )
+                    except Exception as exc:
+                        await self._fail(item, exc)
+                        continue
                 await self.store.complete_cognee_sync(
-                    item["queue_id"],
-                    item["entry_id"],
-                    entry_kind=item["entry_kind"],
-                    dataset_name=dataset_name,
-                    dataset_id=ids[0],
-                    data_id=ids[1],
+                    item["queue_id"], item["entry_id"], entry_kind=item["entry_kind"],
+                    dataset_name=dataset_name, dataset_id=dataset_id, data_id=data_id,
                     content_hash=fingerprint,
                 )
             self._last_error = ""
         except Exception as exc:
             self._last_error = _error_text(exc)
             for item, _doc, _fingerprint in entries:
-                await self._fail(item, self._last_error)
+                await self._fail(item, exc)
 
     async def _maybe_improve(self, dataset_name: str) -> None:
         """按数据集防抖运行图谱增强；增强失败不影响已完成的投影。
@@ -628,43 +582,13 @@ class CogneeCoordinator:
                 tag="思维",
             )
 
-    async def _resolve_data_ids(
-        self,
-        dataset_name: str,
-        metadata_key: str = "anelf_memory_id",
-    ) -> dict[str, tuple[str, str]]:
-        datasets = await self.client.list_datasets()
-        dataset = next(
-            (item for item in datasets if str(_value(item, "name", "")) == dataset_name),
-            None,
-        )
-        if dataset is None:
-            return {}
-        dataset_id = str(_value(dataset, "id", ""))
-        records = await self.client.list_data(_value(dataset, "id", ""))
-        result: dict[str, tuple[str, str]] = {}
-        for record in records:
-            metadata = _value(record, "external_metadata", {})
-            if isinstance(metadata, str):
-                try:
-                    metadata = json.loads(metadata)
-                except json.JSONDecodeError:
-                    metadata = {}
-            if not isinstance(metadata, dict):
-                continue
-            entry_id = str(metadata.get(metadata_key, ""))
-            data_id = str(_value(record, "id", ""))
-            if entry_id and data_id:
-                result[entry_id] = (dataset_id, data_id)
-        return result
-
-    async def _fail(self, item: dict[str, Any], error: str) -> None:
+    async def _fail(self, item: dict[str, Any], error: str | Exception) -> None:
         attempts = int(item.get("attempts", 0))
         delay = min(300.0, 2.0 ** min(attempts, 8))
         await self.store.fail_cognee_sync(
             item["queue_id"],
-            error,
-            max_retries=self.config.max_retries,
+            _error_text(error) if isinstance(error, Exception) else error,
+            max_retries=self.config.max_retries if not isinstance(error, Exception) or retryable(error) else 1,
             retry_delay_seconds=delay,
         )
 

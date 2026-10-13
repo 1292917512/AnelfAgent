@@ -24,6 +24,9 @@ class SearchClient:
     async def initialize(self):
         return SimpleNamespace(ready=True)
 
+    async def available_datasets(self, names):
+        return names
+
     def search_type(self, name):
         return name
 
@@ -103,7 +106,7 @@ async def test_probe_keeps_partial_results_and_reports_unfinished_stage(store, m
         assert "已索引的项目部署事实" in state.rendered
         assert state.ledger.seen_result("memory:fast")
         assert {call["query_type"] for call in client.calls} == {"CHUNKS", "GRAPH_COMPLETION"}
-        assert all(call["only_context"] for call in client.calls)
+        assert all(call["only_context"] == (call["query_type"] == "GRAPH_COMPLETION") for call in client.calls)
         record = hook_journal.snapshot()["recent"][0]
         assert record["status"] == "error"
         assert record["model_calls"] is None and record["tool_calls"] is None
@@ -128,3 +131,102 @@ async def test_entity_resolution_alone_does_not_start_remote_deep_search(store, 
     state = hub.begin_reply("user_webui:1")
     await hub._probe(state, RetrievalPlan(queries=["query"], node_keys=["user:webui:1"]), store)
     assert not state.rendered
+
+
+async def test_federation_publishes_native_and_fast_chunks_before_slow_graph():
+    from agent.memory.cognee.fusion import federated_search
+    from agent.memory.memory_types import MemorySearchResult
+
+    client = SearchClient()
+    snapshots = []
+    ready = asyncio.Event()
+
+    async def native():
+        return [MemorySearchResult(id="native", snippet="native evidence", score=1)]
+
+    def consume(results):
+        snapshots.append(results)
+        if {item.id for item in results} == {"native", "memory:fast"}:
+            ready.set()
+
+    task = asyncio.create_task(federated_search(
+        native(), query="query", client=client,
+        config=CogneeConfig(search_types=["CHUNKS", "GRAPH_COMPLETION"]),
+        limit=5, on_results=consume,
+    ))
+    try:
+        await asyncio.wait_for(ready.wait(), 1)
+        assert not task.done()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert {item.id for item in snapshots[-1]} == {"native", "memory:fast"}
+    assert client.pending == 0
+
+
+async def test_query_embedding_single_flight_is_scoped_and_cancellation_safe():
+    from agent.memory.cognee.adapters import _wrap_embed, query_embeddings
+
+    calls = 0
+    release = asyncio.Event()
+
+    async def embed(text):
+        nonlocal calls
+        calls += 1
+        await release.wait()
+        return [[1.0, 2.0]]
+
+    engine = SimpleNamespace(embed_text=embed)
+    other = SimpleNamespace(embed_text=embed)
+    _wrap_embed(engine)
+    _wrap_embed(other)
+    async with query_embeddings():
+        first = asyncio.create_task(engine.embed_text(["same"]))
+        second = asyncio.create_task(engine.embed_text(["same"]))
+        third = asyncio.create_task(other.embed_text(["same"]))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        first.cancel()
+        release.set()
+        await asyncio.gather(first, return_exceptions=True)
+        assert await second == [[1.0, 2.0]]
+        assert await third == [[1.0, 2.0]]
+        assert calls == 2
+    await engine.embed_text(["same"])
+    assert calls == 3
+
+
+async def test_chunk_results_keep_individual_identity_and_metadata(monkeypatch, tmp_path):
+    from unittest.mock import AsyncMock
+
+    from agent.memory.cognee.client import CogneeClient
+
+    client = CogneeClient(CogneeConfig(data_root=str(tmp_path)))
+    client.initialize = AsyncMock(return_value=SimpleNamespace(ready=True))
+    client.available_datasets = AsyncMock(side_effect=lambda names: names)
+    client.search_type = lambda name: name
+
+    async def recall(_name, query, **kwargs):
+        assert kwargs["only_context"] is False
+        return [{"text": f"chunk-{i}: " + "x" * 900, "kind": "chunk", "source": "graph",
+                 "metadata": {"chunk_id": f"id-{i}"},
+                 "raw": {"external_metadata": {"anelf_memory_id": str(i)}}} for i in range(3)]
+
+    monkeypatch.setattr(client, "_call", recall)
+    results = await search_cognee(client, client.config, "q", ["data"], 3)
+    assert len(results) == 3
+    assert {r.id for r in results} == {"cognee:id-0", "cognee:id-1", "cognee:id-2"}
+    assert all(len(r.snippet) == 700 and r.source == "cognee_chunk" for r in results)
+    assert {r.provenance["anelf_memory_id"] for r in results} == {"0", "1", "2"}
+
+
+def test_rrf_counts_rank_per_lane_and_duplicate_once():
+    from agent.memory.cognee.fusion import _fuse_ranked_lists
+    from agent.memory.memory_types import MemorySearchResult
+
+    a = MemorySearchResult(id="a", snippet="first", score=1)
+    b = MemorySearchResult(id="b", snippet="second", score=1)
+    config = CogneeConfig()
+    results = _fuse_ranked_lists([([a, a, b], 1), ([b, a], 1)], config=config, limit=5)
+    assert len(results) == 2
+    assert results[0].score == results[1].score

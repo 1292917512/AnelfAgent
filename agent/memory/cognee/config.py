@@ -146,7 +146,8 @@ class CogneeConfig:
     rrf_k: int = 60
     recall_pool_multiplier: int = 3
     search_types: list[str] = field(
-        default_factory=lambda: ["CHUNKS", "CHUNKS_LEXICAL"],
+        # 原生 FTS 已覆盖同步词法召回；Cognee BM25 会全量加载图库。
+        default_factory=lambda: ["CHUNKS"],
     )
     # 显式 recall depth=deep 的搜索类型；自动补充独立选择非生成式通道。
     # only_context 仅跳过最终回答生成，CONTEXT_EXTENSION 的迭代检索仍调用 LLM。
@@ -216,6 +217,8 @@ def load_cognee_config() -> CogneeConfig:
         raw = json.loads(path.read_text(encoding="utf-8"))
         allowed = CogneeConfig.__dataclass_fields__.keys()
         values = {key: value for key, value in raw.items() if key in allowed}
+        if values.get("search_types") == ["CHUNKS", "CHUNKS_LEXICAL"]:
+            values["search_types"] = ["CHUNKS"]
         # 一次性默认值迁移：deep_search_types 仍是旧默认（用户从未自定义）时
         # 升级到新默认（含 CONTEXT_EXTENSION/SUMMARIES）；自定义过的列表原样保留
         if values.get("deep_search_types") == _LEGACY_DEEP_TYPES:

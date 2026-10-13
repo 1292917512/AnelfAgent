@@ -13,6 +13,14 @@ class CogneeOperation(str, Enum):
     DELETE = "delete"
 
 
+class CogneePipelineError(RuntimeError):
+    """把流水线失败结果转换为异常，并保留根因类型供重试分类。"""
+
+    def __init__(self, operation: str, error_class: str, message: str) -> None:
+        self.error_class = error_class
+        super().__init__(f"Cognee {operation} 失败: {error_class or 'UnknownError'}: {message}")
+
+
 class CogneeAvailability(BaseModel):
     installed: bool
     enabled: bool

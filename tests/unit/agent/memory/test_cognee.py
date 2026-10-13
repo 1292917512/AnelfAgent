@@ -224,7 +224,6 @@ async def test_client_waits_for_models_then_initializes_without_restart(
     monkeypatch.setattr("agent.memory.cognee.client.resolve_chat_llm_config", chat)
     monkeypatch.setattr("agent.memory.cognee.client.resolve_embedding_llm_config", embedding)
     monkeypatch.setattr(client, "_import_cognee", importer)
-    monkeypatch.setattr(client, "_sanitize_embedding_dimensions", lambda: None)
 
     availability = await client.initialize()
     assert availability.enabled and availability.configuration_required
@@ -277,7 +276,6 @@ async def test_client_serializes_initialization_and_applies_latest_config(
     monkeypatch.setattr(CogneeClient, "installed", property(lambda _self: True))
     monkeypatch.setattr("agent.llm.get_llm_manager", lambda: object())
     monkeypatch.setattr(client, "_import_cognee", load)
-    monkeypatch.setattr(client, "_sanitize_embedding_dimensions", lambda: None)
     first = asyncio.create_task(client.initialize())
     second = asyncio.create_task(client.initialize())
     try:
@@ -437,11 +435,14 @@ class _FakeCogneeClient:
             reason="" if self.ready else "请配置模型",
         )
 
-    async def make_data_item(self, data: str, *, label: str, external_metadata: dict):
-        return {"data": data, "label": label, "external_metadata": external_metadata}
+    async def make_data_item(self, data: str, *, label: str, external_metadata: dict, dataset_name: str = ""):
+        entry_id = external_metadata.get("anelf_memory_id") or external_metadata["anelf_graph_node_id"]
+        return {"data": data, "label": label, "external_metadata": external_metadata, "data_id": f"data-{entry_id}"}
 
-    async def add(self, data, **_kwargs):
+    async def add(self, data, **kwargs):
         self.items.extend(data)
+        dataset = next(row for row in await self.list_datasets() if row.name == kwargs["dataset_name"])
+        return SimpleNamespace(dataset_id=dataset.id)
 
     async def cognify(self, **_kwargs):
         return None
@@ -1266,6 +1267,9 @@ class _TargetingFakeClient:
     async def initialize(self):
         return SimpleNamespace(ready=True)
 
+    async def available_datasets(self, names):
+        return names
+
     def search_type(self, name):
         return str(name).upper()
 
@@ -1346,3 +1350,133 @@ async def test_search_cognee_parses_projection_and_backfills_tags() -> None:
     # 正文剥离头部字段（无 "Memory type:" 噪音），标签回填（归属标注/加权可用）
     assert r.snippet == "阿辰喜欢火锅"
     assert r.tags == ["user:qq:1", "topic:火锅"]
+
+
+async def test_projection_failure_keeps_legacy_data_and_permanent_error_stops_retry(store):
+    store.set_cognee_projection_enabled(True)
+    entry_id = await store.add(MemoryEntry(memory_type=MemoryType.SEMANTIC, content="new version"))
+    items = await store.claim_cognee_sync_batch(10)
+    await store.complete_cognee_sync(items[0]["queue_id"], entry_id, dataset_name="anelf_global",
+        dataset_id="dataset-id", data_id="legacy-id", content_hash="old")
+    entry = await store.get(entry_id)
+    entry.content = "changed version"
+    await store.update(entry)
+    items = await store.claim_cognee_sync_batch(10)
+    client = _FakeCogneeClient()
+    client.cognify = AsyncMock(side_effect=ValueError("invalid extraction schema"))
+    coordinator = CogneeCoordinator(store, client, CogneeConfig())
+    await coordinator._process_batch(items)
+    assert not client.deleted
+    assert (await store.get_cognee_mapping(entry_id))["data_id"] == "legacy-id"
+    assert (await store.get_cognee_sync_status())["failed"] == 1
+    client.cognify = AsyncMock()
+    await store.retry_failed_cognee_sync()
+    await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
+    assert client.deleted == [("dataset-id", "legacy-id")]
+    assert (await store.get_cognee_mapping(entry_id))["data_id"] == f"data-{entry_id}"
+
+
+def test_existing_embedding_data_adopts_identity_without_rebuilding(tmp_path):
+    from agent.memory.cognee.embedding_identity import validate_embedding
+
+    artifact = tmp_path / "system" / "old-vector-data"
+    artifact.parent.mkdir()
+    artifact.write_bytes(b"preserve")
+    payload = {"embedding_model": "openai/embed", "embedding_provider": "openai",
+               "embedding_endpoint": "https://example.invalid/v1", "embedding_dimensions": 1024}
+    validate_embedding(tmp_path, payload, record=True)
+    validate_embedding(tmp_path, {**payload, "embedding_api_key": "rotated"}, record=True)
+    validate_embedding(tmp_path, {**payload, "embedding_dimensions": 0})
+    for changes in ({"embedding_model": "other"}, {"embedding_dimensions": 2048}):
+        with pytest.raises(CogneeConfigError, match="不兼容"):
+            validate_embedding(tmp_path, {**payload, **changes}, record=True)
+    assert artifact.read_bytes() == b"preserve"
+    assert json.loads((tmp_path / "anelf-embedding.json").read_text())["model"] == "embed"
+
+
+def test_retry_policy_rejects_permanent_nested_failures():
+    from agent.memory.cognee.adapters import retryable
+
+    wrapped = RuntimeError("pipeline failed")
+    wrapped.__cause__ = ValueError("invalid JSON")
+    assert not retryable(wrapped)
+    assert not retryable(asyncio.CancelledError())
+    assert retryable(TimeoutError("temporary"))
+
+
+@pytest.mark.parametrize("error_class,expected", [("TimeoutError", True), ("AuthenticationError", False)])
+async def test_pipeline_retry_uses_root_cause_instead_of_wrapper_status(monkeypatch, error_class, expected):
+    from agent.memory.cognee.adapters import retryable
+    from agent.memory.cognee.types import CogneePipelineError
+
+    wrapper = type("CognifyFailedError", (RuntimeError,), {"status_code": 422, "error_class": error_class})
+    assert retryable(wrapper("cognify failed")) is expected
+    wrapped = type("PipelineRunFailedError", (RuntimeError,), {"status_code": 422})("pipeline failed")
+    wrapped.first_error = TimeoutError("network")
+    assert retryable(wrapped)
+
+    client = CogneeClient(CogneeConfig())
+    monkeypatch.setattr(client, "_call", AsyncMock(return_value=SimpleNamespace(
+        status="PipelineRunErrored", error_class=error_class, error_message="root cause",
+    )))
+    with pytest.raises(CogneePipelineError) as caught:
+        await client.add([])
+    assert retryable(caught.value) is expected
+    assert error_class in str(caught.value)
+
+
+def test_disabling_cognee_does_not_require_a_valid_embedding(monkeypatch):
+    monkeypatch.setattr("agent.memory.cognee.client.resolve_embedding_llm_config",
+                        Mock(side_effect=AssertionError("disabled configuration does not write vectors")))
+    CogneeClient(CogneeConfig()).validate_configuration(CogneeConfig(enabled=False))
+
+
+async def test_projection_ids_are_stable_and_isolated_by_dataset(monkeypatch, tmp_path):
+    client = CogneeClient(CogneeConfig(data_root=str(tmp_path)))
+    client._module = SimpleNamespace()
+    client._configured = True
+    monkeypatch.setattr("agent.memory.cognee.client.importlib.import_module",
+        lambda name: SimpleNamespace(DataItem=lambda data, **kwargs: SimpleNamespace(data=data, **kwargs)))
+    async def item(data, dataset):
+        return await client.make_data_item(data, label="anelf-memory-1", external_metadata={}, dataset_name=dataset)
+    first = await item("old", "global")
+    assert (await item("old", "global")).data_id == first.data_id
+    assert (await item("new", "global")).data_id != first.data_id
+    assert (await item("old", "private")).data_id != first.data_id
+
+
+async def test_embedding_transport_does_not_change_host_drop_policy():
+    from agent.memory.cognee.adapters import _EmbeddingTransport
+
+    module = SimpleNamespace(aembedding=AsyncMock(return_value=[[1.0]]), drop_params=False)
+    proxy = _EmbeddingTransport(module)
+    assert await proxy.aembedding(model="test", input=["query"]) == [[1.0]]
+    assert module.aembedding.call_args.kwargs["drop_params"] is True
+    assert module.drop_params is False
+
+
+async def test_reconfigure_drains_projection_before_switching_config(store, monkeypatch):
+    client = _FakeCogneeClient()
+    client.reconfigure = Mock()
+    coordinator = CogneeCoordinator(store, client, CogneeConfig())
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def process(batch):
+        started.set()
+        await release.wait()
+
+    monkeypatch.setattr(coordinator, "_process_entries", process)
+    batch = asyncio.create_task(coordinator._process_batch([]))
+    await started.wait()
+    switch = asyncio.create_task(coordinator.reconfigure(CogneeConfig(enabled=False)))
+    try:
+        await asyncio.sleep(0)
+        client.reconfigure.assert_not_called()
+        release.set()
+        await asyncio.gather(batch, switch)
+        client.reconfigure.assert_called_once()
+        assert not coordinator.config.enabled
+    finally:
+        for task in (batch, switch):
+            task.cancel()
+        await asyncio.gather(batch, switch, return_exceptions=True)

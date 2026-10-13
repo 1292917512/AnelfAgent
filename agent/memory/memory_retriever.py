@@ -268,7 +268,15 @@ class MemoryRetriever:
                 mention_tags = await _mentions()
                 focus_query = self._extract_focus_query(conversation)
 
+                partial_lanes: dict[asyncio.Future, List[MemorySearchResult]] = {}
+
                 async def _query_search(q: str, *, targeted: bool = False) -> List[MemorySearchResult]:
+                    owner = asyncio.current_task()
+
+                    def preserve(results: List[MemorySearchResult]) -> None:
+                        if owner is not None:
+                            partial_lanes[owner] = results
+
                     if q == query and query_vec_task is not None:
                         vec = await asyncio.shield(query_vec_task)
                     else:
@@ -291,6 +299,7 @@ class MemoryRetriever:
                         entity_scope=entity_scope,
                         query_tags=mention_tags or None,
                         node_names=plan.node_labels if targeted else None,
+                        on_results=preserve,
                     )
 
                 # 多窗口补充：以最近一条用户消息为焦点查询（即时窗口，捕捉当前
@@ -344,6 +353,11 @@ class MemoryRetriever:
                 n_plan_landed = 0
                 for i, t in enumerate(all_lanes):
                     if t in pending:
+                        partial = partial_lanes.get(t)
+                        if partial:
+                            lanes.append(partial)
+                            if i < len(plan_lane_tasks):
+                                n_plan_landed += 1
                         continue
                     exc = t.exception()
                     if exc is not None:

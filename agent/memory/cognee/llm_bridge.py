@@ -1,24 +1,23 @@
 """LLMManager 模型配置到 Cognee LLM/Embedding 配置的解析桥接。
 
-Cognee 的 LLM 适配层与主对话模型相互独立：结构化抽取走 cognee 自己的
-provider 适配器（litellm + instructor），因此必须把 AnelfAgent 的模型配置
-正确翻译为 cognee 的 set_llm_config / set_embedding_config payload。
+Cognee 的 LLM 适配层与主对话模型相互独立，默认使用 litellm_native；
+显式选择 instructor_mode 时启用 Instructor。全部模型来源共用参数预算。
 
-关键约束：
-- provider 与模型标识必须匹配（openai provider 不能配 anthropic/ 前缀模型硬跑），
-  无法解析时抛 CogneeConfigError，由上层优雅降级而非放任无限重试。
-- anthropic 协议模型统一走 cognee 的 custom provider（GenericAPIAdapter，
-  底层 litellm）：与主对话调用路径一致、支持第三方兼容端点、默认 json_mode
-  不产生 tool_choice；cognee 原生 AnthropicAdapter 依赖 anthropic SDK
-  （本项目不安装）且不接受自定义端点，仅在显式选择时启用。
-- thinking 模式端点不允许 tool_choice=required，需用 json_mode 规避。
+模型看到什么：原有结构化抽取提示词与显式输出、思考参数。
+token 影响：限定单次生成预算，避免截断后的无效重试；不强制生成到上限。
+缓存影响：不修改任何提示词前缀。
+
+自动映射继承模型的思考契约；自定义来源使用 LiteLLM 规范参数。
+显式 Instructor 模式按其适配器要求处理端点，不在默认 Native 路径强制工具调用。
 """
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 from typing import Any, Optional
 
+from agent.llm.reasoning import parse_thinking_spec, resolve_thinking_value, set_nested_field, to_litellm_effort
 from core.log import log
 
 from .config import (
@@ -28,7 +27,7 @@ from .config import (
     CogneeEmbeddingModelConfig,
 )
 
-# cognee 1.3 支持的 LLM provider（get_llm_client.LLMProvider）
+# Cognee LLM provider 词汇
 SUPPORTED_CHAT_PROVIDERS = frozenset({
     "openai", "ollama", "anthropic", "custom",
     "gemini", "mistral", "azure", "bedrock",
@@ -77,12 +76,11 @@ _EFFORT_TO_BUDGET: dict[str, Optional[int]] = {
     "max": None,
 }
 
-# cognee 结构化抽取的输出预算下限：正文需容纳 nodes+edges JSON，
-# thinking 模型的推理 token 与其共享该预算，过小必然截断
-_MIN_EXTRACTION_MAX_TOKENS = 16384
+# Cognee 默认抽取预算：正文需容纳 nodes+edges JSON，思考 token 可能共享此预算。
+_DEFAULT_EXTRACTION_MAX_TOKENS = 16384
 
 
-class CogneeConfigError(RuntimeError):
+class CogneeConfigError(ValueError):
     """Cognee 模型配置无法解析（配置不完整或与 cognee 不兼容）。"""
 
 
@@ -151,7 +149,7 @@ def _resolve_custom_chat(chat_cfg: CogneeChatModelConfig) -> dict[str, Any]:
         raise CogneeConfigError(
             f"cognee 不支持的 provider: '{provider}'，可选: {sorted(SUPPORTED_CHAT_PROVIDERS)}"
         )
-    if provider == "anthropic" and importlib.util.find_spec("anthropic") is None:
+    if provider == "anthropic" and chat_cfg.instructor_mode and importlib.util.find_spec("anthropic") is None:
         # 配置期快速失败：cognee 的 AnthropicAdapter 依赖原生 SDK，
         # 缺失时运行期会 import 失败并触发长时间重试风暴
         raise CogneeConfigError(
@@ -169,9 +167,9 @@ def _resolve_custom_chat(chat_cfg: CogneeChatModelConfig) -> dict[str, Any]:
     }
     if chat_cfg.api_version:
         payload["llm_api_version"] = chat_cfg.api_version
-    if chat_cfg.extra_args:
-        payload["llm_args"] = dict(chat_cfg.extra_args)
+    payload["llm_args"] = _build_llm_args(None, chat_cfg)
     _apply_chat_overrides(payload, chat_cfg)
+    _ensure_extraction_budget(payload)
     return payload
 
 
@@ -194,8 +192,8 @@ def _payload_from_client(client: Any, chat_cfg: CogneeChatModelConfig) -> dict[s
     llm_args = _build_llm_args(cfg, chat_cfg)
     if llm_args:
         payload["llm_args"] = llm_args
-    _apply_chat_overrides(payload, chat_cfg, client=client)
-    _ensure_extraction_budget(payload, client)
+    _apply_chat_overrides(payload, chat_cfg)
+    _ensure_extraction_budget(payload)
     return payload
 
 
@@ -209,59 +207,50 @@ def _build_llm_args(cfg: Any, chat_cfg: CogneeChatModelConfig) -> dict[str, Any]
     - chat 配置中的 extra_args 显式指定，优先级最高。
     """
     extra_body = {
-        key: value for key, value in (getattr(cfg, "extra_body", None) or {}).items()
+        key: copy.deepcopy(value) for key, value in (getattr(cfg, "extra_body", None) or {}).items()
         if key not in _LLM_ARGS_RESERVED_KEYS
     }
     effort = chat_cfg.reasoning_effort
-    if effort == "off":
+    spec = parse_thinking_spec(getattr(cfg, "thinking", None))
+    if spec is not None:
+        inherited = getattr(cfg, "reasoning_effort", "") or "medium"
+        value = resolve_thinking_value(spec, effort or inherited)
+        if not effort and spec.param.split(".", 1)[0] in extra_body:
+            value = None
+        if value is not None:
+            set_nested_field(extra_body, spec.param, value)
+    elif cfg is None:
+        # 自定义来源没有模型思考契约，使用 LiteLLM 的规范参数。
+        if effort:
+            extra_body["reasoning_effort"] = to_litellm_effort(effort)
+    elif effort == "off":
         extra_body["thinking"] = {"type": "disabled"}
-        log(f"Cognee: 模型 '{cfg.name}' 思考模式已显式关闭", "DEBUG")
     elif effort in _EFFORT_TO_BUDGET:
         budget = _EFFORT_TO_BUDGET[effort]
         thinking: dict[str, Any] = {"type": "enabled"}
         if budget is not None:
             thinking["budget_tokens"] = budget
         extra_body["thinking"] = thinking
-        log(
-            f"Cognee: 模型 '{cfg.name}' 思考等级 {effort}"
-            + (f"（预算 {budget} tokens）" if budget else "（不限制预算）"),
-            "DEBUG",
-        )
     elif getattr(cfg, "supports_reasoning", False) and "thinking" not in extra_body:
-        max_tokens = chat_cfg.max_completion_tokens or 16384
+        max_tokens = chat_cfg.max_completion_tokens or _DEFAULT_EXTRACTION_MAX_TOKENS
         budget = max(1024, min(_THINKING_BUDGET_TOKENS, max_tokens - 1024))
         extra_body["thinking"] = {"type": "enabled", "budget_tokens": budget}
-        log(
-            f"Cognee: 模型 '{cfg.name}' 为 thinking 模型，"
-            f"思考预算限制为 {budget} tokens（可在模型 extra_body 中覆盖）",
-            "DEBUG",
-        )
     llm_args: dict[str, Any] = {}
+    if "reasoning_effort" in extra_body:
+        llm_args["reasoning_effort"] = extra_body.pop("reasoning_effort")
     if extra_body:
         llm_args["extra_body"] = extra_body
-    llm_args.update(chat_cfg.extra_args)
+    llm_args.update(copy.deepcopy(chat_cfg.extra_args))
     return llm_args
 
 
 def _apply_chat_overrides(
     payload: dict[str, Any],
     chat_cfg: CogneeChatModelConfig,
-    client: Optional[Any] = None,
 ) -> None:
-    """应用 instructor_mode / max_tokens 覆盖。
-
-    端点标记为不支持强制 tool_choice（thinking 常开）且未显式指定模式时，
-    自动回退 json_mode——instructor 的 tools 系模式会注入 tool_choice=required，
-    在这类端点上必然 400。
-    """
+    """显式模式选择对应框架，所有来源使用同一输出预算覆盖。"""
     mode = chat_cfg.instructor_mode
-    if not mode and client is not None and not client.config.supports_forced_tool_choice:
-        mode = "json_mode"
-        log(
-            f"Cognee: 模型 '{client.config.name}' 标记为不支持强制 tool_choice，"
-            f"结构化输出自动使用 json_mode",
-            "DEBUG",
-        )
+    payload["structured_output_framework"] = "instructor" if mode else "litellm_native"
     if mode:
         payload["llm_instructor_mode"] = mode
     if chat_cfg.max_completion_tokens > 0:
@@ -270,28 +259,28 @@ def _apply_chat_overrides(
 
 def _ensure_extraction_budget(
     payload: dict[str, Any],
-    client: Optional[Any],
 ) -> None:
     """为结构化抽取保证足够的输出预算。
 
     cognee 默认 llm_max_completion_tokens=16384，但部分适配器不回填默认值，
     缺省时端点会按自身小默认值截断；thinking 模型的推理 token 还与正文
-    共享该预算，过小会在长记忆抽取时反复 max_tokens 截断。模型自身
-    max_tokens 配置（对话用途）若偏小，自动抬升到下限，不影响主对话配置。
+    共享该预算，过小会在长记忆抽取时反复 max_tokens 截断。默认保持
+    16384，不继承主对话的大额输出预算；显式配置同时传到实际请求。
     """
-    if "llm_max_completion_tokens" in payload:
-        return
-    model_max = int(getattr(client.config, "max_tokens", 0) or 0) if client is not None else 0
-    budget = max(model_max, _MIN_EXTRACTION_MAX_TOKENS)
-    payload["llm_max_completion_tokens"] = budget
     llm_args = payload.setdefault("llm_args", {})
-    llm_args.setdefault("max_tokens", budget)
-    if model_max and model_max < _MIN_EXTRACTION_MAX_TOKENS and client is not None:
-        log(
-            f"Cognee: 模型 '{client.config.name}' max_tokens={model_max} 偏小，"
-            f"结构化抽取输出预算抬升至 {budget}（不影响主对话配置）",
-            "DEBUG",
-        )
+    # 显式字段优先于透传参数；只保留一个输出上限，避免不同适配器各读一份。
+    budget = int(payload.get("llm_max_completion_tokens") or
+                 llm_args.get("max_completion_tokens") or llm_args.get("max_tokens") or
+                 _DEFAULT_EXTRACTION_MAX_TOKENS)
+    if budget <= 0:
+        raise CogneeConfigError("模型输出上限必须大于 0")
+    llm_args.pop("max_completion_tokens", None)
+    llm_args["max_tokens"] = budget
+    llm_args.setdefault("timeout", 60.0)
+    payload["llm_max_completion_tokens"] = budget
+    thinking = llm_args.get("extra_body", {}).get("thinking", {})
+    if isinstance(thinking, dict) and thinking.get("budget_tokens", 0) >= budget:
+        raise CogneeConfigError("思考预算必须小于模型输出上限，请提高输出上限或降低思考等级")
 
 
 # ANTHROPIC_BASE_URL 桥接状态：记录原始值以便换端点/换供应商时还原，

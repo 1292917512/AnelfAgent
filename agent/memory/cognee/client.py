@@ -1,19 +1,22 @@
-"""Cognee v1.4 稳定公共 API 的懒加载门面。"""
+"""Cognee 公共 API 的懒加载门面与宿主配置边界。"""
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib
 import importlib.util
 import os
+import time
 from pathlib import Path
 from typing import Any, Optional
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from core.log import log
 
-from . import ladybug_guard
+from . import adapters, ladybug_guard
 from .config import CogneeConfig
+from .embedding_identity import clear_embedding_identity, validate_embedding
 from .llm_bridge import (
     CogneeConfigError,
     anthropic_env_bridge,
@@ -21,7 +24,7 @@ from .llm_bridge import (
     resolve_embedding_llm_config,
     summarize_resolved,
 )
-from .types import CogneeAvailability, CogneeRecallItem
+from .types import CogneeAvailability, CogneePipelineError, CogneeRecallItem
 
 
 class CogneeClient:
@@ -34,8 +37,14 @@ class CogneeClient:
         self._import_error = ""
         self._configuration_required = False
         self._initialize_lock = asyncio.Lock()
+        self._recall_slots = asyncio.Semaphore(4)
+        self._datasets_lock = asyncio.Lock()
+        self._dataset_names: set[str] = set()
+        self._datasets_until = 0.0
         self._resolved_chat: dict[str, Any] = {}
         self._resolved_embedding: dict[str, Any] = {}
+        self._embedding_payload: dict[str, Any] = {}
+        self._chat_payload: dict[str, Any] = {}
 
     @property
     def installed(self) -> bool:
@@ -65,11 +74,22 @@ class CogneeClient:
         self._configuration_required = False
         self._resolved_chat = {}
         self._resolved_embedding = {}
+        self._datasets_until = 0.0
 
     async def initialize(self) -> CogneeAvailability:
         """串行解析并应用配置，并发调用复用已就绪的客户端。"""
         async with self._initialize_lock:
             return await self._initialize()
+
+    def validate_configuration(self, config: CogneeConfig) -> None:
+        """保存前检查向量空间，拒绝会混写现有卷的模型配置。"""
+        if not config.enabled:
+            return
+        from agent.llm import get_llm_manager
+
+        payload = resolve_embedding_llm_config(config.embedding, get_llm_manager())
+        if payload:
+            validate_embedding(Path(config.absolute_data_root), payload)
 
     async def _initialize(self) -> CogneeAvailability:
         if not self.config.enabled:
@@ -82,10 +102,12 @@ class CogneeClient:
             self._configuration_required = False
             return self.availability()
         except CogneeConfigError as exc:
+            self._configured = False
             self._import_error = str(exc)
             self._configuration_required = True
             return self.availability()
         except Exception as exc:
+            self._configured = False
             self._import_error = str(exc)
             self._configuration_required = False
             log(f"Cognee 初始化失败，保持原记忆后端: {exc}", "WARNING")
@@ -126,10 +148,11 @@ class CogneeClient:
         # 限制其 handler 级别以避免 pipeline 状态持续刷屏
         _quieten_cognee_logger()
         ladybug_guard.install(lambda: self.config)
+        adapters.install()
         return self._module
 
     async def _configure(self) -> None:
-        while not self._configured and self.config.enabled:
+        while self.config.enabled:
             config = self.config
             try:
                 from agent.llm import get_llm_manager
@@ -149,35 +172,26 @@ class CogneeClient:
             except Exception as exc:
                 raise RuntimeError(f"无法映射 AnelfAgent 模型配置: {exc}") from exc
 
+            if self._configured and self._chat_payload == chat_payload and self._embedding_payload == embedding_payload:
+                return
+            self._configured = False
             module = await asyncio.to_thread(self._import_cognee)
             if config is not self.config:
                 continue
             root = Path(config.absolute_data_root)
+            validate_embedding(root, embedding_payload)
             root.mkdir(parents=True, exist_ok=True)
             module.config.system_root_directory(str(root / "system"))
             module.config.data_root_directory(str(root / "data"))
             anthropic_env_bridge(chat_payload)
             module.config.set_llm_config(chat_payload)
             module.config.set_embedding_config(embedding_payload)
-            self._sanitize_embedding_dimensions()
+            self._chat_payload = chat_payload
+            self._embedding_payload = embedding_payload
+            if (root / "system").exists():
+                validate_embedding(root, embedding_payload, record=True)
             self._configured = True
-
-    def _sanitize_embedding_dimensions(self) -> None:
-        """为 cognee 的 embedding 调用启用 litellm drop_params。
-
-        cognee 对未知模型推导维度失败时回落 3072 并透传给 litellm，而 litellm 对
-        非 "text-embedding-3" 命名的模型（DashScope 的 text-embedding-v3/v4 等
-        OpenAI 兼容端点）本地拒绝 dimensions 参数（UnsupportedParamsError，
-        经 litellm 重试放大为 30s 连接超时）。开启 drop_params 后该参数被自动
-        丢弃，请求成功；cognee 连接测试随后探测真实维度并写回配置与引擎。
-        对主 LLM 路径同样是容错增强（端点不支持的参数自动丢弃而非 400）。
-        """
-        try:
-            import litellm
-
-            litellm.drop_params = True
-        except Exception as exc:
-            log(f"litellm drop_params 设置失败（不影响主流程）: {exc}", "DEBUG", tag="记忆")
+            return
 
     async def _call(
         self,
@@ -210,8 +224,25 @@ class CogneeClient:
         return await self._call("remember", data, **kwargs)
 
     async def recall(self, query_text: str, **kwargs: Any) -> list[CogneeRecallItem]:
-        raw = await self._call("recall", query_text, **kwargs)
+        async with self._recall_slots:
+            raw = await self._call("recall", query_text, **kwargs)
         return _normalize_recall(raw)
+
+    async def available_datasets(self, names: list[str]) -> list[str]:
+        """短缓存数据集目录，避开不存在的数据集；目录读取失败不误判为空。"""
+        async with self._datasets_lock:
+            if time.monotonic() >= self._datasets_until:
+                try:
+                    rows = await self.list_datasets()
+                except Exception as exc:
+                    log(f"Cognee 数据集目录读取失败，按原范围检索: {exc}", "DEBUG")
+                    return names
+                self._dataset_names = {
+                    str(row.get("name", "") if isinstance(row, dict) else getattr(row, "name", ""))
+                    for row in rows
+                }
+                self._datasets_until = time.monotonic() + 30
+        return [name for name in names if name in self._dataset_names]
 
     async def improve(self, dataset: str = "main_dataset", **kwargs: Any) -> Any:
         return await self._call(
@@ -238,12 +269,28 @@ class CogneeClient:
 
     # v1/lower-level public API
     async def add(self, data: Any, **kwargs: Any) -> Any:
-        return await self._call(
+        result = await self._call(
             "add",
             data,
             timeout=self.config.pipeline_timeout_seconds,
             **kwargs,
         )
+        status = getattr(result, "status", "")
+        if status == "PipelineRunErrored":
+            raise CogneePipelineError(
+                "add", getattr(result, "error_class", "") or "",
+                getattr(result, "error_message", "") or "摄入未完成",
+            )
+        self._datasets_until = 0.0
+        if self._embedding_payload:
+            from cognee.infrastructure.databases.vector.embeddings.config import get_embedding_context_config
+
+            identity = dict(self._embedding_payload)
+            detected = get_embedding_context_config().embedding_dimensions
+            if detected:
+                identity["embedding_dimensions"] = detected
+            validate_embedding(Path(self.config.absolute_data_root), identity, record=True)
+        return result
 
     async def make_data_item(
         self,
@@ -251,6 +298,7 @@ class CogneeClient:
         *,
         label: str,
         external_metadata: dict[str, Any],
+        dataset_name: str = "",
     ) -> Any:
         """构造 Cognee 文档化公开输入类型 DataItem。"""
         if self._module is None or not self._configured:
@@ -262,6 +310,7 @@ class CogneeClient:
             data,
             label=label,
             external_metadata=external_metadata,
+            data_id=uuid5(NAMESPACE_URL, f"anelf:{dataset_name}:{label}:{hashlib.sha256(data.encode()).hexdigest()}"),
         )
 
     async def cognify(self, **kwargs: Any) -> Any:
@@ -322,6 +371,7 @@ class CogneeClient:
         return await self._call("datasets.empty_dataset", _to_uuid(dataset_id), **kwargs)
 
     async def delete_data(self, dataset_id: Any, data_id: Any, **kwargs: Any) -> Any:
+        self._datasets_until = 0.0
         return await self._call(
             "datasets.delete_data",
             _to_uuid(dataset_id),
@@ -337,7 +387,11 @@ class CogneeClient:
         return await self._call("prune.prune_data")
 
     async def prune_system(self, **kwargs: Any) -> Any:
-        return await self._call("prune.prune_system", **kwargs)
+        result = await self._call("prune.prune_system", **kwargs)
+        if kwargs.get("vector") and kwargs.get("metadata"):
+            clear_embedding_identity(Path(self.config.absolute_data_root))
+            self._datasets_until = 0.0
+        return result
 
     async def compact_vector_storage(self, retention_days: float) -> dict[str, Any]:
         """压缩全部 LanceDB 向量表并清理过期版本，回收磁盘空间。
@@ -460,7 +514,10 @@ def _normalize_recall(raw_results: Any) -> list[CogneeRecallItem]:
             content = str(content)
         if not content.strip():
             continue
-        metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+        metadata = dict(data["metadata"]) if isinstance(data.get("metadata"), dict) else {}
+        raw = data.get("raw")
+        if isinstance(raw, dict) and isinstance(raw.get("external_metadata"), dict):
+            metadata.update(raw["external_metadata"])
         raw_id = metadata.get("chunk_id") or data.get("id") or data.get("qa_id") or f"result-{index}"
         score_value = data.get("score", 0.0)
         score = float(score_value) if isinstance(score_value, (int, float)) else 0.0
@@ -470,7 +527,7 @@ def _normalize_recall(raw_results: Any) -> list[CogneeRecallItem]:
                 content=content,
                 score=score,
                 source="cognee_chunk"
-                if "chunk" in source_value.lower() or metadata.get("chunk_id")
+                if "chunk" in source_value.lower() or metadata.get("chunk_id") or data.get("kind") == "chunk"
                 else "cognee_graph",
                 dataset_id=str(data.get("dataset_id", "")),
                 dataset_name=str(data.get("dataset_name", "")),
