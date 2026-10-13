@@ -119,6 +119,8 @@ class SystemOneClient:
         except ValueError as exc:
             raise JudgmentError(f"判断服务网络配置无效: {exc}", cause=ErrorCause.CONFIG, retryable=False) from exc
         # 认证/方法限制仍证明 HTTP 服务已响应，网关和过载错误不能作为恢复依据。
+        if response.status_code == 407:
+            raise JudgmentError("判断服务代理认证失败 (HTTP 407)", cause=ErrorCause.CONFIG, retryable=False)
         if response.status_code == 429 or response.status_code >= 500:
             raise JudgmentError(f"判断服务暂不可达 (HTTP {response.status_code})", cause=ErrorCause.NETWORK, retryable=True)
 

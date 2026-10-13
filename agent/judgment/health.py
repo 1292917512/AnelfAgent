@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from agent.judgment.client import SystemOneClient
 from agent.judgment.types import JudgmentError
 from core.config import get_config_float
+from core.network import resolve_network_route
 from core.sanitizer import sanitize_text
 from core.tool_errors import ErrorCause
 
@@ -175,19 +176,23 @@ class JudgmentHealth:
     async def check_connectivity(self, cfg: JudgmentConfig) -> None:
         """强制检查连接，保留凭据故障；成功只表示服务可达，不代表推理已验证。"""
         self.begin(cfg, probe=True)
-        config_error = self._state(cfg).cause == ErrorCause.CONFIG.value
+        previous = self._state(cfg)
+        config_error = previous.cause == ErrorCause.CONFIG.value and previous.check_kind == "inference"
         started = time.monotonic()
-        budget = max(0.1, get_config_float("judgment_connect_timeout", 2.0))
+        attempt_timeout = max(0.1, get_config_float("judgment_connect_timeout", 2.0))
         try:
-            async with asyncio.timeout(budget):
-                await SystemOneClient(base_url=cfg.base_url, api_key="", timeout=budget).check_connectivity()
+            route = resolve_network_route(cfg.base_url)
+            async with asyncio.timeout(attempt_timeout * len(route.proxies)):
+                await SystemOneClient(base_url=cfg.base_url, api_key="", timeout=attempt_timeout).check_connectivity()
         except asyncio.CancelledError:
             self.cancel(cfg)
             raise
         except Exception as exc:
             error = exc if isinstance(exc, JudgmentError) else JudgmentError(
                 "判断服务连接检查超时" if isinstance(exc, TimeoutError) else sanitize_text(str(exc)) or type(exc).__name__,
-                cause=ErrorCause.TIMEOUT if isinstance(exc, TimeoutError) else ErrorCause.NETWORK, retryable=True,
+                cause=(ErrorCause.TIMEOUT if isinstance(exc, TimeoutError)
+                       else ErrorCause.CONFIG if isinstance(exc, ValueError) else ErrorCause.NETWORK),
+                retryable=not isinstance(exc, ValueError),
             )
             latest = self._result_state(cfg)
             if latest is None or latest.status != "checking":
@@ -200,7 +205,7 @@ class JudgmentHealth:
         state = self._result_state(cfg)
         if state is None or state.status != "checking":
             return
-        if state.cause == ErrorCause.CONFIG.value:
+        if config_error:
             state.status = "offline"
             raise JudgmentError(state.error, cause=ErrorCause.CONFIG, retryable=False)
         self.success(cfg, time.monotonic() - started, connectivity=True)

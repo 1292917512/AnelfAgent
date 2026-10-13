@@ -38,7 +38,7 @@ _JUDGMENT_CONFIGS = {
             "default": 8000, "min": 2000, "max": 32000, "unit": "字符", "advanced": True,
         },
         "judgment_connect_timeout": {
-            "description": "判断服务建立连接及无推理 HEAD 检查的等待上限；正常服务不周期检查，不消耗模型额度",
+            "description": "判断服务单次连接及 HEAD 检查的等待上限；连通检查按全局路由为直连和代理分别预留时间，正常服务不周期检查，不消耗模型额度",
             "default": 2.0, "min": 0.1, "max": 10.0, "unit": "秒", "advanced": True,
         },
         "judgment_recheck_seconds": {

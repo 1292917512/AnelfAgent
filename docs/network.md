@@ -15,6 +15,8 @@
 - `proxy_rules`：一行一条，按顺序首条命中；空行和 `#` 开头的注释忽略。
 - `proxy_connect_timeout`：fallback 直连建立连接的等待上限，不改变读取和长轮询超时。
 
+Jev 推理请求与连通检查均使用全局规则。无推理 HEAD 检查按路由候选数量分配总等待预算，避免直连超时在代理回退前耗尽整个检查；正常服务不周期探测，检测不携带模型密钥。可用 `DOMAIN,api.typesafe.ai,PROXY` 让官方服务直接采用代理，本地模型仍按内网直连规则处理。
+
 ```text
 DOMAIN-SUFFIX,telegram.org,PROXY
 DOMAIN,api.example.com,PROXY
