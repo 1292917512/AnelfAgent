@@ -86,17 +86,26 @@ test("Jev decisions remain visible after later work and expose slow responses", 
 });
 
 test("Jev channel test reports a slow native request without hiding it", async ({ page }, info) => {
+  await page.route("**/api/judgment/providers", (route) => route.fulfill({ json: {
+    providers: { native: { name: "Decision service", base_url: "https://judge.test", api_key: "********",
+      models: { test: { name: "Test decision", model: "jev-test" } } } },
+    default_model: "test", fallback_models: [], revision: "1", health: {},
+  } }));
   await page.route("**/api/judgment/status", (route) => route.fulfill({ json: {
     enabled: true, channel: "typesafe", api_key_configured: true, base_url: "https://judge.test", model: "jev-test",
     timeout: 30, fallback_enabled: true, fallback_model: "", fallback_effort: "low",
   } }));
   await page.route("**/api/config/meta", (route) => route.fulfill({ json: { groups: [] } }));
-  await page.route("**/api/judgment/test", (route) => route.fulfill({ json: {
-    ok: true, source: "typesafe", model: "jev-test", latency_ms: 2500, slow: true, slow_after_ms: 1000, gate_budget_ms: 2000,
-    answers: { needed: { type: "noul", noul: 0.1 } }, missing: [], usage: { input_tokens: 80, output_tokens: 20 },
-  } }));
+  await page.route("**/api/judgment/test", (route) => {
+    expect(route.request().postDataJSON()).toEqual({ model_id: "test", inference: true });
+    return route.fulfill({ json: {
+      ok: true, kind: "inference", source: "typesafe", model: "jev-test", latency_ms: 2500, slow: true, slow_after_ms: 1000, gate_budget_ms: 2000,
+      answers: { needed: { type: "noul", noul: 0.1 } }, missing: [], usage: { input_tokens: 80, output_tokens: 20 },
+    } });
+  });
   await page.goto("/webui/models?tab=judgment");
-  await page.getByRole("button", { name: "Test connection & speed" }).click();
+  await page.getByRole("article", { name: "Decision service" }).getByRole("button", { name: "Test", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Test inference (uses quota)" }).click();
   await expect(page.getByRole("status")).toContainText("Slow response: 2500ms");
   await expect(page.getByText(/Exceeds the 2000ms assessment budget/)).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
