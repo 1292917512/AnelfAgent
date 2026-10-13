@@ -27,12 +27,13 @@ def test_save_mind_config_preserves_all_supported_fields(tmp_path) -> None:
     provider._config = BotConfig()
     provider._cm_available = False
 
-    provider.save_mind_config(llm_timeout=45, send_interim_text=True)
+    provider.save_mind_config(llm_timeout=45, send_interim_text=True, send_final_text=False)
 
     data = json.loads((tmp_path / "mind.json").read_text(encoding="utf-8"))
     assert set(MIND_CONFIG_FIELDS).issubset(data)
     assert data["llm_timeout"] == 45
     assert data["send_interim_text"] is True
+    assert data["send_final_text"] is False
     assert "tool_system_rules" in data
 
 

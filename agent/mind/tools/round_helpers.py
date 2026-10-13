@@ -531,7 +531,7 @@ def _format_task_completions(
         lines.append(f"仍有 {len(running)} 个任务运行中：{_format_running_tasks(running)}")
     lines.append(
         "请根据结果继续处理："
-        "任务用工具推进；用户会话的最终正文按输出契约投递，中途同步或内部事件通知用 send_message；"
+        "任务用工具推进；给用户的答复和进度优先用 send_message 并核对回执，普通正文按投递配置审核；"
         "无需回复或无需继续操作时 end_reply。"
     )
     return "\n".join(lines)

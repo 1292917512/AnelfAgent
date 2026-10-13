@@ -82,6 +82,7 @@ from agent.mind.tools.vision import (
     save_base64_image as save_base64_image,
 )
 from core.activity import ActivityHandle, activity_scope
+from core.config import get_config_bool
 from core.event_bus import (
     EVENT_BEFORE_REPLY,
     EVENT_THINKING_REPLY_ROUND,
@@ -290,17 +291,17 @@ _PROMPT_REPLY_GUIDE = (
     "[输出契约]\n"
     "1. 先做事再说话：需要查资料或执行操作时，立刻通过 function calling 调用工具；"
     "可并行的独立工具同一轮一并发起。\n"
-    "2. 普通会话完成后直接输出给当前用户的最终正文，系统审核后投递并结束；"
-    "中途进度、跨会话回复和媒体仍使用 send_message 等发送工具，以回执为送达事实。\n"
-    "3. 已回复、无需回复或内部处理完成时直接调用 end_reply；结束备注和伴随工具调用的文字不投递。"
-    "不要重复已送达的答复，不要在最终正文中输出内部核验、思考或结束说明。"
+    "2. 给用户的答复和中途进度优先用 send_message 显式投递；跨会话和媒体用对应发送工具。"
+    "发送工具不经过正文自动审核，也不结束执行；必须核对真实回执。普通正文只按当前投递配置审核发送，不能当作已送达。\n"
+    "3. 已回复、无需回复或内部处理完成时直接调用 end_reply；结束备注和同批正文不投递。"
+    "不要重复已送达的答复，内部核验、自我指令与推理不作为对用户的正文。"
 )
 
 # 查资料等非输出工具后：结果仅自己可见；未完成则继续调工具，完成后再回用户
 _PROMPT_AFTER_NON_OUTPUT_TOOLS = (
     "[系统提示] 工具结果仅你可见，不会自动发给用户。\n"
-    "若任务尚未完成 → 继续调用工具，不要输出过程话术。\n"
-    "若已全部完成 → 输出给当前用户的最终回复或用 send_message 显式发送；"
+    "若任务尚未完成 → 继续调用工具，有用进度优先用 send_message 发送。\n"
+    "若已全部完成 → 优先用 send_message 显式发送最终回复并核对回执；"
     "已发送或无需回复时直接调用 end_reply，不输出收尾话术。"
 )
 
@@ -786,7 +787,9 @@ def _reply_delivery_status(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> str:
     if state.auto_reply_blocked:
         status += "没有新的工作或用户消息时不重复发送收尾正文；已完成请直接 end_reply。"
     elif state.auto_reply_eligible:
-        status += "独立最终正文将审核后投递；伴随工具调用的文字只是内部过程。"
+        interim = "开启" if get_config_bool("send_interim_text", False) else "关闭"
+        final = "开启" if get_config_bool("send_final_text", True) else "关闭"
+        status += f"正文自动投递：中间{interim}、最终{final}；开启时仍须审核通过。优先用 send_message 并核对回执。"
     else:
         status += "本轮由内部事件触发，不自动投递；需要通知用户时显式使用 send_message。"
     return "[投递状态] " + tags + status
@@ -939,7 +942,28 @@ async def _handle_text_only_round(
         if ctx.mode == ThinkMode.REPLY and ctx.anything and bg is not None:
             running_bg = bg.running(ctx.current_scope, joinable_only=True)
 
-        if bg is not None and ctx.anything is not None and running_bg and state.wait_budget > 0:
+        waiting = bool(running_bg and state.wait_budget > 0)
+        if ctx.mode == ThinkMode.REPLY:
+            from agent.mind.tools.reply_delivery import deliver_reply
+            _, aborted = await _await_with_abort(deliver_reply(
+                ctx, state, raw_text, interim=waiting, messages=ctx.base_messages + tool_chain[:-1],
+            ), ctx.abort_event)
+            if aborted:
+                state.interrupted = True
+                state.completion_reason = "interrupted"
+                return await _finish_round(ctx, state)
+
+        if bg is not None and ctx.anything is not None and waiting:
+            new_user = await _merge_new_messages(ctx, state)
+            current_bg = bg.running(ctx.current_scope, joinable_only=True)
+            running_ids = {task.task_id for task in current_bg}
+            completed_during_delivery = any(task.task_id not in running_ids for task in running_bg)
+            if new_user or completed_during_delivery:
+                if state.reply_delivery_status != "unknown":
+                    state.auto_reply_blocked = False
+                state.iteration += 1
+                return _StageOutcome.CONTINUE
+            running_bg = current_bg
             # 等待挂起：后台任务运行中时的纯文本一律视为等待——挂起会合
             # （结构性判定，不解析文本语义）。
             # 挂起期间新消息照常实时入库，中断/新消息/完成/超时都会安全唤醒；
@@ -954,6 +978,8 @@ async def _handle_text_only_round(
             )
             if reason == "completed":
                 state.wait_budget -= elapsed
+                if state.reply_delivery_status != "unknown":
+                    state.auto_reply_blocked = False
                 tool_chain.append({
                     "role": "system",
                     "content": _format_task_completions(
@@ -994,11 +1020,6 @@ async def _handle_text_only_round(
             tool_chain.append({"role": "system", "content": _PROMPT_CONTINUE})
             execution_steps.append(f"→ 第{state.iteration + 1}轮: {ctx.mode_label}中")
         else:
-            from agent.mind.tools.reply_delivery import deliver_reply
-            _, aborted = await _await_with_abort(deliver_reply(ctx, state, raw_text), ctx.abort_event)
-            if aborted:
-                state.interrupted = True
-                state.completion_reason = "interrupted"
             return await _finish_round(ctx, state)
 
     state.iteration += 1
@@ -1037,6 +1058,21 @@ async def _handle_tool_round(
             "（产出以最终总结段为准）"
         )
         ctx.collected_text.clear()
+    called = {tc.name for tc in tool_calls}
+    text = _strip_think_blocks(result.content or "").strip()
+    if (ctx.mode == ThinkMode.REPLY and text and not should_suppress(text)
+            and not _END_REPLY_TEXT_RE.match(text) and not (called & (_OUTPUT_TOOL_NAMES | {_END_REPLY_TOOL_NAME}))):
+        from agent.mind.tools.reply_delivery import deliver_reply
+        if state.reply_delivery_status != "unknown":
+            state.auto_reply_blocked = False
+        _, aborted = await _await_with_abort(deliver_reply(
+            ctx, state, text, interim=True, messages=ctx.base_messages + tool_chain,
+        ), ctx.abort_event)
+        if aborted:
+            state.interrupted = True
+            state.completion_reason = "interrupted"
+            if early_runner is not None:
+                early_runner.abandon(cancel=True)
     sent_before = delivery_count()
     partial_abort = await execute_tool_calls(
         mind, tool_chain, result, tool_calls, state.iteration, ctx.anything,
@@ -1051,6 +1087,8 @@ async def _handle_tool_round(
         state.reply_delivery_status = "sent"
     from agent.mind.tools.reply_delivery import observe_send_results
     observe_send_results(ctx, state, tool_calls)
+    if state.interrupted:
+        return await _finish_round(ctx, state)
 
     # 记录目标工具使用（goal nag 提醒的计数依据）
     try:
@@ -1090,8 +1128,6 @@ async def _handle_tool_round(
     outcome = "；失败：" + "; ".join(failures) if failures else "；结果见对应工具回执"
     execution_steps.append(f"→ 第{state.iteration + 1}轮: 调用工具 [{tool_names}]{outcome}")
 
-    called = {tc.name for tc in tool_calls}
-
     if ctx.mode == ThinkMode.REPLY:
         from agent.channel.reply_policy import get_reply_policy
 
@@ -1104,8 +1140,7 @@ async def _handle_tool_round(
             execution_steps.append("→ " + handoff_note)
             return await _finish_round(ctx, state)
 
-    # 非输出工具伴随文本独白时提醒"结果仅自己可见"——独白是模型误以为
-    # 文字可达用户的信号；纯工具轮无需提示（exec_context 每轮已有输出契约）
+    # 工具结果仍仅供模型使用；正文是否送达由独立投递回执说明。
     if ctx.mode == ThinkMode.REPLY:
         round_had_text = bool(_strip_think_blocks(result.content or "").strip())
         if (

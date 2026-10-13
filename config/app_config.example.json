@@ -32,6 +32,7 @@
   "log_file_enabled": false,
   "log_ai_output": true,
   "send_interim_text": false,
+  "send_final_text": true,
   "vector_search_batch_size": 500,
   "memory_recall_top_k": 5,
   "memory_recall_min_score": 0.1,

@@ -92,8 +92,12 @@ _MIND_CONFIGS = {
             "default": True,
         },
         "send_interim_text": {
-            "description": "是否发送中间文本",
+            "description": "自动投递中间正文：工具调用前或等待后台任务时，经审核发送给当前会话；优先使用 send_message 显式发送",
             "default": False,
+        },
+        "send_final_text": {
+            "description": "自动投递最终正文：经审核发送独立最终回复；关闭不影响 send_message，结束备注和内部任务始终不自动投递",
+            "default": True,
         },
     },
     "mind/llm": {
@@ -324,6 +328,7 @@ class MindConfig:
     background_wait_budget: float = 120.0
     log_ai_output: bool = True
     send_interim_text: bool = False
+    send_final_text: bool = True
     # 记忆搜索配置
     vector_search_batch_size: int = 500
     memory_recall_top_k: int = 5

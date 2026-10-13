@@ -169,7 +169,8 @@ class TestRecordSentReply:
     ("group_qq:1", "qq", "1", "group", ""),
     ("user_telegram:1", "telegram", "1", "private", ""),
 ])
-async def test_auto_text_uses_same_pipeline_and_live_history(sqlite, monkeypatch, scope, adapter, target, kind, session):
+@pytest.mark.parametrize("explicit", [False, True])
+async def test_text_uses_same_pipeline_and_live_history(sqlite, monkeypatch, scope, adapter, target, kind, session, explicit):
     import json
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
@@ -177,9 +178,16 @@ async def test_auto_text_uses_same_pipeline_and_live_history(sqlite, monkeypatch
     from agent.channel.channel_types import ChannelStatus
     from agent.channel.delivery import capture_deliveries, delivery_count, delivery_tags
     from agent.mind.tool_activation import bind_scope, reset_scope
+    from agent.mind.tools import reply_delivery
     from agent.storage.data_center import ConversationData
     from agent.storage.storage_router import StorageDomain, StorageRouter
+    from core.config import ConfigManager
     from core.tags import etag_all
+
+    ConfigManager.set("send_interim_text", False)
+    ConfigManager.set("send_final_text", False)
+    review = AsyncMock(side_effect=AssertionError("发送工具不应经过正文审核"))
+    monkeypatch.setattr(reply_delivery, "assess_reply", review)
 
     channel = SimpleNamespace(status=ChannelStatus.RUNNING, send_text=AsyncMock(return_value={"ok": True}),
                               conversation_scope_for_target=lambda tid, ct: None)
@@ -195,13 +203,19 @@ async def test_auto_text_uses_same_pipeline_and_live_history(sqlite, monkeypatch
     token = bind_scope(scope)
     try:
         with capture_deliveries(scope):
-            result = json.loads(await output_tools.send_text_to_channel(adapter, scope,
-                delivery_tags("internal", "pending", scope) + "答案[at_uid:1]", session_id=session, delivery_mode="auto"))
+            text = delivery_tags("internal", "pending", scope) + "答案[at_uid:1]"
+            if explicit:
+                result = json.loads(await output_tools.send_message(adapter, scope, text))
+            else:
+                result = json.loads(await output_tools.send_text_to_channel(adapter, scope, text, session_id=session, delivery_mode="auto"))
             assert delivery_count() == 1
     finally:
         reset_scope(token)
     kwargs = {"channel_type": kind, **({"session_id": session} if session else {})}
     channel.send_text.assert_awaited_once_with(target, "答案[at_uid:1]", **kwargs)
-    assert dict(etag_all(result["delivery"])) == {"delivery_mode": "auto", "delivery_status": "sent", "delivery_scope": scope}
+    assert dict(etag_all(result["delivery"])) == {
+        "delivery_mode": "channel" if explicit else "auto", "delivery_status": "sent", "delivery_scope": scope,
+    }
+    review.assert_not_awaited()
     rows = await sqlite.fetch_live_conversation(scope_type=scope_type, scope_id=scope_id, limit=10)
     assert [(row["role"], row["content"]) for row in rows] == [("user", "问题"), ("assistant", "答案[at_uid:1]")]

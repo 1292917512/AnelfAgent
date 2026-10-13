@@ -10,6 +10,7 @@ from helpers.think_loop_fakes import FakeMind, run_think_loop, text_result, tool
 from agent.channel.delivery import delivery_tags
 from agent.mind.tool_activation import bind_scope, reset_scope
 from agent.mind.tools.reply_delivery import ReplyAssessment
+from core.config import ConfigManager
 
 _SCOPE = "user_qq:1"
 
@@ -67,11 +68,119 @@ async def test_tools_after_end_are_not_executed_and_results_stay_paired(anything
     sender.assert_not_awaited()
 
 
-async def test_tool_narration_is_internal_but_final_is_delivered(anything, sender):
+@pytest.mark.parametrize("interim,final", [(False, True), (True, True), (True, False), (False, False)])
+async def test_interim_and_final_switches_are_independent(anything, sender, interim, final):
+    ConfigManager.set("send_interim_text", interim)
+    ConfigManager.set("send_final_text", final)
     mind, _ = await _run([tool_result("我正在查询", ["recall"]), text_result("查到的结果是 42。")], anything)
     assert mind.executed_tools == ["recall"]
-    assert sender.await_args.args[2] == "查到的结果是 42。"
-    assert sender.await_count == 1
+    assert [call.args[2] for call in sender.await_args_list] == (
+        (["我正在查询"] if interim else []) + (["查到的结果是 42。"] if final else []))
+
+
+async def test_interim_is_sent_before_work_and_review_keeps_previous_evidence(anything, sender, monkeypatch):
+    ConfigManager.set("send_interim_text", True)
+    review = AsyncMock(return_value=ReplyAssessment(True, "通过"))
+    monkeypatch.setattr("agent.mind.tools.reply_delivery.assess_reply", review)
+    tool_started = asyncio.Event()
+
+    class ObservedMind(FakeMind):
+        @property
+        def tool_executor(self):
+            async def execute(tc):
+                assert sender.await_count == 1
+                tool_started.set()
+                return '{"ok": true}'
+            return execute
+
+    mind = ObservedMind(rounds=[tool_result("马上为你检查。", ["recall"]), tool_result("", ["end_reply"])])
+    token = bind_scope(_SCOPE)
+    try:
+        await run_think_loop(mind, anything=anything, base_messages=[{"role": "user", "content": "帮我检查"}])
+    finally:
+        reset_scope(token)
+    assert tool_started.is_set()
+    assert review.await_args.args[2] == [{"role": "user", "content": "帮我检查"}]
+    assert sender.await_args.args[2] == "马上为你检查。"
+
+
+@pytest.mark.parametrize("completion_timing", ["waiting", "during_delivery"])
+async def test_waiting_progress_is_delivered_before_join_and_final_after_completion(anything, sender, sqlite, monkeypatch, completion_timing):
+    from types import SimpleNamespace
+
+    from agent.channel import output_tools
+    from agent.channel.channel_types import ChannelStatus
+    from agent.mind.background_tasks import BackgroundTaskRegistry
+    from agent.storage.data_center import ConversationData
+    from agent.storage.storage_router import StorageDomain, StorageRouter
+
+    ConfigManager.set("send_interim_text", True)
+    mind = FakeMind(rounds=[text_result("任务已启动，正在等结果。"), text_result("任务结果是 42。")], default_text=None)
+    data = ConversationData(StorageRouter(sqlite=sqlite))
+    mind.conversation_data = data
+    anything.scope_type, anything.scope_id = "user", "qq:1"
+    channel = SimpleNamespace(status=ChannelStatus.RUNNING, send_text=AsyncMock(return_value={"ok": True}),
+                              conversation_scope_for_target=lambda tid, ct: None)
+    monkeypatch.setattr(output_tools, "_get_channel", lambda cid: channel if cid == "qq" else None)
+    monkeypatch.setattr(output_tools, "_speak_if_on_call", AsyncMock(return_value=""))
+    monkeypatch.setattr(output_tools, "conversation_data_port", SimpleNamespace(bound=True, get=lambda: data))
+    monkeypatch.setattr("agent.channel.outbound_guard._recent", {})
+    sender.side_effect = output_tools.send_text_to_channel
+    mind.background_tasks = BackgroundTaskRegistry()
+    task_id = mind.background_tasks.register(_SCOPE, "delegation", "计算")
+    notified = asyncio.Event()
+
+    async def notify_completion(scope, description, summary, success):
+        await data.router.append(StorageDomain.CONVERSATION, scope_type="user", scope_id="qq:1",
+                                 role="system", content="[后台任务完成] " + summary)
+        notified.set()
+    mind.background_tasks.set_unclaimed_callback(notify_completion)
+
+    async def complete():
+        if completion_timing == "during_delivery":
+            return
+        while not mind.background_tasks._waiting.get(_SCOPE):
+            await asyncio.sleep(0.005)
+        assert sender.await_args.args[2] == "任务已启动，正在等结果。"
+        mind.background_tasks.complete(task_id, True, "42")
+
+    if completion_timing == "during_delivery":
+        async def send_and_complete(*args, **kwargs):
+            receipt = await output_tools.send_text_to_channel(*args, **kwargs)
+            mind.background_tasks.complete(task_id, True, "42")
+            await notified.wait()
+            return receipt
+        sender.side_effect = send_and_complete
+
+    token = bind_scope(_SCOPE)
+    finisher = asyncio.create_task(complete())
+    try:
+        await asyncio.wait_for(run_think_loop(mind, anything=anything), 3)
+        await asyncio.wait_for(finisher, 1)
+    finally:
+        if not finisher.done():
+            finisher.cancel()
+        await asyncio.gather(finisher, return_exceptions=True)
+        reset_scope(token)
+    assert [call.args[2] for call in sender.await_args_list] == ["任务已启动，正在等结果。", "任务结果是 42。"]
+    assert any("42" in m.get("content", "") for m in mind.sent_messages[1])
+    assert channel.send_text.await_count == 2
+    rows = await sqlite.fetch_live_conversation(scope_type="user", scope_id="qq:1", limit=10)
+    assert [row["content"] for row in rows if row["role"] == "assistant"] == ["任务已启动，正在等结果。", "任务结果是 42。"]
+
+
+@pytest.mark.parametrize("mode", ["reply", "reflect"])
+async def test_end_output_and_internal_boundaries_with_interim_enabled(anything, sender, mode):
+    from agent.mind.tools.think_loop import ThinkMode
+
+    ConfigManager.set("send_interim_text", True)
+    mind = FakeMind(rounds=[tool_result("仅内部备注", ["send_message", "end_reply"])], default_text=None)
+    token = bind_scope(_SCOPE)
+    try:
+        await run_think_loop(mind, anything=anything, mode=ThinkMode(mode))
+    finally:
+        reset_scope(token)
+    sender.assert_not_awaited()
 
 
 async def test_closing_text_after_explicit_reply_is_not_sent_twice(anything, sender):
@@ -94,7 +203,8 @@ async def test_other_target_receipt_does_not_block_current_reply(anything, sende
 
 
 async def test_unknown_send_is_not_retried_after_unrelated_work(anything, sender):
-    await _run([tool_result("", ["send_message"]), tool_result("", ["recall"]), text_result("结果相同。")], anything,
+    ConfigManager.set("send_interim_text", True)
+    await _run([tool_result("", ["send_message"]), tool_result("进度正文", ["recall"]), text_result("结果相同。")], anything,
                receipt={"success": False, "outcome": "unknown", "delivery": delivery_tags("channel", "unknown", _SCOPE)})
     sender.assert_not_awaited()
 
@@ -117,6 +227,22 @@ async def test_rejected_reply_leaves_context_fact_and_never_falls_back(anything,
     assert "delivery_status:skipped" in str(mind._add_system_context.await_args)
 
 
+async def test_rejected_interim_continues_work_and_explicit_send_without_review(anything, sender, monkeypatch):
+    ConfigManager.set("send_interim_text", True)
+    ConfigManager.set("send_final_text", False)
+    review = AsyncMock(return_value=ReplyAssessment(False, "Jev 超时，不自动投递", "local"))
+    monkeypatch.setattr("agent.mind.tools.reply_delivery.assess_reply", review)
+    mind, completion = await _run([
+        tool_result("我正在查询", ["recall"]),
+        tool_result("", ["send_message", "end_reply"]),
+    ], anything)
+    assert mind.executed_tools == ["recall", "send_message", "end_reply"]
+    review.assert_awaited_once()
+    sender.assert_not_awaited()
+    assert "Jev 超时" in str(mind.sent_messages[1])
+    assert "delivery_status:sent" in str(completion["messages"])
+
+
 async def test_failed_auto_send_is_not_reported_as_sent(anything, sender):
     sender.side_effect = None
     sender.return_value = json.dumps({"success": False, "error": "offline"})
@@ -131,7 +257,9 @@ async def test_metadata_and_inline_reasoning_never_escape(anything, sender):
     assert sender.await_args.args[2] == "答复"
 
 
-async def test_interrupt_during_review_cancels_without_sending(anything, sender, monkeypatch):
+@pytest.mark.parametrize("interim", [False, True])
+async def test_interrupt_during_review_cancels_without_sending(anything, sender, monkeypatch, interim):
+    ConfigManager.set("send_interim_text", True)
     started = asyncio.Event()
     cancelled = asyncio.Event()
     async def review(*args):
@@ -141,7 +269,7 @@ async def test_interrupt_during_review_cancels_without_sending(anything, sender,
         finally:
             cancelled.set()
     monkeypatch.setattr("agent.mind.tools.reply_delivery.assess_reply", review)
-    mind = FakeMind(rounds=[text_result("答案。")], default_text=None)
+    mind = FakeMind(rounds=[tool_result("检查中。", ["recall"]) if interim else text_result("答案。")], default_text=None)
     from agent.mind.interrupt import InterruptRegistry
     mind.interrupts = InterruptRegistry()
     token = bind_scope(_SCOPE)
@@ -156,6 +284,7 @@ async def test_interrupt_during_review_cancels_without_sending(anything, sender,
             await asyncio.gather(task, return_exceptions=True)
         reset_scope(token)
     assert cancelled.is_set()
+    assert not mind.executed_tools
     sender.assert_not_awaited()
 
 
