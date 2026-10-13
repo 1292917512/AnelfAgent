@@ -77,7 +77,7 @@ class _RecallGuardHook:
             except Exception:
                 pass
 
-        self._guard._on_revoke = _patched  # type: ignore[method-assign]
+        self._guard._on_revoke = _patched
         self._guard.watch(listener, users=None, backfill=20)
 
     def get_recalled(self, chat: Optional[str], limit: int) -> Any:
@@ -102,7 +102,7 @@ class WeChatBackend:
         self._gui: Any = None
         self._gui_err: str = ""
         self._wx: Any = None
-        self._gui_lock = threading.Lock()
+        self._gui_lock = threading.RLock()
         self._nick_cache: Dict[str, Any] = {}
         self._self_info: Dict[str, Any] = {}
         self._downloads_dir = ""
@@ -226,8 +226,6 @@ class WeChatBackend:
 
     def _get_gui(self) -> Any:
         """取 GUI 驱动；窗口不存在/不可见时抛 BridgeError。"""
-        if self._gui is not None:
-            return self._gui
         with self._gui_lock:
             if self._gui is not None:
                 return self._gui

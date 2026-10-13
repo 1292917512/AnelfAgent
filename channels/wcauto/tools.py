@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agent.channel.channel_types import _err, _ok
 from agent.channel.tool_bridge import channel_tool
@@ -27,6 +27,9 @@ class WcautoToolsMixin:
     # 以下属性由 WcautoChannel 提供（声明仅为类型提示）
     config: Any
     _transport: Any
+
+    if TYPE_CHECKING:
+        async def _download_media(self, chat_id: str, local_id: int) -> str | None: ...
 
     async def _call(self, method: str, params: dict, action: str) -> Any:
         """桥 RPC 统一出口：异常转 None，由调用方组装错误。"""

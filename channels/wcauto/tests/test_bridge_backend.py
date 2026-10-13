@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+import sys
+import threading
+import time
+from types import ModuleType
 
 import pytest
 
@@ -77,3 +81,51 @@ class TestBackendOffline:
         assert backend._display_name("朋友甲") == "朋友甲"
         with pytest.raises(BridgeError, match="为空"):
             backend._display_name("  ")
+
+    def test_first_concurrent_sends_initialize_once_and_serialize(self, monkeypatch) -> None:
+        initialized: list[object] = []
+        operations: list[tuple[str, str]] = []
+        errors: list[Exception] = []
+        done = threading.Event()
+        finished: list[str] = []
+        finished_lock = threading.Lock()
+
+        class FakeGui:
+            def __init__(self) -> None:
+                initialized.append(self)
+                time.sleep(0.01)
+
+            def send_msg(self, text: str, **kwargs: object) -> dict[str, bool]:
+                operations.append(("start", text))
+                time.sleep(0.005)
+                operations.append(("end", text))
+                return {"ok": True}
+
+        gui_module = ModuleType("wechatauto.guia")
+        monkeypatch.setattr(gui_module, "WeChatGUI", FakeGui, raising=False)
+        monkeypatch.setitem(sys.modules, "wechatauto.guia", gui_module)
+        backend = self._backend()
+
+        def send(text: str) -> None:
+            try:
+                assert backend.send_msg("朋友甲", text) == {"ok": True}
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                with finished_lock:
+                    finished.append(text)
+                    if len(finished) == 8:
+                        done.set()
+
+        workers = [threading.Thread(target=send, args=(str(i),), daemon=True) for i in range(8)]
+        for worker in workers:
+            worker.start()
+        assert done.wait(2), "首次发送或并发发送发生死锁"
+        for worker in workers:
+            worker.join(timeout=1)
+        assert not errors
+        assert len(initialized) == 1
+        assert backend._get_gui() is initialized[0]
+        for start, end in zip(operations[::2], operations[1::2], strict=True):
+            assert start == ("start", end[1])
+            assert end[0] == "end"
