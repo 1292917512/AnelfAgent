@@ -78,7 +78,7 @@ def _resolve_target(explicit: str, pfc: Any) -> tuple[str, str]:
     """解析回复目标，两个工具共用的统一入口。
 
     显式 scope 优先（PARAM 错误拒绝非法值，不静默回退）；缺省走上下文
-    推断（_current_scope：ContextVar → 活跃会话回退）——任务/反思上下文
+    推断（仅当前执行的 ContextVar）——任务/反思上下文
     推不出目标时明确报错，而不是碰运气。
 
     Returns:
@@ -192,21 +192,11 @@ def _save_reminders(reminders: List[Dict[str, Any]]) -> None:
 
 
 def _current_scope() -> str:
-    """从当前思维会话的 ContextVar 中获取 scope（工具激活管理器绑定）。
-
-    优先使用 ContextVar（并行安全），回退到 _active_scopes（兼容无绑定场景）。
-    """
+    """只读取当前执行绑定的会话，内部空间不得借用其他正在回复的会话。"""
+    from agent.messages import is_conversation_scope
     from agent.mind.tool_activation import ToolActivationManager
     scope = ToolActivationManager.current_scope()
-    if scope and scope != "_global" and scope.startswith(("user_", "group_")):
-        return scope
-    # 回退：从 Mind 活跃 scope 中提取（兼容测试/无 ContextVar 绑定场景）
-    if not mind_port.bound:
-        return ""
-    for s in getattr(mind_port.get(), "_active_scopes", set()) or set():
-        if s.startswith(("user_", "group_")):
-            return s
-    return ""
+    return scope if is_conversation_scope(scope) else ""
 
 
 async def add_reminder(

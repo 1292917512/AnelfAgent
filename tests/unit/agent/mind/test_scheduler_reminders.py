@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
+from agent.mind.tool_activation import bind_scope, reset_scope
 from agent.mind.tools import scheduler
 from agent.mind.tools.ports import mind_port
 
@@ -60,6 +61,7 @@ async def test_schedule_reminder_persists_and_lists() -> None:
         _reply_adapter_key = "qq"
 
     _wire_mind(FakeMind())
+    token = bind_scope("user_qq:123")
     try:
         result = json.loads(await scheduler.schedule_reminder(
             note="搜索比分并告诉主人", run_at="2099-01-01 08:00",
@@ -76,6 +78,7 @@ async def test_schedule_reminder_persists_and_lists() -> None:
         assert cancelled["ok"] is True
         assert json.loads(await scheduler.list_reminders())["total"] == 0
     finally:
+        reset_scope(token)
         mind_port.unbind()
 
 
@@ -172,4 +175,22 @@ async def test_schedule_reminder_no_target_reports_clearly() -> None:
         assert result["cause"] == "state"
         assert "scope" in result["hint"]
     finally:
+        mind_port.unbind()
+
+
+@pytest.mark.parametrize("scope", ["_global", "reflect:private"])
+async def test_internal_reminder_never_borrows_another_active_conversation(scope) -> None:
+    from types import SimpleNamespace
+
+    _wire_mind(SimpleNamespace(pfc=SimpleNamespace(), _active_scopes={"user_qq:123", "user_webui:1#a"}))
+    token = bind_scope(scope)
+    try:
+        for raw in (await scheduler.schedule_reply(),
+                    await scheduler.schedule_reminder(note="内部计划", run_at="2099-01-01 08:00")):
+            result = json.loads(raw)
+            assert result["cause"] == "state"
+            assert "scope" in result["hint"]
+        assert scheduler._load_reminders() == []
+    finally:
+        reset_scope(token)
         mind_port.unbind()
