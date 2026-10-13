@@ -212,9 +212,12 @@ export function ModelConfigCard({ kind }: { kind: ModelKind }) {
                 ))}
               </Select>
             </Field>
-            <Field label={t("cognee.maxCompletionTokens")}>
+            <Field label={t("cognee.maxCompletionTokens")} desc={t("cognee.maxCompletionTokensHint")}>
               <Input
                 type="number"
+                min={0}
+                step={1}
+                placeholder={t("cognee.maxCompletionTokensPlaceholder")}
                 value={(form as CogneeChatModelConfig).max_completion_tokens || ""}
                 onChange={(e) => update({ max_completion_tokens: parseInt(e.target.value, 10) || 0 })}
               />
