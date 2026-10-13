@@ -20,7 +20,7 @@ export const EMPTY_TASK: TaskConfig = {
   null_keywords: [],
   tool_tags: [],
   prompt: "",
-  allow_output_tools: false,
+  allow_output_tools: true,
   save_result_to_memory: true,
   reasoning_effort: null,
 };
@@ -133,7 +133,7 @@ export function TaskFormFields({ task, set, isCreate }: {
         </Field>
         <div className="flex items-center justify-between md:col-span-2">
           <label className="text-xs text-muted font-medium">{t("tasks.allowOutputTools")}</label>
-          <Switch label={t("tasks.allowOutputTools")} checked={task.allow_output_tools ?? false} onChange={(v) => set("allow_output_tools", v)} />
+          <Switch label={t("tasks.allowOutputTools")} checked={task.allow_output_tools ?? true} onChange={(v) => set("allow_output_tools", v)} />
         </div>
         <div className="flex items-center justify-between md:col-span-2">
           <label className="text-xs text-muted font-medium">{t("tasks.saveResultToMemory")}</label>
@@ -167,7 +167,7 @@ export function TaskDetail({ task }: { task: TaskConfig }) {
         <span><span className="font-medium">{t("tasks.detailMemoryType")}</span>{task.memory_type}</span>
         <span><span className="font-medium">{t("tasks.detailImportance")}</span>{task.importance}</span>
         <span><span className="font-medium">{t("tasks.detailSource")}</span>{task.source || task.name}</span>
-        <span><span className="font-medium">{t("tasks.detailAllowOutputTools")}</span>{task.allow_output_tools ? tc("on") : tc("off")}</span>
+        <span><span className="font-medium">{t("tasks.detailAllowOutputTools")}</span>{(task.allow_output_tools ?? true) ? tc("on") : tc("off")}</span>
         <span><span className="font-medium">{t("tasks.detailSaveResultToMemory")}</span>{task.save_result_to_memory === false ? tc("off") : tc("on")}</span>
         <span><span className="font-medium">{t("tasks.detailReasoningEffort")}</span>{task.reasoning_effort || t("tasks.defaultReasoningEffort")}</span>
         {(task.tags ?? []).length > 0 && (

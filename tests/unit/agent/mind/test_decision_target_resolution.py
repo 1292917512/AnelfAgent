@@ -270,7 +270,7 @@ async def test_tool_action_requires_explicit_output_tool(
     await de.execute_tool_action(mind, _decision(target=target, content="核对文件"))
 
     call = mind.reflect.await_args
-    assert call.kwargs["allow_output_tools"] is can_notify
+    assert call.kwargs["allow_output_tools"] is (not target or can_notify)
     assert call.kwargs["adapter_key"] == ("qq" if can_notify else "")
     prompt = call.args[0][-1]["content"]
     assert "不会自动发送" in prompt

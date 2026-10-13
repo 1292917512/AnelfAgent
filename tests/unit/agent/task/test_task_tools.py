@@ -43,6 +43,7 @@ async def test_create_task_writes_definition(tmp_path) -> None:
     assert saved["display_name"] == "每日简报"
     assert saved["tags"] == ["type:reflection", "topic:日报"]
     assert saved["tool_tags"] == ["heartbeat"]
+    assert saved["allow_output_tools"] is True
     # 创建时记录创建/更新时间戳
     assert saved["created_at"] > 0
     assert saved["updated_at"] == saved["created_at"]

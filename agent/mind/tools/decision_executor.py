@@ -392,7 +392,7 @@ async def execute_tool_action(mind: Mind, decision: Decision) -> None:
     )
     try:
         await mind.reflect(messages, adapter_key=target.adapter_key if can_notify and target else "",
-                           allow_output_tools=can_notify)
+                           allow_output_tools=not decision.target or can_notify)
         _hb_append(f"工具操作: {content[:60]}")
         log(f"AI 自主工具操作完成: {content[:60]}", tag="思维")
     except Exception as exc:

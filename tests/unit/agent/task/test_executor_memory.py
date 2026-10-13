@@ -5,9 +5,31 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
+
 from agent.memory.memory_types import MemoryType
 from agent.task.executor import TaskExecutor
 from agent.task.model import TaskDefinition, TaskResult
+
+
+@pytest.mark.parametrize("permission", [None, True, False])
+async def test_task_output_permission_reaches_reflect_without_auto_routing(permission):
+    from services.task import _normalize_task
+    from web.routers.config import TaskCreate
+
+    values = {"name": "self_check", "prompt": "检查当前情况"}
+    if permission is not None:
+        values["allow_output_tools"] = permission
+    request = TaskCreate(**values)
+    task = TaskDefinition.from_dict(_normalize_task(request.model_dump()))
+    mind = _mind_with_store(_store())
+    await TaskExecutor(mind)._execute_llm(task, None, 0.5)
+    call = mind.reflect.await_args
+    assert call.kwargs["allow_output_tools"] is (permission is not False)
+    prompt = call.args[0][-1]["content"]
+    assert ("普通正文不会投递" in prompt) is (permission is not False)
+    if permission is False:
+        assert "严禁向任何频道/用户发送消息" in prompt
 
 
 def _mind_with_store(store: SimpleNamespace, reflect_return: str = "产出") -> SimpleNamespace:

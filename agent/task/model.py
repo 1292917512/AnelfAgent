@@ -163,7 +163,7 @@ class TaskDefinition(BaseModel):
     null_keywords: List[str] = Field(default_factory=list)
     tool_tags: List[str] = Field(default_factory=list)
     prompt: str = ""
-    allow_output_tools: bool = False
+    allow_output_tools: bool = True
     """是否允许该任务在 reflect 阶段使用 send_* 外发工具。"""
     save_result_to_memory: bool = True
     """任务执行产出是否写入记忆。"""
@@ -219,7 +219,7 @@ class TaskDefinition(BaseModel):
             null_keywords=list(data.get("null_keywords", [])),
             tool_tags=_normalize_tool_tags(data.get("tool_tags", [])),
             prompt=data.get("prompt", ""),
-            allow_output_tools=_to_bool(data.get("allow_output_tools", False)),
+            allow_output_tools=_to_bool(data.get("allow_output_tools", True)),
             save_result_to_memory=_to_bool(data.get("save_result_to_memory", True)),
             model_id=data.get("model_id") or None,
             reasoning_effort=_normalize_reasoning_effort(data.get("reasoning_effort")),

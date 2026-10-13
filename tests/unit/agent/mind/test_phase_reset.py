@@ -191,6 +191,20 @@ class TestReflectPhaseReset:
         assert mind._reflect_depth == 0
         assert mind.phase is MindPhase.IDLE
 
+    @pytest.mark.parametrize("allow", [None, True, False])
+    async def test_reflect_output_permission_is_separate_from_text_routing(self, allow) -> None:
+        mind = _bare_mind()
+        self._wire_reflect_fakes(mind)
+        del mind._build_reflect_blocklist
+        mind._think_loop = AsyncMock()
+        kwargs = {} if allow is None else {"allow_output_tools": allow}
+        await mind.reflect([{"role": "user", "content": "检查后按需通知"}], **kwargs)
+        call = mind._think_loop.await_args.kwargs
+        assert ("send_message" in call["blocked_tools"]) is (allow is False)
+        assert "list_channels" not in call["blocked_tools"]
+        assert call["anything"] is None
+        assert call["mode"].value == "reflect"
+
     @pytest.mark.parametrize("needs_skill_tool", [False, True])
     async def test_inherited_directory_keeps_order_and_required_tools(self, needs_skill_tool: bool, monkeypatch) -> None:
         mind = _bare_mind()

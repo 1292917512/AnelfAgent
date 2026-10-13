@@ -161,7 +161,7 @@
     "detailPrompt": "Prompt: ",
     "modelId": "Model",
     "defaultModel": "Default Model",
-    "allowOutputTools": "Allow outbound send_* tools",
+    "allowOutputTools": "Allow explicit sends (plain text stays internal)",
     "saveResultToMemory": "Write result to memory",
     "reasoningEffort": "Reasoning effort",
     "defaultReasoningEffort": "Follow model",

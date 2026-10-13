@@ -324,15 +324,6 @@ class Mind:
             if count:
                 log(f"判断工具已注册 ({count} 个)", "DEBUG", tag="思维")
 
-    def _resolve_adapter_key(self) -> str:
-        """获取当前回复的 adapter_key（从待处理任务推断的回退路径）。"""
-        tasks = self.pfc.peek_all_tasks()
-        key = self.pfc.get_adapter_key(tasks[0][0]) if tasks else ""
-        if key:
-            from agent.channel.context import bind_current_channel
-            bind_current_channel(key)
-        return key
-
     @property
     def tool_executor(self) -> Optional[Callable[[ToolCall], Awaitable[str]]]:
         return EntityRegistry.execute_tool_call
@@ -1011,12 +1002,12 @@ class Mind:
 
         await asyncio.wait_for(_consume(), timeout=self._get_mind_config().llm_timeout * 20)
 
-    # reflect（子代理/心跳）不得操作频道调度类工具。
+    # reflect 不直接干预频道调度；频道发现和显式发送由任务权限控制。
     # present_plan/update_goal 已放行：tracker 对非用户 scope（reflect 等）
     # 只持久化 goal、不发射前端事件（事件泄漏在 tracker 层根治），
     # 心跳任务因此可以正常创建/推进自己的计划。
     _REFLECT_ALWAYS_BLOCKED = frozenset({
-        "list_channels", "schedule_reply",
+        "schedule_reply",
     })
     # 输出工具集合的单一权威在 round_helpers._OUTPUT_TOOL_NAMES（回合结果判定
     # 同源）——双份定义会在增删输出工具时漂移
@@ -1038,13 +1029,13 @@ class Mind:
             max_iterations: int = 0,
             options: Optional[dict] = None,
             tool_tags: Optional[List[str]] = None,
-            allow_output_tools: bool = False,
+            allow_output_tools: bool = True,
             extra_blocked_tools: Optional[Set[str]] = None,
             completion: Optional[Dict] = None,
             require_output: bool = False,
             inherited_tools: Optional[List[Dict]] = None,
     ) -> str:
-        """内部任务循环：与对话共享统一思维流程，默认禁止对外发送消息。
+        """内部任务循环：正文仅内部可见，显式发送遵循任务的输出权限。
 
         completion 非 None 时，循环结束把结束原因写入 completion["reason"]：
         completed（正常收束）/ budget_exhausted（轮次预算用尽，产出可能只是
@@ -1054,7 +1045,7 @@ class Mind:
         选择器优先按 tag 匹配，同时兼容按 group 名匹配（如 mcp:web-fetch）。
         工具目录为精简常态集（always + 选择器），更多分组由模型经
         list_entity_methods / activate_tool_group 按需唤醒（自服务扩展）。
-        默认过滤 output 类工具（send_message/send_file 等），可按任务配置放开。
+        默认允许 output 类工具（send_message/send_file 等）；任务可显式禁用。
         extra_blocked_tools 可追加屏蔽特定工具（如子代理 leaf 角色屏蔽 delegate_task）。
         require_output 要求结束前提交总结：空结束只在剩余预算内补一个禁止操作的总结轮。
         inherited_tools 保留触发轮的工具顺序，缺少的选择器工具追加到尾部；

@@ -212,7 +212,11 @@ class TestAdaptMessagesCacheControl:
 # ==================================================================
 
 class TestSessionNotification:
-    async def test_notification_block_with_unread(self) -> None:
+    async def test_notification_is_in_dynamic_window_not_execution_tail(self, sqlite) -> None:
+        from agent.mind.cross_channel import build_cross_channel_narrative
+        from agent.storage.data_center import ConversationData
+        from agent.storage.storage_router import StorageRouter
+
         pfc = _pfc()
         await pfc.add_task(MessageUser(
             uid="web_user", session_id="other", text_content="在吗",
@@ -223,15 +227,20 @@ class TestSessionNotification:
             [], time.time(), 0, anything=current, adapter_key="webui",
         )
         content = ctx["content"]
-        assert "[会话通知]" in content
-        assert "1 条未读" in content
-        assert "在吗" in content
-        assert "switch_session" in content
+        assert "[会话通知]" not in content
+        assert "在吗" not in content
+        mind = SimpleNamespace(pfc=pfc, conversation_data=ConversationData(StorageRouter(sqlite=sqlite)))
+        dynamic = await build_cross_channel_narrative(mind, "user_webui:web_user#cur")
+        assert all(m["_layer"] == "provider" for m in dynamic)
+        assert "[会话通知]" in str(dynamic)
+        assert "在吗" in str(dynamic)
+        assert "switch_session" in str(dynamic)
+        assert "user_webui:web_user#other" in pfc.pending_user.seen
 
     def test_no_pending_hint(self) -> None:
         pfc = _pfc()
         ctx = pfc.build_execution_context([], time.time(), 0, anything=None)
-        assert "[当前无外部消息]" in ctx["content"]
+        assert "内部思考（无频道、无默认收件人）" in ctx["content"]
 
 
 # ==================================================================

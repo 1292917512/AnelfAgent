@@ -161,7 +161,7 @@
     "detailPrompt": "提示词：",
     "modelId": "指定模型",
     "defaultModel": "默认模型",
-    "allowOutputTools": "允许任务外发（send_*）",
+    "allowOutputTools": "允许显式发送（普通正文仅内部可见）",
     "saveResultToMemory": "结果写入记忆",
     "reasoningEffort": "思考等级",
     "defaultReasoningEffort": "跟随模型",

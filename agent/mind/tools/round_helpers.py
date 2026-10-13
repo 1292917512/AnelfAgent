@@ -61,7 +61,7 @@ class ThinkMode(str, Enum):
     """对话模式：处理用户消息，通过工具发送回复。"""
 
     REFLECT = "reflect"
-    """反思模式：内省思考，收集文本输出，不发送消息。"""
+    """反思模式：正文作为内部产出，显式发送遵守任务权限。"""
 
 
 # ==================================================================
@@ -251,9 +251,9 @@ async def _prepare_think_context(
     from agent.mind.tool_activation import ToolActivationManager
 
     mode_label = "反思" if mode == ThinkMode.REFLECT else "对话"
-    # adapter_key 优先使用调用方传入（按 scope 隔离），回退到共享状态（兼容旧路径）
-    if not adapter_key and mode == ThinkMode.REPLY:
-        adapter_key = mind._resolve_adapter_key()
+    from agent.messages import parse_entity_scope
+    current_scope = ToolActivationManager.current_scope()
+    adapter_key = (parse_entity_scope(current_scope)[1] or adapter_key) if mode == ThinkMode.REPLY else ""
     if base_messages is None:
         if mode == ThinkMode.REPLY and anything:
             base_messages = await mind.get_recollection(anything=anything)
@@ -271,8 +271,6 @@ async def _prepare_think_context(
     guardrail = GuardrailController()
     # 工具结果加工管线：脱敏 → 扫描 → 守卫 → 截断（整轮预算在会话内累计）
     pipeline = ToolResultPipeline(mind, guardrail)
-    # 会话期间 scope 不变，循环外解析一次
-    current_scope = ToolActivationManager.current_scope()
     # 实体推送并入水位：base 快照之前到达的推送已随短期记忆进 base，
     # 仅快照后到达的推送轮内注入（防重复）。优先使用调用方在快照前读取的水位。
     push_watermark = 0
@@ -294,7 +292,7 @@ async def _prepare_think_context(
     )
 
     # 主回复工具日志：仅 REPLY（与 reply_checkpoints 的 phase=reply 同域）；
-    # 子代理续跑有 delegation transcript，反思无外发副作用
+    # 子代理续跑有 delegation transcript，反思由调用方持有执行记录
     journal = None
     if mode == ThinkMode.REPLY and current_scope:
         from agent.mind.tools.reply_journal import build_reply_journal

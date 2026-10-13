@@ -7,7 +7,7 @@
 - 工具系统提示构建（工具目录 + 使用规则 + 媒体处理规则 + 频道能力）
 - stable 层构建与指纹（Prompt 分层缓存的稳定前缀）
 - 完整 LLM 上下文组装（stable/context/volatile/对话历史分层）
-- 每轮执行上下文（轮次/工具态势/频道/会话通知）
+- 每轮执行上下文（轮次/工具态势/当前空间；跨会话通知独立放在动态区）
 """
 
 from __future__ import annotations
@@ -125,22 +125,6 @@ def _safe_entity_scope(anything: object) -> str:
     return build_entity_scope("user", adapter, str(uid))
 
 
-def _format_scope_label(scope: str, adapter_key: str = "") -> str:
-    """格式化 scope 的通知展示标签：频道 + 私聊/群聊 + 基 id + 子会话。"""
-    from agent.messages import parse_entity_scope
-
-    scope_type, scope_adapter, base_id, session_id = parse_entity_scope(scope)
-    if not scope_type:
-        return scope
-    adapter_key = adapter_key or scope_adapter
-    kind = "群聊" if scope_type == "group" else "私聊"
-    parts = [adapter_key, kind, base_id] if adapter_key else [kind, base_id]
-    label = " ".join(parts)
-    if session_id:
-        label += f"#{session_id}"
-    return label
-
-
 # ==================================================================
 # 提示词模板常量
 # ==================================================================
@@ -158,20 +142,8 @@ _URGENT_ROUND_WARNING = (
     "避免在此阶段开启复杂工具链。"
 )
 
-_NO_PENDING_HINT = "[当前无外部消息] 自主思考阶段：可执行工具操作，或调用 end_reply 结束"
-
-_PENDING_HINT = "→ 处理消息或执行操作，完成后调用 end_reply。空消息表示自主思考阶段（非对方发送），不要重复发送消息"
-
 # exec_context 步骤清单渲染上限：防重复操作只需近期步骤，超出部分以省略行带过
 _MAX_RENDERED_STEPS = 12
-
-# 会话通知：其他会话的未读消息以"弹窗"形式提示（固定模板，动态内容在末尾 exec_context）
-_SESSION_NOTIFY_HINT = (
-    "→ 跨会话收发内容在动态上下文中实时更新；"
-    "回复使用 send_message 指定正确的频道与会话。"
-    "需要为其他会话启动独立回复时调用 switch_session(scope)，list_sessions 可查看会话状态。"
-)
-
 
 from agent.mind.context_pipeline import (
     VOL_HISTORY,
@@ -807,7 +779,7 @@ class ContextAssembly:
     ) -> str:
         """构建当前对话场景信息（私聊/群聊、群组ID、频道、发送者等）。"""
         if not anything:
-            return ""
+            return "[当前空间] 内部思考（无频道、无默认收件人）；感知到外部消息不会自动切换空间。"
 
         parts: list[str] = []
 
@@ -976,22 +948,5 @@ class ContextAssembly:
             else:
                 lines.append("[执行记录（包含成功、失败或中断；以工具回执为准，重试前核对状态）]")
                 lines.extend(execution_steps)
-
-        pending = wm.peek_all_tasks()
-        if pending:
-            current = _safe_entity_scope(anything)
-            lines.append(f"[会话通知] {len(pending)} 个会话有新消息待处理：")
-            for scope, _uid, _gid, preview in pending[:5]:
-                unread = wm.get_unread_count(scope)
-                label = _format_scope_label(scope, wm.get_adapter_key(scope))
-                marker = "（当前会话）" if scope == current else ""
-                unread_text = f"{unread} 条未读: " if unread > 0 else ""
-                lines.append(f"  • {label}{marker} — {unread_text}{preview[:80]}")
-            if len(pending) > 5:
-                lines.append(f"  • ...还有 {len(pending) - 5} 个会话")
-            lines.append(_SESSION_NOTIFY_HINT)
-            lines.append(_PENDING_HINT)
-        else:
-            lines.append(_NO_PENDING_HINT)
 
         return {"role": "system", "content": "\n".join(lines), "_layer": "exec_context"}

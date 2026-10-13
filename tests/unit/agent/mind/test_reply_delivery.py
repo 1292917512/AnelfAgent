@@ -78,30 +78,47 @@ async def test_interim_and_final_switches_are_independent(anything, sender, inte
         (["我正在查询"] if interim else []) + (["查到的结果是 42。"] if final else []))
 
 
-async def test_interim_is_sent_before_work_and_review_keeps_previous_evidence(anything, sender, monkeypatch):
+async def test_review_overlaps_tools_and_receipt_follows_atomic_batch(anything, sender, monkeypatch):
     ConfigManager.set("send_interim_text", True)
-    review = AsyncMock(return_value=ReplyAssessment(True, "通过"))
-    monkeypatch.setattr("agent.mind.tools.reply_delivery.assess_reply", review)
     tool_started = asyncio.Event()
+    delivered = asyncio.Event()
+
+    async def assess(*args):
+        await tool_started.wait()
+        return ReplyAssessment(True, "通过")
+
+    async def send(channel_id, target_id, content, **kwargs):
+        delivered.set()
+        return json.dumps({"success": True, "delivery": delivery_tags("auto", "sent", target_id)})
+
+    review = AsyncMock(side_effect=assess)
+    monkeypatch.setattr("agent.mind.tools.reply_delivery.assess_reply", review)
+    sender.side_effect = send
 
     class ObservedMind(FakeMind):
         @property
         def tool_executor(self):
             async def execute(tc):
-                assert sender.await_count == 1
                 tool_started.set()
+                await delivered.wait()
                 return '{"ok": true}'
             return execute
 
     mind = ObservedMind(rounds=[tool_result("马上为你检查。", ["recall"]), tool_result("", ["end_reply"])])
+    completion = {}
     token = bind_scope(_SCOPE)
     try:
-        await run_think_loop(mind, anything=anything, base_messages=[{"role": "user", "content": "帮我检查"}])
+        await asyncio.wait_for(run_think_loop(mind, anything=anything, completion=completion,
+                                             base_messages=[{"role": "user", "content": "帮我检查"}]), 3)
     finally:
         reset_scope(token)
     assert tool_started.is_set()
     assert review.await_args.args[2] == [{"role": "user", "content": "帮我检查"}]
     assert sender.await_args.args[2] == "马上为你检查。"
+    messages = completion["messages"]
+    call_index = next(i for i, m in enumerate(messages) if m.get("tool_calls"))
+    assert messages[call_index + 1]["role"] == "tool"
+    assert "delivery_status:sent" in messages[call_index + 2]["content"]
 
 
 @pytest.mark.parametrize("completion_timing", ["waiting", "during_delivery"])
@@ -284,7 +301,7 @@ async def test_interrupt_during_review_cancels_without_sending(anything, sender,
             await asyncio.gather(task, return_exceptions=True)
         reset_scope(token)
     assert cancelled.is_set()
-    assert not mind.executed_tools
+    assert set(mind.executed_tools) <= ({"recall"} if interim else set())
     sender.assert_not_awaited()
 
 

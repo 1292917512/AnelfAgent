@@ -2,7 +2,7 @@
 
 模型看到：按中间/最终正文开关反馈投递状态与目标；显式 send_message 不经过正文审核。
 Token：配置 Jev 时只评估有界的候选正文与当前会话证据，无普通模型回退。
-缓存：审核独立调用，回执只追加动态尾部；已发送正文由统一出口写入实时会话。
+缓存：审核与工具并行，回执在批次结束后追加动态尾部；仅已发送正文写入实时会话。
 """
 from __future__ import annotations
 
@@ -44,6 +44,15 @@ class ReplyAssessment:
     reason: str
     model: str = ""
     duration_ms: int = 0
+
+
+@dataclass(frozen=True)
+class ReplyDelivery:
+    """绑定生成时会话的投递事实，不包含未发送正文。"""
+
+    scope: str
+    status: DeliveryStatus
+    reason: str
 
 
 async def assess_reply(content: str, scope: str, messages: list[dict[str, Any]]) -> ReplyAssessment:
@@ -112,8 +121,9 @@ async def assess_reply(content: str, scope: str, messages: list[dict[str, Any]])
 async def deliver_reply(
     ctx: _ThinkLoopCtx, state: _ThinkRoundState, content: str, *,
     interim: bool, messages: list[dict[str, Any]],
-) -> None:
-    """按正文类型开关审核并投递，调用方提供候选正文之前的会话证据。"""
+) -> ReplyDelivery | None:
+    """按正文类型开关审核并发送；调用方在工具批次结束后归并回执。"""
+    scope = ctx.current_scope
     content = strip_message_meta_tags(content).strip()
     status: DeliveryStatus = "skipped"
     if not is_conversation_scope(ctx.current_scope):
@@ -131,40 +141,47 @@ async def deliver_reply(
     elif not content:
         assessment = ReplyAssessment(False, "正文清洗后为空")
     else:
-        assessment = await assess_reply(content, ctx.current_scope, messages)
+        assessment = await assess_reply(content, scope, messages)
     if ctx.abort_event is not None and ctx.abort_event.is_set():
-        return
+        return None
     reason = assessment.reason
     if assessment.approved:
-        _, adapter, _, session = parse_entity_scope(ctx.current_scope)
+        _, adapter, _, session = parse_entity_scope(scope)
         try:
-            result = await send_text_to_channel(adapter, ctx.current_scope, content, session_id=session, delivery_mode="auto")
+            result = await send_text_to_channel(adapter, scope, content, session_id=session, delivery_mode="auto")
         except asyncio.CancelledError:
             state.partial_tool_abort = True
-            state.auto_reply_blocked = True
-            await _publish_delivery(ctx, state, "unknown", "发送中被中断，可能已经送达；再次回复前先核对真实会话")
+            await publish_delivery(ctx, state, ReplyDelivery(
+                scope, "unknown", "发送中被中断，可能已经送达；再次回复前先核对真实会话",
+            ))
             raise
         payload = parse_tool_result_json(result)
         tags = dict(etag_all(str(payload.get("delivery", "")))) if isinstance(payload, dict) else {}
         if (isinstance(payload, dict) and payload.get("success") is True and not extract_error_text(payload)
-                and tags.get("delivery_status") == "sent" and tags.get("delivery_scope") == ctx.current_scope):
+                and tags.get("delivery_status") == "sent" and tags.get("delivery_scope") == scope):
             status, reason = "sent", reason + "；频道已确认发送"
-            state.output_sent = True
         else:
             status = "unknown" if isinstance(payload, dict) and payload.get("outcome") == "unknown" else "failed"
             reason = "频道未确认送达：" + (extract_error_text(payload) or "发送回执无效")
-            state.completion_reason = "failed"
-        state.auto_reply_blocked = True
     if assessment.model:
         reason += f"（判断模型 {assessment.model}，{assessment.duration_ms}ms）"
-    await _publish_delivery(ctx, state, status, reason)
+    return ReplyDelivery(scope, status, reason)
 
 
-async def _publish_delivery(ctx: _ThinkLoopCtx, state: _ThinkRoundState, status: DeliveryStatus, reason: str) -> None:
+async def publish_delivery(ctx: _ThinkLoopCtx, state: _ThinkRoundState, result: ReplyDelivery | None) -> None:
     """把真实投递状态写入执行链；未送达或未知的事实留待下一轮核对。"""
+    if result is None:
+        return
+    status, reason = result.status, result.reason
+    if status != "skipped":
+        state.auto_reply_blocked = True
+    if status == "sent":
+        state.output_sent = True
+    elif status in {"failed", "unknown"}:
+        state.completion_reason = "failed"
     if status != "skipped" or state.reply_delivery_status != "unknown":
         state.reply_delivery_status = status
-    feedback = delivery_tags("auto", status, ctx.current_scope) + reason
+    feedback = delivery_tags("auto", status, result.scope) + reason
     message = {"role": "system", "content": feedback, "_source": {"origin": "reply_delivery"}}
     ctx.tool_chain.append(message)
     ctx.execution_steps.append("→ " + feedback)
@@ -174,7 +191,7 @@ async def _publish_delivery(ctx: _ThinkLoopCtx, state: _ThinkRoundState, status:
         except Exception as exc:
             log(f"投递反馈记录失败: {exc}", "WARNING", tag="通道")
     from agent.mind.context_observation import emit_context_update
-    await emit_context_update([message], origin="delivery", scope=ctx.current_scope, iteration=state.iteration + 1)
+    await emit_context_update([message], origin="delivery", scope=result.scope, iteration=state.iteration + 1)
     log(feedback, "DEBUG", tag="通道")
 
 

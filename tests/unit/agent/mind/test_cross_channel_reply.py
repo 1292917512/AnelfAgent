@@ -6,12 +6,37 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from agent.messages.presets import MessageGroupUser, MessageUser
 from agent.mind.prefrontal_cortex import PrefrontalCortex
 from agent.mind.tools.decision_executor import resolve_reply_target
+
+
+async def test_nested_internal_space_clears_and_restores_channel_without_cross_task_leaks():
+    from agent.channel.context import bind_current_channel, get_current_channel, reset_current_channel
+    from agent.mind.think_session import think_session
+    from agent.mind.tool_activation import ToolActivationManager
+
+    mind = SimpleNamespace(pfc=SimpleNamespace(clear_dynamic_tools=lambda **kwargs: None))
+    parent = bind_current_channel(None)
+    try:
+        async def run(scope, channel):
+            with think_session(mind, scope):
+                assert get_current_channel() == channel
+                with think_session(mind, "reflect:internal", with_token=False):
+                    await asyncio.sleep(0)
+                    assert get_current_channel() is None
+                    assert ToolActivationManager.current_scope() == "reflect:internal"
+                assert get_current_channel() == channel
+                assert ToolActivationManager.current_scope() == scope
+            assert get_current_channel() is None
+
+        await asyncio.gather(run("user_qq:1", "qq"), run("user_webui:1#a", "webui"))
+    finally:
+        reset_current_channel(parent)
 
 
 def _pfc() -> PrefrontalCortex:

@@ -13,7 +13,7 @@ import json
 import time
 from typing import Any, Dict, List
 
-from agent.messages import parse_entity_scope
+from agent.messages import is_conversation_scope, parse_entity_scope
 from core.entity import EntityRegistry
 from core.log import log
 from core.tool_errors import ErrorCause, tool_error
@@ -28,9 +28,7 @@ def _current_scope() -> str:
     """当前思维会话的 scope（ContextVar，并行安全）。"""
     from agent.mind.tool_activation import ToolActivationManager
     scope = ToolActivationManager.current_scope()
-    if scope and scope != "_global" and scope.startswith(("user_", "group_")):
-        return scope
-    return ""
+    return scope if is_conversation_scope(scope) else ""
 
 
 def _system_not_ready() -> str:
@@ -125,8 +123,10 @@ async def list_sessions() -> str:
         "current_scope": current,
         "session_count": len(sessions),
         "sessions": sessions,
-        "hint": "对有未读消息的会话可调用 switch_session(scope) 切换处理；"
-                "不切换时你的回复默认发往当前会话。",
+        "space": "conversation" if current else "internal",
+        "hint": "可调用 switch_session(scope) 打开目标会话的独立回复，或用 send_message 显式指定收件人。"
+                + ("当前正文的默认目标仍是 current_scope，是否送达以回执为准。" if current
+                   else "当前处于内部空间，没有默认频道或收件人，普通正文不会投递。"),
     }, ensure_ascii=False)
 
 

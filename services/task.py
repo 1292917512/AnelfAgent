@@ -27,7 +27,7 @@ _TASK_DEFAULTS: Dict[str, Any] = {
     "display_name": "", "description": "", "scope": "global",
     "enabled": True, "memory_type": "semantic", "importance": 0.5,
     "tags": [], "source": "", "null_keywords": [], "tool_tags": [], "prompt": "",
-    "allow_output_tools": False,
+    "allow_output_tools": True,
     "save_result_to_memory": True,
     "expires_at": "", "created_at": 0.0, "updated_at": 0.0,
 }
@@ -92,7 +92,7 @@ def _normalize_task(data: Dict[str, Any]) -> Dict[str, Any]:
     for k, v in _TASK_DEFAULTS.items():
         if k not in data:
             data[k] = v
-    data["allow_output_tools"] = _to_bool(data.get("allow_output_tools"), default=False)
+    data["allow_output_tools"] = _to_bool(data.get("allow_output_tools"), default=True)
     data["save_result_to_memory"] = _to_bool(data.get("save_result_to_memory"), default=True)
     return _normalize_optional_task_overrides(data)
 

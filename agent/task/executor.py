@@ -172,8 +172,8 @@ class TaskExecutor:
     def _build_task_suffix(allow_output_tools: bool, handoff: bool = False) -> str:
         """按任务配置构建系统规则后缀。"""
         rule_1 = (
-            "1. 这是内部任务，仅可在任务明确要求时使用 send_message/send_file/send_photo/send_voice 外发结果，"
-            "禁止发送无关内容，严禁泄露用户隐私信息"
+            "1. 这是内部任务，普通正文不会投递。需要对外通知时可使用 send_message/send_file/send_photo/send_voice，"
+            "必须先核实目标频道与会话并核对回执；禁止发送无关内容或泄露用户隐私信息"
             if allow_output_tools
             else "1. 这是内部任务，严禁向任何频道/用户发送消息，严禁泄露任何用户隐私信息"
         )

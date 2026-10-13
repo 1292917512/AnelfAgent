@@ -212,10 +212,9 @@ async def reply_loop(
 ) -> None:
     """多轮对话循环入口：处理图片，进入统一思维循环。"""
     mc = mind._get_mind_config()
-    # adapter_key 优先使用调用方传入（按 scope 隔离），回退到共享状态（兼容旧路径）
-    if not adapter_key:
-        adapter_key = mind._resolve_adapter_key()
     scope = mind._resolve_entity_scope(anything) if anything else ""
+    from agent.messages import parse_entity_scope
+    adapter_key = parse_entity_scope(scope)[1] or adapter_key
     from agent.channel.reply_policy import get_reply_policy
     from agent.memory.recall_policy import recall_turn
     from core.tool_context import tool_request
@@ -305,11 +304,11 @@ _PROMPT_AFTER_NON_OUTPUT_TOOLS = (
     "已发送或无需回复时直接调用 end_reply，不输出收尾话术。"
 )
 
-# 反思模式的输出纪律（无 send_message，产出文本即反思结果，但动作必须走工具）
+# 反思正文是内部产出，显式发送遵守本次执行的工具权限。
 _PROMPT_REFLECT_OUTPUT_DISCIPLINE = (
     "[输出纪律] 你必须严格遵守：\n"
     "1. 需要执行动作（检索/查询/分析）时立即调用对应工具，禁止只用文字描述动作\n"
-    "2. 文字输出只是思考草稿，不会执行任何操作\n"
+    "2. 没有默认投递会话，普通正文只留在内部执行上下文，不会自动发送或记为用户已收到\n"
     "3. 完成分析后调用 end_reply 结束本轮反思"
 )
 
@@ -373,7 +372,7 @@ async def think_loop(
 
     通过 mode 参数区分行为：
     - REPLY：处理用户消息，通过工具发送回复，写入对话历史
-    - REFLECT：内省思考，收集文本输出到 collected_text，不发送消息
+    - REFLECT：收集内部文本到 collected_text；显式发送由工具权限控制
 
     base_messages 仅首轮获取，后续轮次复用缓存。
     工具集由调用方构建并传入，确保模式差异在入口处理。
@@ -555,6 +554,13 @@ async def _run_think_rounds(
             _PROMPT_REPLY_GUIDE if mode == ThinkMode.REPLY
             else _PROMPT_REFLECT_OUTPUT_DISCIPLINE
         )
+        if mode == ThinkMode.REFLECT:
+            exec_context["content"] += "\n" + delivery_tags("internal", "pending") + (
+                "本次任务明确禁用对外发送。"
+                if "send_message" in ctx.blocked_tools else
+                "需要对外通知时可以显式调用 send_message，必须指定已核实的频道与会话并核对回执；"
+                "跨频道消息只是感知，不会改变本轮的投递目标。"
+            )
         # exec_context（每轮动态）置于末尾：保持 stable/context/volatile/历史前缀
         # 字节稳定供 Prompt Caching 复用，且当前轮状态在模型注意力最强的末尾位置
         # （缓存断点不在此注入——发送边界由 llm/prompt_cache 按 _layer 统一装饰，
@@ -944,10 +950,11 @@ async def _handle_text_only_round(
 
         waiting = bool(running_bg and state.wait_budget > 0)
         if ctx.mode == ThinkMode.REPLY:
-            from agent.mind.tools.reply_delivery import deliver_reply
-            _, aborted = await _await_with_abort(deliver_reply(
+            from agent.mind.tools.reply_delivery import deliver_reply, publish_delivery
+            receipt, aborted = await _await_with_abort(deliver_reply(
                 ctx, state, raw_text, interim=waiting, messages=ctx.base_messages + tool_chain[:-1],
             ), ctx.abort_event)
+            await publish_delivery(ctx, state, receipt)
             if aborted:
                 state.interrupted = True
                 state.completion_reason = "interrupted"
@@ -1060,32 +1067,39 @@ async def _handle_tool_round(
         ctx.collected_text.clear()
     called = {tc.name for tc in tool_calls}
     text = _strip_think_blocks(result.content or "").strip()
+    from agent.mind.tools.reply_delivery import deliver_reply, observe_send_results, publish_delivery
+    delivery_task = None
+    sent_before = delivery_count()
     if (ctx.mode == ThinkMode.REPLY and text and not should_suppress(text)
             and not _END_REPLY_TEXT_RE.match(text) and not (called & (_OUTPUT_TOOL_NAMES | {_END_REPLY_TOOL_NAME}))):
-        from agent.mind.tools.reply_delivery import deliver_reply
         if state.reply_delivery_status != "unknown":
             state.auto_reply_blocked = False
-        _, aborted = await _await_with_abort(deliver_reply(
+        delivery_task = asyncio.create_task(_await_with_abort(deliver_reply(
             ctx, state, text, interim=True, messages=ctx.base_messages + tool_chain,
-        ), ctx.abort_event)
-        if aborted:
-            state.interrupted = True
-            state.completion_reason = "interrupted"
-            if early_runner is not None:
-                early_runner.abandon(cancel=True)
-    sent_before = delivery_count()
-    partial_abort = await execute_tool_calls(
-        mind, tool_chain, result, tool_calls, state.iteration, ctx.anything,
-        guardrail=guardrail, pipeline=ctx.pipeline, blocked_tools=ctx.blocked_tools,
-        abort_event=ctx.abort_event, early=early_runner, journal=ctx.journal,
-    )
+        ), ctx.abort_event))
+    try:
+        partial_abort = await execute_tool_calls(
+            mind, tool_chain, result, tool_calls, state.iteration, ctx.anything,
+            guardrail=guardrail, pipeline=ctx.pipeline, blocked_tools=ctx.blocked_tools,
+            abort_event=ctx.abort_event, early=early_runner, journal=ctx.journal,
+        )
+        if delivery_task is not None:
+            receipt, aborted = await delivery_task
+            await publish_delivery(ctx, state, receipt)
+            if aborted:
+                state.interrupted = True
+                state.completion_reason = "interrupted"
+    finally:
+        if delivery_task is not None:
+            if not delivery_task.done():
+                delivery_task.cancel()
+            await asyncio.gather(delivery_task, return_exceptions=True)
     if partial_abort:
         state.partial_tool_abort = True
     if delivery_count() > sent_before:
         state.output_sent = True
         state.auto_reply_blocked = True
         state.reply_delivery_status = "sent"
-    from agent.mind.tools.reply_delivery import observe_send_results
     observe_send_results(ctx, state, tool_calls)
     if state.interrupted:
         return await _finish_round(ctx, state)

@@ -251,7 +251,7 @@ class TaskCreate(BaseModel):
     null_keywords: List[str] = []
     tool_tags: List[str] = []
     prompt: str
-    allow_output_tools: bool = False
+    allow_output_tools: bool = True
     save_result_to_memory: bool = True
     model_id: Optional[str] = None
     reasoning_effort: Optional[str] = None

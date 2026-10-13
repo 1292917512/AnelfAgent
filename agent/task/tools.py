@@ -113,7 +113,7 @@ async def create_task(
     tags: str = "",
     tool_tags: str = "heartbeat",
     null_keywords: str = "",
-    allow_output_tools: bool = False,
+    allow_output_tools: bool = True,
     save_result_to_memory: bool = True,
     model_id: str = "",
     reasoning_effort: str = "",
@@ -133,7 +133,7 @@ async def create_task(
         tags: 结果记忆标签，逗号分隔（如 type:reflection,topic:周报）
         tool_tags: 执行时可用的工具标签，逗号分隔（默认 heartbeat）
         null_keywords: 空响应关键词，逗号分隔（命中则本次产出不入库不记忆）
-        allow_output_tools: 是否允许对外发消息（默认 False，仅内部反思类任务）
+        allow_output_tools: 是否允许显式发送消息（默认 True；普通正文始终作为内部产出）
         save_result_to_memory: 结果是否写入长期记忆（默认 True）
         model_id: 指定执行模型 ID（空 = 默认模型；例行任务建议指定轻量模型省成本）
         reasoning_effort: 任务级思考等级（off/minimal/low/medium/high/xhigh/max，空 = 全局默认）
