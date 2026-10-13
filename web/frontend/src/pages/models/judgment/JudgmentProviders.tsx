@@ -58,7 +58,7 @@ export function JudgmentProviders({ catalog, error, revision }: { catalog?: Judg
     {!providers.length && catalog && <p className="rounded-xl border border-dashed border-border p-6 text-sm text-muted">{t("judgment.emptyProviders")}</p>}
     <div className="grid items-start gap-3 xl:grid-cols-2">
       {providers.map(([pid, provider]) => <article key={pid} className="min-w-0 rounded-xl border border-border bg-card" aria-label={provider.name}>
-        <div className="flex items-start gap-3 p-4"><Server size={18} className="mt-0.5 shrink-0 text-accent" /><div className="min-w-0 flex-1"><h4 className="font-medium text-heading">{provider.name}</h4><p className="mt-1 break-all text-xs text-muted">{provider.base_url}</p><span className="text-xs text-muted">{t(provider.api_key ? "judgment.keyConfigured" : "judgment.noKey")}</span></div>
+        <div className="flex items-start gap-3 p-4"><Server size={18} className="mt-0.5 shrink-0 text-accent" /><div className="min-w-0 flex-1"><h4 className="font-medium text-heading">{provider.name}</h4><p className="mt-1 break-all text-xs text-muted">{provider.base_url}</p><div className="mt-1 flex flex-wrap items-center gap-2"><span className="text-xs text-muted">{t(provider.api_key ? "judgment.keyConfigured" : "judgment.noKey")}</span><Badge variant="neutral">{t(provider.use_proxy ? "judgment.proxyConnection" : "judgment.directConnection")}</Badge></div></div>
           <Button size="icon" variant="ghost" aria-label={t("judgment.editNamed", { name: provider.name })} onClick={() => setEditor(pid)}><Pencil size={14} /></Button>
           <Button size="icon" variant="ghost" aria-label={t("judgment.deleteNamed", { name: provider.name })} onClick={() => setRemoving(pid)}><Trash2 size={14} /></Button>
         </div>

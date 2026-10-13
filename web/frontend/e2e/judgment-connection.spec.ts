@@ -4,7 +4,7 @@ import { expect, test } from "./fixtures";
 
 test("judgment providers support local models, isolated health and complete editing", async ({ page }, info) => {
   const catalog: JudgmentCatalog = {
-    providers: { cloud: { name: "Cloud decision", base_url: "https://api.typesafe.ai", api_key: "********", models: { cloud: { name: "Cloud Jev", model: "jev-latest" } } } },
+    providers: { cloud: { name: "Cloud decision", base_url: "https://api.typesafe.ai", api_key: "********", use_proxy: false, models: { cloud: { name: "Cloud Jev", model: "jev-latest" } } } },
     default_model: "cloud", fallback_models: [], revision: "0", health: {},
   };
   let revision = 0;
@@ -54,6 +54,8 @@ test("judgment providers support local models, isolated health and complete edit
   await page.goto("/webui/models?tab=judgment");
   await page.getByRole("button", { name: "Add judgment provider" }).click();
   let dialog = page.getByRole("dialog", { name: "Add judgment provider" });
+  await expect(dialog.getByRole("checkbox", { name: "Use proxy", exact: true })).not.toBeChecked();
+  await expect(dialog.getByRole("link", { name: "Global proxy settings (new tab)", exact: true })).toHaveAttribute("href", "/webui/config?group=network%2Fproxy");
   await dialog.getByLabel("Provider ID", { exact: true }).fill("pc");
   await dialog.getByLabel("Provider name", { exact: true }).fill("Local workstation");
   await dialog.getByLabel("Service URL", { exact: true }).fill("http://127.0.0.1:8090/v1");
@@ -71,6 +73,8 @@ test("judgment providers support local models, isolated health and complete edit
   const local = page.getByRole("article", { name: "Local workstation" });
   await expect(local.getByText("Not checked", { exact: true })).toHaveCount(2);
   await expect(local.getByText("No authentication", { exact: true })).toBeVisible();
+  await expect(local.getByText("Direct", { exact: true })).toBeVisible();
+  expect(catalog.providers.pc?.use_proxy).toBe(false);
   await expect(page.getByRole("list", { name: "Model priority" }).getByRole("listitem").first()).toContainText("Cloud Jev");
   await local.getByRole("button", { name: "Test", exact: true }).first().click();
   dialog = page.getByRole("dialog", { name: "Check connectivity · local" });
@@ -107,10 +111,29 @@ test("judgment providers support local models, isolated health and complete edit
   await cloud.getByRole("button", { name: "Edit Cloud decision", exact: true }).click();
   dialog = page.getByRole("dialog", { name: "Edit judgment provider" });
   await expect(dialog.getByLabel("API key (optional)", { exact: true })).toHaveValue("********");
+  await expect(dialog.getByRole("checkbox", { name: "Use proxy", exact: true })).not.toBeChecked();
+  await dialog.getByRole("checkbox", { name: "Use proxy", exact: true }).check();
   await dialog.getByLabel("Provider name", { exact: true }).fill("Renamed cloud");
   await dialog.getByRole("button", { name: "Save", exact: true }).click();
   await expect(dialog).not.toBeVisible();
   expect(catalog.providers.cloud?.api_key).toBe("********");
+  expect(catalog.providers.cloud?.use_proxy).toBe(true);
+  expect(catalog.providers.pc?.use_proxy).toBe(false);
+  const renamed = page.getByRole("article", { name: "Renamed cloud" });
+  await expect(renamed.getByText("Global proxy", { exact: true })).toBeVisible();
+  await renamed.getByRole("button", { name: "Edit Renamed cloud", exact: true }).click();
+  dialog = page.getByRole("dialog", { name: "Edit judgment provider" });
+  await expect(dialog.getByRole("checkbox", { name: "Use proxy", exact: true })).toBeChecked();
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  await expect(page.getByRole("dialog")).not.toBeVisible();
+  await renamed.getByRole("button", { name: "Edit Renamed cloud", exact: true }).click();
+  dialog = page.getByRole("dialog", { name: "Edit judgment provider" });
+  await dialog.getByRole("checkbox", { name: "Use proxy", exact: true }).uncheck();
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  expect(catalog.providers.cloud?.use_proxy).toBe(false);
+  await expect(renamed.getByText("Direct", { exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   const audit = await new AxeBuilder({ page }).include('section[aria-label="Provider connection"]').withTags(["wcag2a", "wcag2aa", "wcag21aa"]).analyze();
   expect(audit.violations).toEqual([]);
@@ -123,7 +146,7 @@ test("judgment providers support local models, isolated health and complete edit
 
 test("judgment request timeouts do not claim the network is offline", async ({ page }) => {
   const catalog: JudgmentCatalog = {
-    providers: { cloud: { name: "Cloud decision", base_url: "https://api.typesafe.ai", api_key: "********", models: { cloud: { name: "Cloud Jev", model: "jev-latest" } } } },
+    providers: { cloud: { name: "Cloud decision", base_url: "https://api.typesafe.ai", api_key: "********", use_proxy: false, models: { cloud: { name: "Cloud Jev", model: "jev-latest" } } } },
     default_model: "cloud", fallback_models: [], revision: "1",
     health: { cloud: { status: "offline", cause: "timeout", check_kind: "inference", checked_at: Date.now() / 1000,
       retry_at: Date.now() / 1000 + 300, latency_ms: 2000, error: "Assessment deadline exceeded", } },

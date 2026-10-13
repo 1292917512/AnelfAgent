@@ -43,6 +43,7 @@ async def list_judgment_models() -> str:
                description="判断模型增删改：save_provider/save_model 保存，delete_provider/delete_model 删除，set_default 选首选，set_priority 用 config.model_ids 设置优先级（故障跳过、恢复回切）。",
                schema_extra={"config": {"type": "object", "properties": {
                    "name": {"type": "string"}, "base_url": {"type": "string"}, "api_key": {"type": "string"},
+                   "use_proxy": {"type": "boolean", "description": "服务商是否使用全局代理地址，默认 false（始终直连）"},
                    "provider_id": {"type": "string"}, "model": {"type": "string"},
                    "model_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 65},
                    "models": {"type": "object", "additionalProperties": {"type": "object", "properties": {
@@ -58,7 +59,8 @@ async def configure_judgment(
     Args:
         action: save_provider/delete_provider/save_model/delete_model/set_default/set_priority
         identifier: 服务商或模型 ID；set_default 空 ID 取消默认；set_priority 传空字符串
-        config: save_provider 传 name、base_url、api_key、models（模型 ID 到 {model,name} 的字典）。
+        config: save_provider 传 name、base_url、api_key、use_proxy、models（模型 ID 到 {model,name} 的字典）。
+            use_proxy 默认 false（始终直连）；true 使用全局代理地址，推理与连接检查共用。
             Key 省略或掩码保留现值，空字符串清除；models 为服务商的完整定义。
             save_model 只传 provider_id、model、name（可选），仅修改该模型
             set_priority 传 model_ids（按优先级排列，首个为默认，空数组关闭原生模型选择）

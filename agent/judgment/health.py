@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING, Any, Literal
 from agent.judgment.client import SystemOneClient
 from agent.judgment.types import JudgmentError
 from core.config import get_config_float
-from core.network import resolve_network_route
 from core.sanitizer import sanitize_text
 from core.tool_errors import ErrorCause
 
@@ -47,7 +46,7 @@ class JudgmentHealth:
 
     @staticmethod
     def _signature(cfg: JudgmentConfig) -> str:
-        return hashlib.sha256(f"{cfg.base_url}\0{cfg.api_key}\0{cfg.model}".encode()).hexdigest()
+        return hashlib.sha256(f"{cfg.base_url}\0{cfg.api_key}\0{cfg.model}\0{cfg.use_proxy}".encode()).hexdigest()
 
     def _state(self, cfg: JudgmentConfig) -> ModelHealth:
         signature = self._signature(cfg)
@@ -181,9 +180,10 @@ class JudgmentHealth:
         started = time.monotonic()
         attempt_timeout = max(0.1, get_config_float("judgment_connect_timeout", 2.0))
         try:
-            route = resolve_network_route(cfg.base_url)
-            async with asyncio.timeout(attempt_timeout * len(route.proxies)):
-                await SystemOneClient(base_url=cfg.base_url, api_key="", timeout=attempt_timeout).check_connectivity()
+            async with asyncio.timeout(attempt_timeout):
+                await SystemOneClient(
+                    base_url=cfg.base_url, api_key="", timeout=attempt_timeout, use_proxy=cfg.use_proxy,
+                ).check_connectivity()
         except asyncio.CancelledError:
             self.cancel(cfg)
             raise

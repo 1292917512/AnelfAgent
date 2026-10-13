@@ -39,6 +39,7 @@ class DecisionProvider(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     name: str = Field(min_length=1, max_length=160)
     base_url: str = Field(min_length=1, max_length=2048)
+    use_proxy: bool = Field(default=False, strict=True, description="使用全局代理地址；关闭时始终直连")
     api_key: str = Field(default="", repr=False, max_length=8192)
     models: dict[str, DecisionModel] = Field(default_factory=dict, max_length=64)
 
@@ -138,7 +139,7 @@ def update_catalog(action: CatalogAction, identifier: str, data: dict[str, Any] 
     path = Path(ConfigPaths.JUDGMENT)
     with file_write_lock(path):
         catalog = load_catalog()
-        before = {mid: (p.base_url, p.api_key, model.model)
+        before = {mid: (p.base_url, p.api_key, p.use_proxy, model.model)
                   for p in catalog.providers.values() for mid, model in p.models.items()}
         if action == "set_default":
             catalog.default_model = identifier
@@ -193,7 +194,7 @@ def update_catalog(action: CatalogAction, identifier: str, data: dict[str, Any] 
         else:
             raise ValueError(f"未知操作: {action}")
         catalog = _parse(catalog.model_dump())
-        after = {mid: (p.base_url, p.api_key, model.model)
+        after = {mid: (p.base_url, p.api_key, p.use_proxy, model.model)
                  for p in catalog.providers.values() for mid, model in p.models.items()}
         atomic_write_text(path, catalog.model_dump_json(indent=2) + "\n")
         _read.cache_clear()

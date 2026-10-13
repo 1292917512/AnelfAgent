@@ -532,7 +532,7 @@ class Mind:
             "耗时不代表失败。"
             f"用 check_background_tasks(task_id=\"{task_id}\") 查看阶段、操作证据与通知策略；"
             f"确认无需继续时可 terminate_background_task(task_id=\"{task_id}\")。"
-            "这是内部进度事实，是否跟进或通过 send_message 告知用户由你判断。"
+            "这是内部进度事实，是否跟进由你判断。"
         )
         if not scope.startswith(("user_", "group_")):
             self.pfc.add_temporary({"role": "system", "content": prompt})

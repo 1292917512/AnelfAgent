@@ -45,7 +45,7 @@ def chain(monkeypatch):
             for qid, q in body["questions"].items()}})
 
     monkeypatch.setattr(client_module, "async_network_client",
-        lambda **kwargs: httpx.AsyncClient(transport=httpx.MockTransport(respond), **kwargs))
+        lambda proxy_mode, **kwargs: httpx.AsyncClient(transport=httpx.MockTransport(respond), **kwargs))
     return requests, offline
 
 
@@ -125,7 +125,7 @@ async def test_connectivity_head_never_submits_inference_or_credentials(chain, m
         return httpx.Response(status)
 
     monkeypatch.setattr(client_module, "async_network_client",
-        lambda **kwargs: httpx.AsyncClient(transport=httpx.MockTransport(respond), **kwargs))
+        lambda proxy_mode, **kwargs: httpx.AsyncClient(transport=httpx.MockTransport(respond), **kwargs))
     result = await check_connection("local")
     assert result["ok"] is ok
     assert len(requests) == 1 and requests[0].method == "HEAD"

@@ -58,6 +58,8 @@ def test_secret_refs_preserved_by_partial_updates_and_masked_edit(monkeypatch):
     ("save_provider", "pc", {"models": {"bad": {"model": ""}}}),
     ("save_provider", "pc", {"models": None}),
     ("save_provider", "pc", {"models": ["invalid"]}),
+    ("save_provider", "pc", {"use_proxy": "false"}),
+    ("save_provider", "pc", {"use_proxy": 1}),
     ("save_model", "missing", {"provider_id": "missing", "model": "abc"}),
     ("set_default", "missing", None),
     ("delete_provider", "missing", None),
@@ -95,6 +97,15 @@ def test_concurrent_provider_updates_do_not_lose_siblings():
 async def test_ai_crud_returns_masked_directory_and_structured_errors():
     saved = json.loads(await configure_judgment("save_provider", "pc", provider(api_key="private-judgment-test-key")))
     assert "private-judgment-test-key" not in json.dumps(saved)
+    assert saved["providers"]["pc"]["use_proxy"] is False
+    saved = json.loads(await configure_judgment("save_provider", "pc", {"use_proxy": True}))
+    assert saved["providers"]["pc"]["use_proxy"] is True
+    assert load_config("local").use_proxy is True
+    assert json.loads(Path(ConfigPaths.JUDGMENT).read_text(encoding="utf-8"))["providers"]["pc"]["use_proxy"] is True
+    await configure_judgment("save_provider", "pc", {"name": "Renamed"})
+    assert load_config("local").use_proxy is True
+    await configure_judgment("save_provider", "pc", {"use_proxy": False})
+    assert load_config("local").use_proxy is False
     await configure_judgment("save_model", "another", {"provider_id": "pc", "model": "second"})
     await configure_judgment("set_default", "another")
     listed = json.loads(await list_judgment_models())

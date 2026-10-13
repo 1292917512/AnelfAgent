@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router-dom";
 import { Plus, Trash2 } from "lucide-react";
 import type { DecisionProvider } from "@/lib/types";
 import { judgmentApi } from "@/lib/api";
@@ -17,16 +18,20 @@ export function JudgmentProviderEditor({ id = "", provider, onClose }: Props) {
   const [name, setName] = useState(provider?.name ?? "");
   const [url, setUrl] = useState(provider?.base_url ?? "");
   const [key, setKey] = useState(provider?.api_key ?? "");
+  const [useProxy, setUseProxy] = useState(provider?.use_proxy ?? false);
   const [models, setModels] = useState(() => Object.entries(provider?.models ?? {}).map(([mid, model]) => ({ row: crypto.randomUUID(), id: mid, ...model })));
   const ids = models.map((model) => model.id.trim());
   const duplicate = new Set(ids).size !== ids.length;
   const valid = providerId.trim() && name.trim() && url.trim() && !duplicate && models.every((model) => model.id.trim() && model.model.trim());
-  const payload: DecisionProvider = { name, base_url: url, api_key: key, models: Object.fromEntries(models.map((model) => [model.id.trim(), { name: model.name, model: model.model }])) };
+  const payload: DecisionProvider = { name, base_url: url, api_key: key, use_proxy: useProxy, models: Object.fromEntries(models.map((model) => [model.id.trim(), { name: model.name, model: model.model }])) };
   const save = useMutation({
     mutationFn: () => judgmentApi.saveProvider(providerId.trim(), payload),
     onSuccess: async () => { await cache.invalidateQueries({ queryKey: ["judgmentCatalog"] }); onClose(); },
   });
-  const dirty = providerId !== id || JSON.stringify(payload) !== JSON.stringify(provider ?? { name: "", base_url: "", api_key: "", models: {} });
+  const dirty = providerId !== id || name !== (provider?.name ?? "") || url !== (provider?.base_url ?? "")
+    || key !== (provider?.api_key ?? "") || useProxy !== (provider?.use_proxy ?? false)
+    || models.length !== Object.keys(provider?.models ?? {}).length
+    || models.some((model) => provider?.models[model.id]?.name !== model.name || provider?.models[model.id]?.model !== model.model);
   const guard = useDiscardChanges(dirty, onClose, save.isPending);
   return <>
     <Modal open onClose={guard.requestClose} title={t(id ? "judgment.editProvider" : "judgment.addProvider")} width="max-w-2xl" dismissible={!save.isPending} footer={<>
@@ -39,6 +44,14 @@ export function JudgmentProviderEditor({ id = "", provider, onClose }: Props) {
           <label className="space-y-1.5 text-xs text-muted">{t("judgment.providerName")}<Input value={name} onChange={(e) => setName(e.target.value)} /></label>
         </div>
         <label className="block space-y-1.5 text-xs text-muted">{t("judgment.serviceUrl")}<Input placeholder="http://127.0.0.1:8090" value={url} onChange={(e) => setUrl(e.target.value)} /></label>
+        <div className="space-y-2 rounded-xl border border-border bg-surface p-3">
+          <label className="flex min-h-9 cursor-pointer items-center gap-2.5 text-sm text-heading">
+            <input type="checkbox" className="accent-accent" checked={useProxy} onChange={(event) => setUseProxy(event.target.checked)} />
+            {t("judgment.useProxy")}
+          </label>
+          <p className="text-xs leading-relaxed text-muted">{t("judgment.proxyHint")}</p>
+          <Link to="/config?group=network%2Fproxy" target="_blank" rel="noopener noreferrer" className="inline-flex min-h-9 items-center text-xs text-accent hover:underline">{t("judgment.proxySettings")}</Link>
+        </div>
         <label className="block space-y-1.5 text-xs text-muted">{t("judgment.apiKey")}<Input type="password" autoComplete="new-password" value={key} onChange={(e) => setKey(e.target.value)} /></label>
         <p className="text-xs text-muted">{t("judgment.keyHint")}</p>
         <div className="flex items-center justify-between gap-3"><h3 className="text-sm font-medium">{t("judgment.models")}</h3><Button size="sm" disabled={models.length >= 64} onClick={() => setModels([...models, { row: crypto.randomUUID(), id: "", name: "", model: "" }])}><Plus size={14} />{t("judgment.addModel")}</Button></div>

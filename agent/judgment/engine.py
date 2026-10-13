@@ -42,6 +42,7 @@ class JudgmentConfig:
     model_id: str = ""
     provider_id: str = ""
     fallback_models: tuple[str, ...] = ()
+    use_proxy: bool = False
 
     @property
     def native_configured(self) -> bool:
@@ -73,6 +74,7 @@ def load_config(model_id: str = "") -> JudgmentConfig:
         enabled=get_config_bool("judgment_enabled", True),
         api_key=provider.api_key if provider else "",
         base_url=provider.base_url if provider else "",
+        use_proxy=provider.use_proxy if provider else False,
         model=model.model if model else "",
         timeout=get_config_float("judgment_timeout", 30.0),
         fallback_enabled=get_config_bool("judgment_fallback_enabled", True),
@@ -164,7 +166,7 @@ class JudgmentEngine:
         self, cfg: JudgmentConfig, state: JsonValue, questions: Dict[str, Question]
     ) -> JudgmentReport:
         client = SystemOneClient(
-            base_url=cfg.base_url, api_key=cfg.api_key, timeout=cfg.timeout
+            base_url=cfg.base_url, api_key=cfg.api_key, timeout=cfg.timeout, use_proxy=cfg.use_proxy,
         )
         started = time.monotonic()
         answers, model, usage = await client.evaluate(

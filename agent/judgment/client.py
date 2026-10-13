@@ -26,7 +26,7 @@ from agent.judgment.types import (
     question_payload,
 )
 from core.config import get_config_float
-from core.network import async_network_client
+from core.network import ProxyMode, async_network_client
 from core.tool_errors import ErrorCause
 
 _ENDPOINT = "/v1/systemone"
@@ -35,10 +35,11 @@ _ENDPOINT = "/v1/systemone"
 class SystemOneClient:
     """System One 协议客户端，统一地址解析、认证和答案校验。"""
 
-    def __init__(self, *, base_url: str, api_key: str, timeout: float) -> None:
+    def __init__(self, *, base_url: str, api_key: str, timeout: float, use_proxy: bool = False) -> None:
         self._endpoint = self.resolve_endpoint(base_url)
         self._api_key = api_key.strip()
         self._timeout = timeout
+        self._proxy_mode: ProxyMode = "proxy" if use_proxy else "direct"
 
     @staticmethod
     def resolve_endpoint(base_url: str) -> str:
@@ -78,6 +79,7 @@ class SystemOneClient:
     async def _post(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         try:
             async with async_network_client(
+                proxy_mode=self._proxy_mode,
                 timeout=httpx.Timeout(self._timeout, connect=min(self._timeout, get_config_float("judgment_connect_timeout", 2.0))),
                 headers={"Authorization": f"Bearer {self._api_key}"} if self._api_key else {},
             ) as client:
@@ -110,7 +112,9 @@ class SystemOneClient:
     async def check_connectivity(self) -> None:
         """仅发送无凭据、无正文的 HEAD 检查服务可达性，不调用推理端点的 POST。"""
         try:
-            async with async_network_client(timeout=self._timeout, follow_redirects=False) as client:
+            async with async_network_client(
+                proxy_mode=self._proxy_mode, timeout=self._timeout, follow_redirects=False,
+            ) as client:
                 response = await client.head(self._endpoint)
         except httpx.TimeoutException as exc:
             raise JudgmentError("判断服务连接检查超时", cause=ErrorCause.TIMEOUT, retryable=True) from exc

@@ -11,6 +11,7 @@ export interface JudgmentStatus {
   provider_id?: string;
   api_key_configured: boolean;
   base_url: string;
+  use_proxy: boolean;
   model: string;
   timeout: number;
   fallback_enabled: boolean;
@@ -19,7 +20,7 @@ export interface JudgmentStatus {
 }
 
 export interface DecisionModel { name: string; model: string }
-export interface DecisionProvider { name: string; base_url: string; api_key: string; models: Record<string, DecisionModel> }
+export interface DecisionProvider { name: string; base_url: string; api_key: string; use_proxy: boolean; models: Record<string, DecisionModel> }
 export interface JudgmentHealth { status: "unknown" | "ready" | "offline" | "checking"; checked_at: number; retry_at: number; latency_ms: number; error: string; cause?: string; check_kind?: "inference" | "connectivity" }
 export interface JudgmentCatalog { providers: Record<string, DecisionProvider>; default_model: string; fallback_models: string[]; revision: string; health?: Record<string, JudgmentHealth> }
 

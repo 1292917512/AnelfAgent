@@ -120,11 +120,12 @@ async def test_background_shutdown_cancels_pending_request(engine, monkeypatch):
     assert cancelled.is_set() and not judgment_health.snapshot()
 
 
-async def test_config_change_drops_offline_state_and_old_inflight_result(engine, monkeypatch):
+@pytest.mark.parametrize("change", [{"base_url": "http://localhost:8091"}, {"use_proxy": True}])
+async def test_config_change_drops_offline_state_and_old_inflight_result(engine, monkeypatch, change):
     cfg = load_config()
     judgment_health.begin(cfg, probe=False)
     judgment_health.failure(cfg, JudgmentError("offline", cause=ErrorCause.NETWORK, retryable=True), 1)
-    update_catalog("save_provider", "pc", {"base_url": "http://localhost:8091"})
+    update_catalog("save_provider", "pc", change)
     assert not judgment_health.snapshot()
     newer = load_config()
     judgment_health.begin(newer, probe=False)

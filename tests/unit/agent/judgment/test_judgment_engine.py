@@ -186,7 +186,7 @@ async def test_cloud_and_local_use_same_protocol(monkeypatch, address, path, key
         }, "model": cfg.model, "usage": {"input_tokens": 120, "output_tokens": 0}})
 
     monkeypatch.setattr(client_mod, "async_network_client",
-                        lambda **kwargs: httpx.AsyncClient(transport=httpx.MockTransport(handler), **kwargs))
+                        lambda proxy_mode, **kwargs: httpx.AsyncClient(transport=httpx.MockTransport(handler), **kwargs))
     report = await JudgmentEngine().judge({"text": "事实"}, questions, native_only=True)
     assert report.source == JudgmentSource.TYPESAFE and report.model == cfg.model
     assert len(report.answers) == 3 and report.usage.output_tokens == 0 and len(requests) == 1

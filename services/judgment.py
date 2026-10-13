@@ -23,6 +23,7 @@ class JudgmentService:
         return {
             "enabled": cfg.enabled, "channel": cfg.channel,
             "api_key_configured": bool(cfg.api_key), "base_url": cfg.base_url,
+            "use_proxy": cfg.use_proxy,
             "model": cfg.model, "model_id": cfg.model_id, "provider_id": cfg.provider_id,
             "timeout": cfg.timeout, "fallback_enabled": cfg.fallback_enabled,
             "fallback_model": cfg.fallback_model, "fallback_effort": cfg.fallback_effort,
