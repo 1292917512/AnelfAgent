@@ -223,7 +223,8 @@ exec_context 本轮执行状态（每轮全量重建）
   `judgment_connect_timeout`（默认 2 秒）限制建连及连通探测；`judgment_timeout` 是调用总预算，
   自动回复/可选工作使用 `judgment_gate_timeout`（默认 5 秒）的更短总预算，候选数量不放大等待。
   总预算耗尽即返回失败，下次直接跳过已失败模型。普通模型回退由调用方独立允许；回复审核与
-  可选工作均不转普通 LLM。可选工作判断失败保留原流程，普通正文审核失败不自动投递。
+  可选工作均不转普通 LLM。可选工作判断失败保留原流程；普通正文仅在明确、一致的拒绝时拦截，
+  审核不可用或不确定按投递开关正常发送，仍以频道成功回执确认送达。
   台账内存有界、不持久化；AI/Web 可见状态来源（连通/推理）、失败原因及下次检查时间，不改变稳定前缀。
 - **StartLux GGUF**：按[官方部署文档](https://github.com/StartLuxLabs/StartLux-Decision/blob/main/docs/inference.md#gguf-and-llamacpp)
   启动 `startlux_decision.gguf_server`，将其服务地址（例如 `http://127.0.0.1:8090`）填入上面的配置。

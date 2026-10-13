@@ -11,6 +11,7 @@ EXPECTED_CONFIG_KEYS = {
     "judgment_timeout", "judgment_connect_timeout",
     "judgment_gate_enabled",
     "judgment_gate_timeout",
+    "judgment_evidence_max_chars", "judgment_auto_max_chars",
     "judgment_recheck_seconds",
     "judgment_gate_skip_threshold", "judgment_delivery_confidence",
     "judgment_slow_seconds",

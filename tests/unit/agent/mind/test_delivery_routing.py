@@ -10,6 +10,8 @@ from helpers.think_loop_fakes import FakeMind, run_think_loop, text_result, tool
 
 from agent.channel import output_tools
 from agent.channel.channel_types import ChannelStatus
+from agent.judgment.engine import JudgmentConfig
+from agent.judgment.types import ChoiceAnswer, JudgmentReport, JudgmentSource, NoulAnswer
 from agent.mind.tool_activation import bind_scope, reset_scope
 from agent.mind.tools.reply_delivery import ReplyAssessment
 from agent.mind.tools.think_loop import ThinkMode
@@ -99,6 +101,47 @@ async def test_only_confirmed_body_enters_persistent_conversation(pipeline, sqli
     assert channels["qq"].send_text.await_count == int(approved)
     if not approved:
         assert any("delivery_status:skipped" in r["content"] for r in rows)
+
+
+@pytest.mark.parametrize("scope_id", ["qq:1", "webui:1#chat_1"])
+@pytest.mark.parametrize("outcome", ["timeout", "borderline", "internal", "disabled"])
+async def test_real_review_fallback_delivers_once_to_bound_channel(pipeline, sqlite, anything, monkeypatch, scope_id, outcome):
+    from agent.messages import build_entity_scope
+    from agent.mind.tools import reply_delivery
+
+    data, channels = pipeline
+    cfg = JudgmentConfig(True, "", "http://localhost:9000", "local", 30, False, "", "low")
+    monkeypatch.setattr(reply_delivery, "load_config", lambda: cfg)
+    intent = "internal" if outcome == "internal" else "reply"
+    probabilities = {name: 0.0 for name in ("reply", "internal", "duplicate", "wrong_target", "uncertain")}
+    probabilities.update({intent: 0.82, "uncertain": 0.18})
+    answer = JudgmentReport(source=JudgmentSource.TYPESAFE, model="local", answers={
+        "appropriate": NoulAnswer(noul=0 if intent == "internal" else 0.79),
+        "intent": ChoiceAnswer(choice=intent, confidence=0.82, probabilities=probabilities),
+    })
+    judge = AsyncMock(side_effect=TimeoutError() if outcome == "timeout" else None, return_value=answer)
+    monkeypatch.setattr(reply_delivery, "get_judgment_engine", lambda: SimpleNamespace(judge=judge))
+    ConfigManager.set("send_final_text", outcome != "disabled")
+    anything.scope_type, anything.scope_id = "user", scope_id
+    mind = FakeMind(rounds=[text_result("这条回复应投递到当前频道。")], default_text=None)
+    mind.conversation_data = data
+    completion = {}
+    adapter, _, target = scope_id.partition(":")
+    identity, _, session = target.partition("#")
+    scope = build_entity_scope("user", adapter, identity, session)
+    token = bind_scope(scope)
+    try:
+        await run_think_loop(mind, anything=anything, completion=completion)
+    finally:
+        reset_scope(token)
+    sent = outcome in {"timeout", "borderline"}
+    assert channels[adapter].send_text.await_count == int(sent)
+    assert all(channel.send_text.await_count == 0 for key, channel in channels.items() if key != adapter)
+    rows = await sqlite.fetch_live_conversation(scope_type="user", scope_id=scope_id, limit=10)
+    assert [row["content"] for row in rows if row["role"] == "assistant"] == (["这条回复应投递到当前频道。"] if sent else [])
+    assert f"delivery_status:{'sent' if sent else 'skipped'}" in str(completion["messages"])
+    assert f"delivery_scope:{scope}" in str(completion["messages"])
+    assert judge.await_count == int(outcome != "disabled")
 
 
 async def test_reflection_can_explicitly_send_but_never_delivers_its_draft(pipeline, sqlite, monkeypatch):

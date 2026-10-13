@@ -15,7 +15,8 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from agent.config import get_mind_config
-from agent.judgment.gate import assess_optional_work, conversation_evidence
+from agent.judgment.evidence import conversation_evidence
+from agent.judgment.gate import assess_optional_work
 from agent.memory.memory_retriever import MemoryRetriever
 from agent.messages import build_entity_scope, is_conversation_scope, parse_entity_scope
 from agent.messages.everything import build_scope_id

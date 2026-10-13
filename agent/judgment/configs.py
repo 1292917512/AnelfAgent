@@ -26,8 +26,16 @@ _JUDGMENT_CONFIGS = {
             "default": True,
         },
         "judgment_gate_timeout": {
-            "description": "自动回复审核与可选工作预判的等待预算；到期不自动投递，可选工作保留原流程",
+            "description": "自动回复审核与可选工作预判的等待预算；到期正文按投递开关正常发送，可选工作保留原流程",
             "default": 5.0, "min": 0.1, "max": 30.0, "unit": "秒", "advanced": True,
+        },
+        "judgment_evidence_max_chars": {
+            "description": "自动判断的会话证据共享预算；优先保留当前请求、归属标签和执行事实，不注入完整对话",
+            "default": 3000, "min": 600, "max": 12000, "unit": "字符", "advanced": True,
+        },
+        "judgment_auto_max_chars": {
+            "description": "自动审核与可选工作预判的事实总预算；超限不调用模型，正文按投递开关正常发送，可选工作照常执行。不限制显式 judge 或 SDK 输入",
+            "default": 8000, "min": 2000, "max": 32000, "unit": "字符", "advanced": True,
         },
         "judgment_connect_timeout": {
             "description": "判断服务建立连接及无推理 HEAD 检查的等待上限；正常服务不周期检查，不消耗模型额度",
@@ -38,7 +46,7 @@ _JUDGMENT_CONFIGS = {
             "default": 300.0, "min": 30.0, "max": 3600.0, "unit": "秒",
         },
         "judgment_delivery_confidence": {
-            "description": "自动回复审核最低概率；配置 Jev 后仅一致通过才投递，故障或不确定不投递；未配置 Jev 按普通回复投递",
+            "description": "自动回复拦截置信阈值；只有不适合投递与内部/重复/错目标类别均达到此置信度才拦截，不可用或不确定按投递开关正常发送",
             "default": 0.8, "min": 0.5, "max": 1.0, "advanced": True,
         },
         "judgment_gate_skip_threshold": {

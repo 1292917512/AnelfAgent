@@ -11,6 +11,7 @@ from agent.hooks_llm.progress import HookProgress
 from agent.judgment import engine as engine_module
 from agent.judgment import gate
 from agent.judgment.engine import JudgmentConfig, JudgmentEngine
+from agent.judgment.evidence import conversation_evidence
 from agent.judgment.types import ChoiceAnswer, JudgmentError, JudgmentReport, JudgmentSource, JudgmentUsage, NoulAnswer
 from core.hooks import HookMode, hook_execution
 from core.tool_errors import ErrorCause
@@ -131,7 +132,7 @@ async def test_evidence_is_bounded_and_sanitized_without_changing_source(engine,
 def test_context_excludes_prefix_and_keeps_identity_tags():
     messages = [{"role": "system", "content": "stable-prefix"}, {"role": "user", "content": "[uid:42][channel:qq] 过去的安排"}]
     messages.extend({"role": "tool", "content": f"result {index}"} for index in range(12))
-    result = gate.conversation_evidence(messages)
+    result = conversation_evidence(messages)
     assert "stable-prefix" not in str(result) and "[uid:42]" in str(result)
     assert len(result) == 6 and "result 11" in str(result)
 

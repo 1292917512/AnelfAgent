@@ -248,7 +248,7 @@ async def test_rejected_reply_leaves_context_fact_and_never_falls_back(anything,
 async def test_rejected_interim_continues_work_and_explicit_send_without_review(anything, sender, monkeypatch):
     ConfigManager.set("send_interim_text", True)
     ConfigManager.set("send_final_text", False)
-    review = AsyncMock(return_value=ReplyAssessment(False, "Jev 超时，不自动投递", "local"))
+    review = AsyncMock(return_value=ReplyAssessment(False, "Jev 明确拦截：内部过程", "local"))
     monkeypatch.setattr("agent.mind.tools.reply_delivery.assess_reply", review)
     mind, completion = await _run([
         tool_result("我正在查询", ["recall"]),
@@ -257,7 +257,7 @@ async def test_rejected_interim_continues_work_and_explicit_send_without_review(
     assert mind.executed_tools == ["recall", "send_message", "end_reply"]
     review.assert_awaited_once()
     sender.assert_not_awaited()
-    assert "Jev 超时" in str(mind.sent_messages[1])
+    assert "Jev 明确拦截" in str(mind.sent_messages[1])
     assert "delivery_status:sent" in str(completion["messages"])
 
 

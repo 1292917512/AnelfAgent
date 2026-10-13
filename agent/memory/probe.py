@@ -19,7 +19,8 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, AsyncIterator, Dict, Iterable, List, Optional
 
-from agent.judgment.gate import assess_optional_work, conversation_evidence
+from agent.judgment.evidence import conversation_evidence
+from agent.judgment.gate import assess_optional_work
 from agent.judgment.types import JsonValue
 from core.async_helper import spawn
 from core.config import get_config_bool, get_config_float, get_config_int, register_configs_safe

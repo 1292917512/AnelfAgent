@@ -11,7 +11,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Optional
 
 from agent.hooks_llm import HookContext, HookRegistry, llm_hook
-from agent.judgment.gate import assess_optional_work, conversation_evidence
+from agent.judgment.evidence import conversation_evidence
+from agent.judgment.gate import assess_optional_work
 from agent.skills.skill_index import SkillIndex
 from agent.skills.skill_store import SkillStore
 from core.config import get_config_int
