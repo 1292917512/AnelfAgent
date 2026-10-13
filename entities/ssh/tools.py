@@ -19,6 +19,7 @@ import json
 
 from entities._sdk import (
     ErrorCause,
+    ProxyMode,
     error_from_exception,
     get_current_scope,
     tool,
@@ -82,7 +83,7 @@ def ssh_list() -> str:
 @tool(name="ssh_exec", group="ssh", timeout=300,
       allow_sleep=True, sleep_brief=_SLEEP_BRIEF)
 @track_ssh_op("command")
-async def ssh_exec(command: str, name: str = "", timeout: int = 0, work_dir: str = "") -> str:
+async def ssh_exec(command: str, name: str = "", timeout: int = 0, work_dir: str = "", proxy_mode: ProxyMode | None = None) -> str:
     """在 SSH 连接上执行命令，返回结构化结果（exit_code/stdout/stderr/work_dir）。
 
     环境感知：可用连接、登录用户@主机、缺省执行目标与在线连接的当前远程
@@ -103,6 +104,7 @@ async def ssh_exec(command: str, name: str = "", timeout: int = 0, work_dir: str
         name: 连接名称，缺省使用默认连接
         timeout: 命令超时秒数，缺省使用实体配置的默认值（60秒）
         work_dir: 远程工作目录（可选，先 cd 再执行，并对后续命令生效）
+        proxy_mode: 单次网络策略 direct/system/proxy；省略跟随 ssh_proxy_mode（默认直连）
     """
     if error := _gate():
         return error
@@ -110,7 +112,7 @@ async def ssh_exec(command: str, name: str = "", timeout: int = 0, work_dir: str
         return tool_error("命令不能为空", cause=ErrorCause.PARAM)
     try:
         result = await get_ssh_manager().execute(
-            command, name=name, timeout=float(timeout), work_dir=work_dir,
+            command, name=name, timeout=float(timeout), work_dir=work_dir, proxy_mode=proxy_mode,
         )
         return json.dumps(result, ensure_ascii=False)
     except SshCommandInterrupted as e:
@@ -129,18 +131,19 @@ async def ssh_exec(command: str, name: str = "", timeout: int = 0, work_dir: str
 @tool(name="ssh_upload", group="ssh", timeout=600,
       allow_sleep=True, sleep_brief=_SLEEP_BRIEF)
 @track_ssh_op("local_path", "remote_path")
-async def ssh_upload(local_path: str, remote_path: str, name: str = "") -> str:
+async def ssh_upload(local_path: str, remote_path: str, name: str = "", proxy_mode: ProxyMode | None = None) -> str:
     """上传本地文件到远程服务器（SFTP）。
 
     Args:
         local_path: 本地文件路径
         remote_path: 远程目标路径（含文件名）
         name: 连接名称，缺省使用默认连接
+        proxy_mode: 单次网络策略 direct/system/proxy；省略跟随 ssh_proxy_mode（默认直连）
     """
     if error := _gate():
         return error
     try:
-        result = await get_ssh_manager().upload(local_path, remote_path, name=name)
+        result = await get_ssh_manager().upload(local_path, remote_path, name=name, proxy_mode=proxy_mode)
         return json.dumps(result, ensure_ascii=False)
     except FileNotFoundError as e:
         return tool_error(str(e), cause=ErrorCause.NOT_FOUND)
@@ -153,18 +156,19 @@ async def ssh_upload(local_path: str, remote_path: str, name: str = "") -> str:
 @tool(name="ssh_download", group="ssh", timeout=600,
       allow_sleep=True, sleep_brief=_SLEEP_BRIEF)
 @track_ssh_op("remote_path", "local_path")
-async def ssh_download(remote_path: str, local_path: str, name: str = "") -> str:
+async def ssh_download(remote_path: str, local_path: str, name: str = "", proxy_mode: ProxyMode | None = None) -> str:
     """下载远程文件到本地（SFTP）。
 
     Args:
         remote_path: 远程文件路径
         local_path: 本地保存路径（含文件名）
         name: 连接名称，缺省使用默认连接
+        proxy_mode: 单次网络策略 direct/system/proxy；省略跟随 ssh_proxy_mode（默认直连）
     """
     if error := _gate():
         return error
     try:
-        result = await get_ssh_manager().download(remote_path, local_path, name=name)
+        result = await get_ssh_manager().download(remote_path, local_path, name=name, proxy_mode=proxy_mode)
         return json.dumps(result, ensure_ascii=False)
     except ValueError as e:
         return tool_error(str(e), cause=ErrorCause.PARAM)
@@ -175,7 +179,7 @@ async def ssh_download(remote_path: str, local_path: str, name: str = "") -> str
 @tool(name="ssh_connect", group="ssh", timeout=60,
       allow_sleep=True, sleep_brief=_SLEEP_BRIEF)
 @track_ssh_op()
-async def ssh_connect(name: str = "") -> str:
+async def ssh_connect(name: str = "", proxy_mode: ProxyMode | None = None) -> str:
     """建立 SSH 连接（连接池复用，已连接时直接返回）。
 
     建连前先做秒级 TCP 探测，失败立即返回精确原因（域名解析失败 /
@@ -184,13 +188,14 @@ async def ssh_connect(name: str = "") -> str:
 
     Args:
         name: 连接名称，缺省使用默认连接
+        proxy_mode: 单次网络策略 direct/system/proxy；省略跟随 ssh_proxy_mode（默认直连）
     """
     if error := _gate():
         return error
     manager = get_ssh_manager()
     try:
         target = manager.resolve_name(name)
-        snapshot = await manager.connect(target)
+        snapshot = await manager.connect(target, proxy_mode=proxy_mode)
         return json.dumps({"ok": True, "connection": snapshot}, ensure_ascii=False)
     except ValueError as e:
         return tool_error(str(e), cause=ErrorCause.PARAM)

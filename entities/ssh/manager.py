@@ -25,8 +25,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import asyncssh
 
-from core.config import expand_env_refs, get_config_bool, get_config_int
+from core.config import ConfigManager, expand_env_refs, get_config_bool, get_config_int
 from core.log import log
+from entities._sdk import NetworkRoute, ProxyMode, open_proxy_socket, resolve_socket_route
 
 from .store import SshConfigStore, get_ssh_store
 
@@ -210,6 +211,8 @@ class ManagedConnection:
     def __init__(self, name: str) -> None:
         self.name = name
         self.conn: Optional[asyncssh.SSHClientConnection] = None
+        self.routes: dict[tuple[str | None, ...], asyncssh.SSHClientConnection] = {}
+        self.proxy_mode: ProxyMode = "direct"
         self.status: str = STATUS_DISCONNECTED
         self.last_error: str = ""
         self.connected_at: int = 0
@@ -228,6 +231,7 @@ class ManagedConnection:
             "username": profile.get("username", "") if profile else "",
             "description": profile.get("description", "") if profile else "",
             "status": self.status,
+            "proxy_mode": self.proxy_mode,
             "last_error": self.last_error,
             "connected_at": self.connected_at,
             "last_used_at": self.last_used_at,
@@ -256,10 +260,17 @@ class _ClientHandler(asyncssh.SSHClient):
     def __init__(self, manager: "SshConnectionManager", name: str) -> None:
         self._manager = manager
         self._name = name
+        self._conn: asyncssh.SSHClientConnection | None = None
+
+    def connection_made(self, conn: asyncssh.SSHClientConnection) -> None:
+        self._conn = conn
 
     def connection_lost(self, exc: Optional[Exception]) -> None:
         managed = self._manager._connections.get(self._name)
-        if managed is None or managed.status == STATUS_DISCONNECTED:
+        if managed is None:
+            return
+        managed.routes = {key: conn for key, conn in managed.routes.items() if conn is not self._conn}
+        if managed.conn is not self._conn:
             return
         if exc is None:
             managed.status = STATUS_DISCONNECTED
@@ -331,27 +342,35 @@ class SshConnectionManager:
     # 连接生命周期
     # ------------------------------------------------------------------
 
-    async def connect(self, name: str) -> Dict[str, Any]:
+    async def connect(self, name: str, proxy_mode: ProxyMode | None = None) -> Dict[str, Any]:
         """建立连接（已连接则直接返回），返回状态快照。"""
         profile = self._store.get(name)
         if profile is None:
             raise ValueError(f"连接不存在: {name}")
 
+        requested = proxy_mode if proxy_mode is not None else str(ConfigManager.get("ssh_proxy_mode", "direct"))
+        if requested not in {"direct", "system", "proxy"}:
+            raise ValueError("SSH proxy_mode 须为 direct、system 或 proxy")
+        mode: ProxyMode = "proxy" if requested == "proxy" else "system" if requested == "system" else "direct"
+        route = resolve_socket_route(str(profile["host"]), int(profile.get("port", 22)), mode)
         managed = self._managed(name)
-        if managed.status == STATUS_CONNECTED and managed.conn is not None:
-            return managed.snapshot(profile, self._store.get_default_name() == name)
-
         lock = self._get_lock(name)
         async with lock:
-            # 双重检查：等锁期间可能已被其他协程建连
-            if managed.status == STATUS_CONNECTED and managed.conn is not None:
+            if cached := managed.routes.get(route.proxies):
+                managed.last_error = ""
+                managed.conn, managed.proxy_mode = cached, mode
+                managed.status = STATUS_CONNECTED
                 return managed.snapshot(profile, self._store.get_default_name() == name)
 
             managed.status = STATUS_CONNECTING
             managed.last_error = ""
             _broadcast_status(self, name, "status")
             try:
-                conn = await self._create_connection(profile)
+                conn = await self._create_connection(profile, route)
+            except asyncio.CancelledError:
+                managed.status = STATUS_CONNECTED if managed.conn is not None else STATUS_DISCONNECTED
+                _broadcast_status(self, name, "status")
+                raise
             except Exception as exc:
                 managed.status = STATUS_ERROR
                 managed.last_error = str(exc)[:200]
@@ -361,12 +380,14 @@ class SshConnectionManager:
                 # 不与网络失败混为一谈，调用方按 cause 精确决策
                 if isinstance(exc, asyncssh.PermissionDenied):
                     raise PermissionError(f"SSH 认证失败: {exc}") from exc
-                if isinstance(exc, FileNotFoundError):
+                if isinstance(exc, (FileNotFoundError, ValueError)):
                     raise
                 detail = str(exc).strip() or type(exc).__name__
                 raise ConnectionError(f"连接 {name} 失败: {detail}") from exc
 
             managed.conn = conn
+            managed.routes[route.proxies] = conn
+            managed.proxy_mode = mode
             managed.status = STATUS_CONNECTED
             managed.connected_at = int(time.time() * 1000)
             managed.last_used_at = managed.connected_at
@@ -375,8 +396,8 @@ class SshConnectionManager:
             log(f"SSH 已连接: {name} ({profile.get('username')}@{profile.get('host')}:{profile.get('port')})", tag="SSH")
             return managed.snapshot(profile, self._store.get_default_name() == name)
 
-    async def _create_connection(self, profile: Dict[str, Any]) -> asyncssh.SSHClientConnection:
-        """根据配置建立 asyncssh 连接（展开 ${ENV_VAR} 引用，先做 TCP 可达性探测）。"""
+    async def _create_connection(self, profile: Dict[str, Any], route: NetworkRoute) -> asyncssh.SSHClientConnection:
+        """按显式路由建立 SSH 连接，直连先探测 TCP，代理先建立隧道。"""
         password = str(expand_env_refs(profile.get("password", "")))
         passphrase = str(expand_env_refs(profile.get("passphrase", ""))) or None
         key_path = str(profile.get("key_path", "")).strip()
@@ -386,11 +407,11 @@ class SshConnectionManager:
 
         host = str(profile["host"])
         port = int(profile.get("port", 22))
-        await _probe_tcp(host, port)
 
         keepalive = get_config_int("ssh_keepalive_interval", 30)
 
         kwargs: Dict[str, Any] = {
+            "config": None, "proxy_command": None, "tunnel": None,
             "username": profile.get("username", ""),
             "keepalive_interval": keepalive,
             "keepalive_count_max": 3,
@@ -410,32 +431,49 @@ class SshConnectionManager:
             kwargs["password"] = password
 
         connect_timeout = get_config_int("ssh_connect_timeout", 15)
-        try:
-            return await asyncio.wait_for(
-                asyncssh.connect(host, port, **kwargs), timeout=connect_timeout,
-            )
-        except asyncio.TimeoutError:
-            raise ConnectionError(
-                f"SSH 握手超时: TCP 已连通但 {connect_timeout}s 内未完成握手，"
-                "端口可能被非 SSH 服务占用或 sshd 过载"
-            ) from None
+        for index, proxy in enumerate(route.proxies):
+            sock = None
+            try:
+                budget = min(connect_timeout, route.connect_timeout) if index + 1 < len(route.proxies) else connect_timeout
+                async with asyncio.timeout(budget):
+                    if proxy:
+                        sock = await open_proxy_socket(host, port, proxy, timeout=budget)
+                    else:
+                        await _probe_tcp(host, port)
+                    connection = await asyncssh.connect(host, port, sock=sock, **kwargs)
+                    sock = None
+                    return connection
+            except (OSError, asyncio.TimeoutError) as exc:
+                if index + 1 == len(route.proxies):
+                    if isinstance(exc, asyncio.TimeoutError):
+                        raise ConnectionError(f"SSH 建连或握手超时: {host}:{port} 超过 {budget:g}s") from None
+                    raise
+            finally:
+                if sock is not None:
+                    sock.close()
+        raise ConnectionError(f"无法连接 SSH 目标 {host}:{port}")
 
     async def disconnect(self, name: str) -> None:
         """主动断开连接（未连接则无操作）。"""
         managed = self._connections.get(name)
-        if managed is None or managed.conn is None:
+        if managed is None or (managed.conn is None and not managed.routes):
             if managed is not None:
                 managed.status = STATUS_DISCONNECTED
                 managed.last_error = ""
             return
-        conn, managed.conn = managed.conn, None
+        connections = set(managed.routes.values())
+        if managed.conn is not None:
+            connections.add(managed.conn)
+        managed.conn = None
+        managed.routes.clear()
         managed.status = STATUS_DISCONNECTED
         managed.last_error = ""
         # 显式断开后重置远程目录偏好，重连即从登录目录开始（防陈旧目录误导）
         managed.work_dir = ""
         try:
-            conn.close()
-            await conn.wait_closed()
+            for conn in connections:
+                conn.close()
+            await asyncio.gather(*(conn.wait_closed() for conn in connections))
         except Exception as exc:
             log(f"SSH 关闭连接异常（已忽略）: {name} - {exc}", "DEBUG", tag="SSH")
         _broadcast_status(self, name, "status")
@@ -450,12 +488,9 @@ class SshConnectionManager:
     # 命令执行与文件传输
     # ------------------------------------------------------------------
 
-    async def _ensure_connected(self, name: str) -> asyncssh.SSHClientConnection:
+    async def _ensure_connected(self, name: str, proxy_mode: ProxyMode | None = None) -> asyncssh.SSHClientConnection:
         """获取活跃连接，未连接则建连。"""
-        managed = self._managed(name)
-        if managed.status == STATUS_CONNECTED and managed.conn is not None:
-            return managed.conn
-        await self.connect(name)
+        await self.connect(name, proxy_mode)
         managed = self._managed(name)
         assert managed.conn is not None
         return managed.conn
@@ -483,6 +518,7 @@ class SshConnectionManager:
         name: str = "",
         timeout: float = 0,
         work_dir: str = "",
+        proxy_mode: ProxyMode | None = None,
     ) -> Dict[str, Any]:
         """在指定（或默认）连接上执行命令，返回结构化结果。
 
@@ -499,7 +535,7 @@ class SshConnectionManager:
             SshCommandInterrupted: 命令执行中连接断开（含对端关机/网络中断）。
         """
         target = self._resolve_name(name)
-        conn = await self._ensure_connected(target)
+        conn = await self._ensure_connected(target, proxy_mode)
         managed = self._managed(target)
         effective_timeout = timeout or get_config_int("ssh_default_timeout", int(_FALLBACK_CMD_TIMEOUT))
         # 远程工作目录跟踪（ssh_work_dir_tracking，POSIX pwd 捕获）：
@@ -510,8 +546,10 @@ class SshConnectionManager:
 
         def _mark_disconnected() -> None:
             managed = self._managed(target)
-            managed.conn = None
-            managed.status = STATUS_DISCONNECTED
+            managed.routes = {key: item for key, item in managed.routes.items() if item is not conn}
+            if managed.conn is conn:
+                managed.conn = None
+                managed.status = STATUS_DISCONNECTED
             _broadcast_status(self, target, "status")
 
         # 阶段一：打开执行通道。此阶段断线/超时 = 命令未开始，重试安全。
@@ -526,7 +564,7 @@ class SshConnectionManager:
                 conn.close()
             _mark_disconnected()
             try:
-                conn = await self._ensure_connected(target)
+                conn = await self._ensure_connected(target, proxy_mode)
                 process = await self._open_process(conn, full_command)
             except _SESSION_OPEN_EXCS as retry_exc:
                 if isinstance(retry_exc, asyncio.TimeoutError):
@@ -598,12 +636,12 @@ class SshConnectionManager:
             return None
         return _decode_remote_text(result.stdout)
 
-    async def upload(self, local_path: str, remote_path: str, name: str = "") -> Dict[str, Any]:
+    async def upload(self, local_path: str, remote_path: str, name: str = "", proxy_mode: ProxyMode | None = None) -> Dict[str, Any]:
         """经 SFTP 上传本地文件到远程。"""
         target = self._resolve_name(name)
         if not os.path.isfile(local_path):
             raise FileNotFoundError(f"本地文件不存在: {local_path}")
-        conn = await self._ensure_connected(target)
+        conn = await self._ensure_connected(target, proxy_mode)
         sftp = await conn.start_sftp_client()
         try:
             await sftp.put(local_path, remote_path)
@@ -615,12 +653,12 @@ class SshConnectionManager:
         return {"ok": True, "connection": target, "local_path": local_path,
                 "remote_path": remote_path, "size": size}
 
-    async def download(self, remote_path: str, local_path: str, name: str = "") -> Dict[str, Any]:
+    async def download(self, remote_path: str, local_path: str, name: str = "", proxy_mode: ProxyMode | None = None) -> Dict[str, Any]:
         """经 SFTP 下载远程文件到本地。"""
         target = self._resolve_name(name)
         local_dir = os.path.dirname(os.path.abspath(local_path))
         os.makedirs(local_dir, exist_ok=True)
-        conn = await self._ensure_connected(target)
+        conn = await self._ensure_connected(target, proxy_mode)
         sftp = await conn.start_sftp_client()
         try:
             await sftp.get(remote_path, local_path)

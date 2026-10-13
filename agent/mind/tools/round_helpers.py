@@ -219,6 +219,15 @@ def _tool_schema_name(schema: Dict) -> str:
     return str(schema.get("function", {}).get("name", ""))
 
 
+def snapshot_watermark(messages: List[Dict]) -> tuple[int, int]:
+    """读取本次历史快照的水位，其他读者不改变本轮已读范围。"""
+    history = [m["_source"] for m in messages if m.get("_source", {}).get("origin") == "conversation"]
+    return (
+        max((int(row.get("ts_ns", 0)) for row in history), default=0),
+        max((int(row.get("id", 0)) for row in history), default=0),
+    )
+
+
 async def _prepare_think_context(
         mind: "Mind",
         mode: ThinkMode,
@@ -272,19 +281,7 @@ async def _prepare_think_context(
             push_hub = getattr(mind, "push_hub", None)
             if push_hub is not None:
                 push_watermark = push_hub.current_seq(current_scope)
-    # 新消息并入基线：以历史快照水位（快照内最大 ts_ns）为起点，
-    # 循环期间到达的用户消息（到达时已实时入库）将并入当前上下文，而非另起周期
-    last_merged_ts = time.time_ns()
-    last_merged_id = 0
-    if mode == ThinkMode.REPLY and anything:
-        try:
-            scope_type, scope_id = mind._resolve_scope(anything)
-            watermark = mind.conversation_data.get_fetch_watermark(scope_type, scope_id)
-            if watermark is not None:
-                last_merged_ts = watermark
-            last_merged_id = mind.conversation_data.get_fetch_watermark_id(scope_type, scope_id)
-        except Exception as exc:
-            log(f"快照水位获取失败，按当前时间并入: {exc}", "DEBUG", tag="思维")
+    last_merged_ts, last_merged_id = snapshot_watermark(base_messages)
 
     # 中断注册表（协作式刹车信号；替身 Mind 可能不具备，容忍缺省）
     interrupts = getattr(mind, "interrupts", None)
@@ -346,22 +343,22 @@ async def _prepare_think_context(
 # 循环支撑 helper
 # ==================================================================
 
-def _consume_pending_for_scope(mind: "Mind", anything: "Everything") -> None:
+def _consume_pending_for_scope(mind: "Mind", anything: "Everything", through_ts: int) -> None:
     """消费当前 scope 的待处理队列条目（新消息已并入当前循环，无需另起周期）。"""
     try:
         from agent.mind.prefrontal_cortex import _safe_entity_scope
-        mind.pfc.consume_scope_task(_safe_entity_scope(anything))
+        mind.pfc.consume_scope_task(_safe_entity_scope(anything), through_ts=through_ts)
     except Exception as exc:
         log(f"消费待处理队列失败: {exc}", "DEBUG", tag="思维")
 
 
-async def _fetch_new_user_messages(
+async def _fetch_new_messages(
         mind: "Mind",
         anything: "Everything",
         since_ts: int,
         since_id: int = 0,
 ) -> List[Dict]:
-    """获取循环期间到达的新用户消息（role=user，按时间升序）。
+    """读取历史快照之后的收发消息与系统事实，按入库顺序返回。
 
     用于将新消息并入当前 think_loop 上下文，避免图片+文字等连续消息
     被拆成独立周期导致 AI 忘记已回复/丢失上下文关联。
@@ -374,16 +371,16 @@ async def _fetch_new_user_messages(
         if since_id > 0:
             cursor = await db.execute(
                 "SELECT id, role, content, ts_ns FROM conversation_messages "
-                "WHERE scope_type=? AND scope_id=? AND id > ? AND role = 'user' "
-                "ORDER BY id ASC",
-                (scope_type, scope_id, int(since_id)),
+                "WHERE scope_type=? AND scope_id=? AND id > ? AND role IN ('user', 'assistant', 'system') "
+                "ORDER BY id ASC LIMIT ?",
+                (scope_type, scope_id, int(since_id), _MAX_MERGED_MESSAGES + 1),
             )
         else:
             cursor = await db.execute(
                 "SELECT id, role, content, ts_ns FROM conversation_messages "
-                "WHERE scope_type=? AND scope_id=? AND ts_ns > ? AND role = 'user' "
-                "ORDER BY ts_ns ASC, id ASC",
-                (scope_type, scope_id, int(since_ts)),
+                "WHERE scope_type=? AND scope_id=? AND ts_ns > ? AND role IN ('user', 'assistant', 'system') "
+                "ORDER BY ts_ns ASC, id ASC LIMIT ?",
+                (scope_type, scope_id, int(since_ts), _MAX_MERGED_MESSAGES + 1),
             )
         rows = await cursor.fetchall()
         return [{"id": r[0], "role": r[1], "content": r[2], "ts_ns": r[3]} for r in rows]
@@ -567,7 +564,7 @@ async def _suspend_for_background(
     async def _aborted() -> bool:
         if interrupts is not None and interrupts.is_requested(scope):
             return True
-        return bool(await _fetch_new_user_messages(mind, anything, since_ts, since_id))
+        return bool(await _fetch_new_messages(mind, anything, since_ts, since_id))
 
     t0 = time.monotonic()
     result = await registry.wait_any(scope, timeout=timeout, should_abort=_aborted)
@@ -581,7 +578,7 @@ def _maybe_reset_guardrail_for_interjection(guardrail, new_msgs: List[Dict]) -> 
     user 角色消息（proactive 指令/prefill 独白）不触发重置。返回是否重置。
     """
     if any(
-        is_genuine_user_message({"role": "user", "content": m.get("content")})
+        m.get("role", "user") == "user" and is_genuine_user_message({"role": "user", "content": m.get("content")})
         for m in new_msgs
     ):
         guardrail.reset()
@@ -596,18 +593,18 @@ _MAX_MERGED_MESSAGES = 20
 _MAX_MERGED_CHARS = 20000
 
 
-async def _merge_new_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> None:
-    """并入循环期间到达的新用户消息（含携带媒体），更新工具集与并入水位。"""
+async def _merge_new_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> bool:
+    """并入循环期间到达的收发消息与系统事实；返回是否接收了新的用户消息。"""
     from core.sanitizer import clean_surrogates, has_surrogates
 
     mind = ctx.mind
     if not (ctx.mode == ThinkMode.REPLY and ctx.anything):
-        return
-    new_msgs = await _fetch_new_user_messages(
+        return False
+    new_msgs = await _fetch_new_messages(
         mind, ctx.anything, state.last_merged_ts, state.last_merged_id,
     )
     if not new_msgs:
-        return
+        return False
     # 有界并入：首条强制并入保证进度；达到条数/字符上限即停，留存消息
     # 不推进水位（下轮再取），且保留待处理队列条目（循环结束另起周期接续）
     merged: List[Dict] = []
@@ -626,17 +623,18 @@ async def _merge_new_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> No
         # 入口清洗同时保证 FTS/embedding/摘要链路拿到干净文本）
         if isinstance(content, str) and has_surrogates(content):
             content = clean_surrogates(content)
-        ctx.tool_chain.append({"role": "user", "content": content})
+        ctx.tool_chain.append({"role": m["role"], "content": content,
+                               "_source": {"origin": "conversation", "id": m.get("id", 0), "ts_ns": m["ts_ns"]}})
     # 用户插话重置守卫链：用户新消息改变了语境，
     # 跨插话的"重复调用"不再构成死循环
     if _maybe_reset_guardrail_for_interjection(ctx.guardrail, merged):
         log("用户插话，重置工具守卫链", "DEBUG", tag="守卫")
-    state.last_merged_ts = merged[-1]["ts_ns"]
+    state.last_merged_ts = max(state.last_merged_ts, *(m["ts_ns"] for m in merged))
     if merged[-1].get("id"):
         state.last_merged_id = int(merged[-1]["id"])
     # 全部并入才消费待处理队列条目；有留存时保留，避免留存消息无人回复
     if not deferred:
-        _consume_pending_for_scope(mind, ctx.anything)
+        _consume_pending_for_scope(mind, ctx.anything, through_ts=state.last_merged_ts)
     # 新消息携带的媒体：激活对应媒体工具并重建工具集供后续轮次使用
     # （媒体标签已随内容并入上下文，待处理媒体不留存到后续周期）
     try:
@@ -658,6 +656,8 @@ async def _merge_new_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> No
     ctx.execution_steps.append(
         f"→ 第{state.iteration + 1}轮前: 并入 {len(merged)} 条新消息{deferred_note}"
     )
+
+    return any(m["role"] == "user" for m in merged)
 
 
 async def _merge_pushes(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> None:

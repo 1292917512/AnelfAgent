@@ -14,7 +14,9 @@ from core.network import (
     diagnose_network,
     get_proxy_url,
     network_client,
+    open_proxy_socket,
     resolve_network_route,
+    resolve_socket_route,
 )
 
 from .base import BaseChannel, ChannelConfig, ChannelMetadata
@@ -44,6 +46,7 @@ __all__ = [
     "NetworkProbeRequest", "diagnose_network",
     "AsyncNetworkTransport", "NetworkTransport", "NetworkRoute", "ProxyMode",
     "async_network_client", "network_client", "get_proxy_url", "resolve_network_route",
+    "open_proxy_socket", "resolve_socket_route",
     "AdapterChannel",
     "AdapterMessage",
     "AdapterSendRequest",

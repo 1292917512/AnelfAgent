@@ -148,11 +148,7 @@ class FakeMind:
         self._config = {**DEFAULT_MIND_CONFIG, **(config_overrides or {})}
         self._add_system_context = AsyncMock()
         self._reply_adapter_key = ""
-        # 快照水位存根：think_loop 轮顶读取历史水位并入新消息（无真实 DB，空水位即可）
-        self.conversation_data = SimpleNamespace(
-            get_fetch_watermark=lambda *_: None,
-            get_fetch_watermark_id=lambda *_: 0,
-        )
+        self.conversation_data = SimpleNamespace()
 
     @staticmethod
     def _resolve_scope(anything) -> tuple:

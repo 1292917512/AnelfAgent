@@ -130,8 +130,8 @@ class PrefrontalCortex:
     def peek_all_tasks(self) -> List[Tuple[str, str, str, str]]:
         return self.work_memory.peek_all_tasks()
 
-    def consume_scope_task(self, scope: str) -> bool:
-        return self.work_memory.consume_scope_task(scope)
+    def consume_scope_task(self, scope: str, *, through_ts: int | None = None) -> bool:
+        return self.work_memory.consume_scope_task(scope, through_ts=through_ts)
 
     def get_unread_count(self, scope: str) -> int:
         return self.work_memory.get_unread_count(scope)

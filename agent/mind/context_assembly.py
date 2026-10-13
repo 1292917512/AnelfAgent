@@ -167,9 +167,9 @@ _MAX_RENDERED_STEPS = 12
 
 # 会话通知：其他会话的未读消息以"弹窗"形式提示（固定模板，动态内容在末尾 exec_context）
 _SESSION_NOTIFY_HINT = (
-    "→ 回复默认发往当前会话，无需选择投递目标；"
-    "如需处理其他会话的新消息，调用 switch_session(scope) 切换，"
-    "可先调用 list_sessions 查看全部会话"
+    "→ 跨会话收发内容在动态上下文中实时更新；"
+    "回复使用 send_message 指定正确的频道与会话。"
+    "需要为其他会话启动独立回复时调用 switch_session(scope)，list_sessions 可查看会话状态。"
 )
 
 

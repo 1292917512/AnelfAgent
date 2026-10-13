@@ -222,10 +222,10 @@ _MIND_CONFIGS = {
             "advanced": True,
         },
         "cross_channel_narrative_max_items": {
-            "description": "近况叙事最大条数",
+            "description": "实时感知的其他会话数上限（每个会话沿用对话历史窗口）",
             "default": 3,
             "advanced": True,
-            "unit": "条",
+            "unit": "会话",
         },
     },
     "memory/notes": {

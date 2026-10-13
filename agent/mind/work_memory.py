@@ -48,6 +48,7 @@ class PendingSignal:
     to_me: bool = False
     kind: str = ""
     message_id: str = ""
+    created_ts_ns: int = 0
 
 
 def _pfc_persist_enabled() -> bool:
@@ -324,6 +325,7 @@ class WorkMemory:
         message_kind = getattr(anything, "message_kind", "chat") or "chat"
         signal = PendingSignal(
             message_id=anything.adapter_message_id,
+            created_ts_ns=anything.created_ts_ns,
             preview=preview,
             adapter_key=adapter_key,
             to_me=bool(getattr(anything, "to_me", False)),
@@ -537,7 +539,7 @@ class WorkMemory:
             result.append((scope, "0", gid, signal.preview if signal else ""))
         return result
 
-    def consume_scope_task(self, scope: str) -> bool:
+    def consume_scope_task(self, scope: str, *, through_ts: int | None = None) -> bool:
         """消费指定 scope 的待回复条目（含关联状态清理）。
 
         两个队列都查（不按前缀路由）：scope 字符串跨队列天然唯一，
@@ -545,6 +547,9 @@ class WorkMemory:
         无法解析的毒丸条目（留在队列会让自主循环空转）。
         """
         if not scope:
+            return False
+        signal = self._pending_signals.get(scope)
+        if through_ts is not None and signal and signal.created_ts_ns > through_ts:
             return False
         self._clear_scope_state(scope)
         removed_user = self._consume_from_queue(self.pending_user, scope)

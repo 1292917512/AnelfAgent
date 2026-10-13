@@ -1,3 +1,5 @@
+import type { ProxyMode } from "@/lib/types";
+
 export type SshStatus = "disconnected" | "connecting" | "connected" | "error";
 
 export interface SshConnection {
@@ -7,6 +9,7 @@ export interface SshConnection {
   username: string;
   description: string;
   status: SshStatus;
+  proxy_mode: ProxyMode;
   last_error: string;
   connected_at: number;
   last_used_at: number;
@@ -46,6 +49,7 @@ export interface SshExecRequest {
   command: string;
   timeout?: number;
   work_dir?: string;
+  proxy_mode?: ProxyMode;
 }
 
 export interface SshExecResult {

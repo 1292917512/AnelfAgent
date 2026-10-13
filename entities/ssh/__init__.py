@@ -33,6 +33,11 @@ entity_manifest(
 # 实体配置项：分组名 entity/ssh，实体详情页配置 tab 自动展示
 register_configs_safe({
     "entity/ssh": {
+        "ssh_proxy_mode": {
+            "description": "SSH 默认网络策略：direct 直连 / system 全局规则 / proxy 强制代理。单次调用可覆盖；不读取系统 SSH 代理命令",
+            "default": "direct", "value_type": "enum", "options": ["direct", "system", "proxy"],
+            "related_key": "proxy_enabled",
+        },
         "ssh_ai_enabled": {
             "description": "是否允许 AI 调用 SSH 工具（连接/执行/传输）",
             "default": True,

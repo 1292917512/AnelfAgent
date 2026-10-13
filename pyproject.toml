@@ -56,6 +56,7 @@ dependencies = [
     "asyncpg>=0.31.0",
     "aiomysql>=0.3.2",
     "asyncssh>=2.24.0",
+    "python-socks[asyncio]>=2.7,<3",
     "acfunsdk>=0.9.8",
     "brotli>=1.2.0",
     "qrcode-terminal>=0.8",

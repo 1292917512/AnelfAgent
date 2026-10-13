@@ -10,6 +10,8 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
+from core.network import ProxyMode
+
 
 class ConnectionOut(BaseModel):
     """连接状态快照（出站，不含凭据）。"""
@@ -20,6 +22,7 @@ class ConnectionOut(BaseModel):
     username: str = ""
     description: str = ""
     status: str = "disconnected"
+    proxy_mode: ProxyMode = "direct"
     last_error: str = ""
     connected_at: int = 0
     last_used_at: int = 0
@@ -67,6 +70,7 @@ class ExecRequest(BaseModel):
     command: str = Field(..., min_length=1)
     timeout: int = Field(60, ge=1, le=600)
     work_dir: str = ""
+    proxy_mode: ProxyMode | None = None
 
 
 class ExecResult(BaseModel):

@@ -27,7 +27,6 @@ class RecollectionInputs:
     memories: list[dict] = field(default_factory=list)
     relations: list[dict] = field(default_factory=list)
     cross_channel: list[dict] = field(default_factory=list)
-    recalled_scopes: set[str] = field(default_factory=set)
     skills: list[dict] = field(default_factory=list)
     profile_blocks: list[str] = field(default_factory=list)
     hub: str = ""
@@ -88,7 +87,7 @@ async def collect_recollection_inputs(
 
     async def cross_channel() -> None:
         if not trivial and policy.level == "deep":
-            result.cross_channel, result.recalled_scopes = await mind._recall_cross_channel(
+            result.cross_channel = await mind._recall_cross_channel(
                 tail, adapter, scope, query_vec_task=vector_task)
 
     async def pins() -> None:

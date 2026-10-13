@@ -6,12 +6,14 @@ import httpx
 
 from .diagnostics import NetworkProbeReport, NetworkProbeRequest, diagnose_network
 from .policy import NetworkRoute, ProxyMode, get_proxy_url, resolve_network_route
+from .socket import open_proxy_socket, resolve_socket_route
 from .transport import AsyncNetworkTransport, NetworkTransport, ProxySelection
 
 __all__ = [
     "NetworkProbeReport", "NetworkProbeRequest", "diagnose_network",
     "AsyncNetworkTransport", "NetworkTransport", "NetworkRoute", "ProxyMode",
     "get_proxy_url", "resolve_network_route", "network_client", "async_network_client",
+    "open_proxy_socket", "resolve_socket_route",
 ]
 
 

@@ -69,11 +69,14 @@ from core.network import (
     diagnose_network,
     get_proxy_url,
     network_client,
+    open_proxy_socket,
     resolve_network_route,
+    resolve_socket_route,
 )
 from core.network.httpx2 import async_network_client2
 
 __all__ = [
+    "open_proxy_socket", "resolve_socket_route",
     "NetworkProbeRequest", "diagnose_network",
     "AsyncNetworkTransport", "NetworkTransport", "NetworkRoute", "ProxyMode",
     "async_network_client", "async_network_client2", "network_client", "get_proxy_url", "resolve_network_route",

@@ -41,9 +41,6 @@ from agent.mind.cross_channel import (
     ChannelSnapshot,
 )
 from agent.mind.cross_channel import (
-    build_cross_channel_narrative as _cc_build_narrative,
-)
-from agent.mind.cross_channel import (
     collect_channel_info as _cc_collect_channel_info,
 )
 from agent.mind.cross_channel import (
@@ -401,6 +398,7 @@ class Mind:
             preview = str(anything)[:80] if anything else ""
             log(f"感知输入: {preview}", tag="思维")
             await self.add_conversation(anything)
+            self._update_channel_snapshot(anything)
 
             # 用户话题指令抽取（ban-topic）：所有用户消息必经点，纯正则零 LLM，
             # 失败不影响消息主流程
@@ -444,7 +442,6 @@ class Mind:
                 # （防伪造：仅此路径检测，工具结果/子代理输出里的 "/x" 不构成手势）
                 self._detect_skill_gesture(anything, scope)
                 await self.pfc.add_task(anything)
-                self._update_channel_snapshot(anything)
         finally:
             # 感知处理完成边界：未入队/中断/异常路径不会有后续周期覆盖
             # ACCEPTING；已入队时周期未抢锁则先归零、周期启动再覆盖
@@ -1286,20 +1283,11 @@ class Mind:
         current_scope: str,
         query_vec: Optional[List[float]] = None,
         query_vec_task: asyncio.Future[list[float] | None] | None = None,
-    ) -> Tuple[List[Dict], Set[str]]:
-        """搜索其他频道的语义相关对话，返回 (注入消息列表, 已召回 scope 集合)。"""
+    ) -> List[Dict]:
+        """搜索其他频道的语义相关对话，返回注入消息列表。"""
         return await _cc_recall(
             self, query_conversation, current_adapter_key, current_scope, query_vec=query_vec, query_vec_task=query_vec_task,
         )
-
-    def _build_cross_channel_narrative(
-        self,
-        current_adapter_key: str,
-        current_scope: str,
-        already_recalled_scopes: Optional[Set[str]] = None,
-    ) -> str:
-        """生成跨频道近况叙述（已被语义召回覆盖的 scope 不重复出现）。"""
-        return _cc_build_narrative(self, current_adapter_key, current_scope, already_recalled_scopes)
 
     def _get_models_summary(self) -> str:
         """生成可用模型摘要（供 PFC 工作记忆使用）。"""

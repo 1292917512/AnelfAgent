@@ -124,7 +124,7 @@ def resolve_network_route(url: str, proxy_mode: ProxyMode = "system") -> Network
     host = (parts.hostname or "").rstrip(".").lower().encode("idna").decode("ascii")
     if not host:
         raise ValueError("网络请求 URL 缺少主机名")
-    if proxy_mode == "direct" or parts.scheme not in {"http", "https", "ws", "wss"}:
+    if proxy_mode == "direct" or parts.scheme not in {"http", "https", "ws", "wss", "tcp"}:
         return NetworkRoute("direct", "component", (None,))
     if not get_config_bool("proxy_enabled", False):
         if proxy_mode == "proxy":

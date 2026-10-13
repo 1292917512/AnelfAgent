@@ -163,6 +163,11 @@ def guard_outbound(target_scope: str, thinker: str) -> str:
     return ""
 
 
+def recent_outbound_activity(since: float) -> dict[str, float]:
+    """读取近期成功投递目标及最后投递时间，不消费或复制消息内容。"""
+    return {scope: queue[-1].ts for scope, queue in _recent.items() if queue and queue[-1].ts >= since}
+
+
 def render_outbound_facts(thinker: str, *, now: float | None = None) -> str:
     """渲染近期出站事实块（context provider 消费）；无事实返回空串。
 

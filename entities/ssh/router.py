@@ -39,6 +39,7 @@ def _build_out(profile: Dict[str, Any], snapshot: Dict[str, Any]) -> ConnectionO
         username=str(profile.get("username", "")),
         description=str(profile.get("description", "")),
         status=str(snapshot.get("status", "disconnected")),
+        proxy_mode=snapshot.get("proxy_mode", "direct"),
         last_error=str(snapshot.get("last_error", "")),
         connected_at=int(snapshot.get("connected_at", 0)),
         last_used_at=int(snapshot.get("last_used_at", 0)),
@@ -160,7 +161,7 @@ def build_router() -> APIRouter:
         manager = get_ssh_manager()
         try:
             result = await manager.execute(
-                req.command, name=name, timeout=float(req.timeout), work_dir=req.work_dir,
+                req.command, name=name, timeout=float(req.timeout), work_dir=req.work_dir, proxy_mode=req.proxy_mode,
             )
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e

@@ -93,16 +93,9 @@ async def _get_recollection(
         for position, block in enumerate(inputs.profile_blocks):
             if block:
                 profile_msgs.insert(position, {"role": "system", "content": block})
-        # 跨频道语义召回 + 叙事面包屑
+        # 与当前话题有关的跨频道历史召回
         memory_msgs = [{**msg, "_source": {"origin": "memory_recall"}} for msg in memory_msgs]
         memory_msgs.extend({**msg, "_source": {"origin": "cross_channel_recall"}} for msg in inputs.cross_channel)
-        narrative = mind._build_cross_channel_narrative(
-            current_adapter, entity_scope, inputs.recalled_scopes,
-        )
-        if narrative:
-            memory_msgs.append({"role": "system", "content": narrative,
-                                "_source": {"origin": "cross_channel_narrative"}})
-
         # 技能匹配注入（volatile 层）：当前对话语义匹配到的经验技能
         memory_msgs.extend(inputs.skills)
 

@@ -51,6 +51,9 @@
     "cancel": "Cancel"
   },
   "exec": {
+    "proxyMode": "Connection route for this command",
+    "configureDefault": "SSH defaults",
+    "followDefault": "Follow SSH settings (direct by default)",
     "title": "Run Command",
     "subtitle": "Execute a command on the selected connection and view structured output",
     "connection": "Target connection",

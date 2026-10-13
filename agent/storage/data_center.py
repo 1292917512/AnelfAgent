@@ -178,11 +178,6 @@ class ConversationData:
         self.router = router
         # 显式传入时固定（测试/定制）；None 时每次实时读配置（Web 调整即时生效）
         self._max_size_override = max_size
-        # scope_key("user_123"/"group_456") → 最近一次历史快照的最大 ts_ns（快照水位）。
-        # 水位与快照出自同一次 SELECT，think_loop 以此增量合并循环期间新消息。
-        self._fetch_watermarks: dict[str, int] = {}
-        # id 水位：与 ts 水位同次快照记录，同 ts_ns 并列的消息靠 id 精确决胜
-        self._fetch_watermark_ids: dict[str, int] = {}
 
     @property
     def max_size(self) -> int:
@@ -202,21 +197,13 @@ class ConversationData:
         scope_type, scope_id = self._scope_of(anything)
         scopes = await self._alias_merged_scopes(scope_type, scope_id)
         rows = await self._fetch_window_rows(scope_type, scope_id, scopes)
-        # 记录快照水位（快照内最大 ts_ns 与最大 id），并剥离 ts_ns/id 避免泄漏进 LLM 消息
-        max_ts = 0
-        max_id = 0
-        records: list[dict] = []
-        for row in rows:
-            ts = int(row.get("ts_ns", 0) or 0)
-            if ts > max_ts:
-                max_ts = ts
-            rid = int(row.get("id", 0) or 0)
-            if rid > max_id:
-                max_id = rid
-            records.append({"role": row["role"], "content": row["content"]})
-        self._fetch_watermarks[f"{scope_type}_{scope_id}"] = max_ts
-        self._fetch_watermark_ids[f"{scope_type}_{scope_id}"] = max_id
-        return records
+        return [
+            {"role": row["role"], "content": row["content"], "_source": {
+                "origin": "conversation", "id": int(row.get("id", 0)),
+                "ts_ns": int(row.get("ts_ns", 0)),
+            }}
+            for row in rows
+        ]
 
     async def _fetch_window_rows(
         self,
@@ -413,14 +400,6 @@ class ConversationData:
             (summary_row or {}).get("watermarks", {}),
             (summary_row or {}).get("watermark_ids", {}),
         )
-
-    def get_fetch_watermark(self, scope_type: str, scope_id: str) -> Optional[int]:
-        """返回指定 scope 最近一次历史快照的水位（最大 ts_ns），未快照过返回 None。"""
-        return self._fetch_watermarks.get(f"{scope_type}_{scope_id}")
-
-    def get_fetch_watermark_id(self, scope_type: str, scope_id: str) -> int:
-        """返回指定 scope 最近一次历史快照的 id 水位（最大行 id），未快照过返回 0。"""
-        return self._fetch_watermark_ids.get(f"{scope_type}_{scope_id}", 0)
 
     async def count_messages(self, anything: Everything) -> int:
         """该 scope 的对话消息总数（含窗口外历史，溢出提示感知用）。"""

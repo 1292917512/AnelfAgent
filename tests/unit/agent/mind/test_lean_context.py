@@ -102,7 +102,6 @@ class TestLeanRecollection:
         mind._extract_related_scopes = lambda *args: []
         mind._recall_cross_channel = AsyncMock()
         mind._match_skills = AsyncMock(return_value=[{"content": "手势技能"}])
-        mind._build_cross_channel_narrative = lambda *args: ""
         mind._apply_memory_budget = lambda msgs: msgs
         mind._get_models_summary = lambda: "models"
         mind._resolve_target_id = lambda anything: ""
@@ -176,7 +175,7 @@ async def test_context_reads_overlap_and_skills_only_wait_for_memory(monkeypatch
         assert await asyncio.shield(query_vec_task) == [1.0]
         started["cross"].set()
         await release_cross.wait()
-        return [{"content": "跨频道"}], {"user_webui:1"}
+        return [{"content": "跨频道"}]
 
     async def read(key, value):
         started[key].set()
@@ -212,7 +211,7 @@ async def test_context_reads_overlap_and_skills_only_wait_for_memory(monkeypatch
         assert result.profile_blocks == ["自身", "确认", "求证"]
         assert result.memories == [{"content": "记忆"}]
         assert result.skills == [{"content": "技能"}]
-        assert result.recalled_scopes == {"user_webui:1"}
+        assert result.cross_channel == [{"content": "跨频道"}]
         assert result.hub == "主标签" and result.summary == {"summary": "摘要"}
         mind.embedder.embed_query.assert_awaited_once()
     finally:
@@ -243,7 +242,7 @@ async def test_context_exit_drains_sibling_reads(monkeypatch, fail) -> None:
     mind.retriever.recall_split = lambda *args, **kwargs: wait("memory")
     mind.retriever.load_relation_snippets = lambda *args: wait("relations")
     mind._extract_related_scopes = lambda *args: []
-    mind._recall_cross_channel = AsyncMock(return_value=([], set()))
+    mind._recall_cross_channel = AsyncMock(return_value=[])
     mind._match_skills = AsyncMock(return_value=[])
     mind.memory_store = object()
     monkeypatch.setattr("agent.memory.hub.load_hub_block", hub)

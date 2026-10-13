@@ -91,6 +91,16 @@ LiteLLM 的 SDK 通道通过 `aclient_session` 注入无连接资源的转接客
 
 ## 回退与安全边界
 
+SSH 使用实体配置 `ssh_proxy_mode`，初始为 `direct`。Web 配置中心与 AI 的统一配置工具均可修改；
+`ssh_connect/ssh_exec/ssh_upload/ssh_download` 可通过同名参数覆盖单次调用，Web 命令执行面板也可选择。
+SSH 的 `system` 模式按目标主机匹配全局规则；`proxy` 使用全局 `http_proxy` 地址。SSH 不继承机器
+`~/.ssh/config` 的隐式代理设置，显式连接档案是主机、身份及密钥的来源。
+
+非 HTTP 协议通过 `resolve_socket_route(host, port, proxy_mode)` 与 `open_proxy_socket(...)` 接入。
+TCP 隧道支持 HTTP CONNECT、SOCKS5/SOCKS5H；TLS 封装的 HTTPS 代理不支持，配置此类地址会明确报错。
+SSH 不同路由分别复用连接，单次覆盖不会让后续直连命令借用代理连接，也不会中断其他路线的在途命令。
+断开主机时释放全部路线。fallback 仅在建连失败时换路，认证失败及已启动命令的失败不换路重放。
+
 - 连接建立失败可以切换代理；无请求体的 GET/HEAD/OPTIONS 在收到响应头前发生读取失败也可回退。
 - POST 等写请求发送后的超时、业务错误、HTTP 401/403/429、证书验证错误不自动换路重放。
 - 开始消费响应正文后不重放流。失败原因交给调用方处理，不拼接两次下载或生成结果。

@@ -16,6 +16,7 @@ from helpers.think_loop_fakes import FakeMind, FakePfc, run_think_loop
 
 from agent.llm.types import ImageContent, ToolCall
 from agent.messages import MessageUser
+from agent.mind.tools.round_helpers import snapshot_watermark
 from agent.storage.data_center import ConversationData
 from agent.storage.storage_router import StorageDomain, StorageRouter
 from core.tags import format_time, get_time_tag
@@ -97,12 +98,12 @@ class TestConversationOrdering:
         )
         records = await conv_data.get_conversation_record_by_everything(MessageUser(uid=1))
 
-        assert records == [
+        assert [{"role": m["role"], "content": m["content"]} for m in records] == [
             {"role": "user", "content": "m1"},
             {"role": "user", "content": "m2"},
         ]
-        assert conv_data.get_fetch_watermark("user", "1") == t1 + 1
-        assert conv_data.get_fetch_watermark("user", "999") is None
+        assert snapshot_watermark(records) == (t1 + 1, 2)
+        assert snapshot_watermark([]) == (0, 0)
 
 
 # ------------------------------------------------------------------
@@ -182,7 +183,7 @@ class _MergePfc(FakePfc):
         self.media_activated: List[tuple] = []
         self.tools_rebuilt = 0
 
-    def consume_scope_task(self, scope) -> bool:
+    def consume_scope_task(self, scope, **kwargs) -> bool:
         self.consumed.append(scope)
         return True
 
@@ -242,6 +243,106 @@ class _MergeMind(FakeMind):
 
 
 class TestThinkLoopMerge:
+    async def test_cross_channel_refresh_keeps_identity_and_stable_prefix(self, conv_data, monkeypatch) -> None:
+        from agent.channel.outbound_guard import note_outbound
+        from agent.config import MindConfig
+        from agent.mind.cross_channel import update_channel_snapshot
+        from agent.mind.tool_activation import bind_scope, reset_scope
+
+        monkeypatch.setattr("agent.mind.cross_channel.get_mind_config", lambda: MindConfig())
+        monkeypatch.setattr("agent.channel.outbound_guard._recent", {})
+        current = MessageUser(uid="1", adapter_key="webui", session_id="a", text_content="处理当前工作")
+        others = [
+            MessageUser(uid="1", adapter_key="qq", text_content="QQ 上的请求"),
+            MessageUser(uid="1", adapter_key="webui", session_id="b", text_content="另一个 Web 会话"),
+        ]
+        await conv_data.add_conversation_record_by_everything(current)
+        baseline = await conv_data.get_conversation_record_by_everything(current)
+
+        class ConcurrentMind(_MergeMind):
+            async def _invoke_llm_unified(self, *args, **kwargs):
+                result = await super()._invoke_llm_unified(*args, **kwargs)
+                if self.llm_calls == 1:
+                    for role, text in [("user", "QQ 更新了要求"), ("assistant", "QQ 已收到进度")]:
+                        await conv_data.router.append(StorageDomain.CONVERSATION,
+                            scope_type="user", scope_id="qq:1", role=role, content=text)
+                    await conv_data.router.append(StorageDomain.CONVERSATION,
+                        scope_type=current.scope_type, scope_id=current.scope_id, role="user", content="继续")
+                    await conv_data.router.append(StorageDomain.CONVERSATION,
+                        scope_type="user", scope_id="telegram:1", role="assistant", content="主动投递的完整内容")
+                    note_outbound("user_telegram:1", current.entity_scope, "主动投递")
+                return result
+
+        mind = ConcurrentMind(conv_data)
+        mind._channel_snapshots = {}
+        mind._resolve_entity_scope = lambda anything: anything.entity_scope if anything else ""
+        for message in [current, *others]:
+            if message is not current:
+                await conv_data.add_conversation_record_by_everything(message)
+            update_channel_snapshot(mind, message)
+        token = bind_scope(current.entity_scope)
+        try:
+            await run_think_loop(mind, anything=current, base_messages=baseline)
+        finally:
+            reset_scope(token)
+        assert mind.llm_calls == 2
+        for sent in mind.sent_messages:
+            assert sent[:len(baseline)] == baseline
+            dynamic = [m for m in sent if m.get("_source", {}).get("origin") == "cross_channel_narrative"]
+            assert dynamic and all(m["_layer"] == "provider" for m in dynamic)
+            text = "\n".join(m["content"] for m in dynamic)
+            assert "[scope:user_qq:1][channel:qq][role:user]" in text
+            assert "[scope:user_webui:1#b]" in text
+            assert "[scope:user_webui:1#a]" not in text
+        assert "QQ 更新了要求" not in str(mind.sent_messages[0])
+        assert any("[role:assistant]\nQQ 已收到进度" in m.get("content", "") for m in mind.sent_messages[1])
+        assert "QQ 更新了要求" in str(mind.sent_messages[1])
+        assert "[scope:user_telegram:1][channel:telegram][role:assistant]\n主动投递的完整内容" in "\n".join(
+            m.get("content", "") for m in mind.sent_messages[1] if isinstance(m.get("content"), str))
+        assert all(scope == current.entity_scope for scope in mind.pfc.consumed)
+
+    async def test_other_reader_cannot_advance_active_snapshot(self, conv_data) -> None:
+        message = MessageUser(uid=1)
+        await conv_data.router.append(StorageDomain.CONVERSATION,
+            scope_type="user", scope_id="1", role="user", content="开始检查", ts_ns=100)
+        baseline = await conv_data.get_conversation_record_by_everything(message)
+        await conv_data.router.append(StorageDomain.CONVERSATION,
+            scope_type="user", scope_id="1", role="user", content="先别执行，改成只读", ts_ns=100)
+        await conv_data.get_conversation_record_by_everything(message)
+        mind = _MergeMind(conv_data)
+        await run_think_loop(mind, anything=message, base_messages=baseline)
+        assert "先别执行，改成只读" in [m.get("content") for m in mind.sent_messages[0]]
+
+    async def test_message_during_final_llm_call_continues_same_turn(self, conv_data) -> None:
+        message = MessageUser(uid=1)
+        await conv_data.add_conversation_record_by_everything(message)
+        baseline = await conv_data.get_conversation_record_by_everything(message)
+
+        class InterjectedMind(_MergeMind):
+            async def _invoke_llm_unified(self, *args, **kwargs):
+                result = await super()._invoke_llm_unified(*args, **kwargs)
+                if self.llm_calls == 1:
+                    await conv_data.router.append(StorageDomain.CONVERSATION,
+                        scope_type="user", scope_id="1", role="user", content="还有一件事")
+                return result
+
+        mind = InterjectedMind(conv_data)
+        await run_think_loop(mind, anything=message, base_messages=baseline)
+        assert mind.llm_calls == 2
+        assert "还有一件事" in [m.get("content") for m in mind.sent_messages[1]]
+
+    async def test_sent_message_is_visible_without_restarting_turn(self, conv_data) -> None:
+        message = MessageUser(uid=1)
+        await conv_data.add_conversation_record_by_everything(message)
+        baseline = await conv_data.get_conversation_record_by_everything(message)
+        await conv_data.router.append(StorageDomain.CONVERSATION,
+            scope_type="user", scope_id="1", role="assistant", content="已发送的进度")
+        mind = _MergeMind(conv_data)
+        await run_think_loop(mind, anything=message, base_messages=baseline)
+        sent = [m for m in mind.sent_messages[0] if m.get("content") == "已发送的进度"]
+        assert len(sent) == 1 and sent[0]["role"] == "assistant"
+        assert mind.llm_calls == 1
+
     async def test_merges_message_arrived_after_snapshot(self, conv_data) -> None:
         """快照后到达（已实时入库）的新消息并入当前上下文，并消费待处理条目。"""
         t1 = time.time_ns()
@@ -251,7 +352,7 @@ class TestThinkLoopMerge:
         )
         # 快照（水位=t1）
         base_records = await conv_data.get_conversation_record_by_everything(MessageUser(uid=1))
-        assert conv_data.get_fetch_watermark("user", "1") == t1
+        assert snapshot_watermark(base_records)[0] == t1
 
         # 循环期间到达的第二条消息：到达即入库（ts > 水位）
         await conv_data.router.append(

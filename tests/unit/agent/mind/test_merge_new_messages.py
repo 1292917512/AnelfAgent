@@ -26,7 +26,7 @@ def _ctx(consumed: list) -> SimpleNamespace:
     pfc = SimpleNamespace(
         collect_images=lambda scope=None: [],
         collect_media=lambda scope=None: [],
-        consume_scope_task=lambda scope: consumed.append(scope),
+        consume_scope_task=lambda scope, **kwargs: consumed.append(scope),
     )
     return SimpleNamespace(
         mode=ThinkMode.REPLY,
@@ -54,7 +54,7 @@ def fetch(monkeypatch):
         calls.append((since_ts, since_id))
         return holder["msgs"]
 
-    monkeypatch.setattr(round_helpers, "_fetch_new_user_messages", fake)
+    monkeypatch.setattr(round_helpers, "_fetch_new_messages", fake)
     return holder, calls
 
 

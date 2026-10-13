@@ -16,6 +16,7 @@ import asyncssh
 import pytest
 
 import entities.ssh.manager as manager_module
+from core.config import ConfigManager
 from entities.ssh.manager import (
     STATUS_CONNECTED,
     STATUS_DISCONNECTED,
@@ -164,6 +165,71 @@ class TestResolveName:
         empty_mgr = SshConnectionManager(store)
         with pytest.raises(ValueError):
             empty_mgr.resolve_name("")
+
+
+class TestProxyPolicy:
+    @pytest.fixture
+    def settings(self, monkeypatch):
+        values = {"proxy_enabled": True, "http_proxy": "http://proxy.test:7890",
+                  "proxy_rules": "IP-CIDR,192.168.0.0/16,PROXY"}
+        monkeypatch.setattr(ConfigManager, "get", staticmethod(lambda key, default=None: values.get(key, default)))
+        return values
+
+    async def test_default_direct_ignores_global_proxy_and_system_ssh_config(self, manager, settings):
+        fake = FakeConn([FakeResult()])
+        with patch.object(manager_module.asyncssh, "connect", AsyncMock(return_value=fake)) as connect, \
+                patch.object(manager_module, "open_proxy_socket", AsyncMock()) as proxy:
+            await manager.execute("true")
+        proxy.assert_not_called()
+        kwargs = connect.call_args.kwargs
+        assert kwargs["sock"] is None
+        assert kwargs["config"] is None and kwargs["proxy_command"] is None and kwargs["tunnel"] is None
+
+    async def test_per_call_override_and_hot_default_keep_routes_separate(self, manager, settings):
+        direct = FakeConn([FakeResult(), FakeResult()])
+        proxied = FakeConn([FakeResult(), FakeResult()])
+        sock = MagicMock()
+        with patch.object(manager_module.asyncssh, "connect", AsyncMock(side_effect=[direct, proxied])) as connect, \
+                patch.object(manager_module, "open_proxy_socket", AsyncMock(return_value=sock)) as proxy:
+            await manager.execute("first")
+            await manager.execute("second", proxy_mode="proxy")
+            settings["ssh_proxy_mode"] = "proxy"
+            await manager.execute("third")
+            await manager.execute("fourth", proxy_mode="direct")
+        assert connect.await_count == 2
+        proxy.assert_awaited_once_with("192.168.1.10", 22, settings["http_proxy"], timeout=15)
+        assert len(direct.run_commands) == len(proxied.run_commands) == 2
+        assert not sock.close.called
+        await manager.disconnect("web")
+        assert direct.closed and proxied.closed
+
+    async def test_fallback_only_retries_connection_not_auth_or_commands(self, manager, settings):
+        settings["proxy_rules"] = "IP-CIDR,192.168.0.0/16,FALLBACK"
+        fake = FakeConn([FakeResult()])
+        sock = MagicMock()
+        with patch.object(manager_module, "_probe_tcp", AsyncMock(side_effect=ConnectionError("unreachable"))), \
+                patch.object(manager_module, "open_proxy_socket", AsyncMock(return_value=sock)), \
+                patch.object(manager_module.asyncssh, "connect", AsyncMock(return_value=fake)) as connect:
+            await manager.execute("one command", proxy_mode="system")
+        assert len(fake.run_commands) == 1
+        connect.assert_awaited_once()
+        await manager.disconnect("web")
+        with patch.object(manager_module.asyncssh, "connect", AsyncMock(side_effect=asyncssh.PermissionDenied("denied"))), \
+                patch.object(manager_module, "open_proxy_socket", AsyncMock()) as proxy:
+            with pytest.raises(PermissionError):
+                await manager.execute("never", proxy_mode="system")
+        proxy.assert_not_called()
+
+    @pytest.mark.parametrize("cancel", [False, True])
+    async def test_failed_or_cancelled_handshake_closes_proxy_socket(self, manager, settings, cancel):
+        sock = MagicMock()
+        error = asyncio.CancelledError() if cancel else OSError("offline")
+        with patch.object(manager_module, "open_proxy_socket", AsyncMock(return_value=sock)), \
+                patch.object(manager_module.asyncssh, "connect", AsyncMock(side_effect=error)):
+            with pytest.raises(asyncio.CancelledError if cancel else ConnectionError):
+                await manager.connect("web", proxy_mode="proxy")
+        sock.close.assert_called_once()
+        assert manager.get_snapshot("web")["status"] == (STATUS_DISCONNECTED if cancel else STATUS_ERROR)
 
 
 class TestExecute:

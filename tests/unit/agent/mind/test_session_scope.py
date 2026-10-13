@@ -87,6 +87,18 @@ def _pfc() -> PrefrontalCortex:
 
 
 class TestPfcScopeQueues:
+    async def test_snapshot_consumption_preserves_newer_pending_message(self) -> None:
+        pfc = _pfc()
+        first = MessageUser(uid="1", adapter_key="qq", text_content="先检查", created_ts_ns=100)
+        second = MessageUser(uid="1", adapter_key="qq", text_content="暂停执行", created_ts_ns=200)
+        await pfc.add_task(first)
+        await pfc.add_task(second)
+        for watermark in (0, 100):
+            assert not pfc.consume_scope_task(first.entity_scope, through_ts=watermark)
+            assert pfc.get_unread_count(first.entity_scope) == 2
+        assert pfc.consume_scope_task(first.entity_scope, through_ts=200)
+        assert not pfc.peek_all_tasks()
+
     async def test_same_uid_multi_session_isolated(self) -> None:
         """同一 uid 的两个子会话各自产生独立队列条目与未读计数。"""
         pfc = _pfc()

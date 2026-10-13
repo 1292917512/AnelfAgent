@@ -2,8 +2,12 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Play } from "lucide-react";
+import { Link } from "react-router-dom";
 import { sshApi } from "./api";
 import { Card } from "@/components/common/Card";
+import { NetworkConfigLink } from "@/components/common/NetworkSettings";
+import { Select } from "@/components/ui";
+import type { ProxyMode } from "@/lib/types";
 import { toast } from "@/stores/toast-store";
 import type { SshExecResult } from "./types";
 
@@ -12,6 +16,7 @@ export function ExecPanel() {
   const [selected, setSelected] = useState("");
   const [command, setCommand] = useState("");
   const [timeout, setTimeout_] = useState(60);
+  const [proxyMode, setProxyMode] = useState<ProxyMode | "">("");
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<SshExecResult | null>(null);
 
@@ -29,7 +34,9 @@ export function ExecPanel() {
     setRunning(true);
     setResult(null);
     try {
-      const res = await sshApi.exec(effectiveSelected, { command: command.trim(), timeout });
+      const res = await sshApi.exec(effectiveSelected, {
+        command: command.trim(), timeout, ...(proxyMode ? { proxy_mode: proxyMode } : {}),
+      });
       setResult(res.data);
     } catch (err) {
       const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
@@ -68,6 +75,24 @@ export function ExecPanel() {
                 className="w-full px-3 py-2 text-sm rounded-md border border-border bg-elevated text-foreground focus:outline-none focus:ring-1 focus:ring-accent"
               />
             </div>
+          </div>
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <label htmlFor="ssh-exec-proxy" className="text-xs font-medium text-muted">{t("exec.proxyMode")}</label>
+              <div className="flex flex-wrap items-center gap-3">
+                <Link to="/config?key=ssh_proxy_mode" target="_blank" rel="noreferrer" className="text-xs text-accent hover:underline">{t("exec.configureDefault")}</Link>
+                <NetworkConfigLink />
+              </div>
+            </div>
+            <Select id="ssh-exec-proxy" value={proxyMode} className="w-full" disabled={running} onChange={(event) => {
+              const mode = event.target.value;
+              if (mode === "" || mode === "direct" || mode === "system" || mode === "proxy") setProxyMode(mode);
+            }}>
+              <option value="">{t("exec.followDefault")}</option>
+              {(["direct", "system", "proxy"] as const).map((mode) => (
+                <option key={mode} value={mode}>{t(`config:network.${mode}`)}</option>
+              ))}
+            </Select>
           </div>
           <div>
             <label className="block text-xs font-medium text-muted mb-1">{t("exec.command")}</label>

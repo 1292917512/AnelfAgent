@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import ssl
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -13,6 +14,7 @@ import pytest
 from core.config import ConfigManager, ConfigRegistry
 from core.network import async_network_client, get_proxy_url, network_client, resolve_network_route
 from core.network.policy import parse_rules
+from core.network.socket import open_proxy_socket, resolve_socket_route
 
 
 @pytest.fixture
@@ -44,6 +46,59 @@ def test_modes_and_https_address_share_one_source(settings: dict) -> None:
     assert resolve_network_route("https://example.com").proxies == (None,)
     with pytest.raises(ValueError, match="未启用"):
         get_proxy_url("https://example.com", "proxy")
+
+
+def test_tcp_component_opt_in_reuses_global_rules(settings: dict) -> None:
+    settings["proxy_rules"] = "DOMAIN,ssh.example.com,PROXY\nIP-CIDR,2001:db8::/32,DIRECT"
+    assert resolve_socket_route("ssh.example.com", 22).proxies == (None,)
+    assert resolve_socket_route("ssh.example.com", 22, "system").proxies == (settings["http_proxy"],)
+    assert resolve_socket_route("2001:db8::1", 22, "system").proxies == (None,)
+    assert resolve_network_route("ssh://ssh.example.com", "system").proxies == (None,)
+
+
+@pytest.mark.parametrize("scheme", ["http", "socks5", "socks5h"])
+async def test_proxy_socket_negotiates_and_transfers_bytes(scheme: str) -> None:
+    targets: list[bytes] = []
+    closed = asyncio.Event()
+
+    async def proxy(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            if scheme == "http":
+                request = await reader.readuntil(b"\r\n\r\n")
+                targets.append(request.split(b"\r\n", 1)[0])
+                writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
+            else:
+                version, methods = await reader.readexactly(2)
+                assert version == 5
+                await reader.readexactly(methods)
+                writer.write(b"\x05\x00")
+                await writer.drain()
+                assert await reader.readexactly(4) == b"\x05\x01\x00\x03"
+                length = (await reader.readexactly(1))[0]
+                targets.append(await reader.readexactly(length))
+                assert await reader.readexactly(2) == b"\x00\x16"
+                writer.write(b"\x05\x00\x00\x01\x7f\x00\x00\x01\x00\x16")
+            await writer.drain()
+            writer.write(await reader.readexactly(4))
+            await writer.drain()
+            await reader.read()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+            closed.set()
+
+    server = await asyncio.start_server(proxy, "127.0.0.1", 0)
+    async with server:
+        port = server.sockets[0].getsockname()[1]
+        sock = await open_proxy_socket("ssh.example.com", 22, f"{scheme}://127.0.0.1:{port}", timeout=2)
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.sock_sendall(sock, b"ping")
+            assert await asyncio.wait_for(loop.sock_recv(sock, 4), 2) == b"ping"
+        finally:
+            sock.close()
+        await asyncio.wait_for(closed.wait(), 2)
+    assert targets == ([b"CONNECT ssh.example.com:22 HTTP/1.1"] if scheme == "http" else [b"ssh.example.com"])
 
 
 @pytest.mark.parametrize("rule", ["DOMAIN-SUFFIX,com,unknown", "DOMAIN,https://a.com,PROXY", "IP-CIDR,bad,DIRECT", "DOMAIN,*.example.com,DIRECT", "just anything"])

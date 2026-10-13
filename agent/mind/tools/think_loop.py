@@ -67,6 +67,7 @@ from agent.mind.tools.round_helpers import (
     merge_after_messages,
     resolve_tool_calls,
     should_end_reply,
+    snapshot_watermark,
 )
 from agent.mind.tools.round_helpers import (
     _rehydrate_recent_files as _rehydrate_recent_files,
@@ -249,7 +250,7 @@ async def reply_loop(
             # 历史快照已覆盖该 scope 当前全部消息：消费到达时入队的待处理条目，
             # 避免快照内消息在周期结束后另起周期导致重复回复
             if anything:
-                _consume_pending_for_scope(mind, anything)
+                _consume_pending_for_scope(mind, anything, through_ts=snapshot_watermark(base_messages)[0])
             if images:
                 base_messages = await apply_vision(mind, base_messages, images, anything)
 
@@ -528,7 +529,7 @@ async def _run_think_rounds(
                 state.last_input_tokens = 0
                 execution_steps.append(f"→ 第{state.iteration + 1}轮前: 上下文已压缩")
 
-        # 并入循环期间到达的新用户消息（让 AI 在当前回复中一并处理，
+        # 并入循环期间新增的收发消息（让 AI 在当前回复中一并处理，
         # 而非另起周期导致上下文断裂/忘记已回复）
         await _merge_new_messages(ctx, state)
         # 并入循环期间到达的实体推送（[push:] 系统通知，轮内弹窗）
@@ -565,6 +566,11 @@ async def _run_think_rounds(
             from agent.memory.probe import deep_probe_hub
             deep_probe_hub.refresh(ctx.current_scope, ctx.base_messages + ctx.tool_chain)
         provider_msgs = await _collect_provider_messages(mind, ctx.current_scope)
+        from agent.mind.cross_channel import build_cross_channel_narrative
+        try:
+            provider_msgs = await build_cross_channel_narrative(mind, ctx.current_scope) + provider_msgs
+        except Exception as exc:
+            log(f"跨会话上下文读取失败: {exc}", "WARNING", tag="思维")
         llm_messages = (
             ctx.base_messages + ctx.tool_chain + provider_msgs + [exec_context]
         )
@@ -790,6 +796,12 @@ def _reply_delivery_status(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> str:
 
 async def _finish_round(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> _StageOutcome:
     """收敛计划、记录执行摘要和完成状态，不向频道自动发送内容。"""
+    if (ctx.mode == ThinkMode.REPLY and state.completion_reason == "completed"
+            and not state.interrupted and await _merge_new_messages(ctx, state)):
+        state.consecutive_empty_calls = 0
+        state.consecutive_text_rounds = 0
+        state.iteration += 1
+        return _StageOutcome.CONTINUE
     if ctx.mode == ThinkMode.REPLY and state.reply_text_pending:
         if state.completion_reason == "completed" and not state.delivery_recovery_attempted:
             state.delivery_recovery_attempted = True
