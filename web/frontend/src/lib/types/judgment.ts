@@ -4,8 +4,11 @@ export type JudgmentChannel = "disabled" | "typesafe" | "llm_fallback" | "unavai
 
 export interface JudgmentStatus {
   enabled: boolean;
-  /** 当前生效通道：typesafe 原生 / llm_fallback 普通模型回退 / disabled / unavailable */
+  /** 当前生效通道：typesafe 协议（云端或本地） / llm_fallback 普通模型回退 / disabled / unavailable */
   channel: JudgmentChannel;
+  error?: string;
+  model_id?: string;
+  provider_id?: string;
   api_key_configured: boolean;
   base_url: string;
   model: string;
@@ -14,6 +17,11 @@ export interface JudgmentStatus {
   fallback_model: string;
   fallback_effort: string;
 }
+
+export interface DecisionModel { name: string; model: string }
+export interface DecisionProvider { name: string; base_url: string; api_key: string; models: Record<string, DecisionModel> }
+export interface JudgmentHealth { status: "unknown" | "ready" | "offline" | "checking"; checked_at: number; retry_at: number; latency_ms: number; error: string }
+export interface JudgmentCatalog { providers: Record<string, DecisionProvider>; default_model: string; revision: string; health?: Record<string, JudgmentHealth> }
 
 export interface JudgmentChoiceAnswer {
   type: "choice";
@@ -42,7 +50,7 @@ export interface JudgmentTestResult {
   error?: string;
   cause?: string;
   retryable?: boolean;
-  source?: "typesafe" | "llm_fallback";
+  source?: JudgmentChannel;
   model?: string;
   latency_ms: number;
   slow: boolean;

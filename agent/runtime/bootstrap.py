@@ -120,8 +120,9 @@ def create_bootstrap() -> FlowMachine:
     @machine.node(skip_on_error=True, depends_on=["init_storage"])
     async def migrate_legacy_configs():
         """旧实体本地配置（媒体库/网络工具）一次性导入统一配置体系（幂等）。"""
-        from agent.runtime.config_migrate import migrate_legacy_entity_configs
+        from agent.runtime.config_migrate import migrate_judgment_config, migrate_legacy_entity_configs
         migrate_legacy_entity_configs()
+        migrate_judgment_config()
 
     @machine.node(skip_on_error=True, depends_on=[])
     async def register_entities():
@@ -430,6 +431,8 @@ def create_bootstrap() -> FlowMachine:
         from core.hooks import hook_journal
         from core.lifecycle import Lifecycle
         Lifecycle.register("hook_journal", hook_journal, cleanup=hook_journal.clear)
+        from agent.judgment.health import judgment_health
+        Lifecycle.register("judgment_health", judgment_health, on_start=judgment_health.start, cleanup=judgment_health.close)
         Lifecycle.register(
             "script_hooks", script_hook_runtime,
             on_start=script_hook_runtime.start, cleanup=script_hook_runtime.drain,

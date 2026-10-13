@@ -51,6 +51,7 @@ nohup.out
 config/app_config.json
 config/provider_keys.json
 config/llm_clients.json
+config/judgment.json
 config/mcp_servers.json
 config/mind_config.json
 config/approval_policies.json

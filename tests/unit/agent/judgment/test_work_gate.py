@@ -40,12 +40,25 @@ def engine(monkeypatch):
 
 @pytest.mark.parametrize("enabled,key", [(True, ""), (False, "configured")])
 async def test_unconfigured_runs_without_model_call(engine, monkeypatch, enabled, key):
-    config = replace(gate.load_config(), enabled=enabled, api_key=key)
+    config = replace(gate.load_config(), enabled=enabled, api_key=key, base_url="")
     monkeypatch.setattr(gate, "load_config", lambda: config)
     native = AsyncMock()
     monkeypatch.setattr(engine, "_judge_native", native)
     assert (await gate.assess_optional_work("work", "needed?", {})).run
     native.assert_not_awaited()
+
+
+async def test_local_service_without_key_can_skip_optional_work(engine, monkeypatch):
+    config = replace(gate.load_config(), api_key="", base_url="http://127.0.0.1:8090", model="StartLux-Decision-27B")
+    monkeypatch.setattr(gate, "load_config", lambda: config)
+    monkeypatch.setattr(engine_module, "load_config", lambda: config)
+    native = AsyncMock(return_value=report())
+    monkeypatch.setattr(engine, "_judge_native", native)
+    async with hook_execution("local-gate", "test", HookMode.ASYNC) as record:
+        assert not (await gate.assess_optional_work("work", "needed?", {})).run
+        assert record.judgments[0].status == "skip"
+    assert native.await_args.args[0].api_key == ""
+    engine._judge_fallback.assert_not_awaited()
 
 
 @pytest.mark.parametrize("probability,run", [(0, False), (0.1, False), (0.11, True), (0.5, True), (1, True), (-1, True), (2, True), (float("nan"), True)])
@@ -90,10 +103,13 @@ async def test_timeout_and_external_cancellation(engine, monkeypatch):
         assert (await gate.assess_optional_work("work", "needed?", {})).run
         assert record.judgments[0].slow and record.judgments[0].status == "fallback"
     assert cancelled == [True]
+    assert (await gate.assess_optional_work("work", "needed?", {})).run
+    assert cancelled == [True]
+    await gate.judgment_health.close()
     entered.clear()
     async with hook_execution("cancel", "test", HookMode.ASYNC) as record:
         task = asyncio.create_task(gate.assess_optional_work("work", "needed?", {}))
-        await entered.wait()
+        await asyncio.wait_for(entered.wait(), timeout=1)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task

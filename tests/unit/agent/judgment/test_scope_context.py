@@ -59,7 +59,7 @@ class _FakeEngine:
     def __init__(self) -> None:
         self.seen_state: Any = None
 
-    async def judge(self, state: Any, questions: Dict[str, Any]) -> JudgmentReport:
+    async def judge(self, state: Any, questions: Dict[str, Any], *, model_id: str = "") -> JudgmentReport:
         self.seen_state = state
         return JudgmentReport(
             answers={"q": NoulAnswer(noul=0.8)}, source=JudgmentSource.LLM_FALLBACK, model="m"

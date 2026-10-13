@@ -1,6 +1,6 @@
-"""TypeSafe 原生通道 — System One HTTP API 客户端。
+"""System One HTTP 客户端，供云端与自部署判断服务共用。
 
-契约（docs.typesafe.ai/api）：POST {base_url}/v1/systemone，Bearer 认证；
+契约（docs.typesafe.ai/api）：POST {base_url}/v1/systemone，可选 Bearer 认证；
 请求体 state + model + questions（id → 问题），响应 answers 按同键返回。
 所有失败统一包装为 JudgmentError，由引擎按归因决策是否降级回退通道。
 """
@@ -31,13 +31,32 @@ from core.tool_errors import ErrorCause
 _ENDPOINT = "/v1/systemone"
 
 
-class TypeSafeClient:
-    """TypeSafe System One API 客户端（每次调用独立连接，判断为低频调用）。"""
+class SystemOneClient:
+    """System One 协议客户端，统一地址解析、认证和答案校验。"""
 
     def __init__(self, *, base_url: str, api_key: str, timeout: float) -> None:
-        self._base_url = base_url.rstrip("/")
-        self._api_key = api_key
+        self._endpoint = self.resolve_endpoint(base_url)
+        self._api_key = api_key.strip()
         self._timeout = timeout
+
+    @staticmethod
+    def resolve_endpoint(base_url: str) -> str:
+        """接受服务根地址、版本前缀或完整端点，保留反向代理路径。"""
+        try:
+            url = httpx.URL(base_url.strip())
+        except httpx.InvalidURL as exc:
+            raise JudgmentError("判断服务地址无效", cause=ErrorCause.CONFIG, retryable=False) from exc
+        if (url.scheme not in {"http", "https"} or not url.host
+                or url.userinfo or url.query or url.fragment):
+            raise JudgmentError(
+                "判断服务地址须为 HTTP(S) 地址，不含用户名、密码、查询参数或片段",
+                cause=ErrorCause.CONFIG, retryable=False,
+            )
+        path = url.path.rstrip("/")
+        if path.endswith(_ENDPOINT):
+            return str(url.copy_with(path=path))
+        suffix = "/systemone" if path.endswith("/v1") else _ENDPOINT
+        return str(url.copy_with(path=path + suffix))
 
     async def evaluate(
         self,
@@ -58,30 +77,31 @@ class TypeSafeClient:
     async def _post(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         try:
             async with async_network_client(
-                base_url=self._base_url,
                 timeout=self._timeout,
-                headers={"Authorization": f"Bearer {self._api_key}"},
+                headers={"Authorization": f"Bearer {self._api_key}"} if self._api_key else {},
             ) as client:
-                resp = await client.post(_ENDPOINT, json=payload)
+                resp = await client.post(self._endpoint, json=payload)
         except httpx.TimeoutException as exc:
             raise JudgmentError(
-                "TypeSafe 请求超时", cause=ErrorCause.TIMEOUT, retryable=True
+                "System One 请求超时", cause=ErrorCause.TIMEOUT, retryable=True
             ) from exc
         except httpx.HTTPError as exc:
             raise JudgmentError(
-                f"TypeSafe 网络错误: {exc}", cause=ErrorCause.NETWORK, retryable=True
+                f"System One 网络错误: {exc}", cause=ErrorCause.NETWORK, retryable=True
             ) from exc
+        except ValueError as exc:
+            raise JudgmentError(f"判断服务网络配置无效: {exc}", cause=ErrorCause.CONFIG, retryable=False) from exc
 
         if resp.status_code == 200:
             try:
                 data = resp.json()
             except ValueError as exc:
                 raise JudgmentError(
-                    "TypeSafe 响应不是合法 JSON", cause=ErrorCause.INTERNAL, retryable=True
+                    "System One 响应不是合法 JSON", cause=ErrorCause.INTERNAL, retryable=True
                 ) from exc
             if not isinstance(data, dict):
                 raise JudgmentError(
-                    "TypeSafe 响应结构无效", cause=ErrorCause.INTERNAL, retryable=True
+                    "System One 响应结构无效", cause=ErrorCause.INTERNAL, retryable=True
                 )
             return data
         raise self._http_error(resp)
@@ -97,20 +117,20 @@ class TypeSafeClient:
             detail = resp.text[:200]
         if resp.status_code in (401, 403):
             return JudgmentError(
-                f"TypeSafe 凭据无效 ({detail})", cause=ErrorCause.CONFIG, retryable=False
+                f"System One 凭据无效 ({detail})", cause=ErrorCause.CONFIG, retryable=False
             )
-        if resp.status_code == 422:
+        if resp.status_code in (400, 422):
             return JudgmentError(
-                f"TypeSafe 请求校验失败 ({detail})", cause=ErrorCause.PARAM, retryable=False
+                f"System One 请求校验失败 ({detail})", cause=ErrorCause.PARAM, retryable=False
             )
         if resp.status_code in (429, 529) or resp.status_code >= 500:
             return JudgmentError(
-                f"TypeSafe 服务暂不可用 (HTTP {resp.status_code})",
+                f"System One 服务暂不可用 (HTTP {resp.status_code})",
                 cause=ErrorCause.NETWORK,
                 retryable=True,
             )
         return JudgmentError(
-            f"TypeSafe 请求失败 (HTTP {resp.status_code}: {detail})",
+            f"System One 请求失败 (HTTP {resp.status_code}: {detail})",
             cause=ErrorCause.INTERNAL,
             retryable=False,
         )
@@ -122,20 +142,20 @@ class TypeSafeClient:
         raw_answers = data.get("answers")
         if not isinstance(raw_answers, dict):
             raise JudgmentError(
-                "TypeSafe 响应缺少 answers", cause=ErrorCause.INTERNAL, retryable=True
+                "System One 响应缺少 answers", cause=ErrorCause.INTERNAL, retryable=True
             )
         answers: Dict[str, Answer] = {}
         for qid, question in questions.items():
             raw = raw_answers.get(qid)
             if raw is None:
                 raise JudgmentError(
-                    f"TypeSafe 响应缺少答案 '{qid}'", cause=ErrorCause.INTERNAL, retryable=True
+                    f"System One 响应缺少答案 '{qid}'", cause=ErrorCause.INTERNAL, retryable=True
                 )
             answers[qid] = _parse_answer(question, raw, qid)
         try:
             usage = JudgmentUsage.model_validate(data.get("usage") or {})
         except ValidationError as exc:
-            raise JudgmentError("TypeSafe 用量结构无效", cause=ErrorCause.INTERNAL, retryable=True) from exc
+            raise JudgmentError("System One 用量结构无效", cause=ErrorCause.INTERNAL, retryable=True) from exc
         return answers, str(data.get("model") or ""), usage
 
 

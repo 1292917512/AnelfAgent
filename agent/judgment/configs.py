@@ -9,20 +9,6 @@ _JUDGMENT_CONFIGS = {
             "description": "是否启用判断能力（关闭后 judge 工具从目录隐藏，引擎调用直接拒绝）",
             "default": True,
         },
-        "judgment_api_key": {
-            "description": "TypeSafe API Key（留空时走普通模型回退通道；支持 ${ENV_VAR} 外置）",
-            "default": "",
-            "value_type": "password",
-        },
-        "judgment_base_url": {
-            "description": "TypeSafe API 地址",
-            "default": "https://api.typesafe.ai",
-            "advanced": True,
-        },
-        "judgment_model": {
-            "description": "TypeSafe 模型版本（System One 模型，如 jev-latest）",
-            "default": "jev-latest",
-        },
         "judgment_timeout": {
             "description": "单次判断调用的超时时间（每条通道独立计时）",
             "default": 30.0,
@@ -32,7 +18,7 @@ _JUDGMENT_CONFIGS = {
             "unit": "秒",
         },
         "judgment_fallback_enabled": {
-            "description": "未配置密钥或原生通道失败时，是否回退到普通聊天模型完成判断",
+            "description": "未配置判断服务或原生通道失败时，是否回退到普通聊天模型完成判断",
             "default": True,
         },
         "judgment_gate_enabled": {
@@ -42,6 +28,10 @@ _JUDGMENT_CONFIGS = {
         "judgment_gate_timeout": {
             "description": "可选工作预判的总等待预算；到期立即保留原流程",
             "default": 2.0, "min": 0.1, "max": 10.0, "unit": "秒", "advanced": True,
+        },
+        "judgment_recheck_seconds": {
+            "description": "不可达判断模型的后台复查间隔；期间前台直接跳过，恢复或手动测试成功后重新启用",
+            "default": 300.0, "min": 30.0, "max": 3600.0, "unit": "秒",
         },
         "judgment_gate_skip_threshold": {
             "description": "必要概率不高于此值，且无需执行的依据概率不低于 1−此值，才跳过可选工作",

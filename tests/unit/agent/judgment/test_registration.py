@@ -8,12 +8,10 @@ import pytest
 
 EXPECTED_CONFIG_KEYS = {
     "judgment_enabled",
-    "judgment_api_key",
-    "judgment_base_url",
-    "judgment_model",
     "judgment_timeout",
     "judgment_gate_enabled",
     "judgment_gate_timeout",
+    "judgment_recheck_seconds",
     "judgment_gate_skip_threshold",
     "judgment_slow_seconds",
     "judgment_fallback_enabled",
@@ -35,12 +33,6 @@ class TestConfigRegistration:
         keys = {item.key for item in groups["judgment/core"]}
         assert keys == EXPECTED_CONFIG_KEYS
 
-    def test_api_key_is_password_masked(self) -> None:
-        import agent.judgment  # noqa: F401
-        from core.config import ConfigRegistry
-
-        item = ConfigRegistry.get_item("judgment_api_key")
-        assert item is not None and item.is_secret
 
 
 class TestGroupOrder:
@@ -60,6 +52,7 @@ class TestToolRegistration:
 
         activate_group("judgment", "判断")
         assert "judge" in EntityRegistry.get_all_names()
+        assert {"list_judgment_models", "configure_judgment", "test_judgment_model"} <= set(EntityRegistry.get_all_names())
         assert not _deferred_registry.get("judgment")
 
     def test_judge_schema_carries_questions_items(self) -> None:
@@ -80,6 +73,10 @@ class TestToolRegistration:
         # state/context_mode 均为可选（默认 none 不注入）
         required = judge_schema["function"]["parameters"].get("required", [])
         assert required == ["questions"]
+        configure = next(s for s in schemas if s.get("function", {}).get("name") == "configure_judgment")
+        assert set(configure["function"]["parameters"]["properties"]["action"]["enum"]) == {
+            "save_provider", "save_model", "delete_provider", "delete_model", "set_default",
+        }
 
 
 class TestToolErrorContract:

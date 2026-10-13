@@ -42,8 +42,19 @@ def _isolate_config_manager(tmp_path, monkeypatch: pytest.MonkeyPatch):
         ConfigManager, "_config_file", str(tmp_path / "app_config.json")
     )
     ConfigManager.clear()
+    from core.path import ConfigPaths
+    monkeypatch.setattr(ConfigPaths, "JUDGMENT", str(tmp_path / "judgment.json"))
     yield
     ConfigManager.clear()
+
+
+@pytest.fixture(autouse=True)
+async def _isolate_judgment_health():
+    """隔离判断可用性与后台复查任务，避免跨用例熔断污染。"""
+    from agent.judgment.health import judgment_health
+    await judgment_health.close()
+    yield
+    await judgment_health.close()
 
 
 @pytest.fixture(autouse=True)

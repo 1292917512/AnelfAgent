@@ -172,15 +172,40 @@ exec_context 本轮执行状态（每轮全量重建）
 结构化评判三原语（Choice 选项 / Score 评分 / Noul 是非）的统一通道：
 
 - **类型契约** `agent/judgment/types.py`（pydantic 判别联合，置信度公式 (n·p−1)/(n−1) 双通道共用）
-- **双通道引擎** `engine.py`（配置每次调用现读，天然热更）：有 `judgment_api_key` 走 `client.py`
-  TypeSafe 原生 HTTP（POST /v1/systemone，答案严格校验）；未配置或失败时降级 `bridge.py` 普通
+- **双通道引擎** `engine.py`（配置每次调用现读，天然热更）：选择默认或显式模型后走 `client.py`
+  System One 原生 HTTP（POST /v1/systemone，答案严格校验；TypeSafe 云端与自部署服务共用）；未配置或失败时降级 `bridge.py` 普通
   聊天模型（严格 JSON 提示词 + 容错解析 + 本地合成概率/置信度，单题失败不拖垮整批记入 missing）
 - **AI 调用面**：mind 核心工具 `judge`（group="judgment"，tags=["always"]）；上下文三档供给
   context_mode：none（默认，只评判显式传入的 state）/ conversation（注入当前会话最近消息）/
   full（窗口全量 + 折叠摘要，慎用档）；state 与非 none 模式互斥（同传报 PARAM）；护栏
   `judgment_context_messages` / `judgment_context_max_chars` / `judgment_full_max_chars`
-- **Web 面**：模型页「判断 (Jev)」页签；写路径只有 /api/config/meta 一条（`judgment/core` 组）。
-  刻意不进 llm_clients.json/ModelType——判断模型不满足 litellm 对话/媒体协议假设
+- **模型目录**：`ConfigPaths.JUDGMENT`（`config/judgment.json`）保存服务商和模型；`catalog.py`
+  是 Web/AI 唯一校验与原子写入口。服务商持有 `name/base_url/api_key/models`，模型持有
+  `name/model`（展示名/服务端模型名），模型 ID 全局唯一，`default_model` 引用其中一个 ID。
+  模型不进入 llm_clients.json/ModelType：System One 的概率评判协议与聊天/媒体协议不同。
+  启动时仅在新目录不存在的情况下搬运旧单连接配置，保留环境变量引用，不再双轨读写。
+- **Web 面**：模型页「判断 (Jev)」页签，管理多服务商、多模型、默认模型及逐模型状态/测速。
+  `/api/judgment/providers` 与 `/providers/{id}` 提供目录读写，`/models/{id}` 修改单模型，
+  `/default` 设置默认，`/test` 可传 `model_id` 单独诊断。超时、预判、回退和复查间隔等策略
+  仍由 `/api/config/meta`（`judgment/core`）管理。
+- **AI 配置面**：`list_judgment_models` 返回脱敏目录和健康状态；`configure_judgment`
+  支持 `save_provider/delete_provider/save_model/delete_model/set_default`；`test_judgment_model`
+  测试任一模型，不改变默认选择。`judge(model_id=...)` 可以显式选模型，省略则使用默认。
+  保存服务商可只传要改的字段，若传 `models` 则替换该服务商完整模型列表；保存单模型传
+  `provider_id/model/name`。删除默认模型清空默认选择，不自动选择其他服务商。
+- **服务连接**：服务商 `base_url` 可填根地址、`/v1` 或完整 `/v1/systemone`，保留反向代理路径。
+  `api_key` 可选，留空不发 Authorization；支持 `${ENV_VAR}`，掩码或省略保留原始密钥/引用，
+  显式空字符串清除。云端可用 `https://api.typesafe.ai` 和 `jev-latest`，本地填自身服务地址与模型名。
+  测试不以普通模型回退掩盖已选服务的故障。网络沿用全局代理规则，本地与内网默认直连。
+- **可用性**：网络、认证、协议或超时失败后，该模型前台直接跳过，不重复连接；首次检测中的
+  并发请求也不重复等待。记忆/技能可选预判继续原流程，不转普通 LLM；显式 `judge` 依既有回退策略处理。
+  `health.py` 经 Lifecycle 托管后台复查，默认 300 秒（`judgment_recheck_seconds`），每批最多四个，
+  探测预算不超过 `judgment_gate_timeout`。手动测试可立即重试；成功恢复使用，变更连接清除旧状态。
+  台账内存有界、不持久化；AI/Web 可见最近耗时、失败原因及下次检查时间，不注入主模型稳定前缀。
+- **StartLux GGUF**：按[官方部署文档](https://github.com/StartLuxLabs/StartLux-Decision/blob/main/docs/inference.md#gguf-and-llamacpp)
+  启动 `startlux_decision.gguf_server`，将其服务地址（例如 `http://127.0.0.1:8090`）填入上面的配置。
+  GGUF 是权重格式；普通 llama-server 的聊天接口不能代替返回概率分布的 System One 服务。
+  地址由 Anelf 后端访问，远程部署时 localhost 指 Anelf 所在主机。无需在 Anelf 内加载权重或增加模型运行时依赖。
 - **内部接入点**：记忆写入判重（`agent/memory/dedup.py::judge_write`）——判断段经引擎一次调用
   并行评判，热路径零 LLM 调用；失败一律保守退回直接写入（见[记忆分册](memory-system.md)）
 

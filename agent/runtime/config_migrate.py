@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Any, Dict
 
 from core.config import ConfigManager
@@ -25,6 +26,30 @@ _MEDIA_CAP_TO_VISUAL = {
     "video": "video",
 }
 _MEDIA_SOUND_CAPS = ("tts", "voice_mgmt", "music")
+
+
+def migrate_judgment_config() -> None:
+    """将单连接判断配置一次性转为模型目录，保留原始环境变量引用。"""
+    from agent.judgment.catalog import DecisionModel, DecisionProvider, JudgmentCatalog
+    from core.file_utils import atomic_write_text, file_write_lock
+    from core.path import ConfigPaths
+
+    target = Path(ConfigPaths.JUDGMENT)
+    with file_write_lock(target):
+        if target.exists():
+            return
+        source = Path(ConfigPaths.APP_CONFIG)
+        raw = json.loads(source.read_text(encoding="utf-8")) if source.exists() else {}
+        key = "${ANELF_JUDGMENT_API_KEY}" if os.environ.get("ANELF_JUDGMENT_API_KEY") else str(raw.get("judgment_api_key") or "").strip()
+        address = str(os.environ.get("ANELF_JUDGMENT_BASE_URL") or raw.get("judgment_base_url") or "").strip()
+        catalog = JudgmentCatalog()
+        if key or (address and address.rstrip("/") != "https://api.typesafe.ai"):
+            model = str(os.environ.get("ANELF_JUDGMENT_MODEL") or raw.get("judgment_model") or "jev-latest").strip()
+            catalog = JudgmentCatalog(providers={"default": DecisionProvider(
+                name="Jev", base_url=address or "https://api.typesafe.ai", api_key=key,
+                models={"default": DecisionModel(name=model, model=model)},
+            )}, default_model="default")
+        atomic_write_text(target, catalog.model_dump_json(indent=2) + "\n")
 
 
 def _load_json(path: str) -> Dict[str, Any]:

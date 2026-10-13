@@ -12,6 +12,7 @@ conversation（注入当前会话最近消息）/ full（注入窗口全量 + �
 from __future__ import annotations
 
 import json
+from typing import Any, Literal
 
 from agent.judgment.engine import get_judgment_engine
 from agent.judgment.types import JsonValue, JudgmentError, parse_questions
@@ -24,6 +25,55 @@ from core.tool_registry import deferred_tool
 _MESSAGE_CHAR_CAP = 500
 
 _CONTEXT_MODES = ("none", "conversation", "full")
+
+
+@deferred_tool(name="list_judgment_models", group="judgment", source="mind.judgment",
+               description="查看判断服务商、模型 ID 和默认模型；密钥脱敏。")
+async def list_judgment_models() -> str:
+    """读取与 Web 相同的判断模型目录。"""
+    from agent.judgment.catalog import public_catalog
+    from agent.judgment.health import judgment_health
+    try:
+        return json.dumps({**public_catalog(), "health": judgment_health.snapshot()}, ensure_ascii=False)
+    except (ValueError, OSError) as exc:
+        return tool_error(str(exc), cause=ErrorCause.CONFIG, retryable=False)
+
+
+@deferred_tool(name="configure_judgment", group="judgment", source="mind.judgment", risk="CRITICAL",
+               description="判断模型增删改：save_provider 保存服务商，save_model 保存单个模型，delete_provider/delete_model 删除，set_default 选择默认模型（空 ID 取消默认）。",
+               schema_extra={"config": {"type": "object", "properties": {
+                   "name": {"type": "string"}, "base_url": {"type": "string"}, "api_key": {"type": "string"},
+                   "provider_id": {"type": "string"}, "model": {"type": "string"},
+                   "models": {"type": "object", "additionalProperties": {"type": "object", "properties": {
+                       "model": {"type": "string"}, "name": {"type": "string"}}, "required": ["model"], "additionalProperties": False}},
+               }, "additionalProperties": False}})
+async def configure_judgment(
+    action: Literal["save_provider", "delete_provider", "save_model", "delete_model", "set_default"],
+    identifier: str,
+    config: dict[str, Any] | None = None,
+) -> str:
+    """原子修改判断目录，保存后下一次调用生效。
+
+    Args:
+        action: save_provider/delete_provider/save_model/delete_model/set_default
+        identifier: 服务商或模型 ID；set_default 空 ID 取消默认
+        config: save_provider 传 name、base_url、api_key、models（模型 ID 到 {model,name} 的字典）。
+            Key 省略或掩码保留现值，空字符串清除；models 为服务商的完整定义。
+            save_model 只传 provider_id、model、name（可选），仅修改该模型
+    """
+    from agent.judgment.catalog import update_catalog
+    try:
+        return json.dumps(update_catalog(action, identifier, config), ensure_ascii=False)
+    except (ValueError, OSError) as exc:
+        return tool_error(str(exc), cause=ErrorCause.CONFIG, retryable=False)
+
+
+@deferred_tool(name="test_judgment_model", group="judgment", source="mind.judgment",
+               description="测试指定或默认判断模型的三种题型、实际耗时和慢响应警告，不切换默认模型。")
+async def test_judgment_model(model_id: str = "") -> str:
+    """执行与 Web 同源的连接诊断。"""
+    from agent.judgment.diagnostics import test_connection
+    return json.dumps(await test_connection(model_id), ensure_ascii=False)
 
 
 def _judgment_enabled() -> bool:
@@ -120,7 +170,7 @@ async def _capture_scope_context(*, full: bool) -> str:
         "context_mode": {"enum": list(_CONTEXT_MODES)},
     },
 )
-async def judge(questions: list, state: str = "", context_mode: str = "none") -> str:
+async def judge(questions: list, state: str = "", context_mode: str = "none", model_id: str = "") -> str:
     """结构化判断：选择(choice)/评分(score)/是非(noul) 三类问题可混合，一次调用并行评判。
 
     适用场景：路由分派、风险/质量评分、条件核验、候选排序——任何
@@ -128,6 +178,7 @@ async def judge(questions: list, state: str = "", context_mode: str = "none") ->
     拆成多题一次问完（并行评判，题数几乎不影响耗时）。
 
     Args:
+        model_id: 判断模型 ID，留空使用默认模型；通过 list_judgment_models 查询、configure_judgment 管理
         questions: 问题数组，每项 {"id", "type", "instructions", "criteria"}：
             id 自取（结果按此键返回，不发给模型）；
             type 为 choice/score/noul；
@@ -197,11 +248,11 @@ async def judge(questions: list, state: str = "", context_mode: str = "none") ->
             pass
 
     try:
-        report = await get_judgment_engine().judge(parsed_state, parsed)
+        report = await get_judgment_engine().judge(parsed_state, parsed, model_id=model_id)
     except JudgmentError as exc:
         hint = None
         if exc.cause == ErrorCause.CONFIG:
-            hint = "配置 TypeSafe API Key（judgment_api_key）或开启 judgment_fallback_enabled"
+            hint = "通过 configure_judgment 配置服务商并选择默认模型，或开启 judgment_fallback_enabled"
         return tool_error(str(exc), cause=exc.cause, retryable=exc.retryable, hint=hint)
     return json.dumps(
         {

@@ -1,17 +1,67 @@
-"""判断能力路由（/api/judgment）— 通道状态观测与连通性测试。
-
-配置读写走统一配置面（/api/config/meta，judgment/core 组），本路由
-不提供配置写路径。
-"""
+"""判断服务商与模型管理、通道状态和连接测试。"""
 from __future__ import annotations
 
 from typing import Any, Dict
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, ConfigDict
 
 from services.judgment import judgment_service
 
 router = APIRouter(prefix="/judgment", tags=["judgment"])
+
+
+class ModelSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    model_id: str = ""
+
+
+@router.get("/providers")
+async def list_judgment_providers() -> Dict[str, Any]:
+    try:
+        return judgment_service.catalog()
+    except (ValueError, OSError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.put("/providers/{provider_id}")
+async def save_judgment_provider(provider_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        return judgment_service.update("save_provider", provider_id, body)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.delete("/providers/{provider_id}")
+async def delete_judgment_provider(provider_id: str) -> Dict[str, Any]:
+    try:
+        return judgment_service.update("delete_provider", provider_id)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.put("/default")
+async def set_judgment_default(body: ModelSelection) -> Dict[str, Any]:
+    try:
+        return judgment_service.update("set_default", body.model_id)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.put("/models/{model_id}")
+async def save_judgment_model(model_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        return judgment_service.update("save_model", model_id, body)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.delete("/models/{model_id}")
+async def delete_judgment_model(model_id: str) -> Dict[str, Any]:
+    try:
+        return judgment_service.update("delete_model", model_id)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.get("/status")
@@ -21,6 +71,9 @@ async def get_judgment_status() -> Dict[str, Any]:
 
 
 @router.post("/test")
-async def test_judgment() -> Dict[str, Any]:
+async def test_judgment(body: ModelSelection | None = None) -> Dict[str, Any]:
     """用固定样例经当前通道跑一次判断（三题型各一），返回来源/答案/耗时。"""
-    return await judgment_service.test()
+    try:
+        return await judgment_service.test(body.model_id if body else "")
+    except (ValueError, OSError) as exc:
+        raise HTTPException(400, str(exc)) from exc

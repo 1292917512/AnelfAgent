@@ -6,21 +6,22 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from agent.judgment import diagnostics as judgment
 from agent.judgment.engine import JudgmentConfig
 from agent.judgment.types import JudgmentError, JudgmentReport, JudgmentSource
 from core.tool_errors import ErrorCause
-from services import judgment
 
 
 @pytest.mark.parametrize("elapsed,slow", [(0.2, False), (1.2, True), (2.5, True)])
-async def test_speed_and_native_source_are_reported(monkeypatch, elapsed, slow):
-    cfg = JudgmentConfig(True, "configured", "https://test", "jev", 30, True, "", "low")
+@pytest.mark.parametrize("key", ["", "configured"])
+async def test_speed_and_native_source_are_reported(monkeypatch, elapsed, slow, key):
+    cfg = JudgmentConfig(True, key, "http://localhost:8090", "jev", 30, True, "", "low")
     monkeypatch.setattr(judgment, "load_config", lambda: cfg)
     native = AsyncMock(return_value=JudgmentReport(answers={}, source=JudgmentSource.TYPESAFE))
     monkeypatch.setattr(judgment, "get_judgment_engine", lambda: SimpleNamespace(judge=native))
     times = iter([0, elapsed])
     monkeypatch.setattr(judgment, "time", SimpleNamespace(monotonic=lambda: next(times)))
-    result = await judgment.JudgmentService.test()
+    result = await judgment.test_connection()
     assert result["ok"] and result["slow"] is slow
     assert result["latency_ms"] == elapsed * 1000
     assert result["gate_budget_ms"] == 2000 and result["slow_after_ms"] == 1000
@@ -28,11 +29,15 @@ async def test_speed_and_native_source_are_reported(monkeypatch, elapsed, slow):
 
 
 async def test_native_failure_is_not_disguised_by_fallback(monkeypatch):
+    cfg = JudgmentConfig(True, "", "http://localhost:8090", "StartLux-Decision-27B", 30, True, "", "low")
+    monkeypatch.setattr(judgment, "load_config", lambda: cfg)
     native = AsyncMock(side_effect=JudgmentError("unavailable", cause=ErrorCause.NETWORK, retryable=True))
     monkeypatch.setattr(judgment, "get_judgment_engine", lambda: SimpleNamespace(judge=native))
-    result = await judgment.JudgmentService.test()
+    result = await judgment.test_connection()
     assert not result["ok"] and result["cause"] == "network"
     assert "latency_ms" in result
+    assert result["source"] == "typesafe" and native.await_args.kwargs["native_only"]
+
 
 
 async def test_test_request_has_a_total_deadline_and_propagates_cancellation(monkeypatch):
@@ -47,9 +52,9 @@ async def test_test_request_has_a_total_deadline_and_propagates_cancellation(mon
             cancelled.append(True)
 
     monkeypatch.setattr(judgment, "get_judgment_engine", lambda: SimpleNamespace(judge=pending))
-    assert (await judgment.JudgmentService.test())["cause"] == "timeout"
+    assert (await judgment.test_connection())["cause"] == "timeout"
     assert cancelled == [True]
-    task = asyncio.create_task(judgment.JudgmentService.test())
+    task = asyncio.create_task(judgment.test_connection())
     await asyncio.sleep(0)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):

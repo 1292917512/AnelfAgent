@@ -36,7 +36,7 @@ class JudgmentError(Exception):
 
 
 class JudgmentSource(str, Enum):
-    """判断结果来源通道。"""
+    """判断来源协议；typesafe 表示 System One，含云端与自部署服务。"""
 
     TYPESAFE = "typesafe"
     LLM_FALLBACK = "llm_fallback"
