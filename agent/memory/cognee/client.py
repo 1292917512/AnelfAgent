@@ -41,6 +41,7 @@ class CogneeClient:
         self._datasets_lock = asyncio.Lock()
         self._dataset_names: set[str] = set()
         self._datasets_until = 0.0
+        self._compact_rotation = 0
         self._resolved_chat: dict[str, Any] = {}
         self._resolved_embedding: dict[str, Any] = {}
         self._embedding_payload: dict[str, Any] = {}
@@ -308,6 +309,7 @@ class CogneeClient:
         data_item_module = importlib.import_module("cognee.tasks.ingestion.data_item")
         return data_item_module.DataItem(
             data,
+            literal_text=True,
             label=label,
             external_metadata=external_metadata,
             data_id=uuid5(NAMESPACE_URL, f"anelf:{dataset_name}:{label}:{hashlib.sha256(data.encode()).hexdigest()}"),
@@ -394,7 +396,7 @@ class CogneeClient:
         return result
 
     async def compact_vector_storage(self, retention_days: float) -> dict[str, Any]:
-        """压缩全部 LanceDB 向量表并清理过期版本，回收磁盘空间。
+        """按单轮预算压缩 LanceDB 向量表并清理过期版本，回收磁盘空间。
 
         实现见 `storage.compact_lance_tree`；最新版本永远保留，逻辑数据不受影响。
         须在无并发写入时调用（协调器空闲窗口）。
@@ -405,11 +407,26 @@ class CogneeClient:
                 raise RuntimeError(availability.reason or "Cognee 未就绪")
         from .storage import compact_lance_tree
 
-        return await asyncio.to_thread(
+        task = asyncio.create_task(asyncio.to_thread(
             compact_lance_tree,
             Path(self.config.absolute_data_root) / "system" / "databases",
             retention_days,
-        )
+            rotation=self._compact_rotation,
+        ), name="memory.cognee.compact")
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # 原生写线程不可被协程取消；提交完成前不能释放宿主互斥锁。
+            while not task.done():
+                try:
+                    await asyncio.wait({task})
+                except asyncio.CancelledError:
+                    continue
+            if not task.cancelled():
+                task.exception()
+            raise
+        finally:
+            self._compact_rotation += 1
 
     async def visualize(self, *args: Any, **kwargs: Any) -> Any:
         return await self._call("visualize", *args, **kwargs)

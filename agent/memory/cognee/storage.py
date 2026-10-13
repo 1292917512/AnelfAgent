@@ -2,10 +2,8 @@
 
 两个职责共享同一条目录遍历设施，收敛在一个模块：
 
-- ``compact_lance_tree``：cognee 的删除/更新只在 Lance 追加 tombstone 新版本，
-  历史版本物理数据永不回收（磁盘单调膨胀的根因）。本函数遍历
-  ``system/databases/**/*.lance.db`` 逐表 ``optimize(cleanup_older_than)``
-  （碎片合并 + 索引优化 + 清理过期版本；最新版本永远保留，逻辑数据零影响）。
+- ``compact_lance_tree``：宿主唯一压缩入口，复用 Cognee 的有界碎片合并与
+  历史版本清理；全数据树共享单轮预算，轮换起点防止后面的表长期得不到维护。
 - ``StorageStatsTracker``：占用统计（向量/图/元数据/原始文档归类）。
   大库遍历可达数十秒，故请求路径永不遍历——内存 TTL 缓存 → 磁盘快照
   （重启即恢复上次真实值）→ 空统计 三级返回，过期仅调度后台单任务刷新。
@@ -18,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import time
 from pathlib import Path
@@ -75,16 +74,21 @@ def compute_storage_stats(root: Path) -> StorageStatsDict:
     return stats
 
 
-def compact_lance_tree(databases_root: Path, retention_days: float) -> dict[str, Any]:
-    """遍历 LanceDB 库目录逐表 optimize（同步实现，由调用方放入线程执行）。
+def compact_lance_tree(databases_root: Path, retention_days: float, *, rotation: int = 0) -> dict[str, Any]:
+    """按共享预算压缩数据树，保留期内的版本与最新数据保持可读。
 
     单表失败仅记录不中断其余表；须在无并发写入时调用（协调器空闲窗口）。
     返回的 after_stats 是压缩后的实测占用，调用方应直接收录进统计缓存
     （``StorageStatsTracker.adopt``），避免紧接一次重复遍历。
     """
-    from datetime import timedelta
-
     import lancedb
+    from cognee_db_workers.lancedb_compaction import (
+        DEFAULT_MAX_TASKS_PER_RUN,
+        DEFAULT_MAX_VERSIONS_PER_RUN,
+        compact_fragments,
+        lance_core_mismatch,
+        prune_superseded_versions,
+    )
 
     result: dict[str, Any] = {
         "databases": 0,
@@ -94,6 +98,9 @@ def compact_lance_tree(databases_root: Path, retention_days: float) -> dict[str,
         "bytes_reclaimed": 0,
         "errors": [],
         "after_stats": _empty_stats(),
+        "executed_tasks": 0,
+        "old_versions_removed": 0,
+        "budget_exhausted": False,
     }
     if not databases_root.is_dir():
         return result
@@ -102,7 +109,11 @@ def compact_lance_tree(databases_root: Path, retention_days: float) -> dict[str,
         return result
     stats_root = databases_root.parent.parent
     result["bytes_before"] = compute_storage_stats(stats_root)["total_bytes"]
-    older_than = timedelta(days=max(0.0, float(retention_days)))
+    mismatch = lance_core_mismatch()
+    if mismatch:
+        raise RuntimeError(f"Lance 压缩依赖不兼容: {mismatch}")
+    retention_seconds = max(0, math.ceil(float(retention_days) * 86400))
+    tables: list[tuple[Any, str, str]] = []
     for index, db_dir in enumerate(db_dirs, 1):
         log(
             f"Cognee LanceDB 压缩进度: {index}/{len(db_dirs)} {db_dir.name}",
@@ -116,12 +127,31 @@ def compact_lance_tree(databases_root: Path, retention_days: float) -> dict[str,
         except Exception as exc:
             result["errors"].append(f"{db_dir.name}: 打开失败 {exc}")
             continue
-        for table_name in table_names:
-            try:
-                connection.open_table(table_name).optimize(cleanup_older_than=older_than)
-                result["tables"] += 1
-            except Exception as exc:
-                result["errors"].append(f"{db_dir.name}/{table_name}: {exc}")
+        tables.extend((connection, db_dir.name, name) for name in sorted(table_names))
+    offset = rotation % len(tables) if tables else 0
+    tasks_left = DEFAULT_MAX_TASKS_PER_RUN
+    versions_left = DEFAULT_MAX_VERSIONS_PER_RUN
+    for connection, db_name, table_name in tables[offset:] + tables[:offset]:
+        if tasks_left <= 0 and versions_left <= 0:
+            break
+        try:
+            dataset = connection.open_table(table_name).to_lance()
+            if tasks_left > 0:
+                compacted = compact_fragments(dataset, max_tasks=tasks_left)
+                executed = int(compacted["executed_tasks"])
+                tasks_left -= executed
+                result["executed_tasks"] += executed
+            if versions_left > 0:
+                pruned = prune_superseded_versions(
+                    dataset, retention_seconds=retention_seconds, max_versions=versions_left,
+                )
+                removed = int(pruned["old_versions_removed"])
+                versions_left -= removed
+                result["old_versions_removed"] += removed
+            result["tables"] += 1
+        except Exception as exc:
+            result["errors"].append(f"{db_name}/{table_name}: {exc}")
+    result["budget_exhausted"] = tasks_left <= 0 or versions_left <= 0
     after_stats = compute_storage_stats(stats_root)
     result["after_stats"] = after_stats
     result["bytes_after"] = after_stats["total_bytes"]

@@ -187,22 +187,25 @@ class CogneeCoordinator:
         """
         if not self.config.enabled:
             return {"ok": False, "error": "cognee 未启用"}
+        if not self._projection_allowed():
+            return {"ok": False, "error": self._pause_reason}
         if self._task and not self._task.done():
             self._compact_requested = True
             self.wake()
             return {"ok": True, "scheduled": True}
         result = await self._run_compact()
-        return {"ok": True, "scheduled": False, "result": result}
+        return {"ok": "error" not in result, "scheduled": False, "result": result}
 
     async def run_in_idle_window(self, job: Any) -> Any:
         """在队列排空后的空闲窗口执行 job（协程，与写入互斥）。
 
         供存储卷备份/迁移等需要 cognee 数据树静默期的操作使用：
         worker 存活时提交作业并等待其在空闲窗口执行完毕（作业与批次
-        天然互斥——worker 是唯一写入者）；worker 未运行时直接执行。
+        串行，投影锁同时隔离手动维护）；worker 未运行时持锁执行。
         """
         if not (self._task and not self._task.done()):
-            return await job
+            async with self._projection_lock:
+                return await job
         if self._idle_job is not None:
             raise RuntimeError("已有空闲窗口作业排队中")
         self._idle_done.clear()
@@ -221,7 +224,8 @@ class CogneeCoordinator:
         if job is None:
             return
         try:
-            self._idle_job = await job
+            async with self._projection_lock:
+                self._idle_job = await job
         except BaseException as exc:
             self._idle_job = exc
         finally:
@@ -241,7 +245,11 @@ class CogneeCoordinator:
         return {"dry_run": False, "queued": count}
 
     async def improve(self, dataset_name: str) -> Any:
-        return await self.client.improve(dataset=dataset_name)
+        """在投影与维护互斥窗口中增强图谱，遵循写盘熔断。"""
+        async with self._projection_lock:
+            if not self._projection_allowed():
+                raise RuntimeError(self._pause_reason)
+            return await self.client.improve(dataset=dataset_name)
 
     def _projection_allowed(self) -> bool:
         """写盘熔断闸门：暂停期间拒绝批次认领与自动压缩。
@@ -315,8 +323,10 @@ class CogneeCoordinator:
         compact_interval_seconds。无论成败都刷新时间戳，避免失败后在
         每个空闲轮次反复重试；失败仅记日志，下一个周期再试。
         """
-        if not (self.config.enabled and self.config.compact_enabled):
+        if not self.config.enabled:
             self._compact_requested = False
+            return
+        if not self.config.compact_enabled and not self._compact_requested:
             return
         interval_ns = int(self.config.compact_interval_seconds * 1e9)
         due = time.monotonic_ns() - self._last_compact_ns >= interval_ns
@@ -326,9 +336,15 @@ class CogneeCoordinator:
         await self._run_compact()
 
     async def _run_compact(self) -> dict[str, Any]:
+        async with self._projection_lock:
+            if not self._projection_allowed():
+                return {"error": self._pause_reason}
+            return await self._compact_storage()
+
+    async def _compact_storage(self) -> dict[str, Any]:
         self._last_compact_ns = time.monotonic_ns()
         log(
-            "Cognee LanceDB 压缩开始（回收历史版本，首次压缩大库可能耗时较长）",
+            "Cognee LanceDB 压缩开始（有界合并碎片并回收历史版本）",
             tag="思维",
         )
         try:
@@ -350,9 +366,11 @@ class CogneeCoordinator:
             result["after_stats"],
         )
         self.last_compact_at = time.time()
+        self._breaker.observe()
         reclaimed_mb = result["bytes_reclaimed"] / 1024 / 1024
         self.last_compact_summary = (
             f"表 {result['tables']}，回收 {reclaimed_mb:.1f}MB"
+            + ("，已达单轮预算，余量留待下次维护" if result.get("budget_exhausted") else "")
             + (f"，{len(result['errors'])} 个错误" if result["errors"] else "")
         )
         log(

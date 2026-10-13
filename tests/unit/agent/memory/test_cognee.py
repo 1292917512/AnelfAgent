@@ -1067,6 +1067,109 @@ def test_compact_lance_tree_missing_root_is_noop(tmp_path) -> None:
     assert result["errors"] == []
 
 
+def test_compaction_preserves_retained_versions_and_rotates_shared_budget(tmp_path, monkeypatch) -> None:
+    lancedb = pytest.importorskip("lancedb")
+    import cognee_db_workers.lancedb_compaction as compaction
+
+    from agent.memory.cognee.storage import compact_lance_tree
+
+    db_dir = tmp_path / "system" / "databases" / "probe.lance.db"
+    connection = lancedb.connect(str(db_dir))
+    versions: dict[str, set[int]] = {}
+    for name in ("first", "second"):
+        table = connection.create_table(name, [{"id": 0, "vector": [0.0] * 4}])
+        for value in range(1, 5):
+            table.add([{"id": value, "vector": [float(value)] * 4}])
+        versions[name] = {row["version"] for row in table.list_versions()}
+
+    monkeypatch.setattr(compaction, "DEFAULT_MAX_TASKS_PER_RUN", 1)
+    monkeypatch.setattr(compaction, "DEFAULT_MAX_VERSIONS_PER_RUN", 2)
+    retained = compact_lance_tree(db_dir.parent, 1.0)
+    assert retained["errors"] == []
+    assert retained["executed_tasks"] == 1
+    assert retained["old_versions_removed"] == 0
+    for name in versions:
+        table = connection.open_table(name)
+        assert versions[name] <= {row["version"] for row in table.list_versions()}
+        assert table.count_rows() == 5
+    assert len(connection.open_table("first").to_lance().get_fragments()) == 1
+    assert len(connection.open_table("second").to_lance().get_fragments()) == 5
+
+    rotated = compact_lance_tree(db_dir.parent, 0.0, rotation=1)
+    assert rotated["errors"] == []
+    assert rotated["executed_tasks"] == 1
+    assert rotated["old_versions_removed"] == 2
+    assert rotated["budget_exhausted"] is True
+    assert len(connection.open_table("second").to_lance().get_fragments()) == 1
+    assert connection.open_table("second").count_rows() == 5
+
+
+async def test_compaction_cancel_drains_native_write_before_unlocking(store, tmp_path, monkeypatch) -> None:
+    started = asyncio.Event()
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+
+    def compact(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        loop.call_soon_threadsafe(started.set)
+        if not release.wait(5):
+            raise TimeoutError("test did not release native writer")
+        return {}
+
+    monkeypatch.setattr("agent.memory.cognee.storage.compact_lance_tree", compact)
+    config = CogneeConfig(data_root=str(tmp_path), write_breaker_enabled=False)
+    client = CogneeClient(config)
+    client._configured = True
+    coordinator = CogneeCoordinator(store, client, config)
+    task = asyncio.create_task(coordinator._run_compact())
+    try:
+        await asyncio.wait_for(started.wait(), 3)
+        for _ in range(2):
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+            assert coordinator._projection_lock.locked()
+    finally:
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert not coordinator._projection_lock.locked()
+    assert client._compact_rotation == 1
+
+
+async def test_upstream_compaction_is_owned_by_host(tmp_path, monkeypatch) -> None:
+    from cognee.infrastructure.databases.vector.lancedb.LanceDBAdapter import LanceDBAdapter
+
+    from agent.memory.cognee.adapters import _host_compaction_reason
+
+    monkeypatch.setattr(LanceDBAdapter, "_compaction_skip_reason", _host_compaction_reason)
+    adapter = LanceDBAdapter(str(tmp_path), None, Mock())
+    adapter._schedule_open_prune()
+    assert adapter._open_prune_task is None
+    assert await adapter.compact() == {"skipped": "host_managed"}
+    assert adapter._followup_prune_handle is None
+    assert adapter.connection is None
+
+
+@pytest.mark.parametrize("operation", ["improve", "idle_inline", "idle_queued"])
+async def test_manual_maintenance_cannot_overlap_projection(store, operation) -> None:
+    client = _FakeCogneeClient()
+    client.improve = AsyncMock(return_value="done")
+    coordinator = CogneeCoordinator(store, client, CogneeConfig(write_breaker_enabled=False))
+    async with coordinator._projection_lock:
+        if operation == "improve":
+            task = asyncio.create_task(coordinator.improve("dataset"))
+        elif operation == "idle_inline":
+            task = asyncio.create_task(coordinator.run_in_idle_window(client.improve()))
+        else:
+            coordinator._idle_job = client.improve()
+            task = asyncio.create_task(coordinator._run_idle_job())
+        await asyncio.sleep(0)
+        assert not task.done()
+        client.improve.assert_not_awaited()
+    await task
+    client.improve.assert_awaited_once()
+
+
 def test_storage_stats_classifies_components(tmp_path) -> None:
     """存储统计按 向量/图/元数据/原始文档 正确归类，总口径为整个数据目录。"""
     from agent.memory.cognee.storage import compute_storage_stats
@@ -1215,7 +1318,7 @@ class _CompactFakeClient:
 
 @pytest.mark.asyncio
 async def test_coordinator_compact_idle_scheduling(tmp_path) -> None:
-    """空闲窗口压缩：显式请求立即执行，之后受间隔门控；禁用时不执行。"""
+    """空闲窗口按间隔自动压缩；关闭自动维护不影响显式请求。"""
     import asyncio
 
     store = MemoryStore(str(tmp_path / "memory.sqlite3"))
@@ -1245,9 +1348,11 @@ async def test_coordinator_compact_idle_scheduling(tmp_path) -> None:
         assert client.compact_calls == [3.0, 3.0]
 
         coordinator.config.compact_enabled = False
-        coordinator._compact_requested = True
         await coordinator._maybe_compact()
         assert client.compact_calls == [3.0, 3.0]
+        coordinator._compact_requested = True
+        await coordinator._maybe_compact()
+        assert client.compact_calls == [3.0, 3.0, 3.0]
         assert coordinator._compact_requested is False
         await asyncio.sleep(0.05)  # 等 adopt 的快照保存任务收尾
     finally:
@@ -1440,6 +1545,7 @@ async def test_projection_ids_are_stable_and_isolated_by_dataset(monkeypatch, tm
     async def item(data, dataset):
         return await client.make_data_item(data, label="anelf-memory-1", external_metadata={}, dataset_name=dataset)
     first = await item("old", "global")
+    assert first.literal_text is True
     assert (await item("old", "global")).data_id == first.data_id
     assert (await item("new", "global")).data_id != first.data_id
     assert (await item("old", "private")).data_id != first.data_id

@@ -120,7 +120,7 @@ class CogneeConfig:
     sync_interval_seconds: float = 5.0
     sync_batch_size: int = 20
     max_retries: int = 5
-    # LanceDB 物理压缩：同步队列空闲时自动 optimize 全部向量表，
+    # LanceDB 物理压缩：同步队列空闲时按共享预算轮换维护向量表，
     # 回收删除/更新遗留的历史版本（最新版本永远保留，逻辑数据不受影响）。
     # 保留期只是并发读保险：cognee 从不时间旅行，而高频重抽取每天产生
     # 上千个版本清单（单表 7 天可累积 ~7G manifests），窗口宁短勿长
