@@ -276,8 +276,7 @@ class ConversationData:
         if not folds:
             return rows
         result: list[dict] = []
-        marked: set = set()
-        prev_ts = 0
+        markers: dict[int, dict] = {}
         for row in rows:
             msg_id = int(row.get("id", 0) or 0)
             fold = next(
@@ -286,20 +285,22 @@ class ConversationData:
             )
             if fold is None:
                 result.append(row)
-                prev_ts = int(row.get("ts_ns", 0) or 0)
                 continue
-            if fold["id"] not in marked:
-                marked.add(fold["id"])
-                result.append({
-                    "id": fold["from_msg_id"],
+            marker = markers.get(fold["id"])
+            if marker is None:
+                marker = {
+                    "id": fold["to_msg_id"],
                     "role": "system",
                     "content": (
                         f"[换向折叠] 用户从此处换了方向：其后 {fold['folded_count']} 条消息"
                         f"已折叠（不再回放进上下文，可在数据库查看/恢复）。"
                         f"弃置路径摘要：{fold['summary'] or '（无）'}"
                     ),
-                    "ts_ns": prev_ts,
-                })
+                    "ts_ns": 0,
+                }
+                markers[fold["id"]] = marker
+                result.append(marker)
+            marker["ts_ns"] = max(marker["ts_ns"], int(row.get("ts_ns", 0) or 0))
         return result
 
     async def get_conversation_summary(self, anything: Everything) -> Optional[dict]:

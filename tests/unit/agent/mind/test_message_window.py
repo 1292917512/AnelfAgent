@@ -243,6 +243,51 @@ class _MergeMind(FakeMind):
 
 
 class TestThinkLoopMerge:
+    async def test_one_unavailable_scope_does_not_hide_other_live_conversations(self, conv_data, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        from agent.config import MindConfig
+        from agent.mind.cross_channel import build_cross_channel_narrative, update_channel_snapshot
+
+        monkeypatch.setattr("agent.mind.cross_channel.get_mind_config", lambda: MindConfig())
+        monkeypatch.setattr("agent.channel.outbound_guard._recent", {})
+        mind = _MergeMind(conv_data)
+        mind._resolve_entity_scope = lambda message: message.entity_scope
+        mind._channel_snapshots = {}
+        messages = [MessageUser(uid="1", adapter_key=adapter, text_content=text)
+                    for adapter, text in [("qq", "仍可感知的消息"), ("telegram", "暂时无法恢复的消息")]]
+        for message in messages:
+            await conv_data.add_conversation_record_by_everything(message)
+            update_channel_snapshot(mind, message)
+        sqlite = conv_data.router.sqlite
+        await sqlite.fetch_live_conversation(scope_type="user", scope_id=messages[0].scope_id, limit=30)
+        monkeypatch.setattr(sqlite, "_get_db", AsyncMock(side_effect=OSError("storage unavailable")))
+        narrative = await build_cross_channel_narrative(mind, "user_webui:1#a")
+        assert "仍可感知的消息" in str(narrative)
+        assert "暂时无法恢复的消息" not in str(narrative)
+
+    @pytest.mark.parametrize("with_new_message", [False, True])
+    async def test_folded_tail_is_not_reintroduced_as_new_messages(self, conv_data, with_new_message) -> None:
+        message = MessageUser(uid="1", adapter_key="webui", session_id="a")
+        for text in ["保留的要求", "已放弃的步骤", "已放弃的结果"]:
+            await conv_data.router.append(StorageDomain.CONVERSATION,
+                scope_type=message.scope_type, scope_id=message.scope_id, role="user", content=text)
+        sqlite = conv_data.router.sqlite
+        rows = await sqlite.fetch_conversation(scope_type=message.scope_type, scope_id=message.scope_id, limit=10)
+        await sqlite.create_conversation_fold(scope_type=message.scope_type, scope_id=message.scope_id,
+            from_msg_id=rows[0]["id"], to_msg_id=rows[-1]["id"], summary="旧方向已放弃", folded_count=2)
+        baseline = await conv_data.get_conversation_record_by_everything(message)
+        assert "已放弃的步骤" not in str(baseline)
+        if with_new_message:
+            await conv_data.router.append(StorageDomain.CONVERSATION,
+                scope_type=message.scope_type, scope_id=message.scope_id, role="user", content="请改用新方向")
+        mind = _MergeMind(conv_data)
+        await run_think_loop(mind, anything=message, base_messages=baseline)
+        assert "已放弃的步骤" not in str(mind.sent_messages)
+        assert "已放弃的结果" not in str(mind.sent_messages)
+        assert ("请改用新方向" in str(mind.sent_messages)) is with_new_message
+        assert snapshot_watermark(baseline) == (rows[-1]["ts_ns"], rows[-1]["id"])
+
     async def test_cross_channel_refresh_keeps_identity_and_stable_prefix(self, conv_data, monkeypatch) -> None:
         from agent.channel.outbound_guard import note_outbound
         from agent.config import MindConfig
