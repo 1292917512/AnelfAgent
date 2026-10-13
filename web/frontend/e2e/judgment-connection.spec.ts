@@ -161,3 +161,36 @@ test("judgment request timeouts do not claim the network is offline", async ({ p
   await expect(provider.getByText("Connection failed · skipped", { exact: true })).not.toBeVisible();
   expect(modelCalls).toBe(0);
 });
+
+test("judgment editing works without secure-context UUID support", async ({ page }) => {
+  await page.addInitScript(() => Object.defineProperty(crypto, "randomUUID", { value: undefined }));
+  const catalog: JudgmentCatalog = {
+    providers: { local: { name: "LAN decision", base_url: "http://192.168.1.4:10095", api_key: "", use_proxy: false,
+      models: { existing: { name: "Existing", model: "local-model" } } } },
+    default_model: "existing", fallback_models: [], revision: "0", health: {},
+  };
+  await page.route("**/api/judgment/providers", (route) => route.fulfill({ json: catalog }));
+  await page.route("**/api/judgment/providers/local", (route) => {
+    catalog.providers.local = route.request().postDataJSON();
+    catalog.revision = "1";
+    return route.fulfill({ json: catalog });
+  });
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.goto("/webui/models?tab=judgment");
+  await page.getByRole("button", { name: "Edit LAN decision", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Edit judgment provider" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "Add model", exact: true }).click();
+  await dialog.getByLabel("Model ID (globally unique)", { exact: true }).nth(1).fill("replacement");
+  await dialog.getByLabel("Server model name", { exact: true }).nth(1).fill("replacement-model");
+  await dialog.getByRole("button", { name: "Remove model Existing", exact: true }).click();
+  await expect(dialog.getByLabel("Server model name", { exact: true })).toHaveValue("replacement-model");
+  await dialog.getByRole("button", { name: "Add model", exact: true }).click();
+  await dialog.getByLabel("Model ID (globally unique)", { exact: true }).nth(1).fill("another");
+  await dialog.getByLabel("Server model name", { exact: true }).nth(1).fill("another-model");
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  expect(catalog.providers.local?.models).toEqual({ replacement: { name: "", model: "replacement-model" }, another: { name: "", model: "another-model" } });
+  expect(errors).toEqual([]);
+});

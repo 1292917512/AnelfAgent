@@ -178,7 +178,7 @@ class JudgmentHealth:
         previous = self._state(cfg)
         config_error = previous.cause == ErrorCause.CONFIG.value and previous.check_kind == "inference"
         started = time.monotonic()
-        attempt_timeout = max(0.1, get_config_float("judgment_connect_timeout", 2.0))
+        attempt_timeout = max(0.1, get_config_float("judgment_probe_timeout", 5.0))
         try:
             async with asyncio.timeout(attempt_timeout):
                 await SystemOneClient(

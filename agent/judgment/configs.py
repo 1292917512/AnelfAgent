@@ -38,8 +38,12 @@ _JUDGMENT_CONFIGS = {
             "default": 8000, "min": 2000, "max": 32000, "unit": "字符", "advanced": True,
         },
         "judgment_connect_timeout": {
-            "description": "判断服务单次连接及 HEAD 检查的等待上限；连通检查按全局路由为直连和代理分别预留时间，正常服务不周期检查，不消耗模型额度",
+            "description": "判断推理请求建立连接的等待上限，仍受本次判断总预算约束",
             "default": 2.0, "min": 0.1, "max": 10.0, "unit": "秒", "advanced": True,
+        },
+        "judgment_probe_timeout": {
+            "description": "手动及后台 HEAD 连通检查的总等待上限，包含代理握手与响应头；不调用模型，不改变前台判断预算",
+            "default": 5.0, "min": 0.1, "max": 30.0, "unit": "秒", "advanced": True,
         },
         "judgment_recheck_seconds": {
             "description": "不可达判断模型的后台连通复查间隔；仅 HEAD，不调用模型。恢复后重按优先级选用，凭据错误须修正配置",

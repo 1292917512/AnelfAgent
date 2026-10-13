@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
@@ -19,7 +19,8 @@ export function JudgmentProviderEditor({ id = "", provider, onClose }: Props) {
   const [url, setUrl] = useState(provider?.base_url ?? "");
   const [key, setKey] = useState(provider?.api_key ?? "");
   const [useProxy, setUseProxy] = useState(provider?.use_proxy ?? false);
-  const [models, setModels] = useState(() => Object.entries(provider?.models ?? {}).map(([mid, model]) => ({ row: crypto.randomUUID(), id: mid, ...model })));
+  const nextRow = useRef(Object.keys(provider?.models ?? {}).length);
+  const [models, setModels] = useState(() => Object.entries(provider?.models ?? {}).map(([mid, model], row) => ({ row, id: mid, ...model })));
   const ids = models.map((model) => model.id.trim());
   const duplicate = new Set(ids).size !== ids.length;
   const valid = providerId.trim() && name.trim() && url.trim() && !duplicate && models.every((model) => model.id.trim() && model.model.trim());
@@ -54,7 +55,7 @@ export function JudgmentProviderEditor({ id = "", provider, onClose }: Props) {
         </div>
         <label className="block space-y-1.5 text-xs text-muted">{t("judgment.apiKey")}<Input type="password" autoComplete="new-password" value={key} onChange={(e) => setKey(e.target.value)} /></label>
         <p className="text-xs text-muted">{t("judgment.keyHint")}</p>
-        <div className="flex items-center justify-between gap-3"><h3 className="text-sm font-medium">{t("judgment.models")}</h3><Button size="sm" disabled={models.length >= 64} onClick={() => setModels([...models, { row: crypto.randomUUID(), id: "", name: "", model: "" }])}><Plus size={14} />{t("judgment.addModel")}</Button></div>
+        <div className="flex items-center justify-between gap-3"><h3 className="text-sm font-medium">{t("judgment.models")}</h3><Button size="sm" disabled={models.length >= 64} onClick={() => setModels([...models, { row: nextRow.current++, id: "", name: "", model: "" }])}><Plus size={14} />{t("judgment.addModel")}</Button></div>
         <div className="space-y-3">
           {models.map((model, index) => <div key={model.row} className="rounded-xl border border-border p-3 space-y-3">
             <div className="flex items-center justify-between"><span className="text-xs text-muted">{t("judgment.modelNumber", { count: index + 1 })}</span><Button size="icon" variant="ghost" aria-label={t("judgment.removeModel", { name: model.name || model.id || index + 1 })} onClick={() => setModels(models.filter((entry) => entry.row !== model.row))}><Trash2 size={14} /></Button></div>

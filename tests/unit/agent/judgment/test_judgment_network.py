@@ -21,6 +21,7 @@ def network_settings(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     values: dict[str, Any] = {
         "proxy_enabled": True, "http_proxy": "http://proxy.test:7890",
         "proxy_default_mode": "fallback", "judgment_connect_timeout": 0.2,
+        "judgment_probe_timeout": 0.5,
     }
     monkeypatch.setattr(ConfigManager, "get", lambda key, default=None: values.get(key, default))
     return values
@@ -153,3 +154,45 @@ async def test_priority_failover_and_background_recovery_keep_each_providers_rou
     assert (await engine.judge("facts", questions, native_only=True)).model == "local"
     assert calls == [("local.test", None, "POST"), ("cloud.test", network_settings["http_proxy"], "POST"),
                      ("local.test", None, "HEAD"), ("local.test", None, "POST")]
+
+
+@pytest.mark.parametrize("probe", [False, True])
+async def test_access_restriction_is_not_reported_as_healthy(
+    network_settings: dict[str, Any], monkeypatch: pytest.MonkeyPatch, probe: bool,
+) -> None:
+    monkeypatch.setattr(httpx, "AsyncHTTPTransport", lambda **kwargs: httpx.MockTransport(lambda request: httpx.Response(451)))
+    cfg = config()
+    health = JudgmentHealth()
+    with pytest.raises(JudgmentError, match="HTTP 451") as error:
+        if probe:
+            await health.check_connectivity(cfg)
+        else:
+            await JudgmentEngine()._judge_native(cfg, "facts", {"q": NoulQuestion(instructions="Ready?")})
+    assert error.value.cause == ErrorCause.NETWORK and not error.value.retryable
+    if probe:
+        assert health.snapshot()["cloud"]["status"] == "offline"
+        assert health.snapshot()["cloud"]["retry_at"] > 0
+
+
+async def test_head_response_budget_is_independent_of_inference_connect_deadline(
+    network_settings: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    network_settings["judgment_connect_timeout"] = 0.02
+    timeouts: dict[str, dict[str, float]] = {}
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        timeouts[request.method] = request.extensions["timeout"]
+        if request.method == "HEAD":
+            await asyncio.sleep(0.08)
+            return httpx.Response(405)
+        return httpx.Response(200, json={"answers": {"q": {"type": "noul", "noul": 1}}})
+
+    monkeypatch.setattr(httpx, "AsyncHTTPTransport", lambda **kwargs: httpx.MockTransport(respond))
+    cfg = config(use_proxy=True)
+    health = JudgmentHealth()
+    await health.check_connectivity(cfg)
+    await JudgmentEngine()._judge_native(cfg, "facts", {"q": NoulQuestion(instructions="Ready?")})
+    assert health.snapshot()["cloud"]["status"] == "ready"
+    assert timeouts["HEAD"]["read"] == 0.5
+    assert timeouts["POST"]["connect"] == 0.02
+    assert timeouts["POST"]["read"] == cfg.timeout

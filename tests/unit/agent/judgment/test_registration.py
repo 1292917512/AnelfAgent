@@ -8,7 +8,7 @@ import pytest
 
 EXPECTED_CONFIG_KEYS = {
     "judgment_enabled",
-    "judgment_timeout", "judgment_connect_timeout",
+    "judgment_timeout", "judgment_connect_timeout", "judgment_probe_timeout",
     "judgment_gate_enabled",
     "judgment_gate_timeout",
     "judgment_evidence_max_chars", "judgment_auto_max_chars",

@@ -116,7 +116,7 @@ async def test_unavailable_chain_preserves_default_delivery_and_total_timeout(ch
     assert "cloud" not in judgment_health.snapshot()
 
 
-@pytest.mark.parametrize("status,ok", [(200, True), (401, True), (403, True), (404, True), (405, True), (429, False), (502, False)])
+@pytest.mark.parametrize("status,ok", [(200, True), (401, True), (403, True), (404, True), (405, True), (429, False), (451, False), (502, False)])
 async def test_connectivity_head_never_submits_inference_or_credentials(chain, monkeypatch, status, ok):
     requests = []
 
@@ -166,7 +166,7 @@ async def test_head_deadline_and_cancellation_do_not_leave_checking_state(chain,
     async def stuck(*args):
         await asyncio.Event().wait()
     monkeypatch.setattr(SystemOneClient, "check_connectivity", stuck)
-    ConfigManager.set("judgment_connect_timeout", 0.01)
+    ConfigManager.set("judgment_probe_timeout", 0.01)
     result = await check_connection("local")
     assert result["cause"] == "timeout"
     assert judgment_health.snapshot()["local"]["status"] == "offline"

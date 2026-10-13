@@ -125,12 +125,19 @@ class SystemOneClient:
         # 认证/方法限制仍证明 HTTP 服务已响应，网关和过载错误不能作为恢复依据。
         if response.status_code == 407:
             raise JudgmentError("判断服务代理认证失败 (HTTP 407)", cause=ErrorCause.CONFIG, retryable=False)
+        if response.status_code == 451:
+            raise self._http_error(response)
         if response.status_code == 429 or response.status_code >= 500:
             raise JudgmentError(f"判断服务暂不可达 (HTTP {response.status_code})", cause=ErrorCause.NETWORK, retryable=True)
 
     @staticmethod
     def _http_error(resp: httpx.Response) -> JudgmentError:
         """按状态码归因：401/403 凭据、422 参数、429/529 与 5xx 可重试。"""
+        if resp.status_code == 451:
+            return JudgmentError(
+                "判断服务访问受限 (HTTP 451)，请检查服务商所选的直连或代理路径",
+                cause=ErrorCause.NETWORK, retryable=False,
+            )
         detail = ""
         try:
             body = resp.json()
