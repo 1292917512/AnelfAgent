@@ -522,7 +522,7 @@ class ContextAssembly:
             directives_text: str = "",
             repeat_hint_text: str = "",
     ) -> List[Dict]:
-        """组装完整 LLM 上下文（声明式管线），每次调用实时从 DB 获取最新对话历史。
+        """组装回复起点的完整上下文；轮内新增收发由实时会话窗口补充。
 
         各内容块的顺序由 @context_block 声明的变动率决定（值越大变动越频繁，
         排越靠后，见 context_pipeline；尾部动态区内部按字节稳定度从静到动）：
@@ -659,7 +659,7 @@ class ContextAssembly:
 
     @context_block("conversation", VOL_HISTORY, "对话历史（原始窗口）")
     async def _blk_conversation(self, inp: ContextInput) -> List[Dict]:
-        """对话历史原始窗口（水位线后纯追加；实时从 DB 获取，不可缓存）。
+        """回复起点按折叠水位读取历史，不复用其他回复周期的快照。
 
         多轮 think_loop 期间用户可能发送新消息，必须确保拿到最新对话；
         调用方预取时直接复用（避免同一次 get_recollection 内重复拉取）。

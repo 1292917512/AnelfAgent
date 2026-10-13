@@ -10,6 +10,7 @@ import asyncio
 import re
 import time
 import uuid
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Protocol, Set
@@ -34,6 +35,7 @@ if TYPE_CHECKING:
     from agent.mind.context_compressor import ContextCompressor
     from agent.mind.guardrails import GuardrailController
     from agent.mind.mind import Mind
+    from agent.storage.sqlite_backend import ConversationRow
 
 
 class FileStateCacheView(Protocol):
@@ -357,33 +359,14 @@ async def _fetch_new_messages(
         anything: "Everything",
         since_ts: int,
         since_id: int = 0,
-) -> List[Dict]:
-    """读取历史快照之后的收发消息与系统事实，按入库顺序返回。
-
-    用于将新消息并入当前 think_loop 上下文，避免图片+文字等连续消息
-    被拆成独立周期导致 AI 忘记已回复/丢失上下文关联。
-    since_id > 0 时按 id 水位精确决胜（同 ts_ns 并列不丢消息），否则回退 ts 水位。
-    """
+) -> list[ConversationRow]:
+    """从实时会话窗口读取当前历史快照之后的收发消息与系统事实。"""
     try:
         scope_type, scope_id = mind._resolve_scope(anything)
-        sqlite = mind.conversation_data.router.sqlite
-        db = await sqlite._get_db()
-        if since_id > 0:
-            cursor = await db.execute(
-                "SELECT id, role, content, ts_ns FROM conversation_messages "
-                "WHERE scope_type=? AND scope_id=? AND id > ? AND role IN ('user', 'assistant', 'system') "
-                "ORDER BY id ASC LIMIT ?",
-                (scope_type, scope_id, int(since_id), _MAX_MERGED_MESSAGES + 1),
-            )
-        else:
-            cursor = await db.execute(
-                "SELECT id, role, content, ts_ns FROM conversation_messages "
-                "WHERE scope_type=? AND scope_id=? AND ts_ns > ? AND role IN ('user', 'assistant', 'system') "
-                "ORDER BY ts_ns ASC, id ASC LIMIT ?",
-                (scope_type, scope_id, int(since_ts), _MAX_MERGED_MESSAGES + 1),
-            )
-        rows = await cursor.fetchall()
-        return [{"id": r[0], "role": r[1], "content": r[2], "ts_ns": r[3]} for r in rows]
+        return await mind.conversation_data.router.sqlite.fetch_live_conversation(
+            scope_type=scope_type, scope_id=scope_id, after_id=since_id, after_ts=since_ts,
+            limit=_MAX_MERGED_MESSAGES + 1,
+        )
     except Exception as exc:
         log(f"获取新消息失败: {exc}", "DEBUG", tag="思维")
         return []
@@ -571,7 +554,7 @@ async def _suspend_for_background(
     return result.reason, result.completions, time.monotonic() - t0
 
 
-def _maybe_reset_guardrail_for_interjection(guardrail, new_msgs: List[Dict]) -> bool:
+def _maybe_reset_guardrail_for_interjection(guardrail, new_msgs: Sequence[Mapping[str, object]]) -> bool:
     """用户插话时重置工具守卫链。
 
     仅认真实渠道到达的用户消息（带到达元数据标签）为插话；机器生成的
@@ -607,7 +590,7 @@ async def _merge_new_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> bo
         return False
     # 有界并入：首条强制并入保证进度；达到条数/字符上限即停，留存消息
     # 不推进水位（下轮再取），且保留待处理队列条目（循环结束另起周期接续）
-    merged: List[Dict] = []
+    merged: list[ConversationRow] = []
     merged_chars = 0
     for m in new_msgs:
         content_len = len(m["content"]) if isinstance(m.get("content"), str) else 0

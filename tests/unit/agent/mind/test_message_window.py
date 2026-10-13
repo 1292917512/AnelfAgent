@@ -280,12 +280,20 @@ class TestThinkLoopMerge:
             if message is not current:
                 await conv_data.add_conversation_record_by_everything(message)
             update_channel_snapshot(mind, message)
+        sqlite = conv_data.router.sqlite
+        for scope_id in [current.scope_id, *(message.scope_id for message in others), "telegram:1"]:
+            await sqlite.fetch_live_conversation(scope_type="user", scope_id=scope_id, limit=30)
+        queries: list[str] = []
+        db = await sqlite._get_db()
+        await db.set_trace_callback(queries.append)
         token = bind_scope(current.entity_scope)
         try:
             await run_think_loop(mind, anything=current, base_messages=baseline)
         finally:
             reset_scope(token)
+            await db.set_trace_callback(None)
         assert mind.llm_calls == 2
+        assert not [sql for sql in queries if sql.lstrip().upper().startswith("SELECT") and "conversation_messages" in sql]
         for sent in mind.sent_messages:
             assert sent[:len(baseline)] == baseline
             dynamic = [m for m in sent if m.get("_source", {}).get("origin") == "cross_channel_narrative"]

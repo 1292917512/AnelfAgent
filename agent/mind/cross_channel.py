@@ -227,11 +227,11 @@ async def build_cross_channel_narrative(mind: Any, current_scope: str) -> List[D
     async def read(scope: str) -> List[Dict]:
         scope_type, adapter, identity, session = parse_entity_scope(scope)
         scope_id = build_scope_id(adapter, identity, "#" + session if session else "")
-        rows = await mind.conversation_data.router.sqlite.fetch_conversation(
+        rows = await mind.conversation_data.router.sqlite.fetch_live_conversation(
             scope_type=scope_type, scope_id=scope_id, limit=mind.conversation_data.max_size,
         )
         messages: List[Dict] = []
-        for row in rows:
+        for row in sorted(rows, key=lambda row: (row["ts_ns"], row["id"])):
             if row["role"] not in {"user", "assistant"} or row["ts_ns"] < cutoff * 1_000_000_000:
                 continue
             content = (tag_label("scope", scope) + tag_label("channel", adapter)

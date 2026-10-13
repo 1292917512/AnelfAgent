@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+from collections import OrderedDict
+from dataclasses import dataclass
 from pathlib import Path
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator, Optional, TypedDict
 
 import aiosqlite
 
@@ -13,6 +15,35 @@ from core.sqlite_utils import required_row
 
 # 连接健康检查节流间隔（秒）：避免每次 _get_db 都执行 SELECT 1
 _HEALTH_CHECK_INTERVAL = 30.0
+_LIVE_SCOPES = 128
+_LIVE_MESSAGES = 256
+_LIVE_CHARS = 256_000
+
+
+class ConversationRow(TypedDict):
+    id: int
+    role: str
+    content: str
+    ts_ns: int
+
+
+@dataclass
+class _ConversationWindow:
+    rows: list[ConversationRow]
+    floor_id: int = 0
+
+    def trim(self) -> None:
+        """限制记录数与文本体积，保留被淘汰记录的水位供落后读者补读。"""
+        chars = 0
+        start = len(self.rows)
+        for row in reversed(self.rows):
+            if len(self.rows) - start >= _LIVE_MESSAGES or chars + len(row["content"]) > _LIVE_CHARS:
+                break
+            chars += len(row["content"])
+            start -= 1
+        if start:
+            self.floor_id = max(self.floor_id, self.rows[start - 1]["id"])
+            del self.rows[:start]
 
 
 def _register_volume() -> None:
@@ -49,6 +80,8 @@ class SqliteBackend:
         # commit/rollback 会连坐其他路径的半成品（迁移 rollback 吞在途消息、
         # 并发 commit 截断多语句删除）。所有写路径统一经 _write_tx 持锁
         self._write_lock = asyncio.Lock()
+        self._conversation_windows: OrderedDict[tuple[str, str], _ConversationWindow] = OrderedDict()
+        self._conversation_generation = 0
         self._last_health_check = 0.0
         self._register_embedding_backlog()
 
@@ -89,6 +122,7 @@ class SqliteBackend:
             # 保证没有其他协程的写事务在途，否则 rollback 会连坐正常流量
             async with self._write_lock:
                 await migrate_main_db_scopes(db, self.db_path, get_legacy_adapter())
+                self.invalidate_conversation_windows()
             self._scope_migrated = True
         except Exception as exc:
             self._scope_migrate_attempts += 1
@@ -118,6 +152,7 @@ class SqliteBackend:
                     await self._db.execute("SELECT 1")
                     self._last_health_check = now
                 except Exception:
+                    self.invalidate_conversation_windows()
                     try:
                         await self._db.close()
                     except Exception:
@@ -321,6 +356,7 @@ class SqliteBackend:
     async def close(self) -> None:
         """关闭持久连接（与 _get_db 的健康检查/重建互斥，防关闭途中被复用）。"""
         async with self._conn_lock:
+            self.invalidate_conversation_windows()
             if self._db:
                 try:
                     await self._db.close()
@@ -343,12 +379,89 @@ class SqliteBackend:
             try:
                 yield db
             except BaseException:
+                self.invalidate_conversation_windows()
                 await db.rollback()
                 raise
 
     # ------------------------------------------------------------------
     # 会话记录
     # ------------------------------------------------------------------
+
+    def invalidate_conversation_windows(self) -> None:
+        """外部编辑或连接生命周期变化后，清除运行时会话窗口。"""
+        self._conversation_windows.clear()
+        self._conversation_generation += 1
+
+    async def _conversation_window(self, scope_type: str, scope_id: str) -> _ConversationWindow:
+        """首次访问恢复有界窗口；已加载窗口由提交入口同步维护。"""
+        key = (scope_type, scope_id)
+        window = self._conversation_windows.get(key)
+        if window is not None:
+            self._conversation_windows.move_to_end(key)
+            return window
+        db = await self._get_db()
+        async with self._write_lock:
+            window = self._conversation_windows.get(key)
+            while window is None:
+                generation = self._conversation_generation
+                cursor = await db.execute(
+                    "SELECT id, role, content, ts_ns FROM conversation_messages "
+                    "WHERE scope_type=? AND scope_id=? ORDER BY id DESC LIMIT ?",
+                    (scope_type, scope_id, _LIVE_MESSAGES + 1),
+                )
+                records = list(reversed(list(await cursor.fetchall())))
+                if generation != self._conversation_generation:
+                    continue
+                window = _ConversationWindow([
+                    {"id": r[0], "role": r[1], "content": r[2], "ts_ns": r[3]}
+                    for r in records
+                ])
+                window.trim()
+                self._conversation_windows[key] = window
+                while len(self._conversation_windows) > _LIVE_SCOPES:
+                    self._conversation_windows.popitem(last=False)
+            self._conversation_windows.move_to_end(key)
+            return window
+
+    async def fetch_live_conversation(
+        self, *, scope_type: str, scope_id: str, limit: int,
+        after_id: Optional[int] = None, after_ts: int = 0,
+    ) -> list[ConversationRow]:
+        """读取实时收发快照；仅冷启动、淘汰或积压超窗时补读数据库。
+
+        after_id=None 返回最近到达的消息；否则按本轮已读水位返回新增消息。
+        快照独立于窗口，调用方修改消息不会污染其他会话或正在发送的请求。
+        """
+        if limit <= 0:
+            return []
+        window = await self._conversation_window(scope_type, scope_id)
+        if after_id is None:
+            if len(window.rows) >= limit or window.floor_id == 0:
+                return [row.copy() for row in window.rows[-limit:]]
+            predicate, params, order = "", [], "id DESC"
+        elif after_id >= window.floor_id:
+            rows = [row for row in window.rows
+                    if row["role"] in {"user", "assistant", "system"}
+                    and (row["id"] > after_id if after_id else row["ts_ns"] > after_ts)]
+            if not after_id:
+                rows.sort(key=lambda row: (row["ts_ns"], row["id"]))
+            return [row.copy() for row in rows[:limit]]
+        elif after_id:
+            predicate, params, order = " AND id > ?", [after_id], "id ASC"
+        else:
+            predicate, params, order = " AND ts_ns > ?", [after_ts], "ts_ns ASC, id ASC"
+        if after_id is not None:
+            predicate += " AND role IN ('user', 'assistant', 'system')"
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT id, role, content, ts_ns FROM conversation_messages "
+            f"WHERE scope_type=? AND scope_id=?{predicate} ORDER BY {order} LIMIT ?",
+            (scope_type, scope_id, *params, limit),
+        )
+        records = list(await cursor.fetchall())
+        if after_id is None:
+            records.reverse()
+        return [{"id": r[0], "role": r[1], "content": r[2], "ts_ns": r[3]} for r in records]
 
     async def append_conversation(
         self,
@@ -363,11 +476,16 @@ class SqliteBackend:
     ) -> None:
         ts_ns = ts_ns or time.time_ns()
         async with self._write_tx() as db:
-            await db.execute(
+            cursor = await db.execute(
                 "INSERT INTO conversation_messages(scope_type, scope_id, role, content, ts_ns, adapter_key, trigger_mind) VALUES(?,?,?,?,?,?,?)",
                 (scope_type, scope_id, role, content, int(ts_ns), adapter_key or "", 1 if trigger_mind else 0),
             )
             await db.commit()
+            window = self._conversation_windows.get((scope_type, scope_id))
+            if window is not None:
+                window.rows.append({"id": int(cursor.lastrowid or 0), "role": role,
+                                    "content": content, "ts_ns": int(ts_ns)})
+                window.trim()
 
     async def conversation_has_duplicate(
         self,
@@ -1542,6 +1660,7 @@ class SqliteBackend:
         async with self._write_tx() as db:
             await db.execute("DELETE FROM conversation_messages WHERE id=?", (row_id,))
             await db.commit()
+            self.invalidate_conversation_windows()
 
     async def update_conversation_message(self, row_id: int, new_content: str) -> bool:
         """更新单条会话消息内容（存储层正式 API）。
@@ -1563,6 +1682,7 @@ class SqliteBackend:
                 await db.commit()
                 return False
             await db.commit()
+            self.invalidate_conversation_windows()
         from agent.memory.embedding import wake_embedding_worker
         wake_embedding_worker()
         return True
@@ -1575,6 +1695,7 @@ class SqliteBackend:
                 (scope_type, scope_id),
             )
             await db.commit()
+            self._conversation_windows.pop((scope_type, scope_id), None)
             return cursor.rowcount
 
     async def sweep_empty_conversations(self, *, min_age_seconds: int = 3600) -> dict:
@@ -1644,6 +1765,8 @@ class SqliteBackend:
             )
             report["messages"] = cursor.rowcount or 0
             await db.commit()
+            for scope in empty_scopes:
+                self._conversation_windows.pop(scope, None)
         return report
 
     async def list_entity_profiles(self) -> list[dict]:

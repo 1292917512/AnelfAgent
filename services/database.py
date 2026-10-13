@@ -22,8 +22,9 @@ import json
 import os
 import re
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 import aiosqlite
 
@@ -528,11 +529,11 @@ class DatabaseService:
         names = list(values.keys())
         cols_sql = ", ".join(f'"{n}"' for n in names)
         placeholders = ", ".join("?" for _ in names)
-        cursor = await conn.execute(
-            f'INSERT INTO "{table}" ({cols_sql}) VALUES ({placeholders})',
-            [values[n] for n in names],
-        )
-        await conn.commit()
+        async with self._row_write(db_id, table, conn):
+            cursor = await conn.execute(
+                f'INSERT INTO "{table}" ({cols_sql}) VALUES ({placeholders})',
+                [values[n] for n in names],
+            )
         log(f"数据库管理: 插入行 {db_id}/{table} rowid={cursor.lastrowid}", "DEBUG", tag="数据库")
         return {"rowid": cursor.lastrowid}
 
@@ -551,28 +552,54 @@ class DatabaseService:
             assignments[stale_embedding_col] = None
 
         set_sql = ", ".join(f'"{n}" = ?' for n in assignments)
-        cursor = await conn.execute(
-            f'UPDATE "{table}" SET {set_sql} WHERE rowid = ?',
-            (*assignments.values(), rowid),
-        )
-        await conn.commit()
+        async with self._row_write(db_id, table, conn):
+            cursor = await conn.execute(
+                f'UPDATE "{table}" SET {set_sql} WHERE rowid = ?',
+                (*assignments.values(), rowid),
+            )
         if cursor.rowcount == 0:
             raise DatabaseError(f"行不存在: rowid={rowid}", status_code=404)
         # memories 表内容列变更：同步 memories_fts（手动同步表，不随 UPDATE 自动
         # 更新；行数不变所以启动对账不会自愈，旧关键词会一直可搜）
         if table == "memories" and "content" in values:
-            await self._sync_memories_fts(conn, rowid, str(values["content"]))
+            async with self._conn_locks[db_id]:
+                await self._sync_memories_fts(conn, rowid, str(values["content"]))
         log(f"数据库管理: 更新行 {db_id}/{table} rowid={rowid} 列={list(values.keys())}", "DEBUG", tag="数据库")
 
     async def delete_row(self, db_id: str, table: str, rowid: int) -> None:
         self._require_local(db_id)
         conn = await self._get_conn(db_id)
         await self._require_writable(conn, table)
-        cursor = await conn.execute(f'DELETE FROM "{table}" WHERE rowid = ?', (rowid,))
-        await conn.commit()
+        async with self._row_write(db_id, table, conn):
+            cursor = await conn.execute(f'DELETE FROM "{table}" WHERE rowid = ?', (rowid,))
         if cursor.rowcount == 0:
             raise DatabaseError(f"行不存在: rowid={rowid}", status_code=404)
         log(f"数据库管理: 删除行 {db_id}/{table} rowid={rowid}", "DEBUG", tag="数据库")
+
+    @asynccontextmanager
+    async def _row_write(self, db_id: str, table: str, conn: aiosqlite.Connection) -> AsyncIterator[None]:
+        """提交行编辑；失败或取消时回滚，并使运行时会话窗口重新取数。"""
+        async with self._conn_locks.setdefault(db_id, asyncio.Lock()):
+            try:
+                yield
+                await conn.commit()
+            except BaseException:
+                await conn.rollback()
+                raise
+            finally:
+                self._invalidate_conversation_window(db_id, table)
+
+    def _invalidate_conversation_window(self, db_id: str, table: str) -> None:
+        """数据库编辑与运行时指向同一主库时，失效其会话窗口。"""
+        if db_id != "agent" or table != "conversation_messages":
+            return
+        from services._runtime import get_runtime
+
+        runtime = get_runtime()
+        if runtime is not None:
+            sqlite = runtime.data_center.sqlite
+            if Path(sqlite.db_path).resolve() == Path(self._db_path(db_id)).resolve():
+                sqlite.invalidate_conversation_windows()
 
     # ------------------------------------------------------------------
     # 只读 SQL 控制台
