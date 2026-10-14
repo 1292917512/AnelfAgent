@@ -28,10 +28,11 @@ def _record(name: str, started_at: float, *, status: str = "success", trigger: s
 
 
 class TestHistoryStore:
-    def test_record_and_get_newest_first(self) -> None:
-        assert _record("t1", 100.0)
-        assert _record("t1", 200.0)
-        assert _record("t1", 300.0)
+    @pytest.mark.parametrize("trigger", ["manual", "event"])
+    def test_record_and_get_newest_first(self, trigger: str) -> None:
+        assert _record("t1", 100.0, trigger=trigger)
+        assert _record("t1", 200.0, trigger=trigger)
+        assert _record("t1", 300.0, trigger=trigger)
 
         records = task_history.get_history("t1")
         assert [r["started_at"] for r in records] == [300.0, 200.0, 100.0]
@@ -39,7 +40,7 @@ class TestHistoryStore:
         assert first["task_name"] == "t1"
         assert first["duration_ms"] == 1000
         assert first["status"] == "success"
-        assert first["trigger"] == "manual"
+        assert first["trigger"] == trigger
 
     def test_get_history_missing_task(self) -> None:
         assert task_history.get_history("ghost") == []

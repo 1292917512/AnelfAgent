@@ -603,7 +603,7 @@ class HeartbeatEngine:
         except Exception as exc:
             log(f"后台手动任务异常 [{task_name}]: {exc}", "WARNING", tag="心跳")
 
-    async def run_task(self, task_name: str) -> Optional[str]:
+    async def run_task(self, task_name: str, *, trigger: str = "manual") -> Optional[str]:
         """按名称执行指定任务，返回产出内容或 None。
 
         与 tick 共用同一把锁，避免手动触发与调度心跳并发执行同一任务；
@@ -622,7 +622,7 @@ class HeartbeatEngine:
             return None
         self._task_inflight.add(task_name)
 
-        log(f"手动执行任务: {task_name}", tag="心跳")
+        log(f"执行任务: {task_name}（{trigger}）", tag="心跳")
 
         # 会话生命周期由 thinking_session 管理：退出（含异常）保证发射 SESSION_END，
         # 且与并发的思维会话按执行上下文隔离，互不干扰
@@ -636,10 +636,10 @@ class HeartbeatEngine:
                     try:
                         result = await self.executor.run(
                             task, entity, temperature=self.config.analysis_temperature,
-                            trigger="manual",
+                            trigger=trigger,
                         )
                     except Exception as exc:
-                        log(f"手动任务 [{task_name}] 执行失败: {exc}", "WARNING", tag="心跳")
+                        log(f"任务 [{task_name}] 执行失败: {exc}", "WARNING", tag="心跳")
                         return None
                     return result.content if result else None
         finally:

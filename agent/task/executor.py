@@ -61,7 +61,7 @@ class TaskExecutor:
         reasoning_effort 优先级：参数传入 > task.reasoning_effort > 全局设置。
         extra_note：追加到任务指令之后的动态备注（如 idle 反思触发原因）——
         位于最后一条消息内，属纯尾部追加，不影响任务稳定前缀的缓存命中。
-        trigger：执行触发来源（heartbeat/scheduled/idle/manual），随执行历史
+        trigger：执行触发来源（heartbeat/scheduled/idle/manual/event），随执行历史
         落盘供 Web 与 AI 查询。
         """
         if not task.prompt:
@@ -100,7 +100,7 @@ class TaskExecutor:
             completion: Dict[str, Any] = {}
             content = await self._execute_llm(
                 task, entity, temperature, effective_model, effective_effort,
-                extra_note=extra_note, completion=completion,
+                extra_note=extra_note, completion=completion, trigger=trigger,
             )
             tool_calls_made = sum(
                 1 for m in completion.get("messages", [])
@@ -207,6 +207,7 @@ class TaskExecutor:
         *,
         extra_note: str = "",
         completion: Optional[Dict[str, Any]] = None,
+        trigger: str = "manual",
     ) -> str:
         """构建消息 -> LLM reflect -> 清洗输出。"""
         conversation_list: List[Dict] = []
@@ -245,7 +246,8 @@ class TaskExecutor:
             options["reasoning_effort"] = reasoning_effort
 
         from core.activity import activity_owner
-        with activity_owner(kind="task", label=task.name, owner_id=task.name):
+        with activity_owner(kind="task", label=task.name, owner_id=task.name,
+                            trigger=task.trigger_event if trigger == "event" else trigger):
             raw = await self.mind.reflect(
                 messages,
                 options=options,

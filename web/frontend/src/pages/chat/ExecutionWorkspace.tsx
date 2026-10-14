@@ -12,6 +12,7 @@ import { activityFamilies, activityPages } from "./activity/activity-pages";
 import { ActivityStream } from "./activity/ActivityStream";
 import { ActivityDetailsProvider } from "./activity/ActivityDetailsProvider";
 import { ActivityInspection } from "@/components/common/ActivityInspection";
+import { ActivityRoundSummary } from "./activity/ActivityRoundSummary";
 
 /** 当前执行轮次优先展示；更早的过程只在主动上翻时挂载。 */
 export default function ExecutionWorkspace() {
@@ -41,6 +42,8 @@ function ActivityFeed({ runs, clearing, onClear }: { runs: ActivityRun[]; cleari
   const currentPage = index === pages.length - 1;
   const families = useMemo(() => activityFamilies(page?.runs ?? []), [page]);
   const selectedFamily = families.find((item) => item.id === family);
+  const focusFamily = selectedFamily ?? families[families.length - 1];
+  const focusRun = focusFamily?.runs.find((run) => run.id === focusFamily.id) ?? focusFamily?.runs[0];
   const visibleRuns = (selectedFamily?.runs ?? page?.runs ?? []).filter((run) => run.kind !== "hook" || !page?.runs.some((parent) => parent.entries.some((entry) => entry.kind === "hook" && entry.activity_ids?.includes(run.id))));
   const pinPage = useCallback(() => { if (page) setSelected(page.id); }, [page]);
   const { scroll, content, following, pause: pauseFollowing, resume, handlers } = useActivityFollow(`${page?.id}:${family}:${Math.max(0, ...visibleRuns.map((run) => run.revision))}`, pinPage);
@@ -69,15 +72,13 @@ function ActivityFeed({ runs, clearing, onClear }: { runs: ActivityRun[]; cleari
   };
   return <>
     <header className="activity-heading"><div className="activity-heading-title"><Activity size={16} className="text-accent" /><h2>{t("activity.title")}</h2></div>
-      <span className="activity-connection ml-auto inline-flex items-center gap-2 text-xs text-muted" role="status">{activeRuns.length > 0 && <span className="activity-live-dot" />}{t(!connected ? "activity.reconnecting" : activeRuns.length ? "activity.working" : "activity.idle")}</span>
-      <Button variant="ghost" size="sm" className="activity-follow-toggle" aria-pressed={following} title={t(following ? "activity.pauseFollow" : "activity.resumeFollow")} onClick={following ? pauseFollowing : resumeFollowing}>{following ? <Radio size={13} /> : <Pause size={13} />}{t(following ? "activity.following" : "activity.followPaused")}</Button>
-      <Button variant="ghost" size="sm" title={t("activity.clearHistoryHint")} disabled={pages.length < 2} loading={clearing} onClick={onClear}><Trash2 size={13} />{t("activity.clearHistory")}</Button>
+      {focusRun && focusFamily && <ActivityRoundSummary key={focusRun.id} run={focusRun} runs={focusFamily.runs} onReveal={revealRun} />}
+      <div className="activity-heading-controls">
+        <span className="activity-connection inline-flex items-center gap-2 text-xs text-muted" role="status">{activeRuns.length > 0 && <span className="activity-live-dot" />}<span>{t(!connected ? "activity.reconnecting" : activeRuns.length ? "activity.working" : "activity.idle")}</span></span>
+        <Button variant="ghost" size="sm" className="activity-follow-toggle" aria-label={t(following ? "activity.following" : "activity.followPaused")} aria-pressed={following} title={t(following ? "activity.pauseFollow" : "activity.resumeFollow")} onClick={following ? pauseFollowing : resumeFollowing}>{following ? <Radio size={13} /> : <Pause size={13} />}<span className="activity-control-label">{t(following ? "activity.following" : "activity.followPaused")}</span></Button>
+        <Button variant="ghost" size="sm" aria-label={t("activity.clearHistory")} title={t("activity.clearHistoryHint")} disabled={pages.length < 2} loading={clearing} onClick={onClear}><Trash2 size={13} /><span className="activity-control-label">{t("activity.clearHistory")}</span></Button>
+      </div>
     </header>
-    {activeRuns.length > 1 && <nav className="activity-active-runs" aria-label={t("activity.activeRuns")}>
-      {activeRuns.map((run) => <button key={run.id} title={run.label} onClick={() => revealRun(run.id)}>
-        <span className="activity-live-dot" /><span>{run.source.channel || t("activity.system")} · {run.label || t(`activity.kinds.${run.kind}`, { defaultValue: run.kind })}</span>
-      </button>)}
-    </nav>}
     {families.length > 1 && <nav className="activity-sessions" aria-label={t("activity.sessions")}>
       <button aria-pressed={!selectedFamily} onClick={() => setFamily(null)}>{t("activity.allSessions")}</button>
       {families.map((item) => { const root = item.runs.find((run) => run.id === item.id) ?? item.runs[0]!; return <button key={item.id} aria-pressed={selectedFamily?.id === item.id} title={root.label} onClick={() => setFamily(item.id)}>{root.source.channel || t("activity.system")} · {root.source.target || root.actor || t(`activity.kinds.${root.kind}`, { defaultValue: root.kind })}{root.source.session && ` · ${root.source.session}`}<span>{item.runs.length}</span></button>; })}

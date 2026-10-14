@@ -192,12 +192,16 @@ class WorkspaceActivityService:
         run_id = str(payload["turn_id"])
         if run_id in self._runs:
             return
+        initiator = payload.get("initiator")
         run: dict[str, Any] = {
             "id": run_id, "scope": str(payload.get("scope", "")),
             "origin_scope": str(payload.get("origin_scope", "")),
             "parent_id": str(payload.get("parent_id", "")), "actor": str(payload.get("actor", "")),
             "label": presentation_label(str(payload.get("label", ""))),
             "kind": str(payload.get("kind", "reflection")), "owner_id": str(payload.get("owner_id", "")),
+            "trigger": sanitize_text(str(payload.get("trigger", "")))[:100],
+            "initiator": {key: sanitize_text(str(initiator.get(key, "")))[:100] for key in ("id", "name")}
+            if isinstance(initiator, dict) else None,
             "source": source_reference(str(payload.get("origin_scope") or payload.get("scope") or "")),
             "input": sanitize_text(str(payload.get("label", "")))[:MAX_TEXT],
             "generation": 0,

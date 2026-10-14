@@ -11,7 +11,7 @@ class ContributionBoundary extends Component<{ children: ReactNode; fallback: Re
   render() { return this.state.failed ? this.props.fallback : this.props.children; }
 }
 
-type ContextSlot = "audio.recording.actions" | "chat.message" | "activity.tool";
+type ContextSlot = "audio.recording.actions" | "chat.message" | "activity.tool" | "activity.summary.actions";
 type ContentProps = { [S in ContextSlot]: { entry: RegisteredContribution<S>; componentProps: UiSlotProps[S] } }[ContextSlot]
   | { entry: RegisteredContribution<Exclude<UiSlot, ContextSlot>>; componentProps: Record<string, never> };
 
@@ -21,13 +21,16 @@ export function ContributionContent({ entry, componentProps, fallback }: Content
   if (entry.slot === "activity.tool" && "entry" in componentProps && "view" in componentProps && "fallback" in componentProps) {
     const Content = entry.Component;
     content = <Content entry={componentProps.entry} view={componentProps.view} fallback={componentProps.fallback} />;
+  } else if (entry.slot === "activity.summary.actions" && "run" in componentProps && "runs" in componentProps && "onReveal" in componentProps) {
+    const Content = entry.Component;
+    content = <Content run={componentProps.run} runs={componentProps.runs} onReveal={componentProps.onReveal} />;
   } else if (entry.slot === "chat.message" && "payload" in componentProps) {
     const Content = entry.Component;
     content = <Content payload={componentProps.payload} />;
   } else if (entry.slot === "audio.recording.actions" && "path" in componentProps) {
     const Content = entry.Component;
     content = <Content path={componentProps.path} />;
-  } else if (entry.slot !== "chat.message" && entry.slot !== "audio.recording.actions" && entry.slot !== "activity.tool") {
+  } else if (entry.slot !== "chat.message" && entry.slot !== "audio.recording.actions" && entry.slot !== "activity.tool" && entry.slot !== "activity.summary.actions") {
     const Content = entry.Component;
     content = <Content />;
   }
@@ -53,8 +56,10 @@ export function ContributionSlot({ slot }: { slot: "workspace.tools" | "dashboar
 }
 
 type InlineProps = { slot: "audio.recording.actions"; componentProps: UiSlotProps["audio.recording.actions"] }
+  | { slot: "activity.summary.actions"; componentProps: UiSlotProps["activity.summary.actions"] }
   | { slot: "system.restart" | "audio.overview.cards"; componentProps: Record<string, never> };
 export function InlineContributions(props: InlineProps) {
+  if (props.slot === "activity.summary.actions") return getUiContributions(props.slot).map((entry) => <ContributionContent key={entry.key} entry={entry} componentProps={props.componentProps} />);
   if (props.slot === "audio.recording.actions") return getUiContributions(props.slot).map((entry) => <ContributionContent key={entry.key} entry={entry} componentProps={props.componentProps} />);
   return getUiContributions(props.slot).map((entry) => <ContributionContent key={entry.key} entry={entry} componentProps={{}} />);
 }

@@ -68,7 +68,7 @@ def _register_one(engine: "HeartbeatEngine", task_name: str, event: str) -> None
         log(f"任务 [{task_name}] 事件触发（{event}）", "DEBUG", tag="任务")
         # run_task 自带 _task_inflight 去重与并发互斥；产出经执行历史落盘，
         # 不由钩子面登记（任务有自己的结果路由：save_result_to_memory）
-        result = await engine.run_task(task_name)
+        result = await engine.run_task(task_name, trigger="event")
         return None if result is None else ""  # 空串 = 有产出但不走钩子路由
 
 

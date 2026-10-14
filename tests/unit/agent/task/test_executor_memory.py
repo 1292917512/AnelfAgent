@@ -12,6 +12,27 @@ from agent.task.executor import TaskExecutor
 from agent.task.model import TaskDefinition, TaskResult
 
 
+@pytest.mark.parametrize("trigger, expected", [("heartbeat", "heartbeat"), ("scheduled", "scheduled"),
+                                               ("idle", "idle"), ("manual", "manual"), ("event", "after_reply")])
+async def test_task_activity_preserves_trigger_without_changing_prompt(trigger, expected):
+    from core.activity import current_activity_owner
+
+    mind = _mind_with_store(_store())
+    owners = []
+
+    async def reflect(*args, **kwargs):
+        owners.append(current_activity_owner.get())
+        return "done"
+
+    mind.reflect.side_effect = reflect
+    task = TaskDefinition(name="inspect", prompt="inspect", trigger_event="after_reply")
+    await TaskExecutor(mind)._execute_llm(task, None, 0.5, trigger=trigger)
+    assert owners[0]["trigger"] == expected
+    assert owners[0]["kind"] == "task"
+    assert owners[0]["owner_id"] == "inspect"
+    assert current_activity_owner.get() is None
+
+
 @pytest.mark.parametrize("permission", [None, True, False])
 async def test_task_output_permission_reaches_reflect_without_auto_routing(permission):
     from services.task import _normalize_task

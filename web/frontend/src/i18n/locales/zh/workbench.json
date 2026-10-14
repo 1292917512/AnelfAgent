@@ -225,7 +225,6 @@
     "clearHistory": "清除历史",
     "clearHistoryHint": "仅清除之前轮次的临时记录，保留当前轮次和子代理，不中断执行",
     "working": "执行中",
-    "activeRuns": "正在执行的任务",
     "previousRound": "向上查看上一轮",
     "historyRound": "较早的执行过程",
     "nextRound": "下一轮",
@@ -340,7 +339,23 @@
     "timeline": "执行时间线",
     "belongsTo": "所属：{{title}}",
     "sessions": "筛选会话",
-    "allSessions": "全部会话"
+    "allSessions": "全部会话",
+    "summary": {
+      "delegates": "本轮子代理",
+      "plans": "执行计划",
+      "awaitingRun": "等待开始执行",
+      "delegateCount": "{{count}} 个子代理，含嵌套委派",
+      "planProgress": "已完成 {{done}} / {{total}} 步"
+    },
+    "triggers": {
+      "heartbeat": "心跳",
+      "scheduled": "定时任务",
+      "idle": "空闲任务",
+      "manual": "手动触发",
+      "event": "事件触发",
+      "notification": "通知唤醒",
+      "system": "系统触发"
+    }
   },
   "toolView": {
     "exitCode": "退出码 {{code}}",

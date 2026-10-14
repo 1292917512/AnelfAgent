@@ -32,8 +32,8 @@ _VALID_STATUSES = frozenset({STATUS_SUCCESS, STATUS_NO_OUTPUT, STATUS_ERROR})
 # 非失败状态集合：调度的"今日已跑"判据只认这些（error 保留重试语义，at-least-once）
 _GOOD_STATUSES = frozenset({STATUS_SUCCESS, STATUS_NO_OUTPUT})
 
-# 触发来源词汇（心跳调度三种模式 + 手动）
-VALID_TRIGGERS = frozenset({"heartbeat", "scheduled", "idle", "manual"})
+# 执行历史保留调度、手动与事件触发来源。
+VALID_TRIGGERS = frozenset({"heartbeat", "scheduled", "idle", "manual", "event"})
 
 # 产出摘要与错误信息截断上限（单条记录保持轻量）
 _PREVIEW_MAX_CHARS = 200

@@ -18,6 +18,34 @@ from services.activity_presentation import tool_presentation_owner, tool_targets
 from services.workspace_activity import WorkspaceActivityService
 
 
+async def test_trigger_and_sender_remain_local_to_concurrent_runs(activity):
+    service, _ = activity
+
+    async def conversation():
+        async with activity_scope("chat", "group_qq:42", kind="conversation", trigger="chat",
+                                  initiator={"id": "7", "name": "Operator"}):
+            await asyncio.sleep(0)
+            async with activity_scope("child", "reflect:child"):
+                await asyncio.sleep(0)
+
+    async def task():
+        with activity_owner(kind="task", label="Inspect", owner_id="inspect", trigger="scheduled"):
+            async with activity_scope("task", "reflect:task"):
+                await asyncio.sleep(0)
+
+    await asyncio.gather(conversation(), task())
+    runs = {run["id"]: run for run in service.snapshot()["runs"]}
+    assert runs["chat"]["initiator"] == {"id": "7", "name": "Operator"}
+    assert runs["chat"]["trigger"] == "chat"
+    assert runs["chat"]["source"]["target"] == "42"
+    assert runs["task"]["trigger"] == "scheduled"
+    assert runs["task"]["kind"] == "task"
+    assert runs["task"]["initiator"] is None
+    assert runs["child"]["initiator"] is None
+    assert runs["child"]["parent_id"] == "chat"
+    assert runs["child"]["trigger"] == ""
+
+
 async def test_context_updates_preserve_source_and_only_observe_new_cross_messages(activity):
     from copy import deepcopy
 

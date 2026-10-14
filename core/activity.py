@@ -6,7 +6,7 @@ import asyncio
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import AsyncIterator, Iterator
+from typing import AsyncIterator, Iterator, TypedDict
 
 from core.event_bus import event_bus
 from core.log import current_log_actor
@@ -21,10 +21,17 @@ current_activity_id: ContextVar[str] = ContextVar("activity_id", default="")
 current_activity_owner: ContextVar[dict[str, str] | None] = ContextVar("activity_owner", default=None)
 
 
+class ActivityInitiator(TypedDict):
+    """触发执行的消息发送者，仅用于展示，不参与身份授权。"""
+
+    id: str
+    name: str
+
+
 @contextmanager
-def activity_owner(*, kind: str, label: str, owner_id: str = "", scope: str = "") -> Iterator[None]:
+def activity_owner(*, kind: str, label: str, owner_id: str = "", scope: str = "", trigger: str = "") -> Iterator[None]:
     """为任务及嵌套执行声明可展示的身份，随异步调用树传递。"""
-    token = current_activity_owner.set({"kind": kind, "label": label, "owner_id": owner_id, "origin_scope": scope})
+    token = current_activity_owner.set({"kind": kind, "label": label, "owner_id": owner_id, "origin_scope": scope, "trigger": trigger})
     try:
         yield
     finally:
@@ -41,7 +48,10 @@ class ActivityHandle:
 
 
 @asynccontextmanager
-async def activity_scope(turn_id: str, scope: str, *, label: str = "", kind: str = "reflection") -> AsyncIterator[ActivityHandle]:
+async def activity_scope(
+    turn_id: str, scope: str, *, label: str = "", kind: str = "reflection",
+    trigger: str = "", initiator: ActivityInitiator | None = None,
+) -> AsyncIterator[ActivityHandle]:
     """为并行及嵌套执行绑定独立轮次，并在所有退出路径发出终态。"""
     parent_id = current_activity_id.get()
     token = current_activity_id.set(turn_id)
@@ -51,6 +61,7 @@ async def activity_scope(turn_id: str, scope: str, *, label: str = "", kind: str
             "turn_id": turn_id, "scope": scope,
             "origin_scope": request_trace().get("scope", scope),
             "parent_id": parent_id, "actor": current_log_actor(),
+            "trigger": trigger, "initiator": initiator,
             "label": label, "kind": kind, **(current_activity_owner.get() or {}),
         })
         yield handle

@@ -225,7 +225,11 @@ async def reply_loop(
         message_id=str(getattr(anything, "_trace_message_id", "") or getattr(anything, "adapter_message_id", "") or ""),
     ):
         label = anything.get_text_content() or anything._trace_input_preview
-        async with activity_scope(uuid.uuid4().hex[:8], scope, label=label, kind="conversation") as activity, \
+        async with activity_scope(
+            uuid.uuid4().hex[:8], scope, label=label, kind="conversation",
+            trigger=anything.message_kind,
+            initiator={"id": str(anything.uid or ""), "name": str(getattr(anything, "user_name", "") or "")},
+        ) as activity, \
                 recall_turn(scope, anything.recall_policy, default_policy=channel_policy.recall_policy):
             # 会话开始清理历史中断信号，避免上一轮遗留请求误杀新会话；
             # 只清激活时刻之前的——启动窗口内用户发的"停止"是合法中断

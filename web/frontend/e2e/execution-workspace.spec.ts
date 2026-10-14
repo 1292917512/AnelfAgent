@@ -167,9 +167,7 @@ test("workspace shows the global live process beside actual Web messages", async
   await expect(execution.getByRole("button", { name: "Start Tracking", exact: true })).toHaveCount(0);
   await expect(execution.getByText("read_deployment_settings", { exact: true })).toBeVisible();
   await expect(execution.getByText("Group 42", { exact: true }).first()).toBeVisible();
-  const activeRuns = execution.getByRole("navigation", { name: "Active runs", exact: true });
-  await expect(activeRuns.getByRole("button")).toHaveCount(2);
-  await activeRuns.getByRole("button", { name: "qq · Inspect deployment and report the service status", exact: true }).click();
+  await execution.locator(".activity-round-focus").click();
   const inspector = page.getByRole("dialog", { name: "View execution details", exact: true });
   await expect(inspector.getByText("inspect_service", { exact: true })).toBeVisible();
   await inspector.getByRole("button", { name: "Close", exact: true }).click();

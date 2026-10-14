@@ -33,6 +33,13 @@ describe("module UI contributions", () => {
     expect(await loadUiContributions({})).toEqual([]);
     expect(() => defineUiContributions([{ ...entry, slot: "app.routes", path: "/../data", group: "system" }])).toThrow("route");
   });
+  it("registers typed activity summary actions without eagerly loading their views", async () => {
+    const result = await loadUiContributions({
+      "entity:sample": async () => ({ default: defineUiContributions([{ ...entry, slot: "activity.summary.actions", load }]) }),
+    });
+    expect(result.map((item) => item.slot)).toEqual(["activity.summary.actions"]);
+    expect(load).not.toHaveBeenCalled();
+  });
   it("allows independent tool renderers per owner and rejects duplicates within a module", async () => {
     const renderer: UiContribution = { ...entry, slot: "activity.tool", load };
     const result = await loadUiContributions({

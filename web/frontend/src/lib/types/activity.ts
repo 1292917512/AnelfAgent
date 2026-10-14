@@ -32,6 +32,8 @@ export interface ActivityRun {
   actor: string;
   label: string;
   kind: string;
+  trigger?: string;
+  initiator?: { id: string; name: string } | null;
   input: string;
   source: ActivitySource;
   owner_id: string;

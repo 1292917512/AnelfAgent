@@ -204,3 +204,59 @@ test("concurrent channels keep tool ownership, terminal receipts and subagent an
   await page.screenshot({ path: info.outputPath("concurrent-tools.png"), animations: "disabled" });
   expect(errors).toEqual([]);
 });
+
+
+test("round summary isolates conversations and opens nested agents and plans on demand", async ({ page }, info) => {
+  const start = Date.now() / 1000 - 20;
+  let parent = run("qq-round", start, { trigger: "chat", initiator: { id: "7", name: "Operator" }, label: "Check deployment", entries: [
+    { id: "review", kind: "delegation", goal: "Review deployment", agent: "Reviewer", status: "running", background: true, run_id: "review-run", ts: start + 1 },
+    { id: "queued", kind: "delegation", goal: "Check release notes", agent: "Release checker", status: "queued", background: true, ts: start + 2 },
+    { id: "plan", kind: "plan", goal: "Validate deployment", status: "running", ts: start, steps: [{ content: "Inspect configuration", status: "completed", note: "" }, { content: "Check outcome", status: "in_progress", note: "" }] },
+  ] });
+  const child = run("review-run", start + 1, { kind: "delegation", parent_id: parent.id, owner_id: "review", actor: "Reviewer", label: "Review deployment" });
+  const nested = run("nested-run", start + 2, { kind: "delegation", parent_id: child.id, owner_id: "nested", actor: "Auditor", label: "Inspect permissions" });
+  const web = run("web-round", start + 3, { scope: "user_webui:web_user#web", origin_scope: "user_webui:web_user#web", source: { scope: "user_webui:web_user#web", kind: "user", channel: "webui", target: "web_user", session: "web" }, label: "Separate Web question", initiator: { id: "web_user", name: "Web user" } });
+  const publish = await liveFixture(page, [parent, child, nested, web]);
+  await page.goto("/webui/");
+  const header = page.locator(".activity-heading");
+  await expect(header.locator(".activity-round-focus")).toContainText("Separate Web question");
+  await expect(header.getByRole("button", { name: "View details: Round subagents", exact: true })).toHaveCount(0);
+  const families = page.getByRole("navigation", { name: "Filter conversations", exact: true });
+  await families.getByRole("button", { name: /^qq/ }).click();
+  await expect(header.locator(".activity-round-focus")).toContainText("Operator");
+  await expect(header.locator(".activity-round-focus")).toContainText("Check deployment");
+  const agents = header.getByRole("button", { name: "View details: Round subagents", exact: true });
+  await expect(agents).toHaveText("3");
+  await expect(page.locator(".activity-summary-list")).toHaveCount(0);
+  await agents.click();
+  const dialog = page.getByRole("dialog", { name: "Round subagents", exact: true });
+  await expect(dialog.locator(".activity-summary-delegate")).toHaveCount(3);
+  await expect(dialog).toContainText("Release checker");
+  await expect(dialog).toContainText("Waiting to start");
+  const auditor = dialog.locator(".activity-summary-delegate").filter({ hasText: "Auditor" });
+  await expect(auditor).toContainText("Review deployment");
+  await auditor.getByRole("button", { name: "View execution", exact: true }).click();
+  const execution = page.getByRole("dialog", { name: "View execution details", exact: true });
+  await expect(execution).toContainText("Inspect permissions");
+  await execution.getByRole("button", { name: "Close", exact: true }).click();
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(page.locator(".activity-summary-list")).toHaveCount(0);
+  const plans = header.getByRole("button", { name: "View details: Execution plans", exact: true });
+  await expect(plans).toHaveText("1/2");
+  await plans.click();
+  const planDialog = page.getByRole("dialog", { name: "Execution plans", exact: true });
+  await expect(planDialog).toContainText("Inspect configuration");
+  await expect(planDialog).toContainText("Check outcome");
+  await planDialog.getByRole("button", { name: "Close", exact: true }).click();
+  parent = { ...parent, updated_at: start + 4, entries: parent.entries.map((entry) => entry.kind === "plan" ? { ...entry, status: "completed", steps: entry.steps.map((step) => ({ ...step, status: "completed" })) } : entry) };
+  await publish(parent);
+  await expect(plans).toHaveText("2/2");
+  expect(await header.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.evaluate(() => { document.documentElement.dataset.theme = "dark"; document.documentElement.classList.add("dark"); });
+  await page.screenshot({ path: info.outputPath("round-summary-dark.png"), animations: "disabled" });
+  await families.getByRole("button", { name: /^webui/ }).click();
+  await expect(header.locator(".activity-round-focus")).toContainText("Separate Web question");
+  await expect(agents).toHaveCount(0);
+  await expect(plans).toHaveCount(0);
+});

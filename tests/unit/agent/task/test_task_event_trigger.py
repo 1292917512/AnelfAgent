@@ -28,7 +28,8 @@ def _engine(tasks: List[TaskDefinition], run_results: Optional[Dict[str, str]] =
     registry = SimpleNamespace(list_all=lambda: tasks)
     ran: List[str] = []
 
-    async def _run_task(name: str) -> Optional[str]:
+    async def _run_task(name: str, *, trigger: str) -> Optional[str]:
+        assert trigger == "event"
         ran.append(name)
         return (run_results or {}).get(name)
 

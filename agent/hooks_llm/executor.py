@@ -300,7 +300,7 @@ class HookExecutor:
                     # 同类等待不占用全局并发槽，其他钩子仍可运行。
                     async with self._sem_for(spec), self._pool:
                         await progress.update("preparing", "")
-                        with activity_owner(kind="hook", label=spec.name, owner_id=run.id, scope=ctx.scope), progress.observe():
+                        with activity_owner(kind="hook", label=spec.name, owner_id=run.id, scope=ctx.scope, trigger=ctx.trigger), progress.observe():
                             ctx.messages = await self._build_messages(spec, ctx.payload)
                             tools = ctx.payload.get("tools")
                             if spec.context is HookContextMode.TRANSCRIPT and ctx.messages and isinstance(tools, list):

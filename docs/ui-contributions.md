@@ -30,6 +30,7 @@ export default defineUiContributions([
 - `audio.overview.cards` / `audio.identify.after`：音频总览与识别页的扩展区域。
 - `audio.recording.actions`：录制单元操作；组件收到类型明确的 `{ path: string }`。
 - `activity.tool`：本模块的工具执行渲染器，每个模块最多一个；接收 `ToolRendererProps`（脱敏的 `entry`、`summary/detail` 视图和通用 `fallback`）。
+- `activity.summary.actions`：实时过程顶栏的模块扩展入口；接收 `ActivitySummaryProps`（当前轮次根 `run`、同一执行树的只读 `runs`、打开执行详情的 `onReveal`）。摘要保持紧凑，详情点击后再挂载；复用现有活动数据，不轮询或跨会话混入状态。
 - `chat.message`：模块消息渲染器；声明 `messageType`，组件收到 `{ payload: JsonObject }` 并自行校验业务字段。
 - `id` 在模块内唯一，使用小写字母、数字和连字符；不同模块自动加归属前缀。
 - `order` 默认 100，小值在前，同序按归属和 ID 排序。
