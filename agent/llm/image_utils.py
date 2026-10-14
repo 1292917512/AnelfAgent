@@ -65,20 +65,22 @@ _MAX_VIDEO_DOWNLOAD_BYTES = 256 * 1024 * 1024  # 视频 256MB
 
 
 async def download_image_to_base64(url: str, timeout: float = 30.0) -> Optional[ImageContent]:
-    """下载 URL 图片并转为 base64 ImageContent（超体积上限放弃）。"""
+    """在总时限和体积上限内流式下载图片，失败返回 None。"""
 
     try:
-        async with async_network_client(timeout=timeout, follow_redirects=True) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            if len(resp.content) > _MAX_IMAGE_DOWNLOAD_BYTES:
-                raise ValueError(f"图片超过体积上限（{_MAX_IMAGE_DOWNLOAD_BYTES // 1024 // 1024}MB）")
-            content_type = resp.headers.get("content-type", "image/jpeg")
-            mime = content_type.split(";")[0].strip()
-            if not mime.startswith("image/"):
-                mime = "image/jpeg"
-            data = base64.b64encode(resp.content).decode("utf-8")
-            return ImageContent(data=data, mime_type=mime)
+        async with asyncio.timeout(timeout):
+            async with async_network_client(timeout=timeout, follow_redirects=True) as client:
+                async with client.stream("GET", url) as resp:
+                    resp.raise_for_status()
+                    raw = bytearray()
+                    async for chunk in resp.aiter_bytes(chunk_size=64 * 1024):
+                        if len(raw) + len(chunk) > _MAX_IMAGE_DOWNLOAD_BYTES:
+                            raise ValueError("图片超过体积上限")
+                        raw.extend(chunk)
+                    mime = resp.headers.get("content-type", "image/jpeg").split(";", 1)[0].strip()
+                    if not mime.startswith("image/"):
+                        mime = "image/jpeg"
+                return await asyncio.to_thread(load_image_from_bytes, bytes(raw), mime)
     except Exception as e:
         from core.log import log as _log
         _log(f"图片下载失败 ({url[:80]}): {e}", "DEBUG", tag="媒体")
@@ -172,11 +174,30 @@ PREPARED_URL_FALLBACK = "url_fallback"  # URL 下载失败，保留原 URL 交�
 PREPARED_FAILED = "failed"            # 本地路径加载失败，图片被丢弃
 
 
+def _load_inline_image(img: ImageContent) -> ImageContent:
+    """解析并校验图片 Data URL，返回可压缩的 Base64 图片。"""
+    header, separator, data = img.data.partition(",")
+    if not separator or not header.startswith("data:image/") or not header.endswith(";base64"):
+        raise ValueError("图片 Data URL 必须使用 data:image/<格式>;base64,<数据>")
+    if len(data) > ((_MAX_IMAGE_DOWNLOAD_BYTES + 2) // 3) * 4:
+        raise ValueError("图片超过体积上限")
+    raw = base64.b64decode(data, validate=True)
+    if not raw or len(raw) > _MAX_IMAGE_DOWNLOAD_BYTES:
+        raise ValueError("图片为空或超过体积上限")
+    return ImageContent(data=data, mime_type=header[5:-7])
+
+
 async def _prepare_one(img: ImageContent) -> "tuple[Optional[ImageContent], str]":
     """处理单张图片，返回 (图片, 状态)；失败状态返回 (None, PREPARED_FAILED)。"""
     from core.log import log as _log
 
-    if img.is_url:
+    if img.data.startswith("data:"):
+        try:
+            loaded = await asyncio.to_thread(_load_inline_image, img)
+        except ValueError as exc:
+            _log(f"ensure_base64: 图片 Data URL 无效: {exc}", "WARNING", tag="媒体")
+            return None, PREPARED_FAILED
+    elif img.is_url:
         converted = await download_image_to_base64(img.data)
         if converted is None:
             _log(f"ensure_base64: URL 下载失败，保留原 URL 兜底 ({img.data[:80]})",
@@ -303,9 +324,7 @@ def build_multimodal_content(
     *,
     flat_url: bool = False,
 ) -> list[dict]:
-    """将文本和图片列表构建为多模态 content 数组。
-
-    每张图片自动经过 optimize_for_vision 压缩后再编码。
+    """将已准备的图片和文本序列化为多模态 content 数组，不执行 I/O 或压缩。
 
     Args:
         flat_url: 为 True 时使用 Ollama 兼容的扁平 image_url 格式。
@@ -314,5 +333,5 @@ def build_multimodal_content(
     if text:
         parts.append({"type": "text", "text": text})
     for img in images:
-        parts.append(optimize_for_vision(img).to_openai_block(flat_url=flat_url))
+        parts.append(img.to_openai_block(flat_url=flat_url))
     return parts

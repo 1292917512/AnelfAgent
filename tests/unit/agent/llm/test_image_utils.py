@@ -129,3 +129,52 @@ class TestEnsureBase64Report:
         ])
         assert len(prepared) == 2 and not fallbacks and len(failed) == 1
 
+    async def test_data_url_decoded_before_optimization(self) -> None:
+        from agent.llm.image_utils import ensure_base64_report
+        from agent.llm.types import ImageContent
+
+        raw = _make_image_bytes("PNG", (2000, 1500))
+        prepared, fallbacks, failed = await ensure_base64_report([
+            ImageContent("data:image/png;base64," + base64.b64encode(raw).decode()),
+        ])
+        assert not fallbacks and not failed
+        assert not prepared[0].data.startswith("data:")
+        with Image.open(io.BytesIO(base64.b64decode(prepared[0].data))) as result:
+            assert max(result.size) <= 1568
+        assert prepared[0].mime_type == "image/jpeg"
+
+    @pytest.mark.parametrize("source", ["data:image/png;base64,!!", "data:image/png;base64,", "data:image/png,xyz"])
+    async def test_invalid_data_url_is_not_forwarded(self, source: str) -> None:
+        from agent.llm.image_utils import ensure_base64_report
+        from agent.llm.types import ImageContent
+
+        prepared, fallbacks, failed = await ensure_base64_report([ImageContent(source)])
+        assert not prepared and not fallbacks and len(failed) == 1
+
+
+async def test_download_enforces_limit_before_reading_entire_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    from agent.llm import image_utils
+
+    class Stream(httpx.AsyncByteStream):
+        reads = 0
+        closed = False
+
+        async def __aiter__(self):
+            for _ in range(5):
+                self.reads += 1
+                yield b"x" * (64 * 1024)
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    stream = Stream()
+    client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, stream=stream),
+    ))
+    monkeypatch.setattr(image_utils, "async_network_client", lambda **_: client)
+    monkeypatch.setattr(image_utils, "_MAX_IMAGE_DOWNLOAD_BYTES", 64 * 1024)
+    assert await image_utils.download_image_to_base64("https://test.invalid/image") is None
+    assert stream.reads == 2 and stream.closed and client.is_closed
+

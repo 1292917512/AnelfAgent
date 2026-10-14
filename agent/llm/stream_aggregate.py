@@ -34,8 +34,10 @@ class StreamAggregator:
         self._first_delta_at: Optional[float] = None
 
     def feed(self, delta: ChatStreamDelta) -> None:
-        """累积一个片段；首个片段同时锚定 TTFT。"""
-        if self._first_delta_at is None:
+        """累积片段；首个有效内容锚定 TTFT，排除空保活与用量包。"""
+        if self._first_delta_at is None and (
+            delta.content or delta.reasoning_content or delta.tool_calls or delta.thinking_blocks
+        ):
             self._first_delta_at = time.monotonic()
         if delta.content:
             self._content_parts.append(delta.content)
@@ -77,6 +79,7 @@ async def aggregate_with_idle_timeout(
     model: str = "",
     label: str = "",
     ceiling_mult: int = 20,
+    first_response_timeout: float | None = None,
 ) -> ChatResult:
     """以每 chunk 空闲超时消费流式增量并聚合为 ChatResult。
 
@@ -84,21 +87,38 @@ async def aggregate_with_idle_timeout(
     长思考阶段随增量持续回传，不受整窗读超时约束。
     总时长天花板 = 空闲窗口 × ceiling_mult：防端点以"周期性吐字节"的方式
     吊流（每 chunk 都有活动但永不结束），此时空闲超时失效、上层回退链不推进。
+    first_response_timeout 单独限制首个思考/正文/工具增量的等待，空保活不算首响应。
     """
     aggregator = StreamAggregator()
     loop = asyncio.get_running_loop()
     overall_deadline = loop.time() + idle_timeout * ceiling_mult
+    first_deadline = loop.time() + first_response_timeout if first_response_timeout is not None else None
     who = f" [{label}]" if label else ""
     try:
         while True:
-            if loop.time() > overall_deadline:
+            remaining = overall_deadline - loop.time()
+            if remaining <= 0:
                 raise asyncio.TimeoutError(f"LLM{who} 流式总时长超限")
+            wait_deadline = min(loop.time() + idle_timeout, overall_deadline)
+            if first_deadline is not None:
+                wait_deadline = min(wait_deadline, first_deadline)
+                if first_deadline <= loop.time():
+                    raise asyncio.TimeoutError(f"LLM{who} 首响应超时")
             try:
                 delta = await asyncio.wait_for(
-                    stream_gen.__anext__(), timeout=idle_timeout,
+                    stream_gen.__anext__(), timeout=max(0, wait_deadline - loop.time()),
                 )
             except StopAsyncIteration:
                 break
+            except asyncio.TimeoutError as exc:
+                stage = (
+                    "流式总时长超限" if wait_deadline == overall_deadline
+                    else "首响应超时" if first_deadline is not None
+                    else "流式响应超时"
+                )
+                raise asyncio.TimeoutError(f"LLM{who} {stage}") from exc
+            if delta.content or delta.reasoning_content or delta.tool_calls or delta.thinking_blocks:
+                first_deadline = None
             aggregator.feed(delta)
     finally:
         try:

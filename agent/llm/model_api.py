@@ -3,6 +3,7 @@
 模型看到：仅调用方显式传入的消息、媒体或判断题，不自动继承对话或执行工具。
 Token：不增加提示词与判断调用；失败沿项目配置的同类型模型链回退。
 缓存：不修改主对话上下文，不缓存配置与客户端，配置热更在下一次调用生效。
+图片由 SDK 异步准备，同次调用的候选复用结果；辅助识图的思考档位不影响主对话。
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from agent.judgment.types import (
     ScoreQuestion,
 )
 from agent.llm.config import ModelType
-from agent.llm.llm_client import LLMNotConfiguredError
+from agent.llm.llm_client import LLMClient, LLMNotConfiguredError
 from agent.llm.llm_manager import LLMManager, get_llm_manager
 from agent.llm.model_execution import (
     ModelCallError,
@@ -83,18 +84,47 @@ class ModelAPI:
 
     async def describe_images(
         self, images: list[ImageContent], prompt: str = "请简要描述这些图片的内容。", *,
-        model_id: str = "", timeout: float | None = None,
+        model_id: str = "", timeout: float | None = None, options: dict[str, Any] | None = None,
     ) -> ModelResult[str]:
-        """按视觉优先级识别图片，返回描述与实际模型；未传时限时遵循模型空闲超时。"""
+        """按候选支持的格式识图；图片只准备一次，options 可覆盖辅助识图的生成参数。"""
+        import time
+
+        from agent.llm.image_utils import ensure_base64_report
+        from core.log import log
+
         if not images:
             raise ValueError("images 不能为空")
+        sources = [
+            ImageContent(image.data, image.mime_type, False) if image.data.startswith("data:") else image
+            for image in images
+        ]
+        prepared: list[ImageContent] | None = None
+        failed: list[str] = []
+
+        async def invoke(client: LLMClient) -> str:
+            nonlocal prepared, failed
+            selected = sources
+            if client.config.supports_base64_vision:
+                if prepared is None:
+                    started = time.monotonic()
+                    prepared, _fallbacks, failed = await ensure_base64_report(sources)
+                    log(f"识图图片准备: {len(sources)} 张, "
+                        f"{(time.monotonic() - started) * 1000:.0f}ms, {len(failed)} 张失败",
+                        "DEBUG", tag="视觉")
+                if failed:
+                    raise ValueError(f"{len(failed)} 张图片无法读取，请检查文件或 Data URL")
+                selected = prepared
+                if not client.config.supports_url_vision and any(image.is_url for image in selected):
+                    raise RuntimeError("图片下载失败，当前模型仅支持 Base64；请检查图片地址及网络")
+            return await client.describe_images(selected, prompt=prompt, options=options)
+
         return await execute_candidates(
             self.manager, ModelType.VISION,
-            lambda client: client.describe_images(images, prompt=prompt),
+            invoke,
             model_id=model_id, timeout=timeout,
             accepts=lambda client: all(
-                client.config.supports_url_vision if image.is_url
-                else client.config.supports_base64_vision for image in images
+                client.config.supports_base64_vision or (image.is_url and client.config.supports_url_vision)
+                for image in sources
             ),
         )
 

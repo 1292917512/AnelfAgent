@@ -14,7 +14,7 @@ from agent.llm.llm_client import LLMClient, LLMNotConfiguredError
 from agent.llm.llm_manager import LLMManager
 from agent.llm.media_client import MediaClient
 from agent.llm.model_api import ImageContent, ModelAPI, ModelCallError, NoulQuestion, VideoContent
-from agent.llm.types import ChatResult
+from agent.llm.types import ChatResult, ChatStreamDelta
 
 
 @pytest.fixture
@@ -30,6 +30,65 @@ def add(manager: LLMManager, name: str, kind: str, **options: object) -> LLMClie
     manager._clients[name] = client
     manager._type_priorities.setdefault(kind, []).append(name)
     return client
+
+
+async def test_vision_prepares_once_off_loop_and_falls_back_after_stall_and_truncation(
+    manager: LLMManager, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    import threading
+
+    from PIL import Image
+
+    from agent.llm import image_utils
+    from core.config import get_config_float
+
+    path = tmp_path / "image.png"
+    Image.new("RGB", (2000, 1500), (32, 96, 192)).save(path)
+    first = add(manager, "stalled", "vision", supports_vision=True)
+    second = add(manager, "truncated", "vision", supports_vision=True)
+    third = add(manager, "complete", "vision", supports_vision=True)
+    closed = asyncio.Event()
+    attempts: list[str] = []
+    payloads: list[list[dict]] = []
+    threads: list[int] = []
+    original = image_utils.optimize_for_vision
+
+    def optimize(image: ImageContent) -> ImageContent:
+        threads.append(threading.get_ident())
+        return original(image)
+
+    async def stalled(messages: list[dict], **kwargs: object):
+        attempts.append("stalled")
+        payloads.append(messages)
+        try:
+            yield ChatStreamDelta()
+            await asyncio.sleep(10)
+        finally:
+            closed.set()
+
+    async def truncated(messages: list[dict], **kwargs: object):
+        attempts.append("truncated")
+        payloads.append(messages)
+        yield ChatStreamDelta(content="一部分", finish_reason="length")
+
+    async def complete(messages: list[dict], **kwargs: object):
+        attempts.append("complete")
+        payloads.append(messages)
+        yield ChatStreamDelta(content="完整识别结果", finish_reason="stop")
+
+    monkeypatch.setattr(image_utils, "optimize_for_vision", optimize)
+    monkeypatch.setattr(first, "chat_stream", stalled)
+    monkeypatch.setattr(second, "chat_stream", truncated)
+    monkeypatch.setattr(third, "chat_stream", complete)
+    monkeypatch.setattr("core.config.get_config_float", lambda key, default: (
+        0.03 if key == "describe_image_first_response_timeout" else get_config_float(key, default)
+    ))
+    result = await ModelAPI(manager).describe_images([ImageContent(str(path))], prompt="分析图片")
+    assert result.value == "完整识别结果" and result.model_id == "complete"
+    assert attempts == ["stalled", "truncated", "complete"] and closed.is_set()
+    assert len(threads) == 1 and threads[0] != threading.get_ident()
+    assert payloads[0] == payloads[1] == payloads[2]
+    assert payloads[0][0]["content"][0]["text"] == "分析图片"
 
 
 def test_channel_and_entity_exports_share_one_lazy_facade() -> None:

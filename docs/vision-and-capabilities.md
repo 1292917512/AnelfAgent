@@ -20,6 +20,19 @@
   上下文注入排除/外部推送拒收；AI 与 Web 页签同源开关
 - **生成能力组件**经 `_sdk.register_visual_provider` 接入
 
+## 非视觉模型的图片识别
+
+`recognize_image` 将图片与调用方的分析要求交给模型 SDK，结果通过工具回执进入主模型上下文。
+识图调用不继承整段会话；`prompt` 应说明识别目标和必要背景。本地路径、图片 Data URL 和远程
+URL 共用异步准备流程，读取与压缩放工作线程，同次调用的模型回退复用准备结果。支持 Base64
+的模型优先接收下载后的图片，仅支持 URL 的模型直接接收原链接；本地图片不会发送给 URL-only 模型。
+
+配置中心 `model/describe` 的 `describe_image_reasoning_effort` 控制辅助识图思考档位，默认 `off`，
+空值跟随模型配置；复杂分析可提高档位，SDK 调用可用 `options` 按次覆盖。它不影响主对话的原生
+视觉请求。`describe_image_first_response_timeout` 默认 30 秒，限制等待首个有效思考/正文增量；
+0 表示只使用模型超时。输出开始后遵循模型空闲超时，不因超过首响应时限中断正常输出。
+空结果、输出截断和缺失结束标记均按失败回退；日志分别记录图片准备、首响应及模型完成耗时。
+
 ## 视频理解链路
 
 - **supports_video 能力声明**（`LLMClientConfig.supports_video` + `vision/capabilities._run_video_understand`

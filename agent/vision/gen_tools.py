@@ -5,6 +5,10 @@
 
 provider 参数：auto（默认，按配置优先级链自动路由+失败降级）或指定
 提供者名；可用值与能力优先级经 vision_config(action="providers") 查看。
+
+Model Experience：识图工具声明要求明确分析目标，识别结果经工具回执进入模型上下文。
+Token：只传图片与必要分析要求，不复制会话历史。
+缓存：工具说明为静态声明；结果只进入工具链，不注入易变的前缀内容。
 """
 
 from __future__ import annotations
@@ -118,7 +122,7 @@ async def _recognize_visual(media_path: str, prompt: str, provider: str, kwargs:
 
 @deferred_tool(name="recognize_image", group=_group, tags=["always", "media:image"], timeout=300.0)
 async def recognize_image(image_path: str = "", prompt: str = "", provider: str = "auto", **kwargs: str) -> str:
-    """识别/分析图片内容（视频请用 recognize_video）。支持本地文件路径或 URL。
+    """识别/分析图片内容（视频请用 recognize_video）。支持本地文件、URL 或图片 Data URL。
 
     主模型具备视觉能力时：本地图片不调用识别链，按 _multimodal 约定把原图
     直接注入工具链尾部（动态区，不动前缀缓存），主模型亲自看图分析，
@@ -127,7 +131,7 @@ async def recognize_image(image_path: str = "", prompt: str = "", provider: str 
 
     Args:
         image_path: 图片的绝对路径或 URL
-        prompt: 可选的分析提示，如"描述图片中的文字"
+        prompt: 具体识别目标及必要背景，如"逐行提取报错文字"；识图模型不会继承当前会话
         provider: auto（默认，按配置链路由+失败自动降级）或指定提供者名
             （可用值见 vision_config(action="providers")，随组件增删变化）
     """

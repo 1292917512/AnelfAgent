@@ -7,6 +7,10 @@ LLMClient — 统一 LLM 客户端（基于 litellm）。
 - ollama:    Ollama 本地模型
 
 支持深度思考/推理内容提取（reasoning_content）。
+
+Model Experience：辅助识图仅接收图片与分析要求，默认关闭额外推理，可独立配置或按次覆盖。
+Token：减少简单识图的推理消耗，不缩减图片分辨率或正文预算。
+缓存：辅助识图参数不修改主对话消息或稳定前缀。
 """
 
 from __future__ import annotations
@@ -52,6 +56,7 @@ from agent.llm.config import (
 from agent.llm.network import ModelHTTPClient, ModelHTTPHandler, model_network, network_stream
 from agent.llm.protocol import ChatProtocol, is_native_responses_provider, resolve_chat_protocol
 from agent.llm.reasoning import (
+    CANONICAL_EFFORTS,
     normalize_effort,
     parse_thinking_spec,
     resolve_thinking_value,
@@ -1167,29 +1172,44 @@ class LLMClient(BaseEntity):
             self,
             images: list[ImageContent],
             prompt: str = "请简要描述这些图片的内容。",
+            *,
+            options: Optional[dict] = None,
     ) -> str:
+        """识别 SDK 已准备的图片；首响应与流式空闲分别限时，只接受完整描述。"""
+        import time
+
         from agent.llm.image_utils import build_multimodal_content
+        from core.config import get_config, get_config_float
+
         content = build_multimodal_content(
             prompt, images, flat_url=self.config.use_flat_image_url,
         )
         messages: list[dict] = [{"role": "user", "content": content}]
-        # 流式通道 + 每 chunk 空闲超时：深度思考模型在重型识别（QA 复核类
-        # prompt）下的思考阶段随增量持续回传，长思考不受整窗读超时约束——
-        # 非流式下同一调用会在固定 timeout 处间歇性撞死并拖慢整条候选链
+        describe_options: dict[str, Any] = {"max_tokens": self._describe_output_budget()}
+        effort = normalize_effort(get_config("describe_image_reasoning_effort", "off"))
+        if effort:
+            describe_options["reasoning_effort"] = effort
+        describe_options.update(options or {})
+        first_timeout = get_config_float("describe_image_first_response_timeout", 30.0)
         from agent.llm.stream_aggregate import aggregate_with_idle_timeout
-        stream_gen = self.chat_stream(
-            messages, options={"max_tokens": self._describe_output_budget()},
-        )
+        started = time.monotonic()
+        stream_gen = self.chat_stream(messages, options=describe_options)
         result = await aggregate_with_idle_timeout(
             stream_gen, idle_timeout=self.config.timeout or 120.0,
             model=self.config.model, label=self.config.name,
+            first_response_timeout=first_timeout if first_timeout > 0 else None,
         )
-        if result.finish_reason == "error":
-            raise RuntimeError("视觉模型返回了无有效 choices/message 的响应")
+        if result.finish_reason not in ("stop", "end_turn"):
+            raise RuntimeError(
+                f"视觉模型描述未完整结束（finish_reason={result.finish_reason or '缺失'}），"
+                "不采用部分结果；请检查输出预算或模型端点"
+            )
         text = (result.content or "").strip()
         if not text:
             # 空结果视为调用失败，让上层回退到下一个视觉模型
             raise RuntimeError("视觉模型返回空结果")
+        log(f"图片识别完成 [{self.config.name}]: 首响应 {result.ttft_ms or 0:.0f}ms, "
+            f"总耗时 {(time.monotonic() - started) * 1000:.0f}ms", "DEBUG", tag="视觉")
         return text
 
     async def describe_video(
@@ -1502,6 +1522,20 @@ from core.config import ConfigValueType, register_configs_safe  # noqa: E402
 
 register_configs_safe({
     "model/describe": {
+        "describe_image_reasoning_effort": {
+            "description": "辅助图片识别的思考等级：默认关闭额外推理以减少等待；复杂分析可提高，空值跟随模型配置。不影响主对话原生识图，模型不支持的档位按其思考契约处理",
+            "default": "off",
+            "value_type": ConfigValueType.ENUM,
+            "options": ["", *CANONICAL_EFFORTS],
+        },
+        "describe_image_first_response_timeout": {
+            "description": "辅助图片识别等待首个思考或正文增量的上限，超时尝试下一视觉候选；开始输出后沿用模型空闲超时。0 表示只使用模型超时",
+            "default": 30.0,
+            "value_type": ConfigValueType.FLOAT,
+            "min": 0,
+            "max": 300,
+            "unit": "秒",
+        },
         "describe_output_budget": {
             "description": (
                 "图片/视频描述的输出预算上限。思考 token 计入该预算"

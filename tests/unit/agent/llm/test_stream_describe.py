@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 import pytest
 
@@ -80,6 +80,29 @@ class TestAggregateWithIdleTimeout:
                 _drip_forever_gen(), idle_timeout=0.1, ceiling_mult=3,
             )
 
+    async def test_empty_keepalives_do_not_reset_first_response_deadline(self) -> None:
+        closed = asyncio.Event()
+
+        async def keepalives() -> AsyncIterator[ChatStreamDelta]:
+            try:
+                while True:
+                    yield ChatStreamDelta(content="")
+                    await asyncio.sleep(0.005)
+            finally:
+                closed.set()
+
+        with pytest.raises(asyncio.TimeoutError, match="首响应超时"):
+            await aggregate_with_idle_timeout(
+                keepalives(), idle_timeout=1, first_response_timeout=0.03,
+            )
+        assert closed.is_set()
+
+    async def test_first_reasoning_releases_first_response_deadline(self) -> None:
+        result = await aggregate_with_idle_timeout(
+            _flowing_gen(total=0.2, gap=0.02), idle_timeout=0.1, first_response_timeout=0.03,
+        )
+        assert result.content == "识别完成"
+
 
 class TestDescribeImagesStreaming:
     @pytest.mark.asyncio
@@ -137,3 +160,41 @@ class TestDescribeImagesStreaming:
             await client.describe_images(
                 [ImageContent(data="aGk=", is_url=False)], prompt="描述",
             )
+
+    @pytest.mark.parametrize("finish", ["length", "", "error", "content_filter"])
+    async def test_incomplete_description_is_not_success(self, monkeypatch: pytest.MonkeyPatch, finish: str) -> None:
+        async def incomplete() -> AsyncIterator[ChatStreamDelta]:
+            yield ChatStreamDelta(content="只输出了一部分", finish_reason=finish)
+
+        client = _vision_client()
+        monkeypatch.setattr(client, "chat_stream", lambda *_a, **_kw: incomplete())
+        with pytest.raises(RuntimeError, match="未完整结束"):
+            await client.describe_images([ImageContent("aGk=")])
+
+    async def test_auxiliary_effort_override_does_not_change_model_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client = _vision_client()
+        client.config.reasoning_effort = "high"
+        seen: list[dict] = []
+
+        async def stream(messages: list[dict], **kwargs: Any) -> AsyncIterator[ChatStreamDelta]:
+            seen.append(kwargs["options"])
+            yield ChatStreamDelta(content="ok", finish_reason="stop")
+
+        monkeypatch.setattr(client, "chat_stream", stream)
+        await client.describe_images([ImageContent("aGk=")])
+        await client.describe_images([ImageContent("aGk=")], options={"reasoning_effort": "low"})
+        assert [options["reasoning_effort"] for options in seen] == ["off", "low"]
+        assert client.config.reasoning_effort == "high"
+
+    def test_empty_keepalive_does_not_count_as_first_content(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from types import SimpleNamespace
+
+        from agent.llm.stream_aggregate import StreamAggregator
+
+        times = iter([10.0, 10.05])
+        monkeypatch.setattr("agent.llm.stream_aggregate.time", SimpleNamespace(monotonic=lambda: next(times)))
+        aggregator = StreamAggregator()
+        aggregator.feed(ChatStreamDelta())
+        assert aggregator.build().ttft_ms is None
+        aggregator.feed(ChatStreamDelta(content="ok", finish_reason="stop"))
+        assert aggregator.build().ttft_ms == pytest.approx(50)

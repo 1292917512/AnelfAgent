@@ -37,7 +37,7 @@ class _FakeVisionClient:
         self.calls = 0
         self.seen_is_url: List[bool] = []
 
-    async def describe_images(self, images: list, prompt: str = "") -> str:
+    async def describe_images(self, images: list, prompt: str = "", *, options: dict | None = None) -> str:
         self.calls += 1
         self.seen_is_url.append(bool(images[0].is_url))
         if self._error is not None:
@@ -146,18 +146,49 @@ class TestVisionDownloadFirst:
         assert client.seen_is_url == [False]
 
     @pytest.mark.asyncio
-    async def test_download_failure_raises_expired_error(
+    async def test_download_failure_preserves_network_error_for_base64_only_model(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """下载失败直接抛'链接可能已过期'，不再逐个模型空转。"""
+        """下载失败不能判定链接过期；Base64 模型不收到无法处理的 URL。"""
 
         async def _fail_download(url: str) -> Optional[ImageContent]:
             return None
 
-        _patch_mgr(monkeypatch, [_FakeVisionClient("m1")])
+        client = _FakeVisionClient("m1")
+        client.config.supports_url_vision = False
+        _patch_mgr(monkeypatch, [client])
         monkeypatch.setattr(image_utils, "download_image_to_base64", _fail_download)
-        with pytest.raises(RuntimeError, match="已过期"):
+        with pytest.raises(RuntimeError, match="图片下载失败"):
             await ModelsVisualProvider()._run_understand(_URL, "描述")
+        assert client.calls == 0
+
+    async def test_url_only_model_receives_original_without_download(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from unittest.mock import AsyncMock
+
+        client = _FakeVisionClient("url-only")
+        client.config.supports_base64_vision = False
+        _patch_mgr(monkeypatch, [client])
+        download = AsyncMock(side_effect=AssertionError("URL-only 不需要本地下载"))
+        monkeypatch.setattr(image_utils, "download_image_to_base64", download)
+        result = await ModelsVisualProvider()._run_understand(_URL, "描述")
+        assert result["model"] == "url-only"
+        assert client.seen_is_url == [True]
+        download.assert_not_awaited()
+
+    async def test_base64_download_failure_falls_back_to_url_model(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from unittest.mock import AsyncMock
+
+        first = _FakeVisionClient("base64")
+        first.config.supports_url_vision = False
+        second = _FakeVisionClient("url")
+        second.config.supports_base64_vision = False
+        _patch_mgr(monkeypatch, [first, second])
+        download = AsyncMock(return_value=None)
+        monkeypatch.setattr(image_utils, "download_image_to_base64", download)
+        result = await ModelsVisualProvider()._run_understand(_URL, "描述")
+        assert result["model"] == "url"
+        assert first.calls == 0 and second.calls == 1
+        download.assert_awaited_once()
 
 
 class TestVisionVideoRouting:

@@ -130,27 +130,21 @@ class ModelsVisualProvider:
         if is_video_path(image_path):
             return await self._run_video_understand(image_path, prompt)
 
-        from agent.llm.image_utils import (
-            download_image_to_base64,
-            load_image_from_path,
-            optimize_for_vision,
-        )
         from agent.llm.llm_client import LLMNotConfiguredError
         from agent.llm.model_api import ModelAPI
+        from agent.llm.model_execution import ModelCallError
+        from agent.llm.types import ImageContent
 
         models = ModelAPI(_mgr())
         if not models.list_models("vision"):
             raise ProviderUnavailable("未配置视觉模型")
-        if image_path.startswith(("http://", "https://")):
-            img = await download_image_to_base64(image_path)
-            if not img:
-                raise RuntimeError(f"无法下载图片（链接可能已过期）: {image_path[:100]}")
-        else:
-            img = load_image_from_path(image_path)
+        img = ImageContent(data=image_path, is_url=image_path.startswith(("http://", "https://")))
         try:
-            result = await models.describe_images([optimize_for_vision(img)], prompt=prompt)
+            result = await models.describe_images([img], prompt=prompt)
         except LLMNotConfiguredError as exc:
             raise ProviderUnavailable(str(exc)) from exc
+        except ModelCallError as exc:
+            raise ProviderChainError(str(exc), exc.errors) from exc
         return {"description": result.value, "model": result.model_id}
 
     async def _run_video_understand(self, video_path: str, prompt: str) -> Dict[str, Any]:
