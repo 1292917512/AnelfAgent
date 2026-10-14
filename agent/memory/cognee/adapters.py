@@ -147,13 +147,13 @@ def install() -> None:
     embedding_module.litellm = _EmbeddingTransport(embedding_module.litellm)
     from cognee.infrastructure.databases.vector.lancedb.LanceDBAdapter import LanceDBAdapter
 
-    # 压缩只由宿主空闲窗口调度，防止库内后台任务绕过保留期与写盘熔断。
+    # 压缩只由宿主空闲窗口调度，防止构图收尾绕过保留期与写盘熔断。
     LanceDBAdapter._compaction_skip_reason = _host_compaction_reason
     _installed = True
 
 
 def _host_compaction_reason(_adapter: Any) -> str:
-    """库内构图收尾、首次打开和延迟清理统一交给宿主存储维护。"""
+    """库内构图收尾压缩统一交给宿主存储维护。"""
     return "host_managed"
 
 

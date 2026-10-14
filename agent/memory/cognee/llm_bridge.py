@@ -21,6 +21,7 @@ from agent.llm.reasoning import parse_thinking_spec, resolve_thinking_value, set
 from core.log import log
 
 from .config import (
+    COGNEE_INSTRUCTOR_MODES,
     MODEL_SOURCE_CUSTOM,
     MODEL_SOURCE_MODEL,
     CogneeChatModelConfig,
@@ -215,10 +216,14 @@ def _build_llm_args(cfg: Any, chat_cfg: CogneeChatModelConfig) -> dict[str, Any]
     if spec is not None:
         inherited = getattr(cfg, "reasoning_effort", "") or "medium"
         value = resolve_thinking_value(spec, effort or inherited)
+        if effort and value is None:
+            raise CogneeConfigError(f"该模型的思考契约不支持 '{effort}'，请选择已声明的档位或自动继承")
         if not effort and spec.param.split(".", 1)[0] in extra_body:
             value = None
         if value is not None:
             set_nested_field(extra_body, spec.param, value)
+            if effort == "off" and isinstance(extra_body.get("thinking"), dict):
+                extra_body["thinking"].pop("budget_tokens", None)
     elif cfg is None:
         # 自定义来源没有模型思考契约，使用 LiteLLM 的规范参数。
         if effort:
@@ -250,6 +255,8 @@ def _apply_chat_overrides(
 ) -> None:
     """显式模式选择对应框架，所有来源使用同一输出预算覆盖。"""
     mode = chat_cfg.instructor_mode
+    if mode not in COGNEE_INSTRUCTOR_MODES:
+        raise CogneeConfigError(f"不支持的结构化输出模式: '{mode}'")
     payload["structured_output_framework"] = "instructor" if mode else "litellm_native"
     if mode:
         payload["llm_instructor_mode"] = mode

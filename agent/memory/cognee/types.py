@@ -55,6 +55,8 @@ class CogneeSyncStatus(BaseModel):
     pending: int = 0
     failed: int = 0
     synced: int = 0
+    configuration_pending: bool = False
+    configuration_error: str = ""
     last_error: str = ""
     last_compact_at: float = 0.0
     last_compact_summary: str = ""

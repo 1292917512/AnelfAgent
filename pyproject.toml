@@ -43,7 +43,7 @@ dependencies = [
     # cognee 1.5.4+ 声明 litellm<1.97，该上界仅针对 py3.10 上 litellm
     # 类型构建破坏（BerriAI/litellm#38202），本项目 py3.12 不受影响，
     # 经下方 override-dependencies 与 litellm 1.104.0 共存。
-    "cognee==1.6.3",
+    "cognee==1.6.4",
     "sqlite-vec>=0.1.9",
     "tiktoken>=0.12.0",
     "jieba>=0.42.1",

@@ -777,9 +777,9 @@ class MemoryService:
             coordinator.client.validate_configuration(config)
         save_cognee_config(config)
 
-        # 热更新运行时，保存即生效（worker 启停 + 模型重映射）
         if coordinator:
             await coordinator.reconfigure(config)
+        log("Cognee 配置已保存，运行时将在当前批次结束后应用" if coordinator else "Cognee 配置已保存", tag="思维")
         return MemoryService._cognee_config_response(config)
 
     @staticmethod

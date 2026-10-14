@@ -109,7 +109,17 @@ Cognee 默认安装并启用：依赖由 `uv sync` 按锁文件安装，默认�
 聊天与 Embedding 模型默认从模型管理映射，也可在 Web 的 Cognee 面板单独配置。
 配置未齐时客户端返回 `configuration_required=true`，不导入 Cognee、不回落到库的隐式模型；
 协调器在就绪前不认领同步队列，记录保持 pending，不消耗重试次数。首次配置完成后后台循环自动恢复，
-Cognee 面板保存配置则即时重映射。既有 `enabled=false` 保留，图谱抽取与向量化按所选模型计费。
+Cognee 面板保存先校验模型参数和向量空间，再原子写入配置，HTTP 不等待图谱抽取。
+协调器在投影锁内应用最新配置，连续保存合并到同一个受生命周期管理的任务，
+当前批次不中途切换模型。状态接口的 `configuration_pending` / `configuration_error`
+分别表示等待应用和应用失败；失败原因同时记日志，页面显示具体校验错误并保留编辑草稿。
+既有 `enabled=false` 保留，图谱抽取与向量化按所选模型计费。
+
+抽取模型的自动映射、指定模型和自定义来源均支持独立设置思考等级与输出上限。
+指定/自动模型使用模型管理中的 `thinking` 契约，不支持的显式等级在保存前返回错误；
+关闭思考时不残留原有 thinking token 预算。自定义来源使用 LiteLLM 标准参数，
+具体支持范围由服务商决定。原生结构化输出与 Instructor 的边界参照
+[Cognee 官方配置说明](https://docs.cognee.ai/setup-configuration/structured-output-backends)。
 客户端初始化串行执行；导入期间发生配置变更时重新解析最新配置，避免后台同步与召回重复初始化或应用旧配置。
 
 ### 召回与模型预算
@@ -150,14 +160,14 @@ Cognee 面板保存配置则即时重映射。既有 `enabled=false` 保留，�
 | 投影内容指纹跳过 | `store/_shared.py::projection_content_hash` + `cognee_queue.enqueue_sync` | 防记忆写入风暴打爆磁盘写盘配额。`cognee_entry_map` 的 content_hash（type/content/source/metadata/tags 的 canonical sha256，**刻意不含 importance**——召回强化/松弛回归不再触发重投影）一致 → 不入队；在途 processing 批次持有更新负载时不跳过（防「改 B→回退 A」竞态）；`enqueue_backfill` 走 force=True 保持显式修复语义。graph_node 载荷消费时渲染邻域文档 + **结构指纹**（节点身份 + 各边谓词/方向/对端，不含强度与证据文本）——重复提及的强化/证据刷新不触发整篇重投影 |
 | cognee 写盘熔断 | `cognee/write_breaker.py` + coordinator `_projection_allowed` | 进程自身磁盘写入速率超阈值（默认 500MB/5min）时暂停投影认领与自动压缩，冷却到期重评、自调节；平台不支持时 fail-open。状态经 CogneeSyncStatus.paused 暴露；`run_in_idle_window` 用户显式作业不受熔断阻断 |
 | ladybug native 监督 | `agent/memory/cognee/ladybug_guard.py`（门闸/循环安全/看门狗/WAL 容错四位一体，`install()` 幂等） | ①**并发门闸**：进程级线程锁串行所有 native 执行（execute+结果消费全程），wait_for 取消协程不提前放锁；②**循环安全拆除**：close/delete_graph 先 `to_thread` 预拆除再调原方法，门闸等待永不落在事件循环线程；③**失控看门狗**：纯线程实现，持有门闸超 `native_watchdog_restart_seconds`（默认 600）经端口请求守护重启（绝不直接退进程）；**刻意不做 native 中止**——ladybug 的 set_query_timeout/interrupt 对卡死扫描不可靠，隔离+重启是唯一安全语义；④**WAL 容错**：`throw_on_wal_replay_failure=False` 打开图库，损坏回放到最后提交点。配置在 cognee.json |
-| LanceDB 物理压缩 | `cognee/storage.py` + coordinator 空闲窗口调度 | 宿主是唯一维护调度者，适配器边界关闭 Cognee 自带的构图收尾、首次打开与延迟清理。`compact_lance_tree` 复用上游有界算法，全数据树每轮最多 4 个碎片合并任务和 1000 个历史版本，轮换起点避免表长期得不到维护；仅清理后继版本已超过 `compact_retention_days` 的旧版本，保留最新数据与保留期内快照。worker 排空后按 `compact_interval_seconds`（默认 86400s）自动执行。AI 工具 `compact_cognee_storage` / `POST /memory/cognee/compact` / Web 按钮统一进入 `request_compact()`，关闭自动维护仍可手动请求；两者均服从写盘熔断与投影锁，取消时等待原生写入结束后释放锁。`StorageStatsTracker` 以内存 TTL → 磁盘快照 → 空统计返回，请求路径不遍历大库，代际号防旧遍历回写 |
+| LanceDB 物理压缩 | `cognee/storage.py` + coordinator 空闲窗口调度 | 宿主是唯一维护调度者，适配器边界关闭 Cognee 自带的构图收尾压缩，库内无后台清理任务。`compact_lance_tree` 复用上游有界算法，全数据树每轮最多 4 个碎片合并任务和 1000 个历史版本，轮换起点避免表长期得不到维护；仅清理后继版本已超过 `compact_retention_days` 的旧版本，保留最新数据与保留期内快照。worker 排空后按 `compact_interval_seconds`（默认 86400s）自动执行。AI 工具 `compact_cognee_storage` / `POST /memory/cognee/compact` / Web 按钮统一进入 `request_compact()`，关闭自动维护仍可手动请求；两者均服从写盘熔断与投影锁，取消时等待原生写入结束后释放锁。`StorageStatsTracker` 以内存 TTL → 磁盘快照 → 空统计返回，请求路径不遍历大库，代际号防旧遍历回写 |
 | improve 默认禁用 | `cognee/config.py` `improve_interval_seconds`（默认 0） | cognee improve/memify 对全图三元组重新 embedding 且无去重，CHUNKS 类召回不依赖它；同步路径不自动触发，手动 `improve_cognee_dataset` 保留 |
 | goal 不投影 cognee | `store/cognee_queue.enqueue_sync`（source=='goal' 拦截）+ `planning/tracker._persist` | 计划状态 JSON 不是知识：updated_at 高频漂移使投影永不稳定；goal upsert 不入队，原生 FTS/向量检索已覆盖召回；`_persist` 比较 updated_at 之外的语义内容，未变不落库 |
 | 投影开关 | cognee.json `project_memories_enabled` / `project_graph_enabled`（默认均 true） | memory 投影与主向量库同源（重复嵌入），graph 投影是原生检索没有的增量，可按需关停 |
 | embedding 用量账本 | `agent/memory/embedding/usage.py` + `GET /status/usage` 的 embedding 段 | 引擎级埋点（查询/批量/多模态）：日级 calls/texts/chars，内存累加 + 防抖落盘。cognee 自带引擎不在此口径 |
 | 批量对齐与缓存 | `embedding/worker._batch_size` + `engine.max_batch_size` + `embed_query_cache_size` | worker 批次取 min(配置, 客户端 embedding_max_batch)，避免 llm_client 内部拆批；查询向量缓存容量/TTL 可配 |
 | 向量索引清理 | `scripts/dedupe_cognee_vector_index.py` | 一次性治理脚本（幂等，应用运行中可执行）：EdgeType/Entity 等索引按 text 精确去重 + 存量 goal 投影退场 |
-| 依赖约束 | `pyproject.toml` + `uv.lock` + `[tool.uv] override-dependencies` | cognee 1.6.3 与 litellm 1.104.0 + onnxruntime 经 override 共存；LanceDB 0.39 与 PyLance 12.0 使用相同 Lance 内核，压缩前检查匹配。Ladybug 0.19.0 沿用 native 监督边界；投影文本显式声明 `literal_text`，避免内容被当成 URL 或本地文件路径 |
+| 依赖约束 | `pyproject.toml` + `uv.lock` + `[tool.uv] override-dependencies` | cognee 1.6.4 与 litellm 1.104.0 + onnxruntime 经 override 共存；LanceDB 0.39 与 PyLance 12.0 使用相同 Lance 内核，压缩前检查匹配。Ladybug 0.19.0 沿用 native 监督边界；投影文本显式声明 `literal_text`，避免内容被当成 URL 或本地文件路径 |
 
 ## 遗忘治理
 

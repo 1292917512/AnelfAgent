@@ -1143,10 +1143,7 @@ async def test_upstream_compaction_is_owned_by_host(tmp_path, monkeypatch) -> No
 
     monkeypatch.setattr(LanceDBAdapter, "_compaction_skip_reason", _host_compaction_reason)
     adapter = LanceDBAdapter(str(tmp_path), None, Mock())
-    adapter._schedule_open_prune()
-    assert adapter._open_prune_task is None
     assert await adapter.compact() == {"skipped": "host_managed"}
-    assert adapter._followup_prune_handle is None
     assert adapter.connection is None
 
 
@@ -1565,15 +1562,47 @@ async def test_reconfigure_drains_projection_before_switching_config(store, monk
     monkeypatch.setattr(coordinator, "_process_entries", process)
     batch = asyncio.create_task(coordinator._process_batch([]))
     await started.wait()
-    switch = asyncio.create_task(coordinator.reconfigure(CogneeConfig(enabled=False)))
+    await asyncio.wait_for(coordinator.reconfigure(CogneeConfig(enabled=False)), timeout=0.2)
+    switch = coordinator._configuration_task
+    assert switch is not None
     try:
         await asyncio.sleep(0)
+        assert coordinator.configuration_pending
         client.reconfigure.assert_not_called()
+        await coordinator.reconfigure(CogneeConfig(enabled=False, dataset_prefix="latest"))
         release.set()
         await asyncio.gather(batch, switch)
         client.reconfigure.assert_called_once()
         assert not coordinator.config.enabled
+        assert coordinator.config.dataset_prefix == "latest"
+        assert not coordinator.configuration_pending
     finally:
         for task in (batch, switch):
             task.cancel()
         await asyncio.gather(batch, switch, return_exceptions=True)
+
+
+async def test_close_cancels_pending_configuration(store: MemoryStore) -> None:
+    client = _FakeCogneeClient()
+    coordinator = CogneeCoordinator(store, client, CogneeConfig())
+    async with coordinator._projection_lock:
+        await coordinator.reconfigure(CogneeConfig(enabled=False))
+        await asyncio.sleep(0)
+        await asyncio.wait_for(coordinator.close(), timeout=0.2)
+    assert not coordinator.configuration_pending
+    assert coordinator.config.enabled
+
+
+async def test_configuration_failure_is_visible_and_recoverable(store: MemoryStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    coordinator = CogneeCoordinator(store, _FakeCogneeClient(), CogneeConfig())
+    apply = AsyncMock(side_effect=RuntimeError("invalid extraction configuration"))
+    monkeypatch.setattr(coordinator, "_apply_configuration", apply)
+    await coordinator.reconfigure(CogneeConfig(sync_enabled=False))
+    await coordinator._configuration_task
+    status = await coordinator.status()
+    assert not status.configuration_pending
+    assert "invalid extraction configuration" in status.configuration_error
+    apply.side_effect = None
+    await coordinator.reconfigure(CogneeConfig(sync_enabled=False))
+    await coordinator._configuration_task
+    assert not (await coordinator.status()).configuration_error

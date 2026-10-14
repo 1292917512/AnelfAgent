@@ -31,6 +31,59 @@ test("Cognee waits for model setup before loading datasets", async ({ page }, in
 });
 import type { CapabilityStatus, ConfigMetaItem } from "../src/lib/types";
 
+test("Cognee reasoning edits survive failures and independent saves", async ({ page }, info) => {
+  let rejectSave = true;
+  let pending = false;
+  let config = {
+    enabled: true, sync_enabled: true, recall_enabled: true,
+    chat: { source: "auto", model_id: "", provider: "openai", model: "", api_key: "", endpoint: "", api_version: "", instructor_mode: "", max_completion_tokens: 0, reasoning_effort: "", extra_args: {} },
+    embedding: { source: "auto", model_id: "", provider: "openai", model: "", api_key: "", endpoint: "", dimensions: 0 },
+    options: { chat_providers: ["openai"], embed_providers: ["openai"], instructor_modes: [""], reasoning_efforts: ["", "off", "low", "high"] },
+  };
+  await page.route("**/api/memory/cognee/config", async (route) => {
+    if (route.request().method() === "PUT") {
+      if (rejectSave) return route.fulfill({ status: 400, json: { detail: "Thinking budget must be lower than the output limit" } });
+      config = { ...config, ...route.request().postDataJSON() };
+      pending = true;
+    }
+    return route.fulfill({ json: config });
+  });
+  await page.route("**/api/memory/cognee/status", (route) => route.fulfill({ json: {
+    availability: { installed: true, enabled: true, ready: true, configuration_required: false, version: "1.6.4", reason: "" },
+    resolved: { chat: { provider: "openai", model: "openai/glm-test" } },
+    sync: { running: true, pending: 1, failed: 0, synced: 3, last_error: "", configuration_pending: pending },
+  } }));
+  await page.route("**/api/memory/probe-status", (route) => route.fulfill({ json: { enabled: true, inject_enabled: true, counters: {}, scopes: [] } }));
+  await page.route("**/api/memory/cognee/datasets", (route) => route.fulfill({ status: 503, json: { detail: "Dataset store temporarily unavailable" } }));
+  await page.goto("/webui/memory?tab=cognee");
+  const chat = page.locator("section").filter({ has: page.getByRole("heading", { name: "Extraction Model", exact: true }) });
+  const embedding = page.locator("section").filter({ has: page.getByRole("heading", { name: "Embedding Model", exact: true }) });
+  const effort = chat.getByRole("combobox", { name: "Reasoning effort", exact: true });
+  await effort.selectOption("off");
+  await chat.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(chat.getByRole("alert")).toHaveText("Thinking budget must be lower than the output limit");
+  await expect(effort).toHaveValue("off");
+  rejectSave = false;
+  await embedding.getByRole("button", { name: "Custom", exact: true }).click();
+  await embedding.getByLabel("Model identifier").fill("openai/embedding-test");
+  await chat.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(chat.getByRole("button", { name: "Saved", exact: true })).toBeVisible();
+  await expect(embedding.getByLabel("Model identifier")).toHaveValue("openai/embedding-test");
+  await expect(page.getByRole("status").filter({ hasText: "Configuration saved" })).toBeVisible();
+  await effort.selectOption("high");
+  await embedding.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(embedding.getByRole("button", { name: "Saved", exact: true })).toBeVisible();
+  await expect(effort).toHaveValue("high");
+  await chat.getByRole("button", { name: "Save", exact: true }).click();
+  await expect.poll(() => config.chat.reasoning_effort).toBe("high");
+  await expect(page.getByText("Dataset store temporarily unavailable", { exact: true })).toBeVisible();
+  await expect(page.getByText("openai/glm-test", { exact: true })).toBeVisible();
+  await chat.scrollIntoViewIfNeeded();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await chat.screenshot({ path: info.outputPath("cognee-model-card.png") });
+  await page.screenshot({ path: info.outputPath("cognee-config.png"), fullPage: true });
+});
+
 test("capability editing preserves automatic chains and failed edits", async ({ page }, info) => {
   let overrides: Record<string, string[]> = {};
   const defaults = { tts: ["models", "minimax"], voice_mgmt: ["minimax"], music: ["models"] };

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -435,3 +436,62 @@ def test_thinking_budget_cannot_consume_entire_completion_budget():
     with pytest.raises(CogneeConfigError, match="思考预算"):
         resolve_chat_llm_config(CogneeChatModelConfig(source="model", model_id="qwen-thinking",
             reasoning_effort="high", max_completion_tokens=4096), _manager())
+
+
+@pytest.mark.parametrize("source", ["auto", "model"])
+@pytest.mark.parametrize("effort", ["off", "low", "high"])
+def test_model_thinking_contract_applies_to_all_sources(source: str, effort: str) -> None:
+    manager = _manager()
+    model = manager._clients["sf-chat"].config
+    model.thinking = {"param": "thinking.type", "on": "enabled", "off": "disabled"}
+    model.extra_body = {"thinking": {"type": "enabled", "budget_tokens": 4096}}
+    payload = resolve_chat_llm_config(CogneeChatModelConfig(
+        source=source, model_id="sf-chat", reasoning_effort=effort,
+    ), manager)
+    thinking = payload["llm_args"]["extra_body"]["thinking"]
+    assert thinking["type"] == ("disabled" if effort == "off" else "enabled")
+    assert ("budget_tokens" in thinking) is (effort != "off")
+    assert model.extra_body["thinking"]["budget_tokens"] == 4096
+
+
+def test_unsupported_explicit_effort_is_not_silently_ignored() -> None:
+    manager = _manager()
+    manager._clients["sf-chat"].config.thinking = {"param": "reasoning_effort", "map": {"low": "low"}}
+    with pytest.raises(CogneeConfigError, match="不支持 'high'"):
+        resolve_chat_llm_config(CogneeChatModelConfig(
+            source="model", model_id="sf-chat", reasoning_effort="high",
+        ), manager)
+
+
+@pytest.mark.parametrize("effort", ["off", "high"])
+async def test_cognee_native_adapter_receives_reasoning_and_output_budget(
+    monkeypatch: pytest.MonkeyPatch, effort: str,
+) -> None:
+    import importlib
+
+    import litellm
+    from cognee.infrastructure.llm.config import LLMConfig
+    from pydantic import BaseModel
+
+    class Extracted(BaseModel):
+        fact: str
+
+    factory = importlib.import_module(
+        "cognee.infrastructure.llm.structured_output_framework.litellm_native.get_native_client",
+    )
+    payload = resolve_chat_llm_config(CogneeChatModelConfig(
+        source="custom", model="openai/gpt-4o-mini", api_key="test-placeholder",
+        endpoint="https://example.invalid/v1", reasoning_effort=effort, max_completion_tokens=8192,
+    ), _manager())
+    monkeypatch.setattr(factory, "get_llm_context_config", lambda: LLMConfig(**payload))
+    completion = AsyncMock(return_value=litellm.ModelResponse(
+        choices=[{"message": {"role": "assistant", "content": '{"fact":"verified"}'}, "finish_reason": "stop"}],
+    ))
+    monkeypatch.setattr(litellm, "acompletion", completion)
+    result = await factory.get_native_client().acreate_structured_output("source", "extract", Extracted)
+    assert result.fact == "verified"
+    completion.assert_awaited_once()
+    request = completion.call_args.kwargs
+    assert request["reasoning_effort"] == ("none" if effort == "off" else effort)
+    assert request["max_tokens"] == 8192
+    assert request["api_base"] == "https://example.invalid/v1"

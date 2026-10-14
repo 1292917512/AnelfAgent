@@ -41,6 +41,9 @@ class CogneeCoordinator:
         self._wake = asyncio.Event()
         self._closing = False
         self._projection_lock = asyncio.Lock()
+        self._configuration_task: asyncio.Task[None] | None = None
+        self._pending_config: CogneeConfig | None = None
+        self._configuration_error = ""
         self._last_error = ""
         self._last_improve_ns: dict[str, int] = {}
         self._compact_requested = False
@@ -103,6 +106,11 @@ class CogneeCoordinator:
     async def close(self) -> None:
         self._closing = True
         self._wake.set()
+        if self._configuration_task:
+            self._configuration_task.cancel()
+            await asyncio.gather(self._configuration_task, return_exceptions=True)
+            self._configuration_task = None
+        self._pending_config = None
         # 唤醒可能仍在等待空闲窗口作业的调用方，避免关停悬挂
         if self._idle_job is not None:
             self._idle_job = asyncio.CancelledError("cognee worker 已关闭")
@@ -116,10 +124,31 @@ class CogneeCoordinator:
             self._task = None
 
     async def reconfigure(self, config: CogneeConfig) -> None:
-        """热更新配置：按启停状态调整 worker，并重映射 Cognee 模型配置。"""
-        # 数据卷与模型配置不能在一个投影批次中途切换。
-        async with self._projection_lock:
-            await self._apply_configuration(config)
+        """接纳已保存配置，在当前投影批次结束后应用最后一次修改。"""
+        self._pending_config = config.normalized()
+        self._configuration_error = ""
+        if self._configuration_task is None or self._configuration_task.done():
+            self._configuration_task = asyncio.create_task(
+                self._drain_configuration(), name="memory.cognee.configure",
+            )
+
+    @property
+    def configuration_pending(self) -> bool:
+        """已保存配置是否还在等待安全切换或初始化。"""
+        return self._configuration_task is not None and not self._configuration_task.done()
+
+    async def _drain_configuration(self) -> None:
+        while self._pending_config is not None:
+            async with self._projection_lock:
+                config = self._pending_config
+                self._pending_config = None
+                self._configuration_error = ""
+                try:
+                    await self._apply_configuration(config)
+                except Exception as exc:
+                    self._configuration_error = _error_text(exc)
+                if self._configuration_error:
+                    log(f"Cognee 配置已保存但应用失败: {self._configuration_error}", "WARNING", tag="思维")
 
     async def _apply_configuration(self, config: CogneeConfig) -> None:
         self.config = config.normalized()
@@ -149,6 +178,7 @@ class CogneeCoordinator:
         # 立即按新配置做一次初始化，让状态接口即时反馈解析结果
         if self.config.enabled:
             availability = await self.client.initialize()
+            self._configuration_error = "" if availability.ready else availability.reason
             self._last_error = (
                 "" if availability.ready or availability.configuration_required else availability.reason
             )
@@ -170,6 +200,8 @@ class CogneeCoordinator:
             pending=counts["pending"],
             failed=counts["failed"],
             synced=counts["synced"],
+            configuration_pending=self.configuration_pending,
+            configuration_error=self._configuration_error,
             last_error=self._last_error,
             last_compact_at=self.last_compact_at,
             last_compact_summary=self.last_compact_summary,

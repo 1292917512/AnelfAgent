@@ -1,10 +1,12 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Check, Save, RotateCcw } from "lucide-react";
 import { Card } from "@/components/common/Card";
+import { QueryError } from "@/components/common/AsyncState";
 import { cn } from "@/lib/utils";
 import { memoryApi } from "@/lib/api";
+import { apiErrorMessage } from "@/lib/api/client";
 import type {
   CogneeChatModelConfig,
   CogneeEmbeddingModelConfig,
@@ -25,7 +27,7 @@ export function ResolvedModelLine({ label, info }: { label: string; info?: Cogne
     <div className="flex flex-wrap items-center gap-2 text-xs">
       <span className="text-muted w-20 flex-shrink-0">{label}</span>
       {info?.model ? <>
-        <span className="min-w-0 break-all font-mono text-heading">{info.provider}/{info.model}</span>
+        <span className="min-w-0 break-all font-mono text-heading">{info.model}</span>
         {info.instructor_mode && (
           <span className="px-1.5 py-0.5 rounded bg-elevated border border-border text-muted">
             {info.instructor_mode}
@@ -52,28 +54,28 @@ export function ModelConfigCard({ kind }: { kind: ModelKind }) {
   const { t } = useTranslation("memory");
   const { t: ta } = useTranslation("appconfig");
   const queryClient = useQueryClient();
-  const [form, setForm] = useState<KindConfig | null>(null);
-  const [hasChanges, setHasChanges] = useState(false);
+  const [draft, setDraft] = useState<KindConfig | null>(null);
   const [saved, triggerSaved] = useCopyFeedback(2000);
 
-  const { data: config } = useQuery({
+  const { data: config, error: loadError, refetch } = useQuery({
     queryKey: ["cogneeConfig"],
     queryFn: () => memoryApi.cognee.getConfig().then((r) => r.data),
+    throwOnError: false,
   });
   const { data: priorities = {} } = usePriorities();
 
-  useEffect(() => {
-    if (config) setForm(config[kind] as KindConfig);
-  }, [config, kind]);
+  const form = draft ?? config?.[kind];
+  const hasChanges = draft !== null;
 
   const saveMutation = useMutation({
     mutationFn: (values: KindConfig) =>
       memoryApi.cognee.saveConfig({ [kind]: values } as Parameters<typeof memoryApi.cognee.saveConfig>[0]),
-    onSuccess: () => {
+    onSuccess: (response, submitted) => {
+      queryClient.setQueryData(["cogneeConfig"], response.data);
       queryClient.invalidateQueries({ queryKey: ["cogneeConfig"] });
       queryClient.invalidateQueries({ queryKey: ["cogneeStatus"] });
       queryClient.invalidateQueries({ queryKey: ["memoryHealth"] });
-      setHasChanges(false);
+      setDraft((current) => current === submitted ? null : current);
       triggerSaved();
     },
   });
@@ -81,14 +83,14 @@ export function ModelConfigCard({ kind }: { kind: ModelKind }) {
   if (!form) {
     return (
       <Card title={t(`cognee.${kind}ConfigTitle`)}>
-        <p className="text-sm text-muted">{t("common:loading")}</p>
+        {loadError ? <QueryError error={loadError} retry={() => void refetch()} compact /> : <p className="text-sm text-muted">{t("common:loading")}</p>}
       </Card>
     );
   }
 
   const update = (patch: Partial<KindConfig>) => {
-    setForm((prev) => (prev ? { ...prev, ...patch } : prev));
-    setHasChanges(true);
+    setDraft({ ...form, ...patch });
+    if (saveMutation.isError) saveMutation.reset();
   };
 
   const selectedModel = (priorities[kind] || []).find((item) => item.id === form.model_id);
@@ -198,7 +200,7 @@ export function ModelConfigCard({ kind }: { kind: ModelKind }) {
           </div>
         )}
 
-        {kind === "chat" && "instructor_mode" in form && form.source !== "auto" && (
+        {kind === "chat" && "instructor_mode" in form && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <Field label={t("cognee.instructorModeLabel")} desc={t("cognee.instructorModeHint")}>
               <Select
@@ -207,7 +209,7 @@ export function ModelConfigCard({ kind }: { kind: ModelKind }) {
                 onChange={(e) => update({ instructor_mode: e.target.value })}
               >
                 <option value="">{t("cognee.instructorModeAuto")}</option>
-                {(config?.options.instructor_modes ?? []).filter(Boolean).map((m) => (
+                {(config?.options?.instructor_modes ?? []).filter(Boolean).map((m) => (
                   <option key={m} value={m}>{m}</option>
                 ))}
               </Select>
@@ -225,10 +227,11 @@ export function ModelConfigCard({ kind }: { kind: ModelKind }) {
             <Field label={t("cognee.reasoningEffort")} desc={t("cognee.reasoningEffortHint")}>
               <Select
                 className="w-full"
+                aria-label={t("cognee.reasoningEffort")}
                 value={(form as CogneeChatModelConfig).reasoning_effort ?? ""}
                 onChange={(e) => update({ reasoning_effort: e.target.value as CogneeReasoningEffort })}
               >
-                {(config?.options.reasoning_efforts ?? []).map((effort) => (
+                {(config?.options?.reasoning_efforts ?? []).map((effort) => (
                   <option key={effort || "auto"} value={effort}>
                     {t(`cognee.reasoning_${effort || "auto"}`)}
                   </option>
@@ -241,22 +244,23 @@ export function ModelConfigCard({ kind }: { kind: ModelKind }) {
         <div className="flex items-center gap-3 pt-1 flex-wrap">
           <Button
             variant="primary"
-            onClick={() => hasChanges && saveMutation.mutate(form)}
+            onClick={() => hasChanges && !saveMutation.isPending && saveMutation.mutate(form)}
             disabled={!hasChanges}
             loading={saveMutation.isPending}
-            className={cn(saved && "!bg-ok")}
+            className={cn(saved && !hasChanges && "!bg-ok")}
           >
-            {saved ? <Check size={14} /> : <Save size={14} />}
-            {saved ? ta("actions.saved") : saveMutation.isPending ? ta("actions.saving") : ta("actions.save")}
+            {saved && !hasChanges ? <Check size={14} /> : <Save size={14} />}
+            {saved && !hasChanges ? ta("actions.saved") : saveMutation.isPending ? ta("actions.saving") : ta("actions.save")}
           </Button>
           <Button
             variant="secondary"
-            onClick={() => { if (config) { setForm(config[kind] as KindConfig); setHasChanges(false); } }}
+            disabled={!hasChanges || saveMutation.isPending}
+            onClick={() => { setDraft(null); saveMutation.reset(); }}
           >
             <RotateCcw size={14} /> {ta("actions.reset")}
           </Button>
           {saveMutation.isError && (
-            <p className="text-xs text-danger">{t("cognee.saveFailed")}</p>
+            <p role="alert" className="w-full break-words text-sm text-danger">{apiErrorMessage(saveMutation.error, t("cognee.saveFailed"))}</p>
           )}
           <p className="text-xs text-muted">{t("cognee.hotApplyNote")}</p>
         </div>

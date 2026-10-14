@@ -110,6 +110,8 @@ export interface CogneeStatus {
     failed: number;
     synced: number;
     last_error: string;
+    configuration_pending?: boolean;
+    configuration_error?: string;
     last_compact_at?: number;
     last_compact_summary?: string;
   };

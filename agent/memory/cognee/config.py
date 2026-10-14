@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from agent.llm.reasoning import CANONICAL_EFFORTS
+from core.file_utils import atomic_write_text
 from core.log import log
 from core.path import ConfigPaths, project_root
 
@@ -244,10 +245,9 @@ def save_cognee_config(config: CogneeConfig) -> None:
     path = Path(ConfigPaths.COGNEE_CONFIG)
     if not path.is_absolute():
         path = Path(project_root()) / path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
+    atomic_write_text(
+        path,
         json.dumps(config.normalized().to_dict(), ensure_ascii=False, indent=2),
-        encoding="utf-8",
     )
 
 

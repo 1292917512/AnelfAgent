@@ -62,6 +62,9 @@ async def save_cognee_config(req: CogneeConfigUpdate) -> Dict[str, Any]:
             req.model_dump(exclude_none=True),
         )
     except ValueError as exc:
+        from core.log import log
+
+        log(f"Cognee 配置保存被拒绝: {exc}", "WARNING", tag="思维")
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
