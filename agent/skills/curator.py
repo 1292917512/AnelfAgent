@@ -22,6 +22,7 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, Optional
 
+from agent.memory.embedding import Embedder
 from agent.skills.skill_index import SkillIndex
 from agent.skills.skill_store import SkillState, SkillStore
 from core.log import log
@@ -95,17 +96,16 @@ class SkillCurator:
             log(f"技能治理议程生成失败: {exc}", "DEBUG", tag="技能")
         return agenda
 
-    async def warm_index(self, limit: int = 32) -> int:
-        """批量预热技能向量（心跳维护周期调用，若干拍覆盖全库）。
+    async def backfill_vectors(self, _embedder: Embedder, batch_size: int) -> int:
+        """供 EmbeddingWorker 回填技能向量；模型切换时接管待重建索引。"""
+        from core.config import get_config_bool, get_config_int
 
-        存在模型切换触发的待重建状态时，立即执行全量重建（一次性重建完），
-        普通预热让位。
-        """
-        if self._index is None:
+        if self._index is None or not get_config_bool("skills_enabled", True):
             return 0
         try:
             if self._index.rebuild_pending:
                 return await self._index.rebuild_all()
+            limit = min(batch_size, max(1, get_config_int("skills_warm_batch_size", 32)))
             return await self._index.warm(limit=limit)
         except Exception as exc:
             log(f"技能向量预热失败: {exc}", "DEBUG", tag="技能")
@@ -201,14 +201,13 @@ _CURATOR_CONFIGS = {
             "unit": "字",
         },
         "skills_embed_budget": {
-            "description": "单次检索/诊断最多补算的技能向量数（冷缓存时其余走关键词路，"
-                           "心跳批量预热逐步填满缓存）",
+            "description": "主动技能诊断最多补算的技能向量数；会话匹配只读取缓存，缺失向量由后台批量回填",
             "default": 16,
             "advanced": True,
             "unit": "个",
         },
         "skills_warm_batch_size": {
-            "description": "心跳每拍预热的向量批量大小（渐进覆盖全库）",
+            "description": "后台技能向量回填的单批大小（受 EmbeddingWorker 和模型批量上限约束）",
             "default": 32,
             "advanced": True,
             "unit": "个",

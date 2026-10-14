@@ -403,6 +403,29 @@ class TestSkillCatalog:
 
 
 class TestSkillMatcher:
+    async def test_cold_match_does_not_embed_skill_catalog(self, store, monkeypatch):
+        from unittest.mock import Mock
+
+        monkeypatch.setattr("agent.skills.skill_index._EMBEDDING_CACHE_MAX", 8)
+        for index in range(20):
+            store.create(f"skill-{index}", "code review", "步骤", ["review"])
+        embedder = FakeEmbedder()
+        matcher = SkillMatcher(store, embedder)
+        wake = Mock()
+        monkeypatch.setattr("agent.memory.embedding.wake_embedding_worker", wake)
+
+        assert await matcher.match(["code review"])
+        assert embedder.call_count == 1
+        wake.assert_called_once()
+        curator = SkillCurator(store, matcher.index)
+        assert await curator.backfill_vectors(embedder, 8) == 8
+        assert await curator.backfill_vectors(embedder, 32) == 12
+        assert await curator.backfill_vectors(embedder, 32) == 0
+        before = embedder.call_count
+        assert await matcher.match(["code review"])
+        assert embedder.call_count == before + 1
+        assert wake.call_count == 1
+
     async def test_query_lanes_overlap_and_do_not_retry_shared_failure(self, store, monkeypatch):
         import asyncio
         from unittest.mock import AsyncMock
@@ -510,6 +533,7 @@ class TestSkillMatcher:
         store.create("qq-media-fallback-b", "qq media download fallback",
                      "内容", ["qq media"])
         matcher = SkillMatcher(store, FakeEmbedder())
+        await matcher.index.warm()
         matched = await matcher.match(["qq media download fallback"], top_k=3)
         assert len(matched) == 1
         signals = matcher.index.snapshot()["merge_signals"]

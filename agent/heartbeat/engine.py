@@ -807,12 +807,10 @@ class HeartbeatEngine:
         except Exception as e:
             log(f"日期便签归档失败: {e}", "DEBUG", tag="心跳")
 
-        # 技能策展：向量预热每拍（增量覆盖）；重力迁移与治理议程为天级阈值
-        # 语义，按每 N 个 tick 执行一次（默认 12，约每小时一次）
+        # 技能重力迁移与治理议程按维护周期执行，向量回填由 EmbeddingWorker 负责。
         try:
             curator = getattr(self.mind, "skill_curator", None)
             if curator is not None:
-                await curator.warm_index()
                 from core.config import get_config_int
                 curator_every = max(1, get_config_int("skills_curator_every_n_ticks", 12))
                 if self._total_ticks % curator_every == 0:

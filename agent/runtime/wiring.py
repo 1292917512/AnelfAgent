@@ -116,6 +116,7 @@ def wire_runtime(
     # Embedding 后台 worker（施绑后挂载施绑前挂起的外部 backlog 注册）
     embedding_worker_port.set(embedding_worker)
     attach_pending_backlogs(embedding_worker)
+    embedding_worker.register_backlog("skills", mind.skill_curator.backfill_vectors)
 
     # Cognee 可选后端：初始化失败时以 None 施绑（None 是合法绑定值）
     cognee_client_port.set(cognee_client)

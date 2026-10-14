@@ -34,7 +34,7 @@ from agent.memory.memory_utils import (
 from agent.skills.skill_store import Skill, SkillState, SkillStore
 from core.log import log
 
-# 向量内存缓存（模型名+内容 hash 键控）：容量有界 FIFO，持久层为 SQLite
+# 技能向量缓存至少容纳当前目录，避免后台回填与淘汰互相触发重算。
 _EMBEDDING_CACHE_MAX = 1024
 
 
@@ -89,7 +89,7 @@ class SkillIndex:
         self._current_model: Optional[str] = None
         # 构建状态机（Web 可观测、可操作）：
         #   idle      — 稳态，无构建任务
-        #   warming   — 心跳渐进预热中（模型未切换，正常补算）
+        #   warming   — 后台批量回填中（模型未切换，正常补算）
         #   rebuilding — 模型切换后的全量重建中（一次性，无过渡态）
         self._build_state: str = "idle"
         self._build_progress: Dict[str, int] = {"done": 0, "total": 0}
@@ -324,7 +324,7 @@ class SkillIndex:
             f"技能向量已全部清空，安排全量重建",
             "WARNING", tag="技能",
         )
-        # 有事件循环时立即异步重建（不等心跳兜底）
+        # 有事件循环时立即异步重建，失败后由后台回填器接管。
         try:
             asyncio.get_running_loop().create_task(
                 self.rebuild_all(), name="skills.vector_rebuild",
@@ -337,7 +337,7 @@ class SkillIndex:
 
     @property
     def rebuild_pending(self) -> bool:
-        """是否存在待执行的全量向量重建（模型切换后，供心跳接管）。"""
+        """是否存在待执行的全量向量重建（模型切换后，供后台回填器接管）。"""
         return self._rebuild_pending
 
     @property
@@ -350,7 +350,7 @@ class SkillIndex:
 
         状态机：
           idle      — 稳态，无构建任务（embedded == total 且无待重建）
-          warming   — 心跳渐进预热中（正常补算，无模型切换）
+          warming   — 后台批量回填中（正常补算，无模型切换）
           rebuilding — 模型切换后的全量重建中（一次性，无过渡态）
           pending   — 已标记待重建但尚未开始（等待心跳接管）
         """
@@ -462,7 +462,7 @@ class SkillIndex:
         }
 
     async def embed_now(self, name: str) -> bool:
-        """立即嵌入单个技能（CRUD 变更后的即时同步，不等心跳预热）。
+        """立即嵌入单个技能（CRUD 变更后的即时同步，不等后台回填）。
 
         嵌入成功后顺带清理死键（内容变更残留的旧文本键）。
         全量重建进行中时让位（rebuild_all 会覆盖该技能）。
@@ -490,7 +490,7 @@ class SkillIndex:
         embed_query 是单条串行的交互路径（优先级门单飞），全库冷缓存时逐技能
         补算会把一次检索拖成 N 次 API 往返——这里限制单次调用最多补算
         budget 个（默认 skills_embed_budget），其余技能本轮退化为无语义路，
-        由心跳 warm() 批量预热逐步填满缓存。
+        由后台 warm() 批量预热逐步填满缓存。
         """
         if self._embedder is None:
             return {s.name: None for s in skills}
@@ -514,7 +514,7 @@ class SkillIndex:
     async def warm(self, limit: int = 0) -> int:
         """后台批量预热：用 embed_text（单次 API 嵌一批）填充未缓存向量。
 
-        由心跳维护周期调用，若干拍后覆盖全库；失败静默返回 0（可用性状态
+        由后台回填器分批调用，逐步覆盖全库；失败返回 0（可用性状态
         由 Embedder 后台探测机制掌管）。模型切换的待重建状态由 rebuild_all
         接管，此时普通预热让位。limit=0 时读配置 skills_warm_batch_size。
         """
@@ -564,8 +564,8 @@ class SkillIndex:
 
         人为手动切换 embedding 模型的配套动作——不允许新旧向量并存的
         过渡态，切换时缓存已整体清空（_refresh_model），这里一次性重建。
-        防重入（心跳兜底与即时任务可能同时到达）；Embedder 故障时保持
-        pending 标志不清，下一拍心跳重试。batch_size=0 时读配置
+        防重入（后台回填与即时任务可能同时到达）；Embedder 故障时保持
+        pending 标志不清，恢复后由回填器重试。batch_size=0 时读配置
         skills_rebuild_batch_size。
         """
         if self._rebuild_lock is None:
@@ -603,11 +603,11 @@ class SkillIndex:
                     self._last_rebuild_count = total
                     self._last_rebuild_model = self._current_model or ""
                 else:
-                    # 嵌入端点不可用：保持待重建状态，心跳重试
+                    # 嵌入端点不可用时保留待重建状态。
                     self._rebuild_pending = True
                     log(
                         f"技能向量全量重建暂未完成（{len(uncached)} 个未嵌入，"
-                        f"嵌入端点不可用），待心跳重试",
+                        f"嵌入端点不可用），待后台重试",
                         "WARNING", tag="技能",
                     )
                 return total
@@ -616,7 +616,7 @@ class SkillIndex:
                 self._build_progress = {"done": 0, "total": 0}
 
     def _cache_vector(self, key: str, vec: List[float]) -> None:
-        if len(self._vec_cache) >= _EMBEDDING_CACHE_MAX:
+        if len(self._vec_cache) >= max(_EMBEDDING_CACHE_MAX, len(self._all_skills())):
             oldest = next(iter(self._vec_cache))
             self._vec_cache.pop(oldest, None)
         self._vec_cache[key] = vec

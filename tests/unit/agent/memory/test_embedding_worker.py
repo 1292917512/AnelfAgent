@@ -180,6 +180,28 @@ class TestPurgeArchivedMemories:
 
 
 class TestEmbeddingWorker:
+    async def test_registration_during_drain_is_processed_without_poll_delay(self, store) -> None:
+        from unittest.mock import AsyncMock
+
+        worker = EmbeddingWorker(store, FakeEmbedder())
+        completed = asyncio.Event()
+
+        async def first(_embedder, _batch_size):
+            worker._backlogs.pop("first")
+            worker.register_backlog("late", late)
+            return 0
+
+        async def late(_embedder, _batch_size):
+            completed.set()
+            return 0
+
+        worker._backlogs = {"first": AsyncMock(side_effect=first)}
+        await worker.start()
+        try:
+            await asyncio.wait_for(completed.wait(), 2)
+        finally:
+            await worker.close()
+
     async def test_batch_size_aligns_to_client_max_batch(self, store: MemoryStore) -> None:
         """客户端声明单批上限时，worker 批次对齐上限（一批 = 一次 API 调用）。"""
         embedder = FakeEmbedder()

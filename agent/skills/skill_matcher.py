@@ -16,6 +16,10 @@
 近重复折叠：同簇冗余技能会在得分上互相接近，全部注入只会挤占 top-k 坑位、
 重复消耗注入预算。选出结果前按向量相似度折叠近重复项（保留得分更高者），
 折叠事件记入 index 的合并信号——是策展议程"该合并了"的直接证据。
+
+模型可见：沿用技能候选注入，缺失向量时使用关键词匹配并唤醒后台回填。
+Token 影响：不增加上下文；会话路径不再逐条嵌入静态技能内容。
+缓存影响：向量在后台批量补齐并持久化，候选仍在动态区，不改稳定前缀。
 """
 from __future__ import annotations
 
@@ -125,12 +129,14 @@ class SkillMatcher:
             vectors_pending = [tasks.create_task(lane_vector(i, lane)) for i, lane in enumerate(lanes)]
         lane_vecs = [task.result() for task in vectors_pending]
 
-        # 技能向量预算化补算：embed_query 单条串行，全库冷缓存时逐个补算会拖垮
-        # 首轮检索——预算内补算、其余本轮走关键词分，由心跳 warm() 批量预热
         vectors = (
-            await self.index.ensure_vectors(skills)
+            await self.index.ensure_vectors(skills, budget=0)
             if any(v is not None for v in lane_vecs) else {}
         )
+        if any(vectors.get(skill.name) is None for skill in skills):
+            from agent.memory.embedding import wake_embedding_worker
+
+            wake_embedding_worker()
 
         kw = _keyword_weight()
         sw = 1.0 - kw

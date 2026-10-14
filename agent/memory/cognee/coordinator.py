@@ -76,6 +76,8 @@ class CogneeCoordinator:
         if not self.config.enabled:
             return
         availability = await self.client.initialize()
+        if availability.ready:
+            await self.client.available_datasets([])
         if not availability.ready and not availability.configuration_required:
             self._last_error = availability.reason
         # 启动时回收上次异常退出遗留的卡死任务（processing → pending）

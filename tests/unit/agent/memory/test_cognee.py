@@ -453,6 +453,9 @@ class _FakeCogneeClient:
     async def list_datasets(self):
         return [SimpleNamespace(id="dataset-id", name="anelf_global")]
 
+    async def available_datasets(self, names):
+        return names
+
     async def list_data(self, _dataset_id):
         return [
             SimpleNamespace(
@@ -464,6 +467,27 @@ class _FakeCogneeClient:
 
     async def delete_data(self, dataset_id, data_id, **_kwargs):
         self.deleted.append((str(dataset_id), str(data_id)))
+
+
+@pytest.mark.asyncio
+async def test_start_prepares_dataset_directory_without_running_recall(monkeypatch, tmp_path, store):
+    client = CogneeClient(CogneeConfig(data_root=str(tmp_path), sync_enabled=False))
+    monkeypatch.setattr(client, "initialize", AsyncMock(return_value=CogneeAvailability(
+        installed=True, enabled=True, ready=True,
+    )))
+    datasets = AsyncMock(return_value=[{"name": "anelf_global"}])
+    monkeypatch.setattr(client, "list_datasets", datasets)
+    recall = AsyncMock()
+    monkeypatch.setattr(client, "recall", recall)
+    monkeypatch.setattr("agent.memory.cognee.coordinator.cognee_storage_stats.schedule_refresh", Mock())
+    coordinator = CogneeCoordinator(store, client, client.config)
+    try:
+        await coordinator.start()
+        assert await client.available_datasets(["anelf_global", "missing"]) == ["anelf_global"]
+        datasets.assert_awaited_once()
+        recall.assert_not_awaited()
+    finally:
+        await coordinator.close()
 
 
 @pytest.mark.asyncio

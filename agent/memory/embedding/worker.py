@@ -125,6 +125,7 @@ class EmbeddingWorker:
         """挂接一个 backlog 来源（同名覆盖）。"""
         record_mapping(self._backlogs, name, owner=handler.__module__)
         self._backlogs[name] = handler
+        self.wake()
 
     @property
     def _batch_size(self) -> int:
@@ -160,6 +161,7 @@ class EmbeddingWorker:
 
     async def _worker(self) -> None:
         while not self._closing:
+            self._wake.clear()
             try:
                 if not self.embedder.available:
                     # 故障后通过 probe 探测恢复（available 失败后不会自行重置）
@@ -181,7 +183,6 @@ class EmbeddingWorker:
                 await self._sleep_backoff()
                 continue
 
-            self._wake.clear()
             try:
                 await asyncio.wait_for(self._wake.wait(), timeout=self._interval_seconds)
             except asyncio.TimeoutError:

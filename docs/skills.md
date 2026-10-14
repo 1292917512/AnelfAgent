@@ -75,7 +75,9 @@ create/update 在事实层检测到显著信号时**不拒绝**，返回 needs_d
 
 - 覆盖口径 = 匹配面（全量技能含归档，归档向量不失养）
 - 缓存键 = 模型名 + 文本 hash（模型切换即全库失效重嵌，防跨模型余弦混算）
-- 交互路径预算化补算（`skills_embed_budget`，advisory 收紧 8），心跳 `warm()` 批量预热；
+- 会话匹配只读取已有技能向量，缺失时保留关键词路并唤醒 EmbeddingWorker；
+  启动装配即注册技能 backlog，空闲时分批补齐，不等待首次会话或心跳。
+  主动诊断仍支持预算化补算（`skills_embed_budget`，advisory 收紧 8）；
   死键清理时机 = 嵌入完成后（warm/embed_now）+ 删除时，列表重建不清理（防误杀待嵌入键）
 - Web 经 `services._runtime` 拿 Mind 侧索引展示 embedded 状态与覆盖统计，CRUD 后 embed_now
   即时重嵌；Mind 构造时重绑定工具依赖避免双向量缓存
