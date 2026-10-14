@@ -9,6 +9,17 @@
   },
   "loadFailed": "Failed to load modules (entity may be disabled or the server needs a restart)",
   "retry": "Retry",
+  "network": {
+    "enabled": "Proxy enabled",
+    "disabled": "Proxy disabled",
+    "settings": "Proxy settings and diagnostics",
+    "hint": "Actual requests from the last 15 minutes only, without automatic probes. Target HTTP errors do not imply proxy failure.",
+    "unknown": "No recent requests. Connectivity has not been observed.",
+    "reachable": "Response received",
+    "failed": "Request through proxy failed",
+    "more": "Show {{count}} more",
+    "less": "Show less"
+  },
   "stats": {
     "total": "Modules",
     "enabled": "Enabled",

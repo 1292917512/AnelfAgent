@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 import { CalendarClock, CalendarDays, Clock3, Globe2, PartyPopper } from "lucide-react";
 import type { DesktopModuleInfo } from "./types";
 import { SubscriptionDetailView } from "./SubscriptionDetailView";
+import { NetworkDetailView } from "./NetworkDetailView";
 
 interface DetailCellProps {
   icon: typeof Clock3;
@@ -139,6 +140,7 @@ export function ModuleDetailView({ mod }: { mod: DesktopModuleInfo }) {
   }
   if (mod.key === "datetime") return <DatetimeDetailView mod={mod} />;
   if (mod.key === "subscription") return <SubscriptionDetailView mod={mod} />;
+  if (mod.key === "network") return <NetworkDetailView mod={mod} />;
   if (mod.key === "calendar") return <CalendarDetailView mod={mod} />;
   if (mod.key === "weather") return null;
   if (mod.current_content) {

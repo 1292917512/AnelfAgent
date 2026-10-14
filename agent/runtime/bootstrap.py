@@ -69,6 +69,9 @@ def create_bootstrap() -> FlowMachine:
     async def init_llm():
         from agent.llm import get_llm_manager
         from core.lifecycle import Lifecycle
+        from core.network.status import proxy_observations
+
+        Lifecycle.register("proxy_observations", proxy_observations, cleanup=proxy_observations.clear)
         manager = get_llm_manager()
         Lifecycle.register("llm_manager", manager, cleanup=manager.close)
         # 手改 llm_clients.json 热重载：mtime 轮询触发 reconcile（进程内写入

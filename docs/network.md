@@ -45,6 +45,13 @@ IP 规则只匹配 URL 中的 IP，不为路由额外查询 DNS。未命中规�
 
 ## 按需连接检测
 
+统一 HTTP(S) 传输和 TCP 隧道在实际访问时记录被动状态。实体经 `_sdk.get_proxy_status()`、
+频道经 `agent.channel.get_proxy_status()` 读取脱敏快照；原始代理地址仍由 `get_proxy_url()` 获取。
+记录按代理与目标合并，最多 64 项、保留 15 分钟，只存在内存。直连成功不覆盖代理失败，
+HTTP 407 标记代理认证异常，其他 HTTP 错误只说明收到了目标响应；取消与本地池拥堵不视为故障。
+AI 桌面的「代理访问」组件独立消费该接口，按已有开关把异常和近期恢复注入动态区，无异常不注入，
+不增加探测循环、不触发任务、不改路由或重试。配置地址变更后不复用旧代理证据。
+
 配置中心 `network/proxy` 提供「代理与连接检测」；AI 使用 `check_network_proxy`。
 两者经 `core.network.diagnose_network(NetworkProbeRequest(...))` 执行相同检测，
 读取已经保存的生效配置，不修改开关、地址或规则。默认比较 system/direct/proxy 三条路径，

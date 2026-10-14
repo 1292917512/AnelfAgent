@@ -15,6 +15,7 @@ from core.config import ConfigManager, ConfigRegistry
 from core.network import async_network_client, get_proxy_url, network_client, resolve_network_route
 from core.network.policy import parse_rules
 from core.network.socket import open_proxy_socket, resolve_socket_route
+from core.network.status import ProxyObservations
 
 
 @pytest.fixture
@@ -22,6 +23,96 @@ def settings(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     values: dict[str, Any] = {"proxy_enabled": True, "http_proxy": "http://proxy.test:7890"}
     monkeypatch.setattr(ConfigManager, "get", staticmethod(lambda key, default=None: values.get(key, default)))
     return values
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+async def test_passive_proxy_status_tracks_failure_and_recovery_without_replay(settings, monkeypatch, async_mode):
+    observations = ProxyObservations()
+    monkeypatch.setattr("core.network.transport.proxy_observations", observations)
+    settings["http_proxy"] = "http://user:private-value@proxy.test:7890"
+    calls = 0
+    outcome = "error"
+
+    def respond(request):
+        nonlocal calls
+        calls += 1
+        if outcome == "error":
+            raise httpx.ConnectError("secret in diagnostic")
+        return httpx.Response(int(outcome))
+
+    monkeypatch.setattr(httpx, "AsyncHTTPTransport" if async_mode else "HTTPTransport",
+                        lambda **kwargs: httpx.MockTransport(respond))
+    client = async_network_client(proxy_mode="proxy") if async_mode else network_client(proxy_mode="proxy")
+
+    async def request():
+        url = "https://example.com/private/path?token=private-value"
+        return await client.get(url) if async_mode else client.get(url)
+
+    try:
+        with pytest.raises(httpx.ConnectError):
+            await request()
+        row = observations.snapshot()["observations"][0]
+        assert row["state"] == "failed" and row["error_code"] == "ConnectError"
+        assert row["proxy"] == "http://proxy.test:7890" and row["target"] == "https://example.com"
+        assert "private" not in str(row) and "secret" not in str(row)
+        outcome = "407"
+        await request()
+        assert observations.snapshot()["observations"][0]["error_code"] == "proxy_auth"
+        outcome = "503"
+        await request()
+        row = observations.snapshot()["observations"][0]
+        assert row["state"] == "reachable" and row["recovered"] and row["status_code"] == 503
+        assert len(observations.snapshot()["observations"]) == 1
+        assert calls == 3
+    finally:
+        if async_mode:
+            await client.aclose()
+        else:
+            client.close()
+
+
+def test_proxy_observations_are_bounded_and_ignore_unrelated_evidence(settings, monkeypatch):
+    observations = ProxyObservations()
+    now = 1000.0
+    monkeypatch.setattr("core.network.status.time.time", lambda: now)
+    proxy = settings["http_proxy"]
+    for index in range(70):
+        observations.record(proxy, f"https://host{index}.test", error=httpx.ConnectError("offline"))
+    assert len(observations.snapshot()["observations"]) == 64
+    observations.record(None, "https://host69.test", status_code=200)
+    observations.record(proxy, "https://host69.test", error=httpx.PoolTimeout("busy"))
+    assert observations.snapshot()["observations"][0]["state"] == "failed"
+    settings["http_proxy"] = "http://other.test:7890"
+    assert observations.snapshot()["observations"] == []
+    settings["http_proxy"] = proxy
+    now += 901
+    assert observations.snapshot()["observations"] == []
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+async def test_proxy_stream_failure_is_observed(settings, monkeypatch, async_mode):
+    observations = ProxyObservations()
+    monkeypatch.setattr("core.network.transport.proxy_observations", observations)
+
+    class Stream(httpx.SyncByteStream, httpx.AsyncByteStream):
+        def __iter__(self):
+            yield b"partial"
+            raise httpx.ReadError("stream lost")
+
+        async def __aiter__(self):
+            for chunk in self:
+                yield chunk
+
+    monkeypatch.setattr(httpx, "AsyncHTTPTransport" if async_mode else "HTTPTransport",
+                        lambda **kwargs: httpx.MockTransport(lambda request: httpx.Response(200, stream=Stream())))
+    with pytest.raises(httpx.ReadError):
+        if async_mode:
+            async with async_network_client(proxy_mode="proxy") as client:
+                await client.get("https://example.com")
+        else:
+            with network_client(proxy_mode="proxy") as client:
+                client.get("https://example.com")
+    assert observations.snapshot()["observations"][0]["error_code"] == "ReadError"
 
 
 @pytest.mark.parametrize(("url", "expected"), [

@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 from python_socks.async_.asyncio import Proxy
 
 from .policy import NetworkRoute, ProxyMode, resolve_network_route
+from .status import proxy_observations
 
 
 def resolve_socket_route(host: str, port: int, proxy_mode: ProxyMode = "direct") -> NetworkRoute:
@@ -22,7 +23,12 @@ async def open_proxy_socket(host: str, port: int, proxy_url: str, *, timeout: fl
     if scheme == "https":
         raise ValueError("TCP 隧道支持 http://、socks5://、socks5h:// 代理，请调整全局代理地址")
     url = "socks5://" + proxy_url[len("socks5h://"):] if scheme == "socks5h" else proxy_url
+    address = f"[{host}]" if ":" in host else host
+    target = f"tcp://{address}:{port}"
     try:
-        return await Proxy.from_url(url).connect(dest_host=host, dest_port=port, timeout=timeout)
+        sock = await Proxy.from_url(url).connect(dest_host=host, dest_port=port, timeout=timeout)
     except Exception as exc:
+        proxy_observations.record(proxy_url, target, error=exc)
         raise ConnectionError(f"代理隧道建立失败: {host}:{port} ({type(exc).__name__})") from None
+    proxy_observations.record(proxy_url, target)
+    return sock

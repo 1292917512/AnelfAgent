@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { useMutation } from "@tanstack/react-query";
-import { Box, CalendarDays, Clock, CloudSun, CreditCard, RefreshCw } from "lucide-react";
+import { Box, CalendarDays, Clock, CloudSun, CreditCard, Network, RefreshCw } from "lucide-react";
 import { Card } from "@/components/common/Card";
 import { Button, Switch } from "@/components/ui";
 import { ConfigField } from "./ConfigField";
@@ -14,6 +14,7 @@ const MODULE_ICONS: Record<string, typeof Box> = {
   weather: CloudSun,
   subscription: CreditCard,
   calendar: CalendarDays,
+  network: Network,
 };
 
 /** 由专属编辑器接管的配置项（不进通用编辑列表） */

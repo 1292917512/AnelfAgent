@@ -113,6 +113,22 @@ export interface SubscriptionProvider {
 
 /** 组件结构化详情（各组件字段的并集，全部可选；面板按 key 特化渲染） */
 export interface ModuleDetail {
+  network?: {
+    enabled: boolean;
+    mode: string;
+    proxies: string[];
+    observations: Array<{
+      proxy: string;
+      target: string;
+      state: "reachable" | "failed";
+      error_code: string;
+      status_code: number | null;
+      observed_at: number;
+      changed_at: number;
+      failures: number;
+      recovered: boolean;
+    }>;
+  };
   // datetime 组件
   datetime?: string;
   weekday?: string;

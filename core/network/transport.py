@@ -12,6 +12,7 @@ import httpx
 
 from core.config import ConfigManager
 from core.network.policy import ProxyMode, resolve_network_route
+from core.network.status import proxy_observations
 
 ProxySelection = ProxyMode | Callable[[], ProxyMode]
 
@@ -52,11 +53,17 @@ class _SyncPool:
 
 
 class _SyncStream(httpx.SyncByteStream):
-    def __init__(self, stream: httpx.SyncByteStream, release: Callable[[], None]) -> None:
+    def __init__(self, stream: httpx.SyncByteStream, release: Callable[[], None],
+                 on_error: Callable[[Exception], None]) -> None:
         self.stream, self.release = stream, release
+        self.on_error = on_error
 
     def __iter__(self) -> Iterator[bytes]:
-        yield from self.stream
+        try:
+            yield from self.stream
+        except httpx.TransportError as exc:
+            self.on_error(exc)
+            raise
 
     def close(self) -> None:
         try:
@@ -98,12 +105,16 @@ class NetworkTransport(httpx.BaseTransport):
                 response = pool.transport.handle_request(_attempt_request(request, route.connect_timeout if fallback else None))
             except BaseException as exc:
                 release()
+                if isinstance(exc, httpx.TransportError):
+                    proxy_observations.record(proxy, str(request.url), error=exc)
                 if fallback and isinstance(exc, httpx.TransportError) and _can_fallback(exc, request):
                     continue
                 raise
             response.extensions["network_route"] = request.extensions["network_route"]
+            proxy_observations.record(proxy, str(request.url), status_code=response.status_code)
             assert isinstance(response.stream, httpx.SyncByteStream)
-            response.stream = _SyncStream(response.stream, release)
+            response.stream = _SyncStream(response.stream, release,
+                lambda exc: proxy_observations.record(proxy, str(request.url), error=exc))
             return response
         raise RuntimeError("网络路由为空")
 
@@ -122,12 +133,18 @@ class _AsyncPool:
 
 
 class _AsyncStream(httpx.AsyncByteStream):
-    def __init__(self, stream: httpx.AsyncByteStream, release: Callable[[], None]) -> None:
+    def __init__(self, stream: httpx.AsyncByteStream, release: Callable[[], None],
+                 on_error: Callable[[Exception], None]) -> None:
         self.stream, self.release = stream, release
+        self.on_error = on_error
 
     async def __aiter__(self) -> AsyncIterator[bytes]:
-        async for chunk in self.stream:
-            yield chunk
+        try:
+            async for chunk in self.stream:
+                yield chunk
+        except httpx.TransportError as exc:
+            self.on_error(exc)
+            raise
 
     async def aclose(self) -> None:
         try:
@@ -167,12 +184,16 @@ class AsyncNetworkTransport(httpx.AsyncBaseTransport):
                 response = await pool.transport.handle_async_request(_attempt_request(request, route.connect_timeout if fallback else None))
             except BaseException as exc:
                 release()
+                if isinstance(exc, httpx.TransportError):
+                    proxy_observations.record(proxy, str(request.url), error=exc)
                 if fallback and isinstance(exc, httpx.TransportError) and _can_fallback(exc, request):
                     continue
                 raise
             response.extensions["network_route"] = request.extensions["network_route"]
+            proxy_observations.record(proxy, str(request.url), status_code=response.status_code)
             assert isinstance(response.stream, httpx.AsyncByteStream)
-            response.stream = _AsyncStream(response.stream, release)
+            response.stream = _AsyncStream(response.stream, release,
+                lambda exc: proxy_observations.record(proxy, str(request.url), error=exc))
             return response
         raise RuntimeError("网络路由为空")
 
