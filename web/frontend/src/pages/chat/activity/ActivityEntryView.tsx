@@ -1,5 +1,5 @@
 import { Brain, Check, ChevronDown, Loader2, AlertCircle, Bot, ListChecks, ArrowUpRight } from "lucide-react";
-import { useState } from "react";
+import { memo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { ActivityEntry } from "@/lib/types/activity";
 import { formatElapsedCompact } from "@/lib/format";
@@ -41,7 +41,7 @@ function ToolDetails({ entry }: { entry: Extract<ActivityEntry, { kind: "tool" }
 }
 
 /** 思考正文、工具状态和文件改动的统一过程行。 */
-export function ActivityEntryView({ entry, live, current, onReveal }: { entry: ActivityEntry; live: boolean; current: boolean; onReveal: (id: string) => void }) {
+export const ActivityEntryView = memo(function ActivityEntryView({ entry, live, current, onReveal }: { entry: ActivityEntry; live: boolean; current: boolean; onReveal: (id: string) => void }) {
   const { t } = useTranslation("workbench");
   const [expanded, setExpanded] = useState<boolean | null>(null);
   const now = useNow("status" in entry && (entry.status === "running" || entry.status === "queued"));
@@ -100,4 +100,4 @@ export function ActivityEntryView({ entry, live, current, onReveal }: { entry: A
     <ToolContribution entry={entry} view="summary" fallback={<ActivityToolSummary entry={entry} />} />
     {open && <div className="activity-tool-detail"><ToolDetails entry={entry} /></div>}
   </div>;
-}
+});

@@ -100,25 +100,22 @@ async def assess_reply(content: str, scope: str, messages: list[dict[str, Any]])
             native_only=True, timeout=budget,
         )
         answer, intent = report.answers.get("appropriate"), report.answers.get("intent")
+        probability = (intent.selected_probability({"reply", "internal", "duplicate", "wrong_target", "uncertain"})
+                       if isinstance(intent, ChoiceAnswer) else None)
         valid = (report.source == JudgmentSource.TYPESAFE and isinstance(answer, NoulAnswer)
                  and math.isfinite(answer.noul) and 0 <= answer.noul <= 1
-                 and isinstance(intent, ChoiceAnswer)
-                 and set(intent.probabilities) == {"reply", "internal", "duplicate", "wrong_target", "uncertain"}
-                 and intent.choice in intent.probabilities
-                 and all(math.isfinite(p) and 0 <= p <= 1 for p in intent.probabilities.values())
-                 and math.isclose(sum(intent.probabilities.values()), 1, abs_tol=0.01)
-                 and intent.probabilities[intent.choice] == max(intent.probabilities.values()))
+                 and probability is not None)
         reasons = {"internal": "内部过程或结束备注", "duplicate": "与已回复内容重复",
                    "wrong_target": "回复目标不匹配"}
         approved, reason = True, "Jev 未得到有效结论，按默认规则投递"
-        if valid and isinstance(answer, NoulAnswer) and isinstance(intent, ChoiceAnswer):
+        if valid and isinstance(answer, NoulAnswer) and isinstance(intent, ChoiceAnswer) and probability is not None:
             rejected = (1 - answer.noul >= threshold and intent.choice in reasons
-                        and intent.probabilities[intent.choice] >= threshold)
+                        and probability >= threshold)
             approved = not rejected
             reason = ("Jev 明确拦截：" + reasons[intent.choice] if rejected
                       else "Jev 未发现明确拦截依据，按默认规则投递")
             reason += (f"（可投递 {answer.noul:.0%}，类别 {intent.choice} "
-                       f"{intent.probabilities[intent.choice]:.0%}，拦截阈值 {threshold:.0%}）")
+                       f"{probability:.0%}，拦截阈值 {threshold:.0%}）")
         return ReplyAssessment(approved, reason, report.model or cfg.model,
                                round((time.monotonic() - started) * 1000), len(evidence))
     except asyncio.CancelledError:

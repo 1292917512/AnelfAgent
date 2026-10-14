@@ -129,13 +129,10 @@ def _apply_report(record: HookJudgment, report: JudgmentReport) -> None:
     record.probability = needed.noul
     if not isinstance(basis, ChoiceAnswer) or basis.choice not in _BASIS:
         return
-    probabilities = basis.probabilities
-    if (set(probabilities) != set(_BASIS)
-            or any(not math.isfinite(p) or not 0 <= p <= 1 for p in probabilities.values())
-            or not math.isclose(sum(probabilities.values()), 1, abs_tol=0.01)
-            or probabilities[basis.choice] != max(probabilities.values())):
+    probability = basis.selected_probability(_BASIS)
+    if probability is None:
         return
-    record.basis, record.basis_probability = _BASIS[basis.choice], probabilities[basis.choice]
+    record.basis, record.basis_probability = _BASIS[basis.choice], probability
     if basis.choice == "uncertain" or record.basis_probability < 1 - record.threshold:
         return
     skip = needed.noul <= record.threshold and basis.choice in {"covered", "irrelevant"}

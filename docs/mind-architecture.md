@@ -196,6 +196,8 @@ exec_context 本轮执行状态（每轮全量重建）
 结构化评判三原语（Choice 选项 / Score 评分 / Noul 是非）的统一通道：
 
 - **类型契约** `agent/judgment/types.py`（pydantic 判别联合，置信度公式 (n·p−1)/(n−1) 双通道共用）
+  Choice 的 `selected_probability(options)` 统一检查选项完整性、概率范围与总和、选中项是否为最大值。
+  原生客户端在返回 SDK 前执行同一校验，无效分布按接口错误进入既有候选回退；业务层只决定自己的置信阈值和失败策略，不修补答案。
 - **双通道引擎** `engine.py`（配置每次调用现读，天然热更）：自动调用按首选及回退顺序选择可用模型，显式指定只用该原生模型，经 `client.py`
   System One 原生 HTTP（POST /v1/systemone，答案严格校验；TypeSafe 云端与自部署服务共用）；未配置或失败时降级 `bridge.py` 普通
   聊天模型（严格 JSON 提示词 + 容错解析 + 本地合成概率/置信度，单题失败不拖垮整批记入 missing）

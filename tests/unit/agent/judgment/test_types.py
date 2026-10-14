@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from agent.judgment.types import (
+    ChoiceAnswer,
     ChoiceQuestion,
     JudgmentError,
     NoulQuestion,
@@ -13,6 +14,26 @@ from agent.judgment.types import (
     parse_questions,
     question_payload,
 )
+
+
+@pytest.mark.parametrize("choice,probabilities,expected", [
+    ("a", {"a": 0.9, "b": 0.1}, 0.9),
+    ("a", {"a": 0.5, "b": 0.5}, 0.5),
+    ("b", {"a": 0.9, "b": 0.1}, None),
+    ("a", {"a": 1.0}, None),
+    ("a", {"a": 1.0, "b": 0.0, "extra": 0.0}, None),
+    ("a", {"a": float("nan"), "b": 0.0}, None),
+    ("a", {"a": float("inf"), "b": 0.0}, None),
+    ("a", {"a": 1.1, "b": -0.1}, None),
+    ("a", {"a": 0.9, "b": 0.9}, None),
+    ("absent", {"a": 1.0, "b": 0.0}, None),
+    ("a", {}, None),
+])
+def test_choice_probability_requires_complete_consistent_evidence(
+    choice: str, probabilities: dict[str, float], expected: float | None,
+) -> None:
+    answer = ChoiceAnswer(choice=choice, probabilities=probabilities, confidence=1.0)
+    assert answer.selected_probability({"a", "b"}) == expected
 
 
 class TestParseQuestions:

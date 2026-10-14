@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import math
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -68,13 +67,9 @@ async def assess_tool_recovery(scope: str, messages: list[dict[str, Any]], trigg
         answer = report.answers.get("recovery")
         reason, proceed = "Jev 未确认有效恢复路径，按工具守卫规则结束", False
         if report.source == JudgmentSource.TYPESAFE and isinstance(answer, ChoiceAnswer):
-            probabilities = answer.probabilities
-            valid = (set(probabilities) == set(_PATHS) and answer.choice in probabilities
-                     and all(math.isfinite(p) and 0 <= p <= 1 for p in probabilities.values())
-                     and math.isclose(sum(probabilities.values()), 1, abs_tol=0.01)
-                     and probabilities[answer.choice] == max(probabilities.values()))
+            probability = answer.selected_probability(_PATHS)
             threshold = 1 - max(0, min(0.49, get_config_float("judgment_gate_skip_threshold", 0.1)))
-            if valid and probabilities[answer.choice] >= threshold:
+            if probability is not None and probability >= threshold:
                 proceed = answer.choice in {"repair", "investigate"}
                 reason = f"Jev {'允许恢复' if proceed else '结束执行'}：{_PATHS[answer.choice]}"
         return RecoveryDecision(proceed, f"{reason}（{model}，{round((time.monotonic() - started) * 1000)}ms）")

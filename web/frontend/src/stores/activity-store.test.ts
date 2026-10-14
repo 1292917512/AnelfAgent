@@ -45,6 +45,51 @@ it("merges live updates with a delayed snapshot without reviving completed tools
   expect(useActivityStore.getState().runs.map((item) => [item.id, item.revision, item.status])).toEqual([["qq", 5, "completed"], ["web", 6, "running"]]);
 });
 
+it("shares the pending snapshot request until every caller can read its result", async () => {
+  let finish = () => {};
+  vi.mocked(api.get).mockImplementationOnce(() => new Promise((resolve) => {
+    finish = () => resolve({ data: { epoch: "p", revision: 1, runs: [run("current", 1)] } });
+  }));
+  const first = useActivityStore.getState().load();
+  let secondDone = false;
+  const second = useActivityStore.getState().load().then(() => { secondDone = true; });
+  await Promise.resolve();
+  try {
+    expect(secondDone).toBe(false);
+    expect(api.get).toHaveBeenCalledTimes(1);
+  } finally { finish(); }
+  await Promise.all([first, second]);
+  expect(secondDone).toBe(true);
+  expect(useActivityStore.getState().runs[0]?.id).toBe("current");
+});
+
+it("preserves unchanged record and list references across snapshot refreshes", () => {
+  const store = useActivityStore.getState();
+  const record = run("current", 1);
+  store.receive("p", record);
+  const records = useActivityStore.getState().runs;
+  store.restore({ epoch: "p", revision: 1, runs: [{ ...record, entries: [] }] });
+  expect(useActivityStore.getState().runs).toBe(records);
+  expect(useActivityStore.getState().runs[0]).toBe(record);
+  store.restore({ epoch: "p", revision: 2, runs: [{ ...record, revision: 2, status: "completed" }] });
+  expect(useActivityStore.getState().runs[0]?.status).toBe("completed");
+});
+
+it("does not attach an old request failure to a recovered server process", async () => {
+  const store = useActivityStore.getState();
+  store.restore({ epoch: "old", revision: 1, runs: [] });
+  let fail = () => {};
+  vi.mocked(api.get).mockImplementationOnce(() => new Promise((_, reject) => {
+    fail = () => reject(new Error("Old connection closed"));
+  }));
+  const request = store.load();
+  store.restore({ epoch: "new", revision: 1, runs: [run("recovered", 1)] });
+  fail();
+  await request;
+  expect(useActivityStore.getState().error).toBeNull();
+  expect(useActivityStore.getState().runs[0]?.id).toBe("recovered");
+});
+
 it("replaces stale running state when the server process changes", () => {
   const store = useActivityStore.getState();
   store.receive("old", run("old", 100));

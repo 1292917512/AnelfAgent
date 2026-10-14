@@ -199,6 +199,15 @@ def test_invalid_service_address_is_a_configuration_error(address):
     assert caught.value.cause == ErrorCause.CONFIG and not caught.value.retryable
 
 
+@pytest.mark.parametrize("choice,probabilities", [("a", {"a": 1}), ("b", {"a": 0.9, "b": 0.1})])
+def test_native_client_rejects_inconsistent_choice_answers(choice: str, probabilities: dict[str, float]) -> None:
+    questions = parse_questions({"route": {"type": "choice", "instructions": "Choose a route", "criteria": {"a": "A", "b": "B"}}})
+    with pytest.raises(JudgmentError) as caught:
+        SystemOneClient._parse_response({"answers": {"route": {"type": "choice", "choice": choice,
+                                                              "probabilities": probabilities, "confidence": 1}}}, questions)
+    assert caught.value.cause == ErrorCause.INTERNAL and caught.value.retryable
+
+
 async def test_no_key_no_fallback_config_error(
     engine: JudgmentEngine, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -1,25 +1,37 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Modal, LoadingBlock } from "@/components/ui";
+import { RefreshCw } from "lucide-react";
+import { Modal, LoadingBlock, Button } from "@/components/ui";
 import { QueryError } from "@/components/common/AsyncState";
 import { useActivityStore } from "@/stores/activity-store";
+import { useChatStore } from "@/stores/chat-store";
 import { ActivityRunCard } from "./ActivityRunCard";
 
 export default function ActivityDetailsDialog({ ids, onClose, onReveal }: { ids: string[]; onClose: () => void; onReveal: (id: string) => void }) {
   const { t } = useTranslation("settings");
+  const { t: tc } = useTranslation("common");
   const { runs, loading, error, load } = useActivityStore();
+  const connected = useChatStore((state) => state.sseConnected);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [checkedIds, setCheckedIds] = useState<string[] | null>(null);
   const selected = runs.filter((run) => ids.includes(run.id));
-  const active = selected.some((run) => run.status === "running") || selected.length < ids.length;
-  useEffect(() => { void load(); }, [load, ids]);
+  const active = selected.some((run) => run.status === "running" || run.entries.some((entry) => "status" in entry && ["running", "queued"].includes(entry.status)));
+  const pending = checkedIds !== ids;
   useEffect(() => {
-    if (!active) return;
+    let cancelled = false;
+    void load().then(() => { if (!cancelled) setCheckedIds(ids); });
+    return () => { cancelled = true; };
+  }, [load, ids]);
+  useEffect(() => {
+    if (connected || !active) return;
     const timer = window.setInterval(() => { if (!document.hidden) void load(); }, 3000);
     return () => window.clearInterval(timer);
-  }, [active, load]);
+  }, [active, connected, load]);
   return <Modal open onClose={onClose} title={t("hookFlow.executionDetails")} width="max-w-4xl" placement="right">
+    <div className="mb-3 flex justify-end"><Button variant="ghost" size="sm" disabled={loading} onClick={() => void load()}><RefreshCw size={14} />{tc("refresh")}</Button></div>
     {error != null && <QueryError compact error={error} retry={() => void load()} />}
-    {selected.length === 0 && (loading ? <LoadingBlock /> : <p className="text-sm leading-6 text-muted">{t("hookFlow.expiredDetails")}</p>)}
+    {selected.length === 0 && (pending || loading) && <LoadingBlock />}
+    {!pending && !loading && error == null && selected.length < ids.length && <p className="mb-3 text-sm leading-6 text-muted" role="status">{t("hookFlow.expiredDetails")}</p>}
     <div className="space-y-4">
       {selected.map((run) => <ActivityRunCard key={run.id} run={run} open={expanded[run.id] ?? true}
         onToggle={(id, open) => setExpanded((current) => ({ ...current, [id]: open }))} onReveal={onReveal} />)}

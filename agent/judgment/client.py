@@ -3,6 +3,10 @@
 契约（docs.typesafe.ai/api）：POST {base_url}/v1/systemone，可选 Bearer 认证；
 请求体 state + model + questions（id → 问题），响应 answers 按同键返回。
 所有失败统一包装为 JudgmentError，由引擎按归因决策是否降级回退通道。
+
+模型看到：原有问题和事实；选项分布失真视为接口错误，不伪造可用判断。
+Token：不增加判断问题或内容，失败后的候选切换沿用引擎策略。
+缓存：仅校验返回结果，不修改任何模型上下文前缀。
 """
 from __future__ import annotations
 
@@ -200,10 +204,16 @@ def _parse_answer(question: Question, raw: Any, qid: str) -> Answer:
     else:  # pragma: no cover - 判别联合已穷尽
         raise JudgmentError(f"未知问题类型: {type(question)}", cause=ErrorCause.INTERNAL, retryable=False)
     try:
-        return model.model_validate(raw)
+        answer = model.model_validate(raw)
     except ValidationError as exc:
         raise JudgmentError(
             f"答案 '{qid}' 结构无效: {exc.errors()[0].get('msg', '') if exc.errors() else exc}",
             cause=ErrorCause.INTERNAL,
             retryable=True,
         ) from exc
+    if (isinstance(answer, ChoiceAnswer) and isinstance(question, ChoiceQuestion)
+            and answer.selected_probability(question.criteria) is None):
+        raise JudgmentError(
+            f"答案 '{qid}' 的选项概率不完整或与选中项不一致", cause=ErrorCause.INTERNAL, retryable=True,
+        )
+    return answer

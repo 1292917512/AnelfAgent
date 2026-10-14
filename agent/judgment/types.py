@@ -7,6 +7,8 @@
 """
 from __future__ import annotations
 
+import math
+from collections.abc import Collection
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Union
 
@@ -187,6 +189,16 @@ class ChoiceAnswer(BaseModel):
     choice: str
     probabilities: Dict[str, float]
     confidence: float
+
+    def selected_probability(self, options: Collection[str]) -> float | None:
+        """仅完整、归一且选中最大项的分布返回概率，不修补或重选服务端答案。"""
+        probabilities = self.probabilities
+        if (set(probabilities) != set(options) or self.choice not in probabilities
+                or any(not math.isfinite(p) or not 0 <= p <= 1 for p in probabilities.values())
+                or not math.isclose(sum(probabilities.values()), 1, abs_tol=0.01)
+                or probabilities[self.choice] != max(probabilities.values())):
+            return None
+        return probabilities[self.choice]
 
 
 class ScoreAnswer(BaseModel):

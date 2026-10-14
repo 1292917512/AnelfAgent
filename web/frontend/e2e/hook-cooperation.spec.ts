@@ -45,11 +45,29 @@ test("background hook details show real execution and update without cluttering 
 
 test("hooks page opens the same execution details and explains expired memory", async ({ page }) => {
   await page.route("**/api/hooks", (route) => route.fulfill({ json: { execution: { active: [hook], recent: [] } } }));
-  await page.route("**/api/workspace/activity", (route) => route.fulfill({ json: { epoch: "new-process", revision: 0, runs: [] } }));
+  let reads = 0;
+  let fail = false;
+  await page.route("**/api/workspace/activity", (route) => {
+    reads++;
+    return route.fulfill(fail ? { status: 503, json: { detail: "Activity temporarily unavailable" } }
+      : { json: { epoch: "new-process", revision: 0, runs: [] } });
+  });
   await page.goto("/webui/hooks");
   await page.getByRole("button", { name: /skill_review Reply complete/ }).click();
   await page.getByRole("button", { name: "View execution details", exact: true }).click();
-  await expect(page.getByRole("dialog")).toContainText("These execution details have left memory");
+  const dialog = page.getByRole("dialog", { name: "View execution details" });
+  await expect(dialog).toContainText("These execution details have left memory");
+  const afterLoad = reads;
+  await page.clock.install();
+  await page.clock.runFor(6500);
+  expect(reads).toBe(afterLoad);
+  fail = true;
+  await dialog.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(dialog).toContainText("Activity temporarily unavailable");
+  await expect(dialog.getByText(/These execution details have left memory/)).toHaveCount(0);
+  fail = false;
+  await dialog.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(dialog).toContainText("These execution details have left memory");
 });
 
 test("Jev decisions remain visible after later work and expose slow responses", async ({ page }, info) => {
