@@ -33,6 +33,7 @@ async def test_plan_ready_precedes_search_completion(store, monkeypatch) -> None
         return RetrievalPlan(queries=[query, "规划查询甲", "规划查询乙"])
 
     monkeypatch.setattr(MemoryRetriever, "plan_retrieval", _plan)
+    await store._get_db()
     retriever = MemoryRetriever(store, _NullEmbedder())
     conversation = [{"role": "user", "content": "帮我查一下服务器最近的巡检记录和告警情况"}]
     holder = asyncio.get_running_loop().create_future()

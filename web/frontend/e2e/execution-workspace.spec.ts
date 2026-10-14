@@ -86,7 +86,7 @@ test("memory tool references open the resolved project file instead of a workspa
   await expect(execution.getByRole("button", { name: /memory\/external.md/ })).toHaveCount(0);
   await execution.locator(".activity-tool").filter({ hasText: "memory/note.md" }).getByRole("button", { name: "View details: read_memory_file", exact: true }).click();
   const details = page.getByRole("dialog", { name: "read_memory_file", exact: true });
-  await details.getByRole("button", { name: "memory/note.md Project", exact: true }).click();
+  await details.getByRole("button", { name: "memory/note.md Memory", exact: true }).click();
   await expect(details).toHaveCount(0);
   await expect(page.getByText("project content", { exact: true })).toBeVisible();
   expect(new Set(reads).size).toBe(1);
@@ -174,7 +174,11 @@ test("workspace shows the global live process beside actual Web messages", async
   await expect(inspector.getByText("inspect_service", { exact: true })).toBeVisible();
   await inspector.getByRole("button", { name: "Close", exact: true }).click();
   const parentCard = execution.locator('[data-activity-run="global"]');
-  await expect(parentCard.getByRole("button", { name: "Thought", exact: true })).toHaveAttribute("aria-expanded", "true");
+  const model = parentCard.getByRole("button", { name: /^review-model/, exact: false });
+  await expect(model).toHaveAttribute("aria-expanded", "false");
+  await expect(parentCard.getByText("before reporting the deployment result.", { exact: false })).toHaveCount(0);
+  await model.click();
+  await expect(model).toHaveAttribute("aria-expanded", "true");
   await expect(parentCard.getByText("before reporting the deployment result.", { exact: false })).toBeVisible();
   await parentCard.getByRole("button", { name: "View details: inspect_service", exact: true }).click();
   const toolDetails = page.getByRole("dialog", { name: "inspect_service", exact: true });

@@ -25,6 +25,9 @@ test("background hook details show real execution and update without cluttering 
   await page.getByRole("button", { name: "View execution details", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "View execution details" });
   await expect(dialog.getByText("review-model", { exact: true })).toBeVisible();
+  const model = dialog.getByRole("button", { name: /^review-model/ });
+  await expect(model).toHaveAttribute("aria-expanded", "false");
+  await model.click();
   await expect(dialog.getByText(/Compare the completed deployment/)).toBeVisible();
   const tool = dialog.getByRole("button", { name: "View details: get_skill", exact: true });
   await expect(tool).toContainText("Running");

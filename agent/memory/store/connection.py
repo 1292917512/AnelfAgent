@@ -110,18 +110,24 @@ class MemoryConnectionManager:
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
 
             db = await aiosqlite.connect(self.db_path)
-            db.row_factory = aiosqlite.Row
-            await db.execute("PRAGMA journal_mode=WAL;")
-            await db.execute("PRAGMA synchronous=NORMAL;")
-            await db.execute("PRAGMA busy_timeout=5000;")
-            self.vec_available = await self._load_vec_extension(db)
+            try:
+                db.row_factory = aiosqlite.Row
+                await db.execute("PRAGMA journal_mode=WAL;")
+                await db.execute("PRAGMA synchronous=NORMAL;")
+                await db.execute("PRAGMA busy_timeout=5000;")
+                self.vec_available = await self._load_vec_extension(db)
 
-            if not self.initialized:
-                await self._init_schema(db)
-                self.initialized = True
-            # 记忆标签/画像 source 的 scope 迁移（user_version 幂等，失败退避重试）
-            await self._retry_tag_migration(db)
+                if not self.initialized:
+                    await self._init_schema(db)
+                await self._retry_tag_migration(db)
+            except (Exception, asyncio.CancelledError):
+                try:
+                    await db.close()
+                except Exception as exc:
+                    log(f"记忆库初始化连接关闭异常: {exc}", "DEBUG", tag="记忆")
+                raise
 
+            self.initialized = True
             self.db = db
             return db
 
