@@ -263,13 +263,17 @@ async def test_fallback_reset_only_replaces_current_generation(activity):
     async with activity_scope("run", "user_webui:web_user#chat1"):
         await event_bus.emit("thinking_llm_start", {"model": "fast"})
         await event_bus.emit("assistant_delta", {"delta": "Earlier thought", "reasoning": True})
-        await event_bus.emit("thinking_llm_end", {"reasoning_content": "Earlier thought", "duration_ms": 3})
+        await event_bus.emit("thinking_llm_end", {"reasoning_content": "Earlier thought", "duration_ms": 3, "ttft_ms": 1,
+            "usage": {"total_input_tokens": 100, "cache_read_input_tokens": 90, "cache_observable": True}})
         await event_bus.emit("thinking_llm_start", {"model": "fast"})
         await event_bus.emit("assistant_delta", {"delta": "Partial output"})
         await event_bus.emit("assistant_delta", {"reset": True})
         await event_bus.emit("thinking_llm_end", {"content": "Complete fallback", "reasoning_content": "Final thought", "duration_ms": 5})
     entries = service.snapshot()["runs"][0]["entries"]
     assert [entry["content"] for entry in entries if "content" in entry] == ["Earlier thought", "Final thought", "Complete fallback"]
+    models = [entry for entry in entries if entry["kind"] == "model"]
+    assert models[0]["ttft_ms"] == 1 and models[1]["ttft_ms"] is None
+    assert models[0]["usage"]["cache_read_input_tokens"] == 90
 
 
 async def test_cancel_and_error_close_running_tools(activity, monkeypatch):

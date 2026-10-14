@@ -58,6 +58,8 @@ async def retrieval_services(action: str = "status", crawl4ai_image: str = "", s
     写操作立即返回操作 ID，accepted 不代表成功，后续用 status 查询终态，不要重复提交。
     up 只填补空的 Anelf 服务地址；connect 显式替换为本地地址和凭据，不修改能力选择。
     配置服务地址、密钥、引擎与启动开关使用配置工具（retrieval/* 分组）。
+    后续模型调用的动态区同步本进程操作状态；无需用 shell sleep 等待或重复提交。
+    status 提供观察时刻、操作/阶段耗时、有界 Docker 输出及容器状态；available 只表示 CLI 和清单存在。
 
     Args:
         action: status/init/up/update/rollback/stop/connect；仅管理随项目部署的本地服务

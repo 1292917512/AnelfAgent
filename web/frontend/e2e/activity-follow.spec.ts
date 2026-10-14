@@ -112,7 +112,8 @@ test("terminal progress stops live indicators after a long stream and keeps tool
   for (let i = 0; i < 12; i++) {
     await publish({ ...current, entries: current.entries.map((entry) => entry.kind === "thinking" ? { ...entry, content: "Reviewing results\n".repeat(i + 1) } : entry) });
   }
-  await publish({ ...current, status: "completed", ended_at: start + 25, entries: current.entries.map((entry) => entry.kind === "model" ? { ...entry, status: "done", duration_ms: 24000 } : entry) });
+  await publish({ ...current, status: "completed", ended_at: start + 25, entries: current.entries.map((entry) => entry.kind === "model" ? { ...entry, status: "done", duration_ms: 24000, ttft_ms: 2000,
+    usage: { total_input_tokens: 1000, completion_tokens: 250, cache_read_input_tokens: 950, cache_observable: true } } : entry) });
   await expect(page.locator(".activity-connection")).not.toContainText("Working");
   await expect(card.locator(".activity-live-dot, .animate-spin, .activity-thought.is-live")).toHaveCount(0);
   await expect(card.locator(".activity-run-footer")).toContainText("Completed");
@@ -125,6 +126,10 @@ test("terminal progress stops live indicators after a long stream and keeps tool
   await expect(card.locator(".activity-thought-content")).toContainText("Reviewing results");
   await card.getByRole("button", { name: /View details: Test model/ }).click();
   const thinking = page.getByRole("dialog", { name: /Test model/ });
+  await expect(thinking).toContainText("Before first output 2s");
+  await expect(thinking).toContainText("After first output 22s");
+  await expect(thinking).toContainText("Cache read 950 tokens · 95%");
+  await page.screenshot({ path: info.outputPath("model-timing.png"), animations: "disabled" });
   await expect(thinking).toContainText("Reviewing results");
   await thinking.getByRole("button", { name: "Close", exact: true }).click();
   await card.locator(".activity-model-toggle").click();

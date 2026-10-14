@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { Download, Play, RefreshCw, Settings2, Square, Undo2, Unplug } from "lucide-react";
 import { apiErrorMessage, retrievalApi } from "@/lib/api";
 import type { RetrievalDeploymentAction } from "@/lib/types";
+import { formatElapsedCompact } from "@/lib/format";
 import { AsyncState } from "@/components/common/AsyncState";
 import { Badge, Button, Input } from "@/components/ui";
 
@@ -63,6 +64,12 @@ export function RetrievalDeploymentPanel() {
       <p className="text-xs text-muted">{t("deployment.connectHint")}</p>
       {data.operation && <div className="space-y-2 rounded-lg bg-elevated p-3 text-sm" aria-live="polite">
         <div className="flex flex-wrap gap-2"><span>{t(`deployment.status.${data.operation.status}`)}</span>{running && <span className="text-muted">{t(`deployment.phase.${data.operation.phase}`, { defaultValue: data.operation.phase })}</span>}</div>
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs tabular-nums text-muted">
+          {data.operation.elapsed_seconds != null && <span>{t("deployment.elapsed", { duration: formatElapsedCompact(data.operation.elapsed_seconds * 1000) })}</span>}
+          {running && data.operation.phase_elapsed_seconds != null && <span>{t("deployment.phaseElapsed", { duration: formatElapsedCompact(data.operation.phase_elapsed_seconds * 1000) })}</span>}
+          {running && data.operation.output_idle_seconds != null && <span>{t("deployment.lastOutput", { duration: formatElapsedCompact(data.operation.output_idle_seconds * 1000) })}</span>}
+        </div>
+        {running && <p className="text-xs text-muted">{t("deployment.backgroundHint")}</p>}
         {data.operation.error && <p role="alert" className="break-words text-danger">{data.operation.error}</p>}
         {data.operation.log && <details><summary className="cursor-pointer text-xs text-muted">{t("deployment.log")}</summary><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all text-xs">{data.operation.log}</pre></details>}
       </div>}

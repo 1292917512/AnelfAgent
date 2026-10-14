@@ -272,6 +272,12 @@ class ChatStreamDelta:
     thinking_blocks: Optional[list[dict[str, Any]]] = None
     reasoning_details: Optional[list[dict[str, Any]]] = None
 
+    @property
+    def has_output(self) -> bool:
+        """是否包含模型输出；空保活、角色和用量包不算首响应。"""
+        return bool(self.content or self.reasoning_content or self.tool_calls
+                    or self.early_tool_calls or self.thinking_blocks or self.reasoning_details)
+
 
 @dataclass(slots=True)
 class ChatResult:
@@ -283,8 +289,7 @@ class ChatResult:
     raw: Optional[dict[str, Any]] = None
     usage: Optional[UsageInfo] = None
     model: str = ""
-    # 首 token 时间（毫秒，流式路径填充。区分"模型排队慢"与"输出生成长"
-    # 两个独立的延迟来源）。非流式为 None。
+    # 请求开始至首个有效输出的客户端耗时；含网络、排队与服务端处理，不能单独归因。
     ttft_ms: Optional[float] = None
     # 思考块/推理详情（流式路径由聚合层装配回填；非流式从 raw 读取，
     # preserve_reasoning_fields 双源消费挂到历史消息供下轮回传）

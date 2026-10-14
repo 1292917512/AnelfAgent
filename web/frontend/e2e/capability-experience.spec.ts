@@ -263,10 +263,12 @@ test("local retrieval updates remain observable and missing Docker is actionable
       operation = { ...operation, status: "failed", phase: "recovering", finished_at: Date.now() / 1000, error: "Health check failed; previous version restored." };
     }
     return route.fulfill({ json: {
-      available, initialized: available, rollback_available: false, operation,
+      available, initialized: available, rollback_available: false,
+      operation: operation && { ...operation, elapsed_seconds: 30, phase_elapsed_seconds: 20, output_idle_seconds: 1,
+        log: "crawl4ai Downloading layer 12 MB / 40 MB" },
       images: { crawl4ai: "unclecode/crawl4ai:0.9.4", searxng: "searxng/searxng:2026.10.13-22c64b8d3" },
       ports: { crawl4ai: "11235", searxng: "18080" }, containers: [],
-      requirements: { platform: "posix", docker_cli: available, install_guide: "https://docs.docker.com/engine/install/", next_step: "Install Docker" },
+      requirements: { platform: "posix", docker_cli: available, install_guide: "https://docs.docker.com/engine/install/" },
     } });
   });
   await page.goto("/webui/retrieval");
@@ -281,6 +283,8 @@ test("local retrieval updates remain observable and missing Docker is actionable
   await dialog.getByRole("textbox", { name: "Crawl4AI" }).fill("unclecode/crawl4ai:0.9.5");
   await dialog.getByRole("button", { name: "Download and update" }).click();
   await expect(dialog.getByText("Downloading images", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("Total 30s", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("Current phase 20s", { exact: true })).toBeVisible();
   await expect(dialog.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
   await expect(dialog.getByText("Health check failed; previous version restored.")).toBeVisible();
   expect(posts).toBe(1);

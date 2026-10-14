@@ -205,7 +205,7 @@ async def _invoke_llm_unified(
         "tool_count": len(tools) if tools else 0,
         "tool_names": tool_names[:20],
     })
-    t0 = time.time()
+    t0 = time.monotonic()
     try:
         if stream:
             try:
@@ -244,17 +244,17 @@ async def _invoke_llm_unified(
         await event_bus.emit(EVENT_THINKING_LLM_END, {
             **trace,
             "model": model_name,
-            "duration_ms": round((time.time() - t0) * 1000),
+            "duration_ms": round((time.monotonic() - t0) * 1000),
             "error": str(exc),
             "success": False,
         })
         # 请求级审计：异常交换同样落盘（未开启时零开销）
         await context_audit.record_exchange(
             model=model_name, messages=messages, tools=tools,
-            error=exc, duration_ms=(time.time() - t0) * 1000,
+            error=exc, duration_ms=(time.monotonic() - t0) * 1000,
         )
         raise
-    elapsed_ms = (time.time() - t0) * 1000
+    elapsed_ms = (time.monotonic() - t0) * 1000
     # 请求级审计：规整后最终发送的 messages + 完整响应（未开启时零开销）
     await context_audit.record_exchange(
         model=result.model or model_name, messages=messages, tools=tools,
@@ -315,8 +315,7 @@ async def _invoke_llm_unified(
         **trace,
         "model": result.model or model_name,
         "duration_ms": round(elapsed_ms),
-        # TTFT（流式路径）：排队/首 token 延迟，与 duration_ms（总时长）
-        # 相减即输出生成耗时——两个独立的延迟来源分别可诊断
+        # 首个有效输出前的端到端等待，不能单独当成供应商排队或 prefill 时间。
         "ttft_ms": round(result.ttft_ms) if result.ttft_ms is not None else None,
         "has_content": bool(result.content),
         "content_preview": (result.content or "")[:200],
@@ -527,7 +526,7 @@ async def _llm_chat_stream_once(
                 delta = await _next_delta()
             except StopAsyncIteration:
                 break
-            if ttft_ms is None:
+            if ttft_ms is None and delta.has_output:
                 ttft_ms = (time.monotonic() - started) * 1000
             if delta.early_tool_calls and on_tool_call_ready is not None:
                 for call in delta.early_tool_calls:

@@ -306,6 +306,11 @@
     "modelCache": "Cached {{percent}}%",
     "cacheUnknown": "Cache not reported",
     "cacheHint": "Based only on provider-reported cache usage. Missing data does not mean a cache miss.",
+    "modelDetails": "Call details",
+    "firstResponse": "Before first output {{duration}}",
+    "afterResponse": "After first output {{duration}}",
+    "cachedTokens": "Cache read {{tokens}} tokens · {{percent}}%",
+    "timingHint": "Client end-to-end timing. First output includes connection, queuing and server processing; subsequent time includes reasoning, text, tool arguments and transport. Neither is pure model compute time. Unmeasured timing is omitted.",
     "rawResult": "Full receipt",
     "resultFields": {
       "error": "Error",

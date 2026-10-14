@@ -38,7 +38,13 @@ uv run python deploy/retrieval/manage.py status
 
 「检索 → 本地服务」与 `retrieval_services` 共用部署接口，可启动、停止、更新、回退、查看状态。
 写操作返回操作 ID，需查询 `status` 确认终态；页面仅在操作中轮询轻量状态，容器检测按需执行。
-`retrieval/deployment` 配置组控制默认启动与异常上下文提示，Web 和 AI 均可修改。
+`status` 返回观察时间、操作与阶段耗时、距最近输出时间及有界脱敏日志；`available` 仅表示 Docker
+命令与 Compose 清单存在，不代表容器或搜索引擎健康。默认启动先拉取缺失镜像，再启动并等待健康检查，
+两个阶段独立展示（参见 [Compose pull 策略](https://docs.docker.com/reference/cli/docker/compose/pull/)）。
+本进程的后台操作状态在后续模型调用的动态区刷新，成功回执保留五分钟，错误保留至下一操作；
+不生成用户消息，不主动唤醒或阻塞其他会话。AI 无需用 shell sleep 等待或重复提交启动命令，
+需要诊断时按需查询工具回执；操作成功后仍需验证实际检索能力。
+`retrieval/deployment` 配置组控制默认启动与动态状态提示，Web 和 AI 均可修改。
 停止保留配置和数据；若希望以后不自动启动，同时关闭 `retrieval_local_autostart`。
 服务高级设置（如 SearXNG 的完整引擎定义）仍按上游格式编辑 `runtime/searxng/settings.yml`，
 端口在 `.env` 修改后执行 up；Web 配置中心负责 Anelf 接入参数，不提供任意 Compose 文件执行入口。
