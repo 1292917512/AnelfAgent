@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import time
+import uuid
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.llm import ChatResult, LLMCallAborted
@@ -196,7 +197,7 @@ async def _invoke_llm_unified(
     tool_names = [t.get("function", {}).get("name", "") for t in (tools or [])]
     from core.log import current_log_actor
 
-    trace = {"request": request_trace(), "message_count": len(messages), "tool_count": len(tool_names),
+    trace = {"call_id": uuid.uuid4().hex, "request": request_trace(), "message_count": len(messages), "tool_count": len(tool_names),
              "purpose": purpose, "actor": current_log_actor()}
     await event_bus.emit(EVENT_THINKING_LLM_START, {
         **trace,

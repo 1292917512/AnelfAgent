@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from agent.llm.llm_client import LLMClient
 from agent.llm.types import ChatResult, UsageInfo
 from agent.mind.llm_invoker import _REASONING_TRACE_MAX, _invoke_llm_unified
-from core.event_bus import EVENT_THINKING_LLM_END, event_bus
+from core.event_bus import EVENT_THINKING_LLM_END, EVENT_THINKING_LLM_START, event_bus
 from core.tool_context import tool_request
 
 
@@ -45,16 +45,23 @@ def _mind_stub(result: ChatResult) -> SimpleNamespace:
 
 async def _capture(result: ChatResult) -> dict:
     seen: list[dict] = []
+    starts: list[dict] = []
 
     async def _on_end(payload):
         seen.append(payload)
 
+    async def _on_start(payload):
+        starts.append(payload)
+
     event_bus.on(EVENT_THINKING_LLM_END, _on_end, owner="test:reasoning-trace")
+    event_bus.on(EVENT_THINKING_LLM_START, _on_start, owner="test:reasoning-trace")
     try:
         await _invoke_llm_unified(_mind_stub(result), [{"role": "user", "content": "hi"}], None)
     finally:
         event_bus.off_by_owner("test:reasoning-trace")
     assert seen, "LLM_END 事件未发射"
+    assert starts[-1]["call_id"] == seen[-1]["call_id"]
+    assert seen[-1]["call_id"]
     return seen[-1]
 
 

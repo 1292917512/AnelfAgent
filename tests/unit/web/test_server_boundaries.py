@@ -69,6 +69,7 @@ def test_only_fingerprinted_assets_receive_immutable_caching(client: TestClient)
 
 def test_corrupt_auth_config_closes_all_auth_entrypoints(client: TestClient):
     assert client.get("/api/status").status_code == 401
+    assert client.get("/api/context/recent").status_code == 401
     Path(ConfigPaths.WEBUI_CONFIG).write_text("{", encoding="utf-8")
     assert client.get("/api/status").status_code == 503
     assert client.get("/api/auth/check").status_code == 503

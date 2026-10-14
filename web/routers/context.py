@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from services import ContextService
@@ -16,6 +16,15 @@ _context_svc = ContextService()
 
 class _ContinuousToggle(BaseModel):
     enabled: bool
+
+
+@router.get("/recent")
+async def recent_diagnostics(
+    scope: str = Query("", max_length=500), turn_id: str = Query("", max_length=100),
+    limit: int = Query(3, ge=1, le=10), steps: int = Query(12, ge=1, le=80), messages: int = Query(8, ge=1, le=20),
+) -> Dict[str, Any]:
+    """只读内存中的近期消息摘录和执行诊断，沿用 API 认证。"""
+    return _context_svc.recent_diagnostics(scope=scope, turn_id=turn_id, limit=limit, steps=steps, messages=messages)
 
 
 # ------------------------------------------------------------------

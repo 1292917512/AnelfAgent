@@ -4,7 +4,8 @@
   "tabs": {
     "monitor": "Monitor",
     "history": "History",
-    "providers": "Injection"
+    "providers": "Injection",
+    "diagnostics": "Diagnostics"
   },
   "monitor": {
     "ready": "Ready to Capture",
@@ -98,5 +99,61 @@
     "unknown": "Stability unreported",
     "stable": "{{count}} unchanged messages",
     "pressure": "The input is approaching the model limit. Reserve room for tool results and the reply."
+  },
+  "diagnostics": {
+    "scope": "Conversation scope",
+    "all": "All recent conversations and tasks",
+    "auto": "Auto refresh",
+    "refresh": "Refresh diagnostics",
+    "description": "Read-only message excerpts and execution facts from memory. No model calls or history database reads. Overlapping step durations do not add up to wall time.",
+    "collecting": "Recording execution facts",
+    "stopped": "Runtime has not started recording",
+    "observed": "Observed at {{time}}",
+    "retention": "Up to {{count}} runs · cleared on restart",
+    "back": "Back to recent runs",
+    "empty": "No execution diagnostics available",
+    "wallTime": "Elapsed wall time for this run",
+    "cache": "Cache hit",
+    "omitted": "{{count}} more steps · inspect retained steps",
+    "messages": "Message excerpts",
+    "cold": "This conversation window is not loaded or has been evicted. No database fallback.",
+    "details": "Execution details",
+    "ttft": "Wait before first valid output",
+    "input": "Input tokens",
+    "output": "Output tokens",
+    "delivery": "Delivery receipt",
+    "arguments": "Arguments excerpt",
+    "preview": "Result excerpt",
+    "error": "Error",
+    "modelNote": "Generated text is not proof of delivery. First output wait includes networking, queuing and model processing. Unknown cache data is not a cache miss.",
+    "excerptNote": "Only redacted excerpts are retained. Delivery status comes from receipts; missing means unobserved.",
+    "evicted": "This record was evicted or the process restarted.",
+    "status": {
+      "running": "Running",
+      "queued": "Queued",
+      "completed": "Completed",
+      "done": "Completed",
+      "failed": "Failed",
+      "error": "Error",
+      "cancelled": "Cancelled",
+      "interrupted": "Interrupted",
+      "sent": "Sent",
+      "pending": "Pending",
+      "skipped": "Skipped",
+      "unknown": "Unconfirmed",
+      "proceed": "Proceed",
+      "skip": "Skip",
+      "fallback": "Fallback"
+    },
+    "evictedSteps": "{{count}} earlier steps exceeded memory retention",
+    "kind": {
+      "conversation": "Conversation",
+      "reflection": "Reflection",
+      "task": "Task",
+      "delegation": "Subagent",
+      "heartbeat": "Heartbeat",
+      "context": "Context preparation",
+      "delivery": "Reply delivery"
+    }
   }
 }

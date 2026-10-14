@@ -431,8 +431,12 @@ def create_bootstrap() -> FlowMachine:
         # 注册为 Lifecycle 组件：关停时经 cleanup 做 drain——先停订阅切断新触发
         # （进水口），再等运行中的钩子收尾（思考后收），与全局 drain 语义一致
         from agent.hooks.runner import script_hook_runtime
+        from agent.mind.diagnostics import execution_diagnostics
         from core.hooks import hook_journal
         from core.lifecycle import Lifecycle
+        Lifecycle.register("execution_diagnostics", execution_diagnostics,
+                           on_start=execution_diagnostics.start, cleanup=execution_diagnostics.stop)
+        await Lifecycle.start_one("execution_diagnostics")
         Lifecycle.register("hook_journal", hook_journal, cleanup=hook_journal.clear)
         from agent.judgment.health import judgment_health
         Lifecycle.register("judgment_health", judgment_health, on_start=judgment_health.start, cleanup=judgment_health.close)
