@@ -15,6 +15,10 @@
 
 故障恢复由后台 EmbeddingWorker 的 probe 探测负责；引擎处于故障状态时
 所有调用直接短路，避免各路径反复冲击不可用端点。
+
+模型可见：查询结果和失败降级不变，相同文本在排队后复用已完成向量。
+Token 影响：减少重复 embedding 请求，不增加模型输入。
+缓存影响：复用有界查询缓存，配置变更拒绝旧请求回填；不触碰 LLM 前缀。
 """
 
 from __future__ import annotations
@@ -169,7 +173,7 @@ class Embedder:
         self._available = None
         self._limiter = None
         self._limiter_spec = None
-        self._query_cache.clear()
+        self._query_cache = {}
 
     def _ready(self) -> bool:
         """调用前置检查：故障状态短路，恢复由后台 probe 负责。"""
@@ -233,7 +237,8 @@ class Embedder:
             return cached
         timeout = max(0.5, get_config_float("embed_query_timeout_seconds", 15.0))
         try:
-            results = await asyncio.wait_for(self._gated_call([text], priority=True), timeout=timeout)
+            results = await asyncio.wait_for(
+                self._gated_call([text], priority=True, query_key=key), timeout=timeout)
         except asyncio.TimeoutError:
             log(f"Embedding 查询超时（{timeout:.0f}s，本次降级 FTS-only）", "WARNING", tag="思维")
             return None
@@ -244,7 +249,6 @@ class Embedder:
             return None
         preview = text[:50].replace("\n", " ")
         log(f"Embedding 查询: \"{preview}\" → {len(results[0])}维", "DEBUG", tag="思维")
-        self._cache_put(key, results[0])
         return results[0]
 
     @property
@@ -342,13 +346,22 @@ class Embedder:
         *,
         priority: bool,
         multimodal: bool = False,
+        query_key: str = "",
     ) -> list[list[float]]:
         """经优先级门调度后执行 API 调用（查询优先于批量，单飞串行）。"""
         await self._gate.acquire(priority=priority)
         try:
+            cache = self._query_cache
+            if query_key:
+                cached = self._cache_get(query_key)
+                if cached is not None:
+                    return [cached]
             if multimodal:
                 return await self._call_multimodal(payload)
-            return await self._call(payload)
+            results = await self._call(payload)
+            if query_key and results and cache is self._query_cache:
+                self._cache_put(query_key, results[0])
+            return results
         finally:
             await self._gate.release()
 

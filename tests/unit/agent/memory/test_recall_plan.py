@@ -42,6 +42,7 @@ async def test_planning_overlaps_shared_embedding_and_does_not_own_it(store, mon
     query = "航海项目发布地点是哪里"
     started = asyncio.Event()
     vector = asyncio.get_running_loop().create_future()
+    plan_ready = asyncio.get_running_loop().create_future()
 
     async def plan(*args, **kwargs):
         started.set()
@@ -50,7 +51,7 @@ async def test_planning_overlaps_shared_embedding_and_does_not_own_it(store, mon
     monkeypatch.setattr(retriever, "plan_retrieval", plan)
     monkeypatch.setattr(retriever._embedder, "embed_query", AsyncMock(side_effect=AssertionError("重复向量请求")))
     task = asyncio.create_task(retriever.recall_split(
-        [{"role": "user", "content": query}], query_vec_task=vector,
+        [{"role": "user", "content": query}], query_vec_task=vector, plan_ready=plan_ready,
     ))
     try:
         await asyncio.wait_for(started.wait(), 2)
@@ -65,9 +66,45 @@ async def test_planning_overlaps_shared_embedding_and_does_not_own_it(store, mon
             _, messages = await asyncio.wait_for(task, 2)
             assert "青岛" in str(messages)
         retriever._embedder.embed_query.assert_not_awaited()
+        assert plan_ready.done() and not plan_ready.cancelled()
     finally:
         task.cancel()
         vector.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_memory_postprocessing_does_not_wait_for_profiles(store, monkeypatch):
+    import asyncio
+
+    from agent.memory.memory_types import MemoryEntry, MemoryType
+
+    await store.add(MemoryEntry(memory_type=MemoryType.SEMANTIC, content="航海项目发布地点是青岛"))
+    retriever = _retriever(store)
+    release_profile, processed = asyncio.Event(), asyncio.Event()
+    format_results = retriever._format_unified_results
+
+    async def profile(scopes):
+        await release_profile.wait()
+        return [{"content": "当前会话画像"}]
+
+    async def formatted(results):
+        messages = await format_results(results)
+        processed.set()
+        return messages
+
+    monkeypatch.setattr(retriever, "_load_entity_profiles", profile)
+    monkeypatch.setattr(retriever, "_format_unified_results", formatted)
+    task = asyncio.create_task(retriever.recall_split(
+        [{"role": "user", "content": "航海项目发布地点是哪里"}]))
+    try:
+        await asyncio.wait_for(processed.wait(), 2)
+        assert not task.done()
+        release_profile.set()
+        profiles, messages = await asyncio.wait_for(task, 2)
+        assert profiles == [{"content": "当前会话画像"}]
+        assert "青岛" in str(messages)
+    finally:
+        task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 
 

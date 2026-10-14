@@ -140,6 +140,36 @@ class TestEmbedText:
 
 
 class TestQueryCache:
+    async def test_concurrent_queries_reuse_result_after_waiting_for_gate(self) -> None:
+        client = FakeClient(delay=0.02)
+        e = _make_embedder(client)
+        values = await asyncio.gather(*(e.embed_query("共享查询") for _ in range(4)))
+        assert all(value == [1.0, 0.0, 0.0, 0.0] for value in values)
+        assert client.calls == [["共享查询"]]
+
+    async def test_invalidation_during_request_does_not_cache_old_vector(self) -> None:
+        started, release = asyncio.Event(), asyncio.Event()
+
+        class WaitingClient(FakeClient):
+            async def embed(self, texts):
+                started.set()
+                await release.wait()
+                return await super().embed(texts)
+
+        client = WaitingClient()
+        e = _make_embedder(client)
+        task = asyncio.create_task(e.embed_query("切换中的查询"))
+        try:
+            await asyncio.wait_for(started.wait(), 2)
+            e.invalidate()
+            release.set()
+            assert await asyncio.wait_for(task, 2) is not None
+            await e.embed_query("切换中的查询")
+            assert len(client.calls) == 2
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
     async def test_repeated_query_hits_cache(self) -> None:
         """相同查询在 TTL 内命中缓存，不再调用端点。"""
         client = FakeClient()

@@ -150,20 +150,21 @@ class TestLeanRecollection:
 
 
 @pytest.mark.parametrize("group", [False, True])
-async def test_context_reads_overlap_and_skills_only_wait_for_memory(monkeypatch, group) -> None:
+async def test_context_reads_overlap_and_skills_only_wait_for_plan(monkeypatch, group) -> None:
     mind = _fake_mind()
     started = {key: asyncio.Event() for key in ("embed", "memory", "relations", "hub", "summary", "skills", "cross")}
-    release_vector, release_cross = asyncio.Event(), asyncio.Event()
+    release_vector, release_cross, release_memory = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
     async def embed(query):
         started["embed"].set()
         await release_vector.wait()
         return [1.0]
 
-    async def recall(tail, *, query_vec_task, plan_out, **kwargs):
+    async def recall(tail, *, query_vec_task, plan_ready, **kwargs):
         started["memory"].set()
         assert await asyncio.shield(query_vec_task) == [1.0]
-        plan_out["queries"] = ["复用计划"]
+        plan_ready.set_result(["复用计划"])
+        await release_memory.wait()
         return [{"content": "画像"}], [{"content": "记忆"}]
 
     async def skills(query, *, query_vec_task, planned_queries, **kwargs):
@@ -210,6 +211,8 @@ async def test_context_reads_overlap_and_skills_only_wait_for_memory(monkeypatch
             await asyncio.gather(started["skills"].wait(), started["cross"].wait())
             assert not task.done()
             release_cross.set()
+            assert not task.done()
+            release_memory.set()
             result = await task
         assert result.profile_blocks == ["自身", "确认", "求证"]
         assert result.memories == [{"content": "记忆"}]
@@ -230,7 +233,7 @@ async def test_context_exit_drains_sibling_reads(monkeypatch, fail) -> None:
 
     async def wait(name):
         started.add(name)
-        if len(started) == 3:
+        if len(started) == 4:
             ready.set()
         try:
             await asyncio.Event().wait()
@@ -241,12 +244,16 @@ async def test_context_exit_drains_sibling_reads(monkeypatch, fail) -> None:
         await trigger.wait()
         raise RuntimeError("hub unavailable")
 
+    async def recall(*args, plan_ready, **kwargs):
+        plan_ready.set_result(["共享查询"])
+        return await wait("memory")
+
     mind.embedder = SN(embed_query=lambda query: wait("embed"))
-    mind.retriever.recall_split = lambda *args, **kwargs: wait("memory")
+    mind.retriever.recall_split = recall
     mind.retriever.load_relation_snippets = lambda *args: wait("relations")
     mind._extract_related_scopes = lambda *args: []
     mind._recall_cross_channel = AsyncMock(return_value=[])
-    mind._match_skills = AsyncMock(return_value=[])
+    mind._match_skills = lambda *args, **kwargs: wait("skills")
     mind.memory_store = object()
     monkeypatch.setattr("agent.memory.hub.load_hub_block", hub)
     monkeypatch.setattr("agent.memory.self_profile.load_self_profile", AsyncMock(return_value=None))
@@ -267,7 +274,7 @@ async def test_context_exit_drains_sibling_reads(monkeypatch, fail) -> None:
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
-        assert closed == started == {"embed", "memory", "relations"}
+        assert closed == started == {"embed", "memory", "relations", "skills"}
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)

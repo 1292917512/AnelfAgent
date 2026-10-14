@@ -56,7 +56,7 @@ def _plan_budget_seconds(recall_timeout: Optional[float] = None) -> float:
     """检索规划预算（LLM 规划调用与实体解析合计的墙钟上限）。
 
     显式配置 memory_plan_budget_seconds 优先；缺省按召回总时限的四成份额
-    派生（无总时限上下文的独立调用为 8s）。规划与检索串行分享召回总预算，
+    派生（无总时限上下文的独立调用为 8s）。规划与检索并行分享召回总预算，
     召回上下文中收敛至多 recall_timeout - 1s，保证检索段至少 1s。
     """
     budget = 0.0
@@ -142,7 +142,7 @@ class MemoryRetriever:
         query_vec: Optional[List[float]] = None,
         query_vec_task: asyncio.Future[list[float] | None] | None = None,
         fire_probe: bool = False,
-        plan_out: Optional[Dict[str, Any]] = None,
+        plan_ready: asyncio.Future[list[str]] | None = None,
     ) -> Tuple[List[Dict], List[Dict]]:
         """召回相关记忆，画像与检索结果分开返回 (profile_msgs, memory_msgs)。
 
@@ -155,35 +155,9 @@ class MemoryRetriever:
         query_vec 为调用方预计算的查询向量（三条召回路径共享一次 embedding），
         为 None 时内部按需自行计算。query_vec_task 可借用调用方正在准备的向量，
         与规划并行等待；借用失败不重复请求，任务生命周期由调用方管理。
-        plan_out 非 None 时，返回前把本次召回最终采用的计划查询写入
-        plan_out["queries"]（LLM 规划的多查询；规划失败/平凡轮早退时为
-        基查询或空）——技能匹配等旁路召回复用同一规划，不重复支付规划调用。
+        plan_ready 在计划就绪时返回查询列表，旁路技能匹配无需等待检索完成。
+        无规划时返回空列表；调用方拥有 Future，取消旁路不得取消召回。
         """
-        plan_box: List[Optional[RetrievalPlan]] = [None]
-        try:
-            return await self._recall_split(
-                conversation, top_k=top_k, entity_scope=entity_scope,
-                related_scopes=related_scopes, query_vec=query_vec,
-                fire_probe=fire_probe, plan_box=plan_box, query_vec_task=query_vec_task,
-            )
-        finally:
-            if plan_out is not None:
-                plan = plan_box[0]
-                plan_out["queries"] = list(plan.queries) if plan is not None else []
-
-    async def _recall_split(
-        self,
-        conversation: List[Dict],
-        *,
-        top_k: Optional[int] = None,
-        entity_scope: str = "",
-        related_scopes: Optional[List[str]] = None,
-        query_vec: Optional[List[float]] = None,
-        query_vec_task: asyncio.Future[list[float] | None] | None = None,
-        fire_probe: bool = False,
-        plan_box: Optional[List[Optional[RetrievalPlan]]] = None,
-    ) -> Tuple[List[Dict], List[Dict]]:
-        """recall_split 实现体（plan_box 带出最终计划，供包装层落笔 plan_out）。"""
         k, min_score = self.recall_limits(top_k)
 
         all_scopes: List[str] = []
@@ -228,9 +202,7 @@ class MemoryRetriever:
 
             log(f"💾 被动召回: \"{query[:50]}\" (embedding={'是' if self._embedder.available else '否'})", tag="思维")
 
-            # 召回总时限：规划与检索串行共享一个预算（规划段独立预算见
-            # _plan_budget_seconds，超预算回退原查询保住检索段），整体超时走
-            # 回退，不阻塞对话主流程
+            # 规划与检索共享预算，超时保留已完成结果。
             recall_timeout = 5.0
             try:
                 from core.config import get_config_float
@@ -329,6 +301,8 @@ class MemoryRetriever:
                     log(f"💾 检索规划超时（{plan_budget:.1f}s），回退原查询",
                         "WARNING", tag="思维")
                     plan = RetrievalPlan(queries=[query] if query else [])
+                if plan_ready is not None and not plan_ready.done():
+                    plan_ready.set_result(list(plan.queries))
                 # 计划 lanes：同串已由基础 lane 覆盖（query_vec 复用零开销），
                 # 跳过；首条异于原查询的计划查询带实体定向（首条即原查询时
                 # 本轮放弃定向，node_keys 邻域仍供深探）
@@ -386,9 +360,6 @@ class MemoryRetriever:
                     lanes, limit=k * 2, consensus_lanes=n_plan_landed)
 
             results = await _planned_recall()
-            if plan_box is not None:
-                plan_box[0] = plan
-            entity_msgs = await profiles_task
 
             # 时间感知：检测到时间引用词时，提升事件记忆与近期记忆权重
             if self._detect_time_reference(query):
@@ -419,6 +390,7 @@ class MemoryRetriever:
                 pinned = await self._load_permanent_pins([])
                 fallback = await self._fallback_recent(k, scope=entity_scope)
                 pinned_msgs = await self._format_unified_results(pinned) if pinned else []
+                entity_msgs = await profiles_task
                 _fire_probe(pinned)
                 return entity_msgs, pinned_msgs + fallback
 
@@ -440,6 +412,8 @@ class MemoryRetriever:
             if pinned:
                 results = pinned + results
 
+            memory_msgs = await self._format_unified_results(results)
+            entity_msgs = await profiles_task
             _fire_probe(results)
 
             for r in results:
@@ -452,8 +426,10 @@ class MemoryRetriever:
                 path_str = f" {r.path}" if r.path else ""
                 log(f"  💡 {src_label}{tag_str}{path_str} score={r.score:.2f}: {r.snippet[:50]}", tag="思维")
 
-            return entity_msgs, await self._format_unified_results(results)
+            return entity_msgs, memory_msgs
         finally:
+            if plan_ready is not None and not plan_ready.done():
+                plan_ready.set_result([])
             for task in owned:
                 if not task.done():
                     task.cancel()

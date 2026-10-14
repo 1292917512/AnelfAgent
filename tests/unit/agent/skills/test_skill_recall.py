@@ -1,7 +1,8 @@
-"""技能召回链路集成测试：记忆检索计划复用（plan_out）+ 车道拼接 + 归档命中渲染。"""
+"""技能召回链路集成测试：记忆检索计划复用 + 车道拼接 + 归档命中渲染。"""
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -21,12 +22,12 @@ class _NullEmbedder:
 
 
 # ==================================================================
-# recall_split 的 plan_out 出参（技能匹配复用记忆检索计划的通道）
+# recall_split 的计划就绪信号
 # ==================================================================
 
 @pytest.mark.asyncio
-async def test_plan_out_filled_with_planned_queries(store, monkeypatch) -> None:
-    """正常召回：plan_out 拿到 LLM 规划的最终多查询（技能车道直接复用）。"""
+async def test_plan_ready_precedes_search_completion(store, monkeypatch) -> None:
+    """规划就绪即可复用查询，未结束的检索与画像不阻塞技能准备。"""
 
     async def _plan(self, query: str, *, timeout: float | None = None) -> RetrievalPlan:
         return RetrievalPlan(queries=[query, "规划查询甲", "规划查询乙"])
@@ -34,31 +35,47 @@ async def test_plan_out_filled_with_planned_queries(store, monkeypatch) -> None:
     monkeypatch.setattr(MemoryRetriever, "plan_retrieval", _plan)
     retriever = MemoryRetriever(store, _NullEmbedder())
     conversation = [{"role": "user", "content": "帮我查一下服务器最近的巡检记录和告警情况"}]
-    holder: dict = {}
-    await retriever.recall_split(conversation, plan_out=holder)
-    assert len(holder["queries"]) == 3
-    assert holder["queries"][1:] == ["规划查询甲", "规划查询乙"]
+    holder = asyncio.get_running_loop().create_future()
+    release = asyncio.Event()
+    search = store.search_unified
+
+    async def waiting_search(*args, **kwargs):
+        await release.wait()
+        return await search(*args, **kwargs)
+
+    monkeypatch.setattr(store, "search_unified", waiting_search)
+    task = asyncio.create_task(retriever.recall_split(conversation, plan_ready=holder))
+    try:
+        queries = await asyncio.wait_for(holder, 2)
+        assert len(queries) == 3
+        assert queries[1:] == ["规划查询甲", "规划查询乙"]
+        assert not task.done()
+        release.set()
+        await asyncio.wait_for(task, 2)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.asyncio
-async def test_plan_out_empty_on_trivial_turn(store, monkeypatch) -> None:
-    """平凡轮早退：无规划发生，plan_out 落笔为空（技能侧退回基查询单发）。"""
+async def test_plan_ready_empty_on_trivial_turn(store, monkeypatch) -> None:
+    """平凡轮早退仍释放计划等待者。"""
     monkeypatch.setattr(MemoryRetriever, "_is_trivial_turn", lambda self, c: True)
     retriever = MemoryRetriever(store, _NullEmbedder())
-    holder: dict = {}
+    holder = asyncio.get_running_loop().create_future()
     await retriever.recall_split(
-        [{"role": "user", "content": "好的好的，知道了"}], plan_out=holder,
+        [{"role": "user", "content": "好的好的，知道了"}], plan_ready=holder,
     )
-    assert holder["queries"] == []
+    assert holder.result() == []
 
 
 @pytest.mark.asyncio
-async def test_plan_out_empty_when_no_query(store) -> None:
-    """无有效查询（短消息）早退：plan_out 同样落笔为空。"""
+async def test_plan_ready_empty_when_no_query(store) -> None:
+    """无有效查询时不留未完成的计划等待。"""
     retriever = MemoryRetriever(store, _NullEmbedder())
-    holder: dict = {}
-    await retriever.recall_split([{"role": "user", "content": "嗯"}], plan_out=holder)
-    assert holder["queries"] == []
+    holder = asyncio.get_running_loop().create_future()
+    await retriever.recall_split([], plan_ready=holder)
+    assert holder.result() == []
 
 
 # ==================================================================

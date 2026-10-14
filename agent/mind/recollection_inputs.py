@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from agent.memory.memory_retriever import MemoryRetriever
 from agent.memory.recall_policy import current_recall_policy
@@ -51,7 +51,7 @@ async def collect_recollection_inputs(
             if item not in related:
                 related.insert(0, item)
     scopes = ([scope] if scope else []) + [item for item in related if item != scope]
-    plan: dict[str, Any] = {}
+    plan_ready: asyncio.Future[list[str]] = asyncio.get_running_loop().create_future()
     vector_task: asyncio.Task[list[float] | None] | None = None
 
     async def embed() -> list[float] | None:
@@ -62,7 +62,7 @@ async def collect_recollection_inputs(
             log(f"上下文向量预取失败: {type(exc).__name__}", "DEBUG", tag="记忆")
             return None
 
-    async def recall_and_match() -> None:
+    async def recall() -> None:
         if mind.retriever:
             async with hook_execution("memory.recall", "context_prepare", HookMode.SYNC, scope=scope) as run:
                 if policy.level != "deep":
@@ -72,14 +72,19 @@ async def collect_recollection_inputs(
                 else:
                     result.profiles, result.memories = await mind.retriever.recall_split(
                         tail, entity_scope=scope, related_scopes=related,
-                        query_vec_task=vector_task, fire_probe=policy.background, plan_out=plan,
+                        query_vec_task=vector_task, fire_probe=policy.background, plan_ready=plan_ready,
                     )
                 run.detail = f"{policy.level} · {len(result.profiles)} 个画像块 · {len(result.memories)} 个记忆块"
             from agent.memory.probe import deep_probe_hub
             deep_probe_hub.prepare(scope, tail, mind.retriever)
             log(f"语义召回: {len(result.memories)} 条, 画像: {len(result.profiles)} 条", tag="思维")
+        if not plan_ready.done():
+            plan_ready.set_result([])
+
+    async def skills() -> None:
+        planned_queries = await asyncio.shield(plan_ready)
         result.skills = await mind._match_skills(
-            query, query_vec_task=vector_task, scope=scope, planned_queries=plan.get("queries"))
+            query, query_vec_task=vector_task, scope=scope, planned_queries=planned_queries)
 
     async def relations() -> None:
         if mind.retriever and not policy.tags and policy.level not in {"off", "tags"}:
@@ -171,7 +176,8 @@ async def collect_recollection_inputs(
         if lean:
             tasks.create_task(pins())
         else:
-            tasks.create_task(recall_and_match())
+            tasks.create_task(recall())
+            tasks.create_task(skills())
             tasks.create_task(relations())
             tasks.create_task(cross_channel())
             tasks.create_task(profile_blocks())
