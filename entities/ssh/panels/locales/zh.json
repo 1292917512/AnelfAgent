@@ -63,6 +63,8 @@
     "run": "执行",
     "running": "执行中…",
     "result": "执行结果",
+    "loginIdentity": "SSH 登录身份",
+    "workDir": "已确认的远程目录",
     "truncated": "输出已截断",
     "noOutput": "命令无输出"
   },

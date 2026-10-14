@@ -59,6 +59,15 @@ export interface SshExecResult {
   stderr: string;
   connection: string;
   truncated: boolean;
+  work_dir: string;
+  requested_work_dir: string;
+  work_dir_tracking: boolean;
+  login_user: string;
+  host: string;
+  proxy_mode: ProxyMode;
+  elapsed_ms: number;
+  error: string | null;
+  hint: string | null;
 }
 
 export interface SshStatusEvent {

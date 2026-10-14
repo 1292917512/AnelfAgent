@@ -79,17 +79,22 @@ DuerOS 控制台（dueros.baidu.com/dbp/mcp/console）重新授权并同步更�
 ## 实体操作态势注入（entities/_ops.py + 文件/SSH 追踪）
 
 - **操作回报装饰器**（`ToolOp` / `track_ops`）：工具执行后把操作事实（scope/工具/目标/成败/耗时）
-  回报给实体的态势追踪器；实体侧以 `track_fs_op`/`track_ssh_op` 绑定，单点接入
+  回报给实体的态势追踪器；实体侧以 `track_fs_op`/`track_ssh_op` 绑定，单点接入。
+  失败判定复用 `core.tool_results`，退出码与 stdout/stderr 证据进入有界摘要，不另设判定规则
 - **文件操作态势**（`entities/filesystem/ops_context.py`，provider `fs_ops`）：按会话追踪当前 Shell
   目录 + 活跃目录 + 最近操作流水；停止操作超 `os_context_ttl_seconds`（默认 600s）注入自动消失。
   **目录说明文档规则**：当前目录优先、最近活跃目录其次，按 `os_context_doc_names`（默认
   AGENTS.md,README.md，仅纯文件名防路径引导）注入，mtime 缓存自动失效，配额受限；可关
 - **SSH 操作态势**（`entities/ssh/ops_state.py`，provider `ssh_ops`）：按 (会话, 连接) 追踪——只展示
   本会话近期操作过的主机（与全局花名册 provider `ssh_status` 分工）；远程目录说明文档操作成功后
-  经旁路通道后台抓取（30s 最小复用窗口），渲染零远程 I/O
+  经旁路通道后台抓取（30s 最小复用窗口），渲染零远程 I/O。操作记录保留失败证据及耗时，
+  并明确每次命令是新非交互会话；export、别名、虚拟环境激活不跨命令持久，不根据登录名猜测 sudo 权限
 - **SSH 远程目录持久跟踪**（`manager.py`）：ssh_exec 命令经 POSIX pwd 捕获尾块包装（brace 组内 cd
   失败则无标记、退出码语义不变），捕获目录对后续命令生效（与本地 shell cwd 语义对齐）；标记缺失
-  且有目标目录 = cd 失败 → 清除持久目录自愈；非 POSIX 远端可关
+  且有目标目录时（可能 cd 失败或命令提前 exit）清除持久目录；不把请求目录冒充已确认目录，非 POSIX 远端可关
+- **SSH 执行回执**：AI 与 Web 共用退出码、原始输出、登录身份、请求/已确认目录、网络策略与耗时。
+  非零码通过统一错误设施附摘要与核查指引，不等同 SSH 断线，也不保证复合命令未生效；
+  执行中断线标记结果未知、不可盲目重试，取消时关闭执行通道
 
 ## 文件扫描与读取防线（entities/filesystem/scan.py）
 

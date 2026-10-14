@@ -82,6 +82,15 @@ class ExecResult(BaseModel):
     stderr: str = ""
     connection: str = ""
     truncated: bool = False
+    work_dir: str = ""
+    requested_work_dir: str = ""
+    work_dir_tracking: bool = False
+    login_user: str = ""
+    host: str = ""
+    proxy_mode: ProxyMode = "direct"
+    elapsed_ms: int = 0
+    error: str | None = None
+    hint: str | None = None
 
 
 class TransferResult(BaseModel):

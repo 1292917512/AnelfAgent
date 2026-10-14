@@ -16,7 +16,15 @@ test("SSH route override keeps the saved default and exposes configuration links
   const calls: Record<string, unknown>[] = [];
   await page.route("**/api/entity/ssh/connections/test-host/exec", async (route) => {
     calls.push(route.request().postDataJSON());
-    await route.fulfill({ json: { ok: true, exit_code: 0, stdout: "test result", stderr: "", connection: "test-host", truncated: false } });
+    const failed = calls.length === 3;
+    await route.fulfill({ json: {
+      ok: !failed, exit_code: failed ? 1 : 0, stdout: failed ? "NO_SUDO\n/mihomo" : "test result",
+      stderr: "", connection: "test-host", truncated: false, work_dir: "/home/test",
+      requested_work_dir: "", work_dir_tracking: true, login_user: "test", host: "192.168.1.10",
+      proxy_mode: "direct", elapsed_ms: 23,
+      error: failed ? "Exit code 1; stdout: NO_SUDO /mihomo" : null,
+      hint: failed ? "The command may have partially succeeded. Check the result before retrying." : null,
+    } });
   });
   await page.goto("/webui/entities/ssh");
   await page.getByRole("tab", { name: "Run Command", exact: true }).click();
@@ -36,6 +44,12 @@ test("SSH route override keeps the saved default and exposes configuration links
   await run.click();
   await expect.poll(() => calls.length).toBe(3);
   expect(calls[2]).toMatchObject({ proxy_mode: "direct" });
+  await expect(page.getByRole("status")).toContainText("Exit code 1; stdout: NO_SUDO");
+  await expect(page.getByRole("status")).toContainText("partially succeeded");
+  await expect(page.getByText("test@192.168.1.10", { exact: true })).toBeVisible();
+  await expect(page.getByText("/home/test", { exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.getByRole("status").scrollIntoViewIfNeeded();
+  await expect(page.getByRole("status")).toBeInViewport();
   await page.screenshot({ path: testInfo.outputPath("ssh-route.png"), fullPage: true });
 });

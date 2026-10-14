@@ -252,6 +252,8 @@ def render_scope(scope: str) -> Optional[str]:
     docs_enabled = get_config_bool("ssh_remote_docs_enabled", True)
     max_entries = max(1, get_config_int("ssh_ops_max_entries", 8))
     lines = ["[SSH 操作态势] 本会话近期操作的远程主机（实时快照，停止操作后自动消失）"]
+    lines.append("执行环境：每次为远端默认 shell 的新非交互会话，无终端；"
+                 "export/别名/虚拟环境激活不跨调用保留。登录身份不代表 sudo 权限。")
     for name, _session, ops in fresh:
         snapshot = manager.get_snapshot(name) or {}
         title = name
@@ -274,13 +276,15 @@ def render_scope(scope: str) -> Optional[str]:
                     for doc_name, content in dir_docs.docs.items():
                         lines.append(f"## {work_dir}/{doc_name}")
                         lines.append(content)
+        else:
+            lines.append("远程目录：尚未确认；未指定 work_dir 时从远端登录起点执行。")
         lines.append("最近操作（新→旧）:")
         for op in reversed(ops[-max_entries:]):
             mark = "✓" if op.ok else "✗"
             note = f"（{op.note}）" if op.note else ""
             stamp = time.strftime("%H:%M:%S", time.localtime(op.ts))
             target = f" {op.target}" if op.target else ""
-            lines.append(f"- {stamp} {op.kind}{target} {mark}{note}")
+            lines.append(f"- {stamp} {op.kind}{target} {mark}{note} · {op.duration_ms}ms")
     return "\n".join(lines)
 
 

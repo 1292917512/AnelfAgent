@@ -57,7 +57,7 @@ class HangOpen:
 class WaitError:
     """命令执行阶段抛出的异常（命令已在远端启动）。"""
 
-    def __init__(self, exc: Exception) -> None:
+    def __init__(self, exc: BaseException) -> None:
         self.exc = exc
 
 
@@ -250,6 +250,31 @@ class TestExecute:
         assert result["ok"] is False
         assert result["exit_code"] == 127
         assert result["stderr"] == "not found"
+        assert "127" in result["error"] and "not found" in result["error"]
+        assert manager.get_snapshot("web")["status"] == STATUS_CONNECTED
+
+    async def test_stdout_failure_keeps_execution_facts(self, manager: SshConnectionManager) -> None:
+        from entities.ssh.schemas import ExecResult
+
+        stdout = "NO_SUDO\n/mihomo \n__ANELF_PWD_BEGIN__/home/test__ANELF_PWD_END__\n"
+        fake = FakeConn([FakeResult(1, stdout, "")])
+        with patch("entities.ssh.manager.asyncssh.connect", AsyncMock(return_value=fake)):
+            result = await manager.execute("check", work_dir="/home/test")
+        assert "NO_SUDO" in result["error"] and "1" in result["error"]
+        assert "部分生效" in result["hint"]
+        assert "cause" not in result and "retryable" not in result
+        assert result["work_dir"] == result["requested_work_dir"] == "/home/test"
+        assert result["login_user"] == "root" and result["host"] == "192.168.1.10"
+        assert result["elapsed_ms"] >= 0
+        assert "password" not in result
+        assert ExecResult(**result).model_dump() == result
+
+    async def test_stderr_truncation_is_reported(self, manager: SshConnectionManager) -> None:
+        fake = FakeConn([FakeResult(1, "", "x" * 5000)])
+        with patch("entities.ssh.manager.asyncssh.connect", AsyncMock(return_value=fake)):
+            result = await manager.execute("check")
+        assert len(result["stderr"]) == 4000
+        assert result["truncated"] is True
 
     async def test_work_dir_prefix(self, manager: SshConnectionManager) -> None:
         fake = FakeConn([FakeResult(0, "", "")])
@@ -348,6 +373,14 @@ class TestExecute:
             with pytest.raises(asyncio.TimeoutError):
                 await manager.execute("sleep 999")
         assert fake.processes[0].closed is True
+
+    async def test_cancellation_closes_process(self, manager: SshConnectionManager) -> None:
+        fake = FakeConn([WaitError(asyncio.CancelledError())])
+        with patch("entities.ssh.manager.asyncssh.connect", AsyncMock(return_value=fake)):
+            with pytest.raises(asyncio.CancelledError):
+                await manager.execute("sleep 60")
+        assert fake.processes[0].closed
+        assert len(fake.run_commands) == 1
 
 
 class TestConnectDisconnect:
@@ -559,6 +592,16 @@ class TestExtractCapturedPwd:
 
 class TestWorkDirTracking:
     """execute 的远程工作目录捕获与持久化（POSIX pwd 捕获）。"""
+
+    async def test_disabling_tracking_drops_stale_directory(self, manager: SshConnectionManager) -> None:
+        fake = FakeConn([FakeResult(0, "__ANELF_PWD_BEGIN__/old__ANELF_PWD_END__\n"), FakeResult()])
+        with patch("entities.ssh.manager.asyncssh.connect", AsyncMock(return_value=fake)):
+            await manager.execute("cd /old")
+            with patch.object(manager_module, "get_config_bool", return_value=False):
+                result = await manager.execute("pwd")
+        assert fake.run_commands[-1] == "pwd"
+        assert result["work_dir"] == result["requested_work_dir"] == ""
+        assert manager.get_snapshot("web")["work_dir"] == ""
 
     @staticmethod
     def _stdout_with_marker(body: str, path: str) -> str:

@@ -3,18 +3,22 @@
 工具经 track_ops 装饰后，每次执行把操作事实（ToolOp）回报给实体的态势
 追踪器（filesystem/ops_context、ssh/ops_state），追踪器据此向 volatile 层
 注入"本会话正在操作什么"的实时上下文。
+
+模型可见：操作态势与工具执行器使用相同的失败判定及摘要。
+Token 影响：失败备注限定为 120 字符，不复制完整输出。
+缓存影响：仅实体动态态势更新，不触碰稳定前缀。
 """
 
 from __future__ import annotations
 
 import functools
 import inspect
-import json
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Tuple, TypeVar
 
 from core.log import log
+from core.tool_results import extract_error_text
 
 from ._sdk import get_current_scope
 
@@ -47,33 +51,11 @@ class ToolOp:
 
 
 def _classify_tool_result(result: Any) -> Tuple[bool, str]:
-    """按统一错误契约判定工具结果成败。
-
-    含 error 键 = 失败（备注取错误消息）；含 ok 键取其布尔（失败时
-    备注取 returncode/exit_code）；非 JSON 文本（如 read_file 内容）= 成功。
-    """
+    """复用执行器的错误归纳，保留有界诊断证据供动态态势使用。"""
     if not isinstance(result, str):
         return True, ""
-    text = result.lstrip()
-    if not text.startswith("{"):
-        return True, ""
-    try:
-        data = json.loads(text)
-    except ValueError:
-        return True, ""
-    if not isinstance(data, dict):
-        return True, ""
-    if data.get("error"):
-        return False, str(data["error"])[:120]
-    ok = bool(data.get("ok", True))
-    note = ""
-    if not ok:
-        for key in ("returncode", "exit_code"):
-            code = data.get(key)
-            if code is not None:
-                note = f"退出码 {code}"
-                break
-    return ok, note
+    error = extract_error_text(result)
+    return not bool(error), " ".join(error.split())[:120]
 
 
 def track_ops(

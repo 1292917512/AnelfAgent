@@ -122,6 +122,14 @@ export function ExecPanel() {
           subtitle={`exit code: ${result.exit_code}${result.truncated ? ` · ${t("exec.truncated")}` : ""}`}
         >
           <div className="space-y-3">
+            {(result.login_user || result.work_dir) && <dl className="flex flex-wrap gap-x-6 gap-y-2 text-xs">
+              {result.login_user && <div><dt className="text-muted">{t("exec.loginIdentity")}</dt><dd className="break-all">{result.login_user}@{result.host}</dd></div>}
+              {result.work_dir && <div><dt className="text-muted">{t("exec.workDir")}</dt><dd className="break-all">{result.work_dir}</dd></div>}
+            </dl>}
+            {result.error && <div role="status" className="space-y-1 rounded-md border border-warn/30 bg-warn-subtle p-3 text-sm break-words">
+              <p className="text-warn">{result.error}</p>
+              {result.hint && <p className="text-xs text-muted">{result.hint}</p>}
+            </div>}
             {result.stdout && (
               <div>
                 <div className="text-xs font-medium text-muted mb-1">stdout</div>

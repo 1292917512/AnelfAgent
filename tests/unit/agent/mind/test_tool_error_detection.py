@@ -121,6 +121,15 @@ class TestCollectRoundErrorBriefs:
         assert len(briefs) == 1
         assert briefs[0] == f"alpha: {'x' * 150}…"
 
+    def test_ssh_failure_preserves_stdout_evidence(self) -> None:
+        chain = _chain(json.dumps({"ok": False, "exit_code": 1,
+                                   "stdout": "NO_SUDO\n/mihomo", "stderr": ""}))
+        calls = _named_calls("ssh_exec")
+        assert _check_tool_results_all_errors(chain, calls) is True
+        assert _collect_round_error_briefs(chain, calls) == [
+            "ssh_exec: 命令退出码 1；stdout: NO_SUDO /mihomo",
+        ]
+
     def test_trailing_user_message_skipped(self) -> None:
         """尾部多模态注入的 user 消息不影响收集（与全错判定遍历规则一致）。"""
         chain = _chain('{"error": "a"}')

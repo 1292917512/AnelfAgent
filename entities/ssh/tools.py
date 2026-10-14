@@ -95,9 +95,14 @@ async def ssh_exec(command: str, name: str = "", timeout: int = 0, work_dir: str
     关机/重启/网络中断）则立即返回错误，命令可能已在远端启动，
     是否重跑由你判断。
 
-    远程工作目录跨命令持久（与本地 shell 一致）：命令中的 cd 或 work_dir
-    参数指定的目录对后续命令持续生效，结果中的 work_dir 为命令结束后的
-    实际目录；cd 失败时目录偏好自动重置回登录目录。
+    开启 ssh_work_dir_tracking 时，捕获的远程目录用于后续命令；结果中的
+    work_dir 是已确认目录，requested_work_dir 是本次请求的起点。关闭跟踪
+    或捕获失败时，不把请求目录当作实际目录；下次从登录起点重新执行。
+
+    每次调用都是远端默认 shell 的新非交互会话，不分配终端；export、别名、
+    虚拟环境激活不跨调用保留，需要在同一条命令中设置。login_user 是 SSH
+    登录身份，不代表 sudo 权限；系统与 shell 未确认时先用只读命令核实。
+    非零退出码结合 stdout/stderr 判断，复合命令可能部分成功，不要直接整条重跑。
 
     Args:
         command: 要执行的 shell 命令
@@ -117,7 +122,7 @@ async def ssh_exec(command: str, name: str = "", timeout: int = 0, work_dir: str
         return json.dumps(result, ensure_ascii=False)
     except SshCommandInterrupted as e:
         return tool_error(
-            str(e), cause=ErrorCause.NETWORK, retryable=True,
+            str(e), cause=ErrorCause.NETWORK, retryable=False, outcome="unknown",
             hint="命令可能已在远端启动：关机/重启场景这通常就是预期结果；"
                  "重跑前请先确认命令幂等或检查目标当前状态",
             connection=e.connection, elapsed_ms=e.elapsed_ms,

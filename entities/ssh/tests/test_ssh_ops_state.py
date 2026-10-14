@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import time
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -79,6 +81,32 @@ class TestRecordAndRender:
         text = ops_state.render_scope(_SCOPE)
         assert text is not None
         assert "ssh_exec ls ✗（退出码 127）" in text
+
+    async def test_tool_error_evidence_reaches_scoped_context(self, state, monkeypatch) -> None:
+        from entities import _ops
+        from entities.ssh import tools
+
+        monkeypatch.setattr(_ops, "get_current_scope", lambda: _SCOPE)
+        state.execute = AsyncMock(return_value={"ok": False, "exit_code": 1,
+                                                "stdout": "NO_SUDO\n/mihomo", "stderr": ""})
+        monkeypatch.setattr(tools, "get_ssh_manager", lambda: state)
+        monkeypatch.setattr(tools, "_ai_enabled", lambda: True)
+        result = json.loads(await tools.ssh_exec("check", name="web"))
+        assert result["exit_code"] == 1
+        text = ops_state.render_scope(_SCOPE)
+        assert text is not None and "NO_SUDO" in text and "退出码 1" in text
+        assert "无终端" in text and "不代表 sudo 权限" in text
+        assert ops_state.render_scope("user_other:2") is None
+
+    async def test_interrupted_command_reports_unknown_outcome(self, state, monkeypatch) -> None:
+        from entities.ssh import tools
+        from entities.ssh.manager import SshCommandInterrupted
+
+        state.execute = AsyncMock(side_effect=SshCommandInterrupted("web", "lost", 123))
+        monkeypatch.setattr(tools, "get_ssh_manager", lambda: state)
+        monkeypatch.setattr(tools, "_ai_enabled", lambda: True)
+        result = json.loads(await tools.ssh_exec("restart", name="web"))
+        assert result["outcome"] == "unknown" and result["retryable"] is False
 
     def test_ttl_expiry_drops_session(self, state) -> None:
         ops_state.record_tool_op(_op())

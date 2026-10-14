@@ -11,11 +11,16 @@
 - upload/download 走 SFTP
 
 状态变更经模块级订阅者队列广播，router.py 的 SSE 端点消费。
+
+模型可见：工具结果保留退出状态、诊断输出、登录身份及目录跟踪事实。
+Token 影响：每次结果增加少量执行元数据，失败时附有界摘要与核查指引。
+缓存影响：仅工具结果与既有动态态势更新，不修改稳定前缀，无额外远端探测。
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import shlex
@@ -27,7 +32,8 @@ import asyncssh
 
 from core.config import ConfigManager, expand_env_refs, get_config_bool, get_config_int
 from core.log import log
-from entities._sdk import NetworkRoute, ProxyMode, open_proxy_socket, resolve_socket_route
+from core.tool_results import extract_error_text
+from entities._sdk import NetworkRoute, ProxyMode, open_proxy_socket, resolve_socket_route, tool_error
 
 from .store import SshConfigStore, get_ssh_store
 
@@ -528,8 +534,8 @@ class SshConnectionManager:
         - 执行中断开：命令已被中途掐断、结果不可知，抛
           SshCommandInterrupted 立即返回，不重试。
 
-        Returns:
-            {"ok", "exit_code", "stdout", "stderr", "connection", "truncated"}
+        结果包含退出码、输出、登录身份、请求目录与已确认目录；非零退出码
+        附错误摘要，但不推断命令整体是否回滚或用户是否有 sudo 权限。
 
         Raises:
             SshCommandInterrupted: 命令执行中连接断开（含对端关机/网络中断）。
@@ -537,10 +543,14 @@ class SshConnectionManager:
         target = self._resolve_name(name)
         conn = await self._ensure_connected(target, proxy_mode)
         managed = self._managed(target)
+        profile = self._store.get(target) or {}
+        route_mode = managed.proxy_mode
         effective_timeout = timeout or get_config_int("ssh_default_timeout", int(_FALLBACK_CMD_TIMEOUT))
         # 远程工作目录跟踪（ssh_work_dir_tracking，POSIX pwd 捕获）：
         # 显式 work_dir 优先，其次上次捕获的持久目录，cd 因此对后续命令生效
         track_pwd = get_config_bool("ssh_work_dir_tracking", True)
+        if not track_pwd:
+            managed.work_dir = ""
         effective_dir = work_dir.strip() or managed.work_dir
         full_command = compose_exec_command(command, effective_dir, track_pwd)
 
@@ -577,6 +587,9 @@ class SshConnectionManager:
         started = time.monotonic()
         try:
             result = await process.wait(timeout=effective_timeout)
+        except asyncio.CancelledError:
+            process.close()
+            raise
         except asyncio.TimeoutError:
             # 关闭通道终止远端会话，防超时命令在池化连接上继续滞留
             process.close()
@@ -609,8 +622,8 @@ class SshConnectionManager:
                 # 有标记缺失且有目标目录 = cd 失败/命令提前退出：清除持久目录
                 # 自愈，下条命令从登录目录重新开始（cd 错误已在 stderr 暴露）
                 managed.work_dir = ""
-        truncated = len(stdout) > _OUTPUT_LIMIT or len(stderr) > _OUTPUT_LIMIT
-        return {
+        truncated = len(stdout) > _OUTPUT_LIMIT or len(stderr) > _OUTPUT_LIMIT // 2
+        payload = {
             "ok": exit_code == 0,
             "exit_code": exit_code,
             "stdout": stdout[:_OUTPUT_LIMIT],
@@ -618,7 +631,21 @@ class SshConnectionManager:
             "connection": target,
             "truncated": truncated,
             "work_dir": managed.work_dir,
+            "requested_work_dir": effective_dir,
+            "work_dir_tracking": track_pwd,
+            "login_user": profile.get("username", ""),
+            "host": profile.get("host", ""),
+            "proxy_mode": route_mode,
+            "elapsed_ms": int((time.monotonic() - started) * 1000),
         }
+        if exit_code != 0:
+            return json.loads(tool_error(
+                extract_error_text(payload),
+                hint="非零退出码来自远端命令，不代表 SSH 断线。命令可能部分生效；"
+                     "结合 stdout/stderr 核对失败步骤和目标状态，再决定是否修正或重试。",
+                **payload,
+            ))
+        return payload
 
     async def run_capture(self, name: str, command: str, timeout: float = 15.0) -> Optional[str]:
         """在已建连的连接上运行辅助采集命令，返回 stdout（未连接/失败返回 None，静默）。

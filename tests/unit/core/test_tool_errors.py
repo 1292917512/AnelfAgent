@@ -5,11 +5,34 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
+
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
+from core.tool_results import extract_error_text
 
 
 def _parse(result: str) -> dict:
     return json.loads(result)
+
+
+@pytest.mark.parametrize(("payload", "expected"), [
+    ({"ok": False, "exit_code": 1, "stdout": "NO_SUDO\n/proc/example/cwd", "stderr": ""},
+     "命令退出码 1；stdout: NO_SUDO /proc/example/cwd"),
+    ({"ok": False, "exit_code": 127, "stderr": "command not found"},
+     "命令退出码 127；stderr: command not found"),
+    ({"ok": False, "returncode": 2, "stdout": "", "stderr": " "}, "命令退出码 2（无错误输出）"),
+    ({"ok": False, "exit_code": 1, "notes": ["搜索没有匹配"]}, "搜索没有匹配"),
+    ({"ok": True, "exit_code": 0, "stdout": "NO_SUDO", "stderr": "warning"}, ""),
+    ({"success": False, "error": "explicit failure", "exit_code": 1}, "explicit failure"),
+])
+def test_command_error_evidence(payload: dict, expected: str) -> None:
+    assert extract_error_text(payload) == expected
+
+
+def test_command_stdout_summary_is_bounded() -> None:
+    summary = extract_error_text({"ok": False, "exit_code": 1, "stdout": "NO_SUDO\n" + "x" * 10000})
+    assert summary.startswith("命令退出码 1；stdout: NO_SUDO ")
+    assert len(summary) <= 151
 
 
 class TestToolError:
