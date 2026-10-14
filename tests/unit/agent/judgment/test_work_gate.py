@@ -159,6 +159,24 @@ async def test_truncation_never_suppresses_work(engine, monkeypatch):
         native.assert_not_awaited()
 
 
+async def test_background_recollection_can_opt_in_to_normal_model_fallback(engine, monkeypatch):
+    config = replace(gate.load_config(), base_url="", model="")
+    monkeypatch.setattr(gate, "load_config", lambda: config)
+    monkeypatch.setattr(engine_module, "load_config", lambda: config)
+    fallback_report = report()
+    fallback_report.source = JudgmentSource.LLM_FALLBACK
+    fallback_report.model = "ordinary-model"
+    fallback = AsyncMock(return_value=fallback_report)
+    monkeypatch.setattr(engine, "_judge_fallback", fallback)
+    async with hook_execution("memory.probe", "context_refresh", HookMode.ASYNC) as record:
+        decision = await gate.assess_optional_work("回忆结果补充", "needed?", {}, llm_fallback=True)
+        assert not decision.run and decision.provider == "LLM"
+        assert record.judgments[0].provider == "LLM" and record.judgments[0].model == "ordinary-model"
+    fallback.assert_awaited_once()
+    assert (await gate.assess_optional_work("other optional work", "needed?", {})).run
+    assert fallback.await_count == 1
+
+
 async def test_slow_result_remains_visible_to_ai_after_hook_changes(engine, monkeypatch):
     clock = iter([0, 1.2])
     monkeypatch.setattr(gate, "time", SimpleNamespace(time=gate.time.time, monotonic=lambda: next(clock)))

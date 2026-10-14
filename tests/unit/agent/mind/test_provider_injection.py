@@ -23,6 +23,53 @@ from core.context_provider import (
 )
 
 
+async def test_inflight_recollection_enters_next_model_snapshot_without_rewriting_history(store, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from agent.judgment.gate import WorkDecision
+    from agent.memory.memory_retriever import MemoryRetriever
+    from agent.memory.memory_types import MemorySearchResult
+    from agent.memory.probe import DeepProbeHub
+    from agent.memory.recall_policy import RecallPolicy, recall_options
+
+    hub = DeepProbeHub()
+    monkeypatch.setattr("agent.memory.probe.deep_probe_hub", hub)
+    monkeypatch.setattr("agent.memory.probe_refresh.assess_optional_work", AsyncMock(return_value=WorkDecision(True, "test")))
+    monkeypatch.setattr("agent.memory.probe.assess_optional_work", AsyncMock(return_value=WorkDecision(True, "test")))
+    monkeypatch.setattr("agent.memory.recall_fast.search_local", AsyncMock(return_value=[
+        MemorySearchResult(id="mem:found", snippet="此前部署采用青岛节点", score=1),
+    ]))
+    ContextProviderRegistry.register(ProviderMeta(name="memory_deep_probe", provide_fn=hub.current_render))
+    base = [{"role": "system", "content": "stable", "_layer": "stable"},
+            {"role": "user", "content": "继续检查部署问题", "_layer": "conversation"}]
+    state = hub.begin_reply("_global")
+    hub.prepare("_global", base, MemoryRetriever(store, SimpleNamespace(embed_query=AsyncMock(return_value=None))))
+
+    class BackgroundMind(FakeMind):
+        async def _invoke_llm_unified(self, *args, **kwargs):
+            if self.llm_calls == 1:
+                assert state.task is not None
+                await state.task
+            return await super()._invoke_llm_unified(*args, **kwargs)
+
+    mind = BackgroundMind(rounds=[tool_result("", ["inspect"]), tool_result("", ["verify"]), end_reply_result()],
+                          tool_results={"inspect": "旧节点配置发生变更", "verify": "配置检查完成"}, default_text=None,
+                          pfc=FakePfc(exec_layer=True))
+    try:
+        with recall_options(RecallPolicy(level="fast")):
+            await run_think_loop(mind, base_messages=base)
+        assert len(mind.sent_messages) == 3
+        assert all(messages[:2] == base for messages in mind.sent_messages)
+        assert not any("此前部署" in str(m) for m in mind.sent_messages[0])
+        third = mind.sent_messages[2]
+        memory = next(m for m in third if "此前部署" in str(m))
+        assert memory["_layer"] == "provider" and memory["_source"]["provider"] == "memory_deep_probe"
+        assert third.index(memory) > max(i for i, m in enumerate(third) if m.get("role") == "tool")
+    finally:
+        await hub.end_reply("_global")
+
+
 def _register_counter_provider(counter: list) -> None:
     async def _provide(scope: str) -> ProviderSnapshot:
         counter[0] += 1

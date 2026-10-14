@@ -61,3 +61,28 @@ async def test_skill_context_projection_remains_bounded_and_per_run(monkeypatch)
             assert entry["truncated"]
     finally:
         service.stop()
+
+
+async def test_background_skills_and_injection_observation_preserve_actual_input(monkeypatch):
+    from agent.mind.context_observation import emit_recollection_update
+    from agent.skills.discovery import discover_skills
+    from core.tags import strip_message_meta_tags
+
+    skill = Skill(name="deploy", description="Deployment evidence", content="Full skill body")
+    matcher = SimpleNamespace(match=AsyncMock(return_value=[(skill, 0.8)]))
+    deltas = await discover_skills("deploy", matcher=matcher, seen=set())
+    assert len(deltas) == 1 and "[skill:deploy]" in deltas[0].text
+    assert skill.content not in deltas[0].text
+    assert await discover_skills("deploy", matcher=matcher, seen={"skill:deploy"}) == []
+    assert "[skill:" not in strip_message_meta_tags(deltas[0].text)
+    messages = [{"role": "system", "content": deltas[0].text, "_layer": "provider",
+                 "_source": {"origin": "context_provider", "provider": "memory_deep_probe"}}]
+    original = deepcopy(messages)
+    emit = AsyncMock()
+    monkeypatch.setattr("agent.mind.context_observation.event_bus.emit", emit)
+    previous = await emit_recollection_update(messages, "")
+    assert previous == messages[0]["content"]
+    assert emit.await_args.args[1]["skills"] == [{"name": "deploy", "description": "", "mode": "candidate"}]
+    await emit_recollection_update(messages, previous)
+    assert emit.await_count == 1 and messages == original
+    assert normalize_for_send(messages) == [{"role": "system", "content": deltas[0].text}]

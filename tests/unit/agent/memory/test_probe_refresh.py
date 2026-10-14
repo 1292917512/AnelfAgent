@@ -21,6 +21,130 @@ class NullEmbedder:
         return None
 
 
+async def test_tool_progress_without_new_user_message_triggers_nonblocking_recollection(store, monkeypatch):
+    from agent.judgment.gate import WorkDecision
+    from agent.memory import probe, probe_refresh
+
+    hub = DeepProbeHub()
+    retriever = MemoryRetriever(store, NullEmbedder())
+    gate = AsyncMock(return_value=WorkDecision(True, "new evidence"))
+    monkeypatch.setattr(probe_refresh, "assess_optional_work", gate)
+    monkeypatch.setattr(probe, "assess_optional_work", gate)
+    ready, release = asyncio.Event(), asyncio.Event()
+
+    async def slow_search(*args):
+        ready.set()
+        await release.wait()
+        return [MemorySearchResult(id="mem:new", snippet="部署节点迁到青岛", score=1)]
+
+    monkeypatch.setattr("agent.memory.recall_fast.search_local", slow_search)
+    discover = AsyncMock(return_value=[RecallDelta("相关技能候选", "[skill:deploy] 部署方法", "skill:deploy")])
+    old = [{"role": "user", "content": "继续处理这个部署问题"}]
+    progress = [*old, {"role": "tool", "tool_call_id": "call-1", "content": "当前节点发现旧的部署配置"}]
+    with recall_options(RecallPolicy(level="fast")):
+        state = hub.begin_reply("user_qq:1")
+        hub.prepare(state.scope, old, retriever, discover=discover)
+        hub.refresh(state.scope, old)
+        assert state.task is None
+        hub.refresh(state.scope, progress)
+        task = state.task
+        await asyncio.wait_for(ready.wait(), 1)
+        for _ in range(10):
+            if "skill:deploy" in state.rendered:
+                break
+            await asyncio.sleep(0)
+        assert "skill:deploy" in state.rendered and not task.done()
+        hub.refresh(state.scope, progress)
+        assert state.task is task
+        release.set()
+        await task
+        assert "青岛" in state.rendered
+        assert "当前节点" in str(gate.await_args.args[2])
+        hub.refresh(state.scope, [*old, {**progress[-1], "tool_call_id": "different-id"}])
+        assert state.task is task and state.refresh_count == 1
+        await hub.end_reply(state.scope)
+        assert not hub.current_render(state.scope)
+
+
+@pytest.mark.parametrize("allow", [False, True])
+async def test_candidate_review_and_manual_recall_race_do_not_duplicate(store, monkeypatch, allow):
+    from agent.judgment.gate import WorkDecision
+
+    hub = DeepProbeHub()
+    state = hub.begin_reply("user_qq:1")
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def judge(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return WorkDecision(allow, "test")
+
+    monkeypatch.setattr("agent.memory.probe.assess_optional_work", judge)
+    task = asyncio.create_task(hub._admit(state, 0, [RecallDelta("补充记忆", "同一事实", "mem:1", "同一事实")], review=True))
+    await entered.wait()
+    if allow:
+        hub.record(state.scope, results=[MemorySearchResult(id="mem:1", snippet="同一事实", score=1)])
+    release.set()
+    await task
+    assert not state.rendered
+    assert state.ledger.seen_result("mem:1") is allow
+    await hub.end_reply(state.scope)
+
+
+async def test_failed_deep_lane_does_not_cancel_pending_local_recollection(store, monkeypatch):
+    from agent.judgment.gate import WorkDecision
+
+    hub = DeepProbeHub()
+    retriever = MemoryRetriever(store, NullEmbedder())
+    failed = asyncio.Event()
+
+    async def graph(*args, **kwargs):
+        failed.set()
+        raise RuntimeError("graph unavailable")
+
+    async def local(*args):
+        await failed.wait()
+        await asyncio.sleep(0)
+        return [MemorySearchResult(id="mem:local", snippet="本地仍然可用", score=1)]
+
+    monkeypatch.setattr(hub, "_probe", graph)
+    monkeypatch.setattr("agent.memory.recall_fast.search_local", local)
+    for target in ("agent.memory.probe.assess_optional_work", "agent.memory.probe_refresh.assess_optional_work"):
+        monkeypatch.setattr(target, AsyncMock(return_value=WorkDecision(True, "needed")))
+    monkeypatch.setattr(retriever, "plan_retrieval", AsyncMock(return_value=RetrievalPlan(queries=["线索"], deep_needed=True)))
+    with recall_options(RecallPolicy(level="deep")):
+        state = hub.begin_reply("user_qq:1")
+        hub.prepare(state.scope, [], retriever)
+        hub.refresh(state.scope, [{"role": "tool", "content": "发现新的执行线索"}])
+        await state.task
+        assert "本地仍然可用" in state.rendered
+        await hub.end_reply(state.scope)
+
+
+async def test_new_evidence_during_pending_recall_is_kept_for_next_step(store, monkeypatch):
+    from agent.judgment.gate import WorkDecision
+
+    hub = DeepProbeHub()
+    state = hub.begin_reply("user_qq:1")
+    hub.prepare(state.scope, [], MemoryRetriever(store, NullEmbedder()))
+    gate = AsyncMock(return_value=WorkDecision(False, "covered"))
+    monkeypatch.setattr("agent.memory.probe_refresh.assess_optional_work", gate)
+    state.task = asyncio.create_task(asyncio.Event().wait())
+    new = [{"role": "user", "content": "新的发布计划需要回忆"}]
+    hub.refresh(state.scope, new)
+    assert "新的发布" in str(state.evidence) and not state.refresh_count
+    state.task.cancel()
+    await asyncio.gather(state.task, return_exceptions=True)
+    hub.refresh(state.scope, new)
+    await state.task
+    assert gate.await_count == 1
+    for index in range(10):
+        hub.refresh(state.scope, [*new, {"role": "tool", "content": f"新的执行证据 {index}"}])
+        await state.task
+    assert state.refresh_count == gate.await_count == 4
+    await hub.end_reply(state.scope)
+
+
 @pytest.mark.parametrize("level", ["fast", "deep"])
 async def test_new_topic_searches_local_memory_once(store, monkeypatch, level):
     import agent.memory.probe as probe_module
@@ -78,7 +202,7 @@ async def test_policy_change_rejects_late_result_and_keeps_presented_context(sto
     monkeypatch.setattr(probe_module, "deep_probe_hub", hub)
     entered = asyncio.Event()
 
-    async def slow_cognee(*args, revision):
+    async def slow_cognee(*args, revision, review=False):
         entered.set()
         try:
             await asyncio.Event().wait()

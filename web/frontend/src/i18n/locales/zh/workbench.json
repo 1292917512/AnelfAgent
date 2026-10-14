@@ -360,7 +360,10 @@
       "event": "事件触发",
       "notification": "通知唤醒",
       "system": "系统触发"
-    }
+    },
+    "recollectionTitle": "回忆过程",
+    "recollectionHint": "查看当前执行页各会话的记忆与技能准备、后台判断和检索。准备完成的结果在下一次模型调用时进入动态上下文；候选不代表技能已执行。",
+    "recollectionEmpty": "当前执行页暂无回忆记录。"
   },
   "toolView": {
     "exitCode": "退出码 {{code}}",

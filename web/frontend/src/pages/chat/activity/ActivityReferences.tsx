@@ -1,5 +1,6 @@
 import { Fragment } from "react";
-import { Hash, Radio, UserRound, Users, ArrowUpRight } from "lucide-react";
+import { Hash, Radio, UserRound, Users, ArrowUpRight, GraduationCap } from "lucide-react";
+import { Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import type { ActivitySource, ActivityTag } from "@/lib/types/activity";
 import { parseMessageTags } from "@/lib/message-tags";
@@ -19,6 +20,7 @@ export function ActivitySourceLabel({ source }: { source: ActivitySource }) {
 export function ActivityTagLabel({ tag, root = "workspace" }: { tag: ActivityTag; root?: string }) {
   const { t } = useTranslation("workbench");
   const fileRoot = tag.root ?? root;
+  if (tag.key === "skill") return <Link className="activity-tag text-accent" to={`/skills?skill=${encodeURIComponent(tag.value)}`}><GraduationCap size={12} /><b>{tag.value}</b></Link>;
   if (["workspace", "project"].includes(fileRoot) && ["path", "file_path", "directory", "media_file", "file", "dir"].includes(tag.key)) {
     const ref = parseFileReference(`./${fileRoot === "project" ? "project:" : ""}${["directory", "dir"].includes(tag.key) ? "dir:" : ""}${encodeURIComponent(tag.path ?? tag.value)}`);
     if (ref) return <FileReferenceLink reference={ref}>{tag.value}</FileReferenceLink>;

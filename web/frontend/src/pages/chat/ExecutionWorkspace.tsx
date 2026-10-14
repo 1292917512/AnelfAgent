@@ -13,6 +13,7 @@ import { ActivityStream } from "./activity/ActivityStream";
 import { ActivityDetailsProvider } from "./activity/ActivityDetailsProvider";
 import { ActivityInspection } from "@/components/common/ActivityInspection";
 import { ActivityRoundSummary } from "./activity/ActivityRoundSummary";
+import { RecollectionWindow } from "./activity/RecollectionWindow";
 
 /** 当前执行轮次优先展示；更早的过程只在主动上翻时挂载。 */
 export default function ExecutionWorkspace() {
@@ -74,6 +75,7 @@ function ActivityFeed({ runs, clearing, onClear }: { runs: ActivityRun[]; cleari
     <header className="activity-heading"><div className="activity-heading-title"><Activity size={16} className="text-accent" /><h2>{t("activity.title")}</h2></div>
       {focusRun && focusFamily && <ActivityRoundSummary key={focusRun.id} run={focusRun} runs={focusFamily.runs} onReveal={revealRun} />}
       <div className="activity-heading-controls">
+        <RecollectionWindow runs={selectedFamily?.runs ?? page?.runs ?? []} />
         <span className="activity-connection inline-flex items-center gap-2 text-xs text-muted" role="status">{activeRuns.length > 0 && <span className="activity-live-dot" />}<span>{t(!connected ? "activity.reconnecting" : activeRuns.length ? "activity.working" : "activity.idle")}</span></span>
         <Button variant="ghost" size="sm" className="activity-follow-toggle" aria-label={t(following ? "activity.following" : "activity.followPaused")} aria-pressed={following} title={t(following ? "activity.pauseFollow" : "activity.resumeFollow")} onClick={following ? pauseFollowing : resumeFollowing}>{following ? <Radio size={13} /> : <Pause size={13} />}<span className="activity-control-label">{t(following ? "activity.following" : "activity.followPaused")}</span></Button>
         <Button variant="ghost" size="sm" aria-label={t("activity.clearHistory")} title={t("activity.clearHistoryHint")} disabled={pages.length < 2} loading={clearing} onClick={onClear}><Trash2 size={13} /><span className="activity-control-label">{t("activity.clearHistory")}</span></Button>

@@ -84,6 +84,8 @@ def set_turn_recall_policy(policy: RecallPolicy, scope: str) -> None:
     probe = deep_probe_hub.state_for(scope)
     if probe is not None:
         probe.queries.clear()
+        probe.examined.clear()
+        probe.refresh_count = 0
 
 
 @contextmanager

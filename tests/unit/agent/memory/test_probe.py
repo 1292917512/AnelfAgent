@@ -413,7 +413,7 @@ async def test_probe_staged_fast_section_publishes_before_slow(store, monkeypatc
         local_published.set()
         return accepted
 
-    async def _slow_cognee(state_arg, plan_arg, store_arg, *, revision):
+    async def _slow_cognee(state_arg, plan_arg, store_arg, *, revision, review=False):
         remote_started.set()
         await release.wait()
 
