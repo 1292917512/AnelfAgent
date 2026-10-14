@@ -101,15 +101,19 @@ async def get_log_stats() -> Dict[str, Any]:
 
 
 @router.get("/logs/stream")
-async def log_stream(request: Request) -> EventSourceResponse:
-    """SSE：日志快照与实时增量。"""
+async def log_stream(
+    request: Request,
+    debug: bool = Query(False),
+    limit: int = Query(200, ge=1, le=2000),
+) -> EventSourceResponse:
+    """SSE：默认仅推送警告和错误，Debug 订阅包含全部级别。"""
     import json
     from contextlib import aclosing
 
     from services.logs import stream_logs
 
     async def event_generator():
-        async with aclosing(stream_logs()) as stream:
+        async with aclosing(stream_logs(debug=debug, limit=limit)) as stream:
             async for event, data in stream:
                 if await request.is_disconnected():
                     break

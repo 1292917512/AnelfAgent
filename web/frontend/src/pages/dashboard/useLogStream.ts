@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { LogEntry } from "@/lib/types";
 import { MAX_LOG_ENTRIES, mergeLogs } from "./log-buffer";
 
-export function useLogStream() {
+export function useLogStream(debug = false) {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [connection, setConnection] = useState<"connecting" | "live" | "reconnecting">("connecting");
   const [paused, setPaused] = useState(false);
@@ -23,14 +23,17 @@ export function useLogStream() {
     const replacement = snapshot.current;
     queue.current = [];
     snapshot.current = null;
-    setLogs((current) => mergeLogs(replacement ?? current, incoming));
+    if (replacement !== null || incoming.length) setLogs((current) => mergeLogs(replacement ?? current, incoming));
     setPendingCount(0);
   }, []);
 
   useEffect(() => {
-    const stream = new EventSource("/api/status/logs/stream");
-    const schedule = () => { if (timer.current === null) timer.current = setTimeout(flush, 100); };
+    let closed = false;
+    setConnection("connecting");
+    const stream = new EventSource(`/api/status/logs/stream?debug=${debug}&limit=${MAX_LOG_ENTRIES}`);
+    const schedule = () => { if (timer.current === null) timer.current = setTimeout(flush, 250); };
     stream.addEventListener("snapshot", (event: MessageEvent<string>) => {
+      if (closed) return;
       try {
         const data: { logs: LogEntry[] } = JSON.parse(event.data);
         snapshot.current = data.logs.slice(-MAX_LOG_ENTRIES);
@@ -40,6 +43,7 @@ export function useLogStream() {
       } catch { setConnection("reconnecting"); }
     });
     stream.addEventListener("log", (event: MessageEvent<string>) => {
+      if (closed) return;
       try {
         const entry: LogEntry = JSON.parse(event.data);
         queue.current.push(entry);
@@ -47,15 +51,16 @@ export function useLogStream() {
         schedule();
       } catch { setConnection("reconnecting"); }
     });
-    stream.onerror = () => setConnection("reconnecting");
+    stream.onerror = () => { if (!closed) setConnection("reconnecting"); };
     return () => {
+      closed = true;
       stream.close();
       if (timer.current !== null) clearTimeout(timer.current);
       timer.current = null;
       queue.current = [];
       snapshot.current = null;
     };
-  }, [attempt, flush]);
+  }, [attempt, debug, flush]);
 
   const togglePause = () => {
     pausedRef.current = !pausedRef.current;

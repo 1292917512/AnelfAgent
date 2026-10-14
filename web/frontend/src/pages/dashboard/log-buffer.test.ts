@@ -11,7 +11,7 @@ describe("log buffer", () => {
   it("bounds retained history under a large burst", () => {
     const rows = mergeLogs([entry(0)], Array.from({ length: 2500 }, (_, i) => entry(i + 1)));
     expect(rows).toHaveLength(MAX_LOG_ENTRIES);
-    expect(rows[0]?.seq).toBe(501);
+    expect(rows[0]?.seq).toBe(2500 - MAX_LOG_ENTRIES + 1);
     expect(rows[rows.length - 1]?.seq).toBe(2500);
   });
 });

@@ -117,7 +117,9 @@
     "follow": "跟随滚动",
     "unfollowed": "已脱离跟随",
     "clear": "清屏",
-    "onlyErrors": "仅错误",
+    "debugMode": "Debug 模式",
+    "debugHint": "含 INFO / DEBUG 日志",
+    "warningHint": "仅接收警告与错误",
     "resume": "继续",
     "pause": "暂停",
     "levels": "级别",
@@ -140,6 +142,6 @@
     "entries": "日志记录",
     "visibleCount": "显示 {{count}} / {{total}} 条",
     "following": "跟随最新日志",
-    "pauseHint": "画面已暂停 · 最多暂存 2,000 条"
+    "pauseHint": "画面已暂停 · 最多暂存 {{capacity}} 条"
   }
 }

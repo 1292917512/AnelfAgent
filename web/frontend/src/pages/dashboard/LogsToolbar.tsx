@@ -1,15 +1,15 @@
 import { useTranslation } from "react-i18next";
-import { ArrowDownToLine, OctagonAlert, Pause, Play, Search, Trash2, X } from "lucide-react";
+import { ArrowDownToLine, Bug, Pause, Play, Search, Trash2, X } from "lucide-react";
 import { Button, Input, Select } from "@/components/ui";
-import { LOG_LEVELS } from "./log-buffer";
+import { DEFAULT_LOG_LEVELS, LOG_LEVELS } from "./log-buffer";
 
 export function LogsToolbar({
-  levels, onToggleLevel, byLevel, onlyErrors, onToggleOnlyErrors,
+  levels, onToggleLevel, byLevel, debug, onToggleDebug,
   tag, onTagChange, tagOptions, byTag, keyword, onKeywordChange,
   paused, onTogglePause, pendingCount, following, onFollow, onClear,
 }: {
   levels: Set<string>; onToggleLevel: (level: string) => void; byLevel: Record<string, number>;
-  onlyErrors: boolean; onToggleOnlyErrors: () => void;
+  debug: boolean; onToggleDebug: () => void;
   tag: string; onTagChange: (tag: string) => void; tagOptions: string[]; byTag: Record<string, number>;
   keyword: string; onKeywordChange: (keyword: string) => void;
   paused: boolean; onTogglePause: () => void; pendingCount: number;
@@ -33,11 +33,11 @@ export function LogsToolbar({
     </div>
     <div className="logs-level-row">
       <div className="logs-levels" role="group" aria-label={t("logsView.levels")}>
-        {LOG_LEVELS.map((level) => <button type="button" key={level} onClick={() => onToggleLevel(level)} aria-pressed={levels.has(level)} data-level={level}>
+        {(debug ? LOG_LEVELS : DEFAULT_LOG_LEVELS).map((level) => <button type="button" key={level} onClick={() => onToggleLevel(level)} aria-pressed={levels.has(level)} data-level={level}>
           <i aria-hidden="true" />{t(`levelLabels.${level.toLowerCase()}`)}<span>{byLevel[level] ?? 0}</span>
         </button>)}
       </div>
-      <button type="button" className="logs-errors-filter" aria-label={t("logsView.onlyErrors")} title={t("logsView.onlyErrors")} aria-pressed={onlyErrors} onClick={onToggleOnlyErrors}><OctagonAlert size={14} /><span>{t("logsView.onlyErrors")}</span></button>
+      <button type="button" className="logs-debug-toggle" aria-label={t("logsView.debugMode")} title={t("logsView.debugHint")} aria-pressed={debug} onClick={onToggleDebug}><Bug size={14} /><span>{t("logsView.debugMode")}</span></button>
     </div>
   </div>;
 }

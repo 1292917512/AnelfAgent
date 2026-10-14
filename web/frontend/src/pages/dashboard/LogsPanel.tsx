@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -7,13 +7,14 @@ import { apiErrorMessage, statusApi } from "@/lib/api";
 import { Button, ConfirmDialog, toast } from "@/components/ui";
 import { LogsToolbar } from "./LogsToolbar";
 import { LogList } from "./LogList";
-import { LOG_LEVELS, MAX_LOG_ENTRIES } from "./log-buffer";
+import { DEFAULT_LOG_LEVELS, LOG_LEVELS, MAX_LOG_ENTRIES } from "./log-buffer";
 import { useLogStream } from "./useLogStream";
 
 export function LogsPanel() {
   const { t } = useTranslation("status");
   const [searchParams] = useSearchParams();
-  const [levels, setLevels] = useState<Set<string>>(new Set(LOG_LEVELS));
+  const [debug, setDebug] = useState(false);
+  const [levels, setLevels] = useState<Set<string>>(() => new Set(DEFAULT_LOG_LEVELS));
   const [tag, setTag] = useState("");
   const [keyword, setKeyword] = useState("");
   const [following, setFollowing] = useState(true);
@@ -24,17 +25,19 @@ export function LogsPanel() {
   const rowRef = useRef<HTMLDivElement>(null);
   const jumpMsgRef = useRef(searchParams.get("jump"));
   const queryClient = useQueryClient();
-  const stream = useLogStream();
+  const stream = useLogStream(debug);
   const { logs, paused, pendingCount, connection, togglePause, reconnect, reset } = stream;
   const kw = keyword.trim().toLowerCase();
-  const filtered = logs.filter((entry) => levels.has(entry.level) && (!tag || tag === entry.tag) && (!kw || `${entry.message} ${entry.tag}`.toLowerCase().includes(kw)));
-  const byLevel: Record<string, number> = {};
-  const byTag: Record<string, number> = {};
-  logs.forEach((entry) => {
-    byLevel[entry.level] = (byLevel[entry.level] ?? 0) + 1;
-    if (entry.tag) byTag[entry.tag] = (byTag[entry.tag] ?? 0) + 1;
-  });
-  const onlyErrors = levels.size === 2 && levels.has("ERROR") && levels.has("CRITICAL");
+  const filtered = useMemo(() => logs.filter((entry) => levels.has(entry.level) && (!tag || tag === entry.tag) && (!kw || `${entry.message} ${entry.tag}`.toLowerCase().includes(kw))), [logs, levels, tag, kw]);
+  const { byLevel, byTag } = useMemo(() => {
+    const byLevel: Record<string, number> = {};
+    const byTag: Record<string, number> = {};
+    logs.forEach((entry) => {
+      byLevel[entry.level] = (byLevel[entry.level] ?? 0) + 1;
+      if (entry.tag) byTag[entry.tag] = (byTag[entry.tag] ?? 0) + 1;
+    });
+    return { byLevel, byTag };
+  }, [logs]);
 
   useEffect(() => {
     if (!logs.length || !jumpMsgRef.current) return;
@@ -88,8 +91,8 @@ export function LogsPanel() {
       <div><Radio size={17} /><h2>{t("logsView.title")}</h2><span className="logs-connection" data-state={paused ? "paused" : connection}>{paused ? t("paused") : connection === "live" ? t("realtime") : t(`logsView.${connection}`)}</span></div>
       <span className="logs-buffer-count">{t("logsView.bufferUsage", { used: logs.length, capacity: MAX_LOG_ENTRIES })}</span>
     </header>
-    <LogsToolbar levels={levels} onToggleLevel={toggleLevel} byLevel={byLevel} onlyErrors={onlyErrors}
-      onToggleOnlyErrors={() => setLevels(new Set(onlyErrors ? LOG_LEVELS : ["ERROR", "CRITICAL"]))}
+    <LogsToolbar levels={levels} onToggleLevel={toggleLevel} byLevel={byLevel} debug={debug}
+      onToggleDebug={() => { setDebug(!debug); setLevels(new Set(debug ? DEFAULT_LOG_LEVELS : LOG_LEVELS)); }}
       tag={tag} onTagChange={setTag} tagOptions={Object.keys(byTag).sort()} byTag={byTag}
       keyword={keyword} onKeywordChange={setKeyword} paused={paused} onTogglePause={togglePause}
       pendingCount={pendingCount} following={following} onFollow={() => { if (paused) togglePause(); setFollowing(true); }}
@@ -98,7 +101,7 @@ export function LogsPanel() {
     <LogList filtered={filtered} keyword={kw} scrollRef={scrollRef}
       onScroll={() => { const element = scrollRef.current; if (element) setFollowing(element.scrollHeight - element.scrollTop - element.clientHeight < 48); }}
       highlightSeq={highlightSeq} rowRef={rowRef} loading={connection === "connecting" && !logs.length} onTagClick={setTag} />
-    <footer className="logs-console-footer"><span>{t("logsView.visibleCount", { count: filtered.length, total: logs.length })}</span><span>{paused ? t("logsView.pauseHint") : following ? t("logsView.following") : t("logsView.unfollowed")}</span></footer>
+    <footer className="logs-console-footer"><span>{t("logsView.visibleCount", { count: filtered.length, total: logs.length })} · {t(debug ? "logsView.debugHint" : "logsView.warningHint")}</span><span>{paused ? t("logsView.pauseHint", { capacity: MAX_LOG_ENTRIES }) : following ? t("logsView.following") : t("logsView.unfollowed")}</span></footer>
     <ConfirmDialog open={confirmClear} onClose={() => { if (!clearing) setConfirmClear(false); }} onConfirm={clearLogs} loading={clearing}
       title={t("logsView.clear")} message={t("logsView.clearConfirm")} confirmText={t("logsView.clear")} cancelText={t("common:cancel")} danger />
   </section>;

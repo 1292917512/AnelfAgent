@@ -8,7 +8,7 @@ from collections import deque
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from itertools import count
-from typing import TYPE_CHECKING, Any, Callable, Deque, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Collection, Deque, Dict, List, Optional
 
 if TYPE_CHECKING:
     # Record 仅在 loguru 的 __init__.pyi 存根中定义（运行时不可导入），故仅类型检查时引入
@@ -408,6 +408,7 @@ add_listener(_buffer_listener)
 def query_log_buffer(
     *,
     level: Optional[str] = None,
+    levels: Optional[Collection[str]] = None,
     tag: Optional[str] = None,
     keyword: Optional[str] = None,
     limit: int = 50,
@@ -416,6 +417,7 @@ def query_log_buffer(
 
     Args:
         level: 过滤日志级别（INFO/WARNING/ERROR 等）
+        levels: 允许返回的日志级别集合，在截取条数前过滤
         tag: 过滤标签
         keyword: 关键词搜索（匹配消息内容）
         limit: 返回条数上限
@@ -423,6 +425,8 @@ def query_log_buffer(
     results: List[Dict[str, Any]] = []
     for record in sorted(tuple(_log_buffer), key=lambda item: item.seq, reverse=True):
         if level and record.level != level.upper():
+            continue
+        if levels is not None and record.level not in levels:
             continue
         if tag and record.tag != tag:
             continue

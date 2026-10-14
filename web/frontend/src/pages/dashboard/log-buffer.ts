@@ -1,7 +1,8 @@
 import type { LogEntry } from "@/lib/types";
 
-export const MAX_LOG_ENTRIES = 2000;
+export const MAX_LOG_ENTRIES = 200;
 export const LOG_LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] as const;
+export const DEFAULT_LOG_LEVELS = ["WARNING", "ERROR", "CRITICAL"] as const;
 
 export function mergeLogs(current: LogEntry[], incoming: LogEntry[]): LogEntry[] {
   const entries = new Map(current.map((entry) => [entry.seq, entry]));

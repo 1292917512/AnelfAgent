@@ -32,8 +32,8 @@
 .logs-levels [data-level="WARNING"] i { background: var(--warn); }
 .logs-levels :is([data-level="ERROR"], [data-level="CRITICAL"]) i { background: var(--danger); }
 .logs-levels button > span { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 10px; }
-.logs-errors-filter { display: inline-flex; align-items: center; gap: 5px; min-height: 30px; padding: 5px 8px; white-space: nowrap; border-radius: 6px; color: var(--muted); font-size: 11px; }
-.logs-errors-filter[aria-pressed="true"] { background: var(--danger-subtle); color: var(--danger); }
+.logs-debug-toggle { display: inline-flex; align-items: center; gap: 5px; min-height: 30px; padding: 5px 8px; white-space: nowrap; border-radius: 6px; color: var(--muted); font-size: 11px; }
+.logs-debug-toggle[aria-pressed="true"] { background: var(--accent-subtle); color: var(--accent); }
 .logs-column-head, .log-row { display: grid; grid-template-columns: 70px 72px 100px minmax(0, 1fr) 28px; column-gap: 12px; padding-inline: 20px; }
 .logs-column-head { padding-block: 9px; border-block: 1px solid var(--border); background: var(--panel); color: var(--muted); font-size: 10px; }
 .logs-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
@@ -77,9 +77,8 @@
   .logs-level-row { flex-wrap: nowrap; gap: 6px; }
   .logs-levels { flex: 1; min-width: 0; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
   .logs-levels button { white-space: nowrap; flex-shrink: 0; }
-  .logs-errors-filter { flex-shrink: 0; width: 40px; justify-content: center; }
-  .logs-errors-filter > span { display: none; }
-  .logs-levels button, .logs-errors-filter { min-height: 40px; }
+  .logs-debug-toggle { flex-shrink: 0; justify-content: center; }
+  .logs-levels button, .logs-debug-toggle { min-height: 40px; }
   .logs-column-head { display: none; }
   .logs-scroll { border-top: 1px solid var(--border); }
   .log-row { grid-template-columns: auto auto minmax(0, 1fr) 32px; gap: 6px 10px; padding: 10px 14px; contain-intrinsic-size: auto 90px; }

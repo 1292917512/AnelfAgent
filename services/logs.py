@@ -10,8 +10,10 @@ from typing import Any, AsyncGenerator
 from core.log import LogRecord, add_listener, query_log_buffer, remove_listener
 
 
-async def stream_logs() -> AsyncGenerator[tuple[str, dict[str, Any]], None]:
-    """推送缓冲快照与后续日志，慢客户端只保留有界积压。"""
+async def stream_logs(*, debug: bool = False, limit: int = 200) -> AsyncGenerator[tuple[str, dict[str, Any]], None]:
+    """按订阅级别推送有界快照与增量，普通模式仅接收警告及错误。"""
+    levels = None if debug else frozenset({"WARNING", "ERROR", "CRITICAL"})
+    limit = max(1, min(limit, 2000))
     loop = asyncio.get_running_loop()
     ready = asyncio.Event()
     pending: deque[dict[str, Any]] = deque(maxlen=256)
@@ -22,6 +24,8 @@ async def stream_logs() -> AsyncGenerator[tuple[str, dict[str, Any]], None]:
 
     def on_log(data: dict[str, Any]) -> None:
         nonlocal scheduled, overflowed
+        if levels is not None and data["level"] not in levels:
+            return
         with lock:
             if closed:
                 return
@@ -34,7 +38,7 @@ async def stream_logs() -> AsyncGenerator[tuple[str, dict[str, Any]], None]:
 
     add_listener(on_log)
     try:
-        snapshot = query_log_buffer(limit=2000)
+        snapshot = query_log_buffer(levels=levels, limit=limit)
         seen = {entry["seq"] for entry in snapshot}
         yield "snapshot", {"logs": snapshot}
         while True:
@@ -51,7 +55,7 @@ async def stream_logs() -> AsyncGenerator[tuple[str, dict[str, Any]], None]:
                 scheduled = False
                 ready.clear()
             if resync:
-                snapshot = query_log_buffer(limit=2000)
+                snapshot = query_log_buffer(levels=levels, limit=limit)
                 seen = {entry["seq"] for entry in snapshot}
                 yield "snapshot", {"logs": snapshot}
                 continue
@@ -64,8 +68,8 @@ async def stream_logs() -> AsyncGenerator[tuple[str, dict[str, Any]], None]:
                     timestamp=entry["timestamp"], seq=entry["seq"],
                 )
                 yield "log", record.as_dict()
-            if len(seen) > 4000:
-                seen = set(sorted(seen)[-2000:])
+            if len(seen) > limit * 2:
+                seen = set(sorted(seen)[-limit:])
     finally:
         with lock:
             closed = True

@@ -11,18 +11,25 @@ async function logStream(page: Page, entries: LogEntry[]) {
   await page.addInitScript((initial) => {
     const Native = window.EventSource;
     Object.defineProperty(window, "EventSource", { value: function (url: string, options?: EventSourceInit) {
-      if (!url.endsWith("/status/logs/stream")) return new Native(url, options);
+      const parsed = new URL(url, location.href);
+      if (parsed.pathname !== "/api/status/logs/stream") return new Native(url, options);
+      const debug = parsed.searchParams.get("debug") === "true";
+      const limit = Number(parsed.searchParams.get("limit"));
+      const accepts = (entry: LogEntry) => debug || ["WARNING", "ERROR", "CRITICAL"].includes(entry.level);
       const source = Object.assign(new EventTarget(), {
         onerror: null as ((event: Event) => void) | null,
         close: () => window.removeEventListener("test:log-frame", receive),
       });
       function receive(event: Event) {
-        const frame = (event as CustomEvent<{ type: string; data: unknown }>).detail;
+        const frame = (event as CustomEvent<
+          { type: "log"; data: LogEntry } | { type: "snapshot"; data: { logs: LogEntry[] } } | { type: "error"; data?: never }
+        >).detail;
+        if (frame.type === "log" && !accepts(frame.data)) return;
         if (frame.type === "error") source.onerror?.(new Event("error"));
         else source.dispatchEvent(new MessageEvent(frame.type, { data: JSON.stringify(frame.data) }));
       }
       window.addEventListener("test:log-frame", receive);
-      queueMicrotask(() => source.dispatchEvent(new MessageEvent("snapshot", { data: JSON.stringify({ logs: initial }) })));
+      queueMicrotask(() => source.dispatchEvent(new MessageEvent("snapshot", { data: JSON.stringify({ logs: initial.filter(accepts).slice(-limit) }) })));
       return source;
     } });
   }, entries);
@@ -91,6 +98,8 @@ test("logs preserve full messages, filter by source and retain data when clearin
   await logStream(page, [logEntry(1, "Ready"), logEntry(2, message, "ERROR"), logEntry(3, "Queued")]);
   await page.route("**/api/status/logs/clear", (route) => route.fulfill({ status: 503, json: { detail: "Storage unavailable" } }));
   await page.goto("/webui/dashboard?tab=logs");
+  await expect(page.locator(".log-row")).toHaveCount(1);
+  await page.getByRole("button", { name: "Debug mode", exact: true }).click();
   await expect(page.locator(".log-row")).toHaveCount(3);
   const footer = await page.locator(".logs-console-footer").boundingBox();
   const main = await page.locator("main").boundingBox();
@@ -119,21 +128,45 @@ test("logs preserve full messages, filter by source and retain data when clearin
 });
 
 test("paused logs retain a bounded burst and show connection recovery", async ({ page }) => {
-  await logStream(page, [logEntry(1)]);
+  await logStream(page, [logEntry(1, "Ready", "WARNING")]);
   await page.goto("/webui/dashboard?tab=logs");
   await expect(page.locator(".log-row")).toHaveCount(1);
   await page.getByRole("button", { name: "Pause", exact: true }).click();
-  const burst = Array.from({ length: 2100 }, (_, index) => logEntry(index + 2));
+  const burst = Array.from({ length: 2100 }, (_, index) => logEntry(index + 2, undefined, "WARNING"));
   await page.evaluate((entries) => entries.forEach((data) => window.dispatchEvent(new CustomEvent("test:log-frame", { detail: { type: "log", data } }))), burst);
-  await expect(page.getByRole("button", { name: /Resume.*2000/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Resume.*200/ })).toBeVisible();
   await expect(page.locator(".log-row")).toHaveCount(1);
   await page.getByRole("button", { name: /Resume/ }).click();
-  await expect(page.locator(".log-row")).toHaveCount(2000);
-  await expect(page.locator(".log-row").first()).toHaveAttribute("data-seq", "102");
+  await expect(page.locator(".log-row")).toHaveCount(200);
+  await expect(page.locator(".log-row").first()).toHaveAttribute("data-seq", "1902");
   await expect(page.locator(".log-row").last()).toHaveAttribute("data-seq", "2101");
   await page.evaluate(() => window.dispatchEvent(new CustomEvent("test:log-frame", { detail: { type: "error" } })));
   await expect(page.getByText("Log connection lost. Reconnecting automatically.")).toBeVisible();
-  await page.evaluate((entries) => window.dispatchEvent(new CustomEvent("test:log-frame", { detail: { type: "snapshot", data: { logs: entries } } })), [logEntry(2101), logEntry(2102)]);
+  await page.evaluate((entries) => window.dispatchEvent(new CustomEvent("test:log-frame", { detail: { type: "snapshot", data: { logs: entries } } })), [logEntry(2101, undefined, "WARNING"), logEntry(2102, undefined, "ERROR")]);
   await expect(page.locator(".log-row")).toHaveCount(2);
   await expect(page.getByText("Log connection lost. Reconnecting automatically.")).toHaveCount(0);
+});
+
+test("logs default to a small warning window and verbose subscription is opt-in", async ({ page }) => {
+  const levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"];
+  await logStream(page, Array.from({ length: 1000 }, (_, i) => logEntry(i + 1, undefined, levels[i % levels.length])));
+  await page.goto("/webui/dashboard?tab=logs");
+  await expect(page.locator(".log-row")).toHaveCount(200);
+  await expect(page.locator('.log-row:is([data-level="INFO"], [data-level="DEBUG"])')).toHaveCount(0);
+  await expect(page.locator('.log-row[data-level="CRITICAL"]').last()).toHaveAttribute("data-seq", "1000");
+  const debug = page.getByRole("button", { name: "Debug mode", exact: true });
+  await debug.click();
+  await expect(debug).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator('.log-row[data-level="INFO"]')).toHaveCount(40);
+  await expect(page.locator('.log-row[data-level="DEBUG"]')).toHaveCount(40);
+  await debug.click();
+  await expect(debug).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator(".log-row")).toHaveCount(200);
+  await expect(page.locator('.log-row:is([data-level="INFO"], [data-level="DEBUG"])')).toHaveCount(0);
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent("test:log-frame", {
+    detail: { type: "log", data: { seq: 1001, level: "INFO", message: "Hidden verbose entry" } },
+  })));
+  await expect(page.locator(".logs-console-footer")).toContainText("Warnings and errors only");
+  await expect(page.locator(".log-row").last()).toHaveAttribute("data-seq", "1000");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });

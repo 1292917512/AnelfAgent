@@ -18,7 +18,7 @@ def fresh_buffer() -> Iterator[None]:
 
 @pytest.mark.asyncio
 async def test_snapshot_and_threaded_updates_release_listener() -> None:
-    log_module._notify_listeners("INFO", "before", "test")
+    log_module._notify_listeners("WARNING", "before", "test")
     listeners = len(log_module._all_listeners)
     stream = stream_logs()
     event, payload = await anext(stream)
@@ -37,16 +37,16 @@ async def test_snapshot_and_threaded_updates_release_listener() -> None:
 
 @pytest.mark.asyncio
 async def test_slow_consumer_resyncs_without_recursive_logs() -> None:
-    stream = stream_logs()
+    stream = stream_logs(debug=True)
     await anext(stream)
     for index in range(2400):
         log_module._notify_listeners("DEBUG", str(index), "load")
     event, payload = await asyncio.wait_for(anext(stream), 1)
     assert event == "snapshot"
-    assert len(payload["logs"]) == 2000
-    assert payload["logs"][0]["message"] == "400"
+    assert len(payload["logs"]) == 200
+    assert payload["logs"][0]["message"] == "2200"
     assert payload["logs"][-1]["message"] == "2399"
-    assert len({entry["seq"] for entry in payload["logs"]}) == 2000
+    assert len({entry["seq"] for entry in payload["logs"]}) == 200
     log_module._notify_listeners("INFO", "after resync")
     event, payload = await asyncio.wait_for(anext(stream), 1)
     assert event == "log" and payload["message"] == "after resync"
@@ -55,7 +55,7 @@ async def test_slow_consumer_resyncs_without_recursive_logs() -> None:
 
 @pytest.mark.asyncio
 async def test_delayed_thread_notification_is_not_lost() -> None:
-    stream = stream_logs()
+    stream = stream_logs(debug=True)
     await anext(stream)
     callback = log_module._all_listeners[-1]
     callback({"seq": 12, "level": "INFO", "message": "newer", "timestamp": 1.0})
@@ -63,3 +63,28 @@ async def test_delayed_thread_notification_is_not_lost() -> None:
     callback({"seq": 11, "level": "INFO", "message": "delayed", "timestamp": 1.0})
     assert (await asyncio.wait_for(anext(stream), 1))[1]["message"] == "delayed"
     await stream.aclose()
+
+
+@pytest.mark.parametrize("debug,expected", [(False, ["ERROR", "CRITICAL"]), (True, ["CRITICAL", "INFO"])])
+async def test_snapshot_filters_before_limiting(debug: bool, expected: list[str]) -> None:
+    for level in ["WARNING", "INFO", "ERROR", "DEBUG", "CRITICAL", "INFO"]:
+        log_module._notify_listeners(level, level)
+    stream = stream_logs(debug=debug, limit=2)
+    try:
+        _, payload = await anext(stream)
+        assert [entry["level"] for entry in payload["logs"]] == expected
+    finally:
+        await stream.aclose()
+
+
+async def test_default_subscription_discards_verbose_burst_before_queueing() -> None:
+    stream = stream_logs()
+    await anext(stream)
+    try:
+        for index in range(1000):
+            log_module._notify_listeners("INFO" if index % 2 else "DEBUG", str(index))
+        log_module._notify_listeners("WARNING", "important")
+        event, payload = await asyncio.wait_for(anext(stream), 1)
+        assert event == "log" and payload["message"] == "important"
+    finally:
+        await stream.aclose()

@@ -117,7 +117,9 @@
     "follow": "Follow",
     "unfollowed": "Unfollowed",
     "clear": "Clear",
-    "onlyErrors": "Errors only",
+    "debugMode": "Debug mode",
+    "debugHint": "Includes INFO / DEBUG logs",
+    "warningHint": "Warnings and errors only",
     "resume": "Resume",
     "pause": "Pause",
     "levels": "Levels",
@@ -140,6 +142,6 @@
     "entries": "Log entries",
     "visibleCount": "Showing {{count}} / {{total}} entries",
     "following": "Following latest logs",
-    "pauseHint": "Display paused · up to 2,000 entries buffered"
+    "pauseHint": "Display paused · up to {{capacity}} entries buffered"
   }
 }
