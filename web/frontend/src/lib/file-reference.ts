@@ -2,6 +2,15 @@ import type { WorkspaceFileRef } from "./workspace-file";
 
 export interface FileReference extends WorkspaceFileRef { isDir: boolean }
 
+/** 仅识别技能目录与记忆索引；普通 Markdown 文件保持文件样式。 */
+export function fileReferenceKind(reference: FileReference, index?: string): "skill" | "memory" | "file" {
+  if (reference.isDir) return "file";
+  if (reference.root === "workspace" && /^skills\/[^/]+\//i.test(reference.path)) return "skill";
+  if (reference.root === "project" && (/^(?:config\/)?memory\/.+\.md$/i.test(reference.path)
+    || /^memory\/.+\.md$/i.test(index ?? ""))) return "memory";
+  return "file";
+}
+
 /** 将文档内相对链接解析到所属目录，显式项目引用仍保持原根。 */
 export function resolveDocumentReference(href: string, base?: WorkspaceFileRef): FileReference | null {
   if (!base) return parseFileReference(href);

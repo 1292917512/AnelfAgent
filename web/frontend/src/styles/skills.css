@@ -4,10 +4,20 @@
 .skills-section-heading h2 { font-size: 14px; font-weight: 600; color: var(--text-strong); }
 .skills-section-heading > span { margin-left: auto; color: var(--muted); font-size: 11px; }
 .skills-caption { color: var(--muted); font-size: 12px; line-height: 1.8; margin-top: 8px; }
-.skills-recent-run { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 14px; }
-.skills-recent-source { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 11px; color: var(--muted); }
-.skills-recent-source time { margin-left: auto; }
-.skills-recent-title { font-size: 12px; margin-block: 6px 8px; color: var(--text); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+.skills-recent-list { margin-top: 10px; }
+.skills-recent-list > li { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border); }
+.skills-recent-main { min-width: 0; flex: 1; }
+.skills-recent-name { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; font-size: 12px; font-weight: 500; overflow-wrap: anywhere; }
+.skills-recent-name:hover { color: var(--accent); }
+.skills-recent-name svg { flex-shrink: 0; color: var(--muted); }
+.skills-recent-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 5px; font-size: 10px; color: var(--muted); }
+.skills-recent-meta > span { display: inline-flex; gap: 4px; align-items: center; }
+.skills-recent-count { display: grid; gap: 2px; text-align: center; font-size: 14px; font-variant-numeric: tabular-nums; }
+.skills-recent-count > span { color: var(--muted); font-size: 10px; }
+.skills-recent-edit { display: grid; place-items: center; flex-shrink: 0; width: 36px; height: 36px; border-radius: 8px; color: var(--muted); }
+.skills-recent-edit:hover { background: var(--bg-hover); color: var(--accent); }
+.skills-recent-edit:disabled { opacity: .5; }
+@media (pointer: coarse) { .skills-recent-edit { width: 44px; height: 44px; } }
 .skill-evidence { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); gap: 8px; margin-block: 10px; }
 .skill-evidence-item { display: flex; gap: 9px; align-items: flex-start; min-width: 0; padding: 11px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); transition: border-color 140ms, background-color 140ms; }
 .skill-evidence-item:hover { border-color: var(--accent); background: var(--accent-subtle); }

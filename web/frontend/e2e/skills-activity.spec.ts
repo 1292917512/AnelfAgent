@@ -17,8 +17,8 @@ const run: ActivityRun = {
       { name: skill.name, description: skill.description, mode: "candidate", score: 0.68, state: "active" },
       { name: "legacy-check", description: "Historical notes", mode: "candidate", score: 0.31, state: "archived" },
     ] },
-    { id: "get", kind: "tool", name: "get_skill", status: "done", arguments: JSON.stringify({ name: skill.name }), targets: [], request_id: "request-1", result: JSON.stringify({ ok: true, ...skill }), duration_ms: 12, ts: ts - 20 },
-    { id: "recall", kind: "tool", name: "recall", status: "done", arguments: JSON.stringify({ query: "service deployment status", filter_tags: "topic:deployment" }), targets: [], request_id: "request-2", result: JSON.stringify({ count: 2, results: [{ id: "mem:1", source: "memory", content: "The last deployment passed health checks.", tags: ["topic:deployment"], score: 0.87 }, { id: "mem:2", source: "memory", content: "Inspect the current version before restarting.", tags: ["topic:deployment", "channel:qq"], score: 0.72 }] }), duration_ms: 787, ts: ts - 16 },
+    { id: "get", kind: "tool", name: "get_skill", status: "done", arguments: JSON.stringify({ name: skill.name }), targets: [{ key: "file_path", value: "skills/deployment-check/SKILL.md", root: "workspace", path: "skills/deployment-check/SKILL.md" }], request_id: "request-1", result: JSON.stringify({ ok: true, ...skill }), duration_ms: 12, ts: ts - 20 },
+    { id: "recall", kind: "tool", name: "recall", status: "done", arguments: JSON.stringify({ query: "service deployment status", filter_tags: "topic:deployment" }), targets: [{ key: "file_path", value: "memory/deployment.md", root: "project", path: "config/memory/deployment.md" }], request_id: "request-2", result: JSON.stringify({ count: 2, results: [{ id: "mem:1", source: "memory", content: "The last deployment passed health checks.", tags: ["topic:deployment"], score: 0.87 }, { id: "mem:2", source: "memory", content: "Inspect the current version before restarting.", tags: ["topic:deployment", "channel:qq"], score: 0.72 }] }), duration_ms: 787, ts: ts - 16 },
     { id: "fail", kind: "tool", name: "get_skill", status: "error", arguments: '{"name":"missing-check"}', targets: [], request_id: "request-3", result: '{"error":"Skill not found"}', duration_ms: 5, ts: ts - 1 },
   ],
 };
@@ -40,6 +40,8 @@ test("skill evidence distinguishes suggestions from reads and links to a readabl
   await expect(summary).toContainText("Content read 1");
   await expect(summary).toContainText("Suggested 1");
   await expect(summary.getByText("missing-check")).toHaveCount(0);
+  await expect(execution.locator('.file-reference[data-kind="skill"]')).toContainText("Skill");
+  await expect(execution.locator('.file-reference[data-kind="memory"]')).toContainText("Memory");
   await expect(execution.locator(".activity-recall-results")).toHaveCount(0);
   await summary.click();
   const evidence = page.getByRole("dialog", { name: "Skills in this run", exact: true });
@@ -58,6 +60,8 @@ test("skill evidence distinguishes suggestions from reads and links to a readabl
   await expect(execution.locator(".activity-recall-results")).toHaveCount(0);
   await page.locator(".activity-feed").evaluate((element) => { element.scrollTop = 0; });
   await page.screenshot({ path: info.outputPath("skills-workspace-light.png"), animations: "disabled" });
+  const workspaceAudit = await new AxeBuilder({ page }).include(".activity-feed").withTags(["wcag2a", "wcag2aa", "wcag21aa"]).analyze();
+  expect(workspaceAudit.violations).toEqual([]);
   await page.evaluate(() => { document.documentElement.dataset.theme = "dark"; document.documentElement.classList.add("dark"); });
   await page.screenshot({ path: info.outputPath("skills-workspace-dark.png"), animations: "disabled" });
   await summary.click();
@@ -68,6 +72,7 @@ test("skill evidence distinguishes suggestions from reads and links to a readabl
   await expect(card.getByRole("heading", { name: "Deployment checklist" })).toBeVisible();
   await expect(card.locator(".skill-card-facts")).toContainText("38");
   await expect(page.getByRole("region", { name: "Recent skill activity" })).toContainText("qq · 42");
+  await page.getByRole("region", { name: "Recent skill activity" }).screenshot({ path: info.outputPath("recent-skills-dark.png"), animations: "disabled" });
   const populatedAudit = await new AxeBuilder({ page }).include("main").withTags(["wcag2a", "wcag2aa", "wcag21aa"]).analyze();
   expect(populatedAudit.violations).toEqual([]);
   await page.screenshot({ path: info.outputPath("skills-catalog-dark.png"), fullPage: true, animations: "disabled" });
@@ -76,12 +81,18 @@ test("skill evidence distinguishes suggestions from reads and links to a readabl
   await expect(page.locator('[data-skill="legacy-check"]')).toBeVisible();
   await page.getByRole("textbox", { name: "Search skills..." }).fill("does-not-exist");
   await expect(page.getByText("No skills match these filters")).toBeVisible();
-  await page.getByRole("region", { name: "Recent skill activity" }).getByRole("button", { name: "Skills in this run", exact: true }).click();
-  await evidence.getByRole("link", { name: /deployment-check.*Content read/ }).click();
-  await expect(evidence).toHaveCount(0);
+  const recent = page.getByRole("region", { name: "Recent skill activity" });
+  await expect(recent.locator("li")).toHaveCount(2);
+  await expect(recent.locator("li").first()).toContainText("deployment-check");
+  await recent.getByRole("link", { name: "deployment-check", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Search skills..." })).toHaveValue("");
   await expect(page.getByRole("tab", { name: "All · 2", exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(card.getByRole("heading", { name: "Deployment checklist" })).toBeVisible();
+  await recent.getByRole("button", { name: "Edit deployment-check", exact: true }).click();
+  const editor = page.getByRole("dialog", { name: "Edit · deployment-check", exact: true });
+  await expect(editor.locator("textarea")).toHaveValue(skill.content!);
+  await editor.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(editor).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   const audit = await new AxeBuilder({ page }).include("main").withTags(["wcag2a", "wcag2aa", "wcag21aa"]).analyze();
   expect(audit.violations).toEqual([]);

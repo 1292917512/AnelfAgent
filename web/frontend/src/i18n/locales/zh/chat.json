@@ -95,6 +95,8 @@
   "dropToAttach": "松开以附加文件",
   "rootWorkspace": "工作区",
   "rootProject": "项目",
+  "referenceSkill": "技能",
+  "referenceMemory": "记忆",
   "removeAttachment": "移除附件",
   "rootDir": "目录",
   "attachmentUploading": "附件仍在上传中，请稍候再发送",

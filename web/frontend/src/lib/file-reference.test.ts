@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { fileReferenceMarkdown, parseFileReference, resolveDocumentReference } from "./file-reference";
+import { fileReferenceKind, fileReferenceMarkdown, parseFileReference, resolveDocumentReference } from "./file-reference";
 
 describe("file references", () => {
+  it("distinguishes managed skill and memory references without relabeling ordinary markdown", () => {
+    expect(fileReferenceKind({ root: "workspace", path: "skills/deploy/SKILL.md", isDir: false })).toBe("skill");
+    expect(fileReferenceKind({ root: "project", path: "config/memory/events/today.md", isDir: false })).toBe("memory");
+    expect(fileReferenceKind({ root: "project", path: "custom-data/notes/today.md", isDir: false }, "memory/today.md")).toBe("memory");
+    expect(fileReferenceKind({ root: "workspace", path: "memory/today.md", isDir: false })).toBe("file");
+    expect(fileReferenceKind({ root: "workspace", path: "skills/demo", isDir: true })).toBe("file");
+    expect(fileReferenceKind({ root: "project", path: "docs/memory/design.md", isDir: false })).toBe("file");
+  });
   it("resolves skill documentation links within the skill directory without changing explicit roots", () => {
     const base = { root: "workspace", path: "skills/deploy-check" } as const;
     expect(resolveDocumentReference("./scripts/check.py", base)).toEqual({ root: "workspace", path: "skills/deploy-check/scripts/check.py", isDir: false });

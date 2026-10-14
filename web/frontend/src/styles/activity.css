@@ -119,6 +119,13 @@
 .activity-model > span:first-child { display: inline-flex; align-items: center; gap: 5px; }
 .activity-model > span:nth-child(2) { font-variant-numeric: tabular-nums; }
 .activity-model p { width: 100%; color: var(--warn); overflow-wrap: anywhere; }
+.activity-model-call { min-width: 0; }
+.activity-model-call > .activity-entry-heading { gap: 4px; }
+.activity-model-toggle { min-width: 0; flex: 1; min-height: 32px; padding: 6px; border-radius: 6px; text-align: left; }
+.activity-model-toggle:hover { background: var(--bg-hover); color: var(--text); }
+.activity-model-call .activity-thought-content { padding-left: 24px; }
+.activity-model-call.is-live .activity-thought-content { border-left: 2px solid color-mix(in srgb, var(--accent) 35%, transparent); margin-left: 6px; padding-left: 16px; }
+@media (pointer: coarse) { .activity-model-toggle { min-height: 44px; } }
 .activity-tool.is-error { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); }
 .activity-context { border: 1px solid var(--border); border-radius: 10px; background: color-mix(in srgb, var(--accent) 3%, var(--panel)); overflow: hidden; }
 .activity-entry-stat { flex-shrink: 0; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }

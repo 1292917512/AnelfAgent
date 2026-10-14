@@ -56,7 +56,7 @@ export function SkillsPanel() {
   };
   const filters: LibraryFilter[] = ["all", "active", "stale", "archived"];
   return <div className="skills-library">
-    <SkillActivityPanel />
+    <SkillActivityPanel onEdit={(skill) => setEditor({ skill })} />
     <div className="skills-library-heading"><div><h2>{t("library.title")}</h2><p>{t("library.hint")}</p></div>
       <Button variant="primary" onClick={() => setEditor({ skill: null })}><Plus size={16} />{t("createNew")}</Button></div>
     <div className="skills-toolbar">

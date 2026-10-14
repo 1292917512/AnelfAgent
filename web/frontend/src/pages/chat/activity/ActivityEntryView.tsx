@@ -17,6 +17,7 @@ import { ActivityToolSummary } from "./ActivityToolSummary";
 import { ActivityInspector } from "./ActivityInspector";
 import { ActivityNotice } from "./ActivityNotice";
 import { ToolContribution } from "@/components/extensions/ToolContribution";
+import type { ActivityThought } from "./activity-stream";
 
 function readableJson(value: string): string {
   try { return JSON.stringify(JSON.parse(value), null, 2); } catch { return value; }
@@ -41,15 +42,15 @@ function ToolDetails({ entry }: { entry: Extract<ActivityEntry, { kind: "tool" }
 }
 
 /** 思考正文、工具状态和文件改动的统一过程行。 */
-export const ActivityEntryView = memo(function ActivityEntryView({ entry, live, current, onReveal }: { entry: ActivityEntry; live: boolean; current: boolean; onReveal: (id: string) => void }) {
+export const ActivityEntryView = memo(function ActivityEntryView({ entry, thoughts, live, current, onReveal }: { entry: ActivityEntry; thoughts?: ActivityThought[]; live: boolean; current: boolean; onReveal: (id: string) => void }) {
   const { t } = useTranslation("workbench");
   const [expanded, setExpanded] = useState<boolean | null>(null);
-  const now = useNow("status" in entry && (entry.status === "running" || entry.status === "queued"));
+  const now = useNow((entry.kind === "tool" || entry.kind === "delegation") && (entry.status === "running" || entry.status === "queued"));
   if (entry.kind === "notice") return <ActivityNotice entry={entry} />;
   if (entry.kind === "context") return <ActivityContext entry={entry} />;
   if (entry.kind === "hook") return <HookExecutionRow run={{ ...entry, started_at: entry.ts }} defaultExpanded={current} />;
   if (entry.kind === "file") return <DiffView {...entry} />;
-  if (entry.kind === "model") return <ActivityModel entry={entry} />;
+  if (entry.kind === "model") return <ActivityModel entry={entry} thoughts={thoughts} />;
   if (entry.kind === "text") return <div className="activity-output">{entry.truncated && <p className="activity-note">{t("activity.truncated")}</p>}<Markdown content={entry.content} renderText={renderTaggedText} /></div>;
   if (entry.kind === "thinking") {
     const open = expanded ?? current;
@@ -94,4 +95,5 @@ export const ActivityEntryView = memo(function ActivityEntryView({ entry, live, 
     <ActivityTargets targets={entry.targets} compact />
     <ToolContribution entry={entry} view="summary" fallback={<ActivityToolSummary entry={entry} />} />
   </div>;
-});
+}, (a, b) => a.entry === b.entry && a.live === b.live && a.current === b.current && a.onReveal === b.onReveal
+  && a.thoughts?.length === b.thoughts?.length && (a.thoughts?.every((thought, index) => thought === b.thoughts?.[index]) ?? true));

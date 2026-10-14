@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useMemo } from "react";
 import { Activity, Bot, ChevronDown, Check, AlertCircle, Pause, ListChecks } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useNow } from "@/hooks/useNow";
@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { ActivityEntryView } from "./ActivityEntryView";
 import { ActivitySourceLabel, TaggedText } from "./ActivityReferences";
 import { SkillEvidence } from "@/components/common/SkillEvidence";
+import { activityRows } from "./activity-stream";
 
 export const ActivityRunCard = memo(function ActivityRunCard({ run, open, current = false, onToggle, onReveal }: { run: ActivityRun; current?: boolean; open: boolean; onToggle: (id: string, open: boolean) => void; onReveal: (id: string) => void }) {
   const { t } = useTranslation("workbench");
@@ -15,6 +16,7 @@ export const ActivityRunCard = memo(function ActivityRunCard({ run, open, curren
   const now = useNow(running);
   const title = run.label || t(`activity.kinds.${run.kind}`, { defaultValue: t("activity.background") });
   const tools = run.entries.filter((entry) => entry.kind === "tool");
+  const rows = useMemo(() => activityRows(run.entries), [run.entries]);
   const hasError = run.status === "failed" || tools.some((entry) => entry.status === "error");
   const stopped = ["cancelled", "interrupted", "budget_exhausted"].includes(run.status);
   return <article id={`activity-${run.id}`} className={cn("activity-run", running && "is-running", current && "is-current", run.kind === "delegation" && "is-delegation")} data-activity-run={run.id}>
@@ -31,7 +33,7 @@ export const ActivityRunCard = memo(function ActivityRunCard({ run, open, curren
       {run.input && <details className="activity-input"><summary>{t(run.kind === "conversation" ? "activity.request" : "activity.goal")}</summary><div><TaggedText content={run.input} /></div></details>}
       {run.truncated && <p className="activity-note">{t("activity.truncated")}</p>}
       {run.error && <p className="text-xs text-warn break-words" role="alert">{run.error}</p>}
-      {run.entries.map((entry, index) => <ActivityEntryView key={`${entry.id}:${current}`} entry={entry} current={current} live={running && index === run.entries.length - 1} onReveal={onReveal} />)}
+      {rows.map(({ entry, thoughts }) => <ActivityEntryView key={`${entry.id}:${current}`} entry={entry} thoughts={thoughts} current={current} live={running && entry.id === run.entries[run.entries.length - 1]?.id} onReveal={onReveal} />)}
       {running && <p className="activity-waiting"><span className="activity-live-dot" />{t(run.entries.some((entry) => entry.kind === "context" && entry.status === "running") ? "activity.contextPreparing" : run.entries.some((entry) => entry.kind === "tool" && entry.status === "running") ? "activity.executing" : "activity.thinking")}</p>}
       {!running && <p className="activity-run-footer">{t(`activity.status.${run.status}`, { defaultValue: run.status })} · {t("activity.operationCount", { count: tools.length })}{hasError && ` · ${t("activity.needsAttention")}`}</p>}
     </div> : <p className="activity-run-summary">{t("activity.operationCount", { count: tools.length })}{hasError && ` · ${t("activity.needsAttention")}`}</p>}

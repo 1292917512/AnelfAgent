@@ -1,7 +1,7 @@
 import type { ChatStreamingDiff } from "./chat";
 import type { HookExecution } from "./hooks";
 
-interface EntryBase { id: string; ts: number }
+interface EntryBase { id: string; ts: number; generation?: number }
 export interface ActivityTag { key: string; value: string; root?: string; path?: string }
 export interface ActivitySource { scope: string; kind: string; channel: string; target: string; session: string }
 export interface ActivityNoticeItem { source: ActivitySource; role: string; message_id: string; ts: number; content: string }

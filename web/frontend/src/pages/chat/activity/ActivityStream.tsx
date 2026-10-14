@@ -30,7 +30,7 @@ const Segment = memo(function Segment({ segment, parent, onReveal }: { segment: 
       {first && <><SkillEvidence skills={run.skills ?? []} compact />
         {run.input && <details className="activity-input"><summary>{t(run.kind === "conversation" ? "activity.request" : "activity.goal")}</summary><div><TaggedText content={run.input} /></div></details>}
         {run.truncated && <p className="activity-note">{t("activity.truncated")}</p>}</>}
-      {entries.map((entry) => <div key={entry.id} data-activity-entry={entry.id}><ActivityEntryView entry={entry} current live={running && entry.id === run.entries[run.entries.length - 1]?.id} onReveal={onReveal} /></div>)}
+      {entries.map(({ entry, thoughts }) => <div key={entry.id} data-activity-entry={entry.id}><ActivityEntryView entry={entry} thoughts={thoughts} current live={running && entry.id === run.entries[run.entries.length - 1]?.id} onReveal={onReveal} /></div>)}
       {first && entries.length === 0 && running && <p className="activity-waiting">{t("activity.contextPreparing")}</p>}
       {finished && <p className="activity-run-footer">{t(`activity.status.${run.status}`, { defaultValue: run.status })} · {t("activity.operationCount", { count: run.entries.filter((entry) => entry.kind === "tool").length })}{run.error && <span className="text-warn"> · {run.error}</span>}</p>}
     </div>

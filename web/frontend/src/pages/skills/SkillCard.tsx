@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { Archive, ArchiveRestore, Boxes, ChevronDown, CircleDashed, GitMerge, Pin, PinOff, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, Boxes, ChevronDown, CircleDashed, GitMerge, Pencil, Pin, PinOff, Trash2 } from "lucide-react";
 import { skillsApi } from "@/lib/api";
 import type { SkillItem } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -64,7 +64,7 @@ export function SkillCard({ skill, expanded, onToggle, onEdit, onChanged, onDele
           <div className="skill-content-preview"><Markdown content={detail.content ?? ""} fileBase={{ root: "workspace", path: `skills/${skill.name}` }} /></div>
           <details className="skill-source"><summary>{t("library.markdownSource")}</summary><pre>{detail.content}</pre></details>
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" onClick={() => onEdit(detail)}>{t("edit")}</Button>
+            <Button size="sm" onClick={() => onEdit(detail)}><Pencil size={14} />{t("edit")}</Button>
             <Button size="sm" disabled={action.isPending} onClick={() => action.mutate("pin")}>{skill.pinned ? <PinOff size={14} /> : <Pin size={14} />}{skill.pinned ? t("unpin") : t("pin")}</Button>
             <Button size="sm" disabled={action.isPending} onClick={() => action.mutate("state")}>{skill.state === "archived" ? <ArchiveRestore size={14} /> : <Archive size={14} />}{skill.state === "archived" ? t("unarchive") : t("archive")}</Button>
             <Button size="sm" variant="danger" onClick={() => setDeleting(true)}><Trash2 size={14} />{t("delete")}</Button>

@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { BookOpen, Search, Wrench } from "lucide-react";
+import { GraduationCap, Search, Wrench } from "lucide-react";
 import type { ActivityEntry } from "@/lib/types/activity";
 import { activityRecord } from "@/lib/activity-data";
 import { MemoryTags, TaggedText } from "./ActivityReferences";
@@ -18,7 +18,7 @@ export function ActivityToolSummary({ entry }: { entry: Extract<ActivityEntry, {
     return typeof value === "string" && value.trim() ? [{ key, tags: [...new Set(value.split(",").map((tag) => tag.trim()).filter(Boolean))] }] : [];
   });
   if (["get_skill", "restore_skill", "update_skill", "create_skill"].includes(entry.name) && typeof args.name === "string") {
-    Icon = BookOpen;
+    Icon = GraduationCap;
     label = t("node.skill"); text = args.name;
     if (entry.status === "done" && entry.name === "get_skill") outcome = t("evidence.read");
   } else if (["recall", "recall_tool_errors"].includes(entry.name)) {

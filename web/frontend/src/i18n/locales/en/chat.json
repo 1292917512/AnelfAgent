@@ -95,6 +95,8 @@
   "dropToAttach": "Drop to attach file",
   "rootWorkspace": "Workspace",
   "rootProject": "Project",
+  "referenceSkill": "Skill",
+  "referenceMemory": "Memory",
   "removeAttachment": "Remove attachment",
   "rootDir": "Folder",
   "attachmentUploading": "Attachments are still uploading. Please wait before sending.",

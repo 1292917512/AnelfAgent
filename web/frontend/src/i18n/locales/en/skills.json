@@ -66,15 +66,17 @@
     "hint": "Suggestions are recommendations. Read or explicit skills were provided to the AI; this does not confirm that their steps were completed."
   },
   "recent": {
-    "more": "Show {{count}} more runs",
-    "less": "Collapse earlier runs",
+    "more": "Show {{count}} more skills",
+    "less": "Show fewer skills",
     "title": "Recent skill activity",
     "memoryOnly": "In memory · cleared on restart",
     "loading": "Loading execution records…",
     "empty": "No skill suggestions or reads in recent runs. Skills can still be opened from the catalog on demand.",
-    "running": "Running",
-    "ended": "Ended",
-    "system": "System task"
+    "system": "System task",
+    "hint": "Most frequent first · reads and suggestions are counted separately.",
+    "runs": "runs",
+    "count": "Participated in {{count}} recent runs",
+    "edit": "Edit {{name}}"
   },
   "library": {
     "title": "Skill catalog",

@@ -1,4 +1,4 @@
-import { BookOpen, Search, Sparkles, ArrowUpRight } from "lucide-react";
+import { BookOpen, GraduationCap, Search, Sparkles, ArrowUpRight } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import type { ActivitySkill } from "@/lib/types/activity";
@@ -12,7 +12,7 @@ export const SkillEvidence = memo(function SkillEvidence({ skills, compact = fal
   if (!skills.length) return null;
   if (compact) return <>
     <button className="skill-evidence-summary" aria-label={t("evidence.title")} aria-haspopup="dialog" onClick={() => setOpen(true)}>
-      <BookOpen size={14} className="shrink-0 text-accent" />
+      <GraduationCap size={14} className="shrink-0 text-accent" />
       <span className="skill-evidence-summary-body">
         <span className="skill-evidence-counts">{(["read", "explicit", "candidate"] as const).map((mode) => {
           const count = skills.filter((skill) => skill.mode === mode).length;

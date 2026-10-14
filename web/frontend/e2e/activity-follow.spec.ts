@@ -107,6 +107,8 @@ test("terminal progress stops live indicators after a long stream and keeps tool
   await page.goto("/webui/");
   const card = page.locator('[data-activity-run="stream"]');
   await expect(card.locator(".activity-model .animate-spin")).toHaveCount(1);
+  await expect(card.locator(".activity-model-toggle")).toHaveAttribute("aria-expanded", "true");
+  await expect(card.locator(".activity-thought")).toHaveCount(0);
   for (let i = 0; i < 12; i++) {
     await publish({ ...current, entries: current.entries.map((entry) => entry.kind === "thinking" ? { ...entry, content: "Reviewing results\n".repeat(i + 1) } : entry) });
   }
@@ -117,6 +119,15 @@ test("terminal progress stops live indicators after a long stream and keeps tool
   await expect(card.locator(".activity-run-footer")).toBeInViewport();
   await expect(card.locator(".activity-duration")).toHaveText("25s");
   await expect(page.locator(".activity-feed")).toHaveAttribute("data-following", "true");
+  await expect(card.locator(".activity-model-toggle")).toHaveAttribute("aria-expanded", "false");
+  await expect(card.locator(".activity-thought-content")).toHaveCount(0);
+  await card.locator(".activity-model-toggle").click();
+  await expect(card.locator(".activity-thought-content")).toContainText("Reviewing results");
+  await card.getByRole("button", { name: /View details: Test model/ }).click();
+  const thinking = page.getByRole("dialog", { name: /Test model/ });
+  await expect(thinking).toContainText("Reviewing results");
+  await thinking.getByRole("button", { name: "Close", exact: true }).click();
+  await card.locator(".activity-model-toggle").click();
   await card.getByRole("button", { name: "View details: inspect", exact: true }).last().click();
   const dialog = page.getByRole("dialog", { name: "inspect", exact: true });
   await expect(dialog).toContainText("Result 59");
