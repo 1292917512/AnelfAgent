@@ -12,6 +12,7 @@ from typing import Any, Literal
 from core.activity import ACTIVITY_TEXT_LIMIT, EVENT_ACTIVITY_CONTEXT, EVENT_ACTIVITY_UPDATE
 from core.event_bus import event_bus
 from core.sanitizer import sanitize_text
+from core.tags import etag_all
 
 _LABELS = {
     "memory": "记忆召回与技能候选", "profile": "实体画像", "relation": "记忆关联",
@@ -21,6 +22,22 @@ _SOURCE_LABELS = {
     "memory_recall": "记忆召回", "cross_channel_recall": "跨频道召回",
     "cross_channel_narrative": "跨频道关联", "skill_match": "技能匹配与显式调用",
 }
+
+
+async def emit_recollection_update(messages: list[dict[str, Any]], previous: str) -> str:
+    """只在后台回忆快照实际进入本次组装且发生变化时发布观测。"""
+    content = "\n".join(str(message["content"]) for message in messages
+                        if message.get("_source", {}).get("provider") == "memory_deep_probe")
+    if not content or content == previous:
+        return previous
+    skills = list(dict.fromkeys(value for key, value in etag_all(content) if key == "skill"))
+    await event_bus.emit(EVENT_ACTIVITY_CONTEXT, {
+        "status": "done", "duration_ms": 0,
+        "blocks": [{"layer": "provider", "label": "轮内回忆补充", "content": sanitize_text(content)[:ACTIVITY_TEXT_LIMIT]}],
+        "skills": [{"name": name, "description": "", "mode": "candidate"} for name in skills[:16]],
+        "block_count": 1, "truncated": len(content) > ACTIVITY_TEXT_LIMIT,
+    })
+    return content
 
 
 async def emit_context_update(

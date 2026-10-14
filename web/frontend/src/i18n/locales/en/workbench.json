@@ -306,6 +306,11 @@
     "modelCache": "Cached {{percent}}%",
     "cacheUnknown": "Cache not reported",
     "cacheHint": "Based only on provider-reported cache usage. Missing data does not mean a cache miss.",
+    "modelDetails": "Call details",
+    "firstResponse": "Before first output {{duration}}",
+    "afterResponse": "After first output {{duration}}",
+    "cachedTokens": "Cache read {{tokens}} tokens · {{percent}}%",
+    "timingHint": "Client end-to-end timing. First output includes connection, queuing and server processing; subsequent time includes reasoning, text, tool arguments and transport. Neither is pure model compute time. Unmeasured timing is omitted.",
     "rawResult": "Full receipt",
     "resultFields": {
       "error": "Error",
@@ -355,7 +360,10 @@
       "event": "Event trigger",
       "notification": "Notification",
       "system": "System trigger"
-    }
+    },
+    "recollectionTitle": "Recollection",
+    "recollectionHint": "Memory and skill preparation, background decisions and retrieval for the conversations on this execution page. Prepared results enter dynamic context on the next model call; a candidate does not mean a skill was executed.",
+    "recollectionEmpty": "No recollection records on this execution page."
   },
   "toolView": {
     "exitCode": "Exit {{code}}",

@@ -150,7 +150,7 @@ async def _collect_provider_messages(mind: "Mind", scope: str) -> List[Dict]:
                     "role": "system",
                     "content": text,
                     "_layer": "provider",
-                    "_source": {"origin": "context_provider"},
+                    "_source": {"origin": "context_provider", "provider": clip.source},
                 })
         if images and config is not None:
             from agent.mind.tools.vision import build_provider_media_message
@@ -578,6 +578,8 @@ async def _run_think_rounds(
         llm_messages = (
             ctx.base_messages + ctx.tool_chain + provider_msgs + [exec_context]
         )
+        from agent.mind.context_observation import emit_recollection_update
+        state.observed_recollection = await emit_recollection_update(provider_msgs, state.observed_recollection)
         observe_delivery_context(provider_msgs)
 
         mind._set_phase(MindPhase.LLM_CALLING)

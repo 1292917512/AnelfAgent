@@ -22,7 +22,7 @@ register_configs_safe({
         },
         "retrieval_local_context_inject": {
             "default": True,
-            "description": "将本地检索环境缺项和部署失败摘要注入 AI 动态上下文，正常时不注入。",
+            "description": "将本地检索环境缺项、部署进度与结果摘要注入 AI 动态上下文；成功结果短期保留后自动清除。",
         },
     },
     "retrieval": {

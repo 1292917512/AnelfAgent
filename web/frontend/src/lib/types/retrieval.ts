@@ -51,8 +51,13 @@ export interface RetrievalDeploymentStatus {
     finished_at: number | null;
     error: string;
     log: string;
+    elapsed_seconds?: number;
+    phase_elapsed_seconds?: number;
+    output_idle_seconds?: number | null;
   } | null;
+  observed_at?: number;
+  next_step?: string;
   containers?: { service: string; image: string; state: string; health: string }[];
   error?: string;
-  requirements: { platform: string; docker_cli: boolean; install_guide: string; next_step: string };
+  requirements: { platform: string; docker_cli: boolean; install_guide: string };
 }

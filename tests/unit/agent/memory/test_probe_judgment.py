@@ -41,14 +41,14 @@ async def test_initial_probe_obeys_gate_with_scope_and_existing_facts(monkeypatc
     assert "[uid:42]" in str(decision.await_args.args[2])
 
 
-async def test_refresh_skips_expensive_planning_after_local_results(monkeypatch):
+async def test_refresh_gate_can_skip_both_planning_and_search(monkeypatch):
     hub = DeepProbeHub()
     state = hub.begin_reply("user_qq:42")
     retriever = SimpleNamespace(_extract_focus_query=lambda _: "新话题", _is_trivial_turn=lambda _: False,
                                 _store=None, plan_retrieval=AsyncMock())
     state.retriever = retriever
     monkeypatch.setattr("agent.memory.recall_fast.search_local", AsyncMock(return_value=[]))
-    monkeypatch.setattr("agent.memory.probe.assess_optional_work", AsyncMock(return_value=WorkDecision(False, "test")))
+    monkeypatch.setattr("agent.memory.probe_refresh.assess_optional_work", AsyncMock(return_value=WorkDecision(False, "test")))
     with recall_options(RecallPolicy(level="deep")):
         hub.refresh(state.scope, [{"role": "user", "content": "新话题"}])
         await state.task

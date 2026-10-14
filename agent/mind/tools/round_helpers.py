@@ -120,6 +120,7 @@ class _ThinkRoundState:
     # 实体推送并入水位（快照后到达的推送才轮内注入，之前的已随短期记忆进 base）
     push_watermark: int = 0
     observed_cross_messages: dict[str, int] = field(default_factory=dict)
+    observed_recollection: str = ""
     # plan 收敛标记：正常结束路径（_finish_round）已收敛时置位，finally 不重复收敛
     plan_finalized: bool = False
     # 本次会话是否被协作式中断终止（决定 finally 收敛 outcome）

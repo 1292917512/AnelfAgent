@@ -32,6 +32,44 @@ async function liveFixture(page: Page, initial: ActivityRun[]) {
   };
 }
 
+test("recollection window separates conversations and observes background results without rendering closed details", async ({ page }, info) => {
+  const start = Date.now() / 1000 - 10;
+  const hook: ActivityRun["entries"][number] = { id: "recall", kind: "hook", name: "memory.probe", event: "context_refresh", mode: "async", source: "internal", scope: "user_qq:42", status: "running", ts: start, duration_ms: 0, detail: "Searching current deployment evidence" };
+  let first = run("qq-recall", start, { label: "Investigate deployment", entries: [hook] });
+  const second = run("web-recall", start + 1, { label: "Check project memory", scope: "user_webui:1#test", source: { scope: "user_webui:1#test", kind: "user", channel: "webui", target: "1", session: "test" }, entries: [
+    { id: "context", kind: "context", status: "done", ts: start + 1, duration_ms: 100, block_count: 1, blocks: [{ layer: "context", label: "Project memory", content: "Separate Web conversation evidence" }] },
+  ] });
+  const publish = await liveFixture(page, [first, second]);
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.goto("/webui/");
+  await expect(page.getByRole("dialog", { name: "Recollection", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Recollection", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Recollection", exact: true });
+  await expect(dialog.getByRole("heading", { name: "Investigate deployment", exact: true })).toBeVisible();
+  await expect(dialog.getByRole("heading", { name: "Check project memory", exact: true })).toBeVisible();
+  await expect(dialog.getByText("Searching current deployment evidence", { exact: true })).toHaveCount(0);
+  const qq = dialog.locator("section").filter({ has: page.getByRole("heading", { name: "Investigate deployment", exact: true }) });
+  await qq.getByRole("button", { expanded: false }).click();
+  await expect(qq).toContainText("Searching current deployment evidence");
+  first = { ...first, updated_at: start + 2, entries: [{ ...hook, status: "done", duration_ms: 420, detail: "Ready for the next model call" },
+    { id: "injected", kind: "context", status: "done", ts: start + 2, duration_ms: 0, block_count: 1, blocks: [{ layer: "provider", label: "Recollection supplement", content: "[skill:deploy-project] Check deployment steps" }], skills: [{ name: "deploy-project", description: "Deployment checks", mode: "candidate" }] },
+  ] };
+  await publish(first);
+  await expect(qq).toContainText("Ready for the next model call");
+  await qq.locator(".activity-context button[aria-expanded]").click();
+  await expect(qq.getByText("Suggested", { exact: true })).toBeVisible();
+  await qq.locator("summary").filter({ hasText: "Recollection supplement" }).click();
+  await expect(qq.getByRole("link", { name: "deploy-project", exact: true }).last()).toHaveAttribute("href", "/webui/skills?skill=deploy-project");
+  await expect(qq).not.toContainText("Separate Web conversation evidence");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath("recollection.png"), animations: "disabled" });
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator(".activity-feed")).toHaveAttribute("data-following", "true");
+  expect(errors).toEqual([]);
+});
+
 test("live process follows streamed content and concurrent tools until explicitly scrolled", async ({ page, isMobile }, info) => {
   const start = Date.now() / 1000 - 20;
   let current = run("current", start);
@@ -112,7 +150,8 @@ test("terminal progress stops live indicators after a long stream and keeps tool
   for (let i = 0; i < 12; i++) {
     await publish({ ...current, entries: current.entries.map((entry) => entry.kind === "thinking" ? { ...entry, content: "Reviewing results\n".repeat(i + 1) } : entry) });
   }
-  await publish({ ...current, status: "completed", ended_at: start + 25, entries: current.entries.map((entry) => entry.kind === "model" ? { ...entry, status: "done", duration_ms: 24000 } : entry) });
+  await publish({ ...current, status: "completed", ended_at: start + 25, entries: current.entries.map((entry) => entry.kind === "model" ? { ...entry, status: "done", duration_ms: 24000, ttft_ms: 2000,
+    usage: { total_input_tokens: 1000, completion_tokens: 250, cache_read_input_tokens: 950, cache_observable: true } } : entry) });
   await expect(page.locator(".activity-connection")).not.toContainText("Working");
   await expect(card.locator(".activity-live-dot, .animate-spin, .activity-thought.is-live")).toHaveCount(0);
   await expect(card.locator(".activity-run-footer")).toContainText("Completed");
@@ -125,6 +164,10 @@ test("terminal progress stops live indicators after a long stream and keeps tool
   await expect(card.locator(".activity-thought-content")).toContainText("Reviewing results");
   await card.getByRole("button", { name: /View details: Test model/ }).click();
   const thinking = page.getByRole("dialog", { name: /Test model/ });
+  await expect(thinking).toContainText("Before first output 2s");
+  await expect(thinking).toContainText("After first output 22s");
+  await expect(thinking).toContainText("Cache read 950 tokens · 95%");
+  await page.screenshot({ path: info.outputPath("model-timing.png"), animations: "disabled" });
   await expect(thinking).toContainText("Reviewing results");
   await thinking.getByRole("button", { name: "Close", exact: true }).click();
   await card.locator(".activity-model-toggle").click();

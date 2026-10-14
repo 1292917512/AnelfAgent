@@ -46,7 +46,7 @@ async def test_default_start_is_nonblocking_and_only_fills_empty_endpoints(manag
     released.set()
     result = await finish(manager)
     assert result["operation"]["status"] == "succeeded"
-    assert calls == [("up", "-d", "--wait", "--wait-timeout", "180")]
+    assert calls == [("pull", "--policy", "missing"), ("up", "-d", "--pull", "never", "--wait", "--wait-timeout", "180")]
     deployment.ConfigManager.set_persisted.assert_called_once_with({"retrieval_searxng_base_url": "http://127.0.0.1:18080"})
     original = (manager.root / ".env").read_text(encoding="utf-8")
     initialize(manager.root)
@@ -177,3 +177,66 @@ async def test_compose_runner_redacts_output_and_reaps_cancelled_process(manager
     with pytest.raises(asyncio.CancelledError):
         await task
     assert all(proc.poll() is not None for proc in processes)
+
+
+async def test_live_progress_is_bounded_redacted_and_survives_until_next_model_call(manager, monkeypatch):
+    initialize(manager.root)
+    token = read_values(manager.root)["CRAWL4AI_API_TOKEN"]
+    real_popen = subprocess.Popen
+    release = manager.root / "release"
+    script = ("import os,time,pathlib; print('x'*6000 + os.environ['TEST_TOKEN'], flush=True); "
+              "p=pathlib.Path(os.environ['TEST_RELEASE']);\nwhile not p.exists(): time.sleep(0.02)")
+    monkeypatch.setenv("TEST_TOKEN", token)
+    monkeypatch.setenv("TEST_RELEASE", str(release))
+    monkeypatch.setattr(deployment.subprocess, "Popen", lambda command, **kwargs: real_popen([sys.executable, "-c", script], **kwargs))
+    manager.start("up")
+    try:
+        for _ in range(150):
+            await asyncio.sleep(0.02)
+            if manager.snapshot()["operation"]["log"]:
+                break
+        state = manager.snapshot()
+        assert state["operation"]["status"] == "running"
+        assert state["operation"]["phase"] == "pulling"
+        assert "[redacted]" in state["operation"]["log"]
+        assert len(state["operation"]["log"]) <= 4000
+        assert state["operation"]["elapsed_seconds"] >= 0
+        assert state["operation"]["output_idle_seconds"] is not None
+        assert token not in (manager.root / ".operation.json").read_text(encoding="utf-8")
+        release.touch()
+        completed = await finish(manager)
+        assert completed["operation"]["status"] == "succeeded"
+        assert completed["operation"]["id"] in manager.context_status()
+        assert "已完成" in manager.context_status()
+        assert "安装" not in completed["next_step"]
+        monkeypatch.setattr(deployment, "read_values", lambda root: pytest.fail("dynamic context must not read disk"))
+        assert "已完成" in manager.context_status()
+        manager._notice_until = deployment.time.monotonic() - 1
+        assert manager.context_status() == ""
+    finally:
+        await manager.close()
+
+
+async def test_inspection_reports_completion_during_query_without_overwriting_operation(manager, monkeypatch):
+    initialize(manager.root)
+    gate = asyncio.Event()
+
+    async def compose(*args, **kwargs):
+        if args[0] == "ps":
+            gate.set()
+            await manager._task
+            return '{"Service":"crawl4ai","State":"running","Health":"healthy"}'
+        await gate.wait()
+        return "operation output"
+
+    monkeypatch.setattr(manager, "compose", compose)
+    manager.start("up")
+    status = await manager.inspect()
+    assert status["operation"]["status"] == "succeeded"
+    assert status["operation"]["log"] == "operation output"
+    assert status["containers"][0]["health"] == "healthy"
+    old_id = status["operation"]["id"]
+    manager.start("stop")
+    assert old_id not in manager.context_status()
+    assert "后台执行中" in manager.context_status()
+    await finish(manager)

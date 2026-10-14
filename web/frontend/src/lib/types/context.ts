@@ -210,3 +210,54 @@ export interface SnapshotListItem {
   /** 理论可命中前缀（字节稳定层 tokens 合计） */
   expected_prefix_tokens?: number | null;
 }
+export interface DiagnosticStep {
+  id: string;
+  kind: "model" | "tool" | "context" | "hook" | "delivery";
+  name: string;
+  status: string;
+  started_at: number;
+  duration_ms: number;
+  request_id: string;
+  ttft_ms?: number | null;
+  arguments?: string;
+  preview?: string;
+  error?: string;
+  mode?: string;
+  truncated?: boolean;
+  phase?: string;
+  operation?: string;
+  usage?: { total_input_tokens?: number; completion_tokens?: number; cache_read_input_tokens?: number; cache_observable?: boolean };
+  delivery?: { mode?: string; status?: string; scope?: string };
+}
+
+export interface DiagnosticRun {
+  id: string;
+  scope: string;
+  origin_scope: string;
+  parent_id: string;
+  kind: string;
+  trigger: string;
+  label: string;
+  status: string;
+  started_at: number;
+  duration_ms: number;
+  step_count: number;
+  omitted_steps: number;
+  error?: string;
+  steps: DiagnosticStep[];
+  active_steps: DiagnosticStep[];
+}
+
+export interface ConversationDiagnostics {
+  epoch: string;
+  observed_at: number;
+  collecting: boolean;
+  current_turn_id: string;
+  retention: { runs: number; steps_per_run: number; evicted_runs: number };
+  matching_runs: number;
+  active_run_ids: string[];
+  runs: DiagnosticRun[];
+  scopes: string[];
+  conversations: { scope: string; loaded: boolean; messages: { id: string; role: string; ts: number; preview: string; truncated: boolean }[] }[];
+  notes: string[];
+}

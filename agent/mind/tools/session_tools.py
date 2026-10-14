@@ -3,6 +3,10 @@
 - list_sessions：列出活跃会话（未读消息 + 近期活动），供 AI 感知其他窗口动态。
 - switch_session：将目标会话排入回复队列，以其独立隔离的上下文开启一轮 REPLY。
 
+模型可见：get_conversation_diagnostics 按需返回消息摘录、耗时和执行回执。
+Token 影响：仅工具查询时提供有界结果，不自动注入诊断或调用模型总结。
+缓存影响：不改变稳定前缀、已读水位或实时会话内容。
+
 通过 deferred_tool 模式注册（group="session"），bootstrap 阶段激活。
 """
 
@@ -50,6 +54,41 @@ def _scope_label(scope: str) -> str:
     if session_id:
         label += f"#{session_id}"
     return label
+
+
+@deferred_tool(
+    group="session", tags=["core"], source="mind.session", concurrency_safe=True,
+    description="查看自己当前及近期执行的实际耗时、模型首响应/缓存用量、工具结果与投递回执，"
+                "附会话消息摘录。用于判断卡在哪一步、核对是否已执行/已投递、避免重复操作。"
+                "只读有界内存，不触发召回或数据库查询，不改变消息已读状态。",
+)
+async def get_conversation_diagnostics(
+    scope: str = "", turn_id: str = "", turns: int = 2, steps: int = 8, messages: int = 6,
+) -> str:
+    """按需诊断当前或指定会话，不必每轮调用。
+
+    Args:
+        scope: 默认当前会话；指定完整 scope 可查其他会话，* 查看近期全部会话。
+        turn_id: 可选轮次 ID，精确查看某轮执行；无会话时默认当前执行轮次。
+        turns: 最近轮数，1–10。
+        steps: 每轮返回最近步骤数，1–80；运行中的步骤另列 active_steps。
+        messages: 每个会话的最近消息摘录条数，1–20，按提交顺序。
+    """
+    if not mind_port.bound:
+        return _system_not_ready()
+    from agent.mind.diagnostic_query import recent_diagnostics
+    from core.activity import current_activity_id
+    from core.tool_errors import error_from_exception
+
+    selected = "" if scope == "*" else scope or _current_scope()
+    selected_turn = turn_id or (current_activity_id.get() if not selected and scope != "*" else "")
+    try:
+        return json.dumps(recent_diagnostics(
+            mind_port.get().conversation_data.router.sqlite, scope=selected, turn_id=selected_turn,
+            limit=turns, steps=steps, messages=messages,
+        ), ensure_ascii=False)
+    except Exception as exc:
+        return error_from_exception(exc, action="查询会话执行诊断")
 
 
 def _snapshot_activities(mind: Any) -> Dict[str, Dict[str, Any]]:

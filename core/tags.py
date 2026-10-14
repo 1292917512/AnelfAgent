@@ -93,7 +93,7 @@ _META_TAG_NAMES = (
     "group_id", "uid", "name", "nickname", "reply_to", "to_me", "kind", "push",
     "speaker_scope", "face_scope", "delivery_mode", "delivery_status", "delivery_scope",
     "recall_mode", "recall_background", "recall_tag",
-    "task_id", "current_task", "notification", "scope", "role",
+    "task_id", "current_task", "notification", "scope", "role", "skill",
 )
 
 

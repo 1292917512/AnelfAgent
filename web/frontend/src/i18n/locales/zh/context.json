@@ -4,7 +4,8 @@
   "tabs": {
     "monitor": "实时监控",
     "history": "快照历史",
-    "providers": "上下文注入"
+    "providers": "上下文注入",
+    "diagnostics": "执行诊断"
   },
   "monitor": {
     "ready": "准备捕获",
@@ -98,5 +99,61 @@
     "unknown": "未提供稳定性数据",
     "stable": "{{count}} 条消息保持不变",
     "pressure": "输入接近模型上限，需要为工具结果和回复保留空间。"
+  },
+  "diagnostics": {
+    "scope": "会话范围",
+    "all": "全部近期会话与任务",
+    "auto": "自动刷新",
+    "refresh": "刷新诊断",
+    "description": "只读进程内的消息摘录与执行事实，不调用模型、不读取历史数据库。并发步骤的耗时不能相加当成总耗时。",
+    "collecting": "正在记录执行事实",
+    "stopped": "运行时尚未开始记录",
+    "observed": "观测于 {{time}}",
+    "retention": "最多保留 {{count}} 轮 · 重启清空",
+    "back": "返回近期轮次",
+    "empty": "暂无可用的执行诊断",
+    "wallTime": "本轮实际经过时间",
+    "cache": "缓存命中",
+    "omitted": "另有 {{count}} 步未显示 · 查看本轮保留步骤",
+    "messages": "消息摘录",
+    "cold": "此会话内存窗口未加载或已淘汰；不补读数据库。",
+    "details": "执行详情",
+    "ttft": "首个有效输出前等待",
+    "input": "输入 tokens",
+    "output": "输出 tokens",
+    "delivery": "投递回执",
+    "arguments": "参数摘录",
+    "preview": "结果摘录",
+    "error": "错误",
+    "modelNote": "生成文本不代表已投递。首响应包含网络、排队和模型处理；缓存未知不等于未命中。",
+    "excerptNote": "仅保留脱敏摘录；投递状态以回执为准，缺失表示未观测。",
+    "evicted": "该记录已被淘汰或进程已重启。",
+    "status": {
+      "running": "执行中",
+      "queued": "排队中",
+      "completed": "已完成",
+      "done": "已完成",
+      "failed": "失败",
+      "error": "错误",
+      "cancelled": "已取消",
+      "interrupted": "已中断",
+      "sent": "已发送",
+      "pending": "待投递",
+      "skipped": "已跳过",
+      "unknown": "未确认",
+      "proceed": "继续",
+      "skip": "跳过",
+      "fallback": "回退"
+    },
+    "evictedSteps": "较早的 {{count}} 步已超过内存保留上限",
+    "kind": {
+      "conversation": "对话",
+      "reflection": "反思",
+      "task": "任务",
+      "delegation": "子代理",
+      "heartbeat": "心跳",
+      "context": "上下文准备",
+      "delivery": "回复投递"
+    }
   }
 }

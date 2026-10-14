@@ -1,4 +1,4 @@
-"""本地检索装配异常提示：模型只看到可操作的缺项摘要，最多 200 tokens，仅进入动态区。"""
+"""本地检索操作快照：最多 200 tokens，零 I/O，仅进入动态区，不改写会话历史或稳定前缀。"""
 
 from core.context_provider import context_provider
 from core.lifecycle import Lifecycle
@@ -11,4 +11,4 @@ from .deployment import RetrievalDeployment
 def deployment_context(scope: str) -> str:
     """读取启动或操作产生的内存提示，不执行网络检测或模型调用。"""
     instance = Lifecycle.get("retrieval_deployment")
-    return instance.notice if isinstance(instance, RetrievalDeployment) else ""
+    return instance.context_status() if isinstance(instance, RetrievalDeployment) else ""

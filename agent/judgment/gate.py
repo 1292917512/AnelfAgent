@@ -1,8 +1,8 @@
 """可选后台工作的 Jev 预判，缺配置、故障和不确定时保留原流程。
 
 模型看到：Jev 同批判断必要性与依据类别，主模型通过钩子执行记录查看判断。
-Token：配置 Jev 时发送一次有界事实输入，两题共享上下文，跳过无价值后台调用。
-缓存：不改写主模型消息链、工具目录或稳定前缀；无需普通模型回退。
+Token：一次有界事实输入，两题共享上下文；显式开启回退时可调用普通模型判断。
+缓存：不改写主模型消息链、工具目录或稳定前缀；调用方可显式启用普通模型回退。
 """
 
 from __future__ import annotations
@@ -47,31 +47,35 @@ class WorkDecision:
     run: bool
     reason: str
     probability: float | None = None
+    provider: str = "Jev"
 
     def describe(self) -> str:
         probability = f"，必要概率 {self.probability:.0%}" if self.probability is not None else ""
-        return f"Jev {'继续' if self.run else '跳过'}（{self.reason}{probability}）"
+        return f"{self.provider} {'继续' if self.run else '跳过'}（{self.reason}{probability}）"
 
 
-async def assess_optional_work(task: str, instructions: str, state: JsonValue) -> WorkDecision:
+async def assess_optional_work(task: str, instructions: str, state: JsonValue, *, llm_fallback: bool = False,
+                               timeout: float | None = None) -> WorkDecision:
     """同批评估必要性与依据，只有一致的高置信否定才跳过可选工作。"""
     try:
         cfg = load_config()
     except JudgmentError as exc:
         log(f"判断配置不可用：{exc}", "WARNING", tag="判断")
         return WorkDecision(True, "判断配置不可用，继续原流程")
-    if not get_config_bool("judgment_gate_enabled", True) or not cfg.enabled or not cfg.native_configured:
+    if not get_config_bool("judgment_gate_enabled", True) or not cfg.enabled or not (
+        cfg.native_configured or (llm_fallback and cfg.fallback_enabled)
+    ):
         return WorkDecision(True, "未启用原生预判")
-    timeout = max(0.1, min(cfg.timeout, get_config_float("judgment_gate_timeout", 5.0)))
+    timeout = max(0.1, min(cfg.timeout, timeout if timeout is not None else get_config_float("judgment_gate_timeout", 5.0)))
     threshold = max(0, min(0.49, get_config_float("judgment_gate_skip_threshold", 0.1)))
     run = current_hook_run.get()
-    record = HookJudgment(uuid.uuid4().hex, "Jev", task, time.time(), threshold, model=cfg.model)
+    record = HookJudgment(uuid.uuid4().hex, "Jev" if cfg.native_configured else "LLM", task, time.time(), threshold, model=cfg.model)
     record.slow_after_ms = slow_threshold_ms(timeout)
     started = time.monotonic()
     try:
         if run is not None:
             run.judgments = [*run.judgments[-7:], record]
-            run.phase, run.operation = "judgment", f"Jev 判断：{task}"
+            run.phase, run.operation = "judgment", f"{record.provider} 判断：{task}"
             run.updated_at = time.time()
             await run.publish()
         evidence = evidence_json({"task": task, "evidence": state, "truncated": False})
@@ -91,7 +95,7 @@ async def assess_optional_work(task: str, instructions: str, state: JsonValue) -
                 criteria=NoulCriteria(true="工作可能有价值，或现有证据不足以安全跳过", false="有充分依据表明无需执行")),
              "basis": ChoiceQuestion(instructions=rule + "\n哪类事实最能说明执行这项任务的价值？",
                                      criteria={key: value for key, value in _BASIS.items()})},
-            native_only=True, timeout=timeout,
+            native_only=not llm_fallback, timeout=timeout,
         )
         _apply_report(record, report)
     except asyncio.CancelledError:
@@ -104,25 +108,26 @@ async def assess_optional_work(task: str, instructions: str, state: JsonValue) -
         record.duration_ms = max(0, round((time.monotonic() - started) * 1000))
         record.slow = record.duration_ms >= record.slow_after_ms
         if record.slow and record.status != "cancelled":
-            log(f"Jev 预判响应偏慢：{task} {record.duration_ms}ms，阈值 {record.slow_after_ms}ms，"
+            log(f"{record.provider} 预判响应偏慢：{task} {record.duration_ms}ms，阈值 {record.slow_after_ms}ms，"
                 f"结果 {record.status}；请检查模型通道与网络", "WARNING", tag="判断")
         if run is not None:
             run.operation = f"{task}：{record.reason}"
-            run.detail = f"Jev {record.reason}"
+            run.detail = f"{record.provider} {record.reason}"
             run.updated_at = time.time()
             await run.publish()
-    decision = WorkDecision(record.status != "skip", record.reason, record.probability)
+    decision = WorkDecision(record.status != "skip", record.reason, record.probability, record.provider)
     log(f"{task}: {decision.describe()}", "DEBUG", tag="判断")
     return decision
 
 
 def _apply_report(record: HookJudgment, report: JudgmentReport) -> None:
-    """将原生答案投影为事实记录，冲突、截断或缺失证据时保留工作。"""
+    """将判断答案投影为事实记录，冲突、截断或缺失证据时保留工作。"""
     record.status, record.reason = "fallback", "判断不确定，继续原流程"
+    record.provider = "LLM" if report.source == JudgmentSource.LLM_FALLBACK else "Jev"
     record.model = report.model or record.model
     record.input_tokens, record.output_tokens = report.usage.input_tokens, report.usage.output_tokens
     needed, basis = report.answers.get("needed"), report.answers.get("basis")
-    if report.source != JudgmentSource.TYPESAFE or not isinstance(needed, NoulAnswer):
+    if not isinstance(needed, NoulAnswer):
         return
     if not math.isfinite(needed.noul) or not 0 <= needed.noul <= 1:
         return

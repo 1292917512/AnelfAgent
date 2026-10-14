@@ -35,9 +35,7 @@ class StreamAggregator:
 
     def feed(self, delta: ChatStreamDelta) -> None:
         """累积片段；首个有效内容锚定 TTFT，排除空保活与用量包。"""
-        if self._first_delta_at is None and (
-            delta.content or delta.reasoning_content or delta.tool_calls or delta.thinking_blocks
-        ):
+        if self._first_delta_at is None and delta.has_output:
             self._first_delta_at = time.monotonic()
         if delta.content:
             self._content_parts.append(delta.content)
@@ -117,7 +115,7 @@ async def aggregate_with_idle_timeout(
                     else "流式响应超时"
                 )
                 raise asyncio.TimeoutError(f"LLM{who} {stage}") from exc
-            if delta.content or delta.reasoning_content or delta.tool_calls or delta.thinking_blocks:
+            if delta.has_output:
                 first_deadline = None
             aggregator.feed(delta)
     finally:

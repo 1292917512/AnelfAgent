@@ -349,7 +349,7 @@ class WorkspaceActivityService:
         if model:
             model.update(status="error" if payload.get("error") else "done",
                          error=sanitize_text(str(payload.get("error", "")))[:MAX_TEXT],
-                         duration_ms=payload.get("duration_ms", 0))
+                         duration_ms=payload.get("duration_ms", 0), ttft_ms=payload.get("ttft_ms"))
             usage = payload.get("usage") or {}
             model["usage"] = {key: usage[key] for key in (
                 "total_input_tokens", "completion_tokens", "cache_read_input_tokens", "cache_observable",

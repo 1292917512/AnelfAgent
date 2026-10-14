@@ -13,6 +13,14 @@ class ContextService:
         from agent.mind.context_snapshot import context_snapshot
         return context_snapshot
 
+    def recent_diagnostics(self, *, scope: str = "", turn_id: str = "", limit: int = 3, steps: int = 12, messages: int = 8) -> Dict[str, Any]:
+        """联查进程内消息摘录和执行诊断，不读取持久化快照。"""
+        from agent.mind.diagnostic_query import recent_diagnostics
+        from agent.runtime.singleton import get_runtime
+        runtime = get_runtime()
+        sqlite = runtime.data_center.conversation_data.router.sqlite if runtime else None
+        return recent_diagnostics(sqlite, scope=scope, turn_id=turn_id, limit=limit, steps=steps, messages=messages)
+
     # ------------------------------------------------------------------
     # 快照捕获（实时）
     # ------------------------------------------------------------------

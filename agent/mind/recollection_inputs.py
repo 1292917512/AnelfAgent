@@ -75,8 +75,6 @@ async def collect_recollection_inputs(
                         query_vec_task=vector_task, fire_probe=policy.background, plan_ready=plan_ready,
                     )
                 run.detail = f"{policy.level} · {len(result.profiles)} 个画像块 · {len(result.memories)} 个记忆块"
-            from agent.memory.probe import deep_probe_hub
-            deep_probe_hub.prepare(scope, tail, mind.retriever)
             log(f"语义召回: {len(result.memories)} 条, 画像: {len(result.profiles)} 条", tag="思维")
         if not plan_ready.done():
             plan_ready.set_result([])

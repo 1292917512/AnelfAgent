@@ -1,7 +1,9 @@
 import { api } from "./client";
-import type { ContextProviderStatus, ContextSnapshotData, SnapshotListItem, SnapshotRecord, SnapshotResponse } from "@/lib/types";
+import type { ContextProviderStatus, ContextSnapshotData, ConversationDiagnostics, SnapshotListItem, SnapshotRecord, SnapshotResponse } from "@/lib/types";
 
 export const contextApi = {
+  recent: (scope = "", turnId = "", steps = 12) =>
+    api.get<ConversationDiagnostics>("/context/recent", { params: { scope, turn_id: turnId, steps } }),
   snapshotArm: () => api.post("/context/snapshot/arm"),
   snapshotDisarm: () => api.post("/context/snapshot/disarm"),
   snapshotGet: () => api.get<SnapshotResponse>("/context/snapshot"),

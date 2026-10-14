@@ -22,6 +22,15 @@ export function ActivityModel({ entry, thoughts = [] }: { entry: Extract<Activit
   const cached = usage?.cache_read_input_tokens;
   const rate = usage?.cache_observable && input != null && input > 0 && cached != null
     ? Math.min(100, Math.max(0, Math.round(cached / input * 100))) : null;
+  const first = entry.ttft_ms;
+  const elapsed = entry.duration_ms;
+  const timing = first != null && Number.isFinite(first) && first >= 0 && elapsed != null && elapsed >= first;
+  const metrics = <div className="activity-inspection-meta">
+    {timing && <><span>{t("activity.firstResponse", { duration: formatElapsedCompact(first) })}</span>
+      <span>{t("activity.afterResponse", { duration: formatElapsedCompact(elapsed - first) })}</span></>}
+    {input != null && <span>{t("activity.modelUsage", { input: input.toLocaleString(), output: (usage?.completion_tokens ?? 0).toLocaleString() })}</span>}
+    {rate != null && cached != null && <span>{t("activity.cachedTokens", { tokens: cached.toLocaleString(), percent: rate })}</span>}
+  </div>;
   const summary = <>
     <span>{running ? <Loader2 size={12} className="animate-spin" /> : entry.status === "error" ? <AlertCircle size={12} className="text-warn" /> : <Brain size={12} />}{entry.name}</span>
     <span>{formatElapsedCompact(Math.max(0, running ? now - entry.ts * 1000 : entry.duration_ms ?? 0))}</span>
@@ -34,12 +43,15 @@ export function ActivityModel({ entry, thoughts = [] }: { entry: Extract<Activit
         onClick={() => setSelection({ status: entry.status, open: !open })}>
         {summary}<ChevronDown size={13} className={cn("ml-auto shrink-0", open && "rotate-180")} />
       </button> : <div className="activity-model">{summary}</div>}
-      {!!thoughts.length && <ActivityInspector title={`${entry.name} · ${t("activity.thought")}`} preview={thoughts[0]?.content.slice(0, 400)}>
+      <ActivityInspector title={`${entry.name} · ${t("activity.modelDetails")}`} preview={metrics}>
+        {metrics}
+        <p className="activity-note">{t("activity.timingHint")}</p>
+        <p className="activity-note">{t("activity.cacheHint")}</p>
         {thoughts.map((thought) => <div key={thought.id}>
           {thought.truncated && <p className="activity-note">{t("activity.truncated")}</p>}
           <Markdown content={thought.content} renderText={renderTaggedText} />
         </div>)}
-      </ActivityInspector>}
+      </ActivityInspector>
     </div>
     {entry.error && <p className="activity-note text-warn" role="alert">{entry.error}</p>}
     {open && thoughts.map((thought) => <div key={thought.id} className="activity-thought-content">

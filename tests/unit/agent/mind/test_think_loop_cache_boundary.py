@@ -33,6 +33,27 @@ def _loop_mind() -> FakeMind:
 
 
 class TestThinkLoopChainBreakpoint:
+    async def test_deployment_completion_is_dynamic_state_without_changing_conversation(self, monkeypatch, tmp_path):
+        from agent.retrieval.deployment import RetrievalDeployment
+        from agent.retrieval.deployment_context import deployment_context
+        from core.lifecycle import Lifecycle
+
+        deployment = RetrievalDeployment(tmp_path)
+        monkeypatch.setattr(Lifecycle, "get", lambda name: deployment)
+        ContextProviderRegistry.register(ProviderMeta(name="retrieval_local", provide_fn=deployment_context))
+        prefix = _base()
+        wire = normalize_for_send(decorate_messages(prefix, anthropic=True))
+        deployment._operation = {"id": "op-1", "action": "up", "status": "running", "phase": "pulling", "started_at": 100.0}
+        deployment._progress()
+        for scope in ("user_webui:1#main", "user_qq:1"):
+            tail = await _collect_provider_messages(_loop_mind(), scope)
+            assert "pulling" in tail[0]["content"]
+            deployment._progress(status="succeeded", phase="done", finished_at=125.0)
+            tail = await _collect_provider_messages(_loop_mind(), scope)
+            assert "已完成" in tail[0]["content"] and "25.0" in tail[0]["content"]
+            assert normalize_for_send(decorate_messages([*prefix, *tail], anthropic=True))[:len(prefix)] == wire
+            deployment._progress(status="running", phase="pulling")
+
     async def test_reflect_refresh_preserves_inherited_directory_across_rounds(self, monkeypatch):
         from agent.mind.tools.think_loop import ThinkMode
         from core.entity import EntityRegistry

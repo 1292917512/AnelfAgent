@@ -306,6 +306,11 @@
     "modelCache": "缓存 {{percent}}%",
     "cacheUnknown": "缓存未报告",
     "cacheHint": "仅展示供应商返回的真实输入缓存用量；未报告不代表未命中。",
+    "modelDetails": "调用详情",
+    "firstResponse": "首个有效输出前 {{duration}}",
+    "afterResponse": "首个输出后 {{duration}}",
+    "cachedTokens": "缓存读取 {{tokens}} tokens · {{percent}}%",
+    "timingHint": "客户端端到端计时；首响应包含连接、排队和服务端处理，之后包含思考、正文、工具参数及网络传输。不能直接当作纯模型计算耗时；未测得时不显示。",
     "rawResult": "查看完整回执",
     "resultFields": {
       "error": "错误",
@@ -355,7 +360,10 @@
       "event": "事件触发",
       "notification": "通知唤醒",
       "system": "系统触发"
-    }
+    },
+    "recollectionTitle": "回忆过程",
+    "recollectionHint": "查看当前执行页各会话的记忆与技能准备、后台判断和检索。准备完成的结果在下一次模型调用时进入动态上下文；候选不代表技能已执行。",
+    "recollectionEmpty": "当前执行页暂无回忆记录。"
   },
   "toolView": {
     "exitCode": "退出码 {{code}}",

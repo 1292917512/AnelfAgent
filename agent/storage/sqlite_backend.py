@@ -471,6 +471,13 @@ class SqliteBackend:
             records.reverse()
         return [{"id": r[0], "role": r[1], "content": r[2], "ts_ns": r[3]} for r in records]
 
+    def peek_live_conversation(self, *, scope_type: str, scope_id: str, limit: int = 8) -> tuple[list[ConversationRow], bool]:
+        """只读已加载内存窗口；不补读数据库、不推进水位、不改变淘汰顺序。"""
+        window = self._conversation_windows.get((scope_type, scope_id))
+        if window is None:
+            return [], False
+        return [row.copy() for row in window.rows[-max(1, min(limit, 20)):]], True
+
     async def append_conversation(
         self,
         *,

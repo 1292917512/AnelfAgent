@@ -501,6 +501,9 @@ def get_skill(name: str) -> str:
     skill = deps.store.get(name) or skill
     from agent.skills.dependencies import dependency_notice, missing_mcp_dependencies
     missing = missing_mcp_dependencies(skill)
+    from agent.memory.probe import deep_probe_hub
+    from core.conversation_scope import current_scope
+    deep_probe_hub.record(current_scope(), identifiers=[f"skill:{skill.name}"])
     return json.dumps({
         "ok": True,
         "name": skill.name,

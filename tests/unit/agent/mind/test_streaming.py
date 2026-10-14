@@ -6,6 +6,8 @@ import asyncio
 from types import SimpleNamespace
 from typing import List
 
+import pytest
+
 from agent.llm.llm_client import LLMClient
 from agent.llm.types import ChatResult, ChatStreamDelta, ToolCall, UsageInfo
 from agent.mind.mind import Mind
@@ -112,6 +114,28 @@ class TestStreamFallback:
 
 
 class TestTTFT:
+    @pytest.mark.parametrize("output", [ChatStreamDelta(content="answer"), ChatStreamDelta(reasoning_content="reason"),
+                                      ChatStreamDelta(early_tool_calls=[ToolCall("id", "inspect", "{}")])])
+    async def test_keepalive_and_usage_do_not_count_as_first_output(self, monkeypatch, output):
+        clock = 10.0
+        monkeypatch.setattr("agent.mind.llm_invoker.time", SimpleNamespace(monotonic=lambda: clock))
+
+        async def stream(*args, **kwargs):
+            nonlocal clock
+            clock = 11.0
+            yield ChatStreamDelta()
+            yield ChatStreamDelta(usage=UsageInfo(prompt_tokens=12))
+            clock = 12.0
+            yield output
+
+        client = _fake_stream_client([])
+        client.chat_stream = stream
+        result = await Mind._llm_chat_stream_once(_mind_stub(client), [], None)
+        assert result.ttft_ms == 2000
+        assert result.content == output.content
+        assert result.reasoning_content == output.reasoning_content
+        assert result.usage.prompt_tokens == 12
+
     async def test_ttft_measured_on_first_delta(self):
         """首 delta 到达时刻记 TTFT（毫秒），随 ChatResult 返回。"""
 

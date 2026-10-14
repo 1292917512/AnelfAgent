@@ -1,13 +1,14 @@
 import { Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { TabBar } from "@/components/common/TabBar";
-import { Activity, History, Database, ArrowUpRight } from "lucide-react";
+import { Activity, History, Database, ArrowUpRight, Timer } from "lucide-react";
 import { useRouteTab } from "@/hooks/useRouteTab";
 import { MonitorTab } from "./context/MonitorTab";
 import { HistoryTab } from "./context/HistoryTab";
 import { ProvidersPanel } from "@/components/context/ProvidersPanel";
+import { DiagnosticsTab } from "./context/DiagnosticsTab";
 
-const CONTEXT_TABS = ["monitor", "history", "providers"] as const;
+const CONTEXT_TABS = ["monitor", "history", "providers", "diagnostics"] as const;
 type ContextTab = typeof CONTEXT_TABS[number];
 
 export default function Context() {
@@ -18,6 +19,7 @@ export default function Context() {
     { key: "monitor", label: t("tabs.monitor"), icon: Activity },
     { key: "history", label: t("tabs.history"), icon: History },
     { key: "providers", label: t("tabs.providers"), icon: Database },
+    { key: "diagnostics", label: t("tabs.diagnostics"), icon: Timer },
   ] satisfies { key: ContextTab; label: string; icon: typeof Activity }[];
 
   return (
@@ -39,6 +41,7 @@ export default function Context() {
           {tab === "monitor" && <MonitorTab />}
           {tab === "history" && <HistoryTab />}
           {tab === "providers" && <ProvidersPanel />}
+          {tab === "diagnostics" && <DiagnosticsTab />}
         </div>
       </div>
     </div>

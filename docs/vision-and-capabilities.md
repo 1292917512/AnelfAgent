@@ -98,7 +98,8 @@ CapabilityProvider 协议（name/capabilities/is_configured/run）+ CapabilityRo
   不暴露任意脚本与跨调用会话。自托管配置、更新和网络边界见
   [本地检索服务](../deploy/retrieval/README.md)。
 - `retrieval_services` 与 Web/CLI 共用部署管理器，写操作返回 ID 并可查询终态；Lifecycle 默认
-  后台启动本地服务，缺失环境/部署异常通过可关闭的动态上下文提供者提示，快照不执行 I/O。
+  后台启动本地服务，缺失环境、部署阶段与结果通过可关闭的动态上下文提供者提示；成功结果保留五分钟，
+  提供者只读内存，不执行 I/O，也不写入会话历史。
 - 配置统一走 ConfigManager（retrieval_active/retrieval_disabled_providers/
   retrieval_bigmodel_api_key(password)/retrieval_ssrf_protection，retrieval 组）
 - 网络代理统一使用 [核心网络 SDK](network.md)，工具通过 `proxy_mode` 选择全局规则、直连或全局代理。
