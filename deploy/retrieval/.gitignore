@@ -4,3 +4,4 @@ runtime/
 .operation.*
 .env.tmp
 .env.previous.tmp
+compose.yml

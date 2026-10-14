@@ -7,6 +7,10 @@ services:
       - "127.0.0.1:${CRAWL4AI_PORT:-11235}:11235"
     environment:
       CRAWL4AI_API_TOKEN: ${CRAWL4AI_API_TOKEN:?Run manage.py init first}
+      # 可选：容器直连公网受限时统一走代理分流出口（与 SearXNG settings.yml 同源）
+      HTTP_PROXY: ${CRAWL4AI_HTTP_PROXY:-}
+      HTTPS_PROXY: ${CRAWL4AI_HTTP_PROXY:-}
+      NO_PROXY: localhost,127.0.0.1
     shm_size: 1gb
     volumes:
       - crawl4ai-data:/var/lib/crawl4ai
