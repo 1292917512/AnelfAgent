@@ -75,6 +75,31 @@ it("preserves unchanged record and list references across snapshot refreshes", (
   expect(useActivityStore.getState().runs[0]?.status).toBe("completed");
 });
 
+it("reuses completed steps across streamed progress, entry eviction and terminal snapshots", () => {
+  const store = useActivityStore.getState();
+  const initial: ActivityRun = { ...run("current", 1), entries: [
+    { id: "old", kind: "text", ts: 1, content: "Earlier" },
+    { id: "tool", kind: "tool", ts: 2, name: "inspect", arguments: "{}", targets: [{ key: "path", value: "notes.md" }], request_id: "request", status: "done", result: "Complete" },
+    { id: "thought", kind: "thinking", ts: 3, content: "Checking" },
+  ] };
+  store.receive("p", initial);
+  const updated: ActivityRun = JSON.parse(JSON.stringify(initial));
+  updated.revision = 2;
+  updated.entries.shift();
+  const thought = updated.entries[1];
+  if (thought?.kind === "thinking") thought.content += " results";
+  store.receive("p", updated);
+  const received = useActivityStore.getState().runs[0]!;
+  expect(received.entries[0]).toBe(initial.entries[1]);
+  expect(received.entries[1]).not.toBe(initial.entries[2]);
+  expect(received.source).toBe(initial.source);
+  const finished = { ...JSON.parse(JSON.stringify(received)), status: "completed", revision: 3, ended_at: 15 };
+  store.restore({ epoch: "p", revision: 3, runs: [finished] });
+  expect(useActivityStore.getState().runs[0]?.status).toBe("completed");
+  expect(useActivityStore.getState().runs[0]?.entries[0]).toBe(initial.entries[1]);
+  expect(useActivityStore.getState().runs[0]?.entries[1]).toBe(received.entries[1]);
+});
+
 it("does not attach an old request failure to a recovered server process", async () => {
   const store = useActivityStore.getState();
   store.restore({ epoch: "old", revision: 1, runs: [] });

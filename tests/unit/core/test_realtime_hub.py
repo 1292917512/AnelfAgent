@@ -112,6 +112,22 @@ class TestBackpressure:
         assert dead_sub.dead
         assert [e["content"] for e in _drain(live_sub)] == ["R"]
 
+    def test_complete_snapshots_replace_pending_versions_without_dropping_receipts(self):
+        sub = realtime_hub.subscribe()
+        filtered = realtime_hub.subscribe(topics={"reply"})
+        realtime_hub.publish({"event": "reply", "content": "Delivered"})
+        realtime_hub.publish({"event": "activity", "id": "other"})
+        for revision in range(300):
+            realtime_hub.publish(
+                {"event": "activity" if revision < 299 else "activity_end", "id": "current", "revision": revision},
+                supersedes=lambda frame: frame.get("id") == "current",
+            )
+        assert not sub.dead
+        frames = _drain(sub)
+        assert [frame["event"] for frame in frames] == ["reply", "activity", "activity_end"]
+        assert frames[-1]["revision"] == 299
+        assert _drain(filtered) == [{"event": "reply", "content": "Delivered"}]
+
 
 class TestOfferLatest:
     """直挂队列通道（语音 sink）的保最新入队原语。"""

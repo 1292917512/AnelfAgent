@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { Markdown } from "../render/Markdown";
-import { renderTaggedText, TaggedText } from "./ActivityReferences";
+import { renderTaggedText, TaggedText, MemoryTags } from "./ActivityReferences";
 import { TerminalBlock, toolText } from "@/components/activity/ToolPresentation";
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -23,7 +23,7 @@ export function ActivityToolResult({ result }: { result: string }) {
     {!!matches.length && <div className="activity-recall-results">{matches.map((item, index) => <article key={index}>
       <header><span>{String(item.id)}</span>{typeof item.score === "number" && <span>{t("activity.recallScore", { score: item.score.toFixed(2) })}</span>}</header>
       <p><TaggedText content={String(item.content)} /></p>
-      {Array.isArray(item.tags) && <div className="activity-recall-tags">{item.tags.filter((tag): tag is string => typeof tag === "string").map((tag, i) => <span key={i}>{tag}</span>)}</div>}
+      {Array.isArray(item.tags) && <MemoryTags tags={item.tags.filter((tag): tag is string => typeof tag === "string")} />}
     </article>)}</div>}
     <div className="activity-result-text">{fields.map(({ key, value }) => key === "stdout" || key === "stderr" ? <TerminalBlock key={key} label={key} text={value} warning={key === "stderr"} /> : <div key={key} className={key === "error" ? "text-warn" : undefined}>
       <h4>{t(`activity.resultFields.${key}`)}</h4><Markdown content={value} renderText={renderTaggedText} />

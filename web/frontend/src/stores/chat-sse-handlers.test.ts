@@ -11,7 +11,7 @@ it("routes global runtime to activity and only delivered replies to Web messages
   const events = new EventTarget();
   let bucket: ChatBucket = emptyBucket();
   const updateBucket = vi.fn((_id: string, update: (bucket: ChatBucket) => Partial<ChatBucket>) => { bucket = { ...bucket, ...update(bucket) }; });
-  attachChatSseHandlers(events as EventSource, { updateBucket, getActiveChatId: () => "default", setContextUsage: vi.fn() });
+  attachChatSseHandlers(events as EventSource, { updateBucket, getActiveChatId: () => "default", setContextUsage: vi.fn() }, () => true);
   const run: ActivityRun = { id: "qq", scope: "group_qq:42", origin_scope: "group_qq:42", kind: "conversation", label: "Check", input: "Check", owner_id: "", actor: "", parent_id: "", source: { scope: "group_qq:42", kind: "group", channel: "qq", target: "42", session: "" }, status: "running", started_at: 1, updated_at: 1, ended_at: null, revision: 1, entry_count: 1, truncated: false, entries: [{ id: "thought", ts: 1, kind: "thinking", content: "Inspecting all channels" }] };
   events.dispatchEvent(new MessageEvent("activity", { data: JSON.stringify({ epoch: "p", run }) }));
   events.dispatchEvent(new MessageEvent("delta", { data: JSON.stringify({ delta: "Internal output" }) }));
@@ -31,7 +31,21 @@ it("routes global runtime to activity and only delivered replies to Web messages
 it("does not reset Web sending state on malformed terminal events", () => {
   const events = new EventTarget();
   const updateBucket = vi.fn();
-  attachChatSseHandlers(events as EventSource, { updateBucket, getActiveChatId: () => "default", setContextUsage: vi.fn() });
+  attachChatSseHandlers(events as EventSource, { updateBucket, getActiveChatId: () => "default", setContextUsage: vi.fn() }, () => true);
   events.dispatchEvent(new MessageEvent("turn_end", { data: "broken" }));
+  expect(updateBucket).not.toHaveBeenCalled();
+});
+
+it("ignores queued events from a replaced connection including old server epochs", () => {
+  const events = new EventTarget();
+  const updateBucket = vi.fn();
+  let current = true;
+  attachChatSseHandlers(events as EventSource, { updateBucket, getActiveChatId: () => "default", setContextUsage: vi.fn() }, () => current);
+  current = false;
+  useActivityStore.setState({ epoch: "new" });
+  events.dispatchEvent(new MessageEvent("activity_snapshot", { data: JSON.stringify({ epoch: "old", revision: 500, runs: [] }) }));
+  events.dispatchEvent(new MessageEvent("reply", { data: JSON.stringify({ content: "Late reply" }) }));
+  events.dispatchEvent(new MessageEvent("turn_end", { data: "{}" }));
+  expect(useActivityStore.getState().epoch).toBe("new");
   expect(updateBucket).not.toHaveBeenCalled();
 });

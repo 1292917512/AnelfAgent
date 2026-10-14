@@ -446,6 +446,7 @@
     "status": "状态",
     "returncode": "退出码",
     "exit_code": "退出码",
-    "duration_ms": "耗时（毫秒）"
+    "duration_ms": "耗时（毫秒）",
+    "command": "命令"
   }
 }

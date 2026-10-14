@@ -73,10 +73,13 @@ function dispatchUiCommand(data: UiCommandPayload) {
 }
 
 /** 往 EventSource 上挂载全部 chat SSE 事件监听 */
-export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): void {
+export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext, isCurrent: () => boolean): void {
   const { updateBucket } = ctx;
+  const listen = (name: string, handler: (event: MessageEvent<string>) => void) => {
+    es.addEventListener(name, (event: MessageEvent<string>) => { if (isCurrent()) handler(event); });
+  };
 
-  es.addEventListener("message_failed", (event) => {
+  listen("message_failed", (event) => {
     try {
       const data = JSON.parse(event.data) as { chat_id?: string; message_id: string };
       updateBucket(routeChatId(data), (bucket) => ({
@@ -87,7 +90,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
 
 
   // 实时通话：用户语音转写定稿 → 聊天流（语音形态消息）
-  es.addEventListener("voice_transcript", (e) => {
+  listen("voice_transcript", (e) => {
     try {
       const data = JSON.parse(e.data) as { content: string; chat_id?: string };
       const chatId = routeChatId(data);
@@ -103,7 +106,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
   });
 
   // 实时通话：AI 回复已同步语音播出 → 标记最近一条 assistant 消息
-  es.addEventListener("voice_spoken", () => {
+  listen("voice_spoken", () => {
     updateBucket(ctx.getActiveChatId(), (b) => {
       const idx = [...b.messages].reverse().findIndex((m) => m.role === "assistant");
       if (idx === -1) return {};
@@ -115,7 +118,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
     });
   });
 
-  es.addEventListener("reply", (e) => {
+  listen("reply", (e) => {
     try {
       const data = JSON.parse(e.data) as SseReplyEvent;
       const chatId = routeChatId(data);
@@ -133,7 +136,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
     } catch { /* ignore */ }
   });
 
-  es.addEventListener("turn_end", (e) => {
+  listen("turn_end", (e) => {
     try {
       const data = (e.data ? JSON.parse(e.data) : {}) as SseTurnEndEvent;
       const chatId = routeChatId(data);
@@ -142,7 +145,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
     } catch { /* Ignore invalid event data. */ }
   });
 
-  es.addEventListener("media", (e) => {
+  listen("media", (e) => {
     try {
       const data = JSON.parse(e.data) as SseMediaEvent;
       const chatId = routeChatId(data);
@@ -168,7 +171,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
     } catch { /* ignore */ }
   });
 
-  es.addEventListener("extension", (e) => {
+  listen("extension", (e) => {
     try {
       const data = JSON.parse(e.data) as SseExtensionEvent;
       if (typeof data.chat_id !== "string" || !data.chat_id || typeof data.extension?.type !== "string" || typeof data.extension.fallback !== "string" || !data.extension.payload || typeof data.extension.payload !== "object" || Array.isArray(data.extension.payload)) return;
@@ -193,7 +196,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
     } catch { /* ignore */ }
   });
 
-  es.addEventListener("ui_command", (e) => {
+  listen("ui_command", (e) => {
     try {
       dispatchUiCommand(JSON.parse(e.data) as UiCommandPayload);
     } catch { /* ignore */ }
@@ -208,16 +211,16 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
       if (source?.channel === "webui" && source.kind === "user") touchSendWatchdog(source.session || DEFAULT_CHAT_ID);
     } catch { /* Ignore invalid event data. */ }
   };
-  es.addEventListener("activity", receiveActivity);
-  es.addEventListener("activity_end", receiveActivity);
-  es.addEventListener("activity_snapshot", (event: MessageEvent<string>) => {
+  listen("activity", receiveActivity);
+  listen("activity_end", receiveActivity);
+  listen("activity_snapshot", (event: MessageEvent<string>) => {
     try {
       const data = JSON.parse(event.data) as ActivitySnapshot;
       if (data.epoch && typeof data.revision === "number" && Array.isArray(data.runs)) useActivityStore.getState().restore(data);
     } catch { /* Ignore invalid event data. */ }
   });
 
-  es.addEventListener("file_diff", (event) => {
+  listen("file_diff", (event) => {
     try {
       const data = JSON.parse(event.data) as SseFileDiffEvent;
       if (typeof data.path !== "string" || !data.path) return;
@@ -226,7 +229,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
     } catch { /* Ignore invalid event data. */ }
   });
 
-  es.addEventListener("context_usage", (e) => {
+  listen("context_usage", (e) => {
     try {
       const data = JSON.parse(e.data) as SseContextUsageEvent;
       if (routeChatId(data) !== ctx.getActiveChatId()) return;
@@ -243,7 +246,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
   });
 
   // ── Plan 模式事件 ────────────────────────────────────────────
-  es.addEventListener("plan_submitted", (e) => {
+  listen("plan_submitted", (e) => {
     try {
       const data = JSON.parse(e.data) as SsePlanSubmittedEvent;
       const chatId = routeChatId(data);
@@ -270,7 +273,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
     } catch { /* ignore */ }
   });
 
-  es.addEventListener("plan_step_updated", (e) => {
+  listen("plan_step_updated", (e) => {
     try {
       const data = JSON.parse(e.data) as SsePlanStepUpdatedEvent;
       const chatId = routeChatId(data);
@@ -285,7 +288,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
     } catch { /* ignore */ }
   });
 
-  es.addEventListener("plan_status_changed", (e) => {
+  listen("plan_status_changed", (e) => {
     try {
       const data = JSON.parse(e.data) as SsePlanStatusChangedEvent;
       const chatId = routeChatId(data);
@@ -299,7 +302,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
     } catch { /* ignore */ }
   });
 
-  es.addEventListener("plan_cancelled", (e) => {
+  listen("plan_cancelled", (e) => {
     try {
       const data = JSON.parse(e.data) as SsePlanCancelledEvent;
       const chatId = routeChatId(data);
@@ -307,7 +310,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
     } catch { /* ignore */ }
   });
 
-  es.addEventListener("plan_deleted", (e) => {
+  listen("plan_deleted", (e) => {
     try {
       const data = JSON.parse(e.data) as SsePlanDeletedEvent;
       const chatId = routeChatId(data);
@@ -316,7 +319,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
   });
 
   // ── 子代理事件 ───────────────────────────────────────────────
-  es.addEventListener("delegation_started", (e) => {
+  listen("delegation_started", (e) => {
     try {
       const data = JSON.parse(e.data) as SseDelegationStartedEvent;
       const chatId = routeChatId(data);
@@ -338,7 +341,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
     } catch { /* ignore */ }
   });
 
-  es.addEventListener("delegation_progress", (e) => {
+  listen("delegation_progress", (e) => {
     try {
       const data = JSON.parse(e.data) as SseDelegationProgressEvent;
       const chatId = routeChatId(data);
@@ -346,7 +349,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
     } catch { /* ignore */ }
   });
 
-  es.addEventListener("delegation_resolved", (e) => {
+  listen("delegation_resolved", (e) => {
     try {
       const data = JSON.parse(e.data) as SseDelegationResolvedEvent;
       const chatId = routeChatId(data);
@@ -361,5 +364,5 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
     } catch { /* ignore */ }
   });
 
-  es.addEventListener("ping", () => {});
+  listen("ping", () => {});
 }

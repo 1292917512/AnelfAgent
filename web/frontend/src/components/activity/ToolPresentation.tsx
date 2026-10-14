@@ -15,16 +15,16 @@ export function toolText(value: unknown): string {
 }
 
 /** 模块选择可公开的摘要字段；完整参数由宿主保留在详情中。 */
-export function ToolFacts({ entry, fields }: Pick<ToolRendererProps, "entry"> & { fields: readonly ToolField[] }) {
+export function ToolFacts({ entry, fields, compact = false }: Pick<ToolRendererProps, "entry"> & { fields: readonly ToolField[]; compact?: boolean }) {
   const { t } = useTranslation("workbench");
   const args = activityRecord(entry.arguments);
   const values = fields.flatMap((field) => { const value = toolText(args[field.key]); return value ? [{ ...field, value }] : []; });
   if (!values.length) return null;
-  return <dl className="tool-facts">{values.map((field) => <div key={field.key}><dt>{field.label ?? t(`toolFields.${field.key}`, { defaultValue: field.key })}</dt><dd className={field.code ? "font-mono" : undefined} title={field.value}>{field.value}</dd></div>)}</dl>;
+  return <dl className={`tool-facts${compact ? " is-compact" : ""}`}>{(compact ? values.slice(0, 3) : values).map((field) => <div key={field.key}><dt>{field.label ?? t(`toolFields.${field.key}`, { defaultValue: field.key })}</dt><dd className={field.code ? "font-mono" : undefined} title={field.value}>{compact ? field.value.slice(0, 160) : field.value}</dd></div>)}</dl>;
 }
 
 export function ToolPresentation({ fields, ...props }: ToolRendererProps & { fields: readonly ToolField[] }) {
-  return props.view === "summary" ? <ToolFacts entry={props.entry} fields={fields} /> : props.fallback;
+  return props.view === "summary" ? <ToolFacts entry={props.entry} fields={fields} compact /> : <><ToolFacts entry={props.entry} fields={fields} />{props.fallback}</>;
 }
 
 export function TerminalBlock({ label, text, warning = false }: { label: ReactNode; text: string; warning?: boolean }) {
@@ -43,9 +43,10 @@ export function CommandExecution({ command, target, ...props }: ToolRendererProp
   const exitCode = result.exit_code ?? result.returncode;
   const cwd = toolText(result.work_dir ?? result.shell_cwd ?? result.cwd);
   const background = result.status === "running" || result.status === "started" || Boolean(result.task_id);
-  if (props.view === "summary") return <div className="tool-command-summary"><div><Terminal size={13} /><span>{target}</span>{cwd && <span title={cwd}>{cwd}</span>}{typeof exitCode === "number" && <b data-failed={exitCode !== 0}>{t("toolView.exitCode", { code: exitCode })}</b>}{background && <b>{t("toolView.background")}</b>}</div><pre title={command}>{command}</pre></div>;
+  if (props.view === "summary") return <div className="tool-command-summary"><div><Terminal size={13} /><span>{target}</span>{typeof exitCode === "number" && <b data-failed={exitCode !== 0}>{t("toolView.exitCode", { code: exitCode })}</b>}{background && <b>{t("toolView.background")}</b>}{cwd && <span className="tool-command-cwd" title={cwd}>{cwd}</span>}</div><pre title={command}>{command.slice(0, 240)}</pre></div>;
   const streams = ["stdout", "stderr", "output", "output_so_far"].flatMap((key) => typeof result[key] === "string" && result[key] ? [{ key, text: result[key] }] : []);
   return <div className="tool-command-detail">
+    <TerminalBlock label={t("toolFields.command")} text={command} />
     {streams.map(({ key, text }) => <TerminalBlock key={key} label={key} text={text} warning={key === "stderr"} />)}
     {props.entry.result && !streams.length && !Object.keys(result).length && <TerminalBlock label={t("activity.result")} text={props.entry.result} />}
     {streams.length === 0 && props.entry.status === "done" && !background && Object.keys(result).length > 0 && <p className="activity-note">{t("toolView.noOutput")}</p>}

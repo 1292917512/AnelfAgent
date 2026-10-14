@@ -446,6 +446,7 @@
     "status": "Status",
     "returncode": "Exit code",
     "exit_code": "Exit code",
-    "duration_ms": "Duration (ms)"
+    "duration_ms": "Duration (ms)",
+    "command": "Command"
   }
 }

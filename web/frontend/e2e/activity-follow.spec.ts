@@ -22,7 +22,7 @@ async function liveFixture(page: Page, initial: ActivityRun[]) {
       close() { streams.delete(this); super.close(); }
     };
     window.addEventListener("fixture-activity", (event) => {
-      if (event instanceof CustomEvent) for (const stream of streams) stream.dispatchEvent(new MessageEvent("activity", { data: JSON.stringify(event.detail) }));
+      if (event instanceof CustomEvent) for (const stream of streams) stream.dispatchEvent(new MessageEvent(event.detail.run.status === "running" ? "activity" : "activity_end", { data: JSON.stringify(event.detail) }));
     });
   });
   return async (value: ActivityRun) => {
@@ -62,7 +62,8 @@ test("live process follows streamed content and concurrent tools until explicitl
   await feed.evaluate((element) => { element.scrollTop = 240; });
   current = { ...current, updated_at: start + 2, entries: [...current.entries, { id: "tool", kind: "tool", name: "read_memory_file", status: "done", ts: start + 2, arguments: '{"path":"memory/notes.md"}', targets: [{ key: "path", value: "memory/notes.md", path: "config/memory/notes.md", root: "project" }], request_id: "request-follow", result: "Memory inspection completed.", duration_ms: 1240 }] };
   await publish(current);
-  await expect(card.getByRole("button", { name: /read_memory_file Completed/ })).toHaveAttribute("aria-expanded", "true");
+  await expect(card.getByRole("button", { name: "View details: read_memory_file", exact: true })).toContainText("Completed");
+  await expect(card.locator(".activity-tool-detail")).toHaveCount(0);
   await expect.poll(() => feed.evaluate((element) => element.scrollTop)).toBe(240);
   await page.getByRole("button", { name: "Follow paused", exact: true }).click();
   await expect(card.getByText("Memory inspection completed.", { exact: true })).toBeInViewport();
@@ -87,6 +88,41 @@ test("live process follows streamed content and concurrent tools until explicitl
   await page.screenshot({ path: info.outputPath("follow-light.png"), animations: "disabled" });
   await page.evaluate(() => { document.documentElement.dataset.theme = "dark"; document.documentElement.classList.add("dark"); });
   await page.screenshot({ path: info.outputPath("follow-dark.png"), animations: "disabled" });
+  expect(errors).toEqual([]);
+});
+
+test("terminal progress stops live indicators after a long stream and keeps tool details usable", async ({ page }, info) => {
+  const start = Date.now() / 1000 - 30;
+  const entries: ActivityRun["entries"] = Array.from({ length: 60 }, (_, i) => ({
+    id: `tool-${i}`, kind: "tool", ts: start + i / 100, name: "inspect", status: "done", duration_ms: 10,
+    arguments: "{}", targets: [], request_id: `request-${i}`, result: `Result ${i}: ${"verified ".repeat(60)}`,
+  }));
+  const current = run("stream", start, { entries: [...entries,
+    { id: "model", kind: "model", ts: start + 1, name: "Test model", status: "running" },
+    { id: "thought", kind: "thinking", ts: start + 2, content: "Reviewing results" },
+  ] });
+  const publish = await liveFixture(page, [current]);
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.goto("/webui/");
+  const card = page.locator('[data-activity-run="stream"]');
+  await expect(card.locator(".activity-model .animate-spin")).toHaveCount(1);
+  for (let i = 0; i < 12; i++) {
+    await publish({ ...current, entries: current.entries.map((entry) => entry.kind === "thinking" ? { ...entry, content: "Reviewing results\n".repeat(i + 1) } : entry) });
+  }
+  await publish({ ...current, status: "completed", ended_at: start + 25, entries: current.entries.map((entry) => entry.kind === "model" ? { ...entry, status: "done", duration_ms: 24000 } : entry) });
+  await expect(page.locator(".activity-connection")).not.toContainText("Working");
+  await expect(card.locator(".activity-live-dot, .animate-spin, .activity-thought.is-live")).toHaveCount(0);
+  await expect(card.locator(".activity-run-footer")).toContainText("Completed");
+  await expect(card.locator(".activity-run-footer")).toBeInViewport();
+  await expect(card.locator(".activity-duration")).toHaveText("25s");
+  await expect(page.locator(".activity-feed")).toHaveAttribute("data-following", "true");
+  await card.getByRole("button", { name: "View details: inspect", exact: true }).last().click();
+  const dialog = page.getByRole("dialog", { name: "inspect", exact: true });
+  await expect(dialog).toContainText("Result 59");
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath("completed-stream.png"), animations: "disabled" });
   expect(errors).toEqual([]);
 });
 
@@ -127,14 +163,18 @@ test("concurrent channels keep tool ownership, terminal receipts and subagent an
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto("/webui/");
   await expect(page.locator('.tool-command-summary').filter({ hasText: "Exit 0" })).toBeVisible();
-  await expect(page.locator('[data-activity-run="qq"] .tool-terminal code')).toContainText(["# literal <b>output</b>"]);
-  await expect(page.locator('[data-activity-run="qq"] .tool-terminal b')).toHaveCount(0);
+  await expect(page.locator('[data-activity-run="qq"] .tool-terminal')).toHaveCount(0);
+  await page.getByRole("button", { name: "View details: run_shell_command", exact: true }).click();
+  const shellDialog = page.getByRole("dialog", { name: "run_shell_command", exact: true });
+  await expect(shellDialog.locator(".tool-terminal code").last()).toContainText("# literal <b>output</b>");
+  await expect(shellDialog.locator(".tool-terminal b")).toHaveCount(0);
+  await shellDialog.getByRole("button", { name: "Close", exact: true }).click();
   await expect(page.locator('[data-activity-run="review"]')).toContainText("SSH · production");
   await expect(page.locator('[data-activity-run="review"]')).toContainText("Exit 2");
   await expect(page.locator('.activity-segment-parent')).toContainText("Inspect qq");
-  await expect(page.locator('[data-activity-run="review"] .tool-terminal').filter({ hasText: "service: unavailable" })).toBeInViewport();
   const initialOrder = await page.locator("[data-activity-entry]").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-activity-entry")));
   await publish({ ...qq, updated_at: start + 9, entries: qq.entries.map((entry) => entry.kind === "tool" ? { ...entry, result: '{"ok":true,"returncode":0,"stdout":"LATE RESULT"}' } : entry) });
+  await expect(page.locator('[data-activity-run="review"] .tool-command-summary')).toBeInViewport();
   expect(await page.locator("[data-activity-entry]").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-activity-entry")))).toEqual(initialOrder);
   const sessions = page.getByRole("navigation", { name: "Filter conversations" });
   await sessions.getByRole("button", { name: /webui/ }).click();
@@ -144,6 +184,7 @@ test("concurrent channels keep tool ownership, terminal receipts and subagent an
   await expect(page.locator('[data-activity-run="review"]')).toBeVisible();
   await page.locator('[data-activity-run="review"]').getByRole("button", { name: "View details: ssh_exec", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "ssh_exec", exact: true });
+  await expect(dialog.locator(".tool-terminal").filter({ hasText: "service: unavailable" })).toBeVisible();
   await dialog.getByText("Arguments and full receipt", { exact: true }).click();
   await expect(dialog.getByRole("region", { name: "Arguments", exact: true })).toContainText('"work_dir": "/srv/app"');
   await expect(dialog.getByText(/remote-request/)).toBeVisible();

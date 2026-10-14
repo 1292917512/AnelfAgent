@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { replaceEqualDeep } from "@tanstack/react-query";
 import { api } from "@/lib/api/client";
 import type { ActivityRun, ActivitySnapshot } from "@/lib/types/activity";
 
@@ -9,6 +10,18 @@ function retainRuns(runs: ActivityRun[]): ActivityRun[] {
     ordered.splice(completed < 0 ? 0 : completed, 1);
   }
   return ordered;
+}
+
+/** 按步骤身份复用未变化的内容，截断和重排不会让已完成结果反复渲染。 */
+function reconcileRun(previous: ActivityRun | undefined, incoming: ActivityRun): ActivityRun {
+  if (!previous) return incoming;
+  const entries = new Map(previous.entries.map((entry) => [entry.id, entry]));
+  return {
+    ...incoming,
+    source: replaceEqualDeep(previous.source, incoming.source),
+    skills: replaceEqualDeep(previous.skills, incoming.skills),
+    entries: incoming.entries.map((entry) => replaceEqualDeep(entries.get(entry.id), entry)),
+  };
 }
 
 interface ActivityState {
@@ -59,7 +72,7 @@ export const useActivityStore = create<ActivityState>((set, get) => {
       const previous = runs.find((item) => item.id === run.id);
       if (!previous && run.revision <= snapshotRevision) return state;
       if (previous && previous.revision >= run.revision) return state;
-      return { epoch, snapshotRevision, runs: retainRuns([...runs.filter((item) => item.id !== run.id), run]) };
+      return { epoch, snapshotRevision, runs: retainRuns([...runs.filter((item) => item.id !== run.id), reconcileRun(previous, run)]) };
     }),
     restore: (snapshot) => set((state) => {
       if (state.epoch === snapshot.epoch && snapshot.revision < state.snapshotRevision) return state;
@@ -67,7 +80,8 @@ export const useActivityStore = create<ActivityState>((set, get) => {
       const records = new Map(snapshot.runs.map((run) => [run.id, run]));
       for (const run of current) {
         const incoming = records.get(run.id);
-        if (incoming ? run.revision >= incoming.revision : run.revision > snapshot.revision) records.set(run.id, run);
+        if (incoming) records.set(run.id, run.revision >= incoming.revision ? run : reconcileRun(run, incoming));
+        else if (run.revision > snapshot.revision) records.set(run.id, run);
       }
       const ordered = retainRuns([...records.values()]);
       const runs = ordered.length === state.runs.length && ordered.every((run, index) => run === state.runs[index]) ? state.runs : ordered;

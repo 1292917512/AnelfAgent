@@ -5,6 +5,9 @@ export class EventStream {
   private stopped = true;
   private opened = false;
   private delay = 5000;
+  private readonly onVisibilityChange = () => {
+    if (!this.stopped && document.visibilityState === "visible") this.resync();
+  };
 
   constructor(
     private readonly url: string,
@@ -17,6 +20,7 @@ export class EventStream {
   get active(): boolean { return !this.stopped; }
 
   start(): void {
+    if (this.stopped) document.addEventListener("visibilitychange", this.onVisibilityChange);
     this.stopped = false;
     if (this.source) return;
     clearTimeout(this.timer);
@@ -45,6 +49,7 @@ export class EventStream {
 
   stop(): void {
     this.stopped = true;
+    document.removeEventListener("visibilitychange", this.onVisibilityChange);
     clearTimeout(this.timer);
     this.source?.close();
     this.source = null;

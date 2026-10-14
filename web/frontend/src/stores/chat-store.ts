@@ -140,11 +140,11 @@ export const useChatStore = create<ChatState>((set, get) => {
     }
   }
 
-  const stream = new EventStream("/api/chat/stream", (source) => {
+  const stream = new EventStream("/api/chat/stream", (source, isCurrent) => {
     attachChatSseHandlers(source, {
       updateBucket, getActiveChatId: () => get().activeChatId,
       setContextUsage: (usage) => set({ contextUsage: usage }),
-    });
+    }, isCurrent);
   }, (sseConnected) => set({ sseConnected }), () => resync(), resync);
 
   async function checkPendingReply(chatId: string): Promise<void> {

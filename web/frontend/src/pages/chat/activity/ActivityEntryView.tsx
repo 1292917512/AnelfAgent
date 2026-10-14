@@ -46,7 +46,7 @@ export const ActivityEntryView = memo(function ActivityEntryView({ entry, live, 
   const [expanded, setExpanded] = useState<boolean | null>(null);
   const now = useNow("status" in entry && (entry.status === "running" || entry.status === "queued"));
   if (entry.kind === "notice") return <ActivityNotice entry={entry} />;
-  if (entry.kind === "context") return <ActivityContext entry={entry} defaultExpanded={current} />;
+  if (entry.kind === "context") return <ActivityContext entry={entry} />;
   if (entry.kind === "hook") return <HookExecutionRow run={{ ...entry, started_at: entry.ts }} defaultExpanded={current} />;
   if (entry.kind === "file") return <DiffView {...entry} />;
   if (entry.kind === "model") return <ActivityModel entry={entry} />;
@@ -79,25 +79,19 @@ export const ActivityEntryView = memo(function ActivityEntryView({ entry, live, 
       {open && <div className="activity-delegation-detail"><p><TaggedText content={entry.goal} /></p>{entry.run_id && <button className="activity-run-link" onClick={() => onReveal(entry.run_id!)}><ArrowUpRight size={13} />{t("activity.viewExecution")}</button>}{entry.result && <details><summary>{t("activity.result")}</summary><Markdown content={entry.result} /></details>}</div>}
     </div>;
   }
-  const open = expanded ?? current;
   const duration = entry.status === "running" ? Math.max(0, now - entry.ts * 1000) : entry.duration_ms;
   return <div className={cn("activity-tool", entry.status === "error" && "is-error")}>
-    <div className="activity-entry-heading">
-    <button className="activity-entry-toggle" aria-expanded={open} onClick={() => setExpanded(!open)}>
+    <ActivityInspector title={entry.name} preview={(entry.result || entry.arguments).slice(0, 400)} className="activity-tool-trigger" trigger={<>
       {entry.status === "running" ? <Loader2 size={15} className="animate-spin text-accent" /> : entry.status === "done" ? <Check size={15} className="text-ok" /> : <AlertCircle size={15} className="text-warn" />}
       <span className="min-w-0 flex-1 truncate font-mono" title={entry.name}>{entry.name}</span>
       <span className="text-xs tabular-nums text-muted">{t(`activity.status.${entry.status}`)}{duration != null && ` · ${durationLabel(duration)}`}</span>
-      <ChevronDown size={14} className={cn("text-muted transition-transform", open && "rotate-180")} />
-    </button>
-      <ActivityInspector title={entry.name} preview={(entry.result || entry.arguments).slice(0, 400)}>
+      <ArrowUpRight size={14} className="shrink-0 text-muted" />
+    </>}>
         <div className="activity-inspection-meta"><span>{t(`activity.status.${entry.status}`)}</span>{duration != null && <span>{durationLabel(duration)}</span>}</div>
         <ActivityTargets targets={entry.targets} />
-        <ToolContribution entry={entry} view="summary" fallback={<ActivityToolSummary entry={entry} />} />
         <ToolDetails entry={entry} />
-      </ActivityInspector>
-    </div>
-    <ActivityTargets targets={entry.targets} />
+    </ActivityInspector>
+    <ActivityTargets targets={entry.targets} compact />
     <ToolContribution entry={entry} view="summary" fallback={<ActivityToolSummary entry={entry} />} />
-    {open && <div className="activity-tool-detail"><ToolDetails entry={entry} /></div>}
   </div>;
 });

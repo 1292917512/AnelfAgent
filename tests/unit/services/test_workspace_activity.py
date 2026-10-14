@@ -170,7 +170,7 @@ async def test_judgment_records_survive_hook_updates_with_scope_isolation(activi
 @pytest.fixture
 def activity(monkeypatch):
     frames = []
-    monkeypatch.setattr("services.workspace_activity.publish", frames.append)
+    monkeypatch.setattr("services.workspace_activity.publish", lambda frame, **_: frames.append(frame))
     service = WorkspaceActivityService()
     service.start()
     yield service, frames
@@ -200,6 +200,34 @@ async def test_parallel_and_nested_runs_keep_their_own_tools(activity):
     assert runs["parent"]["entries"] == []
     assert frames[-1]["event"] == "activity_end"
     assert "activity_end" in TERMINAL_EVENTS
+
+
+async def test_slow_subscriber_receives_latest_completion_and_independent_runs(activity, monkeypatch):
+    from core import realtime_hub
+
+    service, _ = activity
+    monkeypatch.setattr("services.workspace_activity.publish", realtime_hub.publish)
+    sub = realtime_hub.subscribe()
+    try:
+        async with activity_scope("slow", "group_qq:42"):
+            await event_bus.emit("thinking_tool_start", {"tool_id": "tool", "tool_name": "inspect"})
+            async with activity_scope("other", "user_webui:1"):
+                await event_bus.emit("assistant_delta", {"delta": "Other channel"})
+            realtime_hub.publish({"event": "reply", "content": "Delivered"})
+            for _ in range(300):
+                await event_bus.emit("assistant_delta", {"delta": "x"})
+                if timer := service._pending.get("slow"):
+                    timer.cancel()
+                service._flush("slow")
+            await event_bus.emit("thinking_tool_end", {"tool_id": "tool", "success": True, "result": "Done"})
+        frames = [sub.queue.get_nowait() for _ in range(sub.queue.qsize())]
+        assert [frame["event"] for frame in frames] == ["activity_end", "reply", "activity_end"]
+        assert frames[0]["run"]["id"] == "other"
+        assert frames[-1]["run"] == next(run for run in service.snapshot()["runs"] if run["id"] == "slow")
+        assert frames[-1]["run"]["entries"][0]["status"] == "done"
+        assert not sub.dead
+    finally:
+        realtime_hub.unsubscribe(sub)
 
 
 async def test_fallback_reset_only_replaces_current_generation(activity):

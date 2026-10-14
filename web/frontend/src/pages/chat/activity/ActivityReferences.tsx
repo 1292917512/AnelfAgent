@@ -28,11 +28,21 @@ export function ActivityTagLabel({ tag, root = "workspace" }: { tag: ActivityTag
   return <span className="activity-tag" title={`${tag.key}: ${tag.path ?? tag.value}`}><span>{t(`activity.tags.${tag.key}`, { defaultValue: tag.key })}</span><b>{value}</b></span>;
 }
 
-export function ActivityTargets({ targets }: { targets: ActivityTag[] }) {
+export function ActivityTargets({ targets, compact = false }: { targets: ActivityTag[]; compact?: boolean }) {
   const { t } = useTranslation("workbench");
   if (!targets.length) return null;
   const root = targets.find((tag) => tag.key === "root")?.value;
-  return <div className="activity-targets" aria-label={t("activity.target")}><ArrowUpRight size={13} className="shrink-0 text-muted" /><span className="sr-only">{t("activity.target")}</span>{targets.filter((tag) => tag.key !== "root").map((tag, index) => <ActivityTagLabel key={`${tag.key}:${index}`} tag={tag} root={root} />)}</div>;
+  const visible = targets.filter((tag) => tag.key !== "root");
+  return <div className={`activity-targets${compact ? " is-compact" : ""}`} aria-label={t("activity.target")}><ArrowUpRight size={13} className="shrink-0 text-muted" /><span className="sr-only">{t("activity.target")}</span>{(compact ? visible.slice(0, 3) : visible).map((tag, index) => <ActivityTagLabel key={`${tag.key}:${index}`} tag={tag} root={root} />)}{compact && visible.length > 3 && <span className="activity-note">+{visible.length - 3}</span>}</div>;
+}
+
+/** 记忆标签保留键和值，和正文标签使用相同的语义样式。 */
+export function MemoryTags({ tags }: { tags: string[] }) {
+  return <span className="activity-memory-tags">{tags.map((value, index) => {
+    const separator = value.indexOf(":");
+    return separator > 0 ? <ActivityTagLabel key={index} tag={{ key: value.slice(0, separator), value: value.slice(separator + 1), root: "external" }} />
+      : <span className="activity-tag" key={index}><b>{value}</b></span>;
+  })}</span>;
 }
 
 export function TaggedText({ content }: { content: string }) {

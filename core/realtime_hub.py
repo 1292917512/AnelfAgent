@@ -87,19 +87,27 @@ def _accepts(sub: Subscriber, event_name: str) -> bool:
     return sub.topics is None or event_name in sub.topics
 
 
-def publish(event: Dict[str, Any]) -> None:
+def publish(
+    event: Dict[str, Any],
+    *,
+    supersedes: Callable[[Dict[str, Any]], bool] | None = None,
+) -> None:
     """向所有匹配订阅者推送事件（事件名取自 event["event"]）。
 
     背压策略：队列满时优先丢弃最旧的非终态帧腾位；若腾不出（队列里全是
     终态帧）且本次仍是终态帧，则标记订阅者死亡并丢弃——连接侧（SSE/WS
     发送循环）发现 dead 后断开连接，客户端重连并经 /history 重同步，
     好过前端在缺帧状态下继续渲染。
+
+    supersedes 仅供完整状态帧声明可替代的旧帧；文本增量和消息回执不得合并。
     """
     event_name = str(event.get("event", "message"))
     terminal = event_name in TERMINAL_EVENTS
     for sub in list(_subscribers):
         if sub.dead or not _accepts(sub, event_name):
             continue
+        if supersedes is not None:
+            _remove_superseded(sub.queue, supersedes)
         try:
             sub.queue.put_nowait(event)
             continue
@@ -120,6 +128,20 @@ def publish(event: Dict[str, Any]) -> None:
             )
         else:
             log("实时订阅队列满，丢弃一帧增量", "DEBUG", tag="RealtimeHub")
+
+
+def _remove_superseded(
+    queue: asyncio.Queue[Dict[str, Any]],
+    supersedes: Callable[[Dict[str, Any]], bool],
+) -> None:
+    """移除被新快照完整覆盖的待发送帧，保留其他事件的顺序。"""
+    kept = []
+    while not queue.empty():
+        item = queue.get_nowait()
+        if not supersedes(item):
+            kept.append(item)
+    for item in kept:
+        queue.put_nowait(item)
 
 
 def _shed_oldest_droppable(sub: Subscriber) -> bool:

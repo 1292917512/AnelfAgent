@@ -135,13 +135,17 @@ test("context evidence, tagged results and cache facts remain readable on narrow
   const execution = page.getByRole("region", { name: "Global execution", exact: true });
   await expect(execution.getByText("Cache not reported", { exact: true })).toBeVisible();
   await expect(execution.getByText("Cached 0%", { exact: true })).toHaveCount(0);
-  await expect(execution.getByRole("button", { name: "Memory and context 2s", exact: true })).toHaveAttribute("aria-expanded", "true");
+  await expect(execution.getByRole("button", { name: "Memory and context 2s", exact: true })).toHaveAttribute("aria-expanded", "false");
+  await execution.getByRole("button", { name: "Memory and context 2s", exact: true }).click();
   await execution.locator(".activity-context-detail summary").click();
   await expect(execution.getByText("Evidence BLUE-42", { exact: false })).toBeVisible();
   await expect(execution.locator('[title="topic: review"]')).toBeVisible();
-  await expect(execution.getByText("Verify the path before retrying.", { exact: true })).toBeVisible();
-  await execution.getByText("Arguments and full receipt", { exact: true }).click();
-  await expect(execution.getByRole("region", { name: "Full receipt", exact: true })).toContainText("request-42");
+  await execution.getByRole("button", { name: "View details: read_file", exact: true }).click();
+  const details = page.getByRole("dialog", { name: "read_file", exact: true });
+  await expect(details.getByText("Verify the path before retrying.", { exact: true })).toBeVisible();
+  await details.getByText("Arguments and full receipt", { exact: true }).click();
+  await expect(details.getByRole("region", { name: "Full receipt", exact: true })).toContainText("request-42");
+  await details.getByRole("button", { name: "Close", exact: true }).click();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   const accessibility = await new AxeBuilder({ page }).include(".activity-pane").analyze();
   expect(accessibility.violations).toEqual([]);
@@ -172,9 +176,11 @@ test("workspace shows the global live process beside actual Web messages", async
   const parentCard = execution.locator('[data-activity-run="global"]');
   await expect(parentCard.getByRole("button", { name: "Thought", exact: true })).toHaveAttribute("aria-expanded", "true");
   await expect(parentCard.getByText("before reporting the deployment result.", { exact: false })).toBeVisible();
-  await expect(parentCard.getByRole("button", { name: /inspect_service Completed/ })).toHaveAttribute("aria-expanded", "true");
-  await expect(parentCard.getByRole("region", { name: "Result", exact: true })).toContainText("Service is healthy");
-  await expect(parentCard.getByText("Call ID: tool", { exact: false })).toBeVisible();
+  await parentCard.getByRole("button", { name: "View details: inspect_service", exact: true }).click();
+  const toolDetails = page.getByRole("dialog", { name: "inspect_service", exact: true });
+  await expect(toolDetails.getByRole("region", { name: "Result", exact: true })).toContainText("Service is healthy");
+  await expect(toolDetails.getByText("Call ID: tool", { exact: false })).toBeVisible();
+  await toolDetails.getByRole("button", { name: "Close", exact: true }).click();
   await expect(parentCard.getByText("Validate settings", { exact: true })).toBeVisible();
   await page.screenshot({ path: info.outputPath("workspace-live-activity.png") });
   await parentCard.getByRole("button", { name: "View execution", exact: true }).click();
@@ -222,7 +228,10 @@ test("long execution keeps its heading fixed while tools are opened", async ({ p
   await page.route("**/api/workspace/activity", (route) => route.fulfill({ json: { epoch: "test", revision: 1, runs: [run] } }));
   await page.goto("/webui/");
   const execution = page.getByRole("region", { name: "Global execution", exact: true });
-  await execution.getByRole("button", { name: "read_file_23 Completed · 10ms", exact: true }).click();
+  await execution.getByRole("button", { name: "View details: read_file_23", exact: true }).click();
+  const details = page.getByRole("dialog", { name: "read_file_23", exact: true });
+  await expect(details).toContainText("File content");
+  await details.getByRole("button", { name: "Close", exact: true }).click();
   const geometry = await execution.evaluate((element) => ({
     height: element.clientHeight, content: element.scrollHeight,
     top: element.getBoundingClientRect().top,

@@ -95,3 +95,22 @@ it("resynchronizes lost frames without creating another live connection", async 
   expect(chatApi.history).toHaveBeenCalledOnce();
   expect(sources).toHaveLength(1);
 });
+
+it("recovers completed execution after the page resumes and removes its listener on stop", async () => {
+  const store = useChatStore.getState();
+  store.startSSE();
+  store.startSSE();
+  sources[0]?.onopen?.();
+  await vi.advanceTimersByTimeAsync(1);
+  vi.mocked(useActivityStore.getState().load).mockClear();
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+  document.dispatchEvent(new Event("visibilitychange"));
+  expect(useActivityStore.getState().load).not.toHaveBeenCalled();
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  document.dispatchEvent(new Event("visibilitychange"));
+  expect(useActivityStore.getState().load).toHaveBeenCalledOnce();
+  expect(sources).toHaveLength(1);
+  store.stopSSE();
+  document.dispatchEvent(new Event("visibilitychange"));
+  expect(useActivityStore.getState().load).toHaveBeenCalledOnce();
+});

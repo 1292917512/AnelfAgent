@@ -175,7 +175,11 @@ class WorkspaceActivityService:
         run = self._runs.get(run_id)
         if run is not None:
             publish({"event": "activity" if run["status"] == "running" else "activity_end",
-                     "epoch": self._epoch, "run": deepcopy(run)})
+                     "epoch": self._epoch, "run": deepcopy(run)},
+                    supersedes=lambda frame: frame.get("event") in {"activity", "activity_end"}
+                    and frame.get("epoch") == self._epoch
+                    and frame.get("run", {}).get("id") == run_id
+                    and frame["run"]["revision"] <= run["revision"])
 
     def _append(self, run: dict[str, Any], entry: dict[str, Any]) -> None:
         run["entry_count"] += 1
