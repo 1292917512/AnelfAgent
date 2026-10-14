@@ -1343,6 +1343,7 @@ async def test_coordinator_compact_idle_scheduling(tmp_path) -> None:
             data_root=str(tmp_path / "cognee"),
             compact_interval_seconds=3600.0,
             compact_retention_days=3.0,
+            write_breaker_enabled=False,
         ),
     )
     try:
