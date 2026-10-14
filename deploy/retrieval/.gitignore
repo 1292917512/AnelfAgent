@@ -1,0 +1,6 @@
+.env
+.env.previous
+runtime/
+.operation.*
+.env.tmp
+.env.previous.tmp

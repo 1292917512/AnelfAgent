@@ -8,13 +8,14 @@
   "caps": {
     "search": "联网检索",
     "reader": "网页读取",
-    "repo": "仓库文档"
+    "repo": "仓库文档",
+    "crawl": "动态页面抓取"
   },
   "matrix": {
     "auto": "自动",
     "activeNow": "生效",
     "noneAvailable": "无可用提供者",
-    "autoDesc": "按优先级使用首个 已启用 + 已配置凭据 的提供者",
+    "autoDesc": "按优先级使用首个已启用且配置完整的提供者；普通网页默认使用轻量读取",
     "missing": "已移除的提供者"
   },
   "provider": {
@@ -22,7 +23,7 @@
     "disable": "禁用",
     "disabledBadge": "已禁用",
     "configured": "已配置",
-    "notConfigured": "未配置凭据",
+    "notConfigured": "待配置",
     "noCredential": "无需凭据",
     "unsupported": "不支持",
     "sourcePrefix": "凭据来源",
@@ -39,7 +40,9 @@
     "count": "{{ready}} / {{total}} 已配置并启用",
     "toggle": "启用 {{name}}",
     "manage": "配置与连通测试",
-    "credential": "访问凭据"
+    "credential": "访问凭据",
+    "serviceSettings": "服务配置",
+    "loadingSettings": "正在加载配置…"
   },
   "test": {
     "run": "测试",
@@ -47,7 +50,8 @@
     "inputPlaceholder": {
       "search": "测试查询词（可选）",
       "reader": "测试 URL（可选）",
-      "repo": "owner/repo（可选）"
+      "repo": "owner/repo（可选）",
+      "crawl": "页面 URL（可选）"
     },
     "failed": "测试失败",
     "title": "连通测试",
@@ -62,5 +66,39 @@
     "ssrfSubtitle": "拒绝访问回环/内网/链路本地等受限地址（建议保持开启）",
     "ssrfOn": "已开启",
     "ssrfOff": "已关闭"
+  },
+  "deployment": {
+    "title": "本地服务",
+    "scope": "管理 Anelf 所在主机随附的 Crawl4AI 与 SearXNG。默认随 Anelf 后台启动；容器独立运行。此处不更新远端服务。",
+    "missing": "尚未就绪：需要在 Anelf 主机安装并运行 Docker 与 Compose v2。AI 可通过 retrieval_services 获取环境缺项和装配指引。",
+    "install": "Docker 官方安装说明",
+    "unknown": "尚未获取状态",
+    "start": "启动 / 初始化",
+    "stop": "停止",
+    "connect": "连接本地服务",
+    "connectHint": "启动仅补齐空地址；“连接本地服务”会将两项服务地址及抓取令牌替换为此主机的配置。停止不会关闭下次自动启动。",
+    "rollback": "回退版本",
+    "refresh": "刷新状态",
+    "log": "操作日志",
+    "update": "更新服务版本",
+    "updateHint": "填写需更新服务的官方镜像标签或 sha256，留空则保持原版本。先下载镜像，健康检查失败时尝试恢复原版本；配置和数据卷保留。",
+    "applyUpdate": "下载并更新",
+    "settings": "启动与 AI 状态提示设置",
+    "status": {
+      "running": "执行中",
+      "succeeded": "已完成",
+      "failed": "失败",
+      "interrupted": "已中断"
+    },
+    "phase": {
+      "queued": "等待执行",
+      "preparing": "准备配置",
+      "pulling": "下载镜像",
+      "starting": "启动并等待健康检查",
+      "stopping": "停止服务",
+      "recovering": "恢复原版本",
+      "done": "操作结束",
+      "interrupted": "请检查服务状态"
+    }
   }
 }

@@ -5,7 +5,8 @@
 已配置凭据 的提供者）。注册顺序即 auto 模式优先级：reader 默认本地直连（免费），
 search 默认首个可用组件。显式指定不做隐式回退——不可用即报明原因。
 
-内置提供者：builtin（本地直连读取）、bigmodel（智谱检索/读取/仓库文档）；
+内置提供者：builtin（轻量读取）、searxng（自托管搜索）、crawl4ai（浏览器读取/抓取）、
+bigmodel（智谱检索/读取/仓库文档）；自托管服务配置完整后参与选择。
 第三方组件经 entities._sdk.register_retrieval_provider 注册（同名覆盖）。
 """
 
@@ -20,6 +21,8 @@ from agent.retrieval.providers.base import (
 )
 from agent.retrieval.providers.bigmodel import BigModelProvider
 from agent.retrieval.providers.builtin import BuiltinProvider
+from agent.retrieval.providers.crawl4ai import Crawl4AIProvider
+from agent.retrieval.providers.searxng import SearXNGProvider
 from core.registration import record_mapping
 
 CAPABILITIES: List[str] = list(CAPABILITY_PROTOCOLS.keys())
@@ -44,6 +47,8 @@ def unregister(name: str) -> None:
 def register_builtin_providers() -> None:
     """注册内置提供者（包导入时调用一次）。"""
     register(BuiltinProvider())
+    register(SearXNGProvider())
+    register(Crawl4AIProvider())
     register(BigModelProvider())
 
 
@@ -73,7 +78,7 @@ def _check_usable(provider: Provider, capability: str) -> None:
     if not provider.enabled():
         raise ValueError(f"提供者 {provider.name} 已禁用（可在检索页签或 retrieval_providers 工具启用）")
     if not provider.configured():
-        raise ValueError(f"提供者 {provider.name} 未配置凭据（{provider.key_hint}）")
+        raise ValueError(f"提供者 {provider.name} 配置不完整（{provider.key_hint}）")
 
 
 def _usable(provider: Provider, capability: str) -> bool:

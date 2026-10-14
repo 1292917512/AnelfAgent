@@ -498,6 +498,13 @@ def create_bootstrap() -> FlowMachine:
         log(f"实体就绪: tools={tool_count}, entities={entity_count}, groups={catalog_count}")
 
     @machine.node(skip_on_error=True, depends_on=["assemble_runtime"])
+    async def prepare_retrieval_services():
+        """注册独立检索服务的后台启动与装配状态，不阻塞主运行时。"""
+        import agent.retrieval.deployment_context  # noqa: F401
+        from agent.retrieval.deployment import get_deployment
+        get_deployment()
+
+    @machine.node(skip_on_error=True, depends_on=["assemble_runtime", "prepare_retrieval_services"])
     async def start_context_providers():
         """启动所有上下文提供者的生命周期（on_start）。"""
         from core.context_provider import ContextProviderRegistry

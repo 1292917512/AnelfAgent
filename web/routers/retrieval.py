@@ -38,6 +38,26 @@ class SettingsRequest(BaseModel):
     ssrf_protection: Optional[bool] = None
 
 
+class DeploymentRequest(BaseModel):
+    action: str
+    images: Dict[str, str] = {}
+
+
+@router.get("/deployment")
+async def deployment_status(inspect: bool = False) -> Dict[str, Any]:
+    return await get_retrieval_service().deployment_status(inspect)
+
+
+@router.post("/deployment")
+async def deploy(req: DeploymentRequest) -> Dict[str, Any]:
+    try:
+        return get_retrieval_service().deploy(req.action, req.images)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.get("/matrix")
 async def get_matrix() -> Dict[str, Any]:
     """能力 × 提供者矩阵快照（脱敏）。"""

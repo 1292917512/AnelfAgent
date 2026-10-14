@@ -1,0 +1,35 @@
+name: anelf-retrieval
+services:
+  crawl4ai:
+    image: ${CRAWL4AI_IMAGE:?Run manage.py init first}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${CRAWL4AI_PORT:-11235}:11235"
+    environment:
+      CRAWL4AI_API_TOKEN: ${CRAWL4AI_API_TOKEN:?Run manage.py init first}
+    shm_size: 1gb
+    volumes:
+      - crawl4ai-data:/var/lib/crawl4ai
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:11235/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
+  searxng:
+    image: ${SEARXNG_IMAGE:?Run manage.py init first}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${SEARXNG_PORT:-18080}:8080"
+    volumes:
+      - ./runtime/searxng:/etc/searxng
+      - searxng-data:/var/cache/searxng
+    healthcheck:
+      test: ["CMD", "/usr/local/searxng/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
+volumes:
+  crawl4ai-data:
+  searxng-data:

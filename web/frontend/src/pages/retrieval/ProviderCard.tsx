@@ -1,15 +1,18 @@
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { FlaskConical, Settings2, Trash2 } from "lucide-react";
 import { apiErrorMessage, retrievalApi } from "@/lib/api";
 import type { RetrievalProviderInfo } from "@/lib/types";
 import { Card } from "@/components/common/Card";
-import { Badge, Button, Input, Select, Switch } from "@/components/ui";
+import { Badge, Button, Input, Modal, Select, Switch } from "@/components/ui";
+
+const RegisteredConfigPanel = lazy(() => import("../config/RegisteredConfigPanel").then((module) => ({ default: module.RegisteredConfigPanel })));
 
 export function RetrievalProviderCard({ provider, onChanged }: { provider: RetrievalProviderInfo; onChanged: () => void }) {
   const { t } = useTranslation("retrieval");
   const [apiKey, setApiKey] = useState("");
+  const [configOpen, setConfigOpen] = useState(false);
   const [testCap, setTestCap] = useState(provider.capabilities[0] ?? "");
   const [testInput, setTestInput] = useState("");
   const toggle = useMutation({ mutationFn: () => retrievalApi.setEnabled(provider.name, !provider.enabled), onSuccess: onChanged });
@@ -30,7 +33,8 @@ export function RetrievalProviderCard({ provider, onChanged }: { provider: Retri
     <details className="group mt-4 border-t border-border pt-3">
       <summary className="flex min-h-9 cursor-pointer list-none items-center gap-2 text-xs font-medium text-muted hover:text-heading"><Settings2 size={14} />{t("provider.manage")}</summary>
       <div className="mt-3 space-y-4">
-        {provider.requires_credential && <div className="space-y-2">
+        {provider.config_group && <Button size="sm" onClick={() => setConfigOpen(true)}><Settings2 size={14} />{t("provider.serviceSettings")}</Button>}
+        {provider.requires_credential && !provider.config_group && <div className="space-y-2">
           <label className="block text-xs text-muted" htmlFor={`key-${provider.name}`}>{t("provider.credential")}</label>
           <div className="flex flex-wrap gap-2">
             <Input id={`key-${provider.name}`} type="password" autoComplete="new-password" value={apiKey} disabled={busy}
@@ -54,6 +58,9 @@ export function RetrievalProviderCard({ provider, onChanged }: { provider: Retri
         </div>}
       </div>
     </details>
+    {configOpen && <Modal open onClose={() => { setConfigOpen(false); test.reset(); onChanged(); }} title={provider.display_name} width="max-w-3xl">
+      <Suspense fallback={<p className="text-sm text-muted">{t("provider.loadingSettings")}</p>}><RegisteredConfigPanel group={provider.config_group} /></Suspense>
+    </Modal>}
     {error && <p role="alert" className="mt-3 break-words text-xs text-danger">{apiErrorMessage(error, t("common:requestFailed"))}</p>}
     {test.data && <div role="status" className={`mt-3 rounded-lg border p-3 text-xs ${test.data.ok ? "border-ok/25 bg-ok-subtle" : "border-danger/25 bg-danger-subtle"}`}>
       <div className="flex flex-wrap justify-between gap-2"><span className="font-medium">{test.data.ok ? test.data.summary : t("test.failed")}</span><span className="tabular-nums text-muted">{test.data.latency_ms ?? 0} ms</span></div>

@@ -1,7 +1,7 @@
 """检索工具 — 联网检索、网页读取、仓库文档、HTTP 请求、文件下载、文档重排序。
 
 接口层：本文件只做工具注册与参数校验，能力实现在 providers/ 模块
-（能力 × 提供者矩阵：Provider 抽象 + builtin/bigmodel 内置实现 + 组件注册），
+（能力 × 提供者矩阵：Provider 抽象、内置实现和组件注册），
 经 providers.resolve 统一解析；本机抓取设施在 fetcher.py。
 模型可见：工具参数 proxy_mode 选择全局网络策略，HTTP 失败保留状态码与响应正文。
 token 影响：失败回执增加少量归因字段，正文继续受长度预算约束。
@@ -10,12 +10,14 @@ token 影响：失败回执增加少量归因字段，正文继续受长度预�
 工具面：
 - web_search:        检索关键词，返回结构化结果列表（可指定提供者）
 - web_fetch:         读取指定 URL 的可读正文（可指定提供者；分块统一在工具层）
+- web_crawl:         浏览器服务渲染、CSS 等待和有界滚动（check_fn 门控）
 - repo_docs:         GitHub 仓库知识文档 / 目录结构 / 文件内容（check_fn 门控）
 - web_request:       通用 HTTP 请求（GET/POST，自定义 Header）
 - extract_page_links: 提取页面所有链接
 - web_download:      下载远程文件到本地 workspace（按需落盘）
 - rerank_search:     按相关性对文档列表重排序（rerank 模型链）
 - retrieval_providers: 提供者管理（矩阵查看 / 切换 / 启停 / 凭据配置）
+- retrieval_services: 本地服务装配、状态、版本更新与回退
 """
 
 from __future__ import annotations
@@ -40,9 +42,41 @@ def _repo_available() -> bool:
     return providers.any_available(CAP_REPO)
 
 
-# ==================================================================
-# 检索
-# ==================================================================
+def _crawl_available() -> bool:
+    """仅配置了动态抓取提供者时向模型提供浏览器抓取工具。"""
+    from agent.retrieval import providers
+    from agent.retrieval.providers.base import CAP_CRAWL
+    return providers.any_available(CAP_CRAWL)
+
+
+@deferred_tool(name="retrieval_services", group=_group, tags=["web", "config"], timeout=30)
+async def retrieval_services(action: str = "status", crawl4ai_image: str = "", searxng_image: str = "") -> str:
+    """管理 Anelf 所在主机的 Crawl4AI/SearXNG 本地服务，所有操作与 Web 共用。
+
+    status 返回 Docker 环境缺项、安装指引、容器状态和最近操作。缺少 Docker 时可按指引
+    使用系统工具安装，安装后 up 自动初始化配置、拉取固定镜像并等待健康；首次下载较慢。
+    写操作立即返回操作 ID，accepted 不代表成功，后续用 status 查询终态，不要重复提交。
+    up 只填补空的 Anelf 服务地址；connect 显式替换为本地地址和凭据，不修改能力选择。
+    配置服务地址、密钥、引擎与启动开关使用配置工具（retrieval/* 分组）。
+
+    Args:
+        action: status/init/up/update/rollback/stop/connect；仅管理随项目部署的本地服务
+        crawl4ai_image: update 时指定官方 unclecode/crawl4ai 镜像的明确标签或 sha256，空则不更新
+        searxng_image: update 时指定官方 searxng/searxng 镜像的明确标签或 sha256，空则不更新
+    """
+    from agent.retrieval.deployment import get_deployment
+    manager = get_deployment()
+    try:
+        if action == "status":
+            return json.dumps(await manager.inspect(), ensure_ascii=False)
+        images = {key: value for key, value in {"crawl4ai": crawl4ai_image, "searxng": searxng_image}.items() if value}
+        return json.dumps(manager.start(action, images), ensure_ascii=False)
+    except ValueError as exc:
+        return tool_error(str(exc), cause=ErrorCause.CONFIG, retryable=False)
+    except RuntimeError as exc:
+        return tool_error(str(exc), cause=ErrorCause.STATE, retryable=False)
+    except Exception as exc:
+        return error_from_exception(exc, action="管理本地检索服务")
 
 
 @deferred_tool(name="web_search", group=_group, tags=["always", "web"], concurrency_safe=True)
@@ -98,13 +132,13 @@ def web_fetch(
 
     Args:
         url:            网页地址（必须以 http:// 或 https:// 开头）
-        extract_mode:   输出格式：markdown（默认，保留结构）、text（纯文本）或 raw（原始内容，仅 builtin 提供者支持）
+        extract_mode:   输出格式：markdown（默认，保留结构）、text（纯文本）或 raw（原始内容，builtin/crawl4ai 支持）
         max_chars:      最大返回字符数，默认 8000
         timeout:        超时秒数，默认 15
         proxy_mode:     system 按全局规则，direct 直连，proxy 使用全局代理（选择本机到提供者/网站的网络路径）
         start_index:    从该字符索引开始返回，默认 0，用于长页面分块续读
-        respect_robots: 是否遵守目标站点 robots.txt 合规检查（仅 builtin 提供者生效），默认 system
-        provider:       指定读取提供者（builtin 本机抓取 / bigmodel 智谱），留空用系统当前选择
+        respect_robots: 是否检查目标站点 robots.txt（builtin/crawl4ai 支持），默认 false
+        provider:       指定读取提供者（builtin 轻量抓取 / crawl4ai 浏览器渲染 / bigmodel 智谱），留空用系统当前选择
     """
     from agent.retrieval import providers
     from agent.retrieval.extractor import truncate_text
@@ -138,6 +172,57 @@ def web_fetch(
     if truncated:
         result["next_start_index"] = start_index + len(content)
     result["provider"] = selected.name
+    return json.dumps(result, ensure_ascii=False)
+
+
+@deferred_tool(name="web_crawl", group=_group, tags=["always", "web"],
+               concurrency_safe=True, check_fn=_crawl_available, timeout=60.0)
+def web_crawl(
+    url: str, css_selector: str = "", wait_for: str = "", scan_full_page: bool = False,
+    extract_mode: str = "markdown", max_chars: int = 8000, start_index: int = 0,
+    timeout: int = 30, proxy_mode: ProxyMode = "system", respect_robots: bool = False,
+    provider: str = "",
+) -> str:
+    """在本地浏览器服务渲染网页，等待元素、滚动加载并提取正文与链接。
+
+    普通页面优先 web_fetch；依赖 JavaScript 渲染的内容使用本工具。
+    不执行任意脚本、表单提交或跨调用登录会话。分块续读会重新抓取页面。
+
+    Args:
+        url: HTTP(S) 网页地址
+        css_selector: 只提取指定 CSS 区域，留空读取全页
+        wait_for: 等待出现的 CSS 选择器，留空在 DOM 就绪后提取
+        scan_full_page: 是否滚动加载，最多 10 步
+        extract_mode: markdown / text / raw
+        max_chars: 正文返回上限，1–50000 字符
+        start_index: 正文起点，返回 truncated 时用 next_start_index 续读
+        timeout: 页面操作等待上限，1–45 秒
+        proxy_mode: 到浏览器服务的连接策略；不改变浏览器对网站的出站代理
+        respect_robots: 是否由浏览器服务检查 robots.txt
+        provider: 动态抓取提供者，留空使用系统选择
+    """
+    from agent.retrieval import providers
+    from agent.retrieval.extractor import truncate_text
+    from agent.retrieval.providers.base import CAP_CRAWL, CrawlCap
+
+    if not 1 <= max_chars <= 50000 or start_index < 0 or not 1 <= timeout <= 45:
+        return tool_error("max_chars 须为 1–50000、start_index 非负、timeout 为 1–45 秒", cause=ErrorCause.PARAM, retryable=False)
+    try:
+        selected = providers.resolve(CAP_CRAWL, provider)
+    except ValueError as exc:
+        return tool_error(str(exc), cause=ErrorCause.CONFIG, retryable=False)
+    if not isinstance(selected, CrawlCap):
+        return tool_error("提供者不支持动态抓取", cause=ErrorCause.CONFIG, retryable=False)
+    try:
+        result = selected.crawl(url.strip(), timeout=timeout, extract_mode=extract_mode,
+            css_selector=css_selector, wait_for=wait_for, scan_full_page=scan_full_page,
+            proxy_mode=proxy_mode, respect_robots=respect_robots)
+    except Exception as exc:
+        return selected.error_response(exc, "动态页面抓取")
+    content, truncated = truncate_text(str(result.get("content", ""))[start_index:], max_chars)
+    result.update(content=content, truncated=truncated, provider=selected.name)
+    if truncated:
+        result["next_start_index"] = start_index + len(content)
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -218,8 +303,8 @@ def retrieval_providers(action: str = "list", provider: str = "", capability: st
 
     Args:
         action:     list（能力 × 提供者矩阵，默认）/ switch（切换某能力的提供者，provider=auto 恢复自动选择）/ enable / disable（启停提供者）/ set_key（配置凭据，api_key 传 clear 清除）
-        provider:   目标提供者名（如 builtin / bigmodel）
-        capability: 目标能力（switch 必填：search 检索 / reader 网页读取 / repo 仓库文档）
+        provider:   目标提供者名（如 builtin / searxng / crawl4ai / bigmodel）
+        capability: 目标能力（switch 必填：search 检索 / reader 网页读取 / repo 仓库文档 / crawl 动态抓取）
         api_key:    凭据内容（set_key 必填；传 clear 清除已存凭据）
     """
     from agent.retrieval import providers
@@ -328,12 +413,13 @@ def _providers_matrix() -> dict:
                 "description": p.description,
                 "enabled": p.enabled(),
                 "configured": p.configured(),
+                "config_group": p.config_group,
                 "credential_source": p.credential()[1] or None,
                 "capabilities": providers.provider_capabilities(p),
             }
             for p in providers.list_providers()
         ],
-        "hint": "switch 切换能力实现（provider=auto 自动选择）；enable/disable 启停提供者；set_key 配置凭据",
+        "hint": "switch 切换能力实现；enable/disable 启停；set_key 配置凭据；服务地址等参数通过 config_group 对应的统一配置工具编辑",
     }
 
 

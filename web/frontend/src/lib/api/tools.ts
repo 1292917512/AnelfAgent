@@ -25,6 +25,8 @@ import type {
   PluginInfo,
   ToolGroup,
   RetrievalMatrix,
+  RetrievalDeploymentStatus,
+  RetrievalDeploymentAction,
   RetrievalSettings,
   RetrievalTestResult,
   SkillBuildState,
@@ -182,6 +184,9 @@ export const hooksLlmApi = {
 // Retrieval（检索能力页 · 提供者矩阵 + 抓取设置）
 
 export const retrievalApi = {
+  deployment: (inspect = false) => api.get<RetrievalDeploymentStatus>("/retrieval/deployment", { params: { inspect } }),
+  deploy: (action: RetrievalDeploymentAction, images: Record<string, string> = {}) =>
+    api.post<RetrievalDeploymentStatus>("/retrieval/deployment", { action, images }),
   matrix: () => api.get<RetrievalMatrix>("/retrieval/matrix"),
   setActive: (capability: string, provider: string) =>
     api.put<RetrievalMatrix>("/retrieval/active", { capability, provider }),

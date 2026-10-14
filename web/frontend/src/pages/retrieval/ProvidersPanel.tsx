@@ -1,13 +1,17 @@
+import { lazy, Suspense, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { ArrowRight, Globe2 } from "lucide-react";
 import { apiErrorMessage, retrievalApi } from "@/lib/api";
 import { AsyncState, QueryError } from "@/components/common/AsyncState";
-import { Badge, Select } from "@/components/ui";
+import { Badge, Button, Modal, Select } from "@/components/ui";
 import { RetrievalProviderCard } from "./ProviderCard";
+
+const DeploymentPanel = lazy(() => import("./DeploymentPanel").then((module) => ({ default: module.RetrievalDeploymentPanel })));
 
 export function RetrievalProvidersPanel() {
   const { t } = useTranslation("retrieval");
+  const [deploymentOpen, setDeploymentOpen] = useState(false);
   const client = useQueryClient();
   const query = useQuery({
     queryKey: ["retrievalProvidersMatrix"], queryFn: () => retrievalApi.matrix().then((r) => r.data), throwOnError: false,
@@ -21,7 +25,7 @@ export function RetrievalProvidersPanel() {
   return <AsyncState pending={query.isPending} error={!data && query.error} retry={() => void query.refetch()}>
     {data && <div className="space-y-6">
       {query.isError && <QueryError compact error={query.error} retry={() => void query.refetch()} />}
-      <div className="grid gap-3 lg:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {data.capabilities.map((cap) => {
           const capable = data.providers.filter((p) => p.capabilities.includes(cap));
           const selection = data.selection[cap] || "auto";
@@ -46,11 +50,17 @@ export function RetrievalProvidersPanel() {
       {active.isError && <p role="alert" className="text-sm text-danger">{apiErrorMessage(active.error, t("common:requestFailed"))}</p>}
       <div className="flex flex-wrap items-end justify-between gap-2">
         <div><h2 className="text-sm font-semibold text-heading">{t("provider.title")}</h2><p className="mt-1 text-xs text-muted">{t("matrix.autoDesc")}</p></div>
-        <span className="text-xs tabular-nums text-muted">{t("provider.count", { ready: data.providers.filter((p) => p.enabled && p.configured).length, total: data.providers.length })}</span>
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-xs tabular-nums text-muted">{t("provider.count", { ready: data.providers.filter((p) => p.enabled && p.configured).length, total: data.providers.length })}</span>
+          <Button size="sm" onClick={() => setDeploymentOpen(true)}>{t("deployment.title")}</Button>
+        </div>
       </div>
       <div className="grid items-start gap-4 xl:grid-cols-2">
         {data.providers.map((provider) => <RetrievalProviderCard key={provider.name} provider={provider} onChanged={invalidate} />)}
       </div>
+      <Modal open={deploymentOpen} onClose={() => { setDeploymentOpen(false); void invalidate(); }} title={t("deployment.title")} width="max-w-2xl">
+        {deploymentOpen && <Suspense fallback={<p className="text-sm text-muted">{t("provider.loadingConfig")}</p>}><DeploymentPanel /></Suspense>}
+      </Modal>
     </div>}
   </AsyncState>;
 }

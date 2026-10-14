@@ -131,6 +131,7 @@ __all__ = [
     "register_retrieval_provider", "unregister_retrieval_provider",
     "CapabilityProvider", "ProviderUnavailable", "CapabilityNotSupported",
     "RetrievalProvider", "run_coro_sync", "llm_provider_key",
+    "SearchCap", "ReaderCap", "RepoCap", "CrawlCap",
     "SOURCE_CONFIG", "SOURCE_LLM", "SOURCE_ENV",
     "resolve_workspace_path",
     "download_media_to_uploads", "execute_send_action",
@@ -760,7 +761,7 @@ def register_retrieval_provider(provider: RetrievalProvider) -> None:
     """注册检索提供者（联网检索/网页读取/仓库文档组件）。
 
     provider 需继承 agent.retrieval.providers.base.Provider 并按需实现
-    SearchCap / ReaderCap / RepoCap 协议方法。
+    SearchCap / ReaderCap / RepoCap / CrawlCap 协议方法。
     """
     from agent.retrieval import providers
     providers.register(provider)
@@ -831,6 +832,10 @@ from agent.retrieval.providers.base import (  # noqa: E402
     SOURCE_CONFIG,
     SOURCE_ENV,
     SOURCE_LLM,
+    CrawlCap,
+    ReaderCap,
+    RepoCap,
+    SearchCap,
     llm_provider_key,
     run_coro_sync,
 )

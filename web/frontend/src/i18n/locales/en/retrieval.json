@@ -8,13 +8,14 @@
   "caps": {
     "search": "Web Search",
     "reader": "Page Reader",
-    "repo": "Repo Docs"
+    "repo": "Repo Docs",
+    "crawl": "Dynamic Page Crawl"
   },
   "matrix": {
     "auto": "Auto",
     "activeNow": "Active",
     "noneAvailable": "No provider available",
-    "autoDesc": "Use the first enabled + credential-configured provider by priority",
+    "autoDesc": "Use the first enabled and configured provider by priority; plain page reading stays browser-free by default",
     "missing": "Provider no longer registered"
   },
   "provider": {
@@ -22,7 +23,7 @@
     "disable": "Disable",
     "disabledBadge": "Disabled",
     "configured": "Configured",
-    "notConfigured": "No credential",
+    "notConfigured": "Setup required",
     "noCredential": "No credential required",
     "unsupported": "Unsupported",
     "sourcePrefix": "Credential source",
@@ -39,7 +40,9 @@
     "count": "{{ready}} / {{total}} configured and enabled",
     "toggle": "Enable {{name}}",
     "manage": "Configuration & connection test",
-    "credential": "API credential"
+    "credential": "API credential",
+    "serviceSettings": "Service configuration",
+    "loadingSettings": "Loading settings…"
   },
   "test": {
     "run": "Test",
@@ -47,7 +50,8 @@
     "inputPlaceholder": {
       "search": "Test query (optional)",
       "reader": "Test URL (optional)",
-      "repo": "owner/repo (optional)"
+      "repo": "owner/repo (optional)",
+      "crawl": "Page URL (optional)"
     },
     "failed": "Test failed",
     "title": "Connection test",
@@ -62,5 +66,39 @@
     "ssrfSubtitle": "Block requests to loopback/private/link-local addresses (recommended)",
     "ssrfOn": "Enabled",
     "ssrfOff": "Disabled"
+  },
+  "deployment": {
+    "title": "Local services",
+    "scope": "Manage the bundled Crawl4AI and SearXNG stack on the Anelf host. It starts in the background by default; containers run independently. Remote services are not updated here.",
+    "missing": "Not ready: install and start Docker with Compose v2 on the Anelf host. AI can inspect requirements and setup guidance using retrieval_services.",
+    "install": "Official Docker installation guide",
+    "unknown": "Status not checked",
+    "start": "Start / initialize",
+    "stop": "Stop",
+    "connect": "Connect local services",
+    "connectHint": "Start only fills empty endpoints. Connect replaces both service URLs and the crawler token with this host’s settings. Stop does not disable startup on the next launch.",
+    "rollback": "Roll back",
+    "refresh": "Refresh status",
+    "log": "Operation log",
+    "update": "Update service versions",
+    "updateHint": "Enter official image tags or sha256 digests for services to update. Blank keeps the current version. Images are pulled first; failed health checks trigger recovery. Settings and data volumes are retained.",
+    "applyUpdate": "Download and update",
+    "settings": "Startup and AI status settings",
+    "status": {
+      "running": "Running",
+      "succeeded": "Completed",
+      "failed": "Failed",
+      "interrupted": "Interrupted"
+    },
+    "phase": {
+      "queued": "Queued",
+      "preparing": "Preparing configuration",
+      "pulling": "Downloading images",
+      "starting": "Starting and checking health",
+      "stopping": "Stopping services",
+      "recovering": "Restoring previous version",
+      "done": "Finished",
+      "interrupted": "Check service status"
+    }
   }
 }

@@ -12,6 +12,17 @@ from core.sanitizer import sanitize_text
 class RetrievalServiceFacade:
     """检索页签的数据聚合（能力 × 提供者矩阵、切换/启停/凭据、连通性测试、抓取设置）。"""
 
+    async def deployment_status(self, inspect: bool = False) -> Dict[str, Any]:
+        """读取轻量操作快照，显式刷新时才查询 Docker 容器。"""
+        from agent.retrieval.deployment import get_deployment
+        manager = get_deployment()
+        return await manager.inspect() if inspect else manager.snapshot()
+
+    def deploy(self, action: str, images: Dict[str, str]) -> Dict[str, Any]:
+        """提交本地检索服务操作，立即返回操作 ID。"""
+        from agent.retrieval.deployment import get_deployment
+        return get_deployment().start(action, images)
+
     # ------------------------------------------------------------------
     # 矩阵
     # ------------------------------------------------------------------
@@ -40,6 +51,7 @@ class RetrievalServiceFacade:
                     "enabled": p.enabled(),
                     "configured": p.configured(),
                     "requires_credential": p.requires_credential,
+                    "config_group": p.config_group,
                     "credential_source": p.credential()[1],
                     "capabilities": providers.provider_capabilities(p),
                 }
@@ -126,9 +138,11 @@ class RetrievalServiceFacade:
     def _run_capability_test(provider: object, capability: str, user_input: str) -> Tuple[str, str]:
         """按能力执行一次真实调用，返回 (summary, excerpt)。"""
         from agent.retrieval.providers.base import (
+            CAP_CRAWL,
             CAP_READER,
             CAP_REPO,
             CAP_SEARCH,
+            CrawlCap,
             ReaderCap,
             RepoCap,
             SearchCap,
@@ -146,6 +160,11 @@ class RetrievalServiceFacade:
                 raise ValueError(output.get("error") or "提供者返回失败")
             content = str(output.get("content", ""))
             return str(output.get("title") or output.get("url", "")), content[:300]
+        if capability == CAP_CRAWL and isinstance(provider, CrawlCap):
+            output = provider.crawl(user_input or "https://example.com", timeout=20)
+            if output.get("error") or output.get("success") is False:
+                raise ValueError(output.get("error") or "提供者返回失败")
+            return str(output.get("title") or output.get("url", "")), str(output.get("content", ""))[:300]
         if capability == CAP_REPO and isinstance(provider, RepoCap):
             content = provider.get_repo_structure(user_input or "vitejs/vite")
             return user_input or "vitejs/vite", content[:300]

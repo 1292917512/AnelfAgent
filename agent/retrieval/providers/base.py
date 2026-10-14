@@ -21,11 +21,13 @@ from core.tool_errors import error_from_exception
 CAP_SEARCH = "search"  # 检索
 CAP_READER = "reader"  # 网页读取
 CAP_REPO = "repo"      # 仓库文档
+CAP_CRAWL = "crawl"    # 浏览器渲染抓取
 
 CAPABILITY_LABELS: Dict[str, str] = {
     CAP_SEARCH: "检索",
     CAP_READER: "网页读取",
     CAP_REPO: "仓库文档",
+    CAP_CRAWL: "动态页面抓取",
 }
 
 # 凭据来源标识（面板展示 / AI 工具诊断用）
@@ -68,11 +70,23 @@ class RepoCap(Protocol):
     def read_repo_file(self, repo: str, path: str) -> str: ...
 
 
+@runtime_checkable
+class CrawlCap(Protocol):
+    """浏览器渲染、等待元素与限定正文区域；不执行任意脚本或会话操作。"""
+
+    def crawl(
+        self, url: str, *, timeout: int = 30, extract_mode: str = "markdown",
+        css_selector: str = "", wait_for: str = "", scan_full_page: bool = False,
+        proxy_mode: ProxyMode = "system", respect_robots: bool = False,
+    ) -> Dict[str, Any]: ...
+
+
 # 能力 → 协议（注册表判定与展示的唯一事实源）
 CAPABILITY_PROTOCOLS: Dict[str, Any] = {
     CAP_SEARCH: SearchCap,
     CAP_READER: ReaderCap,
     CAP_REPO: RepoCap,
+    CAP_CRAWL: CrawlCap,
 }
 
 
@@ -84,6 +98,7 @@ class Provider(ABC):
     description: str = ""
     key_hint: str = ""               # 凭据配置指引（面板 / AI 工具报错提示）
     requires_credential: bool = True  # False 表示开箱可用（如本地直连）
+    config_group: str = ""
 
     @abstractmethod
     def credential(self) -> Tuple[str, str]:

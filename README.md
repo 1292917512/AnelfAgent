@@ -61,6 +61,9 @@ start.bat                  # Windows
 
 内置 Cognee 知识图谱，默认启用、依赖自动安装，在 WebUI 配置聊天与 Embedding 模型即可使用。
 
+联网检索内置 SearXNG 接口，动态网页读取内置 Crawl4AI 接口。有 Docker 时默认后台启动本地服务，
+Web 与 AI 均可管理配置、启动、更新和回退；缺少环境会提供装配指引，详见[本地检索服务](deploy/retrieval/README.md)。
+
 ### 日常运维
 
 ```bash

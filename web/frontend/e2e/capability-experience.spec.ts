@@ -215,3 +215,75 @@ test("tag purposes link to tools and retrieval failures stay visible", async ({ 
   await page.screenshot({ path: info.outputPath("retrieval-providers.png"), fullPage: true });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
+
+test("self-hosted retrieval config uses metadata and refreshes availability", async ({ page }, info) => {
+  let endpoint = "";
+  const field: ConfigMetaItem = { key: "retrieval_crawl4ai_base_url", type: "string", description: "Local crawler URL", value: "", default: "", editable: true, options: [], advanced: false, min: null, max: null, step: null, unit: "", tag: "", source: "config_manager", value_source: "configured", environment_variable: null };
+  await page.route("**/api/retrieval/matrix", (route) => route.fulfill({ json: {
+    capabilities: ["search", "reader", "repo", "crawl"], selection: {}, active: { reader: "builtin", crawl: endpoint ? "crawl4ai" : "" },
+    providers: [{ name: "crawl4ai", display_name: "Crawl4AI", description: "Local browser rendering", enabled: true, configured: !!endpoint, requires_credential: true, credential_source: "config", config_group: "retrieval/crawl4ai", capabilities: ["reader", "crawl"] }],
+  } }));
+  await page.route("**/api/config/meta", (route) => route.fulfill({ json: { groups: [{ group: "retrieval/crawl4ai", items: [{ ...field, value: endpoint }] }] } }));
+  await page.route("**/api/config/meta/retrieval_crawl4ai_base_url", (route) => {
+    endpoint = route.request().postDataJSON().value;
+    return route.fulfill({ json: { status: "ok", value: endpoint } });
+  });
+  await page.route("**/api/retrieval/providers/crawl4ai/test", (route) => route.fulfill({ json: { ok: true, latency_ms: 25, summary: "Example", excerpt: "Rendered page content" } }));
+  await page.goto("/webui/retrieval");
+  const card = page.locator("section").filter({ has: page.getByRole("heading", { name: "Crawl4AI", exact: true }) });
+  await card.locator("summary").click();
+  await expect(card.getByRole("button", { name: "Test", exact: true })).toBeDisabled();
+  await card.getByRole("button", { name: "Service configuration" }).click();
+  const dialog = page.getByRole("dialog", { name: "Crawl4AI" });
+  const input = dialog.getByRole("textbox", { name: "Local crawler URL", exact: true });
+  await input.fill("http://127.0.0.1:11235");
+  await input.press("Enter");
+  await expect.poll(() => endpoint).toBe("http://127.0.0.1:11235");
+  await page.screenshot({ path: info.outputPath("retrieval-service-config.png"), fullPage: true });
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(card.getByRole("button", { name: "Test", exact: true })).toBeEnabled();
+  await card.getByRole("combobox", { name: "Capability to test" }).selectOption("crawl");
+  await card.getByRole("button", { name: "Test", exact: true }).click();
+  await expect(card.getByText("Rendered page content")).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test("local retrieval updates remain observable and missing Docker is actionable", async ({ page }, info) => {
+  let available = false;
+  let posts = 0;
+  let snapshots = 0;
+  let operation: null | { id: string; action: string; status: string; phase: string; started_at: number; finished_at: number | null; error: string; log: string } = null;
+  await page.route("**/api/retrieval/matrix", (route) => route.fulfill({ json: { capabilities: [], providers: [], selection: {}, active: {} } }));
+  await page.route("**/api/retrieval/deployment**", (route) => {
+    if (route.request().method() === "POST") {
+      posts++;
+      expect(route.request().postDataJSON()).toEqual({ action: "update", images: { crawl4ai: "unclecode/crawl4ai:0.9.5" } });
+      operation = { id: "op-1", action: "update", status: "running", phase: "pulling", started_at: Date.now() / 1000, finished_at: null, error: "", log: "" };
+    } else if (operation?.status === "running" && ++snapshots > 1) {
+      operation = { ...operation, status: "failed", phase: "recovering", finished_at: Date.now() / 1000, error: "Health check failed; previous version restored." };
+    }
+    return route.fulfill({ json: {
+      available, initialized: available, rollback_available: false, operation,
+      images: { crawl4ai: "unclecode/crawl4ai:0.9.4", searxng: "searxng/searxng:2026.10.13-22c64b8d3" },
+      ports: { crawl4ai: "11235", searxng: "18080" }, containers: [],
+      requirements: { platform: "posix", docker_cli: available, install_guide: "https://docs.docker.com/engine/install/", next_step: "Install Docker" },
+    } });
+  });
+  await page.goto("/webui/retrieval");
+  await page.getByRole("button", { name: "Local services", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Local services" });
+  await expect(dialog.getByRole("link", { name: "Official Docker installation guide" })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Start / initialize" })).toBeDisabled();
+  available = true;
+  await dialog.getByRole("button", { name: "Refresh status" }).click();
+  await expect(dialog.getByRole("button", { name: "Start / initialize" })).toBeEnabled();
+  await dialog.locator("summary").filter({ hasText: "Update service versions" }).click();
+  await dialog.getByRole("textbox", { name: "Crawl4AI" }).fill("unclecode/crawl4ai:0.9.5");
+  await dialog.getByRole("button", { name: "Download and update" }).click();
+  await expect(dialog.getByText("Downloading images", { exact: true })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(dialog.getByText("Health check failed; previous version restored.")).toBeVisible();
+  expect(posts).toBe(1);
+  await page.screenshot({ path: info.outputPath("retrieval-deployment.png"), fullPage: true });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});

@@ -1,0 +1,11 @@
+use_default_settings: true
+general:
+  instance_name: Anelf Search
+search:
+  formats:
+    - html
+    - json
+server:
+  secret_key: __GENERATED_SECRET__
+  limiter: false
+  image_proxy: false

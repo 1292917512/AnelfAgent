@@ -86,13 +86,19 @@ CapabilityProvider 协议（name/capabilities/is_configured/run）+ CapabilityRo
 
 联网检索/网页读取/仓库文档/HTTP 请求/文件下载/文档重排序核心化：
 
-- **providers**（能力×提供者矩阵：Provider ABC + SearchCap/ReaderCap/RepoCap Protocol；builtin
-  本机抓取/bigmodel 内置，组件经 `_sdk.register_retrieval_provider` 接入，可启停）
+- **providers**（能力×提供者矩阵：Provider ABC + SearchCap/ReaderCap/RepoCap/CrawlCap Protocol；
+  builtin 轻量抓取、bigmodel、SearXNG 自托管搜索、Crawl4AI 浏览器读取/抓取内置，组件经
+  `_sdk.register_retrieval_provider` 接入，可启停；`config_group` 驱动提供者配置弹窗）
 - **fetcher**（SSRF 防护与规则路由抓取）+ **extractor**（三层正文提取）+ **robots** + **rerank**
   （rerank 模型链）
-- **工具组 retrieval**：web_search/web_fetch/repo_docs/web_request/extract_page_links/web_download
+- **工具组 retrieval**：web_search/web_fetch/web_crawl/repo_docs/web_request/extract_page_links/web_download
   常驻 always + retrieval_providers/rerank_search core；web_download 注册 timeout=300（AI 参数
   在此范围内生效）
+- `web_crawl` 经 CrawlCap 分派，仅可用时装配；支持 CSS 正文区域、CSS 等待和有界滚动，
+  不暴露任意脚本与跨调用会话。自托管配置、更新和网络边界见
+  [本地检索服务](../deploy/retrieval/README.md)。
+- `retrieval_services` 与 Web/CLI 共用部署管理器，写操作返回 ID 并可查询终态；Lifecycle 默认
+  后台启动本地服务，缺失环境/部署异常通过可关闭的动态上下文提供者提示，快照不执行 I/O。
 - 配置统一走 ConfigManager（retrieval_active/retrieval_disabled_providers/
   retrieval_bigmodel_api_key(password)/retrieval_ssrf_protection，retrieval 组）
 - 网络代理统一使用 [核心网络 SDK](network.md)，工具通过 `proxy_mode` 选择全局规则、直连或全局代理。
