@@ -104,6 +104,48 @@ def fake_registry(monkeypatch: pytest.MonkeyPatch):
     providers_mod._PROVIDERS.update(saved)
 
 
+class TestHttpRequestResults:
+    @pytest.mark.parametrize("status", [403, 404, 500])
+    @pytest.mark.parametrize("tool_name", ["web_fetch", "extract_page_links"])
+    def test_error_pages_are_not_reported_as_success(self, monkeypatch, status, tool_name):
+        from agent.retrieval import fetcher
+        from core.tool_results import extract_error_text
+
+        monkeypatch.setattr(fetcher, "fetch", lambda *a, **kw: (
+            status, "https://example.test", "text/html", '<a href="/login">Login</a>',
+        ))
+        options = {"provider": "builtin"} if tool_name == "web_fetch" else {}
+        result = json.loads(getattr(retrieval_tools, tool_name)("https://example.test", **options))
+        assert str(status) in extract_error_text(result)
+        assert "content" not in result and "links" not in result
+
+    @pytest.mark.parametrize("status", [200, 204, 400, 403, 404, 500])
+    def test_http_status_and_body_reach_error_detection(self, monkeypatch, status):
+        from unittest.mock import Mock
+
+        from agent.retrieval import fetcher
+        from core.tool_results import extract_error_text
+
+        fetch = Mock(return_value=(status, "https://example.test", "text/plain", "response detail"))
+        monkeypatch.setattr(fetcher, "fetch", fetch)
+        result = json.loads(retrieval_tools.web_request("https://example.test", method="POST", body="{}"))
+        assert result["status_code"] == status and result["body"] == "response detail"
+        assert bool(extract_error_text(result)) is (status >= 400)
+        fetch.assert_called_once()
+
+    @pytest.mark.parametrize("headers", ['[]', 'null', '{"X-Header": 42}', '{"Authorization": "secret-test"'])
+    def test_invalid_headers_are_rejected_without_echoing_credentials(self, monkeypatch, headers):
+        from unittest.mock import Mock
+
+        from agent.retrieval import fetcher
+
+        fetch = Mock()
+        monkeypatch.setattr(fetcher, "fetch", fetch)
+        result = json.loads(retrieval_tools.web_request("https://example.test", headers=headers))
+        assert result["cause"] == "param" and "secret-test" not in str(result)
+        fetch.assert_not_called()
+
+
 class TestRegistry:
     def test_capability_detection_by_protocol(self):
         assert providers_mod.provider_capabilities(FakeProvider("a")) == [

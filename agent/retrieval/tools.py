@@ -3,8 +3,8 @@
 接口层：本文件只做工具注册与参数校验，能力实现在 providers/ 模块
 （能力 × 提供者矩阵：Provider 抽象 + builtin/bigmodel 内置实现 + 组件注册），
 经 providers.resolve 统一解析；本机抓取设施在 fetcher.py。
-模型可见：工具参数 proxy_mode 选择全局网络策略，错误经工具结果返回。
-token 影响：仅参数说明增加少量 token。
+模型可见：工具参数 proxy_mode 选择全局网络策略，HTTP 失败保留状态码与响应正文。
+token 影响：失败回执增加少量归因字段，正文继续受长度预算约束。
 缓存影响：不注入运行状态或代理配置到稳定上下文前缀。
 
 工具面：
@@ -366,6 +366,12 @@ def extract_page_links(
     try:
         _status, final_url, content_type, body = fetch(
             url, timeout=float(timeout), proxy_mode=proxy_mode)
+        if _status >= 400:
+            return tool_error(
+                f"读取网页失败（HTTP {_status}）", status_code=_status,
+                cause=ErrorCause.PERMISSION if _status in (401, 403) else ErrorCause.INTERNAL,
+                retryable=False,
+            )
         if "text/html" not in content_type:
             return json.dumps({"error": f"非 HTML 页面: {content_type}"}, ensure_ascii=False)
         from agent.retrieval.extractor import extract_links
@@ -383,7 +389,7 @@ def extract_page_links(
 # ==================================================================
 
 
-@deferred_tool(name="web_request", group=_group, tags=["always", "web"], concurrency_safe=True)
+@deferred_tool(name="web_request", group=_group, tags=["always", "web"])
 def web_request(
     url: str,
     method: str = "GET",
@@ -409,15 +415,19 @@ def web_request(
     import httpx
 
     from agent.retrieval.fetcher import fetch
-    method = method.upper()
+    method = method.strip().upper()
     if method not in ("GET", "POST", "PUT", "DELETE", "PATCH"):
-        return json.dumps({"error": f"不支持的方法: {method}"}, ensure_ascii=False)
+        return tool_error(f"不支持的方法: {method}", cause=ErrorCause.PARAM, retryable=False)
+    if max_chars <= 0 or timeout <= 0:
+        return tool_error("max_chars 和 timeout 必须为正数", cause=ErrorCause.PARAM, retryable=False)
     req_headers = {}
     if headers.strip():
         try:
             req_headers = json.loads(headers)
-        except Exception:
-            return json.dumps({"error": f"headers JSON 解析失败: {headers}"}, ensure_ascii=False)
+        except json.JSONDecodeError:
+            return tool_error("headers 必须是 JSON 对象", cause=ErrorCause.PARAM, retryable=False)
+        if not isinstance(req_headers, dict) or not all(isinstance(value, str) for value in req_headers.values()):
+            return tool_error("headers 必须是字符串键值组成的 JSON 对象", cause=ErrorCause.PARAM, retryable=False)
     req_body: Optional[str] = body.strip() or None
 
     try:
@@ -428,12 +438,21 @@ def web_request(
         truncated = len(text) > max_chars
         if truncated:
             text = text[:max_chars] + "\n... (响应过长，已截断)"
-        return json.dumps({
+        payload = {
             "status_code": _status,
             "content_type": content_type,
             "body": text,
             "truncated": truncated,
-        }, ensure_ascii=False)
+        }
+        if _status >= 400:
+            return tool_error(
+                f"HTTP 请求失败（状态码 {_status}）",
+                cause=ErrorCause.PERMISSION if _status in (401, 403) else ErrorCause.INTERNAL,
+                retryable=False, code=f"HTTP_{_status}",
+                hint="结合响应正文检查请求参数与目标状态；写请求失败不代表未生效，勿直接重复提交。",
+                **payload,
+            )
+        return json.dumps(payload, ensure_ascii=False)
     except httpx.TimeoutException as e:
         return error_from_exception(e, action=f"请求 {url}")
     except PermissionError as e:

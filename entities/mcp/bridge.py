@@ -26,10 +26,15 @@
     }
 
 依赖：mcp>=2.2（pyproject 硬依赖，SDK 字段一律 snake_case 直读）。
+
+模型可见：执行中断与超时反馈结果未知，重连不会重放原操作。
+Token 影响：失败回执增加少量状态字段，不追加提示消息。
+缓存影响：仅当前工具结果，不修改稳定前缀。
 """
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
@@ -550,7 +555,7 @@ class MCPBridge:
         raise ValueError(f"未找到 MCP server: {name}")
 
     async def _do_call_tool(self, server_name: str, tool_name: str, arguments: Dict[str, Any]) -> str:
-        """执行 MCP 工具调用（带超时保护和断线重连）。"""
+        """执行一次 MCP 调用；断线恢复连接，但不重放结果未知的操作。"""
         import asyncio
 
         with self._lock:
@@ -587,51 +592,29 @@ class MCPBridge:
             log(f"MCP tool call 超时 ({timeout}s): {tool_name}", "ERROR")
             return tool_error(
                 f"MCP 工具调用超时 ({timeout}s): {tool_name}",
-                cause=ErrorCause.TIMEOUT, retryable=True, code="TOOL_TIMEOUT",
-                hint="可缩小参数范围重试，或经 update_mcp_server_config 调大 call_timeout",
+                cause=ErrorCause.TIMEOUT, retryable=False, code="TOOL_TIMEOUT", outcome="unknown",
+                hint="远端可能已执行或仍在执行；先核对状态与产物，勿直接重复调用。"
+                     "确认需要续做后，可经 update_mcp_server_config 调整 call_timeout。",
             )
         except Exception as first_exc:
             if not _is_connection_closed(first_exc):
                 raise
             log(f"MCP server '{server_name}' 连接已断开，尝试重连...", "WARNING")
-            if not await self._try_reconnect(server_name):
-                srv_cfg = self._find_server_config(server_name)
-                if srv_cfg is not None and not srv_cfg.enabled:
-                    return tool_error(
-                        f"MCP server '{server_name}' 连接已断开，且当前为禁用状态",
-                        cause=ErrorCause.STATE, retryable=False,
-                        hint="如需使用请先经 connect_mcp_server 或 Web 面板启用",
-                    )
-                return tool_error(
-                    f"MCP server '{server_name}' 连接已断开且重连失败",
-                    cause=ErrorCause.NETWORK, retryable=True,
-                    hint="服务会继续自动重连，请稍后重试",
-                )
-            with self._lock:
-                session = self._sessions.get(server_name)
-            if not session:
-                return tool_error(
-                    f"MCP server '{server_name}' 重连后 session 不可用",
-                    cause=ErrorCause.NETWORK, retryable=True,
-                    hint="请稍后重试",
-                )
-            try:
-                result = await asyncio.wait_for(
-                    invoke(session),
-                    timeout=timeout,
-                )
-            except asyncio.TimeoutError:
-                return tool_error(
-                    f"MCP 工具调用超时 ({timeout}s): {tool_name}",
-                    cause=ErrorCause.TIMEOUT, retryable=True, code="TOOL_TIMEOUT",
-                    hint="可缩小参数范围重试，或经 update_mcp_server_config 调大 call_timeout",
-                )
+            reconnected = await self._try_reconnect(server_name)
+            return tool_error(
+                f"MCP 工具 '{tool_name}' 执行中连接断开，结果未确认",
+                cause=ErrorCause.NETWORK, retryable=False, outcome="unknown",
+                hint="连接恢复不代表原操作未执行；先查询目标状态或产物，确认续做范围，勿直接重放原调用。",
+                server=server_name, reconnected=reconnected,
+            )
 
         if not hasattr(result, "content"):
             return str(result)
         # 远端 is_error 标记恢复为结构化错误信号，供守卫/拦截机制识别
         if result.is_error:
             text = _extract_text_blocks(result)
+            if not text and result.structured_content is not None:
+                text = json.dumps(result.structured_content, ensure_ascii=False)
             return tool_error(
                 f"MCP 工具 '{tool_name}' 执行失败: {text or '远端未返回详情'}",
                 cause=ErrorCause.INTERNAL, retryable=False,

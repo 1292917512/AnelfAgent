@@ -15,7 +15,7 @@ AI 通过这些工具可以自主完成：
 
 Model Experience:
 - 模型看到：本组工具 schema（静态注册）；档案内容不注入任何 prompt 层，
-  AI 经 list_sub_agents 按需查询
+  AI 经 list_sub_agents 按需查询；Ollama 失败回执保留退出码与输出证据
 - token 影响：工具 schema 增量（一次性），档案查询按需
 - KV Cache 影响：无持续影响 — 无动态内容进入前缀层，档案变更不触碰任何缓存字节
 """
@@ -31,6 +31,8 @@ from core.config import expand_env_refs, is_masked_secret, mask_secret
 from entities._sdk import ErrorCause, ProxyMode, entity, error_from_exception, tool, tool_error
 
 if TYPE_CHECKING:
+    import subprocess
+
     from entities._sdk import LLMManager
 
 entity("model_control", "模型控制 - 切换模型、调整参数、管理优先级")
@@ -991,6 +993,14 @@ def _get_ollama():
     return _OllamaService()
 
 
+def _ollama_command_error(result: subprocess.CompletedProcess[str]) -> str:
+    """保留 Ollama 命令的失败证据，避免空 stderr 丢失诊断。"""
+    return tool_error(
+        (result.stderr.strip() or result.stdout.strip() or f"Ollama 退出码 {result.returncode}")[:300],
+        returncode=result.returncode, stdout=result.stdout[-2000:], stderr=result.stderr[-2000:],
+    )
+
+
 if _OLLAMA_AVAILABLE:
     @tool(name="ollama_status", group="ollama",
           description="查询本地 Ollama 服务的运行状态、版本和可用模型列表")
@@ -1026,7 +1036,7 @@ if _OLLAMA_AVAILABLE:
             result = _get_ollama().pull_model(model_name)
             if result.returncode == 0:
                 return json.dumps({"ok": True, "message": f"模型 {model_name} 拉取成功"}, ensure_ascii=False)
-            return json.dumps({"ok": False, "error": result.stderr.strip()}, ensure_ascii=False)
+            return _ollama_command_error(result)
         except Exception as e:
             return error_from_exception(e, action=f"拉取模型 '{model_name}'")
 
@@ -1042,7 +1052,7 @@ if _OLLAMA_AVAILABLE:
             result = _get_ollama().delete_model(model_name)
             if result.returncode == 0:
                 return json.dumps({"ok": True, "message": f"模型 {model_name} 已删除"}, ensure_ascii=False)
-            return json.dumps({"ok": False, "error": result.stderr.strip()}, ensure_ascii=False)
+            return _ollama_command_error(result)
         except Exception as e:
             return error_from_exception(e, action=f"删除模型 '{model_name}'")
 

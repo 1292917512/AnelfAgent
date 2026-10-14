@@ -3,6 +3,10 @@
 分组 sillytavern；运行状态感知由 context.py 的动态注入承担，
 工具无需 always 标签。所有酒馆 API 操作要求酒馆处于运行状态，
 未运行时返回带修复指引的工具错误。
+
+模型可见：请求失败保留底层异常归因，超时与断线不承诺远端操作未生效。
+Token 影响：仅失败回执附状态核查指引。
+缓存影响：仅工具结果，不修改稳定前缀。
 """
 
 from __future__ import annotations
@@ -10,8 +14,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict
 
-from core.tool_errors import ErrorCause, tool_error
-from entities._sdk import tool
+from entities._sdk import ErrorCause, error_from_exception, tool, tool_error
 
 from . import chat_bridge, git_ops, service
 from . import config as st_config
@@ -33,8 +36,8 @@ def _guard(fn) -> str:
         result = fn()
         return json.dumps(result, ensure_ascii=False, default=str)
     except STError as e:
-        return tool_error(str(e), cause=ErrorCause.NETWORK,
-                          hint="确认酒馆在运行: sillytavern_status", retryable=True)
+        cause = e.__cause__ if isinstance(e.__cause__, Exception) else e
+        return error_from_exception(cause, action="酒馆 API 调用")
     except (RuntimeError, ValueError) as e:
         return tool_error(str(e), cause=ErrorCause.STATE, hint=str(e), retryable=False)
 

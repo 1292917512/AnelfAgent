@@ -2,6 +2,10 @@
 
 builtin 读取提供者的实现底座，同时供 web_request / extract_page_links /
 web_download 工具复用（这些工具在本机发起请求，不经提供者矩阵）。
+
+模型可见：网页读取拒绝将 HTTP 错误页当作正常正文。
+Token 影响：错误时只返回状态摘要。
+缓存影响：仅工具结果，不修改稳定前缀。
 """
 
 from __future__ import annotations
@@ -209,6 +213,8 @@ def read_page(
 
     _status, final_url, content_type, body = fetch(
         url, timeout=float(timeout), proxy_mode=proxy_mode)
+    if _status >= 400:
+        raise RuntimeError(f"读取网页失败（HTTP {_status}）: {final_url}")
 
     if "application/json" in content_type or extract_mode == "raw":
         return {

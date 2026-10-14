@@ -3,6 +3,10 @@
 桌面动作直执行（entities/operation/desktop）；MCP 操作经 entities.mcp
 桥调用（get_mcp_bridge 现查单例——桥未初始化/热拔除时返回 None）。
 执行历史为进程内环形缓冲（Web 与 AI 共用的可观测面）。
+
+模型可见：MCP 失败沿用统一错误契约，保留结果未知与重试约束。
+Token 影响：复用已有回执，不增加注入记录。
+缓存影响：仅操作结果与动态历史变化，不修改稳定前缀。
 """
 
 from __future__ import annotations
@@ -13,6 +17,7 @@ from collections import deque
 from typing import Any, Awaitable, Callable, Dict, List, NamedTuple, Optional
 
 from core.log import log
+from core.tool_results import extract_error_text, parse_tool_result_json
 
 from . import desktop, framework
 
@@ -93,13 +98,13 @@ async def execute(op_id: str, args: Optional[Dict[str, Any]] = None) -> Dict[str
         else:
             try:
                 raw = await gateway.call(spec.tool, args)
-                try:
-                    parsed = json.loads(raw)
-                    ok = parsed.get("success") is not False
-                    detail = str(parsed.get("error") or parsed.get("result") or raw)
-                except (json.JSONDecodeError, TypeError):
-                    ok, detail = True, raw
-                outcome = {"ok": ok, ("result" if ok else "error"): detail[:_MCP_RESULT_CHARS]}
+                parsed = parse_tool_result_json(raw)
+                error = extract_error_text(parsed)
+                if error and isinstance(parsed, dict):
+                    outcome = {**parsed, "ok": False, "error": error[:_MCP_RESULT_CHARS]}
+                else:
+                    detail = str(parsed.get("result") or raw) if isinstance(parsed, dict) else raw
+                    outcome = {"ok": True, "result": detail[:_MCP_RESULT_CHARS]}
             except Exception as exc:
                 outcome = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 

@@ -26,6 +26,8 @@ Model Experience（文件发现与路径反馈）:
   是否截断，定位失败给已验证目录和下一步指引；Shell 回执区分执行目录与后续目录。
 - token 影响：两份发现工具 schema 为固定开销；路径回执约增 50~200 token，不注入全目录树。
 - 缓存影响：schema/说明在加载后稳定，目录事实只进入工具结果尾部，不逐轮重写前缀。
+
+Python 超时沿统一错误契约反馈结果未知与状态核查指引，仅增加少量工具回执字段。
 """
 
 from __future__ import annotations
@@ -1131,9 +1133,9 @@ def python_exec(code: str, timeout: int = 30) -> str:
         if persisted_path:
             payload["persisted"] = persisted_path
         return json.dumps(payload, ensure_ascii=False)
-    except subprocess.TimeoutExpired:
-        return tool_error(f"执行超时 ({timeout}s)", cause=ErrorCause.TIMEOUT,
-                          retryable=True)
+    except subprocess.TimeoutExpired as exc:
+        return error_from_exception(exc, action="执行 Python 代码",
+                                    hint="执行超时不代表没有副作用；先核对文件或目标状态，再决定续做范围。")
     except Exception as e:
         return error_from_exception(e, action="执行 Python 代码")
 

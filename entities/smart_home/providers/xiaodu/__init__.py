@@ -7,6 +7,10 @@ IOT_CONTROL_DEVICES（名称语义）与 control_xiaodu / xiaodu_speak（语音�
 
 连接生命周期完全归 MCP 桥（配置/重连/状态/令牌），本层只做轮询同步、设备模型
 映射与动作翻译——桥未连接时待机，不自行建连。
+
+模型可见：MCP 失败按统一错误信号反馈，不误报动作已接受。
+Token 影响：复用原有错误摘要，不增加注入。
+缓存影响：仅工具结果，不修改稳定前缀。
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ from dataclasses import replace
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.log import log
+from core.tool_results import extract_error_text
 from entities._sdk import call_mcp_server_tool
 
 from ...models import ActionSpec, DeviceState
@@ -73,8 +78,8 @@ async def _call(server: str, tool: str, arguments: Dict[str, Any]) -> Any:
         data = json.loads(raw)
     except ValueError as exc:
         raise RuntimeError(f"{server}/{tool} 返回非 JSON: {raw[:120]}") from exc
-    if isinstance(data, dict) and (data.get("error") or data.get("success") is False):
-        raise RuntimeError(str(data.get("error") or data))
+    if error := extract_error_text(data):
+        raise RuntimeError(error)
     return data
 
 

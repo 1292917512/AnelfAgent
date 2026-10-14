@@ -16,6 +16,7 @@ import base64
 import json
 from types import SimpleNamespace
 from typing import Generator, List
+from unittest.mock import AsyncMock
 
 import pytest
 from helpers.mcp_fakes import make_result, make_tool, make_tool_list
@@ -135,20 +136,31 @@ async def test_audio_and_resource_placeholders(bridge: MCPBridge) -> None:
 
 
 @pytest.mark.asyncio
-async def test_structured_content_fallback(bridge: MCPBridge) -> None:
+@pytest.mark.parametrize("structured", [{"rows": 3, "ok": True}, {}])
+async def test_structured_content_fallback(bridge: MCPBridge, structured: dict) -> None:
     """无任何文本时 structured_content 兜底输出 JSON。"""
     out = await _render_call_result(
-        make_result(structured={"rows": 3, "ok": True}),
+        make_result(structured=structured),
     )
-    assert json.loads(out) == {"rows": 3, "ok": True}
+    assert json.loads(out) == structured
 
 
 @pytest.mark.asyncio
-async def test_is_error_returns_tool_error(bridge: MCPBridge) -> None:
+async def test_structured_content_keeps_image(bridge: MCPBridge, upload_dir: str) -> None:
+    result = json.loads(await _render_call_result(make_result(_img_block(), structured={"count": 1})))
+    assert result["_multimodal"] is True and len(result["images"]) == 1
+    assert json.loads(result["text"]) == {"count": 1}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("structured_only", [False, True])
+async def test_is_error_returns_tool_error(bridge: MCPBridge, structured_only: bool) -> None:
     """远端 is_error 标记恢复为结构化错误信号（cause=internal）。"""
 
     class _ErrorSession:
         async def call_tool(self, name: str, arguments: dict) -> object:
+            if structured_only:
+                return make_result(structured={"error": "参数非法"}, is_error=True)
             return make_result(_text_block("参数非法"), is_error=True)
 
     bridge._sessions["test-srv"] = _ErrorSession()
@@ -455,7 +467,30 @@ async def test_do_call_timeout_structured(bridge: MCPBridge) -> None:
     parsed = json.loads(out)
     assert parsed["cause"] == "timeout"
     assert parsed["code"] == "TOOL_TIMEOUT"
-    assert parsed["retryable"] is True
+    assert parsed["retryable"] is False
+    assert parsed["outcome"] == "unknown"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reconnected", [True, False])
+async def test_interrupted_call_is_not_replayed(bridge: MCPBridge, reconnected: bool) -> None:
+    from anyio import BrokenResourceError
+
+    first = SimpleNamespace(call_tool=AsyncMock(side_effect=BrokenResourceError()))
+    restored = SimpleNamespace(call_tool=AsyncMock(return_value=make_result(_text_block("done"))))
+    bridge._sessions["test-srv"] = first
+    bridge._find_server_config = lambda name: SimpleNamespace(call_timeout=5.0, enabled=True)
+
+    async def reconnect(name: str) -> bool:
+        bridge._sessions[name] = restored
+        return reconnected
+
+    bridge._try_reconnect = AsyncMock(side_effect=reconnect)
+    out = json.loads(await bridge._do_call_tool("test-srv", "write", {}))
+    first.call_tool.assert_awaited_once()
+    restored.call_tool.assert_not_awaited()
+    assert out["outcome"] == "unknown" and out["retryable"] is False
+    assert out["reconnected"] is reconnected
 
 
 def test_retry_budget_backoff_sequence() -> None:

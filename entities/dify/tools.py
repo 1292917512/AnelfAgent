@@ -8,7 +8,7 @@
 
 Model Experience:
 - 模型看到：应用引用统一接受 app_id 或应用名（重名时报错并列候选）；
-  错误 JSON 统一携带 cause/hint/retryable
+  错误 JSON 保留归因；网络中断标记结果未知，先核对状态再决定续做
 - token 影响：列表类返回精简字段；DSL 导出为大字段，仅在编辑场景调用
 - 缓存影响：仅 tool_chain 动态区，不触碰前缀缓存层
 
@@ -58,8 +58,10 @@ def _map_error(exc: Exception, action: str) -> str:
         return tool_error(str(exc), cause=ErrorCause.PARAM, retryable=False,
                           hint="先用 dify_export_dsl 导出现有应用作为 DSL 模板再修改")
     if isinstance(exc, DifyApiError):
-        cause = ErrorCause.NETWORK if exc.status == 0 else ErrorCause.INTERNAL
-        return tool_error(str(exc), cause=cause, retryable=exc.status == 0)
+        if isinstance(exc.__cause__, Exception):
+            return error_from_exception(exc.__cause__, action=action)
+        return tool_error(str(exc), cause=ErrorCause.INTERNAL, retryable=False,
+                          status_code=exc.status or None)
     return error_from_exception(exc, action=action)
 
 

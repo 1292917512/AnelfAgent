@@ -101,11 +101,16 @@ class TestExecutor:
         assert entry["op"] == "mcp.srv.do_thing" and entry["ok"] is True
         assert executor.seconds_since_activity() < 5  # 执行触发活跃窗口
 
-    async def test_mcp_error_result_maps_to_failure(self, operations_file, monkeypatch):
+    @pytest.mark.parametrize("payload", [
+        {"success": False, "error": "boom"},
+        {"ok": False, "message": "boom"},
+        {"error": "boom", "outcome": "unknown", "retryable": False},
+    ])
+    async def test_mcp_error_result_maps_to_failure(self, operations_file, monkeypatch, payload):
         framework.register_mcp_operation(server="srv", tool="srv__bad")
 
         async def _call(tool: str, args: dict) -> str:
-            return json.dumps({"success": False, "error": "boom"})
+            return json.dumps(payload)
 
         gateway = executor.McpGateway(
             call=_call, connected_servers=lambda: {}, server_status=lambda: [],
@@ -113,6 +118,21 @@ class TestExecutor:
         monkeypatch.setattr(executor, "mcp_gateway", lambda: gateway)
         outcome = await executor.execute("mcp.srv.bad", {})
         assert outcome["ok"] is False and "boom" in outcome["error"]
+        assert executor.history(1)[0]["ok"] is False
+        if "outcome" in payload:
+            assert outcome["outcome"] == "unknown" and outcome["retryable"] is False
+
+    @pytest.mark.parametrize("raw", ['[]', 'null', '"done"', 'plain result'])
+    async def test_mcp_non_object_results_are_valid(self, operations_file, monkeypatch, raw):
+        from unittest.mock import AsyncMock
+
+        framework.register_mcp_operation(server="srv", tool="srv__read")
+        gateway = executor.McpGateway(
+            call=AsyncMock(return_value=raw), connected_servers=lambda: {}, server_status=lambda: [],
+        )
+        monkeypatch.setattr(executor, "mcp_gateway", lambda: gateway)
+        outcome = await executor.execute("mcp.srv.read")
+        assert outcome == {"ok": True, "result": raw}
 
     async def test_mcp_gateway_absent(self, operations_file):
         framework.register_mcp_operation(server="srv", tool="srv__x")

@@ -1,7 +1,9 @@
 """Dify 连接编排单元测试（Mock HTTP 客户端，无真实网络/配置污染）。"""
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any, Dict, Optional
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -30,6 +32,9 @@ class FakeConsoleClient:
 
     async def __aexit__(self, *exc):
         return None
+
+    async def aclose(self) -> None:
+        pass
 
     def set_credentials(self, email: str, password: str) -> None:
         self._credentials = {"email": email, "password": password}
@@ -177,3 +182,39 @@ async def test_operations_require_connection():
     ConfigManager.set("dify_base_url", "")
     with pytest.raises(DifyStateError, match="地址未配置"):
         await service.list_apps()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status,error,ok", [
+    ("succeeded", "", True), ("succeeded", "node error", False),
+    ("failed", "", False), ("stopped", "", False),
+    ("partial-succeeded", "", False), ("running", "", False), ("", "", False),
+])
+async def test_workflow_receipt_reflects_execution_status(monkeypatch, status, error, ok):
+    remote = SimpleNamespace(run_workflow=AsyncMock(return_value={
+        "workflow_run_id": "run-test", "data": {"status": status, "error": error, "outputs": {"part": "kept"}},
+    }))
+    monkeypatch.setattr(service, "_ensure_admin_session", AsyncMock())
+    monkeypatch.setattr(service, "_service_client", AsyncMock(return_value=(remote, {"id": "app-test"})))
+    result = await service.run_workflow("app-test", {})
+    assert result["ok"] is ok and bool(result["error"]) is not ok
+    assert result["workflow_run_id"] == "run-test" and result["outputs"] == {"part": "kept"}
+
+
+def test_network_error_does_not_suggest_repeating_write():
+    import json
+
+    import httpx
+
+    from entities.dify.client import DifyApiError
+    from entities.dify.tools import _map_error
+
+    try:
+        try:
+            raise httpx.ReadTimeout("response lost")
+        except httpx.ReadTimeout as exc:
+            raise DifyApiError("workflow call failed") from exc
+    except DifyApiError as exc:
+        result = json.loads(_map_error(exc, "运行工作流"))
+    assert result["cause"] == "timeout"
+    assert result["outcome"] == "unknown" and result["retryable"] is False

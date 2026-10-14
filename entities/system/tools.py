@@ -2,6 +2,10 @@
 
 自检策略（模块加载时执行，极低开销）：
 - Git 工具：检测到 git 命令才注册，避免在无 git 环境下污染工具池
+
+模型可见：包管理结果包含退出码与输出，失败可沿统一契约归纳。
+Token 影响：仅工具回执增加退出码字段。
+缓存影响：不修改稳定前缀。
 """
 
 from __future__ import annotations
@@ -137,6 +141,7 @@ def install_python_packages(packages: str) -> str:
         payload = {
             "ok": result.ok,
             "packages": specs,
+            "returncode": result.returncode,
             "stdout": result.stdout[-2000:],
             "stderr": result.stderr[-2000:],
         }
@@ -162,6 +167,7 @@ def uninstall_python_packages(packages: str) -> str:
         result = uninstall_packages(specs)
         return json.dumps({
             "ok": result.ok, "packages": specs,
+            "returncode": result.returncode,
             "stdout": result.stdout[-2000:], "stderr": result.stderr[-2000:],
         }, ensure_ascii=False)
     except Exception as e:

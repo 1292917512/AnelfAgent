@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,17 @@ def workspace(tmp_path, monkeypatch):
 
 def _run(command: str, timeout: int = 30):
     return json.loads(tools.run_shell_command(command, timeout=timeout))
+
+
+def test_python_timeout_does_not_claim_safe_retry(workspace, monkeypatch):
+    from unittest.mock import Mock
+
+    run = Mock(side_effect=subprocess.TimeoutExpired("python", 1))
+    monkeypatch.setattr(subprocess, "run", run)
+    result = json.loads(tools.python_exec("write_then_wait()", timeout=1))
+    assert result["cause"] == "timeout"
+    assert result["retryable"] is False and result["outcome"] == "unknown"
+    run.assert_called_once()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX shell 语义")

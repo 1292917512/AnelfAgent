@@ -94,8 +94,6 @@ class STClient:
                 resp = client.post(path, json=payload or {}, headers={"X-CSRF-Token": token})
             except httpx.HTTPError as e:
                 raise STError(f"请求 {path} 重试失败: {e}") from e
-        if resp.status_code == 204 or not resp.content:
-            return None
         if resp.status_code >= 400:
             detail = ""
             try:
@@ -103,6 +101,8 @@ class STClient:
             except Exception:
                 detail = resp.text[:200]
             raise STError(f"{path} 返回 {resp.status_code}: {detail}".strip())
+        if resp.status_code == 204 or not resp.content:
+            return None
         try:
             return resp.json()
         except ValueError as e:

@@ -3,9 +3,26 @@
 from __future__ import annotations
 
 import json
+import subprocess
+
+import pytest
 
 from agent.llm.llm_client import LLMClient, LLMClientConfig
 from entities.model_control.tools import _parse_field_value
+
+
+@pytest.mark.parametrize("stdout,stderr,expected", [
+    ("download failed", "", "download failed"),
+    ("", "denied", "denied"),
+    ("", "", "7"),
+])
+def test_ollama_command_failure_preserves_evidence(stdout: str, stderr: str, expected: str) -> None:
+    from core.tool_results import extract_error_text
+    from entities.model_control.tools import _ollama_command_error
+
+    result = json.loads(_ollama_command_error(subprocess.CompletedProcess(["ollama"], 7, stdout, stderr)))
+    assert expected in extract_error_text(result)
+    assert result["returncode"] == 7 and result["stdout"] == stdout and result["stderr"] == stderr
 
 
 def _client(**overrides) -> LLMClient:  # type: ignore[no-untyped-def]

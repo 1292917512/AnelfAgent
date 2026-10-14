@@ -221,6 +221,20 @@ class TestXiaomiProvider:
 
 
 class TestXiaoduMcpProvider:
+    @pytest.mark.parametrize("payload", [
+        {"ok": False, "message": "device unavailable"},
+        {"success": False, "error": "device unavailable"},
+        {"error": "device unavailable"},
+    ])
+    async def test_call_rejects_all_standard_failure_receipts(self, monkeypatch, payload):
+        from unittest.mock import AsyncMock
+
+        from entities.smart_home.providers import xiaodu
+
+        monkeypatch.setattr(xiaodu, "call_mcp_server_tool", AsyncMock(return_value=json.dumps(payload)))
+        with pytest.raises(RuntimeError, match="device unavailable"):
+            await xiaodu._call("xiaodu", "control", {})
+
     """小度 MCP 传输型 provider：设备映射 / 动作翻译 / 原生播报。"""
 
     @pytest.fixture()

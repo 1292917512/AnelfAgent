@@ -9,6 +9,10 @@ AI 可借助 devops/ssh 等既有能力自行完成），本实体负责"连接 
 
 AI 工具（tools.py）与 HTTP 路由（router.py）共用本模块，杜绝平行实现。
 client.py 承载全部 HTTP 细节，config.py 承载密钥存储（secrets.json）。
+
+模型可见：工作流回执保留远端状态、运行 ID 与部分输出，未完整成功不标记成功。
+Token 影响：失败或未完成时增加一句状态说明。
+缓存影响：仅工具回执，不修改稳定前缀。
 """
 
 from __future__ import annotations
@@ -542,7 +546,7 @@ async def _service_client(client: DifyConsoleClient, ref: str) -> tuple[DifyServ
 
 
 async def run_workflow(ref: str, inputs: Dict[str, Any], user: str = "anelf-agent") -> Dict[str, Any]:
-    """运行工作流（blocking，同步返回结果）。"""
+    """运行工作流并按远端执行状态返回完成事实。"""
     if not isinstance(inputs, dict):
         raise DifyStateError("inputs 必须是 JSON 对象")
     async with console_client() as console:
@@ -552,14 +556,19 @@ async def run_workflow(ref: str, inputs: Dict[str, Any], user: str = "anelf-agen
         result = await svc.run_workflow(inputs, user=user)
     except DifyNotFoundError:
         raise DifyStateError("工作流不可运行：应用可能未发布（dify_publish）或 API 未开通") from None
-    wf_data = result.get("data") or {}
+    wf_data = result.get("data")
+    if not isinstance(wf_data, dict):
+        raise DifyStateError("工作流响应缺少有效的 data，执行结果未确认，请核对远端运行记录")
+    status = str(wf_data.get("status") or "")
+    error = str(wf_data.get("error") or "")
+    succeeded = status == "succeeded" and not error
     return {
-        "ok": True,
+        "ok": succeeded,
         "app_id": str(app["id"]),
         "workflow_run_id": result.get("workflow_run_id") or result.get("id") or "",
-        "status": wf_data.get("status", ""),
+        "status": status,
         "outputs": wf_data.get("outputs"),
-        "error": wf_data.get("error") or "",
+        "error": error or ("" if succeeded else f"工作流尚未完整成功（status={status or 'unknown'}），请核对运行记录与已有输出"),
         "elapsed_time": wf_data.get("elapsed_time"),
         "total_tokens": wf_data.get("total_tokens"),
     }

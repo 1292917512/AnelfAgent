@@ -25,7 +25,7 @@
 | 注册超时对齐 | `_register_tool_entries(call_timeout=...)` | server 的 `call_timeout` 透传为工具执行超时 meta——连接生命周期超时与单次调用超时是两件事，不透传会落入全局默认 60s 提前掐断 |
 | 参数 schema 保真 | `_parse_param_schema` | anyOf/oneOf 可选参数解引用取非 null 分支的 type；`default/items/minimum/...` 经 `schema_extra` 直通 wire schema（模型看到默认值与数组元素结构，不按 string 兜底猜） |
 | 注册名整形 | `_sanitize_tool_name` | 冲突检测在整形后的名字上进行；非法字符替换下划线 + 64 字符上限（超限截断 + SHA-256 前 8 位防撞）——OpenAI 风格端点会拒绝整组 tools 数组，一个坏名字可导致全会话不可用 |
-| 结构化错误 | `call_tool`/`_do_call_tool` | 未命中 → not_found；超时 → timeout + `code=TOOL_TIMEOUT` + retryable；断线 → network + retryable（对齐 core/tool_errors 纪律） |
+| 结构化错误 | `call_tool`/`_do_call_tool` | 未命中 → not_found；执行超时 → timeout + `code=TOOL_TIMEOUT`；执行中断线 → network。超时或中断标记 `outcome=unknown`、`retryable=false`，先核对状态；连接可重建，原调用不自动重放。远端错误保留文本或结构化诊断 |
 | 重连预算复位 | `_RetryBudget`（稳定窗口 300s） | 连接稳定运行超窗口后失败，重试计数清零重计——长期服务偶发抖动不累计耗尽 5 次预算而永久死亡；退避序列 1/2/4/8/16s |
 | 连接存活探测 | `bridge._wait_with_liveness`（lifecycle 等待段） | stdio 子进程退出/网络静默断开时 SDK 不通知等待方——按 `mcp_liveness_ping_seconds`（默认 60，0=关）周期 `send_ping`（10s 超时），失败抛 ConnectionError 进既有断线分支；enabled 走自动重连、disabled/已删除退出清理；`_try_reconnect` 带 enabled 守卫，禁用 server 调用失败只报错不复活拉起 |
 | Web 启停切换语义 | `services.mcp.toggle_server` | 以配置文件 enabled 为准而非连接状态：已启用（无论是否连上）→ 禁用并断开；已禁用 → 启用 + 热重载连接，连不上保持启用落盘并如实回报 last_error（重启自动重试） |

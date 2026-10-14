@@ -3,6 +3,10 @@
 内容块分派（对齐 dsh 的保真转换，图片更进一步直传）：text 拼接、
 image 落盘 + ``_multimodal`` 约定、audio/resource 短占位、
 structured_content 兜底；base64 原文绝不进入上下文。
+
+模型可见：结构化回执与图片共同保留，空对象仍作为有效结果返回。
+Token 影响：恢复被图片分支遗漏的结构化正文，图片数量和大小仍受限。
+缓存影响：仅工具结果与多模态尾部消息，不修改稳定前缀。
 """
 
 from __future__ import annotations
@@ -91,8 +95,8 @@ async def _render_call_result(result: CallToolResult) -> str:
     if placeholders:
         text = (text + "\n" if text else "") + "\n".join(placeholders)
 
-    if not text and result.structured_content:
-        return json.dumps(result.structured_content, ensure_ascii=False)
+    if not text and result.structured_content is not None:
+        text = json.dumps(result.structured_content, ensure_ascii=False)
 
     if image_paths:
         return json.dumps({

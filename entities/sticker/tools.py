@@ -3,6 +3,10 @@
 检索结果采用多模态约定：返回 {"_multimodal": true, "text": ..., "images": [...]} 时，
 思维循环会把候选图片直接注入上下文，让视觉模型"亲眼看到"候选再决定使用哪张
 （多模态候选注入体验）。
+
+模型可见：发送结果以频道回执为准，收藏使用计数失败不覆盖已成功的投递。
+Token 影响：不增加额外消息。
+缓存影响：仅当前工具回执，不修改稳定前缀。
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ from typing import Any, Dict, List, Optional
 
 from core.config import register_configs_safe
 from core.log import log
+from core.tool_results import extract_error_text, parse_tool_result_json
 from entities._sdk import (
     ErrorCause,
     entity,
@@ -419,11 +424,12 @@ async def send_sticker(
         enrich=_enrich,
         outbound_preview=caption or "表情包",
     )
-    try:
-        if json.loads(result).get("success") is not False:
+    receipt = parse_tool_result_json(result)
+    if isinstance(receipt, dict) and receipt.get("success") is True and not extract_error_text(receipt):
+        try:
             await store.touch_use(sticker_id)
-    except (json.JSONDecodeError, TypeError):
-        log("_enrich 异常已忽略", "DEBUG")
+        except Exception as exc:
+            log(f"表情包已投递，使用统计更新失败: {type(exc).__name__}", "WARNING")
     return result
 
 
