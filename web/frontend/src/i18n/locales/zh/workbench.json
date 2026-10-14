@@ -212,8 +212,10 @@
       "conversation": "会话消息更新",
       "push": "收到实体通知",
       "cross_channel": "跨会话感知",
-      "delivery": "回复投递"
+      "delivery": "回复投递",
+      "recovery": "工具恢复判断"
     },
+    "recoveryHint": "工具失败达到终止阈值后的恢复评估。继续执行仍须遵守工具权限、重复调用限制和本轮预算。",
     "updateRoles": {
       "user": "收到的消息",
       "assistant": "已发送的消息",

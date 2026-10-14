@@ -26,8 +26,19 @@ test("live notifications and tool inspections support hover, touch and keyboard"
       { source: { scope: "user_webui:web_user#review", kind: "user", channel: "webui", target: "web_user", session: "review" }, role: "assistant", message_id: "message-10", ts: Date.now() / 1000,
         content: "[channel:webui][session_id:review] Deployment is paused. Inspecting service settings." },
     ] });
+  run.entries.push({ id: "recovery", kind: "notice", origin: "recovery", iteration: 3, count: 1, deferred: 0, ts: Date.now() / 1000,
+    items: [{ source: run.source, role: "system", message_id: "", ts: 0,
+      content: "Jev allows recovery: inspect the verified working directory before retrying (decision-model, 250ms)." }] });
   await page.route("**/api/workspace/activity", (route) => route.fulfill({ json: { epoch: "test", revision: 2, runs: [run] } }));
   await page.goto("/webui/");
+  const recovery = page.getByRole("button", { name: "View details: Tool recovery decision", exact: true });
+  await expect(recovery).toHaveCount(1);
+  await recovery.click();
+  const recoveryDialog = page.getByRole("dialog", { name: "Tool recovery decision", exact: true });
+  await expect(recoveryDialog).toContainText("decision-model, 250ms");
+  await expect(recoveryDialog).toContainText("tool permissions");
+  expect(await recoveryDialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await recoveryDialog.getByRole("button", { name: "Close", exact: true }).click();
   const notice = page.getByRole("button", { name: "View details: Cross-conversation awareness", exact: true });
   await expect(notice).toContainText("Round 2 context");
   await notice.click();

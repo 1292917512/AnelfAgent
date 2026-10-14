@@ -58,9 +58,8 @@ class TestThinkLoopChainBreakpoint:
             for name in ("cache_parent", "cache_added"):
                 EntityRegistry.unregister(name)
 
-    async def test_async_recall_changes_only_uncached_tail(self, monkeypatch) -> None:
+    async def test_async_recall_changes_only_uncached_tail(self) -> None:
         text = ""
-        monkeypatch.setattr(ContextProviderRegistry, "_providers", {})
         ContextProviderRegistry.register(ProviderMeta(name="memory", provide_fn=lambda scope: text))
         mind = _loop_mind()
         chain = [{"role": "assistant", "content": "查询记忆", "tool_calls": [

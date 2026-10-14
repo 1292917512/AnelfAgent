@@ -204,13 +204,31 @@ async def test_end_output_and_internal_boundaries_with_interim_enabled(anything,
 async def test_closing_text_after_explicit_reply_is_not_sent_twice(anything, sender):
     mind, completion = await _run([tool_result("", ["send_message"]), text_result("好了我已回复。")], anything)
     assert mind.executed_tools == ["send_message"]
-    assert "delivery_status:skipped" in completion["messages"][-1]["content"]
+    assert not any(m.get("_source", {}).get("origin") == "reply_delivery" for m in completion["messages"])
     sender.assert_not_awaited()
 
 
 async def test_new_work_after_progress_allows_final(anything, sender):
     await _run([tool_result("", ["send_message"]), tool_result("查询中", ["recall"]), text_result("最终结果。")], anything)
     assert sender.await_args.args[2] == "最终结果。"
+
+
+async def test_disabled_text_is_silent_in_context_history_and_activity(anything, sender, monkeypatch):
+    ConfigManager.set("send_interim_text", False)
+    ConfigManager.set("send_final_text", False)
+    observe = AsyncMock()
+    review = AsyncMock(side_effect=AssertionError("disabled text must not call Jev"))
+    monkeypatch.setattr("agent.mind.context_observation.emit_context_update", observe)
+    monkeypatch.setattr("agent.mind.tools.reply_delivery.assess_reply", review)
+    mind, completion = await _run([
+        tool_result("检查第一项", ["recall"]), tool_result("检查第二项", ["recall"]), text_result("内部结论"),
+    ], anything)
+    assert completion["reason"] == "completed" and mind.llm_calls == 3
+    assert not any(message.get("role") == "system" for message in completion["messages"])
+    assert all("delivery_status:skipped" not in str(call) for call in mind._add_system_context.await_args_list)
+    assert all(not call.args[0] for call in observe.await_args_list)
+    review.assert_not_awaited()
+    sender.assert_not_awaited()
 
 
 @pytest.mark.parametrize("target", ["user_telegram:1", "group_qq:1", "user_qq:2", "user_qq:1#other"])
@@ -242,7 +260,7 @@ async def test_rejected_reply_leaves_context_fact_and_never_falls_back(anything,
     sender.assert_not_awaited()
     assert mind.llm_calls == 1
     assert "Jev 不通过" in completion["messages"][-1]["content"]
-    assert "delivery_status:skipped" in str(mind._add_system_context.await_args)
+    mind._add_system_context.assert_not_awaited()
 
 
 async def test_rejected_interim_continues_work_and_explicit_send_without_review(anything, sender, monkeypatch):

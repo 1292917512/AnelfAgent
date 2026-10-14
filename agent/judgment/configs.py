@@ -26,7 +26,7 @@ _JUDGMENT_CONFIGS = {
             "default": True,
         },
         "judgment_gate_timeout": {
-            "description": "自动回复审核与可选工作预判的等待预算；到期正文按投递开关正常发送，可选工作保留原流程",
+            "description": "自动回复审核、可选工作与工具恢复判断的等待预算；到期保留各自原规则，不扩大前台等待",
             "default": 5.0, "min": 0.1, "max": 30.0, "unit": "秒", "advanced": True,
         },
         "judgment_evidence_max_chars": {

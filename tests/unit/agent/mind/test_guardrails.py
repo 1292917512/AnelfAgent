@@ -107,6 +107,16 @@ class TestGuardrailController:
         d = ctl.after_call("do_thing", args, _ERROR_RESULT)
         assert d.action == "allow"
 
+    def test_recovery_keeps_exact_failure_blocks(self) -> None:
+        ctl = GuardrailController(_config(hard_stop_enabled=True))
+        for _ in range(4):
+            ctl.after_call("read_file", '{"path":"missing"}', _ERROR_RESULT)
+        assert ctl.halt_decision is not None
+        ctl.resume_after_halt()
+        assert ctl.halt_decision is None
+        assert ctl.before_call("read_file", '{"path":"missing"}').should_block
+        assert not ctl.before_call("read_file", '{"path":"verified"}').should_block
+
     def test_no_progress_warn_for_idempotent(self) -> None:
         ctl = GuardrailController(_config())
         args = '{"id": 1}'

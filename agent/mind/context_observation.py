@@ -24,7 +24,7 @@ _SOURCE_LABELS = {
 
 
 async def emit_context_update(
-    messages: Sequence[Mapping[str, Any]], *, origin: Literal["conversation", "push", "cross_channel", "delivery"],
+    messages: Sequence[Mapping[str, Any]], *, origin: Literal["conversation", "push", "cross_channel", "delivery", "recovery"],
     scope: str, iteration: int, deferred: int = 0,
 ) -> None:
     """展示实际并入的消息及通知；限额和脱敏只作用于观测副本。"""

@@ -231,6 +231,12 @@ class GuardrailController:
         self._no_progress.clear()
         self._halt_decision = None
 
+    def resume_after_halt(self) -> None:
+        """允许一次新的恢复窗口，保留精确失败和无进展调用的拦截依据。"""
+        if self._halt_decision is not None:
+            self._same_tool_failure_counts.pop(self._halt_decision.tool_name, None)
+            self._halt_decision = None
+
     # ------------------------------------------------------------------
     # 执行前拦截（hard_stop 模式）
     # ------------------------------------------------------------------
@@ -311,14 +317,14 @@ class GuardrailController:
         same_count = self._same_tool_failure_counts.get(tool_name, 0) + 1
         self._same_tool_failure_counts[tool_name] = same_count
 
-        # 同工具连续失败达到 halt 阈值 → 终止本轮（无论是否 hard_stop）
+        # 阈值信号交给轮末的终止决策，执行权限与精确重复拦截保持独立。
         if same_count >= cfg.same_tool_failure_halt_after:
             decision = GuardrailDecision(
                 action=_ACTION_HALT,
                 reason="same_tool_failure_halt",
                 message=(
-                    f"工具 {tool_name} 已连续失败 {same_count} 次，守卫强制结束本轮。"
-                    "请停止调用该工具，向用户说明当前遇到的阻碍。"
+                    f"工具 {tool_name} 已连续失败 {same_count} 次，达到守卫终止阈值。"
+                    "需要依据实际错误确认是否有新的恢复路径，不要重复无效调用。"
                 ),
                 count=same_count,
                 tool_name=tool_name,

@@ -291,17 +291,10 @@ _PROMPT_REPLY_GUIDE = (
     "1. 先做事再说话：需要查资料或执行操作时，立刻通过 function calling 调用工具；"
     "可并行的独立工具同一轮一并发起。\n"
     "2. 给用户的答复使用 send_message 显式投递；跨会话和媒体用对应发送工具。"
-    "发送工具不经过正文自动审核，也不结束执行；核对目标与真实回执，不要以普通正文代替发送。\n"
+    "发送工具不经过正文自动审核，也不结束执行；工具结果与未投递正文仅内部可见。"
+    "核对目标与真实回执，不要以普通正文代替发送。\n"
     "3. 已回复、无需回复或内部处理完成时直接调用 end_reply；结束备注和同批正文不投递。"
     "不要重复已送达的答复，内部核验、自我指令与推理不作为对用户的正文。"
-)
-
-# 查资料等非输出工具后：结果仅自己可见；未完成则继续调工具，完成后再回用户
-_PROMPT_AFTER_NON_OUTPUT_TOOLS = (
-    "[系统提示] 工具结果仅你可见，不会自动发给用户。\n"
-    "若任务尚未完成 → 继续调用工具。\n"
-    "若已全部完成 → 需要回复用户时用 send_message 发送最终回复并核对目标与成功回执；"
-    "已发送或无需回复时直接调用 end_reply，不输出收尾话术。"
 )
 
 # 反思正文是内部产出，显式发送遵守本次执行的工具权限。
@@ -1112,14 +1105,6 @@ async def _handle_tool_round(
     except Exception:
         pass
 
-    # 守卫 halt：同工具连续失败达到上限，强制结束本轮
-    if guardrail.halt_decision is not None:
-        state.completion_reason = "failed"
-        halt = guardrail.halt_decision
-        log(f"工具守卫强制结束: {halt.message}", "WARNING", tag="思维")
-        execution_steps.append(f"→ 第{state.iteration + 1}轮: {halt.message}")
-        return await _finish_round(ctx, state)
-
     # 检测本轮工具结果是否全部为错误
     all_errors = _check_tool_results_all_errors(tool_chain, tool_calls)
     if all_errors:
@@ -1155,29 +1140,30 @@ async def _handle_tool_round(
             execution_steps.append("→ " + handoff_note)
             return await _finish_round(ctx, state)
 
-    # 工具结果仍仅供模型使用；正文是否送达由独立投递回执说明。
-    if ctx.mode == ThinkMode.REPLY:
-        round_had_text = bool(_strip_think_blocks(result.content or "").strip())
-        if (
-            round_had_text
-            and not (called & _OUTPUT_TOOL_NAMES)
-            and _END_REPLY_TOOL_NAME not in called
-        ):
-            tool_chain.append({
-                "role": "system",
-                "content": _PROMPT_AFTER_NON_OUTPUT_TOOLS,
-            })
+    if (guardrail.halt_decision is not None or state.consecutive_tool_errors >= 3) and not should_end_reply(tool_calls):
+        from agent.mind.context_observation import emit_context_update
+        from agent.mind.tools.tool_recovery import assess_tool_recovery
 
-    if state.consecutive_tool_errors >= 3:
-        state.completion_reason = "failed"
-        log(
-            f"连续 {state.consecutive_tool_errors} 轮工具调用全部失败，强制结束本轮",
-            "WARNING", tag="思维",
+        trigger = (guardrail.halt_decision.message if guardrail.halt_decision is not None
+                   else f"连续 {state.consecutive_tool_errors} 轮工具调用全部失败")
+        decision, aborted = await _await_with_abort(
+            assess_tool_recovery(ctx.current_scope, ctx.base_messages + tool_chain, trigger), ctx.abort_event,
         )
-        execution_steps.append(
-            f"→ 第{state.iteration + 1}轮: 连续 {state.consecutive_tool_errors} 轮工具全部失败，强制结束"
-        )
-        return await _finish_round(ctx, state)
+        if aborted:
+            state.interrupted = True
+            state.completion_reason = "interrupted"
+            return await _finish_round(ctx, state)
+        message = {"role": "system", "content": trigger + "。" + decision.reason,
+                   "_source": {"origin": "tool_recovery"}}
+        tool_chain.append(message)
+        execution_steps.append(f"→ 第{state.iteration + 1}轮: {decision.reason}")
+        await emit_context_update([message], origin="recovery", scope=ctx.current_scope, iteration=state.iteration + 1)
+        if not decision.proceed:
+            state.completion_reason = "failed"
+            log(decision.reason, "WARNING", tag="守卫")
+            return await _finish_round(ctx, state)
+        guardrail.resume_after_halt()
+        state.consecutive_tool_errors = 0
 
     # 连续错误达到阈值时注入警告
     if state.consecutive_tool_errors >= 2:

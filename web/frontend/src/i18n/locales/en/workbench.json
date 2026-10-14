@@ -212,8 +212,10 @@
       "conversation": "Conversation update",
       "push": "Entity notification",
       "cross_channel": "Cross-conversation awareness",
-      "delivery": "Reply delivery"
+      "delivery": "Reply delivery",
+      "recovery": "Tool recovery decision"
     },
+    "recoveryHint": "Recovery assessment at the tool failure limit. Continuing still respects tool permissions, repeat-call limits and the round budget.",
     "updateRoles": {
       "user": "Received message",
       "assistant": "Sent message",

@@ -6,13 +6,23 @@ json.loads 时，宽松解析仍能识别错误结果，避免连续错误计数
 
 from __future__ import annotations
 
+import asyncio
 import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
+import pytest
+from helpers.think_loop_fakes import FakeMind, run_think_loop, tool_result
+
+from agent.judgment.engine import JudgmentConfig
+from agent.judgment.types import ChoiceAnswer, JudgmentReport, JudgmentSource
 from agent.llm.types import ToolCall
+from agent.mind.tools import tool_recovery
 from agent.mind.tools.think_loop import (
     _check_tool_results_all_errors,
     _collect_round_error_briefs,
 )
+from core.config import ConfigManager
 from core.tool_results import parse_tool_result_json
 
 
@@ -137,3 +147,106 @@ class TestCollectRoundErrorBriefs:
 
     def test_empty_calls(self) -> None:
         assert _collect_round_error_briefs(_chain('{"error": "a"}'), []) == []
+
+
+@pytest.fixture
+def recovery_judge(monkeypatch):
+    cfg = JudgmentConfig(True, "", "http://decision.test", "decision", 30, False, "", "low")
+    monkeypatch.setattr(tool_recovery, "load_config", lambda: cfg)
+    judge = AsyncMock()
+    monkeypatch.setattr(tool_recovery, "get_judgment_engine", lambda: SimpleNamespace(judge=judge))
+    return judge
+
+
+def _recovery_report(choice="repair", probability=1.0):
+    probabilities = {key: (1 - probability) / 3 for key in ("repair", "investigate", "stop", "uncertain")}
+    probabilities[choice] = probability
+    return JudgmentReport(answers={"recovery": ChoiceAnswer(choice=choice, probabilities=probabilities, confidence=1)},
+                          source=JudgmentSource.TYPESAFE, model="decision")
+
+
+@pytest.mark.parametrize("choice,probability,proceed", [
+    ("repair", 1, True), ("investigate", 1, True), ("stop", 1, False), ("uncertain", 1, False), ("repair", 0.6, False),
+])
+async def test_recovery_requires_clear_native_evidence(recovery_judge, choice, probability, proceed):
+    recovery_judge.return_value = _recovery_report(choice, probability)
+    ConfigManager.set("judgment_gate_timeout", 1.5)
+    messages = [{"role": "system", "content": "private stable prefix", "_layer": "stable"},
+                {"role": "user", "content": "[channel:qq][uid:1] 检查文件"},
+                {"role": "tool", "content": '{"error":"相对路径不存在","hint":"检查工作目录"}'}]
+    decision = await tool_recovery.assess_tool_recovery("user_qq:1", messages, "连续失败")
+    assert decision.proceed is proceed
+    facts = recovery_judge.await_args.args[0]
+    assert facts["scope"] == "user_qq:1" and "检查工作目录" in str(facts)
+    assert "private stable prefix" not in str(facts)
+    assert recovery_judge.await_args.kwargs == {"native_only": True, "timeout": 1.5}
+
+
+@pytest.mark.parametrize("failure", [TimeoutError(), RuntimeError("offline")])
+async def test_recovery_failure_preserves_stop(recovery_judge, failure):
+    recovery_judge.side_effect = failure
+    decision = await tool_recovery.assess_tool_recovery("user_qq:1", [], "连续失败")
+    assert not decision.proceed and "不可用" in decision.reason
+
+
+async def test_unconfigured_recovery_never_calls_a_model(recovery_judge, monkeypatch):
+    monkeypatch.setattr(tool_recovery, "load_config", lambda: JudgmentConfig(False, "", "", "", 5, True, "", "low"))
+    decision = await tool_recovery.assess_tool_recovery("user_qq:1", [], "连续失败")
+    assert not decision.proceed
+    recovery_judge.assert_not_awaited()
+
+
+@pytest.mark.parametrize("halt_after,failures", [(8, 3), (2, 2)])
+@pytest.mark.parametrize("proceed", [True, False])
+async def test_failure_threshold_can_resume_without_reexecuting_tools(anything, recovery_judge, halt_after, failures, proceed):
+    ConfigManager.set("guardrails_same_tool_failure_halt_after", halt_after)
+    recovery_judge.return_value = _recovery_report("repair" if proceed else "stop")
+    rounds = [tool_result("检查路径", ["read_file"], json.dumps({"path": f"missing-{i}"})) for i in range(failures)]
+    mind = FakeMind(rounds=rounds + [tool_result("", ["list_directory"]), tool_result("", ["end_reply"])],
+                    default_text=None, tool_results={"read_file": '{"success":false,"error":"路径不存在"}'})
+    completion = {}
+    await run_think_loop(mind, anything=anything, completion=completion)
+    recovery_judge.assert_awaited_once()
+    assert mind.executed_tools == ["read_file"] * failures + (["list_directory", "end_reply"] if proceed else [])
+    assert completion["reason"] == ("completed" if proceed else "failed")
+    if proceed:
+        assert "Jev 允许恢复" in str(mind.sent_messages[failures])
+
+
+async def test_recovery_cannot_extend_total_iteration_budget(anything, recovery_judge):
+    recovery_judge.return_value = _recovery_report()
+    mind = FakeMind(rounds=[tool_result("", ["read_file"]) for _ in range(6)], default_text=None,
+                    tool_results={"read_file": '{"error":"missing"}'})
+    completion = {}
+    await run_think_loop(mind, anything=anything, safety_limit=6, completion=completion)
+    assert completion["reason"] == "budget_exhausted" and mind.llm_calls == 6
+
+
+async def test_user_interrupt_cancels_recovery(anything, recovery_judge):
+    from agent.mind.interrupt import InterruptRegistry
+    from agent.mind.tool_activation import bind_scope, reset_scope
+
+    started, cancelled = asyncio.Event(), asyncio.Event()
+    async def judge(*args, **kwargs):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+    recovery_judge.side_effect = judge
+    mind = FakeMind(rounds=[tool_result("", ["read_file"]) for _ in range(3)], default_text=None,
+                    tool_results={"read_file": '{"error":"missing"}'})
+    mind.interrupts = InterruptRegistry()
+    completion = {}
+    token = bind_scope("user_qq:1")
+    task = asyncio.create_task(run_think_loop(mind, anything=anything, completion=completion))
+    try:
+        await asyncio.wait_for(started.wait(), 2)
+        mind.interrupts.request("user_qq:1", "停止")
+        await asyncio.wait_for(task, 2)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        reset_scope(token)
+    assert cancelled.is_set() and completion["reason"] == "interrupted"
+    assert mind.executed_tools == ["read_file"] * 3

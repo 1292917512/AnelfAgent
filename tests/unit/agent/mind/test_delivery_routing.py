@@ -100,7 +100,7 @@ async def test_only_confirmed_body_enters_persistent_conversation(pipeline, sqli
     assert any("候选正文" in r["content"] for r in rows) is approved
     assert channels["qq"].send_text.await_count == int(approved)
     if not approved:
-        assert any("delivery_status:skipped" in r["content"] for r in rows)
+        assert rows == []
 
 
 @pytest.mark.parametrize("scope_id", ["qq:1", "webui:1#chat_1"])
@@ -139,8 +139,11 @@ async def test_real_review_fallback_delivers_once_to_bound_channel(pipeline, sql
     assert all(channel.send_text.await_count == 0 for key, channel in channels.items() if key != adapter)
     rows = await sqlite.fetch_live_conversation(scope_type="user", scope_id=scope_id, limit=10)
     assert [row["content"] for row in rows if row["role"] == "assistant"] == (["这条回复应投递到当前频道。"] if sent else [])
-    assert f"delivery_status:{'sent' if sent else 'skipped'}" in str(completion["messages"])
-    assert f"delivery_scope:{scope}" in str(completion["messages"])
+    if outcome == "disabled":
+        assert "delivery_status:" not in str(completion["messages"])
+    else:
+        assert f"delivery_status:{'sent' if sent else 'skipped'}" in str(completion["messages"])
+        assert f"delivery_scope:{scope}" in str(completion["messages"])
     assert judge.await_count == int(outcome != "disabled")
 
 

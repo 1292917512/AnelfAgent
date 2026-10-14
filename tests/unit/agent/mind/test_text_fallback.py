@@ -52,8 +52,8 @@ async def test_bare_text_no_continue_or_sent_ack(anything, deliver_mock) -> None
         for m in chain if m.get("role") == "assistant"
     )
 
-async def test_non_output_tools_inject_visibility_hint(anything, deliver_mock) -> None:
-    """查资料类工具伴随文本独白时注入「结果仅你可见」（独白 = 误以为文字可达用户）。"""
+async def test_tool_round_reuses_output_contract_without_extra_hint(anything, deliver_mock) -> None:
+    """输出契约留在执行上下文，文本伴随工具调用不再追加重复提示。"""
     mind = _mind()
     mind._rounds = [
         tool_result("我先查一下相关记忆", ["recall"]),
@@ -66,7 +66,9 @@ async def test_non_output_tools_inject_visibility_hint(anything, deliver_mock) -
         m for m in chain if m.get("role") == "system"
         and "仅你可见" in m.get("content", "")
     ]
-    assert hints
+    assert not hints
+    for messages in mind.sent_messages:
+        assert sum("工具结果与未投递正文仅内部可见" in m.get("content", "") for m in messages) == 1
 
 async def test_silent_tool_round_no_visibility_hint(anything, deliver_mock) -> None:
     """静默工具轮（无伴随文本）不注入提示——exec_context 每轮已有输出契约。"""

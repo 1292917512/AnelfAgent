@@ -2,6 +2,10 @@
 
 从 think_loop 拆出的叶子模块（不依赖 think_loop / reply_finalize），
 供 think_loop 主循环与阶段函数复用；函数以 mind 实例为第一参数。
+
+模型看到：当前会话实时收发消息，已在工具链出现的同一投递回执不重复并入。
+Token：保留真实收发内容，省去重复回执；出站消息仅在发送工具或投递卡片展示。
+缓存：只在工具链尾部追加新事实，不改已组装的稳定前缀。
 """
 
 from __future__ import annotations
@@ -609,7 +613,13 @@ async def _merge_new_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> bo
         merged.append(m)
         merged_chars += content_len
     deferred = len(new_msgs) - len(merged)
-    for m in merged:
+    receipts = {message["content"] for message in ctx.tool_chain
+                if message.get("_source", {}).get("origin") == "reply_delivery"
+                and isinstance(message.get("content"), str)}
+    updates = [message for message in merged
+               if not (message["role"] == "system" and isinstance(message.get("content"), str)
+                       and message["content"] in receipts)]
+    for m in updates:
         content = m["content"]
         # 孤代理字符在并入入口清洗一次（发送边界的全量扫描是兜底；
         # 入口清洗同时保证 FTS/embedding/摘要链路拿到干净文本）
@@ -620,6 +630,7 @@ async def _merge_new_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> bo
     # 用户插话重置守卫链：用户新消息改变了语境，
     # 跨插话的"重复调用"不再构成死循环
     if _maybe_reset_guardrail_for_interjection(ctx.guardrail, merged):
+        state.consecutive_tool_errors = 0
         log("用户插话，重置工具守卫链", "DEBUG", tag="守卫")
     state.last_merged_ts = max(state.last_merged_ts, *(m["ts_ns"] for m in merged))
     if merged[-1].get("id"):
@@ -645,11 +656,13 @@ async def _merge_new_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> bo
         )
     deferred_note = f"，{deferred} 条留存下轮接续" if deferred else ""
     log(f"并入 {len(merged)} 条循环期间新消息到当前上下文{deferred_note}", tag="思维")
-    ctx.execution_steps.append(
-        f"→ 第{state.iteration + 1}轮前: 并入 {len(merged)} 条新消息{deferred_note}"
-    )
+    if updates:
+        ctx.execution_steps.append(
+            f"→ 第{state.iteration + 1}轮前: 并入 {len(updates)} 条新消息{deferred_note}"
+        )
     from agent.mind.context_observation import emit_context_update
-    await emit_context_update(merged, origin="conversation", scope=ctx.current_scope,
+    await emit_context_update([message for message in updates if message["role"] != "assistant"],
+                              origin="conversation", scope=ctx.current_scope,
                               iteration=state.iteration + 1, deferred=deferred)
 
     new_user = any(m["role"] == "user" for m in merged)

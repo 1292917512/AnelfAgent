@@ -295,7 +295,7 @@ class TestWaitSuspension:
 
         assert any("等待后台任务（timeout" in s for s in steps)
         # 第一次挂起超时，下一轮交回控制权；无路由时跳过投递
-        assert any("delivery_status:skipped" in s for s in steps)
+        assert not any("delivery_status:skipped" in s for s in steps)
         assert mind.llm_calls == 2
         deliver_mock.assert_not_awaited()
         assert not any(
@@ -316,7 +316,7 @@ class TestWaitSuspension:
         # 超时提示含任务查询路径
         hints = [m for m in chain if m.get("role") == "system" and "check_background_tasks" in m.get("content", "")]
         assert hints
-        assert any("delivery_status:skipped" in s for s in steps)
+        assert not any("delivery_status:skipped" in s for s in steps)
 
     async def test_no_tasks_text_ends_without_delivery(self, anything, deliver_mock) -> None:
         """无后台任务时直接收束，无路由会话不投递。"""
@@ -327,7 +327,7 @@ class TestWaitSuspension:
         await _run_reply(mind, anything, steps, chain)
 
         assert mind.llm_calls == 1
-        assert any("delivery_status:skipped" in s for s in steps)
+        assert not any("delivery_status:skipped" in s for s in steps)
         deliver_mock.assert_not_awaited()
         assert not any(
             "未调用工具" in m.get("content", "")

@@ -1,8 +1,8 @@
 """普通会话正文的投递审核、发送和事实反馈。
 
-模型看到：按中间/最终正文开关反馈投递状态与目标；显式 send_message 不经过正文审核。
-Token：配置 Jev 时只评估有界的候选正文与当前会话证据，无普通模型回退。
-缓存：审核与工具并行，回执在批次结束后追加动态尾部；仅已发送正文写入实时会话。
+模型看到：实际审核与发送的回执；配置关闭、内部处理和重复收尾直接静默跳过。
+Token：静默跳过不添加消息；配置 Jev 时只评估有界证据，无普通模型回退。
+缓存：回执在批次结束后追加动态尾部，不改稳定前缀；未发送正文不写入实时会话。
 """
 from __future__ import annotations
 
@@ -136,22 +136,11 @@ async def deliver_reply(
     scope = ctx.current_scope
     content = strip_message_meta_tags(content).strip()
     status: DeliveryStatus = "skipped"
-    if not is_conversation_scope(ctx.current_scope):
-        assessment = ReplyAssessment(False, "当前执行没有可路由的会话")
-    elif "send_message" in ctx.blocked_tools:
-        assessment = ReplyAssessment(False, "当前执行策略禁用文本投递")
-    elif not state.auto_reply_eligible:
-        assessment = ReplyAssessment(False, "内部事件处理不自动投递；需通知用户时显式使用 send_message")
-    elif not get_config_bool("send_interim_text" if interim else "send_final_text", not interim):
-        assessment = ReplyAssessment(False, f"{'中间' if interim else '最终'}正文自动投递已关闭；需要发送请使用 send_message")
-    elif state.auto_reply_blocked:
-        reason = ("此前发送结果未知；再次回复前先核对真实会话" if state.reply_delivery_status == "unknown"
-                  else "已执行发送，本轮没有新的工作或用户消息；不重复投递收尾正文")
-        assessment = ReplyAssessment(False, reason)
-    elif not content:
-        assessment = ReplyAssessment(False, "正文清洗后为空")
-    else:
-        assessment = await assess_reply(content, scope, messages)
+    if (not is_conversation_scope(scope) or "send_message" in ctx.blocked_tools
+            or not state.auto_reply_eligible or state.auto_reply_blocked or not content
+            or not get_config_bool("send_interim_text" if interim else "send_final_text", not interim)):
+        return None
+    assessment = await assess_reply(content, scope, messages)
     if ctx.abort_event is not None and ctx.abort_event.is_set():
         return None
     reason = assessment.reason
@@ -195,7 +184,7 @@ async def publish_delivery(ctx: _ThinkLoopCtx, state: _ThinkRoundState, result: 
     message = {"role": "system", "content": feedback, "_source": {"origin": "reply_delivery"}}
     ctx.tool_chain.append(message)
     ctx.execution_steps.append("→ " + feedback)
-    if status != "sent" and ctx.anything:
+    if status in {"failed", "unknown"} and ctx.anything:
         try:
             await ctx.mind._add_system_context(ctx.anything, feedback, role="system")
         except Exception as exc:
