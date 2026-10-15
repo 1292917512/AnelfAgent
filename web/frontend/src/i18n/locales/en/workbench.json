@@ -200,6 +200,16 @@
   "clearView": "Clear displayed messages",
   "chatFocus": "Conversation reading mode",
   "activity": {
+    "control": {
+      "stop": "Stop execution",
+      "resume": "Continue execution",
+      "stopping": "Stopping",
+      "resuming": "Continuation requested",
+      "stopHint": "Stop this Web conversation and its background work. External actions are not rolled back; execution confirms the stopped state.",
+      "resumeHint": "Continue in the same conversation using interruption records and operation summaries, without replaying completed tools.",
+      "failed": "Action failed. Refresh the execution state and retry.",
+      "backgroundPending": "{{count}} background tasks could not accept cancellation. Inspect execution details; cancellation receipts will not restart the conversation."
+    },
     "inspect": "View details: {{title}}",
     "preview": "Preview: {{title}}",
     "previewHint": "Click the entry to read the full details",

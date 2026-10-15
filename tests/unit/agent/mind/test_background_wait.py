@@ -28,6 +28,34 @@ from agent.mind.background_tasks import BackgroundTaskRegistry
 from agent.mind.tools.think_loop import ThinkMode
 
 
+async def test_cancel_scope_keeps_results_without_waking_cancelled_conversation():
+    registry = BackgroundTaskRegistry()
+    wake = AsyncMock()
+    registry.set_unclaimed_callback(wake)
+    started = asyncio.Event()
+
+    async def operation():
+        started.set()
+        await asyncio.Event().wait()
+        return "unreachable"
+
+    task_id = registry.submit("web", "vision", "image", operation)
+    other = registry.register("other", "shell", "unrelated")
+    await started.wait()
+    try:
+        result = await registry.cancel_scope("web")
+        assert result[0]["terminated"]
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not registry.running("web")
+        assert registry.completed("web")[0].task_id == task_id
+        assert registry.completed("web")[0].success is False
+        wake.assert_not_called()
+        assert registry.running("other")[0].task_id == other
+    finally:
+        await registry.close()
+
+
 @pytest.fixture(autouse=True)
 def deliver_mock(monkeypatch):
     """监测发送管道，验证执行过程不会自行对外投递。"""

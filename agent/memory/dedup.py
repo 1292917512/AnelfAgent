@@ -77,7 +77,9 @@ async def light_llm(prompt: str, *, temperature: float = 0.1, timeout: float = 1
     if model_id:
         client = manager.get_enabled_client(model_id)
         if client is None:
-            log(f"轻量内部模型不存在或已停用，回落默认主模型: {model_id}",
+            reason = "不存在" if manager.get_client(model_id) is None else "已停用"
+            log(f"轻量内部模型配置失效: memory_light_model='{model_id}'（{reason}）；"
+                "本次调用改用默认主模型及其回退链。请在配置中心重新选择已启用模型，或清空此项跟随默认模型。",
                 "WARNING", tag="思维")
     options: Dict[str, Any] = {"temperature": temperature}
     effort = normalize_effort(get_config("memory_judge_reasoning_effort", ""))

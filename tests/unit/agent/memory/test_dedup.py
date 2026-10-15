@@ -122,12 +122,16 @@ async def test_light_llm_uses_dedicated_model(monkeypatch: pytest.MonkeyPatch) -
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("exists", [False, True])
 async def test_light_llm_unknown_model_falls_back_default(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, exists: bool,
 ) -> None:
     """专用模型不存在/停用时 client 为 None，回落默认主模型。"""
     manager = _FakeManager()
     manager.get_enabled_client = lambda name: None  # type: ignore[method-assign]
+    manager.get_client = lambda name: object() if exists else None
+    logs = []
+    monkeypatch.setattr(dedup, "log", lambda message, *a, **kw: logs.append(message))
     monkeypatch.setattr("agent.llm.get_llm_manager", lambda: manager)
     monkeypatch.setattr(
         dedup, "get_config",
@@ -137,3 +141,7 @@ async def test_light_llm_unknown_model_falls_back_default(
     await dedup.light_llm("p")
 
     assert manager.kwargs["client"] is None
+    assert len(logs) == 1
+    assert "memory_light_model='ghost-model'" in logs[0]
+    assert ("已停用" if exists else "不存在") in logs[0]
+    assert "清空此项跟随默认模型" in logs[0]

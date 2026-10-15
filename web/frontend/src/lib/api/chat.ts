@@ -2,6 +2,7 @@
 
 import { api } from "./client";
 import type {
+  ActivityControlResult,
   ApiKeyCreated,
   ApiKeyInfo,
   AuthStatus,
@@ -78,7 +79,7 @@ export const chatApi = {
     ),
   botName: () => api.get<{ name: string }>("/chat/bot-name"),
   interrupt: (chatId?: string) =>
-    api.post<{ status: string; interrupted?: boolean; cancelled_delegations?: number }>(
+    api.post<ActivityControlResult>(
       "/chat/interrupt", { chat_id: chatId ?? "default" },
     ),
   delegations: (chatId?: string) =>

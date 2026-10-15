@@ -13,13 +13,63 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
+from helpers.think_loop_fakes import FakeMind
 
 import agent.mind.llm_invoker as li
 from agent.llm import LLMCallAborted
 from agent.llm.types import ChatStreamDelta
 from agent.mind.interrupt import InterruptRegistry
+
+
+async def test_stop_during_context_preparation_closes_work_and_reports_cancelled(monkeypatch, anything):
+    import agent.mind.tools.think_loop as loop
+    from core.activity import EVENT_ACTIVITY_FINISHED
+    from core.event_bus import event_bus
+
+    started, closed = asyncio.Event(), asyncio.Event()
+    scope = "user_webui:web_user#prepare"
+    mind = FakeMind(config_overrides={"max_tool_iterations": 10})
+    mind.interrupts = InterruptRegistry()
+    mind._resolve_entity_scope = lambda _: scope
+    monkeypatch.setattr(mind.pfc, "clear_dynamic_tools", lambda **kw: None)
+    anything.message_kind = "chat"
+    anything.recall_policy = None
+
+    async def prepare(**kw):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+
+    mind.get_recollection = prepare
+    completed = AsyncMock()
+    monkeypatch.setattr(loop, "complete_reply", completed)
+    events = []
+
+    async def finish(payload):
+        events.append(payload)
+
+    event_bus.on(EVENT_ACTIVITY_FINISHED, finish)
+    completion = {}
+    try:
+        work = asyncio.create_task(loop.reply_loop(mind, anything, completion=completion))
+        await asyncio.wait_for(started.wait(), 2)
+        mind.interrupts.request(scope, "Web 停止")
+        await asyncio.wait_for(work, 2)
+        assert closed.is_set()
+        assert completion["reason"] == "interrupted"
+        assert events[-1]["status"] == "cancelled"
+        assert mind.llm_calls == 0
+        assert mind.executed_tools == []
+        completed.assert_awaited_once()
+        assert completed.call_args.kwargs["turn_id"] == events[-1]["turn_id"]
+        assert not mind.interrupts.is_requested(scope)
+    finally:
+        event_bus.off(EVENT_ACTIVITY_FINISHED, finish)
 
 
 class TestRegistryEvent:

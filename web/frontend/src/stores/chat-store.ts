@@ -17,6 +17,8 @@ import { fileReferenceMarkdown } from "@/lib/file-reference";
 import { usePlanStore } from "./plan-store";
 import { useDelegationStore } from "./delegation-store";
 import { useWorkbenchStore } from "./workbench-store";
+import { toast } from "./toast-store";
+import { apiErrorMessage } from "@/lib/api/client";
 import { chatApi, workspaceApi } from "@/lib/api";
 import i18n from "@/i18n";
 import type { ChatBucket, ChatMeta, ContextUsage, PendingFile } from "@/lib/types";
@@ -282,12 +284,15 @@ export const useChatStore = create<ChatState>((set, get) => {
       const chatId = get().activeChatId;
       try {
         const r = await chatApi.interrupt(chatId === DEFAULT_CHAT_ID ? undefined : chatId);
+        if (r.data.status === "error") throw new Error(r.data.error || i18n.t("activity.control.failed", { ns: "workbench" }));
+        const failed = r.data.background?.filter((task) => !task.ok).length ?? 0;
+        if (failed) toast.error(i18n.t("activity.control.backgroundPending", { ns: "workbench", count: failed }));
         // 无进行中的回复/子代理：本地直接复位发送态，避免空等 turn_end
         if (r.data?.status === "idle") {
           clearSendWatchdog(chatId);
           updateBucket(chatId, () => ({ sending: false, sendingSince: null }));
         }
-      } catch { /* 中断失败时由看门狗兜底复位 */ }
+      } catch (error) { toast.error(apiErrorMessage(error, i18n.t("activity.control.failed", { ns: "workbench" }))); }
     },
 
     loadFolds: async (chatId) => {

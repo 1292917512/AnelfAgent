@@ -584,6 +584,18 @@ class BackgroundTaskRegistry:
             and (not joinable_only or rec.info.joinable)
         ]
 
+    async def cancel_scope(self, scope: str) -> list[Dict[str, Any]]:
+        """请求停止会话后台工作；保留结果供查询，取消回执不再自动唤醒会话。"""
+        tasks = self.running(scope)
+        for task in tasks:
+            record = self._records[task.task_id]
+            record.info.notification = CompletionNotification.SILENT
+            record.info.expected_seconds = 0
+            self.watch_stall(task.task_id, 0)
+        return await asyncio.gather(*(
+            asyncio.to_thread(self.terminate, scope, task.task_id) for task in tasks
+        ))
+
     def completed(self, scope: str) -> List[TaskCompletion]:
         """该 scope 下已完成的任务结果（含已送达，供主动查询回看）。"""
         return [

@@ -241,7 +241,7 @@ async def _dispatch(
 
         elif action == "interrupt":
             from services import ChatService
-            result = ChatService().interrupt_chat(str(frame.get("chat_id") or chat_id or "default"))
+            result = await ChatService().interrupt_chat(str(frame.get("chat_id") or chat_id or "default"))
             await ack("interrupt_ack", **result)
 
         elif action == "ui_answer":

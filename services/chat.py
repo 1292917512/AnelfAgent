@@ -320,8 +320,8 @@ class ChatService:
         )
         return await plan_tracker.cancel_plan(scope, plan_id, reason="用户取消")
 
-    def interrupt_chat(self, chat_id: str) -> Dict[str, Any]:
-        """协作式中断当前回复 + 取消该会话运行中的子代理。"""
+    async def interrupt_chat(self, chat_id: str) -> Dict[str, Any]:
+        """中断当前回复与所属后台工作；取消结果不自动唤醒新回复。"""
         rt = get_runtime()
         if rt is None:
             return {"status": "error", "error": "runtime 未就绪"}
@@ -331,9 +331,11 @@ class ChatService:
         dm = getattr(rt.mind, "delegation_manager", None)
         if dm is not None:
             cancelled = dm.cancel_scope(scope)
-        if not interrupted and cancelled == 0:
+        background = await rt.mind.background_tasks.cancel_scope(scope)
+        if not interrupted and cancelled == 0 and not background:
             return {"status": "idle"}
-        return {"status": "ok", "interrupted": interrupted, "cancelled_delegations": cancelled}
+        return {"status": "ok", "interrupted": interrupted, "cancelled_delegations": cancelled,
+                "background": background}
 
     # ------------------------------------------------------------------
     # 换向折叠（web 域会话分支：弃置路径折叠出上下文，DB 保留可恢复）

@@ -200,6 +200,16 @@
   "clearView": "清空当前显示的消息",
   "chatFocus": "对话阅读模式",
   "activity": {
+    "control": {
+      "stop": "终止执行",
+      "resume": "继续执行",
+      "stopping": "正在终止",
+      "resuming": "已请求继续",
+      "stopHint": "停止此 Web 对话及其后台工作。已发生的外部操作不会回滚，执行方确认后显示中止。",
+      "resumeHint": "在原会话中继续：依据中止记录与操作摘要处理剩余工作，不重放已执行工具。",
+      "failed": "操作失败，请刷新状态后重试",
+      "backgroundPending": "有 {{count}} 项后台工作未能受理终止，请打开执行详情检查；不会因取消回执自动继续。"
+    },
     "inspect": "查看详情：{{title}}",
     "preview": "预览：{{title}}",
     "previewHint": "点击入口打开完整详情",

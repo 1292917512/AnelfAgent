@@ -248,15 +248,32 @@ async def reply_loop(
                     push_watermark = push_hub.current_seq(scope)
                 except Exception:
                     push_watermark = 0
-            active_tools = await mind.pfc.get_active_tool_schemas(adapter_key, scope=scope)
-            base_messages = await mind.get_recollection(anything=anything)
+            async def prepare() -> tuple[List[Dict], List[Dict]]:
+                tools = await mind.pfc.get_active_tool_schemas(adapter_key, scope=scope)
+                messages = await mind.get_recollection(anything=anything)
+                if images:
+                    messages = await apply_vision(mind, messages, images, anything)
+                return tools, messages
+
+            prepared, aborted = await _await_with_abort(
+                prepare(), _interrupts.event(scope) if _interrupts is not None and scope else None,
+            )
+            if aborted:
+                reason = (_interrupts.consume(scope) if _interrupts is not None else None) or "用户请求"
+                activity.status = "cancelled"
+                if completion is not None:
+                    completion["reason"] = "interrupted"
+                await mind._add_system_context(
+                    anything, f"[系统] 本次回复在准备上下文时被中断（{reason}），尚未开始模型和工具执行。",
+                    role="system",
+                )
+                await complete_reply(mind, anything, "", 0, completion=completion, turn_id=activity.turn_id)
+                return
+            active_tools, base_messages = prepared
             # 历史快照已覆盖该 scope 当前全部消息：消费到达时入队的待处理条目，
             # 避免快照内消息在周期结束后另起周期导致重复回复
             if anything:
                 _consume_pending_for_scope(mind, anything, through_ts=snapshot_watermark(base_messages)[0])
-            if images:
-                base_messages = await apply_vision(mind, base_messages, images, anything)
-
             await think_loop(
                 mind,
                 mode=ThinkMode.REPLY,
@@ -695,6 +712,9 @@ async def _handle_interrupt(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> bool
         return False
     reason = ctx.interrupts.consume(ctx.current_scope) or "未说明"
     state.interrupted = True  # finally 收敛 plan 时按 cancelled 处理
+    if ctx.completion is not None:
+        ctx.completion.update(reason="interrupted", messages=ctx.base_messages + ctx.tool_chain,
+                              tools=ctx.active_tools)
     log(
         f"会话被中断 (轮次 {state.iteration + 1}): "
         f"scope={ctx.current_scope} reason={reason}",

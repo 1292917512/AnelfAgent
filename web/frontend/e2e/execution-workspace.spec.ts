@@ -16,6 +16,43 @@ function activity(id: string, patch: Partial<ActivityRun> = {}): ActivityRun {
   };
 }
 
+test("Web execution can stop and continue once without controlling other channels", async ({ page }, info) => {
+  const scope = "user_webui:web_user#control";
+  const run = activity("web-control", { scope, origin_scope: scope, entries: [], entry_count: 0,
+    source: { scope, kind: "user", channel: "webui", target: "web_user", session: "control" } });
+  let stopCalls = 0;
+  let resumeCalls = 0;
+  await page.route("**/api/workspace/activity", (route) => route.fulfill({ json: { epoch: "control", revision: run.revision, runs: [run] } }));
+  await page.route("**/api/workspace/activity/web-control/stop", async (route) => {
+    stopCalls++;
+    Object.assign(run, { status: "cancelled", ended_at: Date.now() / 1000, revision: 2, control: "stopping" });
+    await route.fulfill({ json: { status: "ok", interrupted: true } });
+  });
+  await page.route("**/api/workspace/activity/web-control/resume", async (route) => {
+    resumeCalls++;
+    Object.assign(run, { control: "resumed", revision: 3 });
+    await route.fulfill({ json: { status: "accepted" } });
+  });
+  await page.goto("/webui/");
+  const stop = page.getByRole("button", { name: "Stop execution", exact: true });
+  await expect(stop).toBeVisible();
+  await stop.click();
+  const resume = page.getByRole("button", { name: "Continue execution", exact: true });
+  await expect(resume).toBeVisible();
+  const heading = await page.locator(".activity-heading-title").boundingBox();
+  const controls = await page.locator(".activity-heading-controls").boundingBox();
+  expect(heading && controls && heading.x + heading.width <= controls.x).toBeTruthy();
+  await page.screenshot({ path: info.outputPath("stopped-web-execution.png") });
+  await resume.click();
+  await expect(page.getByRole("button", { name: "Continuation requested", exact: true })).toBeDisabled();
+  expect(stopCalls).toBe(1);
+  expect(resumeCalls).toBe(1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  Object.assign(run, { source: { ...run.source, channel: "qq", target: "123" } });
+  await page.reload();
+  await expect(page.getByRole("button", { name: /Stop execution|Continue execution|Continuation requested/ })).toHaveCount(0);
+});
+
 test("live notifications and tool inspections support hover, touch and keyboard", async ({ page, isMobile }, info) => {
   const run = activity("notifications");
   run.entries = run.entries.slice(0, 3);

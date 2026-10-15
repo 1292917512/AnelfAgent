@@ -120,6 +120,23 @@ class WorkspaceActivityService:
         """返回本进程有界的脱敏过程快照，进程结束后不保留。"""
         return {"epoch": self._epoch, "revision": self._revision, "runs": deepcopy(list(self._runs.values()))}
 
+    def get_run(self, run_id: str) -> dict[str, Any] | None:
+        """读取单轮快照；控制操作不持有展示状态的可变引用。"""
+        run = self._runs.get(run_id)
+        return deepcopy(run) if run is not None else None
+
+    def latest_conversation(self, scope: str) -> str | None:
+        """返回会话最近轮次，避免旧页面操作作用于后续执行。"""
+        return next((run["id"] for run in reversed(self._runs.values())
+                     if run["scope"] == scope and run["kind"] == "conversation"), None)
+
+    def set_control(self, run_id: str, state: str) -> None:
+        """发布本轮控制请求状态；执行终态仍由思维循环确认。"""
+        run = self._runs.get(run_id)
+        if run is not None:
+            run["control"] = state
+            self._changed(run, immediate=True)
+
     def clear_history(self) -> dict[str, Any]:
         """清除当前执行轮次之前的内存记录，保留并发执行及完整父子调用树。"""
         if not self._runs:

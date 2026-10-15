@@ -280,12 +280,8 @@ class InterruptRequest(BaseModel):
 
 @router.post("/interrupt")
 async def interrupt_chat(req: InterruptRequest) -> Dict[str, Any]:
-    """前端"停止生成"按钮：协作式中断当前回复 + 取消该会话运行中的子代理。
-
-    中断是协作式的（下一轮检查点安全收束），子代理取消会即时终止其执行任务，
-    delegate_task 工具结果携带 user_cancel 归因提示 AI 不要自动重试。
-    """
-    return _chat_svc.interrupt_chat(req.chat_id)
+    """中断 Web 回复与所属后台工作，在途模型和工具通过协作式取消收束。"""
+    return await _chat_svc.interrupt_chat(req.chat_id)
 
 
 @router.get("/delegations")

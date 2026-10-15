@@ -114,6 +114,8 @@ class HookRuntime:
     # ------------------------------------------------------------------
 
     async def _on_after_reply(self, payload: Dict[str, Any]) -> None:
+        if payload.get("reason") == "interrupted":
+            return
         await self._forward(HOOK_EVENT_AFTER_REPLY, payload)
 
     async def _on_context_pressure(self, payload: Dict[str, Any]) -> None:

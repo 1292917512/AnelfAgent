@@ -308,6 +308,7 @@ async def complete_reply(
         "content": content[:100] if content else "",
         "iterations": iterations,
         "error": error,
+        "reason": (completion or {}).get("reason", "failed" if error else "completed"),
         "execution_summary": execution_summary,
         "executed_tools": _execution_facts(tool_chain),
         "messages": reply_messages,

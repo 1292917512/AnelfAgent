@@ -6,6 +6,7 @@ import asyncio
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -23,6 +24,19 @@ from agent.hooks_llm.snapshot import (
 from agent.hooks_llm.spec import LLMHookSpec
 from core.event_bus import EVENT_AFTER_REPLY, EventBus
 from core.hooks import HookMode
+
+
+async def test_interrupted_reply_does_not_start_completion_hooks(monkeypatch):
+    from agent.hooks_llm.runtime import HookRuntime
+
+    runtime = HookRuntime(SimpleNamespace())
+    forward = AsyncMock()
+    monkeypatch.setattr(runtime, "_forward", forward)
+    await runtime._on_after_reply({"reason": "interrupted"})
+    forward.assert_not_called()
+    payload = {"reason": "completed"}
+    await runtime._on_after_reply(payload)
+    forward.assert_awaited_once_with("after_reply", payload)
 
 
 @pytest.fixture(autouse=True)

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Literal
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
@@ -34,6 +34,17 @@ async def clear_activity_history() -> Dict[str, Any]:
     from services.workspace_activity import workspace_activity
 
     return workspace_activity.clear_history()
+
+
+@router.post("/activity/{run_id}/{action}")
+async def control_activity(run_id: str, action: Literal["stop", "resume"]) -> Dict[str, Any]:
+    """停止指定 Web 对话轮次，或显式提交一次续接请求。"""
+    from services.execution_control import ExecutionControlError, control_execution
+
+    try:
+        return await control_execution(run_id, action)
+    except ExecutionControlError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 @router.get("/tree")

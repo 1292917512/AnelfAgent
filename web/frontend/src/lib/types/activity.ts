@@ -40,6 +40,7 @@ export interface ActivityRun {
   owner_id: string;
   parent_id: string;
   status: string;
+  control?: "" | "stopping" | "resuming" | "resumed";
   error?: string;
   started_at: number;
   updated_at: number;
@@ -52,3 +53,11 @@ export interface ActivityRun {
 }
 
 export interface ActivitySnapshot { epoch: string; revision: number; runs: ActivityRun[] }
+
+export interface ActivityControlResult {
+  status: "ok" | "idle" | "accepted" | "error";
+  error?: string;
+  background?: { ok: boolean; error?: string }[];
+  interrupted?: boolean;
+  cancelled_delegations?: number;
+}
