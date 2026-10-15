@@ -19,7 +19,9 @@ import math
 from typing import Any, Optional
 
 from agent.llm.config import DEFAULT_TIMEOUT
+from agent.llm.protocol import ChatProtocol, is_native_responses_provider
 from agent.llm.reasoning import parse_thinking_spec, resolve_thinking_value, set_nested_field, to_litellm_effort
+from agent.llm.url_utils import infer_chat_protocol, split_endpoint_suffix
 from core.log import log
 
 from .config import (
@@ -63,21 +65,6 @@ _LLM_ARGS_RESERVED_KEYS = frozenset({
     "model", "messages", "max_tokens", "temperature",
     "tools", "tool_choice", "response_format", "stream",
 })
-
-# thinking 模型的思考预算上限（tokens）。部分端点强制开启 thinking 且不可关闭，
-# 推理 token 与正文共享 max_tokens 预算，不加限制会把输出截断
-_THINKING_BUDGET_TOKENS = 2048
-
-# 思考等级 → thinking budget_tokens 映射；与主 LLM 系统 reasoning_effort 档位对齐，
-# max 不封顶交由端点决定（None 表示不传 budget_tokens，仅启用思考）
-_EFFORT_TO_BUDGET: dict[str, Optional[int]] = {
-    "minimal": 512,
-    "low": 1024,
-    "medium": _THINKING_BUDGET_TOKENS,
-    "high": 4096,
-    "xhigh": 8192,
-    "max": None,
-}
 
 # Cognee 默认抽取预算：正文需容纳 nodes+edges JSON，思考 token 可能共享此预算。
 _DEFAULT_EXTRACTION_MAX_TOKENS = 16384
@@ -185,11 +172,19 @@ def _payload_from_client(client: Any, chat_cfg: CogneeChatModelConfig) -> dict[s
             f"模型 '{cfg.name}' 的协议 {cfg.api_type} 不受 cognee 支持，"
             f"请改用自定义配置或选择其他模型"
         )
+    endpoint, _ = split_endpoint_suffix(cfg.base_url)
+    # Cognee 没有宿主的协议协商状态；auto 保留库默认入口，显式协议和完整 URL 优先。
+    protocol = infer_chat_protocol(cfg.base_url) or getattr(cfg, "chat_protocol", "")
+    model = cfg.litellm_model
+    if protocol == ChatProtocol.RESPONSES and is_native_responses_provider(cfg.api_type):
+        prefix, _, name = model.partition("/")
+        if not name.startswith("responses/"):
+            model = f"{prefix}/responses/{name}"
     payload: dict[str, Any] = {
         "llm_provider": provider,
-        "llm_model": cfg.litellm_model,
+        "llm_model": model,
         "llm_api_key": cfg.api_key or None,
-        "llm_endpoint": cfg.base_url,
+        "llm_endpoint": endpoint,
         "llm_temperature": 0.0,
     }
     llm_args = _build_llm_args(cfg, chat_cfg)
@@ -204,9 +199,8 @@ def _build_llm_args(cfg: Any, chat_cfg: CogneeChatModelConfig) -> dict[str, Any]
     """组装透传给 litellm 的 llm_args。
 
     - 模型自身 extra_body 过滤保留键后透传，与主对话行为对齐；
-    - thinking 注入优先级：chat.reasoning_effort 显式档位 > 模型 extra_body.thinking
-      > 按 supports_reasoning 自动注入 medium 预算；reasoning_effort=off 时强制
-      关闭思考（部分端点强制常开，会忽略 disabled，属正常）；
+    - 思考参数沿用模型声明的契约；未声明时使用 LiteLLM reasoning_effort，
+      不为其他协议臆造 Anthropic thinking 预算；
     - chat 配置中的 extra_args 显式指定，优先级最高。
     """
     extra_body = {
@@ -226,22 +220,10 @@ def _build_llm_args(cfg: Any, chat_cfg: CogneeChatModelConfig) -> dict[str, Any]
             set_nested_field(extra_body, spec.param, value)
             if effort == "off" and isinstance(extra_body.get("thinking"), dict):
                 extra_body["thinking"].pop("budget_tokens", None)
-    elif cfg is None:
-        # 自定义来源没有模型思考契约，使用 LiteLLM 的规范参数。
-        if effort:
-            extra_body["reasoning_effort"] = to_litellm_effort(effort)
-    elif effort == "off":
-        extra_body["thinking"] = {"type": "disabled"}
-    elif effort in _EFFORT_TO_BUDGET:
-        budget = _EFFORT_TO_BUDGET[effort]
-        thinking: dict[str, Any] = {"type": "enabled"}
-        if budget is not None:
-            thinking["budget_tokens"] = budget
-        extra_body["thinking"] = thinking
-    elif getattr(cfg, "supports_reasoning", False) and "thinking" not in extra_body:
-        max_tokens = chat_cfg.max_completion_tokens or _DEFAULT_EXTRACTION_MAX_TOKENS
-        budget = max(1024, min(_THINKING_BUDGET_TOKENS, max_tokens - 1024))
-        extra_body["thinking"] = {"type": "enabled", "budget_tokens": budget}
+    else:
+        effective_effort = effort or getattr(cfg, "reasoning_effort", "")
+        if effective_effort:
+            extra_body["reasoning_effort"] = to_litellm_effort(effective_effort)
     llm_args: dict[str, Any] = {"timeout": getattr(cfg, "timeout", DEFAULT_TIMEOUT)}
     if "reasoning_effort" in extra_body:
         llm_args["reasoning_effort"] = extra_body.pop("reasoning_effort")
@@ -265,7 +247,7 @@ def _apply_chat_overrides(
         raise CogneeConfigError(f"不支持的结构化输出模式: '{mode}'")
     payload["structured_output_framework"] = "instructor" if mode else "litellm_native"
     if mode:
-        payload["llm_instructor_mode"] = mode
+        payload["llm_instructor_mode"] = "tool_call" if mode == "tools" else mode
     if chat_cfg.max_completion_tokens > 0:
         payload["llm_max_completion_tokens"] = chat_cfg.max_completion_tokens
 

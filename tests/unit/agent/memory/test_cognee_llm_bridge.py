@@ -179,7 +179,7 @@ def test_model_source_explicit_instructor_mode_wins() -> None:
         source="model", model_id="qwen-thinking", instructor_mode="tools",
     ).normalized()
     payload = resolve_chat_llm_config(cfg, _manager())
-    assert payload["llm_instructor_mode"] == "tools"
+    assert payload["llm_instructor_mode"] == "tool_call"
 
 
 def test_model_source_missing_model_raises() -> None:
@@ -231,12 +231,11 @@ def test_custom_anthropic_native_does_not_require_sdk() -> None:
 # ==================================================================
 
 
-def test_reasoning_model_gets_thinking_budget() -> None:
-    """thinking 模型自动注入思考预算，防止推理 token 吃光输出上限。"""
+def test_reasoning_model_without_contract_does_not_invent_thinking_parameters() -> None:
     cfg = CogneeChatModelConfig(source="model", model_id="qwen-thinking").normalized()
     payload = resolve_chat_llm_config(cfg, _manager())
-    thinking = payload["llm_args"]["extra_body"]["thinking"]
-    assert thinking == {"type": "enabled", "budget_tokens": 2048}
+    assert "extra_body" not in payload["llm_args"]
+    assert "reasoning_effort" not in payload["llm_args"]
 
 
 def test_non_reasoning_model_no_thinking_injection() -> None:
@@ -280,58 +279,46 @@ def test_extra_body_reserved_keys_filtered() -> None:
 # ==================================================================
 
 
-def test_reasoning_effort_off_disables_thinking() -> None:
-    """reasoning_effort=off 强制注入 thinking disabled。"""
+def test_reasoning_effort_off_uses_litellm_contract() -> None:
     cfg = CogneeChatModelConfig(
         source="model", model_id="qwen-thinking", reasoning_effort="off",
     ).normalized()
     payload = resolve_chat_llm_config(cfg, _manager())
-    thinking = payload["llm_args"]["extra_body"]["thinking"]
-    assert thinking == {"type": "disabled"}
+    assert payload["llm_args"]["reasoning_effort"] == "none"
+    assert "extra_body" not in payload["llm_args"]
 
 
-def test_reasoning_effort_levels_budget() -> None:
-    """low/medium/high 映射到对应思考预算；max 不限制预算。"""
-    cases = {"low": 1024, "medium": 2048, "high": 4096}
-    for effort, expected in cases.items():
-        cfg = CogneeChatModelConfig(
-            source="model", model_id="qwen-thinking", reasoning_effort=effort,
-        ).normalized()
-        payload = resolve_chat_llm_config(cfg, _manager())
-        thinking = payload["llm_args"]["extra_body"]["thinking"]
-        assert thinking == {"type": "enabled", "budget_tokens": expected}, effort
-
+@pytest.mark.parametrize("effort", ["low", "medium", "high", "max"])
+def test_reasoning_effort_levels_use_litellm_parameter(effort: str) -> None:
     cfg = CogneeChatModelConfig(
-        source="model", model_id="qwen-thinking", reasoning_effort="max",
+        source="model", model_id="qwen-thinking", reasoning_effort=effort,
     ).normalized()
     payload = resolve_chat_llm_config(cfg, _manager())
-    thinking = payload["llm_args"]["extra_body"]["thinking"]
-    assert thinking == {"type": "enabled"}
+    assert payload["llm_args"]["reasoning_effort"] == effort
+    assert "extra_body" not in payload["llm_args"]
 
 
 def test_reasoning_effort_overrides_model_extra_body() -> None:
-    """显式 reasoning_effort 优先级高于模型 extra_body.thinking。"""
     manager = _manager()
     manager._clients["qwen-thinking"].config.extra_body = {
-        "thinking": {"type": "enabled", "budget_tokens": 4096},
+        "reasoning_effort": "high",
     }
     cfg = CogneeChatModelConfig(
         source="model", model_id="qwen-thinking", reasoning_effort="low",
     ).normalized()
     payload = resolve_chat_llm_config(cfg, manager)
-    thinking = payload["llm_args"]["extra_body"]["thinking"]
-    assert thinking["budget_tokens"] == 1024
+    assert payload["llm_args"]["reasoning_effort"] == "low"
 
 
 def test_reasoning_effort_invalid_falls_back_to_auto() -> None:
-    """非法 reasoning_effort 归一化为 auto，保持按 supports_reasoning 自动注入。"""
+    manager = _manager()
+    manager._clients["qwen-thinking"].config.reasoning_effort = "high"
     cfg = CogneeChatModelConfig(
         source="model", model_id="qwen-thinking", reasoning_effort="extreme",
     ).normalized()
     assert cfg.reasoning_effort == ""
-    payload = resolve_chat_llm_config(cfg, _manager())
-    thinking = payload["llm_args"]["extra_body"]["thinking"]
-    assert thinking == {"type": "enabled", "budget_tokens": 2048}
+    payload = resolve_chat_llm_config(cfg, manager)
+    assert payload["llm_args"]["reasoning_effort"] == "high"
 
 
 def test_explicit_extra_args_override() -> None:
@@ -459,7 +446,8 @@ def test_custom_reasoning_uses_litellm_parameter_and_model_uses_declared_contrac
 def test_thinking_budget_cannot_consume_entire_completion_budget():
     with pytest.raises(CogneeConfigError, match="思考预算"):
         resolve_chat_llm_config(CogneeChatModelConfig(source="model", model_id="qwen-thinking",
-            reasoning_effort="high", max_completion_tokens=4096), _manager())
+            extra_args={"extra_body": {"thinking": {"type": "enabled", "budget_tokens": 4096}}},
+            max_completion_tokens=4096), _manager())
 
 
 @pytest.mark.parametrize("source", ["auto", "model"])

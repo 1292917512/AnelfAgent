@@ -24,7 +24,7 @@ MODEL_SOURCE_CUSTOM = "custom"
 MODEL_SOURCES = (MODEL_SOURCE_AUTO, MODEL_SOURCE_MODEL, MODEL_SOURCE_CUSTOM)
 
 # 思考等级：与主 LLM 系统 reasoning_effort 对齐（agent.llm.reasoning 的 7 级规范词汇）；
-# ""=auto 跟随模型 supports_reasoning，off=强制关闭思考，其余为思考预算档位
+# ""=auto 继承模型设置；显式等级按模型思考契约或 LiteLLM 标准参数下发
 REASONING_EFFORTS = ("",) + CANONICAL_EFFORTS
 
 # cognee 库支持的 provider 词汇（custom = 自填 endpoint 的 OpenAI 兼容端点）
@@ -50,7 +50,7 @@ class CogneeChatModelConfig:
     # instructor 结构化输出模式覆盖；thinking 端点用 json_mode 规避 tool_choice 限制
     instructor_mode: str = ""
     max_completion_tokens: int = 0
-    # 思考等级：""=auto 跟随模型 supports_reasoning / off=关闭 / low~max 为思考预算档位
+    # 思考等级独立覆盖抽取调用，关闭与档位支持范围由模型契约决定
     reasoning_effort: str = ""
     extra_args: dict[str, Any] = field(default_factory=dict)
 

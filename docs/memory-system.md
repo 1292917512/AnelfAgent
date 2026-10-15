@@ -126,7 +126,7 @@ Cognee 面板保存先校验模型参数和向量空间，再原子写入配置�
 
 抽取模型的自动映射、指定模型和自定义来源均支持独立设置思考等级与输出上限。
 指定/自动模型使用模型管理中的 `thinking` 契约，不支持的显式等级在保存前返回错误；
-关闭思考时不残留原有 thinking token 预算。自定义来源使用 LiteLLM 标准参数，
+关闭思考时不残留原有 thinking token 预算。未声明思考契约和自定义来源使用 LiteLLM 标准参数，
 具体支持范围由服务商决定。原生结构化输出与 Instructor 的边界参照
 [Cognee 官方配置说明](https://docs.cognee.ai/setup-configuration/structured-output-backends)。
 客户端初始化串行执行；导入期间发生配置变更时重新解析最新配置，避免后台同步与召回重复初始化或应用旧配置。
@@ -145,6 +145,12 @@ Cognee 面板保存先校验模型参数和向量空间，再原子写入配置�
   自动映射、指定模型、自定义来源共用输出预算；默认保持 16384 token，显式上限同步传到实际请求。
   输出上限不是目标输出长度，过低会截断 JSON。切片、模型能力与思考预算应共同评估，不能仅降低上限。
   映射来源遵循模型思考契约，自定义来源使用 LiteLLM 的规范思考参数。
+- 指定/自动模型保留所选模型的对话协议与端点。OpenAI/Azure Responses 通过 LiteLLM
+  `provider/responses/model` 桥接到 `/responses`，结构化校验仍由 Cognee 负责；完整端点 URL
+  不重复拼接。协议为 `auto` 时保持 Cognee 默认 Chat 入口；Responses 专用服务须显式选择
+  `responses` 或填写完整端点。`tools` 在边界转换为 Instructor 的 `tool_call`，无需改写已保存的界面选项。
+  Responses 传输沿用全局网络规则；适配边界补齐依赖异步桥接遗漏的显式客户端参数，
+  请求结束或取消后关闭客户端，不修改第三方安装文件。
 - 抽取请求继承所选模型的 `timeout`；自定义来源使用主模型框架的默认请求时限，
   `chat.extra_args.timeout` 可显式覆盖，必须是有限正数。模型请求、结构化校验与重试共用
   `pipeline_timeout_seconds` 流水线总时限，不另加与模型配置冲突的固定生成截止时间。

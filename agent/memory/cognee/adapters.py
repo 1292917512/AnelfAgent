@@ -100,6 +100,8 @@ def install() -> None:
     from cognee.infrastructure.llm.LLMGateway import LLMGateway
     from cognee.infrastructure.llm.structured_output_framework.litellm_native.native_adapter import NativeLiteLLMAdapter
 
+    _forward_responses_transport()
+
     def limit_retries(method: Any) -> None:
         policy = getattr(method, "retry", None)
         if policy is not None:
@@ -125,6 +127,18 @@ def install() -> None:
         loop = asyncio.get_running_loop()
         slots = _llm_slots.setdefault(loop, asyncio.Semaphore(4))
         async with slots:
+            from cognee.infrastructure.llm import get_llm_config
+
+            config = get_llm_config()
+            if config.llm_model.startswith(("openai/responses/", "azure/responses/")):
+                from agent.llm.network import ModelHTTPHandler
+
+                # Responses bridge 不使用 LiteLLM 的共享 SDK 会话，显式接回宿主网络策略。
+                client = ModelHTTPHandler(lambda: "system", 4, config.llm_args["timeout"])
+                try:
+                    return await original_completion(*args, **{**kwargs, "client": client})
+                finally:
+                    await client.close()
             return await original_completion(*args, **kwargs)
 
     LLMGateway.acreate_structured_output = staticmethod(completion)
@@ -149,6 +163,34 @@ def install() -> None:
     # 压缩只由宿主空闲窗口调度，防止构图收尾绕过保留期与写盘熔断。
     LanceDBAdapter._compaction_skip_reason = _host_compaction_reason
     _installed = True
+
+
+def _forward_responses_transport() -> None:
+    """补齐 LiteLLM 异步 Chat→Responses 转换中遗漏的显式 HTTP 客户端。"""
+    bridge: Any = importlib.import_module("litellm.completion_extras.litellm_responses_transformation.handler")
+    transformation: Any = importlib.import_module("litellm.completion_extras.litellm_responses_transformation.transformation")
+
+    active_client: ContextVar[Any] = ContextVar("cognee_responses_client", default=None)
+    original_completion = bridge.ResponsesToCompletionBridgeHandler.acompletion
+    original_request = transformation.LiteLLMResponsesTransformationHandler.transform_request
+
+    @wraps(original_completion)
+    async def completion(self: Any, *args: Any, **kwargs: Any) -> Any:
+        token = active_client.set(kwargs.get("client"))
+        try:
+            return await original_completion(self, *args, **kwargs)
+        finally:
+            active_client.reset(token)
+
+    @wraps(original_request)
+    def request(self: Any, *args: Any, **kwargs: Any) -> Any:
+        result = original_request(self, *args, **kwargs)
+        if result.get("client") is None and active_client.get() is not None:
+            result["client"] = active_client.get()
+        return result
+
+    bridge.ResponsesToCompletionBridgeHandler.acompletion = completion
+    transformation.LiteLLMResponsesTransformationHandler.transform_request = request
 
 
 def _host_compaction_reason(_adapter: Any) -> str:
