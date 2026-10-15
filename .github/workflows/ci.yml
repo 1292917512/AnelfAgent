@@ -117,11 +117,8 @@ jobs:
         with:
           enable-cache: true
 
-      # uv.lock 中 registry 为清华镜像，CI 覆盖为 PyPI 重解析（不用 --locked）
       - name: Install dependencies
-        run: uv sync
-        env:
-          UV_INDEX_URL: https://pypi.org/simple
+        run: uv sync --locked
 
       - name: Ruff
         run: uv run ruff check .
@@ -159,9 +156,7 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync
-        env:
-          UV_INDEX_URL: https://pypi.org/simple
+        run: uv sync --locked
 
       # paths 为空（all 腿）时走 pyproject testpaths 全量收集。
       # 失败行转 ::error 注解——注解经公开 API 可读（日志需登录），
@@ -207,9 +202,7 @@ jobs:
         with:
           enable-cache: true
       - name: Install dependencies
-        run: uv sync
-        env:
-          UV_INDEX_URL: https://pypi.org/simple
+        run: uv sync --locked
       - name: Pytest (Windows)
         shell: pwsh
         run: |

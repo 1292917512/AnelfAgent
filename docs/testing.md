@@ -59,6 +59,10 @@ uv run pytest -m integration           # 集成
 产物按腿上传。本地一键镜像 `scripts/check.sh`（--fast 仅静态门禁 / --skip-fe / --skip-browser /
 --skip-test / 透传 pytest 参数）。
 
+共享锁文件使用 PyPI 官方来源，CI 通过 `uv sync --locked` 安装，禁止在 CI 中重新解析依赖。
+本地需要镜像时可通过 `UV_DEFAULT_INDEX` 设置，但不提交因此产生的镜像锁文件；更新依赖后
+须核对锁文件的版本和下载来源，避免开发机网络配置影响其他部署环境。
+
 ## CI 与测试教训
 
 | 教训 | 说明 |
