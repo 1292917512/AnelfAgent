@@ -59,7 +59,7 @@ export function HookJudgmentRow({ judgment }: { judgment: HookJudgment }) {
             <dt>{t("hookJudgment.usage")}</dt><dd className="mt-0.5 tabular-nums text-foreground">{t("hookJudgment.tokens", { input: judgment.input_tokens, output: judgment.output_tokens })}</dd>
           </div>}
         </dl>
-        <p className="leading-relaxed text-muted">{t("hookJudgment.policy", { threshold: percent(judgment.threshold), confidence: percent(1 - judgment.threshold) })}</p>
+        <p className="leading-relaxed text-muted">{t(judgment.policy === "selective" ? "hookJudgment.selectivePolicy" : "hookJudgment.policy", { threshold: percent(judgment.threshold), confidence: percent(1 - judgment.threshold) })}</p>
         {judgment.input_truncated && <p className="text-warn">{t("hookJudgment.truncated")}</p>}
       </div>}
     </div>

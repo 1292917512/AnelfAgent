@@ -24,14 +24,14 @@ _SOURCE_LABELS = {
 
 
 async def emit_recollection_update(messages: list[dict[str, Any]], previous: str) -> str:
-    """只在首轮深探快照实际进入组装时发布观测，同一内容不重复展示。"""
+    """只在补充快照实际进入组装时发布观测，同一内容不重复展示。"""
     content = "\n".join(str(message["content"]) for message in messages
                         if message.get("_source", {}).get("provider") == "memory_deep_probe")
     if not content or content == previous:
         return previous
     await event_bus.emit(EVENT_ACTIVITY_CONTEXT, {
         "status": "done", "duration_ms": 0,
-        "blocks": [{"layer": "provider", "label": "首轮深探结果", "content": sanitize_text(content)[:ACTIVITY_TEXT_LIMIT]}],
+        "blocks": [{"layer": "provider", "label": "对话补充回忆", "content": sanitize_text(content)[:ACTIVITY_TEXT_LIMIT]}],
         "block_count": 1, "truncated": len(content) > ACTIVITY_TEXT_LIMIT,
     })
     return content

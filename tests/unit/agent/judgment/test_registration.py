@@ -13,7 +13,7 @@ EXPECTED_CONFIG_KEYS = {
     "judgment_gate_timeout",
     "judgment_evidence_max_chars", "judgment_auto_max_chars",
     "judgment_recheck_seconds",
-    "judgment_gate_skip_threshold", "judgment_delivery_confidence",
+    "judgment_gate_skip_threshold", "judgment_delivery_confidence", "judgment_recall_confidence",
     "judgment_slow_seconds",
     "judgment_fallback_enabled",
     "judgment_fallback_model",

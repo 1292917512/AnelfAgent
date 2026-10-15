@@ -218,7 +218,8 @@
     "usage": "实际用量",
     "tokens": "输入 {{input}} · 输出 {{output}} token",
     "policy": "仅必要性 ≤ {{threshold}} 且无需执行的依据概率 ≥ {{confidence}} 才跳过；其余继续。",
-    "truncated": "事实超出预判预算，未调用判断模型，保留原流程以避免遗漏。"
+    "truncated": "事实超出预判预算，未调用判断模型，保留原流程以避免遗漏。",
+    "selectivePolicy": "逐条判断候选，被判定有用的概率达到 {{threshold}} 才补充；不确定则跳过，无判断服务时沿用本地匹配。"
   },
   "hookFlow": {
     "title": "执行流程",
@@ -239,7 +240,8 @@
       "memory": {
         "recall": "首轮记忆召回",
         "cross_channel": "跨会话相关召回",
-        "probe": "首轮深度召回"
+        "probe": "首轮深度召回",
+        "dialogue": "对话补充回忆"
       }
     },
     "events": {

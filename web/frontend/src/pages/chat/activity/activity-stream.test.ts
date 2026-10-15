@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 import type { ActivityRun } from "@/lib/types/activity";
 import { activityRows, activitySegments } from "./activity-stream";
+import { activityStages } from "./activity-stages";
 
 function run(id: string, start: number, steps: number[]): ActivityRun {
   return { id, parent_id: "", started_at: start, updated_at: start, ended_at: null, status: "running", revision: 1,
@@ -43,4 +44,18 @@ it("keeps reasoning with its model across interleaved runs and preserves orphane
 it("shows preparation and final state even for runs with no tool or text output", () => {
   const a = { ...run("empty", 1, []), status: "failed", ended_at: 5, error: "Cancelled preparation" };
   expect(activitySegments([a])).toMatchObject([{ first: true, finished: true, entries: [], run: { error: "Cancelled preparation" } }]);
+});
+
+it("groups consecutive tools but keeps separate owners and excludes background hooks from stage navigation", () => {
+  const a = run("A", 1, []);
+  a.entries = [
+    { id: "tool-1", kind: "tool", name: "ssh_exec", ts: 2, status: "done", arguments: "{}", targets: [], request_id: "r1" },
+    { id: "tool-2", kind: "tool", name: "get_skill", ts: 3, status: "error", arguments: "{}", targets: [], request_id: "r1" },
+    { id: "hook", kind: "hook", name: "memory.dialogue", ts: 3.5, event: "context_refresh", mode: "async", source: "internal", scope: "A", status: "running", duration_ms: 0, detail: "Background" },
+    { id: "text", kind: "text", ts: 6, content: "Completed" },
+  ];
+  const stages = activityStages(activitySegments([a, run("B", 4, [5])]));
+  expect(stages.map(({ runId, kind, count }) => [runId, kind, count])).toEqual([["A", "tool", 2], ["B", "model", 1], ["A", "text", 1]]);
+  expect(stages[0]).toMatchObject({ entryId: "tool-1", entryIds: ["tool-1", "tool-2"], failed: true });
+  expect(activitySegments([a]).flatMap(({ entries }) => entries).some(({ entry }) => entry.kind === "hook")).toBe(false);
 });

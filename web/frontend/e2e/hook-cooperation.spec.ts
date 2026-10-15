@@ -20,7 +20,9 @@ test("background hook details show real execution and update without cluttering 
   await page.goto("/webui/");
   const feed = page.getByRole("region", { name: "Global execution" });
   await expect(page.locator('.activity-feed [data-activity-run="hook-child"]')).toHaveCount(0);
-  await expect(page.getByRole("button", { name: /skill_review Reply complete/ })).toHaveAttribute("aria-expanded", "true");
+  await expect(page.getByRole("button", { name: /skill_review Reply complete/ })).toHaveCount(0);
+  await page.getByRole("button", { name: "Background tasks", exact: true }).click();
+  await page.getByRole("button", { name: /skill_review Reply complete/ }).click();
   await expect(page.getByText("Full transcript · 109 messages")).toBeVisible();
   await page.getByRole("button", { name: "View execution details", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "View execution details" });
@@ -91,12 +93,14 @@ test("Jev decisions remain visible after later work and expose slow responses", 
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto("/webui/");
+  await expect(page.locator('[data-judgment]')).toHaveCount(0);
+  await page.getByRole("button", { name: "Decisions", exact: true }).click();
   const judgment = page.locator('[data-judgment="jev-1"]');
   await expect(judgment.getByText("Skip this task", { exact: true })).toBeVisible();
   await expect(judgment.getByText("Need to execute 2%")).toHaveCount(0);
   expect((await judgment.boundingBox())!.height).toBeLessThanOrEqual(44);
   await expect(judgment.getByText("245ms", { exact: true })).toBeVisible();
-  await expect(page.getByText("Subsequent work finished")).toBeVisible();
+  await expect(page.getByText("Subsequent work finished")).toHaveCount(0);
   const slow = page.locator('[data-judgment="jev-2"]');
   expect((await slow.boundingBox())!.height).toBeLessThanOrEqual(44);
   await expect(slow.getByLabel(/Slow response/)).toBeVisible();

@@ -1,15 +1,15 @@
-"""首轮深探事实的有界渲染，按消费会话去重并保留来源标签。
+"""补充回忆的有界渲染，按消费会话去重并保留来源标签。
 
 模型可见：分节事实沿用记忆归属标签，超预算时提示主动 recall。
 Token 影响：整轮共享字符预算；缓存影响：未追加时输出字节不变。
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from core.sanitizer import sanitize_for_context
 
 _HEADER = (
-    "[系统注入·记忆召回·续] 首轮准备完成的深度检索结果"
+    "[系统注入·记忆召回·续] 与当前对话相关的补充资料"
     "（与此前注入的记忆已去重，仅作参考，不代表当前任务进程）："
 )
 _OVERFLOW = "\n（其余内容超出预算，可经 recall 主动获取）"
@@ -34,6 +34,7 @@ class RecallBuffer:
         self._body = ""
         self._section = ""
         self._overflow = False
+        self.facts: list[RecallDelta] = []
 
     def append(self, delta: RecallDelta) -> bool:
         """接纳完整事实；首条过长时保留有界摘录，未呈现的条目不入账。"""
@@ -50,6 +51,7 @@ class RecallBuffer:
             text = text[:remaining - 1] + "…"
         self._body += prefix + text
         self._section = delta.section
+        self.facts.append(replace(delta, text=text))
         return True
 
     def render(self) -> str:

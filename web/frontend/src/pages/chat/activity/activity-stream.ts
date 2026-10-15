@@ -24,7 +24,7 @@ export function activityRows(entries: ActivityEntry[]): ActivityRow[] {
 export function activitySegments(runs: ActivityRun[]): ActivitySegment[] {
   const points = runs.flatMap((run, order) => [
     { run, order, index: -1, ts: run.started_at, entry: null, finished: false },
-    ...activityRows(run.entries).map((entry, index) => ({ run, order, index, ts: entry.entry.ts, entry, finished: false })),
+    ...activityRows(run.entries).filter(({ entry }) => entry.kind !== "hook").map((entry, index) => ({ run, order, index, ts: entry.entry.ts, entry, finished: false })),
     ...(run.status !== "running" ? [{ run, order, index: run.entries.length, ts: run.ended_at ?? run.updated_at, entry: null, finished: true }] : []),
   ]).sort((a, b) => a.ts - b.ts || a.order - b.order || a.index - b.index);
   const segments: ActivitySegment[] = [];

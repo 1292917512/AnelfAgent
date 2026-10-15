@@ -1,7 +1,7 @@
 """首轮深度召回：在上下文准备阶段补充记忆与图谱事实。
 
 复用首轮检索规划，在剩余准备预算内并发读取本地图谱与远端记忆。
-准备结束后只提供固定快照，不随执行线索重新检索。
+准备结束后由对话协调者按新增对话补充快照，不监听工具输出。
 
 Model Experience:
 - 模型看到什么：至多一条 `[系统注入·记忆召回·续]` provider 消息（相关
@@ -94,6 +94,7 @@ class _ProbeState:
 
     scope: str
     ledger: RecallLedger = field(default_factory=RecallLedger)
+    prepared: RecallLedger = field(default_factory=RecallLedger)
     task: asyncio.Task[None] | None = None
     rendered: str = ""
     created_at: float = field(default_factory=time.monotonic)
@@ -160,6 +161,7 @@ class DeepProbeHub:
         *,
         results: Optional[Iterable["MemorySearchResult"]] = None,
         edge_ids: Optional[Iterable[int]] = None,
+        identifiers: Iterable[str] = (),
     ) -> None:
         """仅为实际消费结果的活跃会话记账，无归属或无回复时不创建状态。"""
         state = self.state_for(scope) if scope else None
@@ -169,6 +171,8 @@ class DeepProbeHub:
             state.ledger.record_results(results)
         if edge_ids is not None:
             state.ledger.record_edges(edge_ids)
+        for identifier in identifiers:
+            state.ledger.record_result(identifier)
 
     async def collect(
         self,
@@ -213,6 +217,34 @@ class DeepProbeHub:
         """provider 读取该 scope 的最新渲染（持久：无新产物时返回旧值，空为零注入）。"""
         state = self._states.get(scope)
         return state.rendered if state is not None else ""
+
+    def acknowledge(self, scope: str, content: str) -> None:
+        """只将实际装配到模型输入的完整事实记为可见，预算省略不算消费。"""
+        state = self.state_for(scope)
+        if state is None:
+            return
+        for delta in state.buffer.facts:
+            if delta.text not in content:
+                continue
+            state.ledger.record_result(delta.result_id, delta.snippet)
+            if delta.edge_id is not None:
+                state.ledger.record_edges([delta.edge_id])
+
+    def unseen(self, scope: str, deltas: Iterable[RecallDelta]) -> list[RecallDelta]:
+        """过滤已消费或已经在快照中等待装配的事实。"""
+        state = self.state_for(scope)
+        if state is None:
+            return []
+        return [delta for delta in deltas if not any(
+            ledger.seen_result(delta.result_id) or ledger.seen_content(delta.snippet)
+            or (delta.edge_id is not None and ledger.seen_edge(delta.edge_id))
+            for ledger in (state.ledger, state.prepared)
+        )]
+
+    def publish(self, scope: str, revision: int, deltas: Iterable[RecallDelta]) -> bool:
+        """对话协调者提交本轮有效的增量，失效或已结束的回复拒绝写入。"""
+        state = self.state_for(scope)
+        return self._publish(state, revision, deltas) if state is not None else False
 
     def snapshot(self) -> List[Dict[str, object]]:
         """观测快照：各 scope 的深探状态（在途任务/渲染规模/预览），诊断注入是否发生。"""
@@ -286,14 +318,12 @@ class DeepProbeHub:
             return False
         previous = state.rendered
         for delta in deltas:
-            if (delta.edge_id is not None and state.ledger.seen_edge(delta.edge_id)) or (
-                state.ledger.seen_result(delta.result_id) or state.ledger.seen_content(delta.snippet)
-            ):
+            if not self.unseen(state.scope, [delta]):
                 continue
             if state.buffer.append(delta):
                 if delta.edge_id is not None:
-                    state.ledger.record_edges([delta.edge_id])
-                state.ledger.record_result(delta.result_id, delta.snippet)
+                    state.prepared.record_edges([delta.edge_id])
+                state.prepared.record_result(delta.result_id, delta.snippet)
         state.rendered = state.buffer.render()
         if state.rendered and state.rendered != previous:
             self._metrics("probe.injected")
@@ -435,7 +465,7 @@ deep_probe_hub = DeepProbeHub()
 def _provide_probe(scope: str) -> str:
     """函数式 provide：读深探持久渲染缓存（零 I/O，满足 provider 契约）。
 
-    首轮准备完成后保持快照不变；新回复重置，旧回复结束时回收。
+    只有准备好的新事实才更新快照；新回复重置，旧回复结束时回收。
     """
     return deep_probe_hub.current_render(scope)
 
@@ -447,7 +477,7 @@ ContextProviderRegistry.register(ProviderMeta(
     group="memory",
     inject_key="memory_probe_inject",
     provide_fn=_provide_probe,
-    description="首轮深探结果：准备阶段完成后供当前回复读取的固定快照",
+    description="对话补充记忆：按需更新的有界快照，不在读取时启动检索",
 ))
 
 
@@ -458,12 +488,12 @@ ContextProviderRegistry.register(ProviderMeta(
 _PROBE_CONFIGS = {
     "memory/probe": {
         "memory_probe_inject": {
-            "description": "深探增量的上下文注入开关（关闭后深探仍执行与记账，仅不再注入）",
+            "description": "补充记忆的上下文注入开关；关闭后不注入快照，也不启动轮中补查，首轮深探仍可观测",
             "default": True,
             "advanced": True,
         },
         "memory_probe_enabled": {
-            "description": "首轮深探：仅根据对话正文判断是否需要深层记忆，在首轮准备预算内完成；执行中不追加检索",
+            "description": "允许首轮深探和新增对话的本地补查；首轮在准备预算内完成，轮中仅后台读取本地记忆和技能",
             "default": True,
         },
         "memory_probe_max_chars": {

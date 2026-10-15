@@ -499,6 +499,9 @@ def get_skill(name: str) -> str:
     # 先计数再重读，返回真实值而非手工补偿
     deps.store.record_use(name)
     skill = deps.store.get(name) or skill
+    from agent.memory.probe import deep_probe_hub
+    from core.conversation_scope import current_scope
+    deep_probe_hub.record(current_scope(), identifiers=[f"skill:{skill.name}"])
     from agent.skills.dependencies import dependency_notice, missing_mcp_dependencies
     missing = missing_mcp_dependencies(skill)
     return json.dumps({

@@ -172,3 +172,32 @@ async def test_slow_result_remains_visible_to_ai_after_hook_changes(engine, monk
         assert item.duration_ms == 1200 and item.slow
         assert item.status == "skip" and item.model == "jev-test"
         assert progress.snapshot()["judgments"][0]["slow"]
+
+
+async def test_candidate_batch_requires_each_candidate_to_be_confident(engine, monkeypatch):
+    answers = {
+        "candidate_0": ChoiceAnswer(choice="useful", probabilities={"useful": 0.8, "covered": 0.2, "irrelevant": 0, "uncertain": 0}, confidence=1),
+        "candidate_1": ChoiceAnswer(choice="useful", probabilities={"useful": 0.79, "uncertain": 0.21, "covered": 0, "irrelevant": 0}, confidence=1),
+        "candidate_2": ChoiceAnswer(choice="covered", probabilities={"covered": 0.99, "useful": 0.01, "irrelevant": 0, "uncertain": 0}, confidence=1),
+    }
+    native = AsyncMock(return_value=JudgmentReport(answers=answers, source=JudgmentSource.TYPESAFE))
+    monkeypatch.setattr(engine, "_judge_native", native)
+    async with hook_execution("memory.dialogue", "context_refresh", HookMode.ASYNC) as run:
+        decision = await gate.assess_optional_work("recall", "Only new relevant facts", {"dialogue": "network"}, candidates=["fact", "maybe", "duplicate", "missing answer"])
+        assert decision.run and decision.selected == (0,)
+        assert run.judgments[0].policy == "selective"
+        assert "1/4" in run.judgments[0].reason
+    native.assert_awaited_once()
+    assert set(native.await_args.args[2]) == {f"candidate_{i}" for i in range(4)}
+    engine._judge_fallback.assert_not_awaited()
+
+
+async def test_candidate_empty_response_skips_but_unavailable_uses_local_selection(engine, monkeypatch):
+    native = AsyncMock(return_value=JudgmentReport(answers={}, source=JudgmentSource.TYPESAFE))
+    monkeypatch.setattr(engine, "_judge_native", native)
+    decision = await gate.assess_optional_work("recall", "needed?", {}, candidates=["fact"])
+    assert not decision.run and decision.selected == ()
+    native.side_effect = ValueError("unavailable")
+    decision = await gate.assess_optional_work("recall", "needed?", {}, candidates=["fact"])
+    assert decision.run and decision.selected is None
+    engine._judge_fallback.assert_not_awaited()

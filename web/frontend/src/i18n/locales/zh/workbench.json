@@ -362,8 +362,23 @@
       "system": "系统触发"
     },
     "recollectionTitle": "回忆过程",
-    "recollectionHint": "查看当前执行页各会话的首轮记忆、技能准备及判断。自动召回在执行前完成；技能候选不代表技能已执行。",
-    "recollectionEmpty": "当前执行页暂无回忆记录。"
+    "recollectionHint": "首轮准备与新增对话触发的后台回忆。候选不代表已进入模型输入，技能推荐不代表已执行。",
+    "stages": {
+      "title": "执行阶段导航",
+      "context": "上下文准备",
+      "model": "模型思考",
+      "tool": "工具执行",
+      "text": "输出正文",
+      "plan": "执行计划",
+      "notice": "消息更新"
+    },
+    "side": {
+      "title": "执行辅助信息",
+      "background": "异步任务",
+      "judgments": "判断记录",
+      "close": "关闭详情",
+      "empty": "当前没有相关记录"
+    }
   },
   "toolView": {
     "exitCode": "退出码 {{code}}",

@@ -32,8 +32,22 @@ def test_cumulative_budget_only_records_presented_facts():
     assert len(state.rendered) <= 400
     assert not state.ledger.seen_result("mem:3")
     hub._publish(state, 0, [RecallDelta("补充记忆", "可容纳的小事实", "mem:4", "小事实")])
+    hub.acknowledge(state.scope, "预算省略")
+    assert not state.ledger.seen_result("mem:4")
+    assert state.prepared.seen_result("mem:4")
+    hub.acknowledge(state.scope, state.rendered)
     assert state.ledger.seen_result("mem:4")
+    assert not state.ledger.seen_result("mem:3")
     assert len(state.rendered) <= 400
+
+
+def test_duplicate_candidates_within_one_batch_are_only_prepared_once():
+    hub = DeepProbeHub()
+    state = hub.begin_reply("user_qq:1")
+    delta = RecallDelta("记忆", "同一事实", "mem:1", "同一事实")
+    hub.publish(state.scope, state.revision, [delta, delta])
+    assert state.rendered.count("同一事实") == 1
+    assert len(state.buffer.facts) == 1
 
 
 async def test_policy_change_rejects_late_result_and_keeps_presented_context(store, monkeypatch):

@@ -54,6 +54,11 @@ audio_bytes = audio.value
 `judgment_gate_timeout` 默认 5 秒，是整体等待预算；`judgment_gate_enabled` 可关闭这层优化，
 配置均由 `judgment/core` 配置面供 AI/Web 编辑。
 
+对话补充回忆传入 `candidates` 时改为一次请求内逐条 Choice 判断，只接纳明确有用且选中项概率
+达到 `judgment_recall_confidence` 的候选（默认 0.8）。缺失、矛盾或不确定的候选不自动注入；
+服务不可用则由调用方沿用本地匹配结果。此阈值不改变首轮深探、技能评审或回复投递规则。
+候选保留归属与日期，排除工具回执、模型独白和系统提示；判断结果仅存在钩子观测面。
+
 输入是有界对话事实、会话 scope、已召回内容及其归属标签或技能库状态。
 `judgment_evidence_max_chars` 默认 3000，是整个会话证据的共享预算（含 JSON 转义）；
 优先保留最新用户请求，补入近期执行事实，保留身份标签、时间顺序与截断标记。

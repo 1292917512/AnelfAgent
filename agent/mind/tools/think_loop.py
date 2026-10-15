@@ -26,6 +26,7 @@ from agent.channel.delivery import capture_deliveries, delivery_count, delivery_
 from agent.channel.reply_policy import ReplyToolResult
 from agent.llm import LLMCallAborted
 from agent.mind.message_schema import preserve_reasoning_fields
+from agent.mind.recollection_refresh import DialogueRecollection
 from agent.mind.runtime_context import background_context
 from agent.mind.silence import should_suppress
 from agent.mind.think_session import think_session
@@ -397,10 +398,12 @@ async def think_loop(
         kind="conversation" if mode == ThinkMode.REPLY else "reflection",
     )
     async with manager as activity:
+        recollection = DialogueRecollection(mind, ctx.current_scope, ctx.base_messages)
         try:
             with capture_deliveries(ctx.current_scope, acknowledge=lambda scope, ts: mind.pfc.consume_scope_task(scope, through_ts=ts)):
-                await _run_think_rounds(ctx, state, safety_limit, start_time)
+                await _run_think_rounds(ctx, state, safety_limit, start_time, recollection)
         finally:
+            await recollection.close()
             activity.status = "cancelled" if state.interrupted else state.completion_reason
             # 结束原因收口（调用方传入 completion 容器时写出）：
             # 中断 > 预算耗尽标记 > 默认完成
@@ -430,6 +433,7 @@ async def _run_think_rounds(
         state: _ThinkRoundState,
         safety_limit: int,
         start_time: float,
+        recollection: DialogueRecollection,
 ) -> None:
     """轮次主循环：中断检查 → LLM 调用 → 阶段分发 → 终止判断。"""
     from agent.mind.autonomous import MindPhase
@@ -526,6 +530,7 @@ async def _run_think_rounds(
         # 并入循环期间新增的收发消息（让 AI 在当前回复中一并处理，
         # 而非另起周期导致上下文断裂/忘记已回复）
         await _merge_new_messages(ctx, state)
+        recollection.offer(ctx.base_messages + ctx.tool_chain, watermark=(state.last_merged_ts, state.last_merged_id))
         # 并入循环期间到达的实体推送（[push:] 系统通知，轮内弹窗）
         await _merge_pushes(ctx, state)
         # 并入转向指令（子代理步骤边界；主会话未绑定 drain 时零开销）
@@ -564,6 +569,10 @@ async def _run_think_rounds(
         # 链尾锚点天然随链增长前移）
         # provider 实时注入：每轮收集最新快照，置于工具链之后、exec_context 之前
         provider_msgs = await _collect_provider_messages(mind, ctx.current_scope)
+        from agent.memory.probe import deep_probe_hub
+        for message in provider_msgs:
+            if message.get("_source", {}).get("provider") == "memory_deep_probe":
+                deep_probe_hub.acknowledge(ctx.current_scope, message["content"])
         from agent.mind.cross_channel import build_cross_channel_narrative
         try:
             cross_messages = await build_cross_channel_narrative(mind, ctx.current_scope)

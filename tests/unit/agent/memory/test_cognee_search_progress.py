@@ -104,6 +104,9 @@ async def test_probe_keeps_partial_results_and_reports_unfinished_stage(store, m
     try:
         await hub.collect(scope=state.scope, plan=RetrievalPlan(queries=["query"], deep_needed=True), store=store)
         assert "已索引的项目部署事实" in state.rendered
+        assert state.prepared.seen_result("memory:fast")
+        assert not state.ledger.seen_result("memory:fast")
+        hub.acknowledge(state.scope, state.rendered)
         assert state.ledger.seen_result("memory:fast")
         assert {call["query_type"] for call in client.calls} == {"CHUNKS", "GRAPH_COMPLETION"}
         assert all(call["only_context"] == (call["query_type"] == "GRAPH_COMPLETION") for call in client.calls)

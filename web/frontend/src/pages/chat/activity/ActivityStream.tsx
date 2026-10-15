@@ -1,4 +1,4 @@
-import { memo, useMemo } from "react";
+import { memo } from "react";
 import { Bot, ArrowUpRight, Activity } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { ActivityRun } from "@/lib/types/activity";
@@ -7,7 +7,7 @@ import { useNow } from "@/hooks/useNow";
 import { SkillEvidence } from "@/components/common/SkillEvidence";
 import { ActivitySourceLabel, TaggedText } from "./ActivityReferences";
 import { ActivityEntryView } from "./ActivityEntryView";
-import { activitySegments, type ActivitySegment } from "./activity-stream";
+import type { ActivitySegment } from "./activity-stream";
 
 const Segment = memo(function Segment({ segment, parent, onReveal }: { segment: ActivitySegment; parent?: ActivityRun; onReveal: (id: string) => void }) {
   const { t } = useTranslation("workbench");
@@ -40,7 +40,6 @@ const Segment = memo(function Segment({ segment, parent, onReveal }: { segment: 
   && previous.segment.finished === next.segment.finished && previous.segment.entries.length === next.segment.entries.length
   && previous.segment.entries.every((entry, index) => entry === next.segment.entries[index]));
 
-export function ActivityStream({ runs, onReveal }: { runs: ActivityRun[]; onReveal: (id: string) => void }) {
-  const segments = useMemo(() => activitySegments(runs), [runs]);
+export function ActivityStream({ runs, segments, onReveal }: { runs: ActivityRun[]; segments: ActivitySegment[]; onReveal: (id: string) => void }) {
   return segments.map((segment) => <Segment key={segment.key} segment={segment} parent={runs.find((run) => run.id === segment.run.parent_id)} onReveal={onReveal} />);
 }

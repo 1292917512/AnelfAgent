@@ -362,8 +362,23 @@
       "system": "System trigger"
     },
     "recollectionTitle": "Recollection",
-    "recollectionHint": "Initial memory and skill preparation and decisions for conversations on this execution page. Automatic recall finishes before execution; a candidate does not mean a skill was executed.",
-    "recollectionEmpty": "No recollection records on this execution page."
+    "recollectionHint": "Initial preparation and background recall triggered by new dialogue. Candidates may not enter model input; recommending a skill does not mean it was executed.",
+    "stages": {
+      "title": "Execution stages",
+      "context": "Context preparation",
+      "model": "Model reasoning",
+      "tool": "Tool execution",
+      "text": "Response",
+      "plan": "Execution plan",
+      "notice": "Message update"
+    },
+    "side": {
+      "title": "Execution details",
+      "background": "Background tasks",
+      "judgments": "Decisions",
+      "close": "Close details",
+      "empty": "No records for this view"
+    }
   },
   "toolView": {
     "exitCode": "Exit {{code}}",

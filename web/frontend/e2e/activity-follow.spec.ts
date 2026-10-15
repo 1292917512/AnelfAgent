@@ -63,11 +63,41 @@ test("recollection window separates conversations and observes background result
   await expect(qq.getByRole("link", { name: "deploy-project", exact: true }).last()).toHaveAttribute("href", "/webui/skills?skill=deploy-project");
   await expect(qq).not.toContainText("Separate Web conversation evidence");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  const bounds = await dialog.boundingBox();
+  expect(bounds!.x).toBeGreaterThanOrEqual(11);
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(page.viewportSize()!.width - 11);
   await page.screenshot({ path: info.outputPath("recollection.png"), animations: "disabled" });
-  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await dialog.getByRole("button", { name: "Close details", exact: true }).click();
   await expect(dialog).toHaveCount(0);
   await expect(page.locator(".activity-feed")).toHaveAttribute("data-following", "true");
   expect(errors).toEqual([]);
+});
+
+test("stage navigation previews without mounting details and pauses following on explicit navigation", async ({ page, isMobile }, info) => {
+  const start = Date.now() / 1000 - 30;
+  await liveFixture(page, [run("stages", start, { entries: [
+    { id: "first-model", kind: "model", name: "reasoning-model", status: "done", generation: 1, ts: start },
+    { id: "first-thought", kind: "thinking", content: "Earlier private reasoning", generation: 1, ts: start + 1 },
+    { id: "tool", kind: "tool", name: "ssh_exec", status: "done", arguments: "{}", targets: [], request_id: "r", ts: start + 2 },
+    { id: "live-thought", kind: "thinking", ts: start + 3, generation: 2, content: Array.from({ length: 40 }, (_, i) => `Live thought ${i}`).join("\n\n") },
+  ] })]);
+  await page.goto("/webui/");
+  const rail = page.getByRole("navigation", { name: "Execution stages" });
+  await expect(rail.getByRole("button")).toHaveCount(3);
+  const stage = rail.getByRole("button", { name: /Model reasoning · reasoning-model/ });
+  if (!isMobile) {
+    await stage.hover();
+    await expect(page.locator(".activity-stage-preview")).toContainText("reasoning-model");
+    await expect(page.getByText("Earlier private reasoning", { exact: true })).toHaveCount(0);
+  }
+  await stage.click();
+  await expect(page.locator(".activity-feed")).toHaveAttribute("data-following", "false");
+  await expect(page.getByRole("button", { name: /^reasoning-model/ })).toBeInViewport();
+  await expect(stage).toHaveAttribute("aria-current", "step");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath("stage-navigation.png"), animations: "disabled" });
+  await page.getByRole("button", { name: "Follow paused", exact: true }).click();
+  await expect(page.getByText(/Live thought 39/)).toBeInViewport();
 });
 
 test("live process follows streamed content and concurrent tools until explicitly scrolled", async ({ page, isMobile }, info) => {

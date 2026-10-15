@@ -205,7 +205,9 @@ async def test_probe_renders_relation_delta_with_ledger_dedup(store) -> None:
     content = state2.rendered
     assert "记忆召回·续" in content
     assert "朋友" in content
-    # 边 id 已入账：重复 drain 不会再现
+    assert state2.prepared.seen_edge(1)
+    assert not state2.ledger.seen_edge(1)
+    hub.acknowledge(state2.scope, content)
     assert state2.ledger.seen_edge(1)
 
 

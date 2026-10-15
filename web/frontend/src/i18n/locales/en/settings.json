@@ -218,7 +218,8 @@
     "usage": "Measured usage",
     "tokens": "Input {{input}} · output {{output}} tokens",
     "policy": "Skip only when necessity ≤ {{threshold}} and the unnecessary-work basis probability ≥ {{confidence}}; otherwise proceed.",
-    "truncated": "Evidence exceeded the assessment budget. No judgment call was made; original work continues to avoid missing facts."
+    "truncated": "Evidence exceeded the assessment budget. No judgment call was made; original work continues to avoid missing facts.",
+    "selectivePolicy": "Assess each candidate separately; admit only when its useful-choice probability reaches {{threshold}}. Skip uncertain results; use local matching when judgment is unavailable."
   },
   "hookFlow": {
     "title": "Execution flow",
@@ -239,7 +240,8 @@
       "memory": {
         "recall": "Initial recall",
         "cross_channel": "Related conversations",
-        "probe": "Initial deep recall"
+        "probe": "Initial deep recall",
+        "dialogue": "Dialogue recollection"
       }
     },
     "events": {

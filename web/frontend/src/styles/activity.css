@@ -1,4 +1,36 @@
 .activity-pane { container-type: inline-size; background: var(--card); overflow: hidden; }
+.activity-workspace-body { padding-inline: 30px 42px; }
+.activity-stage-rail { position: absolute; inset: 12px auto 12px 0; width: 28px; display: flex; flex-direction: column; align-items: center; overflow-y: auto; scrollbar-width: none; z-index: 1; }
+.activity-stage-marker { display: grid; place-items: center; min-height: 22px; width: 28px; flex-shrink: 0; outline-offset: -2px; }
+.activity-stage-marker span { width: 9px; height: 2px; border-radius: 2px; background: var(--border); transition: width var(--duration-fast) var(--ease-out), background var(--duration-fast) var(--ease-out); }
+.activity-stage-marker:nth-child(3n) span { width: 15px; }
+.activity-stage-marker:hover span, .activity-stage-marker[aria-current="step"] span { width: 22px; background: var(--accent); }
+.activity-stage-marker[data-running="true"] span { background: var(--accent); }
+.activity-stage-marker[data-failed="true"] span { background: var(--warn); }
+.activity-stage-preview { z-index: 80; width: min(300px, calc(100vw - 32px)); padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--card); box-shadow: 0 8px 30px #0002; pointer-events: auto; font-size: 12px; }
+.activity-stage-preview strong { color: var(--accent); font-size: 11px; }
+.activity-stage-preview p, .activity-stage-preview small { margin-top: 6px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.activity-stage-preview small { color: var(--muted); }
+.activity-side-rail { position: absolute; inset: 12px 4px auto auto; display: grid; gap: 6px; z-index: 2; }
+.activity-side-trigger { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; width: 34px; min-height: 42px; border-radius: 9px; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.activity-side-trigger:hover, .activity-side-trigger[data-state="open"] { color: var(--accent); background: var(--accent-subtle); }
+.activity-side-trigger[data-running="true"]::after { content: ""; position: absolute; right: 4px; top: 4px; width: 4px; height: 4px; border-radius: 50%; background: var(--accent); }
+.activity-side-window { z-index: 60; display: flex; flex-direction: column; width: min(430px, calc(100vw - 28px), var(--radix-popover-content-available-width)); max-height: min(76dvh, 680px, var(--radix-popover-content-available-height)); border: 1px solid var(--border); border-radius: 14px; background: var(--card); box-shadow: 0 12px 44px #0003; overflow: hidden; }
+.activity-side-window > header { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px 8px 16px; border-bottom: 1px solid var(--border); }
+.activity-side-window h3 { font-size: 13px; font-weight: 600; }
+.activity-side-window > header button { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 7px; color: var(--muted); }
+.activity-side-window > header button:hover { background: var(--bg-hover); }
+.activity-side-body { padding: 14px; overflow-y: auto; overscroll-behavior: contain; min-height: 0; }
+.activity-side-body > * + * { margin-top: 18px; }
+.activity-side-source { display: grid; gap: 4px; padding-bottom: 6px; font-size: 11px; color: var(--muted); }
+.activity-side-source h4 { font-weight: 500; overflow-wrap: anywhere; }
+@container (max-width: 600px) {
+  .activity-workspace-body { padding-inline: 24px 34px; }
+  .activity-stage-rail, .activity-stage-marker { width: 24px; }
+  .activity-stage-marker { min-height: 28px; }
+  .activity-side-rail { right: 0; }
+}
+@media (prefers-reduced-motion: reduce) { .activity-stage-marker span { transition: none; } }
 .activity-heading { display: flex; align-items: center; gap: 9px; flex-shrink: 0; min-height: 65px; padding: 12px 20px; border-bottom: 1px solid var(--border); }
 .activity-heading-title { display: flex; align-items: center; gap: 9px; flex-shrink: 0; white-space: nowrap; }
 .activity-heading-controls { display: flex; align-items: center; gap: 4px; flex-shrink: 0; margin-left: auto; }

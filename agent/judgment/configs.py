@@ -57,6 +57,10 @@ _JUDGMENT_CONFIGS = {
             "description": "必要概率不高于此值，且无需执行的依据概率不低于 1−此值，才跳过可选工作",
             "default": 0.1, "min": 0.0, "max": 0.49, "advanced": True,
         },
+        "judgment_recall_confidence": {
+            "description": "对话补充召回的接纳置信度：每条候选被判定有用的概率达到此值才采用；无判断服务时沿用本地匹配，不影响主动召回",
+            "default": 0.8, "min": 0.5, "max": 1.0, "advanced": True,
+        },
         "judgment_slow_seconds": {
             "description": "Jev 响应偏慢警告阈值；超过此值或预判等待预算的八成即提示，计入网络耗时",
             "default": 1.0, "min": 0.1, "max": 30.0, "unit": "秒", "advanced": True,

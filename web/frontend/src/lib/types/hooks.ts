@@ -104,6 +104,7 @@ export interface HookJudgment {
   input_truncated: boolean;
   slow_after_ms: number;
   slow: boolean;
+  policy?: "preserve" | "selective";
 }
 
 export interface HookExecution {

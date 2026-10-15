@@ -118,7 +118,15 @@ register_configs_safe({"memory/recall": {
         "default": "deep", "value_type": "enum", "options": ["off", "tags", "fast", "deep"],
     },
     "memory_recall_background": {
-        "description": "允许深入档在首轮准备阶段并行深探，返回前等待收尾；执行中不再自动检索",
+        "description": "允许首轮并行深探及新增对话的后台补充；工具输出不触发自动检索",
         "default": True,
+    },
+    "memory_dialogue_refresh_limit": {
+        "description": "同一回复内新增对话触发补充召回的最大批次；0 关闭。只检索本地记忆和技能，不等待或唤醒主模型",
+        "default": 3, "min": 0, "max": 10, "advanced": True,
+    },
+    "memory_dialogue_refresh_timeout": {
+        "description": "每批对话补充召回的后台总预算，含查询向量、检索与可选判断；超时不影响主流程",
+        "default": 5.0, "min": 0.1, "max": 30.0, "unit": "秒", "advanced": True,
     },
 }})
