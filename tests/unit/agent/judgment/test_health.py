@@ -43,7 +43,7 @@ async def test_failed_optional_model_is_not_retried_in_foreground(engine, monkey
     native.assert_awaited_once()
     status = judgment_health.snapshot()["local"]
     assert status["status"] == "offline"
-    assert status["retry_at"] == 0 if cause == ErrorCause.CONFIG else status["retry_at"] >= time.time() + 299
+    assert status["retry_at"] == 0 if cause in {ErrorCause.CONFIG, ErrorCause.INTERNAL} else status["retry_at"] >= time.time() + 299
     assert "other" not in judgment_health.snapshot()
 
 
@@ -75,6 +75,27 @@ async def test_manual_probe_recovers_without_changing_default(engine, monkeypatc
     assert (await probe_connection("other"))["ok"]
     assert judgment_health.snapshot()["other"]["status"] == "ready"
     assert load_config().model_id == "local"
+
+
+@pytest.mark.parametrize("cause", [ErrorCause.CONFIG, ErrorCause.INTERNAL])
+@pytest.mark.parametrize("reachable", [True, False])
+async def test_connectivity_cannot_clear_known_inference_errors(engine, monkeypatch, cause, reachable):
+    cfg = load_config()
+    judgment_health.begin(cfg, probe=False)
+    judgment_health.failure(cfg, JudgmentError("invalid response or credentials", cause=cause, retryable=True), 1)
+    before = judgment_health.snapshot()["local"].copy()
+    assert before["retry_at"] == 0
+    ping = AsyncMock(side_effect=None if reachable else JudgmentError("offline", cause=ErrorCause.NETWORK, retryable=True))
+    monkeypatch.setattr(SystemOneClient, "check_connectivity", ping)
+    judgment_health.start()
+    await asyncio.sleep(0)
+    ping.assert_not_awaited()
+    with pytest.raises(JudgmentError):
+        await judgment_health.check_connectivity(cfg)
+    assert judgment_health.snapshot()["local"] == before
+    monkeypatch.setattr(engine, "_judge_native", AsyncMock(return_value=REPORT))
+    assert (await probe_connection("local"))["ok"]
+    assert judgment_health.snapshot()["local"]["status"] == "ready"
 
 
 async def test_background_recheck_waits_for_due_time_and_recovers(engine, monkeypatch):

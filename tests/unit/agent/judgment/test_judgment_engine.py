@@ -220,6 +220,33 @@ def test_native_client_rejects_inconsistent_choice_answers(
     assert reason in str(caught.value) and "trace-123" in str(caught.value)
 
 
+@pytest.mark.parametrize("values,valid", [
+    ([0.33, 0.33, 0.33], True),
+    ([0.35, 0.33, 0.33], True),
+    ([0.94, 0.05, 0], True),
+    ([0.17] * 6, True),
+    ([0.14] * 7, True),
+    ([0.33, 0.33, 0.32], False),
+    ([0.174] * 6, False),
+    ([0.01] * 120, False),
+    ([0] * 255, False),
+    ([1, 1, 1], False),
+])
+def test_choice_rounding_tolerance_preserves_raw_probabilities(values, valid):
+    options = {str(i): value for i, value in enumerate(values)}
+    questions = parse_questions({"target": {"type": "choice", "instructions": "Choose", "criteria": dict.fromkeys(options)}})
+    payload = {"answers": {"target": {"type": "choice", "choice": "0", "probabilities": options, "confidence": 0.5}}}
+    if not valid:
+        with pytest.raises(JudgmentError, match="概率总和"):
+            SystemOneClient._parse_response(payload, questions)
+        return
+    answers, missing, _, _ = SystemOneClient._parse_response(payload, questions)
+    assert not missing
+    answer = answers["target"]
+    assert answer.probabilities == options
+    assert answer.selected_probability(options) == values[0]
+
+
 @pytest.mark.parametrize("invalid", [None, {"choice": "a", "confidence": 1, "probabilities": {"a": 1}}])
 async def test_partial_native_answers_preserve_model_availability(monkeypatch, invalid):
     cfg = _cfg(api_key="test-key", model_id="decision", model="decision-model-preview")

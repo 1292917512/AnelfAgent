@@ -205,9 +205,13 @@ class ChoiceAnswer(BaseModel):
             return "选中项不在选项集合中"
         if any(not math.isfinite(p) or not 0 <= p <= 1 for p in probabilities.values()):
             return "概率须为 0~1 的有限数值"
-        total = sum(probabilities.values())
-        if not math.isclose(total, 1, abs_tol=0.01):
-            return f"概率总和为 {total:.6g}，应为 1（容差 0.01）"
+        total = math.fsum(probabilities.values())
+        # 两位小数独立舍入每项最多误差 0.005；大选项集仍限制总偏差，避免接受退化分布。
+        rounded = all(math.isclose(p * 100, round(p * 100), rel_tol=0, abs_tol=1e-9)
+                      for p in probabilities.values())
+        tolerance = max(0.01, min(0.005 * len(probabilities), 0.05)) if rounded else 0.01
+        if abs(total - 1) > tolerance + 1e-12:
+            return f"概率总和为 {total:.6g}，应为 1（容差 {tolerance:.6g}）"
         selected, peak = probabilities[self.choice], max(probabilities.values())
         if selected != peak:
             return f"选中项概率 {selected:.6g} 小于最大概率 {peak:.6g}"

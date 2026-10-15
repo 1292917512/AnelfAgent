@@ -63,6 +63,8 @@ class JudgmentHealth:
     def unavailable_reason(self, cfg: JudgmentConfig) -> str:
         state = self._state(cfg)
         if state.status == "offline":
+            if not state.retry_at:
+                return "判断模型配置或响应校验失败，已跳过；需修正配置或显式推理测试成功后恢复"
             return "判断模型暂不可用，已跳过；等待后台复查或检查配置"
         if state.status == "checking":
             return "判断模型正在检查连通性，已跳过重复等待"
@@ -94,7 +96,7 @@ class JudgmentHealth:
                 state.status = "unknown"
             return
         state.status, state.checked_at = "offline", time.time()
-        state.retry_at = (0 if error.cause == ErrorCause.CONFIG else
+        state.retry_at = (0 if error.cause in {ErrorCause.CONFIG, ErrorCause.INTERNAL} else
                           state.checked_at + max(30, get_config_float("judgment_recheck_seconds", 300)))
         state.error, state.latency_ms = sanitize_text(str(error))[:300], max(0, round(elapsed * 1000))
         state.cause = error.cause.value
@@ -173,10 +175,11 @@ class JudgmentHealth:
             return
 
     async def check_connectivity(self, cfg: JudgmentConfig) -> None:
-        """强制检查连接，保留凭据故障；成功只表示服务可达，不代表推理已验证。"""
+        """强制检查连接，保留凭据与响应校验故障；可达不代表推理已验证。"""
         self.begin(cfg, probe=True)
         previous = self._state(cfg)
-        config_error = previous.cause == ErrorCause.CONFIG.value and previous.check_kind == "inference"
+        inference_error = (previous.cause in {ErrorCause.CONFIG.value, ErrorCause.INTERNAL.value}
+                           and previous.check_kind == "inference")
         started = time.monotonic()
         attempt_timeout = max(0.1, get_config_float("judgment_probe_timeout", 5.0))
         try:
@@ -197,7 +200,7 @@ class JudgmentHealth:
             latest = self._result_state(cfg)
             if latest is None or latest.status != "checking":
                 raise error from exc
-            if config_error:
+            if inference_error:
                 self.cancel(cfg)
             else:
                 self.failure(cfg, error, time.monotonic() - started, connectivity=True)
@@ -205,9 +208,9 @@ class JudgmentHealth:
         state = self._result_state(cfg)
         if state is None or state.status != "checking":
             return
-        if config_error:
+        if inference_error:
             state.status = "offline"
-            raise JudgmentError(state.error, cause=ErrorCause.CONFIG, retryable=False)
+            raise JudgmentError(state.error, cause=ErrorCause(state.cause), retryable=False)
         self.success(cfg, time.monotonic() - started, connectivity=True)
 
 
