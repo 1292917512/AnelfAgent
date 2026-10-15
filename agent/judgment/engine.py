@@ -169,16 +169,16 @@ class JudgmentEngine:
             base_url=cfg.base_url, api_key=cfg.api_key, timeout=cfg.timeout, use_proxy=cfg.use_proxy,
         )
         started = time.monotonic()
-        answers, model, usage = await client.evaluate(
+        answers, missing, model, usage = await client.evaluate(
             state=state, model=cfg.model, questions=questions
         )
         log(
-            f"判断完成 [typesafe/{model}] {len(answers)} 题 "
+            f"判断完成 [typesafe/{model}] {len(answers)}/{len(questions)} 题 "
             f"{time.monotonic() - started:.2f}s",
             "DEBUG", tag="判断",
         )
         return JudgmentReport(
-            answers=answers, source=JudgmentSource.TYPESAFE, model=model, usage=usage
+            answers=answers, missing=missing, source=JudgmentSource.TYPESAFE, model=model, usage=usage
         )
 
     async def _judge_fallback(

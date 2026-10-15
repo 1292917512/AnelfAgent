@@ -192,13 +192,26 @@ class ChoiceAnswer(BaseModel):
 
     def selected_probability(self, options: Collection[str]) -> float | None:
         """仅完整、归一且选中最大项的分布返回概率，不修补或重选服务端答案。"""
+        return self.probabilities[self.choice] if not self.probability_error(options) else None
+
+    def probability_error(self, options: Collection[str]) -> str:
+        """返回分布校验原因；只描述结构与数值，不输出选项正文。"""
         probabilities = self.probabilities
-        if (set(probabilities) != set(options) or self.choice not in probabilities
-                or any(not math.isfinite(p) or not 0 <= p <= 1 for p in probabilities.values())
-                or not math.isclose(sum(probabilities.values()), 1, abs_tol=0.01)
-                or probabilities[self.choice] != max(probabilities.values())):
-            return None
-        return probabilities[self.choice]
+        expected, received = set(options), set(probabilities)
+        if expected != received:
+            return (f"选项集合不一致（期望 {len(expected)} 项，返回 {len(received)} 项，"
+                    f"缺失 {len(expected - received)} 项，未知 {len(received - expected)} 项）")
+        if self.choice not in probabilities:
+            return "选中项不在选项集合中"
+        if any(not math.isfinite(p) or not 0 <= p <= 1 for p in probabilities.values()):
+            return "概率须为 0~1 的有限数值"
+        total = sum(probabilities.values())
+        if not math.isclose(total, 1, abs_tol=0.01):
+            return f"概率总和为 {total:.6g}，应为 1（容差 0.01）"
+        selected, peak = probabilities[self.choice], max(probabilities.values())
+        if selected != peak:
+            return f"选中项概率 {selected:.6g} 小于最大概率 {peak:.6g}"
+        return ""
 
 
 class ScoreAnswer(BaseModel):
@@ -245,7 +258,7 @@ class JudgmentUsage(BaseModel):
 
 
 class JudgmentReport(BaseModel):
-    """一次判断调用的完整结果（双通道统一格式）。"""
+    """双通道统一结果；missing 包含缺失或无效的题目，调用方按题回退。"""
 
     answers: Dict[str, Answer]
     source: JudgmentSource

@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any, Dict, List, Optional
 
+import httpx
 import pytest
 
+from agent.judgment import client as judgment_client
+from agent.judgment.catalog import update_catalog
+from agent.judgment.health import judgment_health
 from agent.judgment.types import (
     ChoiceAnswer,
     JudgmentError,
@@ -182,6 +187,56 @@ class TestActionMapping:
 
 
 class TestConservativeFallbacks:
+    @pytest.mark.parametrize("relation,valid_target,action", [
+        ("novel", False, "store"),
+        ("covered", False, "skip"),
+        ("evolution", False, "store"),
+        ("fragments", False, "merge"),
+        ("evolution", True, "update"),
+    ])
+    async def test_native_batch_does_not_use_invalid_update_target(
+        self, monkeypatch: pytest.MonkeyPatch, relation: str, valid_target: bool, action: str,
+    ) -> None:
+        update_catalog("save_provider", "bailian", {
+            "name": "Bailian",
+            "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+            "models": {"decision": {"model": "decision-model-preview"}},
+        })
+        update_catalog("set_default", "decision")
+        requests: list[httpx.Request] = []
+        light = _FakeLight("合并后的记忆文本")
+        monkeypatch.setattr(dedup, "light_llm", light)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            payload = json.loads(request.content)
+            assert request.url.path == "/compatible-mode/v1/systemone"
+            assert payload["model"] == "decision-model-preview"
+            assert set(payload["questions"]["target"]["criteria"]) == {"1", "2", "none"}
+            return httpx.Response(200, json={
+                "request_id": "dedup-trace", "model": "decision-model-preview",
+                "usage": {"input_tokens": 80},
+                "answers": {
+                    "relation": _relation(relation).model_dump(),
+                    "target": {"choice": "1", "confidence": 1,
+                               "probabilities": {"1": 1, "2": 0, "none": 0} if valid_target else {"1": 1}},
+                    "merge_fit_1": {"noul": 0.9}, "merge_fit_2": {"noul": 0.1},
+                },
+            })
+
+        monkeypatch.setattr(judgment_client, "async_network_client", lambda proxy_mode, **kwargs: httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), **kwargs,
+        ))
+        decision = await dedup.judge_write("新事实", _CANDIDATES)
+        assert decision["action"] == action
+        assert len(requests) == 1
+        assert len(light.prompts) == int(action in {"merge", "update"})
+        if action == "update":
+            assert decision["target_id"] == 1
+        elif action == "merge":
+            assert decision["target_ids"] == [1]
+        assert judgment_health.snapshot()["decision"]["status"] == "ready"
+
     async def test_low_relation_confidence_stores(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _patch(monkeypatch, {"relation": _relation("covered", confidence=0.1)})
 

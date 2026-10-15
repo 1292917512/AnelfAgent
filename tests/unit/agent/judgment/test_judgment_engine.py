@@ -11,6 +11,7 @@ from agent.judgment import client as client_mod
 from agent.judgment import engine as engine_mod
 from agent.judgment.client import SystemOneClient
 from agent.judgment.engine import JudgmentConfig, JudgmentEngine
+from agent.judgment.health import judgment_health
 from agent.judgment.types import (
     JudgmentError,
     JudgmentReport,
@@ -199,13 +200,57 @@ def test_invalid_service_address_is_a_configuration_error(address):
     assert caught.value.cause == ErrorCause.CONFIG and not caught.value.retryable
 
 
-@pytest.mark.parametrize("choice,probabilities", [("a", {"a": 1}), ("b", {"a": 0.9, "b": 0.1})])
-def test_native_client_rejects_inconsistent_choice_answers(choice: str, probabilities: dict[str, float]) -> None:
+@pytest.mark.parametrize("choice,probabilities,reason", [
+    ("a", {"a": 1}, "缺失 1 项"),
+    ("a", {"a": 1, "extra": 0}, "未知 1 项"),
+    ("b", {"a": 0.9, "b": 0.1}, "选中项概率 0.1 小于最大概率 0.9"),
+    ("a", {"a": 0.9, "b": 0.9}, "概率总和为 1.8"),
+    ("absent", {"a": 1, "b": 0}, "选中项不在选项集合中"),
+    ("a", {"a": float("nan"), "b": 0}, "概率须为 0~1 的有限数值"),
+])
+def test_native_client_rejects_inconsistent_choice_answers(
+    choice: str, probabilities: dict[str, float], reason: str,
+) -> None:
     questions = parse_questions({"route": {"type": "choice", "instructions": "Choose a route", "criteria": {"a": "A", "b": "B"}}})
     with pytest.raises(JudgmentError) as caught:
-        SystemOneClient._parse_response({"answers": {"route": {"type": "choice", "choice": choice,
-                                                              "probabilities": probabilities, "confidence": 1}}}, questions)
+        SystemOneClient._parse_response({"request_id": "trace-123", "answers": {
+            "route": {"type": "choice", "choice": choice, "probabilities": probabilities, "confidence": 1},
+        }}, questions)
     assert caught.value.cause == ErrorCause.INTERNAL and caught.value.retryable
+    assert reason in str(caught.value) and "trace-123" in str(caught.value)
+
+
+@pytest.mark.parametrize("invalid", [None, {"choice": "a", "confidence": 1, "probabilities": {"a": 1}}])
+async def test_partial_native_answers_preserve_model_availability(monkeypatch, invalid):
+    cfg = _cfg(api_key="test-key", model_id="decision", model="decision-model-preview")
+    monkeypatch.setattr(engine_mod, "load_config", lambda: cfg)
+    questions = parse_questions({
+        "valid": {"type": "noul", "instructions": "有用吗？"},
+        "target": {"type": "choice", "instructions": "选一个", "criteria": {"a": "A", "b": "B"}},
+    })
+    requests = []
+    messages = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={
+            "request_id": "batch-trace", "model": cfg.model, "usage": {"input_tokens": 123},
+            "answers": {"valid": {"noul": 0.8}, "target": invalid},
+        })
+
+    monkeypatch.setattr(client_mod, "async_network_client", lambda proxy_mode, **kwargs: httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), **kwargs,
+    ))
+    monkeypatch.setattr(client_mod, "log", lambda message, *args, **kwargs: messages.append(message))
+    for _ in range(2):
+        report = await JudgmentEngine().judge("private state", questions, native_only=True)
+        assert set(report.answers) == {"valid"} and report.missing == ["target"]
+        assert report.usage.input_tokens == 123 and report.usage.output_tokens == 0
+        assert judgment_health.snapshot()["decision"]["status"] == "ready"
+        assert judgment_health.snapshot()["decision"]["retry_at"] == 0
+    assert len(requests) == 2 and len(messages) == 2
+    assert all("batch-trace" in message and "target" in message for message in messages)
+    assert all("private state" not in message and "test-key" not in message for message in messages)
 
 
 async def test_no_key_no_fallback_config_error(

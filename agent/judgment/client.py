@@ -2,10 +2,10 @@
 
 契约（docs.typesafe.ai/api）：POST {base_url}/v1/systemone，可选 Bearer 认证；
 请求体 state + model + questions（id → 问题），响应 answers 按同键返回。
-所有失败统一包装为 JudgmentError，由引擎按归因决策是否降级回退通道。
+单题无效记入 missing；整批不可用时抛出 JudgmentError，由引擎选择回退通道。
 
-模型看到：原有问题和事实；选项分布失真视为接口错误，不伪造可用判断。
-Token：不增加判断问题或内容，失败后的候选切换沿用引擎策略。
+模型看到：原有问题和事实；无效答案不参与决策，其余独立答案保留。
+Token：不增加问题或内容；部分答案有效时不重试整批，避免重复推理。
 缓存：仅校验返回结果，不修改任何模型上下文前缀。
 """
 from __future__ import annotations
@@ -30,7 +30,9 @@ from agent.judgment.types import (
     question_payload,
 )
 from core.config import get_config_float
+from core.log import log
 from core.network import ProxyMode, async_network_client
+from core.sanitizer import sanitize_text
 from core.tool_errors import ErrorCause
 
 _ENDPOINT = "/v1/systemone"
@@ -70,8 +72,8 @@ class SystemOneClient:
         state: JsonValue,
         model: str,
         questions: Dict[str, Question],
-    ) -> tuple[Dict[str, Answer], str, JudgmentUsage]:
-        """批量评判问题，返回（答案字典, 实际模型版本, 用量）。"""
+    ) -> tuple[Dict[str, Answer], list[str], str, JudgmentUsage]:
+        """批量评判问题，返回（有效答案, 缺失或无效题目, 实际模型版本, 用量）。"""
         payload = {
             "state": state,
             "model": model,
@@ -171,25 +173,40 @@ class SystemOneClient:
     @staticmethod
     def _parse_response(
         data: Dict[str, Any], questions: Dict[str, Question]
-    ) -> tuple[Dict[str, Answer], str, JudgmentUsage]:
+    ) -> tuple[Dict[str, Answer], list[str], str, JudgmentUsage]:
         raw_answers = data.get("answers")
         if not isinstance(raw_answers, dict):
             raise JudgmentError(
                 "System One 响应缺少 answers", cause=ErrorCause.INTERNAL, retryable=True
             )
         answers: Dict[str, Answer] = {}
+        missing: list[str] = []
+        errors: list[str] = []
         for qid, question in questions.items():
             raw = raw_answers.get(qid)
-            if raw is None:
-                raise JudgmentError(
-                    f"System One 响应缺少答案 '{qid}'", cause=ErrorCause.INTERNAL, retryable=True
-                )
-            answers[qid] = _parse_answer(question, raw, qid)
+            try:
+                if raw is None:
+                    raise JudgmentError(
+                        f"System One 响应缺少答案 '{qid}'", cause=ErrorCause.INTERNAL, retryable=True,
+                    )
+                answers[qid] = _parse_answer(question, raw, qid)
+            except JudgmentError as exc:
+                missing.append(qid)
+                errors.append(sanitize_text(str(exc))[:300])
+        if errors:
+            request_id = sanitize_text(str(data.get("request_id") or ""))[:80]
+            model_name = sanitize_text(str(data.get("model") or ""))[:80]
+            detail = "; ".join(errors[:3])
+            message = (f"System One {len(missing)}/{len(questions)} 题无效 "
+                       f"[model:{model_name or '-'}][request_id:{request_id or '-'}]: {detail}")
+            if not answers:
+                raise JudgmentError(message, cause=ErrorCause.INTERNAL, retryable=True)
+            log(message, "WARNING", tag="判断")
         try:
             usage = JudgmentUsage.model_validate(data.get("usage") or {})
         except ValidationError as exc:
             raise JudgmentError("System One 用量结构无效", cause=ErrorCause.INTERNAL, retryable=True) from exc
-        return answers, str(data.get("model") or ""), usage
+        return answers, missing, str(data.get("model") or ""), usage
 
 
 def _parse_answer(question: Question, raw: Any, qid: str) -> Answer:
@@ -211,9 +228,8 @@ def _parse_answer(question: Question, raw: Any, qid: str) -> Answer:
             cause=ErrorCause.INTERNAL,
             retryable=True,
         ) from exc
-    if (isinstance(answer, ChoiceAnswer) and isinstance(question, ChoiceQuestion)
-            and answer.selected_probability(question.criteria) is None):
-        raise JudgmentError(
-            f"答案 '{qid}' 的选项概率不完整或与选中项不一致", cause=ErrorCause.INTERNAL, retryable=True,
-        )
+    if isinstance(answer, ChoiceAnswer) and isinstance(question, ChoiceQuestion):
+        error = answer.probability_error(question.criteria)
+        if error:
+            raise JudgmentError(f"答案 '{qid}' 无效: {error}", cause=ErrorCause.INTERNAL, retryable=True)
     return answer
