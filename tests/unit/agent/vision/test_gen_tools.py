@@ -2,13 +2,40 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from types import SimpleNamespace
 from typing import Any, Dict
 
 import pytest
 
 import agent.vision.gen_tools as gen_tools
 from agent.vision.gen_tools import recognize_image, recognize_video
+
+
+async def test_default_background_recognition_retains_scope_and_result(local_image, chain_spy, monkeypatch):
+    from agent.mind.background_tasks import BackgroundTaskRegistry
+    from agent.mind.tools.ports import mind_port
+    from core.conversation_scope import bind_scope, reset_scope
+
+    registry = BackgroundTaskRegistry()
+    mind_port.set(SimpleNamespace(background_tasks=registry))
+    monkeypatch.setattr(gen_tools, "_main_model_supports_vision", lambda: False)
+    token = bind_scope("user_webui:1#image")
+    try:
+        result = json.loads(await recognize_image(local_image, prompt="读错误文字"))
+        assert result["background"] and result["status"] == "running"
+        assert not chain_spy["called"]
+        await asyncio.sleep(0)
+        assert not registry.running("user_webui:1#image")
+        completed = await registry.wait_any("user_webui:1#image", 0, task_id=result["task_id"])
+        assert completed.completions[0].success
+        assert json.loads(completed.completions[0].summary)["description"] == "一只猫"
+        assert registry.completed("user_qq:1") == []
+    finally:
+        reset_scope(token)
+        mind_port.unbind()
+        await registry.close()
 
 
 @pytest.fixture
@@ -83,7 +110,7 @@ class TestDirectInjectFastPath:
             self, chain_spy: Dict[str, Any],
     ) -> None:
         """远程 URL 无法注入本地图片 block，仍走识别链。"""
-        out = json.loads(await recognize_image(image_path="https://example.com/a.jpg"))
+        out = json.loads(await recognize_image(background=False, image_path="https://example.com/a.jpg"))
 
         assert chain_spy["called"] is True
         assert "_multimodal" not in out
@@ -91,7 +118,7 @@ class TestDirectInjectFastPath:
     async def test_video_still_uses_chain(
             self, local_video: str, chain_spy: Dict[str, Any],
     ) -> None:
-        out = json.loads(await recognize_image(image_path="workspace/clip.mp4"))
+        out = json.loads(await recognize_image(background=False, image_path="workspace/clip.mp4"))
 
         assert chain_spy["called"] is True
         assert "_multimodal" not in out
@@ -101,7 +128,7 @@ class TestDirectInjectFastPath:
     ) -> None:
         """显式指定 provider = 明确要求识别链，不走直注。"""
         out = json.loads(await recognize_image(
-            image_path="workspace/shot.png", provider="models",
+            image_path="workspace/shot.png", provider="models", background=False,
         ))
 
         assert chain_spy["called"] is True
@@ -119,7 +146,7 @@ class TestVisionChainFallback:
     async def test_chain_description_returned(
             self, local_image: str, chain_spy: Dict[str, Any],
     ) -> None:
-        out = json.loads(await recognize_image(image_path="workspace/shot.png"))
+        out = json.loads(await recognize_image(background=False, image_path="workspace/shot.png"))
 
         assert chain_spy["called"] is True
         assert out["description"] == "一只猫"
@@ -138,7 +165,7 @@ class TestVisionChainFallback:
                 return {"success": False, "error": "无可用视觉模型"}
 
         monkeypatch.setattr(gen_tools, "get_visual_router", lambda: _FailRouter())
-        out = json.loads(await recognize_image(image_path="workspace/shot.png"))
+        out = json.loads(await recognize_image(background=False, image_path="workspace/shot.png"))
 
         assert "_multimodal" not in out
         assert out["error"] == "无可用视觉模型"
@@ -152,7 +179,7 @@ class TestRecognizeVideo:
     ) -> None:
         """主模型有视觉也不直注（视频无法注入本地 block），走视频识别链。"""
         monkeypatch.setattr(gen_tools, "_main_model_supports_vision", lambda: True)
-        out = json.loads(await recognize_video(video_path="workspace/clip.mp4"))
+        out = json.loads(await recognize_video(background=False, video_path="workspace/clip.mp4"))
 
         assert chain_spy["called"] is True
         assert chain_spy["capability"] == "understand"
@@ -165,7 +192,7 @@ class TestRecognizeVideo:
     async def test_default_prompt_is_video(
             self, local_video: str, chain_spy: Dict[str, Any],
     ) -> None:
-        await recognize_video(video_path="workspace/clip.mp4")
+        await recognize_video(background=False, video_path="workspace/clip.mp4")
 
         assert "视频" in chain_spy["kwargs"]["prompt"]
 

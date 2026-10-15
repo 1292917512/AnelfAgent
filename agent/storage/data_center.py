@@ -432,7 +432,8 @@ class ConversationData:
             min_score=min_score, scan_limit=scan_limit,
         )
 
-    async def add_conversation_record_by_everything(self, anything: Everything) -> None:
+    async def add_conversation_record_by_everything(self, anything: Everything) -> bool:
+        """写入新的会话消息；重复投递返回 False，不再次触发思维。"""
         msg = anything.get_agent_dic()
         role = str(msg.get("role", "user"))
         content = str(msg.get("content", ""))
@@ -479,7 +480,7 @@ class ConversationData:
                 ):
                     log(f"入站消息去重: 丢弃重复投递 (message_id={adapter_message_id})",
                         "DEBUG", tag="存储")
-                    return
+                    return False
             except Exception as exc:
                 # 去重查询失败不阻塞入库（宁可重复也不丢消息）
                 log(f"入站去重查询失败（照常入库）: {exc}", "DEBUG", tag="存储")
@@ -495,6 +496,7 @@ class ConversationData:
             adapter_key=getattr(anything, "adapter_key", "") or "",
             trigger_mind=bool(getattr(anything, "trigger_mind", True)),
         )
+        return True
 
 
 @dataclass(slots=True)

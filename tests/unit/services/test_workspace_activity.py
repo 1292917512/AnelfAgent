@@ -18,6 +18,47 @@ from services.activity_presentation import tool_presentation_owner, tool_targets
 from services.workspace_activity import WorkspaceActivityService
 
 
+async def test_background_completion_updates_original_turn_after_reply_finishes(activity):
+    from agent.mind.background_tasks import BackgroundTaskRegistry
+
+    service, _ = activity
+    registry = BackgroundTaskRegistry()
+    released = asyncio.Event()
+
+    async def operation():
+        await released.wait()
+        return '{"success": true, "description": "image result"}'
+
+    async with activity_scope("origin", "user_webui:1#a"):
+        task_id = registry.submit("user_webui:1#a", "vision", "read image", operation)
+        await asyncio.sleep(0)
+    assert service.snapshot()["runs"][0]["entries"][0]["status"] == "running"
+    async with activity_scope("other", "user_qq:2"):
+        released.set()
+        await registry.wait_any("user_webui:1#a", 2, task_id=task_id)
+        await asyncio.sleep(0)
+    runs = {run["id"]: run for run in service.snapshot()["runs"]}
+    assert runs["origin"]["entries"][0]["status"] == "done"
+    assert "image result" in runs["origin"]["entries"][0]["result"]
+    assert runs["other"]["entries"] == []
+    await registry.close()
+
+
+async def test_threaded_background_registration_and_completion_publish_on_bound_loop(activity):
+    from agent.mind.background_tasks import BackgroundTaskRegistry
+
+    service, _ = activity
+    registry = BackgroundTaskRegistry()
+    registry.bind_loop(asyncio.get_running_loop())
+    async with activity_scope("shell-origin", "user_webui:1"):
+        task_id = await asyncio.to_thread(registry.register, "user_webui:1", "shell", "threaded shell")
+        await asyncio.to_thread(registry.complete, task_id, True, "done")
+        await asyncio.sleep(0)
+    entry = service.snapshot()["runs"][0]["entries"][0]
+    assert entry["status"] == "done" and entry["id"] == task_id
+    await registry.close()
+
+
 async def test_trigger_and_sender_remain_local_to_concurrent_runs(activity):
     service, _ = activity
 

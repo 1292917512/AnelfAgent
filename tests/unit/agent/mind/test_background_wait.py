@@ -41,6 +41,75 @@ def deliver_mock(monkeypatch):
 # ==================================================================
 
 class TestBackgroundTaskRegistry:
+    async def test_explicit_wait_yields_to_new_cross_channel_message_without_cancelling(self, monkeypatch) -> None:
+        import json
+
+        from agent.messages.presets import MessageUser
+        from agent.mind.interrupt import InterruptRegistry
+        from agent.mind.prefrontal_cortex import PrefrontalCortex
+        from agent.mind.tools import background
+        from core.conversation_scope import bind_scope, reset_scope
+
+        entity = SimpleNamespace(add_conversations_num=lambda: 0, personality={}, uid=0)
+        pfc = PrefrontalCortex(everything_data=SimpleNamespace(get_anything=AsyncMock(return_value=entity)))
+        registry = BackgroundTaskRegistry()
+        background.mind_port.set(SimpleNamespace(pfc=pfc, background_tasks=registry, interrupts=InterruptRegistry()))
+        monkeypatch.setattr("agent.mind.background_tasks._POLL_INTERVAL", 0.01)
+        task_id = registry.register("user_webui:1", "vision", "read image")
+        token = bind_scope("user_webui:1")
+        try:
+            waiter = asyncio.create_task(background.wait_background_tasks(task_id, timeout=5))
+            await asyncio.sleep(0)
+            await pfc.add_task(MessageUser(uid="2", adapter_key="qq", text_content="another request"))
+            result = json.loads(await asyncio.wait_for(waiter, 1))
+            assert result["reason"] == "interrupted"
+            assert registry.running("user_webui:1")[0].task_id == task_id
+            assert pfc.peek_all_tasks()[0][0] == "user_qq:2"
+        finally:
+            reset_scope(token)
+            background.mind_port.unbind()
+            await registry.close()
+
+    async def test_selected_wait_does_not_claim_other_tasks(self) -> None:
+        registry = BackgroundTaskRegistry()
+        notices = []
+        registry.set_unclaimed_callback(lambda *args: notices.append(args))
+        a = registry.register("user_qq:1", "vision", "A")
+        b = registry.register("user_qq:1", "shell", "B")
+        waiter = asyncio.create_task(registry.wait_any("user_qq:1", 2, task_id=a))
+        await asyncio.sleep(0)
+        assert not registry.complete(b, True, "B done")
+        assert registry.complete(a, True, "A done")
+        result = await waiter
+        assert [item.task_id for item in result.completions] == [a]
+        assert len(notices) == 1 and notices[0][1] == "B"
+        with pytest.raises(ValueError):
+            await registry.wait_any("user_qq:2", 0, task_id=a)
+
+    async def test_interrupted_wait_routes_racing_completion_once(self) -> None:
+        registry = BackgroundTaskRegistry()
+        notices = []
+        registry.set_unclaimed_callback(lambda *args: notices.append(args))
+        task_id = registry.register("user_qq:1", "vision", "A")
+        waiter = asyncio.create_task(registry.wait_any("user_qq:1", 2, AsyncMock(return_value=True)))
+        await asyncio.sleep(0)
+        registry.complete(task_id, True, "done")
+        assert (await waiter).reason == "interrupted"
+        assert len(notices) == 1 and task_id in notices[0][2]
+        assert not (await registry.wait_any("user_qq:1", 0)).completions
+
+    async def test_submitted_task_cancel_and_shutdown_reach_terminal_state(self) -> None:
+        registry = BackgroundTaskRegistry()
+        async def operation() -> str:
+            await asyncio.sleep(10)
+            return "done"
+        task_id = registry.submit("user_qq:1", "vision", "image", operation)
+        assert registry.terminate("user_qq:2", task_id)["ok"] is False
+        assert registry.terminate("user_qq:1", task_id)["terminated"] is True
+        await registry.close()
+        assert registry.running("user_qq:1") == []
+        assert registry.completed("user_qq:1")[0].success is False
+
     def test_internal_maintenance_is_observable_without_joining_reply(self) -> None:
         registry = BackgroundTaskRegistry()
         registry.register("user_qq:1", "llm_hook", "review", joinable=False)
@@ -153,8 +222,8 @@ class TestBackgroundTaskRegistry:
         tid_reflect = registry.register("reflect:abc", "shell", "心跳任务里的后台命令")
         registry.complete(tid_reflect, True, "退出码 0")
         assert calls == [
-            ("_global", "监控脚本", "执行超时（>1200s），进程已终止", False),
-            ("reflect:abc", "心跳任务里的后台命令", "退出码 0", True),
+            ("_global", "监控脚本", f"[task_id:{tid_global}] 执行超时（>1200s），进程已终止", False),
+            ("reflect:abc", "心跳任务里的后台命令", f"[task_id:{tid_reflect}] 退出码 0", True),
         ]
 
     def test_alert_timeout_reaches_callback_only_when_running(self) -> None:
@@ -253,10 +322,10 @@ class TestWaitSuspension:
         mind._queue = [tool_result("", ["end_reply"], '{"silent": true}')]
 
         async def finisher() -> None:
-            # 等循环真正进入挂起（_waiting 登记）再完成任务——
+            # 等循环真正进入挂起（_wait_targets 登记）再完成任务——
             # 固定时延在并行负载下是竞态（循环首轮耗时不确定）
             for _ in range(400):
-                if mind.background_tasks._waiting.get("_global"):
+                if mind.background_tasks._wait_targets.get("_global"):
                     break
                 await asyncio.sleep(0.005)
             mind.background_tasks.complete(task_id, True, "图片已生成: /tmp/a.png")
@@ -496,15 +565,15 @@ class TestDelegationBackgroundIntegration:
         """check_background_tasks 工具返回运行中与已完成任务快照。"""
         import json
 
-        from agent.delegation import delegate_tool
-        from agent.delegation.delegation_manager import DelegationManager
+        from agent.mind.tools import background
 
         mind = _DelegationMind()
-        manager = DelegationManager(mind)
-        delegate_tool.delegation_manager_port.set(manager)
+        background.mind_port.set(mind)
         mind.background_tasks.register("_global", "delegation", "生成图片")
 
-        result = json.loads(await delegate_tool.check_background_tasks())
-        assert len(result["running"]) == 1
-        assert result["running"][0]["description"] == "生成图片"
-        assert "hint" in result
+        try:
+            result = json.loads(await background.check_background_tasks())
+            assert len(result["running"]) == 1
+            assert result["running"][0]["description"] == "生成图片"
+        finally:
+            background.mind_port.unbind()

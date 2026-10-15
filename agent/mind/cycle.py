@@ -2,6 +2,10 @@
 
 函数以 mind 实例为第一参数（与 agent.mind.tools.* 同风格），
 Mind 类持有一行薄委托，调用方签名零变化。
+
+模型可见：元决策召回围绕最早待处理会话，其他会话仍以独立待办呈现。
+Token：不拼接多个会话生成混合召回查询。
+缓存：只影响本次元决策证据，不修改各会话稳定前缀。
 """
 
 from __future__ import annotations
@@ -373,18 +377,10 @@ async def _think_and_decide(mind: "Mind", situation: SituationContext) -> List[D
     memory_ctx: List[Dict] = []
     if mind.retriever:
         if situation.pending_messages:
-            from agent.messages import build_entity_scope
-            combined_preview = " ".join(pm.preview for pm in situation.pending_messages)
             first_pm = situation.pending_messages[0]
-            entity_scope = ""
-            pm_adapter = str(getattr(first_pm, "adapter_key", "") or "")
-            if first_pm.group_id:
-                entity_scope = build_entity_scope("group", pm_adapter, str(first_pm.group_id))
-            elif first_pm.uid:
-                entity_scope = build_entity_scope("user", pm_adapter, str(first_pm.uid))
             memory_ctx = await mind.retriever.recall(
-                [{"role": "user", "content": combined_preview}],
-                top_k=5, entity_scope=entity_scope,
+                [{"role": "user", "content": first_pm.preview}],
+                top_k=5, entity_scope=first_pm.scope,
             )
         elif situation.is_heartbeat:
             query_parts: list[str] = []

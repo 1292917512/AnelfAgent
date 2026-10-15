@@ -6,9 +6,9 @@
 provider 参数：auto（默认，按配置优先级链自动路由+失败降级）或指定
 提供者名；可用值与能力优先级经 vision_config(action="providers") 查看。
 
-Model Experience：识图工具声明要求明确分析目标，识别结果经工具回执进入模型上下文。
-Token：只传图片与必要分析要求，不复制会话历史。
-缓存：工具说明为静态声明；结果只进入工具链，不注入易变的前缀内容。
+Model Experience：辅助识图默认返回后台任务 ID，完成后按所属会话通知；原生看图仍直接注入原图。
+Token：只传图片与必要分析要求，不复制会话历史；后台摘要有界，完整结果按 ID 查询。
+缓存：工具说明为静态声明；结果进入工具链或动态状态，不修改稳定前缀。
 """
 
 from __future__ import annotations
@@ -59,7 +59,8 @@ def _main_model_supports_vision() -> bool:
 # 图片/视频理解
 # ==================================================================
 
-async def _recognize_visual(media_path: str, prompt: str, provider: str, kwargs: Dict[str, str]) -> str:
+async def _recognize_visual(media_path: str, prompt: str, provider: str, kwargs: Dict[str, str],
+                            *, background: bool) -> str:
     """recognize_image / recognize_video 共用的识别流程：参数归一 → 沙箱校验 → 直注或识别链。"""
     if not media_path:
         media_path = (
@@ -108,7 +109,7 @@ async def _recognize_visual(media_path: str, prompt: str, provider: str, kwargs:
             "text": f"[系统] 图片已附上，请直接查看并按调用要求分析（{desc_prompt}）。",
             "images": [media_path],
         })
-    try:
+    async def recognize() -> str:
         out = await get_visual_router().run(
             "understand", "视频识别" if is_video else "图片识别", provider=provider,
             image_path=media_path, prompt=desc_prompt,
@@ -116,30 +117,47 @@ async def _recognize_visual(media_path: str, prompt: str, provider: str, kwargs:
         if out.get("success"):
             out["image_path"] = media_path
         return _dumps(out)
+
+    try:
+        from core.tool_schema import coerce_bool_arg
+        if coerce_bool_arg(background, True):
+            from agent.mind.tool_activation import current_owner_scope
+            from agent.mind.tools.ports import mind_port
+            if not mind_port.bound:
+                return tool_error("后台任务系统未就绪", cause=ErrorCause.STATE, retryable=True)
+            task_id = mind_port.get().background_tasks.submit(
+                current_owner_scope(), "vision", desc_prompt[:160], recognize,
+            )
+            return _dumps({"success": True, "background": True, "status": "running", "task_id": task_id,
+                           "hint": "识别尚未完成。可继续独立工作，或 wait_background_tasks 等待；完成后回到所属会话。"})
+        return await recognize()
     except Exception as e:
         return error_from_exception(e, action="识别视频" if is_video else "识别图片")
 
 
 @deferred_tool(name="recognize_image", group=_group, tags=["always", "media:image"], timeout=300.0)
-async def recognize_image(image_path: str = "", prompt: str = "", provider: str = "auto", **kwargs: str) -> str:
+async def recognize_image(image_path: str = "", prompt: str = "", provider: str = "auto",
+                          background: bool = True, **kwargs: str) -> str:
     """识别/分析图片内容（视频请用 recognize_video）。支持本地文件、URL 或图片 Data URL。
 
     主模型具备视觉能力时：本地图片不调用识别链，按 _multimodal 约定把原图
     直接注入工具链尾部（动态区，不动前缀缓存），主模型亲自看图分析，
     省一次视觉模型调用；显式指定 provider 时强制走识别链。
-    主模型无视觉能力时：经视觉模型链识别，返回文字描述。
+    主模型无视觉能力时：默认后台识别，返回任务 ID，结果经所属会话的内部通知送达。
 
     Args:
         image_path: 图片的绝对路径或 URL
         prompt: 具体识别目标及必要背景，如"逐行提取报错文字"；识图模型不会继承当前会话
+        background: 辅助识别是否后台执行，默认 true；false 同步返回描述。原生看图不受影响。
         provider: auto（默认，按配置链路由+失败自动降级）或指定提供者名
             （可用值见 vision_config(action="providers")，随组件增删变化）
     """
-    return await _recognize_visual(image_path, prompt, provider, kwargs)
+    return await _recognize_visual(image_path, prompt, provider, kwargs, background=background)
 
 
 @deferred_tool(name="recognize_video", group=_group, tags=["always", "media:video"], timeout=300.0)
-async def recognize_video(video_path: str = "", prompt: str = "", provider: str = "auto", **kwargs: str) -> str:
+async def recognize_video(video_path: str = "", prompt: str = "", provider: str = "auto",
+                          background: bool = True, **kwargs: str) -> str:
     """识别/分析视频内容（画面理解）。支持本地文件路径或 URL。
 
     经视觉模型链把视频发送给声明 supports_video 的模型识别（未声明
@@ -149,9 +167,10 @@ async def recognize_video(video_path: str = "", prompt: str = "", provider: str 
     Args:
         video_path: 视频的绝对路径或 URL
         prompt: 可选的分析提示，如"总结视频里发生的事情"
+        background: 默认 true 后台识别并通知所属会话；false 同步返回描述。
         provider: auto（默认，按配置链路由+失败自动降级）或指定提供者名
     """
-    return await _recognize_visual(video_path, prompt, provider, kwargs)
+    return await _recognize_visual(video_path, prompt, provider, kwargs, background=background)
 
 
 # ==================================================================

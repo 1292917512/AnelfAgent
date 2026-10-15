@@ -14,6 +14,7 @@ from core.activity import (
     EVENT_ACTIVITY_FINISHED,
     EVENT_ACTIVITY_STARTED,
     EVENT_ACTIVITY_UPDATE,
+    EVENT_BACKGROUND_TASK_UPDATED,
     current_activity_id,
 )
 from core.event_bus import (
@@ -89,6 +90,7 @@ class WorkspaceActivityService:
             (EVENT_FILE_DIFF, self._file),
             (EVENT_DELEGATION_STARTED, self._delegation_start),
             (EVENT_DELEGATION_RESOLVED, self._delegation_end),
+            (EVENT_BACKGROUND_TASK_UPDATED, self._background),
             (EVENT_PLAN_SUBMITTED, self._plan_start),
             (EVENT_PLAN_STEP_UPDATED, self._plan_step),
             (EVENT_PLAN_STATUS_CHANGED, self._plan_status),
@@ -216,7 +218,8 @@ class WorkspaceActivityService:
                 entry.update(status="running", run_id=run_id)
                 self._changed(parent)
         while len(self._runs) > MAX_RUNS:
-            key = next((key for key, item in self._runs.items() if item["status"] != "running"), next(iter(self._runs)))
+            key = next((key for key, item in self._runs.items() if item["status"] != "running"
+                        and not any(entry.get("status") == "running" for entry in item["entries"])), next(iter(self._runs)))
             self._runs.pop(key)
             timer = self._pending.pop(key, None)
             if timer:
@@ -409,6 +412,27 @@ class WorkspaceActivityService:
                 if entry["kind"] == kind and entry["id"] == entry_id:
                     return run, entry
         return None
+
+    async def _background(self, payload: dict[str, Any]) -> None:
+        """按发起轮次更新后台状态，完成后仍可查看结果；已专门展示的执行不重复投影。"""
+        if payload["kind"] in {"delegation", "llm_hook"}:
+            return
+        run = self._get(payload)
+        if run is None:
+            return
+        task_id = str(payload["task_id"])
+        entry = next((item for item in run["entries"] if item["kind"] == "background" and item["id"] == task_id), None)
+        if entry is None:
+            entry = {"kind": "background", "id": task_id, "ts": payload["started_at"],
+                     "task_kind": str(payload["kind"]), "status": "running",
+                     "description": sanitize_text(str(payload["description"]))[:300]}
+            self._append(run, entry)
+        if entry["status"] != "running":
+            return
+        entry.update(status=payload["status"], result=sanitize_text(str(payload["result"]))[:MAX_TEXT])
+        if payload["finished_at"]:
+            entry["duration_ms"] = max(0, round((payload["finished_at"] - payload["started_at"]) * 1000))
+        self._changed(run, immediate=entry["status"] != "running")
 
     async def _delegation_start(self, payload: dict[str, Any]) -> None:
         run = self._get(payload)

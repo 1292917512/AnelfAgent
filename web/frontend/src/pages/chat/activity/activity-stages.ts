@@ -12,7 +12,7 @@ export function activityStages(segments: ActivitySegment[]): ActivityStage[] {
   for (const segment of segments) {
     for (const { entry } of segment.entries) {
       if (entry.kind === "hook") continue;
-      const kind: StageKind = entry.kind === "thinking" ? "model" : entry.kind === "file" || entry.kind === "delegation" ? "tool" : entry.kind;
+      const kind: StageKind = entry.kind === "thinking" ? "model" : entry.kind === "file" || entry.kind === "delegation" || entry.kind === "background" ? "tool" : entry.kind;
       const last = stages[stages.length - 1];
       const running = "status" in entry && entry.status === "running";
       const failed = "status" in entry && ["error", "failed", "blocked"].includes(entry.status);
@@ -32,6 +32,7 @@ export function activityStages(segments: ActivitySegment[]): ActivityStage[] {
 }
 
 function stagePreview(entry: ActivityEntry): string {
+  if (entry.kind === "background") return entry.description;
   if (entry.kind === "tool" || entry.kind === "model") return entry.name;
   if (entry.kind === "thinking" || entry.kind === "text") return entry.content.slice(0, 180);
   if (entry.kind === "plan" || entry.kind === "delegation") return entry.goal.slice(0, 180);

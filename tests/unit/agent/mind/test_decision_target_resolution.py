@@ -19,6 +19,7 @@ import pytest
 
 from agent.messages.presets import MessageAssistant, MessageAssistantGroup
 from agent.mind.tools.decision_executor import (
+    execute_reply,
     normalize_target_scope,
     pop_next_reply_target,
     resolve_reply_target,
@@ -40,6 +41,12 @@ def _mind(*, queued: tuple[str, ...] = (), registered: tuple[tuple[str, str], ..
 
 
 class TestNormalizeTargetScope:
+    async def test_stale_explicit_target_does_not_consume_another_conversation(self) -> None:
+        from agent.mind.autonomous import Decision, DecisionType
+        mind = _mind(queued=(_CANONICAL,))
+        await execute_reply(mind, Decision(type=DecisionType.REPLY, target="user_webui:missing"))
+        assert [row[0] for row in mind.pfc.peek_all_tasks()] == [_CANONICAL]
+
     def test_canonical_scope_passthrough(self) -> None:
         mind = _mind()
         assert normalize_target_scope(mind, "user_qq:123") == "user_qq:123"

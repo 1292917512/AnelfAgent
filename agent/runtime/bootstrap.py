@@ -366,6 +366,7 @@ def create_bootstrap() -> FlowMachine:
         import agent.judgment.tools  # noqa: F401
         from agent.mind import Mind
         from agent.mind.tools import (  # noqa: F401
+            background,
             execution_log,
             scheduler,
             session_tools,
@@ -437,6 +438,7 @@ def create_bootstrap() -> FlowMachine:
         Lifecycle.register("execution_diagnostics", execution_diagnostics,
                            on_start=execution_diagnostics.start, cleanup=execution_diagnostics.stop)
         await Lifecycle.start_one("execution_diagnostics")
+        Lifecycle.register("background_tasks", mind.background_tasks, cleanup=mind.background_tasks.close)
         Lifecycle.register("hook_journal", hook_journal, cleanup=hook_journal.clear)
         from agent.judgment.health import judgment_health
         Lifecycle.register("judgment_health", judgment_health, on_start=judgment_health.start, cleanup=judgment_health.close)

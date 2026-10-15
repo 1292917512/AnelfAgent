@@ -11,7 +11,6 @@ Model Experience:
 """
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import Optional
 
@@ -192,78 +191,6 @@ def _validate_agent_name(agent_name: str) -> str:
             cause=ErrorCause.STATE, retryable=False,
         )
     return ""
-
-
-@deferred_tool(
-    name="check_background_tasks",
-    group="delegation", tags=["always"], source="mind.delegation",
-    description="查看当前会话后台任务（子代理委托等）的运行状态与已完成结果。"
-    "启动后台任务后用它查询进度，禁止凭空猜测任务状态。",
-)
-async def check_background_tasks(task_id: str = "", after_sequence: int = 0) -> str:
-    """查看当前会话的后台任务状态（运行中 + 已完成）。
-
-    Args:
-        task_id: 可选，指定任务时改为增量读取其输出——每次只返回自上次
-            读取以来的新增内容（消费型，不重复发送），适合轮询长任务进度。
-        after_sequence: 操作证据游标；传上次 evidence.next_sequence 获取后续证据。
-    """
-    manager = _manager_or_none()
-    if manager is None:
-        return _manager_not_ready()
-    from agent.mind.tool_activation import current_owner_scope
-    # 与启动同链解析：父会话与子代理看到一致的后台任务列表
-    scope = current_owner_scope()
-    registry = getattr(manager._mind, "background_tasks", None) if manager._mind else None
-    if task_id and registry is not None:
-        result = registry.read_task_output(scope, task_id, after_sequence=after_sequence)
-        if not result.get("ok"):
-            from core.tool_errors import ErrorCause, tool_error
-            return tool_error(
-                result.get("error", "读取任务输出失败"),
-                cause=ErrorCause.NOT_FOUND, retryable=False,
-            )
-        return json.dumps(result, ensure_ascii=False)
-    snapshot = manager.background_tasks_snapshot(scope)
-    snapshot["hint"] = (
-        "可传 task_id 查询进度与增量输出。notification 指明完成通知策略："
-        "always=完成即通知，on_result=有产出或失败通知，on_failure=仅失败通知，silent=不通知。"
-        "通知向 AI 提交内部事实，唤醒受路由与预算约束；需要结果时不要把静默任务当作自动续轮。"
-        if snapshot["running"] else "当前没有运行中的后台任务。"
-    )
-    return json.dumps(snapshot, ensure_ascii=False)
-
-
-@deferred_tool(
-    name="terminate_background_task",
-    group="delegation", tags=["always"], source="mind.delegation",
-    description="终止一个运行中的后台任务（后台 shell / 后台委托）。"
-    "任务超时（收到超时提醒）或确认不再需要时由你决策调用；"
-    "终止请求受理后由执行方登记终态；可用 check_background_tasks 核对结果。",
-)
-async def terminate_background_task(task_id: str) -> str:
-    """终止当前会话的一个运行中后台任务。
-
-    Args:
-        task_id: check_background_tasks 返回的任务 ID
-    """
-    manager = _manager_or_none()
-    if manager is None:
-        return _manager_not_ready()
-    registry = getattr(manager._mind, "background_tasks", None) if manager._mind else None
-    if registry is None:
-        return tool_error("后台任务注册表未就绪", cause=ErrorCause.STATE, retryable=False)
-    from agent.mind.tool_activation import current_owner_scope
-    # killer 可能阻塞（shell 进程组击杀有 2s 宽限），放线程池执行
-    result = await asyncio.to_thread(
-        registry.terminate, current_owner_scope(), task_id,
-    )
-    if not result.get("ok"):
-        return tool_error(
-            result.get("error", "终止失败"),
-            cause=ErrorCause.NOT_FOUND, retryable=False,
-        )
-    return json.dumps(result, ensure_ascii=False)
 
 
 @deferred_tool(

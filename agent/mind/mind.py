@@ -379,7 +379,8 @@ class Mind:
                 self._set_phase(MindPhase.ACCEPTING)
             preview = str(anything)[:80] if anything else ""
             log(f"感知输入: {preview}", tag="思维")
-            await self.add_conversation(anything)
+            if not await self.add_conversation(anything):
+                return
             self._update_channel_snapshot(anything)
 
             # 用户话题指令抽取（ban-topic）：所有用户消息必经点，纯正则零 LLM，
@@ -1205,9 +1206,9 @@ class Mind:
         """从 DB 获取指定对象的对话历史。"""
         return await self.conversation_data.get_conversation_record_by_everything(anything)
 
-    async def add_conversation(self, anything: Everything) -> None:
-        """将消息写入对话历史。"""
-        await self.conversation_data.add_conversation_record_by_everything(anything)
+    async def add_conversation(self, anything: Everything) -> bool:
+        """写入对话历史，返回是否为新接收的消息。"""
+        return await self.conversation_data.add_conversation_record_by_everything(anything)
 
     async def _add_system_context(self, anything: Everything, content: str, role: str = "system") -> None:
         """向对话存储追加一条系统上下文消息。

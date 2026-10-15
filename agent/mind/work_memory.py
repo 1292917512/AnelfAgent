@@ -89,6 +89,7 @@ class WorkMemory:
 
         # scope → 最新消息信号（预览 / adapter 路由 / to_me / 消息类别）/ 未读计数
         self._pending_signals: dict[str, PendingSignal] = {}
+        self.message_revision = 0
         self._unread_counts: dict[str, int] = {}
         # 群聊 scope → 最近发送者 [(uid, name), ...]
         self._group_recent_senders: dict[str, list[tuple[str, str]]] = {}
@@ -317,6 +318,8 @@ class WorkMemory:
 
     async def add_task(self, anything: Everything) -> None:
         """将消息加入待处理队列，收集附带媒体，触发画像分析检查。"""
+        if anything.scope_type != "group" or bool(getattr(anything, "to_me", False)):
+            self.message_revision += 1
         scope = anything.entity_scope
         if anything.images:
             self._pending_images.setdefault(scope, []).extend(anything.images)
@@ -339,6 +342,15 @@ class WorkMemory:
         )
         if message_kind == "chat" and (anything.scope_type != "group" or signal.to_me):
             signal.last_addressed_ts_ns = max(signal.last_addressed_ts_ns, anything.created_ts_ns)
+        if previous is not None:
+            signal.first_unread_ts_ns = min(previous.first_unread_ts_ns or anything.created_ts_ns,
+                                          anything.created_ts_ns)
+            if anything.created_ts_ns < previous.created_ts_ns:
+                signal.message_id = previous.message_id
+                signal.created_ts_ns = previous.created_ts_ns
+                signal.preview = previous.preview
+                signal.to_me = previous.to_me
+                signal.kind = previous.kind
 
         self._unread_counts[scope] = self._unread_counts.get(scope, 0) + 1
         if isinstance(anything, EverythingGroup) and anything.is_group_scope:
@@ -545,7 +557,10 @@ class WorkMemory:
             _, _, gid, _ = parse_entity_scope(scope)
             signal = self._pending_signals.get(scope)
             result.append((scope, "0", gid, signal.preview if signal else ""))
-        return result
+        return sorted(result, key=lambda item: (
+            self._pending_signals[item[0]].first_unread_ts_ns
+            if item[0] in self._pending_signals else 0
+        ))
 
     def consume_scope_task(self, scope: str, *, through_ts: int | None = None) -> bool:
         """消费指定 scope 的待回复条目（含关联状态清理）。

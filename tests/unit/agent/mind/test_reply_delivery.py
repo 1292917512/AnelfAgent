@@ -157,7 +157,7 @@ async def test_waiting_progress_is_delivered_before_join_and_final_after_complet
     async def complete():
         if completion_timing == "during_delivery":
             return
-        while not mind.background_tasks._waiting.get(_SCOPE):
+        while not mind.background_tasks._wait_targets.get(_SCOPE):
             await asyncio.sleep(0.005)
         assert sender.await_args.args[2] == "任务已启动，正在等结果。"
         mind.background_tasks.complete(task_id, True, "42")

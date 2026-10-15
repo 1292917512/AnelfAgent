@@ -3,6 +3,16 @@
 `agent/delegation/`、`agent/workflow/` 与后台任务注册表的现状说明。修改委托、续跑、后台任务或
 工作流编排时按需阅读。
 
+## 通用后台任务
+
+`agent/mind/background_tasks.py` 负责按会话登记、等待和完成通知，生命周期由宿主管理。
+查询、等待和终止工具统一放在 `agent/mind/tools/background.py`，不依赖子代理是否启用。
+`wait_background_tasks(task_id, timeout)` 等待指定任务，超时只结束此次等待，不取消执行。
+新私聊或群聊 @ 到达会让等待返回，由 AI 在下一轮动态上下文中判断安排；不会自动改换回复目标。
+指定等待仅领取对应任务，其余完成事实仍按各自通知策略路由；等待被打断时未领取的结果转为通知。
+无独立工作时可用 `end_reply` 收束，后台完成后按原会话续接。状态摘要有界，完整结果按 ID 查询。
+任务登记保留发起轮次 ID，完成后继续更新该轮的 Web 状态，不挂到后来开始的其他会话。
+
 ## 子代理档案体系
 
 一套档案体系（llm_clients.json 顶层 `sub_agents` 键，schema 单一权威在 `agent/delegation/profile.py`，

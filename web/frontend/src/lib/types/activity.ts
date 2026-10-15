@@ -21,6 +21,7 @@ export type ActivityEntry =
   | EntryBase & { kind: "text"; content: string; truncated?: boolean }
   | EntryBase & { kind: "tool"; name: string; owner?: string; arguments: string; targets: ActivityTag[]; request_id: string; truncated?: boolean; status: "running" | "done" | "error" | "interrupted"; result?: string; duration_ms?: number }
   | EntryBase & { kind: "delegation"; goal: string; agent: string; status: string; run_id?: string; result?: string; duration_ms?: number; background: boolean }
+  | EntryBase & { kind: "background"; task_kind: string; description: string; status: "running" | "done" | "error" | "interrupted"; result?: string; duration_ms?: number }
   | EntryBase & { kind: "plan"; goal: string; status: string; files?: string; risks?: string; steps: { content: string; status: string; note: string }[] }
   | EntryBase & { kind: "model"; name: string; status: string; duration_ms?: number; ttft_ms?: number | null; error?: string; usage?: { total_input_tokens?: number; completion_tokens?: number; cache_read_input_tokens?: number; cache_observable?: boolean } }
   | EntryBase & ChatStreamingDiff & { kind: "file" };

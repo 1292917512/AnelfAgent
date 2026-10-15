@@ -15,7 +15,7 @@ def background_context(registry: BackgroundTaskRegistry | None, scope: str) -> s
         return ""
     tasks = registry.running(scope)
     recent = [result for result in registry.completed(scope)
-              if result.kind == "llm_hook" and time.time() - result.finished_at < 300][-3:]
+              if time.time() - result.finished_at < 300][-3:]
     if not tasks and not recent:
         return ""
     lines = [f"[后台任务] 当前会话 {len(tasks)} 项运行中；受理不代表完成，勿重复启动。"]
@@ -34,7 +34,7 @@ def background_context(registry: BackgroundTaskRegistry | None, scope: str) -> s
         idle = max(0, int(time.time() - float(progress.get("updated_at", task.started_at))))
         lines.append(f"{labels} 已耗时 {max(0, int(task.elapsed))} 秒，距最近进展 {idle} 秒：{description}"
                      + (f"；当前 {operation}" if operation else ""))
-    lines.append("耗时/暂无进展仅为事实，不代表失败。check_background_tasks(task_id=...) 查看详情；确认无需继续时 terminate_background_task。当前任务用 end_reply 收束。")
+    lines.append("耗时/暂无进展仅为事实，不代表失败。check_background_tasks(task_id=...) 查看详情；需要结果时 wait_background_tasks(task_id=...)；确认无需继续时 terminate_background_task。当前任务用 end_reply 收束。")
     if len(tasks) > 8:
         lines.append(f"另有 {len(tasks) - 8} 项；check_background_tasks 可查询完整状态。")
     for result in recent:

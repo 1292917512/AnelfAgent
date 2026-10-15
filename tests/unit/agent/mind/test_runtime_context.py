@@ -66,9 +66,9 @@ async def test_observation_does_not_consume_completion():
     registry = BackgroundTaskRegistry()
     task = registry.register("user_qq:1", "delegation", "核对状态")
     background_context(registry, "user_qq:1")
-    registry._waiting["user_qq:1"] = 1
+    registry._wait_targets["user_qq:1"] = [""]
     registry.complete(task, False, "读取失败，需要修正路径")
-    assert background_context(registry, "user_qq:1") == ""
+    assert "读取失败" in background_context(registry, "user_qq:1")
     result = await registry.wait_any("user_qq:1", timeout=0)
     assert len(result.completions) == 1
     assert result.completions[0].success is False

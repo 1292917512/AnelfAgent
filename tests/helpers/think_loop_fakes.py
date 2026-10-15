@@ -68,6 +68,7 @@ class FakePfc:
     def __init__(self, exec_layer: bool = False) -> None:
         self.exec_layer = exec_layer
         self.pending_tasks: list = []
+        self.message_revision = 0
         self.adapter_keys: dict = {}
 
     def build_execution_context(self, *a, **kw) -> dict:

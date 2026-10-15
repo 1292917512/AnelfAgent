@@ -5,6 +5,21 @@ import { expect, it } from "vitest";
 import type { ActivityEntry } from "@/lib/types/activity";
 import { ActivityEntryView } from "./ActivityEntryView";
 
+it("renders background status compactly and mounts results only when inspected", async () => {
+  const user = userEvent.setup();
+  const entry: Extract<ActivityEntry, { kind: "background" }> = {
+    id: "image-task", kind: "background", task_kind: "vision", ts: Date.now() / 1000,
+    description: "Read error from image", status: "running",
+  };
+  const view = (task: typeof entry) => <MemoryRouter><ActivityEntryView entry={task} current={false} live={false} onReveal={() => {}} /></MemoryRouter>;
+  const { rerender } = render(view(entry));
+  expect(screen.getByText(entry.description)).toBeTruthy();
+  rerender(view({ ...entry, status: "done", duration_ms: 2500, result: "Detailed image result" }));
+  expect(screen.queryByText("Detailed image result")).toBeNull();
+  await user.click(screen.getByRole("button", { name: /View details:/ }));
+  expect(screen.getByText("Detailed image result")).toBeTruthy();
+});
+
 it("shows live reasoning, unmounts it at completion, and expands from the model row", async () => {
   const user = userEvent.setup();
   const entry: Extract<ActivityEntry, { kind: "model" }> = { id: "llm", kind: "model", ts: Date.now() / 1000, name: "Test model", status: "running" };

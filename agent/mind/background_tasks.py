@@ -10,6 +10,10 @@
 - 等待是协作式的：1 秒粒度轮询，可响应中断信号与新消息到达（由调用方
   通过 should_abort 传入），不阻塞事件循环。
 - 进程内实现：后台任务本身是 asyncio.Task，进程退出即失效，无持久化需求。
+
+模型可见：任务 ID、状态及完成结果经工具回执或所属会话的内部通知送达。
+Token：状态摘要有界，完整结果按 ID 查询；等待不调用模型轮询。
+缓存：后台状态仅在动态区和工具结果中更新，不修改稳定前缀。
 """
 from __future__ import annotations
 
@@ -21,10 +25,15 @@ import uuid
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Coroutine, Dict, List, Optional
 
 from agent.mind.background_evidence import TaskEvidence
+from core.activity import EVENT_BACKGROUND_TASK_UPDATED, current_activity_id
+from core.event_bus import event_bus
 from core.log import log
+from core.tags import tag_label
+from core.tool_errors import ErrorCause, error_from_exception, tool_error
+from core.tool_results import extract_error_text
 
 # 等待循环的轮询粒度（秒）：平衡事件响应延迟与空转开销
 _POLL_INTERVAL = 1.0
@@ -60,6 +69,7 @@ class BackgroundTaskInfo:
     expected_seconds: float = 0.0
     notification: CompletionNotification = CompletionNotification.ALWAYS
     joinable: bool = True
+    turn_id: str = ""
 
     @property
     def elapsed(self) -> float:
@@ -130,8 +140,9 @@ class BackgroundTaskRegistry:
     def __init__(self) -> None:
         self._records: Dict[str, _TaskRecord] = {}
         self._events: Dict[str, asyncio.Event] = {}
-        # scope -> 正在 wait_any 中挂起的等待者数量（轮内会合判定依据）
-        self._waiting: Dict[str, int] = {}
+        self._wait_targets: dict[str, list[str]] = {}
+        self._tasks: set[asyncio.Task[Any]] = set()
+        self._closing = False
         # task_id -> 增量输出已消费的字节偏移（read_task_output 单游标）
         self._output_cursors: Dict[str, int] = {}
         # 主事件循环（bind_loop 绑定；工作线程完成任务时经 call_soon_threadsafe 回到循环）
@@ -186,11 +197,84 @@ class BackgroundTaskRegistry:
                 expected_seconds=expected_seconds,
                 notification=notification,
                 joinable=joinable,
+                turn_id=current_activity_id.get(),
             ),
         )
         self._purge_completed(scope or "_global")
         log(f"后台任务已登记: {task_id} [{kind}] {description[:60]}", tag="后台")
+        self._publish(task_id)
         return task_id
+
+    def _track(self, operation: Coroutine[Any, Any, Any], *, name: str) -> asyncio.Task[Any]:
+        """持有后台协程，关停时统一等待或取消。"""
+        task = asyncio.create_task(operation, name=name)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
+
+    def submit(self, scope: str, kind: str, description: str,
+               operation: Callable[[], Awaitable[str]]) -> str:
+        """提交返回 JSON 的工具操作，保留结果并按会话通知完成。"""
+        if self._closing:
+            raise RuntimeError("后台任务服务正在关闭")
+        task_id = self.register(scope, kind, description)
+
+        async def run() -> None:
+            token = current_background_task_id.set(task_id)
+            try:
+                result = await operation()
+                success = not extract_error_text(result)
+                self.complete(task_id, success, result)
+            except Exception as exc:
+                self.complete(task_id, False, error_from_exception(exc, action=description))
+            finally:
+                current_background_task_id.reset(token)
+
+        task = self._track(run(), name=f"background.{kind}.{task_id}")
+
+        def finish_cancelled(done: asyncio.Task[Any]) -> None:
+            if done.cancelled():
+                self.complete(task_id, False, tool_error(
+                    "后台任务已取消", cause=ErrorCause.STATE, retryable=False, cancelled=True,
+                ))
+
+        task.add_done_callback(finish_cancelled)
+        loop = asyncio.get_running_loop()
+
+        def cancel() -> bool:
+            if task.done():
+                return False
+            loop.call_soon_threadsafe(task.cancel)
+            return True
+
+        self.attach_killer(task_id, cancel)
+        return task_id
+
+    def _publish(self, task_id: str) -> None:
+        """发布任务事实，展示层不自行猜测后台是否完成。"""
+        if self._loop is not None and self._loop.is_running() and threading.current_thread() is not threading.main_thread():
+            self._loop.call_soon_threadsafe(self._publish, task_id)
+            return
+        rec = self._records.get(task_id)
+        if rec is None or not rec.info.turn_id or self._closing:
+            return
+        payload = {"turn_id": rec.info.turn_id, "task_id": task_id, "scope": rec.info.scope,
+                   "kind": rec.info.kind, "description": rec.info.description,
+                   "status": ("done" if rec.success else "error") if rec.done else "running",
+                   "started_at": rec.info.started_at, "finished_at": rec.finished_at,
+                   "result": rec.summary, "notification": rec.info.notification.value}
+        self._track(event_bus.emit(EVENT_BACKGROUND_TASK_UPDATED, payload), name="background.publish")
+
+    async def close(self) -> None:
+        """停止接收任务并回收本注册表托管的协程和提醒计时器。"""
+        self._closing = True
+        for rec in self._records.values():
+            if rec.stall_timer is not None:
+                rec.stall_timer.cancel()
+        for task in list(self._tasks):
+            task.cancel()
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
 
     def attach_killer(self, task_id: str, killer: Callable[[], bool]) -> None:
         """为任务关联终止句柄（terminate 用；shell 进程组击杀 / 委托取消）。"""
@@ -380,7 +464,8 @@ class BackgroundTaskRegistry:
             claimed_override = True
 
         claimed = (
-            self._waiting.get(rec.info.scope, 0) > 0
+            any(target == task_id or (not target and rec.info.joinable)
+                for target in self._wait_targets.get(rec.info.scope, []))
             if claimed_override is None else claimed_override
         )
         if not claimed or claimed_override is True:
@@ -394,22 +479,36 @@ class BackgroundTaskRegistry:
             f"{'轮内会合' if claimed else '轮外通知'}",
             tag="后台",
         )
+        self._publish(task_id)
         # 轮外完成（无等待者）：触发回调（由 Mind 注册，写对话历史并排入
         # 回复队列触发新 REPLY；非 conversation scope 由回调侧全局桶兜底）。
         # 通知失败时恢复未送达标记——先标记后投递会让回调异常静默丢通知
-        if not claimed and self._on_unclaimed is not None:
-            result = self._on_unclaimed(
-                rec.info.scope, rec.info.description, summary[:1500], success,
-            )
-            if inspect.iscoroutine(result):
-                async def _guarded_notify() -> None:
-                    try:
-                        await result
-                    except Exception as exc:
-                        rec.delivered = False
-                        log(f"后台任务完成通知失败: {task_id}: {exc}", "ERROR", tag="后台")
-                asyncio.ensure_future(_guarded_notify())
+        if not claimed:
+            self._notify(rec)
         return claimed
+
+    def _notify(self, rec: _TaskRecord) -> None:
+        """投递未被等待者领取的结果；失败时保留查询和再次领取的机会。"""
+        if self._on_unclaimed is None or self._closing:
+            return
+        rec.delivered = True
+        try:
+            result = self._on_unclaimed(
+                rec.info.scope, rec.info.description,
+                tag_label("task_id", rec.info.task_id) + " " + rec.summary[:1500], rec.success,
+            )
+        except Exception as exc:
+            rec.delivered = False
+            log(f"后台任务完成通知失败: {rec.info.task_id}: {exc}", "ERROR", tag="后台")
+            return
+        if inspect.isawaitable(result):
+            async def notify() -> None:
+                try:
+                    await result
+                except Exception as exc:
+                    rec.delivered = False
+                    log(f"后台任务完成通知失败: {rec.info.task_id}: {exc}", "ERROR", tag="后台")
+            self._track(notify(), name="background.notify")
 
     def alert_timeout(self, task_id: str, detail: str) -> None:
         """任务超过预期时长仍在运行：向 AI 发送提醒（不改变任务状态，线程安全）。
@@ -442,7 +541,7 @@ class BackgroundTaskRegistry:
                     await result
                 except Exception as exc:
                     log(f"后台进度提醒失败: {task_id}: {exc}", "ERROR", tag="后台")
-            asyncio.ensure_future(notify())
+            self._track(notify(), name="background.alert")
 
     def terminate(self, scope: str, task_id: str) -> Dict[str, Any]:
         """终止一个运行中的后台任务（AI 决策调用；killer 阻塞时调用方应放线程池）。
@@ -515,7 +614,8 @@ class BackgroundTaskRegistry:
                     "kind": c.kind,
                     "description": c.description,
                     "success": c.success,
-                    "summary": c.summary,
+                    "summary": c.summary[:500],
+                    "finished_at": c.finished_at,
                     "notification": c.notification.value,
                 }
                 for c in self.completed(scope)
@@ -531,8 +631,9 @@ class BackgroundTaskRegistry:
             scope: str,
             timeout: float,
             should_abort: Optional[Callable[[], Awaitable[bool]]] = None,
+            *, task_id: str = "",
     ) -> WaitResult:
-        """挂起等待该 scope 任一后台任务完成。
+        """挂起等待该 scope 任一后台任务或指定任务完成。
 
         1 秒粒度轮询，每轮检查 should_abort（中断信号/新消息到达），
         超时或被打断时安全返回，不消费任何完成事件。
@@ -541,13 +642,24 @@ class BackgroundTaskRegistry:
             scope: 对话 scope
             timeout: 等待上限（秒）
             should_abort: 可选的中止判定（返回 True 立即以 interrupted 结束）
+            task_id: 指定时仅等待该任务，已完成的任务直接返回保留结果。
         """
+        if task_id:
+            rec = self._records.get(task_id)
+            if rec is None or rec.info.scope != scope:
+                raise ValueError("任务不存在或不属于当前会话")
+            if rec.done:
+                rec.delivered = True
+                return WaitResult(reason="completed", completions=[rec.to_completion()])
         event = self._events.setdefault(scope, asyncio.Event())
-        self._waiting[scope] = self._waiting.get(scope, 0) + 1
+        self._wait_targets.setdefault(scope, []).append(task_id)
         deadline = time.monotonic() + max(0.0, timeout)
         try:
             while True:
-                fresh = self._collect_undelivered(scope)
+                selected = self._records.get(task_id) if task_id else None
+                fresh = ([selected] if selected and selected.done else []) if task_id else [
+                    rec for rec in self._collect_undelivered(scope) if rec.info.joinable
+                ]
                 if fresh:
                     for rec in fresh:
                         rec.delivered = True
@@ -566,10 +678,15 @@ class BackgroundTaskRegistry:
                 if should_abort is not None and await should_abort():
                     return WaitResult(reason="interrupted")
         finally:
-            self._waiting[scope] = max(0, self._waiting.get(scope, 1) - 1)
+            self._wait_targets[scope].remove(task_id)
+            if not self._wait_targets[scope]:
+                self._wait_targets.pop(scope)
+            for rec in self._collect_undelivered(scope):
+                if not any(target == rec.info.task_id or (not target and rec.info.joinable)
+                           for target in self._wait_targets.get(scope, [])):
+                    self._notify(rec)
             # scope 无等待者且无运行中任务时回收事件与计数，防按 scope 无限累积
-            if self._waiting[scope] == 0 and not self.running(scope):
-                self._waiting.pop(scope, None)
+            if scope not in self._wait_targets and not self.running(scope):
                 if not self._collect_undelivered(scope):
                     self._events.pop(scope, None)
 

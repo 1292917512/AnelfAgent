@@ -12,7 +12,7 @@ type View = "recollection" | "background" | "judgments";
 const views = [{ id: "recollection", icon: Brain }, { id: "background", icon: Webhook }, { id: "judgments", icon: Gauge }] as const;
 function matches(entry: ActivityEntry, view: View): boolean {
   if (view === "judgments") return entry.kind === "hook" && !!entry.judgments?.length;
-  if (view === "background") return (entry.kind === "hook" && entry.mode === "async") || (entry.kind === "delegation" && entry.background);
+  if (view === "background") return entry.kind === "background" || (entry.kind === "hook" && entry.mode === "async") || (entry.kind === "delegation" && entry.background);
   return entry.kind === "context" || (entry.kind === "hook" && (entry.name.startsWith("memory.") || entry.name.startsWith("skills.")));
 }
 

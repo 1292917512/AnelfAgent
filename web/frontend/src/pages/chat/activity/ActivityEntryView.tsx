@@ -16,6 +16,7 @@ import { HookExecutionRow } from "@/components/common/HookExecutionRow";
 import { ActivityToolSummary } from "./ActivityToolSummary";
 import { ActivityInspector } from "./ActivityInspector";
 import { ActivityNotice } from "./ActivityNotice";
+import { ActivityBackground } from "./ActivityBackground";
 import { ToolContribution } from "@/components/extensions/ToolContribution";
 import type { ActivityThought } from "./activity-stream";
 
@@ -47,6 +48,7 @@ export const ActivityEntryView = memo(function ActivityEntryView({ entry, though
   const [expanded, setExpanded] = useState<boolean | null>(null);
   const now = useNow((entry.kind === "tool" || entry.kind === "delegation") && (entry.status === "running" || entry.status === "queued"));
   if (entry.kind === "notice") return <ActivityNotice entry={entry} />;
+  if (entry.kind === "background") return <ActivityBackground entry={entry} />;
   if (entry.kind === "context") return <ActivityContext entry={entry} />;
   if (entry.kind === "hook") return <HookExecutionRow run={{ ...entry, started_at: entry.ts }} defaultExpanded={current} />;
   if (entry.kind === "file") return <DiffView {...entry} />;

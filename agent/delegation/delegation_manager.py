@@ -1156,13 +1156,6 @@ class DelegationManager:
             log(f"后台委托结果路由失败: {delegation_id}: {exc}", "ERROR", tag="委托")
         log(f"后台委托完成: {delegation_id} ({status})", tag="委托")
 
-    def background_tasks_snapshot(self, scope: str) -> Dict[str, Any]:
-        """当前 scope 后台任务状态快照（check_background_tasks 工具用）。"""
-        registry = getattr(self._mind, "background_tasks", None)
-        if registry is None:
-            return {"running": [], "completed": []}
-        return registry.snapshot(scope)
-
     # ------------------------------------------------------------------
     # 结果聚合
     # ------------------------------------------------------------------

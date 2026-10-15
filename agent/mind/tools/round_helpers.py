@@ -557,9 +557,12 @@ async def _suspend_for_background(
     由循环顶部统一并入新消息 / 处理中断，时序不受挂起影响。
     """
     log(f"检测到等待意图，挂起等待后台任务 (scope={scope}, 上限 {timeout:.0f}s)", tag="思维")
+    initial_revision = mind.pfc.message_revision
 
     async def _aborted() -> bool:
         if interrupts is not None and interrupts.is_requested(scope):
+            return True
+        if mind.pfc.message_revision != initial_revision:
             return True
         return bool(await _fetch_new_messages(mind, anything, since_ts, since_id))
 

@@ -90,7 +90,7 @@ async def execute_reply(mind: Mind, decision: Decision) -> None:
     """执行回复决策：解析目标、收集媒体，然后进入多轮思考循环。"""
     target = decision.target or ""
     anything = resolve_reply_target(mind, target)
-    if not anything:
+    if not anything and not target:
         anything = await pop_next_reply_target(mind)
     if not anything:
         return

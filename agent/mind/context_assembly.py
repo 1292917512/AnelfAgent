@@ -263,10 +263,8 @@ class ContextAssembly:
         lines.append("")
         lines.append(PARALLEL_CALL_HINT)
 
-        # 后台任务行为规范：仅子代理委托启用时注入（无后台任务来源则规则无意义）
-        if _delegation_enabled():
-            lines.append("")
-            lines.append(BACKGROUND_TASK_HINT)
+        lines.append("")
+        lines.append(BACKGROUND_TASK_HINT)
 
         # 代码编排路由纪律：实体启用时注入（配置在进程期恒定，stable 层字节稳定）
         if _codebox_enabled():

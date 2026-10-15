@@ -22,7 +22,11 @@
 
 ## 非视觉模型的图片识别
 
-`recognize_image` 将图片与调用方的分析要求交给模型 SDK，结果通过工具回执进入主模型上下文。
+`recognize_image` / `recognize_video` 将媒体与调用方的分析要求交给模型 SDK。辅助识别默认
+`background=true`，立即返回任务 ID；完成事实通过所属会话的内部通知或主动等待返回。
+`background=false` 同步返回识别结果。主模型原生看本地图片仍直接注入原图，不创建后台任务。
+任务复用 `BackgroundTaskRegistry`：`check_background_tasks` 查询，`wait_background_tasks` 等待，
+`terminate_background_task` 请求取消；进程关停回收协程，不持久化运行任务。
 识图调用不继承整段会话；`prompt` 应说明识别目标和必要背景。本地路径、图片 Data URL 和远程
 URL 共用异步准备流程，读取与压缩放工作线程，同次调用的模型回退复用准备结果。支持 Base64
 的模型优先接收下载后的图片，仅支持 URL 的模型直接接收原链接；本地图片不会发送给 URL-only 模型。

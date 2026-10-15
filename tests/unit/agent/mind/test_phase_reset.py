@@ -307,6 +307,14 @@ class TestReplyPhaseReset:
 
 
 class TestAcceptFeelPhaseReset:
+    async def test_duplicate_delivery_does_not_enqueue_again(self) -> None:
+        mind = _bare_mind()
+        self._wire_accept_fakes(mind)
+        mind.add_conversation.return_value = False
+        await mind.accept_feel(self._anything(trigger_mind=True))
+        mind.pfc.add_task.assert_not_awaited()
+        assert mind.phase is MindPhase.IDLE
+
     def _wire_accept_fakes(self, mind: Any) -> None:
         mind.add_conversation = AsyncMock()
         mind._reflecting = False

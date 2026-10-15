@@ -32,15 +32,18 @@ PARALLEL_CALL_HINT = (
     "# 并行工具调用\n"
     "同一轮可以发起多个工具调用（原生并行），参数已确定的独立操作应一次性全部发起，减少对话轮次。\n"
     "需要让用户看到的内容放在 send_message 参数中发送并核对回执；不要用普通正文代替发送工具。\n"
-    "**end_reply 会彻底结束本轮对话，不存在「下一轮再继续」——文字中声明要做的操作，"
-    "必须在调用 end_reply 之前实际发起工具调用，只说不做等于放弃。**"
+    "end_reply 结束本轮，未发起的工作不会自动继续。承诺执行的操作须先实际调用工具；"
+    "已登记的后台任务会按各自通知策略续接。"
 )
 
 BACKGROUND_TASK_HINT = (
     "# 后台任务\n"
-    "delegate_task(background=true) 启动的后台任务，完成时系统会自动通知你（触发新一轮对话），无需守候。\n"
-    "- 想查进度 → 调用 check_background_tasks\n"
-    "- 想等结果 → 告知用户后调用 end_reply 结束本轮，完成时你会被自动唤醒"
+    "返回 background=true/task_id 只表示已启动，不能据此宣称完成或猜测识别结果。\n"
+    "有独立工作可继续执行；需要某项结果时用 wait_background_tasks(task_id=...) 挂起等待，"
+    "不要反复查询空输出。timeout 仅结束本次等待，不取消任务。\n"
+    "无其他工作时可 end_reply 暂停本轮；完成通知按任务 notification 策略进入所属会话，"
+    "不代表已向用户发送。silent 任务需主动查询。用 check_background_tasks 核对结果，"
+    "确认不再需要时用 terminate_background_task。"
 )
 
 CODE_ORCHESTRATION_RULES = (

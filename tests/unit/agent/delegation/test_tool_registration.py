@@ -13,8 +13,6 @@ from pathlib import Path
 
 EXPECTED_TOOLS = {
     "delegate_task",
-    "check_background_tasks",
-    "terminate_background_task",
     "send_to_agent",
     "follow_up_agent",
 }
@@ -30,7 +28,7 @@ def _schema_names() -> set:
 
 class TestDelegationGroupRegistration:
     def test_activation_registers_all_tools(self) -> None:
-        """机制层：delegate_tool 已导入时 activate_group 注册全部 5 个工具。
+        """机制层：delegate_tool 已导入时 activate_group 注册全部委托工具。
 
         共享测试会话中组可能已被先前用例激活（弹出后注册表为空），
         两种情况都断言注册表终态完整。

@@ -91,6 +91,11 @@ class PrefrontalCortex:
         """动态工具集版本号（tag 激活/动态发现变化时递增）。"""
         return self.tool_assembly.tools_version
 
+    @property
+    def message_revision(self) -> int:
+        """待处理消息的到达序号；跨频道新消息可唤醒协作等待，不改变当前回复目标。"""
+        return self.work_memory.message_revision
+
     # ==================================================================
     # WorkMemory 委托
     # ==================================================================

@@ -164,7 +164,7 @@ _IDEMPOTENT_PREFIXES = (
 
 # 无进展检测豁免：系统提示明确鼓励用这些工具轮询等待，
 # 同参数同结果是正常等待行为而非死循环
-_NO_PROGRESS_EXEMPT_TOOLS = frozenset({"check_background_tasks"})
+_NO_PROGRESS_EXEMPT_TOOLS = frozenset({"check_background_tasks", "wait_background_tasks"})
 
 
 def is_idempotent_tool(tool_name: str) -> bool:

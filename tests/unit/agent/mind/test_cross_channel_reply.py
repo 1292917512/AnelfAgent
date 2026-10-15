@@ -55,6 +55,24 @@ def _pfc() -> PrefrontalCortex:
 
 
 class TestCrossChannelIsolation:
+    async def test_late_message_preserves_latest_preview_and_earliest_unread(self) -> None:
+        pfc = _pfc()
+        await pfc.add_task(MessageUser(uid="1", adapter_key="webui", session_id="a",
+                                      text_content="latest", adapter_message_id="new", created_ts_ns=200))
+        await pfc.add_task(MessageUser(uid="1", adapter_key="webui", session_id="a",
+                                      text_content="older", adapter_message_id="old", created_ts_ns=100))
+        signal = pfc.get_pending_signal("user_webui:1#a")
+        assert signal.preview == "latest" and signal.message_id == "new"
+        assert signal.created_ts_ns == 200 and signal.first_unread_ts_ns == 100
+        assert pfc.get_unread_count("user_webui:1#a") == 2
+
+    async def test_waiting_order_does_not_prioritize_private_over_older_mention(self) -> None:
+        pfc = _pfc()
+        await pfc.add_task(MessageUser(uid="1", adapter_key="webui", text_content="new", created_ts_ns=200))
+        await pfc.add_task(MessageGroupUser(uid="2", group_id="42", adapter_key="qq", to_me=True,
+                                           text_content="old", created_ts_ns=100))
+        assert [row[0] for row in pfc.peek_all_tasks()] == ["group_qq:42", "user_webui:1"]
+
     async def test_reply_target_keeps_diagnostic_message_id_out_of_model_and_reply_to(self) -> None:
         pfc = _pfc()
         await pfc.add_task(MessageGroupUser(
