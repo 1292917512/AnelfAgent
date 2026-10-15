@@ -37,17 +37,20 @@ async def test_timeout_configuration_reaches_model(settings, manager, monkeypatc
     assert kwargs["max_retries"] == 0 and kwargs["purpose"] == "guardian"
 
 
-async def test_timeout_cancels_inflight_request(settings, manager):
-    settings["current"] = replace(settings["current"], timeout=0.01)
+async def test_timeout_cancels_inflight_request(settings, manager, monkeypatch):
+    timeout = asyncio.timeout(None)
+    monkeypatch.setattr("agent.approval.guardian.asyncio", SimpleNamespace(timeout=lambda _: timeout))
     cancelled = asyncio.Event()
     async def hang(*args, **kwargs):
         try:
+            timeout.reschedule(asyncio.get_running_loop().time())
             await asyncio.Event().wait()
         finally:
             cancelled.set()
     manager.chat_with_fallback.side_effect = hang
     verdict = await ApprovalGuardian().review(tool_name="t", tool_args={}, reason="", risk_level="high")
     assert verdict.approved is None and "总时限" in verdict.rationale
+    manager.chat_with_fallback.assert_awaited_once()
     assert cancelled.is_set()
 
 
