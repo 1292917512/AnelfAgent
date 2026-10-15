@@ -8,6 +8,7 @@ import json
 import threading
 import time
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -55,6 +56,63 @@ def _configure_without_models(
         client._configured = True
 
     return configure
+
+
+@pytest.mark.parametrize("expire_total", [False, True])
+async def test_client_distinguishes_internal_timeout_from_pipeline_deadline(expire_total):
+    cancelled = asyncio.Event()
+    source = TimeoutError("provider timed out")
+
+    async def cognify(**_kwargs):
+        if not expire_total:
+            raise source
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    client = CogneeClient(CogneeConfig())
+    client._configured = True
+    client._module = SimpleNamespace(cognify=cognify)
+    with pytest.raises(TimeoutError) as caught:
+        await client._call("cognify", timeout=0.01 if expire_total else 120)
+    if expire_total:
+        assert "总时限已到" in str(caught.value)
+        assert cancelled.is_set()
+    else:
+        assert "内部步骤超时" in str(caught.value)
+        assert "provider timed out" in str(caught.value)
+        assert caught.value.__cause__ is source
+
+
+async def test_client_preserves_caller_context_and_propagates_cancellation():
+    context = ContextVar("cognee_call_test", default="host")
+    started, cancelled = asyncio.Event(), asyncio.Event()
+
+    async def cognify(**_kwargs):
+        context.set("pipeline")
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    client = CogneeClient(CogneeConfig())
+    client._configured = True
+    client._module = SimpleNamespace(cognify=cognify)
+
+    async def caller():
+        try:
+            await client.cognify()
+        finally:
+            assert context.get() == "host"
+
+    task = asyncio.create_task(caller())
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert cancelled.is_set()
 
 
 @pytest.mark.asyncio
@@ -1492,6 +1550,39 @@ async def test_projection_failure_keeps_legacy_data_and_permanent_error_stops_re
     await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
     assert client.deleted == [("dataset-id", "legacy-id")]
     assert (await store.get_cognee_mapping(entry_id))["data_id"] == f"data-{entry_id}"
+
+
+async def test_cognify_timeout_keeps_projection_pending_and_retries_same_document(store, monkeypatch):
+    from cognee.modules.pipelines.exceptions import CognifyFailedError
+
+    store.set_cognee_projection_enabled(True)
+    entry_id = await store.add(MemoryEntry(content="pending extraction", memory_type=MemoryType.SEMANTIC))
+    client = _FakeCogneeClient()
+    client.cognify = AsyncMock(side_effect=CognifyFailedError(
+        dataset_name="anelf_global", error_class="TimeoutError", error_message=None,
+    ))
+    warning = Mock()
+    monkeypatch.setattr("agent.memory.cognee.coordinator.log", warning)
+    coordinator = CogneeCoordinator(store, client, CogneeConfig())
+    items = await store.claim_cognee_sync_batch(10)
+    await coordinator._process_batch(items)
+    assert await store.get_cognee_mapping(entry_id) is None
+    assert await store.get_cognee_sync_status() == {"pending": 1, "failed": 0, "synced": 0}
+    assert not await store.claim_cognee_sync_batch(10)
+    assert coordinator._last_error.count("CognifyFailedError:") == 1
+    assert "TimeoutError" in coordinator._last_error
+    assert "422" not in coordinator._last_error
+    assert "raise_on_error=False" not in coordinator._last_error
+    assert "stage:cognify" in warning.call_args.args[0]
+    assert "耗时" in warning.call_args.args[0]
+
+    retry_time = time.time_ns() + 2_000_000_000
+    monkeypatch.setattr("agent.memory.store.cognee_queue.time.time_ns", lambda: retry_time)
+    client.cognify = AsyncMock()
+    await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
+    assert client.items[0]["data_id"] == client.items[1]["data_id"]
+    assert await store.get_cognee_sync_status() == {"pending": 0, "failed": 0, "synced": 1}
+    assert coordinator._last_error == ""
 
 
 def test_existing_embedding_data_adopts_identity_without_rebuilding(tmp_path):

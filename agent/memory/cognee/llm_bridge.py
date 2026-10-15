@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import math
 from typing import Any, Optional
 
+from agent.llm.config import DEFAULT_TIMEOUT
 from agent.llm.reasoning import parse_thinking_spec, resolve_thinking_value, set_nested_field, to_litellm_effort
 from core.log import log
 
@@ -240,12 +242,16 @@ def _build_llm_args(cfg: Any, chat_cfg: CogneeChatModelConfig) -> dict[str, Any]
         max_tokens = chat_cfg.max_completion_tokens or _DEFAULT_EXTRACTION_MAX_TOKENS
         budget = max(1024, min(_THINKING_BUDGET_TOKENS, max_tokens - 1024))
         extra_body["thinking"] = {"type": "enabled", "budget_tokens": budget}
-    llm_args: dict[str, Any] = {}
+    llm_args: dict[str, Any] = {"timeout": getattr(cfg, "timeout", DEFAULT_TIMEOUT)}
     if "reasoning_effort" in extra_body:
         llm_args["reasoning_effort"] = extra_body.pop("reasoning_effort")
     if extra_body:
         llm_args["extra_body"] = extra_body
     llm_args.update(copy.deepcopy(chat_cfg.extra_args))
+    timeout = llm_args["timeout"]
+    if (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+            or not math.isfinite(timeout) or timeout <= 0):
+        raise CogneeConfigError("抽取模型 timeout 必须是大于 0 的有限秒数")
     return llm_args
 
 
@@ -283,7 +289,6 @@ def _ensure_extraction_budget(
         raise CogneeConfigError("模型输出上限必须大于 0")
     llm_args.pop("max_completion_tokens", None)
     llm_args["max_tokens"] = budget
-    llm_args.setdefault("timeout", 60.0)
     payload["llm_max_completion_tokens"] = budget
     thinking = llm_args.get("extra_body", {}).get("thinking", {})
     if isinstance(thinking, dict) and thinking.get("budget_tokens", 0) >= budget:

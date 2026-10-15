@@ -558,6 +558,8 @@ class CogneeCoordinator:
         """先完成新投影再替换旧映射；稳定文档 ID 使失败重试不新增副本。"""
         metadata_key = "anelf_graph_node_id" if graph else "anelf_memory_id"
         label_kind = "graph-node" if graph else "memory"
+        stage = "prepare"
+        started = time.monotonic()
         try:
             data_items: list[Any] = []
             for item, document, _fingerprint in entries:
@@ -573,15 +575,18 @@ class CogneeCoordinator:
                     },
                 ))
             self._breaker.observe()
+            stage = "add"
             ingestion = await self.client.add(
                 data_items, dataset_name=dataset_name, incremental_loading=True,
             )
             dataset_id = str(_value(ingestion, "dataset_id", ""))
             if not dataset_id:
                 raise RuntimeError("Cognee 摄入未返回 dataset_id，保留旧投影")
+            stage = "cognify"
             await self.client.cognify(datasets=[dataset_name], incremental_loading=True)
             self._breaker.observe()
             await self._maybe_improve(dataset_name)
+            stage = "replace_projection"
             for (item, _document, fingerprint), data_item in zip(entries, data_items, strict=True):
                 data_id = str(_value(data_item, "data_id", ""))
                 if not data_id:
@@ -607,6 +612,11 @@ class CogneeCoordinator:
             self._last_error = ""
         except Exception as exc:
             self._last_error = _error_text(exc)
+            log(
+                f"Cognee 同步失败 [stage:{stage}][dataset:{dataset_name}] "
+                f"{len(entries)} 条，耗时 {time.monotonic() - started:.1f}s: {self._last_error}",
+                "WARNING", tag="思维",
+            )
             for item, _doc, _fingerprint in entries:
                 await self._fail(item, exc)
 
@@ -676,8 +686,16 @@ class CogneeCoordinator:
 
 def _error_text(exc: BaseException) -> str:
     """生成可见的错误描述；asyncio.TimeoutError 等异常的 str() 为空。"""
+    name = type(exc).__name__
+    cause = getattr(exc, "error_class", None)
+    if cause and hasattr(exc, "error_message"):
+        message = getattr(exc, "error_message", None) or "底层未提供错误详情"
+        dataset = getattr(exc, "dataset_name", None)
+        return f"{name}: {cause}: {message}" + (f"（数据集: {dataset}）" if dataset else "")
     text = str(exc).strip()
-    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+    if not text:
+        return name
+    return text if text.startswith(f"{name}:") else f"{name}: {text}"
 
 
 def _value(item: Any, key: str, default: Any) -> Any:

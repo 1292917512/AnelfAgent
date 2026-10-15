@@ -31,6 +31,7 @@ class _FakeClientConfig:
         supports_forced_tool_choice: bool = True,
         supports_reasoning: bool = False,
         extra_body: dict | None = None,
+        timeout: float = 60.0,
     ) -> None:
         self.name = name
         self.enabled = True
@@ -42,6 +43,7 @@ class _FakeClientConfig:
         self.supports_forced_tool_choice = supports_forced_tool_choice
         self.supports_reasoning = supports_reasoning
         self.extra_body = extra_body or {}
+        self.timeout = timeout
 
     @property
     def litellm_model(self) -> str:
@@ -113,6 +115,28 @@ def test_auto_prefers_openai_client() -> None:
     assert payload["llm_model"] == "openai/Qwen3-32B"
     assert payload["llm_endpoint"] == "https://example.com/v1"
     assert payload["llm_temperature"] == 0.0
+
+
+@pytest.mark.parametrize("source", ["auto", "model", "custom"])
+@pytest.mark.parametrize("override", [None, 180.0])
+def test_extraction_request_inherits_model_timeout_unless_overridden(source, override):
+    from agent.llm.config import DEFAULT_TIMEOUT
+
+    manager = _manager()
+    manager._clients["sf-chat"].config.timeout = 120.0
+    payload = resolve_chat_llm_config(CogneeChatModelConfig(
+        source=source, model_id="sf-chat", model="openai/test",
+        extra_args={} if override is None else {"timeout": override},
+    ), manager)
+    expected = DEFAULT_TIMEOUT if source == "custom" else 120.0
+    assert payload["llm_args"]["timeout"] == (override or expected)
+    assert manager._clients["sf-chat"].config.timeout == 120.0
+
+
+@pytest.mark.parametrize("value", [None, 0, -1, True, "120", float("inf"), float("nan")])
+def test_extraction_rejects_unbounded_or_invalid_request_timeout(value):
+    with pytest.raises(CogneeConfigError, match="timeout"):
+        resolve_chat_llm_config(CogneeChatModelConfig(extra_args={"timeout": value}), _manager())
 
 
 def test_auto_falls_back_to_supported_provider() -> None:
@@ -482,6 +506,7 @@ async def test_cognee_native_adapter_receives_reasoning_and_output_budget(
     payload = resolve_chat_llm_config(CogneeChatModelConfig(
         source="custom", model="openai/gpt-4o-mini", api_key="test-placeholder",
         endpoint="https://example.invalid/v1", reasoning_effort=effort, max_completion_tokens=8192,
+        extra_args={"timeout": 180.0},
     ), _manager())
     monkeypatch.setattr(factory, "get_llm_context_config", lambda: LLMConfig(**payload))
     completion = AsyncMock(return_value=litellm.ModelResponse(
@@ -495,3 +520,56 @@ async def test_cognee_native_adapter_receives_reasoning_and_output_budget(
     assert request["reasoning_effort"] == ("none" if effort == "off" else effort)
     assert request["max_tokens"] == 8192
     assert request["api_base"] == "https://example.invalid/v1"
+    assert request["timeout"] == 180.0
+
+
+@pytest.mark.parametrize("retry_first_request", [False, True])
+async def test_cognee_generation_respects_model_budget_across_slow_requests_and_retries(
+    monkeypatch, retry_first_request,
+):
+    import asyncio
+    import importlib
+
+    import litellm
+    from cognee.infrastructure.llm.config import LLMConfig
+    from cognee.infrastructure.llm.structured_output_framework.litellm_native.native_adapter import NativeLiteLLMAdapter
+    from tenacity import wait_none
+
+    from agent.memory.cognee import adapters
+
+    adapters.install()
+    gateway = importlib.import_module("cognee.infrastructure.llm.LLMGateway")
+    factory = importlib.import_module(
+        "cognee.infrastructure.llm.structured_output_framework.litellm_native.get_native_client",
+    )
+    payload = resolve_chat_llm_config(CogneeChatModelConfig(
+        source="custom", model="openai/gpt-4o-mini", api_key="test-placeholder",
+        endpoint="https://example.invalid/v1", extra_args={"timeout": 180.0},
+    ), _manager())
+    monkeypatch.setattr(gateway, "get_llm_config", lambda: LLMConfig(**payload))
+    monkeypatch.setattr(factory, "get_llm_context_config", lambda: LLMConfig(**payload))
+    monkeypatch.setattr(NativeLiteLLMAdapter.acreate_structured_output.retry, "wait", wait_none())
+    loop = asyncio.get_running_loop()
+    clock = loop.time
+    elapsed = 0.0
+    calls = 0
+
+    async def completion(**kwargs):
+        nonlocal elapsed, calls
+        calls += 1
+        assert kwargs["timeout"] == 180.0
+        elapsed = 65.0 if retry_first_request else 95.0
+        for _ in range(3):
+            await asyncio.sleep(0)
+        if retry_first_request and calls == 1:
+            raise TimeoutError("transient provider timeout")
+        return litellm.ModelResponse(choices=[{
+            "message": {"role": "assistant", "content": "extracted"}, "finish_reason": "stop",
+        }])
+
+    monkeypatch.setattr(litellm, "acompletion", completion)
+    with monkeypatch.context() as virtual_clock:
+        virtual_clock.setattr(loop, "time", lambda: clock() + elapsed)
+        result = await gateway.LLMGateway.acreate_structured_output("source", "extract", str)
+    assert result == "extracted"
+    assert calls == (2 if retry_first_request else 1)

@@ -1,4 +1,4 @@
-"""Cognee 适配器的宿主边界：有限重试、生成时限与单次召回向量复用。
+"""Cognee 适配器的宿主边界：有限重试、生成并发与单次召回向量复用。
 
 模型看到什么：沿用 Cognee 提示词，不添加消息。
 token 影响：永久错误不重试，同一召回内相同查询只向量化一次。
@@ -16,7 +16,7 @@ from functools import wraps
 from typing import Any
 from weakref import WeakKeyDictionary
 
-from tenacity import retry_if_exception, stop_after_attempt, stop_after_delay
+from tenacity import retry_if_exception, stop_after_attempt
 
 _installed = False
 _llm_slots: WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = WeakKeyDictionary()
@@ -103,7 +103,7 @@ def install() -> None:
     def limit_retries(method: Any) -> None:
         policy = getattr(method, "retry", None)
         if policy is not None:
-            policy.stop = stop_after_attempt(3) | stop_after_delay(60)
+            policy.stop = stop_after_attempt(3)
             policy.retry = retry_if_exception(retryable)
 
     limit_retries(NativeLiteLLMAdapter.acreate_structured_output)
@@ -122,10 +122,9 @@ def install() -> None:
 
     @wraps(original_completion)
     async def completion(*args: Any, **kwargs: Any) -> Any:
-        # 包含模型请求、校验自修复及框架内部重试的总预算。
         loop = asyncio.get_running_loop()
         slots = _llm_slots.setdefault(loop, asyncio.Semaphore(4))
-        async with slots, asyncio.timeout(90):
+        async with slots:
             return await original_completion(*args, **kwargs)
 
     LLMGateway.acreate_structured_output = staticmethod(completion)
