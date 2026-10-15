@@ -12,11 +12,13 @@ from agent.judgment.types import JudgmentError, JudgmentReport, JudgmentSource
 from core.tool_errors import ErrorCause
 
 
-@pytest.mark.parametrize("elapsed,slow", [(0.2, False), (1.2, True), (2.5, True)])
+@pytest.mark.parametrize("elapsed,slow", [(0.2, False), (1.2, False), (2.999, False), (3.0, True), (3.2, True)])
+@pytest.mark.parametrize("budget", [2.0, 5.0])
 @pytest.mark.parametrize("key", ["", "configured"])
-async def test_speed_and_native_source_are_reported(monkeypatch, elapsed, slow, key):
+async def test_speed_and_native_source_are_reported(monkeypatch, elapsed, slow, budget, key):
     cfg = JudgmentConfig(True, key, "http://localhost:8090", "jev", 30, True, "", "low")
     monkeypatch.setattr(judgment, "load_config", lambda: cfg)
+    monkeypatch.setattr(judgment, "get_config_float", lambda name, default: budget if name == "judgment_gate_timeout" else default)
     native = AsyncMock(return_value=JudgmentReport(answers={}, source=JudgmentSource.TYPESAFE))
     monkeypatch.setattr(judgment, "get_judgment_engine", lambda: SimpleNamespace(judge=native))
     times = iter([0, elapsed])
@@ -24,7 +26,7 @@ async def test_speed_and_native_source_are_reported(monkeypatch, elapsed, slow, 
     result = await judgment.test_inference()
     assert result["ok"] and result["slow"] is slow
     assert result["latency_ms"] == elapsed * 1000
-    assert result["gate_budget_ms"] == 5000 and result["slow_after_ms"] == 1000
+    assert result["gate_budget_ms"] == budget * 1000 and result["slow_after_ms"] == 3000
     assert native.await_args.kwargs["native_only"] is True
 
 

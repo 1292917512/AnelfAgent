@@ -75,7 +75,7 @@ async def assess_optional_work(
     run = current_hook_run.get()
     record = HookJudgment(uuid.uuid4().hex, "Jev", task, time.time(), threshold, model=cfg.model)
     record.policy = "selective" if candidates is not None else "preserve"
-    record.slow_after_ms = slow_threshold_ms(timeout)
+    record.slow_after_ms = slow_threshold_ms()
     started = time.monotonic()
     selected: tuple[int, ...] | None = None
     try:

@@ -62,8 +62,8 @@ _JUDGMENT_CONFIGS = {
             "default": 0.8, "min": 0.5, "max": 1.0, "advanced": True,
         },
         "judgment_slow_seconds": {
-            "description": "Jev 响应偏慢警告阈值；超过此值或预判等待预算的八成即提示，计入网络耗时",
-            "default": 1.0, "min": 0.1, "max": 30.0, "unit": "秒", "advanced": True,
+            "description": "Jev 响应偏慢警告阈值；达到此值才提示，计入网络耗时，独立于请求超时预算",
+            "default": 3.0, "min": 0.1, "max": 30.0, "unit": "秒", "advanced": True,
         },
         "judgment_fallback_model": {
             "description": "回退判断专用模型 ID（留空走默认聊天模型链；判断是轻量任务，建议小快模型）",

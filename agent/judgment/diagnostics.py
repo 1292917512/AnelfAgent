@@ -63,7 +63,7 @@ async def test_inference(model_id: str = "") -> Dict[str, Any]:
                 "retryable": False, "source": "unavailable", "latency_ms": 0,
                 "slow": False, "slow_after_ms": 0, "gate_budget_ms": 0}
     budget = max(0.1, min(cfg.timeout, get_config_float("judgment_gate_timeout", 5.0)))
-    slow_after_ms = slow_threshold_ms(budget)
+    slow_after_ms = slow_threshold_ms()
     started = time.monotonic()
     try:
         async with asyncio.timeout(cfg.timeout):

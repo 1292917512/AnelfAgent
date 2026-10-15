@@ -102,7 +102,7 @@ async def test_timeout_and_external_cancellation(engine, monkeypatch):
     monkeypatch.setattr(gate, "get_config_float", lambda key, default: 0.1 if key.endswith("timeout") else default)
     async with hook_execution("timeout", "test", HookMode.ASYNC) as record:
         assert (await gate.assess_optional_work("work", "needed?", {})).run
-        assert record.judgments[0].slow and record.judgments[0].status == "fallback"
+        assert not record.judgments[0].slow and record.judgments[0].status == "fallback"
     assert cancelled == [True]
     assert (await gate.assess_optional_work("work", "needed?", {})).run
     assert cancelled == [True]
@@ -160,7 +160,7 @@ async def test_truncation_never_suppresses_work(engine, monkeypatch):
 
 
 async def test_slow_result_remains_visible_to_ai_after_hook_changes(engine, monkeypatch):
-    clock = iter([0, 1.2])
+    clock = iter([0, 3.2])
     monkeypatch.setattr(gate, "time", SimpleNamespace(time=gate.time.time, monotonic=lambda: next(clock)))
     monkeypatch.setattr(engine, "_judge_native", AsyncMock(return_value=report()))
     async with hook_execution("review", "test", HookMode.ASYNC) as record:
@@ -169,7 +169,7 @@ async def test_slow_result_remains_visible_to_ai_after_hook_changes(engine, monk
         await progress.update("model", "another operation")
         record.detail = "review completed"
         item = record.judgments[0]
-        assert item.duration_ms == 1200 and item.slow
+        assert item.duration_ms == 3200 and item.slow
         assert item.status == "skip" and item.model == "jev-test"
         assert progress.snapshot()["judgments"][0]["slow"]
 
