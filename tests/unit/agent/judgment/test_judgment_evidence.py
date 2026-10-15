@@ -4,8 +4,36 @@ from copy import deepcopy
 
 import pytest
 
-from agent.judgment.evidence import conversation_evidence, evidence_json
+from agent.judgment.evidence import conversation_evidence, dialogue_messages, evidence_json
 from core.config import ConfigManager
+
+
+def test_recall_dialogue_excludes_execution_context_and_keeps_identity():
+    from agent.memory.memory_retriever import MemoryRetriever
+
+    messages = [
+        {"role": "system", "content": "system-private"},
+        {"role": "user", "content": "[channel:qq][uid:42] 回忆项目的部署约定"},
+        {"role": "assistant", "content": "已确认项目部署", "_source": {"origin": "conversation"}},
+        {"role": "assistant", "content": "internal-planning", "tool_calls": [{"function": {"name": "ssh_exec"}}]},
+        {"role": "tool", "content": "tool-private"},
+        {"role": "assistant", "content": "provider-private", "_layer": "provider"},
+        {"role": "user", "content": "memory-private", "_source": {"origin": "memory_recall"}},
+        {"role": "user", "content": [{"type": "text", "text": "[channel:qq][uid:42] 这张图片里的项目"},
+                                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,private"}}]},
+        {"role": "assistant", "content": [{"type": "thinking", "thinking": "thought-private"},
+                                         {"type": "text", "text": "对话答复"}], "reasoning_content": "reasoning-private"},
+    ]
+    original = deepcopy(messages)
+    dialogue = dialogue_messages(messages)
+    evidence = evidence_json(conversation_evidence(dialogue))
+    query = MemoryRetriever._extract_query(messages)
+    assert [message["role"] for message in dialogue] == ["user", "assistant", "user", "assistant"]
+    assert "[channel:qq][uid:42]" in evidence
+    assert "图片里的项目" in query and "已确认项目部署" in query
+    assert "private" not in evidence + query and "internal-planning" not in evidence + query
+    assert "ssh_exec" not in evidence + query
+    assert messages == original
 
 
 @pytest.mark.parametrize("budget", [600, 1500, 3000])

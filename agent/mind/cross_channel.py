@@ -15,7 +15,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from agent.config import get_mind_config
-from agent.judgment.evidence import conversation_evidence
+from agent.judgment.evidence import conversation_evidence, dialogue_messages
 from agent.judgment.gate import assess_optional_work
 from agent.memory.memory_retriever import MemoryRetriever
 from agent.messages import build_entity_scope, is_conversation_scope, parse_entity_scope
@@ -124,6 +124,7 @@ async def recall_cross_channel(
     mc = get_mind_config()
     if not mc.cross_channel_enabled or mc.cross_channel_recall_max_results <= 0 or not mind.embedder.available:
         return []
+    query_conversation = dialogue_messages(query_conversation)
     query = MemoryRetriever._extract_query(query_conversation[-10:])
     if not query or len(query) < 10:
         return []
@@ -135,7 +136,7 @@ async def recall_cross_channel(
                 return []
             decision = await assess_optional_work(
                 "跨会话相关内容召回",
-                "根据当前会话的用户需求、已经获得的答案和工具结果，判断是否需要检索其他会话补充信息。"
+                "根据当前会话的对话正文（用户需求与已回复的内容），判断是否需要检索其他会话补充信息。"
                 "候选只表示可检索的来源，不表示有新消息或必须回复。仅相同用户不足以说明话题相关；"
                 "候选内容保留各自归属，只判断其对当前任务的参考价值，不将其他用户的意图归给当前用户。"
                 "当前事实已足够，或候选话题明确无关时跳过；有信息缺口且可能相关时保留。",

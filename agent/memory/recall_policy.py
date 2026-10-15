@@ -2,7 +2,7 @@
 
 模型可见：策略工具返回生效档位；召回结果沿用实体与记忆标签。
 Token 影响：关闭/标签/快速档减少自动检索，手动 recall 不受限制。
-缓存影响：策略不进入 stable 层，异步补充仅经 provider 尾部注入。
+缓存影响：策略不进入 stable 层，首轮深探快照仅经 provider 尾部注入。
 """
 
 from __future__ import annotations
@@ -72,7 +72,7 @@ def has_recall_turn(scope: str) -> bool:
 
 
 def set_turn_recall_policy(policy: RecallPolicy, scope: str) -> None:
-    """调整当前回复的后续自动召回，不重写已发给模型的历史。"""
+    """调整本轮策略并停止在途准备，不重启检索或重写已有上下文。"""
     turn = _turn.get()
     if turn is None or not turn.active or turn.scope != scope:
         raise ValueError("当前没有可调整的对话轮次")
@@ -81,11 +81,6 @@ def set_turn_recall_policy(policy: RecallPolicy, scope: str) -> None:
     turn.policy = policy
     from .probe import deep_probe_hub
     deep_probe_hub.stop(scope)
-    probe = deep_probe_hub.state_for(scope)
-    if probe is not None:
-        probe.queries.clear()
-        probe.examined.clear()
-        probe.refresh_count = 0
 
 
 @contextmanager
@@ -123,7 +118,7 @@ register_configs_safe({"memory/recall": {
         "default": "deep", "value_type": "enum", "options": ["off", "tags", "fast", "deep"],
     },
     "memory_recall_background": {
-        "description": "允许快速/深入档在回复期间异步补充记忆，只注入动态上下文",
+        "description": "允许深入档在首轮准备阶段并行深探，返回前等待收尾；执行中不再自动检索",
         "default": True,
     },
 }})

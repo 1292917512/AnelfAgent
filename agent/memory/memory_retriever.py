@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any, Coroutine, Dict, List, Optional, Tuple, TypeVar
 
+from agent.judgment.evidence import dialogue_messages
 from core.log import log
 
 from .embedding import Embedder
@@ -159,6 +160,7 @@ class MemoryRetriever:
         无规划时返回空列表；调用方拥有 Future，取消旁路不得取消召回。
         """
         k, min_score = self.recall_limits(top_k)
+        conversation = dialogue_messages(conversation)
 
         all_scopes: List[str] = []
         if entity_scope:
@@ -167,7 +169,7 @@ class MemoryRetriever:
             if s and s not in all_scopes:
                 all_scopes.append(s)
         # 回复路径开账：重置召回账本（防重复三键集合），后续基底层注入/
-        # 工具返回/异步深探共用——一次回复内同一事实只出现一次
+        # 工具返回/首轮深探共用——一次回复内同一事实只出现一次
         if fire_probe and deep_probe_hub.state_for(entity_scope) is None:
             deep_probe_hub.begin_reply(entity_scope)
         # 实体画像加载与检索并行（独立的 DB 读取，不依赖查询结果）
@@ -371,19 +373,18 @@ class MemoryRetriever:
             # 关联扩展：沿标签网络发现一跳关联记忆（想到一件事 → 联想到相关的事）
             results = await self._expand_associations(results, limit=k, extra_seeds=mention_tags)
 
-            # 回复路径收尾钩子：基底层产物入召回账本 + 按需启动异步深探
-            # （LLM 思考期间完成的深度检索经 think_loop 轮顶增量注入，与基底层去重）
-            def _fire_probe(base_results: List[MemorySearchResult]) -> None:
+            async def _complete_probe(base_results: List[MemorySearchResult]) -> None:
                 if deep_probe_hub.state_for(entity_scope) is not None:
                     deep_probe_hub.record(entity_scope, results=base_results)
                 if not fire_probe:
                     return
                 try:
-                    deep_probe_hub.start(scope=entity_scope, plan=plan, store=self._store,
-                                         conversation=conversation,
-                                         recalled=[{"content": item.snippet[:400], "tags": list(item.tags)} for item in base_results[:8]])
+                    await deep_probe_hub.collect(
+                        scope=entity_scope, plan=plan, store=self._store, conversation=conversation,
+                        timeout=recall_timeout - (loop.time() - t0),
+                    )
                 except Exception as exc:
-                    log(f"深探启动失败: {exc}", "DEBUG", tag="记忆")
+                    log(f"首轮深探失败: {exc}", "DEBUG", tag="记忆")
 
             if not results:
                 log("💾 统一搜索无结果，回退近期记忆", tag="思维")
@@ -391,7 +392,7 @@ class MemoryRetriever:
                 fallback = await self._fallback_recent(k, scope=entity_scope)
                 pinned_msgs = await self._format_unified_results(pinned) if pinned else []
                 entity_msgs = await profiles_task
-                _fire_probe(pinned)
+                await _complete_probe(pinned)
                 return entity_msgs, pinned_msgs + fallback
 
             # Rerank if available
@@ -414,7 +415,7 @@ class MemoryRetriever:
 
             memory_msgs = await self._format_unified_results(results)
             entity_msgs = await profiles_task
-            _fire_probe(results)
+            await _complete_probe(results)
 
             for r in results:
                 src_label = (
@@ -592,7 +593,7 @@ class MemoryRetriever:
     def _extract_query(conversation: List[Dict], max_chars: int = 500) -> str:
         """从对话中提取检索查询，过滤无意义短文本，优先使用 user 消息。"""
         texts: list[str] = []
-        for msg in reversed(conversation):
+        for msg in reversed(dialogue_messages(conversation)):
             role = msg.get("role", "")
             if role not in ("user", "assistant"):
                 continue
@@ -614,7 +615,7 @@ class MemoryRetriever:
     @staticmethod
     def _extract_focus_query(conversation: List[Dict], max_chars: int = 200) -> str:
         """提取焦点查询：最近一条用户消息（即时窗口，捕捉当前话题）。"""
-        for msg in reversed(conversation):
+        for msg in reversed(dialogue_messages(conversation)):
             if msg.get("role") != "user":
                 continue
             content = msg.get("content", "")
@@ -631,7 +632,7 @@ class MemoryRetriever:
         """检索规划：轻量 LLM 把对话尾部转成结构化检索计划（失败回退单查询）。
 
         取代旧版纯改写：多查询互补扩大召回面（共识命中加成），实体名驱动
-        图谱解析与 cognee 定向检索，deep_needed 决定是否异步深探——
+        图谱解析与 cognee 定向检索，deep_needed 决定是否首轮深探——
         召回由 LLM 决策而非被动关键词匹配。解析全路径容错；返回的
         plan 已完成实体→图谱节点解析（node_keys/node_labels 就绪）。
 
@@ -777,7 +778,7 @@ class MemoryRetriever:
         """召回诊断：与真实召回同管线（规划 → 多查询联邦检索 → 共识融合 →
         关系邻域 + 遗忘层）的无副作用执行。
 
-        不记访问、不触发异步深探；Web 召回测试面板经此复用，
+        不记访问、不触发首轮深探；Web 召回测试面板经此复用，
         诊断编排与真实召回单一实现、不再两处维护。
         """
         import time as _time
@@ -951,7 +952,7 @@ class MemoryRetriever:
                 return False
         except Exception:
             return False
-        for msg in reversed(conversation):
+        for msg in reversed(dialogue_messages(conversation)):
             if msg.get("role") != "user":
                 continue
             content = msg.get("content", "")
@@ -1083,7 +1084,7 @@ class MemoryRetriever:
                 file_lines.append(f"{marker} {loc} {snippet}".replace("  ", " "))
                 continue
             # memory / cognee_* 统一按记忆行呈现（cognee 只是投影层，对 AI 无区别）；
-            # 行格式为共享权威（recall_format），与异步深探的增量行同构
+            # 行格式为共享权威（recall_format），与首轮深探的增量行同构
             line = await format_memory_line(
                 self._graph, snippet=snippet, tags=r.tags,
                 provenance=r.provenance, timestamp=r.timestamp,

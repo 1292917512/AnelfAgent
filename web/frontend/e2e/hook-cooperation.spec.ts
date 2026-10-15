@@ -93,13 +93,20 @@ test("Jev decisions remain visible after later work and expose slow responses", 
   await page.goto("/webui/");
   const judgment = page.locator('[data-judgment="jev-1"]');
   await expect(judgment.getByText("Skip this task", { exact: true })).toBeVisible();
-  await expect(judgment.getByText("Need to execute 2%")).toBeVisible();
+  await expect(judgment.getByText("Need to execute 2%")).toHaveCount(0);
+  expect((await judgment.boundingBox())!.height).toBeLessThanOrEqual(44);
   await expect(judgment.getByText("245ms", { exact: true })).toBeVisible();
   await expect(page.getByText("Subsequent work finished")).toBeVisible();
+  const slow = page.locator('[data-judgment="jev-2"]');
+  expect((await slow.boundingBox())!.height).toBeLessThanOrEqual(44);
+  await expect(slow.getByLabel(/Slow response/)).toBeVisible();
+  await expect(slow.getByRole("status")).toHaveCount(0);
+  await page.screenshot({ path: info.outputPath("jev-compact.png"), animations: "disabled" });
   await judgment.getByRole("button").click();
+  await expect(judgment.getByText("Need to execute 2%")).toBeVisible();
   await expect(judgment.getByText("Existing facts fully cover the request")).toBeVisible();
   await expect(judgment.getByText("Input 600 · output 40 tokens")).toBeVisible();
-  const slow = page.locator('[data-judgment="jev-2"]');
+  await slow.getByRole("button").click();
   await expect(slow.getByRole("status")).toContainText("Slow response");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   const audit = await new AxeBuilder({ page }).include('[data-judgment]').withTags(["wcag2a", "wcag2aa", "wcag21aa"]).analyze();
@@ -153,10 +160,10 @@ test("LLM hook configuration reuses the shared metadata writer", async ({ page }
 });
 
 test("memory enrichment reports the unfinished stage without fabricated call counts", async ({ page }, info) => {
-  const probe: HookExecution = { ...hook, id: "probe", task_id: "", name: "memory.probe", event: "context_refresh", source: "internal", status: "error", duration_ms: 60000, phase: "error", operation: "Cognee GRAPH_COMPLETION · 2 pending lanes", detail: "Retrieval budget exhausted. Completed results retained: 420 characters.", context_mode: "", activity_ids: [], model_calls: null, tool_calls: null };
+  const probe: HookExecution = { ...hook, id: "probe", task_id: "", name: "memory.probe", event: "context_prepare", mode: "sync", source: "internal", status: "error", duration_ms: 5000, phase: "error", operation: "Cognee GRAPH_COMPLETION · 2 pending lanes", detail: "Retrieval budget exhausted. Completed results retained: 420 characters.", context_mode: "", activity_ids: [], model_calls: null, tool_calls: null };
   await page.route("**/api/hooks", (route) => route.fulfill({ json: { execution: { active: [], recent: [probe] } } }));
   await page.goto("/webui/hooks");
-  await page.getByRole("button", { name: /Memory enrichment/ }).click();
+  await page.getByRole("button", { name: /Initial deep recall/ }).click();
   await expect(page.getByText("Model and tool calls are not counted for this internal process")).toBeVisible();
   await expect(page.getByText("0 model calls · 0 tool calls", { exact: true })).toHaveCount(0);
   await expect(page.getByText(probe.operation ?? "", { exact: true })).toBeVisible();

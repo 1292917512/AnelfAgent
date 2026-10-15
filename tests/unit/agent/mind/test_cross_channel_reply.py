@@ -242,7 +242,8 @@ async def test_history_gate_uses_conversation_and_concurrent_searches(proceed, m
     result = await recall_cross_channel(mind, conversation, "user_webui:other#a", query_vec_task=future)
     state = decision.call_args.args[2]
     assert state["current_scope"] == "user_webui:other#a"
-    assert state["conversation"] == conversation
+    assert state["conversation"] == conversation[:2]
+    assert all(message["role"] != "tool" for message in state["conversation"])
     mind.embedder.embed_query.assert_not_called()
     if proceed:
         assert storage.search_conversation_vector.await_count == 2

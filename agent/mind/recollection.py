@@ -132,7 +132,7 @@ async def _get_recollection(
         "context_cache_hit": context_hit,
     })
 
-    messages = await mind.pfc.build_llm_context(
+    return await mind.pfc.build_llm_context(
         persona_text=persona_text,
         tools_text=tools_text,
         context_text=context_text,
@@ -152,18 +152,6 @@ async def _get_recollection(
         directives_text=inputs.directives,
         repeat_hint_text=inputs.repeat_hint,
     )
-    if not lean and mind.retriever is not None:
-        from functools import partial
-
-        from agent.memory.probe import deep_probe_hub
-        from agent.mind.context_observation import context_skills
-        from agent.skills.discovery import discover_skills
-        state = deep_probe_hub.state_for(entity_scope)
-        if state is not None:
-            deep_probe_hub.record(entity_scope, identifiers=(f"skill:{fact['name']}" for fact in context_skills(messages)))
-            deep_probe_hub.prepare(entity_scope, conversation_list, mind.retriever,
-                discover=partial(discover_skills, matcher=mind.skill_matcher, seen=state.ledger.result_ids))
-    return messages
 
 
 async def _match_skills(

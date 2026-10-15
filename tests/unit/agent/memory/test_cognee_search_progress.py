@@ -102,12 +102,13 @@ async def test_probe_keeps_partial_results_and_reports_unfinished_stage(store, m
     state = hub.begin_reply("user_webui:1")
     hook_journal.clear()
     try:
-        await hub._run(state, RetrievalPlan(queries=["query"], deep_needed=True), store, state.revision)
+        await hub.collect(scope=state.scope, plan=RetrievalPlan(queries=["query"], deep_needed=True), store=store)
         assert "已索引的项目部署事实" in state.rendered
         assert state.ledger.seen_result("memory:fast")
         assert {call["query_type"] for call in client.calls} == {"CHUNKS", "GRAPH_COMPLETION"}
         assert all(call["only_context"] == (call["query_type"] == "GRAPH_COMPLETION") for call in client.calls)
         record = hook_journal.snapshot()["recent"][0]
+        assert record["mode"] == "sync" and record["event"] == "context_prepare"
         assert record["status"] == "error"
         assert record["model_calls"] is None and record["tool_calls"] is None
         assert "已保留" in record["detail"]

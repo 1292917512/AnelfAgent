@@ -161,6 +161,7 @@ async def test_context_reads_overlap_and_skills_only_wait_for_plan(monkeypatch, 
         return [1.0]
 
     async def recall(tail, *, query_vec_task, plan_ready, **kwargs):
+        assert tail == [{"role": "user", "content": query}]
         started["memory"].set()
         assert await asyncio.shield(query_vec_task) == [1.0]
         plan_ready.set_result(["复用计划"])
@@ -168,12 +169,14 @@ async def test_context_reads_overlap_and_skills_only_wait_for_plan(monkeypatch, 
         return [{"content": "画像"}], [{"content": "记忆"}]
 
     async def skills(query, *, query_vec_task, planned_queries, **kwargs):
+        assert "internal" not in query
         assert planned_queries == ["复用计划"]
         assert await query_vec_task == [1.0]
         started["skills"].set()
         return [{"content": "技能"}]
 
     async def cross(*args, query_vec_task, user_scope):
+        assert args[0] == [{"role": "user", "content": query}]
         assert user_scope == "user_qq:1"
         assert await asyncio.shield(query_vec_task) == [1.0]
         started["cross"].set()
@@ -200,7 +203,10 @@ async def test_context_reads_overlap_and_skills_only_wait_for_plan(monkeypatch, 
     monkeypatch.setattr("agent.memory.reflection_lifecycle.load_verification_block", AsyncMock(return_value="求证"))
     query = ("[channel:qq][group_id:100][uid:1]" if group else "") + "帮我查询之前记录的详细项目设计方案"
     task = asyncio.create_task(collect_recollection_inputs(
-        mind, [{"role": "user", "content": query}], SN(uid=0 if group else "1"),
+        mind, [{"role": "user", "content": query},
+               *({"role": "tool", "content": "internal result"} for _ in range(12)),
+               {"role": "assistant", "content": "internal thought", "_layer": "provider"}],
+        SN(uid=0 if group else "1"),
         scope="group_qq:100" if group else "user_qq:1", adapter="qq", lean=False,
     ))
     try:

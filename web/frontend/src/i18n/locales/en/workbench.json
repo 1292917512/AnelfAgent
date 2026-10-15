@@ -362,7 +362,7 @@
       "system": "System trigger"
     },
     "recollectionTitle": "Recollection",
-    "recollectionHint": "Memory and skill preparation, background decisions and retrieval for the conversations on this execution page. Prepared results enter dynamic context on the next model call; a candidate does not mean a skill was executed.",
+    "recollectionHint": "Initial memory and skill preparation and decisions for conversations on this execution page. Automatic recall finishes before execution; a candidate does not mean a skill was executed.",
     "recollectionEmpty": "No recollection records on this execution page."
   },
   "toolView": {

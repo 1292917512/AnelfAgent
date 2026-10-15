@@ -1,6 +1,6 @@
 """自动判断的有界会话证据。
 
-模型看到：当前请求、近期执行事实及送达标记，保留身份标签和摘录标记。
+模型看到：按调用场景提取对话或执行证据，保留身份标签和摘录标记；自动召回只取对话。
 Token：共享字符预算，排除系统提示、多媒体载荷及重复正文，不另调用模型摘要。
 缓存：只生成判断输入，不修改主模型上下文或历史前缀。
 """
@@ -31,16 +31,36 @@ def _origin(message: Mapping[str, Any]) -> str:
     return str(source.get("origin", "")) if isinstance(source, Mapping) else ""
 
 
+def _content_text(content: Any) -> str:
+    """只提取正文文本块，不序列化媒体载荷或思考块。"""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(block["text"] for block in content
+                         if isinstance(block, dict) and block.get("type") in {"text", "input_text", "output_text"}
+                         and isinstance(block.get("text"), str))
+    return ""
+
+
+def dialogue_messages(messages: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """提取按原顺序排列的对话正文及归属，排除注入、工具执行和内部思考。"""
+    result: list[dict[str, Any]] = []
+    for message in messages:
+        if (message.get("role") not in {"user", "assistant"}
+                or message.get("_layer") not in {None, "", "conversation"}
+                or _origin(message) not in {"", "conversation", "steer"}
+                or message.get("tool_calls")):
+            continue
+        content = _content_text(message.get("content")).strip()
+        if content:
+            result.append({"role": message["role"], "content": content,
+                           **{key: message[key] for key in ("_layer", "_source") if key in message}})
+    return result
+
+
 def _text(message: Mapping[str, Any], limit: int) -> tuple[str, bool]:
     """提取文本块与工具名称、参数摘录，不序列化媒体或整份调用对象。"""
-    content = message.get("content")
-    parts: list[str] = []
-    if isinstance(content, str):
-        parts.append(content)
-    elif isinstance(content, list):
-        parts.extend(block["text"] for block in content
-                     if isinstance(block, dict) and block.get("type") in {"text", "input_text", "output_text"}
-                     and isinstance(block.get("text"), str))
+    parts = [_content_text(message.get("content"))]
     calls = message.get("tool_calls")
     shortened = False
     if isinstance(calls, list):

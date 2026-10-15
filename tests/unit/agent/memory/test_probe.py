@@ -60,10 +60,10 @@ async def test_hub_start_gates_on_plan_intent() -> None:
     """规划无 deep_needed 且无实体节点 → 不启动（按需触发非被动）。"""
     hub = DeepProbeHub()
     hub.begin_reply("user_qq:1")
-    hub.start(scope="user_qq:1", plan=RetrievalPlan(queries=["查询"]), store=None)  # type: ignore[arg-type]
+    await hub.collect(scope="user_qq:1", plan=RetrievalPlan(queries=["查询"]), store=None)  # type: ignore[arg-type]
     assert hub.state_for("user_qq:1").task is None
     # 实体节点存在 → 启动（store 在 _probe 内才使用，None 不影响门控）
-    hub.start(
+    await hub.collect(
         scope="user_qq:1",
         plan=RetrievalPlan(queries=["查询"], node_keys=["user:qq:1"]),
         store=None,  # type: ignore[arg-type]
@@ -73,21 +73,95 @@ async def test_hub_start_gates_on_plan_intent() -> None:
 
 
 @pytest.mark.asyncio
-async def test_hub_start_single_flight() -> None:
-    """同 scope 在途单飞：重复 start 不另起任务。"""
+async def test_initial_probe_waits_for_results_and_runs_only_once(monkeypatch):
+    from unittest.mock import AsyncMock
+
     hub = DeepProbeHub()
-    hub.begin_reply("user_qq:1")
+    state = hub.begin_reply("user_qq:1")
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def collect(*args):
+        started.set()
+        await release.wait()
+        state.rendered = "首轮事实"
+
+    run = AsyncMock(side_effect=collect)
+    monkeypatch.setattr(hub, "_run", run)
     plan = RetrievalPlan(queries=["q"], deep_needed=True)
+    first = asyncio.create_task(hub.collect(scope=state.scope, plan=plan, store=None))
+    await started.wait()
+    second = asyncio.create_task(hub.collect(scope=state.scope, plan=plan, store=None))
+    assert not first.done()
+    release.set()
+    await asyncio.gather(first, second)
+    await hub.collect(scope=state.scope, plan=plan, store=None)
+    run.assert_awaited_once()
+    assert hub.current_render(state.scope) == "首轮事实"
+    assert state.task.done()
 
-    async def _hang_probe(state, plan, store, revision):
-        await asyncio.sleep(3600)
 
-    hub._run = _hang_probe  # type: ignore[method-assign]
-    hub.start(scope="user_qq:1", plan=plan, store=None)  # type: ignore[arg-type]
-    first = hub.state_for("user_qq:1").task
-    hub.start(scope="user_qq:1", plan=plan, store=None)  # type: ignore[arg-type]
-    assert hub.state_for("user_qq:1").task is first
-    first.cancel()
+@pytest.mark.asyncio
+async def test_initial_budget_keeps_completed_facts_and_closes_slow_reads(monkeypatch):
+    from agent.memory.probe_render import RecallDelta
+
+    hub = DeepProbeHub()
+    state = hub.begin_reply("user_qq:1")
+    entered, closed = asyncio.Event(), asyncio.Event()
+
+    async def local(*args):
+        await entered.wait()
+        return [RecallDelta("相关关系", "已返回的事实", "mem:ready", "已返回的事实")]
+
+    async def remote(*args, **kwargs):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+
+    monkeypatch.setattr(hub, "_collect_relations", local)
+    monkeypatch.setattr(hub, "_collect_cognee", remote)
+    await hub.collect(scope=state.scope, plan=RetrievalPlan(node_keys=["user:qq:1"]), store=None, timeout=0.03)
+    assert closed.is_set() and state.task.done()
+    snapshot = hub.current_render(state.scope)
+    assert "已返回的事实" in snapshot
+    await asyncio.sleep(0)
+    assert hub.current_render(state.scope) == snapshot
+
+
+@pytest.mark.asyncio
+async def test_exhausted_initial_budget_does_not_start_another_judgment(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    hub = DeepProbeHub()
+    state = hub.begin_reply("user_qq:1")
+    judge = AsyncMock()
+    monkeypatch.setattr("agent.memory.probe.assess_optional_work", judge)
+    await hub.collect(scope=state.scope, plan=RetrievalPlan(queries=["计划"], deep_needed=True), store=None, timeout=0)
+    judge.assert_not_awaited()
+    assert state.task is None
+
+
+@pytest.mark.asyncio
+async def test_cancelling_preparation_propagates_and_drains_probe(monkeypatch):
+    hub = DeepProbeHub()
+    state = hub.begin_reply("user_qq:1")
+    entered, closed = asyncio.Event(), asyncio.Event()
+
+    async def collect(*args):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+
+    monkeypatch.setattr(hub, "_run", collect)
+    task = asyncio.create_task(hub.collect(scope=state.scope, plan=RetrievalPlan(node_keys=["user:qq:1"]), store=None))
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert closed.is_set() and state.task.cancelled()
 
 
 @pytest.mark.asyncio
@@ -184,7 +258,7 @@ async def test_recall_split_fires_probe_and_drains_delta(store, monkeypatch) -> 
 
     # 空库无结果 → fallback 分支也必须启动深探（首轮挖不到更需深层补充）
     state = hub.state_for("user_qq:1")
-    assert state is not None and state.task is not None
+    assert state is not None and state.task is not None and state.task.done()
     await state.task
 
     content = hub.current_render("user_qq:1")
@@ -413,7 +487,7 @@ async def test_probe_staged_fast_section_publishes_before_slow(store, monkeypatc
         local_published.set()
         return accepted
 
-    async def _slow_cognee(state_arg, plan_arg, store_arg, *, revision, review=False):
+    async def _slow_cognee(state_arg, plan_arg, store_arg, *, revision):
         remote_started.set()
         await release.wait()
 
@@ -515,13 +589,13 @@ async def test_cross_channel_no_duplication(store, monkeypatch) -> None:
     assert out.get("relations"), "工具应返回关系边"
 
     # 通道 3：异步深探（对账本外的边渲染；确定性时序——记账全部先行）
-    hub.start(
+    await hub.collect(
         scope="user_qq:1",
         plan=RetrievalPlan(queries=["阿辰的朋友"], deep_needed=True, node_keys=["user:qq:1"]),
         store=store,
     )
     state = hub.state_for("user_qq:1")
-    assert state is not None and state.task is not None
+    assert state is not None and state.task is not None and state.task.done()
     await state.task
 
     content = hub.current_render("user_qq:1")
@@ -553,13 +627,13 @@ async def test_tool_edges_alone_block_probe_duplication(store, monkeypatch) -> N
         reset_scope(token)
     assert out.get("relations")
 
-    hub.start(
+    await hub.collect(
         scope="user_qq:1",
         plan=RetrievalPlan(queries=["朋友"], deep_needed=True, node_keys=["user:qq:1"]),
         store=store,
     )
     state = hub.state_for("user_qq:1")
-    assert state is not None and state.task is not None
+    assert state is not None and state.task is not None and state.task.done()
     await state.task
     assert "相关关系" not in hub.current_render("user_qq:1")
 

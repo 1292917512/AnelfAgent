@@ -1,7 +1,7 @@
 """并发读取上下文事实，仅在数据依赖处等待。
 
-模型可见：画像、召回、技能与摘要的内容和装配顺序保持不变。
-Token 影响：复用检索计划和查询向量，不增加模型请求或注入块。
+模型可见：召回及技能匹配仅根据对话正文准备，排除提示词、工具回执与内部思考。
+Token 影响：复用检索计划和查询向量，减少判断输入，不增加模型请求或注入块。
 缓存影响：只改变取数调度；稳定前缀与动态区的边界不变。
 """
 
@@ -11,6 +11,7 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from agent.judgment.evidence import dialogue_messages
 from agent.memory.memory_retriever import MemoryRetriever
 from agent.memory.recall_policy import current_recall_policy
 from core.hooks import HookMode, hook_execution
@@ -41,6 +42,7 @@ async def collect_recollection_inputs(
 ) -> RecollectionInputs:
     """同时启动独立读取；技能只等待记忆计划，取消时收束全部本轮读取。"""
     result = RecollectionInputs()
+    conversation = dialogue_messages(conversation)
     tail = conversation[-10:]
     policy = current_recall_policy(scope)
     trivial = MemoryRetriever._is_trivial_turn(tail)

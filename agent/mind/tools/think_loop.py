@@ -563,9 +563,6 @@ async def _run_think_rounds(
         # （缓存断点不在此注入——发送边界由 llm/prompt_cache 按 _layer 统一装饰，
         # 链尾锚点天然随链增长前移）
         # provider 实时注入：每轮收集最新快照，置于工具链之后、exec_context 之前
-        if mode == ThinkMode.REPLY:
-            from agent.memory.probe import deep_probe_hub
-            deep_probe_hub.refresh(ctx.current_scope, ctx.base_messages + ctx.tool_chain)
         provider_msgs = await _collect_provider_messages(mind, ctx.current_scope)
         from agent.mind.cross_channel import build_cross_channel_narrative
         try:

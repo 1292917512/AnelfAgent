@@ -12,7 +12,7 @@ const variants: Record<HookJudgment["status"], BadgeVariant> = {
 };
 const percent = (value: number) => `${Math.round(value * 100)}%`;
 
-/** 判断摘要常驻，依据、策略阈值与实测用量按需展开。 */
+/** 单行展示判断任务、结论和耗时，依据与诊断仅在展开时挂载。 */
 export function HookJudgmentRow({ judgment }: { judgment: HookJudgment }) {
   const { t } = useTranslation("settings");
   const [expanded, setExpanded] = useState(false);
@@ -23,34 +23,30 @@ export function HookJudgmentRow({ judgment }: { judgment: HookJudgment }) {
   const slow = judgment.status !== "cancelled" && (judgment.slow || (running && judgment.slow_after_ms > 0 && elapsed >= judgment.slow_after_ms));
   const duration = elapsed < 1000 ? `${Math.round(elapsed)}ms` : `${(elapsed / 1000).toFixed(1)}s`;
   return (
-    <div className={cn("overflow-hidden rounded-xl border border-accent/25 bg-accent/5", slow && "border-warn/40")}
+    <div className={cn("min-w-0 overflow-hidden rounded-md border border-border/60", slow && "border-warn/40")}
       data-judgment={judgment.id}>
       <button type="button" aria-expanded={expanded} aria-controls={detailsId}
+        aria-label={`${t("hookJudgment.title", { provider: judgment.provider })}: ${judgment.task}`}
+        title={judgment.task}
         onClick={() => setExpanded(!expanded)}
-        className="flex w-full items-start gap-3 px-3 py-3 text-left">
-        <span className="mt-0.5 rounded-lg bg-accent/10 p-2 text-accent">
-          {running ? <Loader2 size={16} className="animate-spin motion-reduce:animate-none" /> : <Gauge size={16} />}
-        </span>
-        <span className="min-w-0 flex-1 space-y-1.5">
-          <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span className="text-sm font-semibold text-heading">{t("hookJudgment.title", { provider: judgment.provider })}</span>
-            <Badge variant={variants[judgment.status]}>{t(`hookJudgment.status.${judgment.status}`)}</Badge>
-            <span className="text-xs tabular-nums text-muted">{duration}</span>
-          </span>
-          <span className="block break-words text-xs text-foreground">{judgment.task}</span>
-          {judgment.probability != null && <span className="block text-xs text-muted">
-            {t("hookJudgment.probability", { value: percent(judgment.probability) })}
-          </span>}
-        </span>
-        <ChevronDown size={14} className={cn("mt-2 shrink-0 text-muted transition-transform motion-reduce:transition-none", expanded && "rotate-180")} />
+        className="flex min-h-10 w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs hover:bg-elevated/50">
+        {running ? <Loader2 size={13} className="shrink-0 animate-spin text-accent motion-reduce:animate-none" /> : <Gauge size={13} className="shrink-0 text-muted" />}
+        <span className="shrink-0 font-medium text-heading">{judgment.provider}</span>
+        <span className="min-w-0 flex-1 truncate text-foreground">{judgment.task}</span>
+        <Badge variant={variants[judgment.status]}>{t(`hookJudgment.status.${judgment.status}`)}</Badge>
+        {slow && <TriangleAlert size={13} className="shrink-0 text-warn" aria-label={t("hookJudgment.slow", { ms: judgment.slow_after_ms })} />}
+        <span className="shrink-0 tabular-nums text-muted">{duration}</span>
+        <ChevronDown size={13} className={cn("shrink-0 text-muted transition-transform motion-reduce:transition-none", expanded && "rotate-180")} />
       </button>
-      {slow && <div role="status" className="mx-3 mb-3 flex items-start gap-2 rounded-lg bg-warn/10 p-2.5 text-xs text-warn">
-        <TriangleAlert size={14} className="mt-0.5 shrink-0" />
-        <span className="min-w-0 flex-1 leading-relaxed">{t("hookJudgment.slow", { ms: judgment.slow_after_ms })}
-          <Link to="/models?tab=judgment" className="ml-1 underline underline-offset-2">{t("hookJudgment.testSpeed")}</Link>
-        </span>
-      </div>}
       {expanded && <div id={detailsId} className="space-y-3 border-t border-accent/15 px-3 py-3 text-xs">
+        <p className="break-words font-medium text-heading">{judgment.task}</p>
+        {slow && <div role="status" className="flex items-start gap-2 rounded-md bg-warn/10 p-2 text-warn">
+          <TriangleAlert size={14} className="mt-0.5 shrink-0" />
+          <span className="min-w-0 flex-1 leading-relaxed">{t("hookJudgment.slow", { ms: judgment.slow_after_ms })}
+            <Link to="/models?tab=judgment" className="ml-1 underline underline-offset-2">{t("hookJudgment.testSpeed")}</Link>
+          </span>
+        </div>}
+        {judgment.probability != null && <p className="text-muted">{t("hookJudgment.probability", { value: percent(judgment.probability) })}</p>}
         <p className="break-words leading-relaxed text-foreground">{judgment.reason || t("hookJudgment.evaluating")}</p>
         {judgment.basis && <p className="break-words leading-relaxed text-muted">
           {t("hookJudgment.basis", { value: judgment.basis })}

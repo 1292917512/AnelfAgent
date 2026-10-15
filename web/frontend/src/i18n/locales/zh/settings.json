@@ -239,7 +239,7 @@
       "memory": {
         "recall": "首轮记忆召回",
         "cross_channel": "跨会话相关召回",
-        "probe": "动态记忆补充"
+        "probe": "首轮深度召回"
       }
     },
     "events": {

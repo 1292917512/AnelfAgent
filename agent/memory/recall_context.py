@@ -1,6 +1,6 @@
 """每轮自动召回策略的动态提示，不修改前缀或已注入的记忆。
 
-模型可见：档位、精确标签与后台开关；手动召回始终可用。
+模型可见：档位、精确标签与首轮深探开关；手动召回始终可用。
 Token 影响：约 50 tokens；缓存影响：仅 provider 尾部。
 """
 from core.context_provider import ContextProviderRegistry, ProviderMeta
@@ -16,7 +16,7 @@ def recall_policy_context(scope: str) -> str:
     return (tag_label("recall_mode", policy.level)
             + tag_label("recall_background", str(policy.background).lower())
             + "".join(tag_label("recall_tag", tag) for tag in policy.tags)
-            + " 自动召回策略；已有记忆不撤回。按需调用 recall；set_recall_policy 可调整本轮后续召回。")
+            + " 自动召回仅在首轮准备阶段执行；已有记忆不撤回。执行中需要更多信息请主动调用 recall。")
 
 
 ContextProviderRegistry.register(ProviderMeta(
