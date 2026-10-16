@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import httpx
 import litellm
 import pytest
+from litellm.caching.llm_caching_handler import LLMClientCache
 from pydantic import BaseModel
 
 from agent.llm.config import LLMClientConfig
@@ -18,6 +19,7 @@ class Extracted(BaseModel):
     fact: str
 
 
+@pytest.mark.asyncio(loop_scope="module")
 @pytest.mark.parametrize("mode,protocol,outcome", [
     (mode, protocol, "success") for mode in ("", "json_mode", "tools")
     for protocol in ("chat_completions", "responses")
@@ -93,6 +95,7 @@ async def test_extraction_honors_selected_protocol_and_structured_output(monkeyp
         return httpx.MockTransport(respond)
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as transport:
+        monkeypatch.setattr(litellm, "in_memory_llm_clients_cache", LLMClientCache())
         monkeypatch.setattr(litellm, "aclient_session", transport)
         monkeypatch.setattr(httpx, "AsyncHTTPTransport", http_transport)
         adapter = factory.get_llm_client() if mode else factory.get_native_client()
