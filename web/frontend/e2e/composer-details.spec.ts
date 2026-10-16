@@ -1,5 +1,67 @@
 import { test, expect, openWebChat, closeWebChatOverlay } from "./fixtures";
 
+test("uploaded chat images load after sending and remain accessible from history", async ({ page }, testInfo) => {
+  const name = "screen (1) #预算.png";
+  const filename = `123_${name}`;
+  const url = `/api/chat/files/image/${encodeURIComponent(filename).replace(/[()]/g, (char) => `%${char.charCodeAt(0).toString(16)}`)}`;
+  const image = Buffer.from(await page.evaluate(() => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 240; canvas.height = 80;
+    const ctx = canvas.getContext("2d")!;
+    ctx.fillStyle = "#dbeafe"; ctx.fillRect(0, 0, 240, 80);
+    ctx.fillStyle = "#1e40af"; ctx.font = "20px sans-serif"; ctx.fillText("Chat image preview", 20, 48);
+    return canvas.toDataURL("image/png").split(",")[1]!;
+  }), "base64");
+  let messageId = "";
+  await page.route("**/api/chat/upload", (route) => route.fulfill({ json: {
+    path: `/workspace/uploads/image/${filename}`, url, name, type: "image", size: image.length,
+  } }));
+  await page.route("**/api/chat/files/image/**", (route) => route.fulfill({ contentType: "image/png", body: image }));
+  await page.route("**/api/chat/send", (route) => {
+    const data = route.request().postDataJSON() as { message: string; message_id: string; files: string[] };
+    messageId = data.message_id;
+    expect(data.message).toBe("Check this image");
+    expect(data.files).toEqual([`/workspace/uploads/image/${filename}`]);
+    return route.fulfill({ json: { ok: true } });
+  });
+  await page.route("**/api/chat/history*", (route) => route.fulfill({ json: messageId ? [{
+    id: 1, cid: messageId, role: "user", ts: 1,
+    content: `Check this image\n[${filename}](./uploads/image/${encodeURIComponent(filename)})`,
+  }] : [] }));
+  await page.route("**/api/workspace/file*", (route) => route.fulfill({ json: {
+    path: `uploads/image/${filename}`, name: filename, binary: true, type: "image", size: image.length,
+  } }));
+  await page.route("**/api/workspace/raw*", (route) => route.fulfill({ contentType: "image/png", body: image }));
+  await page.goto("/webui/");
+  await openWebChat(page);
+  await page.locator('.composer-card input[type="file"]').setInputFiles({ name, mimeType: "image/png", buffer: image });
+  await expect(page.getByRole("list", { name: "Pending attachments" })).not.toContainText("Uploading");
+  await page.getByRole("textbox", { name: "Message", exact: true }).fill("Check this image");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  const sentImage = page.locator(".message-bubble img");
+  await expect(sentImage).toHaveCount(1);
+  await expect.poll(() => sentImage.evaluate((el: HTMLImageElement) => el.naturalWidth)).toBe(240);
+  await expect(sentImage).toHaveAttribute("src", url);
+  await page.screenshot({ path: testInfo.outputPath("chat-image.png"), animations: "disabled" });
+  await sentImage.click();
+  const lightbox = page.getByRole("dialog", { name: "Image preview", exact: true });
+  await expect.poll(() => lightbox.getByRole("img", { name: "image", exact: true }).evaluate((el: HTMLImageElement) => el.naturalWidth)).toBe(240);
+  await lightbox.getByRole("button", { name: "Zoom in", exact: true }).click();
+  await expect(lightbox.getByRole("button", { name: "Zoom out", exact: true })).toBeVisible();
+  await lightbox.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(lightbox).not.toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeVisible();
+  await sentImage.click();
+  await page.keyboard.press("Escape");
+  await expect(lightbox).not.toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeVisible();
+  await page.reload();
+  await openWebChat(page);
+  await page.getByRole("button", { name: `${filename} Workspace`, exact: true }).click();
+  await expect.poll(() => page.getByRole("img", { name: filename, exact: true }).evaluate((el: HTMLImageElement) => el.naturalWidth)).toBe(240);
+  await page.screenshot({ path: testInfo.outputPath("chat-image-history.png"), animations: "disabled" });
+});
+
 test("attachment tray stays inside the composer and keeps long filenames contained", async ({ page }, testInfo) => {
   await page.route("**/api/chat/upload", (route) => route.fulfill({ json: { path: "/uploads/example.txt", type: "file" } }));
   await page.goto("/webui/");

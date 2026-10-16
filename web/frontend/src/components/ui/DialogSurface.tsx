@@ -8,7 +8,7 @@ export interface DialogSurfaceProps {
   title: ReactNode;
   children: ReactNode;
   className?: string;
-  placement?: "center" | "right" | "left" | "top";
+  placement?: "center" | "right" | "left" | "top" | "fullscreen";
   dismissible?: boolean;
 }
 
@@ -17,6 +17,7 @@ const PLACEMENT = {
   right: "inset-y-0 right-0 h-dvh border-l",
   left: "inset-y-0 left-0 h-dvh border-r",
   top: "top-[12dvh] left-1/2 -translate-x-1/2 rounded-2xl max-h-[76dvh]",
+  fullscreen: "inset-0 h-dvh",
 };
 
 export function DialogSurface({

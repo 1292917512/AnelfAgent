@@ -7,6 +7,7 @@ import type {
   ApiKeyInfo,
   AuthStatus,
   ChatHistoryMessage,
+  ChatUploadResult,
   DelegationHistoryItem,
   DelegationOverviewItem,
   DelegationProgress,
@@ -48,7 +49,7 @@ export const chatApi = {
   upload: (file: File) => {
     const form = new FormData();
     form.append("file", file);
-    return api.post("/chat/upload", form, {
+    return api.post<ChatUploadResult>("/chat/upload", form, {
       headers: { "Content-Type": "multipart/form-data" },
     });
   },

@@ -3,7 +3,7 @@
  *
  * 独立成模块以避免 chat-sse-handlers / chat-upload 反向 import chat-store 造成循环依赖。
  */
-import type { ChatBucket, ChatMessage, ChatMeta } from "@/lib/types";
+import type { ChatBucket, ChatMeta } from "@/lib/types";
 
 export const DEFAULT_CHAT_ID = "default";
 const LOCAL_STORAGE_ACTIVE_KEY = "anelf:activeChatId";
@@ -101,23 +101,4 @@ export function touchSendWatchdog(chatId: string) {
     _watchdogs.delete(chatId);
     entry.onTimeout(chatId);
   }, SEND_TIMEOUT_MS);
-}
-
-// ── blob: URL 生命周期 ──
-
-const BLOB_URL_RE = /!\[[^\]]*\]\((blob:[^)\s]+)\)/g;
-
-/**
- * 回收消息内容里拼入的 blob: 预览 URL。
- * 发送时图片预览 URL 会被拼进消息 content（markdown 图片语法），这些 URL 的
- * 所有权随之移交给消息；会话删除/消息清空时必须在此统一 revoke，避免内存泄漏。
- */
-export function revokeMessageBlobUrls(messages: ChatMessage[]) {
-  for (const m of messages) {
-    if (!m.content || !m.content.includes("blob:")) continue;
-    for (const match of m.content.matchAll(BLOB_URL_RE)) {
-      const url = match[1];
-      if (url) URL.revokeObjectURL(url);
-    }
-  }
 }

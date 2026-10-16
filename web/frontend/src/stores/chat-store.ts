@@ -33,7 +33,6 @@ import {
   nextCid,
   persistActiveChatId,
   persistChats,
-  revokeMessageBlobUrls,
 } from "./chat-shared";
 import { createChatHistory } from "./chat-history";
 import { attachChatSseHandlers } from "./chat-sse-handlers";
@@ -216,10 +215,8 @@ export const useChatStore = create<ChatState>((set, get) => {
     removeChat: (chatId) => {
       if (chatId === DEFAULT_CHAT_ID) return; // 默认会话不可删除
       history.cancel(chatId);
-      // 回收该会话消息内容里遗留的 blob: 预览 URL（发送时所有权已移交消息）
       const bucket = get().buckets[chatId];
       if (bucket) {
-        revokeMessageBlobUrls(bucket.messages);
         for (const pf of bucket.pendingFiles) {
           if (pf.preview?.startsWith("blob:")) URL.revokeObjectURL(pf.preview);
         }
@@ -349,9 +346,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 
     clearMessages: () => {
       const chatId = get().activeChatId;
-      const bucket = get().buckets[chatId];
       history.cancel(chatId);
-      if (bucket) revokeMessageBlobUrls(bucket.messages);
       updateBucket(chatId, () => ({ messages: [], historyLoaded: true, historyError: null, earlierError: null, hasMore: false, earliestId: undefined }));
     },
 
@@ -462,9 +457,6 @@ export const useChatStore = create<ChatState>((set, get) => {
           displayParts.push(`[${pf.type}: ${pf.file.name}]`);
         }
       }
-
-      // 注意：拼入消息 content 的 blob: 预览 URL 不能在此 revoke（否则已发送消息
-      // 图片必裂图）；其所有权移交消息，由 removeChat / clearMessages 统一回收。
 
       const messageId = nextCid();
       const submittedAt = Date.now();

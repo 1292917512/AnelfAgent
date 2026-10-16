@@ -52,7 +52,7 @@ export function filterAcceptedFiles(files: FileList | null, currentCount: number
   return accepted;
 }
 
-/** 构造 PendingFile（图片生成 blob: 预览 URL；所有权随 pendingFiles/消息 content 管理） */
+/** 图片上传期间使用本地预览，由附件持有并负责释放。 */
 export function makePendingFile(file: File): PendingFile {
   const type = classifyFile(file.name);
   const pf: PendingFile = { file, type, uploading: true };
@@ -68,13 +68,13 @@ export async function uploadPendingFiles(
 ): Promise<void> {
   for (const pf of newFiles) {
     try {
-      const resp = await chatApi.upload(pf.file);
-      const data = resp.data as { path: string; url: string };
+      const { data } = await chatApi.upload(pf.file);
       ctx.updateBucket(chatId, (b) => ({
         pendingFiles: b.pendingFiles.map((f) =>
-          f.file === pf.file ? { ...f, uploading: false, path: data.path } : f,
+          f.file === pf.file ? { ...f, uploading: false, path: data.path, preview: f.type === "image" ? data.url : undefined } : f,
         ),
       }));
+      if (pf.preview?.startsWith("blob:")) URL.revokeObjectURL(pf.preview);
     } catch {
       ctx.updateBucket(chatId, (b) => ({
         pendingFiles: b.pendingFiles.map((f) =>

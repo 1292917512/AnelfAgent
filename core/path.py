@@ -7,6 +7,7 @@ import time
 from functools import wraps
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
+from urllib.parse import quote, unquote
 
 from core.async_helper import dual_mode
 from core.log import log
@@ -596,7 +597,7 @@ UPLOAD_URL_PREFIX = "/api/chat/files"
 
 def upload_url_for(file_type: str, filename: str) -> str:
     """由文件类别与文件名构造可服务 URL（``/api/chat/files/{type}/{name}``）。"""
-    return f"{UPLOAD_URL_PREFIX}/{file_type}/{filename}"
+    return f"{UPLOAD_URL_PREFIX}/{quote(file_type, safe='')}/{quote(filename, safe='')}"
 
 
 def upload_path_to_url(path: str) -> Optional[str]:
@@ -619,7 +620,13 @@ def parse_upload_url(url: str) -> Optional[Tuple[str, str]]:
     if not url.startswith(prefix):
         return None
     rest = url[len(prefix):]
-    parts = rest.split("/", 1)
-    if len(parts) != 2 or not parts[0] or not parts[1] or ".." in parts[1]:
+    try:
+        parts = [unquote(part, errors="strict") for part in rest.split("/")]
+    except UnicodeDecodeError:
+        return None
+    if len(parts) != 2 or any(
+        not part or ".." in part or any(char in part for char in "/\\\x00\r\n")
+        for part in parts
+    ):
         return None
     return parts[0], parts[1]

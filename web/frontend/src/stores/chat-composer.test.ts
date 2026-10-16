@@ -49,6 +49,22 @@ it("blocks duplicate submission until acknowledgement and clears only the acknow
   expect(useChatStore.getState().buckets.A?.inputDraft).toBe("");
 });
 
+it("keeps an uploaded image available after a failed send and retry", async () => {
+  const preview = "/api/chat/files/image/screenshot.png";
+  const path = "/workspace/uploads/image/screenshot.png";
+  useChatStore.setState({ buckets: { A: { ...emptyBucket(), pendingFiles: [{
+    file: new File(["image"], "screenshot.png"), type: "image", uploading: false, path, preview,
+  }] } } });
+  const send = vi.spyOn(chatApi, "send").mockRejectedValueOnce(new Error("offline")).mockResolvedValue(accepted);
+  expect(await useChatStore.getState().send("Check", "User")).toBe(false);
+  expect(useChatStore.getState().buckets.A?.pendingFiles[0]?.preview).toBe(preview);
+  expect(await useChatStore.getState().send("Check", "User")).toBe(true);
+  expect(send.mock.calls[1]?.[3]).toEqual([path]);
+  expect(useChatStore.getState().buckets.A?.messages.filter((message) => message.role === "user")).toEqual([
+    expect.objectContaining({ content: `Check\n![image](${preview})`, delivery: "submitted" }),
+  ]);
+});
+
 it("does not resurrect a removed chat when its send request fails", async () => {
   let reject!: (error: Error) => void;
   vi.spyOn(chatApi, "send").mockImplementation(() => new Promise((_resolve, fail) => { reject = fail; }));

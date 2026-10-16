@@ -28,7 +28,7 @@
 .menu-action { display: flex; width: 100%; align-items: center; gap: 12px; min-height: 42px; padding: 10px 12px; border-radius: 10px; color: var(--text); font-size: 13px; text-align: left; }
 .menu-action:hover { background: var(--bg-hover); }
 .dialog-surface { max-height: var(--viewport-height, 100dvh); }
-.dialog-surface[data-placement="left"], .dialog-surface[data-placement="right"] { top: var(--viewport-top, 0px); bottom: auto; height: var(--viewport-height, 100dvh); }
+.dialog-surface[data-placement="left"], .dialog-surface[data-placement="right"], .dialog-surface[data-placement="fullscreen"] { top: var(--viewport-top, 0px); bottom: auto; height: var(--viewport-height, 100dvh); }
 .dialog-surface[data-placement="center"] { max-height: min(85dvh, var(--viewport-height, 100dvh)); }
 .trace-events::before { content: ""; position: absolute; left: 19px; top: 20px; bottom: 20px; width: 1px; background: var(--border); }
 .trace-timeline { background: var(--card); }

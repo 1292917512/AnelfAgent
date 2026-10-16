@@ -65,6 +65,14 @@ export interface PendingFile {
   root?: "workspace" | "project";
 }
 
+export interface ChatUploadResult {
+  path: string;
+  url: string;
+  name: string;
+  type: string;
+  size: number;
+}
+
 export interface ChatStreamingDiff {
   path: string;
   diff: string;

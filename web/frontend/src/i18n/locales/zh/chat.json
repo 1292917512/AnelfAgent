@@ -145,5 +145,8 @@
   "pendingAttachments": "待发送附件",
   "uploadedFile": "附件",
   "uploadFailed": "上传失败",
-  "uploadingFile": "上传中…"
+  "uploadingFile": "上传中…",
+  "imagePreview": "图片预览",
+  "zoomIn": "放大图片",
+  "zoomOut": "缩小图片"
 }

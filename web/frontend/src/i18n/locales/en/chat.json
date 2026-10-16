@@ -145,5 +145,8 @@
   "pendingAttachments": "Pending attachments",
   "uploadedFile": "Attachment",
   "uploadFailed": "Upload failed",
-  "uploadingFile": "Uploading…"
+  "uploadingFile": "Uploading…",
+  "imagePreview": "Image preview",
+  "zoomIn": "Zoom in",
+  "zoomOut": "Zoom out"
 }
