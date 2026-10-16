@@ -33,13 +33,13 @@ class BuiltinProvider(Provider):
         *,
         timeout: int = 15,
         extract_mode: str = "markdown",
-        proxy_mode: ProxyMode = "system",
+        proxy_mode: ProxyMode | None = None,
         respect_robots: bool = False,
     ) -> Dict[str, Any]:
         from agent.retrieval.fetcher import read_page
         return read_page(
             url, timeout=timeout, extract_mode=extract_mode,
-            proxy_mode=proxy_mode, respect_robots=respect_robots,
+            proxy_mode=proxy_mode if proxy_mode is not None else "system", respect_robots=respect_robots,
         )
 
     def error_response(self, exc: Exception, action: str, hint: str = "") -> str:

@@ -70,7 +70,7 @@ class SelfHostedProvider(Provider):
     def request_json(
         self, path: str, *, method: str = "GET", params: dict[str, Any] | None = None,
         payload: dict[str, Any] | None = None, timeout: float = 30,
-        proxy_mode: ProxyMode = "direct",
+        proxy_mode: ProxyMode | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """请求受信服务地址，限制响应体且禁止携带凭据跟随重定向。"""
         endpoint = validate_service_url(str(self.setting("base_url") or ""))
@@ -80,7 +80,8 @@ class SelfHostedProvider(Provider):
         headers = {"Accept": "application/json"}
         if key:
             headers["Authorization"] = f"Bearer {key}"
-        with network_client(proxy_mode=proxy_mode, timeout=timeout, follow_redirects=False) as client:
+        mode = proxy_mode if proxy_mode is not None else self.setting("proxy_mode", "direct")
+        with network_client(proxy_mode=mode, timeout=timeout, follow_redirects=False) as client:
             with client.stream(method, f"{endpoint}/{path}", params=params, json=payload, headers=headers) as response:
                 route = dict(response.extensions.get("network_route") or {})
                 limit = 8 * 1024 * 1024

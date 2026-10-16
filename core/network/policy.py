@@ -165,7 +165,7 @@ def get_proxy_url(url: str, proxy_mode: ProxyMode = "system") -> str | None:
 
 
 register_configs({"network/proxy": {
-    "proxy_enabled": {"default": False, "description": "启用全局代理规则（下一次请求生效）"},
+    "proxy_enabled": {"default": False, "description": "允许组件使用全局代理地址与站点规则，默认关闭；关闭时 system 直连、proxy 明确报错。只影响项目 SDK，不修改系统代理，下一次请求生效"},
     "http_proxy": {"default": "", "description": "全局代理地址，例如 http://127.0.0.1:7890；支持 HTTP / SOCKS5", "validator": validate_proxy_url},
     "https_proxy": {"default": "", "description": "HTTPS 专用代理（留空复用全局代理地址）", "advanced": True, "validator": validate_proxy_url},
     "proxy_default_mode": {"default": "fallback", "value_type": "enum", "options": ["fallback", "direct", "proxy"], "description": "未命中规则时：fallback 直连失败后代理 / direct 直连 / proxy 代理"},

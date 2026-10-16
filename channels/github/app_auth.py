@@ -16,6 +16,7 @@ import httpx
 import jwt
 
 from core.log import log
+from core.network import AsyncNetworkTransport
 
 _JWT_TTL = 540.0        # JWT 有效期 9 分钟(GitHub 上限 10 分钟)
 _JWT_CACHE = 480.0      # 缓存 8 分钟
@@ -39,7 +40,8 @@ class GitHubAppAuth:
                 "User-Agent": "AnelfAgent-GitHubChannel",
             },
             timeout=timeout,
-            transport=transport,
+            transport=transport if transport is not None else AsyncNetworkTransport(),
+            trust_env=False,
         )
         self._jwt_cached: str = ""
         self._jwt_at: float = 0.0

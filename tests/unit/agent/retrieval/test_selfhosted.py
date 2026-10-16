@@ -50,6 +50,9 @@ def test_search_normalizes_results_and_preserves_partial_engine_failure(service_
     assert requests[0].url.params["q"] == "hello"
     assert "authorization" not in requests[0].headers
     assert factory.call_args.kwargs["proxy_mode"] == "direct"
+    service_settings["retrieval_searxng_proxy_mode"] = "system"
+    tools.web_search("hello", provider="searxng")
+    assert factory.call_args.kwargs["proxy_mode"] == "system"
 
 
 def test_empty_search_distinguishes_engine_failure(service_settings, wire):
@@ -85,6 +88,14 @@ def test_browser_payload_and_bounded_tool_result(service_settings, wire):
     assert "local-service-secret" not in json.dumps(result)
     read = json.loads(tools.web_fetch("https://example.org", provider="crawl4ai"))
     assert read["content"] == "0123456789"
+    assert factory.call_args.kwargs["proxy_mode"] == "direct"
+    service_settings["retrieval_crawl4ai_proxy_mode"] = "proxy"
+    tools.web_fetch("https://example.org", provider="crawl4ai")
+    assert factory.call_args.kwargs["proxy_mode"] == "proxy"
+    tools.web_crawl("https://example.org", proxy_mode="system")
+    assert factory.call_args.kwargs["proxy_mode"] == "system"
+    tools.web_fetch("https://example.org", provider="crawl4ai", proxy_mode="direct")
+    assert factory.call_args.kwargs["proxy_mode"] == "direct"
 
 
 @pytest.mark.parametrize("page,code", [

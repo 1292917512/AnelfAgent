@@ -47,7 +47,8 @@ class SearchCap(Protocol):
 class ReaderCap(Protocol):
     """网页读取能力：URL → 可读正文（完整内容，分块由工具层统一施加）。
 
-    proxy_mode 控制到网站或提供者的本机请求路径；respect_robots / raw 提取由实现声明支持。
+    proxy_mode 控制到网站或提供者的本机请求路径；省略时使用提供者默认策略。
+    respect_robots / raw 提取由实现声明支持。
     """
 
     def read(
@@ -56,7 +57,7 @@ class ReaderCap(Protocol):
         *,
         timeout: int = 15,
         extract_mode: str = "markdown",
-        proxy_mode: ProxyMode = "system",
+        proxy_mode: ProxyMode | None = None,
         respect_robots: bool = False,
     ) -> Dict[str, Any]: ...
 
@@ -77,7 +78,7 @@ class CrawlCap(Protocol):
     def crawl(
         self, url: str, *, timeout: int = 30, extract_mode: str = "markdown",
         css_selector: str = "", wait_for: str = "", scan_full_page: bool = False,
-        proxy_mode: ProxyMode = "system", respect_robots: bool = False,
+        proxy_mode: ProxyMode | None = None, respect_robots: bool = False,
     ) -> Dict[str, Any]: ...
 
 

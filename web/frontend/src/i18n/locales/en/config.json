@@ -156,6 +156,6 @@
     "system": "Follow global rules",
     "direct": "Always direct",
     "proxy": "Use global proxy",
-    "hint": "Proxy addresses and site rules are managed centrally. The default tries direct first; sent write requests are not replayed."
+    "hint": "Global proxy routing is off by default, so system mode connects directly. When enabled, site rules and the default policy apply; direct mode always bypasses them. This controls connections from Anelf, not the outbound proxy settings of local services."
   }
 }

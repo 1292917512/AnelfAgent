@@ -28,7 +28,9 @@ uv run python deploy/retrieval/manage.py status
 | 提供者 | 配置 | 默认本机部署值 |
 | --- | --- | --- |
 | SearXNG | `retrieval_searxng_base_url` | `http://127.0.0.1:18080` |
+| SearXNG | `retrieval_searxng_proxy_mode` | `direct`（到服务的连接策略） |
 | Crawl4AI | `retrieval_crawl4ai_base_url` | `http://127.0.0.1:11235` |
+| Crawl4AI | `retrieval_crawl4ai_proxy_mode` | `direct`（到服务的连接策略） |
 | Crawl4AI | `retrieval_crawl4ai_api_key` | `.env` 中 `CRAWL4AI_API_TOKEN` 的值 |
 
 配置字段由模块注册，Web 与 AI 的统一配置工具共用同一入口。配置后使用页面上的能力测试确认
@@ -73,9 +75,11 @@ SearXNG 端口公开。
 
 到服务的连接与服务到网站的出站连接是两段网络：
 
-- SearXNG 服务连接固定直连；搜索引擎代理由 `runtime/searxng/settings.yml` 的官方 `outgoing`
-  配置管理。宿主 `127.0.0.1` 代理地址在容器中不可直接使用。
-- Crawl4AI 的工具 `proxy_mode` 沿用核心网络 SDK，但只选择 **Anelf → Crawl4AI 服务** 的路线。
+- SearXNG 与 Crawl4AI 的服务连接默认 `direct`，即使全局代理启用也保持直连。提供者配置可选择
+  `system` 跟随全局规则或 `proxy` 使用全局地址，不在提供者内重复存地址。
+- SearXNG 搜索引擎代理由 `runtime/searxng/settings.yml` 的官方 `outgoing` 配置管理；
+  默认不配置代理。宿主 `127.0.0.1` 代理地址在容器中不可直接使用。
+- Crawl4AI 的工具 `proxy_mode` 可覆盖本次服务连接策略，只选择 **Anelf → Crawl4AI 服务** 的路线。
   返回的 `service_route` 也只描述这一段，不代表浏览器的出站代理。
 - Crawl4AI 0.9.4 服务会覆盖调用方浏览器代理以执行自己的出站防护，不能将 Anelf 代理地址作为
   browser_config 参数强塞进去。需代理的抓取应按服务支持的部署网络方式配置。

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import base64
 import json
+from typing import Any
 
+import httpx
 import pytest
 
 from agent.channel.dedup import MessageDedup
@@ -13,6 +15,68 @@ from channels.weixin.state import (
     ContextTokenStore,
     TypingTicketCache,
 )
+from core.config import ConfigManager
+
+
+async def test_api_and_media_share_hot_network_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    values: dict[str, Any] = {"http_proxy": "http://proxy.test:7890", "proxy_rules": "DOMAIN-SUFFIX,weixin.qq.com,PROXY"}
+    monkeypatch.setattr(ConfigManager, "get", staticmethod(lambda key, default=None: values.get(key, default)))
+    monkeypatch.setenv("HTTPS_PROXY", "http://environment.invalid:9999")
+    monkeypatch.setenv("ALL_PROXY", "http://environment.invalid:9999")
+    routes: list[str | None] = []
+
+    def transport(*, proxy: str | None = None, **kwargs: Any) -> httpx.MockTransport:
+        def respond(request: httpx.Request) -> httpx.Response:
+            routes.append(proxy)
+            if request.url.path == "/api":
+                body = json.loads(request.content)
+                assert body["text"] == "你好" and body["base_info"]
+                assert request.headers["authorization"] == "Bearer test-token"
+                assert int(request.headers["content-length"]) == len(request.content)
+            if request.url.path == "/upload":
+                assert request.content == b"ciphertext"
+                return httpx.Response(200, headers={"x-encrypted-param": "uploaded"})
+            if request.url.path == "/download":
+                return httpx.Response(200, content=b"downloaded")
+            return httpx.Response(200, json={"ok": True})
+        return httpx.MockTransport(respond)
+
+    monkeypatch.setattr(httpx, "AsyncHTTPTransport", transport)
+    async with ilink.create_http_client() as client:
+        for enabled, mode, expected in [(False, "system", None), (True, "system", values["http_proxy"]), (True, "direct", None)]:
+            values.update(proxy_enabled=enabled, weixin_proxy_mode=mode)
+            assert await ilink._api_post(client, base_url=ilink.ILINK_BASE_URL, endpoint="api",
+                                         payload={"text": "你好"}, token="test-token", timeout_ms=1000) == {"ok": True}
+            assert await ilink._api_get(client, base_url=ilink.ILINK_BASE_URL, endpoint="qr", timeout_ms=1000) == {"ok": True}
+            assert await ilink.upload_ciphertext(client, ciphertext=b"ciphertext", upload_url=ilink.ILINK_BASE_URL + "/upload") == "uploaded"
+            assert await ilink._download_bytes(client, url=ilink.ILINK_BASE_URL + "/download") == b"downloaded"
+            assert routes[-4:] == [expected] * 4
+    assert client.is_closed
+
+
+async def test_api_failure_does_not_replay_and_poll_deadline_cancels() -> None:
+    import asyncio
+
+    calls = 0
+    cancelled = False
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal calls, cancelled
+        calls += 1
+        if request.url.path == "/failure":
+            return httpx.Response(403, text="forbidden")
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled = True
+        return httpx.Response(200)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond), timeout=None) as client:
+        with pytest.raises(RuntimeError, match="HTTP 403: forbidden"):
+            await ilink._api_post(client, base_url=ilink.ILINK_BASE_URL, endpoint="failure", payload={}, token=None, timeout_ms=1000)
+        with pytest.raises(TimeoutError):
+            await ilink._api_get(client, base_url=ilink.ILINK_BASE_URL, endpoint="poll", timeout_ms=20)
+    assert calls == 2 and cancelled
 
 # ======================================================================
 # AES 加解密

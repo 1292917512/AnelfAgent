@@ -17,6 +17,7 @@ from typing import Any, Callable, Dict, Optional
 import httpx
 
 from core.log import log
+from core.network import AsyncNetworkTransport
 
 _DEFAULT_HEADERS = {
     "Accept": "application/vnd.github+json",
@@ -85,7 +86,8 @@ class GitHubClient:
             headers=_DEFAULT_HEADERS,
             timeout=timeout,
             follow_redirects=True,
-            transport=transport,
+            transport=transport if transport is not None else AsyncNetworkTransport(),
+            trust_env=False,
         )
         self.rate_remaining: int = -1
         self.rate_reset_at: float = 0.0

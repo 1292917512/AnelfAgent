@@ -70,7 +70,10 @@ class SearXNGProvider(SelfHostedProvider):
 
 register_configs_safe({"retrieval/searxng": {
     "retrieval_searxng_base_url": {"default": "", "validator": validate_service_url,
-        "description": "SearXNG 本地服务地址，例如 http://127.0.0.1:18080；留空不参与自动选择。服务连接固定直连，搜索引擎出站网络在 SearXNG 配置"},
+        "description": "SearXNG 本地服务地址，例如 http://127.0.0.1:18080；留空不参与自动选择。服务连接默认直连，搜索引擎出站网络在 SearXNG 配置"},
+    "retrieval_searxng_proxy_mode": {"default": "direct", "value_type": "enum",
+        "options": ["direct", "system", "proxy"], "related_key": "proxy_enabled",
+        "description": "到 SearXNG 服务的网络策略，默认直连；system 跟随全局规则，proxy 使用全局代理。不改变服务到搜索引擎的出站网络"},
     "retrieval_searxng_language": {"default": "", "description": "搜索语言，留空使用 SearXNG 默认值，例如 zh-CN"},
     "retrieval_searxng_engines": {"default": "", "description": "搜索引擎名，逗号分隔；留空使用 SearXNG 已启用的引擎", "advanced": True},
     "retrieval_searxng_timeout": {"default": 20, "min": 1, "max": 45, "unit": "s", "description": "等待搜索服务返回结果的超时"},

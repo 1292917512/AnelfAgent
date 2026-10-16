@@ -3,7 +3,7 @@
 接口层：本文件只做工具注册与参数校验，能力实现在 providers/ 模块
 （能力 × 提供者矩阵：Provider 抽象、内置实现和组件注册），
 经 providers.resolve 统一解析；本机抓取设施在 fetcher.py。
-模型可见：工具参数 proxy_mode 选择全局网络策略，HTTP 失败保留状态码与响应正文。
+模型可见：工具参数 proxy_mode 选择全局网络策略；本地服务默认直连，HTTP 失败保留状态码与响应正文。
 token 影响：失败回执增加少量归因字段，正文继续受长度预算约束。
 缓存影响：不注入运行状态或代理配置到稳定上下文前缀。
 
@@ -122,7 +122,7 @@ def web_fetch(
     extract_mode: str = "markdown",
     max_chars: int = 8000,
     timeout: int = 15,
-    proxy_mode: ProxyMode = "system",
+    proxy_mode: ProxyMode | None = None,
     start_index: int = 0,
     respect_robots: bool = False,
     provider: str = "",
@@ -137,7 +137,7 @@ def web_fetch(
         extract_mode:   输出格式：markdown（默认，保留结构）、text（纯文本）或 raw（原始内容，builtin/crawl4ai 支持）
         max_chars:      最大返回字符数，默认 8000
         timeout:        超时秒数，默认 15
-        proxy_mode:     system 按全局规则，direct 直连，proxy 使用全局代理（选择本机到提供者/网站的网络路径）
+        proxy_mode:     省略使用提供者默认策略（本地服务默认直连）；system 全局规则，direct 直连，proxy 全局代理。只控制本机到提供者/网站的网络
         start_index:    从该字符索引开始返回，默认 0，用于长页面分块续读
         respect_robots: 是否检查目标站点 robots.txt（builtin/crawl4ai 支持），默认 false
         provider:       指定读取提供者（builtin 轻量抓取 / crawl4ai 浏览器渲染 / bigmodel 智谱），留空用系统当前选择
@@ -182,7 +182,7 @@ def web_fetch(
 def web_crawl(
     url: str, css_selector: str = "", wait_for: str = "", scan_full_page: bool = False,
     extract_mode: str = "markdown", max_chars: int = 8000, start_index: int = 0,
-    timeout: int = 30, proxy_mode: ProxyMode = "system", respect_robots: bool = False,
+    timeout: int = 30, proxy_mode: ProxyMode | None = None, respect_robots: bool = False,
     provider: str = "",
 ) -> str:
     """在本地浏览器服务渲染网页，等待元素、滚动加载并提取正文与链接。
@@ -199,7 +199,7 @@ def web_crawl(
         max_chars: 正文返回上限，1–50000 字符
         start_index: 正文起点，返回 truncated 时用 next_start_index 续读
         timeout: 页面操作等待上限，1–45 秒
-        proxy_mode: 到浏览器服务的连接策略；不改变浏览器对网站的出站代理
+        proxy_mode: 到浏览器服务的连接策略，省略跟随服务配置（默认直连）；system 全局规则，direct 直连，proxy 全局代理。不改变浏览器出站
         respect_robots: 是否由浏览器服务检查 robots.txt
         provider: 动态抓取提供者，留空使用系统选择
     """

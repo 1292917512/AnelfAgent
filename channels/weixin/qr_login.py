@@ -14,6 +14,8 @@ import time
 import uuid
 from typing import Any, Dict, Optional
 
+import httpx
+
 from agent.channel.qr_login import (
     QR_CONFIRMED,
     QR_ERROR,
@@ -25,13 +27,12 @@ from agent.channel.qr_login import (
 from core.log import log
 
 from .ilink_client import (
-    AIOHTTP_AVAILABLE,
     EP_GET_BOT_QR,
     EP_GET_QR_STATUS,
     ILINK_BASE_URL,
     QR_TIMEOUT_MS,
     _api_get,
-    _make_ssl_connector,
+    create_http_client,
 )
 from .state import save_weixin_account
 
@@ -73,7 +74,7 @@ QR_MAX_REFRESH = 3
 class QrLoginSession:
     """一次扫码登录会话的状态。"""
 
-    def __init__(self, http_session: Any, qrcode_value: str, qrcode_url: str, bot_type: str):
+    def __init__(self, http_session: httpx.AsyncClient, qrcode_value: str, qrcode_url: str, bot_type: str):
         self.id = uuid.uuid4().hex[:12]
         self.http_session = http_session
         self.qrcode_value = qrcode_value
@@ -101,12 +102,8 @@ class QrLoginManager:
 
     async def start(self, *, bot_type: str = "3") -> Dict[str, Any]:
         """拉取二维码，返回 {session_id, qr_png, qr_url}。"""
-        if not AIOHTTP_AVAILABLE:
-            raise RuntimeError("aiohttp is required for Weixin QR login")
-        import aiohttp
-
         self._store.gc(keep_status={QR_CONFIRMED})
-        http_session = aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector())
+        http_session = create_http_client()
         try:
             qr_resp = await _api_get(
                 http_session,
@@ -115,13 +112,13 @@ class QrLoginManager:
                 timeout_ms=QR_TIMEOUT_MS,
             )
         except Exception as exc:
-            await http_session.close()
+            await http_session.aclose()
             raise RuntimeError(f"获取二维码失败: {exc}") from exc
 
         qrcode_value = str(qr_resp.get("qrcode") or "")
         qrcode_url = str(qr_resp.get("qrcode_img_content") or "")
         if not qrcode_value:
-            await http_session.close()
+            await http_session.aclose()
             raise RuntimeError("二维码响应缺少 qrcode 字段")
 
         session = QrLoginSession(http_session, qrcode_value, qrcode_url, bot_type)
@@ -235,8 +232,8 @@ class QrLoginManager:
 
     async def _close(self, session: QrLoginSession) -> None:
         try:
-            if not session.http_session.closed:
-                await session.http_session.close()
+            if not session.http_session.is_closed:
+                await session.http_session.aclose()
         except Exception:
             log("_close 异常已忽略", "DEBUG")
 
@@ -266,11 +263,7 @@ async def qr_login(
 
     成功返回凭据 dict（account_id/token/base_url/user_id），失败或超时返回 None。
     """
-    if not AIOHTTP_AVAILABLE:
-        raise RuntimeError("aiohttp is required for Weixin QR login")
-    import aiohttp
-
-    async with aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector()) as session:
+    async with create_http_client() as session:
         try:
             qr_resp = await _api_get(
                 session,

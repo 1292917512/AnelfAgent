@@ -15,6 +15,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from channels.github.app_auth import GitHubAppAuth
+from core.config import ConfigManager
 
 
 def _gen_key() -> tuple[str, Any]:
@@ -57,6 +58,28 @@ class TestJwt:
 
 
 class TestInstallationToken:
+    async def test_auth_uses_global_proxy_policy(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pem, _ = _gen_key()
+        values: dict[str, Any] = {"proxy_enabled": True, "http_proxy": "http://proxy.test:7890", "proxy_rules": "DOMAIN,api.github.com,PROXY"}
+        monkeypatch.setattr(ConfigManager, "get", staticmethod(lambda key, default=None: values.get(key, default)))
+        routes: list[str | None] = []
+
+        def transport(*, proxy: str | None = None, **kwargs: Any) -> httpx.MockTransport:
+            def respond(request: httpx.Request) -> httpx.Response:
+                routes.append(proxy)
+                if request.method == "GET":
+                    return httpx.Response(200, json=[{"id": 777}])
+                return httpx.Response(201, json={"token": "test-token", "expires_at": "2099-01-01T00:00:00Z"})
+            return httpx.MockTransport(respond)
+
+        monkeypatch.setattr(httpx, "AsyncHTTPTransport", transport)
+        auth = GitHubAppAuth(app_id="12345", private_key=pem)
+        try:
+            assert await auth.installation_token() == "test-token"
+        finally:
+            await auth.close()
+        assert routes == [values["http_proxy"]] * 2
+
     async def test_discovery_and_token_flow(self) -> None:
         pem, _ = _gen_key()
         calls: List[str] = []

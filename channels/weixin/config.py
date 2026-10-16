@@ -35,6 +35,9 @@ class WeixinConfig(ChannelConfig):
     cdn_base_url: str = Field(
         default=WEIXIN_CDN_BASE_URL, description="微信 CDN 地址（媒体上传/下载）",
         json_schema_extra=_URL)
+    proxy_mode: Literal["system", "direct", "proxy"] = Field(
+        default="system", description="网络策略：system 全局规则 / direct 直连 / proxy 全局代理；收发、媒体和扫码登录共用",
+        json_schema_extra={"related_key": "proxy_enabled"})
     dm_policy: Literal["open", "allowlist", "disabled"] = Field(
         default="open", description="私聊访问策略（open=所有人 / allowlist=白名单 / disabled=禁用）")
     allow_from: str = Field(

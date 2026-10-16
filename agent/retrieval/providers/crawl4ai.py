@@ -28,7 +28,7 @@ class Crawl4AIProvider(SelfHostedProvider):
 
     def read(
         self, url: str, *, timeout: int = 15, extract_mode: str = "markdown",
-        proxy_mode: ProxyMode = "system", respect_robots: bool = False,
+        proxy_mode: ProxyMode | None = None, respect_robots: bool = False,
     ) -> dict[str, Any]:
         return self.crawl(url, timeout=timeout, extract_mode=extract_mode,
                           proxy_mode=proxy_mode, respect_robots=respect_robots)
@@ -36,7 +36,7 @@ class Crawl4AIProvider(SelfHostedProvider):
     def crawl(
         self, url: str, *, timeout: int = 30, extract_mode: str = "markdown",
         css_selector: str = "", wait_for: str = "", scan_full_page: bool = False,
-        proxy_mode: ProxyMode = "system", respect_robots: bool = False,
+        proxy_mode: ProxyMode | None = None, respect_robots: bool = False,
     ) -> dict[str, Any]:
         from agent.retrieval.fetcher import check_ssrf_url, ssrf_protection_enabled
 
@@ -110,6 +110,9 @@ class Crawl4AIProvider(SelfHostedProvider):
 register_configs_safe({"retrieval/crawl4ai": {
     "retrieval_crawl4ai_base_url": {"default": "", "validator": validate_service_url,
         "description": "Crawl4AI 本地服务地址，例如 http://127.0.0.1:11235；留空不参与自动选择。工具 proxy_mode 仅控制到此服务的连接，不控制浏览器出站"},
+    "retrieval_crawl4ai_proxy_mode": {"default": "direct", "value_type": "enum",
+        "options": ["direct", "system", "proxy"], "related_key": "proxy_enabled",
+        "description": "到 Crawl4AI 服务的网络策略，默认直连；system 跟随全局规则，proxy 使用全局代理。不改变浏览器到网站的出站网络；单次工具参数可覆盖"},
     "retrieval_crawl4ai_api_key": {"default": "", "value_type": "password",
         "description": "自托管服务访问令牌，对应部署配置 CRAWL4AI_API_TOKEN，不是云平台 Key"},
 }})

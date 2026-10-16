@@ -1,6 +1,6 @@
 """iLink Bot API 协议层 — 个人微信（Weixin）频道的底层通信实现。
 
-协议部分为纯函数实现，不包含任何频道框架依赖，便于独立测试。
+协议转换为纯函数；收发、媒体和扫码登录经统一网络 SDK 访问。
 
 设计要点：
 - 长轮询 ``getupdates`` 驱动入站消息投递；
@@ -22,13 +22,10 @@ import textwrap
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote, urlparse
 
-try:
-    import aiohttp
+import httpx
 
-    AIOHTTP_AVAILABLE = True
-except ImportError:  # pragma: no cover - 依赖门禁
-    aiohttp = None  # type: ignore[assignment]
-    AIOHTTP_AVAILABLE = False
+from core.config import ConfigManager
+from core.network import async_network_client
 
 try:
     from cryptography.hazmat.backends import default_backend
@@ -99,8 +96,8 @@ _FENCE_RE = re.compile(r"^```([^\n`]*)\s*$")
 
 
 def check_weixin_requirements() -> bool:
-    """运行依赖（aiohttp + cryptography）是否可用。"""
-    return AIOHTTP_AVAILABLE and CRYPTO_AVAILABLE
+    """媒体加密依赖是否可用。"""
+    return CRYPTO_AVAILABLE
 
 
 def _is_stale_session_ret(
@@ -201,23 +198,12 @@ def _parse_aes_key(aes_key_b64: str) -> bytes:
 # 鉴权与 HTTP 封装
 # ======================================================================
 
-def _make_ssl_connector() -> Optional["aiohttp.TCPConnector"]:
-    """返回使用 certifi CA bundle 的 TCPConnector（不可用时返回 None）。
-
-    腾讯 iLink 服务器（``ilinkai.weixin.qq.com``）在某些系统 CA store
-    （尤其是 macOS Apple Silicon 上 Homebrew 的 OpenSSL）下校验失败。
-    使用 certifi 的 Mozilla CA bundle 保证校验通过；否则回退 aiohttp 默认。
-    """
-    try:
-        import ssl
-
-        import certifi
-    except ImportError:
-        return None
-    if not AIOHTTP_AVAILABLE:
-        return None
-    ssl_ctx = ssl.create_default_context(cafile=certifi.where())
-    return aiohttp.TCPConnector(ssl=ssl_ctx)
+def create_http_client() -> httpx.AsyncClient:
+    """创建按频道策略逐请求选路的客户端，总截止由各协议操作控制。"""
+    return async_network_client(
+        proxy_mode=lambda: ConfigManager.get("weixin_proxy_mode", "system"),
+        timeout=None, follow_redirects=True,
+    )
 
 
 def _random_wechat_uin() -> str:
@@ -244,7 +230,7 @@ def _headers(token: Optional[str], body: str) -> Dict[str, str]:
 
 
 async def _api_post(
-    session: "aiohttp.ClientSession",
+    session: httpx.AsyncClient,
     *,
     base_url: str,
     endpoint: str,
@@ -255,21 +241,17 @@ async def _api_post(
     body = _json_dumps({**payload, "base_info": _base_info()})
     url = f"{base_url.rstrip('/')}/{endpoint}"
 
-    # 使用 asyncio.wait_for() 而非 aiohttp ClientTimeout，避免在
-    # asyncio.run_coroutine_threadsafe() 跨线程调用场景下出现
-    # "Timeout context manager should be used inside a task" 错误。
     async def _do() -> Dict[str, Any]:
-        async with session.post(url, data=body, headers=_headers(token, body)) as response:
-            raw = await response.text()
-            if not response.ok:
-                raise RuntimeError(f"iLink POST {endpoint} HTTP {response.status}: {raw[:200]}")
-            return json.loads(raw)
+        response = await session.post(url, content=body.encode("utf-8"), headers=_headers(token, body))
+        if not response.is_success:
+            raise RuntimeError(f"iLink POST {endpoint} HTTP {response.status_code}: {response.text[:200]}")
+        return response.json()
 
     return await asyncio.wait_for(_do(), timeout=timeout_ms / 1000)
 
 
 async def _api_get(
-    session: "aiohttp.ClientSession",
+    session: httpx.AsyncClient,
     *,
     base_url: str,
     endpoint: str,
@@ -282,11 +264,10 @@ async def _api_get(
     }
 
     async def _do() -> Dict[str, Any]:
-        async with session.get(url, headers=headers) as response:
-            raw = await response.text()
-            if not response.ok:
-                raise RuntimeError(f"iLink GET {endpoint} HTTP {response.status}: {raw[:200]}")
-            return json.loads(raw)
+        response = await session.get(url, headers=headers)
+        if not response.is_success:
+            raise RuntimeError(f"iLink GET {endpoint} HTTP {response.status_code}: {response.text[:200]}")
+        return response.json()
 
     return await asyncio.wait_for(_do(), timeout=timeout_ms / 1000)
 
@@ -296,7 +277,7 @@ async def _api_get(
 # ======================================================================
 
 async def get_updates(
-    session: "aiohttp.ClientSession",
+    session: httpx.AsyncClient,
     *,
     base_url: str,
     token: str,
@@ -318,7 +299,7 @@ async def get_updates(
 
 
 async def send_message(
-    session: "aiohttp.ClientSession",
+    session: httpx.AsyncClient,
     *,
     base_url: str,
     token: str,
@@ -351,7 +332,7 @@ async def send_message(
 
 
 async def send_media_message(
-    session: "aiohttp.ClientSession",
+    session: httpx.AsyncClient,
     *,
     base_url: str,
     token: str,
@@ -382,7 +363,7 @@ async def send_media_message(
 
 
 async def send_typing(
-    session: "aiohttp.ClientSession",
+    session: httpx.AsyncClient,
     *,
     base_url: str,
     token: str,
@@ -405,7 +386,7 @@ async def send_typing(
 
 
 async def get_config(
-    session: "aiohttp.ClientSession",
+    session: httpx.AsyncClient,
     *,
     base_url: str,
     token: str,
@@ -426,7 +407,7 @@ async def get_config(
 
 
 async def get_upload_url(
-    session: "aiohttp.ClientSession",
+    session: httpx.AsyncClient,
     *,
     base_url: str,
     token: str,
@@ -474,7 +455,7 @@ def _cdn_upload_url(cdn_base_url: str, upload_param: str, filekey: str) -> str:
 
 
 async def upload_ciphertext(
-    session: "aiohttp.ClientSession",
+    session: httpx.AsyncClient,
     *,
     ciphertext: bytes,
     upload_url: str,
@@ -486,34 +467,31 @@ async def upload_ciphertext(
     """
 
     async def _do_upload() -> str:
-        async with session.post(
+        response = await session.post(
             upload_url,
-            data=ciphertext,
+            content=ciphertext,
             headers={"Content-Type": "application/octet-stream"},
-        ) as response:
-            if response.status == 200:
-                encrypted_param = response.headers.get("x-encrypted-param")
-                if encrypted_param:
-                    await response.read()
-                    return encrypted_param
-                raw = await response.text()
-                raise RuntimeError(f"CDN upload missing x-encrypted-param header: {raw[:200]}")
-            raw = await response.text()
-            raise RuntimeError(f"CDN upload HTTP {response.status}: {raw[:200]}")
+        )
+        if response.status_code == 200:
+            encrypted_param = response.headers.get("x-encrypted-param")
+            if encrypted_param:
+                return encrypted_param
+            raise RuntimeError(f"CDN upload missing x-encrypted-param header: {response.text[:200]}")
+        raise RuntimeError(f"CDN upload HTTP {response.status_code}: {response.text[:200]}")
 
     return await asyncio.wait_for(_do_upload(), timeout=120)
 
 
 async def _download_bytes(
-    session: "aiohttp.ClientSession",
+    session: httpx.AsyncClient,
     *,
     url: str,
     timeout_seconds: float = 60.0,
 ) -> bytes:
     async def _do_download() -> bytes:
-        async with session.get(url) as response:
-            response.raise_for_status()
-            return await response.read()
+        response = await session.get(url)
+        response.raise_for_status()
+        return response.content
 
     return await asyncio.wait_for(_do_download(), timeout=timeout_seconds)
 
@@ -556,7 +534,7 @@ def media_reference(item: Dict[str, Any], key: str) -> Dict[str, Any]:
 
 
 async def download_and_decrypt_media(
-    session: "aiohttp.ClientSession",
+    session: httpx.AsyncClient,
     *,
     cdn_base_url: str,
     encrypted_query_param: Optional[str],

@@ -43,6 +43,7 @@ uv run python scripts/weixin_setup.py
 | `token` | — | Bot Token（留空时自动从 `workspace/weixin/accounts/` 恢复） |
 | `base_url` | `https://ilinkai.weixin.qq.com` | iLink API 地址 |
 | `cdn_base_url` | `https://novac2c.cdn.weixin.qq.com/c2c` | 媒体 CDN |
+| `proxy_mode` | `system` | 跟随全局网络规则；可选 `direct` 始终直连、`proxy` 全局代理，收发、媒体和扫码登录共用 |
 | `dm_policy` | `open` | 私聊策略：`open` / `allowlist` / `disabled` |
 | `allow_from` | `""` | 私聊白名单（逗号分隔用户 ID） |
 | `group_policy` | `disabled` | 群聊策略（见下方限制） |
@@ -51,6 +52,9 @@ uv run python scripts/weixin_setup.py
 | `typing_indicator` | `true` | 处理中显示「正在输入」 |
 | `send_chunk_delay_seconds` | `1.5` | 文本分块发送间隔 |
 | `text_batch_delay_seconds` | `3.0` | 连发消息合批静默期 |
+
+全局代理默认关闭，`system` 此时直连；地址与规则在配置中心 `network/proxy` 管理。
+不读取宿主 `HTTP_PROXY` 等环境代理。策略变更在下一次请求生效，无需重新扫码。
 
 所有字段也支持环境变量覆盖：`ANELF_WEIXIN_<字段名大写>`，
 如 `ANELF_WEIXIN_TOKEN`、`ANELF_WEIXIN_DM_POLICY`。
@@ -84,7 +88,7 @@ uv run python scripts/weixin_setup.py
 
 | 现象 | 处理 |
 |---|---|
-| 启动报缺 aiohttp/cryptography | `uv sync` |
+| 启动报缺 cryptography | `uv sync` |
 | 启动报缺 account_id/token | 重跑 `scripts/weixin_setup.py` |
 | 日志反复「会话已过期」 | 重新扫码登录 |
 | 消息没反应 | 检查 `dm_policy` / 白名单；确认消息是发给 iLink bot 的私聊 |

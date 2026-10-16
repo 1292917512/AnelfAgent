@@ -19,6 +19,32 @@ from channels.github.client import (
     NotFoundError,
     RateLimitError,
 )
+from core.config import ConfigManager
+
+
+async def test_global_proxy_policy_replaces_environment_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
+    values: dict[str, Any] = {"http_proxy": "http://proxy.test:7890", "proxy_rules": "DOMAIN,api.github.com,PROXY"}
+    monkeypatch.setattr(ConfigManager, "get", staticmethod(lambda key, default=None: values.get(key, default)))
+    monkeypatch.setenv("HTTPS_PROXY", "http://environment.invalid:9999")
+    routes: list[str | None] = []
+
+    def transport(*, proxy: str | None = None, **kwargs: Any) -> httpx.MockTransport:
+        def respond(request: httpx.Request) -> httpx.Response:
+            routes.append(proxy)
+            return httpx.Response(200, json={"id": 1})
+        return httpx.MockTransport(respond)
+
+    monkeypatch.setattr(httpx, "AsyncHTTPTransport", transport)
+    client = GitHubClient()
+    try:
+        assert (await client.request("GET", "/user")).data == {"id": 1}
+        values["proxy_enabled"] = True
+        await client.request("GET", "/user")
+        values["proxy_enabled"] = False
+        await client.request("GET", "/user")
+    finally:
+        await client.close()
+    assert routes == [None, values["http_proxy"], None]
 
 
 def _client(handler: Any, **kw: Any) -> GitHubClient:

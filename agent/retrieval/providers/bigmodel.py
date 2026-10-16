@@ -210,7 +210,7 @@ class BigModelProvider(Provider):
         *,
         timeout: int = 15,
         extract_mode: str = "markdown",
-        proxy_mode: ProxyMode = "system",
+        proxy_mode: ProxyMode | None = None,
         respect_robots: bool = False,
     ) -> Dict[str, Any]:
         if extract_mode == "raw":
@@ -222,7 +222,7 @@ class BigModelProvider(Provider):
                 "timeout": min(max(5, timeout), 60),
                 "return_format": "text" if extract_mode == "text" else "markdown",
             },
-            self._require_key(), float(timeout) + 15, proxy_mode=proxy_mode,
+            self._require_key(), float(timeout) + 15, proxy_mode=proxy_mode if proxy_mode is not None else "system",
         ))
         result: Dict[str, Any] = {"url": url, "extract_mode": extract_mode}
         if isinstance(payload, dict):

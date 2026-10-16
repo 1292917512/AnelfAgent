@@ -23,7 +23,9 @@ import secrets
 import time
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
+
+import httpx
 
 from agent.channel.base import BaseChannel, ChannelMetadata
 from agent.channel.channel_types import ChannelCapability, ChannelStatus
@@ -55,9 +57,6 @@ from .state import (
     save_sync_buf,
 )
 
-if TYPE_CHECKING:
-    import aiohttp
-
 
 class WeixinChannel(BaseChannel[WeixinConfig]):
     """个人微信频道（iLink Bot API 长轮询）。"""
@@ -88,8 +87,8 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
     _SPLIT_THRESHOLD = 1800  # iLink 自身约 2048 字符切片
 
     def __init__(self) -> None:
-        self._poll_session: Optional[Any] = None
-        self._send_session: Optional[Any] = None
+        self._poll_session: Optional[httpx.AsyncClient] = None
+        self._send_session: Optional[httpx.AsyncClient] = None
         self._poll_task: Optional[asyncio.Task] = None
         self._running = False
         self._token_store = ContextTokenStore()
@@ -155,7 +154,7 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
 
     async def start(self) -> None:
         if not ilink.check_weixin_requirements():
-            raise RuntimeError("微信频道启动失败: 需要 aiohttp 和 cryptography（uv sync 安装）")
+            raise RuntimeError("微信频道启动失败: 需要 cryptography（uv sync 安装）")
 
         self._resolve_credentials()
         if not self._account_id:
@@ -163,17 +162,8 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
         if not self._token:
             raise RuntimeError("微信频道启动失败: 缺少 token（请先运行 scripts/weixin_setup.py 扫码登录）")
 
-        import aiohttp
-
-        self._poll_session = aiohttp.ClientSession(
-            trust_env=True, connector=ilink._make_ssl_connector(),
-        )
-        # 关闭 aiohttp 内建 ClientTimeout，统一由 ilink_client 的
-        # asyncio.wait_for() 控制，避免跨线程提交协程时的上下文错误。
-        _no_timeout = aiohttp.ClientTimeout(total=None, connect=None, sock_connect=None, sock_read=None)
-        self._send_session = aiohttp.ClientSession(
-            trust_env=True, connector=ilink._make_ssl_connector(), timeout=_no_timeout,
-        )
+        self._poll_session = ilink.create_http_client()
+        self._send_session = ilink.create_http_client()
         self._token_store.restore(self._account_id)
         self._running = True
         self._poll_task = asyncio.create_task(self._poll_loop(), name="weixin-poll")
@@ -213,11 +203,11 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
             except asyncio.CancelledError:
                 pass  # 取消属正常关闭流程（正常控制流，非异常）
         self._poll_task = None
-        if self._poll_session and not self._poll_session.closed:
-            await self._poll_session.close()
+        if self._poll_session and not self._poll_session.is_closed:
+            await self._poll_session.aclose()
         self._poll_session = None
-        if self._send_session and not self._send_session.closed:
-            await self._send_session.close()
+        if self._send_session and not self._send_session.is_closed:
+            await self._send_session.aclose()
         self._send_session = None
         log("微信: 已断开", tag="通道")
 
@@ -511,12 +501,12 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
         if seg is not None:
             segments.append(seg)
 
-    def _require_poll_session(self) -> aiohttp.ClientSession:
+    def _require_poll_session(self) -> httpx.AsyncClient:
         if self._poll_session is None:
             raise RuntimeError("微信频道未连接（poll session 未初始化）")
         return self._poll_session
 
-    def _require_send_session(self) -> aiohttp.ClientSession:
+    def _require_send_session(self) -> httpx.AsyncClient:
         if self._send_session is None:
             raise RuntimeError("微信频道未连接（send session 未初始化）")
         return self._send_session
@@ -917,9 +907,9 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
         session = self._send_session
 
         async def _do_fetch() -> bytes:
-            async with session.get(url) as response:
-                response.raise_for_status()
-                return await response.read()
+            response = await session.get(url)
+            response.raise_for_status()
+            return response.content
 
         data = await asyncio.wait_for(_do_fetch(), timeout=30)
         suffix = Path(url.split("?", 1)[0]).suffix or ".bin"

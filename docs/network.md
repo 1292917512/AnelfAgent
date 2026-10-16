@@ -8,10 +8,11 @@
 
 配置中心的 `network/proxy` 与 AI 配置工具共用同一校验、读写入口：
 
-- `proxy_enabled`：全局开关。
+- `proxy_enabled`：全局代理许可开关，默认关闭；不是操作系统代理，也不修改子服务的网络。
 - `http_proxy`：全局地址，支持 `http://`、`https://`、`socks5://`、`socks5h://`，必须包含端口。
 - `https_proxy`：可选的 HTTPS 专用地址，留空复用 `http_proxy`。
-- `proxy_default_mode`：`fallback`（默认，直连失败后代理）、`direct` 或 `proxy`。
+- `proxy_default_mode`：启用全局代理后，`system` 未命中规则且目标非内网时的策略；
+  `fallback`（默认，直连失败后代理）、`direct` 或 `proxy`。
 - `proxy_rules`：一行一条，按顺序首条命中；空行和 `#` 开头的注释忽略。
 - `proxy_connect_timeout`：fallback 直连建立连接的等待上限，不改变读取和长轮询超时。
 
@@ -42,6 +43,17 @@ IP 规则只匹配 URL 中的 IP，不为路由额外查询 DNS。未命中规�
 `retrieval_proxy`、`plugin_proxy`、供应商 `proxy_url`、Telegram `proxy_host/proxy_port`
 不再读取，需要将所需地址集中配置到 `network/proxy`。检索、供应商、频道和插件页面
 提供全局配置入口，编辑模型时在新标签页打开配置，保留当前草稿。
+
+关闭全局开关时，`system` 直连，显式 `proxy` 返回配置错误；`direct` 始终直连。
+GitHub API 与 App 鉴权共用全局策略；微信收发、媒体和扫码登录共用频道 `proxy_mode`。
+这些入口均不读取宿主的 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 环境代理。
+
+SearXNG 与 Crawl4AI 的服务连接分别由 `retrieval_searxng_proxy_mode` 和
+`retrieval_crawl4ai_proxy_mode` 控制，均默认 `direct`，可在提供者配置中选择 `system` 或 `proxy`。
+网页读取与动态抓取工具省略 `proxy_mode` 时使用提供者默认策略，显式传入时覆盖本次请求；
+builtin 与 BigModel 的默认策略为 `system`。配置通过同一元数据接口供 Web 与 AI 修改。
+**Anelf → 服务** 与 **服务 → 网站/搜索引擎** 是独立连接，后一段由服务自身的出站配置管理，
+不把 Anelf 的全局地址或站点规则自动复制进容器，详见[本地检索服务](../deploy/retrieval/README.md)。
 
 ## 按需连接检测
 
