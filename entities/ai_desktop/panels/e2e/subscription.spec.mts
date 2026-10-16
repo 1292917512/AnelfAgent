@@ -6,6 +6,7 @@ test("subscription login, refresh and failure states remain readable", async ({ 
   let loginState = "waiting";
   let images = 0;
   let starts = 0;
+  let credentialReads = 0;
   let provider: SubscriptionProvider = {
     key: "bailian", name: "阿里百炼", source: "Bailian CLI", auth_type: "console", state: "no_credential",
   };
@@ -17,7 +18,7 @@ test("subscription login, refresh and failure states remain readable", async ({ 
   await page.route("**/api/provider-keys", (route) => route.fulfill({ json: { providers: [{
     name: "bailian_console", title: "百炼控制台授权", description: "Console authorization for quota queries",
     domain: "subscription", domains: ["subscription"], owner: "entity:ai_desktop", destination: "/entities/ai_desktop",
-    editor: "bailian-console", configured: false, fields: [],
+    editor: "bailian-console", configured: null, fields: [],
   }] } }));
   await page.route("**/api/entities/ai_desktop", (route) => route.fulfill({ json: {
     name: "ai_desktop", group: "ai_desktop", type: "tool", source: "entity", enabled: true,
@@ -37,6 +38,7 @@ test("subscription login, refresh and failure states remain readable", async ({ 
   await page.route("**/api/entity/ai_desktop/modules/subscription/login**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith("/login") && route.request().method() === "GET") {
+      credentialReads++;
       await route.fulfill({ json: { available: true, configured: loginState === "complete", monitoring: enabled } });
       return;
     }
@@ -62,8 +64,13 @@ test("subscription login, refresh and failure states remain readable", async ({ 
   });
   await page.goto("/webui/entities/ai_desktop");
   await page.getByRole("link", { name: "Manage credentials" }).click();
+  const card = page.getByRole("region", { name: "百炼控制台授权", exact: true });
+  await expect(card.getByText("Custom authorization")).toBeVisible();
+  expect(credentialReads).toBe(0);
+  expect(starts).toBe(0);
+  await card.getByRole("button").click();
   await page.getByRole("button", { name: "Sign in with QR code" }).click();
-  const dialog = page.getByRole("dialog");
+  const dialog = page.getByRole("dialog", { name: "Sign in with QR code", exact: true });
   const loginImage = dialog.getByRole("img", { name: "Aliyun sign-in QR code", exact: true });
   await expect(loginImage).toBeVisible();
   await expect(dialog.getByRole("button", { name: "Close", exact: true }).last()).toBeInViewport({ ratio: 1 });

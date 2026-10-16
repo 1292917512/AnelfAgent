@@ -55,7 +55,10 @@
   "pageErrorDesc": "The page failed to render. If the app was just updated, a refresh usually fixes it.",
   "providerKeys": {
     "title": "Provider Keys",
-    "hint": "Manage service addresses, secrets and sign-in by feature.",
+    "hint": "Browse credentials by feature. Open a card to edit settings or manage authorization.",
+    "manage": "Manage",
+    "editCredential": "Manage credentials · {{name}}",
+    "authorization": "Custom authorization",
     "empty": "No components in this domain require credentials",
     "configured": "Configured",
     "notConfigured": "Not configured",

@@ -55,7 +55,10 @@
   "pageErrorDesc": "页面内容渲染异常。若是刚更新版本，刷新页面通常即可恢复。",
   "providerKeys": {
     "title": "组件凭据",
-    "hint": "按所属功能管理服务地址、密钥与扫码授权。",
+    "hint": "按所属功能查看凭据，点击卡片编辑或管理授权。",
+    "manage": "管理",
+    "editCredential": "管理凭据 · {{name}}",
+    "authorization": "专属授权",
     "empty": "当前域没有需要凭据的组件",
     "configured": "已配置",
     "notConfigured": "未配置",

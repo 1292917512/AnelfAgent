@@ -15,12 +15,12 @@ type ContextSlot = "credentials.editor" | "audio.recording.actions" | "chat.mess
 type ContentProps = { [S in ContextSlot]: { entry: RegisteredContribution<S>; componentProps: UiSlotProps[S] } }[ContextSlot]
   | { entry: RegisteredContribution<Exclude<UiSlot, ContextSlot>>; componentProps: Record<string, never> };
 
-export function ContributionContent({ entry, componentProps, fallback }: ContentProps & { fallback?: ReactNode }) {
+export function ContributionContent({ entry, componentProps, fallback, pending }: ContentProps & { fallback?: ReactNode; pending?: ReactNode }) {
   const { t } = useTranslation("extensions");
   let content: ReactNode;
   if (entry.slot === "credentials.editor" && "credential" in componentProps) {
     const Content = entry.Component;
-    content = <Content credential={componentProps.credential} />;
+    content = <Content credential={componentProps.credential} onClose={componentProps.onClose} />;
   } else if (entry.slot === "activity.tool" && "entry" in componentProps && "view" in componentProps && "fallback" in componentProps) {
     const Content = entry.Component;
     content = <Content entry={componentProps.entry} view={componentProps.view} fallback={componentProps.fallback} />;
@@ -38,7 +38,7 @@ export function ContributionContent({ entry, componentProps, fallback }: Content
     content = <Content />;
   }
   return <ContributionBoundary key={entry.key} fallback={fallback ?? <p role="alert" className="text-sm text-muted">{t("unavailable")}</p>}>
-    <Suspense fallback={fallback ?? <span role="status" className="text-xs text-muted">{t("common:loading")}</span>}>{content}</Suspense>
+    <Suspense fallback={pending ?? fallback ?? <span role="status" className="text-xs text-muted">{t("common:loading")}</span>}>{content}</Suspense>
   </ContributionBoundary>;
 }
 

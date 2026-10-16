@@ -7,7 +7,7 @@ import { providerKeysApi } from "@/lib/api";
 import { Input } from "@/components/ui";
 import { AsyncState, QueryError } from "./AsyncState";
 import { TabBar } from "./TabBar";
-import { CredentialCard } from "@/components/credentials/CredentialCard";
+import { CredentialCard, CredentialDialog } from "@/components/credentials/CredentialCard";
 import { CredentialFields } from "@/components/credentials/CredentialFields";
 import { ContributionContent } from "@/components/extensions/ContributionSlot";
 import { getUiContributions } from "@/lib/ui-contribution-registry";
@@ -17,6 +17,7 @@ export function ProviderKeysPanel({ domain, owner: moduleOwner }: { domain?: str
   const { t } = useTranslation("common");
   const [search, setSearch] = useState("");
   const [owner, setOwner] = useState("all");
+  const [editing, setEditing] = useState<string>();
   const query = useQuery({ queryKey: ["providerKeys", domain ?? "all"],
     queryFn: () => providerKeysApi.list(domain).then((r) => r.data), throwOnError: false });
   const { hash } = useLocation();
@@ -25,6 +26,10 @@ export function ProviderKeysPanel({ domain, owner: moduleOwner }: { domain?: str
   }, [query.data, hash]);
   const providers = (query.data?.providers ?? []).filter((entry) => !moduleOwner || entry.owner === moduleOwner);
   const editors = getUiContributions("credentials.editor");
+  const selected = providers.find((entry) => entry.name === editing);
+  const editor = selected && editors.find((item) => item.owner === selected.owner && item.id === selected.editor);
+  const closeEditor = () => setEditing(undefined);
+  const fallback = selected && <CredentialDialog credential={selected} onClose={closeEditor}><p className="text-sm text-muted">{t("providerKeys.editorUnavailable")}</p></CredentialDialog>;
   const keyword = search.trim().toLocaleLowerCase();
   const filtered = providers.filter((entry) => (owner === "all" || (entry.owner.split(":")[0] || "unregistered") === owner)
     && [entry.title, entry.name, entry.owner, entry.owner_title ?? "", entry.description].some((text) => text.toLocaleLowerCase().includes(keyword)));
@@ -43,16 +48,13 @@ export function ProviderKeysPanel({ domain, owner: moduleOwner }: { domain?: str
     {!moduleOwner && <TabBar tabs={kinds.map((key) => ({ key, label: t(`providerKeys.owner.${key}`) }))} activeTab={owner} onChange={setOwner} />}
     {query.data && query.error && <QueryError compact error={query.error} retry={() => void query.refetch()} />}
     <AsyncState pending={query.isPending} error={query.data ? undefined : query.error} retry={() => void query.refetch()}>
-      <div className="grid items-start gap-4 xl:grid-cols-2">
-        {providers.map((credential) => {
-          const hidden = !filtered.includes(credential);
-          if (!credential.editor) return <div key={credential.name} hidden={hidden}><CredentialFields credential={credential} /></div>;
-          const editor = editors.find((item) => item.owner === credential.owner && item.id === credential.editor);
-          const fallback = <CredentialCard credential={credential}><p className="text-sm text-muted">{t("providerKeys.editorUnavailable")}</p></CredentialCard>;
-          return <div key={credential.name} hidden={hidden}>{editor ? <ContributionContent entry={editor} componentProps={{ credential }} fallback={fallback} /> : fallback}</div>;
-        })}
+      <div className="grid auto-rows-fr grid-cols-[repeat(auto-fill,minmax(min(100%,19rem),1fr))] gap-3">
+        {filtered.map((credential) => <CredentialCard key={credential.name} credential={credential} onEdit={() => setEditing(credential.name)} />)}
       </div>
       {!filtered.length && <p className="py-12 text-center text-sm text-muted">{t("providerKeys.empty")}</p>}
     </AsyncState>
+    {selected && (!selected.editor ? <CredentialFields key={selected.name} credential={selected} onClose={closeEditor} />
+      : editor ? <ContributionContent entry={editor} componentProps={{ credential: selected, onClose: closeEditor }} fallback={fallback}
+        pending={<CredentialDialog credential={selected} onClose={closeEditor}><p role="status" className="text-xs text-muted">{t("loading")}</p></CredentialDialog>} /> : fallback)}
   </div>;
 }

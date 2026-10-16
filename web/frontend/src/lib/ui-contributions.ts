@@ -7,7 +7,7 @@ import type { NavigationGroup } from "./core-routes";
 import { matchPath } from "react-router-dom";
 
 export interface UiSlotProps {
-  "credentials.editor": { credential: ProviderKeyEntry };
+  "credentials.editor": { credential: ProviderKeyEntry; onClose: () => void };
   "workspace.tools": Record<string, never>;
   "dashboard.cards": Record<string, never>;
   "dashboard.actions": Record<string, never>;

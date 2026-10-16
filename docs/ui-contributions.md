@@ -21,7 +21,7 @@ export default defineUiContributions([
 ]);
 ```
 
-- `credentials.editor`：模块专属授权编辑器；接收 `CredentialEditorProps`（脱敏 `credential` 声明），其 `id` 与后端 `editor` 一致。宿主同时校验模块归属，只挂载后端实际登记的条目。复用 `CredentialCard` 外框；协议、状态、接口和翻译全部留在模块目录。
+- `credentials.editor`：模块专属授权编辑器；接收 `CredentialEditorProps`（脱敏 `credential` 声明及 `onClose`），其 `id` 与后端 `editor` 一致。宿主校验模块归属，点击摘要卡片后才挂载编辑器。编辑器复用 `CredentialDialog` 弹层，管理自己的草稿与关闭保护；协议、状态、接口和翻译全部留在模块目录。
 - `workspace.tools`：工作区工具栏的「工具」入口，适合低频操作，不挤占文件与对话空间。
 - `dashboard.cards`：总览卡片区域，适合模块状态与摘要。
 - `dashboard.actions`：总览页头「服务与维护」入口，重启、部署等低频操作在独立弹窗中呈现。

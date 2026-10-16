@@ -1,20 +1,20 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Eye, EyeOff, RotateCcw, Save, Trash2 } from "lucide-react";
 import { apiErrorMessage, providerKeysApi } from "@/lib/api";
-import type { ProviderKeyEntry } from "@/lib/types";
-import { Badge, Button, Input, toast } from "@/components/ui";
-import { useUnsavedChanges } from "@/components/common/UnsavedChanges";
-import { CredentialCard } from "./CredentialCard";
+import { Button, ConfirmDialog, Input, toast } from "@/components/ui";
+import { useDiscardChanges } from "@/hooks/useDiscardChanges";
+import type { CredentialEditorProps } from "@/lib/ui-contributions";
+import { CredentialDialog } from "./CredentialCard";
 
-export function CredentialFields({ credential }: { credential: ProviderKeyEntry }) {
+export function CredentialFields({ credential, onClose }: CredentialEditorProps) {
   const { t } = useTranslation("common");
   const client = useQueryClient();
+  const formId = useId();
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [visible, setVisible] = useState<Record<string, boolean>>({});
   const dirty = Object.keys(draft).length > 0;
-  useUnsavedChanges(dirty);
   const reset = () => { setDraft({}); setVisible({}); };
   const save = useMutation({
     mutationFn: () => providerKeysApi.set(credential.name, draft),
@@ -31,10 +31,14 @@ export function CredentialFields({ credential }: { credential: ProviderKeyEntry 
     else next[key] = value;
     return next;
   });
-  return <CredentialCard credential={credential} status={<Badge variant={credential.configured ? "ok" : "neutral"}>
-    {t(credential.configured ? "providerKeys.configured" : "providerKeys.notConfigured")}
-  </Badge>}>
-    <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); if (dirty && !save.isPending) save.mutate(); }}>
+  const guard = useDiscardChanges(dirty, onClose, save.isPending);
+  return <><CredentialDialog credential={credential} onClose={guard.requestClose} busy={save.isPending}
+    footer={<>
+      <Button type="button" size="sm" disabled={save.isPending} onClick={guard.requestClose}>{t("close")}</Button>
+      {dirty && <Button type="button" size="sm" variant="ghost" disabled={save.isPending} onClick={reset}>{t("reset")}</Button>}
+      <Button type="submit" form={formId} size="sm" variant="primary" disabled={!dirty} loading={save.isPending}><Save size={14} />{t("providerKeys.save")}</Button>
+    </>}>
+    <form id={formId} className="space-y-4" onSubmit={(event) => { event.preventDefault(); if (dirty && !save.isPending) save.mutate(); }}>
       {credential.fields.map((field) => {
         const id = `credential-${credential.name}-${field.key}`;
         const clearing = draft[field.key] === "" && field.configured;
@@ -75,10 +79,6 @@ export function CredentialFields({ credential }: { credential: ProviderKeyEntry 
         </div>;
       })}
       {save.isError && <p role="alert" className="text-xs text-danger">{apiErrorMessage(save.error, t("providerKeys.saveFailed"))}</p>}
-      <div className="flex items-center justify-end gap-2 border-t border-border/60 pt-3">
-        {dirty && <Button type="button" size="sm" variant="ghost" disabled={save.isPending} onClick={reset}>{t("reset")}</Button>}
-        <Button type="submit" size="sm" variant="primary" disabled={!dirty} loading={save.isPending}><Save size={14} />{t("providerKeys.save")}</Button>
-      </div>
     </form>
-  </CredentialCard>;
+  </CredentialDialog><ConfirmDialog {...guard.confirmProps} /></>;
 }
