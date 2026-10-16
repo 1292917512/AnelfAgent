@@ -105,9 +105,9 @@ class MemorySearchResult(BaseModel):
         """返回可追溯到主库的 ID；图谱综合回答不冒充原始记忆。"""
         if self.source == "memory" and re.fullmatch(r"mem:\d+", self.id):
             return self.id
-        mid = self.provenance.get("anelf_memory_id")
-        if self.source == "cognee_chunk" and str(mid).isdigit() and int(mid) > 0:
-            return f"mem:{mid}"
+        mid = str(self.provenance.get("anelf_memory_id", ""))
+        if self.source == "cognee_chunk" and mid.isdecimal() and int(mid) > 0:
+            return f"mem:{int(mid)}"
         return ""
 
     def content_key(self) -> str:

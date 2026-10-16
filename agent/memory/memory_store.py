@@ -1087,10 +1087,10 @@ class MemoryStore(BaseEntity):
 
         from .provenance import merge_metadata
         sources = [keep.metadata, *(d.metadata for d in drops)]
-        keep.metadata = merge_metadata(keep.metadata, *(
+        lineage: list[dict[str, Any]] = [
             {key: m[key] for key in ("origins", "sensitivity") if key in m} for m in sources[1:]
-        ))
-        keep.metadata = merge_metadata(keep.metadata, metadata or {})
+        ]
+        keep.metadata = merge_metadata(keep.metadata, *lineage, metadata or {})
         if metadata:
             sources.append(metadata)
         for key in ("activity_date", "temporal_scope"):
