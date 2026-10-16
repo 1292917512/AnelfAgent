@@ -46,6 +46,7 @@ def _skill_summary(skill: Any, index: Optional[SkillIndex]) -> Dict[str, Any]:
         "match_count": skill.match_count,
         "patch_count": skill.patch_count,
         "pinned": skill.pinned,
+        "mcp_servers": skill.mcp_servers,
         "created_by": skill.created_by,
         "rationale": skill.rationale,
         "merged_into": skill.merged_into,
@@ -204,3 +205,21 @@ class SkillService:
         if skill is None:
             raise ValueError(f"技能 '{name}' 不存在")
         return {"name": skill.name, "pinned": skill.pinned}
+
+    def get_mcp_bindings(self, name: str) -> Dict[str, Any]:
+        """读取本地关联与可选服务的状态，不含服务器凭据。"""
+        from dataclasses import asdict
+
+        from agent.skills.dependencies import mcp_binding_status, mcp_snapshot
+        skill = self._store.get(name)
+        if skill is None:
+            raise ValueError(f"技能 '{name}' 不存在")
+        snapshot = mcp_snapshot()
+        return {"name": skill.name, "servers": mcp_binding_status(skill),
+                "available": [{"name": key, "configured": True, **asdict(value)} for key, value in snapshot.items()]}
+
+    def set_mcp_bindings(self, name: str, servers: List[str]) -> Dict[str, Any]:
+        """保存技能本地关联；不触发重嵌入或修改标准技能定义。"""
+        from agent.skills.dependencies import set_mcp_bindings
+        skill = set_mcp_bindings(self._store, name, servers)
+        return {"name": skill.name, "mcp_servers": skill.mcp_servers}

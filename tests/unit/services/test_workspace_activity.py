@@ -141,7 +141,9 @@ async def test_skill_facts_survive_entry_eviction_and_only_promote_successful_re
     service, _ = activity
     monkeypatch.setattr("services.workspace_activity.MAX_ENTRIES", 2)
     async with activity_scope("skill-run", "user_qq:1"):
-        facts = [{"name": "deploy-check", "mode": "candidate", "description": "Inspect first", "score": 0.4},
+        mcp_state = {"name": "deploy", "configured": True, "enabled": True, "connected": True, "activation": "sleeping", "tool_count": 2}
+        facts = [{"name": "deploy-check", "mode": "candidate", "description": "Inspect first", "score": 0.4,
+                  "mcp_status": [{**mcp_state, "url": "must-not-be-projected", "api_key": "must-not-be-projected"}]},
                  {"name": "not-used", "mode": "candidate", "description": "Candidate only"}]
         await event_bus.emit("activity_context", {"status": "done", "skills": facts})
         for call, name, success, result in [
@@ -154,7 +156,7 @@ async def test_skill_facts_survive_entry_eviction_and_only_promote_successful_re
         await event_bus.emit("activity_context", {"status": "done", "skills": facts})
     run = service.snapshot()["runs"][0]
     assert len(run["entries"]) == 2 and run["truncated"]
-    assert run["skills"][0] == {"name": "deploy-check", "mode": "read", "description": "Inspect first", "score": 0.4, "state": "", "truncated": True}
+    assert run["skills"][0] == {"name": "deploy-check", "mode": "read", "description": "Inspect first", "score": 0.4, "state": "", "truncated": True, "mcp_status": [mcp_state]}
     assert run["skills"][1]["mode"] == "candidate"
     assert facts[0]["mode"] == "candidate"
 

@@ -35,6 +35,13 @@ def svc(monkeypatch: pytest.MonkeyPatch) -> Generator[MCPService, None, None]:
 
 
 class TestUpdateValidation:
+    def test_renamed_masked_secret_requires_new_value(self, svc: MCPService) -> None:
+        svc.update_server_config("alpha", {"headers": {"Authorization": "test-value"}}, reload=False)
+        before = svc.get_config_json()
+        with pytest.raises(ValueError, match="请填写新值"):
+            svc.update_server_config("alpha", {"headers": {"Renamed": "********"}}, reload=False)
+        assert svc.get_config_json() == before
+
     def test_rejects_unknown_field(self, svc: MCPService) -> None:
         with pytest.raises(ValueError, match="不支持的字段"):
             svc.update_server_config("alpha", {"evil": "x"}, reload=False)
@@ -229,3 +236,31 @@ def test_secret_rotation_merges_and_commits_once(svc, monkeypatch):
         svc.update_server_secrets({"alpha": {"headers": {"ACCESS_TOKEN": "lost"}}, "missing": {"env": {"A": "B"}}})
     assert svc.load_config() == before
     assert reloads == [True]
+
+
+class TestServerOrdering:
+    def test_order_persisted_without_changing_config_or_reloading(self, tmp_path, monkeypatch):
+        from entities.mcp import config
+        path = tmp_path / "mcp.json"
+        monkeypatch.setattr(config, "_writable_config_path", lambda: path)
+        reloads = []
+        store = config.MCPServerStore(on_reload=lambda: reloads.append(True))
+        original = {"mcpServers": {"alpha": {"url": "https://example.com", "oauth": {"client_id": "test"}},
+                                  "beta": {"command": "npx", "env": {"TOKEN": "local-test-value"}}}, "other": {"keep": True}}
+        store.save_config(original)
+        store.reorder_servers(["beta", "alpha"])
+        actual = json.loads(path.read_text(encoding="utf-8"))
+        assert list(actual["mcpServers"]) == ["beta", "alpha"]
+        assert actual == original
+        assert reloads == []
+        for names in (["alpha"], ["alpha", "alpha"], ["beta", "unknown"]):
+            with pytest.raises(ValueError):
+                store.reorder_servers(names)
+            assert json.loads(path.read_text(encoding="utf-8")) == actual
+
+    @pytest.mark.parametrize("content", ['[]', '{"mcpServers": []}', '{"mcpServers": {"bad": null}}'])
+    def test_invalid_json_structure_cannot_replace_config(self, svc, content):
+        before = svc.get_config_json()
+        with pytest.raises(ValueError):
+            svc.save_config_json(content)
+        assert svc.get_config_json() == before

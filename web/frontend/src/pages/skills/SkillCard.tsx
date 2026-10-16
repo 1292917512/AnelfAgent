@@ -9,6 +9,7 @@ import { Badge, Button } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ui/Modal";
 import { AsyncState, QueryError } from "@/components/common/AsyncState";
 import { Markdown } from "@/pages/chat/render/Markdown";
+import { SkillMCPBindings } from "./SkillMCPBindings";
 import { formatRelativeTimestamp } from "@/lib/format";
 
 export function SkillCard({ skill, expanded, onToggle, onEdit, onChanged, onDeleted }: {
@@ -64,6 +65,7 @@ export function SkillCard({ skill, expanded, onToggle, onEdit, onChanged, onDele
           <div className="skill-content-preview"><Markdown content={detail.content ?? ""} fileBase={{ root: "workspace", path: `skills/${skill.name}` }} /></div>
           <details className="skill-source"><summary>{t("library.markdownSource")}</summary><pre>{detail.content}</pre></details>
           <div className="flex flex-wrap gap-2">
+            <SkillMCPBindings name={skill.name} count={detail.mcp_servers.length} />
             <Button size="sm" onClick={() => onEdit(detail)}><Pencil size={14} />{t("edit")}</Button>
             <Button size="sm" disabled={action.isPending} onClick={() => action.mutate("pin")}>{skill.pinned ? <PinOff size={14} /> : <Pin size={14} />}{skill.pinned ? t("unpin") : t("pin")}</Button>
             <Button size="sm" disabled={action.isPending} onClick={() => action.mutate("state")}>{skill.state === "archived" ? <ArchiveRestore size={14} /> : <Archive size={14} />}{skill.state === "archived" ? t("unarchive") : t("archive")}</Button>

@@ -91,7 +91,7 @@ def _fake_skill(name: str, state: SkillState = SkillState.ACTIVE) -> Skill:
 def _mind_with_matcher(matched=None, captured: dict | None = None):
     """最小 Mind 替身：matcher 返回固定结果并捕获查询车道。"""
     store = SimpleNamespace(
-        get=lambda name: None,
+        get=lambda name: next((skill for skill, _ in (matched or []) if skill.name == name), None),
         record_use=MagicMock(),
         record_match=MagicMock(),
         restore=MagicMock(),

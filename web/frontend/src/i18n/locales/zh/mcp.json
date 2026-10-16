@@ -44,13 +44,17 @@
     "kvValue": "值",
     "addRow": "添加一行",
     "timeout": "连接超时（秒）",
-    "sseReadTimeout": "SSE 读取超时（秒）",
+    "sseReadTimeout": "HTTP 读取超时（秒）",
     "callTimeout": "工具调用超时（秒）",
     "optional": "可选",
     "enabledLabel": "创建后立即启用并连接",
     "nameRequired": "请填写服务器名称",
     "urlOrCommandRequired": "请填写 URL 或启动命令",
-    "timeoutPositive": "超时时间必须大于 0"
+    "timeoutPositive": "超时时间必须大于 0",
+    "advanced": "高级设置",
+    "defaultTimeout": "使用默认值",
+    "duplicateKey": "字段名称不能重复",
+    "secretHint": "保留 ******** 表示沿用已保存凭据；删除该行可清除。"
   },
   "jsonConfig": "JSON 配置",
   "jsonHint": "直接编辑 mcpServers 原始配置，保存后自动热重载",
@@ -78,5 +82,21 @@
   "disable": "禁用（重启后不再自动连接）",
   "oauthAuthorize": "发起授权",
   "oauthAuthorizeHint": "生成 OAuth 授权链接并在浏览器打开完成",
-  "oauthStarted": "授权链接已生成，请在浏览器完成授权；完成后将自动连接"
+  "oauthStarted": "授权链接已生成，请在浏览器完成授权；完成后将自动连接",
+  "summary": "{{connected}} / {{total}} 个已连接 · {{tools}} 个工具",
+  "searchServers": "搜索服务器",
+  "searchTools": "搜索工具",
+  "noMatches": "没有匹配的服务器",
+  "nParams": "{{count}} 个参数",
+  "required": "必填",
+  "jsonObjectRequired": "配置必须是 JSON 对象",
+  "reorder": {
+    "hint": "拖动或使用箭头调整顺序，直接保存到 JSON。",
+    "saving": "正在保存顺序…",
+    "filtered": "清除搜索后可调整服务器顺序。",
+    "saved": "服务器顺序已保存",
+    "drag": "调整 {{name}} 的顺序",
+    "up": "上移",
+    "down": "下移"
+  }
 }

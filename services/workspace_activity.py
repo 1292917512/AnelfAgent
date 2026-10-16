@@ -42,7 +42,7 @@ from services.activity_presentation import (
     tool_presentation_owner,
     tool_targets,
 )
-from services.activity_skills import merge_skill_evidence, record_skill_read
+from services.activity_skills import mcp_status_facts, merge_skill_evidence, record_skill_read
 
 MAX_RUNS = 20
 MAX_ENTRIES = 120
@@ -298,7 +298,8 @@ class WorkspaceActivityService:
             remaining -= len(content)
         entry.update(status=payload["status"], blocks=blocks,
                      skills=[{**fact, "name": sanitize_text(str(fact["name"]))[:200],
-                              "description": sanitize_text(str(fact.get("description", "")))[:300]}
+                              "description": sanitize_text(str(fact.get("description", "")))[:300],
+                              **({"mcp_status": mcp_status_facts(fact["mcp_status"])} if "mcp_status" in fact else {})}
                              for fact in payload.get("skills", [])[:16]],
                      block_count=payload.get("block_count", 0),
                      duration_ms=payload.get("duration_ms", 0),

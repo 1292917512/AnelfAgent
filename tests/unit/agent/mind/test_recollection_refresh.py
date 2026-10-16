@@ -179,8 +179,10 @@ async def test_new_sender_is_not_deduplicated_as_previous_sender(worker, monkeyp
 
 async def test_local_branches_parallelize_and_filter_private_ownership(worker, monkeypatch):
     from agent.memory.memory_types import MemorySearchResult
+    from agent.skills.skill_store import Skill
 
     memory_started, skills_started = asyncio.Event(), asyncio.Event()
+    skill = Skill(name="deploy", description="Deploy safely")
 
     async def search(*args):
         memory_started.set()
@@ -191,7 +193,7 @@ async def test_local_branches_parallelize_and_filter_private_ownership(worker, m
     async def match(*args, **kwargs):
         skills_started.set()
         await memory_started.wait()
-        return [(SimpleNamespace(name="deploy", description="Deploy safely", state=SimpleNamespace(value="active")), 0.9)]
+        return [(skill, 0.9)]
 
     async def format_results(results, *args):
         return [RecallDelta("记忆", result.snippet, result.id, result.snippet) for result in results]
@@ -199,6 +201,7 @@ async def test_local_branches_parallelize_and_filter_private_ownership(worker, m
     worker.mind.retriever = SimpleNamespace(_apply_scope_boost=lambda results, scopes: results, _store=object())
     worker.mind._skills_enabled = lambda: True
     worker.mind.skill_matcher = SimpleNamespace(match=match)
+    worker.mind.skill_store = SimpleNamespace(get=lambda name: skill if name == skill.name else None)
     monkeypatch.setattr(refresh, "search_local", search)
     monkeypatch.setattr(refresh.deep_probe_hub, "_memory_deltas", format_results)
     deltas = await asyncio.wait_for(worker._candidates("network"), 1)

@@ -6,6 +6,11 @@
 3. ``MCPServerStore``：mcp_servers.json 的读写、字段校验与脱敏（纯 MCP 域，
    不依赖 bridge/services；热重载经 on_reload 钩子由上层注入）；
 4. 工具组沉睡策略（全局默认 / 排除名单 / 每服务 stay_awake 覆盖三级求值）。
+
+Model Experience:
+    排序仅改变配置目录中的服务顺序，工具定义与执行方式不变。
+    不增加模型输入或 token；不触发连接重建或工具注册。
+    不更新当前会话的工具前缀与动态上下文。
 """
 
 from __future__ import annotations
@@ -86,7 +91,7 @@ def _server_stay_awake(server_name: str) -> bool:
         return False
 
 
-def _mcp_sleep_enabled(server_name: str) -> bool:
+def _mcp_sleep_enabled(server_name: str, *, stay_awake: Optional[bool] = None) -> bool:
     """该 MCP 服务的工具组是否沉睡。
 
     优先级：每服务 stay_awake 覆盖（mcp_servers.json）> 全局排除名单 > 全局默认。
@@ -94,7 +99,8 @@ def _mcp_sleep_enabled(server_name: str) -> bool:
     from core.config import get_config, get_config_bool
     if not get_config_bool("mcp_tools_sleep_default", True):
         return False
-    if _server_stay_awake(server_name):
+    pinned = _server_stay_awake(server_name) if stay_awake is None else stay_awake
+    if pinned:
         return False
     excludes = str(get_config("mcp_sleep_excludes", "") or "")
     excluded = {s.strip() for s in excludes.split(",") if s.strip()}
@@ -309,9 +315,11 @@ class MCPServerStore:
         for secret_field in cls._SECRET_FIELDS:
             new_vals = patch.get(secret_field)
             old_vals = existing.get(secret_field)
-            if isinstance(new_vals, dict) and isinstance(old_vals, dict):
+            if isinstance(new_vals, dict):
                 for k, v in new_vals.items():
-                    if v == cls._SECRET_MASK and k in old_vals:
+                    if v == cls._SECRET_MASK:
+                        if not isinstance(old_vals, dict) or k not in old_vals:
+                            raise ValueError(f"{secret_field}.{k} 没有已保存的值，请填写新值")
                         new_vals[k] = old_vals[k]
 
     # ------------------------------------------------------------------
@@ -381,6 +389,13 @@ class MCPServerStore:
         data = json.loads(json_str)
         if not isinstance(data, dict):
             raise ValueError("配置必须是 JSON 对象")
+        servers = data.get("mcpServers")
+        if not isinstance(servers, dict):
+            raise ValueError("mcpServers 必须是服务器名称到配置的对象")
+        for name, config in servers.items():
+            if not name.strip() or not isinstance(config, dict):
+                raise ValueError("服务器名称不能为空，配置必须是对象")
+            self._finalize_server_config(dict(config))
         with _CONFIG_LOCK:
             self.save_config(data)
         self._trigger_reload()
@@ -557,6 +572,18 @@ class MCPServerStore:
         if data is None:
             data = self.load_config()
         return list(data.get("mcpServers", {}).keys())
+
+    def reorder_servers(self, names: list[str]) -> None:
+        """按完整名称序列原子重排 JSON 条目，保留配置内容且不触发重连。"""
+        with _CONFIG_LOCK:
+            data = self.load_config()
+            servers = data.get("mcpServers", {})
+            if not isinstance(servers, dict) or len(names) != len(servers) or set(names) != set(servers):
+                raise ValueError("服务器列表已变化，请刷新后重排；名称必须完整且不重复")
+            if list(servers) == names:
+                return
+            data["mcpServers"] = {name: servers[name] for name in names}
+            self.save_config(data)
 
     def get_server_config(self, name: str, *, mask_secrets: bool = False) -> Optional[Dict[str, Any]]:
         """返回单个 server 的配置（可选脱敏 env/headers）。"""

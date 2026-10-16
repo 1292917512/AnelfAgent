@@ -127,3 +127,27 @@ async def set_skill_pinned(name: str, req: SetPinnedRequest) -> Dict[str, Any]:
         return _skill_svc.set_pinned(name, req.pinned)
     except ValueError as e:
         raise HTTPException(404, str(e)) from e
+
+
+class SkillMCPBindingsRequest(BaseModel):
+    servers: List[str]
+
+
+@router.get("/{name}/mcp")
+async def get_mcp_bindings(name: str) -> Dict[str, Any]:
+    try:
+        return _skill_svc.get_mcp_bindings(name)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@router.put("/{name}/mcp")
+async def set_mcp_bindings(name: str, req: SkillMCPBindingsRequest) -> Dict[str, Any]:
+    try:
+        return _skill_svc.set_mcp_bindings(name, req.servers)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc

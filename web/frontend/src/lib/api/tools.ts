@@ -19,6 +19,7 @@ import type {
   LlmHooksOverview,
   MCPServer,
   MCPServerConfig,
+  MCPServerPatch,
   MCPToggleResult,
   MCPToolInfo,
   PermissionRuleItem,
@@ -31,6 +32,7 @@ import type {
   RetrievalTestResult,
   SkillBuildState,
   SkillItem,
+  SkillMCPBindings,
   SkillLibraryHealth,
   HooksTestResult,
 } from "@/lib/types";
@@ -65,14 +67,15 @@ export const entitiesApi = {
 // Personas
 
 export const mcpApi = {
-  list: () => api.get<MCPServer[]>("/mcp/"),
+  list: (signal?: AbortSignal) => api.get<MCPServer[]>("/mcp/", { signal }),
+  reorder: (names: string[]) => api.post("/mcp/reorder", { names }),
   config: () => api.get<{ content: string }>("/mcp/config"),
   saveConfig: (content: string) => api.put("/mcp/config", { content }),
-  add: (name: string, config: MCPServerConfig) =>
+  add: (name: string, config: MCPServerPatch) =>
     api.post("/mcp/", { name, ...config }),
   get: (name: string) =>
     api.get<MCPServerConfig>(`/mcp/${encodeURIComponent(name)}`),
-  update: (name: string, config: MCPServerConfig) =>
+  update: (name: string, config: MCPServerPatch) =>
     api.put(`/mcp/${encodeURIComponent(name)}`, config),
   remove: (name: string) => api.delete(`/mcp/${encodeURIComponent(name)}`),
   toggle: (name: string) =>
@@ -142,6 +145,8 @@ export const approvalsApi = {
 // Thinking Tracer
 
 export const skillsApi = {
+  mcpBindings: (name: string) => api.get<SkillMCPBindings>(`/skills/${encodeURIComponent(name)}/mcp`),
+  setMcpBindings: (name: string, servers: string[]) => api.put<{ name: string; mcp_servers: string[] }>(`/skills/${encodeURIComponent(name)}/mcp`, { servers }),
   list: (includeArchived = false) =>
     api.get<SkillItem[]>("/skills/", { params: { include_archived: includeArchived } }),
   health: () => api.get<SkillLibraryHealth>("/skills/health"),

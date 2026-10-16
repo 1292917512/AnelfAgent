@@ -18,7 +18,7 @@ async def test_skill_evidence_tracks_actual_budget_and_never_changes_wire_messag
     candidate = Skill(name="archive-check", description="Prior evidence", state=SkillState.ARCHIVED)
     mind = SimpleNamespace(
         _skills_enabled=lambda: True,
-        skill_store=SimpleNamespace(get=lambda name: forced, record_use=MagicMock(), record_match=MagicMock()),
+        skill_store=SimpleNamespace(get=lambda name: {forced.name: forced, candidate.name: candidate}.get(name), record_use=MagicMock(), record_match=MagicMock()),
         skill_matcher=SimpleNamespace(match=AsyncMock(return_value=[(candidate, 0.426)])),
         _pending_skill_gestures={"user_qq:1": [forced.name]},
     )

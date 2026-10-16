@@ -160,9 +160,16 @@ class DialogueRecollection:
                 return []
             matches = await self.mind.skill_matcher.match([query], top_k=2)
             deltas = []
-            for skill, _score in matches:
+            from agent.skills.dependencies import mcp_binding_notice
+            for matched_skill, _score in matches:
+                skill = self.mind.skill_store.get(matched_skill.name)
+                if skill is None:
+                    continue
                 text = (f"{tag_label('skill', skill.name)} {skill.description[:160]}"
                         f"（{skill.state.value}；需要时 get_skill 读取，候选不代表执行）")
+                notice = mcp_binding_notice(skill, self.scope)
+                if notice:
+                    text += f"\n{notice}"
                 deltas.append(RecallDelta("相关技能候选", text, f"skill:{skill.name}", text))
             return deltas
 

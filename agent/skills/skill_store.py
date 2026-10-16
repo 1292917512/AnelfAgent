@@ -73,6 +73,7 @@ class Skill(BaseModel):
     # 运行时依赖声明（如 [{"type": "mcp", "name": "notion", "url": ...}]），
     # 消费全文时检查缺失并引导安装
     dependencies: List[Dict[str, Any]] = Field(default_factory=list)
+    mcp_servers: List[str] = Field(default_factory=list)
 
     def touch(self) -> None:
         """记录一次活动（真实使用/更新）。检索注入不调用本方法。"""
@@ -94,7 +95,7 @@ _DEFINITION_FIELDS = (
 #: 账本字段（.meta.json，运行时事实，计数更新只改写本文件）
 _LEDGER_FIELDS = (
     "use_count", "match_count", "patch_count", "state", "pinned",
-    "merged_into", "last_activity_at", "last_match_at",
+    "merged_into", "last_activity_at", "last_match_at", "mcp_servers",
 )
 
 _META_FILENAME = ".meta.json"
@@ -181,6 +182,7 @@ def render_skill_ledger(skill: Skill) -> Dict[str, Any]:
         "merged_into": skill.merged_into,
         "last_activity_at": skill.last_activity_at,
         "last_match_at": skill.last_match_at,
+        "mcp_servers": skill.mcp_servers,
     }
 
 
@@ -314,7 +316,7 @@ class SkillStore:
         meta_path = path.parent / _META_FILENAME
         legacy = not meta_path.is_file()
         if legacy:
-            ledger = {k: v for k, v in fm.items() if k in _LEDGER_FIELDS}
+            ledger = {k: v for k, v in fm.items() if k in _LEDGER_FIELDS and k != "mcp_servers"}
         else:
             ledger = json.loads(meta_path.read_text(encoding="utf-8")) or {}
 
@@ -425,22 +427,23 @@ class SkillStore:
             rationale: str = "",
     ) -> Optional[Skill]:
         """增量更新技能（patch_count +1）。rationale 记录本次写入的决策理由。"""
-        skill = self.get(name)
-        if skill is None:
-            return None
-        if content is not None:
-            skill.content = content
-        if description is not None:
-            skill.description = description
-        if add_trigger_patterns:
-            skill.trigger_patterns = list(
-                dict.fromkeys(skill.trigger_patterns + add_trigger_patterns)
-            )
-        skill.patch_count += 1
-        if rationale:
-            skill.rationale = rationale
-        skill.touch()
-        return self.save(skill)
+        with self._lock:
+            skill = self.get(name)
+            if skill is None:
+                return None
+            if content is not None:
+                skill.content = content
+            if description is not None:
+                skill.description = description
+            if add_trigger_patterns:
+                skill.trigger_patterns = list(
+                    dict.fromkeys(skill.trigger_patterns + add_trigger_patterns)
+                )
+            skill.patch_count += 1
+            if rationale:
+                skill.rationale = rationale
+            skill.touch()
+            return self.save(skill)
 
     def delete(self, name: str) -> bool:
         """删除技能（物理删除目录）。"""
@@ -474,6 +477,16 @@ class SkillStore:
             skill.use_count += 1
             skill.touch()
             self._write_ledger(skill)
+
+    def set_mcp_servers(self, name: str, servers: List[str]) -> Skill:
+        """更新本地 MCP 关联账本，不改写技能定义、向量表征或活动计数。"""
+        with self._lock:
+            skill = self.get(name)
+            if skill is None:
+                raise ValueError(f"技能 '{name}' 不存在")
+            skill.mcp_servers = list(servers)
+            self._write_ledger(skill)
+            return skill
 
     def record_match(self, name: str) -> None:
         """记录一次检索注入（match_count +1，仅刷新 last_match_at）。

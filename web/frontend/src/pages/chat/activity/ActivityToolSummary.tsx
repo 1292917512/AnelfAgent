@@ -1,7 +1,8 @@
 import { useTranslation } from "react-i18next";
 import { GraduationCap, Search, Wrench } from "lucide-react";
 import type { ActivityEntry } from "@/lib/types/activity";
-import { activityRecord } from "@/lib/activity-data";
+import { SkillMCPBadge } from "@/components/skills/SkillMCPStatus";
+import { activityRecord, skillMcpStates } from "@/lib/activity-data";
 import { MemoryTags, TaggedText } from "./ActivityReferences";
 
 /** 在折叠工具行直接呈现检索意图及操作对象，完整回执仍在详情中。 */
@@ -17,7 +18,7 @@ export function ActivityToolSummary({ entry }: { entry: Extract<ActivityEntry, {
     const value = args[key];
     return typeof value === "string" && value.trim() ? [{ key, tags: [...new Set(value.split(",").map((tag) => tag.trim()).filter(Boolean))] }] : [];
   });
-  if (["get_skill", "restore_skill", "update_skill", "create_skill"].includes(entry.name) && typeof args.name === "string") {
+  if (["get_skill", "restore_skill", "update_skill", "create_skill", "set_skill_mcp_servers"].includes(entry.name) && typeof args.name === "string") {
     Icon = GraduationCap;
     label = t("node.skill"); text = args.name;
     if (entry.status === "done" && entry.name === "get_skill") outcome = t("evidence.read");
@@ -36,6 +37,7 @@ export function ActivityToolSummary({ entry }: { entry: Extract<ActivityEntry, {
   return <div className="activity-tool-summary">
     {(text || outcome) && <div className="activity-summary-line"><Icon size={13} /><span>{label}</span><p><TaggedText content={text.trim().slice(0, 180)} /></p>{outcome && <b>{outcome}</b>}</div>}
     {detail && <p className={entry.status === "error" ? "text-warn" : undefined}><TaggedText content={detail.trim().slice(0, 180)} /></p>}
+    <SkillMCPBadge states={skillMcpStates(result.mcp_status)} skill={typeof args.name === "string" ? args.name : undefined} />
     {tagGroups.map((group) => <div className="activity-summary-line" key={group.key}><span>{t(group.key === "tags" ? "node.tags" : "node.filterTags")}</span><MemoryTags tags={group.tags.slice(0, 3)} />{group.tags.length > 3 && <span>+{group.tags.length - 3}</span>}</div>)}
   </div>;
 }

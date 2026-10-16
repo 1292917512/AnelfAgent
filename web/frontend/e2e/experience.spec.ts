@@ -73,7 +73,7 @@ test("file conflicts show both versions and use the latest revision only after e
 
 test("skills protect editor drafts and keep failed saves visible", async ({ page }) => {
   const skill = { name: "research", description: "Research carefully", content: "Original instructions", trigger_patterns: ["research"],
-    state: "active", use_count: 4, match_count: 7, patch_count: 1, pinned: false, embedded: null, created_by: "user", rationale: "", merged_into: "" };
+    state: "active", use_count: 4, match_count: 7, patch_count: 1, pinned: false, embedded: null, created_by: "user", rationale: "", merged_into: "", mcp_servers: [] };
   await page.route("**/api/skills/**", (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith("/research") && route.request().method() === "PUT") return route.fulfill({ status: 503, json: { detail: "Skill storage unavailable" } });

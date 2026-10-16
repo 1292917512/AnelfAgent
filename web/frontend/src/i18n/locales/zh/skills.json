@@ -106,5 +106,33 @@
     "filterTags": "限定标签",
     "group": "工具组",
     "results": "{{count}} 条结果"
+  },
+  "mcp": {
+    "manage": "关联 MCP · {{count}}",
+    "title": "关联 MCP · {{name}}",
+    "hint": "最多关联 16 个 MCP 服务。关系只保存在本地技能元数据中，SKILL.md 保持不变。召回时提供连接与激活状态；关联不会自动启动或激活工具。",
+    "selected": "已关联 {{count}} 个",
+    "configure": "管理 MCP 服务",
+    "search": "搜索 MCP 服务",
+    "empty": "没有匹配的 MCP 服务",
+    "unknown": "状态未知",
+    "missing": "未配置",
+    "enabled": "已启用",
+    "disabled": "已停用",
+    "connected": "已连接",
+    "disconnected": "未连接",
+    "tools": "{{count}} 个工具",
+    "activation": {
+      "active": "已激活",
+      "sleeping": "未激活",
+      "deactivated": "本会话已停用",
+      "unavailable": "工具不可用",
+      "on_demand": "按会话唤醒"
+    },
+    "badge": "MCP {{count}} · 激活 {{active}}",
+    "snapshotTitle": "关联 MCP 状态",
+    "snapshotHint": "这是技能召回或读取时的状态快照。连接和会话激活状态可能已变化，关联本身不代表已唤醒工具。",
+    "editSkill": "打开技能并编辑关联",
+    "saveFailed": "关联保存失败"
   }
 }

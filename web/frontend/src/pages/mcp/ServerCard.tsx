@@ -1,230 +1,66 @@
 import { useTranslation } from "react-i18next";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { KeyRound, Loader2, MoonStar, Pencil, Pin, Power, Trash2 } from "lucide-react";
-import { apiErrorMessage, mcpApi } from "@/lib/api";
+import { useSortable } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { ArrowDown, ArrowUp, GripVertical, Globe, Terminal, AlertCircle } from "lucide-react";
 import type { MCPServer } from "@/lib/types";
 import { StatusDot } from "@/components/common/StatusDot";
-import { Badge, toast } from "@/components/ui";
+import { Badge, Button } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import { ToolsSection } from "./ToolsSection";
+import { ServerActions } from "./ServerActions";
 
-interface ServerCardProps {
-  server: MCPServer;
-  oauth?: { authorized: boolean; pending_url: string };
-  onEdit: (server: MCPServer) => void;
-  onDelete: (server: MCPServer) => void;
-}
-
-/** 单个 MCP 服务器卡片：状态、操作（连接/断开、OAuth 授权、编辑、删除）、工具列表 */
-export function ServerCard({ server, oauth, onEdit, onDelete }: ServerCardProps) {
+export function ServerCard({ server, oauth, position, total, disabled, sortable, onMove, onEdit, onDelete }: {
+  server: MCPServer; oauth?: { authorized: boolean; pending_url: string };
+  position: number; total: number; disabled: boolean; sortable: boolean;
+  onMove: (offset: number) => void; onEdit: (server: MCPServer) => void; onDelete: (server: MCPServer) => void;
+}) {
   const { t } = useTranslation("mcp");
-  const queryClient = useQueryClient();
-
-  const authorizeMutation = useMutation({
-    mutationFn: () => mcpApi.oauthAuthorize(server.name).then((r) => r.data),
-    onSuccess: (data) => {
-      if (data.success && data.url) {
-        window.open(data.url, "_blank", "noreferrer");
-        toast.success(data.message || t("oauthStarted"));
-      } else {
-        toast.error(data.message || t("toast.requestFailed"));
-      }
-    },
-    onError: (err) => {
-      toast.error(apiErrorMessage(err, t("toast.requestFailed")));
-    },
-    onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ["mcpOauthStatus"] });
-      queryClient.invalidateQueries({ queryKey: ["mcpServers"] });
-    },
-  });
-
-  const oauthCapable = server.transport !== "stdio";
-  const showAuthorize = oauthCapable && !oauth?.authorized && !oauth?.pending_url;
-
-  const toggleMutation = useMutation({
-    mutationFn: () => mcpApi.toggle(server.name).then((r) => r.data),
-    onSuccess: (data) => {
-      // 启用成功但目标暂不可达：启用已落盘，如实以错误样式提示连接失败
-      if (data.success && !(data.enabled && data.connected === false)) {
-        toast.success(data.message);
-      } else {
-        toast.error(data.message);
-      }
-    },
-    onError: (err) => {
-      toast.error(apiErrorMessage(err, t("toast.requestFailed")));
-    },
-    onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ["mcpServers"] });
-    },
-  });
-
-  const isToggling = toggleMutation.isPending;
-
-  const stayAwakeMutation = useMutation({
-    mutationFn: (enabled: boolean) => mcpApi.setStayAwake(server.name, enabled).then((r) => r.data),
-    onSuccess: (data) => {
-      toast.success(t(data.stay_awake ? "stayAwakeOn" : "stayAwakeOff"));
-    },
-    onError: (err) => {
-      toast.error(apiErrorMessage(err, t("toast.requestFailed")));
-    },
-    onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ["mcpServers"] });
-    },
-  });
-  const channelOnly = !!server.channel_only;
-  const status = isToggling ? "warn" : server.connected ? "ok" : "offline";
-  const statusLabel = isToggling
-    ? server.enabled
-      ? t("disabling")
-      : t("enabling")
-    : server.connected
-      ? channelOnly
-        ? t("channelOnlyStatus")
-        : t("connectedStatus")
-      : server.enabled
-        ? t("disconnectedStatus")
-        : t("disabledStatus");
-
-  return (
-    <div
-      className={cn(
-        "rounded-lg border bg-card p-4 transition-all",
-        isToggling ? "border-warn" : "border-border hover:border-border-strong",
-      )}
-    >
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-3 min-w-0">
-          <StatusDot status={status} />
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="font-medium text-heading truncate">{server.name}</span>
-              <span
-                className={cn(
-                  "text-[11px] shrink-0",
-                  isToggling && "text-warn",
-                  !isToggling && server.connected && "text-ok",
-                  !isToggling && !server.connected && "text-muted",
-                )}
-              >
-                {statusLabel}
-              </span>
-              <Badge variant="neutral">{server.transport}</Badge>
-              {server.plugin ? (
-                <Badge variant="info">{t("pluginBadge", { plugin: server.plugin })}</Badge>
-              ) : null}
-              {!server.enabled && (
-                <Badge variant="warn">{t("disabledStatus")}</Badge>
-              )}
-              {server.connected &&
-                (channelOnly ? (
-                  <Badge variant="neutral">{t("channelOnlyBadge")}</Badge>
-                ) : (
-                  <Badge variant="accent">
-                    {t("nTools", { count: server.tool_count })}
-                  </Badge>
-                ))}
-              {oauth?.pending_url ? (
-                <a href={oauth.pending_url} target="_blank" rel="noreferrer">
-                  <Badge variant="warn">{t("oauthPending")}</Badge>
-                </a>
-              ) : oauth?.authorized ? (
-                <Badge variant="info">{t("oauthAuthorized")}</Badge>
-              ) : null}
-              {server.sleeping ? (
-                <Badge variant="neutral">{t("sleepingBadge")}</Badge>
-              ) : (
-                <Badge variant="ok">{t("awakeBadge")}</Badge>
-              )}
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({ id: server.name, disabled: !sortable });
+  const Icon = server.transport === "stdio" ? Terminal : Globe;
+  const state = server.connected ? "ok" : server.enabled ? "warn" : "offline";
+  const label = server.connected ? server.channel_only ? "channelOnlyStatus" : "connectedStatus" : server.enabled ? "disconnectedStatus" : "disabledStatus";
+  return <section ref={setNodeRef} aria-label={server.name} style={{ transform: CSS.Transform.toString(transform), transition }}
+    className={cn("relative min-w-0 rounded-xl border border-border bg-card p-3 sm:p-4", isDragging && "z-10 shadow-xl ring-2 ring-accent")}>
+    <div className="flex items-start gap-2 sm:gap-3">
+      <div className="flex shrink-0 flex-col items-center gap-1">
+        <button ref={setActivatorNodeRef} {...attributes} {...listeners} disabled={!sortable}
+          aria-label={t("reorder.drag", { name: server.name })} title={t("reorder.drag", { name: server.name })}
+          className="touch-none rounded-lg p-2 text-muted hover:bg-secondary disabled:opacity-30 cursor-grab active:cursor-grabbing">
+          <GripVertical size={16} />
+        </button>
+        <span className="text-[10px] tabular-nums text-muted">{position + 1}</span>
+      </div>
+      <div className="min-w-0 flex-1 space-y-2">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          <Icon size={16} className="shrink-0 text-accent" />
+          <h2 className="min-w-0 break-all text-sm font-semibold text-heading">{server.name}</h2>
+          <span className="inline-flex items-center gap-1.5 text-xs text-muted"><StatusDot status={state} />{t(label)}</span>
+          <Badge variant="neutral">{server.transport}</Badge>
+          {server.plugin && <Badge variant="info">{t("pluginBadge", { plugin: server.plugin })}</Badge>}
+        </div>
+        {server.url && <p className="truncate font-mono text-xs text-muted" title={server.url}>{server.url}</p>}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {server.connected && !server.channel_only && <ToolsSection serverName={server.name} toolCount={server.tool_count} />}
+            <span className="text-[11px] text-muted">{t(server.sleeping ? "sleepingBadge" : "awakeBadge")}</span>
+            {oauth?.pending_url ? <a href={oauth.pending_url} target="_blank" rel="noreferrer" className="text-xs text-accent hover:underline">{t("oauthPending")}</a>
+              : oauth?.authorized && <Badge variant="info">{t("oauthAuthorized")}</Badge>}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center border-r border-border pr-2">
+              <Button size="icon" variant="ghost" disabled={!sortable || position === 0} onClick={() => onMove(-1)}
+                title={t("reorder.up")} aria-label={`${t("reorder.up")} · ${server.name}`}><ArrowUp size={14} /></Button>
+              <Button size="icon" variant="ghost" disabled={!sortable || position === total - 1} onClick={() => onMove(1)}
+                title={t("reorder.down")} aria-label={`${t("reorder.down")} · ${server.name}`}><ArrowDown size={14} /></Button>
             </div>
-            {server.url && (
-              <p className="text-xs text-muted mt-0.5 font-mono truncate">
-                {server.url}
-              </p>
-            )}
-            {!server.connected && server.last_error && (
-              <p className="text-[11px] text-danger mt-1 break-all">
-                {t("lastError")}: {server.last_error}
-              </p>
-            )}
+            <ServerActions server={server} oauth={oauth} disabled={disabled} onEdit={onEdit} onDelete={onDelete} />
           </div>
         </div>
-
-        <div className="flex items-center gap-1 shrink-0">
-          {showAuthorize && (
-            <button
-              onClick={() => authorizeMutation.mutate()}
-              disabled={authorizeMutation.isPending}
-              title={t("oauthAuthorizeHint")}
-              className="p-1.5 rounded text-muted hover:text-accent transition-colors disabled:cursor-wait"
-            >
-              {authorizeMutation.isPending ? (
-                <Loader2 size={16} className="animate-spin text-warn" />
-              ) : (
-                <KeyRound size={16} />
-              )}
-            </button>
-          )}
-          <button
-            onClick={() => stayAwakeMutation.mutate(!server.stay_awake)}
-            disabled={stayAwakeMutation.isPending}
-            title={server.stay_awake ? t("stayAwakeHintOff") : t("stayAwakeHintOn")}
-            className={cn(
-              "p-1.5 rounded transition-colors disabled:cursor-wait",
-              server.stay_awake
-                ? "text-accent hover:text-muted"
-                : "text-muted hover:text-accent",
-            )}
-          >
-            {stayAwakeMutation.isPending ? (
-              <Loader2 size={16} className="animate-spin text-warn" />
-            ) : server.stay_awake ? (
-              <Pin size={16} />
-            ) : (
-              <MoonStar size={16} />
-            )}
-          </button>
-          <button
-            onClick={() => toggleMutation.mutate()}
-            disabled={isToggling}
-            title={server.enabled ? t("disable") : t("enable")}
-            className={cn(
-              "p-1.5 rounded transition-colors disabled:cursor-wait",
-              server.enabled
-                ? "text-ok hover:text-danger"
-                : "text-muted hover:text-ok",
-            )}
-          >
-            {isToggling ? (
-              <Loader2 size={16} className="animate-spin text-warn" />
-            ) : (
-              <Power size={16} />
-            )}
-          </button>
-          <button
-            onClick={() => onEdit(server)}
-            disabled={isToggling}
-            title={t("common:edit")}
-            className="p-1.5 rounded text-muted hover:text-foreground transition-colors disabled:opacity-40"
-          >
-            <Pencil size={15} />
-          </button>
-          <button
-            onClick={() => onDelete(server)}
-            disabled={isToggling}
-            title={t("common:delete")}
-            className="p-1.5 rounded text-muted hover:text-danger transition-colors disabled:opacity-40"
-          >
-            <Trash2 size={16} />
-          </button>
-        </div>
+        {!server.connected && server.last_error && <details className="rounded-lg bg-danger-subtle px-3 py-2 text-xs text-danger">
+          <summary className="cursor-pointer"><AlertCircle size={12} className="mr-1 inline" />{t("lastError")}</summary>
+          <p className="mt-2 whitespace-pre-wrap break-all">{server.last_error}</p>
+        </details>}
       </div>
-
-      {server.connected && (
-        <ToolsSection serverName={server.name} toolCount={server.tool_count} />
-      )}
     </div>
-  );
+  </section>;
 }

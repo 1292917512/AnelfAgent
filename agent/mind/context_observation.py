@@ -102,6 +102,7 @@ def context_skills(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "description": sanitize_text(fact["description"])[:300],
                 "state": fact["state"], "mode": fact["mode"], "score": fact["score"],
                 "truncated": fact["truncated"] or fact["end"] > len(content),
+                **({"mcp_status": fact["mcp_status"]} if fact.get("mcp_status") and fact["end"] <= len(content) else {}),
             })
             if len(skills) >= 16:
                 return skills

@@ -44,13 +44,17 @@
     "kvValue": "Value",
     "addRow": "Add row",
     "timeout": "Connect Timeout (s)",
-    "sseReadTimeout": "SSE Read Timeout (s)",
+    "sseReadTimeout": "HTTP Read Timeout (s)",
     "callTimeout": "Tool Call Timeout (s)",
     "optional": "Optional",
     "enabledLabel": "Enable and connect immediately",
     "nameRequired": "Server name is required",
     "urlOrCommandRequired": "URL or command is required",
-    "timeoutPositive": "Timeout must be greater than 0"
+    "timeoutPositive": "Timeout must be greater than 0",
+    "advanced": "Advanced settings",
+    "defaultTimeout": "Use default",
+    "duplicateKey": "Keys must be unique",
+    "secretHint": "Keep ******** to retain a saved secret; remove the row to clear it."
   },
   "jsonConfig": "JSON Config",
   "jsonHint": "Edit the raw mcpServers config; hot-reloads automatically after saving",
@@ -78,5 +82,21 @@
   "disable": "Disable (no auto-connect on restart)",
   "oauthAuthorize": "Authorize",
   "oauthAuthorizeHint": "Generate an OAuth authorization link and complete it in the browser",
-  "oauthStarted": "Authorization link generated — complete it in the browser; the server will reconnect automatically"
+  "oauthStarted": "Authorization link generated — complete it in the browser; the server will reconnect automatically",
+  "summary": "{{connected}} / {{total}} connected · {{tools}} tools",
+  "searchServers": "Search servers",
+  "searchTools": "Search tools",
+  "noMatches": "No matching servers",
+  "nParams": "{{count}} parameters",
+  "required": "Required",
+  "jsonObjectRequired": "The configuration must be a JSON object",
+  "reorder": {
+    "hint": "Drag or use the arrows to reorder. Changes are saved to JSON immediately.",
+    "saving": "Saving order…",
+    "filtered": "Clear the search to reorder servers.",
+    "saved": "Server order saved",
+    "drag": "Reorder {{name}}",
+    "up": "Move up",
+    "down": "Move down"
+  }
 }

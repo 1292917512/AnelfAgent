@@ -3,7 +3,7 @@ import { test, expect } from "./fixtures";
 import type { ActivityRun } from "../src/lib/types/activity";
 import type { SkillItem } from "../src/lib/types/workspace";
 
-const skill: SkillItem = { name: "deployment-check", description: "Inspect a service before changing its configuration", content: "# Deployment checklist\n\n1. Read the service state.\n2. Check the expected version.\n3. Report verified facts.\n\n**Do not claim success without evidence.**", trigger_patterns: ["deployment", "service", "version"], state: "active", use_count: 12, match_count: 38, patch_count: 3, pinned: true, embedded: true, created_by: "agent", rationale: "Repeated deployment checks", merged_into: "", created_at: 1, last_activity_at: 1728800000, last_match_at: 1728800000 };
+const skill: SkillItem = { name: "deployment-check", description: "Inspect a service before changing its configuration", content: "# Deployment checklist\n\n1. Read the service state.\n2. Check the expected version.\n3. Report verified facts.\n\n**Do not claim success without evidence.**", trigger_patterns: ["deployment", "service", "version"], state: "active", use_count: 12, match_count: 38, mcp_servers: [], patch_count: 3, pinned: true, embedded: true, created_by: "agent", rationale: "Repeated deployment checks", merged_into: "", created_at: 1, last_activity_at: 1728800000, last_match_at: 1728800000 };
 const ts = Date.now() / 1000;
 const run: ActivityRun = {
   id: "skills-review", revision: 1, scope: "group_qq:42", origin_scope: "group_qq:42", source: { scope: "group_qq:42", kind: "group", channel: "qq", target: "42", session: "" },
@@ -97,4 +97,55 @@ test("skill evidence distinguishes suggestions from reads and links to a readabl
   const audit = await new AxeBuilder({ page }).include("main").withTags(["wcag2a", "wcag2aa", "wcag21aa"]).analyze();
   expect(audit.violations).toEqual([]);
   expect(errors).toEqual([]);
+});
+
+
+test("skill MCP links are editable locally and execution shows compact status snapshots", async ({ page }, info) => {
+  let selected = ["docs"];
+  let fail = true;
+  const available = [
+    { name: "docs", configured: true, enabled: true, connected: true, tool_count: 4, activation: "on_demand" },
+    { name: "maps", configured: true, enabled: false, connected: false, tool_count: 0, activation: "unavailable" },
+  ];
+  await page.route("**/api/skills/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith("/mcp")) {
+      if (route.request().method() === "PUT") {
+        if (fail) { await route.fulfill({ status: 503, json: { detail: "Try again" } }); return; }
+        selected = route.request().postDataJSON().servers as string[];
+        await route.fulfill({ json: { name: skill.name, mcp_servers: selected } }); return;
+      }
+      await route.fulfill({ json: { name: skill.name, servers: available.filter((item) => selected.includes(item.name)), available } }); return;
+    }
+    if (path.endsWith(`/${skill.name}`)) { await route.fulfill({ json: { ...skill, mcp_servers: selected } }); return; }
+    if (path.endsWith("/health")) { await route.fulfill({ status: 503, json: { detail: "Unavailable" } }); return; }
+    await route.fulfill({ json: [{ ...skill, mcp_servers: selected }] });
+  });
+  const states = [{ ...available[0], activation: "sleeping" }];
+  await page.route("**/api/workspace/activity", (route) => route.fulfill({ json: { epoch: "links", revision: 1, runs: [{ ...run,
+    skills: [{ name: skill.name, description: skill.description, mode: "read", mcp_status: states }],
+    entries: [{ ...run.entries[1], result: JSON.stringify({ ok: true, name: skill.name, content: "Steps", mcp_status: states }) }],
+  }] } }));
+  await page.goto(`/webui/skills?skill=${skill.name}`);
+  await page.getByRole("button", { name: "MCP links · 1", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: `MCP links · ${skill.name}`, exact: true });
+  await expect(dialog.getByText("Activate per conversation", { exact: true })).toBeVisible();
+  await dialog.getByRole("checkbox", { name: /maps/ }).check();
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(dialog.getByText("Try again", { exact: true })).toBeVisible();
+  await expect(dialog.getByRole("checkbox", { name: /maps/ })).toBeChecked();
+  await page.screenshot({ path: info.outputPath("skill-mcp-editor.png") });
+  fail = false;
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "MCP links · 2", exact: true })).toBeVisible();
+  await page.goto("/webui/");
+  const badge = page.getByRole("button", { name: "MCP 1 · 0 active", exact: true }).first();
+  await expect(badge).toBeVisible();
+  await badge.click();
+  const status = page.getByRole("dialog", { name: "Linked MCP status", exact: true });
+  await expect(status.getByText("Not activated", { exact: true })).toBeVisible();
+  await expect(status.getByText("docs", { exact: true })).toBeVisible();
+  await page.screenshot({ path: info.outputPath("skill-mcp-snapshot.png") });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
 });

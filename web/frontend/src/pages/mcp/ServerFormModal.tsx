@@ -1,249 +1,75 @@
-import { useEffect, useState } from "react";
+import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Globe, Terminal, Radio, Settings2 } from "lucide-react";
 import { apiErrorMessage, mcpApi } from "@/lib/api";
-import type { MCPServerConfig, MCPTransport } from "@/lib/types";
-import { Button, Input, Modal, Select, Switch, Textarea, toast } from "@/components/ui";
-import {
-  inferTransport,
-  parseArgsText,
-  recordToRows,
-  rowsToRecord,
-  type KVRow,
-} from "./types";
+import { Button, ConfirmDialog, Input, Modal, Switch, Textarea, toast } from "@/components/ui";
+import { TabBar } from "@/components/common/TabBar";
+import { useDraft } from "@/hooks/useDraft";
+import { useDiscardChanges } from "@/hooks/useDiscardChanges";
+import { serverDraft, serverPatch, type EditingServer } from "./types";
 import { Field, KVEditor } from "./formFields";
+import type { MCPTransport } from "@/lib/types";
 
-interface ServerFormModalProps {
-  open: boolean;
-  onClose: () => void;
-  /** 编辑模式传入；为空则为添加模式 */
-  editing?: { name: string; config: MCPServerConfig } | null;
-}
-
-/** 添加 / 编辑 MCP 服务器共用表单弹窗 */
-export function ServerFormModal({ open, onClose, editing }: ServerFormModalProps) {
+export function ServerFormModal({ onClose, editing }: { onClose: () => void; editing: EditingServer | null }) {
   const { t } = useTranslation("mcp");
-  const queryClient = useQueryClient();
-  const isEdit = !!editing;
-
-  const [name, setName] = useState("");
-  const [transport, setTransport] = useState<MCPTransport>("streamable_http");
-  const [url, setUrl] = useState("");
-  const [command, setCommand] = useState("");
-  const [argsText, setArgsText] = useState("");
-  const [envRows, setEnvRows] = useState<KVRow[]>([]);
-  const [headerRows, setHeaderRows] = useState<KVRow[]>([]);
-  const [timeout, setTimeout_] = useState("");
-  const [sseReadTimeout, setSseReadTimeout] = useState("");
-  const [callTimeout, setCallTimeout] = useState("");
-  const [enabled, setEnabled] = useState(true);
-  const [formError, setFormError] = useState("");
-
-  // 打开时按编辑/添加模式初始化表单
-  useEffect(() => {
-    if (!open) return;
-    const cfg = editing?.config ?? {};
-    setName(editing?.name ?? "");
-    setTransport(inferTransport(cfg));
-    setUrl(cfg.url ?? "");
-    setCommand(cfg.command ?? "");
-    setArgsText((cfg.args ?? []).join("\n"));
-    setEnvRows(recordToRows(cfg.env));
-    setHeaderRows(recordToRows(cfg.headers));
-    setTimeout_(cfg.timeout != null ? String(cfg.timeout) : "");
-    setSseReadTimeout(cfg.sse_read_timeout != null ? String(cfg.sse_read_timeout) : "");
-    setCallTimeout(cfg.call_timeout != null ? String(cfg.call_timeout) : "");
-    setEnabled(cfg.enabled ?? true);
-    setFormError("");
-  }, [open, editing]);
-
-  const saveMutation = useMutation({
-    mutationFn: async ({ target, config }: { target: string; config: MCPServerConfig }) => {
-      if (isEdit) await mcpApi.update(target, config);
-      else await mcpApi.add(target, config);
-    },
-    onSuccess: (_r, { target }) => {
-      queryClient.invalidateQueries({ queryKey: ["mcpServers"] });
-      toast.success(t(isEdit ? "toast.serverUpdated" : "toast.serverAdded", { name: target }));
-      onClose();
-    },
-    onError: (err) => {
-      toast.error(apiErrorMessage(err, t("toast.requestFailed")));
-    },
-  });
-
-  const parseTimeout = (raw: string): number | undefined | null => {
-    const text = raw.trim();
-    if (!text) return undefined;
-    const num = Number(text);
-    if (!Number.isFinite(num) || num <= 0) return null;
-    return num;
+  const client = useQueryClient();
+  const id = useId();
+  const [initial] = useState(() => serverDraft(editing));
+  const draft = useDraft(initial);
+  const value = draft.values;
+  const [error, setError] = useState("");
+  const save = useMutation({ mutationFn: async () => {
+    const patch = serverPatch(value, editing);
+    return editing ? mcpApi.update(editing.name, patch) : mcpApi.add(value.name.trim(), patch);
+  }, onSuccess: () => {
+    void client.invalidateQueries({ queryKey: ["mcpServers"] });
+    void client.invalidateQueries({ queryKey: ["mcpConfig"] });
+    toast.success(t(editing ? "toast.serverUpdated" : "toast.serverAdded", { name: value.name.trim() }));
+    onClose();
+  }, onError: (failure) => setError(apiErrorMessage(failure, t("toast.requestFailed"))) });
+  const guard = useDiscardChanges(draft.dirty, onClose, save.isPending);
+  const submit = () => {
+    try { serverPatch(value, editing); setError(""); save.mutate(); }
+    catch (failure) { setError(t(failure instanceof Error ? failure.message : "toast.requestFailed")); }
   };
-
-  const handleSubmit = () => {
-    const target = name.trim();
-    if (!isEdit && !target) {
-      setFormError(t("form.nameRequired"));
-      return;
-    }
-    const isStdio = transport === "stdio";
-    if (isStdio && !command.trim()) {
-      setFormError(t("form.urlOrCommandRequired"));
-      return;
-    }
-    if (!isStdio && !url.trim()) {
-      setFormError(t("form.urlOrCommandRequired"));
-      return;
-    }
-    const timeouts = [parseTimeout(timeout), parseTimeout(sseReadTimeout), parseTimeout(callTimeout)];
-    if (timeouts.some((v) => v === null)) {
-      setFormError(t("form.timeoutPositive"));
-      return;
-    }
-
-    const config: MCPServerConfig = { transport, enabled };
-    if (isStdio) {
-      config.command = command.trim();
-      config.args = parseArgsText(argsText);
-      const env = rowsToRecord(envRows);
-      if (env) config.env = env;
-    } else {
-      config.url = url.trim();
-      const headers = rowsToRecord(headerRows);
-      if (headers) config.headers = headers;
-    }
-    if (timeouts[0]) config.timeout = timeouts[0];
-    if (transport === "sse" && timeouts[1]) config.sse_read_timeout = timeouts[1];
-    if (timeouts[2]) config.call_timeout = timeouts[2];
-
-    setFormError("");
-    saveMutation.mutate({ target: isEdit ? editing!.name : target, config });
-  };
-
-  return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title={t(isEdit ? "editServer" : "addServer")}
-      width="max-w-xl"
-      footer={
-        <>
-          <Button variant="secondary" size="sm" onClick={onClose}>
-            {t("common:cancel")}
-          </Button>
-          <Button
-            variant="primary"
-            size="sm"
-            loading={saveMutation.isPending}
-            onClick={handleSubmit}
-          >
-            {t("common:save")}
-          </Button>
-        </>
-      }
-    >
-      <div className="space-y-3">
-        <Field label={t("form.name")}>
-          <Input
-            value={name}
-            placeholder={t("form.namePlaceholder")}
-            disabled={isEdit}
-            onChange={(e) => setName(e.target.value)}
-          />
-          {isEdit && (
-            <p className="text-[10px] text-muted">{t("form.nameHint")}</p>
-          )}
-        </Field>
-
-        <Field label={t("form.transport")}>
-          <Select
-            className="w-full"
-            value={transport}
-            onChange={(e) => setTransport(e.target.value as MCPTransport)}
-          >
-            <option value="streamable_http">{t("form.transportHttp")}</option>
-            <option value="sse">{t("form.transportSse")}</option>
-            <option value="stdio">{t("form.transportStdio")}</option>
-          </Select>
-        </Field>
-
-        {transport === "stdio" ? (
-          <>
-            <Field label={t("form.command")}>
-              <Input
-                value={command}
-                placeholder={t("form.commandPlaceholder")}
-                className="font-mono text-xs"
-                onChange={(e) => setCommand(e.target.value)}
-              />
-            </Field>
-            <Field label={t("form.args")} optional>
-              <Textarea
-                value={argsText}
-                placeholder={t("form.argsPlaceholder")}
-                rows={3}
-                className="font-mono text-xs"
-                onChange={(e) => setArgsText(e.target.value)}
-              />
-            </Field>
-            <Field label={t("form.env")} optional>
-              <KVEditor rows={envRows} onChange={setEnvRows} addLabel={t("form.addRow")} />
-            </Field>
-          </>
-        ) : (
-          <>
-            <Field label={t("form.url")}>
-              <Input
-                value={url}
-                placeholder={t("form.urlPlaceholder")}
-                className="font-mono text-xs"
-                onChange={(e) => setUrl(e.target.value)}
-              />
-            </Field>
-            <Field label={t("form.headers")} optional>
-              <KVEditor rows={headerRows} onChange={setHeaderRows} addLabel={t("form.addRow")} />
-            </Field>
-          </>
-        )}
-
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <Field label={t("form.timeout")} optional>
-            <Input
-              value={timeout}
-              type="number"
-              min={1}
-              onChange={(e) => setTimeout_(e.target.value)}
-            />
+  const transports: { key: MCPTransport; label: string; icon: typeof Globe }[] = [
+    { key: "streamable_http", label: t("form.transportHttp"), icon: Globe },
+    { key: "stdio", label: t("form.transportStdio"), icon: Terminal },
+    { key: "sse", label: t("form.transportSse"), icon: Radio },
+  ];
+  return <>
+    <Modal open onClose={guard.requestClose} dismissible={!save.isPending} title={editing ? `${t("editServer")} · ${editing.name}` : t("addServer")} width="max-w-2xl"
+      footer={<><Button variant="secondary" size="sm" disabled={save.isPending} onClick={guard.requestClose}>{t("common:cancel")}</Button>
+        <Button type="submit" form={id} variant="primary" size="sm" disabled={!draft.dirty} loading={save.isPending}>{t("common:save")}</Button></>}>
+      <form id={id} onSubmit={(event) => { event.preventDefault(); submit(); }}>
+        <fieldset disabled={save.isPending} className="min-w-0 space-y-5">
+          <Field label={t("form.name")} htmlFor={`${id}-name`}>
+            <Input id={`${id}-name`} value={value.name} disabled={!!editing} placeholder={t("form.namePlaceholder")} onChange={(event) => draft.update("name", event.target.value)} />
           </Field>
-          {transport === "sse" && (
-            <Field label={t("form.sseReadTimeout")} optional>
-              <Input
-                value={sseReadTimeout}
-                type="number"
-                min={1}
-                onChange={(e) => setSseReadTimeout(e.target.value)}
-              />
-            </Field>
-          )}
-          <Field label={t("form.callTimeout")} optional>
-            <Input
-              value={callTimeout}
-              type="number"
-              min={1}
-              onChange={(e) => setCallTimeout(e.target.value)}
-            />
-          </Field>
-        </div>
-
-        {!isEdit && (
-          <label className="flex items-center gap-2 text-sm text-foreground">
-            <Switch checked={enabled} onChange={setEnabled} />
-            {t("form.enabledLabel")}
-          </label>
-        )}
-
-        {formError && <p className="text-xs text-danger">{formError}</p>}
-      </div>
+          <div className="space-y-2"><p className="text-xs font-medium text-muted">{t("form.transport")}</p>
+            <TabBar tabs={transports} activeTab={value.transport} onChange={(transport) => draft.update("transport", transport)} />
+          </div>
+          {value.transport === "stdio" ? <>
+            <Field label={t("form.command")} htmlFor={`${id}-command`}><Input id={`${id}-command`} className="font-mono text-xs" value={value.command} placeholder={t("form.commandPlaceholder")} onChange={(event) => draft.update("command", event.target.value)} /></Field>
+            <Field label={t("form.args")} htmlFor={`${id}-args`} optional><Textarea id={`${id}-args`} value={value.argsText} placeholder={t("form.argsPlaceholder")} rows={3} className="font-mono text-xs" onChange={(event) => draft.update("argsText", event.target.value)} /></Field>
+            <KVEditor rows={value.envRows} onChange={(rows) => draft.update("envRows", rows)} label={t("form.env")} />
+          </> : <>
+            <Field label={t("form.url")} htmlFor={`${id}-url`}><Input id={`${id}-url`} value={value.url} className="font-mono text-xs" placeholder={t("form.urlPlaceholder")} onChange={(event) => draft.update("url", event.target.value)} /></Field>
+            <KVEditor rows={value.headerRows} onChange={(rows) => draft.update("headerRows", rows)} label={t("form.headers")} />
+          </>}
+          <details className="rounded-lg border border-border p-3">
+            <summary className="cursor-pointer text-sm text-heading"><Settings2 size={14} className="mr-2 inline" />{t("form.advanced")}</summary>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              {(["timeout", "sseReadTimeout", "callTimeout"] as const).filter((key) => key !== "sseReadTimeout" || value.transport !== "stdio").map((key) =>
+                <Field key={key} label={t(`form.${key}`)} htmlFor={`${id}-${key}`} optional><Input id={`${id}-${key}`} value={value[key]} type="number" min={0.001} step="any" placeholder={t("form.defaultTimeout")} onChange={(event) => draft.update(key, event.target.value)} /></Field>)}
+            </div>
+          </details>
+          {!editing && <div className="flex items-center justify-between gap-3 rounded-lg bg-secondary/50 p-3 text-sm"><span>{t("form.enabledLabel")}</span><Switch label={t("form.enabledLabel")} checked={value.enabled} onChange={(enabled) => draft.update("enabled", enabled)} /></div>}
+          {error && <p role="alert" className="break-words text-xs text-danger">{error}</p>}
+        </fieldset>
+      </form>
     </Modal>
-  );
+    <ConfirmDialog {...guard.confirmProps} />
+  </>;
 }

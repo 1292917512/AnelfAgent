@@ -47,6 +47,21 @@ export interface GlobalSearchResult {
 
 // ── Skills ─────────────────────────────────────────────────────
 
+export interface SkillMCPStatus {
+  name: string;
+  configured: boolean | null;
+  enabled?: boolean;
+  connected?: boolean;
+  tool_count?: number;
+  activation?: "active" | "sleeping" | "deactivated" | "unavailable" | "on_demand";
+}
+
+export interface SkillMCPBindings {
+  name: string;
+  servers: SkillMCPStatus[];
+  available: SkillMCPStatus[];
+}
+
 export interface SkillItem {
   name: string;
   description: string;
@@ -54,6 +69,7 @@ export interface SkillItem {
   state: "active" | "stale" | "archived";
   use_count: number;
   match_count: number;
+  mcp_servers: string[];
   patch_count: number;
   pinned: boolean;
   created_by: string;

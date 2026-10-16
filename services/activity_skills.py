@@ -26,6 +26,7 @@ def merge_skill_evidence(run: dict[str, Any], facts: list[dict[str, Any]]) -> No
             "state": fact.get("state", previous.get("state", "")),
             "score": fact.get("score", previous.get("score")),
             "truncated": bool(fact.get("truncated")),
+            **({"mcp_status": mcp_status_facts(fact["mcp_status"])} if "mcp_status" in fact else {}),
         }
     if len(skills) > 32:
         run["truncated"] = True
@@ -46,4 +47,25 @@ def record_skill_read(run: dict[str, Any], entry: dict[str, Any]) -> None:
     if not isinstance(name, str) or not name:
         return
     merge_skill_evidence(run, [{"name": name, "mode": "read", "description": result.get("description", ""),
-                               "truncated": entry.get("truncated", False)}])
+                               "truncated": entry.get("truncated", False),
+                               **({"mcp_status": result["mcp_status"]} if "mcp_status" in result else {})}])
+
+
+def mcp_status_facts(value: Any) -> list[dict[str, Any]]:
+    """保留技能关联的有界状态快照，剥离其他工具输出字段。"""
+    if not isinstance(value, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for item in value[:16]:
+        if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+            continue
+        fact: dict[str, Any] = {"name": sanitize_text(item["name"])[:256]}
+        for key in ("configured", "enabled", "connected"):
+            if isinstance(item.get(key), bool) or (key == "configured" and item.get(key) is None):
+                fact[key] = item.get(key)
+        if isinstance(item.get("tool_count"), int):
+            fact["tool_count"] = max(0, item["tool_count"])
+        if item.get("activation") in ("active", "sleeping", "deactivated", "unavailable", "on_demand"):
+            fact["activation"] = item["activation"]
+        result.append(fact)
+    return result

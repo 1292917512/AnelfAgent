@@ -38,6 +38,10 @@ class SaveConfigRequest(BaseModel):
     content: str
 
 
+class ReorderServersRequest(BaseModel):
+    names: list[str]
+
+
 @router.get("/")
 async def list_servers() -> List[Dict[str, Any]]:
     return _mcp_svc.list_servers()
@@ -75,6 +79,16 @@ async def oauth_status_all() -> Dict[str, Any]:
     return await _mcp_svc.oauth_status()
 
 
+@router.post("/reorder")
+async def reorder_servers(req: ReorderServersRequest) -> Dict[str, str]:
+    """仅更新 JSON 服务条目顺序，不变更连接或凭据。"""
+    try:
+        await asyncio.to_thread(_mcp_svc.reorder_servers, req.names)
+        return {"status": "ok"}
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
 @router.get("/{name}")
 async def get_server(name: str) -> Dict[str, Any]:
     cfg = _mcp_svc.get_server_config(name, mask_secrets=True)
@@ -85,10 +99,10 @@ async def get_server(name: str) -> Dict[str, Any]:
 
 @router.put("/{name}")
 async def update_server(name: str, req: ServerConfigPayload) -> Dict[str, Any]:
-    patch = req.model_dump(exclude_none=True)
+    patch = req.model_dump(exclude_unset=True)
     try:
         result = await asyncio.to_thread(
-            _mcp_svc.update_server_config, name, patch, replace=True,
+            _mcp_svc.update_server_config, name, patch,
         )
         # 响应同样脱敏，避免把真实密钥回显给前端
         result["before"] = _mcp_svc.mask_secrets(result["before"])

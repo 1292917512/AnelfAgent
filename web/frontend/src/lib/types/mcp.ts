@@ -34,6 +34,9 @@ export interface MCPServerConfig {
   call_timeout?: number;
 }
 
+/** 缺省保留，null 删除字段；空对象用于清空 env / headers。 */
+export type MCPServerPatch = { [K in keyof MCPServerConfig]?: MCPServerConfig[K] | null };
+
 export interface MCPToolParam {
   name: string;
   description: string;

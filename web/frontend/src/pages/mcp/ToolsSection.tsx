@@ -1,98 +1,52 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronDown, ChevronRight, Wrench } from "lucide-react";
+import { Search, Wrench } from "lucide-react";
 import { mcpApi } from "@/lib/api";
-import { Badge, Spinner } from "@/components/ui";
-import { cn } from "@/lib/utils";
+import type { MCPToolInfo } from "@/lib/types";
+import { Button, Input, Modal } from "@/components/ui";
+import { AsyncState } from "@/components/common/AsyncState";
 
-/** 服务器工具区：默认折叠，展开时按需拉取工具详情（描述 + 参数） */
-export function ToolsSection({
-  serverName,
-  toolCount,
-}: {
-  serverName: string;
-  toolCount: number;
-}) {
+export function ToolsSection({ serverName, toolCount }: { serverName: string; toolCount: number }) {
   const { t } = useTranslation("mcp");
-  const [expanded, setExpanded] = useState(false);
+  const [open, setOpen] = useState(false);
+  return <>
+    <Button size="sm" variant="ghost" onClick={() => setOpen(true)}><Wrench size={13} />{t("nTools", { count: toolCount })}</Button>
+    {open && <ToolsDialog serverName={serverName} onClose={() => setOpen(false)} />}
+  </>;
+}
 
-  const { data: tools, isLoading, isError } = useQuery({
-    queryKey: ["mcpServerTools", serverName],
-    queryFn: () => mcpApi.tools(serverName).then((r) => r.data),
-    enabled: expanded,
-    staleTime: 30_000,
-  });
-
-  return (
-    <div className="mt-3 border-t border-border pt-2.5">
-      <button
-        onClick={() => setExpanded((v) => !v)}
-        className="flex items-center gap-1.5 text-xs text-muted hover:text-foreground transition-colors"
-      >
-        {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-        <Wrench size={12} />
-        {expanded ? t("hideTools") : t("showTools")}
-        <span className="text-muted/70">({toolCount})</span>
-      </button>
-
-      {expanded && (
-        <div className="mt-2 space-y-2">
-          {isLoading && (
-            <div className="flex items-center gap-2 text-xs text-muted py-1">
-              <Spinner size={13} />
-              {t("common:loading")}
-            </div>
-          )}
-          {isError && (
-            <p className="text-xs text-danger">{t("toolsLoadFailed")}</p>
-          )}
-          {tools && tools.length === 0 && (
-            <p className="text-xs text-muted">{t("noTools")}</p>
-          )}
-          {tools?.map((tool) => (
-            <div
-              key={tool.name}
-              className="rounded-md border border-border bg-elevated px-3 py-2"
-            >
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-xs font-medium font-mono text-heading">
-                  {tool.name}
-                </span>
-                {tool.params.length > 0 && (
-                  <Badge variant="neutral">
-                    {tool.params.length} params
-                  </Badge>
-                )}
-              </div>
-              {tool.description && (
-                <p className="text-[11px] text-muted mt-1 leading-relaxed">
-                  {tool.description}
-                </p>
-              )}
-              {tool.params.length > 0 && (
-                <div className="mt-1.5 flex flex-wrap gap-1">
-                  {tool.params.map((p) => (
-                    <span
-                      key={p.name}
-                      title={p.description || p.name}
-                      className={cn(
-                        "text-[10px] px-1.5 py-0.5 rounded font-mono border",
-                        p.required
-                          ? "border-accent/30 text-accent bg-accent-subtle"
-                          : "border-border text-muted bg-secondary",
-                      )}
-                    >
-                      {p.name}
-                      <span className="opacity-60">:{p.type}</span>
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
+function ToolsDialog({ serverName, onClose }: { serverName: string; onClose: () => void }) {
+  const { t } = useTranslation("mcp");
+  const [search, setSearch] = useState("");
+  const query = useQuery({ queryKey: ["mcpServerTools", serverName], queryFn: () => mcpApi.tools(serverName).then((r) => r.data), staleTime: 30_000, throwOnError: false });
+  const tools = (query.data ?? []).filter((tool) => `${tool.name} ${tool.description}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
+  return <Modal open onClose={onClose} title={`${serverName} · ${t("showTools")}`} width="max-w-2xl">
+    <div className="space-y-4">
+      <div className="relative"><Search size={15} className="absolute left-3 top-3 text-muted" />
+        <Input className="pl-9" value={search} onChange={(event) => setSearch(event.target.value)} aria-label={t("searchTools")} placeholder={t("searchTools")} />
+      </div>
+      <AsyncState pending={query.isPending} error={query.error} retry={() => void query.refetch()}>
+        {!tools.length && <p className="py-8 text-center text-sm text-muted">{t("noTools")}</p>}
+        {tools.map((tool) => <ToolDetails key={tool.name} tool={tool} />)}
+      </AsyncState>
     </div>
-  );
+  </Modal>;
+}
+
+function ToolDetails({ tool }: { tool: MCPToolInfo }) {
+  const { t } = useTranslation("mcp");
+  const [open, setOpen] = useState(false);
+  return <details open={open} onToggle={(event) => setOpen(event.currentTarget.open)} className="rounded-lg border border-border p-3">
+    <summary className="cursor-pointer break-all font-mono text-xs font-medium text-heading">{tool.name}
+      <span className="ml-2 font-sans font-normal text-muted">{t("nParams", { count: tool.params.length })}</span>
+    </summary>
+    {open && <>
+      <p className="mt-2 whitespace-pre-wrap break-words text-xs leading-relaxed text-muted">{tool.description}</p>
+      <dl className="mt-3 space-y-2">{tool.params.map((param) => <div key={param.name} className="rounded-md bg-secondary p-2 text-xs">
+        <dt className="break-all font-mono text-heading">{param.name} <span className="text-muted">{param.type}</span>{param.required && <span className="ml-2 font-sans text-accent">{t("required")}</span>}</dt>
+        <dd className="mt-1 whitespace-pre-wrap break-words text-muted">{param.description}{param.enum && <p className="mt-1 break-all font-mono">{param.enum.join(" · ")}</p>}</dd>
+      </div>)}</dl>
+    </>}
+  </details>;
 }

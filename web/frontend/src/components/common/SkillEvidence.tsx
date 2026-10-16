@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import type { ActivitySkill } from "@/lib/types/activity";
 import { memo, useState } from "react";
+import { SkillMCPBadge } from "@/components/skills/SkillMCPStatus";
 import { Modal } from "@/components/ui";
 
 /** 以可验证的注入和读取事实展示技能，链接到技能库详情。 */
@@ -24,7 +25,7 @@ export const SkillEvidence = memo(function SkillEvidence({ skills, compact = fal
     {open && <Modal open title={t("evidence.title")} onClose={() => setOpen(false)} width="max-w-2xl"><p className="skills-caption">{t("evidence.hint")}</p><SkillEvidence skills={skills} onSelect={() => setOpen(false)} /></Modal>}
   </>;
   return <div className="skill-evidence" aria-label={t("evidence.title")}>
-    {skills.map((skill) => <Link key={skill.name} to={`/skills?skill=${encodeURIComponent(skill.name)}`} onClick={onSelect}
+    {skills.map((skill) => <div key={skill.name} className="space-y-1"><Link to={`/skills?skill=${encodeURIComponent(skill.name)}`} onClick={onSelect}
       className="skill-evidence-item" data-mode={skill.mode} title={skill.description || skill.name}>
       <span className="skill-evidence-icon">{skill.mode === "read" ? <BookOpen size={15} /> : skill.mode === "explicit" ? <Sparkles size={15} /> : <Search size={15} />}</span>
       <span className="skill-evidence-body"><strong>{skill.name}</strong>{skill.description && <span>{skill.description}</span>}
@@ -34,6 +35,6 @@ export const SkillEvidence = memo(function SkillEvidence({ skills, compact = fal
           {skill.truncated && <span>{t("evidence.partial")}</span>}
         </span>
       </span><ArrowUpRight size={13} className="shrink-0 text-muted" />
-    </Link>)}
+    </Link><SkillMCPBadge states={skill.mcp_status ?? []} skill={skill.name} /></div>)}
   </div>;
 });

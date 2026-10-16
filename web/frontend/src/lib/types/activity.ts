@@ -1,4 +1,5 @@
 import type { ChatStreamingDiff } from "./chat";
+import type { SkillMCPStatus } from "./workspace";
 import type { HookExecution } from "./hooks";
 
 interface EntryBase { id: string; ts: number; generation?: number }
@@ -12,6 +13,7 @@ export interface ActivitySkill {
   state?: string;
   score?: number | null;
   truncated?: boolean;
+  mcp_status?: SkillMCPStatus[];
 }
 export type ActivityEntry =
   | EntryBase & { kind: "notice"; origin: "conversation" | "push" | "cross_channel" | "delivery" | "recovery"; iteration: number; items: ActivityNoticeItem[]; count: number; deferred: number; truncated?: boolean }

@@ -106,5 +106,33 @@
     "filterTags": "Required tags",
     "group": "Tool group",
     "results": "{{count}} results"
+  },
+  "mcp": {
+    "manage": "MCP links · {{count}}",
+    "title": "MCP links · {{name}}",
+    "hint": "Select up to 16 MCP servers. Links are local skill metadata: SKILL.md stays unchanged. Recall shows connection and activation status; linking does not start or activate tools.",
+    "selected": "{{count}} linked",
+    "configure": "Manage MCP servers",
+    "search": "Search MCP servers",
+    "empty": "No matching MCP servers",
+    "unknown": "Status unknown",
+    "missing": "Not configured",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "connected": "Connected",
+    "disconnected": "Disconnected",
+    "tools": "{{count}} tools",
+    "activation": {
+      "active": "Active",
+      "sleeping": "Not activated",
+      "deactivated": "Disabled in this conversation",
+      "unavailable": "Tools unavailable",
+      "on_demand": "Activate per conversation"
+    },
+    "badge": "MCP {{count}} · {{active}} active",
+    "snapshotTitle": "Linked MCP status",
+    "snapshotHint": "Status when this skill was recalled or read. Connections and activation may have changed; linking alone does not activate tools.",
+    "editSkill": "Open skill and edit links",
+    "saveFailed": "Failed to save links"
   }
 }

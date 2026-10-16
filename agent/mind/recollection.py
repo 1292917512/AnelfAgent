@@ -237,7 +237,11 @@ async def _match_skills(
         ]
         archived_hit = False
         skill_facts: list[dict[str, Any]] = []
-        for skill, _score in matched_skills:
+        from agent.skills.dependencies import mcp_binding_notice, mcp_binding_status
+        for matched_skill, _score in matched_skills:
+            skill = mind.skill_store.get(matched_skill.name)
+            if skill is None:
+                continue
             # 信号分离：手势命中 = 真实使用（计数 + 刷新活动）；评分命中 = 检索注入
             # （只计匹配，不刷新活动——被匹配不等于被消费，不能阻断闲置降级）
             if skill.name in forced_names:
@@ -265,10 +269,15 @@ async def _match_skills(
                 if triggers:
                     entry += f"\n触发词: {triggers}"
                 entry_text = entry
+            mcp_status = mcp_binding_status(skill, scope)
+            mcp_notice = mcp_binding_notice(skill, scope, states=mcp_status)
+            if mcp_notice:
+                entry_text += f"\n{mcp_notice}"
             start = len("\n\n".join(skill_lines)) + 2
             skill_facts.append({
                 "name": skill.name, "description": skill.description,
                 "state": skill.state.value,
+                "mcp_status": mcp_status,
                 "mode": "explicit" if skill.name in forced_names else "candidate",
                 "score": None if skill.name in forced_names else round(_score, 4),
                 "heading_end": start + len(entry_text.split("\n", 1)[0]),
@@ -276,6 +285,8 @@ async def _match_skills(
                 "truncated": skill.name in forced_names and len(skill.content) > inject_max,
             })
             skill_lines.append(entry_text)
+        if not skill_facts:
+            return []
         if archived_hit:
             skill_lines.append(
                 "已归档技能是历史沉淀的方法（长期未用移出目录，不代表失效）；"

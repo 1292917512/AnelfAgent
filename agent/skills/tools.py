@@ -19,7 +19,7 @@ from agent.skills.skill_store import SkillState, SkillStore
 from core.entity import EntityRegistry
 from core.latebind import LateBinding
 from core.log import log
-from core.tool_errors import ErrorCause, tool_error
+from core.tool_errors import ErrorCause, error_from_exception, tool_error
 from core.tool_registry import deferred_tool
 
 EntityRegistry.register_group_order("skills", 21)
@@ -502,7 +502,7 @@ def get_skill(name: str) -> str:
     from agent.memory.probe import deep_probe_hub
     from core.conversation_scope import current_scope
     deep_probe_hub.record(current_scope(), identifiers=[f"skill:{skill.name}"])
-    from agent.skills.dependencies import dependency_notice, missing_mcp_dependencies
+    from agent.skills.dependencies import dependency_notice, mcp_binding_status, missing_mcp_dependencies
     missing = missing_mcp_dependencies(skill)
     return json.dumps({
         "ok": True,
@@ -516,6 +516,36 @@ def get_skill(name: str) -> str:
         "patch_count": skill.patch_count,
         "rationale": skill.rationale,
         "merged_into": skill.merged_into,
+        "mcp_servers": skill.mcp_servers,
+        "mcp_status": mcp_binding_status(skill, current_scope()),
         "missing_dependencies": missing,
         "dependency_notice": dependency_notice(skill) if missing else "",
     }, ensure_ascii=False)
+
+
+@deferred_tool(
+    group="skills", tags=["always"], source="mind.skills",
+    description="设置技能关联的 MCP 服务（最多 16 个，传完整服务名称数组，空数组清除）。"
+                "先用 list_mcp_servers 查看名称；仅保存本地关联，不改 SKILL.md、不连接或唤醒服务。"
+                "召回或 get_skill 时提供连接和当前会话激活状态。",
+)
+def set_skill_mcp_servers(name: str, server_names: List[str]) -> str:
+    """替换技能的本地 MCP 关联。
+
+    Args:
+        name: 技能名
+        server_names: MCP 服务名称数组，空数组清除全部关联
+    """
+    deps = _deps()
+    if deps is None:
+        return _not_ready()
+    from agent.skills.dependencies import mcp_binding_status, set_mcp_bindings
+    from core.conversation_scope import current_scope
+    try:
+        skill = set_mcp_bindings(deps.store, name, server_names)
+        return json.dumps({"ok": True, "name": skill.name, "mcp_servers": skill.mcp_servers,
+                           "mcp_status": mcp_binding_status(skill, current_scope())}, ensure_ascii=False)
+    except ValueError as exc:
+        return tool_error(str(exc), cause=ErrorCause.PARAM, retryable=False)
+    except Exception as exc:
+        return error_from_exception(exc)
