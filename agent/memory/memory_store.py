@@ -1042,6 +1042,8 @@ class MemoryStore(BaseEntity):
         *,
         new_content: Optional[str] = None,
         actor: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+        extra_tags: Optional[list[str]] = None,
     ) -> Optional[int]:
         """合并记忆：keep 原地演进，drop 软标记重定向（importance=0 + merged_into）。
 
@@ -1083,7 +1085,18 @@ class MemoryStore(BaseEntity):
         if not drops:
             return None
 
-        keep.tags = list(dict.fromkeys(keep.tags + [t for d in drops for t in d.tags]))
+        from .provenance import merge_metadata
+        sources = [keep.metadata, *(d.metadata for d in drops)]
+        keep.metadata = merge_metadata(keep.metadata, *(
+            {key: m[key] for key in ("origins", "sensitivity") if key in m} for m in sources[1:]
+        ))
+        keep.metadata = merge_metadata(keep.metadata, metadata or {})
+        if metadata:
+            sources.append(metadata)
+        for key in ("activity_date", "temporal_scope"):
+            if len({str(m.get(key, "")) for m in sources}) > 1:
+                keep.metadata.pop(key, None)
+        keep.tags = list(dict.fromkeys(keep.tags + [t for d in drops for t in d.tags] + (extra_tags or [])))
         keep.importance = max([keep.importance, *[d.importance for d in drops]])
         keep.access_count += sum(d.access_count for d in drops)
         keep.metadata["merged_from"] = list(dict.fromkeys(
@@ -1160,7 +1173,7 @@ class MemoryStore(BaseEntity):
 
         db = await self._get_db()
         cursor = await db.execute(
-            "SELECT id, type, content, tags_json, archived_at_ns, archive_reason "
+            "SELECT id, type, content, tags_json, source, ts_ns, metadata_json, archived_at_ns, archive_reason "
             "FROM memories_archive WHERE id=?",
             (current_id,),
         )
@@ -1172,6 +1185,9 @@ class MemoryStore(BaseEntity):
                     "id": int(row["id"]), "type": str(row["type"]),
                     "content": str(row["content"]),
                     "tags": json.loads(row["tags_json"] or "[]"),
+                    "source": str(row["source"] or ""),
+                    "timestamp": row["ts_ns"] / 1e9,
+                    "metadata": parse_metadata_json(row["metadata_json"]),
                     "reason": str(row["archive_reason"]),
                     "archived_at": row["archived_at_ns"] / 1e9,
                 },
@@ -1375,9 +1391,10 @@ class MemoryStore(BaseEntity):
             limit=limit, min_score=min_score, require_tags=require_tags,
         )
 
-    async def has_similar_content(self, content: str, min_overlap: float = 0.6) -> bool:
+    async def has_similar_content(self, content: str, min_overlap: float = 0.6,
+                                  *, tags: Optional[list[str]] = None) -> bool:
         """检查是否已存在语义相近的记忆（基于 FTS 候选 + bigram 相似度）。"""
-        return await self._search.has_similar_content(content, min_overlap)
+        return await self._search.has_similar_content(content, min_overlap, tags=tags)
 
     async def search_forgotten(
         self,
@@ -1465,7 +1482,9 @@ class MemoryStore(BaseEntity):
         rows = await cursor.fetchall()
         return {r["type"]: r["cnt"] for r in rows}
 
-    async def merge_memories(self, ids: list[int], merged_content: str, *, actor: str = "") -> int:
+    async def merge_memories(self, ids: list[int], merged_content: str, *, actor: str = "",
+                             metadata: Optional[Dict[str, Any]] = None,
+                             extra_tags: Optional[list[str]] = None) -> int:
         """将多条记忆合并为一条：有效分最高者原地演进为合并文本，其余软标记并入。
 
         合并不消灭 id：keep 保留原 id 与全部外部指针（便签 mem:ID / 图谱溯源），
@@ -1492,7 +1511,7 @@ class MemoryStore(BaseEntity):
         drop_ids = [e.id for e in mergeable if e.id != keep.id and e.id is not None]
         result = await self.merge_into_keep(
             keep.id or 0, drop_ids,
-            new_content=merged_content.strip(), actor=actor,
+            new_content=merged_content.strip(), actor=actor, metadata=metadata, extra_tags=extra_tags,
         )
         return result or 0
 

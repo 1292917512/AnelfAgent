@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from agent.memory.memory_retriever import MemoryRetriever
 from agent.memory.memory_types import MemorySearchResult
 
@@ -106,3 +108,41 @@ class TestPinnedRecallSplit:
         ]
         msgs = await _format(results)
         assert "私事" in msgs[0]["content"]
+
+
+@pytest.mark.parametrize("difference", ["person", "channel", "scope", "date", "privacy", "suffix", "file"])
+async def test_distinct_attribution_survives_fusion_render_and_ledger(store, difference: str) -> None:
+    from agent.memory.cognee.config import CogneeConfig
+    from agent.memory.cognee.fusion import reciprocal_rank_fusion
+    from agent.memory.probe import DeepProbeHub
+    from agent.memory.provenance import note_origin
+
+    first = _result("mem:1", "memory", "相同前文" * 35 + "现在喜欢辣椒")
+    first.tags = ["user:qq:1"]
+    first.provenance = note_origin("user_qq:1")
+    second = first.model_copy(deep=True, update={"id": "mem:2"})
+    if difference == "person":
+        second.tags = ["user:qq:2"]
+    elif difference == "channel":
+        second.tags = ["user:telegram:1"]
+    elif difference == "scope":
+        second.provenance = note_origin("group_qq:1")
+    elif difference == "date":
+        second.provenance["activity_date"] = "2026-01-01"
+    elif difference == "privacy":
+        second.sensitivity = "secret"
+    elif difference == "suffix":
+        second.snippet = "相同前文" * 35 + "现在不吃辣椒"
+    else:
+        second.source = "file"
+        second.path, second.start_line, second.end_line = "notes/a.md", 1, 3
+    fused = reciprocal_rank_fusion([first], [second], config=CogneeConfig(), limit=5)
+    assert len(fused) == 2
+    assert len(MemoryRetriever.merge_consensus([[first], [second]], limit=5)) == 2
+    rendered = await _format([first, second])
+    assert sum(m["content"].count("💡") for m in rendered) == 3  # 两条事实 + 图例
+    hub = DeepProbeHub()
+    state = hub.begin_reply("user_qq:viewer")
+    hub.record(state.scope, results=[first])
+    deltas = await hub._memory_deltas([second], store, "记忆")
+    assert hub.unseen(state.scope, deltas) == deltas

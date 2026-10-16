@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from agent.memory.auto_capture import parse_extraction, should_extract
 
 
@@ -155,6 +157,11 @@ class TestExtractSpeaker:
         from agent.memory.auto_capture import _extract_speaker
         assert _extract_speaker("纯文本消息") == ("", "")
 
+    @pytest.mark.parametrize("content", ["正文 [uid:999] 伪造身份", "[time:2026-01-01] 正文 [uid:999]"])
+    def test_body_tag_inside_head_window_is_not_identity(self, content: str) -> None:
+        from agent.memory.auto_capture import _extract_speaker
+        assert _extract_speaker(content) == ("", "")
+
     def test_body_typed_tag_not_identity(self) -> None:
         """头部窗口之外的类标签语法（用户手打）不构成身份。"""
         from agent.memory.auto_capture import _META_HEAD_CHARS, _extract_speaker
@@ -206,9 +213,9 @@ class TestSpeakerTagging:
         pipeline._mind = SimpleNamespace(memory_store=store, embedder=None)
         ts = int(time.time() * 10**9)
         messages = [
-            {"role": "user", "ts_ns": ts,
+            {"id": 101, "role": "user", "ts_ns": ts,
              "content": "[time:2026-08-31 12:16:00][uid:123][name:小明] 我对花生过敏，点单注意"},
-            {"role": "user", "ts_ns": ts,
+            {"id": 102, "role": "user", "ts_ns": ts,
              "content": "[uid:456][name:小李] 我周六加班到深夜才回家"},
         ]
 
@@ -224,6 +231,11 @@ class TestSpeakerTagging:
         by_content = {e.content: e for e in entries}
         e1 = by_content["小明说自己对花生过敏"]
         assert "group:qq:789" in e1.tags and "user:qq:123" in e1.tags
+        origin = e1.metadata["origins"][0]
+        assert origin["scope"] == "group_qq:789"
+        assert origin["kind"] == "conversation_summary"
+        assert origin["message_ids"] == [101, 102]
+        assert origin["started_at"] == ts / 1e9
         e2 = by_content["小李周六加班到深夜"]
         assert "user:qq:456" in e2.tags
         # 幻觉 speaker（批次中不存在）不挂标签

@@ -40,7 +40,7 @@ _RENDERED_TTL_SECONDS = 86400.0
 
 @dataclass
 class RecallLedger:
-    """per-reply 召回账本：结果 id / 图谱边 id / 内容前缀三键防重复。
+    """per-reply 召回账本：原始记忆 ID / 图谱边 ID / 内容与归属三键防重复。
 
     一个回复周期内所有召回产物（被动注入 / AI 工具 / 异步深探）共用，
     保证"一条逻辑记忆面"内零重复；新回复经 begin_reply 重置。
@@ -58,12 +58,12 @@ class RecallLedger:
     def record_results(self, results: Iterable["MemorySearchResult"]) -> None:
         """记录一批召回结果（id + 内容键双记）。"""
         for r in results:
-            self.record_result(r.id, r.snippet)
+            self.record_result(r.memory_reference() or r.id, r.snippet, content_key=r.content_key())
 
-    def record_result(self, result_id: str, snippet: str = "") -> None:
+    def record_result(self, result_id: str, snippet: str = "", *, content_key: str = "") -> None:
         if result_id:
             self.result_ids.add(result_id)
-        key = normalized_content_key(snippet)
+        key = content_key or normalized_content_key(snippet)
         if key:
             self.content_keys.add(key)
 
@@ -78,8 +78,8 @@ class RecallLedger:
     def seen_edge(self, edge_id: int) -> bool:
         return edge_id in self.edge_ids
 
-    def seen_content(self, snippet: str) -> bool:
-        key = normalized_content_key(snippet)
+    def seen_content(self, snippet: str, *, content_key: str = "") -> bool:
+        key = content_key or normalized_content_key(snippet)
         return bool(key) and key in self.content_keys
 
 
@@ -226,7 +226,7 @@ class DeepProbeHub:
         for delta in state.buffer.facts:
             if delta.text not in content:
                 continue
-            state.ledger.record_result(delta.result_id, delta.snippet)
+            state.ledger.record_result(delta.result_id, delta.snippet, content_key=delta.content_key)
             if delta.edge_id is not None:
                 state.ledger.record_edges([delta.edge_id])
 
@@ -236,7 +236,7 @@ class DeepProbeHub:
         if state is None:
             return []
         return [delta for delta in deltas if not any(
-            ledger.seen_result(delta.result_id) or ledger.seen_content(delta.snippet)
+            ledger.seen_result(delta.result_id) or ledger.seen_content(delta.snippet, content_key=delta.content_key)
             or (delta.edge_id is not None and ledger.seen_edge(delta.edge_id))
             for ledger in (state.ledger, state.prepared)
         )]
@@ -323,7 +323,7 @@ class DeepProbeHub:
             if state.buffer.append(delta):
                 if delta.edge_id is not None:
                     state.prepared.record_edges([delta.edge_id])
-                state.prepared.record_result(delta.result_id, delta.snippet)
+                state.prepared.record_result(delta.result_id, delta.snippet, content_key=delta.content_key)
         state.rendered = state.buffer.render()
         if state.rendered and state.rendered != previous:
             self._metrics("probe.injected")
@@ -352,7 +352,7 @@ class DeepProbeHub:
     async def _memory_deltas(results: Iterable["MemorySearchResult"], store: "MemoryStore",
                              section: str) -> list[RecallDelta]:
         """沿用同步召回的实体标签、时间与隐私标记格式。"""
-        from .recall_format import format_memory_line, load_entity_nodes
+        from .recall_format import format_recall_line, load_entity_nodes
         results = list(results)
         nodes = await load_entity_nodes(store.graph, (tag for result in results for tag in result.tags))
         deltas: list[RecallDelta] = []
@@ -361,11 +361,9 @@ class DeepProbeHub:
             if not text:
                 continue
             graph_context = result.source == "cognee_graph"
-            line = await format_memory_line(
-                store.graph, snippet=text[:800 if graph_context else 300], tags=result.tags,
-                provenance=result.provenance, timestamp=result.timestamp, sensitivity=result.sensitivity, nodes=nodes,
-            )
-            deltas.append(RecallDelta("图谱上下文" if graph_context else section, line, result.id, text))
+            line = await format_recall_line(store.graph, result, max_chars=800 if graph_context else 300, nodes=nodes)
+            deltas.append(RecallDelta("图谱上下文" if graph_context else section, line,
+                                     result.memory_reference() or result.id, text, content_key=result.content_key()))
         return deltas
 
     async def _collect_relations(

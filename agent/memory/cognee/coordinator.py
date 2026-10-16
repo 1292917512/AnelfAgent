@@ -13,6 +13,7 @@ from typing import Any, Optional
 from core.log import log
 
 from ..memory_store import MemoryStore
+from ..provenance import recall_provenance
 from ..store._shared import projection_content_hash
 from ..store.cognee_queue import ENTRY_KIND_GRAPH_NODE
 from .adapters import retryable
@@ -564,6 +565,7 @@ class CogneeCoordinator:
             data_items: list[Any] = []
             for item, document, _fingerprint in entries:
                 payload = item["payload"]
+                memory_metadata = payload.get("metadata", {})
                 data_items.append(await self.client.make_data_item(
                     document,
                     label=f"anelf-{label_kind}-{item['entry_id']}",
@@ -572,6 +574,11 @@ class CogneeCoordinator:
                         metadata_key: str(item["entry_id"]),
                         "memory_type": "graph_relation" if graph else str(payload.get("type", "semantic")),
                         "source": "graph" if graph else str(payload.get("source", "")),
+                        **({"anelf_attribution": {
+                            "tags": payload.get("tags", []), "timestamp": payload.get("timestamp", 0),
+                            "sensitivity": memory_metadata.get("sensitivity", "normal"),
+                            "provenance": recall_provenance(memory_metadata, source=str(payload.get("source", ""))),
+                        }} if not graph else {}),
                     },
                 ))
             self._breaker.observe()
@@ -676,6 +683,8 @@ class CogneeCoordinator:
         metadata = json.dumps(payload.get("metadata", {}), ensure_ascii=False, sort_keys=True)
         return (
             f"Memory type: {payload.get('type', 'semantic')}\n"
+            f"Memory ID: {payload.get('memory_id', '')}\n"
+            f"Timestamp: {payload.get('timestamp', 0)}\n"
             f"Source: {payload.get('source', '')}\n"
             f"Importance: {payload.get('importance', 0.5)}\n"
             f"Tags: {tags}\n"

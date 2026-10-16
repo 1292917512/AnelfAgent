@@ -20,24 +20,19 @@ def test_parse_memory_projection_strips_header_and_backfills_tags() -> None:
         "Metadata: {}\n\n"
         "阿辰喜欢火锅，尤其是麻辣锅"
     )
-    content, tags = parse_memory_projection(doc)
-    assert content == "阿辰喜欢火锅，尤其是麻辣锅"
-    assert tags == ["user:qq:123", "topic:火锅"]
+    parsed = parse_memory_projection(doc)
+    assert parsed["snippet"] == "阿辰喜欢火锅，尤其是麻辣锅"
+    assert parsed["tags"] == ["user:qq:123", "topic:火锅"]
 
 
 def test_parse_memory_projection_passthrough_non_projection() -> None:
     text = "图谱综合回答：阿辰和老王是朋友"
-    content, tags = parse_memory_projection(text)
-    assert content == text
-    assert tags == []
+    assert parse_memory_projection(text) == {"snippet": text}
 
 
 def test_parse_memory_projection_malformed_header_falls_back() -> None:
     text = "Memory type: 只有头无空行分隔的残缺文档"
-    content, tags = parse_memory_projection(text)
-    # 无 "\n\n" 分隔时整文回退为正文，不丢内容
-    assert "残缺文档" in content
-    assert tags == []
+    assert parse_memory_projection(text) == {"snippet": text}
 
 
 # ==================================================================
@@ -55,7 +50,7 @@ async def test_format_memory_line_attribution_and_time(store) -> None:
     )
     assert line.startswith("💡 ")
     assert "[channel:qq][name:阿辰][uid:123]" in line and "美食" in line
-    assert line.endswith("）") and "记" in line
+    assert "记" in line and line.index("记") < line.index("喜欢火锅")
 
 
 @pytest.mark.asyncio
@@ -108,7 +103,7 @@ async def test_batch_attribution_looks_up_each_identity_once(store, monkeypatch,
         tags=["user:qq:1", "user:webui:1", "topic:项目"], sensitivity="private",
     ) for i in range(5)]
     expected = [await format_memory_line(store.graph, snippet=r.snippet, tags=r.tags,
-                                        sensitivity=r.sensitivity) for r in results]
+                                        sensitivity=r.sensitivity, reference=r.id) for r in results]
     lookup.reset_mock()
     messages = await MemoryRetriever(store, None)._format_unified_results(results)
     lookup.assert_awaited_once_with(["user:qq:1", "user:webui:1"])
@@ -117,3 +112,74 @@ async def test_batch_attribution_looks_up_each_identity_once(store, monkeypatch,
     deltas = await DeepProbeHub._memory_deltas(iter(results), store, "补充记忆")
     lookup.assert_awaited_once_with(["user:qq:1", "user:webui:1"])
     assert [delta.text for delta in deltas] == expected
+
+
+async def test_projection_roundtrip_preserves_attribution_and_privacy(store) -> None:
+    from agent.memory.cognee.coordinator import CogneeCoordinator
+    from agent.memory.memory_retriever import MemoryRetriever
+    from agent.memory.memory_types import MemoryEntry, MemorySearchResult, MemoryType
+    from agent.memory.probe import DeepProbeHub
+    from agent.memory.provenance import capture_origin
+    from agent.memory.recall_format import format_recall_result
+    from agent.memory.store._shared import entry_projection_payload
+
+    metadata = capture_origin("group_qq:789", [{"id": 41, "ts_ns": 1_700_000_000_000_000_000}])
+    metadata.update(sensitivity="private", activity_date="2023-11-13", temporal_scope="state")
+    entry = MemoryEntry(id=7, memory_type=MemoryType.EPISODIC, content="暂住朋友家", source="auto_capture",
+                        tags=["group:qq:789", "user:qq:123"], metadata=metadata, timestamp=1_700_000_000)
+    native = MemorySearchResult.from_entry(entry, .8)
+    document = CogneeCoordinator._render_memory(entry_projection_payload(entry, 7))
+    projected = MemorySearchResult.model_validate({
+        **parse_memory_projection(document), "id": "chunk:1", "source": "cognee_chunk", "score": .7,
+    })
+    assert projected.memory_reference() == "mem:7"
+    assert projected.content_key() == native.content_key()
+    assert projected.sensitivity == "private"
+    assert projected.timestamp == entry.timestamp
+    for result in (native, projected):
+        text = (await MemoryRetriever(store, None)._format_unified_results([result]))[0]["content"]
+        assert "mem:7" in text and "[channel:qq][uid:123]" in text
+        assert "材料[scope:group_qq:789]" in text
+        assert "发生于 2023-11-13" in text and "过去时·可能已变" in text and "私事" in text
+        assert text.index("私事") < text.index("暂住朋友家")
+        delta = (await DeepProbeHub._memory_deltas([result], store, "记忆"))[0]
+        assert delta.text in text
+        tool = format_recall_result(result)
+        assert tool["provenance"]["origins"][0]["message_ids"] == [41]
+
+
+async def test_unknown_graph_never_borrows_query_identity() -> None:
+    text = await format_memory_line(None, snippet="可能有关联", source="cognee_graph")
+    assert "图谱综合·非原话" in text and "出处未记录" in text
+    assert "[scope:" not in text and "[uid:" not in text
+
+
+@pytest.mark.parametrize("metadata", ["broken", "[]", '{"sensitivity": [], "origins": [null]}'])
+def test_invalid_projection_metadata_does_not_discard_content(metadata: str) -> None:
+    parsed = parse_memory_projection(f"Memory type: semantic\nMetadata: {metadata}\nTimestamp: nan\n\n事实")
+    assert parsed["snippet"] == "事实"
+    assert parsed["timestamp"] == 0 and parsed["sensitivity"] == "normal"
+
+
+async def test_origin_subject_and_file_location_are_distinct() -> None:
+    from agent.memory.memory_types import MemorySearchResult
+    from agent.memory.provenance import note_origin
+    from agent.memory.recall_format import format_recall_result
+
+    text = await format_memory_line(None, snippet="乙喜欢安静", tags=["user:telegram:2"],
+                                    provenance=note_origin("user_qq:1"), reference="mem:3")
+    assert "[channel:telegram][uid:2]" in text and "AI记录于[scope:user_qq:1]" in text
+    file = MemorySearchResult(id="chunk:2", source="file", snippet="片段", score=.8,
+                              path="notes/project.md", start_line=12, end_line=16)
+    output = format_recall_result(file)
+    assert (output["path"], output["start_line"], output["end_line"]) == ("notes/project.md", 12, 16)
+
+
+def test_bounded_origin_display_does_not_mutate_full_lineage() -> None:
+    from agent.memory.provenance import origins_from, visible_provenance
+
+    provenance = {"origins": [{"kind": "agent_note", "scope": f"user_qq:{i}"} for i in range(5)]}
+    visible = visible_provenance(provenance)
+    assert visible["origin_count"] == 5 and len(visible["origins"]) == 3
+    assert len(origins_from(provenance)) == 5
+    assert origins_from({"origins": [{"kind": "agent_note", "scope": "user_qq:1", "started_at": 1e100}]}) == []

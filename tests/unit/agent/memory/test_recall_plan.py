@@ -235,6 +235,7 @@ def test_plan_budget_derivation(monkeypatch) -> None:
 def _item(rid: str, score: float, memory_id: str = "") -> MemorySearchResult:
     return MemorySearchResult(
         id=rid, snippet=f"内容{rid}", score=score,
+        source="cognee_chunk" if rid.startswith("cognee:") else "memory",
         provenance={"anelf_memory_id": memory_id} if memory_id else {},
     )
 

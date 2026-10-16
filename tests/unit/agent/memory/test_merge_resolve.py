@@ -33,6 +33,33 @@ def _entry(
 
 
 class TestMergeIntoKeep:
+    async def test_update_and_merge_preserve_origins_privacy_and_local_state(self, store: MemoryStore) -> None:
+        from agent.memory.dedup import apply_update
+        from agent.memory.provenance import note_origin
+
+        first, second = _entry("origin one"), _entry("origin two")
+        first.metadata = {**note_origin("user_qq:1"), "sensitivity": "private", "activity_date": "2026-01-01",
+                          "evidence_score": 4, "linked_to": [9]}
+        second.metadata = {**note_origin("user_telegram:2"), "sensitivity": "secret", "activity_date": "2026-02-01",
+                           "evidence_score": -2}
+        first.embedding = [1, 0]
+        mid, other = await store.add(first), await store.add(second)
+        updated = await apply_update(store, mid, first.content, metadata=note_origin("group_qq:3"))
+        assert updated is not None and updated.embedding == [1, 0]
+        assert len(updated.metadata["origins"]) == 2
+        await store.merge_into_keep(mid, [other], new_content="两个来源的综合",
+                                    metadata={**note_origin("user_webui:owner"), "linked_to": [10],
+                                              "activity_date": "2026-02-01"})
+        merged = await store.get(mid)
+        assert merged is not None
+        assert {o["scope"] for o in merged.metadata["origins"]} == {
+            "user_qq:1", "group_qq:3", "user_telegram:2", "user_webui:owner",
+        }
+        assert merged.metadata["sensitivity"] == "secret"
+        assert merged.metadata["evidence_score"] == 4
+        assert merged.metadata["linked_to"] == [9, 10]
+        assert "activity_date" not in merged.metadata
+
     async def test_keep_evolves_in_place(self, store: MemoryStore) -> None:
         keep_id = await store.add(_entry("存活条目", importance=0.6, access_count=3))
         drop_id = await store.add(_entry("被并入条目", importance=0.4, access_count=2))

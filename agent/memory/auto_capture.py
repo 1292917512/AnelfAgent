@@ -14,8 +14,8 @@
 
 发言者归属：消息行渲染时从元数据标签确定性提取身份（称呼[uid:xxx]），
 提取输出的 speaker 字段经批次内真实 uid 集合校验后挂为 user:{adapter}:{uid}
-记忆标签——每条记忆天生携带"谁说的"，下游召回/任务可核验归属（读取侧的
-归属标注渲染见 memory_retriever._humanize_entity_tags）。
+记忆标签。材料会话、消息 ID 和时间窗口由系统另行保存；标签是提炼出的
+归属线索，不把摘要当作逐字原话（读取侧见 recall_format）。
 
 Model Experience（提取 prompt 说话人身份）:
 - 模型看到什么：消息行从"[时间] 用户: 内容"变为"[时间] 称呼[uid:xxx]: 内容"，
@@ -33,19 +33,23 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.messages import build_entity_scope, parse_entity_scope
 from core.config import get_config_bool, get_config_int, register_configs_safe
 from core.latebind import LateBinding
 from core.log import log
+from core.tags import tag_label
 
 from .dedup import (
     apply_evidence_signals,
     apply_update,
+    attribution_candidates,
     gather_dedup_candidates,
     judge_write,
     light_llm,
 )
 from .memory_types import MemoryEntry, MemoryType
 from .ports import MemoryHost
+from .provenance import capture_origin
 
 _JSON_ARRAY_RE = re.compile(r"\[.*\]", re.DOTALL)
 
@@ -119,14 +123,14 @@ def _extract_speaker(content: str) -> Tuple[str, str]:
 
     uid = ""
     name = ""
-    for key, value in etag_all(content[:_META_HEAD_CHARS]):
+    for key, value in etag_all(content[:_META_HEAD_CHARS], prefix_only=True):
         if key == "uid" and not uid:
             uid = value.strip()
         elif key == "name" and not name:
             name = value.strip()
     if not uid:
         return "", ""
-    label = f"{name}[uid:{uid}]" if name else f"[uid:{uid}]"
+    label = name + tag_label("uid", uid)
     return label, uid
 
 
@@ -407,7 +411,7 @@ class AutoCapturePipeline:
 
         # 触发（或质量门放弃）：本批消息处理完毕，提取游标推进到最新
         messages = [
-            {"role": r["role"], "content": r["content"], "ts_ns": r["ts_ns"]}
+            {"id": r["id"], "role": r["role"], "content": r["content"], "ts_ns": r["ts_ns"]}
             for r in pending_rows
             if r["role"] in ("user", "assistant")
         ]
@@ -480,6 +484,10 @@ class AutoCapturePipeline:
 
         new_part = messages[-_MAX_NEW_MESSAGES:]
         background_part = messages[:-_MAX_NEW_MESSAGES][-_MAX_BACKGROUND_MESSAGES:]
+        scope_type, _, scope_id = scope_key.partition(":")
+        adapter, sep, base_id = scope_id.partition(":")
+        scope = build_entity_scope(scope_type, adapter if sep else "", base_id if sep else adapter)
+        material = capture_origin(scope, [*background_part, *new_part])
         prompt = _EXTRACT_PROMPT.replace(
             "{background}", "\n".join(_fmt(m) for m in background_part) or "（无）"
         ).replace(
@@ -501,8 +509,7 @@ class AutoCapturePipeline:
         store = self._mind.memory_store
         assert store is not None
         scope_tag = scope_key  # scope_key 即 "user:qq:123" / "group:qq:456" 标签格式
-        parts = scope_key.split(":")
-        adapter = parts[1] if len(parts) >= 3 else ""
+        _, adapter, _, _ = parse_entity_scope(scope)
         stored = 0
         for item in items:
             tags = [scope_tag, f"type:{item['type']}"]
@@ -521,21 +528,29 @@ class AutoCapturePipeline:
                         "DEBUG", tag="记忆",
                     )
             try:
+                metadata: Dict[str, Any] = dict(material)
+                if item["sensitivity"] != "normal":
+                    metadata["sensitivity"] = item["sensitivity"]
+                if item["date"] and item["type"] == "event":
+                    metadata["activity_date"] = item["date"]
+                if item.get("temporal_scope") and item["type"] == "event":
+                    metadata["temporal_scope"] = item["temporal_scope"]
                 candidates = await gather_dedup_candidates(
                     store, self._mind.embedder, item["content"],
                 )
+                candidates = attribution_candidates(candidates, tags)
                 decision = await judge_write(item["content"], candidates)
                 action = decision.get("action", "store")
                 from . import metrics
                 metrics.incr(f"write.dedup_llm_{action}")
                 if action == "skip":
-                    await apply_evidence_signals(store, action, item["content"], candidates)
+                    await apply_evidence_signals(store, action, item["content"], candidates, metadata=metadata)
                     continue
                 if action == "update" and decision.get("target_id"):
                     updated = await apply_update(
                         store, int(decision["target_id"]),
                         str(decision.get("content") or item["content"]), tags,
-                        actor="auto_capture",
+                        actor="auto_capture", metadata=metadata,
                     )
                     if updated is not None:
                         await apply_evidence_signals(
@@ -549,7 +564,7 @@ class AutoCapturePipeline:
                     keep_id = await store.merge_memories(
                         merge_ids,
                         str(decision.get("content") or item["content"]),
-                        actor="auto_capture",
+                        actor="auto_capture", metadata=metadata, extra_tags=tags,
                     )
                     if keep_id:
                         await apply_evidence_signals(
@@ -558,13 +573,6 @@ class AutoCapturePipeline:
                         )
                         stored += 1
                         continue
-                metadata: Dict[str, Any] = {}
-                if item["sensitivity"] != "normal":
-                    metadata["sensitivity"] = item["sensitivity"]
-                if item["date"] and item["type"] == "event":
-                    metadata["activity_date"] = item["date"]
-                if item.get("temporal_scope") and item["type"] == "event":
-                    metadata["temporal_scope"] = item["temporal_scope"]
                 entry = MemoryEntry(
                     memory_type=(
                         MemoryType.EPISODIC if item["type"] == "event"

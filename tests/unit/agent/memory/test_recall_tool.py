@@ -31,6 +31,61 @@ def bound_store(store: MemoryStore):
 
 
 class TestRecallSourceMarking:
+    async def test_ambiguous_duplicate_does_not_invent_material_origin(self, store) -> None:
+        from agent.memory.dedup import apply_evidence_signals
+        from agent.memory.provenance import note_origin
+
+        entries = [_entry("喜欢安静的房间", ["user:qq:1"]), _entry("喜欢在房间听音乐", ["user:qq:1"])]
+        for entry in entries:
+            entry.id = await store.add(entry)
+        metadata = {**note_origin("user_qq:1"), "activity_date": "2026-01-01"}
+        await apply_evidence_signals(store, "skip", "房间比较安静", entries, metadata=metadata)
+        for entry in entries:
+            assert "origins" not in (await store.get(entry.id)).metadata
+        await apply_evidence_signals(store, "skip", entries[0].content, entries, metadata=metadata)
+        recorded = await store.get(entries[0].id)
+        assert recorded.metadata["origins"] == metadata["origins"]
+        assert "activity_date" not in recorded.metadata
+
+    async def test_tool_write_read_recall_and_archive_keep_origin(self, bound_store, store) -> None:
+        from core.config import ConfigManager
+        from core.conversation_scope import bind_scope, reset_scope
+
+        ConfigManager.set("memory_llm_dedup_enabled", False)
+        token = bind_scope("group_qq:source")
+        try:
+            saved = json.loads(await bound_store.memorize("originanchor 乙喜欢安静的房间", tags="user:telegram:2",
+                                                         sensitivity="private", temporal_scope="state"))
+        finally:
+            reset_scope(token)
+        assert saved["ok"]
+        mid = saved["id"]
+        detail = json.loads(await bound_store.get_memory(mid))
+        origin = detail["provenance"]["origins"][0]
+        assert origin == {"kind": "agent_note", "scope": "group_qq:source"}
+        assert detail["tags"] == ["user:telegram:2"]
+        recalled = json.loads(await bound_store.recall("originanchor", min_score=0))
+        item = next(r for r in recalled["results"] if r["id"] == f"mem:{mid}")
+        assert item["provenance"]["origins"] == [origin] and item["sensitivity"] == "private"
+        await store.archive_memory(mid, reason="test")
+        archived = json.loads(await bound_store.get_memory(mid))
+        assert archived["provenance"]["origins"] == [origin]
+        assert archived["sensitivity"] == "private" and archived["timestamp"] == detail["timestamp"]
+        forgotten = json.loads(await bound_store.recall("originanchor", min_score=0))["forgotten"][0]
+        assert forgotten["provenance"]["origins"] == [origin]
+        assert forgotten["sensitivity"] == "private"
+
+    async def test_same_content_for_different_people_is_not_write_duplicate(self, store) -> None:
+        from agent.memory.dedup import attribution_candidates
+
+        first = _entry("sameperson 喜欢安静的房间", ["user:qq:1"])
+        mid = await store.add(first)
+        first = await store.get(mid)
+        assert first is not None
+        assert await store.has_similar_content(first.content, tags=["user:qq:1"])
+        assert not await store.has_similar_content(first.content, tags=["user:qq:2"])
+        assert attribution_candidates([first], ["user:qq:2"]) == []
+
     async def test_results_carry_source_and_time(self, bound_store, store: MemoryStore) -> None:
         await store.add(_entry("catnote 主人喜欢猫", ["user:1", "topic:猫"]))
         result = json.loads(await bound_store.recall("catnote"))

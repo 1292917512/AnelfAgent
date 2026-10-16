@@ -50,11 +50,7 @@ async def recall_local(retriever: MemoryRetriever, conversation: list[dict], *, 
 
     async def load_tags() -> None:
         entries = await store.search_by_tags(list(policy.tags), limit=k)
-        tagged.extend(MemorySearchResult(
-            id=f"mem:{entry.id}", snippet=entry.content, score=1,
-            tags=entry.tags, memory_type=entry.memory_type.value, timestamp=entry.timestamp,
-            sensitivity=str(entry.metadata.get("sensitivity", "normal")),
-        ) for entry in entries)
+        tagged.extend(MemorySearchResult.from_entry(entry, 1) for entry in entries)
 
     async def search() -> None:
         query = retriever._extract_query(conversation)

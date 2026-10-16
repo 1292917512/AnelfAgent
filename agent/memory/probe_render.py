@@ -24,6 +24,7 @@ class RecallDelta:
     result_id: str = ""
     snippet: str = ""
     edge_id: int | None = None
+    content_key: str = ""
 
 
 class RecallBuffer:

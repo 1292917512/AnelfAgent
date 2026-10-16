@@ -1,6 +1,31 @@
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect, openWebChat } from "./fixtures";
-import type { ConfigMetaItem, ToolItem } from "../src/lib/types";
+import type { ConfigMetaItem, RecallTestResult, ToolItem } from "../src/lib/types";
+
+test("recall provenance is compact and separates subjects from source conversations", async ({ page }, info) => {
+  const result: RecallTestResult = {
+    plan: { queries: ["quiet rooms"], entities: [], node_keys: [], node_labels: [], deep_needed: false, rationale: "" },
+    depth: "shallow", cognee: { enabled: false, recall_enabled: false, datasets: [], search_types: [] },
+    items: [{ id: "mem:7", source: "memory", content: "Prefers a quiet room", type: "semantic", score: .9,
+      tags: ["user:telegram:subject"], dataset: "", path: "", sensitivity: "private", timestamp: 1700000000,
+      provenance: { origins: [{ kind: "conversation_summary", scope: "group_qq:source", message_ids: [41, 42] }] },
+    }], relations: [], forgotten: [], timings: {},
+  };
+  await page.route("**/api/memory/recall-test", (route) => route.fulfill({ json: result }));
+  await page.goto("/webui/memory?tab=cognee");
+  await page.getByPlaceholder(/Enter query text to test/).fill("quiet rooms");
+  await page.getByRole("button", { name: "Run Test", exact: true }).click();
+  await expect(page.getByText("Prefers a quiet room", { exact: true })).toBeVisible();
+  await expect(page.getByText("group_qq:source", { exact: true })).toHaveCount(0);
+  const control = page.locator("summary").filter({ hasText: "Attribution & provenance" });
+  await control.click();
+  await expect(page.getByText("group_qq:source", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Source message IDs: 41, 42/)).toBeVisible();
+  await page.screenshot({ path: info.outputPath("recall-attribution.png") });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await control.click();
+  await expect(page.getByText("group_qq:source", { exact: true })).toHaveCount(0);
+});
 
 test("document indexing reports partial coverage and allows retry after failure", async ({ page }, info) => {
   await page.route("**/api/memory/health", (route) => route.fulfill({ json: { type_counts: {}, total_memories: 0 } }));

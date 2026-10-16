@@ -73,6 +73,7 @@ class TestMergeResults:
 
     def test_consensus_preserves_source_scores_and_tags(self) -> None:
         first, second = _result("a", 0.7), _result("a", 0.6)
+        first.id = second.id = "mem:1"
         first.tags = ["user:qq:123", "topic:检索"]
         for _ in range(2):
             merged = MemoryRetriever.merge_consensus([[first, first], [second]], limit=10)
@@ -235,19 +236,19 @@ class TestAttributionRendering:
         return MemoryRetriever(store, SimpleNamespace(available=False))
 
     async def test_entity_tag_fallback_shows_uid(self, store) -> None:
-        r = self._retriever(store)
-        display = await r._humanize_entity_tags(["user:qq:123", "topic:周报"])
+        from agent.memory.recall_format import humanize_entity_tags
+        display = await humanize_entity_tags(store.graph, ["user:qq:123", "topic:周报"])
         assert display == ["[channel:qq][uid:123]", "周报"]
 
     async def test_group_tag_shows_group_id(self, store) -> None:
-        r = self._retriever(store)
-        display = await r._humanize_entity_tags(["group:qq:456"])
+        from agent.memory.recall_format import humanize_entity_tags
+        display = await humanize_entity_tags(store.graph, ["group:qq:456"])
         assert display == ["[channel:qq][group_id:456]"]
 
     async def test_graph_label_prefixed_with_uid(self, store) -> None:
         await store.graph.upsert_node("user:qq:123", label="小李")
-        r = self._retriever(store)
-        display = await r._humanize_entity_tags(["user:qq:123"])
+        from agent.memory.recall_format import humanize_entity_tags
+        display = await humanize_entity_tags(store.graph, ["user:qq:123"])
         assert display == ["[channel:qq][name:小李][uid:123]"]
 
     async def test_recall_block_carries_attribution_and_guidance(self, store) -> None:
@@ -260,7 +261,7 @@ class TestAttributionRendering:
         msgs = await r._format_unified_results(results)
         assert len(msgs) == 1
         content = msgs[0]["content"]
-        assert "[uid:123] 喜欢摇滚乐" in content
+        assert "[uid:123]" in content and "喜欢摇滚乐" in content
         # 块头含归属确认提示
         assert "归属标注" in content and "张冠李戴" in content
 
@@ -273,4 +274,4 @@ class TestAttributionRendering:
         r = self._retriever(store)
         msgs = await r._fallback_recent(3)
         assert len(msgs) == 1
-        assert "[uid:123] 对花生过敏" in msgs[0]["content"]
+        assert "[uid:123]" in msgs[0]["content"] and "对花生过敏" in msgs[0]["content"]

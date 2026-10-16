@@ -9,25 +9,26 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import re
+import json
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from functools import partial
-from typing import Literal, Optional
+from typing import Any, Literal, Optional, TypedDict
+
+from pydantic import ValidationError
 
 from core.log import log
 
-from ..memory_types import MemorySearchResult
+from ..memory_types import MemorySearchResult, excerpt
+from ..provenance import recall_provenance
 from .adapters import query_embeddings
 from .client import CogneeClient
 from .config import CogneeConfig
 from .types import CogneeRecallItem
 
-_WHITESPACE_RE = re.compile(r"\s+")
-
 #: 投影文档头字段（coordinator._render_memory 的输出格式）
-_PROJECTION_HEADER_KEYS = ("Memory type", "Source", "Importance", "Tags", "Metadata")
+_PROJECTION_HEADER_KEYS = ("Memory type", "Memory ID", "Timestamp", "Source", "Importance", "Tags", "Metadata")
 
 
 @dataclass
@@ -41,17 +42,24 @@ class CogneeSearchBatch:
     error: str = ""
 
 
-def parse_memory_projection(text: str) -> tuple[str, list[str]]:
-    """解析投影文档：剥离头部字段，返回 (干净正文, 标签列表)。
+class MemoryProjection(TypedDict, total=False):
+    """投影文档中实际存在且已验证的记忆字段。"""
 
-    coordinator 把记忆投影为 ``Memory type/Source/Importance/Tags/Metadata``
-    头部 + 正文的文档；检索回来后按同一格式解析——正文供注入展示（不漏
-    头部噪音），标签回填结果（归属标注/上下文加权/联想种子因此对 cognee
-    结果同样生效）。非投影内容（图谱综合/实体摘要等）原样返回。
-    """
+    snippet: str
+    tags: list[str]
+    provenance: dict[str, Any]
+    timestamp: float
+    memory_type: str | None
+    sensitivity: str
+
+
+def parse_memory_projection(text: str) -> MemoryProjection:
+    """恢复完整投影的出处和时间；残缺分块与综合回答不推断原始归属。"""
     if not text.startswith("Memory type:"):
-        return text, []
-    head, _, content = text.partition("\n\n")
+        return {"snippet": text}
+    head, separator, content = text.partition("\n\n")
+    if not separator or not content.strip():
+        return {"snippet": text}
     fields: dict[str, str] = {}
     for line in head.split("\n"):
         for key in _PROJECTION_HEADER_KEYS:
@@ -59,7 +67,28 @@ def parse_memory_projection(text: str) -> tuple[str, list[str]]:
                 fields[key] = line[len(key) + 2:].strip()
                 break
     tags = [tag.strip() for tag in fields.get("Tags", "").split(",") if tag.strip()]
-    return (content or text).strip(), tags
+    try:
+        metadata = json.loads(fields.get("Metadata", "{}"))
+    except (ValueError, TypeError):
+        metadata = {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    provenance = recall_provenance(metadata, source=fields.get("Source", ""))
+    mid = fields.get("Memory ID", "")
+    if mid.isdigit() and int(mid) > 0:
+        provenance["anelf_memory_id"] = int(mid)
+    try:
+        timestamp = float(fields.get("Timestamp", "0"))
+    except ValueError:
+        timestamp = 0.0
+    if not 0 <= timestamp < 253402300800:
+        timestamp = 0.0
+    return {
+        "snippet": content.strip(), "tags": tags, "provenance": provenance,
+        "timestamp": timestamp, "memory_type": fields.get("Memory type"),
+        "sensitivity": str(metadata.get("sensitivity", "normal"))
+        if metadata.get("sensitivity") in ("private", "secret") else "normal",
+    }
 
 
 async def federated_search(
@@ -216,17 +245,31 @@ async def search_cognee(
             return []
         results: list[MemorySearchResult] = []
         for item in items:
-            content, tags = parse_memory_projection(item.content)
-            results.append(MemorySearchResult(
-                id=item.id,
-                snippet=content[:700],
-                score=item.score,
-                source=item.source,
-                tags=tags,
-                dataset_id=item.dataset_id,
-                dataset_name=item.dataset_name,
-                provenance=item.metadata,
-            ))
+            projection = parse_memory_projection(item.content)
+            if item.source == "cognee_graph":
+                projection = {"snippet": projection["snippet"],
+                              "sensitivity": projection.get("sensitivity", "normal")}
+            attribution = item.metadata.get("anelf_attribution")
+            if item.source == "cognee_chunk" and isinstance(attribution, dict):
+                try:
+                    restored = MemorySearchResult.model_validate({
+                        **attribution, "id": item.id, "snippet": "", "score": 0,
+                    })
+                except ValidationError as exc:
+                    log(f"Cognee 分块出处字段无效: {type(exc).__name__}", "DEBUG", tag="记忆")
+                else:
+                    projection.setdefault("tags", restored.tags)
+                    projection.setdefault("timestamp", restored.timestamp)
+                    projection.setdefault("sensitivity", restored.sensitivity)
+                    projection.setdefault("provenance", restored.provenance)
+            provenance = {**item.metadata, **projection.pop("provenance", {})}
+            provenance.pop("anelf_attribution", None)
+            projection["snippet"] = excerpt(str(projection["snippet"]), 700)
+            results.append(MemorySearchResult.model_validate({
+                **projection, "id": item.id, "score": item.score, "source": item.source,
+                "dataset_id": item.dataset_id, "dataset_name": item.dataset_name,
+                "provenance": provenance,
+            }))
         elapsed = time.monotonic() - started
         log(f"Cognee 检索通道完成: {lane}, {elapsed:.1f}s, {len(results)} 条", "DEBUG", tag="记忆")
         if on_batch is not None:
@@ -269,6 +312,11 @@ def _fuse_ranked_lists(
     """逐通道计算秩，同通道重复命中只计一次，来源优先级保留原生证据。"""
     scores: dict[str, float] = {}
     chosen: dict[str, MemorySearchResult] = {}
+    references: dict[str, set[str]] = {}
+    for results, _weight in lanes:
+        for result in results:
+            if reference := result.memory_reference():
+                references.setdefault(result.content_key(), set()).add(reference)
 
     def add(
         results: list[MemorySearchResult],
@@ -277,6 +325,9 @@ def _fuse_ranked_lists(
         seen: set[str] = set()
         for result in results:
             key = dedupe_key(result)
+            linked = references.get(result.content_key(), set())
+            if not result.memory_reference() and len(linked) == 1:
+                key = next(iter(linked))
             if key in seen:
                 continue
             seen.add(key)
@@ -336,18 +387,8 @@ def datasets_for_scope(
 
 
 def dedupe_key(result: MemorySearchResult) -> str:
-    """统一去重键：优先投影回链 id（anelf_memory_id），否则内容归一哈希。
-
-    跨通道防重复的权威实现——RRF 融合、多查询共识合并共用。
-    """
-    memory_id = result.provenance.get("anelf_memory_id")
-    if memory_id:
-        return f"memory:{memory_id}"
-    text = result.snippet
-    if "\n\n" in text and text.startswith("Memory type:"):
-        text = text.split("\n\n", 1)[1]
-    normalized = _WHITESPACE_RE.sub(" ", text).strip().casefold()
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    """精确回链优先；否则按内容和归属判重，未知出处不借用查询身份。"""
+    return result.memory_reference() or result.content_key() or result.id
 
 
 def _source_priority(source: str) -> int:

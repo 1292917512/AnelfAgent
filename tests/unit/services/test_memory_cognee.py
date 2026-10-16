@@ -14,6 +14,40 @@ from agent.memory.cognee.llm_bridge import CogneeConfigError
 from services.memory import MemoryService
 
 
+async def test_recall_http_preserves_source_diagnostics_and_bounds_origin_details(monkeypatch):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from agent.memory.memory_types import MemorySearchResult, RetrievalPlan
+    from web.routers.memory import router
+
+    result = MemorySearchResult(
+        id="mem:7", snippet="归属明确的事实", score=.8, tags=["user:telegram:2"],
+        sensitivity="private", timestamp=1_700_000_000,
+        provenance={"associated": True, "origins": [
+            {"kind": "agent_note", "scope": f"group_qq:{i}"} for i in range(5)
+        ]},
+    )
+    diagnostic = AsyncMock(return_value={
+        "plan": RetrievalPlan(queries=["query"]), "cognee_config": CogneeConfig(), "deep": False,
+        "datasets": [], "results": [result], "relations": [], "forgotten": [], "timings": {},
+    })
+    monkeypatch.setattr("services.memory.require_runtime", lambda: SimpleNamespace(mind=SimpleNamespace(
+        retriever=SimpleNamespace(diagnostic_recall=diagnostic), memory_store=object(),
+    )))
+    app = FastAPI()
+    app.include_router(router)
+    async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as http:
+        response = await http.post("/memory/recall-test", json={"query": "query"})
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["tags"] == ["user:telegram:2"] and item["sensitivity"] == "private"
+    assert item["timestamp"] == result.timestamp
+    assert item["provenance"]["associated"] is True
+    assert item["provenance"]["origin_count"] == 5 and len(item["provenance"]["origins"]) == 3
+    assert len(result.provenance["origins"]) == 5
+
+
 @pytest.mark.parametrize("compatible", [False, True])
 async def test_save_validates_before_persisting_or_reconfiguring(monkeypatch, compatible):
     saved = Mock()

@@ -62,6 +62,9 @@ def _archived_row_dict(row: Any) -> Dict[str, Any]:
         tags = [str(t) for t in parsed]
     except (ValueError, TypeError):
         pass
+    from ..provenance import recall_provenance
+    from ._shared import parse_metadata_json
+    metadata = parse_metadata_json(row["metadata_json"])
     return {
         "id": int(row["id"]),
         "type": str(row["type"]),
@@ -70,6 +73,9 @@ def _archived_row_dict(row: Any) -> Dict[str, Any]:
         "importance": float(row["importance"]),
         "archived_at": int(row["archived_at_ns"]) / 1e9,
         "reason": str(row["archive_reason"] or ""),
+        "provenance": recall_provenance(metadata, source=str(row["source"] or "")),
+        "timestamp": int(row["ts_ns"]) / 1e9,
+        "sensitivity": str(metadata.get("sensitivity", "normal")),
     }
 
 
@@ -574,25 +580,7 @@ class SearchEngine:
 
         unified: list[MemorySearchResult] = []
         for entry, score in mem_results:
-            metadata = entry.metadata or {}
-            activity_date = str(metadata.get("activity_date", ""))
-            temporal_scope = str(metadata.get("temporal_scope", ""))
-            provenance: Dict[str, Any] = {}
-            if activity_date:
-                provenance["activity_date"] = activity_date
-            if temporal_scope:
-                provenance["temporal_scope"] = temporal_scope
-            unified.append(MemorySearchResult(
-                id=f"mem:{entry.id}",
-                snippet=entry.content[:700],
-                score=score,
-                source="memory",
-                memory_type=entry.memory_type.value,
-                tags=entry.tags,
-                timestamp=entry.timestamp,
-                sensitivity=str(metadata.get("sensitivity", "normal")),
-                provenance=provenance,
-            ))
+            unified.append(MemorySearchResult.from_entry(entry, score))
 
         unified.extend(chunk_results)
         unified.sort(key=lambda r: r.score, reverse=True)
@@ -648,7 +636,7 @@ class SearchEngine:
             last_id = 0
             while True:
                 cursor = await db.execute(
-                    "SELECT id, type, content, tags_json, importance, archived_at_ns, "
+                    "SELECT id, type, content, source, ts_ns, metadata_json, tags_json, importance, archived_at_ns, "
                     "archive_reason, embedding_blob FROM memories_archive "
                     "WHERE embedding_blob IS NOT NULL AND id > ? ORDER BY id LIMIT ?",
                     (last_id, 500),
@@ -695,7 +683,7 @@ class SearchEngine:
         db = await self._conn.get_db()
         conditions = " OR ".join(r"content LIKE ? ESCAPE '\'" for _ in keywords)
         cursor = await db.execute(
-            "SELECT id, type, content, tags_json, importance, archived_at_ns, "
+            "SELECT id, type, content, source, ts_ns, metadata_json, tags_json, importance, archived_at_ns, "
             "archive_reason, NULL AS embedding_blob FROM memories_archive "
             f"WHERE {conditions} ORDER BY archived_at_ns DESC LIMIT ?",
             [*[f"%{escape_like(kw)}%" for kw in keywords], limit],
@@ -754,11 +742,17 @@ class SearchEngine:
     # 去重
     # ------------------------------------------------------------------
 
-    async def has_similar_content(self, content: str, min_overlap: float = 0.6) -> bool:
+    async def has_similar_content(self, content: str, min_overlap: float = 0.6,
+                                  *, tags: Optional[list[str]] = None) -> bool:
         """检查是否已存在语义相近的记忆（基于 FTS 候选 + bigram 相似度）。"""
         results = await self.search_fts(content, limit=5)
         content_clean = content.replace(" ", "").replace("\n", "")
         for entry, _ in results:
+            if tags is not None and (
+                {t for t in entry.tags if t.startswith(("user:", "group:"))}
+                != {t for t in tags if t.startswith(("user:", "group:"))}
+            ):
+                continue
             existing_clean = entry.content.replace(" ", "").replace("\n", "")
             if content_clean in existing_clean or existing_clean in content_clean:
                 return True

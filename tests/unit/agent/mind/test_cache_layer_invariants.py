@@ -120,7 +120,8 @@ class TestRecallTimeGranularity:
     def test_memory_time_is_day_granularity(self):
         import time as _time
         now = _time.time()
-        out = MemoryRetriever._format_memory_time(now)
+        from agent.memory.recall_format import format_memory_time
+        out = format_memory_time(now)
         assert re.fullmatch(r"\d{2}-\d{2}|\d{4}-\d{2}-\d{2}", out), (
             f"召回时间戳必须是日期粒度，实际: {out!r}"
         )

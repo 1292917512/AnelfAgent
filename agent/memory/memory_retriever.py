@@ -8,7 +8,7 @@ Model Experience（召回归属标注）:
 - 模型看到什么：每条召回记忆行首的归属标注（称呼[uid:xxx] / [group_id:xxx]，
   与会话消息 [uid:] 标签同构）+ 记忆召回块头的归属确认提示（先确认记忆
   涉及谁再下定论，uid 不符不张冠李戴）
-- token 影响：每条记忆 +10~20 字符，块头 +约 80 字符（仅召回非空时注入）
+- token 影响：每条增加简短出处与 mem ID，完整材料按需读取；不增加模型调用
 - 缓存影响：召回块在尾部动态区（vol>30），不触碰前缀缓存层
 """
 
@@ -27,10 +27,9 @@ from .memory_types import (
     MemorySearchResult,
     MemoryType,
     RetrievalPlan,
-    normalized_content_key,
 )
 from .probe import deep_probe_hub
-from .recall_format import format_memory_line, load_entity_nodes
+from .recall_format import format_recall_line, load_entity_nodes
 from .store.tag_intel import ASSOC_PREFIXES
 
 if TYPE_CHECKING:
@@ -575,21 +574,9 @@ class MemoryRetriever:
             log(f"💾 回退: 取最近 {len(entries)} 条记忆", tag="思维")
         if not entries:
             return []
-        # 与召回行同一归属标注格式：回退路径同样不能丢失"这是谁的记忆"
-        lines: List[str] = []
-        for e in entries:
-            tags = await self._humanize_entity_tags(e.tags) if e.tags else []
-            head = f"{'·'.join(tags)} " if tags else ""
-            lines.append(f"{head}{e.content}")
-        deep_probe_hub.record(scope, results=(
-            MemorySearchResult(id=f"mem:{entry.id}", snippet=entry.content, score=1)
-            for entry in entries
-        ))
-        from core.sanitizer import sanitize_for_context
-        return [{"role": "system", "content": sanitize_for_context(
-            "[近期记忆]（归属标注：称呼[uid:xxx] 指明记忆涉及谁）\n"
-            + "\n---\n".join(lines)
-        )}]
+        results = [MemorySearchResult.from_entry(entry, 1) for entry in entries]
+        deep_probe_hub.record(scope, results=results)
+        return await self._format_unified_results(results)
 
     @staticmethod
     def _extract_query(conversation: List[Dict], max_chars: int = 500) -> str:
@@ -934,16 +921,8 @@ class MemoryRetriever:
             assoc_tags, exclude_ids=existing_ids, limit=max_extra,
         )
         for entry, score in related:
-            results.append(MemorySearchResult(
-                id=f"mem:{entry.id}",
-                snippet=entry.content[:500],
-                score=round(score * 0.75, 4),
-                source="memory",
-                memory_type=entry.memory_type.value,
-                tags=entry.tags,
-                timestamp=entry.timestamp,
-                sensitivity=str(entry.metadata.get("sensitivity", "normal")),
-                provenance={"associated": True},
+            results.append(MemorySearchResult.from_entry(
+                entry, round(score * 0.75, 4), flags={"associated": True},
             ))
         return results
 
@@ -1025,32 +1004,10 @@ class MemoryRetriever:
             rid = f"mem:{e.id}"
             if rid in existing:
                 continue
-            out.append(MemorySearchResult(
-                id=rid, snippet=e.content[:500], score=1.0, source="memory",
-                memory_type=e.memory_type.value, tags=e.tags,
-                timestamp=e.timestamp,
-                sensitivity=str(e.metadata.get("sensitivity", "normal")),
-                provenance={"pinned": True},
-            ))
+            out.append(MemorySearchResult.from_entry(e, 1, flags={"pinned": True}))
             if len(out) >= pin_limit:
                 break
         return out
-
-    @staticmethod
-    def _dedup_key(snippet: str) -> str:
-        """跨来源内容去重键：去空白后的前缀（memories 表与 cognee 图谱可能注入同一条内容）。"""
-        return normalized_content_key(snippet)
-
-    async def _humanize_entity_tags(self, tags: List[str]) -> List[str]:
-        """归属标注（委托 recall_format 权威实现）。"""
-        from .recall_format import humanize_entity_tags
-        return await humanize_entity_tags(self._store.graph, tags)
-
-    @staticmethod
-    def _format_memory_time(ts: float) -> str:
-        """记忆时间格式（委托 recall_format 权威实现）。"""
-        from .recall_format import format_memory_time
-        return format_memory_time(ts)
 
     async def _format_unified_results(self, results: list[MemorySearchResult]) -> List[Dict]:
         """将统一搜索结果格式化为注入消息。
@@ -1058,7 +1015,7 @@ class MemoryRetriever:
         注入纪律：只保留对 AI 有信息量的内容——归因（谁的/什么主题）、正文、
         记录时间；score/内部类型/来源数据集等调试信息只进 log 不进上下文。
         跨来源内容去重：同一条记忆可能同时命中 memories 表与 cognee 图谱
-        （id 命名空间不同无法按 id 去重），按归一化内容前缀去重。
+        通过原始 ID 或相同内容与归属去重，未知出处不借用当前会话身份。
         """
         if not results:
             return []
@@ -1067,33 +1024,29 @@ class MemoryRetriever:
         mem_lines: list[str] = []
         file_lines: list[str] = []
         seen: set[str] = set()
+        seen_references: set[str] = set()
         deduped = 0
         nodes = await load_entity_nodes(
             self._graph, (tag for result in results if result.source != "file" for tag in result.tags),
         )
 
         for r in results:
-            snippet = r.snippet[:500]
-            key = self._dedup_key(snippet)
-            if key and key in seen:
+            key = r.content_key()
+            reference = r.memory_reference()
+            if (key and key in seen) or (reference and reference in seen_references):
                 deduped += 1
                 continue
             if key:
                 seen.add(key)
+            if reference:
+                seen_references.add(reference)
             pinned = bool(r.provenance.get("pinned")) if r.provenance else False
             associated = bool(r.provenance.get("associated")) if r.provenance else False
             marker = "📌" if pinned else ("🔗" if associated else "💡")
+            line = await format_recall_line(self._graph, r, marker=marker, nodes=nodes)
             if r.source == "file":
-                loc = f"[{r.path}:{r.start_line}-{r.end_line}]" if r.path else ""
-                file_lines.append(f"{marker} {loc} {snippet}".replace("  ", " "))
+                file_lines.append(line)
                 continue
-            # memory / cognee_* 统一按记忆行呈现（cognee 只是投影层，对 AI 无区别）；
-            # 行格式为共享权威（recall_format），与首轮深探的增量行同构
-            line = await format_memory_line(
-                self._graph, snippet=snippet, tags=r.tags,
-                provenance=r.provenance, timestamp=r.timestamp,
-                sensitivity=r.sensitivity, marker=marker, nodes=nodes,
-            )
             if pinned:
                 pinned_lines.append(line)
             else:
@@ -1123,6 +1076,8 @@ class MemoryRetriever:
             dynamic_lines.append(
                 "[系统注入·记忆召回] 以下为自动检索到的相关记忆，不代表当前任务进程，仅作参考"
                 "（💡=直接相关，🔗=联想关联；每条开头的归属标注指明记忆涉及谁，"
+                "涉及对象不等于发言者；材料会话只指来源，不是当前投递目标。"
+                "对话提炼不是逐字原话，图谱综合需核对；出处未记录时不要猜测。"
                 "uid 与当前对话对象不符勿张冠李戴，「私事」不外传——纪律见记忆体系铁律）：\n"
                 + "\n".join(mem_lines)
             )

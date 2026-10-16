@@ -3,6 +3,9 @@
 记忆是 Agent 的核心认知能力，MemoryStore / Embedder 引用经
 ``memory_tools_port`` 晚绑定端口分发（工具 import 时注册、拿不到构造参数；
 由 agent.runtime.wiring 统一施绑）。
+
+Model Experience：召回和联想统一返回出处、时间语义与材料指针；get_memory 可读完整出处。
+每条结果增加短出处字段，不新增模型调用；仅进入工具结果，不触碰稳定前缀。
 """
 
 from __future__ import annotations
@@ -25,6 +28,8 @@ from .hub import HUB_TAG
 from .memory_store import MemoryStore
 from .memory_types import MemoryEntry, MemorySearchResult, MemoryType
 from .probe import deep_probe_hub
+from .provenance import merge_metadata, note_origin, recall_provenance
+from .recall_format import format_recall_result
 from .store.tag_intel import ASSOC_PREFIXES, ENTITY_PREFIXES
 
 EntityRegistry.register_group_order("memory", 10)
@@ -180,10 +185,6 @@ async def memorize(
                 mem_type = _TYPE_MAP.get(t.split(":", 1)[1], MemoryType.SEMANTIC)
                 break
 
-        if mem_type == MemoryType.PERMANENT:
-            importance = 1.0
-            return await _upsert_permanent(content, tag_list, importance)
-
         sensitivity = (sensitivity or "normal").strip().lower()
         if sensitivity not in ("normal", "private", "secret"):
             sensitivity = "normal"
@@ -191,9 +192,18 @@ async def memorize(
         if temporal_scope not in ("state", "episode", "pattern"):
             temporal_scope = ""
         link_ids = await _parse_linked_to(store, linked_to)
+        from core.conversation_scope import current_scope
+        metadata = {
+            **note_origin(current_scope()),
+            **({"sensitivity": sensitivity} if sensitivity != "normal" else {}),
+            **({"temporal_scope": temporal_scope} if temporal_scope else {}),
+            **({"linked_to": link_ids} if link_ids else {}),
+        }
+        if mem_type == MemoryType.PERMANENT:
+            return await _upsert_permanent(content, tag_list, 1.0, metadata)
 
         # 第一级：规则判重（子串/字面高相似，零成本快速拦截）
-        if await store.has_similar_content(content):
+        if await store.has_similar_content(content, tags=tag_list):
             from . import metrics
             metrics.incr("write.dedup_rule_skip")
             return json.dumps({
@@ -203,14 +213,15 @@ async def memorize(
 
         # 第二级：LLM 语义裁决（事实演进 update / 语义重复 skip / 无重复 store）
         from . import metrics
-        from .dedup import apply_update, gather_dedup_candidates, judge_write
+        from .dedup import apply_update, attribution_candidates, gather_dedup_candidates, judge_write
         candidates = await gather_dedup_candidates(store, deps.embedder, content)
+        candidates = attribution_candidates(candidates, tag_list)
         decision = await judge_write(content, candidates)
         action = decision.get("action", "store")
         metrics.incr(f"write.dedup_llm_{action}")
         if action == "skip":
             from .dedup import apply_evidence_signals
-            await apply_evidence_signals(store, action, content, candidates)
+            await apply_evidence_signals(store, action, content, candidates, metadata=metadata)
             return json.dumps({
                 "ok": False, "verdict": "skipped_duplicate",
                 "message": f"已有等价记忆，跳过（{decision.get('reason', '语义重复')}）（未重复写入）",
@@ -219,18 +230,9 @@ async def memorize(
             updated = await apply_update(
                 store, int(decision["target_id"]),
                 str(decision.get("content") or content), tag_list,
-                actor="tool:memorize",
+                actor="tool:memorize", metadata=metadata,
             )
             if updated is not None:
-                dirty = False
-                if sensitivity != "normal":
-                    updated.metadata["sensitivity"] = sensitivity
-                    dirty = True
-                if link_ids:
-                    _merge_linked_to(updated.metadata, link_ids)
-                    dirty = True
-                if dirty:
-                    await store.update(updated, actor="tool:memorize")
                 from .dedup import apply_evidence_signals
                 await apply_evidence_signals(
                     store, action, content, candidates,
@@ -247,14 +249,9 @@ async def memorize(
             merge_ids = [int(i) for i in decision["target_ids"]]
             merged_content = str(decision.get("content") or content)
             keep_id = await store.merge_memories(
-                merge_ids, merged_content, actor="tool:memorize",
+                merge_ids, merged_content, actor="tool:memorize", metadata=metadata, extra_tags=tag_list,
             )
             if keep_id:
-                if link_ids:
-                    keep_entry = await store.get(keep_id)
-                    if keep_entry is not None:
-                        _merge_linked_to(keep_entry.metadata, link_ids)
-                        await store.update(keep_entry, actor="tool:memorize")
                 from .dedup import apply_evidence_signals
                 await apply_evidence_signals(
                     store, action, content, candidates, target_ids=[keep_id],
@@ -272,11 +269,7 @@ async def memorize(
             content=content,
             tags=tag_list,
             importance=max(0.0, min(1.0, importance)),
-            metadata=({
-                **({"sensitivity": sensitivity} if sensitivity != "normal" else {}),
-                **({"temporal_scope": temporal_scope} if temporal_scope else {}),
-                **({"linked_to": link_ids} if link_ids else {}),
-            }),
+            metadata=metadata,
         )
         from .reflection_lifecycle import seed_reflection
         seed_reflection(entry)
@@ -321,14 +314,6 @@ async def _parse_linked_to(store: Any, linked_to: str) -> list[int]:
     return valid
 
 
-def _merge_linked_to(metadata: Dict[str, Any], ids: list[int]) -> None:
-    """把 linked_to 目标 id 合入条目 metadata（追加去重，上限 _LINKED_TO_CAP）。"""
-    if not ids:
-        return
-    existing = [i for i in metadata.get("linked_to", []) if isinstance(i, int)]
-    metadata["linked_to"] = list(dict.fromkeys(existing + ids))[:_LINKED_TO_CAP]
-
-
 async def _tag_near_duplicate_hints(tag_list: list[str]) -> list[str]:
     """新 topic: 标签与既有高频标签存在包含关系时给出归并建议（只提示不改数据）。"""
     new_topics = [t for t in tag_list if t.startswith("topic:")]
@@ -356,7 +341,8 @@ async def _tag_near_duplicate_hints(tag_list: list[str]) -> list[str]:
     return hints
 
 
-async def _upsert_permanent(content: str, tag_list: list[str], importance: float) -> str:
+async def _upsert_permanent(content: str, tag_list: list[str], importance: float,
+                            metadata: Dict[str, Any]) -> str:
     """永久记忆的 upsert：按非 type: 标签匹配已有条目，存在则更新，不存在则新增。
 
     主标签记忆（main:hub）只按 HUB_TAG 单标签匹配——AI 覆写时可自由附带
@@ -379,6 +365,7 @@ async def _upsert_permanent(content: str, tag_list: list[str], importance: float
         target.content = content
         target.tags = tag_list
         target.importance = importance
+        target.metadata = merge_metadata(target.metadata, metadata)
         # 内容已变更，清空旧向量，由后台 worker 重新生成
         target.embedding = None
         await store.update(target, clear_embedding=True, actor="tool:memorize")
@@ -393,6 +380,7 @@ async def _upsert_permanent(content: str, tag_list: list[str], importance: float
         content=content,
         tags=tag_list,
         importance=importance,
+        metadata=metadata,
     )
     mid = await store.add(entry, actor="tool:memorize")
     wake_embedding_worker()
@@ -509,18 +497,7 @@ async def recall(
         consumer_scope = current_scope()
         deep_probe_hub.record(consumer_scope, results=results)
 
-        items = [{
-            "id": r.id,
-            "source": r.source,
-            "content": r.snippet[:300],
-            "type": r.memory_type or "",
-            "tags": r.tags,
-            "score": round(r.score, 3),
-            **({"time": time.strftime("%Y-%m-%d %H:%M", time.localtime(r.timestamp))} if r.timestamp else {}),
-            **({"sensitivity": r.sensitivity} if r.sensitivity != "normal" else {}),
-            **({"path": r.path} if r.source == "file" else {}),
-            **({"dataset": r.dataset_name} if r.dataset_name else {}),
-        } for r in results]
+        items = [format_recall_result(r) for r in results]
 
         # 遗忘层采纳规则：向量强匹配（≥ 配置阈值）随时浮现；
         # 关键词弱命中只在常规检索无果时出现（"似曾相识"而非干扰）
@@ -576,12 +553,17 @@ def _format_forgotten_item(item: Dict[str, Any]) -> Dict[str, Any]:
         "reason": item["reason"],
     }
     if item["kind"] == "archived":
+        from .provenance import visible_provenance
         return {
             "id": item["id"],
             **base,
             "content": str(item["content"])[:300],
             "archived_at": time.strftime("%Y-%m-%d", time.localtime(item["archived_at"])),
             "restorable": True,
+            "provenance": visible_provenance(item.get("provenance", {})),
+            "sensitivity": item.get("sensitivity", "normal"),
+            **({"time": time.strftime("%Y-%m-%d", time.localtime(item["timestamp"]))}
+               if item.get("timestamp") else {}),
         }
     return {
         "id": item["id"],
@@ -589,6 +571,7 @@ def _format_forgotten_item(item: Dict[str, Any]) -> Dict[str, Any]:
         "gist": item["gist"],
         "purged_at": time.strftime("%Y-%m-%d", time.localtime(item["purged_at"])),
         "restorable": False,
+        "provenance": {"attribution": "unrecorded", "kind": "tombstone_gist"},
     }
 
 
@@ -624,12 +607,7 @@ async def _recall_associations(
                 continue
             seen.add(lid)
             out.append({
-                "id": f"mem:{target.id}",
-                "source": "memory",
-                "content": target.content[:300],
-                "type": target.memory_type.value,
-                "tags": target.tags,
-                "score": 0.9,
+                **format_recall_result(MemorySearchResult.from_entry(target, 0.9)),
                 "related": True,
                 "hop": "link",
                 "linked_from": mid,
@@ -648,12 +626,7 @@ async def _recall_associations(
         )
         out.extend([
             {
-                "id": f"mem:{entry.id}",
-                "source": "memory",
-                "content": entry.content[:300],
-                "type": entry.memory_type.value,
-                "tags": entry.tags,
-                "score": round(score, 3),
+                **format_recall_result(MemorySearchResult.from_entry(entry, score)),
                 "related": True,
             }
             for entry, score in related
@@ -717,12 +690,7 @@ async def _recall_associations_deep(
     )
     for entry, score in hop2:
         hop1.append({
-            "id": f"mem:{entry.id}",
-            "source": "memory",
-            "content": entry.content[:300],
-            "type": entry.memory_type.value,
-            "tags": entry.tags,
-            "score": round(score * 0.75, 3),
+            **format_recall_result(MemorySearchResult.from_entry(entry, score * 0.75)),
             "related": True,
             "hop": 2,
         })
@@ -801,6 +769,9 @@ async def get_memory(memory_id: int) -> str:
                 "content": row["content"][:300], "type": row["type"], "tags": row["tags"],
                 "archived_at": time.strftime("%Y-%m-%d", time.localtime(row["archived_at"])),
                 "reason": row["reason"],
+                "provenance": recall_provenance(row["metadata"], source=row["source"]),
+                "sensitivity": row["metadata"].get("sensitivity", "normal"),
+                "timestamp": row["timestamp"],
                 **({"redirect_chain": chain} if chain else {}),
                 "hint": "已归档（不参与召回）；可 restore_memory 恢复到活跃记忆库",
             }, ensure_ascii=False)
@@ -834,9 +805,11 @@ async def get_memory(memory_id: int) -> str:
             "tags": entry.tags,
             "importance": round(entry.importance, 3),
             "source": entry.source,
+            "timestamp": entry.timestamp,
             "access_count": entry.access_count,
             "version": entry.version,
             "sensitivity": entry.metadata.get("sensitivity", "normal"),
+            "provenance": recall_provenance(entry.metadata, source=entry.source),
         }
         if chain:
             result["redirect_chain"] = chain
@@ -970,6 +943,8 @@ async def update_memory(
         # 内容变更时清空旧向量，由后台 worker 重新生成
         if content_changed:
             entry.embedding = None
+            from core.conversation_scope import current_scope
+            entry.metadata = merge_metadata(entry.metadata, note_origin(current_scope()))
 
         ok = await deps.store.update(entry, clear_embedding=content_changed, actor="tool:update_memory")
         if ok and content_changed:

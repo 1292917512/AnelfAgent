@@ -12,6 +12,9 @@
 4. 判断/合成不可用或无候选时回退为直接写入（去重永远不阻塞写入路径）。
 
 memorize 工具与 auto_capture 自动提取管线共用本模块。
+
+Model Experience：候选携带身份与主题标签，同身份候选内判断更新或重复。
+每候选增加少量标签 tokens，调用次数不变；内部判断与合成不改主对话稳定前缀。
 """
 
 from __future__ import annotations
@@ -40,7 +43,7 @@ from core.config import (
 from core.log import log
 
 from .memory_store import MemoryStore
-from .memory_types import GOAL_SOURCE, MemoryEntry, MemoryType
+from .memory_types import GOAL_SOURCE, MemoryEntry, MemoryType, normalized_content_key
 
 # 判重候选准入排除项（系统独占维护的条目不参与语义合并）：
 # - 画像由画像系统覆盖维护，permanent 走 upsert；
@@ -161,7 +164,8 @@ def _candidate_previews(candidates: List[MemoryEntry]) -> List[Dict[str, Any]]:
     previews: List[Dict[str, Any]] = []
     for seq, entry in enumerate(candidates, start=1):
         day = time.strftime("%m-%d", time.localtime(entry.timestamp))
-        previews.append({"seq": str(seq), "date": day, "content": entry.content[:200]})
+        previews.append({"seq": str(seq), "date": day, "content": entry.content[:200],
+                         "tags": entry.tags})
     return previews
 
 
@@ -320,6 +324,7 @@ async def apply_evidence_signals(
     candidates: List[MemoryEntry],
     *,
     target_ids: Optional[List[int]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
     """裁决落地后的证据回流（fail-open，绝不阻塞写入路径）。
 
@@ -347,10 +352,24 @@ async def apply_evidence_signals(
             fresh = await store.get(memory_id)
             if fresh is None:
                 continue
+            confirmed_origin = action != "skip" or len(candidates) == 1 or (
+                normalized_content_key(fresh.content) == normalized_content_key(new_content)
+            )
+            if metadata and confirmed_origin:
+                from .provenance import merge_metadata
+                fresh.metadata = merge_metadata(fresh.metadata, {
+                    key: metadata[key] for key in ("origins", "sensitivity") if key in metadata
+                })
             apply_reinforcement(fresh.metadata, delta, user_originated=True)
             await store.update(fresh, actor="evidence_signal")
     except Exception as exc:
         log(f"证据信号回流失败（已忽略）: {exc}", "DEBUG", tag="记忆")
+
+
+def attribution_candidates(candidates: List[MemoryEntry], tags: list[str]) -> List[MemoryEntry]:
+    """自动写入只在同一组身份归属内判重，跨身份合并须由显式整理决定。"""
+    identity = {t for t in tags if t.startswith(("user:", "group:"))}
+    return [e for e in candidates if {t for t in e.tags if t.startswith(("user:", "group:"))} == identity]
 
 
 async def apply_update(
@@ -360,6 +379,7 @@ async def apply_update(
     extra_tags: Optional[List[str]] = None,
     *,
     actor: str = "",
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> Optional[MemoryEntry]:
     """应用 update 裁决：合并内容写入目标记忆（version+1，向量待重建）。"""
     target = await store.get(target_id)
@@ -368,14 +388,19 @@ async def apply_update(
     merged_tags = (
         list(dict.fromkeys(target.tags + extra_tags)) if extra_tags else target.tags
     )
-    if target.content == merged_content and merged_tags == target.tags:
+    from .provenance import merge_metadata
+    merged_metadata = merge_metadata(target.metadata, metadata or {})
+    if target.content == merged_content and merged_tags == target.tags and merged_metadata == target.metadata:
         # 内容与标签均无变化：无变化的 update 会空转审计并触发
         # cognee 投影重跑，是记忆写入风暴的主要来源之一
         return target
+    changed = target.content != merged_content
     target.content = merged_content
     target.tags = merged_tags
-    target.embedding = None
-    ok = await store.update(target, clear_embedding=True, actor=actor)
+    target.metadata = merged_metadata
+    if changed:
+        target.embedding = None
+    ok = await store.update(target, clear_embedding=changed, actor=actor)
     if not ok:
         return None
     return target

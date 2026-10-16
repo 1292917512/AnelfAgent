@@ -593,6 +593,8 @@ async def test_worker_preserves_pending_until_models_are_ready(
 
 @pytest.mark.asyncio
 async def test_coordinator_projects_and_deletes_memory(tmp_path) -> None:
+    from agent.memory.provenance import note_origin
+
     store = MemoryStore(str(tmp_path / "memory.sqlite3"))
     store.set_cognee_projection_enabled(True)
     client = _FakeCogneeClient()
@@ -605,8 +607,16 @@ async def test_coordinator_projects_and_deletes_memory(tmp_path) -> None:
         memory_id = await store.add(MemoryEntry(
             memory_type=MemoryType.SEMANTIC,
             content="projected",
+            tags=["topic:deployment"], source="auto_capture",
+            metadata={**note_origin("user_qq:1"), "sensitivity": "private"},
         ))
         await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
+
+        attribution = client.items[0]["external_metadata"]["anelf_attribution"]
+        assert attribution["tags"] == ["topic:deployment"]
+        assert attribution["sensitivity"] == "private"
+        assert attribution["provenance"]["origins"][0]["scope"] == "user_qq:1"
+        assert f"Memory ID: {memory_id}\n" in client.items[0]["data"]
 
         mapping = await store.get_cognee_mapping(memory_id)
         assert mapping is not None
@@ -1084,11 +1094,8 @@ def test_rrf_deduplicates_projected_native_memory() -> None:
     projected = [
         MemorySearchResult(
             id="cognee:chunk",
-            snippet=(
-                "Memory type: semantic\nSource: test\nImportance: 0.7\n"
-                "Tags: user:1\nMetadata: {}\n\n"
-                "The user prefers concise answers."
-            ),
+            snippet="The user prefers concise answers.",
+            provenance={"anelf_memory_id": 7},
             score=0.95,
             source="cognee_chunk",
         ),

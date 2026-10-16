@@ -155,6 +155,24 @@ export interface RecallTestPlan {
   rationale: string;
 }
 
+export interface MemoryOrigin {
+  kind: "conversation_summary" | "agent_note";
+  scope: string;
+  message_ids?: number[];
+  started_at?: number;
+  ended_at?: number;
+}
+
+export interface MemoryProvenance {
+  origins?: MemoryOrigin[];
+  origin_count?: number;
+  activity_date?: string;
+  temporal_scope?: string;
+  recorded_by?: string;
+  attribution?: "recorded" | "unrecorded";
+  [key: string]: unknown;
+}
+
 export interface RecallTestItem {
   id: string;
   source: "memory" | "file" | "cognee_chunk" | "cognee_graph";
@@ -164,7 +182,11 @@ export interface RecallTestItem {
   tags: string[];
   dataset: string;
   path: string;
-  provenance: Record<string, unknown>;
+  provenance: MemoryProvenance;
+  timestamp?: number;
+  sensitivity?: string;
+  start_line?: number;
+  end_line?: number;
 }
 
 export interface RecallTestForgotten {

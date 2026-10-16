@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from agent.memory.provenance import visible_provenance
 from core.log import log
 from services._runtime import require_runtime
 
@@ -213,7 +214,7 @@ class MemoryService:
                 "id": r.id, "snippet": r.snippet[:300], "score": round(r.score, 3),
                 "source": r.source, "memory_type": r.memory_type or "",
                 "tags": r.tags, "path": r.path, "dataset": r.dataset_name,
-                "provenance": r.provenance,
+                "provenance": {**r.provenance, "origins": [], **visible_provenance(r.provenance)},
             }
             for r in results
         ]
@@ -285,7 +286,11 @@ class MemoryService:
                 "tags": r.tags,
                 "dataset": r.dataset_name,
                 "path": r.path or "",
-                "provenance": r.provenance,
+                "provenance": {**r.provenance, "origins": [], **visible_provenance(r.provenance)},
+                "timestamp": r.timestamp,
+                "sensitivity": r.sensitivity,
+                "start_line": r.start_line,
+                "end_line": r.end_line,
             } for r in outcome["results"]],
             "relations": outcome["relations"],
             "forgotten": outcome["forgotten"],

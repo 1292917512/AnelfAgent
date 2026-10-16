@@ -204,6 +204,7 @@ async def test_chunk_results_keep_individual_identity_and_metadata(monkeypatch, 
     from unittest.mock import AsyncMock
 
     from agent.memory.cognee.client import CogneeClient
+    from agent.memory.provenance import note_origin
 
     client = CogneeClient(CogneeConfig(data_root=str(tmp_path)))
     client.initialize = AsyncMock(return_value=SimpleNamespace(ready=True))
@@ -214,7 +215,10 @@ async def test_chunk_results_keep_individual_identity_and_metadata(monkeypatch, 
         assert kwargs["only_context"] is False
         return [{"text": f"chunk-{i}: " + "x" * 900, "kind": "chunk", "source": "graph",
                  "metadata": {"chunk_id": f"id-{i}"},
-                 "raw": {"external_metadata": {"anelf_memory_id": str(i)}}} for i in range(3)]
+                 "raw": {"external_metadata": {"anelf_memory_id": str(i), "anelf_attribution": {
+                     "tags": [f"user:qq:{i}"], "provenance": note_origin(f"user_qq:{i}"),
+                     "sensitivity": "private",
+                 }}}} for i in range(3)]
 
     monkeypatch.setattr(client, "_call", recall)
     results = await search_cognee(client, client.config, "q", ["data"], 3)
@@ -222,6 +226,8 @@ async def test_chunk_results_keep_individual_identity_and_metadata(monkeypatch, 
     assert {r.id for r in results} == {"cognee:id-0", "cognee:id-1", "cognee:id-2"}
     assert all(len(r.snippet) == 700 and r.source == "cognee_chunk" for r in results)
     assert {r.provenance["anelf_memory_id"] for r in results} == {"0", "1", "2"}
+    assert {r.provenance["origins"][0]["scope"] for r in results} == {"user_qq:0", "user_qq:1", "user_qq:2"}
+    assert all(r.sensitivity == "private" for r in results)
 
 
 def test_rrf_counts_rank_per_lane_and_duplicate_once():
@@ -234,3 +240,33 @@ def test_rrf_counts_rank_per_lane_and_duplicate_once():
     results = _fuse_ranked_lists([([a, a, b], 1), ([b, a], 1)], config=config, limit=5)
     assert len(results) == 2
     assert results[0].score == results[1].score
+
+
+@pytest.mark.parametrize("source, malformed", [("cognee_chunk", False), ("cognee_graph", False), ("cognee_chunk", True)])
+async def test_chunk_metadata_restores_attribution_without_assigning_it_to_graph(source, malformed):
+    from unittest.mock import AsyncMock
+
+    from agent.memory.provenance import note_origin
+
+    client = SearchClient()
+    body = "只有正文的文档片段"
+    content = f"Memory type: semantic\nTags: user:qq:1\nMemory ID: 7\n\n{body}" if source == "cognee_graph" else body
+    client.recall = AsyncMock(return_value=[CogneeRecallItem(
+        id="chunk:7", content=content, score=.8, source=source,
+        metadata={"anelf_memory_id": "7", "anelf_attribution": {
+            "tags": 1 if malformed else ["user:qq:1"], "timestamp": 1_700_000_000,
+            "sensitivity": "private", "provenance": note_origin("group_qq:2"),
+        }},
+    )])
+    results = await search_cognee(client, CogneeConfig(), "query", ["scope"], 5, ["CHUNKS"])
+    assert len(results) == 1 and results[0].snippet == "只有正文的文档片段"
+    result = results[0]
+    assert "anelf_attribution" not in result.provenance
+    if source == "cognee_chunk" and not malformed:
+        assert result.tags == ["user:qq:1"] and result.sensitivity == "private"
+        assert result.provenance["origins"][0]["scope"] == "group_qq:2"
+        assert result.timestamp == 1_700_000_000 and result.memory_reference() == "mem:7"
+    else:
+        assert result.tags == [] and "origins" not in result.provenance
+        if source == "cognee_graph":
+            assert result.memory_reference() == ""

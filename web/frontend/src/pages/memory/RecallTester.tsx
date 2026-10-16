@@ -11,6 +11,7 @@ import { Select } from "@/components/ui";
 import { Spinner } from "@/components/ui";
 import { memoryApi } from "@/lib/api";
 import type { RecallTestItem, RecallTestResult } from "@/lib/types";
+import { RecallAttribution } from "./RecallAttribution";
 
 const SOURCE_ORDER: RecallTestItem["source"][] = ["memory", "file", "cognee_chunk", "cognee_graph"];
 
@@ -45,6 +46,7 @@ function SourceGroup({ source, items }: { source: RecallTestItem["source"]; item
               <span key={tag} className="rounded bg-surface px-1.5 py-0.5">{tag}</span>
             ))}
           </div>
+          <RecallAttribution item={item} />
         </div>
       ))}
     </div>

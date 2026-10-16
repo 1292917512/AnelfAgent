@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import time
 from enum import Enum
@@ -86,6 +88,47 @@ class MemorySearchResult(BaseModel):
     dataset_name: str = ""
     provenance: Dict[str, Any] = Field(default_factory=dict)
 
+    @classmethod
+    def from_entry(cls, entry: MemoryEntry, score: float, *, max_chars: int = 700,
+                   flags: Optional[Dict[str, Any]] = None) -> MemorySearchResult:
+        """所有本地召回分支共用的出处映射。"""
+        from .provenance import recall_provenance
+
+        return cls(
+            id=f"mem:{entry.id}", snippet=excerpt(entry.content, max_chars), score=score,
+            memory_type=entry.memory_type.value, tags=list(entry.tags), timestamp=entry.timestamp,
+            sensitivity=str(entry.metadata.get("sensitivity", "normal")),
+            provenance={**recall_provenance(entry.metadata, source=entry.source), **(flags or {})},
+        )
+
+    def memory_reference(self) -> str:
+        """返回可追溯到主库的 ID；图谱综合回答不冒充原始记忆。"""
+        if self.source == "memory" and re.fullmatch(r"mem:\d+", self.id):
+            return self.id
+        mid = self.provenance.get("anelf_memory_id")
+        if self.source == "cognee_chunk" and str(mid).isdigit() and int(mid) > 0:
+            return f"mem:{mid}"
+        return ""
+
+    def content_key(self) -> str:
+        """同文不同归属、事件日期、隐私或文件位置不能互相覆盖。"""
+        from .provenance import origins_from
+
+        body = normalized_content_key(self.snippet)
+        if not body:
+            return ""
+        attribution = {
+            "entities": sorted({t for t in self.tags if t.startswith(("user:", "group:"))}),
+            "scopes": sorted({o.scope for o in origins_from(self.provenance)}),
+            "date": self.provenance.get("activity_date", ""),
+            "temporal_scope": self.provenance.get("temporal_scope", ""),
+            "sensitivity": self.sensitivity if self.sensitivity != "normal" else "",
+            "file": [self.path, self.start_line, self.end_line] if self.source == "file" else [],
+        }
+        if not any(attribution.values()):
+            return body
+        return hashlib.sha256(json.dumps([body, attribution], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
 
 class RetrievalPlan(BaseModel):
     """检索规划：轻量 LLM 对"该查什么"的结构化决策（被动召回的驱动计划）。
@@ -116,9 +159,11 @@ class RetrievalPlan(BaseModel):
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
-def normalized_content_key(snippet: str, *, max_chars: int = 120) -> str:
-    """跨来源内容去重键：去空白后的前缀（同名事实不同 id 命中时的兜底判定）。
+def normalized_content_key(snippet: str) -> str:
+    """完整摘录的归一化键，避免共同前缀掩盖后文的相反结论。"""
+    return _WHITESPACE_RE.sub("", snippet or "")
 
-    召回注入格式化与召回账本共用的权威实现。
-    """
-    return _WHITESPACE_RE.sub("", snippet or "")[:max_chars]
+
+def excerpt(text: str, limit: int) -> str:
+    """有界摘录明确标记截断，避免模型把片段误认为完整事实。"""
+    return text if len(text) <= limit else text[:max(0, limit - 1)] + "…"
