@@ -78,6 +78,30 @@ async def test_api_failure_does_not_replay_and_poll_deadline_cancels() -> None:
             await ilink._api_get(client, base_url=ilink.ILINK_BASE_URL, endpoint="poll", timeout_ms=20)
     assert calls == 2 and cancelled
 
+
+def test_setup_loads_shared_config_before_login_and_preserves_other_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import weixin_setup
+
+    steps: list[str] = []
+    saved: dict[str, Any] = {}
+    monkeypatch.setattr(ConfigManager, "initialize", lambda: steps.append("config") or True)
+    monkeypatch.setattr(weixin_setup, "register_channel_schema", lambda channel: steps.append(channel) or True)
+    monkeypatch.setattr(ConfigManager, "get", staticmethod(lambda key, default=None: default))
+
+    async def login() -> dict[str, str]:
+        assert steps == ["config", "weixin"]
+        return {"account_id": "bot@im.bot", "token": "test-token", "base_url": ilink.ILINK_BASE_URL}
+
+    answers = iter(["allowlist", "disabled", "yes"])
+    monkeypatch.setattr(weixin_setup, "qr_login", login)
+    monkeypatch.setattr(weixin_setup, "_ask", lambda *args: next(answers))
+    monkeypatch.setattr("builtins.input", lambda prompt: "user-1")
+    monkeypatch.setattr(weixin_setup, "set_channel_config", lambda channel, **fields: saved.update(channel=channel, **fields))
+    weixin_setup.main()
+    assert saved == {"channel": "weixin", "account_id": "bot@im.bot", "token": "test-token",
+                     "base_url": ilink.ILINK_BASE_URL, "dm_policy": "allowlist", "allow_from": "user-1",
+                     "group_policy": "disabled", "enabled": True}
+
 # ======================================================================
 # AES 加解密
 # ======================================================================
