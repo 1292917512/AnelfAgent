@@ -251,7 +251,10 @@ async def test_ai_configuration_controls_login_route_and_authorization(upstream,
     monkeypatch.setattr(module, "last_refresh", 1000)
     ConfigManager.add_listener("ai_desktop_", router.framework.handle_config_changed)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        assert (await client.post("/modules/subscription/login")).status_code == 409
+        assert (await client.get("/modules/subscription/login")).json()["monitoring"] is False
+        initial = await client.post("/modules/subscription/login")
+        assert initial.status_code == 200
+        await service.close(initial.json()["id"])
         result = json.loads(tools.ai_desktop_modules(action="set_config", module="subscription",
                             name="provider_bailian_enabled", value="true"))
         assert result["success"] and result["value"] is True

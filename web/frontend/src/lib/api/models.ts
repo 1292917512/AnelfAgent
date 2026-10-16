@@ -110,8 +110,8 @@ export const subAgentsApi = {
 export const providerKeysApi = {
   list: (domain = "") =>
     api.get<{ providers: ProviderKeyEntry[] }>("/provider-keys", { params: domain ? { domain } : {} }),
-  set: (provider: string, field: string, value: string) =>
-    api.put<Record<string, unknown>>(`/provider-keys/${encodeURIComponent(provider)}`, { field, value }),
+  set: (provider: string, values: Record<string, string>) =>
+    api.put<Record<string, unknown>>(`/provider-keys/${encodeURIComponent(provider)}`, { values }),
 };
 
 export const localModelsApi = {

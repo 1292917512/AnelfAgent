@@ -9,6 +9,7 @@ import type {
 
 // AI 桌面（动态上下文注入）
 export const aiDesktopApi = {
+  consoleCredential: () => api.get<{ available: boolean; configured: boolean; monitoring: boolean }>("/entity/ai_desktop/modules/subscription/login"),
   startLogin: () => api.post<SubscriptionLogin>("/entity/ai_desktop/modules/subscription/login"),
   loginStatus: (id: string) => api.get<SubscriptionLogin>(`/entity/ai_desktop/modules/subscription/login/${encodeURIComponent(id)}`),
   loginImage: (id: string) => api.get<Blob>(`/entity/ai_desktop/modules/subscription/login/${encodeURIComponent(id)}/image`, { responseType: "blob" }),

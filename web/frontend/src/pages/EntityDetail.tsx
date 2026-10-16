@@ -3,6 +3,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { entitiesApi } from "@/lib/api";
+import { ProviderKeysPanel } from "@/components/common/ProviderKeysPanel";
 import { TabBar } from "@/components/common/TabBar";
 import { Card } from "@/components/common/Card";
 import { StatusDot } from "@/components/common/StatusDot";
@@ -129,7 +130,8 @@ export default function EntityDetail() {
         )}
 
         {tab === "config" && (
-          <div className="mx-auto max-w-4xl">
+          <div className="mx-auto max-w-4xl space-y-6">
+            <ProviderKeysPanel owner={`entity:${name}`} />
             <RegisteredConfigPanel key={name} group={entity.config_group} />
           </div>
         )}

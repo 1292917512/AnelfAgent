@@ -66,6 +66,18 @@ def cli_credential() -> tuple[str, str]:
     return (path, "Bailian CLI") if path else ("", "")
 
 
+def console_authorization_present() -> bool:
+    """只检测可复用授权是否存在，不验证网络、不返回凭据。"""
+    directory = console_config_dir()
+    if not (directory / "config.json").exists():
+        directory = Path(os.environ.get("BAILIAN_CONFIG_DIR", str(Path.home() / ".bailian")))
+    try:
+        data = json.loads((directory / "config.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and isinstance(data.get("access_token"), str) and bool(data["access_token"].strip())
+
+
 def _number(value: Any) -> float | None:
     """将有限数值归一化，缺失及非法值保留未知。"""
     if isinstance(value, bool):

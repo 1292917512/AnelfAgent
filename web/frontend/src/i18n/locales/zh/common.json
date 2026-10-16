@@ -55,21 +55,31 @@
   "pageErrorDesc": "页面内容渲染异常。若是刚更新版本，刷新页面通常即可恢复。",
   "providerKeys": {
     "title": "组件凭据",
-    "hint": "外部平台 Key 集中配置（config/provider_keys.json，已忽略 git 跟踪）",
+    "hint": "按所属功能管理服务地址、密钥与扫码授权。",
     "empty": "当前域没有需要凭据的组件",
     "configured": "已配置",
     "notConfigured": "未配置",
     "save": "保存",
     "saved": "凭据已保存",
     "saveFailed": "凭据保存失败",
-    "localModels": "本地模型资产",
-    "localModelsSummary": "已就绪 {{ready}}/{{total}}",
-    "localModelsLink": "去设置管理",
-    "domain": {
-      "sound": "声音",
-      "vision": "视觉",
-      "retrieval": "检索"
-    }
+    "search": "搜索凭据或所属模块",
+    "openOwner": "前往所属功能",
+    "owner": {
+      "all": "全部",
+      "entity": "实体组件",
+      "channel": "频道",
+      "core": "核心功能",
+      "unregistered": "未登记"
+    },
+    "unregisteredHint": "所属模块尚未登记。已有配置保留，所有字段按敏感信息处理。",
+    "keepSecret": "已保存，输入新值替换",
+    "pendingClear": "保存后清除",
+    "optional": "可选",
+    "clearField": "清除 {{field}}",
+    "undoClear": "撤销清除 {{field}}",
+    "reveal": "显示新输入",
+    "hide": "隐藏新输入",
+    "editorUnavailable": "专属编辑器暂不可用，请从所属功能进入。"
   },
   "dialog": "对话框",
   "loadFailed": "加载失败",

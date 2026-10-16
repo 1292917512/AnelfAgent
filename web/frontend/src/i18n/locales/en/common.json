@@ -55,21 +55,31 @@
   "pageErrorDesc": "The page failed to render. If the app was just updated, a refresh usually fixes it.",
   "providerKeys": {
     "title": "Provider Keys",
-    "hint": "Centralized external platform keys (config/provider_keys.json, git-ignored)",
+    "hint": "Manage service addresses, secrets and sign-in by feature.",
     "empty": "No components in this domain require credentials",
     "configured": "Configured",
     "notConfigured": "Not configured",
     "save": "Save",
     "saved": "Credential saved",
     "saveFailed": "Failed to save credential",
-    "localModels": "Local model assets",
-    "localModelsSummary": "{{ready}}/{{total}} ready",
-    "localModelsLink": "Manage in Settings",
-    "domain": {
-      "sound": "Sound",
-      "vision": "Vision",
-      "retrieval": "Retrieval"
-    }
+    "search": "Search credentials or modules",
+    "openOwner": "Open owning feature",
+    "owner": {
+      "all": "All",
+      "entity": "Entities",
+      "channel": "Channels",
+      "core": "Core",
+      "unregistered": "Unregistered"
+    },
+    "unregisteredHint": "The owning module is not registered. Existing values are preserved and all fields are treated as secrets.",
+    "keepSecret": "Saved — enter a new value to replace",
+    "pendingClear": "Cleared when saved",
+    "optional": "Optional",
+    "clearField": "Clear {{field}}",
+    "undoClear": "Undo clearing {{field}}",
+    "reveal": "Show new input",
+    "hide": "Hide new input",
+    "editorUnavailable": "The custom editor is unavailable. Open the owning feature to continue."
   },
   "dialog": "Dialog",
   "loadFailed": "Unable to load",

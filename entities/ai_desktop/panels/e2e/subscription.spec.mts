@@ -14,6 +14,11 @@ test("subscription login, refresh and failure states remain readable", async ({ 
     priority: 30, enabled: true, default_enabled: true, refresh_interval: 1800,
     last_refresh: null, last_error: "", configs: [], current_content: null, detail: {},
   };
+  await page.route("**/api/provider-keys", (route) => route.fulfill({ json: { providers: [{
+    name: "bailian_console", title: "百炼控制台授权", description: "Console authorization for quota queries",
+    domain: "subscription", domains: ["subscription"], owner: "entity:ai_desktop", destination: "/entities/ai_desktop",
+    editor: "bailian-console", configured: false, fields: [],
+  }] } }));
   await page.route("**/api/entities/ai_desktop", (route) => route.fulfill({ json: {
     name: "ai_desktop", group: "ai_desktop", type: "tool", source: "entity", enabled: true,
     manifest: { display_name: "AI Desktop" }, description: "", config_group: "entity/ai_desktop",
@@ -31,6 +36,10 @@ test("subscription login, refresh and failure states remain readable", async ({ 
   });
   await page.route("**/api/entity/ai_desktop/modules/subscription/login**", async (route) => {
     const path = new URL(route.request().url()).pathname;
+    if (path.endsWith("/login") && route.request().method() === "GET") {
+      await route.fulfill({ json: { available: true, configured: loginState === "complete", monitoring: enabled } });
+      return;
+    }
     if (path.endsWith("/image")) {
       images++;
       await route.fulfill({ contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="168" height="168"><rect width="168" height="168" fill="white"/><path d="M10 10h50v50H10zM108 10h50v50h-50zM10 108h50v50H10zM86 80h60v60H86z" fill="black"/></svg>' });
@@ -52,6 +61,7 @@ test("subscription login, refresh and failure states remain readable", async ({ 
     await route.fulfill({ json: { success: true, last_error: null, content: "" } });
   });
   await page.goto("/webui/entities/ai_desktop");
+  await page.getByRole("link", { name: "Manage credentials" }).click();
   await page.getByRole("button", { name: "Sign in with QR code" }).click();
   const dialog = page.getByRole("dialog");
   const loginImage = dialog.getByRole("img", { name: "Aliyun sign-in QR code", exact: true });
@@ -68,6 +78,8 @@ test("subscription login, refresh and failure states remain readable", async ({ 
   expect(starts).toBe(1);
   await dialog.getByRole("button", { name: "Close", exact: true }).last().click();
   await expect(dialog).toHaveCount(0);
+  await expect(page.getByText("Authorization saved", { exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "Open owning feature" }).click();
   await page.getByRole("button", { name: "Refresh data now" }).click();
   const quota = page.getByRole("region", { name: "阿里百炼" });
   await expect(quota.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "75");

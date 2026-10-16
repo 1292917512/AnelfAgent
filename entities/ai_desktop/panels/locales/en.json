@@ -126,7 +126,15 @@
     "refreshQr": "Get a new code",
     "confirmLogin": "Confirm authorization",
     "additionalVerification": "This account needs additional verification. Complete it in the official console and retry, or sign in through the official CLI.",
-    "quotaRefreshFailed": "Authorization was saved. Quota refresh failed; try refreshing later."
+    "quotaRefreshFailed": "Authorization was saved. Quota refresh failed; try refreshing later.",
+    "credentialsTitle": "Bailian console authorization",
+    "credentialsHint": "Scan to authorize quota access. Saved authorization is reused. Manage quota monitoring in AI Desktop.",
+    "authorizationSaved": "Authorization saved",
+    "authorizationMissing": "Not authorized",
+    "monitoringOn": "Quota monitoring enabled",
+    "monitoringOff": "Quota monitoring disabled",
+    "signInAgain": "Sign in again",
+    "manageAuthorization": "Manage credentials"
   },
   "calendar": {
     "today": "Today",

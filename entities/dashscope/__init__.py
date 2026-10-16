@@ -91,9 +91,10 @@ def register_components() -> None:
 
 register_components()
 
-from entities._sdk import register_provider_key  # noqa: E402
+from entities._sdk import CredentialField, register_provider_key  # noqa: E402
 
 register_provider_key(
     "dashscope", domain="sound", title="阿里百炼",
+    fields=(CredentialField("api_key", "API Key"),), owner_title="阿里百炼", destination="/entities/dashscope",
     description="语音识别/合成/音色复刻的 DashScope API Key（fun-asr、CosyVoice、Qwen-TTS）",
 )

@@ -39,6 +39,14 @@ from core.network import (
     resolve_network_route,
     resolve_socket_route,
 )
+from core.provider_keys import (
+    CredentialField,
+    get_provider_key,
+    list_provider_keys,
+    register_provider_key,
+    set_provider_fields,
+    set_provider_key,
+)
 
 from .base import BaseChannel, ChannelConfig, ChannelMetadata
 from .manager import ChannelManager, get_channel_manager
@@ -64,6 +72,8 @@ from .schemas import (
 from .tool_bridge import channel_tool
 
 __all__ = [
+    "CredentialField", "register_provider_key", "get_provider_key", "list_provider_keys",
+    "set_provider_key", "set_provider_fields",
     "get_model_api", "ModelAPI", "ModelType", "ModelResult", "ModelCallError", "LLMNotConfiguredError",
     "ChatResult", "ImageContent", "VideoContent", "MusicResult",
     "ChoiceQuestion", "NoulQuestion", "NoulCriteria", "ScoreQuestion", "Question",

@@ -176,12 +176,11 @@ from .qwen_asr_stream import register_qwen_streaming_provider as _register_qwen_
 _register_qwen_stream()  # Qwen 实时流式 ASR 组件接入核心注册表（asr_stream 链优先级最高）
 
 
-from entities._sdk import register_provider_key  # noqa: E402
+from entities._sdk import CredentialField, register_provider_key  # noqa: E402
 
 register_provider_key(
     "funasr", domain="sound", title="FunASR 转写服务",
     description="自部署转写服务地址（转写/流式转写/声纹提取）",
-    domains=["sound"],
-    extra_fields=[{"key": "funasr_endpoint", "label": "服务地址",
-                   "default": "", "secret": False}],
+    fields=(CredentialField("funasr_endpoint", "服务地址", secret=False),),
+    owner_title="声音同步", destination="/entities/audiosync",
 )

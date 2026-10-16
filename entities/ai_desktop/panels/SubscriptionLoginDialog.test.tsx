@@ -60,7 +60,7 @@ it.each(["complete", "expired", "error"] as const)("stops polling in state %s", 
   expect(screen.getByText(zh.subscription.loginStates[status])).toBeTruthy();
   expect(aiDesktopApi.loginStatus).toHaveBeenCalledTimes(1);
   expect(aiDesktopApi.loginImage).not.toHaveBeenCalled();
-  expect(invalidate).toHaveBeenCalledTimes(status === "complete" ? 2 : 0);
+  expect(invalidate).toHaveBeenCalledTimes(status === "complete" ? 3 : 0);
   view.unmount();
   view.client.clear();
 });

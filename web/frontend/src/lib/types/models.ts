@@ -190,6 +190,8 @@ export interface ProviderKeyField {
   value: string;
   configured: boolean;
   secret: boolean;
+  multiline: boolean;
+  required: boolean;
 }
 
 export interface ProviderKeyEntry {
@@ -198,5 +200,11 @@ export interface ProviderKeyEntry {
   title: string;
   description: string;
   fields: ProviderKeyField[];
+  owner: string;
+  owner_title?: string;
+  domains: string[];
+  destination: string;
+  editor: string;
+  configured: boolean | null;
   unregistered?: boolean;
 }

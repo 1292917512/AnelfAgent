@@ -1,3 +1,4 @@
+import { useSearchParams } from "react-router-dom";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -19,8 +20,9 @@ export function ChannelsPanel({ onOpenTools }: {
 }) {
   const { t } = useTranslation("channels");
   const client = useQueryClient();
-  const [expanded, setExpanded] = useState<string | null>(null);
-  const [search, setSearch] = useState("");
+  const [params] = useSearchParams();
+  const [expanded, setExpanded] = useState<string | null>(params.get("channel"));
+  const [search, setSearch] = useState(params.get("channel") ?? "");
   const [saved, showSaved, resetSaved] = useCopyFeedback(2000);
   const adapters = useQuery({
     queryKey: ["adapters"], queryFn: () => adaptersApi.list().then((r) => r.data),

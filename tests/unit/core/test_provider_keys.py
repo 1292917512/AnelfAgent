@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -21,7 +23,7 @@ def _isolated(tmp_path, monkeypatch):
 
 class TestRegistry:
     def test_register_and_mask(self) -> None:
-        pk.register_provider_key("minimax", "sound", "MiniMax 平台", "说明")
+        pk.register_provider_key("minimax", "sound", "MiniMax 平台", "说明", fields=(pk.CredentialField("api_key"),))
         pk.set_provider_key("minimax", "api_key", "sk-abcdefghijklmnop")
         entries = pk.list_provider_keys("sound")
         assert len(entries) == 1
@@ -32,13 +34,13 @@ class TestRegistry:
         assert "…" in field["value"] and "abcdefghijklmnop" not in field["value"]
 
     def test_domain_filter(self) -> None:
-        pk.register_provider_key("a", "sound", "A", "")
-        pk.register_provider_key("b", "vision", "B", "")
+        pk.register_provider_key("a", "sound", "A", "", fields=(pk.CredentialField("api_key"),))
+        pk.register_provider_key("b", "vision", "B", "", fields=(pk.CredentialField("api_key"),))
         assert {e["name"] for e in pk.list_provider_keys("sound")} == {"a"}
         assert len(pk.list_provider_keys()) == 2
 
     def test_empty_value_clears_field(self) -> None:
-        pk.register_provider_key("a", "sound", "A", "")
+        pk.register_provider_key("a", "sound", "A", "", fields=(pk.CredentialField("api_key"),))
         pk.set_provider_key("a", "api_key", "sk-x")
         pk.set_provider_key("a", "api_key", "")
         assert pk.get_provider_key("a") == ""
@@ -50,7 +52,7 @@ class TestRegistry:
     def test_extra_fields(self) -> None:
         pk.register_provider_key(
             "cp", "sound", "CP", "",
-            extra_fields=[{"key": "api_host", "label": "接入点", "secret": False}])
+            fields=(pk.CredentialField("api_key"), pk.CredentialField("api_host", "接入点", secret=False)))
         pk.set_provider_key("cp", "api_key", "sk-y")
         pk.set_provider_key("cp", "api_host", "https://sub.example.com")
         entry = pk.list_provider_keys()[0]
@@ -72,3 +74,61 @@ class TestRegistry:
     def test_missing_file_returns_empty(self) -> None:
         assert pk.get_provider_key("nobody") == ""
         assert pk.list_provider_keys() == []
+
+
+def test_module_ownership_reload_and_rollback(monkeypatch):
+    from core.registration import registration_transaction
+
+    monkeypatch.setattr(pk, "caller_module", lambda: "entities.sample.credentials")
+    fields = (pk.CredentialField("endpoint", secret=False),)
+    pk.register_provider_key("sample", "network", "Sample", fields=fields, destination="/entities/sample")
+    pk.set_provider_key("sample", "endpoint", "https://example.test")
+    with pytest.raises(RuntimeError), registration_transaction("entities.sample"):
+        pk.register_provider_key("sample", "network", "Changed", fields=fields)
+        raise RuntimeError("abort")
+    assert pk.list_provider_keys()[0]["title"] == "Sample"
+    assert pk.list_provider_keys()[0]["owner"] == "entity:sample"
+    pk.unregister_provider_keys_by_module("entities.sam")
+    assert not pk.list_provider_keys()[0]["unregistered"]
+    pk.unregister_provider_keys_by_module("entities.sample")
+    assert pk.list_provider_keys()[0]["fields"][0]["secret"]
+    pk.register_provider_key("sample", "network", "Sample", fields=fields)
+    assert pk.list_provider_keys()[0]["fields"][0]["value"] == "https://example.test"
+
+
+def test_declared_fields_status_atomic_updates_and_no_secret_echo():
+    pk.register_provider_key("service", "network", "Service", fields=(
+        pk.CredentialField("endpoint", secret=False), pk.CredentialField("token", required=False),
+    ))
+    pk.set_provider_fields("service", {"endpoint": "https://service.test", "token": "private-test-token"})
+    entry = pk.list_provider_keys()[0]
+    assert entry["configured"] and len(entry["fields"]) == 2
+    assert "private-test-token" not in str(entry)
+    with pytest.raises(ValueError):
+        pk.set_provider_fields("service", {"endpoint": "changed", "unknown": "invalid"})
+    assert pk.get_provider_key("service", "endpoint") == "https://service.test"
+    pk.set_provider_fields("service", {"token": ""})
+    assert pk.get_provider_key("service", "endpoint") and not pk.get_provider_key("service", "token")
+    assert pk.list_provider_keys()[0]["configured"]
+
+
+def test_parallel_writers_and_invalid_file_preservation():
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda index: pk.set_provider_key("sample", f"field_{index}", str(index)), range(32)))
+    assert len(pk._load()["sample"]) == 32
+    Path(pk._path()).write_text("invalid json", encoding="utf-8")
+    with pytest.raises(ValueError):
+        pk.set_provider_key("sample", "token", "new")
+    assert Path(pk._path()).read_text(encoding="utf-8") == "invalid json"
+
+
+def test_custom_editor_is_owned_and_not_writable_as_fields(monkeypatch):
+    monkeypatch.setattr(pk, "caller_module", lambda: "channels.sample.adapter")
+    pk.register_provider_key("qr", "channel", "QR", fields=(), editor="scan", destination="/channels?channel=sample")
+    entry = pk.list_provider_keys()[0]
+    assert entry["owner"] == "channel:sample" and entry["editor"] == "scan" and not entry["fields"]
+    with pytest.raises(ValueError):
+        pk.set_provider_key("qr", "api_key", "not-allowed")
+    monkeypatch.setattr(pk, "caller_module", lambda: "entities.other")
+    with pytest.raises(ValueError):
+        pk.register_provider_key("qr", "other", "Other", fields=(pk.CredentialField("api_key"),))

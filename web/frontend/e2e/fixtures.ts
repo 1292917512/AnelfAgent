@@ -29,6 +29,7 @@ export async function mockApi(page: Page) {
       "/config/meta": metadata,
       "/adapters": { ready: true, adapters: [{ key: "telegram", name: "Telegram", status: "stopped", status_display: "Stopped", detail: "" }] },
       "/models/priorities": {},
+      "/provider-keys": { providers: [] },
       "/models/providers": [],
       "/judgment/providers": { providers: {}, default_model: "", fallback_models: [], revision: "0", health: {} },
       "/memory/files": [{ path: "memory/ideas.md", lines: "2", size: "32 B" }],

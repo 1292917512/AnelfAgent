@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Response
 
 from ... import framework
+from .bailian import cli_credential, console_authorization_present
 from .login import get_console_login
 from .module import SubscriptionModule
 from .providers import PROVIDERS
@@ -19,12 +20,16 @@ def build_router() -> APIRouter:
 
     service = get_console_login(refresh)
 
-    @router.post("")
-    async def start() -> dict[str, Any]:
+    @router.get("")
+    async def credential() -> dict[str, Any]:
         module = framework.get_module("subscription")
         spec = next(spec for spec in PROVIDERS if spec.key == "bailian")
-        if not isinstance(module, SubscriptionModule) or not module.is_enabled() or not module.provider_enabled(spec):
-            raise HTTPException(409, "请先启用百炼额度监控")
+        enabled = isinstance(module, SubscriptionModule) and module.is_enabled() and module.provider_enabled(spec)
+        return {"available": bool(cli_credential()[0]), "configured": console_authorization_present(),
+                "monitoring": enabled}
+
+    @router.post("")
+    async def start() -> dict[str, Any]:
         try:
             return await service.start()
         except ValueError as exc:

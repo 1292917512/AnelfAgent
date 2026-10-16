@@ -32,6 +32,7 @@ export function SubscriptionLoginDialog({ onClose }: { onClose: () => void }) {
         setLogin(data);
         if (data.state === "complete") {
           await Promise.all([
+            client.invalidateQueries({ queryKey: ["bailian-console-credential"] }),
             client.invalidateQueries({ queryKey: ["ai-desktop-modules"] }),
             client.invalidateQueries({ queryKey: ["ai-desktop-preview"] }),
           ]);

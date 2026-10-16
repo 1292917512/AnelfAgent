@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, Power, RotateCcw, Settings2, Blocks, Wifi, WifiOff } from "lucide-react";
 import type { AdapterInfo, ConfigMetaItem, ConfigValues } from "@/lib/types";
+import { ProviderKeysPanel } from "@/components/common/ProviderKeysPanel";
 import { StatusDot } from "@/components/common/StatusDot";
 import { cn } from "@/lib/utils";
 import { ChannelWebView } from "./ChannelWebView";
@@ -122,6 +123,8 @@ export function AdapterCard({
               )}
             </div>
           )}
+
+          <ProviderKeysPanel owner={`channel:${a.key}`} />
 
           {/* Embedded WebUI iframe */}
           <ChannelWebView channelKey={a.key} configs={configs} values={values} />

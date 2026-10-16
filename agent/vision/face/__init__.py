@@ -22,7 +22,7 @@ FaceStatusProvider 每轮注入人物名单/绑定/近期在场摘要。
 
 from agent.vision.face.store import FaceStore, get_face_store
 from core.config import register_configs_safe
-from core.provider_keys import register_provider_key
+from core.provider_keys import CredentialField, register_provider_key
 
 __all__ = [
     "FaceStore",
@@ -34,9 +34,8 @@ register_provider_key(
     "face", domain="vision", title="人脸识别服务",
     description="自部署人脸识别服务地址（SCRFD 检测 + ArcFace 512 维提取，"
                 "参考 deploy/face_server 部署）",
-    domains=["vision"],
-    extra_fields=[{"key": "face_endpoint", "label": "服务地址",
-                   "default": "", "secret": False}],
+    fields=(CredentialField("face_endpoint", "服务地址", secret=False),),
+    owner_title="人脸识别", destination="/vision?tab=face",
 )
 
 # 核心配置项：分组名 vision/face，配置中心自动可见

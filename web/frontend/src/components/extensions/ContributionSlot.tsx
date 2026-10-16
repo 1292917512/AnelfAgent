@@ -11,14 +11,17 @@ class ContributionBoundary extends Component<{ children: ReactNode; fallback: Re
   render() { return this.state.failed ? this.props.fallback : this.props.children; }
 }
 
-type ContextSlot = "audio.recording.actions" | "chat.message" | "activity.tool" | "activity.summary.actions";
+type ContextSlot = "credentials.editor" | "audio.recording.actions" | "chat.message" | "activity.tool" | "activity.summary.actions";
 type ContentProps = { [S in ContextSlot]: { entry: RegisteredContribution<S>; componentProps: UiSlotProps[S] } }[ContextSlot]
   | { entry: RegisteredContribution<Exclude<UiSlot, ContextSlot>>; componentProps: Record<string, never> };
 
 export function ContributionContent({ entry, componentProps, fallback }: ContentProps & { fallback?: ReactNode }) {
   const { t } = useTranslation("extensions");
   let content: ReactNode;
-  if (entry.slot === "activity.tool" && "entry" in componentProps && "view" in componentProps && "fallback" in componentProps) {
+  if (entry.slot === "credentials.editor" && "credential" in componentProps) {
+    const Content = entry.Component;
+    content = <Content credential={componentProps.credential} />;
+  } else if (entry.slot === "activity.tool" && "entry" in componentProps && "view" in componentProps && "fallback" in componentProps) {
     const Content = entry.Component;
     content = <Content entry={componentProps.entry} view={componentProps.view} fallback={componentProps.fallback} />;
   } else if (entry.slot === "activity.summary.actions" && "run" in componentProps && "runs" in componentProps && "onReveal" in componentProps) {
@@ -30,7 +33,7 @@ export function ContributionContent({ entry, componentProps, fallback }: Content
   } else if (entry.slot === "audio.recording.actions" && "path" in componentProps) {
     const Content = entry.Component;
     content = <Content path={componentProps.path} />;
-  } else if (entry.slot !== "chat.message" && entry.slot !== "audio.recording.actions" && entry.slot !== "activity.tool" && entry.slot !== "activity.summary.actions") {
+  } else if (entry.slot !== "chat.message" && entry.slot !== "audio.recording.actions" && entry.slot !== "activity.tool" && entry.slot !== "activity.summary.actions" && entry.slot !== "credentials.editor") {
     const Content = entry.Component;
     content = <Content />;
   }

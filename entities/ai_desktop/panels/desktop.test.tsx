@@ -1,3 +1,4 @@
+import { MemoryRouter } from "react-router-dom";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -24,13 +25,13 @@ beforeEach(async () => {
 });
 
 it("distinguishes unknown quota from exhausted quota and preserves balances", () => {
-  render(<SubscriptionDetailView mod={{ ...moduleInfo, detail: { providers: [{
+  render(<MemoryRouter><SubscriptionDetailView mod={{ ...moduleInfo, detail: { providers: [{
     key: "bailian", name: "百炼", state: "ok", auth_type: "console", windows: [
       { label: "未知窗口", remaining_percent: null },
       { label: "每月", remaining_percent: 0 },
       { label: "账户余额", balance: 68.49, currency: "CNY" },
     ],
-  }] } }} />);
+  }] } }} /></MemoryRouter>);
   expect(screen.queryByRole("progressbar", { name: "未知窗口" })).toBeNull();
   expect(screen.getByText("剩余 未知")).toBeTruthy();
   expect(screen.getByRole("progressbar", { name: "每月" }).getAttribute("aria-valuenow")).toBe("0");
@@ -40,11 +41,10 @@ it("distinguishes unknown quota from exhausted quota and preserves balances", ()
 
 it("shows installation or console login instructions without asking for a model key", () => {
   const provider = { key: "bailian", name: "百炼", state: "no_credential", auth_type: "console" } as const;
-  const { rerender } = render(<SubscriptionDetailView mod={{ ...moduleInfo, detail: { providers: [provider] } }} />);
+  const { rerender } = render(<MemoryRouter><SubscriptionDetailView mod={{ ...moduleInfo, detail: { providers: [provider] } }} /></MemoryRouter>);
   expect(screen.getByRole("link", { name: zh.subscription.installGuide }).getAttribute("href")).toBe("https://bailian.aliyun.com/cli/install.md");
-  rerender(<SubscriptionDetailView mod={{ ...moduleInfo, detail: { providers: [{ ...provider, source: "Bailian CLI" }] } }} />);
-  expect(screen.queryByRole("link")).toBeNull();
-  expect(screen.getByRole("button", { name: zh.subscription.login })).toBeTruthy();
+  rerender(<MemoryRouter><SubscriptionDetailView mod={{ ...moduleInfo, detail: { providers: [{ ...provider, source: "Bailian CLI" }] } }} /></MemoryRouter>);
+  expect(screen.getByRole("link", { name: zh.subscription.manageAuthorization }).getAttribute("href")).toContain("providerKeys#credential-bailian_console");
 });
 
 it.each(["", "1.5", "4", "721"])("does not save invalid integer input %s", async (value) => {

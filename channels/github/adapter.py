@@ -19,6 +19,7 @@ import json
 import time
 from typing import Any, Dict, List, Optional, Set
 
+from agent.channel import CredentialField, get_provider_key, register_provider_key
 from agent.channel.base import BaseChannel, ChannelMetadata
 from agent.channel.channel_types import ChannelCapability, ChannelStatus
 from agent.channel.schemas import (
@@ -36,7 +37,6 @@ from agent.channel.schemas import (
     SendResponse,
 )
 from core.log import log
-from core.provider_keys import get_provider_key, register_provider_key
 
 from .app_auth import GitHubAppAuth
 from .client import GitHubClient
@@ -50,15 +50,17 @@ from .webhook import WebhookIngress
 # 凭据中心登记(Web 面板/AI set_provider_key 工具同面可见;幂等)
 register_provider_key(
     "github",
-    domain="通道",
+    domain="channel",
     title="GitHub",
+    fields=(CredentialField("api_key", "Personal access token"),), owner_title="GitHub", destination="/channels?channel=github",
     description="GitHub 频道凭据:api_key 填 PAT(推荐 fine-grained,最小权限 "
                 "Contents:Read / Issues:R&W / Pull requests:R&W);auth_mode=app 时另登记 github_app(PEM)",
 )
 register_provider_key(
     "github_app",
-    domain="通道",
+    domain="channel",
     title="GitHub App",
+    fields=(CredentialField("api_key", "Private key (PEM)", multiline=True),), owner_title="GitHub", destination="/channels?channel=github",
     description="GitHub App 私钥(PEM 全文,含 BEGIN/END 行;api_key 字段填 PEM)",
 )
 

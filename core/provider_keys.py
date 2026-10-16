@@ -1,39 +1,55 @@
-"""组件凭据中心 — 外部平台 API Key 的统一存取面。
+"""模块自声明凭据，共用存储、脱敏与热卸载契约。
 
-设计约定（模块分离与配置便利的平衡点）：
-- 域（声音/视觉/检索…）只提炼能力接口，具体平台由组件实现；组件所需的
-  外部凭据统一登记到本中心，落盘 ``config/provider_keys.json``
-  （gitignored，只跟踪 example 模板）；
-- 三面配置等价：Web（域页签的组件凭据面板）、配置文件（直接编辑
-  JSON）、AI（list/set_provider_key 工具）——同一存储，无第二真源；
-- 大模型类生成（能走 LLM 接口的图像/视频等）继续走 llm_clients 模型
-  配置，不经本中心；实时/特殊协议的语音等模块凭据只走本中心，不依赖
-  大模型配置；
-- 未登记/未配置凭据的组件自动不可用，其余链路不受影响。
-
-凭据条目结构：{"<provider>": {"api_key": "...", ...附加字段}}；附加字段
-用于同平台的配套参数（如 coding plan 的 host），敏感字段列出时脱敏。
+Model Experience:
+    模型通过凭据工具看到归属、字段和配置状态，不获得密钥原文。
+    清单按需返回，每条增加约 20 token 的归属信息。
+    不自动注入上下文，不改变稳定前缀。
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import threading
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
+from core.file_utils import atomic_write_text
 from core.log import log
 from core.path import config_dir
 from core.registration import belongs_to, caller_module, record_mapping
 
-_LOG_TAG = "凭据"
 
-_SECRET_FIELDS = frozenset({"api_key"})
+@dataclass(frozen=True)
+class CredentialField:
+    """模块声明的可编辑字段；敏感值仅返回掩码。"""
 
-_registry: Dict[str, List[Dict[str, Any]]] = {}
-_lock = threading.Lock()
-_cache: Optional[Dict[str, Dict[str, Any]]] = None
-_cache_mtime: float = -1.0
+    key: str
+    label: str = ""
+    secret: bool = True
+    multiline: bool = False
+    required: bool = True
+
+
+@dataclass(frozen=True)
+class _Registration:
+    module: str
+    title: str
+    owner_title: str
+    description: str
+    domain: str
+    domains: tuple[str, ...]
+    fields: tuple[CredentialField, ...]
+    destination: str
+    editor: str
+
+
+_registry: dict[str, _Registration] = {}
+_lock = threading.RLock()
+_cache: dict[str, dict[str, Any]] | None = None
+_cache_mtime: int = -1
 
 
 def _path() -> str:
@@ -41,163 +57,143 @@ def _path() -> str:
 
 
 def register_provider_key(
-    name: str,
-    domain: str,
-    title: str,
-    description: str = "",
-    extra_fields: Optional[List[Dict[str, Any]]] = None,
-    domains: Optional[List[str]] = None,
+    name: str, domain: str, title: str, description: str = "", *,
+    fields: tuple[CredentialField, ...], domains: tuple[str, ...] = (),
+    destination: str = "", editor: str = "", owner_title: str = "",
 ) -> None:
-    """登记一个组件凭据条目（组件导入时调用，幂等）。
-
-    Args:
-        name: 提供者标识（如 minimax / dashscope / minimax_coding_plan）
-        domain: 主域（卡片的归属页签域）
-        title: 展示名
-        description: 用途说明（面板与 AI 工具展示）
-        extra_fields: api_key 之外的附加字段声明
-            [{"key": "api_host", "label": "接入点", "default": "...", "secret": False}]
-        domains: 该凭据服务的域列表（视图透显，卡只出现一次；
-            缺省即 [domain]）
-    """
+    """登记所属模块的字段或专属编辑器；目的地为站内路由，编辑器由同模块贡献。"""
+    if not re.fullmatch(r"[a-zA-Z0-9_-]+", name):
+        raise ValueError("凭据名称无效")
+    if bool(fields) == bool(editor):
+        raise ValueError("凭据必须声明字段或专属编辑器，不能同时声明")
+    if len({field.key for field in fields}) != len(fields) or any(
+        not re.fullmatch(r"[a-zA-Z0-9_]+", field.key) for field in fields
+    ):
+        raise ValueError("凭据字段无效或重复")
+    if editor and not re.fullmatch(r"[a-z][a-z0-9-]*", editor):
+        raise ValueError("凭据编辑器标识无效")
+    if destination and (not destination.startswith("/") or destination.startswith("//") or "\\" in destination):
+        raise ValueError("凭据入口必须为站内路由")
+    module = caller_module()
     with _lock:
-        record_mapping(_registry, name)
-        entries = _registry.setdefault(name, [])
-        entry = {
-            "owner": caller_module(),
-            "domain": domain,
-            "title": title,
-            "description": description,
-            "extra_fields": list(extra_fields or []),
-            "domains": list(domains or [domain]),
-        }
-        if entry not in entries:
-            entries.append(entry)
+        current = _registry.get(name)
+        if current and current.module != module:
+            raise ValueError(f"凭据已由其他模块登记: {name}")
+        record_mapping(_registry, name, owner=module)
+        _registry[name] = _Registration(module, title, owner_title, description, domain, domains or (domain,), fields, destination, editor)
 
 
 def unregister_provider_keys_by_module(module: str) -> None:
-    """移除模块的凭据声明，保留用户已经配置的值。"""
+    """卸载声明，保留已配置值以供模块重新加载。"""
     with _lock:
-        for name, entries in list(_registry.items()):
-            remaining = [entry for entry in entries if not belongs_to(entry["owner"], module)]
-            if remaining:
-                _registry[name] = remaining
-            else:
-                _registry.pop(name, None)
+        for name, entry in list(_registry.items()):
+            if belongs_to(entry.module, module):
+                _registry.pop(name)
 
 
-def _load() -> Dict[str, Dict[str, Any]]:
+def _load() -> dict[str, dict[str, Any]]:
     global _cache, _cache_mtime
     with _lock:
         try:
-            mtime = os.stat(_path()).st_mtime
-        except OSError:
-            _cache, _cache_mtime = {}, -1.0
+            mtime = os.stat(_path()).st_mtime_ns
+        except FileNotFoundError:
+            _cache, _cache_mtime = {}, -1
             return {}
         if _cache is not None and mtime == _cache_mtime:
             return _cache
-        try:
-            with open(_path(), encoding="utf-8") as fh:
-                data = json.load(fh)
-            _cache = data if isinstance(data, dict) else {}
-        except Exception as exc:
-            log(f"凭据文件读取失败（视为空）: {exc}", "WARNING", tag=_LOG_TAG)
-            _cache = {}
-        _cache_mtime = mtime
-        return _cache
+        with open(_path(), encoding="utf-8") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict) or any(not isinstance(value, dict) for value in data.values()):
+            raise ValueError("凭据文件格式无效，请检查配置文件")
+        _cache, _cache_mtime = data, mtime
+        return data
 
 
-def _save(data: Dict[str, Dict[str, Any]]) -> None:
+def _save(data: dict[str, dict[str, Any]]) -> None:
     global _cache, _cache_mtime
-    with _lock:
-        os.makedirs(os.path.dirname(_path()), exist_ok=True)
-        tmp = _path() + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, ensure_ascii=False, indent=2)
-            fh.write("\n")
-        os.replace(tmp, _path())
-        _cache, _cache_mtime = dict(data), os.stat(_path()).st_mtime
+    os.makedirs(os.path.dirname(_path()), exist_ok=True)
+    atomic_write_text(Path(_path()), json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    os.chmod(_path(), 0o600)
+    _cache, _cache_mtime = data, os.stat(_path()).st_mtime_ns
 
 
 def get_provider_key(name: str, field: str = "api_key") -> str:
-    """读一个凭据字段（未配置返回空串）。"""
-    entry = _load().get(name)
-    if not isinstance(entry, dict):
-        return ""
-    return str(entry.get(field, "") or "").strip()
+    """读取单个字段，未配置返回空串。"""
+    return str(_load().get(name, {}).get(field, "") or "").strip()
+
+
+def set_provider_fields(name: str, values: dict[str, str]) -> None:
+    """原子更新一张卡片的字段；缺省保持原值，显式空串清除。"""
+    if not re.fullmatch(r"[a-zA-Z0-9_-]+", name) or not values or any(
+        not re.fullmatch(r"[a-zA-Z0-9_]+", key) or not isinstance(value, str) for key, value in values.items()
+    ):
+        raise ValueError("凭据名称或字段无效")
+    with _lock:
+        meta = _registry.get(name)
+        if meta and (meta.editor or set(values) - {field.key for field in meta.fields}):
+            raise ValueError("请使用该凭据登记的字段或专属授权入口")
+        data = dict(_load())
+        entry = dict(data.get(name, {}))
+        for key, value in values.items():
+            if value.strip():
+                entry[key] = value.strip()
+            else:
+                entry.pop(key, None)
+        if entry:
+            data[name] = entry
+        else:
+            data.pop(name, None)
+        _save(data)
+    log(f"组件凭据已更新: {name}", "INFO", tag="凭据")
 
 
 def set_provider_key(name: str, field: str, value: str) -> None:
-    """写一个凭据字段（空值删除该字段；条目字段清空后整体摘除）。"""
-    data = dict(_load())
-    entry = dict(data.get(name) or {})
-    value = str(value or "").strip()
-    if value:
-        entry[field] = value
-    else:
-        entry.pop(field, None)
-    if entry:
-        data[name] = entry
-    else:
-        data.pop(name, None)
-    _save(data)
-    log(f"组件凭据已更新: {name}.{field}", "INFO", tag=_LOG_TAG)
+    """更新单个字段，复用卡片的校验与原子写入。"""
+    set_provider_fields(name, {field: value})
 
 
 def _mask(value: str) -> str:
-    if not value:
-        return ""
-    return value[:4] + "…" + value[-4:] if len(value) > 12 else "已配置"
+    return value[:4] + "…" + value[-4:] if len(value) > 12 else ""
 
 
-def list_provider_keys(domain: str = "") -> List[Dict[str, Any]]:
-    """凭据条目清单（值脱敏；domain 非空时按域过滤）。
+def _owner(module: str) -> str:
+    parts = module.split(".")
+    if len(parts) > 1 and parts[0] in {"entities", "channels"}:
+        return f"{'entity' if parts[0] == 'entities' else 'channel'}:{parts[1]}"
+    return f"core:{module}"
 
-    含文件里存在但未登记的条目（config 手填场景），标记 unregistered。
-    """
-    entries: List[Dict[str, Any]] = []
-    for name, metas in _registry.items():
-        stored = _load().get(name) or {}
-        for meta in metas:
-            if domain and domain not in meta.get("domains", [meta["domain"]]):
+
+def list_provider_keys(domain: str = "") -> list[dict[str, Any]]:
+    """返回归属与脱敏状态；未登记字段一律视为敏感，不猜测其用途。"""
+    with _lock:
+        stored = _load()
+        entries: list[dict[str, Any]] = []
+        for name in sorted(set(_registry) | set(stored)):
+            meta = _registry.get(name)
+            if domain and (meta is None or domain not in meta.domains):
                 continue
-            fields: List[Dict[str, Any]] = [{
-                "key": "api_key",
-                "value": _mask(str(stored.get("api_key", "") or "")),
-                "configured": bool(str(stored.get("api_key", "") or "").strip()),
-                "secret": True,
-            }]
-            for extra in meta["extra_fields"]:
-                raw = str(stored.get(extra["key"], "") or "").strip()
-                secret = bool(extra.get("secret", False))
-                fields.append({
-                    "key": extra["key"],
-                    "label": extra.get("label", extra["key"]),
-                    "value": _mask(raw) if secret else raw,
-                    "configured": bool(raw),
-                    "secret": secret,
-                })
-            entries.append({
-                "name": name, "domain": meta["domain"], "title": meta["title"],
-                "description": meta["description"], "fields": fields,
-            })
-    for name in sorted(set(_load()) - set(_registry)):
-        stored = _load().get(name) or {}
-        entries.append({
-            "name": name, "domain": "", "title": name,
-            "description": "（文件中存在但未被任何组件登记）",
-            "fields": [{
-                "key": k, "value": _mask(str(v)) if k in _SECRET_FIELDS else str(v),
-                "configured": bool(str(v or "").strip()), "secret": k in _SECRET_FIELDS,
-            } for k, v in stored.items()],
-            "unregistered": True,
-        })
-    return entries
+            values = stored.get(name, {})
+            definitions = meta.fields if meta else tuple(CredentialField(key) for key in values)
+            fields = []
+            for field in definitions:
+                raw = str(values.get(field.key, "") or "").strip()
+                fields.append({"key": field.key, "label": field.label or field.key,
+                               "value": _mask(raw) if field.secret else raw, "configured": bool(raw),
+                               "secret": field.secret, "multiline": field.multiline, "required": field.required})
+            required = [field for field in fields if field["required"]]
+            configured = None if meta and meta.editor else bool(fields) and all(field["configured"] for field in (required or fields))
+            entries.append({"name": name, "title": meta.title if meta else name,
+                            "description": meta.description if meta else "", "domain": meta.domain if meta else "",
+                            "owner_title": meta.owner_title if meta else "",
+                            "domains": list(meta.domains) if meta else [], "owner": _owner(meta.module) if meta else "",
+                            "destination": meta.destination if meta else "", "editor": meta.editor if meta else "",
+                            "fields": fields, "configured": configured, "unregistered": meta is None})
+        return entries
 
 
 def reset_for_tests() -> None:
-    """清空注册表与缓存（测试隔离用）。"""
+    """重置凭据声明和缓存。"""
     global _cache, _cache_mtime
     with _lock:
         _registry.clear()
-        _cache, _cache_mtime = None, -1.0
+        _cache, _cache_mtime = None, -1

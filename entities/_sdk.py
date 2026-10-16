@@ -62,9 +62,11 @@ from core.context_provider import context_provider
 from core.entity import EntityRegistry
 from core.log import log
 from core.provider_keys import (  # 组件凭据中心桥
+    CredentialField,
     get_provider_key,
     list_provider_keys,
     register_provider_key,
+    set_provider_fields,
     set_provider_key,
 )
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
@@ -110,7 +112,7 @@ __all__ = [
     "entity_manifest", "entity_config", "context_provider",
     "push_notify", "register_entity_llm_hook", "emit_chat_extension",
     "get_embedder", "wake_embedding_worker", "register_embedding_backlog",
-    "register_provider_key", "get_provider_key", "set_provider_key",
+    "CredentialField", "register_provider_key", "get_provider_key", "set_provider_key", "set_provider_fields",
     "list_provider_keys",
     "register_audio_provider", "register_tts_provider", "audio_transcribe", "audio_speaker_embed",
     "default_tts_voice", "realtime_tts_voice",

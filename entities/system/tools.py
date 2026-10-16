@@ -325,7 +325,7 @@ def set_provider_key(provider: str, api_key: str = "", field: str = "api_key", v
     """配置一个组件凭据（如 minimax / minimax_coding_plan / dashscope 的 API Key）。
 
     配好即刻生效（组件由不可用转为可用）。可选 list_provider_keys 查看
-    可用条目与字段。
+    可用条目、归属与字段。editor 非空的授权由所属模块专属入口完成，不写入通用字段。
 
     Args:
         provider: 提供者标识（list_provider_keys 里的 name）

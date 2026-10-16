@@ -126,7 +126,15 @@
     "refreshQr": "重新获取",
     "confirmLogin": "确认授权",
     "additionalVerification": "该账号需要额外身份验证，请在官方控制台完成验证后重试，或使用官方 CLI 登录。",
-    "quotaRefreshFailed": "授权已保存，额度暂未刷新成功，可稍后点击刷新。"
+    "quotaRefreshFailed": "授权已保存，额度暂未刷新成功，可稍后点击刷新。",
+    "credentialsTitle": "百炼控制台授权",
+    "credentialsHint": "扫码授权只用于读取额度，自动复用已保存的授权。额度监控开关在 AI 桌面管理。",
+    "authorizationSaved": "授权已保存",
+    "authorizationMissing": "未授权",
+    "monitoringOn": "额度监控已开启",
+    "monitoringOff": "额度监控未开启",
+    "signInAgain": "重新扫码授权",
+    "manageAuthorization": "管理组件凭据"
   },
   "calendar": {
     "today": "今天",

@@ -21,6 +21,7 @@ export default defineUiContributions([
 ]);
 ```
 
+- `credentials.editor`：模块专属授权编辑器；接收 `CredentialEditorProps`（脱敏 `credential` 声明），其 `id` 与后端 `editor` 一致。宿主同时校验模块归属，只挂载后端实际登记的条目。复用 `CredentialCard` 外框；协议、状态、接口和翻译全部留在模块目录。
 - `workspace.tools`：工作区工具栏的「工具」入口，适合低频操作，不挤占文件与对话空间。
 - `dashboard.cards`：总览卡片区域，适合模块状态与摘要。
 - `dashboard.actions`：总览页头「服务与维护」入口，重启、部署等低频操作在独立弹窗中呈现。
@@ -73,3 +74,24 @@ export default function ExecutionView(props: ToolRendererProps) {
 
 开发服务中，组件源码修改交给 Vite Fast Refresh；清单、入口和语言资源变动重新发现并刷新页面。生产构建的前端资源仍需重新构建并刷新页面，Python 模块热重载不会把 TypeScript 编译到已发布资源中。
 生产构建将启动必读的轻量扩展清单合并为一个资源，组件实现保持按需加载；增加模块不会逐个增加首屏清单请求。
+
+## 凭据字段声明
+
+普通凭据无需专属前端。声明来源为模块自身（实体用 `entities._sdk`，频道用 `agent.channel`）：
+
+```python
+register_provider_key(
+    "sample", domain="retrieval", title="Sample service",
+    fields=(CredentialField("api_key", "API Key"),
+            CredentialField("endpoint", "Service URL", secret=False, required=False)),
+    destination="/entities/sample",
+)
+```
+
+`fields` 与 `editor` 二选一。扫码等授权声明 `fields=(), editor="sample-login"`，前端以相同
+ID 注册 `credentials.editor`。`destination` 只接受站内路由。字段名称是存储契约，`secret`、
+`required`、`multiline` 分别决定脱敏、配置完整性和编辑方式。共用凭据只由归属模块声明，消费者
+读取同一名称，不重复登记。注册由模块事务管理，失败可回滚，卸载只撤销声明。
+
+`PUT /api/provider-keys/{name}` 接受 `{"values": {"field": "value"}}`，一次原子更新；省略字段
+保持原值，显式空字符串清除。专属授权拒绝通用字段写入，由模块自己的受鉴权路由处理。
