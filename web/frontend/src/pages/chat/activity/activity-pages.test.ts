@@ -2,6 +2,7 @@ import { expect, it } from "vitest";
 import type { ActivityRun } from "@/lib/types/activity";
 import { activityFamilies, activityPages } from "./activity-pages";
 import { activitySummary } from "./activity-summary";
+import { activitySideGroups } from "./activity-side";
 
 function run(id: string, start: number, end: number | null, parent_id = ""): ActivityRun {
   return { id, parent_id, started_at: start, ended_at: end, updated_at: end ?? start, status: end == null ? "running" : "completed",
@@ -26,6 +27,44 @@ it("retains a background child in the live round after its parent has completed"
 
 it("renders orphaned children when an older parent was evicted", () => {
   expect(activityPages([run("child", 10, 20, "evicted")])[0]?.runs.map((item) => item.id)).toEqual(["child"]);
+});
+
+it("keeps recollection history but lists only running work, including children of completed rounds", () => {
+  const parent = run("parent", 1, 2);
+  parent.entries = [
+    { id: "recall", kind: "hook", name: "memory.initial", ts: 1, status: "done", mode: "sync", event: "before_reply", source: "internal", scope: parent.scope, duration_ms: 20, detail: "Done" },
+    { id: "active", kind: "background", task_kind: "tool", ts: 1, status: "running", description: "Waiting" },
+    { id: "done", kind: "background", task_kind: "tool", ts: 1, status: "done", description: "Done" },
+    { id: "review", kind: "hook", name: "skill_review", ts: 1, status: "running", mode: "async", event: "after_reply", source: "code", scope: parent.scope, duration_ms: 0, detail: "Review", activity_ids: ["hook-run"] },
+    { id: "delegate", kind: "delegation", ts: 1, status: "running", agent: "Review", goal: "Review", run_id: "child", background: true },
+    { id: "queued", kind: "delegation", ts: 1, status: "queued", agent: "Queued", goal: "Wait", background: true },
+  ];
+  const task = { ...run("task", 2, null), kind: "task" };
+  const child = { ...run("child", 2, null, "parent"), kind: "delegation", owner_id: "delegate" };
+  const nested = { ...run("nested", 3, null, "child"), kind: "delegation", owner_id: "nested" };
+  const hook = { ...run("hook-run", 2, null, "parent"), kind: "hook" };
+  const all = [parent, task, child, nested, hook, { ...run("finished", 1, 2), kind: "task" }];
+  const groups = activitySideGroups([parent], all);
+  expect(groups.recollection.flatMap(({ entries }) => entries.map((entry) => entry.id))).toEqual(["recall"]);
+  expect(groups.background.flatMap(({ entries }) => entries.map((entry) => entry.id))).toEqual(["active", "review"]);
+  expect(groups.tasks.map(({ run }) => run.id)).toEqual(["task"]);
+  expect(groups.delegates.map(({ run }) => run.id)).toEqual(["child", "nested"]);
+  expect(activitySideGroups([], all).recollection).toEqual([]);
+  expect(activitySideGroups([parent], [parent]).delegates.flatMap(({ entries }) => entries.map((entry) => entry.id))).toEqual(["delegate"]);
+  const ended = all.map((run) => ({ ...run, status: "completed", entries: run.entries.map((entry) => "status" in entry ? { ...entry, status: "done" as const } : entry) }));
+  expect(activitySideGroups(ended, ended)).toMatchObject({ tasks: [], delegates: [], background: [] });
+});
+
+it("deduplicates resumed subagents and removes stale parent entries once the child finishes", () => {
+  const parent = run("parent", 1, 2);
+  parent.entries = [{ id: "delegate", kind: "delegation", ts: 1, status: "running", agent: "Worker", goal: "Work", run_id: "child", background: true }];
+  const child = { ...run("child", 2, 3, "parent"), kind: "delegation", owner_id: "delegate" };
+  const resumed = { ...run("resumed", 4, null, "parent"), kind: "delegation", owner_id: "delegate" };
+  expect(activitySideGroups([], [parent, child]).delegates).toEqual([]);
+  expect(activitySideGroups([], [parent, child, resumed]).delegates.map(({ run }) => run.id)).toEqual(["resumed"]);
+  expect(activitySideGroups([], [resumed]).delegates.map(({ run }) => run.id)).toEqual(["resumed"]);
+  parent.entries = [{ id: "unlinked", kind: "delegation", ts: 5, status: "running", agent: "Worker", goal: "Waiting for execution snapshot", background: true }];
+  expect(activitySideGroups([], [parent, { ...resumed, owner_id: "" }]).delegates).toHaveLength(2);
 });
 
 it("summarizes only the selected family, merging continuations and retaining queued children", () => {

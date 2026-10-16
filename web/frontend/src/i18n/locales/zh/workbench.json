@@ -384,6 +384,12 @@
     },
     "side": {
       "title": "执行辅助信息",
+      "records": "回忆与判断",
+      "running": "运行中的工作",
+      "tasks": "进行中任务",
+      "delegates": "运行中子代理",
+      "runningHint": "仅显示运行中的项目，点击可查看执行详情。",
+      "noRunning": "当前没有运行中的项目",
       "background": "异步任务",
       "judgments": "判断记录",
       "close": "关闭详情",

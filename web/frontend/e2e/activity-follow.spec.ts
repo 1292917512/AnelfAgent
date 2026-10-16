@@ -100,6 +100,83 @@ test("stage navigation previews without mounting details and pauses following on
   await expect(page.getByText(/Live thought 39/)).toBeInViewport();
 });
 
+test("long process content stays within the timeline while wide tables scroll locally", async ({ page }, info) => {
+  const start = Date.now() / 1000 - 20;
+  const token = "long_identifier_".repeat(50);
+  await liveFixture(page, [run("width", start, { label: token, source: { scope: "user_qq:42", channel: "qq", kind: "user", target: token, session: token }, entries: [
+    { id: "model", kind: "model", name: token, status: "running", ts: start, generation: 1 },
+    { id: "thought", kind: "thinking", content: `Reasoning [skill:${token}]\n${token}`, ts: start + 1, generation: 1 },
+    { id: "text", kind: "text", content: `| ${Array(8).fill("Column").join(" | ")} |\n| ${Array(8).fill("---").join(" | ")} |\n| ${Array(8).fill(token).join(" | ")} |\n\n\`\`\`sh\necho ${token}\n\`\`\``, ts: start + 2 },
+    { id: "finished-model", kind: "model", name: token, status: "done", ts: start + 3 },
+  ] })]);
+  await page.goto("/webui/");
+  const feed = page.locator(".activity-feed");
+  await expect(feed.locator(".markdown-table")).toBeVisible();
+  expect(await feed.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await feed.evaluate((element) => { element.scrollLeft = 300; });
+  expect(await feed.evaluate((element) => element.scrollLeft)).toBe(0);
+  const table = feed.locator(".markdown-table");
+  expect(await table.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath("timeline-width.png"), animations: "disabled" });
+});
+
+test("side rail separates records from running work and removes completed items live", async ({ page, isMobile }, info) => {
+  if (!isMobile) await page.setViewportSize({ width: 1680, height: 960 });
+  const start = Date.now() / 1000 - 30;
+  let parent = run("owner", start, { status: "completed", ended_at: start + 1, label: "Deployment request", entries: [
+    { id: "bg", kind: "background", task_kind: "image", description: "Analyze the screenshot", status: "running", ts: start + 1 },
+    { id: "old-bg", kind: "background", task_kind: "tool", description: "Already finished", status: "done", ts: start },
+    { id: "delegate", kind: "delegation", agent: "Reviewer", goal: "Review deployment", status: "running", run_id: "reviewer", background: true, ts: start + 1 },
+    { id: "queued", kind: "delegation", agent: "Queued worker", goal: "Wait", status: "queued", background: true, ts: start + 1 },
+  ] });
+  const reviewer = run("reviewer", start + 1, { kind: "delegation", owner_id: "delegate", parent_id: parent.id, actor: "Reviewer", label: "Review deployment", entries: [] });
+  const task = run("maintenance", start + 2, { kind: "task", label: "Check service health", entries: [] });
+  const publish = await liveFixture(page, [parent, reviewer, task, run("latest", start + 3, { label: "Separate conversation", entries: [] })]);
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.goto("/webui/");
+  const rail = page.getByRole("complementary", { name: "Execution details" });
+  await expect(rail.getByRole("button")).toHaveCount(5);
+  expect(await rail.getByRole("button").evaluateAll((buttons) => buttons.map((button) => button.getAttribute("aria-label"))))
+    .toEqual(["Recollection", "Decisions", "Running tasks", "Running subagents", "Background tasks"]);
+  const background = rail.getByRole("button", { name: "Background tasks", exact: true });
+  await expect(background.locator(".activity-side-count")).toHaveText("1");
+  expect(await background.evaluate((element) => element.getBoundingClientRect().right <= element.closest("aside")!.getBoundingClientRect().right)).toBe(true);
+  expect(await background.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await background.click();
+  const bgDialog = page.getByRole("dialog", { name: "Background tasks", exact: true });
+  await expect(bgDialog).toContainText("Analyze the screenshot");
+  await expect(bgDialog).not.toContainText("Already finished");
+  await expect(bgDialog).not.toContainText("Review deployment");
+  parent = { ...parent, entries: parent.entries.map((entry) => entry.id === "bg" && entry.kind === "background" ? { ...entry, status: "done", duration_ms: 500 } : entry) };
+  await publish(parent);
+  await expect(bgDialog).toContainText("Nothing running in this category");
+  await expect(bgDialog).not.toContainText("Analyze the screenshot");
+  await bgDialog.getByRole("button", { name: "Close details" }).click();
+  const agents = rail.getByRole("button", { name: "Running subagents", exact: true });
+  await expect(agents.locator(".activity-side-count")).toHaveText("1");
+  await agents.click();
+  const agentDialog = page.getByRole("dialog", { name: "Running subagents", exact: true });
+  await expect(agentDialog).not.toContainText("Queued worker");
+  await agentDialog.getByRole("button", { name: /Reviewer.*Review deployment/ }).click();
+  const execution = page.getByRole("dialog", { name: "View execution details", exact: true });
+  await expect(execution).toContainText("Review deployment");
+  await expect(agentDialog).toHaveCount(0);
+  await execution.getByRole("button", { name: "Close", exact: true }).click();
+  await publish({ ...reviewer, status: "completed", ended_at: start + 20 });
+  await expect(agents.locator(".activity-side-count")).toBeEmpty();
+  const tasks = rail.getByRole("button", { name: "Running tasks", exact: true });
+  await tasks.click();
+  const taskDialog = page.getByRole("dialog", { name: "Running tasks", exact: true });
+  await expect(taskDialog).toContainText("Check service health");
+  await expect(taskDialog).not.toContainText("Separate conversation");
+  expect(await taskDialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath("running-work.png"), animations: "disabled" });
+  await publish({ ...task, status: "completed", ended_at: start + 20 });
+  await expect(taskDialog).toContainText("Nothing running in this category");
+  expect(errors).toEqual([]);
+});
+
 test("live process follows streamed content and concurrent tools until explicitly scrolled", async ({ page, isMobile }, info) => {
   const start = Date.now() / 1000 - 20;
   let current = run("current", start);

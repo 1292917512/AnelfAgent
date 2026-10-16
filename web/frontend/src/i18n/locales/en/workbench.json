@@ -384,6 +384,12 @@
     },
     "side": {
       "title": "Execution details",
+      "records": "Recollection and decisions",
+      "running": "Running work",
+      "tasks": "Running tasks",
+      "delegates": "Running subagents",
+      "runningHint": "Running items only. Open an item to inspect its execution.",
+      "noRunning": "Nothing running in this category",
       "background": "Background tasks",
       "judgments": "Decisions",
       "close": "Close details",

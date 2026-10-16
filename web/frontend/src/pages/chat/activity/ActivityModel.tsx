@@ -32,7 +32,7 @@ export function ActivityModel({ entry, thoughts = [] }: { entry: Extract<Activit
     {rate != null && cached != null && <span>{t("activity.cachedTokens", { tokens: cached.toLocaleString(), percent: rate })}</span>}
   </div>;
   const summary = <>
-    <span>{running ? <Loader2 size={12} className="animate-spin" /> : entry.status === "error" ? <AlertCircle size={12} className="text-warn" /> : <Brain size={12} />}{entry.name}</span>
+    <span>{running ? <Loader2 size={12} className="animate-spin" /> : entry.status === "error" ? <AlertCircle size={12} className="text-warn" /> : <Brain size={12} />}<span className="activity-model-name" title={entry.name}>{entry.name}</span></span>
     <span>{formatElapsedCompact(Math.max(0, running ? now - entry.ts * 1000 : entry.duration_ms ?? 0))}</span>
     {input != null && <span>{t("activity.modelUsage", { input: input.toLocaleString(), output: (usage?.completion_tokens ?? 0).toLocaleString() })}</span>}
     {!running && <span title={t("activity.cacheHint")}>{rate != null ? t("activity.modelCache", { percent: rate }) : t("activity.cacheUnknown")}</span>}
