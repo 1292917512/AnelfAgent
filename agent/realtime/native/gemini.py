@@ -58,7 +58,7 @@ class GeminiLiveClient:
             raise RuntimeError("无 Gemini 凭据（llm_clients 未配置 google 供应商）")
         import websockets
         factory = self._ws_factory or websockets.connect
-        self._ws = await factory(f"{self._base_url}?key={self._api_key}")
+        self._ws = await factory(f"{self._base_url}?key={self._api_key}", proxy=None)
         await self._send({
             "setup": {
                 "model": f"models/{self._model}",

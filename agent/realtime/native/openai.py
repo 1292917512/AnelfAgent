@@ -65,6 +65,7 @@ class OpenAiRealtimeClient:
                 "Authorization": f"Bearer {self._api_key}",
                 "OpenAI-Beta": "realtime=v1",
             },
+            proxy=None,
         )
         await self._send({
             "type": "session.update",

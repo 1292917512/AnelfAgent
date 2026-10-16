@@ -47,6 +47,8 @@ IP 规则只匹配 URL 中的 IP，不为路由额外查询 DNS。未命中规�
 关闭全局开关时，`system` 直连，显式 `proxy` 返回配置错误；`direct` 始终直连。
 GitHub API 与 App 鉴权共用全局策略；微信收发、媒体和扫码登录共用频道 `proxy_mode`。
 这些入口均不读取宿主的 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 环境代理。
+原生实时语音的 OpenAI、Gemini、千问 WebSocket 明确直连，避免 SDK 自动读取宿主代理；
+该通道尚不提供项目内代理策略配置，不将它误报为已接入全局路由。
 
 SearXNG 与 Crawl4AI 的服务连接分别由 `retrieval_searxng_proxy_mode` 和
 `retrieval_crawl4ai_proxy_mode` 控制，均默认 `direct`，可在提供者配置中选择 `system` 或 `proxy`。

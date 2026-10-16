@@ -65,6 +65,7 @@ class TestOpenAiRealtime:
         await client.connect()
         assert "wss://api.openai.com/v1/realtime?model=" in ws.url
         assert ws.kwargs["additional_headers"]["Authorization"] == "Bearer sk-test"
+        assert ws.kwargs["proxy"] is None
         update = ws.sent[0]
         assert update["type"] == "session.update"
         assert update["session"]["input_audio_format"] == "pcm16"
@@ -115,6 +116,7 @@ class TestGeminiLive:
         client = GeminiLiveClient(api_key="gm-test", ws_factory=_factory(ws))
         await client.connect()
         assert "key=gm-test" in ws.url
+        assert ws.kwargs["proxy"] is None
         setup = ws.sent[0]["setup"]
         assert setup["generation_config"]["response_modalities"] == ["AUDIO"]
 
@@ -153,6 +155,7 @@ class TestQwenRealtime:
             api_key="sk-test", ws_factory=_factory(ws))
         await client.connect()
         assert "/api-ws/v1/realtime?model=qwen-audio-3.0-realtime-plus" in ws.url
+        assert ws.kwargs["proxy"] is None
         assert ws.kwargs["additional_headers"]["Authorization"] == "Bearer sk-test"
         assert client.input_rate == 16000
         update = ws.sent[0]
