@@ -117,9 +117,10 @@ value=true` 启用平台（其他平台短名见配置清单）。未启用的�
 
 百炼在额度面板扫码登录，授权写入 `ConfigPaths` 配置目录下的 `ai_desktop/bailian/config.json`，
 重启后复用，不创建模型 Key，也不改变模型配置。扫码浏览器仅在用户打开面板时启动，取消、超时
-和组件卸载均回收。使用前在部署环境安装 `uv sync --extra subscription-login`，再执行
-`uv run --extra subscription-login playwright install chromium`（Linux 缺系统依赖时按 Playwright
-提示安装）。授权完成仍需用户本人扫码并确认，AI 不代替用户批准授权。
+和组件卸载均回收。点击登录后自动打开官方扫码页，仅展示二维码与状态；扫码后在弹窗确认授权。
+Playwright 随项目依赖安装，首次缺少浏览器时自动下载 Chromium 无头运行包，后续复用缓存。
+下载失败可在弹窗重试；Linux 部署需具备 Playwright 的系统运行库（镜像可预装
+`python -m playwright install --with-deps chromium --only-shell`）。AI 不代替用户批准授权。
 
 也可在运行应用的同一系统用户下执行 `bl auth login --console`；未保存组件专用授权时复用此
 CLI 会话。授权失效后暂停查询，更新凭据文件或重新扫码后恢复，不反复向 AI 提醒登录。

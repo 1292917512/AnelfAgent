@@ -31,15 +31,15 @@ test("subscription login, refresh and failure states remain readable", async ({ 
   await page.route("**/api/entity/ai_desktop/modules/subscription/login**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith("/image")) {
-      await route.fulfill({ contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="900" height="720"><rect width="900" height="720" fill="white"/><text x="300" y="350">Official login preview</text></svg>' });
+      await route.fulfill({ contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="168" height="168"><rect width="168" height="168" fill="white"/><path d="M10 10h50v50H10zM108 10h50v50h-50zM10 108h50v50H10zM86 80h60v60H86z" fill="black"/></svg>' });
       return;
     }
-    if (path.endsWith("/click")) {
+    if (path.endsWith("/confirm")) {
       loginState = "complete";
       provider = { ...provider, state: "ok", plan: "Token Plan", windows: [{ label: "每月", remaining_percent: 75 }] };
     }
     if (path.endsWith("/login") && route.request().method() === "POST") starts++;
-    await route.fulfill({ json: { id: "session", state: loginState, error: "", width: 900, height: 720, expires_at: 0 } });
+    await route.fulfill({ json: { id: "session", state: loginState, error: "", expires_at: 0 } });
   });
   await page.route("**/api/entity/ai_desktop/preview", (route) => route.fulfill({ json: { injecting: false, content: "" } }));
   await page.route("**/api/entity/ai_desktop/modules/subscription/refresh", async (route) => {
@@ -50,13 +50,13 @@ test("subscription login, refresh and failure states remain readable", async ({ 
   await page.goto("/webui/entities/ai_desktop");
   await page.getByRole("button", { name: "Sign in with QR code" }).click();
   const dialog = page.getByRole("dialog");
-  const loginImage = dialog.getByRole("img", { name: "Official Bailian login page (click to interact)", exact: true });
+  const loginImage = dialog.getByRole("img", { name: "Aliyun sign-in QR code", exact: true });
   await expect(loginImage).toBeVisible();
-  await dialog.getByRole("button", { name: "Enlarge QR code (scroll to navigate)", exact: true }).click();
-  await page.screenshot({ path: info.outputPath("subscription-login.png") });
+  await expect(dialog.getByRole("button", { name: "Close", exact: true }).last()).toBeInViewport({ ratio: 1 });
+  await page.screenshot({ path: info.outputPath("subscription-login.png"), animations: "disabled" });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await dialog.getByRole("button", { name: "Fit to window", exact: true }).click();
-  await loginImage.click();
+  loginState = "confirming";
+  await dialog.getByRole("button", { name: "Confirm authorization", exact: true }).click();
   await expect(dialog.getByText("Signed in. Authorization will be reused.")).toBeVisible();
   expect(starts).toBe(1);
   await dialog.getByRole("button", { name: "Close", exact: true }).last().click();

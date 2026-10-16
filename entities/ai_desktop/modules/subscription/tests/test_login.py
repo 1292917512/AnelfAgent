@@ -94,15 +94,23 @@ def test_session_persistence_isolated_reused_and_secrets_not_in_commands(tmp_pat
 
 @pytest.fixture
 def browser(monkeypatch):
-    page = SimpleNamespace(goto=AsyncMock(), screenshot=AsyncMock(return_value=b"png"),
-                           mouse=SimpleNamespace(click=AsyncMock()))
+    scanned = asyncio.Event()
+    qr = Mock(screenshot=AsyncMock(return_value=b"png"))
+    qr.locator.return_value.wait_for = AsyncMock()
+    authorize = Mock(click=AsyncMock(), wait_for=AsyncMock(side_effect=lambda **_: scanned.wait()))
+    async def wait_for_scan(**_):
+        await scanned.wait()
+    authorize.wait_for = wait_for_scan
+    enter = Mock(click=AsyncMock())
+    page = SimpleNamespace(goto=AsyncMock(), locator=Mock(return_value=qr),
+                           get_by_role=Mock(side_effect=lambda _, name, exact: enter if name == "前往登录" else authorize))
     context = SimpleNamespace(new_page=AsyncMock(return_value=page), route=AsyncMock())
     browser = SimpleNamespace(new_context=AsyncMock(return_value=context), close=AsyncMock())
     manager = AsyncMock()
-    manager.__aenter__.return_value = SimpleNamespace(chromium=SimpleNamespace(launch=AsyncMock(return_value=browser)))
     monkeypatch.setattr(login_module.importlib, "import_module", Mock(return_value=SimpleNamespace(async_playwright=lambda: manager)))
+    monkeypatch.setattr(login_module, "open_browser", AsyncMock(return_value=browser))
     monkeypatch.setattr(login_module, "cli_credential", lambda: ("bl", "CLI"))
-    return SimpleNamespace(page=page, context=context, browser=browser)
+    return SimpleNamespace(page=page, context=context, browser=browser, scanned=scanned, authorize=authorize, enter=enter)
 
 
 async def waiting(service: ConsoleLogin) -> dict:
@@ -122,7 +130,7 @@ async def test_login_coalesces_validates_callback_and_releases_browser(browser, 
     with pytest.raises(LookupError):
         await service.image("wrong-session")
     with pytest.raises(ValueError):
-        await service.click(state["id"], -1, 0)
+        await service.confirm(state["id"])
     assert await service.image(state["id"]) == b"png"
     callback, handler = browser.context.route.call_args.args
     assert "needapikey" not in browser.page.goto.call_args.args[0]
@@ -133,6 +141,13 @@ async def test_login_coalesces_validates_callback_and_releases_browser(browser, 
     route.abort.assert_awaited_once()
     assert not (bailian.console_config_dir() / "config.json").exists()
     route.request.headers["origin"] = "https://bailian.console.aliyun.com"
+    browser.enter.click.assert_awaited_once()
+    browser.scanned.set()
+    async with asyncio.timeout(1):
+        while service.status(state["id"])["state"] != "confirming":
+            await asyncio.sleep(0)
+    await service.confirm(state["id"])
+    browser.authorize.click.assert_awaited_once()
     await handler(route)
     await service._task
     assert service.status(state["id"])["state"] == "complete"
@@ -159,16 +174,26 @@ async def test_cancel_and_timeout_release_resources(browser, monkeypatch, stop):
     browser.browser.close.assert_awaited_once()
 
 
-async def test_missing_optional_browser_has_actionable_state(monkeypatch):
-    monkeypatch.setattr(login_module, "cli_credential", lambda: ("bl", "CLI"))
-    monkeypatch.setattr(login_module.importlib, "import_module", Mock(side_effect=ModuleNotFoundError()))
+async def test_preparation_is_visible_and_failure_can_restart(browser, monkeypatch):
     service = ConsoleLogin(AsyncMock())
+    async def prepare(runtime, on_prepare):
+        on_prepare()
+        assert service.status(service._id)["state"] == "preparing"
+        assert service.status(service._id)["expires_at"] == 0
+        raise RuntimeError("private download detail")
+    monkeypatch.setattr(login_module, "open_browser", prepare)
     state = await service.start()
     await service._task
-    assert service.status(state["id"])["state"] == "unavailable"
+    assert service.status(state["id"])["error"] == "browser_prepare_failed"
+    assert "private" not in str(service.status(state["id"]))
+    monkeypatch.setattr(login_module, "open_browser", AsyncMock(return_value=browser.browser))
+    replacement = await waiting(service)
+    assert replacement["id"] != state["id"]
+    assert replacement["state"] == "waiting"
+    await service.close()
 
 
-async def test_ai_configuration_controls_login_route_and_validates_clicks(browser, monkeypatch):
+async def test_ai_configuration_controls_login_route_and_authorization(browser, monkeypatch):
     from entities.ai_desktop import tools
     from entities.ai_desktop.modules.subscription import router
 
@@ -190,6 +215,6 @@ async def test_ai_configuration_controls_login_route_and_validates_clicks(browse
         assert response.status_code == 200
         sid = response.json()["id"]
         assert (await client.get("/modules/subscription/login/unknown")).status_code == 404
-        assert (await client.post(f"/modules/subscription/login/{sid}/click", json={"x": -1, "y": 0})).status_code == 422
+        assert (await client.post(f"/modules/subscription/login/{sid}/confirm")).status_code == 409
         assert (await client.delete(f"/modules/subscription/login/{sid}")).status_code == 200
         assert service._task is None

@@ -3,17 +3,11 @@
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Response
-from pydantic import BaseModel, Field
 
 from ... import framework
 from .login import get_console_login
 from .module import SubscriptionModule
 from .providers import PROVIDERS
-
-
-class LoginClick(BaseModel):
-    x: int = Field(ge=0, lt=900, strict=True)
-    y: int = Field(ge=0, lt=720, strict=True)
 
 
 def build_router() -> APIRouter:
@@ -53,10 +47,10 @@ def build_router() -> APIRouter:
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
 
-    @router.post("/{session_id}/click")
-    async def click(session_id: str, body: LoginClick) -> dict[str, bool]:
+    @router.post("/{session_id}/confirm")
+    async def confirm(session_id: str) -> dict[str, bool]:
         try:
-            await service.click(session_id, body.x, body.y)
+            await service.confirm(session_id)
             return {"success": True}
         except LookupError as exc:
             raise HTTPException(404, str(exc)) from exc

@@ -113,11 +113,9 @@ export interface SubscriptionProvider {
 
 export interface SubscriptionLogin {
   id: string;
-  state: "idle" | "starting" | "waiting" | "refreshing" | "complete" | "expired" | "cancelled" | "unavailable" | "error";
+  state: "idle" | "preparing" | "starting" | "waiting" | "confirming" | "refreshing" | "complete" | "expired" | "cancelled" | "error";
   error: string;
   expires_at: number;
-  width: number;
-  height: number;
 }
 
 /** 组件结构化详情（各组件字段的并集，全部可选；面板按 key 特化渲染） */

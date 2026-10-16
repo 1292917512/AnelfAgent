@@ -196,6 +196,7 @@ dependencies = [
     { name = "onnxruntime" },
     { name = "openpyxl" },
     { name = "pillow" },
+    { name = "playwright" },
     { name = "psutil" },
     { name = "pyautogui" },
     { name = "pycryptodomex" },
@@ -219,11 +220,6 @@ dependencies = [
     { name = "tiktoken" },
     { name = "uvicorn" },
     { name = "yarl" },
-]
-
-[package.optional-dependencies]
-subscription-login = [
-    { name = "playwright" },
 ]
 
 [package.dev-dependencies]
@@ -273,7 +269,7 @@ requires-dist = [
     { name = "onnxruntime", specifier = ">=1.16" },
     { name = "openpyxl", specifier = ">=3.1.5" },
     { name = "pillow", specifier = ">=10.0.0" },
-    { name = "playwright", marker = "extra == 'subscription-login'", specifier = ">=1.50,<2" },
+    { name = "playwright", specifier = ">=1.50,<2" },
     { name = "psutil", specifier = ">=7.0.0" },
     { name = "pyautogui", specifier = ">=0.9.54" },
     { name = "pycryptodomex", specifier = ">=3.23.0" },
@@ -298,7 +294,6 @@ requires-dist = [
     { name = "uvicorn", specifier = ">=0.30.0" },
     { name = "yarl", specifier = ">=1.24.5" },
 ]
-provides-extras = ["subscription-login"]
 
 [package.metadata.requires-dev]
 dev = [

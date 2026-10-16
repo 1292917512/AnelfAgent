@@ -1,4 +1,4 @@
-"""按需启动的控制台授权浏览器；仅向登录面板提供画面，不向模型暴露凭据。"""
+"""按需获取官方扫码画面与授权状态，不向模型或 Web 返回凭据。"""
 
 from __future__ import annotations
 
@@ -10,8 +10,10 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from core.lifecycle import Lifecycle
+from core.log import log
 
 from .bailian import cli_credential, save_console_session
+from .browser_runtime import open_browser
 
 _ORIGIN = "https://bailian.console.aliyun.com"
 _WIDTH, _HEIGHT = 900, 720
@@ -25,6 +27,7 @@ class ConsoleLogin:
         self._on_complete = on_complete
         self._task: asyncio.Task[None] | None = None
         self._page: Any = None
+        self._qr: Any = None
         self._lock = asyncio.Lock()
         self._id = ""
         self._state = "idle"
@@ -36,7 +39,7 @@ class ConsoleLogin:
         if not self._id or not secrets.compare_digest(self._id, session_id):
             raise LookupError("登录会话不存在")
         return {"id": self._id, "state": self._state, "error": self._error,
-                "expires_at": self._expires_at, "width": _WIDTH, "height": _HEIGHT}
+                "expires_at": self._expires_at}
 
     async def start(self) -> dict[str, Any]:
         """复用仍在等待的会话；仅显式请求才启动浏览器。"""
@@ -84,25 +87,39 @@ class ConsoleLogin:
                 await route.fulfill(status=400, headers=headers)
                 done.set()
                 return
+            self._state = "refreshing"
             await route.fulfill(status=200, body="OK", headers=headers)
             done.set()
 
         try:
             factory = importlib.import_module("playwright.async_api").async_playwright
-            async with asyncio.timeout(_TTL), factory() as playwright:
-                browser = await playwright.chromium.launch(headless=True)
+            async with factory() as playwright:
+                browser = await open_browser(playwright, self._preparing)
                 try:
-                    context = await browser.new_context(viewport={"width": _WIDTH, "height": _HEIGHT})
+                    context = await browser.new_context(
+                        viewport={"width": _WIDTH, "height": _HEIGHT}, locale="zh-CN", device_scale_factor=2,
+                    )
                     await context.route(callback, receive)
                     self._page = await context.new_page()
-                    await self._page.goto(
-                        f"{_ORIGIN}/console-login?notice={callback.removeprefix('http://')}",
-                        wait_until="domcontentloaded", timeout=30000,
-                    )
-                    self._state = "waiting"
-                    await done.wait()
+                    async with asyncio.timeout(_TTL):
+                        self._state = "starting"
+                        await self._page.goto(
+                            f"{_ORIGIN}/console-login?notice={callback.removeprefix('http://')}",
+                            wait_until="domcontentloaded", timeout=30000,
+                        )
+                        await self._page.get_by_role("button", name="前往登录", exact=True).click(timeout=30000)
+                        self._qr = self._page.locator(".alipay-qrcode-wrapper")
+                        await self._qr.locator("img.alipay-qrcode").wait_for(state="visible", timeout=30000)
+                        self._expires_at = time.time() + _TTL
+                        self._state = "waiting"
+                        await self._page.get_by_role("button", name="同意授权 CLI 登录", exact=True).wait_for(
+                            state="visible", timeout=_TTL * 1000,
+                        )
+                        self._qr = None
+                        self._state = "confirming"
+                        await done.wait()
                 finally:
-                    self._page = None
+                    self._page = self._qr = None
                     await browser.close()
                 if self._error:
                     self._state = "error"
@@ -110,36 +127,49 @@ class ConsoleLogin:
                     self._state = "refreshing"
                     await self._on_complete()
                     self._state = "complete"
-        except ModuleNotFoundError:
-            self._state, self._error = "unavailable", "browser_not_installed"
         except TimeoutError:
-            self._state, self._error = "expired", ""
+            self._state, self._error = ("error", "browser_prepare_failed") if self._state == "preparing" else ("expired", "")
         except asyncio.CancelledError:
             self._state = "cancelled"
             raise
         except Exception as exc:
+            log(f"百炼扫码登录失败（阶段 {self._state}，类型 {type(exc).__name__}）", "WARNING")
+            preparing = self._state == "preparing"
             self._state = "error"
-            self._error = "browser_not_installed" if "Executable doesn't exist" in str(exc) else "login_failed"
+            self._error = "browser_prepare_failed" if preparing else "login_failed"
         finally:
-            self._page = None
+            self._page = self._qr = None
+
+    def _preparing(self) -> None:
+        """向界面报告首次浏览器准备，不占用扫码有效期。"""
+        self._state, self._expires_at = "preparing", 0
 
     async def image(self, session_id: str) -> bytes:
-        """按需读取登录页截图，不落盘、不采集浏览器历史。"""
-        async with self._lock:
-            self.status(session_id)
-            if self._state != "waiting" or self._page is None:
-                raise ValueError("登录页面尚未就绪或已关闭")
-            return bytes(await self._page.screenshot(type="png", timeout=5000))
+        """只返回官方二维码及扫码状态区域，不展示整页登录表单。"""
+        from playwright.async_api import Error
 
-    async def click(self, session_id: str, x: int, y: int) -> None:
-        """将用户点击传递给官方登录页；不接受脚本、地址或密码输入。"""
         async with self._lock:
             self.status(session_id)
-            if self._state != "waiting" or self._page is None:
+            if self._state != "waiting" or self._qr is None:
                 raise ValueError("登录页面尚未就绪或已关闭")
-            if not (0 <= x < _WIDTH and 0 <= y < _HEIGHT):
-                raise ValueError("点击位置超出登录页面")
-            await self._page.mouse.click(x, y)
+            try:
+                return bytes(await self._qr.screenshot(type="png", timeout=1500))
+            except Error as exc:
+                raise ValueError("扫码页面正在切换，请刷新登录状态") from exc
+
+    async def confirm(self, session_id: str) -> None:
+        """用户确认后点击官方授权按钮，不接受任意页面操作。"""
+        from playwright.async_api import Error
+
+        async with self._lock:
+            self.status(session_id)
+            if self._state != "confirming" or self._page is None:
+                raise ValueError("请先扫码并在手机确认登录")
+            try:
+                await self._page.get_by_role("button", name="同意授权 CLI 登录", exact=True).click(timeout=5000)
+            except Error as exc:
+                if self._state not in ("refreshing", "complete"):
+                    raise ValueError("官方授权暂时无法完成，请重试") from exc
 
     async def close(self, session_id: str | None = None) -> None:
         """取消未完成的登录并等待浏览器资源回收。"""

@@ -1,22 +1,25 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
-import { ZoomIn, ZoomOut } from "lucide-react";
+import { CheckCircle2, Loader2, QrCode, RefreshCw } from "lucide-react";
 import { Button, Modal } from "@/components/ui";
 import { aiDesktopApi } from "./api";
 import type { SubscriptionLogin } from "./types";
 
-/** 按需呈现官方扫码授权页；关闭后取消会话，凭据不返回浏览器。 */
+/** 一键获取官方二维码；凭据仅保存在服务端。 */
 export function SubscriptionLoginDialog({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation("ai_desktop");
   const client = useQueryClient();
   const [login, setLogin] = useState<SubscriptionLogin | null>(null);
   const [image, setImage] = useState("");
   const [failed, setFailed] = useState(false);
-  const [clicking, setClicking] = useState(false);
-  const [zoom, setZoom] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
+    setLogin(null);
+    setImage("");
+    setFailed(false);
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let imageUrl = "";
@@ -25,6 +28,7 @@ export function SubscriptionLoginDialog({ onClose }: { onClose: () => void }) {
       try {
         const { data } = await aiDesktopApi.loginStatus(sessionId);
         if (stopped) return;
+        setFailed(false);
         setLogin(data);
         if (data.state === "complete") {
           await Promise.all([
@@ -44,7 +48,7 @@ export function SubscriptionLoginDialog({ onClose }: { onClose: () => void }) {
             // 完成授权时截图端点会先关闭，下一次状态查询确认结果。
           }
         }
-        if (["starting", "waiting", "refreshing"].includes(data.state)) timer = setTimeout(() => void update(), 2000);
+        if (["preparing", "starting", "waiting", "confirming", "refreshing"].includes(data.state)) timer = setTimeout(() => void update(), 2000);
       } catch {
         if (!stopped) setFailed(true);
       }
@@ -63,38 +67,43 @@ export function SubscriptionLoginDialog({ onClose }: { onClose: () => void }) {
       if (imageUrl) URL.revokeObjectURL(imageUrl);
       if (sessionId) void aiDesktopApi.cancelLogin(sessionId).catch(() => {});
     };
-  }, [client]);
+  }, [client, attempt]);
 
-  const click = async (event: React.MouseEvent<HTMLButtonElement>) => {
-    if (!login || clicking) return;
-    const bounds = event.currentTarget.getBoundingClientRect();
-    setClicking(true);
-    try {
-      await aiDesktopApi.loginClick(login.id,
-        Math.min(login.width - 1, Math.max(0, Math.floor((event.clientX - bounds.left) / bounds.width * login.width))),
-        Math.min(login.height - 1, Math.max(0, Math.floor((event.clientY - bounds.top) / bounds.height * login.height))));
-    } catch { setFailed(true); }
-    finally { setClicking(false); }
+  const confirm = async () => {
+    if (!login || confirming) return;
+    setConfirming(true);
+    try { await aiDesktopApi.confirmLogin(login.id); }
+    catch { setFailed(true); }
+    finally { setConfirming(false); }
   };
-  const unavailable = login?.error === "browser_not_installed";
-  return <Modal open onClose={onClose} title={t("subscription.login")} width="max-w-4xl"
-    footer={<Button variant="secondary" onClick={onClose}>{t("subscription.closeLogin")}</Button>}>
-    <div className="space-y-3">
-      <p className="text-sm text-muted">{t("subscription.loginHint")}</p>
-      <p role="status" className="text-sm">{t(`subscription.loginStates.${failed ? "error" : unavailable ? "unavailable" : login?.state ?? "starting"}`)}</p>
-      {unavailable && <pre className="whitespace-pre-wrap break-all rounded bg-elevated p-3 text-xs">{"uv sync --extra subscription-login\nuv run --extra subscription-login playwright install chromium"}</pre>}
-      {!failed && image && login?.state === "waiting" && <>
-        <Button size="sm" variant="secondary" onClick={() => setZoom(!zoom)} aria-pressed={zoom}>
-          {zoom ? <ZoomOut className="mr-1 h-3.5 w-3.5" /> : <ZoomIn className="mr-1 h-3.5 w-3.5" />}
-          {t(zoom ? "subscription.fitLogin" : "subscription.zoomLogin")}
-        </Button>
-        <div className="max-h-[60vh] overflow-auto rounded-lg border border-border bg-white">
-          <button type="button" onClick={(event) => void click(event)} disabled={clicking}
-            aria-label={t("subscription.loginPage")} className="block" style={{ width: zoom ? login.width : "100%" }}>
-            <img src={image} alt={t("subscription.loginPage")} className="block h-auto w-full" />
-          </button>
-        </div>
-      </>}
+  const retry = async () => {
+    if (login) await aiDesktopApi.cancelLogin(login.id).catch(() => {});
+    setAttempt((value) => value + 1);
+  };
+  const state = failed ? "error" : login?.state ?? "starting";
+  const busy = ["preparing", "starting", "refreshing"].includes(state);
+  const retryable = ["waiting", "expired", "cancelled", "error"].includes(state);
+  return <Modal open onClose={onClose} title={t("subscription.login")} width="max-w-sm"
+    footer={<>
+      {retryable && <Button variant="secondary" onClick={() => void retry()}>
+        <RefreshCw className="mr-1.5 h-4 w-4" />{t("subscription.refreshQr")}
+      </Button>}
+      <Button variant="secondary" onClick={onClose}>{t("subscription.closeLogin")}</Button>
+    </>}>
+    <div className="flex flex-col items-center gap-4 py-3 text-center">
+      {state === "waiting" && image
+        ? <img src={image} alt={t("subscription.loginQr")} className="h-56 w-56 rounded-xl bg-white p-3" />
+        : <div className="flex h-40 items-center justify-center">
+          {busy ? <Loader2 className="h-9 w-9 animate-spin text-accent" />
+            : state === "complete" ? <CheckCircle2 className="h-9 w-9 text-success" />
+              : <QrCode className="h-9 w-9 text-muted" />}
+        </div>}
+      <p role="status" className="text-sm">{t(`subscription.loginStates.${
+        state === "error" && login?.error === "browser_prepare_failed" ? "prepareFailed" : state}`)}</p>
+      {state === "waiting" && <p className="text-xs text-muted">{t("subscription.loginHint")}</p>}
+      {state === "confirming" && <Button onClick={() => void confirm()} disabled={confirming}>
+        {confirming && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}{t("subscription.confirmLogin")}
+      </Button>}
     </div>
   </Modal>;
 }
