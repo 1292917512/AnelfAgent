@@ -2,10 +2,29 @@
 
 from __future__ import annotations
 
+import sys
+from unittest.mock import Mock
+
 from shell_helpers import python_command
 
 from core.command import decode_command_output, run_command
 from core.shell_env import shell_env_defaults
+
+
+def test_expected_exit_keeps_failure_semantics_without_warning_or_raw_output(monkeypatch):
+    log = Mock()
+    monkeypatch.setattr("core.command.log", log)
+    command = [sys.executable, "-c", "import sys; sys.stderr.write('private-output'); sys.exit(3)"]
+    result = run_command(command, shell=False, expected_returncodes=(3,))
+    assert not result.ok and result.returncode == 3
+    assert result.stderr == "private-output"
+    assert all(call.args[1] == "DEBUG" for call in log.call_args_list)
+    assert all("private-output" not in call.args[0] for call in log.call_args_list)
+    log.reset_mock()
+    result = run_command([sys.executable, "-c", "import sys; sys.stderr.write('failure'); sys.exit(4)"],
+                         shell=False, expected_returncodes=(3,))
+    assert not result.ok and result.returncode == 4
+    assert any(call.args[1] == "WARNING" for call in log.call_args_list)
 
 
 def test_command_output_preserves_utf8_and_native_windows_errors(monkeypatch):

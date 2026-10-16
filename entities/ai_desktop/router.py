@@ -11,12 +11,14 @@ import asyncio
 from fastapi import APIRouter, HTTPException
 
 from . import framework
+from .modules.subscription.router import build_router as subscription_router
 from .modules.weather import search_locations
 
 
 def build_router() -> APIRouter:
     """构建 AI 桌面路由（被 web 层挂载到 /api/entity/ai_desktop）。"""
     router = APIRouter()
+    router.include_router(subscription_router())
 
     @router.get("/modules")
     async def list_modules() -> dict:

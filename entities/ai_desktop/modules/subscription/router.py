@@ -1,0 +1,74 @@
+"""额度组件的授权端点，继承实体路由鉴权。"""
+
+from typing import Any
+
+from fastapi import APIRouter, HTTPException, Response
+from pydantic import BaseModel, Field
+
+from ... import framework
+from .login import get_console_login
+from .module import SubscriptionModule
+from .providers import PROVIDERS
+
+
+class LoginClick(BaseModel):
+    x: int = Field(ge=0, lt=900, strict=True)
+    y: int = Field(ge=0, lt=720, strict=True)
+
+
+def build_router() -> APIRouter:
+    """仅显式登录启动浏览器，其余端点只操作已有会话。"""
+    router = APIRouter(prefix="/modules/subscription/login")
+
+    async def refresh() -> None:
+        await framework.force_refresh("subscription")
+
+    service = get_console_login(refresh)
+
+    @router.post("")
+    async def start() -> dict[str, Any]:
+        module = framework.get_module("subscription")
+        spec = next(spec for spec in PROVIDERS if spec.key == "bailian")
+        if not isinstance(module, SubscriptionModule) or not module.is_enabled() or not module.provider_enabled(spec):
+            raise HTTPException(409, "请先启用百炼额度监控")
+        try:
+            return await service.start()
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @router.get("/{session_id}")
+    async def status(session_id: str) -> dict[str, Any]:
+        try:
+            return service.status(session_id)
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    @router.get("/{session_id}/image")
+    async def image(session_id: str) -> Response:
+        try:
+            return Response(await service.image(session_id), media_type="image/png",
+                            headers={"Cache-Control": "no-store"})
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @router.post("/{session_id}/click")
+    async def click(session_id: str, body: LoginClick) -> dict[str, bool]:
+        try:
+            await service.click(session_id, body.x, body.y)
+            return {"success": True}
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @router.delete("/{session_id}")
+    async def cancel(session_id: str) -> dict[str, bool]:
+        try:
+            await service.close(session_id)
+            return {"success": True}
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    return router

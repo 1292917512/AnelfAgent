@@ -99,13 +99,30 @@
     "noCredential": "No credential found in LLM provider config",
     "pending": "Waiting for first fetch",
     "resetAt": "Resets",
-    "consoleRequired": "Sign in to the Bailian console on the device running this app.",
+    "consoleRequired": "Not signed in, or authorization has expired.",
     "lowQuota": "A window has 10% or less remaining.",
     "remaining": "Remaining",
     "unknown": "Unknown",
     "cliRequired": "Optional Bailian CLI is not installed.",
     "installGuide": "Installation guide",
-    "refreshAfterLogin": "Refresh after signing in to read subscription usage. No API key is needed."
+    "notConfigured": "No quota providers enabled. Choose providers below; disabled providers are neither queried nor injected into context.",
+    "login": "Sign in with QR code",
+    "loginHint": "Click the official page to sign in, scan with Aliyun, Alipay or DingTalk, then confirm authorization. The token is saved on the server and reused. Closing cancels an unfinished login.",
+    "loginPage": "Official Bailian login page (click to interact)",
+    "zoomLogin": "Enlarge QR code (scroll to navigate)",
+    "fitLogin": "Fit to window",
+    "closeLogin": "Close",
+    "loginStates": {
+      "starting": "Opening the official login page…",
+      "waiting": "Waiting for scan and authorization",
+      "refreshing": "Authorization saved. Refreshing quota…",
+      "complete": "Signed in. Authorization will be reused.",
+      "expired": "Login expired. Close and reopen to retry.",
+      "cancelled": "Login cancelled.",
+      "unavailable": "Install the optional login component on the Anelf host:",
+      "error": "Login did not complete. Close and retry; existing authorization is preserved.",
+      "idle": "Login has not started"
+    }
   },
   "calendar": {
     "today": "Today",

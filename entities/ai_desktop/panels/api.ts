@@ -4,10 +4,16 @@ import type {
   ModulesResponse,
   PreviewResponse,
   RefreshResponse,
+  SubscriptionLogin,
 } from "./types";
 
 // AI 桌面（动态上下文注入）
 export const aiDesktopApi = {
+  startLogin: () => api.post<SubscriptionLogin>("/entity/ai_desktop/modules/subscription/login"),
+  loginStatus: (id: string) => api.get<SubscriptionLogin>(`/entity/ai_desktop/modules/subscription/login/${encodeURIComponent(id)}`),
+  loginImage: (id: string) => api.get<Blob>(`/entity/ai_desktop/modules/subscription/login/${encodeURIComponent(id)}/image`, { responseType: "blob" }),
+  loginClick: (id: string, x: number, y: number) => api.post(`/entity/ai_desktop/modules/subscription/login/${encodeURIComponent(id)}/click`, { x, y }),
+  cancelLogin: (id: string) => api.delete(`/entity/ai_desktop/modules/subscription/login/${encodeURIComponent(id)}`),
   modules: () => api.get<ModulesResponse>("/entity/ai_desktop/modules"),
   preview: () => api.get<PreviewResponse>("/entity/ai_desktop/preview"),
   refresh: (key: string) =>

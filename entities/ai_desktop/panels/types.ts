@@ -111,6 +111,15 @@ export interface SubscriptionProvider {
   fetched_at?: number;
 }
 
+export interface SubscriptionLogin {
+  id: string;
+  state: "idle" | "starting" | "waiting" | "refreshing" | "complete" | "expired" | "cancelled" | "unavailable" | "error";
+  error: string;
+  expires_at: number;
+  width: number;
+  height: number;
+}
+
 /** 组件结构化详情（各组件字段的并集，全部可选；面板按 key 特化渲染） */
 export interface ModuleDetail {
   network?: {

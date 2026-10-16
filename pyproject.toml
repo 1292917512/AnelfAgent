@@ -85,6 +85,11 @@ dependencies = [
     "tenacity>=9.1.4,<10",
 ]
 
+[project.optional-dependencies]
+subscription-login = [
+    "playwright>=1.50,<2",
+]
+
 [tool.uv]
 # 两处 override 均为绕过 cognee 的矩阵保守钉（本项目实测组合不受其影响）：
 # 1. litellm：cognee 的 <1.97 上界只挡 py3.10 的 litellm 类型构建破坏

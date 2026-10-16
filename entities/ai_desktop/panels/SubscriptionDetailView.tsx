@@ -1,5 +1,8 @@
 import { useTranslation } from "react-i18next";
-import { ExternalLink } from "lucide-react";
+import { useState } from "react";
+import { ExternalLink, QrCode } from "lucide-react";
+import { Button } from "@/components/ui";
+import { SubscriptionLoginDialog } from "./SubscriptionLoginDialog";
 import type { DesktopModuleInfo, QuotaWindow } from "./types";
 
 function quotaText(window: QuotaWindow): string | null {
@@ -48,8 +51,10 @@ function QuotaRow({ window }: { window: QuotaWindow }) {
 /** 展示额度快照、查询状态与控制台登录入口。 */
 export function SubscriptionDetailView({ mod }: { mod: DesktopModuleInfo }) {
   const { t, i18n } = useTranslation("ai_desktop");
+  const [loginOpen, setLoginOpen] = useState(false);
   return (
     <div className="space-y-2">
+      {!mod.detail.providers?.length && <p className="py-2 text-xs text-muted">{t("subscription.notConfigured")}</p>}
       {(mod.detail.providers ?? []).map((provider) => {
         const needsConsole = provider.state === "no_credential" && provider.auth_type === "console";
         const lowQuota = provider.state === "ok" && provider.windows?.some(
@@ -65,13 +70,14 @@ export function SubscriptionDetailView({ mod }: { mod: DesktopModuleInfo }) {
               <div className="space-y-2 text-xs text-muted">
                 <p>{t(provider.source ? "subscription.consoleRequired" : "subscription.cliRequired")}</p>
                 {provider.source ? (
-                  <code className="block select-all break-all rounded bg-surface px-2 py-1.5 text-foreground">bl auth login --console</code>
+                  <Button size="sm" variant="secondary" disabled={!mod.enabled} onClick={() => setLoginOpen(true)}>
+                    <QrCode className="mr-1 h-3.5 w-3.5" />{t("subscription.login")}
+                  </Button>
                 ) : (
                   <a href="https://bailian.aliyun.com/cli/install.md" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-accent hover:underline">
                     {t("subscription.installGuide")}<ExternalLink className="h-3 w-3" />
                   </a>
                 )}
-                <p>{t("subscription.refreshAfterLogin")}</p>
               </div>
             ) : provider.state !== "ok" ? (
               <p className={`break-words text-xs ${provider.state === "error" ? "text-danger" : "text-muted"}`}>
@@ -93,6 +99,7 @@ export function SubscriptionDetailView({ mod }: { mod: DesktopModuleInfo }) {
           </section>
         );
       })}
+      {loginOpen && <SubscriptionLoginDialog onClose={() => setLoginOpen(false)} />}
     </div>
   );
 }

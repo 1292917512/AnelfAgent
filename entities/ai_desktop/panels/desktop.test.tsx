@@ -44,7 +44,7 @@ it("shows installation or console login instructions without asking for a model 
   expect(screen.getByRole("link", { name: zh.subscription.installGuide }).getAttribute("href")).toBe("https://bailian.aliyun.com/cli/install.md");
   rerender(<SubscriptionDetailView mod={{ ...moduleInfo, detail: { providers: [{ ...provider, source: "Bailian CLI" }] } }} />);
   expect(screen.queryByRole("link")).toBeNull();
-  expect(screen.getByText("bl auth login --console")).toBeTruthy();
+  expect(screen.getByRole("button", { name: zh.subscription.login })).toBeTruthy();
 });
 
 it.each(["", "1.5", "4", "721"])("does not save invalid integer input %s", async (value) => {

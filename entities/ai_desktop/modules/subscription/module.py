@@ -4,12 +4,12 @@
 （百炼 Token Plan / 智谱 GLM / MiniMax / Kimi）的用量查询接口与按量供应商（DeepSeek）的
 账户余额接口，凭据自动匹配自 llm_clients.json 的供应商配置（base_url
 关键字识别，Kimi 的 OAuth access token 同样存于 api_key 字段）。
-百炼使用官方 CLI 控制台会话。无凭据的供应商自动跳过，单家失败不扩散。
+各平台默认关闭，仅采集显式启用的平台。百炼复用控制台 token，失效后暂停查询。
 render 只读缓存快照，每家一行注入文本。
 
 Model Experience:
     模型看到什么 —— 各有凭据供应商一行 ``[订阅] 名称（档位）：窗口余量/重置时间``，
-        查询失败时该行如实标注失败原因（凭据过期等需 AI 告知主人处理）；
+        查询失败时该行如实标注失败原因；未配置、关闭和未登录的平台不注入；
     token 影响 —— 每轮增量注入，每家约 30~60 token；未登录的百炼不注入；
     缓存影响 —— 走 volatile 尾部动态区（ai_desktop provider 聚合），不触碰
         stable/conversation 前缀缓存。
@@ -42,6 +42,13 @@ class SubscriptionModule(DesktopModule):
     priority = 30
     refresh_interval = 1800.0
     config_schema = {
+        **{
+            f"provider_{spec.key}_enabled": {
+                "description": f"监控 {spec.display_name} 额度（独立于模型调用开关）",
+                "default": False,
+            }
+            for spec in PROVIDERS
+        },
         "refresh_minutes": {
             "description": "订阅额度刷新间隔",
             "default": 30,
@@ -64,19 +71,24 @@ class SubscriptionModule(DesktopModule):
 
     # ---- 凭据 ----
 
+    def provider_enabled(self, spec: ProviderSpec) -> bool:
+        """只采集明确启用的平台，关闭后立即停止显示和上下文注入。"""
+        value = self.get_config(f"provider_{spec.key}_enabled", False)
+        return value is True or (isinstance(value, str) and value.lower() == "true")
+
     def _credential(self, spec: ProviderSpec) -> Tuple[str, str]:
         """解析供应商凭据（60s TTL 缓存，热跟随 LLM 配置修改）。"""
         if time.time() - self._credentials_at > _CREDENTIAL_CACHE_TTL:
             self._credentials = {
                 spec.key: spec.credential()
-                for spec in PROVIDERS
+                for spec in PROVIDERS if self.provider_enabled(spec)
             }
             self._credentials_at = time.time()
         return self._credentials.get(spec.key, ("", ""))
 
     def _active_specs(self) -> List[ProviderSpec]:
         """有凭据的供应商列表（无凭据的供应商不参与采集与注入）。"""
-        return [spec for spec in PROVIDERS if self._credential(spec)[0]]
+        return [spec for spec in PROVIDERS if self.provider_enabled(spec) and self._credential(spec)[0]]
 
     # ---- 调度 ----
 
@@ -110,7 +122,9 @@ class SubscriptionModule(DesktopModule):
     def render(self) -> Optional[str]:
         """从结构化快照格式化注入文本（每家供应商一行，含失败提示）。"""
         lines: List[str] = []
-        for spec in self._active_specs():
+        for spec in PROVIDERS:
+            if not self.provider_enabled(spec):
+                continue
             data = self._data.get(spec.key)
             if not data or data.get("needs_auth"):
                 continue
@@ -155,7 +169,9 @@ class SubscriptionModule(DesktopModule):
         """面板展示用的结构化详情（逐供应商窗口数据/凭据来源/错误）。"""
         providers: List[Dict[str, Any]] = []
         for spec in PROVIDERS:
-            _key, source = self._credential(spec)
+            if not self.provider_enabled(spec):
+                continue
+            _key, source = self._credentials.get(spec.key, ("", ""))
             data = self._data.get(spec.key)
             entry: Dict[str, Any] = {
                 "key": spec.key,
@@ -163,7 +179,9 @@ class SubscriptionModule(DesktopModule):
                 "source": source or None,
                 "auth_type": spec.auth_type,
             }
-            if not _key or (data and data.get("needs_auth")):
+            if spec.key not in self._credentials:
+                entry["state"] = "pending"
+            elif not _key or (data and data.get("needs_auth")):
                 entry["state"] = "no_credential"
             elif data is None:
                 entry["state"] = "pending"
@@ -196,10 +214,14 @@ class SubscriptionModule(DesktopModule):
     def _fetch_one(self, spec: ProviderSpec, credential: str) -> Dict[str, Any]:
         """采集单家额度，并将登录状态和错误收敛为快照。"""
         try:
+            revision = spec.auth_revision() if spec.auth_revision else None
+            previous = self._data.get(spec.key, {})
+            if revision is not None and previous.get("needs_auth") and previous.get("auth_revision") == revision:
+                return previous
             snapshot = spec.fetch(credential)
             snapshot["fetched_at"] = time.time()
             return snapshot
         except ConsoleLoginRequired:
-            return {"needs_auth": True}
+            return {"needs_auth": True, **({"auth_revision": revision} if revision is not None else {})}
         except Exception as exc:
             return {"error": self._short_error(exc)}

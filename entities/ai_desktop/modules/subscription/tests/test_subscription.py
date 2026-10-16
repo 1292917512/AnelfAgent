@@ -13,6 +13,7 @@ import httpx
 import pytest
 
 from core.command import CommandResult
+from core.config import ConfigManager
 from entities.ai_desktop.modules.subscription import bailian
 from entities.ai_desktop.modules.subscription import module as subscription_module
 from entities.ai_desktop.modules.subscription.module import SubscriptionModule
@@ -28,6 +29,12 @@ from entities.ai_desktop.modules.subscription.providers import (
     parse_kimi,
     parse_minimax,
 )
+
+
+@pytest.fixture(autouse=True)
+def enabled_platforms():
+    for spec in PROVIDERS:
+        ConfigManager.set(SubscriptionModule.full_config_key(f"provider_{spec.key}_enabled"), True)
 
 _GLM_PAYLOAD = {
     "code": 200,
@@ -138,7 +145,7 @@ class TestRender:
     def _module_with_data(self) -> SubscriptionModule:
         module = SubscriptionModule()
         module._credentials_at = time.time()
-        module._credentials = {"glm": ("key", "zhipu"), "minimax": ("", ""),
+        module._credentials = {"bailian": ("", ""), "glm": ("key", "zhipu"), "minimax": ("", ""),
                                "kimi": ("key", "Kimi")}
         module._data = {
             "glm": parse_glm(_GLM_PAYLOAD) | {"fetched_at": time.time()},
@@ -184,7 +191,7 @@ class TestDetail:
     def test_states(self) -> None:
         module = SubscriptionModule()
         module._credentials_at = time.time()
-        module._credentials = {"glm": ("key", "zhipu"), "minimax": ("", ""),
+        module._credentials = {"bailian": ("", ""), "glm": ("key", "zhipu"), "minimax": ("", ""),
                                "kimi": ("key", "Kimi"), "deepseek": ("", "")}
         module._data = {
             "glm": parse_glm(_GLM_PAYLOAD) | {"fetched_at": 1.0},
@@ -321,7 +328,7 @@ class TestBailian:
         assert result["windows"][0]["remaining_percent"] == 50
         command.assert_called_once_with(
             ["/tools/bl", "usage", "token-plan", "--output", "json", "--timeout", "15", "--quiet"],
-            timeout_sec=20, shell=False,
+            timeout_sec=20, shell=False, expected_returncodes=(3,), env_vars=None,
         )
 
     @pytest.mark.parametrize(("result", "exception"), [
@@ -378,6 +385,8 @@ async def test_parallel_refresh_isolated_and_coalesced(monkeypatch: pytest.Monke
         ProviderSpec("failed", "Failed", lambda: ("key", "source"), Mock(side_effect=httpx.ReadTimeout("timeout"))),
     )
     monkeypatch.setattr(subscription_module, "PROVIDERS", providers)
+    for spec in providers:
+        ConfigManager.set(SubscriptionModule.full_config_key(f"provider_{spec.key}_enabled"), True)
     module = SubscriptionModule()
     module._data = {"removed": {"plan": "stale"}}
     await asyncio.gather(module.refresh(), module.refresh())

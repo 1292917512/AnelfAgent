@@ -8,6 +8,7 @@ import os
 import platform
 import shutil
 import subprocess
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
 
@@ -91,7 +92,7 @@ def _run_with_group_kill(command: Union[str, List[str]], timeout_sec: float,
 @dual_mode
 def run_command(command: Union[str, List[str]], timeout_sec: int = 300, env_vars: Optional[Dict[str, str]] = None,
                 shell: Optional[bool] = None, cwd: Optional[str] = None,
-                stdin_data: Optional[str] = None) -> CommandResult:
+                stdin_data: Optional[str] = None, *, expected_returncodes: Collection[int] = ()) -> CommandResult:
     """执行系统命令
 
     Args:
@@ -101,6 +102,7 @@ def run_command(command: Union[str, List[str]], timeout_sec: int = 300, env_vars
         shell: 是否使用shell模式，None时自动判断
         cwd: 工作目录，None 时继承当前进程目录
         stdin_data: 可选，写入子进程 stdin 的文本（hook 类调用经此传 JSON payload）
+        expected_returncodes: 调用方处理的预期非零状态，记调试日志但不改变 ok 或返回码
 
     Returns:
         CommandResult: 执行结果
@@ -163,6 +165,8 @@ def run_command(command: Union[str, List[str]], timeout_sec: int = 300, env_vars
         # 记录执行结果
         if result.returncode == 0:
             log(f"✅ 命令执行成功: {cmd_str[:50]}{'...' if len(cmd_str) > 50 else ''}", "DEBUG")
+        elif result.returncode in expected_returncodes:
+            log(f"命令返回预期状态 {result.returncode}: {cmd_str[:50]}", "DEBUG")
         elif not result.stderr:
             # 非零码 + 无错误输出：POSIX 语义多为否定结果（grep 无匹配 /
             # 条件测试不成立），不是执行错误，降级为中性记录避免误导

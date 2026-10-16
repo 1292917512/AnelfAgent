@@ -99,13 +99,30 @@
     "noCredential": "未在 LLM 供应商配置中找到凭据",
     "pending": "等待首次采集",
     "resetAt": "重置",
-    "consoleRequired": "请在应用所在设备登录百炼控制台。",
+    "consoleRequired": "未登录或授权已失效。",
     "lowQuota": "有窗口余量不超过 10%。",
     "remaining": "剩余",
     "unknown": "未知",
     "cliRequired": "尚未安装可选的 Bailian CLI。",
     "installGuide": "安装指南",
-    "refreshAfterLogin": "登录后点击刷新即可读取订阅额度，无需配置 API Key。"
+    "notConfigured": "尚未启用额度平台。下方选择需要监控的平台；未启用的平台不会查询或注入上下文。",
+    "login": "扫码登录",
+    "loginHint": "点击官方页面进入登录，使用阿里云 App、支付宝或钉钉扫码，再确认授权。授权 token 安全保存在服务端，后续自动复用；关闭窗口会取消未完成的登录。",
+    "loginPage": "百炼官方登录页（可点击）",
+    "zoomLogin": "放大扫码（可拖动查看）",
+    "fitLogin": "适应窗口",
+    "closeLogin": "关闭",
+    "loginStates": {
+      "starting": "正在打开官方登录页…",
+      "waiting": "等待扫码与授权确认",
+      "refreshing": "授权已保存，正在刷新额度…",
+      "complete": "登录完成，后续自动复用授权。",
+      "expired": "登录已过期，请关闭后重新打开。",
+      "cancelled": "登录已取消。",
+      "unavailable": "请在 Anelf 所在设备安装可选扫码登录组件：",
+      "error": "登录未完成，请关闭后重试；已有授权不会被清除。",
+      "idle": "尚未开始登录"
+    }
   },
   "calendar": {
     "today": "今天",

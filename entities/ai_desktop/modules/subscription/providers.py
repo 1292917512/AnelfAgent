@@ -29,7 +29,7 @@ import httpx
 
 from core.log import log
 
-from .bailian import cli_credential, fetch_usage
+from .bailian import auth_revision, cli_credential, fetch_usage
 
 HTTP_TIMEOUT = 15.0
 
@@ -45,6 +45,7 @@ class ProviderSpec:
     credential: Callable[[], Tuple[str, str]]
     fetch: Callable[[str], Dict[str, Any]]
     auth_type: Literal["api_key", "console"] = "api_key"
+    auth_revision: Callable[[], str] | None = None
 
 
 def _http_provider(
@@ -286,7 +287,7 @@ def parse_deepseek(payload: Dict[str, Any]) -> Dict[str, Any]:
 PROVIDERS: Tuple[ProviderSpec, ...] = (
     ProviderSpec(
         key="bailian", display_name="阿里百炼", credential=cli_credential,
-        fetch=fetch_usage, auth_type="console",
+        fetch=fetch_usage, auth_type="console", auth_revision=auth_revision,
     ),
     _http_provider(
         key="glm",
