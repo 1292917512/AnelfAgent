@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import time
 
+import pytest
+
 from agent.memory.embedding import (
     EmbeddingWorker,
     register_embedding_backlog,
@@ -13,7 +15,7 @@ from agent.memory.embedding import (
 from agent.memory.embedding.worker import attach_pending_backlogs, embedding_worker_port
 from agent.memory.memory_store import MemoryStore
 from agent.memory.memory_types import MemoryEntry, MemoryType
-from agent.memory.memory_utils import hash_text
+from agent.memory.memory_utils import hash_text, unpack_embedding
 
 
 class FakeEmbedder:
@@ -136,6 +138,81 @@ class TestBackfillChunkEmbeddings:
         await store.backfill_chunk_embeddings(embedder, batch_size=32)
         assert await store.backfill_chunk_embeddings(embedder, batch_size=32) == 0
         assert len(embedder.calls) == 1
+
+
+@pytest.mark.parametrize("kind", ["memory", "chunk"])
+@pytest.mark.parametrize("change", ["rewrite", "delete", "filled"])
+async def test_backfill_does_not_publish_obsolete_results(store: MemoryStore, kind: str, change: str) -> None:
+    original, replacement = "旧版证据", "当前证据"
+    fresh_vec = [0.0, 1.0, 0.0, 0.0]
+    entry = _entry(original)
+    chunk = {
+        "id": "note.md:1-1", "path": "note.md", "start_line": 1, "end_line": 1,
+        "hash": hash_text(original), "text": original, "updated_ns": time.time_ns(),
+    }
+    if kind == "memory":
+        entry.id = await store.add(entry)
+    else:
+        await store.upsert_chunks([chunk])
+
+    class EditingEmbedder(FakeEmbedder):
+        async def embed_text(self, texts: list[str]) -> list[list[float]]:
+            if kind == "memory":
+                if change == "delete":
+                    await store.delete(entry.id)
+                else:
+                    entry.content = replacement if change == "rewrite" else original
+                    entry.embedding = fresh_vec if change == "filled" else None
+                    await store.update(entry, clear_embedding=change == "rewrite")
+            elif change == "delete":
+                await store.delete_chunks_by_path("note.md")
+            else:
+                text = replacement if change == "rewrite" else original
+                from agent.memory.memory_utils import pack_embedding
+                await store.upsert_chunks([{
+                    **chunk, "hash": hash_text(text), "text": text,
+                    "embedding": pack_embedding(fresh_vec) if change == "filled" else None,
+                }])
+            return await super().embed_text(texts)
+
+    fill = store.backfill_embeddings if kind == "memory" else store.backfill_chunk_embeddings
+    assert await fill(EditingEmbedder()) == 0
+    db = await store._get_db()
+    if kind == "memory":
+        result = await store.get(entry.id)
+        assert (result is None) == (change == "delete")
+        if result is not None:
+            assert result.embedding == (fresh_vec if change == "filled" else None)
+            assert result.content == (replacement if change == "rewrite" else original)
+    else:
+        cursor = await db.execute("SELECT text, embedding FROM chunks WHERE id=?", (chunk["id"],))
+        row = await cursor.fetchone()
+        assert (row is None) == (change == "delete")
+        if row is not None:
+            assert row["text"] == (replacement if change == "rewrite" else original)
+            assert (unpack_embedding(row["embedding"]) if row["embedding"] else None) == (
+                fresh_vec if change == "filled" else None
+            )
+        assert await store.get_cached_embedding(hash_text(original)) is None
+
+
+async def test_embedding_cache_batches_deduplicated_hashes(store: MemoryStore) -> None:
+    db = await store._get_db()
+    await store.put_cached_embedding("first", [1.0, 0.0])
+    await store.put_cached_embedding("last", [0.0, 1.0])
+    statements: list[str] = []
+    await db.set_trace_callback(statements.append)
+    try:
+        hashes = ["first", *[f"missing-{i}" for i in range(1000)], "last", "first"]
+        found = await store.get_cached_embeddings(hashes)
+        assert found == {"first": [1.0, 0.0], "last": [0.0, 1.0]}
+        queries = [q for q in statements if q.startswith("SELECT hash, embedding FROM embedding_cache")]
+        assert len(queries) == 3
+        statements.clear()
+        assert await store.get_cached_embeddings([]) == {}
+        assert statements == []
+    finally:
+        await db.set_trace_callback(None)
 
 
 class TestPurgeArchivedMemories:

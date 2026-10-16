@@ -5,6 +5,20 @@
 
 ## 存储与检索基座
 
+文件召回的全文、LIKE 和向量通道共用查询相关的原文窗口，沿用中文查询分词；
+窗口不超过 500 字符，省略以 `…` 标明，行号对应实际展示内容。原分块范围保留在
+`provenance.chunk_start_line/chunk_end_line`，文件路径与 chunk ID 不变，便于按需读取全文。
+选择窗口只处理最终候选，不改变排序、标签过滤或向量空间，也不新增模型请求。
+
+文件同步的文档解析与分块在工作线程执行，格式支持统一来自文档提取器。
+文件元数据、分块和全文索引在同一事务内替换，失败或取消时回滚。同步返回
+`synced/unchanged/failed/removed/chunks`，单文件失败不会计入未变化或中断其他文件；
+Web 索引面板显示本次同步统计。失败的文件在下一次同步中重试。
+
+分块缓存按内容哈希去重批查，每批最多 500 个哈希；未命中仍由后台 worker 补全。
+后台向量回填只更新内容未变且仍缺向量的记录，避免请求期间的改写、删除或其他回填被旧结果覆盖。
+重排失败保留原候选与原评分，成功时生成独立结果，不修改其他检索分支共用的候选对象。
+
 - **`agent/memory/memory_store.py`**：长期记忆存储（SQLite + FTS5 + Embedding 混合检索；
   软归档遗忘 + importance 松弛回归）。重要性松弛带访问护盾：有效速率 ÷ (1 + ln(access_count))，
   历史访问越多的记忆向基线回归越慢（常被想起的记忆更抗遗忘）
@@ -204,6 +218,10 @@ Cognee 面板保存先校验模型参数和向量空间，再原子写入配置�
 | 便签受管区块硬保护 | `agent/memory/notes.py`（`_MANAGED_BLOCK_RE` + `_assert_managed_blocks_intact`） | `<!-- AUTO:name BEGIN/END -->` 标记对圈定的系统受管区块，便签写工具写入前校验逐字节保留，改动/删除即拒绝；系统写入路径直走 `_atomic_write` 天然豁免。通用读写原语 `update_managed_block`/`read_managed_block`（AUTO:memory-status / AUTO:heartbeat-status） |
 | 标签索引观测 | `agent/heartbeat/engine.py::_write_memory_status` | 状态区块仅保留 AI 可行动项（库容/cognee 同步与熔断/最近整理/便签超标）；标签膨胀提醒条件化（总数超 `memory_tag_bloat_threshold`（默认 400，0=关）才注入归并提醒行）；运维遥测不进 prompt，由 memory_stats 工具按需查询 |
 | 标签智能 | `agent/memory/store/tag_intel.py` | df/共现图谱/提及词表 TTL 缓存；IDF 评分、共现与图谱邻居联想、查询提及识别的统一驱动层 |
+
+自然语言提及只映射到唯一的标签：同名实体不自动择一，拉丁词不匹配其他单词内部；
+明确提供的标签仍按原有接口检索。文档频率按每条记忆去重计数，结构性标签不参与联想。
+多路召回共识按独立查询计数，同一路中的重复结果不叠加置信；融合不改写原候选的分数、标签或归属。
 
 ## 证据体系与反思生命周期
 

@@ -110,6 +110,9 @@
   "fileIndexSubtitle": "Memory system file index status",
   "cleanCache": "Clean Cache",
   "incrementalSync": "Incremental Sync",
+  "indexSyncPending": "Synchronizing document index…",
+  "indexSyncError": "Index synchronization failed. Check the server logs and retry later.",
+  "indexSyncResult": "Synced {{synced}} · Unchanged {{unchanged}} · Removed {{removed}} · Failed {{failed}} · Wrote {{chunks}} chunks",
   "fullRebuild": "Full Rebuild",
   "indexLabels": {
     "files": "Indexed Files",

@@ -14,7 +14,14 @@ export function OverviewPanel() {
     refetchInterval: 10000,
   });
   const { data: indexStatus } = useQuery({ queryKey: ["indexStatus"], queryFn: () => memoryApi.index.status().then((r) => r.data) });
-  const resyncMutation = useMutation({ mutationFn: (force: boolean) => memoryApi.index.resync(force), onSuccess: () => queryClient.invalidateQueries({ queryKey: ["indexStatus"] }) });
+  const resyncMutation = useMutation({
+    mutationFn: async (force: boolean) => {
+      const { data } = await memoryApi.index.resync(force);
+      if ("error" in data) throw new Error(data.error);
+      return data;
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["indexStatus"] }),
+  });
   const cleanCacheMutation = useMutation({ mutationFn: () => memoryApi.index.cleanCache(), onSuccess: () => queryClient.invalidateQueries({ queryKey: ["indexStatus"] }) });
   const retryCogneeMutation = useMutation({
     mutationFn: () => memoryApi.cognee.retry(),
@@ -104,16 +111,25 @@ export function OverviewPanel() {
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all">
             <Trash2 size={14} /> {t("cleanCache")}
           </button>
-          <button onClick={() => resyncMutation.mutate(false)}
+          <button onClick={() => resyncMutation.mutate(false)} disabled={resyncMutation.isPending}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all">
             <RefreshCw size={14} /> {t("incrementalSync")}
           </button>
-          <button onClick={() => { if (window.confirm(t("fullRebuildConfirm"))) resyncMutation.mutate(true); }}
+          <button onClick={() => { if (window.confirm(t("fullRebuildConfirm"))) resyncMutation.mutate(true); }} disabled={resyncMutation.isPending}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-danger-subtle text-danger hover:bg-[rgba(239,68,68,0.15)] transition-all">
             <RefreshCw size={14} /> {t("fullRebuild")}
           </button>
         </div>
       }>
+        {resyncMutation.isPending ? (
+          <p role="status" className="text-sm text-muted mb-3">{t("indexSyncPending")}</p>
+        ) : resyncMutation.isError ? (
+          <p role="alert" className="text-sm text-danger mb-3">{t("indexSyncError")}</p>
+        ) : resyncMutation.data ? (
+          <p role="status" className={`text-sm mb-3 ${resyncMutation.data.failed ? "text-warn" : "text-muted"}`}>
+            {t("indexSyncResult", { ...resyncMutation.data })}
+          </p>
+        ) : null}
         {indexStatus ? (
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
             {Object.entries(indexStatus as Record<string, unknown>).map(([k, v]) => (

@@ -2,10 +2,46 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from agent.memory.memory_store import MemoryStore
 from agent.memory.memory_types import MemoryEntry, MemoryType
+from agent.memory.store.tag_intel import TagIntelligence
+
+
+async def test_ambiguous_labels_do_not_choose_an_identity(store) -> None:
+    await store.graph.add_relation(
+        "user:qq:100", "同事", "user:webui:200",
+        subject_label="小明", object_label="小明",
+    )
+    assert await store.extract_query_mentions("小明说的方案") == []
+    await store.add(MemoryEntry(
+        memory_type=MemoryType.SEMANTIC, content="QQ 的小明的方案", tags=["user:qq:100"],
+    ))
+    results = await store.search_by_tags(["user:qq:100"])
+    assert [entry.content for entry in results] == ["QQ 的小明的方案"]
+
+
+async def test_latin_mentions_match_words_and_mixed_chinese_text(store) -> None:
+    for content in ("NAS 状态", "NAS 使用方式"):
+        await store.add(MemoryEntry(
+            memory_type=MemoryType.SEMANTIC, content=content, tags=["topic:NAS"],
+        ))
+    assert await store.extract_query_mentions("nasal anatomy") == []
+    assert await store.extract_query_mentions("my_nas_backup") == []
+    assert await store.extract_query_mentions("检查NAS，nas是否在线") == ["topic:NAS"]
+    assert await store.extract_query_mentions("NAS", limit=0) == []
+
+
+async def test_tag_document_frequency_counts_documents(store) -> None:
+    intel = TagIntelligence(store._conn)
+    rows = [json.dumps(["topic:NAS", "topic:NAS", "topic:备份"])]
+    df, cooc, vocab = intel._compute(rows, [])
+    assert df == {"topic:NAS": 1, "topic:备份": 1}
+    assert list(cooc.values()) == [1]
+    assert vocab == {}
 
 
 async def _seed(store: MemoryStore) -> None:

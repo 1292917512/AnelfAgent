@@ -5,12 +5,17 @@ Constructed from LLMClientConfig by LLMManager.
 图片生成/编辑的协议差异由 agent.llm.image_adapters 中的适配器收口，
 视频生成的协议差异由 agent.llm.video_adapters 中的适配器收口，
 语音识别的协议差异由 agent.llm.asr_adapters 中的适配器收口。
+
+模型可见：重排仅接受与本次候选对应的有效评分，异常交由模型链或召回方回退。
+Token：正常调用预算不变；无效响应沿既有候选链回退，不追加主模型调用。
+缓存：媒体调用独立于主会话，不改上下文前缀。
 """
 
 from __future__ import annotations
 
 import asyncio
 import base64
+import math
 import mimetypes
 import os
 import time
@@ -431,19 +436,35 @@ class MediaClient:
         model: str = "",
         top_n: int = 5,
     ) -> List[Dict[str, Any]]:
-        """Rerank documents by relevance. Returns [{index, relevance_score, document}]."""
+        """返回候选索引唯一、评分有限的重排结果；无效响应抛错供调用方回退。"""
+        if not documents or top_n <= 0:
+            return []
+        limit = min(top_n, len(documents))
         url = f"{self._base_url}/rerank"
         payload: Dict[str, Any] = {
             "model": model,
             "query": query,
             "documents": documents,
-            "top_n": min(top_n, len(documents)),
+            "top_n": limit,
         }
         async with self._http_client() as client:
             resp = await client.post(url, headers=self._headers(), json=payload)
             self._check_resp(resp)
-            result = resp.json()
-            return result.get("results", [])
+            body = resp.json()
+        results = body.get("results") if isinstance(body, dict) else None
+        if not isinstance(results, list) or not limit <= len(results) <= len(documents):
+            raise ValueError("重排响应缺少足够的候选结果")
+        seen: set[int] = set()
+        for item in results:
+            if not isinstance(item, dict):
+                raise ValueError("重排结果必须为对象")
+            index, score = item.get("index"), item.get("relevance_score")
+            if type(index) is not int or not 0 <= index < len(documents) or index in seen:
+                raise ValueError("重排候选索引缺失、重复或越界")
+            if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(score):
+                raise ValueError("重排相关性评分必须是有限数值")
+            seen.add(index)
+        return results[:limit]
 
     # ------------------------------------------------------------------
     # Video generation (async with polling，协议差异由 VideoGenAdapter 收口)

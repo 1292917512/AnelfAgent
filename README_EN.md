@@ -463,6 +463,8 @@ Released under the **[MIT License](LICENSE)** — stars, issues, and PRs are wel
 
 Special thanks to [Nekro Agent](https://github.com/KroMiose/nekro-agent) and [N.E.K.O](https://github.com/Project-N-E-K-O/N.E.K.O) for inspiration.
 
+Thanks to [Xerj](https://github.com/xerj-org/xerj) for inspiring passage retrieval, source localization, and index coverage reporting.
+
 > **Protocol note**: AnelfAgent talks to NapCatQQ over OneBot v11 WebSocket; it neither contains nor modifies NapCat source code. The WeChat channel integrates Tencent's iLink Bot API, with protocol implementation referencing community adapter practices.
 
 ### Contributing

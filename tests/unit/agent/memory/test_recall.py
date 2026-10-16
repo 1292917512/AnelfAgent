@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import time
 
+import httpx
+import pytest
 import tiktoken
 
+from agent.llm.media_client import MediaClient
 from agent.memory import memory_sync
+from agent.memory.embedding import Embedder
 from agent.memory.memory_retriever import MemoryRetriever
+from agent.memory.memory_store import MemoryStore
 from agent.memory.memory_sync import chunk_markdown
 from agent.memory.memory_types import MemorySearchResult, MemoryType
 
@@ -20,6 +25,24 @@ def _result(rid: str, score: float, mtype: str = "semantic", ts: float = 0.0) ->
         id=rid, snippet=f"内容{rid}", score=score, memory_type=mtype,
         timestamp=ts,
     )
+
+
+async def test_rerank_failure_preserves_evidence_and_scores(store: MemoryStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    results = [_result("mem:1", 0.7), _result("mem:2", 0.5)]
+    retriever = MemoryRetriever(store, Embedder())
+    client = MediaClient("https://rerank.test", "")
+    body = {"results": [{"index": 1, "relevance_score": 0.9}, {"index": 0, "relevance_score": 0.8}]}
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=body))
+    monkeypatch.setattr(client, "_http_client", lambda: httpx.AsyncClient(transport=transport))
+    retriever.set_rerank_client(client)
+    reordered = await retriever._apply_rerank("证据", results, 2)
+    assert [item.id for item in reordered] == ["mem:2", "mem:1"]
+    assert [item.score for item in reordered] == [0.9, 0.8]
+    assert [item.score for item in results] == [0.7, 0.5]
+    body["results"] = []
+    fallback = await retriever._apply_rerank("证据", results, 2)
+    assert fallback is results
+    assert [item.score for item in fallback] == [0.7, 0.5]
 
 
 class TestFocusQuery:
@@ -41,6 +64,21 @@ class TestFocusQuery:
 
 class TestMergeResults:
     """多路融合（merge_consensus）：同键取最高分、按分排序截断。"""
+
+    def test_duplicates_in_one_lane_are_not_independent_evidence(self) -> None:
+        merged = MemoryRetriever.merge_consensus(
+            [[_result("a", 0.6), _result("a", 0.7)], [_result("b", 0.75)]], limit=10,
+        )
+        assert [(r.id, r.score) for r in merged] == [("b", 0.75), ("a", 0.7)]
+
+    def test_consensus_preserves_source_scores_and_tags(self) -> None:
+        first, second = _result("a", 0.7), _result("a", 0.6)
+        first.tags = ["user:qq:123", "topic:检索"]
+        for _ in range(2):
+            merged = MemoryRetriever.merge_consensus([[first, first], [second]], limit=10)
+            assert merged[0].score == 0.77
+            assert merged[0].tags == first.tags
+            assert [first.score, second.score] == [0.7, 0.6]
 
     def test_dedupes_by_key_keeps_higher_score(self) -> None:
         primary = [_result("a", 0.5), _result("b", 0.3)]

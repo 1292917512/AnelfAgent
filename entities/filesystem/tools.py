@@ -149,6 +149,7 @@ _LIST_DIRECTORY_PROMPT = """列出已知目录的内容，返回可直接用于�
 _SEARCH_FILES_PROMPT = """从已知目录搜索文件/目录名，或按正则搜索文件内容；结果返回可直接使用的绝对路径。
 仅知道名称时先搜索，不要拼接猜测的路径。例如 pattern="graph" 可找到嵌套的 memory/graph。
 零匹配是正常查询结果；truncated=true 表示有结果未展示，应缩小 path/pattern/content_pattern。
+内容搜索的 coverage 表示当前过滤范围内的覆盖情况；有跳过或读取失败时，零匹配不能证明内容不存在。
 自动跳过噪声目录（node_modules/.git/__pycache__ 等，search_exclude_dirs 可配置）；内容模式额外跳过二进制与超大文件（>2MB）。"""
 
 _SHELL_PROMPT = """在系统 shell 中执行命令并返回输出。
@@ -892,16 +893,18 @@ def search_files(path: str = ".", pattern: str = "*", content_pattern: str = "",
             return tool_error(f"无效的正则表达式: {e}", cause=ErrorCause.PARAM,
                               retryable=False)
 
-        hits = content_search(fp, pattern, regex, exclude, max_results=max_results + 1)
+        scan = content_search(fp, pattern, regex, exclude, max_results=max_results)
         return json.dumps({
             "pattern": pattern,
             "content_pattern": content_pattern,
             "root": fp,
             "excluded_dirs": sorted(exclude),
-            "count": min(len(hits), max_results),
-            "truncated": len(hits) > max_results,
+            "count": len(scan.hits),
+            "truncated": scan.truncated,
+            "coverage": scan.coverage(),
             "results": [
-                {"path": os.path.normpath(h.abspath), "matches": h.lines} for h in hits[:max_results]
+                {"path": os.path.normpath(h.abspath), "matches": h.lines, "truncated": h.truncated}
+                for h in scan.hits
             ],
         }, ensure_ascii=False)
     except Exception as e:

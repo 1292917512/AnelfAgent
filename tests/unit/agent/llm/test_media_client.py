@@ -83,3 +83,51 @@ class TestDashScopeImageEdit:
             {"type": "image", "image": "https://oss.example/edited2.png"},
         ]}}]}}
         assert adapter.extract_urls(wan_style) == ["https://oss.example/edited2.png"]
+
+
+@pytest.mark.parametrize("body", [
+    {}, [], {"results": []}, {"results": [{"index": 0, "relevance_score": 0.9}]},
+    {"results": [{"index": 0, "relevance_score": 0.9}, {"index": 0, "relevance_score": 0.8}]},
+    {"results": [{"relevance_score": 0.9}, {"index": 1, "relevance_score": 0.8}]},
+    {"results": [{"index": -1, "relevance_score": 0.9}, {"index": 1, "relevance_score": 0.8}]},
+    {"results": [{"index": 2, "relevance_score": 0.9}, {"index": 1, "relevance_score": 0.8}]},
+    {"results": [{"index": True, "relevance_score": 0.9}, {"index": 1, "relevance_score": 0.8}]},
+    {"results": [{"index": 0, "relevance_score": "high"}, {"index": 1, "relevance_score": 0.8}]},
+    {"results": [{"index": 0, "relevance_score": True}, {"index": 1, "relevance_score": 0.8}]},
+    {"results": [None, {"index": 1, "relevance_score": 0.8}]},
+])
+async def test_rerank_rejects_invalid_candidates(body: object, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = MediaClient("https://rerank.test", "")
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=body))
+    monkeypatch.setattr(client, "_http_client", lambda: httpx.AsyncClient(transport=transport))
+    with pytest.raises(ValueError, match="重排"):
+        await client.rerank("证据", ["候选一", "候选二"], top_n=2)
+
+
+async def test_rerank_keeps_valid_order_and_limits_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+
+    items = [{"index": 1, "relevance_score": 2.3}, {"index": 0, "relevance_score": -0.5}]
+    sent: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(200, json={"results": items})
+
+    client = MediaClient("https://rerank.test", "")
+    transport = httpx.MockTransport(respond)
+    monkeypatch.setattr(client, "_http_client", lambda: httpx.AsyncClient(transport=transport))
+    assert await client.rerank("证据", ["候选一", "候选二"], top_n=1) == items[:1]
+    assert json.loads(sent[0].content)["documents"] == ["候选一", "候选二"]
+    assert await client.rerank("证据", []) == []
+    assert len(sent) == 1
+
+
+async def test_rerank_rejects_nonfinite_score(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = MediaClient("https://rerank.test", "")
+    transport = httpx.MockTransport(lambda request: httpx.Response(
+        200, content=b'{"results":[{"index":0,"relevance_score":NaN}]}',
+    ))
+    monkeypatch.setattr(client, "_http_client", lambda: httpx.AsyncClient(transport=transport))
+    with pytest.raises(ValueError, match="有限数值"):
+        await client.rerank("证据", ["候选一"])

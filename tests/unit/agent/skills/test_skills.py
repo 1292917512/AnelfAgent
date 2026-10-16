@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -403,6 +404,50 @@ class TestSkillCatalog:
 
 
 class TestSkillMatcher:
+    @pytest.mark.parametrize("cancelled", [False, True])
+    async def test_shared_vector_failure_keeps_keywords(self, store, monkeypatch, cancelled):
+        from unittest.mock import AsyncMock
+
+        store.create("code-review", "代码审查", "步骤", ["审查"])
+        matcher = SkillMatcher(store)
+        embed = AsyncMock()
+        monkeypatch.setattr(matcher.index, "text_vector", embed)
+        vector = asyncio.get_running_loop().create_future()
+        if cancelled:
+            vector.cancel()
+        else:
+            vector.set_exception(RuntimeError("embedding unavailable"))
+        matched = await matcher.match(["审查"], query_vec_task=vector)
+        assert [skill.name for skill, _ in matched] == ["code-review"]
+        embed.assert_not_awaited()
+
+    async def test_match_cancellation_preserves_shared_vector(self, store):
+        store.create("code-review", "代码审查", "步骤", ["审查"])
+        matcher = SkillMatcher(store)
+        vector = asyncio.get_running_loop().create_future()
+        task = asyncio.create_task(matcher.match(["审查"], query_vec_task=vector))
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not vector.cancelled()
+        vector.set_result(None)
+
+    async def test_match_uses_definitions_after_vector_wait(self, store, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        store.create("code-review", "代码审查", "旧步骤", ["审查"])
+        matcher = SkillMatcher(store)
+
+        async def embed(_query):
+            store.delete("code-review")
+            store.create("new-review", "新的审查", "新步骤", ["审查"])
+            return None
+
+        monkeypatch.setattr(matcher.index, "text_vector", AsyncMock(side_effect=embed))
+        matched = await matcher.match(["审查"])
+        assert [skill.name for skill, _ in matched] == ["new-review"]
+
     async def test_cold_match_does_not_embed_skill_catalog(self, store, monkeypatch):
         from unittest.mock import Mock
 
@@ -824,6 +869,77 @@ class TestSkillVectorPersistence:
     @pytest.fixture
     def db_path(self, tmp_path) -> str:
         return str(tmp_path / "skill_vectors.sqlite3")
+
+    @pytest.mark.parametrize("path", ["single", "batch"])
+    @pytest.mark.parametrize("change", ["rewrite", "delete", "model"])
+    async def test_late_vector_never_overwrites_current_definition(
+        self, store, db_path, monkeypatch, path, change,
+    ):
+        import sqlite3
+        from unittest.mock import AsyncMock
+
+        skill = store.create("s1", "old definition", "c")
+        embedder = FakeEmbedder()
+        index = SkillIndex(store, embedder, db_path=db_path)
+        ready, release = asyncio.Event(), asyncio.Event()
+
+        async def pending(_value):
+            ready.set()
+            await release.wait()
+            return [1.0, 0.0] if path == "single" else [[1.0, 0.0]]
+
+        method = "embed_query" if path == "single" else "embed_text"
+        monkeypatch.setattr(embedder, method, AsyncMock(side_effect=pending))
+        task = asyncio.create_task(index.skill_vector(skill) if path == "single" else index.warm())
+        try:
+            await asyncio.wait_for(ready.wait(), 2)
+            if change == "rewrite":
+                store.patch("s1", description="new definition")
+                current = store.get("s1")
+                index._cache_vector(index._vector_key(current), [0.0, 1.0])
+                index._persist_skill_vector(current, [0.0, 1.0])
+            elif change == "delete":
+                store.delete("s1")
+            else:
+                embedder.client_name = "new-model"
+            release.set()
+            assert await task == (None if path == "single" else 0)
+            with sqlite3.connect(db_path) as conn:
+                rows = conn.execute("SELECT text_hash, vector FROM skill_vectors").fetchall()
+            if change == "rewrite":
+                from agent.memory.memory_utils import hash_text, unpack_embedding
+
+                assert len(rows) == 1
+                assert rows[0][0] == hash_text(index._embedding_text(store.get("s1")))
+                assert unpack_embedding(rows[0][1]) == [0.0, 1.0]
+            else:
+                assert rows == []
+                assert index.cached_vector(skill) is None
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_advisory_draft_cannot_replace_persisted_definition(self, store, db_path):
+        skill = store.create("s1", "alpha beta topic", "original content")
+        index = SkillIndex(store, FakeEmbedder(), db_path=db_path)
+        await index.warm()
+        await index.write_advisory(
+            name="s1", description="different delta topic", content="new content", updating=True,
+        )
+        restarted = SkillIndex(store, FakeEmbedder(), db_path=db_path)
+        assert restarted.is_embedded(skill)
+        assert not restarted.rebuild_pending
+
+    async def test_batch_length_mismatch_keeps_all_pending(self, store, db_path, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        store.create("s1", "alpha topic", "c")
+        store.create("s2", "beta topic", "c")
+        embedder = FakeEmbedder()
+        monkeypatch.setattr(embedder, "embed_text", AsyncMock(return_value=[[1.0]]))
+        index = SkillIndex(store, embedder, db_path=db_path)
+        assert await index.warm() == 0
+        assert index.embedding_stats()["embedded"] == 0
 
     async def test_restart_zero_reembed(self, store: SkillStore, db_path: str) -> None:
         """嵌入 → 关闭 → 新实例（模拟重启）→ 向量从 SQLite 恢复，零嵌入调用。"""

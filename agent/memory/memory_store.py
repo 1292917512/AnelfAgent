@@ -168,7 +168,7 @@ class MemoryStore(BaseEntity):
     # ------------------------------------------------------------------
 
     async def backfill_embeddings(self, embedder: Any, batch_size: int = 32) -> int:
-        """批量为缺少 embedding 的记忆补充向量（单次 API 调用处理一批）。"""
+        """批量回填仍缺向量且内容未变的记忆，忽略请求期间的改写或删除。"""
         db = await self._get_db()
         cursor = await db.execute(
             "SELECT id, content FROM memories WHERE embedding_blob IS NULL LIMIT ?",
@@ -190,10 +190,12 @@ class MemoryStore(BaseEntity):
                 if not vec:
                     continue
                 blob = pack_embedding(vec)
-                await db.execute(
-                    "UPDATE memories SET embedding_blob=? WHERE id=?",
-                    (blob, row["id"]),
+                updated = await db.execute(
+                    "UPDATE memories SET embedding_blob=? WHERE id=? AND content=? AND embedding_blob IS NULL",
+                    (blob, row["id"], row["content"]),
                 )
+                if not updated.rowcount:
+                    continue
                 await self._conn.vec_upsert_memory(db, int(row["id"]), blob)
                 count += 1
         if count:
@@ -201,7 +203,7 @@ class MemoryStore(BaseEntity):
         return count
 
     async def backfill_chunk_embeddings(self, embedder: Any, batch_size: int = 32) -> int:
-        """批量为缺少 embedding 的文件 chunk 补充向量，并写入 embedding 缓存。"""
+        """批量回填内容哈希仍匹配的分块，成功写入时同步向量索引与缓存。"""
         db = await self._get_db()
         cursor = await db.execute(
             "SELECT id, hash, text FROM chunks WHERE embedding IS NULL LIMIT ?",
@@ -223,10 +225,12 @@ class MemoryStore(BaseEntity):
                 if not vec:
                     continue
                 blob = pack_embedding(vec)
-                await db.execute(
-                    "UPDATE chunks SET embedding=? WHERE id=?",
-                    (blob, row["id"]),
+                updated = await db.execute(
+                    "UPDATE chunks SET embedding=? WHERE id=? AND hash=? AND embedding IS NULL",
+                    (blob, row["id"], row["hash"]),
                 )
+                if not updated.rowcount:
+                    continue
                 await self._conn.vec_upsert_chunk(db, str(row["id"]), blob)
                 await db.execute(
                     "INSERT OR REPLACE INTO embedding_cache(hash, embedding, dims, updated_ns) "
@@ -1552,6 +1556,12 @@ class MemoryStore(BaseEntity):
     async def upsert_file(self, path: str, hash_val: str, mtime_ns: int, size: int) -> None:
         await self._files.upsert_file(path, hash_val, mtime_ns, size)
 
+    async def replace_file_index(
+        self, path: str, hash_val: str, mtime_ns: int, size: int, chunks: list[Dict[str, Any]],
+    ) -> int:
+        """原子替换文件及其分块，失败时保留旧索引。"""
+        return await self._files.replace_file_index(path, hash_val, mtime_ns, size, chunks)
+
     async def delete_file(self, path: str) -> None:
         """删除文件记录及其所有 chunks。"""
         await self._files.delete_file(path)
@@ -1575,9 +1585,11 @@ class MemoryStore(BaseEntity):
         query_vec: list[float],
         limit: int = 10,
         min_score: float = 0.3,
+        *,
+        query: str = "",
     ) -> list[Dict[str, Any]]:
         """在 chunks 表中执行向量搜索：优先 sqlite-vec 索引，降级分批全表扫描。"""
-        return await self._files.search_chunks_vector(query_vec, limit, min_score)
+        return await self._files.search_chunks_vector(query_vec, limit, min_score, query=query)
 
     async def search_chunks_fts(self, query: str, limit: int = 10) -> list[Dict[str, Any]]:
         """在 chunks_fts 中执行全文搜索。"""
@@ -1589,6 +1601,9 @@ class MemoryStore(BaseEntity):
 
     async def get_cached_embedding(self, text_hash: str) -> Optional[list[float]]:
         return await self._files.get_cached_embedding(text_hash)
+
+    async def get_cached_embeddings(self, text_hashes: list[str]) -> dict[str, list[float]]:
+        return await self._files.get_cached_embeddings(text_hashes)
 
     async def put_cached_embedding(self, text_hash: str, vec: list[float]) -> None:
         await self._files.put_cached_embedding(text_hash, vec)

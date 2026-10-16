@@ -112,22 +112,32 @@ class SkillMatcher:
         """
         skills = self.index.match_surface(include_archived=_include_archived())
         lanes = [q.strip() for q in queries if q and q.strip()]
-        if not skills or not lanes:
+        if not skills or not lanes or top_k <= 0:
             return []
         if min_score is None:
             min_score = _min_score()
 
         async def lane_vector(index: int, lane: str) -> list[float] | None:
-            if index == 0:
-                if query_vec_task is not None:
-                    return await asyncio.shield(query_vec_task)
-                if query_vec is not None:
-                    return query_vec
-            return await self.index.text_vector(lane)
+            try:
+                if index == 0:
+                    if query_vec_task is not None:
+                        return await asyncio.shield(query_vec_task)
+                    if query_vec is not None:
+                        return query_vec
+                return await self.index.text_vector(lane)
+            except asyncio.CancelledError:
+                task = asyncio.current_task()
+                if task is not None and task.cancelling():
+                    raise
+                return None
+            except Exception as exc:
+                log(f"技能查询向量不可用，保留关键词匹配: {exc}", "DEBUG", tag="技能")
+                return None
 
         async with asyncio.TaskGroup() as tasks:
             vectors_pending = [tasks.create_task(lane_vector(i, lane)) for i, lane in enumerate(lanes)]
         lane_vecs = [task.result() for task in vectors_pending]
+        skills = self.index.match_surface(include_archived=_include_archived())
 
         vectors = (
             await self.index.ensure_vectors(skills, budget=0)

@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -114,11 +116,15 @@ def _default_uploads_dir() -> Path:
     return Path(project_root()) / ConfigPaths.UPLOAD_DIR
 
 
-def _read_indexable_content(file_path: Path) -> str:
-    """按扩展名读取可索引内容：PDF/DOCX 走文本提取，其余按纯文本读取。"""
-    if file_path.suffix.lower() in (".pdf", ".docx"):
-        return extract_document_text(file_path)
-    return file_path.read_text(encoding="utf-8")
+def _read_indexable_content(file_path: Path) -> tuple[os.stat_result, str]:
+    """读取文档快照；读取期间变化的文件交由下一次同步重试。"""
+    stat = file_path.stat()
+    content = (file_path.read_text(encoding="utf-8") if file_path.suffix.lower() in {".md", ".txt"}
+               else extract_document_text(file_path))
+    after = file_path.stat()
+    if (stat.st_mtime_ns, stat.st_size) != (after.st_mtime_ns, after.st_size):
+        raise OSError(f"文件读取期间发生变化: {file_path.name}")
+    return stat, content
 
 
 async def index_single_file(
@@ -130,13 +136,8 @@ async def index_single_file(
     force: bool = False,
     known_hash: Optional[str] = None,
 ) -> int:
-    """索引单个文件（md/pdf/docx/txt），返回写入 chunk 数；内容未变化返回 0。"""
-    try:
-        stat = file_path.stat()
-        content = _read_indexable_content(file_path)
-    except Exception as exc:
-        log(f"跳过文件 {rel_path}: {exc}", "WARNING", tag="思维")
-        return 0
+    """索引已支持的文档；未变化返回 0，读取或写入失败向调用方报告。"""
+    stat, content = await asyncio.to_thread(_read_indexable_content, file_path)
 
     file_hash = hash_text(f"v{_CHUNKER_VERSION}:{content}")
     if not force:
@@ -146,19 +147,20 @@ async def index_single_file(
         if known_hash == file_hash:
             return 0
 
-    chunks = chunk_markdown(content)
+    chunks = await asyncio.to_thread(chunk_markdown, content)
     if not chunks:
         return 0
 
     chunk_dicts: list[Dict[str, Any]] = []
     now_ns = int(time.time() * 1e9)
+    cached_embeddings = await store.get_cached_embeddings([ch["hash"] for ch in chunks])
 
     for ch in chunks:
         chunk_id = f"{rel_path}:{ch['start_line']}-{ch['end_line']}"
         embedding_blob: Optional[bytes] = None
 
         # 只命中缓存即落库；未命中的留 NULL，由后台 EmbeddingWorker 批量补全
-        cached = await store.get_cached_embedding(ch["hash"])
+        cached = cached_embeddings.get(ch["hash"])
         if cached:
             embedding_blob = pack_embedding(cached)
 
@@ -173,9 +175,7 @@ async def index_single_file(
             "updated_ns": now_ns,
         })
 
-    await store.delete_chunks_by_path(rel_path)
-    written = await store.upsert_chunks(chunk_dicts)
-    await store.upsert_file(rel_path, file_hash, int(stat.st_mtime * 1e9), stat.st_size)
+    written = await store.replace_file_index(rel_path, file_hash, stat.st_mtime_ns, stat.st_size, chunk_dicts)
     log(f"📄 索引文件: {rel_path} → {written} chunks", tag="思维")
     return written
 
@@ -191,12 +191,12 @@ async def sync_files(
     """增量同步记忆文件与上传文档到索引。
 
     对比 files 表中的 hash，只处理新增/变化的文件。
-    返回 {"synced": N, "removed": M, "chunks": C} 统计。
+    返回同步、未变化、失败、移除的文件数与写入块数；单文件失败不阻断其他文件。
     """
     if uploads_dir is None:
         uploads_dir = _default_uploads_dir()
-    files = list_indexable_files(memory_dir, uploads_dir)
-    stats = {"synced": 0, "removed": 0, "chunks": 0}
+    files = await asyncio.to_thread(list_indexable_files, memory_dir, uploads_dir)
+    stats = {"synced": 0, "unchanged": 0, "failed": 0, "removed": 0, "chunks": 0}
 
     indexed_files = {f["path"]: f for f in await store.list_files()}
     current_paths: set[str] = set()
@@ -204,14 +204,21 @@ async def sync_files(
     for file_path, rel_path in files:
         current_paths.add(rel_path)
         existing = indexed_files.get(rel_path)
-        written = await index_single_file(
-            store, embedder, file_path, rel_path,
-            force=force,
-            known_hash=existing["hash"] if existing else None,
-        )
+        try:
+            written = await index_single_file(
+                store, embedder, file_path, rel_path,
+                force=force,
+                known_hash=existing["hash"] if existing else None,
+            )
+        except Exception as exc:
+            stats["failed"] += 1
+            log(f"文件索引失败 [{rel_path}]: {exc}", "WARNING", tag="思维")
+            continue
         if written:
             stats["synced"] += 1
             stats["chunks"] += written
+        else:
+            stats["unchanged"] += 1
 
     for old_path in indexed_files:
         if old_path not in current_paths:
@@ -219,10 +226,10 @@ async def sync_files(
             stats["removed"] += 1
             log(f"🗑️ 移除索引: {old_path}", tag="思维")
 
-    if stats["synced"] or stats["removed"]:
+    if stats["synced"] or stats["removed"] or stats["failed"]:
         log(
             f"📊 文件同步完成: 同步 {stats['synced']} 文件, "
-            f"移除 {stats['removed']} 文件, 共 {stats['chunks']} chunks",
+            f"移除 {stats['removed']} 文件, 失败 {stats['failed']} 文件, 共 {stats['chunks']} chunks",
             tag="思维",
         )
         if stats["chunks"]:

@@ -13,6 +13,7 @@ import type {
   GraphNodeDetail,
   MemoryDocument,
   MemoryFileInfo,
+  MemoryIndexSyncResult,
   ProbeStatus,
   UnifiedTag,
 } from "@/lib/types";
@@ -122,7 +123,7 @@ export const memoryApi = {
   },
   index: {
     status: () => api.get("/memory/index/status"),
-    resync: (force = false) => api.post("/memory/index/resync", null, { params: { force } }),
+    resync: (force = false) => api.post<MemoryIndexSyncResult | { error: string }>("/memory/index/resync", null, { params: { force } }),
     cleanCache: () => api.post("/memory/index/clean-cache"),
     rebuildVectors: () => api.post("/memory/embedding/rebuild"),
   },

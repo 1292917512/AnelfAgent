@@ -34,6 +34,8 @@ from .recall_format import format_memory_line, load_entity_nodes
 from .store.tag_intel import ASSOC_PREFIXES
 
 if TYPE_CHECKING:
+    from agent.llm.media_client import MediaClient
+
     from .cognee.config import CogneeConfig
 
 DEFAULT_TOP_K = 5
@@ -88,7 +90,7 @@ class MemoryRetriever:
         self._embedder = embedder
         self._top_k = top_k
         self._min_score = min_score
-        self._rerank_client: Optional[object] = None
+        self._rerank_client: Optional[MediaClient] = None
 
     @staticmethod
     def _cognee_config() -> "CogneeConfig":
@@ -96,7 +98,7 @@ class MemoryRetriever:
         from .cognee.config import load_cognee_config
         return load_cognee_config()
 
-    def set_rerank_client(self, client: object) -> None:
+    def set_rerank_client(self, client: MediaClient) -> None:
         """Set reranker (MediaClient instance) for post-search reranking."""
         self._rerank_client = client
 
@@ -750,17 +752,19 @@ class MemoryRetriever:
         hits: Dict[str, int] = {}
         for lane_index, lane in enumerate(lanes):
             counts_consensus = lane_index < n_consensus
+            seen: set[str] = set()
             for r in lane:
                 key = dedupe_key(r)
-                if counts_consensus:
+                if counts_consensus and key not in seen:
                     hits[key] = hits.get(key, 0) + 1
+                    seen.add(key)
                 current = best.get(key)
                 if current is None or r.score > current.score:
                     best[key] = r
         results: List[MemorySearchResult] = []
         for key, r in best.items():
             if hits.get(key, 0) >= 2:
-                r.score = round(min(1.0, r.score * consensus_boost), 4)
+                r = r.model_copy(update={"score": round(min(1.0, r.score * consensus_boost), 4)})
             results.append(r)
         results.sort(key=lambda r: r.score, reverse=True)
         return results[:limit]
@@ -1141,7 +1145,9 @@ class MemoryRetriever:
         results: list[MemorySearchResult],
         top_k: int,
     ) -> list[MemorySearchResult]:
-        """Apply reranker to reorder search results by relevance."""
+        """按候选索引应用重排，异常保留原顺序与评分。"""
+        if self._rerank_client is None:
+            return results
         try:
             documents = [r.snippet for r in results]
             rerank_model = ""
@@ -1151,19 +1157,11 @@ class MemoryRetriever:
             except Exception:
                 log("_apply_rerank 异常已忽略", "DEBUG")
 
-            kwargs = {"query": query, "documents": documents, "top_n": top_k}
-            if rerank_model:
-                kwargs["model"] = rerank_model
-
-            reranked = await self._rerank_client.rerank(**kwargs)  # type: ignore[union-attr]
-
-            reordered: list[MemorySearchResult] = []
-            for item in reranked:
-                idx = item.get("index", 0)
-                if 0 <= idx < len(results):
-                    r = results[idx]
-                    r.score = item.get("relevance_score", r.score)
-                    reordered.append(r)
+            reranked = await self._rerank_client.rerank(query, documents, model=rerank_model, top_n=top_k)
+            reordered = [
+                results[item["index"]].model_copy(update={"score": item["relevance_score"]})
+                for item in reranked
+            ]
 
             log(f"rerank: {len(results)} -> {len(reordered)} results", "DEBUG", tag="思维")
             return reordered

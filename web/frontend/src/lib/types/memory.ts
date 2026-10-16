@@ -1,3 +1,11 @@
+export interface MemoryIndexSyncResult {
+  synced: number;
+  unchanged: number;
+  failed: number;
+  removed: number;
+  chunks: number;
+}
+
 /** GET /personas/ 的人设列表条目 */
 export interface PersonaItem {
   key: string;

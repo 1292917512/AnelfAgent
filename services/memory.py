@@ -510,7 +510,12 @@ class MemoryService:
 
         rel_key = f"{_DOC_PREFIX}{safe_name}"
         from agent.memory.memory_sync import index_single_file
-        chunks = await index_single_file(store, rt.mind.embedder, dest, rel_key, force=True)
+        try:
+            chunks = await index_single_file(store, rt.mind.embedder, dest, rel_key, force=True)
+        except Exception as exc:
+            log(f"上传文档索引失败 [{rel_key}]: {exc}", "WARNING", tag="记忆")
+            dest.unlink(missing_ok=True)
+            return {"error": "文档解析或索引失败，请检查文件格式与索引日志"}
         if chunks <= 0:
             dest.unlink(missing_ok=True)
             return {"error": "文档解析失败或无可用文本"}

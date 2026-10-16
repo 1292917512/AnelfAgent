@@ -466,6 +466,8 @@ Linux/Windows 测试均上传完整日志和 JUnit 结果，浏览器失败保�
 
 特别感谢 [Nekro Agent](https://github.com/KroMiose/nekro-agent) 与 [N.E.K.O](https://github.com/Project-N-E-K-O/N.E.K.O) 两个项目的参考与启发。
 
+感谢 [Xerj](https://github.com/xerj-org/xerj) 对命中片段检索、来源定位与索引覆盖状态设计的启发。
+
 > **协议说明**：AnelfAgent 通过 OneBot v11 WebSocket 与 NapCatQQ 通信，不包含也不修改 NapCat 源码。微信频道对接腾讯 iLink Bot API，协议实现参考社区适配器实践。
 
 ### 参与贡献

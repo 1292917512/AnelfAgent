@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -9,8 +12,8 @@ import pytest
 from agent.memory.doc_extract import extract_document_text
 from agent.memory.embedding import Embedder
 from agent.memory.memory_store import MemoryStore
-from agent.memory.memory_sync import sync_files
-from agent.memory.memory_utils import list_indexable_files
+from agent.memory.memory_sync import index_single_file, sync_files
+from agent.memory.memory_utils import list_indexable_files, pack_embedding
 
 
 @pytest.fixture
@@ -150,3 +153,93 @@ class TestSyncFilesWithDocs:
         await sync_files(store, Embedder(), memory_dir, uploads_dir=uploads)
         stats = await sync_files(store, Embedder(), memory_dir, uploads_dir=uploads)
         assert stats["synced"] == 0
+        assert stats["unchanged"] == 2
+        assert stats["failed"] == 0
+
+    async def test_office_formats_and_partial_failure(self, store, memory_dir, uploads) -> None:
+        from openpyxl import Workbook
+        from pptx import Presentation
+
+        workbook = Workbook()
+        workbook.active.append(["回款计划", 120])
+        workbook.save(uploads / "docs" / "plan.xlsx")
+        presentation = Presentation()
+        slide = presentation.slides.add_slide(presentation.slide_layouts[1])
+        slide.shapes.title.text = "执行安排"
+        presentation.save(uploads / "docs" / "plan.pptx")
+        (uploads / "docs" / "broken.pdf").write_bytes(b"invalid pdf")
+        stats = await sync_files(store, Embedder(), memory_dir, uploads_dir=uploads)
+        assert stats["synced"] == 4
+        assert stats["failed"] == 1
+        assert "回款计划" in "".join(await _chunk_texts(store, "uploads/docs/plan.xlsx"))
+        assert "执行安排" in "".join(await _chunk_texts(store, "uploads/docs/plan.pptx"))
+
+
+@pytest.mark.parametrize("mode", ["fts", "like", "vector", "unified"])
+async def test_file_retrieval_preserves_tail_evidence_and_lines(store, mode) -> None:
+    text = "不相关的背景介绍。\n" * 100 + "重试预算 应当保留这条关键事实。\n" + "附录内容\n" * 40
+    await store.upsert_chunks([{
+        "id": "chunk", "path": "memory/retry.md", "start_line": 30,
+        "end_line": 30 + text.count("\n"), "hash": "content", "text": text,
+        "embedding": pack_embedding([1.0, 0.0]), "updated_ns": time.time_ns(),
+    }])
+    if mode == "like":
+        store._files._conn.chunks_fts_available = False
+    if mode == "vector":
+        store._files._conn.vec_available = False
+        results = await store.search_chunks_vector([1.0, 0.0], query="重试预算")
+    elif mode == "unified":
+        results = [r.model_dump() for r in await store.search_unified("重试预算", [1.0, 0.0])]
+    else:
+        results = await store.search_chunks_fts("重试预算")
+    assert len(results) == 1
+    result = results[0]
+    assert "重试预算" in result["snippet"]
+    assert len(result["snippet"]) <= 500
+    assert 30 < result["start_line"] <= 130 <= result["end_line"]
+    assert result["provenance"]["chunk_start_line"] == 30
+    assert result["provenance"]["truncated"]
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_failed_file_replacement_preserves_previous_index(store, memory_dir, monkeypatch, cancel) -> None:
+    path = memory_dir / "note.md"
+    await index_single_file(store, Embedder(), path, "memory/note.md")
+    old_file = await store.get_file("memory/note.md")
+    old_chunks = await _chunk_texts(store, "memory/note.md")
+    write_chunks = store._files._write_chunks
+
+    async def fail_after_write(*args):
+        await write_chunks(*args)
+        raise asyncio.CancelledError() if cancel else RuntimeError("write interrupted")
+
+    monkeypatch.setattr(store._files, "_write_chunks", fail_after_write)
+    path.write_text("更新后的内容", encoding="utf-8")
+    with pytest.raises(asyncio.CancelledError if cancel else RuntimeError):
+        await index_single_file(store, Embedder(), path, "memory/note.md")
+    assert await store.get_file("memory/note.md") == old_file
+    assert await _chunk_texts(store, "memory/note.md") == old_chunks
+    assert await store.search_chunks_fts("记忆文件")
+    assert not await store.search_chunks_fts("更新")
+
+
+async def test_document_preparation_does_not_block_event_loop(store, memory_dir, monkeypatch) -> None:
+    from agent.memory import memory_sync
+
+    started, release = threading.Event(), threading.Event()
+    read = memory_sync._read_indexable_content
+
+    def wait_for_release(path):
+        started.set()
+        if not release.wait(2):
+            raise TimeoutError("document preparation blocked the event loop")
+        return read(path)
+
+    monkeypatch.setattr(memory_sync, "_read_indexable_content", wait_for_release)
+    task = asyncio.create_task(index_single_file(store, Embedder(), memory_dir / "note.md", "memory/note.md"))
+    try:
+        assert await asyncio.to_thread(started.wait, 1)
+        assert not task.done()
+    finally:
+        release.set()
+    assert await task > 0

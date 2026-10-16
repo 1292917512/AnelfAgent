@@ -1,23 +1,19 @@
-"""文件扫描原语 — 噪声剪枝的目录遍历、glob 匹配、内容检索与二进制嗅探。
+"""剪枝目录遍历、内容检索与二进制嗅探。
 
-从 tools.search_files / tools.read_file 抽出的无副作用核心，职责：
-
-- **噪声剪枝**（版本控制/依赖/构建/缓存目录）：
-  os.walk 期间按目录名剪枝，``node_modules``/``.git`` 等既不进结果也不再
-  向下遍历——此前 glob.iglob 全量下钻，装了依赖的 workspace 一次
-  ``**/*.py`` 内容搜索要读几万个小文件；
-- **任意深度 glob 语义**：fnmatch 对相对路径匹配（``*.png`` 命中任意深度，
-  fnmatch 的 ``*`` 天然跨 ``/``，``**`` 与之等价）；
-- **二进制嗅探**：读前 8KB 查 NUL 字节。
-  read_file 的扩展名表覆盖不到无扩展名/冷门扩展名的二进制文件，且文本
-  读取走 ``errors="replace"`` 永不抛解码异常——NUL 采样是唯一可靠防线。
+模型可见：文件命中、准确行号、截断和扫描覆盖情况，经工具结果返回。
+Token：预览沿用单行预算，覆盖状态为固定计数和最多五条读取错误。
+缓存：结果属于工具链，不改稳定上下文前缀。
 """
 
 from __future__ import annotations
 
 import fnmatch
 import os
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Iterator, List, NamedTuple, Optional, Pattern
+
+from core.text_passage import passage_around
 
 # 默认剪枝目录：版本控制 / 依赖 / 构建产物 / 工具缓存
 DEFAULT_EXCLUDE_DIRS = frozenset({
@@ -66,6 +62,8 @@ def iter_matches(
     root: str,
     pattern: str,
     exclude: Optional[frozenset] = None,
+    *,
+    on_error: Callable[[OSError], None] | None = None,
 ) -> Iterator[MatchEntry]:
     """按 glob 模式遍历匹配（剪枝噪声目录）。
 
@@ -88,8 +86,8 @@ def iter_matches(
             return True
         return alt != pattern and fnmatch.fnmatch(name, alt)
 
-    for dirpath, dirnames, filenames in os.walk(root):
-        kept = [d for d in dirnames if d not in exclude]
+    for dirpath, dirnames, filenames in os.walk(root, onerror=on_error):
+        kept = sorted(d for d in dirnames if d not in exclude)
         dirnames[:] = kept
         base = os.path.relpath(dirpath, root)
         for name in kept:
@@ -99,15 +97,19 @@ def iter_matches(
                 try:
                     stat = os.stat(abspath)
                     yield MatchEntry(rel, abspath, True, stat.st_size, stat.st_mtime)
-                except OSError:
+                except OSError as exc:
+                    if on_error is not None:
+                        on_error(exc)
                     continue
-        for name in filenames:
+        for name in sorted(filenames):
             rel = name if base == "." else f"{base}/{name}"
             if _matched(rel, name):
                 abspath = os.path.join(dirpath, name)
                 try:
                     stat = os.stat(abspath)
-                except OSError:
+                except OSError as exc:
+                    if on_error is not None:
+                        on_error(exc)
                     continue
                 yield MatchEntry(rel, abspath, False, stat.st_size, stat.st_mtime)
 
@@ -133,6 +135,34 @@ class ContentHit(NamedTuple):
     relpath: str
     abspath: str
     lines: List[str]  # 形如 "12:命中行预览"
+    truncated: bool = False
+
+
+@dataclass
+class ContentSearchResult:
+    """命中与覆盖情况；零命中不等于全部文件均已检查。"""
+
+    hits: list[ContentHit] = field(default_factory=list)
+    scanned_files: int = 0
+    skipped: dict[str, int] = field(default_factory=dict)
+    errors: list[str] = field(default_factory=list)
+    truncated: bool = False
+
+    def skip(self, reason: str) -> None:
+        self.skipped[reason] = self.skipped.get(reason, 0) + 1
+
+    def read_error(self, exc: OSError) -> None:
+        self.skip("unreadable")
+        if len(self.errors) < 5:
+            self.errors.append(str(exc))
+
+    def coverage(self) -> dict[str, object]:
+        return {
+            "complete": not (self.skipped or self.truncated or any(hit.truncated for hit in self.hits)),
+            "scanned_files": self.scanned_files,
+            "skipped_files": self.skipped,
+            "errors": self.errors,
+        }
 
 
 def content_search(
@@ -145,33 +175,48 @@ def content_search(
     per_file_hits: int = 5,
     line_preview_chars: int = 200,
     max_file_bytes: int = 2 * 1024 * 1024,
-) -> List[ContentHit]:
+) -> ContentSearchResult:
     """文件名 glob 过滤后做逐行内容检索（跳过二进制与超大文件）。
 
     max_file_bytes：内容模式逐文件逐行扫描，>2MB 的打包产物/数据文件
     慢且命中无操作价值，直接跳过（文件名模式不受限）。
     """
-    hits: List[ContentHit] = []
-    for entry in iter_matches(root, pattern, exclude):
-        if entry.is_dir or entry.size > max_file_bytes:
+    result = ContentSearchResult()
+    for entry in iter_matches(root, pattern, exclude, on_error=result.read_error):
+        if entry.is_dir:
+            continue
+        if entry.size > max_file_bytes:
+            result.skip("too_large")
             continue
         if os.path.splitext(entry.abspath)[1].lower() in _CONTENT_SKIP_EXTS:
+            result.skip("binary")
             continue
         try:
             with open(entry.abspath, "r", encoding="utf-8", errors="replace") as f:
+                if "\x00" in f.read(BINARY_SAMPLE_BYTES):
+                    result.skip("binary")
+                    continue
+                f.seek(0)
+                result.scanned_files += 1
                 matched: List[str] = []
+                truncated = False
                 for i, line in enumerate(f, 1):
-                    if regex.search(line):
-                        matched.append(f"{i}:{line.rstrip()[:line_preview_chars]}")
+                    match = regex.search(line)
+                    if match is not None:
                         if len(matched) >= per_file_hits:
+                            truncated = True
                             break
-        except OSError:
+                        preview = passage_around(line.rstrip(), *match.span(), max_chars=line_preview_chars)
+                        matched.append(f"{i}:{preview.text}")
+        except OSError as exc:
+            result.read_error(exc)
             continue
         if matched:
-            hits.append(ContentHit(entry.relpath, entry.abspath, matched))
-            if len(hits) >= max_results:
+            if len(result.hits) >= max_results:
+                result.truncated = True
                 break
-    return hits
+            result.hits.append(ContentHit(entry.relpath, entry.abspath, matched, truncated))
+    return result
 
 
 # ------------------------------------------------------------------

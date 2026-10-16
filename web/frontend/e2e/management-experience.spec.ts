@@ -2,6 +2,35 @@ import AxeBuilder from "@axe-core/playwright";
 import { test, expect, openWebChat } from "./fixtures";
 import type { ConfigMetaItem, ToolItem } from "../src/lib/types";
 
+test("document indexing reports partial coverage and allows retry after failure", async ({ page }, info) => {
+  await page.route("**/api/memory/health", (route) => route.fulfill({ json: { type_counts: {}, total_memories: 0 } }));
+  await page.route("**/api/memory/index/status", (route) => route.fulfill({ json: { files: 3, chunks: 6 } }));
+  let release: () => void = () => {};
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  let fail = false;
+  await page.route("**/api/memory/index/resync?*", async (route) => {
+    await pending;
+    await route.fulfill({ json: fail ? { error: "Index unavailable" } : { synced: 3, unchanged: 2, removed: 1, failed: 1, chunks: 6 } });
+  });
+  await page.goto("/webui/memory");
+  const sync = page.getByRole("button", { name: "Incremental Sync", exact: true });
+  await sync.click();
+  await expect(sync).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Full Rebuild", exact: true })).toBeDisabled();
+  await expect(page.getByRole("status")).toContainText("Synchronizing document index");
+  release();
+  await expect(page.getByRole("status")).toContainText("Synced 3 · Unchanged 2 · Removed 1 · Failed 1");
+  await expect(sync).toBeEnabled();
+  await page.screenshot({ path: info.outputPath("document-index-coverage.png") });
+  fail = true;
+  await sync.click();
+  await expect(page.getByRole("alert")).toContainText("Index synchronization failed");
+  fail = false;
+  await sync.click();
+  await expect(page.getByRole("status")).toContainText("Synced 3");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
 test("tool filters survive navigation and editing failures preserve the draft", async ({ page }, info) => {
   const tools: ToolItem[] = [
     { name: "inspect_service", description: "Inspect service health and summarize recent events.", tags: ["ops", "read"], enabled: true, source: "entity" },

@@ -378,26 +378,39 @@ class SkillIndex:
         self._refresh_model()
         if self._embedder is None or not text.strip():
             return None
+        model = self._current_model
         try:
             vec = await self._embedder.embed_query(text)  # type: ignore[attr-defined]
         except Exception as exc:
             log(f"技能向量计算失败: {exc}", "DEBUG", tag="技能")
+            return None
+        if model != self._current_model or model != self._model_key():
             return None
         return vec or None
 
     async def skill_vector(self, skill: Skill) -> Optional[List[float]]:
         """技能向量（模型名 + 表征文本 hash 缓存，内容/模型变更自然失效）。
 
-        嵌入成功后同步持久化到 SQLite——重启经 _ensure_db_loaded 零重嵌恢复。
+        只有仍与库内定义一致的向量才持久化；未提交草稿仅供本次诊断复用。
         """
+        self._refresh_model()
+        self._ensure_db_loaded()
         key = self._vector_key(skill)
         cached = self._vec_cache.get(key)
         if cached is not None:
             return cached
-        vec = await self.text_vector(self._embedding_text(skill))
+        text = self._embedding_text(skill)
+        stored = self._store.get(skill.name)
+        was_current = stored is not None and self._embedding_text(stored) == text
+        vec = await self.text_vector(text)
         if vec:
-            self._cache_vector(key, vec)
-            self._persist_skill_vector(skill, vec)
+            current = self._store.get(skill.name)
+            is_current = current is not None and self._embedding_text(current) == text
+            if was_current and not is_current:
+                return None
+            if is_current:
+                self._cache_vector(key, vec)
+                self._persist_skill_vector(skill, vec)
         return vec
 
     def cached_vector(self, skill: Skill) -> Optional[List[float]]:
@@ -542,15 +555,22 @@ class SkillIndex:
                     break
         if not uncached:
             return 0
+        model = self._current_model
         texts = [self._embedding_text(s) for s in uncached]
         try:
             vectors = await embedder.embed_text(texts)  # type: ignore[attr-defined]
         except Exception as exc:
             log(f"技能向量预热失败: {exc}", "DEBUG", tag="技能")
             return 0
+        if model != self._current_model or model != self._model_key():
+            return 0
+        if len(vectors) != len(uncached):
+            log("技能向量预热返回数量不匹配，保留待回填状态", "WARNING", tag="技能")
+            return 0
+        current_texts = {s.name: self._embedding_text(s) for s in self._all_skills()}
         warmed = 0
-        for skill, vec in zip(uncached, vectors, strict=False):
-            if vec:
+        for skill, text, vec in zip(uncached, texts, vectors, strict=True):
+            if vec and current_texts.get(skill.name) == text:
                 self._cache_vector(self._vector_key(skill), vec)
                 self._persist_skill_vector(skill, vec)
                 warmed += 1

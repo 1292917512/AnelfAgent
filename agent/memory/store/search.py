@@ -518,7 +518,7 @@ class SearchEngine:
             limit=pool_size, min_score=min_score, require_tags=require_tags,
         )
         chunk_vec_coro = (
-            self._file_index.search_chunks_vector(query_vec, limit=pool_size, min_score=0.05)
+            self._file_index.search_chunks_vector(query_vec, limit=pool_size, min_score=0.05, query=query)
             if query_vec and not require_tags else _empty_chunk_vec()
         )
         chunk_fts_coro = (
@@ -566,9 +566,10 @@ class SearchEngine:
                     path=ch.get("path", ""),
                     start_line=ch.get("start_line", 0),
                     end_line=ch.get("end_line", 0),
-                    snippet=ch.get("snippet", "")[:700],
+                    snippet=ch.get("snippet", ""),
                     score=final,
                     source="file",
+                    provenance=ch.get("provenance", {}),
                 ))
 
         unified: list[MemorySearchResult] = []

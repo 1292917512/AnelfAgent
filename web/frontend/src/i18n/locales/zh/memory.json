@@ -110,6 +110,9 @@
   "fileIndexSubtitle": "记忆系统的文件索引状态",
   "cleanCache": "清理缓存",
   "incrementalSync": "增量同步",
+  "indexSyncPending": "正在同步文档索引…",
+  "indexSyncError": "索引同步失败，请查看后台日志；可稍后重试。",
+  "indexSyncResult": "已同步 {{synced}} · 未变化 {{unchanged}} · 已移除 {{removed}} · 失败 {{failed}} · 写入 {{chunks}} 个分块",
   "fullRebuild": "全量重建",
   "indexLabels": {
     "files": "已索引文件数",

@@ -81,7 +81,9 @@ def test_default_exclude_table_contents() -> None:
 
 def test_content_search_skips_noise_and_finds_hits(tree) -> None:
     """内容检索：噪声目录不扫，命中带行号预览。"""
-    hits = content_search(str(tree), "**/*.py", re.compile(r"TODO"))
+    result = content_search(str(tree), "**/*.py", re.compile(r"TODO"))
+    hits = result.hits
+    assert result.coverage()["complete"]
     assert len(hits) == 1
     assert hits[0].relpath == "sub/b.py"
     assert hits[0].lines and hits[0].lines[0].startswith("2:")
@@ -91,15 +93,60 @@ def test_content_search_skips_large_files(tree) -> None:
     """超大文件跳过（>2MB 打包产物不逐行扫）。"""
     big = tree / "big.py"
     big.write_text("needle\n" + "x" * (3 * 1024 * 1024))
-    hits = content_search(str(tree, ), "**/*.py", re.compile("needle"), max_file_bytes=2 * 1024 * 1024)
-    assert all(h.relpath != "big.py" for h in hits)
+    result = content_search(str(tree, ), "**/*.py", re.compile("needle"), max_file_bytes=2 * 1024 * 1024)
+    assert all(h.relpath != "big.py" for h in result.hits)
+    assert result.skipped == {"too_large": 1}
+    assert result.coverage()["complete"] is False
 
 
 def test_content_search_skips_binary_ext(tree) -> None:
     """二进制扩展名跳过（性能防线）。"""
     (tree / "blob.zip").write_text("needle")
-    hits = content_search(str(tree), "*", re.compile("needle"))
-    assert all(not h.relpath.endswith(".zip") for h in hits)
+    result = content_search(str(tree), "*", re.compile("needle"))
+    assert all(not h.relpath.endswith(".zip") for h in result.hits)
+    assert result.skipped == {"binary": 1}
+
+
+def test_search_preserves_long_line_match_and_reports_limits(tmp_path) -> None:
+    (tmp_path / "a.txt").write_text(("x" * 600 + "needle\n") * 7)
+    (tmp_path / "b.txt").write_text("needle")
+    result = content_search(str(tmp_path), "*", re.compile("needle"), max_results=1)
+    assert len(result.hits) == 1
+    assert result.truncated and result.hits[0].truncated
+    assert len(result.hits[0].lines) == 5
+    assert all("needle" in line and len(line) <= 202 for line in result.hits[0].lines)
+    assert result.coverage()["complete"] is False
+
+
+def test_search_skips_unknown_binary_and_reports_unreadable(tmp_path, monkeypatch) -> None:
+    (tmp_path / "blob").write_bytes(b"\x00needle")
+    (tmp_path / "blocked.txt").write_text("needle")
+    original = scan.os.stat
+
+    def stat(path, *args, **kwargs):
+        if str(path).endswith("blocked.txt"):
+            raise PermissionError("blocked.txt is unreadable")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(scan.os, "stat", stat)
+    result = content_search(str(tmp_path), "*", re.compile("needle"))
+    assert not result.hits
+    assert result.skipped == {"binary": 1, "unreadable": 1}
+    assert len(result.errors) == 1
+    assert result.coverage()["complete"] is False
+
+
+def test_tool_exposes_coverage(tmp_path, monkeypatch) -> None:
+    from entities.filesystem import tools
+
+    monkeypatch.setattr(tools, "_load_config", lambda: None)
+    monkeypatch.setattr(tools, "_ws_root", lambda: str(tmp_path))
+    monkeypatch.setattr(tools, "_SANDBOX", False)
+    (tmp_path / "binary").write_bytes(b"\x00needle")
+    result = json.loads(tools.search_files(str(tmp_path), content_pattern="needle"))
+    assert result["count"] == 0
+    assert result["coverage"]["skipped_files"] == {"binary": 1}
+    assert not result["coverage"]["complete"]
 
 
 def test_looks_binary_by_nul_sampling(tmp_path) -> None:

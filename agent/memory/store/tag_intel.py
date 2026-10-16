@@ -7,6 +7,10 @@
 
 关联前缀之外的标签（type:/date:/channel: 等结构性标签）不参与共现与提及，
 避免"共现于 type:fact"这类无意义关联。
+
+模型可见：仅将无歧义的实体/话题提及作为召回种子，不改显式标签。
+Token 影响：不新增注入，减少错误身份和词内误匹配带来的候选。
+缓存影响：派生词表在内存复用，召回仍进入动态区，不触碰稳定前缀。
 """
 
 from __future__ import annotations
@@ -14,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import re
 import time
 from typing import Any, Dict, List
 
@@ -58,33 +63,34 @@ class TagIntelligence:
                 continue
             if not isinstance(tags, list):
                 continue
-            for tag in tags:
-                if isinstance(tag, str):
-                    df[tag] = df.get(tag, 0) + 1
-            assoc = sorted({t for t in tags if isinstance(t, str) and self._is_assoc_tag(t)})
+            unique_tags = {tag for tag in tags if isinstance(tag, str)}
+            for tag in sorted(unique_tags):
+                df[tag] = df.get(tag, 0) + 1
+            assoc = sorted(t for t in unique_tags if self._is_assoc_tag(t))
             for i in range(len(assoc)):
                 for j in range(i + 1, len(assoc)):
                     pair = (assoc[i], assoc[j])
                     cooc[pair] = cooc.get(pair, 0) + 1
 
         # 提及词表：高频 topic 名（df>=2，长度>=2 防噪声）
-        vocab: Dict[str, str] = {}
+        mentions: Dict[str, set[str]] = {}
         for tag, count in df.items():
             if tag.startswith("topic:") and count >= 2:
                 name = tag[len("topic:"):]
                 if len(name) >= 2:
-                    vocab[name.casefold()] = tag
+                    mentions.setdefault(name.casefold(), set()).add(tag)
         # 图谱节点 label/key 词表（user/group/topic 节点 → 同名记忆标签）
         for key, label in node_rows:
             if not key.startswith(ASSOC_PREFIXES):
                 continue
             label = label.strip()
             if len(label) >= 2:
-                vocab.setdefault(label.casefold(), key)
+                mentions.setdefault(label.casefold(), set()).add(key)
             # key 的话题名段也可被提及（如 topic:火锅 的"火锅"）
             name = key.split(":", 1)[1]
             if key.startswith("topic:") and len(name) >= 2:
-                vocab.setdefault(name.casefold(), key)
+                mentions.setdefault(name.casefold(), set()).add(key)
+        vocab = {word: next(iter(tags)) for word, tags in mentions.items() if len(tags) == 1}
         return df, cooc, vocab
 
     async def _ensure_fresh(self) -> None:
@@ -161,15 +167,19 @@ class TagIntelligence:
         """从查询文本识别已知实体/话题提及，返回对应标签（关联前缀）。
 
         按词长降序匹配（长词优先，避免「火锅城」先被「火锅」截胡），
-        同一标签只取一次。仅产出 df>=2 的高频标签，控制噪声。
+        同一标签只取一次；同名歧义不推断身份，拉丁词须匹配完整词。
+        话题来自 df>=2 的标签，实体来自未归档图谱节点。
         """
         text = (query or "").casefold()
-        if not text:
+        if not text or limit <= 0:
             return []
         await self._ensure_fresh()
         hits: List[str] = []
-        for word in sorted(self._vocab, key=len, reverse=True):
-            if word in text:
+        for word in sorted(self._vocab, key=lambda value: (-len(value), value)):
+            if word in text and (
+                not word.isascii()
+                or re.search(rf"(?<![a-z0-9_]){re.escape(word)}(?![a-z0-9_])", text)
+            ):
                 tag = self._vocab[word]
                 if tag not in hits:
                     hits.append(tag)
