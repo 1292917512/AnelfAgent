@@ -4,6 +4,7 @@ import type { DesktopModuleInfo, SubscriptionProvider } from "../types";
 test("subscription login, refresh and failure states remain readable", async ({ page }, info) => {
   let enabled = true;
   let loginState = "waiting";
+  let images = 0;
   let starts = 0;
   let provider: SubscriptionProvider = {
     key: "bailian", name: "阿里百炼", source: "Bailian CLI", auth_type: "console", state: "no_credential",
@@ -31,6 +32,7 @@ test("subscription login, refresh and failure states remain readable", async ({ 
   await page.route("**/api/entity/ai_desktop/modules/subscription/login**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith("/image")) {
+      images++;
       await route.fulfill({ contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="168" height="168"><rect width="168" height="168" fill="white"/><path d="M10 10h50v50H10zM108 10h50v50h-50zM10 108h50v50H10zM86 80h60v60H86z" fill="black"/></svg>' });
       return;
     }
@@ -38,7 +40,9 @@ test("subscription login, refresh and failure states remain readable", async ({ 
       loginState = "complete";
       provider = { ...provider, state: "ok", plan: "Token Plan", windows: [{ label: "每月", remaining_percent: 75 }] };
     }
-    if (path.endsWith("/login") && route.request().method() === "POST") starts++;
+    if (path.endsWith("/login") && route.request().method() === "POST") {
+      starts++;
+    }
     await route.fulfill({ json: { id: "session", state: loginState, error: "", expires_at: 0 } });
   });
   await page.route("**/api/entity/ai_desktop/preview", (route) => route.fulfill({ json: { injecting: false, content: "" } }));
@@ -55,6 +59,9 @@ test("subscription login, refresh and failure states remain readable", async ({ 
   await expect(dialog.getByRole("button", { name: "Close", exact: true }).last()).toBeInViewport({ ratio: 1 });
   await page.screenshot({ path: info.outputPath("subscription-login.png"), animations: "disabled" });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  loginState = "scanned";
+  await expect(dialog.getByText("Code scanned. Confirm sign-in on your phone.")).toBeVisible();
+  expect(images).toBe(1);
   loginState = "confirming";
   await dialog.getByRole("button", { name: "Confirm authorization", exact: true }).click();
   await expect(dialog.getByText("Signed in. Authorization will be reused.")).toBeVisible();

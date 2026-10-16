@@ -110,7 +110,6 @@
     "loginHint": "Scan with Aliyun, Alipay or DingTalk. Authorization is saved and reused.",
     "closeLogin": "Close",
     "loginStates": {
-      "preparing": "Preparing QR sign-in for first use…",
       "starting": "Getting your QR code…",
       "waiting": "Scan and confirm sign-in on your phone",
       "confirming": "Signed in on your phone. Confirm authorization to read Bailian quota.",
@@ -118,13 +117,16 @@
       "complete": "Signed in. Authorization will be reused.",
       "expired": "This login expired. Get a new QR code.",
       "cancelled": "Login cancelled.",
-      "prepareFailed": "Could not prepare QR sign-in. Check the server download connection and retry.",
       "error": "Could not complete sign-in. Please retry; existing authorization is kept.",
-      "idle": "Login has not started"
+      "idle": "Login has not started",
+      "scanned": "Code scanned. Confirm sign-in on your phone.",
+      "authorizing": "Completing console authorization…"
     },
     "loginQr": "Aliyun sign-in QR code",
     "refreshQr": "Get a new code",
-    "confirmLogin": "Confirm authorization"
+    "confirmLogin": "Confirm authorization",
+    "additionalVerification": "This account needs additional verification. Complete it in the official console and retry, or sign in through the official CLI.",
+    "quotaRefreshFailed": "Authorization was saved. Quota refresh failed; try refreshing later."
   },
   "calendar": {
     "today": "Today",

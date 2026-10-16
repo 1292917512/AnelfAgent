@@ -65,19 +65,19 @@ it.each(["complete", "expired", "error"] as const)("stops polling in state %s", 
   view.client.clear();
 });
 
-it("shows automatic preparation, QR and explicit authorization without a page click", async () => {
-  aiDesktopApi.loginStatus.mockResolvedValue({ data: { ...state, state: "preparing" } });
+it("fetches the QR only once and confirms after phone approval", async () => {
   const view = mount();
   await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-  expect(screen.getByRole("status").textContent).toBe(zh.subscription.loginStates.preparing);
-  expect(screen.queryByText(/uv sync/)).toBeNull();
-  expect(aiDesktopApi.loginImage).not.toHaveBeenCalled();
-  aiDesktopApi.loginStatus.mockResolvedValue({ data: state });
-  await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+  expect(aiDesktopApi.startLogin).toHaveBeenCalledExactlyOnceWith();
+  expect(screen.queryByText(/uv sync|Chromium/)).toBeNull();
+  aiDesktopApi.loginStatus.mockResolvedValue({ data: { ...state, state: "scanned" } });
+  await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+  expect(aiDesktopApi.loginImage).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole("status").textContent).toBe(zh.subscription.loginStates.scanned);
   expect(screen.getByRole("img", { name: zh.subscription.loginQr })).toBeTruthy();
   aiDesktopApi.loginStatus.mockResolvedValue({ data: { ...state, state: "confirming" } });
   await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
-  expect(screen.queryByRole("img")).toBeNull();
+  expect(screen.queryByRole("img", { name: zh.subscription.loginQr })).toBeNull();
   await act(async () => { fireEvent.click(screen.getByRole("button", { name: zh.subscription.confirmLogin })); });
   expect(aiDesktopApi.confirmLogin).toHaveBeenCalledWith("session");
   view.unmount();

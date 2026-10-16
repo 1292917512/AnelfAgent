@@ -113,7 +113,7 @@ export interface SubscriptionProvider {
 
 export interface SubscriptionLogin {
   id: string;
-  state: "idle" | "preparing" | "starting" | "waiting" | "confirming" | "refreshing" | "complete" | "expired" | "cancelled" | "error";
+  state: "idle" | "starting" | "waiting" | "scanned" | "confirming" | "authorizing" | "refreshing" | "complete" | "expired" | "cancelled" | "error";
   error: string;
   expires_at: number;
 }

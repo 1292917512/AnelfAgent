@@ -83,7 +83,6 @@ dependencies = [
     "pyautogui>=0.9.54",
     # Cognee 适配器的有限重试策略（复用库已有依赖，不另建重试循环）。
     "tenacity>=9.1.4,<10",
-    "playwright>=1.50,<2",
 ]
 
 [tool.uv]

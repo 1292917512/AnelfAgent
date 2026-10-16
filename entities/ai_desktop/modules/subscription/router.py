@@ -11,7 +11,7 @@ from .providers import PROVIDERS
 
 
 def build_router() -> APIRouter:
-    """仅显式登录启动浏览器，其余端点只操作已有会话。"""
+    """仅显式登录申请二维码，其余端点只操作已有会话。"""
     router = APIRouter(prefix="/modules/subscription/login")
 
     async def refresh() -> None:

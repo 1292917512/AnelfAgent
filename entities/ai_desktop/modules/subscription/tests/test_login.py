@@ -2,12 +2,12 @@
 
 import asyncio
 import json
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
+from urllib.parse import parse_qs
 
 import pytest
 from fastapi import FastAPI
-from httpx import ASGITransport, AsyncClient
+from httpx import ASGITransport, AsyncClient, ConnectError, MockTransport, Response
 
 from core.command import CommandResult
 from core.config import ConfigManager
@@ -93,107 +93,152 @@ def test_session_persistence_isolated_reused_and_secrets_not_in_commands(tmp_pat
 
 
 @pytest.fixture
-def browser(monkeypatch):
-    scanned = asyncio.Event()
-    qr = Mock(screenshot=AsyncMock(return_value=b"png"))
-    qr.locator.return_value.wait_for = AsyncMock()
-    authorize = Mock(click=AsyncMock(), wait_for=AsyncMock(side_effect=lambda **_: scanned.wait()))
-    async def wait_for_scan(**_):
-        await scanned.wait()
-    authorize.wait_for = wait_for_scan
-    enter = Mock(click=AsyncMock())
-    page = SimpleNamespace(goto=AsyncMock(), locator=Mock(return_value=qr),
-                           get_by_role=Mock(side_effect=lambda _, name, exact: enter if name == "前往登录" else authorize))
-    context = SimpleNamespace(new_page=AsyncMock(return_value=page), route=AsyncMock())
-    browser = SimpleNamespace(new_context=AsyncMock(return_value=context), close=AsyncMock())
-    manager = AsyncMock()
-    monkeypatch.setattr(login_module.importlib, "import_module", Mock(return_value=SimpleNamespace(async_playwright=lambda: manager)))
-    monkeypatch.setattr(login_module, "open_browser", AsyncMock(return_value=browser))
+def upstream(monkeypatch):
+    state = {"status": "UNAUTHORIZED", "poll_failures": 0, "auth_status": 200, "requests": [], "clients": []}
+    def handle(request):
+        path = request.url.path
+        state["requests"].append(path)
+        if path == "/login/login.htm":
+            return Response(200, text="window.loginContext = {CSRF_TOKEN: 'test-csrf'};",
+                            headers={"set-cookie": "login_aliyunid_csrf=test-cookie; Path=/"})
+        if path in {"/st/apply.htm", "/st/validate.htm"}:
+            assert "login_aliyunid_csrf=test-cookie" in request.headers["cookie"]
+            params = parse_qs(request.content.decode())
+            assert params["_csrf_token_"] == ["test-csrf"]
+            if path.endswith("apply.htm"):
+                return Response(200, json={"success": True, "data": {"st": "test-ticket", "qrShortLink": True}})
+            assert params["yst"] == ["test-ticket"]
+            if state["poll_failures"]:
+                state["poll_failures"] -= 1
+                raise ConnectError("private network detail")
+            return Response(200, json={"success": True, "data": {"status": state["status"]}})
+        if path == "/login/st_login.htm":
+            assert request.url.params["yst"] == "test-ticket"
+            return Response(302, headers={"location": "https://bailian.console.aliyun.com/console-login",
+                            "set-cookie": "console-session=test-session; Domain=.aliyun.com; Path=/"})
+        if path == "/console-login":
+            return Response(200, text="Console authorization")
+        assert path == "/cli/authorize"
+        assert request.method == "POST" and not request.content
+        assert request.headers["origin"] == "https://bailian.console.aliyun.com"
+        assert "console-session=test-session" in request.headers["cookie"]
+        return Response(state["auth_status"], json={"data": {"access_token": "test-console-token"}})
+    def client(**kwargs):
+        instance = AsyncClient(transport=MockTransport(handle), **kwargs)
+        state["clients"].append(instance)
+        return instance
+    monkeypatch.setattr(login_module, "async_network_client", client)
     monkeypatch.setattr(login_module, "cli_credential", lambda: ("bl", "CLI"))
-    return SimpleNamespace(page=page, context=context, browser=browser, scanned=scanned, authorize=authorize, enter=enter)
+    monkeypatch.setattr(login_module, "_POLL_INTERVAL", 0)
+    return state
 
 
-async def waiting(service: ConsoleLogin) -> dict:
-    state = await service.start()
+async def reach(service: ConsoleLogin, expected: str) -> dict:
     async with asyncio.timeout(1):
-        while service.status(state["id"])["state"] == "starting":
+        while service.status(service._id)["state"] != expected:
             await asyncio.sleep(0)
-    return service.status(state["id"])
+    return service.status(service._id)
 
 
-async def test_login_coalesces_validates_callback_and_releases_browser(browser, tmp_path, monkeypatch):
+async def test_qr_login_cookie_exchange_confirmation_and_cleanup(upstream, tmp_path, monkeypatch):
     monkeypatch.setenv("ANELF_CONFIG_DIR", str(tmp_path))
     complete = AsyncMock()
     service = ConsoleLogin(complete)
-    state = await waiting(service)
+    state = await service.start()
+    await reach(service, "waiting")
     assert (await service.start())["id"] == state["id"]
     with pytest.raises(LookupError):
         await service.image("wrong-session")
     with pytest.raises(ValueError):
         await service.confirm(state["id"])
-    assert await service.image(state["id"]) == b"png"
-    callback, handler = browser.context.route.call_args.args
-    assert "needapikey" not in browser.page.goto.call_args.args[0]
-    route = SimpleNamespace(request=SimpleNamespace(headers={"origin": "https://wrong.test"}, method="POST",
-                            post_data='{}', post_data_json={"access_token": "test-token"}),
-                            abort=AsyncMock(), fulfill=AsyncMock())
-    await handler(route)
-    route.abort.assert_awaited_once()
-    assert not (bailian.console_config_dir() / "config.json").exists()
-    route.request.headers["origin"] = "https://bailian.console.aliyun.com"
-    browser.enter.click.assert_awaited_once()
-    browser.scanned.set()
-    async with asyncio.timeout(1):
-        while service.status(state["id"])["state"] != "confirming":
-            await asyncio.sleep(0)
+    image = await service.image(state["id"])
+    assert image.startswith(b"\x89PNG") and image == await service.image(state["id"])
+    upstream["status"] = "AUTHORIZING"
+    await reach(service, "scanned")
+    upstream["status"] = "AUTHORIZED"
+    await reach(service, "confirming")
+    assert "/cli/authorize" not in upstream["requests"]
     await service.confirm(state["id"])
-    browser.authorize.click.assert_awaited_once()
-    await handler(route)
+    with pytest.raises(ValueError):
+        await service.confirm(state["id"])
     await service._task
     assert service.status(state["id"])["state"] == "complete"
-    assert "test-token" not in str(service.status(state["id"]))
-    assert "state=" in callback
+    assert "test-console-token" not in str(service.status(state["id"]))
+    assert json.loads((bailian.console_config_dir() / "config.json").read_text())["access_token"] == "test-console-token"
+    assert upstream["requests"].count("/st/apply.htm") == 1
+    assert upstream["requests"].count("/cli/authorize") == 1
+    assert all(c.is_closed for c in upstream["clients"])
     complete.assert_awaited_once()
-    browser.browser.close.assert_awaited_once()
+    with pytest.raises(ValueError):
+        await service.image(state["id"])
     await service.close()
 
 
-@pytest.mark.parametrize("stop", ["cancel", "timeout"])
-async def test_cancel_and_timeout_release_resources(browser, monkeypatch, stop):
+@pytest.mark.parametrize("stop", ["cancel_before_start", "cancel", "timeout", "INVALID", "USER_IP_CHECK_FAILED", "UNKNOWN"])
+async def test_terminal_states_do_not_authorize_and_release_resources(upstream, monkeypatch, stop):
     if stop == "timeout":
         monkeypatch.setattr(login_module, "_TTL", 0.03)
     complete = AsyncMock()
     service = ConsoleLogin(complete)
-    state = await waiting(service)
-    if stop == "cancel":
+    state = await service.start()
+    if stop != "cancel_before_start":
+        await reach(service, "waiting")
+    if stop in {"cancel", "cancel_before_start"}:
         await service.close(state["id"])
     else:
+        if stop != "timeout":
+            upstream["status"] = stop
         await service._task
-    assert service.status(state["id"])["state"] == ("cancelled" if stop == "cancel" else "expired")
+    assert service.status(state["id"])["state"] == (
+        "cancelled" if stop.startswith("cancel") else "expired" if stop in {"timeout", "INVALID"} else "error")
     complete.assert_not_awaited()
-    browser.browser.close.assert_awaited_once()
+    assert "/cli/authorize" not in upstream["requests"]
+    assert all(c.is_closed for c in upstream["clients"])
+    assert not service._image
 
 
-async def test_preparation_is_visible_and_failure_can_restart(browser, monkeypatch):
+@pytest.mark.parametrize("failures", [1, 3])
+async def test_poll_network_failure_is_bounded_and_never_leaks(upstream, failures):
+    upstream["poll_failures"] = failures
+    upstream["status"] = "AUTHORIZED"
     service = ConsoleLogin(AsyncMock())
-    async def prepare(runtime, on_prepare):
-        on_prepare()
-        assert service.status(service._id)["state"] == "preparing"
-        assert service.status(service._id)["expires_at"] == 0
-        raise RuntimeError("private download detail")
-    monkeypatch.setattr(login_module, "open_browser", prepare)
-    state = await service.start()
-    await service._task
-    assert service.status(state["id"])["error"] == "browser_prepare_failed"
-    assert "private" not in str(service.status(state["id"]))
-    monkeypatch.setattr(login_module, "open_browser", AsyncMock(return_value=browser.browser))
-    replacement = await waiting(service)
-    assert replacement["id"] != state["id"]
-    assert replacement["state"] == "waiting"
+    await service.start()
+    state = await reach(service, "confirming" if failures == 1 else "error")
+    assert "private" not in str(state)
+    assert upstream["requests"].count("/st/validate.htm") == (2 if failures == 1 else 3)
     await service.close()
 
 
-async def test_ai_configuration_controls_login_route_and_authorization(browser, monkeypatch):
+async def test_failed_authorization_preserves_existing_session_and_can_restart(upstream, tmp_path, monkeypatch):
+    monkeypatch.setenv("ANELF_CONFIG_DIR", str(tmp_path))
+    bailian.save_console_session({"access_token": "existing-test-token"})
+    upstream["status"], upstream["auth_status"] = "SUCCESS", 401
+    service = ConsoleLogin(AsyncMock())
+    first = await service.start()
+    await reach(service, "confirming")
+    await service.confirm(first["id"])
+    await service._task
+    assert service.status(first["id"])["state"] == "error"
+    assert json.loads((bailian.console_config_dir() / "config.json").read_text())["access_token"] == "existing-test-token"
+    second = await service.start()
+    assert second["id"] != first["id"]
+    await service.close()
+
+
+async def test_quota_failure_does_not_turn_saved_login_into_failed_login(upstream, tmp_path, monkeypatch):
+    monkeypatch.setenv("ANELF_CONFIG_DIR", str(tmp_path))
+    upstream["status"] = "AUTHORIZED"
+    service = ConsoleLogin(AsyncMock(side_effect=ValueError("private quota detail")))
+    state = await service.start()
+    await reach(service, "confirming")
+    await service.confirm(state["id"])
+    await service._task
+    assert service.status(state["id"])["state"] == "complete"
+    assert service.status(state["id"])["error"] == "quota_refresh_failed"
+    assert (bailian.console_config_dir() / "config.json").exists()
+
+
+async def test_ai_configuration_controls_login_route_and_authorization(upstream, monkeypatch):
     from entities.ai_desktop import tools
     from entities.ai_desktop.modules.subscription import router
 
@@ -214,7 +259,10 @@ async def test_ai_configuration_controls_login_route_and_authorization(browser, 
         response = await client.post("/modules/subscription/login")
         assert response.status_code == 200
         sid = response.json()["id"]
+        await reach(service, "waiting")
+        image = await client.get(f"/modules/subscription/login/{sid}/image")
+        assert image.status_code == 200 and image.headers["cache-control"] == "no-store"
         assert (await client.get("/modules/subscription/login/unknown")).status_code == 404
         assert (await client.post(f"/modules/subscription/login/{sid}/confirm")).status_code == 409
         assert (await client.delete(f"/modules/subscription/login/{sid}")).status_code == 200
-        assert service._task is None
+        assert service._task is None and all(c.is_closed for c in upstream["clients"])
