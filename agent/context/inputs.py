@@ -12,6 +12,5 @@ class RecollectionInputs:
     skills: list[dict] = field(default_factory=list)
     profile_blocks: list[str] = field(default_factory=list)
     hub: str = ""
-    directives: str = ""
     repeat_hint: str = ""
     summary: dict | None = None

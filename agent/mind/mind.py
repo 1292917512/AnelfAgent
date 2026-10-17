@@ -1,6 +1,10 @@
 """Mind — 思维核心。
 
 统一处理所有消息输入，通过 LLM 实现自主决策和多轮原生工具调用。
+
+模型可见：聊天正文按会话历史传入，不解析为核心控制命令或话题禁令。
+Token 影响：不从消息关键词派生额外纪律提示。
+缓存影响：正文只追加到会话历史，不生成话题纪律前缀。
 """
 
 from __future__ import annotations
@@ -36,11 +40,7 @@ from agent.mind.execution.loop import think_loop
 from agent.mind.execution.media_pipeline import MediaPipeline
 from agent.mind.execution.reply import reply_entry
 from agent.mind.execution.state import ThinkMode
-from agent.mind.interrupt import (
-    InterruptRegistry,
-    is_interrupt_enabled,
-    match_interrupt_keyword,
-)
+from agent.mind.interrupt import InterruptRegistry
 from agent.mind.llm_invoker import ModelInvoker
 from agent.mind.mind_tools import build_reflect_blocklist, select_reflect_tools
 from agent.mind.perception import should_enqueue_external_message
@@ -207,30 +207,7 @@ class Mind:
                 return
             update_channel_snapshot(self, anything)
 
-            # 用户话题指令抽取（ban-topic）：所有用户消息必经点，纯正则零 LLM，
-            # 失败不影响消息主流程
-            try:
-                from agent.messages import CharType
-                if getattr(anything, "char_type", None) in (None, CharType.USER):
-                    from agent.memory.user_directives import observe_message
-                    await observe_message(
-                        anything.entity_scope, anything.get_text_content() or "",
-                    )
-            except Exception:
-                pass
-
-            # 中断指令优先：整条消息精确匹配中断关键词且该 scope 正在回复时，
-            # 请求中断进行中的会话，而非作为新消息入队（用户意图是"刹车"而非对话）
             scope = anything.entity_scope
-            if (
-                is_interrupt_enabled()
-                and scope in self._active_scopes
-                and match_interrupt_keyword(anything.get_text_content() or "")
-            ):
-                self.interrupts.request(scope, reason="用户发送中断指令")
-                log(f"识别到中断指令，已请求中断: {scope}", tag="中断")
-                return
-
             should_enqueue = should_enqueue_external_message(self, anything)
             if (
                 not should_enqueue
@@ -299,7 +276,7 @@ class Mind:
         self._last_activity_ts = time.time()
 
     def interrupt(self, scope: str, reason: str = "") -> bool:
-        """请求中断指定 scope 的进行中会话（协作式，下一轮检查点生效）。
+        """通过显式控制入口中断指定会话，唤醒在途等待并在检查点收束。
 
         Returns:
             是否成功登记（该 scope 无进行中会话时返回 False）。

@@ -184,7 +184,6 @@ class ContextPreparation:
             status_text=status_text,
             heartbeat_text=heartbeat_text,
             hub_text=inputs.hub,
-            directives_text=inputs.directives,
             repeat_hint_text=inputs.repeat_hint,
         )
 

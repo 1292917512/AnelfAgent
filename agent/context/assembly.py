@@ -124,7 +124,6 @@ _MAX_RENDERED_STEPS = 12
 
 from agent.context.pipeline import (
     VOL_HISTORY,
-    VOL_LOW,
     VOL_MESSAGE,
     VOL_PERIODIC,
     VOL_SESSION,
@@ -138,7 +137,6 @@ from agent.context.pipeline import (
 # legacy 布局的变动率覆盖表（tail_injection 关闭时）：动态块移到历史之前
 # 相对序与默认布局一致（按字节稳定度从静到动）
 _LEGACY_VOLATILITY: Dict[str, int] = {
-    "discipline": 9,
     "context": 10, "hub": 11,
     "profile": 20, "relation": 21, "volatile": 22, "heartbeat": 23, "status": 23,
     "overflow": 27, "security": 28, "freshness": 31, "memory": 32,
@@ -469,14 +467,13 @@ channel_id 和 target_id 取当前请求的频道与会话标签，群聊目标�
             status_text: str = "",
             heartbeat_text: str = "",
             hub_text: str = "",
-            directives_text: str = "",
             repeat_hint_text: str = "",
     ) -> List[Dict]:
         """组装回复起点的完整上下文；轮内新增收发由实时会话窗口补充。
 
         各内容块的顺序由 @context_block 声明的变动率决定（值越大变动越频繁，
         排越靠后，见 context.pipeline；尾部动态区内部按字节稳定度从静到动）：
-        stable(0) → discipline(10) → summary(20) → conversation(30) →
+        stable(0) → summary(20) → conversation(30) →
         context(35) → hub(36) → profile(37) → relation/volatile(38) →
         heartbeat/status(39) → freshness(42) → memory(43) → overflow/security(50+)
         tail_injection 关闭时经变动率覆盖表回退旧布局（动态在历史之前）。
@@ -490,7 +487,6 @@ channel_id 和 target_id 取当前请求的频道与会话标签，群聊目标�
             summary_row: 对话摘要行（{summary, watermarks, folded_count}）。
             status_text: 记忆状态区块文本（心跳维护，尾部动态区注入）。
             heartbeat_text: 心跳与任务态势区块文本（心跳维护，尾部动态区注入）。
-            directives_text: 用户话题指令纪律块（ban-topic，稳定前缀区）。
             repeat_hint_text: 话题新鲜度软提示（防复读，尾部动态区）。
         """
         inp = ContextInput(
@@ -508,7 +504,6 @@ channel_id 和 target_id 取当前请求的频道与会话标签，群聊目标�
             scope=scope,
             prefetched_conversation=prefetched_conversation,
             hub_text=hub_text,
-            directives_text=directives_text,
             repeat_hint_text=repeat_hint_text,
         )
         pipeline = self._pipeline if _tail_injection_enabled() else self._pipeline_legacy
@@ -573,15 +568,6 @@ channel_id 和 target_id 取当前请求的频道与会话标签，群聊目标�
         if not inp.hub_text:
             return []
         return [{"role": "system", "content": inp.hub_text}]
-
-    @context_block("discipline", VOL_LOW, "话题禁令（用户指令）")
-    def _blk_discipline(self, inp: ContextInput) -> List[Dict]:
-        """用户话题指令（ban-topic）：对方明确划过的边界，属硬纪律——
-        置于稳定前缀区最前（VOL_LOW），内容仅指令增删时变化，缓存友好；
-        任务精简模式同样注入（主动消息更不能踩线）。"""
-        if not inp.directives_text:
-            return []
-        return [{"role": "system", "content": inp.directives_text}]
 
     @context_block("summary", VOL_PERIODIC, "早期对话摘要（折叠周期内固定）")
     def _blk_summary(self, inp: ContextInput) -> List[Dict]:

@@ -274,7 +274,6 @@ Cognee 面板保存先校验模型参数和向量空间，再原子写入配置�
 | 机制 | 位置 | 说明 |
 |------|------|------|
 | temporal_scope 时间语义 | `store/_shared.py::temporal_is_past/temporal_weight` + 检索评分 + 行尾注 | event 提取输出 temporal_scope（episode/state/pattern 白名单）+ `activity_date`。读时判定超期（state 7 天 / episode 3 天，pattern 永不）→ 注入行追加「过去时·可能已变」尾注 + 检索整体降权（`memory_temporal_expired_weight` 0.5，聊往事仍可低权命中，淘汰仍归遗忘曲线）；memorize 工具补 temporal_scope 参数 |
-| 用户话题指令 | `agent/memory/user_directives.py` + Mind.accept_feel 钩子 + discipline 块（VOL_LOW） | ban-topic：纯正则抽取「别再提X」（零 LLM），挂说出来时的会话 scope（私聊管私聊、群聊管群，不跨会话扩大）；TTL 随命中线性增长（3 天×次数，上限 30 天）沉默不续期自然淡忘；任务精简模式同样注入（主动消息更不能踩线） |
 | 防复读 | `agent/memory/anti_repeat.py` + freshness 块（VOL_SESSION+2） | 生成侧软提示：近期 AI 回复 df≥3 的高频 ngram top5 引导全部回复周期换角度；出站侧的重复内容由「出站事实」provider 动态注入覆盖（见[频道分册](channels-and-scopes.md)） |
 | importance 校准 | `auto_capture._EXTRACT_PROMPT` 校准表 + memorize 工具描述 + `self_profile.PROFILE_MEMORY_IMPORTANCE` | 提取侧锚点表（0.9+ 身份级/明确「记住这个」，0.8 长期偏好与承诺，0.7 阶段动态，0.6 线索，0.5 弱线索不预过滤）；画像 ENTITY 镜像 importance 统一 0.9（身份级事实，四处写入点共用单点常量） |
 | 事件时间本体 | `agent/memory/auto_capture.py` | event 提取输出 temporal_scope（白名单校验，拿不准 pattern）落 metadata；date 落 `activity_date` |

@@ -768,13 +768,6 @@ class HeartbeatEngine:
         except Exception as e:
             log(f"自动记忆捕获失败: {e}", "DEBUG", tag="心跳")
 
-        # 用户话题指令（ban-topic）过期清扫：沉默不续期，到期自动解除
-        try:
-            from agent.memory.user_directives import sweep_expired
-            await sweep_expired()
-        except Exception as e:
-            log(f"话题指令清扫失败: {e}", "DEBUG", tag="心跳")
-
         # 目标停滞概况：长期未更新的目标只呈现事实（心跳日志一行），
         # 存续判断权在 AI——长期目标是规划常态，系统不做基于时间的自动清理
         try:

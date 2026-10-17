@@ -29,10 +29,10 @@ async def collect_recollection_inputs(
     mind: Mind, conversation: list[dict], anything: Everything | None,
     *, scope: str, adapter: str, lean: bool,
 ) -> RecollectionInputs:
-    """并发收集当前会话的记忆、技能、关联、摘要与约束。
+    """并发收集当前会话的记忆、技能、关联与摘要。
 
     深度档的技能匹配复用记忆计划，其余档位直接匹配对话；查询向量共享。
-    精简模式仅读取枢纽、摘要、永久记忆与会话纪律。
+    精简模式仅读取枢纽、摘要与永久记忆。
     本轮任务全部收束后返回材料；未处理的异常或取消会取消同组读取。
     """
     result = RecollectionInputs()
@@ -156,12 +156,6 @@ async def collect_recollection_inputs(
             else:
                 result.profile_blocks.append(block)
 
-    if scope:
-        try:
-            from agent.memory.user_directives import build_directives_block
-            result.directives = build_directives_block(scope)
-        except Exception as exc:
-            log(f"会话纪律获取失败: {exc}", "DEBUG", tag="思维")
     async with asyncio.TaskGroup() as tasks:
         if query and (policy.level == "deep" or get_config_bool("skills_enabled", True)):
             vector_task = tasks.create_task(embed())

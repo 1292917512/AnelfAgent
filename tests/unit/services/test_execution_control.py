@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from agent.mind.background_tasks import BackgroundTaskRegistry
 from agent.mind.interrupt import InterruptRegistry
+from agent.mind.mind import Mind
 from services import execution_control as control
 from services.chat import ChatService
 from services.workspace_activity import WorkspaceActivityService
@@ -22,18 +23,14 @@ def execution(monkeypatch):
     monkeypatch.setattr(control, "workspace_activity", projection)
     interrupts = InterruptRegistry()
     scope = ChatService.scope_for_chat("test")
+    active_scopes: set[str] = set()
     mind = SimpleNamespace(
-        active_reply_scopes=set(), interrupts=interrupts, background_tasks=BackgroundTaskRegistry(),
+        active_reply_scopes=active_scopes, _active_scopes=active_scopes,
+        interrupts=interrupts, background_tasks=BackgroundTaskRegistry(),
         pfc=SimpleNamespace(peek_all_tasks=lambda: []), delegation_manager=None,
     )
 
-    def interrupt(target, reason=""):
-        if target not in mind.active_reply_scopes:
-            return False
-        interrupts.request(target, reason)
-        return True
-
-    mind.interrupt = interrupt
+    mind.interrupt = MethodType(Mind.interrupt, mind)
     runtime = SimpleNamespace(mind=mind)
     monkeypatch.setattr(control, "get_runtime", lambda: runtime)
     monkeypatch.setattr("services.chat.get_runtime", lambda: runtime)

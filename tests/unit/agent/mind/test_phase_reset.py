@@ -19,6 +19,7 @@ from agent.config import MindConfig
 from agent.mind import cycle
 from agent.mind import mind as mind_module
 from agent.mind.autonomous import MindPhase
+from agent.mind.interrupt import InterruptRegistry
 from agent.mind.mind import Mind
 
 
@@ -323,6 +324,7 @@ class TestAcceptFeelPhaseReset:
         mind._auto_cycle_retry = 0
         mind.wake_budget = SimpleNamespace(reset=lambda scope: None)
         mind._channel_snapshots = {}
+        mind.interrupts = InterruptRegistry()
         mind.pfc = SimpleNamespace(add_task=AsyncMock())
 
     @staticmethod
@@ -338,41 +340,39 @@ class TestAcceptFeelPhaseReset:
             __str__=lambda self: "你好",
         )
 
-    async def test_non_trigger_message_resets_accepting(
-            self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_non_trigger_message_resets_accepting(self) -> None:
         """未入队消息（trigger_mind=False）：ACCEPTING 标记后由尾部收口归零。"""
         mind = _bare_mind()
         self._wire_accept_fakes(mind)
-        monkeypatch.setattr(
-            "agent.memory.user_directives.observe_message", AsyncMock(),
-        )
         await mind.accept_feel(self._anything(trigger_mind=False))
         assert mind.phase is MindPhase.IDLE
 
-    @pytest.mark.parametrize("text", ["你好", "/deploy-check 检查部署"])
-    async def test_enqueued_message_leaves_idle_before_cycle(
-            self, monkeypatch: pytest.MonkeyPatch, text: str) -> None:
-        """已入队消息：周期未抢锁时先归零，由随后的周期覆盖为 DECIDING。"""
+    @pytest.mark.parametrize("text", [
+        "你好", "/deploy-check 检查部署", "停止", "停下", "别说了", "取消",
+        "stop!", "Cancel", "别再提加班", "不要再聊股票",
+    ])
+    @pytest.mark.parametrize("active", [False, True])
+    async def test_chat_text_is_recorded_and_enqueued_without_interrupt(
+            self, text: str, active: bool) -> None:
+        """聊天正文按原文入队，进行中的会话不因固定话语触发中断。"""
         mind = _bare_mind()
         self._wire_accept_fakes(mind)
-        monkeypatch.setattr(
-            "agent.memory.user_directives.observe_message", AsyncMock(),
-        )
         message = self._anything(trigger_mind=True)
         message.get_text_content = lambda: text
+        if active:
+            mind._active_scopes.add(message.entity_scope)
+            mind.phase = MindPhase.REPLYING
         await mind.accept_feel(message)
+        mind.add_conversation.assert_awaited_once_with(message)
         mind.pfc.add_task.assert_awaited_once_with(message)
-        assert mind.phase is MindPhase.IDLE
+        assert mind.interrupts.pending_scopes() == []
+        assert mind.phase is (MindPhase.REPLYING if active else MindPhase.IDLE)
 
-    async def test_accept_exception_still_resets(
-            self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_accept_exception_still_resets(self) -> None:
         """感知处理异常（如历史写入失败）：finally 收口不留 ACCEPTING 卡死。"""
         mind = _bare_mind()
         self._wire_accept_fakes(mind)
         mind.add_conversation = AsyncMock(side_effect=RuntimeError("db down"))
-        monkeypatch.setattr(
-            "agent.memory.user_directives.observe_message", AsyncMock(),
-        )
         with pytest.raises(RuntimeError):
             await mind.accept_feel(self._anything(trigger_mind=True))
         assert mind.phase is MindPhase.IDLE

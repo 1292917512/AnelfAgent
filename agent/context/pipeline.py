@@ -114,8 +114,6 @@ class ContextInput:
     heartbeat_text: str = ""
     # 主标签记忆（main:hub 索引中枢与工作窗口，recollection 每周期拉取）
     hub_text: str = ""
-    # 用户话题指令纪律块（ban-topic；仅指令增删时变化，稳定前缀区）
-    directives_text: str = ""
     # 话题新鲜度软提示（随最近一条 AI 回复变化）
     repeat_hint_text: str = ""
     # 召回产物
