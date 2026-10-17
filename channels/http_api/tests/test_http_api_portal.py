@@ -518,3 +518,22 @@ class TestPortalHelpTool:
         assert spec["outbound"]["callback_url"].startswith("http://hook.local")
         # 契约永不泄露令牌值
         assert "secret" not in json.dumps(spec)
+
+    def test_tool_registers_into_entity_catalog(self) -> None:
+        """频道注册时 portal_help 进入实体目录（group=channel_ops, tags=[http_api]），
+        AI 可经 list_entity_methods('channel_ops') 发现并调用。"""
+        from agent.channel.tool_bridge import register_channel_tools, unregister_channel_tools
+        from core.entity import EntityRegistry
+        channel = HttpApiChannel()
+        try:
+            register_channel_tools(channel)
+            entity = EntityRegistry.get("http_api_portal_help")
+            assert entity is not None, "http_api_portal_help 未注册"
+            assert entity.group == "channel_ops"
+            assert "http_api" in (entity.tags or [])
+            import asyncio as _aio
+            payload = json.loads(_aio.run(entity.func()))
+            assert payload["channel_id"] == "http_api"
+            assert "base_url" in payload and "inbound" in payload
+        finally:
+            unregister_channel_tools("http_api")
