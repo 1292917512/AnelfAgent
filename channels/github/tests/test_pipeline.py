@@ -60,11 +60,11 @@ def _release_event() -> Any:
     })
 
 
-def _push_event(branch: str = "main", msg: str = "c1") -> Any:
+def _push_event(branch: str = "main", msg: str = "c1", actor: str = "a") -> Any:
     return from_webhook("push", {
         "ref": f"refs/heads/{branch}", "compare": "https://x",
         "commits": [{"message": msg, "author": {"name": "a"}}],
-        "repository": {"full_name": "o/r"}, "sender": {"login": "a"},
+        "repository": {"full_name": "o/r"}, "sender": {"login": actor},
     })
 
 
@@ -213,6 +213,17 @@ class TestRouting:
         await pipeline.submit_raw(_issue_event(2))  # 达到上限立即冲刷
         assert len(channel.dispatched) == 1
         assert "2 条" in channel.dispatched[0][1]
+        await pipeline.stop()
+
+    async def test_push_coalescing_keeps_different_and_unknown_actors_separate(self) -> None:
+        pipeline, channel, _, _ = _make_pipeline(GitHubConfig(repos=[_sub()], aggregate_window_sec=0))
+        for actor in ("alice", "bob", "", ""):
+            await pipeline.submit_raw(_push_event(actor=actor, msg=f"commit by {actor or 'unknown'}"))
+        await pipeline.flush_all()
+        text = channel.dispatched[0][1]
+        assert "4 条" in text
+        assert "by alice" in text and "by bob" in text
+        assert "聚合" not in text
         await pipeline.stop()
 
     async def test_stop_flushes_pending(self) -> None:

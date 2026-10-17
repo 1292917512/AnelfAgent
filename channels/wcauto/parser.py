@@ -20,6 +20,7 @@ from agent.channel.schemas import (
     AdapterMessage,
     AdapterUser,
     ChannelType,
+    MessageKind,
     MessageSegment,
     SegmentType,
 )
@@ -139,8 +140,8 @@ def parse_message_event(
     )
     sender = AdapterUser(
         platform=PLATFORM,
-        user_id=sender_username or username,
-        user_name=str(data.get("sender_name") or sender_username or username),
+        user_id=("wcauto_system" if is_group else username) if msg_type == "系统消息" else sender_username or username,
+        user_name="微信系统" if msg_type == "系统消息" else str(data.get("sender_name") or sender_username or username),
     )
 
     return AdapterMessage(
@@ -149,6 +150,7 @@ def parse_message_event(
         channel=channel,
         content=text,
         segments=segments,
+        kind=MessageKind.SYSTEM if msg_type == "系统消息" else MessageKind.CHAT,
         is_to_me=is_to_me,
         timestamp=float(data.get("create_time") or time.time()),
         reply_content=quoted,

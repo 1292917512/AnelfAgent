@@ -2,6 +2,9 @@
 
 不依赖 Mind；由运行时共享，消息标签经构造注入的 ToolAssembly 激活工具。
 
+模型看到通知的真实类别，平台来源不列入群发言者或用户画像任务。
+不新增模型调用或 token；仅改变动态队列事实，不改稳定前缀。
+
 职责：
 - 消息队列管理（pending_user / pending_group / pending_analysis，按 scope 分桶隔离）
 - 待办跨重启持久化（pending_tasks 表双写 + 启动 replay）
@@ -398,7 +401,7 @@ class PrefrontalCortex:
             self.pending_group.append(scope)
         else:
             self.pending_user.append(scope)
-        self.set_message_preview(scope, preview, created_ts_ns=timestamp)
+        self.set_message_preview(scope, preview, created_ts_ns=timestamp, kind="system")
         if channel:
             self.set_adapter_key(scope, channel)
 
@@ -444,19 +447,21 @@ class PrefrontalCortex:
             self._pending_signals[scope] = signal
             uid = str(anything.uid) if anything.uid and anything.uid not in (0, "0") else ""
             name = getattr(anything, "user_name", "") or ""
-            if uid:
+            if uid and message_kind == "chat":
                 senders = self._group_recent_senders.setdefault(scope, [])
                 entry = (uid, name)
                 if entry not in senders:
                     senders.append(entry)
                 if len(senders) > 10:
                     senders[:] = senders[-10:]
-            await self._handle_group_message(anything)
+            if message_kind == "chat":
+                await self._handle_group_message(anything)
         else:
             self.pending_user.append(scope)
             self._pending_signals[scope] = signal
 
-        await self._handle_user_message(anything)
+        if message_kind == "chat":
+            await self._handle_user_message(anything)
         self._scan_message_tags(str(anything))
 
     def _scan_message_tags(self, content: str) -> None:
@@ -713,7 +718,9 @@ class PrefrontalCortex:
         )
         return scopes
 
-    def set_message_preview(self, scope: str, preview: str, *, created_ts_ns: int | None = None) -> None:
+    def set_message_preview(
+        self, scope: str, preview: str, *, created_ts_ns: int | None = None, kind: str = "",
+    ) -> None:
         """登记待处理预览与到达水位，保留异步写入期间更新的消息。"""
         if scope:
             signal = self._pending_signals.get(scope) or PendingSignal()
@@ -722,6 +729,10 @@ class PrefrontalCortex:
                     return
                 signal.created_ts_ns = created_ts_ns
             signal.preview = preview
+            signal.kind = kind
+            if kind:
+                signal.to_me = False
+                signal.message_id = ""
             self._pending_signals[scope] = signal
 
     # ==================================================================

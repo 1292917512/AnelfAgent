@@ -421,8 +421,9 @@ class TestLiveSessionManager:
             extra={"gift_id": "8001", "count": 2, "combo": 1}))
         assert len(channel.messages) == 1
         assert "礼物#8001" in channel.messages[0].content
+        assert "发起者=老板(uid=5)；目标=主播(uid=1001)" in channel.messages[0].content
         assert channel.messages[0].trigger_mind is True
-        assert manager.recent_gifts("1001")
+        assert "uid=5" in manager.recent_gifts("1001")[0]
 
         await manager._handle_event("1001", live_signals.LiveEvent(
             kind=live_signals.EVT_BANANA, user_id="6", user_name="蕉农", extra={"count": 3}))

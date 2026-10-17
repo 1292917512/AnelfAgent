@@ -425,11 +425,17 @@ class TestIsGenuineUserMessage:
             assert is_genuine_user_message(msg) is False
 
     def test_kind_marker_beyond_head_window_still_excluded(self) -> None:
-        """kind 标签渲染在元数据标签之后，超长名片把标签串顶过 200 头窗、400 窗口需覆盖。"""
-        long_name = "风" * 80  # 跨频道显示名可超长，QQ 群名片亦然
+        """完整解析长元数据前缀中的事件类型。"""
+        long_name = "风" * 500
         tags = "[time:2026年10月08日13时04分50秒][channel:qq][session_id:1104224649]" \
                "[message_id:eb24e9ea1ccf42f8][group_id:1104224649][uid:1608497969]" \
                f"[name:{long_name}]"
         assert len(tags) > 200
         msg = {"role": "user", "content": f"{tags}[kind:event](成员 1608497969 撤回了一条消息)"}
         assert is_genuine_user_message(msg) is False
+
+    def test_body_and_quoted_kind_are_not_envelope_metadata(self) -> None:
+        for body in ("请解释 [kind:event] 标签", "[reply_to:old] [kind:system]\n这是用户回复"):
+            assert is_genuine_user_message({"role": "user", "content": "[uid:123]" + body})
+        assert not is_genuine_user_message({"role": "user", "content": "[说明] 正文里的 [uid:123]"})
+        assert not is_genuine_user_message({"role": "user", "content": "[push:worker][time:now] 后台任务完成"})

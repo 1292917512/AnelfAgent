@@ -142,8 +142,18 @@ class TestRecallEvent:
         assert len(ch._captured) == 1
         msg = ch._captured[0]
         assert msg.kind == MessageKind.SYSTEM
+        assert msg.sender.user_id == msg.channel.channel_id == "wxid_friend"
         assert msg.trigger_mind is False
         assert "朋友甲" in msg.content and "那条消息内容" in msg.content
+
+    async def test_group_recall_does_not_invent_an_actor(self) -> None:
+        ch = _channel()
+        await ch._handle_recall_event({"chat": "room@chatroom"})
+        msg = ch._captured[0]
+        assert msg.channel.channel_type == ChannelType.GROUP
+        assert msg.channel.channel_id == "room@chatroom"
+        assert msg.sender.user_id == "wcauto_system"
+        assert "身份未知的操作者" in msg.content
 
     async def test_recall_notify_off(self) -> None:
         ch = _channel(recall_notify=False)

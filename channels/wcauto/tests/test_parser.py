@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from agent.channel.schemas import ChannelType, SegmentType
+from agent.channel.schemas import ChannelType, MessageKind, SegmentType
 from channels.wcauto.parser import (
     collect_self_names,
     detect_at_me,
@@ -120,6 +120,15 @@ class TestQuote:
 
 
 class TestMediaMessages:
+    def test_system_notice_keeps_private_peer_without_claiming_speech(self) -> None:
+        msg = parse_message_event(_msg(type="系统消息", sender_username="system", content="你拍了拍朋友甲"))
+        assert msg is not None
+        assert msg.kind == MessageKind.SYSTEM
+        assert msg.sender.user_id == "wxid_friend"
+        assert msg.sender.user_name == "微信系统"
+        assert msg.channel.channel_id == "wxid_friend"
+        assert msg.content == "你拍了拍朋友甲"
+
     def test_image_placeholder(self) -> None:
         msg = parse_message_event(_msg(type="图片", content=""), self_wxid="me")
         assert msg is not None

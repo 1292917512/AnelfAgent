@@ -5,6 +5,9 @@
 - 点名弹幕（含 bot 名/uid/自定义触发词）→ 完整派发 trigger_mind=True（弹幕回复闭环）
 - 礼物/投蕉/关注/入团 → 完整派发，按 live_gift_trigger_mind 决定是否触发思维
 - 连接状态变更 → 系统消息派发进房间会话（重连耗尽/被踢/违规触发思维，其余仅记录）
+
+模型看到事件发起者与目标主播 UID，动态礼物摘要保留发起者 UID。
+每条增加少量身份文本，无额外模型调用，不改变稳定前缀。
 """
 
 from __future__ import annotations
@@ -192,7 +195,8 @@ class LiveSessionManager:
             count = event.extra.get("count", 1)
             combo = event.extra.get("combo", 1)
             desc = f"送出 {name}×{count}" + (f"（{combo} 连击）" if combo > 1 else "")
-            self._gift_feed.setdefault(uid, deque(maxlen=10)).append(f"{event.user_name} {desc}")
+            self._gift_feed.setdefault(uid, deque(maxlen=10)).append(
+                f"{event.user_name}(uid={event.user_id or '未知'}) {desc}")
             await self._dispatch_special(uid, event, desc, trigger=bool(self._channel.config.live_gift_trigger_mind))
             return
         if kind == live_signals.EVT_BANANA:
@@ -265,7 +269,8 @@ class LiveSessionManager:
                                user_name=event.user_name or "unknown"),
             channel=AdapterChannel(channel_id=f"live:{uid}", channel_type=ChannelType.GROUP,
                                    channel_name="直播间"),
-            content=f"[直播间事件] {event.user_name} {desc}",
+            content=(f"[直播间事件] 发起者={event.user_name or '未知用户'}(uid={event.user_id or '未知'})；"
+                     f"目标=主播(uid={uid})；{desc}"),
             kind=MessageKind.EVENT,
             is_to_me=False,
             trigger_mind=trigger,

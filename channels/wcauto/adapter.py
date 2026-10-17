@@ -151,7 +151,7 @@ class WcautoChannel(WcautoToolsMixin, BaseChannel[WcautoConfig]):
         chat = str(data.get("chat") or "")
         if not chat:
             return
-        revoker = str(data.get("revoker") or "对方")
+        revoker = str(data.get("revoker") or "身份未知的操作者")
         original = str(data.get("original_content") or "").strip()
         text = f"[撤回] {revoker} 撤回了一条消息"
         if original:
@@ -160,7 +160,7 @@ class WcautoChannel(WcautoToolsMixin, BaseChannel[WcautoConfig]):
         message = AdapterMessage(
             sender=AdapterUser(
                 platform=self.channel_id,
-                user_id=f"{self.channel_id}_system",
+                user_id=f"{self.channel_id}_system" if is_group else chat,
                 user_name="微信系统",
             ),
             channel=AdapterChannel(

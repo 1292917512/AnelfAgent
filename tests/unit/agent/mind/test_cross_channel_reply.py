@@ -64,6 +64,34 @@ def _pfc() -> PrefrontalCortex:
     )
 
 
+@pytest.mark.parametrize("kind", ["event", "notification", "system"])
+async def test_events_remain_pending_without_speaker_or_profile_attribution(kind):
+    pfc = _pfc()
+    message = MessageGroupUser(uid="source", group_id="room", adapter_key="acfun", to_me=True,
+                               message_kind=kind, text_content="平台事实")
+    await pfc.add_task(message)
+    signal = pfc.get_pending_signal(message.entity_scope)
+    assert signal.kind == kind and signal.last_addressed_ts_ns == 0
+    assert pfc.peek_all_tasks()[0][0] == message.entity_scope
+    assert pfc.get_group_recent_senders(message.entity_scope) == []
+    pfc.everything_data.get_anything.assert_not_awaited()
+    assert not pfc.pending_analysis.queue and not pfc.peek_general_tasks()
+
+
+async def test_internal_notification_replaces_preview_without_claiming_user_speech():
+    pfc = _pfc()
+    pfc.append_notification = AsyncMock(return_value=True)
+    message = MessageGroupUser(uid="user", group_id="room", adapter_key="qq", to_me=True,
+                               text_content="用户请求", adapter_message_id="chat-id")
+    await pfc.add_task(message)
+    await pfc.enqueue_reply(message.entity_scope, "qq", "后台完成", "[push:worker] 后台完成")
+    signal = pfc.get_pending_signal(message.entity_scope)
+    assert signal.kind == "system" and not signal.to_me and not signal.message_id
+    assert signal.last_addressed_ts_ns == message.created_ts_ns
+    assert signal.first_unread_ts_ns == message.created_ts_ns
+    assert pfc.get_group_recent_senders(message.entity_scope) == [("user", "")]
+
+
 class TestCrossChannelIsolation:
     async def test_late_message_preserves_latest_preview_and_earliest_unread(self) -> None:
         pfc = _pfc()
@@ -202,10 +230,12 @@ async def test_live_awareness_only_includes_unhandled_directed_messages(sqlite, 
     mention = await arrive(MessageGroupUser(uid="1", group_id="100", adapter_key="qq", to_me=True, text_content="请看新问题"))
     await arrive(MessageGroupUser(uid="2", group_id="100", adapter_key="qq", text_content="后来的群聊闲谈 [to_me:1]"))
     direct = await arrive(MessageUser(uid="1", adapter_key="telegram", text_content="新私聊问题：请解释 [push:notice]"))
+    await arrive(MessageUser(uid="1", adapter_key="telegram", message_kind="event",
+                             text_content="引用平台事件", reply_to_id="ref", reply_content="引用正文"))
     narrative = await build_cross_channel_narrative(mind, "user_webui:web_user#a")
     text = str(narrative)
     assert "请看新问题" in text and "新私聊问题" in text
-    assert "群聊闲谈" not in text and "已回答旧问题" not in text and "非用户平台通知" not in text
+    assert all(excluded not in text for excluded in ("群聊闲谈", "已回答旧问题", "非用户平台通知", "引用平台事件"))
     sources = [m["_source"] for m in narrative if m["_source"].get("id")]
     assert {(s["scope"], s["ts_ns"]) for s in sources} == {
         (mention.entity_scope, mention.created_ts_ns), (direct.entity_scope, direct.created_ts_ns)}

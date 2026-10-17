@@ -7,8 +7,11 @@
     NORMAL    → 进 per-repo 防抖窗(窗到期或满额时聚合为一条派发)
     DIGEST    → 只进 digest 缓冲与计数(不写历史,防噪音;每日 digest 任务读取)
 
-防打扰设计:同仓同窗多条事件合并为一条消息;push 事件同分支合并提交数;
+防打扰设计:同仓同窗多条事件合并为一条消息;push 事件同分支、同一已知发起者合并提交数;
 洪峰由 aggregate_max_events 拆条;安静时段整体降级。
+
+模型看到独立行为人的事件；不同来源不合并会保留更多事件行，无额外模型调用。
+仅影响新增事件正文，不重写历史或稳定前缀。
 """
 
 from __future__ import annotations
@@ -205,17 +208,18 @@ class EventPipeline:
 
     @staticmethod
     def _coalesce_push(events: List[GitHubEvent]) -> List[GitHubEvent]:
-        """同窗同分支的 push 事件合并为一条(commit 数累加,正文合并)。"""
+        """同窗同分支、同一已知发起者的 push 合并，保留行为人归属。"""
         result: List[GitHubEvent] = []
-        push_slots: Dict[str, GitHubEvent] = {}
+        push_slots: Dict[tuple[str, str], GitHubEvent] = {}
         for ev in events:
-            if ev.event_name != "push":
+            if ev.event_name != "push" or not ev.actor:
                 result.append(ev)
                 continue
             branch = str(ev.extra.get("branch") or "")
-            slot = push_slots.get(branch)
+            key = (branch, ev.actor)
+            slot = push_slots.get(key)
             if slot is None:
-                push_slots[branch] = ev
+                push_slots[key] = ev
                 result.append(ev)
                 continue
             total = int(slot.extra.get("size", 1)) + int(ev.extra.get("size", 1))

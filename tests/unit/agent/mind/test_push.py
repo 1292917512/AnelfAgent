@@ -39,7 +39,10 @@ class FakePFC(PrefrontalCortex):
     def temporary(self):
         return self.clips
 
-    def set_message_preview(self, scope: str, preview: str, *, created_ts_ns: int) -> None:
+    def set_message_preview(
+        self, scope: str, preview: str, *, created_ts_ns: int | None = None, kind: str = "",
+    ) -> None:
+        assert kind == "system"
         self.previews[scope] = preview
 
     def set_adapter_key(self, scope: str, channel: str) -> None:
