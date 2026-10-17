@@ -66,7 +66,7 @@ class Mind:
             pfc: PrefrontalCortex,
             tool_assembly: ToolAssembly,
             context: ContextAssembly,
-        recollection: Recollection,
+            recollection: Recollection,
             background_tasks: BackgroundTaskRegistry,
             embedder: Embedder,
             retriever: Optional[MemoryRetriever],
