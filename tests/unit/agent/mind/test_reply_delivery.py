@@ -8,8 +8,8 @@ import pytest
 from helpers.think_loop_fakes import FakeMind, run_think_loop, text_result, tool_result
 
 from agent.channel.delivery import delivery_tags
+from agent.mind.execution.reply_delivery import ReplyAssessment
 from agent.mind.tool_activation import bind_scope, reset_scope
-from agent.mind.tools.reply_delivery import ReplyAssessment
 from core.config import ConfigManager
 
 _SCOPE = "user_qq:1"
@@ -20,7 +20,7 @@ def sender(monkeypatch):
     async def send(channel_id, target_id, content, **kwargs):
         return json.dumps({"success": True, "delivery": delivery_tags("auto", "sent", target_id)})
     mock = AsyncMock(side_effect=send)
-    monkeypatch.setattr("agent.mind.tools.reply_delivery.send_text_to_channel", mock)
+    monkeypatch.setattr("agent.mind.execution.reply_delivery.send_text_to_channel", mock)
     return mock
 
 
@@ -92,7 +92,7 @@ async def test_review_overlaps_tools_and_receipt_follows_atomic_batch(anything, 
         return json.dumps({"success": True, "delivery": delivery_tags("auto", "sent", target_id)})
 
     review = AsyncMock(side_effect=assess)
-    monkeypatch.setattr("agent.mind.tools.reply_delivery.assess_reply", review)
+    monkeypatch.setattr("agent.mind.execution.reply_delivery.assess_reply", review)
     sender.side_effect = send
 
     class ObservedMind(FakeMind):
@@ -189,7 +189,7 @@ async def test_waiting_progress_is_delivered_before_join_and_final_after_complet
 
 @pytest.mark.parametrize("mode", ["reply", "reflect"])
 async def test_end_output_and_internal_boundaries_with_interim_enabled(anything, sender, mode):
-    from agent.mind.tools.think_loop import ThinkMode
+    from agent.mind.execution.state import ThinkMode
 
     ConfigManager.set("send_interim_text", True)
     mind = FakeMind(rounds=[tool_result("仅内部备注", ["send_message", "end_reply"])], default_text=None)
@@ -219,7 +219,7 @@ async def test_disabled_text_is_silent_in_context_history_and_activity(anything,
     observe = AsyncMock()
     review = AsyncMock(side_effect=AssertionError("disabled text must not call Jev"))
     monkeypatch.setattr("agent.context.observation.emit_context_update", observe)
-    monkeypatch.setattr("agent.mind.tools.reply_delivery.assess_reply", review)
+    monkeypatch.setattr("agent.mind.execution.reply_delivery.assess_reply", review)
     mind, completion = await _run([
         tool_result("检查第一项", ["recall"]), tool_result("检查第二项", ["recall"]), text_result("内部结论"),
     ], anything)
@@ -255,7 +255,7 @@ async def test_internal_event_has_no_automatic_delivery(anything, sender):
 
 async def test_rejected_reply_leaves_context_fact_and_never_falls_back(anything, sender, monkeypatch):
     review = AsyncMock(return_value=ReplyAssessment(False, "Jev 不通过", "local"))
-    monkeypatch.setattr("agent.mind.tools.reply_delivery.assess_reply", review)
+    monkeypatch.setattr("agent.mind.execution.reply_delivery.assess_reply", review)
     mind, completion = await _run([text_result("内部状态。")], anything)
     sender.assert_not_awaited()
     assert mind.llm_calls == 1
@@ -267,7 +267,7 @@ async def test_rejected_interim_continues_work_and_explicit_send_without_review(
     ConfigManager.set("send_interim_text", True)
     ConfigManager.set("send_final_text", False)
     review = AsyncMock(return_value=ReplyAssessment(False, "Jev 明确拦截：内部过程", "local"))
-    monkeypatch.setattr("agent.mind.tools.reply_delivery.assess_reply", review)
+    monkeypatch.setattr("agent.mind.execution.reply_delivery.assess_reply", review)
     mind, completion = await _run([
         tool_result("我正在查询", ["recall"]),
         tool_result("", ["send_message", "end_reply"]),
@@ -304,7 +304,7 @@ async def test_interrupt_during_review_cancels_without_sending(anything, sender,
             await asyncio.Event().wait()
         finally:
             cancelled.set()
-    monkeypatch.setattr("agent.mind.tools.reply_delivery.assess_reply", review)
+    monkeypatch.setattr("agent.mind.execution.reply_delivery.assess_reply", review)
     mind = FakeMind(rounds=[tool_result("检查中。", ["recall"]) if interim else text_result("答案。")], default_text=None)
     from agent.mind.interrupt import InterruptRegistry
     mind.interrupts = InterruptRegistry()

@@ -6,15 +6,15 @@ from types import SimpleNamespace
 
 import pytest
 
+from agent.mind.execution.result_pipeline import (
+    ToolResultPipeline,
+    _persist_oversized_result,
+    truncate_tool_output,
+)
 from agent.mind.result_budget import (
     ResultBudget,
     budget_for_context_window,
     resolve_result_limit,
-)
-from agent.mind.tools.result_pipeline import (
-    ToolResultPipeline,
-    _persist_oversized_result,
-    truncate_tool_output,
 )
 
 
@@ -144,7 +144,7 @@ def workspace(tmp_path, monkeypatch):
 
 
 def _pipeline():
-    from agent.mind.tools.result_pipeline import ToolResultPipeline
+    from agent.mind.execution.result_pipeline import ToolResultPipeline
 
     mind = SimpleNamespace(get_model_context_length=lambda: 0)
     return ToolResultPipeline(mind)
@@ -189,7 +189,7 @@ class TestPersistOversized:
         assert len(result) < 10_000
 
     def test_persist_failure_falls_back(self):
-        from agent.mind.tools.result_pipeline import shell_persist_port
+        from agent.mind.execution.result_pipeline import shell_persist_port
         shell_persist_port.set(lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
         assert _persist_oversized_result("x", "y" * 60_000) is None
 

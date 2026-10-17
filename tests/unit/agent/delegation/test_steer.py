@@ -88,7 +88,7 @@ class TestMergeSteered:
     def test_injects_into_tool_chain(self) -> None:
         from types import SimpleNamespace
 
-        from agent.mind.tools.round_helpers import _merge_steered_messages
+        from agent.mind.execution.messages import _merge_steered_messages
 
         ctx = SimpleNamespace(tool_chain=[], execution_steps=[])
         state = SimpleNamespace(iteration=3)
@@ -107,7 +107,7 @@ class TestMergeSteered:
     def test_no_messages_noop(self) -> None:
         from types import SimpleNamespace
 
-        from agent.mind.tools.round_helpers import _merge_steered_messages
+        from agent.mind.execution.messages import _merge_steered_messages
 
         ctx = SimpleNamespace(tool_chain=[], execution_steps=[])
         _merge_steered_messages(ctx, SimpleNamespace(iteration=0))

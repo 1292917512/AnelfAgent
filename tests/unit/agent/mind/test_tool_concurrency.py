@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import agent.mind.tools.think_loop as tl
+import agent.mind.execution.tool_execution as tl
 import entities.filesystem.tools  # noqa: F401  注册 os 组工具（read_file 等并发安全标记）
 
 
@@ -254,7 +254,7 @@ class TestEarlyToolRunner:
 
     def test_submit_rejects_leaky_arguments(self, mock_mind, monkeypatch):
         mind, _ = mock_mind
-        import agent.mind.tools.think_loop as tl_mod
+        import agent.mind.execution.tool_execution as tl_mod
         monkeypatch.setattr(
             "agent.security.session_token.detect_leak", lambda s: True,
         )

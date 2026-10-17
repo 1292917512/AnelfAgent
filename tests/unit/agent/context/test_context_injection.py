@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from agent.context import assembly
+from agent.context.assembly import ContextAssembly
 from agent.mind.prefrontal_cortex import PrefrontalCortex
 from agent.planning import nag
 
@@ -96,7 +97,7 @@ class TestGoalNag:
 # 窗口外消息计数（软归档感知）
 # ==================================================================
 
-def _pfc(record_count: int, total_count: int, max_size: int = 3) -> PrefrontalCortex:
+def _pfc(record_count: int, total_count: int, max_size: int = 3) -> ContextAssembly:
     records = [
         {"role": "user" if i % 2 == 0 else "assistant", "content": f"消息{i}"}
         for i in range(record_count)
@@ -106,10 +107,11 @@ def _pfc(record_count: int, total_count: int, max_size: int = 3) -> PrefrontalCo
         get_conversation_record_by_everything=AsyncMock(return_value=records),
         count_messages=AsyncMock(return_value=total_count),
     )
-    return PrefrontalCortex(
+    pfc = PrefrontalCortex(
         everything_data=SimpleNamespace(),
         conversation_data=conversation_data,
     )
+    return ContextAssembly(pfc.work_memory, pfc.tool_assembly, conversation_data=conversation_data)
 
 
 class TestOverflowHint:

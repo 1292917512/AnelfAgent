@@ -1,21 +1,11 @@
-"""PrefrontalCortex — AI 工作记忆中枢（组合门面）。
+"""工作记忆门面：维护会话队列、短期记忆与工具激活态。
 
-管理短期记忆、任务队列、工具召回、频道感知和态势上下文。
-LLM 每轮思考从此处获取完整工作记忆（工具提示、频道能力、热工具等）。
-
-实现已按职责拆分为三个自包含组件（本类仅做构造接线与方法委托，
-公开 API 签名保持与拆分前一致，消费方无感知）：
-
-- ``agent.mind.work_memory.WorkMemory``：消息队列 / 待办持久化 / 短期记忆 / 媒体暂存 / 态势路由
-- ``agent.mind.tool_assembly.ToolAssembly``：工具召回 / tag 激活 / 动态发现 / schema 合并与门控
-- ``agent.context.assembly.ContextAssembly``：系统提示构建 / Prompt 分层缓存 / 执行上下文
-"""
+上下文层通过只读视图消费这些状态；本模块不构建提示词或消息分层。"""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
-from agent.context.assembly import ContextAssembly
 from agent.llm.types import ImageContent
 from agent.messages import EntityData, Everything
 from agent.mind.autonomous import MindTask
@@ -26,21 +16,17 @@ from agent.utils.unique_queue import UniqueQueue
 
 if TYPE_CHECKING:
     from agent.channel.manager import ChannelManager
-    from agent.skills.skill_store import SkillStore
     from agent.storage.data_center import ConversationData
-    from core.plugins.store import PluginRegistry
 
 
 class PrefrontalCortex:
-    """工作记忆门面：构造接线 + 方法委托（公开 API 与拆分前一致）。"""
+    """聚合工作记忆与工具目录，向思维流程提供状态操作。"""
 
     def __init__(
             self,
             everything_data: EverythingData,
             channel_manager: Optional["ChannelManager"] = None,
             conversation_data: Optional["ConversationData"] = None,
-            skill_store: Optional["SkillStore"] = None,
-            plugin_registry: Optional["PluginRegistry"] = None,
     ) -> None:
         self.record: dict[str, int] = {}
         self.everything_data = everything_data
@@ -49,10 +35,6 @@ class PrefrontalCortex:
 
         self.work_memory = WorkMemory(everything_data, conversation_data)
         self.tool_assembly = ToolAssembly(channel_manager)
-        self.context_assembly = ContextAssembly(
-            self.work_memory, self.tool_assembly, channel_manager, conversation_data,
-            skill_store, plugin_registry,
-        )
         # 消息标签扫描命中时经 ToolAssembly 激活工具（数据面 → 工具面接线）
         self.work_memory.tool_assembly = self.tool_assembly
 
@@ -217,66 +199,6 @@ class PrefrontalCortex:
         selectors: Optional[List[str]] = None,
     ) -> list[dict]:
         return await self.tool_assembly.get_reflect_tool_schemas(adapter_key, scope, selectors)
-
-    # ==================================================================
-    # ContextAssembly 委托
-    # ==================================================================
-
-    def build_tool_system_prompt(
-            self,
-            models_summary: str = "",
-            adapter_key: str = "",
-            target_id: str = "",
-            direct_vision: bool = False,
-    ) -> list[dict]:
-        return self.context_assembly.build_tool_system_prompt(
-            models_summary=models_summary,
-            adapter_key=adapter_key,
-            target_id=target_id,
-            direct_vision=direct_vision,
-        )
-
-    def build_stable_layer(
-            self,
-            persona_parts: List[str],
-            models_summary: str = "",
-            direct_vision: bool = False,
-            static_guide: str = "",
-    ) -> str:
-        return self.context_assembly.build_stable_layer(
-            persona_parts,
-            models_summary=models_summary,
-            direct_vision=direct_vision,
-            static_guide=static_guide,
-        )
-
-    def stable_fingerprint(self, models_summary: str = "", direct_vision: bool = False) -> str:
-        return self.context_assembly.stable_fingerprint(models_summary, direct_vision)
-
-    async def build_llm_context(self, **kwargs: Any) -> List[Dict]:
-        return await self.context_assembly.build_llm_context(**kwargs)
-
-    def build_execution_context(
-            self,
-            execution_steps: list[str],
-            start_time: float,
-            iteration: int,
-            *,
-            adapter_key: str = "",
-            safety_limit: int = 0,
-            anything: Optional["Everything"] = None,
-            budget_hint: str = "",
-            cache_hint: str = "",
-    ) -> dict:
-        return self.context_assembly.build_execution_context(
-            execution_steps, start_time, iteration,
-            adapter_key=adapter_key, safety_limit=safety_limit, anything=anything,
-            budget_hint=budget_hint, cache_hint=cache_hint,
-        )
-
-    @staticmethod
-    def _build_media_rules(direct_vision: bool = False) -> str:
-        return ContextAssembly._build_media_rules(direct_vision)
 
     # ==================================================================
     # 管理与监控接口

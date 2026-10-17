@@ -12,8 +12,9 @@ from entities import _sdk
 
 
 async def test_context_usage_is_real_and_isolated_between_executions():
+    from agent.mind.execution.state import RoundState
+    from agent.mind.execution.usage import _emit_context_usage
     from agent.mind.think_session import think_session
-    from agent.mind.tools.round_helpers import _emit_context_usage, _ThinkRoundState
 
     mind = SimpleNamespace(
         pfc=SimpleNamespace(clear_dynamic_tools=lambda **kwargs: None),
@@ -25,7 +26,7 @@ async def test_context_usage_is_real_and_isolated_between_executions():
             assert _sdk.get_context_usage() is None
             await _emit_context_usage(
                 SimpleNamespace(mind=mind, current_scope=scope, base_messages=[], tool_chain=[]),
-                _ThinkRoundState(last_input_tokens=tokens),
+                RoundState(last_input_tokens=tokens),
             )
             await asyncio.sleep(0)
             usage = _sdk.get_context_usage()

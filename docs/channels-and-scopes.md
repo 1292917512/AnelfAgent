@@ -71,7 +71,7 @@
 - 构造一律 `build_entity_scope()`，解析一律 `parse_entity_scope()`（返回
   scope_type/adapter/base_id/session_id，兼容无 adapter 旧格式），会话合法性判据
   `is_conversation_scope()`（可路由 = user_/group_ 且含频道前缀），**禁止手工 f-string 拼接**
-- 元决策 decide 的 target 一律经 `decision_executor.normalize_target_scope` 规范化后才可用
+- 元决策 decide 的 target 一律经 `decisions.normalize_target_scope` 规范化后才可用
   （见[思维分册](mind-architecture.md)）
 - 记忆标签同构：`user:{adapter}:{uid}`；存量数据由 `agent/storage/scope_migrate.py` 启动自动
   迁移（`legacy_adapter_default` 配置归属频道）；别名实体的跨频道历史合并由 `alias_merge_history`
@@ -136,7 +136,7 @@
 | 机制 | 位置 | 说明 |
 |------|------|------|
 | 跨周期双答防护 | 回复优先门控 + 出站事实面（见上） | 思维周期消息链在启动时刻冻结（对话历史周期内不重读），并发周期互相看不到对方出站——三通道分工：历史固化/动态注入/执行期边界 |
-| 空会话防护与整合 | `outbound_guard.guard_empty_conversation`（出站层）+ `decision_executor`（决策层前置判定）+ `sqlite_backend.sweep_empty_conversations`（存量整合，心跳周期触发） | 空会话 = 从未收到过 user 角色消息的会话（AI 主动搭话历史缺陷与一次性通知写入产生）。三层：①出站层——AI 思维上下文向空会话发送返回结构化错误（guard=empty_conversation，hint 引导等待对方先开口或改记待办）；②决策层——PROACTIVE 与工具操作结果投递在进入回复周期前判定空会话直接放弃（心跳日志留痕）；③存量整合——按 `conversation_empty_sweep_interval_seconds`（默认 86400s，0=关）清除空会话的消息/摘要/回复检查点（1h 宽限窗口内的新会话不动，NOT EXISTS 单语句守卫防与首条用户消息竞态）。判定事实源 `conversation_has_user_message`；查询失败 fail-open（行为护栏而非安全边界）。配置 `channel/outbound` 组 `outbound_guard_empty_enabled` |
+| 空会话防护与整合 | `outbound_guard.guard_empty_conversation`（出站层）+ `decisions`（决策层前置判定）+ `sqlite_backend.sweep_empty_conversations`（存量整合，心跳周期触发） | 空会话 = 从未收到过 user 角色消息的会话（AI 主动搭话历史缺陷与一次性通知写入产生）。三层：①出站层——AI 思维上下文向空会话发送返回结构化错误（guard=empty_conversation，hint 引导等待对方先开口或改记待办）；②决策层——PROACTIVE 与工具操作结果投递在进入回复周期前判定空会话直接放弃（心跳日志留痕）；③存量整合——按 `conversation_empty_sweep_interval_seconds`（默认 86400s，0=关）清除空会话的消息/摘要/回复检查点（1h 宽限窗口内的新会话不动，NOT EXISTS 单语句守卫防与首条用户消息竞态）。判定事实源 `conversation_has_user_message`；查询失败 fail-open（行为护栏而非安全边界）。配置 `channel/outbound` 组 `outbound_guard_empty_enabled` |
 | 待回复队列毒丸防护 | `is_conversation_scope`（单点判据）+ `scheduler.enqueue_scope_reply`/`add_reminder`（校验）+ `pop_next_reply_target`（就地清除）+ `work_memory.consume_scope_task`（双队列消费） | 三层防线：①源头——`add_reminder` 拒绝持久化不可路由 scope 的提醒（ValueError，事件降级为不提醒）；②入口——`enqueue_scope_reply` 拒绝非会话 scope 入队（退化为全局短期记忆桶）；③兜底——回复消费点对解析失败或缺频道前缀的队列条目就地清除 + WARNING，任何坏条目最多空转一轮即收敛。投递面守卫（待回复队列/持久化提醒/一次性通知）统一拒绝不可路由 scope |
 
 配置组 `channel/outbound`（enabled / recent_seconds / facts_inject / empty_enabled）。

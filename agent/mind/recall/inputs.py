@@ -8,9 +8,9 @@ Token 影响：复用检索计划和查询向量，减少判断输入，不增�
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from agent.context.inputs import RecollectionInputs
 from agent.judgment.evidence import dialogue_messages
 from agent.memory.memory_retriever import MemoryRetriever
 from agent.memory.recall_policy import current_recall_policy
@@ -20,20 +20,6 @@ from core.log import log
 if TYPE_CHECKING:
     from agent.messages import Everything
     from agent.mind.mind import Mind
-
-
-@dataclass
-class RecollectionInputs:
-    profiles: list[dict] = field(default_factory=list)
-    memories: list[dict] = field(default_factory=list)
-    relations: list[dict] = field(default_factory=list)
-    cross_channel: list[dict] = field(default_factory=list)
-    skills: list[dict] = field(default_factory=list)
-    profile_blocks: list[str] = field(default_factory=list)
-    hub: str = ""
-    directives: str = ""
-    repeat_hint: str = ""
-    summary: dict | None = None
 
 
 async def collect_recollection_inputs(

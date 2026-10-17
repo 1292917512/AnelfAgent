@@ -364,7 +364,6 @@ def create_bootstrap() -> FlowMachine:
         # delegation 整组永不注册（activate_group 对空组连组名都不登记）
         import agent.delegation.delegate_tool  # noqa: F401
         import agent.judgment.tools  # noqa: F401
-        from agent.mind import Mind
         from agent.mind.tools import (  # noqa: F401
             background,
             execution_log,
@@ -373,6 +372,7 @@ def create_bootstrap() -> FlowMachine:
             short_term_tools,
         )
         from agent.runtime.assistant import AgentAssistant
+        from agent.runtime.mind_factory import create_mind
         from agent.runtime.runtime import AgentRuntime
         from agent.runtime.singleton import set_runtime
         from agent.runtime.wiring import wire_runtime
@@ -386,7 +386,7 @@ def create_bootstrap() -> FlowMachine:
         channel_manager = ch_data["channel_manager"]
         pipeline = ch_data["pipeline"]
 
-        mind = Mind(
+        mind = create_mind(
             char=char,
             llm=llm_data["llm"],
             llm_manager=llm_data["manager"],

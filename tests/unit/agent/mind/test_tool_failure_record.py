@@ -1,4 +1,4 @@
-"""工具"礼貌失败"选择性落库（agent.mind.tools.think_loop._record_tool_result_failure）。"""
+"""工具"礼貌失败"选择性落库（agent.mind.execution.tool_execution._record_tool_result_failure）。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from agent.llm.types import ToolCall
-from agent.mind.tools.think_loop import _record_tool_result_failure
+from agent.mind.execution.tool_execution import _record_tool_result_failure
 
 
 def _tc(name: str = "web_fetch") -> ToolCall:

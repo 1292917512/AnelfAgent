@@ -25,7 +25,7 @@ from helpers.think_loop_fakes import (
 )
 
 from agent.mind.background_tasks import BackgroundTaskRegistry
-from agent.mind.tools.think_loop import ThinkMode
+from agent.mind.execution.state import ThinkMode
 
 
 async def test_cancel_scope_keeps_results_without_waking_cancelled_conversation():

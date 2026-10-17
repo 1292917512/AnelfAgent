@@ -2,7 +2,7 @@
 
 工具返回给 AI 的错误 JSON 统一由本模块构造：
 
-- ``error`` 为主信号键（框架检测逻辑 round_helpers / guardrails 依赖它识别失败）
+- ``error`` 为主信号键（框架检测逻辑 execution.responses / guardrails 依赖它识别失败）
 - ``cause`` 机器可读归因（参数/配置/权限/网络/超时/状态/内部），AI 据此决策
 - ``hint`` 修复指引，仅在能给出可执行建议时提供
 - ``retryable`` 告知重试是否有意义，仅在归因明确时给出

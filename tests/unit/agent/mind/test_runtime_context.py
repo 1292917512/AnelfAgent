@@ -10,9 +10,9 @@ from helpers.think_loop_fakes import FakeMind, run_think_loop, tool_result
 from agent.context.message_schema import normalize_for_send
 from agent.context.observation import emit_context_summary
 from agent.mind.background_tasks import BackgroundTaskRegistry
+from agent.mind.execution.state import ThinkMode
 from agent.mind.runtime_context import background_context
 from agent.mind.tool_activation import bind_scope, reset_scope
-from agent.mind.tools.think_loop import ThinkMode
 
 
 @pytest.mark.parametrize("running", [True, False])
@@ -21,7 +21,7 @@ async def test_reply_entry_applies_only_running_channel_recall_default(monkeypat
     from agent.channel.reply_policy import ReplyPolicy
     from agent.memory.recall_policy import RecallPolicy, current_recall_policy, default_recall_policy, has_recall_turn
     from agent.messages.everything import Everything
-    from agent.mind.tools.think_loop import reply_loop
+    from agent.mind.execution.reply import reply_loop
 
     anything = Everything(adapter_key="game", uid=1, text_content="检查附近状态")
     scope = anything.entity_scope
@@ -38,7 +38,7 @@ async def test_reply_entry_applies_only_running_channel_recall_default(monkeypat
         assert current_recall_policy(scope) == expected
         assert kwargs["base_messages"] == [{"role": "system", "content": "固定前缀"}]
     loop = AsyncMock(side_effect=execute)
-    monkeypatch.setattr("agent.mind.tools.think_loop.think_loop", loop)
+    monkeypatch.setattr("agent.mind.execution.reply.think_loop", loop)
     mind = SimpleNamespace(_get_mind_config=lambda: SimpleNamespace(max_tool_iterations=5),
                            _resolve_entity_scope=lambda anything: anything.entity_scope,
                            get_recollection=AsyncMock(side_effect=collect),
@@ -122,11 +122,11 @@ async def test_repeated_failures_do_not_report_success():
 
 
 async def test_reply_exception_is_reported_without_automatic_channel_delivery(anything, deliver_mock, monkeypatch):
-    from agent.mind.tools.think_loop import reply_entry
+    from agent.mind.execution.reply import reply_entry
 
     done = AsyncMock()
-    monkeypatch.setattr("agent.mind.tools.think_loop.reply_loop", AsyncMock(side_effect=RuntimeError("工具不可用")))
-    monkeypatch.setattr("agent.mind.tools.think_loop.complete_reply", done)
+    monkeypatch.setattr("agent.mind.execution.reply.reply_loop", AsyncMock(side_effect=RuntimeError("工具不可用")))
+    monkeypatch.setattr("agent.mind.execution.reply.complete_reply", done)
     await reply_entry(FakeMind(), anything)
     deliver_mock.assert_not_awaited()
     assert done.await_args.kwargs["error"] is True

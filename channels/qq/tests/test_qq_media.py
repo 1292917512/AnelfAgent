@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from agent.channel.schemas import MessageSegment, SegmentType
-from agent.mind.tools.media_pipeline import MediaPipeline
+from agent.mind.execution.media_pipeline import MediaPipeline
 from channels.qq.parser import (
     _auto_download_to_me_images,
     _build_media_segment,

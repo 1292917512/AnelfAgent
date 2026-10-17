@@ -9,9 +9,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from agent.mind.tools import round_helpers
-from agent.mind.tools.round_helpers import _merge_new_messages
-from agent.mind.tools.think_loop import ThinkMode
+from agent.mind.execution import messages as message_updates
+from agent.mind.execution.messages import _merge_new_messages
+from agent.mind.execution.state import ThinkMode
 
 
 def _msgs(n: int, chars: int = 0) -> list:
@@ -55,7 +55,7 @@ def fetch(monkeypatch):
         calls.append((since_ts, since_id))
         return holder["msgs"]
 
-    monkeypatch.setattr(round_helpers, "_fetch_new_messages", fake)
+    monkeypatch.setattr(message_updates, "_fetch_new_messages", fake)
     return holder, calls
 
 
@@ -90,7 +90,7 @@ class TestMergeCaps:
     async def test_count_cap_defers_remainder(self, fetch, monkeypatch) -> None:
         holder, _ = fetch
         holder["msgs"] = _msgs(5)
-        monkeypatch.setattr(round_helpers, "_MAX_MERGED_MESSAGES", 3)
+        monkeypatch.setattr(message_updates, "_MAX_MERGED_MESSAGES", 3)
         consumed: list = []
         ctx, state = _ctx(consumed), _state()
         await _merge_new_messages(ctx, state)
@@ -103,7 +103,7 @@ class TestMergeCaps:
         """字符上限：首条强制并入保证进度（单条超预算也不拆分用户原话）。"""
         holder, _ = fetch
         holder["msgs"] = _msgs(3, chars=60)  # 每条约 70+ 字符
-        monkeypatch.setattr(round_helpers, "_MAX_MERGED_CHARS", 100)
+        monkeypatch.setattr(message_updates, "_MAX_MERGED_CHARS", 100)
         consumed: list = []
         ctx, state = _ctx(consumed), _state()
         await _merge_new_messages(ctx, state)
@@ -115,7 +115,7 @@ class TestMergeCaps:
         """留存消息在下轮从推进后的水位接续并入，全部并入后才消费队列。"""
         holder, calls = fetch
         holder["msgs"] = _msgs(5)
-        monkeypatch.setattr(round_helpers, "_MAX_MERGED_MESSAGES", 3)
+        monkeypatch.setattr(message_updates, "_MAX_MERGED_MESSAGES", 3)
         consumed: list = []
         ctx, state = _ctx(consumed), _state()
         await _merge_new_messages(ctx, state)

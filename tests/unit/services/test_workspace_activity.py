@@ -481,10 +481,10 @@ def test_channel_bridge_owner_uses_registered_source(monkeypatch, source, expect
 
 async def test_structured_tool_failure_is_rendered_as_failure(activity, monkeypatch):
     from agent.llm.types import ToolCall
-    from agent.mind.tools.think_loop import execute_one_tool
+    from agent.mind.execution.tool_execution import execute_one_tool
 
     service, _ = activity
-    monkeypatch.setattr("agent.mind.tools.think_loop.check_tool_permission", AsyncMock(return_value=None))
+    monkeypatch.setattr("agent.mind.execution.tool_execution.check_tool_permission", AsyncMock(return_value=None))
     mind = SimpleNamespace(_set_phase=lambda _: None, tool_executor=AsyncMock(return_value='{"success":false,"error":"Invalid destination","retryable":false}'), memory_store=None)
     async with activity_scope("failure", "group_qq:42"):
         await execute_one_tool(mind, ToolCall(id="send", name="send_message", arguments='{"target":"missing"}'), 0)

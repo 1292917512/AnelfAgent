@@ -16,7 +16,7 @@ from helpers.think_loop_fakes import FakeMind, FakePfc, run_think_loop, text_res
 
 from agent.llm.types import ImageContent, ToolCall
 from agent.messages import MessageUser
-from agent.mind.tools.round_helpers import snapshot_watermark
+from agent.mind.execution.messages import snapshot_watermark
 from agent.storage.data_center import ConversationData
 from agent.storage.storage_router import StorageDomain, StorageRouter
 from core.tags import format_time, get_time_tag
@@ -591,8 +591,8 @@ class TestInterjectionGuardrailReset:
         return {"role": "user", "content": f"[time:2026年08月14日][uid:10001] {text}"}
 
     def test_genuine_user_message_resets_guardrail(self) -> None:
+        from agent.mind.execution.messages import _maybe_reset_guardrail_for_interjection
         from agent.mind.guardrails import GuardrailConfig, GuardrailController
-        from agent.mind.tools.round_helpers import _maybe_reset_guardrail_for_interjection
         ctl = GuardrailController(GuardrailConfig(enabled=True, exact_failure_warn_after=2))
         # 先累积失败计数
         ctl.after_call("read_file", '{"p": "/a"}', '{"error": "x"}')
@@ -602,8 +602,8 @@ class TestInterjectionGuardrailReset:
         assert d.action == "allow"
 
     def test_machine_user_message_no_reset(self) -> None:
+        from agent.mind.execution.messages import _maybe_reset_guardrail_for_interjection
         from agent.mind.guardrails import GuardrailConfig, GuardrailController
-        from agent.mind.tools.round_helpers import _maybe_reset_guardrail_for_interjection
         ctl = GuardrailController(GuardrailConfig(enabled=True, exact_failure_warn_after=2))
         ctl.after_call("read_file", '{"p": "/a"}', '{"error": "x"}')
         # 机器生成的 user 消息（无到达标签）不触发重置
@@ -614,7 +614,7 @@ class TestInterjectionGuardrailReset:
         assert d.action == "warn"
 
     def test_empty_msgs_no_reset(self) -> None:
+        from agent.mind.execution.messages import _maybe_reset_guardrail_for_interjection
         from agent.mind.guardrails import GuardrailConfig, GuardrailController
-        from agent.mind.tools.round_helpers import _maybe_reset_guardrail_for_interjection
         ctl = GuardrailController(GuardrailConfig(enabled=True))
         assert not _maybe_reset_guardrail_for_interjection(ctl, [])

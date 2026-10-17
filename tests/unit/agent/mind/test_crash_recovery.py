@@ -162,7 +162,7 @@ class TestReplyToolJournal:
     """主回复工具日志：回合存取/渲染截断、崩溃恢复注入操作清单。"""
 
     async def test_journal_roundtrip_and_render(self, conv_data) -> None:
-        from agent.mind.tools.reply_journal import ReplyToolJournal
+        from agent.mind.execution.reply_journal import ReplyToolJournal
 
         sqlite = conv_data.router.sqlite
         journal = ReplyToolJournal(sqlite, "user_qq:123")
@@ -202,7 +202,7 @@ class TestReplyToolJournal:
         assert await sqlite.load_reply_checkpoints() == []
 
     async def test_render_caps_at_max_rows(self, conv_data) -> None:
-        from agent.mind.tools.reply_journal import ReplyToolJournal
+        from agent.mind.execution.reply_journal import ReplyToolJournal
 
         sqlite = conv_data.router.sqlite
         journal = ReplyToolJournal(sqlite, "user_qq:1")
@@ -213,7 +213,7 @@ class TestReplyToolJournal:
         assert text.count("read_file") == 12
 
     async def test_build_journal_none_without_storage(self) -> None:
-        from agent.mind.tools.reply_journal import build_reply_journal
+        from agent.mind.execution.reply_journal import build_reply_journal
 
         assert build_reply_journal(SimpleNamespace(), "s") is None
         assert build_reply_journal(SimpleNamespace(conversation_data=None), "") is None

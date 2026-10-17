@@ -34,8 +34,8 @@
 
 | 机制 | 位置 | 说明 |
 |------|------|------|
-| steer 档（默认） | `agent/delegation/steer.py` + `DelegationManager.steer` + `round_helpers._merge_steered_messages` + 工具 `send_to_agent` | 在**步骤边界**注入追加指令、改变进行中的工作 |
-| after 档 | `round_helpers.merge_after_messages` + `think_loop` end_reply 分支 | 在**收束边界**注入（REFLECT 连续纯文本达上限本要结束时消费，重置计数续跑；end_reply 收束路径同样先消费 after 档——无追加走原收束）——「做完这批后顺便…」型追加不取消不重开、已完成部分保留 |
+| steer 档（默认） | `agent/delegation/steer.py` + `DelegationManager.steer` + `execution.messages._merge_steered_messages` + 工具 `send_to_agent` | 在**步骤边界**注入追加指令、改变进行中的工作 |
+| after 档 | `execution.messages.merge_after_messages` + `think_loop` end_reply 分支 | 在**收束边界**注入（REFLECT 连续纯文本达上限本要结束时消费，重置计数续跑；end_reply 收束路径同样先消费 after 档——无追加走原收束）——「做完这批后顺便…」型追加不取消不重开、已完成部分保留 |
 | 收件箱 | `SteerInbox`（按档位分离） | 单委托上限 8 条两档合并计、单条 4000 字符截断；SubAgent.run 经 `bind_steer_drain` ContextVar 绑定 mode 参数化 drain 闭包（create_task 复制进整个执行树），主会话未绑定 drain 恒空零开销；委托结束（成败/超时）finally 清箱 |
 | 可续跑 | `agent/delegation/journal.py`（transcript）+ `DelegationManager.follow_up` + 工具 `follow_up_agent` | 委托结束把最终消息链（completion 容器 `messages` = base+tool_chain）持久化为 transcript（`<data_dir>/delegations/<id>.json`，256KB 上限超出降级为不可续跑档案），`follow_up_agent(delegation_id, message)` 以消息链为 base_messages 追加 [续跑指令] 无损续跑（前台/后台两路，血缘 parent_delegation_id 贯通；运行中委托拒绝并引导 send_to_agent） |
 | 结束原因贯通 | `think_loop completion 容器` → `mind.reflect(completion=)` → `SubAgentResult.completed_reason` | 三值：completed / budget_exhausted（轮次预算用尽，产出可能只是中途状态）/ interrupted；聚合结果对 budget_exhausted 条目附 hint（拆小任务重新委托），后台完成通知同样标注；空产出 no_output |

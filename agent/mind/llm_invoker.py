@@ -1,8 +1,4 @@
-"""Mind LLM 调用块：统一调用入口、重试/回退、流式聚合与选项合并。
-
-函数以 mind 实例为第一参数（与 agent.mind.tools.* 同风格），
-Mind 类持有一行薄委托，调用方签名零变化。
-"""
+"""思维模型调用：统一重试、回退、流式聚合、选项合并与摘要。"""
 
 from __future__ import annotations
 
@@ -568,3 +564,41 @@ async def _llm_chat_stream_once(
         thinking_blocks=thinking_blocks,
         reasoning_details=reasoning_details,
     )
+
+
+async def summarize_text(self: Mind, prompt: str) -> str:
+    """生成摘要文本（供对话折叠/上下文压缩等内部流程使用）。
+
+    经 chat_with_fallback 流式通道调用：思考/输出期间不设墙钟（空闲才判
+    超时），主模型超时/故障时自动回退其他可用 chat 模型。可经配置为摘要
+    任务指定更轻量的专用模型与思考档位（conversation_summary_model /
+    conversation_summary_reasoning_effort，空 = 默认主模型/跟随模型配置）。
+
+    Model Experience:
+    - 模型看到什么：无 prompt 层变化；仅通道（流式）与可选专用模型/档位。
+    - token 影响：指定低思考档可显著省 token；流式本身不改用量。
+    - 缓存影响：摘要为独立小请求，不共享主对话前缀，不触碰前缀层。
+    """
+    messages = [{"role": "user", "content": prompt}]
+    if self.llm_manager is not None:
+        from agent.llm.reasoning import normalize_effort
+        from core.config import get_config
+
+        client = None
+        model_id = str(get_config("conversation_summary_model", "") or "").strip()
+        if model_id:
+            client = self.llm_manager.get_enabled_client(model_id)
+            if client is None:
+                log(f"摘要专用模型不存在或已停用，回落默认主模型: {model_id}",
+                    "WARNING", tag="思维")
+        options = None
+        effort = normalize_effort(get_config("conversation_summary_reasoning_effort", ""))
+        if effort:
+            options = {"reasoning_effort": effort}
+        result = await self.llm_manager.chat_with_fallback(
+            messages, max_retries=1, timeout=180.0, purpose="summarize",
+            client=client, options=options, stream=True,
+        )
+    else:
+        result = await self.llm_chat(messages)
+    return (result.content or "").strip()

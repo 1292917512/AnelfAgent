@@ -14,8 +14,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from agent.messages.presets import MessageGroupUser, MessageUser
+from agent.mind.decisions import resolve_reply_target
 from agent.mind.prefrontal_cortex import PrefrontalCortex
-from agent.mind.tools.decision_executor import resolve_reply_target
 
 
 async def test_nested_internal_space_clears_and_restores_channel_without_cross_task_leaks():

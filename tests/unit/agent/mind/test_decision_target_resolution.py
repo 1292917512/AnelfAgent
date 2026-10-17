@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 
 from agent.messages.presets import MessageAssistant, MessageAssistantGroup
-from agent.mind.tools.decision_executor import (
+from agent.mind.decisions import (
     execute_reply,
     normalize_target_scope,
     pop_next_reply_target,
@@ -181,7 +181,7 @@ class TestProactiveEmptyConversation:
     async def test_proactive_aborts_on_empty_conversation(self, monkeypatch) -> None:
         from unittest.mock import AsyncMock
 
-        from agent.mind.tools import decision_executor as de
+        from agent.mind import decisions as de
 
         async def _empty(_scope: str):
             return False
@@ -201,7 +201,7 @@ class TestProactiveEmptyConversation:
     async def test_proactive_proceeds_when_interacted(self, monkeypatch) -> None:
         from unittest.mock import AsyncMock
 
-        from agent.mind.tools import decision_executor as de
+        from agent.mind import decisions as de
 
         async def _interacted(_scope: str):
             return True
@@ -237,7 +237,7 @@ class TestProactiveEmptyConversation:
 
     async def test_query_failure_fails_open(self, monkeypatch) -> None:
         """空会话判定不可知（runtime 未就绪）按非空处理，不误伤正常决策。"""
-        from agent.mind.tools.decision_executor import _target_is_empty_conversation
+        from agent.mind.decisions import _target_is_empty_conversation
 
         async def _unknown(_scope: str):
             return None
@@ -266,7 +266,7 @@ async def test_tool_action_requires_explicit_output_tool(
 ) -> None:
     from unittest.mock import AsyncMock
 
-    from agent.mind.tools import decision_executor as de
+    from agent.mind import decisions as de
 
     monkeypatch.setattr(de, "_hb_append", lambda _text: None)
     monkeypatch.setattr("agent.channel.outbound_guard.target_has_interaction", AsyncMock(return_value=interacted))

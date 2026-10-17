@@ -7,19 +7,10 @@
 
 from __future__ import annotations
 
-import re
-from types import SimpleNamespace
-
-from agent.mind.recollection import (
+from agent.mind.recall.scopes import (
     _extract_related_scopes,
     _speaker_scopes,
 )
-
-_UID_RE = re.compile(r"\[(?:uid|at_uid):([^\]]+)\]")
-
-
-def _mind_stub() -> SimpleNamespace:
-    return SimpleNamespace(_RELATED_UID_RE=_UID_RE)
 
 
 class TestFaceScopeParsing:
@@ -44,7 +35,7 @@ class TestFaceScopeParsing:
 class TestRelatedScopes:
     def test_face_tag_triggers_recall_in_private_chat(self) -> None:
         tail = [{"content": "[face_scope:user:qq:456] 出现在画面里"}]
-        scopes = _extract_related_scopes(_mind_stub(), tail, "user_webui:u1")
+        scopes = _extract_related_scopes(tail, "user_webui:u1")
         assert "user_qq:456" in scopes
 
     def test_multiple_turns_dedupe(self) -> None:
@@ -53,5 +44,5 @@ class TestRelatedScopes:
             {"content": "[face_scope:user:qq:456] 第二帧"},
             {"content": "[face_scope:user:tg:9] 另一人入镜"},
         ]
-        scopes = _extract_related_scopes(_mind_stub(), tail, "user_webui:u1")
+        scopes = _extract_related_scopes(tail, "user_webui:u1")
         assert scopes == ["user_qq:456", "user_tg:9"]

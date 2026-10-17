@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from agent.mind.tools.round_helpers import _cache_status_hint, _ThinkRoundState
+from agent.mind.execution.state import RoundState
+from agent.mind.execution.usage import _cache_status_hint
 
 
-def _state(**kwargs) -> _ThinkRoundState:
+def _state(**kwargs) -> RoundState:
     base = dict(
         last_input_tokens=22819,
         last_cache_read_tokens=22784,
@@ -14,7 +15,7 @@ def _state(**kwargs) -> _ThinkRoundState:
         last_cache_observable=True,
     )
     base.update(kwargs)
-    return _ThinkRoundState(**base)
+    return RoundState(**base)
 
 
 class TestCacheStatusHint:
@@ -50,5 +51,5 @@ class TestCacheStatusHint:
         """配置关闭时不注入。"""
         from core import config as config_mod
         monkeypatch.setattr(config_mod, "get_config_bool", lambda *a, **k: False)
-        # round_helpers 内为函数内延迟导入，打点对模块属性同样生效
+        # execution.usage 内为函数内延迟导入，打点对模块属性同样生效
         assert _cache_status_hint(_state()) == ""

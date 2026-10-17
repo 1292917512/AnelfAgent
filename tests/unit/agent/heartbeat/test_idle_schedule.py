@@ -376,7 +376,7 @@ class TestStartTaskBackground:
 class TestReflectDeferral:
     async def test_execute_reflect_defers_when_idle_configured(self, monkeypatch) -> None:
         from agent.mind.autonomous import Decision, DecisionType
-        from agent.mind.tools.decision_executor import execute_reflect
+        from agent.mind.decisions import execute_reflect
 
         schedules = [TaskSchedule(task_name="self_reflection", mode=ScheduleMode.IDLE, every_n_beats=4)]
         tasks = {"self_reflection": _task("self_reflection")}
@@ -398,7 +398,7 @@ class TestReflectDeferral:
 
     async def test_execute_reflect_immediate_without_idle_config(self, monkeypatch) -> None:
         from agent.mind.autonomous import Decision, DecisionType
-        from agent.mind.tools.decision_executor import execute_reflect
+        from agent.mind.decisions import execute_reflect
 
         schedules = [TaskSchedule(task_name="hb", mode=ScheduleMode.HEARTBEAT, every_n_beats=10)]
         tasks = {"self_reflection": _task("self_reflection"), "hb": _task("hb")}

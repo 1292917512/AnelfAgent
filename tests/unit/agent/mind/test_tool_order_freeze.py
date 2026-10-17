@@ -149,7 +149,7 @@ class TestStableBlocks:
     def test_persona_fingerprint_independent_of_tool_version(self) -> None:
         """人设块指纹不含工具版本因子：工具版本变化不影响其 hash 输入。
 
-        （指纹构造在 recollection._build_layered_prompts：persona_hash 只含
+        （指纹构造在 ContextPreparation.build_layers：persona_hash 只含
         persona_parts + static_guide + env_info，与 stable_fingerprint 完全分离。）
         """
         from agent.context.prompt_layers import prompt_cache_manager as mgr

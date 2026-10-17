@@ -25,7 +25,7 @@ from agent.mind.interrupt import InterruptRegistry
 
 
 async def test_stop_during_context_preparation_closes_work_and_reports_cancelled(monkeypatch, anything):
-    import agent.mind.tools.think_loop as loop
+    import agent.mind.execution.reply as loop
     from core.activity import EVENT_ACTIVITY_FINISHED
     from core.event_bus import event_bus
 

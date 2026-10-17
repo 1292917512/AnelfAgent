@@ -10,28 +10,34 @@
   → PFC（待处理消息与一般任务队列）
   → Mind.execute_mind()
   → cycle：廉价检查 / 态势收集 / 元决策
-  → decision_executor：REPLY、REFLECT、PLAN、TASK、TOOL_ACTION 等
+  → decisions：REPLY、REFLECT、PLAN、TASK、TOOL_ACTION 等
   → reply 或后台任务
 ```
 
-`Mind` 是组合宿主：
+`Mind` 持有思维运行态并提供执行入口，服务装配集中在运行时组合根：
 
 | 组件 | 责任 | 入口 |
 |---|---|---|
-| `agent/mind/mind.py` | 组装运行时组件，提供周期、回复和反思的宿主接口 | `Mind.execute_mind()`、`Mind.reply()`、`Mind.reflect()` |
+| `agent/runtime/mind_factory.py` | 创建共享服务、注入上下文视图、装配后台协作者后返回宿主 | `create_mind()` |
+| `agent/mind/mind.py` | 持有会话状态、锁和中断信号，提供周期、回复和反思入口 | `Mind.execute_mind()`、`Mind.reply()`、`Mind.reflect()` |
 | `agent/mind/mind_tools.py` | 核心工具声明与注册、反思工具权限策略 | `register_core_tools()`、`build_reflect_blocklist()` |
 | `agent/mind/cycle.py` | 自主周期的锁、fast-path、态势收集、元决策和收尾 | `_cycle_body()` |
-| `agent/mind/prefrontal_cortex.py` | 对外提供待办、工具、上下文和会话状态门面 | `PrefrontalCortex` |
+| `agent/mind/prefrontal_cortex.py` | 聚合待办、短期记忆、工具激活与会话状态，不构建上下文 | `PrefrontalCortex` |
 | `agent/mind/work_memory.py` | 待办消息、短期状态和动态任务数据 | `WorkMemory` |
-| `agent/mind/tools/decision_executor.py` | 把结构化决策分发到回复、反思、计划和任务执行器 | 决策执行函数 |
-| `agent/mind/tools/think_loop.py` | 单次回复的多轮模型调用和工具调用循环 | `think_loop()` |
+| `agent/mind/decisions.py` | 把结构化决策分发到回复、反思、计划和任务执行器 | 决策执行函数 |
+| `agent/mind/execution/` | 对话与反思入口、多轮执行、消息并入、工具调用和收束 | `reply.reply_entry()`、`reflection.reflect()`、`loop.think_loop()` |
+| `agent/mind/recall/` | 首轮并发取数、对话增量召回、关联对象识别 | `coordinator.get_recollection()`、`refresh.DialogueRecollection` |
+| `agent/context/` | 提示词、分层缓存、动态呈现、环境快照及发送规整 | `ContextAssembly`、`ContextPreparation` |
+
+宿主方法使用 Python 原生函数绑定，签名与异常传播保持直接可见；不增加通用调度装饰器或服务容器。
+技能库、插件注册表由 `create_mind` 注入共享实例，Mind 不创建上下文所需的单例，也不代理上下文格式化。
 
 - 自主周期由 `_cycle_lock` 串行化；没有待处理消息、任务或分析项时直接结束
 - 普通消息在没有复杂任务、目标或画像工作时走 **fast-path**，直接创建 `REPLY` 决策；复杂场景才
   收集完整态势并调用元决策模型
 - 心跳周期会把长决策转为后台执行，避免阻塞新消息；`mind.is_reply` 为真时 tick 只做维护与提醒
   不启动任务
-- 元决策 decide 的 target 是 LLM 自由文本，一律经 `decision_executor.normalize_target_scope`
+- 元决策 decide 的 target 是 LLM 自由文本，一律经 `decisions.normalize_target_scope`
   规范化后才可用（规范 scope 直接采信；裸 id/旧格式按 PFC `known_scopes()` 唯一解析回填；
   无匹配或歧义时 REPLY 回退 `pop_next_reply_target`、PROACTIVE 放弃告警）——畸形 target 不允许
   拼出影子会话
@@ -42,7 +48,7 @@
 
 ## 二、回复与工具循环
 
-`Mind.reply()` 进入 `agent/mind/tools/think_loop.py`。一次回复通常重复以下步骤，直到模型给出
+`Mind.reply()` 经 `execution/reply.py` 进入 `execution/loop.py`。一次回复通常重复以下步骤，直到模型给出
 结束请求或达到停止条件；正文自身不代表已回复：
 
 1. 从当前 scope 取得上下文和可用工具
@@ -50,6 +56,15 @@
 3. 执行工具并把结构化结果加入当前轮的工具链
 4. 经过结果预算、错误分类、重试和循环守卫后决定继续、重试或停止
 5. 完成回复，写入消息历史并释放本轮动态工具状态
+
+`execution/state.py` 定义会话容器 `ExecutionContext`、轮次状态 `RoundState` 与阶段结果
+`RoundOutcome`。`loop` 只编排阶段：中断检查、工具目录刷新、`round_context` 准备、`model` 调用、
+输出恢复与安全检查，再分发到 `text_round` / `tool_round` / `completion`。
+`tool_execution` 负责批次权限、并发和中断，`result_pipeline` 负责回执处理，`reply_delivery` 负责投递事实。
+
+每轮准备顺序固定：压缩与压缩前沉淀 → 实时消息并入及召回触发 → 推送与转向 → 动态状态采集 →
+按 `base_messages + tool_chain + providers + exec_context` 组装。阶段之间有状态依赖，不以通用并发
+执行替代；`recall/inputs.py` 内独立读取仍并发，技能仍只等待检索计划。
 
 ### end_reply 与产出语义
 
@@ -102,7 +117,7 @@
 | 结果脱敏 | `core/sanitizer.py` | API Key/Token/密码自动遮盖（工具结果 + 日志） |
 | 崩溃尾部修复 | `agent/mind/crash_recovery.py` | 回复检查点落盘（`reply_checkpoints` 表），启动扫描崩溃残留注入「上次被中断」元消息；崩溃退出时附带崩溃上下文（macOS .ips 关联） |
 | reasoning 条件回传 | `think_loop.preserve_reasoning_fields` | `reasoning_details` 仅工具轮回传（DeepSeek 官方规则），纯文本轮省 token；`thinking_blocks` 无条件保留 |
-| 新消息并入上限 | `round_helpers._merge_new_messages` | 消息洪峰分批并入（20 条/20000 字符每轮）：首条强制并入保证进度，超出部分不推进水位（下轮接续）且保留待处理队列条目——留存消息必有人回复 |
+| 新消息并入上限 | `execution.messages._merge_new_messages` | 消息洪峰分批并入（20 条/20000 字符每轮）：首条强制并入保证进度，超出部分不推进水位（下轮接续）且保留待处理队列条目——留存消息必有人回复 |
 
 连续三轮工具全错或达到同工具失败阈值时，经 `tools/tool_recovery.py` 评估恢复路径。
 已配置的原生 Jev 只读取有界的当前请求与近期工具事实，明确支持修正或新取证路径才继续；
@@ -124,18 +139,20 @@
 ## 三、上下文组装与缓存
 
 上下文组件归属 `agent/context/`：`assembly` 组装提示词，`pipeline` 声明分层与顺序，
-`message_schema` 规整发送消息，`compressor` 执行压缩，`prompt_layers` 与 `prefix_guard`
+`preparation` 管理文件缓存、召回预算与分层材料，`providers` 构建实时环境消息，`dynamic` 呈现执行提示，
+`prewarm` 复用正式上下文预热路径；`message_schema` 规整发送消息，`compressor` 执行压缩，`prompt_layers` 与 `prefix_guard`
 管理缓存，`snapshot`、`audit`、`cache_stats`、`observation` 提供观测。
 包入口加载组装层声明，使独立读取 Web 元数据时也能取得完整分层，不启动 Mind 或注册思维工具。
 
-`ports.py` 定义只读工作记忆、工具态势和压缩宿主接口。PFC 注入现有 `WorkMemory` 与
-`ToolAssembly`，Mind 注入压缩宿主；它们共享原有会话状态，不复制队列、激活状态或缓存。
-`mind/recollection.py` 仍负责召回准备，`mind/runtime_context.py` 仍负责后台任务状态适配，
+`ports.py` 定义只读工作记忆、工具态势和压缩宿主接口。运行时向上下文注入 PFC 的 `WorkMemory` 与
+`ToolAssembly`，向压缩器注入 Mind；它们共享会话状态，不复制队列、激活状态或缓存。
+`mind/recall/` 负责召回调度，`skills/recall.py` 负责技能匹配与材料呈现，`mind/runtime_context.py` 负责后台任务状态适配，
 思维循环负责逐轮刷新和调度，上下文组件不反向调用这些调度实现。
 `end_reply` 与 `compress_context` 的工具入口归属 `mind_tools.py`，压缩器本身不注册工具。
 
 `ContextAssembly.build_llm_context()` 使用 `ContextPipeline` 按变动频率从静到动组装消息，
-并为每个块附加内部 `_layer` 标记：
+并为每个块附加内部 `_layer` 标记。`@context_block` 保留方法类型，管线只发现类上声明的方法，
+支持继承与覆写，不遍历宿主依赖或读取无关 property：
 
 ```text
 stable       人设、工具规则和稳定工具目录（对话内冻结，字节级稳定供前缀缓存复用）
@@ -158,8 +175,8 @@ exec_context 本轮执行状态（每轮全量重建）
 |------|------|------|
 | exec_context 步骤预算 | `agent.context.assembly._MAX_RENDERED_STEPS`（12） | `[已完成步骤]` 只保留最近 12 步 + 省略行；finish_think 的最终执行摘要仍消费全量清单 |
 | 执行摘要入库瘦身 | `reply_finalize._compact_summary_for_history` | 对话历史中的 `[已执行操作摘要]` 只入库统计头 + 最近 5 条 + 查询指引；完整清单进进程内环形缓冲（每会话 8 轮），AI 经 `get_execution_log(turns=)` 按需取回 |
-| 缓存命中状态行 | `round_helpers._cache_status_hint` | 上轮真实 usage 的命中率注入 exec_context（端点可观测且 `last_input_tokens > 0` 才注入，不谎报 0%）；配置 `cache_status_hint_enabled` |
-| 输出契约集中呈现 | `think_loop._run_think_rounds` | 输出权限与真实投递状态统一放 exec_context，工具轮不再追加同义提示 |
+| 缓存命中状态行 | `execution.usage._cache_status_hint` | 上轮真实 usage 的命中率注入 exec_context（端点可观测且 `last_input_tokens > 0` 才注入，不谎报 0%）；配置 `cache_status_hint_enabled` |
+| 输出契约集中呈现 | `agent.context.dynamic.append_execution_status` | 输出权限与真实投递状态统一放 exec_context，工具轮不再追加同义提示 |
 | 纪律单一权威源 | `agent/memory/rules_doc.py` + 工具 schema + hub 骨架 | 同一纪律只讲一遍：路由/纪律归铁律（stable 唯一来源），工具 schema 只留参数语义 |
 
 ### 对话折叠与换向

@@ -49,6 +49,23 @@ class _AsyncHost:
 
 
 class TestPipelineOrdering:
+    async def test_only_declared_methods_are_bound_without_reading_host_properties(self) -> None:
+        from unittest.mock import MagicMock
+
+        class Child(_Host):
+            dependency = MagicMock()
+
+            @property
+            def unrelated_state(self):
+                raise AssertionError("上下文块发现不应读取运行时属性")
+
+            @context_block("stable", VOL_STABLE)
+            def _blk_persona(self, inp):
+                return [{"content": "覆写人设"}]
+
+        messages = await ContextPipeline(Child()).build(ContextInput())
+        assert [m["content"] for m in messages] == ["覆写人设", "便签", "历史", "召回"]
+
     async def test_sorted_by_volatility_not_declaration(self) -> None:
         """块顺序由变动率决定，与方法定义顺序无关。"""
         pipeline = ContextPipeline(_Host())
@@ -171,6 +188,7 @@ class TestGoldenOrder:
         from types import SimpleNamespace as SN
         from unittest.mock import AsyncMock
 
+        from agent.context.assembly import ContextAssembly
         from agent.mind.prefrontal_cortex import PrefrontalCortex
 
         conversation_data = SN(
@@ -179,7 +197,7 @@ class TestGoldenOrder:
             count_messages=AsyncMock(return_value=0),
         )
         pfc = PrefrontalCortex(everything_data=SN(), conversation_data=conversation_data)
-        msgs = await pfc.build_llm_context(
+        msgs = await ContextAssembly(pfc.work_memory, pfc.tool_assembly, conversation_data=conversation_data).build_llm_context(
             persona_text="人设", tools_text="工具", context_text="便签",
             status_text="状态",
             memory_msgs=[{"role": "system", "content": "召回"}],
@@ -208,6 +226,7 @@ class TestGoldenOrder:
         from unittest.mock import AsyncMock
 
         import agent.context.assembly as ca
+        from agent.context.assembly import ContextAssembly
         from agent.mind.prefrontal_cortex import PrefrontalCortex
 
         monkeypatch.setattr(ca, "_tail_injection_enabled", lambda: False)
@@ -217,7 +236,7 @@ class TestGoldenOrder:
             count_messages=AsyncMock(return_value=0),
         )
         pfc = PrefrontalCortex(everything_data=SN(), conversation_data=conversation_data)
-        msgs = await pfc.build_llm_context(
+        msgs = await ContextAssembly(pfc.work_memory, pfc.tool_assembly, conversation_data=conversation_data).build_llm_context(
             persona_text="人设", tools_text="工具", context_text="便签",
             status_text="状态",
             memory_msgs=[{"role": "system", "content": "召回"}],

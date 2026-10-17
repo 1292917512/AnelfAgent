@@ -17,7 +17,7 @@ from agent.judgment.health import judgment_health
 from agent.judgment.tools import configure_judgment
 from agent.judgment.tools import test_judgment_model as diagnose_model
 from agent.judgment.types import JudgmentError, NoulQuestion
-from agent.mind.tools.reply_delivery import assess_reply
+from agent.mind.execution.reply_delivery import assess_reply
 from core.config import ConfigManager
 from core.tool_errors import ErrorCause
 

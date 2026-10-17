@@ -11,8 +11,8 @@ from unittest.mock import AsyncMock
 from helpers.think_loop_fakes import FakeMind, run_think_loop, text_result, tool_result
 
 from agent.context.message_schema import normalize_for_send
+from agent.context.providers import collect_provider_messages
 from agent.llm.prompt_cache import count_breakpoints, decorate_messages
-from agent.mind.tools.think_loop import _collect_provider_messages
 from core.context_provider import ContextProviderRegistry, ProviderMeta
 
 
@@ -46,16 +46,16 @@ class TestThinkLoopChainBreakpoint:
         deployment._operation = {"id": "op-1", "action": "up", "status": "running", "phase": "pulling", "started_at": 100.0}
         deployment._progress()
         for scope in ("user_webui:1#main", "user_qq:1"):
-            tail = await _collect_provider_messages(_loop_mind(), scope)
+            tail = await collect_provider_messages(None, scope)
             assert "pulling" in tail[0]["content"]
             deployment._progress(status="succeeded", phase="done", finished_at=125.0)
-            tail = await _collect_provider_messages(_loop_mind(), scope)
+            tail = await collect_provider_messages(None, scope)
             assert "已完成" in tail[0]["content"] and "25.0" in tail[0]["content"]
             assert normalize_for_send(decorate_messages([*prefix, *tail], anthropic=True))[:len(prefix)] == wire
             deployment._progress(status="running", phase="pulling")
 
     async def test_reflect_refresh_preserves_inherited_directory_across_rounds(self, monkeypatch):
-        from agent.mind.tools.think_loop import ThinkMode
+        from agent.mind.execution.state import ThinkMode
         from core.entity import EntityRegistry
         for name in ("cache_parent", "cache_added"):
             EntityRegistry.register_tool(name=name, func=lambda: "ok", group="cache_test")
@@ -87,11 +87,11 @@ class TestThinkLoopChainBreakpoint:
             {"id": "recall-1", "type": "function", "function": {"name": "recall", "arguments": "{}"}},
         ]}, {"role": "tool", "tool_call_id": "recall-1", "content": "已找到事实"}]
         prefix = [*_base(), *chain]
-        empty = await _collect_provider_messages(mind, "scope")
+        empty = await collect_provider_messages(getattr(getattr(mind, "llm", None), "config", None), "scope")
         assert empty == []
         wire_prefix = normalize_for_send(decorate_messages(prefix, anthropic=True))
         for text in ("补充事实一", "补充事实一\n补充事实二", ""):
-            tail = await _collect_provider_messages(mind, "scope")
+            tail = await collect_provider_messages(getattr(getattr(mind, "llm", None), "config", None), "scope")
             messages = decorate_messages([*prefix, *tail], anthropic=True)
             assert normalize_for_send(messages)[:len(prefix)] == wire_prefix
             assert all(not m.get("cache_control") for m in messages[len(prefix):])

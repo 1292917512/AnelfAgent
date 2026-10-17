@@ -67,7 +67,7 @@ Cognee 投影头与文档外部元数据携带出处，分块保留元数据时�
 未配置或判断不可用时沿用本地匹配阈值，不额外调用普通模型。
 实时跨频道消息仍逐轮进入动态上下文，手动 `recall` 与技能工具始终可用。
 
-首轮上下文读取由 `mind/recollection_inputs.py` 统一管理生命周期：查询向量、检索规划、
+首轮上下文读取由 `mind/recall/inputs.py` 统一管理生命周期：查询向量、检索规划、
 关系、主标签索引、画像补充和会话摘要同时准备；记忆规划完成即释放技能匹配，
 技能不等待记忆检索或其他频道检索收尾。画像与检索结果整理独立执行，全部就绪后按固定位置装配。
 语义召回、跨频道与技能复用同一个在途查询向量，失败后各自降级，不重复发起同一向量请求。
@@ -82,7 +82,7 @@ Cognee 投影头与文档外部元数据携带出处，分块保留元数据时�
 
 全局默认来自 `memory/recall`：`memory_recall_level`（默认 deep）与
 `memory_recall_background`（允许首轮并行深探及新对话后台补充）。首轮检索在准备结束前收束；
-补充召回由 `mind/recollection_refresh.py` 随当前回复托管，最多 `memory_dialogue_refresh_limit` 批，
+补充召回由 `mind/recall/refresh.py` 随当前回复托管，最多 `memory_dialogue_refresh_limit` 批，
 每批共用 `memory_dialogue_refresh_timeout` 总预算。0 批次可关闭轮中补充。
 Web 的记忆页和钩子页共用配置入口；AI 的全局修改沿用
 `update_entity_config`，单轮修改用 `set_recall_policy`。
@@ -254,7 +254,7 @@ Cognee 面板保存先校验模型参数和向量空间，再原子写入配置�
 | 证据数学 | `agent/memory/evidence.py`（纯函数零依赖） | 记忆/反思的「可信度」维度（与「记不记得住」分维）：rein/disp 双通道各有独立时钟与半衰期（负向 180 天刻意长于正向 30 天）、读时衰减不改存储、importance 阶梯种子（≥0.9 直通 0.8）、用户确认连击加成、protected 恒 +inf。信号回流在 `dedup.apply_evidence_signals`：skip=用户复述确认（+1.0 金标准）/update/merge=谱系存活（+0.5） |
 | 反思生命周期 | `agent/memory/reflection_lifecycle.py` + consolidator 集成 | 对象是 `type:reflection` 标签的记忆（self_reflection 任务产出播种，memorize/任务结果两写入点接入）。状态机 pending→confirmed（score≥1.0）→晋升（score≥2.0 且过冷却）/denied；负分进 sub_zero 每日倒计时到期归档。晋升 = LLM 合并裁决（promote/merge/reject，复用 dedup.light_llm）写入目标画像——**晋升是人格生长的唯一通道**；LLM 失败只退避重试绝不静默晋升，5 次死信。终态幂等，重入安全 |
 | 证据反馈回路 | `reflection_lifecycle.load_verification_block` / `classify_reflection_feedback` / `record_user_feedback` + auto_capture 尾部 | pending/confirmed 反思经画像区「待验证认知」块呈现进对话（呈现即登记 surfaced_at，24h 冷却防追问骚扰）→ auto_capture 周期把该 scope 用户新消息对着「已呈现未裁决」条目跑 light_llm 分类（confirmed +1.0 / denied +1.0 反驳 / ignored -0.2）→ 证据回流驱动晋升/归档；Web 记忆页 ✓/👎 按钮走同一 record_user_feedback（人审直改）。**可见性规则**：带 user:/group: 标签的反思只在对应 scope（含群聊参与人）可见，无实体标签的自认知全局可见——A 的反思绝不注入 B 的对话 |
-| 人格双层 | `agent/memory/self_profile.py` + `agent/mind/recollection.py` | 宪法层=personas/*.json（用户编辑，stable 层冻结）；生长层=`agent:self` 自画像（personality 表 + ENTITY 记忆镜像双写，覆盖式更新前备份）——随画像区每轮注入；已确认反思块紧随其后（score>0 才呈现）。关系动态走图谱 `agent:self` 节点。铁律已登记路由：自我认知只能写反思等晋升，禁止直接改自画像 |
+| 人格双层 | `agent/memory/self_profile.py` + `agent/mind/recall/coordinator.py` | 宪法层=personas/*.json（用户编辑，stable 层冻结）；生长层=`agent:self` 自画像（personality 表 + ENTITY 记忆镜像双写，覆盖式更新前备份）——随画像区每轮注入；已确认反思块紧随其后（score>0 才呈现）。关系动态走图谱 `agent:self` 节点。铁律已登记路由：自我认知只能写反思等晋升，禁止直接改自画像 |
 | 积极性频率 | `agent/mind/proactivity.py` | `proactivity_level`（0-1 默认 0.5）：元决策 prompt 注入档位指导、心跳 idle 调度拍数按 `1.5-level` 缩放；AI 可经 update_entity_config 自调 |
 
 ## 索引完整性：合并统一 + mem:ID + 谱系审计

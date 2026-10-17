@@ -18,8 +18,9 @@
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Awaitable, Callable, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Awaitable, Callable, Dict, List, Optional, TypeVar, Union
 
 if TYPE_CHECKING:
     from agent.messages import Everything
@@ -134,9 +135,10 @@ class ContextInput:
 
 # 构建块函数签名：接收共享输入，返回消息列表（角色可自定义，缺省 system）
 BlockFn = Callable[[ContextInput], Union[List[Dict], Awaitable[List[Dict]]]]
+_BlockT = TypeVar("_BlockT", bound=Callable[..., List[Dict] | Awaitable[List[Dict]]])
 
 
-def context_block(layer: str, volatility: int, label: str = ""):
+def context_block(layer: str, volatility: int, label: str = "") -> Callable[[_BlockT], _BlockT]:
     """声明上下文构建块：分层标识 + 变动率（排序依据，越小越靠前）+ 展示名。
 
     装饰时自动把层元数据注册到注册中心；同层多块（如 stable 的人设/工具块）
@@ -147,8 +149,8 @@ def context_block(layer: str, volatility: int, label: str = ""):
     if label or layer not in _LAYER_REGISTRY:
         register_layer(layer, volatility, label or layer)
 
-    def decorator(fn: BlockFn) -> BlockFn:
-        fn._context_block_meta = (layer, volatility)  # type: ignore[attr-defined]
+    def decorator(fn: _BlockT) -> _BlockT:
+        fn.__dict__["_context_block_meta"] = (layer, volatility)
         return fn
     return decorator
 
@@ -170,19 +172,16 @@ class ContextPipeline:
         self._overrides = volatility_overrides or {}
         # (volatility, layer, fn)；同变动率按层名排序保证确定性
         builders: List[tuple[int, str, BlockFn]] = []
-        for name in dir(host):
-            fn = getattr(host, name)
+        for name, fn in inspect.getmembers_static(type(host), predicate=inspect.isfunction):
             meta = getattr(fn, "_context_block_meta", None)
             if meta:
                 layer, vol = meta
-                builders.append((vol, layer, fn))
+                builders.append((vol, layer, getattr(host, name)))
         builders.sort(key=lambda b: (b[0], b[1]))
         self._builders = builders
 
     async def build(self, inp: ContextInput) -> List[Dict]:
         """按变动率从静到动组装全部内容块，注入 _layer 标签。"""
-        import inspect
-
         messages: List[Dict] = []
         for _vol, layer, fn in self._builders:
             result = fn(inp)

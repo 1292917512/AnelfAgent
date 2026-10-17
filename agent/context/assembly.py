@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Dict, List, Optional
 
 from agent.context.ports import ToolContextView, WorkingMemoryView
+from agent.context.preparation import ContextPreparation
 from agent.context.usage_rules import (
     BACKGROUND_TASK_HINT,
     CODE_ORCHESTRATION_RULES,
@@ -168,7 +169,7 @@ _LEGACY_VOLATILITY: Dict[str, int] = {
 
 
 class ContextAssembly:
-    """LLM 上下文组装（PFC 上下文面组件）。"""
+    """经只读运行态视图构建 LLM 提示词、分层消息与执行提示。"""
 
     def __init__(
             self,
@@ -179,6 +180,7 @@ class ContextAssembly:
             skill_store: Optional["SkillStore"] = None,
             plugin_registry: Optional["PluginRegistry"] = None,
     ) -> None:
+        self.preparation = ContextPreparation(self)
         self._work_memory = work_memory
         self._tool_assembly = tool_assembly
         self._channel_manager = channel_manager

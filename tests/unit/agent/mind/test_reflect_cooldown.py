@@ -15,8 +15,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from agent.mind import cycle as cycle_mod
+from agent.mind import decisions as de
 from agent.mind.autonomous import Decision, DecisionType
-from agent.mind.tools import decision_executor as de
 
 
 def _fake_mind(*, last_reflect_ts: float, has_idle: bool = True) -> tuple[Any, List[str]]:

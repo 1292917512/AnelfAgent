@@ -8,10 +8,11 @@ from typing import Dict, List
 
 import pytest
 
+from agent.context import providers
+from agent.context.assembly import ContextAssembly
 from agent.llm.llm_client import LLMClientConfig
 from agent.llm.types import ImageContent
-from agent.mind.prefrontal_cortex import PrefrontalCortex
-from agent.mind.tools.think_loop import apply_vision
+from agent.mind.execution.vision import apply_vision
 
 _TINY_B64 = base64.b64encode(b"tiny-image-bytes").decode("utf-8")
 
@@ -155,7 +156,7 @@ class TestApplyVisionNonVisionModel:
     ) -> None:
         saved = str(tmp_path / "vision_saved.jpg")
         monkeypatch.setattr(
-            "agent.mind.tools.vision.save_base64_image",
+            "agent.mind.execution.vision.save_base64_image",
             lambda data, mime_type="image/jpeg": saved,
         )
         big_b64 = base64.b64encode(b"x" * 600).decode("utf-8")
@@ -197,13 +198,13 @@ class TestMediaRulesDirectVision:
 
     def test_rules_static_across_vision_capability(self) -> None:
         """direct_vision 取值不影响文案（stable 层字节稳定）。"""
-        rules_off = PrefrontalCortex._build_media_rules(direct_vision=False)
-        rules_on = PrefrontalCortex._build_media_rules(direct_vision=True)
+        rules_off = ContextAssembly._build_media_rules(direct_vision=False)
+        rules_on = ContextAssembly._build_media_rules(direct_vision=True)
         assert rules_off == rules_on
 
     def test_static_text_covers_both_cases(self) -> None:
         """静态文案同时覆盖：已视觉呈现免工具 + 未呈现/深入分析用工具。"""
-        rules = PrefrontalCortex._build_media_rules(direct_vision=True)
+        rules = ContextAssembly._build_media_rules(direct_vision=True)
         assert "已直接以视觉形式呈现" in rules
         assert "recognize_image" in rules
         assert "必须优先使用" in rules
@@ -269,14 +270,13 @@ class TestProviderMediaMessage:
 
     async def test_sampling_keeps_head_middle_tail(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """多于上限时等距抽样保头/中/尾（信息量最高的是两端与中点）。"""
-        from agent.mind.tools import vision as vision_mod
 
         async def _fake_report(images, *a, **kw):
             return images, [], []
 
         monkeypatch.setattr("agent.llm.image_utils.ensure_base64_report", _fake_report)
         images = [self._img(f"img{i}") for i in range(8)]
-        msg = await vision_mod.build_provider_media_message(images, self._config())
+        msg = await providers.build_provider_media_message(images, self._config())
 
         assert msg is not None and msg["role"] == "user"
         assert msg["_layer"] == "provider"
@@ -291,13 +291,12 @@ class TestProviderMediaMessage:
 
     async def test_url_fallback_becomes_url_block(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """下载失败的 URL 图以原 URL block 注入（端点兜底），caption 说明数量。"""
-        from agent.mind.tools import vision as vision_mod
 
         async def _fake_report(images, *a, **kw):
             return images[:1], ["https://x.com/fail.png"], ["broken-local"]
 
         monkeypatch.setattr("agent.llm.image_utils.ensure_base64_report", _fake_report)
-        msg = await vision_mod.build_provider_media_message(
+        msg = await providers.build_provider_media_message(
             [self._img("a"), self._img("b")], self._config(),
         )
         assert msg is not None
@@ -308,11 +307,10 @@ class TestProviderMediaMessage:
 
     async def test_all_failed_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """全部加载失败时不追加消息（调用方不注入空块）。"""
-        from agent.mind.tools import vision as vision_mod
 
         async def _fake_report(images, *a, **kw):
             return [], [], ["x", "y"]
 
         monkeypatch.setattr("agent.llm.image_utils.ensure_base64_report", _fake_report)
-        msg = await vision_mod.build_provider_media_message([self._img("a")], self._config())
+        msg = await providers.build_provider_media_message([self._img("a")], self._config())
         assert msg is None

@@ -10,7 +10,7 @@ import pytest
 
 from agent.memory.memory_retriever import MemoryRetriever
 from agent.memory.memory_types import RetrievalPlan
-from agent.mind import recollection
+from agent.mind.recall import coordinator as recollection
 from agent.skills.skill_store import Skill, SkillState
 
 

@@ -9,14 +9,10 @@ from typing import Dict, List
 
 import pytest
 
-import agent.mind.tools.think_loop as tl
-from agent.mind.tools.round_helpers import (
-    _handle_length_recovery,
-    _StageOutcome,
-    _ThinkLoopCtx,
-    _ThinkRoundState,
-)
-from agent.mind.tools.think_loop import _handle_security_leak
+import agent.mind.execution.tool_execution as tl
+from agent.mind.execution.completion import _handle_security_leak
+from agent.mind.execution.responses import _handle_length_recovery
+from agent.mind.execution.state import ExecutionContext, RoundOutcome, RoundState
 
 
 def _tc(name: str, call_id: str = ""):
@@ -28,13 +24,13 @@ def _tc(name: str, call_id: str = ""):
     )
 
 
-def _make_ctx(tool_chain: List[Dict]) -> _ThinkLoopCtx:
-    """构造最小可用 _ThinkLoopCtx（_handle_length_recovery 只需 tool_chain/execution_steps）。"""
+def _make_ctx(tool_chain: List[Dict]) -> ExecutionContext:
+    """构造最小可用 ExecutionContext（_handle_length_recovery 只需 tool_chain/execution_steps）。"""
 
     async def _noop_delta(_text: str, _reasoning: bool) -> None:
         return None
 
-    return _ThinkLoopCtx(
+    return ExecutionContext(
         mind=SimpleNamespace(),
         mode=None,  # type: ignore[arg-type]
         anything=None,
@@ -171,13 +167,13 @@ class TestLengthRecoveryPairing:
         """恢复耗尽分支：上游带 tool_calls 的 result 被跳过，assistant 无 tool_calls 字段。"""
         tool_chain: List[dict] = []
         ctx = _make_ctx(tool_chain)
-        state = _ThinkRoundState(max_output_recoveries=3)
+        state = RoundState(max_output_recoveries=3)
         result = self._mk_result(
             content="",
             tool_calls=[_tc("send_message", "x")],
         )
         out = _handle_length_recovery(ctx, state, result)
-        assert out is _StageOutcome.CONTINUE
+        assert out is RoundOutcome.CONTINUE
         for msg in tool_chain:
             if msg.get("role") == "assistant":
                 assert "tool_calls" not in msg
@@ -187,13 +183,13 @@ class TestLengthRecoveryPairing:
         """恢复中分支：带 tool_calls 的 result 在续写路径同样被丢弃，assistant 无 tool_calls。"""
         tool_chain: List[dict] = []
         ctx = _make_ctx(tool_chain)
-        state = _ThinkRoundState(max_output_recoveries=0)
+        state = RoundState(max_output_recoveries=0)
         result = self._mk_result(
             content="正在写入",
             tool_calls=[_tc("write_file", "y")],
         )
         out = _handle_length_recovery(ctx, state, result)
-        assert out is _StageOutcome.CONTINUE
+        assert out is RoundOutcome.CONTINUE
         for msg in tool_chain:
             if msg.get("role") == "assistant":
                 assert "tool_calls" not in msg
@@ -202,10 +198,10 @@ class TestLengthRecoveryPairing:
         """非 length finish_reason 不进入恢复路径。"""
         tool_chain: List[dict] = []
         ctx = _make_ctx(tool_chain)
-        state = _ThinkRoundState()
+        state = RoundState()
         result = self._mk_result(content="正常", finish="stop")
         out = _handle_length_recovery(ctx, state, result)
-        assert out is _StageOutcome.PROCEED
+        assert out is RoundOutcome.PROCEED
         assert tool_chain == []
 
 
@@ -214,16 +210,16 @@ class TestSecurityLeakPairing:
 
     async def test_security_leak_with_tool_calls_warns_redo(self, monkeypatch):
         """令牌泄露且本轮带 tool_calls：system 消息附「重新发起」提示，tool_chain 无孤儿。"""
-        monkeypatch.setattr(tl, "_detect_token_leak", lambda r, t: True)
+        monkeypatch.setattr("agent.mind.execution.completion._detect_token_leak", lambda r, t: True)
         tool_chain: List[dict] = []
         ctx = _make_ctx(tool_chain)
-        state = _ThinkRoundState()
+        state = RoundState()
         result = SimpleNamespace(
             content="...", tool_calls=[_tc("send_message", "x")],
             finish_reason="stop", reasoning_content="", raw=None,
         )
         out = await _handle_security_leak(ctx, state, result, result.tool_calls)
-        assert out is _StageOutcome.CONTINUE
+        assert out is RoundOutcome.CONTINUE
         for msg in tool_chain:
             if msg.get("role") == "assistant":
                 assert "tool_calls" not in msg
@@ -232,15 +228,15 @@ class TestSecurityLeakPairing:
 
     async def test_security_leak_text_only_unchanged(self, monkeypatch):
         """令牌泄露但本轮无 tool_calls：system 消息不含「重新发起」提示。"""
-        monkeypatch.setattr(tl, "_detect_token_leak", lambda r, t: True)
+        monkeypatch.setattr("agent.mind.execution.completion._detect_token_leak", lambda r, t: True)
         tool_chain: List[dict] = []
         ctx = _make_ctx(tool_chain)
-        state = _ThinkRoundState()
+        state = RoundState()
         result = SimpleNamespace(
             content="...", tool_calls=[],
             finish_reason="stop", reasoning_content="", raw=None,
         )
         out = await _handle_security_leak(ctx, state, result, [])
-        assert out is _StageOutcome.CONTINUE
+        assert out is RoundOutcome.CONTINUE
         sys_msgs = [m for m in tool_chain if m["role"] == "system"]
         assert not any("重新发起" in (m.get("content") or "") for m in sys_msgs)

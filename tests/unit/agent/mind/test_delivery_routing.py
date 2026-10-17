@@ -12,9 +12,9 @@ from agent.channel import output_tools
 from agent.channel.channel_types import ChannelStatus
 from agent.judgment.engine import JudgmentConfig
 from agent.judgment.types import ChoiceAnswer, JudgmentReport, JudgmentSource, NoulAnswer
+from agent.mind.execution.reply_delivery import ReplyAssessment
+from agent.mind.execution.state import ThinkMode
 from agent.mind.tool_activation import bind_scope, reset_scope
-from agent.mind.tools.reply_delivery import ReplyAssessment
-from agent.mind.tools.think_loop import ThinkMode
 from agent.storage.data_center import ConversationData
 from agent.storage.storage_router import StorageDomain, StorageRouter
 from core.config import ConfigManager
@@ -52,7 +52,7 @@ async def test_concurrent_channels_keep_review_target_and_history(pipeline, sqli
         assert content == scope + "的进度"
         return ReplyAssessment(True, "通过")
 
-    monkeypatch.setattr("agent.mind.tools.reply_delivery.assess_reply", assess)
+    monkeypatch.setattr("agent.mind.execution.reply_delivery.assess_reply", assess)
 
     async def run(scope_id):
         scope = "user_" + scope_id
@@ -78,7 +78,7 @@ async def test_concurrent_channels_keep_review_target_and_history(pipeline, sqli
 @pytest.mark.parametrize("approved", [False, True])
 async def test_only_confirmed_body_enters_persistent_conversation(pipeline, sqlite, anything, monkeypatch, approved):
     data, channels = pipeline
-    monkeypatch.setattr("agent.mind.tools.reply_delivery.assess_reply",
+    monkeypatch.setattr("agent.mind.execution.reply_delivery.assess_reply",
                         AsyncMock(return_value=ReplyAssessment(approved, "已核验")))
     anything.scope_type, anything.scope_id = "user", "qq:1"
     mind = FakeMind(rounds=[text_result("候选正文，只在通过时送达")], default_text=None)
@@ -107,7 +107,7 @@ async def test_only_confirmed_body_enters_persistent_conversation(pipeline, sqli
 @pytest.mark.parametrize("outcome", ["timeout", "borderline", "internal", "disabled"])
 async def test_real_review_fallback_delivers_once_to_bound_channel(pipeline, sqlite, anything, monkeypatch, scope_id, outcome):
     from agent.messages import build_entity_scope
-    from agent.mind.tools import reply_delivery
+    from agent.mind.execution import reply_delivery
 
     data, channels = pipeline
     cfg = JudgmentConfig(True, "", "http://localhost:9000", "local", 30, False, "", "low")
@@ -150,7 +150,7 @@ async def test_real_review_fallback_delivers_once_to_bound_channel(pipeline, sql
 async def test_reflection_can_explicitly_send_but_never_delivers_its_draft(pipeline, sqlite, monkeypatch):
     data, channels = pipeline
     review = AsyncMock(side_effect=AssertionError("内部反思不触发自动正文审核"))
-    monkeypatch.setattr("agent.mind.tools.reply_delivery.assess_reply", review)
+    monkeypatch.setattr("agent.mind.execution.reply_delivery.assess_reply", review)
 
     class SendingMind(FakeMind):
         @property

@@ -6,35 +6,27 @@
 from __future__ import annotations
 
 import asyncio
-import re
 import time
-import uuid
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional
 
 from agent.channel.manager import ChannelManager
-from agent.context.compressor import ContextCompressor
-from agent.context.message_schema import normalize_for_send
-from agent.heartbeat.engine import HeartbeatEngine
 from agent.llm import ChatModel, ChatResult, ImageContent, ToolCall
 from agent.llm.llm_client import LLMClient
 from agent.llm.llm_manager import LLMManager
-from agent.memory.embedding import get_embedder
 from agent.memory.memory_retriever import MemoryRetriever
 from agent.memory.memory_store import MemoryStore
 from agent.messages import (
     CharacterAgent,
     Everything,
-    EverythingGroup,
 )
+from agent.mind import background_routing as _background_routing
 from agent.mind import cycle as _cycle
 from agent.mind import llm_invoker as _llm_invoker
-from agent.mind import recollection as _recollection
+from agent.mind import perception as _perception
 from agent.mind import tool_activation as _tool_activation  # noqa: F401  # 注册 activate_tool_group 延迟工具
 from agent.mind.autonomous import (
-    Decision,
     DecisionType,
     MindPhase,
-    SituationContext,
 )
 from agent.mind.background_tasks import BackgroundTaskRegistry
 from agent.mind.cross_channel import (
@@ -49,68 +41,63 @@ from agent.mind.cross_channel import (
 from agent.mind.cross_channel import (
     update_channel_snapshot as _cc_update_snapshot,
 )
-from agent.mind.interrupt import (
-    InterruptRegistry,
-    is_interrupt_enabled,
-    match_interrupt_keyword,
-)
-from agent.mind.mind_tools import build_reflect_blocklist, register_core_tools, select_reflect_tools
-from agent.mind.prefrontal_cortex import PrefrontalCortex
-from agent.mind.tools.decision_executor import (
+from agent.mind.decisions import (
     execute_decision as _de_execute,
 )
-from agent.mind.tools.decision_executor import (
+from agent.mind.decisions import (
     execute_reflect as _de_reflect,
 )
-from agent.mind.tools.decision_executor import (
+from agent.mind.decisions import (
     pop_next_reply_target as _de_pop_target,
 )
-from agent.mind.tools.decision_executor import (
+from agent.mind.decisions import (
     resolve_reply_target as _de_resolve_target,
 )
-from agent.mind.tools.media_pipeline import MediaPipeline
-from agent.mind.tools.think_loop import (
-    ThinkMode,
+from agent.mind.execution import reflection as _reflection
+from agent.mind.execution.loop import think_loop as _tl_think_loop
+from agent.mind.execution.media_pipeline import MediaPipeline
+from agent.mind.execution.reply import reply_entry as _tl_reply
+from agent.mind.execution.vision import collect_pending_images as _tl_collect_images
+from agent.mind.interrupt import (
+    InterruptRegistry,
 )
-from agent.mind.tools.think_loop import (
-    apply_vision as _tl_apply_vision,
-)
-from agent.mind.tools.think_loop import (
-    collect_pending_images as _tl_collect_images,
-)
-from agent.mind.tools.think_loop import (
-    complete_reply as _tl_complete_reply,
-)
-from agent.mind.tools.think_loop import (
-    reply_entry as _tl_reply,
-)
-from agent.mind.tools.think_loop import (
-    reply_loop as _tl_reply_loop,
-)
-from agent.mind.tools.think_loop import (
-    save_base64_image as _tl_save_b64_image,
-)
-from agent.mind.tools.think_loop import (
-    think_loop as _tl_think_loop,
-)
+from agent.mind.prefrontal_cortex import PrefrontalCortex
+from agent.mind.recall import coordinator as _recollection
+from agent.mind.recall import scopes as _recall_scopes
 from agent.storage.data_center import ConversationData, EverythingData
 from agent.storage.storage_router import StorageDomain
-from core.async_helper import spawn
 from core.entity import EntityRegistry
 from core.event_bus import (
     EVENT_THINKING_PHASE_CHANGE,
     event_bus,
 )
 from core.log import log
-from core.tool_registry import activate_group
 from core.trace_session import thinking_session
 
 if TYPE_CHECKING:
+    from agent.context.assembly import ContextAssembly
+    from agent.context.compressor import ContextCompressor
+    from agent.delegation.delegation_manager import DelegationManager
+    from agent.heartbeat.engine import HeartbeatEngine
+    from agent.memory.auto_capture import AutoCapturePipeline
+    from agent.memory.embedding import Embedder
+    from agent.skills import SkillCurator, SkillMatcher, SkillReviewer
+    from agent.skills.skill_store import SkillStore
     from agent.storage.storage_router import StorageRouter
+    from agent.workflow.engine import WorkflowEngine
 
 
 class Mind:
     """统一思维核心：自主决策、LLM 对话、工具编排。"""
+
+    heartbeat_engine: HeartbeatEngine
+    compressor: ContextCompressor
+    skill_matcher: SkillMatcher
+    skill_curator: SkillCurator
+    skill_reviewer: SkillReviewer
+    delegation_manager: DelegationManager
+    workflow_engine: WorkflowEngine
+    auto_capture_pipeline: AutoCapturePipeline
 
     def __init__(
             self,
@@ -121,7 +108,11 @@ class Mind:
             channel_manager: ChannelManager,
             everything_data: EverythingData,
             conversation_data: ConversationData,
-            prefrontal_cortex: Optional[PrefrontalCortex] = None,
+            prefrontal_cortex: PrefrontalCortex,
+            context: ContextAssembly,
+            skill_store: SkillStore,
+            embedder: Embedder,
+            retriever: Optional[MemoryRetriever],
             storage_router: Optional["StorageRouter"] = None,
             memory_store: Optional[MemoryStore] = None,
     ) -> None:
@@ -133,33 +124,12 @@ class Mind:
         self.conversation_data = conversation_data
         self.storage_router = storage_router
 
-        # 技能库单例先行（PFC 工具块的技能目录注入来源；匹配/策展/评审稍后装配）
-        from agent.skills import get_skill_store
-        self.skill_store = get_skill_store()
-
-        # 插件注册表（PFC 工具块的插件名册注入来源）
-        from core.plugins import get_plugin_manager
-        self.plugin_registry = get_plugin_manager().registry
-
-        self.pfc = prefrontal_cortex or PrefrontalCortex(
-            everything_data=everything_data,
-            channel_manager=channel_manager,
-            conversation_data=conversation_data,
-            skill_store=self.skill_store,
-            plugin_registry=self.plugin_registry,
-        )
-        self.heartbeat_engine = HeartbeatEngine(self)
-
+        self.skill_store = skill_store
+        self.pfc = prefrontal_cortex
+        self.context = context
         self.memory_store = memory_store
-        self.embedder = get_embedder("text")
-        self.retriever: Optional[MemoryRetriever] = None
-        if self.memory_store:
-            self.retriever = MemoryRetriever(self.memory_store, self.embedder)
-            if self.llm_manager:
-                # rerank 需要 MediaClient（有 rerank 方法），而非 LLMClient
-                rerank_client = self.llm_manager.get_media_client("rerank")
-                if rerank_client:
-                    self.retriever.set_rerank_client(rerank_client)
+        self.embedder = embedder
+        self.retriever = retriever
 
         self.media_pipeline = MediaPipeline()
 
@@ -223,66 +193,16 @@ class Mind:
         self._cached_max_output: int = 0
         self._cached_model_name: str = ""
 
-        # 文件型层 mtime 快检缓存（便签/索引文件未变时跳过 I/O）
-        from agent.context.prompt_layers import FileLayerCache
-        self._file_cache = FileLayerCache()
 
-        self._init_subsystems()
-        register_core_tools()
-
-    def _init_subsystems(self) -> None:
-        """初始化思维子系统：上下文压缩 / 技能自学习 / 子代理委托 / 记忆自动捕获。
-
-        各子系统实例由本类构造持有，工具层的引用经 LateBinding 端口由
-        agent.runtime.wiring 统一施绑（本方法只激活 deferred 工具组）。
-        """
-        # 上下文压缩器（think_loop 每轮调用前检查溢出风险）
-        self.compressor = ContextCompressor(self)
-
-        # 技能自学习系统（匹配/事实索引/策展/后台评审，共享已建库实例）
-        from agent.skills import (
-            SkillCurator,
-            SkillMatcher,
-            SkillReviewer,
-        )
-        self.skill_matcher = SkillMatcher(self.skill_store, self.embedder)
-        self.skill_curator = SkillCurator(self.skill_store, self.skill_matcher.index)
-        self.skill_reviewer = SkillReviewer(self, self.skill_store, index=self.skill_matcher.index)
-        if self._skills_enabled():
-            self.skill_reviewer.start()
-
-        # 子代理委托管理器（delegate_task 工具经 wiring 端口消费本实例）
-        from agent.delegation.delegation_manager import DelegationManager
-        self.delegation_manager = DelegationManager(self)
-        count = activate_group("delegation", "子代理 - 复杂任务拆分委托与并行执行")
-        log(f"🤖 子代理工具已注册 ({count} 个)", tag="委托")
-
-        # 工作流引擎（journal 化 DAG 编排；workflow_* 工具经 wiring 端口消费本实例）
-        import agent.workflow.tools  # noqa: F401  （deferred 工具注册）
-        from agent.workflow.engine import WorkflowEngine
-        self.workflow_engine = WorkflowEngine(self)
-        count = activate_group("workflow", "工作流 - 可恢复的多步骤编排（断点续跑/门控重跑）")
-        log(f"🧩 工作流工具已注册 ({count} 个)", tag="工作流")
-
-        # 记忆自动捕获管线（心跳 tick / 关停兜底 / 压缩前抢跑共用单例）
-        from agent.memory.auto_capture import AutoCapturePipeline
-        self.auto_capture_pipeline = AutoCapturePipeline(self)
-
-    # ==================================================================
     # 初始化与配置
-    # ==================================================================
 
     @property
     def tool_executor(self) -> Optional[Callable[[ToolCall], Awaitable[str]]]:
         return EntityRegistry.execute_tool_call
 
-    def get_model_context_length(self) -> int:
-        """获取当前模型的上下文窗口（tokens，带缓存；0 表示未知，委托 llm_invoker 模块）。"""
-        return _llm_invoker.get_model_context_length(self)
+    get_model_context_length = _llm_invoker.get_model_context_length
 
-    def get_model_max_output(self) -> int:
-        """获取当前模型的输出预算（tokens，带缓存；0 表示未知，委托 llm_invoker 模块）。"""
-        return _llm_invoker.get_model_max_output(self)
+    get_model_max_output = _llm_invoker.get_model_max_output
 
     @staticmethod
     def _get_mind_config():
@@ -314,88 +234,11 @@ class Mind:
             return
         self._set_phase(MindPhase.IDLE)
 
-    # ==================================================================
     # 消息感知入口
-    # ==================================================================
 
-    async def accept_feel(self, anything: Everything) -> None:
-        """接收外部消息：到达即写入对话历史（保证时序）；仅在 trigger_mind 时加入 PFC 任务队列。"""
-        try:
-            # 思维工作运行中不覆盖当前阶段，避免 UI 阶段抖动
-            if (not self._active_scopes and not self._cycle_lock.locked()
-                    and self._reflect_depth == 0):
-                self._set_phase(MindPhase.ACCEPTING)
-            preview = str(anything)[:80] if anything else ""
-            log(f"感知输入: {preview}", tag="思维")
-            if not await self.add_conversation(anything):
-                return
-            self._update_channel_snapshot(anything)
+    accept_feel = _perception.accept_feel
 
-            # 用户话题指令抽取（ban-topic）：所有用户消息必经点，纯正则零 LLM，
-            # 失败不影响消息主流程
-            try:
-                from agent.messages import CharType
-                if getattr(anything, "char_type", None) in (None, CharType.USER):
-                    from agent.memory.user_directives import observe_message
-                    await observe_message(
-                        anything.entity_scope, anything.get_text_content() or "",
-                    )
-            except Exception:
-                pass
-
-            # 中断指令优先：整条消息精确匹配中断关键词且该 scope 正在回复时，
-            # 请求中断进行中的会话，而非作为新消息入队（用户意图是"刹车"而非对话）
-            scope = anything.entity_scope
-            if (
-                is_interrupt_enabled()
-                and scope in self._active_scopes
-                and match_interrupt_keyword(anything.get_text_content() or "")
-            ):
-                self.interrupts.request(scope, reason="用户发送中断指令")
-                log(f"识别到中断指令，已请求中断: {scope}", tag="中断")
-                return
-
-            should_enqueue = self.should_enqueue_external_message(anything)
-            if (
-                not should_enqueue
-                and bool(getattr(anything, "trigger_mind", True))
-                and self._reflecting
-                and isinstance(anything, EverythingGroup)
-                and not bool(getattr(anything, "to_me", False))
-            ):
-                log(f"反思中忽略非 @ 群消息: {anything.entity_scope}", "DEBUG", tag="思维")
-            if should_enqueue:
-                # 真实外部事件：重置自动续轮退避 + 后台任务唤醒预算（真人参与
-                # 后自动唤醒链路重新合法）
-                self._auto_cycle_retry = 0
-                self.wake_budget.reset(scope)
-                # /name 技能手势：真实外部消息正文以 /技能名 开头 → 确定性触发
-                # （防伪造：仅此路径检测，工具结果/子代理输出里的 "/x" 不构成手势）
-                self._detect_skill_gesture(anything, scope)
-                await self.pfc.add_task(anything)
-        finally:
-            # 感知处理完成边界：未入队/中断/异常路径不会有后续周期覆盖
-            # ACCEPTING；已入队时周期未抢锁则先归零、周期启动再覆盖
-            self._reset_phase_if_idle()
-
-    def _detect_skill_gesture(self, anything: Everything, scope: str) -> None:
-        """检测 /name 技能手势并登记待注入（recollection 消费后清空）。"""
-        try:
-            from core.config import get_config_bool
-            if not get_config_bool("skill_user_gesture_enabled", True):
-                return
-            from agent.skills.gesture import parse_skill_gesture
-            from core.tags import strip_message_meta_tags
-            text = strip_message_meta_tags(anything.get_text_content() or "").strip()
-            name = parse_skill_gesture(text)
-            if not name:
-                return
-            pending = self._pending_skill_gestures.setdefault(scope, [])
-            if len(pending) < 3 and name not in pending:
-                pending.append(name)
-                log(f"识别到技能手势 /{name}，将在召回时确定性注入: {scope}", "DEBUG", tag="技能")
-        except Exception:
-            pass  # 手势检测失败不影响消息入队
+    _detect_skill_gesture = _perception._detect_skill_gesture
 
     def _schedule_next_cycle(self, reason: str) -> None:
         """以指数退避调度下一轮自主循环（默认 0.5s 起、8s 封顶），避免紧凑重试。
@@ -418,85 +261,11 @@ class Mind:
 
         asyncio.create_task(_later(), name="agent.mind.auto_cycle")
 
-    def _update_channel_snapshot(self, anything: Everything) -> None:
-        """记录频道活动快照，供跨频道感知使用。"""
-        _cc_update_snapshot(self, anything)
+    _update_channel_snapshot = _cc_update_snapshot
 
-    async def _on_bg_task_unclaimed(self, scope: str, description: str,
-                                    summary: str, success: bool = True) -> None:
-        """后台任务轮外完成回调：完成事实写对话历史并排入回复队列触发新 REPLY。
+    _on_bg_task_unclaimed = _background_routing._on_bg_task_unclaimed
 
-        通知经 enqueue_scope_reply 落目标会话的对话历史（一次性事实固化，
-        不驻留短期记忆——驻留会每轮催促已处理完的事项且反复打断缓存前缀）。
-        非 conversation scope（心跳任务等无会话上下文发起的任务）无处写历史，
-        退化为全局短期记忆桶（对齐 PushHub 全局兜底），任何下一周期可见。
-
-        唤醒预算：成功与失败各自独立计数（上限同为 background_wake_budget，
-        默认 3，0=关闭）——成功完成被抑制是良性的（信息在历史里，下次真人
-        消息可见）；失败完成必须先耗尽独立额度才可被抑制，防"任务死了无人
-        告知"（2026-08 监控脚本超时静默事故）。连续自动唤醒超预算时不触发
-        新周期（防"完成→回复→又启后台任务→完成"的自我激励循环），完成事实
-        已在历史中，下次真人消息或心跳周期触发时模型可见，信息不丢。
-        """
-        from agent.mind.tools.scheduler import enqueue_scope_reply
-        header = "[后台任务失败]" if not success else "[后台任务完成]"
-        prompt = (
-            f"{header} {description}\n"
-            f"结果：{summary[:800]}\n"
-        )
-        if not success:
-            prompt += (
-                "任务以失败收场——失败原因见上方结果；"
-                "是否告知用户（send_message）、是否重试，由你判断。\n"
-            )
-        prompt += "请根据结果继续处理（回复用户请调用 send_message，完成请调用 end_reply）。"
-
-        if not scope.startswith(("user_", "group_")):
-            self.pfc.add_temporary({"role": "system", "content": prompt})
-            return
-        await enqueue_scope_reply(
-            self.pfc, scope,
-            self.pfc.get_adapter_key(scope),
-            f"后台任务{'失败' if not success else '完成'}: {description[:60]}",
-            prompt,
-        )
-        if not self.wake_budget.allow(scope, failed=not success):
-            self.wake_budget.note_suppressed(scope, description, failed=not success)
-            return
-        self.wake_budget.consume(scope, failed=not success)
-        spawn(self.try_execute_mind(), name="mind.wake")
-
-    async def _on_bg_task_alert(self, scope: str, description: str,
-                                detail: str, task_id: str) -> None:
-        """后台任务超时提醒：超过预期时长时向 AI 报告进度事实。
-
-        系统只报告、不下指令——超时未必是异常（大下载/大构建本来就慢），
-        提醒先引导甄别"确实需要更久"还是"真的卡住"，三个去向（等/查/终止）
-        平铺为可用事实，由 AI 自行判断。提醒经一次性历史固化（同完成通知通道）。
-        """
-        from agent.mind.tools.scheduler import enqueue_scope_reply
-        prompt = (
-            f"[后台任务进度报告] {description}\n"
-            f"{detail}\n"
-            "耗时不代表失败。"
-            f"用 check_background_tasks(task_id=\"{task_id}\") 查看阶段、操作证据与通知策略；"
-            f"确认无需继续时可 terminate_background_task(task_id=\"{task_id}\")。"
-            "这是内部进度事实，是否跟进由你判断。"
-        )
-        if not scope.startswith(("user_", "group_")):
-            self.pfc.add_temporary({"role": "system", "content": prompt})
-            return
-        await enqueue_scope_reply(
-            self.pfc, scope,
-            self.pfc.get_adapter_key(scope),
-            f"后台任务进度报告: {description[:60]}",
-            prompt,
-        )
-        if not self.wake_budget.allow(scope):
-            self.wake_budget.note_suppressed(scope, description)
-            return
-        self.wake_budget.consume(scope)
-        spawn(self.try_execute_mind(), name="mind.wake")
+    _on_bg_task_alert = _background_routing._on_bg_task_alert
 
     @property
     def is_reply(self) -> bool:
@@ -535,22 +304,7 @@ class Mind:
         self.interrupts.request(scope, reason=reason or "外部请求")
         return True
 
-    def should_enqueue_external_message(self, anything: Everything) -> bool:
-        """判断外部消息是否应进入待回复队列。"""
-        if not bool(getattr(anything, "trigger_mind", True)):
-            return False
-        text = (anything.get_text_content() or "").strip()
-        has_media = bool(getattr(anything, "images", None) or getattr(anything, "media_segments", None))
-        if not text and not has_media:
-            log(f"忽略空消息入队: {anything.entity_scope}", "DEBUG", tag="思维")
-            return False
-        if (
-            self._reflecting
-            and isinstance(anything, EverythingGroup)
-            and not bool(getattr(anything, "to_me", False))
-        ):
-            return False
-        return True
+    should_enqueue_external_message = _perception.should_enqueue_external_message
 
     async def execute_mind(self, *, is_heartbeat: bool = False) -> None:
         """触发自主循环。通过 _cycle_lock 防止多个循环并发执行。"""
@@ -572,9 +326,7 @@ class Mind:
         finally:
             self._reset_phase_if_idle()
 
-    # ==================================================================
     # 自主循环：态势收集 → 元决策 → 分发执行
-    # ==================================================================
 
     _DEFERRED_DECISIONS = frozenset({
         DecisionType.REFLECT, DecisionType.REMEMBER,
@@ -590,42 +342,19 @@ class Mind:
         async with thinking_session({"is_heartbeat": is_heartbeat}) as session:
             await self._cycle_body(session.end, is_heartbeat=is_heartbeat)
 
-    async def _cycle_body(self, end_payload: Dict[str, Any], *, is_heartbeat: bool = False) -> None:
-        """自主循环主体（委托 cycle 模块；会话生命周期由 _autonomous_cycle 管理）。"""
-        await _cycle._cycle_body(self, end_payload, is_heartbeat=is_heartbeat)
+    _cycle_body = _cycle._cycle_body
 
-    async def _execute_decisions_and_finalize(
-            self,
-            end_payload: Dict[str, Any],
-            situation: SituationContext,
-            decisions: List[Decision],
-            *,
-            is_heartbeat: bool = False,
-    ) -> None:
-        """执行决策列表并完成周期收尾（委托 cycle 模块，供 fast-path 和主路径复用）。"""
-        await _cycle._execute_decisions_and_finalize(
-            self, end_payload, situation, decisions, is_heartbeat=is_heartbeat,
-        )
+    _execute_decisions_and_finalize = _cycle._execute_decisions_and_finalize
 
-    async def _clear_dynamic_tools_when_idle(self) -> None:
-        """等所有回复会话结束后再清动态工具（委托 cycle 模块，后台等待不阻塞周期）。"""
-        await _cycle._clear_dynamic_tools_when_idle(self)
+    _clear_dynamic_tools_when_idle = _cycle._clear_dynamic_tools_when_idle
 
-    async def _run_heartbeat_tick_bg(self) -> None:
-        """后台执行心跳 tick，完成后触发新周期（委托 cycle 模块，不阻塞主循环）。"""
-        await _cycle._run_heartbeat_tick_bg(self)
+    _run_heartbeat_tick_bg = _cycle._run_heartbeat_tick_bg
 
-    async def _safe_execute(self, decision: Decision) -> bool:
-        """安全执行决策，异常转为通用错误任务（委托 cycle 模块）。返回是否成功。"""
-        return await _cycle._safe_execute(self, decision)
+    _safe_execute = _cycle._safe_execute
 
-    async def _gather_situation(self, *, is_heartbeat: bool = False) -> SituationContext:
-        """收集当前态势（委托 cycle 模块，纯读取无副作用）。"""
-        return await _cycle._gather_situation(self, is_heartbeat=is_heartbeat)
+    _gather_situation = _cycle._gather_situation
 
-    def _collect_channel_info(self) -> List[str]:
-        """收集频道连接信息摘要，包含连接状态细节。"""
-        return _cc_collect_channel_info(self)
+    _collect_channel_info = _cc_collect_channel_info
 
     async def _collect_active_goals(self) -> List[str]:
         """收集活跃目标摘要（规划态势快照单一数据源，见 agent.planning.situation）。"""
@@ -633,41 +362,23 @@ class Mind:
         return await _plan_situation.active_goal_lines()
 
 
-    # ==================================================================
     # 元决策
-    # ==================================================================
 
-    async def _think_and_decide(self, situation: SituationContext) -> List[Decision]:
-        """让 AI 根据态势做元决策（委托 cycle 模块）。"""
-        return await _cycle._think_and_decide(self, situation)
+    _think_and_decide = _cycle._think_and_decide
 
-    def _fallback_decisions(self, situation: SituationContext) -> List[Decision]:
-        """元决策失败时的兜底（委托 cycle 模块）。"""
-        return _cycle._fallback_decisions(self, situation)
+    _fallback_decisions = _cycle._fallback_decisions
 
-    # ==================================================================
-    # 决策分发与执行（委托 decision_executor 模块）
-    # ==================================================================
+    # 决策分发
 
-    async def _execute_decision(self, decision: Decision) -> None:
-        """根据决策类型分发执行。"""
-        await _de_execute(self, decision)
+    _execute_decision = _de_execute
 
-    async def _execute_reflect(self, decision: Optional[Decision] = None, *, skip_interval: bool = False) -> int:
-        """执行反思决策。"""
-        return await _de_reflect(self, decision, skip_interval=skip_interval)
+    _execute_reflect = _de_reflect
 
-    def _resolve_reply_target(self, target: str) -> Optional[Everything]:
-        """根据 target 在已知路由中查找并消费对应任务。"""
-        return _de_resolve_target(self, target)
+    _resolve_reply_target = _de_resolve_target
 
-    async def _pop_next_reply_target(self) -> Optional[Everything]:
-        """从 PFC 取出下一个待回复目标。"""
-        return await _de_pop_target(self)
+    _pop_next_reply_target = _de_pop_target
 
-    # ==================================================================
-    # 多轮对话循环（委托 think_loop 模块）
-    # ==================================================================
+    # 对话执行入口
 
     async def reply(
             self,
@@ -692,417 +403,48 @@ class Mind:
             # PROACTIVE 直调路径无登记（无其他活跃即归零）
             self._reset_phase_if_idle()
 
-    def _collect_pending_images(self, scope: str = "") -> List[ImageContent]:
-        return _tl_collect_images(self, scope=scope)
+    _collect_pending_images = _tl_collect_images
 
-    @staticmethod
-    def _save_base64_image(b64_data: str, mime_type: str = "image/jpeg") -> str:
-        """将 base64 图片数据保存为文件，返回路径。"""
-        return _tl_save_b64_image(b64_data, mime_type)
+    _think_loop = _tl_think_loop
 
-    async def _apply_vision(
-            self,
-            messages: List[Dict],
-            images: List[ImageContent],
-            anything: Optional[Everything] = None,
-    ) -> List[Dict]:
-        """将图片路径以 [media_file:image:path] 标签注入到对话历史。"""
-        return await _tl_apply_vision(self, messages, images, anything)
-
-    async def _reply_loop(
-            self,
-            anything: Everything,
-            images: Optional[List[ImageContent]] = None,
-    ) -> None:
-        """多轮对话循环入口。"""
-        await _tl_reply_loop(self, anything, images)
-
-    async def _think_loop(
-            self,
-            mode: ThinkMode,
-            tool_chain: List[Dict],
-            execution_steps: List[str],
-            start_time: float,
-            safety_limit: int,
-            collected_text: List[str],
-            active_tools: List[Dict],
-            anything: Optional[Everything] = None,
-            base_messages: Optional[List[Dict]] = None,
-            options: Optional[Dict] = None,
-            *,
-            adapter_key: str = "",
-            blocked_tools: Optional[Set[str]] = None,
-            completion: Optional[Dict] = None,
-            reflect_tool_selectors: Optional[List[str]] = None,
-            require_output: bool = False,
-    ) -> None:
-        """统一思维循环。"""
-        await _tl_think_loop(
-            self, mode, tool_chain, execution_steps, start_time,
-            safety_limit, collected_text, active_tools,
-            anything, base_messages, options,
-            adapter_key=adapter_key, blocked_tools=blocked_tools,
-            completion=completion,
-            reflect_tool_selectors=reflect_tool_selectors,
-            require_output=require_output,
-        )
-
-    @staticmethod
-    def _resolve_target_id(anything: Optional[Everything]) -> str:
-        """从消息对象中提取 target_id。"""
-        if not anything:
-            return ""
-        if isinstance(anything, EverythingGroup) and anything.is_group_scope:
-            return str(anything.group_id)
-        return str(anything.uid) if anything.uid else ""
-
-    async def _complete_reply(
-            self,
-            anything: Everything,
-            content: str,
-            iterations: int,
-            *,
-            error: bool = False,
-            tool_chain: Optional[List[Dict]] = None,
-    ) -> None:
-        """记录 AI 最终输出，清理回复状态。"""
-        await _tl_complete_reply(self, anything, content, iterations, error=error, tool_chain=tool_chain)
-
-    # ==================================================================
     # LLM 调用与重试
-    # ==================================================================
 
-    async def _invoke_llm_unified(
-            self,
-            messages: List[Dict],
-            tools: Optional[list[dict]],
-            anything: Optional[Everything] = None,
-            *,
-            tool_choice: Optional[str] = None,
-            options: Optional[Dict] = None,
-            stream: bool = False,
-            on_delta: Optional[Any] = None,
-            purpose: str = "reply",
-            cache_tail_anchor: bool = True,
-            abort_event: Optional[asyncio.Event] = None,
-            on_tool_call_ready: Optional[Any] = None,
-    ) -> ChatResult:
-        """统一 LLM 调用（带重试、模型回退和事件追踪，委托 llm_invoker 模块）。
+    _invoke_llm_unified = _llm_invoker._invoke_llm_unified
 
-        purpose 标记调用用途（reply/reflect 等），缓存命中统计按用途分桶，
-        避免无共享前缀的辅助调用污染主对话命中率口径。
-        cache_tail_anchor=False 用于一次性调用（压缩摘要等）：省略链尾
-        增量断点，避免写入永不命中的缓存条目。
-        abort_event 置位时在途调用被取消并抛 LLMCallAborted（用户中断，
-        不进重试/回退）；on_tool_call_ready 接收流中已完整的工具调用供
-        执行层提前分发。
-        """
-        return await _llm_invoker._invoke_llm_unified(
-            self, messages, tools, anything,
-            tool_choice=tool_choice, options=options, stream=stream, on_delta=on_delta,
-            purpose=purpose, cache_tail_anchor=cache_tail_anchor,
-            abort_event=abort_event, on_tool_call_ready=on_tool_call_ready,
-        )
+    _llm_chat_with_retry = _llm_invoker._llm_chat_with_retry
 
-    def _merge_llm_options(self, options: Optional[dict]) -> dict:
-        """合并 LLM 调用选项（委托 llm_invoker 模块）。"""
-        return _llm_invoker._merge_llm_options(self, options)
-
-    async def _llm_chat_with_retry(
-            self,
-            messages: List[Dict],
-            tools: Optional[list[dict]],
-            *,
-            tool_choice: Optional[str] = None,
-            options: Optional[dict] = None,
-    ) -> ChatResult:
-        """非流式 LLM 调用（带回退重试，委托 llm_invoker 模块）。"""
-        return await _llm_invoker._llm_chat_with_retry(
-            self, messages, tools, tool_choice=tool_choice, options=options,
-        )
-
-    async def _llm_chat_stream_once(
-            self,
-            messages: List[Dict],
-            tools: Optional[list[dict]],
-            *,
-            tool_choice: Optional[str] = None,
-            options: Optional[dict] = None,
-            on_delta: Optional[Any] = None,
-            on_tool_call_ready: Optional[Any] = None,
-            abort_event: Optional[asyncio.Event] = None,
-    ) -> ChatResult:
-        """主客户端单次流式调用（委托 llm_invoker 模块）。"""
-        return await _llm_invoker._llm_chat_stream_once(
-            self, messages, tools, tool_choice=tool_choice, options=options,
-            on_delta=on_delta, on_tool_call_ready=on_tool_call_ready,
-            abort_event=abort_event,
-        )
+    _llm_chat_stream_once = _llm_invoker._llm_chat_stream_once
 
     async def llm_chat(self, request_messages: List[Dict], options: Optional[dict] = None) -> ChatResult:
         """简单 LLM 调用封装（无工具，纯文本生成）。"""
         return await self.llm.chat(request_messages, options=options)
 
-    async def summarize_text(self, prompt: str) -> str:
-        """生成摘要文本（供对话折叠/上下文压缩等内部流程使用）。
-
-        经 chat_with_fallback 流式通道调用：思考/输出期间不设墙钟（空闲才判
-        超时），主模型超时/故障时自动回退其他可用 chat 模型。可经配置为摘要
-        任务指定更轻量的专用模型与思考档位（conversation_summary_model /
-        conversation_summary_reasoning_effort，空 = 默认主模型/跟随模型配置）。
-
-        Model Experience:
-        - 模型看到什么：无 prompt 层变化；仅通道（流式）与可选专用模型/档位。
-        - token 影响：指定低思考档可显著省 token；流式本身不改用量。
-        - 缓存影响：摘要为独立小请求，不共享主对话前缀，不触碰前缀层。
-        """
-        messages = [{"role": "user", "content": prompt}]
-        if self.llm_manager is not None:
-            from agent.llm.reasoning import normalize_effort
-            from core.config import get_config
-
-            client = None
-            model_id = str(get_config("conversation_summary_model", "") or "").strip()
-            if model_id:
-                client = self.llm_manager.get_enabled_client(model_id)
-                if client is None:
-                    log(f"摘要专用模型不存在或已停用，回落默认主模型: {model_id}",
-                        "WARNING", tag="思维")
-            options = None
-            effort = normalize_effort(get_config("conversation_summary_reasoning_effort", ""))
-            if effort:
-                options = {"reasoning_effort": effort}
-            result = await self.llm_manager.chat_with_fallback(
-                messages, max_retries=1, timeout=180.0, purpose="summarize",
-                client=client, options=options, stream=True,
-            )
-        else:
-            result = await self.llm_chat(messages)
-        return (result.content or "").strip()
+    summarize_text = _llm_invoker.summarize_text
 
     async def prewarm_scope_cache(self, scope_type: str, scope_id: str) -> None:
-        """折叠后预热：用该会话的新前缀发一次 1-token 轻调用写热缓存。
-
-        折叠重写摘要块 = 缓存前缀断点；预热把"断点后首次全价预读"转移到
-        空闲后台，用户发起的下一轮真实调用直接命中。经 build_llm_context
-        走同一组装管线（tools + stable/summary/conversation/context 便签），
-        召回/画像等每会话动态区不参与（它们在真实调用的前缀匹配范围之外）。
-        预热成本即下一轮真实调用本应付的全价预读，净零额外开销；
-        失败静默（下次真实调用自然回温）。
-        """
-        from agent.messages import Everything, EverythingGroup
-
-        adapter, _, base_id = scope_id.partition(":")
-        anything: Everything
-        if scope_type == "group":
-            anything = EverythingGroup(group_id=base_id, adapter_key=adapter)
-        else:
-            anything = Everything(uid=base_id, adapter_key=adapter)
-        entity_scope = self._resolve_entity_scope(anything)
-
-        # 永久块（真实流程经召回提升进 context 层；预热不跑检索，直接取 pins 组装）
-        permanent_text = ""
-        if self.retriever is not None:
-            pinned = await self.retriever._load_permanent_pins([])
-            pin_msgs = await self.retriever._format_unified_results(pinned) if pinned else []
-            permanent_text = str(pin_msgs[0]["content"]) if pin_msgs else ""
-
-        models_summary = self._get_models_summary()
-        layered = await self._build_layered_prompts(anything, models_summary, permanent_text)
-        persona_text, tools_text, context_text = layered[0], layered[1], layered[2]
-        summary_row = await self.conversation_data.get_conversation_summary(anything)
-        conversation = await self.conversation_data.get_conversation_record_by_everything(anything)
-        messages = await self.pfc.build_llm_context(
-            persona_text=persona_text,
-            tools_text=tools_text,
-            context_text=context_text,
-            memory_msgs=[],
-            anything=anything,
-            adapter_key=adapter,
-            summary_row=summary_row,
-            prefetched_conversation=conversation,
-            scope=entity_scope,
+        """请求预热会话折叠后的上下文前缀。"""
+        from agent.context.prewarm import prewarm_scope_cache
+        await prewarm_scope_cache(
+            scope_type, scope_id, context=self.context, char=self.char,
+            models_summary=self._get_models_summary(), direct_vision=self._direct_vision(),
+            retriever=self.retriever, conversation_data=self.conversation_data, client=self.llm,
+            get_tools=self.pfc.get_active_tool_schemas,
+            timeout=self._get_mind_config().llm_timeout * 20,
         )
-        llm_client = self.llm if isinstance(self.llm, LLMClient) else None
-        if llm_client is None:
-            return
-        from agent.llm.prompt_cache import decorate_messages, is_anthropic_wire
-        messages = decorate_messages(messages, anthropic=is_anthropic_wire(
-            llm_client.config.litellm_model or "",
-            getattr(llm_client.config, "api_type", "") or "",
-        ))
-        # 发送边界统一规整：与 _invoke_llm_unified 一致（decorate 之后 normalize），
-        # 剥离 _layer 标签——缺此步会把内部分类标签泄露给供应商（潜在 400）
-        messages = normalize_for_send(messages)
-        # tools 数组是请求最前段，必须与真实调用一致（缺它前缀从第 0 字节就不匹配）
-        tools = await self.pfc.get_active_tool_schemas(adapter, scope=entity_scope)
-        log(
-            f"缓存预热 [{entity_scope}]: model={llm_client.config.model} "
-            f"msgs={len(messages)} tools={len(tools or [])}",
-            "DEBUG", tag="缓存",
-        )
-        # 预热是 1-token 轻调用但总时长必须有界：detached task 无引用无取消，
-        # 端点挂起/吊流会泄漏孤儿任务并长期占用缓存亲和小连接池
-        async def _consume() -> None:
-            async for _delta in llm_client.chat_stream(
-                messages, options={"max_tokens": 1}, tools=tools or None,
-            ):
-                pass
 
-        await asyncio.wait_for(_consume(), timeout=self._get_mind_config().llm_timeout * 20)
-
-    async def reflect(
-            self,
-            messages: List[Dict],
-            *,
-            adapter_key: str = "",
-            max_iterations: int = 0,
-            options: Optional[dict] = None,
-            tool_tags: Optional[List[str]] = None,
-            allow_output_tools: bool = True,
-            extra_blocked_tools: Optional[Set[str]] = None,
-            completion: Optional[Dict] = None,
-            require_output: bool = False,
-            inherited_tools: Optional[List[Dict]] = None,
-    ) -> str:
-        """内部任务循环：正文仅内部可见，显式发送遵循任务的输出权限。
-
-        completion 非 None 时，循环结束把结束原因写入 completion["reason"]：
-        completed（正常收束）/ budget_exhausted（轮次预算用尽，产出可能只是
-        中途状态）/ interrupted（协作中断）——调用方据此决策是否需要续委托。
-
-        tool_tags 非空时按选择器加载工具集（替代默认的 "heartbeat" 标签）。
-        选择器优先按 tag 匹配，同时兼容按 group 名匹配（如 mcp:web-fetch）。
-        工具目录为精简常态集（always + 选择器），更多分组由模型经
-        list_entity_methods / activate_tool_group 按需唤醒（自服务扩展）。
-        默认允许 output 类工具（send_message/send_file 等）；任务可显式禁用。
-        extra_blocked_tools 可追加屏蔽特定工具（如子代理 leaf 角色屏蔽 delegate_task）。
-        require_output 要求结束前提交总结：空结束只在剩余预算内补一个禁止操作的总结轮。
-        inherited_tools 保留触发轮的工具顺序，缺少的选择器工具追加到尾部；
-        相同目录有利于复用缓存，执行权限仍由 blocked_tools 与统一门控约束。
-
-        Returns:
-            LLM 产出的文本内容（所有轮次输出的合并）。
-        """
-        self.note_activity()
-        # 反思计时打点：mind.reflect 是所有反思会话（调度任务/元决策 REFLECT/
-        # 子代理/手动触发）的唯一入口，在此刷新 _last_reflect_time，供
-        # SituationContext.hours_since_reflect 计算真实间隔。此前该字段仅在
-        # __init__ 置 0 后全仓库无写入点，hours_since_reflect 恒返回 999.0
-        # 哨兵，元决策被"距上次反思 999h"误导而反复建议反思（饱和假象根因）。
-        self._last_reflect_time = time.time()
-        # 进行中思考计数：phase 空闲判定的活跃事实源（并发 reflect 时仅最后
-        # 一个收尾的调用触发归零），异常也必须复位
-        self._reflect_depth += 1
-        try:
-            mc = self._get_mind_config()
-            safety_limit = max_iterations or mc.max_tool_iterations
-            blocked_tools = build_reflect_blocklist(allow_output_tools)
-            if extra_blocked_tools:
-                blocked_tools = blocked_tools | set(extra_blocked_tools)
-
-            # 每次反思会话使用唯一 scope：并行子代理/心跳 reflect 的 plan 与
-            # 工具激活状态按 scope 隔离，共享字面量会互相串扰
-            reflect_scope = f"reflect:{uuid.uuid4().hex[:8]}"
-            active_tools, extra_selectors = await select_reflect_tools(
-                self.pfc, adapter_key=adapter_key, scope=reflect_scope,
-                tool_tags=tool_tags, inherited_tools=inherited_tools,
-            )
-
-            collected_text: List[str] = []
-            execution_steps: List[str] = []
-            output_policy = "放开外发" if allow_output_tools else "禁用外发"
-            log(f"反思循环开始: {len(active_tools)} 个工具可用, 策略={output_policy}, 上限 {safety_limit} 轮", tag="思维")
-
-            from agent.mind.think_session import think_session
-            from core.tool_context import tool_request
-
-            with think_session(self, reflect_scope, with_token=False), tool_request(reflect_scope, inherit=True):
-                await self._think_loop(
-                    mode=ThinkMode.REFLECT,
-                    tool_chain=[],
-                    execution_steps=execution_steps,
-                    start_time=time.time(),
-                    safety_limit=safety_limit,
-                    collected_text=collected_text,
-                    active_tools=active_tools,
-                    anything=None,
-                    base_messages=messages,
-                    options=options,
-                    blocked_tools=blocked_tools,
-                    completion=completion,
-                    reflect_tool_selectors=extra_selectors,
-                    require_output=require_output,
-                )
-
-            total = "\n".join(collected_text)
-            log(f"反思循环结束: 产出 {len(total)} 字", tag="思维")
-            return total
-        finally:
-            self._reflect_depth -= 1
-            self._reset_phase_if_idle()
+    reflect = _reflection.reflect
 
     async def execute_task(self, task_name: str) -> Optional[str]:
         """按名称执行指定任务，返回任务产出文本或 None。"""
         log(f"执行任务: {task_name}", tag="思维")
         return await self.heartbeat_engine.run_task(task_name)
 
-    # ==================================================================
-    # 上下文构建（回忆 + 对话历史）
-    # ==================================================================
+    # 召回调度与会话数据访问
 
-    async def get_recollection(
-            self,
-            conversation_list: Optional[List[Dict]] = None,
-            anything: Optional[Everything] = None,
-            *,
-            lean: bool = False,
-    ) -> List[Dict]:
-        """构建完整 LLM 上下文（人设 + 工作记忆 + 语义召回 + 对话历史，委托 recollection 模块）。
+    get_recollection = _recollection.get_recollection
 
-        lean=True 为任务精简模式：只保留人设 + 工具 + 永久记忆，
-        不做环境注入（便签/召回/状态），任务按规则经工具按需取数。
-        """
-        return await _recollection.get_recollection(self, conversation_list, anything, lean=lean)
+    _match_skills = _recollection._match_skills
 
-    async def _match_skills(
-            self,
-            base_query: str,
-            *,
-            query_vec: Optional[List[float]] = None,
-            query_vec_task: asyncio.Future[list[float] | None] | None = None,
-            scope: str = "",
-            planned_queries: Optional[List[str]] = None,
-    ) -> List[Dict]:
-        """匹配当前对话相关的技能（委托 recollection 模块）。"""
-        return await _recollection._match_skills(
-            self, base_query, query_vec=query_vec, query_vec_task=query_vec_task, scope=scope,
-            planned_queries=planned_queries,
-        )
-
-    async def _build_layered_prompts(
-            self,
-            anything: Optional[Everything],
-            models_summary: str,
-            permanent_text: str = "",
-            *,
-            lean: bool = False,
-    ) -> Tuple[str, str, str, bool, bool, bool, str, str]:
-        """构建 stable 人设块/工具块/context 层三段提示（委托 recollection 模块）。
-
-        permanent_text：永久记忆置顶块（召回路径剥离，字节稳定），并入 context 层
-        走内容寻址缓存。返回追加 status_text / heartbeat_text：心跳维护的记忆状态
-        与心跳态势区块（尾部动态区独立注入，不入 context 层，避免计数更新击穿
-        缓存前缀）。lean 为任务精简模式：context 层只留永久记忆块，两者留空。
-        """
-        return await _recollection._build_layered_prompts(
-            self, anything, models_summary, permanent_text, lean=lean,
-        )
-
-    @staticmethod
-    def _apply_memory_budget(msgs: List[Dict]) -> List[Dict]:
-        """按预算截断 memory 层（委托 recollection 模块）。"""
-        return _recollection._apply_memory_budget(msgs)
 
     @staticmethod
     def _skills_enabled() -> bool:
@@ -1154,49 +496,18 @@ class Mind:
             return ""
         return anything.entity_scope
 
-    _RELATED_UID_RE = re.compile(r"\[(?:uid|at_uid):([^\]]+)\]")
 
-    def _extract_related_scopes(
-        self, conversation_tail: List[Dict], primary_scope: str,
-    ) -> List[str]:
-        """从对话中提取涉及的用户 uid（委托 recollection 模块）。"""
-        return _recollection._extract_related_scopes(self, conversation_tail, primary_scope)
+    _extract_related_scopes = staticmethod(_recall_scopes._extract_related_scopes)
 
-    def _extract_scopes_from_anything(
-        self, anything: Everything, primary_scope: str,
-    ) -> List[str]:
-        """从当前消息对象提取发送者 uid（委托 recollection 模块）。"""
-        return _recollection._extract_scopes_from_anything(self, anything, primary_scope)
+    _extract_scopes_from_anything = staticmethod(_recall_scopes._extract_scopes_from_anything)
 
-    # ==================================================================
-    # 跨频道感知（委托 cross_channel 模块）
-    # ==================================================================
+    # 跨频道感知
 
-    async def _recall_cross_channel(
-        self,
-        query_conversation: List[Dict],
-        current_scope: str,
-        *,
-        user_scope: str = "",
-        query_vec: Optional[List[float]] = None,
-        query_vec_task: asyncio.Future[list[float] | None] | None = None,
-    ) -> List[Dict]:
-        """搜索其他频道的语义相关对话，返回注入消息列表。"""
-        return await _cc_recall(
-            self, query_conversation, current_scope, user_scope=user_scope,
-            query_vec=query_vec, query_vec_task=query_vec_task,
-        )
+    _recall_cross_channel = _cc_recall
 
     def _get_models_summary(self) -> str:
-        """生成可用模型摘要（供 PFC 工作记忆使用）。"""
+        """读取模型目录，交由上下文层呈现。"""
+        from agent.context.preparation import format_models_summary
         if not self.llm_manager:
             return ""
-        summary = self.llm_manager.get_models_summary()
-        if not summary:
-            return ""
-        return (
-            "# 可用模型\n"
-            f"{summary}\n"
-            "不要编造工具不存在的功能或数据。"
-        )
-
+        return format_models_summary(self.llm_manager.get_models_summary())

@@ -57,7 +57,7 @@ class TestToolError:
         assert "detail" not in payload
 
     def test_error_key_is_primary_signal(self) -> None:
-        # 框架检测逻辑（round_helpers._extract_error_text）依赖 error 键识别失败
+        # 框架检测逻辑（core.tool_results.extract_error_text）依赖 error 键识别失败
         payload = _parse(tool_error("x", cause=ErrorCause.INTERNAL))
         assert payload.get("error")
 
@@ -132,7 +132,7 @@ class TestErrorFromException:
         assert payload["error"].startswith("权限不足")
 
     def test_framework_detection_compatible(self) -> None:
-        # 模拟 round_helpers._extract_error_text 的判定:error 键非空即识别为失败
+        # 模拟 core.tool_results.extract_error_text 的判定:error 键非空即识别为失败
         for exc in (TimeoutError(), PermissionError(), RuntimeError("boom")):
             payload = _parse(error_from_exception(exc))
             assert payload.get("error")

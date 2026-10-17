@@ -14,7 +14,7 @@
 
 本模块是 plan 状态机与事件发射的**唯一入口**，消费者：
 - ``agent/planning/tools.py``：present_plan / goal CRUD 工具
-- ``agent/mind/tools/think_loop.py``：会话结束收敛
+- ``agent/mind/execution/loop.py``：会话结束收敛
 - ``web/routers/chat.py``：cancel-plan 路由
 
 三层进度机制（仅作用于 PLAN_KIND）：

@@ -77,7 +77,7 @@ async def recover_interrupted_replies(mind, crash_context: str = "") -> int:
 
 
 async def _do_recover(mind, crash_context: str = "") -> int:
-    from agent.mind.tools.reply_journal import ReplyToolJournal
+    from agent.mind.execution.reply_journal import ReplyToolJournal
 
     router = mind.conversation_data.router
     sqlite = router.sqlite

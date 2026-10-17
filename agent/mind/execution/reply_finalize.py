@@ -10,11 +10,10 @@ import json
 import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from agent.mind.tools import execution_log
 from core.event_bus import EVENT_AFTER_REPLY, event_bus
 from core.tags import etag_all
 from core.tool_results import extract_error_text, parse_tool_result_json
-
-from . import execution_log
 
 # 入库简版保留的尾部条数（历史每次窗口加载都计费，只留近期操作）
 _HISTORY_TAIL_LINES = 5

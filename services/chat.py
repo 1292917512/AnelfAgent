@@ -65,7 +65,7 @@ def clean_message_for_display(msg: Dict[str, Any]) -> Dict[str, Any]:
     if kind:
         result["kind"] = kind
     if kind == "tool_summary":
-        from agent.mind.tools.reply_finalize import parse_execution_summary
+        from agent.mind.execution.reply_finalize import parse_execution_summary
         summary = parse_execution_summary(content)
         if summary is not None:
             result["summary"] = summary

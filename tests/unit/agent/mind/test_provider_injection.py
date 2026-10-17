@@ -15,7 +15,7 @@ from helpers.think_loop_fakes import (
     tool_result,
 )
 
-from agent.mind.tools.think_loop import ThinkMode
+from agent.mind.execution.state import ThinkMode
 from core.context_provider import (
     ContextProviderRegistry,
     ProviderMeta,

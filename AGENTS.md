@@ -41,7 +41,7 @@ description: "AnelfAgent 工作区指令：稳定的开发规范、架构边界�
 |------|------|---------|
 | `core/` | 基础框架（EntityRegistry / ConfigManager / Application+Lifecycle / FlowMachine / ConfigPaths / 标签 / 事件 / 日志 / 存储卷） | 不依赖任何业务模块 |
 | `agent/` | 智能体内核（Mind / LLM / Storage / Channel / Runtime / Memory / Task / Heartbeat / Planning） | 不依赖 web |
-| `agent/mind/` | 思维核心（自主决策 / 多轮推理 / 跨频道感知） | 工具编排在 `mind/tools/` |
+| `agent/mind/` | 思维核心（自主决策 / 多轮推理 / 跨频道感知） | 执行流程在 `mind/execution/`，召回调度在 `mind/recall/`，工具接口在 `mind/tools/` |
 | `agent/context/` | 上下文构建、消息规整、压缩、缓存与快照观测 | 通过只读视图与宿主接口获取运行态，不直接依赖 mind |
 | `agent/memory/` | 语义记忆（FTS5 + Embedding 混合检索 / 便签 / 文件索引） | 不依赖 mind |
 | `agent/skills/` | 技能自学习（事实归系统、决策归 AI） | 文件在 `workspace/skills/` |

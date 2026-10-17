@@ -116,7 +116,7 @@ async def execute_reply(mind: Mind, decision: Decision) -> None:
         )
         _checkpoint_registered = True
         # 开新账：上次异常退出可能留下未随检查点一并清除的残行
-        from agent.mind.tools.reply_journal import build_reply_journal
+        from agent.mind.execution.reply_journal import build_reply_journal
         stale_journal = build_reply_journal(mind, scope)
         if stale_journal is not None:
             await stale_journal.clear()
@@ -149,7 +149,7 @@ async def execute_reply(mind: Mind, decision: Decision) -> None:
             # 账本已空——恢复注入无操作清单是正确状态，反之会留孤儿行。
             # 协作中断/正常收束都不是崩溃，已执行内容已由执行摘要入库
             try:
-                from agent.mind.tools.reply_journal import build_reply_journal
+                from agent.mind.execution.reply_journal import build_reply_journal
                 journal = build_reply_journal(mind, scope)
                 if journal is not None:
                     await journal.clear()

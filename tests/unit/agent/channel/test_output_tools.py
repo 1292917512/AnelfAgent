@@ -177,8 +177,8 @@ async def test_text_uses_same_pipeline_and_live_history(sqlite, monkeypatch, sco
 
     from agent.channel.channel_types import ChannelStatus
     from agent.channel.delivery import capture_deliveries, delivery_count, delivery_tags
+    from agent.mind.execution import reply_delivery
     from agent.mind.tool_activation import bind_scope, reset_scope
-    from agent.mind.tools import reply_delivery
     from agent.storage.data_center import ConversationData
     from agent.storage.storage_router import StorageDomain, StorageRouter
     from core.config import ConfigManager

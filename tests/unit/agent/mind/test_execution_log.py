@@ -7,8 +7,8 @@
 
 from __future__ import annotations
 
+from agent.mind.execution.reply_finalize import _compact_summary_for_history
 from agent.mind.tools import execution_log as elog
-from agent.mind.tools.reply_finalize import _compact_summary_for_history
 
 
 def _full_summary(n: int) -> str:

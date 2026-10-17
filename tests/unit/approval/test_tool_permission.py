@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from agent.approval.types import ApprovalResult
+from agent.mind.execution.permission import check_tool_permission
 from agent.mind.interrupt import InterruptRegistry
-from agent.mind.tools.permission import check_tool_permission
 
 
 @pytest.fixture()

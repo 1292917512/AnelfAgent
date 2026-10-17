@@ -17,11 +17,8 @@ from helpers.think_loop_fakes import FakeMind, run_think_loop, tool_result
 from agent.judgment.engine import JudgmentConfig
 from agent.judgment.types import ChoiceAnswer, JudgmentReport, JudgmentSource
 from agent.llm.types import ToolCall
-from agent.mind.tools import tool_recovery
-from agent.mind.tools.think_loop import (
-    _check_tool_results_all_errors,
-    _collect_round_error_briefs,
-)
+from agent.mind.execution import tool_recovery
+from agent.mind.execution.responses import _check_tool_results_all_errors, _collect_round_error_briefs
 from core.config import ConfigManager
 from core.tool_results import parse_tool_result_json
 

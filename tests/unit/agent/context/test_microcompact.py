@@ -95,7 +95,7 @@ class TestCircuitBreaker:
 
 class TestRehydration:
     def test_rehydrate_recent_files(self, tmp_path, monkeypatch):
-        from agent.mind.tools.think_loop import _rehydrate_recent_files
+        from agent.mind.execution.compression import _rehydrate_recent_files
         from entities.filesystem import file_state
 
         monkeypatch.setattr(file_state, "get_current_scope", lambda: "_rehy")
@@ -110,7 +110,7 @@ class TestRehydration:
         file_state.clear_scope("_rehy")
 
     def test_rehydrate_empty_cache(self):
-        from agent.mind.tools.think_loop import _rehydrate_recent_files
+        from agent.mind.execution.compression import _rehydrate_recent_files
         from entities.filesystem import file_state
         file_state.clear_scope("_rehy_empty")
         # 未绑定 scope 时落入 _global，临时清空避免串扰

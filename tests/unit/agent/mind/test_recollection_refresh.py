@@ -10,7 +10,7 @@ from agent.judgment.gate import WorkDecision
 from agent.memory.probe import DeepProbeHub
 from agent.memory.probe_render import RecallDelta
 from agent.memory.recall_policy import RecallPolicy
-from agent.mind import recollection_refresh as refresh
+from agent.mind.recall import refresh
 
 SCOPE = "user_webui:42#main"
 
@@ -212,7 +212,7 @@ async def test_real_think_loop_keeps_message_order_and_adds_recall_only_to_next_
     from helpers.think_loop_fakes import FakeMind, run_think_loop, tool_result
 
     from agent.memory import probe
-    from agent.mind.tools import round_helpers
+    from agent.mind.execution import messages
     from core.context_provider import ContextProviderRegistry, ProviderMeta
     from core.conversation_scope import bind_scope, reset_scope
 
@@ -244,7 +244,7 @@ async def test_real_think_loop_keeps_message_order_and_adds_recall_only_to_next_
             await asyncio.wait_for(refresh.deep_probe_hub.state_for(SCOPE).task, 1)
         return result
 
-    monkeypatch.setattr(round_helpers, "_fetch_new_messages", fetch)
+    monkeypatch.setattr(messages, "_fetch_new_messages", fetch)
     monkeypatch.setattr(mind, "_invoke_llm_unified", invoke)
     token = bind_scope(SCOPE)
     try:

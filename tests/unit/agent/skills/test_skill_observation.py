@@ -7,7 +7,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 from agent.context.message_schema import normalize_for_send
 from agent.context.observation import context_skills, emit_context_summary
-from agent.mind.recollection import _apply_memory_budget, _match_skills
+from agent.context.preparation import apply_memory_budget
+from agent.mind.recall.coordinator import _match_skills
 from agent.skills.skill_store import Skill, SkillState
 from core.activity import activity_scope
 from services.workspace_activity import WorkspaceActivityService
@@ -18,6 +19,7 @@ async def test_skill_evidence_tracks_actual_budget_and_never_changes_wire_messag
     candidate = Skill(name="archive-check", description="Prior evidence", state=SkillState.ARCHIVED)
     mind = SimpleNamespace(
         _skills_enabled=lambda: True,
+        pfc=SimpleNamespace(add_temporary=MagicMock()),
         skill_store=SimpleNamespace(get=lambda name: {forced.name: forced, candidate.name: candidate}.get(name), record_use=MagicMock(), record_match=MagicMock()),
         skill_matcher=SimpleNamespace(match=AsyncMock(return_value=[(candidate, 0.426)])),
         _pending_skill_gestures={"user_qq:1": [forced.name]},
@@ -30,9 +32,9 @@ async def test_skill_evidence_tracks_actual_budget_and_never_changes_wire_messag
     assert normalize_for_send(messages) == normalize_for_send([
         {key: value for key, value in message.items() if key != "_source"} for message in original])
     monkeypatch.setattr("core.config.get_config_int", lambda key, default: 400)
-    visible = context_skills(_apply_memory_budget(messages))
+    visible = context_skills(apply_memory_budget(messages))
     assert len(visible) == 1 and visible[0]["name"] == "inspect" and visible[0]["truncated"]
-    assert context_skills(_apply_memory_budget([{"content": "Earlier memories " * 400}, *messages])) == []
+    assert context_skills(apply_memory_budget([{"content": "Earlier memories " * 400}, *messages])) == []
     assert messages == original
 
 

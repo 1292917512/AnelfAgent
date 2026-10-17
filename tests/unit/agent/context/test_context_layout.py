@@ -7,20 +7,22 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from agent.context.assembly import ContextAssembly
 from agent.context.message_schema import normalize_for_send
 from agent.mind.prefrontal_cortex import PrefrontalCortex
 
 
-def _pfc() -> PrefrontalCortex:
+def _pfc() -> ContextAssembly:
     conversation_data = SimpleNamespace(
         max_size=30,
         get_conversation_record_by_everything=AsyncMock(return_value=[]),
         count_messages=AsyncMock(return_value=0),
     )
-    return PrefrontalCortex(
+    pfc = PrefrontalCortex(
         everything_data=SimpleNamespace(),
         conversation_data=conversation_data,
     )
+    return ContextAssembly(pfc.work_memory, pfc.tool_assembly, conversation_data=conversation_data)
 
 
 def _layers(msgs: list[dict]) -> list[str]:

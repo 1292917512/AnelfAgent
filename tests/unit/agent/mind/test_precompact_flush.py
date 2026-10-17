@@ -7,7 +7,7 @@ import asyncio
 import pytest
 
 from agent.memory import auto_capture, metrics
-from agent.mind.tools.round_helpers import _precompact_flush
+from agent.mind.execution.compression import _precompact_flush
 
 
 class _MindStub:

@@ -19,7 +19,7 @@ from helpers.think_loop_fakes import (
     tool_result,
 )
 
-from agent.mind.tools.think_loop import ThinkMode
+from agent.mind.execution.state import ThinkMode
 
 
 def _reflect_mind(rounds: list) -> FakeMind:
@@ -164,7 +164,7 @@ class TestRequiredOutput:
         assert any(m.get("_source", {}).get("origin") == "output_recovery" for m in chain)
 
     async def test_recovery_blocks_streaming_and_batch_tools(self, monkeypatch) -> None:
-        from agent.mind.tools.think_loop import _EarlyToolRunner
+        from agent.mind.execution.tool_execution import _EarlyToolRunner
 
         summary = "已有操作结果已核验，未再操作。"
         mind = _reflect_mind([

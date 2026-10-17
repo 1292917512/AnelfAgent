@@ -48,7 +48,9 @@ async def test_prewarm_strips_layer_tags(monkeypatch) -> None:
     async def _layered(*a, **k):
         return ("人设", "工具说明", "便签")
 
-    mind._build_layered_prompts = _layered
+    mind.context = MagicMock()
+    mind.char = MagicMock()
+    mind.context.preparation.build_layers = _layered
     mind.conversation_data = MagicMock()
     mind.conversation_data.get_conversation_summary = AsyncMock(return_value=None)
     mind.conversation_data.get_conversation_record_by_everything = AsyncMock(return_value=[])
@@ -61,7 +63,7 @@ async def test_prewarm_strips_layer_tags(monkeypatch) -> None:
         ]
 
     mind.pfc = MagicMock()
-    mind.pfc.build_llm_context = _build_context
+    mind.context.build_llm_context = _build_context
     mind.pfc.get_active_tool_schemas = AsyncMock(return_value=[])
     mind._get_mind_config.return_value.llm_timeout = 60
     mind.llm = _fake_llm_client(sent)
@@ -85,7 +87,9 @@ async def test_prewarm_no_llm_client_noop(monkeypatch) -> None:
     async def _layered(*a, **k):
         return ("", "", "")
 
-    mind._build_layered_prompts = _layered
+    mind.context = MagicMock()
+    mind.char = MagicMock()
+    mind.context.preparation.build_layers = _layered
     mind.conversation_data = MagicMock()
     mind.conversation_data.get_conversation_summary = AsyncMock(return_value=None)
     mind.conversation_data.get_conversation_record_by_everything = AsyncMock(return_value=[])
@@ -94,7 +98,7 @@ async def test_prewarm_no_llm_client_noop(monkeypatch) -> None:
         return [{"role": "system", "content": "x", "_layer": "stable"}]
 
     mind.pfc = MagicMock()
-    mind.pfc.build_llm_context = _build_context
+    mind.context.build_llm_context = _build_context
     mind.llm = None  # 非 LLMClient
 
     # 不应抛异常

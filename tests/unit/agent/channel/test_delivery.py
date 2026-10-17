@@ -13,7 +13,7 @@ from agent.channel.delivery import (
     observe_delivery_context,
     record_delivery,
 )
-from agent.mind.tools.result_pipeline import _truncate_json_output
+from agent.mind.execution.result_pipeline import _truncate_json_output
 from core.tags import etag_all, strip_message_meta_tags
 
 

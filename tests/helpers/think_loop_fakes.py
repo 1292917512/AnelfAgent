@@ -16,7 +16,8 @@ from types import SimpleNamespace
 from typing import Any, List, Optional
 from unittest.mock import AsyncMock
 
-from agent.mind.tools.think_loop import ThinkMode, think_loop
+from agent.mind.execution.loop import think_loop
+from agent.mind.execution.state import ThinkMode
 from core.tags import etag_all
 from core.tool_results import extract_error_text
 
@@ -136,6 +137,7 @@ class FakeMind:
         pfc: Optional[FakePfc] = None,
     ) -> None:
         self.pfc = pfc if pfc is not None else FakePfc()
+        self.context = SimpleNamespace(build_execution_context=self.pfc.build_execution_context)
         self.compressor = None
         self.memory_store = None
         self._rounds: List[SimpleNamespace] = list(rounds or [])

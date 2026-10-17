@@ -81,7 +81,7 @@ def _fake_mind(store_map: dict, pending: dict):
 
 class TestMatchSkillsGesture:
     async def test_forced_injection_bypasses_scoring(self) -> None:
-        from agent.mind import recollection
+        from agent.mind.recall import coordinator as recollection
         skill = _fake_skill("deploy-check")
         mind = _fake_mind({"deploy-check": skill}, {"user_qq:1": ["deploy-check"]})
         msgs = await recollection._match_skills(mind, "hi", scope="user_qq:1")
@@ -92,7 +92,7 @@ class TestMatchSkillsGesture:
 
     async def test_stale_skill_injected(self) -> None:
         """闲置技能照常手势注入（闲置 ≠ 不可用）。"""
-        from agent.mind import recollection
+        from agent.mind.recall import coordinator as recollection
         skill = _fake_skill("old-helper", state=SkillState.STALE)
         mind = _fake_mind({"old-helper": skill}, {"user_qq:1": ["old-helper"]})
         msgs = await recollection._match_skills(mind, "hi", scope="user_qq:1")
@@ -102,7 +102,7 @@ class TestMatchSkillsGesture:
 
     async def test_archived_skill_auto_restored(self) -> None:
         """已归档技能手势 = 最强恢复信号：自动 restore 后注入全文。"""
-        from agent.mind import recollection
+        from agent.mind.recall import coordinator as recollection
         archived = _fake_skill("dusty-skill", state=SkillState.ARCHIVED)
         restored = _fake_skill("dusty-skill", state=SkillState.ACTIVE)
         mind = _fake_mind({"dusty-skill": archived}, {"user_qq:1": ["dusty-skill"]})
@@ -114,7 +114,7 @@ class TestMatchSkillsGesture:
 
     async def test_archived_not_invocable_no_restore(self) -> None:
         """已归档且关闭手势的技能：拒绝注入，也不触发恢复。"""
-        from agent.mind import recollection
+        from agent.mind.recall import coordinator as recollection
         skill = _fake_skill("internal-only", user_invocable=False,
                             state=SkillState.ARCHIVED)
         mind = _fake_mind({"internal-only": skill}, {"user_qq:1": ["internal-only"]})
@@ -124,7 +124,7 @@ class TestMatchSkillsGesture:
         mind.pfc.add_temporary.assert_not_called()
 
     async def test_not_found_writes_hint(self) -> None:
-        from agent.mind import recollection
+        from agent.mind.recall import coordinator as recollection
         mind = _fake_mind({}, {"user_qq:1": ["ghost-skill"]})
         msgs = await recollection._match_skills(mind, "hi", scope="user_qq:1")
         assert msgs == []
@@ -133,7 +133,7 @@ class TestMatchSkillsGesture:
         assert "ghost-skill" in hint["content"] and "不存在" in hint["content"]
 
     async def test_user_invocable_false_skips(self) -> None:
-        from agent.mind import recollection
+        from agent.mind.recall import coordinator as recollection
         skill = _fake_skill("internal-only", user_invocable=False)
         mind = _fake_mind({"internal-only": skill}, {"user_qq:1": ["internal-only"]})
         msgs = await recollection._match_skills(mind, "hi", scope="user_qq:1")
@@ -142,7 +142,7 @@ class TestMatchSkillsGesture:
         mind.pfc.add_temporary.assert_not_called()
 
     async def test_no_pending_no_change(self) -> None:
-        from agent.mind import recollection
+        from agent.mind.recall import coordinator as recollection
         mind = _fake_mind({}, {})
         msgs = await recollection._match_skills(mind, "hi", scope="user_qq:1")
         assert msgs == []

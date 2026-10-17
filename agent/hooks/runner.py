@@ -25,17 +25,17 @@ HOOK_EVENTS = ("tool_pre", "tool_post", "reply_end")
 HOOK_INTEGRATIONS: List[Dict[str, str]] = [
     {
         "event": "tool_pre",
-        "where": "agent/mind/tools/permission.py",
+        "where": "agent/mind/execution/permission.py",
         "note": "审批门之前执行；exit 2 阻塞工具调用（只能在审批规则之上收紧，不能放宽）",
     },
     {
         "event": "tool_post",
-        "where": "agent/mind/tools/think_loop.py",
+        "where": "agent/mind/execution/loop.py",
         "note": "工具执行完成后触发（带结果预览，通知型，无法阻塞）",
     },
     {
         "event": "reply_end",
-        "where": "agent/mind/tools/reply_finalize.py",
+        "where": "agent/mind/execution/reply_finalize.py",
         "note": "一次回复完成后触发，用于审计与通知，不改写已发送内容",
     },
 ]

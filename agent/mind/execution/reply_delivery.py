@@ -35,7 +35,7 @@ from core.tool_results import extract_error_text, parse_tool_result_json
 
 if TYPE_CHECKING:
     from agent.llm import ToolCall
-    from agent.mind.tools.round_helpers import _ThinkLoopCtx, _ThinkRoundState
+    from agent.mind.execution.state import ExecutionContext, RoundState
 
 
 @dataclass(frozen=True)
@@ -126,7 +126,7 @@ async def assess_reply(content: str, scope: str, messages: list[dict[str, Any]])
 
 
 async def deliver_reply(
-    ctx: _ThinkLoopCtx, state: _ThinkRoundState, content: str, *,
+    ctx: ExecutionContext, state: RoundState, content: str, *,
     interim: bool, messages: list[dict[str, Any]],
 ) -> ReplyDelivery | None:
     """按正文类型开关审核并发送；调用方在工具批次结束后归并回执。"""
@@ -164,7 +164,7 @@ async def deliver_reply(
     return ReplyDelivery(scope, status, reason)
 
 
-async def publish_delivery(ctx: _ThinkLoopCtx, state: _ThinkRoundState, result: ReplyDelivery | None) -> None:
+async def publish_delivery(ctx: ExecutionContext, state: RoundState, result: ReplyDelivery | None) -> None:
     """把真实投递状态写入执行链；未送达或未知的事实留待下一轮核对。"""
     if result is None:
         return
@@ -191,7 +191,7 @@ async def publish_delivery(ctx: _ThinkLoopCtx, state: _ThinkRoundState, result: 
     log(feedback, "DEBUG", tag="通道")
 
 
-def observe_send_results(ctx: _ThinkLoopCtx, state: _ThinkRoundState, calls: list[ToolCall]) -> None:
+def observe_send_results(ctx: ExecutionContext, state: RoundState, calls: list[ToolCall]) -> None:
     """当前会话的发送尝试抑制重复自动投递；其他会话的回执不改变本会话状态。"""
     from agent.mind.mind_tools import OUTPUT_TOOL_NAMES
 

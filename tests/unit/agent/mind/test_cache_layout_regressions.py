@@ -7,7 +7,7 @@ from typing import Dict, List
 
 from agent.context.compressor import ContextCompressor
 from agent.context.message_schema import normalize_for_send
-from agent.mind.tools.reply_finalize import _build_execution_summary
+from agent.mind.execution.reply_finalize import _build_execution_summary
 
 
 class TestNormalizeNonMutating:

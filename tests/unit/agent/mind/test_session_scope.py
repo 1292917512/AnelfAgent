@@ -16,6 +16,7 @@ import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from agent.context.assembly import ContextAssembly
 from agent.messages import parse_entity_scope
 from agent.messages.presets import MessageAssistant, MessageGroupUser, MessageUser
 from agent.mind.prefrontal_cortex import PrefrontalCortex
@@ -143,7 +144,7 @@ class TestPfcScopeQueues:
 
 class TestResolveReplyTarget:
     async def test_session_propagates_to_reply_message(self) -> None:
-        from agent.mind.tools.decision_executor import resolve_reply_target
+        from agent.mind.decisions import resolve_reply_target
 
         pfc = _pfc()
         await pfc.add_task(MessageUser(
@@ -223,7 +224,7 @@ class TestSessionNotification:
             adapter_key="webui",
         ))
         current = MessageUser(uid="web_user", session_id="cur", text_content="hi")
-        ctx = pfc.build_execution_context(
+        ctx = ContextAssembly(pfc.work_memory, pfc.tool_assembly).build_execution_context(
             [], time.time(), 0, anything=current, adapter_key="webui",
         )
         content = ctx["content"]
@@ -239,7 +240,7 @@ class TestSessionNotification:
 
     def test_no_pending_hint(self) -> None:
         pfc = _pfc()
-        ctx = pfc.build_execution_context([], time.time(), 0, anything=None)
+        ctx = ContextAssembly(pfc.work_memory, pfc.tool_assembly).build_execution_context([], time.time(), 0, anything=None)
         assert "内部思考（无频道、无默认收件人）" in ctx["content"]
 
 

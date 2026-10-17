@@ -16,8 +16,8 @@ from typing import Any
 
 import pytest
 
+from agent.mind.decisions import pop_next_reply_target
 from agent.mind.tools import scheduler as scheduler_mod
-from agent.mind.tools.decision_executor import pop_next_reply_target
 from agent.mind.tools.scheduler import add_reminder
 from agent.mind.work_memory import WorkMemory
 

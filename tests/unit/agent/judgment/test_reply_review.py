@@ -9,7 +9,7 @@ from agent.judgment import engine as engine_module
 from agent.judgment.engine import JudgmentConfig, JudgmentEngine
 from agent.judgment.evidence import evidence_json
 from agent.judgment.types import ChoiceAnswer, JudgmentError, JudgmentReport, JudgmentSource, NoulAnswer
-from agent.mind.tools import reply_delivery as delivery
+from agent.mind.execution import reply_delivery as delivery
 from core.config import ConfigManager
 from core.tool_errors import ErrorCause
 
