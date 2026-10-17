@@ -12,7 +12,7 @@ from agent.context.preparation import ContextPreparation
 from agent.memory.memory_retriever import MemoryRetriever
 from agent.mind.recall import inputs as recall_inputs
 from agent.mind.recall.coordinator import prepare_recollection
-from agent.mind.recall.inputs import collect_recollection_inputs
+from agent.mind.recall.inputs import Recollection
 
 
 class _FileCache:
@@ -35,8 +35,8 @@ def _fake_mind(pins_text: str = "") -> SN:
     )
     mind = SN(
         char=SN(get_personality_msg=lambda: [{"content": "人格"}]),
-        retriever=retriever,
-        memory_store=None,  # 替身无记忆库：主标签记忆注入位为空
+        recollection=Recollection(retriever=retriever, memory_store=None, skills=SN(), config=SN(),
+                                 pfc=SN(), conversation_data=SN(), embedder=SN()),
         models=SN(llm=None, llm_manager=SN(get_models_summary=lambda: "models")),
         context=SN(
             stable_fingerprint=lambda summary, vision: "fp",
@@ -97,8 +97,8 @@ class TestLeanRecollection:
         from agent.memory.recall_policy import RecallPolicy, recall_options
 
         mind = _fake_mind()
-        mind.embedder = SN(embed_query=AsyncMock(return_value=[1.0]))
-        mind.retriever.load_relation_snippets = AsyncMock(return_value=[])
+        mind.recollection.embedder = SN(embed_query=AsyncMock(return_value=[1.0]))
+        mind.recollection.retriever.load_relation_snippets = AsyncMock(return_value=[])
         matched, release = asyncio.Event(), asyncio.Event()
 
         async def local(*args, **kwargs):
@@ -115,8 +115,8 @@ class TestLeanRecollection:
         monkeypatch.setattr("agent.memory.recall_fast.recall_local", local)
         monkeypatch.setattr(recall_inputs, "match_skills", skills)
         with recall_options(RecallPolicy(level=level)):
-            task = asyncio.create_task(collect_recollection_inputs(
-                mind, [{"role": "user", "content": "帮我检查部署配置是否正确"}], None,
+            task = asyncio.create_task(mind.recollection.collect(
+                [{"role": "user", "content": "帮我检查部署配置是否正确"}], None,
                 scope="", adapter="", lean=False,
             ))
             try:
@@ -133,9 +133,9 @@ class TestLeanRecollection:
 
     async def test_greeting_skips_network_query_but_keeps_profiles(self, monkeypatch) -> None:
         mind = _fake_mind()
-        mind.embedder = SN(embed_query=AsyncMock())
-        mind.retriever.recall_split = AsyncMock(return_value=([{"content": "画像"}], []))
-        mind.retriever.load_relation_snippets = AsyncMock(return_value=[])
+        mind.recollection.embedder = SN(embed_query=AsyncMock())
+        mind.recollection.retriever.recall_split = AsyncMock(return_value=([{"content": "画像"}], []))
+        mind.recollection.retriever.load_relation_snippets = AsyncMock(return_value=[])
         monkeypatch.setattr(recall_inputs, "extract_related_scopes", lambda *args: [])
         monkeypatch.setattr(recall_inputs, "recall_cross_channel", AsyncMock())
         monkeypatch.setattr(recall_inputs, "match_skills", AsyncMock(return_value=[]))
@@ -145,19 +145,19 @@ class TestLeanRecollection:
             {"role": "user", "content": "请记住详细的项目信息"},
             {"role": "user", "content": "[channel:qq]谢谢！"},
         ])
-        mind.embedder.embed_query.assert_not_called()
+        mind.recollection.embedder.embed_query.assert_not_called()
         recall_inputs.recall_cross_channel.assert_not_called()
-        mind.retriever.recall_split.assert_awaited_once()
-        assert recall_inputs.match_skills.call_args.args == (mind, "",)
+        mind.recollection.retriever.recall_split.assert_awaited_once()
+        assert recall_inputs.match_skills.call_args.args == (mind.recollection.skills, "",)
         assert mind.context.build_llm_context.call_args.kwargs["memory_msgs"] == []
 
     async def test_lean_skips_all_recall_paths(self, monkeypatch) -> None:
         """精简上下文不 embed、不召回，环境注入位全空。"""
         mind = _fake_mind("永久")
-        mind.embedder = SN(
+        mind.recollection.embedder = SN(
             embed_query=AsyncMock(side_effect=AssertionError("lean 不应 embed"))
         )
-        mind.retriever.recall_split = AsyncMock(
+        mind.recollection.retriever.recall_split = AsyncMock(
             side_effect=AssertionError("lean 不应召回")
         )
         monkeypatch.setattr(recall_inputs, "extract_related_scopes", lambda conv, scope: [])
@@ -207,7 +207,7 @@ async def test_context_reads_overlap_and_skills_only_wait_for_plan(monkeypatch, 
         started["skills"].set()
         return [{"content": "技能"}]
 
-    async def cross(_mind, *args, query_vec_task, user_scope):
+    async def cross(*args, query_vec_task, user_scope, **kwargs):
         assert args[0] == [{"role": "user", "content": query}]
         assert user_scope == "user_qq:1"
         assert await asyncio.shield(query_vec_task) == [1.0]
@@ -219,23 +219,23 @@ async def test_context_reads_overlap_and_skills_only_wait_for_plan(monkeypatch, 
         started[key].set()
         return value
 
-    mind.embedder = SN(embed_query=AsyncMock(side_effect=embed))
-    mind.retriever.recall_split = recall
-    mind.retriever.load_relation_snippets = lambda scopes: read("relations", [{"content": "关系"}])
+    mind.recollection.embedder = SN(embed_query=AsyncMock(side_effect=embed))
+    mind.recollection.retriever.recall_split = recall
+    mind.recollection.retriever.load_relation_snippets = lambda scopes: read("relations", [{"content": "关系"}])
     monkeypatch.setattr(recall_inputs, "extract_related_scopes", lambda *args: [])
     monkeypatch.setattr(recall_inputs, "extract_scopes_from_anything", lambda *args: [])
     monkeypatch.setattr(recall_inputs, "match_skills", skills)
     monkeypatch.setattr(recall_inputs, "recall_cross_channel", cross)
-    mind.memory_store = object()
-    mind.conversation_data = SN(get_conversation_summary=lambda anything: read("summary", {"summary": "摘要"}))
+    mind.recollection.memory_store = object()
+    mind.recollection.conversation_data = SN(get_conversation_summary=lambda anything: read("summary", {"summary": "摘要"}))
     monkeypatch.setattr("agent.memory.hub.load_hub_block", lambda store: read("hub", "主标签"))
     monkeypatch.setattr("agent.memory.self_profile.load_self_profile", AsyncMock(return_value=None))
     monkeypatch.setattr("agent.memory.self_profile.render_self_profile_block", lambda _: "自身")
     monkeypatch.setattr("agent.memory.reflection_lifecycle.load_confirmed_block", AsyncMock(return_value="确认"))
     monkeypatch.setattr("agent.memory.reflection_lifecycle.load_verification_block", AsyncMock(return_value="求证"))
     query = ("[channel:qq][group_id:100][uid:1]" if group else "") + "帮我查询之前记录的详细项目设计方案"
-    task = asyncio.create_task(collect_recollection_inputs(
-        mind, [{"role": "user", "content": query},
+    task = asyncio.create_task(mind.recollection.collect(
+        [{"role": "user", "content": query},
                *({"role": "tool", "content": "internal result"} for _ in range(12)),
                {"role": "assistant", "content": "internal thought", "_layer": "provider"}],
         SN(uid=0 if group else "1"),
@@ -257,7 +257,7 @@ async def test_context_reads_overlap_and_skills_only_wait_for_plan(monkeypatch, 
         assert result.skills == [{"content": "技能"}]
         assert result.cross_channel == [{"content": "跨频道"}]
         assert result.hub == "主标签" and result.summary == {"summary": "摘要"}
-        mind.embedder.embed_query.assert_awaited_once()
+        mind.recollection.embedder.embed_query.assert_awaited_once()
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -286,20 +286,20 @@ async def test_context_exit_drains_sibling_reads(monkeypatch, fail) -> None:
         plan_ready.set_result(["共享查询"])
         return await wait("memory")
 
-    mind.embedder = SN(embed_query=lambda query: wait("embed"))
-    mind.retriever.recall_split = recall
-    mind.retriever.load_relation_snippets = lambda *args: wait("relations")
+    mind.recollection.embedder = SN(embed_query=lambda query: wait("embed"))
+    mind.recollection.retriever.recall_split = recall
+    mind.recollection.retriever.load_relation_snippets = lambda *args: wait("relations")
     monkeypatch.setattr(recall_inputs, "extract_related_scopes", lambda *args: [])
     monkeypatch.setattr(recall_inputs, "recall_cross_channel", AsyncMock(return_value=[]))
     monkeypatch.setattr(recall_inputs, "match_skills", lambda *args, **kwargs: wait("skills"))
-    mind.memory_store = object()
+    mind.recollection.memory_store = object()
     monkeypatch.setattr("agent.memory.hub.load_hub_block", hub)
     monkeypatch.setattr("agent.memory.self_profile.load_self_profile", AsyncMock(return_value=None))
     monkeypatch.setattr("agent.memory.self_profile.render_self_profile_block", lambda _: "")
     monkeypatch.setattr("agent.memory.reflection_lifecycle.load_confirmed_block", AsyncMock(return_value=""))
     monkeypatch.setattr("agent.memory.reflection_lifecycle.load_verification_block", AsyncMock(return_value=""))
-    task = asyncio.create_task(collect_recollection_inputs(
-        mind, [{"role": "user", "content": "请查找之前讨论的完整方案"}], None,
+    task = asyncio.create_task(mind.recollection.collect(
+        [{"role": "user", "content": "请查找之前讨论的完整方案"}], None,
         scope="user_qq:1", adapter="qq", lean=False,
     ))
     try:

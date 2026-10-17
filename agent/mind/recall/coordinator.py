@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Dict, List, Optional
 from agent.context.observation import observe_preparation
 from agent.context.preparation import model_context
 from agent.memory import recall_context  # noqa: F401
-from agent.mind.recall.inputs import collect_recollection_inputs
 
 if TYPE_CHECKING:
     from agent.messages import Everything
@@ -37,8 +36,8 @@ async def prepare_recollection(
 
     entity_scope = anything.entity_scope if anything else ""
     current_adapter = getattr(anything, "adapter_key", "") or ""
-    inputs = await collect_recollection_inputs(
-        mind, conversation_list, anything, scope=entity_scope, adapter=current_adapter, lean=lean,
+    inputs = await mind.recollection.collect(
+        conversation_list, anything, scope=entity_scope, adapter=current_adapter, lean=lean,
     )
     models_summary, direct_vision = model_context(mind.models.llm, mind.models.llm_manager)
     return await mind.context.preparation.build_recollection(

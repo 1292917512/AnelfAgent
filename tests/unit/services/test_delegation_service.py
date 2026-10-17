@@ -39,7 +39,7 @@ class _FakeManager:
 
 class _FakeRuntime:
     def __init__(self, manager: _FakeManager) -> None:
-        self.mind = type("Mind", (), {"delegation_manager": manager})()
+        self.delegation_manager = manager
 
 
 @pytest.fixture

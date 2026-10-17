@@ -56,13 +56,11 @@ async def test_factory_shares_state_and_finishes_wiring_before_publish(tmp_path,
     manager.chat_with_fallback = AsyncMock(return_value=ChatResult(content=""))
     runtime = AgentRuntime(
         channel_manager=MagicMock(), pipeline=MagicMock(), char=MagicMock(),
-        config=provider.mind, llm=MagicMock(), llm_manager=manager, data_center=MagicMock(),
+        config=provider.mind, llm=MagicMock(), llm_manager=manager,
+        data_center=SimpleNamespace(conversation_data=conversation, everything_data=everything),
+        memory_store=memory, embedder=embedder,
     )
-    mind = factory.create_mind(
-        char=runtime.char, models=runtime,
-        channel_manager=runtime.channel_manager, everything_data=everything,
-        conversation_data=conversation, memory_store=memory,
-    )
+    mind = factory.create_mind(runtime)
     runtime.mind, runtime.pfc = mind, mind.pfc
     runtime.assistant, runtime.workflow_engine = MagicMock(), MagicMock()
     monkeypatch.setattr("services.memory.require_runtime", lambda: runtime)
@@ -78,16 +76,24 @@ async def test_factory_shares_state_and_finishes_wiring_before_publish(tmp_path,
     assert mind.context._pfc.temporary == []
     assert mind.context._tool_assembly is mind.tool_assembly
     assert mind.pfc.tool_assembly is mind.tool_assembly
-    factories["HeartbeatEngine"].assert_called_once_with(mind, everything)
-    assert mind.context._skill_store is mind.skills.store is store
+    factories["HeartbeatEngine"].assert_called_once_with(mind, everything, memory=runtime, skills=runtime.skills)
+    assert mind.context._skill_store is runtime.skills.store is store
+    assert mind.recollection.skills is runtime.skills
+    assert mind.memory_store is mind.recollection.memory_store is runtime.memory_store
+    assert mind.embedder is mind.recollection.embedder is runtime.embedder
+    assert mind.retriever is mind.recollection.retriever is runtime.retriever
+    assert not hasattr(mind, "skills") and not hasattr(mind, "delegation_manager")
+    monkeypatch.setattr("services._runtime.get_runtime", lambda: runtime)
+    from services.skill import _runtime_index
+    assert _runtime_index() is runtime.skills.matcher.index
     assert mind.context._plugin_registry is registry
     assert mind.context.preparation.assembly is mind.context
     assert not hasattr(mind.pfc, "build_llm_context")
     factories["MemoryRetriever"].assert_called_once_with(memory, embedder)
     mind.retriever.set_rerank_client.assert_called_once_with(manager.get_media_client.return_value)
     factories["SkillMatcher"].assert_called_once_with(store, embedder)
-    factories["SkillCurator"].assert_called_once_with(store, mind.skills.matcher.index)
-    factories["SkillReviewer"].assert_called_once_with(mind, store, index=mind.skills.matcher.index)
+    factories["SkillCurator"].assert_called_once_with(store, runtime.skills.matcher.index)
+    factories["SkillReviewer"].assert_called_once_with(mind, store, index=runtime.skills.matcher.index)
     assert factories["SkillReviewer"].return_value.start.call_count == int(skills_enabled)
     factories["DelegationManager"].assert_called_once_with(mind)
     factories["ContextCompressor"].assert_called_once_with(mind.model_invoker)

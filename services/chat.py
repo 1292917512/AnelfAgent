@@ -328,7 +328,7 @@ class ChatService:
         scope = self.scope_for_chat(chat_id)
         interrupted = rt.mind.interrupt(scope, reason="用户点击停止生成")
         cancelled = 0
-        dm = getattr(rt.mind, "delegation_manager", None)
+        dm = rt.delegation_manager
         if dm is not None:
             cancelled = dm.cancel_scope(scope)
         background = await rt.mind.background_tasks.cancel_scope(scope)

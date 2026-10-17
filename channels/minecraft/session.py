@@ -30,7 +30,7 @@ async def stop_companion_work(world_id: str, *, server: str = "minecraft", reaso
     mind = runtime.mind
     scopes = {build_entity_scope("group", "minecraft", world_id)}
     scopes.update(scope for scope in runtime.pfc.known_scopes() if _belongs_to_world(scope, world_id))
-    manager = mind.delegation_manager
+    manager = runtime.delegation_manager
     worker_scopes = {
         scope for delegation_id, scope in consume_control_delegates(server).items()
         if manager.cancel(delegation_id) and scope

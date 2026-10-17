@@ -80,11 +80,11 @@ async def check():
     ), patch('core.plugins.get_plugin_manager'), patch('agent.memory.embedding.get_embedder'), \
         patch('agent.heartbeat.engine.HeartbeatEngine'), patch('agent.context.compressor.ContextCompressor'), \
         patch('agent.delegation.delegation_manager.DelegationManager'):
-        mind = factory.create_mind(
-            char=MagicMock(), models=SimpleNamespace(config=MagicMock(), llm=MagicMock(), llm_manager=None),
-            channel_manager=MagicMock(), everything_data=MagicMock(),
-            conversation_data=MagicMock(), memory_store=None,
+        runtime = SimpleNamespace(
+            char=MagicMock(), config=MagicMock(), llm=MagicMock(), llm_manager=None,
+            channel_manager=MagicMock(), data_center=MagicMock(), memory_store=None, embedder=MagicMock(),
         )
+        mind = factory.create_mind(runtime)
     try:
         expected = {'delegate_task', 'send_to_agent', 'follow_up_agent'}
         assert expected <= set(EntityRegistry.get_all_names())

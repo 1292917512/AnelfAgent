@@ -32,7 +32,6 @@ if TYPE_CHECKING:
     from agent.config import MindConfig
     from agent.context.assembly import ContextAssembly
     from agent.context.compressor import ContextCompressor
-    from agent.delegation.delegation_manager import DelegationManager
     from agent.heartbeat.engine import HeartbeatEngine
     from agent.llm import ImageContent
     from agent.memory.embedding import Embedder
@@ -43,8 +42,8 @@ if TYPE_CHECKING:
     from agent.mind.llm_invoker import ModelInvoker, ModelRuntime
     from agent.mind.prefrontal_cortex import PrefrontalCortex
     from agent.mind.push import PushHub
+    from agent.mind.recall.inputs import Recollection
     from agent.mind.tool_assembly import ToolAssembly
-    from agent.skills.runtime import SkillRuntime
     from agent.storage.data_center import ConversationData
 
 
@@ -53,7 +52,6 @@ class Mind:
 
     heartbeat_engine: HeartbeatEngine
     compressor: ContextCompressor
-    delegation_manager: DelegationManager
     push_hub: PushHub
     model_invoker: ModelInvoker
 
@@ -68,7 +66,7 @@ class Mind:
             pfc: PrefrontalCortex,
             tool_assembly: ToolAssembly,
             context: ContextAssembly,
-            skills: SkillRuntime,
+        recollection: Recollection,
             background_tasks: BackgroundTaskRegistry,
             embedder: Embedder,
             retriever: Optional[MemoryRetriever],
@@ -80,7 +78,7 @@ class Mind:
         self.channel_manager = channel_manager
         self.conversation_data = conversation_data
 
-        self.skills = skills
+        self.recollection = recollection
         self.background_tasks = background_tasks
         self.pfc = pfc
         self.tool_assembly = tool_assembly

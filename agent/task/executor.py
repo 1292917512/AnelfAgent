@@ -26,6 +26,7 @@ from core.log import log
 from .model import TaskDefinition, TaskResult, format_task_time
 
 if TYPE_CHECKING:
+    from agent.memory.ports import MemoryHost
     from agent.messages import EntityData
 
 
@@ -39,8 +40,9 @@ def _clean_llm_output(text: str) -> str:
 class TaskExecutor:
     """统一的任务执行器：构建上下文 -> LLM 调用 -> 清洗输出 -> 存储结果。"""
 
-    def __init__(self, mind: Any) -> None:
+    def __init__(self, mind: Any, memory: MemoryHost) -> None:
         self.mind = mind
+        self.memory = memory
 
     async def run(
         self,
@@ -275,7 +277,7 @@ class TaskExecutor:
         lines: List[str] = []
 
         try:
-            store = self.mind.memory_store
+            store = self.memory.memory_store
             if store:
                 stats = await store.get_tool_error_stats()
                 top = [s for s in stats if s.get("unresolved")][:3]
@@ -296,7 +298,7 @@ class TaskExecutor:
             log(f"反思焦点-目标停滞概况构建失败: {exc}", "DEBUG", tag="任务")
 
         try:
-            store = self.mind.memory_store
+            store = self.memory.memory_store
             if store:
                 recent = await store.list_recent(
                     limit=1, memory_type=MemoryType.EPISODIC, source=task.name,
@@ -318,7 +320,7 @@ class TaskExecutor:
         （store/skip/update/merge），事实演进合并进既有记忆而非新增矛盾记录。
         LLM 裁决失败回退 store，去重不阻塞任务落库。
         """
-        store = self.mind.memory_store
+        store = self.memory.memory_store
         if not store or not result.content.strip():
             return
 
@@ -337,7 +339,7 @@ class TaskExecutor:
             log(f"任务结果与已有记忆重复，跳过存储: [{result.task_name}]", tag="任务")
             return
 
-        candidates = await gather_dedup_candidates(store, self.mind.embedder, content)
+        candidates = await gather_dedup_candidates(store, self.memory.embedder, content)
         verdict = await judge_write(content, candidates)
         action = verdict.get("action", "store")
         metrics.incr(f"write.dedup_llm_{action}")

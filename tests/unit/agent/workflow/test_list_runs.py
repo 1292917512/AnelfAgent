@@ -1,15 +1,16 @@
 """list_runs 对外契约回归测试（run_id 映射 + running 标记）。"""
 
 import pytest
-from wf_helpers import FakeDelegationManager, make_stub_mind
+from wf_helpers import FakeDelegationManager
 
+from agent.mind.background.tasks import BackgroundTaskRegistry
 from agent.workflow import journal as wf_journal
 from agent.workflow.engine import WorkflowEngine
 
 
 @pytest.fixture()
 def engine():
-    eng = WorkflowEngine(make_stub_mind(FakeDelegationManager()))
+    eng = WorkflowEngine(BackgroundTaskRegistry(), FakeDelegationManager())
     yield eng
     import asyncio
     asyncio.get_event_loop().run_until_complete(eng.aclose())

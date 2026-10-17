@@ -25,7 +25,7 @@ async def test_skill_evidence_tracks_actual_budget_and_never_changes_wire_messag
             MagicMock(),
         ),
     )
-    messages = await match_skills(mind, "deployment", scope="user_qq:1")
+    messages = await match_skills(mind.skills, "deployment", scope="user_qq:1")
     original = deepcopy(messages)
     facts = context_skills(messages)
     assert [(fact["name"], fact["mode"], fact["score"]) for fact in facts] == [

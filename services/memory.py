@@ -83,7 +83,7 @@ class MemoryService:
         self, memory_type: Optional[str] = None, limit: int = 200,
     ) -> List[Dict[str, Any]]:
         rt = require_runtime()
-        store = rt.mind.memory_store
+        store = rt.memory_store
         if not store:
             return []
         return await store.list_all_with_id(
@@ -92,21 +92,21 @@ class MemoryService:
 
     async def get_ltm(self, mem_id: int) -> Any:
         rt = require_runtime()
-        store = rt.mind.memory_store
+        store = rt.memory_store
         if not store:
             return None
         return await store.get(mem_id)
 
     async def delete_ltm(self, mem_id: int) -> bool:
         rt = require_runtime()
-        store = rt.mind.memory_store
+        store = rt.memory_store
         if not store:
             return False
         return await store.delete(mem_id, actor="web")
 
     async def update_ltm(self, mem_id: int, content: str, importance: float = 0.5, tags: Optional[List[str]] = None) -> bool:
         rt = require_runtime()
-        store = rt.mind.memory_store
+        store = rt.memory_store
         if not store:
             return False
         entry = await store.get(mem_id)
@@ -126,7 +126,7 @@ class MemoryService:
         lifecycle.feedback（防随后的 auto_capture 分类重复回流）。
         """
         rt = require_runtime()
-        store = rt.mind.memory_store
+        store = rt.memory_store
         if not store:
             return None
         entry = await store.get(mem_id)
@@ -147,7 +147,7 @@ class MemoryService:
 
     async def create_ltm(self, content: str, memory_type: str = "semantic", importance: float = 0.5, tags: Optional[List[str]] = None) -> int:
         rt = require_runtime()
-        store = rt.mind.memory_store
+        store = rt.memory_store
         if not store:
             return -1
         from agent.memory.memory_types import MemoryEntry, MemoryType
@@ -157,7 +157,7 @@ class MemoryService:
 
     async def clear_ltm(self, memory_type: Optional[str] = None) -> int:
         rt = require_runtime()
-        store = rt.mind.memory_store
+        store = rt.memory_store
         if not store:
             return 0
         return await store.clear(_parse_memory_type(memory_type))
@@ -166,7 +166,7 @@ class MemoryService:
         self, page: int = 1, page_size: int = 50, memory_type: Optional[str] = None,
     ) -> Dict[str, Any]:
         rt = require_runtime()
-        store = rt.mind.memory_store
+        store = rt.memory_store
         if not store:
             return {"items": [], "total": 0, "page": 1, "page_size": page_size, "pages": 0}
         return await store.list_paginated(
@@ -176,7 +176,7 @@ class MemoryService:
 
     async def get_ltm_stats(self) -> Dict[str, Any]:
         rt = require_runtime()
-        store = rt.mind.memory_store
+        store = rt.memory_store
         if not store:
             return {"type_counts": {}, "total": 0}
         type_counts = await store.get_type_counts()
@@ -185,13 +185,13 @@ class MemoryService:
 
     async def search_ltm(self, query: str, tags: Optional[str] = None, limit: int = 20) -> List[Dict[str, Any]]:
         rt = require_runtime()
-        store = rt.mind.memory_store
+        store = rt.memory_store
         if not store:
             return []
         tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
         query_vec = None
-        if rt.mind.embedder:
-            query_vec = await rt.mind.embedder.embed_query(query)
+        if rt.embedder:
+            query_vec = await rt.embedder.embed_query(query)
         from agent.memory.cognee.config import load_cognee_config
         from agent.memory.cognee.fusion import federated_search
         from agent.memory.cognee.runtime import get_cognee_client
@@ -253,8 +253,8 @@ class MemoryService:
         本方法只做 API 响应形状的映射。
         """
         rt = require_runtime()
-        retriever = rt.mind.retriever
-        if retriever is None or rt.mind.memory_store is None:
+        retriever = rt.retriever
+        if retriever is None or rt.memory_store is None:
             return {"error": "记忆系统未初始化"}
 
         outcome = await retriever.diagnostic_recall(
@@ -299,7 +299,7 @@ class MemoryService:
 
     async def merge_ltm(self, ids: List[int], content: str) -> Dict[str, Any]:
         rt = require_runtime()
-        store = rt.mind.memory_store
+        store = rt.memory_store
         if not store:
             return {"error": "记忆系统未初始化"}
         keep_id = await store.merge_memories(ids, content, actor="web")
@@ -465,23 +465,23 @@ class MemoryService:
 
     async def get_index_status(self) -> Dict[str, Any]:
         rt = require_runtime()
-        store = rt.mind.memory_store
+        store = rt.memory_store
         if not store:
             return {"error": "记忆系统未初始化"}
         return await store.get_index_status()
 
     async def resync_files(self, force: bool = False) -> Dict[str, Any]:
         rt = require_runtime()
-        store = rt.mind.memory_store
+        store = rt.memory_store
         if not store:
             return {"error": "记忆系统未初始化"}
         from agent.memory.memory_sync import sync_files
         from agent.memory.notes import get_memory_dir
-        return await sync_files(store, rt.mind.embedder, get_memory_dir(), force=force)
+        return await sync_files(store, rt.embedder, get_memory_dir(), force=force)
 
     async def clean_embedding_cache(self) -> Dict[str, Any]:
         rt = require_runtime()
-        store = rt.mind.memory_store
+        store = rt.memory_store
         if not store:
             return {"error": "记忆系统未初始化"}
         cleaned = await store.clean_embedding_cache()
@@ -494,7 +494,7 @@ class MemoryService:
     async def upload_document(self, filename: str, content: bytes) -> Dict[str, Any]:
         """保存上传文档并立即解析入库，返回索引统计。"""
         rt = require_runtime()
-        store = rt.mind.memory_store
+        store = rt.memory_store
         if not store:
             return {"error": "记忆系统未初始化"}
         from agent.memory.doc_extract import SUPPORTED_DOC_EXTS
@@ -516,7 +516,7 @@ class MemoryService:
         rel_key = f"{_DOC_PREFIX}{safe_name}"
         from agent.memory.memory_sync import index_single_file
         try:
-            chunks = await index_single_file(store, rt.mind.embedder, dest, rel_key, force=True)
+            chunks = await index_single_file(store, rt.embedder, dest, rel_key, force=True)
         except Exception as exc:
             log(f"上传文档索引失败 [{rel_key}]: {exc}", "WARNING", tag="记忆")
             dest.unlink(missing_ok=True)
@@ -532,7 +532,7 @@ class MemoryService:
     async def list_documents(self) -> List[Dict[str, Any]]:
         """列出已索引的上传文档。"""
         rt = require_runtime()
-        store = rt.mind.memory_store
+        store = rt.memory_store
         if not store:
             return []
         counts = await store.list_chunk_counts()
@@ -555,7 +555,7 @@ class MemoryService:
     async def delete_document(self, path: str) -> Dict[str, Any]:
         """删除上传文档：清理索引并移除磁盘文件。"""
         rt = require_runtime()
-        store = rt.mind.memory_store
+        store = rt.memory_store
         if not store:
             return {"error": "记忆系统未初始化"}
         if not path.startswith(_DOC_PREFIX) or ".." in path:
@@ -572,7 +572,7 @@ class MemoryService:
     async def get_health_status(self) -> Dict[str, Any]:
         """返回记忆系统综合健康状态。"""
         rt = require_runtime()
-        store = rt.mind.memory_store
+        store = rt.memory_store
         if not store:
             return {"error": "记忆系统未初始化"}
         health = await store.get_health_status()
@@ -616,7 +616,7 @@ class MemoryService:
         后台 EmbeddingWorker 按新模型自动分批回填（含贴纸/图片 backlog）。
         """
         rt = require_runtime()
-        store = rt.mind.memory_store
+        store = rt.memory_store
         if not store:
             return {"error": "记忆系统未初始化"}
         cleared = await store.rebuild_embeddings()
@@ -630,7 +630,7 @@ class MemoryService:
             cleared["stickers"] = await get_sticker_store().clear_embeddings()
         except Exception as exc:
             log(f"贴纸向量清空失败: {exc}", "DEBUG")
-        if rt.mind.embedder:
+        if rt.embedder:
             from agent.memory.embedding import invalidate_embedders
             invalidate_embedders()
         from agent.memory.embedding import wake_embedding_worker
@@ -711,7 +711,7 @@ class MemoryService:
         重启 worker → 全量重新入队。
         """
         rt = require_runtime()
-        store = rt.mind.memory_store
+        store = rt.memory_store
         from agent.memory.cognee.runtime import get_cognee_client, get_cognee_coordinator
         client = get_cognee_client()
         coordinator = get_cognee_coordinator()
@@ -855,7 +855,7 @@ class MemoryService:
     async def list_goals(self, status: str = "all") -> List[Dict[str, Any]]:
         """列出所有目标计划。"""
         rt = require_runtime()
-        store = rt.mind.memory_store
+        store = rt.memory_store
         if not store:
             return []
         goals: List[Dict[str, Any]] = []
@@ -869,7 +869,7 @@ class MemoryService:
     async def get_goal(self, goal_id: str) -> Optional[Dict[str, Any]]:
         """获取单个目标详情。"""
         rt = require_runtime()
-        store = rt.mind.memory_store
+        store = rt.memory_store
         if not store:
             return None
         for entry, goal in await self._goal_entries(store):
@@ -887,7 +887,7 @@ class MemoryService:
         import time
         import uuid
         rt = require_runtime()
-        store = rt.mind.memory_store
+        store = rt.memory_store
         if not store:
             return {"error": "记忆系统未初始化"}
         from agent.memory.memory_types import GOAL_SOURCE, MemoryEntry, MemoryType
@@ -932,7 +932,7 @@ class MemoryService:
         import json
         import time
         rt = require_runtime()
-        store = rt.mind.memory_store
+        store = rt.memory_store
         if not store:
             return None
         from agent.memory.memory_types import GOAL_SOURCE, MemoryEntry, MemoryType
@@ -1008,7 +1008,7 @@ class MemoryService:
     async def delete_goal(self, goal_id: str) -> bool:
         """删除目标。"""
         rt = require_runtime()
-        store = rt.mind.memory_store
+        store = rt.memory_store
         if not store:
             return False
         for entry, goal in await self._goal_entries(store):

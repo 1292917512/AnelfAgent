@@ -31,7 +31,7 @@ import json
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from agent.approval.types import ApprovalResult
 from agent.workflow import journal as wf_journal
@@ -51,6 +51,10 @@ from agent.workflow.spec import (
 from core.config import get_config_bool, get_config_int, register_configs_safe
 from core.log import log
 from core.tool_results import extract_error_text, parse_tool_result_json
+
+if TYPE_CHECKING:
+    from agent.delegation.delegation_manager import DelegationManager
+    from agent.mind.background.tasks import BackgroundTaskRegistry
 
 _TAG = "工作流"
 
@@ -118,10 +122,11 @@ class _RunState:
 
 
 class WorkflowEngine:
-    """工作流编排引擎（Mind 持有实例；工具/服务层经端口消费）。"""
+    """工作流编排引擎，工具与服务层经端口消费。"""
 
-    def __init__(self, mind: Any) -> None:
-        self._mind = mind
+    def __init__(self, background_tasks: BackgroundTaskRegistry | None, delegation_manager: DelegationManager | None) -> None:
+        self._background_tasks = background_tasks
+        self._delegation_manager = delegation_manager
         self._journal = WorkflowJournal()
         self._runs: Dict[str, _RunState] = {}
         self._dispatch_sem: Optional[asyncio.Semaphore] = None
@@ -232,7 +237,7 @@ class WorkflowEngine:
 
     def _stop_in_loop(self, state: _RunState) -> None:
         """循环线程内执行取消：ask 走 manager.cancel（转用户取消结果），其余任务取消。"""
-        manager = getattr(self._mind, "delegation_manager", None)
+        manager = self._delegation_manager
         if manager is not None:
             for did in list(state.delegation_ids.values()):
                 try:
@@ -246,7 +251,7 @@ class WorkflowEngine:
     def _spawn(self, run_id: str, scope: str, name: str) -> None:
         state = _RunState(run_id=run_id, scope=scope, name=name,
                           loop=asyncio.get_running_loop())
-        registry = getattr(self._mind, "background_tasks", None)
+        registry = self._background_tasks
         if registry is not None:
             state.registry_id = registry.register(scope, "workflow", f"[{name}] 工作流运行")
             engine = self
@@ -363,7 +368,7 @@ class WorkflowEngine:
             self._complete_registry(state, False, f"工作流 [{spec.name}] 引擎异常")
 
     def _complete_registry(self, state: _RunState, success: bool, summary: str) -> None:
-        registry = getattr(self._mind, "background_tasks", None)
+        registry = self._background_tasks
         if registry is not None and state.registry_id:
             try:
                 registry.complete(state.registry_id, success, summary, claimed=False)
@@ -591,10 +596,10 @@ class WorkflowEngine:
             existing: Optional[Dict[str, Dict[str, Any]]] = None,
             timeout: float = 0.0,
     ) -> _StepOutcome:
-        manager = getattr(self._mind, "delegation_manager", None)
+        manager = self._delegation_manager
         if manager is None:
             return _StepOutcome(status=NODE_FAILED, error="委托管理器未初始化")
-        registry = getattr(self._mind, "background_tasks", None)
+        registry = self._background_tasks
         delegation_id = ""
         if registry is not None:
             delegation_id = registry.register(
@@ -627,8 +632,6 @@ class WorkflowEngine:
                 except Exception:
                     pass  # 注册表收尾失败不影响步骤结局
 
-        if result is None:
-            return _StepOutcome(status=NODE_FAILED, error="子代理未返回执行结果")
         if result.cancelled:
             return _StepOutcome(status="cancelled", error=result.error or "已取消",
                                 delegation_id=delegation_id)

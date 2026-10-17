@@ -1,11 +1,11 @@
 """SkillService — 技能库管理服务（供 Web API 使用）。
 
 技能存储在 workspace/skills/ 目录（文件系统），本服务为无状态封装。
-向量状态与 CRUD 后的即时嵌入经 Mind 侧 SkillIndex（同进程运行时单例）；
+向量状态与 CRUD 后的即时嵌入经运行时共享 SkillIndex；
 runtime 未就绪时优雅降级（embedded 字段为 None，不写死索引不可用）。
 
 Model Experience：Web 健康报告只含元数据事实与向量缓存命中状态（不发嵌入请求，
-读缓存是零成本）；CRUD 变更经 mind_index.embed_now 立即同步（单条 embed_query，
+读缓存是零成本）；CRUD 变更经 SkillIndex.embed_now 立即同步（单条 embed_query，
 失败静默降级，心跳 warm 兜底）。
 """
 from __future__ import annotations
@@ -18,20 +18,14 @@ from agent.skills.skill_store import SkillState, SkillStore
 from core.log import log
 
 
-def _mind_index() -> Optional[SkillIndex]:
-    """Mind 侧事实索引（运行时单例，向量缓存的唯一权威）。
-
-    runtime 未就绪（测试/web-only）时返回 None，调用方全部降级处理。
-    """
+def _runtime_index() -> Optional[SkillIndex]:
+    """获取共享技能索引；运行时未就绪时返回 None。"""
     try:
         from services import _runtime
         rt = _runtime.get_runtime()
         if rt is None:
             return None
-        mind = getattr(rt, "mind", None)
-        skills = getattr(mind, "skills", None)
-        matcher = skills.matcher if skills is not None else None
-        return getattr(matcher, "index", None)
+        return rt.skills.matcher.index
     except Exception:
         return None
 
@@ -70,7 +64,7 @@ class SkillService:
 
         失败静默（心跳 warm 兜底）；无事件循环（同步测试环境）跳过。
         """
-        index = _mind_index()
+        index = _runtime_index()
         if index is None:
             return
         try:
@@ -90,7 +84,7 @@ class SkillService:
 
     def list_skills(self, *, include_archived: bool = False) -> List[Dict[str, Any]]:
         """列出技能摘要信息（含向量就绪状态）。"""
-        index = _mind_index()
+        index = _runtime_index()
         return [
             _skill_summary(s, index)
             for s in self._store.list_skills(include_archived=include_archived)
@@ -101,13 +95,13 @@ class SkillService:
         skill = self._store.get(name)
         if skill is None:
             raise ValueError(f"技能 '{name}' 不存在")
-        data = _skill_summary(skill, _mind_index())
+        data = _skill_summary(skill, _runtime_index())
         data["content"] = skill.content
         return data
 
     def library_health(self) -> Dict[str, Any]:
         """技能库健康报告（元数据事实 + Mind 侧向量覆盖统计与构建状态）。"""
-        index = _mind_index()
+        index = _runtime_index()
         snapshot = SkillIndex(self._store).snapshot()
         if index is not None:
             # Mind 侧索引持有真实向量缓存与构建状态；Web 侧临时索引恒为空
@@ -120,7 +114,7 @@ class SkillService:
 
         幂等：进行中直接返回当前进度。返回触发后的构建状态快照。
         """
-        index = _mind_index()
+        index = _runtime_index()
         if index is None:
             raise RuntimeError("技能索引不可用（runtime 未就绪）")
         if index.vector_rebuilding:
@@ -133,7 +127,7 @@ class SkillService:
 
         幂等：向量已就绪直接返回；重建进行中让位（rebuild_all 会覆盖该技能）。
         """
-        index = _mind_index()
+        index = _runtime_index()
         if index is None:
             raise RuntimeError("技能索引不可用（runtime 未就绪）")
         skill = self._store.get(name)
@@ -181,7 +175,7 @@ class SkillService:
         """删除技能（向量死键由索引懒清理；索引可及时立即清理）。"""
         deleted = self._store.delete(name)
         if deleted:
-            index = _mind_index()
+            index = _runtime_index()
             if index is not None:
                 try:
                     index.prune_stale_vectors()

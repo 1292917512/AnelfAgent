@@ -35,8 +35,9 @@ async def test_stop_cancels_world_workers_and_reminders(
         background_tasks=BackgroundTaskRegistry(),
     )
     manager = DelegationManager(mind)
-    mind.delegation_manager = manager
-    monkeypatch.setattr("agent.runtime.singleton.get_runtime", lambda: SimpleNamespace(mind=mind, pfc=memory))
+    monkeypatch.setattr("agent.runtime.singleton.get_runtime", lambda: SimpleNamespace(
+        mind=mind, pfc=memory, delegation_manager=manager,
+    ))
     scopes = ["group_minecraft:local", "user_minecraft:local/Alice", "user_webui:web_user#game", "group_minecraft:other"]
     monkeypatch.setattr(tool_context, "_controls", {})
     tool_context.register_control("minecraft", "local", frozenset({"cancel_task"}))

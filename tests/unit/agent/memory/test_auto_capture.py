@@ -210,7 +210,7 @@ class TestSpeakerTagging:
         monkeypatch.setattr(ac, "judge_write", fake_judge)
 
         pipeline = ac.AutoCapturePipeline.__new__(ac.AutoCapturePipeline)
-        pipeline._mind = SimpleNamespace(memory_store=store, embedder=None)
+        pipeline._memory = SimpleNamespace(memory_store=store, embedder=None)
         ts = int(time.time() * 10**9)
         messages = [
             {"id": 101, "role": "user", "ts_ns": ts,
@@ -265,7 +265,7 @@ class TestSpeakerTagging:
         monkeypatch.setattr(ac, "judge_write", fake_judge)
 
         pipeline = ac.AutoCapturePipeline.__new__(ac.AutoCapturePipeline)
-        pipeline._mind = SimpleNamespace(memory_store=store, embedder=None)
+        pipeline._memory = SimpleNamespace(memory_store=store, embedder=None)
         messages = [
             {"role": "user", "ts_ns": int(time.time() * 10**9),
              "content": "[uid:123][name:主人] 我周五要交报告"},

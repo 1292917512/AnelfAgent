@@ -18,7 +18,7 @@ from services.memory import MemoryService
 
 @pytest.fixture
 def svc(store: MemoryStore, monkeypatch) -> MemoryService:
-    rt = SimpleNamespace(mind=SimpleNamespace(memory_store=store))
+    rt = SimpleNamespace(memory_store=store)
     monkeypatch.setattr("services.memory.require_runtime", lambda: rt)
     return MemoryService()
 

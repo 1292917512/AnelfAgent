@@ -233,7 +233,7 @@ async def test_history_candidates_use_explicit_aliases_and_recent_topics(sqlite,
         "qq": ChannelSnapshot(active_scopes={"group_qq:5": ScopeActivity(time.time() - 7200, "过期话题")}),
     }
     mind = SimpleNamespace(config=MindConfig(), conversation_data=ConversationData(StorageRouter(sqlite=sqlite)), pfc=pfc)
-    candidates = await _recall_candidates(mind, "group_qq:100", "user_qq:123")
+    candidates = await _recall_candidates(mind.config, mind.pfc, mind.conversation_data, "group_qq:100", "user_qq:123")
     linked = {scope for scope, _, same_user in candidates if same_user}
     assert linked == {"user_qq:123", "user_telegram:remote"}
     assert "user_webui:123#b" in {scope for scope, _, _ in candidates}
@@ -275,7 +275,8 @@ async def test_history_gate_uses_conversation_and_concurrent_searches(proceed, m
                     {"role": "tool", "content": "本轮检索缺少实施依据"}]
     future = asyncio.get_running_loop().create_future()
     future.set_result([0.1, 0.2])
-    result = await recall_cross_channel(mind, conversation, "user_webui:other#a", query_vec_task=future)
+    result = await recall_cross_channel(conversation, "user_webui:other#a", query_vec_task=future,
+        config=mind.config, pfc=mind.pfc, conversation_data=mind.conversation_data, embedder=mind.embedder)
     state = decision.call_args.args[2]
     assert state["current_scope"] == "user_webui:other#a"
     assert state["conversation"] == conversation[:2]
@@ -311,7 +312,8 @@ async def test_cancelling_cross_recall_preserves_shared_embedding(monkeypatch):
     mind = SimpleNamespace(config=MindConfig(), embedder=SimpleNamespace(available=True), pfc=pfc,
         conversation_data=SimpleNamespace(related_conversation_scopes=AsyncMock(return_value=[])))
     task = asyncio.create_task(recall_cross_channel(
-        mind, [{"role": "user", "content": "帮我查询之前项目实施方案的相关资料"}], "group_webui:1", query_vec_task=vector))
+        [{"role": "user", "content": "帮我查询之前项目实施方案的相关资料"}], "group_webui:1", query_vec_task=vector,
+        config=mind.config, pfc=mind.pfc, conversation_data=mind.conversation_data, embedder=mind.embedder))
     try:
         async with asyncio.timeout(2):
             await judged.wait()

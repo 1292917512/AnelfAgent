@@ -198,8 +198,8 @@ async def test_local_branches_parallelize_and_filter_private_ownership(worker, m
     async def format_results(results, *args):
         return [RecallDelta("记忆", result.snippet, result.id, result.snippet) for result in results]
 
-    worker.mind.retriever = SimpleNamespace(_apply_scope_boost=lambda results, scopes: results, _store=object())
-    worker.mind.skills = SimpleNamespace(
+    worker.recall.retriever = SimpleNamespace(_apply_scope_boost=lambda results, scopes: results, _store=object())
+    worker.recall.skills = SimpleNamespace(
         matcher=SimpleNamespace(match=match),
         store=SimpleNamespace(get=lambda name: skill if name == skill.name else None),
     )
@@ -229,7 +229,7 @@ async def test_real_think_loop_keeps_message_order_and_adds_recall_only_to_next_
     monkeypatch.setattr(refresh.DialogueRecollection, "_candidates", candidates)
     monkeypatch.setattr(refresh, "assess_optional_work", AsyncMock(return_value=WorkDecision(True, "local")))
     mind = FakeMind(rounds=[tool_result("", ["recall"]), tool_result("", ["get_skill"]), tool_result("", ["end_reply"])], default_text=None)
-    mind.retriever = object()
+    mind.recollection.retriever = object()
     anything.entity_scope = SCOPE
     prefix = [{"role": "system", "content": "STABLE_PREFIX", "_layer": "stable"}, *dialogue("讨论办公室网络配置")]
     original_invoke = mind.model_invoker.invoke

@@ -48,8 +48,10 @@ from .config import ScheduleMode, current_interval_seconds, get_heartbeat_config
 
 if TYPE_CHECKING:
     from agent.heartbeat.config import TaskSchedule
+    from agent.memory.ports import MemoryHost
     from agent.messages import EntityData
     from agent.mind.mind import Mind
+    from agent.skills.runtime import SkillRuntime
     from agent.storage.data_center import EverythingData
 
 
@@ -151,15 +153,17 @@ class HeartbeatEngine:
     _MAX_TASK_FAILURES = 3  # 任务连续失败上限，达到后放弃本轮调度标记
     _MAX_ANALYSIS_ATTEMPTS = 3  # 实体画像分析连续未执行上限，达到后放弃该实体
 
-    def __init__(self, mind: Mind, everything_data: EverythingData) -> None:
+    def __init__(self, mind: Mind, everything_data: EverythingData, *, memory: MemoryHost, skills: SkillRuntime | None) -> None:
         self.mind = mind
+        self.memory = memory
+        self.skills = skills
         self.everything_data = everything_data
         self.config = get_heartbeat_config()
         self.task_registry = TaskRegistry()
         # 定义文件调度种子必须在启动时执行：reload 仅 Web API 触发，
         # 随仓库分发的任务（如 graph_curation）不经过 Web 就永远没有调度
         self._seed_declared_schedules()
-        self.executor = TaskExecutor(mind)
+        self.executor = TaskExecutor(mind, memory)
         self._total_ticks: int = 0
         self._tick_lock = asyncio.Lock()
         self.background_tick_running = False
@@ -755,9 +759,9 @@ class HeartbeatEngine:
         # 类型计数在同 tick 内被健康检查与状态区块复用，只查一次；
         # 整理 tick 计数可能变化，状态区块到时重查（见 _write_memory_status）
         type_counts: Optional[Dict[str, int]] = None
-        if self.mind.memory_store:
+        if self.memory.memory_store:
             try:
-                type_counts = await self.mind.memory_store.get_type_counts()
+                type_counts = await self.memory.memory_store.get_type_counts()
             except Exception:
                 type_counts = None
         memory_warnings = await self._check_memory_health(type_counts)
@@ -770,9 +774,9 @@ class HeartbeatEngine:
         try:
             from core.config import get_config_int
             consolidate_every = max(1, get_config_int("memory_consolidate_every_n_ticks", 12))
-            if self.mind.memory_store and self._total_ticks % consolidate_every == 0:
+            if self.memory.memory_store and self._total_ticks % consolidate_every == 0:
                 from agent.memory.consolidator import MemoryConsolidator
-                consolidate_report = await MemoryConsolidator(self.mind.memory_store).consolidate()
+                consolidate_report = await MemoryConsolidator(self.memory.memory_store).consolidate()
                 for line in consolidate_report.to_log_lines():
                     hb_log.append_entry(f"[记忆整理] {line}")
         except Exception as e:
@@ -783,7 +787,7 @@ class HeartbeatEngine:
         try:
             from core.config import get_config_int
             sync_every = max(1, get_config_int("memory_file_sync_every_n_ticks", 12))
-            if self.mind.memory_store and self._total_ticks % sync_every == 0:
+            if self.memory.memory_store and self._total_ticks % sync_every == 0:
                 await self._resync_file_index()
         except Exception as e:
             log(f"文件索引周期同步失败: {e}", "DEBUG", tag="心跳")
@@ -791,7 +795,7 @@ class HeartbeatEngine:
         # 自动记忆捕获：对话达轮数阈值或静默空闲时提取事实进长期记忆
         try:
             from agent.memory.auto_capture import run_auto_capture
-            await run_auto_capture(self.mind)
+            await run_auto_capture(self.memory)
         except Exception as e:
             log(f"自动记忆捕获失败: {e}", "DEBUG", tag="心跳")
 
@@ -806,10 +810,10 @@ class HeartbeatEngine:
             log(f"目标停滞概况构建失败: {e}", "DEBUG", tag="心跳")
 
         # 主标签记忆（main:hub）自愈：缺失/被清理时重建骨架（幂等）
-        if self.mind.memory_store:
+        if self.memory.memory_store:
             try:
                 from agent.memory.hub import ensure_hub
-                if await ensure_hub(self.mind.memory_store):
+                if await ensure_hub(self.memory.memory_store):
                     hb_log.append_entry("[主标签记忆] 骨架缺失，已重建")
             except Exception as e:
                 log(f"主标签记忆自愈失败: {e}", "DEBUG", tag="心跳")
@@ -829,7 +833,7 @@ class HeartbeatEngine:
 
         # 技能重力迁移与治理议程按维护周期执行，向量回填由 EmbeddingWorker 负责。
         try:
-            skills = getattr(self.mind, "skills", None)
+            skills = self.skills
             curator = skills.curator if skills is not None else None
             if curator is not None:
                 from core.config import get_config_int
@@ -851,9 +855,9 @@ class HeartbeatEngine:
         # 图谱治理议程：确定性事实摘要（弱边/陈旧/歧义/重复/枢纽），
         # AI 经 graph_curation 任务消费完整议程并用图谱工具执行治理
         try:
-            if self.mind.memory_store is not None:
+            if self.memory.memory_store is not None:
                 from agent.memory.graph.curation import agenda_summary, build_agenda
-                graph_agenda = await build_agenda(self.mind.memory_store.graph)
+                graph_agenda = await build_agenda(self.memory.memory_store.graph)
                 graph_summary = agenda_summary(graph_agenda)
                 if graph_summary:
                     hb_log.append_entry(f"[图谱治理议程] {graph_summary}")
@@ -930,14 +934,14 @@ class HeartbeatEngine:
         self, type_counts: Optional[Dict[str, int]] = None,
     ) -> List[str]:
         """记忆健康检查：纯逻辑检查阈值（与 memory_stats 共用同一配置口径）。"""
-        if not self.mind.memory_store:
+        if not self.memory.memory_store:
             return []
         from core.config import get_config_int
         warn_threshold = get_config_int("memory_warn_threshold", 200)
         warnings: List[str] = []
         try:
             if type_counts is None:
-                type_counts = await self.mind.memory_store.get_type_counts()
+                type_counts = await self.memory.memory_store.get_type_counts()
             entity_count = type_counts.get("entity", 0)
             if entity_count > 5:
                 warnings.append(
@@ -983,7 +987,7 @@ class HeartbeatEngine:
         （召回通道计数、写入去重分布、24h 变更审计、高频标签明细）不进
         prompt，由 memory_stats 工具按需查询——这是状态区块保持低噪的边界。
         """
-        store = self.mind.memory_store
+        store = self.memory.memory_store
         if not store:
             return
         try:
@@ -1224,7 +1228,7 @@ class HeartbeatEngine:
         经 LLM 去重裁决：auto_capture 可能已从原始对话提取过相同事实，
         直接写入会产生重复（语义重复 skip / 事实演进 update / 无重复 store）。
         """
-        store = self.mind.memory_store
+        store = self.memory.memory_store
         if not store:
             return
         content = f"[{note_date} 事件归档]\n{distilled}"
@@ -1236,7 +1240,7 @@ class HeartbeatEngine:
                 gather_dedup_candidates,
                 judge_write,
             )
-            candidates = await gather_dedup_candidates(store, self.mind.embedder, content)
+            candidates = await gather_dedup_candidates(store, self.memory.embedder, content)
             decision = await judge_write(content, candidates)
             action = decision.get("action", "store")
             metrics.incr(f"write.dedup_llm_{action}")
@@ -1276,13 +1280,13 @@ class HeartbeatEngine:
 
     async def _resync_file_index(self) -> None:
         """增量同步文件索引：周期维护与归档删除后共用（hash 比对，未变文件零写入）。"""
-        store = self.mind.memory_store
+        store = self.memory.memory_store
         if not store:
             return
         try:
             from agent.memory.memory_sync import sync_files
             from agent.memory.notes import get_memory_dir
-            await sync_files(store, self.mind.embedder, get_memory_dir())
+            await sync_files(store, self.memory.embedder, get_memory_dir())
         except Exception as exc:
             log(f"文件索引同步失败: {exc}", "DEBUG", tag="心跳")
 
@@ -1355,13 +1359,13 @@ class HeartbeatEngine:
         source = f"entity_{identity_id}"
         scope_tag = f"{identity_type}:{identity_id}"
 
-        if self.mind.memory_store:
-            old_entries = await self.mind.memory_store.list_recent(
+        if self.memory.memory_store:
+            old_entries = await self.memory.memory_store.list_recent(
                 limit=5, memory_type=MemoryType.ENTITY, source=source,
             )
             for old in old_entries:
                 if old.id:
-                    await self.mind.memory_store.delete(old.id, actor="heartbeat_profile")
+                    await self.memory.memory_store.delete(old.id, actor="heartbeat_profile")
 
             entry = MemoryEntry(
                 memory_type=MemoryType.ENTITY,
@@ -1370,12 +1374,12 @@ class HeartbeatEngine:
                 tags=[scope_tag],
                 importance=PROFILE_MEMORY_IMPORTANCE,
             )
-            await self.mind.memory_store.add(entry, actor="heartbeat_profile")
+            await self.memory.memory_store.add(entry, actor="heartbeat_profile")
             from agent.memory.embedding import wake_embedding_worker
             wake_embedding_worker()
 
         # 关系抽取：复用同一份对话材料提炼结构化关系事实（失败不影响画像产出）
-        if self.mind.memory_store:
+        if self.memory.memory_store:
             try:
                 from agent.memory.graph.extract import extract_and_store_relations
                 added = await extract_and_store_relations(self.mind, entity, combined)

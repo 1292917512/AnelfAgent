@@ -31,7 +31,7 @@ async def test_task_activity_preserves_trigger_without_changing_prompt(trigger, 
 
     mind.reflect.side_effect = reflect
     task = TaskDefinition(name="inspect", prompt="inspect", trigger_event="after_reply")
-    await TaskExecutor(mind)._execute_llm(task, None, 0.5, trigger=trigger)
+    await TaskExecutor(mind, mind)._execute_llm(task, None, 0.5, trigger=trigger)
     assert owners[0]["trigger"] == expected
     assert owners[0]["kind"] == "task"
     assert owners[0]["owner_id"] == "inspect"
@@ -49,7 +49,7 @@ async def test_task_output_permission_reaches_reflect_without_auto_routing(permi
     request = TaskCreate(**values)
     task = TaskDefinition.from_dict(_normalize_task(request.model_dump()))
     mind = _mind_with_store(_store())
-    await TaskExecutor(mind)._execute_llm(task, None, 0.5)
+    await TaskExecutor(mind, mind)._execute_llm(task, None, 0.5)
     call = mind.reflect.await_args
     assert call.kwargs["allow_output_tools"] is (permission is not False)
     prompt = call.args[0][-1]["content"]
@@ -86,7 +86,7 @@ class TestStoreResultDedup:
         mind = _mind_with_store(store)
         result = TaskResult(task_name="t", content="重复内容", memory_type=MemoryType.EPISODIC, source="t")
 
-        await TaskExecutor(mind)._store_result(result)
+        await TaskExecutor(mind, mind)._store_result(result)
 
         store.add.assert_not_awaited()
 
@@ -100,7 +100,7 @@ class TestStoreResultDedup:
         mind = _mind_with_store(store)
         result = TaskResult(task_name="t", content="已有等价记忆", memory_type=MemoryType.EPISODIC, source="t")
 
-        await TaskExecutor(mind)._store_result(result)
+        await TaskExecutor(mind, mind)._store_result(result)
 
         store.add.assert_not_awaited()
         dedup.apply_evidence_signals.assert_awaited_once()
@@ -114,7 +114,7 @@ class TestStoreResultDedup:
         mind = _mind_with_store(store)
         result = TaskResult(task_name="t", content="全新结论", memory_type=MemoryType.EPISODIC, source="t", importance=0.8)
 
-        await TaskExecutor(mind)._store_result(result)
+        await TaskExecutor(mind, mind)._store_result(result)
 
         store.add.assert_awaited_once()
         entry = store.add.await_args.args[0]
@@ -139,7 +139,7 @@ class TestReflectionFocus:
             AsyncMock(return_value="[目标停滞] 1 个活跃目标 ≥7 天未更新: g1(9天)"),
         )
         mind = _mind_with_store(store)
-        executor = TaskExecutor(mind)
+        executor = TaskExecutor(mind, mind)
         task = TaskDefinition(
             name="self_reflection", prompt="p",
             save_result_to_memory=False, tags=["type:reflection"],
@@ -159,7 +159,7 @@ class TestReflectionFocus:
         monkeypatch.setattr(situation, "stale_goal_line", AsyncMock(return_value=""))
         store = _store()
         mind = _mind_with_store(store)
-        executor = TaskExecutor(mind)
+        executor = TaskExecutor(mind, mind)
         task = TaskDefinition(
             name="self_reflection", prompt="p",
             save_result_to_memory=False, tags=["type:reflection"],
@@ -179,7 +179,7 @@ class TestReflectionFocus:
         )
         store = _store(get_tool_error_stats=AsyncMock(side_effect=RuntimeError("boom")))
         mind = _mind_with_store(store)
-        executor = TaskExecutor(mind)
+        executor = TaskExecutor(mind, mind)
         task = TaskDefinition(
             name="self_reflection", prompt="p",
             save_result_to_memory=False, tags=["type:reflection"],
@@ -191,7 +191,7 @@ class TestReflectionFocus:
     async def test_non_reflection_task_skips_focus(self) -> None:
         store = _store()
         mind = _mind_with_store(store)
-        executor = TaskExecutor(mind)
+        executor = TaskExecutor(mind, mind)
         task = TaskDefinition(name="plain_task", prompt="p", save_result_to_memory=False)
 
         await executor.run(task, trigger="manual")

@@ -228,8 +228,8 @@ class _ScopeState:
 class AutoCapturePipeline:
     """自动捕获调度器：每 tick 扫描各 scope，满足触发条件即提取。"""
 
-    def __init__(self, mind: MemoryHost) -> None:
-        self._mind = mind
+    def __init__(self, memory: MemoryHost) -> None:
+        self._memory = memory
         self._states: Dict[str, _ScopeState] = {}
         # 每 scope 一把锁：心跳 tick 与压缩前抢跑（PreCompact flush）可能并发
         # 处理同一 scope，串行化避免同批次被重复提取
@@ -243,7 +243,7 @@ class AutoCapturePipeline:
         if scope_key in self._states:
             return self._states[scope_key]
         state = _ScopeState()
-        store = self._mind.memory_store
+        store = self._memory.memory_store
         if store:
             try:
                 db = await store._get_db()
@@ -267,7 +267,7 @@ class AutoCapturePipeline:
         return state
 
     async def _save_state(self, scope_key: str, state: _ScopeState) -> None:
-        store = self._mind.memory_store
+        store = self._memory.memory_store
         if not store:
             return
         try:
@@ -292,7 +292,7 @@ class AutoCapturePipeline:
         """扫描所有会话 scope，对命中触发条件的执行提取。"""
         if not get_config_bool("memory_auto_capture_enabled", True):
             return
-        store = self._mind.memory_store
+        store = self._memory.memory_store
         if not store:
             return
         try:
@@ -506,7 +506,7 @@ class AutoCapturePipeline:
         if not items:
             return 0
 
-        store = self._mind.memory_store
+        store = self._memory.memory_store
         assert store is not None
         scope_tag = scope_key  # scope_key 即 "user:qq:123" / "group:qq:456" 标签格式
         _, adapter, _, _ = parse_entity_scope(scope)
@@ -536,7 +536,7 @@ class AutoCapturePipeline:
                 if item.get("temporal_scope") and item["type"] == "event":
                     metadata["temporal_scope"] = item["temporal_scope"]
                 candidates = await gather_dedup_candidates(
-                    store, self._mind.embedder, item["content"],
+                    store, self._memory.embedder, item["content"],
                 )
                 candidates = attribution_candidates(candidates, tags)
                 decision = await judge_write(item["content"], candidates)
@@ -624,7 +624,7 @@ class AutoCapturePipeline:
             render_material,
         )
 
-        store = self._mind.memory_store
+        store = self._memory.memory_store
         assert store is not None
         material = render_material(messages)
         if len(material) < 30:

@@ -32,9 +32,9 @@ async def test_recall_http_preserves_source_diagnostics_and_bounds_origin_detail
         "plan": RetrievalPlan(queries=["query"]), "cognee_config": CogneeConfig(), "deep": False,
         "datasets": [], "results": [result], "relations": [], "forgotten": [], "timings": {},
     })
-    monkeypatch.setattr("services.memory.require_runtime", lambda: SimpleNamespace(mind=SimpleNamespace(
+    monkeypatch.setattr("services.memory.require_runtime", lambda: SimpleNamespace(
         retriever=SimpleNamespace(diagnostic_recall=diagnostic), memory_store=object(),
-    )))
+    ))
     app = FastAPI()
     app.include_router(router)
     async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as http:

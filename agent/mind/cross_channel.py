@@ -24,7 +24,11 @@ from core.log import log
 from core.tags import etag_all, tag_label
 
 if TYPE_CHECKING:
+    from agent.config import MindConfig
+    from agent.memory.embedding import Embedder
     from agent.mind.mind import Mind
+    from agent.mind.prefrontal_cortex import PrefrontalCortex
+    from agent.storage.data_center import ConversationData
 
 
 def collect_channel_info(mind: Mind) -> list[str]:
@@ -60,17 +64,20 @@ def collect_channel_info(mind: Mind) -> list[str]:
 
 
 async def recall_cross_channel(
-    mind: Mind,
     query_conversation: list[dict[str, Any]],
     current_scope: str,
     *,
+    config: MindConfig,
+    pfc: PrefrontalCortex,
+    conversation_data: ConversationData,
+    embedder: Embedder,
     user_scope: str = "",
     query_vec: list[float] | None = None,
     query_vec_task: asyncio.Future[list[float] | None] | None = None,
 ) -> list[dict[str, Any]]:
     """结合当前对话判断召回价值，并发检索近期会话与显式关联身份的历史。"""
-    mc = mind.config
-    if not mc.cross_channel_enabled or mc.cross_channel_recall_max_results <= 0 or not mind.embedder.available:
+    mc = config
+    if not mc.cross_channel_enabled or mc.cross_channel_recall_max_results <= 0 or not embedder.available:
         return []
     query_conversation = dialogue_messages(query_conversation)
     query = MemoryRetriever._extract_query(query_conversation[-10:])
@@ -78,7 +85,7 @@ async def recall_cross_channel(
         return []
     try:
         async with hook_execution("memory.cross_channel", "context_prepare", HookMode.SYNC, scope=current_scope) as run:
-            candidates = await _recall_candidates(mind, current_scope, user_scope)
+            candidates = await _recall_candidates(config, pfc, conversation_data, current_scope, user_scope)
             if not candidates:
                 run.detail = "没有其他候选会话"
                 return []
@@ -98,7 +105,7 @@ async def recall_cross_channel(
             if query_vec_task is not None:
                 query_vec = await asyncio.shield(query_vec_task)
             elif query_vec is None:
-                query_vec = await mind.embedder.embed_query(query)
+                query_vec = await embedder.embed_query(query)
             if not query_vec:
                 run.detail = "查询向量不可用，跳过跨会话历史检索"
                 return []
@@ -109,7 +116,7 @@ async def recall_cross_channel(
             async def search(scope: str) -> list[dict[str, Any]]:
                 kind, adapter, identity, session = parse_entity_scope(scope)
                 try:
-                    rows = await mind.conversation_data.search_conversation_vector(
+                    rows = await conversation_data.search_conversation_vector(
                         kind, build_scope_id(adapter, identity, "#" + session if session else ""), query_vec,
                         limit=2, skip_recent=0, min_score=mc.cross_channel_recall_min_score,
                         scan_limit=mc.cross_channel_recall_scan_limit,
@@ -146,17 +153,20 @@ async def recall_cross_channel(
         return []
 
 
-async def _recall_candidates(mind: Mind, current_scope: str, user_scope: str) -> list[tuple[str, ScopeActivity, bool]]:
+async def _recall_candidates(
+    config: MindConfig, pfc: PrefrontalCortex, conversation_data: ConversationData,
+    current_scope: str, user_scope: str,
+) -> list[tuple[str, ScopeActivity, bool]]:
     """优先显式关联身份，再按活跃时间选择有界候选；不通过同号或昵称推断身份。"""
-    mc = mind.config
+    mc = config
     cutoff = time.time() - mc.cross_channel_window_minutes * 60
-    activities = {scope: activity for snapshot in mind.pfc.channel_snapshots.values()
+    activities = {scope: activity for snapshot in pfc.channel_snapshots.values()
                   for scope, activity in snapshot.active_scopes.items()
                   if scope != current_scope and activity.last_time >= cutoff and is_conversation_scope(scope)}
     linked: set[str] = set()
     kind, adapter, identity, _ = parse_entity_scope(user_scope or current_scope)
     if kind == "user" and adapter:
-        aliases = await mind.conversation_data.related_conversation_scopes(kind, build_scope_id(adapter, identity))
+        aliases = await conversation_data.related_conversation_scopes(kind, build_scope_id(adapter, identity))
         for alias_kind, alias_id in aliases:
             alias_adapter, _, rest = alias_id.partition(":")
             base, _, session = rest.partition("#")

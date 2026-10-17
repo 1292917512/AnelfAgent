@@ -145,6 +145,7 @@ class FakeMind:
         self.context = context if context is not None else FakeContext()
         self.compressor = None
         self.memory_store = None
+        self.recollection = SimpleNamespace(retriever=None)
         self._rounds: List[SimpleNamespace] = list(rounds or [])
         self.default_text = default_text
         self.llm_calls = 0

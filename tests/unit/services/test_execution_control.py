@@ -27,11 +27,11 @@ def execution(monkeypatch):
     mind = SimpleNamespace(
         active_reply_scopes=active_scopes, _active_scopes=active_scopes,
         interrupts=interrupts, background_tasks=BackgroundTaskRegistry(),
-        pfc=SimpleNamespace(peek_all_tasks=lambda: []), delegation_manager=None,
+        pfc=SimpleNamespace(peek_all_tasks=lambda: []),
     )
 
     mind.interrupt = MethodType(Mind.interrupt, mind)
-    runtime = SimpleNamespace(mind=mind, pfc=mind.pfc)
+    runtime = SimpleNamespace(mind=mind, pfc=mind.pfc, delegation_manager=SimpleNamespace(cancel_scope=Mock(return_value=1)))
     monkeypatch.setattr(control, "get_runtime", lambda: runtime)
     monkeypatch.setattr("services.chat.get_runtime", lambda: runtime)
     send = AsyncMock()
@@ -48,14 +48,13 @@ async def test_stop_is_scoped_and_does_not_report_completion_early(execution):
     projection, mind, scope, send = execution
     await start(projection, scope)
     mind.active_reply_scopes.update({scope, ChatService.scope_for_chat("other")})
-    mind.delegation_manager = SimpleNamespace(cancel_scope=Mock(return_value=1))
     result = await control.control_execution("run", "stop")
     assert result["interrupted"] is True
     assert mind.interrupts.pending_scopes() == [scope]
     assert projection.get_run("run")["status"] == "running"
     assert projection.get_run("run")["control"] == "stopping"
     assert await control.control_execution("run", "stop") == {"status": "accepted"}
-    mind.delegation_manager.cancel_scope.assert_called_once_with(scope)
+    control.get_runtime().delegation_manager.cancel_scope.assert_called_once_with(scope)
     send.assert_not_called()
 
 

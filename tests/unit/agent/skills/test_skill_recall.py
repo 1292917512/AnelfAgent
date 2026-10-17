@@ -116,7 +116,7 @@ class TestMatchSkillsLanes:
         captured: dict = {}
         mind = _mind_with_matcher(captured=captured)
         await recollection.match_skills(
-            mind, "基查询", query_vec=[0.1, 0.2],
+            mind.skills, "基查询", query_vec=[0.1, 0.2],
             planned_queries=["基查询", "规划乙", "规划丙", "规划丁"],
         )
         assert captured["queries"] == ["基查询", "规划乙", "规划丙"]
@@ -127,7 +127,7 @@ class TestMatchSkillsLanes:
         """基查询为空时车道 = 规划查询（无预计算向量照配首车道语义）。"""
         captured: dict = {}
         mind = _mind_with_matcher(captured=captured)
-        await recollection.match_skills(mind, "", planned_queries=["规划乙"])
+        await recollection.match_skills(mind.skills, "", planned_queries=["规划乙"])
         assert captured["queries"] == ["规划乙"]
 
     @pytest.mark.asyncio
@@ -135,7 +135,7 @@ class TestMatchSkillsLanes:
         """无任何查询文本时不调用匹配器（空车道无意义）。"""
         captured: dict = {}
         mind = _mind_with_matcher(captured=captured)
-        msgs = await recollection.match_skills(mind, "", planned_queries=[])
+        msgs = await recollection.match_skills(mind.skills, "", planned_queries=[])
         assert msgs == [] and "queries" not in captured
 
 
@@ -146,7 +146,7 @@ class TestMatchSkillsArchivedRendering:
         archived = _fake_skill("dusty-skill", state=SkillState.ARCHIVED)
         active = _fake_skill("fresh-skill", state=SkillState.ACTIVE)
         mind = _mind_with_matcher(matched=[(archived, 0.6), (active, 0.5)])
-        msgs = await recollection.match_skills(mind, "查询")
+        msgs = await recollection.match_skills(mind.skills, "查询")
         assert msgs
         content = msgs[0]["content"]
         assert "## dusty-skill【已归档】" in content
@@ -158,5 +158,5 @@ class TestMatchSkillsArchivedRendering:
     async def test_no_archived_no_hint(self) -> None:
         """无归档命中时块尾不加恢复指引（零噪音）。"""
         mind = _mind_with_matcher(matched=[(_fake_skill("fresh-skill"), 0.5)])
-        msgs = await recollection.match_skills(mind, "查询")
+        msgs = await recollection.match_skills(mind.skills, "查询")
         assert msgs and "restore_skill" not in msgs[0]["content"]

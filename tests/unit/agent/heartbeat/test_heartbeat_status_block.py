@@ -69,7 +69,7 @@ def _make_engine(
     monkeypatch.setattr(HeartbeatConfig, "save", lambda self, path=None: None)
     # 间隔真源（mind.heartbeat_interval）打桩，隔离真实 mind 配置
     monkeypatch.setattr("agent.heartbeat.engine.current_interval_seconds", lambda: 300)
-    engine = HeartbeatEngine(SimpleNamespace(), SimpleNamespace())
+    engine = HeartbeatEngine(SimpleNamespace(), SimpleNamespace(), memory=SimpleNamespace(memory_store=None, embedder=None), skills=None)
     return engine
 
 

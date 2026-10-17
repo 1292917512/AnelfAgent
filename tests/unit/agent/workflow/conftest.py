@@ -22,13 +22,13 @@ def fake_manager():
 
 
 @pytest.fixture()
-def stub_mind(fake_manager):
-    return make_stub_mind(fake_manager)
+def stub_mind():
+    return make_stub_mind()
 
 
 @pytest.fixture()
-async def engine(stub_mind):
+async def engine(stub_mind, fake_manager):
     from agent.workflow.engine import WorkflowEngine
-    eng = WorkflowEngine(stub_mind)
+    eng = WorkflowEngine(stub_mind.background_tasks, fake_manager)
     yield eng
     await eng.aclose()

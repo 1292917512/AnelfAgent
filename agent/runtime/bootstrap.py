@@ -379,23 +379,18 @@ def create_bootstrap() -> FlowMachine:
             config=get_mind_config(), data_center=data_center,
             llm=llm_data["llm"],
             llm_manager=llm_data["manager"],
+            memory_store=mem["store"], embedder=mem["embedder"],
         )
-        mind = create_mind(
-            char=char, models=runtime,
-            channel_manager=channel_manager,
-            everything_data=data_center.everything_data,
-            conversation_data=data_center.conversation_data,
-            memory_store=mem["store"],
-        )
+        mind = create_mind(runtime)
         import agent.workflow.tools  # noqa: F401  # 注册工作流工具
         from agent.memory.auto_capture import AutoCapturePipeline
         from agent.workflow.engine import WorkflowEngine
         from core.tool_registry import activate_group
 
-        workflow_engine = WorkflowEngine(mind)
+        workflow_engine = WorkflowEngine(mind.background_tasks, runtime.delegation_manager)
         count = activate_group("workflow", "工作流 - 可恢复的多步骤编排（断点续跑/门控重跑）")
         log(f"🧩 工作流工具已注册 ({count} 个)", tag="工作流")
-        auto_capture_pipeline = AutoCapturePipeline(mind)
+        auto_capture_pipeline = AutoCapturePipeline(runtime)
         assistant = AgentAssistant(mind)
         pipeline.register_agent(assistant)
 
@@ -414,6 +409,7 @@ def create_bootstrap() -> FlowMachine:
         hooks_llm_runtime = HookRuntime(mind)
         wire_runtime(
             mind=mind,
+            skills=runtime.skills, delegation_manager=runtime.delegation_manager,
             workflow_engine=workflow_engine,
             auto_capture_pipeline=auto_capture_pipeline,
             data_center=data_center,
@@ -761,9 +757,9 @@ def create_bootstrap() -> FlowMachine:
         for port_name in assert_wired():
             issues.append(f"晚绑定端口未施绑: {port_name}")
 
-        if rt.mind.memory_store:
+        if rt.memory_store:
             try:
-                await rt.mind.memory_store._get_db()
+                await rt.memory_store._get_db()
             except Exception as e:
                 issues.append(f"MemoryStore 连接失败: {e}")
 

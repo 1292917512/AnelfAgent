@@ -7,12 +7,9 @@ from typing import TYPE_CHECKING
 from core.log import log
 
 if TYPE_CHECKING:
-    from agent.channel.manager import ChannelManager
-    from agent.memory.memory_store import MemoryStore
     from agent.messages import CharacterAgent
-    from agent.mind.llm_invoker import ModelRuntime
     from agent.mind.mind import Mind
-    from agent.storage.data_center import ConversationData, EverythingData
+    from agent.runtime.runtime import AgentRuntime
 
 
 def load_persona() -> CharacterAgent:
@@ -35,12 +32,7 @@ def load_persona() -> CharacterAgent:
     return CharacterAgent(personality=prompts)
 
 
-def create_mind(
-    *, char: CharacterAgent, models: ModelRuntime,
-    channel_manager: ChannelManager, everything_data: EverythingData,
-    conversation_data: ConversationData,
-    memory_store: MemoryStore | None,
-) -> Mind:
+def create_mind(runtime: AgentRuntime) -> Mind:
     """在运行中的事件循环内装配思维服务，完成接线后返回宿主。"""
     import asyncio
     from functools import partial
@@ -48,7 +40,6 @@ def create_mind(
     from agent.context.assembly import ContextAssembly
     from agent.context.compressor import ContextCompressor
     from agent.heartbeat.engine import HeartbeatEngine
-    from agent.memory.embedding import get_embedder
     from agent.memory.memory_retriever import MemoryRetriever
     from agent.mind.background.routing import on_task_alert, on_task_unclaimed
     from agent.mind.background.tasks import BackgroundTaskRegistry
@@ -56,6 +47,7 @@ def create_mind(
     from agent.mind.mind import Mind
     from agent.mind.prefrontal_cortex import PrefrontalCortex
     from agent.mind.push import PushHub
+    from agent.mind.recall.inputs import Recollection
     from agent.mind.tool_assembly import ToolAssembly
     from agent.mind.tools.core import register_core_tools
     from agent.skills import SkillCurator, SkillMatcher, SkillReviewer, get_skill_store
@@ -65,6 +57,10 @@ def create_mind(
     from core.tool_registry import activate_group
 
     loop = asyncio.get_running_loop()
+    conversation_data = runtime.data_center.conversation_data
+    everything_data = runtime.data_center.everything_data
+    channel_manager = runtime.channel_manager
+    memory_store, embedder = runtime.memory_store, runtime.embedder
     skill_store = get_skill_store()
     plugin_registry = get_plugin_manager().registry
     tool_assembly = ToolAssembly(channel_manager)
@@ -73,29 +69,34 @@ def create_mind(
         pfc, tool_assembly, channel_manager, conversation_data,
         skill_store, plugin_registry,
     )
-    embedder = get_embedder("text")
     skill_matcher = SkillMatcher(skill_store, embedder)
-    skills = SkillRuntime(skill_store, skill_matcher, SkillCurator(skill_store, skill_matcher.index))
+    runtime.skills = SkillRuntime(skill_store, skill_matcher, SkillCurator(skill_store, skill_matcher.index))
     background_tasks = BackgroundTaskRegistry(loop=loop)
     retriever = MemoryRetriever(memory_store, embedder) if memory_store else None
-    if retriever is not None and models.llm_manager is not None:
-        rerank_client = models.llm_manager.get_media_client("rerank")
+    runtime.retriever = retriever
+    if retriever is not None and runtime.llm_manager is not None:
+        rerank_client = runtime.llm_manager.get_media_client("rerank")
         if rerank_client:
             retriever.set_rerank_client(rerank_client)
     mind = Mind(
-        config=models.config,
-        char=char, models=models, channel_manager=channel_manager,
+        config=runtime.config,
+        char=runtime.char, models=runtime, channel_manager=channel_manager,
         conversation_data=conversation_data,
         pfc=pfc, tool_assembly=tool_assembly,
-        context=context, skills=skills, background_tasks=background_tasks,
+        context=context,
+        recollection=Recollection(
+            config=runtime.config, pfc=pfc, conversation_data=conversation_data,
+            memory_store=memory_store, embedder=embedder, retriever=retriever, skills=runtime.skills,
+        ),
+        background_tasks=background_tasks,
         embedder=embedder, retriever=retriever,
         memory_store=memory_store,
     )
-    mind.model_invoker = ModelInvoker(models)
+    mind.model_invoker = ModelInvoker(runtime)
     background_tasks.set_unclaimed_callback(partial(on_task_unclaimed, mind))
     background_tasks.set_alert_callback(partial(on_task_alert, mind))
     mind.push_hub = PushHub(pfc, mind.try_execute_mind, loop=loop)
-    mind.heartbeat_engine = HeartbeatEngine(mind, everything_data)
+    mind.heartbeat_engine = HeartbeatEngine(mind, everything_data, memory=runtime, skills=runtime.skills)
     mind.compressor = ContextCompressor(mind.model_invoker)
 
     reviewer = SkillReviewer(mind, skill_store, index=skill_matcher.index)
@@ -104,7 +105,7 @@ def create_mind(
 
     import agent.delegation.delegate_tool  # noqa: F401
     from agent.delegation.delegation_manager import DelegationManager
-    mind.delegation_manager = DelegationManager(mind)
+    runtime.delegation_manager = DelegationManager(mind)
     count = activate_group("delegation", "子代理 - 复杂任务拆分委托与并行执行")
     log(f"🤖 子代理工具已注册 ({count} 个)", tag="委托")
 
