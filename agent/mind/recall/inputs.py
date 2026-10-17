@@ -1,8 +1,8 @@
-"""并发读取上下文事实，仅在数据依赖处等待。
+"""收集召回材料，按依赖并发读取，不负责最终上下文装配。
 
-模型可见：召回及技能匹配仅根据对话正文准备，排除提示词、工具回执与内部思考。
-Token 影响：复用检索计划和查询向量，减少判断输入，不增加模型请求或注入块。
-缓存影响：只改变取数调度；稳定前缀与动态区的边界不变。
+模型可见：语义查询取自对话正文；画像、关联、技能、会话纪律等材料交由上下文层按来源装配。
+Token 影响：技能匹配复用记忆检索计划与基础查询向量，不另起技能规划模型请求。
+缓存影响：本模块只产出材料，不写入稳定前缀；分层与预算裁剪由上下文层负责。
 """
 
 from __future__ import annotations
@@ -29,7 +29,12 @@ async def collect_recollection_inputs(
     mind: Mind, conversation: list[dict], anything: Everything | None,
     *, scope: str, adapter: str, lean: bool,
 ) -> RecollectionInputs:
-    """同时启动独立读取；技能只等待记忆计划，取消时收束全部本轮读取。"""
+    """并发收集当前会话的记忆、技能、关联、摘要与约束。
+
+    技能等待检索计划就绪后开始匹配，可与后续记忆检索并行；查询向量由需要它的读取共享。
+    精简模式仅读取枢纽、摘要、永久记忆与会话纪律，不执行技能匹配或消费显式技能请求。
+    本轮任务全部收束后返回材料；未处理的异常或取消会取消同组读取。
+    """
     result = RecollectionInputs()
     conversation = dialogue_messages(conversation)
     tail = conversation[-10:]
@@ -184,7 +189,12 @@ async def match_skills(
         scope: str = "",
         planned_queries: Optional[List[str]] = None,
 ) -> List[Dict]:
-    """消费本会话的技能手势，交给技能系统匹配与生成召回材料。"""
+    """从技能运行时取出本会话的显式请求，合并对话匹配结果生成技能材料。
+
+    /name 请求绕过相关度评分，普通候选按对话查询及检索计划匹配。
+    技能系统负责可调用校验、去重、正文预算与来源信息；本函数不执行技能步骤。
+    关闭技能功能时不消费请求；启用时请求一次性取出，匹配失败不会自动放回。
+    """
     if not get_config_bool("skills_enabled", True):
         return []
     from agent.skills.recall import match_recalled_skills
