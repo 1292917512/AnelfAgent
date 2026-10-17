@@ -478,7 +478,7 @@ class DelegationManager:
         （工具层已前置拦截未知名称，此处降级是直连调用方的防御路径）；
         未标注/非法/未配置时返回 ""（用默认模型）。
         """
-        mgr = getattr(self._mind, "llm_manager", None)
+        mgr = self._mind.models.llm_manager
         if mgr is None:
             return ""
         try:
@@ -501,7 +501,7 @@ class DelegationManager:
         """
         if not agent_name:
             return None
-        mgr = getattr(self._mind, "llm_manager", None)
+        mgr = self._mind.models.llm_manager
         if mgr is None:
             return None
         try:

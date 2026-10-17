@@ -37,8 +37,7 @@ def _fake_mind(pins_text: str = "") -> SN:
         char=SN(get_personality_msg=lambda: [{"content": "人格"}]),
         retriever=retriever,
         memory_store=None,  # 替身无记忆库：主标签记忆注入位为空
-        llm=None,
-        llm_manager=SN(get_models_summary=lambda: "models"),
+        models=SN(llm=None, llm_manager=SN(get_models_summary=lambda: "models")),
         context=SN(
             stable_fingerprint=lambda summary, vision: "fp",
             build_persona_block=lambda parts, guide: "人设块",

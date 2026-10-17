@@ -140,11 +140,11 @@ def wire_runtime(
     from agent.storage.conversation_fold import conversation_folder
 
     async def prewarm(scope_type: str, scope_id: str) -> None:
-        models_summary, direct_vision = model_context(mind.llm, mind.llm_manager)
+        models_summary, direct_vision = model_context(mind.models.llm, mind.models.llm_manager)
         await prewarm_scope_cache(
             scope_type, scope_id, context=mind.context, char=mind.char,
             models_summary=models_summary, direct_vision=direct_vision,
-            retriever=mind.retriever, conversation_data=mind.conversation_data, client=mind.llm,
+            retriever=mind.retriever, conversation_data=mind.conversation_data, client=mind.models.llm,
             get_tools=mind.tool_assembly.get_active_tool_schemas,
             timeout=mind.config.llm_timeout * 20,
         )

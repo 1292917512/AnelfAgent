@@ -40,7 +40,7 @@ async def prepare_recollection(
     inputs = await collect_recollection_inputs(
         mind, conversation_list, anything, scope=entity_scope, adapter=current_adapter, lean=lean,
     )
-    models_summary, direct_vision = model_context(mind.llm, mind.llm_manager)
+    models_summary, direct_vision = model_context(mind.models.llm, mind.models.llm_manager)
     return await mind.context.preparation.build_recollection(
         inputs, conversation_list, anything,
         persona_parts=[msg["content"] for msg in mind.char.get_personality_msg() if msg.get("content")],

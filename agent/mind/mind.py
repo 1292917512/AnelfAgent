@@ -34,14 +34,13 @@ if TYPE_CHECKING:
     from agent.context.compressor import ContextCompressor
     from agent.delegation.delegation_manager import DelegationManager
     from agent.heartbeat.engine import HeartbeatEngine
-    from agent.llm import ChatModel, ImageContent
-    from agent.llm.llm_manager import LLMManager
+    from agent.llm import ImageContent
     from agent.memory.embedding import Embedder
     from agent.memory.memory_retriever import MemoryRetriever
     from agent.memory.memory_store import MemoryStore
     from agent.messages import CharacterAgent, Everything
     from agent.mind.background.tasks import BackgroundTaskRegistry
-    from agent.mind.llm_invoker import ModelInvoker
+    from agent.mind.llm_invoker import ModelInvoker, ModelRuntime
     from agent.mind.prefrontal_cortex import PrefrontalCortex
     from agent.mind.push import PushHub
     from agent.mind.tool_assembly import ToolAssembly
@@ -63,8 +62,7 @@ class Mind:
             *,
             config: MindConfig,
             char: CharacterAgent,
-            llm: ChatModel,
-            llm_manager: Optional[LLMManager] = None,
+            models: ModelRuntime,
             channel_manager: ChannelManager,
             conversation_data: ConversationData,
             pfc: PrefrontalCortex,
@@ -78,8 +76,7 @@ class Mind:
     ) -> None:
         self.config = config
         self.char = char
-        self.llm = llm
-        self.llm_manager = llm_manager
+        self.models = models
         self.channel_manager = channel_manager
         self.conversation_data = conversation_data
 

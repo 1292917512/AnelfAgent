@@ -281,7 +281,7 @@ class ModelService:
         if rt is None:
             return
         try:
-            rt.switch_llm(self._manager().get_default())
+            rt.llm = self._manager().get_default()
         except Exception:
             from core.log import log
             log("LLM 热切换失败", "ERROR")

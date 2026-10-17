@@ -357,9 +357,10 @@ async def think_and_decide(mind: "Mind", situation: SituationContext) -> List[De
         mc = mind.config
         opts = {"temperature": mc.meta_decision_temperature}
         tc = {"type": "function", "function": {"name": "decide"}}
-        if mind.llm_manager:
-            primary = mind.llm if isinstance(mind.llm, LLMClient) else None
-            result = await mind.llm_manager.chat_with_fallback(
+        models = mind.models
+        if models.llm_manager:
+            primary = models.llm if isinstance(models.llm, LLMClient) else None
+            result = await models.llm_manager.chat_with_fallback(
                 messages,
                 options=opts,
                 tools=DECISION_TOOLS,
@@ -369,7 +370,7 @@ async def think_and_decide(mind: "Mind", situation: SituationContext) -> List[De
                 timeout=mc.llm_timeout,
             )
         else:
-            result = await mind.llm.chat(
+            result = await models.llm.chat(
                 messages, options=opts,
                 tools=DECISION_TOOLS, tool_choice=tc,
             )

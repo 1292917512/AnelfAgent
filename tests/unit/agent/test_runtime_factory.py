@@ -9,6 +9,7 @@ import pytest
 
 from agent.config import BotConfig, BotConfigProvider
 from agent.llm import ChatResult
+from agent.llm.llm_client import LLMClient, LLMClientConfig
 from agent.runtime import factory
 from agent.runtime.runtime import AgentRuntime
 from agent.skills.skill_store import SkillStore
@@ -53,16 +54,17 @@ async def test_factory_shares_state_and_finishes_wiring_before_publish(tmp_path,
     conversation, manager, memory, everything = MagicMock(), MagicMock(), MagicMock(), MagicMock()
     conversation.router.append = AsyncMock()
     manager.chat_with_fallback = AsyncMock(return_value=ChatResult(content=""))
+    runtime = AgentRuntime(
+        channel_manager=MagicMock(), pipeline=MagicMock(), char=MagicMock(),
+        config=provider.mind, llm=MagicMock(), llm_manager=manager, data_center=MagicMock(),
+    )
     mind = factory.create_mind(
-        char=MagicMock(), llm=MagicMock(), llm_manager=manager,
-        channel_manager=MagicMock(), everything_data=everything,
+        char=runtime.char, models=runtime,
+        channel_manager=runtime.channel_manager, everything_data=everything,
         conversation_data=conversation, memory_store=memory,
     )
-    runtime = AgentRuntime(
-        channel_manager=mind.channel_manager, pipeline=MagicMock(), assistant=MagicMock(),
-        mind=mind, pfc=mind.pfc, char=mind.char, llm=mind.llm,
-        data_center=MagicMock(), workflow_engine=MagicMock(),
-    )
+    runtime.mind, runtime.pfc = mind, mind.pfc
+    runtime.assistant, runtime.workflow_engine = MagicMock(), MagicMock()
     monkeypatch.setattr("services.memory.require_runtime", lambda: runtime)
     assert mind.context._pfc is mind.pfc is runtime.pfc
     memory_service = MemoryService()
@@ -94,6 +96,8 @@ async def test_factory_shares_state_and_finishes_wiring_before_publish(tmp_path,
     assert mind.reflect.__self__ is mind
     assert not mind.is_reply and mind._reply_idle_event.is_set()
     assert mind.config is provider.mind
+    assert mind.models is runtime
+    assert not hasattr(mind, "llm")
     provider.save_mind_config(llm_timeout=45, llm_max_retries=2)
     assert mind.config.llm_timeout == 45
     assert mind.config.llm_max_retries == 2
@@ -107,6 +111,17 @@ async def test_factory_shares_state_and_finishes_wiring_before_publish(tmp_path,
     assert mind.config.llm_timeout == 75
     await mind.model_invoker.chat_with_retry([], None)
     assert manager.chat_with_fallback.call_args.kwargs["timeout"] == 75
+
+    replacement = object.__new__(LLMClient)
+    replacement.config = LLMClientConfig(name="replacement", context_window=64000)
+    monkeypatch.setattr(LLMClient, "get_model_info", staticmethod(lambda _: {}))
+    runtime.llm = replacement
+    mind.model_invoker.session_params["temperature"] = 0.3
+    await mind.model_invoker.chat_with_retry([], None)
+    assert manager.chat_with_fallback.call_args.kwargs["client"] is replacement
+    assert manager.chat_with_fallback.call_args.kwargs["options"]["temperature"] == 0.3
+    assert mind.models.llm is replacement
+    assert mind.model_invoker.get_context_length() == 64000
 
     def fail_write(*args):
         raise OSError("disk unavailable")

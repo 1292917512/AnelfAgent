@@ -35,7 +35,7 @@ class _StubLLMManager:
 class _FakeMind:
     def __init__(self, output: str = "子任务完成") -> None:
         self.reflect = AsyncMock(return_value=output)
-        self.llm_manager: _StubLLMManager | None = None
+        self.models = SimpleNamespace(llm_manager=None)
         self.model_invoker = SimpleNamespace(get_context_length=lambda: 128000)
 
 
@@ -43,7 +43,7 @@ class _FakeMind:
 def _make_manager(profiles=None, tiers=None) -> tuple[DelegationManager, _StubLLMManager]:
     mind = _FakeMind()
     stub = _StubLLMManager(profiles or {}, tiers or {})
-    mind.llm_manager = stub
+    mind.models.llm_manager = stub
     return DelegationManager(mind), stub
 
 
@@ -102,7 +102,7 @@ class TestDelegateToolValidation:
     async def test_disabled_profile_model_rejected(self) -> None:
         manager, _ = _make_manager(profiles={"researcher": "glm-flash"})
         # 覆写档案可用性：候选池无可用模型
-        manager._mind.llm_manager.list_sub_agents = lambda: [{
+        manager._mind.models.llm_manager.list_sub_agents = lambda: [{
             "name": "researcher", "models": ["glm-flash"], "description": "",
             "tier": 0, "builtin": False, "first_available": None,
             "model_missing": False, "model_enabled": False,

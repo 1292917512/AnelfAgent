@@ -148,6 +148,7 @@ class FakeMind:
         self._rounds: List[SimpleNamespace] = list(rounds or [])
         self.default_text = default_text
         self.llm_calls = 0
+        self.models = SimpleNamespace(llm=None, llm_manager=None)
         self.tool_choices: list = []
         self.sent_messages: List[list] = []
         self.executed_tools: List[str] = []

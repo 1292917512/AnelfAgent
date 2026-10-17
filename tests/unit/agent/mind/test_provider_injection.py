@@ -136,7 +136,7 @@ class TestProviderMediaDispatch:
             rounds=[end_reply_result()], default_text=None,
             context=FakeContext(exec_layer=True),
         )
-        mind.llm = SimpleNamespace(
+        mind.models.llm = SimpleNamespace(
             config=SimpleNamespace(supports_vision=True, use_flat_image_url=False),
         )
         return mind

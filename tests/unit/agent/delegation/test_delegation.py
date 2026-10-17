@@ -28,6 +28,7 @@ class _FakeMind:
         from agent.mind.prefrontal_cortex import PrefrontalCortex
         self.pfc = PrefrontalCortex(SimpleNamespace())
         self.model_invoker = SimpleNamespace(get_context_length=lambda: 128000)
+        self.models = SimpleNamespace(llm_manager=None)
 
 
 

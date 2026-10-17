@@ -357,7 +357,8 @@ def create_bootstrap() -> FlowMachine:
         depends_on=["init_channel_system", "init_persona", "init_memory", "register_internal_tools"],
     )
     async def assemble_runtime():
-        """纯组装：Mind -> Assistant -> Runtime -> set_runtime -> 统一施绑。"""
+        """创建运行时模型状态，装配执行服务后发布并统一施绑。"""
+        from agent.config import get_mind_config
         from agent.runtime.assistant import AgentAssistant
         from agent.runtime.factory import create_mind
         from agent.runtime.runtime import AgentRuntime
@@ -373,10 +374,14 @@ def create_bootstrap() -> FlowMachine:
         channel_manager = ch_data["channel_manager"]
         pipeline = ch_data["pipeline"]
 
-        mind = create_mind(
-            char=char,
+        runtime = AgentRuntime(
+            channel_manager=channel_manager, pipeline=pipeline, char=char,
+            config=get_mind_config(), data_center=data_center,
             llm=llm_data["llm"],
             llm_manager=llm_data["manager"],
+        )
+        mind = create_mind(
+            char=char, models=runtime,
             channel_manager=channel_manager,
             everything_data=data_center.everything_data,
             conversation_data=data_center.conversation_data,
@@ -394,17 +399,10 @@ def create_bootstrap() -> FlowMachine:
         assistant = AgentAssistant(mind)
         pipeline.register_agent(assistant)
 
-        runtime = AgentRuntime(
-            channel_manager=channel_manager,
-            pipeline=pipeline,
-            assistant=assistant,
-            mind=mind,
-            pfc=mind.pfc,
-            char=char,
-            llm=llm_data["llm"],
-            data_center=data_center,
-            workflow_engine=workflow_engine,
-        )
+        runtime.mind = mind
+        runtime.pfc = mind.pfc
+        runtime.assistant = assistant
+        runtime.workflow_engine = workflow_engine
         set_runtime(runtime)
 
         # 晚绑定统一施绑（mind 工具组 / cognee 可选后端 / sticker worker + 跨模块回调），

@@ -89,7 +89,7 @@ async def prepare_round_context(
     # （缓存断点不在此注入——发送边界由 llm/prompt_cache 按 _layer 统一装饰，
     # 链尾锚点天然随链增长前移）
     # provider 实时注入：每轮收集最新快照，置于工具链之后、exec_context 之前
-    provider_msgs = await collect_provider_messages(getattr(getattr(mind, "llm", None), "config", None), ctx.current_scope)
+    provider_msgs = await collect_provider_messages(getattr(mind.models.llm, "config", None), ctx.current_scope)
     from agent.memory.probe import deep_probe_hub
     for message in provider_msgs:
         if message.get("_source", {}).get("provider") == "memory_deep_probe":

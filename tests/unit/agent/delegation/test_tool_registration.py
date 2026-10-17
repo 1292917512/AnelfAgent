@@ -53,6 +53,7 @@ import asyncio
 import importlib
 import sys
 from unittest.mock import DEFAULT, MagicMock, patch
+from types import SimpleNamespace
 importlib.import_module(sys.argv[1])
 if sys.argv[1] in {'agent.mind.prefrontal_cortex', 'agent.runtime.factory'}:
     assert 'agent.mind.mind' not in sys.modules
@@ -80,7 +81,7 @@ async def check():
         patch('agent.heartbeat.engine.HeartbeatEngine'), patch('agent.context.compressor.ContextCompressor'), \
         patch('agent.delegation.delegation_manager.DelegationManager'):
         mind = factory.create_mind(
-            char=MagicMock(), llm=MagicMock(), llm_manager=None,
+            char=MagicMock(), models=SimpleNamespace(config=MagicMock(), llm=MagicMock(), llm_manager=None),
             channel_manager=MagicMock(), everything_data=MagicMock(),
             conversation_data=MagicMock(), memory_store=None,
         )

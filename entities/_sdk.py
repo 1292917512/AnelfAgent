@@ -935,7 +935,7 @@ def set_default_model(model_id: str) -> bool:
     from agent.runtime.singleton import get_runtime
     rt = get_runtime()
     if rt is not None:
-        rt.switch_llm(mgr.get_default())
+        rt.llm = mgr.get_default()
     return True
 
 

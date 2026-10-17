@@ -189,6 +189,7 @@ class TestFrontDelegateRegistry:
                     lambda scope, desc, summary: self.unclaimed.append((scope, desc)),
                 )
                 self.model_invoker = SimpleNamespace(get_context_length=lambda: 128000)
+                self.models = SimpleNamespace(llm_manager=None)
 
             async def reflect(self, messages, **kwargs) -> str:
                 if delay:

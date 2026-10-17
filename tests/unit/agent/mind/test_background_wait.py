@@ -474,7 +474,7 @@ class TestReflectGuards:
     async def test_reflect_discipline_injected_when_unsupported(self, anything) -> None:
         """端点不支持强制 tool_choice 时，REFLECT 同样注入输出纪律提示。"""
         mind = _WaitMind()
-        mind.llm = SimpleNamespace(config=SimpleNamespace(supports_forced_tool_choice=False))
+        mind.models.llm = SimpleNamespace(config=SimpleNamespace(supports_forced_tool_choice=False))
         seen: List[str] = []
         original = mind.model_invoker.invoke
 
@@ -513,6 +513,7 @@ class _DelegationMind:
         # 镜像 on_task_unclaimed：轮外完成经回调排入回复队列并触发新一轮
         self.background_tasks.set_unclaimed_callback(self.on_task_unclaimed)
         self.model_invoker = SimpleNamespace(get_context_length=lambda: 128000)
+        self.models = SimpleNamespace(llm_manager=None)
 
     def on_task_unclaimed(self, scope: str, description: str, summary: str, success: bool = True):
         # 镜像 on_task_unclaimed（async 版）：返回协程由 registry

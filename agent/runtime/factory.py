@@ -8,10 +8,9 @@ from core.log import log
 
 if TYPE_CHECKING:
     from agent.channel.manager import ChannelManager
-    from agent.llm import ChatModel
-    from agent.llm.llm_manager import LLMManager
     from agent.memory.memory_store import MemoryStore
     from agent.messages import CharacterAgent
+    from agent.mind.llm_invoker import ModelRuntime
     from agent.mind.mind import Mind
     from agent.storage.data_center import ConversationData, EverythingData
 
@@ -37,7 +36,7 @@ def load_persona() -> CharacterAgent:
 
 
 def create_mind(
-    *, char: CharacterAgent, llm: ChatModel, llm_manager: LLMManager | None,
+    *, char: CharacterAgent, models: ModelRuntime,
     channel_manager: ChannelManager, everything_data: EverythingData,
     conversation_data: ConversationData,
     memory_store: MemoryStore | None,
@@ -46,7 +45,6 @@ def create_mind(
     import asyncio
     from functools import partial
 
-    from agent.config import get_mind_config
     from agent.context.assembly import ContextAssembly
     from agent.context.compressor import ContextCompressor
     from agent.heartbeat.engine import HeartbeatEngine
@@ -80,20 +78,20 @@ def create_mind(
     skills = SkillRuntime(skill_store, skill_matcher, SkillCurator(skill_store, skill_matcher.index))
     background_tasks = BackgroundTaskRegistry(loop=loop)
     retriever = MemoryRetriever(memory_store, embedder) if memory_store else None
-    if retriever is not None and llm_manager is not None:
-        rerank_client = llm_manager.get_media_client("rerank")
+    if retriever is not None and models.llm_manager is not None:
+        rerank_client = models.llm_manager.get_media_client("rerank")
         if rerank_client:
             retriever.set_rerank_client(rerank_client)
     mind = Mind(
-        config=get_mind_config(),
-        char=char, llm=llm, llm_manager=llm_manager, channel_manager=channel_manager,
+        config=models.config,
+        char=char, models=models, channel_manager=channel_manager,
         conversation_data=conversation_data,
         pfc=pfc, tool_assembly=tool_assembly,
         context=context, skills=skills, background_tasks=background_tasks,
         embedder=embedder, retriever=retriever,
         memory_store=memory_store,
     )
-    mind.model_invoker = ModelInvoker(mind)
+    mind.model_invoker = ModelInvoker(models)
     background_tasks.set_unclaimed_callback(partial(on_task_unclaimed, mind))
     background_tasks.set_alert_callback(partial(on_task_alert, mind))
     mind.push_hub = PushHub(pfc, mind.try_execute_mind, loop=loop)

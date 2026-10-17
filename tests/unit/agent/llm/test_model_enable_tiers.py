@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from agent.llm.config import ModelType
 from agent.llm.llm_manager import LLMManager
 
@@ -127,10 +129,10 @@ class TestDelegationDifficultyWiring:
         from agent.delegation.delegation_manager import DelegationManager
 
         class _StubMind:
-            llm_manager = _make_manager(tmp_path)
+            models = SimpleNamespace(llm_manager=_make_manager(tmp_path))
 
         mgr = DelegationManager(_StubMind())  # type: ignore[arg-type]
-        mgr._mind.llm_manager.update_sub_agent("easy", models=["cheap"])
+        mgr._mind.models.llm_manager.update_sub_agent("easy", models=["cheap"])
 
         assert mgr._resolve_model("", 0) == ""
         assert mgr._resolve_model("", 1) == "cheap"

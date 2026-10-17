@@ -18,7 +18,7 @@ _TINY_B64 = base64.b64encode(b"tiny-image-bytes").decode("utf-8")
 
 
 def _make_mind(config: LLMClientConfig) -> SimpleNamespace:
-    return SimpleNamespace(llm=SimpleNamespace(config=config))
+    return SimpleNamespace(models=SimpleNamespace(llm=SimpleNamespace(config=config)))
 
 
 def _make_messages() -> List[Dict]:
