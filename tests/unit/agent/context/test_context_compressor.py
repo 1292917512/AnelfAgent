@@ -1,11 +1,11 @@
-"""上下文压缩管线（agent.mind.context_compressor）单元测试。"""
+"""上下文压缩管线（agent.context.compressor）单元测试。"""
 
 from __future__ import annotations
 
 from typing import List
 from unittest.mock import AsyncMock
 
-from agent.mind.context_compressor import (
+from agent.context.compressor import (
     CompressionConfig,
     ContextCompressor,
 )
@@ -67,7 +67,7 @@ class TestThreshold:
 
     def test_estimate_tokens_fallback(self, monkeypatch) -> None:
         """tiktoken 缺失时回退 chars/4 估算。"""
-        import agent.mind.context_compressor as cc
+        import agent.context.compressor as cc
         monkeypatch.setattr(cc, "_get_tiktoken_encoding", lambda: None)
         msgs = [{"role": "user", "content": "a" * 400}]
         assert ContextCompressor.estimate_tokens(msgs) == 100
@@ -690,7 +690,7 @@ class TestMediaBlockEstimate:
     """estimate_tokens 的多模态块估算（不再计 0，按字节启发式 + 缓存复用）。"""
 
     def test_image_block_counted(self) -> None:
-        from agent.mind.context_compressor import ContextCompressor
+        from agent.context.compressor import ContextCompressor
         text_only = [{"role": "user", "content": "你好"}]
         with_image = [{
             "role": "user",
@@ -707,7 +707,7 @@ class TestMediaBlockEstimate:
         assert with_img - base >= 400
 
     def test_remote_url_image_uses_typical_estimate(self) -> None:
-        from agent.mind.context_compressor import ContextCompressor
+        from agent.context.compressor import ContextCompressor
         msgs = [{
             "role": "user",
             "content": [
@@ -719,7 +719,7 @@ class TestMediaBlockEstimate:
 
     def test_media_estimate_cached(self) -> None:
         """同一图片块逐轮重发时走缓存（第二次调用结果一致且命中 LRU）。"""
-        from agent.mind.context_compressor import ContextCompressor
+        from agent.context.compressor import ContextCompressor
         block = {"type": "image_url", "image_url": {
             "url": "data:image/png;base64," + "B" * 50_000,
         }}
@@ -729,7 +729,7 @@ class TestMediaBlockEstimate:
         assert first == second
 
     def test_audio_block_counted(self) -> None:
-        from agent.mind.context_compressor import ContextCompressor
+        from agent.context.compressor import ContextCompressor
         msgs = [{
             "role": "user",
             "content": [

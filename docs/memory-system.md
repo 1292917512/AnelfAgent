@@ -237,7 +237,7 @@ Cognee 面板保存先校验模型参数和向量空间，再原子写入配置�
 
 | 机制 | 位置 | 说明 |
 |------|------|------|
-| 记忆体系铁律 | `agent/memory/rules_doc.py`（文档持有）+ `config/memory_rules.md`（文件载体，ConfigPaths.MEMORY_RULES）+ `context_assembly._memory_rules_text` | 写入路由（五系统 + 技能分流，一条信息只进一个系统、出处用指针）/ 标签纪律（前缀语义、打标即入联想网络、写前 memory_index 查既有形态、tags 软加权 vs filter_tags 硬过滤）/ 主标签记忆用法 / 披露边界 / 查询路由 / 落盘诚实 / 检索纪律 / 口头纠正（用户说「记错了」时 recall 定位 → update_memory 原地修正 / forget 归档，禁止新旧矛盾并存）/ 图谱治理路由条。缺失时以 DEFAULT_RULES 种子落盘；AI 无写入路径，人类经 Web 记忆页「规则」标签整文档编辑或手编文件；读取走 mtime 缓存，生效文本参与 stable 指纹门控 |
+| 记忆体系铁律 | `agent/memory/rules_doc.py`（文档持有）+ `config/memory_rules.md`（文件载体，ConfigPaths.MEMORY_RULES）+ `agent.context.assembly._memory_rules_text` | 写入路由（五系统 + 技能分流，一条信息只进一个系统、出处用指针）/ 标签纪律（前缀语义、打标即入联想网络、写前 memory_index 查既有形态、tags 软加权 vs filter_tags 硬过滤）/ 主标签记忆用法 / 披露边界 / 查询路由 / 落盘诚实 / 检索纪律 / 口头纠正（用户说「记错了」时 recall 定位 → update_memory 原地修正 / forget 归档，禁止新旧矛盾并存）/ 图谱治理路由条。缺失时以 DEFAULT_RULES 种子落盘；AI 无写入路径，人类经 Web 记忆页「规则」标签整文档编辑或手编文件；读取走 mtime 缓存，生效文本参与 stable 指纹门控 |
 | 主标签记忆（main:hub） | `agent/memory/hub.py` + `_blk_hub`（vol 36 独立块） | 带保留标签 `main:hub` 的 PERMANENT 记忆每回复周期置顶注入：AI 经 memorize（type:permanent + main:hub）整段 upsert 维护；心跳维护段 `ensure_hub` 自愈重建骨架；forget 拦截 hub 归档。注入预算 `memory_hub_inject_max_chars`（默认 3000） |
 | 便签受管区块硬保护 | `agent/memory/notes.py`（`_MANAGED_BLOCK_RE` + `_assert_managed_blocks_intact`） | `<!-- AUTO:name BEGIN/END -->` 标记对圈定的系统受管区块，便签写工具写入前校验逐字节保留，改动/删除即拒绝；系统写入路径直走 `_atomic_write` 天然豁免。通用读写原语 `update_managed_block`/`read_managed_block`（AUTO:memory-status / AUTO:heartbeat-status） |
 | 标签索引观测 | `agent/heartbeat/engine.py::_write_memory_status` | 状态区块仅保留 AI 可行动项（库容/cognee 同步与熔断/最近整理/便签超标）；标签膨胀提醒条件化（总数超 `memory_tag_bloat_threshold`（默认 400，0=关）才注入归并提醒行）；运维遥测不进 prompt，由 memory_stats 工具按需查询 |

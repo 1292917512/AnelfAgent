@@ -25,7 +25,8 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 
-from agent.mind.message_schema import is_genuine_user_message
+from agent.context.message_schema import is_genuine_user_message
+from agent.context.ports import CompressionHost
 from core.log import log
 from core.tool_results import extract_error_text
 
@@ -277,7 +278,7 @@ class _RewriteOutcome(NamedTuple):
 class ContextCompressor:
     """上下文压缩器：检测溢出并压缩中间轮次。"""
 
-    def __init__(self, mind: Any, config: Optional[CompressionConfig] = None) -> None:
+    def __init__(self, mind: CompressionHost, config: Optional[CompressionConfig] = None) -> None:
         self._mind = mind
         # 显式注入（测试）时固化；默认 None 时 config 属性每次访问动态读取，
         # 配置中心保存即热生效，无需重启
@@ -821,7 +822,7 @@ class ContextCompressor:
 
         # 6. 压缩后使 Prompt 层缓存失效（volatile 层内容已变化）
         try:
-            from agent.mind.prompt_layers import prompt_cache_manager
+            from agent.context.prompt_layers import prompt_cache_manager
             prompt_cache_manager.invalidate(scope)
         except Exception:
             log("compress_messages 异常已忽略", "DEBUG")
@@ -1215,50 +1216,6 @@ class ContextCompressor:
         while cleaned and cleaned[0].get("role") == "tool":
             cleaned.pop(0)
         return cleaned
-
-
-# ------------------------------------------------------------------
-# AI 可调用工具：手动触发压缩
-# ------------------------------------------------------------------
-
-from core.latebind import LateBinding  # noqa: E402
-from core.tool_registry import deferred_tool  # noqa: E402
-
-#: 压缩器端口（compress_context 工具 import 时注册、拿不到 Mind 构造参数，
-#: 由 agent.runtime.wiring 统一施绑）
-compressor_port: LateBinding[ContextCompressor] = LateBinding("compressor")
-
-
-@deferred_tool(
-    name="compress_context",
-    group="thinking", tags=["always"], source="mind.core",
-    description="手动触发上下文压缩：将早期对话压缩为摘要以释放上下文空间。"
-    "当感觉对话变长、响应变慢或收到上下文溢出提示时使用。"
-    "可通过 focus_topic 指定你最关心的话题，压缩时该话题相关信息将被优先完整保留。",
-)
-def _compress_context_tool(reason: str = "", focus_topic: str = "") -> str:
-    """手动触发上下文压缩。
-
-    Args:
-        reason: 触发原因（仅日志记录）
-        focus_topic: 可选的焦点话题，压缩摘要将优先完整保留该话题相关信息
-    """
-    compressor = compressor_port.get() if compressor_port.bound else None
-    if compressor is None:
-        return json.dumps({"error": "压缩器未初始化"}, ensure_ascii=False)
-    try:
-        from agent.mind.tool_activation import ToolActivationManager
-        scope = ToolActivationManager.current_scope()
-    except Exception:
-        scope = ""
-    compressor.request_manual(scope, focus_topic=focus_topic)
-    if reason:
-        log(f"AI 请求手动压缩: {reason} (focus={focus_topic or '无'})", tag="压缩")
-    return json.dumps({
-        "ok": True,
-        "message": "压缩请求已登记，将在下一轮 LLM 调用前执行。"
-                   + (f"焦点话题「{focus_topic}」的信息将被优先保留。" if focus_topic else ""),
-    }, ensure_ascii=False)
 
 
 # ------------------------------------------------------------------

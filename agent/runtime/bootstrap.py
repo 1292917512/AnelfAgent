@@ -679,7 +679,7 @@ def create_bootstrap() -> FlowMachine:
         max_age_hours = get_config_float("recovery_max_age_hours", 24.0)
         cutoff_ns = time.time_ns() - int(max_age_hours * 3600 * 1e9)
 
-        from agent.mind.message_schema import is_genuine_user_message
+        from agent.context.message_schema import is_genuine_user_message
         from agent.mind.tools.scheduler import enqueue_scope_reply
 
         last_msgs = await sqlite.list_scopes_with_last_message()

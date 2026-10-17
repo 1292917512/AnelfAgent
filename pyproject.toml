@@ -259,3 +259,10 @@ type = "forbidden"
 source_modules = ["agent.memory"]
 forbidden_modules = ["agent.mind"]
 allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "context 不直接依赖 mind（经只读视图与压缩宿主接口注入）"
+type = "forbidden"
+source_modules = ["agent.context"]
+forbidden_modules = ["agent.mind"]
+allow_indirect_imports = true

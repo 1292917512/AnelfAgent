@@ -71,7 +71,7 @@ class TestMergeCaps:
         ctx, state = _ctx([]), _state()
         ctx.tool_chain.append({"role": "system", "content": receipt, "_source": {"origin": "reply_delivery"}})
         observe = AsyncMock()
-        monkeypatch.setattr("agent.mind.context_observation.emit_context_update", observe)
+        monkeypatch.setattr("agent.context.observation.emit_context_update", observe)
         assert await _merge_new_messages(ctx, state)
         assert [m["content"] for m in ctx.tool_chain] == [receipt, "实际发送的回复", "[time:now] 新消息"]
         assert observe.await_args.args[0] == [holder["msgs"][-1]]

@@ -1,7 +1,7 @@
 """内部消息契约与发送边界规整层（参考 Mini-Agent schema + 提供商转换层思路）。
 
 背景：发送边界的修补逻辑历史上散落多处——
-- mind._normalize_message_roles：中途 system 注入转 user
+- normalize_roles：中途 system 注入转 user
   （anthropic 协议会把任意位置的 system 消息抽离到 system 参数顶部，
   不转换则中途纠正/反馈全部脱离上下文位置）
 - prefrontal_cortex.build_llm_context 末尾：尾部 assistant 转 user（prefill 400）

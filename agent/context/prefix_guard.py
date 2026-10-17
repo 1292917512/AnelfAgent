@@ -6,7 +6,7 @@
 在每次 LLM 调用前对前缀层消息逐条计算哈希，与同 scope 上一次调用的哈希链
 比对，首个不一致的位置即缓存断裂点。
 
-与 context_snapshot._categorize 的区别：那是层聚合 sha1（整层一个哈希，
+与 ContextSnapshot._categorize 的区别：那是层聚合 sha1（整层一个哈希，
 只能定位到层），本模块是逐消息前缀链（能定位到层内第几条消息变了）。
 
 架构纪律：
@@ -91,7 +91,7 @@ class PrefixGuard:
     @staticmethod
     def _build_chain(messages: List[Dict], layers: Tuple[str, ...]) -> List[Tuple[str, str]]:
         """按消息顺序提取守卫层消息的 (layer, hash) 链。"""
-        from agent.mind.prompt_layers import PromptCacheManager
+        from agent.context.prompt_layers import PromptCacheManager
         layer_set = set(layers)
         chain: List[Tuple[str, str]] = []
         for msg in messages:

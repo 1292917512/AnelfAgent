@@ -896,7 +896,7 @@ class LLMManager(BaseEntity):
         if not result.usage:
             return
         try:
-            from agent.mind.cache_stats import cache_usage_tracker
+            from agent.context.cache_stats import cache_usage_tracker
             cache_usage_tracker.record(
                 result.usage, kind=purpose,
                 model=result.model or client.config.model,

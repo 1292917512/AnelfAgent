@@ -294,7 +294,7 @@ async def test_internal_purpose_usage_recorded(
     ))
     recorded: list[dict] = []
     monkeypatch.setattr(
-        "agent.mind.cache_stats.cache_usage_tracker.record",
+        "agent.context.cache_stats.cache_usage_tracker.record",
         lambda usage, *, kind="reply", model="": recorded.append(
             {"kind": kind, "model": model, "total": usage.total_tokens}),
     )
@@ -416,7 +416,7 @@ async def test_internal_usage_record_failure_is_fail_open(
     ))
     def _boom(*a, **kw):
         raise RuntimeError("tracker broken")
-    monkeypatch.setattr("agent.mind.cache_stats.cache_usage_tracker.record", _boom)
+    monkeypatch.setattr("agent.context.cache_stats.cache_usage_tracker.record", _boom)
 
     result = await manager.chat_with_fallback(
         [{"role": "user", "content": "hi"}],

@@ -8,21 +8,17 @@ LLM 每轮思考从此处获取完整工作记忆（工具提示、频道能力�
 
 - ``agent.mind.work_memory.WorkMemory``：消息队列 / 待办持久化 / 短期记忆 / 媒体暂存 / 态势路由
 - ``agent.mind.tool_assembly.ToolAssembly``：工具召回 / tag 激活 / 动态发现 / schema 合并与门控
-- ``agent.mind.context_assembly.ContextAssembly``：系统提示构建 / Prompt 分层缓存 / 执行上下文
+- ``agent.context.assembly.ContextAssembly``：系统提示构建 / Prompt 分层缓存 / 执行上下文
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
+from agent.context.assembly import ContextAssembly
 from agent.llm.types import ImageContent
 from agent.messages import EntityData, Everything
 from agent.mind.autonomous import MindTask
-from agent.mind.context_assembly import (
-    ContextAssembly,
-    _env_info_block,  # noqa: F401  # re-export（测试/外部兼容）
-    _safe_entity_scope,  # noqa: F401  # re-export（round_helpers 等引用）
-)
 from agent.mind.tool_assembly import ToolAssembly
 from agent.mind.work_memory import PendingSignal, WorkMemory
 from agent.storage.data_center import EverythingData
@@ -314,13 +310,13 @@ class PrefrontalCortex:
             })
 
         try:
-            from agent.mind.prompt_layers import prompt_cache_manager
+            from agent.context.prompt_layers import prompt_cache_manager
             cache_stats = prompt_cache_manager.stats()
         except Exception:
             cache_stats = {}
 
         try:
-            from agent.mind.cache_stats import cache_usage_tracker
+            from agent.context.cache_stats import cache_usage_tracker
             provider_cache = cache_usage_tracker.summary()
         except Exception:
             provider_cache = {}

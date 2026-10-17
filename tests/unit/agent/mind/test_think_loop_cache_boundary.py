@@ -10,8 +10,8 @@ from unittest.mock import AsyncMock
 
 from helpers.think_loop_fakes import FakeMind, run_think_loop, text_result, tool_result
 
+from agent.context.message_schema import normalize_for_send
 from agent.llm.prompt_cache import count_breakpoints, decorate_messages
-from agent.mind.message_schema import normalize_for_send
 from agent.mind.tools.think_loop import _collect_provider_messages
 from core.context_provider import ContextProviderRegistry, ProviderMeta
 

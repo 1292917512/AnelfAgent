@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.mind.context_assembly import ContextAssembly
+from agent.context.assembly import ContextAssembly
 from agent.mind.tool_assembly import ToolAssembly
 from agent.mind.work_memory import WorkMemory
 
@@ -152,7 +152,7 @@ class TestStableBlocks:
         （指纹构造在 recollection._build_layered_prompts：persona_hash 只含
         persona_parts + static_guide + env_info，与 stable_fingerprint 完全分离。）
         """
-        from agent.mind.prompt_layers import prompt_cache_manager as mgr
+        from agent.context.prompt_layers import prompt_cache_manager as mgr
         h1 = mgr.compute_hash("人设", "指南", "环境")
         h2 = mgr.compute_hash("人设", "指南", "环境")
         assert h1 == h2

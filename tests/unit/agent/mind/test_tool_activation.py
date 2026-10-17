@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,6 +17,50 @@ from agent.mind.tool_activation import (
     reset_scope,
     tool_activation,
 )
+
+
+def test_core_tools_registered_once_at_bootstrap(tmp_path: Path) -> None:
+    """导入并激活核心工具后，重复注册不丢工具或产生重复定义。"""
+    result = subprocess.run(
+        [sys.executable, "-c", """
+from agent.mind.mind_tools import register_core_tools
+from core.entity import EntityRegistry
+register_core_tools()
+first = EntityRegistry.get_tool_schema_by_names(['end_reply', 'compress_context'])
+register_core_tools()
+assert EntityRegistry.get_tool_schema_by_names(['end_reply', 'compress_context']) == first
+assert {item['function']['name'] for item in first} == {'end_reply', 'compress_context'}
+for name in ('end_reply', 'compress_context'):
+    entity = EntityRegistry.get(name)
+    assert entity.group == 'thinking' and entity.source == 'mind.core'
+    assert 'always' in entity.tags
+"""],
+        capture_output=True, timeout=30,
+        env=os.environ | {
+            "ANELF_CONFIG_DIR": str(tmp_path / "config"),
+            "ANELF_DATA_DIR": str(tmp_path / "data"),
+            "PYTHONIOENCODING": "utf-8",
+        },
+    )
+    assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
+
+
+def test_manual_compression_uses_bound_session(monkeypatch) -> None:
+    """手动压缩沿用当前会话，其他会话的请求与焦点互不覆盖。"""
+    from agent.context.compressor import ContextCompressor
+    from agent.mind import mind_tools
+
+    compressor = ContextCompressor(SimpleNamespace())
+    monkeypatch.setattr(mind_tools, "compressor_port", SimpleNamespace(bound=True, get=lambda: compressor))
+    for scope, focus in (("user_qq:1", "项目"), ("user_webui:1", "行程")):
+        token = bind_scope(scope)
+        try:
+            assert json.loads(mind_tools._compress_context_tool(focus_topic=focus))["ok"]
+        finally:
+            reset_scope(token)
+    assert compressor.pop_manual_focus("user_qq:1") == "项目"
+    assert compressor.pop_manual_focus("user_webui:1") == "行程"
+    assert compressor.pop_manual_focus("user_qq:1") is None
 
 
 @pytest.fixture

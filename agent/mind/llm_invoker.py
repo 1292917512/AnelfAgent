@@ -12,10 +12,10 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from agent.context import audit as context_audit
+from agent.context.message_schema import normalize_for_send
 from agent.llm import ChatResult, LLMCallAborted
 from agent.llm.llm_client import LLMClient
-from agent.mind import context_audit
-from agent.mind.message_schema import normalize_for_send
 from core.async_helper import suppress_task
 from core.event_bus import (
     EVENT_THINKING_LLM_END,
@@ -111,7 +111,7 @@ async def _invoke_llm_unified(
     # 与同 scope 上一次调用比对，首个不一致位置即缓存断裂点。仅观测不阻断，
     # 归因随快照落盘 records.jsonl（轻量观测版，不阻断调用）。
     # 须先于 try_capture 计算，归因才能并入本次快照。
-    from agent.mind.prefix_guard import prefix_guard
+    from agent.context.prefix_guard import prefix_guard
     # scope 解析链：消息实体 scope（主回复）> 委托链绑定的父会话 scope
     # （子代理 reflect，见 delegation_manager.bind_usage_scope）> 激活上下文
     # scope。reflect 的一次性 scope 落到第三档时会被 scope_usage 丢弃
@@ -145,7 +145,7 @@ async def _invoke_llm_unified(
     # kind=调用用途（reply/reflect…）：列表行按用途区分主对话与任务调用，
     # 任务首轮的结构性低命中不再被误读为主对话缓存故障；scope 与 kind
     # 共同构成变更对比的前缀族键（跨族对比会把族间差异误标为层漂移）
-    from agent.mind.context_snapshot import context_snapshot
+    from agent.context.snapshot import context_snapshot
     await context_snapshot.try_capture(
         messages, tools, model_name, kind=purpose, scope=_guard_scope,
         prefix_drift=prefix_drift, legal_break=legal_break,
@@ -280,7 +280,7 @@ async def _invoke_llm_unified(
             "cache_creation_input_tokens": result.usage.cache_creation_input_tokens,
             "cache_hit_rate": round(result.usage.cache_hit_rate, 4),
         }
-        from agent.mind.cache_stats import cache_usage_tracker
+        from agent.context.cache_stats import cache_usage_tracker
         cache_usage_tracker.record(result.usage, kind=purpose, model=result.model or model_name)
         # 会话级用量累计（成本账本；fail-open，scope 取 prefix_guard 已算出的值）
         if _guard_scope:
@@ -298,7 +298,7 @@ async def _invoke_llm_unified(
             max_ctx = mind.get_model_context_length()
     else:
         # usage 缺失埋点：流式端点/网关未返回 usage 时缓存统计不可用
-        from agent.mind.cache_stats import cache_usage_tracker
+        from agent.context.cache_stats import cache_usage_tracker
         cache_usage_tracker.record_missing(kind=purpose)
         log(
             f"LLM 调用未返回 usage（{result.model or model_name}），"

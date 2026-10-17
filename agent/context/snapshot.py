@@ -14,7 +14,7 @@ import os
 import time
 from typing import Any, Dict, List, Optional, Tuple, TypeVar
 
-from agent.mind.context_pipeline import get_layer_meta, list_layer_metas
+from agent.context.pipeline import get_layer_meta, list_layer_metas
 from core.log import log
 
 _SNAPSHOT_DIR = os.path.join("logs", "context_snapshots")
@@ -25,7 +25,7 @@ _MAX_DIFF_FAMILIES = 64
 
 
 # ======================================================================
-# 分类定义（层标签/顺序的单一数据源在 context_pipeline 注册中心）
+# 分类定义（层标签/顺序的单一数据源在 context.pipeline 注册中心）
 # ======================================================================
 
 def _layer_label(layer: str) -> str:
@@ -417,7 +417,7 @@ class ContextSnapshot:
 
         无标签消息按位置推断：进入工具链区域（出现 tool/带 tool_calls 的
         assistant）后，未标记的 system 消息（纠正提示/通知等）归入 tool_chain。
-        层标签与变动率元数据来自 context_pipeline 注册中心（单一数据源）。
+        层标签与变动率元数据来自 context.pipeline 注册中心（单一数据源）。
         family 为 (scope, kind) 前缀族键：变更对比只与同族的上次快照进行。
         """
         import hashlib
@@ -572,7 +572,7 @@ class ContextSnapshot:
             if s.get("layer") in CACHEABLE_PREFIX_LAYERS
         )
 
-        from agent.mind.cache_stats import cache_usage_tracker
+        from agent.context.cache_stats import cache_usage_tracker
         # 主口径只看主对话调用（reply）：reflect 评审/心跳分析等辅助调用
         # 无共享前缀，命中率为 0 属正常，混入会误报"缓存崩了"
         last_call = cache_usage_tracker.last(kind="reply")

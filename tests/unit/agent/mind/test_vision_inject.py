@@ -191,7 +191,7 @@ class TestMediaRulesDirectVision:
             name="recognize_image",
         )
         monkeypatch.setattr(
-            "agent.mind.context_assembly.EntityRegistry.get_all",
+            "agent.context.assembly.EntityRegistry.get_all",
             staticmethod(lambda: [entity]),
         )
 

@@ -7,8 +7,8 @@
 
 from __future__ import annotations
 
+from agent.context.message_schema import preserve_reasoning_fields
 from agent.llm.types import ChatResult
-from agent.mind.message_schema import preserve_reasoning_fields
 
 
 def _result(reasoning: str = "思考过程", details: bool = True, blocks: bool = True) -> ChatResult:

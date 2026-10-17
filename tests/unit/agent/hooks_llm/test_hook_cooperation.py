@@ -136,8 +136,8 @@ async def test_complete_transcript_keeps_tools_nested_content_and_cache_layers()
     release.set()
     await executor.drain()
     assert seen == [(original, original_tools)]
+    from agent.context.message_schema import normalize_for_send
     from agent.llm.prompt_cache import decorate_messages
-    from agent.mind.message_schema import normalize_for_send
     decorated = decorate_messages(seen[0][0], anthropic=True)
     assert "cache_control" in str(decorated[0])
     assert all("_layer" not in item for item in normalize_for_send(decorated))

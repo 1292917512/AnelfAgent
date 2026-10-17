@@ -1,4 +1,4 @@
-"""内部消息契约与发送边界规整层（agent.mind.message_schema）单元测试。
+"""内部消息契约与发送边界规整层（agent.context.message_schema）单元测试。
 
 发送边界规则统一收拢于 normalize_for_send：
 - normalize_roles：头部连续 system 块保持，中途 system 注入转 user
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent.mind.message_schema import (
+from agent.context.message_schema import (
     ChatMessage,
     ensure_tool_result_pairing,
     fix_empty_tool_call_content,
@@ -19,7 +19,6 @@ from agent.mind.message_schema import (
     normalize_roles,
     validate_messages,
 )
-from agent.mind.mind import _normalize_message_roles
 
 
 class TestChatMessage:
@@ -313,7 +312,7 @@ class TestNormalizeForSendPairing:
 
 
 # ==================================================================
-# 发送边界角色归一（mind._normalize_message_roles）
+# 发送边界角色归一（message_schema.normalize_roles）
 # ==================================================================
 
 class TestNormalizeMessageRoles:
@@ -324,7 +323,7 @@ class TestNormalizeMessageRoles:
             {"role": "system", "content": "便签上下文"},
             {"role": "user", "content": "你好"},
         ]
-        result = _normalize_message_roles(msgs)
+        result = normalize_roles(msgs)
         assert [m["role"] for m in result] == ["system", "system", "user"]
 
     def test_mid_conversation_system_becomes_user(self) -> None:
@@ -336,7 +335,7 @@ class TestNormalizeMessageRoles:
             {"role": "system", "content": "[系统提示] 你刚才的文字是内心独白"},
             {"role": "system", "content": "[系统] 执行上下文"},
         ]
-        result = _normalize_message_roles(msgs)
+        result = normalize_roles(msgs)
         assert [m["role"] for m in result] == [
             "system", "user", "assistant", "user", "user",
         ]
@@ -353,7 +352,7 @@ class TestNormalizeMessageRoles:
             {"role": "tool", "tool_call_id": "tc1", "content": "{}"},
             {"role": "system", "content": "[后台任务完成] …"},
         ]
-        result = _normalize_message_roles(msgs)
+        result = normalize_roles(msgs)
         assert result[2]["tool_calls"] == [{"id": "tc1"}]
         assert result[3]["role"] == "tool"
         assert result[4]["role"] == "user"
@@ -367,7 +366,7 @@ class TestNormalizeMessageRoles:
             {"role": "system", "content": "[已执行操作摘要] 本轮共执行 1 次工具"},
             {"role": "user", "content": "结果呢"},
         ]
-        result = _normalize_message_roles(msgs)
+        result = normalize_roles(msgs)
         assert [m["role"] for m in result] == [
             "system", "user", "assistant", "user", "user",
         ]
@@ -376,21 +375,21 @@ class TestNormalizeMessageRoles:
         """输入消息 dict 不被修改（转换产生新 dict）。"""
         original = {"role": "system", "content": "中途注入"}
         msgs = [{"role": "user", "content": "你好"}, original]
-        result = _normalize_message_roles(msgs)
+        result = normalize_roles(msgs)
         assert original["role"] == "system"
         assert result[1] is not original
 
     def test_all_system_preserved(self) -> None:
         """全 system 列表（纯提示词场景）整体保持。"""
         msgs = [{"role": "system", "content": "a"}, {"role": "system", "content": "b"}]
-        assert [m["role"] for m in _normalize_message_roles(msgs)] == ["system", "system"]
+        assert [m["role"] for m in normalize_roles(msgs)] == ["system", "system"]
 
     def test_no_system_unchanged(self) -> None:
         msgs = [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]
-        assert _normalize_message_roles(msgs) == msgs
+        assert normalize_roles(msgs) == msgs
 
     def test_empty_list(self) -> None:
-        assert _normalize_message_roles([]) == []
+        assert normalize_roles([]) == []
 
 
 class TestIsGenuineUserMessage:

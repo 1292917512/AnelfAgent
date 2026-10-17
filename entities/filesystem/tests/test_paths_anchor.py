@@ -29,7 +29,7 @@ class TestGetWorkspaceRoot:
     def test_environment_and_tools_agree_after_changing_launch_directory(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, configured: str,
     ) -> None:
-        from agent.mind.context_assembly import _env_info_block
+        from agent.context.assembly import _env_info_block
         from core import path as path_mod
         from core.config import ConfigManager
         from entities.filesystem import ops_context, shell_state

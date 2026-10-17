@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from agent.mind import prefrontal_cortex
+from agent.context import assembly
 from agent.mind.prefrontal_cortex import PrefrontalCortex
 from agent.planning import nag
 
@@ -18,7 +18,7 @@ from agent.planning import nag
 
 def _block(monkeypatch: pytest.MonkeyPatch, system: str) -> str:
     monkeypatch.setattr(platform, "system", lambda: system)
-    return prefrontal_cortex._env_info_block()
+    return assembly._env_info_block()
 
 
 def test_bsd_dialect_hint_on_darwin(monkeypatch: pytest.MonkeyPatch):
@@ -36,9 +36,9 @@ def test_no_bsd_dialect_hint_on_linux(monkeypatch: pytest.MonkeyPatch):
 
 def test_env_block_contains_python_summary():
     """[运行环境] 注入工作区/宿主环境事实，且进程级缓存保证字节稳定。"""
-    block = prefrontal_cortex._env_info_block()
+    block = assembly._env_info_block()
     assert "你的操作环境" in block and "宿主环境" in block
-    assert prefrontal_cortex._env_info_block() == block
+    assert assembly._env_info_block() == block
 
 
 # ==================================================================

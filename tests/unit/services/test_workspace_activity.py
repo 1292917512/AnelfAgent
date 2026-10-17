@@ -90,7 +90,7 @@ async def test_trigger_and_sender_remain_local_to_concurrent_runs(activity):
 async def test_context_updates_preserve_source_and_only_observe_new_cross_messages(activity):
     from copy import deepcopy
 
-    from agent.mind.context_observation import emit_context_update, emit_cross_channel_updates
+    from agent.context.observation import emit_context_update, emit_cross_channel_updates
     from core.activity import ACTIVITY_TEXT_LIMIT
 
     service, frames = activity

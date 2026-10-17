@@ -10,6 +10,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
+from agent.context.observation import emit_context_summary
 from agent.memory import recall_context  # noqa: F401
 from agent.memory.notes import (
     build_dynamic_notes,
@@ -21,7 +22,6 @@ from agent.memory.notes import (
     get_memory_dir,
     get_notes_path,
 )
-from agent.mind.context_observation import emit_context_summary
 from agent.mind.recollection_inputs import collect_recollection_inputs
 from core.activity import EVENT_ACTIVITY_CONTEXT
 from core.event_bus import EVENT_THINKING_CONTEXT_BUILD, event_bus
@@ -325,7 +325,7 @@ async def _build_layered_prompts(
         (persona_text, tools_text, context_text, persona_hit, tools_hit,
          context_hit, status_text, heartbeat_text)
     """
-    from agent.mind.prompt_layers import (
+    from agent.context.prompt_layers import (
         LAYER_CONTEXT,
         LAYER_STABLE_PERSONA,
         LAYER_STABLE_TOOLS,
@@ -340,7 +340,7 @@ async def _build_layered_prompts(
     direct_vision = mind._direct_vision()
 
     # --- stable 人设块：人设 + 环境 + 静态指南（指纹不含工具因子） ---
-    from agent.mind.context_assembly import _env_info_block
+    from agent.context.assembly import _env_info_block
     notes_path = get_notes_path()
     static_guide, _ = mind._file_cache.get_or_load(notes_path, build_static_guide)
     persona_hash = prompt_cache_manager.compute_hash(

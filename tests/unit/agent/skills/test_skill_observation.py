@@ -5,8 +5,8 @@ from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
-from agent.mind.context_observation import context_skills, emit_context_summary
-from agent.mind.message_schema import normalize_for_send
+from agent.context.message_schema import normalize_for_send
+from agent.context.observation import context_skills, emit_context_summary
 from agent.mind.recollection import _apply_memory_budget, _match_skills
 from agent.skills.skill_store import Skill, SkillState
 from core.activity import activity_scope

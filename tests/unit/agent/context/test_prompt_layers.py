@@ -1,8 +1,8 @@
-"""Prompt 分层缓存（agent.mind.prompt_layers）单元测试。"""
+"""Prompt 分层缓存（agent.context.prompt_layers）单元测试。"""
 
 from __future__ import annotations
 
-from agent.mind.prompt_layers import (
+from agent.context.prompt_layers import (
     LAYER_CONTEXT,
     LAYER_STABLE,
     PromptCacheManager,

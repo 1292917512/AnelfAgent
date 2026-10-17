@@ -1,7 +1,6 @@
 """ContextAssembly — LLM 上下文组装：系统提示构建、Prompt 分层缓存、执行上下文。
 
-从 PrefrontalCortex 拆分而来。函数/类以组合方式持有 WorkMemory 与 ToolAssembly
-（由 PFC 门面接线），不依赖 Mind。
+经只读接口获取工作记忆与工具状态，由调用方注入，不导入思维实现。
 
 职责：
 - 工具系统提示构建（工具目录 + 使用规则 + 媒体处理规则 + 频道能力）
@@ -14,7 +13,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Dict, List, Optional
 
-from agent.mind.usage_rules import (
+from agent.context.ports import ToolContextView, WorkingMemoryView
+from agent.context.usage_rules import (
     BACKGROUND_TASK_HINT,
     CODE_ORCHESTRATION_RULES,
     PARALLEL_CALL_HINT,
@@ -27,8 +27,6 @@ from core.log import log
 if TYPE_CHECKING:
     from agent.channel.manager import ChannelManager
     from agent.messages import Everything
-    from agent.mind.tool_assembly import ToolAssembly
-    from agent.mind.work_memory import WorkMemory
     from agent.skills.skill_store import SkillStore
     from agent.storage.data_center import ConversationData
     from core.plugins.store import PluginRegistry
@@ -128,7 +126,7 @@ def _safe_entity_scope(anything: object) -> str:
 # ==================================================================
 # 提示词模板常量
 # ==================================================================
-# stable 工具块的静态引导文本统一收敛在 agent.mind.usage_rules
+# stable 工具块的静态引导文本统一收敛在 agent.context.usage_rules
 # （AI 无写入路径、字节恒定走内容寻址缓存）；此处仅保留 exec_context
 # 构建期的轮内动态文案。
 
@@ -145,7 +143,7 @@ _URGENT_ROUND_WARNING = (
 # exec_context 步骤清单渲染上限：防重复操作只需近期步骤，超出部分以省略行带过
 _MAX_RENDERED_STEPS = 12
 
-from agent.mind.context_pipeline import (
+from agent.context.pipeline import (
     VOL_HISTORY,
     VOL_LOW,
     VOL_MESSAGE,
@@ -174,8 +172,8 @@ class ContextAssembly:
 
     def __init__(
             self,
-            work_memory: "WorkMemory",
-            tool_assembly: "ToolAssembly",
+            work_memory: WorkingMemoryView,
+            tool_assembly: ToolContextView,
             channel_manager: Optional["ChannelManager"] = None,
             conversation_data: Optional["ConversationData"] = None,
             skill_store: Optional["SkillStore"] = None,
@@ -418,8 +416,6 @@ channel_id 和 target_id 取当前请求的频道与会话标签，群聊目标�
         （铁律文本经 mtime 缓存读取，未变时仅一次 stat syscall，
         Web/手工编辑后随门控失配重建一次）。
         """
-        from agent.mind.tool_activation import tool_activation
-
         if self._skill_store is not None:
             from agent.skills.catalog import catalog_factor, catalog_section
             catalog_gate = catalog_factor(self._skill_store)
@@ -437,7 +433,7 @@ channel_id 和 target_id 取当前请求的频道与会话标签，群聊目标�
         memory_rules = _memory_rules_text()
         cache_key = (
             self._tool_assembly.tools_version,
-            tool_activation.version, models_summary, direct_vision,
+            self._tool_assembly.activation_version, models_summary, direct_vision,
             memory_rules,
             # 注册表-only 变化（实体热插拔/分组权重调整）不触碰 tools_version，
             # 必须纳入门控，否则目录重建滞后一轮
@@ -452,7 +448,7 @@ channel_id 和 target_id 取当前请求的频道与会话标签，群聊目标�
 
         import json as _json
 
-        from agent.mind.prompt_layers import prompt_cache_manager
+        from agent.context.prompt_layers import prompt_cache_manager
 
         mc = _get_mind_config()
         rules = mc.tool_system_rules if hasattr(mc, "tool_system_rules") else []
@@ -499,7 +495,7 @@ channel_id 和 target_id 取当前请求的频道与会话标签，群聊目标�
         """组装回复起点的完整上下文；轮内新增收发由实时会话窗口补充。
 
         各内容块的顺序由 @context_block 声明的变动率决定（值越大变动越频繁，
-        排越靠后，见 context_pipeline；尾部动态区内部按字节稳定度从静到动）：
+        排越靠后，见 context.pipeline；尾部动态区内部按字节稳定度从静到动）：
         stable(0) → discipline(10) → summary(20) → conversation(30) →
         context(35) → hub(36) → profile(37) → relation/volatile(38) →
         heartbeat/status(39) → freshness(42) → memory(43) → overflow/security(50+)
@@ -540,7 +536,7 @@ channel_id 和 target_id 取当前请求的频道与会话标签，群聊目标�
 
         # 确保最后一条非 system 消息不是 assistant 角色，防止 Anthropic prefill 400 错误。
         # （规则实现已收拢至 message_schema.fix_trailing_assistant，此处就地委托）
-        from agent.mind.message_schema import fix_trailing_assistant
+        from agent.context.message_schema import fix_trailing_assistant
         fix_trailing_assistant(all_msgs)
 
         return all_msgs
@@ -877,9 +873,9 @@ channel_id 和 target_id 取当前请求的频道与会话标签，群聊目标�
 
         # 目标 nag 提醒（目标连续 10 轮未更新才提醒）
         try:
-            from agent.mind.tool_activation import ToolActivationManager
             from agent.planning.nag import maybe_nag
-            nag_text = maybe_nag(ToolActivationManager.current_scope())
+            from core.conversation_scope import current_scope
+            nag_text = maybe_nag(current_scope())
             if nag_text:
                 lines.append(nag_text)
         except Exception:
@@ -894,8 +890,7 @@ channel_id 和 target_id 取当前请求的频道与会话标签，群聊目标�
             lines.append(cache_hint)
 
         # 沉睡分组激活状态（粘性模式轮数不递减，显示常驻；非粘性剩余最后一轮时提示续期）
-        from agent.mind.tool_activation import tool_activation
-        active_groups = tool_activation.active_groups()
+        active_groups = ta.active_groups()
         if active_groups:
             if _tool_activation_sticky():
                 group_desc = ", ".join(

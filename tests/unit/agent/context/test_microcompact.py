@@ -9,7 +9,7 @@ from typing import Dict, List
 
 import pytest
 
-from agent.mind.context_compressor import CompressionConfig, ContextCompressor
+from agent.context.compressor import CompressionConfig, ContextCompressor
 
 
 def _compressor(**cfg) -> ContextCompressor:

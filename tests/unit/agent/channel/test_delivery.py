@@ -38,7 +38,7 @@ def test_nested_execution_does_not_confirm_parent_delivery():
 
 
 def test_explicit_silence_is_scoped_and_does_not_claim_sent():
-    from agent.mind.mind import _end_reply_tool
+    from agent.mind.mind_tools import _end_reply_tool
     from agent.mind.tool_activation import bind_scope, reset_scope
 
     scope = "user_webui:web_user#chat_1"

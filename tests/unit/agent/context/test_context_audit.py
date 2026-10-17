@@ -1,4 +1,4 @@
-"""请求级全量审计日志（agent.mind.context_audit）单元测试。
+"""请求级全量审计日志（agent.context.audit）单元测试。
 
 审计文件包含完整对话内容，默认关闭；开启后每次 LLM 交换以 JSONL
 追加到日轮转文件，写失败静默降级绝不影响主流程。
@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import os
 
-import agent.mind.context_audit as audit
+import agent.context.audit as audit
 
 
 def _enable(monkeypatch, tmp_path, *, log_tools: bool = False) -> str:

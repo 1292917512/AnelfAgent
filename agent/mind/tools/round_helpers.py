@@ -20,7 +20,8 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Protocol, Set
 
 from agent.channel.delivery import DeliveryStatus
-from agent.mind.message_schema import is_genuine_user_message
+from agent.context.message_schema import is_genuine_user_message
+from agent.mind.mind_tools import END_REPLY_TOOL_NAME
 from agent.mind.tools.result_pipeline import ToolResultPipeline
 from agent.mind.tools.vision import apply_vision
 from core.event_bus import event_bus
@@ -30,6 +31,7 @@ from core.stream_events import EVENT_ASSISTANT_DELTA, EVENT_CONTEXT_USAGE
 from core.tool_results import extract_error_text, parse_tool_result_json
 
 if TYPE_CHECKING:
+    from agent.context.compressor import ContextCompressor
     from agent.llm import ChatResult, ToolCall
     from agent.messages import Everything
     from agent.mind.background_tasks import (
@@ -37,7 +39,6 @@ if TYPE_CHECKING:
         BackgroundTaskRegistry,
         TaskCompletion,
     )
-    from agent.mind.context_compressor import ContextCompressor
     from agent.mind.guardrails import GuardrailController
     from agent.mind.mind import Mind
     from agent.storage.sqlite_backend import ConversationRow
@@ -362,7 +363,7 @@ def _user_initiated(messages: List[Dict]) -> bool:
 def _consume_pending_for_scope(mind: "Mind", anything: "Everything", through_ts: int) -> None:
     """消费当前 scope 的待处理队列条目（新消息已并入当前循环，无需另起周期）。"""
     try:
-        from agent.mind.prefrontal_cortex import _safe_entity_scope
+        from agent.context.assembly import _safe_entity_scope
         mind.pfc.consume_scope_task(_safe_entity_scope(anything), through_ts=through_ts)
     except Exception as exc:
         log(f"消费待处理队列失败: {exc}", "DEBUG", tag="思维")
@@ -463,7 +464,7 @@ async def _compress_context(
     mind.compressor._record_compress_result(True)
     # 压缩整体重写前缀 = 已知断裂：登记后下次校验重建基线（不误报漂移），
     # 快照/命中率列表据因标识"压缩"而非"平台波动"
-    from agent.mind.prefix_guard import prefix_guard
+    from agent.context.prefix_guard import prefix_guard
     prefix_guard.note_legal_break(scope, "compress")
     rehydrated = await asyncio.to_thread(_rehydrate_recent_files, scope)
     if rehydrated:
@@ -664,7 +665,7 @@ async def _merge_new_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> bo
         ctx.execution_steps.append(
             f"→ 第{state.iteration + 1}轮前: 并入 {len(updates)} 条新消息{deferred_note}"
         )
-    from agent.mind.context_observation import emit_context_update
+    from agent.context.observation import emit_context_update
     await emit_context_update([message for message in updates if message["role"] != "assistant"],
                               origin="conversation", scope=ctx.current_scope,
                               iteration=state.iteration + 1, deferred=deferred)
@@ -708,7 +709,7 @@ async def _merge_pushes(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> None:
         log(f"消费推送待处理队列失败: {exc}", "DEBUG", tag="思维")
     log(f"并入 {len(texts)} 条实体推送到当前上下文", tag="思维")
     ctx.execution_steps.append(f"→ 第{state.iteration + 1}轮前: 并入 {len(texts)} 条实体推送")
-    from agent.mind.context_observation import emit_context_update
+    from agent.context.observation import emit_context_update
     await emit_context_update([{"role": "system", "content": text} for text in texts],
                               origin="push", scope=ctx.current_scope, iteration=state.iteration + 1)
 
@@ -972,17 +973,9 @@ def _handle_length_recovery(
 # 回合结果判定守卫
 # ==================================================================
 
-_END_REPLY_TOOL_NAME = "end_reply"
-
-# 查资料等非输出工具后：结果仅自己可见；未完成则继续调工具，完成后再回用户
-_OUTPUT_TOOL_NAMES = frozenset({
-    "send_message", "send_photo", "send_voice", "send_file",
-})
-
-
 def should_end_reply(tool_calls: List["ToolCall"]) -> bool:
     """检测本轮是否应结束：AI 调用了 end_reply。"""
-    return any(tc.name == _END_REPLY_TOOL_NAME for tc in tool_calls)
+    return any(tc.name == END_REPLY_TOOL_NAME for tc in tool_calls)
 
 
 _THINK_BLOCK_RE = re.compile(r"<think(?:ing)?>.*?(?:</think(?:ing)?>|$)", re.DOTALL | re.IGNORECASE)

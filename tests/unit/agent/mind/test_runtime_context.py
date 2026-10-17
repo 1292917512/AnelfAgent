@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from helpers.think_loop_fakes import FakeMind, run_think_loop, tool_result
 
+from agent.context.message_schema import normalize_for_send
+from agent.context.observation import emit_context_summary
 from agent.mind.background_tasks import BackgroundTaskRegistry
-from agent.mind.context_observation import emit_context_summary
-from agent.mind.message_schema import normalize_for_send
 from agent.mind.runtime_context import background_context
 from agent.mind.tool_activation import bind_scope, reset_scope
 from agent.mind.tools.think_loop import ThinkMode
@@ -95,7 +95,7 @@ async def test_task_updates_only_change_dynamic_tail(anything):
 
 async def test_context_observation_reports_actual_blocks_without_mutating_messages(monkeypatch):
     emit = AsyncMock()
-    monkeypatch.setattr("agent.mind.context_observation.event_bus.emit", emit)
+    monkeypatch.setattr("agent.context.observation.event_bus.emit", emit)
     messages = [{"role": "system", "_layer": "stable", "content": "稳定前缀"},
                 {"role": "system", "_layer": "relation", "content": "[uid:42][topic:review] 关联证据"},
                 {"role": "system", "_layer": "memory", "content": "[相关技能] review-check",

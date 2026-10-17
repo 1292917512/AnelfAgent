@@ -24,8 +24,9 @@ from typing import TYPE_CHECKING, AbstractSet, Any, Dict, List, Optional, Set
 
 from agent.channel.delivery import capture_deliveries, delivery_count, delivery_tags, observe_delivery_context
 from agent.channel.reply_policy import ReplyToolResult
+from agent.context.message_schema import preserve_reasoning_fields
 from agent.llm import LLMCallAborted
-from agent.mind.message_schema import preserve_reasoning_fields
+from agent.mind.mind_tools import END_REPLY_TOOL_NAME, OUTPUT_TOOL_NAMES
 from agent.mind.recollection_refresh import DialogueRecollection
 from agent.mind.runtime_context import background_context
 from agent.mind.silence import should_suppress
@@ -36,9 +37,7 @@ from agent.mind.tools.result_pipeline import (
     ToolResultPipeline,
 )
 from agent.mind.tools.round_helpers import (
-    _END_REPLY_TOOL_NAME,
     _MAX_TOOL_CONCURRENCY,
-    _OUTPUT_TOOL_NAMES,
     ThinkMode,
     _cache_status_hint,
     _check_tool_results_all_errors,
@@ -594,14 +593,14 @@ async def _run_think_rounds(
         try:
             cross_messages = await build_cross_channel_narrative(mind, ctx.current_scope)
             provider_msgs = cross_messages + provider_msgs
-            from agent.mind.context_observation import emit_cross_channel_updates
+            from agent.context.observation import emit_cross_channel_updates
             await emit_cross_channel_updates(cross_messages, state.observed_cross_messages, state.iteration + 1)
         except Exception as exc:
             log(f"跨会话上下文读取失败: {exc}", "WARNING", tag="思维")
         llm_messages = (
             ctx.base_messages + ctx.tool_chain + provider_msgs + [exec_context]
         )
-        from agent.mind.context_observation import emit_recollection_update
+        from agent.context.observation import emit_recollection_update
         state.observed_recollection = await emit_recollection_update(provider_msgs, state.observed_recollection)
         observe_delivery_context(provider_msgs)
 
@@ -951,7 +950,7 @@ async def _handle_text_only_round(
                 "tool_calls": [{
                     "id": _SYNTHETIC_END_REPLY_CALL_ID,
                     "type": "function",
-                    "function": {"name": _END_REPLY_TOOL_NAME, "arguments": "{}"},
+                    "function": {"name": END_REPLY_TOOL_NAME, "arguments": "{}"},
                 }],
             }
             preserve_reasoning_fields(assistant_msg, result, tool_turn=True)
@@ -1083,7 +1082,7 @@ async def _handle_tool_round(
     # 收束前最后一个未被工具调用打断的连续文本段。
     # end_reply 是收束信号而非工作工具：纯 end_reply 批次不构成"打断"，
     # 已收集的连续文本段即最终结论，必须保留（同批正文在下方收束处理纳入）
-    pure_end_reply = all(tc.name == _END_REPLY_TOOL_NAME for tc in tool_calls)
+    pure_end_reply = all(tc.name == END_REPLY_TOOL_NAME for tc in tool_calls)
     if ctx.mode == ThinkMode.REFLECT and ctx.collected_text and not pure_end_reply:
         dropped_chars = sum(len(s) for s in ctx.collected_text)
         execution_steps.append(
@@ -1097,7 +1096,7 @@ async def _handle_tool_round(
     delivery_task = None
     sent_before = delivery_count()
     if (ctx.mode == ThinkMode.REPLY and text and not should_suppress(text)
-            and not _END_REPLY_TEXT_RE.match(text) and not (called & (_OUTPUT_TOOL_NAMES | {_END_REPLY_TOOL_NAME}))):
+            and not _END_REPLY_TEXT_RE.match(text) and not (called & (OUTPUT_TOOL_NAMES | {END_REPLY_TOOL_NAME}))):
         if state.reply_delivery_status != "unknown":
             state.auto_reply_blocked = False
         delivery_task = asyncio.create_task(_await_with_abort(deliver_reply(
@@ -1173,7 +1172,7 @@ async def _handle_tool_round(
             return await _finish_round(ctx, state)
 
     if (guardrail.halt_decision is not None or state.consecutive_tool_errors >= 3) and not should_end_reply(tool_calls):
-        from agent.mind.context_observation import emit_context_update
+        from agent.context.observation import emit_context_update
         from agent.mind.tools.tool_recovery import assess_tool_recovery
 
         trigger = (guardrail.halt_decision.message if guardrail.halt_decision is not None
@@ -1279,7 +1278,7 @@ class _EarlyToolRunner:
         """流中收到完整调用时评估并分发；不合资格则忽略，留给工具批。"""
         if self._closed or tc.id in self._tasks:
             return
-        if tc.name == _END_REPLY_TOOL_NAME:
+        if tc.name == END_REPLY_TOOL_NAME:
             self._closed = True
             return
         if not self._is_readonly(tc.name):
@@ -1488,7 +1487,7 @@ async def execute_tool_calls(
             from core.tool_errors import ErrorCause, tool_error
             blocked_results[tc.id] = tool_error("end_reply 之后的调用未执行", cause=ErrorCause.USER_CANCEL, retryable=False)
             continue
-        ended = tc.name == _END_REPLY_TOOL_NAME
+        ended = tc.name == END_REPLY_TOOL_NAME
         blocked = _precheck_tool_call(mind, tc, blocked_tools, guardrail)
         if blocked is not None:
             blocked_results[tc.id] = blocked

@@ -15,14 +15,14 @@ import re
 
 import pytest
 
-import agent.mind.context_assembly  # noqa: F401  导入触发 @context_block 注册
-from agent.memory.memory_retriever import MemoryRetriever
-from agent.memory.memory_types import MemorySearchResult
-from agent.mind.context_pipeline import (
+import agent.context.assembly  # noqa: F401  导入触发 @context_block 注册
+from agent.context.pipeline import (
     _LAYER_REGISTRY,
     VOL_HISTORY,
     VOL_STABLE,
 )
+from agent.memory.memory_retriever import MemoryRetriever
+from agent.memory.memory_types import MemorySearchResult
 
 # 记忆系统相关内容块：必须全部位于历史锚点之后的尾部动态区
 # （目标/计划态势原 goals 层已并入 provider 层：plan_ops 每轮注入，见 agent.planning.situation）
@@ -162,7 +162,7 @@ class TestProviderLayerPlacement:
     """
 
     def test_provider_between_chain_and_exec(self) -> None:
-        from agent.mind.context_pipeline import VOL_CHAIN, VOL_ROUND
+        from agent.context.pipeline import VOL_CHAIN, VOL_ROUND
 
         meta = _LAYER_REGISTRY.get("provider")
         assert meta is not None, "provider 层未注册"
@@ -174,6 +174,6 @@ class TestProviderLayerPlacement:
 
     def test_provider_not_pipeline_block(self) -> None:
         """provider 不再是管线组装块（管线产物在回复周期内冻结，实时注入会失真）。"""
-        from agent.mind.context_assembly import ContextAssembly
+        from agent.context.assembly import ContextAssembly
 
         assert not hasattr(ContextAssembly, "_blk_provider")

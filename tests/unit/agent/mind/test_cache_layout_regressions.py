@@ -5,8 +5,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Dict, List
 
-from agent.mind.context_compressor import ContextCompressor
-from agent.mind.message_schema import normalize_for_send
+from agent.context.compressor import ContextCompressor
+from agent.context.message_schema import normalize_for_send
 from agent.mind.tools.reply_finalize import _build_execution_summary
 
 
@@ -362,7 +362,7 @@ class TestSleepableCatalogStatic:
         """沉睡分组目录文案不随激活状态变化（stable 层字节稳定）。"""
         from types import SimpleNamespace as SN
 
-        import agent.mind.context_assembly as ca
+        import agent.context.assembly as ca
 
         monkeypatch.setattr(
             ca.EntityRegistry, "get_entity_catalog",
@@ -385,8 +385,8 @@ class TestSleepableCatalogStatic:
 class TestCacheKindBucketing:
     def test_kind_separated_stats(self) -> None:
         """辅助调用（reflect）与主对话（reply）分桶统计，互不污染命中率口径。"""
+        from agent.context.cache_stats import CacheUsageTracker
         from agent.llm.types import UsageInfo
-        from agent.mind.cache_stats import CacheUsageTracker
 
         tracker = CacheUsageTracker()
         tracker.record(UsageInfo(prompt_tokens=100, cache_read_input_tokens=95), kind="reply")
@@ -410,8 +410,8 @@ class TestCacheRateAggregation:
         归一后的分母恒 ≥ read（不含口径 total = prompt+read+creation），
         单次命中率天然不超 1，聚合算术平均同样封顶。
         """
+        from agent.context.cache_stats import CacheUsageTracker
         from agent.llm.types import UsageInfo
-        from agent.mind.cache_stats import CacheUsageTracker
 
         tracker = CacheUsageTracker()
         # Anthropic 记账：input_tokens 仅未缓存部分，read 远大于它

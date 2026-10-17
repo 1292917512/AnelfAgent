@@ -19,6 +19,7 @@
 | 组件 | 责任 | 入口 |
 |---|---|---|
 | `agent/mind/mind.py` | 组装运行时组件，提供周期、回复和反思的宿主接口 | `Mind.execute_mind()`、`Mind.reply()`、`Mind.reflect()` |
+| `agent/mind/mind_tools.py` | 核心工具声明与注册、反思工具权限策略 | `register_core_tools()`、`build_reflect_blocklist()` |
 | `agent/mind/cycle.py` | 自主周期的锁、fast-path、态势收集、元决策和收尾 | `_cycle_body()` |
 | `agent/mind/prefrontal_cortex.py` | 对外提供待办、工具、上下文和会话状态门面 | `PrefrontalCortex` |
 | `agent/mind/work_memory.py` | 待办消息、短期状态和动态任务数据 | `WorkMemory` |
@@ -94,7 +95,7 @@
 | 工具守卫 | `agent/mind/guardrails.py` | 精确失败重复/同工具连续失败/无进展循环检测，动作 warn/block/halt；分级提醒（首次温和、后续附参数预览）；用户插话重置计数 |
 | 错误分类 | `agent/llm/resilience/classifier.py` | LLM 错误分类（rate_limit/context_overflow/auth 等）驱动重试策略 |
 | 自适应重试 | `agent/llm/retry.py` | 指数退避 + 抖动（jittered_backoff） |
-| 上下文压缩 | `agent/mind/context_compressor.py` | 溢出检测（真实 usage 优先）→ 保头保尾 + LLM 摘要 → 压缩反馈注入；摘要调用复用主前缀命中 KV 缓存；被压缩中间段的文件操作经规则提取为 `[已操作文件]` system 消息（单调增长的事实链，上限 30 条/类，不占摘要预算） |
+| 上下文压缩 | `agent/context/compressor.py` | 溢出检测（真实 usage 优先）→ 保头保尾 + LLM 摘要 → 压缩反馈注入；摘要调用复用主前缀命中 KV 缓存；被压缩中间段的文件操作经规则提取为 `[已操作文件]` system 消息（单调增长的事实链，上限 30 条/类，不占摘要预算） |
 | 结果预算 | `agent/mind/result_budget.py` | 按模型窗口动态截断工具结果（15% 单条 / 30% 整轮） |
 | 会话令牌 | `agent/security/session_token.py` | 一次性令牌标记可信历史，泄露即 SECURITY 停止 |
 | 威胁扫描 | `agent/security/threat_scanner.py` | 注入模式扫描（工具结果标记 / 记忆写入拦截） |
@@ -122,6 +123,17 @@
 
 ## 三、上下文组装与缓存
 
+上下文组件归属 `agent/context/`：`assembly` 组装提示词，`pipeline` 声明分层与顺序，
+`message_schema` 规整发送消息，`compressor` 执行压缩，`prompt_layers` 与 `prefix_guard`
+管理缓存，`snapshot`、`audit`、`cache_stats`、`observation` 提供观测。
+包入口加载组装层声明，使独立读取 Web 元数据时也能取得完整分层，不启动 Mind 或注册思维工具。
+
+`ports.py` 定义只读工作记忆、工具态势和压缩宿主接口。PFC 注入现有 `WorkMemory` 与
+`ToolAssembly`，Mind 注入压缩宿主；它们共享原有会话状态，不复制队列、激活状态或缓存。
+`mind/recollection.py` 仍负责召回准备，`mind/runtime_context.py` 仍负责后台任务状态适配，
+思维循环负责逐轮刷新和调度，上下文组件不反向调用这些调度实现。
+`end_reply` 与 `compress_context` 的工具入口归属 `mind_tools.py`，压缩器本身不注册工具。
+
 `ContextAssembly.build_llm_context()` 使用 `ContextPipeline` 按变动频率从静到动组装消息，
 并为每个块附加内部 `_layer` 标记：
 
@@ -137,14 +149,14 @@ provider     上下文提供者实时注入（每轮发送组装时收集最新�
 exec_context 本轮执行状态（每轮全量重建）
 ```
 
-层的注册和排序由 `agent/mind/context_pipeline.py` 统一维护；新增上下文块应声明其层和变动率，
+层的注册和排序由 `agent/context/pipeline.py` 统一维护；新增上下文块应声明其层和变动率，
 不要在调用点手工插入消息。发送前由 `normalize_for_send()` 清理内部层标记和来源字段。
 
 ### 每轮动态区预算纪律
 
 | 机制 | 位置 | 说明 |
 |------|------|------|
-| exec_context 步骤预算 | `context_assembly._MAX_RENDERED_STEPS`（12） | `[已完成步骤]` 只保留最近 12 步 + 省略行；finish_think 的最终执行摘要仍消费全量清单 |
+| exec_context 步骤预算 | `agent.context.assembly._MAX_RENDERED_STEPS`（12） | `[已完成步骤]` 只保留最近 12 步 + 省略行；finish_think 的最终执行摘要仍消费全量清单 |
 | 执行摘要入库瘦身 | `reply_finalize._compact_summary_for_history` | 对话历史中的 `[已执行操作摘要]` 只入库统计头 + 最近 5 条 + 查询指引；完整清单进进程内环形缓冲（每会话 8 轮），AI 经 `get_execution_log(turns=)` 按需取回 |
 | 缓存命中状态行 | `round_helpers._cache_status_hint` | 上轮真实 usage 的命中率注入 exec_context（端点可观测且 `last_input_tokens > 0` 才注入，不谎报 0%）；配置 `cache_status_hint_enabled` |
 | 输出契约集中呈现 | `think_loop._run_think_rounds` | 输出权限与真实投递状态统一放 exec_context，工具轮不再追加同义提示 |

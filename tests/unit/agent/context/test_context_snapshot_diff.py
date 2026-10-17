@@ -6,15 +6,15 @@ import json
 
 import pytest
 
+from agent.context.cache_stats import CacheUsageTracker
+from agent.context.snapshot import ContextSnapshot
 from agent.llm.types import UsageInfo
-from agent.mind.cache_stats import CacheUsageTracker
-from agent.mind.context_snapshot import ContextSnapshot
 
 
 @pytest.fixture
 def snapshot(tmp_path, monkeypatch: pytest.MonkeyPatch) -> ContextSnapshot:
     """独立快照实例（持久化指向临时目录，避免污染仓库 logs/）。"""
-    monkeypatch.setattr("agent.mind.context_snapshot._SNAPSHOT_DIR", str(tmp_path))
+    monkeypatch.setattr("agent.context.snapshot._SNAPSHOT_DIR", str(tmp_path))
     return ContextSnapshot()
 
 
@@ -84,7 +84,7 @@ class TestCacheBlock:
             cache_read_input_tokens=800,
         ))
         # _build_cache_block 内部延迟 import cache_usage_tracker 单例，替换之
-        import agent.mind.cache_stats as cache_mod
+        import agent.context.cache_stats as cache_mod
         monkeypatch.setattr(cache_mod, "cache_usage_tracker", tracker)
 
         await snapshot.arm()
@@ -106,7 +106,7 @@ class TestCacheBlock:
         self, snapshot: ContextSnapshot, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """消息级断链：conversation 第 3 条被原地改写，前缀计入其前 2 条。"""
-        import agent.mind.cache_stats as cache_mod
+        import agent.context.cache_stats as cache_mod
         monkeypatch.setattr(cache_mod, "cache_usage_tracker", CacheUsageTracker())
 
         await snapshot.arm()
@@ -133,7 +133,7 @@ class TestCacheBlock:
         self, snapshot: ContextSnapshot, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """追加式增长（工具链/会话常态）：既有消息全稳定，仅新增计入重写区。"""
-        import agent.mind.cache_stats as cache_mod
+        import agent.context.cache_stats as cache_mod
         monkeypatch.setattr(cache_mod, "cache_usage_tracker", CacheUsageTracker())
 
         msgs = [
@@ -166,7 +166,7 @@ class TestCacheBlock:
         self, snapshot: ContextSnapshot, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """链收缩（压缩删除尾部）：stable==count 但整层变化，断链点不得穿过。"""
-        import agent.mind.cache_stats as cache_mod
+        import agent.context.cache_stats as cache_mod
         monkeypatch.setattr(cache_mod, "cache_usage_tracker", CacheUsageTracker())
 
         msgs = [
@@ -201,7 +201,7 @@ class TestCacheBlock:
         self, snapshot: ContextSnapshot, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """新层首现：断链点在该层第 0 条，而非整份快照"无基线"。"""
-        import agent.mind.cache_stats as cache_mod
+        import agent.context.cache_stats as cache_mod
         monkeypatch.setattr(cache_mod, "cache_usage_tracker", CacheUsageTracker())
 
         base = [
@@ -284,7 +284,7 @@ class TestPrefixStableCaliber:
         self, tmp_path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setattr(
-            "agent.mind.context_snapshot._SNAPSHOT_DIR", str(tmp_path),
+            "agent.context.snapshot._SNAPSHOT_DIR", str(tmp_path),
         )
         self._write_snapshot(tmp_path, [
             {"layer": "stable", "changed": False},
@@ -300,7 +300,7 @@ class TestPrefixStableCaliber:
         self, tmp_path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setattr(
-            "agent.mind.context_snapshot._SNAPSHOT_DIR", str(tmp_path),
+            "agent.context.snapshot._SNAPSHOT_DIR", str(tmp_path),
         )
         self._write_snapshot(tmp_path, [
             {"layer": "stable", "changed": False},
@@ -392,7 +392,7 @@ class TestFamilyIsolation:
 
     async def test_baseline_families_bounded(self, snapshot: ContextSnapshot) -> None:
         """基线族数量有界：一次性 reflect scope 不无界累积。"""
-        from agent.mind import context_snapshot as mod
+        from agent.context import snapshot as mod
         for i in range(mod._MAX_DIFF_FAMILIES + 8):
             await snapshot.arm()
             await snapshot.try_capture(

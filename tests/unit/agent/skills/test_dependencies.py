@@ -72,8 +72,8 @@ def test_unavailable_status_does_not_claim_missing(state_source) -> None:
 
 
 async def test_recall_refreshes_links_without_auto_wakeup_or_prefix_changes(tmp_path: Path, state_source) -> None:
-    from agent.mind.context_observation import context_skills
-    from agent.mind.message_schema import normalize_for_send
+    from agent.context.message_schema import normalize_for_send
+    from agent.context.observation import context_skills
     from agent.mind.recollection import _match_skills
     from agent.skills.catalog import catalog_section
 

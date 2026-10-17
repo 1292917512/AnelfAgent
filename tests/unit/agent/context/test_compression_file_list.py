@@ -1,8 +1,8 @@
-"""压缩文件清单结构化累积（context_compressor 第九轮）单元测试。"""
+"""上下文压缩中的文件操作清单结构化累积。"""
 
 from __future__ import annotations
 
-from agent.mind.context_compressor import (
+from agent.context.compressor import (
     _extract_file_operations,
     _extract_file_operations_from_summary,
     _merge_list,

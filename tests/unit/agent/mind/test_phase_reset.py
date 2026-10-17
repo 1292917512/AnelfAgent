@@ -171,7 +171,6 @@ class TestReflectPhaseReset:
     def _wire_reflect_fakes(self, mind: Any) -> None:
         mind.note_activity = lambda: None
         mind._get_mind_config = lambda: SimpleNamespace(max_tool_iterations=6)
-        mind._build_reflect_blocklist = lambda allow: set()
         mind.pfc = SimpleNamespace(
             get_active_tool_schemas=AsyncMock(return_value=[]),
             clear_dynamic_tools=lambda **kwargs: None,
@@ -195,7 +194,6 @@ class TestReflectPhaseReset:
     async def test_reflect_output_permission_is_separate_from_text_routing(self, allow) -> None:
         mind = _bare_mind()
         self._wire_reflect_fakes(mind)
-        del mind._build_reflect_blocklist
         mind._think_loop = AsyncMock()
         kwargs = {} if allow is None else {"allow_output_tools": allow}
         await mind.reflect([{"role": "user", "content": "检查后按需通知"}], **kwargs)

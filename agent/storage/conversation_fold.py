@@ -372,8 +372,8 @@ class ConversationFolder:
         折后首轮校验不误报断裂，快照/命中率列表可据因标识"折叠"，
         与供应商侧波动区分（观测性登记，fail-open 不影响折叠主流程）。"""
         try:
+            from agent.context.prefix_guard import prefix_guard
             from agent.messages import build_entity_scope
-            from agent.mind.prefix_guard import prefix_guard
             adapter, _, base_id = scope_id.partition(":")
             prefix_guard.note_legal_break(
                 build_entity_scope(scope_type, adapter, base_id), "fold")

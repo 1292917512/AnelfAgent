@@ -1,4 +1,4 @@
-"""前缀稳定性守卫（agent.mind.prefix_guard）单元测试。
+"""前缀稳定性守卫（agent.context.prefix_guard）单元测试。
 
 覆盖：首次无基线、前缀稳定、逐位置断裂归因、纯追加免疫、链收缩检测、
 用途（kind）隔离、reset 重置、fail-open 健壮性。
@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from agent.mind.prefix_guard import PrefixGuard
+from agent.context.prefix_guard import PrefixGuard
 
 
 def _msg(layer: str, content: str, role: str = "system") -> dict:
@@ -127,7 +127,7 @@ class TestLegalBreak:
 
     def test_reason_expires_after_ttl(self, monkeypatch) -> None:
         """窗口过期后取因为 None（惰性清除）。"""
-        import agent.mind.prefix_guard as guard_mod
+        import agent.context.prefix_guard as guard_mod
         g = PrefixGuard()
         g.note_legal_break("s1", "compress")
         assert g.legal_break_reason("s1") == "compress"

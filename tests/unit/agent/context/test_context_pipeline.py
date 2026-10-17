@@ -1,8 +1,13 @@
-"""上下文构建管线（context_pipeline）单元测试：声明注册 / 变动率排序 / 布局覆盖 / 断点注入。"""
+"""上下文构建管线（agent.context.pipeline）单元测试：声明注册 / 变动率排序 / 布局覆盖 / 断点注入。"""
 
 from __future__ import annotations
 
-from agent.mind.context_pipeline import (
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+from agent.context.pipeline import (
     VOL_HISTORY,
     VOL_LOW,
     VOL_SESSION,
@@ -89,9 +94,34 @@ class TestBreakpointInjection:
 
 
 class TestLayerRegistry:
+    def test_metadata_available_without_loading_mind(self, tmp_path: Path) -> None:
+        """独立观测进程取得完整分层，不因导入上下文而注册思维工具。"""
+        result = subprocess.run(
+            [sys.executable, "-c", """
+import sys
+from agent.context.compressor import ContextCompressor
+from agent.context.snapshot import ContextSnapshot
+from core.tool_registry import _deferred_registry
+from services.context import ContextService
+layers = {item['layer']: item for item in ContextService.list_layer_metas()}
+assert {'stable', 'summary', 'conversation', 'memory', 'provider', 'exec_context'} <= layers.keys()
+assert layers['stable']['volatility'] == 0
+assert layers['memory']['volatility'] == 43
+assert not any(name == 'agent.mind' or name.startswith('agent.mind.') for name in sys.modules)
+assert not _deferred_registry.get('thinking')
+"""],
+            capture_output=True, timeout=30,
+            env=os.environ | {
+                "ANELF_CONFIG_DIR": str(tmp_path / "config"),
+                "ANELF_DATA_DIR": str(tmp_path / "data"),
+                "PYTHONIOENCODING": "utf-8",
+            },
+        )
+        assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
+
     def test_decorator_registers_meta(self) -> None:
         """装饰器自动注册层元数据（label 缺省用层名）。"""
-        from agent.mind.context_pipeline import context_block, get_layer_meta
+        from agent.context.pipeline import context_block, get_layer_meta
 
         class _LocalHost:
             @context_block("ut_custom_layer", VOL_SESSION, "自定义展示名")
@@ -105,7 +135,7 @@ class TestLayerRegistry:
 
     def test_builtin_layers_registered(self) -> None:
         """think_loop 管理的层（tool_chain/exec_context）同样在册。"""
-        from agent.mind.context_pipeline import get_layer_meta
+        from agent.context.pipeline import get_layer_meta
 
         chain = get_layer_meta("tool_chain")
         assert chain is not None and chain.managed == "think_loop"
@@ -114,7 +144,7 @@ class TestLayerRegistry:
 
     def test_order_derived_from_registry(self) -> None:
         """层序由注册表按变动率推导（含管线层与 think_loop 层）。"""
-        from agent.mind.context_pipeline import get_layer_order, register_layer
+        from agent.context.pipeline import get_layer_order, register_layer
 
         register_layer("zzz_custom", 45, "自定义层")
         order = get_layer_order()
@@ -124,8 +154,8 @@ class TestLayerRegistry:
     def test_real_assembly_layers_have_labels(self) -> None:
         """真实 ContextAssembly 的 11 个层全部带中文展示名注册。"""
         # 导入即触发块装饰注册
-        import agent.mind.context_assembly  # noqa: F401
-        from agent.mind.context_pipeline import get_layer_meta
+        import agent.context.assembly  # noqa: F401
+        from agent.context.pipeline import get_layer_meta
 
         for layer, expect in (
             ("stable", "人设"), ("context", "便签"), ("summary", "摘要"),
@@ -177,7 +207,7 @@ class TestGoldenOrder:
         from types import SimpleNamespace as SN
         from unittest.mock import AsyncMock
 
-        import agent.mind.context_assembly as ca
+        import agent.context.assembly as ca
         from agent.mind.prefrontal_cortex import PrefrontalCortex
 
         monkeypatch.setattr(ca, "_tail_injection_enabled", lambda: False)

@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 from typing import TYPE_CHECKING, Any
 
+from agent.context.observation import context_skills
 from agent.judgment.evidence import conversation_evidence, dialogue_messages
 from agent.judgment.gate import assess_optional_work
 from agent.memory.memory_retriever import MemoryRetriever
@@ -18,7 +19,6 @@ from agent.memory.probe import deep_probe_hub
 from agent.memory.probe_render import RecallDelta
 from agent.memory.recall_fast import search_local
 from agent.memory.recall_policy import current_recall_policy
-from agent.mind.context_observation import context_skills
 from core.config import get_config_bool, get_config_float, get_config_int
 from core.hooks import HookMode, hook_execution
 from core.log import log

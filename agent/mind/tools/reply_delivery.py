@@ -186,20 +186,20 @@ async def publish_delivery(ctx: _ThinkLoopCtx, state: _ThinkRoundState, result: 
             await ctx.mind._add_system_context(ctx.anything, feedback, role="system")
         except Exception as exc:
             log(f"投递反馈记录失败: {exc}", "WARNING", tag="通道")
-    from agent.mind.context_observation import emit_context_update
+    from agent.context.observation import emit_context_update
     await emit_context_update([message], origin="delivery", scope=result.scope, iteration=state.iteration + 1)
     log(feedback, "DEBUG", tag="通道")
 
 
 def observe_send_results(ctx: _ThinkLoopCtx, state: _ThinkRoundState, calls: list[ToolCall]) -> None:
     """当前会话的发送尝试抑制重复自动投递；其他会话的回执不改变本会话状态。"""
-    from agent.mind.tools.round_helpers import _OUTPUT_TOOL_NAMES
+    from agent.mind.mind_tools import OUTPUT_TOOL_NAMES
 
     results = {message.get("tool_call_id"): message for message in ctx.tool_chain if message.get("role") == "tool"}
     for call in calls:
         if call.name == "end_reply":
             break
-        if call.name not in _OUTPUT_TOOL_NAMES:
+        if call.name not in OUTPUT_TOOL_NAMES:
             if state.reply_delivery_status != "unknown":
                 state.auto_reply_blocked = False
             continue

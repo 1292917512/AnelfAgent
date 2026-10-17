@@ -250,7 +250,7 @@ default_path 保持测试隔离）；同族库路径均由 `main_sqlite_path()`�
 | `memory` | 记忆管理 | `agent/memory/tools.py` | always/core/heartbeat |
 | `graph` | 关系图谱 | `agent/memory/graph/tools.py`（含 graph_curation_agenda 治理议程） | always/core/heartbeat |
 | `notes` | 便签记忆 | `agent/memory/notes.py` | core/heartbeat |
-| `thinking` | 思维工具 | `agent/mind/mind.py` + `agent/mind/tool_activation.py` + `agent/mind/context_compressor.py` + `agent/mind/tools/short_term_tools.py` | always |
+| `thinking` | 思维工具 | `agent/mind/mind_tools.py` + `agent/mind/tool_activation.py` + `agent/mind/tools/short_term_tools.py` | always |
 | `planning` | 目标规划 | `agent/planning/tools.py` + `agent/task/tools.py` | planning/goal/heartbeat |
 | `skills` | 技能 | `agent/skills/tools.py` | always |
 | `delegation` | 子代理 | `agent/delegation/delegate_tool.py` | always |
@@ -282,18 +282,18 @@ default_path 保持测试隔离）；同族库路径均由 `main_sqlite_path()`�
 | 文件 | 职责 |
 |------|------|
 | `agent/mind/mind.py` | 思维核心、自主循环 |
-| `agent/mind/prefrontal_cortex.py` | 工作记忆门面（组合 work_memory / tool_assembly / context_assembly） |
+| `agent/mind/prefrontal_cortex.py` | 工作记忆门面（组合 work_memory / tool_assembly / context.assembly） |
 | `agent/mind/autonomous.py` | 决策类型、态势模型、元决策 prompt |
-| `agent/mind/prompt_layers.py` | Prompt 分层缓存（stable/context/volatile + PromptCacheManager） |
-| `agent/mind/context_pipeline.py` | 上下文构建管线（@context_block 声明层+变动率 / 变动率排序组装） |
+| `agent/context/prompt_layers.py` | Prompt 分层缓存（stable/context/volatile + PromptCacheManager） |
+| `agent/context/pipeline.py` | 上下文构建管线（@context_block 声明层+变动率 / 变动率排序组装） |
 | `agent/mind/guardrails.py` | 工具调用守卫（死循环检测 warn/block/halt） |
-| `agent/mind/context_compressor.py` | 上下文压缩（溢出检测 + 保头保尾 + LLM 摘要） |
+| `agent/context/compressor.py` | 上下文压缩（溢出检测 + 保头保尾 + LLM 摘要） |
 | `agent/mind/result_budget.py` | 工具结果预算截断（按模型窗口动态计算） |
 | `agent/mind/tool_activation.py` | 工具沉睡/激活状态机（activate_tool_group） |
 | `agent/mind/tools/think_loop.py` | 统一思维循环（多轮 LLM + 工具编排 + reply_entry/reply_loop） |
 | `agent/mind/tools/reply_finalize.py` | 思维收尾块（finish_think/complete_reply/执行摘要） |
 | `core/tool_results.py` | 工具结果宽松 JSON 解析 + 错误文本提取 |
-| `agent/mind/message_schema.py` | 内部消息契约 + 发送边界规整 + 推理字段回传 |
+| `agent/context/message_schema.py` | 内部消息契约 + 发送边界规整 + 推理字段回传 |
 | `agent/llm/resilience/classifier.py` | LLM 错误分类（驱动重试/压缩/回退策略） |
 | `agent/llm/reasoning.py` | 思考等级单一权威（7 级规范词汇 + 档位表 + 下发通道分派） |
 | `agent/llm/prompt_cache.py` | Anthropic 缓存断点唯一权威 |
@@ -320,7 +320,7 @@ default_path 保持测试隔离）；同族库路径均由 `main_sqlite_path()`�
 | `agent/delegation/delegate_tool.py` | delegate_task / send_to_agent / follow_up_agent / 后台任务工具组 |
 | `agent/mind/work_memory.py` | 工作记忆数据面（消息队列 / 待办 / 短期记忆 / 态势路由） |
 | `agent/mind/tool_assembly.py` | 工具装配（召回 / tag 激活 / schema 合并门控） |
-| `agent/mind/context_assembly.py` | 上下文组装（系统提示 / 分层缓存 / 执行上下文） |
+| `agent/context/assembly.py` | 上下文组装（系统提示 / 分层缓存 / 执行上下文） |
 | `agent/mind/tools/decision_executor.py` | 决策执行分发（REPLY/REFLECT/PLAN 等） |
 | `agent/mind/push.py` | 实体推送中枢 PushHub |
 | `agent/capabilities.py` | 能力提供者路由框架 |

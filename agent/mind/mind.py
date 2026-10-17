@@ -6,13 +6,14 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 import time
 import uuid
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
 from agent.channel.manager import ChannelManager
+from agent.context.compressor import ContextCompressor
+from agent.context.message_schema import normalize_for_send
 from agent.heartbeat.engine import HeartbeatEngine
 from agent.llm import ChatModel, ChatResult, ImageContent, ToolCall
 from agent.llm.llm_client import LLMClient
@@ -36,7 +37,6 @@ from agent.mind.autonomous import (
     SituationContext,
 )
 from agent.mind.background_tasks import BackgroundTaskRegistry
-from agent.mind.context_compressor import ContextCompressor
 from agent.mind.cross_channel import (
     ChannelSnapshot,
 )
@@ -54,10 +54,7 @@ from agent.mind.interrupt import (
     is_interrupt_enabled,
     match_interrupt_keyword,
 )
-from agent.mind.message_schema import (
-    normalize_for_send,
-    normalize_roles,
-)
+from agent.mind.mind_tools import build_reflect_blocklist, register_core_tools, select_reflect_tools
 from agent.mind.prefrontal_cortex import PrefrontalCortex
 from agent.mind.tools.decision_executor import (
     execute_decision as _de_execute,
@@ -72,7 +69,6 @@ from agent.mind.tools.decision_executor import (
     resolve_reply_target as _de_resolve_target,
 )
 from agent.mind.tools.media_pipeline import MediaPipeline
-from agent.mind.tools.round_helpers import _OUTPUT_TOOL_NAMES
 from agent.mind.tools.think_loop import (
     ThinkMode,
 )
@@ -106,43 +102,11 @@ from core.event_bus import (
     event_bus,
 )
 from core.log import log
+from core.tool_registry import activate_group
 from core.trace_session import thinking_session
 
 if TYPE_CHECKING:
     from agent.storage.storage_router import StorageRouter
-
-_END_REPLY_TOOL_NAME = "end_reply"
-
-
-from core.tool_registry import activate_group, deferred_tool
-
-
-@deferred_tool(
-    name=_END_REPLY_TOOL_NAME,
-    group="thinking", tags=["always"], source="mind.core",
-    description=(
-        "结束本轮操作，不再执行后续工具或生成回复。已回复或无需回复时调用；"
-        "reason 及同批正文仅为内部记录，不发给用户。需回复时先调用 send_message 并确认目标会话的成功回执。"
-    ),
-)
-def _end_reply_tool(reason: str = "") -> str:
-    """静默结束当前执行，reason 仅作为内部备注。"""
-    from agent.channel.delivery import delivery_tags
-    from core.conversation_scope import current_scope
-
-    if reason:
-        log(f"AI 结束操作: {reason}", tag="思维")
-    return json.dumps({"ok": True, "action": "end_reply",
-                       "delivery": delivery_tags("silent", "skipped", current_scope())}, ensure_ascii=False)
-
-
-def _normalize_message_roles(messages: List[Dict]) -> List[Dict]:
-    """发送边界角色归一（委托 message_schema.normalize_roles）。
-
-    头部连续 system 块（提示词分层）保持 system 供 Anthropic 前缀缓存复用；
-    中途的 system 注入（纠正提示/执行反馈/执行上下文）转为 user 保留位置语义。
-    """
-    return normalize_roles(messages)
 
 
 class Mind:
@@ -260,11 +224,11 @@ class Mind:
         self._cached_model_name: str = ""
 
         # 文件型层 mtime 快检缓存（便签/索引文件未变时跳过 I/O）
-        from agent.mind.prompt_layers import FileLayerCache
+        from agent.context.prompt_layers import FileLayerCache
         self._file_cache = FileLayerCache()
 
         self._init_subsystems()
-        self._register_core_tools()
+        register_core_tools()
 
     def _init_subsystems(self) -> None:
         """初始化思维子系统：上下文压缩 / 技能自学习 / 子代理委托 / 记忆自动捕获。
@@ -307,22 +271,6 @@ class Mind:
     # ==================================================================
     # 初始化与配置
     # ==================================================================
-
-    def _register_core_tools(self) -> None:
-        """激活 Mind 核心层工具（end_reply 等）。"""
-        import agent.hooks.tools  # noqa: F401
-        activate_group("hooks", "钩子管理 — 声明、配置和执行模式")
-        if _END_REPLY_TOOL_NAME not in EntityRegistry.get_all_names():
-            activate_group("thinking", "思维工具 - 对话流程控制与工具编排")
-            log("思维工具已注册 (end_reply)", "DEBUG", tag="思维")
-        if "switch_session" not in EntityRegistry.get_all_names():
-            count = activate_group("session", "会话管理 — 多频道/多会话的发现与切换")
-            if count:
-                log(f"会话管理工具已注册 ({count} 个)", "DEBUG", tag="思维")
-        if "judge" not in EntityRegistry.get_all_names():
-            count = activate_group("judgment", "判断 — 结构化选择/评分/是非评判")
-            if count:
-                log(f"判断工具已注册 ({count} 个)", "DEBUG", tag="思维")
 
     @property
     def tool_executor(self) -> Optional[Callable[[ToolCall], Awaitable[str]]]:
@@ -1003,25 +951,6 @@ class Mind:
 
         await asyncio.wait_for(_consume(), timeout=self._get_mind_config().llm_timeout * 20)
 
-    # reflect 不直接干预频道调度；频道发现和显式发送由任务权限控制。
-    # present_plan/update_goal 已放行：tracker 对非用户 scope（reflect 等）
-    # 只持久化 goal、不发射前端事件（事件泄漏在 tracker 层根治），
-    # 心跳任务因此可以正常创建/推进自己的计划。
-    _REFLECT_ALWAYS_BLOCKED = frozenset({
-        "schedule_reply",
-    })
-    # 输出工具集合的单一权威在 round_helpers._OUTPUT_TOOL_NAMES（回合结果判定
-    # 同源）——双份定义会在增删输出工具时漂移
-    _REFLECT_OUTPUT_TOOLS = _OUTPUT_TOOL_NAMES
-
-    @classmethod
-    def _build_reflect_blocklist(cls, allow_output_tools: bool) -> Set[str]:
-        """根据任务策略构建 reflect 阶段工具黑名单。"""
-        blocked = set(cls._REFLECT_ALWAYS_BLOCKED)
-        if not allow_output_tools:
-            blocked.update(cls._REFLECT_OUTPUT_TOOLS)
-        return blocked
-
     async def reflect(
             self,
             messages: List[Dict],
@@ -1068,33 +997,17 @@ class Mind:
         try:
             mc = self._get_mind_config()
             safety_limit = max_iterations or mc.max_tool_iterations
-            blocked_tools = self._build_reflect_blocklist(allow_output_tools)
+            blocked_tools = build_reflect_blocklist(allow_output_tools)
             if extra_blocked_tools:
                 blocked_tools = blocked_tools | set(extra_blocked_tools)
 
             # 每次反思会话使用唯一 scope：并行子代理/心跳 reflect 的 plan 与
             # 工具激活状态按 scope 隔离，共享字面量会互相串扰
             reflect_scope = f"reflect:{uuid.uuid4().hex[:8]}"
-            # 无选择器时复用回复的基础目录；动态发现与冻结顺序仍按 scope 隔离。
-            # 档案指定选择器时只装配对应工具和本次反思发现的工具。
-            # 可见性与权限分离：禁用工具不从数组移除，由 think_loop 执行侧拦截
-            # （合成错误结果，模型自我纠正）
-            from core.config import get_config_bool
-            share_reply_tools = get_config_bool("reflect_share_reply_tools", True)
-            if tool_tags or not share_reply_tools:
-                extra_selectors = tool_tags if tool_tags else ["heartbeat"]
-                active_tools = await self.pfc.get_reflect_tool_schemas(
-                    adapter_key, scope=reflect_scope, selectors=extra_selectors,
-                )
-            else:
-                extra_selectors = []
-                active_tools = await self.pfc.get_active_tool_schemas(
-                    adapter_key, scope=reflect_scope,
-                )
-
-            if inherited_tools is not None:
-                from agent.mind.tool_assembly import inherit_tool_catalog
-                active_tools = await inherit_tool_catalog(inherited_tools, active_tools, scope=reflect_scope)
+            active_tools, extra_selectors = await select_reflect_tools(
+                self.pfc, adapter_key=adapter_key, scope=reflect_scope,
+                tool_tags=tool_tags, inherited_tools=inherited_tools,
+            )
 
             collected_text: List[str] = []
             execution_steps: List[str] = []

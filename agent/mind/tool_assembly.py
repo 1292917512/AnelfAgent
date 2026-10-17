@@ -69,6 +69,17 @@ class ToolAssembly:
         return self._tools_version
 
     @property
+    def activation_version(self) -> int:
+        """共享激活状态的版本，供上下文缓存校验。"""
+        from agent.mind.tool_activation import tool_activation
+        return tool_activation.version
+
+    def active_groups(self) -> dict[str, int]:
+        """当前会话已激活分组的只读快照。"""
+        from agent.mind.tool_activation import tool_activation
+        return tool_activation.active_groups()
+
+    @property
     def _tool_recall_top_n(self) -> int:
         from agent.config import get_mind_config
         return get_mind_config().tool_recall_top_n

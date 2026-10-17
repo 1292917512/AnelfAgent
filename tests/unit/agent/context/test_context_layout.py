@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from agent.mind.message_schema import normalize_for_send
+from agent.context.message_schema import normalize_for_send
 from agent.mind.prefrontal_cortex import PrefrontalCortex
 
 
@@ -116,7 +116,7 @@ class TestTailInjectionLayout:
     async def test_legacy_layout_when_disabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """tail_injection 关闭时回退旧布局（动态内容在历史之前）。"""
         monkeypatch.setattr(
-            "agent.mind.context_assembly._tail_injection_enabled", lambda: False,
+            "agent.context.assembly._tail_injection_enabled", lambda: False,
         )
         pfc = _pfc()
         msgs = await pfc.build_llm_context(**_BASE_KWARGS)
@@ -147,11 +147,11 @@ class TestNormalizePreservesBreakpoint:
 
 class TestCapNames:
     def test_short_list_unchanged(self) -> None:
-        from agent.mind.context_assembly import _cap_names
+        from agent.context.assembly import _cap_names
         assert _cap_names(["a", "b"]) == "a, b"
 
     def test_long_list_capped(self) -> None:
-        from agent.mind.context_assembly import _cap_names
+        from agent.context.assembly import _cap_names
         names = [f"tool_{i}" for i in range(47)]
         out = _cap_names(names)
         assert "tool_7" in out and "tool_8" not in out

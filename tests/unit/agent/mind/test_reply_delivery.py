@@ -218,7 +218,7 @@ async def test_disabled_text_is_silent_in_context_history_and_activity(anything,
     ConfigManager.set("send_final_text", False)
     observe = AsyncMock()
     review = AsyncMock(side_effect=AssertionError("disabled text must not call Jev"))
-    monkeypatch.setattr("agent.mind.context_observation.emit_context_update", observe)
+    monkeypatch.setattr("agent.context.observation.emit_context_update", observe)
     monkeypatch.setattr("agent.mind.tools.reply_delivery.assess_reply", review)
     mind, completion = await _run([
         tool_result("检查第一项", ["recall"]), tool_result("检查第二项", ["recall"]), text_result("内部结论"),

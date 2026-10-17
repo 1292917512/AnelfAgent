@@ -47,8 +47,8 @@ def _log_full_tools() -> bool:
 
 def _current_scope() -> str:
     try:
-        from agent.mind.tool_activation import ToolActivationManager
-        return ToolActivationManager.current_scope() or ""
+        from core.conversation_scope import current_scope
+        return current_scope() or ""
     except Exception:
         return ""
 

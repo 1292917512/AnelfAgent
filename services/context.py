@@ -6,11 +6,11 @@ from typing import Any, Dict, List, Optional
 
 
 class ContextService:
-    """上下文观测服务（Web 侧入口，封装 agent.mind 的上下文快照与管线元数据）。"""
+    """Web 上下文观测入口，读取快照、分层元数据与思维执行诊断。"""
 
     @staticmethod
     def _snapshot() -> Any:
-        from agent.mind.context_snapshot import context_snapshot
+        from agent.context.snapshot import context_snapshot
         return context_snapshot
 
     def recent_diagnostics(self, *, scope: str = "", turn_id: str = "", limit: int = 3, steps: int = 12, messages: int = 8) -> Dict[str, Any]:
@@ -80,7 +80,7 @@ class ContextService:
     @staticmethod
     def list_layer_metas() -> List[Dict[str, Any]]:
         """上下文层注册表（变动率/展示名/构建责任方，序列化为前端结构）。"""
-        from agent.mind.context_pipeline import list_layer_metas
+        from agent.context.pipeline import list_layer_metas
         return [
             {
                 "layer": m.layer,
