@@ -25,10 +25,20 @@ def test_core_tools_registered_once_at_bootstrap(tmp_path: Path) -> None:
 from agent.mind.tools.core import register_core_tools
 from core.entity import EntityRegistry
 register_core_tools()
-first = EntityRegistry.get_tool_schema_by_names(['end_reply', 'compress_context'])
+names = [
+    'get_execution_log', 'activate_tool_group', 'deactivate_tool_group',
+    'compress_context', 'end_reply', 'check_background_tasks', 'wait_background_tasks',
+    'terminate_background_task', 'schedule_reply', 'schedule_reminder', 'list_reminders',
+    'cancel_reminder', 'list_short_term_memory', 'remove_short_term_memory', 'clear_short_term_memory',
+    'get_conversation_diagnostics', 'list_sessions', 'switch_session',
+    'list_judgment_models', 'configure_judgment', 'test_judgment_model', 'judge',
+]
+first = EntityRegistry.get_tool_schema_by_names(names)
+assert [item['function']['name'] for item in first] == names
+registered = [name for name in EntityRegistry.get_all_names() if name in names]
+assert registered == names
 register_core_tools()
-assert EntityRegistry.get_tool_schema_by_names(['end_reply', 'compress_context']) == first
-assert {item['function']['name'] for item in first} == {'end_reply', 'compress_context'}
+assert EntityRegistry.get_tool_schema_by_names(names) == first
 for name in ('end_reply', 'compress_context'):
     entity = EntityRegistry.get(name)
     assert entity.group == 'thinking' and entity.source == 'mind.core'

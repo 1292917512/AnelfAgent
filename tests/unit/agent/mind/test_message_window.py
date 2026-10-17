@@ -245,6 +245,7 @@ def _attach_pending_work(mind):
 
     entity = SimpleNamespace(add_conversations_num=lambda: 0, personality={})
     work = WorkMemory(SimpleNamespace(get_anything=AsyncMock(return_value=entity)))
+    mind.pfc.work_memory = work
     mind.pfc.add_task = work.add_task
     mind.pfc.peek_all_tasks = work.peek_all_tasks
     mind.pfc.get_pending_signal = work.get_pending_signal
@@ -256,7 +257,6 @@ class TestThinkLoopMerge:
         from unittest.mock import AsyncMock
 
         from agent.channel.output_tools import execute_send_action
-        from agent.mind.cross_channel import update_channel_snapshot
         from core.conversation_scope import bind_scope, reset_scope
 
         current = MessageUser(uid="1", adapter_key="webui", session_id="a", text_content="A 的请求")
@@ -276,13 +276,12 @@ class TestThinkLoopMerge:
 
         mind = _MergeMind(conv_data)
         mind.model_invoker = CrossReplyModel(mind)
-        mind._channel_snapshots = {}
         work = _attach_pending_work(mind)
         await work.add_task(other)
         mind.pfc.consume_scope_task = work.consume_scope_task
         for message in (current, other):
             await conv_data.add_conversation_record_by_everything(message)
-            update_channel_snapshot(mind, message)
+            work.observe_channel(message, window_minutes=mind.config.cross_channel_window_minutes)
         token = bind_scope(current.entity_scope)
         try:
             await run_think_loop(mind, anything=current,
@@ -295,18 +294,17 @@ class TestThinkLoopMerge:
     async def test_one_unavailable_scope_does_not_hide_other_live_conversations(self, conv_data, monkeypatch) -> None:
         from unittest.mock import AsyncMock
 
-        from agent.mind.cross_channel import build_cross_channel_narrative, update_channel_snapshot
+        from agent.mind.cross_channel import build_cross_channel_narrative
 
         monkeypatch.setattr("agent.channel.outbound_guard._recent", {})
         mind = _MergeMind(conv_data)
-        mind._channel_snapshots = {}
-        _attach_pending_work(mind)
+        work = _attach_pending_work(mind)
         messages = [MessageUser(uid="1", adapter_key=adapter, text_content=text)
                     for adapter, text in [("qq", "仍可感知的消息"), ("telegram", "暂时无法恢复的消息")]]
         for message in messages:
             await mind.pfc.add_task(message)
             await conv_data.add_conversation_record_by_everything(message)
-            update_channel_snapshot(mind, message)
+            work.observe_channel(message, window_minutes=mind.config.cross_channel_window_minutes)
         sqlite = conv_data.router.sqlite
         await sqlite.fetch_live_conversation(scope_type="user", scope_id=messages[0].scope_id, limit=30)
         monkeypatch.setattr(sqlite, "_get_db", AsyncMock(side_effect=OSError("storage unavailable")))
@@ -338,7 +336,6 @@ class TestThinkLoopMerge:
 
     async def test_cross_channel_refresh_keeps_identity_and_stable_prefix(self, conv_data, monkeypatch) -> None:
         from agent.channel.outbound_guard import note_outbound
-        from agent.mind.cross_channel import update_channel_snapshot
         from core.conversation_scope import bind_scope, reset_scope
 
         monkeypatch.setattr("agent.channel.outbound_guard._recent", {})
@@ -369,13 +366,12 @@ class TestThinkLoopMerge:
 
         mind = _MergeMind(conv_data)
         mind.model_invoker = ConcurrentModel(mind)
-        _attach_pending_work(mind)
-        mind._channel_snapshots = {}
+        work = _attach_pending_work(mind)
         for message in [current, *others]:
             if message is not current:
                 await conv_data.add_conversation_record_by_everything(message)
                 await mind.pfc.add_task(message)
-            update_channel_snapshot(mind, message)
+            work.observe_channel(message, window_minutes=mind.config.cross_channel_window_minutes)
         sqlite = conv_data.router.sqlite
         for scope_id in [current.scope_id, *(message.scope_id for message in others), "telegram:1"]:
             await sqlite.fetch_live_conversation(scope_type="user", scope_id=scope_id, limit=30)

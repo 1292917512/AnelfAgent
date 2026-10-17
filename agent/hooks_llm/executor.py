@@ -10,7 +10,7 @@ cooldown/debounce、独立日志归因 / 用量归属 / 进度流 / 后台任务
 - 频控：cooldown（最小间隔）+ debounce（合并窗口取最后快照）；
 - 防递归：执行体标 origin=llm_hook 深度标记，其派生事件不再触发同类钩子；
 - 观测：bind_log_actor / bind_usage_scope / journal 进度流；
-- 路由：BackgroundTaskRegistry 登记，完成走既有 unclaimed → wake_budget 通道。
+- 路由：BackgroundTaskRegistry 登记，完成走既有 unclaimed 回调唤醒主思维。
 """
 from __future__ import annotations
 

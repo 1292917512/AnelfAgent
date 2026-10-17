@@ -21,6 +21,7 @@ from agent.mind.autonomous import MindPhase
 from agent.mind.execution import reflect as reflect_module
 from agent.mind.interrupt import InterruptRegistry
 from agent.mind.mind import Mind
+from agent.mind.work_memory import WorkMemory
 
 
 def _bare_mind() -> Any:
@@ -317,16 +318,15 @@ class TestAcceptFeelPhaseReset:
         mind.conversation_data.add_conversation_record_by_everything.return_value = False
         await mind.accept_feel(self._anything(trigger_mind=True))
         mind.pfc.add_task.assert_not_awaited()
+        assert mind.pfc.work_memory.channel_snapshots == {}
         assert mind.phase is MindPhase.IDLE
 
     def _wire_accept_fakes(self, mind: Any) -> None:
         mind.conversation_data = SimpleNamespace(add_conversation_record_by_everything=AsyncMock(return_value=True))
         mind._reflecting = False
         mind._auto_cycle_retry = 0
-        mind.wake_budget = SimpleNamespace(reset=lambda scope: None)
-        mind._channel_snapshots = {}
         mind.interrupts = InterruptRegistry()
-        mind.pfc = SimpleNamespace(add_task=AsyncMock())
+        mind.pfc = SimpleNamespace(add_task=AsyncMock(), work_memory=WorkMemory(SimpleNamespace()))
 
     @staticmethod
     def _anything(*, trigger_mind: bool) -> Any:
@@ -363,6 +363,12 @@ class TestAcceptFeelPhaseReset:
         if active:
             mind._active_scopes.add(message.entity_scope)
             mind.phase = MindPhase.REPLYING
+
+        async def queued_after_observation(_message):
+            snapshot = mind.pfc.work_memory.channel_snapshots["webui"]
+            assert snapshot.active_scopes[message.entity_scope].last_preview == text
+
+        mind.pfc.add_task.side_effect = queued_after_observation
         await mind.accept_feel(message)
         mind.conversation_data.add_conversation_record_by_everything.assert_awaited_once_with(message)
         mind.pfc.add_task.assert_awaited_once_with(message)

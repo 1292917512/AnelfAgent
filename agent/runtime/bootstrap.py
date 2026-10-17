@@ -358,19 +358,6 @@ def create_bootstrap() -> FlowMachine:
     )
     async def assemble_runtime():
         """纯组装：Mind -> Assistant -> Runtime -> set_runtime -> 统一施绑。"""
-        # 提前导入工具模块，使其 deferred 工具在 Mind 初始化激活
-        # thinking/session/delegation 分组时一并注册（依赖引用经 wiring 统一施绑）；
-        # delegate_tool 漏导入会导致 activate_group("delegation") 弹出空组、
-        # delegation 整组永不注册（activate_group 对空组连组名都不登记）
-        import agent.delegation.delegate_tool  # noqa: F401
-        import agent.judgment.tools  # noqa: F401
-        from agent.mind.tools import (  # noqa: F401
-            background,
-            execution_log,
-            scheduler,
-            session_tools,
-            short_term_tools,
-        )
         from agent.runtime.assistant import AgentAssistant
         from agent.runtime.mind_factory import create_mind
         from agent.runtime.runtime import AgentRuntime

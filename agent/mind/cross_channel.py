@@ -1,4 +1,4 @@
-"""跨频道感知：快照管理、语义召回、叙事构建。
+"""跨频道感知：语义召回与实时叙事构建，活动快照由工作记忆持有。
 
 模型可见：其他会话的新私聊与群聊 @，以及与当前话题相关的历史片段。
 Token 影响：新消息沿用有界内存窗口；可选 Jev 预判减少无关召回，历史检索复用查询向量。
@@ -9,9 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import datetime
-import re
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from agent.judgment.evidence import conversation_evidence, dialogue_messages
@@ -19,63 +18,13 @@ from agent.judgment.gate import assess_optional_work
 from agent.memory.memory_retriever import MemoryRetriever
 from agent.messages import build_entity_scope, is_conversation_scope, parse_entity_scope
 from agent.messages.everything import build_scope_id
+from agent.mind.work_memory import ScopeActivity
 from core.hooks import HookMode, hook_execution
 from core.log import log
 from core.tags import etag_all, tag_label
 
 if TYPE_CHECKING:
-    from agent.messages import Everything
     from agent.mind.mind import Mind
-
-_PREVIEW_TAG_RE = re.compile(r"\[[^\]]*\]")
-
-
-@dataclass
-class ScopeActivity:
-    """单个 scope 的近期活动快照。"""
-    last_time: float = 0.0
-    last_preview: str = ""
-    adapter_key: str = ""
-
-
-@dataclass
-class ChannelSnapshot:
-    """频道活动快照（轻量级，纯内存）。"""
-    last_message_time: float = 0.0
-    active_scopes: dict[str, ScopeActivity] = field(default_factory=dict)
-
-
-def update_channel_snapshot(mind: Mind, anything: "Everything") -> None:
-    """记录频道活动快照，供跨频道感知使用。"""
-    adapter_key = getattr(anything, "adapter_key", "") or ""
-    if not adapter_key:
-        return
-    scope = anything.entity_scope if anything else ""
-    if not scope:
-        return
-
-    raw = anything.get_text_content()[:80] if hasattr(anything, "get_text_content") else ""
-    preview = _PREVIEW_TAG_RE.sub("", raw).strip()[:50]
-
-    snap = mind._channel_snapshots.setdefault(adapter_key, ChannelSnapshot())
-    now = time.time()
-    snap.last_message_time = now
-
-    activity = snap.active_scopes.setdefault(scope, ScopeActivity())
-    activity.last_time = now
-    activity.last_preview = preview
-    activity.adapter_key = adapter_key
-
-    mc = mind.config
-    window = mc.cross_channel_window_minutes * 60
-    snap.active_scopes = {
-        s: a for s, a in snap.active_scopes.items() if now - a.last_time < window
-    }
-    # 窗口外完全沉寂的频道快照整体移除，防按频道/scope 永久残留
-    mind._channel_snapshots = {
-        key: s for key, s in mind._channel_snapshots.items()
-        if key == adapter_key or now - s.last_message_time < window
-    }
 
 
 def collect_channel_info(mind: Mind) -> list[str]:
@@ -201,7 +150,7 @@ async def _recall_candidates(mind: Mind, current_scope: str, user_scope: str) ->
     """优先显式关联身份，再按活跃时间选择有界候选；不通过同号或昵称推断身份。"""
     mc = mind.config
     cutoff = time.time() - mc.cross_channel_window_minutes * 60
-    activities = {scope: activity for snapshot in mind._channel_snapshots.values()
+    activities = {scope: activity for snapshot in mind.pfc.work_memory.channel_snapshots.values()
                   for scope, activity in snapshot.active_scopes.items()
                   if scope != current_scope and activity.last_time >= cutoff and is_conversation_scope(scope)}
     linked: set[str] = set()

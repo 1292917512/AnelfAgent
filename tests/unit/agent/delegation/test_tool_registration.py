@@ -1,15 +1,10 @@
-"""delegation 工具组生产注册链路回归测试。
-
-回归自 2026-09 潜伏缺陷：`activate_group("delegation")` 在 Mind 构造期执行，
-但全仓唯一 import delegate_tool（填充 deferred 注册表）的是 wire_runtime
-函数体——在 Mind 构造之后才运行，导致 activate 弹出空组、delegation 整组
-从未进入 EntityRegistry（组名都不登记），delegate_task 生产环境完全不可用。
-单测因直接 import delegate_tool 一直绿，未暴露该时序缺陷。
-"""
+"""委托工具组的声明、激活与独立工厂装配。"""
 
 from __future__ import annotations
 
-from pathlib import Path
+import os
+import subprocess
+import sys
 
 EXPECTED_TOOLS = {
     "delegate_task",
@@ -44,12 +39,44 @@ class TestDelegationGroupRegistration:
         assert EntityRegistry.get_group_description("delegation") != ""
         assert EXPECTED_TOOLS <= _schema_names()
 
-    def test_bootstrap_preimport_guarantee(self) -> None:
-        """时序守卫：assemble_runtime 的提前导入清单必须覆盖 delegate_tool。
+    def test_factory_registers_tools_without_bootstrap_imports(self, tmp_path) -> None:
+        """独立进程只调用工厂，也必须取得完整工具目录。"""
+        result = subprocess.run(
+            [sys.executable, "-c", """
+import asyncio
+from unittest.mock import DEFAULT, MagicMock, patch
+from agent.runtime import mind_factory
+from core.entity import EntityRegistry
 
-        Mind 构造期激活 thinking/session/delegation 组，其 deferred 模块须先
-        导入——该保障位于 bootstrap assemble_runtime（thinking/session 同例），
-        被移除时本测试即红（防止时序缺陷静默回归）。
-        """
-        source = Path("agent/runtime/bootstrap.py").read_text(encoding="utf-8")
-        assert "import agent.delegation.delegate_tool" in source
+async def check():
+    with patch.multiple(mind_factory,
+        get_skill_store=DEFAULT, get_plugin_manager=DEFAULT, get_embedder=DEFAULT,
+        SkillMatcher=DEFAULT, SkillCurator=DEFAULT, SkillReviewer=DEFAULT,
+        HeartbeatEngine=DEFAULT, ContextCompressor=DEFAULT,
+    ), patch('agent.delegation.delegation_manager.DelegationManager'):
+        mind = mind_factory.create_mind(
+            char=MagicMock(), llm=MagicMock(), llm_manager=None,
+            channel_manager=MagicMock(), everything_data=MagicMock(),
+            conversation_data=MagicMock(), memory_store=None,
+        )
+    try:
+        expected = {'delegate_task', 'send_to_agent', 'follow_up_agent'}
+        assert expected <= set(EntityRegistry.get_all_names())
+        assert EntityRegistry.get_group_description('delegation')
+        for name in ('end_reply', 'schedule_reply', 'switch_session', 'judge', 'check_background_tasks'):
+            assert EntityRegistry.get(name) is not None, name
+        assert mind.push_hub and mind.background_tasks and mind.model_invoker
+    finally:
+        await mind.background_tasks.close()
+        await mind.push_hub.close()
+
+asyncio.run(check())
+"""],
+            capture_output=True, timeout=30,
+            env=os.environ | {
+                "ANELF_CONFIG_DIR": str(tmp_path / "config"),
+                "ANELF_DATA_DIR": str(tmp_path / "data"),
+                "PYTHONIOENCODING": "utf-8",
+            },
+        )
+        assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")

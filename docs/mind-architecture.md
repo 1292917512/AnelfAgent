@@ -47,7 +47,11 @@ Mind 原生方法负责消息接收、周期、回复、反思与召回观测的
 核心将聊天正文作为对话材料交给 AI 理解，不按固定话语中断执行或自动登记话题禁令。
 中断由 Web 控制、频道显式命令或内部调用通过 `Mind.interrupt(scope)` 发起；频道自身的命令解析由频道负责。
 工作流引擎由 `AgentRuntime` 持有，记忆自动捕获管线由运行时创建并直接施绑到所属模块端口；
-这两类服务不通过 Mind 中转。Mind 保留思考阶段、会话并发控制、跨频道感知状态及执行所需协作者。
+这两类服务不通过 Mind 中转。Mind 保留思考阶段、会话并发控制及执行所需协作者。
+频道活动快照归 `WorkMemory`，接收消息写入历史后更新；跨频道召回和会话工具读取同一份内存状态，
+不另建 Mind 缓存。实时消息筛选、动态层位置及当前频道的切换规则保持独立。
+`register_core_tools()` 先加载工具声明再激活分组；子代理工具由 `create_mind()` 装配，
+bootstrap 不重复维护这些声明的导入清单。
 
 - 自主周期由 `_cycle_lock` 串行化；没有待处理消息、任务或分析项时直接结束
 - 普通消息在没有复杂任务、目标或画像工作时走 **fast-path**，直接创建 `REPLY` 决策；复杂场景才
@@ -60,8 +64,9 @@ Mind 原生方法负责消息接收、周期、回复、反思与召回观测的
   拼出影子会话
 - tool_action 的 target 是显式通知的目标提示，不是普通正文的默认收件人。反思正文始终内部可见；
   需要通知时由 `send_message` 投递并核对回执，例行核对无需发消息。
-- **唤醒预算**（`agent/mind/wake_budget.py`）：连续自动唤醒超 `background_wake_budget`（默认 3）
-  不再触发新周期（防自我激励循环），真人输入重置
+- **后台通知**（`agent/mind/background_routing.py`）：轮外完成与进度事实写入所属会话历史后
+  入队并尝试唤醒主模型，由主模型决定继续、重试、回复或结束；不按连续唤醒次数截断，
+  不要求新的用户输入，也不增加独立判断调用。后台事件唤醒与定时心跳独立，心跳间隔只控制定时思考
 
 ## 二、回复与工具循环
 
@@ -307,7 +312,7 @@ exec_context 本轮执行状态（每轮全量重建）
 LLM 钩子不设整体时间截止；单次模型/工具 I/O 仍走各自超时与重试。AI 经动态尾部获知排队、调用、耗时和最近进展，使用 check_background_tasks / terminate_background_task 检查及取消。同步模式不使用防抖延迟。
 `stall_seconds` 控制无进展提醒（0 关闭），一次停滞仅提醒一次，有新进展后重新计时，不终止任务。
 后台查询返回 `notification`：always 完成通知、on_result 有产出或失败通知、on_failure 仅失败通知、silent 不通知。
-通知属于 AI 内部事实，唤醒仍受路由和预算约束；频道回复必须显式发送。内部钩子不参与主回复的自动等待。
+通知属于 AI 内部事实，按会话归属路由后由主模型决定后续；频道回复必须显式发送。内部钩子不参与主回复的自动等待。
 `check_background_tasks(task_id, after_sequence)` 可读取脱敏操作证据；每任务保留最近 32 个事件，返回游标、截断和淘汰标记。
 动态尾部只保留最近五分钟内的钩子终态摘要，历史仍可按任务查询；模型观察不会消费完成通知。
 技能评审保持异步。事件订阅将超时治理交给钩子宿主，避免总线默认 5 秒提前取消。
@@ -319,7 +324,7 @@ LLM 钩子不设整体时间截止；单次模型/工具 I/O 仍走各自超时�
 | 钩子注册表与装饰器 | `agent/hooks_llm/spec.py`（`LLMHookSpec` / `HookRegistry` / `@llm_hook`） | 声明式注册：event（白名单 after_reply/context_pressure/delegation_resolved/llm_end）+ 上下文档位（none/lean/transcript）+ `when` 条件门控 + 治理参数（max_concurrent/cooldown/debounce/priority/model/tool_tags）+ owner/source 归属。**llm_end 是高频事件**：装饰器与 _sdk 桥都强制最小冷却 `LLM_END_MIN_COOLDOWN_SECONDS`（20s），防成本失控 |
 | llm_end 快照源 | `agent/mind/llm_invoker.py`（EVENT_THINKING_LLM_END payload 增 `messages/tools`） | 保留本次调用消息的缓存分层与工具目录；scope 从触发会话解析。tracer 剔除 messages/tools，不复制完整上下文到诊断记录 |
 | 上下文快照与护栏 | `agent/hooks_llm/snapshot.py` | 完整深拷贝消息、嵌套工具调用与结果，不按字符截去执行证据；保留 `_layer/_source` 至最终发送边界。transcript 受总开关门控，context 可选择 transcript / lean / none；模型窗口溢出仍交给统一压缩器 |
-| 并行执行与治理 | `executor.py`（dispatch 后台调度 + `_RecursionGuard` 防递归 + per-hook/per-scope cooldown/debounce + 全局池 semaphore）+ `runtime.py` + `configs.py`（`hooks_llm/*` 组） | 异步扩员：emit 方不被钩子 LLM 阻塞；防递归（钩子执行树 ContextVar 标 origin，跨 create_task 拦截派生事件）；并发（全局池默认 2 + per-hook 默认 1）；频控（cooldown 锚点在调度受理时同步记录；debounce 用 call_later 句柄 + 最新快照槽）；路由（route_output 默认 True 走 unclaimed→wake_budget 通道唤醒主思维；False 内部治理类钩子成功静默、失败通知 AI）。runtime 经 LateBinding 由 bootstrap 实例化、注册为 Lifecycle 组件——关停 drain（先停订阅，再等运行中钩子收尾，超时才取消） |
+| 并行执行与治理 | `executor.py`（dispatch 后台调度 + `_RecursionGuard` 防递归 + per-hook/per-scope cooldown/debounce + 全局池 semaphore）+ `runtime.py` + `configs.py`（`hooks_llm/*` 组） | 异步扩员：emit 方不被钩子 LLM 阻塞；防递归（钩子执行树 ContextVar 标 origin，跨 create_task 拦截派生事件）；并发（全局池默认 2 + per-hook 默认 1）；频控（cooldown 锚点在调度受理时同步记录；debounce 用 call_later 句柄 + 最新快照槽）；路由（route_output 默认 True 经 unclaimed 回调唤醒主思维；False 内部治理类钩子成功静默、失败通知 AI）。runtime 经 LateBinding 由 bootstrap 实例化、注册为 Lifecycle 组件——关停 drain（先停订阅，再等运行中钩子收尾，超时才取消） |
 | 技能后台评审 | `agent/skills/background_review.py`（`skill_review` 钩子） | event=after_reply + context=transcript + tool_tags=["skills"] + route_output=False + 6 轮上限；评审材料为完整 transcript + 四问框架 |
 | 任务事件触发 | `agent/task/event_trigger.py` + `agent/heartbeat/engine.py::_sync_event_triggers` + `agent/task/tools.py` | 任务的第五种触发方式（与 heartbeat/scheduled/idle/manual 正交）：带 trigger_event 的任务经钩子面注册 `task_event:<name>` 钩子（context=none），命中后调 `HeartbeatEngine.run_task`（复用 inflight 去重与执行历史落盘）；任务 CRUD 经 reload 即时重建、无孤儿钩子 |
 | 实体桥接 | `entities/_sdk.py::register_entity_llm_hook` | 实体经 _sdk 桥注册钩子（owner 缺省取实体模块名）；entities→agent 唯一豁免通道同 push_notify 模板 |

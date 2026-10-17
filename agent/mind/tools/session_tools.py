@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from typing import Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List
 
 from agent.messages import is_conversation_scope, parse_entity_scope
 from core.entity import EntityRegistry
@@ -24,6 +24,9 @@ from core.tool_errors import ErrorCause, tool_error
 from core.tool_registry import deferred_tool
 
 from .ports import mind_port
+
+if TYPE_CHECKING:
+    from agent.mind.work_memory import WorkMemory
 
 EntityRegistry.register_group_order("session", 71)
 
@@ -91,10 +94,10 @@ async def get_conversation_diagnostics(
         return error_from_exception(exc, action="查询会话执行诊断")
 
 
-def _snapshot_activities(mind: Any) -> Dict[str, Dict[str, Any]]:
+def _snapshot_activities(work_memory: WorkMemory) -> Dict[str, Dict[str, Any]]:
     """汇总频道活动快照：scope → {adapter_key, last_time, last_preview}。"""
     result: Dict[str, Dict[str, Any]] = {}
-    for adapter_key, snap in getattr(mind, "_channel_snapshots", {}).items():
+    for adapter_key, snap in work_memory.channel_snapshots.items():
         for scope, activity in snap.active_scopes.items():
             result[scope] = {
                 "adapter_key": activity.adapter_key or adapter_key,
@@ -116,7 +119,7 @@ async def list_sessions() -> str:
     mind = mind_port.get()
 
     current = _current_scope()
-    activities = _snapshot_activities(mind)
+    activities = _snapshot_activities(mind.pfc.work_memory)
     now = time.time()
 
     sessions: List[Dict[str, Any]] = []
@@ -205,7 +208,7 @@ async def switch_session(scope: str, reason: str = "") -> str:
             "hint": "该会话正在处理中，无需重复切换",
         }, ensure_ascii=False)
 
-    preview = _snapshot_activities(mind).get(scope, {}).get("last_preview", "")
+    preview = _snapshot_activities(mind.pfc.work_memory).get(scope, {}).get("last_preview", "")
 
     prompt = "[会话切换] 你主动切换到该会话处理消息"
     if reason:

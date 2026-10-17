@@ -78,8 +78,17 @@ def _end_reply_tool(reason: str = "") -> str:
 
 
 def register_core_tools() -> None:
-    """激活 Mind 核心层工具（end_reply 等）。"""
+    """加载工具声明后激活核心分组，不依赖调用方的导入顺序。"""
     import agent.hooks.tools  # noqa: F401
+    import agent.judgment.tools  # noqa: F401
+    from agent.mind.tools import (  # noqa: F401
+        background,
+        execution_log,
+        scheduler,
+        session_tools,
+        short_term_tools,
+    )
+
     activate_group("hooks", "钩子管理 — 声明、配置和执行模式")
     if END_REPLY_TOOL_NAME not in EntityRegistry.get_all_names():
         activate_group("thinking", "思维工具 - 对话流程控制与工具编排")

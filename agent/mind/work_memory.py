@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 from agent.llm.types import ImageContent
@@ -33,6 +34,26 @@ if TYPE_CHECKING:
     from agent.mind.tool_assembly import ToolAssembly
     from agent.storage.data_center import ConversationData
     from agent.storage.sqlite_backend import SqliteBackend
+
+
+_PREVIEW_TAG_RE = re.compile(r"\[[^\]]*\]")
+
+
+@dataclass
+class ScopeActivity:
+    """单个会话的近期活动快照。"""
+
+    last_time: float = 0.0
+    last_preview: str = ""
+    adapter_key: str = ""
+
+
+@dataclass
+class ChannelSnapshot:
+    """频道活动快照，仅用于内存中的会话发现与召回。"""
+
+    last_message_time: float = 0.0
+    active_scopes: dict[str, ScopeActivity] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -89,6 +110,7 @@ class WorkMemory:
 
         # scope → 最新消息信号（预览 / adapter 路由 / to_me / 消息类别）/ 未读计数
         self._pending_signals: dict[str, PendingSignal] = {}
+        self.channel_snapshots: dict[str, ChannelSnapshot] = {}
         self.message_revision = 0
         self._unread_counts: dict[str, int] = {}
         # 群聊 scope → 最近发送者 [(uid, name), ...]
@@ -100,6 +122,29 @@ class WorkMemory:
         self._general_task_keys: list[str] = []
         # pending_analysis 条目 (group_id, uid, adapter_key) → 持久化 task_key
         self._analysis_task_keys: dict[tuple, str] = {}
+
+    def observe_channel(self, anything: Everything, *, window_minutes: float) -> None:
+        """记录已接收消息的频道活动，不改变未读队列或当前会话。"""
+        adapter_key = anything.adapter_key or ""
+        scope = anything.entity_scope
+        if not adapter_key or not scope:
+            return
+        preview = _PREVIEW_TAG_RE.sub("", anything.get_text_content()[:80]).strip()[:50]
+        now = time.time()
+        snap = self.channel_snapshots.setdefault(adapter_key, ChannelSnapshot())
+        snap.last_message_time = now
+        activity = snap.active_scopes.setdefault(scope, ScopeActivity())
+        activity.last_time = now
+        activity.last_preview = preview
+        activity.adapter_key = adapter_key
+        window = window_minutes * 60
+        snap.active_scopes = {
+            key: value for key, value in snap.active_scopes.items() if now - value.last_time < window
+        }
+        self.channel_snapshots = {
+            key: value for key, value in self.channel_snapshots.items()
+            if key == adapter_key or now - value.last_message_time < window
+        }
 
     # ==================================================================
     # 待办持久化（pending_tasks 表双写，崩溃重启后 replay）

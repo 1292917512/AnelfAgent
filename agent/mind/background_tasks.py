@@ -43,7 +43,7 @@ current_background_task_id: ContextVar[str] = ContextVar("background_task_id", d
 
 
 class CompletionNotification(str, Enum):
-    """完成事实的 AI 通知策略；唤醒仍受会话路由和预算约束。"""
+    """完成事实的 AI 通知策略；通知按会话归属路由。"""
 
     ALWAYS = "always"
     ON_RESULT = "on_result"

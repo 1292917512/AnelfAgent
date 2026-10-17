@@ -75,7 +75,7 @@ def create_mind(
     if get_config_bool("skills_enabled", True):
         reviewer.start()
 
-    # 子代理委托管理器（delegate_task 工具经 wiring 端口消费本实例）
+    import agent.delegation.delegate_tool  # noqa: F401
     from agent.delegation.delegation_manager import DelegationManager
     mind.delegation_manager = DelegationManager(mind)
     count = activate_group("delegation", "子代理 - 复杂任务拆分委托与并行执行")

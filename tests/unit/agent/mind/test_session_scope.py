@@ -261,7 +261,6 @@ class TestSwitchSession:
         mind = SimpleNamespace(
             pfc=pfc,
             _active_scopes=set(),
-            _channel_snapshots={},
             try_execute_mind=AsyncMock(),
         )
         mind_port.set(mind)  # type: ignore[arg-type]
@@ -282,7 +281,6 @@ class TestSwitchSession:
         mind = SimpleNamespace(
             pfc=pfc,
             _active_scopes=set(),
-            _channel_snapshots={},
             try_execute_mind=AsyncMock(),
         )
         mind_port.set(mind)  # type: ignore[arg-type]
@@ -301,7 +299,7 @@ class TestSwitchSession:
             uid="web_user", session_id="tab1", text_content="未读消息",
             adapter_key="webui",
         ))
-        mind = SimpleNamespace(pfc=pfc, _active_scopes=set(), _channel_snapshots={})
+        mind = SimpleNamespace(pfc=pfc, _active_scopes=set())
         mind_port.set(mind)  # type: ignore[arg-type]
         try:
             result = json.loads(await session_tools.list_sessions())

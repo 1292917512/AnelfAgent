@@ -13,31 +13,16 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Set
 
-from agent.channel.manager import ChannelManager
 from agent.context.observation import emit_context_summary
 from agent.context.preparation import model_context
-from agent.llm import ChatModel, ImageContent, ToolCall
-from agent.llm.llm_manager import LLMManager
-from agent.memory.memory_retriever import MemoryRetriever
-from agent.memory.memory_store import MemoryStore
-from agent.messages import (
-    CharacterAgent,
-    Everything,
-    EverythingGroup,
-)
+from agent.messages import EverythingGroup
 from agent.mind.autonomous import MindPhase
-from agent.mind.cross_channel import (
-    ChannelSnapshot,
-    update_channel_snapshot,
-)
 from agent.mind.cycle import run_cycle
 from agent.mind.execution.reflect import reflect_entry
 from agent.mind.execution.reply import reply_entry
 from agent.mind.interrupt import InterruptRegistry
 from agent.mind.perception import should_enqueue_external_message
-from agent.mind.prefrontal_cortex import PrefrontalCortex
 from agent.mind.recall.coordinator import prepare_recollection
-from agent.storage.data_center import ConversationData, EverythingData
 from core.activity import EVENT_ACTIVITY_CONTEXT
 from core.entity import EntityRegistry
 from core.event_bus import (
@@ -48,16 +33,24 @@ from core.log import log
 from core.trace_session import thinking_session
 
 if TYPE_CHECKING:
+    from agent.channel.manager import ChannelManager
     from agent.config import MindConfig
     from agent.context.assembly import ContextAssembly
     from agent.context.compressor import ContextCompressor
     from agent.delegation.delegation_manager import DelegationManager
     from agent.heartbeat.engine import HeartbeatEngine
+    from agent.llm import ChatModel, ImageContent, ToolCall
+    from agent.llm.llm_manager import LLMManager
     from agent.memory.embedding import Embedder
+    from agent.memory.memory_retriever import MemoryRetriever
+    from agent.memory.memory_store import MemoryStore
+    from agent.messages import CharacterAgent, Everything
     from agent.mind.background_tasks import BackgroundTaskRegistry
     from agent.mind.llm_invoker import ModelInvoker
+    from agent.mind.prefrontal_cortex import PrefrontalCortex
     from agent.mind.push import PushHub
     from agent.skills.runtime import SkillRuntime
+    from agent.storage.data_center import ConversationData, EverythingData
 
 
 class Mind:
@@ -126,15 +119,8 @@ class Mind:
         # 动态工具后台清理去重标记
         self._dynamic_tools_clear_pending: bool = False
 
-        self._channel_snapshots: dict[str, ChannelSnapshot] = {}
-
         # scope 级中断信号（think_loop 每轮检查，用户可刹车失控回复）
         self.interrupts = InterruptRegistry()
-
-        # 后台任务自动唤醒预算（防"完成→回复→又启后台任务"的自我激励循环；
-        # 真人输入到达即重置，见 wake_budget 模块说明）
-        from agent.mind.wake_budget import WakeBudgetTracker
-        self.wake_budget = WakeBudgetTracker()
 
     # 初始化与配置
 
@@ -180,9 +166,10 @@ class Mind:
             log(f"感知输入: {preview}", tag="思维")
             if not await self.conversation_data.add_conversation_record_by_everything(anything):
                 return
-            update_channel_snapshot(self, anything)
+            self.pfc.work_memory.observe_channel(
+                anything, window_minutes=self.config.cross_channel_window_minutes,
+            )
 
-            scope = anything.entity_scope
             should_enqueue = should_enqueue_external_message(self, anything)
             if (
                 not should_enqueue
@@ -193,9 +180,8 @@ class Mind:
             ):
                 log(f"反思中忽略非 @ 群消息: {anything.entity_scope}", "DEBUG", tag="思维")
             if should_enqueue:
-                # 真实外部事件：重置自动续轮退避 + 后台任务唤醒预算（真人参与后自动唤醒链路重新合法）
+                # 外部消息入队时重置自动续轮退避。
                 self._auto_cycle_retry = 0
-                self.wake_budget.reset(scope)
                 await self.pfc.add_task(anything)
         finally:
             # 感知处理完成边界：未入队/中断/异常路径不会有后续周期覆盖
