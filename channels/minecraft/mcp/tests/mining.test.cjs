@@ -140,6 +140,27 @@ test('eight steps keep three-block headroom and traverse the staircase back to t
   assert.equal(f.events.at(-1).data.phase, 'completed')
 })
 
+test('a deliberate fall may break a support held at the stand edge', async () => {
+  // Standing across a cell boundary: the floored feet cell has air below and
+  // the overlapped neighbour leaf is the real support (own support by AABB).
+  // The deliberate-fall exemption must cover the whole underfoot band, or the
+  // production dig wrapper would refuse the planned descent.
+  const bot = new EventEmitter()
+  bot.entity = { position: new Vec3(0.9, 70, 0.5), onGround: true }
+  const block = { position: new Vec3(1, 69, 0), name: 'oak_leaves' }
+  let asserted = false
+  bot.dig = async target => {
+    assert.equal(target, block)
+    safety.assertFloorSafe(bot, target)
+    asserted = true
+  }
+  await safety.breakForFall(bot, block, new AbortController().signal)
+  assert.ok(asserted)
+  assert.ok(safety.recentDeliberateFall(bot))
+  // Outside a planned fall the same own-support block stays protected.
+  assert.throws(() => safety.assertFloorSafe(bot, block), /support/)
+})
+
 for (const hazard of ['lava', 'water', 'gravel', 'sand', 'chest', 'bedrock']) {
   test(`stops before excavating ${hazard} and confirms return without inventing progress`, async () => {
     const f = await fixture({ depth: 2, count: 2 })
@@ -285,7 +306,10 @@ test('movement profiles cannot re-enable excavation, scaffolding, parkour or dee
   const f = await fixture()
   const profile = new Movements(f.bot)
   f.bot.pathfinder.setMovements(profile)
-  assert.equal(profile.canDig, false)
+  // Travel may now clear foliage only: canDig is on for leaves, every solid
+  // block id sits in blocksCantBreak so terrain remains untouchable.
+  assert.equal(profile.canDig, true)
+  assert.ok(profile.blocksCantBreak.size > 0, 'Solid blocks stay unbreakable during travel')
   assert.equal(profile.maxDropDown, 2)
   assert.equal(profile.allow1by1towers, false)
   assert.equal(profile.allowParkour, false)
@@ -486,3 +510,24 @@ for (const operation of ['resume_action', 'return_from_mine']) {
     }
   })
 }
+
+
+test('plain travel may clear foliage but never terrain', () => {
+  const assert = require('node:assert/strict')
+  const safety = dependencies('mineflayer/lib/anelf_mining/mining-safety.cjs')
+  const EventEmitter = require('node:events')
+  const bot = new EventEmitter()
+  bot.registry = { blocksByName: { oak_leaves: { id: 10 }, stone: { id: 1 }, dirt: { id: 2 }, leaf_litter: { id: 11 } } }
+  bot.pathfinder = { setMovements () {}, setGoal () {} }
+  bot.dig = async () => {}
+  safety.installSafety(bot)
+  const moveStub = () => ({ getMoveDropDown () {}, getMoveDown () {} })
+  const travel = moveStub()
+  bot.pathfinder.setMovements(travel)
+  assert.equal(travel.canDig, true, 'Travel can dig its way through a canopy')
+  assert.ok(travel.blocksCantBreak.has(1) && travel.blocksCantBreak.has(2), 'Solid terrain stays untouchable')
+  assert.ok(!travel.blocksCantBreak.has(10) && !travel.blocksCantBreak.has(11), 'Leaves and litter stay diggable')
+  const gather = { anelfGatherMode: 'scaffold', getMoveDropDown () {}, getMoveDown () {} }
+  bot.pathfinder.setMovements(gather)
+  assert.equal(gather.blocksCantBreak, undefined, 'Gather modes keep their own break discipline')
+})

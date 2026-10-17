@@ -85,6 +85,8 @@ class SurvivalBridge:
         except ValidationError:
             log("Minecraft 忽略非法生存事件", "WARNING", tag="Minecraft")
             return
+        if progress.phase in {"started", "blocked"}:
+            log(f"MC_SURVIVAL kind={progress.kind} phase={progress.phase}", "DEBUG", tag="Minecraft")
         if progress.runtime_id != self._runtime_id:
             return
         key = (progress.id, progress.phase)

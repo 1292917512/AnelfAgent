@@ -32,6 +32,20 @@ test('real face rays accept exposed trunk faces while rejecting fully hidden blo
   assert.equal(reachableFace({ ...bot, entity: {} }, target, feet), false)
 })
 
+test('sight rays pass through cocoa pods attached to a trunk', async () => {
+  const { reachableFace } = await load('tools/anelf-gather-navigation.mjs')
+  const registry = deps('prismarine-registry')('26.1')
+  const World = deps('prismarine-world')(registry), Chunk = deps('prismarine-chunk')(registry)
+  const world = new World().sync; world.setColumn(0, 0, new Chunk())
+  const set = (x, y, z, name) => world.setBlockStateId(new Vec3(x, y, z), registry.blocksByName[name].defaultState)
+  const bot = { entity: { eyeHeight: 1.62 }, world }
+  const feet = new Vec3(2.5, 64, 3.5), target = new Vec3(4, 64, 3)
+  set(4, 64, 3, 'jungle_log')
+  set(3, 64, 3, 'cocoa')  // solid-bodied pod straight in the sight line
+  assert.equal(reachableFace(bot, target, feet), true,
+    'A cocoa pod on the ray is a strippable cover, not a hidden face')
+})
+
 test('sight rays pass through collision-less covers like leaf litter', async () => {
   const { reachableFace } = await load('tools/anelf-gather-navigation.mjs')
   const registry = deps('prismarine-registry')('26.1')
@@ -522,4 +536,624 @@ test('scaffold routing is skipped when no reserve material is in the inventory',
     return false
   }
   await assert.rejects(task.candidate(nav), /GATHER_NO_TARGET/)
+})
+
+/** Mixed auto-order terrain: real registry world and real candidate selection;
+ * collectOne is reduced to the dig+receipt bookkeeping the loop owns. */
+async function mixedScenario (t, { soilName = 'dirt', soil = [], logs = [], logName = 'oak_log', order = {}, stock = [], botAt = [0.5, 64, 0.5] } = {}) {
+  const { GatherTask } = await load('tools/anelf-gather-task.mjs')
+  const { GatherNavigation } = await load('tools/anelf-gather-navigation.mjs')
+  const { ActionController } = await load('bot/anelf-actions.mjs')
+  const locks = new ActionController({ push () {} }); t.after(() => locks.metrics.close())
+  const registry = deps('prismarine-registry')('26.1')
+  const World = deps('prismarine-world')(registry), Chunk = deps('prismarine-chunk')(registry)
+  const world = new World().sync
+  for (let cx = -1; cx <= 1; cx++) for (let cz = -1; cz <= 1; cz++) world.setColumn(cx, cz, new Chunk())
+  const set = (x, y, z, name) => world.setBlockStateId(new Vec3(x, y, z), registry.blocksByName[name].defaultState)
+  for (let x = 0; x <= 31; x++) for (let z = -16; z <= 15; z++) set(x, 63, z, 'stone')
+  for (const [x, y, z] of soil) set(x, y, z, soilName)
+  for (const [x, y, z] of logs) set(x, y, z, logName)
+  const surface = [...soil.map(p => ({ pos: p, name: soilName })), ...logs.map(p => ({ pos: p, name: logName }))]
+  const bag = new Map(stock)
+  const bot = { entity: { position: new Vec3(...botAt), eyeHeight: 1.62, width: 0.6, onGround: true },
+    entities: {}, game: { dimension: 'overworld', gameMode: 0 }, health: 20, food: 20, world,
+    inventory: { type: 'minecraft:inventory', slots: [], items: () => [...bag].map(([name, count]) => ({ name, count })) },
+    registry,
+    blockAt: p => world.getBlock(p),
+    findBlocks: ({ matching, point, maxDistance, count }) => {
+      const ids = Array.isArray(matching) ? matching : [matching]
+      const names = new Set(Object.entries(registry.blocksByName).filter(([, block]) => ids.includes(block.id)).map(([name]) => name))
+      const center = new Vec3(point.x, point.y, point.z)
+      return surface.map(entry => new Vec3(...entry.pos))
+        .filter(p => names.has(world.getBlock(p)?.name) && p.distanceTo(center) <= maxDistance)
+        .sort((a, b) => a.distanceTo(center) - b.distanceTo(center))
+        .slice(0, count)
+    },
+    pathfinder: { setGoal () {} },
+  }
+  const entry = new Vec3(Math.floor(botAt[0]), Math.floor(botAt[1]), Math.floor(botAt[2]))
+  const task = new GatherTask({ locks, manager: { statusReport: () => ({}), botOrNull: () => bot } }, bot,
+    { block: 'auto', count: 4, x: entry.x, y: entry.y, z: entry.z, radius: 8, withdraw: [], deposit: false, ...order })
+  // execute() builds its own navigation instance, so the routing surface is
+  // stubbed on the prototype (treeTask pattern); candidate stays fully real.
+  const patches = {
+    safe: () => true,
+    walk: async () => {},
+    cleanupScaffolding: async () => {},
+    reachable: async () => true,
+    scaffoldingIds: () => [registry.itemsByName.dirt.id],
+    safeRoutePoint: p => {
+      const point = new Vec3(p.x, p.y, p.z)
+      if (point.distanceTo(entry) > 16 && !(task.chunk &&
+        point.distanceTo(new Vec3(task.chunk.x * 16 + 8, entry.y, task.chunk.z * 16 + 8)) <= 12)) return false
+      return world.getBlock(point.offset(0, -1, 0))?.boundingBox === 'block' &&
+        world.getBlock(point)?.boundingBox === 'empty'
+    },
+  }
+  for (const [name, replacement] of Object.entries(patches)) {
+    const original = GatherNavigation.prototype[name]
+    GatherNavigation.prototype[name] = replacement
+    t.after(() => { GatherNavigation.prototype[name] = original })
+  }
+  const nav = new GatherNavigation(bot, entry, new AbortController().signal)
+  const dugOrder = []
+  task.collectOne = async (navigation, signal, allowed = null, excluded = null) => {
+    const { block } = await task.candidate(navigation, new Set(), allowed, excluded)
+    world.setBlockStateId(block.position, 0)
+    dugOrder.push(`${block.name}@${block.position.x},${block.position.y},${block.position.z}`)
+    task.dug++; task.gained++
+    const item = task.itemFor(block.name)
+    bag.set(item, (bag.get(item) ?? 0) + 1)
+    task.recordGain(item, 1, bag.get(item))
+    return block.position.clone()
+  }
+  const execute = () => task.execute({ signal: new AbortController().signal, release () {} }, true)
+  return { task, bot, nav, dugOrder, world, execute }
+}
+
+test('a mixed order digs the nearest soil first and then clears the whole tree', async t => {
+  const { task, dugOrder, execute } = await mixedScenario(t,
+    { soilName: 'grass_block', soil: [[1, 64, 0]], logs: [[4, 64, 4], [4, 65, 4], [4, 66, 4]], order: { count: 4 } })
+  await execute()
+  assert.equal(task.phase, 'completed')
+  assert.equal(task.gained, 4)
+  assert.deepEqual(dugOrder, [
+    'grass_block@1,64,0', 'oak_log@4,64,4', 'oak_log@4,65,4', 'oak_log@4,66,4',
+  ], 'Nearest target first; a started tree is cleared to its highest log')
+  assert.deepEqual(task.snapshot().items, [
+    { item: 'dirt', gained: 1, available: 1 }, { item: 'oak_log', gained: 3, available: 3 },
+  ], 'Grass counts as dirt; per-item gains replace the single-item view')
+})
+
+test('a nearer tree is harvested whole before any farther soil', async t => {
+  const { task, dugOrder, execute } = await mixedScenario(t,
+    { soil: [[5, 64, 5]], logs: [[1, 64, 1], [1, 65, 1], [1, 66, 1]], order: { count: 4 } })
+  await execute()
+  assert.equal(task.phase, 'completed')
+  assert.deepEqual(dugOrder, [
+    'oak_log@1,64,1', 'oak_log@1,65,1', 'oak_log@1,66,1', 'dirt@5,64,5',
+  ], 'The tree owns the bot until its component is fully removed')
+})
+
+test('a tree that cannot fit the remaining budget is skipped whole, not left floating', async t => {
+  const { task, world, dugOrder, execute } = await mixedScenario(t,
+    { soil: [[5, 64, 5], [5, 64, 6]], logs: [[1, 64, 1], [1, 65, 1], [1, 66, 1]], order: { count: 2 } })
+  await execute()
+  assert.equal(task.phase, 'completed')
+  assert.equal(task.gained, 2)
+  assert.deepEqual(dugOrder, ['dirt@5,64,5', 'dirt@5,64,6'], 'Soil keeps the work after the exclusion')
+  for (const y of [64, 65, 66]) {
+    assert.equal(world.getBlock(new Vec3(1, y, 1))?.name, 'oak_log', `Log at y=${y} must remain untouched`)
+  }
+  assert.match(task.reason, /GATHER_TREE_LIMIT/, 'The exclusion reason states the budget misfit')
+  assert.ok(task.snapshot().items.every(entry => entry.item === 'dirt'))
+})
+
+test('auto orders keep targeting unharvestable trees out of later soil rounds', async t => {
+  const { task, nav, world } = await mixedScenario(t,
+    { soil: [[5, 64, 5]], logs: [[1, 64, 1], [1, 65, 1], [1, 66, 1]], order: { count: 1 } })
+  // The excluded tree must be invisible to the plain soil round inside collectOne.
+  const excluded = new Set()
+  for (const y of [64, 65, 66]) excluded.add(`${1},${y},${1}`)
+  const picked = await task.candidate(nav, new Set(), null, excluded)
+  assert.equal(picked.block.name, 'dirt', 'An excluded trunk never comes back as a nearest target')
+  assert.equal(world.getBlock(new Vec3(1, 64, 1))?.name, 'oak_log')
+})
+
+test('trunk log discovery covers every natural species and excludes player-made trunks', async () => {
+  const { trunkLogNames } = await load('tools/anelf-gather-task.mjs')
+  const registry = deps('prismarine-registry')('26.1')
+  const names = trunkLogNames({ registry })
+  for (const expected of ['oak_log', 'pale_oak_log', 'cherry_log', 'mangrove_log']) {
+    assert.ok(names.includes(expected), `${expected} must be a mixed-order target`)
+  }
+  assert.ok(!names.some(name => name.startsWith('stripped_')), 'Stripped trunks are player-made and excluded')
+  assert.ok(!names.includes('log'), 'The legacy oak log block name is excluded')
+})
+
+test('below the dirt floor the chunk top soil outranks a much nearer tree', async t => {
+  // Backpack starts empty: scaffolding reserve first, trees wait. The tree at
+  // distance 2 loses to chunk soil at distance 6 until the soil is exhausted.
+  const { task, dugOrder, execute } = await mixedScenario(t, {
+    soil: [[4, 64, 2], [6, 64, 4]],
+    logs: [[12, 64, 2], [12, 65, 2], [12, 66, 2]],
+    botAt: [10.5, 64, 2.5],
+    order: { count: 5, chunk: { x: 0, z: 0 } },
+  })
+  await execute()
+  assert.equal(task.phase, 'completed')
+  assert.equal(task.gained, 5)
+  const kinds = dugOrder.map(entry => entry.split('@')[0])
+  assert.deepEqual(kinds, ['dirt', 'dirt', 'oak_log', 'oak_log', 'oak_log'],
+    'Every reserve dirt digs before the first log, then the whole tree')
+})
+
+test('with the dirt floor met the same terrain goes back to nearest-first', async t => {
+  const { task, dugOrder, execute } = await mixedScenario(t, {
+    soil: [[4, 64, 2], [6, 64, 4]],
+    logs: [[12, 64, 2], [12, 65, 2], [12, 66, 2]],
+    botAt: [10.5, 64, 2.5],
+    stock: [['dirt', 12]],
+    order: { count: 5, chunk: { x: 0, z: 0 } },
+  })
+  await execute()
+  assert.equal(task.phase, 'completed')
+  assert.equal(dugOrder[0], 'oak_log@12,64,2',
+    'A stocked backpack lets the nearer tree win again')
+})
+
+test('soil below the current top layer waits even when it is nearer', async t => {
+  // The deeper soil sits right under the bot; the top layer is far away.
+  // Layering wins over proximity: only the y=64 layer of the chunk digs.
+  const { task, world, dugOrder, execute } = await mixedScenario(t, {
+    soil: [[4, 64, 2], [5, 64, 4], [10, 63, 3]],
+    botAt: [10.5, 64, 2.5],
+    stock: [['dirt', 12]],
+    order: { count: 2, chunk: { x: 0, z: 0 } },
+  })
+  await execute()
+  assert.equal(task.phase, 'completed')
+  assert.deepEqual(dugOrder, ['dirt@5,64,4', 'dirt@4,64,2'],
+    'Only the chunk top layer is eligible; deeper soil waits for its turn')
+  assert.equal(world.getBlock(new Vec3(10, 63, 3))?.name, 'dirt',
+    'The nearer but deeper block must stay untouched')
+})
+
+test('a tree that cannot be climbed for lack of reserve dirt is skipped whole', async t => {
+  const { task, world, dugOrder, execute } = await mixedScenario(t, {
+    soil: [[4, 64, 2], [5, 64, 4], [6, 64, 6]],
+    logs: [[12, 64, 2], [12, 65, 2], [12, 66, 2]],
+    botAt: [10.5, 64, 2.5],
+    stock: [['dirt', 12]],
+    order: { count: 3, chunk: { x: 0, z: 0 } },
+  })
+  const realCollectOne = task.collectOne
+  task.collectOne = async (navigation, signal, allowed = null, excluded = null) => {
+    if (allowed) throw new Error('GATHER_SCAFFOLD_RESERVE: Need at least 64 dirt blocks before climbing a tree.')
+    return realCollectOne(navigation, signal, allowed, excluded)
+  }
+  await execute()
+  assert.equal(task.phase, 'completed')
+  assert.equal(dugOrder.length, 3)
+  assert.ok(dugOrder.every(entry => entry.startsWith('dirt@')),
+    'The order keeps filling with soil after the tree is skipped')
+  for (const y of [64, 65, 66]) {
+    assert.equal(world.getBlock(new Vec3(12, y, 2))?.name, 'oak_log',
+      `Log at y=${y} is skipped whole, never left floating`)
+  }
+})
+
+test('a stale support record without a safe approach never blocks the work face', async t => {
+  // One scenario per test: nested prototype patches across two scenarios in a
+  // single test leave restore chains that leak into later tests.
+  const { GatherNavigation } = await load('tools/anelf-gather-navigation.mjs')
+  const { task, dugOrder, execute } = await mixedScenario(t, {
+    soil: [[4, 64, 2], [5, 64, 4]],
+    botAt: [10.5, 64, 2.5],
+    stock: [['dirt', 12]],
+    order: { count: 2, chunk: { x: 0, z: 0 } },
+  })
+  const navRestore = GatherNavigation.prototype.restoreScaffolds
+  const navCleanup = GatherNavigation.prototype.cleanupScaffolding
+  GatherNavigation.prototype.restoreScaffolds = async function () {
+    this.scaffolds.set('12,65,2', { position: new Vec3(12, 65, 2), type: 1 })
+  }
+  GatherNavigation.prototype.cleanupScaffolding = async function () {
+    throw new Error('GATHER_SCAFFOLD_CLEANUP: No safe approach to recorded support.')
+  }
+  t.after(() => {
+    GatherNavigation.prototype.restoreScaffolds = navRestore
+    GatherNavigation.prototype.cleanupScaffolding = navCleanup
+  })
+  await execute()
+  assert.equal(task.phase, 'completed')
+  assert.equal(dugOrder.length, 2)
+})
+
+test('a barren chunk never digs soil across the border; the worker relocates instead', async t => {
+  const { task, world, dugOrder, execute } = await mixedScenario(t, {
+    soil: [[17, 64, 2]],
+    botAt: [10.5, 64, 2.5],
+    order: { count: 1, chunk: { x: 0, z: 0 } },
+  })
+  await execute()
+  assert.equal(task.phase, 'blocked', 'No in-chunk soil means the order ends; ring relocation is worker work')
+  assert.deepEqual(dugOrder, [])
+  assert.equal(world.getBlock(new Vec3(17, 64, 2))?.name, 'dirt',
+    'Neighbor-chunk soil stays untouched — the pit is chunk-shaped')
+})
+
+test('the work face is the standard chunk grid square, not a bot radius', async t => {
+  // The bot stands in a chunk corner; the only soil sits beyond radius 8 at
+  // the far corner of the same standard chunk — it must still be found.
+  const { task, dugOrder, execute } = await mixedScenario(t, {
+    soil: [[14, 64, 14], [15, 64, 8]],
+    botAt: [1.5, 64, 1.5],
+    order: { count: 2, chunk: { x: 0, z: 0 } },
+  })
+  await execute()
+  assert.equal(task.phase, 'completed')
+  assert.deepEqual(dugOrder, ['dirt@15,64,8', 'dirt@14,64,14'],
+    'The whole chunk column is searched and nearest-to-bot digs first')
+})
+
+test('a chunk-clamped dirt order never digs outside its chunk column', async t => {
+  const { task, world, dugOrder, execute } = await mixedScenario(t, {
+    soil: [[4, 64, 2], [6, 64, 4], [17, 64, 2]],
+    botAt: [10.5, 64, 2.5],
+    order: { block: 'dirt', count: 2, chunk: { x: 0, z: 0 } },
+  })
+  await execute()
+  assert.equal(task.phase, 'completed')
+  assert.equal(dugOrder.length, 2)
+  for (const entry of dugOrder) {
+    const x = Number(entry.split('@')[1].split(',')[0])
+    assert.ok(x >= 0 && x < 16, `Dug block at x=${x} must stay inside chunk (0,0)`)
+  }
+  assert.equal(world.getBlock(new Vec3(17, 64, 2))?.name, 'dirt',
+    'Soil in the next chunk is out of the authorized face')
+})
+
+test('chunk bounds let stands reach the far corner from the opposite edge', async () => {
+  const { GatherNavigation } = await load('tools/anelf-gather-navigation.mjs')
+  const bot = new EventEmitter()
+  bot.entities = {}; bot.entity = { position: new Vec3(1.5, 64, 1.5) }
+  bot.blockAt = p => p.y < 64 ? solid : air
+  const controller = new AbortController()
+  const entry = new Vec3(1, 64, 1)
+  const bounded = new GatherNavigation(bot, entry, controller.signal, '', new Vec3(8, 64, 8))
+  const corner = new Vec3(14, 64, 14)
+  assert.ok(corner.distanceTo(entry) > 16, 'The corner stand is beyond the default entry bound')
+  assert.equal(bounded.safeRoutePoint(corner, 'leaf'), true,
+    'The chunk center bound keeps corner targets reachable from an edge entry')
+  const plain = new GatherNavigation(bot, entry, controller.signal)
+  assert.equal(plain.safeRoutePoint(corner, 'leaf'), false)
+})
+
+test('a companion player hugging the bot does not veto the entry stand', async () => {
+  const { GatherNavigation } = await load('tools/anelf-gather-navigation.mjs')
+  const bot = new EventEmitter()
+  bot.entity = { position: new Vec3(0.5, 64, 0.5) }
+  bot.blockAt = p => p.y < 64 ? solid : air
+  const nav = new GatherNavigation(bot, new Vec3(0, 64, 0), new AbortController().signal)
+  const cell = new Vec3(1, 64, 0)
+  const hugging = { position: new Vec3(1.5, 64, 0.5), width: 0.6, height: 1.8, isValid: true }
+  bot.entities = { 1: { ...hugging, type: 'player', name: 'player' } }
+  assert.equal(nav.safe(cell), true, 'A watching player never blocks the work face')
+  bot.entities = { 2: { ...hugging, type: 'mob', name: 'zombie' } }
+  assert.equal(nav.safe(cell), false, 'A hostile overlapping the cell still rejects the entry')
+})
+
+test('trees just outside the chunk stay visible next to the dirt face', async t => {
+  const { task, dugOrder, execute } = await mixedScenario(t, {
+    soil: [[4, 64, 2]],
+    logs: [[17, 64, 3], [17, 65, 3], [17, 66, 3]],
+    botAt: [10.5, 64, 2.5],
+    stock: [['dirt', 12]],
+    order: { count: 4, chunk: { x: 0, z: 0 } },
+  })
+  await execute()
+  assert.equal(task.phase, 'completed')
+  assert.deepEqual(dugOrder.map(e => e.split('@')[0]), ['dirt', 'oak_log', 'oak_log', 'oak_log'],
+    'Trunks across the chunk border are ordinary targets while the dirt digs')
+})
+
+test('an adjacent trunk preempts nearer soil once the dirt floor is met', async t => {
+  const { task, dugOrder, execute } = await mixedScenario(t, {
+    soil: [[8, 64, 3]],
+    logs: [[14, 64, 3], [14, 65, 3], [14, 66, 3]],
+    botAt: [10.5, 64, 2.5],
+    stock: [['dirt', 12]],
+    order: { count: 4, chunk: { x: 0, z: 0 } },
+  })
+  await execute()
+  assert.equal(task.phase, 'completed')
+  assert.deepEqual(dugOrder.map(e => e.split('@')[0]), ['oak_log', 'oak_log', 'oak_log', 'dirt'],
+    'Trees a few blocks away are harvested before the sweep continues')
+})
+
+test('logsOnly orders never dig soil', async t => {
+  const { task, world, dugOrder, execute } = await mixedScenario(t, {
+    soil: [[5, 64, 4], [6, 64, 6]],
+    logs: [[12, 64, 2], [12, 65, 2], [12, 66, 2]],
+    botAt: [10.5, 64, 2.5],
+    order: { count: 3, chunk: { x: 0, z: 0 }, logsOnly: true },
+  })
+  await execute()
+  assert.equal(task.phase, 'completed')
+  assert.ok(dugOrder.every(e => e.startsWith('oak_log@')), 'Only logs are dug')
+  assert.equal(world.getBlock(new Vec3(5, 64, 4))?.name, 'dirt', 'Soil stays untouched')
+})
+
+test('a protected-floor refusal rotates stands instead of failing the order', async t => {
+  const { task, dugOrder, execute } = await mixedScenario(t, {
+    soil: [[4, 64, 2], [5, 64, 4]],
+    botAt: [10.5, 64, 2.5],
+    order: { count: 2, chunk: { x: 0, z: 0 } },
+  })
+  const realCollectOne = task.collectOne
+  let refused = 0
+  task.collectOne = async (...args) => {
+    if (refused < 1) {
+      refused++
+      throw new Error("MINING_PROTECTED_FLOOR: Do not dig the bot's support or a mine return-path floor")
+    }
+    return realCollectOne(...args)
+  }
+  await execute()
+  assert.equal(task.phase, 'completed')
+  assert.equal(dugOrder.length, 2)
+})
+
+test('tall jungle trunks inside the raised climb band are harvested whole', async t => {
+  const logs = []
+  for (let y = 64; y <= 73; y++) logs.push([12, y, 2])
+  const { task, bot, world, dugOrder, execute } = await mixedScenario(t, {
+    soil: [[4, 64, 2]],
+    logs,
+    botAt: [10.5, 64, 2.5],
+    stock: [['dirt', 12]],
+    order: { count: 10, chunk: { x: 0, z: 0 } },
+  })
+  // The real flow climbs on placed scaffolds; the stub simulates that by
+  // raising a support column beside the trunk as each log clears.
+  const realCollectOne = task.collectOne
+  task.collectOne = async (navigation, signal, allowed = null, excluded = null) => {
+    const position = await realCollectOne(navigation, signal, allowed, excluded)
+    if (position.x === 12 && position.z === 2) {
+      world.setBlockStateId(new Vec3(11, position.y, 2), bot.registry.blocksByName.dirt.defaultState)
+      bot.entity.position = new Vec3(11.5, position.y + 1, 2.5)
+    }
+    return position
+  }
+  await execute()
+  assert.equal(task.phase, 'completed')
+  assert.equal(dugOrder.filter(e => e.startsWith('oak_log@')).length, 10,
+    'A ten-log trunk above the old eight-block climb band clears completely')
+})
+
+test('vines wrapping a target are stripped before the dig', async t => {
+  const { task, bot, world } = await mixedScenario(t, { soil: [[4, 64, 2]] })
+  const vine = bot.registry.blocksByName.vine.defaultState
+  for (const [x, y, z] of [[5, 64, 2], [3, 64, 2], [4, 64, 3], [4, 64, 1]]) {
+    world.setBlockStateId(new Vec3(x, y, z), vine)
+  }
+  world.setBlockStateId(new Vec3(4, 65, 2), bot.registry.blocksByName.cocoa.defaultState)
+  bot.dig = async block => { world.setBlockStateId(block.position, 0) }
+  await task.clearVineWrap(world.getBlock(new Vec3(4, 64, 2)), new AbortController().signal)
+  for (const [x, y, z] of [[5, 64, 2], [3, 64, 2], [4, 64, 3], [4, 64, 1], [4, 65, 2]]) {
+    assert.equal(world.getBlock(new Vec3(x, y, z))?.boundingBox, 'empty', `Cover at ${x},${y},${z} is stripped`)
+  }
+  assert.equal(world.getBlock(new Vec3(4, 64, 2))?.name, 'dirt', 'The target itself stays for the real dig')
+})
+
+test('a dig aims at the nearest visible face instead of mineflayer raycast drift', async t => {
+  const { task, bot, world } = await mixedScenario(t, { soil: [[4, 64, 2]] })
+  const looks = []
+  bot.lookAt = async point => { looks.push(point.clone()) }
+  bot.dig = async block => { world.setBlockStateId(block.position, 0) }
+  const target = world.getBlock(new Vec3(4, 64, 2))
+  await task.digBlock(target, false, new AbortController().signal)
+  assert.equal(world.getBlock(new Vec3(4, 64, 2))?.boundingBox, 'empty', 'The aimed dig removes the block')
+  assert.equal(looks.length, 1, 'The dig is preceded by one explicit look')
+  // Bot eye at spawn (0.5, 65.62, 2.5); dirt at (4,64,2) — nearest visible
+  // face is its west face (4.001, 64.5, 2.5).
+  assert.deepEqual([looks[0].x, looks[0].y, looks[0].z], [4.001, 64.5, 2.5])
+})
+
+test('a not-in-view dig clears its obstruction and retries instead of failing the order', async t => {
+  const { task, bot, nav, world } = await mixedScenario(t, { soil: [[4, 64, 2]] })
+  const target = world.getBlock(new Vec3(4, 64, 2))
+  let refusals = 0
+  bot.dig = async block => {
+    if (refusals < 1) {
+      refusals++
+      throw new Error('Block not in view')
+    }
+    world.setBlockStateId(block.position, 0)
+  }
+  task.clearSightObstruction = async () => true
+  await task.digWithSightRetry(nav, target, false, 'leaf', new AbortController().signal)
+  assert.equal(refusals, 1)
+  assert.equal(world.getBlock(new Vec3(4, 64, 2))?.boundingBox, 'empty', 'The retried dig succeeds')
+
+  // No clearable obstruction: the raw refusal becomes a recoverable NO_SIGHT.
+  task.clearSightObstruction = async () => false
+  bot.dig = async () => { throw new Error('Block not in view') }
+  await assert.rejects(
+    task.digWithSightRetry(nav, target, false, 'leaf', new AbortController().signal),
+    /GATHER_NO_SIGHT/,
+  )
+})
+
+test('unbooked ground items near the work face are swept after the return', async t => {
+  const { task, bot, nav } = await mixedScenario(t, { soil: [[4, 64, 2]] })
+  const walks = []
+  nav.walk = async to => { walks.push(to.toString()) }
+  bot.entities = { 1: { name: 'item', isValid: true, position: new Vec3(1, 64, 0) } }
+  await task.collectDeferredDrops(nav, new AbortController().signal)
+  assert.deepEqual(walks, ['(1, 64, 0)'],
+    'A visible ground item is walked over and vacuumed without any booking')
+  assert.deepEqual(task.deferredDrops, [])
+})
+
+test('dismantled scaffold drops are registered for the post-return pickup', async t => {
+  const { task, bot } = await mixedScenario(t, { soil: [[4, 64, 2]] })
+  bot.entities = {
+    1: { name: 'item', isValid: true, position: new Vec3(1.5, 64, 0.5) },
+    2: { name: 'item', isValid: true, position: new Vec3(0.5, 64, 2.5) },
+    3: { name: 'item', isValid: true, position: new Vec3(40.5, 64, 40.5) },  // too far
+    4: { name: 'zombie', isValid: true, position: new Vec3(1.5, 64, 0.5) }, // not a drop
+  }
+  task.recordScaffoldDrops()
+  task.recordScaffoldDrops()  // dedup on repeated scans
+  assert.deepEqual(task.deferredDrops.map(miss => `${miss.position}`),
+    ['(1, 64, 0)', '(0, 64, 2)'],
+    'Only nearby item entities enter the ledger, exactly once')
+  assert.ok(task.deferredDrops.every(miss => miss.item === 'dirt'))
+})
+
+test('reclaimed scaffold dirt is vacuumed without inflating order progress', async t => {
+  const { task, bot, nav } = await mixedScenario(t, { soil: [[4, 64, 2]], stock: [['dirt', 12]] })
+  bot.entities = { 7: { name: 'item', isValid: true, position: new Vec3(1.5, 64, 0.5) } }
+  task.recordScaffoldDrops()
+  const walks = []
+  nav.walk = async to => { walks.push(`${to}`); bot.entity.position = to.clone() }
+  await task.collectDeferredDrops(nav, new AbortController().signal)
+  assert.deepEqual(walks, ['(1, 64, 0)'], 'The reclaim drop is still walked over and vacuumed')
+  assert.equal(task.gained, 0, 'Own scaffold material never counts as order output')
+  assert.deepEqual(task.snapshot().items, [])
+})
+
+test('the pickup sweep walks back to the entry after chasing a distant drop', async t => {
+  const { task, bot, execute } = await mixedScenario(t, { soil: [[4, 64, 2]], order: { count: 1 } })
+  bot.entities = { 7: { name: 'item', isValid: true, position: new Vec3(6.5, 64, 2.5) } }
+  const { GatherNavigation } = await load('tools/anelf-gather-navigation.mjs')
+  const previous = GatherNavigation.prototype.walk
+  const walks = []
+  GatherNavigation.prototype.walk = async function (to) {
+    walks.push(`${to}`)
+    this.bot.entity.position = to.clone()
+  }
+  try { await execute() } finally { GatherNavigation.prototype.walk = previous }
+  assert.equal(task.phase, 'completed')
+  assert.equal(task.returned, true)
+  assert.equal(walks.at(-1), '(0, 64, 0)', 'The last leg walks back to the entry after the pickup')
+  assert.equal(`${bot.entity.position.floored()}`, '(0, 64, 0)')
+})
+
+test('a pickup strand with no route back reports returned honestly', async t => {
+  const { task, bot, execute } = await mixedScenario(t, { soil: [[4, 64, 2]], order: { count: 1 } })
+  bot.entities = { 7: { name: 'item', isValid: true, position: new Vec3(6.5, 64, 2.5) } }
+  const { GatherNavigation } = await load('tools/anelf-gather-navigation.mjs')
+  const previous = GatherNavigation.prototype.walk
+  let entryWalks = 0
+  GatherNavigation.prototype.walk = async function (to) {
+    // The ordinary return to the entry succeeds; only the post-pickup leg
+    // back home finds no route.
+    if (`${to}` === '(0, 64, 0)' && ++entryWalks > 1) throw new Error('GATHER_NO_ROUTE')
+    this.bot.entity.position = to.clone()
+  }
+  try { await execute() } finally { GatherNavigation.prototype.walk = previous }
+  assert.equal(task.phase, 'completed')
+  assert.equal(task.returned, false, 'The bot stayed away from the entry; the snapshot must not claim the return')
+})
+
+test('a deferred scaffold cleanup failure stays visible without failing the order', async t => {
+  const { task, execute } = await mixedScenario(t, { soil: [[4, 64, 2]], order: { count: 1 } })
+  const { GatherNavigation } = await load('tools/anelf-gather-navigation.mjs')
+  const previous = GatherNavigation.prototype.cleanupScaffolding
+  GatherNavigation.prototype.cleanupScaffolding = async () => {
+    throw new Error('GATHER_SCAFFOLD_CLEANUP: Temporary support removal was not confirmed.')
+  }
+  const errors = []
+  const originalError = console.error
+  console.error = (...args) => errors.push(args.join(' '))
+  try { await execute() } finally {
+    GatherNavigation.prototype.cleanupScaffolding = previous
+    console.error = originalError
+  }
+  assert.equal(task.phase, 'completed')
+  assert.ok(errors.some(line => line.includes('[anelf] return scaffold cleanup deferred')),
+    'The swallowed failure is logged for diagnosis')
+})
+
+test('floating logs inside the chunk are swept before the ordinary tiers', async t => {
+  const { task, dugOrder, execute } = await mixedScenario(t, {
+    soil: [[4, 64, 2]],
+    logs: [[12, 66, 2]],
+    botAt: [10.5, 64, 2.5],
+    stock: [['dirt', 12]],
+    order: { count: 2, chunk: { x: 0, z: 0 } },
+  })
+  await execute()
+  assert.equal(task.phase, 'completed')
+  assert.deepEqual(dugOrder, ['oak_log@12,66,2', 'dirt@4,64,2'],
+    'A hanging leftover with air below is harvested first, then normal work resumes')
+})
+
+test('deferred drops below an elevated bot are collected after the return', async t => {
+  const { task, bot, nav } = await mixedScenario(t, { soil: [[4, 64, 2]] })
+  task.deferredDrops.push({ position: new Vec3(5, 64, 2), item: 'dirt' })
+  const gainedBefore = task.gained
+  const walks = []
+  let vacuumed = false
+  const baseItems = bot.inventory.items
+  bot.inventory.items = () => (vacuumed ? [...baseItems(), { name: 'dirt', count: 1 }] : baseItems())
+  nav.walk = async to => { walks.push(to.toString()); vacuumed = true }
+  await task.collectDeferredDrops(nav, new AbortController().signal)
+  assert.equal(task.gained, gainedBefore + 1, 'Walking over the drop credits the gain')
+  assert.deepEqual(task.deferredDrops, [], 'The ledger clears')
+  assert.ok(walks.length >= 1, 'The bot actually walked to the drop')
+})
+
+test('a stranded scaffold builds its way down with carried dirt', async t => {
+  // Fresh module instance: earlier tests patch GatherNavigation.prototype and
+  // a leaked stub must not silence this real-cleanup check.
+  const { GatherNavigation } = await import(`${pathToFileURL(path.join(root, 'node_modules/awesome-mineflayer-mcp/dist/tools/anelf-gather-navigation.mjs')).href}?isolate=descent`)
+  const registry = deps('prismarine-registry')('26.1')
+  const World = deps('prismarine-world')(registry), Chunk = deps('prismarine-chunk')(registry)
+  const world = new World().sync
+  world.setColumn(0, 0, new Chunk())
+  const set = (x, y, z, name) => world.setBlockStateId(new Vec3(x, y, z), registry.blocksByName[name].defaultState)
+  set(0, 59, 0, 'stone')   // real floor
+  set(0, 61, 0, 'dirt')    // lower pillar support
+  set(0, 62, 0, 'dirt')    // the bot's perch
+  const bot = new EventEmitter()
+  bot.entity = { position: new Vec3(0.5, 63, 0.5), onGround: true }
+  bot.registry = registry
+  bot.entities = {}
+  bot.inventory = { items: () => [{ name: 'dirt', count: 32 }] }
+  bot.blockAt = p => world.getBlock(p)
+  bot.placeBlock = async (reference, face) => {
+    const target = reference.position.plus(face).floored()
+    if (world.getBlock(target)?.boundingBox !== 'empty') throw new Error('occupied')
+    set(target.x, target.y, target.z, 'dirt')
+  }
+  bot.dig = async block => {
+    set(block.position.x, block.position.y, block.position.z, 'air')
+    if (bot.entity.position.floored().equals(block.position.offset(0, 1, 0))) {
+      bot.entity.position = block.position.offset(0.5, 0, 0.5)
+    }
+  }
+  bot.pathfinder = { setGoal () {} }
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'anelf-scaffold-descent-'))
+  const previous = process.env.AWESOME_MINEFLAYER_MCP_HOME
+  process.env.AWESOME_MINEFLAYER_MCP_HOME = home
+  t.after(async () => {
+    if (previous === undefined) delete process.env.AWESOME_MINEFLAYER_MCP_HOME
+    else process.env.AWESOME_MINEFLAYER_MCP_HOME = previous
+    await fs.rm(home, { recursive: true, force: true })
+  })
+  const nav = new GatherNavigation(bot, new Vec3(0, 59, 0), new AbortController().signal, 'descent-test')
+  nav.scaffolds.set('0,62,0', { position: new Vec3(0, 62, 0), type: registry.blocksByName.dirt.id })
+  nav.scaffolds.set('0,61,0', { position: new Vec3(0, 61, 0), type: registry.blocksByName.dirt.id })
+  nav.walk = async to => { bot.entity.position = new Vec3(to.x + 0.5, to.y, to.z + 0.5); bot.entity.onGround = true }
+  await nav.cleanupScaffolding()
+  assert.deepEqual([...nav.scaffolds.keys()], [], 'Every recorded support is dismantled, builder blocks included')
+  for (const y of [60, 61, 62]) {
+    assert.equal(world.getBlock(new Vec3(0, y, 0))?.boundingBox, 'empty', `Pillar cell y=${y} ends clean`)
+  }
+  assert.equal(world.getBlock(new Vec3(0, 59, 0))?.name, 'stone', 'The original floor remains')
+  assert.equal(Math.floor(bot.entity.position.y), 59, 'The bot ends standing on real ground')
 })

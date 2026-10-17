@@ -6,6 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import pathfinder from 'mineflayer-pathfinder'
 import { Vec3 } from 'vec3'
 import { clear, escapeCandidates, observeSurvival, occupied, safeStanding, safeSwimCorridor, shoreCandidates, surfaceVisible } from './anelf-survival-observation.mjs'
+import safety from 'mineflayer/lib/anelf_mining/mining-safety.cjs'
 
 /** @typedef {import('mineflayer').Bot & {isAlive?:boolean}} Bot */
 /** @typedef {import('./anelf-actions.mjs').ActionController} Controller */
@@ -148,8 +149,11 @@ export class SurvivalController {
     const approaching = o.threat && (o.threatDistance < 2.5 ||
       (previous?.threat?.id === o.threat.id && o.threatDistance < previous.threatDistance - 0.1))
     /** @type {Hazard|null} */
+    // Damage from a planned, survivable fall is expected policy — a hurt
+    // rescue right after it would just fight the descent.
+    const plannedFall = safety.recentDeliberateFall(bot)
     const kind = o.headWater ? 'drowning' : o.burning ? 'burning' : o.trapped ? 'trapped' :
-      now < this.hurtUntil ? 'hurt' : approaching ? 'hostile' : moving && now - this.frozenSince >= 6000 ? 'stuck' : null
+      now < this.hurtUntil && !plannedFall ? 'hurt' : approaching ? 'hostile' : moving && now - this.frozenSince >= 6000 ? 'stuck' : null
     if (!kind) {
       if (this.episode && !this.pending && now - this.episode.lastHazardAt >= 2500) {
         this.publish(this.episode.id, 'danger', 'clear', 'Danger signs cleared; interrupted work was not resumed.')
@@ -186,7 +190,7 @@ export class SurvivalController {
       }
       this.publish(episode.id, kind, 'started', 'Local rescue owns the bot; prior work is cancelled.')
       if (kind === 'drowning') await this.surface(bot, signal)
-      else if (kind === 'stuck') await this.unstuck(bot, signal)
+      else if (kind === 'stuck') await this.unstuck(bot, signal, episode.attempts >= 2)
       else await this.escape(bot, episode.away ?? bot.entity.position, signal, kind === 'burning')
       signal.throwIfAborted()
       this.publish(episode.id, kind, 'moved', 'Bounded rescue movement ended; wait for fresh danger observations.')
@@ -246,12 +250,40 @@ export class SurvivalController {
     }
   }
 
-  /** @param {Bot} bot @param {AbortSignal} signal */
-  async unstuck (bot, signal) {
-    if (!bot.entity.onGround || !safeStanding(bot, bot.entity.position.floored()) ||
-        !clear(bot.blockAt(bot.entity.position.offset(0, 2, 0)))) throw new Error('No safe standing space for a bounded unstuck jump.')
-    bot.setControlState('jump', true)
-    try { await delay(300, undefined, { signal }) } finally { bot.setControlState('jump', false) }
+  /** A wedged bot jumps first; once jumping has failed, dig the blocking cell
+   * in the facing direction out — never the floor it stands on.
+   * @param {Bot} bot @param {AbortSignal} signal @param {boolean} dig */
+  async unstuck (bot, signal, dig) {
+    if (bot.entity.onGround && safeStanding(bot, bot.entity.position.floored()) &&
+        clear(bot.blockAt(bot.entity.position.offset(0, 2, 0)))) {
+      bot.setControlState('jump', true)
+      try { await delay(300, undefined, { signal }) } finally { bot.setControlState('jump', false) }
+      if (!dig) return
+    } else if (!dig) {
+      throw new Error('No safe standing space for a bounded unstuck jump.')
+    }
+    if (!await this.digFree(bot, signal)) throw new Error('No diggable blocking cell; bounded unstuck gave up.')
+  }
+
+  /** Dig the cell blocking movement — facing feet, facing head, then overhead.
+   * The floor below the bot is never a candidate.
+   * @param {Bot} bot @param {AbortSignal} signal */
+  async digFree (bot, signal) {
+    const yaw = bot.entity.yaw ?? 0
+    const facing = new Vec3(Math.round(-Math.sin(yaw)), 0, Math.round(-Math.cos(yaw)))
+    const feet = bot.entity.position.floored()
+    for (const offset of [facing.clone(), facing.offset(0, 1, 0), new Vec3(0, 2, 0)]) {
+      signal.throwIfAborted()
+      const block = bot.blockAt(feet.offset(offset.x, offset.y, offset.z))
+      if (!block || block.boundingBox === 'empty') continue
+      try {
+        await bot.tool.equipForBlock(block, { requireHarvest: true, getFromChest: false })
+        signal.throwIfAborted()
+        await bot.dig(block, true, 'raycast')
+        return true
+      } catch { /* try the next cell */ }
+    }
+    return false
   }
 
   /** @param {Bot} bot @param {Vec3} away @param {AbortSignal} signal @param {boolean} burning */
@@ -274,7 +306,12 @@ export class SurvivalController {
   async navigate (bot, goal, signal, shallowWater = false) {
     signal.throwIfAborted()
     const timeout = new AbortController()
-    const stop = () => bot.pathfinder.setGoal(null)
+    // Only clear the goal this navigation installed: an idle pickup finishing
+    // after a work walk replaced the goal must never stomp the active one.
+    const stop = () => {
+      const active = bot.pathfinder.goal
+      if (active == null || active === goal) bot.pathfinder.setGoal(null)
+    }
     /** @type {Error|null} */
     let unsafe = null
     /** @param {import('mineflayer-pathfinder').PartiallyComputedPath} result */
@@ -295,7 +332,7 @@ export class SurvivalController {
       if (unsafe) throw unsafe
     } finally {
       timeout.abort()
-      bot.pathfinder.setGoal(null)
+      stop()
       await motion.catch(() => {})
       signal.removeEventListener('abort', stop)
       bot.removeListener('path_update', validate)

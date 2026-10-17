@@ -273,6 +273,23 @@ async def test_tree_receipt_treats_requested_as_a_hard_cap(
     assert "整树上限 8" in announce.call_args.args[0]
 
 
+async def test_mixed_gather_announcement_lists_every_item_gain(
+    channel: MinecraftChannel, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    announce = AsyncMock()
+    monkeypatch.setattr(channel, "_announce_reflex", announce)
+    await channel._dispatch_event(GameEvent(seq=1, ts=1000, type="gather_progress", data={
+        "id": "gather", "actionId": "action", "phase": "completed", "mode": "count", "dug": 28,
+        "item": "auto", "gained": 40, "requested": 40, "returned": True,
+        "depositRequested": False, "deposited": 0, "inventoryClean": True,
+        "items": [{"item": "dirt", "gained": 31, "available": 95},
+                  {"item": "pale_oak_log", "gained": 9, "available": 9}],
+    }))
+    text = announce.call_args.args[0]
+    assert "采集任务已完成" in text
+    assert "泥土 31、苍白橡木原木 9（合计 40/40）" in text
+
+
 def test_reply_policy_uses_configured_server_and_requires_delegation(channel: MinecraftChannel) -> None:
     channel.get_config().mcp_server = "game-test"
     policy = channel.reply_policy
