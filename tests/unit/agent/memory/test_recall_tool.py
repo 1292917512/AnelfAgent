@@ -31,6 +31,54 @@ def bound_store(store: MemoryStore):
 
 
 class TestRecallSourceMarking:
+    async def test_reflection_updates_hub_and_memory_without_losing_origin(self, bound_store, store) -> None:
+        from core.conversation_scope import bind_scope, reset_scope
+
+        ids = []
+        scopes = ["user_webui:web_user", "reflect:de8b4383", "reflect:a1234567"]
+        for index, scope in enumerate(scopes):
+            token = bind_scope(scope)
+            try:
+                if index < 2:
+                    result = json.loads(await bound_store.memorize(
+                        f"hubanchor 标签索引 {index}", tags="type:permanent,main:hub", importance=1,
+                    ))
+                else:
+                    result = json.loads(await bound_store.update_memory(ids[0], content="hubanchor 整理完成"))
+            finally:
+                reset_scope(token)
+            assert result.get("ok"), result
+            ids.append(result["id"])
+
+        assert len(set(ids)) == 1
+        entry = await store.get(ids[0])
+        assert entry.content == "hubanchor 整理完成"
+        assert entry.tags == ["type:permanent", "main:hub"]
+        assert entry.importance == 1
+        expected = [{"kind": "agent_note", "scope": scope} for scope in scopes]
+        assert entry.metadata["origins"] == expected
+        detail = json.loads(await bound_store.get_memory(ids[0]))
+        assert detail["provenance"]["origins"] == expected
+        recalled = json.loads(await bound_store.recall("hubanchor", min_score=0))
+        item = next(r for r in recalled["results"] if r["id"] == f"mem:{ids[0]}")
+        assert item["provenance"]["origins"] == expected
+
+    @pytest.mark.parametrize("scope", ["_global", "reflect:de8b4383"])
+    async def test_internal_note_creation_keeps_execution_scope(self, bound_store, store, scope) -> None:
+        from core.config import ConfigManager
+        from core.conversation_scope import bind_scope, reset_scope
+
+        ConfigManager.set("memory_llm_dedup_enabled", False)
+        token = bind_scope(scope)
+        try:
+            saved = json.loads(await bound_store.memorize("noteanchor 整理中发现的事实", tags="topic:整理"))
+        finally:
+            reset_scope(token)
+        assert saved.get("ok"), saved
+        entry = await store.get(saved["id"])
+        assert entry.tags == ["topic:整理"]
+        assert entry.metadata["origins"] == [{"kind": "agent_note", "scope": scope}]
+
     async def test_ambiguous_duplicate_does_not_invent_material_origin(self, store) -> None:
         from agent.memory.dedup import apply_evidence_signals
         from agent.memory.provenance import note_origin

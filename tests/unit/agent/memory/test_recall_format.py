@@ -183,3 +183,25 @@ def test_bounded_origin_display_does_not_mutate_full_lineage() -> None:
     assert visible["origin_count"] == 5 and len(visible["origins"]) == 3
     assert len(origins_from(provenance)) == 5
     assert origins_from({"origins": [{"kind": "agent_note", "scope": "user_qq:1", "started_at": 1e100}]}) == []
+
+
+@pytest.mark.parametrize("scope", ["reflect:de8b4383", "reflect:", "reflect:invalid", "invalid"])
+def test_material_origin_rejects_internal_and_invalid_scopes(scope: str) -> None:
+    from pydantic import ValidationError
+
+    from agent.memory.provenance import capture_origin, note_origin
+
+    with pytest.raises(ValidationError, match="材料会话无效"):
+        capture_origin(scope, [{"id": 41}])
+    if scope != "reflect:de8b4383":
+        with pytest.raises(ValidationError):
+            note_origin(scope)
+
+
+async def test_reflection_origin_is_agent_record_not_conversation_material() -> None:
+    from agent.memory.provenance import note_origin
+
+    text = await format_memory_line(None, snippet="整理结果", tags=["user:telegram:2"],
+                                    provenance=note_origin("reflect:de8b4383"), reference="mem:3")
+    assert "AI记录于[scope:reflect:de8b4383]" in text
+    assert "材料[scope:" not in text and "出处未记录" not in text
