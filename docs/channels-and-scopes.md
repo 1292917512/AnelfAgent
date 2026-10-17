@@ -26,6 +26,14 @@ GitHub push 只合并同分支、同一已知发起者的事件，避免将不�
 非聊天事件保留原有入队与唤醒策略，但不计入用户发言次数、群发言者列表或首次用户画像任务。
 内部后台通知的待处理信号标为 `system`，保留此前用户请求的时间水位，避免掩盖未处理对话。
 
+http_api 频道是外部系统的双向 HTTP 门户（默认 127.0.0.1:8091，停用）：入站 /api/chat
+（文本 + images + media base64 落盘为媒体段）、/api/vision/push 与 WS /api/vision/stream
+（视觉单帧/持续推流，与 web 端共用 `push_external_frame`，判变注入由系统内部完成）、
+/api/chat/stream（SSE 帧）；出站按 同步响应 → SSE 订阅 → webhook 回调（请求级 callback_url
+注册优先，http_api_callback_url 兜底）三级级联，媒体段只经回调投递（≤20MB 内联 base64）。
+报文契约见 channels/http_api/README.md；频道内会话规则经 reply_policy 注入，完整接入契约
+由 `http_api_portal_help` 频道工具按生效配置实时生成供 AI 自取。
+
 ## 频道回复策略（agent/channel/reply_policy.py）
 
 频道通过 `reply_policy` 声明直达回复、初始工具目录、操作规则与 `recall_policy` 默认召回策略。

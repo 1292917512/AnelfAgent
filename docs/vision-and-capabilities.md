@@ -6,7 +6,9 @@
 ## 视觉源框架（agent/vision/）
 
 - **framework**（VisualSource 基类 + 注册表）：来源组件化——`entities/screen`（mss 截屏）等经
-  `_sdk.register_vision_source` 接入，外部帧经 POST /api/vision/push 汇入统一缓冲
+  `_sdk.register_vision_source` 接入，外部帧经 `framework.push_external_frame` 统一入口汇入
+  缓冲（三个门：web 端 POST /api/vision/push、http_api 频道 POST /api/vision/push 与
+  WS /api/vision/stream 持续推流，契约一致）
 - **buffer**（分源判变）/ **watcher**（轮询循环）/ **capture**（帧契约 + 分块 dHash）/ **context**
   （变化驱动注入 + 注入轨迹）：视觉状态行与变化帧经 vision provider 注入（vision_context_inject
   可关），按会话与执行请求独立记录已见帧。首次读取或内容变化时最多补充三个源的画面，

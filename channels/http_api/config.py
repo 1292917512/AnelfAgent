@@ -21,6 +21,12 @@ class HttpApiConfig(ChannelConfig):
     api_token: str = Field(
         default="", description="API Token（空则免认证）",
         json_schema_extra={"value_type": "password"})
+    callback_url: str = Field(
+        default="", description="默认出站回调地址（Agent 主动消息以 POST JSON 推送到该 webhook）")
+    callback_token: str = Field(
+        default="", description="出站回调 Bearer Token（空则不带认证头）",
+        json_schema_extra={"value_type": "password"})
+    callback_timeout: int = Field(default=10, description="出站回调请求超时时间（秒）")
 
 
 CONFIG_MODEL = HttpApiConfig

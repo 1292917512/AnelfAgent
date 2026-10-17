@@ -19,7 +19,7 @@ Model Experience:
 
 from __future__ import annotations
 
-from typing import ClassVar, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional
 
 from core.config import get_config
 from core.registration import record_mapping
@@ -99,3 +99,66 @@ def enabled_sources() -> List[VisualSource]:
 def pollable_sources() -> List[VisualSource]:
     """支持盯屏轮询的源（含已停用；门控由调用方判定）。"""
     return [s for s in all_sources() if s.poll_interval > 0 and s.can_capture]
+
+
+# ------------------------------------------------------------------
+# 外部推送统一入口（web /api/vision/push 与 http_api 频道共用）
+# ------------------------------------------------------------------
+
+PUSH_EXTS = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
+PUSH_MAX_BYTES = 20 * 1024 * 1024
+
+
+async def push_external_frame(
+    source: str,
+    image_base64: str,
+    mime_type: str = "image/png",
+    captured_at: Optional[float] = None,
+) -> Dict[str, Any]:
+    """外部视觉源推送一帧：base64 图片落盘后经缓冲统一入口汇入。
+
+    与本地捕获走相同的判变与注入路径，缓冲中记为 ``external:<source>``。
+
+    Raises:
+        ValueError: 非法 source 名 / 不支持的类型 / base64 非法 / 源已停用。
+        OverflowError: 图片为空或超过上限。
+    """
+    import asyncio
+    import base64
+    import binascii
+    import time
+    from pathlib import Path
+
+    source = source.strip()
+    if not source or ".." in source or "/" in source:
+        raise ValueError("非法 source 名")
+    if not is_enabled(f"external:{source}"):
+        raise ValueError(f"外部视觉源已停用: {source}")
+    if mime_type not in PUSH_EXTS:
+        raise ValueError(f"不支持的图片类型: {mime_type}")
+    try:
+        data = base64.b64decode(image_base64, validate=True)
+    except (binascii.Error, ValueError):
+        raise ValueError("image_base64 不是合法的 base64") from None
+    if not data or len(data) > PUSH_MAX_BYTES:
+        raise OverflowError("图片为空或超过 20MB 上限")
+
+    from core.path import ConfigPaths
+
+    out_dir = Path(str(ConfigPaths.UPLOAD_DIR)) / "vision"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    dest = out_dir / f"{int(time.time() * 1000)}_{source}{PUSH_EXTS[mime_type]}"
+
+    def _write() -> None:
+        dest.write_bytes(data)
+
+    await asyncio.to_thread(_write)
+    from .buffer import get_vision_buffer
+    frame, changed = await get_vision_buffer().ingest(
+        str(dest), f"external:{source}",
+        captured_at=captured_at or time.time(),
+    )
+    return {
+        "ok": True, "path": frame.path, "changed": changed,
+        "source": frame.source,
+    }
