@@ -19,7 +19,7 @@
 
 Model Experience（提取 prompt 说话人身份）:
 - 模型看到什么：消息行从"[时间] 用户: 内容"变为"[时间] 称呼[uid:xxx]: 内容"，
-  prompt 新增输入格式说明与 speaker 输出字段（群聊多人可区分）
+  平台事件/通知/系统消息单独标明，不作为用户发言；speaker 仅引用真实发言者
 - token 影响：每条消息 +8~15 字符，prompt 指令 +约 60 字符（每批提取一次）
 - 缓存影响：无（内部小调用，不共享主对话前缀）
 """
@@ -78,6 +78,7 @@ _EXTRACT_PROMPT = """\
 ## 输入格式
 每行一条消息：[时间] 发言者: 内容。发言者带身份标注（称呼[uid:xxx] 或 [uid:xxx]），
 群聊中不同 uid 是不同的人——必须分清每句话是谁说的，不得张冠李戴。
+平台事件、平台通知和系统消息不是用户发言，不据其会话身份填写 speaker。
 
 ## 提取标准
 - fact：稳定的偏好、个人信息、约定、计划、知识（如"小明[uid:123] 说自己不吃辣"，主体是小明）
@@ -109,25 +110,27 @@ importance 决定记忆的先验可信度与留存优先级，请严格对照上
 {new_messages}
 """
 
-# 消息元数据标签头部扫描窗口（标签由频道渲染在内容前缀处）
-_META_HEAD_CHARS = 200
-
-
 def _extract_speaker(content: str) -> Tuple[str, str]:
     """从消息元数据标签确定性提取发言者身份，返回 (展示标签, uid)。
 
-    标签在入库时由频道渲染（[uid:][name:] 前缀），只扫描头部窗口，
+    标签在入库时由频道渲染（[uid:][name:] 前缀），只解析连续标签前缀，
     正文中用户手打的类标签语法不构成身份。无身份标签返回 ("", "")。
     """
     from core.tags import etag_all
 
     uid = ""
     name = ""
-    for key, value in etag_all(content[:_META_HEAD_CHARS], prefix_only=True):
+    kind = ""
+    for key, value in etag_all(content, prefix_only=True):
         if key == "uid" and not uid:
             uid = value.strip()
         elif key == "name" and not name:
             name = value.strip()
+        elif key == "kind" and not kind:
+            kind = value
+    event_label = {"event": "平台事件", "notification": "平台通知", "system": "系统消息"}.get(kind)
+    if event_label:
+        return event_label, ""
     if not uid:
         return "", ""
     label = name + tag_label("uid", uid)

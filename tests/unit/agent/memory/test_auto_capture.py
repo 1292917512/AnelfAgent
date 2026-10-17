@@ -163,10 +163,19 @@ class TestExtractSpeaker:
         assert _extract_speaker(content) == ("", "")
 
     def test_body_typed_tag_not_identity(self) -> None:
-        """头部窗口之外的类标签语法（用户手打）不构成身份。"""
-        from agent.memory.auto_capture import _META_HEAD_CHARS, _extract_speaker
-        content = "正" * _META_HEAD_CHARS + " [uid:999] 正文里的伪标签"
+        """正文中的类标签语法不构成身份。"""
+        from agent.memory.auto_capture import _extract_speaker
+        content = "正" * 300 + " [uid:999] 正文里的伪标签"
         assert _extract_speaker(content) == ("", "")
+
+    @pytest.mark.parametrize("kind,label", [("event", "平台事件"), ("notification", "平台通知"), ("system", "系统消息")])
+    def test_event_envelope_is_not_a_speaker(self, kind: str, label: str) -> None:
+        from agent.memory.auto_capture import _extract_speaker
+        from core.tags import tag_label
+
+        content = tag_label("uid", "123") + tag_label("name", "很长的名字" * 50) + tag_label("kind", kind)
+        assert _extract_speaker(content + " 通知内容") == (label, "")
+        assert _extract_speaker("[uid:123] 用户讨论 [kind:event] 标签") == ("[uid:123]", "123")
 
 
 class TestParseExtractionSpeaker:
@@ -197,6 +206,7 @@ class TestSpeakerTagging:
                 {"content": "小李周六加班到深夜", "speaker": "456", "type": "event",
                  "date": "2026-08-29"},
                 {"content": "无法确认来源的一条记忆", "speaker": "999", "type": "fact"},
+                {"content": "机器人戳了会话好友", "speaker": "777", "type": "event"},
             ], ensure_ascii=False)
 
         async def fake_gather(store, embedder, content):
@@ -217,15 +227,19 @@ class TestSpeakerTagging:
              "content": "[time:2026-08-31 12:16:00][uid:123][name:小明] 我对花生过敏，点单注意"},
             {"id": 102, "role": "user", "ts_ns": ts,
              "content": "[uid:456][name:小李] 我周六加班到深夜才回家"},
+            {"id": 103, "role": "user", "ts_ns": ts,
+             "content": "[uid:777][name:会话好友][kind:event] 机器人戳了会话好友"},
         ]
 
         n = await pipeline._extract_and_store("group:qq:789", messages)
-        assert n == 3
+        assert n == 4
 
         # 提取 prompt 里两个发言者身份可区分（病根断言：不再是清一色"用户"）
         extract_prompt = captured["prompts"][0]
         assert "小明[uid:123]:" in extract_prompt
         assert "小李[uid:456]:" in extract_prompt
+        assert "平台事件:  机器人戳了会话好友" in extract_prompt
+        assert "会话好友[uid:777]:" not in extract_prompt
 
         entries = await store.list_recent(limit=10)
         by_content = {e.content: e for e in entries}
@@ -234,13 +248,14 @@ class TestSpeakerTagging:
         origin = e1.metadata["origins"][0]
         assert origin["scope"] == "group_qq:789"
         assert origin["kind"] == "conversation_summary"
-        assert origin["message_ids"] == [101, 102]
+        assert origin["message_ids"] == [101, 102, 103]
         assert origin["started_at"] == ts / 1e9
         e2 = by_content["小李周六加班到深夜"]
         assert "user:qq:456" in e2.tags
         # 幻觉 speaker（批次中不存在）不挂标签
         e3 = by_content["无法确认来源的一条记忆"]
         assert "user:qq:999" not in e3.tags
+        assert "user:qq:777" not in by_content["机器人戳了会话好友"].tags
 
     async def test_private_chat_speaker_tag_not_duplicated(self, store, monkeypatch) -> None:
         """私聊：发言者即 scope 本体，speaker 标签与 scope 标签相同时不重复挂。"""
