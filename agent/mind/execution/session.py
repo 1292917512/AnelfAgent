@@ -104,7 +104,7 @@ async def _prepare_think_context(
     guardrail = GuardrailController()
     # 工具结果加工管线：脱敏 → 扫描 → 守卫 → 截断（整轮预算在会话内累计）
     pipeline = ToolResultPipeline(mind, guardrail)
-    # 实体推送并入水位：base 快照之前到达的推送已随短期记忆进 base，
+    # 实体推送并入水位：base 快照之前到达的推送已随历史或兜底短期记忆进 base，
     # 仅快照后到达的推送轮内注入（防重复）。优先使用调用方在快照前读取的水位。
     push_watermark = 0
     if mode == ThinkMode.REPLY:

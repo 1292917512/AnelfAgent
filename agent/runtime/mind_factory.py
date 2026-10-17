@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+from functools import partial
+
 from agent.channel.manager import ChannelManager
 from agent.config import get_mind_config
 from agent.context.assembly import ContextAssembly
@@ -13,9 +16,12 @@ from agent.memory.embedding import get_embedder
 from agent.memory.memory_retriever import MemoryRetriever
 from agent.memory.memory_store import MemoryStore
 from agent.messages import CharacterAgent
+from agent.mind.background_routing import on_task_alert, on_task_unclaimed
+from agent.mind.background_tasks import BackgroundTaskRegistry
 from agent.mind.mind import Mind
 from agent.mind.mind_tools import register_core_tools
 from agent.mind.prefrontal_cortex import PrefrontalCortex
+from agent.mind.push import PushHub
 from agent.skills import SkillCurator, SkillMatcher, SkillReviewer, get_skill_store
 from agent.skills.runtime import SkillRuntime
 from agent.storage.data_center import ConversationData, EverythingData
@@ -31,7 +37,8 @@ def create_mind(
     conversation_data: ConversationData,
     memory_store: MemoryStore | None,
 ) -> Mind:
-    """共享技能库与上下文视图，按依赖顺序装配思维服务。"""
+    """在运行中的事件循环内装配思维服务，完成接线后返回宿主。"""
+    loop = asyncio.get_running_loop()
     skill_store = get_skill_store()
     plugin_registry = get_plugin_manager().registry
     pfc = PrefrontalCortex(everything_data, channel_manager, conversation_data)
@@ -42,6 +49,7 @@ def create_mind(
     embedder = get_embedder("text")
     skill_matcher = SkillMatcher(skill_store, embedder)
     skills = SkillRuntime(skill_store, skill_matcher, SkillCurator(skill_store, skill_matcher.index))
+    background_tasks = BackgroundTaskRegistry(loop=loop)
     retriever = MemoryRetriever(memory_store, embedder) if memory_store else None
     if retriever is not None and llm_manager is not None:
         rerank_client = llm_manager.get_media_client("rerank")
@@ -51,10 +59,13 @@ def create_mind(
         config=get_mind_config(),
         char=char, llm=llm, llm_manager=llm_manager, channel_manager=channel_manager,
         everything_data=everything_data, conversation_data=conversation_data,
-        prefrontal_cortex=pfc, context=context, skills=skills,
+        prefrontal_cortex=pfc, context=context, skills=skills, background_tasks=background_tasks,
         embedder=embedder, retriever=retriever,
         memory_store=memory_store,
     )
+    background_tasks.set_unclaimed_callback(partial(on_task_unclaimed, mind))
+    background_tasks.set_alert_callback(partial(on_task_alert, mind))
+    mind.push_hub = PushHub(pfc, mind.try_execute_mind, loop=loop)
     mind.heartbeat_engine = HeartbeatEngine(mind)
     mind.compressor = ContextCompressor(mind.model_invoker)
 

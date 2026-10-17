@@ -449,6 +449,7 @@ def create_bootstrap() -> FlowMachine:
         Lifecycle.register("execution_diagnostics", execution_diagnostics,
                            on_start=execution_diagnostics.start, cleanup=execution_diagnostics.stop)
         await Lifecycle.start_one("execution_diagnostics")
+        Lifecycle.register("push_hub", mind.push_hub, cleanup=mind.push_hub.close)
         Lifecycle.register("background_tasks", mind.background_tasks, cleanup=mind.background_tasks.close)
         Lifecycle.register("hook_journal", hook_journal, cleanup=hook_journal.clear)
         from agent.judgment.health import judgment_health

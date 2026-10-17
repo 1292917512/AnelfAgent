@@ -1,5 +1,6 @@
 """思维运行时装配：共享实例、上下文边界与后台服务依赖。"""
 
+import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -43,8 +44,12 @@ async def test_factory_shares_state_and_finishes_wiring_before_publish(tmp_path,
     registration = MagicMock()
     monkeypatch.setattr(mind_factory, "register_core_tools", registration)
     monkeypatch.setattr(mind_factory, "activate_group", MagicMock(return_value=1))
+    woke = asyncio.Event()
+    wake = AsyncMock(side_effect=woke.set)
+    monkeypatch.setattr(mind_factory.Mind, "try_execute_mind", wake)
 
     conversation, manager, memory = MagicMock(), MagicMock(), MagicMock()
+    conversation.router.append = AsyncMock()
     manager.chat_with_fallback = AsyncMock(return_value=ChatResult(content=""))
     mind = mind_factory.create_mind(
         char=MagicMock(), llm=MagicMock(), llm_manager=manager,
@@ -93,3 +98,29 @@ async def test_factory_shares_state_and_finishes_wiring_before_publish(tmp_path,
     with pytest.raises(OSError, match="disk unavailable"):
         provider.save_mind_config(llm_timeout=90)
     assert mind.config.llm_timeout == 75
+
+    scope = "user_webui:u1"
+    try:
+        assert await asyncio.to_thread(mind.push_hub.push, scope, "test", "推送通知", "webui")
+        await asyncio.wait_for(woke.wait(), timeout=1)
+        assert mind.push_hub.current_seq(scope) == 1
+        assert conversation.router.append.await_count == 1
+        assert "推送通知" in conversation.router.append.call_args.kwargs["content"]
+
+        woke.clear()
+        task = mind.background_tasks.register(scope, "shell", "后台操作")
+        await asyncio.to_thread(mind.background_tasks.complete, task, True, "已完成")
+        await asyncio.wait_for(woke.wait(), timeout=1)
+        assert conversation.router.append.await_count == 2
+        assert "[后台任务完成]" in conversation.router.append.call_args.kwargs["content"]
+
+        woke.clear()
+        running = mind.background_tasks.register(scope, "shell", "运行中操作")
+        await asyncio.to_thread(mind.background_tasks.alert_timeout, running, "检查进度")
+        await asyncio.wait_for(woke.wait(), timeout=1)
+        assert conversation.router.append.await_count == 3
+        assert "[后台任务进度报告]" in conversation.router.append.call_args.kwargs["content"]
+        assert len(mind.background_tasks.running(scope)) == 1
+    finally:
+        await mind.background_tasks.close()
+        await mind.push_hub.close()

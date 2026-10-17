@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from functools import partial
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Set
 
 from agent.channel.manager import ChannelManager
@@ -29,8 +28,6 @@ from agent.messages import (
 )
 from agent.mind import tool_activation as _tool_activation  # noqa: F401  # 注册 activate_tool_group 延迟工具
 from agent.mind.autonomous import MindPhase
-from agent.mind.background_routing import on_task_alert, on_task_unclaimed
-from agent.mind.background_tasks import BackgroundTaskRegistry
 from agent.mind.cross_channel import (
     ChannelSnapshot,
     update_channel_snapshot,
@@ -64,6 +61,8 @@ if TYPE_CHECKING:
     from agent.delegation.delegation_manager import DelegationManager
     from agent.heartbeat.engine import HeartbeatEngine
     from agent.memory.embedding import Embedder
+    from agent.mind.background_tasks import BackgroundTaskRegistry
+    from agent.mind.push import PushHub
     from agent.skills.runtime import SkillRuntime
 
 
@@ -73,6 +72,7 @@ class Mind:
     heartbeat_engine: HeartbeatEngine
     compressor: ContextCompressor
     delegation_manager: DelegationManager
+    push_hub: PushHub
 
     def __init__(
             self,
@@ -87,6 +87,7 @@ class Mind:
             prefrontal_cortex: PrefrontalCortex,
             context: ContextAssembly,
             skills: SkillRuntime,
+            background_tasks: BackgroundTaskRegistry,
             embedder: Embedder,
             retriever: Optional[MemoryRetriever],
             memory_store: Optional[MemoryStore] = None,
@@ -100,6 +101,7 @@ class Mind:
         self.conversation_data = conversation_data
 
         self.skills = skills
+        self.background_tasks = background_tasks
         self.pfc = prefrontal_cortex
         self.context = context
         self.memory_store = memory_store
@@ -141,25 +143,6 @@ class Mind:
         # 真人输入到达即重置，见 wake_budget 模块说明）
         from agent.mind.wake_budget import WakeBudgetTracker
         self.wake_budget = WakeBudgetTracker()
-
-        # scope 级后台任务注册表（等待意图挂起 / 完成通知新轮次的统一原语）
-        self.background_tasks = BackgroundTaskRegistry()
-        try:
-            self.background_tasks.bind_loop(asyncio.get_running_loop())
-        except RuntimeError:
-            pass  # 非异步上下文（测试等）：工作线程完成时退化为直接调用
-        # 轮外完成回调：后台任务完成且无等待者时，排入回复队列触发新 REPLY
-        self.background_tasks.set_unclaimed_callback(partial(on_task_unclaimed, self))
-        # 超时提醒回调：任务超过预期时长仍在运行时向 AI 报告进度（去留由 AI 决策）
-        self.background_tasks.set_alert_callback(partial(on_task_alert, self))
-
-        # 实体推送中枢（[push:] 系统通知：短期记忆 + 入队唤醒 + 轮内弹窗）
-        from agent.mind.push import PushHub
-        self.push_hub = PushHub(self)
-        try:
-            self.push_hub.bind_loop(asyncio.get_running_loop())
-        except RuntimeError:
-            pass  # 非异步上下文（测试等）：跨线程推送退化为直接调用
 
     # 初始化与配置
 

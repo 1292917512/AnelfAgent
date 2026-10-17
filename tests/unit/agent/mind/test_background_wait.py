@@ -139,6 +139,19 @@ class TestBackgroundTaskRegistry:
         assert registry.running("user_qq:1") == []
         assert registry.completed("user_qq:1")[0].success is False
 
+    async def test_late_completion_and_alert_do_not_wake_after_shutdown(self) -> None:
+        registry = BackgroundTaskRegistry(loop=asyncio.get_running_loop())
+        callback = AsyncMock()
+        registry.set_unclaimed_callback(callback)
+        registry.set_alert_callback(callback)
+        task_id = registry.register("user_qq:1", "shell", "关闭中的操作")
+        await registry.close()
+        await asyncio.to_thread(registry.alert_timeout, task_id, "迟到提醒")
+        await asyncio.to_thread(registry.complete, task_id, True, "迟到完成")
+        await asyncio.sleep(0)
+        callback.assert_not_called()
+        assert registry.completed("user_qq:1")[0].success is True
+
     def test_internal_maintenance_is_observable_without_joining_reply(self) -> None:
         registry = BackgroundTaskRegistry()
         registry.register("user_qq:1", "llm_hook", "review", joinable=False)

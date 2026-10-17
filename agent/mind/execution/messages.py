@@ -169,7 +169,7 @@ async def _merge_new_messages(ctx: ExecutionContext, state: RoundState) -> bool:
 async def _merge_pushes(ctx: ExecutionContext, state: RoundState) -> None:
     """并入循环期间到达的实体推送（[push:] 系统通知），实现轮内弹窗。
 
-    推送到达时已写入短期记忆（后续会话可见）；此处将快照后新到的推送
+    推送到达时已写入会话历史（失败时回退短期记忆）；此处将快照后新到的推送
     直接注入当前轮工具链尾部，AI 无需等会话结束即可感知，与手机弹窗同语义。
     """
     mind = ctx.mind
