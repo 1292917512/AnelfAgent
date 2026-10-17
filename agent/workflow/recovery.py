@@ -8,27 +8,27 @@ stopped(interrupted)——不合成步骤结局、不重派执行（续跑是显
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List
 
 from agent.workflow import journal as wf_journal
 from core.log import log
 
+if TYPE_CHECKING:
+    from agent.workflow.engine import WorkflowEngine
+
 _TAG = "工作流"
 
 
-async def recover_interrupted_workflows(mind: Any) -> List[Dict[str, Any]]:
+async def recover_interrupted_workflows(mind: Any, engine: WorkflowEngine) -> List[Dict[str, Any]]:
     """收敛崩溃残留的 running run；返回收敛清单（供启动日志/测试断言）。
 
     只收敛「上一进程遗留」：跳过已在引擎在飞表中的 run 与引擎构造之后
     创建的 run——恢复任务与 Web/工具启动并发执行，晚到的恢复不得误伤
     本进程新启动的工作流。
     """
-    engine = getattr(mind, "workflow_engine", None)
-    journal = getattr(engine, "journal", None)
-    if journal is None:
-        return []
-    live_ids = set(engine.running_ids()) if engine is not None else set()
-    started_at = getattr(engine, "_started_at", 0.0)
+    journal = engine.journal
+    live_ids = set(engine.running_ids())
+    started_at = engine._started_at
     stale = [
         run for run in await journal.list_non_terminal_runs()
         if run["id"] not in live_ids and float(run.get("created_at") or 0.0) < started_at

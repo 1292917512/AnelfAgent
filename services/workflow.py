@@ -25,7 +25,7 @@ def _engine() -> WorkflowEngine | None:
     rt = get_runtime()
     if rt is None:
         return None
-    return getattr(rt.mind, "workflow_engine", None)
+    return rt.workflow_engine
 
 
 def _require_engine() -> WorkflowEngine:

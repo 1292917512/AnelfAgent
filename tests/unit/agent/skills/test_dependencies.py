@@ -17,6 +17,7 @@ from agent.skills.dependencies import (
     missing_mcp_dependencies,
     set_mcp_bindings,
 )
+from agent.skills.runtime import SkillRuntime
 from agent.skills.skill_store import Skill, SkillStore
 
 
@@ -81,10 +82,10 @@ async def test_recall_refreshes_links_without_auto_wakeup_or_prefix_changes(tmp_
     stale_skill = store.save(Skill(name="inspect", description="Inspect deployment", content="Steps"))
     before = catalog_section(store)
     set_mcp_bindings(store, "inspect", ["docs"])
-    mind = SimpleNamespace(skill_store=store,
-                           pfc=SimpleNamespace(add_temporary=MagicMock()),
-                           skill_matcher=SimpleNamespace(match=AsyncMock(return_value=[(stale_skill, 0.9)])),
-                           _pending_skill_gestures={})
+    mind = SimpleNamespace(
+        pfc=SimpleNamespace(add_temporary=MagicMock()),
+        skills=SkillRuntime(store, SimpleNamespace(match=AsyncMock(return_value=[(stale_skill, 0.9)])), MagicMock()),
+    )
     messages = await match_skills(mind, "inspect", scope="scope-a")
     assert "docs（启用、已连接、分组未激活）" in messages[0]["content"]
     facts = context_skills(messages)

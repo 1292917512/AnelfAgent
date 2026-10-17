@@ -8,6 +8,7 @@ from agent.messages import CharacterAgent
 from agent.mind import Mind
 from agent.runtime.assistant import AgentAssistant
 from agent.storage.data_center import DataCenter
+from agent.workflow.engine import WorkflowEngine
 from core.log import log
 
 
@@ -22,6 +23,7 @@ class AgentRuntime:
     char: CharacterAgent
     llm: ChatModel
     data_center: DataCenter
+    workflow_engine: WorkflowEngine
 
     def switch_llm(self, new_llm: ChatModel) -> None:
         """热切换 LLM 实例，同步更新 runtime 和 mind 的引用。"""

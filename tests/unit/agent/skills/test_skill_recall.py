@@ -11,6 +11,7 @@ import pytest
 from agent.memory.memory_retriever import MemoryRetriever
 from agent.memory.memory_types import RetrievalPlan
 from agent.mind.recall import inputs as recollection
+from agent.skills.runtime import SkillRuntime
 from agent.skills.skill_store import Skill, SkillState
 
 
@@ -104,10 +105,8 @@ def _mind_with_matcher(matched=None, captured: dict | None = None):
         return list(matched or [])
 
     return SimpleNamespace(
-        skill_store=store,
-        skill_matcher=SimpleNamespace(match=match),
+        skills=SkillRuntime(store, SimpleNamespace(match=match), MagicMock()),
         pfc=SimpleNamespace(add_temporary=MagicMock()),
-        _pending_skill_gestures={},
     )
 
 
@@ -154,7 +153,7 @@ class TestMatchSkillsArchivedRendering:
         assert "## dusty-skill【已归档】" in content
         assert "## fresh-skill — " in content  # 在役行不带标注
         assert "restore_skill" in content
-        assert mind.skill_store.record_match.call_count == 2
+        assert mind.skills.store.record_match.call_count == 2
 
     @pytest.mark.asyncio
     async def test_no_archived_no_hint(self) -> None:

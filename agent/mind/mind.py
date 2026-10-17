@@ -43,7 +43,7 @@ from agent.mind.interrupt import (
 )
 from agent.mind.llm_invoker import ModelInvoker
 from agent.mind.mind_tools import build_reflect_blocklist, select_reflect_tools
-from agent.mind.perception import detect_skill_gesture, should_enqueue_external_message
+from agent.mind.perception import should_enqueue_external_message
 from agent.mind.prefrontal_cortex import PrefrontalCortex
 from agent.mind.recall.coordinator import prepare_recollection
 from agent.storage.data_center import ConversationData, EverythingData
@@ -63,12 +63,8 @@ if TYPE_CHECKING:
     from agent.context.compressor import ContextCompressor
     from agent.delegation.delegation_manager import DelegationManager
     from agent.heartbeat.engine import HeartbeatEngine
-    from agent.memory.auto_capture import AutoCapturePipeline
     from agent.memory.embedding import Embedder
-    from agent.skills import SkillCurator, SkillMatcher, SkillReviewer
-    from agent.skills.skill_store import SkillStore
-    from agent.storage.storage_router import StorageRouter
-    from agent.workflow.engine import WorkflowEngine
+    from agent.skills.runtime import SkillRuntime
 
 
 class Mind:
@@ -76,12 +72,7 @@ class Mind:
 
     heartbeat_engine: HeartbeatEngine
     compressor: ContextCompressor
-    skill_matcher: SkillMatcher
-    skill_curator: SkillCurator
-    skill_reviewer: SkillReviewer
     delegation_manager: DelegationManager
-    workflow_engine: WorkflowEngine
-    auto_capture_pipeline: AutoCapturePipeline
 
     def __init__(
             self,
@@ -95,10 +86,9 @@ class Mind:
             conversation_data: ConversationData,
             prefrontal_cortex: PrefrontalCortex,
             context: ContextAssembly,
-            skill_store: SkillStore,
+            skills: SkillRuntime,
             embedder: Embedder,
             retriever: Optional[MemoryRetriever],
-            storage_router: Optional["StorageRouter"] = None,
             memory_store: Optional[MemoryStore] = None,
     ) -> None:
         self.config = config
@@ -108,9 +98,8 @@ class Mind:
         self.channel_manager = channel_manager
         self.everything_data = everything_data
         self.conversation_data = conversation_data
-        self.storage_router = storage_router
 
-        self.skill_store = skill_store
+        self.skills = skills
         self.pfc = prefrontal_cortex
         self.context = context
         self.memory_store = memory_store
@@ -152,9 +141,6 @@ class Mind:
         # 真人输入到达即重置，见 wake_budget 模块说明）
         from agent.mind.wake_budget import WakeBudgetTracker
         self.wake_budget = WakeBudgetTracker()
-
-        # /name 技能手势待注入队列（scope -> [技能名]，recollection 消费后清空）
-        self._pending_skill_gestures: Dict[str, List[str]] = {}
 
         # scope 级后台任务注册表（等待意图挂起 / 完成通知新轮次的统一原语）
         self.background_tasks = BackgroundTaskRegistry()
@@ -261,7 +247,7 @@ class Mind:
                 self.wake_budget.reset(scope)
                 # /name 技能手势：真实外部消息正文以 /技能名 开头 → 确定性触发
                 # （防伪造：仅此路径检测，工具结果/子代理输出里的 "/x" 不构成手势）
-                detect_skill_gesture(self, anything, scope)
+                self.skills.observe_request(anything.get_text_content() or "", scope)
                 await self.pfc.add_task(anything)
         finally:
             # 感知处理完成边界：未入队/中断/异常路径不会有后续周期覆盖

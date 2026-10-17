@@ -29,7 +29,8 @@ def _mind_index() -> Optional[SkillIndex]:
         if rt is None:
             return None
         mind = getattr(rt, "mind", None)
-        matcher = getattr(mind, "skill_matcher", None)
+        skills = getattr(mind, "skills", None)
+        matcher = skills.matcher if skills is not None else None
         return getattr(matcher, "index", None)
     except Exception:
         return None

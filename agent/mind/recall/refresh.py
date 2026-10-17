@@ -158,11 +158,11 @@ class DialogueRecollection:
         async def skills() -> list[RecallDelta]:
             if not get_config_bool("skills_enabled", True):
                 return []
-            matches = await self.mind.skill_matcher.match([query], top_k=2)
+            matches = await self.mind.skills.matcher.match([query], top_k=2)
             deltas = []
             from agent.skills.dependencies import mcp_binding_notice
             for matched_skill, _score in matches:
-                skill = self.mind.skill_store.get(matched_skill.name)
+                skill = self.mind.skills.store.get(matched_skill.name)
                 if skill is None:
                     continue
                 text = (f"{tag_label('skill', skill.name)} {skill.description[:160]}"

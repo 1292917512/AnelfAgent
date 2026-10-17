@@ -199,8 +199,10 @@ async def test_local_branches_parallelize_and_filter_private_ownership(worker, m
         return [RecallDelta("记忆", result.snippet, result.id, result.snippet) for result in results]
 
     worker.mind.retriever = SimpleNamespace(_apply_scope_boost=lambda results, scopes: results, _store=object())
-    worker.mind.skill_matcher = SimpleNamespace(match=match)
-    worker.mind.skill_store = SimpleNamespace(get=lambda name: skill if name == skill.name else None)
+    worker.mind.skills = SimpleNamespace(
+        matcher=SimpleNamespace(match=match),
+        store=SimpleNamespace(get=lambda name: skill if name == skill.name else None),
+    )
     monkeypatch.setattr(refresh, "search_local", search)
     monkeypatch.setattr(refresh.deep_probe_hub, "_memory_deltas", format_results)
     deltas = await asyncio.wait_for(worker._candidates("network"), 1)

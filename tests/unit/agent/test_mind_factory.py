@@ -33,12 +33,10 @@ async def test_factory_shares_state_and_finishes_wiring_before_publish(tmp_path,
         ("agent.runtime.mind_factory", "HeartbeatEngine"),
         ("agent.runtime.mind_factory", "ContextCompressor"),
         ("agent.runtime.mind_factory", "MemoryRetriever"),
-        ("agent.skills", "SkillMatcher"),
-        ("agent.skills", "SkillCurator"),
-        ("agent.skills", "SkillReviewer"),
+        ("agent.runtime.mind_factory", "SkillMatcher"),
+        ("agent.runtime.mind_factory", "SkillCurator"),
+        ("agent.runtime.mind_factory", "SkillReviewer"),
         ("agent.delegation.delegation_manager", "DelegationManager"),
-        ("agent.workflow.engine", "WorkflowEngine"),
-        ("agent.memory.auto_capture", "AutoCapturePipeline"),
     ]:
         factories[name] = MagicMock()
         monkeypatch.setattr(f"{module}.{name}", factories[name])
@@ -51,22 +49,22 @@ async def test_factory_shares_state_and_finishes_wiring_before_publish(tmp_path,
     mind = mind_factory.create_mind(
         char=MagicMock(), llm=MagicMock(), llm_manager=manager,
         channel_manager=MagicMock(), everything_data=MagicMock(),
-        conversation_data=conversation, storage_router=None, memory_store=memory,
+        conversation_data=conversation, memory_store=memory,
     )
     assert mind.context._work_memory is mind.pfc.work_memory
     assert mind.context._tool_assembly is mind.pfc.tool_assembly
     assert mind.pfc.work_memory.tool_assembly is mind.pfc.tool_assembly
-    assert mind.context._skill_store is mind.skill_store is store
+    assert mind.context._skill_store is mind.skills.store is store
     assert mind.context._plugin_registry is registry
     assert mind.context.preparation.assembly is mind.context
     assert not hasattr(mind.pfc, "build_llm_context")
     factories["MemoryRetriever"].assert_called_once_with(memory, embedder)
     mind.retriever.set_rerank_client.assert_called_once_with(manager.get_media_client.return_value)
     factories["SkillMatcher"].assert_called_once_with(store, embedder)
-    factories["SkillCurator"].assert_called_once_with(store, mind.skill_matcher.index)
-    factories["SkillReviewer"].assert_called_once_with(mind, store, index=mind.skill_matcher.index)
-    assert mind.skill_reviewer.start.call_count == int(skills_enabled)
-    for name in ("HeartbeatEngine", "DelegationManager", "WorkflowEngine", "AutoCapturePipeline"):
+    factories["SkillCurator"].assert_called_once_with(store, mind.skills.matcher.index)
+    factories["SkillReviewer"].assert_called_once_with(mind, store, index=mind.skills.matcher.index)
+    assert factories["SkillReviewer"].return_value.start.call_count == int(skills_enabled)
+    for name in ("HeartbeatEngine", "DelegationManager"):
         factories[name].assert_called_once_with(mind)
     factories["ContextCompressor"].assert_called_once_with(mind.model_invoker)
     registration.assert_called_once_with()

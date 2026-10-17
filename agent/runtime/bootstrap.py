@@ -393,9 +393,17 @@ def create_bootstrap() -> FlowMachine:
             channel_manager=channel_manager,
             everything_data=data_center.everything_data,
             conversation_data=data_center.conversation_data,
-            storage_router=data_center.router,
             memory_store=mem["store"],
         )
+        import agent.workflow.tools  # noqa: F401  # 注册工作流工具
+        from agent.memory.auto_capture import AutoCapturePipeline
+        from agent.workflow.engine import WorkflowEngine
+        from core.tool_registry import activate_group
+
+        workflow_engine = WorkflowEngine(mind)
+        count = activate_group("workflow", "工作流 - 可恢复的多步骤编排（断点续跑/门控重跑）")
+        log(f"🧩 工作流工具已注册 ({count} 个)", tag="工作流")
+        auto_capture_pipeline = AutoCapturePipeline(mind)
         assistant = AgentAssistant(mind)
         pipeline.register_agent(assistant)
 
@@ -407,6 +415,7 @@ def create_bootstrap() -> FlowMachine:
             char=char,
             llm=llm_data["llm"],
             data_center=data_center,
+            workflow_engine=workflow_engine,
         )
         set_runtime(runtime)
 
@@ -419,6 +428,8 @@ def create_bootstrap() -> FlowMachine:
         hooks_llm_runtime = HookRuntime(mind)
         wire_runtime(
             mind=mind,
+            workflow_engine=workflow_engine,
+            auto_capture_pipeline=auto_capture_pipeline,
             data_center=data_center,
             memory_store=mem["store"],
             embedder=mem["embedder"],
@@ -457,8 +468,8 @@ def create_bootstrap() -> FlowMachine:
         )
         # 先等待工作流任务终止，再关闭 journal 连接。
         Lifecycle.register(
-            "workflow_engine", mind.workflow_engine,
-            cleanup=mind.workflow_engine.aclose,
+            "workflow_engine", workflow_engine,
+            cleanup=workflow_engine.aclose,
         )
 
         log(
@@ -731,7 +742,7 @@ def create_bootstrap() -> FlowMachine:
             await recover_interrupted_delegations(mind)
             # 工作流崩溃收敛同范式：running 残留 → stopped(interrupted)，可续跑
             from agent.workflow.recovery import recover_interrupted_workflows
-            await recover_interrupted_workflows(mind)
+            await recover_interrupted_workflows(mind, require_runtime().workflow_engine)
             # 恢复流程已执行（无论是否有检查点要处理），崩溃上下文不再保留：
             # 提前标记会让恢复失败时上下文永久丢失
             if crash_context:

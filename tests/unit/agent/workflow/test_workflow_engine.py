@@ -442,7 +442,6 @@ class TestSpecGuard:
 
 class TestRecovery:
     async def test_interrupted_runs_converged(self, engine, stub_mind):
-        stub_mind.workflow_engine = engine  # recovery 经 mind.workflow_engine 收口
         # 直接造崩溃残留：running run + running 节点行（时间戳回拨到引擎启动前，
         # 模拟上一进程遗留）
         await engine.journal.create_run("zombie", "僵尸", "{}", "h", "user_x")
@@ -450,7 +449,7 @@ class TestRecovery:
         _rewind_created_at(engine, "zombie")
 
         from agent.workflow.recovery import recover_interrupted_workflows
-        recovered = await recover_interrupted_workflows(stub_mind)
+        recovered = await recover_interrupted_workflows(stub_mind, engine)
         assert [r["id"] for r in recovered] == ["zombie"]
 
         run = await engine.journal.get_run("zombie")
@@ -458,17 +457,16 @@ class TestRecovery:
         assert run["stop_reason"] == "interrupted"
 
         # 二次收敛幂等（无 running 残留）
-        assert await recover_interrupted_workflows(stub_mind) == []
+        assert await recover_interrupted_workflows(stub_mind, engine) == []
 
     async def test_recovery_skips_live_and_fresh_runs(self, engine, stub_mind):
         """恢复守卫：在飞 run 与引擎启动后新建的 running run 不被误收敛。"""
-        stub_mind.workflow_engine = engine
         engine._runs["live"] = type("R", (), {})()  # 在飞表占位（不真跑）
         await engine.journal.create_run("live", "在飞", "{}", "h", "")
         await engine.journal.create_run("fresh", "新建", "{}", "h", "")  # 启动后创建
 
         from agent.workflow.recovery import recover_interrupted_workflows
-        assert await recover_interrupted_workflows(stub_mind) == []
+        assert await recover_interrupted_workflows(stub_mind, engine) == []
         assert (await engine.journal.get_run("live"))["status"] == wf_journal.RUNNING
         assert (await engine.journal.get_run("fresh"))["status"] == wf_journal.RUNNING
         engine._runs.pop("live", None)

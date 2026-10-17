@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from agent.skills.gesture import parse_skill_gesture
+from agent.skills.runtime import SkillRuntime
 from agent.skills.skill_store import Skill, SkillState, parse_skill_md, render_skill_md
 
 
@@ -59,7 +60,7 @@ def _fake_skill(
 
 
 def _fake_mind(store_map: dict, pending: dict):
-    """最小 Mind 替身：skill_store/skill_matcher/pfc/_pending_skill_gestures。"""
+    """使用真实技能请求队列与替身匹配器的思维宿主。"""
     store = SimpleNamespace(
         get=lambda name: store_map.get(name),
         record_use=MagicMock(),
@@ -70,15 +71,32 @@ def _fake_mind(store_map: dict, pending: dict):
     async def match(queries, *, top_k=3, min_score=None, query_vec=None, query_vec_task=None):
         return []
 
-    return SimpleNamespace(
-        skill_store=store,
-        skill_matcher=SimpleNamespace(match=match),
-        pfc=SimpleNamespace(add_temporary=MagicMock()),
-        _pending_skill_gestures=pending,
-    )
+    skills = SkillRuntime(store, SimpleNamespace(match=match), MagicMock())
+    for scope, names in pending.items():
+        for name in names:
+            skills.observe_request(f"/{name}", scope)
+    return SimpleNamespace(skills=skills, pfc=SimpleNamespace(add_temporary=MagicMock()))
 
 
 class TestMatchSkillsGesture:
+    def test_requests_are_bounded_isolated_and_consumed_once(self) -> None:
+        skills = SkillRuntime(MagicMock(), MagicMock(), MagicMock())
+        other = SkillRuntime(MagicMock(), MagicMock(), MagicMock())
+        for name in ("one", "one", "two", "three", "four"):
+            skills.observe_request(f"/{name} 执行", "user_qq:1")
+        skills.observe_request("/other", "user_qq:2")
+        assert skills.consume_requests("") == []
+        assert other.consume_requests("user_qq:1") == []
+        assert skills.consume_requests("user_qq:1") == ["one", "two", "three"]
+        assert skills.consume_requests("user_qq:1") == []
+        assert skills.consume_requests("user_qq:2") == ["other"]
+
+    def test_disabled_gesture_does_not_queue(self, monkeypatch) -> None:
+        skills = SkillRuntime(MagicMock(), MagicMock(), MagicMock())
+        monkeypatch.setattr("agent.skills.runtime.get_config_bool", lambda *args: False)
+        skills.observe_request("/deploy-check", "user_qq:1")
+        assert skills.consume_requests("user_qq:1") == []
+
     async def test_forced_injection_bypasses_scoring(self) -> None:
         from agent.mind.recall import inputs as recollection
         skill = _fake_skill("deploy-check")
@@ -86,8 +104,8 @@ class TestMatchSkillsGesture:
         msgs = await recollection.match_skills(mind, "hi", scope="user_qq:1")
         assert msgs and "deploy-check" in msgs[0]["content"]
         assert "的完整正文" in msgs[0]["content"]  # 正文注入
-        assert mind._pending_skill_gestures.get("user_qq:1") is None  # 已消费
-        mind.skill_store.record_use.assert_called_once_with("deploy-check")
+        assert mind.skills.consume_requests("user_qq:1") == []
+        mind.skills.store.record_use.assert_called_once_with("deploy-check")
 
     async def test_stale_skill_injected(self) -> None:
         """闲置技能照常手势注入（闲置 ≠ 不可用）。"""
@@ -96,8 +114,8 @@ class TestMatchSkillsGesture:
         mind = _fake_mind({"old-helper": skill}, {"user_qq:1": ["old-helper"]})
         msgs = await recollection.match_skills(mind, "hi", scope="user_qq:1")
         assert msgs and "old-helper 的完整正文" in msgs[0]["content"]
-        mind.skill_store.restore.assert_not_called()  # 闲置无需恢复
-        mind.skill_store.record_use.assert_called_once_with("old-helper")
+        mind.skills.store.restore.assert_not_called()  # 闲置无需恢复
+        mind.skills.store.record_use.assert_called_once_with("old-helper")
 
     async def test_archived_skill_auto_restored(self) -> None:
         """已归档技能手势 = 最强恢复信号：自动 restore 后注入全文。"""
@@ -105,11 +123,11 @@ class TestMatchSkillsGesture:
         archived = _fake_skill("dusty-skill", state=SkillState.ARCHIVED)
         restored = _fake_skill("dusty-skill", state=SkillState.ACTIVE)
         mind = _fake_mind({"dusty-skill": archived}, {"user_qq:1": ["dusty-skill"]})
-        mind.skill_store.restore = MagicMock(return_value=restored)
+        mind.skills.store.restore = MagicMock(return_value=restored)
         msgs = await recollection.match_skills(mind, "hi", scope="user_qq:1")
         assert msgs and "dusty-skill 的完整正文" in msgs[0]["content"]
-        mind.skill_store.restore.assert_called_once_with("dusty-skill")
-        mind.skill_store.record_use.assert_called_once_with("dusty-skill")
+        mind.skills.store.restore.assert_called_once_with("dusty-skill")
+        mind.skills.store.record_use.assert_called_once_with("dusty-skill")
 
     async def test_archived_not_invocable_no_restore(self) -> None:
         """已归档且关闭手势的技能：拒绝注入，也不触发恢复。"""
@@ -119,7 +137,7 @@ class TestMatchSkillsGesture:
         mind = _fake_mind({"internal-only": skill}, {"user_qq:1": ["internal-only"]})
         msgs = await recollection.match_skills(mind, "hi", scope="user_qq:1")
         assert msgs == []
-        mind.skill_store.restore.assert_not_called()
+        mind.skills.store.restore.assert_not_called()
         mind.pfc.add_temporary.assert_not_called()
 
     async def test_not_found_writes_hint(self) -> None:

@@ -9,6 +9,7 @@ from agent.context.message_schema import normalize_for_send
 from agent.context.observation import context_skills, emit_context_summary
 from agent.context.preparation import apply_memory_budget
 from agent.mind.recall.inputs import match_skills
+from agent.skills.runtime import SkillRuntime
 from agent.skills.skill_store import Skill, SkillState
 from core.activity import activity_scope
 from services.workspace_activity import WorkspaceActivityService
@@ -19,10 +20,13 @@ async def test_skill_evidence_tracks_actual_budget_and_never_changes_wire_messag
     candidate = Skill(name="archive-check", description="Prior evidence", state=SkillState.ARCHIVED)
     mind = SimpleNamespace(
         pfc=SimpleNamespace(add_temporary=MagicMock()),
-        skill_store=SimpleNamespace(get=lambda name: {forced.name: forced, candidate.name: candidate}.get(name), record_use=MagicMock(), record_match=MagicMock()),
-        skill_matcher=SimpleNamespace(match=AsyncMock(return_value=[(candidate, 0.426)])),
-        _pending_skill_gestures={"user_qq:1": [forced.name]},
+        skills=SkillRuntime(
+            SimpleNamespace(get=lambda name: {forced.name: forced, candidate.name: candidate}.get(name), record_use=MagicMock(), record_match=MagicMock()),
+            SimpleNamespace(match=AsyncMock(return_value=[(candidate, 0.426)])),
+            MagicMock(),
+        ),
     )
+    mind.skills.observe_request(f"/{forced.name}", "user_qq:1")
     messages = await match_skills(mind, "deployment", scope="user_qq:1")
     original = deepcopy(messages)
     facts = context_skills(messages)

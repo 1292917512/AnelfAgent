@@ -188,8 +188,8 @@ async def match_skills(
     if not get_config_bool("skills_enabled", True):
         return []
     from agent.skills.recall import match_recalled_skills
-    gestures = mind._pending_skill_gestures.pop(scope, []) if scope else []
+    gestures = mind.skills.consume_requests(scope)
     return await match_recalled_skills(
-        mind.skill_store, mind.skill_matcher, gestures, mind.pfc.add_temporary, base_query,
+        mind.skills.store, mind.skills.matcher, gestures, mind.pfc.add_temporary, base_query,
         query_vec=query_vec, query_vec_task=query_vec_task, scope=scope, planned_queries=planned_queries,
     )

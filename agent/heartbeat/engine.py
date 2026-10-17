@@ -809,7 +809,8 @@ class HeartbeatEngine:
 
         # 技能重力迁移与治理议程按维护周期执行，向量回填由 EmbeddingWorker 负责。
         try:
-            curator = getattr(self.mind, "skill_curator", None)
+            skills = getattr(self.mind, "skills", None)
+            curator = skills.curator if skills is not None else None
             if curator is not None:
                 from core.config import get_config_int
                 curator_every = max(1, get_config_int("skills_curator_every_n_ticks", 12))

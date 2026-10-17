@@ -11,18 +11,22 @@ from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from agent.hooks_llm import HookRuntime
+    from agent.memory.auto_capture import AutoCapturePipeline
     from agent.memory.cognee.client import CogneeClient
     from agent.memory.cognee.coordinator import CogneeCoordinator
     from agent.memory.embedding import Embedder, EmbeddingWorker
     from agent.memory.memory_store import MemoryStore
     from agent.mind.mind import Mind
     from agent.storage.data_center import DataCenter
+    from agent.workflow.engine import WorkflowEngine
     from entities.sticker.worker import ImageIndexWorker
 
 
 def wire_runtime(
     *,
     mind: "Mind",
+    workflow_engine: "WorkflowEngine",
+    auto_capture_pipeline: "AutoCapturePipeline",
     data_center: "DataCenter",
     memory_store: "MemoryStore",
     embedder: "Embedder",
@@ -81,15 +85,15 @@ def wire_runtime(
     shell_persist_port.set(persist_output)
     image_index_submit_port.set(submit_image)
 
-    # 思维子系统实例（Mind 构造持有，工具层经端口消费）
+    # 思维与技能服务（工具层经端口消费）
     compressor_port.set(mind.compressor)
     delegation_manager_port.set(mind.delegation_manager)
-    auto_capture_port.set(mind.auto_capture_pipeline)
-    skill_tools_port.set(SkillToolDeps(mind.skill_store, mind.skill_matcher))
+    auto_capture_port.set(auto_capture_pipeline)
+    skill_tools_port.set(SkillToolDeps(mind.skills.store, mind.skills.matcher))
 
     # 工作流引擎（journal 化 DAG 编排；workflow_* 工具组消费）
     from agent.workflow.tools import workflow_engine_port
-    workflow_engine_port.set(mind.workflow_engine)
+    workflow_engine_port.set(workflow_engine)
 
     # LLM 钩子面运行时（组合根实例化后分发；事件装配由调用方在施绑后 start）
     from agent.hooks_llm import hooks_llm_runtime_port
@@ -116,7 +120,7 @@ def wire_runtime(
     # Embedding 后台 worker（施绑后挂载施绑前挂起的外部 backlog 注册）
     embedding_worker_port.set(embedding_worker)
     attach_pending_backlogs(embedding_worker)
-    embedding_worker.register_backlog("skills", mind.skill_curator.backfill_vectors)
+    embedding_worker.register_backlog("skills", mind.skills.curator.backfill_vectors)
 
     # Cognee 可选后端：初始化失败时以 None 施绑（None 是合法绑定值）
     cognee_client_port.set(cognee_client)
