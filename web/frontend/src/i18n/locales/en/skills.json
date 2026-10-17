@@ -12,7 +12,7 @@
   "stateActive": "Available",
   "stateStale": "Idle",
   "stateArchived": "Archived",
-  "useCount": "Reads / explicit calls",
+  "useCount": "Reads",
   "patchCount": "Patches",
   "pinned": "Pinned",
   "pin": "Pin",
@@ -59,11 +59,10 @@
   "evidence": {
     "title": "Skills in this run",
     "candidate": "Suggested",
-    "explicit": "Explicit call",
     "read": "Content read",
     "partial": "Partial content shown",
     "score": "Match {{score}}",
-    "hint": "Suggestions are recommendations. Read or explicit skills were provided to the AI; this does not confirm that their steps were completed."
+    "hint": "Suggestions are recommendations. Read skills were provided to the AI; this does not confirm that their steps were completed."
   },
   "recent": {
     "more": "Show {{count}} more skills",

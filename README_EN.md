@@ -145,7 +145,7 @@ Hybrid scoring over Embedding + FTS5 + tag matching + time decay. Optional **Cog
 
 ### Self-Learning Skills
 
-After each conversation, an LLM hook reviews the transcript in the background and distills skills into `workspace/skills/SKILL.md`; a two-layer recall (catalog + semantic matching) injects them when relevant; heartbeat curation demotes / archives / merges stale ones. Skills accumulate, and the agent gets better with use. Typing `/skill-name` invokes a skill deterministically.
+After each conversation, an LLM hook reviews the transcript in the background and distills skills into `workspace/skills/SKILL.md`; a two-layer recall (catalog + semantic matching) suggests relevant skills for the AI to read and use; heartbeat curation demotes / archives / merges stale ones. Skills accumulate, and the agent gets better with use.
 
 ### Sub-Agents & Workflows
 

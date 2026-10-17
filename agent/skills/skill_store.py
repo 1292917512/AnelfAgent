@@ -3,7 +3,7 @@
 技能是 AI 从任务经验中提炼的可复用知识，存储在 ``workspace/skills/<name>/``：
 
 - ``SKILL.md``：定义（YAML frontmatter + markdown 正文），只含内容性字段
-  （名称/描述/触发词/作者/手势开关/决策理由/依赖声明），与社区技能格式
+  （名称/描述/触发词/作者/决策理由/依赖声明），与社区技能格式
   兼容，可直接导入导出。
 - ``.meta.json``：账本（计数/状态/时间戳），系统维护的运行时事实。
   计数更新只改写本文件——定义字节稳定，不被运行时计数污染。
@@ -52,21 +52,19 @@ class Skill(BaseModel):
     trigger_patterns: List[str] = Field(default_factory=list)
     content: str = ""
     created_by: str = "agent"
-    # 真实消费次数（手势命中 / AI 读全文 / 内容被合并采用）；检索注入不计入
+    # 真实消费次数（AI 读全文 / 内容被合并采用）；检索注入不计入
     use_count: int = 0
     # 检索注入次数（语义/关键词匹配命中即计数，不代表被真正消费）
     match_count: int = 0
     patch_count: int = 0
     state: SkillState = SkillState.ACTIVE
     pinned: bool = False
-    # 用户手势可调用（/name 确定性触发；False = 仅语义/关键词匹配可见）
-    user_invocable: bool = True
     # 最近一次写入的决策理由（决策协议回执，供后续评审追溯问责）
     rationale: str = ""
     # 被合并归档时的去向技能名（可逆归档的恢复线索）
     merged_into: str = ""
     created_at: float = Field(default_factory=time.time)
-    # 活动时钟（手势命中 / 读全文 / 更新时刷新；检索注入不刷新）
+    # 活动时钟（读全文 / 更新时刷新；检索注入不刷新）
     last_activity_at: float = Field(default_factory=time.time)
     # 最近一次被检索注入的时间（stale 层的软保留信号：仍被检索到则不归档）
     last_match_at: float = 0.0
@@ -89,7 +87,7 @@ _FRONTMATTER_RE = re.compile(r"\A\s*---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
 #: 定义字段（SKILL.md frontmatter，内容性、可随文件分发）
 _DEFINITION_FIELDS = (
     "name", "description", "trigger_patterns", "created_by",
-    "user_invocable", "rationale", "created_at", "dependencies",
+    "rationale", "created_at", "dependencies",
 )
 
 #: 账本字段（.meta.json，运行时事实，计数更新只改写本文件）
@@ -153,8 +151,6 @@ def render_skill_md(skill: Skill) -> str:
         "created_by": skill.created_by,
         "created_at": skill.created_at,
     }
-    if not skill.user_invocable:
-        meta["user_invocable"] = False
     if skill.rationale:
         meta["rationale"] = skill.rationale
     if skill.dependencies:
@@ -466,7 +462,7 @@ class SkillStore:
     def record_use(self, name: str) -> None:
         """记录一次真实使用（use_count +1，刷新活动时间）。
 
-        真实使用 = 手势命中 / AI 读全文 / 内容被采用，均刷新活动时钟
+        真实使用 = AI 读全文 / 内容被采用，均刷新活动时钟
         （重力计时以真实消费为准）。检索注入走 record_match，两者分离后
         策展的闲置计时不再被"碰巧被匹配到"刷新。
         """

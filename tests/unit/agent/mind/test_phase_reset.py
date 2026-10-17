@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 from typing import Any, List
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -322,7 +322,6 @@ class TestAcceptFeelPhaseReset:
         mind._reflecting = False
         mind._auto_cycle_retry = 0
         mind.wake_budget = SimpleNamespace(reset=lambda scope: None)
-        mind.skills = SimpleNamespace(observe_request=MagicMock())
         mind._channel_snapshots = {}
         mind.pfc = SimpleNamespace(add_task=AsyncMock())
 
@@ -348,20 +347,21 @@ class TestAcceptFeelPhaseReset:
             "agent.memory.user_directives.observe_message", AsyncMock(),
         )
         await mind.accept_feel(self._anything(trigger_mind=False))
-        mind.skills.observe_request.assert_not_called()
         assert mind.phase is MindPhase.IDLE
 
+    @pytest.mark.parametrize("text", ["你好", "/deploy-check 检查部署"])
     async def test_enqueued_message_leaves_idle_before_cycle(
-            self, monkeypatch: pytest.MonkeyPatch) -> None:
+            self, monkeypatch: pytest.MonkeyPatch, text: str) -> None:
         """已入队消息：周期未抢锁时先归零，由随后的周期覆盖为 DECIDING。"""
         mind = _bare_mind()
         self._wire_accept_fakes(mind)
         monkeypatch.setattr(
             "agent.memory.user_directives.observe_message", AsyncMock(),
         )
-        await mind.accept_feel(self._anything(trigger_mind=True))
-        mind.skills.observe_request.assert_called_once_with("你好", "user_webui:u1")
-        mind.pfc.add_task.assert_awaited_once()
+        message = self._anything(trigger_mind=True)
+        message.get_text_content = lambda: text
+        await mind.accept_feel(message)
+        mind.pfc.add_task.assert_awaited_once_with(message)
         assert mind.phase is MindPhase.IDLE
 
     async def test_accept_exception_still_resets(

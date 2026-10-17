@@ -19,7 +19,7 @@ _LABELS = {
 }
 _SOURCE_LABELS = {
     "memory_recall": "记忆召回", "cross_channel_recall": "跨频道召回",
-    "cross_channel_narrative": "跨频道关联", "skill_match": "技能匹配与显式调用",
+    "cross_channel_narrative": "跨频道关联", "skill_match": "技能匹配",
 }
 
 

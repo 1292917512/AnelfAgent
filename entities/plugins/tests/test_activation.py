@@ -126,7 +126,7 @@ class TestToolVisibility:
 
 class TestCommandsConversion:
     def test_commands_become_skills(self, manager, plugin_env):
-        """插件 commands/*.md 转换为可手势触发的技能，卸载时回收。"""
+        """插件命令内容作为技能入库，卸载时回收。"""
         pkg = plugin_env.make_plugin("cmder", skill=False, mcp=False, tools=False)
         (pkg / "commands").mkdir()
         (pkg / "commands" / "review.md").write_text(
@@ -138,7 +138,7 @@ class TestCommandsConversion:
         assert sorted(record.skills) == ["cmder__plain", "cmder__review"]
         skill_md = (plugin_env.skills_dir / "cmder__review" / "SKILL.md").read_text(encoding="utf-8")
         assert "代码评审" in skill_md
-        assert "user_invocable: true" in skill_md
+        assert "user_invocable" not in skill_md
         assert "请评审 $ARGUMENTS 的代码" in skill_md
         # 命令自身 frontmatter 不进入正文
         assert "argument-hint" not in skill_md.split("---")[2]

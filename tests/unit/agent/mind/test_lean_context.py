@@ -93,18 +93,53 @@ class TestLeanLayeredPrompts:
 
 
 class TestLeanRecollection:
+    @pytest.mark.parametrize("level", ["off", "tags", "fast"])
+    async def test_skill_matching_is_independent_of_memory_level(self, monkeypatch, level) -> None:
+        from agent.memory.recall_policy import RecallPolicy, recall_options
+
+        mind = _fake_mind()
+        mind.embedder = SN(embed_query=AsyncMock(return_value=[1.0]))
+        mind.retriever.load_relation_snippets = AsyncMock(return_value=[])
+        matched, release = asyncio.Event(), asyncio.Event()
+
+        async def local(*args, **kwargs):
+            await release.wait()
+            return [], []
+
+        async def skills(_mind, query, *, planned_queries, query_vec_task, **kwargs):
+            assert "部署" in query
+            assert planned_queries == []
+            assert await query_vec_task == [1.0]
+            matched.set()
+            return [{"content": "部署技能候选"}]
+
+        monkeypatch.setattr("agent.memory.recall_fast.recall_local", local)
+        monkeypatch.setattr(recall_inputs, "match_skills", skills)
+        with recall_options(RecallPolicy(level=level)):
+            task = asyncio.create_task(collect_recollection_inputs(
+                mind, [{"role": "user", "content": "帮我检查部署配置是否正确"}], None,
+                scope="", adapter="", lean=False,
+            ))
+            try:
+                await asyncio.wait_for(matched.wait(), timeout=2)
+                assert not task.done()
+            finally:
+                release.set()
+                result = await task
+        assert result.skills == [{"content": "部署技能候选"}]
+
     @pytest.mark.parametrize("query", ["我钥匙放哪了", "WiFi密码", "会议地址", "帮我查下", "/review", "好的？"])
     def test_short_queries_are_not_treated_as_greetings(self, query: str) -> None:
         assert not MemoryRetriever._is_trivial_turn([{"role": "user", "content": query}])
 
-    async def test_greeting_skips_network_recall_but_keeps_profiles_and_gestures(self, monkeypatch) -> None:
+    async def test_greeting_skips_network_query_but_keeps_profiles(self, monkeypatch) -> None:
         mind = _fake_mind()
         mind.embedder = SN(embed_query=AsyncMock())
         mind.retriever.recall_split = AsyncMock(return_value=([{"content": "画像"}], []))
         mind.retriever.load_relation_snippets = AsyncMock(return_value=[])
         monkeypatch.setattr(recall_inputs, "extract_related_scopes", lambda *args: [])
         monkeypatch.setattr(recall_inputs, "recall_cross_channel", AsyncMock())
-        monkeypatch.setattr(recall_inputs, "match_skills", AsyncMock(return_value=[{"content": "手势技能"}]))
+        monkeypatch.setattr(recall_inputs, "match_skills", AsyncMock(return_value=[]))
         mind.context.preparation.build_layers = AsyncMock(return_value=("p", "t", "c", True, True, True, "", ""))
         mind.context.build_llm_context = AsyncMock(return_value=[])
         await Mind.get_recollection(mind, [
@@ -115,7 +150,7 @@ class TestLeanRecollection:
         recall_inputs.recall_cross_channel.assert_not_called()
         mind.retriever.recall_split.assert_awaited_once()
         assert recall_inputs.match_skills.call_args.args == (mind, "",)
-        assert mind.context.build_llm_context.call_args.kwargs["memory_msgs"] == [{"content": "手势技能"}]
+        assert mind.context.build_llm_context.call_args.kwargs["memory_msgs"] == []
 
     async def test_lean_skips_all_recall_paths(self, monkeypatch) -> None:
         """lean 的 get_recollection：不 embed、不召回，环境注入位全空。"""

@@ -8,8 +8,7 @@
 3. **统一发送入口**（forward_message）：所有发送动作都走 SendRequest，
    子类只需实现 1 个抽象方法
 4. **健康探针**（health_check）：看门狗主动检测频道健康状态
-5. **命令系统钩子**（detect_command / execute_command）：内建命令路由，
-   由 InputPipeline 中的 CommandProcessor 统一驱动
+5. **命令扩展钩子**（detect_command / execute_command）：由频道按需接入
 6. **能力 / 信息查询**（get_self_info / get_user_info / get_channel_info）：
    统一的"我是谁 / 你是谁 / 这是哪"查询协议
 7. **路由器挂载**（get_router）：HTTP 类频道（http_api / webui / webhook）统一
@@ -635,7 +634,7 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
         is_super_user: bool = False,
         is_advanced_user: bool = False,
     ) -> Optional[List[CommandResponse]]:
-        """执行命令并消费流式输出（由 InputPipeline 的 CommandProcessor 调用）。
+        """供频道自定义命令处理调用，不由核心入站管线自动执行。
 
         默认返回 None 让 Mind 处理；子类可覆盖实现频道自定义命令。
         """

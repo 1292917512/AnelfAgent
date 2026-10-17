@@ -106,7 +106,7 @@ async def test_context_observation_reports_actual_blocks_without_mutating_messag
     assert [block["layer"] for block in payload["blocks"]] == ["relation", "memory"]
     assert payload["duration_ms"] == 42
     assert payload["block_count"] == 2
-    assert payload["blocks"][1]["label"] == "技能匹配与显式调用"
+    assert payload["blocks"][1]["label"] == "技能匹配"
     assert normalize_for_send(messages) == normalize_for_send([
         {key: value for key, value in msg.items() if key != "_source"} for msg in original
     ])

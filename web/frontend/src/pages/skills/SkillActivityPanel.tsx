@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Activity, ArrowUpRight, BookOpen, GraduationCap, Loader2, Pencil, Search, Sparkles } from "lucide-react";
+import { Activity, ArrowUpRight, BookOpen, GraduationCap, Loader2, Pencil, Search } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useActivityStore } from "@/stores/activity-store";
@@ -31,8 +31,8 @@ export function SkillActivityPanel({ onEdit }: { onEdit: (skill: SkillItem) => v
       <div className="skills-recent-main">
         <Link to={`/skills?skill=${encodeURIComponent(skill.name)}`} title={skill.description} className="skills-recent-name">{skill.name}<ArrowUpRight size={12} /></Link>
         <div className="skills-recent-meta">
-          {(["read", "explicit", "candidate"] as const).map((mode) => {
-            const Icon = mode === "read" ? BookOpen : mode === "explicit" ? Sparkles : Search;
+          {(["read", "candidate"] as const).map((mode) => {
+            const Icon = mode === "read" ? BookOpen : Search;
             return modes[mode] > 0 && <span key={mode} title={t(`evidence.${mode}`)}><Icon size={12} />{t(`evidence.${mode}`)} {modes[mode]}</span>;
           })}
           <span title={latest.label}>{latest.source.channel || t("recent.system")}{latest.source.target && ` · ${latest.source.target}`}</span>

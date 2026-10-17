@@ -2,7 +2,6 @@
 name: minecraft-companion
 description: Minecraft Java 陪玩、进入世界、跟随玩家、采集木头、查看背包、游戏内聊天和停止操作。
 trigger_patterns: [我的世界, Minecraft, MC陪玩, 跟着我, 采集木头, 上游戏, 进游戏, 游戏里找我]
-user_invocable: true
 ---
 
 # Minecraft 陪玩

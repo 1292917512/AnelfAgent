@@ -1,6 +1,6 @@
 """收集召回材料，按依赖并发读取，不负责最终上下文装配。
 
-模型可见：语义查询取自对话正文；画像、关联、技能、会话纪律等材料交由上下文层按来源装配。
+模型可见：技能候选独立于记忆档位，查询取自对话正文；材料由上下文层按来源装配。
 Token 影响：技能匹配复用记忆检索计划与基础查询向量，不另起技能规划模型请求。
 缓存影响：本模块只产出材料，不写入稳定前缀；分层与预算裁剪由上下文层负责。
 """
@@ -31,8 +31,8 @@ async def collect_recollection_inputs(
 ) -> RecollectionInputs:
     """并发收集当前会话的记忆、技能、关联、摘要与约束。
 
-    技能等待检索计划就绪后开始匹配，可与后续记忆检索并行；查询向量由需要它的读取共享。
-    精简模式仅读取枢纽、摘要、永久记忆与会话纪律，不执行技能匹配或消费显式技能请求。
+    深度档的技能匹配复用记忆计划，其余档位直接匹配对话；查询向量共享。
+    精简模式仅读取枢纽、摘要、永久记忆与会话纪律。
     本轮任务全部收束后返回材料；未处理的异常或取消会取消同组读取。
     """
     result = RecollectionInputs()
@@ -40,7 +40,7 @@ async def collect_recollection_inputs(
     tail = conversation[-10:]
     policy = current_recall_policy(scope)
     trivial = MemoryRetriever._is_trivial_turn(tail)
-    query = MemoryRetriever._extract_query(tail) if not lean and not trivial and policy.level == "deep" else ""
+    query = MemoryRetriever._extract_query(tail) if not lean and not trivial else ""
     related = extract_related_scopes(conversation[-30:], scope)
     if anything:
         for item in extract_scopes_from_anything(anything, scope):
@@ -76,7 +76,7 @@ async def collect_recollection_inputs(
             plan_ready.set_result([])
 
     async def skills() -> None:
-        planned_queries = await asyncio.shield(plan_ready)
+        planned_queries = await asyncio.shield(plan_ready) if policy.level == "deep" else []
         result.skills = await match_skills(
             mind, query, query_vec_task=vector_task, scope=scope, planned_queries=planned_queries)
 
@@ -163,7 +163,7 @@ async def collect_recollection_inputs(
         except Exception as exc:
             log(f"会话纪律获取失败: {exc}", "DEBUG", tag="思维")
     async with asyncio.TaskGroup() as tasks:
-        if query:
+        if query and (policy.level == "deep" or get_config_bool("skills_enabled", True)):
             vector_task = tasks.create_task(embed())
         tasks.create_task(hub())
         tasks.create_task(summary())
@@ -189,17 +189,11 @@ async def match_skills(
         scope: str = "",
         planned_queries: Optional[List[str]] = None,
 ) -> List[Dict]:
-    """从技能运行时取出本会话的显式请求，合并对话匹配结果生成技能材料。
-
-    /name 请求绕过相关度评分，普通候选按对话查询及检索计划匹配。
-    技能系统负责可调用校验、去重、正文预算与来源信息；本函数不执行技能步骤。
-    关闭技能功能时不消费请求；启用时请求一次性取出，匹配失败不会自动放回。
-    """
+    """按对话和可用检索计划匹配技能候选，正文由 AI 按需读取。"""
     if not get_config_bool("skills_enabled", True):
         return []
     from agent.skills.recall import match_recalled_skills
-    gestures = mind.skills.consume_requests(scope)
     return await match_recalled_skills(
-        mind.skills.store, mind.skills.matcher, gestures, mind.pfc.add_temporary, base_query,
+        mind.skills.store, mind.skills.matcher, base_query,
         query_vec=query_vec, query_vec_task=query_vec_task, scope=scope, planned_queries=planned_queries,
     )

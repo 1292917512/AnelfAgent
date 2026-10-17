@@ -9,7 +9,7 @@ export interface ActivityNoticeItem { source: ActivitySource; role: string; mess
 export interface ActivitySkill {
   name: string;
   description: string;
-  mode: "candidate" | "explicit" | "read";
+  mode: "candidate" | "read";
   state?: string;
   score?: number | null;
   truncated?: boolean;

@@ -2,7 +2,7 @@
 
 重力（确定性默认衰减，无 LLM，由心跳维护钩子周期执行）：
 - active → stale:    超过 stale_after_days（默认 30 天）无真实活动
-                      （真实活动 = 手势命中 / AI 读全文 / 更新；检索注入不算）
+                      （真实活动 = AI 读全文 / 更新；检索注入不算）
 - stale → archived:  超过 archive_after_days（默认 90 天）无真实活动
                       **且**超过同窗口未被检索注入（仍被检索到的技能有保留价值）
 - 试用期快筛：创建超过 probation_days（默认 14 天）零参与（无使用且无匹配）
@@ -135,11 +135,6 @@ _CURATOR_CONFIGS = {
     "skills/core": {
         "skills_enabled": {
             "description": "是否启用技能自学习系统",
-            "default": True,
-        },
-        "skill_user_gesture_enabled": {
-            "description": "启用 /技能名 用户手势：真实用户消息正文以 /技能名 开头时绕过语义评分"
-                           "确定性加载该技能（防伪造：仅外部消息路径检测）",
             "default": True,
         },
         "skills_review_enabled": {

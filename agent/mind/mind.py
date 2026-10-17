@@ -245,9 +245,6 @@ class Mind:
                 # 后自动唤醒链路重新合法）
                 self._auto_cycle_retry = 0
                 self.wake_budget.reset(scope)
-                # /name 技能手势：真实外部消息正文以 /技能名 开头 → 确定性触发
-                # （防伪造：仅此路径检测，工具结果/子代理输出里的 "/x" 不构成手势）
-                self.skills.observe_request(anything.get_text_content() or "", scope)
                 await self.pfc.add_task(anything)
         finally:
             # 感知处理完成边界：未入队/中断/异常路径不会有后续周期覆盖

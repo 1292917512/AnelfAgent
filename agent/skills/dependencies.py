@@ -6,11 +6,11 @@
         name: notion
         url: https://mcp.notion.com/mcp
 
-消费全文的路径（get_skill / 手势强制注入）在依赖缺失时附带提示，
+读取全文的 get_skill 在依赖缺失时附带提示，
 引导经 mcp_manage 直接添加或经插件市场安装；无缺失时零占用。
 本地 MCP 关联存于技能账本，独立于可分发的 dependencies 声明。
 
-Model Experience：召回候选/手势正文/读取技能附带关联 MCP 的只读状态，由 AI 决定唤醒。
+Model Experience：召回候选与读取技能附带关联 MCP 的只读状态，由 AI 决定唤醒。
 Token：每个关联服务一段短状态，不展开工具 schema、地址或凭据。
 缓存：只进入技能动态召回或工具结果，不改变稳定目录和 SKILL.md。
 """

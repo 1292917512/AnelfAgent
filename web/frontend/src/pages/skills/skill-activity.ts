@@ -14,7 +14,7 @@ export function skillParticipation(runs: ActivityRun[]): SkillParticipation[] {
     for (const skill of run.skills ?? []) {
       let row = rows.get(skill.name);
       if (!row) {
-        row = { skill, count: 0, modes: { read: 0, explicit: 0, candidate: 0 }, latest: run };
+        row = { skill, count: 0, modes: { read: 0, candidate: 0 }, latest: run };
         rows.set(skill.name, row);
       }
       row.count += 1;

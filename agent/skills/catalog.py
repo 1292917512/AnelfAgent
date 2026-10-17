@@ -20,7 +20,7 @@ from agent.skills.skill_store import Skill, SkillState, SkillStore
 _HEADER = (
     "[技能库目录] 全部可用技能（按入库时间排序，「闲置」=长期未用但可正常调用）。"
     "与当前任务相关时先用 get_skill 读取完整内容再按步骤执行，不相关则忽略、"
-    "不要逐条翻读；用户可经 /技能名 显式调用；已归档技能不在此列，"
+    "不要逐条翻读；已归档技能不在此列，"
     "匹配命中后可用 restore_skill 恢复。"
 )
 
@@ -124,12 +124,6 @@ register_configs_safe({"skills/catalog": {
         "description": "技能目录单行描述的最大字符数（描述是模型判断相关性的路由依据，"
                        "过短会导致技能存在但被忽略）",
         "default": 160,
-        "advanced": True,
-        "unit": "字符",
-    },
-    "skills_inject_max_chars": {
-        "description": "手势命中注入正文的最大字符数（超限截断，全文经 get_skill 读取）",
-        "default": 8000,
         "advanced": True,
         "unit": "字符",
     },

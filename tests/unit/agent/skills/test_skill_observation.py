@@ -16,22 +16,21 @@ from services.workspace_activity import WorkspaceActivityService
 
 
 async def test_skill_evidence_tracks_actual_budget_and_never_changes_wire_messages(monkeypatch):
-    forced = Skill(name="inspect", description="Inspect deployment", content="Steps " * 400)
+    candidate_first = Skill(name="inspect", description="Inspect deployment " * 20, trigger_patterns=["deployment " * 30])
     candidate = Skill(name="archive-check", description="Prior evidence", state=SkillState.ARCHIVED)
     mind = SimpleNamespace(
         pfc=SimpleNamespace(add_temporary=MagicMock()),
         skills=SkillRuntime(
-            SimpleNamespace(get=lambda name: {forced.name: forced, candidate.name: candidate}.get(name), record_use=MagicMock(), record_match=MagicMock()),
-            SimpleNamespace(match=AsyncMock(return_value=[(candidate, 0.426)])),
+            SimpleNamespace(get=lambda name: {candidate_first.name: candidate_first, candidate.name: candidate}.get(name), record_use=MagicMock(), record_match=MagicMock()),
+            SimpleNamespace(match=AsyncMock(return_value=[(candidate_first, 0.9), (candidate, 0.426)])),
             MagicMock(),
         ),
     )
-    mind.skills.observe_request(f"/{forced.name}", "user_qq:1")
     messages = await match_skills(mind, "deployment", scope="user_qq:1")
     original = deepcopy(messages)
     facts = context_skills(messages)
     assert [(fact["name"], fact["mode"], fact["score"]) for fact in facts] == [
-        ("inspect", "explicit", None), ("archive-check", "candidate", 0.426)]
+        ("inspect", "candidate", 0.9), ("archive-check", "candidate", 0.426)]
     assert normalize_for_send(messages) == normalize_for_send([
         {key: value for key, value in message.items() if key != "_source"} for message in original])
     monkeypatch.setattr("core.config.get_config_int", lambda key, default: 400)

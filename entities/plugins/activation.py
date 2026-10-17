@@ -160,8 +160,7 @@ def _activate_skills(plugin_name: str, payload_dir: Path, skill_roots: List[str]
 def _activate_commands(plugin_name: str, payload_dir: Path, commands_dir: str) -> List[str]:
     """把插件 commands/*.md 斜杠命令转换为技能入库（``<插件>__<命令名>`` 目录）。
 
-    命令文件可带 YAML frontmatter（description 等），正文作为技能内容；
-    user_invocable 置真，用户可直接 /命令名 手势触发。
+    命令文件的描述与正文作为技能内容，供系统匹配和 AI 按需读取。
     """
     if not commands_dir:
         return []
@@ -182,7 +181,6 @@ def _activate_commands(plugin_name: str, payload_dir: Path, commands_dir: str) -
             skill_meta = {
                 "name": f"{plugin_name}__{cmd_name}",
                 "description": description,
-                "user_invocable": True,
                 "trigger_patterns": [cmd_name],
             }
             target_name = _resolve_skill_target(skills_base, plugin_name, str(skill_meta["name"]))

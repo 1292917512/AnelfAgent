@@ -1,4 +1,4 @@
-import { BookOpen, GraduationCap, Search, Sparkles, ArrowUpRight } from "lucide-react";
+import { BookOpen, GraduationCap, Search, ArrowUpRight } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import type { ActivitySkill } from "@/lib/types/activity";
@@ -15,7 +15,7 @@ export const SkillEvidence = memo(function SkillEvidence({ skills, compact = fal
     <button className="skill-evidence-summary" aria-label={t("evidence.title")} aria-haspopup="dialog" onClick={() => setOpen(true)}>
       <GraduationCap size={14} className="shrink-0 text-accent" />
       <span className="skill-evidence-summary-body">
-        <span className="skill-evidence-counts">{(["read", "explicit", "candidate"] as const).map((mode) => {
+        <span className="skill-evidence-counts">{(["read", "candidate"] as const).map((mode) => {
           const count = skills.filter((skill) => skill.mode === mode).length;
           return count > 0 && <span key={mode} data-mode={mode}>{t(`evidence.${mode}`)} <b>{count}</b></span>;
         })}</span>
@@ -27,7 +27,7 @@ export const SkillEvidence = memo(function SkillEvidence({ skills, compact = fal
   return <div className="skill-evidence" aria-label={t("evidence.title")}>
     {skills.map((skill) => <div key={skill.name} className="space-y-1"><Link to={`/skills?skill=${encodeURIComponent(skill.name)}`} onClick={onSelect}
       className="skill-evidence-item" data-mode={skill.mode} title={skill.description || skill.name}>
-      <span className="skill-evidence-icon">{skill.mode === "read" ? <BookOpen size={15} /> : skill.mode === "explicit" ? <Sparkles size={15} /> : <Search size={15} />}</span>
+      <span className="skill-evidence-icon">{skill.mode === "read" ? <BookOpen size={15} /> : <Search size={15} />}</span>
       <span className="skill-evidence-body"><strong>{skill.name}</strong>{skill.description && <span>{skill.description}</span>}
         <span className="skill-evidence-meta"><b>{t(`evidence.${skill.mode}`)}</b>
           {skill.score != null && <span>{t("evidence.score", { score: skill.score.toFixed(2) })}</span>}

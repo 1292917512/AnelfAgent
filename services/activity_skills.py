@@ -9,9 +9,9 @@ from core.tool_results import parse_tool_result_json
 
 
 def merge_skill_evidence(run: dict[str, Any], facts: list[dict[str, Any]]) -> None:
-    """合并同名技能，成功读取优先于显式注入与候选，保留匹配来源。"""
+    """合并同名技能，成功读取优先于候选，保留匹配来源。"""
     skills = {fact["name"]: fact for fact in run["skills"]}
-    ranks = {"candidate": 0, "explicit": 1, "read": 2}
+    ranks = {"candidate": 0, "read": 1}
     for fact in facts:
         name = sanitize_text(str(fact.get("name", "")))[:200]
         mode = fact.get("mode")

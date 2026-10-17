@@ -12,7 +12,7 @@
   "stateActive": "可用",
   "stateStale": "闲置",
   "stateArchived": "已归档",
-  "useCount": "正文读取 / 显式调用",
+  "useCount": "正文读取",
   "patchCount": "修订次数",
   "pinned": "置顶",
   "pin": "置顶",
@@ -59,11 +59,10 @@
   "evidence": {
     "title": "本轮技能",
     "candidate": "召回候选",
-    "explicit": "显式调用",
     "read": "已读取正文",
     "partial": "内容部分展示",
     "score": "匹配分 {{score}}",
-    "hint": "候选只表示被推荐；已读取或显式调用表示正文已提供给 AI，不等于技能步骤已执行完成。"
+    "hint": "候选只表示被推荐；已读取表示正文已提供给 AI，不等于技能步骤已执行完成。"
   },
   "recent": {
     "more": "展开更多 · {{count}} 项技能",
