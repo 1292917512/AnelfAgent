@@ -35,6 +35,7 @@ Mind 原生方法负责消息接收、周期、回复与反思的生命周期；
 不把模块函数重新绑定到宿主。`create_mind()` 注入配置提供器持有的 `MindConfig`，执行阶段直接读取
 `mind.config`；保存与重载原位更新同一对象，无需重建 Mind。共享配置契约位于 `agent/config.py`，
 上下文等模块可直接使用，不经 Mind 中转。消息归属由消息对象的 scope 属性提供。
+工具执行模块直接调用 `EntityRegistry.execute_tool_call()`；Mind 不持有或转发固定的注册表执行器。
 `ModelInvoker` 通过 `ModelRuntime` 接口实时读取配置、模型与会话选项。模型元数据复用模型库缓存，
 思维层不重复缓存预算，模型切换和参数修改后直接读取当前值；
 压缩器只通过 `CompressionHost` 接口使用该协作者，不依赖 Mind。事件名称、载荷与消息装配顺序由原有链路保持。

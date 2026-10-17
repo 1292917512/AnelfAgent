@@ -148,13 +148,10 @@ async def test_reflection_can_explicitly_send_but_never_delivers_its_draft(pipel
     monkeypatch.setattr("agent.mind.execution.reply_delivery.assess_reply", review)
 
     class SendingMind(FakeMind):
-        @property
-        def tool_executor(self):
-            async def execute(call):
-                if call.name == "send_message":
-                    return await output_tools.send_message(**json.loads(call.arguments))
-                return '{"ok": true}'
-            return execute
+        async def execute_tool(self, call):
+            if call.name == "send_message":
+                return await output_tools.send_message(**json.loads(call.arguments))
+            return '{"ok": true}'
 
     mind = SendingMind(rounds=[
         text_result("内部自查草稿"),

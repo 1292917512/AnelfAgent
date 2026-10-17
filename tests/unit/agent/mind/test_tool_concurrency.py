@@ -52,7 +52,8 @@ async def test_permission_denial_closes_tool_progress_without_execution(monkeypa
     emit = AsyncMock()
     monkeypatch.setattr(tl.event_bus, "emit", emit)
     execute = AsyncMock()
-    mind = SimpleNamespace(_set_phase=lambda phase: None, tool_executor=execute)
+    monkeypatch.setattr(tl.EntityRegistry, "execute_tool_call", execute)
+    mind = SimpleNamespace(_set_phase=lambda phase: None)
 
     denied = await tl.execute_one_tool(mind, _tc("write_file", "denied-call"), 1)
     assert json.loads(denied)["permission_outcome"] == "rule_deny"
@@ -92,8 +93,9 @@ async def test_tool_observation_preserves_result_and_hook_order(monkeypatch, out
     monkeypatch.setattr("agent.hooks.hooks_active", lambda _: True)
     monkeypatch.setattr("agent.hooks.run_event_hooks", post)
     monkeypatch.setattr(tl, "_record_tool_result_failure", lambda *args: records.append("record"))
+    monkeypatch.setattr(tl.EntityRegistry, "execute_tool_call", execute)
     memory = SimpleNamespace(record_tool_error=AsyncMock())
-    mind = SimpleNamespace(_set_phase=lambda phase: None, tool_executor=execute, memory_store=memory)
+    mind = SimpleNamespace(_set_phase=lambda phase: None, memory_store=memory)
     actual = await tl.execute_one_tool(mind, _tc("inspect"), 2)
 
     assert records[:5] == [tl.EVENT_TOOL_EXECUTED, tl.EVENT_THINKING_TOOL_START,
@@ -121,7 +123,8 @@ async def test_tool_cancellation_closes_once_and_propagates(monkeypatch, during_
     emit = AsyncMock()
     monkeypatch.setattr(tl.event_bus, "emit", emit)
     monkeypatch.setattr("agent.hooks.run_event_hooks", post)
-    mind = SimpleNamespace(_set_phase=lambda phase: None, tool_executor=execute)
+    monkeypatch.setattr(tl.EntityRegistry, "execute_tool_call", execute)
+    mind = SimpleNamespace(_set_phase=lambda phase: None)
     with pytest.raises(asyncio.CancelledError) as caught:
         await tl.execute_one_tool(mind, _tc("inspect"), 0)
     assert caught.value is error

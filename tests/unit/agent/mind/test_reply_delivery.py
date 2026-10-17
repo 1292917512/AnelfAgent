@@ -96,13 +96,10 @@ async def test_review_overlaps_tools_and_receipt_follows_atomic_batch(anything, 
     sender.side_effect = send
 
     class ObservedMind(FakeMind):
-        @property
-        def tool_executor(self):
-            async def execute(tc):
-                tool_started.set()
-                await delivered.wait()
-                return '{"ok": true}'
-            return execute
+        async def execute_tool(self, tc):
+            tool_started.set()
+            await delivered.wait()
+            return '{"ok": true}'
 
     mind = ObservedMind(rounds=[tool_result("马上为你检查。", ["recall"]), tool_result("", ["end_reply"])])
     completion = {}

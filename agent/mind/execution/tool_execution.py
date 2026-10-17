@@ -13,6 +13,7 @@ from agent.mind.execution.responses import _strip_think_blocks
 from agent.mind.execution.result_pipeline import ToolResultPipeline
 from agent.mind.execution.vision import _append_multimodal_result
 from agent.mind.tools.core import END_REPLY_TOOL_NAME
+from core.entity import EntityRegistry
 from core.event_bus import (
     EVENT_THINKING_TOOL_END,
     EVENT_THINKING_TOOL_START,
@@ -41,8 +42,6 @@ def _partition_tool_calls(tool_calls: List["ToolCall"]) -> List[tuple]:
     连续的并发安全调用组成并行批次，其余各自串行。
     安全判定 fail-closed：查询失败一律视为不安全。
     """
-    from core.entity import EntityRegistry
-
     def _is_safe(tc: "ToolCall") -> bool:
         try:
             entity = EntityRegistry.get(tc.name)
@@ -514,7 +513,7 @@ async def execute_one_tool(
         with observation:
             denied = await check_tool_permission(tc, anything, tool_scope, mind)
             permission_checked = True
-            result = denied if denied is not None else await mind.tool_executor(tc)  # type: ignore[misc]
+            result = denied if denied is not None else await EntityRegistry.execute_tool_call(tc)
             result_error = extract_error_text(result)
     except Exception as exc:
         result = error_from_exception(exc, action=f"工具 {tc.name} 执行")

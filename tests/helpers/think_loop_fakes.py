@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import time
+from contextvars import ContextVar
 from types import SimpleNamespace
 from typing import Any, List, Optional
 from unittest.mock import AsyncMock
@@ -156,20 +157,17 @@ class FakeMind:
     def _resolve_adapter_key(self) -> str:
         return ""
 
-    @property
-    def tool_executor(self):
-        async def _exec(tc) -> str:
-            self.executed_tools.append(tc.name)
-            result = self.tool_results.get(tc.name, DEFAULT_TOOL_RESULT)
-            if tc.name in {"send_message", "send_photo", "send_voice", "send_file"}:
-                from agent.channel.delivery import record_delivery
-                payload = json.loads(result)
-                if isinstance(payload, dict) and payload.get("success") is True and not extract_error_text(payload):
-                    tags = dict(etag_all(str(payload.get("delivery", ""))))
-                    if tags.get("delivery_status") == "sent" and payload.get("outcome") != "unknown":
-                        record_delivery(tags.get("delivery_scope", ""))
-            return result
-        return _exec
+    async def execute_tool(self, tc) -> str:
+        self.executed_tools.append(tc.name)
+        result = self.tool_results.get(tc.name, DEFAULT_TOOL_RESULT)
+        if tc.name in {"send_message", "send_photo", "send_voice", "send_file"}:
+            from agent.channel.delivery import record_delivery
+            payload = json.loads(result)
+            if isinstance(payload, dict) and payload.get("success") is True and not extract_error_text(payload):
+                tags = dict(etag_all(str(payload.get("delivery", ""))))
+                if tags.get("delivery_status") == "sent" and payload.get("outcome") != "unknown":
+                    record_delivery(tags.get("delivery_scope", ""))
+        return result
 
     def _set_phase(self, phase) -> None:
         pass
@@ -199,7 +197,10 @@ class FakeModelInvoker:
         return text_result(mind.default_text)
 
 
-def run_think_loop(
+current_fake_mind: ContextVar[FakeMind | None] = ContextVar("fake_mind", default=None)
+
+
+async def run_think_loop(
     mind: Any,
     *,
     anything: Any = None,
@@ -220,18 +221,22 @@ def run_think_loop(
         kwargs["adapter_key"] = adapter_key
     if completion is not None:
         kwargs["completion"] = completion
-    return think_loop(
-        mind,
-        mode=mode,
-        tool_chain=chain if chain is not None else [],
-        execution_steps=steps if steps is not None else [],
-        start_time=time.time(),
-        safety_limit=safety_limit,
-        collected_text=collected_text if collected_text is not None else [],
-        active_tools=tools if tools is not None else [],
-        require_output=require_output,
-        anything=anything,
-        base_messages=base_messages if base_messages is not None
-        else [{"role": "user", "content": "你好"}],
-        **kwargs,
-    )
+    token = current_fake_mind.set(mind)
+    try:
+        return await think_loop(
+            mind,
+            mode=mode,
+            tool_chain=chain if chain is not None else [],
+            execution_steps=steps if steps is not None else [],
+            start_time=time.time(),
+            safety_limit=safety_limit,
+            collected_text=collected_text if collected_text is not None else [],
+            active_tools=tools if tools is not None else [],
+            require_output=require_output,
+            anything=anything,
+            base_messages=base_messages if base_messages is not None
+            else [{"role": "user", "content": "你好"}],
+            **kwargs,
+        )
+    finally:
+        current_fake_mind.reset(token)

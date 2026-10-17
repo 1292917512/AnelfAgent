@@ -153,14 +153,17 @@ async def test_observed_preparation_and_tools_keep_concurrent_scopes_and_termina
         await asyncio.sleep(0)
         return messages
 
-    async def work(scope, cancelled):
-        async def execute(tc):
-            await asyncio.sleep(0)
-            if cancelled:
-                raise asyncio.CancelledError("stop")
-            return scope
+    async def execute(tc):
+        await asyncio.sleep(0)
+        scope = current_activity_id.get()
+        if scope == "user_qq:2":
+            raise asyncio.CancelledError("stop")
+        return scope
 
-        mind = SimpleNamespace(_set_phase=lambda phase: None, tool_executor=execute, memory_store=None)
+    monkeypatch.setattr(tool_execution.EntityRegistry, "execute_tool_call", execute)
+
+    async def work(scope, cancelled):
+        mind = SimpleNamespace(_set_phase=lambda phase: None, memory_store=None)
         messages = [{"role": "system", "content": scope, "_layer": "memory"}]
         with tool_request(scope=scope):
             async with activity_scope(scope, scope):
@@ -536,7 +539,9 @@ async def test_structured_tool_failure_is_rendered_as_failure(activity, monkeypa
 
     service, _ = activity
     monkeypatch.setattr("agent.mind.execution.tool_execution.check_tool_permission", AsyncMock(return_value=None))
-    mind = SimpleNamespace(_set_phase=lambda _: None, tool_executor=AsyncMock(return_value='{"success":false,"error":"Invalid destination","retryable":false}'), memory_store=None)
+    monkeypatch.setattr("core.entity.EntityRegistry.execute_tool_call",
+                        AsyncMock(return_value='{"success":false,"error":"Invalid destination","retryable":false}'))
+    mind = SimpleNamespace(_set_phase=lambda _: None, memory_store=None)
     async with activity_scope("failure", "group_qq:42"):
         await execute_one_tool(mind, ToolCall(id="send", name="send_message", arguments='{"target":"missing"}'), 0)
     entry = service.snapshot()["runs"][0]["entries"][0]

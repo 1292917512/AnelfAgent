@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
 from agent.context.observation import observe_preparation
 from agent.context.preparation import model_context
@@ -23,7 +23,6 @@ from agent.mind.execution.reply import reply_entry
 from agent.mind.interrupt import InterruptRegistry
 from agent.mind.perception import should_enqueue_external_message
 from agent.mind.recall.coordinator import prepare_recollection
-from core.entity import EntityRegistry
 from core.event_bus import (
     EVENT_THINKING_PHASE_CHANGE,
     event_bus,
@@ -38,7 +37,7 @@ if TYPE_CHECKING:
     from agent.context.compressor import ContextCompressor
     from agent.delegation.delegation_manager import DelegationManager
     from agent.heartbeat.engine import HeartbeatEngine
-    from agent.llm import ChatModel, ImageContent, ToolCall
+    from agent.llm import ChatModel, ImageContent
     from agent.llm.llm_manager import LLMManager
     from agent.memory.embedding import Embedder
     from agent.memory.memory_retriever import MemoryRetriever
@@ -120,12 +119,6 @@ class Mind:
 
         # scope 级中断信号（think_loop 每轮检查，用户可刹车失控回复）
         self.interrupts = InterruptRegistry()
-
-    # 初始化与配置
-
-    @property
-    def tool_executor(self) -> Optional[Callable[[ToolCall], Awaitable[str]]]:
-        return EntityRegistry.execute_tool_call
 
     def _set_phase(self, phase: MindPhase) -> None:
         prev = self.phase

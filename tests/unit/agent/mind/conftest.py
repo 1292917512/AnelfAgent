@@ -11,6 +11,22 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def isolate_tool_executor(monkeypatch):
+    """在注册表执行边界替换工具，脚本化的并发思维用例各用自己的结果。"""
+    from helpers.think_loop_fakes import current_fake_mind
+
+    from core.entity import EntityRegistry
+
+    execute = EntityRegistry.execute_tool_call
+
+    async def execute_call(tc):
+        mind = current_fake_mind.get()
+        return await mind.execute_tool(tc) if mind is not None else await execute(tc)
+
+    monkeypatch.setattr(EntityRegistry, "execute_tool_call", execute_call)
+
+
+@pytest.fixture(autouse=True)
 async def isolate_context_providers() -> AsyncIterator[None]:
     """思维单测只采集本用例注册的提供者，结束前回收后台采集任务。"""
     from core.context_provider import ContextProviderRegistry
