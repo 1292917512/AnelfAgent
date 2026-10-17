@@ -95,7 +95,7 @@ class QQSender:
             if remaining:
                 segments.append({"type": "text", "data": {"text": remaining}})
 
-        if not segments:
+        if not segments and last_end == 0:
             segments.append({"type": "text", "data": {"text": text}})
 
         return segments
@@ -191,7 +191,7 @@ class QQSender:
         file_value = await self._to_ob_file(photo)
         ob_message: list = [{"type": "image", "data": {"file": file_value}}]
         if caption:
-            ob_message.append({"type": "text", "data": {"text": caption}})
+            ob_message.extend(self._parse_at_in_text(caption, channel_type))
         reply_to = kwargs.get("reply_to")
         if reply_to:
             ob_message.insert(0, {"type": "reply", "data": {"id": str(reply_to)}})

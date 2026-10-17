@@ -3,16 +3,26 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import Mock
+from typing import Any
+from unittest.mock import AsyncMock, Mock
 
-from agent.channel.schemas import MessageSegment, SegmentType
+from agent.channel.schemas import (
+    AdapterChannel,
+    ChannelType,
+    MessageSegment,
+    SegmentType,
+    SendRequest,
+    SendSegment,
+)
 from agent.mind.execution.media_pipeline import process_segments
+from channels.qq.adapter import OneBotV11Channel
 from channels.qq.parser import (
     _auto_download_to_me_images,
     _build_media_segment,
     _parse_message_event_async,
     _parse_message_segments_sync,
 )
+from channels.qq.send import QQSender
 
 
 class TestBuildMediaSegment:
@@ -51,7 +61,7 @@ class TestBuildMediaSegment:
 
 
 class TestParseMessageSegmentsSync:
-    """同步消息解析中的 file 段。"""
+    """同步消息解析段契约。"""
 
     def test_file_segment_keeps_file_id(self) -> None:
         _, segments = _parse_message_segments_sync([
@@ -68,6 +78,91 @@ class TestParseMessageSegmentsSync:
         assert seg.file_path == ""
         assert seg.file_id == "/fid-1"
         assert seg.file_name == "vlookup-7.13.xlsx"
+
+    def test_at_segment_uses_standard_tag(self) -> None:
+        content, segments = _parse_message_segments_sync(
+            [{"type": "at", "data": {"qq": 42, "name": "成员"}}],
+            group_id="100",
+            self_id="999",
+        )
+        assert content == "[at_uid:42]"
+        assert segments[0].content == content
+
+
+class _SenderChannelStub:
+    """QQSender 的最小 API 频道替身。"""
+
+    def __init__(self) -> None:
+        self._self_id = "10086"
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _call_api_data(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append((action, params))
+        return {"message_id": 123}
+
+
+class TestQQSenderOutbound:
+    """QQ 出站文本与图片 caption 共用 at 段转换契约。"""
+
+    async def test_photo_caption_matches_text_at_segments(self) -> None:
+        ch = _SenderChannelStub()
+        sender = QQSender(ch)  # type: ignore[arg-type]
+        caption = "请看[at_uid:1207435368]这里"
+
+        await sender.send_photo(
+            "1104224649", "https://example.com/image.png",
+            caption=caption, channel_type="group",
+        )
+        await sender.send_text("1104224649", caption, channel_type="group")
+
+        photo_action, photo_params = ch.calls[0]
+        text_action, text_params = ch.calls[1]
+        assert photo_action == text_action == "send_group_msg"
+        photo_message = photo_params["message"]
+        assert photo_message[0]["type"] == "image"
+        assert photo_message[1:] == text_params["message"]
+        assert {"type": "at", "data": {"qq": "1207435368"}} in photo_message
+        assert all(
+            "[at_uid:" not in segment["data"].get("text", "")
+            for segment in photo_message
+        )
+
+    def test_filtered_self_at_does_not_restore_raw_tag(self) -> None:
+        sender = QQSender(_SenderChannelStub())  # type: ignore[arg-type]
+        for channel_type in ("group", "private"):
+            assert sender._parse_at_in_text("[at_uid:10086]", channel_type) == []
+
+
+class TestQQForwardMessage:
+    """统一 SendRequest 到 OneBot API 的群聊路由与 caption 契约。"""
+
+    async def test_group_image_preserves_channel_type_and_converts_at(self) -> None:
+        ch = OneBotV11Channel()
+        api_mock = AsyncMock(return_value={"message_id": 456})
+        ch._call_api_data = api_mock  # type: ignore[method-assign]
+        request = SendRequest(
+            adapter_key="qq",
+            channel=AdapterChannel(
+                channel_id="1104224649", channel_type=ChannelType.GROUP
+            ),
+            segments=[SendSegment(
+                type=SegmentType.IMAGE,
+                content="https://example.com/image.png",
+                caption="[at_uid:1207435368] 看图",
+            )],
+        )
+
+        response = await ch.forward_message(request)
+
+        assert response.success is True
+        call = api_mock.await_args
+        assert call is not None
+        action, params = call.args
+        assert action == "send_group_msg"
+        assert params["group_id"] == 1104224649
+        assert params["message"][1] == {
+            "type": "at", "data": {"qq": "1207435368"}
+        }
 
 
 class TestMediaPipelineHints:
