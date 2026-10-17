@@ -57,7 +57,7 @@ async def control_execution(run_id: str, action: Literal["stop", "resume"]) -> d
         raise ExecutionControlError("只有已中止的对话可以继续，请等待停止完成")
     mind = runtime.mind
     if (run["scope"] in mind.active_reply_scopes
-            or any(scope == run["scope"] for scope, *_ in mind.pfc.peek_all_tasks())
+            or any(scope == run["scope"] for scope, *_ in runtime.pfc.peek_all_tasks())
             or mind.background_tasks.running(run["scope"])):
         raise ExecutionControlError("该会话仍有运行或待处理工作，请等待结束后继续")
     workspace_activity.set_control(run_id, "resuming")

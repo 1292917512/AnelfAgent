@@ -5,12 +5,12 @@ from __future__ import annotations
 from agent.channel.delivery import observe_delivery_context
 from agent.context.dynamic import append_execution_status, format_delivery_status
 from agent.context.providers import collect_provider_messages
+from agent.mind.background.context import background_context
 from agent.mind.execution.compression import _compress_context, _precompact_flush
 from agent.mind.execution.messages import _merge_new_messages, _merge_pushes, _merge_steered_messages
 from agent.mind.execution.state import ExecutionContext, RoundState, ThinkMode
 from agent.mind.execution.usage import _cache_status_hint, _token_budget_hint
 from agent.mind.recall.refresh import DialogueRecollection
-from agent.mind.runtime_context import background_context
 from core.log import log
 
 

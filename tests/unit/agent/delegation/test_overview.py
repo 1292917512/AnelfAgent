@@ -29,7 +29,7 @@ class _FakeMind:
     def __init__(self, output: str = "完成", gate: Optional[asyncio.Event] = None) -> None:
         self.output = output
         self.gate = gate
-        from agent.mind.pfc import PrefrontalCortex
+        from agent.mind.prefrontal_cortex import PrefrontalCortex
         self.pfc = PrefrontalCortex(SimpleNamespace())
         self.model_invoker = SimpleNamespace(get_context_length=lambda: 128000)
 

@@ -18,7 +18,7 @@ from agent.judgment.gate import assess_optional_work
 from agent.memory.memory_retriever import MemoryRetriever
 from agent.messages import build_entity_scope, is_conversation_scope, parse_entity_scope
 from agent.messages.everything import build_scope_id
-from agent.mind.pfc import ScopeActivity
+from agent.mind.prefrontal_cortex import ScopeActivity
 from core.hooks import HookMode, hook_execution
 from core.log import log
 from core.tags import etag_all, tag_label

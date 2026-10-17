@@ -6,6 +6,7 @@ from agent.channel import ChannelManager, InputPipeline
 from agent.llm import ChatModel, get_llm_manager
 from agent.messages import CharacterAgent
 from agent.mind.mind import Mind
+from agent.mind.prefrontal_cortex import PrefrontalCortex
 from agent.runtime.assistant import AgentAssistant
 from agent.storage.data_center import DataCenter
 from agent.workflow.engine import WorkflowEngine
@@ -20,6 +21,7 @@ class AgentRuntime:
     pipeline: InputPipeline
     assistant: AgentAssistant
     mind: Mind
+    pfc: PrefrontalCortex
     char: CharacterAgent
     llm: ChatModel
     data_center: DataCenter

@@ -14,7 +14,7 @@ import pytest
 
 from agent.mind.execution.messages import _merge_pushes
 from agent.mind.execution.state import ThinkMode
-from agent.mind.pfc import PrefrontalCortex
+from agent.mind.prefrontal_cortex import PrefrontalCortex
 from agent.mind.push import PushHub
 from core.tags import etag_all
 
@@ -300,7 +300,7 @@ async def test_merge_pushes_injects_into_tool_chain() -> None:
 async def test_push_does_not_repeat_history_or_consume_unseen_user_message(already_in_context) -> None:
     from unittest.mock import MagicMock
 
-    from agent.mind.pfc import PendingSignal, PrefrontalCortex
+    from agent.mind.prefrontal_cortex import PendingSignal, PrefrontalCortex
     from agent.storage.data_center import EverythingData
 
     mind = FakeMind()

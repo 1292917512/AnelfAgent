@@ -97,7 +97,7 @@ class TestGuardIntegration:
     async def test_cross_reply_consumes_only_answered_pending_scope(self, new_message, receipt, observed_role) -> None:
         from unittest.mock import MagicMock
 
-        from agent.mind.pfc import PendingSignal, PrefrontalCortex
+        from agent.mind.prefrontal_cortex import PendingSignal, PrefrontalCortex
         from agent.storage.data_center import EverythingData
 
         work = PrefrontalCortex(MagicMock(spec=EverythingData))

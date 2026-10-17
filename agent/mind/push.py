@@ -25,7 +25,7 @@ from core.log import log
 from core.tags import get_time_tag, tag_label
 
 if TYPE_CHECKING:
-    from agent.mind.pfc import PrefrontalCortex
+    from agent.mind.prefrontal_cortex import PrefrontalCortex
 
 # 单条推送内容上限（防止异常实体灌爆短期记忆桶）
 _MAX_CONTENT_CHARS = 2000

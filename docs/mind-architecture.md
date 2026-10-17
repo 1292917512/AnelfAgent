@@ -18,12 +18,12 @@
 
 | 组件 | 责任 | 入口 |
 |---|---|---|
-| `agent/runtime/mind_factory.py` | 创建共享服务、注入上下文视图、装配后台协作者后返回宿主 | `create_mind()` |
+| `agent/runtime/factory.py` | 加载人设；创建共享服务、注入上下文视图、装配后台协作者后返回宿主 | `load_persona()` / `create_mind()` |
 | `agent/mind/mind.py` | 持有会话状态、锁和中断信号，提供周期、回复和反思入口 | `Mind.execute_mind()`、`Mind.reply()`、`Mind.reflect()` |
 | `agent/mind/tools/core.py` | 核心工具声明与注册、反思工具权限策略 | `register_core_tools()`、`build_reflect_blocklist()` |
 | `agent/mind/cycle.py` | fast-path、态势收集、元决策、分发和收尾；周期锁由 Mind 持有 | `run_cycle()` |
-| `agent/mind/pfc.py` | 待办消息、短期状态、通知落库与队列路由 | `PrefrontalCortex` |
-| `agent/mind/background/` | 后台任务登记、操作证据与完成通知路由 | `tasks.py` / `evidence.py` / `routing.py` |
+| `agent/mind/prefrontal_cortex.py` | 待办消息、短期状态、通知落库与队列路由；runtime 与 Mind 共用 `pfc` 实例 | `PrefrontalCortex` |
+| `agent/mind/background/` | 后台任务登记、操作证据、完成通知路由与动态摘要 | `tasks.py` / `evidence.py` / `routing.py` / `context.py` |
 | `agent/mind/tool_assembly.py` | 工具发现、激活、目录顺序与空闲清理 | `ToolAssembly` |
 | `agent/mind/decisions.py` | 把结构化决策分发到回复、反思、计划和任务执行器 | 决策执行函数 |
 | `agent/mind/execution/` | 多轮执行、消息并入、工具调用和收束；由 Mind 的回复、反思入口调用 | `reply.reply_entry()`、`reflect.reflect_entry()`、`loop.think_loop()` |
@@ -32,13 +32,16 @@
 | `agent/context/` | 提示词、分层缓存、动态呈现、环境快照及发送规整 | `ContextAssembly`、`ContextPreparation` |
 
 Mind 原生方法负责消息接收、周期、回复与反思的生命周期；上下文准备入口的观测由 `agent.context.observation`
-装饰器负责。内部阶段直接调用所属模块的函数，
+装饰器负责。运行时工厂按方法加载依赖，单独加载人设不初始化思维与工具模块。内部阶段直接调用所属模块的函数，
 不把模块函数重新绑定到宿主。`create_mind()` 注入配置提供器持有的 `MindConfig`，执行阶段直接读取
 `mind.config`；保存与重载原位更新同一对象，无需重建 Mind。共享配置契约位于 `agent/config.py`，
 上下文等模块可直接使用，不经 Mind 中转。消息归属由消息对象的 scope 属性提供。
 工具执行模块直接调用 `EntityRegistry.execute_tool_call()`；Mind 不持有或转发固定的注册表执行器。
 工具结果管线只接收模型窗口与守卫，不依赖 Mind。包入口不预加载思维宿主，
 各模块直接导入实际定义，避免导入叶子组件时连带初始化执行管线。
+`runtime.pfc`、`mind.pfc` 与上下文只读视图指向同一实例，外部服务直接访问 `runtime.pfc`；
+PFC 实现保留在思维数据层，不反向依赖运行时。会话绑定与收尾只接收工具装配器，
+入队规则只接收消息和反思状态，崩溃恢复只接收存储路由，不为这些操作传递完整 Mind。
 `ModelInvoker` 通过 `ModelRuntime` 接口实时读取配置与模型，自己持有临时参数 `session_params`。
 参数由模型控制工具经 SDK 修改，覆盖调用选项，流式与非流式共用；作用范围为当前运行时，不按频道隔离。
 模型元数据复用模型库缓存，
@@ -149,7 +152,7 @@ bootstrap 不重复维护这些声明的导入清单。
 | 会话令牌 | `agent/security/session_token.py` | 一次性令牌标记可信历史，泄露即 SECURITY 停止 |
 | 威胁扫描 | `agent/security/threat_scanner.py` | 注入模式扫描（工具结果标记 / 记忆写入拦截） |
 | 结果脱敏 | `core/sanitizer.py` | API Key/Token/密码自动遮盖（工具结果 + 日志） |
-| 崩溃尾部修复 | `agent/mind/crash_recovery.py` | 回复检查点落盘（`reply_checkpoints` 表），启动扫描崩溃残留注入「上次被中断」元消息；崩溃退出时附带崩溃上下文（macOS .ips 关联） |
+| 崩溃尾部修复 | `agent/mind/execution/recovery.py` | 回复检查点落盘（`reply_checkpoints` 表），启动扫描崩溃残留注入「上次被中断」元消息；崩溃退出时附带崩溃上下文（macOS .ips 关联） |
 | reasoning 条件回传 | `think_loop.preserve_reasoning_fields` | `reasoning_details` 仅工具轮回传（DeepSeek 官方规则），纯文本轮省 token；`thinking_blocks` 无条件保留 |
 | 新消息并入上限 | `execution.messages._merge_new_messages` | 消息洪峰分批并入（20 条/20000 字符每轮）：首条强制并入保证进度，超出部分不推进水位（下轮接续）且保留待处理队列条目——留存消息必有人回复 |
 
@@ -180,7 +183,7 @@ bootstrap 不重复维护这些声明的导入清单。
 
 `ports.py` 定义 PFC、工具态势的只读视图与压缩宿主接口。运行时向上下文注入 `PrefrontalCortex` 与
 `ToolAssembly`，向压缩器注入 `ModelInvoker`；它们共享会话状态，不复制队列、激活状态或缓存。
-`mind/recall/` 负责召回调度，`skills/recall.py` 负责技能匹配与材料呈现，`mind/runtime_context.py` 负责后台任务状态适配，
+`mind/recall/` 负责召回调度，`skills/recall.py` 负责技能匹配与材料呈现，`mind/background/context.py` 负责后台任务状态适配，
 思维循环负责逐轮刷新和调度，上下文组件不反向调用这些调度实现。
 `end_reply` 与 `compress_context` 的工具入口归属 `tools/core.py`，压缩器本身不注册工具。
 

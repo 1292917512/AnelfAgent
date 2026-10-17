@@ -12,8 +12,8 @@ import pytest
 from agent.hooks_llm import HookExecutor, HookRegistry, LLMHookSpec
 from agent.hooks_llm.settings import config_keys
 from agent.hooks_llm.spec import HookContextMode
+from agent.mind.background.context import background_context
 from agent.mind.background.tasks import BackgroundTaskRegistry
-from agent.mind.runtime_context import background_context
 from core.activity import activity_scope
 from core.event_bus import (
     EVENT_THINKING_LLM_END,

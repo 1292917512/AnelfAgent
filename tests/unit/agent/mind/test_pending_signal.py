@@ -11,7 +11,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import List
 
-from agent.mind.pfc import PendingSignal, PrefrontalCortex
+from agent.mind.prefrontal_cortex import PendingSignal, PrefrontalCortex
 from agent.utils.unique_queue import UniqueQueue
 
 

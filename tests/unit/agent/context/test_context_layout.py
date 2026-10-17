@@ -9,7 +9,7 @@ import pytest
 
 from agent.context.assembly import ContextAssembly
 from agent.context.message_schema import normalize_for_send
-from agent.mind.pfc import PrefrontalCortex
+from agent.mind.prefrontal_cortex import PrefrontalCortex
 from agent.mind.tool_assembly import ToolAssembly
 
 

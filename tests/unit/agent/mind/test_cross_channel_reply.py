@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -15,27 +16,36 @@ import pytest
 
 from agent.messages.presets import MessageGroupUser, MessageUser
 from agent.mind.decisions import resolve_reply_target
-from agent.mind.pfc import PrefrontalCortex
+from agent.mind.prefrontal_cortex import PrefrontalCortex
 
 
-async def test_nested_internal_space_clears_and_restores_channel_without_cross_task_leaks():
+@pytest.mark.parametrize("fail_inner", [False, True])
+async def test_nested_internal_space_clears_and_restores_channel_without_cross_task_leaks(fail_inner):
     from agent.channel.context import bind_current_channel, get_current_channel, reset_current_channel
     from agent.mind.think_session import think_session
     from agent.mind.tool_activation import ToolActivationManager
 
-    mind = SimpleNamespace(tool_assembly=SimpleNamespace(clear_dynamic_tools=lambda **kwargs: None))
+    parent_scope = ToolActivationManager.current_scope()
     parent = bind_current_channel(None)
     try:
         async def run(scope, channel):
-            with think_session(mind, scope):
+            cleanup = []
+            tools = SimpleNamespace(clear_dynamic_tools=lambda **kwargs: cleanup.append(
+                (kwargs, get_current_channel(), ToolActivationManager.current_scope())))
+            with think_session(tools, scope):
                 assert get_current_channel() == channel
-                with think_session(mind, "reflect:internal", with_token=False):
-                    await asyncio.sleep(0)
-                    assert get_current_channel() is None
-                    assert ToolActivationManager.current_scope() == "reflect:internal"
+                with pytest.raises(RuntimeError, match="inner failed") if fail_inner else nullcontext():
+                    with think_session(tools, "reflect:internal", with_token=False):
+                        await asyncio.sleep(0)
+                        assert get_current_channel() is None
+                        assert ToolActivationManager.current_scope() == "reflect:internal"
+                        if fail_inner:
+                            raise RuntimeError("inner failed")
                 assert get_current_channel() == channel
                 assert ToolActivationManager.current_scope() == scope
+                assert cleanup == [({"scope": "reflect:internal", "force": True}, channel, scope)]
             assert get_current_channel() is None
+            assert cleanup[-1] == ({"scope": scope, "force": False}, None, parent_scope)
 
         await asyncio.gather(run("user_qq:1", "qq"), run("user_webui:1#a", "webui"))
     finally:
@@ -147,7 +157,7 @@ class TestCrossChannelIsolation:
         """跨频道快照按新格式 scope 记录（A 频道活跃可被 B 频道感知）。"""
         work = _pfc()
         clock = [time.time()]
-        monkeypatch.setattr("agent.mind.pfc.time.time", lambda: clock[0])
+        monkeypatch.setattr("agent.mind.prefrontal_cortex.time.time", lambda: clock[0])
         work.observe_channel(
             MessageUser(uid="123", adapter_key="qq", text_content="[to_me:1]在QQ说话"), window_minutes=30,
         )
@@ -212,7 +222,7 @@ async def test_live_awareness_only_includes_unhandled_directed_messages(sqlite, 
 async def test_history_candidates_use_explicit_aliases_and_recent_topics(sqlite, monkeypatch):
     from agent.config import MindConfig
     from agent.mind.cross_channel import _recall_candidates
-    from agent.mind.pfc import ChannelSnapshot, ScopeActivity
+    from agent.mind.prefrontal_cortex import ChannelSnapshot, ScopeActivity
     from agent.storage.data_center import ConversationData
     from agent.storage.storage_router import StorageRouter
 
@@ -236,7 +246,7 @@ async def test_history_gate_uses_conversation_and_concurrent_searches(proceed, m
     from agent.config import MindConfig
     from agent.judgment.gate import WorkDecision
     from agent.mind.cross_channel import recall_cross_channel
-    from agent.mind.pfc import ChannelSnapshot, ScopeActivity
+    from agent.mind.prefrontal_cortex import ChannelSnapshot, ScopeActivity
     from core.hooks import hook_journal
 
     decision = AsyncMock(return_value=WorkDecision(proceed, "测试判断"))
@@ -286,7 +296,7 @@ async def test_cancelling_cross_recall_preserves_shared_embedding(monkeypatch):
     from agent.config import MindConfig
     from agent.judgment.gate import WorkDecision
     from agent.mind.cross_channel import recall_cross_channel
-    from agent.mind.pfc import ChannelSnapshot, ScopeActivity
+    from agent.mind.prefrontal_cortex import ChannelSnapshot, ScopeActivity
 
     judged = asyncio.Event()
 

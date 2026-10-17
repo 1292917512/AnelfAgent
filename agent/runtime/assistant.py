@@ -139,7 +139,7 @@ class AgentAssistant:
         """心跳进行中收到消息，向来源频道发送简短提示。"""
         notified_scopes: set[str] = set()
         for anything in batch:
-            if not should_enqueue_external_message(self.mind, anything):
+            if not should_enqueue_external_message(anything, reflecting=self.mind._reflecting):
                 continue
             if not anything.adapter_key:
                 continue

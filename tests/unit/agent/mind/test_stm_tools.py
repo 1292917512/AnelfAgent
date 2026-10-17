@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent.memory import notes
-from agent.mind.pfc import PrefrontalCortex
+from agent.mind.prefrontal_cortex import PrefrontalCortex
 from agent.mind.tools import short_term_tools
 from agent.mind.tools.ports import mind_port
 

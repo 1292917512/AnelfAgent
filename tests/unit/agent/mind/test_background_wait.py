@@ -75,7 +75,7 @@ class TestBackgroundTaskRegistry:
 
         from agent.messages.presets import MessageUser
         from agent.mind.interrupt import InterruptRegistry
-        from agent.mind.pfc import PrefrontalCortex
+        from agent.mind.prefrontal_cortex import PrefrontalCortex
         from agent.mind.tools import background
         from core.conversation_scope import bind_scope, reset_scope
 
@@ -507,7 +507,7 @@ class _DelegationMind:
         self.reflect = AsyncMock(return_value=output)
         self.background_tasks = BackgroundTaskRegistry()
         self.try_execute_mind = AsyncMock()
-        from agent.mind.pfc import PrefrontalCortex
+        from agent.mind.prefrontal_cortex import PrefrontalCortex
         self.pfc = PrefrontalCortex(SimpleNamespace())
         self.pfc.get_adapter_key = lambda scope: "test"
         # 镜像 on_task_unclaimed：轮外完成经回调排入回复队列并触发新一轮

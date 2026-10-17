@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 
 from agent.mind.decisions import pop_next_reply_target
-from agent.mind.pfc import PrefrontalCortex
+from agent.mind.prefrontal_cortex import PrefrontalCortex
 from agent.mind.tools import scheduler as scheduler_mod
 from agent.mind.tools.scheduler import add_reminder
 

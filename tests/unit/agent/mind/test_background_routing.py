@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.mind.background.routing import on_task_alert, on_task_unclaimed
-from agent.mind.pfc import PrefrontalCortex
+from agent.mind.prefrontal_cortex import PrefrontalCortex
 
 
 def _fake_mind() -> SimpleNamespace:

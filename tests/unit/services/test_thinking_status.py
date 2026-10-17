@@ -7,7 +7,7 @@ import pytest
 
 from agent.context.cache_stats import cache_usage_tracker
 from agent.context.prompt_layers import prompt_cache_manager
-from agent.mind.pfc import PrefrontalCortex
+from agent.mind.prefrontal_cortex import PrefrontalCortex
 from agent.mind.tool_assembly import ToolAssembly
 from services import status
 
@@ -23,7 +23,7 @@ def test_thinking_snapshot_reads_owners_without_changing_work(monkeypatch, cache
     tools._tool_recall = {"read_file": 3}
     tools._discovered_tools.add("inspect_workspace")
     tools._tag_activated_tools.add("recognize_image")
-    runtime = SimpleNamespace(mind=SimpleNamespace(pfc=memory, tool_assembly=tools))
+    runtime = SimpleNamespace(pfc=memory, mind=SimpleNamespace(tool_assembly=tools))
     monkeypatch.setattr(status, "get_runtime", lambda: runtime)
     expected_cache = {"requests": 2}
     for target, method in [(prompt_cache_manager, "stats"), (cache_usage_tracker, "summary")]:

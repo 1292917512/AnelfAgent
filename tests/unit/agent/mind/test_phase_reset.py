@@ -21,7 +21,7 @@ from agent.mind.autonomous import MindPhase
 from agent.mind.execution import reflect as reflect_module
 from agent.mind.interrupt import InterruptRegistry
 from agent.mind.mind import Mind
-from agent.mind.pfc import PrefrontalCortex
+from agent.mind.prefrontal_cortex import PrefrontalCortex
 
 
 def _bare_mind() -> Any:

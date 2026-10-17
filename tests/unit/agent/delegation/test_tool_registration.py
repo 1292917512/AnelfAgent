@@ -42,8 +42,8 @@ class TestDelegationGroupRegistration:
         assert EXPECTED_TOOLS <= _schema_names()
 
     @pytest.mark.parametrize("entry_module", [
-        "agent.runtime.mind_factory", "agent.mind.mind",
-        "agent.mind.execution.tool_execution", "agent.task.executor", "agent.mind.pfc",
+        "agent.runtime.factory", "agent.mind.mind",
+        "agent.mind.execution.tool_execution", "agent.task.executor", "agent.mind.prefrontal_cortex",
     ])
     def test_factory_registers_tools_without_bootstrap_imports(self, tmp_path, entry_module) -> None:
         """独立进程只调用工厂，也必须取得完整工具目录。"""
@@ -54,19 +54,32 @@ import importlib
 import sys
 from unittest.mock import DEFAULT, MagicMock, patch
 importlib.import_module(sys.argv[1])
-if sys.argv[1] == 'agent.mind.pfc':
+if sys.argv[1] in {'agent.mind.prefrontal_cortex', 'agent.runtime.factory'}:
     assert 'agent.mind.mind' not in sys.modules
-from agent.runtime import mind_factory
+from agent.runtime import factory
 from core.context_provider import ContextProviderRegistry
 from core.entity import EntityRegistry
 
+if sys.argv[1] == 'agent.runtime.factory':
+    before = set(EntityRegistry.get_all_names())
+    personality = ['persona']
+    provider = MagicMock()
+    provider.get_persona_config.return_value = {'personality': personality, 'name': 'test'}
+    with patch('agent.config.get_config_provider', return_value=provider):
+        first, second = factory.load_persona(), factory.load_persona()
+    assert first.personality == second.personality
+    assert personality == ['persona']
+    assert first.personality[0] == 'persona' and len(first.personality) == 2
+    assert 'agent.mind.mind' not in sys.modules
+    assert set(EntityRegistry.get_all_names()) == before
+
 async def check():
-    with patch.multiple(mind_factory,
-        get_skill_store=DEFAULT, get_plugin_manager=DEFAULT, get_embedder=DEFAULT,
+    with patch.multiple('agent.skills', get_skill_store=DEFAULT,
         SkillMatcher=DEFAULT, SkillCurator=DEFAULT, SkillReviewer=DEFAULT,
-        HeartbeatEngine=DEFAULT, ContextCompressor=DEFAULT,
-    ), patch('agent.delegation.delegation_manager.DelegationManager'):
-        mind = mind_factory.create_mind(
+    ), patch('core.plugins.get_plugin_manager'), patch('agent.memory.embedding.get_embedder'), \
+        patch('agent.heartbeat.engine.HeartbeatEngine'), patch('agent.context.compressor.ContextCompressor'), \
+        patch('agent.delegation.delegation_manager.DelegationManager'):
+        mind = factory.create_mind(
             char=MagicMock(), llm=MagicMock(), llm_manager=None,
             channel_manager=MagicMock(), everything_data=MagicMock(),
             conversation_data=MagicMock(), memory_store=None,

@@ -359,7 +359,7 @@ def create_bootstrap() -> FlowMachine:
     async def assemble_runtime():
         """纯组装：Mind -> Assistant -> Runtime -> set_runtime -> 统一施绑。"""
         from agent.runtime.assistant import AgentAssistant
-        from agent.runtime.mind_factory import create_mind
+        from agent.runtime.factory import create_mind
         from agent.runtime.runtime import AgentRuntime
         from agent.runtime.singleton import set_runtime
         from agent.runtime.wiring import wire_runtime
@@ -399,6 +399,7 @@ def create_bootstrap() -> FlowMachine:
             pipeline=pipeline,
             assistant=assistant,
             mind=mind,
+            pfc=mind.pfc,
             char=char,
             llm=llm_data["llm"],
             data_center=data_center,
@@ -715,7 +716,7 @@ def create_bootstrap() -> FlowMachine:
         if not get_config_bool("recovery_interrupted_enabled", True):
             return
         from agent.delegation.recovery import recover_interrupted_delegations
-        from agent.mind.crash_recovery import (
+        from agent.mind.execution.recovery import (
             collect_crash_context,
             recover_interrupted_replies,
         )
@@ -724,7 +725,7 @@ def create_bootstrap() -> FlowMachine:
             mind = require_runtime().mind
             # 消费上次崩溃状态（守护脚本写入 + 系统崩溃报告关联），仅注入一次
             crash_context = collect_crash_context()
-            recovered = await recover_interrupted_replies(mind, crash_context)
+            recovered = await recover_interrupted_replies(mind.conversation_data.router, crash_context)
             # 委托崩溃恢复同范式：账本未闭合条目 → 中断元消息（独立于回复检查点）
             await recover_interrupted_delegations(mind)
             # 工作流崩溃收敛同范式：running 残留 → stopped(interrupted)，可续跑

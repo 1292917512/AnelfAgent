@@ -30,7 +30,7 @@ from core.tool_registry import deferred_tool
 from .ports import mind_port
 
 if TYPE_CHECKING:
-    from agent.mind.pfc import PrefrontalCortex
+    from agent.mind.prefrontal_cortex import PrefrontalCortex
 
 _MAX_DELAY = 600
 

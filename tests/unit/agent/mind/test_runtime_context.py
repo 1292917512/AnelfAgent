@@ -11,9 +11,9 @@ from helpers.think_loop_fakes import FakeMind, run_think_loop, tool_result
 
 from agent.context.message_schema import normalize_for_send
 from agent.context.observation import emit_context_summary, observe_preparation
+from agent.mind.background.context import background_context
 from agent.mind.background.tasks import BackgroundTaskRegistry
 from agent.mind.execution.state import ThinkMode
-from agent.mind.runtime_context import background_context
 from core.conversation_scope import bind_scope, reset_scope
 
 
@@ -202,6 +202,6 @@ def test_old_hook_results_leave_dynamic_tail_but_remain_queryable(monkeypatch):
     task_id = registry.register("user_qq:1", "llm_hook", "review")
     registry.complete(task_id, False, "old failure")
     finished = registry.completed("user_qq:1")[0].finished_at
-    monkeypatch.setattr("agent.mind.runtime_context.time.time", lambda: finished + 301)
+    monkeypatch.setattr("agent.mind.background.context.time.time", lambda: finished + 301)
     assert background_context(registry, "user_qq:1") == ""
     assert registry.read_task_output("user_qq:1", task_id)["summary"] == "old failure"

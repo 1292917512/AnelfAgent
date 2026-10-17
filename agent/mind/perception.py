@@ -2,19 +2,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-from agent.messages import (
-    Everything,
-    EverythingGroup,
-)
+from agent.messages import Everything, EverythingGroup
 from core.log import log
 
-if TYPE_CHECKING:
-    from agent.mind.mind import Mind
 
-
-def should_enqueue_external_message(mind: Mind, anything: Everything) -> bool:
+def should_enqueue_external_message(anything: Everything, *, reflecting: bool) -> bool:
     """判断外部消息是否应进入待回复队列。"""
     if not bool(getattr(anything, "trigger_mind", True)):
         return False
@@ -24,7 +16,7 @@ def should_enqueue_external_message(mind: Mind, anything: Everything) -> bool:
         log(f"忽略空消息入队: {anything.entity_scope}", "DEBUG", tag="思维")
         return False
     if (
-        mind._reflecting
+        reflecting
         and isinstance(anything, EverythingGroup)
         and not bool(getattr(anything, "to_me", False))
     ):

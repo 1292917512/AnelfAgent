@@ -191,7 +191,7 @@ async def main(args: argparse.Namespace) -> None:
                                                ROOT / "channels/minecraft/mcp/tests/benchmark-executor.cjs",
                                                ROOT / "channels/minecraft/mcp/package-lock.json",
                                                ROOT / "agent/channel/reply_policy.py", ROOT / "agent/mind/tool_assembly.py",
-                                               ROOT / "agent/mind/pfc.py", ROOT / "agent/mind/execution/loop.py",
+                                               ROOT / "agent/mind/prefrontal_cortex.py", ROOT / "agent/mind/execution/loop.py",
                                                ROOT / "channels/minecraft/adapter.py", ROOT / "channels/minecraft/reply_policy.py",
                                                ROOT / "channels/minecraft/receipts.py",
                                                *sorted((ROOT / "channels/minecraft/mcp/runtime").glob("*.mjs"))]}

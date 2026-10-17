@@ -9,7 +9,7 @@ from unittest.mock import Mock
 import pytest
 
 from agent.context.assembly import ContextAssembly
-from agent.mind.pfc import PrefrontalCortex
+from agent.mind.prefrontal_cortex import PrefrontalCortex
 from agent.mind.tool_assembly import ToolAssembly
 
 

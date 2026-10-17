@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock
 from agent.context.assembly import ContextAssembly
 from agent.messages import parse_entity_scope
 from agent.messages.presets import MessageAssistant, MessageGroupUser, MessageUser
-from agent.mind.pfc import PrefrontalCortex
+from agent.mind.prefrontal_cortex import PrefrontalCortex
 from agent.mind.tool_assembly import ToolAssembly
 from agent.mind.tools.ports import mind_port
 

@@ -42,7 +42,7 @@ if TYPE_CHECKING:
     from agent.messages import CharacterAgent, Everything
     from agent.mind.background.tasks import BackgroundTaskRegistry
     from agent.mind.llm_invoker import ModelInvoker
-    from agent.mind.pfc import PrefrontalCortex
+    from agent.mind.prefrontal_cortex import PrefrontalCortex
     from agent.mind.push import PushHub
     from agent.mind.tool_assembly import ToolAssembly
     from agent.skills.runtime import SkillRuntime
@@ -155,7 +155,7 @@ class Mind:
                 anything, window_minutes=self.config.cross_channel_window_minutes,
             )
 
-            should_enqueue = should_enqueue_external_message(self, anything)
+            should_enqueue = should_enqueue_external_message(anything, reflecting=self._reflecting)
             if (
                 not should_enqueue
                 and bool(getattr(anything, "trigger_mind", True))

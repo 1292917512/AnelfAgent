@@ -1,6 +1,6 @@
 """Prefrontal Cortex（PFC）：消息队列、待办持久化、短期记忆、媒体暂存与态势路由。
 
-不依赖 Mind；消息标签经构造注入的 ToolAssembly 激活工具。
+不依赖 Mind；由运行时共享，消息标签经构造注入的 ToolAssembly 激活工具。
 
 职责：
 - 消息队列管理（pending_user / pending_group / pending_analysis，按 scope 分桶隔离）

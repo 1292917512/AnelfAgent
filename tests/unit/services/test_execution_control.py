@@ -31,7 +31,7 @@ def execution(monkeypatch):
     )
 
     mind.interrupt = MethodType(Mind.interrupt, mind)
-    runtime = SimpleNamespace(mind=mind)
+    runtime = SimpleNamespace(mind=mind, pfc=mind.pfc)
     monkeypatch.setattr(control, "get_runtime", lambda: runtime)
     monkeypatch.setattr("services.chat.get_runtime", lambda: runtime)
     send = AsyncMock()

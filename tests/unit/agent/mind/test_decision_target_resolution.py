@@ -25,7 +25,7 @@ from agent.mind.decisions import (
     resolve_reply_target,
     routable_target,
 )
-from agent.mind.pfc import PrefrontalCortex
+from agent.mind.prefrontal_cortex import PrefrontalCortex
 
 _UID = 1292917512
 _CANONICAL = "user_qq:1292917512"

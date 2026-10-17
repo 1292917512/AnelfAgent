@@ -73,7 +73,7 @@ async def reply_loop(
     from core.tool_context import tool_request
 
     channel_policy = get_reply_policy(adapter_key)
-    with think_session(mind, scope), tool_request(
+    with think_session(mind.tool_assembly, scope), tool_request(
         scope, str(getattr(anything, "uid", "") or ""),
         message_id=str(getattr(anything, "_trace_message_id", "") or getattr(anything, "adapter_message_id", "") or ""),
     ):

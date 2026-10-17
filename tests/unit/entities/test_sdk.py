@@ -64,7 +64,7 @@ async def test_context_usage_is_real_and_isolated_between_executions():
         model_invoker=SimpleNamespace(get_context_length=lambda: 10000),
     )
     async def execute(scope, tokens):
-        with think_session(mind, scope):
+        with think_session(mind.tool_assembly, scope):
             assert _sdk.get_context_usage() is None
             await _emit_context_usage(
                 SimpleNamespace(mind=mind, current_scope=scope, base_messages=[], tool_chain=[]),

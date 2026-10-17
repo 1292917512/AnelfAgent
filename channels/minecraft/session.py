@@ -29,7 +29,7 @@ async def stop_companion_work(world_id: str, *, server: str = "minecraft", reaso
         return
     mind = runtime.mind
     scopes = {build_entity_scope("group", "minecraft", world_id)}
-    scopes.update(scope for scope in mind.pfc.known_scopes() if _belongs_to_world(scope, world_id))
+    scopes.update(scope for scope in runtime.pfc.known_scopes() if _belongs_to_world(scope, world_id))
     manager = mind.delegation_manager
     worker_scopes = {
         scope for delegation_id, scope in consume_control_delegates(server).items()
@@ -37,14 +37,14 @@ async def stop_companion_work(world_id: str, *, server: str = "minecraft", reaso
     }
     for scope in scopes | worker_scopes:
         mind.interrupt(scope, reason=reason)
-        mind.pfc.consume_scope_task(scope)
+        runtime.pfc.consume_scope_task(scope)
     for scope in scopes:
         manager.cancel_scope(scope)
     await remove_scope_reminders(scopes | worker_scopes)
     note = f"{reason}；此前任务已取消，等待玩家的新指令，不再续跑。"
     for scope in scopes | worker_scopes:
         adapter = parse_entity_scope(scope)[1]
-        if not await mind.pfc.append_notification(
+        if not await runtime.pfc.append_notification(
             scope, adapter, f"{tag_label('push', 'minecraft_stop')} {note}",
         ):
             log(f"Minecraft 停止事实记录失败: {scope}", "WARNING", tag="Minecraft")
@@ -59,5 +59,5 @@ async def record_game_event(world_id: str, text: str) -> None:
         return
     scope = build_entity_scope("group", "minecraft", world_id)
     prompt = f"{tag_label('push', 'minecraft_reflex')} {text}"
-    if not await runtime.mind.pfc.append_notification(scope, "minecraft", prompt):
+    if not await runtime.pfc.append_notification(scope, "minecraft", prompt):
         log(f"Minecraft 事件记录失败: {scope}", "WARNING", tag="Minecraft")

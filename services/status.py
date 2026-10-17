@@ -45,7 +45,7 @@ class AgentStatusService:
                     lines.append(f"  [{src}]:     {cnt}")
 
             lines.append(f"角色提示词:    {len(rt.char.personality)} 条")
-            lines.append(f"短期记忆:      {len(rt.mind.pfc.temporary)} 条")
+            lines.append(f"短期记忆:      {len(rt.pfc.temporary)} 条")
         except Exception as e:
             lines.append(f"获取组件信息失败: {e}")
         return lines
@@ -77,7 +77,7 @@ class AgentStatusService:
                 },
                 "tools": tools,
                 "persona_prompts": len(rt.char.personality),
-                "short_term_memory": len(rt.mind.pfc.temporary),
+                "short_term_memory": len(rt.pfc.temporary),
             }
         except Exception as e:
             return {"ready": False, "error": str(e)}
@@ -101,7 +101,7 @@ class AgentStatusService:
         if rt is None:
             return None
         try:
-            memory, tools = rt.mind.pfc, rt.mind.tool_assembly
+            memory, tools = rt.pfc, rt.mind.tool_assembly
             try:
                 from agent.context.prompt_layers import prompt_cache_manager
                 cache_stats = prompt_cache_manager.stats()

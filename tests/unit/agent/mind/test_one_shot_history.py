@@ -12,7 +12,7 @@ from typing import Any, List
 
 import pytest
 
-from agent.mind.pfc import PrefrontalCortex
+from agent.mind.prefrontal_cortex import PrefrontalCortex
 
 
 class _FakeRouter:
@@ -62,7 +62,7 @@ async def test_enqueue_writes_history_not_temporary() -> None:
 async def test_notification_watermark_preserves_new_work_during_a_cross_reply(monkeypatch, interleaved_user) -> None:
     from unittest.mock import AsyncMock, MagicMock
 
-    from agent.mind.pfc import PendingSignal, PrefrontalCortex
+    from agent.mind.prefrontal_cortex import PendingSignal, PrefrontalCortex
     from agent.storage.data_center import EverythingData
 
     work = PrefrontalCortex(MagicMock(spec=EverythingData))
@@ -77,7 +77,7 @@ async def test_notification_watermark_preserves_new_work_during_a_cross_reply(mo
     pfc.pending_user = work.pending_user
     pfc.set_message_preview = work.set_message_preview
     pfc._conversation_data = SimpleNamespace(router=SimpleNamespace(append=AsyncMock(side_effect=append)))
-    monkeypatch.setattr("agent.mind.pfc.time.time_ns", lambda: 200)
+    monkeypatch.setattr("agent.mind.prefrontal_cortex.time.time_ns", lambda: 200)
     await pfc.enqueue_reply(_SCOPE, "qq", "后台完成", "[push:devops] 构建完成")
     assert captured[0]["ts_ns"] == 200
     assert not work.consume_scope_task(_SCOPE, through_ts=100)

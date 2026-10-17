@@ -253,7 +253,7 @@ class _MergeMind(FakeMind):
 def _attach_pending_work(mind):
     from unittest.mock import AsyncMock
 
-    from agent.mind.pfc import PrefrontalCortex
+    from agent.mind.prefrontal_cortex import PrefrontalCortex
 
     entity = SimpleNamespace(add_conversations_num=lambda: 0, personality={})
     work = PrefrontalCortex(SimpleNamespace(get_anything=AsyncMock(return_value=entity)))

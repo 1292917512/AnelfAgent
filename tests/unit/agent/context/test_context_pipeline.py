@@ -189,7 +189,7 @@ class TestGoldenOrder:
         from unittest.mock import AsyncMock
 
         from agent.context.assembly import ContextAssembly
-        from agent.mind.pfc import PrefrontalCortex
+        from agent.mind.prefrontal_cortex import PrefrontalCortex
         from agent.mind.tool_assembly import ToolAssembly
 
         conversation_data = SN(
@@ -228,7 +228,7 @@ class TestGoldenOrder:
 
         import agent.context.assembly as ca
         from agent.context.assembly import ContextAssembly
-        from agent.mind.pfc import PrefrontalCortex
+        from agent.mind.prefrontal_cortex import PrefrontalCortex
         from agent.mind.tool_assembly import ToolAssembly
 
         monkeypatch.setattr(ca, "_tail_injection_enabled", lambda: False)

@@ -39,20 +39,20 @@ class MemoryService:
     def list_stm(self) -> List[Dict[str, Any]]:
         """返回 PFC 中的短期记忆列表。"""
         rt = require_runtime()
-        return list(rt.mind.pfc.temporary)
+        return list(rt.pfc.temporary)
 
     def delete_stm(self, index: int) -> bool:
         rt = require_runtime()
-        return rt.mind.pfc.delete_temporary(index)
+        return rt.pfc.delete_temporary(index)
 
     def clear_stm(self) -> int:
         rt = require_runtime()
-        return rt.mind.pfc.clear_temporary()
+        return rt.pfc.clear_temporary()
 
     def get_pending_status(self) -> List[Dict[str, Any]]:
         """获取 PFC 的队列状态信息（待处理消息、通用任务等）。"""
         rt = require_runtime()
-        pfc = rt.mind.pfc
+        pfc = rt.pfc
         result: List[Dict[str, Any]] = []
 
         for scope, (preview, adapter_key) in pfc.get_pending_message_previews().items():

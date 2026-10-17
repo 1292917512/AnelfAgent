@@ -1,4 +1,4 @@
-"""思维运行时装配：共享实例、上下文边界与后台服务依赖。"""
+"""运行时装配：共享实例、上下文边界与后台服务依赖。"""
 
 import asyncio
 import json
@@ -9,54 +9,71 @@ import pytest
 
 from agent.config import BotConfig, BotConfigProvider
 from agent.llm import ChatResult
-from agent.runtime import mind_factory
+from agent.runtime import factory
+from agent.runtime.runtime import AgentRuntime
 from agent.skills.skill_store import SkillStore
 from core.config import ConfigManager
+from services.memory import MemoryService
 
 
 @pytest.mark.parametrize("skills_enabled", [False, True])
 async def test_factory_shares_state_and_finishes_wiring_before_publish(tmp_path, monkeypatch, skills_enabled):
     store = SkillStore(str(tmp_path / "skills"))
     registry, embedder = MagicMock(), MagicMock()
-    monkeypatch.setattr(mind_factory, "get_skill_store", lambda: store)
-    monkeypatch.setattr(mind_factory, "get_plugin_manager", lambda: SimpleNamespace(registry=registry))
-    monkeypatch.setattr(mind_factory, "get_embedder", lambda kind: embedder)
+    monkeypatch.setattr("agent.skills.get_skill_store", lambda: store)
+    monkeypatch.setattr("core.plugins.get_plugin_manager", lambda: SimpleNamespace(registry=registry))
+    monkeypatch.setattr("agent.memory.embedding.get_embedder", lambda kind: embedder)
     ConfigManager.set("skills_enabled", skills_enabled)
     ConfigManager.set("mind_config_path", str(tmp_path / "mind.json"))
     provider = object.__new__(BotConfigProvider)
     provider._config = BotConfig()
     provider._cm_available = True
-    monkeypatch.setattr(mind_factory, "get_mind_config", lambda: provider.mind)
+    monkeypatch.setattr("agent.config.get_mind_config", lambda: provider.mind)
 
     # Persistent collaborators are isolated; state and context assembly remain real.
     factories = {}
     for module, name in [
-        ("agent.runtime.mind_factory", "HeartbeatEngine"),
-        ("agent.runtime.mind_factory", "ContextCompressor"),
-        ("agent.runtime.mind_factory", "MemoryRetriever"),
-        ("agent.runtime.mind_factory", "SkillMatcher"),
-        ("agent.runtime.mind_factory", "SkillCurator"),
-        ("agent.runtime.mind_factory", "SkillReviewer"),
+        ("agent.heartbeat.engine", "HeartbeatEngine"),
+        ("agent.context.compressor", "ContextCompressor"),
+        ("agent.memory.memory_retriever", "MemoryRetriever"),
+        ("agent.skills", "SkillMatcher"),
+        ("agent.skills", "SkillCurator"),
+        ("agent.skills", "SkillReviewer"),
         ("agent.delegation.delegation_manager", "DelegationManager"),
     ]:
         factories[name] = MagicMock()
         monkeypatch.setattr(f"{module}.{name}", factories[name])
     registration = MagicMock()
-    monkeypatch.setattr(mind_factory, "register_core_tools", registration)
-    monkeypatch.setattr(mind_factory, "activate_group", MagicMock(return_value=1))
+    monkeypatch.setattr("agent.mind.tools.core.register_core_tools", registration)
+    monkeypatch.setattr("core.tool_registry.activate_group", MagicMock(return_value=1))
     woke = asyncio.Event()
     wake = AsyncMock(side_effect=woke.set)
-    monkeypatch.setattr(mind_factory.Mind, "try_execute_mind", wake)
+    monkeypatch.setattr("agent.mind.mind.Mind.try_execute_mind", wake)
 
     conversation, manager, memory, everything = MagicMock(), MagicMock(), MagicMock(), MagicMock()
     conversation.router.append = AsyncMock()
     manager.chat_with_fallback = AsyncMock(return_value=ChatResult(content=""))
-    mind = mind_factory.create_mind(
+    mind = factory.create_mind(
         char=MagicMock(), llm=MagicMock(), llm_manager=manager,
         channel_manager=MagicMock(), everything_data=everything,
         conversation_data=conversation, memory_store=memory,
     )
-    assert mind.context._pfc is mind.pfc
+    runtime = AgentRuntime(
+        channel_manager=mind.channel_manager, pipeline=MagicMock(), assistant=MagicMock(),
+        mind=mind, pfc=mind.pfc, char=mind.char, llm=mind.llm,
+        data_center=MagicMock(), workflow_engine=MagicMock(),
+    )
+    monkeypatch.setattr("services.memory.require_runtime", lambda: runtime)
+    assert mind.context._pfc is mind.pfc is runtime.pfc
+    memory_service = MemoryService()
+    notice = {"role": "system", "content": "scope-specific notice"}
+    mind.pfc.add_temporary(notice, scope="user_webui:u1")
+    assert memory_service.list_stm() == [notice]
+    assert memory_service.delete_stm(0)
+    assert mind.pfc.temporary == []
+    runtime.pfc.add_temporary(notice)
+    assert memory_service.clear_stm() == 1
+    assert mind.context._pfc.temporary == []
     assert mind.context._tool_assembly is mind.tool_assembly
     assert mind.pfc.tool_assembly is mind.tool_assembly
     factories["HeartbeatEngine"].assert_called_once_with(mind, everything)
@@ -106,6 +123,9 @@ async def test_factory_shares_state_and_finishes_wiring_before_publish(tmp_path,
         assert mind.push_hub.current_seq(scope) == 1
         assert conversation.router.append.await_count == 1
         assert "推送通知" in conversation.router.append.call_args.kwargs["content"]
+        assert memory_service.get_pending_status() == [{
+            "role": "pending", "content": "[待处理消息: user_webui:u1] 实体推送 test: 推送通知 [webui]",
+        }]
 
         woke.clear()
         task = mind.background_tasks.register(scope, "shell", "后台操作")

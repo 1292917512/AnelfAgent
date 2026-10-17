@@ -48,7 +48,7 @@ async def reflect_entry(
     execution_steps: list[str] = []
     output_policy = "放开外发" if allow_output_tools else "禁用外发"
     log(f"反思循环开始: {len(active_tools)} 个工具可用, 策略={output_policy}, 上限 {safety_limit} 轮", tag="思维")
-    with think_session(mind, reflect_scope, with_token=False), tool_request(reflect_scope, inherit=True):
+    with think_session(mind.tool_assembly, reflect_scope, with_token=False), tool_request(reflect_scope, inherit=True):
         await think_loop(
             mind,
             mode=ThinkMode.REFLECT,

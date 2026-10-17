@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.mind.pfc import PrefrontalCortex
+from agent.mind.prefrontal_cortex import PrefrontalCortex
 from agent.mind.tools import scheduler
 from agent.mind.tools.ports import mind_port
 from core.conversation_scope import bind_scope, reset_scope
