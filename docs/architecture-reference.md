@@ -14,6 +14,7 @@
 | `core/` | 基础框架（EntityRegistry / ConfigManager / Application+Lifecycle / FlowMachine / PathManager+ConfigPaths / 标签 / 事件 / 日志 / 存储卷注册表） | 不依赖任何业务模块 |
 | `agent/` | 智能体内核（Mind / LLM / Storage / Channel / Runtime / Memory / Task / Heartbeat / Planning） | 不依赖 web |
 | `agent/mind/` | 思维核心（自主决策 / 多轮推理 / 跨频道感知） | 工具编排在 `mind/tools/` |
+| `agent/context/` | 上下文构建、发送规整、压缩、缓存与观测 | 通过只读视图与宿主接口获取运行态，不直接依赖 mind |
 | `agent/memory/` | 语义记忆（FTS5 + Embedding 混合检索 / 便签 / 文件索引） | 不依赖 mind |
 | `agent/skills/` | 技能自学习（事实索引 / 匹配 / 后台评审 / 策展；事实归系统、决策归 AI） | 文件存储在 `workspace/skills/` |
 | `agent/delegation/` | 子代理调度（档案 schema / 并行 fan-out / 续跑 / 双档转向 / 运行日志） | 经 `mind.reflect()` 隔离执行 |
@@ -39,7 +40,7 @@ web/frontend → web/routers → services → agent → core/
 entities → entities._sdk → core.entity
 channels/ → agent.channel → core.entity
 
-agent.mind → agent.memory / agent.heartbeat / agent.task / agent.planning
+agent.mind → agent.context / agent.memory / agent.heartbeat / agent.task / agent.planning
 agent.heartbeat → agent.task + agent.memory + agent.mind（调度执行）
 agent.task → agent.memory（结果存储）
 agent.planning → agent.memory
@@ -49,7 +50,7 @@ services → web | channels → web/services | entities → agent/services/web/c
 （entities 经 _sdk 桥接 agent，_sdk 是唯一豁免）| web/routers → agent/entities/channels（经 services 收口）
 ```
 
-以上方向由 import-linter 机械守卫（pyproject.toml `[tool.importlinter]` 八条 forbidden 契约，
+以上方向由 import-linter 机械守卫（pyproject.toml `[tool.importlinter]` forbidden 契约，
 `uv run lint-imports`，CI 红绿门禁；`_sdk → agent.**` 为唯一豁免通道，web/routers 契约允许经
 services 的间接依赖）。注意：本地与 CI 的 import-linter 版本可能不同（新版会检出惰性
 in-function import 违层），实体里写 `from agent.` 之前先想到 _sdk 桥，并以新版工具验证。
