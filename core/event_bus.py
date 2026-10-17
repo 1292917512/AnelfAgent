@@ -78,6 +78,7 @@ class EventBus:
             event_bus.on("after_reply", my_handler, owner="plugin:weather")
 
         Args:
+            priority: 订阅排序；普通 emit 不保证完成先后，emit_with_result 按此顺序等待。
             owner: 处理器归属标识，用于 ``off_by_owner()`` 批量清理。
             timeout: 0 使用总线默认；None 由宿主管理超时；正数为订阅独立时限。
         """
@@ -177,7 +178,10 @@ class EventBus:
                 subs.remove(sub)
 
     async def emit(self, event: str, payload: Optional[Dict[str, Any]] = None) -> None:
-        """发射事件，并发调用所有已注册处理器（各自带超时保护）。"""
+        """并发调用订阅快照并等待结束；超时与异常被隔离，返回不表示全部成功。
+
+        处理器继承发射方的 ContextVar；取消继续传播。调用者必须等待或调度本协程。
+        """
         payload = payload or {}
         self._stats[event] = self._stats.get(event, 0) + 1
 
@@ -199,7 +203,7 @@ class EventBus:
         """发射事件并检查拦截。
 
         处理器返回 ``False`` 时中断后续调用并返回 ``False``。
-        所有处理器正常完成则返回 ``True``。
+        没有处理器明确返回 ``False`` 时返回 ``True``；被隔离的异常和超时不构成拦截。
         """
         payload = payload or {}
         self._stats[event] = self._stats.get(event, 0) + 1
