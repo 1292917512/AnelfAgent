@@ -4,7 +4,7 @@
 - normalize_roles：中途 system 注入转 user
   （anthropic 协议会把任意位置的 system 消息抽离到 system 参数顶部，
   不转换则中途纠正/反馈全部脱离上下文位置）
-- prefrontal_cortex.build_llm_context 末尾：尾部 assistant 转 user（prefill 400）
+- ContextAssembly 构建末尾：尾部 assistant 转 user（prefill 400）
 
 本模块将两类修补收拢为单一入口 normalize_for_send()，任何新的发送边界
 规则只加在这里；并用 pydantic 模型定义内部消息契约（文档化 + 可校验）。

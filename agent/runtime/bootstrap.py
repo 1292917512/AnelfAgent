@@ -679,7 +679,6 @@ def create_bootstrap() -> FlowMachine:
         cutoff_ns = time.time_ns() - int(max_age_hours * 3600 * 1e9)
 
         from agent.context.message_schema import is_genuine_user_message
-        from agent.mind.tools.scheduler import enqueue_scope_reply
 
         last_msgs = await sqlite.list_scopes_with_last_message()
         recovered = 0
@@ -694,8 +693,8 @@ def create_bootstrap() -> FlowMachine:
                 continue
             scope = f"{row['scope_type']}_{row['scope_id']}"
             preview = row["content"][:300]
-            await enqueue_scope_reply(
-                mind.pfc, scope, row["adapter_key"], preview,
+            await mind.pfc.enqueue_reply(
+                scope, row["adapter_key"], preview,
                 f"[系统] 进程重启前你收到了这条消息但尚未回复（对话历史中可见其完整内容）：\n"
                 f"{preview}\n请现在补回处理。",
             )

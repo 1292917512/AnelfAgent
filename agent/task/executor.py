@@ -19,6 +19,7 @@ import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.memory.memory_types import MemoryEntry, MemoryType
+from agent.mind.recall import coordinator
 from core.event_bus import EVENT_THINKING_INTROSPECTION, event_bus
 from core.log import log
 
@@ -218,7 +219,7 @@ class TaskExecutor:
         # 环境便签/召回/状态由任务按系统规则经 recall/get_conversation 按需取回
         from core.config import get_config_bool
         lean = get_config_bool("task_lean_context", True)
-        base_messages = await self.mind.get_recollection(conversation_list, lean=lean)
+        base_messages = await coordinator.prepare_recollection(self.mind, conversation_list, lean=lean)
 
         # 长任务交接注入：上次运行留下的 "# HANDOFF" 块（确定性接力，recall 之外的信息通道）
         handoff_prefix = ""

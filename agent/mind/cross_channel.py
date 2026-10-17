@@ -1,4 +1,4 @@
-"""跨频道感知：语义召回与实时叙事构建，活动快照由工作记忆持有。
+"""跨频道感知：语义召回与实时叙事构建，活动快照由 PFC 持有。
 
 模型可见：其他会话的新私聊与群聊 @，以及与当前话题相关的历史片段。
 Token 影响：新消息沿用有界内存窗口；可选 Jev 预判减少无关召回，历史检索复用查询向量。
@@ -18,7 +18,7 @@ from agent.judgment.gate import assess_optional_work
 from agent.memory.memory_retriever import MemoryRetriever
 from agent.messages import build_entity_scope, is_conversation_scope, parse_entity_scope
 from agent.messages.everything import build_scope_id
-from agent.mind.work_memory import ScopeActivity
+from agent.mind.pfc import ScopeActivity
 from core.hooks import HookMode, hook_execution
 from core.log import log
 from core.tags import etag_all, tag_label
@@ -150,7 +150,7 @@ async def _recall_candidates(mind: Mind, current_scope: str, user_scope: str) ->
     """优先显式关联身份，再按活跃时间选择有界候选；不通过同号或昵称推断身份。"""
     mc = mind.config
     cutoff = time.time() - mc.cross_channel_window_minutes * 60
-    activities = {scope: activity for snapshot in mind.pfc.work_memory.channel_snapshots.values()
+    activities = {scope: activity for snapshot in mind.pfc.channel_snapshots.values()
                   for scope, activity in snapshot.active_scopes.items()
                   if scope != current_scope and activity.last_time >= cutoff and is_conversation_scope(scope)}
     linked: set[str] = set()

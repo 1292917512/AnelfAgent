@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import pytest
 from helpers.think_loop_fakes import (
+    FakeContext,
     FakeMind,
-    FakePfc,
     end_reply_result,
     run_think_loop,
     tool_result,
@@ -37,7 +37,7 @@ async def test_tool_progress_refreshes_providers_without_automatic_recall(monkey
             {"role": "user", "content": "继续检查部署问题", "_layer": "conversation"}]
     mind = FakeMind(rounds=[tool_result("", ["inspect"]), tool_result("", ["verify"]), end_reply_result()],
                     tool_results={"inspect": "旧节点配置发生变更", "verify": "配置检查完成"},
-                    default_text=None, pfc=FakePfc(exec_layer=True))
+                    default_text=None, context=FakeContext(exec_layer=True))
     await run_think_loop(mind, base_messages=base)
     assert len(mind.sent_messages) == 3
     assert all(messages[:2] == base for messages in mind.sent_messages)
@@ -76,7 +76,7 @@ class TestProviderTailInjection:
         mind = FakeMind(
             rounds=[tool_result("", ["recall"]), end_reply_result()],
             default_text=None,
-            pfc=FakePfc(exec_layer=True),
+            context=FakeContext(exec_layer=True),
         )
         base = [{"role": "system", "content": "BASE", "_layer": "stable"}]
         await run_think_loop(
@@ -112,7 +112,7 @@ class TestProviderTailInjection:
         """无注册 provider 时消息结构不受影响（零开销零残留）。"""
         mind = FakeMind(
             rounds=[end_reply_result()], default_text=None,
-            pfc=FakePfc(exec_layer=True),
+            context=FakeContext(exec_layer=True),
         )
         await run_think_loop(mind, mode=ThinkMode.REPLY, base_messages=[])
         round1 = mind.sent_messages[0]
@@ -134,7 +134,7 @@ class TestProviderMediaDispatch:
         from types import SimpleNamespace
         mind = FakeMind(
             rounds=[end_reply_result()], default_text=None,
-            pfc=FakePfc(exec_layer=True),
+            context=FakeContext(exec_layer=True),
         )
         mind.llm = SimpleNamespace(
             config=SimpleNamespace(supports_vision=True, use_flat_image_url=False),
@@ -180,7 +180,7 @@ class TestProviderMediaDispatch:
 
         mind = FakeMind(
             rounds=[end_reply_result()], default_text=None,
-            pfc=FakePfc(exec_layer=True),
+            context=FakeContext(exec_layer=True),
         )  # 无 llm 配置 = 非视觉
         await run_think_loop(mind, mode=ThinkMode.REPLY, base_messages=[])
         msgs = mind.sent_messages[0]
@@ -213,7 +213,7 @@ class TestProviderMediaDispatch:
 
         mind = FakeMind(
             rounds=[end_reply_result()], default_text=None,
-            pfc=FakePfc(exec_layer=True),
+            context=FakeContext(exec_layer=True),
         )
         await run_think_loop(mind, mode=ThinkMode.REPLY, base_messages=[])
         msgs = mind.sent_messages[0]

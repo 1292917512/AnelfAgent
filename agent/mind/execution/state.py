@@ -12,7 +12,7 @@ from agent.mind.execution.result_pipeline import ToolResultPipeline
 
 if TYPE_CHECKING:
     from agent.messages import Everything
-    from agent.mind.background_tasks import (
+    from agent.mind.background.tasks import (
         BackgroundTaskRegistry,
     )
     from agent.mind.guardrails import GuardrailController

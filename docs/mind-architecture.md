@@ -7,7 +7,7 @@
 
 ```text
 频道/服务消息
-  → PFC（待处理消息与一般任务队列）
+  → Prefrontal Cortex（PFC，待处理消息与一般任务队列）
   → Mind.execute_mind()
   → cycle：廉价检查 / 态势收集 / 元决策
   → decisions：REPLY、REFLECT、PLAN、TASK、TOOL_ACTION 等
@@ -22,8 +22,9 @@
 | `agent/mind/mind.py` | 持有会话状态、锁和中断信号，提供周期、回复和反思入口 | `Mind.execute_mind()`、`Mind.reply()`、`Mind.reflect()` |
 | `agent/mind/tools/core.py` | 核心工具声明与注册、反思工具权限策略 | `register_core_tools()`、`build_reflect_blocklist()` |
 | `agent/mind/cycle.py` | fast-path、态势收集、元决策、分发和收尾；周期锁由 Mind 持有 | `run_cycle()` |
-| `agent/mind/prefrontal_cortex.py` | 聚合待办、短期记忆、工具激活与会话状态，不构建上下文 | `PrefrontalCortex` |
-| `agent/mind/work_memory.py` | 待办消息、短期状态和动态任务数据 | `WorkMemory` |
+| `agent/mind/pfc.py` | 待办消息、短期状态、通知落库与队列路由 | `PrefrontalCortex` |
+| `agent/mind/background/` | 后台任务登记、操作证据与完成通知路由 | `tasks.py` / `evidence.py` / `routing.py` |
+| `agent/mind/tool_assembly.py` | 工具发现、激活、目录顺序与空闲清理 | `ToolAssembly` |
 | `agent/mind/decisions.py` | 把结构化决策分发到回复、反思、计划和任务执行器 | 决策执行函数 |
 | `agent/mind/execution/` | 多轮执行、消息并入、工具调用和收束；由 Mind 的回复、反思入口调用 | `reply.reply_entry()`、`reflect.reflect_entry()`、`loop.think_loop()` |
 | `agent/mind/recall/` | 首轮并发取数、对话增量召回、关联对象识别 | `coordinator.prepare_recollection()`、`refresh.DialogueRecollection` |
@@ -36,7 +37,11 @@ Mind 原生方法负责消息接收、周期、回复与反思的生命周期；
 `mind.config`；保存与重载原位更新同一对象，无需重建 Mind。共享配置契约位于 `agent/config.py`，
 上下文等模块可直接使用，不经 Mind 中转。消息归属由消息对象的 scope 属性提供。
 工具执行模块直接调用 `EntityRegistry.execute_tool_call()`；Mind 不持有或转发固定的注册表执行器。
-`ModelInvoker` 通过 `ModelRuntime` 接口实时读取配置、模型与会话选项。模型元数据复用模型库缓存，
+工具结果管线只接收模型窗口与守卫，不依赖 Mind。包入口不预加载思维宿主，
+各模块直接导入实际定义，避免导入叶子组件时连带初始化执行管线。
+`ModelInvoker` 通过 `ModelRuntime` 接口实时读取配置与模型，自己持有临时参数 `session_params`。
+参数由模型控制工具经 SDK 修改，覆盖调用选项，流式与非流式共用；作用范围为当前运行时，不按频道隔离。
+模型元数据复用模型库缓存，
 思维层不重复缓存预算，模型切换和参数修改后直接读取当前值；
 压缩器只通过 `CompressionHost` 接口使用该协作者，不依赖 Mind。事件名称、载荷与消息装配顺序由原有链路保持。
 技能库、插件注册表由 `create_mind` 注入共享实例，Mind 不创建上下文所需的单例，也不代理上下文格式化。
@@ -45,12 +50,17 @@ Mind 原生方法负责消息接收、周期、回复与反思的生命周期；
 后台任务注册表与推送中枢由 `create_mind()` 绑定当前事件循环并接入通知回调，Mind 仅持有执行入口。
 模型调用器同样由工厂装配；无状态媒体转换直接调用执行模块函数，不在 Mind 上登记实例。
 会话读写与内部上下文追加统一经 `ConversationData`，Mind 不转发存储接口。
-推送中枢只依赖工作记忆门面与唤醒回调；关停由 `Lifecycle` 先关闭后台任务服务，再收束已受理推送，最后释放存储。
+推送中枢只依赖 `PrefrontalCortex` 与唤醒回调；通知落库、失败退化、入队与预览更新时间由 PFC 统一处理。
+关停由 `Lifecycle` 先关闭后台任务服务，再收束已受理推送，最后释放存储。
+`ToolAssembly` 持有延迟清理标志，等待所有回复退出再清理；`HeartbeatEngine` 持有后台心跳运行标志，
+在派发前去重，成功、失败或取消后释放，并按待办状态续接周期。实体维护存储直接注入心跳引擎。
+观测服务直接读取各组件的快照，Web 使用 `/api/status/thinking`，不为状态查询装配或激活工具。
+对话折叠的预热回调在运行时接线处绑定，调用时读取当前模型与预算，再进入上下文预热模块。
 核心将聊天正文作为对话材料交给 AI 理解，不按固定话语中断执行或自动登记话题禁令。
 中断由 Web 控制、频道显式命令或内部调用通过 `Mind.interrupt(scope)` 发起；频道自身的命令解析由频道负责。
 工作流引擎由 `AgentRuntime` 持有，记忆自动捕获管线由运行时创建并直接施绑到所属模块端口；
 这两类服务不通过 Mind 中转。Mind 保留思考阶段、会话并发控制及执行所需协作者。
-频道活动快照归 `WorkMemory`，接收消息写入历史后更新；跨频道召回和会话工具读取同一份内存状态，
+频道活动快照归 PFC，接收消息写入历史后更新；跨频道召回和会话工具读取同一份内存状态，
 不另建 Mind 缓存。实时消息筛选、动态层位置及当前频道的切换规则保持独立。
 `register_core_tools()` 先加载工具声明再激活分组；子代理工具由 `create_mind()` 装配，
 bootstrap 不重复维护这些声明的导入清单。
@@ -61,12 +71,12 @@ bootstrap 不重复维护这些声明的导入清单。
 - 心跳周期会把长决策转为后台执行，避免阻塞新消息；`mind.is_reply` 为真时 tick 只做维护与提醒
   不启动任务
 - 元决策 decide 的 target 是 LLM 自由文本，一律经 `decisions.normalize_target_scope`
-  规范化后才可用（规范 scope 直接采信；裸 id/旧格式按 PFC `known_scopes()` 唯一解析回填；
+  规范化后才可用（规范 scope 直接采信；裸 id/旧格式按 PFC 的 `known_scopes()` 唯一解析回填；
   无匹配或歧义时 REPLY 回退 `pop_next_reply_target`、PROACTIVE 放弃告警）——畸形 target 不允许
   拼出影子会话
 - tool_action 的 target 是显式通知的目标提示，不是普通正文的默认收件人。反思正文始终内部可见；
   需要通知时由 `send_message` 投递并核对回执，例行核对无需发消息。
-- **后台通知**（`agent/mind/background_routing.py`）：轮外完成与进度事实写入所属会话历史后
+- **后台通知**（`agent/mind/background/routing.py`）：轮外完成与进度事实写入所属会话历史后
   入队并尝试唤醒主模型，由主模型决定继续、重试、回复或结束；不按连续唤醒次数截断，
   不要求新的用户输入，也不增加独立判断调用。后台事件唤醒与定时心跳独立，心跳间隔只控制定时思考
 
@@ -168,8 +178,8 @@ bootstrap 不重复维护这些声明的导入清单。
 管理缓存，`snapshot`、`audit`、`cache_stats`、`observation` 提供观测。
 包入口加载组装层声明，使独立读取 Web 元数据时也能取得完整分层，不启动 Mind 或注册思维工具。
 
-`ports.py` 定义只读工作记忆、工具态势和压缩宿主接口。运行时向上下文注入 PFC 的 `WorkMemory` 与
-`ToolAssembly`，向压缩器注入 Mind；它们共享会话状态，不复制队列、激活状态或缓存。
+`ports.py` 定义 PFC、工具态势的只读视图与压缩宿主接口。运行时向上下文注入 `PrefrontalCortex` 与
+`ToolAssembly`，向压缩器注入 `ModelInvoker`；它们共享会话状态，不复制队列、激活状态或缓存。
 `mind/recall/` 负责召回调度，`skills/recall.py` 负责技能匹配与材料呈现，`mind/runtime_context.py` 负责后台任务状态适配，
 思维循环负责逐轮刷新和调度，上下文组件不反向调用这些调度实现。
 `end_reply` 与 `compress_context` 的工具入口归属 `tools/core.py`，压缩器本身不注册工具。

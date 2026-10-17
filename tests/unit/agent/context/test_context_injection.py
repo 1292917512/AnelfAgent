@@ -10,7 +10,8 @@ import pytest
 
 from agent.context import assembly
 from agent.context.assembly import ContextAssembly
-from agent.mind.prefrontal_cortex import PrefrontalCortex
+from agent.mind.pfc import PrefrontalCortex
+from agent.mind.tool_assembly import ToolAssembly
 from agent.planning import nag
 
 # ==================================================================
@@ -111,7 +112,7 @@ def _pfc(record_count: int, total_count: int, max_size: int = 3) -> ContextAssem
         everything_data=SimpleNamespace(),
         conversation_data=conversation_data,
     )
-    return ContextAssembly(pfc.work_memory, pfc.tool_assembly, conversation_data=conversation_data)
+    return ContextAssembly(pfc, ToolAssembly(), conversation_data=conversation_data)
 
 
 class TestOverflowHint:

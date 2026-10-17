@@ -12,7 +12,7 @@ import pytest
 from agent.hooks_llm import HookExecutor, HookRegistry, LLMHookSpec
 from agent.hooks_llm.settings import config_keys
 from agent.hooks_llm.spec import HookContextMode
-from agent.mind.background_tasks import BackgroundTaskRegistry
+from agent.mind.background.tasks import BackgroundTaskRegistry
 from agent.mind.runtime_context import background_context
 from core.activity import activity_scope
 from core.event_bus import (
@@ -255,13 +255,15 @@ def test_entity_sdk_exposes_stall_policy_through_shared_configuration():
 
 
 @pytest.mark.parametrize("mode, expected", [(HookContextMode.NONE, []), (HookContextMode.LEAN, [{"role": "system", "content": "fixed instructions"}])])
-async def test_context_choice_is_applied_before_handler(mode, expected):
+async def test_context_choice_is_applied_before_handler(mode, expected, monkeypatch):
     seen = []
     async def handler(ctx):
         seen.append(ctx.messages)
         assert ctx.inherited_tools is None
-    mind = SimpleNamespace(background_tasks=None, get_recollection=AsyncMock(return_value=[{"role": "system", "content": "fixed instructions"}]))
+    prepare = AsyncMock(return_value=[{"role": "system", "content": "fixed instructions"}])
+    monkeypatch.setattr("agent.mind.recall.coordinator.prepare_recollection", prepare)
+    mind = SimpleNamespace(background_tasks=None)
     executor = HookExecutor(mind)
     await executor.dispatch("after_reply", [LLMHookSpec("context", "after_reply", handler, context=mode, mode=HookMode.SYNC)], {"messages": [{"role": "user", "content": "private transcript"}], "tools": []})
     assert seen == [expected]
-    assert mind.get_recollection.await_count == (1 if mode is HookContextMode.LEAN else 0)
+    assert prepare.await_count == (1 if mode is HookContextMode.LEAN else 0)

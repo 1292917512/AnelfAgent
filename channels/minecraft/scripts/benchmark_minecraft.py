@@ -80,10 +80,10 @@ async def request(client: httpx.AsyncClient, route: str, method: str = "GET", bo
 
 
 async def idle(client: httpx.AsyncClient) -> bool:
-    status, pfc, delegates = await asyncio.gather(
-        request(client, "/api/status/"), request(client, "/api/status/pfc"), request(client, "/api/delegations/overview"))
-    return bool(status["ready"] and status["status"]["queue_size"] == 0 and not pfc["pending_messages"]
-                and not pfc["general_tasks"] and not delegates["running"])
+    status, thinking, delegates = await asyncio.gather(
+        request(client, "/api/status/"), request(client, "/api/status/thinking"), request(client, "/api/delegations/overview"))
+    return bool(status["ready"] and status["status"]["queue_size"] == 0 and not thinking["pending_messages"]
+                and not thinking["general_tasks"] and not delegates["running"])
 
 
 async def wait_idle(client: httpx.AsyncClient, timeout: float = 180) -> float:
@@ -191,7 +191,7 @@ async def main(args: argparse.Namespace) -> None:
                                                ROOT / "channels/minecraft/mcp/tests/benchmark-executor.cjs",
                                                ROOT / "channels/minecraft/mcp/package-lock.json",
                                                ROOT / "agent/channel/reply_policy.py", ROOT / "agent/mind/tool_assembly.py",
-                                               ROOT / "agent/mind/prefrontal_cortex.py", ROOT / "agent/mind/execution/loop.py",
+                                               ROOT / "agent/mind/pfc.py", ROOT / "agent/mind/execution/loop.py",
                                                ROOT / "channels/minecraft/adapter.py", ROOT / "channels/minecraft/reply_policy.py",
                                                ROOT / "channels/minecraft/receipts.py",
                                                *sorted((ROOT / "channels/minecraft/mcp/runtime").glob("*.mjs"))]}

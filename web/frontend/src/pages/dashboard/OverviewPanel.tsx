@@ -34,12 +34,12 @@ export function OverviewPanel() {
   const setStartedAt = useAppStore((s) => s.setStartedAt);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const statusQuery = useQuery({ queryKey: ["status"], queryFn: () => statusApi.get().then((r) => r.data), refetchInterval: 3000 });
-  const { data: pfc } = useQuery({ queryKey: ["pfc"], queryFn: () => statusApi.pfc().then((r) => r.data), refetchInterval: 3000 });
+  const { data: thinking } = useQuery({ queryKey: ["thinking"], queryFn: () => statusApi.thinking().then((r) => r.data), refetchInterval: 3000 });
   const { data: components } = useQuery({ queryKey: ["components"], queryFn: () => statusApi.components().then((r) => r.data), refetchInterval: 10000 });
   const isReady = statusQuery.data?.ready;
   const statusInfo = statusQuery.data?.status as Record<string, unknown> | undefined;
   const phase = String(statusInfo?.mind_phase ?? "idle");
-  const pendingTotal = (pfc?.pending_messages?.length ?? 0) + (pfc?.general_tasks?.length ?? 0);
+  const pendingTotal = (thinking?.pending_messages?.length ?? 0) + (thinking?.general_tasks?.length ?? 0);
   const tools = components?.structured?.tools;
   const phaseIndex = ["accepting", "recalling"].includes(phase) ? 0 : ["deciding", "introspecting", "llm_calling"].includes(phase) ? 1 : phase === "tool_executing" ? 2 : phase === "replying" ? 3 : -1;
   useEffect(() => {
@@ -67,8 +67,8 @@ export function OverviewPanel() {
           {[
             { label: t("messageCount"), icon: MessageSquare, value: statusInfo?.message_count ?? "—", note: t("overview.received") },
             { label: t("tools"), icon: Wrench, value: tools ? `${tools.enabled} / ${tools.total}` : "—", note: t("overview.availableTools") },
-            { label: t("status:stm"), icon: Brain, value: pfc ? `${pfc.short_term_memory_count ?? 0} / ${pfc.short_term_memory_max ?? 0}` : "—", note: t("overview.memoryWindow") },
-            { label: t("status:pending"), icon: Inbox, value: pfc ? pendingTotal : "—", note: t("overview.pendingHint") },
+            { label: t("status:stm"), icon: Brain, value: thinking ? `${thinking.short_term_memory_count ?? 0} / ${thinking.short_term_memory_max ?? 0}` : "—", note: t("overview.memoryWindow") },
+            { label: t("status:pending"), icon: Inbox, value: thinking ? pendingTotal : "—", note: t("overview.pendingHint") },
           ].map((metric) => <div key={metric.label} className="overview-metric">
             <div><span>{metric.label}</span><metric.icon size={16} /></div>
             <strong>{String(metric.value)}</strong><span className="overview-metric-note">{metric.note}</span>
@@ -77,7 +77,7 @@ export function OverviewPanel() {
       </div>
       <div className="overview-inbox">
         <SectionBoundary><AttentionPanel /></SectionBoundary>
-        <PendingTasks pfc={pfc} />
+        <PendingTasks snapshot={thinking} />
       </div>
       <SectionBoundary><DelegationsPanel /></SectionBoundary>
       <Card className="overview-details !p-0">

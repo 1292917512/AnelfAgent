@@ -22,7 +22,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from agent.hooks_llm.progress import HookProgress
 from agent.hooks_llm.snapshot import freeze_messages
 from agent.hooks_llm.spec import HookContext, HookContextMode, LLMHookSpec
-from agent.mind.background_tasks import CompletionNotification, current_background_task_id
+from agent.mind.background.tasks import CompletionNotification, current_background_task_id
+from agent.mind.recall import coordinator
 from core.activity import activity_owner
 from core.hooks import HookMode, hook_execution
 from core.log import bind_log_actor, log, reset_log_actor
@@ -248,7 +249,7 @@ class HookExecutor:
                 return []
             return freeze_messages(payload.get("messages"))
         if spec.context is HookContextMode.LEAN:
-            return await self._mind.get_recollection(lean=True)
+            return await coordinator.prepare_recollection(self._mind, lean=True)
         return []
 
     @staticmethod

@@ -9,7 +9,7 @@ import type {
   LogStats,
   PythonPackage,
   StartupNode,
-  PfcSnapshot,
+  ThinkingSnapshot,
   RuntimeComponents,
   UiStateReport,
 } from "@/lib/types";
@@ -18,7 +18,7 @@ export const statusApi = {
   get: () => api.get<AgentStatusResponse>("/status/"),
   components: () => api.get<{ structured: RuntimeComponents; lines: string[] }>("/status/components"),
   events: () => api.get<{ stats: Record<string, number> }>("/status/events"),
-  pfc: () => api.get<PfcSnapshot>("/status/pfc"),
+  thinking: () => api.get<ThinkingSnapshot>("/status/thinking"),
   logs: (level?: string, tag?: string, keyword?: string, limit = 50) =>
     api.get<{ logs: LogEntry[]; count: number }>("/status/logs", { params: { level: level || undefined, tag: tag || undefined, keyword: keyword || undefined, limit } }),
   logStats: () => api.get<LogStats>("/status/log-stats"),

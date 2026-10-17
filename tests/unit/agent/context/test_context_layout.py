@@ -9,7 +9,8 @@ import pytest
 
 from agent.context.assembly import ContextAssembly
 from agent.context.message_schema import normalize_for_send
-from agent.mind.prefrontal_cortex import PrefrontalCortex
+from agent.mind.pfc import PrefrontalCortex
+from agent.mind.tool_assembly import ToolAssembly
 
 
 def _pfc() -> ContextAssembly:
@@ -22,7 +23,7 @@ def _pfc() -> ContextAssembly:
         everything_data=SimpleNamespace(),
         conversation_data=conversation_data,
     )
-    return ContextAssembly(pfc.work_memory, pfc.tool_assembly, conversation_data=conversation_data)
+    return ContextAssembly(pfc, ToolAssembly(), conversation_data=conversation_data)
 
 
 def _layers(msgs: list[dict]) -> list[str]:

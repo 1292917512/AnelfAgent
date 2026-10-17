@@ -11,15 +11,13 @@ from helpers.think_loop_fakes import FakeMind, run_think_loop, tool_result
 
 from agent.context.message_schema import normalize_for_send
 from agent.context.observation import emit_context_summary, observe_preparation
-from agent.mind.background_tasks import BackgroundTaskRegistry
+from agent.mind.background.tasks import BackgroundTaskRegistry
 from agent.mind.execution.state import ThinkMode
 from agent.mind.runtime_context import background_context
 from core.conversation_scope import bind_scope, reset_scope
 
 
 async def test_preparation_observer_preserves_signature_messages_and_event_order(monkeypatch):
-    from agent.mind.mind import Mind
-
     events = []
     messages = [{"role": "system", "content": "稳定前缀", "_layer": "stable"},
                 {"role": "user", "content": "原始消息", "_layer": "conversation"},
@@ -37,10 +35,10 @@ async def test_preparation_observer_preserves_signature_messages_and_event_order
         return messages
 
     monkeypatch.setattr("agent.context.observation.event_bus.emit", emit)
-    monkeypatch.setattr("agent.mind.mind.prepare_recollection", prepare)
-    assert inspect.iscoroutinefunction(Mind.get_recollection)
-    assert inspect.signature(Mind.get_recollection) == inspect.signature(Mind.get_recollection.__wrapped__)
-    assert await Mind.get_recollection(marker, messages, None, lean=True) is messages
+    observed = observe_preparation(prepare)
+    assert inspect.iscoroutinefunction(observed)
+    assert inspect.signature(observed) == inspect.signature(prepare)
+    assert await observed(marker, messages, None, lean=True) is messages
     assert events == ["running", "prepare", "done"]
     assert messages == before and normalize_for_send(messages) == wire
 
@@ -77,7 +75,7 @@ async def test_reply_entry_applies_only_running_channel_recall_default(monkeypat
     manager = SimpleNamespace(get=lambda key: channel if key == "game" else None)
     monkeypatch.setattr("agent.channel.manager.get_channel_manager", lambda: manager)
     expected = policy if running else default_recall_policy()
-    async def collect(**kwargs):
+    async def collect(mind, **kwargs):
         assert current_recall_policy(scope) == expected
         return [{"role": "system", "content": "固定前缀"}]
     async def execute(*args, **kwargs):
@@ -85,10 +83,11 @@ async def test_reply_entry_applies_only_running_channel_recall_default(monkeypat
         assert kwargs["base_messages"] == [{"role": "system", "content": "固定前缀"}]
     loop = AsyncMock(side_effect=execute)
     monkeypatch.setattr("agent.mind.execution.reply.think_loop", loop)
+    monkeypatch.setattr("agent.mind.recall.coordinator.prepare_recollection", collect)
     mind = SimpleNamespace(config=SimpleNamespace(max_tool_iterations=5),
-                           get_recollection=AsyncMock(side_effect=collect),
-                           pfc=SimpleNamespace(get_active_tool_schemas=AsyncMock(return_value=[]),
-                                               consume_scope_task=Mock(), clear_dynamic_tools=Mock()))
+                           pfc=SimpleNamespace(consume_scope_task=Mock()),
+                           tool_assembly=SimpleNamespace(get_active_tool_schemas=AsyncMock(return_value=[]),
+                                                        clear_dynamic_tools=Mock()))
     await reply_loop(mind, anything, adapter_key="game")
     loop.assert_awaited_once()
     assert not has_recall_turn(scope)

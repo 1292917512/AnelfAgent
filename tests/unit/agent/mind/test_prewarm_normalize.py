@@ -1,4 +1,4 @@
-"""缓存预热（Mind.prewarm_scope_cache）发送边界规整回归测试。
+"""上下文缓存预热的发送边界规整回归测试。
 
 锁定修复：prewarm 曾直接把带 _layer 标签的消息发给供应商（decorate 后
 未经 normalize_for_send），内部分类标签泄露可能导致严格校验端点 400。
@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.config import MindConfig
+from agent.context.prewarm import prewarm_scope_cache
 from agent.mind.mind import Mind
 
 
@@ -63,13 +64,17 @@ async def test_prewarm_strips_layer_tags(monkeypatch) -> None:
             {"role": "user", "content": "你好", "_layer": "conversation"},
         ]
 
-    mind.pfc = MagicMock()
+    mind.tool_assembly = MagicMock()
     mind.context.build_llm_context = _build_context
-    mind.pfc.get_active_tool_schemas = AsyncMock(return_value=[])
+    mind.tool_assembly.get_active_tool_schemas = AsyncMock(return_value=[])
     mind.llm = _fake_llm_client(sent)
 
-    # 绑定真实的 prewarm_scope_cache 实现到替身实例
-    await Mind.prewarm_scope_cache(mind, "user", "test:u1")
+    await prewarm_scope_cache(
+        "user", "test:u1", context=mind.context, char=mind.char,
+        models_summary="", direct_vision=False, retriever=None,
+        conversation_data=mind.conversation_data, client=mind.llm,
+        get_tools=mind.tool_assembly.get_active_tool_schemas, timeout=mind.config.llm_timeout * 20,
+    )
 
     assert sent, "chat_stream 应被调用"
     for msg in sent:
@@ -97,9 +102,14 @@ async def test_prewarm_no_llm_client_noop(monkeypatch) -> None:
     async def _build_context(**kwargs):
         return [{"role": "system", "content": "x", "_layer": "stable"}]
 
-    mind.pfc = MagicMock()
+    mind.tool_assembly = MagicMock()
     mind.context.build_llm_context = _build_context
     mind.llm = None  # 非 LLMClient
 
     # 不应抛异常
-    await Mind.prewarm_scope_cache(mind, "user", "test:u1")
+    await prewarm_scope_cache(
+        "user", "test:u1", context=mind.context, char=mind.char,
+        models_summary="", direct_vision=False, retriever=None,
+        conversation_data=mind.conversation_data, client=mind.llm,
+        get_tools=mind.tool_assembly.get_active_tool_schemas, timeout=mind.config.llm_timeout * 20,
+    )

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Awaitable, Callable, Dict, List, Optional, Set
 from agent.mind.execution.messages import _user_initiated, snapshot_watermark
 from agent.mind.execution.result_pipeline import ToolResultPipeline
 from agent.mind.execution.state import ExecutionContext, RoundState, ThinkMode
+from agent.mind.recall import coordinator
 from core.event_bus import event_bus
 from core.stream_events import EVENT_ASSISTANT_DELTA
 
@@ -89,7 +90,7 @@ async def _prepare_think_context(
     adapter_key = (parse_entity_scope(current_scope)[1] or adapter_key) if mode == ThinkMode.REPLY else ""
     if base_messages is None:
         if mode == ThinkMode.REPLY and anything:
-            base_messages = await mind.get_recollection(anything=anything)
+            base_messages = await coordinator.prepare_recollection(mind, anything=anything)
         else:
             base_messages = []
 
@@ -103,7 +104,7 @@ async def _prepare_think_context(
     # 工具调用守卫：跟踪本次会话的调用历史，检测死循环
     guardrail = GuardrailController()
     # 工具结果加工管线：脱敏 → 扫描 → 守卫 → 截断（整轮预算在会话内累计）
-    pipeline = ToolResultPipeline(mind, guardrail)
+    pipeline = ToolResultPipeline(mind.model_invoker.get_context_length(), guardrail)
     # 实体推送并入水位：base 快照之前到达的推送已随历史或兜底短期记忆进 base，
     # 仅快照后到达的推送轮内注入（防重复）。优先使用调用方在快照前读取的水位。
     push_watermark = 0

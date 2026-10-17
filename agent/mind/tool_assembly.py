@@ -1,6 +1,6 @@
 """ToolAssembly — 工具装配：召回、tag 激活、动态发现、schema 合并与门控。
 
-从 PrefrontalCortex 拆分而来。本模块为自包含状态类，不依赖 Mind/PFC，
+本模块持有工具目录与清理状态，不依赖 Mind，
 工具实体、门控与频道声明通过各自公共接口读取，便于独立测试。
 
 职责：
@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Set
 from copy import deepcopy
 from typing import TYPE_CHECKING, Optional
 
@@ -44,7 +46,7 @@ async def inherit_tool_catalog(previous: list[dict], selected: list[dict], *, sc
 
 
 class ToolAssembly:
-    """工具召回与活跃工具集装配（PFC 工具面组件）。"""
+    """工具召回、活跃目录装配与空闲清理。"""
 
     def __init__(self, channel_manager: Optional["ChannelManager"] = None) -> None:
         self._channel_manager = channel_manager
@@ -62,6 +64,7 @@ class ToolAssembly:
         # 跨回复冻结的 tools 数组顺序（追加式：只增不改，缓存前缀稳定的最终防线；
         # 仅存名字，注销工具由存在性检查自然滤除，无害残留）
         self._frozen_tool_names: list[str] = []
+        self._clear_pending = False
 
     @property
     def tools_version(self) -> int:
@@ -80,14 +83,9 @@ class ToolAssembly:
         return tool_activation.active_groups()
 
     @property
-    def _tool_recall_top_n(self) -> int:
+    def tool_recall_top_n(self) -> int:
         from agent.config import get_mind_config
         return get_mind_config().tool_recall_top_n
-
-    @property
-    def tool_recall_top_n(self) -> int:
-        """热工具召回 top-N 配置（状态快照等外部读取用）。"""
-        return self._tool_recall_top_n
 
     # ==================================================================
     # tag 激活 / 媒体工具
@@ -133,10 +131,10 @@ class ToolAssembly:
         if not self._tool_recall:
             return []
         sorted_tools = sorted(self._tool_recall.items(), key=lambda x: x[1], reverse=True)
-        hot = sorted(name for name, _ in sorted_tools[:self._tool_recall_top_n])
+        hot = sorted(name for name, _ in sorted_tools[:self.tool_recall_top_n])
         if hot:
             recall_detail = ", ".join(f"{n}({self._tool_recall[n]})" for n in hot)
-            log(f"热工具 top-{self._tool_recall_top_n}: [{recall_detail}]", "DEBUG", tag="PFC")
+            log(f"热工具 top-{self.tool_recall_top_n}: [{recall_detail}]", "DEBUG", tag="PFC")
         return hot
 
     def get_hot_tool_schemas(self) -> list[dict]:
@@ -214,6 +212,26 @@ class ToolAssembly:
             self._scope_order.pop(oldest)
             self._scope_discovered_tools.pop(oldest, None)
             self._scope_frozen_tool_names.pop(oldest, None)
+
+    def clear_when_idle(self, active_scopes: Set[str], idle: asyncio.Event) -> None:
+        """在所有回复退出后清理目录；共享活跃集合随会话更新，后台等待只登记一次。"""
+        if not active_scopes:
+            self.clear_dynamic_tools()
+            return
+        if self._clear_pending:
+            return
+        self._clear_pending = True
+        log(f"延迟清理动态工具：仍有活跃会话 {sorted(active_scopes)}", "DEBUG", tag="思维")
+
+        async def wait_and_clear() -> None:
+            try:
+                await idle.wait()
+                if not active_scopes:
+                    self.clear_dynamic_tools()
+            finally:
+                self._clear_pending = False
+
+        asyncio.create_task(wait_and_clear(), name="agent.mind.clear_dynamic_tools")
 
     def clear_dynamic_tools(self, scope: str = "", *, force: bool = False) -> None:
         """清理动态目录；长期会话可保留前缀，一次性反思强制释放自身状态。"""

@@ -36,7 +36,7 @@
   "syncPending": "Pending Sync",
   "syncFailed": "Failed Sync",
   "retryFailedSync": "Retry Failed",
-  "stmTitle": "Short-term Memory (PFC)",
+  "stmTitle": "Short-term Memory",
   "autoRefresh": "Auto Refresh",
   "temporary": "Temporary Memory",
   "pendingFilter": "Pending",

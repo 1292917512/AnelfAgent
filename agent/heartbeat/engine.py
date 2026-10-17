@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.memory.memory_types import MemoryEntry, MemoryType
 from agent.memory.self_profile import PROFILE_MEMORY_IMPORTANCE
+from agent.mind.recall import coordinator
 from agent.task import history as task_history
 from agent.task.executor import TaskExecutor
 from agent.task.executor import _clean_llm_output as _clean_llm
@@ -49,6 +50,7 @@ if TYPE_CHECKING:
     from agent.heartbeat.config import TaskSchedule
     from agent.messages import EntityData
     from agent.mind.mind import Mind
+    from agent.storage.data_center import EverythingData
 
 
 _SWEEP_CONFIGS = {
@@ -149,8 +151,9 @@ class HeartbeatEngine:
     _MAX_TASK_FAILURES = 3  # 任务连续失败上限，达到后放弃本轮调度标记
     _MAX_ANALYSIS_ATTEMPTS = 3  # 实体画像分析连续未执行上限，达到后放弃该实体
 
-    def __init__(self, mind: "Mind") -> None:
+    def __init__(self, mind: Mind, everything_data: EverythingData) -> None:
         self.mind = mind
+        self.everything_data = everything_data
         self.config = get_heartbeat_config()
         self.task_registry = TaskRegistry()
         # 定义文件调度种子必须在启动时执行：reload 仅 Web API 触发，
@@ -159,6 +162,7 @@ class HeartbeatEngine:
         self.executor = TaskExecutor(mind)
         self._total_ticks: int = 0
         self._tick_lock = asyncio.Lock()
+        self.background_tick_running = False
         self._task_failures: Dict[str, int] = {}
         # 定时任务连续失败达上限后的"今日放弃"台账（任务名 → 放弃日期）：
         # 替代旧的"放弃即标记今日已跑"写法——标记已不存于调度配置，
@@ -373,6 +377,29 @@ class HeartbeatEngine:
     # ------------------------------------------------------------------
     # 心跳主循环
     # ------------------------------------------------------------------
+
+    def start_background_tick(self) -> None:
+        """至多启动一个后台心跳；在入队前登记状态，避免相邻周期重复派发。"""
+        if self.background_tick_running:
+            return
+        self.background_tick_running = True
+        from core.async_helper import spawn
+        spawn(self._run_background_tick(), name="mind.heartbeat.tick")
+
+    async def _run_background_tick(self) -> None:
+        """在独立链路中执行心跳，完成后按待办状态续接自主周期。"""
+        from core.trace_session import detach_thinking_session
+        detach_thinking_session()
+        try:
+            executed = await self.tick()
+            if executed:
+                log(f"心跳任务完成: {', '.join(executed)}", tag="心跳")
+        except Exception as exc:
+            log(f"心跳 tick 异常: {exc}", "WARNING", tag="心跳")
+        finally:
+            self.background_tick_running = False
+            if self.mind.pfc.has_pending_tasks():
+                self.mind._schedule_next_cycle("心跳完成后仍有待处理任务")
 
     async def tick(self) -> List[str]:
         """单次心跳 — 返回本次执行的任务名列表。
@@ -719,7 +746,7 @@ class HeartbeatEngine:
         await self._maintain_conversation_folds()
 
         try:
-            saved = await self.mind.everything_data.save_all_entity_counters()
+            saved = await self.everything_data.save_all_entity_counters()
             if saved:
                 log(f"心跳持久化实体计数: {saved} 个", "DEBUG", tag="心跳")
         except Exception as e:
@@ -1286,7 +1313,7 @@ class HeartbeatEngine:
             combined = combined + alias_convs
 
         from core.config import get_config_bool
-        base_messages = await self.mind.get_recollection(
+        base_messages = await coordinator.prepare_recollection(self.mind,
             combined, lean=get_config_bool("task_lean_context", True),
         )
         personality_desc = entity.get_personality_desc()
@@ -1309,7 +1336,7 @@ class HeartbeatEngine:
         # 覆盖式更新前备份旧画像（防坏写不可恢复）
         try:
             scope_type0, scope_id0 = entity.identity_parts
-            sqlite0 = self.mind.everything_data.router.sqlite
+            sqlite0 = self.everything_data.router.sqlite
             old_profile = await sqlite0.get_entity_personality(
                 scope_type=scope_type0, scope_id=scope_id0,
             )
@@ -1320,7 +1347,7 @@ class HeartbeatEngine:
             log(f"画像备份失败: {exc}", "DEBUG", tag="心跳")
 
         entity.set_personality(content)
-        await self.mind.everything_data.save_entity_personality(entity)
+        await self.everything_data.save_entity_personality(entity)
         log(f"实体画像更新: {desc} -> {content[:80]}", tag="心跳")
 
         # 画像记忆以含 adapter 的身份 scope_id 为标识，跨频道同号实体互不串档
@@ -1378,7 +1405,7 @@ class HeartbeatEngine:
         """收集所有 alias 关联身份的对话记录。"""
         try:
             from agent.messages import MessageAssistant, MessageAssistantGroup
-            sqlite = self.mind.everything_data.router.sqlite
+            sqlite = self.everything_data.router.sqlite
             scope_type, scope_id = entity.identity_parts
             primary = await sqlite.resolve_alias(scope_type, scope_id)
             p_type, p_id = primary if primary else (scope_type, scope_id)

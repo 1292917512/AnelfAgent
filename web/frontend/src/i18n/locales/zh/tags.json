@@ -23,7 +23,7 @@
   "sourceMessage": "消息",
   "sourceTool": "工具",
   "sourceMessageTooltip": "作为 [key:value] 嵌入消息，LLM 可直接理解",
-  "sourceToolTooltip": "被工具注册为路由标签，PFC 扫描消息时激活对应工具",
+  "sourceToolTooltip": "被工具注册为路由标签，扫描消息时激活对应工具",
   "tagFormat": "[{{name}}:值]",
   "statsBuiltin": "{{count}} 个内置",
   "statsCustom": "{{count}} 个自定义",

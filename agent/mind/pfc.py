@@ -1,7 +1,6 @@
-"""WorkMemory — 工作记忆的"数据面"：消息队列、待办持久化、短期记忆、媒体暂存与态势路由。
+"""Prefrontal Cortex（PFC）：消息队列、待办持久化、短期记忆、媒体暂存与态势路由。
 
-从 PrefrontalCortex 拆分而来（原 PFC 职责过载，见 agent/mind/prefrontal_cortex.py）。
-本模块为自包含状态类，不依赖 Mind；工具激活委托给 ToolAssembly（构造后由门面接线）。
+不依赖 Mind；消息标签经构造注入的 ToolAssembly 激活工具。
 
 职责：
 - 消息队列管理（pending_user / pending_group / pending_analysis，按 scope 分桶隔离）
@@ -84,21 +83,21 @@ def _pfc_persist_enabled() -> bool:
         return True
 
 
-class WorkMemory:
-    """消息队列 + 短期记忆 + 态势路由（PFC 数据面组件）。"""
+class PrefrontalCortex:
+    """消息队列、短期记忆、通知历史与态势路由。"""
 
     def __init__(
             self,
             everything_data: EverythingData,
             conversation_data: Optional["ConversationData"] = None,
+            *, tool_assembly: Optional["ToolAssembly"] = None,
     ) -> None:
         # 短期记忆按 scope 分桶（跨会话隔离，避免并行会话互相串内容）；
         # 无 scope 的写入进 "_default" 全局桶，读取时与本 scope 桶合并。
         self._temporary: dict[str, list[Dict]] = {}
         self.everything_data = everything_data
         self._conversation_data = conversation_data
-        # 工具激活接线（门面注入）：消息标签扫描命中时激活对应工具
-        self.tool_assembly: Optional["ToolAssembly"] = None
+        self.tool_assembly = tool_assembly
 
         # 消息任务队列（元素为 entity_scope 字符串，如 user_qq:123 / user_webui:u#chat_id）
         self.pending_user: UniqueQueue[str] = UniqueQueue()
@@ -180,7 +179,7 @@ class WorkMemory:
             except Exception as exc:
                 log(f"待办持久化写入失败: {exc}", "DEBUG", tag="PFC")
 
-        spawn(_add(), name="work_memory.persist_add")
+        spawn(_add(), name="pfc.persist_add")
 
     def _persist_remove(self, task_key: str) -> None:
         """异步删除已消费待办（fire-and-forget）。"""
@@ -200,7 +199,7 @@ class WorkMemory:
             except Exception as exc:
                 log(f"待办持久化删除失败: {exc}", "DEBUG", tag="PFC")
 
-        spawn(_del(), name="work_memory.persist_remove")
+        spawn(_del(), name="pfc.persist_remove")
 
     def restore_persisted_tasks(self, rows: List[Dict[str, Any]]) -> int:
         """启动时 replay 持久化的待办（bootstrap 调用，同步重建内存队列）。
@@ -250,14 +249,9 @@ class WorkMemory:
     # ==================================================================
 
     @property
-    def _max_temp(self) -> int:
+    def max_temp(self) -> int:
         from agent.config import get_mind_config
         return get_mind_config().short_term_memory_size
-
-    @property
-    def max_temp(self) -> int:
-        """短期记忆桶容量上限（监控/执行上下文展示用）。"""
-        return self._max_temp
 
     def get_group_recent_senders(self, scope: str) -> list[tuple[str, str]]:
         """群聊 scope 的最近发送者列表 [(uid, name), ...]（场景信息用）。"""
@@ -287,9 +281,9 @@ class WorkMemory:
         key = scope or "_default"
         bucket = self._temporary.setdefault(key, [])
         bucket.append(temporary_clip)
-        if len(bucket) > self._max_temp:
-            overflowed = bucket[:-self._max_temp]
-            self._temporary[key] = bucket[-self._max_temp:]
+        if len(bucket) > self.max_temp:
+            overflowed = bucket[:-self.max_temp]
+            self._temporary[key] = bucket[-self.max_temp:]
             self._promote_overflow(overflowed, key)
 
     @staticmethod
@@ -360,6 +354,53 @@ class WorkMemory:
     # ==================================================================
     # 消息入队 / 画像分析触发
     # ==================================================================
+
+    async def append_notification(
+        self, scope: str, channel: str, prompt: str, *, ts_ns: int | None = None,
+    ) -> bool:
+        """将一次性系统事实追加到目标历史；失败返回 False，交由调用方保留通知。"""
+        router = getattr(self._conversation_data, "router", None)
+        if router is None:
+            return False
+        try:
+            from agent.messages.everything import parse_entity_scope
+            from agent.storage.storage_router import StorageDomain
+            scope_type, _adapter, _base_id, _session_id = parse_entity_scope(scope)
+            if not scope_type:
+                return False
+            scope_id = scope[len(scope_type) + 1:]
+            await router.append(
+                StorageDomain.CONVERSATION,
+                scope_type=scope_type, scope_id=scope_id,
+                role="system", content=prompt, ts_ns=ts_ns if ts_ns is not None else time.time_ns(),
+                adapter_key=channel or "", trigger_mind=False,
+            )
+            return True
+        except Exception as exc:
+            log(f"一次性通知写入历史失败（回退短期记忆兜底）: scope={scope} ({exc})",
+                "WARNING", tag="调度")
+            return False
+
+    async def enqueue_reply(self, scope: str, channel: str, preview: str, prompt: str) -> None:
+        """先写通知历史，再登记待回复队列与水位；失败保留短期记忆，由调用方唤醒。"""
+        from agent.messages import is_conversation_scope
+        if not is_conversation_scope(scope):
+            log(
+                f"拒绝入队不可路由 scope（退化为全局短期记忆）: scope={scope!r} preview={preview[:60]}",
+                "WARNING", tag="调度",
+            )
+            self.add_temporary({"role": "system", "content": prompt})
+            return
+        timestamp = time.time_ns()
+        if not await self.append_notification(scope, channel, prompt, ts_ns=timestamp):
+            self.add_temporary({"role": "system", "content": prompt}, scope=scope)
+        if scope.startswith("group_"):
+            self.pending_group.append(scope)
+        else:
+            self.pending_user.append(scope)
+        self.set_message_preview(scope, preview, created_ts_ns=timestamp)
+        if channel:
+            self.set_adapter_key(scope, channel)
 
     async def add_task(self, anything: Everything) -> None:
         """将消息加入待处理队列，收集附带媒体，触发画像分析检查。"""

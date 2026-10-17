@@ -28,7 +28,6 @@ from core.tool_results import extract_error_text
 
 if TYPE_CHECKING:
     from agent.mind.guardrails import GuardrailController
-    from agent.mind.mind import Mind
 
 #: 超大工具结果落盘函数端口（agent → entities 跨层桥，wiring 以
 #: entities.filesystem.shell_state.persist_output 施绑；未施绑时退回截断）
@@ -78,14 +77,10 @@ class ToolResultPipeline:
 
     def __init__(
             self,
-            mind: "Mind",
+            context_length: int,
             guardrail: Optional["GuardrailController"] = None,
     ) -> None:
         self._guardrail = guardrail
-        context_length = (
-            mind.model_invoker.get_context_length()
-            if hasattr(mind, "model_invoker") else 0
-        )
         self._budget: Optional[ResultBudget] = (
             budget_for_context_window(context_length) if context_length > 0 else None
         )

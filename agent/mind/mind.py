@@ -13,8 +13,6 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
-from agent.context.observation import observe_preparation
-from agent.context.preparation import model_context
 from agent.messages import EverythingGroup
 from agent.mind.autonomous import MindPhase
 from agent.mind.cycle import run_cycle
@@ -22,7 +20,6 @@ from agent.mind.execution.reflect import reflect_entry
 from agent.mind.execution.reply import reply_entry
 from agent.mind.interrupt import InterruptRegistry
 from agent.mind.perception import should_enqueue_external_message
-from agent.mind.recall.coordinator import prepare_recollection
 from core.event_bus import (
     EVENT_THINKING_PHASE_CHANGE,
     event_bus,
@@ -43,12 +40,13 @@ if TYPE_CHECKING:
     from agent.memory.memory_retriever import MemoryRetriever
     from agent.memory.memory_store import MemoryStore
     from agent.messages import CharacterAgent, Everything
-    from agent.mind.background_tasks import BackgroundTaskRegistry
+    from agent.mind.background.tasks import BackgroundTaskRegistry
     from agent.mind.llm_invoker import ModelInvoker
-    from agent.mind.prefrontal_cortex import PrefrontalCortex
+    from agent.mind.pfc import PrefrontalCortex
     from agent.mind.push import PushHub
+    from agent.mind.tool_assembly import ToolAssembly
     from agent.skills.runtime import SkillRuntime
-    from agent.storage.data_center import ConversationData, EverythingData
+    from agent.storage.data_center import ConversationData
 
 
 class Mind:
@@ -68,9 +66,9 @@ class Mind:
             llm: ChatModel,
             llm_manager: Optional[LLMManager] = None,
             channel_manager: ChannelManager,
-            everything_data: EverythingData,
             conversation_data: ConversationData,
-            prefrontal_cortex: PrefrontalCortex,
+            pfc: PrefrontalCortex,
+            tool_assembly: ToolAssembly,
             context: ContextAssembly,
             skills: SkillRuntime,
             background_tasks: BackgroundTaskRegistry,
@@ -83,12 +81,12 @@ class Mind:
         self.llm = llm
         self.llm_manager = llm_manager
         self.channel_manager = channel_manager
-        self.everything_data = everything_data
         self.conversation_data = conversation_data
 
         self.skills = skills
         self.background_tasks = background_tasks
-        self.pfc = prefrontal_cortex
+        self.pfc = pfc
+        self.tool_assembly = tool_assembly
         self.context = context
         self.memory_store = memory_store
         self.embedder = embedder
@@ -103,19 +101,14 @@ class Mind:
         self._last_reflect_time: float = 0.0
         # 最近一次真实思考活动时间戳（idle 空闲计数锚点，见 last_activity_ts）
         self._last_activity_ts: float = 0.0
-        # 会话级 LLM 参数覆盖（model_control 工具经此下发 temperature 等，随会话存活）
-        self.session_llm_params: dict = {}
 
         self._reflecting: bool = False
         # 进行中的 reflect 调用深度（并发子代理/任务/反思共用唯一入口，
         # phase 空闲判定的活跃事实源之一，asyncio 单线程计数无竞态）
         self._reflect_depth: int = 0
         self._cycle_lock = asyncio.Lock()
-        self._heartbeat_running: bool = False
         # 自动续轮退避计数（周期内无实质进展时递增，防紧凑重试烧 token）
         self._auto_cycle_retry: int = 0
-        # 动态工具后台清理去重标记
-        self._dynamic_tools_clear_pending: bool = False
 
         # scope 级中断信号（think_loop 每轮检查，用户可刹车失控回复）
         self.interrupts = InterruptRegistry()
@@ -148,7 +141,7 @@ class Mind:
     # 消息感知入口
 
     async def accept_feel(self, anything: Everything) -> None:
-        """接收外部消息：到达即写入对话历史（保证时序）；仅在 trigger_mind 时加入 PFC 任务队列。"""
+        """接收外部消息：到达即写入对话历史（保证时序）；仅在 trigger_mind 时加入 PFC 队列。"""
         try:
             # 思维工作运行中不覆盖当前阶段，避免 UI 阶段抖动
             if (not self._active_scopes and not self._cycle_lock.locked()
@@ -158,7 +151,7 @@ class Mind:
             log(f"感知输入: {preview}", tag="思维")
             if not await self.conversation_data.add_conversation_record_by_everything(anything):
                 return
-            self.pfc.work_memory.observe_channel(
+            self.pfc.observe_channel(
                 anything, window_minutes=self.config.cross_channel_window_minutes,
             )
 
@@ -295,18 +288,6 @@ class Mind:
             # PROACTIVE 直调路径无登记（无其他活跃即归零）
             self._reset_phase_if_idle()
 
-    async def prewarm_scope_cache(self, scope_type: str, scope_id: str) -> None:
-        """请求预热会话折叠后的上下文前缀。"""
-        from agent.context.prewarm import prewarm_scope_cache
-        models_summary, direct_vision = model_context(self.llm, self.llm_manager)
-        await prewarm_scope_cache(
-            scope_type, scope_id, context=self.context, char=self.char,
-            models_summary=models_summary, direct_vision=direct_vision,
-            retriever=self.retriever, conversation_data=self.conversation_data, client=self.llm,
-            get_tools=self.pfc.get_active_tool_schemas,
-            timeout=self.config.llm_timeout * 20,
-        )
-
     async def reflect(
             self,
             messages: List[Dict],
@@ -356,20 +337,3 @@ class Mind:
         finally:
             self._reflect_depth -= 1
             self._reset_phase_if_idle()
-
-    async def execute_task(self, task_name: str) -> Optional[str]:
-        """按名称执行指定任务，返回任务产出文本或 None。"""
-        log(f"执行任务: {task_name}", tag="思维")
-        return await self.heartbeat_engine.run_task(task_name)
-
-    # 召回调度
-
-    @observe_preparation
-    async def get_recollection(
-            self,
-            conversation_list: Optional[List[Dict]] = None,
-            anything: Optional["Everything"] = None,
-            *, lean: bool = False,
-    ) -> List[Dict]:
-        """准备当前会话的召回材料并组装上下文。"""
-        return await prepare_recollection(self, conversation_list, anything, lean=lean)

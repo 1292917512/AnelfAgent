@@ -8,7 +8,7 @@ if TYPE_CHECKING:
     from agent.llm.types import ChatResult
 
 
-class WorkingMemoryView(Protocol):
+class PFCView(Protocol):
     """上下文可读取的会话短期记忆与群聊发送者。"""
 
     @property

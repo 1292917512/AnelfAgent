@@ -19,7 +19,7 @@ from services.workspace_activity import WorkspaceActivityService
 
 
 async def test_background_completion_updates_original_turn_after_reply_finishes(activity):
-    from agent.mind.background_tasks import BackgroundTaskRegistry
+    from agent.mind.background.tasks import BackgroundTaskRegistry
 
     service, _ = activity
     registry = BackgroundTaskRegistry()
@@ -45,7 +45,7 @@ async def test_background_completion_updates_original_turn_after_reply_finishes(
 
 
 async def test_threaded_background_registration_and_completion_publish_on_bound_loop(activity):
-    from agent.mind.background_tasks import BackgroundTaskRegistry
+    from agent.mind.background.tasks import BackgroundTaskRegistry
 
     service, _ = activity
     registry = BackgroundTaskRegistry(loop=asyncio.get_running_loop())

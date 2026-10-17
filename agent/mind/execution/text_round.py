@@ -25,7 +25,7 @@ from core.log import log
 
 if TYPE_CHECKING:
     from agent.llm import ChatResult
-    from agent.mind.background_tasks import BackgroundTaskInfo
+    from agent.mind.background.tasks import BackgroundTaskInfo
 
 
 _PROMPT_CONTINUE = (

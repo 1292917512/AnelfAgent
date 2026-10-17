@@ -63,13 +63,13 @@ class TestThinkLoopChainBreakpoint:
             initial = EntityRegistry.get_tool_schema_by_names(["cache_parent"])
             selected = EntityRegistry.get_tool_schema_by_names(["cache_added"])
             mind = FakeMind(rounds=[tool_result("", ["recall"]), tool_result("", ["end_reply"])])
-            mind.pfc.tools_version = 0
-            monkeypatch.setattr(mind.pfc, "get_active_tool_schemas", AsyncMock(return_value=selected))
+            mind.tool_assembly.tools_version = 0
+            monkeypatch.setattr(mind.tool_assembly, "get_active_tool_schemas", AsyncMock(return_value=selected))
             original_invoke = mind.model_invoker.invoke
             catalogs = []
             async def invoke(messages, tools, *args, **kwargs):
                 catalogs.append(deepcopy(tools))
-                mind.pfc.tools_version += 1
+                mind.tool_assembly.tools_version += 1
                 return await original_invoke(messages, tools, *args, **kwargs)
             monkeypatch.setattr(mind.model_invoker, "invoke", invoke)
             await run_think_loop(mind, mode=ThinkMode.REFLECT, tools=initial)

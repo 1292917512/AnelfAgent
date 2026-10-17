@@ -161,7 +161,7 @@ ConfigPaths.UPLOAD_DIR          # workspace/uploads
   `batch_remove_tags`。内置标签含 time/uid/group_id/name/channel/session_id/message_id/kind/
   media_file/reply_to/to_me/push 等。to_me 标识「群消息 @ 了机器人」、push 标识「非用户消息的实体推送」，
   出站时随元数据剥离名单一并剥离——**出站清洗名单是标签外泄的唯一防线，新增渲染标签必须同步名单**。
-  消息标签的工具唤醒是显式映射（`work_memory._scan_message_tags`）：media_type/media_file →
+  消息标签的工具唤醒是显式映射（`pfc._scan_message_tags`）：media_type/media_file →
   `media:{类型}` 工具组、channel → 频道专属工具；其余元数据标签不承载工具路由（防用户可控值泛化激活）
 - **会话 scope**（`agent/messages/everything.py`）：格式 `user_{adapter}:{uid}` /
   `group_{adapter}:{gid}` / `user_{adapter}:{uid}#{chat_id}`，跨频道同号实体天然隔离。构造一律
@@ -296,7 +296,7 @@ default_path 保持测试隔离）；同族库路径均由 `main_sqlite_path()`�
 | 文件 | 职责 |
 |------|------|
 | `agent/mind/mind.py` | 思维核心、自主循环 |
-| `agent/mind/prefrontal_cortex.py` | 工作记忆门面（组合 work_memory / tool_assembly；上下文通过只读视图消费） |
+| `agent/mind/pfc.py` / `tool_assembly.py` | PFC 与工具目录分别持有状态；上下文通过各自只读视图消费 |
 | `agent/mind/autonomous.py` | 决策类型、态势模型、元决策 prompt |
 | `agent/context/prompt_layers.py` | Prompt 分层缓存（stable/context/volatile + PromptCacheManager） |
 | `agent/context/pipeline.py` | 上下文构建管线（@context_block 声明层+变动率 / 变动率排序组装） |
@@ -332,7 +332,7 @@ default_path 保持测试隔离）；同族库路径均由 `main_sqlite_path()`�
 | `agent/delegation/journal.py` | 委托运行日志（进度流/transcript/崩溃 ledger） |
 | `agent/delegation/recovery.py` | 委托崩溃恢复 |
 | `agent/delegation/delegate_tool.py` | delegate_task / send_to_agent / follow_up_agent / 后台任务工具组 |
-| `agent/mind/work_memory.py` | 工作记忆数据面（消息队列 / 待办 / 短期记忆 / 态势路由） |
+| `agent/mind/pfc.py` | 前额叶皮层数据面（消息队列 / 待办 / 短期记忆 / 态势路由） |
 | `agent/mind/tool_assembly.py` | 工具装配（召回 / tag 激活 / schema 合并门控） |
 | `agent/context/assembly.py` | 上下文组装（系统提示 / 分层缓存 / 执行上下文） |
 | `agent/mind/decisions.py` | 决策执行分发（REPLY/REFLECT/PLAN 等） |

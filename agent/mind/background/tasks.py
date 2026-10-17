@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Awaitable, Callable, Coroutine, Dict, List, Optional
 
-from agent.mind.background_evidence import TaskEvidence
+from agent.mind.background.evidence import TaskEvidence
 from core.activity import EVENT_BACKGROUND_TASK_UPDATED, current_activity_id
 from core.event_bus import event_bus
 from core.log import log

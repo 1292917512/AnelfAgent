@@ -41,7 +41,7 @@ async def reflect_entry(
         blocked_tools = blocked_tools | set(extra_blocked_tools)
     reflect_scope = f"reflect:{uuid.uuid4().hex[:8]}"
     active_tools, extra_selectors = await select_reflect_tools(
-        mind.pfc, adapter_key=adapter_key, scope=reflect_scope,
+        mind.tool_assembly, adapter_key=adapter_key, scope=reflect_scope,
         tool_tags=tool_tags, inherited_tools=inherited_tools,
     )
     collected_text: list[str] = []

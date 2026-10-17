@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import pytest
 from helpers.think_loop_fakes import (
+    FakeContext,
     FakeMind,
-    FakePfc,
     run_think_loop,
     text_result,
     tool_result,
@@ -28,7 +28,7 @@ class _ReplayMind(FakeMind):
     """脚本化 Mind 替身：按 _rounds 队列逐轮响应（轮次耗尽即失败）。"""
 
     def __init__(self, rounds: list) -> None:
-        super().__init__(rounds=rounds, default_text=None, pfc=FakePfc(exec_layer=True))
+        super().__init__(rounds=rounds, default_text=None, context=FakeContext(exec_layer=True))
 
 
 @pytest.fixture

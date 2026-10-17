@@ -158,7 +158,7 @@ class TestExecuteToolCalls:
                 params=[], tags=[], source="internal",
                 meta={"concurrency_safe": True},
             )
-        mind = SimpleNamespace()
+        mind = SimpleNamespace(model_invoker=SimpleNamespace(get_context_length=lambda: 0))
         result = SimpleNamespace(content="")
         return mind, result, records
 
@@ -233,7 +233,7 @@ class TestInterruptedBatch:
                 params=[], tags=[], source="internal",
                 meta={"concurrency_safe": True},
             )
-        return SimpleNamespace(), SimpleNamespace(content=""), records
+        return SimpleNamespace(model_invoker=SimpleNamespace(get_context_length=lambda: 0)), SimpleNamespace(content=""), records
 
     async def test_parallel_batch_abort_preserves_pairing(self, mock_mind):
         """快调用已完成保留真实结果；慢调用在途被中止 → 占位结果 + 部分执行标记。"""
@@ -316,7 +316,7 @@ class TestEarlyToolRunner:
                 params=[], tags=[], source="internal",
                 meta={"concurrency_safe": True},
             )
-        return SimpleNamespace(), records
+        return SimpleNamespace(model_invoker=SimpleNamespace(get_context_length=lambda: 0)), records
 
     def test_submit_rejects_write_tools(self, mock_mind):
         mind, _ = mock_mind

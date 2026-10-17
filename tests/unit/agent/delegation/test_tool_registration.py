@@ -6,6 +6,8 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 EXPECTED_TOOLS = {
     "delegate_task",
     "send_to_agent",
@@ -39,13 +41,23 @@ class TestDelegationGroupRegistration:
         assert EntityRegistry.get_group_description("delegation") != ""
         assert EXPECTED_TOOLS <= _schema_names()
 
-    def test_factory_registers_tools_without_bootstrap_imports(self, tmp_path) -> None:
+    @pytest.mark.parametrize("entry_module", [
+        "agent.runtime.mind_factory", "agent.mind.mind",
+        "agent.mind.execution.tool_execution", "agent.task.executor", "agent.mind.pfc",
+    ])
+    def test_factory_registers_tools_without_bootstrap_imports(self, tmp_path, entry_module) -> None:
         """独立进程只调用工厂，也必须取得完整工具目录。"""
         result = subprocess.run(
             [sys.executable, "-c", """
 import asyncio
+import importlib
+import sys
 from unittest.mock import DEFAULT, MagicMock, patch
+importlib.import_module(sys.argv[1])
+if sys.argv[1] == 'agent.mind.pfc':
+    assert 'agent.mind.mind' not in sys.modules
 from agent.runtime import mind_factory
+from core.context_provider import ContextProviderRegistry
 from core.entity import EntityRegistry
 
 async def check():
@@ -66,12 +78,13 @@ async def check():
         for name in ('end_reply', 'schedule_reply', 'switch_session', 'judge', 'check_background_tasks'):
             assert EntityRegistry.get(name) is not None, name
         assert mind.push_hub and mind.background_tasks and mind.model_invoker
+        assert any(provider.name == 'recall_policy' for provider in ContextProviderRegistry.get_all())
     finally:
         await mind.background_tasks.close()
         await mind.push_hub.close()
 
 asyncio.run(check())
-"""],
+""", entry_module],
             capture_output=True, timeout=30,
             env=os.environ | {
                 "ANELF_CONFIG_DIR": str(tmp_path / "config"),

@@ -18,7 +18,7 @@ from core.tool_registry import activate_group, deferred_tool
 
 if TYPE_CHECKING:
     from agent.context.compressor import ContextCompressor
-    from agent.mind.prefrontal_cortex import PrefrontalCortex
+    from agent.mind.tool_assembly import ToolAssembly
 
 END_REPLY_TOOL_NAME = "end_reply"
 OUTPUT_TOOL_NAMES = frozenset({"send_message", "send_photo", "send_voice", "send_file"})
@@ -112,7 +112,7 @@ def build_reflect_blocklist(allow_output_tools: bool) -> set[str]:
 
 
 async def select_reflect_tools(
-    pfc: PrefrontalCortex,
+    tool_assembly: ToolAssembly,
     *,
     adapter_key: str,
     scope: str,
@@ -125,12 +125,12 @@ async def select_reflect_tools(
     share_reply_tools = get_config_bool("reflect_share_reply_tools", True)
     if tool_tags or not share_reply_tools:
         selectors = tool_tags if tool_tags else ["heartbeat"]
-        active_tools = await pfc.get_reflect_tool_schemas(
+        active_tools = await tool_assembly.get_reflect_tool_schemas(
             adapter_key, scope=scope, selectors=selectors,
         )
     else:
         selectors = []
-        active_tools = await pfc.get_active_tool_schemas(adapter_key, scope=scope)
+        active_tools = await tool_assembly.get_active_tool_schemas(adapter_key, scope=scope)
 
     if inherited_tools is not None:
         from agent.mind.tool_assembly import inherit_tool_catalog

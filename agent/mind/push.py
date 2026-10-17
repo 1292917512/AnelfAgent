@@ -25,7 +25,7 @@ from core.log import log
 from core.tags import get_time_tag, tag_label
 
 if TYPE_CHECKING:
-    from agent.mind.prefrontal_cortex import PrefrontalCortex
+    from agent.mind.pfc import PrefrontalCortex
 
 # 单条推送内容上限（防止异常实体灌爆短期记忆桶）
 _MAX_CONTENT_CHARS = 2000
@@ -141,8 +141,7 @@ class PushHub:
             self, scope: str, channel: str,
             preview: str, text: str, trigger: bool) -> None:
         """推送投递：一次性事实写对话历史 + 入队 + seq/inflight 登记。"""
-        from agent.mind.tools.scheduler import enqueue_scope_reply
-        await enqueue_scope_reply(self._pfc, scope, channel, preview, text)
+        await self._pfc.enqueue_reply(scope, channel, preview, text)
         seq = self._seq.get(scope, 0) + 1
         self._seq[scope] = seq
         self._inflight.setdefault(scope, deque()).append((seq, text))

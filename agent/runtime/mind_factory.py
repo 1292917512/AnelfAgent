@@ -16,12 +16,13 @@ from agent.memory.embedding import get_embedder
 from agent.memory.memory_retriever import MemoryRetriever
 from agent.memory.memory_store import MemoryStore
 from agent.messages import CharacterAgent
-from agent.mind.background_routing import on_task_alert, on_task_unclaimed
-from agent.mind.background_tasks import BackgroundTaskRegistry
+from agent.mind.background.routing import on_task_alert, on_task_unclaimed
+from agent.mind.background.tasks import BackgroundTaskRegistry
 from agent.mind.llm_invoker import ModelInvoker
 from agent.mind.mind import Mind
-from agent.mind.prefrontal_cortex import PrefrontalCortex
+from agent.mind.pfc import PrefrontalCortex
 from agent.mind.push import PushHub
+from agent.mind.tool_assembly import ToolAssembly
 from agent.mind.tools.core import register_core_tools
 from agent.skills import SkillCurator, SkillMatcher, SkillReviewer, get_skill_store
 from agent.skills.runtime import SkillRuntime
@@ -42,9 +43,10 @@ def create_mind(
     loop = asyncio.get_running_loop()
     skill_store = get_skill_store()
     plugin_registry = get_plugin_manager().registry
-    pfc = PrefrontalCortex(everything_data, channel_manager, conversation_data)
+    tool_assembly = ToolAssembly(channel_manager)
+    pfc = PrefrontalCortex(everything_data, conversation_data, tool_assembly=tool_assembly)
     context = ContextAssembly(
-        pfc.work_memory, pfc.tool_assembly, channel_manager, conversation_data,
+        pfc, tool_assembly, channel_manager, conversation_data,
         skill_store, plugin_registry,
     )
     embedder = get_embedder("text")
@@ -59,8 +61,9 @@ def create_mind(
     mind = Mind(
         config=get_mind_config(),
         char=char, llm=llm, llm_manager=llm_manager, channel_manager=channel_manager,
-        everything_data=everything_data, conversation_data=conversation_data,
-        prefrontal_cortex=pfc, context=context, skills=skills, background_tasks=background_tasks,
+        conversation_data=conversation_data,
+        pfc=pfc, tool_assembly=tool_assembly,
+        context=context, skills=skills, background_tasks=background_tasks,
         embedder=embedder, retriever=retriever,
         memory_store=memory_store,
     )
@@ -68,7 +71,7 @@ def create_mind(
     background_tasks.set_unclaimed_callback(partial(on_task_unclaimed, mind))
     background_tasks.set_alert_callback(partial(on_task_alert, mind))
     mind.push_hub = PushHub(pfc, mind.try_execute_mind, loop=loop)
-    mind.heartbeat_engine = HeartbeatEngine(mind)
+    mind.heartbeat_engine = HeartbeatEngine(mind, everything_data)
     mind.compressor = ContextCompressor(mind.model_invoker)
 
     reviewer = SkillReviewer(mind, skill_store, index=skill_matcher.index)

@@ -179,7 +179,7 @@ class TestFrontDelegateRegistry:
     """前台委托注册表集成：check 可见、claimed 收尾不双投递、terminate 可停。"""
 
     def _registry_mind(self, output: str = "前台结果", delay: float = 0.0):
-        from agent.mind.background_tasks import BackgroundTaskRegistry
+        from agent.mind.background.tasks import BackgroundTaskRegistry
 
         class _Mind:
             def __init__(self) -> None:

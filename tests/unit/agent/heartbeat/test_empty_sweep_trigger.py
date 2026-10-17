@@ -34,7 +34,7 @@ def _engine_with_sqlite(
         conversation_data=SimpleNamespace(
             router=SimpleNamespace(sqlite=sqlite)),
     )
-    return HeartbeatEngine(mind)  # type: ignore[arg-type]
+    return HeartbeatEngine(mind, SimpleNamespace())  # type: ignore[arg-type]
 
 
 def _count_sweep_calls(monkeypatch: pytest.MonkeyPatch, sqlite: SqliteBackend) -> list[dict]:

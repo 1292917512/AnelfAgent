@@ -21,7 +21,7 @@ from agent.mind.autonomous import MindPhase
 from agent.mind.execution import reflect as reflect_module
 from agent.mind.interrupt import InterruptRegistry
 from agent.mind.mind import Mind
-from agent.mind.work_memory import WorkMemory
+from agent.mind.pfc import PrefrontalCortex
 
 
 def _bare_mind() -> Any:
@@ -152,7 +152,6 @@ class TestCycleBodyDeciding:
             seen.append(mind.phase)
             return situation
 
-        mind._heartbeat_running = False
         mind.pfc = SimpleNamespace(
             peek_all_tasks=lambda: [("user_webui:u1", 1, 0, "hi")],
             peek_general_tasks=lambda: [],
@@ -177,7 +176,7 @@ class TestReflectPhaseReset:
     def _wire_reflect_fakes(self, mind: Any) -> None:
         mind.note_activity = lambda: None
         mind.config = SimpleNamespace(max_tool_iterations=6)
-        mind.pfc = SimpleNamespace(
+        mind.tool_assembly = SimpleNamespace(
             get_active_tool_schemas=AsyncMock(return_value=[]),
             clear_dynamic_tools=lambda **kwargs: None,
         )
@@ -221,7 +220,7 @@ class TestReflectPhaseReset:
         selected = [{"type": "function", "function": {"name": "end_reply"}}]
         if needs_skill_tool:
             selected.append({"type": "function", "function": {"name": "get_skill"}})
-        mind.pfc.get_reflect_tool_schemas = AsyncMock(return_value=selected)
+        mind.tool_assembly.get_reflect_tool_schemas = AsyncMock(return_value=selected)
         loop = AsyncMock()
         monkeypatch.setattr(reflect_module, "think_loop", loop)
         await mind.reflect([{"role": "user", "content": "review"}], tool_tags=["skills"],
@@ -318,7 +317,7 @@ class TestAcceptFeelPhaseReset:
         mind.conversation_data.add_conversation_record_by_everything.return_value = False
         await mind.accept_feel(self._anything(trigger_mind=True))
         mind.pfc.add_task.assert_not_awaited()
-        assert mind.pfc.work_memory.channel_snapshots == {}
+        assert mind.pfc.channel_snapshots == {}
         assert mind.phase is MindPhase.IDLE
 
     def _wire_accept_fakes(self, mind: Any) -> None:
@@ -326,7 +325,8 @@ class TestAcceptFeelPhaseReset:
         mind._reflecting = False
         mind._auto_cycle_retry = 0
         mind.interrupts = InterruptRegistry()
-        mind.pfc = SimpleNamespace(add_task=AsyncMock(), work_memory=WorkMemory(SimpleNamespace()))
+        mind.pfc = PrefrontalCortex(SimpleNamespace())
+        mind.pfc.add_task = AsyncMock()
 
     @staticmethod
     def _anything(*, trigger_mind: bool) -> Any:
@@ -365,7 +365,7 @@ class TestAcceptFeelPhaseReset:
             mind.phase = MindPhase.REPLYING
 
         async def queued_after_observation(_message):
-            snapshot = mind.pfc.work_memory.channel_snapshots["webui"]
+            snapshot = mind.pfc.channel_snapshots["webui"]
             assert snapshot.active_scopes[message.entity_scope].last_preview == text
 
         mind.pfc.add_task.side_effect = queued_after_observation

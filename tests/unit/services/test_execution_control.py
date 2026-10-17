@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from agent.mind.background_tasks import BackgroundTaskRegistry
+from agent.mind.background.tasks import BackgroundTaskRegistry
 from agent.mind.interrupt import InterruptRegistry
 from agent.mind.mind import Mind
 from services import execution_control as control

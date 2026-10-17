@@ -6,7 +6,7 @@ import asyncio
 import uuid
 
 from agent.delegation.sub_agent import SubAgentResult
-from agent.mind.background_tasks import BackgroundTaskRegistry
+from agent.mind.background.tasks import BackgroundTaskRegistry
 
 
 class FakeDelegationManager:

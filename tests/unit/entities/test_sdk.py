@@ -3,12 +3,54 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from core.tool_schema import extract_tool_params
 from entities import _sdk
+
+
+@pytest.mark.parametrize("path", ["stream", "direct", "fallback"])
+async def test_session_params_reach_model_and_clear_without_mutating_options(monkeypatch, path):
+    from agent.llm.llm_client import LLMClient
+    from agent.llm.types import ChatResult, ChatStreamDelta
+    from agent.mind.llm_invoker import ModelInvoker
+    from agent.runtime import singleton
+    from entities.model_control.tools import clear_session_params, set_session_params
+
+    client = object.__new__(LLMClient)
+    client.config = SimpleNamespace(model="test", enabled=True)
+    requests = []
+
+    async def stream(messages, *, options=None, **kwargs):
+        requests.append(options)
+        yield ChatStreamDelta(content="ok")
+
+    async def chat(messages, *, options=None, **kwargs):
+        requests.append(options)
+        return ChatResult(content="ok")
+
+    client.chat_stream = stream
+    client.chat = chat
+    manager = SimpleNamespace(chat_with_fallback=AsyncMock(side_effect=chat)) if path == "fallback" else None
+    mind = SimpleNamespace(llm=client, llm_manager=manager, config=SimpleNamespace(llm_timeout=10, llm_max_retries=2))
+    mind.model_invoker = ModelInvoker(mind)
+    monkeypatch.setattr(singleton, "require_runtime", lambda: SimpleNamespace(mind=mind))
+    options = {"temperature": 0.8, "max_tokens": 200}
+    params = {"temperature": 0.2, "max_tokens": 400, "reasoning_effort": "high"}
+    invoke = mind.model_invoker.chat_stream_once if path == "stream" else mind.model_invoker.chat_with_retry
+
+    assert json.loads(set_session_params(**params))["ok"]
+    assert _sdk.get_session_llm_params() is mind.model_invoker.session_params
+    assert (await invoke([], None, options=options)).content == "ok"
+    assert requests[-1] == params
+    assert json.loads(clear_session_params())["ok"]
+    await invoke([], None, options=options)
+    assert requests[-1] == options == {"temperature": 0.8, "max_tokens": 200}
+    assert mind.model_invoker.session_params == {}
 
 
 async def test_context_usage_is_real_and_isolated_between_executions():
@@ -17,7 +59,7 @@ async def test_context_usage_is_real_and_isolated_between_executions():
     from agent.mind.think_session import think_session
 
     mind = SimpleNamespace(
-        pfc=SimpleNamespace(clear_dynamic_tools=lambda **kwargs: None),
+        tool_assembly=SimpleNamespace(clear_dynamic_tools=lambda **kwargs: None),
         compressor=SimpleNamespace(threshold_tokens=lambda: 8000, estimate_tokens=lambda messages: 999),
         model_invoker=SimpleNamespace(get_context_length=lambda: 10000),
     )

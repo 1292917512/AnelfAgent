@@ -1,6 +1,6 @@
 """ContextAssembly — LLM 上下文组装：系统提示构建、Prompt 分层缓存、执行上下文。
 
-经只读接口获取工作记忆与工具状态，由调用方注入，不导入思维实现。
+经只读接口获取 PFC 与工具状态，由调用方注入，不导入思维实现。
 
 职责：
 - 工具系统提示构建（工具目录 + 使用规则 + 媒体处理规则 + 频道能力）
@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Dict, List, Optional
 
 from agent.config import get_mind_config
-from agent.context.ports import ToolContextView, WorkingMemoryView
+from agent.context.ports import PFCView, ToolContextView
 from agent.context.preparation import ContextPreparation
 from agent.context.usage_rules import (
     BACKGROUND_TASK_HINT,
@@ -149,7 +149,7 @@ class ContextAssembly:
 
     def __init__(
             self,
-            work_memory: WorkingMemoryView,
+            pfc: PFCView,
             tool_assembly: ToolContextView,
             channel_manager: Optional["ChannelManager"] = None,
             conversation_data: Optional["ConversationData"] = None,
@@ -157,7 +157,7 @@ class ContextAssembly:
             plugin_registry: Optional["PluginRegistry"] = None,
     ) -> None:
         self.preparation = ContextPreparation(self)
-        self._work_memory = work_memory
+        self._pfc = pfc
         self._tool_assembly = tool_assembly
         self._channel_manager = channel_manager
         self._conversation_data = conversation_data
@@ -598,7 +598,7 @@ channel_id 和 target_id 取当前请求的频道与会话标签，群聊目标�
         """回复起点按折叠水位读取历史，不复用其他回复周期的快照。
 
         多轮 think_loop 期间用户可能发送新消息，必须确保拿到最新对话；
-        调用方预取时直接复用（避免同一次 get_recollection 内重复拉取）。
+        调用方预取时直接复用，避免同一次上下文准备内重复拉取。
         """
         conversation_list: List[Dict] = []
         max_size = 0
@@ -644,7 +644,7 @@ channel_id 和 target_id 取当前请求的频道与会话标签，群聊目标�
     @context_block("volatile", VOL_TAIL_HEAD + 3, "短期记忆（volatile 层）")
     def _blk_volatile(self, inp: ContextInput) -> List[Dict]:
         """短期记忆桶（角色按存储原样使用，主流格式不做转换）。"""
-        clips = list(self._work_memory.get_temporary(inp.scope))
+        clips = list(self._pfc.get_temporary(inp.scope))
         if not clips:
             return []
         header = {
@@ -751,7 +751,7 @@ channel_id 和 target_id 取当前请求的频道与会话标签，群聊目标�
 
         if group_id and group_id not in (0, "0", ""):
             parts.append(f"群聊 group_id={group_id}")
-            senders = self._work_memory.get_group_recent_senders(anything.entity_scope)
+            senders = self._pfc.get_group_recent_senders(anything.entity_scope)
             if senders:
                 desc = ", ".join(f"uid:{s[0]}({s[1]})" for s in senders if s[0])
                 if desc:
@@ -794,7 +794,7 @@ channel_id 和 target_id 取当前请求的频道与会话标签，群聊目标�
         elapsed = time.time() - start_time
         remaining = (safety_limit - iteration) if safety_limit > 0 else None
 
-        wm = self._work_memory
+        pfc = self._pfc
         ta = self._tool_assembly
         lines: list[str] = []
 
@@ -892,9 +892,9 @@ channel_id 和 target_id 取当前请求的频道与会话标签，群聊目标�
             log("当前模型信息获取失败", "DEBUG", tag="PFC")
 
         # 短期记忆状态（本 scope 桶）
-        temp_count = len(wm.get_temporary(anything.entity_scope if anything else ""))
+        temp_count = len(pfc.get_temporary(anything.entity_scope if anything else ""))
         if temp_count:
-            lines.append(f"[短期记忆] {temp_count}/{wm.max_temp} 条")
+            lines.append(f"[短期记忆] {temp_count}/{pfc.max_temp} 条")
 
         if execution_steps:
             # 步骤清单预算化：防重复操作只需近期步骤，exec_context 每轮全量重建，

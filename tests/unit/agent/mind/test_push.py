@@ -14,17 +14,18 @@ import pytest
 
 from agent.mind.execution.messages import _merge_pushes
 from agent.mind.execution.state import ThinkMode
+from agent.mind.pfc import PrefrontalCortex
 from agent.mind.push import PushHub
 from core.tags import etag_all
 
 
-class FakePFC:
+class FakePFC(PrefrontalCortex):
     """enqueue_scope_reply 依赖的最小 PFC 替身（无 router → temporary 兜底）。"""
 
-    conversation_data = None
+    _conversation_data = None
 
     def __init__(self) -> None:
-        self.temporary: list[tuple[dict, str]] = []
+        self.clips: list[tuple[dict, str]] = []
         self.pending_user: list[str] = []
         self.pending_group: list[str] = []
         self.previews: dict[str, str] = {}
@@ -32,7 +33,11 @@ class FakePFC:
         self.consumed: list[str] = []
 
     def add_temporary(self, clip: dict, scope: str = "") -> None:
-        self.temporary.append((clip, scope))
+        self.clips.append((clip, scope))
+
+    @property
+    def temporary(self):
+        return self.clips
 
     def set_message_preview(self, scope: str, preview: str, *, created_ts_ns: int) -> None:
         self.previews[scope] = preview
@@ -189,18 +194,16 @@ async def test_push_cross_thread_dispatches_to_bound_loop() -> None:
 
 
 async def test_close_drains_delivery_without_starting_new_thought(monkeypatch) -> None:
-    from agent.mind.tools import scheduler
-
     mind = FakeMind()
     entered, release = asyncio.Event(), asyncio.Event()
-    enqueue = scheduler.enqueue_scope_reply
+    enqueue = mind.pfc.enqueue_reply
 
     async def delayed(*args):
         entered.set()
         await release.wait()
         await enqueue(*args)
 
-    monkeypatch.setattr(scheduler, "enqueue_scope_reply", delayed)
+    monkeypatch.setattr(mind.pfc, "enqueue_reply", delayed)
     assert mind.push_hub.push(_SCOPE, "devops", "已受理通知")
     await entered.wait()
     closing = asyncio.create_task(mind.push_hub.close())
@@ -297,14 +300,14 @@ async def test_merge_pushes_injects_into_tool_chain() -> None:
 async def test_push_does_not_repeat_history_or_consume_unseen_user_message(already_in_context) -> None:
     from unittest.mock import MagicMock
 
-    from agent.mind.work_memory import PendingSignal, WorkMemory
+    from agent.mind.pfc import PendingSignal, PrefrontalCortex
     from agent.storage.data_center import EverythingData
 
     mind = FakeMind()
     mind.push_hub.push(_SCOPE, "devops", "构建完成", trigger=False)
     await _deliver_all()
     text = mind.pfc.temporary[0][0]["content"]
-    mind.pfc = WorkMemory(MagicMock(spec=EverythingData))
+    mind.pfc = PrefrontalCortex(MagicMock(spec=EverythingData))
     mind.pfc.pending_user.append(_SCOPE)
     mind.pfc._pending_signals[_SCOPE] = PendingSignal(created_ts_ns=200)
     ctx = _make_ctx(mind, _SCOPE)

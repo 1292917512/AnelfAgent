@@ -25,7 +25,7 @@ from helpers.think_loop_fakes import (
     tool_result,
 )
 
-from agent.mind.background_tasks import BackgroundTaskRegistry
+from agent.mind.background.tasks import BackgroundTaskRegistry
 from agent.mind.execution.state import ThinkMode
 
 
@@ -75,7 +75,7 @@ class TestBackgroundTaskRegistry:
 
         from agent.messages.presets import MessageUser
         from agent.mind.interrupt import InterruptRegistry
-        from agent.mind.prefrontal_cortex import PrefrontalCortex
+        from agent.mind.pfc import PrefrontalCortex
         from agent.mind.tools import background
         from core.conversation_scope import bind_scope, reset_scope
 
@@ -83,7 +83,7 @@ class TestBackgroundTaskRegistry:
         pfc = PrefrontalCortex(everything_data=SimpleNamespace(get_anything=AsyncMock(return_value=entity)))
         registry = BackgroundTaskRegistry()
         background.mind_port.set(SimpleNamespace(pfc=pfc, background_tasks=registry, interrupts=InterruptRegistry()))
-        monkeypatch.setattr("agent.mind.background_tasks._POLL_INTERVAL", 0.01)
+        monkeypatch.setattr("agent.mind.background.tasks._POLL_INTERVAL", 0.01)
         task_id = registry.register("user_webui:1", "vision", "read image")
         token = bind_scope("user_webui:1")
         try:
@@ -507,14 +507,9 @@ class _DelegationMind:
         self.reflect = AsyncMock(return_value=output)
         self.background_tasks = BackgroundTaskRegistry()
         self.try_execute_mind = AsyncMock()
-        self.pfc = SimpleNamespace(
-            add_temporary=lambda clip, scope="": None,
-            pending_user=[],
-            pending_group=[],
-            set_message_preview=lambda scope, preview, **kwargs: None,
-            set_adapter_key=lambda scope, key: None,
-            get_adapter_key=lambda scope: "test",
-        )
+        from agent.mind.pfc import PrefrontalCortex
+        self.pfc = PrefrontalCortex(SimpleNamespace())
+        self.pfc.get_adapter_key = lambda scope: "test"
         # 镜像 on_task_unclaimed：轮外完成经回调排入回复队列并触发新一轮
         self.background_tasks.set_unclaimed_callback(self.on_task_unclaimed)
         self.model_invoker = SimpleNamespace(get_context_length=lambda: 128000)
@@ -523,9 +518,8 @@ class _DelegationMind:
         # 镜像 on_task_unclaimed（async 版）：返回协程由 registry
         # 在主循环 ensure_future——历史写入完成后才入队触发
         async def _notify() -> None:
-            from agent.mind.tools.scheduler import enqueue_scope_reply
-            await enqueue_scope_reply(
-                self.pfc, scope, self.pfc.get_adapter_key(scope),
+            await self.pfc.enqueue_reply(
+                scope, self.pfc.get_adapter_key(scope),
                 f"后台任务完成: {description[:60]}", summary,
             )
             asyncio.create_task(self.try_execute_mind())
@@ -550,7 +544,7 @@ class TestDelegationBackgroundIntegration:
             await asyncio.sleep(0)
 
         # 完成即新 turn：scope 已排入回复队列，并触发新一轮
-        assert "user_qq:123" in mind.pfc.pending_user
+        assert "user_qq:123" in mind.pfc.pending_user.queue
         mind.try_execute_mind.assert_called_once()
         # 事件已标记送达，后续 wait_any 不会重复返回
         result = await mind.background_tasks.wait_any("user_qq:123", timeout=0.1)
@@ -573,7 +567,7 @@ class TestDelegationBackgroundIntegration:
         assert result.reason == "completed"
         assert result.completions[0].task_id == delegation_id
         # 轮内会合：不排入回复队列、不触发新一轮
-        assert "user_qq:123" not in mind.pfc.pending_user
+        assert "user_qq:123" not in mind.pfc.pending_user.queue
         mind.try_execute_mind.assert_not_called()
         if bg is not None:
             await asyncio.wait_for(bg, timeout=5)
@@ -605,7 +599,7 @@ class TestDelegationBackgroundIntegration:
         # 取消终态完成 + 轮外通知照常送达
         completed = mind.background_tasks.completed("user_qq:123")
         assert completed and not completed[0].success
-        assert "user_qq:123" in mind.pfc.pending_user
+        assert "user_qq:123" in mind.pfc.pending_user.queue
 
     async def test_check_background_tasks_tool(self) -> None:
         """check_background_tasks 工具返回运行中与已完成任务快照。"""

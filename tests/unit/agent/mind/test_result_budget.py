@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 
 from agent.mind.execution.result_pipeline import (
@@ -146,8 +144,7 @@ def workspace(tmp_path, monkeypatch):
 def _pipeline():
     from agent.mind.execution.result_pipeline import ToolResultPipeline
 
-    mind = SimpleNamespace(model_invoker=SimpleNamespace(get_context_length=lambda: 0))
-    return ToolResultPipeline(mind)
+    return ToolResultPipeline(0)
 
 
 class TestEmptyResultPlaceholder:
@@ -181,7 +178,7 @@ class TestPersistOversized:
         assert files[0].read_text() == output
 
     def test_pipeline_end_to_end(self, workspace):
-        pipeline = ToolResultPipeline(SimpleNamespace(), None)
+        pipeline = ToolResultPipeline(0)
         pipeline.begin_turn()
         result = pipeline.process("web_fetch", "{}", "B" * 60_000)
         assert "<persisted-output>" in result

@@ -10,7 +10,7 @@ import time
 from contextlib import contextmanager
 from typing import Any, Iterator
 
-from agent.mind.background_tasks import BackgroundTaskRegistry
+from agent.mind.background.tasks import BackgroundTaskRegistry
 from core.activity import EVENT_ACTIVITY_FINISHED, EVENT_ACTIVITY_STARTED, current_activity_id
 from core.event_bus import (
     EVENT_THINKING_LLM_END,

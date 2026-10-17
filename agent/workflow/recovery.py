@@ -62,9 +62,8 @@ async def _notify_scope(mind: Any, run: Dict[str, Any]) -> None:
         "或调整规格后用 workflow_start 以 resume_of 修订重启。"
     )
     try:
-        from agent.mind.tools.scheduler import enqueue_scope_reply
-        await enqueue_scope_reply(
-            mind.pfc, scope, mind.pfc.get_adapter_key(scope),
+        await mind.pfc.enqueue_reply(
+            scope, mind.pfc.get_adapter_key(scope),
             f"工作流中断: {spec_name}", note,
         )
     except Exception as exc:

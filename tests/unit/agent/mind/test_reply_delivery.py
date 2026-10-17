@@ -124,7 +124,7 @@ async def test_waiting_progress_is_delivered_before_join_and_final_after_complet
 
     from agent.channel import output_tools
     from agent.channel.channel_types import ChannelStatus
-    from agent.mind.background_tasks import BackgroundTaskRegistry
+    from agent.mind.background.tasks import BackgroundTaskRegistry
     from agent.storage.data_center import ConversationData
     from agent.storage.storage_router import StorageDomain, StorageRouter
 

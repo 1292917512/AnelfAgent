@@ -25,7 +25,8 @@ class _FakeMind:
 
     def __init__(self, output: str = "子任务完成报告") -> None:
         self.reflect = AsyncMock(return_value=output)
-        self.pfc = type("PFC", (), {"add_temporary": lambda self, clip, scope="": None})()
+        from agent.mind.pfc import PrefrontalCortex
+        self.pfc = PrefrontalCortex(SimpleNamespace())
         self.model_invoker = SimpleNamespace(get_context_length=lambda: 128000)
 
 
@@ -195,7 +196,7 @@ def _slow_mind(seconds: float = 60.0) -> _FakeMind:
 class TestDelegationCancel:
     @pytest.mark.parametrize("by_agent", [False, True])
     async def test_cancel_includes_queued_delegations(self, by_agent: bool) -> None:
-        from agent.mind.background_tasks import BackgroundTaskRegistry
+        from agent.mind.background.tasks import BackgroundTaskRegistry
 
         mind = _FakeMind()
         registry = BackgroundTaskRegistry()
@@ -231,7 +232,7 @@ class TestDelegationCancel:
             await asyncio.gather(task, return_exceptions=True)
 
     async def test_cancel_agent_before_background_coroutine_starts(self) -> None:
-        from agent.mind.background_tasks import BackgroundTaskRegistry
+        from agent.mind.background.tasks import BackgroundTaskRegistry
 
         mind = _FakeMind()
         mind.background_tasks = BackgroundTaskRegistry()

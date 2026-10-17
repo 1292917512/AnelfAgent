@@ -17,6 +17,7 @@ from agent.task.model import TaskDefinition
 def _isolate_history_path(tmp_path, monkeypatch: pytest.MonkeyPatch):
     """隔离执行历史文件（ConfigPaths 解析真实 data 目录，必须显式重定向）。"""
     monkeypatch.setattr(task_history, "_history_path", lambda: tmp_path / "task_history.json")
+    monkeypatch.setattr("agent.mind.recall.coordinator.prepare_recollection", AsyncMock(return_value=[]))
     yield
 
 
@@ -159,8 +160,6 @@ def _fake_mind(reflect_return: str = "", reflect_exc: Exception | None = None) -
     else:
         reflect.return_value = reflect_return
     return SimpleNamespace(
-        pfc=SimpleNamespace(),
-        get_recollection=AsyncMock(return_value=[]),
         reflect=reflect,
         memory_store=None,
     )

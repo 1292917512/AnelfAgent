@@ -192,7 +192,7 @@ class AgentAssistant:
         空闲后立即补跑——被延后的 tick 不递增任何计数器。
         """
         m = self.mind
-        return bool(m.is_reply or m.is_reflecting or m._heartbeat_running)
+        return bool(m.is_reply or m.is_reflecting or m.heartbeat_engine.background_tick_running)
 
     def _on_interval_config_changed(self, key: str, value: Any) -> None:
         """ConfigManager 变更监听：间隔值真实变化时唤醒进行中的 sleep。

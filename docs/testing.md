@@ -32,7 +32,7 @@ uv run pytest -m integration           # 集成
 ## 测试防膨胀规约（写新测试前逐条自查）
 
 1. **先查共享层再动手**：think_loop 替身用 `tests/helpers/think_loop_fakes.py`
-   （FakeMind/FakePfc/text_result/tool_result/run_think_loop），禁止在新文件复制这些样板；
+   （FakeMind/FakePFC/FakeToolAssembly/FakeContext/text_result/tool_result/run_think_loop），禁止在新文件复制这些样板；
    Mind 替身的特化行为以子类扩展实现
 2. **fixture 分层复用**：`tests/unit/conftest.py` 提供 `store`（MemoryStore），
    `tests/unit/agent/conftest.py` 提供 `sqlite` 基座，`tests/unit/agent/mind/conftest.py` 提供

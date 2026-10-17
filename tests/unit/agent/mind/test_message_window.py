@@ -12,7 +12,15 @@ from types import SimpleNamespace
 from typing import List
 
 import pytest
-from helpers.think_loop_fakes import FakeMind, FakeModelInvoker, FakePfc, run_think_loop, text_result, tool_result
+from helpers.think_loop_fakes import (
+    FakeMind,
+    FakeModelInvoker,
+    FakePFC,
+    FakeToolAssembly,
+    run_think_loop,
+    text_result,
+    tool_result,
+)
 
 from agent.llm.types import ImageContent, ToolCall
 from agent.messages import MessageUser
@@ -170,7 +178,7 @@ class TestFeelImmediateAccept:
 # think_loop 循环内合并
 # ------------------------------------------------------------------
 
-class _MergePfc(FakePfc):
+class _MergeMemory(FakePFC):
     """记录媒体收集/工具重建调用次数的 PFC 替身。"""
 
     def __init__(self) -> None:
@@ -180,8 +188,6 @@ class _MergePfc(FakePfc):
         self.media_drained = 0
         self.pending_images: list = []
         self.pending_media: list = []
-        self.media_activated: List[tuple] = []
-        self.tools_rebuilt = 0
 
     def consume_scope_task(self, scope, **kwargs) -> bool:
         self.consumed.append(scope)
@@ -196,6 +202,12 @@ class _MergePfc(FakePfc):
         self.media_drained += 1
         media, self.pending_media = self.pending_media, []
         return media
+
+class _MergeTools(FakeToolAssembly):
+    def __init__(self) -> None:
+        super().__init__()
+        self.media_activated: List[tuple] = []
+        self.tools_rebuilt = 0
 
     def activate_media_tools(self, images: list, media_segments: list) -> None:
         self.media_activated.append((images, media_segments))
@@ -227,7 +239,7 @@ class _MergeMind(FakeMind):
 
     def __init__(self, conv_data: ConversationData) -> None:
         super().__init__(
-            pfc=_MergePfc(),
+            pfc=_MergeMemory(), tool_assembly=_MergeTools(),
             config_overrides={"force_tool_use": True},
             tool_results={"end_reply": '{"ok": true, "action": "end_reply"}'},
         )
@@ -241,14 +253,11 @@ class _MergeMind(FakeMind):
 def _attach_pending_work(mind):
     from unittest.mock import AsyncMock
 
-    from agent.mind.work_memory import WorkMemory
+    from agent.mind.pfc import PrefrontalCortex
 
     entity = SimpleNamespace(add_conversations_num=lambda: 0, personality={})
-    work = WorkMemory(SimpleNamespace(get_anything=AsyncMock(return_value=entity)))
-    mind.pfc.work_memory = work
-    mind.pfc.add_task = work.add_task
-    mind.pfc.peek_all_tasks = work.peek_all_tasks
-    mind.pfc.get_pending_signal = work.get_pending_signal
+    work = PrefrontalCortex(SimpleNamespace(get_anything=AsyncMock(return_value=entity)))
+    mind.pfc = work
     return work
 
 
@@ -278,7 +287,6 @@ class TestThinkLoopMerge:
         mind.model_invoker = CrossReplyModel(mind)
         work = _attach_pending_work(mind)
         await work.add_task(other)
-        mind.pfc.consume_scope_task = work.consume_scope_task
         for message in (current, other):
             await conv_data.add_conversation_record_by_everything(message)
             work.observe_channel(message, window_minutes=mind.config.cross_channel_window_minutes)
@@ -335,6 +343,8 @@ class TestThinkLoopMerge:
         assert snapshot_watermark(baseline) == (rows[-1]["ts_ns"], rows[-1]["id"])
 
     async def test_cross_channel_refresh_keeps_identity_and_stable_prefix(self, conv_data, monkeypatch) -> None:
+        from unittest.mock import Mock
+
         from agent.channel.outbound_guard import note_outbound
         from core.conversation_scope import bind_scope, reset_scope
 
@@ -367,6 +377,7 @@ class TestThinkLoopMerge:
         mind = _MergeMind(conv_data)
         mind.model_invoker = ConcurrentModel(mind)
         work = _attach_pending_work(mind)
+        monkeypatch.setattr(work, "consume_scope_task", Mock(wraps=work.consume_scope_task))
         for message in [current, *others]:
             if message is not current:
                 await conv_data.add_conversation_record_by_everything(message)
@@ -399,7 +410,7 @@ class TestThinkLoopMerge:
         assert "QQ 更新了要求" in str(mind.sent_messages[1])
         assert "主动投递的完整内容" not in "\n".join(
             m.get("content", "") for m in mind.sent_messages[1] if isinstance(m.get("content"), str))
-        assert all(scope == current.entity_scope for scope in mind.pfc.consumed)
+        assert all(call.args[0] == current.entity_scope for call in work.consume_scope_task.call_args_list)
 
     async def test_other_reader_cannot_advance_active_snapshot(self, conv_data) -> None:
         message = MessageUser(uid=1)
@@ -518,9 +529,9 @@ class TestThinkLoopMerge:
         )
 
         # 媒体工具已激活且工具集已重建
-        assert len(mind.pfc.media_activated) == 1
-        assert mind.pfc.media_activated[0][0] and not mind.pfc.media_activated[0][1]
-        assert mind.pfc.tools_rebuilt == 1
+        assert len(mind.tool_assembly.media_activated) == 1
+        assert mind.tool_assembly.media_activated[0][0] and not mind.tool_assembly.media_activated[0][1]
+        assert mind.tool_assembly.tools_rebuilt == 1
 
 
 # ------------------------------------------------------------------
@@ -530,7 +541,7 @@ class TestThinkLoopMerge:
 class TestActivateMediaTools:
     def test_activates_by_image_and_segment_type(self) -> None:
         """按图片与媒体段类型激活对应标签工具（recognize_image / voice_to_text）。"""
-        from agent.mind.prefrontal_cortex import PrefrontalCortex
+        from agent.mind.tool_assembly import ToolAssembly
         from core.entity import EntityRegistry
 
         EntityRegistry.register_tool(
@@ -542,30 +553,22 @@ class TestActivateMediaTools:
             group="media", tags=["media:voice"],
         )
         try:
-            pfc = PrefrontalCortex(
-                everything_data=SimpleNamespace(),
-                channel_manager=None,
-                conversation_data=SimpleNamespace(),
-            )
+            tools = ToolAssembly()
             seg = SimpleNamespace(type=SimpleNamespace(value="voice"))
-            pfc.activate_media_tools([SimpleNamespace(data="/tmp/x.jpg")], [seg])
+            tools.activate_media_tools([SimpleNamespace(data="/tmp/x.jpg")], [seg])
 
-            assert "test_recognize_image_x" in pfc.tool_assembly.tag_activated_tools
-            assert "test_voice_to_text_x" in pfc.tool_assembly.tag_activated_tools
+            assert "test_recognize_image_x" in tools.tag_activated_tools
+            assert "test_voice_to_text_x" in tools.tag_activated_tools
         finally:
             EntityRegistry.unregister("test_recognize_image_x")
             EntityRegistry.unregister("test_voice_to_text_x")
 
     def test_no_media_no_activation(self) -> None:
-        from agent.mind.prefrontal_cortex import PrefrontalCortex
+        from agent.mind.tool_assembly import ToolAssembly
 
-        pfc = PrefrontalCortex(
-            everything_data=SimpleNamespace(),
-            channel_manager=None,
-            conversation_data=SimpleNamespace(),
-        )
-        pfc.activate_media_tools([], [])
-        assert not pfc.tool_assembly.tag_activated_tools
+        tools = ToolAssembly()
+        tools.activate_media_tools([], [])
+        assert not tools.tag_activated_tools
 
 
 class TestInterjectionGuardrailReset:

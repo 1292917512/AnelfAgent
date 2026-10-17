@@ -138,7 +138,7 @@ async def _run_think_rounds(
     # registry 版本覆盖运行期注册表增删（MCP 热同步/reload/entities 重载/WebUI 开关）——
     # 否则粘性激活的 stay_awake 服务在回复进行中新增工具，要等下一个版本事件才可见
     last_tools_version = (
-        getattr(mind.pfc, "tools_version", 0),
+        mind.tool_assembly.tools_version,
         _tool_act_mgr.version,
         EntityRegistry.version(),
     )
@@ -154,19 +154,19 @@ async def _run_think_rounds(
         # 前缀字节稳定）；带选择器的 REFLECT 走精简目录装配（与初始
         # 装配同一入口，重建不会退回全量、也不会丢失选择器工具）
         cur_tools_version = (
-            getattr(mind.pfc, "tools_version", 0),
+            mind.tool_assembly.tools_version,
             _tool_act_mgr.version,
             EntityRegistry.version(),
         )
         if cur_tools_version != last_tools_version:
             last_tools_version = cur_tools_version
             if mode is ThinkMode.REFLECT and ctx.reflect_tool_selectors:
-                selected_tools = await mind.pfc.get_reflect_tool_schemas(
+                selected_tools = await mind.tool_assembly.get_reflect_tool_schemas(
                     ctx.adapter_key, scope=ctx.current_scope,
                     selectors=list(ctx.reflect_tool_selectors),
                 )
             else:
-                selected_tools = await mind.pfc.get_active_tool_schemas(
+                selected_tools = await mind.tool_assembly.get_active_tool_schemas(
                     ctx.adapter_key, scope=ctx.current_scope,
                 )
             if mode is ThinkMode.REFLECT:

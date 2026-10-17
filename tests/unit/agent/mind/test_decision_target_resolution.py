@@ -25,14 +25,14 @@ from agent.mind.decisions import (
     resolve_reply_target,
     routable_target,
 )
-from agent.mind.work_memory import WorkMemory
+from agent.mind.pfc import PrefrontalCortex
 
 _UID = 1292917512
 _CANONICAL = "user_qq:1292917512"
 
 
 def _mind(*, queued: tuple[str, ...] = (), registered: tuple[tuple[str, str], ...] = ()) -> Any:
-    pfc = WorkMemory(SimpleNamespace())  # type: ignore[arg-type]
+    pfc = PrefrontalCortex(SimpleNamespace())  # type: ignore[arg-type]
     for scope in queued:
         (pfc.pending_group if scope.startswith("group_") else pfc.pending_user).append(scope)
     for scope, adapter in registered:
@@ -52,19 +52,6 @@ class TestNormalizeTargetScope:
         assert normalize_target_scope(mind, "user_qq:123") == "user_qq:123"
         assert normalize_target_scope(mind, "group_qq:456") == "group_qq:456"
         assert normalize_target_scope(mind, "user_webui:u#chat1") == "user_webui:u#chat1"
-
-    def test_resolution_via_pfc_facade(self) -> None:
-        """解析经 PrefrontalCortex 门面可达（运行时 mind.pfc 是门面而非 WorkMemory）。"""
-        from unittest.mock import AsyncMock
-
-        from agent.mind.prefrontal_cortex import PrefrontalCortex
-
-        pfc = PrefrontalCortex(
-            everything_data=SimpleNamespace(get_anything=AsyncMock(return_value=None)),
-        )
-        pfc.pending_user.append(_CANONICAL)
-        mind = SimpleNamespace(pfc=pfc, _active_scopes=set())
-        assert normalize_target_scope(mind, f"user_{_UID}") == _CANONICAL
 
     def test_legacy_prefix_resolved_from_known_scopes(self) -> None:
         """旧格式 user_123 按已知会话补频道前缀，不再产出裸 id scope。"""
@@ -191,7 +178,7 @@ class TestProactiveEmptyConversation:
             "agent.channel.outbound_guard.target_has_interaction", _empty)
 
         mind = SimpleNamespace(
-            pfc=WorkMemory(SimpleNamespace()),  # type: ignore[arg-type]
+            pfc=PrefrontalCortex(SimpleNamespace()),  # type: ignore[arg-type]
             _active_scopes=set(),
             reply=AsyncMock(),
         )
@@ -213,7 +200,7 @@ class TestProactiveEmptyConversation:
         import asyncio
 
         mind = SimpleNamespace(
-            pfc=WorkMemory(SimpleNamespace()),  # type: ignore[arg-type]
+            pfc=PrefrontalCortex(SimpleNamespace()),  # type: ignore[arg-type]
             _active_scopes=set(),
             _reply_activated_at={},
             _reply_idle_event=asyncio.Event(),

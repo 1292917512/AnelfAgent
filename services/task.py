@@ -362,7 +362,8 @@ class TaskService:
 
         async def _run() -> None:
             try:
-                result = await rt.mind.execute_task(name)
+                log(f"执行任务: {name}", tag="思维")
+                result = await rt.mind.heartbeat_engine.run_task(name)
                 log(f"Web 手动任务完成: {name} ({'有产出' if result else '无产出'})", tag="任务")
             except Exception as exc:
                 log(f"Web 手动任务异常 [{name}]: {exc}", "WARNING", tag="任务")

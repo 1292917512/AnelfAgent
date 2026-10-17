@@ -523,7 +523,7 @@ async def test_context_carries_exec_params_from_spec():
     (False, "", True, True),
 ])
 async def test_completion_notification_matches_declared_policy(route, output, fails, notified):
-    from agent.mind.background_tasks import BackgroundTaskRegistry
+    from agent.mind.background.tasks import BackgroundTaskRegistry
     registry = BackgroundTaskRegistry()
     notifications = []
     registry.set_unclaimed_callback(lambda *args: notifications.append(args))

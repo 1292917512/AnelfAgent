@@ -14,7 +14,7 @@ from agent.vision.gen_tools import recognize_image, recognize_video
 
 
 async def test_default_background_recognition_retains_scope_and_result(local_image, chain_spy, monkeypatch):
-    from agent.mind.background_tasks import BackgroundTaskRegistry
+    from agent.mind.background.tasks import BackgroundTaskRegistry
     from agent.mind.tools.ports import mind_port
     from core.conversation_scope import bind_scope, reset_scope
 

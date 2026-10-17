@@ -33,18 +33,18 @@ async def test_stop_during_context_preparation_closes_work_and_reports_cancelled
     scope = anything.entity_scope
     mind = FakeMind(config_overrides={"max_tool_iterations": 10})
     mind.interrupts = InterruptRegistry()
-    monkeypatch.setattr(mind.pfc, "clear_dynamic_tools", lambda **kw: None)
+    monkeypatch.setattr(mind.tool_assembly, "clear_dynamic_tools", lambda **kw: None)
     anything.message_kind = "chat"
     anything.recall_policy = None
 
-    async def prepare(**kw):
+    async def prepare(mind, **kw):
         started.set()
         try:
             await asyncio.Event().wait()
         finally:
             closed.set()
 
-    mind.get_recollection = prepare
+    monkeypatch.setattr("agent.mind.recall.coordinator.prepare_recollection", prepare)
     completed = AsyncMock()
     monkeypatch.setattr(loop, "complete_reply", completed)
     events = []
@@ -145,7 +145,6 @@ class _FakeStreamClient(_ClientBase):
 def _stream_mind(client) -> SimpleNamespace:
     return SimpleNamespace(
         llm=client,
-        session_llm_params=None,
         config=SimpleNamespace(llm_timeout=5.0),
     )
 

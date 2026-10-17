@@ -23,7 +23,7 @@
   "sourceMessage": "Msg",
   "sourceTool": "Tool",
   "sourceMessageTooltip": "Embedded in messages as [key:value], readable by the LLM",
-  "sourceToolTooltip": "Registered as a routing tag on tools; PFC activates matching tools when detected",
+  "sourceToolTooltip": "Registered as a routing tag on tools; matching tools are activated when detected in messages",
   "tagFormat": "[{{name}}:value]",
   "statsBuiltin": "{{count}} built-in",
   "statsCustom": "{{count}} custom",

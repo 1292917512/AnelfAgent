@@ -10,7 +10,7 @@ import asyncio
 import json
 from dataclasses import asdict
 
-from agent.mind.background_tasks import current_background_task_id
+from agent.mind.background.tasks import current_background_task_id
 from agent.mind.tool_activation import current_owner_scope
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
 from core.tool_registry import deferred_tool

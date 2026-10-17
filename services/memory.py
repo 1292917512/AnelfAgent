@@ -37,7 +37,7 @@ class MemoryService:
     # ==================================================================
 
     def list_stm(self) -> List[Dict[str, Any]]:
-        """返回 PFC 短期记忆列表。"""
+        """返回 PFC 中的短期记忆列表。"""
         rt = require_runtime()
         return list(rt.mind.pfc.temporary)
 
@@ -49,7 +49,7 @@ class MemoryService:
         rt = require_runtime()
         return rt.mind.pfc.clear_temporary()
 
-    def get_pfc_status(self) -> List[Dict[str, Any]]:
+    def get_pending_status(self) -> List[Dict[str, Any]]:
         """获取 PFC 的队列状态信息（待处理消息、通用任务等）。"""
         rt = require_runtime()
         pfc = rt.mind.pfc

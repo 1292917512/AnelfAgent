@@ -14,14 +14,14 @@ export function STMPanel() {
   const [filter, setFilter] = useState<STMFilter>("all");
 
   const { data: stm = [] } = useQuery({ queryKey: ["stm"], queryFn: () => memoryApi.stm.list().then((r) => r.data), refetchInterval: 3000 });
-  const { data: pfcStatus = [] } = useQuery({ queryKey: ["pfcStatus"], queryFn: () => memoryApi.stm.status().then((r) => r.data), refetchInterval: 3000 });
+  const { data: pendingStatus = [] } = useQuery({ queryKey: ["pendingStatus"], queryFn: () => memoryApi.stm.status().then((r) => r.data), refetchInterval: 3000 });
 
   const deleteMutation = useMutation({ mutationFn: (index: number) => memoryApi.stm.delete(index), onSuccess: () => queryClient.invalidateQueries({ queryKey: ["stm"] }) });
   const clearMutation = useMutation({ mutationFn: () => memoryApi.stm.clear(), onSuccess: () => queryClient.invalidateQueries({ queryKey: ["stm"] }) });
 
   const allItems = [
     ...stm.map((item: Record<string, unknown>, i: number) => ({ type: "temporary" as const, content: typeof item === "string" ? item : (item.content as string ?? JSON.stringify(item)), role: (item.role as string) ?? "memory", index: i })),
-    ...pfcStatus.map((s: Record<string, string>, i: number) => ({ type: (s.role ?? "pending") as STMFilter, content: s.content ?? "", role: s.role ?? "pending", index: -1 - i })),
+    ...pendingStatus.map((s: Record<string, string>, i: number) => ({ type: (s.role ?? "pending") as STMFilter, content: s.content ?? "", role: s.role ?? "pending", index: -1 - i })),
   ];
   const filtered = filter === "all" ? allItems : allItems.filter((it) => it.type === filter);
   return (

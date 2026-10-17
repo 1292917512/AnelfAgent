@@ -311,7 +311,7 @@ test("only the current round mounts until the user scrolls into transient histor
 test("overview keeps maintenance separate and metric geometry aligned", async ({ page }, info) => {
   await page.addInitScript(() => localStorage.setItem("theme", "dark"));
   await page.route("**/api/status/", (route) => route.fulfill({ json: { ready: true, status: { uptime: 3673, mind_phase: "idle", message_count: 162 } } }));
-  await page.route("**/api/status/pfc", (route) => route.fulfill({ json: { pending_messages: [], general_tasks: [], short_term_memory_count: 3, short_term_memory_max: 10, tool_recall: [], tag_activated_tools: [], active_tools: [] } }));
+  await page.route("**/api/status/thinking", (route) => route.fulfill({ json: { pending_messages: [], general_tasks: [], short_term_memory_count: 3, short_term_memory_max: 10, tool_recall: [], tag_activated_tools: [], discovered_tools: [] } }));
   await page.route("**/api/tools/", (route) => route.fulfill({ json: [{ name: "inspect_service", enabled: true }] }));
   await page.route("**/api/status/components", (route) => route.fulfill({ json: { structured: { ready: true, llm: { impl: "LLMManager", model: "review-model" }, storage: { impl: "DataCenter", sqlite: "ready" }, tools: { total: 913, enabled: 858, by_source: { core: 20, entity: 838 } } } } }));
   await page.route("**/api/mcp/", (route) => route.fulfill({ json: [] }));

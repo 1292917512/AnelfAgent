@@ -135,8 +135,21 @@ def wire_runtime(
     image_index_worker_port.set(image_index_worker)
 
     # 折后预热钩子（storage 层不反向依赖 mind，经注入解耦）
+    from agent.context.preparation import model_context
+    from agent.context.prewarm import prewarm_scope_cache
     from agent.storage.conversation_fold import conversation_folder
-    conversation_folder.set_prewarm_hook(mind.prewarm_scope_cache)
+
+    async def prewarm(scope_type: str, scope_id: str) -> None:
+        models_summary, direct_vision = model_context(mind.llm, mind.llm_manager)
+        await prewarm_scope_cache(
+            scope_type, scope_id, context=mind.context, char=mind.char,
+            models_summary=models_summary, direct_vision=direct_vision,
+            retriever=mind.retriever, conversation_data=mind.conversation_data, client=mind.llm,
+            get_tools=mind.tool_assembly.get_active_tool_schemas,
+            timeout=mind.config.llm_timeout * 20,
+        )
+
+    conversation_folder.set_prewarm_hook(prewarm)
 
     # 会话用量账本接线：scope_usage 只暴露回调接口，落盘由主库实现
     # （分层纪律：agent/mind 不直接依赖 storage 层）

@@ -8,20 +8,16 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agent.mind.background_routing import on_task_alert, on_task_unclaimed
+from agent.mind.background.routing import on_task_alert, on_task_unclaimed
+from agent.mind.pfc import PrefrontalCortex
 
 
 def _fake_mind() -> SimpleNamespace:
+    memory = PrefrontalCortex(SimpleNamespace(), SimpleNamespace(router=SimpleNamespace(append=AsyncMock())))
+    memory.add_temporary = MagicMock()
+    memory.get_adapter_key = lambda scope: "qq"
     return SimpleNamespace(
-        pfc=SimpleNamespace(
-            conversation_data=SimpleNamespace(router=SimpleNamespace(append=AsyncMock())),
-            add_temporary=MagicMock(),
-            pending_user=[],
-            pending_group=[],
-            set_message_preview=MagicMock(),
-            set_adapter_key=MagicMock(),
-            get_adapter_key=lambda scope: "qq",
-        ),
+        pfc=memory,
         try_execute_mind=AsyncMock(),
     )
 
@@ -31,15 +27,15 @@ def _fake_mind() -> SimpleNamespace:
 async def test_completion_keeps_waking_without_new_user_input(scope: str, success: bool) -> None:
     mind = _fake_mind()
     queue = mind.pfc.pending_group if scope.startswith("group_") else mind.pfc.pending_user
-    append = mind.pfc.conversation_data.router.append
+    append = mind.pfc._conversation_data.router.append
 
     for index in range(5):
         await on_task_unclaimed(mind, scope, f"优化任务 {index}", f"结果 {index}", success)
         assert append.await_count == index + 1
-        assert queue == [scope]
+        assert list(queue.queue) == [scope]
         await asyncio.sleep(0)
         assert mind.try_execute_mind.await_count == index + 1
-        queue.clear()
+        mind.pfc.consume_scope_task(scope)
 
     mind.pfc.add_temporary.assert_not_called()
     saved = append.call_args.kwargs
@@ -54,7 +50,7 @@ async def test_completion_keeps_waking_without_new_user_input(scope: str, succes
 
 async def test_progress_alerts_and_completion_all_reach_model() -> None:
     mind = _fake_mind()
-    append = mind.pfc.conversation_data.router.append
+    append = mind.pfc._conversation_data.router.append
     for _ in range(5):
         await on_task_alert(mind, "user_qq:1", "下载任务", "已运行 2000s（预期 1800s）", "ab12cd34")
         await asyncio.sleep(0)
@@ -74,16 +70,16 @@ async def test_progress_alerts_and_completion_all_reach_model() -> None:
 async def test_history_unavailable_preserves_notification_and_wakes(missing_router: bool) -> None:
     mind = _fake_mind()
     if missing_router:
-        mind.pfc.conversation_data = None
+        mind.pfc._conversation_data = None
     else:
-        mind.pfc.conversation_data.router.append.side_effect = RuntimeError("storage unavailable")
+        mind.pfc._conversation_data.router.append.side_effect = RuntimeError("storage unavailable")
 
     await on_task_unclaimed(mind, "user_qq:1", "构建任务", "执行失败", success=False)
     await asyncio.sleep(0)
     mind.pfc.add_temporary.assert_called_once()
     assert mind.pfc.add_temporary.call_args.kwargs == {"scope": "user_qq:1"}
     assert "执行失败" in mind.pfc.add_temporary.call_args.args[0]["content"]
-    assert mind.pfc.pending_user == ["user_qq:1"]
+    assert list(mind.pfc.pending_user.queue) == ["user_qq:1"]
     mind.try_execute_mind.assert_awaited_once()
 
 
@@ -94,6 +90,6 @@ async def test_non_conversation_notifications_only_update_global_memory(scope: s
     await on_task_alert(mind, scope, "下载任务", "已运行 2000s", "ab12cd34")
 
     assert mind.pfc.add_temporary.call_count == 2
-    mind.pfc.conversation_data.router.append.assert_not_awaited()
-    assert mind.pfc.pending_user == [] and mind.pfc.pending_group == []
+    mind.pfc._conversation_data.router.append.assert_not_awaited()
+    assert mind.pfc.pending_user.is_empty() and mind.pfc.pending_group.is_empty()
     mind.try_execute_mind.assert_not_called()

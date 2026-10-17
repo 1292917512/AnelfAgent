@@ -36,7 +36,7 @@
   "syncPending": "待同步",
   "syncFailed": "同步失败",
   "retryFailedSync": "重试失败项",
-  "stmTitle": "短期记忆 (PFC)",
+  "stmTitle": "短期记忆",
   "autoRefresh": "自动刷新",
   "temporary": "临时记忆",
   "pendingFilter": "待处理",

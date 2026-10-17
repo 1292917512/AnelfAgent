@@ -28,7 +28,7 @@ async def test_factory_shares_state_and_finishes_wiring_before_publish(tmp_path,
     provider._cm_available = True
     monkeypatch.setattr(mind_factory, "get_mind_config", lambda: provider.mind)
 
-    # Persistent collaborators are isolated; Mind, PFC and ContextAssembly remain real.
+    # Persistent collaborators are isolated; state and context assembly remain real.
     factories = {}
     for module, name in [
         ("agent.runtime.mind_factory", "HeartbeatEngine"),
@@ -48,17 +48,18 @@ async def test_factory_shares_state_and_finishes_wiring_before_publish(tmp_path,
     wake = AsyncMock(side_effect=woke.set)
     monkeypatch.setattr(mind_factory.Mind, "try_execute_mind", wake)
 
-    conversation, manager, memory = MagicMock(), MagicMock(), MagicMock()
+    conversation, manager, memory, everything = MagicMock(), MagicMock(), MagicMock(), MagicMock()
     conversation.router.append = AsyncMock()
     manager.chat_with_fallback = AsyncMock(return_value=ChatResult(content=""))
     mind = mind_factory.create_mind(
         char=MagicMock(), llm=MagicMock(), llm_manager=manager,
-        channel_manager=MagicMock(), everything_data=MagicMock(),
+        channel_manager=MagicMock(), everything_data=everything,
         conversation_data=conversation, memory_store=memory,
     )
-    assert mind.context._work_memory is mind.pfc.work_memory
-    assert mind.context._tool_assembly is mind.pfc.tool_assembly
-    assert mind.pfc.work_memory.tool_assembly is mind.pfc.tool_assembly
+    assert mind.context._pfc is mind.pfc
+    assert mind.context._tool_assembly is mind.tool_assembly
+    assert mind.pfc.tool_assembly is mind.tool_assembly
+    factories["HeartbeatEngine"].assert_called_once_with(mind, everything)
     assert mind.context._skill_store is mind.skills.store is store
     assert mind.context._plugin_registry is registry
     assert mind.context.preparation.assembly is mind.context
@@ -69,8 +70,7 @@ async def test_factory_shares_state_and_finishes_wiring_before_publish(tmp_path,
     factories["SkillCurator"].assert_called_once_with(store, mind.skills.matcher.index)
     factories["SkillReviewer"].assert_called_once_with(mind, store, index=mind.skills.matcher.index)
     assert factories["SkillReviewer"].return_value.start.call_count == int(skills_enabled)
-    for name in ("HeartbeatEngine", "DelegationManager"):
-        factories[name].assert_called_once_with(mind)
+    factories["DelegationManager"].assert_called_once_with(mind)
     factories["ContextCompressor"].assert_called_once_with(mind.model_invoker)
     registration.assert_called_once_with()
     assert mind.accept_feel.__self__ is mind

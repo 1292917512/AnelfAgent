@@ -16,6 +16,7 @@ from agent.mind.execution.reply_finalize import complete_reply
 from agent.mind.execution.state import ThinkMode
 from agent.mind.execution.tool_execution import _await_with_abort
 from agent.mind.execution.vision import apply_vision
+from agent.mind.recall import coordinator
 from agent.mind.think_session import think_session
 from core.activity import activity_scope
 from core.event_bus import (
@@ -100,8 +101,8 @@ async def reply_loop(
                 except Exception:
                     push_watermark = 0
             async def prepare() -> tuple[List[Dict], List[Dict]]:
-                tools = await mind.pfc.get_active_tool_schemas(adapter_key, scope=scope)
-                messages = await mind.get_recollection(anything=anything)
+                tools = await mind.tool_assembly.get_active_tool_schemas(adapter_key, scope=scope)
+                messages = await coordinator.prepare_recollection(mind, anything=anything)
                 if images:
                     messages = await apply_vision(mind, messages, images, anything)
                 return tools, messages

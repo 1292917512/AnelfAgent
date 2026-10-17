@@ -19,7 +19,6 @@ async def test_skill_evidence_tracks_actual_budget_and_never_changes_wire_messag
     candidate_first = Skill(name="inspect", description="Inspect deployment " * 20, trigger_patterns=["deployment " * 30])
     candidate = Skill(name="archive-check", description="Prior evidence", state=SkillState.ARCHIVED)
     mind = SimpleNamespace(
-        pfc=SimpleNamespace(add_temporary=MagicMock()),
         skills=SkillRuntime(
             SimpleNamespace(get=lambda name: {candidate_first.name: candidate_first, candidate.name: candidate}.get(name), record_use=MagicMock(), record_match=MagicMock()),
             SimpleNamespace(match=AsyncMock(return_value=[(candidate_first, 0.9), (candidate, 0.426)])),

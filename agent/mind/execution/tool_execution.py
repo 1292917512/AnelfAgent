@@ -279,7 +279,7 @@ async def execute_tool_calls(
     journal 非空时逐调用落账（REPLY 模式的崩溃尾部账本，见 reply_journal）。
     """
     if pipeline is None:
-        pipeline = ToolResultPipeline(mind, guardrail)
+        pipeline = ToolResultPipeline(mind.model_invoker.get_context_length(), guardrail)
     pipeline.begin_turn()
 
     # 配对铁律：assistant 与其全部 tool 响应必须原子落链

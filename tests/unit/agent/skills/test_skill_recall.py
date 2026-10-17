@@ -106,7 +106,6 @@ def _mind_with_matcher(matched=None, captured: dict | None = None):
 
     return SimpleNamespace(
         skills=SkillRuntime(store, SimpleNamespace(match=match), MagicMock()),
-        pfc=SimpleNamespace(add_temporary=MagicMock()),
     )
 
 

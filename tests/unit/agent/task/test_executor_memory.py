@@ -12,6 +12,11 @@ from agent.task.executor import TaskExecutor
 from agent.task.model import TaskDefinition, TaskResult
 
 
+@pytest.fixture(autouse=True)
+def _isolate_recollection(monkeypatch):
+    monkeypatch.setattr("agent.mind.recall.coordinator.prepare_recollection", AsyncMock(return_value=[]))
+
+
 @pytest.mark.parametrize("trigger, expected", [("heartbeat", "heartbeat"), ("scheduled", "scheduled"),
                                                ("idle", "idle"), ("manual", "manual"), ("event", "after_reply")])
 async def test_task_activity_preserves_trigger_without_changing_prompt(trigger, expected):
@@ -55,8 +60,6 @@ async def test_task_output_permission_reaches_reflect_without_auto_routing(permi
 
 def _mind_with_store(store: SimpleNamespace, reflect_return: str = "产出") -> SimpleNamespace:
     return SimpleNamespace(
-        pfc=SimpleNamespace(),
-        get_recollection=AsyncMock(return_value=[]),
         reflect=AsyncMock(return_value=reflect_return),
         memory_store=store,
         embedder=None,

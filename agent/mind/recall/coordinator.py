@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Dict, List, Optional
 
+from agent.context.observation import observe_preparation
 from agent.context.preparation import model_context
 from agent.memory import recall_context  # noqa: F401
 from agent.mind.recall.inputs import collect_recollection_inputs
@@ -13,6 +14,7 @@ if TYPE_CHECKING:
     from agent.mind.mind import Mind
 
 
+@observe_preparation
 async def prepare_recollection(
         mind: "Mind",
         conversation_list: Optional[List[Dict]] = None,

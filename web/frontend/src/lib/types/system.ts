@@ -25,7 +25,7 @@ export interface DevTool {
   install_url?: string;
 }
 
-export interface PfcSnapshot {
+export interface ThinkingSnapshot {
   tool_recall?: { name: string; count: number }[];
   tool_recall_top_n?: number;
   tag_activated_tools?: string[];
@@ -34,7 +34,7 @@ export interface PfcSnapshot {
   pending_analysis_count?: number;
   short_term_memory_count?: number;
   short_term_memory_max?: number;
-  active_tools?: string[];
+  discovered_tools?: string[];
 }
 
 export interface RuntimeComponents {

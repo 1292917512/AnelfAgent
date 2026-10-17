@@ -134,18 +134,14 @@ async def _merge_new_messages(ctx: ExecutionContext, state: RoundState) -> bool:
         _consume_pending_for_scope(mind, ctx.anything, through_ts=state.last_merged_ts)
     # 新消息携带的媒体：激活对应媒体工具并重建工具集供后续轮次使用
     # （媒体标签已随内容并入上下文，待处理媒体不留存到后续周期）
-    try:
-        merged_images = mind.pfc.collect_images(scope=ctx.current_scope)
-        merged_media = mind.pfc.collect_media(scope=ctx.current_scope)
-    except TypeError:
-        merged_images = mind.pfc.collect_images()
-        merged_media = mind.pfc.collect_media()
+    merged_images = mind.pfc.collect_images(scope=ctx.current_scope)
+    merged_media = mind.pfc.collect_media(scope=ctx.current_scope)
     if merged_images:
         # 视觉模型直传图片 block；非视觉模型转存超大 base64 为文件路径
         ctx.tool_chain = await apply_vision(mind, ctx.tool_chain, merged_images)
     if merged_images or merged_media:
-        mind.pfc.activate_media_tools(merged_images, merged_media)
-        ctx.active_tools = await mind.pfc.get_active_tool_schemas(
+        mind.tool_assembly.activate_media_tools(merged_images, merged_media)
+        ctx.active_tools = await mind.tool_assembly.get_active_tool_schemas(
             ctx.adapter_key, scope=ctx.anything.entity_scope if ctx.anything else "",
         )
     deferred_note = f"，{deferred} 条留存下轮接续" if deferred else ""

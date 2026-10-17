@@ -92,18 +92,48 @@ class AgentStatusService:
             return None
 
     # ------------------------------------------------------------------
-    # Mind 参数配置
+    # 思维运行态与配置
     # ------------------------------------------------------------------
 
-    def get_pfc_snapshot(self) -> Optional[Dict[str, Any]]:
-        """返回 PFC 工作记忆状态快照。"""
+    def get_thinking_snapshot(self) -> Optional[Dict[str, Any]]:
+        """只读汇总 PFC、工具目录与缓存观测。"""
         rt = get_runtime()
         if rt is None:
             return None
         try:
-            return rt.mind.pfc.get_status_snapshot()
+            memory, tools = rt.mind.pfc, rt.mind.tool_assembly
+            try:
+                from agent.context.prompt_layers import prompt_cache_manager
+                cache_stats = prompt_cache_manager.stats()
+            except Exception:
+                cache_stats = {}
+            try:
+                from agent.context.cache_stats import cache_usage_tracker
+                provider_cache = cache_usage_tracker.summary()
+            except Exception:
+                provider_cache = {}
+            return {
+                "tool_recall": [{"name": n, "count": c} for n, c in tools.get_tool_recall_sorted()],
+                "tool_recall_top_n": tools.tool_recall_top_n,
+                "tag_activated_tools": sorted(tools.tag_activated_tools),
+                "discovered_tools": sorted(tools.discovered_tools),
+                "pending_messages": [
+                    {"scope": scope, "uid": uid, "group_id": group_id,
+                     "preview": preview, "adapter_key": memory.get_adapter_key(scope)}
+                    for scope, uid, group_id, preview in memory.peek_all_tasks()
+                ],
+                "general_tasks": [
+                    {"type": task.task_type.value, "scope": task.scope, "preview": task.preview}
+                    for task in memory.peek_general_tasks()
+                ],
+                "pending_analysis_count": len(memory.pending_analysis),
+                "short_term_memory_count": len(memory.temporary),
+                "short_term_memory_max": memory.max_temp,
+                "prompt_cache": cache_stats,
+                "provider_cache": provider_cache,
+            }
         except Exception as e:
-            log(f"获取 PFC 快照失败: {e}", "DEBUG")
+            log(f"获取思维运行态快照失败: {e}", "DEBUG")
             return None
 
     def get_mind_config(self) -> Optional[Dict[str, Any]]:

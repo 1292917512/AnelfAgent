@@ -15,7 +15,7 @@ import pytest
 
 from agent.messages.presets import MessageGroupUser, MessageUser
 from agent.mind.decisions import resolve_reply_target
-from agent.mind.prefrontal_cortex import PrefrontalCortex
+from agent.mind.pfc import PrefrontalCortex
 
 
 async def test_nested_internal_space_clears_and_restores_channel_without_cross_task_leaks():
@@ -23,7 +23,7 @@ async def test_nested_internal_space_clears_and_restores_channel_without_cross_t
     from agent.mind.think_session import think_session
     from agent.mind.tool_activation import ToolActivationManager
 
-    mind = SimpleNamespace(pfc=SimpleNamespace(clear_dynamic_tools=lambda **kwargs: None))
+    mind = SimpleNamespace(tool_assembly=SimpleNamespace(clear_dynamic_tools=lambda **kwargs: None))
     parent = bind_current_channel(None)
     try:
         async def run(scope, channel):
@@ -145,9 +145,9 @@ class TestCrossChannelIsolation:
 
     async def test_cross_channel_snapshot_uses_adapter_scopes(self, monkeypatch) -> None:
         """跨频道快照按新格式 scope 记录（A 频道活跃可被 B 频道感知）。"""
-        work = _pfc().work_memory
+        work = _pfc()
         clock = [time.time()]
-        monkeypatch.setattr("agent.mind.work_memory.time.time", lambda: clock[0])
+        monkeypatch.setattr("agent.mind.pfc.time.time", lambda: clock[0])
         work.observe_channel(
             MessageUser(uid="123", adapter_key="qq", text_content="[to_me:1]在QQ说话"), window_minutes=30,
         )
@@ -212,13 +212,13 @@ async def test_live_awareness_only_includes_unhandled_directed_messages(sqlite, 
 async def test_history_candidates_use_explicit_aliases_and_recent_topics(sqlite, monkeypatch):
     from agent.config import MindConfig
     from agent.mind.cross_channel import _recall_candidates
-    from agent.mind.work_memory import ChannelSnapshot, ScopeActivity
+    from agent.mind.pfc import ChannelSnapshot, ScopeActivity
     from agent.storage.data_center import ConversationData
     from agent.storage.storage_router import StorageRouter
 
     await sqlite.set_alias(scope_type="user", scope_id="telegram:remote", primary_scope_type="user", primary_scope_id="qq:123")
     pfc = _pfc()
-    pfc.work_memory.channel_snapshots = {
+    pfc.channel_snapshots = {
         "webui": ChannelSnapshot(active_scopes={"user_webui:123#b": ScopeActivity(time.time(), "相关项目")}),
         "qq": ChannelSnapshot(active_scopes={"group_qq:5": ScopeActivity(time.time() - 7200, "过期话题")}),
     }
@@ -236,7 +236,7 @@ async def test_history_gate_uses_conversation_and_concurrent_searches(proceed, m
     from agent.config import MindConfig
     from agent.judgment.gate import WorkDecision
     from agent.mind.cross_channel import recall_cross_channel
-    from agent.mind.work_memory import ChannelSnapshot, ScopeActivity
+    from agent.mind.pfc import ChannelSnapshot, ScopeActivity
     from core.hooks import hook_journal
 
     decision = AsyncMock(return_value=WorkDecision(proceed, "测试判断"))
@@ -256,7 +256,7 @@ async def test_history_gate_uses_conversation_and_concurrent_searches(proceed, m
     storage = SimpleNamespace(related_conversation_scopes=AsyncMock(return_value=[]),
                               search_conversation_vector=AsyncMock(side_effect=search))
     pfc = _pfc()
-    pfc.work_memory.channel_snapshots = {adapter: ChannelSnapshot(active_scopes={
+    pfc.channel_snapshots = {adapter: ChannelSnapshot(active_scopes={
         f"user_{adapter}:1": ScopeActivity(time.time(), "项目实施依据")}) for adapter in ("qq", "telegram")}
     mind = SimpleNamespace(config=MindConfig(), conversation_data=storage, pfc=pfc,
                           embedder=SimpleNamespace(available=True, embed_query=AsyncMock()))
@@ -286,7 +286,7 @@ async def test_cancelling_cross_recall_preserves_shared_embedding(monkeypatch):
     from agent.config import MindConfig
     from agent.judgment.gate import WorkDecision
     from agent.mind.cross_channel import recall_cross_channel
-    from agent.mind.work_memory import ChannelSnapshot, ScopeActivity
+    from agent.mind.pfc import ChannelSnapshot, ScopeActivity
 
     judged = asyncio.Event()
 
@@ -297,7 +297,7 @@ async def test_cancelling_cross_recall_preserves_shared_embedding(monkeypatch):
     monkeypatch.setattr("agent.mind.cross_channel.assess_optional_work", judge)
     vector = asyncio.get_running_loop().create_future()
     pfc = _pfc()
-    pfc.work_memory.channel_snapshots = {"qq": ChannelSnapshot(active_scopes={"user_qq:1": ScopeActivity(time.time(), "项目")})}
+    pfc.channel_snapshots = {"qq": ChannelSnapshot(active_scopes={"user_qq:1": ScopeActivity(time.time(), "项目")})}
     mind = SimpleNamespace(config=MindConfig(), embedder=SimpleNamespace(available=True), pfc=pfc,
         conversation_data=SimpleNamespace(related_conversation_scopes=AsyncMock(return_value=[])))
     task = asyncio.create_task(recall_cross_channel(

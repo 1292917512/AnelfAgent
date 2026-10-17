@@ -36,9 +36,10 @@ names = [
 first = EntityRegistry.get_tool_schema_by_names(names)
 assert [item['function']['name'] for item in first] == names
 registered = [name for name in EntityRegistry.get_all_names() if name in names]
-assert registered == names
+assert sorted(registered) == sorted(names)
 register_core_tools()
 assert EntityRegistry.get_tool_schema_by_names(names) == first
+assert [name for name in EntityRegistry.get_all_names() if name in names] == registered
 for name in ('end_reply', 'compress_context'):
     entity = EntityRegistry.get(name)
     assert entity.group == 'thinking' and entity.source == 'mind.core'

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from agent.channel import ChannelManager, InputPipeline
 from agent.llm import ChatModel, get_llm_manager
 from agent.messages import CharacterAgent
-from agent.mind import Mind
+from agent.mind.mind import Mind
 from agent.runtime.assistant import AgentAssistant
 from agent.storage.data_center import DataCenter
 from agent.workflow.engine import WorkflowEngine
