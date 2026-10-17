@@ -40,8 +40,7 @@ def _user_initiated(messages: List[Dict]) -> bool:
 def _consume_pending_for_scope(mind: "Mind", anything: "Everything", through_ts: int) -> None:
     """消费当前 scope 的待处理队列条目（新消息已并入当前循环，无需另起周期）。"""
     try:
-        from agent.context.assembly import _safe_entity_scope
-        mind.pfc.consume_scope_task(_safe_entity_scope(anything), through_ts=through_ts)
+        mind.pfc.consume_scope_task(anything.entity_scope, through_ts=through_ts)
     except Exception as exc:
         log(f"消费待处理队列失败: {exc}", "DEBUG", tag="思维")
 
@@ -54,9 +53,8 @@ async def _fetch_new_messages(
 ) -> list[ConversationRow]:
     """从实时会话窗口读取当前历史快照之后的收发消息与系统事实。"""
     try:
-        scope_type, scope_id = mind._resolve_scope(anything)
         return await mind.conversation_data.router.sqlite.fetch_live_conversation(
-            scope_type=scope_type, scope_id=scope_id, after_id=since_id, after_ts=since_ts,
+            scope_type=anything.scope_type, scope_id=anything.scope_id, after_id=since_id, after_ts=since_ts,
             limit=_MAX_MERGED_MESSAGES + 1,
         )
     except Exception as exc:
@@ -148,7 +146,7 @@ async def _merge_new_messages(ctx: ExecutionContext, state: RoundState) -> bool:
     if merged_images or merged_media:
         mind.pfc.activate_media_tools(merged_images, merged_media)
         ctx.active_tools = await mind.pfc.get_active_tool_schemas(
-            ctx.adapter_key, scope=mind._resolve_entity_scope(ctx.anything),
+            ctx.adapter_key, scope=ctx.anything.entity_scope if ctx.anything else "",
         )
     deferred_note = f"，{deferred} 条留存下轮接续" if deferred else ""
     log(f"并入 {len(merged)} 条循环期间新消息到当前上下文{deferred_note}", tag="思维")

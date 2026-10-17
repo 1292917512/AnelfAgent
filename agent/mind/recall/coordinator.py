@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Dict, List, Optional
 
+from agent.context.preparation import model_context
 from agent.memory import recall_context  # noqa: F401
 from agent.mind.recall.inputs import collect_recollection_inputs
 
@@ -32,13 +33,14 @@ async def prepare_recollection(
     if conversation_list is None:
         conversation_list = await mind.get_conversation(anything) if anything else []
 
-    entity_scope = mind._resolve_entity_scope(anything)
+    entity_scope = anything.entity_scope if anything else ""
     current_adapter = getattr(anything, "adapter_key", "") or ""
     inputs = await collect_recollection_inputs(
         mind, conversation_list, anything, scope=entity_scope, adapter=current_adapter, lean=lean,
     )
+    models_summary, direct_vision = model_context(mind.llm, mind.llm_manager)
     return await mind.context.preparation.build_recollection(
         inputs, conversation_list, anything,
         persona_parts=[msg["content"] for msg in mind.char.get_personality_msg() if msg.get("content")],
-        models_summary=mind._get_models_summary(), direct_vision=mind._direct_vision(), lean=lean,
+        models_summary=models_summary, direct_vision=direct_vision, lean=lean,
     )

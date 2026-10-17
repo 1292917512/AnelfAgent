@@ -37,8 +37,8 @@ def _fake_mind(pins_text: str = "") -> SN:
         char=SN(get_personality_msg=lambda: [{"content": "人格"}]),
         retriever=retriever,
         memory_store=None,  # 替身无记忆库：主标签记忆注入位为空
-        _direct_vision=lambda: False,
-        _resolve_entity_scope=lambda anything: "user_lean:test",
+        llm=None,
+        llm_manager=SN(get_models_summary=lambda: "models"),
         context=SN(
             stable_fingerprint=lambda summary, vision: "fp",
             build_persona_block=lambda parts, guide: "人设块",
@@ -105,7 +105,6 @@ class TestLeanRecollection:
         monkeypatch.setattr(recall_inputs, "extract_related_scopes", lambda *args: [])
         monkeypatch.setattr(recall_inputs, "recall_cross_channel", AsyncMock())
         monkeypatch.setattr(recall_inputs, "match_skills", AsyncMock(return_value=[{"content": "手势技能"}]))
-        mind._get_models_summary = lambda: "models"
         mind.context.preparation.build_layers = AsyncMock(return_value=("p", "t", "c", True, True, True, "", ""))
         mind.context.build_llm_context = AsyncMock(return_value=[])
         await Mind.get_recollection(mind, [
@@ -127,7 +126,6 @@ class TestLeanRecollection:
         mind.retriever.recall_split = AsyncMock(
             side_effect=AssertionError("lean 不应召回")
         )
-        mind._get_models_summary = lambda: "models"
         monkeypatch.setattr(recall_inputs, "extract_related_scopes", lambda conv, scope: [])
         mind.context.preparation.build_layers = AsyncMock(
             return_value=("p", "t", "c", True, True, True, "", "")

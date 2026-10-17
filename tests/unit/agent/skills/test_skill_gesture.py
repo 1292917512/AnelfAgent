@@ -71,7 +71,6 @@ def _fake_mind(store_map: dict, pending: dict):
         return []
 
     return SimpleNamespace(
-        _skills_enabled=lambda: True,
         skill_store=store,
         skill_matcher=SimpleNamespace(match=match),
         pfc=SimpleNamespace(add_temporary=MagicMock()),

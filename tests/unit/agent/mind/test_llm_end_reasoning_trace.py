@@ -35,7 +35,7 @@ def _invoker(result: ChatResult) -> ModelInvoker:
     mind = SimpleNamespace(
         llm=client,
         session_llm_params={},
-        _get_mind_config=lambda: SimpleNamespace(
+        config=SimpleNamespace(
             reasoning_effort=None, llm_timeout=30, log_ai_output=False,
         ),
     )

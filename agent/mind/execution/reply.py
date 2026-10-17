@@ -63,8 +63,8 @@ async def reply_loop(
         completion: Optional[Dict[str, Any]] = None,
 ) -> None:
     """多轮对话循环入口：处理图片，进入统一思维循环。"""
-    mc = mind._get_mind_config()
-    scope = mind._resolve_entity_scope(anything) if anything else ""
+    mc = mind.config
+    scope = anything.entity_scope if anything else ""
     from agent.messages import parse_entity_scope
     adapter_key = parse_entity_scope(scope)[1] or adapter_key
     from agent.channel.reply_policy import get_reply_policy

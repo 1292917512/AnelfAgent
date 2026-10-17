@@ -1,12 +1,16 @@
 """思维运行时装配：共享实例、上下文边界与后台服务依赖。"""
 
+import json
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agent.config import BotConfig, BotConfigProvider
+from agent.llm import ChatResult
 from agent.runtime import mind_factory
 from agent.skills.skill_store import SkillStore
+from core.config import ConfigManager
 
 
 @pytest.mark.parametrize("skills_enabled", [False, True])
@@ -16,7 +20,12 @@ async def test_factory_shares_state_and_finishes_wiring_before_publish(tmp_path,
     monkeypatch.setattr(mind_factory, "get_skill_store", lambda: store)
     monkeypatch.setattr(mind_factory, "get_plugin_manager", lambda: SimpleNamespace(registry=registry))
     monkeypatch.setattr(mind_factory, "get_embedder", lambda kind: embedder)
-    monkeypatch.setattr(mind_factory.Mind, "_skills_enabled", staticmethod(lambda: skills_enabled))
+    ConfigManager.set("skills_enabled", skills_enabled)
+    ConfigManager.set("mind_config_path", str(tmp_path / "mind.json"))
+    provider = object.__new__(BotConfigProvider)
+    provider._config = BotConfig()
+    provider._cm_available = True
+    monkeypatch.setattr(mind_factory, "get_mind_config", lambda: provider.mind)
 
     # Persistent collaborators are isolated; Mind, PFC and ContextAssembly remain real.
     factories = {}
@@ -38,6 +47,7 @@ async def test_factory_shares_state_and_finishes_wiring_before_publish(tmp_path,
     monkeypatch.setattr(mind_factory, "activate_group", MagicMock(return_value=1))
 
     conversation, manager, memory = MagicMock(), MagicMock(), MagicMock()
+    manager.chat_with_fallback = AsyncMock(return_value=ChatResult(content=""))
     mind = mind_factory.create_mind(
         char=MagicMock(), llm=MagicMock(), llm_manager=manager,
         channel_manager=MagicMock(), everything_data=MagicMock(),
@@ -63,3 +73,25 @@ async def test_factory_shares_state_and_finishes_wiring_before_publish(tmp_path,
     assert mind.accept_feel.__self__ is mind
     assert mind.reflect.__self__ is mind
     assert not mind.is_reply and mind._reply_idle_event.is_set()
+    assert mind.config is provider.mind
+    provider.save_mind_config(llm_timeout=45, llm_max_retries=2)
+    assert mind.config.llm_timeout == 45
+    assert mind.config.llm_max_retries == 2
+    await mind.model_invoker.chat_with_retry([], None)
+    call = manager.chat_with_fallback.call_args
+    assert call.kwargs["timeout"] == 45
+    assert call.kwargs["max_retries"] == 2
+    (tmp_path / "mind.json").write_text(json.dumps({"llm_timeout": 75}), encoding="utf-8")
+    provider.reload()
+    assert mind.config is provider.mind
+    assert mind.config.llm_timeout == 75
+    await mind.model_invoker.chat_with_retry([], None)
+    assert manager.chat_with_fallback.call_args.kwargs["timeout"] == 75
+
+    def fail_write(*args):
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr("core.file_utils.atomic_write_text", fail_write)
+    with pytest.raises(OSError, match="disk unavailable"):
+        provider.save_mind_config(llm_timeout=90)
+    assert mind.config.llm_timeout == 75

@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from typing import Any, List, Optional
 from unittest.mock import AsyncMock
 
+from agent.config import MindConfig
 from agent.mind.execution.loop import think_loop
 from agent.mind.execution.state import ThinkMode
 from core.tags import etag_all
@@ -147,19 +148,11 @@ class FakeMind:
         self.sent_messages: List[list] = []
         self.executed_tools: List[str] = []
         self.tool_results = tool_results or {}
-        self._config = {**DEFAULT_MIND_CONFIG, **(config_overrides or {})}
+        self.config = MindConfig(**{**DEFAULT_MIND_CONFIG, **(config_overrides or {})})
         self._add_system_context = AsyncMock()
         self._reply_adapter_key = ""
         self.conversation_data = SimpleNamespace()
         self.model_invoker = FakeModelInvoker(self)
-
-    @staticmethod
-    def _resolve_scope(anything) -> tuple:
-        """对齐 Mind._resolve_scope（替身实体缺 scope 字段时回落 uid 维度）。"""
-        return (
-            getattr(anything, "scope_type", "user"),
-            getattr(anything, "scope_id", str(getattr(anything, "uid", ""))),
-        )
 
     def _resolve_adapter_key(self) -> str:
         return ""
@@ -181,10 +174,6 @@ class FakeMind:
 
     def _set_phase(self, phase) -> None:
         pass
-
-    def _get_mind_config(self):
-        return SimpleNamespace(**self._config)
-
 
 class FakeModelInvoker:
     """按脚本响应模型调用，记录调用参数。"""

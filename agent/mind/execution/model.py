@@ -69,7 +69,7 @@ async def _invoke_llm_round(
         ctx.execution_steps.append(f"→ 第{state.iteration + 1}轮: LLM 调用被用户中止")
         return None
     except asyncio.TimeoutError:
-        timeout_val = mind._get_mind_config().llm_timeout
+        timeout_val = mind.config.llm_timeout
         log(f"LLM 调用超时 ({timeout_val}s)，注入恢复提示继续循环", "WARNING", tag="思维")
         ctx.execution_steps.append(f"→ 第{state.iteration + 1}轮: LLM 调用超时 ({timeout_val}s)")
         ctx.tool_chain.append({

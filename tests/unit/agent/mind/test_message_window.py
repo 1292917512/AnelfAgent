@@ -237,15 +237,6 @@ class _MergeMind(FakeMind):
     def _resolve_adapter_key(self) -> str:
         return "test"
 
-    @staticmethod
-    def _resolve_scope(anything) -> tuple[str, str]:
-        return anything.scope_type, anything.scope_id
-
-    @staticmethod
-    def _resolve_entity_scope(anything) -> str:
-        return f"user_{anything.uid}" if anything else ""
-
-
 
 def _attach_pending_work(mind):
     from unittest.mock import AsyncMock
@@ -265,13 +256,11 @@ class TestThinkLoopMerge:
         from unittest.mock import AsyncMock
 
         from agent.channel.output_tools import execute_send_action
-        from agent.config import MindConfig
         from agent.mind.cross_channel import update_channel_snapshot
         from agent.mind.tool_activation import bind_scope, reset_scope
 
         current = MessageUser(uid="1", adapter_key="webui", session_id="a", text_content="A 的请求")
         other = MessageUser(uid="1", adapter_key="qq", text_content="B 的请求")
-        monkeypatch.setattr("agent.mind.cross_channel.get_mind_config", lambda: MindConfig())
         monkeypatch.setattr("agent.channel.outbound_guard._recent", {})
         monkeypatch.setattr("agent.channel.output_tools._validate_channel", lambda key: (object(), None))
         monkeypatch.setattr("agent.channel.output_tools._resolve_send_target", lambda *args: ("1", "private"))
@@ -287,7 +276,6 @@ class TestThinkLoopMerge:
 
         mind = _MergeMind(conv_data)
         mind.model_invoker = CrossReplyModel(mind)
-        mind._resolve_entity_scope = lambda message: message.entity_scope
         mind._channel_snapshots = {}
         work = _attach_pending_work(mind)
         await work.add_task(other)
@@ -307,13 +295,10 @@ class TestThinkLoopMerge:
     async def test_one_unavailable_scope_does_not_hide_other_live_conversations(self, conv_data, monkeypatch) -> None:
         from unittest.mock import AsyncMock
 
-        from agent.config import MindConfig
         from agent.mind.cross_channel import build_cross_channel_narrative, update_channel_snapshot
 
-        monkeypatch.setattr("agent.mind.cross_channel.get_mind_config", lambda: MindConfig())
         monkeypatch.setattr("agent.channel.outbound_guard._recent", {})
         mind = _MergeMind(conv_data)
-        mind._resolve_entity_scope = lambda message: message.entity_scope
         mind._channel_snapshots = {}
         _attach_pending_work(mind)
         messages = [MessageUser(uid="1", adapter_key=adapter, text_content=text)
@@ -353,11 +338,9 @@ class TestThinkLoopMerge:
 
     async def test_cross_channel_refresh_keeps_identity_and_stable_prefix(self, conv_data, monkeypatch) -> None:
         from agent.channel.outbound_guard import note_outbound
-        from agent.config import MindConfig
         from agent.mind.cross_channel import update_channel_snapshot
         from agent.mind.tool_activation import bind_scope, reset_scope
 
-        monkeypatch.setattr("agent.mind.cross_channel.get_mind_config", lambda: MindConfig())
         monkeypatch.setattr("agent.channel.outbound_guard._recent", {})
         current = MessageUser(uid="1", adapter_key="webui", session_id="a", text_content="处理当前工作")
         others = [
@@ -388,7 +371,6 @@ class TestThinkLoopMerge:
         mind.model_invoker = ConcurrentModel(mind)
         _attach_pending_work(mind)
         mind._channel_snapshots = {}
-        mind._resolve_entity_scope = lambda anything: anything.entity_scope if anything else ""
         for message in [current, *others]:
             if message is not current:
                 await conv_data.add_conversation_record_by_everything(message)

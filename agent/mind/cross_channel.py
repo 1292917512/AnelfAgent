@@ -14,7 +14,6 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
-from agent.config import get_mind_config
 from agent.judgment.evidence import conversation_evidence, dialogue_messages
 from agent.judgment.gate import assess_optional_work
 from agent.memory.memory_retriever import MemoryRetriever
@@ -51,7 +50,7 @@ def update_channel_snapshot(mind: Mind, anything: "Everything") -> None:
     adapter_key = getattr(anything, "adapter_key", "") or ""
     if not adapter_key:
         return
-    scope = mind._resolve_entity_scope(anything)
+    scope = anything.entity_scope if anything else ""
     if not scope:
         return
 
@@ -67,7 +66,7 @@ def update_channel_snapshot(mind: Mind, anything: "Everything") -> None:
     activity.last_preview = preview
     activity.adapter_key = adapter_key
 
-    mc = get_mind_config()
+    mc = mind.config
     window = mc.cross_channel_window_minutes * 60
     snap.active_scopes = {
         s: a for s, a in snap.active_scopes.items() if now - a.last_time < window
@@ -121,7 +120,7 @@ async def recall_cross_channel(
     query_vec_task: asyncio.Future[list[float] | None] | None = None,
 ) -> list[dict[str, Any]]:
     """结合当前对话判断召回价值，并发检索近期会话与显式关联身份的历史。"""
-    mc = get_mind_config()
+    mc = mind.config
     if not mc.cross_channel_enabled or mc.cross_channel_recall_max_results <= 0 or not mind.embedder.available:
         return []
     query_conversation = dialogue_messages(query_conversation)
@@ -200,7 +199,7 @@ async def recall_cross_channel(
 
 async def _recall_candidates(mind: Mind, current_scope: str, user_scope: str) -> list[tuple[str, ScopeActivity, bool]]:
     """优先显式关联身份，再按活跃时间选择有界候选；不通过同号或昵称推断身份。"""
-    mc = get_mind_config()
+    mc = mind.config
     cutoff = time.time() - mc.cross_channel_window_minutes * 60
     activities = {scope: activity for snapshot in mind._channel_snapshots.values()
                   for scope, activity in snapshot.active_scopes.items()
@@ -227,7 +226,7 @@ async def _recall_candidates(mind: Mind, current_scope: str, user_scope: str) ->
 
 async def build_cross_channel_narrative(mind: Mind, current_scope: str) -> list[dict[str, Any]]:
     """从已有内存窗口感知待回复私聊与群聊 @，不消费队列、不重放已处理历史。"""
-    mc = get_mind_config()
+    mc = mind.config
     if not mc.cross_channel_enabled or mc.cross_channel_narrative_max_items <= 0:
         return []
     pfc = mind.pfc

@@ -32,10 +32,36 @@ def _mind_stub(client) -> SimpleNamespace:
     mind = SimpleNamespace(
         llm=client,
         session_llm_params={},
-        _get_mind_config=lambda: SimpleNamespace(reasoning_effort=None, llm_timeout=30),
+        config=SimpleNamespace(llm_timeout=30),
     )
     mind.model_invoker = ModelInvoker(mind)
     return mind
+
+
+@pytest.mark.parametrize("window_first", [False, True])
+def test_model_budgets_follow_live_model_and_configuration(monkeypatch, window_first):
+    first, second = _fake_stream_client([]), _fake_stream_client([])
+    first.config = SimpleNamespace(litellm_model="first", context_window=100, max_tokens=20)
+    second.config = SimpleNamespace(litellm_model="second", context_window=300, max_tokens=40)
+    metadata = {"first": {"max_input_tokens": 200, "max_output_tokens": 25}, "second": {}}
+    monkeypatch.setattr(LLMClient, "get_model_info", staticmethod(lambda model: metadata[model]))
+    runtime = _mind_stub(first)
+    invoker = runtime.model_invoker
+
+    def budgets():
+        if window_first:
+            return invoker.get_context_length(), invoker.get_max_output()
+        output = invoker.get_max_output()
+        return invoker.get_context_length(), output
+
+    assert budgets() == (200, 20)
+    runtime.llm = second
+    assert budgets() == (300, 40)
+    second.config.context_window, second.config.max_tokens = 500, 60
+    assert budgets() == (500, 60)
+    runtime.llm = first
+    first.config.max_tokens = 0
+    assert budgets() == (200, 25)
 
 
 class TestStreamAggregation:
@@ -118,8 +144,7 @@ class TestStreamFallback:
 
         captured = {}
         mind = _mind_stub(client)
-        mind._get_mind_config = lambda: SimpleNamespace(
-            reasoning_effort=None, llm_timeout=30, log_ai_output=False)
+        mind.config = SimpleNamespace(llm_timeout=30, log_ai_output=False)
         mind.llm_manager = None
 
         async def fake_retry(messages, tools, *, tool_choice=None, options=None):

@@ -39,8 +39,7 @@ async def test_reply_entry_applies_only_running_channel_recall_default(monkeypat
         assert kwargs["base_messages"] == [{"role": "system", "content": "固定前缀"}]
     loop = AsyncMock(side_effect=execute)
     monkeypatch.setattr("agent.mind.execution.reply.think_loop", loop)
-    mind = SimpleNamespace(_get_mind_config=lambda: SimpleNamespace(max_tool_iterations=5),
-                           _resolve_entity_scope=lambda anything: anything.entity_scope,
+    mind = SimpleNamespace(config=SimpleNamespace(max_tool_iterations=5),
                            get_recollection=AsyncMock(side_effect=collect),
                            pfc=SimpleNamespace(get_active_tool_schemas=AsyncMock(return_value=[]),
                                                consume_scope_task=Mock(), clear_dynamic_tools=Mock()))

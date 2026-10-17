@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agent.config import MindConfig
 from agent.mind.mind import Mind
 
 
@@ -42,8 +43,8 @@ async def test_prewarm_strips_layer_tags(monkeypatch) -> None:
     sent: List[dict] = []
     mind = MagicMock(spec=Mind)
     mind.retriever = None  # 跳过永久块检索
-    mind._resolve_entity_scope = MagicMock(return_value="user_test:u1")
-    mind._get_models_summary = MagicMock(return_value="")
+    mind.llm_manager = None
+    mind.config = MindConfig(llm_timeout=60)
 
     async def _layered(*a, **k):
         return ("人设", "工具说明", "便签")
@@ -65,7 +66,6 @@ async def test_prewarm_strips_layer_tags(monkeypatch) -> None:
     mind.pfc = MagicMock()
     mind.context.build_llm_context = _build_context
     mind.pfc.get_active_tool_schemas = AsyncMock(return_value=[])
-    mind._get_mind_config.return_value.llm_timeout = 60
     mind.llm = _fake_llm_client(sent)
 
     # 绑定真实的 prewarm_scope_cache 实现到替身实例
@@ -81,8 +81,8 @@ async def test_prewarm_no_llm_client_noop(monkeypatch) -> None:
     """llm 非 LLMClient 时预热静默退出，不抛异常。"""
     mind = MagicMock(spec=Mind)
     mind.retriever = None
-    mind._resolve_entity_scope = MagicMock(return_value="user_test:u1")
-    mind._get_models_summary = MagicMock(return_value="")
+    mind.llm_manager = None
+    mind.config = MindConfig()
 
     async def _layered(*a, **k):
         return ("", "", "")

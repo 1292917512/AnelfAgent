@@ -81,7 +81,7 @@ async def test_recall_refreshes_links_without_auto_wakeup_or_prefix_changes(tmp_
     stale_skill = store.save(Skill(name="inspect", description="Inspect deployment", content="Steps"))
     before = catalog_section(store)
     set_mcp_bindings(store, "inspect", ["docs"])
-    mind = SimpleNamespace(_skills_enabled=lambda: True, skill_store=store,
+    mind = SimpleNamespace(skill_store=store,
                            pfc=SimpleNamespace(add_temporary=MagicMock()),
                            skill_matcher=SimpleNamespace(match=AsyncMock(return_value=[(stale_skill, 0.9)])),
                            _pending_skill_gestures={})

@@ -403,7 +403,7 @@ async def think_and_decide(mind: "Mind", situation: SituationContext) -> List[De
         mind.char.get_personality_msg(), situation, memory_ctx,
     )
     try:
-        mc = mind._get_mind_config()
+        mc = mind.config
         opts = {"temperature": mc.meta_decision_temperature}
         tc = {"type": "function", "function": {"name": "decide"}}
         if mind.llm_manager:

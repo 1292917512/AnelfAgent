@@ -104,7 +104,6 @@ def _mind_with_matcher(matched=None, captured: dict | None = None):
         return list(matched or [])
 
     return SimpleNamespace(
-        _skills_enabled=lambda: True,
         skill_store=store,
         skill_matcher=SimpleNamespace(match=match),
         pfc=SimpleNamespace(add_temporary=MagicMock()),

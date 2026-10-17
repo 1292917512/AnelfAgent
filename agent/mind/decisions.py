@@ -19,7 +19,6 @@ from agent.messages import (
     parse_entity_scope,
 )
 from agent.mind.autonomous import Decision, DecisionType, MindPhase
-from agent.mind.execution.vision import collect_pending_images
 from core.config import get_config_int, register_configs_safe
 from core.log import log
 
@@ -98,7 +97,7 @@ async def execute_reply(mind: Mind, decision: Decision) -> None:
 
     # scope 一律按解析后的实体规范化（target 可能是裸 ID "123"，
     # 直接用会导致去重登记与中断匹配失效）
-    scope = mind._resolve_entity_scope(anything)
+    scope = anything.entity_scope if anything else ""
     if scope in mind._active_scopes:
         log(f"跳过重复回复: {scope}", "DEBUG", tag="思维")
         return
@@ -127,7 +126,7 @@ async def execute_reply(mind: Mind, decision: Decision) -> None:
         adapter_key = getattr(anything, "adapter_key", "") or ""
         mind._set_phase(MindPhase.RECALLING)
 
-        pending_images = collect_pending_images(mind, scope=scope)
+        pending_images = mind.pfc.collect_images(scope=scope)
         if pending_images:
             log(f"注入待处理图片: {len(pending_images)} 张", tag="思维")
 
@@ -322,7 +321,7 @@ async def execute_proactive(mind: Mind, decision: Decision) -> None:
 
     # 回复所有权：与 execute_reply 同一登记协议——PROACTIVE 也是该会话的
     # 回复周期所有者（出站事实面据此放行本会话投递、拦截他链代答）
-    scope = mind._resolve_entity_scope(anything)
+    scope = anything.entity_scope if anything else ""
     if scope in mind._active_scopes:
         log(f"PROACTIVE 跳过（会话回复在飞）: {scope}", "DEBUG", tag="思维")
         return

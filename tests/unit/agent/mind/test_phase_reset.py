@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from agent.config import MindConfig
 from agent.mind import cycle
 from agent.mind import mind as mind_module
 from agent.mind.autonomous import MindPhase
@@ -24,6 +25,7 @@ from agent.mind.mind import Mind
 def _bare_mind() -> Any:
     """最小 Mind 实例（绕过构造）：phase 判定触达的字段 + 真实 _set_phase/收口。"""
     mind = Mind.__new__(Mind)
+    mind.config = MindConfig()
     mind.phase = MindPhase.IDLE
     mind._active_scopes = set()
     mind._reflect_depth = 0
@@ -172,7 +174,7 @@ class TestCycleBodyDeciding:
 class TestReflectPhaseReset:
     def _wire_reflect_fakes(self, mind: Any) -> None:
         mind.note_activity = lambda: None
-        mind._get_mind_config = lambda: SimpleNamespace(max_tool_iterations=6)
+        mind.config = SimpleNamespace(max_tool_iterations=6)
         mind.pfc = SimpleNamespace(
             get_active_tool_schemas=AsyncMock(return_value=[]),
             clear_dynamic_tools=lambda **kwargs: None,

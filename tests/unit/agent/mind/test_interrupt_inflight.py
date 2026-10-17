@@ -30,10 +30,9 @@ async def test_stop_during_context_preparation_closes_work_and_reports_cancelled
     from core.event_bus import event_bus
 
     started, closed = asyncio.Event(), asyncio.Event()
-    scope = "user_webui:web_user#prepare"
+    scope = anything.entity_scope
     mind = FakeMind(config_overrides={"max_tool_iterations": 10})
     mind.interrupts = InterruptRegistry()
-    mind._resolve_entity_scope = lambda _: scope
     monkeypatch.setattr(mind.pfc, "clear_dynamic_tools", lambda **kw: None)
     anything.message_kind = "chat"
     anything.recall_policy = None
@@ -147,7 +146,7 @@ def _stream_mind(client) -> SimpleNamespace:
     return SimpleNamespace(
         llm=client,
         session_llm_params=None,
-        _get_mind_config=lambda: SimpleNamespace(llm_timeout=5.0),
+        config=SimpleNamespace(llm_timeout=5.0),
     )
 
 
@@ -219,7 +218,7 @@ class TestUnifiedNoFallbackOnAbort:
             llm=SimpleNamespace(config=SimpleNamespace(
                 litellm_model="fake-model", api_type="openai",
             )),
-            _get_mind_config=lambda: SimpleNamespace(log_ai_output=False),
+            config=SimpleNamespace(log_ai_output=False),
         )
         invoker = li.ModelInvoker(mind)
         invoker.chat_stream_once = stream_fn

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from agent.channel.manager import ChannelManager
+from agent.config import get_mind_config
 from agent.context.assembly import ContextAssembly
 from agent.context.compressor import ContextCompressor
 from agent.heartbeat.engine import HeartbeatEngine
@@ -18,6 +19,7 @@ from agent.mind.prefrontal_cortex import PrefrontalCortex
 from agent.skills import get_skill_store
 from agent.storage.data_center import ConversationData, EverythingData
 from agent.storage.storage_router import StorageRouter
+from core.config import get_config_bool
 from core.log import log
 from core.plugins import get_plugin_manager
 from core.tool_registry import activate_group
@@ -44,6 +46,7 @@ def create_mind(
         if rerank_client:
             retriever.set_rerank_client(rerank_client)
     mind = Mind(
+        config=get_mind_config(),
         char=char, llm=llm, llm_manager=llm_manager, channel_manager=channel_manager,
         everything_data=everything_data, conversation_data=conversation_data,
         prefrontal_cortex=pfc, context=context, skill_store=skill_store,
@@ -62,7 +65,7 @@ def create_mind(
     mind.skill_matcher = SkillMatcher(mind.skill_store, mind.embedder)
     mind.skill_curator = SkillCurator(mind.skill_store, mind.skill_matcher.index)
     mind.skill_reviewer = SkillReviewer(mind, mind.skill_store, index=mind.skill_matcher.index)
-    if mind._skills_enabled():
+    if get_config_bool("skills_enabled", True):
         mind.skill_reviewer.start()
 
     # 子代理委托管理器（delegate_task 工具经 wiring 端口消费本实例）

@@ -156,7 +156,7 @@ class DialogueRecollection:
             return await deep_probe_hub._memory_deltas(results, retriever._store, "补充记忆")
 
         async def skills() -> list[RecallDelta]:
-            if not self.mind._skills_enabled():
+            if not get_config_bool("skills_enabled", True):
                 return []
             matches = await self.mind.skill_matcher.match([query], top_k=2)
             deltas = []

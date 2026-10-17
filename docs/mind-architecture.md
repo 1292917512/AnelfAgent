@@ -27,11 +27,15 @@
 | `agent/mind/decisions.py` | 把结构化决策分发到回复、反思、计划和任务执行器 | 决策执行函数 |
 | `agent/mind/execution/` | 多轮执行、消息并入、工具调用和收束；由 Mind 的回复、反思入口调用 | `reply.reply_entry()`、`loop.think_loop()` |
 | `agent/mind/recall/` | 首轮并发取数、对话增量召回、关联对象识别 | `coordinator.prepare_recollection()`、`refresh.DialogueRecollection` |
-| `agent/mind/llm_invoker.py` | 模型预算缓存、统一发送、重试、回退、流式聚合与摘要 | `ModelInvoker` |
+| `agent/mind/llm_invoker.py` | 模型预算读取、统一发送、重试、回退、流式聚合与摘要 | `ModelInvoker` |
 | `agent/context/` | 提示词、分层缓存、动态呈现、环境快照及发送规整 | `ContextAssembly`、`ContextPreparation` |
 
 Mind 原生方法负责消息接收、周期、回复、反思与召回观测的生命周期，内部阶段直接调用所属模块的函数，
-不把模块函数重新绑定到宿主。`ModelInvoker` 持有模型预算缓存，并实时读取宿主当前的模型与会话选项；
+不把模块函数重新绑定到宿主。`create_mind()` 注入配置提供器持有的 `MindConfig`，执行阶段直接读取
+`mind.config`；保存与重载原位更新同一对象，无需重建 Mind。共享配置契约位于 `agent/config.py`，
+上下文等模块可直接使用，不经 Mind 中转。消息归属由消息对象的 scope 属性提供。
+`ModelInvoker` 通过 `ModelRuntime` 接口实时读取配置、模型与会话选项。模型元数据复用模型库缓存，
+思维层不重复缓存预算，模型切换和参数修改后直接读取当前值；
 压缩器只通过 `CompressionHost` 接口使用该协作者，不依赖 Mind。事件名称、载荷与消息装配顺序由原有链路保持。
 技能库、插件注册表由 `create_mind` 注入共享实例，Mind 不创建上下文所需的单例，也不代理上下文格式化。
 

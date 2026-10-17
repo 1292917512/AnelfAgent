@@ -848,7 +848,7 @@ class TestSpeakArbitration:
             assert spoken_log == []  # 未播完，不标记
 
             await engine.speak_to_scope("user_webui:u1", "完整播出的提醒")
-            await _wait_for(lambda: session.lane.active is None)
+            await _wait_for(lambda: session.lane.active is None and bool(spoken_log))
             assert spoken_log == ["完整播出的提醒"]
         finally:
             await engine.stop("c-s4")

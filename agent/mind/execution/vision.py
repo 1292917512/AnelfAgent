@@ -17,10 +17,6 @@ if TYPE_CHECKING:
     from agent.mind.mind import Mind
 
 
-def collect_pending_images(mind: Mind, scope: str = "") -> List[ImageContent]:
-    return mind.pfc.collect_images(scope=scope)
-
-
 # 内联 base64 图片数据的长度上限：超过则转存为文件路径（防上下文膨胀）
 _MAX_INLINE_IMAGE_DATA = 500
 

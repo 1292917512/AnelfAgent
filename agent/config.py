@@ -2,7 +2,8 @@
 BotConfigProvider：AnelfAgent 集中配置访问层。
 
 LLM 客户端配置由 LLMManager 管理（config/llm_clients.json），
-此模块保留兼容性运行参数、人设配置、MCP 配置等全局设置的读写。
+此模块管理运行参数、人设和 MCP 等全局设置；MindConfig 供思维、上下文与记忆层共享。
+保存和重载原位更新配置对象，消费者可持有引用，不需要经 Mind 转发读取。
 
 支持环境变量覆盖：``ANELF_<KEY>`` 格式的环境变量会覆盖对应配置。
 """

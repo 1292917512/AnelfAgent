@@ -217,7 +217,6 @@ class TestProactiveEmptyConversation:
             _active_scopes=set(),
             _reply_activated_at={},
             _reply_idle_event=asyncio.Event(),
-            _resolve_entity_scope=lambda _a: _CANONICAL,
             _reset_phase_if_idle=lambda: None,
             conversation_data=SimpleNamespace(
                 router=SimpleNamespace(

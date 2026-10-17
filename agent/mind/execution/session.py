@@ -93,7 +93,7 @@ async def _prepare_think_context(
         else:
             base_messages = []
 
-    mc = mind._get_mind_config()
+    mc = mind.config
     # 纯工具模式（可选，默认关）：开启后 LLM 调用强制工具选择（tool_choice=required）
     pure_tool_mode = bool(getattr(mc, "force_tool_use", False))
     # 后台任务等待：等待意图挂起的单次上限与本轮回复累计预算（秒）

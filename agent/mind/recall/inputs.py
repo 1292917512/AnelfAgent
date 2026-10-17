@@ -16,6 +16,7 @@ from agent.memory.memory_retriever import MemoryRetriever
 from agent.memory.recall_policy import current_recall_policy
 from agent.mind.cross_channel import recall_cross_channel
 from agent.mind.recall.scopes import extract_related_scopes, extract_scopes_from_anything
+from core.config import get_config_bool
 from core.hooks import HookMode, hook_execution
 from core.log import log
 
@@ -184,7 +185,7 @@ async def match_skills(
         planned_queries: Optional[List[str]] = None,
 ) -> List[Dict]:
     """消费本会话的技能手势，交给技能系统匹配与生成召回材料。"""
-    if not mind._skills_enabled():
+    if not get_config_bool("skills_enabled", True):
         return []
     from agent.skills.recall import match_recalled_skills
     gestures = mind._pending_skill_gestures.pop(scope, []) if scope else []

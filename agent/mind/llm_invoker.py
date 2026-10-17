@@ -6,7 +6,7 @@ import asyncio
 import sys
 import time
 import uuid
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol
 
 from agent.context import audit as context_audit
 from agent.context.message_schema import normalize_for_send
@@ -21,8 +21,10 @@ from core.event_bus import (
 from core.log import log
 
 if TYPE_CHECKING:
+    from agent.config import MindConfig
+    from agent.llm import ChatModel
+    from agent.llm.llm_manager import LLMManager
     from agent.messages import Everything
-    from agent.mind.mind import Mind
 
 # asyncio.timeout 需 3.11+（无 per-chunk Task 创建开销）；3.10 回退 wait_for
 _HAS_ASYNCIO_TIMEOUT = sys.version_info >= (3, 11)
@@ -45,15 +47,24 @@ def _llm_end_transcript_hook_registered() -> bool:
         return False
 
 
-def _merge_llm_options(mind: "Mind", options: Optional[dict]) -> dict:
+class ModelRuntime(Protocol):
+    """模型调用所需的实时配置、客户端与会话选项。"""
+
+    config: MindConfig
+    llm: ChatModel
+    llm_manager: LLMManager | None
+    session_llm_params: dict
+
+
+def _merge_llm_options(runtime: ModelRuntime, options: Optional[dict]) -> dict:
     """合并 LLM 调用选项：调用方 options + 会话级参数覆盖。
 
     思考等级不做全局兜底——是否思考由选用的模型自己决定（模型配置的
     reasoning_effort / thinking 契约），对话层不统一注入档位。
     """
     merged_options = dict(options or {})
-    if mind.session_llm_params:
-        merged_options.update(mind.session_llm_params)
+    if runtime.session_llm_params:
+        merged_options.update(runtime.session_llm_params)
     return merged_options
 
 
@@ -86,60 +97,27 @@ async def _race_abort(aw: Any, abort_event: Optional[asyncio.Event]) -> Any:
 
 
 class ModelInvoker:
-    """持有模型预算缓存，统一执行流式、重试、回退与摘要调用。"""
+    """读取实时模型预算，统一执行流式、重试、回退与摘要调用。"""
 
-    def __init__(self, mind: Mind) -> None:
-        self._mind = mind
-        self._cached_context_length = 0
-        self._cached_max_output = 0
-        self._cached_model_name = ""
+    def __init__(self, runtime: ModelRuntime) -> None:
+        self._runtime = runtime
 
     def get_context_length(self) -> int:
-        """获取当前模型的上下文窗口（tokens，带缓存；0 表示未知）。
-
-        缓存键含模型名，switch_model 后自动失效。
-        """
-        mind = self._mind
-        llm_client = mind.llm if isinstance(mind.llm, LLMClient) else None
-        if llm_client is None:
+        """获取当前模型窗口：模型元数据优先，配置兜底，0 表示未知。"""
+        client = self._runtime.llm
+        if not isinstance(client, LLMClient):
             return 0
-        current_model = llm_client.config.litellm_model or ""
-        if self._cached_context_length > 0 and self._cached_model_name == current_model:
-            return self._cached_context_length
-        max_ctx = 0
-        try:
-            info = LLMClient.get_model_info(current_model)
-            max_ctx = info.get("max_input_tokens") or info.get("max_tokens") or 0
-        except Exception:
-            max_ctx = 0
-        if not max_ctx:
-            max_ctx = llm_client.config.context_window or 0
-        self._cached_context_length = max_ctx
-        self._cached_model_name = current_model
-        return max_ctx
+        info = LLMClient.get_model_info(client.config.litellm_model or "")
+        return info.get("max_input_tokens") or info.get("max_tokens") or client.config.context_window or 0
 
     def get_max_output(self) -> int:
-        """获取当前模型的输出预算（tokens，带缓存；0 表示未知）。
-
-        优先级：显式配置 max_tokens > litellm 模型信息 max_output_tokens > 0（未知）。
-        与 get_context_length 共用模型名缓存键，switch_model 后同步失效。
-        """
-        mind = self._mind
-        llm_client = mind.llm if isinstance(mind.llm, LLMClient) else None
-        if llm_client is None:
+        """获取当前输出预算：显式配置优先，模型元数据兜底，0 表示未知。"""
+        client = self._runtime.llm
+        if not isinstance(client, LLMClient):
             return 0
-        current_model = llm_client.config.litellm_model or ""
-        if self._cached_max_output > 0 and self._cached_model_name == current_model:
-            return self._cached_max_output
-        max_out = llm_client.config.max_tokens or 0
-        if not max_out:
-            try:
-                info = LLMClient.get_model_info(current_model)
-                max_out = info.get("max_output_tokens") or 0
-            except Exception:
-                max_out = 0
-        self._cached_max_output = max_out
-        return max_out
+        if client.config.max_tokens:
+            return client.config.max_tokens
+        return LLMClient.get_model_info(client.config.litellm_model or "").get("max_output_tokens") or 0
 
     async def invoke(
             self,
@@ -163,8 +141,8 @@ class ModelInvoker:
         cache_tail_anchor=False 声明本调用是一次性的（前缀+尾部不会再被
         原样重发），缓存装饰省略链尾增量锚点以免写入永不命中的条目。
         """
-        mind = self._mind
-        model_name = mind.llm.config.model if isinstance(mind.llm, LLMClient) else "unknown"
+        runtime = self._runtime
+        model_name = runtime.llm.config.model if isinstance(runtime.llm, LLMClient) else "unknown"
 
         # 前缀稳定性守卫（normalize 前，_layer 标签尚存）：对前缀层消息逐条哈希
         # 与同 scope 上一次调用比对，首个不一致位置即缓存断裂点。仅观测不阻断，
@@ -214,7 +192,7 @@ class ModelInvoker:
         # 按主客户端线型判定，回退候选的供应商适配在 llm_manager）
         from agent.llm.prompt_cache import decorate_messages, is_anthropic_wire, observe_scope_idle
         hook_messages = messages
-        _llm = getattr(mind, "llm", None)
+        _llm = runtime.llm
         _llm_cfg = getattr(_llm, "config", None)
         messages = decorate_messages(messages, anthropic=is_anthropic_wire(
             getattr(_llm_cfg, "litellm_model", "") or "",
@@ -320,7 +298,7 @@ class ModelInvoker:
             model=result.model or model_name, messages=messages, tools=tools,
             result=result, duration_ms=elapsed_ms,
         )
-        mc = mind._get_mind_config()
+        mc = runtime.config
         if mc.log_ai_output:
             if result.reasoning_content:
                 log(f"AI 推理: {result.reasoning_content[:300]}", "DEBUG", tag="思维")
@@ -351,9 +329,8 @@ class ModelInvoker:
                 f"cache_creation={result.usage.cache_creation_input_tokens}",
                 "DEBUG", tag="思维",
             )
-            llm_client = mind.llm if isinstance(mind.llm, LLMClient) else None
+            llm_client = runtime.llm if isinstance(runtime.llm, LLMClient) else None
             if llm_client:
-                # 复用模型名缓存的上下文窗口查询，避免每次 LLM 调用重复 get_model_info
                 max_ctx = self.get_context_length()
         else:
             # usage 缺失埋点：流式端点/网关未返回 usage 时缓存统计不可用
@@ -409,26 +386,26 @@ class ModelInvoker:
             tool_choice: Optional[str] = None,
             options: Optional[dict] = None,
     ) -> ChatResult:
-        mind = self._mind
-        mc = mind._get_mind_config()
-        merged_options = _merge_llm_options(mind, options)
+        runtime = self._runtime
+        mc = runtime.config
+        merged_options = _merge_llm_options(runtime, options)
 
         model_override_id = merged_options.pop("_model_id", None)
         final_options = merged_options or None
 
-        if mind.llm_manager:
+        if runtime.llm_manager:
             if model_override_id:
                 # 执行路径：覆盖模型不存在或已停用时回退默认
-                primary = mind.llm_manager.get_enabled_client(model_override_id)
+                primary = runtime.llm_manager.get_enabled_client(model_override_id)
                 if not primary:
                     from core.log import log
                     log(f"指定模型 '{model_override_id}' 不可用（不存在或已停用），回退到默认模型", "WARNING", tag="思维")
-                    primary = mind.llm if isinstance(mind.llm, LLMClient) else None
+                    primary = runtime.llm if isinstance(runtime.llm, LLMClient) else None
             else:
-                primary = mind.llm if isinstance(mind.llm, LLMClient) else None
+                primary = runtime.llm if isinstance(runtime.llm, LLMClient) else None
             if primary is not None and not primary.config.enabled:
-                primary = mind.llm_manager.get_default()
-            result = await mind.llm_manager.chat_with_fallback(
+                primary = runtime.llm_manager.get_default()
+            result = await runtime.llm_manager.chat_with_fallback(
                 messages,
                 options=final_options,
                 tools=tools,
@@ -442,7 +419,7 @@ class ModelInvoker:
             )
         else:
             result = await asyncio.wait_for(
-                mind.llm.chat(messages, options=final_options, tools=tools, tool_choice=tool_choice),
+                runtime.llm.chat(messages, options=final_options, tools=tools, tool_choice=tool_choice),
                 timeout=mc.llm_timeout,
             )
         if result.content:
@@ -469,11 +446,11 @@ class ModelInvoker:
         调用方不得走任何重试/回退。on_tool_call_ready 接收流中已完整的工具调用
         （early_tool_calls），执行层据此在流继续生成时提前分发。
         """
-        mind = self._mind
-        if not isinstance(mind.llm, LLMClient):
+        runtime = self._runtime
+        if not isinstance(runtime.llm, LLMClient):
             raise RuntimeError("当前 LLM 客户端不支持流式调用")
-        mc = mind._get_mind_config()
-        merged_options = _merge_llm_options(mind, options)
+        mc = runtime.config
+        merged_options = _merge_llm_options(runtime, options)
         merged_options.pop("_model_id", None)
         final_options = merged_options or None
 
@@ -488,7 +465,7 @@ class ModelInvoker:
         reasoning_details: Optional[List[dict]] = None
         ttft_ms: Optional[float] = None
         started = time.monotonic()
-        stream_iter = mind.llm.chat_stream(
+        stream_iter = runtime.llm.chat_stream(
             messages, options=final_options, tools=tools, tool_choice=tool_choice,
         ).__aiter__()
         # 总时长天花板（与管理器流式路径 ceiling_mult=20 同口径）：防端点
@@ -569,7 +546,7 @@ class ModelInvoker:
             finish_reason=finish_reason,
             reasoning_content="".join(reasoning_parts),
             usage=usage,
-            model=mind.llm.config.model,
+            model=runtime.llm.config.model,
             ttft_ms=ttft_ms,
             thinking_blocks=thinking_blocks,
             reasoning_details=reasoning_details,
@@ -588,16 +565,16 @@ class ModelInvoker:
         - token 影响：指定低思考档可显著省 token；流式本身不改用量。
         - 缓存影响：摘要为独立小请求，不共享主对话前缀，不触碰前缀层。
         """
-        mind = self._mind
+        runtime = self._runtime
         messages = [{"role": "user", "content": prompt}]
-        if mind.llm_manager is not None:
+        if runtime.llm_manager is not None:
             from agent.llm.reasoning import normalize_effort
             from core.config import get_config
 
             client = None
             model_id = str(get_config("conversation_summary_model", "") or "").strip()
             if model_id:
-                client = mind.llm_manager.get_enabled_client(model_id)
+                client = runtime.llm_manager.get_enabled_client(model_id)
                 if client is None:
                     log(f"摘要专用模型不存在或已停用，回落默认主模型: {model_id}",
                         "WARNING", tag="思维")
@@ -605,10 +582,10 @@ class ModelInvoker:
             effort = normalize_effort(get_config("conversation_summary_reasoning_effort", ""))
             if effort:
                 options = {"reasoning_effort": effort}
-            result = await mind.llm_manager.chat_with_fallback(
+            result = await runtime.llm_manager.chat_with_fallback(
                 messages, max_retries=1, timeout=180.0, purpose="summarize",
                 client=client, options=options, stream=True,
             )
         else:
-            result = await mind.llm.chat(messages, options=None)
+            result = await runtime.llm.chat(messages, options=None)
         return (result.content or "").strip()

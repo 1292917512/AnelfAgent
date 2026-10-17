@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from agent.context.inputs import RecollectionInputs
 from agent.context.prompt_layers import FileLayerCache
+from agent.llm.llm_client import LLMClient
 from agent.memory.notes import (
     build_dynamic_notes,
     build_file_index_block,
@@ -25,6 +26,8 @@ from core.event_bus import EVENT_THINKING_CONTEXT_BUILD, event_bus
 
 if TYPE_CHECKING:
     from agent.context.assembly import ContextAssembly
+    from agent.llm import ChatModel
+    from agent.llm.llm_manager import LLMManager
     from agent.messages import Everything
 
 
@@ -212,8 +215,8 @@ def apply_memory_budget(msgs: List[Dict]) -> List[Dict]:
     return kept
 
 
-def format_models_summary(summary: str) -> str:
-    """将可用模型目录呈现为上下文提示。"""
-    if not summary:
-        return ""
-    return "# 可用模型\n" + summary + "\n不要编造工具不存在的功能或数据。"
+def model_context(client: ChatModel, manager: LLMManager | None) -> tuple[str, bool]:
+    """读取可用模型目录及当前视觉能力，构建工具层所需的模型提示。"""
+    summary = manager.get_models_summary() if manager else ""
+    text = "# 可用模型\n" + summary + "\n不要编造工具不存在的功能或数据。" if summary else ""
+    return text, bool(isinstance(client, LLMClient) and client.config.supports_vision)

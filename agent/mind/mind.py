@@ -13,8 +13,8 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional
 
 from agent.channel.manager import ChannelManager
 from agent.context.observation import emit_context_summary
+from agent.context.preparation import model_context
 from agent.llm import ChatModel, ImageContent, ToolCall
-from agent.llm.llm_client import LLMClient
 from agent.llm.llm_manager import LLMManager
 from agent.memory.memory_retriever import MemoryRetriever
 from agent.memory.memory_store import MemoryStore
@@ -58,6 +58,7 @@ from core.log import log
 from core.trace_session import thinking_session
 
 if TYPE_CHECKING:
+    from agent.config import MindConfig
     from agent.context.assembly import ContextAssembly
     from agent.context.compressor import ContextCompressor
     from agent.delegation.delegation_manager import DelegationManager
@@ -85,6 +86,7 @@ class Mind:
     def __init__(
             self,
             *,
+            config: MindConfig,
             char: CharacterAgent,
             llm: ChatModel,
             llm_manager: Optional[LLMManager] = None,
@@ -99,6 +101,7 @@ class Mind:
             storage_router: Optional["StorageRouter"] = None,
             memory_store: Optional[MemoryStore] = None,
     ) -> None:
+        self.config = config
         self.char = char
         self.llm = llm
         self.llm_manager = llm_manager
@@ -177,11 +180,6 @@ class Mind:
     @property
     def tool_executor(self) -> Optional[Callable[[ToolCall], Awaitable[str]]]:
         return EntityRegistry.execute_tool_call
-
-    @staticmethod
-    def _get_mind_config():
-        from agent.config import get_mind_config
-        return get_mind_config()
 
     def _set_phase(self, phase: MindPhase) -> None:
         prev = self.phase
@@ -388,12 +386,13 @@ class Mind:
     async def prewarm_scope_cache(self, scope_type: str, scope_id: str) -> None:
         """请求预热会话折叠后的上下文前缀。"""
         from agent.context.prewarm import prewarm_scope_cache
+        models_summary, direct_vision = model_context(self.llm, self.llm_manager)
         await prewarm_scope_cache(
             scope_type, scope_id, context=self.context, char=self.char,
-            models_summary=self._get_models_summary(), direct_vision=self._direct_vision(),
+            models_summary=models_summary, direct_vision=direct_vision,
             retriever=self.retriever, conversation_data=self.conversation_data, client=self.llm,
             get_tools=self.pfc.get_active_tool_schemas,
-            timeout=self._get_mind_config().llm_timeout * 20,
+            timeout=self.config.llm_timeout * 20,
         )
 
     async def reflect(
@@ -436,7 +435,7 @@ class Mind:
         # 一个收尾的调用触发归零），异常也必须复位
         self._reflect_depth += 1
         try:
-            mc = self._get_mind_config()
+            mc = self.config
             safety_limit = max_iterations or mc.max_tool_iterations
             blocked_tools = build_reflect_blocklist(allow_output_tools)
             if extra_blocked_tools:
@@ -512,17 +511,6 @@ class Mind:
         await emit_context_summary(messages, round((time.monotonic() - started) * 1000))
         return messages
 
-    @staticmethod
-    def _skills_enabled() -> bool:
-        """技能系统总开关。"""
-        from core.config import get_config_bool
-        return get_config_bool("skills_enabled", True)
-
-    def _direct_vision(self) -> bool:
-        """当前主模型是否支持视觉（决定图片直传与媒体规则文案）。"""
-        llm_client = self.llm if isinstance(self.llm, LLMClient) else None
-        return bool(llm_client and llm_client.config.supports_vision)
-
     async def get_conversation(self, anything: Everything) -> List[Dict]:
         """从 DB 获取指定对象的对话历史。"""
         return await self.conversation_data.get_conversation_record_by_everything(anything)
@@ -538,33 +526,9 @@ class Mind:
             role: 存储角色（主流 OpenAI 格式）。系统上下文用 "system"，
                   AI 自身输出用 "assistant"，用户消息用 "user"。
         """
-        scope_type, scope_id = self._resolve_scope(anything)
         await self.conversation_data.router.append(
             StorageDomain.CONVERSATION,
-            scope_type=scope_type, scope_id=scope_id,
+            scope_type=anything.scope_type, scope_id=anything.scope_id,
             role=role, content=content,
             adapter_key=getattr(anything, "adapter_key", "") or "",
         )
-
-    @staticmethod
-    def _resolve_scope(anything: Everything) -> tuple[str, str]:
-        """从 anything 解析 scope_type 和 scope_id。"""
-        return anything.scope_type, anything.scope_id
-
-    @staticmethod
-    def _resolve_entity_scope(anything: Optional[Everything]) -> str:
-        """从消息对象解析实体 scope（如 user_123 / group_456 / user_123#chat_id）。
-
-        使用 ``everything.entity_scope`` 属性（支持 session_id 多会话后缀），
-        而不是手工拼接——保证与 webui 多 chat_id 隔离一致。
-        """
-        if not anything:
-            return ""
-        return anything.entity_scope
-
-    def _get_models_summary(self) -> str:
-        """读取模型目录，交由上下文层呈现。"""
-        from agent.context.preparation import format_models_summary
-        if not self.llm_manager:
-            return ""
-        return format_models_summary(self.llm_manager.get_models_summary())

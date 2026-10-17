@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Dict, List, Optional
 
+from agent.config import get_mind_config
 from agent.context.ports import ToolContextView, WorkingMemoryView
 from agent.context.preparation import ContextPreparation
 from agent.context.usage_rules import (
@@ -31,11 +32,6 @@ if TYPE_CHECKING:
     from agent.skills.skill_store import SkillStore
     from agent.storage.data_center import ConversationData
     from core.plugins.store import PluginRegistry
-
-
-def _get_mind_config():
-    from agent.config import get_mind_config
-    return get_mind_config()
 
 
 def _memory_rules_text() -> str:
@@ -104,24 +100,6 @@ def _env_info_block() -> str:
             "stat 用 -f 而非 -c、date 用 -v 而非 -d、grep 无 -P"
         )
     return block
-
-
-def _safe_entity_scope(anything: object) -> str:
-    """兼容测试替身的 entity_scope 获取：缺失时按 adapter/uid/group_id 拼接。"""
-    if anything is None:
-        return ""
-    scope = getattr(anything, "entity_scope", None)
-    if scope:
-        return str(scope)
-    from agent.messages import build_entity_scope
-    adapter = str(getattr(anything, "adapter_key", "") or "")
-    gid = getattr(anything, "group_id", 0)
-    if gid not in (0, "0", "", None):
-        return build_entity_scope("group", adapter, str(gid))
-    uid = getattr(anything, "uid", "")
-    if uid in ("", 0, "0", None):
-        return ""
-    return build_entity_scope("user", adapter, str(uid))
 
 
 # ==================================================================
@@ -212,7 +190,7 @@ class ContextAssembly:
         if not catalog:
             return []
 
-        mc = _get_mind_config()
+        mc = get_mind_config()
         rules = mc.tool_system_rules if hasattr(mc, "tool_system_rules") else []
         lines = list(rules) + ["# 工具分组目录"]
 
@@ -452,7 +430,7 @@ channel_id 和 target_id 取当前请求的频道与会话标签，群聊目标�
 
         from agent.context.prompt_layers import prompt_cache_manager
 
-        mc = _get_mind_config()
+        mc = get_mind_config()
         rules = mc.tool_system_rules if hasattr(mc, "tool_system_rules") else []
         catalog = EntityRegistry.get_entity_catalog()
         sleepable = EntityRegistry.get_sleepable_groups()
@@ -787,7 +765,7 @@ channel_id 和 target_id 取当前请求的频道与会话标签，群聊目标�
 
         if group_id and group_id not in (0, "0", ""):
             parts.append(f"群聊 group_id={group_id}")
-            senders = self._work_memory.get_group_recent_senders(_safe_entity_scope(anything))
+            senders = self._work_memory.get_group_recent_senders(anything.entity_scope)
             if senders:
                 desc = ", ".join(f"uid:{s[0]}({s[1]})" for s in senders if s[0])
                 if desc:
@@ -928,7 +906,7 @@ channel_id 和 target_id 取当前请求的频道与会话标签，群聊目标�
             log("当前模型信息获取失败", "DEBUG", tag="PFC")
 
         # 短期记忆状态（本 scope 桶）
-        temp_count = len(wm.get_temporary(_safe_entity_scope(anything)))
+        temp_count = len(wm.get_temporary(anything.entity_scope if anything else ""))
         if temp_count:
             lines.append(f"[短期记忆] {temp_count}/{wm.max_temp} 条")
 

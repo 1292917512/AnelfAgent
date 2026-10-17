@@ -214,6 +214,7 @@ class TestAdaptMessagesCacheControl:
 
 class TestSessionNotification:
     async def test_notification_is_in_dynamic_window_not_execution_tail(self, sqlite) -> None:
+        from agent.config import MindConfig
         from agent.mind.cross_channel import build_cross_channel_narrative
         from agent.storage.data_center import ConversationData
         from agent.storage.storage_router import StorageRouter
@@ -230,7 +231,7 @@ class TestSessionNotification:
         content = ctx["content"]
         assert "[会话通知]" not in content
         assert "在吗" not in content
-        mind = SimpleNamespace(pfc=pfc, conversation_data=ConversationData(StorageRouter(sqlite=sqlite)))
+        mind = SimpleNamespace(config=MindConfig(), pfc=pfc, conversation_data=ConversationData(StorageRouter(sqlite=sqlite)))
         dynamic = await build_cross_channel_narrative(mind, "user_webui:web_user#cur")
         assert all(m["_layer"] == "provider" for m in dynamic)
         assert "[会话通知]" in str(dynamic)
