@@ -48,3 +48,20 @@ def test_ambiguous_entity_and_config_queries_return_candidates() -> None:
     finally:
         for name in names:
             EntityRegistry.unregister(name)
+
+
+def test_tag_lookup_suggests_actual_groups_without_aliasing() -> None:
+    names = ("tag_lookup_a", "tag_lookup_b", "tag_lookup_disabled")
+    for name, group in zip(names, ("test_notes", "test_scheduler", "test_disabled"), strict=True):
+        EntityRegistry.register_tool(name=name, func=lambda: "ok", group=group, tags=["test_heartbeat"])
+    try:
+        EntityRegistry.set_enabled(names[-1], False, persist=False)
+        result = json.loads(list_entity_methods("test_heartbeat"))
+        assert result["cause"] == "not_found"
+        assert result["did_you_mean"] == ["test_notes", "test_scheduler"]
+        assert "标签" in result["hint"]
+        assert "methods" not in result
+        assert json.loads(list_entity_methods("test_notes"))["methods"][0]["name"] == names[0]
+    finally:
+        for name in names:
+            EntityRegistry.unregister(name)

@@ -5,6 +5,9 @@
 "需要决策"的诊断报告，AI 阅读事实后带 decision 回执重呼即完成写入，
 或改走合并/放弃路径——把判断留给 AI，把事实算清楚留给系统。
 
+模型在成功回执中看到正文长度建议，建议本身不要求重复提交；冲突仍需 decision 确认。
+减少重复传递技能正文的 token，不引入动态前缀；工具说明变更后既有工具缓存需重新建立。
+
 SkillStore / SkillMatcher 引用经 ``skill_tools_port`` 晚绑定端口分发
 （工具 import 时注册、拿不到构造参数；由 agent.runtime.wiring 统一施绑）。
 """
@@ -59,11 +62,12 @@ def _decision_request(facts: Dict[str, Any], guidance: str) -> str:
     """构造决策请求响应：呈现事实 + 决策路径，不做任何拒绝。"""
     return json.dumps({
         "status": "needs_decision",
+        "written": False,
         "facts": facts,
         "guidance": guidance,
         "options": [
             {"action": "merge", "how": "差异点并入相近技能：update_skill 增量补充，或 merge_skills 显式合并（源可逆归档）"},
-            {"action": "confirm", "how": "确有差异需独立成篇：重呼本工具并带 decision 参数写明差异理由"},
+            {"action": "confirm", "how": "确认本次创建或更新：保留拟写内容重呼当前工具，decision 写明取舍与确认理由"},
             {"action": "abort", "how": "事实改变了判断：直接放弃本次写入"},
         ],
     }, ensure_ascii=False)
@@ -105,18 +109,19 @@ async def create_skill(
         description: 一句话描述技能用途（场景 + 目的）
         content: 技能内容（markdown，步骤/要点/注意事项）
         trigger_patterns: 触发关键词，逗号分隔（3~8 个高区分度词，宁少勿泛）
-        decision: 决策回执：首次调用返回诊断报告后，写明差异理由重呼以确认写入
+        decision: 决策回执：返回 needs_decision 后，写明取舍理由重呼以确认写入
     """
     deps = _deps()
     if deps is None:
         return _not_ready()
     patterns = [p.strip() for p in trigger_patterns.split(",") if p.strip()]
+    facts: Dict[str, Any] = {}
     if not decision.strip():
         facts = await _advisory_or_none(
             name=name, description=description, content=content,
             patterns=patterns, updating=False,
-        )
-        if facts is not None:
+        ) or {}
+        if facts.keys() - {"body_over_advice"}:
             return _decision_request(
                 facts,
                 "本次拟议创建与技能库现状存在上述显著事实，请决策：合并 / 确认新建 / 放弃。",
@@ -128,13 +133,14 @@ async def create_skill(
     )
     return json.dumps({
         "ok": True, "name": skill.name,
+        **({"advisory": facts} if facts else {}),
         "message": f"技能 '{skill.name}' 已创建",
     }, ensure_ascii=False)
 
 
 @deferred_tool(
     group="skills", tags=["always"], source="mind.skills", timeout=90.0,
-    description="更新已有技能：改进内容、补充触发词。增量更新，会记录 patch 次数。"
+    description="更新已有技能：正文完整替换，触发词追加，会记录 patch 次数。"
                 "当检测到无实质变化/触发词碰撞等显著事实时，首次调用返回诊断报告（不写入），"
                 "阅读后带 decision 参数（更新理由）重呼即完成更新。",
 )
@@ -155,12 +161,13 @@ async def update_skill(
     if deps is None:
         return _not_ready()
     patterns = [p.strip() for p in add_trigger_patterns.split(",") if p.strip()]
+    facts: Dict[str, Any] = {}
     if not decision.strip():
         facts = await _advisory_or_none(
             name=name, description=description, content=content,
             patterns=patterns, updating=True,
-        )
-        if facts is not None:
+        ) or {}
+        if facts.keys() - {"body_over_advice"}:
             if "not_found" in facts:
                 return tool_error(
                     f"技能 '{name}' 不存在", cause=ErrorCause.NOT_FOUND, retryable=False,
@@ -180,6 +187,7 @@ async def update_skill(
         return tool_error(f"技能 '{name}' 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
     return json.dumps({
         "ok": True, "name": skill.name, "patch_count": skill.patch_count,
+        **({"advisory": facts} if facts else {}),
         "message": f"技能 '{skill.name}' 已更新（第 {skill.patch_count} 次修订）",
     }, ensure_ascii=False)
 

@@ -62,6 +62,11 @@ create/update 在事实层检测到显著信号时**不拒绝**，返回 needs_d
 - 触发词碰撞 ≥ `skills_trigger_collision_limit`
 - 容量水位 / 无实质变化
 
+正文超过 `skills_body_advise_chars` 仅为长度建议，单独出现时直接保存并在成功回执的
+`advisory` 中返回；与其他冲突同时出现时仍随诊断一起呈现。`needs_decision` 的 `written=false`
+表示尚未写入，创建和更新均可通过 `decision` 明确取舍后确认；不应原样无确认重复提交。
+后台评审以一次成功写入为限，为确认与 `end_reply` 留出轮次；预算耗尽仍如实标为未完成。
+
 评审上下文由 SkillIndex 供给（语义相近 top10 + 库健康摘要）。
 
 ## 后台评审与策展

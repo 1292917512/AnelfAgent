@@ -63,7 +63,7 @@ class TestRecallSourceMarking:
         item = next(r for r in recalled["results"] if r["id"] == f"mem:{ids[0]}")
         assert item["provenance"]["origins"] == expected
 
-    @pytest.mark.parametrize("scope", ["_global", "reflect:de8b4383"])
+    @pytest.mark.parametrize("scope", ["_global", "reflect:de8b4383", "reflect:da09792e"])
     async def test_internal_note_creation_keeps_execution_scope(self, bound_store, store, scope) -> None:
         from core.config import ConfigManager
         from core.conversation_scope import bind_scope, reset_scope
