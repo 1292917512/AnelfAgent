@@ -51,8 +51,9 @@ def think_session(
     """
     from agent.channel.context import bind_current_channel, reset_current_channel
     from agent.messages import parse_entity_scope
-    from agent.mind.tool_activation import bind_scope, reset_scope, tool_activation
+    from agent.mind.tool_activation import tool_activation
     from agent.security.session_token import bind_token, generate_token, reset_token
+    from core.conversation_scope import bind_scope, reset_scope
 
     scope_token = bind_scope(scope)
     channel_token = bind_current_channel(parse_entity_scope(scope)[1] or None)

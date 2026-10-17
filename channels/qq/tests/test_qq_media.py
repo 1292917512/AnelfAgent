@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import Mock
 
 from agent.channel.schemas import MessageSegment, SegmentType
-from agent.mind.execution.media_pipeline import MediaPipeline
+from agent.mind.execution.media_pipeline import process_segments
 from channels.qq.parser import (
     _auto_download_to_me_images,
     _build_media_segment,
@@ -70,13 +71,13 @@ class TestParseMessageSegmentsSync:
 
 
 class TestMediaPipelineHints:
-    """MediaPipeline 三种提示形态。"""
+    """媒体段的三种提示形态。"""
 
     async def test_local_path_tag(self, tmp_path) -> None:
         real = tmp_path / "a.ogg"
         real.write_bytes(b"\x00")
         seg = MessageSegment(type=SegmentType.VOICE, file_path=str(real))
-        results = await MediaPipeline().process_segments([seg])
+        results = await process_segments([seg])
         from core.tags import etag_all
         assert len(results) == 1
         assert etag_all(results[0]) == [("media_file", f"voice:{real.as_posix()}")]
@@ -87,7 +88,7 @@ class TestMediaPipelineHints:
             url="https://example.com/f.xlsx",
             file_name="f.xlsx",
         )
-        results = await MediaPipeline().process_segments([seg])
+        results = await process_segments([seg])
         assert len(results) == 1
         assert "[media_file:file:未下载]" in results[0]
         assert 'web_download(url="https://example.com/f.xlsx"' in results[0]
@@ -98,18 +99,30 @@ class TestMediaPipelineHints:
             file_id="/fid-9",
             file_name="f.xlsx",
         )
-        results = await MediaPipeline().process_segments([seg])
+        results = await process_segments([seg])
         assert len(results) == 1
         assert 'qq_download_file(file_id="/fid-9")' in results[0]
 
     async def test_voice_url_prefers_transcribe(self) -> None:
         seg = MessageSegment(type=SegmentType.VOICE, url="https://example.com/a.amr")
-        results = await MediaPipeline().process_segments([seg])
+        results = await process_segments([seg])
         assert 'voice_to_text(url="https://example.com/a.amr")' in results[0]
 
     async def test_empty_segment_skipped(self) -> None:
         seg = MessageSegment(type=SegmentType.FILE)
-        assert await MediaPipeline().process_segments([seg]) == []
+        assert await process_segments([seg]) == []
+
+    async def test_image_index_and_face_worker_keep_inbound_scope(self, monkeypatch) -> None:
+        from agent.mind.execution import media_pipeline
+
+        indexed, face = Mock(), Mock()
+        media_pipeline.image_index_submit_port.set(indexed)
+        monkeypatch.setattr("agent.vision.face.worker.submit_face_image", face)
+        seg = MessageSegment(type=SegmentType.IMAGE, url="https://example.com/photo.jpg")
+        result = await process_segments([seg], scope="user_qq:123")
+        indexed.assert_called_once_with(seg.url, "inbound")
+        face.assert_called_once_with(seg.url, "inbound", "user_qq:123")
+        assert len(result) == 1 and "[media_file:image:未下载]" in result[0]
 
 
 class TestExtractImagesFallback:

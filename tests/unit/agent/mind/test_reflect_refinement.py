@@ -267,8 +267,8 @@ class TestCompletionReason:
         deliver_mock.assert_not_awaited()
 
     async def test_tool_rounds_cannot_complete_plan_and_budget_cancels(self, store) -> None:
-        from agent.mind.tool_activation import bind_scope, reset_scope
         from agent.planning import tracker
+        from core.conversation_scope import bind_scope, reset_scope
 
         scope = "reflect:plan-evidence"
         tracker.planning_store_port.set(store)

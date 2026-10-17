@@ -8,9 +8,9 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from agent.mind.tool_activation import bind_scope, reset_scope
 from agent.mind.tools import scheduler
 from agent.mind.tools.ports import mind_port
+from core.conversation_scope import bind_scope, reset_scope
 
 
 def _wire_mind(mind: object) -> None:

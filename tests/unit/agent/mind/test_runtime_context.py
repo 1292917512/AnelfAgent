@@ -12,7 +12,7 @@ from agent.context.observation import emit_context_summary
 from agent.mind.background_tasks import BackgroundTaskRegistry
 from agent.mind.execution.state import ThinkMode
 from agent.mind.runtime_context import background_context
-from agent.mind.tool_activation import bind_scope, reset_scope
+from core.conversation_scope import bind_scope, reset_scope
 
 
 @pytest.mark.parametrize("running", [True, False])

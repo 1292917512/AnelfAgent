@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-import uuid
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Set
 
 from agent.channel.manager import ChannelManager
@@ -26,25 +25,19 @@ from agent.messages import (
     Everything,
     EverythingGroup,
 )
-from agent.mind import tool_activation as _tool_activation  # noqa: F401  # 注册 activate_tool_group 延迟工具
 from agent.mind.autonomous import MindPhase
 from agent.mind.cross_channel import (
     ChannelSnapshot,
     update_channel_snapshot,
 )
 from agent.mind.cycle import run_cycle
-from agent.mind.execution.loop import think_loop
-from agent.mind.execution.media_pipeline import MediaPipeline
+from agent.mind.execution.reflect import reflect_entry
 from agent.mind.execution.reply import reply_entry
-from agent.mind.execution.state import ThinkMode
 from agent.mind.interrupt import InterruptRegistry
-from agent.mind.llm_invoker import ModelInvoker
-from agent.mind.mind_tools import build_reflect_blocklist, select_reflect_tools
 from agent.mind.perception import should_enqueue_external_message
 from agent.mind.prefrontal_cortex import PrefrontalCortex
 from agent.mind.recall.coordinator import prepare_recollection
 from agent.storage.data_center import ConversationData, EverythingData
-from agent.storage.storage_router import StorageDomain
 from core.activity import EVENT_ACTIVITY_CONTEXT
 from core.entity import EntityRegistry
 from core.event_bus import (
@@ -62,6 +55,7 @@ if TYPE_CHECKING:
     from agent.heartbeat.engine import HeartbeatEngine
     from agent.memory.embedding import Embedder
     from agent.mind.background_tasks import BackgroundTaskRegistry
+    from agent.mind.llm_invoker import ModelInvoker
     from agent.mind.push import PushHub
     from agent.skills.runtime import SkillRuntime
 
@@ -73,6 +67,7 @@ class Mind:
     compressor: ContextCompressor
     delegation_manager: DelegationManager
     push_hub: PushHub
+    model_invoker: ModelInvoker
 
     def __init__(
             self,
@@ -107,9 +102,6 @@ class Mind:
         self.memory_store = memory_store
         self.embedder = embedder
         self.retriever = retriever
-
-        self.media_pipeline = MediaPipeline()
-        self.model_invoker = ModelInvoker(self)
 
         self._active_scopes: set[str] = set()
         # scope → 本次回复的激活时刻（中断请求的新旧分界，见 InterruptRegistry.clear_before）
@@ -186,7 +178,7 @@ class Mind:
                 self._set_phase(MindPhase.ACCEPTING)
             preview = str(anything)[:80] if anything else ""
             log(f"感知输入: {preview}", tag="思维")
-            if not await self.add_conversation(anything):
+            if not await self.conversation_data.add_conversation_record_by_everything(anything):
                 return
             update_channel_snapshot(self, anything)
 
@@ -201,8 +193,7 @@ class Mind:
             ):
                 log(f"反思中忽略非 @ 群消息: {anything.entity_scope}", "DEBUG", tag="思维")
             if should_enqueue:
-                # 真实外部事件：重置自动续轮退避 + 后台任务唤醒预算（真人参与
-                # 后自动唤醒链路重新合法）
+                # 真实外部事件：重置自动续轮退避 + 后台任务唤醒预算（真人参与后自动唤醒链路重新合法）
                 self._auto_cycle_retry = 0
                 self.wake_budget.reset(scope)
                 await self.pfc.add_task(anything)
@@ -378,50 +369,12 @@ class Mind:
         # 一个收尾的调用触发归零），异常也必须复位
         self._reflect_depth += 1
         try:
-            mc = self.config
-            safety_limit = max_iterations or mc.max_tool_iterations
-            blocked_tools = build_reflect_blocklist(allow_output_tools)
-            if extra_blocked_tools:
-                blocked_tools = blocked_tools | set(extra_blocked_tools)
-
-            # 每次反思会话使用唯一 scope：并行子代理/心跳 reflect 的 plan 与
-            # 工具激活状态按 scope 隔离，共享字面量会互相串扰
-            reflect_scope = f"reflect:{uuid.uuid4().hex[:8]}"
-            active_tools, extra_selectors = await select_reflect_tools(
-                self.pfc, adapter_key=adapter_key, scope=reflect_scope,
-                tool_tags=tool_tags, inherited_tools=inherited_tools,
+            return await reflect_entry(
+                self, messages, adapter_key=adapter_key, max_iterations=max_iterations,
+                options=options, tool_tags=tool_tags, allow_output_tools=allow_output_tools,
+                extra_blocked_tools=extra_blocked_tools, completion=completion,
+                require_output=require_output, inherited_tools=inherited_tools,
             )
-
-            collected_text: List[str] = []
-            execution_steps: List[str] = []
-            output_policy = "放开外发" if allow_output_tools else "禁用外发"
-            log(f"反思循环开始: {len(active_tools)} 个工具可用, 策略={output_policy}, 上限 {safety_limit} 轮", tag="思维")
-
-            from agent.mind.think_session import think_session
-            from core.tool_context import tool_request
-
-            with think_session(self, reflect_scope, with_token=False), tool_request(reflect_scope, inherit=True):
-                await think_loop(
-                    self,
-                    mode=ThinkMode.REFLECT,
-                    tool_chain=[],
-                    execution_steps=execution_steps,
-                    start_time=time.time(),
-                    safety_limit=safety_limit,
-                    collected_text=collected_text,
-                    active_tools=active_tools,
-                    anything=None,
-                    base_messages=messages,
-                    options=options,
-                    blocked_tools=blocked_tools,
-                    completion=completion,
-                    reflect_tool_selectors=extra_selectors,
-                    require_output=require_output,
-                )
-
-            total = "\n".join(collected_text)
-            log(f"反思循环结束: 产出 {len(total)} 字", tag="思维")
-            return total
         finally:
             self._reflect_depth -= 1
             self._reset_phase_if_idle()
@@ -431,7 +384,7 @@ class Mind:
         log(f"执行任务: {task_name}", tag="思维")
         return await self.heartbeat_engine.run_task(task_name)
 
-    # 召回调度与会话数据访问
+    # 召回调度
 
     async def get_recollection(
             self,
@@ -453,25 +406,3 @@ class Mind:
             raise
         await emit_context_summary(messages, round((time.monotonic() - started) * 1000))
         return messages
-
-    async def get_conversation(self, anything: Everything) -> List[Dict]:
-        """从 DB 获取指定对象的对话历史。"""
-        return await self.conversation_data.get_conversation_record_by_everything(anything)
-
-    async def add_conversation(self, anything: Everything) -> bool:
-        """写入对话历史，返回是否为新接收的消息。"""
-        return await self.conversation_data.add_conversation_record_by_everything(anything)
-
-    async def _add_system_context(self, anything: Everything, content: str, role: str = "system") -> None:
-        """向对话存储追加一条系统上下文消息。
-
-        Args:
-            role: 存储角色（主流 OpenAI 格式）。系统上下文用 "system"，
-                  AI 自身输出用 "assistant"，用户消息用 "user"。
-        """
-        await self.conversation_data.router.append(
-            StorageDomain.CONVERSATION,
-            scope_type=anything.scope_type, scope_id=anything.scope_id,
-            role=role, content=content,
-            adapter_key=getattr(anything, "adapter_key", "") or "",
-        )

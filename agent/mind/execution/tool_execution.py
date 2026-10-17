@@ -13,7 +13,7 @@ from agent.mind.execution.permission import check_tool_permission
 from agent.mind.execution.responses import _strip_think_blocks
 from agent.mind.execution.result_pipeline import ToolResultPipeline
 from agent.mind.execution.vision import _append_multimodal_result
-from agent.mind.mind_tools import END_REPLY_TOOL_NAME
+from agent.mind.tools.core import END_REPLY_TOOL_NAME
 from core.event_bus import (
     EVENT_THINKING_TOOL_END,
     EVENT_THINKING_TOOL_START,

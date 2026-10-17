@@ -20,12 +20,12 @@
 |---|---|---|
 | `agent/runtime/mind_factory.py` | 创建共享服务、注入上下文视图、装配后台协作者后返回宿主 | `create_mind()` |
 | `agent/mind/mind.py` | 持有会话状态、锁和中断信号，提供周期、回复和反思入口 | `Mind.execute_mind()`、`Mind.reply()`、`Mind.reflect()` |
-| `agent/mind/mind_tools.py` | 核心工具声明与注册、反思工具权限策略 | `register_core_tools()`、`build_reflect_blocklist()` |
+| `agent/mind/tools/core.py` | 核心工具声明与注册、反思工具权限策略 | `register_core_tools()`、`build_reflect_blocklist()` |
 | `agent/mind/cycle.py` | fast-path、态势收集、元决策、分发和收尾；周期锁由 Mind 持有 | `run_cycle()` |
 | `agent/mind/prefrontal_cortex.py` | 聚合待办、短期记忆、工具激活与会话状态，不构建上下文 | `PrefrontalCortex` |
 | `agent/mind/work_memory.py` | 待办消息、短期状态和动态任务数据 | `WorkMemory` |
 | `agent/mind/decisions.py` | 把结构化决策分发到回复、反思、计划和任务执行器 | 决策执行函数 |
-| `agent/mind/execution/` | 多轮执行、消息并入、工具调用和收束；由 Mind 的回复、反思入口调用 | `reply.reply_entry()`、`loop.think_loop()` |
+| `agent/mind/execution/` | 多轮执行、消息并入、工具调用和收束；由 Mind 的回复、反思入口调用 | `reply.reply_entry()`、`reflect.reflect_entry()`、`loop.think_loop()` |
 | `agent/mind/recall/` | 首轮并发取数、对话增量召回、关联对象识别 | `coordinator.prepare_recollection()`、`refresh.DialogueRecollection` |
 | `agent/mind/llm_invoker.py` | 模型预算读取、统一发送、重试、回退、流式聚合与摘要 | `ModelInvoker` |
 | `agent/context/` | 提示词、分层缓存、动态呈现、环境快照及发送规整 | `ContextAssembly`、`ContextPreparation` |
@@ -41,6 +41,8 @@ Mind 原生方法负责消息接收、周期、回复、反思与召回观测的
 技能库、匹配器、策展器由 `SkillRuntime` 持有，Mind 仅持有 `skills` 协作者。
 系统按对话匹配候选，AI 用 `get_skill` 读取正文；评审器由组合根注册到钩子宿主。
 后台任务注册表与推送中枢由 `create_mind()` 绑定当前事件循环并接入通知回调，Mind 仅持有执行入口。
+模型调用器同样由工厂装配；无状态媒体转换直接调用执行模块函数，不在 Mind 上登记实例。
+会话读写与内部上下文追加统一经 `ConversationData`，Mind 不转发存储接口。
 推送中枢只依赖工作记忆门面与唤醒回调；关停由 `Lifecycle` 先关闭后台任务服务，再收束已受理推送，最后释放存储。
 核心将聊天正文作为对话材料交给 AI 理解，不按固定话语中断执行或自动登记话题禁令。
 中断由 Web 控制、频道显式命令或内部调用通过 `Mind.interrupt(scope)` 发起；频道自身的命令解析由频道负责。
@@ -163,7 +165,7 @@ Mind 原生方法负责消息接收、周期、回复、反思与召回观测的
 `ToolAssembly`，向压缩器注入 Mind；它们共享会话状态，不复制队列、激活状态或缓存。
 `mind/recall/` 负责召回调度，`skills/recall.py` 负责技能匹配与材料呈现，`mind/runtime_context.py` 负责后台任务状态适配，
 思维循环负责逐轮刷新和调度，上下文组件不反向调用这些调度实现。
-`end_reply` 与 `compress_context` 的工具入口归属 `mind_tools.py`，压缩器本身不注册工具。
+`end_reply` 与 `compress_context` 的工具入口归属 `tools/core.py`，压缩器本身不注册工具。
 
 `ContextAssembly.build_llm_context()` 使用 `ContextPipeline` 按变动频率从静到动组装消息，
 并为每个块附加内部 `_layer` 标记。`@context_block` 保留方法类型，管线只发现类上声明的方法，

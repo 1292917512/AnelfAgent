@@ -8,7 +8,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from agent.messages import Everything, EverythingGroup
+from agent.storage.data_center import ConversationData
 from agent.storage.sqlite_backend import SqliteBackend
+from agent.storage.storage_router import StorageRouter
 
 
 async def append(sqlite: SqliteBackend, text: str, *, scope: str = "qq:1", role: str = "user", ts: int = 100) -> None:
@@ -17,6 +20,23 @@ async def append(sqlite: SqliteBackend, text: str, *, scope: str = "qq:1", role:
 
 async def read(sqlite: SqliteBackend, *, scope: str = "qq:1", after: int | None = None, limit: int = 30) -> list:
     return await sqlite.fetch_live_conversation(scope_type="user", scope_id=scope, after_id=after, limit=limit)
+
+
+@pytest.mark.parametrize("group", [False, True])
+@pytest.mark.parametrize("role", ["system", "assistant"])
+async def test_internal_context_keeps_route_and_live_window(sqlite, monkeypatch, group, role):
+    data = ConversationData(StorageRouter(sqlite=sqlite))
+    target = (EverythingGroup(uid="u1", group_id="g1", adapter_key="webui", session_id="one")
+              if group else Everything(uid="u1", adapter_key="webui", session_id="one"))
+    other = target.model_copy(update={"session_id": "two"})
+    await sqlite.fetch_live_conversation(scope_type=target.scope_type, scope_id=target.scope_id, limit=10)
+    await data.append_context(other, "另一会话")
+    await data.append_context(target, "原始上下文内容", role=role)
+    persisted = await sqlite.fetch_conversation(scope_type=target.scope_type, scope_id=target.scope_id, limit=10)
+    assert [(row["role"], row["content"]) for row in persisted] == [(role, "原始上下文内容")]
+    monkeypatch.setattr(sqlite, "_get_db", AsyncMock(side_effect=AssertionError("live window missed context")))
+    live = await sqlite.fetch_live_conversation(scope_type=target.scope_type, scope_id=target.scope_id, limit=10)
+    assert [(row["role"], row["content"]) for row in live] == [(role, "原始上下文内容")]
 
 
 async def test_warm_reads_need_no_database_and_snapshots_are_independent(sqlite, monkeypatch):

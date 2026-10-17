@@ -414,6 +414,15 @@ class ConversationData:
         """会话持久化键：与 entity_scope 同源（含子会话 #chat_id 后缀）。"""
         return anything.scope_type, anything.scope_id
 
+    async def append_context(self, anything: Everything, content: str, role: str = "system") -> None:
+        """向消息所属会话追加内部上下文，保持原始角色、内容与频道归属。"""
+        await self.router.append(
+            StorageDomain.CONVERSATION,
+            scope_type=anything.scope_type, scope_id=anything.scope_id,
+            role=role, content=content,
+            adapter_key=getattr(anything, "adapter_key", "") or "",
+        )
+
     async def search_conversation_vector(
         self,
         scope_type: str,

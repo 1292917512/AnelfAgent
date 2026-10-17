@@ -251,7 +251,7 @@ default_path 保持测试隔离）；同族库路径均由 `main_sqlite_path()`�
 | `memory` | 记忆管理 | `agent/memory/tools.py` | always/core/heartbeat |
 | `graph` | 关系图谱 | `agent/memory/graph/tools.py`（含 graph_curation_agenda 治理议程） | always/core/heartbeat |
 | `notes` | 便签记忆 | `agent/memory/notes.py` | core/heartbeat |
-| `thinking` | 思维工具 | `agent/mind/mind_tools.py` + `agent/mind/tool_activation.py` + `agent/mind/tools/short_term_tools.py` | always |
+| `thinking` | 思维工具 | `agent/mind/tools/core.py` + `agent/mind/tool_activation.py` + `agent/mind/tools/short_term_tools.py` | always |
 | `planning` | 目标规划 | `agent/planning/tools.py` + `agent/task/tools.py` | planning/goal/heartbeat |
 | `skills` | 技能 | `agent/skills/tools.py` | always |
 | `delegation` | 子代理 | `agent/delegation/delegate_tool.py` | always |

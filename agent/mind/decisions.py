@@ -134,11 +134,12 @@ async def execute_reply(mind: Mind, decision: Decision) -> None:
         # 按实际携带的媒体激活媒体工具（recognize_image 等），确保本轮 schema 可用
         if pending_images or pending_media:
             mind.pfc.activate_media_tools(pending_images, pending_media)
-        if mind.media_pipeline and pending_media:
-            media_texts = await mind.media_pipeline.process_segments(pending_media, scope)
+        if pending_media:
+            from agent.mind.execution.media_pipeline import process_segments
+            media_texts = await process_segments(pending_media, scope)
             if media_texts:
                 combined = '\n'.join(media_texts)
-                await mind._add_system_context(anything, combined)
+                await mind.conversation_data.append_context(anything, combined)
 
         await mind.reply(anything, pending_images, adapter_key=adapter_key)
     finally:

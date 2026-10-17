@@ -84,7 +84,7 @@ async def _handle_interrupt(ctx: ExecutionContext, state: RoundState) -> bool:
             if state.partial_tool_abort
             else "未完成的操作已放弃"
         )
-        await ctx.mind._add_system_context(
+        await ctx.mind.conversation_data.append_context(
             ctx.anything,
             f"[系统] 本次回复在执行中被中断（{reason}），"
             f"{aborted_hint}，如需继续请重新发起。",

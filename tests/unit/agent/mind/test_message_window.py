@@ -257,7 +257,7 @@ class TestThinkLoopMerge:
 
         from agent.channel.output_tools import execute_send_action
         from agent.mind.cross_channel import update_channel_snapshot
-        from agent.mind.tool_activation import bind_scope, reset_scope
+        from core.conversation_scope import bind_scope, reset_scope
 
         current = MessageUser(uid="1", adapter_key="webui", session_id="a", text_content="A 的请求")
         other = MessageUser(uid="1", adapter_key="qq", text_content="B 的请求")
@@ -339,7 +339,7 @@ class TestThinkLoopMerge:
     async def test_cross_channel_refresh_keeps_identity_and_stable_prefix(self, conv_data, monkeypatch) -> None:
         from agent.channel.outbound_guard import note_outbound
         from agent.mind.cross_channel import update_channel_snapshot
-        from agent.mind.tool_activation import bind_scope, reset_scope
+        from core.conversation_scope import bind_scope, reset_scope
 
         monkeypatch.setattr("agent.channel.outbound_guard._recent", {})
         current = MessageUser(uid="1", adapter_key="webui", session_id="a", text_content="处理当前工作")

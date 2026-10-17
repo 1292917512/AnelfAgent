@@ -212,7 +212,7 @@ class TaskExecutor:
         """构建消息 -> LLM reflect -> 清洗输出。"""
         conversation_list: List[Dict] = []
         if entity:
-            conversation_list = await self.mind.get_conversation(entity)
+            conversation_list = await self.mind.conversation_data.get_conversation_record_by_everything(entity)
 
         # 任务精简上下文（task_lean_context）：人设+工具+永久记忆+任务指令；
         # 环境便签/召回/状态由任务按系统规则经 recall/get_conversation 按需取回

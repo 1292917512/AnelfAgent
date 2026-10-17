@@ -18,10 +18,11 @@ from agent.memory.memory_store import MemoryStore
 from agent.messages import CharacterAgent
 from agent.mind.background_routing import on_task_alert, on_task_unclaimed
 from agent.mind.background_tasks import BackgroundTaskRegistry
+from agent.mind.llm_invoker import ModelInvoker
 from agent.mind.mind import Mind
-from agent.mind.mind_tools import register_core_tools
 from agent.mind.prefrontal_cortex import PrefrontalCortex
 from agent.mind.push import PushHub
+from agent.mind.tools.core import register_core_tools
 from agent.skills import SkillCurator, SkillMatcher, SkillReviewer, get_skill_store
 from agent.skills.runtime import SkillRuntime
 from agent.storage.data_center import ConversationData, EverythingData
@@ -63,6 +64,7 @@ def create_mind(
         embedder=embedder, retriever=retriever,
         memory_store=memory_store,
     )
+    mind.model_invoker = ModelInvoker(mind)
     background_tasks.set_unclaimed_callback(partial(on_task_unclaimed, mind))
     background_tasks.set_alert_callback(partial(on_task_alert, mind))
     mind.push_hub = PushHub(pfc, mind.try_execute_mind, loop=loop)

@@ -16,7 +16,7 @@ import agent.channel.outbound_guard as outbound_guard
 import agent.channel.output_tools as output_tools
 from agent.channel.delivery import capture_deliveries, delivery_count, observe_delivery_context
 from agent.channel.output_tools import execute_send_action
-from agent.mind.tool_activation import bind_scope, reset_scope
+from core.conversation_scope import bind_scope, reset_scope
 from core.tags import etag_all
 
 _SCOPE = "user_qq:1292917512"

@@ -31,7 +31,7 @@ async def prepare_recollection(
     """
     # 若未传入对话历史，从 DB 实时获取
     if conversation_list is None:
-        conversation_list = await mind.get_conversation(anything) if anything else []
+        conversation_list = await mind.conversation_data.get_conversation_record_by_everything(anything) if anything else []
 
     entity_scope = anything.entity_scope if anything else ""
     current_adapter = getattr(anything, "adapter_key", "") or ""

@@ -149,9 +149,8 @@ class FakeMind:
         self.executed_tools: List[str] = []
         self.tool_results = tool_results or {}
         self.config = MindConfig(**{**DEFAULT_MIND_CONFIG, **(config_overrides or {})})
-        self._add_system_context = AsyncMock()
         self._reply_adapter_key = ""
-        self.conversation_data = SimpleNamespace()
+        self.conversation_data = SimpleNamespace(append_context=AsyncMock())
         self.model_invoker = FakeModelInvoker(self)
 
     def _resolve_adapter_key(self) -> str:

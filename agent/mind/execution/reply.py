@@ -114,7 +114,7 @@ async def reply_loop(
                 activity.status = "cancelled"
                 if completion is not None:
                     completion["reason"] = "interrupted"
-                await mind._add_system_context(
+                await mind.conversation_data.append_context(
                     anything, f"[系统] 本次回复在准备上下文时被中断（{reason}），尚未开始模型和工具执行。",
                     role="system",
                 )

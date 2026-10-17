@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Dict, List
 from agent.channel.reply_policy import ReplyToolResult
 from agent.context.message_schema import preserve_reasoning_fields
 from agent.mind.execution.state import ExecutionContext, RoundOutcome, RoundState
-from agent.mind.mind_tools import END_REPLY_TOOL_NAME
+from agent.mind.tools.core import END_REPLY_TOOL_NAME
 from core.log import log
 from core.tool_results import extract_error_text, parse_tool_result_json
 

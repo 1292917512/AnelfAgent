@@ -48,7 +48,7 @@ def wire_runtime(
     from agent.memory.embedding.worker import attach_pending_backlogs, embedding_worker_port
     from agent.memory.graph.tools import graph_store_port
     from agent.memory.tools import MemoryToolDeps, memory_tools_port
-    from agent.mind.mind_tools import compressor_port
+    from agent.mind.tools.core import compressor_port
     from agent.mind.tools.ports import mind_port
     from agent.planning.tracker import planning_store_port
     from agent.runtime.skill_dependencies import skill_mcp_snapshot

@@ -1,6 +1,6 @@
 """图片感知索引 worker：入站图片的后台沉淀（下载 → 哈希 → VLM 描述 → embedding 入库）。
 
-参照 EmbeddingWorker 的 wake 模式：MediaPipeline 只负责投递（fire-and-forget），
+参照 EmbeddingWorker 的 wake 模式：入站媒体处理只负责投递（fire-and-forget），
 worker 串行消化队列，避免阻塞消息管线；VLM 描述可配置关闭（省 token），
 关闭时仍保留 phash / content_hash 索引（图搜图、去重仍可用）。
 """

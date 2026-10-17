@@ -183,7 +183,7 @@ class TestVoiceToText:
         assert "error" in out["ingest"]
 
     async def test_current_channel_source_from_scope(self) -> None:
-        from agent.mind.tool_activation import bind_scope, reset_scope
+        from core.conversation_scope import bind_scope, reset_scope
         assert gen_tools._current_channel_source() == "chat"
         token = bind_scope("user_qq:123")
         try:

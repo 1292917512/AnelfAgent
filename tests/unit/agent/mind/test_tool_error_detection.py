@@ -230,7 +230,7 @@ async def test_recovery_cannot_extend_total_iteration_budget(anything, recovery_
 
 async def test_user_interrupt_cancels_recovery(anything, recovery_judge):
     from agent.mind.interrupt import InterruptRegistry
-    from agent.mind.tool_activation import bind_scope, reset_scope
+    from core.conversation_scope import bind_scope, reset_scope
 
     started, cancelled = asyncio.Event(), asyncio.Event()
     async def judge(*args, **kwargs):

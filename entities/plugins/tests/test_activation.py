@@ -104,7 +104,8 @@ class TestToolVisibility:
 
     def test_auto_activate_in_conversation_scope(self, manager, plugin_env):
         """对话 scope 中安装：分组自动激活（装完即可用）。"""
-        from agent.mind.tool_activation import bind_scope, reset_scope, tool_activation
+        from agent.mind.tool_activation import tool_activation
+        from core.conversation_scope import bind_scope, reset_scope
 
         token = bind_scope("user_test")
         try:

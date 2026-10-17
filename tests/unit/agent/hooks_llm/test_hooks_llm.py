@@ -337,7 +337,7 @@ async def test_llm_end_scope_fallback_to_contextvar(monkeypatch):
 
     spec = LLMHookSpec(name="le2", event="llm_end", handler=_h)
     executor = _make_executor()
-    from agent.mind.tool_activation import bind_scope, reset_scope
+    from core.conversation_scope import bind_scope, reset_scope
     token = bind_scope("user_q:42")
     try:
         await executor.dispatch("llm_end", [spec], {"model": "m"})

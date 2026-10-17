@@ -183,7 +183,7 @@ async def publish_delivery(ctx: ExecutionContext, state: RoundState, result: Rep
     ctx.execution_steps.append("→ " + feedback)
     if status in {"failed", "unknown"} and ctx.anything:
         try:
-            await ctx.mind._add_system_context(ctx.anything, feedback, role="system")
+            await ctx.mind.conversation_data.append_context(ctx.anything, feedback, role="system")
         except Exception as exc:
             log(f"投递反馈记录失败: {exc}", "WARNING", tag="通道")
     from agent.context.observation import emit_context_update
@@ -193,7 +193,7 @@ async def publish_delivery(ctx: ExecutionContext, state: RoundState, result: Rep
 
 def observe_send_results(ctx: ExecutionContext, state: RoundState, calls: list[ToolCall]) -> None:
     """当前会话的发送尝试抑制重复自动投递；其他会话的回执不改变本会话状态。"""
-    from agent.mind.mind_tools import OUTPUT_TOOL_NAMES
+    from agent.mind.tools.core import OUTPUT_TOOL_NAMES
 
     results = {message.get("tool_call_id"): message for message in ctx.tool_chain if message.get("role") == "tool"}
     for call in calls:

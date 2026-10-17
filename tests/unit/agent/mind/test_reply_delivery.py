@@ -9,8 +9,8 @@ from helpers.think_loop_fakes import FakeMind, run_think_loop, text_result, tool
 
 from agent.channel.delivery import delivery_tags
 from agent.mind.execution.reply_delivery import ReplyAssessment
-from agent.mind.tool_activation import bind_scope, reset_scope
 from core.config import ConfigManager
+from core.conversation_scope import bind_scope, reset_scope
 
 _SCOPE = "user_qq:1"
 
@@ -225,7 +225,7 @@ async def test_disabled_text_is_silent_in_context_history_and_activity(anything,
     ], anything)
     assert completion["reason"] == "completed" and mind.llm_calls == 3
     assert not any(message.get("role") == "system" for message in completion["messages"])
-    assert all("delivery_status:skipped" not in str(call) for call in mind._add_system_context.await_args_list)
+    assert all("delivery_status:skipped" not in str(call) for call in mind.conversation_data.append_context.await_args_list)
     assert all(not call.args[0] for call in observe.await_args_list)
     review.assert_not_awaited()
     sender.assert_not_awaited()
@@ -260,7 +260,7 @@ async def test_rejected_reply_leaves_context_fact_and_never_falls_back(anything,
     sender.assert_not_awaited()
     assert mind.llm_calls == 1
     assert "Jev 不通过" in completion["messages"][-1]["content"]
-    mind._add_system_context.assert_not_awaited()
+    mind.conversation_data.append_context.assert_not_awaited()
 
 
 async def test_rejected_interim_continues_work_and_explicit_send_without_review(anything, sender, monkeypatch):
@@ -352,5 +352,5 @@ async def test_interrupt_during_send_retains_unknown_receipt(anything, sender):
         reset_scope(token)
     assert completion["reason"] == "interrupted"
     assert any("delivery_status:unknown" in m.get("content", "") for m in completion["messages"])
-    assert "可能已经送达" in str(mind._add_system_context.await_args)
+    assert "可能已经送达" in str(mind.conversation_data.append_context.await_args)
     assert sender.await_count == 1

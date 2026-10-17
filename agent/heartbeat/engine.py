@@ -1267,7 +1267,7 @@ class HeartbeatEngine:
         log(f"实体画像分析: {desc}", tag="心跳")
 
         min_conv = self.config.min_conversations_for_analysis
-        conversation = await self.mind.get_conversation(entity)
+        conversation = await self.mind.conversation_data.get_conversation_record_by_everything(entity)
         if len(conversation) < min_conv:
             log(f"对话不足: {desc} ({len(conversation)}/{min_conv})", tag="心跳")
             return None
@@ -1278,7 +1278,7 @@ class HeartbeatEngine:
         combined = conversation
         if entity.uid:
             user_query_entity = MessageAssistant(uid=entity.uid, adapter_key=entity.adapter_key)
-            user_conv = await self.mind.get_conversation(user_query_entity)
+            user_conv = await self.mind.conversation_data.get_conversation_record_by_everything(user_query_entity)
             combined = conversation + user_conv
 
         alias_convs = await self._collect_alias_conversations(entity)
@@ -1396,7 +1396,7 @@ class HeartbeatEngine:
                     if id_type == "group"
                     else MessageAssistant(uid=id_id)
                 )
-                conv = await self.mind.get_conversation(alias_entity)
+                conv = await self.mind.conversation_data.get_conversation_record_by_everything(alias_entity)
                 if conv:
                     extra.extend(conv)
             return extra

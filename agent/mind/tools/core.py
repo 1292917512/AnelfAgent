@@ -10,13 +10,14 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from agent.context.compressor import ContextCompressor
+from agent.mind.tool_activation import ToolActivationManager
 from core.entity import EntityRegistry
 from core.latebind import LateBinding
 from core.log import log
 from core.tool_registry import activate_group, deferred_tool
 
 if TYPE_CHECKING:
+    from agent.context.compressor import ContextCompressor
     from agent.mind.prefrontal_cortex import PrefrontalCortex
 
 END_REPLY_TOOL_NAME = "end_reply"
@@ -44,7 +45,6 @@ def _compress_context_tool(reason: str = "", focus_topic: str = "") -> str:
     if compressor is None:
         return json.dumps({"error": "压缩器未初始化"}, ensure_ascii=False)
     try:
-        from agent.mind.tool_activation import ToolActivationManager
         scope = ToolActivationManager.current_scope()
     except Exception:
         scope = ""
