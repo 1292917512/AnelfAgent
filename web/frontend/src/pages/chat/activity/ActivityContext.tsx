@@ -8,8 +8,19 @@ import { cn } from "@/lib/utils";
 import { TaggedText } from "./ActivityReferences";
 import { SkillEvidence } from "@/components/common/SkillEvidence";
 
+type ContextEntry = Extract<ActivityEntry, { kind: "context" }>;
+
+function ContextBlock({ block }: { block: ContextEntry["blocks"][number] }) {
+  const { t } = useTranslation("workbench");
+  const [open, setOpen] = useState(false);
+  return <details onToggle={(event) => setOpen(event.currentTarget.open)}>
+    <summary><ChevronDown size={13} aria-hidden="true" />{block.label}<span>{t("activity.contextChars", { count: block.content.length })}</span></summary>
+    {open && <div><TaggedText content={block.content} /></div>}
+  </details>;
+}
+
 /** 展示实际进入本轮模型上下文的记忆、关联与技能候选。 */
-export function ActivityContext({ entry, defaultExpanded = false }: { entry: Extract<ActivityEntry, { kind: "context" }>; defaultExpanded?: boolean }) {
+export function ActivityContext({ entry, defaultExpanded = false }: { entry: ContextEntry; defaultExpanded?: boolean }) {
   const { t } = useTranslation("workbench");
   const [open, setOpen] = useState(defaultExpanded);
   const running = entry.status === "running";
@@ -27,10 +38,7 @@ export function ActivityContext({ entry, defaultExpanded = false }: { entry: Ext
       <p className="activity-note">{t("activity.contextHint")}</p>
       <SkillEvidence skills={entry.skills ?? []} />
       {entry.truncated && <p className="activity-note">{t("activity.truncated")}</p>}
-      {entry.blocks.map((block, index) => <details key={`${block.layer}:${index}`}>
-        <summary><ChevronDown size={13} aria-hidden="true" />{block.label}<span>{t("activity.contextChars", { count: block.content.length })}</span></summary>
-        <div><TaggedText content={block.content} /></div>
-      </details>)}
+      {entry.blocks.map((block, index) => <ContextBlock key={`${block.layer}:${index}`} block={block} />)}
       {!entry.blocks.length && !running && <p className="activity-note">{t("activity.contextEmpty")}</p>}
     </div>}
   </div>;
