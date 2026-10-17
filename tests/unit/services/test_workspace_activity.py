@@ -48,8 +48,7 @@ async def test_threaded_background_registration_and_completion_publish_on_bound_
     from agent.mind.background_tasks import BackgroundTaskRegistry
 
     service, _ = activity
-    registry = BackgroundTaskRegistry()
-    registry.bind_loop(asyncio.get_running_loop())
+    registry = BackgroundTaskRegistry(loop=asyncio.get_running_loop())
     async with activity_scope("shell-origin", "user_webui:1"):
         task_id = await asyncio.to_thread(registry.register, "user_webui:1", "shell", "threaded shell")
         await asyncio.to_thread(registry.complete, task_id, True, "done")
