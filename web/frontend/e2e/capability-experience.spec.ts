@@ -195,10 +195,22 @@ test("tag purposes link to tools and retrieval failures stay visible", async ({ 
     { name: "custom_ops", description: "Personal maintenance tools", builtin: false, sources: ["custom", "tool", "message"], message_key: true, tool_count: 1, tools: ["check_service"] },
   ] }));
   await page.goto("/webui/tags");
-  await expect(page.getByRole("button", { name: "Delete tag custom_ops" })).toBeDisabled();
-  await page.getByRole("textbox", { name: "Search tags, descriptions or linked tools…" }).fill("recognize_image");
-  await expect(page.getByRole("link", { name: "2 linked tools" })).toHaveAttribute("href", "/webui/tools?tag=media%3Aimage");
+  const cards = page.locator("main article");
+  await expect(cards).toHaveCount(3);
+  const cardHeights = await cards.evaluateAll((entries) => entries.map((entry) => entry.getBoundingClientRect().height));
+  expect(Math.max(...cardHeights) - Math.min(...cardHeights)).toBeLessThanOrEqual(1);
   await page.screenshot({ path: info.outputPath("tag-catalog.png"), fullPage: true });
+  await page.getByRole("button", { name: "View tag details: custom_ops", exact: true }).click();
+  const customDetail = page.getByRole("dialog");
+  await expect(customDetail.getByRole("button", { name: "Delete tag custom_ops" })).toBeDisabled();
+  await customDetail.getByText("Close", { exact: true }).click();
+  await expect(customDetail).toBeHidden();
+  await page.getByRole("textbox", { name: "Search tags, descriptions or linked tools…" }).fill("recognize_image");
+  await page.getByRole("button", { name: "View tag details: media:image", exact: true }).click();
+  const toolDetail = page.getByRole("dialog");
+  await expect(toolDetail.getByRole("link", { name: "View in Tools", exact: true })).toHaveAttribute("href", "/webui/tools?tag=media%3Aimage");
+  await expect(toolDetail.getByText("recognize_image", { exact: true })).toBeVisible();
+  await page.screenshot({ path: info.outputPath("tag-detail.png"), fullPage: true });
   await page.route("**/api/retrieval/matrix", (route) => route.fulfill({ json: {
     capabilities: ["search", "reader", "repo"], selection: { search: "auto", reader: "auto", repo: "auto" }, active: { search: "demo", reader: "builtin" },
     providers: [

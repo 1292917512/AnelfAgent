@@ -45,5 +45,9 @@
   "deleteNamed": "Delete tag {{name}}",
   "inUse": "Still referenced by tools. Update their tags before deleting.",
   "routingHint": "Routing label for tool discovery and capability grouping.",
-  "linkedTools": "{{count}} linked tools"
+  "linkedTools": "{{count}} linked tools",
+  "noLinkedTools": "No linked tools",
+  "viewDetails": "View details",
+  "viewDetailsNamed": "View tag details: {{name}}",
+  "viewInTools": "View in Tools"
 }

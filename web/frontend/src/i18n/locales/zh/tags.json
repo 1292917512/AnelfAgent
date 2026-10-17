@@ -45,5 +45,9 @@
   "deleteNamed": "删除标签 {{name}}",
   "inUse": "仍有关联工具，请先调整工具标签。",
   "routingHint": "工具发现与能力分组使用的路由标签。",
-  "linkedTools": "关联 {{count}} 个工具"
+  "linkedTools": "关联 {{count}} 个工具",
+  "noLinkedTools": "暂无关联工具",
+  "viewDetails": "查看详情",
+  "viewDetailsNamed": "查看标签详情：{{name}}",
+  "viewInTools": "在工具页查看"
 }
