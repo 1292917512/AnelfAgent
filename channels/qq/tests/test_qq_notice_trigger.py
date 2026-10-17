@@ -107,6 +107,55 @@ class TestNoticeMessageContract:
         assert message is not None
         assert message.is_to_me is True
 
+    @pytest.mark.parametrize("group_id,sender_id,target_id", [
+        (0, 12345, 10086), (0, 10086, 12345), (0, 12345, 12345),
+        (110, 12345, 10086), (110, 10086, 12345), (110, 12345, 12345),
+        (110, 12345, 22222),
+    ])
+    async def test_poke_participants_and_conversation_are_distinct(
+        self, group_id: int, sender_id: int, target_id: int,
+    ) -> None:
+        data = _notice("notify", group_id=group_id, sub_type="poke", target_id=str(target_id),
+                       self_id="10086", user_id=sender_id if group_id else 12345)
+        if not group_id:
+            data["sender_id"] = str(sender_id)
+        message = await parse_event_async(data)
+        assert message is not None
+        actor = "机器人自身" if sender_id == 10086 else "用户"
+        target = "机器人自身" if target_id == 10086 else "用户"
+        assert f"发起者={actor}（QQ:{sender_id}）" in message.content
+        assert f"被戳者={target}（QQ:{target_id}）" in message.content
+        assert message.sender.user_id == str(sender_id if group_id else 12345)
+        assert message.channel.channel_id == str(group_id or 12345)
+        assert message.is_to_me is (target_id == 10086)
+        assert message.kind == MessageKind.EVENT and message.trigger_mind
+        assert message.segments[0].content == message.content
+
+    async def test_poke_cached_names_do_not_replace_identity(self, monkeypatch) -> None:
+        from channels.qq import parser
+
+        monkeypatch.setattr(parser, "get_cached_nickname", lambda group, user: "同名用户")
+        data = _notice("notify", sub_type="poke", target_id=22222, raw_info=[
+            {"type": "qq", "nm": "你"}, {"type": "img", "src": "https://example.com/poke.png"},
+            {"type": "nor", "txt": "戳了戳"}, {"type": "qq", "nm": "我"},
+            {"type": "nor", "txt": "的肚子，并弹了回去"},
+        ])
+        message = await parse_event_async(data)
+        assert message is not None
+        assert "发起者=同名用户（QQ:12345）" in message.content
+        assert "被戳者=同名用户（QQ:22222）" in message.content
+        assert "动作=戳了戳；附加文案=的肚子，并弹了回去" in message.content
+        assert "[动作图片:https://example.com/poke.png]" in message.content
+
+    @pytest.mark.parametrize("raw_info", [None, {}, [], [None]])
+    async def test_incomplete_poke_does_not_invent_bot_target(self, raw_info: Any) -> None:
+        data = _notice("notify", group_id=0, sub_type="poke", self_id="", raw_info=raw_info)
+        message = await parse_event_async(data)
+        assert message is not None
+        assert "发起者=用户（QQ:12345）" in message.content
+        assert "被戳者=身份未知" in message.content
+        assert message.is_to_me is False
+
 
 class TestDecideNoticeTrigger:
     """group_notice_trigger 三档决策矩阵。"""

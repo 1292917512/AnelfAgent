@@ -2,6 +2,9 @@
 
 将 OneBot v11 标准 JSON 事件转换为 ``AdapterMessage``。
 参考: https://github.com/botuniverse/onebot-11/tree/master/event
+
+模型看到戳一戳的实际发起者、目标与机器人身份，私聊归属仍为会话好友。
+事件正文增加少量身份说明，不新增模型或昵称查询；不改变稳定前缀。
 """
 
 from __future__ import annotations
@@ -809,8 +812,11 @@ async def _format_notice(
     self_id = str(data.get("self_id", ""))
 
     if notice_type == "notify" and sub_type == "poke":
-        target_id = str(data.get("target_id", ""))
-        raw_info = data.get("raw_info", [])
+        target_id = str(data.get("target_id") or "")
+        group_id = str(data.get("group_id") or "")
+        sender_id = str((data.get("sender_id", user_id) if not group_id else user_id) or "")
+        raw_info = data.get("raw_info")
+        raw_info = raw_info if isinstance(raw_info, list) else []
         item2 = raw_info[2] if len(raw_info) > 2 else None
         item4 = raw_info[4] if len(raw_info) > 4 else None
         poke_style = item2.get("txt", "戳一戳") if isinstance(item2, dict) else "戳一戳"
@@ -821,17 +827,20 @@ async def _format_notice(
         if len(raw_info) > 1 and isinstance(raw_info[1], dict) and raw_info[1].get("type") == "img":
             action_img = raw_info[1].get("src", "")
 
-        group_id = str(data.get("group_id", ""))
-        sender_nickname = get_cached_nickname(group_id, str(user_id)) if group_id else ""
-        sender_display = sender_nickname or f"用户{user_id}"
+        def participant(identity: str) -> str:
+            """以账号区分参与者，昵称仅辅助展示。"""
+            if identity in ("", "0"):
+                return "身份未知"
+            if identity == self_id:
+                return f"机器人自身（QQ:{identity}）"
+            nickname = get_cached_nickname(group_id, identity) if group_id else ""
+            return f"{nickname or '用户'}（QQ:{identity}）"
 
-        is_poke_me = target_id == self_id
-        if is_poke_me:
-            text = f"({sender_display} {poke_style} 你 {poke_suffix})".strip()
-        else:
-            target_nickname = get_cached_nickname(group_id, target_id) if group_id else ""
-            target_display = target_nickname or f"用户{target_id}"
-            text = f"({sender_display} {poke_style} {target_display} {poke_suffix})".strip()
+        is_poke_me = target_id not in ("", "0") and target_id == self_id
+        text = f"(QQ戳一戳：发起者={participant(sender_id)}；被戳者={participant(target_id)}；动作={poke_style}"
+        if poke_suffix:
+            text += f"；附加文案={poke_suffix}"
+        text += ")"
 
         if action_img:
             text = f"{text} [动作图片:{action_img}]"
