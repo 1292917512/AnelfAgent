@@ -1,5 +1,7 @@
 """动态执行事实的隔离、通知消费和缓存前缀纪律。"""
 
+import asyncio
+import inspect
 from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -8,11 +10,55 @@ import pytest
 from helpers.think_loop_fakes import FakeMind, run_think_loop, tool_result
 
 from agent.context.message_schema import normalize_for_send
-from agent.context.observation import emit_context_summary
+from agent.context.observation import emit_context_summary, observe_preparation
 from agent.mind.background_tasks import BackgroundTaskRegistry
 from agent.mind.execution.state import ThinkMode
 from agent.mind.runtime_context import background_context
 from core.conversation_scope import bind_scope, reset_scope
+
+
+async def test_preparation_observer_preserves_signature_messages_and_event_order(monkeypatch):
+    from agent.mind.mind import Mind
+
+    events = []
+    messages = [{"role": "system", "content": "稳定前缀", "_layer": "stable"},
+                {"role": "user", "content": "原始消息", "_layer": "conversation"},
+                {"role": "system", "content": "召回证据", "_layer": "memory"}]
+    before = deepcopy(messages)
+    wire = normalize_for_send(messages)
+    marker = object()
+
+    async def emit(event, payload):
+        events.append(payload["status"])
+
+    async def prepare(mind, conversation_list, anything, *, lean):
+        assert mind is marker and conversation_list is messages and anything is None and lean
+        events.append("prepare")
+        return messages
+
+    monkeypatch.setattr("agent.context.observation.event_bus.emit", emit)
+    monkeypatch.setattr("agent.mind.mind.prepare_recollection", prepare)
+    assert inspect.iscoroutinefunction(Mind.get_recollection)
+    assert inspect.signature(Mind.get_recollection) == inspect.signature(Mind.get_recollection.__wrapped__)
+    assert await Mind.get_recollection(marker, messages, None, lean=True) is messages
+    assert events == ["running", "prepare", "done"]
+    assert messages == before and normalize_for_send(messages) == wire
+
+
+@pytest.mark.parametrize("error", [ValueError("invalid input"), asyncio.CancelledError("stop")])
+async def test_preparation_failure_is_observed_without_replacing_exception(monkeypatch, error):
+    emit = AsyncMock()
+    monkeypatch.setattr("agent.context.observation.event_bus.emit", emit)
+
+    @observe_preparation
+    async def prepare():
+        raise error
+
+    with pytest.raises(type(error)) as caught:
+        await prepare()
+    assert caught.value is error
+    assert [call.args[1]["status"] for call in emit.await_args_list] == [
+        "running", "interrupted" if isinstance(error, asyncio.CancelledError) else "error"]
 
 
 @pytest.mark.parametrize("running", [True, False])

@@ -6,10 +6,14 @@
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import nullcontext
+
 import pytest
 
+from core.event_bus import event_bus
 from core.trace_session import thinking_session
-from core.tracer import _MAX_SESSION_NODES, NodeType, TraceNode, Tracer
+from core.tracer import _MAX_SESSION_NODES, NodeStatus, NodeType, TraceNode, Tracer
 
 
 @pytest.fixture
@@ -27,6 +31,32 @@ def tracer():
 def _only_session(t: Tracer):
     assert len(t._sessions) == 1
     return next(iter(t._sessions.values()))
+
+
+@pytest.mark.parametrize("error,status", [(None, NodeStatus.COMPLETED), (ValueError("failed"), NodeStatus.ERROR),
+                                          (asyncio.CancelledError("stop"), NodeStatus.WARNING)])
+async def test_span_terminal_state_and_original_exception(tracer, error, status):
+    expected = pytest.raises(type(error)) if error is not None else nullcontext()
+    with expected as caught:
+        async with tracer.span("operation") as node:
+            node.data["result"] = "evidence"
+            if error is not None:
+                raise error
+    if error is not None:
+        assert caught.value is error
+    assert node.status is status
+    assert node.data == {"result": "evidence"}
+    assert node.duration_ms >= 0
+
+
+async def test_cancelled_tool_is_not_shown_as_completed_or_failed(tracer):
+    async with thinking_session({"scope": "user_qq:1"}):
+        await event_bus.emit("thinking_tool_start", {"tool_id": "cancelled", "tool_name": "inspect"})
+        await event_bus.emit("thinking_tool_end", {"tool_id": "cancelled", "tool_name": "inspect",
+                                                   "success": False, "cancelled": True, "duration_ms": 10})
+    tool = next(node for node in _only_session(tracer).nodes if node.type == NodeType.TOOL_CALL)
+    assert tool.status is NodeStatus.WARNING
+    assert tool.duration_ms == 10
 
 
 class TestDelegationSession:

@@ -13,7 +13,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Set
 
-from agent.context.observation import emit_context_summary
+from agent.context.observation import observe_preparation
 from agent.context.preparation import model_context
 from agent.messages import EverythingGroup
 from agent.mind.autonomous import MindPhase
@@ -23,7 +23,6 @@ from agent.mind.execution.reply import reply_entry
 from agent.mind.interrupt import InterruptRegistry
 from agent.mind.perception import should_enqueue_external_message
 from agent.mind.recall.coordinator import prepare_recollection
-from core.activity import EVENT_ACTIVITY_CONTEXT
 from core.entity import EntityRegistry
 from core.event_bus import (
     EVENT_THINKING_PHASE_CHANGE,
@@ -372,23 +371,12 @@ class Mind:
 
     # 召回调度
 
+    @observe_preparation
     async def get_recollection(
             self,
             conversation_list: Optional[List[Dict]] = None,
             anything: Optional["Everything"] = None,
             *, lean: bool = False,
     ) -> List[Dict]:
-        """观测上下文准备过程，成功后展示实际装配结果，失败仍交给调用方处理。"""
-        started = time.monotonic()
-        await event_bus.emit(EVENT_ACTIVITY_CONTEXT, {"status": "running"})
-        try:
-            messages = await prepare_recollection(self, conversation_list, anything, lean=lean)
-        except BaseException as exc:
-            await event_bus.emit(EVENT_ACTIVITY_CONTEXT, {
-                "status": "interrupted" if isinstance(exc, asyncio.CancelledError) else "error",
-                "duration_ms": round((time.monotonic() - started) * 1000),
-                "error": f"{type(exc).__name__}: {exc}",
-            })
-            raise
-        await emit_context_summary(messages, round((time.monotonic() - started) * 1000))
-        return messages
+        """准备当前会话的召回材料并组装上下文。"""
+        return await prepare_recollection(self, conversation_list, anything, lean=lean)

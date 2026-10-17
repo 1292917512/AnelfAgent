@@ -184,8 +184,9 @@ class DelegationManager:
         async def _on_tool_end(payload: Dict[str, Any]) -> None:
             tool = str(payload.get("tool_name", ""))
             success = bool(payload.get("success"))
-            await self._emit_progress("tool_end", tool=tool, success=success)
-            self._journal_progress(f"工具 {tool} {'完成' if success else '失败'}")
+            cancelled = bool(payload.get("cancelled"))
+            await self._emit_progress("tool_end", tool=tool, success=success, cancelled=cancelled)
+            self._journal_progress(f"工具 {tool} {'已取消' if cancelled else '完成' if success else '失败'}")
 
         async def _on_llm_end(payload: Dict[str, Any]) -> None:
             self._record_usage(payload)

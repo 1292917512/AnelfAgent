@@ -30,7 +30,8 @@
 | `agent/mind/llm_invoker.py` | 模型预算读取、统一发送、重试、回退、流式聚合与摘要 | `ModelInvoker` |
 | `agent/context/` | 提示词、分层缓存、动态呈现、环境快照及发送规整 | `ContextAssembly`、`ContextPreparation` |
 
-Mind 原生方法负责消息接收、周期、回复、反思与召回观测的生命周期，内部阶段直接调用所属模块的函数，
+Mind 原生方法负责消息接收、周期、回复与反思的生命周期；上下文准备入口的观测由 `agent.context.observation`
+装饰器负责。内部阶段直接调用所属模块的函数，
 不把模块函数重新绑定到宿主。`create_mind()` 注入配置提供器持有的 `MindConfig`，执行阶段直接读取
 `mind.config`；保存与重载原位更新同一对象，无需重建 Mind。共享配置契约位于 `agent/config.py`，
 上下文等模块可直接使用，不经 Mind 中转。消息归属由消息对象的 scope 属性提供。

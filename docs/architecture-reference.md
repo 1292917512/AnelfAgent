@@ -75,6 +75,19 @@ in-function import 违层），实体里写 `from agent.` 之前先想到 _sdk �
 可观测：`GET /api/status/services`（Lifecycle.snapshot 注册表快照）、`GET /api/status/startup`
 （Application.startup_timeline 启动时间线），前端 Dashboard「系统服务」面板展示。
 
+## 执行观测边界
+
+`core.observation.ExecutionObservation` 只记录单调时钟耗时与异常事实，不调度、不重试、不修改参数、
+返回值或异常。构造时开始计时；作为上下文管理器使用时，退出后冻结耗时。事件名称、载荷与成功判定由
+所属模块负责，沿用 EventBus 的等待顺序与当前会话上下文，不另建事件或订阅体系。
+
+上下文准备由 `agent.context.observation.observe_preparation` 装饰入口，观测实际组装结果，不修改消息。
+Mind 工具耗时包含权限检查，调用结束事件由执行入口在 `tool_post` 前发送；权限模块只返回裁决，
+不重复发送。结果后处理失败仍由工具链发布更正事件。
+实体注册表计时不含外层审批；启动节点计时包含重试与退避；`track_ops`、钩子与追踪区间复用同一时钟。
+取消继续向上传播，工具观测标记为中断。LLM 首包、网络重试预算、音频长度等独立口径不套用整函数计时；
+观测不得改动模型参数、消息层、缓存前缀或动态注入顺序。
+
 ## EntityRegistry（core/entity.py）
 
 中央注册枢纽。所有模块以实体方式注册、发现、调用。

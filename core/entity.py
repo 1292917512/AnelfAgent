@@ -29,6 +29,7 @@ from pydantic import TypeAdapter, ValidationError
 from core.event_bus import EVENT_TRACE_CALL_END, EVENT_TRACE_CALL_START, event_bus
 from core.exceptions import catch_exceptions
 from core.log import log
+from core.observation import ExecutionObservation
 from core.registration import caller_module, record_mapping, record_undo
 from core.sanitizer import sanitize_text
 from core.tags import tag_label
@@ -1128,7 +1129,7 @@ class EntityRegistry:
         labels = tag_label("call_id", call_id) + tag_label("tool", name)
         if trace.get("request_id"):
             labels += tag_label("request_id", trace["request_id"])
-        started = asyncio.get_running_loop().time()
+        observation = ExecutionObservation()
         await event_bus.emit(EVENT_TRACE_CALL_START, {
             **identity, "group": entity.group if entity else "",
             "entity_type": entity.entity_type.value if entity else "tool",
@@ -1139,7 +1140,7 @@ class EntityRegistry:
             result = await cls._invoke_tool(name, arguments, timeout=timeout)
         except asyncio.CancelledError:
             await event_bus.emit(EVENT_TRACE_CALL_END, {
-                **identity, "duration_ms": round((asyncio.get_running_loop().time() - started) * 1000),
+                **identity, "duration_ms": round(observation.elapsed_ms),
                 "success": False, "error": "工具调用已取消，执行结果未确认", "cancelled": True,
             })
             raise
@@ -1153,7 +1154,7 @@ class EntityRegistry:
                 payload["diagnostic"] = {"tool": name, "call_id": call_id, **trace}
                 result = sanitize_text(json.dumps(payload, ensure_ascii=False))
                 error = extract_error_text(result)
-        duration = round((asyncio.get_running_loop().time() - started) * 1000)
+        duration = round(observation.elapsed_ms)
         await event_bus.emit(EVENT_TRACE_CALL_END, {
             **identity, "duration_ms": duration, "success": not bool(error),
             "error": error, "result_preview": sanitize_text(result)[:_EVENT_PREVIEW_LEN],

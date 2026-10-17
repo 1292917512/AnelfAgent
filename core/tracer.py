@@ -45,6 +45,7 @@ from core.event_bus import (
     event_bus,
 )
 from core.log import log
+from core.observation import ExecutionObservation
 from core.trace_session import current_session_id as _ctx_session_id
 
 _OWNER = "thinking_tracer"
@@ -411,7 +412,7 @@ class Tracer:
         """在当前追踪上下文中创建一个有生命周期的节点。
 
         有 Mind 会话时进入会话；无会话时进入系统节点列表。
-        节点从 RUNNING 状态开始，退出时自动更新为 COMPLETED 或 ERROR。
+        节点退出时标记完成、错误或取消，异常原样传递。
 
         用法::
 
@@ -419,6 +420,7 @@ class Tracer:
                 node.data["backend"] = "sqlite"
                 await storage.init()
         """
+        observation = ExecutionObservation()
         node = TraceNode(
             id=f"span_{uuid.uuid4().hex[:8]}",
             type=node_type,
@@ -429,15 +431,14 @@ class Tracer:
         )
         in_session = self._current_session() is not None
         self._add_system_node(node)
-        status = NodeStatus.COMPLETED
         try:
-            yield node
-        except Exception:
-            status = NodeStatus.ERROR
-            raise
+            with observation:
+                yield node
         finally:
+            status = (NodeStatus.WARNING if observation.cancelled else
+                      NodeStatus.ERROR if observation.error is not None else NodeStatus.COMPLETED)
             node.status = status
-            node.duration_ms = round((time.time() - node.timestamp) * 1000)
+            node.duration_ms = round(observation.elapsed_ms)
             updates = {
                 "status": status,
                 "duration_ms": node.duration_ms,
@@ -705,11 +706,12 @@ class Tracer:
         nid = flow.tool_nodes.pop(tid, None) if flow else None
         if nid:
             success = payload.get("success", True)
+            status = NodeStatus.WARNING if payload.get("cancelled") else NodeStatus.COMPLETED if success else NodeStatus.ERROR
             tool_name = payload.get("tool_name", "?")
             dur = payload.get("duration_ms", 0)
             self._update_node(
                 nid,
-                status=NodeStatus.COMPLETED if success else NodeStatus.ERROR,
+                status=status,
                 duration_ms=dur,
                 label=f"工具: {tool_name} ({dur}ms)",
                 data=payload,

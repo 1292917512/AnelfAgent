@@ -6,12 +6,41 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from typing import Any, Literal
+from collections.abc import Callable, Coroutine, Mapping, Sequence
+from functools import wraps
+from typing import Any, Literal, ParamSpec
 
 from core.activity import ACTIVITY_TEXT_LIMIT, EVENT_ACTIVITY_CONTEXT, EVENT_ACTIVITY_UPDATE
 from core.event_bus import event_bus
+from core.observation import ExecutionObservation
 from core.sanitizer import sanitize_text
+
+P = ParamSpec("P")
+
+
+def observe_preparation(
+    prepare: Callable[P, Coroutine[Any, Any, list[dict]]],
+) -> Callable[P, Coroutine[Any, Any, list[dict]]]:
+    """观测上下文准备的起止与实际结果，保持消息对象和异常不变。"""
+    @wraps(prepare)
+    async def observed(*args: P.args, **kwargs: P.kwargs) -> list[dict]:
+        observation = ExecutionObservation()
+        await event_bus.emit(EVENT_ACTIVITY_CONTEXT, {"status": "running"})
+        try:
+            with observation:
+                messages = await prepare(*args, **kwargs)
+        finally:
+            if observation.error is not None:
+                await event_bus.emit(EVENT_ACTIVITY_CONTEXT, {
+                    "status": "interrupted" if observation.cancelled else "error",
+                    "duration_ms": round(observation.elapsed_ms),
+                    "error": f"{type(observation.error).__name__}: {observation.error}",
+                })
+        await emit_context_summary(messages, round(observation.elapsed_ms))
+        return messages
+
+    return observed
+
 
 _LABELS = {
     "memory": "记忆召回与技能候选", "profile": "实体画像", "relation": "记忆关联",
