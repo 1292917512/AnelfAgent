@@ -56,8 +56,9 @@ async def test_factory_shares_state_and_finishes_wiring_before_publish(tmp_path,
     factories["SkillCurator"].assert_called_once_with(store, mind.skill_matcher.index)
     factories["SkillReviewer"].assert_called_once_with(mind, store, index=mind.skill_matcher.index)
     assert mind.skill_reviewer.start.call_count == int(skills_enabled)
-    for name in ("HeartbeatEngine", "ContextCompressor", "DelegationManager", "WorkflowEngine", "AutoCapturePipeline"):
+    for name in ("HeartbeatEngine", "DelegationManager", "WorkflowEngine", "AutoCapturePipeline"):
         factories[name].assert_called_once_with(mind)
+    factories["ContextCompressor"].assert_called_once_with(mind.model_invoker)
     registration.assert_called_once_with()
     assert mind.accept_feel.__self__ is mind
     assert mind.reflect.__self__ is mind

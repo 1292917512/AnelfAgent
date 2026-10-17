@@ -1,10 +1,11 @@
-"""后台任务唤醒预算（agent.mind.wake_budget + Mind._on_bg_task_unclaimed）单元测试。"""
+"""后台任务唤醒预算（agent.mind.wake_budget + on_task_unclaimed）单元测试。"""
 
 from __future__ import annotations
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from agent.mind.background_routing import on_task_alert, on_task_unclaimed
 from agent.mind.wake_budget import WakeBudgetTracker
 from core.config import ConfigManager
 
@@ -81,7 +82,7 @@ def _async_noop():
 
 
 class TestUnclaimedCallbackBudget:
-    """Mind._on_bg_task_unclaimed：超预算不入队唤醒，但信息仍写短期记忆。"""
+    """on_task_unclaimed：超预算不入队唤醒，但信息仍写短期记忆。"""
 
     @staticmethod
     def _fake_mind(budget: int):
@@ -102,36 +103,32 @@ class TestUnclaimedCallbackBudget:
         return mind
 
     async def test_within_budget_wakes(self) -> None:
-        import agent.mind.mind as mind_mod
         mind = self._fake_mind(3)
-        await mind_mod.Mind._on_bg_task_unclaimed(
+        await on_task_unclaimed(
             mind, "user_qq:1", "构建任务", "退出码 0")
         # 通知已投递（无 router 时短期记忆兜底，信息保底）
         assert mind.pfc.add_temporary.called
         assert mind.wake_budget.count("user_qq:1") == 1
 
     async def test_over_budget_suppresses_wake(self) -> None:
-        import agent.mind.mind as mind_mod
         mind = self._fake_mind(1)
-        await mind_mod.Mind._on_bg_task_unclaimed(mind, "user_qq:1", "任务A", "ok")
-        await mind_mod.Mind._on_bg_task_unclaimed(mind, "user_qq:1", "任务B", "ok")
+        await on_task_unclaimed(mind, "user_qq:1", "任务A", "ok")
+        await on_task_unclaimed(mind, "user_qq:1", "任务B", "ok")
         # 第二次超预算：仍投递通知（第二次 add_temporary 兜底），计数不再增长
         assert mind.pfc.add_temporary.call_count == 2
         assert mind.wake_budget.count("user_qq:1") == 1
 
     async def test_reset_via_genuine_input(self) -> None:
-        import agent.mind.mind as mind_mod
         mind = self._fake_mind(1)
-        await mind_mod.Mind._on_bg_task_unclaimed(mind, "user_qq:1", "任务A", "ok")
+        await on_task_unclaimed(mind, "user_qq:1", "任务A", "ok")
         mind.wake_budget.reset("user_qq:1")  # 真人消息到达（accept_feel 路径）
         assert mind.wake_budget.allow("user_qq:1")
 
     async def test_failure_wakes_after_success_budget_exhausted(self) -> None:
         """成功额度耗尽后，失败完成仍唤醒（独立额度）——监控任务死了必须有人知道。"""
-        import agent.mind.mind as mind_mod
         mind = self._fake_mind(1)
-        await mind_mod.Mind._on_bg_task_unclaimed(mind, "user_qq:1", "任务A", "ok")
-        await mind_mod.Mind._on_bg_task_unclaimed(
+        await on_task_unclaimed(mind, "user_qq:1", "任务A", "ok")
+        await on_task_unclaimed(
             mind, "user_qq:1", "监控脚本", "执行超时（>1200s）", success=False)
         # 成功额度不动，失败额度消耗一次
         assert mind.wake_budget.count("user_qq:1") == 1
@@ -139,9 +136,8 @@ class TestUnclaimedCallbackBudget:
 
     async def test_failure_prompt_marks_failed(self) -> None:
         """失败通知带 [后台任务失败] 头部与处置指引，模型可区分成败。"""
-        import agent.mind.mind as mind_mod
         mind = self._fake_mind(3)
-        await mind_mod.Mind._on_bg_task_unclaimed(
+        await on_task_unclaimed(
             mind, "user_qq:1", "监控脚本", "执行超时（>1200s）", success=False)
         content = mind.pfc.add_temporary.call_args[0][0]["content"]
         assert "[后台任务失败]" in content
@@ -149,9 +145,8 @@ class TestUnclaimedCallbackBudget:
 
     async def test_non_conversation_scope_falls_back_to_global_bucket(self) -> None:
         """非 conversation scope（心跳任务等）：全局短期记忆桶兜底，不消耗唤醒预算。"""
-        import agent.mind.mind as mind_mod
         mind = self._fake_mind(1)
-        await mind_mod.Mind._on_bg_task_unclaimed(mind, "_global", "监控脚本", "退出码 1", success=False)
+        await on_task_unclaimed(mind, "_global", "监控脚本", "退出码 1", success=False)
         assert mind.pfc.add_temporary.called
         content = mind.pfc.add_temporary.call_args[0][0]["content"]
         assert "[后台任务失败]" in content
@@ -160,7 +155,7 @@ class TestUnclaimedCallbackBudget:
 
 
 class TestBgTaskAlert:
-    """Mind._on_bg_task_alert：超时提醒写历史并入队唤醒，去留决策留给 AI。"""
+    """on_task_alert：超时提醒写历史并入队唤醒，去留决策留给 AI。"""
 
     @staticmethod
     def _fake_mind(budget: int):
@@ -181,9 +176,8 @@ class TestBgTaskAlert:
 
     async def test_alert_notifies_with_decision_hooks(self) -> None:
         """提醒是报告不是命令：事实 + 真假超时甄别引导 + 平铺可用动作（含 task_id）。"""
-        import agent.mind.mind as mind_mod
         mind = self._fake_mind(1)
-        await mind_mod.Mind._on_bg_task_alert(
+        await on_task_alert(
             mind, "user_qq:1", "下载任务", "已运行 2000s（预期 1800s）", "ab12cd34")
         content = mind.pfc.add_temporary.call_args[0][0]["content"]
         assert "[后台任务进度报告]" in content
@@ -195,8 +189,7 @@ class TestBgTaskAlert:
         assert mind.wake_budget.count("user_qq:1") == 1
 
     async def test_alert_global_scope_bucket_only(self) -> None:
-        import agent.mind.mind as mind_mod
         mind = self._fake_mind(1)
-        await mind_mod.Mind._on_bg_task_alert(mind, "_global", "监控脚本", "已运行 2000s", "ab12cd34")
+        await on_task_alert(mind, "_global", "监控脚本", "已运行 2000s", "ab12cd34")
         assert mind.pfc.add_temporary.called
         assert mind.wake_budget.count("_global") == 0

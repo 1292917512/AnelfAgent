@@ -146,7 +146,7 @@ def workspace(tmp_path, monkeypatch):
 def _pipeline():
     from agent.mind.execution.result_pipeline import ToolResultPipeline
 
-    mind = SimpleNamespace(get_model_context_length=lambda: 0)
+    mind = SimpleNamespace(model_invoker=SimpleNamespace(get_context_length=lambda: 0))
     return ToolResultPipeline(mind)
 
 

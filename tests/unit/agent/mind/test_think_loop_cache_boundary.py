@@ -65,13 +65,13 @@ class TestThinkLoopChainBreakpoint:
             mind = FakeMind(rounds=[tool_result("", ["recall"]), tool_result("", ["end_reply"])])
             mind.pfc.tools_version = 0
             monkeypatch.setattr(mind.pfc, "get_active_tool_schemas", AsyncMock(return_value=selected))
-            original_invoke = mind._invoke_llm_unified
+            original_invoke = mind.model_invoker.invoke
             catalogs = []
             async def invoke(messages, tools, *args, **kwargs):
                 catalogs.append(deepcopy(tools))
                 mind.pfc.tools_version += 1
                 return await original_invoke(messages, tools, *args, **kwargs)
-            monkeypatch.setattr(mind, "_invoke_llm_unified", invoke)
+            monkeypatch.setattr(mind.model_invoker, "invoke", invoke)
             await run_think_loop(mind, mode=ThinkMode.REFLECT, tools=initial)
             assert catalogs[0] == initial
             assert catalogs[1] == initial + selected
@@ -99,7 +99,7 @@ class TestThinkLoopChainBreakpoint:
 
     async def test_think_loop_never_marks_messages(self, anything, deliver_mock) -> None:
         """think_loop 不再触碰断点：发送给 invoker 的消息零 cache_control，
-        装饰统一发生在真实 _invoke_llm_unified 内（本 fake 绕过了它）。"""
+        装饰统一发生在真实 invoke 内（本 fake 绕过了它）。"""
         mind = _loop_mind()
         base = _base()
         await run_think_loop(mind, anything=anything, base_messages=base)
@@ -111,7 +111,7 @@ class TestThinkLoopChainBreakpoint:
 
     async def test_invoker_boundary_decorates_by_layer(self, anything) -> None:
         """发送边界集成：管线输出的层标签经 decorate_messages 正确落锚点
-        （模拟 _invoke_llm_unified 内的装饰调用）。"""
+        （模拟 invoke 内的装饰调用）。"""
         mind = _loop_mind()
         base = _base()
         await run_think_loop(mind, anything=anything, base_messages=base)

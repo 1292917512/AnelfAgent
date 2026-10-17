@@ -5,6 +5,7 @@ from typing import Any, List, Optional
 
 from agent.messages import Everything
 from agent.mind.mind import Mind
+from agent.mind.perception import should_enqueue_external_message
 from core.log import log
 
 DEFAULT_HEARTBEAT_INTERVAL = 300.0
@@ -138,7 +139,7 @@ class AgentAssistant:
         """心跳进行中收到消息，向来源频道发送简短提示。"""
         notified_scopes: set[str] = set()
         for anything in batch:
-            if not self.mind.should_enqueue_external_message(anything):
+            if not should_enqueue_external_message(self.mind, anything):
                 continue
             if not anything.adapter_key:
                 continue

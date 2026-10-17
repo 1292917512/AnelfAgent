@@ -42,13 +42,13 @@ class ToolContextView(Protocol):
 class CompressionHost(Protocol):
     """压缩所需的模型预算与摘要调用，不承担工具执行。"""
 
-    def get_model_context_length(self) -> int: ...
+    def get_context_length(self) -> int: ...
 
-    def get_model_max_output(self) -> int: ...
+    def get_max_output(self) -> int: ...
 
     async def summarize_text(self, prompt: str) -> str: ...
 
-    async def _invoke_llm_unified(
+    async def invoke(
         self,
         messages: list[dict],
         tools: list[dict] | None,

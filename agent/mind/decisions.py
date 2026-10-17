@@ -19,6 +19,7 @@ from agent.messages import (
     parse_entity_scope,
 )
 from agent.mind.autonomous import Decision, DecisionType, MindPhase
+from agent.mind.execution.vision import collect_pending_images
 from core.config import get_config_int, register_configs_safe
 from core.log import log
 
@@ -126,7 +127,7 @@ async def execute_reply(mind: Mind, decision: Decision) -> None:
         adapter_key = getattr(anything, "adapter_key", "") or ""
         mind._set_phase(MindPhase.RECALLING)
 
-        pending_images = mind._collect_pending_images(scope=scope)
+        pending_images = collect_pending_images(mind, scope=scope)
         if pending_images:
             log(f"注入待处理图片: {len(pending_images)} 张", tag="思维")
 

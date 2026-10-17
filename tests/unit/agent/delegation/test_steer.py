@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 from agent.delegation.steer import (
     SteerInbox,
@@ -187,14 +188,13 @@ class TestFrontDelegateRegistry:
                 self.background_tasks.set_unclaimed_callback(
                     lambda scope, desc, summary: self.unclaimed.append((scope, desc)),
                 )
+                self.model_invoker = SimpleNamespace(get_context_length=lambda: 128000)
 
             async def reflect(self, messages, **kwargs) -> str:
                 if delay:
                     await asyncio.sleep(delay)
                 return output
 
-            def get_model_context_length(self) -> int:
-                return 128_000
 
         return _Mind()
 

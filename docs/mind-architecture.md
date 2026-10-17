@@ -21,15 +21,18 @@
 | `agent/runtime/mind_factory.py` | 创建共享服务、注入上下文视图、装配后台协作者后返回宿主 | `create_mind()` |
 | `agent/mind/mind.py` | 持有会话状态、锁和中断信号，提供周期、回复和反思入口 | `Mind.execute_mind()`、`Mind.reply()`、`Mind.reflect()` |
 | `agent/mind/mind_tools.py` | 核心工具声明与注册、反思工具权限策略 | `register_core_tools()`、`build_reflect_blocklist()` |
-| `agent/mind/cycle.py` | 自主周期的锁、fast-path、态势收集、元决策和收尾 | `_cycle_body()` |
+| `agent/mind/cycle.py` | fast-path、态势收集、元决策、分发和收尾；周期锁由 Mind 持有 | `run_cycle()` |
 | `agent/mind/prefrontal_cortex.py` | 聚合待办、短期记忆、工具激活与会话状态，不构建上下文 | `PrefrontalCortex` |
 | `agent/mind/work_memory.py` | 待办消息、短期状态和动态任务数据 | `WorkMemory` |
 | `agent/mind/decisions.py` | 把结构化决策分发到回复、反思、计划和任务执行器 | 决策执行函数 |
-| `agent/mind/execution/` | 对话与反思入口、多轮执行、消息并入、工具调用和收束 | `reply.reply_entry()`、`reflection.reflect()`、`loop.think_loop()` |
-| `agent/mind/recall/` | 首轮并发取数、对话增量召回、关联对象识别 | `coordinator.get_recollection()`、`refresh.DialogueRecollection` |
+| `agent/mind/execution/` | 多轮执行、消息并入、工具调用和收束；由 Mind 的回复、反思入口调用 | `reply.reply_entry()`、`loop.think_loop()` |
+| `agent/mind/recall/` | 首轮并发取数、对话增量召回、关联对象识别 | `coordinator.prepare_recollection()`、`refresh.DialogueRecollection` |
+| `agent/mind/llm_invoker.py` | 模型预算缓存、统一发送、重试、回退、流式聚合与摘要 | `ModelInvoker` |
 | `agent/context/` | 提示词、分层缓存、动态呈现、环境快照及发送规整 | `ContextAssembly`、`ContextPreparation` |
 
-宿主方法使用 Python 原生函数绑定，签名与异常传播保持直接可见；不增加通用调度装饰器或服务容器。
+Mind 原生方法负责消息接收、周期、回复、反思与召回观测的生命周期，内部阶段直接调用所属模块的函数，
+不把模块函数重新绑定到宿主。`ModelInvoker` 持有模型预算缓存，并实时读取宿主当前的模型与会话选项；
+压缩器只通过 `CompressionHost` 接口使用该协作者，不依赖 Mind。事件名称、载荷与消息装配顺序由原有链路保持。
 技能库、插件注册表由 `create_mind` 注入共享实例，Mind 不创建上下文所需的单例，也不代理上下文格式化。
 
 - 自主周期由 `_cycle_lock` 串行化；没有待处理消息、任务或分析项时直接结束
@@ -190,7 +193,7 @@ exec_context 本轮执行状态（每轮全量重建）
   `conversation_summary_llm_timeout`（默认 900s）——超时以普通 TimeoutError 进入既有丢批路径
   推进水位线，一次失败即收敛
 - **换向折叠**（web 域会话分支）：用户从某条消息换方向，其后消息段（id 区间）装配时过滤出上下文，
-  原位插入含摘要的 system 标记（摘要走 `mind.summarize_text`，失败降级确定性摘要）；DB 保留可
+  原位插入含摘要的 system 标记（摘要走 `ModelInvoker.summarize_text`，失败降级确定性摘要）；DB 保留可
   检索（recall 不受影响）可恢复（active=0 即回）；过滤在 `_fetch_window_rows` 统一收口
   （装配/压缩/折叠调度计数同口径）
 

@@ -170,7 +170,7 @@ class TestRequiredOutput:
         mind = _reflect_mind([
             end_reply_result(), tool_result(summary, ["get_inventory", "craft_item", "end_reply"]),
         ])
-        original_invoke = mind._invoke_llm_unified
+        original_invoke = mind.model_invoker.invoke
 
         async def invoke(*args, **kwargs):
             result = await original_invoke(*args, **kwargs)
@@ -180,7 +180,7 @@ class TestRequiredOutput:
                     callback(tc)
             return result
 
-        monkeypatch.setattr(mind, "_invoke_llm_unified", invoke)
+        monkeypatch.setattr(mind.model_invoker, "invoke", invoke)
         monkeypatch.setattr(_EarlyToolRunner, "_is_readonly", lambda self, name: True)
         collected: list = []
         chain: list = []
@@ -239,7 +239,7 @@ class TestRequiredOutput:
             end_reply_result(), text_result("第一阶段总结"),
             tool_result("", ["get_state"]), tool_result("补充查询已核验", ["end_reply"]),
         ])
-        original_invoke = mind._invoke_llm_unified
+        original_invoke = mind.model_invoker.invoke
 
         async def invoke(*args, **kwargs):
             result = await original_invoke(*args, **kwargs)
@@ -248,7 +248,7 @@ class TestRequiredOutput:
                 inbox.push("summary-test", "请再查询当前状态", mode=steer_mode)
             return result
 
-        monkeypatch.setattr(mind, "_invoke_llm_unified", invoke)
+        monkeypatch.setattr(mind.model_invoker, "invoke", invoke)
         with bind_steer_drain(lambda mode: inbox.drain("summary-test", mode)):
             await run_think_loop(mind, mode=ThinkMode.REFLECT, require_output=True)
         assert mind.executed_tools.count("get_state") == 1
@@ -349,7 +349,7 @@ class TestAggregateReason:
         from agent.delegation.delegation_manager import DelegationManager
 
         manager = DelegationManager.__new__(DelegationManager)
-        manager._mind = SimpleNamespace(get_model_context_length=lambda: 128_000)
+        manager._mind = SimpleNamespace(model_invoker=SimpleNamespace(get_context_length=lambda: 128_000))
         return manager
 
     def test_budget_exhausted_hint_in_aggregate(self) -> None:

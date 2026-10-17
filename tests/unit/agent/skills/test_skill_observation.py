@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 from agent.context.message_schema import normalize_for_send
 from agent.context.observation import context_skills, emit_context_summary
 from agent.context.preparation import apply_memory_budget
-from agent.mind.recall.coordinator import _match_skills
+from agent.mind.recall.inputs import match_skills
 from agent.skills.skill_store import Skill, SkillState
 from core.activity import activity_scope
 from services.workspace_activity import WorkspaceActivityService
@@ -24,7 +24,7 @@ async def test_skill_evidence_tracks_actual_budget_and_never_changes_wire_messag
         skill_matcher=SimpleNamespace(match=AsyncMock(return_value=[(candidate, 0.426)])),
         _pending_skill_gestures={"user_qq:1": [forced.name]},
     )
-    messages = await _match_skills(mind, "deployment", scope="user_qq:1")
+    messages = await match_skills(mind, "deployment", scope="user_qq:1")
     original = deepcopy(messages)
     facts = context_skills(messages)
     assert [(fact["name"], fact["mode"], fact["score"]) for fact in facts] == [

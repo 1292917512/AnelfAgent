@@ -106,7 +106,7 @@ class ContextSnapshot:
             prefix_drift: Optional[Dict[str, Any]] = None,
             legal_break: Optional[str] = None,
     ) -> bool:
-        """尝试捕获（在 _invoke_llm_unified 中 normalize 前调用）。
+        """尝试捕获（在 ModelInvoker.invoke 中 normalize 前调用）。
 
         未布防且未开启连续捕获时立即返回 False（零开销）。
         一次性布防捕获后自动解除；连续模式持续捕获并追加紧凑记录。

@@ -10,7 +10,7 @@ import pytest
 
 from agent.llm.llm_client import LLMClient
 from agent.llm.types import ChatResult, ChatStreamDelta, ToolCall, UsageInfo
-from agent.mind.mind import Mind
+from agent.mind.llm_invoker import ModelInvoker
 
 
 def _fake_stream_client(deltas: List[ChatStreamDelta], raise_mid: bool = False):
@@ -29,14 +29,37 @@ def _fake_stream_client(deltas: List[ChatStreamDelta], raise_mid: bool = False):
 
 
 def _mind_stub(client) -> SimpleNamespace:
-    return SimpleNamespace(
+    mind = SimpleNamespace(
         llm=client,
         session_llm_params={},
         _get_mind_config=lambda: SimpleNamespace(reasoning_effort=None, llm_timeout=30),
     )
+    mind.model_invoker = ModelInvoker(mind)
+    return mind
 
 
 class TestStreamAggregation:
+    async def test_uses_current_model_and_session_options(self):
+        first = _fake_stream_client([ChatStreamDelta(content="first")])
+        second = _fake_stream_client([])
+        requests = []
+
+        async def next_stream(messages, *, options=None, tools=None, tool_choice=None):
+            requests.append(options)
+            yield ChatStreamDelta(content="second")
+
+        second.chat_stream = next_stream
+        mind = _mind_stub(first)
+        invoker = mind.model_invoker
+        assert (await invoker.chat_stream_once([], None)).content == "first"
+
+        mind.llm = second
+        mind.session_llm_params = {"temperature": 0.2}
+        supplied = {"temperature": 0.8, "max_tokens": 200}
+        assert (await invoker.chat_stream_once([], None, options=supplied)).content == "second"
+        assert requests == [{"temperature": 0.2, "max_tokens": 200}]
+        assert supplied == {"temperature": 0.8, "max_tokens": 200}
+
     async def test_content_and_reasoning_aggregated(self):
         deltas = [
             ChatStreamDelta(content="你"),
@@ -50,8 +73,9 @@ class TestStreamAggregation:
         async def on_delta(delta: str, reasoning: bool):
             received.append((delta, reasoning))
 
-        result = await Mind._llm_chat_stream_once(mind, [{"role": "user", "content": "hi"}], None,
-                                                  on_delta=on_delta)
+        result = await mind.model_invoker.chat_stream_once(
+            [{"role": "user", "content": "hi"}], None, on_delta=on_delta,
+        )
         assert result.content == "你好吗"
         assert result.reasoning_content == "想想"
         assert result.finish_reason == "stop"
@@ -73,19 +97,19 @@ class TestStreamAggregation:
         tc = ToolCall(id="c1", name="read_file", arguments="{}")
         deltas = [ChatStreamDelta(tool_calls=[tc], finish_reason="tool_calls")]
         mind = _mind_stub(_fake_stream_client(deltas))
-        result = await Mind._llm_chat_stream_once(mind, [], None)
+        result = await mind.model_invoker.chat_stream_once([], None)
         assert len(result.tool_calls) == 1
         assert result.tool_calls[0].name == "read_file"
 
     async def test_no_delta_callback_ok(self):
         mind = _mind_stub(_fake_stream_client([ChatStreamDelta(content="x")]))
-        result = await Mind._llm_chat_stream_once(mind, [], None)
+        result = await mind.model_invoker.chat_stream_once([], None)
         assert result.content == "x"
 
 
 class TestStreamFallback:
     async def test_mid_stream_failure_falls_back(self, monkeypatch):
-        """流式中途失败 → _invoke_llm_unified(stream=True) 回退非流式。"""
+        """流式中途失败 → invoke(stream=True) 回退非流式。"""
         client = _fake_stream_client(
             [ChatStreamDelta(content="半截"), ChatStreamDelta(content="丢弃")],
             raise_mid=True,
@@ -102,13 +126,14 @@ class TestStreamFallback:
             captured["called"] = True
             return fallback_result
 
-        mind._llm_chat_with_retry = fake_retry
+        mind.model_invoker.chat_with_retry = fake_retry
         monkeypatch.setattr("agent.mind.llm_invoker.normalize_for_send", lambda m: m)
         monkeypatch.setattr("agent.mind.llm_invoker.context_audit", SimpleNamespace(
             record_exchange=lambda **kw: asyncio.sleep(0)))
 
-        result = await Mind._invoke_llm_unified(mind, [{"role": "user", "content": "hi"}], None,
-                                                stream=True)
+        result = await mind.model_invoker.invoke(
+            [{"role": "user", "content": "hi"}], None, stream=True,
+        )
         assert captured.get("called")
         assert result.content == "完整结果"
 
@@ -130,7 +155,7 @@ class TestTTFT:
 
         client = _fake_stream_client([])
         client.chat_stream = stream
-        result = await Mind._llm_chat_stream_once(_mind_stub(client), [], None)
+        result = await _mind_stub(client).model_invoker.chat_stream_once([], None)
         assert result.ttft_ms == 2000
         assert result.content == output.content
         assert result.reasoning_content == output.reasoning_content
@@ -147,7 +172,7 @@ class TestTTFT:
         client = _fake_stream_client([])
         client.chat_stream = slow_first_stream
         mind = _mind_stub(client)
-        result = await Mind._llm_chat_stream_once(mind, [], None)
+        result = await mind.model_invoker.chat_stream_once([], None)
         assert result.content == "首字尾"
         assert result.ttft_ms is not None and result.ttft_ms >= 40
 
@@ -161,7 +186,7 @@ class TestTTFT:
         client = _fake_stream_client([])
         client.chat_stream = empty_stream
         mind = _mind_stub(client)
-        result = await Mind._llm_chat_stream_once(mind, [], None)
+        result = await mind.model_invoker.chat_stream_once([], None)
         assert result.ttft_ms is None
 
 
@@ -197,7 +222,7 @@ class TestSummarizeModelSelection:
         ConfigManager.set("conversation_summary_reasoning_effort", "")
         mgr, stub = self._stub()
 
-        assert await Mind.summarize_text(stub, "整理这段对话") == "摘要内容"
+        assert await ModelInvoker(stub).summarize_text("整理这段对话") == "摘要内容"
 
         kwargs = mgr.calls[0]
         assert kwargs["client"] is None
@@ -215,7 +240,7 @@ class TestSummarizeModelSelection:
             mgr, stub = self._stub()
             lite = mgr.known_client
 
-            await Mind.summarize_text(stub, "整理这段对话")
+            await ModelInvoker(stub).summarize_text("整理这段对话")
 
             kwargs = mgr.calls[0]
             assert kwargs["client"] is lite
@@ -232,7 +257,7 @@ class TestSummarizeModelSelection:
         try:
             mgr, stub = self._stub()
 
-            await Mind.summarize_text(stub, "整理这段对话")
+            await ModelInvoker(stub).summarize_text("整理这段对话")
 
             assert mgr.calls[0]["client"] is None
         finally:
@@ -246,12 +271,12 @@ class TestSummarizeModelSelection:
         ConfigManager.set("conversation_summary_reasoning_effort", " LOW ")
         try:
             mgr, stub = self._stub()
-            await Mind.summarize_text(stub, "整理这段对话")
+            await ModelInvoker(stub).summarize_text("整理这段对话")
             assert mgr.calls[0]["options"] == {"reasoning_effort": "low"}
 
             mgr2, stub2 = self._stub()
             ConfigManager.set("conversation_summary_reasoning_effort", "bogus")
-            await Mind.summarize_text(stub2, "整理这段对话")
+            await ModelInvoker(stub2).summarize_text("整理这段对话")
             assert mgr2.calls[0]["options"] is None
         finally:
             ConfigManager.set("conversation_summary_reasoning_effort", "")

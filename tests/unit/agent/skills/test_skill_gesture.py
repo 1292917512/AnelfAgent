@@ -1,4 +1,4 @@
-"""用户技能手势（agent/skills/gesture + recollection._match_skills 消费）单元测试。"""
+"""用户技能手势（agent/skills/gesture + recollection.match_skills 消费）单元测试。"""
 
 from __future__ import annotations
 
@@ -81,10 +81,10 @@ def _fake_mind(store_map: dict, pending: dict):
 
 class TestMatchSkillsGesture:
     async def test_forced_injection_bypasses_scoring(self) -> None:
-        from agent.mind.recall import coordinator as recollection
+        from agent.mind.recall import inputs as recollection
         skill = _fake_skill("deploy-check")
         mind = _fake_mind({"deploy-check": skill}, {"user_qq:1": ["deploy-check"]})
-        msgs = await recollection._match_skills(mind, "hi", scope="user_qq:1")
+        msgs = await recollection.match_skills(mind, "hi", scope="user_qq:1")
         assert msgs and "deploy-check" in msgs[0]["content"]
         assert "的完整正文" in msgs[0]["content"]  # 正文注入
         assert mind._pending_skill_gestures.get("user_qq:1") is None  # 已消费
@@ -92,57 +92,57 @@ class TestMatchSkillsGesture:
 
     async def test_stale_skill_injected(self) -> None:
         """闲置技能照常手势注入（闲置 ≠ 不可用）。"""
-        from agent.mind.recall import coordinator as recollection
+        from agent.mind.recall import inputs as recollection
         skill = _fake_skill("old-helper", state=SkillState.STALE)
         mind = _fake_mind({"old-helper": skill}, {"user_qq:1": ["old-helper"]})
-        msgs = await recollection._match_skills(mind, "hi", scope="user_qq:1")
+        msgs = await recollection.match_skills(mind, "hi", scope="user_qq:1")
         assert msgs and "old-helper 的完整正文" in msgs[0]["content"]
         mind.skill_store.restore.assert_not_called()  # 闲置无需恢复
         mind.skill_store.record_use.assert_called_once_with("old-helper")
 
     async def test_archived_skill_auto_restored(self) -> None:
         """已归档技能手势 = 最强恢复信号：自动 restore 后注入全文。"""
-        from agent.mind.recall import coordinator as recollection
+        from agent.mind.recall import inputs as recollection
         archived = _fake_skill("dusty-skill", state=SkillState.ARCHIVED)
         restored = _fake_skill("dusty-skill", state=SkillState.ACTIVE)
         mind = _fake_mind({"dusty-skill": archived}, {"user_qq:1": ["dusty-skill"]})
         mind.skill_store.restore = MagicMock(return_value=restored)
-        msgs = await recollection._match_skills(mind, "hi", scope="user_qq:1")
+        msgs = await recollection.match_skills(mind, "hi", scope="user_qq:1")
         assert msgs and "dusty-skill 的完整正文" in msgs[0]["content"]
         mind.skill_store.restore.assert_called_once_with("dusty-skill")
         mind.skill_store.record_use.assert_called_once_with("dusty-skill")
 
     async def test_archived_not_invocable_no_restore(self) -> None:
         """已归档且关闭手势的技能：拒绝注入，也不触发恢复。"""
-        from agent.mind.recall import coordinator as recollection
+        from agent.mind.recall import inputs as recollection
         skill = _fake_skill("internal-only", user_invocable=False,
                             state=SkillState.ARCHIVED)
         mind = _fake_mind({"internal-only": skill}, {"user_qq:1": ["internal-only"]})
-        msgs = await recollection._match_skills(mind, "hi", scope="user_qq:1")
+        msgs = await recollection.match_skills(mind, "hi", scope="user_qq:1")
         assert msgs == []
         mind.skill_store.restore.assert_not_called()
         mind.pfc.add_temporary.assert_not_called()
 
     async def test_not_found_writes_hint(self) -> None:
-        from agent.mind.recall import coordinator as recollection
+        from agent.mind.recall import inputs as recollection
         mind = _fake_mind({}, {"user_qq:1": ["ghost-skill"]})
-        msgs = await recollection._match_skills(mind, "hi", scope="user_qq:1")
+        msgs = await recollection.match_skills(mind, "hi", scope="user_qq:1")
         assert msgs == []
         mind.pfc.add_temporary.assert_called_once()
         hint = mind.pfc.add_temporary.call_args[0][0]
         assert "ghost-skill" in hint["content"] and "不存在" in hint["content"]
 
     async def test_user_invocable_false_skips(self) -> None:
-        from agent.mind.recall import coordinator as recollection
+        from agent.mind.recall import inputs as recollection
         skill = _fake_skill("internal-only", user_invocable=False)
         mind = _fake_mind({"internal-only": skill}, {"user_qq:1": ["internal-only"]})
-        msgs = await recollection._match_skills(mind, "hi", scope="user_qq:1")
+        msgs = await recollection.match_skills(mind, "hi", scope="user_qq:1")
         assert msgs == []
         # 被拒绝的手势不应写"不存在"提示（技能存在但关闭了手势）
         mind.pfc.add_temporary.assert_not_called()
 
     async def test_no_pending_no_change(self) -> None:
-        from agent.mind.recall import coordinator as recollection
+        from agent.mind.recall import inputs as recollection
         mind = _fake_mind({}, {})
-        msgs = await recollection._match_skills(mind, "hi", scope="user_qq:1")
+        msgs = await recollection.match_skills(mind, "hi", scope="user_qq:1")
         assert msgs == []

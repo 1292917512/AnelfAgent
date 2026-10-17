@@ -50,7 +50,7 @@ def _compressor() -> ContextCompressor:
         microcompact_chain_threshold=6,
         microcompact_keep_recent=2,
     )
-    return ContextCompressor(mind=None, config=config)
+    return ContextCompressor(model=None, config=config)
 
 
 class TestCollapseDupHints:

@@ -19,10 +19,10 @@ class _FakeMind:
         self._max_output = max_output
         self.summarize_text = AsyncMock(return_value="【摘要】早期对话要点")
 
-    def get_model_context_length(self) -> int:
+    def get_context_length(self) -> int:
         return self._context_length
 
-    def get_model_max_output(self) -> int:
+    def get_max_output(self) -> int:
         return self._max_output
 
 
@@ -589,14 +589,14 @@ class TestPrefixReuseSummary:
     """
 
     class _InvokeMind(_FakeMind):
-        """带 _invoke_llm_unified 的 Mind 替身，记录调用参数。"""
+        """带 invoke 的 Mind 替身，记录调用参数。"""
 
         def __init__(self, context_length: int = 10_000, content: str = "【前缀摘要】要点") -> None:
             super().__init__(context_length)
             self._content = content
             self.invoke_calls: list = []
 
-        async def _invoke_llm_unified(self, messages, tools, anything=None, **kwargs):
+        async def invoke(self, messages, tools, anything=None, **kwargs):
             self.invoke_calls.append({"messages": messages, "tools": tools, "kwargs": kwargs})
             from types import SimpleNamespace
             return SimpleNamespace(content=self._content)
@@ -665,7 +665,7 @@ class TestPrefixReuseSummary:
         async def _boom(*a, **k):
             raise RuntimeError("LLM 不可用")
 
-        mind._invoke_llm_unified = _boom
+        mind.invoke = _boom
         c = self._compressor(mind)
         base = [{"role": "system", "content": "sys"}] + _make_messages(10)
         tools = [{"type": "function", "function": {"name": "t1"}}]

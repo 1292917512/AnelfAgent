@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from typing import List
 
 import pytest
-from helpers.think_loop_fakes import FakeMind, FakePfc, run_think_loop, text_result, tool_result
+from helpers.think_loop_fakes import FakeMind, FakeModelInvoker, FakePfc, run_think_loop, text_result, tool_result
 
 from agent.llm.types import ImageContent, ToolCall
 from agent.messages import MessageUser
@@ -205,6 +205,23 @@ class _MergePfc(FakePfc):
         return []
 
 
+class _MergeModel(FakeModelInvoker):
+    async def invoke(self, messages, tools, anything=None, *, tool_choice=None, options=None,
+        stream=False, on_delta=None, purpose="reply", cache_tail_anchor=True,
+        abort_event=None, on_tool_call_ready=None):
+        self._mind.llm_calls += 1
+        self._mind.sent_messages.append(list(messages))
+        return SimpleNamespace(
+            content="",
+            tool_calls=[ToolCall(id="c1", name="end_reply", arguments="{}")],
+            reasoning_content="",
+            usage=None,
+            raw=None,
+            model="fake",
+        )
+
+
+
 class _MergeMind(FakeMind):
     """LLM 首轮即 end_reply 的 Mind 替身，conversation_data 为真实临时库。"""
 
@@ -215,6 +232,7 @@ class _MergeMind(FakeMind):
             tool_results={"end_reply": '{"ok": true, "action": "end_reply"}'},
         )
         self.conversation_data = conv_data
+        self.model_invoker = _MergeModel(self)
 
     def _resolve_adapter_key(self) -> str:
         return "test"
@@ -227,19 +245,6 @@ class _MergeMind(FakeMind):
     def _resolve_entity_scope(anything) -> str:
         return f"user_{anything.uid}" if anything else ""
 
-    async def _invoke_llm_unified(self, messages, tools, anything=None, *, tool_choice=None, options=None,
-        stream=False, on_delta=None, purpose="reply", cache_tail_anchor=True,
-        abort_event=None, on_tool_call_ready=None):
-        self.llm_calls += 1
-        self.sent_messages.append(list(messages))
-        return SimpleNamespace(
-            content="",
-            tool_calls=[ToolCall(id="c1", name="end_reply", arguments="{}")],
-            reasoning_content="",
-            usage=None,
-            raw=None,
-            model="fake",
-        )
 
 
 def _attach_pending_work(mind):
@@ -273,14 +278,15 @@ class TestThinkLoopMerge:
         monkeypatch.setattr("agent.channel.output_tools.guard_outbound", lambda *args: None)
         monkeypatch.setattr("agent.channel.output_tools.guard_empty_conversation", AsyncMock(return_value=None))
 
-        class CrossReplyMind(_MergeMind):
-            async def _invoke_llm_unified(self, *args, **kwargs):
-                result = await super()._invoke_llm_unified(*args, **kwargs)
+        class CrossReplyModel(_MergeModel):
+            async def invoke(self, *args, **kwargs):
+                result = await super().invoke(*args, **kwargs)
                 await execute_send_action(channel_id="qq", target_id="1", operation="消息",
                                           invoke=AsyncMock(return_value={"success": True}))
                 return result
 
-        mind = CrossReplyMind(conv_data)
+        mind = _MergeMind(conv_data)
+        mind.model_invoker = CrossReplyModel(mind)
         mind._resolve_entity_scope = lambda message: message.entity_scope
         mind._channel_snapshots = {}
         work = _attach_pending_work(mind)
@@ -361,13 +367,13 @@ class TestThinkLoopMerge:
         await conv_data.add_conversation_record_by_everything(current)
         baseline = await conv_data.get_conversation_record_by_everything(current)
 
-        class ConcurrentMind(_MergeMind):
-            async def _invoke_llm_unified(self, *args, **kwargs):
-                result = await super()._invoke_llm_unified(*args, **kwargs)
-                if self.llm_calls == 1:
+        class ConcurrentModel(_MergeModel):
+            async def invoke(self, *args, **kwargs):
+                result = await super().invoke(*args, **kwargs)
+                if self._mind.llm_calls == 1:
                     incoming = MessageUser(uid="1", adapter_key="qq", text_content="QQ 更新了要求")
                     await conv_data.add_conversation_record_by_everything(incoming)
-                    await self.pfc.add_task(incoming)
+                    await self._mind.pfc.add_task(incoming)
                     await conv_data.router.append(StorageDomain.CONVERSATION,
                         scope_type="user", scope_id="qq:1", role="assistant", content="QQ 已收到进度")
                     await conv_data.router.append(StorageDomain.CONVERSATION,
@@ -378,7 +384,8 @@ class TestThinkLoopMerge:
                     return tool_result("", ["recall"])
                 return result
 
-        mind = ConcurrentMind(conv_data)
+        mind = _MergeMind(conv_data)
+        mind.model_invoker = ConcurrentModel(mind)
         _attach_pending_work(mind)
         mind._channel_snapshots = {}
         mind._resolve_entity_scope = lambda anything: anything.entity_scope if anything else ""
@@ -433,16 +440,17 @@ class TestThinkLoopMerge:
         await conv_data.add_conversation_record_by_everything(message)
         baseline = await conv_data.get_conversation_record_by_everything(message)
 
-        class InterjectedMind(_MergeMind):
-            async def _invoke_llm_unified(self, *args, **kwargs):
-                result = await super()._invoke_llm_unified(*args, **kwargs)
-                if self.llm_calls == 1:
+        class InterjectedModel(_MergeModel):
+            async def invoke(self, *args, **kwargs):
+                result = await super().invoke(*args, **kwargs)
+                if self._mind.llm_calls == 1:
                     await conv_data.router.append(StorageDomain.CONVERSATION,
                         scope_type="user", scope_id="1", role="user", content="还有一件事")
                     return text_result("已完成前一项。")
                 return result
 
-        mind = InterjectedMind(conv_data)
+        mind = _MergeMind(conv_data)
+        mind.model_invoker = InterjectedModel(mind)
         await run_think_loop(mind, anything=message, base_messages=baseline)
         assert mind.llm_calls == 2
         assert "还有一件事" in [m.get("content") for m in mind.sent_messages[1]]

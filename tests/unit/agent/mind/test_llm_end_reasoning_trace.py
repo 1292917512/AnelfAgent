@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 from agent.llm.llm_client import LLMClient
 from agent.llm.types import ChatResult, UsageInfo
-from agent.mind.llm_invoker import _REASONING_TRACE_MAX, _invoke_llm_unified
+from agent.mind.llm_invoker import _REASONING_TRACE_MAX, ModelInvoker
 from core.event_bus import EVENT_THINKING_LLM_END, EVENT_THINKING_LLM_START, event_bus
 from core.tool_context import tool_request
 
@@ -25,22 +25,24 @@ def _result(reasoning: str) -> ChatResult:
     )
 
 
-def _mind_stub(result: ChatResult) -> SimpleNamespace:
+def _invoker(result: ChatResult) -> ModelInvoker:
     client = object.__new__(LLMClient)
     client.config = SimpleNamespace(model="fake", name="fake", litellm_model="", api_type="")
 
     async def _chat(messages, tools, **kwargs):
         return result
 
-    return SimpleNamespace(
+    mind = SimpleNamespace(
         llm=client,
         session_llm_params={},
-        _llm_chat_with_retry=_chat,
-        get_model_context_length=lambda: 128000,
         _get_mind_config=lambda: SimpleNamespace(
             reasoning_effort=None, llm_timeout=30, log_ai_output=False,
         ),
     )
+    invoker = ModelInvoker(mind)
+    invoker.chat_with_retry = _chat
+    invoker.get_context_length = lambda: 128000
+    return invoker
 
 
 async def _capture(result: ChatResult) -> dict:
@@ -56,7 +58,7 @@ async def _capture(result: ChatResult) -> dict:
     event_bus.on(EVENT_THINKING_LLM_END, _on_end, owner="test:reasoning-trace")
     event_bus.on(EVENT_THINKING_LLM_START, _on_start, owner="test:reasoning-trace")
     try:
-        await _invoke_llm_unified(_mind_stub(result), [{"role": "user", "content": "hi"}], None)
+        await _invoker(result).invoke( [{"role": "user", "content": "hi"}], None)
     finally:
         event_bus.off_by_owner("test:reasoning-trace")
     assert seen, "LLM_END 事件未发射"
@@ -83,7 +85,7 @@ class TestReasoningTracePayload:
         event_bus.on(EVENT_THINKING_LLM_END, capture, owner="test:hook-snapshot")
         try:
             async with thinking_session({"scope": "user_qq:1"}):
-                await _invoke_llm_unified(_mind_stub(_result("thought")), messages, tools)
+                await _invoker(_result("thought")).invoke( messages, tools)
             assert seen[-1]["messages"] == messages
             assert seen[-1]["tools"] == tools
             session = next(iter(tracer._sessions.values()))

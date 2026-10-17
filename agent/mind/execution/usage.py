@@ -26,7 +26,7 @@ async def _emit_context_usage(ctx: ExecutionContext, state: RoundState) -> None:
         _tokens = state.last_input_tokens or compressor.estimate_tokens(
             ctx.base_messages + ctx.tool_chain)
         _threshold = compressor.threshold_tokens()
-        _window = mind.get_model_context_length()
+        _window = mind.model_invoker.get_context_length()
         from agent.mind.think_session import ContextUsage, current_context_usage
         current_context_usage.set(ContextUsage(context_window=_window, tokens_used=_tokens))
         if _threshold > 0:
@@ -75,7 +75,7 @@ def _token_budget_hint(ctx: ExecutionContext, state: RoundState) -> str:
         if not get_config_bool("token_budget_reminder_enabled", True):
             return ""
         threshold = compressor.threshold_tokens()
-        window = mind.get_model_context_length()
+        window = mind.model_invoker.get_context_length()
         if threshold <= 0 or window <= 0:
             return ""
         tokens = state.last_input_tokens or compressor.estimate_tokens(

@@ -391,7 +391,7 @@ class ChatService:
                 "当时在尝试什么、进行到哪一步。只输出概括本身，不要评价。\n\n" + material
             )
             try:
-                summary = (await rt.mind.summarize_text(prompt)).strip()
+                summary = (await rt.mind.model_invoker.summarize_text(prompt)).strip()
             except Exception as exc:
                 log(f"换向折叠摘要生成失败，降级确定性摘要: {exc}", "DEBUG", tag="聊天")
         if not summary:

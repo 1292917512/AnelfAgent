@@ -792,7 +792,7 @@ class LLMManager(BaseEntity):
         purpose 标记调用用途（guardian/summarize/skill_review 等）：成功结果的
         usage 记入缓存命中统计与 scope 成本账本，内部辅助调用与主对话同口径。
         record_usage=False 用于调用方自行记账的场景（主对话路径的记账权威是
-        _invoke_llm_unified——其 scope 解析链覆盖消息实体维度，本层只有
+        ModelInvoker.invoke——其 scope 解析链覆盖消息实体维度，本层只有
         ContextVar 维度，双写会导致缓存统计与成本账本全部翻倍）。
 
         stream=True 走流式通道：空闲窗口（客户端超时配置）内无任何新片段才判
@@ -890,7 +890,7 @@ class LLMManager(BaseEntity):
     def _record_internal_usage(result: ChatResult, client: LLMClient, purpose: str) -> None:
         """把内部辅助调用的 usage 记入缓存命中统计与 scope 成本账本（fail-open）。
 
-        与 _invoke_llm_unified 的主对话记账同口径；agent.llm 不顶层依赖
+        与 ModelInvoker.invoke 的主对话记账同口径；agent.llm 不顶层依赖
         agent.mind（避免循环引用），此处延迟导入。
         """
         if not result.usage:

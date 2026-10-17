@@ -278,8 +278,8 @@ class _RewriteOutcome(NamedTuple):
 class ContextCompressor:
     """上下文压缩器：检测溢出并压缩中间轮次。"""
 
-    def __init__(self, mind: CompressionHost, config: Optional[CompressionConfig] = None) -> None:
-        self._mind = mind
+    def __init__(self, model: CompressionHost, config: Optional[CompressionConfig] = None) -> None:
+        self._model = model
         # 显式注入（测试）时固化；默认 None 时 config 属性每次访问动态读取，
         # 配置中心保存即热生效，无需重启
         self._config_override = config
@@ -478,10 +478,10 @@ class ContextCompressor:
 
     def threshold_tokens(self) -> int:
         """计算压缩触发阈值（输出预留从窗口扣除，小窗口退化 85%）。"""
-        context_length = self._mind.get_model_context_length()
+        context_length = self._model.get_context_length()
         if context_length <= 0:
             return 0
-        output_budget = self._mind.get_model_max_output()
+        output_budget = self._model.get_max_output()
         effective = context_length - min(output_budget, context_length // 4)
         threshold = int(effective * self.config.threshold_percent)
         if context_length <= _SMALL_WINDOW_TOKENS and threshold >= effective * 0.9:
@@ -943,7 +943,7 @@ class ContextCompressor:
                 )
 
         if summarizer is None:
-            summarizer = getattr(self._mind, "summarize_text", None)
+            summarizer = getattr(self._model, "summarize_text", None)
         if summarizer is None:
             # LLM 摘要不可用：直接走确定性拼接（docstring 声明的回退语义）
             fallback = self._fallback_summary(middle)
@@ -1004,7 +1004,7 @@ class ContextCompressor:
 
         与 dsh summarizer 的关键对齐：保留会话自身的 system/tools/消息前缀，
         摘要调用即上一次真实请求的字节级前缀扩展，供应商 KV 缓存被复用而非
-        失效；唯一的新增输入是末尾的压缩指令。经 _invoke_llm_unified 走
+        失效；唯一的新增输入是末尾的压缩指令。经 ModelInvoker.invoke 走
         decorate_messages（断点按 _layer 锚点放置）+ normalize_for_send
         （剥离 _layer）+ purpose="compress" 分桶统计。
 
@@ -1016,10 +1016,10 @@ class ContextCompressor:
             Exception: LLM 调用失败（mind 未就绪/网络/模型异常），
             由 _summarize 捕获并回退文本渲染路径。
         """
-        mind = self._mind
-        invoke = getattr(mind, "_invoke_llm_unified", None)
+        model = self._model
+        invoke = getattr(model, "invoke", None)
         if invoke is None:
-            raise RuntimeError("mind 不支持 _invoke_llm_unified")
+            raise RuntimeError("模型调用器不支持 invoke")
         directive = {
             "role": "user",
             "content": _SUMMARY_DIRECTIVE.format(

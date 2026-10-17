@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from agent.delegation.delegate_tool import delegate_task, delegation_manager_port
@@ -35,9 +36,8 @@ class _FakeMind:
     def __init__(self, output: str = "子任务完成") -> None:
         self.reflect = AsyncMock(return_value=output)
         self.llm_manager: _StubLLMManager | None = None
+        self.model_invoker = SimpleNamespace(get_context_length=lambda: 128000)
 
-    def get_model_context_length(self) -> int:
-        return 128_000
 
 
 def _make_manager(profiles=None, tiers=None) -> tuple[DelegationManager, _StubLLMManager]:

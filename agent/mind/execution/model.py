@@ -52,7 +52,7 @@ async def _invoke_llm_round(
     mind = ctx.mind
     on_tool_call_ready = early_runner.submit if early_runner is not None else None
     try:
-        return await mind._invoke_llm_unified(
+        return await mind.model_invoker.invoke(
             llm_messages, ctx.active_tools or None, ctx.anything,
             tool_choice="required" if require_tools else None,
             options=ctx.options,

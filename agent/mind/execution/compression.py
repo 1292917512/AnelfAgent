@@ -94,7 +94,7 @@ async def _compress_context(
         new_base, new_chain = await mind.compressor.compress_messages(
             base_messages, tool_chain,
             scope=scope,
-            summarizer=mind.summarize_text,
+            summarizer=mind.model_invoker.summarize_text,
             tools=tools,
         )
     except Exception as exc:

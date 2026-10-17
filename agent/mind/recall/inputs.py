@@ -8,12 +8,14 @@ Token 影响：复用检索计划和查询向量，减少判断输入，不增�
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 from agent.context.inputs import RecollectionInputs
 from agent.judgment.evidence import dialogue_messages
 from agent.memory.memory_retriever import MemoryRetriever
 from agent.memory.recall_policy import current_recall_policy
+from agent.mind.cross_channel import recall_cross_channel
+from agent.mind.recall.scopes import extract_related_scopes, extract_scopes_from_anything
 from core.hooks import HookMode, hook_execution
 from core.log import log
 
@@ -33,9 +35,9 @@ async def collect_recollection_inputs(
     policy = current_recall_policy(scope)
     trivial = MemoryRetriever._is_trivial_turn(tail)
     query = MemoryRetriever._extract_query(tail) if not lean and not trivial and policy.level == "deep" else ""
-    related = mind._extract_related_scopes(conversation[-30:], scope)
+    related = extract_related_scopes(conversation[-30:], scope)
     if anything:
-        for item in mind._extract_scopes_from_anything(anything, scope):
+        for item in extract_scopes_from_anything(anything, scope):
             if item not in related:
                 related.insert(0, item)
     scopes = ([scope] if scope else []) + [item for item in related if item != scope]
@@ -69,8 +71,8 @@ async def collect_recollection_inputs(
 
     async def skills() -> None:
         planned_queries = await asyncio.shield(plan_ready)
-        result.skills = await mind._match_skills(
-            query, query_vec_task=vector_task, scope=scope, planned_queries=planned_queries)
+        result.skills = await match_skills(
+            mind, query, query_vec_task=vector_task, scope=scope, planned_queries=planned_queries)
 
     async def relations() -> None:
         if mind.retriever and not policy.tags and policy.level not in {"off", "tags"}:
@@ -90,8 +92,8 @@ async def collect_recollection_inputs(
                     if tags.get("channel") == adapter and tags.get("uid") not in (None, "0", ""):
                         user_scope = build_entity_scope("user", adapter, tags["uid"])
                         break
-            result.cross_channel = await mind._recall_cross_channel(
-                conversation, scope, user_scope=user_scope, query_vec_task=vector_task)
+            result.cross_channel = await recall_cross_channel(
+                mind, conversation, scope, user_scope=user_scope, query_vec_task=vector_task)
 
     async def pins() -> None:
         if mind.retriever is not None:
@@ -170,3 +172,23 @@ async def collect_recollection_inputs(
             if scope:
                 tasks.create_task(repeat_hint())
     return result
+
+
+async def match_skills(
+        mind: "Mind",
+        base_query: str,
+        *,
+        query_vec: Optional[List[float]] = None,
+        query_vec_task: asyncio.Future[list[float] | None] | None = None,
+        scope: str = "",
+        planned_queries: Optional[List[str]] = None,
+) -> List[Dict]:
+    """消费本会话的技能手势，交给技能系统匹配与生成召回材料。"""
+    if not mind._skills_enabled():
+        return []
+    from agent.skills.recall import match_recalled_skills
+    gestures = mind._pending_skill_gestures.pop(scope, []) if scope else []
+    return await match_recalled_skills(
+        mind.skill_store, mind.skill_matcher, gestures, mind.pfc.add_temporary, base_query,
+        query_vec=query_vec, query_vec_task=query_vec_task, scope=scope, planned_queries=planned_queries,
+    )

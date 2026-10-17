@@ -65,7 +65,7 @@ async def prewarm_scope_cache(
         llm_client.config.litellm_model or "",
         getattr(llm_client.config, "api_type", "") or "",
     ))
-    # 发送边界统一规整：与 _invoke_llm_unified 一致（decorate 之后 normalize），
+    # 发送边界统一规整：与 ModelInvoker.invoke 一致（decorate 之后 normalize），
     # 剥离 _layer 标签——缺此步会把内部分类标签泄露给供应商（潜在 400）
     messages = normalize_for_send(messages)
     # tools 数组是请求最前段，必须与真实调用一致（缺它前缀从第 0 字节就不匹配）

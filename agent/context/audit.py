@@ -1,6 +1,6 @@
 """请求级全量审计日志（参考 Mini-Agent logger：每次请求完整落盘可回放）。
 
-在唯一发送点 Mind._invoke_llm_unified 挂钩：每次 LLM 调用把规整后最终发送的
+在唯一发送点 ModelInvoker.invoke 挂钩：每次 LLM 调用把规整后最终发送的
 messages、工具清单、响应（内容/推理/工具调用/usage）、耗时与异常以 JSONL
 追加到日轮转文件，供"模型为什么忘了 X / 为什么这样回"类上下文问题回放定位。
 

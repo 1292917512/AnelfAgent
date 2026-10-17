@@ -83,8 +83,8 @@ class ToolResultPipeline:
     ) -> None:
         self._guardrail = guardrail
         context_length = (
-            mind.get_model_context_length()
-            if hasattr(mind, "get_model_context_length") else 0
+            mind.model_invoker.get_context_length()
+            if hasattr(mind, "model_invoker") else 0
         )
         self._budget: Optional[ResultBudget] = (
             budget_for_context_window(context_length) if context_length > 0 else None

@@ -454,7 +454,7 @@ async def test_record_usage_disabled_skips(
     """record_usage=False：调用方自行记账（主对话路径），管理器侧不双写。
 
     回归：主对话每次 LLM 调用曾在缓存命中统计与 scope 成本账本中各记两次
-    （管理器默认 kind=internal 一次 + _invoke_llm_unified 按真实 purpose 一次）。
+    （管理器默认 kind=internal 一次 + invoke 按真实 purpose 一次）。
     """
     manager = LLMManager(str(tmp_path / "llm.json"))
     primary = _client("primary")

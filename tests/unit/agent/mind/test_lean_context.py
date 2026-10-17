@@ -10,7 +10,8 @@ import pytest
 
 from agent.context.preparation import ContextPreparation
 from agent.memory.memory_retriever import MemoryRetriever
-from agent.mind.recall import coordinator as recollection
+from agent.mind.mind import Mind
+from agent.mind.recall import inputs as recall_inputs
 from agent.mind.recall.inputs import collect_recollection_inputs
 
 
@@ -96,28 +97,28 @@ class TestLeanRecollection:
     def test_short_queries_are_not_treated_as_greetings(self, query: str) -> None:
         assert not MemoryRetriever._is_trivial_turn([{"role": "user", "content": query}])
 
-    async def test_greeting_skips_network_recall_but_keeps_profiles_and_gestures(self) -> None:
+    async def test_greeting_skips_network_recall_but_keeps_profiles_and_gestures(self, monkeypatch) -> None:
         mind = _fake_mind()
         mind.embedder = SN(embed_query=AsyncMock())
         mind.retriever.recall_split = AsyncMock(return_value=([{"content": "画像"}], []))
         mind.retriever.load_relation_snippets = AsyncMock(return_value=[])
-        mind._extract_related_scopes = lambda *args: []
-        mind._recall_cross_channel = AsyncMock()
-        mind._match_skills = AsyncMock(return_value=[{"content": "手势技能"}])
+        monkeypatch.setattr(recall_inputs, "extract_related_scopes", lambda *args: [])
+        monkeypatch.setattr(recall_inputs, "recall_cross_channel", AsyncMock())
+        monkeypatch.setattr(recall_inputs, "match_skills", AsyncMock(return_value=[{"content": "手势技能"}]))
         mind._get_models_summary = lambda: "models"
         mind.context.preparation.build_layers = AsyncMock(return_value=("p", "t", "c", True, True, True, "", ""))
         mind.context.build_llm_context = AsyncMock(return_value=[])
-        await recollection.get_recollection(mind, [
+        await Mind.get_recollection(mind, [
             {"role": "user", "content": "请记住详细的项目信息"},
             {"role": "user", "content": "[channel:qq]谢谢！"},
         ])
         mind.embedder.embed_query.assert_not_called()
-        mind._recall_cross_channel.assert_not_called()
+        recall_inputs.recall_cross_channel.assert_not_called()
         mind.retriever.recall_split.assert_awaited_once()
-        assert mind._match_skills.call_args.args == ("",)
+        assert recall_inputs.match_skills.call_args.args == (mind, "",)
         assert mind.context.build_llm_context.call_args.kwargs["memory_msgs"] == [{"content": "手势技能"}]
 
-    async def test_lean_skips_all_recall_paths(self) -> None:
+    async def test_lean_skips_all_recall_paths(self, monkeypatch) -> None:
         """lean 的 get_recollection：不 embed、不召回，环境注入位全空。"""
         mind = _fake_mind("永久")
         mind.embedder = SN(
@@ -127,7 +128,7 @@ class TestLeanRecollection:
             side_effect=AssertionError("lean 不应召回")
         )
         mind._get_models_summary = lambda: "models"
-        mind._extract_related_scopes = lambda conv, scope: []
+        monkeypatch.setattr(recall_inputs, "extract_related_scopes", lambda conv, scope: [])
         mind.context.preparation.build_layers = AsyncMock(
             return_value=("p", "t", "c", True, True, True, "", "")
         )
@@ -135,7 +136,7 @@ class TestLeanRecollection:
             return_value=[{"role": "system", "content": "x"}]
         )
 
-        msgs = await recollection.get_recollection(mind, [], None, lean=True)
+        msgs = await Mind.get_recollection(mind, [], None, lean=True)
 
         assert msgs == [{"role": "system", "content": "x"}]
         kwargs = mind.context.build_llm_context.call_args.kwargs
@@ -167,14 +168,14 @@ async def test_context_reads_overlap_and_skills_only_wait_for_plan(monkeypatch, 
         await release_memory.wait()
         return [{"content": "画像"}], [{"content": "记忆"}]
 
-    async def skills(query, *, query_vec_task, planned_queries, **kwargs):
+    async def skills(_mind, query, *, query_vec_task, planned_queries, **kwargs):
         assert "internal" not in query
         assert planned_queries == ["复用计划"]
         assert await query_vec_task == [1.0]
         started["skills"].set()
         return [{"content": "技能"}]
 
-    async def cross(*args, query_vec_task, user_scope):
+    async def cross(_mind, *args, query_vec_task, user_scope):
         assert args[0] == [{"role": "user", "content": query}]
         assert user_scope == "user_qq:1"
         assert await asyncio.shield(query_vec_task) == [1.0]
@@ -189,10 +190,10 @@ async def test_context_reads_overlap_and_skills_only_wait_for_plan(monkeypatch, 
     mind.embedder = SN(embed_query=AsyncMock(side_effect=embed))
     mind.retriever.recall_split = recall
     mind.retriever.load_relation_snippets = lambda scopes: read("relations", [{"content": "关系"}])
-    mind._extract_related_scopes = lambda *args: []
-    mind._extract_scopes_from_anything = lambda *args: []
-    mind._match_skills = skills
-    mind._recall_cross_channel = cross
+    monkeypatch.setattr(recall_inputs, "extract_related_scopes", lambda *args: [])
+    monkeypatch.setattr(recall_inputs, "extract_scopes_from_anything", lambda *args: [])
+    monkeypatch.setattr(recall_inputs, "match_skills", skills)
+    monkeypatch.setattr(recall_inputs, "recall_cross_channel", cross)
     mind.memory_store = object()
     mind.conversation_data = SN(get_conversation_summary=lambda anything: read("summary", {"summary": "摘要"}))
     monkeypatch.setattr("agent.memory.hub.load_hub_block", lambda store: read("hub", "主标签"))
@@ -256,9 +257,9 @@ async def test_context_exit_drains_sibling_reads(monkeypatch, fail) -> None:
     mind.embedder = SN(embed_query=lambda query: wait("embed"))
     mind.retriever.recall_split = recall
     mind.retriever.load_relation_snippets = lambda *args: wait("relations")
-    mind._extract_related_scopes = lambda *args: []
-    mind._recall_cross_channel = AsyncMock(return_value=[])
-    mind._match_skills = lambda *args, **kwargs: wait("skills")
+    monkeypatch.setattr(recall_inputs, "extract_related_scopes", lambda *args: [])
+    monkeypatch.setattr(recall_inputs, "recall_cross_channel", AsyncMock(return_value=[]))
+    monkeypatch.setattr(recall_inputs, "match_skills", lambda *args, **kwargs: wait("skills"))
     mind.memory_store = object()
     monkeypatch.setattr("agent.memory.hub.load_hub_block", hub)
     monkeypatch.setattr("agent.memory.self_profile.load_self_profile", AsyncMock(return_value=None))

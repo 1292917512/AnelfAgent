@@ -10,7 +10,7 @@ import pytest
 
 from agent.memory.memory_retriever import MemoryRetriever
 from agent.memory.memory_types import RetrievalPlan
-from agent.mind.recall import coordinator as recollection
+from agent.mind.recall import inputs as recollection
 from agent.skills.skill_store import Skill, SkillState
 
 
@@ -80,7 +80,7 @@ async def test_plan_ready_empty_when_no_query(store) -> None:
 
 
 # ==================================================================
-# _match_skills 的车道拼接与归档渲染
+# match_skills 的车道拼接与归档渲染
 # ==================================================================
 
 def _fake_skill(name: str, state: SkillState = SkillState.ACTIVE) -> Skill:
@@ -118,7 +118,7 @@ class TestMatchSkillsLanes:
         """规划查询拼成后续车道：基查询去重、总量上限 3 条。"""
         captured: dict = {}
         mind = _mind_with_matcher(captured=captured)
-        await recollection._match_skills(
+        await recollection.match_skills(
             mind, "基查询", query_vec=[0.1, 0.2],
             planned_queries=["基查询", "规划乙", "规划丙", "规划丁"],
         )
@@ -130,7 +130,7 @@ class TestMatchSkillsLanes:
         """基查询为空时车道 = 规划查询（无预计算向量照配首车道语义）。"""
         captured: dict = {}
         mind = _mind_with_matcher(captured=captured)
-        await recollection._match_skills(mind, "", planned_queries=["规划乙"])
+        await recollection.match_skills(mind, "", planned_queries=["规划乙"])
         assert captured["queries"] == ["规划乙"]
 
     @pytest.mark.asyncio
@@ -138,7 +138,7 @@ class TestMatchSkillsLanes:
         """无任何查询文本时不调用匹配器（空车道无意义）。"""
         captured: dict = {}
         mind = _mind_with_matcher(captured=captured)
-        msgs = await recollection._match_skills(mind, "", planned_queries=[])
+        msgs = await recollection.match_skills(mind, "", planned_queries=[])
         assert msgs == [] and "queries" not in captured
 
 
@@ -149,7 +149,7 @@ class TestMatchSkillsArchivedRendering:
         archived = _fake_skill("dusty-skill", state=SkillState.ARCHIVED)
         active = _fake_skill("fresh-skill", state=SkillState.ACTIVE)
         mind = _mind_with_matcher(matched=[(archived, 0.6), (active, 0.5)])
-        msgs = await recollection._match_skills(mind, "查询")
+        msgs = await recollection.match_skills(mind, "查询")
         assert msgs
         content = msgs[0]["content"]
         assert "## dusty-skill【已归档】" in content
@@ -161,5 +161,5 @@ class TestMatchSkillsArchivedRendering:
     async def test_no_archived_no_hint(self) -> None:
         """无归档命中时块尾不加恢复指引（零噪音）。"""
         mind = _mind_with_matcher(matched=[(_fake_skill("fresh-skill"), 0.5)])
-        msgs = await recollection._match_skills(mind, "查询")
+        msgs = await recollection.match_skills(mind, "查询")
         assert msgs and "restore_skill" not in msgs[0]["content"]

@@ -231,7 +231,7 @@ async def test_real_think_loop_keeps_message_order_and_adds_recall_only_to_next_
     mind.retriever = object()
     anything.entity_scope = SCOPE
     prefix = [{"role": "system", "content": "STABLE_PREFIX", "_layer": "stable"}, *dialogue("讨论办公室网络配置")]
-    original_invoke = mind._invoke_llm_unified
+    original_invoke = mind.model_invoker.invoke
 
     async def fetch(mind, anything, since_ts, since_id=0):
         return [{"id": 50, "ts_ns": 9_000_000_000_000_000_000, "role": "user", "content": "也请检查备份保留的时间"}] if mind.llm_calls >= 1 and since_id < 50 else []
@@ -245,7 +245,7 @@ async def test_real_think_loop_keeps_message_order_and_adds_recall_only_to_next_
         return result
 
     monkeypatch.setattr(messages, "_fetch_new_messages", fetch)
-    monkeypatch.setattr(mind, "_invoke_llm_unified", invoke)
+    monkeypatch.setattr(mind.model_invoker, "invoke", invoke)
     token = bind_scope(SCOPE)
     try:
         await run_think_loop(mind, anything=anything, base_messages=prefix)

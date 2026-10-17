@@ -1208,7 +1208,7 @@ class DelegationManager:
 
     def _summary_char_budget(self, n_summaries: int) -> int:
         """每个子任务摘要的字符预算（父上下文剩余空间均分）。"""
-        context_length = self._mind.get_model_context_length()
+        context_length = self._mind.model_invoker.get_context_length()
         if context_length <= 0:
             return _MAX_SUMMARY_CHARS
         headroom_chars = context_length * _CHARS_PER_TOKEN

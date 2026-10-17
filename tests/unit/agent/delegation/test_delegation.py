@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -25,9 +26,8 @@ class _FakeMind:
     def __init__(self, output: str = "子任务完成报告") -> None:
         self.reflect = AsyncMock(return_value=output)
         self.pfc = type("PFC", (), {"add_temporary": lambda self, clip, scope="": None})()
+        self.model_invoker = SimpleNamespace(get_context_length=lambda: 128000)
 
-    def get_model_context_length(self) -> int:
-        return 128_000
 
 
 @pytest.fixture

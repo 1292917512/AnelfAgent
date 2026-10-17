@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock
 import pytest
 from helpers.think_loop_fakes import (
     FakeMind,
+    FakeModelInvoker,
     end_reply_result,
     run_think_loop,
     text_result,
@@ -305,6 +306,19 @@ class TestBackgroundTaskRegistry:
 # think_loop 挂起点测试
 # ==================================================================
 
+class _WaitModel(FakeModelInvoker):
+    async def invoke(self, messages, tools, anything=None, *, tool_choice=None, options=None,
+        stream=False, on_delta=None, purpose="reply", cache_tail_anchor=True,
+        abort_event=None, on_tool_call_ready=None):
+        self._mind.llm_calls += 1
+        if self._mind.llm_calls == 1:
+            return text_result(self._mind._wait_text)
+        if self._mind._queue:
+            return self._mind._queue.pop(0)
+        return end_reply_result()
+
+
+
 class _WaitMind(FakeMind):
     """Mind 替身：首轮输出等待意图文本，之后按队列返回结果。"""
 
@@ -318,16 +332,8 @@ class _WaitMind(FakeMind):
         self.interrupts = None
         self._wait_text = wait_text
         self._queue: List = []
+        self.model_invoker = _WaitModel(self)
 
-    async def _invoke_llm_unified(self, messages, tools, anything=None, *, tool_choice=None, options=None,
-        stream=False, on_delta=None, purpose="reply", cache_tail_anchor=True,
-        abort_event=None, on_tool_call_ready=None):
-        self.llm_calls += 1
-        if self.llm_calls == 1:
-            return text_result(self._wait_text)
-        if self._queue:
-            return self._queue.pop(0)
-        return end_reply_result()
 
 
 _SEND_MESSAGE_TOOL = [{"type": "function", "function": {"name": "send_message"}}]
@@ -457,7 +463,7 @@ class TestReflectGuards:
         mind = _WaitMind()
         mind.llm = SimpleNamespace(config=SimpleNamespace(supports_forced_tool_choice=False))
         seen: List[str] = []
-        original = mind._invoke_llm_unified
+        original = mind.model_invoker.invoke
 
         async def spy(messages, tools, anything=None, *, tool_choice=None, options=None,
                       stream=False, on_delta=None, purpose="reply", **kwargs):
@@ -467,7 +473,7 @@ class TestReflectGuards:
                 stream=stream, on_delta=on_delta, purpose=purpose, **kwargs,
             )
 
-        mind._invoke_llm_unified = spy
+        mind.model_invoker.invoke = spy
         await run_think_loop(
             mind, mode=ThinkMode.REFLECT, safety_limit=2,
             tools=[{"type": "function", "function": {"name": "recall"}}],
@@ -496,11 +502,12 @@ class _DelegationMind:
             set_adapter_key=lambda scope, key: None,
             get_adapter_key=lambda scope: "test",
         )
-        # 镜像 Mind._on_bg_task_unclaimed：轮外完成经回调排入回复队列并触发新一轮
-        self.background_tasks.set_unclaimed_callback(self._on_bg_task_unclaimed)
+        # 镜像 on_task_unclaimed：轮外完成经回调排入回复队列并触发新一轮
+        self.background_tasks.set_unclaimed_callback(self.on_task_unclaimed)
+        self.model_invoker = SimpleNamespace(get_context_length=lambda: 128000)
 
-    def _on_bg_task_unclaimed(self, scope: str, description: str, summary: str, success: bool = True):
-        # 镜像 Mind._on_bg_task_unclaimed（async 版）：返回协程由 registry
+    def on_task_unclaimed(self, scope: str, description: str, summary: str, success: bool = True):
+        # 镜像 on_task_unclaimed（async 版）：返回协程由 registry
         # 在主循环 ensure_future——历史写入完成后才入队触发
         async def _notify() -> None:
             from agent.mind.tools.scheduler import enqueue_scope_reply
@@ -511,8 +518,6 @@ class _DelegationMind:
             asyncio.create_task(self.try_execute_mind())
         return _notify()
 
-    def get_model_context_length(self) -> int:
-        return 128_000
 
 
 class TestDelegationBackgroundIntegration:

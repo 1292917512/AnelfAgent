@@ -1,7 +1,6 @@
 """Mind 自主循环块：态势收集 → 元决策 → 分发执行 → 动态工具收尾。
 
-函数以 mind 实例为第一参数（与 agent.mind.tools.* 同风格），
-Mind 类持有一行薄委托，调用方签名零变化。
+按态势、决策、分发和收尾组织函数；内部步骤直接调用所属模块。
 
 模型可见：元决策召回围绕最早待处理会话，其他会话仍以独立待办呈现。
 Token：不拼接多个会话生成混合召回查询。
@@ -33,6 +32,9 @@ from agent.mind.autonomous import (
     build_meta_decision_messages,
     parse_decisions_from_tool_calls,
 )
+from agent.mind.cross_channel import collect_channel_info
+from agent.mind.decisions import execute_decision
+from agent.planning.situation import active_goal_lines
 from core.event_bus import (
     EVENT_THINKING_DECISION,
     EVENT_THINKING_SITUATION,
@@ -45,10 +47,12 @@ if TYPE_CHECKING:
     from agent.mind.mind import Mind
 
 
-# 反思域决策回执行行前缀：这些行由决策执行器写回心跳日志，回喂元决策态势
-# 会形成自指循环（元决策读到「反思已登记/反思完成」历史 → 强化同类判定 →
-# 再触发反思，2026-09「对话质量下滑」连爆事故的燃料）；「距上次反思」时间
-# 锚点与登记侧冷却已覆盖其信息价值，态势注入前剥离
+_DEFERRED_DECISIONS = frozenset({
+    DecisionType.REFLECT, DecisionType.REMEMBER,
+    DecisionType.PLAN, DecisionType.SELF_TASK,
+})
+
+# 反思回执不回喂元决策，避免历史回执反复触发同类决策。
 _DECISION_ECHO_PREFIXES = ("反思已登记", "反思完成", "反思登记被冷却拒绝")
 
 
@@ -61,7 +65,7 @@ def _strip_decision_echo(text: str) -> str:
     return "\n".join(kept).strip()
 
 
-async def _cycle_body(mind: "Mind", end_payload: Dict[str, Any], *, is_heartbeat: bool = False) -> None:
+async def run_cycle(mind: "Mind", end_payload: Dict[str, Any], *, is_heartbeat: bool = False) -> None:
     """自主循环主体（会话生命周期由 _autonomous_cycle 管理）。"""
 
     if is_heartbeat:
@@ -69,7 +73,7 @@ async def _cycle_body(mind: "Mind", end_payload: Dict[str, Any], *, is_heartbeat
         if not mind._heartbeat_running:
             mind._heartbeat_running = True
             from core.async_helper import spawn
-            spawn(mind._run_heartbeat_tick_bg(), name="mind.heartbeat.tick")
+            spawn(run_heartbeat_tick(mind), name="mind.heartbeat.tick")
 
     # 廉价前置判断：仅检查队列是否有待处理项，命中 fast-path 时跳过昂贵的 memory/goals 查询
     cheap_pending = mind.pfc.peek_all_tasks()
@@ -90,7 +94,7 @@ async def _cycle_body(mind: "Mind", end_payload: Dict[str, Any], *, is_heartbeat
     ]
     if direct:
         log(f"channel fast-path: {len(direct)} direct replies (no meta-decision)", tag="思维")
-        await _execute_decisions_and_finalize(
+        await execute_decisions(
             mind, end_payload, SituationContext(pending_messages=direct),
             [Decision(type=DecisionType.REPLY, target=pm.scope, priority=10) for pm in direct],
             is_heartbeat=is_heartbeat, consume_general_tasks=False,
@@ -101,7 +105,7 @@ async def _cycle_body(mind: "Mind", end_payload: Dict[str, Any], *, is_heartbeat
     if (not is_heartbeat and cheap_pending and not cheap_tasks
             and cheap_profiles == 0):
         # 惰性检查目标（仅在 fast-path 候选时查询）
-        active_goals = await mind._collect_active_goals()
+        active_goals = await active_goal_lines()
         if not active_goals:
             decisions = [
                 Decision(type=DecisionType.REPLY, target=scope, priority=10)
@@ -128,8 +132,8 @@ async def _cycle_body(mind: "Mind", end_payload: Dict[str, Any], *, is_heartbeat
                 active_goals=[],
                 heartbeat_log="",
             )
-            await mind._execute_decisions_and_finalize(
-                end_payload, situation, decisions, is_heartbeat=False,
+            await execute_decisions(
+                mind, end_payload, situation, decisions, is_heartbeat=False,
             )
             return
 
@@ -137,7 +141,7 @@ async def _cycle_body(mind: "Mind", end_payload: Dict[str, Any], *, is_heartbeat
     # 记忆/目标查询耗时可观，期间不应显示 idle）；no_pending 早退由周期
     # 完成边界（execute_mind finally）统一归零
     mind._set_phase(MindPhase.DECIDING)
-    situation = await mind._gather_situation(is_heartbeat=is_heartbeat)
+    situation = await gather_situation(mind, is_heartbeat=is_heartbeat)
 
     if not situation.has_pending and not is_heartbeat:
         end_payload["reason"] = "no_pending"
@@ -170,7 +174,7 @@ async def _cycle_body(mind: "Mind", end_payload: Dict[str, Any], *, is_heartbeat
         ]
         log("fast-path: direct reply (no meta-decision)", tag="思维")
     else:
-        decisions = await mind._think_and_decide(situation)
+        decisions = await think_and_decide(mind, situation)
 
     # 代码级兜底：有 pending 消息但元决策全非 REPLY 时，为每个 scope 补充 REPLY
     if situation.pending_messages and not any(d.type == DecisionType.REPLY for d in decisions):
@@ -183,12 +187,12 @@ async def _cycle_body(mind: "Mind", end_payload: Dict[str, Any], *, is_heartbeat
 
     log(f"决策结果: {', '.join(d.type.value for d in decisions)}", tag="思维")
 
-    await mind._execute_decisions_and_finalize(
-        end_payload, situation, decisions, is_heartbeat=is_heartbeat,
+    await execute_decisions(
+        mind, end_payload, situation, decisions, is_heartbeat=is_heartbeat,
     )
 
 
-async def _execute_decisions_and_finalize(
+async def execute_decisions(
         mind: "Mind",
         end_payload: Dict[str, Any],
         situation: SituationContext,
@@ -217,15 +221,15 @@ async def _execute_decisions_and_finalize(
         immediate: List[Decision] = []
         deferred = sorted_decisions
     else:
-        immediate = [d for d in sorted_decisions if d.type not in mind._DEFERRED_DECISIONS]
-        deferred = [d for d in sorted_decisions if d.type in mind._DEFERRED_DECISIONS]
+        immediate = [d for d in sorted_decisions if d.type not in _DEFERRED_DECISIONS]
+        deferred = [d for d in sorted_decisions if d.type in _DEFERRED_DECISIONS]
 
     if mind._reflecting or mind.heartbeat_engine.reflection_pending:
         deferred = [d for d in deferred if d.type != DecisionType.REFLECT]
 
     for d in deferred:
         asyncio.create_task(
-            mind._safe_execute(d),
+            execute_safely(mind, d),
             name=f"agent.mind.bg.{d.type.value}",
         )
 
@@ -233,7 +237,7 @@ async def _execute_decisions_and_finalize(
 
     exec_ok: List[bool] = []
     if immediate:
-        exec_ok = list(await asyncio.gather(*(mind._safe_execute(d) for d in immediate)))
+        exec_ok = list(await asyncio.gather(*(execute_safely(mind, d) for d in immediate)))
         if any(exec_ok):
             # 有实质进展（即时决策执行成功）：重置自动续轮退避
             mind._auto_cycle_retry = 0
@@ -254,7 +258,7 @@ async def _execute_decisions_and_finalize(
             active_goals=len(situation.active_goals),
         )
 
-    await mind._clear_dynamic_tools_when_idle()
+    await clear_dynamic_tools_when_idle(mind)
 
     end_payload.update({
         "decisions_executed": [d.type.value for d in immediate],
@@ -265,7 +269,7 @@ async def _execute_decisions_and_finalize(
         mind._schedule_next_cycle("自主循环结束后仍有待处理任务")
 
 
-async def _clear_dynamic_tools_when_idle(mind: "Mind") -> None:
+async def clear_dynamic_tools_when_idle(mind: "Mind") -> None:
     """等所有回复会话结束后再清动态工具，避免并行 REPLY 被提前清掉。
 
     不阻塞当前周期：仍有活跃会话时挂到后台等待，
@@ -293,7 +297,7 @@ async def _clear_dynamic_tools_when_idle(mind: "Mind") -> None:
     asyncio.create_task(_wait_and_clear(), name="agent.mind.clear_dynamic_tools")
 
 
-async def _run_heartbeat_tick_bg(mind: "Mind") -> None:
+async def run_heartbeat_tick(mind: "Mind") -> None:
     """后台执行心跳 tick，完成后触发新周期（不阻塞主循环）。"""
     # tick 是独立后台工作，不属于派生它的思维会话，脱离其链路上下文
     detach_thinking_session()
@@ -310,10 +314,10 @@ async def _run_heartbeat_tick_bg(mind: "Mind") -> None:
             mind._schedule_next_cycle("心跳完成后仍有待处理任务")
 
 
-async def _safe_execute(mind: "Mind", decision: Decision) -> bool:
+async def execute_safely(mind: "Mind", decision: Decision) -> bool:
     """安全执行决策，异常转为通用错误任务。返回是否成功。"""
     try:
-        await mind._execute_decision(decision)
+        await execute_decision(mind, decision)
         return True
     except Exception as exc:
         log(f"决策执行异常 [{decision.type.value}]: {exc}", "WARNING", tag="思维")
@@ -325,7 +329,7 @@ async def _safe_execute(mind: "Mind", decision: Decision) -> bool:
         return False
 
 
-async def _gather_situation(mind: "Mind", *, is_heartbeat: bool = False) -> SituationContext:
+async def gather_situation(mind: "Mind", *, is_heartbeat: bool = False) -> SituationContext:
     """收集当前态势：待处理消息、记忆、通道、目标等（纯读取，无副作用）。"""
     pending: List[PendingMessage] = []
     for item in mind.pfc.peek_all_tasks():
@@ -345,8 +349,8 @@ async def _gather_situation(mind: "Mind", *, is_heartbeat: bool = False) -> Situ
         recent = await mind.memory_store.list_recent(limit=5)
         recent_mem_lines = [e.content[:100] for e in recent]
 
-    connected_channels = mind._collect_channel_info()
-    active_goals = await mind._collect_active_goals()
+    connected_channels = collect_channel_info(mind)
+    active_goals = await active_goal_lines()
     general_tasks = mind.pfc.peek_general_tasks()
     heartbeat_log = _hb_load_recent(3) if is_heartbeat else ""
     if heartbeat_log:
@@ -372,7 +376,7 @@ async def _gather_situation(mind: "Mind", *, is_heartbeat: bool = False) -> Situ
     )
 
 
-async def _think_and_decide(mind: "Mind", situation: SituationContext) -> List[Decision]:
+async def think_and_decide(mind: "Mind", situation: SituationContext) -> List[Decision]:
     """让 AI 根据态势做元决策，通过 Tool Calling 返回决策列表。"""
     memory_ctx: List[Dict] = []
     if mind.retriever:
@@ -425,10 +429,10 @@ async def _think_and_decide(mind: "Mind", situation: SituationContext) -> List[D
         return parse_decisions_from_tool_calls(result.tool_calls, situation)
     except Exception as exc:
         log(f"元决策 LLM 调用失败（含重试和回退），使用兜底决策: {exc}", "WARNING", tag="思维")
-        return mind._fallback_decisions(situation)
+        return fallback_decisions(situation)
 
 
-def _fallback_decisions(mind: "Mind", situation: SituationContext) -> List[Decision]:
+def fallback_decisions(situation: SituationContext) -> List[Decision]:
     """元决策失败时的兜底：为每条待处理消息生成 REPLY 决策。"""
     decisions: List[Decision] = []
     for pm in situation.pending_messages:

@@ -4,15 +4,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from agent.mind import tool_activation as _tool_activation  # noqa: F401  # 注册 activate_tool_group 延迟工具
 from core.async_helper import spawn
 
 if TYPE_CHECKING:
     from agent.mind.mind import Mind
 
 
-async def _on_bg_task_unclaimed(self: Mind, scope: str, description: str,
-                                summary: str, success: bool = True) -> None:
+async def on_task_unclaimed(
+    mind: Mind, scope: str, description: str, summary: str, success: bool = True,
+) -> None:
     """后台任务轮外完成回调：完成事实写对话历史并排入回复队列触发新 REPLY。
 
     通知经 enqueue_scope_reply 落目标会话的对话历史（一次性事实固化，
@@ -41,23 +41,24 @@ async def _on_bg_task_unclaimed(self: Mind, scope: str, description: str,
     prompt += "请根据结果继续处理（回复用户请调用 send_message，完成请调用 end_reply）。"
 
     if not scope.startswith(("user_", "group_")):
-        self.pfc.add_temporary({"role": "system", "content": prompt})
+        mind.pfc.add_temporary({"role": "system", "content": prompt})
         return
     await enqueue_scope_reply(
-        self.pfc, scope,
-        self.pfc.get_adapter_key(scope),
+        mind.pfc, scope,
+        mind.pfc.get_adapter_key(scope),
         f"后台任务{'失败' if not success else '完成'}: {description[:60]}",
         prompt,
     )
-    if not self.wake_budget.allow(scope, failed=not success):
-        self.wake_budget.note_suppressed(scope, description, failed=not success)
+    if not mind.wake_budget.allow(scope, failed=not success):
+        mind.wake_budget.note_suppressed(scope, description, failed=not success)
         return
-    self.wake_budget.consume(scope, failed=not success)
-    spawn(self.try_execute_mind(), name="mind.wake")
+    mind.wake_budget.consume(scope, failed=not success)
+    spawn(mind.try_execute_mind(), name="mind.wake")
 
 
-async def _on_bg_task_alert(self: Mind, scope: str, description: str,
-                            detail: str, task_id: str) -> None:
+async def on_task_alert(
+    mind: Mind, scope: str, description: str, detail: str, task_id: str,
+) -> None:
     """后台任务超时提醒：超过预期时长时向 AI 报告进度事实。
 
     系统只报告、不下指令——超时未必是异常（大下载/大构建本来就慢），
@@ -74,16 +75,16 @@ async def _on_bg_task_alert(self: Mind, scope: str, description: str,
         "这是内部进度事实，是否跟进由你判断。"
     )
     if not scope.startswith(("user_", "group_")):
-        self.pfc.add_temporary({"role": "system", "content": prompt})
+        mind.pfc.add_temporary({"role": "system", "content": prompt})
         return
     await enqueue_scope_reply(
-        self.pfc, scope,
-        self.pfc.get_adapter_key(scope),
+        mind.pfc, scope,
+        mind.pfc.get_adapter_key(scope),
         f"后台任务进度报告: {description[:60]}",
         prompt,
     )
-    if not self.wake_budget.allow(scope):
-        self.wake_budget.note_suppressed(scope, description)
+    if not mind.wake_budget.allow(scope):
+        mind.wake_budget.note_suppressed(scope, description)
         return
-    self.wake_budget.consume(scope)
-    spawn(self.try_execute_mind(), name="mind.wake")
+    mind.wake_budget.consume(scope)
+    spawn(mind.try_execute_mind(), name="mind.wake")

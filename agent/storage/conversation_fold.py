@@ -403,13 +403,9 @@ class ConversationFolder:
 
     @staticmethod
     async def _resolve_summarizer() -> Callable[[str], Awaitable[str]]:
-        """解析摘要函数：优先运行时 Mind.summarize_text（主模型纯文本调用）。"""
+        """读取运行时模型调用器的摘要接口。"""
         from agent.runtime.singleton import require_runtime
-        mind = require_runtime().mind
-        summarizer = getattr(mind, "summarize_text", None)
-        if summarizer is None:
-            raise RuntimeError("运行时 Mind 不具备摘要能力")
-        return summarizer
+        return require_runtime().mind.model_invoker.summarize_text
 
 
 # 全局单例

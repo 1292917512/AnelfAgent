@@ -19,7 +19,7 @@ async def test_context_usage_is_real_and_isolated_between_executions():
     mind = SimpleNamespace(
         pfc=SimpleNamespace(clear_dynamic_tools=lambda **kwargs: None),
         compressor=SimpleNamespace(threshold_tokens=lambda: 8000, estimate_tokens=lambda messages: 999),
-        get_model_context_length=lambda: 10000,
+        model_invoker=SimpleNamespace(get_context_length=lambda: 10000),
     )
     async def execute(scope, tokens):
         with think_session(mind, scope):

@@ -223,7 +223,7 @@ _STRIP_KEYS = ("_layer", "_source")
 def normalize_for_send(messages: List[Dict]) -> List[Dict]:
     """发送边界统一规整：配对修复 + 角色归一 + 尾部 prefill 修复 + 空 content 修复。
 
-    _invoke_llm_unified 的唯一入口；新增发送边界规则只加在这里，
+    ModelInvoker.invoke 的唯一入口；新增发送边界规则只加在这里，
     不再散落到上下文组装各阶段。
     """
     # 剥离内部分类标签（上下文快照用，LLM 不可见）。

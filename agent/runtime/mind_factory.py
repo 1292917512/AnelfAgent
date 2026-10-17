@@ -51,7 +51,7 @@ def create_mind(
         memory_store=memory_store,
     )
     mind.heartbeat_engine = HeartbeatEngine(mind)
-    mind.compressor = ContextCompressor(mind)
+    mind.compressor = ContextCompressor(mind.model_invoker)
 
     # 技能自学习系统（匹配/事实索引/策展/后台评审，共享已建库实例）
     from agent.skills import (

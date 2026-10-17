@@ -160,10 +160,10 @@ class TestFoldExecution:
         async def fake_summarizer(prompt: str) -> str:
             return "折叠摘要内容"
 
-        async def resolve():
-            return fake_summarizer
-
-        monkeypatch.setattr(ConversationFolder, "_resolve_summarizer", staticmethod(resolve))
+        runtime = SimpleNamespace(
+            mind=SimpleNamespace(model_invoker=SimpleNamespace(summarize_text=fake_summarizer)),
+        )
+        monkeypatch.setattr("agent.runtime.singleton.require_runtime", lambda: runtime)
         folder = ConversationFolder()
         await folder._fold(
             conv_data, "user", "1", [("user", "1")], {},

@@ -29,7 +29,7 @@ def _speaker_scopes(text: str) -> List[str]:
     return scopes
 
 
-def _extract_related_scopes(
+def extract_related_scopes(
         conversation_tail: List[Dict], primary_scope: str,
 ) -> List[str]:
     """从对话中提取涉及的实体 scope，构建画像加载列表。
@@ -66,7 +66,7 @@ def _extract_related_scopes(
     return scopes
 
 
-def _extract_scopes_from_anything(
+def extract_scopes_from_anything(
         anything: "Everything", primary_scope: str,
 ) -> List[str]:
     """从当前消息对象提取发送者 uid 和 [at_uid:xxx] 中的 uid。"""

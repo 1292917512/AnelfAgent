@@ -151,6 +151,7 @@ class FakeMind:
         self._add_system_context = AsyncMock()
         self._reply_adapter_key = ""
         self.conversation_data = SimpleNamespace()
+        self.model_invoker = FakeModelInvoker(self)
 
     @staticmethod
     def _resolve_scope(anything) -> tuple:
@@ -184,22 +185,30 @@ class FakeMind:
     def _get_mind_config(self):
         return SimpleNamespace(**self._config)
 
-    def get_model_context_length(self) -> int:
+
+class FakeModelInvoker:
+    """按脚本响应模型调用，记录调用参数。"""
+
+    def __init__(self, mind: FakeMind) -> None:
+        self._mind = mind
+
+    def get_context_length(self) -> int:
         return 0
 
-    async def _invoke_llm_unified(
+    async def invoke(
         self, messages, tools, anything=None, *, tool_choice=None, options=None,
         stream=False, on_delta=None, purpose="reply", cache_tail_anchor=True,
         abort_event=None, on_tool_call_ready=None,
     ):
-        self.llm_calls += 1
-        self.tool_choices.append(tool_choice)
-        self.sent_messages.append(list(messages))
-        if self._rounds:
-            return self._rounds.pop(0)
-        if self.default_text is None:
+        mind = self._mind
+        mind.llm_calls += 1
+        mind.tool_choices.append(tool_choice)
+        mind.sent_messages.append(list(messages))
+        if mind._rounds:
+            return mind._rounds.pop(0)
+        if mind.default_text is None:
             raise IndexError("脚本轮次耗尽（FakeMind 未提供 default_text）")
-        return text_result(self.default_text)
+        return text_result(mind.default_text)
 
 
 def run_think_loop(

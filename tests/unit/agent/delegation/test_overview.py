@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 from agent.delegation.delegation_manager import DelegationManager
@@ -29,14 +30,13 @@ class _FakeMind:
         self.output = output
         self.gate = gate
         self.pfc = type("PFC", (), {"add_temporary": lambda self, clip, scope="": None})()
+        self.model_invoker = SimpleNamespace(get_context_length=lambda: 128000)
 
     async def reflect(self, *args: Any, **kwargs: Any) -> str:
         if self.gate is not None:
             await self.gate.wait()
         return self.output
 
-    def get_model_context_length(self) -> int:
-        return 128_000
 
 
 def _buffer_messages(limit: int = 50) -> List[str]:

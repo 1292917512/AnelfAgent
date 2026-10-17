@@ -15,19 +15,15 @@ import pytest
 
 from agent.mind import cycle as cycle_mod
 from agent.mind.autonomous import Decision, DecisionType, PendingMessage, SituationContext
-from agent.mind.mind import Mind
 
 
 def _fake_mind() -> Any:
-    """最小 Mind 替身：只覆盖 _execute_decisions_and_finalize 触达的字段。"""
+    """最小 Mind 替身：只覆盖 execute_decisions 触达的字段。"""
     return SimpleNamespace(
-        _DEFERRED_DECISIONS=Mind._DEFERRED_DECISIONS,
         _reflecting=False,
         _active_scopes=set(),
         _auto_cycle_retry=0,
         _set_phase=lambda phase: None,
-        _safe_execute=AsyncMock(return_value=True),
-        _clear_dynamic_tools_when_idle=AsyncMock(),
         _schedule_next_cycle=lambda reason: None,
         heartbeat_engine=SimpleNamespace(reflection_pending=False),
         pfc=SimpleNamespace(
@@ -42,26 +38,28 @@ def _fake_mind() -> Any:
 def _isolate_events(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cycle_mod.event_bus, "emit", AsyncMock())
     monkeypatch.setattr(cycle_mod, "_hb_write", lambda **kwargs: None)
+    monkeypatch.setattr(cycle_mod, "execute_safely", AsyncMock(return_value=True))
+    monkeypatch.setattr(cycle_mod, "clear_dynamic_tools_when_idle", AsyncMock())
 
 
 class TestHeartbeatDecisionDeferral:
-    async def test_heartbeat_defers_all_decisions(self) -> None:
+    async def test_heartbeat_defers_all_decisions(self, monkeypatch) -> None:
         """心跳周期：即时决策转后台执行，函数返回不等决策完成。"""
         mind = _fake_mind()
         release = asyncio.Event()
         done: List[str] = []
 
-        async def _safe(decision: Decision) -> bool:
+        async def _safe(_mind, decision: Decision) -> bool:
             await release.wait()
             done.append(decision.type.value)
             return True
 
-        mind._safe_execute = _safe
+        monkeypatch.setattr(cycle_mod, "execute_safely", _safe)
         decisions = [Decision(type=DecisionType.REPLY, target="user_webui:u1", priority=10)]
 
         # 决策被门控永不完成，函数仍须正常返回（后台化）
         await asyncio.wait_for(
-            cycle_mod._execute_decisions_and_finalize(
+            cycle_mod.execute_decisions(
                 mind, {}, SituationContext(), decisions, is_heartbeat=True,
             ),
             timeout=1.0,
@@ -75,22 +73,22 @@ class TestHeartbeatDecisionDeferral:
                 break
         assert done == [DecisionType.REPLY.value]
 
-    async def test_message_cycle_executes_immediate_inline(self) -> None:
+    async def test_message_cycle_executes_immediate_inline(self, monkeypatch) -> None:
         """用户消息周期：即时决策保持内联执行（函数等待决策完成）。"""
         mind = _fake_mind()
         release = asyncio.Event()
         done: List[str] = []
 
-        async def _safe(decision: Decision) -> bool:
+        async def _safe(_mind, decision: Decision) -> bool:
             await release.wait()
             done.append(decision.type.value)
             return True
 
-        mind._safe_execute = _safe
+        monkeypatch.setattr(cycle_mod, "execute_safely", _safe)
         decisions = [Decision(type=DecisionType.REPLY, target="user_webui:u1", priority=10)]
 
         runner = asyncio.create_task(
-            cycle_mod._execute_decisions_and_finalize(
+            cycle_mod.execute_decisions(
                 mind, {}, SituationContext(), decisions, is_heartbeat=False,
             )
         )
@@ -104,22 +102,22 @@ class TestHeartbeatDecisionDeferral:
         # 内联执行成功重置续轮退避
         assert mind._auto_cycle_retry == 0
 
-    async def test_heartbeat_still_filters_reflect_when_pending(self) -> None:
+    async def test_heartbeat_still_filters_reflect_when_pending(self, monkeypatch) -> None:
         """心跳周期全量转后台后，待反思标记仍过滤重复的 REFLECT 决策。"""
         mind = _fake_mind()
         mind.heartbeat_engine.reflection_pending = True
         scheduled: List[str] = []
 
-        async def _safe(decision: Decision) -> bool:
+        async def _safe(_mind, decision: Decision) -> bool:
             scheduled.append(decision.type.value)
             return True
 
-        mind._safe_execute = _safe
+        monkeypatch.setattr(cycle_mod, "execute_safely", _safe)
         decisions = [
             Decision(type=DecisionType.REFLECT, reason="重复反思", priority=5),
             Decision(type=DecisionType.REPLY, target="user_webui:u1", priority=10),
         ]
-        await cycle_mod._execute_decisions_and_finalize(
+        await cycle_mod.execute_decisions(
             mind, {}, SituationContext(), decisions, is_heartbeat=True,
         )
         for _ in range(10):
@@ -137,18 +135,18 @@ async def test_direct_channel_owns_request_and_preserves_background_work(monkeyp
                         lambda adapter: ReplyPolicy(direct_reply=adapter == "game"))
     mind = _fake_mind()
     mind._heartbeat_running = True
-    mind._gather_situation = AsyncMock(side_effect=AssertionError("must not decide the same game request again"))
-    mind._collect_active_goals = AsyncMock(side_effect=AssertionError("unrelated goals must not delay the request"))
+    monkeypatch.setattr(cycle_mod, "gather_situation", AsyncMock(side_effect=AssertionError("must not decide the same game request again")))
+    monkeypatch.setattr(cycle_mod, "active_goal_lines", AsyncMock(side_effect=AssertionError("unrelated goals must not delay the request")))
     mind.pfc.peek_all_tasks = lambda: [("group_game:local", "player", "local", "制作工具"),
                                      ("user_webui:other", "other", "", "其他请求")]
     mind.pfc.get_adapter_key = lambda scope: "game" if scope.startswith("group_game:") else "webui"
     mind.pfc.peek_general_tasks = lambda: ["unrelated task"]
     mind.pfc.pending_analysis = ["unrelated profile"]
     mind.pfc.clear_general_tasks_before = Mock()
-    await cycle_mod._cycle_body(mind, {}, is_heartbeat=heartbeat)
+    await cycle_mod.run_cycle(mind, {}, is_heartbeat=heartbeat)
     await asyncio.sleep(0)
-    assert mind._safe_execute.await_count == 1
-    decision = mind._safe_execute.await_args.args[0]
+    assert cycle_mod.execute_safely.await_count == 1
+    decision = cycle_mod.execute_safely.await_args.args[1]
     assert decision.type == DecisionType.REPLY and decision.target == "group_game:local"
     mind.pfc.clear_general_tasks_before.assert_called_once_with(0)
 

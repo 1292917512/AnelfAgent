@@ -15,6 +15,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from agent.mind import cycle
+from agent.mind import mind as mind_module
 from agent.mind.autonomous import MindPhase
 from agent.mind.mind import Mind
 
@@ -142,7 +144,7 @@ class TestCycleBodyDeciding:
             active_goals=["g1"],
         )
 
-        async def _gather(*, is_heartbeat: bool = False) -> SituationContext:
+        async def _gather(_mind, *, is_heartbeat: bool = False) -> SituationContext:
             seen.append(mind.phase)
             return situation
 
@@ -154,17 +156,17 @@ class TestCycleBodyDeciding:
             get_adapter_key=lambda scope: "webui",
             get_pending_signal=lambda scope: None,
         )
-        mind._collect_active_goals = AsyncMock(return_value=["g1"])
-        mind._gather_situation = _gather
-        mind._think_and_decide = AsyncMock(
+        monkeypatch.setattr(cycle, "active_goal_lines", AsyncMock(return_value=["g1"]))
+        monkeypatch.setattr(cycle, "gather_situation", _gather)
+        monkeypatch.setattr(cycle, "think_and_decide", AsyncMock(
             return_value=[Decision(type=DecisionType.IDLE, reason="r")],
-        )
-        mind._execute_decisions_and_finalize = AsyncMock()
+        ))
+        monkeypatch.setattr(cycle, "execute_decisions", AsyncMock())
         monkeypatch.setattr(cycle_mod.event_bus, "emit", AsyncMock())
 
-        await cycle_mod._cycle_body(mind, {}, is_heartbeat=False)
+        await cycle_mod.run_cycle(mind, {}, is_heartbeat=False)
         assert seen == [MindPhase.DECIDING]
-        mind._execute_decisions_and_finalize.assert_awaited_once()
+        cycle.execute_decisions.assert_awaited_once()
 
 
 class TestReflectPhaseReset:
@@ -176,28 +178,28 @@ class TestReflectPhaseReset:
             clear_dynamic_tools=lambda **kwargs: None,
         )
 
-    async def test_reflect_end_resets_phase_and_depth(self) -> None:
+    async def test_reflect_end_resets_phase_and_depth(self, monkeypatch) -> None:
         """reflect 结束（任务/反思/子代理统一入口）：深度复位 + 相位归零。"""
         mind = _bare_mind()
         self._wire_reflect_fakes(mind)
 
-        async def _loop(**kwargs: Any) -> None:
+        async def _loop(_mind, **kwargs: Any) -> None:
             mind._set_phase(MindPhase.LLM_CALLING)
 
-        mind._think_loop = _loop
+        monkeypatch.setattr(mind_module, "think_loop", _loop)
         output = await mind.reflect([{"role": "user", "content": "x"}])
         assert output == ""
         assert mind._reflect_depth == 0
         assert mind.phase is MindPhase.IDLE
 
     @pytest.mark.parametrize("allow", [None, True, False])
-    async def test_reflect_output_permission_is_separate_from_text_routing(self, allow) -> None:
+    async def test_reflect_output_permission_is_separate_from_text_routing(self, monkeypatch, allow) -> None:
         mind = _bare_mind()
         self._wire_reflect_fakes(mind)
-        mind._think_loop = AsyncMock()
+        monkeypatch.setattr(mind_module, "think_loop", AsyncMock())
         kwargs = {} if allow is None else {"allow_output_tools": allow}
         await mind.reflect([{"role": "user", "content": "检查后按需通知"}], **kwargs)
-        call = mind._think_loop.await_args.kwargs
+        call = mind_module.think_loop.await_args.kwargs
         assert ("send_message" in call["blocked_tools"]) is (allow is False)
         assert "list_channels" not in call["blocked_tools"]
         assert call["anything"] is None
@@ -216,7 +218,7 @@ class TestReflectPhaseReset:
             selected.append({"type": "function", "function": {"name": "get_skill"}})
         mind.pfc.get_reflect_tool_schemas = AsyncMock(return_value=selected)
         loop = AsyncMock()
-        mind._think_loop = loop
+        monkeypatch.setattr(mind_module, "think_loop", loop)
         await mind.reflect([{"role": "user", "content": "review"}], tool_tags=["skills"],
                            inherited_tools=inherited, extra_blocked_tools={"send_message"})
         sent = loop.await_args.kwargs
@@ -227,21 +229,21 @@ class TestReflectPhaseReset:
         sent["active_tools"][0]["function"]["name"] = "mutated"
         assert inherited[0]["function"]["name"] == "send_message"
 
-    async def test_concurrent_reflects_reset_only_after_last(self) -> None:
+    async def test_concurrent_reflects_reset_only_after_last(self, monkeypatch) -> None:
         """并发 reflect：先结束的不归零（深度仍存活），最后一个收尾才归零。"""
         mind = _bare_mind()
         self._wire_reflect_fakes(mind)
         entered = 0
         release = asyncio.Event()
 
-        async def _loop(**kwargs: Any) -> None:
+        async def _loop(_mind, **kwargs: Any) -> None:
             nonlocal entered
             entered += 1
             mind._set_phase(MindPhase.LLM_CALLING)
             if entered == 1:
                 await release.wait()
 
-        mind._think_loop = _loop
+        monkeypatch.setattr(mind_module, "think_loop", _loop)
         first = asyncio.create_task(mind.reflect([{"role": "user", "content": "a"}]))
         await asyncio.sleep(0)
         second = asyncio.create_task(mind.reflect([{"role": "user", "content": "b"}]))
@@ -255,16 +257,16 @@ class TestReflectPhaseReset:
         assert mind._reflect_depth == 0
         assert mind.phase is MindPhase.IDLE
 
-    async def test_reflect_exception_still_resets(self) -> None:
+    async def test_reflect_exception_still_resets(self, monkeypatch) -> None:
         """reflect 异常穿透：深度与相位同样复位，不留卡死。"""
         mind = _bare_mind()
         self._wire_reflect_fakes(mind)
 
-        async def _loop(**kwargs: Any) -> None:
+        async def _loop(_mind, **kwargs: Any) -> None:
             mind._set_phase(MindPhase.TOOL_EXECUTING)
             raise RuntimeError("boom")
 
-        mind._think_loop = _loop
+        monkeypatch.setattr(mind_module, "think_loop", _loop)
         with pytest.raises(RuntimeError):
             await mind.reflect([{"role": "user", "content": "x"}])
         assert mind._reflect_depth == 0
@@ -280,7 +282,7 @@ class TestReplyPhaseReset:
         async def _tl(m: Any, anything: Any, images: Any, *, adapter_key: str, completion: dict) -> None:
             m._set_phase(MindPhase.REPLYING)
 
-        monkeypatch.setattr("agent.mind.mind._tl_reply", _tl)
+        monkeypatch.setattr("agent.mind.mind.reply_entry", _tl)
         await mind.reply(SimpleNamespace(entity_scope="user_webui:u1"))
         assert mind.phase is MindPhase.IDLE
 
@@ -295,7 +297,7 @@ class TestReplyPhaseReset:
         async def _tl(m: Any, anything: Any, images: Any, *, adapter_key: str, completion: dict) -> None:
             m._set_phase(MindPhase.REPLYING)
 
-        monkeypatch.setattr("agent.mind.mind._tl_reply", _tl)
+        monkeypatch.setattr("agent.mind.mind.reply_entry", _tl)
         await mind.reply(SimpleNamespace(entity_scope=scope))
         assert mind.phase is MindPhase.REPLYING
         # execute_reply finally：注销 scope → 收口归零
@@ -318,8 +320,8 @@ class TestAcceptFeelPhaseReset:
         mind._reflecting = False
         mind._auto_cycle_retry = 0
         mind.wake_budget = SimpleNamespace(reset=lambda scope: None)
-        mind._detect_skill_gesture = lambda anything, scope: None
-        mind._update_channel_snapshot = lambda anything: None
+        mind._pending_skill_gestures = {}
+        mind._channel_snapshots = {}
         mind.pfc = SimpleNamespace(add_task=AsyncMock())
 
     @staticmethod

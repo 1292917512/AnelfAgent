@@ -114,7 +114,7 @@ class TestFoldService:
 
         rt = SimpleNamespace(
             data_center=SimpleNamespace(sqlite=sqlite),
-            mind=SimpleNamespace(summarize_text=_summarize),
+            mind=SimpleNamespace(model_invoker=SimpleNamespace(summarize_text=_summarize)),
         )
         monkeypatch.setattr(chat_mod, "get_runtime", lambda: rt)
         monkeypatch.setattr(chat_mod, "is_ready", lambda: True)

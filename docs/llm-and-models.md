@@ -168,6 +168,6 @@ audio_bytes = audio.value
 
 | 机制 | 位置 | 说明 |
 |------|------|------|
-| 摘要专用模型与思考档 | `mind.summarize_text` + `conversation_summary_model` / `conversation_summary_reasoning_effort`（cache/prompt 组） | 折叠/压缩摘要可指定更轻量模型与低思考档：模型经 `get_enabled_client` 解析（不存在/停用 WARNING 回落默认），effort 走 per-call options（调用方 > 模型配置；不支持思考自动忽略），失败走默认回退链韧性不降级。compressor 前缀复用路径刻意不动（KV 命中是其核心设计） |
-| 压缩调用免尾锚点 | `prompt_cache.decorate_messages(tail_anchor=)` / `_invoke_llm_unified(cache_tail_anchor=)` | 一次性调用（前缀+摘要指令不会再被原样重发）省略链尾增量断点——该断点写入的缓存条目永无读者（纯写入费）；层锚点保留照常吃缓存读。默认 True 不影响 reply/reflect 的增量缓存设计 |
+| 摘要专用模型与思考档 | `ModelInvoker.summarize_text` + `conversation_summary_model` / `conversation_summary_reasoning_effort`（cache/prompt 组） | 折叠/压缩摘要可指定更轻量模型与低思考档：模型经 `get_enabled_client` 解析（不存在/停用 WARNING 回落默认），effort 走 per-call options（调用方 > 模型配置；不支持思考自动忽略），失败走默认回退链韧性不降级。compressor 前缀复用路径刻意不动（KV 命中是其核心设计） |
+| 压缩调用免尾锚点 | `prompt_cache.decorate_messages(tail_anchor=)` / `ModelInvoker.invoke(cache_tail_anchor=)` | 一次性调用（前缀+摘要指令不会再被原样重发）省略链尾增量断点——该断点写入的缓存条目永无读者（纯写入费）；层锚点保留照常吃缓存读。默认 True 不影响 reply/reflect 的增量缓存设计 |
 | light_llm 通道 | `agent/memory/dedup.light_llm` 等 | 内部小任务（判重合成/反思晋升/反馈分类/标签归并提示）统一走轻量通道，可经 `memory_light_model` 等配置指定专用模型 |

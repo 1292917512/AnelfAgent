@@ -2,9 +2,9 @@
 
 语义锚点：
 - InterruptRegistry 的 event 与请求同生命周期（登记置位、消费换新）；
-- _llm_chat_stream_once 与 abort_event 竞争，中止时关闭生成器并抛
+- chat_stream_once 与 abort_event 竞争，中止时关闭生成器并抛
   LLMCallAborted；
-- _invoke_llm_unified 收到 LLMCallAborted 不走"流式失败回退非流式"
+- invoke 收到 LLMCallAborted 不走"流式失败回退非流式"
   （中断不是故障）；
 - 非流式路径同样可中断（在途请求被取消）。
 """
@@ -164,8 +164,7 @@ class TestStreamAbort:
 
         trig = asyncio.get_running_loop().create_task(trigger())
         with pytest.raises(LLMCallAborted):
-            await li._llm_chat_stream_once(
-                mind, [], None, abort_event=abort,
+            await li.ModelInvoker(mind).chat_stream_once( [], None, abort_event=abort,
             )
         await trig
         assert client.closed  # 底层流被关闭（连接释放）
@@ -174,7 +173,7 @@ class TestStreamAbort:
         monkeypatch.setattr(li, "LLMClient", _ClientBase)
         client = _FakeStreamClient([], hang=False)
         mind = _stream_mind(client)
-        result = await li._llm_chat_stream_once(mind, [], None)
+        result = await li.ModelInvoker(mind).chat_stream_once( [], None)
         assert result.content == ""
 
     async def test_race_abort_cancels_awaited_coro(self):
@@ -207,7 +206,7 @@ class TestStreamAbort:
 
 
 class TestUnifiedNoFallbackOnAbort:
-    def _mind(self, *, stream_fn=None, retry_fn=None):
+    def _invoker(self, *, stream_fn=None, retry_fn=None):
         calls = {"fallback": 0}
 
         async def default_retry(messages, tools, **kwargs):
@@ -221,21 +220,22 @@ class TestUnifiedNoFallbackOnAbort:
                 litellm_model="fake-model", api_type="openai",
             )),
             _get_mind_config=lambda: SimpleNamespace(log_ai_output=False),
-            _llm_chat_stream_once=stream_fn,
-            _llm_chat_with_retry=retry_fn or default_retry,
         )
-        return mind, calls
+        invoker = li.ModelInvoker(mind)
+        invoker.chat_stream_once = stream_fn
+        invoker.chat_with_retry = retry_fn or default_retry
+        return invoker, calls
 
     async def test_stream_abort_does_not_fallback(self):
         async def aborting_stream(*args, **kwargs):
             raise LLMCallAborted("中断事件到达")
 
-        mind, calls = self._mind(stream_fn=aborting_stream)
+        invoker, calls = self._invoker(stream_fn=aborting_stream)
         abort = asyncio.Event()
         abort.set()
         with pytest.raises(LLMCallAborted):
-            await li._invoke_llm_unified(
-                mind, [], None, stream=True, abort_event=abort,
+            await invoker.invoke(
+                [], None, stream=True, abort_event=abort,
             )
         assert calls["fallback"] == 0  # 中断不是故障：绝不回退非流式重试
 
@@ -253,7 +253,7 @@ class TestUnifiedNoFallbackOnAbort:
             finally:
                 cancelled["hit"] = True
 
-        mind, _ = self._mind(retry_fn=slow_retry)
+        invoker, _ = self._invoker(retry_fn=slow_retry)
         abort = asyncio.Event()
 
         async def trigger():
@@ -262,8 +262,8 @@ class TestUnifiedNoFallbackOnAbort:
 
         trig = asyncio.get_running_loop().create_task(trigger())
         with pytest.raises(LLMCallAborted):
-            await li._invoke_llm_unified(
-                mind, [], None, stream=False, abort_event=abort,
+            await invoker.invoke(
+                [], None, stream=False, abort_event=abort,
             )
         await trig
         assert cancelled["hit"]
