@@ -148,12 +148,12 @@ class TestSimilarMerge:
         b_id = await store.add(_entry("相似记忆B", importance=0.4))
         await store.update(MemoryEntry(
             id=a_id, memory_type=MemoryType.SEMANTIC, content="相似记忆A",
-            importance=0.6, embedding=vec_a, tags=["topic:x"],
-        ))
+            importance=0.6, tags=["topic:x"],
+        ), new_embedding=vec_a)
         await store.update(MemoryEntry(
             id=b_id, memory_type=MemoryType.SEMANTIC, content="相似记忆B",
-            importance=0.4, embedding=vec_b, tags=["topic:y"],
-        ))
+            importance=0.4, tags=["topic:y"],
+        ), new_embedding=vec_b)
 
         pairs = await store.find_similar_memories(0.92)
         assert len(pairs) == 1

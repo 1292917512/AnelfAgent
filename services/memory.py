@@ -116,7 +116,7 @@ class MemoryService:
         entry.importance = importance
         if tags is not None:
             entry.tags = tags
-        return await store.update(entry)
+        return await store.update(entry, actor="web")
 
     async def apply_ltm_evidence(self, mem_id: int, signal: str) -> Optional[Dict[str, Any]]:
         """对一条反思施加用户证据信号（确认/反驳）——反馈回路的人审入口。
@@ -935,7 +935,6 @@ class MemoryService:
         store = rt.memory_store
         if not store:
             return None
-        from agent.memory.memory_types import GOAL_SOURCE, MemoryEntry, MemoryType
         target_entry = None
         target_goal = None
         for entry, goal in await self._goal_entries(store):
@@ -984,25 +983,20 @@ class MemoryService:
                 target_goal["memory_id"] = target_entry.id
                 return target_goal
         target_goal["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-        new_entry = MemoryEntry(
-            memory_type=MemoryType.SEMANTIC,
-            content=json.dumps(target_goal, ensure_ascii=False),
-            source=GOAL_SOURCE,
-            importance=0.8 if target_goal["status"] == "active" else 0.3,
-            # 合并保留既有键（kind 等生命周期声明），整覆会丢失归属
-            metadata={
-                **(target_entry.metadata or {}),
-                "goal_id": goal_id,
-                "status": target_goal["status"],
-            },
+        target_entry.content = json.dumps(target_goal, ensure_ascii=False)
+        target_entry.importance = 0.8 if target_goal["status"] == "active" else 0.3
+        # 合并保留既有键（kind 等生命周期声明），整覆会丢失归属
+        target_entry.metadata = {
+            **(target_entry.metadata or {}),
+            "goal_id": goal_id,
+            "status": target_goal["status"],
+        }
+        updated = await store.update(
+            target_entry, actor="web", expected_version=target_entry.version,
         )
-        # 先写入新条目成功后再删旧条目，add 失败时目标不丢失
-        new_id = await store.add(new_entry, actor="web")
-        if not new_id:
+        if not updated:
             return None
-        if target_entry.id:
-            await store.delete(target_entry.id, actor="web")
-        target_goal["memory_id"] = new_id
+        target_goal["memory_id"] = target_entry.id
         return target_goal
 
     async def delete_goal(self, goal_id: str) -> bool:

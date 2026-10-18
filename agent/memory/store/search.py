@@ -334,7 +334,8 @@ class SearchEngine:
         ids = [int(r["rowid"]) for r in vec_rows]
         placeholders = ",".join("?" for _ in ids)
         cursor = await db.execute(
-            f"SELECT {MEM_COLUMNS} FROM memories WHERE importance > 0 AND id IN ({placeholders})",
+            f"SELECT {MEM_COLUMNS} FROM memories "
+            f"WHERE importance > 0 AND embedding_blob IS NOT NULL AND id IN ({placeholders})",
             ids,
         )
         entries = {int(row["id"]): row_to_entry(row) for row in await cursor.fetchall()}

@@ -73,8 +73,7 @@ async def test_update_and_delete_synced(store: MemoryStore) -> None:
     mid = await store.add(_entry("原始", embedding=_unit_vec(0)))
     entry = await store.get(mid)
     assert entry is not None
-    entry.embedding = _unit_vec(1)
-    await store.update(entry)
+    await store.update(entry, new_embedding=_unit_vec(1))
 
     results = await store.search_vector(_unit_vec(1), limit=5, min_score=0.5)
     assert any(r[0].id == mid for r in results)
@@ -84,6 +83,57 @@ async def test_update_and_delete_synced(store: MemoryStore) -> None:
     await store.delete(mid)
     results = await store.search_vector(_unit_vec(1), limit=5, min_score=0.0)
     assert all(r[0].id != mid for r in results)
+
+
+async def test_content_update_invalidates_snapshot_embedding(store: MemoryStore) -> None:
+    mid = await store.add(_entry("旧正文", embedding=_unit_vec(0)))
+    entry = await store.get(mid)
+    assert entry is not None and entry.embedding == _unit_vec(0)
+    entry.content = "新正文"
+    assert await store.update(entry, clear_embedding=True)
+    assert entry.embedding is None
+
+    refreshed = await store.get(mid)
+    assert refreshed is not None and refreshed.embedding is None
+    assert await store.search_vector(_unit_vec(0), limit=5, min_score=0.5) == []
+
+
+async def test_snapshot_embedding_does_not_replace_current_vector(store: MemoryStore) -> None:
+    mid = await store.add(_entry("正文", embedding=_unit_vec(0)))
+    entry = await store.get(mid)
+    assert entry is not None
+    entry.embedding = _unit_vec(1)
+    entry.importance = 0.7
+    assert await store.update(entry)
+
+    assert any(
+        result.id == mid
+        for result, _score in await store.search_vector(_unit_vec(0), limit=5, min_score=0.5)
+    )
+    assert all(
+        result.id != mid
+        for result, _score in await store.search_vector(_unit_vec(1), limit=5, min_score=0.5)
+    )
+
+
+async def test_ann_ignores_residual_index_without_authoritative_embedding(store: MemoryStore) -> None:
+    mid = await store.add(_entry("旧正文", embedding=_unit_vec(0)))
+    db = await store._get_db()
+    await db.execute("UPDATE memories SET embedding_blob=NULL WHERE id=?", (mid,))
+    await db.commit()
+
+    assert await store.search_vector(_unit_vec(0), limit=5, min_score=0.0) == []
+
+
+async def test_expected_version_conflict_does_not_write(store: MemoryStore) -> None:
+    mid = await store.add(_entry("初版", embedding=_unit_vec(0)))
+    entry = await store.get(mid)
+    assert entry is not None
+    entry.content = "冲突写入"
+    assert not await store.update(entry, expected_version=entry.version + 1)
+    refreshed = await store.get(mid)
+    assert refreshed is not None and refreshed.content == "初版"
+    assert refreshed.embedding == _unit_vec(0)
 
 
 async def test_stale_index_rebuilt_on_open(tmp_path) -> None:

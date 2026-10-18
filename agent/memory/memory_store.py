@@ -311,61 +311,89 @@ class MemoryStore(BaseEntity):
                     db, memory_id, "upsert", entry_projection_payload(entry, memory_id),
                 )
 
-    async def update(self, entry: MemoryEntry, *, clear_embedding: bool = False, actor: str = "") -> bool:
-        """原地更新一条记忆的内容、标签等字段（保留原 id 和时间戳）。
+    async def update(
+        self,
+        entry: MemoryEntry,
+        *,
+        clear_embedding: bool = False,
+        actor: str = "",
+        expected_version: Optional[int] = None,
+        new_embedding: Optional[list[float]] = None,
+    ) -> bool:
+        """原地更新记忆，并保证正文、权威向量与派生索引一致。
 
-        embedding 语义：entry.embedding 非空时写入新向量；clear_embedding=True 时
-        显式清空（内容已变更，待后台 worker 重建）；其余情况不触碰 embedding_blob。
-        审计 detail 记被替换的旧内容（新值即条目现值，旧值才是失落的一方）。
+        ``entry.embedding`` 是读取快照，不代表调用方要写入新向量；只有
+        ``new_embedding`` 可显式替换向量。正文变化时默认失效旧向量并唤醒后台
+        回填。``expected_version`` 用于让基于旧快照的语义决策安全失效。
         """
         if not entry.id:
             return False
+        if clear_embedding and new_embedding is not None:
+            raise ValueError("clear_embedding 与 new_embedding 不能同时指定")
+        if new_embedding is not None and not new_embedding:
+            raise ValueError("new_embedding 不能为空向量")
+
         db = await self._get_db()
-        set_clause = "content=?, importance=?, metadata_json=?, tags_json=?, version=version+1"
-        params: list[Any] = [
-            entry.content,
-            entry.importance,
-            json.dumps(entry.metadata, ensure_ascii=False),
-            json.dumps(entry.tags, ensure_ascii=False),
-        ]
-        blob: Optional[bytes] = None
         embedding_touched = False
-        if entry.embedding:
-            blob = pack_embedding(entry.embedding)
-            set_clause += ", embedding_blob=?"
-            params.append(blob)
-            embedding_touched = True
-        elif clear_embedding:
-            set_clause += ", embedding_blob=NULL"
-            embedding_touched = True
-        params.append(entry.id)
+        embedding_cleared = False
+        old_version = 0
         async with self._tx(db):
             old_cursor = await db.execute(
-                "SELECT content FROM memories WHERE id=?", (entry.id,),
+                "SELECT content, version FROM memories WHERE id=?", (entry.id,),
             )
             old_row = await old_cursor.fetchone()
+            if old_row is None:
+                return False
+            old_version = int(old_row["version"] or 1)
+            if expected_version is not None and old_version != expected_version:
+                return False
+
+            content_changed = str(old_row["content"]) != entry.content
+            set_clause = "content=?, importance=?, metadata_json=?, tags_json=?, version=version+1"
+            params: list[Any] = [
+                entry.content,
+                entry.importance,
+                json.dumps(entry.metadata, ensure_ascii=False),
+                json.dumps(entry.tags, ensure_ascii=False),
+            ]
+            blob: Optional[bytes] = None
+            if new_embedding is not None:
+                blob = pack_embedding(new_embedding)
+                set_clause += ", embedding_blob=?"
+                params.append(blob)
+                embedding_touched = True
+            elif content_changed or clear_embedding:
+                set_clause += ", embedding_blob=NULL"
+                embedding_touched = True
+                embedding_cleared = True
+
+            params.extend((entry.id, old_version))
             cursor = await db.execute(
-                f"UPDATE memories SET {set_clause} WHERE id=?",
+                f"UPDATE memories SET {set_clause} WHERE id=? AND version=?",
                 params,
             )
-            if (cursor.rowcount or 0) > 0:
-                if embedding_touched:
-                    await self._conn.vec_upsert_memory(db, entry.id or 0, blob)
-                await self._conn.fts_upsert_memory(db, entry.id or 0, entry.content)
-                old_content = str(old_row["content"]) if old_row else ""
-                await self._record_audit(
-                    db, entry.id or 0, "update", old_content[:120], actor=actor,
-                )
-                await self._cognee.enqueue_sync(
-                    db,
-                    entry.id,
-                    "upsert",
-                    entry_projection_payload(entry, entry.id),
-                )
-        updated = (cursor.rowcount or 0) > 0
-        if updated:
-            log(f"📝 记忆更新 [{entry.memory_type.value}] id={entry.id}: {entry.content[:50]}", tag="思维")
-        return updated
+            if (cursor.rowcount or 0) == 0:
+                return False
+            if embedding_touched:
+                await self._conn.vec_upsert_memory(db, entry.id, blob)
+            await self._conn.fts_upsert_memory(db, entry.id, entry.content)
+            await self._record_audit(
+                db, entry.id, "update", str(old_row["content"])[:120], actor=actor,
+            )
+            await self._cognee.enqueue_sync(
+                db, entry.id, "upsert", entry_projection_payload(entry, entry.id),
+            )
+
+        entry.version = old_version + 1
+        if new_embedding is not None:
+            entry.embedding = list(new_embedding)
+        elif embedding_cleared:
+            entry.embedding = None
+        if embedding_cleared:
+            from .embedding import wake_embedding_worker
+            wake_embedding_worker()
+        log(f"📝 记忆更新 [{entry.memory_type.value}] id={entry.id}: {entry.content[:50]}", tag="思维")
+        return True
 
     async def delete(self, memory_id: int, *, actor: str = "") -> bool:
         db = await self._get_db()
@@ -1655,24 +1683,26 @@ class MemoryStore(BaseEntity):
         return {"memories": mem, "chunks": chunks}
 
     async def rebuild_embeddings(self) -> Dict[str, int]:
-        """清空全部向量数据（记忆 / chunk / 缓存 + vec 索引），供切换 embedding 模型后重建。
+        """失效活跃与归档记忆、文档分块及缓存中的全部向量，供显式重建。
 
-        权威 BLOB 列置 NULL 后由后台 EmbeddingWorker 按新模型重新回填；
-        vec 索引表直接删除，维度在首次写入时按新向量惰性重建。
+        后台 worker 只回填活跃记忆和分块；归档记忆恢复为活跃后再进入回填。
         """
         db = await self._get_db()
         mem = await fetch_count(
             db, "SELECT COUNT(*) FROM memories WHERE embedding_blob IS NOT NULL")
+        archived = await fetch_count(
+            db, "SELECT COUNT(*) FROM memories_archive WHERE embedding_blob IS NOT NULL")
         chunks = await fetch_count(
             db, "SELECT COUNT(*) FROM chunks WHERE embedding IS NOT NULL")
         async with self._tx(db):
             await db.execute("UPDATE memories SET embedding_blob=NULL")
+            await db.execute("UPDATE memories_archive SET embedding_blob=NULL")
             await db.execute("UPDATE chunks SET embedding=NULL")
             await db.execute("DELETE FROM embedding_cache")
             await db.execute("DROP TABLE IF EXISTS memories_vec")
             await db.execute("DROP TABLE IF EXISTS chunks_vec")
         self._vec_dims = None
-        return {"memories": mem, "chunks": chunks}
+        return {"memories": mem, "archived": archived, "chunks": chunks}
 
     # ------------------------------------------------------------------
     # 工具错误追踪（委托 ToolErrorTracker）

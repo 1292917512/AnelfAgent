@@ -552,18 +552,36 @@ class DatabaseService:
             assignments[stale_embedding_col] = None
 
         set_sql = ", ".join(f'"{n}" = ?' for n in assignments)
+        memories_content_changed = table == "memories" and "content" in values
+        has_version = any(column["name"] == "version" for column in columns)
+        if table == "memories" and has_version and "version" not in assignments:
+            set_sql += ', "version" = COALESCE("version", 0) + 1'
+        vector_invalidated = (
+            memories_content_changed
+            and stale_embedding_col == "embedding_blob"
+            and assignments.get("embedding_blob") is None
+        )
         async with self._row_write(db_id, table, conn):
             cursor = await conn.execute(
                 f'UPDATE "{table}" SET {set_sql} WHERE rowid = ?',
                 (*assignments.values(), rowid),
             )
+            if vector_invalidated:
+                vec_exists = await conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memories_vec'"
+                )
+                if await vec_exists.fetchone():
+                    await conn.execute("DELETE FROM memories_vec WHERE rowid=?", (rowid,))
         if cursor.rowcount == 0:
             raise DatabaseError(f"行不存在: rowid={rowid}", status_code=404)
         # memories 表内容列变更：同步 memories_fts（手动同步表，不随 UPDATE 自动
         # 更新；行数不变所以启动对账不会自愈，旧关键词会一直可搜）
-        if table == "memories" and "content" in values:
+        if memories_content_changed:
             async with self._conn_locks[db_id]:
                 await self._sync_memories_fts(conn, rowid, str(values["content"]))
+            if vector_invalidated:
+                from agent.memory.embedding import wake_embedding_worker
+                wake_embedding_worker()
         log(f"数据库管理: 更新行 {db_id}/{table} rowid={rowid} 列={list(values.keys())}", "DEBUG", tag="数据库")
 
     async def delete_row(self, db_id: str, table: str, rowid: int) -> None:
