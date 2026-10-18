@@ -128,6 +128,48 @@ class TestHeartbeatDecisionDeferral:
         assert scheduled == [DecisionType.REPLY.value]
 
 
+class TestMessageCycleToolActionGuard:
+    async def test_message_cycle_never_runs_parallel_tool_action(self, monkeypatch) -> None:
+        """同一用户指令不得同时进入 REPLY 与 TOOL_ACTION 两条工具循环。"""
+        mind = _fake_mind()
+        situation = SituationContext(pending_messages=[
+            PendingMessage(scope="group_wcauto:g1", preview="测试全部消息类型",
+                           adapter_key="wcauto"),
+        ])
+        decisions = [
+            Decision(type=DecisionType.REPLY, target="group_wcauto:g1", priority=10),
+            Decision(type=DecisionType.TOOL_ACTION, target="group_wcauto:g1",
+                     content="测试全部消息类型", priority=9),
+        ]
+        await cycle_mod.execute_decisions(
+            mind, {}, situation, decisions, is_heartbeat=False,
+        )
+        assert cycle_mod.execute_safely.await_count == 1
+        decision = cycle_mod.execute_safely.await_args.args[1]
+        assert decision.type == DecisionType.REPLY
+
+    async def test_heartbeat_keeps_autonomous_tool_action(self, monkeypatch) -> None:
+        """心跳周期不受聊天守卫影响，自主 TOOL_ACTION 仍转后台执行。"""
+        mind = _fake_mind()
+        situation = SituationContext(pending_messages=[
+            PendingMessage(scope="user_qq:u1", preview="帮我查一下", adapter_key="qq"),
+        ])
+        decisions = [
+            Decision(type=DecisionType.REPLY, target="user_qq:u1", priority=10),
+            Decision(type=DecisionType.TOOL_ACTION, content="自主维护", priority=5),
+        ]
+        await cycle_mod.execute_decisions(
+            mind, {}, situation, decisions, is_heartbeat=True,
+        )
+        for _ in range(10):
+            await asyncio.sleep(0)
+            if cycle_mod.execute_safely.await_count >= 2:
+                break
+        assert cycle_mod.execute_safely.await_count == 2
+        executed = {call.args[1].type for call in cycle_mod.execute_safely.await_args_list}
+        assert executed == {DecisionType.REPLY, DecisionType.TOOL_ACTION}
+
+
 @pytest.mark.parametrize("heartbeat", [False, True])
 async def test_direct_channel_owns_request_and_preserves_background_work(monkeypatch, heartbeat: bool) -> None:
     from agent.channel.reply_policy import ReplyPolicy

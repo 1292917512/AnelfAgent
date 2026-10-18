@@ -202,6 +202,16 @@ async def execute_decisions(
     会话结束信息写入 end_payload，由 _autonomous_cycle 的 finally 统一发射，
     确保异常路径下会话也能按 id 关闭。
     """
+    # 用户请求只由 REPLY 的工具循环执行：同一指令若再派生 TOOL_ACTION，
+    # 会与 REPLY 并行启动第二个 reflect 工具循环，造成重复思考与重复操作。
+    # 心跳周期的自主维护仍可使用 TOOL_ACTION。
+    if not is_heartbeat and situation.pending_messages:
+        suppressed = [d for d in decisions if d.type == DecisionType.TOOL_ACTION]
+        if suppressed:
+            decisions = [d for d in decisions if d.type != DecisionType.TOOL_ACTION]
+            log(f"用户消息周期抑制 {len(suppressed)} 个 TOOL_ACTION 决策"
+                "（由 REPLY 工具循环统一执行）", tag="思维")
+
     await event_bus.emit(EVENT_THINKING_DECISION, {
         "decisions": [
             {"type": d.type.value, "target": d.target, "reason": d.reason, "priority": d.priority}
