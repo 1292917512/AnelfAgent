@@ -36,6 +36,8 @@ class BridgeConfig:
     enable_moments: bool = True
     # 桥数据目录（下载媒体缓存等），留空为 <配置目录>/data
     data_dir: str = ""
+    # 微信 4.x 数据目录（xwechat_files 所在地）；留空自动探测，跨用户会话/自定义路径时须显式指定
+    db_dir: str = ""
 
     @property
     def media_max_bytes(self) -> int:

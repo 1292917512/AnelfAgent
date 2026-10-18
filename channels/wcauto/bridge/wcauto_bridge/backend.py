@@ -126,7 +126,7 @@ class WeChatBackend:
         """启动读侧：解密库 + 全局监听 + 防撤回。GUI 写侧不在这里初始化。"""
         _, WeChatDB, Listener, MediaDownloader = _lazy_wechatauto()
         cfg = self._cfg
-        self._db = WeChatDB(account=cfg.account) if cfg.account else WeChatDB()
+        self._db = WeChatDB(account=cfg.account or None, db_dir=cfg.db_dir or None)
         self._self_info = dict(self._db.get_self_info() or {})
         self._media = MediaDownloader(self._db)
         self._downloads_dir = os.path.join(self._data_dir(), "downloads")
