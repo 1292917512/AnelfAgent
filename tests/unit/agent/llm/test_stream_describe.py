@@ -47,9 +47,9 @@ async def _stalled_gen() -> AsyncIterator[ChatStreamDelta]:
 
 
 async def _drip_forever_gen() -> AsyncIterator[ChatStreamDelta]:
-    """吊流：每 chunk 都有活动但永不结束（天花板兜底）。"""
+    """吊流：持续让出事件循环并产出增量，避免真实定时延迟干扰天花板测试。"""
     while True:
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(0)
         yield ChatStreamDelta(content="滴")
 
 
