@@ -42,7 +42,6 @@ from core.tags import tag_label
 from .dedup import (
     apply_evidence_signals,
     apply_update,
-    attribution_candidates,
     gather_dedup_candidates,
     judge_write,
     light_llm,
@@ -541,8 +540,7 @@ class AutoCapturePipeline:
                 candidates = await gather_dedup_candidates(
                     store, self._memory.embedder, item["content"],
                 )
-                candidates = attribution_candidates(candidates, tags)
-                decision = await judge_write(item["content"], candidates)
+                decision = await judge_write(item["content"], candidates, tags=tags)
                 action = decision.get("action", "store")
                 from . import metrics
                 metrics.incr(f"write.dedup_llm_{action}")

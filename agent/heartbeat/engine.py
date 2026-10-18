@@ -1241,7 +1241,7 @@ class HeartbeatEngine:
                 judge_write,
             )
             candidates = await gather_dedup_candidates(store, self.memory.embedder, content)
-            decision = await judge_write(content, candidates)
+            decision = await judge_write(content, candidates, tags=tags)
             action = decision.get("action", "store")
             metrics.incr(f"write.dedup_llm_{action}")
             if action == "skip":

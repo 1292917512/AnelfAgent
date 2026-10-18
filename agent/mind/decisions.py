@@ -254,7 +254,7 @@ async def execute_remember(mind: Mind, decision: Decision) -> None:
         # 第二级：LLM 语义裁决（store / skip / update / merge）
         from agent.memory.dedup import apply_update, gather_dedup_candidates, judge_write
         candidates = await gather_dedup_candidates(store, mind.embedder, content)
-        verdict = await judge_write(content, candidates)
+        verdict = await judge_write(content, candidates, tags=tags)
         action = verdict.get("action", "store")
         metrics.incr(f"write.dedup_llm_{action}")
 

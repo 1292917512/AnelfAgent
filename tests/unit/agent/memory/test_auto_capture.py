@@ -212,7 +212,7 @@ class TestSpeakerTagging:
         async def fake_gather(store, embedder, content):
             return []
 
-        async def fake_judge(content, candidates):
+        async def fake_judge(content, candidates, *, tags=None):
             return {"action": "store"}
 
         monkeypatch.setattr(ac, "light_llm", fake_llm)
@@ -272,7 +272,7 @@ class TestSpeakerTagging:
         async def fake_gather(store, embedder, content):
             return []
 
-        async def fake_judge(content, candidates):
+        async def fake_judge(content, candidates, *, tags=None):
             return {"action": "store"}
 
         monkeypatch.setattr(ac, "light_llm", fake_llm)

@@ -124,15 +124,18 @@ class TestRecallSourceMarking:
         assert forgotten["sensitivity"] == "private"
 
     async def test_same_content_for_different_people_is_not_write_duplicate(self, store) -> None:
-        from agent.memory.dedup import attribution_candidates
+        from agent.memory.dedup import gather_dedup_candidates
 
         first = _entry("sameperson 喜欢安静的房间", ["user:qq:1"])
         mid = await store.add(first)
         first = await store.get(mid)
         assert first is not None
+        # 规则判重保持保守：不同人的同句文本不做零成本拦截
         assert await store.has_similar_content(first.content, tags=["user:qq:1"])
         assert not await store.has_similar_content(first.content, tags=["user:qq:2"])
-        assert attribution_candidates([first], ["user:qq:2"]) == []
+        # 候选召回不做身份预过滤：跨群/跨人的候选交给判断段结合标签裁决
+        candidates = await gather_dedup_candidates(store, None, first.content)
+        assert any(c.id == mid for c in candidates)
 
     async def test_results_carry_source_and_time(self, bound_store, store: MemoryStore) -> None:
         await store.add(_entry("catnote 主人喜欢猫", ["user:1", "topic:猫"]))

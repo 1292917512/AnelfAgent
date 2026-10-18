@@ -138,9 +138,11 @@ async def gather_dedup_candidates(
 
 # 关系四选一的选项语义（判断模型只看到选项名与描述，边界靠描述拉开）
 _RELATION_CRITERIA: Dict[str, str] = {
-    "novel": "与所有候选都不重复（不同事实或不同事件），应直接写入新记忆",
+    "novel": "与所有候选都不重复（不同事实或不同事件），应直接写入新记忆。"
+             "同一句话涉及的 user:/group: 对象不同时，是不同人各自的事实，不是重复",
     "covered": "已被某条候选完整覆盖——同一事实且没有增加任何新信息"
-               "（更简略的重述、子集表述也算覆盖），应放弃写入",
+               "（更简略的重述、子集表述也算覆盖），应放弃写入。"
+               "不依赖说话人的通用事实在不同频道再次出现也算覆盖（多方确认）",
     "evolution": "是对某一条候选的更新、补充或修正（同一事实的新进展或更准确的表述），"
                  "应合并进该候选，而不是新增一条造成矛盾或冗余",
     "fragments": "与多条候选互为片段或重复，应把这些候选与新内容合并为一条完整记忆",
@@ -209,11 +211,17 @@ async def _synthesize_merged_content(content: str, targets: List[MemoryEntry]) -
         return ""
 
 
-async def judge_write(content: str, candidates: List[MemoryEntry]) -> Dict[str, Any]:
+async def judge_write(
+    content: str,
+    candidates: List[MemoryEntry],
+    *,
+    tags: Optional[List[str]] = None,
+) -> Dict[str, Any]:
     """对一条新记忆做写入裁决。无候选、判断失败或置信度不足时返回 store。
 
     判断段经 agent/judgment 平台（Jev 原生或普通模型回退）；仅 update/merge
-    再经 light_llm 合成合并文本。去重永远不阻塞写入路径。
+    再经 light_llm 合成合并文本。去重永远不阻塞写入路径。候选不做身份预过滤
+    ——跨频道/跨人的相似内容由判断模型结合候选标签与新记忆标签裁决。
     """
     if not candidates or not get_config_bool("memory_llm_dedup_enabled", True):
         return {"action": "store"}
@@ -225,6 +233,7 @@ async def judge_write(content: str, candidates: List[MemoryEntry]) -> Dict[str, 
     }
     state: Dict[str, Any] = {
         "new_memory": content,
+        "new_tags": list(tags or []),
         "candidates": previews,
     }
     questions = _build_judgment_questions(previews)
@@ -366,12 +375,6 @@ async def apply_evidence_signals(
         log(f"证据信号回流失败（已忽略）: {exc}", "DEBUG", tag="记忆")
 
 
-def attribution_candidates(candidates: List[MemoryEntry], tags: list[str]) -> List[MemoryEntry]:
-    """自动写入只在同一组身份归属内判重，跨身份合并须由显式整理决定。"""
-    identity = {t for t in tags if t.startswith(("user:", "group:"))}
-    return [e for e in candidates if {t for t in e.tags if t.startswith(("user:", "group:"))} == identity]
-
-
 async def apply_update(
     store: MemoryStore,
     target_id: int,
@@ -394,13 +397,11 @@ async def apply_update(
         # 内容与标签均无变化：无变化的 update 会空转审计并触发
         # cognee 投影重跑，是记忆写入风暴的主要来源之一
         return target
-    changed = target.content != merged_content
     target.content = merged_content
     target.tags = merged_tags
     target.metadata = merged_metadata
-    if changed:
-        target.embedding = None
-    ok = await store.update(target, clear_embedding=changed, actor=actor)
+    # 正文变化时 Store 统一失效旧向量并唤醒后台回填
+    ok = await store.update(target, actor=actor)
     if not ok:
         return None
     return target

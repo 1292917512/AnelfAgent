@@ -340,7 +340,7 @@ class TaskExecutor:
             return
 
         candidates = await gather_dedup_candidates(store, self.memory.embedder, content)
-        verdict = await judge_write(content, candidates)
+        verdict = await judge_write(content, candidates, tags=result.tags)
         action = verdict.get("action", "store")
         metrics.incr(f"write.dedup_llm_{action}")
 
