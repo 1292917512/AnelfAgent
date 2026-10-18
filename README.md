@@ -1,6 +1,6 @@
 # AnelfAgent
 
-**v0.3** · 统一智能体框架 — 自主思考 · 语义记忆 · 工具编排 · 多模态生成 · 实时语音 · 多通道通信
+**v0.3** · 统一智能体框架 — 自主思考 · 语义记忆 · 工具编排 · 多模态生成 · 实时语音 · 多平台常驻
 
 **简体中文** | [English](README_EN.md)
 
@@ -8,7 +8,7 @@
 [![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
 [![uv](https://img.shields.io/badge/package%20manager-uv-DE5FE9.svg)](https://github.com/astral-sh/uv)
 
-AnelfAgent 是一个开源自托管的 AI 智能体运行时：给它一个 LLM API Key，它就能成为一个**有自己的记忆、会自主学习技能、能主动干活、住在多个聊天平台里**的 AI 助手。它内置自主决策引擎、混合语义记忆、技能自学习、子代理调度、可恢复工作流、MCP 工具桥接与多平台通道适配，覆盖文本、图像、语音、视频、音乐多模态能力，并附带一个现代化 WebUI 完成配置、对话与运维的全部操作。
+AnelfAgent 是一个开源自托管的 AI 智能体运行时：给它一个 LLM API Key，它就能成为一个**有自己的记忆、会自主学习技能、能主动干活、同时住在多个聊天平台里**的 AI 个体——不是一问一答的对话框，也不是一套按流程跑的脚本。记忆跟着「人」走，而不是跟着某个对话窗口走：换个话题、隔几天再聊，它仍然记得你是谁、聊过什么、答应过什么；同一个它同时活在 QQ、微信、飞书、Telegram 等各个平台上，谁在私聊、谁在群里发言都分得清，并对每个人保持各自的记忆与边界。支撑这些的是内置的自主决策引擎、混合语义记忆、技能自学习、子代理调度、可恢复工作流、MCP 工具桥接与多平台通道适配，覆盖文本、图像、语音、视频、音乐多模态能力，并附带一个现代化 WebUI 完成配置、对话与运维的全部操作。
 
 > 本仓库为 **0.3 稳定基线**：架构与能力已趋于定型，适合自托管部署与二次扩展。
 
@@ -61,8 +61,9 @@ start.bat                  # Windows
 
 内置 Cognee 知识图谱，默认启用、依赖自动安装，在 WebUI 配置聊天与 Embedding 模型即可使用。
 
-联网检索内置 SearXNG 接口，动态网页读取内置 Crawl4AI 接口。有 Docker 时默认后台启动本地服务，
-Web 与 AI 均可管理配置、启动、更新和回退；缺少环境会提供装配指引，详见[本地检索服务](deploy/retrieval/README.md)。
+联网检索与网页读取内置提供者矩阵（内置源 / BigModel / DeepSeek，以及可本地部署的 SearXNG / Crawl4AI）。
+有 Docker 时默认后台启动本地服务，Web 与 AI 均可管理配置、启动、更新和回退；缺少环境会提供装配指引，
+详见[本地检索服务](deploy/retrieval/README.md)。
 
 ### 日常运维
 
@@ -84,12 +85,12 @@ WebUI →「频道」页选择平台按提示操作即可。最快上手的是**
 
 ## 它能做什么？
 
-一句话：**一个 7×24 在线、记得住事、学得会技能、自己会干活的 AI**。
+一句话：**一个 7×24 在线、跨对话记得住人、学得会技能、自己会干活的 AI 个体**——更像一位长期相处的伙伴，而不是一个用完即走的问答工具。
 
 | 场景 | 说明 |
 |---|---|
-| 💬 聊天助手 | 住在 QQ / 微信 / 飞书 / Telegram / B站 / AcFun / WebUI 里，多平台同一颗大脑 |
-| 🧠 记得住 | 语义记忆 + 知识图谱：你说过的事、你的喜好、你们的关系，长期记住且越用越准 |
+| 💬 聊天助手 | 住在 QQ / 微信 / 飞书 / Telegram / AcFun / WebUI 等频道里，多平台同时在线、共享同一颗大脑，认得出每个和它说话的人 |
+| 🧠 记得住 | 语义记忆 + 知识图谱：你说过的事、你的喜好、你们的关系，长期记住且越用越准——记忆跟着人走，换话题、开新会话也不会清零 |
 | 🌱 会成长 | 聊天中自动沉淀「技能」（排障经验、任务方法），下次遇到同类问题直接复用 |
 | 🛠 干活 | 读写文件、跑命令、联网搜索、操作桌面、控制智能家居、管理服务器——经规则与 AI 评审执行 |
 | ⏰ 主动性 | 心跳调度：定时提醒、定时任务、空闲时自我反思整理，不等指令也能推进工作 |
@@ -120,6 +121,16 @@ WebUI →「频道」页选择平台按提示操作即可。最快上手的是**
 | `PLAN` | 目标规划 |
 
 系统提示按变更频率分层（stable → summary → 历史 → context → volatile → provider），字节级稳定命中 Anthropic / OpenAI **前缀缓存**，长对话成本显著降低。
+
+### 跨频道与跨对话：一个连续的个体
+
+AnelfAgent 不是「每个聊天窗口各开一个机器人」：它只有一个「我」，却同时在许多地方在场，也只维护一份连续的记忆与性格。
+
+- **一颗大脑，多个现场**：QQ、微信、飞书、Telegram、WebUI……每个频道都是它的一个「在场」，共享同一份记忆、技能与人设。在这一边学会的东西，换到另一边照样用得上
+- **认得出每个说话的人**：频道 × 私聊 / 群聊各自独立成会话，群里几个人同时发言也分得清谁说了什么。你的偏好、你们的关系和约定挂在「你」身上，而不是挂在某次对话里——新开话题、隔周再聊，它依然记得
+- **记忆边界清晰**：A 的私人记忆与反思不会出现在 B 的对话里；个人关系网络按人隔离，公共知识全局共享
+- **跨平台认出同一个人**：同一个人在不同平台的身份可通过别名关联为同一实体，对话历史合并识别；语音场景还有声纹加持——听声音就知道是你
+- **对话结束 ≠ 关系结束**：约好「明天提醒我」，到点它会主动来找你；没聊完的事、没做完的活，自然延续到下一次对话
 
 ### 实体注册与工具门控
 
@@ -226,15 +237,17 @@ Embedding + FTS5 + 标签匹配 + 时间衰减的混合评分召回；可选启�
 
 ## 多平台接入
 
-频道目录自动发现 + 热插拔，新增频道只需 `channels/{name}/adapter.py` + 配置：
+多个频道可**同时开启**，共享同一个体（记忆 / 技能 / 人设），各自维护独立的会话与身份边界。频道目录自动发现 + 热插拔，新增频道只需 `channels/{name}/adapter.py` + 配置：
 
 | 平台 | 要点 |
 |---|---|
 | **QQ** | OneBot v11 + NapCat（直连） |
-| **微信** | iLink Bot API，扫码登录，无需公网 webhook（详见 [`channels/weixin/README.md`](channels/weixin/README.md)） |
+| **微信** | 双通道并存：`weixin` 走 iLink Bot API，扫码登录、无需公网 webhook（[`channels/weixin/README.md`](channels/weixin/README.md)）；`wcauto` 经 Windows 桥驱动个人号桌面客户端，私聊 / 群聊 / 媒体 / 朋友圈全能力（[`channels/wcauto/README.md`](channels/wcauto/README.md)） |
 | **飞书** | WebSocket 事件驱动；另有独立的飞书任务委派 ACP 接入（[`acp/`](acp) + `scripts/anelf-acp`，见 [`docs/feishu-task-binding.md`](docs/feishu-task-binding.md)） |
 | **Telegram** | Bot API 长轮询 / Webhook |
-| **Bilibili / AcFun** | 弹幕与私信接入 |
+| **GitHub** | 仓库动态监听（push / issue / PR / release / CI / star）：轮询零公网依赖或 Webhook，事件按优先级推送唤醒 AI，AI 可反查与回写（[`channels/github/README.md`](channels/github/README.md)） |
+| **AcFun** | 弹幕与私信接入 |
+| **Minecraft** | 游戏内陪玩（复用 Mineflayer MCP，Java 26.1，[`channels/minecraft/README.md`](channels/minecraft/README.md)） |
 | **WebUI** | 内置三栏对话工作台（文件树 / 对话流 / Dock），SSE 推送，AI 可反向驱动界面 |
 | **HTTP API** | 同步请求-响应 |
 | **CLI** | 终端调试 |
@@ -327,7 +340,7 @@ AnelfAgent/
 ├── restart.sh                # 一键后台重启
 ├── core/                     # 基础框架（零业务依赖）
 ├── agent/                    # 智能体内核（不依赖 web）
-├── channels/                 # qq / weixin / feishu / telegram / bilibili / acfun / webui / http_api / cli
+├── channels/                 # qq / weixin / wcauto / feishu / telegram / github / minecraft / acfun / webui / http_api / cli
 ├── entities/                 # filesystem / codebox / smart_home / minimax / vault / ssh / mcp / ...
 ├── services/ · web/          # 业务封装 · Web API + React 前端
 ├── acp/ · deploy/ · scripts/ # 飞书 ACP · 边车参考服务 · 运维脚本
