@@ -93,7 +93,8 @@ CapabilityProvider 协议（name/capabilities/is_configured/run）+ CapabilityRo
 联网检索/网页读取/仓库文档/HTTP 请求/文件下载/文档重排序核心化：
 
 - **providers**（能力×提供者矩阵：Provider ABC + SearchCap/ReaderCap/RepoCap/CrawlCap Protocol；
-  builtin 轻量抓取、bigmodel、SearXNG 自托管搜索、Crawl4AI 浏览器读取/抓取内置，组件经
+  builtin 轻量抓取、bigmodel、deepseek（Search/Fetch 按次计费）、SearXNG 自托管搜索、
+  Crawl4AI 浏览器读取/抓取内置，组件经
   `_sdk.register_retrieval_provider` 接入，可启停；`config_group` 驱动提供者配置弹窗）
 - **fetcher**（SSRF 防护与规则路由抓取）+ **extractor**（三层正文提取）+ **robots** + **rerank**
   （rerank 模型链）
@@ -107,7 +108,8 @@ CapabilityProvider 协议（name/capabilities/is_configured/run）+ CapabilityRo
   后台启动本地服务，缺失环境、部署阶段与结果通过可关闭的动态上下文提供者提示；成功结果保留五分钟，
   提供者只读内存，不执行 I/O，也不写入会话历史。
 - 配置统一走 ConfigManager（retrieval_active/retrieval_disabled_providers/
-  retrieval_bigmodel_api_key(password)/retrieval_ssrf_protection，retrieval 组）
+  retrieval_bigmodel_api_key(password)/retrieval_deepseek_api_key(password)/
+  retrieval_ssrf_protection，retrieval 组）
 - 网络代理统一使用 [核心网络 SDK](network.md)，工具通过 `proxy_mode` 选择全局规则、直连或全局代理。
 - **数据面**：`services/retrieval.py` + `/api/retrieval/*` + 视觉/声音能力状态端点；检索页
   （/retrieval）能力×提供者矩阵 + 抓取设置；视觉页「生成能力」页签 + 声音页「生成」页签共用

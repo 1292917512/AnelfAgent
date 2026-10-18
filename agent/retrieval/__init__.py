@@ -2,7 +2,7 @@
 
 划分纪律（核心由 Agent 集成，平台组件可插拔）：
 - providers/：能力 × 提供者矩阵（Provider 抽象 + SearchCap/ReaderCap/RepoCap/CrawlCap
-  统一 Protocol）——builtin、bigmodel、searxng 与 crawl4ai 为内置提供者，
+  统一 Protocol）——builtin、bigmodel、deepseek、searxng 与 crawl4ai 为内置提供者，
   第三方平台组件经 entities._sdk.register_retrieval_provider 注册；
 - fetcher.py / extractor.py / robots.py：直连抓取设施（SSRF 防护 / robots
   合规 / 三层正文提取管线）；
@@ -40,6 +40,11 @@ register_configs_safe({
         },
         "retrieval_bigmodel_api_key": {
             "description": "智谱 BigModel Coding Plan API Key（检索/网页读取/仓库文档）",
+            "default": "",
+            "value_type": "password",
+        },
+        "retrieval_deepseek_api_key": {
+            "description": "DeepSeek API Key（Search/Fetch 检索与网页读取，按成功请求计费；留空回退 LLM 供应商 deepseek.com 凭据）",
             "default": "",
             "value_type": "password",
         },

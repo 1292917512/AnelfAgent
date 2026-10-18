@@ -6,8 +6,8 @@
 search 默认首个可用组件。显式指定不做隐式回退——不可用即报明原因。
 
 内置提供者：builtin（轻量读取）、searxng（自托管搜索）、crawl4ai（浏览器读取/抓取）、
-bigmodel（智谱检索/读取/仓库文档）；自托管服务配置完整后参与选择。
-第三方组件经 entities._sdk.register_retrieval_provider 注册（同名覆盖）。
+bigmodel（智谱检索/读取/仓库文档）、deepseek（DeepSeek 检索/读取）；自托管服务配置
+完整后参与选择。第三方组件经 entities._sdk.register_retrieval_provider 注册（同名覆盖）。
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from agent.retrieval.providers.base import (
 from agent.retrieval.providers.bigmodel import BigModelProvider
 from agent.retrieval.providers.builtin import BuiltinProvider
 from agent.retrieval.providers.crawl4ai import Crawl4AIProvider
+from agent.retrieval.providers.deepseek import DeepSeekProvider
 from agent.retrieval.providers.searxng import SearXNGProvider
 from core.registration import record_mapping
 
@@ -50,6 +51,7 @@ def register_builtin_providers() -> None:
     register(SearXNGProvider())
     register(Crawl4AIProvider())
     register(BigModelProvider())
+    register(DeepSeekProvider())
 
 
 def list_providers() -> List[Provider]:
