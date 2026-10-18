@@ -174,7 +174,7 @@ class FakeMind:
                     record_delivery(tags.get("delivery_scope", ""))
         return result
 
-    def _set_phase(self, phase) -> None:
+    def set_phase(self, phase) -> None:
         pass
 
 class FakeModelInvoker:

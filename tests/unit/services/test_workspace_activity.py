@@ -163,7 +163,7 @@ async def test_observed_preparation_and_tools_keep_concurrent_scopes_and_termina
     monkeypatch.setattr(tool_execution.EntityRegistry, "execute_tool_call", execute)
 
     async def work(scope, cancelled):
-        mind = SimpleNamespace(_set_phase=lambda phase: None, memory_store=None)
+        mind = SimpleNamespace(set_phase=lambda phase: None, memory_store=None)
         messages = [{"role": "system", "content": scope, "_layer": "memory"}]
         with tool_request(scope=scope):
             async with activity_scope(scope, scope):
@@ -541,7 +541,7 @@ async def test_structured_tool_failure_is_rendered_as_failure(activity, monkeypa
     monkeypatch.setattr("agent.mind.execution.tool_execution.check_tool_permission", AsyncMock(return_value=None))
     monkeypatch.setattr("core.entity.EntityRegistry.execute_tool_call",
                         AsyncMock(return_value='{"success":false,"error":"Invalid destination","retryable":false}'))
-    mind = SimpleNamespace(_set_phase=lambda _: None, memory_store=None)
+    mind = SimpleNamespace(set_phase=lambda _: None, memory_store=None)
     async with activity_scope("failure", "group_qq:42"):
         await execute_one_tool(mind, ToolCall(id="send", name="send_message", arguments='{"target":"missing"}'), 0)
     entry = service.snapshot()["runs"][0]["entries"][0]

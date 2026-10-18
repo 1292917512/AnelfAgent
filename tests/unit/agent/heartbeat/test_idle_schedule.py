@@ -426,7 +426,7 @@ class TestReflectDeferral:
         mind = SimpleNamespace(
             heartbeat_engine=engine,
             _reflecting=False,
-            _set_phase=lambda phase: None,
+            set_phase=lambda phase: None,
             pfc=SimpleNamespace(has_pending_tasks=lambda: False),
         )
         count = await execute_reflect(mind, Decision(type=DecisionType.REFLECT, reason="对话质量下滑"))
@@ -448,7 +448,7 @@ class TestReflectDeferral:
         mind = SimpleNamespace(
             heartbeat_engine=engine,
             _reflecting=False,
-            _set_phase=lambda phase: None,
+            set_phase=lambda phase: None,
             pfc=SimpleNamespace(has_pending_tasks=lambda: False),
         )
         count = await execute_reflect(mind, Decision(type=DecisionType.REFLECT, reason=""))

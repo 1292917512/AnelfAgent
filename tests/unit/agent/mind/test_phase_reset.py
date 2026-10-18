@@ -25,7 +25,7 @@ from agent.mind.prefrontal_cortex import PrefrontalCortex
 
 
 def _bare_mind() -> Any:
-    """最小 Mind 实例（绕过构造）：phase 判定触达的字段 + 真实 _set_phase/收口。"""
+    """最小 Mind 实例（绕过构造）：phase 判定触达的字段 + 真实 set_phase/收口。"""
     mind = Mind.__new__(Mind)
     mind.config = MindConfig()
     mind.phase = MindPhase.IDLE
@@ -36,7 +36,7 @@ def _bare_mind() -> Any:
 
 
 def _phase_log(mind: Any) -> List[MindPhase]:
-    """包装真实 _set_phase，记录相位流转序列。"""
+    """包装真实 set_phase，记录相位流转序列。"""
     log: List[MindPhase] = []
     real = mind.set_phase
 

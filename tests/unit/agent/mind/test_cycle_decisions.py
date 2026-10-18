@@ -23,7 +23,7 @@ def _fake_mind() -> Any:
         _reflecting=False,
         _active_scopes=set(),
         _auto_cycle_retry=0,
-        _set_phase=lambda phase: None,
+        set_phase=lambda phase: None,
         _schedule_next_cycle=lambda reason: None,
         heartbeat_engine=SimpleNamespace(reflection_pending=False, start_background_tick=Mock()),
         _reply_idle_event=asyncio.Event(),
