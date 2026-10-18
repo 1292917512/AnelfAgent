@@ -31,22 +31,18 @@ export function ServerCard({ server, oauth, position, total, disabled, sortable,
         <span className="text-[10px] tabular-nums text-muted">{position + 1}</span>
       </div>
       <div className="min-w-0 flex-1 space-y-2">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
           <Icon size={16} className="shrink-0 text-accent" />
           <h2 className="min-w-0 break-all text-sm font-semibold text-heading">{server.name}</h2>
           <span className="inline-flex items-center gap-1.5 text-xs text-muted"><StatusDot status={state} />{t(label)}</span>
           <Badge variant="neutral">{server.transport}</Badge>
           {server.plugin && <Badge variant="info">{t("pluginBadge", { plugin: server.plugin })}</Badge>}
-        </div>
-        {server.url && <p className="truncate font-mono text-xs text-muted" title={server.url}>{server.url}</p>}
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex flex-wrap items-center gap-2">
-            {server.connected && !server.channel_only && <ToolsSection serverName={server.name} toolCount={server.tool_count} />}
-            <span className="text-[11px] text-muted">{t(server.sleeping ? "sleepingBadge" : "awakeBadge")}</span>
-            {oauth?.pending_url ? <a href={oauth.pending_url} target="_blank" rel="noreferrer" className="text-xs text-accent hover:underline">{t("oauthPending")}</a>
-              : oauth?.authorized && <Badge variant="info">{t("oauthAuthorized")}</Badge>}
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
+          {server.url && <p className="min-w-0 flex-1 truncate font-mono text-xs text-muted" title={server.url}>{server.url}</p>}
+          {server.connected && !server.channel_only && <ToolsSection serverName={server.name} toolCount={server.tool_count} />}
+          <span className="text-[11px] text-muted">{t(server.sleeping ? "sleepingBadge" : "awakeBadge")}</span>
+          {oauth?.pending_url ? <a href={oauth.pending_url} target="_blank" rel="noreferrer" className="text-xs text-accent hover:underline">{t("oauthPending")}</a>
+            : oauth?.authorized && <Badge variant="info">{t("oauthAuthorized")}</Badge>}
+          <div className="ms-auto flex shrink-0 flex-wrap items-center gap-2">
             <div className="flex items-center border-r border-border pr-2">
               <Button size="icon" variant="ghost" disabled={!sortable || position === 0} onClick={() => onMove(-1)}
                 title={t("reorder.up")} aria-label={`${t("reorder.up")} · ${server.name}`}><ArrowUp size={14} /></Button>
