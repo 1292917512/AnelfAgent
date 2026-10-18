@@ -279,14 +279,16 @@ class QQTransport:
             # 使用异步解析，支持获取引用消息内容、群成员昵称和合并转发
             message = await parse_event_async(data, self.call_api_raw)
             if message:
-                # require_mention: 群聊中非 @ 消息仍记录到历史，但不触发思考；
-                # 系统通知（notice）按 group_notice_trigger 分档豁免
-                if (
+                # 撤回只记录；其他通知按 group_notice_trigger，普通群消息按 require_mention。
+                is_notice = data.get("post_type") == "notice"
+                if is_notice and data.get("notice_type") == "group_recall":
+                    message.trigger_mind = False
+                elif (
                     ch._cfg("require_mention", False)
                     and not message.is_to_me
                     and message.channel.channel_type == ChannelType.GROUP
                 ):
-                    if data.get("post_type") == "notice":
+                    if is_notice:
                         message.trigger_mind = await self._decide_notice_trigger(data)
                     else:
                         message.trigger_mind = False
@@ -299,9 +301,12 @@ class QQTransport:
     async def _decide_notice_trigger(self, data: Dict[str, Any]) -> bool:
         """判定群系统通知是否触发思考（group_notice_trigger 配置分档）。
 
-        auto: 成员变动总是触发（任何群身份都值得知晓）；管理类仅在 bot 为
-        群主/管理员时触发；互动类只入库。角色查询失败保守降级为不触发。
+        撤回始终只入库；auto 下成员变动总是触发，其他管理类仅在 bot 为
+        群主/管理员时触发，互动类只入库。角色查询失败保守降级为不触发。
         """
+        if data.get("notice_type") == "group_recall":
+            return False
+
         mode = self._ch._cfg("group_notice_trigger", "auto")
         if mode == "off":
             return False

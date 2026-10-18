@@ -4,6 +4,30 @@ import { MemoryRouter } from "react-router-dom";
 import { expect, it } from "vitest";
 import type { ActivityEntry } from "@/lib/types/activity";
 import { ActivityEntryView } from "./ActivityEntryView";
+import { ActivityContext } from "./ActivityContext";
+
+it("mounts recalled content only for expanded blocks and preserves live updates", async () => {
+  const user = userEvent.setup();
+  const entry: Extract<ActivityEntry, { kind: "context" }> = {
+    id: "context", kind: "context", ts: 1, status: "done", duration_ms: 30, block_count: 2,
+    blocks: [
+      { layer: "memory", label: "Memory block", content: "Recalled detail" },
+      { layer: "profile", label: "Profile block", content: "Profile detail" },
+    ],
+  };
+  const view = (value: typeof entry) => <MemoryRouter><ActivityContext entry={value} defaultExpanded /></MemoryRouter>;
+  const { container, rerender } = render(view(entry));
+  expect(screen.queryByText("Recalled detail")).toBeNull();
+  expect(screen.queryByText("Profile detail")).toBeNull();
+  const summary = container.querySelector("summary")!;
+  await user.click(summary);
+  expect(await screen.findByText("Recalled detail")).toBeTruthy();
+  expect(screen.queryByText("Profile detail")).toBeNull();
+  rerender(view({ ...entry, blocks: [{ ...entry.blocks[0]!, content: "Updated recall" }, entry.blocks[1]!] }));
+  expect(screen.getByText("Updated recall")).toBeTruthy();
+  await user.click(summary);
+  expect(screen.queryByText("Updated recall")).toBeNull();
+});
 
 it("renders background status compactly and mounts results only when inspected", async () => {
   const user = userEvent.setup();

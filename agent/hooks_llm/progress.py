@@ -10,7 +10,7 @@ import time
 from contextlib import contextmanager
 from typing import Any, Iterator
 
-from agent.mind.background_tasks import BackgroundTaskRegistry
+from agent.mind.background.tasks import BackgroundTaskRegistry
 from core.activity import EVENT_ACTIVITY_FINISHED, EVENT_ACTIVITY_STARTED, current_activity_id
 from core.event_bus import (
     EVENT_THINKING_LLM_END,
@@ -84,6 +84,7 @@ class HookProgress:
                                                activity_id=current_activity_id.get(),
                                                tool=payload.get("tool_name"), result=payload.get("result"),
                                                error=payload.get("error"), success=payload.get("success"),
+                                               cancelled=bool(payload.get("cancelled")),
                                                duration_ms=payload.get("duration_ms"),
                                                truncated=payload.get("result_truncated", False))
             self._tools.pop(str(payload.get("tool_id", "")), None)

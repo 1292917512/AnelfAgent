@@ -105,8 +105,11 @@ class WcautoTransport:
                 if self._session is None or self._session.closed:
                     self._session = aiohttp.ClientSession()
                 log(f"wcauto: 正在连接桥 {ws_url} ...")
+                token = str(ch._cfg("access_token", ""))
+                ws_headers = {"Authorization": f"Bearer {token}"} if token else None
                 async with self._session.ws_connect(
                     ws_url, heartbeat=30.0, max_msg_size=64 * 1024 * 1024,
+                    headers=ws_headers,
                 ) as ws:
                     if not await self._handshake(ws):
                         await asyncio.sleep(backoff)

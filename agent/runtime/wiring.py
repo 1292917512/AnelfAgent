@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
+    from agent.delegation.delegation_manager import DelegationManager
     from agent.hooks_llm import HookRuntime
     from agent.memory.auto_capture import AutoCapturePipeline
     from agent.memory.cognee.client import CogneeClient
@@ -17,6 +18,7 @@ if TYPE_CHECKING:
     from agent.memory.embedding import Embedder, EmbeddingWorker
     from agent.memory.memory_store import MemoryStore
     from agent.mind.mind import Mind
+    from agent.skills.runtime import SkillRuntime
     from agent.storage.data_center import DataCenter
     from agent.workflow.engine import WorkflowEngine
     from entities.sticker.worker import ImageIndexWorker
@@ -25,6 +27,8 @@ if TYPE_CHECKING:
 def wire_runtime(
     *,
     mind: "Mind",
+    skills: SkillRuntime,
+    delegation_manager: DelegationManager,
     workflow_engine: "WorkflowEngine",
     auto_capture_pipeline: "AutoCapturePipeline",
     data_center: "DataCenter",
@@ -48,7 +52,7 @@ def wire_runtime(
     from agent.memory.embedding.worker import attach_pending_backlogs, embedding_worker_port
     from agent.memory.graph.tools import graph_store_port
     from agent.memory.tools import MemoryToolDeps, memory_tools_port
-    from agent.mind.mind_tools import compressor_port
+    from agent.mind.tools.core import compressor_port
     from agent.mind.tools.ports import mind_port
     from agent.planning.tracker import planning_store_port
     from agent.runtime.skill_dependencies import skill_mcp_snapshot
@@ -87,9 +91,9 @@ def wire_runtime(
 
     # 思维与技能服务（工具层经端口消费）
     compressor_port.set(mind.compressor)
-    delegation_manager_port.set(mind.delegation_manager)
+    delegation_manager_port.set(delegation_manager)
     auto_capture_port.set(auto_capture_pipeline)
-    skill_tools_port.set(SkillToolDeps(mind.skills.store, mind.skills.matcher))
+    skill_tools_port.set(SkillToolDeps(skills.store, skills.matcher))
 
     # 工作流引擎（journal 化 DAG 编排；workflow_* 工具组消费）
     from agent.workflow.tools import workflow_engine_port
@@ -120,7 +124,7 @@ def wire_runtime(
     # Embedding 后台 worker（施绑后挂载施绑前挂起的外部 backlog 注册）
     embedding_worker_port.set(embedding_worker)
     attach_pending_backlogs(embedding_worker)
-    embedding_worker.register_backlog("skills", mind.skills.curator.backfill_vectors)
+    embedding_worker.register_backlog("skills", skills.curator.backfill_vectors)
 
     # Cognee 可选后端：初始化失败时以 None 施绑（None 是合法绑定值）
     cognee_client_port.set(cognee_client)
@@ -135,8 +139,21 @@ def wire_runtime(
     image_index_worker_port.set(image_index_worker)
 
     # 折后预热钩子（storage 层不反向依赖 mind，经注入解耦）
+    from agent.context.preparation import model_context
+    from agent.context.prewarm import prewarm_scope_cache
     from agent.storage.conversation_fold import conversation_folder
-    conversation_folder.set_prewarm_hook(mind.prewarm_scope_cache)
+
+    async def prewarm(scope_type: str, scope_id: str) -> None:
+        models_summary, direct_vision = model_context(mind.models.llm, mind.models.llm_manager)
+        await prewarm_scope_cache(
+            scope_type, scope_id, context=mind.context, char=mind.char,
+            models_summary=models_summary, direct_vision=direct_vision,
+            retriever=mind.retriever, conversation_data=mind.conversation_data, client=mind.models.llm,
+            get_tools=mind.tool_assembly.get_active_tool_schemas,
+            timeout=mind.config.llm_timeout * 20,
+        )
+
+    conversation_folder.set_prewarm_hook(prewarm)
 
     # 会话用量账本接线：scope_usage 只暴露回调接口，落盘由主库实现
     # （分层纪律：agent/mind 不直接依赖 storage 层）

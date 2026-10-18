@@ -124,7 +124,7 @@ async def execute_reply(mind: Mind, decision: Decision) -> None:
         log(f"回复检查点登记失败（不影响回复）: {exc}", "DEBUG", tag="思维")
     try:
         adapter_key = getattr(anything, "adapter_key", "") or ""
-        mind._set_phase(MindPhase.RECALLING)
+        mind.set_phase(MindPhase.RECALLING)
 
         pending_images = mind.pfc.collect_images(scope=scope)
         if pending_images:
@@ -133,12 +133,13 @@ async def execute_reply(mind: Mind, decision: Decision) -> None:
         pending_media = mind.pfc.collect_media(scope=scope)
         # 按实际携带的媒体激活媒体工具（recognize_image 等），确保本轮 schema 可用
         if pending_images or pending_media:
-            mind.pfc.activate_media_tools(pending_images, pending_media)
-        if mind.media_pipeline and pending_media:
-            media_texts = await mind.media_pipeline.process_segments(pending_media, scope)
+            mind.tool_assembly.activate_media_tools(pending_images, pending_media)
+        if pending_media:
+            from agent.mind.execution.media_pipeline import process_segments
+            media_texts = await process_segments(pending_media, scope)
             if media_texts:
                 combined = '\n'.join(media_texts)
-                await mind._add_system_context(anything, combined)
+                await mind.conversation_data.append_context(anything, combined)
 
         await mind.reply(anything, pending_images, adapter_key=adapter_key)
     finally:
@@ -204,7 +205,7 @@ async def execute_reflect(mind: Mind, decision: Optional[Decision] = None, *, sk
         # 任一任务置位之前，这里是执行入口的最后防线）
         return 0
     mind._reflecting = True
-    mind._set_phase(MindPhase.INTROSPECTING)
+    mind.set_phase(MindPhase.INTROSPECTING)
 
     try:
         result = await engine.run_task("self_reflection")
@@ -253,7 +254,7 @@ async def execute_remember(mind: Mind, decision: Decision) -> None:
         # 第二级：LLM 语义裁决（store / skip / update / merge）
         from agent.memory.dedup import apply_update, gather_dedup_candidates, judge_write
         candidates = await gather_dedup_candidates(store, mind.embedder, content)
-        verdict = await judge_write(content, candidates)
+        verdict = await judge_write(content, candidates, tags=tags)
         action = verdict.get("action", "store")
         metrics.incr(f"write.dedup_llm_{action}")
 

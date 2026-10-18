@@ -6,7 +6,7 @@ import asyncio
 import uuid
 
 from agent.delegation.sub_agent import SubAgentResult
-from agent.mind.background_tasks import BackgroundTaskRegistry
+from agent.mind.background.tasks import BackgroundTaskRegistry
 
 
 class FakeDelegationManager:
@@ -41,10 +41,9 @@ class FakeDelegationManager:
         )
 
 
-def make_stub_mind(manager: FakeDelegationManager) -> object:
-    """构造引擎依赖的最小 Mind 桩（delegation_manager + background_tasks）。"""
+def make_stub_mind() -> object:
+    """构造工作流恢复需要的后台任务宿主。"""
     return type("StubMind", (), {
-        "delegation_manager": manager,
         "background_tasks": BackgroundTaskRegistry(),
     })()
 

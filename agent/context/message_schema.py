@@ -4,7 +4,7 @@
 - normalize_roles：中途 system 注入转 user
   （anthropic 协议会把任意位置的 system 消息抽离到 system 参数顶部，
   不转换则中途纠正/反馈全部脱离上下文位置）
-- prefrontal_cortex.build_llm_context 末尾：尾部 assistant 转 user（prefill 400）
+- ContextAssembly 构建末尾：尾部 assistant 转 user（prefill 400）
 
 本模块将两类修补收拢为单一入口 normalize_for_send()，任何新的发送边界
 规则只加在这里；并用 pydantic 模型定义内部消息契约（文档化 + 可校验）。
@@ -17,6 +17,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict
+
+from core.tags import etag_all
 
 if TYPE_CHECKING:
     from agent.llm.types import ChatResult
@@ -252,9 +254,8 @@ _USER_ARRIVAL_TAGS = (
     "time", "uid", "name", "channel", "group_id", "session_id", "message_id",
 )
 
-# 平台事件/推送的 kind 标签（渲染于元数据标签之后）：此类消息虽经渠道到达，
-# 但不是用户原话或请求，不应进入未回复补回等"欠回复"语义
-_NON_CHAT_KIND_MARKERS = ("[kind:event]", "[kind:notification]", "[kind:system]")
+# 平台事件不是用户原话，不进入未回复补回等“欠回复”语义。
+_NON_CHAT_KINDS = ("event", "notification", "system")
 
 
 def is_genuine_user_message(msg: Dict) -> bool:
@@ -264,11 +265,9 @@ def is_genuine_user_message(msg: Dict) -> bool:
     content = msg.get("content")
     if not isinstance(content, str) or not content:
         return False
-    head = content.lstrip()[:200]
-    if not (head.startswith("[") and any(f"[{tag}:" in head for tag in _USER_ARRIVAL_TAGS)):
-        return False
-    # kind 标签渲染在元数据标签串之后，窗口放宽覆盖其位置
-    return not any(marker in content[:400] for marker in _NON_CHAT_KIND_MARKERS)
+    tags = dict(reversed(etag_all(content.lstrip(), prefix_only=True)))
+    return (any(tag in tags for tag in _USER_ARRIVAL_TAGS)
+            and "push" not in tags and tags.get("kind") not in _NON_CHAT_KINDS)
 
 
 def preserve_reasoning_fields(msg: Dict[str, Any], result: "ChatResult",

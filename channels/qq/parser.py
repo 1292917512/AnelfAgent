@@ -2,6 +2,11 @@
 
 将 OneBot v11 标准 JSON 事件转换为 ``AdapterMessage``。
 参考: https://github.com/botuniverse/onebot-11/tree/master/event
+
+模型看到戳一戳的实际发起者、目标与机器人身份，私聊归属仍为会话好友；
+群撤回事件只写入会话历史，能按消息 ID 查询时附带原消息摘要。
+事件正文增加少量身份说明，撤回摘要复用引用消息的 200 字上限；仅增加动态事件
+正文 token，不改变稳定前缀。
 """
 
 from __future__ import annotations
@@ -202,7 +207,7 @@ async def _parse_message_event_async(
     reply_content = ""
     reply_segments: List[MessageSegment] = []
     if reply_to_id and api_caller:
-        reply_content, reply_segments = await _fetch_reply_content(
+        reply_content, reply_segments = await _fetch_message_content(
             reply_to_id, api_caller, group_id, self_id
         )
 
@@ -359,8 +364,11 @@ def _parse_message_segments_sync(
 
         elif seg_type == "at":
             qq = str(seg_data.get("qq", ""))
-            at_text = f"[at_uid:{qq}](me)" if qq else ""
+            at_text = f"[at_uid:{qq}]" if qq else ""
             if at_text:
+                nickname = seg_data.get("name", "")
+                if nickname and group_id and qq not in ("all", self_id):
+                    cache_nickname(group_id, qq, nickname)
                 text_parts.append(at_text)
                 segments.append(MessageSegment(
                     type=SegmentType.AT,
@@ -461,23 +469,23 @@ async def _get_member_nickname(
     return ""
 
 
-async def _fetch_reply_content(
-    reply_id: str,
+async def _fetch_message_content(
+    message_id: str,
     api_caller: Optional[ApiCaller],
     group_id: str = "",
     self_id: str = "",
     timeout: float = 3.0,
 ) -> Tuple[str, List[MessageSegment]]:
-    """获取被引用消息的内容与消息段。
+    """按消息 ID 获取内容与消息段，供引用消息和撤回记录使用。
 
     为避免阻塞消息处理，API 调用有超时限制。
     """
-    if not reply_id or not api_caller:
+    if not message_id or not api_caller:
         return "", []
 
     try:
         result = await asyncio.wait_for(
-            api_caller("get_msg", {"message_id": int(reply_id)}),
+            api_caller("get_msg", {"message_id": int(message_id)}),
             timeout=timeout,
         )
         if result and result.get("data"):
@@ -485,6 +493,8 @@ async def _fetch_reply_content(
             raw_message = msg_data.get("message", [])
             # 使用同步解析避免递归异步调用
             content, segments = _parse_message_segments_sync(raw_message, group_id, self_id)
+            if not content.strip() and not segments:
+                return "", []
             sender = msg_data.get("sender", {})
             sender_name = (
                 sender.get("card")
@@ -493,11 +503,13 @@ async def _fetch_reply_content(
             )
             # 截断过长内容
             content_preview = content[:200] if len(content) > 200 else content
-            return f"{sender_name}: {content_preview}", segments
+            if sender_name:
+                return f"{sender_name}: {content_preview}", segments
+            return content_preview, segments
     except asyncio.TimeoutError:
-        log(f"获取引用消息超时: message_id={reply_id}", "DEBUG", tag="QQ")
+        log(f"获取消息内容超时: message_id={message_id}", "DEBUG", tag="QQ")
     except Exception as exc:
-        log(f"获取引用消息失败: {exc}", "DEBUG", tag="QQ")
+        log(f"获取消息内容失败: {exc}", "DEBUG", tag="QQ")
     return "", []
 
 
@@ -809,8 +821,11 @@ async def _format_notice(
     self_id = str(data.get("self_id", ""))
 
     if notice_type == "notify" and sub_type == "poke":
-        target_id = str(data.get("target_id", ""))
-        raw_info = data.get("raw_info", [])
+        target_id = str(data.get("target_id") or "")
+        group_id = str(data.get("group_id") or "")
+        sender_id = str((data.get("sender_id", user_id) if not group_id else user_id) or "")
+        raw_info = data.get("raw_info")
+        raw_info = raw_info if isinstance(raw_info, list) else []
         item2 = raw_info[2] if len(raw_info) > 2 else None
         item4 = raw_info[4] if len(raw_info) > 4 else None
         poke_style = item2.get("txt", "戳一戳") if isinstance(item2, dict) else "戳一戳"
@@ -821,17 +836,20 @@ async def _format_notice(
         if len(raw_info) > 1 and isinstance(raw_info[1], dict) and raw_info[1].get("type") == "img":
             action_img = raw_info[1].get("src", "")
 
-        group_id = str(data.get("group_id", ""))
-        sender_nickname = get_cached_nickname(group_id, str(user_id)) if group_id else ""
-        sender_display = sender_nickname or f"用户{user_id}"
+        def participant(identity: str) -> str:
+            """以账号区分参与者，昵称仅辅助展示。"""
+            if identity in ("", "0"):
+                return "身份未知"
+            if identity == self_id:
+                return f"机器人自身（QQ:{identity}）"
+            nickname = get_cached_nickname(group_id, identity) if group_id else ""
+            return f"{nickname or '用户'}（QQ:{identity}）"
 
-        is_poke_me = target_id == self_id
-        if is_poke_me:
-            text = f"({sender_display} {poke_style} 你 {poke_suffix})".strip()
-        else:
-            target_nickname = get_cached_nickname(group_id, target_id) if group_id else ""
-            target_display = target_nickname or f"用户{target_id}"
-            text = f"({sender_display} {poke_style} {target_display} {poke_suffix})".strip()
+        is_poke_me = target_id not in ("", "0") and target_id == self_id
+        text = f"(QQ戳一戳：发起者={participant(sender_id)}；被戳者={participant(target_id)}；动作={poke_style}"
+        if poke_suffix:
+            text += f"；附加文案={poke_suffix}"
+        text += ")"
 
         if action_img:
             text = f"{text} [动作图片:{action_img}]"
@@ -871,8 +889,18 @@ async def _format_notice(
 
     if notice_type == "group_recall":
         if str(user_id) == str(operator_id):
-            return f"(成员 {user_id} 撤回了一条消息)", False
-        return f"(成员 {user_id} 的消息被 {operator_id} 撤回)", False
+            text = f"成员 {user_id} 撤回了一条消息"
+        else:
+            text = f"成员 {user_id} 的消息被 {operator_id} 撤回"
+        recalled_content, _ = await _fetch_message_content(
+            str(data.get("message_id", "") or ""),
+            api_caller,
+            str(data.get("group_id") or ""),
+            self_id,
+        )
+        if recalled_content:
+            text += f"；原消息：{recalled_content}"
+        return f"({text})", False
 
     if notice_type == "group_admin":
         action = "被设为管理员" if sub_type == "set" else "被取消管理员"

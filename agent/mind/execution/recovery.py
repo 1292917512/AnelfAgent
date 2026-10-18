@@ -4,8 +4,7 @@ think_loop 进行中的状态目前只有内存标记（``mind._active_scopes``�
 崩溃/SIGKILL 时随进程蒸发——重启后模型不知道上一轮执行到哪、哪个工具没
 返回、回复发了一半。本模块补上这一环：
 
-- 回复进入时向 ``reply_checkpoints`` 表写检查点，正常/协作中断结束在 finally
-  清除（见 decision_executor.execute_reply）；
+- 回复执行时向 ``reply_checkpoints`` 表写检查点，正常/协作中断结束后清除；
 - 启动时 ``recover_interrupted_replies`` 扫描残留检查点，向对应会话注入
   "[系统] 上一次回复被意外中断"元消息（写 DB，下次会话可见），随后删除行。
 
@@ -25,7 +24,12 @@ Model Experience 三行声明：
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from core.log import log
+
+if TYPE_CHECKING:
+    from agent.storage.storage_router import StorageRouter
 
 # 注入的中断元消息（文案对齐 think_loop._handle_interrupt 的协作中断提示）
 INTERRUPTED_NOTICE = (
@@ -62,7 +66,7 @@ def build_interrupted_notice(crash_context: str = "") -> str:
     return f"{INTERRUPTED_NOTICE}\n崩溃信息：\n{crash_context}"
 
 
-async def recover_interrupted_replies(mind, crash_context: str = "") -> int:
+async def recover_interrupted_replies(router: StorageRouter, crash_context: str = "") -> int:
     """扫描崩溃残留的回复检查点，注入中断元消息并清除。返回处理的 scope 数。
 
     crash_context 非空时（上一次是崩溃而非正常重启），随元消息附带崩溃信息，
@@ -70,16 +74,15 @@ async def recover_interrupted_replies(mind, crash_context: str = "") -> int:
     调用；任何异常吞掉并记日志，绝不影响启动流程（fail-open）。
     """
     try:
-        return await _do_recover(mind, crash_context)
+        return await _do_recover(router, crash_context)
     except Exception as exc:
         log(f"崩溃尾部恢复失败（已忽略）: {exc}", "WARNING", tag="启动")
         return 0
 
 
-async def _do_recover(mind, crash_context: str = "") -> int:
+async def _do_recover(router: StorageRouter, crash_context: str = "") -> int:
     from agent.mind.execution.reply_journal import ReplyToolJournal
 
-    router = mind.conversation_data.router
     sqlite = router.sqlite
     rows = await sqlite.load_reply_checkpoints()
     if not rows:

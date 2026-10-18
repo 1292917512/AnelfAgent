@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Awaitable, Callable, Coroutine, Dict, List, Optional
 
-from agent.mind.background_evidence import TaskEvidence
+from agent.mind.background.evidence import TaskEvidence
 from core.activity import EVENT_BACKGROUND_TASK_UPDATED, current_activity_id
 from core.event_bus import event_bus
 from core.log import log
@@ -43,7 +43,7 @@ current_background_task_id: ContextVar[str] = ContextVar("background_task_id", d
 
 
 class CompletionNotification(str, Enum):
-    """完成事实的 AI 通知策略；唤醒仍受会话路由和预算约束。"""
+    """完成事实的 AI 通知策略；通知按会话归属路由。"""
 
     ALWAYS = "always"
     ON_RESULT = "on_result"
@@ -137,7 +137,7 @@ class WaitResult:
 class BackgroundTaskRegistry:
     """scope 级后台任务注册表（进程内，无持久化需求）。"""
 
-    def __init__(self) -> None:
+    def __init__(self, *, loop: asyncio.AbstractEventLoop | None = None) -> None:
         self._records: Dict[str, _TaskRecord] = {}
         self._events: Dict[str, asyncio.Event] = {}
         self._wait_targets: dict[str, list[str]] = {}
@@ -145,16 +145,12 @@ class BackgroundTaskRegistry:
         self._closing = False
         # task_id -> 增量输出已消费的字节偏移（read_task_output 单游标）
         self._output_cursors: Dict[str, int] = {}
-        # 主事件循环（bind_loop 绑定；工作线程完成任务时经 call_soon_threadsafe 回到循环）
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        # 轮外完成回调（无等待者时触发，由 Mind 注册，避免 entities 层直接 import agent.mind）
+        # 运行时注入主循环，工作线程完成任务时经 call_soon_threadsafe 回到循环。
+        self._loop = loop
+        # 运行时接入轮外完成回调；注册表不依赖思维宿主。
         self._on_unclaimed: Optional[Callable[[str, str, str, bool], Any]] = None
         # 超时提醒回调（任务超过预期时长仍在运行时触发，不改变任务状态）
         self._on_alert: Optional[Callable[[str, str, str, str], Any]] = None
-
-    def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
-        """绑定主事件循环（Mind 初始化时调用）。"""
-        self._loop = loop
 
     def set_unclaimed_callback(self, callback: Callable[[str, str, str, bool], Any]) -> None:
         """注册轮外完成回调（无等待者时触发新 REPLY 周期）。
@@ -268,6 +264,8 @@ class BackgroundTaskRegistry:
     async def close(self) -> None:
         """停止接收任务并回收本注册表托管的协程和提醒计时器。"""
         self._closing = True
+        self._on_unclaimed = None
+        self._on_alert = None
         for rec in self._records.values():
             if rec.stall_timer is not None:
                 rec.stall_timer.cancel()
@@ -480,7 +478,7 @@ class BackgroundTaskRegistry:
             tag="后台",
         )
         self._publish(task_id)
-        # 轮外完成（无等待者）：触发回调（由 Mind 注册，写对话历史并排入
+        # 轮外完成（无等待者）：触发回调（由运行时接入，写对话历史并排入
         # 回复队列触发新 REPLY；非 conversation scope 由回调侧全局桶兜底）。
         # 通知失败时恢复未送达标记——先标记后投递会让回调异常静默丢通知
         if not claimed:

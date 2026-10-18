@@ -16,7 +16,7 @@ import agent.channel.outbound_guard as outbound_guard
 import agent.channel.output_tools as output_tools
 from agent.channel.delivery import capture_deliveries, delivery_count, observe_delivery_context
 from agent.channel.output_tools import execute_send_action
-from agent.mind.tool_activation import bind_scope, reset_scope
+from core.conversation_scope import bind_scope, reset_scope
 from core.tags import etag_all
 
 _SCOPE = "user_qq:1292917512"
@@ -97,10 +97,10 @@ class TestGuardIntegration:
     async def test_cross_reply_consumes_only_answered_pending_scope(self, new_message, receipt, observed_role) -> None:
         from unittest.mock import MagicMock
 
-        from agent.mind.work_memory import PendingSignal, WorkMemory
+        from agent.mind.prefrontal_cortex import PendingSignal, PrefrontalCortex
         from agent.storage.data_center import EverythingData
 
-        work = WorkMemory(MagicMock(spec=EverythingData))
+        work = PrefrontalCortex(MagicMock(spec=EverythingData))
         owner = "user_webui:web_user#one"
         for scope in (owner, _SCOPE):
             work.pending_user.append(scope)

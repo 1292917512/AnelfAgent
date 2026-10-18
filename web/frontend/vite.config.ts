@@ -87,6 +87,7 @@ const vendorChunks: Record<string, readonly string[]> = {
   "i18n-vendor": ["i18next", "react-i18next", "i18next-browser-languagedetector"],
   "query-vendor": ["axios", "@tanstack/react-query"],
   "react-vendor": ["react", "react-dom", "react-router-dom"],
+  "ui-vendor": ["@radix-ui", "@floating-ui", "tailwind-merge"],
 };
 
 export default defineConfig({

@@ -100,9 +100,9 @@ def _rewrite_set_cookie(value: str, prefix: str) -> str:
     return value + f"; Path={prefix}/"
 
 
-@router.api_route("/{channel_id}/webui", methods=_PROXY_METHODS)
-@router.api_route("/{channel_id}/webui/", methods=_PROXY_METHODS)
-@router.api_route("/{channel_id}/webui/{path:path}", methods=_PROXY_METHODS)
+@router.api_route("/{channel_id}/webui", methods=_PROXY_METHODS, include_in_schema=False)
+@router.api_route("/{channel_id}/webui/", methods=_PROXY_METHODS, include_in_schema=False)
+@router.api_route("/{channel_id}/webui/{path:path}", methods=_PROXY_METHODS, include_in_schema=False)
 async def proxy_channel_webui(channel_id: str, request: Request, path: str = "") -> Response:
     """将请求转发到频道配置的 WebUI 源站，并按需重写响应内容。"""
     target = _resolve_target(channel_id)

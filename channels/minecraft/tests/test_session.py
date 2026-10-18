@@ -9,7 +9,8 @@ import pytest
 
 from agent.channel.schemas import AdapterChannel, ChannelType
 from agent.delegation.delegation_manager import DelegationManager
-from agent.mind.background_tasks import BackgroundTaskRegistry
+from agent.mind.background.tasks import BackgroundTaskRegistry
+from agent.mind.prefrontal_cortex import PrefrontalCortex
 from agent.mind.tools import scheduler
 from channels.minecraft import session
 from channels.minecraft.adapter import MinecraftChannel
@@ -25,18 +26,18 @@ async def test_stop_cancels_world_workers_and_reminders(
     monkeypatch.setattr(scheduler, "_reminders_path", lambda: tmp_path / "reminders.json")
     monkeypatch.setattr(DelegationManager, "_install_progress_hook", lambda self: None)
     router = SimpleNamespace(append=AsyncMock())
+    memory = PrefrontalCortex(SimpleNamespace(), SimpleNamespace(router=router))
+    memory.known_scopes = lambda: {"group_minecraft:local", "user_minecraft:local/Alice", "group_minecraft:other"}
+    memory.consume_scope_task = Mock()
     mind = SimpleNamespace(
-        pfc=SimpleNamespace(
-            known_scopes=lambda: {"group_minecraft:local", "user_minecraft:local/Alice", "group_minecraft:other"},
-            conversation_data=SimpleNamespace(router=router),
-            consume_scope_task=Mock(),
-        ),
+        pfc=memory,
         interrupt=Mock(),
         background_tasks=BackgroundTaskRegistry(),
     )
     manager = DelegationManager(mind)
-    mind.delegation_manager = manager
-    monkeypatch.setattr("agent.runtime.singleton.get_runtime", lambda: SimpleNamespace(mind=mind))
+    monkeypatch.setattr("agent.runtime.singleton.get_runtime", lambda: SimpleNamespace(
+        mind=mind, pfc=memory, delegation_manager=manager,
+    ))
     scopes = ["group_minecraft:local", "user_minecraft:local/Alice", "user_webui:web_user#game", "group_minecraft:other"]
     monkeypatch.setattr(tool_context, "_controls", {})
     tool_context.register_control("minecraft", "local", frozenset({"cancel_task"}))
@@ -115,7 +116,7 @@ async def test_stop_cancels_local_actions_and_workers_before_resuming_chat(monke
 async def test_reflex_fact_reaches_history_once_despite_echo(monkeypatch: pytest.MonkeyPatch) -> None:
     channel = MinecraftChannel()
     router = SimpleNamespace(append=AsyncMock())
-    runtime = SimpleNamespace(mind=SimpleNamespace(pfc=SimpleNamespace(conversation_data=SimpleNamespace(router=router))))
+    runtime = SimpleNamespace(pfc=PrefrontalCortex(SimpleNamespace(), SimpleNamespace(router=router)))
     monkeypatch.setattr("agent.runtime.singleton.get_runtime", lambda: runtime)
     monkeypatch.setattr(channel, "get_config", lambda: MinecraftConfig(enabled=True))
     channel._connection = ConnectionStatus(status="online", username="AnelfBot")

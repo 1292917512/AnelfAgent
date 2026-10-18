@@ -10,7 +10,7 @@ cooldown/debounce、独立日志归因 / 用量归属 / 进度流 / 后台任务
 - 频控：cooldown（最小间隔）+ debounce（合并窗口取最后快照）；
 - 防递归：执行体标 origin=llm_hook 深度标记，其派生事件不再触发同类钩子；
 - 观测：bind_log_actor / bind_usage_scope / journal 进度流；
-- 路由：BackgroundTaskRegistry 登记，完成走既有 unclaimed → wake_budget 通道。
+- 路由：BackgroundTaskRegistry 登记，完成走既有 unclaimed 回调唤醒主思维。
 """
 from __future__ import annotations
 
@@ -22,7 +22,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from agent.hooks_llm.progress import HookProgress
 from agent.hooks_llm.snapshot import freeze_messages
 from agent.hooks_llm.spec import HookContext, HookContextMode, LLMHookSpec
-from agent.mind.background_tasks import CompletionNotification, current_background_task_id
+from agent.mind.background.tasks import CompletionNotification, current_background_task_id
+from agent.mind.recall import coordinator
 from core.activity import activity_owner
 from core.hooks import HookMode, hook_execution
 from core.log import bind_log_actor, log, reset_log_actor
@@ -248,7 +249,7 @@ class HookExecutor:
                 return []
             return freeze_messages(payload.get("messages"))
         if spec.context is HookContextMode.LEAN:
-            return await self._mind.get_recollection(lean=True)
+            return await coordinator.prepare_recollection(self._mind, lean=True)
         return []
 
     @staticmethod

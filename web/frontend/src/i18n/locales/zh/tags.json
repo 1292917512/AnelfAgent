@@ -23,7 +23,7 @@
   "sourceMessage": "消息",
   "sourceTool": "工具",
   "sourceMessageTooltip": "作为 [key:value] 嵌入消息，LLM 可直接理解",
-  "sourceToolTooltip": "被工具注册为路由标签，PFC 扫描消息时激活对应工具",
+  "sourceToolTooltip": "被工具注册为路由标签，扫描消息时激活对应工具",
   "tagFormat": "[{{name}}:值]",
   "statsBuiltin": "{{count}} 个内置",
   "statsCustom": "{{count}} 个自定义",
@@ -45,5 +45,9 @@
   "deleteNamed": "删除标签 {{name}}",
   "inUse": "仍有关联工具，请先调整工具标签。",
   "routingHint": "工具发现与能力分组使用的路由标签。",
-  "linkedTools": "关联 {{count}} 个工具"
+  "linkedTools": "关联 {{count}} 个工具",
+  "noLinkedTools": "暂无关联工具",
+  "viewDetails": "查看详情",
+  "viewDetailsNamed": "查看标签详情：{{name}}",
+  "viewInTools": "在工具页查看"
 }

@@ -41,8 +41,8 @@ def _mount_module_routers(
 ) -> None:
     """扫描 pkg_name/*/entry_file 中的 build_router() 并挂载（频道与实体通用）。
 
-    模块自带路由的标准入口：不要求模块已启用，import/挂载失败均静默降级，
-    仅 log WARNING 不中断启动。
+    模块自带路由的标准入口：不要求模块已启用，import/挂载失败均降级跳过
+    并记录 WARNING，不中断启动。
     """
     import importlib
 
@@ -54,9 +54,11 @@ def _mount_module_routers(
             continue
         if not (item / entry_file).exists():
             continue
+        module_path = f"{pkg_name}.{item.name}.{entry_file[:-3]}"
         try:
-            mod = importlib.import_module(f"{pkg_name}.{item.name}.{entry_file[:-3]}")
-        except Exception:
+            mod = importlib.import_module(module_path)
+        except Exception as exc:
+            log(f"模块路由导入失败: {module_path} - {exc}", "WARNING")
             continue
         build_router = getattr(mod, "build_router", None)
         if not callable(build_router):
@@ -125,7 +127,8 @@ def _mount_one_module_router(app: FastAPI, kind: str, name: str) -> None:
     try:
         module_path = f"{pkg_name}.{name}.{entry_file[:-3]}"
         mod = sys.modules.get(module_path) or importlib.import_module(module_path)
-    except Exception:
+    except Exception as exc:
+        log(f"模块路由导入失败: {module_path} - {exc}", "WARNING")
         return
     build_router = getattr(mod, "build_router", None)
     if not callable(build_router):

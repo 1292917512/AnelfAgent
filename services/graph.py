@@ -9,7 +9,7 @@ from services._runtime import require_runtime
 
 def _graph():
     rt = require_runtime()
-    store = rt.mind.memory_store
+    store = rt.memory_store
     if store is None:
         raise RuntimeError("记忆系统未初始化")
     return store.graph

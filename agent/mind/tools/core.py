@@ -10,14 +10,15 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from agent.context.compressor import ContextCompressor
+from agent.mind.tool_activation import ToolActivationManager
 from core.entity import EntityRegistry
 from core.latebind import LateBinding
 from core.log import log
 from core.tool_registry import activate_group, deferred_tool
 
 if TYPE_CHECKING:
-    from agent.mind.prefrontal_cortex import PrefrontalCortex
+    from agent.context.compressor import ContextCompressor
+    from agent.mind.tool_assembly import ToolAssembly
 
 END_REPLY_TOOL_NAME = "end_reply"
 OUTPUT_TOOL_NAMES = frozenset({"send_message", "send_photo", "send_voice", "send_file"})
@@ -44,7 +45,6 @@ def _compress_context_tool(reason: str = "", focus_topic: str = "") -> str:
     if compressor is None:
         return json.dumps({"error": "压缩器未初始化"}, ensure_ascii=False)
     try:
-        from agent.mind.tool_activation import ToolActivationManager
         scope = ToolActivationManager.current_scope()
     except Exception:
         scope = ""
@@ -78,8 +78,17 @@ def _end_reply_tool(reason: str = "") -> str:
 
 
 def register_core_tools() -> None:
-    """激活 Mind 核心层工具（end_reply 等）。"""
+    """加载工具声明后激活核心分组，不依赖调用方的导入顺序。"""
     import agent.hooks.tools  # noqa: F401
+    import agent.judgment.tools  # noqa: F401
+    from agent.mind.tools import (  # noqa: F401
+        background,
+        execution_log,
+        scheduler,
+        session_tools,
+        short_term_tools,
+    )
+
     activate_group("hooks", "钩子管理 — 声明、配置和执行模式")
     if END_REPLY_TOOL_NAME not in EntityRegistry.get_all_names():
         activate_group("thinking", "思维工具 - 对话流程控制与工具编排")
@@ -103,7 +112,7 @@ def build_reflect_blocklist(allow_output_tools: bool) -> set[str]:
 
 
 async def select_reflect_tools(
-    pfc: PrefrontalCortex,
+    tool_assembly: ToolAssembly,
     *,
     adapter_key: str,
     scope: str,
@@ -116,12 +125,12 @@ async def select_reflect_tools(
     share_reply_tools = get_config_bool("reflect_share_reply_tools", True)
     if tool_tags or not share_reply_tools:
         selectors = tool_tags if tool_tags else ["heartbeat"]
-        active_tools = await pfc.get_reflect_tool_schemas(
+        active_tools = await tool_assembly.get_reflect_tool_schemas(
             adapter_key, scope=scope, selectors=selectors,
         )
     else:
         selectors = []
-        active_tools = await pfc.get_active_tool_schemas(adapter_key, scope=scope)
+        active_tools = await tool_assembly.get_active_tool_schemas(adapter_key, scope=scope)
 
     if inherited_tools is not None:
         from agent.mind.tool_assembly import inherit_tool_catalog

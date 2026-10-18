@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from agent.mind.background_tasks import BackgroundTaskRegistry
+from agent.mind.background.tasks import BackgroundTaskRegistry
 
 
 class TestReadTaskOutput:

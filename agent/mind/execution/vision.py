@@ -60,7 +60,7 @@ async def apply_vision(
 
     log(f"processing {len(images)} image(s)", tag="思维")
 
-    config = getattr(getattr(mind, "llm", None), "config", None)
+    config = getattr(mind.models.llm, "config", None)
     if config is not None and getattr(config, "supports_vision", False):
         return await _inject_image_blocks(messages, images, config)
 
@@ -165,7 +165,7 @@ async def _append_multimodal_result(
     images = [p for p in (parsed.get("images") or []) if isinstance(p, str) and p]
     if not images:
         return
-    config = getattr(getattr(mind, "llm", None), "config", None)
+    config = getattr(mind.models.llm, "config", None)
     if config is None or not getattr(config, "supports_vision", False):
         return
 

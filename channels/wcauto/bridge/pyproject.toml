@@ -1,0 +1,19 @@
+[project]
+name = "wcauto-bridge"
+version = "1.0.0"
+description = "wcauto 微信个人号 Windows 桥服务（AnelfAgent channels/wcauto）"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "aiohttp>=3.9",
+    "wechatauto-replica==1.2.6.1",
+    # 发送路径：WinRT OCR 兜底 + 拼音输入（见 wechatauto-replica GUIDE §1）
+    "winsdk>=1.0.0b10; sys_platform == 'win32'",
+    "pypinyin>=0.48.0",
+]
+
+[tool.uv]
+# 桥目录是部署单元而非可安装 wheel；wcauto_bridge 包由工作目录直接运行
+package = false
+
+[project.urls]
+Upstream = "https://github.com/fanyuantaier/wechatauto-replica"

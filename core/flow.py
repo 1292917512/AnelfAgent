@@ -8,13 +8,13 @@
 - retries / retry_delay 声明式重试（引擎侧查表退避，超出重复末值）
 """
 import asyncio
-import time
 from dataclasses import dataclass, field
 from enum import Enum
 from graphlib import CycleError, TopologicalSorter
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Union
 
 from core.log import log
+from core.observation import ExecutionObservation
 
 
 class NodeState(Enum):
@@ -212,12 +212,12 @@ class FlowMachine:
 
     async def _run_node(self, node: _Node) -> NodeResult:
         """执行单个节点（含超时与查表式重试）。"""
-        start = time.time()
+        observation = ExecutionObservation()
         for attempt in range(1, node.retries + 2):
             try:
                 log(f"▶️ 执行节点: {node.name}", "INFO")
                 result = await self._invoke(node)
-                duration = time.time() - start
+                duration = observation.elapsed_ms / 1000
                 log(f"✅ 节点完成: {node.name} ({duration:.3f}s)", "INFO")
                 return NodeResult(
                     name=node.name, state=NodeState.SUCCESS,
@@ -230,7 +230,7 @@ class FlowMachine:
                     if delay > 0:
                         await asyncio.sleep(delay)
                     continue
-                duration = time.time() - start
+                duration = observation.elapsed_ms / 1000
                 if node.skip_on_error:
                     log(f"⚠️ 节点 {node.name} 出错但跳过: {exc}", "WARNING")
                     return NodeResult(
@@ -243,7 +243,7 @@ class FlowMachine:
                     error=exc, duration=duration, attempts=attempt,
                 )
             except BaseException as exc:
-                duration = time.time() - start
+                duration = observation.elapsed_ms / 1000
                 log(f"💥 节点崩溃: {node.name} - {exc}", "ERROR")
                 return NodeResult(
                     name=node.name, state=NodeState.CRASHED,

@@ -5,12 +5,12 @@ from __future__ import annotations
 from agent.channel.delivery import observe_delivery_context
 from agent.context.dynamic import append_execution_status, format_delivery_status
 from agent.context.providers import collect_provider_messages
+from agent.mind.background.context import background_context
 from agent.mind.execution.compression import _compress_context, _precompact_flush
 from agent.mind.execution.messages import _merge_new_messages, _merge_pushes, _merge_steered_messages
 from agent.mind.execution.state import ExecutionContext, RoundState, ThinkMode
 from agent.mind.execution.usage import _cache_status_hint, _token_budget_hint
 from agent.mind.recall.refresh import DialogueRecollection
-from agent.mind.runtime_context import background_context
 from core.log import log
 
 
@@ -89,7 +89,7 @@ async def prepare_round_context(
     # （缓存断点不在此注入——发送边界由 llm/prompt_cache 按 _layer 统一装饰，
     # 链尾锚点天然随链增长前移）
     # provider 实时注入：每轮收集最新快照，置于工具链之后、exec_context 之前
-    provider_msgs = await collect_provider_messages(getattr(getattr(mind, "llm", None), "config", None), ctx.current_scope)
+    provider_msgs = await collect_provider_messages(getattr(mind.models.llm, "config", None), ctx.current_scope)
     from agent.memory.probe import deep_probe_hub
     for message in provider_msgs:
         if message.get("_source", {}).get("provider") == "memory_deep_probe":

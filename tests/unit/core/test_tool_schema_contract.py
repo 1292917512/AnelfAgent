@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 from enum import Enum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 import pytest
 from pydantic import BaseModel, Field
@@ -41,6 +42,45 @@ def test_nested_schema_and_optional_array():
     assert options["anyOf"] == [{"items": {"type": "string"}, "type": "array"}, {"type": "null"}]
     assert schema["properties"]["target"]["properties"]["count"]["minimum"] == 1
     assert schema["properties"]["mode"]["enum"] == ["fast", "full"]
+
+
+@pytest.mark.parametrize("arguments,expected", [
+    ({"count": 3, "enabled": True, "ratio": 0.25}, {"count": 3, "enabled": True, "ratio": 0.25}),
+    ({"count": "12", "enabled": "false", "ratio": "0.75"}, {"count": 12, "enabled": False, "ratio": 0.75}),
+    ({"count": 8.0, "enabled": 1, "ratio": 2}, {"count": 8, "enabled": True, "ratio": 2.0}),
+])
+async def test_dynamic_signature_preserves_parameter_types(
+    monkeypatch: pytest.MonkeyPatch, arguments: dict[str, Any], expected: dict[str, Any],
+) -> None:
+    def generated(**kwargs: Any) -> str:
+        assert isinstance(kwargs["target"], str)
+        assert type(kwargs["count"]) is int
+        assert type(kwargs["enabled"]) is bool
+        assert type(kwargs["ratio"]) is float
+        return json.dumps(kwargs)
+
+    monkeypatch.setattr(generated, "__signature__", inspect.Signature([
+        inspect.Parameter("target", inspect.Parameter.KEYWORD_ONLY),
+        inspect.Parameter("count", inspect.Parameter.KEYWORD_ONLY, annotation=int, default=20),
+        inspect.Parameter("enabled", inspect.Parameter.KEYWORD_ONLY, annotation=bool, default=False),
+        inspect.Parameter("ratio", inspect.Parameter.KEYWORD_ONLY, annotation=float, default=0.5),
+    ]), raising=False)
+    EntityRegistry.register_tool(name="_schema_probe", func=generated, params=extract_tool_params(generated))
+    schema = EntityRegistry.get_tool_schema_by_names(["_schema_probe"])[0]["function"]["parameters"]
+    properties = schema["properties"]
+    assert properties["target"]["type"] == "string"
+    assert properties["count"]["type"] == "integer"
+    assert properties["enabled"]["type"] == "boolean"
+    assert properties["ratio"]["type"] == "number"
+    params = {param.name: param for param in extract_tool_params(generated)}
+    assert params["target"].required
+    assert params["count"].default == 20
+    assert params["enabled"].default is False
+    assert params["ratio"].default == 0.5
+    result = json.loads(await EntityRegistry.execute_tool(
+        "_schema_probe", json.dumps({"target": 110, **arguments}),
+    ))
+    assert result == {"target": "110", **expected}
 
 
 def test_nested_definitions_have_resolvable_distinct_parameter_names():

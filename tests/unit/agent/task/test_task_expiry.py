@@ -233,7 +233,7 @@ class TestEngineDisableExpired:
             HeartbeatConfig, "save", lambda self, path=None: save_calls.append(self),
         )
 
-        engine = HeartbeatEngine(SimpleNamespace())
+        engine = HeartbeatEngine(SimpleNamespace(), SimpleNamespace(), memory=SimpleNamespace(memory_store=None, embedder=None), skills=None)
         await engine._disable_expired_tasks()
 
         # 过期任务：文件停用 + 内存停用 + 调度移除 + updated_at 刷新
@@ -271,7 +271,7 @@ class TestEngineDisableExpired:
         monkeypatch.setattr("agent.heartbeat.engine.get_heartbeat_config", lambda: config)
         monkeypatch.setattr(HeartbeatConfig, "save", lambda self, path=None: None)
 
-        engine = HeartbeatEngine(SimpleNamespace())
+        engine = HeartbeatEngine(SimpleNamespace(), SimpleNamespace(), memory=SimpleNamespace(memory_store=None, embedder=None), skills=None)
         await engine._disable_expired_tasks()
         assert engine.task_registry.get("live").enabled is True  # type: ignore[union-attr]
         assert config.get_schedule("live") is not None
@@ -353,7 +353,7 @@ def _make_expiry_engine(tasks_dir, config, monkeypatch):
         "agent.heartbeat.engine.TaskRegistry", lambda: TaskRegistry(tasks_dir))
     monkeypatch.setattr("agent.heartbeat.engine.get_heartbeat_config", lambda: config)
     monkeypatch.setattr(HeartbeatConfig, "save", lambda self, path=None: None)
-    return HeartbeatEngine(SimpleNamespace())
+    return HeartbeatEngine(SimpleNamespace(), SimpleNamespace(), memory=SimpleNamespace(memory_store=None, embedder=None), skills=None)
 
 
 def _write_task(tasks_dir, name: str, *, enabled: bool, expires_at: str) -> None:

@@ -23,7 +23,7 @@
   "sourceMessage": "Msg",
   "sourceTool": "Tool",
   "sourceMessageTooltip": "Embedded in messages as [key:value], readable by the LLM",
-  "sourceToolTooltip": "Registered as a routing tag on tools; PFC activates matching tools when detected",
+  "sourceToolTooltip": "Registered as a routing tag on tools; matching tools are activated when detected in messages",
   "tagFormat": "[{{name}}:value]",
   "statsBuiltin": "{{count}} built-in",
   "statsCustom": "{{count}} custom",
@@ -45,5 +45,9 @@
   "deleteNamed": "Delete tag {{name}}",
   "inUse": "Still referenced by tools. Update their tags before deleting.",
   "routingHint": "Routing label for tool discovery and capability grouping.",
-  "linkedTools": "{{count}} linked tools"
+  "linkedTools": "{{count}} linked tools",
+  "noLinkedTools": "No linked tools",
+  "viewDetails": "View details",
+  "viewDetailsNamed": "View tag details: {{name}}",
+  "viewInTools": "View in Tools"
 }

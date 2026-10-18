@@ -41,7 +41,6 @@ from core.event_bus import (
     event_bus,
 )
 from core.log import log
-from core.trace_session import detach_thinking_session
 
 if TYPE_CHECKING:
     from agent.mind.mind import Mind
@@ -70,10 +69,7 @@ async def run_cycle(mind: "Mind", end_payload: Dict[str, Any], *, is_heartbeat: 
 
     if is_heartbeat:
         # 心跳 tick 后台执行，不阻塞主循环的消息处理（受管任务：强引用防 GC + 异常记日志）
-        if not mind._heartbeat_running:
-            mind._heartbeat_running = True
-            from core.async_helper import spawn
-            spawn(run_heartbeat_tick(mind), name="mind.heartbeat.tick")
+        mind.heartbeat_engine.start_background_tick()
 
     # 廉价前置判断：仅检查队列是否有待处理项，命中 fast-path 时跳过昂贵的 memory/goals 查询
     cheap_pending = mind.pfc.peek_all_tasks()
@@ -140,7 +136,7 @@ async def run_cycle(mind: "Mind", end_payload: Dict[str, Any], *, is_heartbeat: 
     # 完整决策周期开始：DECIDING 覆盖态势收集 + 元决策全程（收集可能涉及
     # 记忆/目标查询耗时可观，期间不应显示 idle）；no_pending 早退由周期
     # 完成边界（execute_mind finally）统一归零
-    mind._set_phase(MindPhase.DECIDING)
+    mind.set_phase(MindPhase.DECIDING)
     situation = await gather_situation(mind, is_heartbeat=is_heartbeat)
 
     if not situation.has_pending and not is_heartbeat:
@@ -258,7 +254,7 @@ async def execute_decisions(
             active_goals=len(situation.active_goals),
         )
 
-    await clear_dynamic_tools_when_idle(mind)
+    mind.tool_assembly.clear_when_idle(mind._active_scopes, mind._reply_idle_event)
 
     end_payload.update({
         "decisions_executed": [d.type.value for d in immediate],
@@ -267,51 +263,6 @@ async def execute_decisions(
 
     if mind.pfc.has_pending_tasks():
         mind._schedule_next_cycle("自主循环结束后仍有待处理任务")
-
-
-async def clear_dynamic_tools_when_idle(mind: "Mind") -> None:
-    """等所有回复会话结束后再清动态工具，避免并行 REPLY 被提前清掉。
-
-    不阻塞当前周期：仍有活跃会话时挂到后台等待，
-    避免长时间回复把自主循环（含心跳）整体卡住。
-    """
-    if not mind._active_scopes:
-        mind.pfc.clear_dynamic_tools()
-        return
-    if mind._dynamic_tools_clear_pending:
-        return
-    mind._dynamic_tools_clear_pending = True
-    log(
-        f"延迟清理动态工具：仍有活跃会话 {sorted(mind._active_scopes)}",
-        "DEBUG", tag="思维",
-    )
-
-    async def _wait_and_clear() -> None:
-        try:
-            await mind._reply_idle_event.wait()
-            if not mind._active_scopes:
-                mind.pfc.clear_dynamic_tools()
-        finally:
-            mind._dynamic_tools_clear_pending = False
-
-    asyncio.create_task(_wait_and_clear(), name="agent.mind.clear_dynamic_tools")
-
-
-async def run_heartbeat_tick(mind: "Mind") -> None:
-    """后台执行心跳 tick，完成后触发新周期（不阻塞主循环）。"""
-    # tick 是独立后台工作，不属于派生它的思维会话，脱离其链路上下文
-    detach_thinking_session()
-    try:
-        executed = await mind.heartbeat_engine.tick()
-        if executed:
-            log(f"心跳任务完成: {', '.join(executed)}", tag="心跳")
-    except Exception as exc:
-        log(f"心跳 tick 异常: {exc}", "WARNING", tag="心跳")
-    finally:
-        mind._heartbeat_running = False
-        # 完成后触发新周期（心跳可能注入了新任务）
-        if mind.pfc.has_pending_tasks():
-            mind._schedule_next_cycle("心跳完成后仍有待处理任务")
 
 
 async def execute_safely(mind: "Mind", decision: Decision) -> bool:
@@ -406,9 +357,10 @@ async def think_and_decide(mind: "Mind", situation: SituationContext) -> List[De
         mc = mind.config
         opts = {"temperature": mc.meta_decision_temperature}
         tc = {"type": "function", "function": {"name": "decide"}}
-        if mind.llm_manager:
-            primary = mind.llm if isinstance(mind.llm, LLMClient) else None
-            result = await mind.llm_manager.chat_with_fallback(
+        models = mind.models
+        if models.llm_manager:
+            primary = models.llm if isinstance(models.llm, LLMClient) else None
+            result = await models.llm_manager.chat_with_fallback(
                 messages,
                 options=opts,
                 tools=DECISION_TOOLS,
@@ -418,7 +370,7 @@ async def think_and_decide(mind: "Mind", situation: SituationContext) -> List[De
                 timeout=mc.llm_timeout,
             )
         else:
-            result = await mind.llm.chat(
+            result = await models.llm.chat(
                 messages, options=opts,
                 tools=DECISION_TOOLS, tool_choice=tc,
             )

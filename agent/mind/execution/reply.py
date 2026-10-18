@@ -16,6 +16,7 @@ from agent.mind.execution.reply_finalize import complete_reply
 from agent.mind.execution.state import ThinkMode
 from agent.mind.execution.tool_execution import _await_with_abort
 from agent.mind.execution.vision import apply_vision
+from agent.mind.recall import coordinator
 from agent.mind.think_session import think_session
 from core.activity import activity_scope
 from core.event_bus import (
@@ -72,7 +73,7 @@ async def reply_loop(
     from core.tool_context import tool_request
 
     channel_policy = get_reply_policy(adapter_key)
-    with think_session(mind, scope), tool_request(
+    with think_session(mind.tool_assembly, scope), tool_request(
         scope, str(getattr(anything, "uid", "") or ""),
         message_id=str(getattr(anything, "_trace_message_id", "") or getattr(anything, "adapter_message_id", "") or ""),
     ):
@@ -84,14 +85,14 @@ async def reply_loop(
         ) as activity, \
                 recall_turn(scope, anything.recall_policy, default_policy=channel_policy.recall_policy):
             # 会话开始清理历史中断信号，避免上一轮遗留请求误杀新会话；
-            # 只清激活时刻之前的——启动窗口内用户发的"停止"是合法中断
+            # 只清激活时刻之前的，启动窗口内经控制接口发起的中断仍须保留。
             _interrupts = getattr(mind, "interrupts", None)
             if scope and _interrupts is not None:
                 _interrupts.clear_before(
                     scope, getattr(mind, "_reply_activated_at", {}).get(scope, 0),
                 )
             # 推送水位必须在 base 快照之前读取：快照与水位读取之间的到达窗口内，
-            # 推送既不随短期记忆进 base、又被 drain_inflight 按 seq≤水位 丢弃，导致吞推送
+            # 推送既未进入 base、又被 drain_inflight 按 seq≤水位丢弃，导致吞推送。
             push_watermark = 0
             push_hub = getattr(mind, "push_hub", None)
             if push_hub is not None and scope:
@@ -100,8 +101,8 @@ async def reply_loop(
                 except Exception:
                     push_watermark = 0
             async def prepare() -> tuple[List[Dict], List[Dict]]:
-                tools = await mind.pfc.get_active_tool_schemas(adapter_key, scope=scope)
-                messages = await mind.get_recollection(anything=anything)
+                tools = await mind.tool_assembly.get_active_tool_schemas(adapter_key, scope=scope)
+                messages = await coordinator.prepare_recollection(mind, anything=anything)
                 if images:
                     messages = await apply_vision(mind, messages, images, anything)
                 return tools, messages
@@ -114,7 +115,7 @@ async def reply_loop(
                 activity.status = "cancelled"
                 if completion is not None:
                     completion["reason"] = "interrupted"
-                await mind._add_system_context(
+                await mind.conversation_data.append_context(
                     anything, f"[系统] 本次回复在准备上下文时被中断（{reason}），尚未开始模型和工具执行。",
                     role="system",
                 )

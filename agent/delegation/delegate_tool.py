@@ -175,7 +175,7 @@ def _validate_agent_name(agent_name: str) -> str:
     if not agent_name:
         return ""
     manager = _manager_or_none()
-    mgr = getattr(manager._mind, "llm_manager", None) if manager else None
+    mgr = manager._mind.models.llm_manager if manager else None
     profiles = {p["name"]: p for p in mgr.list_sub_agents()} if mgr is not None else {}
     if agent_name not in profiles:
         available = "、".join(profiles) if profiles else "（暂无，可用 create_sub_agent 创建）"

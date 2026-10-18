@@ -31,7 +31,6 @@ def _fake_stream_client(deltas: List[ChatStreamDelta], raise_mid: bool = False):
 def _mind_stub(client) -> SimpleNamespace:
     mind = SimpleNamespace(
         llm=client,
-        session_llm_params={},
         config=SimpleNamespace(llm_timeout=30),
     )
     mind.model_invoker = ModelInvoker(mind)
@@ -80,7 +79,7 @@ class TestStreamAggregation:
         assert (await invoker.chat_stream_once([], None)).content == "first"
 
         mind.llm = second
-        mind.session_llm_params = {"temperature": 0.2}
+        invoker.session_params = {"temperature": 0.2}
         supplied = {"temperature": 0.8, "max_tokens": 200}
         assert (await invoker.chat_stream_once([], None, options=supplied)).content == "second"
         assert requests == [{"temperature": 0.2, "max_tokens": 200}]

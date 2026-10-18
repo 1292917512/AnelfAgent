@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import time
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
-from agent.mind.tool_activation import bind_scope, reset_scope
+from agent.mind.prefrontal_cortex import PrefrontalCortex
 from agent.mind.tools import scheduler
 from agent.mind.tools.ports import mind_port
+from core.conversation_scope import bind_scope, reset_scope
 
 
 def _wire_mind(mind: object) -> None:
@@ -52,11 +54,8 @@ async def test_cancel_scope_reminders_preserves_other_conversations() -> None:
 
 @pytest.mark.asyncio
 async def test_schedule_reminder_persists_and_lists() -> None:
-    class FakePFC:
-        pass
-
     class FakeMind:
-        pfc = FakePFC()
+        pfc = PrefrontalCortex(SimpleNamespace())
         _active_scopes = {"user_qq:123"}
         _reply_adapter_key = "qq"
 
@@ -84,11 +83,8 @@ async def test_schedule_reminder_persists_and_lists() -> None:
 
 @pytest.mark.asyncio
 async def test_schedule_reminder_rejects_past_time() -> None:
-    class FakePFC:
-        pass
-
     class FakeMind:
-        pfc = FakePFC()
+        pfc = PrefrontalCortex(SimpleNamespace())
         _active_scopes = {"user_qq:123"}
         _reply_adapter_key = ""
 
@@ -112,12 +108,8 @@ async def test_schedule_reminder_explicit_scope_without_conversation() -> None:
     回归 2026-09-15 晨报事故：旧实现回退遍历 _active_scopes（仅回复周期
     进行中非空），深夜无会话时非确定性地报「无法确定回复目标」。
     """
-    class FakePFC:
-        def get_adapter_key(self, scope: str) -> str:
-            return ""
-
     class FakeMind:
-        pfc = FakePFC()
+        pfc = PrefrontalCortex(SimpleNamespace())
         _active_scopes: set = set()
 
     _wire_mind(FakeMind())

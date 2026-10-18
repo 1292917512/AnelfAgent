@@ -17,17 +17,17 @@ from typing import Any
 import pytest
 
 from agent.mind.decisions import pop_next_reply_target
+from agent.mind.prefrontal_cortex import PrefrontalCortex
 from agent.mind.tools import scheduler as scheduler_mod
 from agent.mind.tools.scheduler import add_reminder
-from agent.mind.work_memory import WorkMemory
 
 
-def _work_memory() -> WorkMemory:
-    """真实 WorkMemory（everything_data 仅异步画像路径触达，此处不涉及）。"""
-    return WorkMemory(SimpleNamespace())  # type: ignore[arg-type]
+def _pfc() -> PrefrontalCortex:
+    """真实 PFC（everything_data 仅异步画像路径触达，此处不涉及）。"""
+    return PrefrontalCortex(SimpleNamespace())  # type: ignore[arg-type]
 
 
-def _mind_with(pfc: WorkMemory) -> Any:
+def _mind_with(pfc: PrefrontalCortex) -> Any:
     return SimpleNamespace(pfc=pfc, _active_scopes=set())
 
 
@@ -64,7 +64,7 @@ class TestAddReminderScopeValidation:
 class TestConsumeScopeTask:
     def test_poison_purged_with_associated_state(self) -> None:
         """user 队列毒丸：消费后队列空、关联状态（预览/路由/未读）一并清理。"""
-        wm = _work_memory()
+        wm = _pfc()
         wm.pending_user.append("_global")
         wm.set_message_preview("_global", "定时提醒: 测试提醒")
         wm.set_adapter_key("_global", "qq")
@@ -77,20 +77,20 @@ class TestConsumeScopeTask:
 
     def test_entry_in_wrong_queue_still_consumed(self) -> None:
         """落在错误队列的条目同样可消费（不按前缀路由，两个队列都查）。"""
-        wm = _work_memory()
+        wm = _pfc()
         wm.pending_group.append("user_qq:1")
         assert wm.consume_scope_task("user_qq:1") is True
         assert wm.has_pending_tasks() is False
 
     def test_consume_missing_scope_is_false(self) -> None:
-        wm = _work_memory()
+        wm = _pfc()
         assert wm.consume_scope_task("user_qq:404") is False
 
 
 class TestPopNextReplyTargetPurgesPoison:
     async def test_poison_purged_and_valid_target_returned(self) -> None:
         """毒丸条目被就地清除（循环得以终止），后面的合法 scope 正常返回。"""
-        wm = _work_memory()
+        wm = _pfc()
         wm.pending_user.append("_global")
         wm.pending_user.append("user_qq:1")
         mind = _mind_with(wm)
@@ -105,7 +105,7 @@ class TestPopNextReplyTargetPurgesPoison:
 
     async def test_all_poison_leaves_queue_empty(self) -> None:
         """全毒丸队列：一次调用全部清除，返回 None（本轮空转一轮即收敛）。"""
-        wm = _work_memory()
+        wm = _pfc()
         wm.pending_user.append("_global")
         wm.pending_user.append("badscope")
         mind = _mind_with(wm)

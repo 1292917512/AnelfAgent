@@ -7,14 +7,15 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, ValidationInfo, field_validator
 
 
 class MemoryOrigin(BaseModel):
-    """产生记忆的材料窗口；摘要指针不表示逐字引用或每句均由用户确认。"""
+    """对话材料窗口或 AI 记录的执行会话；不表示逐字引用或用户确认。"""
 
     kind: Literal["conversation_summary", "agent_note"]
     scope: str
@@ -24,8 +25,10 @@ class MemoryOrigin(BaseModel):
 
     @field_validator("scope")
     @classmethod
-    def valid_scope(cls, value: str) -> str:
+    def valid_scope(cls, value: str, info: ValidationInfo) -> str:
         from agent.messages import parse_entity_scope
+        if info.data.get("kind") == "agent_note" and re.fullmatch(r"reflect:[0-9a-f]{8}", value):
+            return value
         if value != "_global" and not parse_entity_scope(value)[0]:
             raise ValueError("材料会话无效")
         return value
@@ -59,7 +62,7 @@ def capture_origin(scope: str, messages: Sequence[Mapping[str, Any]]) -> dict[st
 
 
 def note_origin(scope: str) -> dict[str, Any]:
-    """标记 AI 主动记录发生的会话，不把当前对话对象当成事实发言者。"""
+    """保留 AI 记录的执行会话，包括内部反思；不据此推断事实发言者。"""
     return {"origins": [MemoryOrigin(kind="agent_note", scope=scope).model_dump(exclude_defaults=True)]}
 
 

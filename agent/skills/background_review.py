@@ -5,6 +5,7 @@
 仅依据本轮操作事实筛选评审，纯问答默认不启动模型；阈值可由 AI/Web 调整。
 同会话冷却限制触发频率；单钩子并发为 1，执行队列由钩子宿主管理。
 评审禁止对外发送消息，产出只用于观测，成功完成不唤醒新回复。
+模型在尾部获得写入确认和收尾规则及当前长度建议；少量提示 token 换取减少重复调用。
 """
 from __future__ import annotations
 
@@ -44,19 +45,22 @@ _REVIEW_INSTRUCTION = """{context_description}
 
 ## 决策路径（按顺序考察）
 1. 无可沉淀 → 直接 end_reply（多数轮次如此，宁缺毋滥）
-2. 相近技能可容纳本次经验 → **合并优先**：update_skill 增量补充（删除过时部分，
-   不要只增不减），或对库现状中的合并候选用 merge_skills 显式合并
-3. 确有差异需新建 → create_skill；若返回"需要决策"的诊断报告（相近技能/触发词碰撞），
-   阅读事实后自行裁决：合并 / 带 decision 参数（差异理由）重呼确认 / 放弃
+2. 相近技能可容纳本次经验 → **合并优先**：基于旧正文整理，用 update_skill 提交合并后的完整正文
+   （删除过时部分，不要只增不减），或对库现状中的合并候选用 merge_skills 显式合并
+3. 确有差异需新建 → create_skill
 4. 库现状中的问题技能（零参与/高匹配零消费/触发词互相竞争/高频改写未收敛/
    解析失败）可顺手治理：merge / update 收敛 / create_skill 同名重建修复 / 不管（有理由地保留）
 
 ## 写作与召回
-- 正文：步骤 + 坑 + 注意事项，markdown 列表化，控制在 2000 字内，能列表别流水
+- 正文：步骤 + 坑 + 注意事项，markdown 列表化，建议 {body_advise_chars} 字内，保留必要细节
 - **禁止**写：结果性内容（"帮某人查到了 X"）、流水账、AI 自述
 - 触发词：3~8 个高区分度词，宁少勿泛；只在真实漏召回后补充，不做预防性堆砌
   （工具会报告跨技能碰撞的泛词，此时换更具体的表述或合并竞争技能）
-- 本轮最多一次写入（create / update / merge 三选一）
+- create_skill / update_skill 返回 needs_decision 表示尚未写入，不是接口故障；
+  阅读 facts 后调整内容，或带 decision（取舍理由）确认同一份内容，或放弃，不原样无 decision 重试
+- 成功回执中的 advisory 只是建议，内容已经保存；不要为消除提示再次写入
+- 本轮最多一次成功写入（create / update / merge 三选一）；成功后 end_reply 收尾
+- 本轮模型调用预算 {iteration_budget}，提前预留确认与收尾轮次；预算不足时说明未完成项，不反复试写
 
 ## 工作原则
 - 多数轮次都是无价值的，先看相近候选再下结论，不一拍脑门写新技能
@@ -218,7 +222,11 @@ class SkillReviewer:
             context_description = "本次未继承原对话执行过程。仅按下面的技能库事实检查重复与失效内容；不得推测原对话或据此沉淀新经验。"
             seed = ""
         candidates = await self._build_candidates(seed)
-        instruction = _REVIEW_INSTRUCTION.format(context_description=context_description, candidates=candidates, health=health)
+        instruction = _REVIEW_INSTRUCTION.format(
+            context_description=context_description, candidates=candidates, health=health,
+            body_advise_chars=get_config_int("skills_body_advise_chars", 2000),
+            iteration_budget=str(ctx.max_iterations) if ctx.max_iterations else "沿用主思维配置，以轮内执行状态为准",
+        )
 
         messages = list(ctx.messages) + [{"role": "user", "content": instruction}]
         log(f"技能后台评审开始（{ctx.context_mode.value} 上下文）", "DEBUG", tag="技能")

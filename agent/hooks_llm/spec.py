@@ -76,7 +76,7 @@ class LLMHookSpec:
     allow_output_tools: bool = False
     """是否放开外发工具（默认禁止，内部派生语义）。"""
     route_output: bool = True
-    """产出路由：True=登记后台任务完成并经 unclaimed→wake_budget 通道唤醒
+    """产出路由：True=登记后台任务完成并经 unclaimed 回调唤醒
     主思维跟进处理；False=成功时仅留记录，失败仍通知 AI。
     通知是内部执行事实，不会自动向频道用户发送正文。"""
     max_iterations: int = 6

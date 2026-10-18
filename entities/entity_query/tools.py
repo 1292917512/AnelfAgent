@@ -1,6 +1,6 @@
 """实体系统自省工具 — 查询实体目录和方法详情。
 
-Model Experience：方法详情复用执行端 JSON Schema，模糊查询歧义返回候选。
+Model Experience：方法详情复用执行端 JSON Schema，模糊查询歧义返回候选，误用标签时列出实际分组。
 按需结果增加嵌套参数约束，减少参数试错；不修改稳定提示词与缓存前缀。
 """
 
@@ -98,9 +98,13 @@ def list_entity_methods(group: str) -> str:
         if not tools:
             catalog = EntityRegistry.get_entity_catalog()
             available = [c["group"] for c in catalog]
-            suggestions = difflib.get_close_matches(group, available, n=3, cutoff=0.5)
+            tagged_groups = sorted({e.group or "default" for e in EntityRegistry.get_by_tag(group)
+                                    if e.entity_type == ET.TOOL and e.enabled})
+            suggestions = tagged_groups or difflib.get_close_matches(group, available, n=3, cutoff=0.5)
             return tool_error(f"实体分组 '{group}' 不存在或无可用方法",
                               cause=ErrorCause.NOT_FOUND, retryable=False,
+                              hint=("该名称匹配工具标签而非可用分组，请从 did_you_mean 中选择实际分组查询。"
+                                    if tagged_groups else "请使用 query_entities 返回目录中的分组名称。"),
                               group=group, available_groups=available,
                               did_you_mean=suggestions or None)
 

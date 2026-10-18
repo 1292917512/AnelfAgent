@@ -10,8 +10,9 @@ import json
 
 import pytest
 
-from agent.mind.tool_activation import bind_scope, reset_scope, tool_activation
+from agent.mind.tool_activation import tool_activation
 from core.config import ConfigManager
+from core.conversation_scope import bind_scope, reset_scope
 from core.entity import EntityRegistry
 
 

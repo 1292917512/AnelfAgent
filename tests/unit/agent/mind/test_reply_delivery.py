@@ -9,8 +9,8 @@ from helpers.think_loop_fakes import FakeMind, run_think_loop, text_result, tool
 
 from agent.channel.delivery import delivery_tags
 from agent.mind.execution.reply_delivery import ReplyAssessment
-from agent.mind.tool_activation import bind_scope, reset_scope
 from core.config import ConfigManager
+from core.conversation_scope import bind_scope, reset_scope
 
 _SCOPE = "user_qq:1"
 
@@ -49,12 +49,36 @@ async def test_plain_final_uses_current_conversation_once(anything, sender, scop
     assert "delivery_status:sent" in completion["messages"][-1]["content"]
 
 
-@pytest.mark.parametrize("ending", [tool_result("内部收束说明", ["end_reply"]), text_result("end_reply()"), text_result("[SILENT]")])
+@pytest.mark.parametrize("ending", [text_result("end_reply()"), text_result("[SILENT]")])
 async def test_explicit_end_never_sends_or_recovers(anything, sender, ending):
     mind, completion = await _run([ending], anything)
     assert mind.llm_calls == 1
     assert completion["reason"] == "completed"
     sender.assert_not_awaited()
+
+
+async def test_end_reply_text_fallback_delivers_and_corrects(anything, sender):
+    """纯收束批次正文零送达时经 Jev 兜底：补投 + 纠偏提示，不写常规投递回执。"""
+    mind, completion = await _run([tool_result("内部收束说明", ["end_reply"])], anything)
+    sender.assert_awaited_once()
+    assert sender.await_args.args[2] == "内部收束说明"
+    msgs = completion["messages"]
+    assert any(m.get("role") == "system" and "必须调用 send_message" in m.get("content", "") for m in msgs)
+    assert not any("按普通会话回复投递" in m.get("content", "") for m in msgs)
+
+
+async def test_end_reply_text_rejected_keeps_text_intact(anything, sender, monkeypatch):
+    """Jev 判定不投：不写新会话记录、不改写正文（防伪造前缀诱导幻觉）。"""
+    review = AsyncMock(return_value=ReplyAssessment(False, "Jev 明确拦截：内部过程或结束备注"))
+    monkeypatch.setattr("agent.mind.execution.reply_delivery.assess_reply", review)
+    mind, completion = await _run([tool_result("内部收束说明", ["end_reply"])], anything)
+    sender.assert_not_awaited()
+    assistants = [
+        m for m in completion["messages"]
+        if m.get("role") == "assistant" and m.get("content")
+    ]
+    assert assistants, "未投递正文应保留在执行链中"
+    assert all("未投递" not in (m["content"] or "") for m in assistants)
 
 
 async def test_tools_after_end_are_not_executed_and_results_stay_paired(anything, sender):
@@ -96,13 +120,10 @@ async def test_review_overlaps_tools_and_receipt_follows_atomic_batch(anything, 
     sender.side_effect = send
 
     class ObservedMind(FakeMind):
-        @property
-        def tool_executor(self):
-            async def execute(tc):
-                tool_started.set()
-                await delivered.wait()
-                return '{"ok": true}'
-            return execute
+        async def execute_tool(self, tc):
+            tool_started.set()
+            await delivered.wait()
+            return '{"ok": true}'
 
     mind = ObservedMind(rounds=[tool_result("马上为你检查。", ["recall"]), tool_result("", ["end_reply"])])
     completion = {}
@@ -127,7 +148,7 @@ async def test_waiting_progress_is_delivered_before_join_and_final_after_complet
 
     from agent.channel import output_tools
     from agent.channel.channel_types import ChannelStatus
-    from agent.mind.background_tasks import BackgroundTaskRegistry
+    from agent.mind.background.tasks import BackgroundTaskRegistry
     from agent.storage.data_center import ConversationData
     from agent.storage.storage_router import StorageDomain, StorageRouter
 
@@ -225,7 +246,7 @@ async def test_disabled_text_is_silent_in_context_history_and_activity(anything,
     ], anything)
     assert completion["reason"] == "completed" and mind.llm_calls == 3
     assert not any(message.get("role") == "system" for message in completion["messages"])
-    assert all("delivery_status:skipped" not in str(call) for call in mind._add_system_context.await_args_list)
+    assert all("delivery_status:skipped" not in str(call) for call in mind.conversation_data.append_context.await_args_list)
     assert all(not call.args[0] for call in observe.await_args_list)
     review.assert_not_awaited()
     sender.assert_not_awaited()
@@ -260,7 +281,7 @@ async def test_rejected_reply_leaves_context_fact_and_never_falls_back(anything,
     sender.assert_not_awaited()
     assert mind.llm_calls == 1
     assert "Jev 不通过" in completion["messages"][-1]["content"]
-    mind._add_system_context.assert_not_awaited()
+    mind.conversation_data.append_context.assert_not_awaited()
 
 
 async def test_rejected_interim_continues_work_and_explicit_send_without_review(anything, sender, monkeypatch):
@@ -352,5 +373,5 @@ async def test_interrupt_during_send_retains_unknown_receipt(anything, sender):
         reset_scope(token)
     assert completion["reason"] == "interrupted"
     assert any("delivery_status:unknown" in m.get("content", "") for m in completion["messages"])
-    assert "可能已经送达" in str(mind._add_system_context.await_args)
+    assert "可能已经送达" in str(mind.conversation_data.append_context.await_args)
     assert sender.await_count == 1

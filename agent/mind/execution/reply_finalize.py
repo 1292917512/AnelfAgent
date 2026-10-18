@@ -107,7 +107,7 @@ async def finish_think(
         # 工具执行记录持久化到对话历史（system 角色），
         # 等价于主流 function calling 历史中的 assistant(tool_calls) + tool results。
         # 不再写入短期记忆（DB 历史每轮都会加载，避免双重注入）。
-        await mind._add_system_context(
+        await mind.conversation_data.append_context(
             anything,
             _compact_summary_for_history(execution_summary),
             role="system",
@@ -268,7 +268,7 @@ async def complete_reply(
     """
     from agent.mind.autonomous import MindPhase
 
-    mind._set_phase(MindPhase.REPLYING)
+    mind.set_phase(MindPhase.REPLYING)
     content = (content or "").strip()
 
     # 会话用量账本：REPLY 完成 turns+1 并把该会话累计增量落盘

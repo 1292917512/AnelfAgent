@@ -5,7 +5,7 @@
 
 ## 通用后台任务
 
-`agent/mind/background_tasks.py` 负责按会话登记、等待和完成通知，生命周期由宿主管理。
+`agent/mind/background/tasks.py` 负责按会话登记与等待；同目录 `routing.py` 处理完成通知，`evidence.py` 保存操作证据，生命周期由宿主管理。
 查询、等待和终止工具统一放在 `agent/mind/tools/background.py`，不依赖子代理是否启用。
 `wait_background_tasks(task_id, timeout)` 等待指定任务，超时只结束此次等待，不取消执行。
 新私聊或群聊 @ 到达会让等待返回，由 AI 在下一轮动态上下文中判断安排；不会自动改换回复目标。

@@ -19,13 +19,13 @@ from agent.mind.execution.responses import (
 )
 from agent.mind.execution.state import ExecutionContext, RoundOutcome, RoundState, ThinkMode
 from agent.mind.execution.tool_execution import _await_with_abort
-from agent.mind.mind_tools import END_REPLY_TOOL_NAME
 from agent.mind.silence import should_suppress
+from agent.mind.tools.core import END_REPLY_TOOL_NAME
 from core.log import log
 
 if TYPE_CHECKING:
     from agent.llm import ChatResult
-    from agent.mind.background_tasks import BackgroundTaskInfo
+    from agent.mind.background.tasks import BackgroundTaskInfo
 
 
 _PROMPT_CONTINUE = (

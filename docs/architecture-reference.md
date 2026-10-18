@@ -75,6 +75,19 @@ in-function import 违层），实体里写 `from agent.` 之前先想到 _sdk �
 可观测：`GET /api/status/services`（Lifecycle.snapshot 注册表快照）、`GET /api/status/startup`
 （Application.startup_timeline 启动时间线），前端 Dashboard「系统服务」面板展示。
 
+## 执行观测边界
+
+`core.observation.ExecutionObservation` 只记录单调时钟耗时与异常事实，不调度、不重试、不修改参数、
+返回值或异常。构造时开始计时；作为上下文管理器使用时，退出后冻结耗时。事件名称、载荷与成功判定由
+所属模块负责，沿用 EventBus 的等待顺序与当前会话上下文，不另建事件或订阅体系。
+
+上下文准备由 `agent.context.observation.observe_preparation` 装饰入口，观测实际组装结果，不修改消息。
+Mind 工具耗时包含权限检查，调用结束事件由执行入口在 `tool_post` 前发送；权限模块只返回裁决，
+不重复发送。结果后处理失败仍由工具链发布更正事件。
+实体注册表计时不含外层审批；启动节点计时包含重试与退避；`track_ops`、钩子与追踪区间复用同一时钟。
+取消继续向上传播，工具观测标记为中断。LLM 首包、网络重试预算、音频长度等独立口径不套用整函数计时；
+观测不得改动模型参数、消息层、缓存前缀或动态注入顺序。
+
 ## EntityRegistry（core/entity.py）
 
 中央注册枢纽。所有模块以实体方式注册、发现、调用。
@@ -148,7 +161,7 @@ ConfigPaths.UPLOAD_DIR          # workspace/uploads
   `batch_remove_tags`。内置标签含 time/uid/group_id/name/channel/session_id/message_id/kind/
   media_file/reply_to/to_me/push 等。to_me 标识「群消息 @ 了机器人」、push 标识「非用户消息的实体推送」，
   出站时随元数据剥离名单一并剥离——**出站清洗名单是标签外泄的唯一防线，新增渲染标签必须同步名单**。
-  消息标签的工具唤醒是显式映射（`work_memory._scan_message_tags`）：media_type/media_file →
+  消息标签的工具唤醒是显式映射（`pfc._scan_message_tags`）：media_type/media_file →
   `media:{类型}` 工具组、channel → 频道专属工具；其余元数据标签不承载工具路由（防用户可控值泛化激活）
 - **会话 scope**（`agent/messages/everything.py`）：格式 `user_{adapter}:{uid}` /
   `group_{adapter}:{gid}` / `user_{adapter}:{uid}#{chat_id}`，跨频道同号实体天然隔离。构造一律
@@ -251,7 +264,7 @@ default_path 保持测试隔离）；同族库路径均由 `main_sqlite_path()`�
 | `memory` | 记忆管理 | `agent/memory/tools.py` | always/core/heartbeat |
 | `graph` | 关系图谱 | `agent/memory/graph/tools.py`（含 graph_curation_agenda 治理议程） | always/core/heartbeat |
 | `notes` | 便签记忆 | `agent/memory/notes.py` | core/heartbeat |
-| `thinking` | 思维工具 | `agent/mind/mind_tools.py` + `agent/mind/tool_activation.py` + `agent/mind/tools/short_term_tools.py` | always |
+| `thinking` | 思维工具 | `agent/mind/tools/core.py` + `agent/mind/tool_activation.py` + `agent/mind/tools/short_term_tools.py` | always |
 | `planning` | 目标规划 | `agent/planning/tools.py` + `agent/task/tools.py` | planning/goal/heartbeat |
 | `skills` | 技能 | `agent/skills/tools.py` | always |
 | `delegation` | 子代理 | `agent/delegation/delegate_tool.py` | always |
@@ -283,7 +296,7 @@ default_path 保持测试隔离）；同族库路径均由 `main_sqlite_path()`�
 | 文件 | 职责 |
 |------|------|
 | `agent/mind/mind.py` | 思维核心、自主循环 |
-| `agent/mind/prefrontal_cortex.py` | 工作记忆门面（组合 work_memory / tool_assembly；上下文通过只读视图消费） |
+| `agent/mind/prefrontal_cortex.py` / `tool_assembly.py` | PFC 与工具目录分别持有状态；上下文通过各自只读视图消费 |
 | `agent/mind/autonomous.py` | 决策类型、态势模型、元决策 prompt |
 | `agent/context/prompt_layers.py` | Prompt 分层缓存（stable/context/volatile + PromptCacheManager） |
 | `agent/context/pipeline.py` | 上下文构建管线（@context_block 声明层+变动率 / 变动率排序组装） |
@@ -319,7 +332,7 @@ default_path 保持测试隔离）；同族库路径均由 `main_sqlite_path()`�
 | `agent/delegation/journal.py` | 委托运行日志（进度流/transcript/崩溃 ledger） |
 | `agent/delegation/recovery.py` | 委托崩溃恢复 |
 | `agent/delegation/delegate_tool.py` | delegate_task / send_to_agent / follow_up_agent / 后台任务工具组 |
-| `agent/mind/work_memory.py` | 工作记忆数据面（消息队列 / 待办 / 短期记忆 / 态势路由） |
+| `agent/mind/prefrontal_cortex.py` | 前额叶皮层数据面（消息队列 / 待办 / 短期记忆 / 态势路由）；外部通过 `runtime.pfc` 访问共享实例 |
 | `agent/mind/tool_assembly.py` | 工具装配（召回 / tag 激活 / schema 合并门控） |
 | `agent/context/assembly.py` | 上下文组装（系统提示 / 分层缓存 / 执行上下文） |
 | `agent/mind/decisions.py` | 决策执行分发（REPLY/REFLECT/PLAN 等） |
@@ -363,7 +376,7 @@ default_path 保持测试隔离）；同族库路径均由 `main_sqlite_path()`�
 | `core/latebind.py` | 晚绑定端口原语 |
 | `agent/runtime/wiring.py` | 运行时统一施绑点 |
 | `core/crash_report.py` | 崩溃状态设施（crash_state.json + macOS .ips 关联） |
-| `agent/mind/crash_recovery.py` | 崩溃尾部修复 |
+| `agent/mind/execution/recovery.py` | 崩溃尾部修复；直接通过存储路由读取检查点并追加恢复事实 |
 | `core/context_provider.py` | 上下文提供者注册表（实时快照注入；priority=变动率排序：10-19 状态级 / 20-29 摘要级 / 30-39 会话操作态势 / 40+ 实时快照；两道门控热读取——inject_key 注入开关（约定 `<组名>_context_inject`）与 group 实体启停联动） |
 
 ## 修改后检查

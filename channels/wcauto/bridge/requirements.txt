@@ -1,7 +1,0 @@
-# wcauto 桥（Windows 侧）依赖
-# Python 3.9+；须在已登录微信 4.1.12+ 的 Windows 10/11 上运行
-aiohttp>=3.9
-wechatauto-replica>=1.2.6.1
-# 发送路径额外依赖（OCR 兜底 + 拼音输入，见 wechatauto 文档）
-winsdk>=1.0.0b10; sys_platform == "win32"
-pypinyin>=0.48.0

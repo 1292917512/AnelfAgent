@@ -23,9 +23,11 @@ def _fake_mind() -> Any:
         _reflecting=False,
         _active_scopes=set(),
         _auto_cycle_retry=0,
-        _set_phase=lambda phase: None,
+        set_phase=lambda phase: None,
         _schedule_next_cycle=lambda reason: None,
-        heartbeat_engine=SimpleNamespace(reflection_pending=False),
+        heartbeat_engine=SimpleNamespace(reflection_pending=False, start_background_tick=Mock()),
+        _reply_idle_event=asyncio.Event(),
+        tool_assembly=SimpleNamespace(clear_when_idle=Mock()),
         pfc=SimpleNamespace(
             peek_general_tasks=lambda: [],
             clear_general_tasks_before=lambda n: None,
@@ -39,7 +41,6 @@ def _isolate_events(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cycle_mod.event_bus, "emit", AsyncMock())
     monkeypatch.setattr(cycle_mod, "_hb_write", lambda **kwargs: None)
     monkeypatch.setattr(cycle_mod, "execute_safely", AsyncMock(return_value=True))
-    monkeypatch.setattr(cycle_mod, "clear_dynamic_tools_when_idle", AsyncMock())
 
 
 class TestHeartbeatDecisionDeferral:
@@ -134,7 +135,6 @@ async def test_direct_channel_owns_request_and_preserves_background_work(monkeyp
     monkeypatch.setattr("agent.channel.reply_policy.get_reply_policy",
                         lambda adapter: ReplyPolicy(direct_reply=adapter == "game"))
     mind = _fake_mind()
-    mind._heartbeat_running = True
     monkeypatch.setattr(cycle_mod, "gather_situation", AsyncMock(side_effect=AssertionError("must not decide the same game request again")))
     monkeypatch.setattr(cycle_mod, "active_goal_lines", AsyncMock(side_effect=AssertionError("unrelated goals must not delay the request")))
     mind.pfc.peek_all_tasks = lambda: [("group_game:local", "player", "local", "制作工具"),

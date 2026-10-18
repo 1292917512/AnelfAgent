@@ -14,10 +14,10 @@ from agent.judgment.engine import JudgmentConfig
 from agent.judgment.types import ChoiceAnswer, JudgmentReport, JudgmentSource, NoulAnswer
 from agent.mind.execution.reply_delivery import ReplyAssessment
 from agent.mind.execution.state import ThinkMode
-from agent.mind.tool_activation import bind_scope, reset_scope
 from agent.storage.data_center import ConversationData
-from agent.storage.storage_router import StorageDomain, StorageRouter
+from agent.storage.storage_router import StorageRouter
 from core.config import ConfigManager
+from core.conversation_scope import bind_scope, reset_scope
 
 
 @pytest.fixture
@@ -84,11 +84,6 @@ async def test_only_confirmed_body_enters_persistent_conversation(pipeline, sqli
     mind = FakeMind(rounds=[text_result("候选正文，只在通过时送达")], default_text=None)
     mind.conversation_data = data
 
-    async def add_context(target, content, role):
-        await data.router.append(StorageDomain.CONVERSATION, scope_type=target.scope_type,
-                                 scope_id=target.scope_id, role=role, content=content)
-
-    mind._add_system_context = add_context
     token = bind_scope("user_qq:1")
     completion = {}
     try:
@@ -153,13 +148,10 @@ async def test_reflection_can_explicitly_send_but_never_delivers_its_draft(pipel
     monkeypatch.setattr("agent.mind.execution.reply_delivery.assess_reply", review)
 
     class SendingMind(FakeMind):
-        @property
-        def tool_executor(self):
-            async def execute(call):
-                if call.name == "send_message":
-                    return await output_tools.send_message(**json.loads(call.arguments))
-                return '{"ok": true}'
-            return execute
+        async def execute_tool(self, call):
+            if call.name == "send_message":
+                return await output_tools.send_message(**json.loads(call.arguments))
+            return '{"ok": true}'
 
     mind = SendingMind(rounds=[
         text_result("内部自查草稿"),

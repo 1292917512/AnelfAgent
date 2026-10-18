@@ -26,14 +26,14 @@ from core.sanitizer import truncate_middle
 from core.tags import tag_label
 
 if TYPE_CHECKING:
-    from agent.mind.mind import Mind
+    from agent.mind.recall.inputs import Recollection
 
 
 class DialogueRecollection:
     """每回复一个工作者，只保留最新待查对话；旧结果不能越过对话修订。"""
 
-    def __init__(self, mind: Mind, scope: str, conversation: list[dict[str, Any]]) -> None:
-        self.mind = mind
+    def __init__(self, recall: Recollection, scope: str, conversation: list[dict[str, Any]]) -> None:
+        self.recall = recall
         self.scope = scope
         self.state = deep_probe_hub.state_for(scope)
         self.task: asyncio.Task[None] | None = None
@@ -51,7 +51,7 @@ class DialogueRecollection:
     def offer(self, conversation: list[dict[str, Any]], *, watermark: tuple[int, int]) -> None:
         """在真实用户消息并入后调用；仅调度内存快照，不等待检索。"""
         state = self.state
-        if state is None or deep_probe_hub.state_for(self.scope) is not state or self.mind.retriever is None:
+        if state is None or deep_probe_hub.state_for(self.scope) is not state or self.recall.retriever is None:
             return
         if watermark == self.watermark:
             return
@@ -143,7 +143,7 @@ class DialogueRecollection:
 
     async def _candidates(self, query: str) -> list[RecallDelta]:
         """复用现有检索和技能匹配，只返回短候选，不做规划或多级深探。"""
-        retriever = self.mind.retriever
+        retriever = self.recall.retriever
         if retriever is None:
             return []
 
@@ -158,11 +158,11 @@ class DialogueRecollection:
         async def skills() -> list[RecallDelta]:
             if not get_config_bool("skills_enabled", True):
                 return []
-            matches = await self.mind.skills.matcher.match([query], top_k=2)
+            matches = await self.recall.skills.matcher.match([query], top_k=2)
             deltas = []
             from agent.skills.dependencies import mcp_binding_notice
             for matched_skill, _score in matches:
-                skill = self.mind.skills.store.get(matched_skill.name)
+                skill = self.recall.skills.store.get(matched_skill.name)
                 if skill is None:
                     continue
                 text = (f"{tag_label('skill', skill.name)} {skill.description[:160]}"

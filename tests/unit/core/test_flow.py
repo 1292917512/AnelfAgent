@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,6 +13,32 @@ async def _ok(value: object = None) -> object:
     return value
 
 
+async def test_node_observation_includes_retries_and_backoff(monkeypatch):
+    clock = SimpleNamespace(value=10.0)
+    monkeypatch.setattr("core.observation.time", SimpleNamespace(monotonic=lambda: clock.value))
+    attempts = []
+    delays = []
+
+    async def delay(seconds):
+        delays.append(seconds)
+        clock.value += seconds
+
+    monkeypatch.setattr("core.flow.asyncio.sleep", delay)
+    machine = FlowMachine()
+
+    @machine.node(retries=1, retry_delay=2.0)
+    async def operation():
+        attempts.append(clock.value)
+        clock.value += 0.5
+        if len(attempts) == 1:
+            raise ValueError("retry")
+        return "done"
+
+    result = await machine.execute()
+    assert result.success
+    assert attempts == [10.0, 12.5] and delays == [2.0]
+    assert result.results[0].result == "done"
+    assert result.results[0].attempts == 2 and result.results[0].duration == 3.0
 async def test_sequential_chain_default_preserves_registration_order():
     """未声明 depends_on 的节点弱链式依赖前驱，按注册顺序串行。"""
     machine = FlowMachine()

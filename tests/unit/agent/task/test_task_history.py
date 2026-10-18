@@ -17,6 +17,7 @@ from agent.task.model import TaskDefinition
 def _isolate_history_path(tmp_path, monkeypatch: pytest.MonkeyPatch):
     """隔离执行历史文件（ConfigPaths 解析真实 data 目录，必须显式重定向）。"""
     monkeypatch.setattr(task_history, "_history_path", lambda: tmp_path / "task_history.json")
+    monkeypatch.setattr("agent.mind.recall.coordinator.prepare_recollection", AsyncMock(return_value=[]))
     yield
 
 
@@ -159,8 +160,6 @@ def _fake_mind(reflect_return: str = "", reflect_exc: Exception | None = None) -
     else:
         reflect.return_value = reflect_return
     return SimpleNamespace(
-        pfc=SimpleNamespace(),
-        get_recollection=AsyncMock(return_value=[]),
         reflect=reflect,
         memory_store=None,
     )
@@ -169,7 +168,7 @@ def _fake_mind(reflect_return: str = "", reflect_exc: Exception | None = None) -
 class TestExecutorRecordsHistory:
     async def test_success_recorded_with_preview(self) -> None:
         mind = _fake_mind(reflect_return="任务产出内容")
-        executor = TaskExecutor(mind)  # type: ignore[arg-type]
+        executor = TaskExecutor(mind, mind)  # type: ignore[arg-type]
         task = TaskDefinition(name="ok_task", prompt="p", save_result_to_memory=False)
 
         result = await executor.run(task, trigger="heartbeat")
@@ -185,7 +184,7 @@ class TestExecutorRecordsHistory:
 
     async def test_no_output_recorded(self) -> None:
         mind = _fake_mind(reflect_return="")
-        executor = TaskExecutor(mind)  # type: ignore[arg-type]
+        executor = TaskExecutor(mind, mind)  # type: ignore[arg-type]
         task = TaskDefinition(name="empty_task", prompt="p", save_result_to_memory=False)
 
         assert await executor.run(task, trigger="idle") is None
@@ -195,7 +194,7 @@ class TestExecutorRecordsHistory:
 
     async def test_null_keyword_recorded_with_preview(self) -> None:
         mind = _fake_mind(reflect_return="暂无述求")
-        executor = TaskExecutor(mind)  # type: ignore[arg-type]
+        executor = TaskExecutor(mind, mind)  # type: ignore[arg-type]
         task = TaskDefinition(
             name="kw_task", prompt="p", null_keywords=["暂无述求"],
             save_result_to_memory=False,
@@ -209,7 +208,7 @@ class TestExecutorRecordsHistory:
 
     async def test_error_recorded_and_reraised(self) -> None:
         mind = _fake_mind(reflect_exc=RuntimeError("LLM 连接失败"))
-        executor = TaskExecutor(mind)  # type: ignore[arg-type]
+        executor = TaskExecutor(mind, mind)  # type: ignore[arg-type]
         task = TaskDefinition(name="bad_task", prompt="p", save_result_to_memory=False)
 
         with pytest.raises(RuntimeError, match="LLM 连接失败"):
@@ -222,7 +221,8 @@ class TestExecutorRecordsHistory:
 
     async def test_precheck_skip_not_recorded(self) -> None:
         """prompt 为空 / scope 不匹配属配置问题而非执行，不产生历史记录。"""
-        executor = TaskExecutor(_fake_mind())  # type: ignore[arg-type]
+        mind = _fake_mind()
+        executor = TaskExecutor(mind, mind)  # type: ignore[arg-type]
         assert await executor.run(TaskDefinition(name="no_prompt", prompt="")) is None
         assert await executor.run(
             TaskDefinition(name="scope_mismatch", prompt="p", scope="entity"),

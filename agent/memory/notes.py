@@ -398,8 +398,8 @@ async def _resync_single_file(file_path: Path) -> None:
     try:
         from agent.runtime.singleton import require_runtime
         rt = require_runtime()
-        store = rt.mind.memory_store
-        embedder = rt.mind.embedder
+        store = rt.memory_store
+        embedder = rt.embedder
         if not store:
             return
         from agent.memory.memory_sync import index_single_file

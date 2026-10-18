@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import base64
-import binascii
 import os
 import tempfile
 import time
@@ -21,8 +18,6 @@ from agent.vision.face.engine import (  # noqa: F401  # 门面再导出（web �
     FaceEngineNotConfigured,
 )
 
-_PUSH_MAX_BYTES = 20 * 1024 * 1024
-_PUSH_EXTS = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
 _FACE_UPLOAD_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
 
@@ -129,44 +124,14 @@ class VisionServiceFacade:
         self, source: str, image_base64: str, mime_type: str,
         captured_at: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """外部视觉源推送一帧（base64 图片 → 缓冲统一入口）。
+        """外部视觉源推送一帧（委托 agent.vision.framework 统一入口）。
 
         Raises:
             ValueError: 非法 source 名 / 不支持的类型 / base64 非法。
             OverflowError: 图片为空或超过上限。
         """
-        source = source.strip()
-        if not source or ".." in source or "/" in source:
-            raise ValueError("非法 source 名")
-        from agent.vision.framework import is_enabled
-        if not is_enabled(f"external:{source}"):
-            raise ValueError(f"外部视觉源已停用: {source}")
-        if mime_type not in _PUSH_EXTS:
-            raise ValueError(f"不支持的图片类型: {mime_type}")
-        try:
-            data = base64.b64decode(image_base64, validate=True)
-        except (binascii.Error, ValueError):
-            raise ValueError("image_base64 不是合法的 base64") from None
-        if not data or len(data) > _PUSH_MAX_BYTES:
-            raise OverflowError("图片为空或超过 20MB 上限")
-
-        from core.path import ConfigPaths
-        out_dir = Path(str(ConfigPaths.UPLOAD_DIR)) / "vision"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        dest = out_dir / f"{int(time.time() * 1000)}_{source}{_PUSH_EXTS[mime_type]}"
-
-        def _write() -> None:
-            dest.write_bytes(data)
-
-        await asyncio.to_thread(_write)
-        frame, changed = await get_vision_buffer().ingest(
-            str(dest), f"external:{source}",
-            captured_at=captured_at or time.time(),
-        )
-        return {
-            "ok": True, "path": frame.path, "changed": changed,
-            "source": frame.source,
-        }
+        from agent.vision.framework import push_external_frame
+        return await push_external_frame(source, image_base64, mime_type, captured_at)
 
 
 def _face_upload_path(filename: str, content: bytes, *, persistent: bool) -> str:

@@ -162,8 +162,12 @@ async def test_backfill_does_not_publish_obsolete_results(store: MemoryStore, ki
                     await store.delete(entry.id)
                 else:
                     entry.content = replacement if change == "rewrite" else original
-                    entry.embedding = fresh_vec if change == "filled" else None
-                    await store.update(entry, clear_embedding=change == "rewrite")
+                    entry.embedding = None
+                    await store.update(
+                        entry,
+                        clear_embedding=change == "rewrite",
+                        new_embedding=fresh_vec if change == "filled" else None,
+                    )
             elif change == "delete":
                 await store.delete_chunks_by_path("note.md")
             else:

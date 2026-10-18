@@ -279,7 +279,7 @@ class ContextSnapshot:
             from agent.llm.llm_client import LLMClient
             from agent.runtime.singleton import require_runtime
             rt = require_runtime()
-            llm = rt.mind.llm
+            llm = rt.llm
             if isinstance(llm, LLMClient):
                 info = LLMClient.get_model_info(llm.config.litellm_model)
                 ctx = info.get("max_input_tokens") or info.get("max_tokens") or 0

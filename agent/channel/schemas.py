@@ -161,6 +161,8 @@ class AdapterMessage(BaseModel):
     timestamp: float = Field(default_factory=time.time)
     reply_to_id: str = ""
     reply_content: str = ""
+    # 显式子会话标识（http_api 多会话等）；空则沿用 channel.channel_id 自然会话
+    session_id: str = ""
 
 
 class AdapterSendRequest(BaseModel):

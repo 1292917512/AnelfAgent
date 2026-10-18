@@ -357,22 +357,10 @@ def create_bootstrap() -> FlowMachine:
         depends_on=["init_channel_system", "init_persona", "init_memory", "register_internal_tools"],
     )
     async def assemble_runtime():
-        """纯组装：Mind -> Assistant -> Runtime -> set_runtime -> 统一施绑。"""
-        # 提前导入工具模块，使其 deferred 工具在 Mind 初始化激活
-        # thinking/session/delegation 分组时一并注册（依赖引用经 wiring 统一施绑）；
-        # delegate_tool 漏导入会导致 activate_group("delegation") 弹出空组、
-        # delegation 整组永不注册（activate_group 对空组连组名都不登记）
-        import agent.delegation.delegate_tool  # noqa: F401
-        import agent.judgment.tools  # noqa: F401
-        from agent.mind.tools import (  # noqa: F401
-            background,
-            execution_log,
-            scheduler,
-            session_tools,
-            short_term_tools,
-        )
+        """创建运行时模型状态，装配执行服务后发布并统一施绑。"""
+        from agent.config import get_mind_config
         from agent.runtime.assistant import AgentAssistant
-        from agent.runtime.mind_factory import create_mind
+        from agent.runtime.factory import create_mind
         from agent.runtime.runtime import AgentRuntime
         from agent.runtime.singleton import set_runtime
         from agent.runtime.wiring import wire_runtime
@@ -386,37 +374,30 @@ def create_bootstrap() -> FlowMachine:
         channel_manager = ch_data["channel_manager"]
         pipeline = ch_data["pipeline"]
 
-        mind = create_mind(
-            char=char,
+        runtime = AgentRuntime(
+            channel_manager=channel_manager, pipeline=pipeline, char=char,
+            config=get_mind_config(), data_center=data_center,
             llm=llm_data["llm"],
             llm_manager=llm_data["manager"],
-            channel_manager=channel_manager,
-            everything_data=data_center.everything_data,
-            conversation_data=data_center.conversation_data,
-            memory_store=mem["store"],
+            memory_store=mem["store"], embedder=mem["embedder"],
         )
+        mind = create_mind(runtime)
         import agent.workflow.tools  # noqa: F401  # 注册工作流工具
         from agent.memory.auto_capture import AutoCapturePipeline
         from agent.workflow.engine import WorkflowEngine
         from core.tool_registry import activate_group
 
-        workflow_engine = WorkflowEngine(mind)
+        workflow_engine = WorkflowEngine(mind.background_tasks, runtime.delegation_manager)
         count = activate_group("workflow", "工作流 - 可恢复的多步骤编排（断点续跑/门控重跑）")
         log(f"🧩 工作流工具已注册 ({count} 个)", tag="工作流")
-        auto_capture_pipeline = AutoCapturePipeline(mind)
+        auto_capture_pipeline = AutoCapturePipeline(runtime)
         assistant = AgentAssistant(mind)
         pipeline.register_agent(assistant)
 
-        runtime = AgentRuntime(
-            channel_manager=channel_manager,
-            pipeline=pipeline,
-            assistant=assistant,
-            mind=mind,
-            char=char,
-            llm=llm_data["llm"],
-            data_center=data_center,
-            workflow_engine=workflow_engine,
-        )
+        runtime.mind = mind
+        runtime.pfc = mind.pfc
+        runtime.assistant = assistant
+        runtime.workflow_engine = workflow_engine
         set_runtime(runtime)
 
         # 晚绑定统一施绑（mind 工具组 / cognee 可选后端 / sticker worker + 跨模块回调），
@@ -428,6 +409,7 @@ def create_bootstrap() -> FlowMachine:
         hooks_llm_runtime = HookRuntime(mind)
         wire_runtime(
             mind=mind,
+            skills=runtime.skills, delegation_manager=runtime.delegation_manager,
             workflow_engine=workflow_engine,
             auto_capture_pipeline=auto_capture_pipeline,
             data_center=data_center,
@@ -449,6 +431,7 @@ def create_bootstrap() -> FlowMachine:
         Lifecycle.register("execution_diagnostics", execution_diagnostics,
                            on_start=execution_diagnostics.start, cleanup=execution_diagnostics.stop)
         await Lifecycle.start_one("execution_diagnostics")
+        Lifecycle.register("push_hub", mind.push_hub, cleanup=mind.push_hub.close)
         Lifecycle.register("background_tasks", mind.background_tasks, cleanup=mind.background_tasks.close)
         Lifecycle.register("hook_journal", hook_journal, cleanup=hook_journal.clear)
         from agent.judgment.health import judgment_health
@@ -691,7 +674,6 @@ def create_bootstrap() -> FlowMachine:
         cutoff_ns = time.time_ns() - int(max_age_hours * 3600 * 1e9)
 
         from agent.context.message_schema import is_genuine_user_message
-        from agent.mind.tools.scheduler import enqueue_scope_reply
 
         last_msgs = await sqlite.list_scopes_with_last_message()
         recovered = 0
@@ -706,8 +688,8 @@ def create_bootstrap() -> FlowMachine:
                 continue
             scope = f"{row['scope_type']}_{row['scope_id']}"
             preview = row["content"][:300]
-            await enqueue_scope_reply(
-                mind.pfc, scope, row["adapter_key"], preview,
+            await mind.pfc.enqueue_reply(
+                scope, row["adapter_key"], preview,
                 f"[系统] 进程重启前你收到了这条消息但尚未回复（对话历史中可见其完整内容）：\n"
                 f"{preview}\n请现在补回处理。",
             )
@@ -728,7 +710,7 @@ def create_bootstrap() -> FlowMachine:
         if not get_config_bool("recovery_interrupted_enabled", True):
             return
         from agent.delegation.recovery import recover_interrupted_delegations
-        from agent.mind.crash_recovery import (
+        from agent.mind.execution.recovery import (
             collect_crash_context,
             recover_interrupted_replies,
         )
@@ -737,7 +719,7 @@ def create_bootstrap() -> FlowMachine:
             mind = require_runtime().mind
             # 消费上次崩溃状态（守护脚本写入 + 系统崩溃报告关联），仅注入一次
             crash_context = collect_crash_context()
-            recovered = await recover_interrupted_replies(mind, crash_context)
+            recovered = await recover_interrupted_replies(mind.conversation_data.router, crash_context)
             # 委托崩溃恢复同范式：账本未闭合条目 → 中断元消息（独立于回复检查点）
             await recover_interrupted_delegations(mind)
             # 工作流崩溃收敛同范式：running 残留 → stopped(interrupted)，可续跑
@@ -775,9 +757,9 @@ def create_bootstrap() -> FlowMachine:
         for port_name in assert_wired():
             issues.append(f"晚绑定端口未施绑: {port_name}")
 
-        if rt.mind.memory_store:
+        if rt.memory_store:
             try:
-                await rt.mind.memory_store._get_db()
+                await rt.memory_store._get_db()
             except Exception as e:
                 issues.append(f"MemoryStore 连接失败: {e}")
 

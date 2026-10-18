@@ -44,7 +44,7 @@ def test_document_index_failure_is_reported_and_upload_removed(
     docs = tmp_path / "docs"
     monkeypatch.setattr("services.memory._docs_dir", lambda: docs)
     monkeypatch.setattr("services.memory.require_runtime", lambda: SimpleNamespace(
-        mind=SimpleNamespace(memory_store=object(), embedder=None),
+        memory_store=object(), embedder=None,
     ))
     monkeypatch.setattr("agent.memory.memory_sync.index_single_file", AsyncMock(side_effect=RuntimeError("write failed")))
     response = client.post("/api/memory/documents/upload", files={"file": ("test.pdf", b"invalid", "application/pdf")})

@@ -102,10 +102,84 @@ class TestNoticeMessageContract:
         assert message.kind == MessageKind.EVENT
         assert "撤回" in message.content
 
+    async def test_group_recall_includes_original_message_when_available(self) -> None:
+        api_caller = AsyncMock(return_value={
+            "retcode": 0,
+            "data": {
+                "message": [{"type": "text", "data": {"text": "撤回前的文本"}}],
+                "sender": {"nickname": "小明"},
+            },
+        })
+        message = await parse_event_async(
+            _notice("group_recall", message_id=789), api_caller
+        )
+        assert message is not None
+        assert "原消息：小明: 撤回前的文本" in message.content
+        api_caller.assert_awaited_once_with("get_msg", {"message_id": 789})
+
+    async def test_group_recall_keeps_record_when_original_unavailable(self) -> None:
+        api_caller = AsyncMock(return_value={"retcode": 1404, "data": None})
+        message = await parse_event_async(
+            _notice("group_recall", message_id=789), api_caller
+        )
+        assert message is not None
+        assert "撤回" in message.content
+        assert "原消息" not in message.content
+        api_caller.assert_awaited_once_with("get_msg", {"message_id": 789})
+
     async def test_poke_bot_is_to_me(self) -> None:
         message = await parse_event_async(_notice("notify", sub_type="poke", target_id=10086))
         assert message is not None
         assert message.is_to_me is True
+
+    @pytest.mark.parametrize("group_id,sender_id,target_id", [
+        (0, 12345, 10086), (0, 10086, 12345), (0, 12345, 12345),
+        (110, 12345, 10086), (110, 10086, 12345), (110, 12345, 12345),
+        (110, 12345, 22222),
+    ])
+    async def test_poke_participants_and_conversation_are_distinct(
+        self, group_id: int, sender_id: int, target_id: int,
+    ) -> None:
+        data = _notice("notify", group_id=group_id, sub_type="poke", target_id=str(target_id),
+                       self_id="10086", user_id=sender_id if group_id else 12345)
+        if not group_id:
+            data["sender_id"] = str(sender_id)
+        message = await parse_event_async(data)
+        assert message is not None
+        actor = "机器人自身" if sender_id == 10086 else "用户"
+        target = "机器人自身" if target_id == 10086 else "用户"
+        assert f"发起者={actor}（QQ:{sender_id}）" in message.content
+        assert f"被戳者={target}（QQ:{target_id}）" in message.content
+        assert message.sender.user_id == str(sender_id if group_id else 12345)
+        assert message.channel.channel_id == str(group_id or 12345)
+        assert message.is_to_me is (target_id == 10086)
+        assert message.kind == MessageKind.EVENT and message.trigger_mind
+        assert message.segments[0].content == message.content
+
+    async def test_poke_cached_names_do_not_replace_identity(self, monkeypatch) -> None:
+        from channels.qq import parser
+
+        monkeypatch.setattr(parser, "get_cached_nickname", lambda group, user: "同名用户")
+        data = _notice("notify", sub_type="poke", target_id=22222, raw_info=[
+            {"type": "qq", "nm": "你"}, {"type": "img", "src": "https://example.com/poke.png"},
+            {"type": "nor", "txt": "戳了戳"}, {"type": "qq", "nm": "我"},
+            {"type": "nor", "txt": "的肚子，并弹了回去"},
+        ])
+        message = await parse_event_async(data)
+        assert message is not None
+        assert "发起者=同名用户（QQ:12345）" in message.content
+        assert "被戳者=同名用户（QQ:22222）" in message.content
+        assert "动作=戳了戳；附加文案=的肚子，并弹了回去" in message.content
+        assert "[动作图片:https://example.com/poke.png]" in message.content
+
+    @pytest.mark.parametrize("raw_info", [None, {}, [], [None]])
+    async def test_incomplete_poke_does_not_invent_bot_target(self, raw_info: Any) -> None:
+        data = _notice("notify", group_id=0, sub_type="poke", self_id="", raw_info=raw_info)
+        message = await parse_event_async(data)
+        assert message is not None
+        assert "发起者=用户（QQ:12345）" in message.content
+        assert "被戳者=身份未知" in message.content
+        assert message.is_to_me is False
 
 
 class TestDecideNoticeTrigger:
@@ -116,10 +190,11 @@ class TestDecideNoticeTrigger:
         for notice_type in ("group_increase", "group_recall", "group_upload"):
             assert await transport._decide_notice_trigger(_notice(notice_type)) is False
 
-    async def test_all_enables_all(self) -> None:
+    async def test_all_enables_all_except_recall(self) -> None:
         transport, _, _ = _make_transport(cfg={"group_notice_trigger": "all"})
-        for notice_type in ("group_increase", "group_recall", "group_upload"):
+        for notice_type in ("group_increase", "group_ban", "group_upload"):
             assert await transport._decide_notice_trigger(_notice(notice_type)) is True
+        assert await transport._decide_notice_trigger(_notice("group_recall")) is False
 
     async def test_auto_membership_always_triggers(self) -> None:
         transport, _, raw_mock = _make_transport(cfg={})
@@ -135,6 +210,11 @@ class TestDecideNoticeTrigger:
             _notice("notify", sub_type="poke", target_id=22222)
         ) is False
 
+    async def test_auto_recall_record_only_without_role_query(self) -> None:
+        transport, _, raw_mock = _make_transport(cfg={}, role="admin")
+        assert await transport._decide_notice_trigger(_notice("group_recall")) is False
+        raw_mock.assert_not_called()
+
     @pytest.mark.parametrize("role,expected", [
         ("owner", True),
         ("admin", True),
@@ -143,7 +223,7 @@ class TestDecideNoticeTrigger:
     ])
     async def test_auto_moderation_by_role(self, role: str, expected: bool) -> None:
         transport, _, _ = _make_transport(cfg={}, role=role)
-        got = await transport._decide_notice_trigger(_notice("group_recall"))
+        got = await transport._decide_notice_trigger(_notice("group_ban"))
         assert got is expected
 
     async def test_auto_moderation_api_failure_degrades_false(self) -> None:
@@ -152,7 +232,7 @@ class TestDecideNoticeTrigger:
 
     async def test_moderation_without_group_id_no_trigger(self) -> None:
         transport, _, _ = _make_transport(cfg={})
-        data = _notice("group_recall")
+        data = _notice("group_ban")
         data.pop("group_id")
         assert await transport._decide_notice_trigger(data) is False
 
@@ -193,19 +273,22 @@ class TestGroupAdminCache:
 class TestProcessEventTriggerFlow:
     """_process_event 集成：require_mention 下 notice 分流、普通消息不受影响。"""
 
-    async def test_membership_notice_triggers_under_require_mention(self) -> None:
+    @pytest.mark.parametrize("notice_type", ["group_increase", "group_decrease"])
+    async def test_membership_notice_triggers_under_require_mention(
+        self, notice_type: str
+    ) -> None:
         transport, ch, _ = _make_transport(cfg={"require_mention": True})
-        await transport._process_event(_notice("group_increase"))
+        await transport._process_event(_notice(notice_type))
         assert len(ch.received) == 1
         assert ch.received[0].trigger_mind is True
 
-    async def test_recall_notice_as_admin_triggers(self) -> None:
+    async def test_recall_notice_as_admin_record_only(self) -> None:
         transport, ch, _ = _make_transport(
             cfg={"require_mention": True}, role="admin"
         )
         await transport._process_event(_notice("group_recall"))
         assert len(ch.received) == 1
-        assert ch.received[0].trigger_mind is True
+        assert ch.received[0].trigger_mind is False
 
     async def test_recall_notice_as_member_not_trigger(self) -> None:
         transport, ch, _ = _make_transport(
@@ -247,6 +330,12 @@ class TestProcessEventTriggerFlow:
         await transport._process_event(data)
         assert len(ch.received) == 1
         assert ch.received[0].trigger_mind is True
+
+    async def test_recall_record_only_without_require_mention(self) -> None:
+        transport, ch, _ = _make_transport(cfg={"require_mention": False})
+        await transport._process_event(_notice("group_recall"))
+        assert len(ch.received) == 1
+        assert ch.received[0].trigger_mind is False
 
     async def test_no_require_mention_notice_still_triggers(self) -> None:
         """require_mention=False 时消息本就全触发，notice 不回归。"""

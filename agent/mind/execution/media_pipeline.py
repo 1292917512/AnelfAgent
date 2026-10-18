@@ -1,22 +1,26 @@
-"""MediaPipeline: convert media segments to path-based tags.
+"""Convert media segments to path-based tags.
 
 Media files are referenced by local path when available; otherwise the
 tag carries the remote URL or platform file_id plus a download hint, so
 AI can fetch the file on demand (web_download / qq_download_file) and
 then process it with tools (recognize_image, voice_to_text, read_file, etc.).
 
-Model Experience: local paths use forward slashes and the shared tag codec.
-Windows paths avoid redundant escape tokens; tags remain in the appended message.
+Model input: local paths and download hints use the shared tag codec.
+Token impact: forward slashes avoid redundant Windows path escapes.
+Cache impact: media tags remain in appended messages, outside the stable prefix.
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Callable, List
+from typing import TYPE_CHECKING, Callable, List, Sequence
 
 from core.latebind import LateBinding
 from core.log import log
+
+if TYPE_CHECKING:
+    from agent.channel.schemas import MessageSegment
 
 #: 图片索引投递函数端口（agent → entities 跨层桥，wiring 以
 #: entities.sticker.worker.submit_image 施绑；未施绑时跳过索引投递）
@@ -25,72 +29,66 @@ image_index_submit_port: LateBinding[Callable[[str, str], None]] = LateBinding(
 )
 
 
-class MediaPipeline:
-    """Convert media segments to [media_file:type:path] tags."""
+async def process_segments(segments: Sequence[MessageSegment], scope: str = "") -> List[str]:
+    """Convert media segments to tag strings for LLM context.
 
-    async def process_segments(self, segments: list, scope: str = "") -> List[str]:
-        """Convert media segments to tag strings for LLM context.
+    Returns list of strings like '[media_file:voice:workspace/uploads/voice/xxx.ogg]'.
+    Segments without a local file emit a download hint instead of a fake path.
+    ``scope`` 是当前会话 entity_scope，透传给人脸 worker 作 face_scope 打标依据。
+    """
+    from core.tags import tag_label
 
-        Returns list of strings like '[media_file:voice:workspace/uploads/voice/xxx.ogg]'.
-        Segments without a local file emit a download hint instead of a fake path.
-        ``scope`` 是当前会话 entity_scope，透传给人脸 worker 作 face_scope 打标依据。
-        """
-        from core.tags import tag_label
+    results: List[str] = []
+    for seg in segments:
+        seg_type = seg.type.value if hasattr(seg.type, "value") else str(seg.type)
+        file_path = getattr(seg, "file_path", "") or ""
+        url = getattr(seg, "url", "") or ""
+        file_id = getattr(seg, "file_id", "") or ""
+        file_name = getattr(seg, "file_name", "") or ""
 
-        results: List[str] = []
-        for seg in segments:
-            seg_type = seg.type.value if hasattr(seg.type, "value") else str(seg.type)
-            file_path = getattr(seg, "file_path", "") or ""
-            url = getattr(seg, "url", "") or ""
-            file_id = getattr(seg, "file_id", "") or ""
-            file_name = getattr(seg, "file_name", "") or ""
-
-            # 图片感知索引：投递后台 worker（phash/描述/向量沉淀，支撑文搜图/图搜图）；
-            # 本地未下载的 http URL 由 worker 自行下载，索引失败不影响消息管线
-            if seg_type == "image":
-                try:
-                    from core.config import get_config_bool
-                    if get_config_bool("image_index_enabled", True) and image_index_submit_port.bound:
-                        candidate = file_path if file_path and os.path.isfile(file_path) else url
-                        if candidate:
-                            image_index_submit_port.get()(candidate, "inbound")
-                except Exception:
-                    log("process_segments 异常已忽略", "DEBUG")
-
-                # 人脸识别：同一入站图片旁路投递人脸 worker（agent 层内直调，
-                # 无跨层端口）；命中绑定实体时由 ingest 打 face_scope 标驱动记忆召回。
-                # scope 经参数透传（worker 据此写一次性历史通知）；失败不影响消息管线
-                try:
-                    from agent.vision.face.worker import submit_face_image
+        # 图片索引失败不影响消息管线，远端 URL 由 worker 按需下载。
+        if seg_type == "image":
+            try:
+                from core.config import get_config_bool
+                if get_config_bool("image_index_enabled", True) and image_index_submit_port.bound:
                     candidate = file_path if file_path and os.path.isfile(file_path) else url
                     if candidate:
-                        submit_face_image(candidate, "inbound", scope or "")
-                except Exception:
-                    log("人脸识别投递异常已忽略", "DEBUG")
+                        image_index_submit_port.get()(candidate, "inbound")
+            except Exception:
+                log("process_segments 异常已忽略", "DEBUG")
 
-            if file_path and os.path.isfile(file_path):
-                tag_text = tag_label("media_file", f"{seg_type}:{Path(file_path).as_posix()}")
-                results.append(tag_text)
-                log(f"media tag: [{seg_type}] {file_path}", "DEBUG", tag="媒体")
-                continue
+            # 人脸 worker 接收会话归属，识别失败不影响入站处理。
+            try:
+                from agent.vision.face.worker import submit_face_image
+                candidate = file_path if file_path and os.path.isfile(file_path) else url
+                if candidate:
+                    submit_face_image(candidate, "inbound", scope or "")
+            except Exception:
+                log("人脸识别投递异常已忽略", "DEBUG")
 
-            if not url and not file_id:
-                continue
-
-            name_part = f" 文件名: {file_name}" if file_name else ""
-            if url.startswith(("http://", "https://")):
-                dl = f'web_download(url="{url}"' + (
-                    f', filename="{file_name}"' if file_name else "") + ")"
-                if seg_type in ("voice", "audio"):
-                    hint = f'识别: voice_to_text(url="{url}")（留存入音源库加 ingest=true） 或下载: {dl}'
-                else:
-                    hint = f"下载: {dl}"
-            else:
-                hint = f'下载: qq_download_file(file_id="{file_id}")'
-            tag_text = (
-                f"{tag_label('media_file', f'{seg_type}:未下载')}{name_part} | {hint}"
-            )
+        if file_path and os.path.isfile(file_path):
+            tag_text = tag_label("media_file", f"{seg_type}:{Path(file_path).as_posix()}")
             results.append(tag_text)
-            log(f"media tag: [{seg_type}] 未下载 ({file_name or file_id or url})", "DEBUG", tag="媒体")
+            log(f"media tag: [{seg_type}] {file_path}", "DEBUG", tag="媒体")
+            continue
 
-        return results
+        if not url and not file_id:
+            continue
+
+        name_part = f" 文件名: {file_name}" if file_name else ""
+        if url.startswith(("http://", "https://")):
+            dl = f'web_download(url="{url}"' + (
+                f', filename="{file_name}"' if file_name else "") + ")"
+            if seg_type in ("voice", "audio"):
+                hint = f'识别: voice_to_text(url="{url}")（留存入音源库加 ingest=true） 或下载: {dl}'
+            else:
+                hint = f"下载: {dl}"
+        else:
+            hint = f'下载: qq_download_file(file_id="{file_id}")'
+        tag_text = (
+            f"{tag_label('media_file', f'{seg_type}:未下载')}{name_part} | {hint}"
+        )
+        results.append(tag_text)
+        log(f"media tag: [{seg_type}] 未下载 ({file_name or file_id or url})", "DEBUG", tag="媒体")
+
+    return results

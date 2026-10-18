@@ -83,10 +83,9 @@ async def test_recall_refreshes_links_without_auto_wakeup_or_prefix_changes(tmp_
     before = catalog_section(store)
     set_mcp_bindings(store, "inspect", ["docs"])
     mind = SimpleNamespace(
-        pfc=SimpleNamespace(add_temporary=MagicMock()),
         skills=SkillRuntime(store, SimpleNamespace(match=AsyncMock(return_value=[(stale_skill, 0.9)])), MagicMock()),
     )
-    messages = await match_skills(mind, "inspect", scope="scope-a")
+    messages = await match_skills(mind.skills, "inspect", scope="scope-a")
     assert "docs（启用、已连接、分组未激活）" in messages[0]["content"]
     facts = context_skills(messages)
     assert facts[0]["mcp_status"][0]["activation"] == "sleeping"

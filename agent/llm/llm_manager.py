@@ -577,15 +577,15 @@ class LLMManager(BaseEntity):
         try:
             from agent.runtime.singleton import get_runtime
             rt = get_runtime()
-            if rt is None or getattr(rt, "mind", None) is None or not self._clients:
+            if rt is None or not self._clients:
                 return False
-            current = getattr(rt.mind.llm, "config", None)
+            current = getattr(rt.llm, "config", None)
             current_name = current.name if current is not None else ""
             current_client = self._clients.get(current_name)
             active_gone = current_client is None or not current_client.config.enabled
             if not default_changed and not active_gone:
                 return False
-            rt.switch_llm(self.get_default())
+            rt.llm = self.get_default()
             info(f"热重载后默认客户端已切换为: {self.get_default().config.name}", tag="模型")
             return True
         except Exception:
@@ -1559,12 +1559,12 @@ class LLMManager(BaseEntity):
         try:
             from agent.runtime.singleton import get_runtime
             rt = get_runtime()
-            if rt is None or getattr(rt, "mind", None) is None:
+            if rt is None:
                 return
-            current = getattr(rt.mind.llm, "config", None)
+            current = getattr(rt.llm, "config", None)
             if current is None or current.name != model_id:
                 return
-            rt.switch_llm(self.get_default())
+            rt.llm = self.get_default()
             info(f"模型 '{model_id}' 已停用，默认客户端已热切换", tag="模型")
         except Exception:
             log("_hot_switch_if_disabled 异常已忽略", "DEBUG")
@@ -1579,7 +1579,7 @@ class LLMManager(BaseEntity):
                 rt = get_runtime()
                 client = self._clients.get(new_first)
                 if rt and client:
-                    rt.switch_llm(client)
+                    rt.llm = client
                     info(f"chat 优先级首位变更，已热切换至: {new_first}", tag="模型")
             except Exception:
                 log("_auto_switch_chat 异常已忽略", "DEBUG")

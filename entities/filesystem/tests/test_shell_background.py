@@ -9,7 +9,7 @@ import time
 import pytest
 from shell_helpers import python_command
 
-from agent.mind.background_tasks import BackgroundTaskRegistry
+from agent.mind.background.tasks import BackgroundTaskRegistry
 from entities.filesystem import shell_background, tools
 
 

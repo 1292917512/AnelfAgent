@@ -348,7 +348,7 @@ class TestStatusBlockTagOverview:
             tags=["type:fact", "topic:火锅", "user:qq:1"], importance=0.7,
         ))
         engine = HeartbeatEngine.__new__(HeartbeatEngine)
-        engine.mind = SimpleNamespace(memory_store=store)
+        engine.memory = SimpleNamespace(memory_store=store)
         await engine._write_memory_status()
         text = (memory_dir / "memory.md").read_text(encoding="utf-8")
         assert "标签索引" not in text
@@ -372,7 +372,7 @@ class TestStatusBlockTagOverview:
             tags=["type:fact", "topic:火锅", "user:qq:1"], importance=0.7,
         ))
         engine = HeartbeatEngine.__new__(HeartbeatEngine)
-        engine.mind = SimpleNamespace(
+        engine.memory = SimpleNamespace(
             memory_store=SimpleNamespace(
                 get_type_counts=store.get_type_counts,
                 count_archived=store.count_archived,
@@ -400,7 +400,7 @@ class TestStatusBlockTagOverview:
             return candidates[:limit]
 
         engine = HeartbeatEngine.__new__(HeartbeatEngine)
-        engine.mind = SimpleNamespace(
+        engine.memory = SimpleNamespace(
             memory_store=SimpleNamespace(
                 get_type_counts=store.get_type_counts,
                 count_archived=store.count_archived,
@@ -425,7 +425,7 @@ class TestStatusBlockNotesCapacity:
         from agent.heartbeat.engine import HeartbeatEngine
 
         engine = HeartbeatEngine.__new__(HeartbeatEngine)
-        engine.mind = SimpleNamespace(memory_store=store)
+        engine.memory = SimpleNamespace(memory_store=store)
         return engine
 
     async def test_line_overflow_warns(self, memory_dir: Path, store) -> None:

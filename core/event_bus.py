@@ -1,17 +1,12 @@
 """EventBus：轻量级异步事件总线。
 
-参考 OpenClaw 的 Hook 系统设计，提供解耦的事件通信机制。
 插件、适配器、面板等模块可订阅感兴趣的事件而无需直接依赖。
-
 用法::
-
     from core.event_bus import event_bus
-
     # 订阅
     @event_bus.on("after_reply")
     async def log_reply(payload):
         print("Bot replied:", payload)
-
     # 发射
     await event_bus.emit("after_reply", {"content": "Hello!"})
 """
@@ -59,14 +54,14 @@ class EventBus:
         self._stats: Dict[str, int] = {}
 
     def on(
-        self,
-        event: str,
-        handler: Optional[EventHandler] = None,
-        *,
-        priority: int = 0,
-        once: bool = False,
-        owner: str = "",
-        timeout: float | None = 0,
+            self,
+            event: str,
+            handler: Optional[EventHandler] = None,
+            *,
+            priority: int = 0,
+            once: bool = False,
+            owner: str = "",
+            timeout: float | None = 0,
     ) -> Callable:
         """订阅事件。可作为装饰器使用::
 
@@ -78,19 +73,23 @@ class EventBus:
             event_bus.on("after_reply", my_handler, owner="plugin:weather")
 
         Args:
+            priority: 订阅排序，高优先级处理器的协程先启动；emit 并发等待，不保证完成先后。
             owner: 处理器归属标识，用于 ``off_by_owner()`` 批量清理。
             timeout: 0 使用总线默认；None 由宿主管理超时；正数为订阅独立时限。
         """
+
         def _register(fn: EventHandler) -> EventHandler:
             sub = _Subscription(handler=fn, priority=priority, once=once, owner=owner, timeout=timeout)
             subs = self._handlers.setdefault(event, [])
             subs.append(sub)
             subs.sort(key=lambda s: s.priority, reverse=True)
+
             def undo() -> None:
                 current = self._handlers.get(event, [])
                 self._handlers[event] = [s for s in current if s is not sub]
                 if not self._handlers[event]:
                     self._handlers.pop(event, None)
+
             record_undo(undo, owner=getattr(fn, "__module__", ""))
             return fn
 
@@ -146,7 +145,7 @@ class EventBus:
         return removed
 
     async def _invoke_handler(
-        self, event: str, sub: "_Subscription", payload: Dict[str, Any],
+            self, event: str, sub: "_Subscription", payload: Dict[str, Any],
     ) -> Any:
         """执行单个处理器（带超时保护），返回其结果。
 
@@ -169,7 +168,7 @@ class EventBus:
         return None
 
     def _prune_once(
-        self, subs: List["_Subscription"], batch: List["_Subscription"],
+            self, subs: List["_Subscription"], batch: List["_Subscription"],
     ) -> None:
         """从订阅列表中移除已触发的 once 订阅。"""
         for sub in batch:
@@ -177,7 +176,10 @@ class EventBus:
                 subs.remove(sub)
 
     async def emit(self, event: str, payload: Optional[Dict[str, Any]] = None) -> None:
-        """发射事件，并发调用所有已注册处理器（各自带超时保护）。"""
+        """并发调用订阅快照并等待结束；超时与异常被隔离，返回不表示全部成功。
+
+        处理器继承发射方的 ContextVar；取消继续传播。调用者必须等待或调度本协程。
+        """
         payload = payload or {}
         self._stats[event] = self._stats.get(event, 0) + 1
 
@@ -192,32 +194,6 @@ class EventBus:
         current = self._handlers.get(event)
         if current is not None:
             self._prune_once(current, batch)
-
-    async def emit_with_result(
-        self, event: str, payload: Optional[Dict[str, Any]] = None,
-    ) -> bool:
-        """发射事件并检查拦截。
-
-        处理器返回 ``False`` 时中断后续调用并返回 ``False``。
-        所有处理器正常完成则返回 ``True``。
-        """
-        payload = payload or {}
-        self._stats[event] = self._stats.get(event, 0) + 1
-
-        subs = self._handlers.get(event)
-        if not subs:
-            return True
-
-        batch = list(subs)
-        try:
-            for sub in batch:
-                result = await self._invoke_handler(event, sub, payload)
-                if result is False:
-                    return False
-        finally:
-            self._prune_once(subs, batch)
-
-        return True
 
     def has_listeners(self, event: str) -> bool:
         return bool(self._handlers.get(event))
@@ -235,12 +211,12 @@ class _Subscription:
     __slots__ = ("handler", "priority", "once", "owner", "timeout")
 
     def __init__(
-        self,
-        handler: EventHandler,
-        priority: int = 0,
-        once: bool = False,
-        owner: str = "",
-        timeout: float | None = 0,
+            self,
+            handler: EventHandler,
+            priority: int = 0,
+            once: bool = False,
+            owner: str = "",
+            timeout: float | None = 0,
     ) -> None:
         self.handler = handler
         self.priority = priority
@@ -324,4 +300,3 @@ EVENT_PLAN_DELETED = "plan_deleted"
 EVENT_DELEGATION_STARTED = "delegation_started"
 EVENT_DELEGATION_PROGRESS = "delegation_progress"
 EVENT_DELEGATION_RESOLVED = "delegation_resolved"
-

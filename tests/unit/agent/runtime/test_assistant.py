@@ -65,7 +65,8 @@ class TestHeartbeatIntervalHotReload:
     @staticmethod
     def _fake_mind() -> Any:
         return SimpleNamespace(
-            is_reply=False, is_reflecting=False, _heartbeat_running=False,
+            is_reply=False, is_reflecting=False,
+            heartbeat_engine=SimpleNamespace(background_tick_running=False),
             execute_mind=AsyncMock(),
         )
 

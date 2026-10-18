@@ -14,9 +14,7 @@ import json
 from typing import Dict, List, Optional
 
 from core.config import get_config_int
-from core.conversation_scope import bind_scope as bind_scope
 from core.conversation_scope import current_scope
-from core.conversation_scope import reset_scope as reset_scope
 from core.entity import EntityRegistry, EntityType
 from core.log import log
 from core.tool_registry import deferred_tool

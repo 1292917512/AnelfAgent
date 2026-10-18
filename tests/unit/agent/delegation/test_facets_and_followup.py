@@ -18,8 +18,10 @@ class _FakeMind:
 
     def __init__(self, output: str = "子任务完成报告") -> None:
         self.reflect = AsyncMock(return_value=output)
-        self.pfc = type("PFC", (), {"add_temporary": lambda self, clip, scope="": None})()
+        from agent.mind.prefrontal_cortex import PrefrontalCortex
+        self.pfc = PrefrontalCortex(SimpleNamespace())
         self.model_invoker = SimpleNamespace(get_context_length=lambda: 128000)
+        self.models = SimpleNamespace(llm_manager=None)
 
 
 

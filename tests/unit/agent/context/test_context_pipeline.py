@@ -190,6 +190,7 @@ class TestGoldenOrder:
 
         from agent.context.assembly import ContextAssembly
         from agent.mind.prefrontal_cortex import PrefrontalCortex
+        from agent.mind.tool_assembly import ToolAssembly
 
         conversation_data = SN(
             max_size=30,
@@ -197,7 +198,7 @@ class TestGoldenOrder:
             count_messages=AsyncMock(return_value=0),
         )
         pfc = PrefrontalCortex(everything_data=SN(), conversation_data=conversation_data)
-        msgs = await ContextAssembly(pfc.work_memory, pfc.tool_assembly, conversation_data=conversation_data).build_llm_context(
+        msgs = await ContextAssembly(pfc, ToolAssembly(), conversation_data=conversation_data).build_llm_context(
             persona_text="人设", tools_text="工具", context_text="便签",
             status_text="状态",
             memory_msgs=[{"role": "system", "content": "召回"}],
@@ -228,6 +229,7 @@ class TestGoldenOrder:
         import agent.context.assembly as ca
         from agent.context.assembly import ContextAssembly
         from agent.mind.prefrontal_cortex import PrefrontalCortex
+        from agent.mind.tool_assembly import ToolAssembly
 
         monkeypatch.setattr(ca, "_tail_injection_enabled", lambda: False)
         conversation_data = SN(
@@ -236,7 +238,7 @@ class TestGoldenOrder:
             count_messages=AsyncMock(return_value=0),
         )
         pfc = PrefrontalCortex(everything_data=SN(), conversation_data=conversation_data)
-        msgs = await ContextAssembly(pfc.work_memory, pfc.tool_assembly, conversation_data=conversation_data).build_llm_context(
+        msgs = await ContextAssembly(pfc, ToolAssembly(), conversation_data=conversation_data).build_llm_context(
             persona_text="人设", tools_text="工具", context_text="便签",
             status_text="状态",
             memory_msgs=[{"role": "system", "content": "召回"}],

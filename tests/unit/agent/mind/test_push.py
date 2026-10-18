@@ -7,23 +7,25 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from types import SimpleNamespace
 
 import pytest
 
 from agent.mind.execution.messages import _merge_pushes
 from agent.mind.execution.state import ThinkMode
+from agent.mind.prefrontal_cortex import PrefrontalCortex
 from agent.mind.push import PushHub
 from core.tags import etag_all
 
 
-class FakePFC:
+class FakePFC(PrefrontalCortex):
     """enqueue_scope_reply 依赖的最小 PFC 替身（无 router → temporary 兜底）。"""
 
-    conversation_data = None
+    _conversation_data = None
 
     def __init__(self) -> None:
-        self.temporary: list[tuple[dict, str]] = []
+        self.clips: list[tuple[dict, str]] = []
         self.pending_user: list[str] = []
         self.pending_group: list[str] = []
         self.previews: dict[str, str] = {}
@@ -31,9 +33,16 @@ class FakePFC:
         self.consumed: list[str] = []
 
     def add_temporary(self, clip: dict, scope: str = "") -> None:
-        self.temporary.append((clip, scope))
+        self.clips.append((clip, scope))
 
-    def set_message_preview(self, scope: str, preview: str, *, created_ts_ns: int) -> None:
+    @property
+    def temporary(self):
+        return self.clips
+
+    def set_message_preview(
+        self, scope: str, preview: str, *, created_ts_ns: int | None = None, kind: str = "",
+    ) -> None:
+        assert kind == "system"
         self.previews[scope] = preview
 
     def set_adapter_key(self, scope: str, channel: str) -> None:
@@ -47,6 +56,7 @@ class FakeMind:
     def __init__(self) -> None:
         self.pfc = FakePFC()
         self.wakes = 0
+        self.push_hub = PushHub(self.pfc, self.try_execute_mind, loop=asyncio.get_running_loop())
 
     async def try_execute_mind(self) -> None:
         self.wakes += 1
@@ -64,7 +74,7 @@ _SCOPE = "user_webui:u1"
 @pytest.mark.asyncio
 async def test_push_wraps_tags_and_enqueues() -> None:
     mind = FakeMind()
-    hub = PushHub(mind)
+    hub = mind.push_hub
     ok = hub.push(_SCOPE, "voiceprint", "声纹库新增 3 条样本", channel="webui", trigger=False)
     assert ok is True
     await _deliver_all()
@@ -88,16 +98,16 @@ async def test_push_wraps_tags_and_enqueues() -> None:
 @pytest.mark.asyncio
 async def test_push_group_scope_enqueues_pending_group() -> None:
     mind = FakeMind()
-    hub = PushHub(mind)
+    hub = mind.push_hub
     hub.push("group_qq:g1", "devops", "构建完成", trigger=False)
     await _deliver_all()
     assert mind.pfc.pending_group == ["group_qq:g1"]
     assert mind.pfc.pending_user == []
 
 
-def test_push_invalid_scope_writes_global_bucket_only() -> None:
+async def test_push_invalid_scope_writes_global_bucket_only() -> None:
     mind = FakeMind()
-    hub = PushHub(mind)
+    hub = mind.push_hub
     ok = hub.push("", "watcher", "全局通知", trigger=False)
     assert ok is True
     clip, scope = mind.pfc.temporary[0]
@@ -107,9 +117,9 @@ def test_push_invalid_scope_writes_global_bucket_only() -> None:
     assert hub.current_seq("") == 0
 
 
-def test_push_empty_content_rejected() -> None:
+async def test_push_empty_content_rejected() -> None:
     mind = FakeMind()
-    hub = PushHub(mind)
+    hub = mind.push_hub
     assert hub.push(_SCOPE, "a", "  ", trigger=False) is False
     assert mind.pfc.temporary == []
 
@@ -117,7 +127,7 @@ def test_push_empty_content_rejected() -> None:
 @pytest.mark.asyncio
 async def test_push_source_sanitized_for_tag_syntax() -> None:
     mind = FakeMind()
-    hub = PushHub(mind)
+    hub = mind.push_hub
     hub.push(_SCOPE, "[a:b]", "内容", trigger=False)
     await _deliver_all()
     assert mind.pfc.temporary[0][0]["content"].startswith("[push:ab][time:")
@@ -126,7 +136,7 @@ async def test_push_source_sanitized_for_tag_syntax() -> None:
 @pytest.mark.asyncio
 async def test_push_content_truncated() -> None:
     mind = FakeMind()
-    hub = PushHub(mind)
+    hub = mind.push_hub
     hub.push(_SCOPE, "a", "x" * 3000, trigger=False)
     await _deliver_all()
     content = mind.pfc.temporary[0][0]["content"]
@@ -137,7 +147,7 @@ async def test_push_content_truncated() -> None:
 @pytest.mark.asyncio
 async def test_push_trigger_wakes_mind() -> None:
     mind = FakeMind()
-    hub = PushHub(mind)
+    hub = mind.push_hub
     hub.push(_SCOPE, "a", "触发", trigger=True)
     await _deliver_all()
     assert mind.wakes == 1
@@ -146,7 +156,7 @@ async def test_push_trigger_wakes_mind() -> None:
 @pytest.mark.asyncio
 async def test_push_trigger_false_does_not_wake() -> None:
     mind = FakeMind()
-    hub = PushHub(mind)
+    hub = mind.push_hub
     hub.push(_SCOPE, "a", "静默", trigger=False)
     await _deliver_all()
     assert mind.wakes == 0
@@ -155,7 +165,7 @@ async def test_push_trigger_false_does_not_wake() -> None:
 @pytest.mark.asyncio
 async def test_drain_inflight_respects_watermark() -> None:
     mind = FakeMind()
-    hub = PushHub(mind)
+    hub = mind.push_hub
     hub.push(_SCOPE, "a", "第一条", trigger=False)
     await _deliver_all()
     watermark = hub.current_seq(_SCOPE)
@@ -176,8 +186,7 @@ async def test_drain_inflight_respects_watermark() -> None:
 @pytest.mark.asyncio
 async def test_push_cross_thread_dispatches_to_bound_loop() -> None:
     mind = FakeMind()
-    hub = PushHub(mind)
-    hub.bind_loop(asyncio.get_running_loop())
+    hub = mind.push_hub
     ok = await asyncio.to_thread(hub.push, _SCOPE, "watcher", "线程推送", "", False)
     assert ok is True
     await _deliver_all()
@@ -185,6 +194,71 @@ async def test_push_cross_thread_dispatches_to_bound_loop() -> None:
     await _deliver_all()
     assert mind.pfc.temporary[0][1] == _SCOPE
     assert "线程推送" in mind.pfc.temporary[0][0]["content"]
+
+
+async def test_close_drains_delivery_without_starting_new_thought(monkeypatch) -> None:
+    mind = FakeMind()
+    entered, release = asyncio.Event(), asyncio.Event()
+    enqueue = mind.pfc.enqueue_reply
+
+    async def delayed(*args):
+        entered.set()
+        await release.wait()
+        await enqueue(*args)
+
+    monkeypatch.setattr(mind.pfc, "enqueue_reply", delayed)
+    assert mind.push_hub.push(_SCOPE, "devops", "已受理通知")
+    await entered.wait()
+    closing = asyncio.create_task(mind.push_hub.close())
+    try:
+        await asyncio.sleep(0)
+        assert not closing.done()
+        assert mind.push_hub.push(_SCOPE, "devops", "迟到通知") is False
+    finally:
+        release.set()
+        await closing
+    assert len(mind.pfc.temporary) == 1
+    assert "已受理通知" in mind.pfc.temporary[0][0]["content"]
+    assert mind.wakes == 0
+
+
+async def test_close_keeps_cross_thread_push_accepted_before_shutdown() -> None:
+    mind = FakeMind()
+    accepted: list[bool] = []
+    worker = threading.Thread(target=lambda: accepted.append(
+        mind.push_hub.push(_SCOPE, "watcher", "关停前通知")))
+    worker.start()
+    worker.join(timeout=1)
+    assert not worker.is_alive()
+    assert accepted == [True]
+    await mind.push_hub.close()
+    assert len(mind.pfc.temporary) == 1
+    assert "关停前通知" in mind.pfc.temporary[0][0]["content"]
+    assert mind.wakes == 0
+
+
+async def test_close_cancels_owned_wakeup_and_rejects_closed_loop() -> None:
+    mind = FakeMind()
+    started, cancelled = asyncio.Event(), asyncio.Event()
+
+    async def wake() -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    hub = PushHub(mind.pfc, wake, loop=asyncio.get_running_loop())
+    assert hub.push(_SCOPE, "watcher", "唤醒中")
+    await started.wait()
+    await hub.close()
+    assert cancelled.is_set()
+    assert hub.push(_SCOPE, "watcher", "已关闭") is False
+    closed_loop = asyncio.new_event_loop()
+    closed_loop.close()
+    stopped = PushHub(mind.pfc, wake, loop=closed_loop)
+    assert stopped.push(_SCOPE, "watcher", "无循环") is False
+    assert len(mind.pfc.temporary) == 1
 
 
 def _make_ctx(mind: FakeMind, scope: str) -> SimpleNamespace:
@@ -202,8 +276,7 @@ def _make_ctx(mind: FakeMind, scope: str) -> SimpleNamespace:
 @pytest.mark.asyncio
 async def test_merge_pushes_injects_into_tool_chain() -> None:
     mind = FakeMind()
-    hub = PushHub(mind)
-    mind.push_hub = hub
+    hub = mind.push_hub
     hub.push(_SCOPE, "devops", "构建完成", trigger=False)
     await _deliver_all()
 
@@ -230,15 +303,14 @@ async def test_merge_pushes_injects_into_tool_chain() -> None:
 async def test_push_does_not_repeat_history_or_consume_unseen_user_message(already_in_context) -> None:
     from unittest.mock import MagicMock
 
-    from agent.mind.work_memory import PendingSignal, WorkMemory
+    from agent.mind.prefrontal_cortex import PendingSignal, PrefrontalCortex
     from agent.storage.data_center import EverythingData
 
     mind = FakeMind()
-    mind.push_hub = PushHub(mind)
     mind.push_hub.push(_SCOPE, "devops", "构建完成", trigger=False)
     await _deliver_all()
     text = mind.pfc.temporary[0][0]["content"]
-    mind.pfc = WorkMemory(MagicMock(spec=EverythingData))
+    mind.pfc = PrefrontalCortex(MagicMock(spec=EverythingData))
     mind.pfc.pending_user.append(_SCOPE)
     mind.pfc._pending_signals[_SCOPE] = PendingSignal(created_ts_ns=200)
     ctx = _make_ctx(mind, _SCOPE)
@@ -255,8 +327,7 @@ async def test_push_does_not_repeat_history_or_consume_unseen_user_message(alrea
 async def test_merge_pushes_skips_snapshot_covered_entries() -> None:
     """base 快照前到达的推送已随对话历史进入上下文，不再轮内注入。"""
     mind = FakeMind()
-    hub = PushHub(mind)
-    mind.push_hub = hub
+    hub = mind.push_hub
     hub.push(_SCOPE, "devops", "构建完成", trigger=False)
     await _deliver_all()
 
@@ -271,8 +342,7 @@ async def test_merge_pushes_skips_snapshot_covered_entries() -> None:
 @pytest.mark.asyncio
 async def test_merge_pushes_ignores_reflect_mode() -> None:
     mind = FakeMind()
-    hub = PushHub(mind)
-    mind.push_hub = hub
+    hub = mind.push_hub
     hub.push(_SCOPE, "devops", "构建完成", trigger=False)
     await _deliver_all()
 

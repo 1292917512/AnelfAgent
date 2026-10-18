@@ -136,15 +136,14 @@ async def test_empty_output_quietly_ends(anything, deliver_mock) -> None:
     deliver_mock.assert_not_awaited()
     assert not any("禁止" in m.get("content", "") for m in chain if m.get("role") == "system")
 
-async def test_end_reply_content_not_delivered(anything, deliver_mock) -> None:
-    """end_reply 同批带有 assistant 正文 → 静默收束，正文不投递。"""
+async def test_end_reply_content_fallback_on_zero_delivery(anything, deliver_mock) -> None:
+    """纯收束批次正文零送达时经 Jev 兜底（无真实频道时留未投递提示）。"""
     mind = _mind()
     mind._rounds = [tool_result("这是最后一段话～", ["end_reply"])]
     steps: List[str] = []
     await _run(mind, anything, steps)
 
-    deliver_mock.assert_not_awaited()
-    assert any("静默收束" in s for s in steps)
+    assert any("兜底补投" in s or "未投递" in s for s in steps)
 
 async def test_end_reply_content_suppressed_after_send_message(anything, deliver_mock) -> None:
     """同轮 send_message 已送达，end_reply 附带正文不再重复投递。"""

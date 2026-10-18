@@ -7,7 +7,6 @@ Token 影响：无；调用方按需通过工具结果或动态上下文提供�
 
 from __future__ import annotations
 
-import asyncio
 import time
 import uuid
 from collections import deque
@@ -20,6 +19,7 @@ from typing import AsyncIterator, Literal
 from core.activity import current_activity_id
 from core.conversation_scope import current_scope
 from core.event_bus import event_bus
+from core.observation import ExecutionObservation
 from core.sanitizer import sanitize_text
 
 EVENT_HOOK_EXECUTION = "hook_execution"
@@ -118,23 +118,23 @@ async def hook_execution(name: str, event: str, mode: HookMode, *, source: str =
     """记录实际执行的起止、耗时与异常，取消信号原样传递。"""
     run = HookRun(uuid.uuid4().hex, name, event, mode, source,
                   scope or current_scope(), current_activity_id.get(), time.time())
-    started = time.monotonic()
+    observation = ExecutionObservation()
     hook_journal._active[run.id] = run
     token = current_hook_run.set(run)
     try:
-        await run.publish()
-        yield run
-        if run.status == "running":
-            run.status = "done"
-    except asyncio.CancelledError:
-        run.status = "cancelled"
-        raise
-    except BaseException as exc:
-        run.status = "error"
-        run.detail = f"{type(exc).__name__}: {str(exc) or '操作未完成，请查看关联的模型或工具执行记录'}"
-        raise
+        with observation:
+            await run.publish()
+            yield run
     finally:
-        run.duration_ms = max(0, round((time.monotonic() - started) * 1000))
+        if observation.cancelled:
+            run.status = "cancelled"
+        elif observation.error is not None:
+            exc = observation.error
+            run.status = "error"
+            run.detail = f"{type(exc).__name__}: {str(exc) or '操作未完成，请查看关联的模型或工具执行记录'}"
+        elif run.status == "running":
+            run.status = "done"
+        run.duration_ms = round(observation.elapsed_ms)
         run.phase = run.status
         run.updated_at = time.time()
         run.detail = sanitize_text(run.detail)[:1200]

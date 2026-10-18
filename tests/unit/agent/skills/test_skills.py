@@ -1104,6 +1104,24 @@ class TestSkillTools:
         assert result["ok"] and result["use_count"] == 1
         assert store.get("s1").last_activity_at > before
 
+    @pytest.mark.parametrize("updating", [False, True])
+    async def test_length_advice_saves_once_without_confirmation(self, store: SkillStore, monkeypatch, updating: bool) -> None:
+        from agent.skills import tools as skill_tools
+        from core.config import ConfigManager
+
+        await self._patch_tools(store, monkeypatch)
+        ConfigManager.set("skills_body_advise_chars", 40)
+        if updating:
+            store.create("t1", "旧流程", "已经失效的步骤")
+        content = "完整流程中的必要细节和验证步骤。" * 10
+        result = json.loads(await skill_tools.update_skill("t1", content=content) if updating else
+                            await skill_tools.create_skill("t1", "新的完整流程", content))
+        assert result["ok"] and "status" not in result
+        assert result["advisory"] == {"body_over_advice": {"chars": len(content), "advice": 40}}
+        saved = store.get("t1")
+        assert saved.content == content and saved.patch_count == int(updating)
+        assert SkillStore(str(store.skills_dir)).get("t1").content == content
+
     async def test_decision_protocol_create(self, store: SkillStore, monkeypatch) -> None:
         """决策协议：相近拟议创建首次返回诊断（不写入），带 decision 回执后写入。"""
         await self._patch_tools(store, monkeypatch)
@@ -1116,6 +1134,7 @@ class TestSkillTools:
             content="新内容", trigger_patterns="qq media",
         ))
         assert first["status"] == "needs_decision"
+        assert first["written"] is False
         assert first["facts"]["similar_skills"][0]["name"] == "qq-media-fallback"
         assert {o["action"] for o in first["options"]} == {"merge", "confirm", "abort"}
         assert store.get("qq-media-recovery") is None  # 未写入
@@ -1135,16 +1154,21 @@ class TestSkillTools:
         await self._patch_tools(store, monkeypatch)
         from agent.skills import tools as skill_tools
 
-        body = "步骤一 " * 60
+        body = "步骤一 " * 600
         store.create("t1", "d", body)
         first = json.loads(await skill_tools.update_skill("t1", content=body + " "))
         assert first["status"] == "needs_decision"
         assert "no_substantive_change" in first["facts"]
+        assert "body_over_advice" in first["facts"]
+        assert first["written"] is False and store.get("t1").patch_count == 0
+        assert "创建或更新" in next(o["how"] for o in first["options"] if o["action"] == "confirm")
 
         second = json.loads(await skill_tools.update_skill(
             "t1", content=body + " ", decision="补充收尾步骤",
         ))
         assert second["ok"]
+        assert store.get("t1").patch_count == 1
+        assert store.get("t1").rationale == "补充收尾步骤"
 
     async def test_merge_skills_tool(self, store: SkillStore, monkeypatch) -> None:
         await self._patch_tools(store, monkeypatch)
@@ -1262,6 +1286,9 @@ class TestSkillReviewerContract:
 
         from agent.hooks_llm import HookContext, HookContextMode, HookRegistry
         from agent.skills.background_review import _HOOK_NAME, SkillReviewer
+        from core.config import ConfigManager
+
+        ConfigManager.set("skills_body_advise_chars", 3500)
 
         mind = SimpleNamespace(reflect=AsyncMock(return_value="沉淀了一个技能"))
         reviewer = SkillReviewer(mind, store)
@@ -1277,6 +1304,7 @@ class TestSkillReviewerContract:
 
             ctx = HookContext(
                 name=spec.name, event="after_reply", scope="user_q:1",
+                max_iterations=4,
                 payload={"error": False, "execution_summary": "[已执行操作摘要]\n  #1 recall(q=x) → ok"},
                 messages=[
                     {"role": "system", "content": "人设"},
@@ -1292,6 +1320,11 @@ class TestSkillReviewerContract:
             assert base_messages[0]["content"] == "人设"
             assert base_messages[-1]["role"] == "user"
             assert "技能评审员" in base_messages[-1]["content"]
+            assert base_messages[:-1] == ctx.messages
+            assert "建议 3500 字" in base_messages[-1]["content"]
+            assert "模型调用预算 4" in base_messages[-1]["content"]
+            assert "needs_decision 表示尚未写入" in base_messages[-1]["content"]
+            assert mind.reflect.await_args.kwargs["max_iterations"] == 4
             assert out == "沉淀了一个技能"
         finally:
             reviewer.stop()

@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import pytest
 from helpers.think_loop_fakes import (
+    FakeContext,
     FakeMind,
-    FakePfc,
     end_reply_result,
     run_think_loop,
     text_result,
@@ -23,7 +23,7 @@ from agent.mind.execution.state import ThinkMode
 
 
 def _reflect_mind(rounds: list) -> FakeMind:
-    return FakeMind(rounds=rounds, default_text=None, pfc=FakePfc(exec_layer=True))
+    return FakeMind(rounds=rounds, default_text=None, context=FakeContext(exec_layer=True))
 
 
 def _base() -> list:
@@ -267,8 +267,8 @@ class TestCompletionReason:
         deliver_mock.assert_not_awaited()
 
     async def test_tool_rounds_cannot_complete_plan_and_budget_cancels(self, store) -> None:
-        from agent.mind.tool_activation import bind_scope, reset_scope
         from agent.planning import tracker
+        from core.conversation_scope import bind_scope, reset_scope
 
         scope = "reflect:plan-evidence"
         tracker.planning_store_port.set(store)

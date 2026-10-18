@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
 from agent.context.assembly import ContextAssembly
+from agent.mind.prefrontal_cortex import PrefrontalCortex
 from agent.mind.tool_assembly import ToolAssembly
-from agent.mind.work_memory import WorkMemory
 
 
 def _schema(name: str) -> dict:
@@ -24,6 +26,42 @@ def _assembly_ta() -> ToolAssembly:
     ta._frozen_tool_names = []
     ta._tool_recall = {}
     return ta
+
+
+@pytest.mark.parametrize("cancel_wait", [False, True])
+async def test_cleanup_waits_for_all_scopes_and_deduplicates(monkeypatch, cancel_wait):
+    assembly = ToolAssembly()
+    cleanup = Mock()
+    monkeypatch.setattr(assembly, "clear_dynamic_tools", cleanup)
+    active = {"user_qq:a", "user_webui:b"}
+    idle = asyncio.Event()
+    spawned = []
+    create_task = asyncio.create_task
+
+    def capture(coro, *, name):
+        task = create_task(coro, name=name)
+        spawned.append(task)
+        return task
+
+    monkeypatch.setattr(asyncio, "create_task", capture)
+    assembly.clear_when_idle(active, idle)
+    assembly.clear_when_idle(active, idle)
+    assert len(spawned) == 1
+    await asyncio.sleep(0)
+    active.remove("user_qq:a")
+    await asyncio.sleep(0)
+    cleanup.assert_not_called()
+    if cancel_wait:
+        spawned[0].cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await spawned[0]
+        assembly.clear_when_idle(active, idle)
+        assert len(spawned) == 2
+    active.clear()
+    idle.set()
+    await spawned[-1]
+    cleanup.assert_called_once_with()
+    assert not assembly._clear_pending
 
 
 class TestAppendOnlyFreeze:
@@ -77,7 +115,7 @@ class TestAppendOnlyFreeze:
 
 class TestStableBlocks:
     def _assembly(self) -> ContextAssembly:
-        wm = WorkMemory(everything_data=SimpleNamespace())
+        wm = PrefrontalCortex(everything_data=SimpleNamespace())
         ta = ToolAssembly()
         return ContextAssembly(wm, ta)
 
@@ -107,7 +145,7 @@ class TestStableBlocks:
         store = SkillStore(str(tmp_path / "skills"))
         store.create("demo-skill", "演示技能", "c")
 
-        wm = WorkMemory(everything_data=SimpleNamespace())
+        wm = PrefrontalCortex(everything_data=SimpleNamespace())
         injected = ContextAssembly(wm, ToolAssembly(), skill_store=store)
         block = injected.build_tools_block()
         assert "[技能库目录]" in block and "demo-skill" in block
@@ -128,7 +166,7 @@ class TestStableBlocks:
         registry = PluginRegistry(tmp_path / "plugins.json")
         registry.upsert(InstalledPlugin(name="demo-plug", skills=["s"]))
 
-        wm = WorkMemory(everything_data=SimpleNamespace())
+        wm = PrefrontalCortex(everything_data=SimpleNamespace())
         injected = ContextAssembly(wm, ToolAssembly(), plugin_registry=registry)
         block = injected.build_tools_block()
         assert "[插件名册]" in block and "demo-plug" in block

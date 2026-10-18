@@ -19,7 +19,7 @@ from services.workspace_activity import WorkspaceActivityService
 
 
 async def test_background_completion_updates_original_turn_after_reply_finishes(activity):
-    from agent.mind.background_tasks import BackgroundTaskRegistry
+    from agent.mind.background.tasks import BackgroundTaskRegistry
 
     service, _ = activity
     registry = BackgroundTaskRegistry()
@@ -45,11 +45,10 @@ async def test_background_completion_updates_original_turn_after_reply_finishes(
 
 
 async def test_threaded_background_registration_and_completion_publish_on_bound_loop(activity):
-    from agent.mind.background_tasks import BackgroundTaskRegistry
+    from agent.mind.background.tasks import BackgroundTaskRegistry
 
     service, _ = activity
-    registry = BackgroundTaskRegistry()
-    registry.bind_loop(asyncio.get_running_loop())
+    registry = BackgroundTaskRegistry(loop=asyncio.get_running_loop())
     async with activity_scope("shell-origin", "user_webui:1"):
         task_id = await asyncio.to_thread(registry.register, "user_webui:1", "shell", "threaded shell")
         await asyncio.to_thread(registry.complete, task_id, True, "done")
@@ -135,6 +134,61 @@ async def test_context_and_blocked_tools_are_visible_with_terminal_truth(activit
     assert entries[0]["blocks"][0]["content"] == "[uid:1] 证据"
     assert entries[1]["status"] == "error"
     assert "调整参数" in entries[1]["result"]
+
+
+async def test_observed_preparation_and_tools_keep_concurrent_scopes_and_terminal_states(activity, monkeypatch):
+    from agent.context.observation import observe_preparation
+    from agent.mind.diagnostics import ExecutionDiagnostics
+    from agent.mind.execution import tool_execution
+    from core.tool_context import tool_request
+
+    service, _ = activity
+    diagnostics = ExecutionDiagnostics()
+    diagnostics.start()
+    monkeypatch.setattr(tool_execution, "check_tool_permission", AsyncMock(return_value=None))
+    monkeypatch.setattr("agent.hooks.hooks_active", lambda _: False)
+
+    @observe_preparation
+    async def prepare(messages):
+        await asyncio.sleep(0)
+        return messages
+
+    async def execute(tc):
+        await asyncio.sleep(0)
+        scope = current_activity_id.get()
+        if scope == "user_qq:2":
+            raise asyncio.CancelledError("stop")
+        return scope
+
+    monkeypatch.setattr(tool_execution.EntityRegistry, "execute_tool_call", execute)
+
+    async def work(scope, cancelled):
+        mind = SimpleNamespace(set_phase=lambda phase: None, memory_store=None)
+        messages = [{"role": "system", "content": scope, "_layer": "memory"}]
+        with tool_request(scope=scope):
+            async with activity_scope(scope, scope):
+                assert await prepare(messages) is messages
+                call = tool_execution.execute_one_tool(mind, SimpleNamespace(name="inspect", id="same-id", arguments="{}"),
+                                                       0, SimpleNamespace(entity_scope=scope))
+                if cancelled:
+                    with pytest.raises(asyncio.CancelledError):
+                        await call
+                else:
+                    assert await call == scope
+                step = diagnostics.snapshot(scope=scope)["runs"][0]["steps"][-1]
+                assert step["status"] == ("interrupted" if cancelled else "completed")
+                assert not diagnostics.snapshot(scope=scope)["runs"][0]["active_steps"]
+
+    try:
+        await asyncio.gather(work("user_webui:1#a", False), work("user_qq:2", True))
+        runs = {run["scope"]: run for run in service.snapshot()["runs"]}
+        for scope, cancelled in [("user_webui:1#a", False), ("user_qq:2", True)]:
+            context, tool = runs[scope]["entries"]
+            assert context["blocks"][0]["content"] == scope
+            assert tool["status"] == ("interrupted" if cancelled else "done")
+            assert tool["duration_ms"] >= 0
+    finally:
+        diagnostics.stop()
 
 
 async def test_skill_facts_survive_entry_eviction_and_only_promote_successful_reads(activity, monkeypatch):
@@ -485,7 +539,9 @@ async def test_structured_tool_failure_is_rendered_as_failure(activity, monkeypa
 
     service, _ = activity
     monkeypatch.setattr("agent.mind.execution.tool_execution.check_tool_permission", AsyncMock(return_value=None))
-    mind = SimpleNamespace(_set_phase=lambda _: None, tool_executor=AsyncMock(return_value='{"success":false,"error":"Invalid destination","retryable":false}'), memory_store=None)
+    monkeypatch.setattr("core.entity.EntityRegistry.execute_tool_call",
+                        AsyncMock(return_value='{"success":false,"error":"Invalid destination","retryable":false}'))
+    mind = SimpleNamespace(set_phase=lambda _: None, memory_store=None)
     async with activity_scope("failure", "group_qq:42"):
         await execute_one_tool(mind, ToolCall(id="send", name="send_message", arguments='{"target":"missing"}'), 0)
     entry = service.snapshot()["runs"][0]["entries"][0]

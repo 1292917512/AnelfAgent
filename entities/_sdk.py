@@ -78,7 +78,7 @@ __registration_bridge__ = True
 if TYPE_CHECKING:
     from agent.llm.llm_client import LLMClient as LLMClient
     from agent.llm.llm_manager import LLMManager as LLMManager
-    from agent.mind.background_tasks import BackgroundTaskRegistry
+    from agent.mind.background.tasks import BackgroundTaskRegistry
     from agent.mind.think_session import ContextUsage
 
 from core.network import (
@@ -935,7 +935,7 @@ def set_default_model(model_id: str) -> bool:
     from agent.runtime.singleton import get_runtime
     rt = get_runtime()
     if rt is not None:
-        rt.switch_llm(mgr.get_default())
+        rt.llm = mgr.get_default()
     return True
 
 
@@ -955,7 +955,7 @@ def get_llm_client_class() -> "type[LLMClient]":
 def get_session_llm_params() -> Dict[str, Any]:
     """获取会话级临时 LLM 参数覆盖（可变 dict，直接读写；重启失效）。"""
     from agent.runtime.singleton import require_runtime
-    return require_runtime().mind.session_llm_params
+    return require_runtime().mind.model_invoker.session_params
 
 
 def canonical_efforts() -> List[str]:

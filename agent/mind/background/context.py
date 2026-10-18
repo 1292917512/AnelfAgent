@@ -1,10 +1,10 @@
-"""当前执行会话的后台任务摘要，只追加到逐轮动态尾部。"""
+"""后台任务的会话摘要，只追加到逐轮动态尾部。"""
 
 from __future__ import annotations
 
 import time
 
-from agent.mind.background_tasks import BackgroundTaskRegistry, current_background_task_id
+from agent.mind.background.tasks import BackgroundTaskRegistry, current_background_task_id
 from core.sanitizer import sanitize_text
 from core.tags import tag_label
 

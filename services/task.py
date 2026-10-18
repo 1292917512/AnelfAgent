@@ -15,13 +15,24 @@ from typing import Any, Dict, List
 
 from core.log import log
 from core.path import ConfigPaths
-from services._parsing import to_bool as _to_bool
 from services._runtime import get_runtime
+
+
+def to_bool(value: Any, *, default: bool = False) -> bool:
+    """兼容字符串/数字的布尔值解析。"""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
 
 
 def _tasks_dir() -> Path:
     """任务定义目录（运行时解析：ConfigPaths 动态跟随目录配置/测试隔离）。"""
     return Path(ConfigPaths.TASKS_DIR)
+
 
 _TASK_DEFAULTS: Dict[str, Any] = {
     "display_name": "", "description": "", "scope": "global",
@@ -92,8 +103,8 @@ def _normalize_task(data: Dict[str, Any]) -> Dict[str, Any]:
     for k, v in _TASK_DEFAULTS.items():
         if k not in data:
             data[k] = v
-    data["allow_output_tools"] = _to_bool(data.get("allow_output_tools"), default=True)
-    data["save_result_to_memory"] = _to_bool(data.get("save_result_to_memory"), default=True)
+    data["allow_output_tools"] = to_bool(data.get("allow_output_tools"), default=True)
+    data["save_result_to_memory"] = to_bool(data.get("save_result_to_memory"), default=True)
     return _normalize_optional_task_overrides(data)
 
 
@@ -362,7 +373,8 @@ class TaskService:
 
         async def _run() -> None:
             try:
-                result = await rt.mind.execute_task(name)
+                log(f"执行任务: {name}", tag="思维")
+                result = await rt.mind.heartbeat_engine.run_task(name)
                 log(f"Web 手动任务完成: {name} ({'有产出' if result else '无产出'})", tag="任务")
             except Exception as exc:
                 log(f"Web 手动任务异常 [{name}]: {exc}", "WARNING", tag="任务")

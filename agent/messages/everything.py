@@ -1,3 +1,9 @@
+"""消息身份、会话归属与平台元数据渲染。
+
+模型看到平台事件的 kind 位于可信标签前缀，先于引用与外部正文。
+仅调整非聊天标签顺序，不增加 token；普通聊天及既有历史不重写，稳定前缀不变。
+"""
+
 from __future__ import annotations
 
 import time
@@ -117,7 +123,8 @@ class Everything(Nothing):
         # 只有当内容包含完整的元数据标签（如 [time:xxx] 或 [uid:xxx]）时才跳过标签生成
         # 简单的 [at_uid:xxx] 不算元数据标签
         self._tags_generated = bool(
-            content
+            self.message_kind == "chat"
+            and content
             and content.startswith('[')
             and any(
                 f"[{tag}:" in content
@@ -136,7 +143,7 @@ class Everything(Nothing):
     }
 
     def get_tag_list(self) -> str:
-        text_tags: str = ""
+        text_tags = kind_tag.generate_label(self.message_kind) if self.message_kind and self.message_kind != "chat" else ""
         for tag in self.tag_list:
             tag_name: str = tag.get_tag_name()
             if tag_name == time_tag.get_tag_name():
@@ -150,9 +157,6 @@ class Everything(Nothing):
                 val = getattr(self, field, None)
                 if val is not None and val != "":
                     text_tags += tag.generate_label(str(val))
-        # 消息类别标签：仅非 chat（通知/事件/系统）时标注，真人聊天保持信封干净
-        if self.message_kind and self.message_kind != "chat":
-            text_tags += kind_tag.generate_label(self.message_kind)
         return text_tags
 
     def _render_to_me_label(self) -> str:

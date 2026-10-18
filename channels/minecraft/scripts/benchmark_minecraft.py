@@ -80,10 +80,10 @@ async def request(client: httpx.AsyncClient, route: str, method: str = "GET", bo
 
 
 async def idle(client: httpx.AsyncClient) -> bool:
-    status, pfc, delegates = await asyncio.gather(
-        request(client, "/api/status/"), request(client, "/api/status/pfc"), request(client, "/api/delegations/overview"))
-    return bool(status["ready"] and status["status"]["queue_size"] == 0 and not pfc["pending_messages"]
-                and not pfc["general_tasks"] and not delegates["running"])
+    status, thinking, delegates = await asyncio.gather(
+        request(client, "/api/status/"), request(client, "/api/status/thinking"), request(client, "/api/delegations/overview"))
+    return bool(status["ready"] and status["status"]["queue_size"] == 0 and not thinking["pending_messages"]
+                and not thinking["general_tasks"] and not delegates["running"])
 
 
 async def wait_idle(client: httpx.AsyncClient, timeout: float = 180) -> float:

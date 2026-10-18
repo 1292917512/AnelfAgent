@@ -83,7 +83,7 @@ class TestReloadReconcile:
         summary = manager.reload_from_disk()
 
         assert summary["models"]["changed"] == ["m1"]
-        assert manager.get_client("m1") is client  # 对象身份保留（Mind.llm 等引用不失效）
+        assert manager.get_client("m1") is client  # 原位更新保留运行时客户端引用
         assert client.config.timeout == 99
         # update_config 语义：配置变化后旧的输出上限学习值不应继续钳制
         assert client._learned_output_cap is None

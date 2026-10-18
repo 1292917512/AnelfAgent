@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 import pytest
@@ -156,6 +157,35 @@ class TestTargetDir:
 
 
 class TestTrackOpsDecorator:
+    @pytest.mark.parametrize("cancelled", [False, True])
+    async def test_async_outcome_survives_reporting_failure(self, monkeypatch, cancelled):
+        monkeypatch.setattr(sdk, "get_current_scope", lambda: _SCOPE)
+        records = []
+        result = '{"ok":true}'
+        error = asyncio.CancelledError("stop")
+
+        def report(op):
+            records.append(op)
+            raise RuntimeError("observer unavailable")
+
+        @sdk.track_ops(report, "file_path")
+        async def execute(file_path: str, count: int, recursive: bool) -> str:
+            assert type(count) is int and type(recursive) is bool
+            if cancelled:
+                raise error
+            return result
+
+        if cancelled:
+            with pytest.raises(asyncio.CancelledError) as caught:
+                await execute("file.txt", 2, False)
+            assert caught.value is error
+        else:
+            assert await execute("file.txt", 2, False) is result
+        assert len(records) == 1
+        assert records[0].ok is not cancelled
+        assert records[0].arguments == {"file_path": "file.txt", "count": 2, "recursive": False}
+        assert records[0].scope == _SCOPE and records[0].duration_ms >= 0
+
     def test_sync_tool_reported(self, workspace, monkeypatch) -> None:
         monkeypatch.setattr(sdk, "get_current_scope", lambda: _SCOPE)
 

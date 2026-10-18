@@ -199,7 +199,8 @@ class ExecutionDiagnostics:
             return
         result = ("" if step.data["name"] == "get_conversation_diagnostics"
                   else str(payload.get("result") or payload.get("result_preview") or ""))
-        step.data.update(status="completed" if payload.get("success") else "failed",
+        status = "interrupted" if payload.get("cancelled") else "completed" if payload.get("success") else "failed"
+        step.data.update(status=status,
                          duration_ms=payload.get("duration_ms", 0), preview=preview(result), error=preview(payload.get("error")),
                          truncated=step.data.get("truncated", False) or bool(payload.get("result_truncated")) or len(result) > PREVIEW_LIMIT)
         parsed = parse_tool_result_json(result)

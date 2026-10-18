@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import TYPE_CHECKING, Optional
 
-from core.event_bus import EVENT_THINKING_TOOL_END, event_bus
 from core.log import log
 
 if TYPE_CHECKING:
@@ -34,21 +32,16 @@ async def check_tool_permission(
     def interrupted() -> bool:
         return bool(interrupts is not None and scope and interrupts.is_requested(scope))
 
-    async def blocked(error: str, outcome: str) -> str:
-        result = json.dumps({
+    def blocked(error: str, outcome: str) -> str:
+        return json.dumps({
             "error": error, "permission_outcome": outcome, "retryable": False,
             "hint": "请根据原因调整操作，不要重复相同调用或通过其他执行通道绕过规则。",
         }, ensure_ascii=False)
-        await event_bus.emit(EVENT_THINKING_TOOL_END, {
-            "scope": tool_scope, "tool_name": tc.name, "tool_id": tc.id,
-            "duration_ms": 0, "error": error, "success": False, "result": result,
-        })
-        return result
 
     outcome: str
     try:
         if interrupted():
-            return await blocked("工具调用已取消，等待新的任务指示", "cancelled")
+            return blocked("工具调用已取消，等待新的任务指示", "cancelled")
         # 用户 hook（tool_pre）：只能在审批规则之上收紧（exit 2 阻塞），
         # 不能放宽 DENY/ASK——hook 放行不构成授权。空配置时零开销短路
         from agent.hooks import hooks_active, run_event_hooks
@@ -58,34 +51,31 @@ async def check_tool_permission(
                 scope=tool_scope,
             )
             if not hook_outcome.allowed:
-                return await blocked(f"工具调用被 hook 阻塞: {hook_outcome.reason}", "hook_blocked")
+                return blocked(f"工具调用被 hook 阻塞: {hook_outcome.reason}", "hook_blocked")
 
 
         try:
             tool_args = json.loads(tc.arguments) if tc.arguments else {}
         except (ValueError, TypeError):
-            return await blocked("工具参数必须是有效 JSON 对象", "invalid_arguments")
+            return blocked("工具参数必须是有效 JSON 对象", "invalid_arguments")
         if not isinstance(tool_args, dict):
-            return await blocked("工具参数必须是 JSON 对象", "invalid_arguments")
+            return blocked("工具参数必须是 JSON 对象", "invalid_arguments")
         result = await get_approval_gate().check(
             tool_name=tc.name, tool_args=tool_args, reason=f"AI 调用工具 {tc.name}", scope=scope,
             channel_id=str(getattr(anything, "adapter_key", "") or ""),
             user_id=str(getattr(anything, "uid", "") or ""),
         )
         if interrupted():
-            return await blocked("工具调用已取消，等待新的任务指示", "cancelled")
+            return blocked("工具调用已取消，等待新的任务指示", "cancelled")
         if result.notice:
             _push_approval_reminder(mind, scope, result.notice)
         if result.allowed:
             return None
         error, outcome = result.reason, result.outcome
-    except asyncio.CancelledError:
-        await blocked("权限评审已取消，工具未执行", "cancelled")
-        raise
     except Exception as exc:
         log(f"工具权限检查失败: {type(exc).__name__}", "ERROR", tag="权限")
         error, outcome = "权限检查未完成，本次工具未执行", "permission_error"
-    return await blocked(error, outcome)
+    return blocked(error, outcome)
 
 
 # 提醒节流：(scope, 提醒文本) → 上次提醒时间——同一事件短时间去重，

@@ -20,9 +20,9 @@
 （_DB_OP_TIMEOUT）防 sqlite 锁等待悬挂占用 scope 锁。
 
 Model Experience:
-- 模型看到什么：摘要提示词内容不变；仅调用通道（流式）与可选专用模型/
-  思考档位（conversation_summary_model / conversation_summary_reasoning_effort）。
-- token 影响：指定低思考档可显著省 token；流式本身不改变用量。
+- 模型看到什么：摘要输入明确区分用户发言、平台事件与系统通知，保留消息身份标签；
+  可选专用模型/思考档位（conversation_summary_model / conversation_summary_reasoning_effort）。
+- token 影响：事件行增加少量类别文字；流式本身不改变用量。
 - 缓存影响：摘要为独立小请求，不共享主对话前缀，不触碰任何前缀层。
 """
 
@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Awaitable, Callable, Dict, List, Optional, Tup
 
 from core.latebind import LateBinding
 from core.log import log
+from core.tags import etag_all
 from core.tool_registry import deferred_tool
 
 if TYPE_CHECKING:
@@ -145,6 +146,9 @@ def _format_fold_messages(rows: List[Dict]) -> str:
     for row in rows:
         role = role_labels.get(str(row.get("role", "")), "用户")
         content = str(row.get("content", ""))
+        if row.get("role") == "user":
+            kind = dict(reversed(etag_all(content, prefix_only=True))).get("kind", "")
+            role = {"event": "平台事件", "notification": "平台通知", "system": "系统消息"}.get(kind, role)
         if len(content) > _FOLD_MSG_MAX_CHARS:
             content = content[:_FOLD_MSG_MAX_CHARS] + "…"
         lines.append(f"{role}: {content}")

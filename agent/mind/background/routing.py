@@ -1,9 +1,15 @@
-"""后台任务完成与超时提醒的会话路由。"""
+"""后台任务完成结果与超时提醒的会话路由。
+
+模型看到：完成结果与进度事实经所属会话历史送达，后续行动由主模型决定。
+Token：取消次数抑制后可能增加主模型处理轮次；不增加独立判断调用。
+缓存：通知追加到历史尾部，写入失败回退短期记忆；不改写稳定前缀。
+"""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from agent.messages import is_conversation_scope
 from core.async_helper import spawn
 
 if TYPE_CHECKING:
@@ -15,19 +21,14 @@ async def on_task_unclaimed(
 ) -> None:
     """后台任务轮外完成回调：完成事实写对话历史并排入回复队列触发新 REPLY。
 
-    通知经 enqueue_scope_reply 落目标会话的对话历史（一次性事实固化，
+    通知经 PrefrontalCortex.enqueue_reply 落目标会话的对话历史（一次性事实固化，
     不驻留短期记忆——驻留会每轮催促已处理完的事项且反复打断缓存前缀）。
     非 conversation scope（心跳任务等无会话上下文发起的任务）无处写历史，
     退化为全局短期记忆桶（对齐 PushHub 全局兜底），任何下一周期可见。
 
-    唤醒预算：成功与失败各自独立计数（上限同为 background_wake_budget，
-    默认 3，0=关闭）——成功完成被抑制是良性的（信息在历史里，下次真人
-    消息可见）；失败完成必须先耗尽独立额度才可被抑制，防"任务死了无人
-    告知"（2026-08 监控脚本超时静默事故）。连续自动唤醒超预算时不触发
-    新周期（防"完成→回复→又启后台任务→完成"的自我激励循环），完成事实
-    已在历史中，下次真人消息或心跳周期触发时模型可见，信息不丢。
+    会话通知不依赖心跳或新的用户输入，完成事实入队后尝试唤醒主模型，
+    由主模型结合目标与结果决定继续、重试、回复或结束。
     """
-    from agent.mind.tools.scheduler import enqueue_scope_reply
     header = "[后台任务失败]" if not success else "[后台任务完成]"
     prompt = (
         f"{header} {description}\n"
@@ -40,19 +41,15 @@ async def on_task_unclaimed(
         )
     prompt += "请根据结果继续处理（回复用户请调用 send_message，完成请调用 end_reply）。"
 
-    if not scope.startswith(("user_", "group_")):
+    if not is_conversation_scope(scope):
         mind.pfc.add_temporary({"role": "system", "content": prompt})
         return
-    await enqueue_scope_reply(
-        mind.pfc, scope,
+    await mind.pfc.enqueue_reply(
+        scope,
         mind.pfc.get_adapter_key(scope),
         f"后台任务{'失败' if not success else '完成'}: {description[:60]}",
         prompt,
     )
-    if not mind.wake_budget.allow(scope, failed=not success):
-        mind.wake_budget.note_suppressed(scope, description, failed=not success)
-        return
-    mind.wake_budget.consume(scope, failed=not success)
     spawn(mind.try_execute_mind(), name="mind.wake")
 
 
@@ -65,7 +62,6 @@ async def on_task_alert(
     提醒先引导甄别"确实需要更久"还是"真的卡住"，三个去向（等/查/终止）
     平铺为可用事实，由 AI 自行判断。提醒经一次性历史固化（同完成通知通道）。
     """
-    from agent.mind.tools.scheduler import enqueue_scope_reply
     prompt = (
         f"[后台任务进度报告] {description}\n"
         f"{detail}\n"
@@ -74,17 +70,13 @@ async def on_task_alert(
         f"确认无需继续时可 terminate_background_task(task_id=\"{task_id}\")。"
         "这是内部进度事实，是否跟进由你判断。"
     )
-    if not scope.startswith(("user_", "group_")):
+    if not is_conversation_scope(scope):
         mind.pfc.add_temporary({"role": "system", "content": prompt})
         return
-    await enqueue_scope_reply(
-        mind.pfc, scope,
+    await mind.pfc.enqueue_reply(
+        scope,
         mind.pfc.get_adapter_key(scope),
         f"后台任务进度报告: {description[:60]}",
         prompt,
     )
-    if not mind.wake_budget.allow(scope):
-        mind.wake_budget.note_suppressed(scope, description)
-        return
-    mind.wake_budget.consume(scope)
     spawn(mind.try_execute_mind(), name="mind.wake")

@@ -22,7 +22,7 @@ def _manager() -> Optional["DelegationManager"]:
     rt = get_runtime()
     if rt is None:
         return None
-    return getattr(rt.mind, "delegation_manager", None)
+    return rt.delegation_manager
 
 
 class DelegationService:

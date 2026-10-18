@@ -15,6 +15,7 @@ import sys
 import warnings
 from pathlib import Path
 
+# 取消urllib3的无效报错提示
 warnings.filterwarnings("ignore", message="urllib3.*doesn't match a supported version")
 
 from core.application import Application

@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Iterator
 
 if TYPE_CHECKING:
-    from agent.mind.mind import Mind
+    from agent.mind.tool_assembly import ToolAssembly
 
 
 @dataclass(frozen=True)
@@ -35,7 +35,7 @@ current_context_usage: ContextVar[ContextUsage | None] = ContextVar("context_usa
 
 @contextmanager
 def think_session(
-        mind: "Mind",
+        tool_assembly: ToolAssembly,
         scope: str,
         *,
         with_token: bool = True,
@@ -44,15 +44,16 @@ def think_session(
     """思维会话上下文管理器。
 
     Args:
-        mind: Mind 实例（用于清理 PFC 动态工具）
+        tool_assembly: 当前执行共用的工具装配器
         scope: 对话 scope（工具激活状态按 scope 隔离）
         with_token: 是否生成一次性会话令牌（reflect 等内部会话可关闭）
-        clear_dynamic_tools: 退出时是否清理 PFC 动态工具（tag 激活 + 动态发现）
+        clear_dynamic_tools: 退出时是否清理动态工具（tag 激活 + 动态发现）
     """
     from agent.channel.context import bind_current_channel, reset_current_channel
     from agent.messages import parse_entity_scope
-    from agent.mind.tool_activation import bind_scope, reset_scope, tool_activation
+    from agent.mind.tool_activation import tool_activation
     from agent.security.session_token import bind_token, generate_token, reset_token
+    from core.conversation_scope import bind_scope, reset_scope
 
     scope_token = bind_scope(scope)
     channel_token = bind_current_channel(parse_entity_scope(scope)[1] or None)
@@ -70,4 +71,4 @@ def think_session(
         reset_current_channel(channel_token)
         if clear_dynamic_tools:
             # 传入 scope：非主会话（如后台评审 reflect）不清理全局动态工具，避免踩踏
-            mind.pfc.clear_dynamic_tools(scope=scope, force=not with_token)
+            tool_assembly.clear_dynamic_tools(scope=scope, force=not with_token)

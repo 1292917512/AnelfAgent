@@ -95,7 +95,7 @@ class TestExpandAssociations:
 class TestMemorizeAutoTag:
     async def test_auto_tag_current_scope(self, store: MemoryStore, monkeypatch) -> None:
         from agent.memory import tools as mem_tools
-        from agent.mind.tool_activation import bind_scope, reset_scope
+        from core.conversation_scope import bind_scope, reset_scope
 
         mem_tools.memory_tools_port.set(mem_tools.MemoryToolDeps(store, None))
 
@@ -110,7 +110,7 @@ class TestMemorizeAutoTag:
 
     async def test_explicit_tag_not_overridden(self, store: MemoryStore, monkeypatch) -> None:
         from agent.memory import tools as mem_tools
-        from agent.mind.tool_activation import bind_scope, reset_scope
+        from core.conversation_scope import bind_scope, reset_scope
 
         mem_tools.memory_tools_port.set(mem_tools.MemoryToolDeps(store, None))
 

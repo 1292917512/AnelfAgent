@@ -129,3 +129,34 @@ class TestBackendOffline:
         for start, end in zip(operations[::2], operations[1::2], strict=True):
             assert start == ("start", end[1])
             assert end[0] == "end"
+
+
+class TestWxResponseHandling:
+    def _backend(self) -> WeChatBackend:
+        return WeChatBackend(BridgeConfig(), lambda event, data: None)
+
+    def test_send_success_passthrough(self) -> None:
+        backend = self._backend()
+        backend._gui = type("FakeGui", (), {
+            "send_msg": lambda self, text, **kwargs: {
+                "status": "成功", "message": "已发送", "data": {"local_id": 1}},
+        })()
+        result = backend.send_msg("朋友甲", "你好")
+        assert result["status"] == "成功"
+
+    def test_send_failure_not_reported_as_success(self) -> None:
+        backend = self._backend()
+        backend._gui = type("FakeGui", (), {
+            "send_msg": lambda self, text, **kwargs: {
+                "status": "失败", "message": "微信窗口不可见", "data": None},
+        })()
+        with pytest.raises(BridgeError, match="微信窗口不可见"):
+            backend.send_msg("朋友甲", "你好")
+
+    def test_send_empty_response_rejected(self) -> None:
+        backend = self._backend()
+        backend._gui = type("FakeGui", (), {
+            "send_msg": lambda self, text, **kwargs: None,
+        })()
+        with pytest.raises(BridgeError, match="无响应"):
+            backend.send_msg("朋友甲", "你好")

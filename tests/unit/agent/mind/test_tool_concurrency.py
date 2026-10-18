@@ -44,16 +44,19 @@ class TestPartition:
 
 
 async def test_permission_denial_closes_tool_progress_without_execution(monkeypatch):
-    from core.tool_errors import ErrorCause, tool_error
+    from agent.approval.types import ApprovalResult
 
-    denied = tool_error("当前上下文不允许执行", cause=ErrorCause.PERMISSION, retryable=False)
-    monkeypatch.setattr(tl, "check_tool_permission", AsyncMock(return_value=denied))
+    gate = SimpleNamespace(check=AsyncMock(return_value=ApprovalResult(False, "rule_deny", "当前上下文不允许执行")))
+    monkeypatch.setattr("agent.approval.get_approval_gate", lambda: gate)
+    monkeypatch.setattr("agent.hooks.hooks_active", lambda _: False)
     emit = AsyncMock()
     monkeypatch.setattr(tl.event_bus, "emit", emit)
     execute = AsyncMock()
-    mind = SimpleNamespace(_set_phase=lambda phase: None, tool_executor=execute)
+    monkeypatch.setattr(tl.EntityRegistry, "execute_tool_call", execute)
+    mind = SimpleNamespace(set_phase=lambda phase: None)
 
-    assert await tl.execute_one_tool(mind, _tc("write_file", "denied-call"), 1) == denied
+    denied = await tl.execute_one_tool(mind, _tc("write_file", "denied-call"), 1)
+    assert json.loads(denied)["permission_outcome"] == "rule_deny"
     execute.assert_not_awaited()
     endings = [call.args[1] for call in emit.await_args_list if call.args[0] == tl.EVENT_THINKING_TOOL_END]
     assert len(endings) == 1
@@ -61,6 +64,75 @@ async def test_permission_denial_closes_tool_progress_without_execution(monkeypa
     assert endings[0]["success"] is False
     assert endings[0]["result"] == denied
     assert endings[0]["duration_ms"] >= 0
+
+
+@pytest.mark.parametrize("outcome", ["success", "reported_error", "exception"])
+async def test_tool_observation_preserves_result_and_hook_order(monkeypatch, outcome):
+    records = []
+    events = []
+    result = '{"ok":true,"value":42}' if outcome == "success" else '{"error":"unavailable"}'
+
+    async def emit(event, payload):
+        records.append(event)
+        events.append((event, payload))
+
+    async def permission(*args):
+        records.append("permission")
+
+    async def execute(tc):
+        records.append("execute")
+        if outcome == "exception":
+            raise ValueError("invalid target")
+        return result
+
+    async def post(*args, **kwargs):
+        records.append("post")
+
+    monkeypatch.setattr(tl.event_bus, "emit", emit)
+    monkeypatch.setattr(tl, "check_tool_permission", permission)
+    monkeypatch.setattr("agent.hooks.hooks_active", lambda _: True)
+    monkeypatch.setattr("agent.hooks.run_event_hooks", post)
+    monkeypatch.setattr(tl, "_record_tool_result_failure", lambda *args: records.append("record"))
+    monkeypatch.setattr(tl.EntityRegistry, "execute_tool_call", execute)
+    memory = SimpleNamespace(record_tool_error=AsyncMock())
+    mind = SimpleNamespace(set_phase=lambda phase: None, memory_store=memory)
+    actual = await tl.execute_one_tool(mind, _tc("inspect"), 2)
+
+    assert records[:5] == [tl.EVENT_TOOL_EXECUTED, tl.EVENT_THINKING_TOOL_START,
+                           "permission", "execute", tl.EVENT_THINKING_TOOL_END]
+    ending = events[-1][1]
+    assert ending["result"] == actual
+    assert ending["success"] is (outcome == "success")
+    if outcome == "exception":
+        assert records[5:] == []
+        assert "invalid target" in json.loads(actual)["error"]
+        memory.record_tool_error.assert_awaited_once()
+    else:
+        assert actual is result
+        assert records[5:] == ["post", "record"]
+        memory.record_tool_error.assert_not_awaited()
+
+
+@pytest.mark.parametrize("during_permission", [True, False])
+async def test_tool_cancellation_closes_once_and_propagates(monkeypatch, during_permission):
+    error = asyncio.CancelledError("stop")
+    permission = AsyncMock(side_effect=error) if during_permission else AsyncMock(return_value=None)
+    execute = AsyncMock(side_effect=error)
+    post = AsyncMock()
+    monkeypatch.setattr(tl, "check_tool_permission", permission)
+    emit = AsyncMock()
+    monkeypatch.setattr(tl.event_bus, "emit", emit)
+    monkeypatch.setattr("agent.hooks.run_event_hooks", post)
+    monkeypatch.setattr(tl.EntityRegistry, "execute_tool_call", execute)
+    mind = SimpleNamespace(set_phase=lambda phase: None)
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await tl.execute_one_tool(mind, _tc("inspect"), 0)
+    assert caught.value is error
+    endings = [call.args[1] for call in emit.await_args_list if call.args[0] == tl.EVENT_THINKING_TOOL_END]
+    assert len(endings) == 1 and endings[0]["cancelled"] and not endings[0]["success"]
+    assert ("工具未执行" if during_permission else "执行结果未确认") in endings[0]["error"]
+    assert execute.await_count == (0 if during_permission else 1)
+    post.assert_not_awaited()
 
 
 class TestExecuteToolCalls:
@@ -86,7 +158,7 @@ class TestExecuteToolCalls:
                 params=[], tags=[], source="internal",
                 meta={"concurrency_safe": True},
             )
-        mind = SimpleNamespace()
+        mind = SimpleNamespace(model_invoker=SimpleNamespace(get_context_length=lambda: 0))
         result = SimpleNamespace(content="")
         return mind, result, records
 
@@ -161,7 +233,7 @@ class TestInterruptedBatch:
                 params=[], tags=[], source="internal",
                 meta={"concurrency_safe": True},
             )
-        return SimpleNamespace(), SimpleNamespace(content=""), records
+        return SimpleNamespace(model_invoker=SimpleNamespace(get_context_length=lambda: 0)), SimpleNamespace(content=""), records
 
     async def test_parallel_batch_abort_preserves_pairing(self, mock_mind):
         """快调用已完成保留真实结果；慢调用在途被中止 → 占位结果 + 部分执行标记。"""
@@ -244,7 +316,7 @@ class TestEarlyToolRunner:
                 params=[], tags=[], source="internal",
                 meta={"concurrency_safe": True},
             )
-        return SimpleNamespace(), records
+        return SimpleNamespace(model_invoker=SimpleNamespace(get_context_length=lambda: 0)), records
 
     def test_submit_rejects_write_tools(self, mock_mind):
         mind, _ = mock_mind

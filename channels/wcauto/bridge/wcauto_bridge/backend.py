@@ -25,6 +25,17 @@ class BridgeError(Exception):
     """桥后端可预期失败（未装依赖/窗口不可见/媒体过大等），message 透传给频道。"""
 
 
+def _wx_result(resp: Any, action: str) -> Dict[str, Any]:
+    """把 wechatauto WxResponse 转成结果或 BridgeError，避免失败被当成功透传。"""
+    if resp is None:
+        raise BridgeError(f"{action}失败: 客户端无响应")
+    result = dict(resp)
+    status = result.get("status")
+    if status is not None and status != "成功":
+        raise BridgeError(f"{action}失败: {result.get('message') or status}")
+    return result
+
+
 def _lazy_wechatauto():
     """惰性导入 wechatauto；不可用时抛 BridgeError。"""
     try:
@@ -115,7 +126,7 @@ class WeChatBackend:
         """启动读侧：解密库 + 全局监听 + 防撤回。GUI 写侧不在这里初始化。"""
         _, WeChatDB, Listener, MediaDownloader = _lazy_wechatauto()
         cfg = self._cfg
-        self._db = WeChatDB(account=cfg.account) if cfg.account else WeChatDB()
+        self._db = WeChatDB(account=cfg.account or None, db_dir=cfg.db_dir or None)
         self._self_info = dict(self._db.get_self_info() or {})
         self._media = MediaDownloader(self._db)
         self._downloads_dir = os.path.join(self._data_dir(), "downloads")
@@ -372,14 +383,14 @@ class WeChatBackend:
         with self._gui_lock:
             resp = self._get_gui().send_msg(str(text), who=self._display_name(chat),
                                             verify=bool(verify))
-        return dict(resp)
+        return _wx_result(resp, "发送文本")
 
     def send_at(self, chat: str, member: str, text: str,
                 verify: bool = True) -> Dict[str, Any]:
         with self._gui_lock:
             resp = self._get_gui().at_member(
                 str(member), str(text), who=self._display_name(chat), verify=bool(verify))
-        return dict(resp)
+        return _wx_result(resp, "发送@消息")
 
     def _send_file_like(self, chat: str, filename: str, data_b64: str,
                         verify: bool, image: bool) -> Dict[str, Any]:
@@ -403,7 +414,7 @@ class WeChatBackend:
                 else:
                     resp = gui.send_file(path, who=self._display_name(chat),
                                          verify=bool(verify))
-            return dict(resp)
+            return _wx_result(resp, "发送图片" if image else "发送文件")
         finally:
             try:
                 os.remove(path)
@@ -425,7 +436,7 @@ class WeChatBackend:
             from wechatauto.wx import Chat
             chat_obj = Chat(self._display_name(chat), self._get_gui(), self._db)
             resp = chat_obj.RecallLastMessage()
-        return dict(resp)
+        return _wx_result(resp, "撤回消息")
 
     def get_recalled(self, chat: str = "", limit: int = 20) -> Any:
         if self._recall is None:
@@ -466,7 +477,7 @@ class WeChatBackend:
             resp = moment.LikeMoment(publisher=publisher or None,
                                      keyword=keyword or None,
                                      db=MomentDB(self._db))
-        return dict(resp)
+        return _wx_result(resp, "朋友圈点赞")
 
     def moment_comment(self, content: str, publisher: str = "",
                        keyword: str = "") -> Dict[str, Any]:
@@ -479,7 +490,7 @@ class WeChatBackend:
                                         keyword=keyword or None,
                                         content=content,
                                         db=MomentDB(self._db))
-        return dict(resp)
+        return _wx_result(resp, "朋友圈评论")
 
     # -- 标签群发（写）-----------------------------------------------------
 
@@ -489,7 +500,7 @@ class WeChatBackend:
         with self._gui_lock:
             resp = self._get_wx().SendToLabel(str(text), str(label),
                                               dry_run=bool(dry_run))
-        return dict(resp)
+        return _wx_result(resp, "标签群发")
 
     # -- UIA 引擎 ---------------------------------------------------------
 

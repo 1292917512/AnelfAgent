@@ -19,12 +19,14 @@ import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.memory.memory_types import MemoryEntry, MemoryType
+from agent.mind.recall import coordinator
 from core.event_bus import EVENT_THINKING_INTROSPECTION, event_bus
 from core.log import log
 
 from .model import TaskDefinition, TaskResult, format_task_time
 
 if TYPE_CHECKING:
+    from agent.memory.ports import MemoryHost
     from agent.messages import EntityData
 
 
@@ -38,8 +40,9 @@ def _clean_llm_output(text: str) -> str:
 class TaskExecutor:
     """统一的任务执行器：构建上下文 -> LLM 调用 -> 清洗输出 -> 存储结果。"""
 
-    def __init__(self, mind: Any) -> None:
+    def __init__(self, mind: Any, memory: MemoryHost) -> None:
         self.mind = mind
+        self.memory = memory
 
     async def run(
         self,
@@ -212,13 +215,13 @@ class TaskExecutor:
         """构建消息 -> LLM reflect -> 清洗输出。"""
         conversation_list: List[Dict] = []
         if entity:
-            conversation_list = await self.mind.get_conversation(entity)
+            conversation_list = await self.mind.conversation_data.get_conversation_record_by_everything(entity)
 
         # 任务精简上下文（task_lean_context）：人设+工具+永久记忆+任务指令；
         # 环境便签/召回/状态由任务按系统规则经 recall/get_conversation 按需取回
         from core.config import get_config_bool
         lean = get_config_bool("task_lean_context", True)
-        base_messages = await self.mind.get_recollection(conversation_list, lean=lean)
+        base_messages = await coordinator.prepare_recollection(self.mind, conversation_list, lean=lean)
 
         # 长任务交接注入：上次运行留下的 "# HANDOFF" 块（确定性接力，recall 之外的信息通道）
         handoff_prefix = ""
@@ -274,7 +277,7 @@ class TaskExecutor:
         lines: List[str] = []
 
         try:
-            store = self.mind.memory_store
+            store = self.memory.memory_store
             if store:
                 stats = await store.get_tool_error_stats()
                 top = [s for s in stats if s.get("unresolved")][:3]
@@ -295,7 +298,7 @@ class TaskExecutor:
             log(f"反思焦点-目标停滞概况构建失败: {exc}", "DEBUG", tag="任务")
 
         try:
-            store = self.mind.memory_store
+            store = self.memory.memory_store
             if store:
                 recent = await store.list_recent(
                     limit=1, memory_type=MemoryType.EPISODIC, source=task.name,
@@ -317,7 +320,7 @@ class TaskExecutor:
         （store/skip/update/merge），事实演进合并进既有记忆而非新增矛盾记录。
         LLM 裁决失败回退 store，去重不阻塞任务落库。
         """
-        store = self.mind.memory_store
+        store = self.memory.memory_store
         if not store or not result.content.strip():
             return
 
@@ -336,8 +339,8 @@ class TaskExecutor:
             log(f"任务结果与已有记忆重复，跳过存储: [{result.task_name}]", tag="任务")
             return
 
-        candidates = await gather_dedup_candidates(store, self.mind.embedder, content)
-        verdict = await judge_write(content, candidates)
+        candidates = await gather_dedup_candidates(store, self.memory.embedder, content)
+        verdict = await judge_write(content, candidates, tags=result.tags)
         action = verdict.get("action", "store")
         metrics.incr(f"write.dedup_llm_{action}")
 

@@ -213,10 +213,9 @@ async def memorize(
 
         # 第二级：LLM 语义裁决（事实演进 update / 语义重复 skip / 无重复 store）
         from . import metrics
-        from .dedup import apply_update, attribution_candidates, gather_dedup_candidates, judge_write
+        from .dedup import apply_update, gather_dedup_candidates, judge_write
         candidates = await gather_dedup_candidates(store, deps.embedder, content)
-        candidates = attribution_candidates(candidates, tag_list)
-        decision = await judge_write(content, candidates)
+        decision = await judge_write(content, candidates, tags=tag_list)
         action = decision.get("action", "store")
         metrics.incr(f"write.dedup_llm_{action}")
         if action == "skip":

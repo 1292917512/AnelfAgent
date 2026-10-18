@@ -19,6 +19,8 @@ import json
 import time
 from typing import Any, Dict, List, Optional, Set
 
+from fastapi import APIRouter, Request
+
 from agent.channel import CredentialField, get_provider_key, register_provider_key
 from agent.channel.base import BaseChannel, ChannelMetadata
 from agent.channel.channel_types import ChannelCapability, ChannelStatus
@@ -383,7 +385,8 @@ def build_router() -> Any:
     webhook 端点自带 HMAC 验签(@self_authenticated);
     其余管理端点由 webui 密码体系默认保护。
     """
-    from fastapi import APIRouter, Request
+    # Request 须在模块级导入：postponed annotations 下局部导入无法被
+    # FastAPI 的 get_type_hints 解析，会连带 /openapi.json 生成失败
     from fastapi.responses import JSONResponse
 
     from core.http_endpoints import self_authenticated

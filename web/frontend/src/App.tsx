@@ -4,7 +4,7 @@ import { FileDraftLifecycle } from "./components/layout/FileDraftLifecycle";
 import { Layout } from "./components/layout/Layout";
 import { AuthGate } from "./components/AuthGate";
 import { Toaster } from "./components/ui/Toast";
-import { CommandPalette } from "./components/palette/CommandPalette";
+import { CommandPaletteHost } from "./components/palette/CommandPaletteHost";
 import { useChatStore } from "./stores/chat-store";
 import { useThinkingStore } from "./stores/thinking-store";
 import { useAppStore } from "./stores/app-store";
@@ -19,7 +19,7 @@ import { UiCommandHost } from "./components/workbench/UiCommandHost";
 import { getUiContributions } from "./lib/ui-contribution-registry";
 
 function ApplicationLayout() {
-  return <UnsavedChangesProvider><FileDraftLifecycle /><Layout /><CommandPalette /><UiCommandHost /></UnsavedChangesProvider>;
+  return <UnsavedChangesProvider><FileDraftLifecycle /><Layout /><CommandPaletteHost /><UiCommandHost /></UnsavedChangesProvider>;
 }
 
 function PageBoundary({ children }: { children: React.ReactNode }) {

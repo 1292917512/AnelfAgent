@@ -67,10 +67,10 @@ async def get_event_stats() -> Dict[str, Any]:
     return {"stats": stats or {}}
 
 
-@router.get("/pfc")
-async def get_pfc_status() -> Dict[str, Any]:
-    """PFC 工作记忆状态快照。"""
-    snapshot = _status_svc.get_pfc_snapshot()
+@router.get("/thinking")
+async def get_thinking_status() -> Dict[str, Any]:
+    """PFC、工具目录与缓存状态快照。"""
+    snapshot = _status_svc.get_thinking_snapshot()
     return snapshot or {}
 
 

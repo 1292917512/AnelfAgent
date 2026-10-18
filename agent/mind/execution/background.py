@@ -11,7 +11,7 @@ from core.log import log
 
 if TYPE_CHECKING:
     from agent.messages import Everything
-    from agent.mind.background_tasks import (
+    from agent.mind.background.tasks import (
         BackgroundTaskInfo,
         BackgroundTaskRegistry,
         TaskCompletion,

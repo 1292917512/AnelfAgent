@@ -78,7 +78,7 @@ class TestToolSurface:
 
     async def test_tool_returns_recorded_summary(self):
         """绑定会话 scope 后可取回完整摘要。"""
-        from agent.mind.tool_activation import bind_scope, reset_scope
+        from core.conversation_scope import bind_scope, reset_scope
 
         token = bind_scope("user_qq:1")
         try:

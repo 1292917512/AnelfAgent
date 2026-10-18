@@ -115,8 +115,8 @@ async def get_ltm_stats() -> Dict[str, Any]:
 
 @router.get("/stm/status")
 @_runtime_fallback(_FALLBACK_LIST)
-async def get_pfc_status() -> List[Dict[str, Any]]:
-    return _mem_svc.get_pfc_status()
+async def get_pending_status() -> List[Dict[str, Any]]:
+    return _mem_svc.get_pending_status()
 
 
 @router.get("/index/status")

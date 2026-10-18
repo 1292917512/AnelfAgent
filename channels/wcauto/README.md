@@ -5,7 +5,7 @@
 与 `weixin` 频道（iLink bot 身份，群聊受限）互补共存。
 
 > 桥基于 [wechatauto-replica](https://github.com/fanyuantaier/wechatauto-replica)：
-> 收消息走本地 SQLCipher 数据库解密轮询（不操作界面，锁屏可收）；
+> 收消息走本地 SQLCipher 数据库解密轮询（监听本身不操作界面）；
 > 发消息走 UIA 主路径 + OCR/坐标兜底（窗口须可见）。
 > **Windows 部署全流程见 [docs/deployment-windows.md](docs/deployment-windows.md)。**
 
@@ -28,12 +28,12 @@
 ## 快速开始
 
 1. **Windows 侧起桥**（详见部署文档）：拷贝 `bridge/` 目录 →
-   `pip install -r requirements.txt` → 编辑 `wcauto_bridge.json`（设 token）→
-   `run_bridge.bat`
+   `uv python install 3.12` → `uv sync --frozen` →
+   编辑 `wcauto_bridge.json`（设 token）→ `run_bridge.bat --doctor` → `run_bridge.bat`
 2. **频道侧连接**：WebUI 配置中心 `adapter/wcauto` 组（或直接改
    `channel_config.json`）设置 `ws_url` 与 `access_token`，`enabled` 置 true
 3. **验证**：频道卡片状态 `running`、日志出现 `wcauto: 已连接桥 account=...`
-   即成功；用你的微信给任一好友/群发消息，AI 即可收到
+   即成功；用**另一个微信号**给目标号发消息，验证完整入站链路
 
 ## 常用配置项
 
@@ -71,9 +71,10 @@
 
 ## 限制（微信桌面客户端形态决定）
 
-- **必须有一台常开 Windows**（物理机/虚拟机）登录微信 4.1.12+；不要「以管理员身份」运行微信
-- **发消息/朋友圈互动/at/转发需要窗口可见**：锁屏、远程桌面断开时发送会安全失败
-  （健康检查会显示「窗口不可见（仅收不发）」）；收消息不受影响
+- **必须有一台常开 Windows**（物理机/虚拟机）登录微信 4.1.12+，使用 64 位 Python 3.12；
+  微信与桥保持同用户、同权限级别，默认不要单独提权
+- **发消息/朋友圈互动/at/转发需要窗口可见**：锁屏、远程桌面断开时发送会安全失败；
+  数据库监听不操作界面，但锁屏/RDP 断开后新消息能否继续到达取决于微信客户端，不作绝对保证
 - **语音为 SILK 原始格式**（.silk），频道不内置转写
 - **群聊@我识别**基于正文 `@昵称` 匹配（微信 DB 不存 at 列表）；
   引用消息从正文正则提取，非结构化
@@ -103,8 +104,9 @@ channels/wcauto/
 ├── state.py          # last_seq 水位持久化 + 去重
 ├── config.py         # CONFIG_MODEL（WebUI 配置元数据）
 ├── frontend/index.ts # 配置中心分组名注册
-├── bridge/           # Windows 桥服务（自包含，整目录拷贝部署）
+├── bridge/           # Windows 桥服务（uv 项目，自包含，整目录拷贝部署）
+│   ├── pyproject.toml / uv.lock / .python-version
 │   └── wcauto_bridge/  protocol/config/backend/server/__main__
 ├── docs/deployment-windows.md  # Windows 部署与运维手册
-└── tests/            # 78 例（协议/配置/解析/传输/发送/工具/事件流）
+└── tests/            # 频道内单元测试（协议/配置/解析/传输/发送/工具/事件流）
 ```

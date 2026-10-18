@@ -134,18 +134,14 @@ async def _merge_new_messages(ctx: ExecutionContext, state: RoundState) -> bool:
         _consume_pending_for_scope(mind, ctx.anything, through_ts=state.last_merged_ts)
     # 新消息携带的媒体：激活对应媒体工具并重建工具集供后续轮次使用
     # （媒体标签已随内容并入上下文，待处理媒体不留存到后续周期）
-    try:
-        merged_images = mind.pfc.collect_images(scope=ctx.current_scope)
-        merged_media = mind.pfc.collect_media(scope=ctx.current_scope)
-    except TypeError:
-        merged_images = mind.pfc.collect_images()
-        merged_media = mind.pfc.collect_media()
+    merged_images = mind.pfc.collect_images(scope=ctx.current_scope)
+    merged_media = mind.pfc.collect_media(scope=ctx.current_scope)
     if merged_images:
         # 视觉模型直传图片 block；非视觉模型转存超大 base64 为文件路径
         ctx.tool_chain = await apply_vision(mind, ctx.tool_chain, merged_images)
     if merged_images or merged_media:
-        mind.pfc.activate_media_tools(merged_images, merged_media)
-        ctx.active_tools = await mind.pfc.get_active_tool_schemas(
+        mind.tool_assembly.activate_media_tools(merged_images, merged_media)
+        ctx.active_tools = await mind.tool_assembly.get_active_tool_schemas(
             ctx.adapter_key, scope=ctx.anything.entity_scope if ctx.anything else "",
         )
     deferred_note = f"，{deferred} 条留存下轮接续" if deferred else ""
@@ -169,7 +165,7 @@ async def _merge_new_messages(ctx: ExecutionContext, state: RoundState) -> bool:
 async def _merge_pushes(ctx: ExecutionContext, state: RoundState) -> None:
     """并入循环期间到达的实体推送（[push:] 系统通知），实现轮内弹窗。
 
-    推送到达时已写入短期记忆（后续会话可见）；此处将快照后新到的推送
+    推送到达时已写入会话历史（失败时回退短期记忆）；此处将快照后新到的推送
     直接注入当前轮工具链尾部，AI 无需等会话结束即可感知，与手机弹窗同语义。
     """
     mind = ctx.mind

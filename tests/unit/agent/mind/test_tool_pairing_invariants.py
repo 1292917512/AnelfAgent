@@ -66,7 +66,7 @@ class TestAtomicChainAppend:
         monkeypatch.setattr(tl, "execute_one_tool", fake_execute_one)
         monkeypatch.setattr(tl, "log_tool_round", lambda *a, **k: None)
         monkeypatch.setattr(tl, "preserve_reasoning_fields", lambda *a, **k: None)
-        return SimpleNamespace()
+        return SimpleNamespace(model_invoker=SimpleNamespace(get_context_length=lambda: 0))
 
     async def test_normal_path_assistant_then_tools(self, mock_mind):
         """正常路径：assistant 在前、N 条 tool 响应依次在后。"""

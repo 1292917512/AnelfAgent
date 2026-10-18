@@ -1,5 +1,7 @@
 """动态执行事实的隔离、通知消费和缓存前缀纪律。"""
 
+import asyncio
+import inspect
 from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -8,11 +10,53 @@ import pytest
 from helpers.think_loop_fakes import FakeMind, run_think_loop, tool_result
 
 from agent.context.message_schema import normalize_for_send
-from agent.context.observation import emit_context_summary
-from agent.mind.background_tasks import BackgroundTaskRegistry
+from agent.context.observation import emit_context_summary, observe_preparation
+from agent.mind.background.context import background_context
+from agent.mind.background.tasks import BackgroundTaskRegistry
 from agent.mind.execution.state import ThinkMode
-from agent.mind.runtime_context import background_context
-from agent.mind.tool_activation import bind_scope, reset_scope
+from core.conversation_scope import bind_scope, reset_scope
+
+
+async def test_preparation_observer_preserves_signature_messages_and_event_order(monkeypatch):
+    events = []
+    messages = [{"role": "system", "content": "稳定前缀", "_layer": "stable"},
+                {"role": "user", "content": "原始消息", "_layer": "conversation"},
+                {"role": "system", "content": "召回证据", "_layer": "memory"}]
+    before = deepcopy(messages)
+    wire = normalize_for_send(messages)
+    marker = object()
+
+    async def emit(event, payload):
+        events.append(payload["status"])
+
+    async def prepare(mind, conversation_list, anything, *, lean):
+        assert mind is marker and conversation_list is messages and anything is None and lean
+        events.append("prepare")
+        return messages
+
+    monkeypatch.setattr("agent.context.observation.event_bus.emit", emit)
+    observed = observe_preparation(prepare)
+    assert inspect.iscoroutinefunction(observed)
+    assert inspect.signature(observed) == inspect.signature(prepare)
+    assert await observed(marker, messages, None, lean=True) is messages
+    assert events == ["running", "prepare", "done"]
+    assert messages == before and normalize_for_send(messages) == wire
+
+
+@pytest.mark.parametrize("error", [ValueError("invalid input"), asyncio.CancelledError("stop")])
+async def test_preparation_failure_is_observed_without_replacing_exception(monkeypatch, error):
+    emit = AsyncMock()
+    monkeypatch.setattr("agent.context.observation.event_bus.emit", emit)
+
+    @observe_preparation
+    async def prepare():
+        raise error
+
+    with pytest.raises(type(error)) as caught:
+        await prepare()
+    assert caught.value is error
+    assert [call.args[1]["status"] for call in emit.await_args_list] == [
+        "running", "interrupted" if isinstance(error, asyncio.CancelledError) else "error"]
 
 
 @pytest.mark.parametrize("running", [True, False])
@@ -31,7 +75,7 @@ async def test_reply_entry_applies_only_running_channel_recall_default(monkeypat
     manager = SimpleNamespace(get=lambda key: channel if key == "game" else None)
     monkeypatch.setattr("agent.channel.manager.get_channel_manager", lambda: manager)
     expected = policy if running else default_recall_policy()
-    async def collect(**kwargs):
+    async def collect(mind, **kwargs):
         assert current_recall_policy(scope) == expected
         return [{"role": "system", "content": "固定前缀"}]
     async def execute(*args, **kwargs):
@@ -39,10 +83,11 @@ async def test_reply_entry_applies_only_running_channel_recall_default(monkeypat
         assert kwargs["base_messages"] == [{"role": "system", "content": "固定前缀"}]
     loop = AsyncMock(side_effect=execute)
     monkeypatch.setattr("agent.mind.execution.reply.think_loop", loop)
+    monkeypatch.setattr("agent.mind.recall.coordinator.prepare_recollection", collect)
     mind = SimpleNamespace(config=SimpleNamespace(max_tool_iterations=5),
-                           get_recollection=AsyncMock(side_effect=collect),
-                           pfc=SimpleNamespace(get_active_tool_schemas=AsyncMock(return_value=[]),
-                                               consume_scope_task=Mock(), clear_dynamic_tools=Mock()))
+                           pfc=SimpleNamespace(consume_scope_task=Mock()),
+                           tool_assembly=SimpleNamespace(get_active_tool_schemas=AsyncMock(return_value=[]),
+                                                        clear_dynamic_tools=Mock()))
     await reply_loop(mind, anything, adapter_key="game")
     loop.assert_awaited_once()
     assert not has_recall_turn(scope)
@@ -157,6 +202,6 @@ def test_old_hook_results_leave_dynamic_tail_but_remain_queryable(monkeypatch):
     task_id = registry.register("user_qq:1", "llm_hook", "review")
     registry.complete(task_id, False, "old failure")
     finished = registry.completed("user_qq:1")[0].finished_at
-    monkeypatch.setattr("agent.mind.runtime_context.time.time", lambda: finished + 301)
+    monkeypatch.setattr("agent.mind.background.context.time.time", lambda: finished + 301)
     assert background_context(registry, "user_qq:1") == ""
     assert registry.read_task_output("user_qq:1", task_id)["summary"] == "old failure"

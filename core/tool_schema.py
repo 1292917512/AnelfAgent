@@ -7,6 +7,7 @@ schema token，减少错误重试；注册时生成，运行时不改写稳定�
 从函数/绑定方法签名与 docstring 自动推导 LLM 工具参数：
 - 跳过 self/cls 与 *args/**kwargs
 - 支持 `from __future__ import annotations` 产生的字符串注解
+- 支持 ``__signature__`` 声明的动态参数类型，缺少注解时才默认字符串
 - 参数描述取自 Google style（Args:）或 Sphinx style（:param x:）docstring
 - 支持 ``func._schema_extra`` 注入额外 JSON Schema 字段（如 items/minItems）
 """
@@ -49,7 +50,9 @@ def extract_tool_params(func: Callable) -> List[ToolParam]:
         # *args / **kwargs 是容错性捕获参数，不应出现在 LLM schema 中
         if p.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
             continue
-        annotation = annotations.get(p_name, str)
+        annotation = annotations.get(p_name, p.annotation)
+        if annotation is inspect.Parameter.empty:
+            annotation = str
         adapter: TypeAdapter[Any] = TypeAdapter(annotation)
         schema = adapter.json_schema(ref_template=f"#/$defs/{p_name}_{{model}}")
         definitions = schema.get("$defs", {})

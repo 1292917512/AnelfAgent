@@ -207,15 +207,14 @@ async def _write_scope_note(
         from agent.mind.tools.ports import mind_port
         if not mind_port.bound:
             return False
-        from agent.mind.tools.scheduler import _append_one_shot_history
         from core.tags import tag_label
         mind = mind_port.get()
         names = "、".join(nm or f"人物{pid}" for pid, _, nm in fresh)
         tags = "".join(tag_label("face_scope", sc) for _, sc, _ in fresh)
         prompt = (f"[人脸识别·一次性通知] 画面（来源 {source or '未知'}）中出现: "
                   f"{names} {tags}")
-        return await _append_one_shot_history(
-            mind.pfc, scope, mind.pfc.get_adapter_key(scope), prompt)
+        return await mind.pfc.append_notification(
+            scope, mind.pfc.get_adapter_key(scope), prompt)
     except Exception as exc:
         log(f"face_scope 历史打标失败（已忽略）: {exc}", "DEBUG", tag=_LOG_TAG)
         return False

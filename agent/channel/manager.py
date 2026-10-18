@@ -339,7 +339,7 @@ class ChannelManager(BaseEntity):
             media_segments=media_segments,
             adapter_key=cid,
             message_id=message.message_id,
-            session_id=message.channel.channel_id,
+            session_id=message.session_id or message.channel.channel_id,
             reply_to_id=message.reply_to_id,
             reply_content=message.reply_content,
             trigger_mind=trigger_mind,

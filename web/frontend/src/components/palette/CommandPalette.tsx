@@ -41,19 +41,6 @@ export function CommandPalette() {
   const { t } = useTranslation("palette");
   const { t: tNav } = useTranslation("nav");
 
-  // 全局快捷键：⌘K / Ctrl+K 开关
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
-        e.preventDefault();
-        const { paletteOpen, setPaletteOpen } = useAppStore.getState();
-        setPaletteOpen(!paletteOpen);
-      }
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, []);
-
   useEffect(() => {
     if (!open) { setQuery(""); setResults(null); }
   }, [open]);

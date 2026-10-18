@@ -1,260 +1,752 @@
-"""工作记忆门面：维护会话队列、短期记忆与工具激活态。
+"""Prefrontal Cortex（PFC）：消息队列、待办持久化、短期记忆、媒体暂存与态势路由。
 
-上下文层通过只读视图消费这些状态；本模块不构建提示词或消息分层。"""
+不依赖 Mind；由运行时共享，消息标签经构造注入的 ToolAssembly 激活工具。
+
+模型看到通知的真实类别，平台来源不列入群发言者或用户画像任务。
+不新增模型调用或 token；仅改变动态队列事实，不改稳定前缀。
+
+职责：
+- 消息队列管理（pending_user / pending_group / pending_analysis，按 scope 分桶隔离）
+- 待办跨重启持久化（pending_tasks 表双写 + 启动 replay）
+- 通用任务队列（错误反馈、AI 自主任务、画像分析等）
+- 短期记忆（_temporary，按 scope 分桶）
+- 待处理媒体暂存与 scope → adapter 路由表 / 未读计数 / 消息预览
+"""
 
 from __future__ import annotations
 
+import asyncio
+import json
+import re
+import time
+import uuid
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 from agent.llm.types import ImageContent
-from agent.messages import EntityData, Everything
-from agent.mind.autonomous import MindTask
-from agent.mind.tool_assembly import ToolAssembly
-from agent.mind.work_memory import PendingSignal, WorkMemory
+from agent.messages import EntityData, Everything, EverythingGroup, build_entity_scope
+from agent.mind.autonomous import MindTask, TaskType
 from agent.storage.data_center import EverythingData
 from agent.utils.unique_queue import UniqueQueue
+from core.async_helper import spawn
+from core.log import log
+from core.tags import etag_all
 
 if TYPE_CHECKING:
-    from agent.channel.manager import ChannelManager
+    from agent.mind.tool_assembly import ToolAssembly
     from agent.storage.data_center import ConversationData
+    from agent.storage.sqlite_backend import SqliteBackend
+
+
+_PREVIEW_TAG_RE = re.compile(r"\[[^\]]*\]")
+
+
+@dataclass
+class ScopeActivity:
+    """单个会话的近期活动快照。"""
+
+    last_time: float = 0.0
+    last_preview: str = ""
+    adapter_key: str = ""
+
+
+@dataclass
+class ChannelSnapshot:
+    """频道活动快照，仅用于内存中的会话发现与召回。"""
+
+    last_message_time: float = 0.0
+    active_scopes: dict[str, ScopeActivity] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class PendingSignal:
+    """scope 的最新待处理消息信号：预览、路由与对话性质元数据。
+
+    to_me/kind 为元决策态势提供直接判据（群消息是否 @ 了机器人、
+    是否平台推送而非真人聊天），与消息渲染的 [to_me:]/[kind:] 标签同源。
+    未读起点与最近定向消息时间用于动态感知筛选，不保存消息正文副本。
+    """
+
+    preview: str = ""
+    adapter_key: str = ""
+    to_me: bool = False
+    kind: str = ""
+    message_id: str = ""
+    created_ts_ns: int = 0
+    first_unread_ts_ns: int = 0
+    last_addressed_ts_ns: int = 0
+
+
+def _pfc_persist_enabled() -> bool:
+    """PFC 待办跨重启持久化开关（配置 pfc_persist_enabled，默认开）。"""
+    try:
+        from core.config import get_config_bool
+        return get_config_bool("pfc_persist_enabled", True)
+    except Exception:
+        return True
 
 
 class PrefrontalCortex:
-    """聚合工作记忆与工具目录，向思维流程提供状态操作。"""
+    """消息队列、短期记忆、通知历史与态势路由。"""
 
     def __init__(
             self,
             everything_data: EverythingData,
-            channel_manager: Optional["ChannelManager"] = None,
             conversation_data: Optional["ConversationData"] = None,
+            *, tool_assembly: Optional["ToolAssembly"] = None,
     ) -> None:
-        self.record: dict[str, int] = {}
+        # 短期记忆按 scope 分桶（跨会话隔离，避免并行会话互相串内容）；
+        # 无 scope 的写入进 "_default" 全局桶，读取时与本 scope 桶合并。
+        self._temporary: dict[str, list[Dict]] = {}
         self.everything_data = everything_data
-        self._channel_manager = channel_manager
         self._conversation_data = conversation_data
+        self.tool_assembly = tool_assembly
 
-        self.work_memory = WorkMemory(everything_data, conversation_data)
-        self.tool_assembly = ToolAssembly(channel_manager)
-        # 消息标签扫描命中时经 ToolAssembly 激活工具（数据面 → 工具面接线）
-        self.work_memory.tool_assembly = self.tool_assembly
+        # 消息任务队列（元素为 entity_scope 字符串，如 user_qq:123 / user_webui:u#chat_id）
+        self.pending_user: UniqueQueue[str] = UniqueQueue()
+        self.pending_group: UniqueQueue[str] = UniqueQueue()
+        self.pending_analysis: UniqueQueue[tuple[Union[int, str], Union[int, str], str]] = UniqueQueue()
+        # 按 scope 分桶的待处理媒体（跨频道并行不串台）
+        self._pending_images: dict[str, List[ImageContent]] = {}
+        self._pending_media: dict[str, list] = {}
+
+        # scope → 最新消息信号（预览 / adapter 路由 / to_me / 消息类别）/ 未读计数
+        self._pending_signals: dict[str, PendingSignal] = {}
+        self.channel_snapshots: dict[str, ChannelSnapshot] = {}
+        self.message_revision = 0
+        self._unread_counts: dict[str, int] = {}
+        # 群聊 scope → 最近发送者 [(uid, name), ...]
+        self._group_recent_senders: dict[str, list[tuple[str, str]]] = {}
+
+        # 通用任务（错误反馈、AI 自主任务、画像分析等）
+        self._general_tasks: list[MindTask] = []
+        # 与 _general_tasks 对齐的持久化 task_key（双写 pending_tasks 表用）
+        self._general_task_keys: list[str] = []
+        # pending_analysis 条目 (group_id, uid, adapter_key) → 持久化 task_key
+        self._analysis_task_keys: dict[tuple, str] = {}
+
+    def observe_channel(self, anything: Everything, *, window_minutes: float) -> None:
+        """记录已接收消息的频道活动，不改变未读队列或当前会话。"""
+        adapter_key = anything.adapter_key or ""
+        scope = anything.entity_scope
+        if not adapter_key or not scope:
+            return
+        preview = _PREVIEW_TAG_RE.sub("", anything.get_text_content()[:80]).strip()[:50]
+        now = time.time()
+        snap = self.channel_snapshots.setdefault(adapter_key, ChannelSnapshot())
+        snap.last_message_time = now
+        activity = snap.active_scopes.setdefault(scope, ScopeActivity())
+        activity.last_time = now
+        activity.last_preview = preview
+        activity.adapter_key = adapter_key
+        window = window_minutes * 60
+        snap.active_scopes = {
+            key: value for key, value in snap.active_scopes.items() if now - value.last_time < window
+        }
+        self.channel_snapshots = {
+            key: value for key, value in self.channel_snapshots.items()
+            if key == adapter_key or now - value.last_message_time < window
+        }
 
     # ==================================================================
-    # 队列直通属性（消费方直接访问队列对象：assistant/cycle/scheduler）
+    # 待办持久化（pending_tasks 表双写，崩溃重启后 replay）
+    # ==================================================================
+
+    def _persist_db(self) -> Optional["SqliteBackend"]:
+        cd = self._conversation_data
+        if cd is None:
+            return None
+        try:
+            return cd.router.sqlite
+        except Exception:
+            return None
+
+    def _persist_add(self, *, scope: str, kind: str, payload: Dict[str, Any]) -> None:
+        """异步双写待办（fire-and-forget；失败仅记日志，不阻塞主流程）。"""
+        if not _pfc_persist_enabled():
+            return
+        db = self._persist_db()
+        if db is None:
+            return
+        try:
+            asyncio.get_running_loop()  # 无事件循环（同步/测试上下文）时 spawn 会炸，先探测
+        except RuntimeError:
+            return  # 跳过持久化
+
+        async def _add() -> None:
+            try:
+                await db.add_pending_task(
+                    scope=scope, kind=kind,
+                    payload_json=json.dumps(payload, ensure_ascii=False, default=str),
+                )
+            except Exception as exc:
+                log(f"待办持久化写入失败: {exc}", "DEBUG", tag="PFC")
+
+        spawn(_add(), name="pfc.persist_add")
+
+    def _persist_remove(self, task_key: str) -> None:
+        """异步删除已消费待办（fire-and-forget）。"""
+        if not task_key or not _pfc_persist_enabled():
+            return
+        db = self._persist_db()
+        if db is None:
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        async def _del() -> None:
+            try:
+                await db.delete_pending_task_by_key(task_key)
+            except Exception as exc:
+                log(f"待办持久化删除失败: {exc}", "DEBUG", tag="PFC")
+
+        spawn(_del(), name="pfc.persist_remove")
+
+    def restore_persisted_tasks(self, rows: List[Dict[str, Any]]) -> int:
+        """启动时 replay 持久化的待办（bootstrap 调用，同步重建内存队列）。
+
+        复用 payload 中的 task_key：消费时按 key 删除对应行，
+        行在消费前保留，replay 后再次崩溃也不会丢。
+        """
+        restored = 0
+        for row in rows:
+            try:
+                payload = json.loads(row.get("payload_json") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            key = str(payload.get("task_key") or "")
+            kind = row.get("kind", "")
+            if kind == "analysis":
+                entry = (
+                    payload.get("group_id", 0),
+                    payload.get("uid", 0),
+                    str(payload.get("adapter_key", "") or ""),
+                )
+                self.pending_analysis.append(entry)
+                if key:
+                    self._analysis_task_keys[entry] = key
+                restored += 1
+            elif kind == "general":
+                try:
+                    task = MindTask(
+                        task_type=TaskType(payload.get("task_type", "self_task")),
+                        scope=payload.get("scope", ""),
+                        preview=payload.get("preview", ""),
+                        adapter_key=payload.get("adapter_key", ""),
+                        uid=payload.get("uid", 0),
+                        group_id=payload.get("group_id", 0),
+                        timestamp=payload.get("timestamp", 0.0) or 0.0,
+                        metadata=payload.get("metadata", {}) or {},
+                    )
+                except Exception:
+                    continue
+                self._general_tasks.append(task)
+                self._general_task_keys.append(key)
+                restored += 1
+        return restored
+
+    # ==================================================================
+    # 短期记忆
     # ==================================================================
 
     @property
-    def pending_user(self) -> UniqueQueue[str]:
-        return self.work_memory.pending_user
+    def max_temp(self) -> int:
+        from agent.config import get_mind_config
+        return get_mind_config().short_term_memory_size
 
-    @property
-    def pending_group(self) -> UniqueQueue[str]:
-        return self.work_memory.pending_group
-
-    @property
-    def pending_analysis(self) -> UniqueQueue:
-        return self.work_memory.pending_analysis
-
-    @property
-    def conversation_data(self) -> Optional["ConversationData"]:
-        """会话存储访问（一次性事件通知写对话历史用，见 scheduler）。"""
-        return self._conversation_data
+    def get_group_recent_senders(self, scope: str) -> list[tuple[str, str]]:
+        """群聊 scope 的最近发送者列表 [(uid, name), ...]（场景信息用）。"""
+        return self._group_recent_senders.get(scope, [])
 
     @property
     def temporary(self) -> list[Dict]:
         """全桶展开视图（管理接口/监控用；LLM 上下文请用 get_temporary(scope)）。"""
-        return self.work_memory.temporary
+        result: list[Dict] = []
+        for bucket in self._temporary.values():
+            result.extend(bucket)
+        return result
 
-    @property
-    def tools_version(self) -> int:
-        """动态工具集版本号（tag 激活/动态发现变化时递增）。"""
-        return self.tool_assembly.tools_version
+    def get_temporary(self, scope: str = "") -> list[Dict]:
+        """指定 scope 的短期记忆（_default 全局桶 + 本 scope 桶）。"""
+        result = list(self._temporary.get("_default", []))
+        if scope and scope != "_default":
+            result.extend(self._temporary.get(scope, []))
+        return result
 
-    @property
-    def message_revision(self) -> int:
-        """待处理消息的到达序号；跨频道新消息可唤醒协作等待，不改变当前回复目标。"""
-        return self.work_memory.message_revision
+    def add_temporary(self, temporary_clip: Dict, scope: str = "") -> None:
+        """写入短期记忆到指定 scope 桶（空 scope 进 _default 全局桶）。
+
+        溢出晋升：被容量截尾挤出的最老条目追加到当天 events 日期便签，
+        可被文件索引检索，避免静默丢失。
+        """
+        key = scope or "_default"
+        bucket = self._temporary.setdefault(key, [])
+        bucket.append(temporary_clip)
+        if len(bucket) > self.max_temp:
+            overflowed = bucket[:-self.max_temp]
+            self._temporary[key] = bucket[-self.max_temp:]
+            self._promote_overflow(overflowed, key)
+
+    @staticmethod
+    def _promote_overflow(clips: List[Dict], bucket_key: str) -> None:
+        """将溢出的短期记忆条目追加到当天 events 日期便签（尽力而为，失败仅记日志）。"""
+        if not clips:
+            return
+        try:
+            from agent.memory.notes import append_to_memory_file
+            today = time.strftime("%Y-%m-%d")
+            now = time.strftime("%H:%M")
+            lines = [f"\n## 短期记忆溢出（{now}，桶 {bucket_key}）\n"]
+            for clip in clips:
+                content = str(clip.get("content", "")).strip().replace("\n", " ")[:500]
+                if content:
+                    lines.append(f"- {content}")
+            if len(lines) > 1:
+                append_to_memory_file(f"memory/events/{today}.md", "\n".join(lines) + "\n")
+        except Exception as exc:
+            log(f"短期记忆溢出晋升失败: {exc}", "DEBUG", tag="思维")
+
+    def delete_temporary(self, index: int) -> bool:
+        """按全桶展开视图的索引删除一条短期记忆。"""
+        if index < 0:
+            return False
+        offset = index
+        for key in list(self._temporary.keys()):
+            bucket = self._temporary[key]
+            if offset < len(bucket):
+                bucket.pop(offset)
+                if not bucket:
+                    del self._temporary[key]
+                return True
+            offset -= len(bucket)
+        return False
+
+    def delete_temporary_in_scope(self, scope: str, index: int) -> bool:
+        """按 get_temporary(scope) 视图索引删除一条（先 _default 桶后本 scope 桶）。"""
+        if index < 0:
+            return False
+        default_bucket = self._temporary.get("_default", [])
+        if index < len(default_bucket):
+            default_bucket.pop(index)
+            if not default_bucket:
+                self._temporary.pop("_default", None)
+            return True
+        offset = index - len(default_bucket)
+        bucket = self._temporary.get(scope, [])
+        if scope and scope != "_default" and offset < len(bucket):
+            bucket.pop(offset)
+            if not bucket:
+                self._temporary.pop(scope, None)
+            return True
+        return False
+
+    def clear_temporary_in_scope(self, scope: str) -> int:
+        """清空 get_temporary(scope) 视图覆盖的桶（_default 桶 + 本 scope 桶），返回清除条数。"""
+        count = len(self._temporary.pop("_default", []))
+        if scope and scope != "_default":
+            count += len(self._temporary.pop(scope, []))
+        return count
+
+    def clear_temporary(self) -> int:
+        count = sum(len(bucket) for bucket in self._temporary.values())
+        self._temporary.clear()
+        return count
 
     # ==================================================================
-    # WorkMemory 委托
+    # 消息入队 / 画像分析触发
     # ==================================================================
+
+    async def append_notification(
+        self, scope: str, channel: str, prompt: str, *, ts_ns: int | None = None,
+    ) -> bool:
+        """将一次性系统事实追加到目标历史；失败返回 False，交由调用方保留通知。"""
+        router = getattr(self._conversation_data, "router", None)
+        if router is None:
+            return False
+        try:
+            from agent.messages.everything import parse_entity_scope
+            from agent.storage.storage_router import StorageDomain
+            scope_type, _adapter, _base_id, _session_id = parse_entity_scope(scope)
+            if not scope_type:
+                return False
+            scope_id = scope[len(scope_type) + 1:]
+            await router.append(
+                StorageDomain.CONVERSATION,
+                scope_type=scope_type, scope_id=scope_id,
+                role="system", content=prompt, ts_ns=ts_ns if ts_ns is not None else time.time_ns(),
+                adapter_key=channel or "", trigger_mind=False,
+            )
+            return True
+        except Exception as exc:
+            log(f"一次性通知写入历史失败（回退短期记忆兜底）: scope={scope} ({exc})",
+                "WARNING", tag="调度")
+            return False
+
+    async def enqueue_reply(self, scope: str, channel: str, preview: str, prompt: str) -> None:
+        """先写通知历史，再登记待回复队列与水位；失败保留短期记忆，由调用方唤醒。"""
+        from agent.messages import is_conversation_scope
+        if not is_conversation_scope(scope):
+            log(
+                f"拒绝入队不可路由 scope（退化为全局短期记忆）: scope={scope!r} preview={preview[:60]}",
+                "WARNING", tag="调度",
+            )
+            self.add_temporary({"role": "system", "content": prompt})
+            return
+        timestamp = time.time_ns()
+        if not await self.append_notification(scope, channel, prompt, ts_ns=timestamp):
+            self.add_temporary({"role": "system", "content": prompt}, scope=scope)
+        if scope.startswith("group_"):
+            self.pending_group.append(scope)
+        else:
+            self.pending_user.append(scope)
+        self.set_message_preview(scope, preview, created_ts_ns=timestamp, kind="system")
+        if channel:
+            self.set_adapter_key(scope, channel)
 
     async def add_task(self, anything: Everything) -> None:
-        await self.work_memory.add_task(anything)
+        """将消息加入待处理队列，收集附带媒体，触发画像分析检查。"""
+        if anything.scope_type != "group" or bool(getattr(anything, "to_me", False)):
+            self.message_revision += 1
+        scope = anything.entity_scope
+        if anything.images:
+            self._pending_images.setdefault(scope, []).extend(anything.images)
+        if hasattr(anything, "media_segments") and anything.media_segments:
+            self._pending_media.setdefault(scope, []).extend(anything.media_segments)
 
-    def restore_persisted_tasks(self, rows: List[Dict[str, Any]]) -> int:
-        return self.work_memory.restore_persisted_tasks(rows)
+        preview = anything.get_text_content()[:300] if hasattr(anything, "get_text_content") else str(anything)[:300]
+        adapter_key = getattr(anything, "adapter_key", "") or ""
+        message_kind = getattr(anything, "message_kind", "chat") or "chat"
+        previous = self._pending_signals.get(scope)
+        signal = PendingSignal(
+            message_id=anything.adapter_message_id,
+            created_ts_ns=anything.created_ts_ns,
+            preview=preview,
+            adapter_key=adapter_key,
+            to_me=bool(getattr(anything, "to_me", False)),
+            kind="" if message_kind == "chat" else message_kind,
+            first_unread_ts_ns=(previous.first_unread_ts_ns if previous else 0) or anything.created_ts_ns,
+            last_addressed_ts_ns=previous.last_addressed_ts_ns if previous else 0,
+        )
+        if message_kind == "chat" and (anything.scope_type != "group" or signal.to_me):
+            signal.last_addressed_ts_ns = max(signal.last_addressed_ts_ns, anything.created_ts_ns)
+        if previous is not None:
+            signal.first_unread_ts_ns = min(previous.first_unread_ts_ns or anything.created_ts_ns,
+                                          anything.created_ts_ns)
+            if anything.created_ts_ns < previous.created_ts_ns:
+                signal.message_id = previous.message_id
+                signal.created_ts_ns = previous.created_ts_ns
+                signal.preview = previous.preview
+                signal.to_me = previous.to_me
+                signal.kind = previous.kind
+
+        self._unread_counts[scope] = self._unread_counts.get(scope, 0) + 1
+        if isinstance(anything, EverythingGroup) and anything.is_group_scope:
+            self.pending_group.append(scope)
+            self._pending_signals[scope] = signal
+            uid = str(anything.uid) if anything.uid and anything.uid not in (0, "0") else ""
+            name = getattr(anything, "user_name", "") or ""
+            if uid and message_kind == "chat":
+                senders = self._group_recent_senders.setdefault(scope, [])
+                entry = (uid, name)
+                if entry not in senders:
+                    senders.append(entry)
+                if len(senders) > 10:
+                    senders[:] = senders[-10:]
+            if message_kind == "chat":
+                await self._handle_group_message(anything)
+        else:
+            self.pending_user.append(scope)
+            self._pending_signals[scope] = signal
+
+        if message_kind == "chat":
+            await self._handle_user_message(anything)
+        self._scan_message_tags(str(anything))
+
+    def _scan_message_tags(self, content: str) -> None:
+        """按消息标签唤醒工具（显式映射，全部唤醒语义在此声明）。
+
+        [media_type:image] / [media_file:image:路径]  -> tag "media:{类型}" 工具组
+        [channel:qq]                                  -> 该频道专属工具
+        其余元数据标签（time/uid/kind 等）不承载工具路由。
+        """
+        assembly = self.tool_assembly
+        if assembly is None:
+            return
+        for key, value in etag_all(content):
+            if key in ("media_type", "media_file"):
+                # [media_type:image] 的 value 即媒体类型；[media_file:image:path] 取首段
+                media_kind = value.split(":", 1)[0] if value else ""
+                if media_kind:
+                    assembly.activate_by_tag(f"media:{media_kind.lower()}")
+            elif key == "channel" and value:
+                # 工具 tag 恒为小写（EntityRegistry 注册时 lower），频道 id 随配置大小写不定
+                assembly.activate_by_tag(value.lower())
+
+    @staticmethod
+    def _analysis_threshold() -> int:
+        try:
+            from agent.config import get_config_provider
+            return get_config_provider().mind.conversation_analysis_threshold
+        except Exception:
+            return 5
+
+    def _enqueue_analysis(
+        self, group_id: Union[int, str], uid: Union[int, str], adapter_key: str = ""
+    ) -> None:
+        """画像分析任务入队（去重），并双写 pending_tasks 表。"""
+        entry = (group_id, uid, adapter_key)
+        if entry in self.pending_analysis.seen:
+            return
+        self.pending_analysis.append(entry)
+        key = uuid.uuid4().hex
+        self._analysis_task_keys[entry] = key
+        if group_id not in (0, "0", "", None):
+            scope = build_entity_scope("group", adapter_key, str(group_id))
+        else:
+            scope = build_entity_scope("user", adapter_key, str(uid))
+        self._persist_add(scope=scope, kind="analysis", payload={
+            "task_key": key, "group_id": group_id, "uid": uid, "adapter_key": adapter_key,
+        })
 
     def requeue_analysis(
         self, group_id: Union[int, str], uid: Union[int, str], adapter_key: str = ""
     ) -> None:
-        self.work_memory.requeue_analysis(group_id, uid, adapter_key)
+        """分析未能执行时重新入队（去重由 _enqueue_analysis 保证）。"""
+        self._enqueue_analysis(group_id, uid, adapter_key)
+
+    async def _handle_group_message(self, anything: EverythingGroup) -> None:
+        """群组消息达到阈值时加入画像分析队列，分析后重置计数实现周期性增量更新。"""
+        adapter_key = str(getattr(anything, "adapter_key", "") or "")
+        group_entity = await self.everything_data.get_anything(anything.group_id, 0, adapter_key)
+        conv_count = group_entity.add_conversations_num()
+        if conv_count >= self._analysis_threshold():
+            self._enqueue_analysis(group_entity.group_id, group_entity.uid or 0, adapter_key)
+            group_entity.reset_conversations_num()
+
+    async def _handle_user_message(self, anything: Everything) -> None:
+        """用户消息达到阈值时加入画像分析队列；首次出现的用户自动建档。
+
+        达到阈值后重置计数器，实现周期性增量画像更新。
+        """
+        group_id = anything.group_id if isinstance(anything, EverythingGroup) else 0
+        adapter_key = str(getattr(anything, "adapter_key", "") or "")
+        if anything.uid is None:
+            return
+        user_entity = await self.everything_data.get_anything(group_id, anything.uid, adapter_key)
+        conv_count = user_entity.add_conversations_num()
+        has_personality = bool(user_entity.personality.get("personality"))
+
+        if conv_count == 1 and not has_personality:
+            uid_str = str(anything.uid)
+            self.add_general_task(MindTask(
+                task_type=TaskType.PROFILE,
+                scope=user_entity.identity_scope,
+                uid=anything.uid,
+                preview=f"新用户 {uid_str} 首次出现，建立画像",
+            ))
+            self._enqueue_analysis(group_id, user_entity.uid or 0, adapter_key)
+        elif conv_count >= self._analysis_threshold():
+            self._enqueue_analysis(group_id, user_entity.uid or 0, adapter_key)
+            user_entity.reset_conversations_num()
+
+    # ==================================================================
+    # 消息任务消费
+    # ==================================================================
+
+    def _clear_scope_state(self, scope: str) -> None:
+        """清理 scope 消费后的关联状态（信号 / 未读 / 群发送者）。"""
+        self._pending_signals.pop(scope, None)
+        self._unread_counts.pop(scope, None)
+        self._group_recent_senders.pop(scope, None)
 
     async def pop_analysis_task(self) -> Optional[EntityData]:
-        return await self.work_memory.pop_analysis_task()
+        if not self.pending_analysis.is_empty():
+            group_id, uid, adapter_key = self.pending_analysis.popleft()
+            key = self._analysis_task_keys.pop((group_id, uid, adapter_key), "")
+            self._persist_remove(key)
+            return await self.everything_data.get_anything(group_id, uid, adapter_key)
+        return None
+
+    # ==================================================================
+    # 通用任务队列
+    # ==================================================================
 
     def add_general_task(self, task: MindTask) -> None:
-        self.work_memory.add_general_task(task)
+        self._general_tasks.append(task)
+        key = uuid.uuid4().hex
+        self._general_task_keys.append(key)
+        self._persist_add(scope=task.scope or "global", kind="general", payload={
+            "task_key": key,
+            "task_type": task.task_type.value,
+            "scope": task.scope,
+            "preview": task.preview,
+            "adapter_key": task.adapter_key,
+            "uid": task.uid,
+            "group_id": task.group_id,
+            "timestamp": task.timestamp,
+            "metadata": task.metadata,
+        })
 
     def peek_general_tasks(self) -> list[MindTask]:
-        return self.work_memory.peek_general_tasks()
+        return list(self._general_tasks)
 
     def get_pending_message_previews(self) -> Dict[str, Tuple[str, str]]:
-        return self.work_memory.get_pending_message_previews()
+        """待处理消息预览快照：{scope: (preview, adapter_key)}。"""
+        return {
+            scope: (signal.preview, signal.adapter_key)
+            for scope, signal in self._pending_signals.items()
+        }
 
     def consume_general_task(self, index: int) -> bool:
-        return self.work_memory.consume_general_task(index)
+        if 0 <= index < len(self._general_tasks):
+            self._general_tasks.pop(index)
+            key = self._general_task_keys.pop(index) if index < len(self._general_task_keys) else ""
+            self._persist_remove(key)
+            return True
+        return False
 
     def clear_general_tasks(self) -> int:
-        return self.work_memory.clear_general_tasks()
+        count = len(self._general_tasks)
+        self._general_tasks.clear()
+        keys, self._general_task_keys = self._general_task_keys, []
+        for key in keys:
+            self._persist_remove(key)
+        return count
 
     def clear_general_tasks_before(self, snapshot_count: int) -> int:
-        return self.work_memory.clear_general_tasks_before(snapshot_count)
+        """快照式清理：只清快照前已存在的条目，周期内新增保留到下周期。"""
+        if snapshot_count <= 0:
+            return 0
+        removed = min(snapshot_count, len(self._general_tasks))
+        self._general_tasks = self._general_tasks[removed:]
+        keys_to_remove = self._general_task_keys[:removed]
+        self._general_task_keys = self._general_task_keys[removed:]
+        for key in keys_to_remove:
+            self._persist_remove(key)
+        return removed
+
+    # ==================================================================
+    # 态势感知 / 路由
+    # ==================================================================
 
     def peek_all_tasks(self) -> List[Tuple[str, str, str, str]]:
-        return self.work_memory.peek_all_tasks()
+        """查看所有待处理消息任务（不消费）。
+
+        返回 (scope, base_uid, base_group_id, preview) 四元组；
+        base id 从 scope 解析（不含 adapter 前缀与 #session 后缀），私聊项 group_id 为 "0"，反之亦然。
+        """
+        from agent.messages import parse_entity_scope
+
+        result: List[Tuple[str, str, str, str]] = []
+        for scope in self.pending_user.queue:
+            _, _, uid, _ = parse_entity_scope(scope)
+            signal = self._pending_signals.get(scope)
+            result.append((scope, uid, "0", signal.preview if signal else ""))
+        for scope in self.pending_group.queue:
+            _, _, gid, _ = parse_entity_scope(scope)
+            signal = self._pending_signals.get(scope)
+            result.append((scope, "0", gid, signal.preview if signal else ""))
+        return sorted(result, key=lambda item: (
+            self._pending_signals[item[0]].first_unread_ts_ns
+            if item[0] in self._pending_signals else 0
+        ))
 
     def consume_scope_task(self, scope: str, *, through_ts: int | None = None) -> bool:
-        return self.work_memory.consume_scope_task(scope, through_ts=through_ts)
+        """消费指定 scope 的待回复条目（含关联状态清理）。
+
+        两个队列都查（不按前缀路由）：scope 字符串跨队列天然唯一，
+        双查对落在错误队列的条目同样健壮，也让回复路径能就地清除
+        无法解析的毒丸条目（留在队列会让自主循环空转）。
+        """
+        if not scope:
+            return False
+        signal = self._pending_signals.get(scope)
+        if through_ts is not None and signal and signal.created_ts_ns > through_ts:
+            signal.first_unread_ts_ns = max(signal.first_unread_ts_ns, through_ts + 1)
+            return False
+        self._clear_scope_state(scope)
+        removed_user = self._consume_from_queue(self.pending_user, scope)
+        removed_group = self._consume_from_queue(self.pending_group, scope)
+        return removed_user or removed_group
 
     def get_unread_count(self, scope: str) -> int:
-        return self.work_memory.get_unread_count(scope)
+        """指定 scope 的未读消息数（消费后清零）。"""
+        return self._unread_counts.get(scope, 0)
+
+    @staticmethod
+    def _consume_from_queue(queue: UniqueQueue, key: str) -> bool:
+        """从去重队列中消费元素。"""
+        if key in queue.seen:
+            queue.seen.discard(key)
+            try:
+                queue.queue.remove(key)
+            except ValueError:
+                log("_consume_from_queue 异常已忽略", "DEBUG")
+            return True
+        return False
 
     def has_pending_tasks(self) -> bool:
-        return self.work_memory.has_pending_tasks()
+        return (
+                not self.pending_user.is_empty()
+                or not self.pending_group.is_empty()
+                or bool(self._general_tasks)
+        )
 
     def set_adapter_key(self, scope: str, adapter_key: str) -> None:
-        self.work_memory.set_adapter_key(scope, adapter_key)
+        """注册 scope → adapter_key 映射（支撑主动消息路由）。"""
+        if scope and adapter_key:
+            signal = self._pending_signals.get(scope) or PendingSignal()
+            signal.adapter_key = adapter_key
+            self._pending_signals[scope] = signal
 
     def get_adapter_key(self, scope: str) -> str:
-        return self.work_memory.get_adapter_key(scope)
+        signal = self._pending_signals.get(scope)
+        return signal.adapter_key if signal else ""
 
     def get_pending_signal(self, scope: str) -> Optional[PendingSignal]:
-        return self.work_memory.get_pending_signal(scope)
+        """取 scope 的最新消息信号（无登记返回 None）。"""
+        return self._pending_signals.get(scope)
 
     def known_scopes(self) -> set[str]:
-        return self.work_memory.known_scopes()
+        """已知会话 scope 全集（待回复队列 + 消息路由登记）。"""
+        scopes: set[str] = set(self.pending_user.queue)
+        scopes.update(self.pending_group.queue)
+        scopes.update(
+            scope for scope, signal in self._pending_signals.items() if signal.adapter_key
+        )
+        return scopes
 
-    def set_message_preview(self, scope: str, preview: str, *, created_ts_ns: int | None = None) -> None:
-        self.work_memory.set_message_preview(scope, preview, created_ts_ns=created_ts_ns)
+    def set_message_preview(
+        self, scope: str, preview: str, *, created_ts_ns: int | None = None, kind: str = "",
+    ) -> None:
+        """登记待处理预览与到达水位，保留异步写入期间更新的消息。"""
+        if scope:
+            signal = self._pending_signals.get(scope) or PendingSignal()
+            if created_ts_ns is not None:
+                if signal.created_ts_ns > created_ts_ns:
+                    return
+                signal.created_ts_ns = created_ts_ns
+            signal.preview = preview
+            signal.kind = kind
+            if kind:
+                signal.to_me = False
+                signal.message_id = ""
+            self._pending_signals[scope] = signal
 
-    def add_temporary(self, temporary_clip: Dict, scope: str = "") -> None:
-        self.work_memory.add_temporary(temporary_clip, scope)
-
-    def get_temporary(self, scope: str = "") -> list[Dict]:
-        return self.work_memory.get_temporary(scope)
-
-    def delete_temporary(self, index: int) -> bool:
-        return self.work_memory.delete_temporary(index)
-
-    def clear_temporary(self) -> int:
-        return self.work_memory.clear_temporary()
-
-    def delete_temporary_in_scope(self, scope: str, index: int) -> bool:
-        return self.work_memory.delete_temporary_in_scope(scope, index)
-
-    def clear_temporary_in_scope(self, scope: str) -> int:
-        return self.work_memory.clear_temporary_in_scope(scope)
+    # ==================================================================
+    # 媒体收集
+    # ==================================================================
 
     def collect_images(self, scope: str = "") -> List[ImageContent]:
-        return self.work_memory.collect_images(scope)
+        """收集并清空指定 scope 的待处理图片（无 scope 时取默认桶）。"""
+        key = scope or "_default"
+        images = self._pending_images.pop(key, [])
+        return images
 
     def collect_media(self, scope: str = "") -> list:
-        return self.work_memory.collect_media(scope)
-
-    # ==================================================================
-    # ToolAssembly 委托
-    # ==================================================================
-
-    def record_tool_use(self, tool_name: str) -> None:
-        self.tool_assembly.record_tool_use(tool_name)
-
-    def get_hot_tool_names(self) -> list[str]:
-        return self.tool_assembly.get_hot_tool_names()
-
-    def get_hot_tool_schemas(self) -> list[dict]:
-        return self.tool_assembly.get_hot_tool_schemas()
-
-    def get_channel_tool_schemas(self, adapter_key: str) -> list[dict]:
-        return self.tool_assembly.get_channel_tool_schemas(adapter_key)
-
-    def resolve_tag_tool_schemas(self) -> list[dict]:
-        return self.tool_assembly.resolve_tag_tool_schemas()
-
-    def activate_media_tools(self, images: list, media_segments: list) -> None:
-        self.tool_assembly.activate_media_tools(images, media_segments)
-
-    def expand_discovered_tools(self, tool_calls: list, scope: str = "") -> None:
-        self.tool_assembly.expand_discovered_tools(tool_calls, scope)
-
-    def clear_dynamic_tools(self, scope: str = "", *, force: bool = False) -> None:
-        self.tool_assembly.clear_dynamic_tools(scope, force=force)
-
-    async def get_active_tool_schemas(self, adapter_key: str = "", scope: str = "") -> list[dict]:
-        return await self.tool_assembly.get_active_tool_schemas(adapter_key, scope)
-
-    async def get_reflect_tool_schemas(
-        self,
-        adapter_key: str = "",
-        scope: str = "",
-        selectors: Optional[List[str]] = None,
-    ) -> list[dict]:
-        return await self.tool_assembly.get_reflect_tool_schemas(adapter_key, scope, selectors)
-
-    # ==================================================================
-    # 管理与监控接口
-    # ==================================================================
-
-    def get_entity_list(self) -> List[Dict]:
-        result: List[Dict] = []
-        for key, entity in self.everything_data.entities.items():
-            result.append({
-                "key": key,
-                "uid": entity.uid,
-                "group_id": entity.group_id,
-                "personality": entity.personality,
-            })
-        return result
-
-    def get_status_snapshot(self) -> Dict:
-        """返回 PFC 完整状态快照（供 Web 监控）。"""
-        pending_msgs = []
-        for scope, uid, group_id, preview in self.work_memory.peek_all_tasks():
-            adapter_key = self.work_memory.get_adapter_key(scope)
-            pending_msgs.append({
-                "scope": scope, "uid": uid, "group_id": group_id,
-                "preview": preview, "adapter_key": adapter_key,
-            })
-
-        general_tasks = []
-        for t in self.work_memory.peek_general_tasks():
-            general_tasks.append({
-                "type": t.task_type.value, "scope": t.scope, "preview": t.preview,
-            })
-
-        try:
-            from agent.context.prompt_layers import prompt_cache_manager
-            cache_stats = prompt_cache_manager.stats()
-        except Exception:
-            cache_stats = {}
-
-        try:
-            from agent.context.cache_stats import cache_usage_tracker
-            provider_cache = cache_usage_tracker.summary()
-        except Exception:
-            provider_cache = {}
-
-        return {
-            "tool_recall": [
-                {"name": n, "count": c} for n, c in self.tool_assembly.get_tool_recall_sorted()
-            ],
-            "tool_recall_top_n": self.tool_assembly.tool_recall_top_n,
-            "tag_activated_tools": sorted(self.tool_assembly.tag_activated_tools),
-            "discovered_tools": sorted(self.tool_assembly.discovered_tools),
-            "pending_messages": pending_msgs,
-            "general_tasks": general_tasks,
-            "pending_analysis_count": len(self.work_memory.pending_analysis),
-            "short_term_memory_count": len(self.work_memory.temporary),
-            "short_term_memory_max": self.work_memory.max_temp,
-            "prompt_cache": cache_stats,
-            "provider_cache": provider_cache,
-        }
+        """收集并清空指定 scope 的待处理媒体片段（无 scope 时取默认桶）。"""
+        key = scope or "_default"
+        media = self._pending_media.pop(key, [])
+        return media

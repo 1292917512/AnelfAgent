@@ -13,11 +13,11 @@ from __future__ import annotations
 
 import functools
 import inspect
-import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional, Tuple, TypeVar
+from typing import Any, Callable, Dict, Tuple, TypeVar
 
 from core.log import log
+from core.observation import ExecutionObservation
 from core.tool_results import extract_error_text
 
 from ._sdk import get_current_scope
@@ -81,7 +81,7 @@ def track_ops(
             sig = None
 
         def _report(args: tuple, kwargs: dict, result: Any,
-                    exc: Optional[BaseException], started: float) -> None:
+                    observation: ExecutionObservation) -> None:
             try:
                 arguments: Dict[str, Any] = {}
                 if sig is not None:
@@ -93,6 +93,7 @@ def track_ops(
                 target = " → ".join(targets)
                 if len(target) > 100:
                     target = target[:97] + "..."
+                exc = observation.error
                 if exc is not None:
                     ok, note = False, f"{type(exc).__name__}: {exc}"[:120]
                 else:
@@ -100,7 +101,7 @@ def track_ops(
                 sink(ToolOp(
                     scope=get_current_scope(), tool=tool_name, target=target,
                     targets=targets, arguments=arguments, ok=ok, note=note,
-                    duration_ms=int((time.monotonic() - started) * 1000),
+                    duration_ms=int(observation.elapsed_ms),
                 ))
             except Exception as report_exc:
                 log(f"操作态势回报失败（已忽略）: {tool_name} - {report_exc}",
@@ -109,27 +110,27 @@ def track_ops(
         if inspect.iscoroutinefunction(func):
             @functools.wraps(func)
             async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-                started = time.monotonic()
+                observation = ExecutionObservation()
+                result = None
                 try:
-                    result = await func(*args, **kwargs)
-                except BaseException as exc:
-                    _report(args, kwargs, None, exc, started)
-                    raise
-                _report(args, kwargs, result, None, started)
-                return result
+                    with observation:
+                        result = await func(*args, **kwargs)
+                    return result
+                finally:
+                    _report(args, kwargs, result, observation)
 
             return async_wrapper  # type: ignore[return-value]
 
         @functools.wraps(func)
         def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
-            started = time.monotonic()
+            observation = ExecutionObservation()
+            result = None
             try:
-                result = func(*args, **kwargs)
-            except BaseException as exc:
-                _report(args, kwargs, None, exc, started)
-                raise
-            _report(args, kwargs, result, None, started)
-            return result
+                with observation:
+                    result = func(*args, **kwargs)
+                return result
+            finally:
+                _report(args, kwargs, result, observation)
 
         return sync_wrapper  # type: ignore[return-value]
 

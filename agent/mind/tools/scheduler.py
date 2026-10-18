@@ -19,7 +19,7 @@ import time
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from core.async_helper import spawn
 from core.log import log
@@ -28,6 +28,9 @@ from core.tool_errors import ErrorCause, tool_error
 from core.tool_registry import deferred_tool
 
 from .ports import mind_port
+
+if TYPE_CHECKING:
+    from agent.mind.prefrontal_cortex import PrefrontalCortex
 
 _MAX_DELAY = 600
 
@@ -62,11 +65,11 @@ def _invalid_scope(scope: str) -> str:
     )
 
 
-def _channel_for_scope(scope: str, pfc: Any) -> str:
+def _channel_for_scope(scope: str, pfc: PrefrontalCortex) -> str:
     """scope 的投递频道：PFC 登记表优先（活跃会话可能携带更精确路由），
     无登记时从 scope 的 adapter 段派生——显式指定目标的提醒在触发时
     无活跃会话可查，投递路由必须自足。"""
-    registered = getattr(pfc, "get_adapter_key", lambda s: "")(scope)
+    registered = pfc.get_adapter_key(scope)
     if registered:
         return registered
     from agent.messages.everything import parse_entity_scope
@@ -74,7 +77,7 @@ def _channel_for_scope(scope: str, pfc: Any) -> str:
     return adapter
 
 
-def _resolve_target(explicit: str, pfc: Any) -> tuple[str, str]:
+def _resolve_target(explicit: str) -> tuple[str, str]:
     """解析回复目标，两个工具共用的统一入口。
 
     显式 scope 优先（PARAM 错误拒绝非法值，不静默回退）；缺省走上下文
@@ -120,7 +123,7 @@ async def schedule_reply(
 
     delay = max(1, min(delay_seconds, _MAX_DELAY))
 
-    target, err = _resolve_target(scope, mind.pfc)
+    target, err = _resolve_target(scope)
     if err:
         return err
 
@@ -149,7 +152,7 @@ async def _delayed_reply(delay: int, channel: str, scope: str, reason: str) -> N
         prompt += f"，原因：{reason}"
     prompt += "。请决定下一步操作。"
 
-    await _enqueue_reply(scope, channel, f"定时回复: {reason or '延迟触发'}", prompt)
+    await mind_port.get().pfc.enqueue_reply(scope, channel, f"定时回复: {reason or '延迟触发'}", prompt)
     log(f"延迟 {delay}s 到期，触发回复: scope={scope}", tag="调度")
     spawn(mind_port.get().try_execute_mind(), name="mind.wake")
 
@@ -253,78 +256,6 @@ async def remove_scope_reminders(scopes: set[str]) -> int:
     return removed
 
 
-async def _append_one_shot_history(
-        pfc: Any, scope: str, channel: str, prompt: str, *, ts_ns: int | None = None) -> bool:
-    """一次性事件通知写入目标会话的对话历史（system 角色，不触发思维）。
-
-    一次性事实（任务完成/推送/提醒到期）的正确归宿是历史而非短期记忆：
-    历史随窗口自然滚动、追加在尾部前缀稳定（volatile 层零扰动）；短期
-    记忆是持续提醒区，一次性通知驻留会每轮重复催促已处理完的事项，且
-    每条新通知都重写会话层前缀、反复打断 prompt cache。
-    写入失败返回 False（调用方落短期记忆兜底，信息不丢）。
-    """
-    conversation_data = getattr(pfc, "conversation_data", None)
-    router = getattr(conversation_data, "router", None)
-    if router is None:
-        return False
-    try:
-        from agent.messages.everything import parse_entity_scope
-        from agent.storage.storage_router import StorageDomain
-        scope_type, _adapter, _base_id, _session_id = parse_entity_scope(scope)
-        if not scope_type:
-            return False
-        scope_id = scope[len(scope_type) + 1:]
-        await router.append(
-            StorageDomain.CONVERSATION,
-            scope_type=scope_type, scope_id=scope_id,
-            role="system", content=prompt, ts_ns=ts_ns if ts_ns is not None else time.time_ns(),
-            adapter_key=channel or "", trigger_mind=False,
-        )
-        return True
-    except Exception as exc:
-        log(f"一次性通知写入历史失败（回退短期记忆兜底）: scope={scope} ({exc})",
-            "WARNING", tag="调度")
-        return False
-
-
-async def enqueue_scope_reply(
-    pfc: Any, scope: str, channel: str, preview: str, prompt: str) -> None:
-    """一次性事件通知的统一入口（"完成即新 turn"）。
-
-    通知写入目标 scope 的对话历史（见 _append_one_shot_history），scope 入
-    待处理队列、预览与路由登记，由调用方触发 try_execute_mind。await 返回
-    即历史已落库——随后的回复周期拉取历史必含本条，无竞态。历史写入失败
-    时回退短期记忆兜底（信息不丢，退化为旧语义）。
-
-    无法解析或缺少频道前缀的 scope（非 user_/group_ 会话）拒绝入待处理
-    队列——回复路径消费不掉它，会让自主循环以 0 退避无限空转；退化为
-    全局短期记忆桶（对齐 PushHub 全局兜底），任何下一周期可见。
-    """
-    from agent.messages import is_conversation_scope
-    if not is_conversation_scope(scope):
-        log(
-            f"拒绝入队不可路由 scope（退化为全局短期记忆）: scope={scope!r} preview={preview[:60]}",
-            "WARNING", tag="调度",
-        )
-        pfc.add_temporary({"role": "system", "content": prompt})
-        return
-    timestamp = time.time_ns()
-    if not await _append_one_shot_history(pfc, scope, channel, prompt, ts_ns=timestamp):
-        pfc.add_temporary({"role": "system", "content": prompt}, scope=scope)
-    if scope.startswith("group_"):
-        pfc.pending_group.append(scope)
-    else:
-        pfc.pending_user.append(scope)
-    pfc.set_message_preview(scope, preview, created_ts_ns=timestamp)
-    if channel:
-        pfc.set_adapter_key(scope, channel)
-
-
-async def _enqueue_reply(scope: str, channel: str, preview: str, prompt: str) -> None:
-    """基于 mind 端口的 enqueue_scope_reply 便捷封装。"""
-    await enqueue_scope_reply(mind_port.get().pfc, scope, channel, preview, prompt)
-
-
 def _parse_run_at(run_at: str) -> Optional[float]:
     """解析绝对时间字符串为时间戳，支持多种常见格式，无法解析返回 None。"""
     text = run_at.strip()
@@ -390,7 +321,7 @@ async def schedule_reminder(
     if run_at_ts <= time.time():
         return tool_error("触发时间必须晚于当前时间", cause=ErrorCause.PARAM, retryable=False)
 
-    target, err = _resolve_target(scope, mind.pfc)
+    target, err = _resolve_target(scope)
     if err:
         return err
 
@@ -468,7 +399,9 @@ async def check_due_reminders() -> int:
             f"[定时提醒] 你之前设定的定时提醒到期：{r.get('note', '')}"
             "。请执行提醒内容并告知用户（如需最新信息请先搜索）。"
         )
-        await _enqueue_reply(scope, r.get("channel", ""), f"定时提醒: {r.get('note', '')[:80]}", prompt)
+        await mind_port.get().pfc.enqueue_reply(
+            scope, r.get("channel", ""), f"定时提醒: {r.get('note', '')[:80]}", prompt,
+        )
         log(f"定时提醒到期触发: id={r.get('id')} scope={scope} note={r.get('note', '')[:50]}", tag="调度")
 
     spawn(mind_port.get().try_execute_mind(), name="mind.wake")

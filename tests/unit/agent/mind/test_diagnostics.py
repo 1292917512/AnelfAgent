@@ -133,7 +133,7 @@ async def test_message_query_is_read_only_memory_and_ai_uses_same_contract(diagn
         assert [row["role"] for row in excerpts["messages"]] == ["user", "assistant"]
         assert "private value" not in json.dumps(result)
         assert recent_diagnostics(sqlite, scope="user_webui:me#b", store=diagnostics)["conversations"][0] == {"scope": "user_webui:me#b", "loaded": False, "messages": []}
-        from agent.mind.tool_activation import bind_scope, reset_scope
+        from core.conversation_scope import bind_scope, reset_scope
         token = bind_scope("user_webui:me#a")
         monkeypatch.setattr(session_tools, "mind_port", SimpleNamespace(bound=True, get=lambda: SimpleNamespace(conversation_data=SimpleNamespace(router=SimpleNamespace(sqlite=sqlite)))))
         try:

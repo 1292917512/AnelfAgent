@@ -48,23 +48,22 @@ def _llm_end_transcript_hook_registered() -> bool:
 
 
 class ModelRuntime(Protocol):
-    """模型调用所需的实时配置、客户端与会话选项。"""
+    """模型调用所需的实时配置与客户端。"""
 
     config: MindConfig
     llm: ChatModel
     llm_manager: LLMManager | None
-    session_llm_params: dict
 
 
-def _merge_llm_options(runtime: ModelRuntime, options: Optional[dict]) -> dict:
+def _merge_llm_options(session_params: dict, options: Optional[dict]) -> dict:
     """合并 LLM 调用选项：调用方 options + 会话级参数覆盖。
 
     思考等级不做全局兜底——是否思考由选用的模型自己决定（模型配置的
     reasoning_effort / thinking 契约），对话层不统一注入档位。
     """
     merged_options = dict(options or {})
-    if runtime.session_llm_params:
-        merged_options.update(runtime.session_llm_params)
+    if session_params:
+        merged_options.update(session_params)
     return merged_options
 
 
@@ -101,6 +100,7 @@ class ModelInvoker:
 
     def __init__(self, runtime: ModelRuntime) -> None:
         self._runtime = runtime
+        self.session_params: dict[str, Any] = {}
 
     def get_context_length(self) -> int:
         """获取当前模型窗口：模型元数据优先，配置兜底，0 表示未知。"""
@@ -388,7 +388,7 @@ class ModelInvoker:
     ) -> ChatResult:
         runtime = self._runtime
         mc = runtime.config
-        merged_options = _merge_llm_options(runtime, options)
+        merged_options = _merge_llm_options(self.session_params, options)
 
         model_override_id = merged_options.pop("_model_id", None)
         final_options = merged_options or None
@@ -450,7 +450,7 @@ class ModelInvoker:
         if not isinstance(runtime.llm, LLMClient):
             raise RuntimeError("当前 LLM 客户端不支持流式调用")
         mc = runtime.config
-        merged_options = _merge_llm_options(runtime, options)
+        merged_options = _merge_llm_options(self.session_params, options)
         merged_options.pop("_model_id", None)
         final_options = merged_options or None
 

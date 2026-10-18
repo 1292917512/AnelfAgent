@@ -29,7 +29,7 @@ async def workflow_client(tmp_path, monkeypatch):
     monkeypatch.setattr(ConfigPaths, "DELEGATION_DIR", str(tmp_path / "delegations"))
     manager = SimpleNamespace(delegate=AsyncMock(return_value=SubAgentResult(
         goal="work", success=True, output="result")))
-    engine = WorkflowEngine(SimpleNamespace(delegation_manager=manager))
+    engine = WorkflowEngine(None, manager)
     monkeypatch.setattr("services.workflow.get_runtime", lambda: SimpleNamespace(workflow_engine=engine))
     monkeypatch.setattr(workflow_engine_port, "_box", [engine])
     app = FastAPI()

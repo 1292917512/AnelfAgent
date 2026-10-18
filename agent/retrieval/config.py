@@ -4,6 +4,7 @@
 - retrieval_active：能力 × 固定提供者选择（JSON 字典，缺省 auto 自动选择）
 - retrieval_disabled_providers：停用的提供者（JSON 数组）
 - retrieval_bigmodel_api_key：智谱 BigModel 凭据（password 类型，掩码展示）
+- retrieval_deepseek_api_key：DeepSeek Search/Fetch 凭据（password 类型，掩码展示）
 - retrieval_ssrf_protection：SSRF 防护开关
 """
 
@@ -69,4 +70,5 @@ def full_config() -> Dict[str, Any]:
         "disabled_providers": ConfigManager.get("retrieval_disabled_providers", []),
         "ssrf_protection": bool(ConfigManager.get("retrieval_ssrf_protection", True)),
         "bigmodel_key_configured": bool(get_provider_key("bigmodel")),
+        "deepseek_key_configured": bool(get_provider_key("deepseek")),
     }

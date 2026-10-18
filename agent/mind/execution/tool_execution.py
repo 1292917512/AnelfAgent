@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from typing import TYPE_CHECKING, AbstractSet, Any, Dict, List, Optional, Set
 
 from agent.context.message_schema import preserve_reasoning_fields
@@ -13,7 +12,8 @@ from agent.mind.execution.permission import check_tool_permission
 from agent.mind.execution.responses import _strip_think_blocks
 from agent.mind.execution.result_pipeline import ToolResultPipeline
 from agent.mind.execution.vision import _append_multimodal_result
-from agent.mind.mind_tools import END_REPLY_TOOL_NAME
+from agent.mind.tools.core import END_REPLY_TOOL_NAME
+from core.entity import EntityRegistry
 from core.event_bus import (
     EVENT_THINKING_TOOL_END,
     EVENT_THINKING_TOOL_START,
@@ -21,7 +21,9 @@ from core.event_bus import (
     event_bus,
 )
 from core.log import log
+from core.observation import ExecutionObservation
 from core.tool_errors import error_from_exception
+from core.tool_results import extract_error_text
 
 if TYPE_CHECKING:
     from agent.llm import ChatResult, ToolCall
@@ -40,8 +42,6 @@ def _partition_tool_calls(tool_calls: List["ToolCall"]) -> List[tuple]:
     连续的并发安全调用组成并行批次，其余各自串行。
     安全判定 fail-closed：查询失败一律视为不安全。
     """
-    from core.entity import EntityRegistry
-
     def _is_safe(tc: "ToolCall") -> bool:
         try:
             entity = EntityRegistry.get(tc.name)
@@ -279,7 +279,7 @@ async def execute_tool_calls(
     journal 非空时逐调用落账（REPLY 模式的崩溃尾部账本，见 reply_journal）。
     """
     if pipeline is None:
-        pipeline = ToolResultPipeline(mind, guardrail)
+        pipeline = ToolResultPipeline(mind.model_invoker.get_context_length(), guardrail)
     pipeline.begin_turn()
 
     # 配对铁律：assistant 与其全部 tool 响应必须原子落链
@@ -490,15 +490,13 @@ async def execute_one_tool(
     from core.log import current_log_actor
     from core.tool_context import request_trace
 
-    mind._set_phase(MindPhase.TOOL_EXECUTING)
+    mind.set_phase(MindPhase.TOOL_EXECUTING)
     tool_scope = getattr(anything, "entity_scope", "") if anything is not None else ""
+    identity = {"actor": current_log_actor(), "request": request_trace(),
+                "scope": tool_scope, "tool_name": tc.name, "tool_id": tc.id}
     await event_bus.emit(EVENT_TOOL_EXECUTED, {"tool": tc.name, "iteration": iteration})
     await event_bus.emit(EVENT_THINKING_TOOL_START, {
-        "actor": current_log_actor(),
-        "request": request_trace(),
-        "scope": tool_scope,
-        "tool_name": tc.name,
-        "tool_id": tc.id,
+        **identity,
         "arguments_preview": tc.arguments[:300] if tc.arguments else "",
         "arguments": (tc.arguments or "")[:ACTIVITY_TEXT_LIMIT],
         "arguments_truncated": len(tc.arguments or "") > ACTIVITY_TEXT_LIMIT,
@@ -506,69 +504,58 @@ async def execute_one_tool(
     })
     log(f"执行工具: {tc.name}", tag="思维")
 
-    t0 = time.time()
+    observation = ExecutionObservation()
+    result = ""
+    denied = None
+    permission_checked = False
+    result_error = ""
     try:
-        denied = await check_tool_permission(tc, anything, tool_scope, mind)
-        result = denied if denied is not None else await mind.tool_executor(tc)  # type: ignore[misc]
-        from core.tool_results import extract_error_text
-        result_error = extract_error_text(result)
-        elapsed_ms = (time.time() - t0) * 1000
-        await event_bus.emit(EVENT_THINKING_TOOL_END, {
-            "actor": current_log_actor(),
-            "request": request_trace(),
-            "scope": tool_scope,
-            "tool_name": tc.name,
-            "tool_id": tc.id,
-            "duration_ms": round(elapsed_ms),
-            "result_preview": result[:300] if result else "",
-            "result": (result or "")[:ACTIVITY_TEXT_LIMIT],
-            "result_truncated": len(result or "") > ACTIVITY_TEXT_LIMIT,
-            "error": result_error,
-            "success": not bool(result_error),
-        })
-        if denied is not None:
-            return denied
-        # 用户 hook（tool_post）：fire 型事件，阻塞语义对工具结果无意义，
-        # 只投递预览（记录/通知类脚本的挂点）。空配置零开销短路
-        from agent.hooks import hooks_active, run_event_hooks
-        if hooks_active("tool_post"):
-            try:
-                await run_event_hooks(
-                    "tool_post", tool_name=tc.name,
-                    arguments=(tc.arguments or "")[:500],
-                    scope=tool_scope,
-                    result_preview=result[:400] if isinstance(result, str) else "",
-                )
-            except Exception:
-                pass  # hook 失败不影响已产出的工具结果
-        _record_tool_result_failure(mind, tc, result)
-        return result
+        with observation:
+            denied = await check_tool_permission(tc, anything, tool_scope, mind)
+            permission_checked = True
+            result = denied if denied is not None else await EntityRegistry.execute_tool_call(tc)
+            result_error = extract_error_text(result)
     except Exception as exc:
-        elapsed_ms = (time.time() - t0) * 1000
-        failure = error_from_exception(exc, action=f"工具 {tc.name} 执行")
-        await event_bus.emit(EVENT_THINKING_TOOL_END, {
-            "actor": current_log_actor(),
-            "request": request_trace(),
-            "scope": tool_scope,
-            "tool_name": tc.name,
-            "tool_id": tc.id,
-            "duration_ms": round(elapsed_ms),
-            "error": str(exc),
-            "result": failure,
-            "success": False,
+        result = error_from_exception(exc, action=f"工具 {tc.name} 执行")
+    finally:
+        error = observation.error
+        details = ({"error": str(error), "result": result, "success": False} if error is not None else {
+            "result_preview": result[:300] if result else "", "result": (result or "")[:ACTIVITY_TEXT_LIMIT],
+            "result_truncated": len(result or "") > ACTIVITY_TEXT_LIMIT,
+            "error": result_error, "success": not bool(result_error),
         })
-        log(f"工具 {tc.name} 执行失败: {exc}", "WARNING", tag="思维")
+        if observation.cancelled:
+            details.update(cancelled=True, error=("工具调用已取消，执行结果未确认" if permission_checked
+                                                  else "权限评审已取消，工具未执行"))
+        await event_bus.emit(EVENT_THINKING_TOOL_END, {
+            **identity, "duration_ms": round(observation.elapsed_ms), **details,
+        })
+
+    if observation.error is not None:
+        failure = observation.error
+        log(f"工具 {tc.name} 执行失败: {failure}", "WARNING", tag="思维")
         if mind.memory_store:
             try:
                 await mind.memory_store.record_tool_error(
                     tool_name=tc.name,
-                    error_type=type(exc).__name__,
-                    error_msg=str(exc),
+                    error_type=type(failure).__name__,
+                    error_msg=str(failure),
                     args_json=(tc.arguments or "")[:500],
                 )
             except Exception:
                 pass
-        return failure
+    elif denied is None:
+        from agent.hooks import hooks_active, run_event_hooks
+        if hooks_active("tool_post"):
+            try:
+                await run_event_hooks(
+                    "tool_post", tool_name=tc.name, arguments=(tc.arguments or "")[:500],
+                    scope=tool_scope, result_preview=result[:400] if isinstance(result, str) else "",
+                )
+            except Exception:
+                pass  # hook 失败不影响已产出的工具结果
+        _record_tool_result_failure(mind, tc, result)
+    return result
 
 
 def log_tool_round(iteration: int, tool_calls: List[ToolCall]) -> None:

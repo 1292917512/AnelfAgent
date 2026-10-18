@@ -34,7 +34,7 @@ def _fake_mind(*, last_reflect_ts: float, has_idle: bool = True) -> tuple[Any, L
             run_task=AsyncMock(return_value="反思产出"),
         ),
         _reflecting=False,
-        _set_phase=lambda phase: None,
+        set_phase=lambda phase: None,
         pfc=SimpleNamespace(has_pending_tasks=lambda: False),
     ), pending
 

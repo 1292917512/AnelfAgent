@@ -41,7 +41,7 @@ tick() 单次心跳：
   tick 收尾按任务名现取条目复位计数；无调度任务的失败/放弃台账随 `_prune_stale_runtime_state`
   对账清理。任务文件消失的孤儿调度、执行历史与交接文件随引擎构造与 reload 对账清理
   （`_prune_orphan_schedules` / `_prune_orphan_task_artifacts`；目录不可枚举的异常态跳过对账防误清）
-- **心跳忙碌延后**（`assistant._heartbeat_loop`）：`is_reply / is_reflecting / _heartbeat_running`
+- **心跳忙碌延后**（`assistant._heartbeat_loop`）：`is_reply / is_reflecting / heartbeat_engine.background_tick_running`
   任一为真时不整轮跳过，按 `heartbeat_busy_defer_seconds`（默认 60s，热读取）短间隔轮询，空闲后
   立即补跑；被延后的 tick 不递增任何计数器
 - **同任务排队去重**：引擎 `_task_inflight` 集合（asyncio 单线程 check-then-set 无竞态）——

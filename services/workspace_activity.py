@@ -405,7 +405,8 @@ class WorkspaceActivityService:
             if entry is None:
                 return
         result = sanitize_text(str(payload.get("result") or payload.get("result_preview") or payload.get("error") or ""))
-        entry.update(status="done" if payload.get("success") else "error", result=result[:MAX_TEXT],
+        status = "interrupted" if payload.get("cancelled") else "done" if payload.get("success") else "error"
+        entry.update(status=status, result=result[:MAX_TEXT],
                      truncated=entry.get("truncated", False) or bool(payload.get("result_truncated")) or len(result) > MAX_TEXT,
                      duration_ms=payload.get("duration_ms", 0))
         record_skill_read(run, entry)

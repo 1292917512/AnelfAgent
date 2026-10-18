@@ -3,7 +3,7 @@
 无需 API key、不触网络：脚本化的 LLM 轮次队列即"录制"，测试驱动真实
 think_loop 回放并断言三件套——
   1. sent_messages 布局（_layer 序列 / 消息数 / 角色序列）
-  2. 工具调用序列（名称 + 顺序，经 fake tool_executor 捕获）
+  2. 工具调用序列（名称 + 顺序，经注册表执行替身捕获）
   3. 出站行为（发送管道监测：end_reply 静默收束不投递）
 
 任何改动 think_loop / 上下文组装 / 出站路由的 PR，若改变了模型可见行为，
@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import pytest
 from helpers.think_loop_fakes import (
+    FakeContext,
     FakeMind,
-    FakePfc,
     run_think_loop,
     text_result,
     tool_result,
@@ -28,7 +28,7 @@ class _ReplayMind(FakeMind):
     """脚本化 Mind 替身：按 _rounds 队列逐轮响应（轮次耗尽即失败）。"""
 
     def __init__(self, rounds: list) -> None:
-        super().__init__(rounds=rounds, default_text=None, pfc=FakePfc(exec_layer=True))
+        super().__init__(rounds=rounds, default_text=None, context=FakeContext(exec_layer=True))
 
 
 @pytest.fixture

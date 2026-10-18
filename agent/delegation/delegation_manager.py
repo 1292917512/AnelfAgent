@@ -123,7 +123,7 @@ def _usage_bucket() -> Dict[str, int]:
 
 
 def _adapter_key_of(mind: Any, scope: str) -> str:
-    """scope 的回复路由 adapter（ledger 记录；pfc 未就绪时容错空串）。"""
+    """scope 的回复路由 adapter（ledger 记录；PFC 未就绪时返回空串）。"""
     try:
         return str(mind.pfc.get_adapter_key(scope) or "")
     except Exception:
@@ -184,8 +184,9 @@ class DelegationManager:
         async def _on_tool_end(payload: Dict[str, Any]) -> None:
             tool = str(payload.get("tool_name", ""))
             success = bool(payload.get("success"))
-            await self._emit_progress("tool_end", tool=tool, success=success)
-            self._journal_progress(f"工具 {tool} {'完成' if success else '失败'}")
+            cancelled = bool(payload.get("cancelled"))
+            await self._emit_progress("tool_end", tool=tool, success=success, cancelled=cancelled)
+            self._journal_progress(f"工具 {tool} {'已取消' if cancelled else '完成' if success else '失败'}")
 
         async def _on_llm_end(payload: Dict[str, Any]) -> None:
             self._record_usage(payload)
@@ -477,7 +478,7 @@ class DelegationManager:
         （工具层已前置拦截未知名称，此处降级是直连调用方的防御路径）；
         未标注/非法/未配置时返回 ""（用默认模型）。
         """
-        mgr = getattr(self._mind, "llm_manager", None)
+        mgr = self._mind.models.llm_manager
         if mgr is None:
             return ""
         try:
@@ -500,7 +501,7 @@ class DelegationManager:
         """
         if not agent_name:
             return None
-        mgr = getattr(self._mind, "llm_manager", None)
+        mgr = self._mind.models.llm_manager
         if mgr is None:
             return None
         try:
@@ -1130,18 +1131,14 @@ class DelegationManager:
             if claimed:
                 # 轮内会合：等待者本轮已收到完成注入（ephemeral），完整详情
                 # 固化到对话历史供后续轮次回溯（一次性事实，不驻留短期记忆）
-                from agent.mind.tools.scheduler import _append_one_shot_history
-                if not await _append_one_shot_history(
-                        self._mind.pfc, scope,
-                        self._mind.pfc.get_adapter_key(scope), note):
+                if not await self._mind.pfc.append_notification(
+                        scope, self._mind.pfc.get_adapter_key(scope), note):
                     self._mind.pfc.add_temporary({"role": "user", "content": note}, scope=scope)
             elif registry is None:
                 # 无注册表（极端降级路径）：自行写历史 + 入队 + 触发新 REPLY；
                 # 非 conversation scope 无处写历史，全局短期记忆桶兜底
                 if scope.startswith(("user_", "group_")):
-                    from agent.mind.tools.scheduler import enqueue_scope_reply
-                    await enqueue_scope_reply(
-                        self._mind.pfc,
+                    await self._mind.pfc.enqueue_reply(
                         scope,
                         self._mind.pfc.get_adapter_key(scope),
                         f"后台委托完成: {goal[:60]}",

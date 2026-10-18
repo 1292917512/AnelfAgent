@@ -20,6 +20,7 @@ from agent.context.assembly import ContextAssembly
 from agent.messages import parse_entity_scope
 from agent.messages.presets import MessageAssistant, MessageGroupUser, MessageUser
 from agent.mind.prefrontal_cortex import PrefrontalCortex
+from agent.mind.tool_assembly import ToolAssembly
 from agent.mind.tools.ports import mind_port
 
 # ==================================================================
@@ -225,7 +226,7 @@ class TestSessionNotification:
             adapter_key="webui",
         ))
         current = MessageUser(uid="web_user", session_id="cur", text_content="hi")
-        ctx = ContextAssembly(pfc.work_memory, pfc.tool_assembly).build_execution_context(
+        ctx = ContextAssembly(pfc, ToolAssembly()).build_execution_context(
             [], time.time(), 0, anything=current, adapter_key="webui",
         )
         content = ctx["content"]
@@ -241,7 +242,7 @@ class TestSessionNotification:
 
     def test_no_pending_hint(self) -> None:
         pfc = _pfc()
-        ctx = ContextAssembly(pfc.work_memory, pfc.tool_assembly).build_execution_context([], time.time(), 0, anything=None)
+        ctx = ContextAssembly(pfc, ToolAssembly()).build_execution_context([], time.time(), 0, anything=None)
         assert "内部思考（无频道、无默认收件人）" in ctx["content"]
 
 
@@ -261,7 +262,6 @@ class TestSwitchSession:
         mind = SimpleNamespace(
             pfc=pfc,
             _active_scopes=set(),
-            _channel_snapshots={},
             try_execute_mind=AsyncMock(),
         )
         mind_port.set(mind)  # type: ignore[arg-type]
@@ -282,7 +282,6 @@ class TestSwitchSession:
         mind = SimpleNamespace(
             pfc=pfc,
             _active_scopes=set(),
-            _channel_snapshots={},
             try_execute_mind=AsyncMock(),
         )
         mind_port.set(mind)  # type: ignore[arg-type]
@@ -301,7 +300,7 @@ class TestSwitchSession:
             uid="web_user", session_id="tab1", text_content="未读消息",
             adapter_key="webui",
         ))
-        mind = SimpleNamespace(pfc=pfc, _active_scopes=set(), _channel_snapshots={})
+        mind = SimpleNamespace(pfc=pfc, _active_scopes=set())
         mind_port.set(mind)  # type: ignore[arg-type]
         try:
             result = json.loads(await session_tools.list_sessions())

@@ -1,4 +1,4 @@
-"""崩溃尾部修复（agent.mind.crash_recovery）单元测试。
+"""崩溃尾部修复（agent.mind.execution.recovery）单元测试。
 
 覆盖：检查点表的写/清/加载、崩溃残留扫描注入中断元消息、非法 scope 处理、
 注入失败保留行（at-least-once）、崩溃上下文随元消息注入。
@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.mind.crash_recovery import (
+from agent.mind.execution.recovery import (
     INTERRUPTED_NOTICE,
     build_interrupted_notice,
     collect_crash_context,
@@ -30,10 +30,6 @@ async def conv_data(tmp_path):
     await data.router.sqlite._ensure_init()
     yield data
     await sqlite.close()
-
-
-def _mind(conv_data) -> SimpleNamespace:
-    return SimpleNamespace(conversation_data=conv_data)
 
 
 class TestReplyCheckpoints:
@@ -65,7 +61,7 @@ class TestRecoverInterrupted:
     async def test_injects_notice_and_clears(self, conv_data) -> None:
         sqlite = conv_data.router.sqlite
         await sqlite.record_reply_checkpoint("user_qq:123", adapter_key="qq")
-        recovered = await recover_interrupted_replies(_mind(conv_data))
+        recovered = await recover_interrupted_replies(conv_data.router)
         assert recovered == 1
         # 检查点已清除
         assert await sqlite.load_reply_checkpoints() == []
@@ -76,7 +72,7 @@ class TestRecoverInterrupted:
     async def test_group_scope_injects(self, conv_data) -> None:
         sqlite = conv_data.router.sqlite
         await sqlite.record_reply_checkpoint("group_feishu:456", adapter_key="feishu")
-        recovered = await recover_interrupted_replies(_mind(conv_data))
+        recovered = await recover_interrupted_replies(conv_data.router)
         assert recovered == 1
         msgs = await sqlite.fetch_conversation(scope_type="group", scope_id="feishu:456", limit=10)
         assert any(m["content"] == INTERRUPTED_NOTICE for m in msgs)
@@ -85,18 +81,18 @@ class TestRecoverInterrupted:
         sqlite = conv_data.router.sqlite
         # 非法 scope（非 user/group 前缀）：直接清除，不注入
         await sqlite.record_reply_checkpoint("bogus_scope_x")
-        recovered = await recover_interrupted_replies(_mind(conv_data))
+        recovered = await recover_interrupted_replies(conv_data.router)
         assert recovered == 0
         assert await sqlite.load_reply_checkpoints() == []
 
     async def test_no_checkpoints_noop(self, conv_data) -> None:
-        assert await recover_interrupted_replies(_mind(conv_data)) == 0
+        assert await recover_interrupted_replies(conv_data.router) == 0
 
     async def test_injected_notice_does_not_trigger_mind(self, conv_data) -> None:
         """中断元消息 trigger_mind=False，不触发新一轮思考（直接查库验证）。"""
         sqlite = conv_data.router.sqlite
         await sqlite.record_reply_checkpoint("user_qq:123")
-        await recover_interrupted_replies(_mind(conv_data))
+        await recover_interrupted_replies(conv_data.router)
         db = await sqlite._get_db()
         cursor = await db.execute(
             "SELECT trigger_mind FROM conversation_messages WHERE content=?",
@@ -111,7 +107,7 @@ class TestRecoverInterrupted:
         sqlite = conv_data.router.sqlite
         await sqlite.record_reply_checkpoint("user_qq:123", adapter_key="qq")
         context = "上一次进程崩溃：SIGSEGV（ladybug 段错误）"
-        recovered = await recover_interrupted_replies(_mind(conv_data), context)
+        recovered = await recover_interrupted_replies(conv_data.router, context)
         assert recovered == 1
         msgs = await sqlite.fetch_conversation(scope_type="user", scope_id="qq:123", limit=10)
         injected = [m["content"] for m in msgs if m["role"] == "system"]
@@ -190,7 +186,7 @@ class TestReplyToolJournal:
             "user_qq:123", "run_command", '{"cmd": "ls"}', '{"error": "timeout"}', "error",
         )
         await sqlite.record_reply_checkpoint("user_qq:123", adapter_key="qq")
-        recovered = await recover_interrupted_replies(_mind(conv_data))
+        recovered = await recover_interrupted_replies(conv_data.router)
         assert recovered == 1
         msgs = await sqlite.fetch_conversation(scope_type="user", scope_id="qq:123", limit=10)
         ops_msgs = [m for m in msgs if "中断前本轮已执行的操作" in m["content"]]

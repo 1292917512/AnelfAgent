@@ -45,7 +45,7 @@ test("overview prioritizes delegations and makes nested history traceable", asyn
     usage: { turns: 3, input_tokens: 4500, output_tokens: 200 },
   }));
   await page.route("**/api/status/", (route) => route.fulfill({ json: { ready: true, status: { uptime: 1200, mind_phase: phase, message_count: 48 } } }));
-  await page.route("**/api/status/pfc", (route) => route.fulfill({ json: { tool_recall: [{ name: "read_file", count: 83 }, { name: "recall", count: 25 }], short_term_memory_count: 2, short_term_memory_max: 10, pending_messages: [], general_tasks: [] } }));
+  await page.route("**/api/status/thinking", (route) => route.fulfill({ json: { tool_recall: [{ name: "read_file", count: 83 }, { name: "recall", count: 25 }], discovered_tools: ["inspect_workspace"], tag_activated_tools: ["recognize_image"], short_term_memory_count: 2, short_term_memory_max: 10, pending_messages: [], general_tasks: [] } }));
   await page.route("**/api/status/components", (route) => route.fulfill({ json: { structured: { ready: true, tools: { enabled: 123, total: 140, by_source: { core: 80, entity: 60 } }, llm: { impl: "LLMClient", model: "review-model" } } } }));
   await page.route("**/api/mcp/", (route) => route.fulfill({ json: [] }));
   await page.route("**/api/status/services", (route) => route.fulfill({ json: { services: [] } }));
@@ -87,6 +87,9 @@ test("overview prioritizes delegations and makes nested history traceable", asyn
   await page.getByRole("button", { name: /System details/ }).click();
   await expect(page.getByRole("heading", { name: "System Services", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Component Info", exact: true })).toBeVisible();
+  await page.locator(".overview-tool-details summary").click();
+  await expect(page.locator(".overview-tool-details")).toContainText("inspect_workspace");
+  await expect(page.locator(".overview-tool-details")).toContainText("recognize_image");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   const accessibility = await new AxeBuilder({ page }).include("main").analyze();
   expect(accessibility.violations.filter((item) => ["serious", "critical"].includes(item.impact ?? ""))).toEqual([]);

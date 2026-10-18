@@ -61,7 +61,7 @@ class TestNormalizeTargetId:
 class TestNormalizeScopeId:
     def test_bare_id_prefixed_by_current_scope(self) -> None:
         """裸 id 按当前思维会话的 adapter 补全。"""
-        from agent.mind.tool_activation import bind_scope, reset_scope
+        from core.conversation_scope import bind_scope, reset_scope
 
         token = bind_scope("user_qq:1292917512")
         try:
@@ -75,7 +75,7 @@ class TestNormalizeScopeId:
 
     def test_no_scope_passthrough(self) -> None:
         """无当前 scope（心跳/后台上下文）：原样返回。"""
-        from agent.mind.tool_activation import bind_scope, reset_scope
+        from core.conversation_scope import bind_scope, reset_scope
 
         token = bind_scope("")
         try:

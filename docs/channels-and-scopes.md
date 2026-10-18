@@ -13,6 +13,27 @@
 - 频道目录应自持有适配器、配置模型、协议、技能、前端与测试；插件负载、运行时数据和源码目录是
   不同对象：更新源码后必须通过该频道的安装/升级入口同步负载，不要把生成的运行时目录当作源码提交
 
+QQ 戳一戳保持平台事件类型：群聊由 `user_id` 标识发起者；NapCat 私聊的 `user_id` 是会话好友，
+`sender_id` 才是发起者，`target_id` 是被戳者。事件正文分别标明双方账号和机器人自身，
+昵称只作辅助，动作与附加文案不作为身份依据。私聊归属仍为会话好友，不因机器人发起互动而切换。
+
+平台事件的会话信封不等于行为人：私聊系统事实沿用原会话对端，群事件留在原群；实际发起者、
+操作目标与来源由频道正文明确表达，缺失身份保持未知。微信桥的撤回与系统消息遵循同一规则；
+AcFun 直播事件携带行为人 UID 与目标主播 UID，通知中心保持聚合收件箱语义。
+GitHub push 只合并同分支、同一已知发起者的事件，避免将不同人的操作记到同一人名下。
+
+`kind` 必须在连续元数据前缀内，先于引用预览与外部正文；正文中的类标签不改变事件类型。
+非聊天事件保留原有入队与唤醒策略，但不计入用户发言次数、群发言者列表或首次用户画像任务。
+内部后台通知的待处理信号标为 `system`，保留此前用户请求的时间水位，避免掩盖未处理对话。
+
+http_api 频道是外部系统的双向 HTTP 门户（默认 127.0.0.1:8091，停用）：入站 /api/chat
+（文本 + images + media base64 落盘为媒体段）、/api/vision/push 与 WS /api/vision/stream
+（视觉单帧/持续推流，与 web 端共用 `push_external_frame`，判变注入由系统内部完成）、
+/api/chat/stream（SSE 帧）；出站按 同步响应 → SSE 订阅 → webhook 回调（请求级 callback_url
+注册优先，http_api_callback_url 兜底）三级级联，媒体段只经回调投递（≤20MB 内联 base64）。
+报文契约见 channels/http_api/README.md；频道内会话规则经 reply_policy 注入，完整接入契约
+由 `http_api_portal_help` 频道工具按生效配置实时生成供 AI 自取。
+
 ## 频道回复策略（agent/channel/reply_policy.py）
 
 频道通过 `reply_policy` 声明直达回复、初始工具目录、操作规则与 `recall_policy` 默认召回策略。
@@ -137,7 +158,7 @@
 |------|------|------|
 | 跨周期双答防护 | 回复优先门控 + 出站事实面（见上） | 思维周期消息链在启动时刻冻结（对话历史周期内不重读），并发周期互相看不到对方出站——三通道分工：历史固化/动态注入/执行期边界 |
 | 空会话防护与整合 | `outbound_guard.guard_empty_conversation`（出站层）+ `decisions`（决策层前置判定）+ `sqlite_backend.sweep_empty_conversations`（存量整合，心跳周期触发） | 空会话 = 从未收到过 user 角色消息的会话（AI 主动搭话历史缺陷与一次性通知写入产生）。三层：①出站层——AI 思维上下文向空会话发送返回结构化错误（guard=empty_conversation，hint 引导等待对方先开口或改记待办）；②决策层——PROACTIVE 与工具操作结果投递在进入回复周期前判定空会话直接放弃（心跳日志留痕）；③存量整合——按 `conversation_empty_sweep_interval_seconds`（默认 86400s，0=关）清除空会话的消息/摘要/回复检查点（1h 宽限窗口内的新会话不动，NOT EXISTS 单语句守卫防与首条用户消息竞态）。判定事实源 `conversation_has_user_message`；查询失败 fail-open（行为护栏而非安全边界）。配置 `channel/outbound` 组 `outbound_guard_empty_enabled` |
-| 待回复队列毒丸防护 | `is_conversation_scope`（单点判据）+ `scheduler.enqueue_scope_reply`/`add_reminder`（校验）+ `pop_next_reply_target`（就地清除）+ `work_memory.consume_scope_task`（双队列消费） | 三层防线：①源头——`add_reminder` 拒绝持久化不可路由 scope 的提醒（ValueError，事件降级为不提醒）；②入口——`enqueue_scope_reply` 拒绝非会话 scope 入队（退化为全局短期记忆桶）；③兜底——回复消费点对解析失败或缺频道前缀的队列条目就地清除 + WARNING，任何坏条目最多空转一轮即收敛。投递面守卫（待回复队列/持久化提醒/一次性通知）统一拒绝不可路由 scope |
+| 待回复队列毒丸防护 | `is_conversation_scope`（单点判据）+ `PrefrontalCortex.enqueue_reply`/`add_reminder`（校验）+ `pop_next_reply_target`（就地清除）+ `pfc.consume_scope_task`（双队列消费） | 三层防线：①源头——`add_reminder` 拒绝持久化不可路由 scope 的提醒（ValueError，事件降级为不提醒）；②入口——`enqueue_reply` 拒绝非会话 scope 入队（退化为全局短期记忆桶）；③兜底——回复消费点对解析失败或缺频道前缀的队列条目就地清除 + WARNING，任何坏条目最多空转一轮即收敛。投递面守卫（待回复队列/持久化提醒/一次性通知）统一拒绝不可路由 scope |
 
 配置组 `channel/outbound`（enabled / recent_seconds / facts_inject / empty_enabled）。
 

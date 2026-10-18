@@ -1,4 +1,4 @@
-"""跨频道感知：快照管理、语义召回、叙事构建。
+"""跨频道感知：语义召回与实时叙事构建，活动快照由 PFC 持有。
 
 模型可见：其他会话的新私聊与群聊 @，以及与当前话题相关的历史片段。
 Token 影响：新消息沿用有界内存窗口；可选 Jev 预判减少无关召回，历史检索复用查询向量。
@@ -9,9 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import datetime
-import re
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from agent.judgment.evidence import conversation_evidence, dialogue_messages
@@ -19,63 +18,17 @@ from agent.judgment.gate import assess_optional_work
 from agent.memory.memory_retriever import MemoryRetriever
 from agent.messages import build_entity_scope, is_conversation_scope, parse_entity_scope
 from agent.messages.everything import build_scope_id
+from agent.mind.prefrontal_cortex import ScopeActivity
 from core.hooks import HookMode, hook_execution
 from core.log import log
 from core.tags import etag_all, tag_label
 
 if TYPE_CHECKING:
-    from agent.messages import Everything
+    from agent.config import MindConfig
+    from agent.memory.embedding import Embedder
     from agent.mind.mind import Mind
-
-_PREVIEW_TAG_RE = re.compile(r"\[[^\]]*\]")
-
-
-@dataclass
-class ScopeActivity:
-    """单个 scope 的近期活动快照。"""
-    last_time: float = 0.0
-    last_preview: str = ""
-    adapter_key: str = ""
-
-
-@dataclass
-class ChannelSnapshot:
-    """频道活动快照（轻量级，纯内存）。"""
-    last_message_time: float = 0.0
-    active_scopes: dict[str, ScopeActivity] = field(default_factory=dict)
-
-
-def update_channel_snapshot(mind: Mind, anything: "Everything") -> None:
-    """记录频道活动快照，供跨频道感知使用。"""
-    adapter_key = getattr(anything, "adapter_key", "") or ""
-    if not adapter_key:
-        return
-    scope = anything.entity_scope if anything else ""
-    if not scope:
-        return
-
-    raw = anything.get_text_content()[:80] if hasattr(anything, "get_text_content") else ""
-    preview = _PREVIEW_TAG_RE.sub("", raw).strip()[:50]
-
-    snap = mind._channel_snapshots.setdefault(adapter_key, ChannelSnapshot())
-    now = time.time()
-    snap.last_message_time = now
-
-    activity = snap.active_scopes.setdefault(scope, ScopeActivity())
-    activity.last_time = now
-    activity.last_preview = preview
-    activity.adapter_key = adapter_key
-
-    mc = mind.config
-    window = mc.cross_channel_window_minutes * 60
-    snap.active_scopes = {
-        s: a for s, a in snap.active_scopes.items() if now - a.last_time < window
-    }
-    # 窗口外完全沉寂的频道快照整体移除，防按频道/scope 永久残留
-    mind._channel_snapshots = {
-        key: s for key, s in mind._channel_snapshots.items()
-        if key == adapter_key or now - s.last_message_time < window
-    }
+    from agent.mind.prefrontal_cortex import PrefrontalCortex
+    from agent.storage.data_center import ConversationData
 
 
 def collect_channel_info(mind: Mind) -> list[str]:
@@ -111,17 +64,20 @@ def collect_channel_info(mind: Mind) -> list[str]:
 
 
 async def recall_cross_channel(
-    mind: Mind,
     query_conversation: list[dict[str, Any]],
     current_scope: str,
     *,
+    config: MindConfig,
+    pfc: PrefrontalCortex,
+    conversation_data: ConversationData,
+    embedder: Embedder,
     user_scope: str = "",
     query_vec: list[float] | None = None,
     query_vec_task: asyncio.Future[list[float] | None] | None = None,
 ) -> list[dict[str, Any]]:
     """结合当前对话判断召回价值，并发检索近期会话与显式关联身份的历史。"""
-    mc = mind.config
-    if not mc.cross_channel_enabled or mc.cross_channel_recall_max_results <= 0 or not mind.embedder.available:
+    mc = config
+    if not mc.cross_channel_enabled or mc.cross_channel_recall_max_results <= 0 or not embedder.available:
         return []
     query_conversation = dialogue_messages(query_conversation)
     query = MemoryRetriever._extract_query(query_conversation[-10:])
@@ -129,7 +85,7 @@ async def recall_cross_channel(
         return []
     try:
         async with hook_execution("memory.cross_channel", "context_prepare", HookMode.SYNC, scope=current_scope) as run:
-            candidates = await _recall_candidates(mind, current_scope, user_scope)
+            candidates = await _recall_candidates(config, pfc, conversation_data, current_scope, user_scope)
             if not candidates:
                 run.detail = "没有其他候选会话"
                 return []
@@ -149,7 +105,7 @@ async def recall_cross_channel(
             if query_vec_task is not None:
                 query_vec = await asyncio.shield(query_vec_task)
             elif query_vec is None:
-                query_vec = await mind.embedder.embed_query(query)
+                query_vec = await embedder.embed_query(query)
             if not query_vec:
                 run.detail = "查询向量不可用，跳过跨会话历史检索"
                 return []
@@ -160,7 +116,7 @@ async def recall_cross_channel(
             async def search(scope: str) -> list[dict[str, Any]]:
                 kind, adapter, identity, session = parse_entity_scope(scope)
                 try:
-                    rows = await mind.conversation_data.search_conversation_vector(
+                    rows = await conversation_data.search_conversation_vector(
                         kind, build_scope_id(adapter, identity, "#" + session if session else ""), query_vec,
                         limit=2, skip_recent=0, min_score=mc.cross_channel_recall_min_score,
                         scan_limit=mc.cross_channel_recall_scan_limit,
@@ -197,17 +153,20 @@ async def recall_cross_channel(
         return []
 
 
-async def _recall_candidates(mind: Mind, current_scope: str, user_scope: str) -> list[tuple[str, ScopeActivity, bool]]:
+async def _recall_candidates(
+    config: MindConfig, pfc: PrefrontalCortex, conversation_data: ConversationData,
+    current_scope: str, user_scope: str,
+) -> list[tuple[str, ScopeActivity, bool]]:
     """优先显式关联身份，再按活跃时间选择有界候选；不通过同号或昵称推断身份。"""
-    mc = mind.config
+    mc = config
     cutoff = time.time() - mc.cross_channel_window_minutes * 60
-    activities = {scope: activity for snapshot in mind._channel_snapshots.values()
+    activities = {scope: activity for snapshot in pfc.channel_snapshots.values()
                   for scope, activity in snapshot.active_scopes.items()
                   if scope != current_scope and activity.last_time >= cutoff and is_conversation_scope(scope)}
     linked: set[str] = set()
     kind, adapter, identity, _ = parse_entity_scope(user_scope or current_scope)
     if kind == "user" and adapter:
-        aliases = await mind.conversation_data.related_conversation_scopes(kind, build_scope_id(adapter, identity))
+        aliases = await conversation_data.related_conversation_scopes(kind, build_scope_id(adapter, identity))
         for alias_kind, alias_id in aliases:
             alias_adapter, _, rest = alias_id.partition(":")
             base, _, session = rest.partition("#")

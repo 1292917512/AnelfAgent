@@ -6,7 +6,7 @@ import { PageContainer, PageHeader } from "@/components/common/PageContainer";
 import { AsyncState, QueryError } from "@/components/common/AsyncState";
 import { Button, ConfirmDialog, Input } from "@/components/ui";
 import { Tag, Plus, Search } from "lucide-react";
-import { TagCard } from "./tags/TagCard";
+import { TagCard, TagDetailModal } from "./tags/TagCard";
 import { CreateTagModal } from "./tags/CreateTagModal";
 
 const FILTERS = ["all", "message", "tool", "custom"] as const;
@@ -17,6 +17,7 @@ export default function Tags() {
   const client = useQueryClient();
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
+  const [selectedName, setSelectedName] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState({ name: "", description: "" });
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
@@ -27,9 +28,10 @@ export default function Tags() {
   });
   const remove = useMutation({
     mutationFn: (name: string) => tagsApi.deleteMessageTag(name),
-    onSuccess: async () => { setDeleteTarget(null); await client.invalidateQueries({ queryKey: ["unified-tags"] }); },
+    onSuccess: async () => { setDeleteTarget(null); setSelectedName(null); await client.invalidateQueries({ queryKey: ["unified-tags"] }); },
   });
   const tags = query.data ?? [];
+  const selectedTag = tags.find((tag) => tag.name === selectedName) ?? null;
   const keyword = search.trim().toLowerCase();
   const filtered = tags.filter((tag) => (filter === "all" || tag.sources.includes(filter))
     && [tag.name, tag.description, ...tag.tools].some((value) => value.toLowerCase().includes(keyword)));
@@ -49,12 +51,14 @@ export default function Tags() {
     </div>
     <AsyncState pending={query.isPending} error={!query.data && query.error} retry={() => void query.refetch()}>
       {query.isError && query.data && <QueryError compact error={query.error} retry={() => void query.refetch()} />}
-      <div className="grid items-start gap-3 md:grid-cols-2 2xl:grid-cols-3">
-        {filtered.map((tag) => <TagCard key={tag.name} tag={tag} onDelete={() => { remove.reset(); setDeleteTarget(tag.name); }} t={t} />)}
+      <div className="grid auto-rows-fr grid-cols-[repeat(auto-fill,minmax(min(100%,19rem),1fr))] gap-3">
+        {filtered.map((tag) => <TagCard key={tag.name} tag={tag} onOpen={() => setSelectedName(tag.name)} t={t} />)}
       </div>
       {!filtered.length && <p className="rounded-xl border border-dashed border-border p-8 text-center text-sm text-muted">{t(keyword || filter !== "all" ? "noMatch" : "noTags")}</p>}
     </AsyncState>
     {remove.isError && <p role="alert" className="text-sm text-danger">{apiErrorMessage(remove.error, t("common:requestFailed"))}</p>}
+    {selectedTag && <TagDetailModal tag={selectedTag} onClose={() => setSelectedName(null)} t={t}
+      onDelete={() => { remove.reset(); setDeleteTarget(selectedTag.name); }} />}
     <CreateTagModal open={showCreate} onClose={() => { if (!create.isPending) setShowCreate(false); }}
       form={form} setForm={setForm} pending={create.isPending} onSubmit={() => create.mutate()} error={create.error} />
     <ConfirmDialog open={deleteTarget !== null} onClose={() => { if (!remove.isPending) setDeleteTarget(null); }}

@@ -89,7 +89,7 @@ def _make_engine(
     monkeypatch.setattr(HeartbeatConfig, "save", lambda self, path=None: None)
     # 间隔真源（mind.heartbeat_interval）打桩，隔离真实 mind 配置
     monkeypatch.setattr("agent.heartbeat.engine.current_interval_seconds", lambda: 300)
-    engine = HeartbeatEngine(mind)
+    engine = HeartbeatEngine(mind, SimpleNamespace(), memory=mind, skills=None)
     engine._run_maintenance = AsyncMock()  # type: ignore[method-assign]
     engine.executor = SimpleNamespace(run=AsyncMock(side_effect=lambda t, e, **k: _result(t.name)))
     return engine
