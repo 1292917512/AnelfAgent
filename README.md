@@ -253,6 +253,7 @@ Embedding + FTS5 + 标签匹配 + 时间衰减的混合评分召回；可选启�
 | `smart_home` | 智能家居 — Home Assistant 接入，灯光/空调/窗帘等设备域可插拔 |
 | `minimax` | MiniMax — 图片理解/生成、语音合成/音色管理、联网检索、流式 TTS |
 | `dashscope` | 阿里百炼 — 流式/非流式 ASR、CosyVoice/Qwen-TTS、音色复刻 |
+| `deepseek` | DeepSeek — Search/Fetch 联网检索与网页读取（Markdown，按成功请求计费） |
 | `audiosync` | 音源同步 — 外部音源（目录/推送）接入核心音频库 |
 | `sticker` | 表情包与图片感知 — 收藏/语义检索/发送，文搜图、图搜图 |
 | `vault` | 密码本 — 加密凭据库 / TOTP 验证器 / 模糊检索 / 泄露体检 |
