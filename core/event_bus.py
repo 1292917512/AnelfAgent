@@ -73,7 +73,7 @@ class EventBus:
             event_bus.on("after_reply", my_handler, owner="plugin:weather")
 
         Args:
-            priority: 订阅排序；普通 emit 不保证完成先后，emit_with_result 按此顺序等待。
+            priority: 订阅排序，高优先级处理器的协程先启动；emit 并发等待，不保证完成先后。
             owner: 处理器归属标识，用于 ``off_by_owner()`` 批量清理。
             timeout: 0 使用总线默认；None 由宿主管理超时；正数为订阅独立时限。
         """
@@ -194,32 +194,6 @@ class EventBus:
         current = self._handlers.get(event)
         if current is not None:
             self._prune_once(current, batch)
-
-    async def emit_with_result(
-            self, event: str, payload: Optional[Dict[str, Any]] = None,
-    ) -> bool:
-        """发射事件并检查拦截。
-
-        处理器返回 ``False`` 时中断后续调用并返回 ``False``。
-        没有处理器明确返回 ``False`` 时返回 ``True``；被隔离的异常和超时不构成拦截。
-        """
-        payload = payload or {}
-        self._stats[event] = self._stats.get(event, 0) + 1
-
-        subs = self._handlers.get(event)
-        if not subs:
-            return True
-
-        batch = list(subs)
-        try:
-            for sub in batch:
-                result = await self._invoke_handler(event, sub, payload)
-                if result is False:
-                    return False
-        finally:
-            self._prune_once(subs, batch)
-
-        return True
 
     def has_listeners(self, event: str) -> bool:
         return bool(self._handlers.get(event))
