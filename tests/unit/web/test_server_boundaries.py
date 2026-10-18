@@ -1,4 +1,4 @@
-"""静态文件路径与鉴权配置故障的 HTTP/WS 回归。"""
+"""静态文件路径、模块路由降级与鉴权配置故障的 HTTP/WS 回归。"""
 
 import json
 from pathlib import Path
@@ -140,3 +140,41 @@ def test_share_token_does_not_unlock_management(client: TestClient, monkeypatch:
         assert client.get("/api/entity/share" + path).status_code == 404
     for path in ("/links", "/stats", "/logs"):
         assert client.get("/api/entity/share" + path).status_code == 401
+
+
+def test_module_router_import_failure_logs_warning(monkeypatch: pytest.MonkeyPatch):
+    import importlib
+    from types import SimpleNamespace
+
+    from fastapi import FastAPI
+
+    def fake_import(module_path: str):
+        if module_path == "channels.acfun.adapter":
+            raise ImportError("broken dependency")
+        return SimpleNamespace(build_router=None)
+
+    logs: list[tuple[str, str]] = []
+    monkeypatch.setattr(importlib, "import_module", fake_import)
+    monkeypatch.setattr(server, "log", lambda message, level="INFO": logs.append((message, level)))
+    server._mount_module_routers(FastAPI(), "channels", "adapter.py", "/api/channels/{}", "channel-{}")
+    assert logs == [("模块路由导入失败: channels.acfun.adapter - broken dependency", "WARNING")]
+
+
+def test_hot_module_router_import_failure_logs_warning(monkeypatch: pytest.MonkeyPatch):
+    import importlib
+    import sys
+
+    from fastapi import FastAPI
+
+    module_path = "channels.acfun.adapter"
+    monkeypatch.delitem(sys.modules, module_path, raising=False)
+
+    def fake_import(path: str):
+        assert path == module_path
+        raise ImportError("broken dependency")
+
+    logs: list[tuple[str, str]] = []
+    monkeypatch.setattr(importlib, "import_module", fake_import)
+    monkeypatch.setattr(server, "log", lambda message, level="INFO": logs.append((message, level)))
+    server._mount_one_module_router(FastAPI(), "channel", "acfun")
+    assert logs == [("模块路由导入失败: channels.acfun.adapter - broken dependency", "WARNING")]
