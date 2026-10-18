@@ -124,7 +124,7 @@ async def execute_reply(mind: Mind, decision: Decision) -> None:
         log(f"回复检查点登记失败（不影响回复）: {exc}", "DEBUG", tag="思维")
     try:
         adapter_key = getattr(anything, "adapter_key", "") or ""
-        mind._set_phase(MindPhase.RECALLING)
+        mind.set_phase(MindPhase.RECALLING)
 
         pending_images = mind.pfc.collect_images(scope=scope)
         if pending_images:
@@ -205,7 +205,7 @@ async def execute_reflect(mind: Mind, decision: Optional[Decision] = None, *, sk
         # 任一任务置位之前，这里是执行入口的最后防线）
         return 0
     mind._reflecting = True
-    mind._set_phase(MindPhase.INTROSPECTING)
+    mind.set_phase(MindPhase.INTROSPECTING)
 
     try:
         result = await engine.run_task("self_reflection")

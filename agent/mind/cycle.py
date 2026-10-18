@@ -136,7 +136,7 @@ async def run_cycle(mind: "Mind", end_payload: Dict[str, Any], *, is_heartbeat: 
     # 完整决策周期开始：DECIDING 覆盖态势收集 + 元决策全程（收集可能涉及
     # 记忆/目标查询耗时可观，期间不应显示 idle）；no_pending 早退由周期
     # 完成边界（execute_mind finally）统一归零
-    mind._set_phase(MindPhase.DECIDING)
+    mind.set_phase(MindPhase.DECIDING)
     situation = await gather_situation(mind, is_heartbeat=is_heartbeat)
 
     if not situation.has_pending and not is_heartbeat:

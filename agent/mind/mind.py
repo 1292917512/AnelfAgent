@@ -108,15 +108,13 @@ class Mind:
         # scope 级中断信号（think_loop 每轮检查，用户可刹车失控回复）
         self.interrupts = InterruptRegistry()
 
-    def _set_phase(self, phase: MindPhase) -> None:
+    def set_phase(self, phase: MindPhase) -> None:
         prev = self.phase
         self.phase = phase
         if event_bus.has_listeners(EVENT_THINKING_PHASE_CHANGE):
             try:
                 loop = asyncio.get_running_loop()
-                loop.create_task(event_bus.emit(EVENT_THINKING_PHASE_CHANGE, {
-                    "phase": phase.value, "prev_phase": prev.value,
-                }))
+                loop.create_task(event_bus.emit(EVENT_THINKING_PHASE_CHANGE, {"phase": phase.value, "prev_phase": prev.value}))
             except RuntimeError:
                 pass
 
@@ -131,7 +129,7 @@ class Mind:
             return
         if self._active_scopes or self._reflect_depth > 0 or self._cycle_lock.locked():
             return
-        self._set_phase(MindPhase.IDLE)
+        self.set_phase(MindPhase.IDLE)
 
     # 消息感知入口
 
@@ -141,7 +139,7 @@ class Mind:
             # 思维工作运行中不覆盖当前阶段，避免 UI 阶段抖动
             if (not self._active_scopes and not self._cycle_lock.locked()
                     and self._reflect_depth == 0):
-                self._set_phase(MindPhase.ACCEPTING)
+                self.set_phase(MindPhase.ACCEPTING)
             preview = str(anything)[:80] if anything else ""
             log(f"感知输入: {preview}", tag="思维")
             if not await self.conversation_data.add_conversation_record_by_everything(anything):
@@ -152,11 +150,11 @@ class Mind:
 
             should_enqueue = should_enqueue_external_message(anything, reflecting=self._reflecting)
             if (
-                not should_enqueue
-                and bool(getattr(anything, "trigger_mind", True))
-                and self._reflecting
-                and isinstance(anything, EverythingGroup)
-                and not bool(getattr(anything, "to_me", False))
+                    not should_enqueue
+                    and bool(getattr(anything, "trigger_mind", True))
+                    and self._reflecting
+                    and isinstance(anything, EverythingGroup)
+                    and not bool(getattr(anything, "to_me", False))
             ):
                 log(f"反思中忽略非 @ 群消息: {anything.entity_scope}", "DEBUG", tag="思维")
             if should_enqueue:

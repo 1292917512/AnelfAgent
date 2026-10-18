@@ -490,7 +490,7 @@ async def execute_one_tool(
     from core.log import current_log_actor
     from core.tool_context import request_trace
 
-    mind._set_phase(MindPhase.TOOL_EXECUTING)
+    mind.set_phase(MindPhase.TOOL_EXECUTING)
     tool_scope = getattr(anything, "entity_scope", "") if anything is not None else ""
     identity = {"actor": current_log_actor(), "request": request_trace(),
                 "scope": tool_scope, "tool_name": tc.name, "tool_id": tc.id}

@@ -54,7 +54,7 @@ async def _handle_tool_round(
     execution_steps = ctx.execution_steps
     guardrail = ctx.guardrail
 
-    mind._set_phase(MindPhase.TOOL_EXECUTING)
+    mind.set_phase(MindPhase.TOOL_EXECUTING)
     state.consecutive_empty_calls = 0
     state.reflect_text_rounds = 0
     # 反思产出语义：模型发起工作工具调用即说明此前的纯文本是中间独白而非

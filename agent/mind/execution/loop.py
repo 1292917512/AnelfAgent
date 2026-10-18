@@ -188,7 +188,7 @@ async def _run_think_rounds(
             ctx, state, safety_limit, start_time, recollection,
         )
 
-        mind._set_phase(MindPhase.LLM_CALLING)
+        mind.set_phase(MindPhase.LLM_CALLING)
         # 流中早执行：只读调用在流继续生成时提前分发，工具轮按 id 回收
         early_runner = _EarlyToolRunner(
             mind, anything, state.iteration,

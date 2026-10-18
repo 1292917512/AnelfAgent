@@ -38,13 +38,13 @@ def _bare_mind() -> Any:
 def _phase_log(mind: Any) -> List[MindPhase]:
     """包装真实 _set_phase，记录相位流转序列。"""
     log: List[MindPhase] = []
-    real = mind._set_phase
+    real = mind.set_phase
 
     def _wrapped(phase: MindPhase) -> None:
         log.append(phase)
         real(phase)
 
-    mind._set_phase = _wrapped
+    mind.set_phase = _wrapped
     return log
 
 
@@ -92,7 +92,7 @@ class TestExecuteMindPhaseReset:
         mind = _bare_mind()
 
         async def _cycle(*, is_heartbeat: bool = False) -> None:
-            mind._set_phase(MindPhase.DECIDING)
+            mind.set_phase(MindPhase.DECIDING)
 
         mind._autonomous_cycle = _cycle
         await mind.execute_mind(is_heartbeat=True)
@@ -103,7 +103,7 @@ class TestExecuteMindPhaseReset:
         mind = _bare_mind()
 
         async def _cycle(*, is_heartbeat: bool = False) -> None:
-            mind._set_phase(MindPhase.DECIDING)
+            mind.set_phase(MindPhase.DECIDING)
             mind._active_scopes.add("user_webui:u1")
 
         mind._autonomous_cycle = _cycle
@@ -114,7 +114,7 @@ class TestExecuteMindPhaseReset:
         mind = _bare_mind()
 
         async def _cycle(*, is_heartbeat: bool = False) -> None:
-            mind._set_phase(MindPhase.DECIDING)
+            mind.set_phase(MindPhase.DECIDING)
 
         mind._autonomous_cycle = _cycle
         await mind.try_execute_mind()
@@ -125,7 +125,7 @@ class TestExecuteMindPhaseReset:
         mind = _bare_mind()
 
         async def _cycle(*, is_heartbeat: bool = False) -> None:
-            mind._set_phase(MindPhase.DECIDING)
+            mind.set_phase(MindPhase.DECIDING)
             raise RuntimeError("boom")
 
         mind._autonomous_cycle = _cycle
@@ -187,7 +187,7 @@ class TestReflectPhaseReset:
         self._wire_reflect_fakes(mind)
 
         async def _loop(_mind, **kwargs: Any) -> None:
-            mind._set_phase(MindPhase.LLM_CALLING)
+            mind.set_phase(MindPhase.LLM_CALLING)
             kwargs["collected_text"].extend(["第一段", "第二段"])
 
         monkeypatch.setattr(reflect_module, "think_loop", _loop)
@@ -243,7 +243,7 @@ class TestReflectPhaseReset:
         async def _loop(_mind, **kwargs: Any) -> None:
             nonlocal entered
             entered += 1
-            mind._set_phase(MindPhase.LLM_CALLING)
+            mind.set_phase(MindPhase.LLM_CALLING)
             if entered == 1:
                 await release.wait()
 
@@ -267,7 +267,7 @@ class TestReflectPhaseReset:
         self._wire_reflect_fakes(mind)
 
         async def _loop(_mind, **kwargs: Any) -> None:
-            mind._set_phase(MindPhase.TOOL_EXECUTING)
+            mind.set_phase(MindPhase.TOOL_EXECUTING)
             raise RuntimeError("boom")
 
         monkeypatch.setattr(reflect_module, "think_loop", _loop)
@@ -284,7 +284,7 @@ class TestReplyPhaseReset:
         mind.note_activity = lambda: None
 
         async def _tl(m: Any, anything: Any, images: Any, *, adapter_key: str, completion: dict) -> None:
-            m._set_phase(MindPhase.REPLYING)
+            m.set_phase(MindPhase.REPLYING)
 
         monkeypatch.setattr("agent.mind.mind.reply_entry", _tl)
         await mind.reply(SimpleNamespace(entity_scope="user_webui:u1"))
@@ -299,7 +299,7 @@ class TestReplyPhaseReset:
         mind._active_scopes.add(scope)
 
         async def _tl(m: Any, anything: Any, images: Any, *, adapter_key: str, completion: dict) -> None:
-            m._set_phase(MindPhase.REPLYING)
+            m.set_phase(MindPhase.REPLYING)
 
         monkeypatch.setattr("agent.mind.mind.reply_entry", _tl)
         await mind.reply(SimpleNamespace(entity_scope=scope))

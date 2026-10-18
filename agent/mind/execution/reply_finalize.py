@@ -268,7 +268,7 @@ async def complete_reply(
     """
     from agent.mind.autonomous import MindPhase
 
-    mind._set_phase(MindPhase.REPLYING)
+    mind.set_phase(MindPhase.REPLYING)
     content = (content or "").strip()
 
     # 会话用量账本：REPLY 完成 turns+1 并把该会话累计增量落盘
