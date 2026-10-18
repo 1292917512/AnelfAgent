@@ -16,6 +16,78 @@ from . import chat_bridge, git_ops, service
 from . import config as st_config
 from .st_client import STError, get_st_client
 
+# 请求体模型必须定义在模块级：本模块启用 postponed annotations，
+# build_router() 内的局部类无法被 FastAPI 的 get_type_hints 解析，
+# 会导致 /openapi.json 与 /docs 生成 500
+
+
+class GitCheckoutBody(BaseModel):
+    name: str = Field(min_length=1)
+    remote: str = "origin"
+
+
+class GitUpdateBody(BaseModel):
+    remote: str = "origin"
+    branch: Optional[str] = None
+
+
+class GitCommitBody(BaseModel):
+    message: str = Field(min_length=1)
+
+
+class CharacterCreateBody(BaseModel):
+    name: str = Field(min_length=1)
+    description: str = ""
+    personality: str = ""
+    first_mes: str = ""
+    scenario: str = ""
+    mes_example: str = ""
+    system_prompt: str = ""
+    tags: list[str] = []
+
+
+class CharacterEditBody(BaseModel):
+    avatar: str
+    field: str
+    value: str
+    current_name: str = ""
+
+
+class CharacterDeleteBody(BaseModel):
+    avatar: str
+    delete_chats: bool = False
+
+
+class ModelConfigBody(BaseModel):
+    main_api: str = ""
+    model: str = ""
+    temperature: float = 0.0
+    max_context: int = 0
+    max_tokens: int = 0
+
+
+class ChatSendBody(BaseModel):
+    avatar: str = Field(min_length=1)
+    message: str = Field(min_length=1)
+    chat_file: str = ""
+    name: str = "Anelf"
+
+
+class MemoryBody(BaseModel):
+    collection_id: str = Field(min_length=1)
+    text: str = ""
+    query: str = ""
+    top_k: int = 5
+
+
+class ImportBody(BaseModel):
+    url: str = Field(min_length=1)
+
+
+class ExtInstallBody(BaseModel):
+    url: str = Field(min_length=1)
+    global_install: bool = True
+
 
 def build_router() -> APIRouter:
     router = APIRouter()
@@ -79,10 +151,6 @@ def build_router() -> APIRouter:
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
-    class GitCheckoutBody(BaseModel):
-        name: str = Field(min_length=1)
-        remote: str = "origin"
-
     @router.post("/git/checkout")
     async def git_checkout(body: GitCheckoutBody) -> Dict[str, Any]:
         """切换到指定远端分支版本（要求工作区干净）。"""
@@ -91,19 +159,12 @@ def build_router() -> APIRouter:
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
-    class GitUpdateBody(BaseModel):
-        remote: str = "origin"
-        branch: Optional[str] = None
-
     @router.post("/git/update")
     async def git_update(body: GitUpdateBody) -> Dict[str, Any]:
         try:
             return await asyncio.to_thread(git_ops.pull, body.remote, body.branch)
         except Exception as e:
             return {"ok": False, "error": str(e)}
-
-    class GitCommitBody(BaseModel):
-        message: str = Field(min_length=1)
 
     @router.post("/git/commit")
     async def git_commit(body: GitCommitBody) -> Dict[str, Any]:
@@ -154,16 +215,6 @@ def build_router() -> APIRouter:
             return get_st_client().get_character(_running_base(), avatar)
         return await _call(_run)()
 
-    class CharacterCreateBody(BaseModel):
-        name: str = Field(min_length=1)
-        description: str = ""
-        personality: str = ""
-        first_mes: str = ""
-        scenario: str = ""
-        mes_example: str = ""
-        system_prompt: str = ""
-        tags: list[str] = []
-
     @router.post("/characters/create")
     async def character_create(body: CharacterCreateBody) -> Dict[str, Any]:
         def _run() -> Dict[str, Any]:
@@ -172,12 +223,6 @@ def build_router() -> APIRouter:
             avatar = get_st_client().create_character(_running_base(), fields)
             return {"ok": True, "avatar": avatar}
         return await _call(_run)()
-
-    class CharacterEditBody(BaseModel):
-        avatar: str
-        field: str
-        value: str
-        current_name: str = ""
 
     @router.post("/characters/edit")
     async def character_edit(body: CharacterEditBody) -> Dict[str, Any]:
@@ -188,10 +233,6 @@ def build_router() -> APIRouter:
                 body.field, body.value)
             return {"ok": True, "result": result}
         return await _call(_run)()
-
-    class CharacterDeleteBody(BaseModel):
-        avatar: str
-        delete_chats: bool = False
 
     @router.post("/characters/delete")
     async def character_delete(body: CharacterDeleteBody) -> Dict[str, Any]:
@@ -216,13 +257,6 @@ def build_router() -> APIRouter:
             get_st_client().save_settings(_running_base(), settings)
             return {"ok": True}
         return await _call(_run)()
-
-    class ModelConfigBody(BaseModel):
-        main_api: str = ""
-        model: str = ""
-        temperature: float = 0.0
-        max_context: int = 0
-        max_tokens: int = 0
 
     @router.post("/settings/model")
     async def set_model_config(body: ModelConfigBody) -> Dict[str, Any]:
@@ -276,12 +310,6 @@ def build_router() -> APIRouter:
     # AI × 酒馆角色对话（实体内部生成编排，用 AnelfAgent 自己的人设与主模型）
     # ------------------------------------------------------------------
 
-    class ChatSendBody(BaseModel):
-        avatar: str = Field(min_length=1)
-        message: str = Field(min_length=1)
-        chat_file: str = ""
-        name: str = "Anelf"
-
     @router.post("/chat/send")
     async def chat_send(body: ChatSendBody) -> Dict[str, Any]:
         """AI 对酒馆角色说话（走 anelf-bridge 插件，复用酒馆生成管道）。"""
@@ -311,12 +339,6 @@ def build_router() -> APIRouter:
             return get_st_client().worldinfo_get(_running_base(), name)
         return await _call(_run)()
 
-    class MemoryBody(BaseModel):
-        collection_id: str = Field(min_length=1)
-        text: str = ""
-        query: str = ""
-        top_k: int = 5
-
     @router.post("/memory/insert")
     async def memory_insert(body: MemoryBody) -> Dict[str, Any]:
         def _run() -> Any:
@@ -337,9 +359,6 @@ def build_router() -> APIRouter:
             return {"groups": get_st_client().groups_all(_running_base())}
         return await _call(_run)()
 
-    class ImportBody(BaseModel):
-        url: str = Field(min_length=1)
-
     @router.post("/import")
     async def import_url(body: ImportBody) -> Dict[str, Any]:
         def _run() -> Any:
@@ -358,10 +377,6 @@ def build_router() -> APIRouter:
             exts = get_st_client().extensions_discover(_running_base())
             return {"count": len(exts), "extensions": exts}
         return await _call(_run)()
-
-    class ExtInstallBody(BaseModel):
-        url: str = Field(min_length=1)
-        global_install: bool = True
 
     @router.post("/extensions/install")
     async def extension_install(body: ExtInstallBody) -> Dict[str, Any]:
