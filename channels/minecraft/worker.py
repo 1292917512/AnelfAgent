@@ -3,8 +3,9 @@
 架构定位：与 MinecraftLifestyle（模型反思驱动的自主生活）相对，本循环把控制权
 交给确定性脚本——在线即开始采集作业，模型不指令也持续干活；每组终态向模型
 汇报一次事实，模型只输出 WORK_VERDICT 裁决（continue / stop），不编排动作。
-汇报（历史写入 + 裁决轮）整体是后台任务，作业循环从不等待汇报——一组终态后
-立即受理下一组，执行器终态本身已含返程与库存收尾，无需任何额外间歇。
+汇报（历史写入 + 裁决轮）整体是后台任务，作业循环从不等待汇报——完成组终态后
+立即受理下一组（受阻组保持一个轮询周期的歇拍，防瞬时失败放大成 RPC 风暴），
+执行器终态本身已含返程与库存收尾，无需任何额外间歇。
 开启 worker_judgment_gate 时，汇报先经 Jev 门卫预判（judgment_gate.py），
 例行进展高置信跳过裁决轮，异常或值得播报的才进入模型。
 玩家聊天不打断作业（大模型思考期间脚本不停）；只有 !stop / !pause、模型
@@ -33,6 +34,7 @@ from core.log import log
 from core.tool_context import tool_request
 
 from .judgment_gate import verdict_needed
+from .protocol import GATHER_ITEM_LABELS
 
 ToolCall = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 
@@ -52,6 +54,34 @@ _NO_ROUTE_MARKER = "GATHER_NO_ROUTE"
 _RAPID_REBLOCK_SECONDS = 15.0
 _RELOCATE_DISTANCE = 24
 _RELOCATE_DIRECTIONS = ((1, 0), (0, 1), (-1, 0), (0, -1))
+# 换区探测的目标族：与执行器 auto 订单的展开一致（泥土族 + 自然树干原木），
+# 探测只决定"朝哪走"，授权与可挖性仍由 gather 订单在到达后裁定。
+_RELOCATE_SOIL_BLOCKS = ("dirt", "grass_block", "podzol", "mycelium", "dirt_path")
+_RELOCATE_LOG_BLOCKS = (
+    "oak_log", "spruce_log", "birch_log", "jungle_log", "acacia_log",
+    "dark_oak_log", "cherry_log", "mangrove_log", "pale_oak_log",
+)
+# 垫脚保底的 worker 侧镜像（仅用于探测排序）：权威值在执行器 tier1DirtFloor。
+_DIRT_RESERVE_FLOOR = 10
+_RELOCATE_PROBE_DISTANCE = 64
+# 连续换区无效后的远程跳区距离：残破挖掘区里的探测命中会互相指向圈内，
+# 近距换区永远跳不出去；连续两轮换区无产出就直接跳出 48 格。
+_RELOCATE_LONG_HOP_DISTANCE = 48
+_RELOCATE_FAIL_ESCALATION = 2
+# 深埋/高山目标走向了也挖不到：泥土候选的高差对齐挖掘带（±8，走到水平
+# 位置不改变高度），原木允许更大落差（山坡可寻路）。
+_RELOCATE_SOIL_MAX_DY = 8
+_RELOCATE_LOG_MAX_DY = 24
+# 探测与四个方向全部失败后的冷却：避免固定节奏的寻路风暴（原地打转观感）。
+_RELOCATE_FAIL_COOLDOWN_SECONDS = 60.0
+# 冷却播报节流：同一困境反复进入冷却时最多每 5 分钟告知玩家一次。
+_COOLDOWN_ANNOUNCE_INTERVAL = 300.0
+# 同因连续受阻升级换区的阈值：个别原因（如脚下不是完整实心方块的 UNSAFE_ENTRY）
+# 不在换区名单里，但原地连败说明站位本身不利，主动搬家比原地重试强。
+_REPEATED_BLOCK_RELOCATE_AFTER = 5
+# 一轮自主作业的产出目标：2 组泥土 + 1 组木头，达成即收工待命（!resume 开新一轮）。
+_WORK_GOAL_DIRT_GROUPS = 2
+_WORK_GOAL_WOOD_GROUPS = 1
 _ACTIVE_PHASES = frozenset({"running", "returning", "pausing", "paused", "stopping"})
 _BLOCKED_PHASES = frozenset({"blocked", "interrupted"})
 
@@ -61,19 +91,6 @@ def _needs_relocate(reason: str) -> bool:
     （无目标 / 位置拉锯 / 支架路线不可达）。"""
     return (_NO_TARGET_MARKER in reason or _POSITION_FIGHT_MARKER in reason
             or _NO_ROUTE_MARKER in reason)
-_ITEM_LABELS = {
-    "dirt": "泥土",
-    "cobblestone": "圆石",
-    "stone": "石头",
-    "oak_log": "橡木原木",
-    "birch_log": "白桦原木",
-    "spruce_log": "云杉原木",
-    "jungle_log": "丛林原木",
-    "acacia_log": "金合欢原木",
-    "dark_oak_log": "深色橡木原木",
-    "cherry_log": "樱花原木",
-    "mangrove_log": "红树林原木",
-}
 
 # 裁决快车道墙钟上限：供应商回退链整体卡死时兜底；健康链路数秒内返回，
 # 超时只发生在异常网络下，等价 continue（裁决是旁路，无回应不阻塞作业）。
@@ -99,18 +116,31 @@ class StackOutcome:
     dug: int
     gained: int
     requested: int
+    items: tuple[tuple[str, int], ...] = ()
+    entry: tuple[int, int, int] | None = None
 
     @classmethod
     def from_snapshot(cls, snapshot: dict[str, Any]) -> "StackOutcome":
         phase = snapshot.get("phase")
         if not isinstance(phase, str) or not phase:
             phase = "running" if bool(snapshot.get("active")) else "unknown"
+        raw_entry = snapshot.get("entry")
+        entry = ((int(raw_entry["x"]), int(raw_entry["y"]), int(raw_entry["z"]))
+                 if isinstance(raw_entry, dict) and all(k in raw_entry for k in ("x", "y", "z")) else None)
+        raw_items = snapshot.get("items")
+        items = tuple(
+            (str(item["item"]), _as_int(item.get("gained")))
+            for item in raw_items
+            if isinstance(item, dict) and item.get("item")
+        ) if isinstance(raw_items, list) else ()
         return cls(
             phase=phase,
             reason=str(snapshot.get("reason") or ""),
             dug=_as_int(snapshot.get("dug")),
             gained=_as_int(snapshot.get("gained")),
             requested=_as_int(snapshot.get("requested")),
+            items=items,
+            entry=entry,
         )
 
 
@@ -154,12 +184,22 @@ class MinecraftWorker:
         self._reports: set[asyncio.Task[None]] = set()
         self._paused = False
         self._hold_reason: str | None = None
+        self._stuck_entry: tuple[int, int, int] | None = None
+        self._stuck_streak = 0
+        self._relocate_fails = 0
         self._paused_action = False
         self._stacks_done = 0
         self._total_gained = 0
+        self._totals: dict[str, int] = {}
+        self._inv_dirt = 0
+        self._inv_wood = 0
         self._last_block_reason = ""
+        self._repeated_blocks = 0
         self._relocate_pending = False
         self._relocate_heading = 0
+        self._relocate_cooldown_until = 0.0
+        self._cooldown_announced_at: float | None = None
+        self._last_relocate_target: tuple[int, int] | None = None
         self._last_block_at = 0.0
         self._suppress_report = False
 
@@ -216,6 +256,10 @@ class MinecraftWorker:
                 await asyncio.sleep(self._poll_seconds())
                 continue
             if self._relocate_pending:
+                if self._clock() < self._relocate_cooldown_until:
+                    # 探测与方向全部失败后的冷却：不再按固定节奏重试寻路。
+                    await asyncio.sleep(self._poll_seconds())
+                    continue
                 self._relocate_pending = False
                 await self._relocate()
             try:
@@ -230,9 +274,26 @@ class MinecraftWorker:
                 # 他方动作占着 bot，或裁决/暂停落在挖掘中途：本轮无新事实。
                 await asyncio.sleep(self._poll_seconds())
                 continue
-            self._stacks_done += 1
+            if outcome.gained > 0:
+                # 组号只计有产出的组：空手受阻组不占号，「第 N 组」与实际收获对齐。
+                self._stacks_done += 1
+                self._relocate_fails = 0
             self._total_gained += outcome.gained
+            for item, gained in outcome.items:
+                self._totals[item] = self._totals.get(item, 0) + gained
             self._apply_block_outcome(outcome)
+            self._track_stuck_spot(outcome)
+            await self._refresh_inventory_goals()
+            if self._dirt_goal_met() and self._wood_goal_met():
+                self._hold_reason = "goal_met"
+                self._relocate_pending = False
+                log(f"Minecraft 自主作业目标达成（背包泥土 {self._inv_dirt}、原木 {self._inv_wood}），收工待命",
+                    "INFO", tag="Minecraft")
+                self._spawn_announce("两组泥土和一组木头都备齐啦，我在这儿歇着；用掉一些后喊 !resume 我再补。")
+            if outcome.phase != "completed":
+                # 瞬时受阻（如新连接区块未加载的 UNSAFE_ENTRY）若不歇拍会形成
+                # 每秒数十次的 RPC 风暴，反而饿死区块加载；完成组仍立即受理下一组。
+                await asyncio.sleep(self._poll_seconds())
             # 汇报整体是后台任务：作业循环不等待历史写入与裁决轮，
             # 下一组立即受理——执行器终态已含返程与库存收尾。
             # 同因快速重复受阻视为瞬时失败风暴：抑制重复汇报，只换区续跑。
@@ -246,7 +307,7 @@ class MinecraftWorker:
         if not await self._wait_until_free():
             return None
         entry = await self._entry_point()
-        await self._call("gather_resources", {
+        order: dict[str, Any] = {
             "block": self._item(),
             "count": self._stack_size(),
             "x": entry["x"],
@@ -254,8 +315,45 @@ class MinecraftWorker:
             "z": entry["z"],
             "radius": _WORK_RADIUS,
             "mode": "count",
-        })
+        }
+        if self._item() in {"auto", "dirt"}:
+            # 区块对齐作业面：// 是 floor 语义，负坐标也落在正确区块。
+            order["chunk"] = {"x": entry["x"] // 16, "z": entry["z"] // 16}
+        await self._refresh_inventory_goals()
+        if self._item() == "auto" and self._dirt_goal_met() and not self._wood_goal_met():
+            # 泥土配额已满、木头未满：本组只砍树。
+            order["logsOnly"] = True
+        if self._item() == "auto" and self._wood_goal_met() and not self._dirt_goal_met():
+            # 木头配额已满、泥土未满：本组只挖土，别再让混合单挑中树后撞爬树储备门槛。
+            order["block"] = "dirt"
+        await self._call("gather_resources", order)
         return await self._watch_stack()
+
+    def _dirt_goal_met(self) -> bool:
+        return self._inv_dirt >= self._stack_size() * _WORK_GOAL_DIRT_GROUPS
+
+    def _wood_goal_met(self) -> bool:
+        return self._inv_wood >= self._stack_size() * _WORK_GOAL_WOOD_GROUPS
+
+    async def _refresh_inventory_goals(self) -> None:
+        """按背包持有量刷新目标进度：重启不清零，玩家取走材料后 resume 补足。"""
+        try:
+            inventory = await asyncio.wait_for(self._call("get_inventory", {}), timeout=10)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log(f"Minecraft 自主作业库存查询失败: {exc}", "DEBUG", tag="Minecraft")
+            return
+        dirt = wood = 0
+        for item in inventory.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").casefold().removeprefix("minecraft:")
+            if name == "dirt":
+                dirt += int(item.get("count") or 0)
+            elif name.endswith("_log"):
+                wood += int(item.get("count") or 0)
+        self._inv_dirt, self._inv_wood = dirt, wood
 
     async def _wait_until_free(self) -> bool:
         """等他方动作（玩家指令、对话派工）释放 bot；持有或掉线则放弃本轮。"""
@@ -279,35 +377,174 @@ class MinecraftWorker:
         return {k: int(float(position[k])) for k in ("x", "y", "z")}
 
     async def _relocate(self) -> None:
-        """原地无目标时换区：朝轮换方向前进一段再开工，让裁决循环有新作业面可挖。"""
+        """原地无目标时换区：目标在正下方先受控下撤，再朝最近可见资源走，
+        找不到再按轮换方向拓荒；全部失败进入冷却并告知玩家，不再原地打转。"""
         state = await self._safe_call("get_state", {})
         position = (state or {}).get("position") or {}
         if not all(k in position for k in ("x", "y", "z")):
             return
-        # 单方向寻路失败（河流/崖壁）不代表无处可去：失败即轮换下一方向，
-        # 四个方向都不通才留在原地开工。半途放弃会把换区变成新的 NO_TARGET 来源。
+        here = {k: int(float(position[k])) for k in ("x", "y", "z")}
+        # 目标明显在下方时优先受控下撤：能摔不死直接掉血落地，会摔死才
+        # 逐格垂直下挖（每格确认下方仍有实心支撑）到安全高度再落。下撤
+        # 带上目标层高度，越过资源层继续挖没有意义。它先于长跳升级——
+        # 站在树冠/悬空树叶上时四向寻路全是 NO_PATH，脚下的资源才是唯一
+        # 可达的出路。探测列表按环距/块距排序，最近命中常是同层或更高，
+        # 必须扫出真正低于脚下 3 格以上的目标，不能只看第一个。
+        below = next((target for target in await self._probe_targets(here)
+                      if target["y"] <= here["y"] - 3), None)
+        if below is not None and await self._descend(below["y"]):
+            log(f"Minecraft 自主作业目标在下方 {here['y'] - below['y']} 格，受控下撤后重新探测", "INFO", tag="Minecraft")
+            return
+        if self._relocate_fails >= _RELOCATE_FAIL_ESCALATION:
+            # 近距换区连续无产出：探测命中互相指向残破区内部，直接远程跳区
+            # 离开整个地带，落点后再按探测恢复就近作业。长跳尝试全部轮换
+            # 方向（单方向直线在山脊地形常 NO_PATH），48 不通降 24，仍全部
+            # 不通进入冷却——绝不再落回 8 格碎步，那正是打乒乓的来源。
+            for distance in (_RELOCATE_LONG_HOP_DISTANCE, _RELOCATE_DISTANCE):
+                for _ in _RELOCATE_DIRECTIONS:
+                    dx, dz = _RELOCATE_DIRECTIONS[self._relocate_heading % len(_RELOCATE_DIRECTIONS)]
+                    self._relocate_heading += 1
+                    if await self._walk_relocate(here["x"] + dx * distance, here["z"] + dz * distance):
+                        log(f"Minecraft 自主作业连续 {self._relocate_fails} 轮换区无产出，跳区至 "
+                            f"({here['x'] + dx * distance}, {here['z'] + dz * distance}) 离开残破地带",
+                            "INFO", tag="Minecraft")
+                        return
+            self._relocate_cooldown_until = self._clock() + _RELOCATE_FAIL_COOLDOWN_SECONDS
+            log("Minecraft 自主作业残破地带四向跳区全部不可达，进入冷却", "WARNING", tag="Minecraft")
+            await self._announce_cooldown("这一带的地形我走不出去也挖不动，先歇一会儿；带我到平缓些的地方我马上继续。")
+            return
+        for target in await self._probe_targets(here):
+            if await self._walk_relocate(target["x"], target["z"]):
+                log(f"Minecraft 自主作业附近无目标，走向可见资源 ({target['x']}, {target['z']}) 继续开工",
+                    "INFO", tag="Minecraft")
+                return
+        # 单方向寻路失败（河流/崖壁）不代表无处可去：先试近距（陡坡上缓段
+        # 更可能可达）再试远距，失败即轮换下一方向，全部不通才进入冷却。
         for _ in _RELOCATE_DIRECTIONS:
             dx, dz = _RELOCATE_DIRECTIONS[self._relocate_heading % len(_RELOCATE_DIRECTIONS)]
             self._relocate_heading += 1
-            target = {
-                "x": int(float(position["x"])) + dx * _RELOCATE_DISTANCE,
-                "y": int(float(position["y"])),
-                "z": int(float(position["z"])) + dz * _RELOCATE_DISTANCE,
-            }
-            try:
-                await asyncio.wait_for(
-                    self._call("goto", {"goalType": "near", **target, "range": 2, "timeout": 90000}),
-                    timeout=100.0,
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                log(f"Minecraft 自主作业换区移动失败: {exc}", "DEBUG", tag="Minecraft")
-                continue
-            label = _ITEM_LABELS.get(self._item(), self._item())
-            log(f"Minecraft 自主作业附近无{label}，换区至 ({target['x']}, {target['z']}) 继续开工",
-                "INFO", tag="Minecraft")
+            for distance in (8, _RELOCATE_DISTANCE):
+                if await self._walk_relocate(here["x"] + dx * distance, here["z"] + dz * distance):
+                    label = GATHER_ITEM_LABELS.get(self._item(), self._item())
+                    log(f"Minecraft 自主作业附近无{label}，换区至 ({here['x'] + dx * distance}, "
+                        f"{here['z'] + dz * distance}) 继续开工", "INFO", tag="Minecraft")
+                    return
+        self._relocate_cooldown_until = self._clock() + _RELOCATE_FAIL_COOLDOWN_SECONDS
+        log("Minecraft 自主作业换区探测与拓荒全部失败，进入冷却", "WARNING", tag="Minecraft")
+        await self._announce_cooldown("附近暂时找不到能挖的泥土和树，我先歇一会儿再找；也可以带我走两步换个地方。")
+
+    async def _announce_cooldown(self, text: str) -> None:
+        """冷却求助首次立即播报，后续最多每 5 分钟一次，失败不反噬作业循环。"""
+        now = self._clock()
+        if (
+            self._cooldown_announced_at is not None
+            and now - self._cooldown_announced_at < _COOLDOWN_ANNOUNCE_INTERVAL
+        ):
             return
+        self._cooldown_announced_at = now
+        try:
+            await self._announce(text)
+        except Exception as exc:
+            log(f"Minecraft 自主作业冷却播报失败: {exc}", "DEBUG", tag="Minecraft")
+
+    async def _descend(self, target_y: int | None = None) -> bool:
+        """受控下撤：优先掉血落地（不摔死），否则逐格垂直下挖到安全高度。"""
+        args: dict[str, Any] = {}
+        if target_y is not None:
+            args["targetY"] = int(target_y)
+        try:
+            result = await asyncio.wait_for(self._call("descend", args), timeout=150)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log(f"Minecraft 自主作业受控下撤失败: {exc}", "DEBUG", tag="Minecraft")
+            return False
+        ok = bool(result.get("completed"))
+        log(f"Minecraft 自主作业受控下撤: fallen={result.get('fallen')} dug={result.get('dug')} "
+            f"from={result.get('from')} to={result.get('to')}", "DEBUG", tag="Minecraft")
+        return ok
+
+    async def _probe_targets(self, here: dict[str, int]) -> list[dict[str, Any]]:
+        """可见资源探测：按「保底泥土优先 → 区块环距 → 块距」排序返回可走向位置。
+
+        背包泥土不足保底时泥土命中排在原木前（垫脚启动金）；环距即「本区块
+        → 周围 8 区块 → 继续扩环」的扩搜顺序。丢弃高差过大与刚走完的目标——
+        深埋方块走向了也挖不到，原地重走只会制造"到达即完成"的空换区。
+        """
+        soil_first = await self._dirt_below_floor()
+        soil = await self._probe_blocks(_RELOCATE_SOIL_BLOCKS, here)
+        logs = await self._probe_blocks(_RELOCATE_LOG_BLOCKS, here)
+        home = (here["x"] // 16, here["z"] // 16)
+        ranked: list[tuple[tuple[int, int, int], dict[str, Any]]] = []
+        for is_soil, hits in ((True, soil), (False, logs)):
+            for hit in hits:
+                x, y, z = (hit[k] for k in ("x", "y", "z"))
+                if abs(y - here["y"]) > (_RELOCATE_SOIL_MAX_DY if is_soil else _RELOCATE_LOG_MAX_DY):
+                    continue
+                if self._last_relocate_target is not None and abs(x - self._last_relocate_target[0]) <= 8 \
+                        and abs(z - self._last_relocate_target[1]) <= 8:
+                    continue
+                ring = max(abs(x // 16 - home[0]), abs(z // 16 - home[1]))
+                # 3D 距离让浅层命中排在深埋命中前：走向 40 格深的地下土
+                # 只会空跑一趟。
+                distance = (x - here["x"]) ** 2 + (z - here["z"]) ** 2 + (y - here["y"]) ** 2
+                priority = 0 if not soil_first or is_soil else 1
+                ranked.append(((priority, ring, distance), {"x": x, "y": y, "z": z}))
+        ranked.sort(key=lambda item: item[0])
+        return [entry for _key, entry in ranked]
+
+    async def _probe_blocks(self, names: tuple[str, ...], here: dict[str, int]) -> list[dict[str, int]]:
+        try:
+            found = await asyncio.wait_for(self._call("find_blocks", {
+                "matching": list(names),
+                "point": here,
+                "maxDistance": _RELOCATE_PROBE_DISTANCE,
+                "count": 8,
+            }), timeout=10)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log(f"Minecraft 自主作业资源探测失败: {exc}", "DEBUG", tag="Minecraft")
+            return []
+        positions = found.get("positions") or []
+        return [
+            {k: int(float(entry[k])) for k in ("x", "y", "z")}
+            for entry in positions
+            if isinstance(entry, dict) and all(k in entry for k in ("x", "y", "z"))
+        ]
+
+    async def _dirt_below_floor(self) -> bool:
+        """背包泥土是否低于垫脚保底；读不到库存时保守视为不缺。"""
+        try:
+            inventory = await asyncio.wait_for(self._call("get_inventory", {}), timeout=10)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log(f"Minecraft 自主作业库存查询失败: {exc}", "DEBUG", tag="Minecraft")
+            return False
+        total = 0
+        for item in inventory.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").casefold().removeprefix("minecraft:")
+            if name == "dirt":
+                total += int(item.get("count") or 0)
+        return total < _DIRT_RESERVE_FLOOR
+
+    async def _walk_relocate(self, x: int, z: int) -> bool:
+        """y 无关目标走一步：固定高度的 near 目标在起伏地形上必然大量不可达。"""
+        try:
+            await asyncio.wait_for(
+                self._call("goto", {"goalType": "nearxz", "x": x, "z": z, "range": 4, "timeout": 90000}),
+                timeout=100.0,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log(f"Minecraft 自主作业换区移动失败: {exc}", "DEBUG", tag="Minecraft")
+            return False
+        self._last_relocate_target = (x, z)
+        return True
 
     async def _watch_stack(self) -> StackOutcome:
         """轮询采集状态直到终态；裁决/暂停/掉线落在中途则放弃记账。"""
@@ -339,22 +576,35 @@ class MinecraftWorker:
             log(f"Minecraft 自主作业监视超时后取消失败: {exc}", "WARNING", tag="Minecraft")
 
     def _report_line(self, outcome: StackOutcome) -> str:
-        label = _ITEM_LABELS.get(self._item(), self._item())
+        prefix = f"第 {self._stacks_done} 组" if outcome.gained else ""
+        if len(outcome.items) > 1:
+            head_item = "资源"
+            detail = "、".join(f"{GATHER_ITEM_LABELS.get(name, name)} {gained}" for name, gained in outcome.items)
+            gains = f"{detail}（合计 {outcome.gained}/{outcome.requested}）"
+        else:
+            name = outcome.items[0][0] if outcome.items else self._item()
+            head_item = GATHER_ITEM_LABELS.get(name, name)
+            gains = f"{outcome.gained}/{outcome.requested} 个{head_item}"
+        if len(self._totals) > 1:
+            totals = "、".join(f"{GATHER_ITEM_LABELS.get(name, name)} {gained}" for name, gained in self._totals.items())
+        else:
+            totals = f"{self._total_gained} 个"
         if outcome.phase in _BLOCKED_PHASES or outcome.phase not in {"completed"}:
             head = "受阻" if outcome.phase in _BLOCKED_PHASES else outcome.phase
             return (
-                f"自主作业第 {self._stacks_done} 组{label}{head}：{outcome.reason or '无终态原因'}；"
-                f"本组新入包 {outcome.gained}/{outcome.requested}，挖掉 {outcome.dug} 个方块，"
-                f"累计 {self._total_gained} 个。"
+                f"自主作业{prefix}{head_item}{head}：{outcome.reason or '无终态原因'}；"
+                f"本组新入包 {gains}，挖掉 {outcome.dug} 个方块，"
+                f"累计 {totals}。"
             )
         return (
-            f"自主作业第 {self._stacks_done} 组{label}完成：新入包 {outcome.gained}/{outcome.requested}，"
-            f"挖掉 {outcome.dug} 个方块，累计 {self._total_gained} 个。"
+            f"自主作业{prefix}{head_item}完成：新入包 {gains}，"
+            f"挖掉 {outcome.dug} 个方块，累计 {totals}。"
         )
 
     def _apply_block_outcome(self, outcome: StackOutcome) -> None:
-        """受阻是本地自治信号，不是停止信号：换区可绕开的设下一轮搬家，其余原样
-        续跑。汇报与裁决始终是旁路，模型不回应等价于 continue，循环永不停等。"""
+        """受阻是本地自治信号，不是停止信号：换区可绕开的设下一轮搬家，同因连败
+        升级换区离开不利站位，其余原样续跑。汇报与裁决始终是旁路，模型不回应等价
+        于 continue，循环永不停等。"""
         if outcome.phase in _BLOCKED_PHASES:
             reason = outcome.reason or outcome.phase
             now = self._clock()
@@ -364,21 +614,62 @@ class MinecraftWorker:
                 reason == self._last_block_reason
                 and now - self._last_block_at < _RAPID_REBLOCK_SECONDS
             )
+            self._repeated_blocks = self._repeated_blocks + 1 if reason == self._last_block_reason else 1
             self._last_block_reason = reason
             self._last_block_at = now
             if _needs_relocate(reason):
                 self._relocate_pending = True
+                # 换区类受阻计入无产出计数：探测命中可能互相指向残破区内部
+                # （可见但安全检查不通过），近距换区空转两轮即远程跳区离开。
+                self._relocate_fails += 1
                 log(f"Minecraft 自主作业作业面受阻，自动换区继续: {reason}", "INFO", tag="Minecraft")
+            elif self._repeated_blocks >= _REPEATED_BLOCK_RELOCATE_AFTER:
+                self._relocate_pending = True
+                self._relocate_fails += 1
+                log(f"Minecraft 自主作业同因受阻 {self._repeated_blocks} 组，主动换区离开不利站位: {reason}",
+                    "INFO", tag="Minecraft")
             else:
                 log(f"Minecraft 自主作业本组受阻，继续下一组: {reason}", "DEBUG", tag="Minecraft")
             return
         self._last_block_reason = ""
+        self._repeated_blocks = 0
         self._last_block_at = 0.0
         self._suppress_report = False
+
+    def _track_stuck_spot(self, outcome: StackOutcome) -> None:
+        """同点位空手连败升级换区：失败原因可能轮换（NO_TARGET/寻路/挖掘中止），
+        按「原因」计数永远凑不齐，按「入口坐标 + 空手」计数才能跳出死点。"""
+        entry = outcome.entry
+        if entry is None:
+            return
+        if entry == self._stuck_entry:
+            if outcome.gained == 0:
+                self._stuck_streak += 1
+        else:
+            self._stuck_entry = entry
+            self._stuck_streak = 1 if outcome.gained == 0 else 0
+        if self._stuck_streak >= _REPEATED_BLOCK_RELOCATE_AFTER and not self._relocate_pending:
+            self._relocate_pending = True
+            self._stuck_streak = 0
+            self._relocate_fails += 1
+            log(f"Minecraft 自主作业同点位连续空手受阻 {entry}，主动换区离开死点", "INFO", tag="Minecraft")
 
     def _spawn_report(self, report_line: str) -> None:
         """后台汇报：历史写入与裁决轮都不占用作业循环，失败不反噬作业。"""
         task = asyncio.create_task(self._report_and_verdict(report_line), name="channel.minecraft.worker-report")
+        self._reports.add(task)
+        task.add_done_callback(self._reports.discard)
+
+    def _spawn_announce(self, text: str) -> None:
+        """后台播报：收工等节点事实直接告知玩家，失败不反噬作业循环。"""
+
+        async def guarded() -> None:
+            try:
+                await self._announce(text)
+            except Exception as exc:
+                log(f"Minecraft 自主作业节点播报失败: {exc}", "DEBUG", tag="Minecraft")
+
+        task = asyncio.create_task(guarded(), name="channel.minecraft.worker-announce")
         self._reports.add(task)
         task.add_done_callback(self._reports.discard)
 
@@ -453,17 +744,22 @@ class MinecraftWorker:
                     log(f"Minecraft 裁决暂停未确认: {exc}", "WARNING", tag="Minecraft")
             log("Minecraft 模型裁决 stop，自主作业暂停开工", "INFO", tag="Minecraft")
         else:
-            if self._hold_reason is not None and _needs_relocate(self._last_block_reason):
-                self._relocate_pending = True
-            if self._paused_action:
-                self._paused_action = False
-                try:
-                    await asyncio.wait_for(self._call("resume_action", {"allowIdle": True}), timeout=3)
-                except Exception as exc:
-                    log(f"Minecraft 裁决恢复未确认: {exc}", "WARNING", tag="Minecraft")
-            if self._hold_reason is not None:
-                log(f"Minecraft 模型裁决 continue，解除持有: {self._hold_reason}", "INFO", tag="Minecraft")
-            self._hold_reason = None
+            if self._hold_reason == "goal_met":
+                # 配额收工只由玩家 !resume 解除：后台裁决的 continue 不重启
+                # 已达标的作业，否则刚宣布收工待命就自相矛盾地继续挖。
+                log("Minecraft 模型裁决 continue，但本轮配额已达标，保持收工待命", "INFO", tag="Minecraft")
+            else:
+                if self._hold_reason is not None and _needs_relocate(self._last_block_reason):
+                    self._relocate_pending = True
+                if self._paused_action:
+                    self._paused_action = False
+                    try:
+                        await asyncio.wait_for(self._call("resume_action", {"allowIdle": True}), timeout=3)
+                    except Exception as exc:
+                        log(f"Minecraft 裁决恢复未确认: {exc}", "WARNING", tag="Minecraft")
+                if self._hold_reason is not None:
+                    log(f"Minecraft 模型裁决 continue，解除持有: {self._hold_reason}", "INFO", tag="Minecraft")
+                self._hold_reason = None
         message = _verdict_message(text)
         if message:
             await self._announce(message)

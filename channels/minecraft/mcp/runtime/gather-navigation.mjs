@@ -12,7 +12,10 @@ import { clear, safeStanding, solid, occupied } from '../bot/anelf-survival-obse
 const { Movements, goals } = pathfinder
 const routeModes = /** @type {const} */ (['leaf', 'high', 'scaffold'])
 /** @typedef {typeof routeModes[number]} RouteMode */
-const scaffoldHeight = 8
+// Tree-climbing scaffold band: 16 reaches tall jungle trunks and the hanging
+// crowns of earlier partial harvests while every placed block stays inside
+// the recorded, dismantled-on-return support budget.
+export const scaffoldHeight = 16
 /** @typedef {{position:Vec3,type:number,entry?:{x:number,y:number,z:number}}} Support */
 
 /** @param {unknown} name */
@@ -59,7 +62,9 @@ function raycastThroughCovers (bot, eye, direction, range, target) {
     // The raycast result is the world block itself. Collision-less covers and
     // harvestable leaves do not hide a face: covers never block walking or the
     // dig packet, and leaves are exactly what gathering is allowed to clear.
-    if (hit.boundingBox !== 'empty' && !isLeafBlockName(hit.name)) return false
+    // Cocoa pods are solid-bodied trunk attachments; like collision-less
+    // covers they hide nothing a harvest needs to see.
+    if (hit.boundingBox !== 'empty' && !isLeafBlockName(hit.name) && hit.name !== 'cocoa') return false
     const exit = rayExitDistance(hit.position, eye, direction, traveled)
     if (!Number.isFinite(exit)) return false
     traveled += exit
@@ -86,10 +91,33 @@ function rayExitDistance (cell, start, direction, entered) {
   return exit
 }
 
+/** An entity other than a player overlaps the cell. A companion player
+ * hugging the bot is normal in this game and must not veto the entry stand;
+ * mobs, armor stands and objects still do.
+ * @param {import('mineflayer').Bot} bot @param {Vec3} p
+ */
+function occupiedByNonPlayer (bot, p) {
+  for (const entity of Object.values(bot.entities ?? {})) {
+    if (!entity.position || entity.isValid === false || entity.name === 'item') continue
+    if (entity.type === 'player' || entity.name === 'player') continue
+    const { x, y, z } = entity.position, half = (entity.width || 0.6) / 2
+    if (x + half > p.x && x - half < p.x + 1 && z + half > p.z && z - half < p.z + 1 &&
+      y + (entity.height || 1.8) > p.y && y < p.y + 1) return true
+  }
+  return false
+}
+
 export class GatherNavigation {
-  /** @param {import('mineflayer').Bot} bot @param {Vec3} entry @param {AbortSignal} signal @param {string} [world] */
-  constructor (bot, entry, signal, world = '') {
+  /**
+   * @param {import('mineflayer').Bot} bot @param {Vec3} entry @param {AbortSignal} signal
+   * @param {string} [world] @param {Vec3} [boundsCenter]
+   * Stands stay within 16 blocks of the entry, or additionally within 12 of an
+   * explicit bounds center: chunk-clamped digging anchors that on the chunk
+   * center so corner targets stay reachable even when work starts at an edge.
+   */
+  constructor (bot, entry, signal, world = '', boundsCenter = null) {
     this.bot = bot; this.entry = entry; this.signal = signal; this.world = world
+    this.boundsCenter = boundsCenter
     /** @type {Map<string,Support>} */
     this.scaffolds = new Map()
     /** @type {Map<string,Support>} */
@@ -155,7 +183,9 @@ export class GatherNavigation {
   /** @param {{x:number,y:number,z:number}} p @param {RouteMode} mode */
   safeRoutePoint (p, mode) {
     const point = new Vec3(p.x, p.y, p.z).floored()
-    if (point.distanceTo(this.entry) > 16 || occupied(this.bot, point, true)) return false
+    const anchor = this.boundsCenter
+    if (point.distanceTo(this.entry) > 16 && !(anchor && point.distanceTo(anchor) <= 12)) return false
+    if (occupied(this.bot, point, true)) return false
     if (mode === 'scaffold' && point.y >= this.entry.y + 1 && point.y <= this.entry.y + scaffoldHeight) {
       const feet = this.bot.blockAt(point), head = this.bot.blockAt(point.offset(0, 1, 0))
       const floor = this.bot.blockAt(point.offset(0, -1, 0))
@@ -178,7 +208,7 @@ export class GatherNavigation {
   safe (p) {
     const point = new Vec3(p.x, p.y, p.z).floored()
     return point.y === this.entry.y && point.distanceTo(this.entry) <= 16 &&
-      safeStanding(this.bot, point) && !occupied(this.bot, point, true)
+      safeStanding(this.bot, point) && !occupiedByNonPlayer(this.bot, point)
   }
 
   /** @param {RouteMode} mode */
@@ -271,7 +301,13 @@ export class GatherNavigation {
     if (!await this.reachable(this.bot.entity.position, to, mode)) throw new Error(`GATHER_NO_ROUTE: No confirmed ${mode} route.`)
     this.signal.throwIfAborted()
     this.bot.pathfinder.setMovements(this.movements(mode))
-    const stop = () => this.bot.pathfinder.setGoal(null)
+    // Only clear the goal this walk installed: when survival rescue preempts,
+    // the walk's own cleanup must never kill the rescue's replacement goal.
+    let installed = null
+    const stop = () => {
+      const active = this.bot.pathfinder.goal
+      if (active == null || installed == null || active === installed) this.bot.pathfinder.setGoal(null)
+    }
     let unsafe = false
     /** @param {import('mineflayer-pathfinder').PartiallyComputedPath} result */
     const validate = result => {
@@ -316,7 +352,7 @@ export class GatherNavigation {
     let motion
     const stall = new AbortController()
     try {
-      motion = this.bot.pathfinder.goto(new goals.GoalBlock(to.x, to.y, to.z))
+      motion = this.bot.pathfinder.goto(installed = new goals.GoalBlock(to.x, to.y, to.z))
       // A walking bot must keep making progress unless the route itself is
       // being cleared (mining or placing). Survival rescue escalates a six
       // second frozen walk into a preemption, so gathering abandons the
@@ -359,7 +395,13 @@ export class GatherNavigation {
       stall.abort()
       timeout.abort(); stop()
       if (onForced && this.bot._client?.removeListener) this.bot._client.removeListener('position', onForced)
-      if (motion) await motion.catch(() => {})
+      if (motion) await motion.catch(error => {
+        const message = error instanceof Error ? error.message : String(error)
+        if (message.includes('goal was changed')) {
+          const site = new Error('replacement-site').stack ?? ''
+          console.error('[anelf] goal replaced during walk:', String(this.bot.pathfinder.goal), site.slice(0, 600))
+        }
+      })
       await Promise.allSettled([...placements])
       if (mode === 'scaffold') this.bot.placeBlock = originalPlace
       this.signal.removeEventListener('abort', stop)
@@ -369,8 +411,11 @@ export class GatherNavigation {
 
   async cleanupScaffolding () {
     if (!this.scaffolds.size) return
-    const supports = [...this.scaffolds.values()].sort((a, b) => b.position.y - a.position.y)
-    for (const { position: point, type } of supports) {
+    // Descend builder blocks are recorded mid-loop, so keep draining until the
+    // registry is empty instead of clearing records that were never processed.
+    while (this.scaffolds.size) {
+      const supports = [...this.scaffolds.values()].sort((a, b) => b.position.y - a.position.y)
+      for (const { position: point, type } of supports) {
       this.signal.throwIfAborted()
       if (this.bot.blockAt(point)?.boundingBox === 'empty') {
         const key = safety.key(point)
@@ -401,7 +446,27 @@ export class GatherNavigation {
       }
       this.signal.throwIfAborted()
       if (descend) {
-        if (!solid(landing)) throw new Error('GATHER_SCAFFOLD_CLEANUP: Descent needs solid ground immediately below the support.')
+        if (!solid(landing)) {
+          // The landing below the support was dug away (our own pit): build
+          // the way down with carried dirt instead of stranding the bot on
+          // top of its own scaffold. The placed block becomes a recorded
+          // support and is dismantled by a later iteration of this loop.
+          const below = point.offset(0, -1, 0)
+          const carried = this.bot.inventory?.items?.().some(entry => entry.name === 'dirt')
+          if (!carried || landing?.boundingBox !== 'empty' || !this.bot.placeBlock) {
+            throw new Error('GATHER_SCAFFOLD_CLEANUP: Descent needs solid ground immediately below the support.')
+          }
+          await this.bot.placeBlock(block, new Vec3(0, -1, 0))
+          const placed = this.bot.blockAt(below)
+          if (placed?.boundingBox !== 'block') {
+            throw new Error('GATHER_SCAFFOLD_CLEANUP: Descent support placement was not confirmed.')
+          }
+          const belowKey = safety.key(below)
+          const record = { position: below.clone(), type: placed.type, entry: this.entry.clone() }
+          this.scaffolds.set(belowKey, record)
+          this.persistedScaffolds.set(belowKey, record)
+          await this.persistScaffolds()
+        }
         const centered = point.offset(0.5, 1, 0.5)
         if (this.bot.entity.position.distanceTo(centered) > 0.18) await this.walk(point.offset(0, 1, 0), 'scaffold')
         await safety.descendTemporarySupport(this.bot, block, this.signal)
@@ -416,8 +481,8 @@ export class GatherNavigation {
       }
       if (this.bot.blockAt(point)?.boundingBox !== 'empty') throw new Error('GATHER_SCAFFOLD_CLEANUP: Temporary support removal was not confirmed.')
       this.scaffolds.delete(key); this.persistedScaffolds.delete(key); await this.persistScaffolds()
+      }
     }
-    this.scaffolds.clear(); await this.persistScaffolds()
     if (this.bot.entity.position.floored().y !== this.entry.y) await this.walk(this.entry, 'leaf')
   }
 }

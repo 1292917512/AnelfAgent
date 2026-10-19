@@ -12,6 +12,7 @@ import { registerProduction } from './anelf-production-tools.mjs'
 import { registerSupplies } from './anelf-supply-tools.mjs'
 import { registerGathering } from './anelf-gather-tools.mjs'
 import { registerBuildSite } from './anelf-build-site.mjs'
+import { registerDescent } from './anelf-descent-tools.mjs'
 
 /** @typedef {import('../context.js').ToolContext} Context */
 /** @typedef {import('./registry.js').Registrar} Registrar */
@@ -38,6 +39,7 @@ async function stop (locks, reflex = false) {
 
 /** @param {Registrar} reg */
 export function registerActions (reg) {
+  registerDescent(reg)
   registerProduction(reg)
   registerSupplies(reg)
   registerGathering(reg)

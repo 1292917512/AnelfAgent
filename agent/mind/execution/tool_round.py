@@ -191,9 +191,9 @@ async def _handle_tool_round(
             state.reflect_text_rounds = 0
             state.iteration += 1
             return RoundOutcome.CONTINUE
-        # end_reply 即静默收束：REPLY 下同批正文与此前独白均不投递
-        # （回复走 send_message，结束备注写 reason 仅内部日志）；REFLECT 下
-        # 收束信号不是工作工具，同批文本即最终连续文本段，纳入产出
+        # end_reply 即收束信号：回复走 send_message；纯收束批次的同批正文仅在本轮
+        # 零送达时经 Jev 兜底（见下），其余不投递（结束备注写 reason 仅内部日志）；
+        # REFLECT 下收束信号不是工作工具，同批文本即最终连续文本段，纳入产出
         end_text = _strip_think_blocks(result.content or "").strip()
         if ctx.mode == ThinkMode.REFLECT and ctx.require_output and not end_text and not ctx.collected_text:
             ctx.summary_only = True
@@ -210,7 +210,46 @@ async def _handle_tool_round(
             state.iteration += 1
             return RoundOutcome.CONTINUE
         if ctx.mode == ThinkMode.REPLY:
-            execution_steps.append(f"→ 第{state.iteration + 1}轮: end_reply 请求静默收束，过程正文不投递")
+            if (pure_end_reply and end_text and ctx.anything is not None
+                    and not should_suppress(end_text) and not _END_REPLY_TEXT_RE.match(end_text)
+                    and not state.output_sent and state.reply_delivery_status == "pending"):
+                # 犯错兜底，不改投递契约：模型漏用 send_message 以正文收束且本轮
+                # 零送达时经 Jev 判定补投；未投递时不写新会话记录（防循环），
+                # 在正文自身加注并标记思维链路。送达后给模型的回执是纠偏提示
+                # 而非投递成功回执，不奖励跳过工具。
+                receipt, aborted = await _await_with_abort(deliver_reply(
+                    ctx, state, end_text, interim=False,
+                    messages=ctx.base_messages + tool_chain,
+                ), ctx.abort_event)
+                if aborted:
+                    state.interrupted = True
+                    state.completion_reason = "interrupted"
+                    return await _finish_round(ctx, state)
+                reason = receipt.reason if receipt is not None else "不具备自动投递资格"
+                if receipt is not None and receipt.status == "sent":
+                    state.output_sent = True
+                    state.auto_reply_blocked = True
+                    state.reply_delivery_status = "sent"
+                    tool_chain.append({
+                        "role": "system",
+                        "content": (
+                            "[系统] 本次回复未经 send_message 以正文收束，已由兜底送达用户（特例）。"
+                            "后续必须调用 send_message 发送回复。"
+                        ),
+                        "_source": {"origin": "reply_delivery"},
+                    })
+                    execution_steps.append(f"→ 第{state.iteration + 1}轮: end_reply 正文经 Jev 兜底补投")
+                else:
+                    # 不写新会话记录（防循环），也不改写正文本身（加注会随
+                    # completion 快照流向续跑/事件消费方，伪造 [系统] 前缀
+                    # 易诱导模型幻觉）——标记只进执行摘要与思维链路，
+                    # 属固有的执行事实记录通道
+                    preview = end_text if len(end_text) <= 60 else end_text[:60] + "…"
+                    execution_steps.append(
+                        f"→ 第{state.iteration + 1}轮: end_reply 正文未投递（{reason}）：{preview}"
+                    )
+            else:
+                execution_steps.append(f"→ 第{state.iteration + 1}轮: end_reply 请求静默收束，过程正文不投递")
         elif end_text:
             ctx.collected_text.append(end_text)
         log(f"AI 请求结束{ctx.mode_label} (轮次 {state.iteration + 1})", tag="思维")

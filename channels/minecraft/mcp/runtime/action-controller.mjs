@@ -169,9 +169,12 @@ export class ActionController extends ActionLocks {
     // setGoal(null) aborts immediately; pathfinder.stop() may walk to the next node first.
     const bot = this.bot
     if (bot) {
-      this.cleanup(action, () => bot.pathfinder.setGoal(null))
-      this.cleanup(action, () => bot.stopDigging())
-      this.cleanup(action, () => bot.clearControlStates())
+      // Deferred cleanups of a superseded action must not kill the successor's
+      // walk or dig: only clear motion when no newer action took over.
+      const ownsMotion = () => this.action == null || this.action === action
+      this.cleanup(action, () => { if (ownsMotion()) return bot.pathfinder.setGoal(null) })
+      this.cleanup(action, () => { if (ownsMotion()) return bot.stopDigging() })
+      this.cleanup(action, () => { if (ownsMotion()) return bot.clearControlStates() })
     }
   }
 
@@ -340,7 +343,7 @@ export class ActionController extends ActionLocks {
         action.reason = 'Movement target was lost or the pathfinder stopped.'
       }
       for (const dispose of action.dispose.splice(0)) dispose()
-      bot.pathfinder.setGoal(null)
+      if (this.action == null || this.action === action) bot.pathfinder.setGoal(null)
       this.settle(action)
     }
     const reached = () => { if (!continuous) finish() }

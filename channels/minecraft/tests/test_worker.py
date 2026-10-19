@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from typing import Any
 
 import pytest
 
-from channels.minecraft.worker import MinecraftWorker, StackOutcome
+from channels.minecraft.worker import (
+    _RELOCATE_LOG_BLOCKS,
+    _RELOCATE_SOIL_BLOCKS,
+    MinecraftWorker,
+    StackOutcome,
+)
 
 
 class FakeGame:
@@ -71,7 +77,9 @@ class RuntimeStub:
         self.mind = mind
 
 
-def _make_worker(game: FakeGame) -> tuple[MinecraftWorker, dict[str, bool], list[str], list[str]]:
+def _make_worker(
+    game: FakeGame, *, item: str = "dirt", clock: Callable[[], float] = time.monotonic,
+) -> tuple[MinecraftWorker, dict[str, bool], list[str], list[str]]:
     flag = {"online": True}
     records: list[str] = []
     announces: list[str] = []
@@ -87,11 +95,12 @@ def _make_worker(game: FakeGame) -> tuple[MinecraftWorker, dict[str, bool], list
         server_id=lambda: "local",
         online=lambda: flag["online"],
         enabled=lambda: True,
-        item=lambda: "dirt",
+        item=lambda: item,
         stack_size=lambda: 64,
         poll_seconds=lambda: 0.01,
         record=record,
         announce=announce,
+        clock=clock,
     )
     return worker, flag, records, announces
 
@@ -138,6 +147,189 @@ async def test_worker_digs_without_model_and_reports_each_stack(
 
 
 @pytest.mark.asyncio
+async def test_repeated_same_reason_blocks_escalate_to_relocate() -> None:
+    """非换区原因的同因连败升级换区：UNSAFE_ENTRY 这类不利站位靠搬家自救。"""
+    game = FakeGame()
+    worker, _flag, _records, _announces = _make_worker(game)
+    blocked = StackOutcome(phase="blocked", reason="GATHER_UNSAFE_ENTRY: x", dug=0, gained=0, requested=64)
+    for index in range(4):
+        worker._apply_block_outcome(blocked)
+        assert not worker._relocate_pending, f"第 {index + 1} 次同因受阻仍在原地重试"
+    worker._apply_block_outcome(blocked)
+    assert worker._relocate_pending  # 第 5 次同因连败升级换区
+
+    worker._relocate_pending = False
+    worker._apply_block_outcome(StackOutcome(phase="completed", reason="", dug=1, gained=1, requested=64))
+    for _ in range(4):
+        worker._apply_block_outcome(blocked)
+    assert not worker._relocate_pending  # 完成组已重置连败计数
+
+
+@pytest.mark.asyncio
+async def test_same_spot_empty_streak_relocates_regardless_of_reason() -> None:
+    """失败原因轮换（寻路/挖掘中止/无目标）时，同点位空手连败也要升级换区。"""
+    game = FakeGame()
+    worker, _flag, _records, _announces = _make_worker(game)
+    reasons = ["GATHER_NO_TARGET: a", "Goal was changed before it could be completed!",
+               "Digging aborted", "GATHER_NO_ROUTE: b", "GATHER_NO_SIGHT: c"]
+    for index, reason in enumerate(reasons):
+        outcome = StackOutcome(phase="blocked", reason=reason, dug=0, gained=0, requested=64,
+                               entry=(10, 64, -5))
+        worker._track_stuck_spot(outcome)
+        if index < len(reasons) - 1:
+            assert not worker._relocate_pending, "前四组仍在原地重试"
+    assert worker._relocate_pending  # 第五组同点位空手，无论原因轮换都换区
+    assert worker._stuck_streak == 0  # 升级后计数复位
+
+    # 有产出或换了位置则计数归零
+    worker._relocate_pending = False
+    worker._track_stuck_spot(StackOutcome(phase="completed", reason="", dug=2, gained=2, requested=64,
+                                          entry=(10, 64, -5)))
+    assert worker._stuck_streak == 0
+
+
+@pytest.mark.asyncio
+async def test_worker_auto_order_flows_through_and_reports_per_item_gains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    game = FakeGame()
+    game.status_results = [
+        {"active": True, "phase": "running", "gained": 12, "dug": 14, "requested": 64, "reason": ""},
+        {"active": False, "phase": "completed", "gained": 40, "dug": 43, "requested": 64, "reason": "",
+         "items": [{"item": "dirt", "gained": 31, "available": 95},
+                   {"item": "oak_log", "gained": 9, "available": 9}]},
+    ]
+    mind = FakeMind()
+    monkeypatch.setattr("agent.runtime.singleton.get_runtime", lambda: RuntimeStub(mind))
+    worker, flag, records, _announces = _make_worker(game, item="auto")
+    game.flip_offline_when_status_exhausted(flag)
+
+    await asyncio.wait_for(worker._session_loop(), timeout=2)
+    await _drain_reports(worker)
+
+    orders = game.gather_orders()
+    assert orders[0]["block"] == "auto"
+    assert orders[0]["mode"] == "count"
+    assert orders[0]["chunk"] == {"x": 0, "z": -1}  # (10,·,-5)：floor 语义负坐标落对区块
+    assert "第 1 组资源完成" in records[0]
+    assert "泥土 31、橡木原木 9（合计 40/64）" in records[0]
+    assert "累计 泥土 31、橡木原木 9" in records[0]
+
+
+@pytest.mark.asyncio
+async def test_empty_blocked_groups_do_not_consume_stack_numbers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """空手受阻组不占组号：玩家看到的「第 N 组」与实际有产出的组对齐。"""
+    monkeypatch.setattr("agent.runtime.singleton.get_runtime", lambda: None)
+    game = FakeGame()
+    blocked = {"active": False, "phase": "blocked", "gained": 0, "dug": 0, "requested": 64,
+               "reason": "GATHER_NO_TARGET: none"}
+    game.status_results = [dict(blocked), dict(blocked),
+                           {"active": False, "phase": "completed", "gained": 64, "dug": 64,
+                            "requested": 64, "reason": ""}]
+    worker, flag, records, _announces = _make_worker(game)
+    game.flip_offline_when_status_exhausted(flag)
+
+    await asyncio.wait_for(worker._session_loop(), timeout=2)
+    await _drain_reports(worker)
+
+    assert "自主作业泥土受阻" in records[0]  # 空手受阻汇报不带组号
+    assert any("第 1 组泥土完成" in r for r in records)  # 首个有产出组仍是第 1 组
+    assert not any("第 3 组" in r for r in records)  # 两次空手受阻不占号
+
+
+@pytest.mark.asyncio
+async def test_work_goal_holds_on_inventory_holdings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """一轮目标按背包持有量判定：泥土两组 + 原木一组即收工；泥土满后订单只砍树。"""
+    monkeypatch.setattr("agent.runtime.singleton.get_runtime", lambda: None)
+
+    class QuotaGame(FakeGame):
+        def __init__(self) -> None:
+            super().__init__()
+            self.inventory = {"dirt": 200, "oak_log": 10}
+
+        async def __call__(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+            if name == "get_inventory":
+                return {"items": [{"name": n, "count": c} for n, c in self.inventory.items()]}
+            return await super().__call__(name, args)
+
+    game = QuotaGame()
+    game.status_results = [
+        {"active": False, "phase": "completed", "gained": 64, "dug": 64, "requested": 64, "reason": "",
+         "items": [{"item": "oak_log", "gained": 54, "available": 64}]},
+    ]
+    game.gather_hooks.append(lambda: setattr(game, "inventory", {"dirt": 200, "oak_log": 100}))
+    worker, flag, _records, announces = _make_worker(game, item="auto")
+
+    task = asyncio.create_task(worker._session_loop())
+    await asyncio.sleep(0.05)
+    flag["online"] = False
+    await asyncio.wait_for(task, timeout=3)
+    await _drain_reports(worker)
+
+    orders = game.gather_orders()
+    assert len(orders) == 1
+    assert orders[0]["logsOnly"] is True  # 背包泥土已超两组，第一组就只砍树
+    assert worker.holding and worker._hold_reason == "goal_met"
+    assert any("备齐" in text for text in announces)
+
+
+@pytest.mark.asyncio
+async def test_work_goal_switches_to_dirt_only_when_wood_met(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """木头配额已满、泥土未满：auto 订单降级为只挖土，不再挑树撞爬树储备门槛。"""
+    monkeypatch.setattr("agent.runtime.singleton.get_runtime", lambda: None)
+
+    class WoodMetGame(FakeGame):
+        def __init__(self) -> None:
+            super().__init__()
+            self.inventory = {"dirt": 57, "spruce_log": 91}
+
+        async def __call__(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+            if name == "get_inventory":
+                return {"items": [{"name": n, "count": c} for n, c in self.inventory.items()]}
+            return await super().__call__(name, args)
+
+    game = WoodMetGame()
+    game.status_results = [
+        {"active": False, "phase": "blocked", "gained": 0, "dug": 0, "requested": 64,
+         "reason": "GATHER_NO_TARGET: none", "items": []},
+    ]
+    worker, flag, _records, _announces = _make_worker(game, item="auto")
+    game.flip_offline_when_status_exhausted(flag)
+
+    task = asyncio.create_task(worker._session_loop())
+    await asyncio.wait_for(task, timeout=3)
+    await _drain_reports(worker)
+
+    orders = game.gather_orders()
+    assert orders  # 木头 91 ≥ 一组：每组都只挖土
+    assert all(order["block"] == "dirt" for order in orders)
+    assert all("logsOnly" not in order for order in orders)
+    assert orders[0]["chunk"] == {"x": orders[0]["x"] // 16, "z": orders[0]["z"] // 16}
+    assert not worker.holding  # 泥土 57 < 两组，不收工
+
+
+@pytest.mark.asyncio
+async def test_goal_met_hold_survives_continue_verdict() -> None:
+    """配额收工持有只由玩家 !resume 解除：后台裁决 continue 不重启已达标的作业，
+    否则刚宣布收工待命就自相矛盾地继续挖。"""
+    game = FakeGame()
+    worker, _flag, _records, _announces = _make_worker(game)
+    worker._hold_reason = "goal_met"
+    worker._inv_dirt, worker._inv_wood = 130, 70
+
+    await worker._apply_verdict("WORK_VERDICT=continue\n继续挖。")
+
+    assert worker.holding and worker._hold_reason == "goal_met"
+    assert ("resume_action", {"allowIdle": True}) not in game.calls
+
+
+@pytest.mark.asyncio
 async def test_worker_keeps_relocating_and_digging_without_waiting_for_verdict(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -159,7 +351,7 @@ async def test_worker_keeps_relocating_and_digging_without_waiting_for_verdict(
     assert len(game.gather_orders()) == 4
     assert not worker.holding  # 受阻从不进入持有；模型不回应等价于 continue
     gotos = _goto_orders(game)
-    assert [(g["x"], g["y"], g["z"]) for g in gotos] == [(34, 64, -5), (10, 64, 19)]  # 四方向轮转换区
+    assert [(g["x"], g["z"]) for g in gotos] == [(18, -5), (10, 43)]  # 首次受阻近距换区（东 8 格）；二次受阻无产出即远程跳区（南 48 格）
     assert any("受阻" in record for record in records)
 
 
@@ -297,9 +489,11 @@ async def test_relocate_pending_moves_bot_before_next_stack(
 
     gotos = _goto_orders(game)
     assert len(gotos) == 1
-    # 出生点 (10, 64, -5) 朝第一个轮换方向（东）前进 24 格后再开工
-    assert (gotos[0]["x"], gotos[0]["y"], gotos[0]["z"]) == (34, 64, -5)
-    assert gotos[0]["goalType"] == "near"
+    # 出生点 (10, 64, -5) 朝第一个轮换方向（东）先走近距 8 格即达；
+    # y 无关目标（nearxz）适配起伏地形，固定高度的 near 目标会大量不可达。
+    assert (gotos[0]["x"], gotos[0]["z"]) == (18, -5)
+    assert gotos[0]["goalType"] == "nearxz"
+    assert "y" not in gotos[0]
     sequence = [name for name, _args in game.calls]
     assert sequence.index("goto") < sequence.index("gather_resources")
     assert len(game.gather_orders()) == 1
@@ -330,11 +524,259 @@ async def test_relocate_failure_rotates_direction(monkeypatch: pytest.MonkeyPatc
     await asyncio.wait_for(worker._session_loop(), timeout=2)
 
     gotos = _goto_orders(game)
-    assert len(gotos) == 2  # 东向 NoPath 失败后立即轮换到南向
-    # 出生点 (10, 64, -5)：东 (34, -5) 失败，改南 (10, 19)
-    assert (gotos[0]["x"], gotos[0]["z"]) == (34, -5)
-    assert (gotos[1]["x"], gotos[1]["z"]) == (10, 19)
+    assert len(gotos) == 2  # 近距失败后立即改试远距
+    # 出生点 (10, 64, -5)：东近 (18, -5) 失败，改东远 (34, -5) 成功
+    assert (gotos[0]["x"], gotos[0]["z"]) == (18, -5)
+    assert (gotos[1]["x"], gotos[0]["z"]) != gotos[1]["x"] or (gotos[1]["x"], gotos[1]["z"]) == (34, -5)
     assert len(game.gather_orders()) == 1
+
+
+@pytest.mark.asyncio
+async def test_relocate_walks_toward_nearest_visible_resource(monkeypatch: pytest.MonkeyPatch) -> None:
+    """可见资源优先于盲走：探测到最近的泥土/原木就直接走过去。"""
+    monkeypatch.setattr("agent.runtime.singleton.get_runtime", lambda: None)
+
+    class ProbeGame(FakeGame):
+        async def __call__(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+            if name == "find_blocks":
+                return {"positions": [
+                    {"x": 12, "y": 60, "z": -30},
+                    {"x": -40, "y": 64, "z": 90},
+                    {"x": 10, "y": 20, "z": -5},
+                ]}
+            return await super().__call__(name, args)
+
+    game = ProbeGame()
+    worker, _flag, _records, _announces = _make_worker(game)
+
+    await worker._relocate()
+
+    gotos = _goto_orders(game)
+    assert len(gotos) == 1
+    assert gotos[0]["goalType"] == "nearxz"
+    assert (gotos[0]["x"], gotos[0]["z"]) == (12, -30)
+    assert worker._last_relocate_target == (12, -30)
+
+    # 刚走完的目标不重走：下一轮跳过同一片区域，改走向次近的可见资源。
+    await worker._relocate()
+    gotos = _goto_orders(game)
+    assert len(gotos) == 2
+    assert (gotos[1]["x"], gotos[1]["z"]) == (-40, 90)
+
+
+@pytest.mark.asyncio
+async def test_relocate_probe_prefers_reserve_soil_and_orders_by_chunk_ring(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """背包泥土低于保底时泥土命中优先；保底满足后按「区块环距 → 块距」扩搜。"""
+    monkeypatch.setattr("agent.runtime.singleton.get_runtime", lambda: None)
+
+    class RingProbeGame(FakeGame):
+        def __init__(self, dirt: int) -> None:
+            super().__init__()
+            self._dirt = dirt
+
+        async def __call__(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+            if name == "get_inventory":
+                return {"items": [{"name": "dirt", "count": self._dirt}]}
+            if name == "find_blocks":
+                if set(args["matching"]) == set(_RELOCATE_SOIL_BLOCKS):
+                    return {"positions": [{"x": 40, "y": 64, "z": 0}]}
+                assert set(args["matching"]) == set(_RELOCATE_LOG_BLOCKS)
+                return {"positions": [{"x": 20, "y": 64, "z": 0}, {"x": 12, "y": 64, "z": 0}]}
+            return await super().__call__(name, args)
+
+    here = {"x": 10, "y": 64, "z": -5}  # 所在区块 (0, -1)
+
+    game = RingProbeGame(dirt=5)
+    worker, _flag, _records, _announces = _make_worker(game)
+    targets = await worker._probe_targets(here)
+    assert [(t["x"], t["z"]) for t in targets] == [(40, 0), (12, 0), (20, 0)], (
+        "泥土（环 2）在保底未满足时排在更近的原木（环 1）之前"
+    )
+
+    game = RingProbeGame(dirt=20)
+    worker, _flag, _records, _announces = _make_worker(game)
+    targets = await worker._probe_targets(here)
+    assert [(t["x"], t["z"]) for t in targets] == [(12, 0), (20, 0), (40, 0)], (
+        "保底满足后回到环距+块距的就近扩搜"
+    )
+
+
+@pytest.mark.asyncio
+async def test_consecutive_dead_relocations_escalate_to_long_hop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """近距换区连续无产出：跳过探测，直接远程跳区离开残破地带。"""
+    monkeypatch.setattr("agent.runtime.singleton.get_runtime", lambda: None)
+    game = FakeGame()
+    worker, _flag, _records, _announces = _make_worker(game)
+    worker._relocate_fails = 2  # 前两轮换区都没换来产出
+
+    async def empty_probe(here: dict[str, int]) -> list[dict[str, Any]]:
+        return []  # 无下方目标可下撤，也无可见资源可走向
+
+    worker._probe_targets = empty_probe
+    await worker._relocate()
+
+    gotos = _goto_orders(game)
+    assert len(gotos) == 1
+    assert gotos[0]["goalType"] == "nearxz"
+    # 出生点 (10,·,-5) 朝东 48 格
+    assert (gotos[0]["x"], gotos[0]["z"]) == (58, -5)
+
+
+@pytest.mark.asyncio
+async def test_no_target_relocations_naturally_escalate_to_long_hop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """NO_TARGET 换区循环自身计入无产出计数：探测命中互相指向残破区内部
+    （可见但过不了安全检查）时，空转两轮即远程跳区，无需其他升级路径。"""
+    monkeypatch.setattr("agent.runtime.singleton.get_runtime", lambda: None)
+    game = FakeGame()
+    worker, _flag, _records, _announces = _make_worker(game)
+
+    blocked = StackOutcome(phase="blocked", reason="GATHER_NO_TARGET: none", dug=0, gained=0, requested=64)
+    worker._apply_block_outcome(blocked)
+    worker._apply_block_outcome(blocked)
+    assert worker._relocate_fails == 2
+    assert worker._relocate_pending
+
+    async def empty_probe(here: dict[str, int]) -> list[dict[str, Any]]:
+        return []  # 无下方目标可下撤，也无可见资源可走向
+
+    worker._probe_targets = empty_probe
+    await worker._relocate()
+    gotos = _goto_orders(game)
+    assert len(gotos) == 1
+    assert (gotos[0]["x"], gotos[0]["z"]) == (58, -5)
+
+
+@pytest.mark.asyncio
+async def test_escalated_escape_exhaustion_cools_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """升级跳区四向全不通（山脊地形长距 NO_PATH）：进入冷却播报，绝不落回 8 格碎步。"""
+    monkeypatch.setattr("agent.runtime.singleton.get_runtime", lambda: None)
+
+    class NoPathGame(FakeGame):
+        async def __call__(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+            if name == "goto":
+                self.calls.append((name, dict(args)))
+                raise RuntimeError("MCP 工具 'goto' 执行失败: Error [NO_PATH]")
+            return await super().__call__(name, args)
+
+    game = NoPathGame()
+    worker, _flag, _records, announces = _make_worker(game, clock=lambda: 100.0)
+    worker._relocate_fails = 2
+
+    async def empty_probe(here: dict[str, int]) -> list[dict[str, Any]]:
+        return []  # 无下方目标可下撤，也无可见资源可走向
+
+    worker._probe_targets = empty_probe
+    await worker._relocate()
+
+    gotos = _goto_orders(game)
+    # 四个方向 × (48, 24) 各试一次，全部 NO_PATH 后进入冷却
+    assert len(gotos) == 8
+    assert all(g["goalType"] == "nearxz" for g in gotos)
+    assert worker._relocate_cooldown_until > 0
+    assert any("走不出去" in text for text in announces)
+
+
+@pytest.mark.asyncio
+async def test_escalated_relocate_descends_to_resource_below_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """升级换区前先查脚下：站在树冠/悬空树叶上时四向寻路全是 NO_PATH，
+    探测命中的下方资源才是唯一可达出路——直接受控下撤，不做任何跳区。"""
+    monkeypatch.setattr("agent.runtime.singleton.get_runtime", lambda: None)
+    game = FakeGame()
+    worker, _flag, _records, _announces = _make_worker(game)
+    worker._relocate_fails = 2
+
+    async def below_probe(here: dict[str, int]) -> list[dict[str, Any]]:
+        # 最近命中是同层目标，正下方的泥土排在后面：下撤检查必须扫全表
+        return [{"x": here["x"] + 2, "y": here["y"], "z": here["z"]},
+                {"x": here["x"], "y": here["y"] - 9, "z": here["z"]}]
+
+    descended: list[int | None] = []
+
+    async def fake_descend(target_y: int | None = None) -> bool:
+        descended.append(target_y)
+        return True
+
+    worker._probe_targets = below_probe
+    worker._descend = fake_descend
+    await worker._relocate()
+
+    assert descended == [64 - 9]  # FakeGame 出生点 y=64，目标在其下 9 格
+    assert _goto_orders(game) == []  # 下撤成功即完成换区，绝不寻路
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("started_at", [0.0, 1000.0])
+async def test_cooldown_announcements_are_throttled(
+    monkeypatch: pytest.MonkeyPatch, started_at: float,
+) -> None:
+    """首次求助立即播报，后续按实际播报时间节流，满 5 分钟恢复。"""
+    monkeypatch.setattr("agent.runtime.singleton.get_runtime", lambda: None)
+
+    class NoPathGame(FakeGame):
+        async def __call__(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+            if name == "goto":
+                self.calls.append((name, dict(args)))
+                raise RuntimeError("MCP 工具 'goto' 执行失败: Error [NO_PATH]")
+            return await super().__call__(name, args)
+
+    game = NoPathGame()
+    now = started_at
+    worker, _flag, _records, announces = _make_worker(game, clock=lambda: now)
+    worker._relocate_fails = 2
+
+    async def empty_probe(here: dict[str, int]) -> list[dict[str, Any]]:
+        return []
+
+    worker._probe_targets = empty_probe
+    await worker._relocate()
+    assert len([text for text in announces if "走不出去" in text]) == 1
+
+    for elapsed in (60.0, 299.0):
+        now = started_at + elapsed
+        await worker._relocate()
+        assert len([text for text in announces if "走不出去" in text]) == 1
+
+    now = started_at + 300.0
+    await worker._relocate()
+    assert len([text for text in announces if "走不出去" in text]) == 2
+
+
+@pytest.mark.asyncio
+async def test_relocate_total_failure_cools_down_and_announces(monkeypatch: pytest.MonkeyPatch) -> None:
+    """探测与四个方向全部失败：进入冷却不再打转，并播报一次告知玩家。"""
+    monkeypatch.setattr("agent.runtime.singleton.get_runtime", lambda: None)
+
+    class NoPathGame(FakeGame):
+        async def __call__(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+            if name == "goto":
+                self.calls.append((name, dict(args)))
+                raise RuntimeError("MCP 工具 'goto' 执行失败: Error [NO_PATH]")
+            return await super().__call__(name, args)
+
+    game = NoPathGame()
+    worker, flag, _records, announces = _make_worker(game, clock=lambda: 100.0)
+
+    await worker._relocate()
+
+    assert len(_goto_orders(game)) == 8  # 无可见资源，四个方向近远各试一次
+    assert worker._relocate_cooldown_until > worker._clock()
+    assert any("歇" in text for text in announces)
+
+    worker._relocate_pending = True
+    task = asyncio.create_task(worker._session_loop())
+    await asyncio.sleep(0.05)
+    flag["online"] = False
+    await asyncio.wait_for(task, timeout=2)
+    assert len(_goto_orders(game)) == 8  # 冷却期内不再重试换区
+    assert game.gather_orders() == []
 
 
 @pytest.mark.asyncio
@@ -356,7 +798,7 @@ async def test_no_target_block_relocates_immediately_without_hold(
     assert not worker.holding
     assert not worker._relocate_pending  # 两次受阻均已当场换区消费
     gotos = _goto_orders(game)
-    assert [(g["x"], g["y"], g["z"]) for g in gotos] == [(34, 64, -5), (10, 64, 19)]
+    assert [(g["x"], g["z"]) for g in gotos] == [(18, -5), (10, 43)]  # 首次受阻近距换区（东 8 格）；二次受阻无产出即远程跳区（南 48 格）
     await worker.stop()
 
 

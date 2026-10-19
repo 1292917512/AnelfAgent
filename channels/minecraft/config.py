@@ -59,9 +59,12 @@ class MinecraftConfig(ChannelConfig):
         ),
     )
     worker_item: str = Field(
-        default="dirt",
+        default="auto",
         pattern=r"^[a-z0-9_]{1,32}$",
-        description="自主作业的采集目标（执行器支持的资源名：dirt、cobblestone、各类原木等）",
+        description=(
+            "自主作业采集目标：auto=就近混合（泥土族 + 全部自然树干原木整树采集，"
+            "放不进预算的树整棵跳过不留悬空）；或指定单一资源名（dirt、cobblestone、某种原木等）"
+        ),
     )
     worker_stack_size: int = Field(
         default=64,

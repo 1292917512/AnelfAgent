@@ -40,6 +40,7 @@ _LOG_BLOCKS = (
     "dark_oak_log",
     "cherry_log",
     "mangrove_log",
+    "pale_oak_log",
 )
 _ACTIVE_PHASES = {"running", "returning", "pausing", "paused", "stopping"}
 _STATUS_TOOLS = {

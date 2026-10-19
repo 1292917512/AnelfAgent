@@ -6,6 +6,14 @@ from pydantic import BaseModel, Field
 
 ONLINE_STATE = "online"
 
+GATHER_ITEM_LABELS: dict[str, str] = {
+    "dirt": "泥土", "cobblestone": "圆石", "stone": "石头",
+    "oak_log": "橡木原木", "birch_log": "白桦原木", "spruce_log": "云杉原木",
+    "jungle_log": "丛林原木", "acacia_log": "金合欢原木", "dark_oak_log": "深色橡木原木",
+    "cherry_log": "樱花原木", "mangrove_log": "红树林原木", "pale_oak_log": "苍白橡木原木",
+    "auto": "混合资源",
+}
+
 
 class SurvivalStatus(BaseModel):
     """执行器自持有的本地反射设置与会话标识。"""
@@ -195,6 +203,14 @@ class SupplyProgress(BaseModel):
         return f"{label}：{facts}；{cleanup}。"
 
 
+class GatherItemProgress(BaseModel):
+    """混合订单中单类物品的入包与现有库存事实。"""
+
+    item: str = Field(pattern=r"^[a-z0-9_]+$")
+    gained: int = Field(ge=0)
+    available: int = Field(default=0, ge=0)
+
+
 class GatherProgress(BaseModel):
     """采集只认可新入包、返程与交付事实，方块挖掉不代表资源到手。"""
 
@@ -210,6 +226,7 @@ class GatherProgress(BaseModel):
     deposit_requested: bool = Field(alias="depositRequested")
     returned: bool
     inventory_clean: bool = Field(alias="inventoryClean")
+    items: list[GatherItemProgress] = Field(default_factory=list, max_length=16)
 
     def announcement(self) -> str | None:
         if self.phase == "running":
@@ -220,11 +237,16 @@ class GatherProgress(BaseModel):
         label = "采集任务已完成" if complete else {
             "cancelled": "采集任务已取消", "interrupted": "采集任务已中断",
         }.get(self.phase, "采集任务受阻，已停止")
-        name = {"cobblestone": "圆石", "oak_log": "橡木原木", "birch_log": "白桦原木"}.get(self.item, self.item)
         returned = "已回到出发点" if self.returned else "尚未确认回到出发点"
         delivery = f"；确认存入指定箱子 {self.deposited} 个" if self.deposit_requested else ""
         cleanup = "" if self.inventory_clean else "；临时物品收尾尚未确认"
-        quantity = f"{self.gained} 个{name}（整树上限 {self.requested}）" if self.mode == "tree" else f"{self.gained}/{self.requested} 个{name}"
+        if len(self.items) > 1:
+            detail = "、".join(f"{GATHER_ITEM_LABELS.get(entry.item, entry.item)} {entry.gained}" for entry in self.items)
+            quantity = f"{detail}（合计 {self.gained}/{self.requested}）"
+        else:
+            item_name = self.items[0].item if self.items else self.item
+            name = GATHER_ITEM_LABELS.get(item_name, item_name)
+            quantity = f"{self.gained} 个{name}（整树上限 {self.requested}）" if self.mode == "tree" else f"{self.gained}/{self.requested} 个{name}"
         return (f"{label}：确认挖掉 {self.dug} 个方块，新入包 {quantity}"
                 f"；{returned}{delivery}{cleanup}。")
 

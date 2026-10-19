@@ -49,12 +49,36 @@ async def test_plain_final_uses_current_conversation_once(anything, sender, scop
     assert "delivery_status:sent" in completion["messages"][-1]["content"]
 
 
-@pytest.mark.parametrize("ending", [tool_result("内部收束说明", ["end_reply"]), text_result("end_reply()"), text_result("[SILENT]")])
+@pytest.mark.parametrize("ending", [text_result("end_reply()"), text_result("[SILENT]")])
 async def test_explicit_end_never_sends_or_recovers(anything, sender, ending):
     mind, completion = await _run([ending], anything)
     assert mind.llm_calls == 1
     assert completion["reason"] == "completed"
     sender.assert_not_awaited()
+
+
+async def test_end_reply_text_fallback_delivers_and_corrects(anything, sender):
+    """纯收束批次正文零送达时经 Jev 兜底：补投 + 纠偏提示，不写常规投递回执。"""
+    mind, completion = await _run([tool_result("内部收束说明", ["end_reply"])], anything)
+    sender.assert_awaited_once()
+    assert sender.await_args.args[2] == "内部收束说明"
+    msgs = completion["messages"]
+    assert any(m.get("role") == "system" and "必须调用 send_message" in m.get("content", "") for m in msgs)
+    assert not any("按普通会话回复投递" in m.get("content", "") for m in msgs)
+
+
+async def test_end_reply_text_rejected_keeps_text_intact(anything, sender, monkeypatch):
+    """Jev 判定不投：不写新会话记录、不改写正文（防伪造前缀诱导幻觉）。"""
+    review = AsyncMock(return_value=ReplyAssessment(False, "Jev 明确拦截：内部过程或结束备注"))
+    monkeypatch.setattr("agent.mind.execution.reply_delivery.assess_reply", review)
+    mind, completion = await _run([tool_result("内部收束说明", ["end_reply"])], anything)
+    sender.assert_not_awaited()
+    assistants = [
+        m for m in completion["messages"]
+        if m.get("role") == "assistant" and m.get("content")
+    ]
+    assert assistants, "未投递正文应保留在执行链中"
+    assert all("未投递" not in (m["content"] or "") for m in assistants)
 
 
 async def test_tools_after_end_are_not_executed_and_results_stay_paired(anything, sender):

@@ -401,3 +401,46 @@ test('swimming escape rejects downward detours, unknown columns and obstructed c
   set(0, 64, 0, 'stone')
   assert.equal(safeSwimStep(bot, new Vec3(0, 62, 0), 62), false)
 })
+
+
+test('a wedged bot digs its blocking cell instead of jumping forever', async () => {
+  const { SurvivalController } = await load('bot/anelf-survival.mjs')
+  const controller = Object.create(SurvivalController.prototype)
+  const dug = []
+  const solid = { name: 'stone', boundingBox: 'block', shapes: [[0, 0, 0, 1, 1, 1]] }
+  const bot = {
+    entity: { position: new Vec3(0.5, 64, 0.5), onGround: true, yaw: 0 },
+    blockAt: p => p.y < 64 ? { ...solid, position: p.clone() }
+      : p.z === -1 && p.y <= 65 ? { name: 'dirt', boundingBox: 'block', position: p.clone(), canHarvest: () => true }
+        : { name: 'air', boundingBox: 'empty', position: p.clone() },
+    tool: { equipForBlock: async () => {} },
+    dig: async block => { dug.push(block.position.toString()) },
+    setControlState () {},
+  }
+  await controller.unstuck(bot, new AbortController().signal, true)
+  assert.ok(dug.length >= 1, 'The facing blocking cell is dug out')
+  assert.ok(dug.every(key => !key.startsWith('0,63,')), 'The floor below is never a candidate')
+})
+
+
+test('rescue navigation never clears a goal it no longer owns', async () => {
+  const { SurvivalController } = await load('bot/anelf-survival.mjs')
+  const controller = Object.create(SurvivalController.prototype)
+  const mine = { tag: 'mine' }
+  const foreign = { tag: 'foreign' }
+  let cleared = null
+  const bot = {
+    pathfinder: {
+      goal: mine,
+      setGoal (goal) { cleared = goal },
+      goto: async () => {
+        bot.pathfinder.goal = foreign  // a work walk replaced us mid-flight
+        throw new Error('The goal was changed before it could be completed!')
+      },
+    },
+    on () {}, removeListener () {},
+  }
+  const controller2 = Object.create(SurvivalController.prototype)
+  await controller2.navigate(bot, mine, new AbortController().signal).catch(() => {})
+  assert.equal(cleared, null, 'A replaced goal is never cleared by our cleanup')
+})
