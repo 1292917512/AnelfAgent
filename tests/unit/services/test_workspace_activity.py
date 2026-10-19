@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -15,7 +16,70 @@ from core.hooks import HookJudgment, HookMode, hook_execution, hook_journal
 from core.realtime_hub import TERMINAL_EVENTS
 from core.tags import tag_label
 from services.activity_presentation import tool_presentation_owner, tool_targets
+from services.activity_stream import ActivityStreamEncoder
 from services.workspace_activity import WorkspaceActivityService
+
+
+def test_activity_transport_sends_only_new_text_and_terminal_tool_changes():
+    encoder = ActivityStreamEncoder()
+    run = {"id": "run", "revision": 1, "status": "running", "entries": [
+        {"id": "history", "kind": "text", "content": "History " * 25000},
+        {"id": "tool", "kind": "tool", "status": "running", "arguments": "x" * 8000},
+        {"id": "thought", "kind": "thinking", "content": "Thinking " * 3000},
+    ]}
+    first = {"event": "activity", "epoch": "p", "run": run}
+    assert encoder.encode(first) is first
+    updated = deepcopy(run)
+    updated["revision"] = 20
+    updated["entries"][-1]["content"] += "新进展 🙂"
+    patch = encoder.encode({**first, "run": updated})
+    assert patch == {"event": "activity_delta", "epoch": "p", "base_revision": 1,
+                     "run": {"id": "run", "revision": 20}, "entries": [],
+                     "appends": [{"id": "thought", "text": "新进展 🙂"}]}
+    assert len(json.dumps(patch)) < 300
+    assert len(json.dumps(first)) > 200000
+    final = deepcopy(updated)
+    final["revision"] = 30
+    final["status"] = "completed"
+    final["entries"][1].update(status="error", result="Command timed out", duration_ms=90019)
+    patch = encoder.encode({**first, "event": "activity_end", "run": final})
+    assert patch["base_revision"] == 20
+    assert patch["run"]["status"] == "completed"
+    assert patch["entries"] == [final["entries"][1]]
+    assert run["entries"][1]["status"] == "running"
+
+
+def test_activity_transport_handles_replacement_eviction_restart_and_snapshot():
+    encoder = ActivityStreamEncoder()
+    run = {"id": "a", "revision": 1, "entries": [
+        {"id": "old", "kind": "text", "content": "old"},
+        {"id": "thought", "kind": "thinking", "content": "original"},
+    ]}
+    first = {"event": "activity", "epoch": "p", "run": run}
+    encoder.encode(first)
+    updated = {**run, "revision": 3, "entries": [{"id": "thought", "kind": "thinking", "content": "replacement"}]}
+    patch = encoder.encode({**first, "run": updated})
+    assert patch["entry_order"] == ["thought"]
+    assert patch["entries"] == updated["entries"]
+    assert patch["appends"] == []
+    snapshot = {"event": "activity_snapshot", "epoch": "p", "revision": 4, "runs": []}
+    assert encoder.encode(snapshot) is snapshot
+    assert encoder.encode(first) is first
+    restarted = {**first, "epoch": "new"}
+    assert encoder.encode(restarted) is restarted
+    assert ActivityStreamEncoder().encode(restarted) is restarted
+    reply = {"event": "reply", "content": "Delivered"}
+    assert encoder.encode(reply) is reply
+
+
+def test_activity_transport_bounds_per_connection_baselines():
+    from services.workspace_activity import MAX_RUNS
+
+    encoder = ActivityStreamEncoder()
+    for index in range(MAX_RUNS + 1):
+        encoder.encode({"event": "activity", "epoch": "p", "run": {"id": str(index), "revision": index + 1, "entries": []}})
+    evicted = {"event": "activity_end", "epoch": "p", "run": {"id": "0", "revision": 100, "entries": []}}
+    assert encoder.encode(evicted) is evicted
 
 
 async def test_background_completion_updates_original_turn_after_reply_finishes(activity):

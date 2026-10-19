@@ -22,7 +22,8 @@ import type {
   SseTurnEndEvent,
   UiCommandPayload,
 } from "@/lib/types";
-import type { ActivityRun, ActivitySnapshot } from "@/lib/types/activity";
+import type { ActivityDelta, ActivityRun, ActivitySnapshot } from "@/lib/types/activity";
+import { ActivityStreamDecoder } from "@/lib/activity-stream";
 import { useActivityStore } from "./activity-store";
 import { useDelegationStore } from "./delegation-store";
 import { usePlanStore } from "./plan-store";
@@ -73,8 +74,9 @@ function dispatchUiCommand(data: UiCommandPayload) {
 }
 
 /** 往 EventSource 上挂载全部 chat SSE 事件监听 */
-export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext, isCurrent: () => boolean): void {
+export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext, isCurrent: () => boolean, recover: () => void): void {
   const { updateBucket } = ctx;
+  const activity = new ActivityStreamDecoder();
   const listen = (name: string, handler: (event: MessageEvent<string>) => void) => {
     es.addEventListener(name, (event: MessageEvent<string>) => { if (isCurrent()) handler(event); });
   };
@@ -206,17 +208,30 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext, isCu
     try {
       const data = JSON.parse(event.data) as { epoch: string; run: ActivityRun };
       if (!data.epoch || !data.run?.id || !Array.isArray(data.run.entries)) return;
-      useActivityStore.getState().receive(data.epoch, data.run);
+      useActivityStore.getState().receive(data.epoch, activity.receive(data.epoch, data.run));
       const source = data.run.source;
       if (source?.channel === "webui" && source.kind === "user") touchSendWatchdog(source.session || DEFAULT_CHAT_ID);
     } catch { /* Ignore invalid event data. */ }
   };
   listen("activity", receiveActivity);
   listen("activity_end", receiveActivity);
+  listen("activity_delta", (event: MessageEvent<string>) => {
+    try {
+      const data = JSON.parse(event.data) as ActivityDelta;
+      const run = activity.apply(data);
+      if (!run) { recover(); return; }
+      useActivityStore.getState().receive(data.epoch, run);
+      const source = run.source;
+      if (source?.channel === "webui" && source.kind === "user") touchSendWatchdog(source.session || DEFAULT_CHAT_ID);
+    } catch { recover(); }
+  });
   listen("activity_snapshot", (event: MessageEvent<string>) => {
     try {
       const data = JSON.parse(event.data) as ActivitySnapshot;
-      if (data.epoch && typeof data.revision === "number" && Array.isArray(data.runs)) useActivityStore.getState().restore(data);
+      if (data.epoch && typeof data.revision === "number" && Array.isArray(data.runs)) {
+        activity.restore(data);
+        useActivityStore.getState().restore(data);
+      }
     } catch { /* Ignore invalid event data. */ }
   });
 

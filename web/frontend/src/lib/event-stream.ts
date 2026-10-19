@@ -11,7 +11,7 @@ export class EventStream {
 
   constructor(
     private readonly url: string,
-    private readonly attach: (source: EventSource, isCurrent: () => boolean) => void,
+    private readonly attach: (source: EventSource, isCurrent: () => boolean, recover: () => void) => void,
     private readonly connectionChanged: (connected: boolean) => void,
     private readonly onOpen: (reconnected: boolean) => void,
     private readonly resync: () => void,
@@ -26,7 +26,15 @@ export class EventStream {
     clearTimeout(this.timer);
     const source = new EventSource(this.url);
     this.source = source;
-    this.attach(source, () => this.source === source);
+    const recover = () => {
+      if (this.source !== source) return;
+      this.connectionChanged(false);
+      source.close();
+      this.source = null;
+      this.timer = setTimeout(() => { if (!this.stopped) this.start(); }, this.delay);
+      this.delay = Math.min(this.delay * 2, 30000);
+    };
+    this.attach(source, () => this.source === source, recover);
     source.addEventListener("resync", () => { if (this.source === source) this.resync(); });
     source.onopen = () => {
       if (this.source !== source) return;
@@ -37,13 +45,8 @@ export class EventStream {
     };
     source.onerror = () => {
       if (this.source !== source) return;
-      this.connectionChanged(false);
-      if (source.readyState === EventSource.CLOSED) {
-        source.close();
-        this.source = null;
-        this.timer = setTimeout(() => { if (!this.stopped) this.start(); }, this.delay);
-        this.delay = Math.min(this.delay * 2, 30000);
-      }
+      if (source.readyState === EventSource.CLOSED) recover();
+      else this.connectionChanged(false);
     };
   }
 

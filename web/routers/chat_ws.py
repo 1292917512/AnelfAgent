@@ -30,6 +30,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from core import realtime_hub
 from core.audio_frames import AudioFrameError, decode_audio_frame
 from core.log import log
+from services.activity_stream import ActivityStreamEncoder
 
 router = APIRouter(prefix="/chat", tags=["chat-ws"])
 
@@ -129,6 +130,7 @@ async def _pump_downstream(websocket: WebSocket, sub: realtime_hub.Subscriber) -
     dead 判定带超时轮询：判死后不再有新帧入队，阻塞在 queue.get() 上
     会永远等不到——30s 无帧即复查 dead/连接活性。
     """
+    encoder = ActivityStreamEncoder()
     try:
         while True:
             if sub.dead:
@@ -138,7 +140,7 @@ async def _pump_downstream(websocket: WebSocket, sub: realtime_hub.Subscriber) -
                 await websocket.close(code=1013)
                 return
             try:
-                event = await asyncio.wait_for(sub.queue.get(), timeout=30.0)
+                event = encoder.encode(await asyncio.wait_for(sub.queue.get(), timeout=30.0))
             except asyncio.TimeoutError:
                 continue  # 回到循环头复查 dead/连接状态
             # 下行音频帧（实时语音）：二进制 PCM 帧直发（audio_chunk 数据面）

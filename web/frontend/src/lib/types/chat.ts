@@ -285,6 +285,7 @@ export interface ChatSseEventMap {
   ui_command: UiCommandPayload;
   activity: { epoch: string; run: import("./activity").ActivityRun };
   activity_end: { epoch: string; run: import("./activity").ActivityRun };
+  activity_delta: import("./activity").ActivityDelta;
   activity_snapshot: import("./activity").ActivitySnapshot;
   file_diff: SseFileDiffEvent;
   context_usage: SseContextUsageEvent;

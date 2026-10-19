@@ -1,5 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest";
-import type { ActivityRun } from "@/lib/types/activity";
+import type { ActivityDelta, ActivityRun } from "@/lib/types/activity";
 import type { ChatBucket } from "@/lib/types";
 import { attachChatSseHandlers } from "./chat-sse-handlers";
 import { emptyBucket } from "./chat-shared";
@@ -7,11 +7,40 @@ import { useActivityStore } from "./activity-store";
 
 beforeEach(() => { useActivityStore.setState({ epoch: "", snapshotRevision: 0, runs: [] }); });
 
+it("rebuilds connection deltas independently of newer HTTP snapshots and never duplicates text", () => {
+  const events = new EventTarget();
+  const recover = vi.fn();
+  attachChatSseHandlers(events as EventSource, { updateBucket: vi.fn(), getActiveChatId: () => "default", setContextUsage: vi.fn() }, () => true, recover);
+  const emit = (name: string, data: unknown) => events.dispatchEvent(new MessageEvent(name, { data: JSON.stringify(data) }));
+  const run: ActivityRun = { id: "run", revision: 1, scope: "", origin_scope: "", source: { scope: "", channel: "", kind: "", target: "", session: "" },
+    actor: "", label: "Inspect", kind: "conversation", input: "Inspect", owner_id: "", parent_id: "", started_at: 1, updated_at: 1, ended_at: null,
+    status: "running", entry_count: 2, truncated: false, entries: [
+      { id: "thought", kind: "thinking", ts: 1, content: "A" },
+      { id: "tool", kind: "tool", ts: 2, name: "ssh_exec", arguments: "{}", targets: [], request_id: "r", status: "running" },
+    ] };
+  emit("activity", { epoch: "p", run });
+  useActivityStore.getState().restore({ epoch: "p", revision: 3, runs: [{ ...run, revision: 3, entries: [{ ...run.entries[0]!, kind: "thinking", content: "ABC" }, run.entries[1]!] }] });
+  const delta: ActivityDelta = { epoch: "p", base_revision: 1, run: { id: "run", revision: 2 }, entries: [], appends: [{ id: "thought", text: "B" }] };
+  emit("activity_delta", delta);
+  expect(useActivityStore.getState().runs[0]?.entries[0]).toMatchObject({ content: "ABC" });
+  const finished: ActivityDelta = { ...delta, base_revision: 2, run: { id: "run", revision: 4, status: "completed", ended_at: 100 },
+    appends: [{ id: "thought", text: "CD🙂" }], entries: [{ id: "tool", kind: "tool", ts: 2, name: "ssh_exec", arguments: "{}", targets: [], request_id: "r", status: "error", result: "Timed out", duration_ms: 90019 }] };
+  emit("activity_delta", finished);
+  emit("activity_delta", finished);
+  expect(useActivityStore.getState().runs[0]).toMatchObject({ status: "completed", entries: [{ content: "ABCD🙂" }, { status: "error", result: "Timed out", duration_ms: 90019 }] });
+  emit("activity_delta", { ...delta, base_revision: 4, run: { id: "run", revision: 5 }, appends: [], entry_order: ["tool"] });
+  expect(useActivityStore.getState().runs[0]?.entries.map((entry) => entry.id)).toEqual(["tool"]);
+  expect(recover).not.toHaveBeenCalled();
+  emit("activity_delta", { ...delta, base_revision: 6, run: { id: "run", revision: 7 } });
+  expect(recover).toHaveBeenCalledOnce();
+  expect(useActivityStore.getState().runs[0]?.revision).toBe(5);
+});
+
 it("routes global runtime to activity and only delivered replies to Web messages", () => {
   const events = new EventTarget();
   let bucket: ChatBucket = emptyBucket();
   const updateBucket = vi.fn((_id: string, update: (bucket: ChatBucket) => Partial<ChatBucket>) => { bucket = { ...bucket, ...update(bucket) }; });
-  attachChatSseHandlers(events as EventSource, { updateBucket, getActiveChatId: () => "default", setContextUsage: vi.fn() }, () => true);
+  attachChatSseHandlers(events as EventSource, { updateBucket, getActiveChatId: () => "default", setContextUsage: vi.fn() }, () => true, vi.fn());
   const run: ActivityRun = { id: "qq", scope: "group_qq:42", origin_scope: "group_qq:42", kind: "conversation", label: "Check", input: "Check", owner_id: "", actor: "", parent_id: "", source: { scope: "group_qq:42", kind: "group", channel: "qq", target: "42", session: "" }, status: "running", started_at: 1, updated_at: 1, ended_at: null, revision: 1, entry_count: 1, truncated: false, entries: [{ id: "thought", ts: 1, kind: "thinking", content: "Inspecting all channels" }] };
   events.dispatchEvent(new MessageEvent("activity", { data: JSON.stringify({ epoch: "p", run }) }));
   events.dispatchEvent(new MessageEvent("delta", { data: JSON.stringify({ delta: "Internal output" }) }));
@@ -31,7 +60,7 @@ it("routes global runtime to activity and only delivered replies to Web messages
 it("does not reset Web sending state on malformed terminal events", () => {
   const events = new EventTarget();
   const updateBucket = vi.fn();
-  attachChatSseHandlers(events as EventSource, { updateBucket, getActiveChatId: () => "default", setContextUsage: vi.fn() }, () => true);
+  attachChatSseHandlers(events as EventSource, { updateBucket, getActiveChatId: () => "default", setContextUsage: vi.fn() }, () => true, vi.fn());
   events.dispatchEvent(new MessageEvent("turn_end", { data: "broken" }));
   expect(updateBucket).not.toHaveBeenCalled();
 });
@@ -40,7 +69,7 @@ it("ignores queued events from a replaced connection including old server epochs
   const events = new EventTarget();
   const updateBucket = vi.fn();
   let current = true;
-  attachChatSseHandlers(events as EventSource, { updateBucket, getActiveChatId: () => "default", setContextUsage: vi.fn() }, () => current);
+  attachChatSseHandlers(events as EventSource, { updateBucket, getActiveChatId: () => "default", setContextUsage: vi.fn() }, () => current, vi.fn());
   current = false;
   useActivityStore.setState({ epoch: "new" });
   events.dispatchEvent(new MessageEvent("activity_snapshot", { data: JSON.stringify({ epoch: "old", revision: 500, runs: [] }) }));

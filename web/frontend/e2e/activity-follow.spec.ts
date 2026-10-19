@@ -24,6 +24,9 @@ async function liveFixture(page: Page, initial: ActivityRun[]) {
     window.addEventListener("fixture-activity", (event) => {
       if (event instanceof CustomEvent) for (const stream of streams) stream.dispatchEvent(new MessageEvent(event.detail.run.status === "running" ? "activity" : "activity_end", { data: JSON.stringify(event.detail) }));
     });
+    window.addEventListener("fixture-activity-delta", (event) => {
+      if (event instanceof CustomEvent) for (const stream of streams) stream.dispatchEvent(new MessageEvent("activity_delta", { data: JSON.stringify(event.detail) }));
+    });
   });
   return async (value: ActivityRun) => {
     const updated = { ...value, revision: snapshot.revision + 1 };
@@ -31,6 +34,30 @@ async function liveFixture(page: Page, initial: ActivityRun[]) {
     await page.evaluate((payload) => window.dispatchEvent(new CustomEvent("fixture-activity", { detail: payload })), { epoch: snapshot.epoch, run: updated });
   };
 }
+
+test("an open tool inspector receives its timeout and stops counting while the run continues", async ({ page }, info) => {
+  await page.clock.install();
+  const start = Date.now() / 1000 - 90;
+  const tool = { id: "ssh-timeout", kind: "tool" as const, name: "ssh_exec", ts: start, status: "running" as const,
+    arguments: '{"command":"powershell -File probe.ps1","timeout":90}', targets: [], request_id: "timeout-request" };
+  const active = run("timeout-run", start, { entries: [tool] });
+  const publish = await liveFixture(page, [active]);
+  await page.goto("/webui/");
+  await page.getByRole("button", { name: "View details: ssh_exec", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "ssh_exec", exact: true });
+  await expect(dialog.locator(".activity-inspection-meta")).toContainText("Running");
+  await publish(active);
+  await page.evaluate((payload) => window.dispatchEvent(new CustomEvent("fixture-activity-delta", { detail: payload })), {
+    epoch: "follow", base_revision: 2, run: { id: active.id, revision: 3 }, appends: [],
+    entries: [{ ...tool, status: "error", result: JSON.stringify({ error: "SSH command timed out", cause: "timeout", retryable: false, outcome: "unknown" }), duration_ms: 90019 }],
+  });
+  await expect(dialog.locator(".activity-inspection-meta")).toContainText("Failed");
+  await expect(dialog.getByRole("region", { name: "Result", exact: true })).toContainText("SSH command timed out");
+  await expect(dialog.locator(".activity-inspection-meta")).toContainText("1m 30s");
+  await page.clock.fastForward(5000);
+  await expect(dialog.locator(".activity-inspection-meta")).toContainText("1m 30s");
+  await page.screenshot({ path: info.outputPath("ssh-timeout-result.png"), animations: "disabled" });
+});
 
 test("recollection window separates conversations and observes background results without rendering closed details", async ({ page }, info) => {
   const start = Date.now() / 1000 - 10;

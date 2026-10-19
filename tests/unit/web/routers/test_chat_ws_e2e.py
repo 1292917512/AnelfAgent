@@ -24,6 +24,27 @@ def clean_hub():
 
 
 class TestWebSocketEndToEnd:
+    def test_activity_baselines_and_deltas_share_the_websocket_transport(self, client):
+        from core import realtime_hub
+
+        first = {"event": "activity", "epoch": "p", "run": {"id": "run", "revision": 1, "entries": [
+            {"id": "thought", "kind": "thinking", "content": "Existing detail" * 1000},
+        ]}}
+        with client.websocket_connect("/api/chat/ws") as ws:
+            realtime_hub.publish(first)
+            assert ws.receive_json()["run"] == first["run"]
+            realtime_hub.publish({**first, "event": "activity_end", "run": {
+                **first["run"], "revision": 2, "status": "completed", "entries": [
+                    {**first["run"]["entries"][0], "content": first["run"]["entries"][0]["content"] + " Done"},
+                ],
+            }})
+            frame = ws.receive_json()
+            assert frame["type"] == "activity_delta"
+            assert frame["base_revision"] == 1
+            assert frame["run"] == {"id": "run", "revision": 2, "status": "completed"}
+            assert frame["appends"] == [{"id": "thought", "text": " Done"}]
+            assert frame["entries"] == []
+
     def test_ping_pong_over_real_socket(self, client):
         with client.websocket_connect("/api/chat/ws?client=web") as ws:
             ws.send_json({"action": "ping", "request_id": "r1"})

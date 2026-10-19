@@ -306,7 +306,10 @@ async def cancel_delegation(delegation_id: str) -> Dict[str, Any]:
 @router.get("/stream")
 async def chat_stream(request: Request) -> EventSourceResponse:
     """SSE 端点：推送聊天消息事件（实时枢纽的 web 客户端视图）。"""
+    from services.activity_stream import ActivityStreamEncoder
+
     sub = realtime_hub.subscribe(client_kind="web")
+    encoder = ActivityStreamEncoder()
 
     async def event_generator():
         try:
@@ -314,7 +317,7 @@ async def chat_stream(request: Request) -> EventSourceResponse:
                 if sub.dead or await request.is_disconnected():
                     break
                 try:
-                    msg = await asyncio.wait_for(sub.queue.get(), timeout=30.0)
+                    msg = encoder.encode(await asyncio.wait_for(sub.queue.get(), timeout=30.0))
                     yield {"event": msg.get("event", "message"), "data": json.dumps(msg, ensure_ascii=False)}
                 except asyncio.TimeoutError:
                     yield {"event": "ping", "data": ""}

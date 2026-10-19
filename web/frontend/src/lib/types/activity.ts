@@ -56,6 +56,15 @@ export interface ActivityRun {
 
 export interface ActivitySnapshot { epoch: string; revision: number; runs: ActivityRun[] }
 
+export interface ActivityDelta {
+  epoch: string;
+  base_revision: number;
+  run: Partial<Omit<ActivityRun, "entries">> & Pick<ActivityRun, "id" | "revision">;
+  entries: ActivityEntry[];
+  appends: { id: string; text: string }[];
+  entry_order?: string[];
+}
+
 export interface ActivityControlResult {
   status: "ok" | "idle" | "accepted" | "error";
   error?: string;

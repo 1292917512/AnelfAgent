@@ -96,6 +96,21 @@ it("resynchronizes lost frames without creating another live connection", async 
   expect(sources).toHaveLength(1);
 });
 
+it("reconnects once with backoff when an activity delta has no connection baseline", async () => {
+  useChatStore.getState().startSSE();
+  sources[0]?.onopen?.();
+  const invalid = new MessageEvent("activity_delta", { data: JSON.stringify({ epoch: "p", base_revision: 1, run: { id: "lost", revision: 2 }, entries: [], appends: [] }) });
+  sources[0]?.dispatchEvent(invalid);
+  sources[0]?.dispatchEvent(invalid);
+  expect(sources[0]?.close).toHaveBeenCalledOnce();
+  expect(useChatStore.getState().sseConnected).toBe(false);
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(sources).toHaveLength(2);
+  vi.mocked(useActivityStore.getState().load).mockClear();
+  sources[1]?.onopen?.();
+  expect(useActivityStore.getState().load).toHaveBeenCalledOnce();
+});
+
 it("recovers completed execution after the page resumes and removes its listener on stop", async () => {
   const store = useChatStore.getState();
   store.startSSE();
