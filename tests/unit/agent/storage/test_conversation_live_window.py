@@ -3,15 +3,60 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
-from agent.messages import Everything, EverythingGroup
+from agent.messages import Everything, EverythingGroup, MessageUser
 from agent.storage.data_center import ConversationData
 from agent.storage.sqlite_backend import SqliteBackend
 from agent.storage.storage_router import StorageRouter
+
+
+@pytest.mark.parametrize("kind", ["chat", "notification"])
+async def test_replay_dedup_is_atomic_and_ignores_only_arrival_time(sqlite, kind):
+    data = ConversationData(StorageRouter(sqlite=sqlite))
+    first = MessageUser(uid="1", adapter_key="qq", adapter_message_id="id_%_1", message_kind=kind,
+                        text_content="[time:正文时间][uid:别人]重复网络投递", created_ts_ns=time.time_ns())
+    await read(sqlite)
+    copies = [first.model_copy(update={"created_ts_ns": first.created_ts_ns + i * 3_000_000_000})
+              for i in range(8)]
+    assert sum(await asyncio.gather(*(data.add_conversation_record_by_everything(m) for m in copies))) == 1
+    assert len(await read(sqlite)) == 1
+    await sqlite.close()
+    assert await data.add_conversation_record_by_everything(copies[-1]) is False
+    variants = [
+        {"adapter_message_id": "another_id"},  # 相同正文的人为重发
+        {"text_content": "[time:编辑时间][uid:别人]重复网络投递"},  # 同 ID 的编辑
+        {"session_id": "another_session"},
+        {"adapter_key": "telegram"},
+    ]
+    for change in variants:
+        assert await data.add_conversation_record_by_everything(first.model_copy(update=change)) is True
+    no_id = first.model_copy(update={"adapter_message_id": ""})
+    assert await data.add_conversation_record_by_everything(no_id) is True
+    assert await data.add_conversation_record_by_everything(no_id) is True
+
+
+async def test_dedup_query_failure_does_not_admit_an_unchecked_message(sqlite, monkeypatch):
+    data = ConversationData(StorageRouter(sqlite=sqlite))
+    message = MessageUser(uid="1", adapter_key="qq", adapter_message_id="m1", text_content="执行一次")
+    monkeypatch.setattr(sqlite, "_conversation_has_duplicate", AsyncMock(side_effect=OSError("lookup failed")))
+    with pytest.raises(OSError, match="lookup failed"):
+        await data.add_conversation_record_by_everything(message)
+    assert await read(sqlite) == []
+
+
+async def test_message_lookup_uses_original_id_not_copied_body_tags(sqlite):
+    data = ConversationData(StorageRouter(sqlite=sqlite))
+    message = MessageUser(uid="1", adapter_key="qq", adapter_message_id="original",
+                          text_content="[message_id:copied][reply_to:copied-ref]复制的聊天记录")
+    await data.add_conversation_record_by_everything(message)
+    assert await sqlite.find_conversation_by_message_id("copied") == []
+    hits = await sqlite.find_conversation_by_message_id("original")
+    assert len(hits) == 1 and hits[0]["reply_to"] == ""
 
 
 async def append(sqlite: SqliteBackend, text: str, *, scope: str = "qq:1", role: str = "user", ts: int = 100) -> None:

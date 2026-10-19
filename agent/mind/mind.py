@@ -170,10 +170,13 @@ class Mind:
     def _schedule_next_cycle(self, reason: str, *, backoff: bool = False) -> None:
         """以指数退避调度下一轮自主循环（默认 0.5s 起、8s 封顶），避免紧凑重试。
 
-        正常续轮有待回复消息时立即处理；异常恢复指定 backoff，
-        即使消息仍在排队也退避，避免持续失败形成空转。
+        正常续轮有待回复消息时立即处理；异常或无进展续轮最多自动尝试 5 次，
+        超限保留待办并停止续轮，等待新的外部输入或显式调度。
         """
         from core.config import get_config_float
+        if backoff and self._auto_cycle_retry >= 5:
+            log(f"{reason}：连续无进展续轮已达上限，保留待办并停止自动重试", "ERROR", tag="思维")
+            return
         base = max(0.1, get_config_float("auto_cycle_base_delay", 0.5))
         if not backoff and (not self.pfc.pending_user.is_empty() or not self.pfc.pending_group.is_empty()):
             delay = 0.0
@@ -245,8 +248,8 @@ class Mind:
             images: Optional[List[ImageContent]] = None,
             *,
             adapter_key: str = "",
-    ) -> None:
-        """执行回复，异常时发送错误提示。
+    ) -> bool:
+        """执行回复，失败写入原会话并返回 False，不自动投递错误回复。
 
         创建 completion 容器贯穿本次回复：think_loop 结束处写入完整消息链
         （base + tool_chain），complete_reply 据此在 EVENT_AFTER_REPLY 附带
@@ -255,7 +258,7 @@ class Mind:
         self.note_activity()
         completion: Dict[str, Any] = {}
         try:
-            await reply_entry(
+            return await reply_entry(
                 self, anything, images, adapter_key=adapter_key, completion=completion,
             )
         finally:

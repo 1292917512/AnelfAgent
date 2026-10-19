@@ -185,7 +185,7 @@ async def test_failed_cycle_recovers_pending_work(
 ) -> None:
     mind = _fake_mind()
     monkeypatch.setattr("core.config.get_config_float", lambda key, default: 0.1)
-    scope = build_entity_scope("test", "user", "u1")
+    scope = build_entity_scope("user", "test", "u1")
     if pending == "message":
         mind.pfc.pending_user.append(scope)
     elif pending == "general":
@@ -237,16 +237,17 @@ async def test_empty_failed_cycle_and_cancellation_do_not_retry(cancelled: bool)
 def test_failure_backoff_is_bounded_even_with_waiting_messages(monkeypatch: pytest.MonkeyPatch) -> None:
     mind = _fake_mind()
     mind.driver = SimpleNamespace(request_cycle=Mock())
-    mind.pfc.pending_user.append(build_entity_scope("test", "user", "u1"))
+    mind.pfc.pending_user.append(build_entity_scope("user", "test", "u1"))
     monkeypatch.setattr("core.config.get_config_float", lambda key, default: 0.0)
     for _ in range(9):
         mind._schedule_next_cycle("failure", backoff=True)
     assert [call.kwargs["delay"] for call in mind.driver.request_cycle.call_args_list] == pytest.approx(
-        [0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 6.4, 8.0, 8.0],
+        [0.1, 0.2, 0.4, 0.8, 1.6],
     )
     mind._auto_cycle_retry = 10000
     mind._schedule_next_cycle("failure", backoff=True)
-    mind.driver.request_cycle.assert_called_with(delay=8.0)
+    assert mind.driver.request_cycle.call_count == 5
+    assert mind.pfc.has_pending_tasks()
     mind._schedule_next_cycle("normal continuation")
     mind.driver.request_cycle.assert_called_with(delay=0.0)
 

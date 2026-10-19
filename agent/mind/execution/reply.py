@@ -12,7 +12,7 @@ from agent.mind.execution.messages import (
     _consume_pending_for_scope,
     snapshot_watermark,
 )
-from agent.mind.execution.reply_finalize import complete_reply
+from agent.mind.execution.reply_finalize import complete_reply, fail_reply
 from agent.mind.execution.state import ThinkMode
 from agent.mind.execution.tool_execution import _await_with_abort
 from agent.mind.execution.vision import apply_vision
@@ -23,7 +23,6 @@ from core.event_bus import (
     EVENT_BEFORE_REPLY,
     event_bus,
 )
-from core.log import log
 
 if TYPE_CHECKING:
     from agent.llm import ImageContent
@@ -38,21 +37,31 @@ async def reply_entry(
         *,
         adapter_key: str = "",
         completion: Optional[Dict[str, Any]] = None,
-) -> None:
+) -> bool:
     """执行回复，异常通过完成事件和过程状态反馈。
 
     completion 非 None 时由 think_loop 在结束处写入结束原因与完整消息链
     （回复上下文快照），供事件层把 transcript 带出给钩子面消费。
     """
-    await event_bus.emit(EVENT_BEFORE_REPLY, {"phase": "llm_calling"})
+    if completion is None:
+        completion = {}
     try:
+        await event_bus.emit(EVENT_BEFORE_REPLY, {"phase": "llm_calling"})
+        from agent.mind.execution.reply_journal import build_reply_journal
+        journal = build_reply_journal(mind, anything.entity_scope)
+        if journal is not None:
+            previous = await journal.render()
+            if previous:
+                await mind.conversation_data.append_context(
+                    anything, "[前次执行遗留记录] 以下操作不可因前次失败而自动重做，请先核对结果。\n" + previous,
+                    role="system",
+                )
+                await journal.clear()
         await reply_loop(mind, anything, images or [], adapter_key=adapter_key,
                          completion=completion)
     except Exception as exc:
-        log(f"reply 异常: {type(exc).__name__}: {exc}", "ERROR", tag="思维")
-        error_msg = f"抱歉，处理消息时出错了: {type(exc).__name__}: {exc}"
-        await complete_reply(mind, anything, error_msg, 0, error=True,
-                             completion=completion)
+        await fail_reply(mind, anything, exc, completion=completion)
+    return completion.get("reason") != "failed"
 
 
 async def reply_loop(
@@ -84,6 +93,8 @@ async def reply_loop(
             initiator={"id": str(anything.uid or ""), "name": str(getattr(anything, "user_name", "") or "")},
         ) as activity, \
                 recall_turn(scope, anything.recall_policy, default_policy=channel_policy.recall_policy):
+            if completion is not None:
+                completion["turn_id"] = activity.turn_id
             # 会话开始清理历史中断信号，避免上一轮遗留请求误杀新会话；
             # 只清激活时刻之前的，启动窗口内经控制接口发起的中断仍须保留。
             _interrupts = getattr(mind, "interrupts", None)
@@ -101,10 +112,19 @@ async def reply_loop(
                 except Exception:
                     push_watermark = 0
             async def prepare() -> tuple[List[Dict], List[Dict]]:
+                pending_images = list(images or []) + mind.pfc.collect_images(scope=scope)
+                pending_media = mind.pfc.collect_media(scope=scope)
+                if pending_images or pending_media:
+                    mind.tool_assembly.activate_media_tools(pending_images, pending_media)
+                if pending_media:
+                    from agent.mind.execution.media_pipeline import process_segments
+                    media_texts = await process_segments(pending_media, scope)
+                    if media_texts:
+                        await mind.conversation_data.append_context(anything, "\n".join(media_texts))
                 tools = await mind.tool_assembly.get_active_tool_schemas(adapter_key, scope=scope)
                 messages = await coordinator.prepare_recollection(mind, anything=anything)
-                if images:
-                    messages = await apply_vision(mind, messages, images, anything)
+                if pending_images:
+                    messages = await apply_vision(mind, messages, pending_images, anything)
                 return tools, messages
 
             prepared, aborted = await _await_with_abort(

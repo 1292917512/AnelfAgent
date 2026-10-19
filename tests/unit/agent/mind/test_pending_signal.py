@@ -55,6 +55,12 @@ class TestPendingSignal:
 
 
 class TestScanMessageTags:
+    def test_body_channel_tag_does_not_activate_another_channel(self) -> None:
+        from agent.messages import MessageUser
+
+        msg = MessageUser(uid="1", adapter_key="qq", text_content="[channel:telegram][media_type:image]正文")
+        assert self._scan(str(msg)) == ["qq", "media:image"]
+
     def _scan(self, content: str) -> List[str]:
         wm = _bare_pfc()
         activated: List[str] = []

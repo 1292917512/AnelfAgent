@@ -77,6 +77,7 @@ class TestBusyHint:
         assistant = AgentAssistant(mind, heartbeat_enabled=False)
         await assistant.feel(self._msg("user_qq:1"))
         await assistant.feel(self._msg("user_qq:1"))
+        await asyncio.gather(*assistant._busy_hint_tasks.values())
         assert mind.channel_manager.reply.await_count == 1
         mind.driver.request_cycle.assert_called()
 
@@ -96,6 +97,7 @@ class TestBusyHint:
         mind = self._mind("tick")
         assistant = AgentAssistant(mind, heartbeat_enabled=False)
         await assistant.feel(self._msg("user_qq:1"))
+        await asyncio.gather(*assistant._busy_hint_tasks.values())
         assert mind.channel_manager.reply.await_count == 1
         mind.driver.is_running = False
         mind.driver.current_work = ""
@@ -104,7 +106,42 @@ class TestBusyHint:
         mind.driver.is_running = True
         mind.driver.current_work = "heartbeat"
         await assistant.feel(self._msg("user_qq:1"))
+        await asyncio.gather(*assistant._busy_hint_tasks.values())
         assert mind.channel_manager.reply.await_count == 2  # 新忙碌周期再提示一次
+
+    @pytest.mark.parametrize("finish", ["stop", "timeout", "error"])
+    async def test_slow_hint_does_not_block_ingress_and_is_reaped(self, monkeypatch, finish: str) -> None:
+        mind = self._mind("heartbeat")
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def send(*args):
+            entered.set()
+            await release.wait()
+            if finish == "error":
+                raise OSError("channel unavailable")
+
+        mind.channel_manager.reply.side_effect = send
+        if finish == "timeout":
+            monkeypatch.setattr("agent.runtime.assistant._BUSY_HINT_TIMEOUT", 0.02)
+        assistant = AgentAssistant(mind, heartbeat_enabled=False)
+        try:
+            await asyncio.wait_for(assistant.feel(self._msg("user_qq:1")), 1)
+            await asyncio.wait_for(entered.wait(), 1)
+            await asyncio.wait_for(assistant.feel(self._msg("user_qq:2")), 1)
+            assert mind.accept_feel.await_count == 2
+            assert mind.driver.request_cycle.call_count == 2
+            if finish == "stop":
+                await asyncio.wait_for(assistant.stop(), 1)
+            else:
+                if finish == "error":
+                    release.set()
+                await asyncio.wait_for(asyncio.gather(*assistant._busy_hint_tasks.values()), 1)
+                before = mind.channel_manager.reply.await_count
+                await assistant.feel(self._msg("user_qq:1"))
+                assert mind.channel_manager.reply.await_count == before
+            assert not assistant._busy_hint_tasks
+        finally:
+            await assistant.stop()
 
 
 class TestHeartbeatIntervalHotReload:

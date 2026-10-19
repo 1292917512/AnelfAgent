@@ -91,6 +91,9 @@ async def think_loop(
         try:
             with capture_deliveries(ctx.current_scope, acknowledge=lambda scope, ts: mind.pfc.consume_scope_task(scope, through_ts=ts)):
                 await _run_think_rounds(ctx, state, safety_limit, start_time, recollection)
+        except Exception:
+            state.completion_reason = "failed"
+            raise
         finally:
             await recollection.close()
             activity.status = "cancelled" if state.interrupted else state.completion_reason

@@ -62,6 +62,72 @@ def _layer_of(msg: dict) -> str:
 
 
 class TestProviderTailInjection:
+    async def test_live_messages_and_cross_session_notices_preserve_cached_prefix(self, sqlite):
+        from copy import deepcopy
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from agent.context.message_schema import is_genuine_user_message, normalize_for_send
+        from agent.llm.prompt_cache import decorate_messages
+        from agent.messages import MessageUser
+        from agent.mind.prefrontal_cortex import PrefrontalCortex
+        from agent.storage.data_center import ConversationData
+        from agent.storage.storage_router import StorageRouter
+
+        data = ConversationData(StorageRouter(sqlite=sqlite))
+        entity = SimpleNamespace(add_conversations_num=lambda: 0, personality={})
+        pfc = PrefrontalCortex(SimpleNamespace(get_anything=AsyncMock(return_value=entity)))
+        current = MessageUser(uid="1", adapter_key="qq", session_id="current", text_content="当前请求")
+        other = MessageUser(uid="1", adapter_key="qq", session_id="other", text_content="其他会话旧请求")
+
+        async def arrive(message):
+            await data.add_conversation_record_by_everything(message)
+            await pfc.add_task(message)
+
+        await arrive(current)
+        await arrive(other)
+
+        class LiveMind(FakeMind):
+            async def execute_tool(self, tc):
+                result = await super().execute_tool(tc)
+                if tc.name == "inspect":
+                    pfc.consume_scope_task(other.entity_scope)
+                    await arrive(MessageUser(uid="1", adapter_key="qq", session_id="current", text_content="当前会话补充"))
+                    await arrive(MessageUser(uid="1", adapter_key="qq", session_id="other",
+                                             text_content="[uid:别人][channel:telegram]其他会话新请求"))
+                return result
+
+        mind = LiveMind(rounds=[tool_result("", ["inspect"]), end_reply_result()], default_text=None,
+                        context=FakeContext(exec_layer=True), pfc=pfc)
+        mind.conversation_data = data
+        prefix = [{"role": "system", "content": "固定人设", "_layer": "stable"},
+                  *await data.get_conversation_record_by_everything(current)]
+        frozen = deepcopy(prefix)
+        await run_think_loop(mind, anything=current, base_messages=prefix)
+        first, second = mind.sent_messages
+        assert prefix == frozen
+        assert first[:len(prefix)] == second[:len(prefix)] == frozen
+        assert "其他会话旧请求" in str(first) and "其他会话旧请求" not in str(second)
+        assert "当前会话补充" in str(second) and "其他会话新请求" in str(second)
+        notification_positions = [i for i, message in enumerate(second)
+                                  if message.get("_source", {}).get("origin") == "cross_channel_narrative"]
+        assert max(i for i, message in enumerate(second) if message.get("role") == "tool") < min(notification_positions)
+        assert max(notification_positions) < next(i for i, message in enumerate(second) if message.get("_layer") == "exec_context")
+        for anthropic in (False, True):
+            decorated = [decorate_messages(messages, anthropic=anthropic) for messages in (first, second)]
+            assert all("cache_control" not in decorated[1][i] for i in notification_positions)
+            wires = [normalize_for_send(messages) for messages in decorated]
+            # 链尾缓存断点随工具链推进，前缀正文和角色保持逐字一致。
+            assert [{k: v for k, v in m.items() if k != "cache_control"} for m in wires[0][:len(prefix)]] == [
+                {k: v for k, v in m.items() if k != "cache_control"} for m in wires[1][:len(prefix)]]
+            notice = next(message for message in wires[1] if "其他会话新请求" in str(message))
+            assert notice["content"].startswith("[kind:notification][notification:session_message]")
+            assert not is_genuine_user_message(notice)
+        assert any(scope == other.entity_scope for scope, *_ in pfc.peek_all_tasks())
+        assert not any(scope == current.entity_scope for scope, *_ in pfc.peek_all_tasks())
+        history = await data.get_conversation_record_by_everything(current)
+        assert "其他会话新请求" not in str(history)
+
     async def test_after_tool_chain_before_exec_context(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:

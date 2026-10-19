@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from helpers.think_loop_fakes import FakeMind, run_think_loop, tool_result
+from helpers.think_loop_fakes import FakeMind, FakePFC, run_think_loop, tool_result
 
 from agent.context.message_schema import normalize_for_send
 from agent.context.observation import emit_context_summary, observe_preparation
@@ -85,7 +85,7 @@ async def test_reply_entry_applies_only_running_channel_recall_default(monkeypat
     monkeypatch.setattr("agent.mind.execution.reply.think_loop", loop)
     monkeypatch.setattr("agent.mind.recall.coordinator.prepare_recollection", collect)
     mind = SimpleNamespace(config=SimpleNamespace(max_tool_iterations=5),
-                           pfc=SimpleNamespace(consume_scope_task=Mock()),
+                           pfc=FakePFC(),
                            tool_assembly=SimpleNamespace(get_active_tool_schemas=AsyncMock(return_value=[]),
                                                         clear_dynamic_tools=Mock()))
     await reply_loop(mind, anything, adapter_key="game")
@@ -163,18 +163,6 @@ async def test_repeated_failures_do_not_report_success():
     completion = {}
     await run_think_loop(mind, mode=ThinkMode.REFLECT, completion=completion)
     assert completion["reason"] == "failed"
-
-
-async def test_reply_exception_is_reported_without_automatic_channel_delivery(anything, deliver_mock, monkeypatch):
-    from agent.mind.execution.reply import reply_entry
-
-    done = AsyncMock()
-    monkeypatch.setattr("agent.mind.execution.reply.reply_loop", AsyncMock(side_effect=RuntimeError("工具不可用")))
-    monkeypatch.setattr("agent.mind.execution.reply.complete_reply", done)
-    await reply_entry(FakeMind(), anything)
-    deliver_mock.assert_not_awaited()
-    assert done.await_args.kwargs["error"] is True
-    assert "工具不可用" in done.await_args.args[2]
 
 
 async def test_skill_review_evidence_only_counts_current_round(anything):

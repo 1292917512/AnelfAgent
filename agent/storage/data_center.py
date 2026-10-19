@@ -482,30 +482,20 @@ class ConversationData:
         # 入站去重：webhook 重投/断线重放的副本（同 message_id 同内容）直接丢弃。
         # 编辑消息带 [编辑] 前缀（内容已变）不受影响
         adapter_message_id = getattr(anything, "adapter_message_id", "") or ""
-        if adapter_message_id:
-            try:
-                if await self.router.sqlite.conversation_has_duplicate(
-                    scope_type, scope_id, adapter_message_id, content,
-                ):
-                    log(f"入站消息去重: 丢弃重复投递 (message_id={adapter_message_id})",
-                        "DEBUG", tag="存储")
-                    return False
-            except Exception as exc:
-                # 去重查询失败不阻塞入库（宁可重复也不丢消息）
-                log(f"入站去重查询失败（照常入库）: {exc}", "DEBUG", tag="存储")
         # 以消息到达时间入库，保证对话历史严格按到达时序排列；
         # adapter_key 记录来源频道，供启动时未回复恢复定位回复路由；
         # trigger_mind 记录消息当时是否触发思考（非 @ 群消息记 False），
         # 供启动恢复扫描排除"本就不该回复"的消息
-        await self.router.append(
+        inserted = await self.router.append(
             StorageDomain.CONVERSATION,
             scope_type=scope_type, scope_id=scope_id,
             role=role, content=content,
             ts_ns=anything.created_ts_ns,
             adapter_key=getattr(anything, "adapter_key", "") or "",
             trigger_mind=bool(getattr(anything, "trigger_mind", True)),
+            message_id=adapter_message_id,
         )
-        return True
+        return bool(inserted)
 
 
 @dataclass(slots=True)

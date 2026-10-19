@@ -11,6 +11,7 @@ Token：不拼接多个会话生成混合召回查询；保留待办按正常续
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Dict, List
 
 from agent.heartbeat import (
@@ -25,15 +26,13 @@ from agent.mind.autonomous import (
     Decision,
     DecisionType,
     MindPhase,
-    MindTask,
     PendingMessage,
     SituationContext,
-    TaskType,
     build_meta_decision_messages,
     parse_decisions_from_tool_calls,
 )
 from agent.mind.cross_channel import collect_channel_info
-from agent.mind.decisions import execute_decision
+from agent.mind.decisions import execute_decision, normalize_target_scope
 from agent.planning.situation import active_goal_lines
 from core.event_bus import (
     EVENT_THINKING_DECISION,
@@ -163,20 +162,34 @@ async def run_cycle(mind: "Mind", end_payload: Dict[str, Any], *, is_heartbeat: 
     else:
         decisions = await think_and_decide(mind, situation)
 
-    # 代码级兜底：有 pending 消息但元决策全非 REPLY 时，为每个 scope 补充 REPLY
-    if situation.pending_messages and not any(d.type == DecisionType.REPLY for d in decisions):
-        for pm in situation.pending_messages:
-            decisions.append(Decision(
-                type=DecisionType.REPLY, target=pm.scope, priority=10,
-                reason="代码级兜底: 有消息但未产生 REPLY 决策",
-            ))
-        log("兜底: 补充 REPLY 决策 (元决策未覆盖待处理消息)", "WARNING", tag="思维")
+    decisions = cover_pending_replies(mind, situation, decisions)
 
     log(f"决策结果: {', '.join(d.type.value for d in decisions)}", tag="思维")
 
     await execute_decisions(
         mind, end_payload, situation, decisions, is_heartbeat=is_heartbeat,
     )
+
+
+def cover_pending_replies(mind: "Mind", situation: SituationContext, decisions: List[Decision]) -> List[Decision]:
+    """规范化并去重 REPLY，只执行态势中的真实待办，补齐未覆盖会话。"""
+    pending = {pm.scope for pm in situation.pending_messages}
+    covered: set[str] = set()
+    result: List[Decision] = []
+    for decision in decisions:
+        if decision.type != DecisionType.REPLY:
+            result.append(decision)
+            continue
+        scope = normalize_target_scope(mind, decision.target or "")
+        if scope not in pending or scope in covered:
+            log(f"丢弃无效或重复 REPLY 决策: {decision.target}", "WARNING", tag="思维")
+            continue
+        covered.add(scope)
+        result.append(replace(decision, target=scope))
+    result.extend(Decision(type=DecisionType.REPLY, target=pm.scope, priority=10,
+                           reason="待处理消息未被有效 REPLY 覆盖")
+                  for pm in situation.pending_messages if pm.scope not in covered)
+    return result
 
 
 async def execute_decisions(
@@ -233,7 +246,8 @@ async def execute_decisions(
             mind.driver.request_cycle()
             break
 
-    if any(ok for _, ok in executed):
+    progressed = any(ok and decision.type != DecisionType.IDLE for decision, ok in executed)
+    if progressed:
         # 有实质进展（决策执行成功）：重置自动续轮退避
         mind._auto_cycle_retry = 0
 
@@ -256,26 +270,21 @@ async def execute_decisions(
     mind.tool_assembly.clear_when_idle(mind._active_scopes, mind._reply_idle_event)
 
     end_payload.update({
-        "decisions_executed": [decision.type.value for decision, _ in executed],
+        "decisions_executed": [decision.type.value for decision, ok in executed if ok],
+        "decisions_failed": [decision.type.value for decision, ok in executed if not ok],
         "decisions_deferred": [decision.type.value for decision in yielded],
     })
 
     if mind.pfc.has_pending_tasks():
-        mind._schedule_next_cycle("自主循环结束后仍有待处理任务")
+        mind._schedule_next_cycle("自主循环结束后仍有待处理任务", backoff=not progressed)
 
 
 async def execute_safely(mind: "Mind", decision: Decision) -> bool:
-    """安全执行决策，异常转为通用错误任务。返回是否成功。"""
+    """返回实际执行结果；失败记录到日志和周期结果，不派生可再次执行的错误任务。"""
     try:
-        await execute_decision(mind, decision)
-        return True
+        return await execute_decision(mind, decision)
     except Exception as exc:
         log(f"决策执行异常 [{decision.type.value}]: {exc}", "WARNING", tag="思维")
-        mind.pfc.add_general_task(MindTask(
-            task_type=TaskType.ERROR,
-            preview=f"{decision.type.value} 执行失败: {exc}",
-            metadata={"decision": decision.type.value, "error": str(exc)},
-        ))
         return False
 
 

@@ -1,7 +1,9 @@
 """思维循环的收尾块：结束处理、执行摘要与状态清理。
 
-回复入口（reply_entry/reply_loop）在 think_loop 模块（它同时依赖本模块的
-finish_think/complete_reply 收尾，入口与循环同层避免双向依赖）。
+回复入口位于 reply.py，循环位于 loop.py；本模块负责终态记录、执行摘要与完成事件。
+
+模型可见：异常终止以系统记录写入原会话，附已有工具账本，明确禁止自动重放。
+Token：仅失败时增加一条有界记录；缓存：写会话尾部，不触碰稳定前缀。
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.mind.tools import execution_log
 from core.event_bus import EVENT_AFTER_REPLY, event_bus
+from core.log import log
 from core.tags import etag_all
 from core.tool_results import extract_error_text, parse_tool_result_json
 
@@ -240,6 +243,36 @@ def _summarize_tool_result_for_log(call_sig: str, result: str) -> str:
 # 回复完成与状态清理
 # ==================================================================
 
+async def fail_reply(
+        mind: Mind, anything: Everything, exc: Exception, *, completion: Optional[Dict] = None,
+) -> None:
+    """记录失败和已有操作事实并发出终态，不投递替代回复或重放请求。
+
+    落库异常不阻止终态事件，仍向上抛出，由回复所有者保留检查点与工具账本。
+    """
+    from agent.mind.execution.reply_journal import build_reply_journal
+
+    detail = f"{type(exc).__name__}: {exc}"
+    log(f"回复失败 [{anything.entity_scope}]: {detail}", "ERROR", tag="思维")
+    if completion is not None:
+        completion["reason"] = "failed"
+    journal = build_reply_journal(mind, anything.entity_scope)
+    record = (
+        f"[本轮执行失败] {detail[:500]}\n"
+        "本轮已终止，不自动重试或重放请求；本记录未投递给用户。"
+        "已有操作以工具结果和投递记录为准，不得因本轮失败重复执行。"
+    )
+    try:
+        facts = await journal.render() if journal is not None else ""
+        if facts:
+            record += "\n" + facts
+        await mind.conversation_data.append_context(anything, record, role="system")
+    finally:
+        await complete_reply(mind, anything, detail, 0, error=True,
+                             execution_summary=record, completion=completion,
+                             turn_id=(completion or {}).get("turn_id", ""))
+
+
 async def complete_reply(
         mind: Mind,
         anything: Everything,
@@ -307,7 +340,7 @@ async def complete_reply(
         "content": content[:100] if content else "",
         "iterations": iterations,
         "error": error,
-        "reason": (completion or {}).get("reason", "failed" if error else "completed"),
+        "reason": "failed" if error else (completion or {}).get("reason", "completed"),
         "execution_summary": execution_summary,
         "executed_tools": _execution_facts(tool_chain),
         "messages": reply_messages,

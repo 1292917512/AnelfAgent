@@ -18,6 +18,7 @@ from agent.messages import (
     parse_entity_scope,
 )
 from agent.mind.autonomous import Decision, DecisionType, MindPhase
+from agent.mind.execution.reply_journal import clear_settled_reply
 from core.config import get_config_int, register_configs_safe
 from core.log import log
 
@@ -65,41 +66,43 @@ def _reflection_cooldown_state(mind: Mind) -> tuple[bool, float]:
     return elapsed >= minutes, elapsed
 
 
-async def execute_decision(mind: Mind, decision: Decision) -> None:
+async def execute_decision(mind: Mind, decision: Decision) -> bool:
     """根据决策类型分发执行。"""
     log(f"执行决策: {decision.type.value} target={decision.target} reason={decision.reason}", tag="思维")
 
     if decision.type == DecisionType.REPLY:
-        await execute_reply(mind, decision)
+        return await execute_reply(mind, decision)
     elif decision.type == DecisionType.REFLECT:
         await execute_reflect(mind, decision)
     elif decision.type == DecisionType.REMEMBER:
         await execute_remember(mind, decision)
     elif decision.type == DecisionType.PROACTIVE:
-        await execute_proactive(mind, decision)
+        return await execute_proactive(mind, decision)
     elif decision.type == DecisionType.TOOL_ACTION:
         await execute_tool_action(mind, decision)
     elif decision.type == DecisionType.PLAN:
         await execute_plan(mind, decision)
     elif decision.type == DecisionType.SELF_TASK:
         await execute_self_task(mind, decision)
+    return True
 
 
-async def execute_reply(mind: Mind, decision: Decision) -> None:
-    """执行回复决策：解析目标、收集媒体，然后进入多轮思考循环。"""
+async def execute_reply(mind: Mind, decision: Decision) -> bool:
+    """消费目标待办并持有回复所有权，终态落库后清理检查点。"""
     target = decision.target or ""
     anything = resolve_reply_target(mind, target)
     if not anything and not target:
         anything = await pop_next_reply_target(mind)
     if not anything:
-        return
+        log(f"回复目标已失效或无待处理消息: {target}", "WARNING", tag="思维")
+        return False
 
     # scope 一律按解析后的实体规范化（target 可能是裸 ID "123"，
     # 直接用会导致去重登记与中断匹配失效）
     scope = anything.entity_scope if anything else ""
     if scope in mind._active_scopes:
         log(f"跳过重复回复: {scope}", "DEBUG", tag="思维")
-        return
+        return False
     # 激活时刻先于活跃登记：accept_feel 的中断判定以登记为准，
     # 登记后到达的中断请求 requested_at ≥ 激活时刻，启动清理不会误清
     mind._reply_activated_at[scope] = time.time()
@@ -114,53 +117,21 @@ async def execute_reply(mind: Mind, decision: Decision) -> None:
             phase="reply",
         )
         _checkpoint_registered = True
-        # 开新账：上次异常退出可能留下未随检查点一并清除的残行
-        from agent.mind.execution.reply_journal import build_reply_journal
-        stale_journal = build_reply_journal(mind, scope)
-        if stale_journal is not None:
-            await stale_journal.clear()
     except Exception as exc:
         log(f"回复检查点登记失败（不影响回复）: {exc}", "DEBUG", tag="思维")
+    settled = False
     try:
         adapter_key = getattr(anything, "adapter_key", "") or ""
         mind.set_phase(MindPhase.RECALLING)
 
-        pending_images = mind.pfc.collect_images(scope=scope)
-        if pending_images:
-            log(f"注入待处理图片: {len(pending_images)} 张", tag="思维")
-
-        pending_media = mind.pfc.collect_media(scope=scope)
-        # 按实际携带的媒体激活媒体工具（recognize_image 等），确保本轮 schema 可用
-        if pending_images or pending_media:
-            mind.tool_assembly.activate_media_tools(pending_images, pending_media)
-        if pending_media:
-            from agent.mind.execution.media_pipeline import process_segments
-            media_texts = await process_segments(pending_media, scope)
-            if media_texts:
-                combined = '\n'.join(media_texts)
-                await mind.conversation_data.append_context(anything, combined)
-
-        await mind.reply(anything, pending_images, adapter_key=adapter_key)
+        ok = await mind.reply(anything, adapter_key=adapter_key)
+        settled = True
+        return ok
     finally:
         mind._active_scopes.discard(scope)
         mind._reply_activated_at.pop(scope, None)
-        if _checkpoint_registered:
-            # 工具日志先于检查点清除（同生命周期）：间隙崩溃时检查点仍在、
-            # 账本已空——恢复注入无操作清单是正确状态，反之会留孤儿行。
-            # 协作中断/正常收束都不是崩溃，已执行内容已由执行摘要入库
-            try:
-                from agent.mind.execution.reply_journal import build_reply_journal
-                journal = build_reply_journal(mind, scope)
-                if journal is not None:
-                    await journal.clear()
-            except Exception as exc:
-                log(f"工具日志清除失败（已忽略）: {exc}", "DEBUG", tag="思维")
-            # 清除检查点（正常结束/协作中断/异常都算收束）。关停取消场景
-            # 若清除未完成，残留行下次启动注入"被中断"提示——语义上同样成立
-            try:
-                await mind.conversation_data.router.sqlite.clear_reply_checkpoint(scope)
-            except Exception as exc:
-                log(f"回复检查点清除失败（已忽略）: {exc}", "DEBUG", tag="思维")
+        if _checkpoint_registered and settled:
+            await clear_settled_reply(mind, scope)
         if not mind._active_scopes:
             mind._reply_idle_event.set()
         mind._reset_phase_if_idle()
@@ -298,30 +269,30 @@ async def execute_remember(mind: Mind, decision: Decision) -> None:
         _hb_append(f"主动记忆裁决: 写入失败（{exc}），未记住 - {content[:60]}")
 
 
-async def execute_proactive(mind: Mind, decision: Decision) -> None:
+async def execute_proactive(mind: Mind, decision: Decision) -> bool:
     """主动发送消息：将指令写入 PFC 短期记忆，然后进入思考循环。"""
     target = decision.target
     content = decision.content
     if not target or not content:
-        return
+        return False
     anything = resolve_reply_target(mind, target)
     if not anything:
         anything = routable_target(mind, target)
     if not anything:
         log(f"PROACTIVE 目标不可路由，已放弃: {target}", "WARNING", tag="思维")
         _hb_append(f"主动消息放弃: 目标 '{target}' 无法解析为可路由会话 - {decision.content[:40]}")
-        return
+        return False
     if await _target_is_empty_conversation(anything.entity_scope):
         log(f"PROACTIVE 目标为空会话，已放弃: {target}", "WARNING", tag="思维")
         _hb_append(f"主动消息放弃: 目标 '{target}' 从未有过对话（空会话），不主动打扰 - {decision.content[:40]}")
-        return
+        return False
 
     # 回复所有权：与 execute_reply 同一登记协议——PROACTIVE 也是该会话的
     # 回复周期所有者（出站事实面据此放行本会话投递、拦截他链代答）
     scope = anything.entity_scope if anything else ""
     if scope in mind._active_scopes:
         log(f"PROACTIVE 跳过（会话回复在飞）: {scope}", "DEBUG", tag="思维")
-        return
+        return False
 
     proactive_prompt = (
         f"你要主动联系 {target}。\n"
@@ -340,6 +311,7 @@ async def execute_proactive(mind: Mind, decision: Decision) -> None:
     mind._active_scopes.add(scope)
     mind._reply_idle_event.clear()
     checkpoint_registered = False
+    settled = False
     try:
         try:
             await mind.conversation_data.router.sqlite.record_reply_checkpoint(
@@ -348,15 +320,14 @@ async def execute_proactive(mind: Mind, decision: Decision) -> None:
             checkpoint_registered = True
         except Exception as exc:
             log(f"主动消息检查点登记失败（不影响执行）: {exc}", "DEBUG", tag="思维")
-        await mind.reply(anything, adapter_key=adapter_key)
+        ok = await mind.reply(anything, adapter_key=adapter_key)
+        settled = True
+        return ok
     finally:
         mind._active_scopes.discard(scope)
         mind._reply_activated_at.pop(scope, None)
-        if checkpoint_registered:
-            try:
-                await mind.conversation_data.router.sqlite.clear_reply_checkpoint(scope)
-            except Exception as exc:
-                log(f"主动消息检查点清除失败（已忽略）: {exc}", "DEBUG", tag="思维")
+        if checkpoint_registered and settled:
+            await clear_settled_reply(mind, scope)
         if not mind._active_scopes:
             mind._reply_idle_event.set()
         mind._reset_phase_if_idle()

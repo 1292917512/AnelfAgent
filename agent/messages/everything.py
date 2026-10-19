@@ -1,7 +1,8 @@
 """消息身份、会话归属与平台元数据渲染。
 
-模型看到平台事件的 kind 位于可信标签前缀，先于引用与外部正文。
-仅调整非聊天标签顺序，不增加 token；普通聊天及既有历史不重写，稳定前缀不变。
+模型看到系统生成的真实来源标签，换行后的外部正文不参与身份解析。
+Token：增加前缀分隔换行，带引用时增加短引用标识。
+缓存：仅影响新消息的会话层，不改稳定前缀和既有历史。
 """
 
 from __future__ import annotations
@@ -79,7 +80,6 @@ class Everything(Nothing):
     message_kind: str = "chat"
     # 消息到达时间（纳秒）：构造即到达，时间标签与对话历史入库均以它为准，保证时序
     created_ts_ns: int = Field(default_factory=time.time_ns)
-    _tags_generated: bool = PrivateAttr(default=False)
     _trace_message_id: str = PrivateAttr(default="")
     _trace_input_preview: str = PrivateAttr(default="")
 
@@ -119,18 +119,8 @@ class Everything(Nothing):
         return f"{self.scope_type}_{self.scope_id}"
 
     def set_text_content(self, content: str) -> None:
+        """设置原始正文；外部文本不能声明自身已经携带可信元数据。"""
         self.text_content = content
-        # 只有当内容包含完整的元数据标签（如 [time:xxx] 或 [uid:xxx]）时才跳过标签生成
-        # 简单的 [at_uid:xxx] 不算元数据标签
-        self._tags_generated = bool(
-            self.message_kind == "chat"
-            and content
-            and content.startswith('[')
-            and any(
-                f"[{tag}:" in content
-                for tag in ("time", "uid", "channel", "group_id", "session_id", "message_id")
-            )
-        )
 
     def get_text_content(self) -> str:
         return self.text_content
@@ -172,13 +162,13 @@ class Everything(Nothing):
         header = tag_label(reply_to_tag.get_tag_name(), str(self.reply_to_id))
         preview = " ".join((self.reply_content or "").split()).strip()
         if preview:
-            header = f"{header}{preview[:200]}"
-        return f"{header}\n" if self.text_content else header
+            header = f"{header}\n引用内容：{preview[:200]}"
+        return header
 
     def __str__(self) -> str:
-        if self._tags_generated:
-            return self.text_content
-        return self.get_tag_list() + self.text_content
+        header = self.get_tag_list()
+        separator = "\n" if header and self.text_content and not header.endswith("\n") else ""
+        return header + separator + self.text_content
 
 
 class EverythingGroup(Everything):

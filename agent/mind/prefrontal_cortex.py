@@ -474,15 +474,15 @@ class PrefrontalCortex:
         assembly = self.tool_assembly
         if assembly is None:
             return
+        channel = dict(reversed(etag_all(content, prefix_only=True))).get("channel")
+        if channel:
+            assembly.activate_by_tag(channel.lower())
         for key, value in etag_all(content):
             if key in ("media_type", "media_file"):
                 # [media_type:image] 的 value 即媒体类型；[media_file:image:path] 取首段
                 media_kind = value.split(":", 1)[0] if value else ""
                 if media_kind:
                     assembly.activate_by_tag(f"media:{media_kind.lower()}")
-            elif key == "channel" and value:
-                # 工具 tag 恒为小写（EntityRegistry 注册时 lower），频道 id 随配置大小写不定
-                assembly.activate_by_tag(value.lower())
 
     @staticmethod
     def _analysis_threshold() -> int:

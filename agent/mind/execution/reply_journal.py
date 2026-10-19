@@ -11,9 +11,12 @@ REPLY 模式每个执行过的工具调用追加一行（名称/参数摘要/结
 """
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from core.log import log
+
+if TYPE_CHECKING:
+    from agent.mind.mind import Mind
 
 _ARG_HEAD_CHARS = 400
 _RESULT_HEAD_CHARS = 240
@@ -44,12 +47,8 @@ class ReplyToolJournal:
             log(f"工具日志落账失败（已忽略）: {exc}", "DEBUG", tag="思维")
 
     async def render(self) -> str:
-        """渲染已执行操作清单（供崩溃恢复注入；无记录返回空串）。"""
-        try:
-            rows = await self._sqlite.load_reply_tool_journal(self._scope_key)
-        except Exception as exc:
-            log(f"工具日志读取失败（已忽略）: {exc}", "DEBUG", tag="启动")
-            return ""
+        """渲染已执行操作清单；无记录返回空串，读取失败向上抛出以保留恢复依据。"""
+        rows = await self._sqlite.load_reply_tool_journal(self._scope_key)
         if not rows:
             return ""
         lines = ["中断前本轮已执行的操作："]
@@ -89,3 +88,13 @@ def build_reply_journal(mind: Any, scope_key: str) -> Optional[ReplyToolJournal]
     if sqlite is None:
         return None
     return ReplyToolJournal(sqlite, scope_key)
+
+
+async def clear_settled_reply(mind: Mind, scope: str) -> None:
+    """终态记录成功后依次清理工具日志和检查点；清理失败保留恢复依据。"""
+    try:
+        sqlite = mind.conversation_data.router.sqlite
+        await sqlite.clear_reply_tool_journal(scope)
+        await sqlite.clear_reply_checkpoint(scope)
+    except Exception as exc:
+        log(f"回复检查点清理失败 [{scope}]: {exc}", "WARNING", tag="思维")

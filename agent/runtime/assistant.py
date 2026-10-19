@@ -17,6 +17,7 @@ from core.log import log
 
 DEFAULT_HEARTBEAT_INTERVAL = 300.0
 _BUSY_HINT = "稍等，我正在自主思考中~"
+_BUSY_HINT_TIMEOUT = 10.0
 
 
 class AgentAssistant:
@@ -42,6 +43,7 @@ class AgentAssistant:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         # 同一忙碌周期内已提示过的 scope（每 scope 一次，空闲即清）
         self._busy_hinted: set[str] = set()
+        self._busy_hint_tasks: dict[str, asyncio.Task[None]] = {}
 
     @staticmethod
     def _load_heartbeat_interval() -> float:
@@ -74,10 +76,10 @@ class AgentAssistant:
                 # 未进入对话历史/PFC，唤醒只会让 Mind 基于缺失上下文决策
                 log(f"消息感知处理失败（重试后仍失败）: {exc}", "ERROR", tag="运行时")
                 raise
-        await self._hint_if_waiting_behind_work(anything)
         self.mind.driver.request_cycle()
+        self._hint_if_waiting_behind_work(anything)
 
-    async def _hint_if_waiting_behind_work(self, anything: Everything) -> None:
+    def _hint_if_waiting_behind_work(self, anything: Everything) -> None:
         """消息将排在自主工作之后时，向来源会话发一次简短提示。
 
         同 scope 在途回复内的新消息经轮内合并处理（不等待、不提示）；
@@ -92,14 +94,25 @@ class AgentAssistant:
         if not should_enqueue_external_message(anything, reflecting=self.mind._reflecting):
             return
         scope = anything.entity_scope
-        if scope in self._busy_hinted:
+        if scope in self._busy_hinted or scope in self._busy_hint_tasks:
             return
         self._busy_hinted.add(scope)
+        task = asyncio.create_task(self._send_busy_hint(anything), name=f"busy_hint:{scope}")
+        self._busy_hint_tasks[scope] = task
+        task.add_done_callback(lambda _task: self._busy_hint_tasks.pop(scope, None))
+
+    async def _send_busy_hint(self, anything: Everything) -> None:
+        """固定提示只做有界 I/O，不占主思维；失败记录后结束，不重试。"""
+        scope = anything.entity_scope
+        driver = self.mind.driver
+        if not driver.is_running or driver.current_work == "cycle" or scope in self.mind._active_scopes:
+            return
         try:
-            await self.mind.channel_manager.reply(anything, _BUSY_HINT)
-            log(f"忙碌提示已发送: {scope}", "DEBUG", tag="运行时")
-        except Exception:
-            log(f"忙碌提示发送失败: {scope}", "DEBUG", tag="运行时")
+            async with asyncio.timeout(_BUSY_HINT_TIMEOUT):
+                await self.mind.channel_manager.reply(anything, _BUSY_HINT)
+            log(f"忙碌提示发送调用完成: {scope}", "DEBUG", tag="运行时")
+        except Exception as exc:
+            log(f"忙碌提示发送失败（不重试）: {scope}: {type(exc).__name__}: {exc}", "WARNING", tag="运行时")
 
     def _ensure_started(self) -> None:
         if self._heartbeat_enabled and (not self._heartbeat_task or self._heartbeat_task.done()):
@@ -116,6 +129,12 @@ class AgentAssistant:
             except asyncio.CancelledError:
                 pass  # 取消属正常关闭流程（正常控制流，非异常）
         self._heartbeat_task = None
+        hint_tasks = list(self._busy_hint_tasks.values())
+        for task in hint_tasks:
+            task.cancel()
+        await asyncio.gather(*hint_tasks, return_exceptions=True)
+        self._busy_hint_tasks.clear()
+        self._busy_hinted.clear()
         await self.mind.driver.close()
 
     def _current_heartbeat_interval(self) -> float:

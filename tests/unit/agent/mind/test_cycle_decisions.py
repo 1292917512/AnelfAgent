@@ -29,7 +29,7 @@ def _fake_mind() -> Any:
         _active_scopes=set(),
         _auto_cycle_retry=0,
         set_phase=lambda phase: None,
-        _schedule_next_cycle=lambda reason: None,
+        _schedule_next_cycle=lambda reason, **kwargs: None,
         driver=SimpleNamespace(request_cycle=Mock()),
         heartbeat_engine=SimpleNamespace(reflection_pending=False),
         _reply_idle_event=asyncio.Event(),
@@ -232,6 +232,52 @@ async def test_direct_channel_owns_request_and_preserves_background_work(monkeyp
     decision = cycle_mod.execute_safely.await_args.args[1]
     assert decision.type == DecisionType.REPLY and decision.target == "group_game:local"
     mind.pfc.clear_general_tasks_before.assert_called_once_with(0)
+
+
+@pytest.mark.parametrize("targets", [["user_webui:missing"], [None], ["qq:1", "user_qq:1", "bogus"]])
+async def test_invalid_or_duplicate_meta_targets_cover_real_pending_once(monkeypatch, targets):
+    from agent.messages import MessageUser
+
+    mind = _fake_mind()
+    mind.pfc = PrefrontalCortex(SimpleNamespace())
+    scopes = [MessageUser(uid="1", adapter_key=adapter).entity_scope for adapter in ("qq", "telegram")]
+    for scope in scopes:
+        mind.pfc.pending_user.append(scope)
+    situation = SituationContext(pending_messages=[PendingMessage(scope=scope, preview="待处理") for scope in scopes],
+                                 active_goals=["existing goal"])
+    monkeypatch.setattr(cycle_mod, "active_goal_lines", AsyncMock(return_value=situation.active_goals))
+    monkeypatch.setattr(cycle_mod, "gather_situation", AsyncMock(return_value=situation))
+    monkeypatch.setattr(cycle_mod, "think_and_decide", AsyncMock(return_value=[
+        Decision(type=DecisionType.REPLY, target=target) for target in targets]))
+    from agent.mind.decisions import execute_decision
+
+    async def consume(_mind, decision):
+        assert decision.target in scopes
+        _mind.pfc.consume_scope_task(decision.target)
+        return True
+
+    # 驱动真实周期，检查调度规范化；模型与实际回复作为边界替身。
+    monkeypatch.setattr(cycle_mod, "execute_safely", consume)
+    mind._schedule_next_cycle = Mock()
+    end = {}
+    await cycle_mod.run_cycle(mind, end)
+    assert end["decisions_executed"] == ["reply", "reply"]
+    assert end["decisions_failed"] == []
+    assert not mind.pfc.has_pending_tasks()
+    mind._schedule_next_cycle.assert_not_called()
+    assert await execute_decision(mind, Decision(type=DecisionType.REPLY, target=scopes[0])) is False
+
+
+async def test_idle_is_valid_but_does_not_reset_no_progress_backoff():
+    mind = _fake_mind()
+    mind._auto_cycle_retry = 3
+    mind.pfc.has_pending_tasks = lambda: True
+    mind._schedule_next_cycle = Mock()
+    end = {}
+    await cycle_mod.execute_decisions(mind, end, SituationContext(), [Decision(type=DecisionType.IDLE)])
+    assert end["decisions_executed"] == ["idle"] and end["decisions_failed"] == []
+    assert mind._auto_cycle_retry == 3
+    assert mind._schedule_next_cycle.call_args.kwargs == {"backoff": True}
 
 
 class TestSituationSummary:

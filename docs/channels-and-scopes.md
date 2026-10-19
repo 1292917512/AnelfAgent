@@ -130,6 +130,19 @@ http_api 频道是外部系统的双向 HTTP 门户（默认 127.0.0.1:8091，�
 
 ## 防护层
 
+### 入站身份与重复投递
+
+`Everything` 始终从适配器提供的字段生成发送者、频道、群组及消息 ID 标签，标签前缀与正文用
+换行分隔，引用预览也位于前缀之外。正文中的 `[uid:...]`、`[channel:...]` 等保持原文，仅表示
+用户复制的内容，不能替代真实身份；消息 ID 查询和频道工具激活只读取可信前缀。跨会话内容以
+动态通知呈现，具体注入位置及串行处理约定见[思维分册](mind-architecture.md#二回复与工具循环)。
+
+`ConversationData` 传递平台消息 ID，由 `SqliteBackend.append_conversation` 在同一写锁内完成
+判重和追加。24 小时窗口内，同 scope、角色、平台 ID 和相同内容的重投只入库一次，比较时仅
+忽略系统前缀中生成的到达时间；正文里的时间标签、编辑内容和媒体差异仍参与比较。不同平台 ID
+的相同正文是两条消息；无 ID 时不按正文猜测重复。判重失败向上抛出，由受理层有限重试并记录
+错误，不能绕过检查直接放行执行。去重不会重写已有消息或引入模型 token。
+
 ### 投递标签与回执
 
 `agent/channel/delivery.py` 通过 `core.tags` 统一编码投递事实，标签本身不触发发送：
@@ -156,7 +169,7 @@ http_api 频道是外部系统的双向 HTTP 门户（默认 127.0.0.1:8091，�
 
 | 机制 | 位置 | 说明 |
 |------|------|------|
-| 跨周期双答防护 | 回复优先门控 + 出站事实面（见上） | 思维周期消息链在启动时刻冻结（对话历史周期内不重读），并发周期互相看不到对方出站——三通道分工：历史固化/动态注入/执行期边界 |
+| 跨执行体双答防护 | 回复优先门控 + 出站事实面（见上） | 主思维串行，当前会话历史按水位逐轮并入；独立子代理和钩子的出站事实经动态注入与发送边界共同约束 |
 | 空会话防护与整合 | `outbound_guard.guard_empty_conversation`（出站层）+ `decisions`（决策层前置判定）+ `sqlite_backend.sweep_empty_conversations`（存量整合，心跳周期触发） | 空会话 = 从未收到过 user 角色消息的会话（AI 主动搭话历史缺陷与一次性通知写入产生）。三层：①出站层——AI 思维上下文向空会话发送返回结构化错误（guard=empty_conversation，hint 引导等待对方先开口或改记待办）；②决策层——PROACTIVE 与工具操作结果投递在进入回复周期前判定空会话直接放弃（心跳日志留痕）；③存量整合——按 `conversation_empty_sweep_interval_seconds`（默认 86400s，0=关）清除空会话的消息/摘要/回复检查点（1h 宽限窗口内的新会话不动，NOT EXISTS 单语句守卫防与首条用户消息竞态）。判定事实源 `conversation_has_user_message`；查询失败 fail-open（行为护栏而非安全边界）。配置 `channel/outbound` 组 `outbound_guard_empty_enabled` |
 | 待回复队列毒丸防护 | `is_conversation_scope`（单点判据）+ `PrefrontalCortex.enqueue_reply`/`add_reminder`（校验）+ `pop_next_reply_target`（就地清除）+ `pfc.consume_scope_task`（双队列消费） | 三层防线：①源头——`add_reminder` 拒绝持久化不可路由 scope 的提醒（ValueError，事件降级为不提醒）；②入口——`enqueue_reply` 拒绝非会话 scope 入队（退化为全局短期记忆桶）；③兜底——回复消费点对解析失败或缺频道前缀的队列条目就地清除 + WARNING，任何坏条目最多空转一轮即收敛。投递面守卫（待回复队列/持久化提醒/一次性通知）统一拒绝不可路由 scope |
 

@@ -233,6 +233,17 @@ async def test_live_awareness_only_includes_unhandled_directed_messages(sqlite, 
     await arrive(MessageUser(uid="1", adapter_key="telegram", message_kind="event",
                              text_content="引用平台事件", reply_to_id="ref", reply_content="引用正文"))
     narrative = await build_cross_channel_narrative(mind, "user_webui:web_user#a")
+    from agent.context.message_schema import is_genuine_user_message, normalize_for_send
+    from core.tags import etag_all
+
+    for message in narrative[1:]:
+        prefix = dict(etag_all(message["content"], prefix_only=True))
+        assert message["role"] == "system"
+        assert prefix["kind"] == "notification" and prefix["notification"] == "session_message"
+        assert prefix["scope"] == message["_source"]["scope"]
+    sent = normalize_for_send([{"role": "system", "content": "persona"}, *narrative])
+    assert all(not is_genuine_user_message(message) for message in sent)
+    assert all("_source" not in message and "_layer" not in message for message in sent)
     text = str(narrative)
     assert "请看新问题" in text and "新私聊问题" in text
     assert all(excluded not in text for excluded in ("群聊闲谈", "已回答旧问题", "非用户平台通知", "引用平台事件"))

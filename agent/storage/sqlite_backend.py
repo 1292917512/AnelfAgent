@@ -12,12 +12,26 @@ import aiosqlite
 
 from core.log import log
 from core.sqlite_utils import required_row
+from core.tags import etag_all, get_time_tag, tag_label
 
 # 连接健康检查节流间隔（秒）：避免每次 _get_db 都执行 SELECT 1
 _HEALTH_CHECK_INTERVAL = 30.0
 _LIVE_SCOPES = 128
 _LIVE_MESSAGES = 256
 _LIVE_CHARS = 256_000
+
+
+def _without_arrival_time(content: str, ts_ns: int) -> str:
+    """只移除可信前缀中与入库时间对应的首个时间标签，保留正文里的所有标签。"""
+    offset = 0
+    for key, value in etag_all(content, prefix_only=True):
+        label = tag_label(key, value)
+        if key == "time":
+            if label == get_time_tag(ts_ns):
+                return content[:offset] + content[offset + len(label):]
+            break
+        offset += len(label)
+    return content
 
 
 class ConversationRow(TypedDict):
@@ -488,9 +502,15 @@ class SqliteBackend:
         ts_ns: Optional[int] = None,
         adapter_key: str = "",
         trigger_mind: bool = True,
-    ) -> None:
+        message_id: str = "",
+    ) -> bool:
+        """在同一写锁内判重并追加；重复投递不写窗口，返回 False。"""
         ts_ns = ts_ns or time.time_ns()
         async with self._write_tx() as db:
+            if message_id and await self._conversation_has_duplicate(
+                db, scope_type, scope_id, role, message_id, content, ts_ns,
+            ):
+                return False
             cursor = await db.execute(
                 "INSERT INTO conversation_messages(scope_type, scope_id, role, content, ts_ns, adapter_key, trigger_mind) VALUES(?,?,?,?,?,?,?)",
                 (scope_type, scope_id, role, content, int(ts_ns), adapter_key or "", 1 if trigger_mind else 0),
@@ -501,38 +521,42 @@ class SqliteBackend:
                 window.rows.append({"id": int(cursor.lastrowid or 0), "role": role,
                                     "content": content, "ts_ns": int(ts_ns)})
                 window.trim()
+            return True
 
-    async def conversation_has_duplicate(
+    async def _conversation_has_duplicate(
         self,
+        db: aiosqlite.Connection,
         scope_type: str,
         scope_id: str,
+        role: str,
         message_id: str,
         content: str,
+        ts_ns: int,
         *,
         window_seconds: int = 86400,
     ) -> bool:
         """入站去重：同 scope 时间窗内是否已有同 message_id 且同内容的消息。
 
-        webhook 重投/重连重放的副本 message_id 与内容完全相同；Telegram 编辑
-        消息带 [编辑] 前缀（内容不同）不误伤。LIKE 粗筛 + 内容全等校验，
-        时间窗约束扫描范围。
+        仅排除系统生成的到达时间；不同 ID、编辑后的内容和正文标签仍有区别。
+        查询失败向上抛出，不能绕过去重后继续执行有副作用的请求。
         """
         message_id = (message_id or "").strip()
         if not message_id:
             return False
-        from core.tags import tag_label
-        db = await self._get_db()
-        cursor = await db.execute(
-            "SELECT content FROM conversation_messages "
-            "WHERE scope_type=? AND scope_id=? AND ts_ns > ? AND content LIKE ? "
-            "ORDER BY ts_ns DESC LIMIT 20",
-            (scope_type, scope_id,
+        label = tag_label("message_id", message_id)
+        pattern = label.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        stable_content = _without_arrival_time(content, ts_ns)
+        async with db.execute(
+            "SELECT content, ts_ns FROM conversation_messages "
+            "WHERE scope_type=? AND scope_id=? AND role=? AND ts_ns > ? AND content LIKE ? ESCAPE '\\' "
+            "ORDER BY ts_ns DESC",
+            (scope_type, scope_id, role,
              int(time.time_ns() - window_seconds * 1e9),
-             f"%{tag_label('message_id', message_id)}%"),
-        )
-        for row in await cursor.fetchall():
-            if (row[0] or "") == content:
-                return True
+             f"%{pattern}%"),
+        ) as cursor:
+            async for row in cursor:
+                if _without_arrival_time(row[0] or "", row[1]) == stable_content:
+                    return True
         return False
 
     async def list_scopes_with_last_message(self) -> list[dict]:
@@ -1410,7 +1434,7 @@ class SqliteBackend:
         matched: list[dict] = []
         for r in rows:
             content = r[4] or ""
-            tags = {k: v for k, v in etag_all(content)}
+            tags = dict(reversed(etag_all(content, prefix_only=True)))
             if tags.get("message_id") != message_id:
                 continue
             matched.append({
