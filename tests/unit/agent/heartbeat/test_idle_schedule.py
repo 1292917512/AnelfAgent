@@ -65,7 +65,15 @@ def _make_engine(
     file_stems: frozenset[str] = frozenset(),
     save_calls: list[HeartbeatConfig] | None = None,
 ) -> tuple[HeartbeatEngine, SimpleNamespace]:
-    mind = SimpleNamespace(last_activity_ts=last_activity, is_reply=False)
+    mind = SimpleNamespace(
+        last_activity_ts=last_activity,
+        is_reply=False,
+        _autonomous_cycle=AsyncMock(),
+        _reset_phase_if_idle=Mock(),
+        pfc=SimpleNamespace(pending_analysis=[]),
+    )
+    from agent.mind.driver import MindDriver
+    mind.driver = MindDriver(mind)
     config = HeartbeatConfig(task_schedules=schedules)
 
     # 隔离真实配置文件：TaskRegistry / get_heartbeat_config / save 均指向测试替身
@@ -85,50 +93,11 @@ def _make_engine(
     # 间隔真源（mind.heartbeat_interval）打桩，隔离真实 mind 配置
     monkeypatch.setattr("agent.heartbeat.engine.current_interval_seconds", lambda: 300)
     engine = HeartbeatEngine(mind, SimpleNamespace(), memory=mind, skills=None)
+    mind.heartbeat_engine = engine
     # 内置维护与执行器全部替身化：测试只关心调度决策
     engine._run_maintenance = AsyncMock()  # type: ignore[method-assign]
     engine.executor = SimpleNamespace(run=AsyncMock(side_effect=lambda t, e, **k: _result(t.name)))
     return engine, mind
-
-
-@pytest.mark.parametrize("outcome", ["success", "error", "cancel"])
-async def test_background_tick_deduplicates_and_releases_on_completion(monkeypatch, outcome):
-    engine, mind = _make_engine([], {}, monkeypatch)
-    mind.pfc = SimpleNamespace(has_pending_tasks=Mock(return_value=True))
-    mind._schedule_next_cycle = Mock()
-    gate = asyncio.Event()
-    entered = asyncio.Event()
-
-    async def tick():
-        entered.set()
-        await gate.wait()
-        if outcome == "error":
-            raise RuntimeError("test heartbeat failure")
-
-    engine.tick = AsyncMock(side_effect=tick)
-    tasks = []
-
-    def spawn(coro, *, name):
-        task = asyncio.create_task(coro, name=name)
-        tasks.append(task)
-        return task
-
-    monkeypatch.setattr("core.async_helper.spawn", spawn)
-    engine.start_background_tick()
-    engine.start_background_tick()
-    assert engine.background_tick_running
-    assert len(tasks) == 1
-    await entered.wait()
-    if outcome == "cancel":
-        tasks[0].cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await tasks[0]
-    else:
-        gate.set()
-        await tasks[0]
-    assert not engine.background_tick_running
-    engine.tick.assert_awaited_once()
-    mind._schedule_next_cycle.assert_called_once()
 
 
 class TestIdleConfig:
@@ -397,20 +366,15 @@ class TestStartTaskBackground:
         assert ok is False and "已在执行" in msg
 
     async def test_accepts_and_schedules_run_task(self, monkeypatch) -> None:
-        engine, _ = _make_engine([], {"a": _task("a")}, monkeypatch)
-        engine.run_task = AsyncMock(return_value="产出")  # type: ignore[method-assign]
+        engine, mind = _make_engine([], {"a": _task("a")}, monkeypatch)
+        engine.run_claimed_task = AsyncMock(return_value="产出")  # type: ignore[method-assign]
         ok, msg = engine.start_task_background("a")
         assert ok is True and "后台" in msg
-        for _ in range(10):
-            await asyncio.sleep(0)
-            if engine.run_task.await_count:
-                break
-        engine.run_task.assert_awaited_once_with("a")
-
-    async def test_guarded_swallows_exceptions(self, monkeypatch) -> None:
-        engine, _ = _make_engine([], {"a": _task("a")}, monkeypatch)
-        engine.run_task = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
-        await engine._run_task_guarded("a")  # 后台壳吞异常只记日志，不外抛
+        duplicate_ok, duplicate_msg = engine.start_task_background("a")
+        assert duplicate_ok is False and "排队" in duplicate_msg
+        await mind.driver.when_idle()
+        engine.run_claimed_task.assert_awaited_once_with("a", trigger="manual")
+        await mind.driver.close()
 
 
 class TestReflectDeferral:

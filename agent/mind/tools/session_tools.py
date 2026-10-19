@@ -12,7 +12,6 @@ Token 影响：仅工具查询时提供有界结果，不自动注入诊断或�
 
 from __future__ import annotations
 
-import asyncio
 import json
 import time
 from typing import TYPE_CHECKING, Any, Dict, List
@@ -220,7 +219,7 @@ async def switch_session(scope: str, reason: str = "") -> str:
         preview or f"会话切换: {reason or '主动处理'}"[:60],
         prompt,
     )
-    asyncio.create_task(mind.try_execute_mind())
+    mind.driver.request_cycle()
     log(f"AI 切换会话: scope={scope} reason={reason}", tag="会话")
 
     return json.dumps({

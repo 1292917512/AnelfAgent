@@ -1,20 +1,24 @@
-"""自主周期决策执行：心跳周期即时决策全部转后台，用户消息周期保持内联执行。
-
-回归背景：心跳周期的 REPLY/PROACTIVE/TOOL_ACTION 均为分钟级 think loop，
-内联执行会让 _cycle_lock 全程被占，期间到达的用户消息被序列化在长决策之后。
-"""
+"""主周期决策执行：所有主决策串行，心跳在决策边界向用户消息让路。"""
 
 from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from typing import Any, List
+from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from agent.mind import cycle as cycle_mod
 from agent.mind.autonomous import Decision, DecisionType, PendingMessage, SituationContext
+
+
+class _PendingQueue:
+    def __init__(self) -> None:
+        self.empty = True
+
+    def is_empty(self) -> bool:
+        return self.empty
 
 
 def _fake_mind() -> Any:
@@ -25,13 +29,16 @@ def _fake_mind() -> Any:
         _auto_cycle_retry=0,
         set_phase=lambda phase: None,
         _schedule_next_cycle=lambda reason: None,
-        heartbeat_engine=SimpleNamespace(reflection_pending=False, start_background_tick=Mock()),
+        driver=SimpleNamespace(request_cycle=Mock()),
+        heartbeat_engine=SimpleNamespace(reflection_pending=False),
         _reply_idle_event=asyncio.Event(),
         tool_assembly=SimpleNamespace(clear_when_idle=Mock()),
         pfc=SimpleNamespace(
             peek_general_tasks=lambda: [],
-            clear_general_tasks_before=lambda n: None,
+            clear_general_tasks_before=Mock(),
             has_pending_tasks=lambda: False,
+            pending_user=_PendingQueue(),
+            pending_group=_PendingQueue(),
         ),
     )
 
@@ -43,93 +50,105 @@ def _isolate_events(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cycle_mod, "execute_safely", AsyncMock(return_value=True))
 
 
-class TestHeartbeatDecisionDeferral:
-    async def test_heartbeat_defers_all_decisions(self, monkeypatch) -> None:
-        """心跳周期：即时决策转后台执行，函数返回不等决策完成。"""
-        mind = _fake_mind()
-        release = asyncio.Event()
-        done: List[str] = []
+@pytest.mark.parametrize("heartbeat", [False, True])
+async def test_decisions_execute_inline_and_serially(monkeypatch, heartbeat: bool) -> None:
+    mind = _fake_mind()
+    events: list[str] = []
+    active = 0
+    max_active = 0
 
-        async def _safe(_mind, decision: Decision) -> bool:
-            await release.wait()
-            done.append(decision.type.value)
-            return True
+    async def _safe(_mind, decision: Decision) -> bool:
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        events.append(f"start:{decision.type.value}")
+        await asyncio.sleep(0)
+        events.append(f"end:{decision.type.value}")
+        active -= 1
+        return True
 
-        monkeypatch.setattr(cycle_mod, "execute_safely", _safe)
-        decisions = [Decision(type=DecisionType.REPLY, target="user_webui:u1", priority=10)]
+    monkeypatch.setattr(cycle_mod, "execute_safely", _safe)
+    decisions = [
+        Decision(type=DecisionType.PLAN, content="规划", priority=5),
+        Decision(type=DecisionType.REPLY, target="user_webui:u1", priority=10),
+    ]
+    await cycle_mod.execute_decisions(
+        mind, {}, SituationContext(), decisions, is_heartbeat=heartbeat,
+    )
 
-        # 决策被门控永不完成，函数仍须正常返回（后台化）
-        await asyncio.wait_for(
-            cycle_mod.execute_decisions(
-                mind, {}, SituationContext(), decisions, is_heartbeat=True,
-            ),
-            timeout=1.0,
-        )
-        assert done == []
+    assert events == ["start:reply", "end:reply", "start:plan", "end:plan"]
+    assert max_active == 1
 
-        release.set()
-        for _ in range(10):
-            await asyncio.sleep(0)
-            if done:
-                break
-        assert done == [DecisionType.REPLY.value]
 
-    async def test_message_cycle_executes_immediate_inline(self, monkeypatch) -> None:
-        """用户消息周期：即时决策保持内联执行（函数等待决策完成）。"""
-        mind = _fake_mind()
-        release = asyncio.Event()
-        done: List[str] = []
+async def test_heartbeat_yields_to_new_message_between_decisions(monkeypatch) -> None:
+    mind = _fake_mind()
+    executed: list[str] = []
 
-        async def _safe(_mind, decision: Decision) -> bool:
-            await release.wait()
-            done.append(decision.type.value)
-            return True
+    async def _safe(_mind, decision: Decision) -> bool:
+        executed.append(decision.type.value)
+        mind.pfc.pending_user.empty = False
+        return True
 
-        monkeypatch.setattr(cycle_mod, "execute_safely", _safe)
-        decisions = [Decision(type=DecisionType.REPLY, target="user_webui:u1", priority=10)]
+    monkeypatch.setattr(cycle_mod, "execute_safely", _safe)
+    decisions = [
+        Decision(type=DecisionType.REPLY, target="user_webui:u1", priority=10),
+        Decision(type=DecisionType.PLAN, content="自主规划", priority=5),
+    ]
+    await cycle_mod.execute_decisions(
+        mind, {}, SituationContext(), decisions, is_heartbeat=True,
+    )
 
-        runner = asyncio.create_task(
-            cycle_mod.execute_decisions(
-                mind, {}, SituationContext(), decisions, is_heartbeat=False,
-            )
-        )
-        for _ in range(5):
-            await asyncio.sleep(0)
-        assert not runner.done()
+    assert executed == [DecisionType.REPLY.value]
+    mind.driver.request_cycle.assert_called_once_with()
+    mind.pfc.clear_general_tasks_before.assert_not_called()
 
-        release.set()
-        await asyncio.wait_for(runner, timeout=1.0)
-        assert done == [DecisionType.REPLY.value]
-        # 内联执行成功重置续轮退避
-        assert mind._auto_cycle_retry == 0
 
-    async def test_heartbeat_still_filters_reflect_when_pending(self, monkeypatch) -> None:
-        """心跳周期全量转后台后，待反思标记仍过滤重复的 REFLECT 决策。"""
-        mind = _fake_mind()
-        mind.heartbeat_engine.reflection_pending = True
-        scheduled: List[str] = []
+async def test_heartbeat_with_general_tasks_finishes_batch_before_ack(monkeypatch) -> None:
+    mind = _fake_mind()
+    mind.pfc.peek_general_tasks = lambda: ["existing"]
+    executed: list[str] = []
 
-        async def _safe(_mind, decision: Decision) -> bool:
-            scheduled.append(decision.type.value)
-            return True
+    async def _safe(_mind, decision: Decision) -> bool:
+        executed.append(decision.type.value)
+        mind.pfc.pending_user.empty = False
+        return True
 
-        monkeypatch.setattr(cycle_mod, "execute_safely", _safe)
-        decisions = [
-            Decision(type=DecisionType.REFLECT, reason="重复反思", priority=5),
-            Decision(type=DecisionType.REPLY, target="user_webui:u1", priority=10),
-        ]
-        await cycle_mod.execute_decisions(
-            mind, {}, SituationContext(), decisions, is_heartbeat=True,
-        )
-        for _ in range(10):
-            await asyncio.sleep(0)
-            if len(scheduled) >= 1:
-                break
-        assert scheduled == [DecisionType.REPLY.value]
+    monkeypatch.setattr(cycle_mod, "execute_safely", _safe)
+    decisions = [
+        Decision(type=DecisionType.REPLY, target="user_webui:u1", priority=10),
+        Decision(type=DecisionType.PLAN, content="自主规划", priority=5),
+    ]
+    await cycle_mod.execute_decisions(
+        mind, {}, SituationContext(), decisions, is_heartbeat=True,
+    )
+
+    assert executed == [DecisionType.REPLY.value, DecisionType.PLAN.value]
+    mind.driver.request_cycle.assert_not_called()
+    mind.pfc.clear_general_tasks_before.assert_called_once_with(1)
+
+
+async def test_heartbeat_still_filters_reflect_when_pending(monkeypatch) -> None:
+    mind = _fake_mind()
+    mind.heartbeat_engine.reflection_pending = True
+    scheduled: list[str] = []
+
+    async def _safe(_mind, decision: Decision) -> bool:
+        scheduled.append(decision.type.value)
+        return True
+
+    monkeypatch.setattr(cycle_mod, "execute_safely", _safe)
+    decisions = [
+        Decision(type=DecisionType.REFLECT, reason="重复反思", priority=5),
+        Decision(type=DecisionType.REPLY, target="user_webui:u1", priority=10),
+    ]
+    await cycle_mod.execute_decisions(
+        mind, {}, SituationContext(), decisions, is_heartbeat=True,
+    )
+    assert scheduled == [DecisionType.REPLY.value]
 
 
 class TestMessageCycleToolActionGuard:
-    async def test_message_cycle_never_runs_parallel_tool_action(self, monkeypatch) -> None:
+    async def test_message_cycle_never_runs_parallel_tool_action(self) -> None:
         """同一用户指令不得同时进入 REPLY 与 TOOL_ACTION 两条工具循环。"""
         mind = _fake_mind()
         situation = SituationContext(pending_messages=[
@@ -148,8 +167,8 @@ class TestMessageCycleToolActionGuard:
         decision = cycle_mod.execute_safely.await_args.args[1]
         assert decision.type == DecisionType.REPLY
 
-    async def test_heartbeat_keeps_autonomous_tool_action(self, monkeypatch) -> None:
-        """心跳周期不受聊天守卫影响，自主 TOOL_ACTION 仍转后台执行。"""
+    async def test_heartbeat_keeps_autonomous_tool_action(self) -> None:
+        """心跳周期不受聊天守卫影响，自主 TOOL_ACTION 仍在主 Driver 内执行。"""
         mind = _fake_mind()
         situation = SituationContext(pending_messages=[
             PendingMessage(scope="user_qq:u1", preview="帮我查一下", adapter_key="qq"),
@@ -161,13 +180,9 @@ class TestMessageCycleToolActionGuard:
         await cycle_mod.execute_decisions(
             mind, {}, situation, decisions, is_heartbeat=True,
         )
-        for _ in range(10):
-            await asyncio.sleep(0)
-            if cycle_mod.execute_safely.await_count >= 2:
-                break
         assert cycle_mod.execute_safely.await_count == 2
-        executed = {call.args[1].type for call in cycle_mod.execute_safely.await_args_list}
-        assert executed == {DecisionType.REPLY, DecisionType.TOOL_ACTION}
+        executed = [call.args[1].type for call in cycle_mod.execute_safely.await_args_list]
+        assert executed == [DecisionType.REPLY, DecisionType.TOOL_ACTION]
 
 
 @pytest.mark.parametrize("heartbeat", [False, True])
@@ -186,7 +201,6 @@ async def test_direct_channel_owns_request_and_preserves_background_work(monkeyp
     mind.pfc.pending_analysis = ["unrelated profile"]
     mind.pfc.clear_general_tasks_before = Mock()
     await cycle_mod.run_cycle(mind, {}, is_heartbeat=heartbeat)
-    await asyncio.sleep(0)
     assert cycle_mod.execute_safely.await_count == 1
     decision = cycle_mod.execute_safely.await_args.args[1]
     assert decision.type == DecisionType.REPLY and decision.target == "group_game:local"
@@ -199,13 +213,11 @@ class TestSituationSummary:
         ctx = SituationContext(pending_messages=[
             PendingMessage(scope="group_qq:1", preview="帮我查下天气", group_id="1",
                            adapter_key="qq", to_me=True),
-            PendingMessage(scope="group_qq:1", preview="大家周末去哪玩", group_id="1",
-                           adapter_key="qq"),
+            PendingMessage(scope="group_qq:1", preview="大家周末去哪玩", adapter_key="qq"),
             PendingMessage(scope="user_qq:2", preview="张三赞了你的消息", adapter_key="qq",
                            kind="notification"),
         ])
         summary = ctx.to_summary()
         assert "[@我]" in summary
         assert "[notification]" in summary
-        # 无标记的群消息是群员间对话，不得带 @我 标记
         assert "大家周末去哪玩" in summary

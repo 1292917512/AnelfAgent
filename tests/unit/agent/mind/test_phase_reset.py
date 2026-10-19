@@ -3,7 +3,7 @@
 回归背景：phase 复位曾只存在于 execute_reply finally 一处，心跳 idle 决策、
 reflect 族（任务/反思/子代理）、PROACTIVE 直调、未入队消息四条路径结束后
 阶段永久卡死（UI 恒显「决策中」）。本文件锁定活跃事实源三元组
-（_active_scopes / _reflect_depth / _cycle_lock）与各完成边界的收口行为。
+（_active_scopes / _reflect_depth / Driver 执行态）与各完成边界的收口行为。
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import pytest
 from agent.config import MindConfig
 from agent.mind import cycle
 from agent.mind.autonomous import MindPhase
+from agent.mind.driver import MindDriver
 from agent.mind.execution import reflect as reflect_module
 from agent.mind.interrupt import InterruptRegistry
 from agent.mind.mind import Mind
@@ -31,7 +32,8 @@ def _bare_mind() -> Any:
     mind.phase = MindPhase.IDLE
     mind._active_scopes = set()
     mind._reflect_depth = 0
-    mind._cycle_lock = asyncio.Lock()
+    mind.heartbeat_engine = SimpleNamespace(tick=AsyncMock(return_value=[]))
+    mind.driver = MindDriver(mind)
     return mind
 
 
@@ -76,12 +78,13 @@ class TestResetPhaseIfIdle:
         mind._reset_phase_if_idle()
         assert mind.phase is MindPhase.LLM_CALLING
 
-    async def test_cycle_lock_blocks_reset(self) -> None:
+    def test_driver_running_blocks_reset(self) -> None:
         mind = _bare_mind()
         mind.phase = MindPhase.DECIDING
-        async with mind._cycle_lock:
-            mind._reset_phase_if_idle()
-            assert mind.phase is MindPhase.DECIDING
+        mind.driver._running = True
+        mind._reset_phase_if_idle()
+        assert mind.phase is MindPhase.DECIDING
+        mind.driver._running = False
         mind._reset_phase_if_idle()
         assert mind.phase is MindPhase.IDLE
 
@@ -97,6 +100,7 @@ class TestExecuteMindPhaseReset:
         mind._autonomous_cycle = _cycle
         await mind.execute_mind(is_heartbeat=True)
         assert mind.phase is MindPhase.IDLE
+        await mind.driver.close()
 
     async def test_cycle_end_with_active_scope_keeps_phase(self) -> None:
         """周期派生了存活的后台回复（已登记 scope）时不归零。"""
@@ -109,19 +113,22 @@ class TestExecuteMindPhaseReset:
         mind._autonomous_cycle = _cycle
         await mind.execute_mind()
         assert mind.phase is MindPhase.DECIDING
+        await mind.driver.close()
 
-    async def test_try_execute_mind_resets_after_cycle(self) -> None:
+    async def test_wake_request_resets_after_cycle(self) -> None:
         mind = _bare_mind()
 
         async def _cycle(*, is_heartbeat: bool = False) -> None:
             mind.set_phase(MindPhase.DECIDING)
 
         mind._autonomous_cycle = _cycle
-        await mind.try_execute_mind()
+        mind.driver.request_cycle()
+        await mind.driver.when_idle()
         assert mind.phase is MindPhase.IDLE
+        await mind.driver.close()
 
     async def test_cycle_exception_still_resets(self) -> None:
-        """周期异常穿透（assistant 捕获续跑）：finally 收口不留 DECIDING 卡死。"""
+        """周期异常由 Driver 边界捕获：收口不留 DECIDING 卡死。"""
         mind = _bare_mind()
 
         async def _cycle(*, is_heartbeat: bool = False) -> None:
@@ -129,9 +136,9 @@ class TestExecuteMindPhaseReset:
             raise RuntimeError("boom")
 
         mind._autonomous_cycle = _cycle
-        with pytest.raises(RuntimeError):
-            await mind.execute_mind()
+        await mind.execute_mind()
         assert mind.phase is MindPhase.IDLE
+        await mind.driver.close()
 
 
 class TestCycleBodyDeciding:

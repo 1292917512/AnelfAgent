@@ -18,7 +18,7 @@ def _fake_mind() -> SimpleNamespace:
     memory.get_adapter_key = lambda scope: "qq"
     return SimpleNamespace(
         pfc=memory,
-        try_execute_mind=AsyncMock(),
+        driver=SimpleNamespace(request_cycle=MagicMock()),
     )
 
 
@@ -34,7 +34,7 @@ async def test_completion_keeps_waking_without_new_user_input(scope: str, succes
         assert append.await_count == index + 1
         assert list(queue.queue) == [scope]
         await asyncio.sleep(0)
-        assert mind.try_execute_mind.await_count == index + 1
+        assert mind.driver.request_cycle.call_count == index + 1
         mind.pfc.consume_scope_task(scope)
 
     mind.pfc.add_temporary.assert_not_called()
@@ -63,7 +63,7 @@ async def test_progress_alerts_and_completion_all_reach_model() -> None:
     await on_task_unclaimed(mind, "user_qq:1", "下载任务", "下载完成")
     await asyncio.sleep(0)
     assert append.await_count == 6
-    assert mind.try_execute_mind.await_count == 6
+    assert mind.driver.request_cycle.call_count == 6
 
 
 @pytest.mark.parametrize("missing_router", [True, False])
@@ -80,7 +80,7 @@ async def test_history_unavailable_preserves_notification_and_wakes(missing_rout
     assert mind.pfc.add_temporary.call_args.kwargs == {"scope": "user_qq:1"}
     assert "执行失败" in mind.pfc.add_temporary.call_args.args[0]["content"]
     assert list(mind.pfc.pending_user.queue) == ["user_qq:1"]
-    mind.try_execute_mind.assert_awaited_once()
+    mind.driver.request_cycle.assert_called_once()
 
 
 @pytest.mark.parametrize("scope", ["_global", "reflect:1", "user_legacy", "user_qq:", "group_"])
@@ -92,4 +92,4 @@ async def test_non_conversation_notifications_only_update_global_memory(scope: s
     assert mind.pfc.add_temporary.call_count == 2
     mind.pfc._conversation_data.router.append.assert_not_awaited()
     assert mind.pfc.pending_user.is_empty() and mind.pfc.pending_group.is_empty()
-    mind.try_execute_mind.assert_not_called()
+    mind.driver.request_cycle.assert_not_called()

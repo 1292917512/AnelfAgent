@@ -18,7 +18,7 @@ import asyncio
 import re
 import threading
 from collections import deque
-from typing import TYPE_CHECKING, Any, Callable, Coroutine, Deque, Dict, List, Tuple
+from typing import TYPE_CHECKING, Callable, Deque, Dict, List, Tuple
 
 from core.async_helper import spawn
 from core.log import log
@@ -42,7 +42,7 @@ class PushHub:
     """实体通知的历史投递、会话唤醒与轮内注入队列。"""
 
     def __init__(
-        self, pfc: PrefrontalCortex, wake: Callable[[], Coroutine[Any, Any, None]],
+        self, pfc: PrefrontalCortex, wake: Callable[[], None],
         *, loop: asyncio.AbstractEventLoop,
     ) -> None:
         self._pfc = pfc
@@ -53,20 +53,15 @@ class PushHub:
         self._seq: Dict[str, int] = {}
         self._loop = loop
         self._delivery_tasks: set[asyncio.Task[None]] = set()
-        self._wake_tasks: set[asyncio.Task[None]] = set()
         self._closing = False
         self._admission_lock = threading.Lock()
 
     async def close(self) -> None:
-        """拒绝新推送，停止唤醒任务并等待已受理通知完成投递。"""
+        """拒绝新推送，等待已受理通知完成投递。"""
         with self._admission_lock:
             self._closing = True
         # 关停门关闭前受理的跨线程回调先进入投递队列。
         await asyncio.sleep(0)
-        for task in tuple(self._wake_tasks):
-            task.cancel()
-        if self._wake_tasks:
-            await asyncio.gather(*tuple(self._wake_tasks), return_exceptions=True)
         while self._delivery_tasks:
             await asyncio.gather(*tuple(self._delivery_tasks), return_exceptions=True)
         self._inflight.clear()
@@ -146,9 +141,7 @@ class PushHub:
         self._seq[scope] = seq
         self._inflight.setdefault(scope, deque()).append((seq, text))
         if trigger and not self._closing:
-            task = spawn(self._wake(), name="mind.wake")
-            self._wake_tasks.add(task)
-            task.add_done_callback(self._wake_tasks.discard)
+            self._wake()
 
     def drain_inflight(self, scope: str, since: int = 0) -> List[str]:
         """取出该 scope 序号大于水位的推送并清空队列（think_loop 每轮调用）。

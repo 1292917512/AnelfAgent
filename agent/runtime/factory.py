@@ -95,7 +95,7 @@ def create_mind(runtime: AgentRuntime) -> Mind:
     mind.model_invoker = ModelInvoker(runtime)
     background_tasks.set_unclaimed_callback(partial(on_task_unclaimed, mind))
     background_tasks.set_alert_callback(partial(on_task_alert, mind))
-    mind.push_hub = PushHub(pfc, mind.try_execute_mind, loop=loop)
+    mind.push_hub = PushHub(pfc, mind.driver.request_cycle, loop=loop)
     mind.heartbeat_engine = HeartbeatEngine(mind, everything_data, memory=runtime, skills=runtime.skills)
     mind.compressor = ContextCompressor(mind.model_invoker)
 

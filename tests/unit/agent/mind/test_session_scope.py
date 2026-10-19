@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 from agent.context.assembly import ContextAssembly
 from agent.messages import parse_entity_scope
@@ -262,7 +262,7 @@ class TestSwitchSession:
         mind = SimpleNamespace(
             pfc=pfc,
             _active_scopes=set(),
-            try_execute_mind=AsyncMock(),
+            driver=SimpleNamespace(request_cycle=MagicMock()),
         )
         mind_port.set(mind)  # type: ignore[arg-type]
         try:
@@ -271,7 +271,7 @@ class TestSwitchSession:
             assert result["ok"] is True
             assert result["scope"] == "user_webui:web_user#tab9"
             assert "user_webui:web_user#tab9" in pfc.pending_user.seen
-            mind.try_execute_mind.assert_called_once()
+            mind.driver.request_cycle.assert_called_once()
         finally:
             mind_port.unbind()
 
@@ -282,7 +282,7 @@ class TestSwitchSession:
         mind = SimpleNamespace(
             pfc=pfc,
             _active_scopes=set(),
-            try_execute_mind=AsyncMock(),
+            driver=SimpleNamespace(request_cycle=MagicMock()),
         )
         mind_port.set(mind)  # type: ignore[arg-type]
         try:

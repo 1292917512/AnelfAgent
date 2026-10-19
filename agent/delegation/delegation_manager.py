@@ -1144,7 +1144,7 @@ class DelegationManager:
                         f"后台委托完成: {goal[:60]}",
                         note + "\n请将结果告知用户，或根据结果继续未完成的操作。",
                     )
-                    asyncio.create_task(self._mind.try_execute_mind())
+                    self._mind.driver.request_cycle()
                 else:
                     self._mind.pfc.add_temporary({"role": "user", "content": note})
             # 轮外完成且有注册表：unclaimed 回调统一负责（写历史 + 入队 +

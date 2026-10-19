@@ -41,12 +41,18 @@ tick() 单次心跳：
   tick 收尾按任务名现取条目复位计数；无调度任务的失败/放弃台账随 `_prune_stale_runtime_state`
   对账清理。任务文件消失的孤儿调度、执行历史与交接文件随引擎构造与 reload 对账清理
   （`_prune_orphan_schedules` / `_prune_orphan_task_artifacts`；目录不可枚举的异常态跳过对账防误清）
-- **心跳忙碌延后**（`assistant._heartbeat_loop`）：`is_reply / is_reflecting / heartbeat_engine.background_tick_running`
-  任一为真时不整轮跳过，按 `heartbeat_busy_defer_seconds`（默认 60s，热读取）短间隔轮询，空闲后
+- **主 Driver 单航班执行**：tick 维护、到期任务、元决策周期与用户回复全部经
+  `mind.driver`（`agent/mind/driver.py`）的常驻 worker 串行执行——同一时刻至多一个
+  顶层思维工作；调用方（定时器/Web 手动/事件钩子/AI 工具）只做受理登记并立即返回，
+  忙碌期间的唤醒被锁存、当前工作结束后继续 drain。`is_reply` 为真时 tick 仍只做维护
+  与提醒、不启动新任务（让路语义不变，只是执行统一串行延后）
+- **心跳忙碌延后**（`assistant._heartbeat_loop`）：主 Driver 有正在执行或已受理的工作时
+  不整轮跳过，按 `heartbeat_busy_defer_seconds`（默认 60s，热读取）短间隔轮询，空闲后
   立即补跑；被延后的 tick 不递增任何计数器
 - **同任务排队去重**：引擎 `_task_inflight` 集合（asyncio 单线程 check-then-set 无竞态）——
-  `run_task` 锁前查重拒绝重复触发，tick 选 task 时跳过 inflight 名称，手动连点/Web trigger/AI
-  触发/tick 四路径共用
+  `claim_task` 在排队前认领（queued 与 running 共用同一集合），tick 选 task 时跳过 inflight
+  名称，手动连点/Web trigger/AI 触发/事件触发/tick 五路径共用；关停时未开始的认领随
+  `MindDriver.close()` 释放
 - **心跳态势注入**（`_write_heartbeat_status` + 便签受管区块 AUTO:heartbeat-status，heartbeat 层）：
   AI 自我感知通道——心跳节奏、任务规模（**计数级**，具体内容经 list_tasks/task_history 按需取）、
   每条调度的节奏折算与最近一次执行、最近失败任务告警行。写入仅在内容变化时落盘（任务未执行期间
@@ -56,7 +62,8 @@ tick() 单次心跳：
 ## 触发模式
 
 heartbeat（每 N 次心跳）/ scheduled（每天指定时间）/ idle / manual（仅手动）+ **事件触发**
-（trigger_event 字段，经 LLM 钩子面注册 `task_event:<name>` 钩子，与时间调度正交——时间调度管
+（trigger_event 字段，经 LLM 钩子面注册 `task_event:<name>` 钩子，钩子经
+`engine.submit_task` 提交主 Driver 并等待终态；与时间调度正交——时间调度管
 「何时跑」，事件触发管「发生了什么之后跑」；不进 heartbeat.json 调度；详见
 [思维分册·LLM 钩子面](mind-architecture.md)）。
 

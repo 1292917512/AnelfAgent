@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 from agent.messages import EverythingGroup
 from agent.mind.autonomous import MindPhase
 from agent.mind.cycle import run_cycle
+from agent.mind.driver import MindDriver
 from agent.mind.execution.reflect import reflect_entry
 from agent.mind.execution.reply import reply_entry
 from agent.mind.interrupt import InterruptRegistry
@@ -101,12 +102,12 @@ class Mind:
         # 进行中的 reflect 调用深度（并发子代理/任务/反思共用唯一入口，
         # phase 空闲判定的活跃事实源之一，asyncio 单线程计数无竞态）
         self._reflect_depth: int = 0
-        self._cycle_lock = asyncio.Lock()
         # 自动续轮退避计数（周期内无实质进展时递增，防紧凑重试烧 token）
         self._auto_cycle_retry: int = 0
 
         # scope 级中断信号（think_loop 每轮检查，用户可刹车失控回复）
         self.interrupts = InterruptRegistry()
+        self.driver = MindDriver(self)
 
     def set_phase(self, phase: MindPhase) -> None:
         prev = self.phase
@@ -122,12 +123,12 @@ class Mind:
         """无活跃思维工作时把阶段归零 IDLE（phase 的唯一复位点）。
 
         活跃事实源三元组：回复会话（_active_scopes）/ 进行中 reflect
-        （_reflect_depth）/ 自主循环（_cycle_lock）——任一存活即不动，
+        （_reflect_depth）/ 主 Driver 执行态——任一存活即不动，
         由该工作自己的完成边界再次调用本方法兜底归零。
         """
         if self.phase is MindPhase.IDLE:
             return
-        if self._active_scopes or self._reflect_depth > 0 or self._cycle_lock.locked():
+        if self._active_scopes or self._reflect_depth > 0 or self.driver.is_running:
             return
         self.set_phase(MindPhase.IDLE)
 
@@ -137,7 +138,7 @@ class Mind:
         """接收外部消息：到达即写入对话历史（保证时序）；仅在 trigger_mind 时加入 PFC 队列。"""
         try:
             # 思维工作运行中不覆盖当前阶段，避免 UI 阶段抖动
-            if (not self._active_scopes and not self._cycle_lock.locked()
+            if (not self._active_scopes and not self.driver.is_running
                     and self._reflect_depth == 0):
                 self.set_phase(MindPhase.ACCEPTING)
             preview = str(anything)[:80] if anything else ""
@@ -180,12 +181,7 @@ class Mind:
             delay = min(base * (2.0 ** self._auto_cycle_retry), 8.0)
         self._auto_cycle_retry += 1
         log(f"{reason}，{delay:.1f}s 后自动触发新一轮 (第{self._auto_cycle_retry}次续轮)", tag="思维")
-
-        async def _later() -> None:
-            await asyncio.sleep(delay)
-            await self.try_execute_mind()
-
-        asyncio.create_task(_later(), name="agent.mind.auto_cycle")
+        self.driver.request_cycle(delay=delay)
 
     @property
     def is_reply(self) -> bool:
@@ -225,24 +221,9 @@ class Mind:
         return True
 
     async def execute_mind(self, *, is_heartbeat: bool = False) -> None:
-        """触发自主循环。通过 _cycle_lock 防止多个循环并发执行。"""
-        try:
-            async with self._cycle_lock:
-                await self._autonomous_cycle(is_heartbeat=is_heartbeat)
-        finally:
-            # 周期工作完成边界：锁已释放，无派生活跃（后台回复/反思）时归零；
-            # 周期异常穿透（assistant 捕获续跑）同样收口，不留 DECIDING 卡死
-            self._reset_phase_if_idle()
-
-    async def try_execute_mind(self) -> None:
-        """尝试触发自主循环；已有循环在执行时直接跳过（用于 fire-and-forget 场景）。"""
-        if self._cycle_lock.locked():
-            return
-        try:
-            async with self._cycle_lock:
-                await self._autonomous_cycle()
-        finally:
-            self._reset_phase_if_idle()
+        """提交一次主周期并等待已受理的即时工作全部排空。"""
+        self.driver.request_cycle(is_heartbeat=is_heartbeat)
+        await self.driver.when_idle()
 
     # 自主循环：态势收集 → 元决策 → 分发执行
 

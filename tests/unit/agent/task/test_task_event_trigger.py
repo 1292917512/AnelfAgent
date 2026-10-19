@@ -24,16 +24,16 @@ def _clean_registry():
 
 
 def _engine(tasks: List[TaskDefinition], run_results: Optional[Dict[str, str]] = None):
-    """构造一个带 task_registry 与 run_task 的轻量引擎替身。"""
+    """构造一个带 task_registry 与 submit_task 的轻量引擎替身。"""
     registry = SimpleNamespace(list_all=lambda: tasks)
     ran: List[str] = []
 
-    async def _run_task(name: str, *, trigger: str) -> Optional[str]:
+    async def _submit_task(name: str, *, trigger: str) -> Optional[str]:
         assert trigger == "event"
         ran.append(name)
         return (run_results or {}).get(name)
 
-    engine = SimpleNamespace(task_registry=registry, run_task=_run_task)
+    engine = SimpleNamespace(task_registry=registry, submit_task=_submit_task)
     engine._ran = ran  # type: ignore[attr-defined]
     return engine
 
@@ -85,7 +85,7 @@ def test_sync_reconcile_updates_event_change():
     assert HookRegistry.get("task_event:a").event == "context_pressure"
 
 
-async def test_task_event_hook_invokes_run_task():
+async def test_task_event_hook_invokes_submit_task():
     engine = _engine([_task("a", "after_reply")], run_results={"a": "done"})
     sync_task_event_hooks(engine)
     spec = HookRegistry.get("task_event:a")

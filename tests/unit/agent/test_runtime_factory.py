@@ -48,8 +48,8 @@ async def test_factory_shares_state_and_finishes_wiring_before_publish(tmp_path,
     monkeypatch.setattr("agent.mind.tools.core.register_core_tools", registration)
     monkeypatch.setattr("core.tool_registry.activate_group", MagicMock(return_value=1))
     woke = asyncio.Event()
-    wake = AsyncMock(side_effect=woke.set)
-    monkeypatch.setattr("agent.mind.mind.Mind.try_execute_mind", wake)
+    wake = MagicMock(side_effect=woke.set)
+    monkeypatch.setattr("agent.mind.driver.MindDriver.request_cycle", wake)
 
     conversation, manager, memory, everything = MagicMock(), MagicMock(), MagicMock(), MagicMock()
     conversation.router.append = AsyncMock()

@@ -7,8 +7,8 @@
 - 扫描任务注册表中 trigger_event 非空的任务，每个任务注册一个
   ``task_event:<task_name>`` 钩子（context=none——任务用 lean 精简上下文，
   不继承触发会话的 transcript，避免跨会话上下文串扰与成本）；
-- 命中后调 ``HeartbeatEngine.run_task(name)``——复用引擎既有的
-  ``_task_inflight`` 同任务去重、手动/调度并发互斥与执行历史落盘；
+- 命中后调 ``HeartbeatEngine.submit_task(name)``——由主 Driver 串行执行，
+  复用引擎的 ``_task_inflight`` 同任务去重与执行历史落盘；
 - 事件触发不进 heartbeat.json 调度（与时间调度正交），不持久化计数。
 
 注册归属 owner=task.events：reload 时先按 owner 整体注销再重建，保证
@@ -56,19 +56,19 @@ def sync_task_event_hooks(engine: "HeartbeatEngine") -> int:
 
 
 def _register_one(engine: "HeartbeatEngine", task_name: str, event: str) -> None:
-    """为单个任务注册事件钩子（命中后经引擎 run_task 执行）。"""
+    """为单个任务注册事件钩子（命中后提交主 Driver 执行）。"""
 
     @llm_hook(
-        f"{_HOOK_NAME_PREFIX}{task_name}", event=event, context="none",
+        f"{_HOOK_NAME_PREFIX}{task_name}", event=event, context="none", mode="async",
         allow_output_tools=False, max_concurrent=1,
         owner=_OWNER, source="task",
         description=f"任务 [{task_name}] 的事件触发（{event}）",
     )
     async def _task_event_hook(ctx: HookContext) -> Optional[str]:
         log(f"任务 [{task_name}] 事件触发（{event}）", "DEBUG", tag="任务")
-        # run_task 自带 _task_inflight 去重与并发互斥；产出经执行历史落盘，
-        # 不由钩子面登记（任务有自己的结果路由：save_result_to_memory）
-        result = await engine.run_task(task_name, trigger="event")
+        # 独立事件钩子只提交并等待本次终态；主 Driver 不等待异步钩子，
+        # 因而不存在主工作与钩子相互等待。任务产出仍走自己的结果路由。
+        result = await engine.submit_task(task_name, trigger="event")
         return None if result is None else ""  # 空串 = 有产出但不走钩子路由
 
 

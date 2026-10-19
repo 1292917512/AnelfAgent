@@ -696,7 +696,7 @@ def create_bootstrap() -> FlowMachine:
             recovered += 1
         if recovered:
             log(f"未回复消息恢复: {recovered} 个 scope 重新入队", tag="启动")
-            _spawn_background(mind.try_execute_mind(), name="recover-mind-execute")
+            mind.driver.request_cycle()
 
     @machine.node(skip_on_error=True, depends_on=["start_agent"])
     async def recover_interrupted():
@@ -739,7 +739,7 @@ def create_bootstrap() -> FlowMachine:
                     "请检查自身状态并向主人报到（可经 devops 工具 get_crash_report 复查详情）。",
                     trigger=False,
                 )
-                _spawn_background(mind.try_execute_mind(), name="crash-notify-mind")
+                mind.driver.request_cycle()
         except Exception as exc:
             log(f"崩溃尾部恢复失败: {exc}", "ERROR", tag="启动")
 

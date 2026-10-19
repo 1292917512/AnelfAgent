@@ -109,14 +109,18 @@ class HeartbeatService:
         if rt is None:
             raise HeartbeatServiceError("Agent 尚未初始化", status_code=503)
 
-        async def _run() -> None:
+        future = rt.mind.driver.submit_tick()
+
+        def _log_done(done: "asyncio.Future[list[str]]") -> None:
+            if done.cancelled():
+                return
             try:
-                executed = await rt.mind.heartbeat_engine.tick()
+                executed = done.result()
                 log(f"Web 手动心跳完成: 执行了 {len(executed)} 个任务", tag="心跳")
             except Exception as exc:
                 log(f"Web 手动心跳异常: {exc}", "WARNING", tag="心跳")
 
-        asyncio.create_task(_run(), name="agent.heartbeat.web_manual_tick")
+        future.add_done_callback(_log_done)
 
     @staticmethod
     def remove_schedule_for_task(task_name: str) -> None:

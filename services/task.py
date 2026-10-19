@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import time
@@ -371,15 +370,11 @@ class TaskService:
         if rt is None:
             raise TaskServiceError("Agent 尚未初始化", status_code=503)
 
-        async def _run() -> None:
-            try:
-                log(f"执行任务: {name}", tag="思维")
-                result = await rt.mind.heartbeat_engine.run_task(name)
-                log(f"Web 手动任务完成: {name} ({'有产出' if result else '无产出'})", tag="任务")
-            except Exception as exc:
-                log(f"Web 手动任务异常 [{name}]: {exc}", "WARNING", tag="任务")
-
-        asyncio.create_task(_run(), name=f"agent.task.web_{name}")
+        accepted, message = rt.mind.heartbeat_engine.start_task_background(name)
+        if not accepted:
+            log(f"Web 手动任务未受理 [{name}]: {message}", "WARNING", tag="任务")
+            return
+        log(f"Web 手动任务已受理: {name}", tag="任务")
 
     @staticmethod
     def reload_registry() -> None:

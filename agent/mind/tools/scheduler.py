@@ -154,7 +154,7 @@ async def _delayed_reply(delay: int, channel: str, scope: str, reason: str) -> N
 
     await mind_port.get().pfc.enqueue_reply(scope, channel, f"定时回复: {reason or '延迟触发'}", prompt)
     log(f"延迟 {delay}s 到期，触发回复: scope={scope}", tag="调度")
-    spawn(mind_port.get().try_execute_mind(), name="mind.wake")
+    mind_port.get().driver.request_cycle()
 
 
 # ======================================================================
@@ -404,5 +404,5 @@ async def check_due_reminders() -> int:
         )
         log(f"定时提醒到期触发: id={r.get('id')} scope={scope} note={r.get('note', '')[:50]}", tag="调度")
 
-    spawn(mind_port.get().try_execute_mind(), name="mind.wake")
+    mind_port.get().driver.request_cycle()
     return len(due)

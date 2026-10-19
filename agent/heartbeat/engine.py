@@ -165,8 +165,6 @@ class HeartbeatEngine:
         self._seed_declared_schedules()
         self.executor = TaskExecutor(mind, memory)
         self._total_ticks: int = 0
-        self._tick_lock = asyncio.Lock()
-        self.background_tick_running = False
         self._task_failures: Dict[str, int] = {}
         # 定时任务连续失败达上限后的"今日放弃"台账（任务名 → 放弃日期）：
         # 替代旧的"放弃即标记今日已跑"写法——标记已不存于调度配置，
@@ -382,41 +380,16 @@ class HeartbeatEngine:
     # 心跳主循环
     # ------------------------------------------------------------------
 
-    def start_background_tick(self) -> None:
-        """至多启动一个后台心跳；在入队前登记状态，避免相邻周期重复派发。"""
-        if self.background_tick_running:
-            return
-        self.background_tick_running = True
-        from core.async_helper import spawn
-        spawn(self._run_background_tick(), name="mind.heartbeat.tick")
-
-    async def _run_background_tick(self) -> None:
-        """在独立链路中执行心跳，完成后按待办状态续接自主周期。"""
-        from core.trace_session import detach_thinking_session
-        detach_thinking_session()
-        try:
-            executed = await self.tick()
-            if executed:
-                log(f"心跳任务完成: {', '.join(executed)}", tag="心跳")
-        except Exception as exc:
-            log(f"心跳 tick 异常: {exc}", "WARNING", tag="心跳")
-        finally:
-            self.background_tick_running = False
-            if self.mind.pfc.has_pending_tasks():
-                self.mind._schedule_next_cycle("心跳完成后仍有待处理任务")
-
     async def tick(self) -> List[str]:
-        """单次心跳 — 返回本次执行的任务名列表。
+        """在主 Driver 内执行一次心跳，返回本次执行的任务名列表。
 
-        每次心跳只执行一个到期任务（避免长任务阻塞），
-        计数器随评估递增并持久化；回复进行中让路时不递增（见 _tick_inner）。
-        使用 asyncio.Lock 保证 Web 手动 tick 与调度 tick 互斥。
+        每次心跳只执行一个到期任务（避免长任务阻塞），计数器随评估递增并持久化；
+        回复进行中让路时不递增。
         """
-        async with self._tick_lock:
-            return await self._tick_inner()
+        return await self._tick_inner()
 
     async def _tick_inner(self) -> List[str]:
-        """tick 实际逻辑（已持锁）。"""
+        """tick 实际逻辑（由主 Driver 串行调用，无需自持互斥）。"""
         self._total_ticks += 1
         executed: List[str] = []
 
@@ -604,15 +577,20 @@ class HeartbeatEngine:
     # ------------------------------------------------------------------
 
     def start_task_background(self, task_name: str) -> tuple[bool, str]:
-        """校验并后台启动任务（供 AI 工具调用，不阻塞当前思维循环）。
+        """受理具名任务并交由主 Driver 串行执行，立即返回受理结果。"""
+        accepted, message, _ = self.mind.driver.submit_task(task_name)
+        return accepted, message
 
-        受理后任务在独立 asyncio Task 中经 run_task 执行（_task_inflight 去重
-        与 _tick_lock 互斥由 run_task 保证，此处的 inflight 检查仅为提前给出
-        准确反馈）；任务执行中再次触发同名任务会被 run_task 忽略。
+    async def submit_task(self, task_name: str, *, trigger: str = "event") -> Optional[str]:
+        """提交任务到主 Driver 并等待本次执行终态，供独立事件钩子使用。"""
+        accepted, message, future = self.mind.driver.submit_task(task_name, trigger=trigger)
+        if not accepted or future is None:
+            log(f"任务 [{task_name}] 未受理: {message}", "WARNING", tag="心跳")
+            return None
+        return await future
 
-        Returns:
-            (是否受理, 说明文案)
-        """
+    def claim_task(self, task_name: str) -> tuple[bool, str]:
+        """在排队前认领任务，queued 与 running 共用同一去重集合。"""
         task = self.task_registry.get(task_name)
         if not task:
             return False, f"任务 {task_name} 不存在"
@@ -620,61 +598,47 @@ class HeartbeatEngine:
             return False, f"任务 {task_name} 已禁用"
         if task_name in self._task_inflight:
             return False, f"任务 {task_name} 已在执行或排队中"
-        asyncio.create_task(
-            self._run_task_guarded(task_name),
-            name=f"agent.heartbeat.manual.{task_name}",
-        )
-        return True, "任务已受理，正在后台执行"
+        self._task_inflight.add(task_name)
+        return True, ""
 
-    async def _run_task_guarded(self, task_name: str) -> None:
-        """后台任务执行壳：吞掉异常只记日志（run_task 内部已分级处理）。"""
-        try:
-            result = await self.run_task(task_name)
-            log(f"后台手动任务完成: {task_name} ({'有产出' if result else '无产出'})", tag="心跳")
-        except Exception as exc:
-            log(f"后台手动任务异常 [{task_name}]: {exc}", "WARNING", tag="心跳")
+    def release_task_claim(self, task_name: str) -> None:
+        """释放排队或执行阶段的任务认领。"""
+        self._task_inflight.discard(task_name)
 
     async def run_task(self, task_name: str, *, trigger: str = "manual") -> Optional[str]:
-        """按名称执行指定任务，返回产出内容或 None。
+        """在当前主 Driver 工作内联执行任务；外部触发应改用 submit_task。"""
+        accepted, message = self.claim_task(task_name)
+        if not accepted:
+            log(f"任务 [{task_name}] 未受理: {message}", "WARNING", tag="心跳")
+            return None
+        return await self.run_claimed_task(task_name, trigger=trigger)
 
-        与 tick 共用同一把锁，避免手动触发与调度心跳并发执行同一任务；
-        同一任务已在执行/排队中时直接忽略重复触发（排队里同一种任务只允许一条）。
-        """
+    async def run_claimed_task(self, task_name: str, *, trigger: str) -> Optional[str]:
+        """执行已认领任务并在所有退出路径释放认领。"""
         task = self.task_registry.get(task_name)
-        if not task:
-            log(f"任务 [{task_name}] 不存在", "WARNING", tag="心跳")
+        if task is None:
+            self.release_task_claim(task_name)
             return None
-        if not task.enabled:
-            log(f"任务 [{task_name}] 已禁用", "WARNING", tag="心跳")
-            return None
-        # check-then-set 间无 await，asyncio 单线程下无竞态
-        if task_name in self._task_inflight:
-            log(f"任务 [{task_name}] 已在执行或排队中，忽略重复触发", "WARNING", tag="心跳")
-            return None
-        self._task_inflight.add(task_name)
-
         log(f"执行任务: {task_name}（{trigger}）", tag="心跳")
 
-        # 会话生命周期由 thinking_session 管理：退出（含异常）保证发射 SESSION_END，
-        # 且与并发的思维会话按执行上下文隔离，互不干扰
+        # 会话生命周期由 thinking_session 管理：退出（含异常）保证发射 SESSION_END
         try:
-            async with self._tick_lock:
-                async with thinking_session({
-                    "is_heartbeat": True, "is_introspection": True, "entity": "任务执行",
-                }) as session:
-                    session.end["reason"] = "task_completed"
-                    entity = await self._pop_analysis_entity() if task.scope.value == "entity" else None
-                    try:
-                        result = await self.executor.run(
-                            task, entity, temperature=self.config.analysis_temperature,
-                            trigger=trigger,
-                        )
-                    except Exception as exc:
-                        log(f"任务 [{task_name}] 执行失败: {exc}", "WARNING", tag="心跳")
-                        return None
-                    return result.content if result else None
+            async with thinking_session({
+                "is_heartbeat": True, "is_introspection": True, "entity": "任务执行",
+            }) as session:
+                session.end["reason"] = "task_completed"
+                entity = await self._pop_analysis_entity() if task.scope.value == "entity" else None
+                try:
+                    result = await self.executor.run(
+                        task, entity, temperature=self.config.analysis_temperature,
+                        trigger=trigger,
+                    )
+                except Exception as exc:
+                    log(f"任务 [{task_name}] 执行失败: {exc}", "WARNING", tag="心跳")
+                    return None
+                return result.content if result else None
         finally:
-            self._task_inflight.discard(task_name)
+            self.release_task_claim(task_name)
 
     # ------------------------------------------------------------------
     # 反思延迟消费（元决策 REFLECT → 空闲窗口）

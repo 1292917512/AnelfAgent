@@ -13,7 +13,7 @@ import asyncio
 import time
 from types import SimpleNamespace
 from typing import List, Optional
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from helpers.think_loop_fakes import (
@@ -506,7 +506,7 @@ class _DelegationMind:
     def __init__(self, output: str = "子任务完成") -> None:
         self.reflect = AsyncMock(return_value=output)
         self.background_tasks = BackgroundTaskRegistry()
-        self.try_execute_mind = AsyncMock()
+        self.driver = SimpleNamespace(request_cycle=MagicMock())
         from agent.mind.prefrontal_cortex import PrefrontalCortex
         self.pfc = PrefrontalCortex(SimpleNamespace())
         self.pfc.get_adapter_key = lambda scope: "test"
@@ -523,7 +523,7 @@ class _DelegationMind:
                 scope, self.pfc.get_adapter_key(scope),
                 f"后台任务完成: {description[:60]}", summary,
             )
-            asyncio.create_task(self.try_execute_mind())
+            self.driver.request_cycle()
         return _notify()
 
 
@@ -546,7 +546,7 @@ class TestDelegationBackgroundIntegration:
 
         # 完成即新 turn：scope 已排入回复队列，并触发新一轮
         assert "user_qq:123" in mind.pfc.pending_user.queue
-        mind.try_execute_mind.assert_called_once()
+        mind.driver.request_cycle.assert_called_once()
         # 事件已标记送达，后续 wait_any 不会重复返回
         result = await mind.background_tasks.wait_any("user_qq:123", timeout=0.1)
         assert result.reason == "timeout"
@@ -569,7 +569,7 @@ class TestDelegationBackgroundIntegration:
         assert result.completions[0].task_id == delegation_id
         # 轮内会合：不排入回复队列、不触发新一轮
         assert "user_qq:123" not in mind.pfc.pending_user.queue
-        mind.try_execute_mind.assert_not_called()
+        mind.driver.request_cycle.assert_not_called()
         if bg is not None:
             await asyncio.wait_for(bg, timeout=5)
 

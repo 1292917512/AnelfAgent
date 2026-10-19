@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 from typing import TYPE_CHECKING, Dict, List, Optional, Union
 
@@ -215,10 +214,7 @@ async def execute_reflect(mind: Mind, decision: Optional[Decision] = None, *, sk
     finally:
         mind._reflecting = False
         if mind.pfc.has_pending_tasks():
-            asyncio.create_task(
-                mind.try_execute_mind(),
-                name="agent.mind.post_reflect",
-            )
+            mind.driver.request_cycle()
 
 
 async def execute_remember(mind: Mind, decision: Decision) -> None:
@@ -415,7 +411,8 @@ async def execute_plan(mind: Mind, decision: Decision) -> None:
 
     plan_prompt = (
         f"请根据以下规划说明：{content}\n"
-        "使用工具 create_goal、list_goals、update_goal 管理目标计划。\n"
+        "本轮只创建或推进持久目标，不执行目标中的任务；目标执行由对应的回复或任务循环负责。\n"
+        "使用工具 create_goal、list_goals、update_goal 管理目标计划，不要使用 present_plan。\n"
         "与该目标相关的重要产出用 memorize 记录时打上 goal:{goal_id} 标签（替换为实际 goal_id），便于目标视角串联召回。\n"
         "若该规划是反复出现的周期性工作，用 create_task + set_task_schedule 沉淀为自动任务，"
         "不要每次手动重复规划。\n"
@@ -427,7 +424,11 @@ async def execute_plan(mind: Mind, decision: Decision) -> None:
             + [{"role": "user", "content": plan_prompt}]
     )
     try:
-        await mind.reflect(messages)
+        await mind.reflect(
+            messages,
+            tool_tags=["planning"],
+            extra_blocked_tools={"present_plan"},
+        )
         _hb_append(f"规划执行: {content[:60]}")
         log(f"AI 规划执行: {content[:60]}", "DEBUG", tag="思维")
     except Exception as exc:

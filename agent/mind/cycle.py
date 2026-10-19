@@ -9,7 +9,6 @@ Token：不拼接多个会话生成混合召回查询。
 
 from __future__ import annotations
 
-import asyncio
 import time
 from typing import TYPE_CHECKING, Any, Dict, List
 
@@ -46,11 +45,6 @@ if TYPE_CHECKING:
     from agent.mind.mind import Mind
 
 
-_DEFERRED_DECISIONS = frozenset({
-    DecisionType.REFLECT, DecisionType.REMEMBER,
-    DecisionType.PLAN, DecisionType.SELF_TASK,
-})
-
 # 反思回执不回喂元决策，避免历史回执反复触发同类决策。
 _DECISION_ECHO_PREFIXES = ("反思已登记", "反思完成", "反思登记被冷却拒绝")
 
@@ -66,10 +60,6 @@ def _strip_decision_echo(text: str) -> str:
 
 async def run_cycle(mind: "Mind", end_payload: Dict[str, Any], *, is_heartbeat: bool = False) -> None:
     """自主循环主体（会话生命周期由 _autonomous_cycle 管理）。"""
-
-    if is_heartbeat:
-        # 心跳 tick 后台执行，不阻塞主循环的消息处理（受管任务：强引用防 GC + 异常记日志）
-        mind.heartbeat_engine.start_background_tick()
 
     # 廉价前置判断：仅检查队列是否有待处理项，命中 fast-path 时跳过昂贵的 memory/goals 查询
     cheap_pending = mind.pfc.peek_all_tasks()
@@ -203,8 +193,7 @@ async def execute_decisions(
     确保异常路径下会话也能按 id 关闭。
     """
     # 用户请求只由 REPLY 的工具循环执行：同一指令若再派生 TOOL_ACTION，
-    # 会与 REPLY 并行启动第二个 reflect 工具循环，造成重复思考与重复操作。
-    # 心跳周期的自主维护仍可使用 TOOL_ACTION。
+    # 会在另一条 reflect 工具循环中重复执行。心跳周期的自主维护仍可使用 TOOL_ACTION。
     if not is_heartbeat and situation.pending_messages:
         suppressed = [d for d in decisions if d.type == DecisionType.TOOL_ACTION]
         if suppressed:
@@ -220,42 +209,39 @@ async def execute_decisions(
     })
 
     sorted_decisions = sorted(decisions, key=lambda d: d.priority, reverse=True)
-    if is_heartbeat:
-        # 心跳周期的即时决策（REPLY/PROACTIVE/TOOL_ACTION 均为分钟级 think loop）
-        # 全部转后台执行：_cycle_lock 持锁时间收敛到态势收集+元决策，
-        # 周期执行期间到达的用户消息不再被序列化在长决策之后
-        immediate: List[Decision] = []
-        deferred = sorted_decisions
-    else:
-        immediate = [d for d in sorted_decisions if d.type not in _DEFERRED_DECISIONS]
-        deferred = [d for d in sorted_decisions if d.type in _DEFERRED_DECISIONS]
-
     if mind._reflecting or mind.heartbeat_engine.reflection_pending:
-        deferred = [d for d in deferred if d.type != DecisionType.REFLECT]
-
-    for d in deferred:
-        asyncio.create_task(
-            execute_safely(mind, d),
-            name=f"agent.mind.bg.{d.type.value}",
-        )
+        sorted_decisions = [d for d in sorted_decisions if d.type != DecisionType.REFLECT]
 
     snapshot_count = len(mind.pfc.peek_general_tasks()) if consume_general_tasks else 0
+    executed: List[tuple[Decision, bool]] = []
+    yielded: List[Decision] = []
+    for index, decision in enumerate(sorted_decisions):
+        ok = await execute_safely(mind, decision)
+        executed.append((decision, ok))
+        # 无通用待办需要结算时，心跳决策在用户消息到达后让路；
+        # 有快照待办时先完成本批，避免执行与清除口径错位。
+        if (
+            is_heartbeat and snapshot_count == 0
+            and (not mind.pfc.pending_user.is_empty() or not mind.pfc.pending_group.is_empty())
+        ):
+            yielded = sorted_decisions[index + 1:]
+            if yielded:
+                log(f"用户消息到达，{len(yielded)} 个心跳决策延后到后续周期", tag="思维")
+            mind.driver.request_cycle()
+            break
 
-    exec_ok: List[bool] = []
-    if immediate:
-        exec_ok = list(await asyncio.gather(*(execute_safely(mind, d) for d in immediate)))
-        if any(exec_ok):
-            # 有实质进展（即时决策执行成功）：重置自动续轮退避
-            mind._auto_cycle_retry = 0
+    if any(ok for _, ok in executed):
+        # 有实质进展（决策执行成功）：重置自动续轮退避
+        mind._auto_cycle_retry = 0
 
-    mind.pfc.clear_general_tasks_before(snapshot_count)
+    if not yielded:
+        mind.pfc.clear_general_tasks_before(snapshot_count)
 
     exec_results: List[str] = [
-        f"{d.type.value} {'成功' if ok else '失败'}"
-        for d, ok in zip(immediate, exec_ok, strict=False)
+        f"{decision.type.value} {'成功' if ok else '失败'}"
+        for decision, ok in executed
     ]
-    if is_heartbeat:
-        exec_results.extend(f"{d.type.value} 转后台" for d in deferred)
+    exec_results.extend(f"{decision.type.value} 用户让路" for decision in yielded)
     if is_heartbeat or decisions:
         _hb_write(
             task_names=[d.type.value for d in sorted_decisions],
@@ -267,8 +253,8 @@ async def execute_decisions(
     mind.tool_assembly.clear_when_idle(mind._active_scopes, mind._reply_idle_event)
 
     end_payload.update({
-        "decisions_executed": [d.type.value for d in immediate],
-        "decisions_deferred": [d.type.value for d in deferred],
+        "decisions_executed": [decision.type.value for decision, _ in executed],
+        "decisions_deferred": [decision.type.value for decision in yielded],
     })
 
     if mind.pfc.has_pending_tasks():

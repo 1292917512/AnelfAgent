@@ -10,6 +10,7 @@ from __future__ import annotations
 import time
 from types import SimpleNamespace
 from typing import List
+from unittest.mock import AsyncMock
 
 import pytest
 from helpers.think_loop_fakes import (
@@ -129,17 +130,19 @@ class _RecordingMind:
             pending_analysis=SimpleNamespace(is_empty=lambda: True),
             peek_general_tasks=lambda: [],
         )
+        self.driver = SimpleNamespace(
+            is_busy=False, is_running=False, current_work="",
+            request_cycle=lambda: self.calls.append("wake"), close=AsyncMock(),
+        )
 
     async def accept_feel(self, anything) -> None:
         self.calls.append("accept_feel")
 
-    async def execute_mind(self, *, is_heartbeat: bool = False) -> None:
-        self.calls.append("execute_mind")
 
 
 class TestFeelImmediateAccept:
-    async def test_feel_accepts_before_queue(self) -> None:
-        """feel() 先感知（写历史 + 入 PFC 队列）再入队，不等 Mind 空闲。"""
+    async def test_feel_accepts_before_wake(self) -> None:
+        """feel() 先感知（写历史 + 入 PFC 队列）再唤醒 Driver，不等 Mind 空闲。"""
         from agent.runtime.assistant import AgentAssistant
 
         mind = _RecordingMind()
@@ -148,8 +151,7 @@ class TestFeelImmediateAccept:
         msg.set_text_content("你好")
         await assistant.feel(msg)
 
-        assert mind.calls == ["accept_feel"]
-        assert assistant._queue.qsize() == 1
+        assert mind.calls == ["accept_feel", "wake"]
         await assistant.stop()
 
     async def test_feel_reports_accept_failure_without_enqueuing(self) -> None:
@@ -169,7 +171,6 @@ class TestFeelImmediateAccept:
             with pytest.raises(RuntimeError, match="db down"):
                 await assistant.feel(msg)
             assert mind.calls == ["accept_feel", "accept_feel"]
-            assert assistant._queue.empty()
         finally:
             await assistant.stop()
 

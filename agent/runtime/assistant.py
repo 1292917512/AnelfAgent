@@ -1,7 +1,14 @@
+"""消息与心跳的运行时外壳：感知即入库，执行统一交给主思维 Driver。
+
+对话历史与 PFC 入队不等待 Driver（到达即写，保时序）；feel 只负责感知、
+必要的忙碌提示与一次唤醒登记。心跳是 Driver 的另一种周期来源，主工作
+繁忙时延后而非并行。
+"""
+
 from __future__ import annotations
 
 import asyncio
-from typing import Any, List, Optional
+from typing import Any, Optional
 
 from agent.messages import Everything
 from agent.mind.mind import Mind
@@ -9,14 +16,13 @@ from agent.mind.perception import should_enqueue_external_message
 from core.log import log
 
 DEFAULT_HEARTBEAT_INTERVAL = 300.0
+_BUSY_HINT = "稍等，我正在自主思考中~"
 
 
 class AgentAssistant:
-    """智能体执行壳：消息到达即感知入窗，批量驱动 Mind 统一决策。
+    """智能体执行壳：消息到达即感知入窗，并唤醒唯一主思维 Driver。
 
-    消息到达时立即写入对话历史（保证时序）并入 PFC 队列，
-    Mind 空闲后一次性排空唤醒队列（自然 CD），
-    心跳定期触发自主思考（反思、主动行为等）。
+    对话历史与 PFC 入队不等待 Driver；心跳只是另一种周期唤醒来源。
     """
 
     def __init__(
@@ -27,8 +33,6 @@ class AgentAssistant:
         heartbeat_enabled: bool = True,
     ) -> None:
         self.mind = mind
-        self._queue: "asyncio.Queue[Everything]" = asyncio.Queue()
-        self._task: Optional[asyncio.Task[None]] = None
         self._heartbeat_task: Optional[asyncio.Task[None]] = None
         self._heartbeat_interval = heartbeat_interval or self._load_heartbeat_interval()
         self._heartbeat_enabled = heartbeat_enabled
@@ -36,6 +40,8 @@ class AgentAssistant:
         self._interval_wake = asyncio.Event()
         self._applied_interval = self._heartbeat_interval
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        # 同一忙碌周期内已提示过的 scope（每 scope 一次，空闲即清）
+        self._busy_hinted: set[str] = set()
 
     @staticmethod
     def _load_heartbeat_interval() -> float:
@@ -47,19 +53,11 @@ class AgentAssistant:
             return DEFAULT_HEARTBEAT_INTERVAL
 
     def start(self) -> None:
-        """启动心跳循环（在当前事件循环中）。消息处理循环在 feel() 首次调用时懒启动。"""
-        if self._heartbeat_enabled and (not self._heartbeat_task or self._heartbeat_task.done()):
-            self._heartbeat_task = asyncio.create_task(
-                self._heartbeat_loop(), name="agent.agent_core.Heartbeat",
-            )
-            log(f"心跳已启动（间隔 {self._heartbeat_interval}s）", tag="运行时")
+        """在当前事件循环中启动心跳；主 Driver 由首次工作请求懒启动。"""
+        self._ensure_started()
 
     async def feel(self, anything: Everything) -> None:
-        """消息到达入口：立即感知（写入对话历史 + 入 PFC 队列），再入队等待统一决策。
-
-        对话历史是与 AI 共同维护的消息窗口——无论 AI 是否正在思考，
-        新消息都必须第一时间按到达时序插入，保证每轮 LLM 看到严格时序的上下文。
-        """
+        """消息到达入口：立即感知写入，再锁存一次主周期唤醒。"""
         self._ensure_started()
         for attempt in (0, 1):
             try:
@@ -72,102 +70,53 @@ class AgentAssistant:
                     log(f"消息感知失败，退避重试: {exc}", "WARNING", tag="运行时")
                     await asyncio.sleep(0.5)
                     continue
-                # 感知写入失败的消息不再入队：accept_feel 未生效意味着该消息
-                # 未进入对话历史/PFC，入队只会让 Mind 基于缺失上下文决策
+                # 感知写入失败的消息不再唤醒：accept_feel 未生效意味着该消息
+                # 未进入对话历史/PFC，唤醒只会让 Mind 基于缺失上下文决策
                 log(f"消息感知处理失败（重试后仍失败）: {exc}", "ERROR", tag="运行时")
                 raise
-        await self._queue.put(anything)
+        await self._hint_if_waiting_behind_work(anything)
+        self.mind.driver.request_cycle()
+
+    async def _hint_if_waiting_behind_work(self, anything: Everything) -> None:
+        """消息将排在自主工作之后时，向来源会话发一次简短提示。
+
+        同 scope 在途回复内的新消息经轮内合并处理（不等待、不提示）；
+        用户周期之间的正常排队属对话节奏，同样不提示。
+        """
+        driver = self.mind.driver
+        if not driver.is_running or driver.current_work == "cycle":
+            self._busy_hinted.clear()
+            return
+        if not anything.adapter_key or anything.entity_scope in self.mind._active_scopes:
+            return
+        if not should_enqueue_external_message(anything, reflecting=self.mind._reflecting):
+            return
+        scope = anything.entity_scope
+        if scope in self._busy_hinted:
+            return
+        self._busy_hinted.add(scope)
+        try:
+            await self.mind.channel_manager.reply(anything, _BUSY_HINT)
+            log(f"忙碌提示已发送: {scope}", "DEBUG", tag="运行时")
+        except Exception:
+            log(f"忙碌提示发送失败: {scope}", "DEBUG", tag="运行时")
 
     def _ensure_started(self) -> None:
-        if self._task and not self._task.done():
-            if self._heartbeat_enabled and (not self._heartbeat_task or self._heartbeat_task.done()):
-                self._heartbeat_task = asyncio.create_task(
-                    self._heartbeat_loop(), name="agent.agent_core.Heartbeat",
-                )
-            return
-        self._task = asyncio.create_task(self._run_loop(), name="agent.agent_core.AgentAssistant")
         if self._heartbeat_enabled and (not self._heartbeat_task or self._heartbeat_task.done()):
             self._heartbeat_task = asyncio.create_task(
                 self._heartbeat_loop(), name="agent.agent_core.Heartbeat",
             )
-        log(f"AgentAssistant 已启动（心跳间隔 {self._heartbeat_interval}s）", tag="运行时")
+            log(f"AgentAssistant 已启动（心跳间隔 {self._heartbeat_interval}s）", tag="运行时")
 
     async def stop(self) -> None:
-        for task in (self._task, self._heartbeat_task):
-            if task:
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass  # 取消属正常关闭流程（正常控制流，非异常）
-        self._task = None
+        if self._heartbeat_task:
+            self._heartbeat_task.cancel()
+            try:
+                await self._heartbeat_task
+            except asyncio.CancelledError:
+                pass  # 取消属正常关闭流程（正常控制流，非异常）
         self._heartbeat_task = None
-
-    async def _run_loop(self) -> None:
-        """批量消息处理循环。
-
-        阻塞等待首条消息 → 排空队列中所有已到达的消息 → 一次 execute_mind 统一决策。
-        消息在 feel() 到达时已写入对话历史并入 PFC 队列，此处仅负责触发决策；
-        Mind 执行期间新到的消息自然积累（CD），由下一轮或循环内合并机制处理。
-        处理完成后自检 PFC，有待处理任务则短暂延迟后再执行。
-        """
-        while True:
-            first = await self._queue.get()
-            batch: List[Everything] = [first]
-            while not self._queue.empty():
-                try:
-                    batch.append(self._queue.get_nowait())
-                except asyncio.QueueEmpty:
-                    break
-            try:
-                log(f"批量处理 {len(batch)} 条消息", "DEBUG", tag="运行时")
-                if self.mind.is_reflecting:
-                    await self._notify_heartbeat_busy(batch)
-                await self.mind.execute_mind()
-                await self._drain_pending_tasks()
-            except Exception:
-                log("AgentAssistant 批量处理异常", "ERROR", tag="运行时")
-                # 异常后 PFC 中仍有待处理项时主动调度下一轮：
-                # 否则消息要等当前长任务/下次心跳收尾才有机会被重新触发
-                if self.mind.pfc.has_pending_tasks():
-                    self.mind._schedule_next_cycle("批量处理异常后仍有待处理任务")
-            finally:
-                for _ in batch:
-                    self._queue.task_done()
-
-    async def _notify_heartbeat_busy(self, batch: List[Everything]) -> None:
-        """心跳进行中收到消息，向来源频道发送简短提示。"""
-        notified_scopes: set[str] = set()
-        for anything in batch:
-            if not should_enqueue_external_message(anything, reflecting=self.mind._reflecting):
-                continue
-            if not anything.adapter_key:
-                continue
-            scope = anything.entity_scope
-            if scope in notified_scopes:
-                continue
-            notified_scopes.add(scope)
-            try:
-                await self.mind.channel_manager.reply(anything, "稍等，我正在自主思考中~")
-                log(f"心跳忙碌提示已发送: {scope}", "DEBUG", tag="运行时")
-            except Exception:
-                log(f"心跳忙碌提示发送失败: {scope}", "DEBUG", tag="运行时")
-
-    async def _drain_pending_tasks(self) -> None:
-        """自检 PFC 非消息任务（画像分析、通用任务），消息任务不重复处理。"""
-        if self.mind.is_reply or not self._queue.empty():
-            return
-        if not self.mind.pfc.pending_analysis or self.mind.pfc.pending_analysis.is_empty():
-            if not self.mind.pfc.peek_general_tasks():
-                return
-        await asyncio.sleep(1.0)
-        if not self.mind.is_reply and self._queue.empty():
-            try:
-                await self.mind.execute_mind()
-            except Exception:
-                log("PFC 任务自排空异常", "ERROR", tag="运行时")
-                if self.mind.pfc.has_pending_tasks():
-                    self.mind._schedule_next_cycle("PFC 自排空异常后仍有待处理任务")
+        await self.mind.driver.close()
 
     def _current_heartbeat_interval(self) -> float:
         """动态获取心跳间隔，支持运行时热更新。"""
@@ -186,22 +135,11 @@ class AgentAssistant:
             return 60.0
 
     def _mind_busy(self) -> bool:
-        """Mind 是否正在执行中（回复/反思/上一轮心跳 tick 未收尾）。
-
-        忙碌时心跳不整轮跳过，而是按 _busy_defer_seconds 短间隔轮询，
-        空闲后立即补跑——被延后的 tick 不递增任何计数器。
-        """
-        m = self.mind
-        return bool(m.is_reply or m.is_reflecting or m.heartbeat_engine.background_tick_running)
+        """主 Driver 是否已有正在执行或待执行的即时工作。"""
+        return self.mind.driver.is_busy
 
     def _on_interval_config_changed(self, key: str, value: Any) -> None:
-        """ConfigManager 变更监听：间隔值真实变化时唤醒进行中的 sleep。
-
-        回调可能来自非事件循环线程（AI 配置工具在执行器中运行），经
-        call_soon_threadsafe 置事件。save_mind_config 双轨同步会对全部
-        Mind 字段执行 ConfigManager.set，故与已应用的休眠值比较，
-        同值写入不唤醒（不重置 sleep 进度）。
-        """
+        """ConfigManager 变更监听：间隔值真实变化时唤醒进行中的 sleep。"""
         try:
             new_interval = float(value)
         except (TypeError, ValueError):
@@ -213,12 +151,7 @@ class AgentAssistant:
             loop.call_soon_threadsafe(self._interval_wake.set)
 
     async def _heartbeat_loop(self) -> None:
-        """定期触发 Mind 自主思考（反思、主动行为、目标推进等）。
-
-        AI 执行中（非空闲）时延后心跳而非跳过整轮：短间隔轮询忙碌状态，
-        空闲后立即补跑，保证空闲思考（idle 调度）与维护不被长对话饿死。
-        sleep 可被配置变更唤醒：间隔热更后立即按新值重排，不等旧周期到期。
-        """
+        """定期请求主 Driver 执行心跳；主工作繁忙时延后而非并行。"""
         from core.config import ConfigManager
 
         self._loop = asyncio.get_running_loop()

@@ -56,9 +56,9 @@ class FakeMind:
     def __init__(self) -> None:
         self.pfc = FakePFC()
         self.wakes = 0
-        self.push_hub = PushHub(self.pfc, self.try_execute_mind, loop=asyncio.get_running_loop())
+        self.push_hub = PushHub(self.pfc, self.wake, loop=asyncio.get_running_loop())
 
-    async def try_execute_mind(self) -> None:
+    def wake(self) -> None:
         self.wakes += 1
 
 
@@ -237,26 +237,18 @@ async def test_close_keeps_cross_thread_push_accepted_before_shutdown() -> None:
     assert mind.wakes == 0
 
 
-async def test_close_cancels_owned_wakeup_and_rejects_closed_loop() -> None:
+async def test_close_rejects_push_and_closed_loop_refuses() -> None:
+    """唤醒为同步受理：触发推送即唤醒一次；关闭后拒绝推送，死循环拒绝构造性推送。"""
     mind = FakeMind()
-    started, cancelled = asyncio.Event(), asyncio.Event()
-
-    async def wake() -> None:
-        started.set()
-        try:
-            await asyncio.Event().wait()
-        finally:
-            cancelled.set()
-
-    hub = PushHub(mind.pfc, wake, loop=asyncio.get_running_loop())
+    hub = mind.push_hub
     assert hub.push(_SCOPE, "watcher", "唤醒中")
-    await started.wait()
+    await _deliver_all()
+    assert mind.wakes == 1
     await hub.close()
-    assert cancelled.is_set()
     assert hub.push(_SCOPE, "watcher", "已关闭") is False
     closed_loop = asyncio.new_event_loop()
     closed_loop.close()
-    stopped = PushHub(mind.pfc, wake, loop=closed_loop)
+    stopped = PushHub(mind.pfc, mind.wake, loop=closed_loop)
     assert stopped.push(_SCOPE, "watcher", "无循环") is False
     assert len(mind.pfc.temporary) == 1
 

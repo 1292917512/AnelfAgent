@@ -10,7 +10,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from agent.messages import is_conversation_scope
-from core.async_helper import spawn
 
 if TYPE_CHECKING:
     from agent.mind.mind import Mind
@@ -50,7 +49,7 @@ async def on_task_unclaimed(
         f"后台任务{'失败' if not success else '完成'}: {description[:60]}",
         prompt,
     )
-    spawn(mind.try_execute_mind(), name="mind.wake")
+    mind.driver.request_cycle()
 
 
 async def on_task_alert(
@@ -79,4 +78,4 @@ async def on_task_alert(
         f"后台任务进度报告: {description[:60]}",
         prompt,
     )
-    spawn(mind.try_execute_mind(), name="mind.wake")
+    mind.driver.request_cycle()
