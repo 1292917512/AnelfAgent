@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -76,7 +77,9 @@ class RuntimeStub:
         self.mind = mind
 
 
-def _make_worker(game: FakeGame, *, item: str = "dirt") -> tuple[MinecraftWorker, dict[str, bool], list[str], list[str]]:
+def _make_worker(
+    game: FakeGame, *, item: str = "dirt", clock: Callable[[], float] = time.monotonic,
+) -> tuple[MinecraftWorker, dict[str, bool], list[str], list[str]]:
     flag = {"online": True}
     records: list[str] = []
     announces: list[str] = []
@@ -97,6 +100,7 @@ def _make_worker(game: FakeGame, *, item: str = "dirt") -> tuple[MinecraftWorker
         poll_seconds=lambda: 0.01,
         record=record,
         announce=announce,
+        clock=clock,
     )
     return worker, flag, records, announces
 
@@ -661,7 +665,7 @@ async def test_escalated_escape_exhaustion_cools_down(
             return await super().__call__(name, args)
 
     game = NoPathGame()
-    worker, _flag, _records, announces = _make_worker(game)
+    worker, _flag, _records, announces = _make_worker(game, clock=lambda: 100.0)
     worker._relocate_fails = 2
 
     async def empty_probe(here: dict[str, int]) -> list[dict[str, Any]]:
@@ -709,8 +713,11 @@ async def test_escalated_relocate_descends_to_resource_below_first(
 
 
 @pytest.mark.asyncio
-async def test_cooldown_announcements_are_throttled(monkeypatch: pytest.MonkeyPatch) -> None:
-    """冷却求助播报节流：同一困境反复进入冷却时最多每 5 分钟说一次。"""
+@pytest.mark.parametrize("started_at", [0.0, 1000.0])
+async def test_cooldown_announcements_are_throttled(
+    monkeypatch: pytest.MonkeyPatch, started_at: float,
+) -> None:
+    """首次求助立即播报，后续按实际播报时间节流，满 5 分钟恢复。"""
     monkeypatch.setattr("agent.runtime.singleton.get_runtime", lambda: None)
 
     class NoPathGame(FakeGame):
@@ -721,7 +728,8 @@ async def test_cooldown_announcements_are_throttled(monkeypatch: pytest.MonkeyPa
             return await super().__call__(name, args)
 
     game = NoPathGame()
-    worker, _flag, _records, announces = _make_worker(game)
+    now = started_at
+    worker, _flag, _records, announces = _make_worker(game, clock=lambda: now)
     worker._relocate_fails = 2
 
     async def empty_probe(here: dict[str, int]) -> list[dict[str, Any]]:
@@ -731,9 +739,14 @@ async def test_cooldown_announcements_are_throttled(monkeypatch: pytest.MonkeyPa
     await worker._relocate()
     assert len([text for text in announces if "走不出去" in text]) == 1
 
-    worker._relocate_cooldown_until = 0.0  # 冷却过后同样的困境再来一轮
+    for elapsed in (60.0, 299.0):
+        now = started_at + elapsed
+        await worker._relocate()
+        assert len([text for text in announces if "走不出去" in text]) == 1
+
+    now = started_at + 300.0
     await worker._relocate()
-    assert len([text for text in announces if "走不出去" in text]) == 1  # 5 分钟内不重复
+    assert len([text for text in announces if "走不出去" in text]) == 2
 
 
 @pytest.mark.asyncio
@@ -749,7 +762,7 @@ async def test_relocate_total_failure_cools_down_and_announces(monkeypatch: pyte
             return await super().__call__(name, args)
 
     game = NoPathGame()
-    worker, flag, _records, announces = _make_worker(game)
+    worker, flag, _records, announces = _make_worker(game, clock=lambda: 100.0)
 
     await worker._relocate()
 

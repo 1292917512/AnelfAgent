@@ -198,7 +198,7 @@ class MinecraftWorker:
         self._relocate_pending = False
         self._relocate_heading = 0
         self._relocate_cooldown_until = 0.0
-        self._cooldown_announced_at = 0.0
+        self._cooldown_announced_at: float | None = None
         self._last_relocate_target: tuple[int, int] | None = None
         self._last_block_at = 0.0
         self._suppress_report = False
@@ -434,10 +434,14 @@ class MinecraftWorker:
         await self._announce_cooldown("附近暂时找不到能挖的泥土和树，我先歇一会儿再找；也可以带我走两步换个地方。")
 
     async def _announce_cooldown(self, text: str) -> None:
-        """冷却求助播报节流：同一困境最多每 5 分钟说一次，失败不反噬作业循环。"""
-        if self._clock() - self._cooldown_announced_at < _COOLDOWN_ANNOUNCE_INTERVAL:
+        """冷却求助首次立即播报，后续最多每 5 分钟一次，失败不反噬作业循环。"""
+        now = self._clock()
+        if (
+            self._cooldown_announced_at is not None
+            and now - self._cooldown_announced_at < _COOLDOWN_ANNOUNCE_INTERVAL
+        ):
             return
-        self._cooldown_announced_at = self._clock()
+        self._cooldown_announced_at = now
         try:
             await self._announce(text)
         except Exception as exc:
