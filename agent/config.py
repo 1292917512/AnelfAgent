@@ -45,9 +45,10 @@ _MIND_CONFIGS = {
             "unit": "秒",
         },
         "auto_cycle_base_delay": {
-            "description": "自主循环续轮退避基数（指数封顶 8s）；有待回复消息时不退避",
+            "description": "自主循环续轮退避基数（指数封顶 8s）；正常续轮有待回复消息时不退避，异常恢复始终退避",
             "default": 0.5,
             "advanced": True,
+            "min": 0.1,
             "unit": "秒",
         },
         "meta_decision_temperature": {

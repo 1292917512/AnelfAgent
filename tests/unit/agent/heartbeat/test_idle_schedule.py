@@ -376,6 +376,44 @@ class TestStartTaskBackground:
         engine.run_claimed_task.assert_awaited_once_with("a", trigger="manual")
         await mind.driver.close()
 
+    @pytest.mark.parametrize("deleted", [False, True])
+    async def test_queued_task_rechecks_current_definition(
+        self, monkeypatch: pytest.MonkeyPatch, deleted: bool,
+    ) -> None:
+        tasks = {"a": _task("a")}
+        engine, mind = _make_engine([], tasks, monkeypatch)
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _cycle(*, is_heartbeat: bool) -> None:
+            entered.set()
+            await release.wait()
+
+        mind._autonomous_cycle = _cycle
+        try:
+            mind.driver.request_cycle()
+            await asyncio.wait_for(entered.wait(), 1)
+            accepted, _, future = mind.driver.submit_task("a")
+            assert accepted and future is not None
+            if deleted:
+                del tasks["a"]
+            else:
+                # reload 会替换定义对象；执行边界应读取最新对象。
+                tasks["a"] = TaskDefinition(name="a", prompt="updated", enabled=False)
+            release.set()
+            assert await asyncio.wait_for(future, 1) is None
+            engine.executor.run.assert_not_awaited()
+            assert "a" not in engine._task_inflight
+
+            tasks["a"] = _task("a")
+            accepted, _, future = mind.driver.submit_task("a")
+            assert accepted and future is not None
+            assert await asyncio.wait_for(future, 1) == "产出"
+            engine.executor.run.assert_awaited_once()
+            assert "a" not in engine._task_inflight
+        finally:
+            await mind.driver.close()
+
 
 class TestReflectDeferral:
     async def test_execute_reflect_defers_when_idle_configured(self, monkeypatch) -> None:

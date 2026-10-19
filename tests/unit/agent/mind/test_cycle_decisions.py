@@ -10,7 +10,8 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from agent.mind import cycle as cycle_mod
-from agent.mind.autonomous import Decision, DecisionType, PendingMessage, SituationContext
+from agent.mind.autonomous import Decision, DecisionType, MindTask, PendingMessage, SituationContext, TaskType
+from agent.mind.prefrontal_cortex import PrefrontalCortex
 
 
 class _PendingQueue:
@@ -148,6 +149,32 @@ async def test_heartbeat_still_filters_reflect_when_pending(monkeypatch) -> None
 
 
 class TestMessageCycleToolActionGuard:
+    async def test_suppressed_action_preserves_general_work_until_next_cycle(self) -> None:
+        mind = _fake_mind()
+        mind.pfc = PrefrontalCortex(SimpleNamespace())
+        mind._schedule_next_cycle = Mock()
+        task = MindTask(task_type=TaskType.SELF_TASK, preview="备份配置")
+        mind.pfc.add_general_task(task)
+        situation = SituationContext(
+            pending_messages=[PendingMessage(scope="user_qq:u1", preview="你好", adapter_key="qq")],
+            pending_tasks=[task],
+        )
+        reply = Decision(type=DecisionType.REPLY, target="user_qq:u1", priority=10)
+        action = Decision(type=DecisionType.TOOL_ACTION, content=task.preview, priority=5)
+        await cycle_mod.execute_decisions(mind, {}, situation, [reply, action])
+        assert mind.pfc.peek_general_tasks() == [task]
+        mind._schedule_next_cycle.assert_called_once()
+        cycle_mod.execute_safely.assert_awaited_once_with(mind, reply)
+
+        # 下一轮从保留的待办重新决策，完成后才确认消费。
+        await cycle_mod.execute_decisions(
+            mind, {}, SituationContext(pending_tasks=mind.pfc.peek_general_tasks()), [action],
+        )
+        assert not mind.pfc.has_pending_tasks()
+        assert cycle_mod.execute_safely.await_count == 2
+        cycle_mod.execute_safely.assert_awaited_with(mind, action)
+        mind._schedule_next_cycle.assert_called_once()
+
     async def test_message_cycle_never_runs_parallel_tool_action(self) -> None:
         """同一用户指令不得同时进入 REPLY 与 TOOL_ACTION 两条工具循环。"""
         mind = _fake_mind()

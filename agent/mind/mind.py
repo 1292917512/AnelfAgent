@@ -167,18 +167,19 @@ class Mind:
             # ACCEPTING；已入队时周期未抢锁则先归零、周期启动再覆盖
             self._reset_phase_if_idle()
 
-    def _schedule_next_cycle(self, reason: str) -> None:
+    def _schedule_next_cycle(self, reason: str, *, backoff: bool = False) -> None:
         """以指数退避调度下一轮自主循环（默认 0.5s 起、8s 封顶），避免紧凑重试。
 
-        有待回复的用户消息时不退避——退避是为空闲自驱续轮防抖，
-        用户消息已在排队等待，延迟直接损害对话体验。
+        正常续轮有待回复消息时立即处理；异常恢复指定 backoff，
+        即使消息仍在排队也退避，避免持续失败形成空转。
         """
         from core.config import get_config_float
-        base = get_config_float("auto_cycle_base_delay", 0.5)
-        if not self.pfc.pending_user.is_empty() or not self.pfc.pending_group.is_empty():
+        base = max(0.1, get_config_float("auto_cycle_base_delay", 0.5))
+        if not backoff and (not self.pfc.pending_user.is_empty() or not self.pfc.pending_group.is_empty()):
             delay = 0.0
         else:
-            delay = min(base * (2.0 ** self._auto_cycle_retry), 8.0)
+            # 基数至少 0.1s，指数到 7 已达到封顶，先限指数避免长期失败溢出。
+            delay = min(base * (2.0 ** min(self._auto_cycle_retry, 7)), 8.0)
         self._auto_cycle_retry += 1
         log(f"{reason}，{delay:.1f}s 后自动触发新一轮 (第{self._auto_cycle_retry}次续轮)", tag="思维")
         self.driver.request_cycle(delay=delay)

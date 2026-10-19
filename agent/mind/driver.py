@@ -8,6 +8,10 @@ LLM 钩子 / 工作流 ask / Minecraft 自主轮次），它们不经本调度�
 期间的唤醒被锁存、当前工作结束后继续 drain；延迟续轮由统一计时器管理，
 被即时唤醒取代时不重复触发。任务在排队前即认领（queued 与 running 共用
 任务在飞集合），未开始的认领在关停时释放。
+
+模型可见：周期异常后的未消费待办按新态势重新进入主周期，不注入额外提示。
+Token：恢复复用正常周期的模型调用；退避等待不调用模型。
+缓存：不改上下文组装或稳定前缀，仅改变已有待办的调度时机。
 """
 
 from __future__ import annotations
@@ -238,31 +242,36 @@ class MindDriver:
             raise
         except Exception as exc:
             log(f"主思维工作异常 [{work}]: {exc}", "WARNING", tag="思维")
+            if work in ("cycle", "heartbeat") and (
+                self._mind.pfc.has_pending_tasks() or self._mind.pfc.pending_analysis
+            ):
+                self._mind._schedule_next_cycle("主周期异常后仍有待办", backoff=True)
         finally:
             self._running = False
             self._current_work = ""
             self._mind._reset_phase_if_idle()
 
     async def _run_tick(self) -> None:
-        waiters = self._tick_waiters
-        self._tick_waiters = []
-        self._tick_requested = False
         try:
             executed = await self._mind.heartbeat_engine.tick()
         except asyncio.CancelledError:
-            for future in waiters:
+            for future in self._tick_waiters:
                 if not future.done():
                     future.cancel()
             raise
         except Exception as exc:
             log(f"手动心跳执行异常: {exc}", "WARNING", tag="思维")
-            for future in waiters:
+            for future in self._tick_waiters:
                 if not future.done():
                     future.set_exception(exc)
-            return
-        for future in waiters:
-            if not future.done():
-                future.set_result(executed)
+        else:
+            for future in self._tick_waiters:
+                if not future.done():
+                    future.set_result(executed)
+        finally:
+            # 直到终态才清批次，执行中提交的等待者也共享本次结果。
+            self._tick_waiters.clear()
+            self._tick_requested = False
 
     async def _run_task(self, request: "_TaskRequest") -> None:
         try:

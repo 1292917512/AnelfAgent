@@ -2,8 +2,9 @@
 
 按态势、决策、分发和收尾组织函数；内部步骤直接调用所属模块。
 
-模型可见：元决策召回围绕最早待处理会话，其他会话仍以独立待办呈现。
-Token：不拼接多个会话生成混合召回查询。
+模型可见：元决策召回围绕最早待处理会话，其他会话仍以独立待办呈现；
+消息周期抑制工具行动时，通用待办保留到后续周期重新决策。
+Token：不拼接多个会话生成混合召回查询；保留待办按正常续轮决策，不重放旧决策。
 缓存：只影响本次元决策证据，不修改各会话稳定前缀。
 """
 
@@ -198,6 +199,8 @@ async def execute_decisions(
         suppressed = [d for d in decisions if d.type == DecisionType.TOOL_ACTION]
         if suppressed:
             decisions = [d for d in decisions if d.type != DecisionType.TOOL_ACTION]
+            # 决策与通用待办没有逐项对应关系，不能确认被抑制行动的待办已完成。
+            consume_general_tasks = False
             log(f"用户消息周期抑制 {len(suppressed)} 个 TOOL_ACTION 决策"
                 "（由 REPLY 工具循环统一执行）", tag="思维")
 

@@ -614,15 +614,15 @@ class HeartbeatEngine:
         return await self.run_claimed_task(task_name, trigger=trigger)
 
     async def run_claimed_task(self, task_name: str, *, trigger: str) -> Optional[str]:
-        """执行已认领任务并在所有退出路径释放认领。"""
-        task = self.task_registry.get(task_name)
-        if task is None:
-            self.release_task_claim(task_name)
-            return None
-        log(f"执行任务: {task_name}（{trigger}）", tag="心跳")
-
-        # 会话生命周期由 thinking_session 管理：退出（含异常）保证发射 SESSION_END
+        """复核最新定义后执行已认领任务，并在所有退出路径释放认领。"""
         try:
+            task = self.task_registry.get(task_name)
+            if task is None or not task.enabled:
+                log(f"任务 [{task_name}] 已删除或禁用，跳过排队执行", "DEBUG", tag="心跳")
+                return None
+            log(f"执行任务: {task_name}（{trigger}）", tag="心跳")
+
+            # 会话生命周期由 thinking_session 管理：退出（含异常）保证发射 SESSION_END
             async with thinking_session({
                 "is_heartbeat": True, "is_introspection": True, "entity": "任务执行",
             }) as session:
