@@ -7,7 +7,12 @@
 
 from __future__ import annotations
 
-from agent.mind.execution.reply_finalize import _compact_summary_for_history
+from agent.mind.execution.reply_finalize import (
+    _build_execution_summary,
+    _compact_summary_for_history,
+    format_undelivered_reply,
+    parse_execution_summary,
+)
 from agent.mind.tools import execution_log as elog
 
 
@@ -47,6 +52,20 @@ class TestRingBuffer:
 
 
 class TestHistoryCompact:
+    def test_undelivered_note_survives_long_tool_summary(self):
+        """投递事实在完整摘要及历史裁剪后保留，正文换行不伪造额外摘要条目。"""
+        chain = [{"role": "tool", "tool_call_id": f"tc_{i}", "content": "结果" * 100} for i in range(100)]
+        note = format_undelivered_reply("第一行\n第二行", "Jev 拒绝投递")
+        summary = _build_execution_summary(chain, ["普通过程记录", note])
+        assert "已省略" in summary
+        assert summary.endswith(note)
+        compact = _compact_summary_for_history(summary)
+        assert compact.endswith(note)
+        assert '"第一行\\n第二行"' in compact
+        assert "普通过程记录" not in summary
+        parsed = parse_execution_summary(compact)
+        assert parsed is not None and parsed["count"] == 100
+
     def test_short_summary_unchanged(self):
         """条数不超上限时原样入库（首行 + 5 条以内）。"""
         summary = _full_summary(5)

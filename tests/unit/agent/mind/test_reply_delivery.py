@@ -67,18 +67,44 @@ async def test_end_reply_text_fallback_delivers_and_corrects(anything, sender):
     assert not any("按普通会话回复投递" in m.get("content", "") for m in msgs)
 
 
-async def test_end_reply_text_rejected_keeps_text_intact(anything, sender, monkeypatch):
-    """Jev 判定不投：不写新会话记录、不改写正文（防伪造前缀诱导幻觉）。"""
-    review = AsyncMock(return_value=ReplyAssessment(False, "Jev 明确拦截：内部过程或结束备注"))
+@pytest.mark.parametrize("outcome", ["rejected", "disabled", "failed", "unknown"])
+async def test_end_reply_undelivered_summary_keeps_text_intact_and_ends(anything, sender, monkeypatch, outcome):
+    """未投递正文仅附摘要标注，未知结果要求核对；收束不再调用模型或重试发送。"""
+    from agent.mind.execution.reply_finalize import parse_execution_summary
+    from core.event_bus import EVENT_AFTER_REPLY
+
+    events = AsyncMock()
+    monkeypatch.setattr("agent.mind.execution.reply_finalize.event_bus.emit", events)
+    review = AsyncMock(return_value=ReplyAssessment(outcome != "rejected", "Jev 审核结果"))
     monkeypatch.setattr("agent.mind.execution.reply_delivery.assess_reply", review)
-    mind, completion = await _run([tool_result("内部收束说明", ["end_reply"])], anything)
-    sender.assert_not_awaited()
+    if outcome == "disabled":
+        ConfigManager.set("send_final_text", False)
+    if outcome in {"failed", "unknown"}:
+        sender.side_effect = None
+        sender.return_value = json.dumps({"success": False, "outcome": outcome, "error": "频道未确认发送"})
+    content = "内部收束说明\n第二行" + "长" * 100
+    mind, completion = await _run([tool_result(content, ["end_reply"])], anything)
+    assert sender.await_count == int(outcome in {"failed", "unknown"})
+    assert review.await_count == int(outcome != "disabled")
+    assert mind.llm_calls == 1
+    assert mind.executed_tools == ["end_reply"]
     assistants = [
         m for m in completion["messages"]
         if m.get("role") == "assistant" and m.get("content")
     ]
-    assert assistants, "未投递正文应保留在执行链中"
-    assert all("未投递" not in (m["content"] or "") for m in assistants)
+    assert [m["content"] for m in assistants] == [content]
+    completed = next(call.args[1] for call in events.await_args_list if call.args[0] == EVENT_AFTER_REPLY)
+    summary = completed["execution_summary"]
+    expected_status = "送达状态未知，重发前需核对" if outcome == "unknown" else "未投递"
+    assert f"end_reply 正文{expected_status}" in summary
+    assert json.dumps(content[:60] + "…", ensure_ascii=False) in summary
+    assert len(summary.splitlines()) == 3
+    parsed = parse_execution_summary(summary)
+    assert parsed is not None and parsed["count"] == 1
+    if outcome == "unknown":
+        assert "未投递" not in summary
+    # 沿用唯一的执行摘要入库，不再追加投递通知或 assistant 历史。
+    mind.conversation_data.append_context.assert_awaited_once_with(anything, summary, role="system")
 
 
 async def test_tools_after_end_are_not_executed_and_results_stay_paired(anything, sender):

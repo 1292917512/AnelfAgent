@@ -11,6 +11,7 @@ from agent.mind.execution.completion import _finish_round
 from agent.mind.execution.messages import (
     merge_after_messages,
 )
+from agent.mind.execution.reply_finalize import format_undelivered_reply
 from agent.mind.execution.responses import (
     _END_REPLY_TEXT_RE,
     _check_tool_results_all_errors,
@@ -214,8 +215,8 @@ async def _handle_tool_round(
                     and not should_suppress(end_text) and not _END_REPLY_TEXT_RE.match(end_text)
                     and not state.output_sent and state.reply_delivery_status == "pending"):
                 # 犯错兜底，不改投递契约：模型漏用 send_message 以正文收束且本轮
-                # 零送达时经 Jev 判定补投；未投递时不写新会话记录（防循环），
-                # 在正文自身加注并标记思维链路。送达后给模型的回执是纠偏提示
+                # 零送达时经 Jev 判定补投；未投递时不单独追加通知（防循环），
+                # 在执行摘要标注投递事实，正文保持原样。送达后给模型的回执是纠偏提示
                 # 而非投递成功回执，不奖励跳过工具。
                 receipt, aborted = await _await_with_abort(deliver_reply(
                     ctx, state, end_text, interim=False,
@@ -240,13 +241,14 @@ async def _handle_tool_round(
                     })
                     execution_steps.append(f"→ 第{state.iteration + 1}轮: end_reply 正文经 Jev 兜底补投")
                 else:
-                    # 不写新会话记录（防循环），也不改写正文本身（加注会随
+                    # 不单独追加通知（防循环），也不改写正文本身（加注会随
                     # completion 快照流向续跑/事件消费方，伪造 [系统] 前缀
                     # 易诱导模型幻觉）——标记只进执行摘要与思维链路，
                     # 属固有的执行事实记录通道
-                    preview = end_text if len(end_text) <= 60 else end_text[:60] + "…"
                     execution_steps.append(
-                        f"→ 第{state.iteration + 1}轮: end_reply 正文未投递（{reason}）：{preview}"
+                        format_undelivered_reply(
+                            end_text, reason, unknown=receipt is not None and receipt.status == "unknown",
+                        )
                     )
             else:
                 execution_steps.append(f"→ 第{state.iteration + 1}轮: end_reply 请求静默收束，过程正文不投递")
