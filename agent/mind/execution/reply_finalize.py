@@ -2,10 +2,6 @@
 
 回复入口（reply_entry/reply_loop）在 think_loop 模块（它同时依赖本模块的
 finish_think/complete_reply 收尾，入口与循环同层避免双向依赖）。
-
-模型看到：执行摘要保留未投递正文的状态、原因与有界预览，不作为已发送回复。
-Token：每次未投递收束增加一条摘要，正文预览最多 60 字符，不增加模型调用。
-缓存：沿用执行摘要追加到历史尾部的通道，不修改稳定前缀。
 """
 
 from __future__ import annotations
@@ -16,7 +12,6 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.mind.tools import execution_log
 from core.event_bus import EVENT_AFTER_REPLY, event_bus
-from core.sanitizer import sanitize_text
 from core.tags import etag_all
 from core.tool_results import extract_error_text, parse_tool_result_json
 
@@ -25,7 +20,6 @@ _HISTORY_TAIL_LINES = 5
 # 完整摘要的字符上限（环形缓冲与事件 payload 消费；保头保尾 + 中间省略）
 _EXEC_SUMMARY_MAX_CHARS = 16000
 _EXEC_SUMMARY_HEADER = "[已执行操作摘要]"
-_DELIVERY_NOTE_PREFIX = "[正文投递]"
 # 摘要行格式（生成与解析同模块维护，展示层不自行猜测格式）
 _SUMMARY_LINE_RE = re.compile(r"^#\d+\s+(?P<call>.*)\s*→\s*(?P<result>.*)$")
 _SUMMARY_COUNT_RE = re.compile(r"共执行\s*(\d+)\s*次")
@@ -80,15 +74,6 @@ if TYPE_CHECKING:
 # ==================================================================
 # 思维循环结束处理
 # ==================================================================
-
-def format_undelivered_reply(content: str, reason: str, *, unknown: bool = False) -> str:
-    """生成摘要用投递事实：正文脱敏、单行引用，未知结果保留核对语义。"""
-    text = sanitize_text(content)
-    preview = text[:60] + "…" if len(text) > 60 else text
-    detail = " ".join(sanitize_text(reason).split())[:200]
-    status = "送达状态未知，重发前需核对" if unknown else "未投递"
-    return f"{_DELIVERY_NOTE_PREFIX} end_reply 正文{status}（{detail}）：{json.dumps(preview, ensure_ascii=False)}"
-
 
 async def finish_think(
         mind: Mind,
@@ -153,7 +138,7 @@ def _build_execution_summary(
     tool_chain: Optional[List[Dict]],
     execution_steps: List[str],
 ) -> str:
-    """从工具链构建摘要并保留正文投递事实；无工具结果时回退到步骤日志。
+    """从工具链构建完整执行摘要；无工具结果时回退到步骤日志。
 
     摘要同时用于：执行日志缓冲（get_execution_log 查询）与
     EVENT_AFTER_REPLY.execution_summary（SkillReviewer 契约）；
@@ -198,8 +183,6 @@ def _build_execution_summary(
                 result_lines.append(f"  #{tool_idx} {call_sig} → {result}")
 
         if result_lines:
-            # 投递发生在工具批次之后，作为独立事实保留在摘要尾部，不计入工具次数。
-            result_lines.extend(f"  {step}" for step in execution_steps if step.startswith(_DELIVERY_NOTE_PREFIX))
             # 总量截断：多轮长会话的工具摘要可能上万字符，保头保尾 + 中间省略
             summary_body = "\n".join(result_lines)
             if len(summary_body) > _EXEC_SUMMARY_MAX_CHARS:
@@ -224,7 +207,7 @@ def _build_execution_summary(
                     + "\n".join(reversed(tail_lines))
                 )
             return (
-                f"[已执行操作摘要] 本轮共执行 {tool_idx} 次工具\n"
+                f"[已执行操作摘要] 本轮共执行 {len(result_lines)} 次工具\n"
                 + summary_body
             )
 
