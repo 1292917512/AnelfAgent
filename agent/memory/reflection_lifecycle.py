@@ -22,6 +22,10 @@
 
 幂等纪律：晋升决策按 reflection id 幂等（promoted/denied 为终态，重入安全）；
 LLM 失败不降级为直接晋升（防断电静默重复），退避后重试。
+
+Model Experience：反馈分类读取完整候选与本批真实用户发言，平台通知不作为确认。
+Token：内部调用沿用候选池与消息批次上限，保留末尾限定条件。
+缓存：不改变主对话前缀或新增主模型调用。
 """
 
 from __future__ import annotations
@@ -34,6 +38,7 @@ from typing import Any, Dict, List, Set
 
 from core.config import get_config_bool, get_config_float, get_config_int, register_configs_safe
 from core.log import log
+from core.tags import etag_all
 
 from . import evidence
 from .memory_store import MemoryStore
@@ -505,27 +510,19 @@ _FEEDBACK_PROMPT = """\
 输出：[{{"id": 认知id, "verdict": "confirmed"/"denied"/"ignored"}}]
 """
 
-_JSON_ARR_RE = re.compile(r"\[.*\]", re.DOTALL)
-
-
 def _parse_feedback(raw: str) -> Dict[int, str]:
-    """解析分类输出为 {id: verdict}（容错：夹带文本/缺字段/非法 id）。"""
-    m = _JSON_ARR_RE.search(raw)
-    if not m:
-        return {}
-    try:
-        data = json.loads(m.group(0))
-    except json.JSONDecodeError:
-        return {}
+    """严格解析反馈；缺项、重复 ID 和非法态度均不是用户忽略。"""
+    data = json.loads(raw)
+    if not isinstance(data, list):
+        raise ValueError("反馈必须为 JSON 数组")
     result: Dict[int, str] = {}
-    if isinstance(data, list):
-        for item in data:
-            if not isinstance(item, dict):
-                continue
-            try:
-                result[int(str(item.get("id")))] = str(item.get("verdict", "")).strip().lower()
-            except (TypeError, ValueError):
-                continue
+    for item in data:
+        if not isinstance(item, dict) or type(item.get("id")) is not int:
+            raise ValueError("反馈缺少有效记忆 ID")
+        memory_id, verdict = item["id"], item.get("verdict")
+        if memory_id in result or verdict not in ("confirmed", "denied", "ignored"):
+            raise ValueError("反馈包含重复 ID 或非法态度")
+        result[memory_id] = verdict
     return result
 
 
@@ -535,26 +532,32 @@ async def classify_reflection_feedback(
     """对"已呈现未裁决"的反思跑用户回应分类，回流证据分。
 
     由 auto_capture 周期调用（同批对话材料顺手裁决）；scope_key 为
-    auto_capture 的会话键（user_qq:123 / group_qq:456 形式）。
+    auto_capture 的会话键（user:qq:123 / group:qq:456 形式）。
     只裁决"呈现先于本批消息"的条目（同批刚呈现的留给下一批），
     无候选或无用户消息时零成本返回。返回实际回流条数。
     """
     if not get_config_bool("memory_reflection_feedback_enabled", True):
         return 0
+    user_messages = [
+        m for m in messages
+        if m.get("role") == "user"
+        and next((value for key, value in etag_all(str(m.get("content", "")), prefix_only=True)
+                  if key == "kind"), "chat") == "chat"
+    ]
     user_texts = [
         str(m.get("content", "")).strip()
-        for m in messages if m.get("role") == "user"
+        for m in user_messages
     ]
     user_texts = [t for t in user_texts if t]
     if not user_texts:
         return 0
     visible_tags = scope_tags_from_entity_scopes([scope_key.replace(":", "_", 1)])
     batch_since = min(
-        (int(m.get("ts_ns", 0)) / 1e9 for m in messages if m.get("ts_ns")),
+        (int(m.get("ts_ns", 0)) / 1e9 for m in user_messages if m.get("ts_ns")),
         default=time.time(),
     )
 
-    entries = await _load_reflection_pool(store)
+    entries = await store.search_by_tags([REFLECTION_TAG], limit=50)
     pending_review: List[MemoryEntry] = []
     for e in entries:
         if e.id is None or evidence.is_protected(e):
@@ -572,29 +575,22 @@ async def classify_reflection_feedback(
     if not pending_review:
         return 0
 
-    items = "\n".join(f"{e.id} | {e.content[:120]}" for e in pending_review)
-    rendered = "\n".join(t[:200] for t in user_texts[-12:])
+    items = "\n".join(f"{e.id} | {e.content}" for e in pending_review)
+    rendered = "\n".join(user_texts)
     prompt = _FEEDBACK_PROMPT.replace("{items}", items).replace("{messages}", rendered)
     from .dedup import light_llm
-    try:
-        raw = await light_llm(prompt, temperature=0.1, timeout=60.0)
-    except Exception as exc:
-        log(f"反馈分类调用失败 [{scope_key}]: {exc}", "DEBUG", tag=_LOG_TAG)
-        return 0
-
+    raw = await light_llm(prompt, temperature=0.1, timeout=60.0)
     verdicts = _parse_feedback(raw or "")
+    if set(verdicts) != {e.id for e in pending_review}:
+        raise ValueError("反馈结果未完整覆盖本批候选")
     applied = 0
     from . import metrics
     for entry in pending_review:
-        verdict = verdicts.get(int(entry.id or 0))
-        if verdict not in ("confirmed", "denied", "ignored"):
-            verdict = "ignored"
+        verdict = verdicts[int(entry.id or 0)]
         record_user_feedback(entry, verdict)
-        try:
-            await store.update(entry, actor="reflection_lifecycle")
-            applied += 1
-        except Exception as exc:
-            log(f"反馈回流写入失败 #{entry.id}: {exc}", "DEBUG", tag=_LOG_TAG)
+        if not await store.update(entry, actor="reflection_lifecycle", expected_version=entry.version):
+            raise RuntimeError(f"反馈写入冲突 #{entry.id}")
+        applied += 1
         metrics.incr(f"reflection.feedback_{verdict}")
     if applied:
         log(f"反思反馈回流 [{scope_key}]: {applied} 条", "DEBUG", tag=_LOG_TAG)

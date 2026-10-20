@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+from unittest.mock import AsyncMock
+
 import pytest
 
 from entities.sticker.store import StickerStore
@@ -24,6 +27,46 @@ async def _seed(store: StickerStore) -> None:
         content_hash="hash_b",
     )
     await store.upsert_image(path="/tmp/c.png", description="架构图")
+
+
+async def test_lifecycle_closes_shared_connection(store: StickerStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    from core.lifecycle import Lifecycle
+    from entities.sticker import register_lifecycle
+
+    monkeypatch.setattr("entities.sticker.store._store", store)
+    Lifecycle.reset()
+    try:
+        register_lifecycle()
+        db = await store._get_db()
+        await Lifecycle.shutdown_all()
+        assert store._db is None
+        with pytest.raises(ValueError, match="no active connection"):
+            await db.execute("SELECT 1")
+    finally:
+        Lifecycle.reset()
+
+
+@pytest.mark.parametrize("failure", [OSError("schema unavailable"), asyncio.CancelledError()])
+async def test_initialization_failure_releases_connection(
+    store: StickerStore, monkeypatch: pytest.MonkeyPatch, failure: BaseException,
+) -> None:
+    import aiosqlite
+
+    connections: list[aiosqlite.Connection] = []
+    connect = aiosqlite.connect
+
+    def tracked_connect(database: str) -> aiosqlite.Connection:
+        connection = connect(database)
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(aiosqlite, "connect", tracked_connect)
+    monkeypatch.setattr(store, "_load_vec_extension", AsyncMock(side_effect=failure))
+    with pytest.raises(type(failure)):
+        await store._get_db()
+    assert store._db is None and len(connections) == 1
+    with pytest.raises(ValueError, match="no active connection"):
+        await connections[0].execute("SELECT 1")
 
 
 class TestListMissingEmbedding:

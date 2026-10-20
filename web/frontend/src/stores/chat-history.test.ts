@@ -34,10 +34,10 @@ it("deduplicates concurrent requests and preserves messages sent while history i
   let release!: (data: AxiosResponse<ChatHistoryMessage[]>) => void;
   vi.mocked(chatApi.history).mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
   const pending = history.load();
-  await history.load();
+  const joined = history.load();
   buckets.A!.messages.push({ role: "user", content: "New message", cid: "local", delivery: "submitting", ts: 2 });
   release(response([{ id: 1, role: "user", content: "Earlier", ts: 1 }]));
-  await pending;
+  await Promise.all([pending, joined]);
   expect(chatApi.history).toHaveBeenCalledOnce();
   expect(buckets.A?.messages.map((message) => message.content)).toEqual(["Earlier", "New message"]);
 });
@@ -56,11 +56,13 @@ it("coalesces reconnect refreshes after an in-flight history response", async ()
   vi.mocked(chatApi.history).mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }))
     .mockResolvedValueOnce(response([{ id: 1, role: "assistant", content: "Arrived during reconnect", ts: 1 }]));
   const pending = history.load();
-  await history.refresh();
-  await history.refresh();
+  let refreshed = false;
+  const refreshes = Promise.all([history.refresh(), history.refresh()]).then(() => { refreshed = true; });
+  await Promise.resolve();
+  expect(refreshed).toBe(false);
   expect(chatApi.history).toHaveBeenCalledOnce();
   release(response([]));
-  await pending;
+  await Promise.all([pending, refreshes]);
   expect(chatApi.history).toHaveBeenCalledTimes(2);
   expect(buckets.A?.messages[0]?.content).toBe("Arrived during reconnect");
 });
@@ -70,10 +72,10 @@ it("cancels queued reconnect refreshes with the conversation", async () => {
   let release!: (data: AxiosResponse<ChatHistoryMessage[]>) => void;
   vi.mocked(chatApi.history).mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
   const pending = history.load();
-  await history.refresh();
+  const refresh = history.refresh();
   history.cancel("A");
   release(response([]));
-  await pending;
+  await Promise.all([pending, refresh]);
   expect(chatApi.history).toHaveBeenCalledOnce();
 });
 
@@ -110,6 +112,19 @@ it("keeps pagination failures separate and preserves the existing history", asyn
   expect(buckets.A.earlierError).toBeInstanceOf(Error);
   expect(buckets.A.historyLoaded).toBe(true);
   expect(buckets.A.loadingEarlier).toBe(false);
+});
+
+it("reuses unchanged messages across silent reconciliation and only initializes details once", async () => {
+  const onLoaded = vi.fn();
+  const history = createChatHistory({ activeId: () => "A", bucket: (id) => buckets[id],
+    update: (id, patch) => { const bucket = buckets[id]; if (bucket) buckets[id] = { ...bucket, ...patch(bucket) }; }, onLoaded });
+  vi.mocked(chatApi.history).mockImplementation(async () => response([{ id: 1, role: "assistant", content: "Unchanged", ts: 1 }]));
+  await history.load();
+  const messages = buckets.A!.messages;
+  await history.refresh();
+  await history.refresh();
+  expect(buckets.A!.messages).toBe(messages);
+  expect(onLoaded).toHaveBeenCalledOnce();
 });
 
 it("does not treat a reply to an older message as acknowledgement of newer input", async () => {

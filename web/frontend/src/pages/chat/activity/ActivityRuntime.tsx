@@ -1,4 +1,3 @@
-import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { hasActiveWork, activeChatRun } from "@/lib/chat-activity";
@@ -7,7 +6,7 @@ import { useActivityStore } from "@/stores/activity-store";
 import { useChatStore } from "@/stores/chat-store";
 import { useShallow } from "zustand/react/shallow";
 
-/** 补充尚未产生轮次的阶段和队列事实；静默时复用活动快照恢复，不合成执行记录。 */
+/** 补充尚未产生轮次的阶段和队列事实，不合成执行记录或编排实时恢复。 */
 export function ActivityRuntime() {
   const { t } = useTranslation("workbench");
   const waitingIds = useChatStore(useShallow((state) => Object.entries(state.buckets).filter(([, bucket]) => bucket.sending).map(([id]) => id)));
@@ -23,12 +22,6 @@ export function ActivityRuntime() {
   const pending = !thinking.isError ? thinking.data?.pending_messages ?? [] : [];
   const tasks = !thinking.isError ? thinking.data?.general_tasks?.length ?? 0 : 0;
   const queued = !status.isError ? status.data?.status?.queue_size ?? 0 : 0;
-
-  useEffect(() => {
-    const activity = useActivityStore.getState();
-    if (!document.hidden && !waiting && (busy || observed || pending.length || tasks || queued)
-      && Date.now() - activity.syncedAt >= 10_000) void activity.load();
-  }, [status.dataUpdatedAt, thinking.dataUpdatedAt, busy, observed, waiting, pending.length, tasks, queued]);
 
   if (observed && !unobserved) return null;
   const unavailable = status.isError || thinking.isError;

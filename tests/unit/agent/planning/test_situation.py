@@ -222,3 +222,22 @@ class TestSituationLines:
 
     async def test_active_goal_briefs_empty_on_clean_store(self, store):
         assert await situation.active_goal_briefs() == []
+
+
+async def test_description_and_pending_step_note_refresh_together(store):
+    goal = json.loads(await planning_tools.create_goal("消息验证", description="先实证登录态", steps="登录|收发验证"))["goal"]
+    assert "先实证登录态" in await _render()
+    await planning_tools.update_goal(goal["goal_id"], step_index=0, note="等待本人扫码", description="已调整验证方式")
+    text = await _render()
+    assert "等待本人扫码" in text and "已调整验证方式" in text
+    assert "先实证登录态" not in text
+
+
+async def test_goal_write_conflict_does_not_report_success_or_advance(store, monkeypatch):
+    from unittest.mock import AsyncMock
+    goal = json.loads(await planning_tools.create_goal("目标", steps="第一步|第二步"))["goal"]
+    monkeypatch.setattr(store, "update", AsyncMock(return_value=False))
+    result = json.loads(await planning_tools.update_goal(goal["goal_id"], step_index=0, step_status="completed"))
+    assert not result.get("success") and result.get("error")
+    stored = json.loads((await tracker.find_goal_by_id(goal["goal_id"]))[0].content)
+    assert [step["status"] for step in stored["steps"]] == ["pending", "pending"]

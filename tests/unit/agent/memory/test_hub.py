@@ -9,7 +9,7 @@ import pytest
 
 from agent.memory import hub
 from agent.memory.memory_store import MemoryStore
-from agent.memory.memory_types import MemoryEntry, MemoryType
+from agent.memory.memory_types import MemoryEntry, MemorySearchResult, MemoryType
 
 
 @pytest.fixture
@@ -49,19 +49,33 @@ class TestLoadHubBlock:
         assert block.startswith("[主标签记忆]")
         assert "## 标签索引" in block
 
-    async def test_budget_truncates_tail(
-        self, store: MemoryStore, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setattr(
-            "core.config.get_config_int",
-            lambda key, default=0, **kw: 8 if key == "memory_hub_inject_max_chars" else default,
-        )
-        await hub.ensure_hub(store)
+    async def test_budget_preserves_index_and_recent_work(self, store: MemoryStore) -> None:
+        from core.config import ConfigManager
+        ConfigManager.set("memory_hub_inject_max_chars", 200)
+        await store.add(MemoryEntry(memory_type=MemoryType.PERMANENT,
+            content="## 标签索引\n资产入口" + "长期条目" * 200 + "\n## 即时记录\n等待扫码后再发探针",
+            tags=hub.HUB_TAGS))
         block = await hub.load_hub_block(store)
         assert "超出注入预算已截断" in block
-        # 保头：索引段完整保留；截尾：即时记录段被裁
-        assert "## 标签索引" in block
-        assert "## 即时记录" not in block
+        assert "## 标签索引" in block and "等待扫码后再发探针" in block
+        assert len(block) <= 200 + len(hub._INJECT_HEADER) + 1
+
+    async def test_provider_reads_latest_hub_on_each_round(self, store, monkeypatch):
+        from agent.context.providers import collect_provider_messages
+        from core.context_provider import ContextProviderRegistry
+        monkeypatch.setattr(ContextProviderRegistry, "_providers", {})
+        hub.register_provider(store)
+        await hub.ensure_hub(store)
+        first = await collect_provider_messages(None, "user_qq:1")
+        entry = await hub.get_hub_entry(store)
+        entry.content = "## 标签索引\n工程入口\n## 即时记录\n等待扫码"
+        await store.update(entry)
+        second = await collect_provider_messages(None, "user_qq:1")
+        assert first != second
+        assert len(second) == 1 and "等待扫码" in second[0]["content"]
+        assert second[0]["_layer"] == "provider"
+        assert second[0]["_source"]["provider"] == "memory_hub"
+        assert await collect_provider_messages(None, "user_qq:1") == second
 
 
 class TestPinsExclusion:
@@ -78,6 +92,39 @@ class TestPinsExclusion:
         assert pins, "普通永久记忆应出现在 pins 中"
         assert all(hub.HUB_TAG not in (p.tags or []) for p in pins)
         assert any("pinrule" in p.snippet for p in pins)
+
+    async def test_hub_excluded_from_automatic_recall_but_readable(
+        self, store: MemoryStore,
+    ) -> None:
+        from agent.memory.memory_retriever import MemoryRetriever
+        from agent.memory.probe import DeepProbeHub
+
+        retriever = MemoryRetriever(store, Mock())
+        entry = MemoryEntry(
+            memory_type=MemoryType.PERMANENT, content="过期工作窗口",
+            tags=[*hub.HUB_TAGS, "user:qq:1"],
+        )
+        entry.id = await store.add(entry)
+        rule = MemoryEntry(
+            memory_type=MemoryType.SEMANTIC, content="操作前先查询密码本",
+            tags=["user:qq:1"],
+        )
+        rule.id = await store.add(rule)
+        results = [MemorySearchResult.from_entry(item, 1) for item in (entry, rule)]
+
+        injected = [
+            await retriever._load_entity_profiles(["user_qq:1"]),
+            await retriever._format_unified_results(results),
+            await retriever._fallback_recent(5),
+        ]
+        for messages in injected:
+            text = json.dumps(messages, ensure_ascii=False)
+            assert "操作前先查询密码本" in text
+            assert "过期工作窗口" not in text
+        deltas = await DeepProbeHub._memory_deltas(results, store, "记忆")
+        assert len(deltas) == 1 and deltas[0].result_id == f"mem:{rule.id}"
+        assert "过期工作窗口" in await hub.load_hub_block(store)
+        assert (await store.search_by_tags([hub.HUB_TAG]))[0].id == entry.id
 
 
 class TestHubToolGuards:

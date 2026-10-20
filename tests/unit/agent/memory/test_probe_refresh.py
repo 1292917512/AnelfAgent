@@ -146,7 +146,7 @@ async def test_reapplying_policy_keeps_existing_probe(monkeypatch):
         assert not state.task.done()
 
 
-async def test_fallback_facts_are_in_ledger_before_probe_starts(store, monkeypatch):
+async def test_fallback_facts_are_prepared_but_not_consumed_before_probe(store, monkeypatch):
     import agent.memory.memory_retriever as retriever_module
 
     hub = DeepProbeHub()
@@ -161,7 +161,8 @@ async def test_fallback_facts_are_in_ledger_before_probe_starts(store, monkeypat
 
     async def probe(state, plan, store, revision, timeout):
         assert 0 < timeout <= 5.0
-        seen.append(set(state.ledger.result_ids))
+        seen.append(set(state.prepared.result_ids))
+        assert not state.ledger.result_ids
 
     monkeypatch.setattr(hub, "_run", probe)
     await retriever.recall_split([{"role": "user", "content": "不相关的全新话题需要调查"}],
@@ -169,4 +170,39 @@ async def test_fallback_facts_are_in_ledger_before_probe_starts(store, monkeypat
     state = hub.state_for("user_qq:1")
     await state.task
     assert seen and {f"mem:{pin_id}", f"mem:{recent_id}"} <= seen[0]
+    await hub.end_reply(state.scope)
+
+
+async def test_budget_omission_releases_initial_fact_for_supplement(store, monkeypatch):
+    import agent.memory.memory_retriever as module
+    from agent.context.preparation import apply_memory_budget
+    from core.config import ConfigManager
+
+    hub = DeepProbeHub()
+    monkeypatch.setattr(module, "deep_probe_hub", hub)
+    state = hub.begin_reply("user_qq:1")
+    mid = await store.add(MemoryEntry(memory_type=MemoryType.SEMANTIC, content="必须先检查真实登录状态"))
+    messages = await MemoryRetriever(store, NullEmbedder())._fallback_recent(1, scope=state.scope)
+    ConfigManager.set("memory_inject_max_chars", 6000)
+    limited = apply_memory_budget([{"role": "system", "content": "p" * 6000}, *messages])
+    hub.acknowledge_base(state.scope, limited)
+    assert not state.ledger.seen_result(f"mem:{mid}")
+    delta = RecallDelta("记忆", "必须先检查真实登录状态", f"mem:{mid}", "必须先检查真实登录状态")
+    assert hub.unseen(state.scope, [delta]) == [delta]
+    assert hub.publish(state.scope, state.revision, [delta])
+    hub.acknowledge(state.scope, state.rendered)
+    assert state.ledger.seen_result(f"mem:{mid}")
+    await hub.end_reply(state.scope)
+
+
+async def test_initial_fact_is_consumed_only_when_visible(store, monkeypatch):
+    import agent.memory.memory_retriever as module
+    hub = DeepProbeHub()
+    monkeypatch.setattr(module, "deep_probe_hub", hub)
+    state = hub.begin_reply("user_qq:1")
+    mid = await store.add(MemoryEntry(memory_type=MemoryType.SEMANTIC, content="需要保留的明确约定"))
+    messages = await MemoryRetriever(store, NullEmbedder())._fallback_recent(1, scope=state.scope)
+    assert not state.ledger.seen_result(f"mem:{mid}")
+    hub.acknowledge_base(state.scope, messages)
+    assert state.ledger.seen_result(f"mem:{mid}")
     await hub.end_reply(state.scope)

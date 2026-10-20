@@ -420,12 +420,6 @@ _CONSOLIDATOR_CONFIGS = {
             "advanced": True,
             "unit": "条",
         },
-        "memory_hub_inject_max_chars": {
-            "description": "主标签记忆（main:hub，每轮置顶注入的索引中枢与工作窗口）注入上下文的字符预算（超出保索引段截尾部）",
-            "default": 3000,
-            "advanced": True,
-            "unit": "字符",
-        },
         "memory_recall_skip_trivial": {
             "description": "平凡消息（≤6 字符客套话）跳过检索与查询改写",
             "default": True,

@@ -87,8 +87,8 @@ async def test_memory_postprocessing_does_not_wait_for_profiles(store, monkeypat
         await release_profile.wait()
         return [{"content": "当前会话画像"}]
 
-    async def formatted(results):
-        messages = await format_results(results)
+    async def formatted(results, *, scope=""):
+        messages = await format_results(results, scope=scope)
         processed.set()
         return messages
 

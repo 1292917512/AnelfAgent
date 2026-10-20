@@ -166,13 +166,17 @@ class StickerStore:
                 return self._db
             os.makedirs(os.path.dirname(os.path.abspath(self._db_path)), exist_ok=True)
             db = await aiosqlite.connect(self._db_path)
-            db.row_factory = aiosqlite.Row
-            await db.execute("PRAGMA journal_mode=WAL;")
-            await db.execute("PRAGMA synchronous=NORMAL;")
-            await db.execute("PRAGMA busy_timeout=5000;")
-            self._vec_available = await self._load_vec_extension(db)
-            await db.executescript(_SCHEMA)
-            await db.commit()
+            try:
+                db.row_factory = aiosqlite.Row
+                await db.execute("PRAGMA journal_mode=WAL;")
+                await db.execute("PRAGMA synchronous=NORMAL;")
+                await db.execute("PRAGMA busy_timeout=5000;")
+                self._vec_available = await self._load_vec_extension(db)
+                await db.executescript(_SCHEMA)
+                await db.commit()
+            except BaseException:
+                await db.close()
+                raise
             self._db = db
             log(f"StickerStore 就绪: {self._db_path} (vec={self._vec_available})", tag="贴纸")
             return db
@@ -193,9 +197,11 @@ class StickerStore:
             return False
 
     async def close(self) -> None:
-        if self._db is not None:
-            await self._db.close()
-            self._db = None
+        """与连接初始化互斥，关闭已发布的数据库连接。"""
+        async with self._lock:
+            if self._db is not None:
+                await self._db.close()
+                self._db = None
 
     # ------------------------------------------------------------------
     # vec0 派生索引（维度首次写入时确定，变更时重建）

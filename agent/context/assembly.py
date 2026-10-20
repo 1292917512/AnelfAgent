@@ -137,7 +137,7 @@ from agent.context.pipeline import (
 # legacy 布局的变动率覆盖表（tail_injection 关闭时）：动态块移到历史之前
 # 相对序与默认布局一致（按字节稳定度从静到动）
 _LEGACY_VOLATILITY: Dict[str, int] = {
-    "context": 10, "hub": 11,
+    "context": 10,
     "profile": 20, "relation": 21, "volatile": 22, "heartbeat": 23, "status": 23,
     "overflow": 27, "security": 28, "freshness": 31, "memory": 32,
     "summary": 33, "conversation": 34,
@@ -467,7 +467,6 @@ channel_id 和 target_id 取当前请求的频道与会话标签，群聊目标�
             summary_row: Optional[Dict] = None,
             status_text: str = "",
             heartbeat_text: str = "",
-            hub_text: str = "",
             repeat_hint_text: str = "",
     ) -> List[Dict]:
         """组装回复起点的完整上下文；轮内新增收发由实时会话窗口补充。
@@ -475,7 +474,7 @@ channel_id 和 target_id 取当前请求的频道与会话标签，群聊目标�
         各内容块的顺序由 @context_block 声明的变动率决定（值越大变动越频繁，
         排越靠后，见 context.pipeline；尾部动态区内部按字节稳定度从静到动）：
         stable(0) → summary(20) → conversation(30) →
-        context(35) → hub(36) → profile(37) → relation/volatile(38) →
+        context(35) → profile(37) → relation/volatile(38) →
         heartbeat/status(39) → freshness(42) → memory(43) → overflow/security(50+)
         tail_injection 关闭时经变动率覆盖表回退旧布局（动态在历史之前）。
         目标/计划态势不经此层：规划面经 plan_ops provider 每轮注入
@@ -504,7 +503,6 @@ channel_id 和 target_id 取当前请求的频道与会话标签，群聊目标�
             adapter_key=adapter_key,
             scope=scope,
             prefetched_conversation=prefetched_conversation,
-            hub_text=hub_text,
             repeat_hint_text=repeat_hint_text,
         )
         pipeline = self._pipeline if _tail_injection_enabled() else self._pipeline_legacy
@@ -558,17 +556,6 @@ channel_id 和 target_id 取当前请求的频道与会话标签，群聊目标�
         if not inp.context_text:
             return []
         return [{"role": "system", "content": inp.context_text}]
-
-    @context_block("hub", VOL_TAIL_HEAD + 1, "主标签记忆（索引中枢与工作窗口）")
-    def _blk_hub(self, inp: ContextInput) -> List[Dict]:
-        """主标签记忆（main:hub）：AI 的索引中枢与长工作流即时记录窗口。
-
-        独立成块（不并入 context 层便签消息）：AI 更新只漂移本消息，
-        不影响便签/文件索引的内容寻址缓存。
-        """
-        if not inp.hub_text:
-            return []
-        return [{"role": "system", "content": inp.hub_text}]
 
     @context_block("summary", VOL_PERIODIC, "早期对话摘要（折叠周期内固定）")
     def _blk_summary(self, inp: ContextInput) -> List[Dict]:

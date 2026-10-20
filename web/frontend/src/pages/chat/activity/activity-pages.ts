@@ -1,4 +1,5 @@
 import type { ActivityRun } from "@/lib/types/activity";
+import { hasActiveWork } from "@/lib/chat-activity";
 
 export interface ActivityPage { id: string; runs: ActivityRun[]; startedAt: number; endedAt: number }
 
@@ -33,7 +34,7 @@ export function activityPages(runs: ActivityRun[]): ActivityPage[] {
   const families = activityFamilies(runs);
   if (!families.length) return [];
   const latest = families[families.length - 1]!;
-  const current = families.filter((family) => family === latest || family.runs.some((run) => run.status === "running" || run.entries.some((entry) => "status" in entry && entry.status === "running")));
+  const current = families.filter((family) => family === latest || family.runs.some(hasActiveWork));
   return [...families.filter((family) => !current.includes(family)), {
     id: latest.id, runs: current.flatMap((family) => family.runs),
     startedAt: Math.min(...current.map((family) => family.startedAt)),

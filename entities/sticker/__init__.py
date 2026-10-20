@@ -3,3 +3,13 @@
 from core.entity import EntityRegistry
 
 EntityRegistry.register_group_order("sticker", 36)
+
+
+def register_lifecycle() -> None:
+    """托管图片库连接，由宿主在索引与向量回填停止后关闭。"""
+    from core.lifecycle import Lifecycle
+
+    from .store import get_sticker_store
+
+    store = get_sticker_store()
+    Lifecycle.register("sticker_store", store, cleanup=store.close)

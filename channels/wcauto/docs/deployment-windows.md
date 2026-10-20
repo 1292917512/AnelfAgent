@@ -301,11 +301,14 @@ cd C:\wcauto\bridge
 
 它验证的是**桥实际使用的配置与初始化路径**，输出 JSON，重点看：
 
-- `account.username`：是否为你的目标 wxid；
+- `backend.cached_account.username`：数据库缓存中是否为目标 wxid（不证明当前登录）；
 - `db_ok=true`；
-- `listener.listener_running=true`；
+- `backend.listener_running=true`：监听线程仍运行；
 - `image_key=true`（仅图片下载需要）；
-- `window_visible=true`（仅发送需要）。
+- `backend.gui_initialized`：仅表示 GUI 对象是否已初始化；
+- `backend.login_state=unknown`：桥未取得实时登录证据，需在桥机核对当前画面或独立探针。
+
+桥 doctor 不弹起微信窗口，缓存、线程存活和数据库可读都不能作为登录或可发送的证明。
 
 如果上游 doctor 正常、桥 doctor 异常，优先检查两侧是否用了不同的 Python
 环境、`account` 配置，以及桥是否被安全软件拦截。
@@ -361,7 +364,11 @@ Invoke-RestMethod -Headers $headers http://127.0.0.1:8655/wcauto/health
 - `ok=true`；
 - `backend.listener_running=true`；
 - `client_connected`：频道连接后应为 true；
-- `backend.window_visible`：只表示发送条件，不影响进程存活判断。
+- `backend.cached_account`：带 `source=database_cache` 的缓存账号；
+- `backend.login_state=unknown`、`login_evidence=null`：无实时登录结论；
+- `backend.gui_initialized`：对象初始化状态，不代表窗口可用或已登录。
+
+health 为被动检查，不调用 `ensure_visible`；执行发送或请求人工配合前应另行核实当前登录画面。
 
 ### 6.3 远程网络与防火墙
 

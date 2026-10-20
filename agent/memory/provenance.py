@@ -20,6 +20,7 @@ class MemoryOrigin(BaseModel):
     kind: Literal["conversation_summary", "agent_note"]
     scope: str
     message_ids: list[Annotated[int, Field(strict=True, gt=0)]] = Field(default_factory=list)
+    capture_key: str = Field(default="", pattern=r"^(?:[0-9a-f]{64})?$")
     started_at: float = Field(default=0, ge=0, lt=253402300800, allow_inf_nan=False)
     ended_at: float = Field(default=0, ge=0, lt=253402300800, allow_inf_nan=False)
 
@@ -50,12 +51,15 @@ def origins_from(metadata: Mapping[str, Any]) -> list[MemoryOrigin]:
     return origins
 
 
-def capture_origin(scope: str, messages: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def capture_origin(
+    scope: str, messages: Sequence[Mapping[str, Any]], *, capture_key: str = "",
+) -> dict[str, Any]:
     """保存实际送入提取器的材料指针，不复制正文或信任模型生成的 ID。"""
     ids = [m["id"] for m in messages if type(m.get("id")) is int and m["id"] > 0]
     times = [int(m["ts_ns"]) / 1e9 for m in messages if m.get("ts_ns")]
     origin = MemoryOrigin(
         kind="conversation_summary", scope=scope, message_ids=list(dict.fromkeys(ids)),
+        capture_key=capture_key,
         started_at=min(times, default=0), ended_at=max(times, default=0),
     )
     return {"origins": [origin.model_dump(exclude_defaults=True)]}
@@ -98,7 +102,7 @@ def recall_provenance(metadata: Mapping[str, Any], *, source: str = "") -> dict[
     result = {key: metadata[key] for key in ("activity_date", "temporal_scope") if metadata.get(key)}
     origins = origins_from(metadata)
     if origins:
-        result["origins"] = [o.model_dump(exclude_defaults=True) for o in origins]
+        result["origins"] = [o.model_dump(exclude_defaults=True, exclude={"capture_key"}) for o in origins]
     if source:
         result["recorded_by"] = source
     return result

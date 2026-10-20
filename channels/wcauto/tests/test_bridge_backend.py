@@ -69,7 +69,7 @@ class TestBackendOffline:
         result = self._backend().ping()
         assert result["pong"] is True
         assert result["listener_running"] is False
-        assert result["gui_ready"] is False
+        assert result["gui_initialized"] is False
 
     def test_download_media_requires_start(self) -> None:
         with pytest.raises(BridgeError, match="未初始化"):
@@ -160,3 +160,19 @@ class TestWxResponseHandling:
         })()
         with pytest.raises(BridgeError, match="无响应"):
             backend.send_msg("朋友甲", "你好")
+
+
+def test_health_does_not_touch_gui_or_claim_cached_account_is_logged_in():
+    from unittest.mock import Mock
+    backend = WeChatBackend(BridgeConfig(), lambda *_: None)
+    backend._self_info = {"username": "cached-user", "nick_name": "Cached"}
+    backend._gui = Mock()
+    status = backend.ping()
+    assert status["cached_account"]["source"] == "database_cache"
+    assert status["cached_account"]["username"] == "cached-user"
+    assert status["login_state"] == "unknown" and status["login_evidence"] is None
+    assert status["gui_initialized"] is True
+    assert not backend._gui.mock_calls
+    assert "account" not in status and "window_visible" not in status
+    backend.doctor()
+    assert not backend._gui.mock_calls

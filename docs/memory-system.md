@@ -27,13 +27,15 @@ Web 索引面板显示本次同步统计。失败的文件在下一次同步中�
   安全失效；ANN 读取拒绝权威向量已清空但派生索引残留的行。显式 `rebuild_embeddings` 同时失效
   归档向量（恢复为活跃后进入常规回填）
 - **写入判重**（`agent/memory/dedup.py::judge_write`）：判断段（关系四选一 novel/covered/
-  evolution/fragments + update 目标选择 + merge 逐候选是非）经判断引擎一次调用并行评判，
+  evolution/fragments + skip/update 目标选择 + merge 逐候选是非）经判断引擎一次调用并行评判，
   仅 update/merge 再经 light_llm 合成合并文本（store/skip 占写入绝大多数，热路径零 LLM 调用）；
   关系/目标置信度低于 `memory_dedup_min_confidence`（默认 0.25）或任何判断/合成失败一律保守退回
   直接写入——**去重永不阻塞写入路径**。判断模型只看 1..N 候选序号（真实 id 转述易抄错），
   裁决返回前映射回真实 id。候选召回**全库不按身份预过滤**：所有频道的记忆同属 AI 个体，
   跨群/跨私聊的相似候选连同其 user:/group: 标签一起进入判断段——不依赖说话人的通用事实
-  再次出现判 covered（多方确认），同一句话涉及不同对象判 novel（不同人各自的事实）
+  再次出现判 covered（内容已覆盖），同一句话涉及不同对象判 novel（不同人各自的事实）。
+  skip 必须选中有效候选，只为该条目追加出处与更严格的隐私级别；内容重复不代表用户确认，
+  update/merge 也不自动增加证据分或用户确认次数。
 - **recall 工具**：source 标志 + depth 浅深 + filter_tags 硬过滤 + forgotten 字段（见遗忘层兜底召回）
 
 ## 召回归属与出处
@@ -62,6 +64,31 @@ Cognee 投影头与文档外部元数据携带出处，分块保留元数据时�
 更新与合并保留出处谱系，隐私取最严格级别，多个日期不一致时不把其中一个日期冒充全部
 内容的发生时间。
 这些信息仅进入既有召回层和工具结果，不增加 LLM 请求或改变主对话稳定前缀的位置。
+首轮召回只登记候选；最终上下文完成预算裁剪后，完整呈现的事实才进入消费账本，
+被裁掉或仅部分呈现的事实不会阻止后续补充召回。
+
+## 自动捕获与失败恢复
+
+`auto_capture.py` 按会话加锁，按消息 ID 从旧到新消费；`capture_state.py` 在现有
+`capture_cursors.pending_json` 保存冻结材料、提取结果、逐项进度和失败次数。每批最多 12 条，
+12000 字符预算只在消息间切分；单条超长消息完整发送，不裁掉结尾的否定与条件。
+旧背景最多 3 条且单条有界，不作为重复提取对象。单条有正文的约定也可以触发捕获。
+
+有效 `[]` 表示没有新事实；非 JSON、越界数量或无效字段属于失败。提取结果先落检查点，
+写入出处的 `capture_key` 与记忆一同提交，恢复时核对活跃和归档条目的出处，跳过已提交项。
+该键不进入模型召回文本。捕获、工具记忆和任务总结的重复内容不自动充当用户确认。
+
+每批最多尝试 5 次，重启和新消息到达不重置失败次数；失败审计 `capture_failed` 保留材料
+消息 ID、进度和原因，达到上限明确放弃该批再处理后续消息，不报捕获成功。压缩前 flush 仅在
+成功消费批次时返回成功。原始对话仍可经消息工具查证；审计沿用记忆库的保留策略。
+关系提取在事实批次提交后独立执行，失败记录日志，不重跑事实写入。
+
+进程关停复用 `run_auto_capture(force=True)`，跳过轮数、空闲和每轮会话数量门槛，
+每个会话最多消费一个批次；入口总预算 30 秒，取消时保存失败检查点，剩余材料下次启动续跑。
+
+反思反馈独立于新事实数量：空提取仍分析该批用户反馈，平台事件、通知不充当用户确认。
+完整用户发言和候选保留结尾限定条件；候选读取失败、分类格式错误、缺项或写入冲突均进入
+同一有界失败流程，不默认为 ignored。只有有效的明确反馈分类才更新对应证据。
 
 ## 自动召回策略
 
@@ -77,7 +104,7 @@ Cognee 投影头与文档外部元数据携带出处，分块保留元数据时�
 实时跨频道消息仍逐轮进入动态上下文，手动 `recall` 与技能工具始终可用。
 
 首轮上下文读取由 `mind/recall/inputs.py` 统一管理生命周期：查询向量、检索规划、
-关系、主标签索引、画像补充和会话摘要同时准备；记忆规划完成即释放技能匹配，
+关系、画像补充和会话摘要同时准备；记忆规划完成即释放技能匹配，
 技能不等待记忆检索或其他频道检索收尾。画像与检索结果整理独立执行，全部就绪后按固定位置装配。
 语义召回、跨频道与技能复用同一个在途查询向量，失败后各自降级，不重复发起同一向量请求。
 技能的互补查询向量并行准备。结果始终按既定分层与来源顺序装配，不按完成先后重排；
@@ -247,7 +274,7 @@ Cognee 面板保存先校验模型参数和向量空间，再原子写入配置�
 | 机制 | 位置 | 说明 |
 |------|------|------|
 | 记忆体系铁律 | `agent/memory/rules_doc.py`（文档持有）+ `config/memory_rules.md`（文件载体，ConfigPaths.MEMORY_RULES）+ `agent.context.assembly._memory_rules_text` | 写入路由（五系统 + 技能分流，一条信息只进一个系统、出处用指针）/ 标签纪律（前缀语义、打标即入联想网络、写前 memory_index 查既有形态、tags 软加权 vs filter_tags 硬过滤）/ 主标签记忆用法 / 披露边界 / 查询路由 / 落盘诚实 / 检索纪律 / 口头纠正（用户说「记错了」时 recall 定位 → update_memory 原地修正 / forget 归档，禁止新旧矛盾并存）/ 图谱治理路由条。缺失时以 DEFAULT_RULES 种子落盘；AI 无写入路径，人类经 Web 记忆页「规则」标签整文档编辑或手编文件；读取走 mtime 缓存，生效文本参与 stable 指纹门控 |
-| 主标签记忆（main:hub） | `agent/memory/hub.py` + `_blk_hub`（vol 36 独立块） | 带保留标签 `main:hub` 的 PERMANENT 记忆每回复周期置顶注入：AI 经 memorize（type:permanent + main:hub）整段 upsert 维护；心跳维护段 `ensure_hub` 自愈重建骨架；forget 拦截 hub 归档。注入预算 `memory_hub_inject_max_chars`（默认 3000） |
+| 主标签记忆（main:hub） | `agent/memory/hub.py` + provider `memory_hub`（priority 31） | 每轮模型调用读取权威条目，工具链后的动态区注入；初始上下文、自动召回（含近期兜底与深探）、人物画像及永久置顶均不保存 hub 副本。显式工具查询仍可读取 hub，工具历史保留查询时的结果。AI 经 memorize（type:permanent + main:hub）整段 upsert；心跳 `ensure_hub` 自愈骨架；forget 拦截归档。`memory_hub_inject_enabled` 控制注入，字符预算 `memory_hub_inject_max_chars` 默认 3000，超长保留首尾并标记省略。hub 维护资产指针与接力线索，目标进度归 planning |
 | 便签受管区块硬保护 | `agent/memory/notes.py`（`_MANAGED_BLOCK_RE` + `_assert_managed_blocks_intact`） | `<!-- AUTO:name BEGIN/END -->` 标记对圈定的系统受管区块，便签写工具写入前校验逐字节保留，改动/删除即拒绝；系统写入路径直走 `_atomic_write` 天然豁免。通用读写原语 `update_managed_block`/`read_managed_block`（AUTO:memory-status / AUTO:heartbeat-status） |
 | 标签索引观测 | `agent/heartbeat/engine.py::_write_memory_status` | 状态区块仅保留 AI 可行动项（库容/cognee 同步与熔断/最近整理/便签超标）；标签膨胀提醒条件化（总数超 `memory_tag_bloat_threshold`（默认 400，0=关）才注入归并提醒行）；运维遥测不进 prompt，由 memory_stats 工具按需查询 |
 | 标签智能 | `agent/memory/store/tag_intel.py` | df/共现图谱/提及词表 TTL 缓存；IDF 评分、共现与图谱邻居联想、查询提及识别的统一驱动层 |
@@ -260,7 +287,7 @@ Cognee 面板保存先校验模型参数和向量空间，再原子写入配置�
 
 | 机制 | 位置 | 说明 |
 |------|------|------|
-| 证据数学 | `agent/memory/evidence.py`（纯函数零依赖） | 记忆/反思的「可信度」维度（与「记不记得住」分维）：rein/disp 双通道各有独立时钟与半衰期（负向 180 天刻意长于正向 30 天）、读时衰减不改存储、importance 阶梯种子（≥0.9 直通 0.8）、用户确认连击加成、protected 恒 +inf。信号回流在 `dedup.apply_evidence_signals`：skip=用户复述确认（+1.0 金标准）/update/merge=谱系存活（+0.5） |
+| 证据数学 | `agent/memory/evidence.py`（纯函数零依赖） | 记忆/反思的「可信度」维度（与「记不记得住」分维）：rein/disp 双通道各有独立时钟与半衰期（负向 180 天刻意长于正向 30 天）、读时衰减不改存储、importance 阶梯种子（≥0.9 直通 0.8）、用户确认连击加成、protected 恒 +inf。证据回流来自反思反馈分类与显式人审；去重、合并、任务总结和 AI 自述不作为用户确认 |
 | 反思生命周期 | `agent/memory/reflection_lifecycle.py` + consolidator 集成 | 对象是 `type:reflection` 标签的记忆（self_reflection 任务产出播种，memorize/任务结果两写入点接入）。状态机 pending→confirmed（score≥1.0）→晋升（score≥2.0 且过冷却）/denied；负分进 sub_zero 每日倒计时到期归档。晋升 = LLM 合并裁决（promote/merge/reject，复用 dedup.light_llm）写入目标画像——**晋升是人格生长的唯一通道**；LLM 失败只退避重试绝不静默晋升，5 次死信。终态幂等，重入安全 |
 | 证据反馈回路 | `reflection_lifecycle.load_verification_block` / `classify_reflection_feedback` / `record_user_feedback` + auto_capture 尾部 | pending/confirmed 反思经画像区「待验证认知」块呈现进对话（呈现即登记 surfaced_at，24h 冷却防追问骚扰）→ auto_capture 周期把该 scope 用户新消息对着「已呈现未裁决」条目跑 light_llm 分类（confirmed +1.0 / denied +1.0 反驳 / ignored -0.2）→ 证据回流驱动晋升/归档；Web 记忆页 ✓/👎 按钮走同一 record_user_feedback（人审直改）。**可见性规则**：带 user:/group: 标签的反思只在对应 scope（含群聊参与人）可见，无实体标签的自认知全局可见——A 的反思绝不注入 B 的对话 |
 | 人格双层 | `agent/memory/self_profile.py` + `agent/mind/recall/coordinator.py` | 宪法层=personas/*.json（用户编辑，stable 层冻结）；生长层=`agent:self` 自画像（personality 表 + ENTITY 记忆镜像双写，覆盖式更新前备份）——随画像区每轮注入；已确认反思块紧随其后（score>0 才呈现）。关系动态走图谱 `agent:self` 节点。铁律已登记路由：自我认知只能写反思等晋升，禁止直接改自画像 |
@@ -285,4 +312,4 @@ Cognee 面板保存先校验模型参数和向量空间，再原子写入配置�
 | temporal_scope 时间语义 | `store/_shared.py::temporal_is_past/temporal_weight` + 检索评分 + 行尾注 | event 提取输出 temporal_scope（episode/state/pattern 白名单）+ `activity_date`。读时判定超期（state 7 天 / episode 3 天，pattern 永不）→ 注入行追加「过去时·可能已变」尾注 + 检索整体降权（`memory_temporal_expired_weight` 0.5，聊往事仍可低权命中，淘汰仍归遗忘曲线）；memorize 工具补 temporal_scope 参数 |
 | 防复读 | `agent/memory/anti_repeat.py` + freshness 块（VOL_SESSION+2） | 生成侧软提示：近期 AI 回复 df≥3 的高频 ngram top5 引导全部回复周期换角度；出站侧的重复内容由「出站事实」provider 动态注入覆盖（见[频道分册](channels-and-scopes.md)） |
 | importance 校准 | `auto_capture._EXTRACT_PROMPT` 校准表 + memorize 工具描述 + `self_profile.PROFILE_MEMORY_IMPORTANCE` | 提取侧锚点表（0.9+ 身份级/明确「记住这个」，0.8 长期偏好与承诺，0.7 阶段动态，0.6 线索，0.5 弱线索不预过滤）；画像 ENTITY 镜像 importance 统一 0.9（身份级事实，四处写入点共用单点常量） |
-| 事件时间本体 | `agent/memory/auto_capture.py` | event 提取输出 temporal_scope（白名单校验，拿不准 pattern）落 metadata；date 落 `activity_date` |
+| 事件时间本体 | `agent/memory/auto_capture.py` | event 提取输出 temporal_scope（白名单校验，未提供则留空）落 metadata；date 落 `activity_date` |

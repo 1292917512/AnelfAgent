@@ -27,7 +27,7 @@ from agent.memory.memory_types import MemorySearchResult
 # 记忆系统相关内容块：必须全部位于历史锚点之后的尾部动态区
 # （目标/计划态势原 goals 层已并入 provider 层：plan_ops 每轮注入，见 agent.planning.situation）
 _MEMORY_FAMILY_LAYERS = (
-    "hub", "status", "profile", "relation", "volatile", "memory", "provider",
+    "status", "profile", "relation", "volatile", "memory", "provider",
 )
 # 缓存前缀层：stable/summary/conversation 之外任何内容不得混入
 _PREFIX_LAYERS = ("stable", "summary", "conversation")
@@ -59,7 +59,7 @@ class TestLayerVolatilityInvariants:
             meta = _LAYER_REGISTRY[layer]
             return meta.volatility
 
-        assert vol("context") < vol("hub") < vol("profile")
+        assert vol("context") < vol("profile")
         assert vol("profile") <= vol("relation") <= vol("volatile")
         assert vol("volatile") < vol("status") < vol("memory")
 

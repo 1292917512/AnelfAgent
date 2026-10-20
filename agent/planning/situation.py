@@ -10,7 +10,7 @@
 
 Model Experience:
 - 模型看到什么：当前会话可见的活跃目标/计划快照（goal_id/标题/步骤进度/
-  步骤状态，当前执行计划置顶），每轮刷新；reflect（任务/子代理）scope
+  步骤状态、描述与待办备注，当前执行计划置顶），每轮刷新；reflect（任务/子代理）scope
   不注入，保持 lean 精简语义
 - token 影响：无活跃目标时零注入；有目标时受渲染上限约束（数百字符，
   provider 预算再兜底）
@@ -66,6 +66,8 @@ class _GoalView:
 
     goal_id: str
     title: str
+    description: str
+    step_notes: list[str]
     is_plan: bool
     plan_scope: str
     steps: List[Tuple[str, str]]
@@ -137,6 +139,13 @@ def _parse_goal(entry: Any) -> Optional[_GoalView]:
     return _GoalView(
         goal_id=goal_id,
         title=sanitize_for_context(str(data.get("title", "")), max_chars=_TITLE_CHARS),
+        description=sanitize_for_context(str(data.get("description", "")), max_chars=200),
+        step_notes=[
+            sanitize_for_context(f"{step.get('content', '')}: {step['note']}", max_chars=180)
+            for step in (raw_steps if isinstance(raw_steps, list) else [])
+            if isinstance(step, dict) and step.get("note")
+            and step.get("status") in ("pending", "in_progress")
+        ][:2],
         is_plan=is_plan,
         plan_scope=str(metadata.get("scope", "")) if is_plan else "",
         steps=steps,
@@ -206,10 +215,13 @@ def render(scope: str) -> str:
     ordered = [g for g in visible if g.is_plan] + [g for g in visible if not g.is_plan]
     lines = [
         f"[规划态势] 进行中的目标 {len(visible)} 个（每轮刷新，goal_id 以此为准；"
-        "update_goal 推进步骤，标记 completed/cancelled 即自动清理）：",
+        "备注中的等待条件须先核实；get_goal 查看全文，update_goal 记录实际结果）：",
     ]
     for goal in ordered[:_MAX_GOALS]:
         lines.append(("▸ " if goal.is_plan else "• ") + _goal_line(goal))
+        if goal.description:
+            lines.append(f"  描述: {goal.description}")
+        lines.extend(f"  步骤备注: {note}" for note in goal.step_notes)
     if len(ordered) > _MAX_GOALS:
         lines.append(f"…另有 {len(ordered) - _MAX_GOALS} 个目标（list_goals 查看全部）")
     return "\n".join(lines)[:_MAX_RENDER_CHARS]

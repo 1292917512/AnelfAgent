@@ -101,10 +101,12 @@ scheduled/heartbeat；元决策 REFLECT 不立即执行，改为 `engine.mark_re
 - 目标 CRUD（create_goal/update_goal/delete_goal）：**终态即清**——update_goal 终态即删、全部
   步骤完成后自动收口、delete_goal 显式删除；目标关闭只由完成事实驱动，系统不做基于时间的自动
   清理；update_goal 越界 step_index/非法 step_status 返回 PARAM 错误（不静默 no-op）；
-  not_found 错误附 `active_goals` 简报供 AI 一次自纠
+  not_found 错误附 `active_goals` 简报供 AI 一次自纠。步骤完成与下一步骤推进同次写入，
+  基于读取版本提交；版本冲突返回明确错误并要求重读，不报告已更新
 - **规划态势轮内注入**（`agent/planning/situation.py` 版本化快照 + provider `plan_ops`，priority 30）：
-  活跃目标/计划快照（goal_id/标题/步骤进度，当前 scope 的执行计划置顶）经 provider 层每轮注入
-  ——修复回复中途目标被删除后快照过期、AI 拿过期 goal_id 连续 not_found 的回归。单一数据源：
+  活跃目标/计划快照（goal_id/标题/目标描述/步骤进度，以及最多两条待处理步骤备注，当前
+  scope 的执行计划置顶）经 provider 层每轮注入。描述与备注有界且共用原字符预算；完整内容
+  经 get_goal 读取。系统呈现已保存状态，由 AI 根据执行证据更新，不推测完成或自动改写目标。
   全部规划写路径变更后调 `situation.invalidate()`，快照按版本失配（+60s 再同步窗口兜底）单飞重建，
   稳态渲染零 I/O；reflect 前缀 scope（任务/子代理）不注入保持 lean 语义；配置
   `goals_inject_enabled`（planning/core 组），group=planning 随工具组启停联动

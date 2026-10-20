@@ -5,7 +5,8 @@
 tools.recall 主动召回保持一致的搜索范围。
 
 Model Experience（召回归属标注）:
-- 模型看到什么：每条召回记忆行首的归属标注（称呼[uid:xxx] / [group_id:xxx]，
+- 模型看到什么：main:hub 由逐轮 provider 提供，不进入召回快照；
+  每条召回记忆行首的归属标注（称呼[uid:xxx] / [group_id:xxx]，
   与会话消息 [uid:] 标签同构）+ 记忆召回块头的归属确认提示（先确认记忆
   涉及谁再下定论，uid 不符不张冠李戴）
 - token 影响：每条增加简短出处与 mem ID，完整材料按需读取；不增加模型调用
@@ -21,6 +22,7 @@ from agent.judgment.evidence import dialogue_messages
 from core.log import log
 
 from .embedding import Embedder
+from .hub import HUB_TAG
 from .memory_store import MemoryStore
 from .memory_types import (
     MemoryEntry,
@@ -29,6 +31,7 @@ from .memory_types import (
     RetrievalPlan,
 )
 from .probe import deep_probe_hub
+from .probe_render import RecallDelta
 from .recall_format import format_recall_line, load_entity_nodes
 from .store.tag_intel import ASSOC_PREFIXES
 
@@ -189,8 +192,7 @@ class MemoryRetriever:
                 log("💾 被动召回: 无有效查询，回退近期记忆", tag="思维")
                 pinned = await self._load_permanent_pins([])
                 entity_msgs, fallback = await asyncio.gather(profiles_task, self._fallback_recent(k, scope=entity_scope))
-                pinned_msgs = await self._format_unified_results(pinned) if pinned else []
-                deep_probe_hub.record(entity_scope, results=pinned)
+                pinned_msgs = await self._format_unified_results(pinned, scope=entity_scope) if pinned else []
                 return entity_msgs, pinned_msgs + fallback
 
             # 平凡消息节流：纯客套/短回复轮跳过检索与改写（省一次改写 LLM 调用
@@ -199,8 +201,7 @@ class MemoryRetriever:
                 log("💾 被动召回: 平凡消息轮，跳过检索", "DEBUG", tag="思维")
                 pinned = await self._load_permanent_pins([])
                 entity_msgs = await profiles_task
-                pinned_msgs = await self._format_unified_results(pinned) if pinned else []
-                deep_probe_hub.record(entity_scope, results=pinned)
+                pinned_msgs = await self._format_unified_results(pinned, scope=entity_scope) if pinned else []
                 return entity_msgs, pinned_msgs
 
             log(f"💾 被动召回: \"{query[:50]}\" (embedding={'是' if self._embedder.available else '否'})", tag="思维")
@@ -374,9 +375,7 @@ class MemoryRetriever:
             # 关联扩展：沿标签网络发现一跳关联记忆（想到一件事 → 联想到相关的事）
             results = await self._expand_associations(results, limit=k, extra_seeds=mention_tags)
 
-            async def _complete_probe(base_results: List[MemorySearchResult]) -> None:
-                if deep_probe_hub.state_for(entity_scope) is not None:
-                    deep_probe_hub.record(entity_scope, results=base_results)
+            async def _complete_probe() -> None:
                 if not fire_probe:
                     return
                 try:
@@ -391,9 +390,9 @@ class MemoryRetriever:
                 log("💾 统一搜索无结果，回退近期记忆", tag="思维")
                 pinned = await self._load_permanent_pins([])
                 fallback = await self._fallback_recent(k, scope=entity_scope)
-                pinned_msgs = await self._format_unified_results(pinned) if pinned else []
+                pinned_msgs = await self._format_unified_results(pinned, scope=entity_scope) if pinned else []
                 entity_msgs = await profiles_task
-                await _complete_probe(pinned)
+                await _complete_probe()
                 return entity_msgs, pinned_msgs + fallback
 
             # Rerank if available
@@ -414,9 +413,9 @@ class MemoryRetriever:
             if pinned:
                 results = pinned + results
 
-            memory_msgs = await self._format_unified_results(results)
+            memory_msgs = await self._format_unified_results(results, scope=entity_scope)
             entity_msgs = await profiles_task
-            await _complete_probe(results)
+            await _complete_probe()
 
             for r in results:
                 src_label = (
@@ -481,7 +480,7 @@ class MemoryRetriever:
             if not entries:
                 tag = f"user:{entity_id}" if primary_scope.startswith("user_") else f"group:{entity_id}"
                 entries = await self._store.search_by_tags([tag], limit=3)
-            return primary_scope, source, entries
+            return primary_scope, source, [entry for entry in entries if HUB_TAG not in entry.tags]
 
         loaded = await asyncio.gather(*(_load_one(p) for p in resolved_map))
 
@@ -551,7 +550,8 @@ class MemoryRetriever:
             "（结构化事实，非用户消息；完整网络可用 graph_query 查询）："
         ]
         used = len(lines[0])
-        rendered_ids: list[int] = []
+        from core.sanitizer import sanitize_for_context
+        facts: list[RecallDelta] = []
         for edge in edges:
             line = f"- {format_triple(edge)}"
             if edge["evidence"]:
@@ -561,10 +561,9 @@ class MemoryRetriever:
                 break
             lines.append(line)
             used += len(line)
-            rendered_ids.append(int(edge["id"]))
-        deep_probe_hub.record(scopes[0], edge_ids=rendered_ids)
+            facts.append(RecallDelta("关系", sanitize_for_context(line), edge_id=int(edge["id"])))
+        deep_probe_hub.prepare_base(scopes[0], facts)
 
-        from core.sanitizer import sanitize_for_context
         log(f"关系网络注入: {len(scopes)} 个 scope, {len(lines) - 1} 条关系", tag="思维")
         return [{"role": "system", "content": sanitize_for_context("\n".join(lines))}]
 
@@ -575,8 +574,7 @@ class MemoryRetriever:
         if not entries:
             return []
         results = [MemorySearchResult.from_entry(entry, 1) for entry in entries]
-        deep_probe_hub.record(scope, results=results)
-        return await self._format_unified_results(results)
+        return await self._format_unified_results(results, scope=scope)
 
     @staticmethod
     def _extract_query(conversation: List[Dict], max_chars: int = 500) -> str:
@@ -997,10 +995,9 @@ class MemoryRetriever:
             return []
         out: list[MemorySearchResult] = []
         # list_recent 窗口内按时间升序返回，反转为最新优先
-        from agent.memory.hub import HUB_TAG
         for e in reversed(entries):
             if HUB_TAG in e.tags:
-                continue  # 主标签记忆有专属注入块（hub 层），不占 pin 名额
+                continue
             rid = f"mem:{e.id}"
             if rid in existing:
                 continue
@@ -1009,7 +1006,7 @@ class MemoryRetriever:
                 break
         return out
 
-    async def _format_unified_results(self, results: list[MemorySearchResult]) -> List[Dict]:
+    async def _format_unified_results(self, results: list[MemorySearchResult], *, scope: str = "") -> List[Dict]:
         """将统一搜索结果格式化为注入消息。
 
         注入纪律：只保留对 AI 有信息量的内容——归因（谁的/什么主题）、正文、
@@ -1017,9 +1014,12 @@ class MemoryRetriever:
         跨来源内容去重：同一条记忆可能同时命中 memories 表与 cognee 图谱
         通过原始 ID 或相同内容与归属去重，未知出处不借用当前会话身份。
         """
+        results = [result for result in results if HUB_TAG not in result.tags]
         if not results:
             return []
 
+        from core.sanitizer import sanitize_for_context
+        facts: list[RecallDelta] = []
         pinned_lines: list[str] = []
         mem_lines: list[str] = []
         file_lines: list[str] = []
@@ -1044,6 +1044,7 @@ class MemoryRetriever:
             associated = bool(r.provenance.get("associated")) if r.provenance else False
             marker = "📌" if pinned else ("🔗" if associated else "💡")
             line = await format_recall_line(self._graph, r, marker=marker, nodes=nodes)
+            facts.append(RecallDelta("记忆", sanitize_for_context(line), reference or r.id, r.snippet, content_key=key))
             if r.source == "file":
                 file_lines.append(line)
                 continue
@@ -1091,6 +1092,7 @@ class MemoryRetriever:
                 "role": "system",
                 "content": sanitize_for_context("\n\n".join(dynamic_lines)),
             })
+        deep_probe_hub.prepare_base(scope, facts)
         return messages
 
 

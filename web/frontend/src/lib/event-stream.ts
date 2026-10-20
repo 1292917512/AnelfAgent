@@ -27,6 +27,7 @@ export class EventStream {
     private readonly connectionChanged: (connected: boolean, status: StreamStatus) => void,
     private readonly onOpen: (reconnected: boolean) => void,
     private readonly resync: () => void,
+    private readonly onHealthCheck: () => void = () => {},
   ) {}
 
   get active(): boolean { return !this.stopped; }
@@ -66,7 +67,9 @@ export class EventStream {
     source.addEventListener("ping", received);
     source.addEventListener("resync", () => { if (this.source === source) { received(); this.resync(); } });
     this.healthTimer = setInterval(() => {
-      if (this.source === source && !document.hidden && performance.now() - this.lastReceived >= STALE_AFTER_MS) recover("stalled");
+      if (this.source !== source || document.hidden) return;
+      if (performance.now() - this.lastReceived >= STALE_AFTER_MS) recover("stalled");
+      else this.onHealthCheck();
     }, HEALTH_CHECK_MS);
     source.onopen = () => {
       if (this.source !== source) return;

@@ -326,7 +326,6 @@ class TaskExecutor:
 
         from agent.memory import metrics
         from agent.memory.dedup import (
-            apply_evidence_signals,
             apply_update,
             gather_dedup_candidates,
             judge_write,
@@ -345,7 +344,6 @@ class TaskExecutor:
         metrics.incr(f"write.dedup_llm_{action}")
 
         if action == "skip":
-            await apply_evidence_signals(store, action, content, candidates)
             log(f"任务结果已有等价记忆，跳过存储: [{result.task_name}]", tag="任务")
             return
         if action == "update" and verdict.get("target_id"):
@@ -355,10 +353,6 @@ class TaskExecutor:
                 actor=f"task:{result.task_name}",
             )
             if updated is not None:
-                await apply_evidence_signals(
-                    store, action, content, candidates,
-                    target_ids=[updated.id] if updated.id else None,
-                )
                 wake_embedding_worker()
                 log(f"任务结果合并更新到记忆 #{updated.id}: [{result.task_name}]", tag="任务")
                 return
@@ -369,9 +363,6 @@ class TaskExecutor:
                 actor=f"task:{result.task_name}",
             )
             if keep_id:
-                await apply_evidence_signals(
-                    store, action, content, candidates, target_ids=[keep_id],
-                )
                 wake_embedding_worker()
                 log(f"任务结果合并 {len(merge_ids)} 条为记忆 #{keep_id}: [{result.task_name}]",
                     tag="任务")

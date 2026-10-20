@@ -5,6 +5,7 @@
  * 消费方：DelegationCard 消息卡 + 执行记录面板内的子代理子树。
  */
 import { create } from "zustand";
+import { replaceEqualDeep } from "@tanstack/react-query";
 import type { DelegationNode, RunningDelegation, SseDelegationProgressEvent } from "@/lib/types";
 
 const MAX_COMPLETED_DELEGATIONS_PER_CHAT = 50;
@@ -25,7 +26,7 @@ interface DelegationState {
     cancelled?: boolean,
   ) => void;
   /** 刷新后恢复运行中的委托卡片（GET /chat/delegations） */
-  rehydrate: (chatId: string, running: RunningDelegation[]) => void;
+  rehydrate: (chatId: string, running: RunningDelegation[], observed?: Readonly<Record<string, DelegationNode>>) => void;
   getChatDelegations: (chatId: string) => DelegationNode[];
   clear: (chatId: string) => void;
 }
@@ -118,17 +119,25 @@ export const useDelegationStore = create<DelegationState>((set, get) => ({
       };
     }),
 
-  rehydrate: (chatId, running) =>
+  rehydrate: (chatId, running, observed) =>
     set((s) => {
-      if (!running.length) return {};
       const chatNodes = { ...(s.delegations[chatId] ?? {}) };
       const now = Date.now() / 1000;
       let changed = false;
+      const active = new Set(running.map((item) => item.delegation_id));
+      for (const [id, node] of Object.entries(observed ?? {})) {
+        if (node.status === "running" && !active.has(id) && chatNodes[id] === node) {
+          delete chatNodes[id];
+          changed = true;
+        }
+      }
       for (const r of running) {
         const existing = chatNodes[r.delegation_id];
         // 已存在且非 running（ SSE 已推 resolved）时不回退状态
         if (existing && existing.status !== "running") continue;
-        chatNodes[r.delegation_id] = {
+        if (existing && observed && existing !== observed[r.delegation_id]) continue;
+        const node = replaceEqualDeep<DelegationNode>(existing, {
+          ...existing,
           delegation_id: r.delegation_id,
           chat_id: chatId,
           goal: r.goal,
@@ -143,8 +152,9 @@ export const useDelegationStore = create<DelegationState>((set, get) => ({
           started_at: existing?.started_at ?? now - r.elapsed_seconds,
           iteration: existing?.iteration,
           current_tool: existing?.current_tool,
-        };
-        changed = true;
+        });
+        chatNodes[r.delegation_id] = node;
+        changed ||= node !== existing;
       }
       if (!changed) return {};
       return { delegations: { ...s.delegations, [chatId]: chatNodes } };

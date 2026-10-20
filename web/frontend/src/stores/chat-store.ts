@@ -121,16 +121,26 @@ export const useChatStore = create<ChatState>((set, get) => {
     });
   }
 
+  const detailRequests = new Map<string, Promise<void>>();
+  function refreshDetails(id: string): Promise<void> {
+    const pending = detailRequests.get(id);
+    if (pending) return pending;
+    const observed = useDelegationStore.getState().delegations[id] ?? {};
+    const request = Promise.all([
+      get().loadFolds(id),
+      chatApi.delegations(id === DEFAULT_CHAT_ID ? undefined : id).then(({ data }) => {
+        if (get().buckets[id]) useDelegationStore.getState().rehydrate(id, data.running ?? [], observed);
+      }).catch(() => {}),
+    ]).then(() => {}).finally(() => { detailRequests.delete(id); });
+    detailRequests.set(id, request);
+    return request;
+  }
+
   const history = createChatHistory({
     activeId: () => get().activeChatId,
     bucket: (id) => get().buckets[id],
     update: updateBucket,
-    onLoaded: (id) => {
-      void get().loadFolds(id);
-      void chatApi.delegations(id === DEFAULT_CHAT_ID ? undefined : id).then(({ data }) => {
-        if (get().buckets[id] && data.running?.length) useDelegationStore.getState().rehydrate(id, data.running);
-      }).catch(() => {});
-    },
+    onLoaded: (id) => { void refreshDetails(id); },
   });
 
   function settleSubmission(chatId: string): void {
@@ -142,17 +152,24 @@ export const useChatStore = create<ChatState>((set, get) => {
     }
   }
 
-  async function syncConversation(chatId: string): Promise<void> {
-    await Promise.all([useActivityStore.getState().load(), history.refresh(chatId)]);
+  async function syncConversation(chatId: string, recover = false): Promise<void> {
+    const loaded = get().buckets[chatId]?.historyLoaded;
+    await Promise.all([
+      useActivityStore.getState().load(),
+      history.refresh(chatId),
+      recover && loaded ? refreshDetails(chatId) : Promise.resolve(),
+    ]);
     settleSubmission(chatId);
   }
 
   function resync(): void {
     const state = get();
-    const ids = new Set([state.activeChatId, ...Object.keys(state.buckets).filter((id) => state.buckets[id]?.sending)]);
+    const delegated = Object.entries(useDelegationStore.getState().delegations)
+      .filter(([id, nodes]) => state.buckets[id] && Object.values(nodes).some((node) => node.status === "running")).map(([id]) => id);
+    const ids = new Set([state.activeChatId, ...Object.keys(state.buckets).filter((id) => state.buckets[id]?.sending), ...delegated]);
     for (const id of ids) {
       if (state.buckets[id]?.sending) armSendWatchdog(id, checkPendingReply);
-      void syncConversation(id);
+      void syncConversation(id, true);
     }
   }
 
@@ -162,7 +179,8 @@ export const useChatStore = create<ChatState>((set, get) => {
       setContextUsage: (contextUsage, id) => updateBucket(id, () => ({ contextUsage })),
       onTurnEnd: (id) => { void syncConversation(id); },
     }, isCurrent, recover, received);
-  }, (_connected, streamStatus) => set({ streamStatus }), () => resync(), resync);
+  }, (_connected, streamStatus) => set({ streamStatus }), () => resync(), resync,
+    () => { void useActivityStore.getState().reconcile(); });
 
   async function checkPendingReply(chatId: string): Promise<void> {
     const pending = get().buckets[chatId];
@@ -171,7 +189,8 @@ export const useChatStore = create<ChatState>((set, get) => {
       if (stream.active) armSendWatchdog(chatId, checkPendingReply);
       return;
     }
-    await syncConversation(chatId);
+    await Promise.all([useActivityStore.getState().reconcile(true), history.refresh(chatId)]);
+    settleSubmission(chatId);
     const current = get().buckets[chatId];
     if (!stream.active || !current?.sending || current.sendingSince !== pending.sendingSince) return;
     armSendWatchdog(chatId, checkPendingReply);

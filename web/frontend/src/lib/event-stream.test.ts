@@ -13,12 +13,13 @@ let stream: EventStream;
 let received = () => {};
 const changed = vi.fn();
 const resync = vi.fn();
+const healthCheck = vi.fn();
 
 beforeEach(() => {
-  vi.useFakeTimers(); sources.length = 0; changed.mockClear(); resync.mockClear();
+  vi.useFakeTimers(); sources.length = 0; changed.mockClear(); resync.mockClear(); healthCheck.mockClear();
   vi.spyOn(document, "hidden", "get").mockReturnValue(false);
   vi.stubGlobal("EventSource", class extends Source { constructor() { super(); sources.push(this); } });
-  stream = new EventStream("/events", (_source, _current, _recover, pulse) => { received = pulse; }, changed, vi.fn(), resync);
+  stream = new EventStream("/events", (_source, _current, _recover, pulse) => { received = pulse; }, changed, vi.fn(), resync, healthCheck);
 });
 afterEach(() => { stream.stop(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
@@ -55,6 +56,7 @@ it("allows background suspension and grants a fresh receive window when visible 
   vi.spyOn(document, "hidden", "get").mockReturnValue(true);
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
   vi.advanceTimersByTime(300_000);
+  expect(healthCheck).not.toHaveBeenCalled();
   expect(sources[0]?.close).not.toHaveBeenCalled();
   vi.spyOn(document, "hidden", "get").mockReturnValue(false);
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");

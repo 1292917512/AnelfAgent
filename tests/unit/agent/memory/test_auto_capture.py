@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import time
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from agent.memory.auto_capture import parse_extraction, should_extract
+from agent.memory.capture_state import CaptureOutcome
 
 
 class TestShouldExtract:
@@ -17,63 +21,27 @@ class TestShouldExtract:
         ]
         assert should_extract(msgs)
 
-    def test_chitchat_batch_filtered(self) -> None:
-        msgs = [
-            {"role": "user", "content": "哈哈"},
-            {"role": "assistant", "content": "嗯嗯"},
-            {"role": "user", "content": "好"},
-        ]
-        assert not should_extract(msgs)
+    def test_nontext_batch_filtered(self) -> None:
+        assert not should_extract([{"role": "user", "content": "[uid:123] 😂"}])
+        assert should_extract([{"role": "user", "content": "我姓张"}])
 
 
 class TestParseExtraction:
     def test_valid_array(self) -> None:
-        raw = '[{"content": "主人不吃辣", "type": "fact", "topic": "饮食", "importance": 0.8, "sensitivity": "normal"}]'
-        items = parse_extraction(raw, max_items=6)
-        assert len(items) == 1
-        assert items[0]["type"] == "fact"
-        assert items[0]["importance"] == 0.8
-
-    def test_empty_and_noise(self) -> None:
+        items = parse_extraction('[{"content":"主人不吃辣","type":"fact","importance":0.8}]', max_items=6)
+        assert items[0].content == "主人不吃辣" and items[0].importance == 0.8
         assert parse_extraction("[]", max_items=6) == []
-        assert parse_extraction("没有可提取内容", max_items=6) == []
 
-    def test_field_sanitization(self) -> None:
-        raw = '''[
-          {"content": "短", "type": "fact"},
-          {"content": "正常的记忆内容", "type": "weird", "importance": 99, "sensitivity": "Private"},
-          {"content": null}
-        ]'''
-        items = parse_extraction(raw, max_items=6)
-        assert len(items) == 1
-        assert items[0]["type"] == "fact"  # 非法类型归一
-        assert items[0]["importance"] == 1.0  # 超界截断
-        assert items[0]["sensitivity"] == "private"  # 大小写归一
+    @pytest.mark.parametrize("raw", ["没有可提取内容", '{"content":"错误根节点"}',
+        '[{"content":null}]', '[{"content":"正常内容","type":"weird"}]',
+        '[{"content":"正常内容","importance":99}]', '[{"content":"主人喜欢猫",}]'])
+    def test_invalid_output_is_failure(self, raw: str) -> None:
+        with pytest.raises(ValueError):
+            parse_extraction(raw, max_items=6)
 
-    def test_max_items_cap(self) -> None:
-        raw = "[" + ",".join(
-            f'{{"content": "记忆内容{i}号"}}' for i in range(10)
-        ) + "]"
-        assert len(parse_extraction(raw, max_items=3)) == 3
-
-    def test_trailing_comma_repair(self) -> None:
-        raw = '[{"content": "主人喜欢猫",}]'
-        items = parse_extraction(raw, max_items=6)
-        assert len(items) == 1
-
-
-class TestBatchSignature:
-    def test_same_ids_same_sig(self) -> None:
-        from agent.memory.auto_capture import _batch_signature
-        rows = [{"id": 1}, {"id": 2}, {"id": 3}]
-        assert _batch_signature(rows) == _batch_signature([dict(r) for r in rows])
-
-    def test_different_ids_different_sig(self) -> None:
-        from agent.memory.auto_capture import _batch_signature
-        a = _batch_signature([{"id": 1}, {"id": 2}])
-        b = _batch_signature([{"id": 1}, {"id": 3}])
-        assert a != b
-        assert _batch_signature([]) == ""
+    def test_over_budget_output_is_not_silently_dropped(self) -> None:
+        with pytest.raises(ValueError):
+            parse_extraction('[{"content":"完整事实一"},{"content":"完整事实二"}]', max_items=1)
 
 
 class _FakeSqlite:
@@ -87,7 +55,8 @@ class _FakeSqlite:
     ):
         if after_id is not None:
             return [r for r in self._rows if r["id"] > after_id][:limit]
-        return self._rows[-limit:]
+        rows = [r for r in self._rows if before_id is None or r["id"] < before_id]
+        return rows[-limit:]
 
 
 class TestFetchPending:
@@ -182,11 +151,11 @@ class TestParseExtractionSpeaker:
     def test_speaker_parsed(self) -> None:
         raw = '[{"content": "小明说自己不吃辣", "speaker": "123", "type": "fact"}]'
         items = parse_extraction(raw, max_items=6)
-        assert items[0]["speaker"] == "123"
+        assert items[0].speaker == "123"
 
     def test_speaker_defaults_empty(self) -> None:
         raw = '[{"content": "周五要交报告"}]'
-        assert parse_extraction(raw, max_items=6)[0]["speaker"] == ""
+        assert parse_extraction(raw, max_items=6)[0].speaker == ""
 
 
 class TestSpeakerTagging:
@@ -219,8 +188,8 @@ class TestSpeakerTagging:
         monkeypatch.setattr(ac, "gather_dedup_candidates", fake_gather)
         monkeypatch.setattr(ac, "judge_write", fake_judge)
 
-        pipeline = ac.AutoCapturePipeline.__new__(ac.AutoCapturePipeline)
-        pipeline._memory = SimpleNamespace(memory_store=store, embedder=None)
+        pipeline = ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None))
+        monkeypatch.setattr(ac, "get_config_bool", lambda key, default=True: False)
         ts = int(time.time() * 10**9)
         messages = [
             {"id": 101, "role": "user", "ts_ns": ts,
@@ -231,8 +200,8 @@ class TestSpeakerTagging:
              "content": "[uid:777][name:会话好友][kind:event] 机器人戳了会话好友"},
         ]
 
-        n = await pipeline._extract_and_store("group:qq:789", messages)
-        assert n == 4
+        outcome = await pipeline._process_scope(_FakeSqlite(messages), "group", "qq:789", every_n=5, idle_seconds=0, now=time.time())
+        assert outcome is CaptureOutcome.COMPLETED
 
         # 提取 prompt 里两个发言者身份可区分（病根断言：不再是清一色"用户"）
         extract_prompt = captured["prompts"][0]
@@ -279,14 +248,190 @@ class TestSpeakerTagging:
         monkeypatch.setattr(ac, "gather_dedup_candidates", fake_gather)
         monkeypatch.setattr(ac, "judge_write", fake_judge)
 
-        pipeline = ac.AutoCapturePipeline.__new__(ac.AutoCapturePipeline)
-        pipeline._memory = SimpleNamespace(memory_store=store, embedder=None)
+        pipeline = ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None))
+        monkeypatch.setattr(ac, "get_config_bool", lambda key, default=True: False)
         messages = [
-            {"role": "user", "ts_ns": int(time.time() * 10**9),
+            {"id": 1, "role": "user", "ts_ns": int(time.time() * 10**9),
              "content": "[uid:123][name:主人] 我周五要交报告"},
         ]
-        n = await pipeline._extract_and_store("user:qq:123", messages)
-        assert n == 1
+        outcome = await pipeline._process_scope(_FakeSqlite(messages), "user", "qq:123", every_n=5, idle_seconds=0, now=time.time())
+        assert outcome is CaptureOutcome.COMPLETED
         entries = await store.list_recent(limit=5)
         tags = entries[0].tags
         assert tags.count("user:qq:123") == 1
+
+
+@pytest.fixture
+def capture(store, monkeypatch):
+    import agent.memory.auto_capture as ac
+    monkeypatch.setattr(ac, "get_config_bool", lambda key, default=True: False)
+    monkeypatch.setattr(ac, "gather_dedup_candidates", AsyncMock(return_value=[]))
+    monkeypatch.setattr(ac, "judge_write", AsyncMock(return_value={"action": "store"}))
+    return ac, ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None))
+
+
+def _rows(count):
+    return [{"id": i, "role": "user", "content": f"ROW_{i:03}: a meaningful instruction", "ts_ns": i * 10**9}
+            for i in range(1, count + 1)]
+
+
+async def _process(pipeline, rows):
+    return await pipeline._process_scope(_FakeSqlite(rows), "user", "qq:123", every_n=5, idle_seconds=0, now=time.time())
+
+
+@pytest.mark.parametrize(("force", "age", "expected"), [
+    (False, 0, 0), (True, 0, 2), (False, 3600, 1), (True, 3600, 2),
+])
+async def test_shutdown_capture_bypasses_idle_and_scope_limit(
+    store, sqlite, monkeypatch, force: bool, age: int, expected: int,
+) -> None:
+    import agent.memory.auto_capture as ac
+    from agent.memory.capture_state import CaptureState
+    from core.config import ConfigManager
+
+    monkeypatch.setattr(
+        "agent.runtime.singleton.require_runtime",
+        lambda: SimpleNamespace(data_center=SimpleNamespace(sqlite=sqlite)),
+    )
+    llm = AsyncMock(return_value="[]")
+    monkeypatch.setattr(ac, "light_llm", llm)
+    ConfigManager.set("memory_auto_capture_max_scopes", 1)
+    ConfigManager.set("memory_auto_capture_extract_relations", False)
+    pipeline = ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None))
+    for scope_id in ("webui:a", "webui:b"):
+        await pipeline._journal.save(f"user:{scope_id}", CaptureState(warmup_threshold=5))
+        await sqlite.append_conversation(
+            scope_type="user", scope_id=scope_id, role="user",
+            content="记住：每次操作前先核对当前执行目标。",
+            ts_ns=int((time.time() - age) * 1e9),
+        )
+    await pipeline.run(force=force)
+    assert llm.await_count == expected
+    states = [await pipeline._journal.load(f"user:{scope_id}") for scope_id in ("webui:a", "webui:b")]
+    assert sum(state.last_msg_id > 0 for state in states) == expected
+
+
+async def test_backlog_covers_each_new_message_before_advancing(capture, monkeypatch):
+    ac, pipeline = capture
+    llm = AsyncMock(return_value="[]")
+    monkeypatch.setattr(ac, "light_llm", llm)
+    rows = _rows(40)
+    while await _process(pipeline, rows) is not CaptureOutcome.IDLE:
+        pass
+    prompts = [call.args[0].split("【新对话（提取对象）】")[1] for call in llm.await_args_list]
+    assert len(prompts) == 4
+    for row in rows:
+        assert sum(row["content"] in prompt for prompt in prompts) == 1
+    assert (await pipeline._journal.load("user:qq:123")).last_msg_id == 40
+
+
+async def test_single_message_keeps_tail_qualification(capture, monkeypatch):
+    ac, pipeline = capture
+    llm = AsyncMock(return_value="[]")
+    monkeypatch.setattr(ac, "light_llm", llm)
+    rows = _rows(1)
+    rows[0]["content"] = "x" * 13000 + " 以上只是计划，尚未验证完成"
+    assert await _process(pipeline, rows) is CaptureOutcome.COMPLETED
+    assert rows[0]["content"] in llm.await_args.args[0]
+
+
+@pytest.mark.parametrize("after_commit", [False, True])
+async def test_restart_resumes_saved_items_without_duplicate_write(capture, store, monkeypatch, after_commit):
+    ac, pipeline = capture
+    llm = AsyncMock(return_value='[{"content":"第一条完整事实"},{"content":"第二条完整事实"}]')
+    monkeypatch.setattr(ac, "light_llm", llm)
+    original_add = store.add
+    calls = 0
+
+    async def failing_add(entry, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2 and not after_commit:
+            raise RuntimeError("storage unavailable")
+        result = await original_add(entry, **kwargs)
+        if calls == 1 and after_commit:
+            raise RuntimeError("checkpoint connection lost after commit")
+        return result
+
+    monkeypatch.setattr(store, "add", failing_add)
+    assert await _process(pipeline, _rows(1)) is CaptureOutcome.FAILED
+    await store.close()
+    restarted = ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None))
+    assert await _process(restarted, _rows(1)) is CaptureOutcome.COMPLETED
+    entries = await store.list_recent(limit=10)
+    assert sorted(e.content for e in entries) == sorted(["第一条完整事实", "第二条完整事实"])
+    assert llm.await_count == 1
+    assert (await restarted._journal.load("user:qq:123")).batch is None
+
+
+async def test_invalid_output_is_bounded_across_restart_and_new_arrivals(capture, store, monkeypatch):
+    ac, pipeline = capture
+    monkeypatch.setattr(ac, "light_llm", AsyncMock(return_value="invalid"))
+    assert await _process(pipeline, _rows(1)) is CaptureOutcome.FAILED
+    for attempt in range(2, ac._MAX_BATCH_FAILURES + 1):
+        pipeline = ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None))
+        assert await _process(pipeline, _rows(2)) is CaptureOutcome.FAILED
+        state = await pipeline._journal.load("user:qq:123")
+        assert state.last_msg_id == (1 if attempt == ac._MAX_BATCH_FAILURES else 0)
+    db = await store._get_db()
+    audit = await (await db.execute("SELECT detail FROM memory_audit WHERE action='capture_failed' ORDER BY id DESC LIMIT 1")).fetchone()
+    failure = json.loads(audit[0])
+    assert failure["abandoned"] and failure["message_ids"] == [1]
+    monkeypatch.setattr(ac, "light_llm", AsyncMock(return_value="[]"))
+    assert await _process(pipeline, _rows(2)) is CaptureOutcome.COMPLETED
+    assert (await pipeline._journal.load("user:qq:123")).last_msg_id == 2
+
+
+async def test_empty_extraction_still_classifies_feedback(capture, monkeypatch):
+    ac, pipeline = capture
+    feedback = AsyncMock(return_value=0)
+    monkeypatch.setattr(ac, "get_config_bool", lambda key, default=True: key == "memory_reflection_feedback_enabled")
+    monkeypatch.setattr(ac, "light_llm", AsyncMock(return_value="[]"))
+    monkeypatch.setattr("agent.memory.reflection_lifecycle.classify_reflection_feedback", feedback)
+    assert await _process(pipeline, _rows(1)) is CaptureOutcome.COMPLETED
+    feedback.assert_awaited_once()
+
+
+async def test_cancel_after_write_recovers_without_extracting_again(capture, store, monkeypatch):
+    import asyncio
+
+    ac, pipeline = capture
+    llm = AsyncMock(return_value='[{"content":"取消前已经提交的事实"}]')
+    monkeypatch.setattr(ac, "light_llm", llm)
+    original_add = store.add
+
+    async def cancelled_add(entry, **kwargs):
+        await original_add(entry, **kwargs)
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(store, "add", cancelled_add)
+    with pytest.raises(asyncio.CancelledError):
+        await _process(pipeline, _rows(1))
+    state = await pipeline._journal.load("user:qq:123")
+    assert state.batch.failures == 1 and state.last_msg_id == 0
+    restarted = ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None))
+    assert await _process(restarted, _rows(1)) is CaptureOutcome.COMPLETED
+    assert len(await store.list_recent(limit=10)) == 1
+    assert llm.await_count == 1
+
+
+async def test_duplicate_receipt_survives_checkpoint_failure(capture, store, monkeypatch):
+    from agent.memory.memory_types import MemoryEntry, MemoryType
+
+    ac, pipeline = capture
+    entry_id = await store.add(MemoryEntry(memory_type=MemoryType.SEMANTIC, content="已经保存的事实"))
+    monkeypatch.setattr(ac, "light_llm", AsyncMock(return_value='[{"content":"已经保存的事实"}]'))
+    judge = AsyncMock(return_value={"action": "skip", "target_id": entry_id})
+    monkeypatch.setattr(ac, "judge_write", judge)
+    retain = ac.retain_duplicate_origin
+
+    async def failed_checkpoint(*args):
+        await retain(*args)
+        raise RuntimeError("checkpoint failed after retaining origin")
+
+    monkeypatch.setattr(ac, "retain_duplicate_origin", failed_checkpoint)
+    assert await _process(pipeline, _rows(1)) is CaptureOutcome.FAILED
+    assert await _process(ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None)),
+                          _rows(1)) is CaptureOutcome.COMPLETED
+    assert len(await store.list_recent(limit=10)) == 1
+    assert judge.await_count == 1

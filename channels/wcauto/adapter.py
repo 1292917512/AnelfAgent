@@ -383,10 +383,9 @@ class WcautoChannel(WcautoToolsMixin, BaseChannel[WcautoConfig]):
             return HealthStatus(healthy=False, detail=str(exc), last_error=str(exc))
         latency_ms = (time.time() - started) * 1000
         listener_ok = bool((data or {}).get("listener_running"))
-        window = "窗口可见" if (data or {}).get("window_visible") else "窗口不可见（仅收不发）"
         return HealthStatus(
             healthy=listener_ok,
-            detail=f"桥在线（{data.get('nickname', '?')}，{window}）",
+            detail="桥在线，监听线程" + ("运行中" if listener_ok else "未运行") + "；微信登录状态未验证",
             latency_ms=latency_ms,
             last_success_at=time.time(),
         )
@@ -400,8 +399,10 @@ class WcautoChannel(WcautoToolsMixin, BaseChannel[WcautoConfig]):
         if self_info:
             info["account"] = self_info.get("username", "")
             info["nickname"] = self_info.get("nick_name", "")
+        info["account_source"] = "database_cache"
+        info["login_state"] = "unknown"
         info["detail"] = (
-            f"已连接桥 {info['ws_url']}（{info.get('nickname') or '?'}）"
+            f"已连接桥 {info['ws_url']}（缓存账号：{info.get('nickname') or '?'}；登录状态未验证）"
             if info["ws_connected"] else f"连接桥 {info['ws_url']} 中"
         )
         return info

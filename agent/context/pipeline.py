@@ -112,8 +112,6 @@ class ContextInput:
     status_text: str = ""
     # 心跳与任务态势（心跳维护快照，status 族独立注入尾部动态区）
     heartbeat_text: str = ""
-    # 主标签记忆（main:hub 索引中枢与工作窗口，recollection 每周期拉取）
-    hub_text: str = ""
     # 话题新鲜度软提示（随最近一条 AI 回复变化）
     repeat_hint_text: str = ""
     # 召回产物

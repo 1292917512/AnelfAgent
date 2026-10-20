@@ -318,6 +318,11 @@ async def update_goal(
             "title": target_goal.get("title", ""),
         }, ensure_ascii=False)
 
+    next_idx = step_index + 1
+    advance_next = (step_status == "completed" and 0 <= next_idx < len(steps)
+                    and steps[next_idx].get("status") == "pending")
+    if advance_next:
+        steps[next_idx]["status"] = "in_progress"
     target_goal["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
 
     # 原地更新（保留 id 与时间戳），内容变更后清空旧向量待后台 worker 重建
@@ -330,7 +335,9 @@ async def update_goal(
         "goal_id": goal_id,
         "status": target_goal["status"],
     }
-    await store.update(target_entry, clear_embedding=True)
+    if not await store.update(target_entry, clear_embedding=True, expected_version=target_entry.version):
+        return tool_error("目标已发生变更，本次更新未写入", cause=ErrorCause.STATE, retryable=False,
+                          hint="先用 get_goal 读取当前目标，再按实际结果更新")
     target_goal["memory_id"] = target_entry.id
 
     # 发射步骤进度事件（前端 计划卡片据此打勾）；
@@ -343,14 +350,8 @@ async def update_goal(
                 step_status or target_goal["steps"][step_index].get("status", "pending"),
                 note=note,
             )
-            if step_status == "completed":
-                next_idx = step_index + 1
-                steps = target_goal.get("steps", [])
-                if next_idx < len(steps) and steps[next_idx].get("status") == "pending":
-                    steps[next_idx]["status"] = "in_progress"
-                    target_entry.content = json.dumps(target_goal, ensure_ascii=False)
-                    await store.update(target_entry, clear_embedding=False)
-                    await tracker._emit_step(scope, goal_id, next_idx, "in_progress", note="自动推进")
+            if advance_next:
+                await tracker._emit_step(scope, goal_id, next_idx, "in_progress", note="自动推进")
 
         if goal_status:
             await tracker._emit_status(scope, goal_id, target_goal["status"])

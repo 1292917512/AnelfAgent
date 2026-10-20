@@ -345,7 +345,7 @@ class MemoryConnectionManager:
             db, "capture_cursors", "counted_msg_id", "INTEGER NOT NULL DEFAULT 0"
         )
         await self._ensure_column(
-            db, "capture_cursors", "last_batch_sig", "TEXT NOT NULL DEFAULT ''"
+            db, "capture_cursors", "pending_json", "TEXT NOT NULL DEFAULT ''"
         )
 
         # ---- 工具错误追踪表 ----

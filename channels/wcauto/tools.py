@@ -174,7 +174,7 @@ class WcautoToolsMixin:
             return result
         return _ok({"count": len(result or []), "recalled": result or []})
 
-    @channel_tool(group=_GROUP, description="桥自检（账号/数据库密钥/图片密钥/窗口状态）")
+    @channel_tool(group=_GROUP, description="桥只读自检（数据库/图片密钥；账号来自缓存，不证明微信已登录；需要实时画面核实）")
     async def bridge_doctor(self) -> str:
         result = await self._call(protocol.RPC_DOCTOR, {}, "桥自检")
         if isinstance(result, str):

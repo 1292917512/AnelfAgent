@@ -58,8 +58,8 @@ def discover_entities() -> List[str]:
 async def discover_entity_lifecycles() -> int:
     """扫描并调用所有实体的 ``register_lifecycle()``，返回注册成功的实体数。
 
-    在 bootstrap 的 register_internal_tools 之后调用，
-    此时 MemoryStore/LLMManager 等基础设施已就绪。
+    基础存储就绪后、消费存储的 worker 注册前调用，
+    保证宿主逆序关停时先停止消费，再关闭资源。
     实体没有该函数则跳过；调用失败仅 WARNING 不中断启动。
     """
     registered = 0

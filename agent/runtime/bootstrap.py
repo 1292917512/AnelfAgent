@@ -205,16 +205,6 @@ def create_bootstrap() -> FlowMachine:
         except Exception as exc:
             log(f"文件索引同步失败（不影响启动）: {exc}", "WARNING")
 
-        from agent.memory.embedding import EmbeddingWorker
-
-        embedding_worker = EmbeddingWorker(store, embedder)
-        await embedding_worker.start()
-        Lifecycle.register(
-            "embedding_worker",
-            embedding_worker,
-            cleanup=embedding_worker.close,
-        )
-
         cognee_client = None
         cognee_coordinator = None
         try:
@@ -245,12 +235,11 @@ def create_bootstrap() -> FlowMachine:
             "store": store,
             "embedder": embedder,
             "memory_dir": memory_dir,
-            "embedding_worker": embedding_worker,
             "cognee_client": cognee_client,
             "cognee_coordinator": cognee_coordinator,
         }
 
-    @machine.node(skip_on_error=False, depends_on=["init_memory", "register_entities"])
+    @machine.node(skip_on_error=False, depends_on=["register_entity_lifecycles"])
     async def register_internal_tools():
         """激活内部 deferred 工具组（依赖引用经 wiring.wire_runtime 统一施绑）。
 
@@ -317,15 +306,19 @@ def create_bootstrap() -> FlowMachine:
         register_audio_backlog()
         register_notes_tools(memory_dir=mem.get("memory_dir"))
 
-        # 图片感知索引 worker：入站图片后台沉淀（phash/描述/向量），支撑文搜图/图搜图
-        # （引用经 wiring.wire_runtime 统一施绑，本节点只负责创建与生命周期注册）
+        from agent.memory.embedding import EmbeddingWorker
         from core.lifecycle import Lifecycle
         from entities.sticker.worker import ImageIndexWorker
+
+        embedding_worker = EmbeddingWorker(mem["store"], mem["embedder"])
+        Lifecycle.register(
+            "embedding_worker", embedding_worker,
+            on_start=embedding_worker.start, cleanup=embedding_worker.close,
+        )
         image_index_worker = ImageIndexWorker()
-        await image_index_worker.start()
         Lifecycle.register(
             "image_index_worker", image_index_worker,
-            cleanup=image_index_worker.close,
+            on_start=image_index_worker.start, cleanup=image_index_worker.close,
         )
 
         # 人脸入库 worker：入站图片/视觉帧后台识别（检测→建档→事件→face_scope 打标）
@@ -338,7 +331,7 @@ def create_bootstrap() -> FlowMachine:
             "face_ingest_worker", face_worker,
             cleanup=face_worker.close,
         )
-        return {"image_index_worker": image_index_worker}
+        return {"image_index_worker": image_index_worker, "embedding_worker": embedding_worker}
 
     @machine.node(skip_on_error=True,
                   depends_on=["register_entities", "init_memory", "init_audio"])
@@ -415,7 +408,7 @@ def create_bootstrap() -> FlowMachine:
             data_center=data_center,
             memory_store=mem["store"],
             embedder=mem["embedder"],
-            embedding_worker=mem["embedding_worker"],
+            embedding_worker=tools_ctx["embedding_worker"],
             cognee_client=mem.get("cognee_client"),
             cognee_coordinator=mem.get("cognee_coordinator"),
             image_index_worker=tools_ctx["image_index_worker"],

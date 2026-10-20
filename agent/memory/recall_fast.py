@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, Any
 from core.log import log
 
 from .memory_types import MemorySearchResult
-from .probe import deep_probe_hub
 from .recall_policy import RecallPolicy
 
 if TYPE_CHECKING:
@@ -64,6 +63,5 @@ async def recall_local(retriever: MemoryRetriever, conversation: list[dict], *, 
                 tasks.create_task(search())
     results = list({item.id: item for item in [*tagged, *found]}.values())[:k]
     pins = await retriever._load_permanent_pins(results)
-    deep_probe_hub.record(scope, results=[*results, *pins])
-    messages: list[dict[str, Any]] = await retriever._format_unified_results([*pins, *results])
+    messages: list[dict[str, Any]] = await retriever._format_unified_results([*pins, *results], scope=scope)
     return profiles, messages

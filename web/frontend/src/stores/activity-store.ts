@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { replaceEqualDeep } from "@tanstack/react-query";
 import { api } from "@/lib/api/client";
+import { hasActiveWork } from "@/lib/chat-activity";
 import type { ActivityRun, ActivitySnapshot } from "@/lib/types/activity";
 
 function retainRuns(runs: ActivityRun[]): ActivityRun[] {
@@ -28,12 +29,15 @@ interface ActivityState {
   epoch: string;
   snapshotRevision: number;
   syncedAt: number;
+  checkedAt: number;
   runs: ActivityRun[];
   loaded: boolean;
   loading: boolean;
   clearing: boolean;
   error: unknown;
   load: () => Promise<void>;
+  /** 合并前台健康检查与会话静默核对；持续收帧也不能无限推迟完整快照。 */
+  reconcile: (waiting?: boolean) => Promise<void>;
   clearHistory: () => Promise<void>;
   receive: (epoch: string, run: ActivityRun) => void;
   receiveMany: (epoch: string, runs: ActivityRun[]) => void;
@@ -44,11 +48,11 @@ interface ActivityState {
 export const useActivityStore = create<ActivityState>((set, get) => {
   let pendingLoad: Promise<void> | null = null;
   return {
-    epoch: "", snapshotRevision: 0, syncedAt: 0, runs: [], loaded: false, loading: false, clearing: false, error: null,
+    epoch: "", snapshotRevision: 0, syncedAt: 0, checkedAt: 0, runs: [], loaded: false, loading: false, clearing: false, error: null,
     load: () => {
       if (pendingLoad) return pendingLoad;
       const epoch = get().epoch;
-      set({ loading: true, error: null });
+      set({ loading: true, checkedAt: Date.now(), error: null });
       pendingLoad = (async () => {
         try {
           const { data } = await api.get<ActivitySnapshot>("/workspace/activity");
@@ -57,6 +61,13 @@ export const useActivityStore = create<ActivityState>((set, get) => {
         finally { pendingLoad = null; set({ loading: false }); }
       })();
       return pendingLoad;
+    },
+    reconcile: (waiting = false) => {
+      if (pendingLoad) return pendingLoad;
+      const state = get();
+      const elapsed = Date.now() - state.checkedAt;
+      return elapsed >= 30_000 || (elapsed >= 10_000 && (waiting || (Date.now() - state.syncedAt >= 10_000 && state.runs.some(hasActiveWork))))
+        ? state.load() : Promise.resolve();
     },
     clearHistory: async () => {
       if (get().clearing) return;
@@ -93,7 +104,7 @@ export const useActivityStore = create<ActivityState>((set, get) => {
       }
       const ordered = retainRuns([...records.values()]);
       const runs = ordered.length === state.runs.length && ordered.every((run, index) => run === state.runs[index]) ? state.runs : ordered;
-      return { epoch: snapshot.epoch, snapshotRevision: snapshot.revision, syncedAt: Date.now(), runs, loaded: true, error: null };
+      return { epoch: snapshot.epoch, snapshotRevision: snapshot.revision, syncedAt: Date.now(), checkedAt: Date.now(), runs, loaded: true, error: null };
     }),
   };
 });

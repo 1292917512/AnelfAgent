@@ -1,29 +1,18 @@
-"""主标签记忆（main:hub）— AI 的随身索引中枢与长工作流即时记录窗口。
+"""主标签记忆的骨架、逐轮读取与有界渲染。
 
-定位：标签系统是连接全部记忆子系统的索引总线，主标签记忆是这条总线
-在上下文中的常驻投影——一条带保留标签 main:hub 的 PERMANENT 记忆，
-每回复周期经专属注入块置顶呈现，不占永久记忆 pin 名额。
-
-职责切分：
-- 系统侧（本模块）：骨架创建与自愈（ensure_hub）、注入渲染（load_hub_block）、
-  预算截断；使用规则在 config/memory_rules.md「记忆体系铁律」（stable 层，
-  见 agent.memory.rules_doc——骨架与注入头刻意不重复纪律文案，单一权威源）
-- AI 侧：经 memorize 携带 type:permanent + main:hub 整段覆写维护内容
-  （索引段精细维护、即时区完工即清理），禁止归档/删除（forget 侧有拦截）
-
-Model Experience：
-1. 模型看到什么：context 层独立消息 [主标签记忆]（vol 36，尾部动态区最前段），
-   内容为该记忆全文（超预算保索引段截尾部）
-2. token 影响：上限 memory_hub_inject_max_chars（默认 3000），空骨架约百字
-3. 缓存影响：独立消息块，AI 更新只漂移自身；置于 context 层（35）与
-   status 层（40）之间，不触碰 stable/summary/conversation 前缀
+Model Experience：模型在 provider 动态区读取 main:hub 的最新索引与工作窗口。
+Token：沿用 memory_hub_inject_max_chars 预算，超长时保留首尾并标记省略。
+缓存：工具链之后注入；内容未变时字节稳定，不重写稳定前缀或历史。
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional
 
+from core.config import register_configs_safe
+from core.context_provider import ContextProviderRegistry, ProviderMeta
 from core.log import log
+from core.sanitizer import sanitize_for_context, truncate_middle
 
 from .memory_types import MemoryEntry, MemoryType
 
@@ -79,7 +68,7 @@ async def ensure_hub(store: "MemoryStore") -> bool:
 
 
 async def load_hub_block(store: "MemoryStore") -> str:
-    """渲染主标签记忆的注入块文本（超预算保头截尾），缺失/异常返回空串。"""
+    """渲染最新工作窗口，超预算保留首尾并标记省略。"""
     entry = await get_hub_entry(store)
     if entry is None:
         return ""
@@ -88,9 +77,27 @@ async def load_hub_block(store: "MemoryStore") -> str:
         return ""
     from core.config import get_config_int
     budget = get_config_int("memory_hub_inject_max_chars", 3000)
-    if len(content) > budget:
-        content = (
-            content[:budget].rstrip()
-            + "\n……（超出注入预算已截断，请精简后整段覆写）"
-        )
-    return f"{_INJECT_HEADER}\n{content}"
+    content = truncate_middle(content, max(0, budget), head_ratio=0.5,
+                              marker="\n……（超出注入预算已截断，请精简后整段覆写）\n")
+    return sanitize_for_context(f"{_INJECT_HEADER}\n{content}", max_chars=len(_INJECT_HEADER) + 1 + max(0, budget))
+
+
+def register_provider(store: "MemoryStore") -> None:
+    """由组合根绑定存储；每次模型调用读取权威条目，不保留第二份工作状态。"""
+    async def provide(scope: str) -> str | None:
+        return await load_hub_block(store) or None
+
+    ContextProviderRegistry.register(ProviderMeta(
+        name="memory_hub", priority=31, retention_priority=10, max_tokens=800,
+        inject_key="memory_hub_inject_enabled", provide_fn=provide,
+        description="主标签记忆：最新资产索引与工作窗口",
+    ))
+
+
+register_configs_safe({"memory/recall": {
+    "memory_hub_inject_enabled": {"description": "每轮注入主标签记忆工作窗口", "default": True},
+    "memory_hub_inject_max_chars": {
+        "description": "主标签记忆的字符预算，超出时保留首尾并标记省略",
+        "default": 3000, "advanced": True, "unit": "字符",
+    },
+}})

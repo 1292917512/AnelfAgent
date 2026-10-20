@@ -79,21 +79,23 @@ class TestRecallSourceMarking:
         assert entry.tags == ["topic:整理"]
         assert entry.metadata["origins"] == [{"kind": "agent_note", "scope": scope}]
 
-    async def test_ambiguous_duplicate_does_not_invent_material_origin(self, store) -> None:
-        from agent.memory.dedup import apply_evidence_signals
+    async def test_duplicate_preserves_only_selected_origin_without_reinforcement(self, store) -> None:
+        from agent.memory.dedup import retain_duplicate_origin
         from agent.memory.provenance import note_origin
 
         entries = [_entry("喜欢安静的房间", ["user:qq:1"]), _entry("喜欢在房间听音乐", ["user:qq:1"])]
         for entry in entries:
             entry.id = await store.add(entry)
-        metadata = {**note_origin("user_qq:1"), "activity_date": "2026-01-01"}
-        await apply_evidence_signals(store, "skip", "房间比较安静", entries, metadata=metadata)
-        for entry in entries:
-            assert "origins" not in (await store.get(entry.id)).metadata
-        await apply_evidence_signals(store, "skip", entries[0].content, entries, metadata=metadata)
+        metadata = note_origin("user_qq:1")
+        metadata.update({"activity_date": "2026-10-20", "sensitivity": "private"})
+        assert await retain_duplicate_origin(store, entries[0].id, metadata)
+        assert await retain_duplicate_origin(store, entries[0].id, metadata)
         recorded = await store.get(entries[0].id)
         assert recorded.metadata["origins"] == metadata["origins"]
+        assert "evidence" not in recorded.metadata
         assert "activity_date" not in recorded.metadata
+        assert recorded.metadata["sensitivity"] == "private"
+        assert (await store.get(entries[1].id)).metadata == {}
 
     async def test_tool_write_read_recall_and_archive_keep_origin(self, bound_store, store) -> None:
         from core.config import ConfigManager

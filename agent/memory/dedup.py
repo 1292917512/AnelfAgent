@@ -5,7 +5,7 @@
 
 1. 候选召回：FTS（jieba 词级）+ 向量双路取并集，上限 memory_dedup_candidate_limit；
 2. 判断段（agent/judgment 平台，Jev 原生或普通模型回退）：一次调用并行评判——
-   关系四选一（novel/covered/evolution/fragments）+ update 目标选择 +
+   关系四选一（novel/covered/evolution/fragments）+ skip/update 目标选择 +
    merge 逐候选是非，置信度不足保守退回直接写入；
 3. 生成段：仅 update/merge 需要合并文本时，经 light_llm 合成一次
    （store/skip 占写入绝大多数，热路径零 LLM 调用）；
@@ -43,7 +43,7 @@ from core.config import (
 from core.log import log
 
 from .memory_store import MemoryStore
-from .memory_types import GOAL_SOURCE, MemoryEntry, MemoryType, normalized_content_key
+from .memory_types import GOAL_SOURCE, MemoryEntry, MemoryType
 
 # 判重候选准入排除项（系统独占维护的条目不参与语义合并）：
 # - 画像由画像系统覆盖维护，permanent 走 upsert；
@@ -142,7 +142,7 @@ _RELATION_CRITERIA: Dict[str, str] = {
              "同一句话涉及的 user:/group: 对象不同时，是不同人各自的事实，不是重复",
     "covered": "已被某条候选完整覆盖——同一事实且没有增加任何新信息"
                "（更简略的重述、子集表述也算覆盖），应放弃写入。"
-               "不依赖说话人的通用事实在不同频道再次出现也算覆盖（多方确认）",
+               "不依赖说话人的通用事实在不同频道再次出现也算覆盖；覆盖不代表得到用户确认",
     "evolution": "是对某一条候选的更新、补充或修正（同一事实的新进展或更准确的表述），"
                  "应合并进该候选，而不是新增一条造成矛盾或冗余",
     "fragments": "与多条候选互为片段或重复，应把这些候选与新内容合并为一条完整记忆",
@@ -179,7 +179,7 @@ def _build_judgment_questions(previews: List[Dict[str, Any]]) -> Dict[str, Quest
             criteria=dict(_RELATION_CRITERIA),
         ),
         "target": ChoiceQuestion(
-            instructions="若新记忆是对某条候选的更新/补充/修正，应合并进哪条候选？",
+            instructions="若已有候选完整覆盖新记忆，或新记忆更新/补充/修正候选，应归属哪条候选？",
             criteria={
                 **{p["seq"]: f"候选 {p['seq']}（{p['date']}）{p['content'][:80]}"
                    for p in previews},
@@ -201,7 +201,7 @@ async def _synthesize_merged_content(content: str, targets: List[MemoryEntry]) -
              for t in targets]
     prompt = (
         "你是记忆系统的文本合并器。把下列记忆合并为一条完整、准确的表述"
-        "（一两句话，保留关键事实与时间信息）。只输出合并后的文本，不要输出任何其他内容。\n\n"
+        "（一两句话，保留关键事实、时间、来源与不确定性；AI 自述不等于已验证事实，修正应取代被否定的旧说法）。只输出合并后的文本，不要输出任何其他内容。\n\n"
         f"【新记忆】\n{content}\n\n【待合并的既有记忆】\n" + "\n".join(lines)
     )
     try:
@@ -264,11 +264,11 @@ async def judge_write(
         f"(relation={relation.choice}, confidence={relation.confidence:.2f})",
         "DEBUG", tag="记忆",
     )
-    if action in ("store", "skip"):
+    if action == "store":
         return {"action": action}
 
     candidate_ids = {e.id for e in candidates if e.id is not None}
-    if action == "update":
+    if action in ("update", "skip"):
         target_answer = report.answers.get("target")
         target_id = 0
         if isinstance(target_answer, ChoiceAnswer) and target_answer.choice != "none":
@@ -279,8 +279,10 @@ async def judge_write(
             and target_answer.confidence >= min_confidence
         )
         if not target_ok:
-            log("写入去重 update 目标无效或置信度不足，直接写入", "DEBUG", tag="记忆")
+            log("写入去重目标无效或置信度不足，直接写入", "DEBUG", tag="记忆")
             return {"action": "store"}
+        if action == "skip":
+            return {"action": "skip", "target_id": target_id}
         target_entry = next(e for e in candidates if e.id == target_id)
         merged = await _synthesize_merged_content(content, [target_entry])
         if not merged:
@@ -316,63 +318,23 @@ async def judge_write(
     }
 
 
-def _bigram_dice(a: str, b: str) -> float:
-    """CJK 友好的 bigram Dice 相似度（信号归属用，候选内最相似者认领）。"""
-    import re as _re
-    ta = set(_re.sub(r"\s+", "", a or "")[i:i + 2] for i in range(max(0, len(_re.sub(r"\s+", "", a or "")) - 1)))
-    tb = set(_re.sub(r"\s+", "", b or "")[i:i + 2] for i in range(max(0, len(_re.sub(r"\s+", "", b or "")) - 1)))
-    if not ta or not tb:
-        return 0.0
-    return 2 * len(ta & tb) / (len(ta) + len(tb))
-
-
-async def apply_evidence_signals(
-    store: MemoryStore,
-    action: str,
-    new_content: str,
-    candidates: List[MemoryEntry],
-    *,
-    target_ids: Optional[List[int]] = None,
-    metadata: Optional[Dict[str, Any]] = None,
-) -> None:
-    """裁决落地后的证据回流（fail-open，绝不阻塞写入路径）。
-
-    用户对同一事实的复述/演进是既有记忆的确认信号（信号来自 dedup
-    裁决这一硬判定，而非对话语气的猜测）：
-    - skip（用户复述了既有事实）→ 候选中最相似者记一次用户确认（+1.0）；
-    - update/merge（事实演进但谱系存活）→ target_ids 按 id 直取
-      （merge 后旧 id 已归档，调用方须传合并产物的新 id），各记 +0.5。
-    负向信号（反驳/纠错）不在此处判定——由反思生命周期（reflection_lifecycle）
-    的自检与显式纠正路径施加，避免把"演进"误读为"被推翻"。
-    """
-    from .evidence import apply_reinforcement
-
-    try:
-        ids: List[int] = []
-        delta = 0.5
-        if action == "skip" and candidates:
-            best = max(candidates, key=lambda e: _bigram_dice(e.content, new_content))
-            if best.id is not None:
-                ids = [best.id]
-            delta = 1.0
-        elif action in ("update", "merge") and target_ids:
-            ids = [i for i in target_ids if i]
-        for memory_id in ids:
-            fresh = await store.get(memory_id)
-            if fresh is None:
-                continue
-            confirmed_origin = action != "skip" or len(candidates) == 1 or (
-                normalized_content_key(fresh.content) == normalized_content_key(new_content)
-            )
-            if metadata and confirmed_origin:
-                from .provenance import merge_metadata
-                fresh.metadata = merge_metadata(fresh.metadata, {
-                    key: metadata[key] for key in ("origins", "sensitivity") if key in metadata
-                })
-            apply_reinforcement(fresh.metadata, delta, user_originated=True)
-            await store.update(fresh, actor="evidence_signal")
-    except Exception as exc:
-        log(f"证据信号回流失败（已忽略）: {exc}", "DEBUG", tag="记忆")
+async def retain_duplicate_origin(
+    store: MemoryStore, target_id: int, metadata: Dict[str, Any],
+) -> bool:
+    """为裁决选中的重复条目保留材料出处，不改变证据分或用户确认数。"""
+    from .provenance import merge_metadata
+    target = await store.get(target_id)
+    if target is None:
+        return False
+    merged = merge_metadata(target.metadata, {
+        key: metadata[key] for key in ("origins", "sensitivity") if key in metadata
+    })
+    if merged == target.metadata:
+        return True
+    target.metadata = merged
+    if not await store.update(target, actor="dedup_origin", expected_version=target.version):
+        raise RuntimeError(f"重复记忆出处写入冲突 #{target_id}")
+    return True
 
 
 async def apply_update(

@@ -109,6 +109,8 @@ def wire_runtime(
     voice_sink_port.set(deliver_utterance)
 
     # 记忆存储族（memory/graph/planning 工具组共用同一 MemoryStore）
+    from agent.memory.hub import register_provider as register_hub_provider
+    register_hub_provider(memory_store)
     memory_tools_port.set(MemoryToolDeps(memory_store, embedder))
     graph_store_port.set(memory_store)
     planning_store_port.set(memory_store)

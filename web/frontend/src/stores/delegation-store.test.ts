@@ -22,6 +22,26 @@ it("does not revive a completed run when a delayed started event arrives", () =>
   expect(store.getChatDelegations("one")[0]).toMatchObject({ status: "completed", output: "done" });
 });
 
+it("removes missed running cards from an empty recovery snapshot without inferring a result", () => {
+  const store = useDelegationStore.getState();
+  store.upsertDelegation(node);
+  store.upsertDelegation({ ...node, delegation_id: "finished", status: "completed", output: "Evidence" });
+  const observed = useDelegationStore.getState().delegations.one;
+  store.rehydrate("one", [], observed);
+  expect(store.getChatDelegations("one")).toEqual([expect.objectContaining({ delegation_id: "finished", status: "completed", output: "Evidence" })]);
+});
+
+it("preserves streamed progress and new delegations received after a recovery request began", () => {
+  const store = useDelegationStore.getState();
+  store.upsertDelegation(node);
+  const observed = useDelegationStore.getState().delegations.one;
+  store.updateProgress("one", { chat_id: "one", delegation_id: "active", kind: "round", iteration: 3 });
+  store.upsertDelegation({ ...node, delegation_id: "new" });
+  store.rehydrate("one", [], observed);
+  expect(store.getChatDelegations("one")).toHaveLength(2);
+  expect(store.getChatDelegations("one").find((item) => item.delegation_id === "active")?.iteration).toBe(4);
+});
+
 it("lets a failed cancellation be retried without reverting a terminal result", () => {
   const store = useDelegationStore.getState();
   store.upsertDelegation(node);

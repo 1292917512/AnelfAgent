@@ -135,7 +135,7 @@ test("runtime facts recover other channel work when heartbeats arrive but activi
   await page.clock.runFor(5000);
   const runtime = page.getByRole("complementary", { name: "Runtime status and pending messages", exact: true });
   await expect(runtime).toContainText("Agent currently: LLM Calling");
-  await page.clock.runFor(10_000);
+  await page.clock.runFor(35_000);
   await expect(page.getByText("Other project progress recovered", { exact: true })).toBeVisible();
   await expect(runtime).toHaveCount(0);
   const recoveredRequests = snapshots;

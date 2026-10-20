@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import time
+from unittest.mock import AsyncMock
+
+import pytest
 
 from agent.memory import evidence
 from agent.memory.memory_types import MemoryEntry, MemoryType
@@ -343,3 +346,40 @@ class TestFeedbackClassification:
         )
         assert applied == 0
         assert not called
+
+
+@pytest.mark.parametrize("raw", ["invalid", "[]", '[{"id":999,"verdict":"ignored"}]'])
+async def test_invalid_feedback_does_not_invent_user_attitude(store, monkeypatch, raw):
+    from agent.memory.reflection_lifecycle import classify_reflection_feedback
+    entry = _reflection(importance=0.9)
+    seed_reflection(entry)
+    entry.metadata["lifecycle"]["surfaced_at"] = time.time() - 60
+    entry.id = await store.add(entry)
+    monkeypatch.setattr("agent.memory.dedup.light_llm", AsyncMock(return_value=raw))
+    with pytest.raises(ValueError):
+        await classify_reflection_feedback(store, "user:qq:1",
+            [{"role":"user", "content":"这个结论不对", "ts_ns":time.time_ns()}])
+    saved = await store.get(entry.id)
+    assert get_lifecycle(saved)["feedback"] == ""
+    assert saved.metadata == entry.metadata
+
+
+async def test_feedback_read_failure_is_not_an_empty_candidate_pool(store, monkeypatch):
+    from agent.memory.reflection_lifecycle import classify_reflection_feedback
+
+    monkeypatch.setattr(store, "search_by_tags", AsyncMock(side_effect=RuntimeError("database unavailable")))
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await classify_reflection_feedback(store, "user:qq:1", [{"role": "user", "content": "这个结论不对"}])
+
+
+@pytest.mark.parametrize("kind", ["notification", "event", "system"])
+async def test_platform_message_cannot_confirm_reflection(store, monkeypatch, kind):
+    from agent.memory.reflection_lifecycle import classify_reflection_feedback
+    from core.tags import tag_label
+
+    read = AsyncMock(side_effect=AssertionError("平台消息不进入反馈判断"))
+    monkeypatch.setattr(store, "search_by_tags", read)
+    assert await classify_reflection_feedback(store, "user:qq:1", [
+        {"role": "user", "content": tag_label("kind", kind) + " 确认成功"}
+    ]) == 0
+    read.assert_not_awaited()

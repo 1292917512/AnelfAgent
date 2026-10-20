@@ -177,14 +177,14 @@ class TestLeanRecollection:
         assert kwargs["relation_msgs"] == []
         assert kwargs["status_text"] == ""
         assert kwargs["heartbeat_text"] == ""
-        assert kwargs["hub_text"] == ""  # 无记忆库时主标签记忆位为空
+        assert "hub_text" not in kwargs
         assert mind.context.preparation.build_layers.call_args.kwargs["lean"] is True
 
 
 @pytest.mark.parametrize("group", [False, True])
 async def test_context_reads_overlap_and_skills_only_wait_for_plan(monkeypatch, group) -> None:
     mind = _fake_mind()
-    started = {key: asyncio.Event() for key in ("embed", "memory", "relations", "hub", "summary", "skills", "cross")}
+    started = {key: asyncio.Event() for key in ("embed", "memory", "relations", "summary", "skills", "cross")}
     release_vector, release_cross, release_memory = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
     async def embed(query):
@@ -228,7 +228,6 @@ async def test_context_reads_overlap_and_skills_only_wait_for_plan(monkeypatch, 
     monkeypatch.setattr(recall_inputs, "recall_cross_channel", cross)
     mind.recollection.memory_store = object()
     mind.recollection.conversation_data = SN(get_conversation_summary=lambda anything: read("summary", {"summary": "摘要"}))
-    monkeypatch.setattr("agent.memory.hub.load_hub_block", lambda store: read("hub", "主标签"))
     monkeypatch.setattr("agent.memory.self_profile.load_self_profile", AsyncMock(return_value=None))
     monkeypatch.setattr("agent.memory.self_profile.render_self_profile_block", lambda _: "自身")
     monkeypatch.setattr("agent.memory.reflection_lifecycle.load_confirmed_block", AsyncMock(return_value="确认"))
@@ -243,7 +242,7 @@ async def test_context_reads_overlap_and_skills_only_wait_for_plan(monkeypatch, 
     ))
     try:
         async with asyncio.timeout(2):
-            await asyncio.gather(*(started[key].wait() for key in ("embed", "memory", "relations", "hub", "summary")))
+            await asyncio.gather(*(started[key].wait() for key in ("embed", "memory", "relations", "summary")))
             assert not task.done()
             release_vector.set()
             await asyncio.gather(started["skills"].wait(), started["cross"].wait())
@@ -256,7 +255,7 @@ async def test_context_reads_overlap_and_skills_only_wait_for_plan(monkeypatch, 
         assert result.memories == [{"content": "记忆"}]
         assert result.skills == [{"content": "技能"}]
         assert result.cross_channel == [{"content": "跨频道"}]
-        assert result.hub == "主标签" and result.summary == {"summary": "摘要"}
+        assert result.summary == {"summary": "摘要"}
         mind.recollection.embedder.embed_query.assert_awaited_once()
     finally:
         task.cancel()
@@ -274,13 +273,12 @@ async def test_context_exit_drains_sibling_reads(monkeypatch, fail) -> None:
         if len(started) == 4:
             ready.set()
         try:
+            if name == "relations" and fail:
+                await trigger.wait()
+                raise RuntimeError("relations unavailable")
             await asyncio.Event().wait()
         finally:
             closed.add(name)
-
-    async def hub(store):
-        await trigger.wait()
-        raise RuntimeError("hub unavailable")
 
     async def recall(*args, plan_ready, **kwargs):
         plan_ready.set_result(["共享查询"])
@@ -293,7 +291,6 @@ async def test_context_exit_drains_sibling_reads(monkeypatch, fail) -> None:
     monkeypatch.setattr(recall_inputs, "recall_cross_channel", AsyncMock(return_value=[]))
     monkeypatch.setattr(recall_inputs, "match_skills", lambda *args, **kwargs: wait("skills"))
     mind.recollection.memory_store = object()
-    monkeypatch.setattr("agent.memory.hub.load_hub_block", hub)
     monkeypatch.setattr("agent.memory.self_profile.load_self_profile", AsyncMock(return_value=None))
     monkeypatch.setattr("agent.memory.self_profile.render_self_profile_block", lambda _: "")
     monkeypatch.setattr("agent.memory.reflection_lifecycle.load_confirmed_block", AsyncMock(return_value=""))

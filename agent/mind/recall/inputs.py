@@ -50,7 +50,7 @@ class Recollection:
         """并发收集当前会话的记忆、技能、关联与摘要。
 
         深度档的技能匹配复用记忆计划，其余档位直接匹配对话；查询向量共享。
-        精简模式仅读取枢纽、摘要与永久记忆。
+        精简模式仅读取摘要与永久记忆。
         本轮任务全部收束后返回材料；未处理的异常或取消会取消同组读取。
         """
         result = RecollectionInputs()
@@ -124,12 +124,7 @@ class Recollection:
         async def pins() -> None:
             if self.retriever is not None:
                 pinned = await self.retriever._load_permanent_pins([])
-                result.memories = await self.retriever._format_unified_results(pinned) if pinned else []
-
-        async def hub() -> None:
-            if self.memory_store is not None:
-                from agent.memory.hub import load_hub_block
-                result.hub = await load_hub_block(self.memory_store)
+                result.memories = await self.retriever._format_unified_results(pinned, scope=scope) if pinned else []
 
         async def repeat_hint() -> None:
             try:
@@ -179,7 +174,6 @@ class Recollection:
         async with asyncio.TaskGroup() as tasks:
             if query and (policy.level == "deep" or get_config_bool("skills_enabled", True)):
                 vector_task = tasks.create_task(embed())
-            tasks.create_task(hub())
             tasks.create_task(summary())
             if lean:
                 tasks.create_task(pins())

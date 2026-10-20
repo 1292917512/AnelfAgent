@@ -108,6 +108,7 @@ async def prepare_round_context(
     llm_messages = (
         ctx.base_messages + ctx.tool_chain + provider_msgs + [exec_context]
     )
+    deep_probe_hub.acknowledge_base(ctx.current_scope, llm_messages)
     from agent.context.observation import emit_recollection_update
     state.observed_recollection = await emit_recollection_update(provider_msgs, state.observed_recollection)
     observe_delivery_context(provider_msgs)

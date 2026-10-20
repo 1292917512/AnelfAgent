@@ -219,12 +219,12 @@ async def memorize(
         action = decision.get("action", "store")
         metrics.incr(f"write.dedup_llm_{action}")
         if action == "skip":
-            from .dedup import apply_evidence_signals
-            await apply_evidence_signals(store, action, content, candidates, metadata=metadata)
-            return json.dumps({
-                "ok": False, "verdict": "skipped_duplicate",
-                "message": f"已有等价记忆，跳过（{decision.get('reason', '语义重复')}）（未重复写入）",
-            }, ensure_ascii=False)
+            from .dedup import retain_duplicate_origin
+            if await retain_duplicate_origin(store, int(decision["target_id"]), metadata):
+                return json.dumps({
+                    "ok": False, "verdict": "skipped_duplicate",
+                    "message": f"已有等价记忆，跳过（{decision.get('reason', '语义重复')}）（未重复写入）",
+                }, ensure_ascii=False)
         if action == "update" and decision.get("target_id"):
             updated = await apply_update(
                 store, int(decision["target_id"]),
@@ -232,11 +232,6 @@ async def memorize(
                 actor="tool:memorize", metadata=metadata,
             )
             if updated is not None:
-                from .dedup import apply_evidence_signals
-                await apply_evidence_signals(
-                    store, action, content, candidates,
-                    target_ids=[updated.id] if updated.id else None,
-                )
                 wake_embedding_worker()
                 return json.dumps({
                     "ok": True, "id": updated.id, "action": "updated", "verdict": "updated",
@@ -251,10 +246,6 @@ async def memorize(
                 merge_ids, merged_content, actor="tool:memorize", metadata=metadata, extra_tags=tag_list,
             )
             if keep_id:
-                from .dedup import apply_evidence_signals
-                await apply_evidence_signals(
-                    store, action, content, candidates, target_ids=[keep_id],
-                )
                 wake_embedding_worker()
                 return json.dumps({
                     "ok": True, "id": keep_id, "action": "merged", "verdict": "merged",

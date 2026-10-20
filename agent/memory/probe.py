@@ -5,7 +5,8 @@
 
 Model Experience:
 - 模型看到什么：至多一条 `[系统注入·记忆召回·续]` provider 消息（相关
-  关系 / 新增记忆 / 图谱上下文分节），仅当深探发现账本外增量时出现；预判只读对话正文
+  关系 / 新增记忆 / 图谱上下文分节），仅当深探发现账本外增量时出现；
+  main:hub 由独立 provider 逐轮读取，深探不复制；预判只读对话正文
 - token 影响：每回复 ≤memory_probe_max_chars（默认 1600 字符）；无增量零注入
 - 缓存影响：provider 层每轮新鲜段（与桌面环境时间天气同区），不触碰
   任何 prompt 前缀缓存层
@@ -27,6 +28,7 @@ from core.context_provider import ContextProviderRegistry, ProviderMeta
 from core.hooks import HookMode, current_hook_run, hook_execution
 from core.log import log
 
+from .hub import HUB_TAG
 from .memory_types import RetrievalPlan, normalized_content_key
 from .probe_render import RecallBuffer, RecallDelta
 
@@ -95,6 +97,7 @@ class _ProbeState:
     scope: str
     ledger: RecallLedger = field(default_factory=RecallLedger)
     prepared: RecallLedger = field(default_factory=RecallLedger)
+    base_facts: list[RecallDelta] = field(default_factory=list)
     task: asyncio.Task[None] | None = None
     rendered: str = ""
     created_at: float = field(default_factory=time.monotonic)
@@ -230,6 +233,36 @@ class DeepProbeHub:
             if delta.edge_id is not None:
                 state.ledger.record_edges([delta.edge_id])
 
+    def prepare_base(self, scope: str, facts: Iterable[RecallDelta]) -> None:
+        """暂存首轮候选，准备期间去重，但不计作已经呈现。"""
+        state = self.state_for(scope)
+        if state is None:
+            return
+        for fact in facts:
+            state.base_facts.append(fact)
+            state.prepared.record_result(fact.result_id, fact.snippet, content_key=fact.content_key)
+            if fact.edge_id is not None:
+                state.prepared.record_edges([fact.edge_id])
+
+    def acknowledge_base(self, scope: str, messages: list[dict]) -> None:
+        """在最终模型输入上确认首轮事实，释放被预算或压缩省略的候选。"""
+        state = self.state_for(scope)
+        if state is None or not state.base_facts:
+            return
+        contents = [m["content"] for m in messages
+                    if m.get("role") == "system" and isinstance(m.get("content"), str)]
+        for fact in state.base_facts:
+            if any(fact.text in text for text in contents):
+                state.ledger.record_result(fact.result_id, fact.snippet, content_key=fact.content_key)
+                if fact.edge_id is not None:
+                    state.ledger.record_edges([fact.edge_id])
+        state.base_facts.clear()
+        state.prepared.reset()
+        for fact in state.buffer.facts:
+            state.prepared.record_result(fact.result_id, fact.snippet, content_key=fact.content_key)
+            if fact.edge_id is not None:
+                state.prepared.record_edges([fact.edge_id])
+
     def unseen(self, scope: str, deltas: Iterable[RecallDelta]) -> list[RecallDelta]:
         """过滤已消费或已经在快照中等待装配的事实。"""
         state = self.state_for(scope)
@@ -353,7 +386,7 @@ class DeepProbeHub:
                              section: str) -> list[RecallDelta]:
         """沿用同步召回的实体标签、时间与隐私标记格式。"""
         from .recall_format import format_recall_line, load_entity_nodes
-        results = list(results)
+        results = [result for result in results if HUB_TAG not in result.tags]
         nodes = await load_entity_nodes(store.graph, (tag for result in results for tag in result.tags))
         deltas: list[RecallDelta] = []
         for result in results:

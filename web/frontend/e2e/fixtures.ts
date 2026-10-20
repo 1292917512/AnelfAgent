@@ -98,6 +98,11 @@ export async function installEventStream(page: Page) {
       onerror: ((event: Event) => void) | null = null;
       deliver = (event: Event) => {
         const frame = (event as CustomEvent<{ event: string; data: unknown }>).detail;
+        if (frame.event === "test-disconnect") {
+          this.readyState = TestEventSource.CLOSED;
+          this.onerror?.(new Event("error"));
+          return;
+        }
         this.dispatchEvent(new MessageEvent(frame.event, { data: JSON.stringify(frame.data) }));
       };
       constructor(url: string) {

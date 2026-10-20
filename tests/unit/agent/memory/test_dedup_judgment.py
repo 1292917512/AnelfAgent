@@ -155,10 +155,10 @@ class TestActionMapping:
         assert light.prompts == []  # store 热路径零 LLM 调用
 
     async def test_covered_to_skip(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _patch(monkeypatch, {"relation": _relation("covered")})
+        _patch(monkeypatch, {"relation": _relation("covered"), "target": _target("1")})
 
         decision = await dedup.judge_write("喜欢下雨天", _CANDIDATES)
-        assert decision == {"action": "skip"}
+        assert decision == {"action": "skip", "target_id": 1}
 
     async def test_evolution_to_update(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _patch(monkeypatch, {
@@ -189,7 +189,7 @@ class TestActionMapping:
 class TestConservativeFallbacks:
     @pytest.mark.parametrize("relation,valid_target,action", [
         ("novel", False, "store"),
-        ("covered", False, "skip"),
+        ("covered", False, "store"),
         ("evolution", False, "store"),
         ("fragments", False, "merge"),
         ("evolution", True, "update"),

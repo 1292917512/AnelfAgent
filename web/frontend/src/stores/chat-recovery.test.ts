@@ -5,6 +5,7 @@ import { useChatStore } from "./chat-store";
 import { emptyBucket } from "./chat-shared";
 import type { ActivityRun } from "@/lib/types/activity";
 import { useActivityStore } from "./activity-store";
+import { useDelegationStore } from "./delegation-store";
 
 class Source extends EventTarget {
   static CLOSED = 2;
@@ -32,7 +33,9 @@ beforeEach(() => {
   vi.spyOn(chatApi, "delegations").mockResolvedValue(response({ running: [] }));
   vi.spyOn(chatApi, "send").mockResolvedValue(response({}));
   vi.spyOn(useActivityStore.getState(), "load").mockResolvedValue();
+  vi.spyOn(useActivityStore.getState(), "reconcile").mockImplementation(() => useActivityStore.getState().load());
   useActivityStore.setState({ runs: [], error: null });
+  useDelegationStore.setState({ delegations: {} });
   useChatStore.setState({ activeChatId: "A", buckets: { A: emptyBucket(), B: emptyBucket() } });
 });
 afterEach(() => {
@@ -105,6 +108,23 @@ it("resynchronizes lost frames without creating another live connection", async 
   expect(sources).toHaveLength(1);
 });
 
+it("recovers inactive conversations with only a background delegation after reconnect", async () => {
+  const store = useChatStore.getState();
+  store.startSSE(); sources[0]?.onopen?.();
+  await vi.advanceTimersByTimeAsync(1);
+  useDelegationStore.getState().upsertDelegation({ delegation_id: "background", chat_id: "B", goal: "Review", context_preview: "",
+    role: "leaf", task_index: 0, background: true, depth: 0, status: "running", started_at: 1 });
+  vi.mocked(chatApi.delegations).mockClear();
+  sources[0]!.readyState = Source.CLOSED;
+  sources[0]?.onerror?.();
+  await vi.advanceTimersByTimeAsync(5000);
+  sources[1]?.onopen?.();
+  await vi.advanceTimersByTimeAsync(1);
+  expect(chatApi.delegations).toHaveBeenCalledWith("B");
+  expect(useDelegationStore.getState().getChatDelegations("B")).toEqual([]);
+  expect(useChatStore.getState().activeChatId).toBe("A");
+});
+
 it("checks accepted input immediately and keeps waiting beyond two minutes when only heartbeats arrive", async () => {
   const store = useChatStore.getState();
   store.startSSE(); sources[0]?.onopen?.();
@@ -115,6 +135,8 @@ it("checks accepted input immediately and keeps waiting beyond two minutes when 
   await vi.advanceTimersByTimeAsync(1);
   expect(useActivityStore.getState().load).toHaveBeenCalledOnce();
   expect(chatApi.history).toHaveBeenCalledOnce();
+  const folds = vi.mocked(chatApi.folds).mock.calls.length;
+  const delegations = vi.mocked(chatApi.delegations).mock.calls.length;
   store.setInputDraft("A", "Keep next draft");
   for (let index = 0; index < 13; index++) {
     sources[0]?.dispatchEvent(new MessageEvent("ping"));
@@ -123,6 +145,8 @@ it("checks accepted input immediately and keeps waiting beyond two minutes when 
   expect(useChatStore.getState().buckets.A).toMatchObject({ sending: true, inputDraft: "Keep next draft" });
   expect(useChatStore.getState().buckets.A?.messages).toHaveLength(1);
   expect(vi.mocked(chatApi.history).mock.calls.length).toBeGreaterThan(10);
+  expect(chatApi.folds).toHaveBeenCalledTimes(folds);
+  expect(chatApi.delegations).toHaveBeenCalledTimes(delegations);
   expect(chatApi.send).toHaveBeenCalledOnce();
   expect(sources).toHaveLength(1);
 });

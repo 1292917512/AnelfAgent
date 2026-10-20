@@ -1,4 +1,4 @@
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ActivityRun } from "@/lib/types/activity";
 import { useActivityStore } from "./activity-store";
 import { api } from "@/lib/api/client";
@@ -8,7 +8,41 @@ const run = (id: string, revision: number, status = "running"): ActivityRun => (
   id, revision, status, scope: "group_qq:42", origin_scope: "group_qq:42", source: { scope: "group_qq:42", kind: "group", channel: "qq", target: "42", session: "" },
   actor: "", label: "Review deployment", kind: "conversation", input: "Review deployment", owner_id: "", parent_id: "", started_at: 10, updated_at: 12, ended_at: null, entries: [], entry_count: 0, truncated: false,
 });
-beforeEach(() => { vi.clearAllMocks(); useActivityStore.setState({ epoch: "", snapshotRevision: 0, runs: [], loaded: false, loading: false, clearing: false, error: null }); });
+beforeEach(() => { vi.clearAllMocks(); useActivityStore.setState({ epoch: "", snapshotRevision: 0, syncedAt: 0, checkedAt: 0, runs: [], loaded: false, loading: false, clearing: false, error: null }); });
+afterEach(() => { vi.useRealTimers(); });
+
+it("bounds snapshot recovery even while another channel continues streaming", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(0);
+  const store = useActivityStore.getState();
+  const child = { ...run("child", 1), kind: "delegation" };
+  store.restore({ epoch: "p", revision: 1, runs: [child] });
+  vi.mocked(api.get).mockResolvedValue({ data: { epoch: "p", revision: 32, runs: [run("child", 32, "completed"), run("other", 31)] } });
+  for (let second = 1; second <= 29; second++) {
+    vi.advanceTimersByTime(1000);
+    store.receive("p", run("other", second + 1));
+    await store.reconcile();
+  }
+  expect(api.get).not.toHaveBeenCalled();
+  vi.advanceTimersByTime(1000);
+  await Promise.all([store.reconcile(), store.reconcile(true)]);
+  expect(api.get).toHaveBeenCalledOnce();
+  expect(useActivityStore.getState().runs.find((item) => item.id === "child")?.status).toBe("completed");
+});
+
+it("discovers idle maintenance and shares the global snapshot across waiting conversations", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(0);
+  const store = useActivityStore.getState();
+  store.restore({ epoch: "p", revision: 0, runs: [] });
+  vi.mocked(api.get).mockResolvedValue({ data: { epoch: "p", revision: 1, runs: [{ ...run("compact", 1), kind: "maintenance" }] } });
+  vi.advanceTimersByTime(30_000);
+  await store.reconcile();
+  expect(useActivityStore.getState().runs[0]?.kind).toBe("maintenance");
+  vi.advanceTimersByTime(10_000);
+  await store.reconcile(true);
+  vi.advanceTimersByTime(5000);
+  await store.reconcile(true);
+  expect(api.get).toHaveBeenCalledTimes(2);
+});
 
 it("clears earlier records without stale snapshots or queued frames bringing them back", async () => {
   const store = useActivityStore.getState();

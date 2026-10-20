@@ -1,4 +1,4 @@
-"""自动记忆捕获管线：对话 → 长期记忆的确定性提取（不依赖 LLM 自觉调 memorize）。
+"""自动记忆捕获管线：对话 → 长期记忆的有界提取（不依赖 LLM 自觉调 memorize）。
 
 每个心跳 tick 检查各会话 scope 的新消息，命中任一触发条件即提取：
 
@@ -8,30 +8,28 @@
 3. Warm-up：新 scope 的提取阈值按 1→2→4→…→every_n 指数爬升，
    会话早期（信息最密集的阶段）记忆被更快固化。
 
-提取流程：质量门（过滤纯寒暄批次）→ 单次 LLM 提取（JSON 数组）→
-逐条经 dedup 模块语义裁决（store/skip/update）→ 写库。
-游标按 scope 持久化（capture_cursors 表），进程重启后从未处理消息继续。
+提取流程：完整新消息 → LLM 提取并校验 JSON → 逐条语义裁决 → 保存出处与检查点。
+每批最多 12 条，字符预算只在消息之间切分；失败最多尝试 5 次，明确记入审计。
+游标、冻结材料与提取结果按 scope 持久化，重启恢复已保存进度。
 
 发言者归属：消息行渲染时从元数据标签确定性提取身份（称呼[uid:xxx]），
 提取输出的 speaker 字段经批次内真实 uid 集合校验后挂为 user:{adapter}:{uid}
 记忆标签。材料会话、消息 ID 和时间窗口由系统另行保存；标签是提炼出的
 归属线索，不把摘要当作逐字原话（读取侧见 recall_format）。
 
-Model Experience（提取 prompt 说话人身份）:
-- 模型看到什么：消息行从"[时间] 用户: 内容"变为"[时间] 称呼[uid:xxx]: 内容"，
-  平台事件/通知/系统消息单独标明，不作为用户发言；speaker 仅引用真实发言者
-- token 影响：每条消息 +8~15 字符，prompt 指令 +约 60 字符（每批提取一次）
-- 缓存影响：无（内部小调用，不共享主对话前缀）
+Model Experience：内部提取器收到完整新消息、有限旧背景和真实发言者标记；
+平台事件单独标明，AI 自述不得作为执行证据。
+Token：每批最多 12 条、通常不超过 12000 字符；单条超长消息保持完整。
+缓存：内部辅助调用，不改变主对话稳定前缀；已保存结果恢复时不重复提取。
 """
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import re
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from agent.messages import build_entity_scope, parse_entity_scope
 from core.config import get_config_bool, get_config_int, register_configs_safe
@@ -39,37 +37,24 @@ from core.latebind import LateBinding
 from core.log import log
 from core.tags import tag_label
 
+from .capture_state import CaptureBatch, CaptureItem, CaptureJournal, CaptureOutcome, CaptureState
 from .dedup import (
-    apply_evidence_signals,
     apply_update,
     gather_dedup_candidates,
     judge_write,
     light_llm,
+    retain_duplicate_origin,
 )
 from .memory_types import MemoryEntry, MemoryType
 from .ports import MemoryHost
 from .provenance import capture_origin
 
-_JSON_ARRAY_RE = re.compile(r"\[.*\]", re.DOTALL)
-
-# 单条消息送入提取 prompt 的截断长度
-_MSG_MAX_CHARS = 300
-# 提取 prompt 中新消息/背景消息条数上限
 _MAX_NEW_MESSAGES = 12
-_MAX_BACKGROUND_MESSAGES = 3
-# 连续提取失败上限：达到后放弃本批（游标推进，避免毒批次卡死管线）
+_BATCH_MAX_CHARS = 12000
 _MAX_BATCH_FAILURES = 5
-# 待提取消息的单批拉取窗口与单 tick 处理上限（积压超限时后续 tick 继续消费）
 _PENDING_BATCH_SIZE = 40
 _MAX_PENDING_PER_TICK = 200
 
-
-def _batch_signature(rows: List[Dict[str, Any]]) -> str:
-    """批次指纹：消息 id 序列哈希，用于崩溃恢复后的重复提取识别。"""
-    if not rows:
-        return ""
-    ids = ",".join(str(int(r["id"])) for r in rows)
-    return hashlib.sha1(ids.encode()).hexdigest()
 
 _EXTRACT_PROMPT = """\
 你是记忆提取器。从以下对话片段中提取值得长期记住的信息，输出 JSON 数组。
@@ -78,6 +63,8 @@ _EXTRACT_PROMPT = """\
 每行一条消息：[时间] 发言者: 内容。发言者带身份标注（称呼[uid:xxx] 或 [uid:xxx]），
 群聊中不同 uid 是不同的人——必须分清每句话是谁说的，不得张冠李戴。
 平台事件、平台通知和系统消息不是用户发言，不据其会话身份填写 speaker。
+AI 的计划、推测和自述不是执行证据；保留条件、否定与不确定性，不把「准备做」写成「已完成」。
+本批最多输出 {max_items} 条；没有值得提取的内容时输出 []。
 
 ## 提取标准
 - fact：稳定的偏好、个人信息、约定、计划、知识（如"小明[uid:123] 说自己不吃辣"，主体是小明）
@@ -90,7 +77,7 @@ _EXTRACT_PROMPT = """\
 - 0.7：阶段性计划与近期动态
 - 0.6：一般偏好线索、次要观察
 - 0.5：弱线索（不确定的照实标低分，不要在提取侧预过滤——下游有裁决）
-importance 决定记忆的先验可信度与留存优先级，请严格对照上表，不要一律给中间值。
+importance 仅决定记忆的重要程度与留存优先级，不代表内容已经核实，请严格对照上表，不要一律给中间值。
 
 ## 输出格式（只输出 JSON 数组，没有值得提取的内容时输出 []）
 [{"content": "一两句话的记忆内容（用称呼写明主体是谁，禁止「用户」「有人」这类模糊指代）",
@@ -102,7 +89,7 @@ importance 决定记忆的先验可信度与留存优先级，请严格对照上
    "date": "事件发生的日期 YYYY-MM-DD（仅 event 且能从对话确定时填写，否则省略）",
    "temporal_scope": "仅 event 填写：episode=一次性事件 / state=持续状态（会结束的：出差/养猫/减肥） / pattern=反复模式（拿不准用 pattern）"}]
 
-【背景（最近的旧对话，仅供理解）】
+【旧对话（仅供理解，不重复提取）】
 {background}
 
 【新对话（提取对象）】
@@ -137,161 +124,38 @@ def _extract_speaker(content: str) -> Tuple[str, str]:
 
 
 def should_extract(messages: List[Dict[str, Any]]) -> bool:
-    """质量门：实质性消息（非寒暄/表情/过短）不足 2 条的批次不值得提取。"""
-    substantive = 0
-    for msg in messages:
-        content = (msg.get("content") or "").strip()
-        # 至少 8 个字符且不只是标点/表情符号
-        if len(content) >= 8 and re.search(r"[一-鿿A-Za-z0-9]{4}", content):
-            substantive += 1
-    return substantive >= 2
+    """存在实质性正文即可提取，单条约定不依赖后续回复。"""
+    from core.tags import strip_message_meta_tags
+    return any(
+        re.search(r"[一-鿿A-Za-z0-9]", strip_message_meta_tags(str(msg.get("content") or "")))
+        for msg in messages
+    )
 
 
-def parse_extraction(raw: str, *, max_items: int) -> List[Dict[str, Any]]:
-    """解析 LLM 提取输出（提取首个 JSON 数组 + 字段校验 + 数量截断）。"""
-    m = _JSON_ARRAY_RE.search(raw or "")
-    if not m:
-        return []
-    try:
-        items = json.loads(m.group(0))
-    except json.JSONDecodeError:
-        try:
-            items = json.loads(re.sub(r",\s*([}\]])", r"\1", m.group(0)))
-        except json.JSONDecodeError:
-            return []
-    if not isinstance(items, list):
-        return []
-    out: List[Dict[str, Any]] = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        raw_content = item.get("content")
-        if not isinstance(raw_content, str):
-            continue
-        content = raw_content.strip()
-        if len(content) < 4:
-            continue
-        try:
-            importance = max(0.3, min(1.0, float(item.get("importance", 0.6))))
-        except (TypeError, ValueError):
-            importance = 0.6
-        sensitivity = str(item.get("sensitivity", "normal")).strip().lower()
-        date = str(item.get("date", "")).strip()
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
-            date = ""
-        temporal_scope = str(item.get("temporal_scope", "")).strip().lower()
-        if temporal_scope not in ("episode", "state", "pattern"):
-            temporal_scope = ""
-        # 发言者 uid（与批次内真实出现的 uid 的交叉校验在写库侧进行）
-        speaker = str(item.get("speaker", "")).strip()[:64]
-        out.append({
-            "content": content,
-            "type": "event" if item.get("type") == "event" else "fact",
-            "topic": str(item.get("topic", "")).strip(),
-            "importance": importance,
-            "sensitivity": sensitivity if sensitivity in ("private", "secret") else "normal",
-            "date": date,
-            "temporal_scope": temporal_scope,
-            "speaker": speaker,
-        })
-        if len(out) >= max_items:
-            break
-    return out
-
-
-class _ScopeState:
-    """单个 scope 的提取状态（capture_cursors 表一行）。
-
-    双游标：counted_msg_id 统计已计入 pending 的消息（防重复计数），
-    last_msg_id 标记已提取完成的位置（提取批次取 id > last_msg_id 的消息）。
-    """
-
-    __slots__ = ("last_msg_id", "counted_msg_id", "pending_turns",
-                 "warmup_threshold", "failures", "last_batch_sig")
-
-    def __init__(
-        self,
-        last_msg_id: int = 0,
-        counted_msg_id: int = 0,
-        pending_turns: int = 0,
-        warmup_threshold: int = 1,
-        failures: int = 0,
-        last_batch_sig: str = "",
-    ) -> None:
-        self.last_msg_id = last_msg_id
-        self.counted_msg_id = counted_msg_id
-        self.pending_turns = pending_turns
-        self.warmup_threshold = warmup_threshold
-        self.failures = failures
-        # 最近成功提取批次的消息 id 指纹：崩溃恢复后同批次跳过重复提取
-        self.last_batch_sig = last_batch_sig
+def parse_extraction(raw: str, *, max_items: int) -> list[CaptureItem]:
+    """校验完整提取结果；有效空数组与解析失败严格区分。"""
+    items = json.loads(raw)
+    if not isinstance(items, list) or len(items) > max_items:
+        raise ValueError("提取结果必须是预算内的 JSON 数组")
+    return [CaptureItem.model_validate(item) for item in items]
 
 
 class AutoCapturePipeline:
-    """自动捕获调度器：每 tick 扫描各 scope，满足触发条件即提取。"""
+    """按会话串行消费消息，恢复已保存的提取结果与逐条写入进度。"""
 
     def __init__(self, memory: MemoryHost) -> None:
         self._memory = memory
-        self._states: Dict[str, _ScopeState] = {}
-        # 每 scope 一把锁：心跳 tick 与压缩前抢跑（PreCompact flush）可能并发
-        # 处理同一 scope，串行化避免同批次被重复提取
         self._scope_locks: Dict[str, asyncio.Lock] = {}
 
-    # ------------------------------------------------------------------
-    # 游标持久化（memory DB 的 capture_cursors 表）
-    # ------------------------------------------------------------------
-
-    async def _load_state(self, scope_key: str) -> _ScopeState:
-        if scope_key in self._states:
-            return self._states[scope_key]
-        state = _ScopeState()
+    @property
+    def _journal(self) -> CaptureJournal:
         store = self._memory.memory_store
-        if store:
-            try:
-                db = await store._get_db()
-                cursor = await db.execute(
-                    "SELECT last_msg_id, counted_msg_id, pending_turns, warmup_threshold, last_batch_sig "
-                    "FROM capture_cursors WHERE scope_key=?",
-                    (scope_key,),
-                )
-                row = await cursor.fetchone()
-                if row:
-                    state = _ScopeState(
-                        last_msg_id=int(row["last_msg_id"]),
-                        counted_msg_id=int(row["counted_msg_id"]),
-                        pending_turns=int(row["pending_turns"]),
-                        warmup_threshold=int(row["warmup_threshold"]),
-                        last_batch_sig=str(row["last_batch_sig"] or ""),
-                    )
-            except Exception as exc:
-                log(f"捕获游标读取失败 [{scope_key}]: {exc}", "DEBUG", tag="记忆")
-        self._states[scope_key] = state
-        return state
+        if store is None:
+            raise RuntimeError("记忆存储未初始化")
+        return CaptureJournal(store)
 
-    async def _save_state(self, scope_key: str, state: _ScopeState) -> None:
-        store = self._memory.memory_store
-        if not store:
-            return
-        try:
-            db = await store._get_db()
-            async with store._tx(db):
-                await db.execute(
-                    "INSERT OR REPLACE INTO capture_cursors"
-                    "(scope_key, last_msg_id, counted_msg_id, pending_turns, warmup_threshold, last_batch_sig, updated_ns) "
-                    "VALUES(?,?,?,?,?,?,?)",
-                    (scope_key, state.last_msg_id, state.counted_msg_id,
-                     state.pending_turns, state.warmup_threshold, state.last_batch_sig,
-                     time.time_ns()),
-                )
-        except Exception as exc:
-            log(f"捕获游标保存失败 [{scope_key}]: {exc}", "DEBUG", tag="记忆")
-
-    # ------------------------------------------------------------------
-    # 主流程
-    # ------------------------------------------------------------------
-
-    async def run(self) -> None:
-        """扫描所有会话 scope，对命中触发条件的执行提取。"""
+    async def run(self, *, force: bool = False) -> None:
+        """扫描会话；关停强制模式为每个会话消费一个批次，剩余材料下次恢复。"""
         if not get_config_bool("memory_auto_capture_enabled", True):
             return
         store = self._memory.memory_store
@@ -307,8 +171,8 @@ class AutoCapturePipeline:
             return
 
         every_n = max(1, get_config_int("memory_auto_capture_every_n", 5))
-        idle_seconds = max(30, get_config_int("memory_auto_capture_idle_seconds", 600))
-        max_scopes = max(1, get_config_int("memory_auto_capture_max_scopes", 5))
+        idle_seconds = 0 if force else max(30, get_config_int("memory_auto_capture_idle_seconds", 600))
+        max_scopes = len(scopes) if force else max(1, get_config_int("memory_auto_capture_max_scopes", 5))
 
         processed = 0
         now = time.time()
@@ -316,10 +180,11 @@ class AutoCapturePipeline:
             if processed >= max_scopes:
                 break
             try:
-                if await self._process_scope(
+                outcome = await self._process_scope(
                     sqlite, scope["scope_type"], scope["scope_id"],
                     every_n=every_n, idle_seconds=idle_seconds, now=now,
-                ):
+                )
+                if outcome is not CaptureOutcome.IDLE:
                     processed += 1
             except Exception as exc:
                 log(
@@ -359,8 +224,8 @@ class AutoCapturePipeline:
         every_n: int,
         idle_seconds: int,
         now: float,
-    ) -> bool:
-        """处理单个 scope（每 scope 串行）；实际执行了提取返回 True。"""
+    ) -> CaptureOutcome:
+        """串行消费一个会话批次，返回实际消费结果。"""
         lock = self._scope_locks.setdefault(f"{scope_type}:{scope_id}", asyncio.Lock())
         async with lock:
             return await self._process_scope_locked(
@@ -369,251 +234,181 @@ class AutoCapturePipeline:
             )
 
     async def _process_scope_locked(
-        self,
-        sqlite: Any,
-        scope_type: str,
-        scope_id: str,
-        *,
-        every_n: int,
-        idle_seconds: int,
-        now: float,
-    ) -> bool:
-        """处理单个 scope；实际执行了提取返回 True。"""
+        self, sqlite: Any, scope_type: str, scope_id: str, *,
+        every_n: int, idle_seconds: int, now: float,
+    ) -> CaptureOutcome:
+        """消费一个有界批次；失败检查点保留，终止的批次写入审计。"""
         scope_key = f"{scope_type}:{scope_id}"
-        state = await self._load_state(scope_key)
-
-        # 按提取游标分批拉取（id 升序）：积压超过单批窗口时逐批消费，
-        # 游标只推进到实际处理的最大 id，不会因窗口截断永久漏提
-        rows = await self._fetch_pending(
-            sqlite, scope_type, scope_id, state.last_msg_id,
-        )
-        uncounted = [r for r in rows if int(r["id"]) > state.counted_msg_id]
-        if not uncounted and not state.pending_turns:
-            return False
-        latest_id = int(rows[-1]["id"]) if rows else state.counted_msg_id
-        pending_rows = rows
-        if not pending_rows:
-            return False
-        latest_ts = int(pending_rows[-1]["ts_ns"]) / 1e9
-
-        # 新消息轮数（一条 user 消息≈一轮；只统计未计过数的消息）
-        new_turns = sum(1 for r in uncounted if r["role"] == "user") or len(uncounted)
-        pending_turns = state.pending_turns + new_turns
-        state.counted_msg_id = max(state.counted_msg_id, latest_id)
-
-        threshold = min(state.warmup_threshold, every_n)
-        triggered_by_turns = pending_turns >= threshold
-        triggered_by_idle = bool(pending_turns) and (now - latest_ts) >= idle_seconds
-
-        if not (triggered_by_turns or triggered_by_idle):
-            # 未触发：只累计轮数（提取游标不动，下轮仍需拿到这批消息）
-            state.pending_turns = pending_turns
-            await self._save_state(scope_key, state)
-            return False
-
-        # 触发（或质量门放弃）：本批消息处理完毕，提取游标推进到最新
-        messages = [
-            {"id": r["id"], "role": r["role"], "content": r["content"], "ts_ns": r["ts_ns"]}
-            for r in pending_rows
-            if r["role"] in ("user", "assistant")
-        ]
+        journal = self._journal
+        state = await journal.load(scope_key)
+        if state.batch is None:
+            rows = await self._fetch_pending(sqlite, scope_type, scope_id, state.last_msg_id)
+            if not rows:
+                return CaptureOutcome.IDLE
+            uncounted = [r for r in rows if int(r["id"]) > state.counted_msg_id]
+            state.pending_turns += sum(r["role"] == "user" for r in uncounted) or len(uncounted)
+            state.counted_msg_id = max(state.counted_msg_id, int(rows[-1]["id"]))
+            threshold = min(state.warmup_threshold, every_n)
+            idle = now - int(rows[-1]["ts_ns"]) / 1e9 >= idle_seconds
+            if state.pending_turns < threshold and not idle and len(rows) < _MAX_NEW_MESSAGES:
+                await journal.save(scope_key, state)
+                return CaptureOutcome.IDLE
+            selected: list[dict[str, Any]] = []
+            chars = 0
+            for row in rows:
+                size = len(str(row.get("content") or ""))
+                if selected and (len(selected) >= _MAX_NEW_MESSAGES or chars + size > _BATCH_MAX_CHARS):
+                    break
+                selected.append(row)
+                chars += size
+            background = await sqlite.fetch_conversation_with_id(
+                scope_type=scope_type, scope_id=scope_id, limit=3, before_id=int(selected[0]["id"]),
+            )
+            state.batch = CaptureBatch(rows=selected, background=[
+                r for r in background if r["role"] in ("user", "assistant")
+            ])
+            await journal.save(scope_key, state)
+        batch = state.batch
+        messages = [r for r in batch.rows if r["role"] in ("user", "assistant")]
         from . import metrics
-        if not should_extract(messages):
-            metrics.incr("capture.skipped_low_quality")
-            state.last_msg_id = latest_id
-            state.pending_turns = 0
-            await self._save_state(scope_key, state)
-            return False
-
-        batch_sig = _batch_signature(pending_rows)
-        if batch_sig and batch_sig == state.last_batch_sig:
-            # 崩溃恢复：该批次已提取落库但游标未及保存，直接推进避免重复提取
-            state.last_msg_id = latest_id
-            state.pending_turns = 0
-            state.failures = 0
-            await self._save_state(scope_key, state)
-            log(f"自动捕获 [{scope_key}]: 批次已提取（崩溃恢复），跳过重复提取", "DEBUG", tag="记忆")
-            return False
-
-        extracted = await self._extract_and_store(scope_key, messages)
         metrics.incr("capture.batches")
-        if extracted is None:
-            # 提取失败：提取游标不推进，pending 保留，下轮重试（有限次）
-            state.failures += 1
-            state.pending_turns = pending_turns
-            metrics.incr("capture.failed")
-            if state.failures >= _MAX_BATCH_FAILURES:
-                log(f"自动捕获连续 {state.failures} 次失败，放弃本批 [{scope_key}]", "WARNING", tag="记忆")
-                state.pending_turns = 0
-                state.failures = 0
-                state.last_msg_id = latest_id
-            await self._save_state(scope_key, state)
-            return False
-
-        # 成功：游标推进、重置计数，warm-up 阈值指数爬升直至 every_n
-        metrics.incr("capture.extracted", extracted)
-        state.last_msg_id = latest_id
-        state.pending_turns = 0
-        state.failures = 0
-        state.last_batch_sig = batch_sig
-        state.warmup_threshold = min(state.warmup_threshold * 2, every_n)
-        await self._save_state(scope_key, state)
-        if extracted:
-            log(f"自动捕获 [{scope_key}]: 提取 {extracted} 条记忆", tag="记忆")
-        return True
-
-    async def _extract_and_store(
-        self, scope_key: str, messages: List[Dict[str, Any]],
-    ) -> Optional[int]:
-        """LLM 提取 + 逐条语义裁决写库。失败返回 None，成功返回写入/更新条数。"""
-        from core.tags import strip_message_meta_tags
-
-        # 批次内真实出现的发言者 uid 集合：写库时校验 LLM 输出的 speaker，
-        # 不在集合内的视为幻觉丢弃（身份只能来自消息元数据，不信模型编造）
-        speaker_uids: set[str] = set()
-
-        def _fmt(msg: Dict[str, Any]) -> str:
-            day = time.strftime("%m-%d %H:%M", time.localtime(int(msg["ts_ns"]) / 1e9))
-            if msg["role"] == "user":
-                label, uid = _extract_speaker(msg["content"])
-                if uid:
-                    speaker_uids.add(uid)
-                who = label or "用户"
-            else:
-                who = "AI"
-            content = strip_message_meta_tags(msg["content"])[:_MSG_MAX_CHARS]
-            return f"[{day}] {who}: {content}"
-
-        new_part = messages[-_MAX_NEW_MESSAGES:]
-        background_part = messages[:-_MAX_NEW_MESSAGES][-_MAX_BACKGROUND_MESSAGES:]
-        scope_type, _, scope_id = scope_key.partition(":")
-        adapter, sep, base_id = scope_id.partition(":")
-        scope = build_entity_scope(scope_type, adapter if sep else "", base_id if sep else adapter)
-        material = capture_origin(scope, [*background_part, *new_part])
-        prompt = _EXTRACT_PROMPT.replace(
-            "{background}", "\n".join(_fmt(m) for m in background_part) or "（无）"
-        ).replace(
-            "{new_messages}", "\n".join(_fmt(m) for m in new_part)
-        )
-
         try:
-            raw = await light_llm(prompt, temperature=0.2, timeout=120.0)
-        except Exception as exc:
-            # LLM 未配置/超时/故障：返回 None 走失败重试计数（有界），
-            # 避免异常直接穿透导致每个 tick 无限重试毒 scope
-            log(f"自动捕获提取调用失败 [{scope_key}]: {exc}", "DEBUG", tag="记忆")
-            return None
-        max_items = max(1, get_config_int("memory_auto_capture_max_per_batch", 6))
-        items = parse_extraction(raw, max_items=max_items)
-        if not items:
-            return 0
-
-        store = self._memory.memory_store
-        assert store is not None
-        scope_tag = scope_key  # scope_key 即 "user:qq:123" / "group:qq:456" 标签格式
-        _, adapter, _, _ = parse_entity_scope(scope)
-        stored = 0
-        for item in items:
-            tags = [scope_tag, f"type:{item['type']}"]
-            if item["topic"]:
-                tags.append(f"topic:{item['topic']}")
-            # 发言者归属标签：每条记忆天生携带"谁说的"，下游召回/任务可核验归属
-            speaker = item.get("speaker", "")
-            if speaker:
-                if speaker in speaker_uids and adapter:
-                    speaker_tag = f"user:{adapter}:{speaker}"
-                    if speaker_tag != scope_tag:
-                        tags.append(speaker_tag)
-                else:
-                    log(
-                        f"自动捕获 [{scope_key}]: speaker {speaker!r} 不在批次发言者中，已丢弃",
-                        "DEBUG", tag="记忆",
-                    )
-            try:
-                metadata: Dict[str, Any] = dict(material)
-                if item["sensitivity"] != "normal":
-                    metadata["sensitivity"] = item["sensitivity"]
-                if item["date"] and item["type"] == "event":
-                    metadata["activity_date"] = item["date"]
-                if item.get("temporal_scope") and item["type"] == "event":
-                    metadata["temporal_scope"] = item["temporal_scope"]
-                candidates = await gather_dedup_candidates(
-                    store, self._memory.embedder, item["content"],
-                )
-                decision = await judge_write(item["content"], candidates, tags=tags)
-                action = decision.get("action", "store")
-                from . import metrics
-                metrics.incr(f"write.dedup_llm_{action}")
-                if action == "skip":
-                    await apply_evidence_signals(store, action, item["content"], candidates, metadata=metadata)
-                    continue
-                if action == "update" and decision.get("target_id"):
-                    updated = await apply_update(
-                        store, int(decision["target_id"]),
-                        str(decision.get("content") or item["content"]), tags,
-                        actor="auto_capture", metadata=metadata,
-                    )
-                    if updated is not None:
-                        await apply_evidence_signals(
-                            store, action, item["content"], candidates,
-                            target_ids=[updated.id] if updated.id else None,
-                        )
-                        stored += 1
-                        continue
-                if action == "merge" and decision.get("target_ids"):
-                    merge_ids = [int(i) for i in decision["target_ids"]]
-                    keep_id = await store.merge_memories(
-                        merge_ids,
-                        str(decision.get("content") or item["content"]),
-                        actor="auto_capture", metadata=metadata, extra_tags=tags,
-                    )
-                    if keep_id:
-                        await apply_evidence_signals(
-                            store, action, item["content"], candidates,
-                            target_ids=[keep_id],
-                        )
-                        stored += 1
-                        continue
-                entry = MemoryEntry(
-                    memory_type=(
-                        MemoryType.EPISODIC if item["type"] == "event"
-                        else MemoryType.SEMANTIC
-                    ),
-                    content=item["content"],
-                    source="auto_capture",
-                    tags=tags,
-                    importance=item["importance"],
-                    metadata=metadata,
-                )
-                await store.add(entry, actor="auto_capture")
-                stored += 1
-            except Exception as exc:
-                log(f"自动捕获写入失败 [{scope_key}]: {exc}", "DEBUG", tag="记忆")
+            stored = await self._consume_batch(scope_key, state, messages)
+        except (Exception, asyncio.CancelledError) as exc:
+            batch.failures += 1
+            metrics.incr("capture.failed")
+            detail = json.dumps({
+                "scope": scope_key, "message_ids": [r["id"] for r in batch.rows],
+                "attempt": batch.failures, "next_item": batch.next_item,
+                "error": f"{type(exc).__name__}: {exc}"[:500],
+                "abandoned": batch.failures >= _MAX_BATCH_FAILURES,
+            }, ensure_ascii=False)
+            if batch.failures >= _MAX_BATCH_FAILURES:
+                self._advance(state, batch)
+            await journal.save(scope_key, state, failure=detail)
+            log(f"自动捕获失败: {detail}", "WARNING", tag="记忆")
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            return CaptureOutcome.FAILED
+        self._advance(state, batch)
+        state.warmup_threshold = min(state.warmup_threshold * 2, every_n)
+        await journal.save(scope_key, state)
+        metrics.incr("capture.extracted", stored)
         if stored:
             from .embedding import wake_embedding_worker
             wake_embedding_worker()
-
-        # 关系抽取联动：同一批对话材料顺手提炼结构化关系进图谱
-        # （此前关系只在画像分析 60 轮阈值时抽取，跨人交叉知识沉淀太慢）
         if get_config_bool("memory_auto_capture_extract_relations", True):
             try:
-                relations = await self._extract_relations(scope_key, messages)
-                if relations:
-                    from . import metrics
-                    metrics.incr("capture.relations", relations)
-                    log(f"自动捕获 [{scope_key}]: +{relations} 条图谱关系", tag="记忆")
+                await self._extract_relations(scope_key, messages)
             except Exception as exc:
-                log(f"自动捕获关系抽取失败 [{scope_key}]: {exc}", "DEBUG", tag="记忆")
+                log(f"关系提取失败 [{scope_key}]: {exc}", "WARNING", tag="记忆")
+        return CaptureOutcome.COMPLETED
 
-        # 反馈分类联动：已呈现的待验证认知 × 本批用户消息 → 证据回流
-        # （证据系统的用户信号源；与关系抽取同构——同批材料顺手裁决）
-        if get_config_bool("memory_reflection_feedback_enabled", True):
-            try:
+    @staticmethod
+    def _advance(state: CaptureState, batch: CaptureBatch) -> None:
+        """结束已处理或明确终止的批次，保留尚未消费的计数。"""
+        state.last_msg_id = int(batch.rows[-1]["id"])
+        consumed = sum(r["role"] == "user" for r in batch.rows) or len(batch.rows)
+        state.pending_turns = max(0, state.pending_turns - consumed)
+        state.batch = None
+
+    async def _consume_batch(
+        self, scope_key: str, state: CaptureState, messages: list[dict[str, Any]],
+    ) -> int:
+        """先保存提取结果，再按出处回执恢复写入，反馈独立于新事实数量。"""
+        batch = state.batch
+        assert batch is not None
+        journal = self._journal
+        if batch.items is None:
+            batch.items = await self._extract(messages, batch.background) if should_extract(messages) else []
+            await journal.save(scope_key, state)
+        stored = 0
+        while batch.next_item < len(batch.items):
+            key = batch.item_key(scope_key, batch.next_item)
+            if not await journal.has_item(key):
+                stored += await self._store_item(scope_key, [*batch.background, *messages], batch.items[batch.next_item], key)
+            batch.next_item += 1
+            await journal.save(scope_key, state)
+        if not batch.feedback_done:
+            if get_config_bool("memory_reflection_feedback_enabled", True):
                 from .reflection_lifecycle import classify_reflection_feedback
-                await classify_reflection_feedback(store, scope_key, messages)
-            except Exception as exc:
-                log(f"反思反馈分类失败 [{scope_key}]: {exc}", "DEBUG", tag="记忆")
+                await classify_reflection_feedback(journal.store, scope_key, messages)
+            batch.feedback_done = True
+            await journal.save(scope_key, state)
         return stored
+
+    async def _extract(self, messages: list[dict[str, Any]], background: list[dict[str, Any]]) -> list[CaptureItem]:
+        """发送整条消息，保持时间、真实发言者及正文中的限定条件。"""
+        from core.sanitizer import truncate_middle
+        from core.tags import strip_message_meta_tags
+
+        def render(msg: dict[str, Any], *, background: bool = False) -> str:
+            day = time.strftime("%m-%d %H:%M", time.localtime(int(msg["ts_ns"]) / 1e9))
+            who = (_extract_speaker(msg["content"])[0] or "用户") if msg["role"] == "user" else "AI"
+            content = strip_message_meta_tags(msg["content"])
+            return f"[{day}] {who}: {truncate_middle(content, 2000) if background else content}"
+
+        lines = [render(msg) for msg in messages]
+        previous = "\n".join(render(msg, background=True) for msg in background)
+        limit = max(1, get_config_int("memory_auto_capture_max_per_batch", 6))
+        prompt = (_EXTRACT_PROMPT.replace("{max_items}", str(limit))
+                  .replace("{background}", previous or "（无）").replace("{new_messages}", "\n".join(lines)))
+        raw = await light_llm(prompt, temperature=0.2, timeout=120.0)
+        return parse_extraction(raw, max_items=limit)
+
+    async def _store_item(
+        self, scope_key: str, messages: list[dict[str, Any]], item: CaptureItem, key: str,
+    ) -> int:
+        """保存一个提取结果及其出处；写入失败交由批次检查点处理。"""
+        store = self._journal.store
+        scope_type, _, scope_id = scope_key.partition(":")
+        adapter, sep, base_id = scope_id.partition(":")
+        scope = build_entity_scope(scope_type, adapter if sep else "", base_id if sep else adapter)
+        _, adapter, _, _ = parse_entity_scope(scope)
+        metadata = capture_origin(scope, messages, capture_key=key)
+        if item.sensitivity != "normal":
+            metadata["sensitivity"] = item.sensitivity
+        if item.type == "event":
+            if item.date:
+                metadata["activity_date"] = item.date
+            if item.temporal_scope:
+                metadata["temporal_scope"] = item.temporal_scope
+        tags = [scope_key, f"type:{item.type}"]
+        if item.topic:
+            tags.append(f"topic:{item.topic}")
+        speakers = {_extract_speaker(m["content"])[1] for m in messages if m["role"] == "user"}
+        if item.speaker and item.speaker in speakers and adapter:
+            speaker_tag = f"user:{adapter}:{item.speaker}"
+            if speaker_tag not in tags:
+                tags.append(speaker_tag)
+        candidates = await gather_dedup_candidates(store, self._memory.embedder, item.content)
+        decision = await judge_write(item.content, candidates, tags=tags)
+        action = decision.get("action", "store")
+        from . import metrics
+        metrics.incr(f"write.dedup_llm_{action}")
+        if action == "skip" and decision.get("target_id"):
+            if await retain_duplicate_origin(store, int(decision["target_id"]), metadata):
+                return 0
+        if action == "update" and decision.get("target_id"):
+            updated = await apply_update(
+                store, int(decision["target_id"]), str(decision.get("content") or item.content),
+                tags, actor="auto_capture", metadata=metadata,
+            )
+            if updated is not None:
+                return 1
+        if action == "merge" and decision.get("target_ids"):
+            keep_id = await store.merge_memories(
+                [int(i) for i in decision["target_ids"]], str(decision.get("content") or item.content),
+                actor="auto_capture", metadata=metadata, extra_tags=tags,
+            )
+            if keep_id:
+                return 1
+        await store.add(MemoryEntry(
+            memory_type=MemoryType.EPISODIC if item.type == "event" else MemoryType.SEMANTIC,
+            content=item.content, source="auto_capture", tags=tags,
+            importance=item.importance, metadata=metadata,
+        ), actor="auto_capture")
+        return 1
 
     async def _extract_relations(
         self, scope_key: str, messages: List[Dict[str, Any]],
@@ -664,53 +459,19 @@ def _pipeline() -> "AutoCapturePipeline":
     return auto_capture_port.get()
 
 
-async def run_auto_capture(mind: MemoryHost) -> None:
-    """心跳集成入口：每个 tick 调用一次。"""
-    await _pipeline().run()
-
-
-async def flush_auto_capture(mind: MemoryHost) -> None:
-    """进程退出前的兜底提取：所有有待提取内容的 scope 立即处理（不等阈值/空闲）。
-
-    对应触发器的第三轨（shutdown flush）：未达轮数阈值且未满空闲时间的
-    对话批次，在优雅关停时强制提取，避免短期会话的记忆随进程退出丢失。
-    """
-    pipeline = _pipeline()
-    store = mind.memory_store
-    if not store or not get_config_bool("memory_auto_capture_enabled", True):
-        return
-    try:
-        from agent.runtime.singleton import require_runtime
-        sqlite = require_runtime().data_center.sqlite
-        scopes = await sqlite.list_conversation_scope_keys()
-    except Exception:
-        return
-    every_n = max(1, get_config_int("memory_auto_capture_every_n", 5))
-    now = time.time()
-    for scope in scopes:
-        try:
-            state = await pipeline._load_state(f"{scope['scope_type']}:{scope['scope_id']}")
-            if state.pending_turns <= 0:
-                continue
-            # idle_seconds=0：有待提取内容即视为到期
-            await pipeline._process_scope(
-                sqlite, scope["scope_type"], scope["scope_id"],
-                every_n=every_n, idle_seconds=0, now=now,
-            )
-        except Exception as exc:
-            log(f"关停兜底提取失败 [{scope.get('scope_id')}]: {exc}", "DEBUG", tag="记忆")
+async def run_auto_capture(mind: MemoryHost, *, force: bool = False) -> None:
+    """心跳与关停共用入口；强制模式跳过轮数和空闲门槛。"""
+    await _pipeline().run(force=force)
 
 
 async def flush_scope_capture(mind: MemoryHost, scope_key: str) -> bool:
     """单 scope 强制提取：上下文压缩前抢跑沉淀（PreCompact flush）。
 
-    上下文压缩只裁剪内存中的消息链，但被裁掉的细节若尚未经 auto_capture
-    沉淀，本会话后续轮次就无法召回——抢在压缩前把该 scope 的待定对话
-    提取为长期记忆（信息不失帧）。idle_seconds=0：有待提取内容即视为
-    到期（与关停兜底路径同语义）。
+    压缩前消费一个待定批次，降低未沉淀细节离开上下文的风险。
+    idle_seconds=0：有待提取内容即视为到期，剩余积压由后续捕获继续消费。
 
     fail-open：未启用 / 无待提取内容 / 运行时不可用均返回 False，
-    是否记录日志由调用方决定。实际执行了提取返回 True。
+    失败由管线记录。实际消费批次返回 True。
     """
     if not mind.memory_store or not get_config_bool("memory_auto_capture_enabled", True):
         return False
@@ -723,10 +484,11 @@ async def flush_scope_capture(mind: MemoryHost, scope_key: str) -> bool:
     except Exception:
         return False
     every_n = max(1, get_config_int("memory_auto_capture_every_n", 5))
-    return await _pipeline()._process_scope(
+    outcome = await _pipeline()._process_scope(
         sqlite, scope_type, scope_id,
         every_n=every_n, idle_seconds=0, now=time.time(),
     )
+    return outcome is CaptureOutcome.COMPLETED
 
 
 _CAPTURE_CONFIGS = {

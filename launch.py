@@ -108,11 +108,11 @@ def create_application(args: argparse.Namespace) -> Application:
 
     async def _flush_pending_memory() -> None:
         """记忆自动捕获兜底：退出前强制提取各会话待定内容（限时 30s）。"""
-        from agent.memory.auto_capture import flush_auto_capture
+        from agent.memory.auto_capture import run_auto_capture
         from services._runtime import require_runtime
         try:
             await asyncio.wait_for(
-                flush_auto_capture(require_runtime().mind), timeout=30.0,
+                run_auto_capture(require_runtime().mind, force=True), timeout=30.0,
             )
         except asyncio.TimeoutError:
             log("兜底记忆提取超时（30s），未处理内容下次启动续跑（游标已持久化）", "WARNING", tag="关停")

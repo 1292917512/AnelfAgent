@@ -32,7 +32,9 @@
    编辑 `wcauto_bridge.json`（设 token）→ `run_bridge.bat --doctor` → `run_bridge.bat`
 2. **频道侧连接**：WebUI 配置中心 `adapter/wcauto` 组（或直接改
    `channel_config.json`）设置 `ws_url` 与 `access_token`，`enabled` 置 true
-3. **验证**：频道卡片状态 `running`、日志出现 `wcauto: 已连接桥 account=...`
+3. **验证**：频道卡片状态 `running`、日志出现 `wcauto: 已连接桥 account=...` 只说明桥连接成功。
+   账号来自数据库缓存；health/doctor 的 `login_state=unknown` 不证明微信已登录。收发验收前先
+   检查桥机当前登录画面，再进行真实收发。health/doctor 不会主动弹起窗口。
    即成功；用**另一个微信号**给目标号发消息，验证完整入站链路
 
 ## 常用配置项
@@ -87,7 +89,7 @@
 |---|---|
 | 频道一直 `connecting` | 桥是否在跑；`ws_url` 的 IP/端口；防火墙放行 8655 |
 | 日志 `auth_failed` | `access_token` 与桥 `wcauto_bridge.json` 的 token 不一致 |
-| 能收不能发 | 微信窗口不可见（锁屏/RDP 断开）；桥机执行 `--doctor` 自检 |
+| 能收不能发 | 先核对实时登录画面及窗口状态（锁屏/RDP 断开等）；`--doctor` 仅检查桥、数据库与缓存 |
 | 图片下载失败 | 微信里先点开过该图（缩略图策略）；桥 `doctor` 看图片密钥 |
 | 群消息不到 | 检查 `group_policy`/白名单/`ignore_chats` |
 | AI 撞拟人节流 | 正常现象（rhythm 冷却 30-75s），降频即可 |

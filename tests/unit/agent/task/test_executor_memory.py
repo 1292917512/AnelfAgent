@@ -95,7 +95,6 @@ class TestStoreResultDedup:
 
         monkeypatch.setattr(dedup, "gather_dedup_candidates", AsyncMock(return_value=[SimpleNamespace(id=5)]))
         monkeypatch.setattr(dedup, "judge_write", AsyncMock(return_value={"action": "skip"}))
-        monkeypatch.setattr(dedup, "apply_evidence_signals", AsyncMock())
         store = _store()
         mind = _mind_with_store(store)
         result = TaskResult(task_name="t", content="已有等价记忆", memory_type=MemoryType.EPISODIC, source="t")
@@ -103,7 +102,7 @@ class TestStoreResultDedup:
         await TaskExecutor(mind, mind)._store_result(result)
 
         store.add.assert_not_awaited()
-        dedup.apply_evidence_signals.assert_awaited_once()
+        store.update.assert_not_awaited()
 
     async def test_store_verdict_writes_entry(self, monkeypatch) -> None:
         import agent.memory.dedup as dedup

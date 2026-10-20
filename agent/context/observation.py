@@ -44,7 +44,7 @@ def observe_preparation(
 
 _LABELS = {
     "memory": "记忆召回与技能候选", "profile": "实体画像", "relation": "记忆关联",
-    "hub": "主标签记忆", "context": "便签与文件索引", "volatile": "短期记忆",
+    "context": "便签与文件索引", "volatile": "短期记忆",
 }
 _SOURCE_LABELS = {
     "memory_recall": "记忆召回", "cross_channel_recall": "跨频道召回",

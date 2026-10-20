@@ -1,4 +1,5 @@
 import { chatApi } from "@/lib/api";
+import { replaceEqualDeep } from "@tanstack/react-query";
 import type { ChatBucket, ChatHistoryMessage, ChatMessage } from "@/lib/types";
 import { DEFAULT_CHAT_ID } from "./chat-shared";
 
@@ -19,7 +20,9 @@ function mergeHistory(local: ChatMessage[], incoming: ChatHistoryMessage[]): Cha
     const existing = (message.id != null ? byId.get(message.id) : undefined) ?? (message.cid ? byClient.get(message.cid) : undefined);
     if (!existing) return message;
     matched.add(existing);
-    return { ...existing, ...message, content: existing.content, delivery: existing.delivery === "submitting" || existing.delivery === "unknown" ? "submitted" : existing.delivery };
+    const merged: ChatMessage = { ...existing, ...message, content: existing.content };
+    if (existing.delivery === "submitting" || existing.delivery === "unknown") merged.delivery = "submitted";
+    return replaceEqualDeep(existing, merged);
   });
   messages.push(...local.filter((message) => !matched.has(message)));
   return messages.sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0));
@@ -27,7 +30,7 @@ function mergeHistory(local: ChatMessage[], incoming: ChatHistoryMessage[]): Cha
 
 /** Serializes history requests per conversation and preserves messages received during loading. */
 export function createChatHistory(context: HistoryContext) {
-  const requests = new Map<string, { refresh: boolean }>();
+  const requests = new Map<string, { refresh: boolean; promise: Promise<void> }>();
   async function load(chatId: string | undefined, mode: HistoryMode): Promise<void> {
     const id = chatId ?? context.activeId();
     const original = context.bucket(id);
@@ -35,42 +38,46 @@ export function createChatHistory(context: HistoryContext) {
     if (!original) return;
     if (inflight) {
       if (mode === "refresh") inflight.refresh = true;
-      return;
+      return inflight.promise;
     }
     if (mode === "initial" && original.historyLoaded) return;
     if (mode === "earlier" && (!original.hasMore || original.earliestId == null)) return;
-    const ticket = { refresh: false };
+    const ticket = { refresh: false, promise: Promise.resolve() };
     const snapshot = new Set(original.messages);
     requests.set(id, ticket);
     context.update(id, () => mode === "earlier"
       ? { loadingEarlier: true, earlierError: null }
       : { historyLoading: true, historyError: null });
-    try {
-      const { data } = await chatApi.history("web_user", HISTORY_PAGE_SIZE,
-        id === DEFAULT_CHAT_ID ? undefined : id, mode === "earlier" ? original.earliestId : undefined);
-      if (requests.get(id) !== ticket || !context.bucket(id)) return;
-      context.update(id, (bucket) => {
-        const first = data[0]?.id;
-        const local = mode === "refresh" && first != null
-          ? bucket.messages.filter((message) => message.id != null || message.role === "user" || message.kind === "system_notice" || !snapshot.has(message))
-          : bucket.messages;
-        const messages = mergeHistory(local, data);
-        const ids = messages.flatMap((message) => message.id != null ? [message.id] : []);
-        return { messages, earliestId: ids.length ? Math.min(...ids) : undefined,
-          historyLoaded: true,
-          hasMore: mode === "refresh" && original.historyLoaded ? bucket.hasMore : data.length >= HISTORY_PAGE_SIZE };
-      });
-      if (mode !== "earlier") context.onLoaded(id);
-    } catch (error) {
-      if (requests.get(id) === ticket && context.bucket(id)) context.update(id, () =>
-        mode === "earlier" ? { earlierError: error } : { historyError: error });
-    } finally {
-      if (requests.get(id) === ticket) {
-        requests.delete(id);
-        if (context.bucket(id)) context.update(id, () => ({ historyLoading: false, loadingEarlier: false }));
-        if (ticket.refresh) await load(id, "refresh");
+    ticket.promise = (async () => {
+      try {
+        const { data } = await chatApi.history("web_user", HISTORY_PAGE_SIZE,
+          id === DEFAULT_CHAT_ID ? undefined : id, mode === "earlier" ? original.earliestId : undefined);
+        if (requests.get(id) !== ticket || !context.bucket(id)) return;
+        context.update(id, (bucket) => {
+          const first = data[0]?.id;
+          const local = mode === "refresh" && first != null
+            ? bucket.messages.filter((message) => message.id != null || message.role === "user" || message.kind === "system_notice" || !snapshot.has(message))
+            : bucket.messages;
+          const merged = mergeHistory(local, data);
+          const messages = merged.length === bucket.messages.length && merged.every((message, index) => message === bucket.messages[index]) ? bucket.messages : merged;
+          const ids = messages.flatMap((message) => message.id != null ? [message.id] : []);
+          return { messages, earliestId: ids.length ? Math.min(...ids) : undefined,
+            historyLoaded: true,
+            hasMore: mode === "refresh" && original.historyLoaded ? bucket.hasMore : data.length >= HISTORY_PAGE_SIZE };
+        });
+        if (mode !== "earlier" && !original.historyLoaded) context.onLoaded(id);
+      } catch (error) {
+        if (requests.get(id) === ticket && context.bucket(id)) context.update(id, () =>
+          mode === "earlier" ? { earlierError: error } : { historyError: error });
+      } finally {
+        if (requests.get(id) === ticket) {
+          requests.delete(id);
+          if (context.bucket(id)) context.update(id, () => ({ historyLoading: false, loadingEarlier: false }));
+          if (ticket.refresh) await load(id, "refresh");
+        }
       }
-    }
+    })();
+    return ticket.promise;
   }
   return {
     load: (id?: string) => load(id, "initial"),

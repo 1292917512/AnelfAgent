@@ -25,6 +25,12 @@ it("retains a background child in the live round after its parent has completed"
   expect(pages[0]?.runs.map((item) => item.id)).toEqual(["parent", "child", "web"]);
 });
 
+it("retains queued delegation work in the live page after the parent reply ends", () => {
+  const parent = run("parent", 1, 2);
+  parent.entries = [{ id: "queued", kind: "delegation", ts: 1, agent: "Worker", goal: "Waiting", status: "queued", background: true }];
+  expect(activityPages([parent, run("new", 3, 4)])[0]?.runs.map((item) => item.id)).toEqual(["parent", "new"]);
+});
+
 it("renders orphaned children when an older parent was evicted", () => {
   expect(activityPages([run("child", 10, 20, "evicted")])[0]?.runs.map((item) => item.id)).toEqual(["child"]);
 });
@@ -48,9 +54,9 @@ it("keeps recollection history but lists only running work, including children o
   expect(groups.recollection.flatMap(({ entries }) => entries.map((entry) => entry.id))).toEqual(["recall"]);
   expect(groups.background.flatMap(({ entries }) => entries.map((entry) => entry.id))).toEqual(["active", "review"]);
   expect(groups.tasks.map(({ run }) => run.id)).toEqual(["task"]);
-  expect(groups.delegates.map(({ run }) => run.id)).toEqual(["child", "nested"]);
+  expect(groups.delegates.map(({ run }) => run.id)).toEqual(["child", "nested", "parent"]);
   expect(activitySideGroups([], all).recollection).toEqual([]);
-  expect(activitySideGroups([parent], [parent]).delegates.flatMap(({ entries }) => entries.map((entry) => entry.id))).toEqual(["delegate"]);
+  expect(activitySideGroups([parent], [parent]).delegates.flatMap(({ entries }) => entries.map((entry) => entry.id))).toEqual(["delegate", "queued"]);
   const ended = all.map((run) => ({ ...run, status: "completed", entries: run.entries.map((entry) => "status" in entry ? { ...entry, status: "done" as const } : entry) }));
   expect(activitySideGroups(ended, ended)).toMatchObject({ tasks: [], delegates: [], background: [] });
 });

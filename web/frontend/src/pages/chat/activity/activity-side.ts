@@ -25,7 +25,7 @@ export function activitySideGroups(records: ActivityRun[], work: ActivityRun[]):
     }
   }
   for (const run of work) for (const entry of run.entries) {
-    if (entry.kind === "delegation" && entry.status === "running" && !delegationRuns.has(entry.id) && !delegationRuns.has(entry.run_id ?? "")) {
+    if (entry.kind === "delegation" && ["running", "queued"].includes(entry.status) && !delegationRuns.has(entry.id) && !delegationRuns.has(entry.run_id ?? "")) {
       delegates.set(entry.id, { run, entries: [entry] });
     }
   }

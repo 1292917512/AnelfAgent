@@ -183,7 +183,6 @@ class ContextPreparation:
             summary_row=inputs.summary,
             status_text=status_text,
             heartbeat_text=heartbeat_text,
-            hub_text=inputs.hub,
             repeat_hint_text=inputs.repeat_hint,
         )
 

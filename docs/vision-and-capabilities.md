@@ -24,6 +24,10 @@
 
 ## 图片输入与辅助识别
 
+图片库 `StickerStore` 经实体 `register_lifecycle()` 托管。运行时先注册实体存储，再注册
+向量回填与图片索引 worker；宿主逆序关停时先停 worker、后关库。连接初始化失败或被取消时
+关闭尚未发布的连接，避免残留 SQLite 线程阻止进程退出。
+
 主模型声明 `supports_vision` 时，入站图片直接进入所属 user 消息。`recognize_image(provider="auto")`
 对本地路径、HTTP(S) URL 和图片 Data URL 使用同一路由：返回原图引用，工具执行层将图片追加到
 本批全部 tool 回执之后，供下一轮主模型直接分析，不另起识图模型或后台任务。已在当前上下文中的

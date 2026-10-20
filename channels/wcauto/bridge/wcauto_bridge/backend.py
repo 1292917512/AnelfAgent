@@ -99,7 +99,12 @@ class _RecallGuardHook:
 
 
 class WeChatBackend:
-    """微信后端：读侧（DB 监听）常驻，写侧（GUI）按需惰性初始化。"""
+    """微信后端：读侧常驻，写侧按需初始化。
+
+    Model Experience：探活明确标注缓存账号与未验证登录状态。
+    Token：状态结果增加少量来源字段，无额外模型调用。
+    缓存：仅影响工具结果，不更改稳定前缀。
+    """
 
     def __init__(self, config: BridgeConfig,
                  emit: Callable[[str, Dict[str, Any]], None]) -> None:
@@ -281,45 +286,36 @@ class WeChatBackend:
     # -- 状态/信息（读，AUTO_ALLOW 语义）--------------------------------
 
     def ping(self) -> Dict[str, Any]:
-        """轻量探活：桥进程状态 + 监听/窗口可用性。"""
-        window_visible = False
-        if self._gui is not None:
-            try:
-                window_visible = bool(self._gui.ensure_visible())
-            except Exception:
-                window_visible = False
+        """只读探活；账号来自数据库缓存，不构成实时登录证据。"""
         return {
             "pong": True,
             "uptime_sec": int(time.time() - self._started_at),
-            "account": self._self_info.get("username", ""),
-            "nickname": self._self_info.get("nick_name", ""),
+            "cached_account": {
+                "username": self._self_info.get("username", ""),
+                "nickname": self._self_info.get("nick_name", ""),
+                "source": "database_cache",
+            },
             "listener_running": bool(
                 self._listener and self._listener._thread
                 and self._listener._thread.is_alive()),
-            "gui_ready": self._gui is not None,
+            "gui_initialized": self._gui is not None,
             "gui_error": self._gui_err,
-            "window_visible": window_visible,
             "recall_guard": self._recall is not None,
+            "login_state": "unknown",
+            "login_evidence": None,
         }
 
     def doctor(self) -> Dict[str, Any]:
-        """深度自检：账号/数据库密钥/图片密钥/控件树四项。"""
-        result: Dict[str, Any] = {"account": None, "db_ok": False,
-                                  "image_key": False, "window_visible": False}
+        """只读检查数据库及图片密钥；不激活窗口或据缓存判断登录状态。"""
+        result: Dict[str, Any] = {"backend": self.ping(), "db_ok": False, "image_key": False}
         try:
-            result["account"] = self._self_info or dict(self._db.get_self_info() or {})
-            result["db_ok"] = bool(result["account"].get("username"))
+            result["db_ok"] = bool(self._db.get_self_info().get("username"))
         except Exception as exc:
             result["db_error"] = str(exc)[:300]
         try:
             result["image_key"] = bool(self._media.detect_image_key())
-        except Exception:
-            pass
-        try:
-            result["window_visible"] = bool(self._get_gui().ensure_visible())
-        except BridgeError as exc:
-            result["window_error"] = str(exc)[:300]
-        result["listener"] = self.ping()
+        except Exception as exc:
+            result["image_error"] = str(exc)[:300]
         return result
 
     def get_self_info(self) -> Dict[str, Any]:
