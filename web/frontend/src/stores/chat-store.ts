@@ -10,6 +10,8 @@
  *
  */
 import { create } from "zustand";
+import axios from "axios";
+import { activeChatRun, submissionFinished } from "@/lib/chat-activity";
 import { EventStream } from "@/lib/event-stream";
 import { useActivityStore } from "./activity-store";
 import { captureWorkspaceContext } from "@/lib/workspace-context";
@@ -21,7 +23,7 @@ import { toast } from "./toast-store";
 import { apiErrorMessage } from "@/lib/api/client";
 import { chatApi, workspaceApi } from "@/lib/api";
 import i18n from "@/i18n";
-import type { ChatBucket, ChatMeta, ContextUsage, PendingFile } from "@/lib/types";
+import type { ChatBucket, ChatMeta, PendingFile, StreamStatus } from "@/lib/types";
 import {
   DEFAULT_CHAT_ID,
   armSendWatchdog,
@@ -47,9 +49,9 @@ interface ChatState {
   buckets: Record<string, ChatBucket>;
   activeChatId: string;
   chats: ChatMeta[];
-  contextUsage: ContextUsage | null;
   /** SSE 实时流连接状态（断线时聊天流顶部显示恢复横幅） */
-  sseConnected: boolean;
+  streamStatus: StreamStatus;
+  refreshRealtime: () => void;
 
   /** 派生 helper：当前激活 bucket（渲染时直接用） */
   active: () => ChatBucket;
@@ -131,33 +133,46 @@ export const useChatStore = create<ChatState>((set, get) => {
     },
   });
 
+  function settleSubmission(chatId: string): void {
+    const bucket = get().buckets[chatId];
+    const latest = [...(bucket?.messages ?? [])].reverse().find((message) => message.role === "user");
+    if (bucket?.sending && submissionFinished(useActivityStore.getState().runs, chatId, latest)) {
+      clearSendWatchdog(chatId);
+      updateBucket(chatId, () => ({ sending: false, sendingSince: null }));
+    }
+  }
+
+  async function syncConversation(chatId: string): Promise<void> {
+    await Promise.all([useActivityStore.getState().load(), history.refresh(chatId)]);
+    settleSubmission(chatId);
+  }
+
   function resync(): void {
-    void useActivityStore.getState().load();
     const state = get();
     const ids = new Set([state.activeChatId, ...Object.keys(state.buckets).filter((id) => state.buckets[id]?.sending)]);
     for (const id of ids) {
       if (state.buckets[id]?.sending) armSendWatchdog(id, checkPendingReply);
-      void history.refresh(id);
+      void syncConversation(id);
     }
   }
 
-  const stream = new EventStream("/api/chat/stream", (source, isCurrent, recover) => {
-    attachChatSseHandlers(source, {
+  const stream = new EventStream("/api/chat/stream", (source, isCurrent, recover, received) => {
+    return attachChatSseHandlers(source, {
       updateBucket, getActiveChatId: () => get().activeChatId,
-      setContextUsage: (usage) => set({ contextUsage: usage }),
-    }, isCurrent, recover);
-  }, (sseConnected) => set({ sseConnected }), () => resync(), resync);
+      setContextUsage: (contextUsage, id) => updateBucket(id, () => ({ contextUsage })),
+      onTurnEnd: (id) => { void syncConversation(id); },
+    }, isCurrent, recover, received);
+  }, (_connected, streamStatus) => set({ streamStatus }), () => resync(), resync);
 
   async function checkPendingReply(chatId: string): Promise<void> {
     const pending = get().buckets[chatId];
     if (!pending?.sending) return;
-    await Promise.all([history.refresh(chatId), useActivityStore.getState().load()]);
+    await syncConversation(chatId);
     const current = get().buckets[chatId];
     if (!stream.active || !current?.sending || current.sendingSince !== pending.sendingSince) return;
     const activity = useActivityStore.getState();
-    const running = activity.runs.some((run) => run.status === "running" && run.source.channel === "webui"
-      && (run.source.session || DEFAULT_CHAT_ID) === chatId);
-    if (!get().sseConnected || current.historyLoading || current.historyError || activity.loading || activity.error || running) {
+    const running = activeChatRun(activity.runs, chatId);
+    if (get().streamStatus !== "connected" || current.historyLoading || current.historyError || activity.loading || activity.error || running) {
       armSendWatchdog(chatId, checkPendingReply);
       return;
     }
@@ -172,8 +187,8 @@ export const useChatStore = create<ChatState>((set, get) => {
     buckets: initialBuckets,
     activeChatId: initialChatId,
     chats: initialChats,
-    contextUsage: null,
-    sseConnected: false,
+    streamStatus: "stopped",
+    refreshRealtime: resync,
 
     active: () => {
       const s = get();
@@ -491,7 +506,15 @@ export const useChatStore = create<ChatState>((set, get) => {
           messages: current.messages.map((message) => message.cid === messageId && message.delivery === "submitting" ? { ...message, delivery: "submitted" } : message),
         }));
         return true;
-      } catch {
+      } catch (error) {
+        if (axios.isAxiosError(error) && !error.response && !axios.isCancel(error)) {
+          if (get().buckets[chatId]) updateBucket(chatId, (current) => ({
+            inputDraft: current.inputDraft === text ? "" : current.inputDraft,
+            messages: current.messages.map((message) => message.cid === messageId ? { ...message, delivery: "unknown" } : message),
+          }));
+          void history.refresh(chatId);
+          return false;
+        }
         if (!bucket.sending) clearSendWatchdog(chatId);
         if (get().buckets[chatId]) updateBucket(chatId, (current) => ({
           pendingFiles: [...pendingFiles, ...current.pendingFiles],

@@ -12,7 +12,7 @@ import type {
 
 export const workspaceApi = {
   controlActivity: (runId: string, action: "stop" | "resume") =>
-    api.post<ActivityControlResult>(`/workspace/activity/${encodeURIComponent(runId)}/${action}`),
+    api.post<ActivityControlResult>(`/workspace/activity/${encodeURIComponent(runId)}/${action}`, undefined, { errorFeedback: "local" }),
   tree: (path = "", depth = 2, root: WorkspaceRoot = "workspace") =>
     api.get<{ path: string; children: WorkspaceNode[]; truncated: boolean }>("/workspace/tree", { params: { path: path || undefined, depth, root } }),
   read: (path: string, root: WorkspaceRoot = "workspace", signal?: AbortSignal) =>

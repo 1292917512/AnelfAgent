@@ -13,6 +13,7 @@ import { fileReferenceMarkdown } from "@/lib/file-reference";
 import { useMediaQuery } from "@/lib/use-media-query";
 import { ModelSelect } from "@/components/models/ModelSelect";
 import { ContextChip } from "./ContextChip";
+import { useChatActivity } from "./useChatActivity";
 import { PendingAttachments } from "./PendingAttachments";
 
 const PASTE_PLACEHOLDER_MIN_CHARS = 400;
@@ -30,7 +31,7 @@ export function ChatInput() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const pendingFiles = useChatStore((s) => s.buckets[s.activeChatId]?.pendingFiles ?? []);
-  const sending = useChatStore((s) => s.buckets[s.activeChatId]?.sending ?? false);
+  const { busy, canStop } = useChatActivity();
   const addFiles = useChatStore((s) => s.addFiles);
   const removeFile = useChatStore((s) => s.removeFile);
   const send = useChatStore((s) => s.send);
@@ -202,12 +203,12 @@ export function ChatInput() {
             <ModelSelect modelType="chat" compact className="composer-model" />
           </div>
           <div className="flex items-center gap-2">
-            {sending && <Button variant="danger" size="sm" onClick={() => void interrupt()} title={t("stopTitle")}>
+            {canStop && <Button variant="danger" size="sm" onClick={() => void interrupt()} title={t("stopTitle")}>
               <Square size={13} />{t("stop")}
             </Button>}
             <Button variant="primary" size="sm" onClick={() => void handleSend()} loading={submitting}
               disabled={(!input.trim() && !pendingFiles.some((file) => file.path)) || pendingFiles.some((file) => file.uploading)}>
-              <Send size={15} />{t(sending ? "addMessage" : "send")}
+              <Send size={15} />{t(busy ? "addMessage" : "send")}
             </Button>
           </div>
         </div>

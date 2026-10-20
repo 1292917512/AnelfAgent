@@ -85,3 +85,30 @@ export async function closeWebChatOverlay(page: Page) {
   const dialog = page.getByRole("dialog", { name: "Web chat", exact: true });
   if (await dialog.isVisible()) await dialog.getByRole("button", { name: "Close", exact: true }).click();
 }
+
+/** 可控浏览器事件流，沿用真实前端解码与恢复链路。 */
+export async function installEventStream(page: Page) {
+  await page.addInitScript(() => {
+    let connections = 0;
+    class TestEventSource extends EventTarget {
+      static CONNECTING = 0; static OPEN = 1; static CLOSED = 2;
+      readyState = 0;
+      onopen: ((event: Event) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+      deliver = (event: Event) => {
+        const frame = (event as CustomEvent<{ event: string; data: unknown }>).detail;
+        this.dispatchEvent(new MessageEvent(frame.event, { data: JSON.stringify(frame.data) }));
+      };
+      constructor(url: string) {
+        super();
+        if (url.includes("/chat/stream")) {
+          window.addEventListener("test-activity", this.deliver);
+          Object.assign(window, { testStreamConnections: ++connections });
+        }
+        setTimeout(() => { this.readyState = 1; this.onopen?.(new Event("open")); }, 0);
+      }
+      close() { this.readyState = 2; window.removeEventListener("test-activity", this.deliver); }
+    }
+    Object.defineProperty(window, "EventSource", { value: TestEventSource });
+  });
+}

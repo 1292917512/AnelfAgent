@@ -98,5 +98,7 @@
   "resultsCount": "{{count}} items",
   "noMatches": "No matching results",
   "clearFilters": "Clear filters",
-  "saved": "Saved"
+  "saved": "Saved",
+  "serviceReady": "Service ready",
+  "serviceUnavailable": "Service unavailable"
 }

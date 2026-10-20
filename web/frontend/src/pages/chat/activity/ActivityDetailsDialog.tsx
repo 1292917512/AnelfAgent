@@ -7,16 +7,20 @@ import { useActivityStore } from "@/stores/activity-store";
 import { useChatStore } from "@/stores/chat-store";
 import { ActivityRunCard } from "./ActivityRunCard";
 import { ActivityExecutionControl } from "./ActivityExecutionControl";
+import { useShallow } from "zustand/react/shallow";
+import { hasActiveWork } from "@/lib/chat-activity";
 
 export default function ActivityDetailsDialog({ ids, onClose, onReveal }: { ids: string[]; onClose: () => void; onReveal: (id: string) => void }) {
   const { t } = useTranslation("settings");
   const { t: tc } = useTranslation("common");
-  const { runs, loading, error, load } = useActivityStore();
-  const connected = useChatStore((state) => state.sseConnected);
+  const selected = useActivityStore(useShallow((state) => state.runs.filter((run) => ids.includes(run.id))));
+  const loading = useActivityStore((state) => state.loading);
+  const error = useActivityStore((state) => state.error);
+  const load = useActivityStore((state) => state.load);
+  const connected = useChatStore((state) => state.streamStatus === "connected");
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [checkedIds, setCheckedIds] = useState<string[] | null>(null);
-  const selected = runs.filter((run) => ids.includes(run.id));
-  const active = selected.some((run) => run.status === "running" || run.entries.some((entry) => "status" in entry && ["running", "queued"].includes(entry.status)));
+  const active = selected.some(hasActiveWork);
   const pending = checkedIds !== ids;
   useEffect(() => {
     let cancelled = false;

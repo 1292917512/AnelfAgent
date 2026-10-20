@@ -9,7 +9,7 @@ export function ConnectionStatus() {
     queryKey: ["status"], queryFn: () => statusApi.get().then((response) => response.data),
     refetchInterval: 15_000, retry: false, throwOnError: false,
   });
-  const label = status.isPending ? t("connecting") : status.isError ? t("disconnected") : status.data?.ready ? t("connected") : t("notReady");
+  const label = status.isPending ? t("connecting") : status.isError ? t("serviceUnavailable") : status.data?.ready ? t("serviceReady") : t("notReady");
   return (
     <button type="button" onClick={() => void status.refetch()} title={label} aria-label={label}
       className="hidden items-center gap-1.5 rounded-md px-2 py-1 text-[11px] text-muted sm:flex">

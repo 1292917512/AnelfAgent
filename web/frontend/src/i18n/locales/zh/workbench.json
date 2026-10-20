@@ -408,6 +408,15 @@
       "file_restore": "恢复近期文件上下文",
       "cognee_compact": "Cognee 存储维护",
       "tool_prepare": "准备工具目录"
+    },
+    "observationSummary": "本轮并入 {{total}} 条；这里展示 {{shown}} 条摘要，不影响模型接收。",
+    "sync": {
+      "stopped": "实时连接未启动",
+      "connecting": "正在连接实时过程",
+      "reconnecting": "正在恢复实时连接",
+      "stalled": "暂未收到实时更新",
+      "synchronizing": "正在补齐过程记录",
+      "refresh": "重新同步实时过程"
     }
   },
   "toolView": {

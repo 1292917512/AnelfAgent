@@ -54,6 +54,7 @@ it("follows growth, ignores downward and nested scrolling, and resumes after rea
   rerender(<Feed revision="2" />); flush();
   expect(feed.scrollTop).toBe(1300);
   expect(paused).toHaveBeenCalledOnce();
+  fireEvent.wheel(feed, { deltaY: 100 });
   feed.scrollTop = 1600;
   fireEvent.scroll(feed); flush();
   expect(screen.getByText("following")).toBeTruthy();

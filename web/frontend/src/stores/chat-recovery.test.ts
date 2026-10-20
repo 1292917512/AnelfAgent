@@ -3,6 +3,7 @@ import { AxiosHeaders, type AxiosResponse } from "axios";
 import { chatApi } from "@/lib/api";
 import { useChatStore } from "./chat-store";
 import { emptyBucket } from "./chat-shared";
+import type { ActivityRun } from "@/lib/types/activity";
 import { useActivityStore } from "./activity-store";
 
 class Source extends EventTarget {
@@ -14,6 +15,12 @@ class Source extends EventTarget {
 }
 const sources: Source[] = [];
 const response = <T,>(data: T): AxiosResponse<T> => ({ data, status: 200, statusText: "OK", headers: {}, config: { headers: new AxiosHeaders() } });
+
+function completedRun(chatId: string, started = 1): ActivityRun {
+  return { id: chatId, kind: "conversation", scope: "", origin_scope: "", owner_id: "", actor: "", label: "", input: "", parent_id: "",
+    source: { channel: "webui", kind: "user", target: "web_user", session: chatId, scope: "" }, status: "completed", can_stop: false,
+    started_at: started, updated_at: 4, ended_at: 4, revision: 1, entry_count: 0, entries: [], truncated: false };
+}
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -42,13 +49,14 @@ it("rebuilds a closed stream, recovers replies in every waiting chat and preserv
   await store.send("Question B", "User");
   store.setInputDraft("B", "Unsent draft");
   const buckets = useChatStore.getState().buckets;
+  vi.mocked(useActivityStore.getState().load).mockImplementation(async () => { useActivityStore.setState({ runs: [completedRun("A"), completedRun("B")] }); });
   vi.mocked(chatApi.history).mockImplementation(async (_user, _limit, id) => response([
     { id: 1, cid: buckets[id ?? "A"]?.messages[0]?.cid, role: "user", content: `Question ${id}`, ts: 1 },
     { id: 2, role: "assistant", content: `Recovered ${id}`, ts: 2 },
   ]));
   sources[0]!.readyState = Source.CLOSED;
   sources[0]?.onerror?.();
-  expect(useChatStore.getState().sseConnected).toBe(false);
+  expect(useChatStore.getState().streamStatus).not.toBe("connected");
   await vi.advanceTimersByTimeAsync(5000);
   expect(sources).toHaveLength(2);
   sources[1]?.onopen?.();
@@ -103,7 +111,7 @@ it("reconnects once with backoff when an activity delta has no connection baseli
   sources[0]?.dispatchEvent(invalid);
   sources[0]?.dispatchEvent(invalid);
   expect(sources[0]?.close).toHaveBeenCalledOnce();
-  expect(useChatStore.getState().sseConnected).toBe(false);
+  expect(useChatStore.getState().streamStatus).not.toBe("connected");
   await vi.advanceTimersByTimeAsync(5000);
   expect(sources).toHaveLength(2);
   vi.mocked(useActivityStore.getState().load).mockClear();
@@ -128,4 +136,36 @@ it("recovers completed execution after the page resumes and removes its listener
   store.stopSSE();
   document.dispatchEvent(new Event("visibilitychange"));
   expect(useActivityStore.getState().load).toHaveBeenCalledOnce();
+});
+
+it("keeps waiting after a busy hint and ignores an older turn ending after newer input", async () => {
+  const store = useChatStore.getState();
+  store.startSSE();
+  await store.send("New correction", "User");
+  const cid = useChatStore.getState().buckets.A?.messages[0]?.cid;
+  vi.mocked(chatApi.history).mockResolvedValue(response([{ id: 9, cid, ts: 3, role: "user", content: "New correction" },
+    { id: 10, ts: 3.1, role: "assistant", content: "Busy hint" }]));
+  sources[0]?.dispatchEvent(new MessageEvent("reply", { data: JSON.stringify({ chat_id: "A", content: "Busy hint" }) }));
+  expect(useChatStore.getState().buckets.A?.sending).toBe(true);
+  useActivityStore.setState({ runs: [completedRun("A")] });
+  sources[0]?.dispatchEvent(new MessageEvent("turn_end", { data: JSON.stringify({ chat_id: "A" }) }));
+  await vi.advanceTimersByTimeAsync(1);
+  expect(useChatStore.getState().buckets.A?.sending).toBe(true);
+  useActivityStore.setState({ runs: [completedRun("A", 3.5)] });
+  sources[0]?.dispatchEvent(new MessageEvent("turn_end", { data: JSON.stringify({ chat_id: "A" }) }));
+  await vi.advanceTimersByTimeAsync(1);
+  expect(useChatStore.getState().buckets.A?.sending).toBe(false);
+  expect(useChatStore.getState().buckets.A?.messages.find((message) => message.cid === cid)?.delivery).toBe("submitted");
+});
+
+it("retains context usage for background conversations without leaking it across tabs", () => {
+  const store = useChatStore.getState();
+  store.startSSE();
+  for (const [chat_id, tokens] of [["A", 900], ["B", 100]] as const) sources[0]?.dispatchEvent(new MessageEvent("context_usage", {
+    data: JSON.stringify({ chat_id, tokens, threshold: 1000, window: 2000, percent: tokens / 10 }),
+  }));
+  store.setActiveChat("B");
+  const state = useChatStore.getState();
+  expect(state.buckets[state.activeChatId]?.contextUsage?.tokens).toBe(100);
+  expect(state.buckets.A?.contextUsage?.tokens).toBe(900);
 });

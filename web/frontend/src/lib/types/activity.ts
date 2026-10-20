@@ -58,6 +58,21 @@ export interface ActivityRun {
 
 export interface ActivitySnapshot { epoch: string; revision: number; runs: ActivityRun[] }
 
+export interface ActivityReadingPosition {
+  mode: "follow" | "reading" | "paused";
+  runId?: string;
+  entryId?: string;
+  offset: number;
+  top: number;
+}
+
+export interface ActivityViewState {
+  selected: string | null;
+  family: string | null;
+  expanded: Record<string, { current: boolean; open: boolean }>;
+  position?: ActivityReadingPosition;
+}
+
 export interface ActivityDelta {
   epoch: string;
   base_revision: number;

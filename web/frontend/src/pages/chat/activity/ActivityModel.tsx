@@ -50,7 +50,7 @@ export function ActivityModel({ entry, thoughts = [] }: { entry: Extract<Activit
         <p className="activity-note">{t("activity.cacheHint")}</p>
         {thoughts.map((thought) => <div key={thought.id}>
           {thought.truncated && <p className="activity-note">{t("activity.truncated")}</p>}
-          <Markdown content={thought.content} renderText={renderTaggedText} />
+          <Markdown content={thought.content} renderText={renderTaggedText} live={running} />
         </div>)}
       </ActivityInspector>
     </div>

@@ -45,7 +45,7 @@ export const chatApi = {
       message_id: messageId,
       ...(chatId ? { chat_id: chatId } : {}),
       ...(files?.length ? { files } : {}),
-    }),
+    }, { errorFeedback: "local" }),
   upload: (file: File) => {
     const form = new FormData();
     form.append("file", file);
@@ -81,7 +81,7 @@ export const chatApi = {
   botName: () => api.get<{ name: string }>("/chat/bot-name"),
   interrupt: (chatId?: string) =>
     api.post<ActivityControlResult>(
-      "/chat/interrupt", { chat_id: chatId ?? "default" },
+      "/chat/interrupt", { chat_id: chatId ?? "default" }, { errorFeedback: "local" },
     ),
   delegations: (chatId?: string) =>
     api.get<{ running: RunningDelegation[] }>(

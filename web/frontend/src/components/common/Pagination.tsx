@@ -11,23 +11,25 @@ export function Pagination({
   total,
   pageSize,
   onChange,
+  disabled = false,
 }: {
   page: number;
   total: number;
   pageSize: number;
   onChange: (page: number) => void;
+  disabled?: boolean;
 }) {
   const { t } = useTranslation("common");
   const pages = totalPages(total, pageSize);
   return (
     <div className="flex items-center justify-center gap-3">
-      <Button variant="secondary" size="sm" disabled={page <= 1} onClick={() => onChange(page - 1)}>
+      <Button variant="secondary" size="sm" disabled={disabled || page <= 1} onClick={() => onChange(page - 1)}>
         {t("prev")}
       </Button>
       <span className="text-xs text-muted">
         {page} / {pages}
       </span>
-      <Button variant="secondary" size="sm" disabled={page >= pages} onClick={() => onChange(page + 1)}>
+      <Button variant="secondary" size="sm" disabled={disabled || page >= pages} onClick={() => onChange(page + 1)}>
         {t("next")}
       </Button>
     </div>

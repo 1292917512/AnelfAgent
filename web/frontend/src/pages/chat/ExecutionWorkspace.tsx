@@ -1,8 +1,10 @@
-import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Activity, ArrowDown, ArrowUp, Trash2, Pause, Radio } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useActivityStore } from "@/stores/activity-store";
-import { useChatStore } from "@/stores/chat-store";
+import { useActivityViewStore } from "@/stores/activity-view-store";
+import { useShallow } from "zustand/react/shallow";
+import { hasActiveWork } from "@/lib/chat-activity";
 import { QueryError } from "@/components/common/AsyncState";
 import { Button } from "@/components/ui";
 import type { ActivityRun } from "@/lib/types/activity";
@@ -17,32 +19,42 @@ import { ActivityRoundSummary } from "./activity/ActivityRoundSummary";
 import { ActivityStageRail } from "./activity/ActivityStageRail";
 import { ActivitySidePanel } from "./activity/ActivitySidePanel";
 import { ActivityExecutionControl } from "./activity/ActivityExecutionControl";
+import { ActivityConnection } from "./activity/ActivityConnection";
 
 /** 当前执行轮次优先展示；更早的过程只在主动上翻时挂载。 */
 export default function ExecutionWorkspace() {
   const { t } = useTranslation("workbench");
-  const { epoch, runs, loaded, error, load, clearing, clearHistory } = useActivityStore();
+  const { epoch, runs, loaded, error, load, clearing, clearHistory } = useActivityStore(useShallow((state) => ({
+    epoch: state.epoch, runs: state.runs, loaded: state.loaded, error: state.error, load: state.load,
+    clearing: state.clearing, clearHistory: state.clearHistory,
+  })));
   useEffect(() => { if (!loaded) void load(); }, [loaded, load]);
   return <ActivityDetailsProvider><section aria-label={t("execution.region")} className="activity-pane flex h-full min-h-0 flex-col">
     {error != null && <div className="p-3"><QueryError compact error={error} retry={() => void load()} /></div>}
-    <ActivityFeed key={epoch} runs={runs} clearing={clearing} onClear={() => void clearHistory()} />
+    <ActivityFeed key={epoch} epoch={epoch} runs={runs} clearing={clearing} onClear={() => void clearHistory()} />
   </section></ActivityDetailsProvider>;
 }
 
-function ActivityFeed({ runs, clearing, onClear }: { runs: ActivityRun[]; clearing: boolean; onClear: () => void }) {
+function ActivityFeed({ epoch, runs, clearing, onClear }: { epoch: string; runs: ActivityRun[]; clearing: boolean; onClear: () => void }) {
   const { t } = useTranslation("workbench");
   const inspect = useContext(ActivityInspection);
-  const connected = useChatStore((state) => state.sseConnected);
   const pages = useMemo(() => activityPages(runs), [runs]);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [family, setFamily] = useState<string | null>(null);
+  const [initial] = useState(() => useActivityViewStore.getState().read(epoch));
+  const [selected, setSelected] = useState(initial.selected);
+  const [family, setFamily] = useState(initial.family);
   const selectedIndex = pages.findIndex((page) => page.id === selected);
   const index = selectedIndex < 0 ? pages.length - 1 : selectedIndex;
   const page = pages[index];
   const touchStart = useRef<number | null>(null);
   const paging = useRef(false);
-  const [expanded, setExpanded] = useState<Record<string, { current: boolean; open: boolean }>>({});
-  const activeRuns = runs.filter((run) => run.status === "running" || run.entries.some((entry) => "status" in entry && ["running", "queued"].includes(entry.status)));
+  const [expanded, setExpanded] = useState(initial.expanded);
+  const view = useRef({ selected, family, expanded });
+  useLayoutEffect(() => {
+    view.current = { selected, family, expanded };
+    const store = useActivityViewStore.getState();
+    store.save(epoch, { ...view.current, position: store.read(epoch).position });
+  }, [epoch, selected, family, expanded]);
+  const activeRuns = runs.filter(hasActiveWork);
   const currentPage = index === pages.length - 1;
   const families = useMemo(() => activityFamilies(page?.runs ?? []), [page]);
   const selectedFamily = families.find((item) => item.id === family);
@@ -51,7 +63,10 @@ function ActivityFeed({ runs, clearing, onClear }: { runs: ActivityRun[]; cleari
   const visibleRuns = useMemo(() => (selectedFamily?.runs ?? page?.runs ?? []).filter((run) => run.kind !== "hook" || !page?.runs.some((parent) => parent.entries.some((entry) => entry.kind === "hook" && entry.activity_ids?.includes(run.id)))), [selectedFamily, page]);
   const segments = useMemo(() => currentPage ? activitySegments(visibleRuns) : [], [visibleRuns, currentPage]);
   const pinPage = useCallback(() => { if (page) setSelected(page.id); }, [page]);
-  const { scroll, content, following, pause: pauseFollowing, resume, handlers } = useActivityFollow(`${page?.id}:${family}:${Math.max(0, ...visibleRuns.map((run) => run.revision))}`, pinPage, currentPage);
+  const { scroll, content, following, pause: pauseFollowing, resume, handlers } = useActivityFollow(`${page?.id}:${family}:${Math.max(0, ...visibleRuns.map((run) => run.revision))}`, pinPage, currentPage, initial.position,
+    (position) => useActivityViewStore.getState().save(epoch, { ...view.current,
+      selected: pages.some((item) => item.id === view.current.selected) ? view.current.selected : null,
+      expanded: Object.fromEntries(Object.entries(view.current.expanded).filter(([id]) => runs.some((run) => run.id === id))), position }));
   const toggleRun = useCallback((id: string, open: boolean) => {
     setExpanded((previous) => {
       const retained = Object.fromEntries(Object.entries(previous).filter(([key]) => runs.some((run) => run.id === key)));
@@ -80,7 +95,7 @@ function ActivityFeed({ runs, clearing, onClear }: { runs: ActivityRun[]; cleari
       {focusRun && focusFamily && <ActivityRoundSummary key={focusRun.id} run={focusRun} runs={focusFamily.runs} onReveal={revealRun} />}
       <div className="activity-heading-controls">
         {focusRun && <ActivityExecutionControl key={focusRun.id} run={focusRun} />}
-        <span className="activity-connection inline-flex items-center gap-2 text-xs text-muted" role="status">{activeRuns.length > 0 && <span className="activity-live-dot" />}<span>{t(!connected ? "activity.reconnecting" : activeRuns.length ? "activity.working" : "activity.idle")}</span></span>
+        <ActivityConnection active={activeRuns.length > 0} />
         <Button variant="ghost" size="sm" className="activity-follow-toggle" aria-label={t(following ? "activity.following" : "activity.followPaused")} aria-pressed={following} title={t(following ? "activity.pauseFollow" : "activity.resumeFollow")} onClick={following ? pauseFollowing : resumeFollowing}>{following ? <Radio size={13} /> : <Pause size={13} />}<span className="activity-control-label">{t(following ? "activity.following" : "activity.followPaused")}</span></Button>
         <Button variant="ghost" size="sm" aria-label={t("activity.clearHistory")} title={t("activity.clearHistoryHint")} disabled={pages.length < 2} loading={clearing} onClick={onClear}><Trash2 size={13} /><span className="activity-control-label">{t("activity.clearHistory")}</span></Button>
       </div>

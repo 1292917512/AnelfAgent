@@ -1,3 +1,5 @@
+export type StreamStatus = "stopped" | "connecting" | "connected" | "reconnecting" | "stalled";
+
 import type { PlanStepStatus } from "./plan";
 import type { JsonObject } from "./json";
 
@@ -37,7 +39,7 @@ export interface ChatMessage {
   /** epoch 秒：历史消息来自后端 ts_ns，本地/SSE 消息为到达时刻；时间线合排用 */
   ts?: number;
   id?: number;
-  delivery?: "submitting" | "submitted" | "failed";
+  delivery?: "submitting" | "submitted" | "failed" | "unknown";
   cid?: string;
   media_type?: string;
   url?: string;
@@ -85,6 +87,7 @@ export interface ChatStreamingDiff {
 }
 
 export interface ChatBucket {
+  contextUsage?: ContextUsage;
   workspaceContextEnabled: boolean;
   inputDraft: string;
   submitting: boolean;

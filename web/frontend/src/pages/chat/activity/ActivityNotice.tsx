@@ -20,6 +20,7 @@ export function ActivityNotice({ entry }: { entry: Extract<ActivityEntry, { kind
     <ActivityInspector title={title} preview={preview} className="activity-notice-trigger" trigger={<>
       <span className="activity-notice-symbol"><Icon size={15} /></span>
       <span className="activity-notice-body"><span className="activity-notice-title">{title}<span>{t("activity.updateCount", { count: entry.count })}</span></span>
+        {entry.truncated && <span className="activity-notice-meta">{t("activity.observationSummary", { shown: entry.items.length, total: entry.count })}</span>}
         <span className="activity-notice-preview">{preview || t("activity.updateTagged")}</span>
         <span className="activity-notice-meta">{t("activity.updateRound", { count: entry.iteration })}{sources.length > 0 && ` · ${sources.join(" / ")}`}</span>
       </span><ArrowUpRight size={15} className="shrink-0 text-muted" />

@@ -98,5 +98,7 @@
   "resultsCount": "共 {{count}} 项",
   "noMatches": "没有匹配结果",
   "clearFilters": "清除筛选",
-  "saved": "已保存"
+  "saved": "已保存",
+  "serviceReady": "服务可用",
+  "serviceUnavailable": "服务不可访问"
 }

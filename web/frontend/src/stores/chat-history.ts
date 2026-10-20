@@ -1,6 +1,6 @@
 import { chatApi } from "@/lib/api";
 import type { ChatBucket, ChatHistoryMessage, ChatMessage } from "@/lib/types";
-import { clearSendWatchdog, DEFAULT_CHAT_ID } from "./chat-shared";
+import { DEFAULT_CHAT_ID } from "./chat-shared";
 
 export const HISTORY_PAGE_SIZE = 100;
 type HistoryMode = "initial" | "earlier" | "refresh";
@@ -19,7 +19,7 @@ function mergeHistory(local: ChatMessage[], incoming: ChatHistoryMessage[]): Cha
     const existing = (message.id != null ? byId.get(message.id) : undefined) ?? (message.cid ? byClient.get(message.cid) : undefined);
     if (!existing) return message;
     matched.add(existing);
-    return { ...existing, ...message, content: existing.content, delivery: existing.delivery === "submitting" ? "submitted" : existing.delivery };
+    return { ...existing, ...message, content: existing.content, delivery: existing.delivery === "submitting" || existing.delivery === "unknown" ? "submitted" : existing.delivery };
   });
   messages.push(...local.filter((message) => !matched.has(message)));
   return messages.sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0));
@@ -55,12 +55,8 @@ export function createChatHistory(context: HistoryContext) {
           ? bucket.messages.filter((message) => message.id != null || message.role === "user" || message.kind === "system_notice" || !snapshot.has(message))
           : bucket.messages;
         const messages = mergeHistory(local, data);
-        const pendingId = [...bucket.messages].reverse().find((message) => message.role === "user")?.cid;
-        const requestIndex = pendingId ? data.findIndex((message) => message.cid === pendingId) : -1;
-        const answered = bucket.sending && requestIndex >= 0 && data.slice(requestIndex + 1).some((message) => message.role === "assistant");
-        if (answered) clearSendWatchdog(id);
         const ids = messages.flatMap((message) => message.id != null ? [message.id] : []);
-        return { ...(answered ? { sending: false, sendingSince: null } : {}), messages, earliestId: ids.length ? Math.min(...ids) : undefined,
+        return { messages, earliestId: ids.length ? Math.min(...ids) : undefined,
           historyLoaded: true,
           hasMore: mode === "refresh" && original.historyLoaded ? bucket.hasMore : data.length >= HISTORY_PAGE_SIZE };
       });

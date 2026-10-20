@@ -20,6 +20,7 @@ export * from "./entities";
 export * from "./graph";
 export * from "./plan";
 export * from "./chat";
+export * from "./identity";
 export * from "./activity";
 export * from "./thinking";
 export * from "./system";

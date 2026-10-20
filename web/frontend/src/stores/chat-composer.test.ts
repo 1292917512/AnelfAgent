@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { AxiosHeaders, type AxiosResponse } from "axios";
+import { AxiosError, AxiosHeaders, type AxiosResponse } from "axios";
 import { chatApi } from "@/lib/api";
 import { useChatStore } from "./chat-store";
 import { clearSendWatchdog, emptyBucket } from "./chat-shared";
@@ -92,4 +92,18 @@ it("does not attach workspace context when it is disabled for the conversation",
   await useChatStore.getState().send("First", "User");
   expect(send.mock.calls[0]?.[5]).toBeUndefined();
   expect(useChatStore.getState().buckets.B?.workspaceContextEnabled).toBe(true);
+});
+
+it("preserves an unconfirmed submission and reconciles its existing client id without resending", async () => {
+  vi.spyOn(chatApi, "folds").mockResolvedValue({ ...accepted, data: { folds: [] } });
+  vi.spyOn(chatApi, "delegations").mockResolvedValue({ ...accepted, data: { running: [] } });
+  vi.spyOn(chatApi, "send").mockRejectedValue(new AxiosError("Timeout", "ECONNABORTED"));
+  vi.spyOn(chatApi, "history").mockResolvedValue({ ...accepted, data: [] });
+  await useChatStore.getState().send("First", "User");
+  const message = useChatStore.getState().buckets.A?.messages[0];
+  expect(message).toMatchObject({ role: "user", content: "First", delivery: "unknown" });
+  vi.mocked(chatApi.history).mockResolvedValue({ ...accepted, data: [{ id: 12, cid: message?.cid, role: "user", content: "First", ts: 1 }] });
+  await useChatStore.getState().refreshAfterReconnect("A");
+  expect(useChatStore.getState().buckets.A?.messages).toEqual([expect.objectContaining({ id: 12, cid: message?.cid, delivery: "submitted" })]);
+  expect(chatApi.send).toHaveBeenCalledOnce();
 });

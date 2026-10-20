@@ -1,10 +1,13 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import type { ActivityEntry } from "@/lib/types/activity";
 import { ActivityEntryView } from "./ActivityEntryView";
+import { highlightCode } from "@/lib/shiki";
 import { ActivityContext } from "./ActivityContext";
+
+vi.mock("@/lib/shiki", () => ({ highlightCode: vi.fn(async () => null) }));
 
 it("mounts recalled content only for expanded blocks and preserves live updates", async () => {
   const user = userEvent.setup();
@@ -76,4 +79,19 @@ it("keeps measured timing in details and does not infer missing timing or cache 
   expect(screen.queryByText("Before first output 2s")).toBeNull();
   expect(screen.queryByText("After first output 22s")).toBeNull();
   expect(screen.queryByText("Cache read 950 tokens · 95%")).toBeNull();
+});
+
+it("defers code highlighting in an open reasoning inspector until the model finishes", async () => {
+  const user = userEvent.setup();
+  vi.mocked(highlightCode).mockClear();
+  const model: Extract<ActivityEntry, { kind: "model" }> = { id: "live", kind: "model", name: "Live model", status: "running", ts: 1 };
+  const view = (status: string, count: number) => <MemoryRouter><ActivityEntryView entry={{ ...model, status }}
+    thoughts={[{ id: "thought", kind: "thinking", ts: 1, content: `\`\`\`python\nvalue = ${count}\n\`\`\`` }]} current live={status === "running"} onReveal={() => {}} /></MemoryRouter>;
+  const { rerender } = render(view("running", 0));
+  await user.click(screen.getByRole("button", { name: /View details: Live model/ }));
+  for (let index = 1; index <= 20; index++) rerender(view("running", index));
+  expect(highlightCode).not.toHaveBeenCalled();
+  rerender(view("done", 20));
+  await waitFor(() => expect(highlightCode).toHaveBeenCalled());
+  expect(screen.getByRole("dialog").textContent).toContain("value = 20");
 });

@@ -127,7 +127,8 @@
   "delivery": {
     "submitting": "正在提交…",
     "submitted": "已提交",
-    "failed": "接收失败，可复制到草稿后重试"
+    "failed": "接收失败，可复制到草稿后重试",
+    "unknown": "提交状态待确认，请等待历史同步；不会自动重发。"
   },
   "workspaceContext": {
     "include": "附带工作区上下文",

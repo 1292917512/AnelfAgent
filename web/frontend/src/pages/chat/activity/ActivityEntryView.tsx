@@ -63,7 +63,7 @@ export const ActivityEntryView = memo(function ActivityEntryView({ entry, though
         <button aria-expanded={open} onClick={() => setExpanded(!open)} className="activity-entry-toggle"><Brain size={15} /><span>{t(live ? "activity.thinking" : "activity.thought")}</span><ChevronDown size={14} className={cn("ml-auto transition-transform", open && "rotate-180")} /></button>
         <ActivityInspector title={t("activity.thought")} preview={entry.content.slice(0, 400)}>
           {entry.truncated && <p className="activity-note">{t("activity.truncated")}</p>}
-          <Markdown content={entry.content} renderText={renderTaggedText} />
+          <Markdown content={entry.content} renderText={renderTaggedText} live={live} />
         </ActivityInspector>
       </div>
       <div className={cn("activity-thought-content", !open && "activity-thought-preview")}>{entry.truncated && open && <p className="activity-note">{t("activity.truncated")}</p>}<Markdown content={open ? entry.content : entry.content.slice(0, 500)} renderText={renderTaggedText} live={live} /></div>

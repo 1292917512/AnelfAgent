@@ -14,7 +14,7 @@ import { formatTokensCompact } from "@/lib/format";
 
 export function ContextChip() {
   const { t } = useTranslation("chat");
-  const usage = useChatStore((s) => s.contextUsage);
+  const usage = useChatStore((s) => s.buckets[s.activeChatId]?.contextUsage);
   const tracingEnabled = useThinkingStore((s) => s.enabled);
   if (!usage || usage.threshold <= 0) return null;
 

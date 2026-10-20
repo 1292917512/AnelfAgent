@@ -4,7 +4,7 @@
  * 在两域面板中逐块同构，收敛于此；所有用户可见文案经 props 注入
  * （i18n 键留在各面板命名空间），表单状态由模态自管理（目标切换时复位）。
  */
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Button, Input, Modal, Select } from "@/components/ui";
 
@@ -73,7 +73,7 @@ export interface MergeIdentityModalLabels {
 }
 
 export function MergeIdentityModal<T extends { id: number }>({
-  source, candidates, getOptionLabel, onClose, onSubmit, pending, labels,
+  source, candidates, getOptionLabel, onClose, onSubmit, pending, labels, candidateControls,
 }: {
   source: T | null;
   candidates: T[];
@@ -82,6 +82,7 @@ export function MergeIdentityModal<T extends { id: number }>({
   onSubmit: (targetId: number) => void;
   pending: boolean;
   labels: MergeIdentityModalLabels;
+  candidateControls?: ReactNode;
 }) {
   const { t } = useTranslation();
   const [targetId, setTargetId] = useState("");
@@ -96,7 +97,7 @@ export function MergeIdentityModal<T extends { id: number }>({
       footer={
         <>
           <Button variant="secondary" onClick={onClose}>{t("common:cancel")}</Button>
-          <Button variant="danger" loading={pending} disabled={!targetId}
+          <Button variant="danger" loading={pending} disabled={!targetId || !candidates.some((item) => item.id === Number(targetId))}
             onClick={() => onSubmit(Number(targetId))}>
             {labels.mergeLabel}
           </Button>
@@ -105,6 +106,7 @@ export function MergeIdentityModal<T extends { id: number }>({
     >
       <div className="space-y-3 text-sm">
         <p className="text-muted">{labels.hint}</p>
+        {candidateControls}
         <Select className="w-full" value={targetId} onChange={(e) => setTargetId(e.target.value)}>
           <option value="">{labels.targetPlaceholder}</option>
           {candidates.map((item) => (

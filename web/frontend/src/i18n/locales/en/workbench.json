@@ -408,6 +408,15 @@
       "file_restore": "Restoring recent file context",
       "cognee_compact": "Cognee storage maintenance",
       "tool_prepare": "Preparing tools"
+    },
+    "observationSummary": "{{total}} included this round; showing {{shown}} summaries. Model input is unchanged.",
+    "sync": {
+      "stopped": "Live stream stopped",
+      "connecting": "Connecting to live activity",
+      "reconnecting": "Reconnecting live activity",
+      "stalled": "No recent live updates",
+      "synchronizing": "Synchronizing activity",
+      "refresh": "Synchronize live activity"
     }
   },
   "toolView": {

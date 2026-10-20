@@ -30,12 +30,13 @@ import { usePlanStore } from "./plan-store";
 import { useWorkbenchStore } from "./workbench-store";
 import { useChangesStore } from "./changes-store";
 import { useTreeChangesStore } from "@/stores/tree-changes-store";
-import { clearSendWatchdog, touchSendWatchdog, nextCid, DEFAULT_CHAT_ID } from "./chat-shared";
+import { touchSendWatchdog, nextCid, DEFAULT_CHAT_ID } from "./chat-shared";
 
 export interface ChatSseContext {
   updateBucket: (chatId: string, fn: (b: ChatBucket) => Partial<ChatBucket>) => void;
   getActiveChatId: () => string;
-  setContextUsage: (usage: ContextUsage) => void;
+  setContextUsage: (usage: ContextUsage, chatId: string) => void;
+  onTurnEnd?: (chatId: string) => void;
 }
 
 export function routeChatId(data: SseEventBase): string {
@@ -74,14 +75,16 @@ function dispatchUiCommand(data: UiCommandPayload) {
 }
 
 /** 往 EventSource 上挂载全部 chat SSE 事件监听 */
-export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext, isCurrent: () => boolean, recover: () => void): void {
+export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext, isCurrent: () => boolean, recover: () => void, received: () => void = () => {}): () => void {
   const { updateBucket } = ctx;
   const activity = new ActivityStreamDecoder();
   let activityEpoch = "";
   let activityFrame: number | null = null;
+  let activityTimer: ReturnType<typeof setTimeout> | undefined;
   const pendingActivity = new Map<string, ActivityRun>();
   const flushActivity = () => {
     if (activityFrame != null) cancelAnimationFrame(activityFrame);
+    clearTimeout(activityTimer); activityTimer = undefined;
     activityFrame = null;
     if (isCurrent() && pendingActivity.size) useActivityStore.getState().receiveMany(activityEpoch, [...pendingActivity.values()]);
     pendingActivity.clear();
@@ -92,11 +95,12 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext, isCu
     pendingActivity.delete(run.id);
     pendingActivity.set(run.id, run);
     while (pendingActivity.size > 20) pendingActivity.delete(pendingActivity.keys().next().value!);
-    if (run.status !== "running" || document.hidden) flushActivity();
+    if (run.status !== "running" || run.control === "stopping" || run.control === "resuming") flushActivity();
+    else if (document.hidden) activityTimer ??= setTimeout(flushActivity, 250);
     else if (activityFrame == null) activityFrame = requestAnimationFrame(flushActivity);
   };
   const listen = (name: string, handler: (event: MessageEvent<string>) => void) => {
-    es.addEventListener(name, (event: MessageEvent<string>) => { if (isCurrent()) handler(event); });
+    es.addEventListener(name, (event: MessageEvent<string>) => { if (isCurrent()) { received(); handler(event); } });
   };
 
   listen("message_failed", (event) => {
@@ -142,14 +146,11 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext, isCu
     try {
       const data = JSON.parse(e.data) as SseReplyEvent;
       const chatId = routeChatId(data);
-      clearSendWatchdog(chatId);
       const isBackground = chatId !== ctx.getActiveChatId();
       updateBucket(chatId, (b) => {
         const msg: ChatMessage = { role: "assistant", content: data.content, cid: nextCid(), ts: Date.now() / 1000 };
         return {
           messages: [...b.messages, msg],
-          sending: false,
-          sendingSince: null,
           unread: isBackground ? b.unread + 1 : b.unread,
         };
       });
@@ -160,8 +161,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext, isCu
     try {
       const data = (e.data ? JSON.parse(e.data) : {}) as SseTurnEndEvent;
       const chatId = routeChatId(data);
-      clearSendWatchdog(chatId);
-      updateBucket(chatId, () => ({ sending: false, sendingSince: null }));
+      ctx.onTurnEnd?.(chatId);
     } catch { /* Ignore invalid event data. */ }
   });
 
@@ -169,7 +169,6 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext, isCu
     try {
       const data = JSON.parse(e.data) as SseMediaEvent;
       const chatId = routeChatId(data);
-      clearSendWatchdog(chatId);
       const isBackground = chatId !== ctx.getActiveChatId();
       updateBucket(chatId, (b) => {
         const msg: ChatMessage = {
@@ -183,8 +182,6 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext, isCu
         };
         return {
           messages: [...b.messages, msg],
-          sending: false,
-          sendingSince: null,
           unread: isBackground ? b.unread + 1 : b.unread,
         };
       });
@@ -266,7 +263,6 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext, isCu
   listen("context_usage", (e) => {
     try {
       const data = JSON.parse(e.data) as SseContextUsageEvent;
-      if (routeChatId(data) !== ctx.getActiveChatId()) return;
       ctx.setContextUsage({
         tokens: data.tokens,
         threshold: data.threshold,
@@ -275,7 +271,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext, isCu
         cache_read_input_tokens: data.cache_read_input_tokens,
         cache_creation_input_tokens: data.cache_creation_input_tokens,
         cache_hit_rate: data.cache_hit_rate,
-      });
+      }, routeChatId(data));
     } catch { /* ignore */ }
   });
 
@@ -399,4 +395,9 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext, isCu
   });
 
   listen("ping", () => {});
+  return () => {
+    if (activityFrame != null) cancelAnimationFrame(activityFrame);
+    clearTimeout(activityTimer);
+    pendingActivity.clear();
+  };
 }

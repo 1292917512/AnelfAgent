@@ -31,6 +31,7 @@ async function bootstrap() {
   const container = document.getElementById("root");
   if (!container) throw new Error("Application root is missing");
   const root = createRoot(container);
+  root.render(<div role="status" aria-busy="true" className="flex min-h-dvh items-center justify-center text-sm text-muted">{i18n.t("loading")}</div>);
   try {
     await Promise.all([initChannelPlugins(), initUiContributions()]);
     root.render(<StrictMode><QueryClientProvider client={queryClient}><App /></QueryClientProvider></StrictMode>);

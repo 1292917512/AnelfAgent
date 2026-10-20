@@ -104,5 +104,17 @@ it("coalesces live frames, delivers terminal state immediately and discards a re
     current = false;
     vi.advanceTimersByTime(20);
     expect(useActivityStore.getState().runs.map((item) => item.id)).toEqual(["run"]);
+    current = true;
+    vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+    changed.mockClear();
+    for (let revision = 53; revision <= 102; revision++) events.dispatchEvent(new MessageEvent("activity", {
+      data: JSON.stringify({ epoch: "p", run: { ...run, revision, entries: [{ ...run.entries[0], content: `Hidden ${revision}` }] } }),
+    }));
+    expect(changed).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(250);
+    expect(changed).toHaveBeenCalledOnce();
+    expect(useActivityStore.getState().runs[0]?.entries[0]).toMatchObject({ content: "Hidden 102" });
+    events.dispatchEvent(new MessageEvent("activity_end", { data: JSON.stringify({ epoch: "p", run: { ...run, revision: 103, status: "completed" } }) }));
+    expect(useActivityStore.getState().runs[0]?.status).toBe("completed");
   } finally { unsubscribe(); }
 });

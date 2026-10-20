@@ -127,7 +127,8 @@
   "delivery": {
     "submitting": "Submitting…",
     "submitted": "Submitted",
-    "failed": "Reception failed. Copy to draft to retry."
+    "failed": "Reception failed. Copy to draft to retry.",
+    "unknown": "Submission unconfirmed. Checking history; no automatic resend."
   },
   "workspaceContext": {
     "include": "Include workspace context",

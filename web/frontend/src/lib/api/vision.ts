@@ -38,8 +38,8 @@ export const faceApi = {
   engineUnload: () => api.post<Record<string, unknown>>("/face/engine/unload"),
   imageUrl: (path: string) => `/api/face/image?path=${encodeURIComponent(path)}`,
   // 人物身份
-  persons: (params?: { status?: string; keyword?: string; limit?: number; offset?: number }) =>
-    api.get<FacePersonListResult>("/face/persons", { params }),
+  persons: (params?: { status?: string; keyword?: string; limit?: number; offset?: number }, signal?: AbortSignal) =>
+    api.get<FacePersonListResult>("/face/persons", { params, signal }),
   personDetail: (id: number) => api.get<FacePersonDetail>(`/face/persons/${id}`),
   updatePerson: (id: number, data: {
     name?: string; role?: string; notes?: string; status?: string; threshold?: number | null;

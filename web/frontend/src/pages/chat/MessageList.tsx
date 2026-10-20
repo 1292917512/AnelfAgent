@@ -130,11 +130,10 @@ export function MessageList() {
   const activeChatId = useChatStore((s) => s.activeChatId);
   // 细粒度 selector：只订阅本组件需要的字段，其他会话/字段变化不触发重渲染
   const messages = useChatStore((s) => s.buckets[s.activeChatId]?.messages);
-  const sending = useChatStore((s) => s.buckets[s.activeChatId]?.sending ?? false);
   const historyLoaded = useChatStore((s) => s.buckets[s.activeChatId]?.historyLoaded ?? false);
   const hasMore = useChatStore((s) => s.buckets[s.activeChatId]?.hasMore ?? false);
   const loadingEarlier = useChatStore((s) => s.buckets[s.activeChatId]?.loadingEarlier ?? false);
-  const sseConnected = useChatStore((s) => s.sseConnected);
+  const sseConnected = useChatStore((s) => s.streamStatus === "connected");
   const loadEarlier = useChatStore((s) => s.loadEarlier);
   const scrollRef = useRef<HTMLDivElement>(null);
   const initialLoad = useRef(true);
@@ -309,7 +308,7 @@ export function MessageList() {
           />
         );
       })}
-      {sending && <ActivityRow />}
+      <ActivityRow />
     </div>
   );
 }

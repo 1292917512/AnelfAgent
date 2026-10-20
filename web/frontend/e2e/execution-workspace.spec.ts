@@ -1,5 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
-import { test, expect, openWebChat, closeWebChatOverlay } from "./fixtures";
+import { test, expect, openWebChat, closeWebChatOverlay, installEventStream } from "./fixtures";
 import type { ActivityRun } from "../src/lib/types/activity";
 
 function activity(id: string, patch: Partial<ActivityRun> = {}): ActivityRun {
@@ -309,25 +309,7 @@ test("only the current round mounts until the user scrolls into transient histor
 });
 
 test("live bursts follow the tail, preserve reading position and expose reflection control", async ({ page }, info) => {
-  await page.addInitScript(() => {
-    class TestEventSource extends EventTarget {
-      static CONNECTING = 0; static OPEN = 1; static CLOSED = 2;
-      readyState = 0;
-      onopen: ((event: Event) => void) | null = null;
-      onerror: ((event: Event) => void) | null = null;
-      deliver = (event: Event) => {
-        const frame = (event as CustomEvent<{ event: string; data: unknown }>).detail;
-        this.dispatchEvent(new MessageEvent(frame.event, { data: JSON.stringify(frame.data) }));
-      };
-      constructor(url: string) {
-        super();
-        if (url.includes("/chat/stream")) window.addEventListener("test-activity", this.deliver);
-        setTimeout(() => { this.readyState = 1; this.onopen?.(new Event("open")); }, 0);
-      }
-      close() { this.readyState = 2; window.removeEventListener("test-activity", this.deliver); }
-    }
-    Object.defineProperty(window, "EventSource", { value: TestEventSource });
-  });
+  await installEventStream(page);
   const now = Date.now() / 1000;
   const run = activity("follow", { scope: "reflect:follow", origin_scope: "", kind: "reflection", can_stop: true,
     source: { scope: "reflect:follow", channel: "", kind: "", target: "", session: "" }, started_at: now, entries: [
@@ -362,9 +344,16 @@ test("live bursts follow the tail, preserve reading position and expose reflecti
   await feed.evaluate((element) => { element.scrollTop -= 150; });
   await expect(feed).toHaveAttribute("data-following", "false");
   const reading = await feed.evaluate((element) => element.scrollTop);
+  const viewport = page.viewportSize()!;
+  await page.setViewportSize({ ...viewport, width: viewport.width < 960 ? 1200 : 1000 });
+  await expect(feed).toHaveAttribute("data-following", "false");
+  await page.setViewportSize(viewport);
+  await expect(feed).toHaveAttribute("data-following", "false");
+  await expect.poll(async () => Math.abs(await feed.evaluate((element) => element.scrollTop) - reading)).toBeLessThanOrEqual(2);
   for (let index = 0; index < 10; index++) await append(`Burst update ${index}`);
   await expect(execution.getByText("Burst update 9", { exact: true })).toBeAttached();
   expect(Math.abs(await feed.evaluate((element) => element.scrollTop) - reading)).toBeLessThanOrEqual(2);
+  await feed.dispatchEvent("wheel", { deltaY: 200 });
   await feed.evaluate((element) => { element.scrollTop = element.scrollHeight; });
   await expect(feed).toHaveAttribute("data-following", "true");
   await append("Following again");
@@ -399,5 +388,47 @@ test("overview keeps maintenance separate and metric geometry aligned", async ({
   await page.emulateMedia({ reducedMotion: "reduce" });
   await expect(dialog).toHaveCSS("animation-name", "none");
   await page.screenshot({ path: info.outputPath("overview-maintenance.png") });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test("streams through a busy workspace without remounting completed tool results", async ({ page }, info) => {
+  await installEventStream(page);
+  const now = Date.now() / 1000;
+  const runs = Array.from({ length: 20 }, (_, index) => activity(`stress-${index}`, {
+    revision: index + 1, kind: "reflection", input: "", actor: `Worker ${index}`, started_at: now + index / 1000,
+    entries: [
+      ...Array.from({ length: 6 }, (_, step) => ({ id: `tool-${step}`, kind: "tool" as const, ts: now + step + index / 1000,
+        name: "inspect_service", arguments: "{}", targets: [], request_id: `request-${index}-${step}`, status: "done" as const,
+        result: "Verified service state", duration_ms: 10 })),
+      { id: "model", kind: "model", generation: 1, ts: now + 6 + index / 1000, name: `Model ${index}`, status: "running" },
+      { id: "thought", kind: "thinking", generation: 1, ts: now + 7 + index / 1000,
+        content: "```python\n" + Array.from({ length: 60 }, (_, line) => `check_${line} = ${line}`).join("\n") + "\n```" },
+    ],
+  }));
+  await page.route("**/api/workspace/activity", (route) => route.fulfill({ json: { epoch: "stress", revision: 20, runs } }));
+  await page.goto("/webui/");
+  await expect(page.locator(".activity-thought-content")).toHaveCount(20);
+  const stableTool = await page.locator(".activity-tool").first().elementHandle();
+  const samples: number[] = [];
+  for (let index = 0; index < 10; index++) {
+    const run = runs[0]!;
+    run.revision = 21 + index;
+    const thought = run.entries[7];
+    if (thought?.kind === "thinking") thought.content = thought.content.replace("\n```", `\n# update ${index}\n` + "```");
+    samples.push(await page.evaluate(async (record) => {
+      const start = performance.now();
+      window.dispatchEvent(new CustomEvent("test-activity", { detail: { event: "activity", data: { epoch: "stress", run: record } } }));
+      await new Promise(requestAnimationFrame);
+      await new Promise(requestAnimationFrame);
+      return performance.now() - start;
+    }, run));
+  }
+  await expect(page.locator('[data-activity-run="stress-0"] .activity-thought-content')).toContainText("# update 9");
+  const ordered = [...samples].sort((a, b) => a - b);
+  const metrics = { p95: ordered[ordered.length - 1], median: ordered[Math.floor(ordered.length / 2)], samples };
+  console.log(`Activity rendering (${info.project.name}): ${JSON.stringify(metrics)}`);
+  await info.attach("activity-rendering", { body: JSON.stringify(metrics), contentType: "application/json" });
+  expect(metrics.p95).toBeLessThan(250);
+  expect(await stableTool?.evaluate((element) => element.isConnected)).toBe(true);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });

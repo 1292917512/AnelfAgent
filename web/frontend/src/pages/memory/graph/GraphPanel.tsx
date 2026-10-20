@@ -79,8 +79,9 @@ export function GraphPanel() {
         .map((n) => n.id),
     );
     // 搜索命中节点 + 其一跳邻居，保持上下文可见
+    const matches = new Set(hitIds);
     for (const edge of data.edges) {
-      if (hitIds.has(edge.subject.id) || hitIds.has(edge.object.id)) {
+      if (matches.has(edge.subject.id) || matches.has(edge.object.id)) {
         hitIds.add(edge.subject.id);
         hitIds.add(edge.object.id);
       }

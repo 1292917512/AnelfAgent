@@ -1,5 +1,12 @@
 import axios from "axios";
 
+declare module "axios" {
+  interface AxiosRequestConfig {
+    /** 局部反馈由调用方负责，其他写请求沿用全局错误提示。 */
+    errorFeedback?: "global" | "local";
+  }
+}
+
 export const api = axios.create({
   baseURL: "/api", timeout: 30_000, headers: { "Content-Type": "application/json" },
 });
@@ -16,7 +23,8 @@ api.interceptors.response.use((response) => response, (error: unknown) => {
   if (axios.isAxiosError(error) && error.response?.status === 401 && !error.config?.url?.startsWith("/auth/")) {
     onUnauthorized?.();
   }
-  if (!axios.isCancel(error) && axios.isAxiosError(error) && !["get", "head"].includes(error.config?.method ?? "get")) onError?.(error);
+  if (!axios.isCancel(error) && axios.isAxiosError(error) && error.config?.errorFeedback !== "local"
+    && !["get", "head"].includes(error.config?.method ?? "get")) onError?.(error);
   return Promise.reject(error);
 });
 

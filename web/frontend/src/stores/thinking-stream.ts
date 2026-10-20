@@ -16,20 +16,21 @@ export class ThinkingStream {
   private readonly stream: EventStream;
 
   constructor(handlers: EventHandlers, connectionChanged: (connected: boolean) => void, reconnect: () => void) {
-    const listen = <K extends keyof ThinkingEvents>(source: EventSource, event: K, isCurrent: () => boolean) => {
+    const listen = <K extends keyof ThinkingEvents>(source: EventSource, event: K, isCurrent: () => boolean, received: () => void) => {
       source.addEventListener(event, (message: MessageEvent<string>) => {
         if (!isCurrent()) return;
+        received();
         try { handlers[event](JSON.parse(message.data)); }
         catch { reconnect(); }
       });
     };
-    this.stream = new EventStream("/api/thinking/stream", (source, isCurrent) => {
-      listen(source, "session_start", isCurrent);
-      listen(source, "session_end", isCurrent);
-      listen(source, "node_added", isCurrent);
-      listen(source, "node_updated", isCurrent);
-      listen(source, "tools_updated", isCurrent);
-    }, connectionChanged, (reconnected) => { if (reconnected) reconnect(); }, reconnect);
+    this.stream = new EventStream("/api/thinking/stream", (source, isCurrent, _recover, received) => {
+      listen(source, "session_start", isCurrent, received);
+      listen(source, "session_end", isCurrent, received);
+      listen(source, "node_added", isCurrent, received);
+      listen(source, "node_updated", isCurrent, received);
+      listen(source, "tools_updated", isCurrent, received);
+    }, (connected) => connectionChanged(connected), (reconnected) => { if (reconnected) reconnect(); }, reconnect);
   }
 
   start(): void { this.stream.start(); }
