@@ -45,6 +45,7 @@ class ConversationRow(TypedDict):
 class _ConversationWindow:
     rows: list[ConversationRow]
     floor_id: int = 0
+    floor_ts: int = 0
 
     def trim(self) -> None:
         """限制记录数与文本体积，保留被淘汰记录的水位供落后读者补读。"""
@@ -57,6 +58,7 @@ class _ConversationWindow:
             start -= 1
         if start:
             self.floor_id = max(self.floor_id, self.rows[start - 1]["id"])
+            self.floor_ts = max(self.floor_ts, *(row["ts_ns"] for row in self.rows[:start]))
             del self.rows[:start]
 
 
@@ -439,6 +441,17 @@ class SqliteBackend:
                     for r in records
                 ])
                 window.trim()
+                if window.floor_id:
+                    cursor = await db.execute(
+                        "SELECT MAX(ts_ns) FROM conversation_messages "
+                        "WHERE scope_type=? AND scope_id=? AND id<=?",
+                        (scope_type, scope_id, window.floor_id),
+                    )
+                    row = await cursor.fetchone()
+                    window.floor_ts = int(row[0] or 0) if row else 0
+                    if generation != self._conversation_generation:
+                        window = None
+                        continue
                 self._conversation_windows[key] = window
                 while len(self._conversation_windows) > _LIVE_SCOPES:
                     self._conversation_windows.popitem(last=False)
@@ -446,22 +459,24 @@ class SqliteBackend:
             return window
 
     async def fetch_live_conversation(
-        self, *, scope_type: str, scope_id: str, limit: int,
+        self, *, scope_type: str, scope_id: str, limit: Optional[int],
         after_id: Optional[int] = None, after_ts: int = 0,
     ) -> list[ConversationRow]:
         """读取实时收发快照；仅冷启动、淘汰或积压超窗时补读数据库。
 
         after_id=None 返回最近到达的消息；否则按本轮已读水位返回新增消息。
+        limit=None 一次读取该快照内全部新增消息，不将积压拆成多个模型轮次。
         快照独立于窗口，调用方修改消息不会污染其他会话或正在发送的请求。
         """
-        if limit <= 0:
+        if limit is not None and limit <= 0:
             return []
         window = await self._conversation_window(scope_type, scope_id)
         if after_id is None:
-            if len(window.rows) >= limit or window.floor_id == 0:
-                return [row.copy() for row in window.rows[-limit:]]
+            if window.floor_id == 0 or (limit is not None and len(window.rows) >= limit):
+                rows = window.rows if limit is None else window.rows[-limit:]
+                return [row.copy() for row in rows]
             predicate, params, order = "", [], "id DESC"
-        elif after_id >= window.floor_id:
+        elif after_id >= window.floor_id or (not after_id and after_ts >= window.floor_ts):
             rows = [row for row in window.rows
                     if row["role"] in {"user", "assistant", "system"}
                     and (row["id"] > after_id if after_id else row["ts_ns"] > after_ts)]
@@ -478,7 +493,7 @@ class SqliteBackend:
         cursor = await db.execute(
             "SELECT id, role, content, ts_ns FROM conversation_messages "
             f"WHERE scope_type=? AND scope_id=?{predicate} ORDER BY {order} LIMIT ?",
-            (scope_type, scope_id, *params, limit),
+            (scope_type, scope_id, *params, limit if limit is not None else -1),
         )
         records = list(await cursor.fetchall())
         if after_id is None:

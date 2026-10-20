@@ -1,4 +1,9 @@
-"""按会话水位并入实时收发消息、推送与子代理转向。"""
+"""按会话水位并入实时收发消息、推送与子代理转向。
+
+模型可见：当前快照中全部新增消息按到达顺序追加，不按条数拆轮。
+Token：随实际新增内容增长；容量由上下文压缩处理。
+缓存：只追加执行链，不改写已发送的稳定前缀。
+"""
 
 
 from __future__ import annotations
@@ -55,7 +60,7 @@ async def _fetch_new_messages(
     try:
         return await mind.conversation_data.router.sqlite.fetch_live_conversation(
             scope_type=anything.scope_type, scope_id=anything.scope_id, after_id=since_id, after_ts=since_ts,
-            limit=_MAX_MERGED_MESSAGES + 1,
+            limit=None,
         )
     except Exception as exc:
         log(f"获取新消息失败: {exc}", "DEBUG", tag="思维")
@@ -77,12 +82,6 @@ def _maybe_reset_guardrail_for_interjection(guardrail, new_msgs: Sequence[Mappin
     return False
 
 
-_MAX_MERGED_MESSAGES = 20
-
-
-_MAX_MERGED_CHARS = 20000
-
-
 async def _merge_new_messages(ctx: ExecutionContext, state: RoundState) -> bool:
     """并入循环期间到达的收发消息与系统事实；返回是否接收了新的用户消息。"""
     from core.sanitizer import clean_surrogates, has_surrogates
@@ -90,23 +89,11 @@ async def _merge_new_messages(ctx: ExecutionContext, state: RoundState) -> bool:
     mind = ctx.mind
     if not (ctx.mode == ThinkMode.REPLY and ctx.anything):
         return False
-    new_msgs = await _fetch_new_messages(
+    merged = await _fetch_new_messages(
         mind, ctx.anything, state.last_merged_ts, state.last_merged_id,
     )
-    if not new_msgs:
+    if not merged:
         return False
-    # 有界并入：首条强制并入保证进度；达到条数/字符上限即停，留存消息
-    # 不推进水位（下轮再取），且保留待处理队列条目（循环结束另起周期接续）
-    merged: list[ConversationRow] = []
-    merged_chars = 0
-    for m in new_msgs:
-        content_len = len(m["content"]) if isinstance(m.get("content"), str) else 0
-        if merged and (len(merged) >= _MAX_MERGED_MESSAGES
-                       or merged_chars + content_len > _MAX_MERGED_CHARS):
-            break
-        merged.append(m)
-        merged_chars += content_len
-    deferred = len(new_msgs) - len(merged)
     receipts = {message["content"] for message in ctx.tool_chain
                 if message.get("_source", {}).get("origin") == "reply_delivery"
                 and isinstance(message.get("content"), str)}
@@ -129,9 +116,7 @@ async def _merge_new_messages(ctx: ExecutionContext, state: RoundState) -> bool:
     state.last_merged_ts = max(state.last_merged_ts, *(m["ts_ns"] for m in merged))
     if merged[-1].get("id"):
         state.last_merged_id = int(merged[-1]["id"])
-    # 全部并入才消费待处理队列条目；有留存时保留，避免留存消息无人回复
-    if not deferred:
-        _consume_pending_for_scope(mind, ctx.anything, through_ts=state.last_merged_ts)
+    _consume_pending_for_scope(mind, ctx.anything, through_ts=state.last_merged_ts)
     # 新消息携带的媒体：激活对应媒体工具并重建工具集供后续轮次使用
     # （媒体标签已随内容并入上下文，待处理媒体不留存到后续周期）
     merged_images = mind.pfc.collect_images(scope=ctx.current_scope)
@@ -144,16 +129,15 @@ async def _merge_new_messages(ctx: ExecutionContext, state: RoundState) -> bool:
         ctx.active_tools = await mind.tool_assembly.get_active_tool_schemas(
             ctx.adapter_key, scope=ctx.anything.entity_scope if ctx.anything else "",
         )
-    deferred_note = f"，{deferred} 条留存下轮接续" if deferred else ""
-    log(f"并入 {len(merged)} 条循环期间新消息到当前上下文{deferred_note}", tag="思维")
+    log(f"并入 {len(merged)} 条循环期间新消息到当前上下文", tag="思维")
     if updates:
         ctx.execution_steps.append(
-            f"→ 第{state.iteration + 1}轮前: 并入 {len(updates)} 条新消息{deferred_note}"
+            f"→ 第{state.iteration + 1}轮前: 并入 {len(updates)} 条新消息"
         )
     from agent.context.observation import emit_context_update
     await emit_context_update([message for message in updates if message["role"] != "assistant"],
                               origin="conversation", scope=ctx.current_scope,
-                              iteration=state.iteration + 1, deferred=deferred)
+                              iteration=state.iteration + 1)
 
     new_user = any(m["role"] == "user" for m in merged)
     if new_user:

@@ -1,7 +1,7 @@
 """跨频道感知：语义召回与实时叙事构建，活动快照由 PFC 持有。
 
 模型可见：其他会话的新私聊与群聊 @ 以 system 通知呈现，显式 kind/notification/scope/channel 标签区分来源。
-Token 影响：每条通知增加两个短标签；新消息沿用有界内存窗口，历史检索复用查询向量。
+Token 影响：通知覆盖所选会话全部未读消息，内存窗口不足时补读；历史检索复用查询向量。
 缓存影响：实时收发进入 provider 动态层，不改稳定前缀与已执行工具链。
 """
 
@@ -206,14 +206,14 @@ async def build_cross_channel_narrative(mind: Mind, current_scope: str) -> list[
         scope_id = build_scope_id(adapter, identity, "#" + session if session else "")
         try:
             rows = await mind.conversation_data.router.sqlite.fetch_live_conversation(
-                scope_type=kind, scope_id=scope_id, limit=mind.conversation_data.max_size,
+                scope_type=kind, scope_id=scope_id, limit=None, after_id=0, after_ts=max(0, start - 1),
             )
         except Exception as exc:
             log(f"跨会话上下文读取失败 ({scope}): {type(exc).__name__}: {exc}", "WARNING", tag="思维")
             return []
         messages: list[dict[str, Any]] = []
         for row in sorted(rows, key=lambda row: (row["ts_ns"], row["id"])):
-            if row["role"] != "user" or not start <= row["ts_ns"] <= signal.created_ts_ns:
+            if row["role"] != "user" or row["ts_ns"] < start:
                 continue
             tags = dict(reversed(etag_all(row["content"], prefix_only=True)))
             if tags.get("kind", "chat") != "chat" or "push" in tags or (kind == "group" and tags.get("to_me") != "1"):

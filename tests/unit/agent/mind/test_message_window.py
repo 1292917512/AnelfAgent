@@ -263,6 +263,72 @@ def _attach_pending_work(mind):
 
 
 class TestThinkLoopMerge:
+    async def test_each_call_includes_messages_and_notifications_arriving_during_preparation(self, conv_data, monkeypatch) -> None:
+        from copy import deepcopy
+
+        from agent.context.message_schema import normalize_for_send
+        from agent.mind.execution import round_context
+
+        current = MessageUser(uid="1", adapter_key="webui", session_id="a", text_content="开始处理")
+        other = MessageUser(uid="1", adapter_key="qq", text_content="另一个会话的通知")
+        mind = FakeMind(rounds=[tool_result("", ["recall"]), tool_result("", ["end_reply"])], default_text=None)
+        mind.conversation_data = conv_data
+        work = _attach_pending_work(mind)
+        await conv_data.add_conversation_record_by_everything(current)
+        prefix = [{"role": "system", "content": "STABLE", "_layer": "stable"},
+                  *await conv_data.get_conversation_record_by_everything(current)]
+        frozen_prefix = deepcopy(prefix)
+        calls = 0
+
+        async def arrive(message, text):
+            message = message.model_copy(update={"text_content": text, "created_ts_ns": time.time_ns()})
+            await conv_data.add_conversation_record_by_everything(message)
+            await work.add_task(message)
+
+        async def prepare(*args):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                for index in range(25):
+                    await arrive(current, f"补充 {index}")
+                await arrive(current, "长文" * 11000)
+                await arrive(current, "先不要执行，最后以这句话为准")
+                for index in range(conv_data.max_size + 2):
+                    await arrive(other, f"其他会话补充 {index}")
+            else:
+                await arrive(other, "其他会话的最新纠正")
+            return [{"role": "system", "content": f"环境 {calls}", "_layer": "provider"}]
+
+        invoke = mind.model_invoker.invoke
+        async def invoke_with_arrival(*args, **kwargs):
+            result = await invoke(*args, **kwargs)
+            if mind.llm_calls == 1:
+                await arrive(current, "模型请求期间到达")
+            return result
+
+        monkeypatch.setattr(round_context, "collect_provider_messages", prepare)
+        monkeypatch.setattr(mind.model_invoker, "invoke", invoke_with_arrival)
+        await run_think_loop(mind, anything=current, base_messages=prefix)
+        first, second = mind.sent_messages
+        assert first[:len(prefix)] == second[:len(prefix)] == frozen_prefix
+        first_users = [message["content"] for message in first if message["role"] == "user"]
+        assert len(first_users) == 28
+        assert "先不要执行" in first_users[-1]
+        assert "模型请求期间到达" not in str(first)
+        assert sum("模型请求期间到达" in str(message) for message in second) == 1
+        first_notices = [message for message in first if message.get("_source", {}).get("id")
+                         and message.get("_source", {}).get("origin") == "cross_channel_narrative"]
+        assert len(first_notices) == conv_data.max_size + 2
+        assert all("[kind:notification]" in message["content"] for message in first_notices)
+        assert "其他会话的最新纠正" in str(second)
+        assert "其他会话的最新纠正" not in str(first)
+        assert [message["content"] for message in second if message.get("_layer") == "provider"
+                and not message.get("_source")] == ["环境 2"]
+        assert not work.get_pending_signal(current.entity_scope)
+        assert work.get_pending_signal(other.entity_scope) is not None
+        assert normalize_for_send(first)[:len(prefix)] == normalize_for_send(prefix)
+        assert any(message["role"] == "tool" for message in second)
+
     async def test_cross_reply_acknowledges_the_input_seen_by_the_model(self, conv_data, monkeypatch) -> None:
         from unittest.mock import AsyncMock
 

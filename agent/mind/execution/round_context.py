@@ -1,4 +1,9 @@
-"""执行轮次的上下文准备；保持压缩、消息水位与动态采集顺序。"""
+"""执行轮次的上下文准备与发送快照组装。
+
+模型可见：耗时准备后刷新当前对话、推送和跨会话通知，再构建本轮状态。
+Token：新增消息不按轮次分批，沿用压缩与动态提供者预算。
+缓存：对话只追加执行链；通知与实时状态仍在动态尾部，不改稳定前缀。
+"""
 
 from __future__ import annotations
 
@@ -18,7 +23,7 @@ async def prepare_round_context(
     ctx: ExecutionContext, state: RoundState, safety_limit: int, start_time: float,
     recollection: DialogueRecollection,
 ) -> tuple[list[dict], bool]:
-    """压缩、实时并入、动态取数与组装按固定顺序完成。"""
+    """完成压缩和动态媒体准备后，合并实时消息并组装本次调用的输入。"""
     mind, anything, mode = ctx.mind, ctx.anything, ctx.mode
     execution_steps = ctx.execution_steps
     # Microcompact：完整压缩前的轻量清理（旧只读工具结果 → 占位符）
@@ -53,14 +58,27 @@ async def prepare_round_context(
             state.last_input_tokens = 0
             execution_steps.append(f"→ 第{state.iteration + 1}轮前: 上下文已压缩")
 
-    # 并入循环期间新增的收发消息（让 AI 在当前回复中一并处理，
-    # 而非另起周期导致上下文断裂/忘记已回复）
+    provider_msgs = await collect_provider_messages(getattr(mind.models.llm, "config", None), ctx.current_scope)
+    from agent.memory.probe import deep_probe_hub
+    for message in provider_msgs:
+        if message.get("_source", {}).get("provider") == "memory_deep_probe":
+            deep_probe_hub.acknowledge(ctx.current_scope, message["content"])
+
     await _merge_new_messages(ctx, state)
     recollection.offer(ctx.base_messages + ctx.tool_chain, watermark=(state.last_merged_ts, state.last_merged_id))
     # 并入循环期间到达的实体推送（[push:] 系统通知，轮内弹窗）
     await _merge_pushes(ctx, state)
     # 并入转向指令（子代理步骤边界；主会话未绑定 drain 时零开销）
     _merge_steered_messages(ctx, state)
+
+    from agent.mind.cross_channel import build_cross_channel_narrative
+    try:
+        cross_messages = await build_cross_channel_narrative(mind, ctx.current_scope)
+        provider_msgs = cross_messages + provider_msgs
+        from agent.context.observation import emit_cross_channel_updates
+        await emit_cross_channel_updates(cross_messages, state.observed_cross_messages, state.iteration + 1)
+    except Exception as exc:
+        log(f"跨会话上下文读取失败: {exc}", "WARNING", tag="思维")
 
     exec_context = mind.context.build_execution_context(
         execution_steps, start_time, state.iteration,
@@ -84,24 +102,6 @@ async def prepare_round_context(
         exec_context, background=task_context, reply=reply, delivery=delivery,
         output_blocked="send_message" in ctx.blocked_tools,
     )
-    # exec_context（每轮动态）置于末尾：保持 stable/context/volatile/历史前缀
-    # 字节稳定供 Prompt Caching 复用，且当前轮状态在模型注意力最强的末尾位置
-    # （缓存断点不在此注入——发送边界由 llm/prompt_cache 按 _layer 统一装饰，
-    # 链尾锚点天然随链增长前移）
-    # provider 实时注入：每轮收集最新快照，置于工具链之后、exec_context 之前
-    provider_msgs = await collect_provider_messages(getattr(mind.models.llm, "config", None), ctx.current_scope)
-    from agent.memory.probe import deep_probe_hub
-    for message in provider_msgs:
-        if message.get("_source", {}).get("provider") == "memory_deep_probe":
-            deep_probe_hub.acknowledge(ctx.current_scope, message["content"])
-    from agent.mind.cross_channel import build_cross_channel_narrative
-    try:
-        cross_messages = await build_cross_channel_narrative(mind, ctx.current_scope)
-        provider_msgs = cross_messages + provider_msgs
-        from agent.context.observation import emit_cross_channel_updates
-        await emit_cross_channel_updates(cross_messages, state.observed_cross_messages, state.iteration + 1)
-    except Exception as exc:
-        log(f"跨会话上下文读取失败: {exc}", "WARNING", tag="思维")
     llm_messages = (
         ctx.base_messages + ctx.tool_chain + provider_msgs + [exec_context]
     )

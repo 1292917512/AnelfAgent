@@ -1,8 +1,4 @@
-"""循环期间新消息并入上限（_merge_new_messages）单元测试。
-
-消息洪峰（群聊刷屏/离线堆积/连发长文）分批并入：单轮 ≤ 条数/字符上限，
-超出部分不推进水位、不消费待处理队列，下轮/下一周期接续（保回复语义）。
-"""
+"""同轮新消息完整并入、水位隔离与回执去重。"""
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -59,7 +55,7 @@ def fetch(monkeypatch):
     return holder, calls
 
 
-class TestMergeCaps:
+class TestMergeMessages:
     async def test_sent_messages_sync_once_without_duplicate_activity(self, fetch, monkeypatch) -> None:
         holder, _ = fetch
         receipt = "[delivery_mode:auto][delivery_status:unknown][delivery_scope:user_web:u1] 发送中断，请核对"
@@ -77,7 +73,7 @@ class TestMergeCaps:
         assert observe.await_args.args[0] == [holder["msgs"][-1]]
         assert state.last_merged_id == 3 and state.last_merged_ts == 30
 
-    async def test_under_cap_merges_all_and_consumes(self, fetch) -> None:
+    async def test_merges_all_and_consumes(self, fetch) -> None:
         holder, _ = fetch
         holder["msgs"] = _msgs(3)
         consumed: list = []
@@ -87,42 +83,18 @@ class TestMergeCaps:
         assert state.last_merged_ts == 30 and state.last_merged_id == 3
         assert consumed == ["user_web:u1"]  # 全量并入：消费待处理队列
 
-    async def test_count_cap_defers_remainder(self, fetch, monkeypatch) -> None:
-        holder, _ = fetch
-        holder["msgs"] = _msgs(5)
-        monkeypatch.setattr(message_updates, "_MAX_MERGED_MESSAGES", 3)
-        consumed: list = []
-        ctx, state = _ctx(consumed), _state()
-        await _merge_new_messages(ctx, state)
-        assert len(ctx.tool_chain) == 3
-        assert state.last_merged_ts == 30 and state.last_merged_id == 3  # 水位只到已并入
-        assert consumed == []  # 有留存：保留待处理队列，循环结束另起周期
-        assert any("留存" in s for s in ctx.execution_steps)
-
-    async def test_char_cap_defers_but_first_always_merges(self, fetch, monkeypatch) -> None:
-        """字符上限：首条强制并入保证进度（单条超预算也不拆分用户原话）。"""
-        holder, _ = fetch
-        holder["msgs"] = _msgs(3, chars=60)  # 每条约 70+ 字符
-        monkeypatch.setattr(message_updates, "_MAX_MERGED_CHARS", 100)
-        consumed: list = []
-        ctx, state = _ctx(consumed), _state()
-        await _merge_new_messages(ctx, state)
-        assert len(ctx.tool_chain) == 1  # 首条并入，第二条起超预算留存
-        assert state.last_merged_id == 1
-        assert consumed == []
-
-    async def test_next_round_continues_from_watermark(self, fetch, monkeypatch) -> None:
-        """留存消息在下轮从推进后的水位接续并入，全部并入后才消费队列。"""
+    @pytest.mark.parametrize(("count", "chars"), [(50, 0), (3, 25000)])
+    async def test_backlog_never_defers_the_latest_correction(self, fetch, count, chars) -> None:
         holder, calls = fetch
-        holder["msgs"] = _msgs(5)
-        monkeypatch.setattr(message_updates, "_MAX_MERGED_MESSAGES", 3)
+        holder["msgs"] = _msgs(count, chars)
+        holder["msgs"][-1]["content"] = "[time:now] 先不要执行，我需要修改要求"
         consumed: list = []
         ctx, state = _ctx(consumed), _state()
-        await _merge_new_messages(ctx, state)
-        # 第二轮：DB 按新水位返回留存的两条
-        holder["msgs"] = holder["msgs"][3:]
-        await _merge_new_messages(ctx, state)
-        assert calls[1] == (30, 3)  # 水位已推进到第一批末尾
-        assert len(ctx.tool_chain) == 5
-        assert state.last_merged_ts == 50 and state.last_merged_id == 5
+        assert await _merge_new_messages(ctx, state)
+        assert [m["content"] for m in ctx.tool_chain] == [m["content"] for m in holder["msgs"]]
+        assert state.last_merged_id == count
         assert consumed == ["user_web:u1"]
+        holder["msgs"] = []
+        assert not await _merge_new_messages(ctx, state)
+        assert calls[-1] == (count * 10, count)
+        assert len(ctx.tool_chain) == count

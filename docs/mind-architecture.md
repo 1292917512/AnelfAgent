@@ -124,12 +124,14 @@ bootstrap 不重复维护这些声明的导入清单。
 输出恢复与安全检查，再分发到 `text_round` / `tool_round` / `completion`。
 `tool_execution` 负责批次权限、并发和中断，`result_pipeline` 负责回执处理，`reply_delivery` 负责投递事实。
 
-每轮准备顺序固定：压缩与压缩前沉淀 → 实时消息并入及召回触发 → 推送与转向 → 动态状态采集 →
-按 `base_messages + tool_chain + providers + exec_context` 组装。阶段之间有状态依赖，不以通用并发
+每轮准备顺序固定：压缩与压缩前沉淀 → 动态提供者及媒体准备 → 当前会话实时消息并入及召回触发 →
+推送、转向与跨会话通知刷新 → 本轮执行状态 → 按 `base_messages + tool_chain + providers + exec_context`
+组装。耗时准备期间已提交的消息进入本次调用，不等后续工具或下一轮执行。阶段之间有状态依赖，不以通用并发
 执行替代；`recall/inputs.py` 内独立读取仍并发，技能仅在深度召回模式下等待检索计划。
 
 消息受理不等待主思维完成：先写会话历史和 PFC，再锁存 Driver 唤醒。当前会话的新消息在下一次
-模型调用前按水位并入；在途模型请求不修改，未并入的消息保留待办。自主工作结束后 Driver
+模型调用前按水位完整并入，不按条数或字符数将已到达消息分摊到未来轮次；
+快照形成之后到达的消息保留待办，在下一次模型调用前并入，在途模型请求不修改。自主工作结束后 Driver
 继续串行处理队列。固定忙碌提示由 `AgentAssistant` 管理异步发送任务，每 scope 每忙碌周期一次，
 10 秒超时后结束、不重试，关停取消并回收；提示的网络 I/O 不占用消息受理或主思维执行权。
 
@@ -195,7 +197,7 @@ bootstrap 不重复维护这些声明的导入清单。
 | 结果脱敏 | `core/sanitizer.py` | API Key/Token/密码自动遮盖（工具结果 + 日志） |
 | 崩溃尾部修复 | `agent/mind/execution/recovery.py` | 回复检查点落盘（`reply_checkpoints` 表），启动扫描崩溃残留注入「上次被中断」元消息；崩溃退出时附带崩溃上下文（macOS .ips 关联） |
 | reasoning 条件回传 | `think_loop.preserve_reasoning_fields` | `reasoning_details` 仅工具轮回传（DeepSeek 官方规则），纯文本轮省 token；`thinking_blocks` 无条件保留 |
-| 新消息并入上限 | `execution.messages._merge_new_messages` | 消息洪峰分批并入（20 条/20000 字符每轮）：首条强制并入保证进度，超出部分不推进水位（下轮接续）且保留待处理队列条目——留存消息必有人回复 |
+| 实时消息完整性 | `execution.messages._merge_new_messages` | 每次取数完整并入已提交的新消息，按实际覆盖水位消费待办；内存超窗补读数据库，模型容量沿用压缩及溢出处理，不靠分批执行延迟最新纠正 |
 
 连续三轮工具全错或达到同工具失败阈值时，经 `tools/tool_recovery.py` 评估恢复路径。
 已配置的原生 Jev 只读取有界的当前请求与近期工具事实，明确支持修正或新取证路径才继续；

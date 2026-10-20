@@ -63,7 +63,7 @@ async def append(sqlite: SqliteBackend, text: str, *, scope: str = "qq:1", role:
     await sqlite.append_conversation(scope_type="user", scope_id=scope, role=role, content=text, ts_ns=ts)
 
 
-async def read(sqlite: SqliteBackend, *, scope: str = "qq:1", after: int | None = None, limit: int = 30) -> list:
+async def read(sqlite: SqliteBackend, *, scope: str = "qq:1", after: int | None = None, limit: int | None = 30) -> list:
     return await sqlite.fetch_live_conversation(scope_type="user", scope_id=scope, after_id=after, limit=limit)
 
 
@@ -153,6 +153,38 @@ async def test_lagging_reader_recovers_all_messages_after_window_eviction(sqlite
     assert contents == [str(i) for i in range(9)]
     monkeypatch.setattr(sqlite, "_get_db", AsyncMock(side_effect=AssertionError("caught-up reader accessed database")))
     assert await read(sqlite, after=cursor) == []
+
+
+@pytest.mark.parametrize("window_size", [3, 256])
+async def test_complete_unread_snapshot_keeps_latest_correction_and_watermark(sqlite, monkeypatch, window_size):
+    monkeypatch.setattr("agent.storage.sqlite_backend._LIVE_MESSAGES", window_size)
+    await read(sqlite)
+    await append(sqlite, "already seen")
+    for index in range(30):
+        await append(sqlite, str(index), ts=101 + index)
+    await append(sqlite, "stop before executing", ts=150)
+    rows = await read(sqlite, after=1, limit=None)
+    assert [row["content"] for row in rows] == [*(str(index) for index in range(30)), "stop before executing"]
+    await append(sqlite, "arrived after snapshot", ts=151)
+    assert [row["content"] for row in await read(sqlite, after=rows[-1]["id"], limit=None)] == ["arrived after snapshot"]
+    assert rows[-1]["content"] == "stop before executing"
+
+
+@pytest.mark.parametrize("cold", [False, True])
+async def test_timestamp_reader_uses_memory_only_when_all_unread_rows_are_covered(sqlite, monkeypatch, cold):
+    monkeypatch.setattr("agent.storage.sqlite_backend._LIVE_MESSAGES", 3)
+    await read(sqlite)
+    for index, ts in enumerate([1000, 200, 300, 400, 500, 1100]):
+        await append(sqlite, str(index), ts=ts)
+    if cold:
+        sqlite.invalidate_conversation_windows()
+    rows = await sqlite.fetch_live_conversation(scope_type="user", scope_id="qq:1", limit=None,
+                                                after_id=0, after_ts=900)
+    assert [row["content"] for row in rows] == ["0", "5"]
+    monkeypatch.setattr(sqlite, "_get_db", AsyncMock(side_effect=AssertionError("fresh notification queried database")))
+    rows = await sqlite.fetch_live_conversation(scope_type="user", scope_id="qq:1", limit=None,
+                                                after_id=0, after_ts=1000)
+    assert [row["content"] for row in rows] == ["5"]
 
 
 async def test_large_messages_are_not_truncated_or_retained_unbounded(sqlite, monkeypatch):
