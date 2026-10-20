@@ -190,6 +190,8 @@ async def _run_think_rounds(
         llm_messages, require_tools = await prepare_round_context(
             ctx, state, safety_limit, start_time, recollection,
         )
+        if await _handle_interrupt(ctx, state):
+            return
 
         mind.set_phase(MindPhase.LLM_CALLING)
         # 流中早执行：只读调用在流继续生成时提前分发，工具轮按 id 回收

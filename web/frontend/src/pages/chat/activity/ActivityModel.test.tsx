@@ -44,7 +44,7 @@ it("renders background status compactly and mounts results only when inspected",
   expect(screen.getByText("Detailed image result")).toBeTruthy();
 });
 
-it("shows live reasoning, unmounts it at completion, and expands from the model row", async () => {
+it("preserves explicit reasoning expansion when the model completes", async () => {
   const user = userEvent.setup();
   const entry: Extract<ActivityEntry, { kind: "model" }> = { id: "llm", kind: "model", ts: Date.now() / 1000, name: "Test model", status: "running" };
   const thoughts: Extract<ActivityEntry, { kind: "thinking" }>[] = [{ id: "thought", kind: "thinking", ts: entry.ts, content: "Inspecting execution evidence." }];
@@ -53,9 +53,9 @@ it("shows live reasoning, unmounts it at completion, and expands from the model 
   expect(screen.getByText(thoughts[0]!.content)).toBeTruthy();
   const toggle = screen.getByRole("button", { expanded: true });
   expect(toggle.textContent).toContain("Test model");
-  rerender(view({ ...entry, status: "done", duration_ms: 1200 }));
-  expect(screen.queryByText(thoughts[0]!.content)).toBeNull();
+  await user.click(toggle);
   await user.click(screen.getByRole("button", { expanded: false }));
+  rerender(view({ ...entry, status: "done", duration_ms: 1200 }));
   expect(screen.getByText(thoughts[0]!.content)).toBeTruthy();
   rerender(view({ ...entry, status: "done", duration_ms: 1200 }));
   expect(screen.getByRole("button", { expanded: true })).toBeTruthy();

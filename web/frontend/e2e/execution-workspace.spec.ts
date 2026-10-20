@@ -16,9 +16,9 @@ function activity(id: string, patch: Partial<ActivityRun> = {}): ActivityRun {
   };
 }
 
-test("Web execution can stop and continue once without controlling other channels", async ({ page }, info) => {
+test("execution controls follow runtime capability and only Web conversations can continue", async ({ page }, info) => {
   const scope = "user_webui:web_user#control";
-  const run = activity("web-control", { scope, origin_scope: scope, entries: [], entry_count: 0,
+  const run = activity("web-control", { scope, origin_scope: scope, entries: [], entry_count: 0, can_stop: true,
     source: { scope, kind: "user", channel: "webui", target: "web_user", session: "control" } });
   let stopCalls = 0;
   let resumeCalls = 0;
@@ -306,6 +306,73 @@ test("only the current round mounts until the user scrolls into transient histor
   restarted = true;
   await page.reload();
   await expect(execution.locator("[data-activity-run]")).toHaveCount(0);
+});
+
+test("live bursts follow the tail, preserve reading position and expose reflection control", async ({ page }, info) => {
+  await page.addInitScript(() => {
+    class TestEventSource extends EventTarget {
+      static CONNECTING = 0; static OPEN = 1; static CLOSED = 2;
+      readyState = 0;
+      onopen: ((event: Event) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+      deliver = (event: Event) => {
+        const frame = (event as CustomEvent<{ event: string; data: unknown }>).detail;
+        this.dispatchEvent(new MessageEvent(frame.event, { data: JSON.stringify(frame.data) }));
+      };
+      constructor(url: string) {
+        super();
+        if (url.includes("/chat/stream")) window.addEventListener("test-activity", this.deliver);
+        setTimeout(() => { this.readyState = 1; this.onopen?.(new Event("open")); }, 0);
+      }
+      close() { this.readyState = 2; window.removeEventListener("test-activity", this.deliver); }
+    }
+    Object.defineProperty(window, "EventSource", { value: TestEventSource });
+  });
+  const now = Date.now() / 1000;
+  const run = activity("follow", { scope: "reflect:follow", origin_scope: "", kind: "reflection", can_stop: true,
+    source: { scope: "reflect:follow", channel: "", kind: "", target: "", session: "" }, started_at: now, entries: [
+      { id: "model", kind: "model", generation: 1, name: "Test model", ts: now, status: "running" },
+      { id: "reasoning", kind: "thinking", generation: 1, ts: now + 1, content: Array.from({ length: 60 }, (_, i) => `Step ${i}: checking execution evidence.\n\n`).join("") },
+    ] });
+  await page.route("**/api/workspace/activity", (route) => route.fulfill({ json: { epoch: "follow", revision: run.revision, runs: [run] } }));
+  await page.route("**/api/workspace/activity/follow/stop", (route) => {
+    Object.assign(run, { status: "cancelled", can_stop: false, revision: run.revision + 1, ended_at: Date.now() / 1000 });
+    return route.fulfill({ json: { status: "ok", interrupted: true } });
+  });
+  await page.goto("/webui/");
+  const execution = page.getByRole("region", { name: "Global execution", exact: true });
+  const feed = execution.locator(".activity-feed");
+  const gap = () => feed.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
+  await expect(execution.getByRole("button", { name: "Stop execution", exact: true })).toBeVisible();
+  await expect.poll(gap).toBeLessThanOrEqual(2);
+  await feed.dispatchEvent("wheel", { deltaY: 100 });
+  await expect(feed).toHaveAttribute("data-following", "true");
+  const append = async (label: string) => {
+    const thought = run.entries[1];
+    if (thought?.kind === "thinking") thought.content += `\n\n${label}`;
+    run.revision++;
+    await page.evaluate((record) => window.dispatchEvent(new CustomEvent("test-activity", {
+      detail: { event: "activity", data: { epoch: "follow", run: record } },
+    })), run);
+  };
+  await append("First streamed update");
+  await expect(execution.getByText("First streamed update", { exact: true })).toBeVisible();
+  await expect.poll(gap).toBeLessThanOrEqual(2);
+  await feed.dispatchEvent("wheel", { deltaY: -150 });
+  await feed.evaluate((element) => { element.scrollTop -= 150; });
+  await expect(feed).toHaveAttribute("data-following", "false");
+  const reading = await feed.evaluate((element) => element.scrollTop);
+  for (let index = 0; index < 10; index++) await append(`Burst update ${index}`);
+  await expect(execution.getByText("Burst update 9", { exact: true })).toBeAttached();
+  expect(Math.abs(await feed.evaluate((element) => element.scrollTop) - reading)).toBeLessThanOrEqual(2);
+  await feed.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  await expect(feed).toHaveAttribute("data-following", "true");
+  await append("Following again");
+  await expect.poll(gap).toBeLessThanOrEqual(2);
+  await page.screenshot({ path: info.outputPath("live-following.png") });
+  await execution.getByRole("button", { name: "Stop execution", exact: true }).click();
+  await expect(execution.getByRole("button", { name: "Stop execution", exact: true })).toHaveCount(0);
+  await expect(execution.getByRole("button", { name: "Continue execution", exact: true })).toHaveCount(0);
 });
 
 test("overview keeps maintenance separate and metric geometry aligned", async ({ page }, info) => {

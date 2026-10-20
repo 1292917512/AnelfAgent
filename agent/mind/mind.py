@@ -219,7 +219,7 @@ class Mind:
         Returns:
             是否成功登记（该 scope 无进行中会话时返回 False）。
         """
-        if scope not in self._active_scopes:
+        if scope not in self._active_scopes and not self.interrupts.is_active(scope):
             return False
         self.interrupts.request(scope, reason=reason or "外部请求")
         return True

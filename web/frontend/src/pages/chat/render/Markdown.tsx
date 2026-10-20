@@ -1,5 +1,5 @@
-import { Children, memo, useEffect, useState, type ReactNode } from "react";
-import ReactMarkdown from "react-markdown";
+import { Children, isValidElement, memo, useEffect, useMemo, useState, type ReactNode } from "react";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Check, Copy, ExternalLink, Link2 } from "lucide-react";
 import { useLightbox } from "./Lightbox";
@@ -61,7 +61,7 @@ function LinkCard({ href, children, fileBase }: { href?: string; children?: Reac
 }
 
 /** 代码块：Shiki 语法高亮 + 语言标签 + 复制按钮（高亮完成前用纯文本占位，避免布局跳动） */
-function CodeBlock({ className, children }: { className?: string; children?: ReactNode }) {
+function CodeBlock({ className, children, live = false }: { className?: string; children?: ReactNode; live?: boolean }) {
   const [copied, triggerCopied] = useCopyFeedback(1500);
   const match = /language-(\w+)/.exec(className || "");
   const lang = match?.[1] || "";
@@ -71,13 +71,14 @@ function CodeBlock({ className, children }: { className?: string; children?: Rea
   useEffect(() => {
     let alive = true;
     setHtml(null);
+    if (live) return;
     highlightCode(code, lang).then((h) => {
       if (alive) setHtml(h);
     });
     return () => {
       alive = false;
     };
-  }, [code, lang]);
+  }, [code, lang, live]);
 
   const copy = async () => {
     try {
@@ -114,14 +115,44 @@ interface MarkdownProps {
   content: string;
   renderText?: (text: string) => ReactNode;
   fileBase?: WorkspaceFileRef;
+  live?: boolean;
 }
 
 /** 统一 Markdown 渲染：GFM + 代码高亮 + 链接卡片 + 图片灯箱（memo：content 稳定时不重解析） */
-export const Markdown = memo(function Markdown({ content, renderText, fileBase }: MarkdownProps) {
+export const Markdown = memo(function Markdown({ content, renderText, fileBase, live = false }: MarkdownProps) {
   const { lightbox, openLightbox } = useLightbox();
-  const text = (children: ReactNode) => renderText
-    ? Children.map(children, (child) => typeof child === "string" ? renderText(child) : child)
-    : children;
+  const components = useMemo<Components>(() => {
+    const text = (children: ReactNode) => renderText
+      ? Children.map(children, (child) => typeof child === "string" ? renderText(child) : child)
+      : children;
+    return {
+      p: ({ children }) => <p>{text(children)}</p>,
+      li: ({ children }) => <li>{text(children)}</li>,
+      strong: ({ children }) => <strong>{text(children)}</strong>,
+      em: ({ children }) => <em>{text(children)}</em>,
+      td: ({ children }) => <td>{text(children)}</td>,
+      th: ({ children }) => <th>{text(children)}</th>,
+      table: ({ children }) => <div className="markdown-table"><table>{children}</table></div>,
+      a: ({ href, children }) => <LinkCard href={href} fileBase={fileBase}>{children}</LinkCard>,
+      pre: ({ children }) => {
+        // react-markdown 将代码块渲染为 pre > code
+        const child = Array.isArray(children) ? children[0] : children;
+        if (isValidElement<{ className?: string; children?: ReactNode }>(child)) {
+          return <CodeBlock className={child.props.className} live={live}>{child.props.children}</CodeBlock>;
+        }
+        return <pre>{children}</pre>;
+      },
+      img: ({ src, alt }) => (
+        <img
+          src={src}
+          alt={alt || ""}
+          loading="lazy"
+          onClick={() => typeof src === "string" && openLightbox(src, alt)}
+          className="cursor-zoom-in hover:opacity-90 transition-opacity"
+        />
+      ),
+    };
+  }, [renderText, fileBase, live, openLightbox]);
 
   return (
     <div
@@ -139,34 +170,7 @@ export const Markdown = memo(function Markdown({ content, renderText, fileBase }
     >
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        components={{
-          p: ({ children }) => <p>{text(children)}</p>,
-          li: ({ children }) => <li>{text(children)}</li>,
-          strong: ({ children }) => <strong>{text(children)}</strong>,
-          em: ({ children }) => <em>{text(children)}</em>,
-          td: ({ children }) => <td>{text(children)}</td>,
-          th: ({ children }) => <th>{text(children)}</th>,
-          table: ({ children }) => <div className="markdown-table"><table>{children}</table></div>,
-          a: ({ href, children }) => <LinkCard href={href} fileBase={fileBase}>{children}</LinkCard>,
-          pre: ({ children }) => {
-            // react-markdown 将代码块渲染为 pre > code
-            const child = Array.isArray(children) ? children[0] : children;
-            if (child && typeof child === "object" && "props" in (child as Record<string, unknown>)) {
-              const codeEl = child as { props: { className?: string; children?: ReactNode } };
-              return <CodeBlock className={codeEl.props.className}>{codeEl.props.children}</CodeBlock>;
-            }
-            return <pre>{children}</pre>;
-          },
-          img: ({ src, alt }) => (
-            <img
-              src={src}
-              alt={alt || ""}
-              loading="lazy"
-              onClick={() => typeof src === "string" && openLightbox(src, alt)}
-              className="cursor-zoom-in hover:opacity-90 transition-opacity"
-            />
-          ),
-        }}
+        components={components}
       >
         {content}
       </ReactMarkdown>

@@ -284,6 +284,7 @@ class ModelInvoker:
                 "model": model_name,
                 "duration_ms": round((time.monotonic() - t0) * 1000),
                 "error": str(exc),
+                "cancelled": isinstance(exc, LLMCallAborted),
                 "success": False,
             })
             # 请求级审计：异常交换同样落盘（未开启时零开销）

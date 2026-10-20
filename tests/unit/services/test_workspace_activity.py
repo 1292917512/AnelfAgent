@@ -437,6 +437,31 @@ async def test_fallback_reset_only_replaces_current_generation(activity):
     assert models[0]["usage"]["cache_read_input_tokens"] == 90
 
 
+async def test_model_calls_pair_by_identity_without_rendering_compression_as_reply(activity):
+    service, _ = activity
+    async with activity_scope("run", "reflect:one", can_stop=True):
+        await event_bus.emit("thinking_llm_start", {"model": "same", "call_id": "compress", "purpose": "compress"})
+        await event_bus.emit("thinking_llm_start", {"model": "same", "call_id": "reply", "purpose": "reflect"})
+        await event_bus.emit("thinking_llm_end", {"call_id": "compress", "purpose": "compress", "content": "Private summary", "duration_ms": 10})
+        await event_bus.emit("thinking_llm_end", {"call_id": "reply", "purpose": "reflect", "content": "Reflection", "duration_ms": 20})
+    run = service.get_run("run")
+    assert run["can_stop"] is False
+    assert [(entry["call_id"], entry["duration_ms"]) for entry in run["entries"] if entry["kind"] == "model"] == [("compress", 10), ("reply", 20)]
+    assert [entry["content"] for entry in run["entries"] if entry["kind"] == "text"] == ["Reflection"]
+
+
+async def test_processing_phases_publish_start_and_cancelled_terminal(activity):
+    from core.activity import activity_step
+
+    service, _ = activity
+    async with activity_scope("run", "reflect:one"):
+        with pytest.raises(asyncio.CancelledError):
+            async with activity_step("context_summary"):
+                assert service.get_run("run")["entries"][0]["status"] == "running"
+                raise asyncio.CancelledError
+    assert service.get_run("run")["entries"][0]["status"] == "interrupted"
+
+
 async def test_cancel_and_error_close_running_tools(activity, monkeypatch):
     service, _ = activity
     clock = 1000.0

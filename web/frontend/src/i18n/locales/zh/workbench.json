@@ -193,7 +193,11 @@
     "waiting": "等待 AI 回复",
     "source": "来源",
     "allSources": "所有来源",
-    "runningOnly": "仅运行中"
+    "runningOnly": "仅运行中",
+    "submitting": "正在提交消息",
+    "accepted": "消息已受理，等待处理或并入当前执行",
+    "generating": "模型正在响应",
+    "executing": "正在执行 {{name}}"
   },
   "expandChat": "展开对话阅读",
   "restoreChat": "恢复分栏",
@@ -205,7 +209,7 @@
       "resume": "继续执行",
       "stopping": "正在终止",
       "resuming": "已请求继续",
-      "stopHint": "停止此 Web 对话及其后台工作。已发生的外部操作不会回滚，执行方确认后显示中止。",
+      "stopHint": "停止此执行。停止请求由执行方安全收束，已发生的操作不会回滚。",
       "resumeHint": "在原会话中继续：依据中止记录与操作摘要处理剩余工作，不重放已执行工具。",
       "failed": "操作失败，请刷新状态后重试",
       "backgroundPending": "有 {{count}} 项后台工作未能受理终止，请打开执行详情检查；不会因取消回执自动继续。"
@@ -268,7 +272,8 @@
       "reflection": "自主思考",
       "delegation": "子代理",
       "task": "任务",
-      "hook": "后台钩子"
+      "hook": "后台钩子",
+      "maintenance": "系统维护"
     },
     "status": {
       "running": "执行中",
@@ -380,7 +385,8 @@
       "tool": "工具执行",
       "text": "输出正文",
       "plan": "执行计划",
-      "notice": "消息更新"
+      "notice": "消息更新",
+      "phase": "处理阶段"
     },
     "side": {
       "title": "执行辅助信息",
@@ -394,6 +400,14 @@
       "judgments": "判断记录",
       "close": "关闭详情",
       "empty": "当前没有相关记录"
+    },
+    "phases": {
+      "context_compress": "等待并整理上下文",
+      "memory_flush": "压缩前沉淀记忆",
+      "context_summary": "生成上下文摘要",
+      "file_restore": "恢复近期文件上下文",
+      "cognee_compact": "Cognee 存储维护",
+      "tool_prepare": "准备工具目录"
     }
   },
   "toolView": {

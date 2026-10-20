@@ -4,8 +4,13 @@ export type ActivityThought = Extract<ActivityEntry, { kind: "thinking" }>;
 export interface ActivityRow { entry: ActivityEntry; thoughts?: ActivityThought[] }
 export interface ActivitySegment { key: string; run: ActivityRun; entries: ActivityRow[]; first: boolean; finished: boolean }
 
+const entryRows = new WeakMap<ActivityEntry[], ActivityRow[]>();
+const stableRows = new WeakMap<ActivityEntry, ActivityRow>();
+
 /** 在同一执行内将思考归入所属模型调用，其他步骤保持原有顺序。 */
 export function activityRows(entries: ActivityEntry[]): ActivityRow[] {
+  const cached = entryRows.get(entries);
+  if (cached) return cached;
   const rows: ActivityRow[] = [];
   let model: ActivityRow | undefined;
   for (const entry of entries) {
@@ -17,14 +22,22 @@ export function activityRows(entries: ActivityEntry[]): ActivityRow[] {
       if (entry.kind === "model") model = row;
     }
   }
-  return rows;
+  const result = rows.map((row) => {
+    const previous = stableRows.get(row.entry);
+    if (previous && previous.thoughts?.length === row.thoughts?.length
+      && (previous.thoughts?.every((thought, index) => thought === row.thoughts?.[index]) ?? true)) return previous;
+    stableRows.set(row.entry, row);
+    return row;
+  });
+  entryRows.set(entries, result);
+  return result;
 }
 
 /** 按步骤开始时间交织并发过程；流式更新和工具完成不会移动已有步骤。 */
 export function activitySegments(runs: ActivityRun[]): ActivitySegment[] {
   const points = runs.flatMap((run, order) => [
     { run, order, index: -1, ts: run.started_at, entry: null, finished: false },
-    ...activityRows(run.entries).filter(({ entry }) => entry.kind !== "hook").map((entry, index) => ({ run, order, index, ts: entry.entry.ts, entry, finished: false })),
+    ...activityRows(run.entries).filter(({ entry }) => entry.kind !== "hook" || (entry.mode === "sync" && entry.event === "context_prepare")).map((entry, index) => ({ run, order, index, ts: entry.entry.ts, entry, finished: false })),
     ...(run.status !== "running" ? [{ run, order, index: run.entries.length, ts: run.ended_at ?? run.updated_at, entry: null, finished: true }] : []),
   ]).sort((a, b) => a.ts - b.ts || a.order - b.order || a.index - b.index);
   const segments: ActivitySegment[] = [];

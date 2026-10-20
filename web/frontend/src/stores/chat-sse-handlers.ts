@@ -77,6 +77,24 @@ function dispatchUiCommand(data: UiCommandPayload) {
 export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext, isCurrent: () => boolean, recover: () => void): void {
   const { updateBucket } = ctx;
   const activity = new ActivityStreamDecoder();
+  let activityEpoch = "";
+  let activityFrame: number | null = null;
+  const pendingActivity = new Map<string, ActivityRun>();
+  const flushActivity = () => {
+    if (activityFrame != null) cancelAnimationFrame(activityFrame);
+    activityFrame = null;
+    if (isCurrent() && pendingActivity.size) useActivityStore.getState().receiveMany(activityEpoch, [...pendingActivity.values()]);
+    pendingActivity.clear();
+  };
+  const deliverActivity = (epoch: string, run: ActivityRun) => {
+    if (activityEpoch !== epoch) pendingActivity.clear();
+    activityEpoch = epoch;
+    pendingActivity.delete(run.id);
+    pendingActivity.set(run.id, run);
+    while (pendingActivity.size > 20) pendingActivity.delete(pendingActivity.keys().next().value!);
+    if (run.status !== "running" || document.hidden) flushActivity();
+    else if (activityFrame == null) activityFrame = requestAnimationFrame(flushActivity);
+  };
   const listen = (name: string, handler: (event: MessageEvent<string>) => void) => {
     es.addEventListener(name, (event: MessageEvent<string>) => { if (isCurrent()) handler(event); });
   };
@@ -208,7 +226,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext, isCu
     try {
       const data = JSON.parse(event.data) as { epoch: string; run: ActivityRun };
       if (!data.epoch || !data.run?.id || !Array.isArray(data.run.entries)) return;
-      useActivityStore.getState().receive(data.epoch, activity.receive(data.epoch, data.run));
+      deliverActivity(data.epoch, activity.receive(data.epoch, data.run));
       const source = data.run.source;
       if (source?.channel === "webui" && source.kind === "user") touchSendWatchdog(source.session || DEFAULT_CHAT_ID);
     } catch { /* Ignore invalid event data. */ }
@@ -220,7 +238,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext, isCu
       const data = JSON.parse(event.data) as ActivityDelta;
       const run = activity.apply(data);
       if (!run) { recover(); return; }
-      useActivityStore.getState().receive(data.epoch, run);
+      deliverActivity(data.epoch, run);
       const source = run.source;
       if (source?.channel === "webui" && source.kind === "user") touchSendWatchdog(source.session || DEFAULT_CHAT_ID);
     } catch { recover(); }
@@ -229,6 +247,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext, isCu
     try {
       const data = JSON.parse(event.data) as ActivitySnapshot;
       if (data.epoch && typeof data.revision === "number" && Array.isArray(data.runs)) {
+        pendingActivity.clear();
         activity.restore(data);
         useActivityStore.getState().restore(data);
       }

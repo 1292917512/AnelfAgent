@@ -7,6 +7,7 @@ import asyncio
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Protocol
 
 from agent.mind.execution.state import ExecutionContext, RoundState
+from core.activity import activity_step
 from core.latebind import LateBinding
 from core.log import log
 
@@ -91,12 +92,13 @@ async def _compress_context(
     （摘要调用复用主对话前缀命中 KV 缓存）。
     """
     try:
-        new_base, new_chain = await mind.compressor.compress_messages(
-            base_messages, tool_chain,
-            scope=scope,
-            summarizer=mind.model_invoker.summarize_text,
-            tools=tools,
-        )
+        async with activity_step("context_summary"):
+            new_base, new_chain = await mind.compressor.compress_messages(
+                base_messages, tool_chain,
+                scope=scope,
+                summarizer=mind.model_invoker.summarize_text,
+                tools=tools,
+            )
     except Exception as exc:
         mind.compressor._record_compress_result(False)
         log(f"上下文压缩失败: {exc}", "WARNING", tag="压缩")
@@ -106,7 +108,8 @@ async def _compress_context(
     # 快照/命中率列表据因标识"压缩"而非"平台波动"
     from agent.context.prefix_guard import prefix_guard
     prefix_guard.note_legal_break(scope, "compress")
-    rehydrated = await asyncio.to_thread(_rehydrate_recent_files, scope)
+    async with activity_step("file_restore"):
+        rehydrated = await asyncio.to_thread(_rehydrate_recent_files, scope)
     if rehydrated:
         new_chain = [*new_chain, {"role": "system", "content": rehydrated,
                                   "_source": {"origin": "rehydration"}}]

@@ -6,6 +6,7 @@ import { QueryError } from "@/components/common/AsyncState";
 import { useActivityStore } from "@/stores/activity-store";
 import { useChatStore } from "@/stores/chat-store";
 import { ActivityRunCard } from "./ActivityRunCard";
+import { ActivityExecutionControl } from "./ActivityExecutionControl";
 
 export default function ActivityDetailsDialog({ ids, onClose, onReveal }: { ids: string[]; onClose: () => void; onReveal: (id: string) => void }) {
   const { t } = useTranslation("settings");
@@ -33,8 +34,11 @@ export default function ActivityDetailsDialog({ ids, onClose, onReveal }: { ids:
     {selected.length === 0 && (pending || loading) && <LoadingBlock />}
     {!pending && !loading && error == null && selected.length < ids.length && <p className="mb-3 text-sm leading-6 text-muted" role="status">{t("hookFlow.expiredDetails")}</p>}
     <div className="space-y-4">
-      {selected.map((run) => <ActivityRunCard key={run.id} run={run} open={expanded[run.id] ?? true}
-        onToggle={(id, open) => setExpanded((current) => ({ ...current, [id]: open }))} onReveal={onReveal} />)}
+      {selected.map((run) => <section key={run.id}>
+        <div className="flex justify-end"><ActivityExecutionControl run={run} /></div>
+        <ActivityRunCard run={run} open={expanded[run.id] ?? true}
+          onToggle={(id, open) => setExpanded((current) => ({ ...current, [id]: open }))} onReveal={onReveal} />
+      </section>)}
     </div>
   </Modal>;
 }

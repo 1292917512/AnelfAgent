@@ -18,8 +18,9 @@ from __future__ import annotations
 
 import asyncio
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, Iterator, List, Optional
 
 from core.log import log
 
@@ -38,6 +39,27 @@ class InterruptRegistry:
     def __init__(self) -> None:
         self._requests: Dict[str, InterruptRequest] = {}
         self._events: Dict[str, asyncio.Event] = {}
+        self._executions: dict[str, str] = {}
+
+    @contextmanager
+    def execution(self, run_id: str, scope: str) -> Iterator[None]:
+        """绑定一次在途执行，退出即释放控制目标与未消费的信号。"""
+        if run_id in self._executions or scope in self._executions.values():
+            raise ValueError("执行标识或 scope 已在运行")
+        self._executions[run_id] = scope
+        try:
+            yield
+        finally:
+            self._executions.pop(run_id, None)
+            self.clear(scope)
+
+    def scope_for_run(self, run_id: str) -> str | None:
+        """只返回仍在运行的精确控制目标，不依赖展示记录的保留期限。"""
+        return self._executions.get(run_id)
+
+    def is_active(self, scope: str) -> bool:
+        """回复与隔离反思共用的可中断执行事实。"""
+        return scope in self._executions.values()
 
     def request(self, scope: str, reason: str = "") -> None:
         """请求中断指定 scope 的进行中会话（幂等：重复请求只更新时间）。"""

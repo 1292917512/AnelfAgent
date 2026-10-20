@@ -3,19 +3,23 @@
 from __future__ import annotations
 
 import asyncio
+import time
+import uuid
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import AsyncIterator, Iterator, TypedDict
+from typing import AsyncIterator, Iterator, Literal, TypedDict
 
 from core.event_bus import event_bus
 from core.log import current_log_actor
+from core.observation import ExecutionObservation
 from core.tool_context import request_trace
 
 EVENT_ACTIVITY_STARTED = "activity_started"
 EVENT_ACTIVITY_FINISHED = "activity_finished"
 EVENT_ACTIVITY_CONTEXT = "activity_context"
 EVENT_ACTIVITY_UPDATE = "activity_context_update"
+EVENT_ACTIVITY_STEP = "activity_step"
 EVENT_BACKGROUND_TASK_UPDATED = "background_task_updated"
 ACTIVITY_TEXT_LIMIT = 16000
 current_activity_id: ContextVar[str] = ContextVar("activity_id", default="")
@@ -48,10 +52,37 @@ class ActivityHandle:
     turn_id: str = ""
 
 
+@dataclass
+class ActivityStep:
+    """过程阶段的结果摘要，仅供观测，不参与执行决策。"""
+
+    detail: str = ""
+    status: Literal["done", "error", "interrupted"] = "done"
+
+
+@asynccontextmanager
+async def activity_step(name: str) -> AsyncIterator[ActivityStep]:
+    """发布等待或处理阶段的开始与终态，异常与取消保持原语义。"""
+    step = ActivityStep()
+    identity = {"id": uuid.uuid4().hex, "turn_id": current_activity_id.get(), "name": name, "ts": time.time()}
+    observation = ExecutionObservation()
+    try:
+        with observation:
+            await event_bus.emit(EVENT_ACTIVITY_STEP, {**identity, "status": "running"})
+            yield step
+    finally:
+        await event_bus.emit(EVENT_ACTIVITY_STEP, {
+            **identity, "status": "interrupted" if observation.cancelled else "error" if observation.error else step.status,
+            "duration_ms": round(observation.elapsed_ms), "detail": step.detail,
+            "error": str(observation.error or ""),
+        })
+
+
 @asynccontextmanager
 async def activity_scope(
     turn_id: str, scope: str, *, label: str = "", kind: str = "reflection",
     trigger: str = "", initiator: ActivityInitiator | None = None,
+    can_stop: bool = False,
 ) -> AsyncIterator[ActivityHandle]:
     """为并行及嵌套执行绑定独立轮次，并在所有退出路径发出终态。"""
     parent_id = current_activity_id.get()
@@ -63,6 +94,7 @@ async def activity_scope(
             "origin_scope": request_trace().get("scope", scope),
             "parent_id": parent_id, "actor": current_log_actor(),
             "trigger": trigger, "initiator": initiator,
+            "can_stop": can_stop,
             "label": label, "kind": kind, **(current_activity_owner.get() or {}),
         })
         yield handle

@@ -71,6 +71,90 @@ async def test_stop_during_context_preparation_closes_work_and_reports_cancelled
         event_bus.off(EVENT_ACTIVITY_FINISHED, finish)
 
 
+async def test_reflection_preparation_can_be_stopped_and_releases_runtime_identity(monkeypatch):
+    from agent.mind.execution import reflect
+    from core.activity import EVENT_ACTIVITY_STARTED
+    from core.event_bus import event_bus
+
+    started, closed = asyncio.Event(), asyncio.Event()
+    mind = FakeMind()
+    mind.interrupts = InterruptRegistry()
+    runs = []
+
+    async def prepare(*args, **kwargs):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+
+    async def observe(payload):
+        runs.append(payload)
+
+    monkeypatch.setattr(reflect, "select_reflect_tools", prepare)
+    event_bus.on(EVENT_ACTIVITY_STARTED, observe)
+    completion = {}
+    try:
+        task = asyncio.create_task(reflect.reflect_entry(mind, [], completion=completion))
+        await asyncio.wait_for(started.wait(), 2)
+        target = runs[-1]
+        assert mind.interrupts.scope_for_run(target["turn_id"]) == target["scope"]
+        mind.interrupts.request(target["scope"], "Web 停止")
+        assert await asyncio.wait_for(task, 2) == ""
+        assert completion["reason"] == "interrupted"
+        assert closed.is_set()
+        assert mind.interrupts.scope_for_run(target["turn_id"]) is None
+        assert mind.interrupts.pending_scopes() == []
+        assert mind.llm_calls == 0
+    finally:
+        event_bus.off(EVENT_ACTIVITY_STARTED, observe)
+
+
+@pytest.mark.parametrize("waiting_for_lock", [True, False])
+async def test_compression_abort_drains_work_and_preserves_lock_ownership(monkeypatch, waiting_for_lock):
+    from agent.mind.execution import round_context
+    from agent.mind.execution.state import ThinkMode
+    from core.activity import EVENT_ACTIVITY_STEP
+    from core.event_bus import event_bus
+
+    started, closed, abort = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    lock = asyncio.Lock()
+    if waiting_for_lock:
+        await lock.acquire()
+    mind = FakeMind()
+    mind.compressor = SimpleNamespace(microcompact=lambda chain: 0, should_compress=lambda *a, **kw: True, scope_lock=lambda scope: lock)
+    ctx = SimpleNamespace(mind=mind, anything=None, mode=ThinkMode.REFLECT, current_scope="reflect:test", execution_steps=[],
+                          base_messages=[], tool_chain=[], active_tools=[], abort_event=abort)
+    state = SimpleNamespace(last_input_tokens=100, iteration=0)
+
+    async def summarize(*args, **kwargs):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+
+    async def phase(payload):
+        if waiting_for_lock and payload["name"] == "context_compress":
+            started.set()
+
+    monkeypatch.setattr(round_context, "_precompact_flush", AsyncMock(return_value=False))
+    monkeypatch.setattr(round_context, "_compress_context", summarize)
+    event_bus.on(EVENT_ACTIVITY_STEP, phase)
+    try:
+        task = asyncio.create_task(round_context.prepare_round_context(ctx, state, 10, 0, SimpleNamespace()))
+        await asyncio.wait_for(started.wait(), 2)
+        abort.set()
+        assert await asyncio.wait_for(task, 2) == ([], False)
+        assert lock.locked() is waiting_for_lock
+        assert closed.is_set() is not waiting_for_lock
+        assert mind.llm_calls == 0
+    finally:
+        event_bus.off(EVENT_ACTIVITY_STEP, phase)
+        if lock.locked():
+            lock.release()
+
+
 class TestRegistryEvent:
     def test_request_sets_event(self):
         reg = InterruptRegistry()

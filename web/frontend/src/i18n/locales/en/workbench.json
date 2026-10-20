@@ -193,7 +193,11 @@
     "waiting": "Waiting for the agent",
     "source": "Source",
     "allSources": "All sources",
-    "runningOnly": "Running only"
+    "runningOnly": "Running only",
+    "submitting": "Submitting message",
+    "accepted": "Message accepted; awaiting processing or inclusion in the current execution",
+    "generating": "Model responding",
+    "executing": "Running {{name}}"
   },
   "expandChat": "Expand conversation",
   "restoreChat": "Restore split view",
@@ -205,7 +209,7 @@
       "resume": "Continue execution",
       "stopping": "Stopping",
       "resuming": "Continuation requested",
-      "stopHint": "Stop this Web conversation and its background work. External actions are not rolled back; execution confirms the stopped state.",
+      "stopHint": "Stop this execution. The runtime confirms safe completion; actions already performed are not rolled back.",
       "resumeHint": "Continue in the same conversation using interruption records and operation summaries, without replaying completed tools.",
       "failed": "Action failed. Refresh the execution state and retry.",
       "backgroundPending": "{{count}} background tasks could not accept cancellation. Inspect execution details; cancellation receipts will not restart the conversation."
@@ -268,7 +272,8 @@
       "reflection": "Reflection",
       "delegation": "Sub-agent",
       "task": "Task",
-      "hook": "Background hook"
+      "hook": "Background hook",
+      "maintenance": "Maintenance"
     },
     "status": {
       "running": "Running",
@@ -380,7 +385,8 @@
       "tool": "Tool execution",
       "text": "Response",
       "plan": "Execution plan",
-      "notice": "Message update"
+      "notice": "Message update",
+      "phase": "Processing stage"
     },
     "side": {
       "title": "Execution details",
@@ -394,6 +400,14 @@
       "judgments": "Decisions",
       "close": "Close details",
       "empty": "No records for this view"
+    },
+    "phases": {
+      "context_compress": "Preparing context compression",
+      "memory_flush": "Saving memory before compression",
+      "context_summary": "Summarizing context",
+      "file_restore": "Restoring recent file context",
+      "cognee_compact": "Cognee storage maintenance",
+      "tool_prepare": "Preparing tools"
     }
   },
   "toolView": {

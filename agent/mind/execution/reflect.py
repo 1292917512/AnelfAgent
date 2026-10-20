@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import time
 import uuid
+from contextlib import nullcontext
 from typing import TYPE_CHECKING
 
 from agent.mind.execution.loop import think_loop
 from agent.mind.execution.state import ThinkMode
+from agent.mind.execution.tool_execution import _await_with_abort
 from agent.mind.think_session import think_session
 from agent.mind.tools.core import build_reflect_blocklist, select_reflect_tools
+from core.activity import activity_scope, activity_step
 from core.log import log
 from core.tool_context import tool_request
 
@@ -40,32 +43,48 @@ async def reflect_entry(
     if extra_blocked_tools:
         blocked_tools = blocked_tools | set(extra_blocked_tools)
     reflect_scope = f"reflect:{uuid.uuid4().hex[:8]}"
-    active_tools, extra_selectors = await select_reflect_tools(
-        mind.tool_assembly, adapter_key=adapter_key, scope=reflect_scope,
-        tool_tags=tool_tags, inherited_tools=inherited_tools,
-    )
     collected_text: list[str] = []
     execution_steps: list[str] = []
     output_policy = "放开外发" if allow_output_tools else "禁用外发"
-    log(f"反思循环开始: {len(active_tools)} 个工具可用, 策略={output_policy}, 上限 {safety_limit} 轮", tag="思维")
-    with think_session(mind.tool_assembly, reflect_scope, with_token=False), tool_request(reflect_scope, inherit=True):
-        await think_loop(
-            mind,
-            mode=ThinkMode.REFLECT,
-            tool_chain=[],
-            execution_steps=execution_steps,
-            start_time=time.time(),
-            safety_limit=safety_limit,
-            collected_text=collected_text,
-            active_tools=active_tools,
-            anything=None,
-            base_messages=messages,
-            options=options,
-            blocked_tools=blocked_tools,
-            completion=completion,
-            reflect_tool_selectors=extra_selectors,
-            require_output=require_output,
-        )
+    interrupts = getattr(mind, "interrupts", None)
+    turn_id = uuid.uuid4().hex[:8]
+    with think_session(mind.tool_assembly, reflect_scope, with_token=False), tool_request(reflect_scope, inherit=True), \
+            interrupts.execution(turn_id, reflect_scope) if interrupts is not None else nullcontext():
+        async with activity_scope(turn_id, reflect_scope, can_stop=True) as activity:
+            if completion is not None:
+                completion["turn_id"] = turn_id
+            async with activity_step("tool_prepare") as step:
+                prepared, aborted = await _await_with_abort(select_reflect_tools(
+                    mind.tool_assembly, adapter_key=adapter_key, scope=reflect_scope,
+                    tool_tags=tool_tags, inherited_tools=inherited_tools,
+                ), interrupts.event(reflect_scope) if interrupts is not None else None)
+                if aborted:
+                    step.status = "interrupted"
+            if aborted:
+                activity.status = "cancelled"
+                if completion is not None:
+                    completion.update(reason="interrupted", turn_id=turn_id)
+                return ""
+            active_tools, extra_selectors = prepared
+            log(f"反思循环开始: {len(active_tools)} 个工具可用, 策略={output_policy}, 上限 {safety_limit} 轮", tag="思维")
+            await think_loop(
+                mind,
+                mode=ThinkMode.REFLECT,
+                tool_chain=[],
+                execution_steps=execution_steps,
+                start_time=time.time(),
+                safety_limit=safety_limit,
+                collected_text=collected_text,
+                active_tools=active_tools,
+                anything=None,
+                base_messages=messages,
+                options=options,
+                blocked_tools=blocked_tools,
+                completion=completion,
+                reflect_tool_selectors=extra_selectors,
+                require_output=require_output,
+                activity=activity,
+            )
     total = "\n".join(collected_text)
     log(f"反思循环结束: 产出 {len(total)} 字", tag="思维")
     return total

@@ -9,12 +9,13 @@ import { useActivityStore } from "@/stores/activity-store";
 import { useChatStore } from "@/stores/chat-store";
 import { toast } from "@/stores/toast-store";
 
-/** 只控制当前 Web 会话轮次；终态依赖服务端确认，不提前伪装停止。 */
+/** 可停止能力来自运行时，续接沿用最近 Web 会话；终态依赖服务端确认。 */
 export function ActivityExecutionControl({ run }: { run: ActivityRun }) {
   const { t } = useTranslation("workbench");
   const latest = useActivityStore((state) => state.runs.filter((item) => item.scope === run.scope && item.kind === "conversation").slice(-1)[0]?.id);
   const [pending, setPending] = useState(false);
-  if (run.kind !== "conversation" || run.source.channel !== "webui" || run.source.target !== "web_user" || latest !== run.id) return null;
+  const web = run.kind === "conversation" && run.source.channel === "webui" && run.source.target === "web_user" && latest === run.id;
+  if (run.status === "running" ? !run.can_stop : !web) return null;
   const stopping = run.status === "running" && run.control === "stopping";
   const resuming = run.control === "resuming" || run.control === "resumed";
   if (run.status !== "running" && run.status !== "cancelled") return null;

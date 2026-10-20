@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { FileWarning, Loader2, X, ZoomIn, ZoomOut } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -70,8 +70,9 @@ export function Lightbox({ src, alt, onClose }: LightboxProps) {
 /** 灯箱状态管理 Hook：在渲染器中注入 onImageClick */
 export function useLightbox(): { lightbox: ReactNode; openLightbox: (src: string, alt?: string) => void } {
   const [state, setState] = useState<{ src: string; alt?: string } | null>(null);
+  const openLightbox = useCallback((src: string, alt?: string) => setState({ src, alt }), []);
   return {
     lightbox: state ? <Lightbox src={state.src} alt={state.alt} onClose={() => setState(null)} /> : null,
-    openLightbox: (src, alt) => setState({ src, alt }),
+    openLightbox,
   };
 }

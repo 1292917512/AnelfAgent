@@ -13,6 +13,7 @@ from core.activity import (
     EVENT_ACTIVITY_CONTEXT,
     EVENT_ACTIVITY_FINISHED,
     EVENT_ACTIVITY_STARTED,
+    EVENT_ACTIVITY_STEP,
     EVENT_ACTIVITY_UPDATE,
     EVENT_BACKGROUND_TASK_UPDATED,
     current_activity_id,
@@ -81,6 +82,7 @@ class WorkspaceActivityService:
             (EVENT_ACTIVITY_FINISHED, self._finish),
             (EVENT_ACTIVITY_CONTEXT, self._context),
             (EVENT_ACTIVITY_UPDATE, self._context_update),
+            (EVENT_ACTIVITY_STEP, self._step),
             (EVENT_HOOK_EXECUTION, self._hook),
             (EVENT_ASSISTANT_DELTA, self._delta),
             (EVENT_THINKING_LLM_START, self._llm_start),
@@ -109,6 +111,7 @@ class WorkspaceActivityService:
         for run in self._runs.values():
             if run["status"] == "running":
                 run["status"] = "interrupted"
+                run["can_stop"] = False
                 run["ended_at"] = time.time()
                 for entry in run["entries"]:
                     if entry.get("status") in {"running", "queued"}:
@@ -225,6 +228,7 @@ class WorkspaceActivityService:
             "input": sanitize_text(str(payload.get("label", "")))[:MAX_TEXT],
             "generation": 0,
             "status": "running", "started_at": time.time(), "ended_at": None,
+            "can_stop": bool(payload.get("can_stop")),
             "entries": [], "skills": [], "entry_count": 0, "truncated": False,
         }
         self._runs[run_id] = run
@@ -250,8 +254,9 @@ class WorkspaceActivityService:
         run["status"] = str(payload["status"])
         run["error"] = sanitize_text(str(payload.get("error", "")))[:MAX_TEXT]
         run["ended_at"] = time.time()
+        run["can_stop"] = False
         for entry in run["entries"]:
-            if entry["kind"] in {"tool", "model", "context"} and entry.get("status") == "running":
+            if entry["kind"] in {"tool", "model", "context", "phase"} and entry.get("status") == "running":
                 entry["status"] = "interrupted"
                 entry["duration_ms"] = max(0, round((run["ended_at"] - entry["ts"]) * 1000))
         self._changed(run, immediate=True)
@@ -259,6 +264,20 @@ class WorkspaceActivityService:
         if run["kind"] == "delegation" and run["status"] in {"failed", "cancelled", "interrupted"}:
             await self._delegation_end({"delegation_id": run["owner_id"], "success": False,
                                         "cancelled": run["status"] != "failed", "error": run["error"]})
+
+    async def _step(self, payload: dict[str, Any]) -> None:
+        """阶段按稳定 ID 更新，迟到的终态仍归属发起执行。"""
+        run = self._get(payload)
+        if run is None:
+            return
+        entry = next((item for item in run["entries"] if item["id"] == payload["id"]), None)
+        if entry is None:
+            entry = {"id": str(payload["id"]), "kind": "phase", "name": str(payload["name"]), "ts": payload["ts"]}
+            self._append(run, entry)
+        entry.update(status=payload["status"], duration_ms=payload.get("duration_ms", 0),
+                     detail=sanitize_text(str(payload.get("detail", "")))[:1200],
+                     error=sanitize_text(str(payload.get("error", "")))[:1200])
+        self._changed(run, immediate=True)
 
     async def _hook(self, payload: dict[str, Any]) -> None:
         run = self._get(payload)
@@ -358,27 +377,31 @@ class WorkspaceActivityService:
         if run is None:
             return
         run["generation"] += 1
-        self._append(run, {"kind": "model", "name": str(payload.get("model", "")), "status": "running"})
+        self._append(run, {"kind": "model", "name": str(payload.get("model", "")), "status": "running",
+                           "call_id": str(payload.get("call_id", "")), "purpose": str(payload.get("purpose", ""))})
         self._changed(run)
 
     async def _llm_end(self, payload: dict[str, Any]) -> None:
         run = self._get(payload)
         if run is None:
             return
-        entries = [entry for entry in run["entries"] if entry.get("generation") == run["generation"]]
-        model = next((entry for entry in entries if entry["kind"] == "model"), None)
+        call_id = str(payload.get("call_id", ""))
+        model = next((entry for entry in reversed(run["entries"]) if entry["kind"] == "model"
+                      and (entry.get("call_id") == call_id if call_id else entry.get("generation") == run["generation"])), None)
+        generation = model["generation"] if model else run["generation"]
+        entries = [entry for entry in run["entries"] if entry.get("generation") == generation]
         if model:
-            model.update(status="error" if payload.get("error") else "done",
+            model.update(status="interrupted" if payload.get("cancelled") else "error" if payload.get("error") else "done",
                          error=sanitize_text(str(payload.get("error", "")))[:MAX_TEXT],
                          duration_ms=payload.get("duration_ms", 0), ttft_ms=payload.get("ttft_ms"))
             usage = payload.get("usage") or {}
             model["usage"] = {key: usage[key] for key in (
                 "total_input_tokens", "completion_tokens", "cache_read_input_tokens", "cache_observable",
             ) if key in usage}
-        for kind, field in (("thinking", "reasoning_content"), ("text", "content")):
+        for kind, field in (() if payload.get("purpose") == "compress" else (("thinking", "reasoning_content"), ("text", "content"))):
             content = str(payload.get(field) or "")
             if content and not any(entry["kind"] == kind for entry in entries):
-                self._append(run, {"kind": kind, "content": sanitize_text(content)[:MAX_TEXT],
+                self._append(run, {"kind": kind, "generation": generation, "content": sanitize_text(content)[:MAX_TEXT],
                                    "truncated": len(content) > MAX_TEXT or bool(payload.get("reasoning_truncated" if kind == "thinking" else "content_truncated"))})
         self._changed(run)
 

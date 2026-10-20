@@ -1,7 +1,7 @@
 import type { ActivityEntry } from "@/lib/types/activity";
 import type { ActivitySegment } from "./activity-stream";
 
-export type StageKind = "context" | "model" | "tool" | "text" | "plan" | "notice";
+export type StageKind = "context" | "model" | "tool" | "text" | "plan" | "notice" | "phase";
 export interface ActivityStage {
   id: string; runId: string; entryId: string; entryIds: string[]; kind: StageKind; title: string; preview: string; count: number; running: boolean; failed: boolean;
 }
@@ -33,6 +33,7 @@ export function activityStages(segments: ActivitySegment[]): ActivityStage[] {
 
 function stagePreview(entry: ActivityEntry): string {
   if (entry.kind === "background") return entry.description;
+  if (entry.kind === "phase") return entry.detail || entry.error || "";
   if (entry.kind === "tool" || entry.kind === "model") return entry.name;
   if (entry.kind === "thinking" || entry.kind === "text") return entry.content.slice(0, 180);
   if (entry.kind === "plan" || entry.kind === "delegation") return entry.goal.slice(0, 180);

@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional
 from agent.llm import LLMCallAborted
 from agent.mind.execution.compression import _handle_overflow
 from agent.mind.execution.state import ExecutionContext, RoundState
-from agent.mind.execution.tool_execution import _EarlyToolRunner
+from agent.mind.execution.tool_execution import _await_with_abort, _EarlyToolRunner
 from core.log import log
 
 if TYPE_CHECKING:
@@ -81,6 +81,7 @@ async def _invoke_llm_round(
         return None
     except Exception as exc:
         # 上下文超限：立即压缩后重试（连续压缩无效时放弃，防止死循环）
-        if await _handle_overflow(ctx, state, exc):
+        handled, aborted = await _await_with_abort(_handle_overflow(ctx, state, exc), ctx.abort_event)
+        if aborted or handled:
             return None
         raise

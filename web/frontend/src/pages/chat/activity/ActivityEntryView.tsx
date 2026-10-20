@@ -17,6 +17,7 @@ import { ActivityToolSummary } from "./ActivityToolSummary";
 import { ActivityInspector } from "./ActivityInspector";
 import { ActivityNotice } from "./ActivityNotice";
 import { ActivityBackground } from "./ActivityBackground";
+import { ActivityPhase } from "./ActivityPhase";
 import { ToolContribution } from "@/components/extensions/ToolContribution";
 import type { ActivityThought } from "./activity-stream";
 
@@ -50,10 +51,11 @@ export const ActivityEntryView = memo(function ActivityEntryView({ entry, though
   if (entry.kind === "notice") return <ActivityNotice entry={entry} />;
   if (entry.kind === "background") return <ActivityBackground entry={entry} />;
   if (entry.kind === "context") return <ActivityContext entry={entry} />;
-  if (entry.kind === "hook") return <HookExecutionRow run={{ ...entry, started_at: entry.ts }} defaultExpanded={current} />;
+  if (entry.kind === "phase") return <ActivityPhase entry={entry} />;
+  if (entry.kind === "hook") return current ? <ActivityPhase entry={entry} /> : <HookExecutionRow run={{ ...entry, started_at: entry.ts }} />;
   if (entry.kind === "file") return <DiffView {...entry} />;
   if (entry.kind === "model") return <ActivityModel entry={entry} thoughts={thoughts} />;
-  if (entry.kind === "text") return <div className="activity-output">{entry.truncated && <p className="activity-note">{t("activity.truncated")}</p>}<Markdown content={entry.content} renderText={renderTaggedText} /></div>;
+  if (entry.kind === "text") return <div className="activity-output">{entry.truncated && <p className="activity-note">{t("activity.truncated")}</p>}<Markdown content={entry.content} renderText={renderTaggedText} live={live} /></div>;
   if (entry.kind === "thinking") {
     const open = expanded ?? current;
     return <div className={cn("activity-thought", live && "is-live")}>
@@ -64,7 +66,7 @@ export const ActivityEntryView = memo(function ActivityEntryView({ entry, though
           <Markdown content={entry.content} renderText={renderTaggedText} />
         </ActivityInspector>
       </div>
-      <div className={cn("activity-thought-content", !open && "activity-thought-preview")}>{entry.truncated && open && <p className="activity-note">{t("activity.truncated")}</p>}<TaggedText content={open ? entry.content : entry.content.slice(0, 500)} /></div>
+      <div className={cn("activity-thought-content", !open && "activity-thought-preview")}>{entry.truncated && open && <p className="activity-note">{t("activity.truncated")}</p>}<Markdown content={open ? entry.content : entry.content.slice(0, 500)} renderText={renderTaggedText} live={live} /></div>
     </div>;
   }
   if (entry.kind === "plan") {

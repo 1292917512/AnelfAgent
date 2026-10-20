@@ -42,7 +42,7 @@ function ActivityFeed({ runs, clearing, onClear }: { runs: ActivityRun[]; cleari
   const touchStart = useRef<number | null>(null);
   const paging = useRef(false);
   const [expanded, setExpanded] = useState<Record<string, { current: boolean; open: boolean }>>({});
-  const activeRuns = runs.filter((run) => run.status === "running");
+  const activeRuns = runs.filter((run) => run.status === "running" || run.entries.some((entry) => "status" in entry && ["running", "queued"].includes(entry.status)));
   const currentPage = index === pages.length - 1;
   const families = useMemo(() => activityFamilies(page?.runs ?? []), [page]);
   const selectedFamily = families.find((item) => item.id === family);
@@ -51,7 +51,7 @@ function ActivityFeed({ runs, clearing, onClear }: { runs: ActivityRun[]; cleari
   const visibleRuns = useMemo(() => (selectedFamily?.runs ?? page?.runs ?? []).filter((run) => run.kind !== "hook" || !page?.runs.some((parent) => parent.entries.some((entry) => entry.kind === "hook" && entry.activity_ids?.includes(run.id)))), [selectedFamily, page]);
   const segments = useMemo(() => currentPage ? activitySegments(visibleRuns) : [], [visibleRuns, currentPage]);
   const pinPage = useCallback(() => { if (page) setSelected(page.id); }, [page]);
-  const { scroll, content, following, pause: pauseFollowing, resume, handlers } = useActivityFollow(`${page?.id}:${family}:${Math.max(0, ...visibleRuns.map((run) => run.revision))}`, pinPage);
+  const { scroll, content, following, pause: pauseFollowing, resume, handlers } = useActivityFollow(`${page?.id}:${family}:${Math.max(0, ...visibleRuns.map((run) => run.revision))}`, pinPage, currentPage);
   const toggleRun = useCallback((id: string, open: boolean) => {
     setExpanded((previous) => {
       const retained = Object.fromEntries(Object.entries(previous).filter(([key]) => runs.some((run) => run.id === key)));

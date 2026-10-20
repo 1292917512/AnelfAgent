@@ -16,6 +16,7 @@ export interface ActivitySkill {
   mcp_status?: SkillMCPStatus[];
 }
 export type ActivityEntry =
+  | EntryBase & { kind: "phase"; name: string; status: string; duration_ms: number; detail?: string; error?: string }
   | EntryBase & { kind: "notice"; origin: "conversation" | "push" | "cross_channel" | "delivery" | "recovery"; iteration: number; items: ActivityNoticeItem[]; count: number; deferred: number; truncated?: boolean }
   | EntryBase & Omit<HookExecution, "started_at"> & { kind: "hook" }
   | EntryBase & { kind: "context"; status: string; duration_ms: number; blocks: { layer: string; label: string; content: string }[]; block_count: number; skills?: ActivitySkill[]; error?: string; truncated?: boolean }
@@ -25,7 +26,7 @@ export type ActivityEntry =
   | EntryBase & { kind: "delegation"; goal: string; agent: string; status: string; run_id?: string; result?: string; duration_ms?: number; background: boolean }
   | EntryBase & { kind: "background"; task_kind: string; description: string; status: "running" | "done" | "error" | "interrupted"; result?: string; duration_ms?: number }
   | EntryBase & { kind: "plan"; goal: string; status: string; files?: string; risks?: string; steps: { content: string; status: string; note: string }[] }
-  | EntryBase & { kind: "model"; name: string; status: string; duration_ms?: number; ttft_ms?: number | null; error?: string; usage?: { total_input_tokens?: number; completion_tokens?: number; cache_read_input_tokens?: number; cache_observable?: boolean } }
+  | EntryBase & { kind: "model"; name: string; purpose?: string; call_id?: string; status: string; duration_ms?: number; ttft_ms?: number | null; error?: string; usage?: { total_input_tokens?: number; completion_tokens?: number; cache_read_input_tokens?: number; cache_observable?: boolean } }
   | EntryBase & ChatStreamingDiff & { kind: "file" };
 
 export interface ActivityRun {
@@ -43,6 +44,7 @@ export interface ActivityRun {
   parent_id: string;
   status: string;
   control?: "" | "stopping" | "resuming" | "resumed";
+  can_stop?: boolean;
   error?: string;
   started_at: number;
   updated_at: number;

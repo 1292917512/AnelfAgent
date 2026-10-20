@@ -1,4 +1,4 @@
-"""Web 会话的按轮次停止与继续，复用原会话调度及操作摘要。
+"""按轮次停止执行与继续 Web 会话，复用运行时中断和原会话调度。
 
 模型可见：继续是一条用户明确提交的续接请求，要求先核对中断中的操作。
 Token：每次继续增加一条短消息；操作细节复用现有执行日志按需读取。
@@ -24,7 +24,32 @@ class ExecutionControlError(Exception):
 
 
 async def control_execution(run_id: str, action: Literal["stop", "resume"]) -> dict[str, Any]:
-    """控制最近一轮 Web 会话；重试同一续接请求不会重复入队。"""
+    """按运行时标识停止执行；Web 对话的续接保持原会话与幂等规则。"""
+    runtime = get_runtime()
+    if runtime is None:
+        raise ExecutionControlError("智能体尚未就绪", 503)
+    if action == "stop":
+        scope = runtime.mind.interrupts.scope_for_run(run_id)
+        if scope is None:
+            if workspace_activity.get_run(run_id) is None:
+                raise ExecutionControlError("执行记录已过期，请刷新工作区", 404)
+            return {"status": "idle"}
+        if runtime.mind.interrupts.is_requested(scope):
+            return {"status": "accepted"}
+        workspace_activity.set_control(run_id, "stopping")
+        kind, channel, user, session = parse_entity_scope(scope)
+        try:
+            if kind == "user" and channel == "webui" and user == "web_user":
+                result = await ChatService().interrupt_chat(session or "default")
+            else:
+                interrupted = runtime.mind.interrupt(scope, reason="用户停止执行")
+                result = {"status": "ok" if interrupted else "idle", "interrupted": interrupted}
+        except BaseException:
+            workspace_activity.set_control(run_id, "")
+            raise
+        if result["status"] != "ok":
+            workspace_activity.set_control(run_id, "")
+        return result
     run = workspace_activity.get_run(run_id)
     if run is None:
         raise ExecutionControlError("执行记录已过期，请刷新工作区", 404)
@@ -35,24 +60,7 @@ async def control_execution(run_id: str, action: Literal["stop", "resume"]) -> d
         return {"status": "accepted"}
     if workspace_activity.latest_conversation(run["scope"]) != run_id:
         raise ExecutionControlError("该会话已有后续轮次，请操作最新执行")
-    runtime = get_runtime()
-    if runtime is None:
-        raise ExecutionControlError("智能体尚未就绪", 503)
     chat = ChatService()
-    if action == "stop":
-        if run["status"] != "running":
-            return {"status": "idle"}
-        if run.get("control") == "stopping":
-            return {"status": "accepted"}
-        workspace_activity.set_control(run_id, "stopping")
-        try:
-            result = await chat.interrupt_chat(session or "default")
-        except BaseException:
-            workspace_activity.set_control(run_id, "")
-            raise
-        if result["status"] != "ok":
-            workspace_activity.set_control(run_id, "")
-        return result
     if run["status"] != "cancelled":
         raise ExecutionControlError("只有已中止的对话可以继续，请等待停止完成")
     mind = runtime.mind

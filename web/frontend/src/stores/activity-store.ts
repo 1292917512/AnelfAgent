@@ -6,7 +6,7 @@ import type { ActivityRun, ActivitySnapshot } from "@/lib/types/activity";
 function retainRuns(runs: ActivityRun[]): ActivityRun[] {
   const ordered = [...runs].sort((a, b) => a.started_at - b.started_at || a.id.localeCompare(b.id));
   while (ordered.length > 20) {
-    const completed = ordered.findIndex((run) => run.status !== "running");
+    const completed = ordered.findIndex((run) => run.status !== "running" && !run.entries.some((entry) => "status" in entry && ["running", "queued"].includes(entry.status)));
     ordered.splice(completed < 0 ? 0 : completed, 1);
   }
   return ordered;
@@ -35,6 +35,7 @@ interface ActivityState {
   load: () => Promise<void>;
   clearHistory: () => Promise<void>;
   receive: (epoch: string, run: ActivityRun) => void;
+  receiveMany: (epoch: string, runs: ActivityRun[]) => void;
   restore: (snapshot: ActivitySnapshot) => void;
 }
 
@@ -66,13 +67,19 @@ export const useActivityStore = create<ActivityState>((set, get) => {
       } catch (error) { if (get().epoch === epoch) set({ error }); }
       finally { set({ clearing: false }); }
     },
-    receive: (epoch, run) => set((state) => {
+    receive: (epoch, run) => get().receiveMany(epoch, [run]),
+    receiveMany: (epoch, incoming) => set((state) => {
       const runs = state.epoch === epoch ? state.runs : [];
       const snapshotRevision = state.epoch === epoch ? state.snapshotRevision : 0;
-      const previous = runs.find((item) => item.id === run.id);
-      if (!previous && run.revision <= snapshotRevision) return state;
-      if (previous && previous.revision >= run.revision) return state;
-      return { epoch, snapshotRevision, runs: retainRuns([...runs.filter((item) => item.id !== run.id), reconcileRun(previous, run)]) };
+      const records = new Map(runs.map((run) => [run.id, run]));
+      let changed = false;
+      for (const run of incoming) {
+        const previous = records.get(run.id);
+        if ((!previous && run.revision <= snapshotRevision) || (previous && previous.revision >= run.revision)) continue;
+        records.set(run.id, reconcileRun(previous, run));
+        changed = true;
+      }
+      return changed ? { epoch, snapshotRevision, runs: retainRuns([...records.values()]) } : state;
     }),
     restore: (snapshot) => set((state) => {
       if (state.epoch === snapshot.epoch && snapshot.revision < state.snapshotRevision) return state;

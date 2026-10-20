@@ -185,6 +185,8 @@
 .activity-model > span:nth-child(2) { font-variant-numeric: tabular-nums; }
 .activity-model p { width: 100%; color: var(--warn); overflow-wrap: anywhere; }
 .activity-model-call { min-width: 0; }
+.activity-phase { min-width: 0; border-left: 2px solid var(--border); }
+.activity-thought-content .markdown-content { white-space: normal; }
 .activity-model-call > .activity-entry-heading { gap: 4px; }
 .activity-model-toggle { min-width: 0; flex: 1; min-height: 32px; padding: 6px; border-radius: 6px; text-align: left; }
 .activity-model-toggle:hover { background: var(--bg-hover); color: var(--text); }

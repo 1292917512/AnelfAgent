@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.mind.execution.loop import think_loop
@@ -82,13 +83,15 @@ async def reply_loop(
     from core.tool_context import tool_request
 
     channel_policy = get_reply_policy(adapter_key)
+    turn_id = uuid.uuid4().hex[:8]
+    interrupts = getattr(mind, "interrupts", None)
     with think_session(mind.tool_assembly, scope), tool_request(
         scope, str(getattr(anything, "uid", "") or ""),
         message_id=str(getattr(anything, "_trace_message_id", "") or getattr(anything, "adapter_message_id", "") or ""),
-    ):
+    ), interrupts.execution(turn_id, scope) if interrupts is not None else nullcontext():
         label = anything.get_text_content() or anything._trace_input_preview
         async with activity_scope(
-            uuid.uuid4().hex[:8], scope, label=label, kind="conversation",
+            turn_id, scope, label=label, kind="conversation", can_stop=True,
             trigger=anything.message_kind,
             initiator={"id": str(anything.uid or ""), "name": str(getattr(anything, "user_name", "") or "")},
         ) as activity, \

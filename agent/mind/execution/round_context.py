@@ -14,8 +14,10 @@ from agent.mind.background.context import background_context
 from agent.mind.execution.compression import _compress_context, _precompact_flush
 from agent.mind.execution.messages import _merge_new_messages, _merge_pushes, _merge_steered_messages
 from agent.mind.execution.state import ExecutionContext, RoundState, ThinkMode
+from agent.mind.execution.tool_execution import _await_with_abort
 from agent.mind.execution.usage import _cache_status_hint, _token_budget_hint
 from agent.mind.recall.refresh import DialogueRecollection
+from core.activity import activity_step
 from core.log import log
 
 
@@ -36,19 +38,20 @@ async def prepare_round_context(
         last_input_tokens=state.last_input_tokens,
         scope=ctx.current_scope,
     ):
-        try:
-            async with mind.compressor.scope_lock(ctx.current_scope):
-                # PreCompact flush：压缩前把该会话的待定对话抢跑沉淀为
-                # 长期记忆，防止压缩摘要丢弃未提取的细节（信息不失帧）；
-                # fail-open，提取失败/超时绝不阻断压缩
-                if await _precompact_flush(mind, ctx.current_scope):
-                    execution_steps.append(
-                        f"→ 第{state.iteration + 1}轮前: 压缩前已沉淀待定记忆"
-                    )
+        async def compress() -> None:
+            async with activity_step("context_compress"), mind.compressor.scope_lock(ctx.current_scope):
+                async with activity_step("memory_flush"):
+                    flushed = await _precompact_flush(mind, ctx.current_scope)
+                if flushed:
+                    execution_steps.append(f"→ 第{state.iteration + 1}轮前: 压缩前已沉淀待定记忆")
                 ctx.base_messages, ctx.tool_chain = await _compress_context(
-                    mind, ctx.base_messages, ctx.tool_chain, ctx.current_scope,
-                    tools=ctx.active_tools,
+                    mind, ctx.base_messages, ctx.tool_chain, ctx.current_scope, tools=ctx.active_tools,
                 )
+
+        try:
+            _, aborted = await _await_with_abort(compress(), ctx.abort_event)
+            if aborted:
+                return [], False
         except Exception as exc:
             # 估算/手动触发的压缩失败不应杀死整轮回复：
             # 本轮不压缩继续（硬溢出路径由 _handle_overflow 另行处理，保留原语义）

@@ -7,9 +7,11 @@ import hashlib
 import json
 import re
 import time
+import uuid
 from collections import defaultdict
 from typing import Any, Optional
 
+from core.activity import activity_owner, activity_scope, activity_step
 from core.log import log
 
 from ..memory_store import MemoryStore
@@ -371,10 +373,19 @@ class CogneeCoordinator:
         await self._run_compact()
 
     async def _run_compact(self) -> dict[str, Any]:
-        async with self._projection_lock:
-            if not self._projection_allowed():
-                return {"error": self._pause_reason}
-            return await self._compact_storage()
+        with activity_owner(kind="maintenance", label="Cognee", owner_id="cognee"):
+            async with activity_scope(uuid.uuid4().hex[:8], "") as activity, activity_step("cognee_compact") as step:
+                async with self._projection_lock:
+                    if not self._projection_allowed():
+                        step.status, step.detail = "error", self._pause_reason
+                        activity.status, activity.error = "failed", self._pause_reason
+                        return {"error": self._pause_reason}
+                    result = await self._compact_storage()
+                    step.detail = self.last_compact_summary
+                    if "error" in result:
+                        step.status = "error"
+                        activity.status, activity.error = "failed", str(result["error"])
+                    return result
 
     async def _compact_storage(self) -> dict[str, Any]:
         self._last_compact_ns = time.monotonic_ns()

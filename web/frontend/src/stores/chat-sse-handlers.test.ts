@@ -1,17 +1,18 @@
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ActivityDelta, ActivityRun } from "@/lib/types/activity";
 import type { ChatBucket } from "@/lib/types";
 import { attachChatSseHandlers } from "./chat-sse-handlers";
 import { emptyBucket } from "./chat-shared";
 import { useActivityStore } from "./activity-store";
 
-beforeEach(() => { useActivityStore.setState({ epoch: "", snapshotRevision: 0, runs: [] }); });
+beforeEach(() => { vi.useFakeTimers(); useActivityStore.setState({ epoch: "", snapshotRevision: 0, runs: [] }); });
+afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
 
 it("rebuilds connection deltas independently of newer HTTP snapshots and never duplicates text", () => {
   const events = new EventTarget();
   const recover = vi.fn();
   attachChatSseHandlers(events as EventSource, { updateBucket: vi.fn(), getActiveChatId: () => "default", setContextUsage: vi.fn() }, () => true, recover);
-  const emit = (name: string, data: unknown) => events.dispatchEvent(new MessageEvent(name, { data: JSON.stringify(data) }));
+  const emit = (name: string, data: unknown) => { events.dispatchEvent(new MessageEvent(name, { data: JSON.stringify(data) })); vi.advanceTimersByTime(20); };
   const run: ActivityRun = { id: "run", revision: 1, scope: "", origin_scope: "", source: { scope: "", channel: "", kind: "", target: "", session: "" },
     actor: "", label: "Inspect", kind: "conversation", input: "Inspect", owner_id: "", parent_id: "", started_at: 1, updated_at: 1, ended_at: null,
     status: "running", entry_count: 2, truncated: false, entries: [
@@ -43,6 +44,7 @@ it("routes global runtime to activity and only delivered replies to Web messages
   attachChatSseHandlers(events as EventSource, { updateBucket, getActiveChatId: () => "default", setContextUsage: vi.fn() }, () => true, vi.fn());
   const run: ActivityRun = { id: "qq", scope: "group_qq:42", origin_scope: "group_qq:42", kind: "conversation", label: "Check", input: "Check", owner_id: "", actor: "", parent_id: "", source: { scope: "group_qq:42", kind: "group", channel: "qq", target: "42", session: "" }, status: "running", started_at: 1, updated_at: 1, ended_at: null, revision: 1, entry_count: 1, truncated: false, entries: [{ id: "thought", ts: 1, kind: "thinking", content: "Inspecting all channels" }] };
   events.dispatchEvent(new MessageEvent("activity", { data: JSON.stringify({ epoch: "p", run }) }));
+  vi.advanceTimersByTime(20);
   events.dispatchEvent(new MessageEvent("delta", { data: JSON.stringify({ delta: "Internal output" }) }));
   expect(updateBucket).not.toHaveBeenCalled();
   expect(useActivityStore.getState().runs[0]?.entries).toEqual(run.entries);
@@ -77,4 +79,30 @@ it("ignores queued events from a replaced connection including old server epochs
   events.dispatchEvent(new MessageEvent("turn_end", { data: "{}" }));
   expect(useActivityStore.getState().epoch).toBe("new");
   expect(updateBucket).not.toHaveBeenCalled();
+});
+
+it("coalesces live frames, delivers terminal state immediately and discards a replaced connection's pending frame", () => {
+  const events = new EventTarget();
+  let current = true;
+  attachChatSseHandlers(events as EventSource, { updateBucket: vi.fn(), getActiveChatId: () => "default", setContextUsage: vi.fn() }, () => current, vi.fn());
+  const run: ActivityRun = { id: "run", revision: 1, scope: "", origin_scope: "", source: { scope: "", channel: "", kind: "", target: "", session: "" },
+    actor: "", label: "Inspect", kind: "reflection", input: "", owner_id: "", parent_id: "", started_at: 1, updated_at: 1, ended_at: null,
+    status: "running", entry_count: 1, truncated: false, entries: [{ id: "text", kind: "text", ts: 1, content: "A" }] };
+  const changed = vi.fn();
+  const unsubscribe = useActivityStore.subscribe(changed);
+  try {
+    for (let revision = 1; revision <= 50; revision++) events.dispatchEvent(new MessageEvent("activity", {
+      data: JSON.stringify({ epoch: "p", run: { ...run, revision, entries: [{ ...run.entries[0], content: `Result ${revision}` }] } }),
+    }));
+    expect(changed).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(20);
+    expect(changed).toHaveBeenCalledOnce();
+    expect(useActivityStore.getState().runs[0]?.entries[0]).toMatchObject({ content: "Result 50" });
+    events.dispatchEvent(new MessageEvent("activity_end", { data: JSON.stringify({ epoch: "p", run: { ...run, revision: 51, status: "cancelled" } }) }));
+    expect(useActivityStore.getState().runs[0]?.status).toBe("cancelled");
+    events.dispatchEvent(new MessageEvent("activity", { data: JSON.stringify({ epoch: "p", run: { ...run, id: "late", revision: 52 } }) }));
+    current = false;
+    vi.advanceTimersByTime(20);
+    expect(useActivityStore.getState().runs.map((item) => item.id)).toEqual(["run"]);
+  } finally { unsubscribe(); }
 });

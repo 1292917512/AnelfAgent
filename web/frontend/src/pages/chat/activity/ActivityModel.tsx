@@ -6,7 +6,7 @@ import { useNow } from "@/hooks/useNow";
 import { formatElapsedCompact } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { ActivityInspector } from "./ActivityInspector";
-import { TaggedText, renderTaggedText } from "./ActivityReferences";
+import { renderTaggedText } from "./ActivityReferences";
 import { Markdown } from "../render/Markdown";
 import type { ActivityThought } from "./activity-stream";
 
@@ -14,8 +14,8 @@ import type { ActivityThought } from "./activity-stream";
 export function ActivityModel({ entry, thoughts = [] }: { entry: Extract<ActivityEntry, { kind: "model" }>; thoughts?: ActivityThought[] }) {
   const { t } = useTranslation("workbench");
   const running = entry.status === "running";
-  const [selection, setSelection] = useState<{ status: string; open: boolean } | null>(null);
-  const open = selection?.status === entry.status ? selection.open : running;
+  const [selection, setSelection] = useState<boolean | null>(null);
+  const open = selection ?? running;
   const now = useNow(running);
   const usage = entry.usage;
   const input = usage?.total_input_tokens;
@@ -38,9 +38,10 @@ export function ActivityModel({ entry, thoughts = [] }: { entry: Extract<Activit
     {!running && <span title={t("activity.cacheHint")}>{rate != null ? t("activity.modelCache", { percent: rate }) : t("activity.cacheUnknown")}</span>}
   </>;
   return <div className={cn("activity-model-call", running && "is-live")}>
+    {entry.purpose === "compress" && <p className="activity-note">{t("activity.phases.context_summary")}</p>}
     <div className="activity-entry-heading">
       {thoughts.length ? <button className="activity-model activity-model-toggle" aria-expanded={open}
-        onClick={() => setSelection({ status: entry.status, open: !open })}>
+        onClick={() => setSelection(!open)}>
         {summary}<ChevronDown size={13} className={cn("ml-auto shrink-0", open && "rotate-180")} />
       </button> : <div className="activity-model">{summary}</div>}
       <ActivityInspector title={`${entry.name} · ${t("activity.modelDetails")}`} preview={metrics}>
@@ -56,7 +57,7 @@ export function ActivityModel({ entry, thoughts = [] }: { entry: Extract<Activit
     {entry.error && <p className="activity-note text-warn" role="alert">{entry.error}</p>}
     {open && thoughts.map((thought) => <div key={thought.id} className="activity-thought-content">
       {thought.truncated && <p className="activity-note">{t("activity.truncated")}</p>}
-      <TaggedText content={thought.content} />
+      <Markdown content={thought.content} renderText={renderTaggedText} live={running} />
     </div>)}
   </div>;
 }

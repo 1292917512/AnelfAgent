@@ -48,12 +48,13 @@ async def test_stop_is_scoped_and_does_not_report_completion_early(execution):
     projection, mind, scope, send = execution
     await start(projection, scope)
     mind.active_reply_scopes.update({scope, ChatService.scope_for_chat("other")})
-    result = await control.control_execution("run", "stop")
+    with mind.interrupts.execution("run", scope):
+        result = await control.control_execution("run", "stop")
+        assert mind.interrupts.pending_scopes() == [scope]
+        assert await control.control_execution("run", "stop") == {"status": "accepted"}
     assert result["interrupted"] is True
-    assert mind.interrupts.pending_scopes() == [scope]
     assert projection.get_run("run")["status"] == "running"
     assert projection.get_run("run")["control"] == "stopping"
-    assert await control.control_execution("run", "stop") == {"status": "accepted"}
     control.get_runtime().delegation_manager.cancel_scope.assert_called_once_with(scope)
     send.assert_not_called()
 
@@ -107,6 +108,19 @@ async def test_old_stop_never_stops_new_turn(execution):
     await start(projection, scope)
     await start(projection, scope, "new")
     mind.active_reply_scopes.add(scope)
-    with pytest.raises(control.ExecutionControlError):
-        await control.control_execution("run", "stop")
+    with mind.interrupts.execution("new", scope):
+        assert await control.control_execution("run", "stop") == {"status": "idle"}
     assert not mind.interrupts.is_requested(scope)
+
+
+async def test_reflection_stop_uses_runtime_identity_after_display_eviction(execution):
+    projection, mind, scope, send = execution
+    with mind.interrupts.execution("reflection", "reflect:one"), mind.interrupts.execution("other", "reflect:two"):
+        result = await control.control_execution("reflection", "stop")
+        assert result["interrupted"] is True
+        assert mind.interrupts.pending_scopes() == ["reflect:one"]
+        assert projection.get_run("reflection") is None
+        assert not mind.interrupts.is_requested(scope)
+    assert mind.interrupts.scope_for_run("reflection") is None
+    assert mind.interrupts.pending_scopes() == []
+    send.assert_not_called()

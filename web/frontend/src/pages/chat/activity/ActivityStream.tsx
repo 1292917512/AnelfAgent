@@ -9,14 +9,18 @@ import { ActivitySourceLabel, TaggedText } from "./ActivityReferences";
 import { ActivityEntryView } from "./ActivityEntryView";
 import type { ActivitySegment } from "./activity-stream";
 
-const Segment = memo(function Segment({ segment, parent, onReveal }: { segment: ActivitySegment; parent?: ActivityRun; onReveal: (id: string) => void }) {
+function samePresentation(a: ActivityRun, b: ActivityRun): boolean {
+  return a.id === b.id && a.status === b.status && a.started_at === b.started_at && a.ended_at === b.ended_at
+    && a.actor === b.actor && a.label === b.label && a.kind === b.kind && a.parent_id === b.parent_id
+    && a.source === b.source && a.input === b.input && a.skills === b.skills && a.truncated === b.truncated && a.error === b.error;
+}
+
+const Heading = memo(function Heading({ run, parent, onReveal }: { run: ActivityRun; parent?: ActivityRun; onReveal: (id: string) => void }) {
   const { t } = useTranslation("workbench");
-  const { run, entries, first, finished } = segment;
   const running = run.status === "running";
   const now = useNow(running);
   const title = run.actor || run.label || t(`activity.kinds.${run.kind}`, { defaultValue: run.kind });
-  return <article className={`activity-run activity-segment is-current${running ? " is-running" : ""}`} data-activity-run={run.id}>
-    <header className="activity-segment-header">
+  return <header className="activity-segment-header">
       <span className="activity-segment-symbol">{run.parent_id ? <Bot size={15} /> : <Activity size={15} />}</span>
       <div className="min-w-0 flex-1">
         <div className="activity-run-meta"><span>{t(`activity.kinds.${run.kind}`, { defaultValue: run.kind })}</span><ActivitySourceLabel source={run.source} /></div>
@@ -25,7 +29,15 @@ const Segment = memo(function Segment({ segment, parent, onReveal }: { segment: 
       </div>
       <span className="activity-duration" title={t(`activity.status.${run.status}`, { defaultValue: run.status })}>{formatElapsedCompact(Math.max(0, (run.ended_at != null ? run.ended_at * 1000 : now) - run.started_at * 1000))}</span>
       {running && <span className="activity-live-dot" role="img" aria-label={t("activity.working")} />}
-    </header>
+    </header>;
+}, (a, b) => a.onReveal === b.onReveal && samePresentation(a.run, b.run) && a.parent?.id === b.parent?.id && a.parent?.label === b.parent?.label && a.parent?.source.scope === b.parent?.source.scope);
+
+const Segment = memo(function Segment({ segment, parent, onReveal }: { segment: ActivitySegment; parent?: ActivityRun; onReveal: (id: string) => void }) {
+  const { t } = useTranslation("workbench");
+  const { run, entries, first, finished } = segment;
+  const running = run.status === "running";
+  return <article className={`activity-run activity-segment is-current${running ? " is-running" : ""}`} data-activity-run={run.id}>
+    <Heading run={run} parent={parent} onReveal={onReveal} />
     <div className="activity-run-content">
       {first && <><SkillEvidence skills={run.skills ?? []} compact />
         {run.input && <details className="activity-input"><summary>{t(run.kind === "conversation" ? "activity.request" : "activity.goal")}</summary><div><TaggedText content={run.input} /></div></details>}
@@ -35,8 +47,9 @@ const Segment = memo(function Segment({ segment, parent, onReveal }: { segment: 
       {finished && <p className="activity-run-footer">{t(`activity.status.${run.status}`, { defaultValue: run.status })} · {t("activity.operationCount", { count: run.entries.filter((entry) => entry.kind === "tool").length })}{run.error && <span className="text-warn"> · {run.error}</span>}</p>}
     </div>
   </article>;
-}, (previous, next) => previous.onReveal === next.onReveal && previous.parent === next.parent
-  && previous.segment.run === next.segment.run && previous.segment.first === next.segment.first
+}, (previous, next) => previous.onReveal === next.onReveal && previous.parent?.id === next.parent?.id && previous.parent?.label === next.parent?.label
+  && previous.segment.run.entries[previous.segment.run.entries.length - 1]?.id === next.segment.run.entries[next.segment.run.entries.length - 1]?.id
+  && samePresentation(previous.segment.run, next.segment.run) && previous.segment.first === next.segment.first
   && previous.segment.finished === next.segment.finished && previous.segment.entries.length === next.segment.entries.length
   && previous.segment.entries.every((entry, index) => entry === next.segment.entries[index]));
 
