@@ -11,7 +11,7 @@ from agent.context.message_schema import preserve_reasoning_fields
 from agent.mind.execution.permission import check_tool_permission
 from agent.mind.execution.responses import _strip_think_blocks
 from agent.mind.execution.result_pipeline import ToolResultPipeline
-from agent.mind.execution.vision import _append_multimodal_result
+from agent.mind.execution.vision import _append_multimodal_result, split_multimodal_result
 from agent.mind.tools.core import END_REPLY_TOOL_NAME
 from core.entity import EntityRegistry
 from core.event_bus import (
@@ -251,6 +251,7 @@ async def execute_tool_calls(
         abort_event: Optional[asyncio.Event] = None,
         early: Optional[_EarlyToolRunner] = None,
         journal: Optional["ReplyToolJournal"] = None,
+        base_messages: Optional[List[Dict]] = None,
 ) -> bool:
     """执行工具调用并将 assistant + tool 消息追加到 tool_chain。
 
@@ -349,6 +350,7 @@ async def execute_tool_calls(
             # 统一走归因映射（超时/网络/权限…），不裸抛 str(exc)
             output = error_from_exception(output, action=f"工具 {tc.name} 执行")
         output_str = output if isinstance(output, str) else str(output)
+        output_str, images = split_multimodal_result(output_str)
         process_failed = False
         try:
             final_output = pipeline.process(
@@ -367,9 +369,16 @@ async def execute_tool_calls(
             })
         # 多模态工具结果：候选图片注入上下文，让视觉模型直接看到
         try:
-            await _append_multimodal_result(mind, multimodal_msgs, final_output)
+            if images and not process_failed and tc.id not in blocked_results:
+                await _await_with_abort(_append_multimodal_result(
+                    mind, multimodal_msgs, images,
+                    existing_messages=[*(base_messages or []), *tool_chain],
+                ), abort_event)
         except Exception as exc:
-            log(f"多模态工具结果展开失败（不影响主流程）: {exc}", "DEBUG", tag="思维")
+            process_failed = True
+            final_output += "\n" + error_from_exception(exc, action=f"工具 {tc.name} 图片加载")
+            batch_msgs[-1]["content"] = final_output
+            log(f"多模态工具结果展开失败: {exc}", "ERROR", tag="思维")
         if journal is not None:
             status = (
                 "blocked" if tc.id in blocked_results

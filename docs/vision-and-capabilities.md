@@ -22,11 +22,28 @@
   上下文注入排除/外部推送拒收；AI 与 Web 页签同源开关
 - **生成能力组件**经 `_sdk.register_visual_provider` 接入
 
-## 非视觉模型的图片识别
+## 图片输入与辅助识别
 
-`recognize_image` / `recognize_video` 将媒体与调用方的分析要求交给模型 SDK。辅助识别默认
+主模型声明 `supports_vision` 时，入站图片直接进入所属 user 消息。`recognize_image(provider="auto")`
+对本地路径、HTTP(S) URL 和图片 Data URL 使用同一路由：返回原图引用，工具执行层将图片追加到
+本批全部 tool 回执之后，供下一轮主模型直接分析，不另起识图模型或后台任务。已在当前上下文中的
+图片，包括 OCR、文字提取与细节分析，都由主模型直接处理；仅缺图时才调用工具加载。
+
+入站图片、工具图片与 provider 画面共用 `agent/context/media.py` 的内容块组装，底层沿用
+`agent/llm/image_utils.py` 的异步读取、下载与尺寸优化，不用文字识别结果替代原图。工具返回的
+内联图片在文本预算加工前提取，Data URL 不在 tool 文字回执中重复携带，也不会因文字截断失效。
+同一次内容块组装中重复来源只准备一次；加载后的相同图片按当前消息中的图像内容去重，不使用持久化的路径去重表。
+同一路径内容变化会呈现新图，压缩后已无原图时允许重新加载；既有消息不因去重被修改。
+
+`vision_format` 决定原图传输格式：支持 Base64 时优先读取或下载后内联；仅支持 URL 时直传原链接，
+本地文件和 Data URL 无法交给 URL-only 端点，会明确提示格式不支持。下载失败只有在端点声明支持
+URL 时才保留完整原链接直传，并说明图片未经过本地验证；否则明确告知未加载。失败不自动另起辅助
+识别，也不由框架无限重试。
+
+主模型不支持视觉，或调用方显式指定 `provider` 时，`recognize_image` 走辅助识别链；
+`recognize_video` 保持视频识别链。辅助识别将媒体与调用方的分析要求交给提供者，默认
 `background=true`，立即返回任务 ID；完成事实通过所属会话的内部通知或主动等待返回。
-`background=false` 同步返回识别结果。主模型原生看本地图片仍直接注入原图，不创建后台任务。
+`background=false` 同步返回识别结果。该选项只影响辅助识别，不改变原生看图路由。
 任务复用 `BackgroundTaskRegistry`：`check_background_tasks` 查询，`wait_background_tasks` 等待，
 `terminate_background_task` 请求取消；进程关停回收协程，不持久化运行任务。
 识图调用不继承整段会话；`prompt` 应说明识别目标和必要背景。本地路径、图片 Data URL 和远程
@@ -58,7 +75,8 @@ URL 共用异步准备流程，读取与压缩放工作线程，同次调用的�
   组装点按 kind 分派（协议物理约束）：clip 文本走 system 消息；image 在视觉模型下集中组 user
   角色多模态消息（image block 仅 user 角色可靠；等距抽样 ≤3 张保头中尾；图在文前），非视觉降级
   为标签；**audio/video 一律降级为标签并入 clip 文本**（litellm 对话转换层不接受这两类 block），
-  AI 经既有媒体工具链处理——不静默丢媒体。位置在工具链之后、exec_context 之前，不触碰前缀
+  AI 经既有媒体工具链处理——不静默丢媒体。位置在工具链之后、exec_context 之前，不触碰前缀。
+  图片复用统一加载入口；URL 回退只保留一个完整地址的图片块，不把诊断用的截短地址当作图片源
 - **ai_desktop 媒体契约**（`entities/ai_desktop/framework.py`）：DesktopModule 的
   `render_media() -> List[ContextMedia]`（默认空）；文本必须自足（降级路径只文本+标签生效）
 

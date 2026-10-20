@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from types import SimpleNamespace
 from typing import Dict, List
@@ -79,6 +80,26 @@ class TestAtomicChainAppend:
         assert tool_chain[1]["tool_call_id"] == "a"
         assert tool_chain[2]["tool_call_id"] == "b"
 
+    async def test_inline_image_survives_text_budget_and_is_not_repeated(self, mock_mind, monkeypatch):
+        from agent.llm.config import LLMClientConfig
+
+        data = base64.b64encode(b"image-bytes" * 8000).decode()
+        source = "data:image/jpeg;base64," + data
+        mock_mind.models = SimpleNamespace(llm=SimpleNamespace(config=LLMClientConfig(name="vision", supports_vision=True)))
+        async def execute(mind, tc, iteration, anything=None):
+            return json.dumps({"_multimodal": True, "success": True, "image_path": source, "images": [source]})
+        monkeypatch.setattr(tl, "execute_one_tool", execute)
+        chain = []
+        calls = [_tc("recognize_image", "a"), _tc("recognize_image", "b")]
+        base = [{"role": "system", "content": "stable prefix"}]
+        await tl.execute_tool_calls(mock_mind, chain, SimpleNamespace(content=""), calls, 1, base_messages=base)
+        assert [m["role"] for m in chain[:3]] == ["assistant", "tool", "tool"]
+        assert all(data not in m["content"] for m in chain if m["role"] == "tool")
+        blocks = [b for m in chain if isinstance(m["content"], list) for b in m["content"] if b["type"] == "image_url"]
+        assert [b["image_url"]["url"] for b in blocks] == [source]
+        assert base == [{"role": "system", "content": "stable prefix"}]
+        assert "已在当前上下文中" in str(chain[-1])
+
     async def test_cancel_mid_batch_leaves_no_orphan(self, mock_mind, monkeypatch):
         """batch 中途 CancelledError 透传：tool_chain 不含该轮任何消息（无孤儿）。"""
 
@@ -109,6 +130,39 @@ class TestAtomicChainAppend:
             await task
         assert tool_chain == []
 
+    async def test_abort_during_image_loading_keeps_tool_results_paired(self, mock_mind, monkeypatch):
+        from agent.llm.config import LLMClientConfig
+
+        mock_mind.models = SimpleNamespace(llm=SimpleNamespace(config=LLMClientConfig(name="vision", supports_vision=True)))
+        loading = asyncio.Event()
+        cancelled = asyncio.Event()
+        abort = asyncio.Event()
+
+        async def execute(mind, tc, iteration, anything=None):
+            return json.dumps({"_multimodal": True, "images": ["https://example.com/image.jpg"]})
+
+        async def download(url, timeout=30):
+            loading.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        monkeypatch.setattr(tl, "execute_one_tool", execute)
+        monkeypatch.setattr("agent.llm.image_utils.download_image_to_base64", download)
+        chain = []
+        task = asyncio.create_task(tl.execute_tool_calls(
+            mock_mind, chain, SimpleNamespace(content=""), [_tc("recognize_image", "a"), _tc("write_file", "b")],
+            1, abort_event=abort,
+        ))
+        await asyncio.wait_for(loading.wait(), timeout=2)
+        abort.set()
+        await asyncio.wait_for(task, timeout=2)
+        assert cancelled.is_set()
+        assert [m["role"] for m in chain] == ["assistant", "tool", "tool"]
+        assert [m["tool_call_id"] for m in chain[1:]] == ["a", "b"]
+        assert "未执行" in chain[-1]["content"]
+
     async def test_per_tool_exception_still_pairs(self, mock_mind, monkeypatch):
         """单条工具异常被消化为合成错误结果，配对不变量仍成立。"""
 
@@ -121,6 +175,25 @@ class TestAtomicChainAppend:
         await tl.execute_tool_calls(mock_mind, tool_chain, result, [_tc("write_file", "a")], 1)
         assert [m["role"] for m in tool_chain] == ["assistant", "tool"]
         assert "炸了" in tool_chain[1]["content"]
+
+    async def test_image_preparation_exception_is_visible(self, mock_mind, monkeypatch):
+        from agent.llm.config import LLMClientConfig
+
+        mock_mind.models = SimpleNamespace(llm=SimpleNamespace(config=LLMClientConfig(name="vision", supports_vision=True)))
+
+        async def execute(mind, tc, iteration, anything=None):
+            return json.dumps({"_multimodal": True, "images": ["image.jpg"]})
+
+        async def prepare(images):
+            raise RuntimeError("image preparation failed")
+
+        monkeypatch.setattr(tl, "execute_one_tool", execute)
+        monkeypatch.setattr("agent.llm.image_utils.ensure_base64_report", prepare)
+        chain = []
+        await tl.execute_tool_calls(mock_mind, chain, SimpleNamespace(content=""), [_tc("recognize_image", "a")], 1)
+        assert [m["role"] for m in chain] == ["assistant", "tool"]
+        assert "图片加载" in chain[1]["content"]
+        assert "image preparation failed" in chain[1]["content"]
 
     async def test_multimodal_msgs_after_all_tool_results(self, mock_mind, monkeypatch):
         """多模态注入消息落在全部 tool 结果之后：tool 结果跨串行分批整体连续。
@@ -135,8 +208,8 @@ class TestAtomicChainAppend:
                 return json.dumps({"_multimodal": True, "text": "t", "images": ["x.png"]})
             return json.dumps({"tool": tc.name})
 
-        async def fake_append(mind, target, output):
-            if '"_multimodal"' in output:
+        async def fake_append(mind, target, images, **kwargs):
+            if images:
                 target.append({"role": "user", "content": [{"type": "text", "text": "img"}]})
 
         monkeypatch.setattr(tl, "execute_one_tool", fake_execute)

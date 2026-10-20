@@ -316,7 +316,8 @@ channel_id 和 target_id 取当前请求的频道与会话标签，群聊目标�
             if media_type == "image":
                 lines.append(
                     f"- [media_type:image] → 若图片已直接以视觉形式呈现则无需调用工具识别；"
-                    f"未直接呈现或需更深入分析（OCR/细节）时调用 {tools_str}"
+                    f"OCR、文字提取与细节分析也直接基于已有原图完成；"
+                    f"仅图片尚未呈现时调用 {tools_str} 加载，明确要求其他提供者分析时才指定 provider"
                 )
             else:
                 lines.append(f"- [media_type:{media_type}] → {tools_str}")

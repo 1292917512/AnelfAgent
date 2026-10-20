@@ -106,14 +106,16 @@ class TestDirectInjectFastPath:
         # 分析要求随注入文本自包含（模型轮内可见自己的调用参数，此为兜底）
         assert "评估渲染质量" in out["text"]
 
-    async def test_url_still_uses_chain(
-            self, chain_spy: Dict[str, Any],
+    @pytest.mark.parametrize("source", ["https://example.com/a.jpg", "data:image/png;base64,aW1hZ2U="])
+    @pytest.mark.parametrize("background", [True, False])
+    async def test_remote_and_inline_images_use_direct_injection(
+            self, chain_spy: Dict[str, Any], source: str, background: bool,
     ) -> None:
-        """远程 URL 无法注入本地图片 block，仍走识别链。"""
-        out = json.loads(await recognize_image(background=False, image_path="https://example.com/a.jpg"))
-
-        assert chain_spy["called"] is True
-        assert "_multimodal" not in out
+        out = json.loads(await recognize_image(background=background, image_path=source))
+        assert chain_spy["called"] is False
+        assert out["_multimodal"] is True
+        assert out["images"] == [source]
+        assert "task_id" not in out
 
     async def test_video_still_uses_chain(
             self, local_video: str, chain_spy: Dict[str, Any],
@@ -123,12 +125,13 @@ class TestDirectInjectFastPath:
         assert chain_spy["called"] is True
         assert "_multimodal" not in out
 
+    @pytest.mark.parametrize("source", ["workspace/shot.png", "https://example.com/a.jpg", "data:image/png;base64,aW1hZ2U="])
     async def test_explicit_provider_forces_chain(
-            self, local_image: str, chain_spy: Dict[str, Any],
+            self, local_image: str, chain_spy: Dict[str, Any], source: str,
     ) -> None:
         """显式指定 provider = 明确要求识别链，不走直注。"""
         out = json.loads(await recognize_image(
-            image_path="workspace/shot.png", provider="models", background=False,
+            image_path=source, provider="models", background=False,
         ))
 
         assert chain_spy["called"] is True

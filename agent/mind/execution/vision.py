@@ -1,17 +1,25 @@
-"""会话媒体处理：视觉模型直传、非视觉模型引用与图片转存。"""
+"""会话媒体处理：视觉模型直传、非视觉模型引用与图片转存。
+
+模型可见：入站图片和工具图片共用原图加载，失败明确提示，不另起识图调用。
+Token：工具内联图片与文字分离；当前上下文中的相同原图不重复注入。
+缓存：入站图片保留消息归属，工具图片追加在整批回执之后，不改已有前缀。
+"""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import uuid
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Dict, List, Optional
 
+from agent.context.media import build_image_blocks
+from agent.llm.types import ImageContent
 from core.log import log
 from core.tool_results import parse_tool_result_json
 
 if TYPE_CHECKING:
-    from agent.llm import ImageContent
     from agent.llm.llm_client import LLMClientConfig
     from agent.messages import Everything
     from agent.mind.mind import Mind
@@ -43,6 +51,8 @@ async def apply_vision(
         messages: List[Dict],
         images: List[ImageContent],
         anything: Optional[Everything] = None,
+        *,
+        existing_messages: Sequence[Mapping] = (),
 ) -> List[Dict]:
     """处理图片：视觉模型直接注入图片 block，其余大 base64 图转存为文件路径。
 
@@ -62,7 +72,7 @@ async def apply_vision(
 
     config = getattr(mind.models.llm, "config", None)
     if config is not None and getattr(config, "supports_vision", False):
-        return await _inject_image_blocks(messages, images, config)
+        return await _inject_image_blocks(messages, images, config, existing_messages=existing_messages)
 
     # 仅处理需要转存的超大 base64 图片（QQ/Telegram 通常是 URL/文件路径，无需处理）
     saver = save_base64_image
@@ -94,39 +104,15 @@ async def _inject_image_blocks(
         messages: List[Dict],
         images: List[ImageContent],
         config: "LLMClientConfig",
+        *,
+        existing_messages: Sequence[Mapping] = (),
 ) -> List[Dict]:
-    """将图片以多模态 content block 注入到最后一条 user 消息（视觉模型直传）。
-
-    URL 图片下载优先（端点直抓远程链接不稳定且超时不可控）。三种结果分别处理：
-    - 成功：压缩后的 base64 block；
-    - URL 回退：下载失败保留原 URL 交由端点兜底——**必须告知 Agent**（端点
-      同样抓不到时模型看到的是坏图，不知情会产生幻觉描述）；
-    - 失败：本地路径加载失败被丢弃，文本告知 Agent。
-
-    注入位置在对话尾部，stable/volatile 前缀字节不变，Prompt Caching 不受影响。
-    """
-    from agent.llm.image_utils import ensure_base64_report
-
-    prepared, url_fallbacks, failed = await ensure_base64_report(images)
-    blocks = [img.to_openai_block(flat_url=config.use_flat_image_url) for img in prepared]
-    notices: List[str] = []
-    if url_fallbacks:
-        notices.append(
-            f"{len(url_fallbacks)} 张图片本地下载失败（{'; '.join(url_fallbacks)}），"
-            "已按原 URL 直传给端点：如果你看不到这些图片的内容，说明端点也无法访问，"
-            "请如实告知用户图片不可见，不要描述你未看到的内容。"
-        )
-    if failed:
-        notices.append(
-            f"{len(failed)} 张图片加载失败（{'; '.join(failed)}），未包含在消息中，请告知用户。"
-        )
-    if notices:
-        blocks.append({"type": "text", "text": f"[系统提示] {' '.join(notices)}"})
-
+    """将新图片附到最后一条 user 消息，复用当前上下文中的原图。"""
     result = list(messages)
     for i in range(len(result) - 1, -1, -1):
         if result[i].get("role") != "user":
             continue
+        blocks = await build_image_blocks(images, config, [*existing_messages, *messages])
         content = result[i].get("content", "")
         if isinstance(content, str):
             parts: List[Dict] = [{"type": "text", "text": content}] if content else []
@@ -135,7 +121,8 @@ async def _inject_image_blocks(
         else:
             parts = []
         result[i] = {**result[i], "content": parts + blocks}
-        log(f"图片直传: {len(prepared)} 张注入到最后一条 user 消息", "DEBUG", tag="思维")
+        count = sum(block["type"] == "image_url" for block in blocks)
+        log(f"图片直传: {count} 张注入到最后一条 user 消息", "DEBUG", tag="思维")
         break
     return result
 
@@ -144,46 +131,43 @@ async def _inject_image_blocks(
 _MAX_TOOL_RESULT_IMAGES = 6
 
 
+def split_multimodal_result(output: str) -> tuple[str, list[ImageContent]]:
+    """在文本预算处理前提取工具原图，内联数据不作为普通文字重复投送。"""
+    if '"_multimodal"' not in output:
+        return output, []
+    parsed = parse_tool_result_json(output)
+    if not isinstance(parsed, dict) or not parsed.get("_multimodal") or parsed.get("success") is False:
+        return output, []
+    references = parsed.get("images")
+    if not isinstance(references, list):
+        return output, []
+    images = [ImageContent(data=p, is_url=p.startswith(("http://", "https://")))
+              for p in references if isinstance(p, str) and p][:_MAX_TOOL_RESULT_IMAGES]
+    parsed["images"] = ["[内联图片]" if image.data.startswith("data:") else image.data for image in images]
+    if isinstance(parsed.get("image_path"), str) and parsed["image_path"].startswith("data:"):
+        parsed["image_path"] = "[内联图片]"
+    return json.dumps(parsed, ensure_ascii=False), images
+
+
 async def _append_multimodal_result(
         mind: Mind,
         tool_chain: List[Dict],
-        output: str,
+        images: list[ImageContent],
+        *,
+        existing_messages: Sequence[Mapping] = (),
 ) -> None:
-    """展开多模态工具结果约定，把候选图片以 user 消息注入上下文。
-
-    工具返回 JSON 含 ``{"_multimodal": true, "text": ..., "images": [路径...]}``
-    时（如 recognize_image / search_sticker / search_image / find_similar_image），
-    将图片加载压缩后以 image_url block 注入工具链尾部（动态区，不动前缀缓存），
-    视觉模型即可"亲眼看到"候选再做选择。非视觉模型跳过，文本摘要
-    （text/results 字段）已随 tool 消息提供全部信息。
-    """
-    if '"_multimodal"' not in output:
-        return
-    parsed = parse_tool_result_json(output)
-    if not isinstance(parsed, dict) or not parsed.get("_multimodal"):
-        return
-    images = [p for p in (parsed.get("images") or []) if isinstance(p, str) and p]
+    """将工具原图或加载失败提示追加到批次尾部，已有原图只追加复用提示。"""
     if not images:
         return
     config = getattr(mind.models.llm, "config", None)
     if config is None or not getattr(config, "supports_vision", False):
         return
 
-    from agent.llm.image_utils import ensure_base64, load_image_from_path
-
-    candidates: List[ImageContent] = []
-    for path in images[:_MAX_TOOL_RESULT_IMAGES]:
-        try:
-            candidates.append(load_image_from_path(path))
-        except Exception:
-            continue
-    if not candidates:
-        return
-    prepared = await ensure_base64(candidates)
-    if not prepared:
-        return
-    text = parsed.get("text") or "[系统] 上方工具返回了候选图片，请查看后继续。"
-    blocks: List[Dict] = [{"type": "text", "text": text}]
-    blocks.extend(img.to_openai_block(flat_url=config.use_flat_image_url) for img in prepared)
-    tool_chain.append({"role": "user", "content": blocks})
-    log(f"多模态工具结果: 注入 {len(prepared)} 张候选图片", "DEBUG", tag="思维")
+    blocks = await build_image_blocks(images, config, [*existing_messages, *tool_chain])
+    if blocks:
+        tool_chain.append({
+            "role": "user", "content": [{"type": "text", "text": "上方工具返回的图片，请结合调用要求查看。"}, *blocks],
+            "_layer": "tool_chain", "_source": {"origin": "tool_media"},
+        })
+    count = sum(block["type"] == "image_url" for block in blocks)
+    log(f"多模态工具结果: 注入 {count} 张候选图片", "DEBUG", tag="思维")

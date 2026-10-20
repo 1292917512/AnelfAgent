@@ -6,7 +6,7 @@
 provider 参数：auto（默认，按配置优先级链自动路由+失败降级）或指定
 提供者名；可用值与能力优先级经 vision_config(action="providers") 查看。
 
-Model Experience：辅助识图默认返回后台任务 ID，完成后按所属会话通知；原生看图仍直接注入原图。
+Model Experience：视觉主模型通过工具回注原图；本地路径、URL、Data URL 共用此路由，辅助识图按会话通知。
 Token：只传图片与必要分析要求，不复制会话历史；后台摘要有界，完整结果按 ID 查询。
 缓存：工具说明为静态声明；结果进入工具链或动态状态，不修改稳定前缀。
 """
@@ -99,14 +99,12 @@ async def _recognize_visual(media_path: str, prompt: str, provider: str, kwargs:
     desc_prompt = prompt or (
         "请简要描述这个视频的内容。" if is_video else "请简要描述这张图片的内容。"
     )
-    # 主模型有视觉能力时跳过识别链，直接按 _multimodal 约定回注原图——
-    # 省一次视觉模型调用；视频与远程 URL 无法注入本地 block，仍走识别链
-    if not is_video and not is_remote and provider == "auto" and _main_model_supports_vision():
+    if not is_video and provider == "auto" and _main_model_supports_vision():
         return _dumps({
             "success": True,
             "image_path": media_path,
             "_multimodal": True,
-            "text": f"[系统] 图片已附上，请直接查看并按调用要求分析（{desc_prompt}）。",
+            "text": f"原图交由当前视觉上下文加载，已有图片直接复用；请按要求分析（{desc_prompt}）。",
             "images": [media_path],
         })
     async def recognize() -> str:
@@ -140,16 +138,16 @@ async def recognize_image(image_path: str = "", prompt: str = "", provider: str 
                           background: bool = True, **kwargs: str) -> str:
     """识别/分析图片内容（视频请用 recognize_video）。支持本地文件、URL 或图片 Data URL。
 
-    主模型具备视觉能力时：本地图片不调用识别链，按 _multimodal 约定把原图
-    直接注入工具链尾部（动态区，不动前缀缓存），主模型亲自看图分析，
-    省一次视觉模型调用；显式指定 provider 时强制走识别链。
+    主模型具备视觉能力时：本地路径、URL、Data URL 均不调用识别链，原图
+    直接注入工具链尾部（动态区，不动前缀缓存），当前上下文已有图片直接复用。
+    已呈现图片的 OCR 和细节分析由主模型完成；显式指定 provider 才强制走识别链。
     主模型无视觉能力时：默认后台识别，返回任务 ID，结果经所属会话的内部通知送达。
 
     Args:
-        image_path: 图片的绝对路径或 URL
+        image_path: 图片的本地路径、HTTP(S) URL 或 Data URL
         prompt: 具体识别目标及必要背景，如"逐行提取报错文字"；识图模型不会继承当前会话
         background: 辅助识别是否后台执行，默认 true；false 同步返回描述。原生看图不受影响。
-        provider: auto（默认，按配置链路由+失败自动降级）或指定提供者名
+        provider: auto 优先由视觉主模型直接看图，否则走配置的辅助识别链；也可指定提供者名
             （可用值见 vision_config(action="providers")，随组件增删变化）
     """
     return await _recognize_visual(image_path, prompt, provider, kwargs, background=background)

@@ -87,6 +87,7 @@ async def _handle_tool_round(
             mind, tool_chain, result, tool_calls, state.iteration, ctx.anything,
             guardrail=guardrail, pipeline=ctx.pipeline, blocked_tools=ctx.blocked_tools,
             abort_event=ctx.abort_event, early=early_runner, journal=ctx.journal,
+            base_messages=ctx.base_messages,
         )
         if delivery_task is not None:
             receipt, aborted = await delivery_task

@@ -198,12 +198,15 @@ class TestProviderMediaDispatch:
 
     def _vision_mind(self) -> FakeMind:
         from types import SimpleNamespace
+
+        from agent.llm.config import LLMClientConfig
+
         mind = FakeMind(
             rounds=[end_reply_result()], default_text=None,
             context=FakeContext(exec_layer=True),
         )
         mind.models.llm = SimpleNamespace(
-            config=SimpleNamespace(supports_vision=True, use_flat_image_url=False),
+            config=LLMClientConfig(name="vision", supports_vision=True),
         )
         return mind
 

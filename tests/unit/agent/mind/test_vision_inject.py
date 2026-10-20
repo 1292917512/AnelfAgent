@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import copy
+import json
 from types import SimpleNamespace
 from typing import Dict, List
 
@@ -12,7 +14,7 @@ from agent.context import providers
 from agent.context.assembly import ContextAssembly
 from agent.llm.llm_client import LLMClientConfig
 from agent.llm.types import ImageContent
-from agent.mind.execution.vision import apply_vision
+from agent.mind.execution.vision import _append_multimodal_result, apply_vision, split_multimodal_result
 
 _TINY_B64 = base64.b64encode(b"tiny-image-bytes").decode("utf-8")
 
@@ -203,11 +205,12 @@ class TestMediaRulesDirectVision:
         assert rules_off == rules_on
 
     def test_static_text_covers_both_cases(self) -> None:
-        """静态文案同时覆盖：已视觉呈现免工具 + 未呈现/深入分析用工具。"""
+        """已有原图直接分析，缺图才加载，文案不随模型能力变化。"""
         rules = ContextAssembly._build_media_rules(direct_vision=True)
         assert "已直接以视觉形式呈现" in rules
         assert "recognize_image" in rules
         assert "必须优先使用" in rules
+        assert "OCR、文字提取与细节分析也直接基于已有原图完成" in rules
 
 
 class TestUrlFallbackNotification:
@@ -293,17 +296,17 @@ class TestProviderMediaMessage:
         """下载失败的 URL 图以原 URL block 注入（端点兜底），caption 说明数量。"""
 
         async def _fake_report(images, *a, **kw):
-            return images[:1], ["https://x.com/fail.png"], ["broken-local"]
+            return [images[0], ImageContent(data="https://x.com/fail.png", is_url=True)], ["https://x.com/fail.png"], ["broken-local"]
 
         monkeypatch.setattr("agent.llm.image_utils.ensure_base64_report", _fake_report)
         msg = await providers.build_provider_media_message(
-            [self._img("a"), self._img("b")], self._config(),
+            [self._img("a"), self._img("b")], LLMClientConfig(name="v", supports_vision=True, vision_format="both"),
         )
         assert msg is not None
         urls = [b["image_url"]["url"] for b in msg["content"] if b["type"] == "image_url"]
         assert urls[-1] == "https://x.com/fail.png"
-        caption = next(b["text"] for b in msg["content"] if b["type"] == "text")
-        assert "加载失败" in caption
+        assert urls.count("https://x.com/fail.png") == 1
+        assert any("加载失败" in b.get("text", "") for b in msg["content"])
 
     async def test_all_failed_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """全部加载失败时不追加消息（调用方不注入空块）。"""
@@ -314,3 +317,84 @@ class TestProviderMediaMessage:
         monkeypatch.setattr("agent.llm.image_utils.ensure_base64_report", _fake_report)
         msg = await providers.build_provider_media_message([self._img("a")], self._config())
         assert msg is None
+
+
+class TestToolImageInjection:
+    @pytest.mark.parametrize("source_kind", ["path", "url", "data"])
+    @pytest.mark.parametrize("api_type", ["openai", "ollama"])
+    async def test_source_forms_share_loading_and_context_dedup(self, tmp_path, monkeypatch, source_kind, api_type):
+        config = LLMClientConfig(name="v", supports_vision=True, api_type=api_type)
+        mind = _make_mind(config)
+        path = tmp_path / "image.jpg"
+        path.write_bytes(base64.b64decode(_TINY_B64))
+        sources = {"path": str(path), "url": "https://example.com/image.jpg",
+                   "data": f"data:image/jpeg;base64,{_TINY_B64}"}
+        async def download(url, timeout=30):
+            return ImageContent(data=_TINY_B64)
+        monkeypatch.setattr("agent.llm.image_utils.download_image_to_base64", download)
+        output = json.dumps({"_multimodal": True, "images": [sources[source_kind]]})
+        receipt, images = split_multimodal_result(output)
+        assert _TINY_B64 not in receipt
+        base = await apply_vision(mind, _make_messages(), [ImageContent(data=_TINY_B64)])
+        original = copy.deepcopy(base)
+        chain = []
+        await _append_multimodal_result(mind, chain, images, existing_messages=base)
+        assert base == original
+        assert not any(b["type"] == "image_url" for m in chain for b in m["content"])
+        assert "已在当前上下文中" in str(chain)
+        chain.clear()
+        await _append_multimodal_result(mind, chain, images, existing_messages=_make_messages())
+        assert sum(b["type"] == "image_url" for m in chain for b in m["content"]) == 1
+        assert chain[0]["_source"]["origin"] == "tool_media"
+        if api_type == "ollama":
+            assert isinstance(chain[0]["content"][1]["image_url"], str)
+
+    async def test_repeated_source_loads_once_but_changed_file_is_presented(self, tmp_path):
+        config = LLMClientConfig(name="v", supports_vision=True)
+        mind = _make_mind(config)
+        path = tmp_path / "screen.jpg"
+        path.write_bytes(base64.b64decode(_TINY_B64))
+        images = [ImageContent(data=str(path))] * 2
+        chain = []
+        await _append_multimodal_result(mind, chain, images)
+        assert sum(b["type"] == "image_url" for b in chain[0]["content"]) == 1
+        saved = copy.deepcopy(chain)
+        path.write_bytes(b"changed-image-bytes")
+        await _append_multimodal_result(mind, chain, images)
+        assert chain[:1] == saved
+        assert sum(b["type"] == "image_url" for b in chain[-1]["content"]) == 1
+
+    @pytest.mark.parametrize("vision_format", ["base64", "both", "url"])
+    async def test_download_failure_respects_transport_and_retains_full_url(self, monkeypatch, vision_format):
+        url = "https://example.com/image?signature=" + "x" * 200
+        calls = []
+        async def download(source, timeout=30):
+            calls.append(source)
+            return None
+        monkeypatch.setattr("agent.llm.image_utils.download_image_to_base64", download)
+        config = LLMClientConfig(name="v", supports_vision=True, vision_format=vision_format)
+        chain = []
+        await _append_multimodal_result(_make_mind(config), chain, [ImageContent(data=url, is_url=True)])
+        blocks = [b for m in chain for b in m["content"] if b["type"] == "image_url"]
+        if vision_format == "base64":
+            assert not blocks
+            assert "未包含在消息中" in str(chain)
+        else:
+            assert [b["image_url"]["url"] for b in blocks] == [url]
+        assert len(calls) == (0 if vision_format == "url" else 1)
+
+    @pytest.mark.parametrize("source", ["data:image/png;base64,not-base64!", "/missing/unknown-image.jpg"])
+    async def test_invalid_image_is_reported_without_an_image_block(self, source):
+        chain = []
+        await _append_multimodal_result(
+            _make_mind(LLMClientConfig(name="v", supports_vision=True)), chain, [ImageContent(data=source)],
+        )
+        assert "加载失败" in str(chain)
+        assert not any(b["type"] == "image_url" for m in chain for b in m["content"])
+
+    async def test_nonvision_model_does_not_receive_image_blocks(self):
+        chain = []
+        await _append_multimodal_result(
+            _make_mind(LLMClientConfig(name="t", supports_vision=False)), chain, [ImageContent(data=_TINY_B64)],
+        )
+        assert chain == []

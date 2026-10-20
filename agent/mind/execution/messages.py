@@ -123,7 +123,9 @@ async def _merge_new_messages(ctx: ExecutionContext, state: RoundState) -> bool:
     merged_media = mind.pfc.collect_media(scope=ctx.current_scope)
     if merged_images:
         # 视觉模型直传图片 block；非视觉模型转存超大 base64 为文件路径
-        ctx.tool_chain = await apply_vision(mind, ctx.tool_chain, merged_images)
+        ctx.tool_chain = await apply_vision(
+            mind, ctx.tool_chain, merged_images, existing_messages=ctx.base_messages,
+        )
     if merged_images or merged_media:
         mind.tool_assembly.activate_media_tools(merged_images, merged_media)
         ctx.active_tools = await mind.tool_assembly.get_active_tool_schemas(

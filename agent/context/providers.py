@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Dict, List, Optional
 
+from agent.context.media import build_image_blocks
 from core.log import log
 
 if TYPE_CHECKING:
@@ -108,29 +109,18 @@ async def build_provider_media_message(
     图在文前（时间序=相关性序），位置在工具链之后、exec_context 之前，
     不触碰 stable/历史前缀缓存。无有效画面时返回 None（调用方不追加）。
     """
-    from agent.llm.image_utils import ensure_base64_report
-    from agent.llm.types import ImageContent
-
     sampled = _sample_head_middle_tail(images, _MAX_PROVIDER_IMAGES)
-    prepared, url_fallbacks, failed = await ensure_base64_report(sampled)
-    blocks: List[Dict] = [
-        img.to_openai_block(flat_url=config.use_flat_image_url) for img in prepared
-    ]
-    for url in url_fallbacks:
-        blocks.append(ImageContent(data=url, is_url=True).to_openai_block(
-            flat_url=config.use_flat_image_url,
-        ))
-    if not blocks:
+    blocks = await build_image_blocks(sampled, config)
+    image_count = sum(block["type"] == "image_url" for block in blocks)
+    if not image_count:
         return None
     notes: List[str] = []
     if len(images) > len(sampled):
         notes.append(f"共 {len(images)} 张，抽样展示 {len(sampled)} 张（头/中/尾）")
-    if failed:
-        notes.append(f"{len(failed)} 张加载失败未注入（{'; '.join(failed)}）")
     note_text = f"（{'；'.join(notes)}）" if notes else ""
     blocks.append({
         "type": "text",
-        "text": f"[系统提示] 以上 {len(blocks)} 张图片是环境信息附带的实时画面"
+        "text": f"[系统提示] 以上 {image_count} 张图片是环境信息附带的实时画面"
                 f"{note_text}，请结合上文环境信息理解。",
     })
     return {
