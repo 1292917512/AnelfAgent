@@ -37,6 +37,7 @@ test("MCP ordering persists in JSON, edits retain draft, tool details load on de
   await handle.focus();
   await handle.press("Space");
   await expect(handle).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("status").filter({ hasText: "over droppable area alpha" })).toBeAttached();
   await handle.press("ArrowUp");
   await expect(page.getByRole("status").filter({ hasText: "over droppable area beta" })).toBeAttached();
   await handle.press("Space");
