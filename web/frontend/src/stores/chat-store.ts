@@ -11,7 +11,7 @@
  */
 import { create } from "zustand";
 import axios from "axios";
-import { activeChatRun, submissionFinished } from "@/lib/chat-activity";
+import { submissionFinished } from "@/lib/chat-activity";
 import { EventStream } from "@/lib/event-stream";
 import { useActivityStore } from "./activity-store";
 import { captureWorkspaceContext } from "@/lib/workspace-context";
@@ -167,20 +167,14 @@ export const useChatStore = create<ChatState>((set, get) => {
   async function checkPendingReply(chatId: string): Promise<void> {
     const pending = get().buckets[chatId];
     if (!pending?.sending) return;
+    if (document.hidden) {
+      if (stream.active) armSendWatchdog(chatId, checkPendingReply);
+      return;
+    }
     await syncConversation(chatId);
     const current = get().buckets[chatId];
     if (!stream.active || !current?.sending || current.sendingSince !== pending.sendingSince) return;
-    const activity = useActivityStore.getState();
-    const running = activeChatRun(activity.runs, chatId);
-    if (get().streamStatus !== "connected" || current.historyLoading || current.historyError || activity.loading || activity.error || running) {
-      armSendWatchdog(chatId, checkPendingReply);
-      return;
-    }
-    updateBucket(chatId, (bucket) => ({
-      sending: false, sendingSince: null,
-      messages: [...bucket.messages, { role: "system", kind: "system_notice", tone: "warn",
-        content: i18n.t("sendTimeout", { ns: "chat" }), cid: nextCid(), ts: Date.now() / 1000 }],
-    }));
+    armSendWatchdog(chatId, checkPendingReply);
   }
 
   return {
@@ -505,6 +499,7 @@ export const useChatStore = create<ChatState>((set, get) => {
           inputDraft: current.inputDraft === text ? "" : current.inputDraft,
           messages: current.messages.map((message) => message.cid === messageId && message.delivery === "submitting" ? { ...message, delivery: "submitted" } : message),
         }));
+        if (stream.active) void syncConversation(chatId);
         return true;
       } catch (error) {
         if (axios.isAxiosError(error) && !error.response && !axios.isCancel(error)) {

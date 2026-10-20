@@ -27,6 +27,7 @@ function reconcileRun(previous: ActivityRun | undefined, incoming: ActivityRun):
 interface ActivityState {
   epoch: string;
   snapshotRevision: number;
+  syncedAt: number;
   runs: ActivityRun[];
   loaded: boolean;
   loading: boolean;
@@ -43,7 +44,7 @@ interface ActivityState {
 export const useActivityStore = create<ActivityState>((set, get) => {
   let pendingLoad: Promise<void> | null = null;
   return {
-    epoch: "", snapshotRevision: 0, runs: [], loaded: false, loading: false, clearing: false, error: null,
+    epoch: "", snapshotRevision: 0, syncedAt: 0, runs: [], loaded: false, loading: false, clearing: false, error: null,
     load: () => {
       if (pendingLoad) return pendingLoad;
       const epoch = get().epoch;
@@ -79,7 +80,7 @@ export const useActivityStore = create<ActivityState>((set, get) => {
         records.set(run.id, reconcileRun(previous, run));
         changed = true;
       }
-      return changed ? { epoch, snapshotRevision, runs: retainRuns([...records.values()]) } : state;
+      return changed ? { epoch, snapshotRevision, syncedAt: Date.now(), runs: retainRuns([...records.values()]) } : state;
     }),
     restore: (snapshot) => set((state) => {
       if (state.epoch === snapshot.epoch && snapshot.revision < state.snapshotRevision) return state;
@@ -92,8 +93,7 @@ export const useActivityStore = create<ActivityState>((set, get) => {
       }
       const ordered = retainRuns([...records.values()]);
       const runs = ordered.length === state.runs.length && ordered.every((run, index) => run === state.runs[index]) ? state.runs : ordered;
-      if (state.epoch === snapshot.epoch && state.snapshotRevision === snapshot.revision && state.runs === runs && state.loaded && state.error == null) return state;
-      return { epoch: snapshot.epoch, snapshotRevision: snapshot.revision, runs, loaded: true, error: null };
+      return { epoch: snapshot.epoch, snapshotRevision: snapshot.revision, syncedAt: Date.now(), runs, loaded: true, error: null };
     }),
   };
 });

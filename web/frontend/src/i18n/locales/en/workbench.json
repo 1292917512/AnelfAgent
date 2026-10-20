@@ -245,7 +245,7 @@
     "retention": "Recent records are kept in memory and cleared on server restart",
     "idle": "Ready",
     "reconnecting": "Reconnecting",
-    "empty": "Ready for the next thought",
+    "empty": "No execution records yet",
     "emptyHint": "Thoughts, tool calls and task progress from every channel appear here.",
     "background": "Background activity",
     "system": "System",
@@ -416,7 +416,20 @@
       "reconnecting": "Reconnecting live activity",
       "stalled": "No recent live updates",
       "synchronizing": "Synchronizing activity",
-      "refresh": "Synchronize live activity"
+      "refresh": "Synchronize live activity",
+      "connected": "Live stream connected"
+    },
+    "runtime": {
+      "title": "Runtime status and pending messages",
+      "checking": "Checking runtime status…",
+      "unavailable": "Runtime status unavailable; synchronize to retry",
+      "notReady": "Agent is not ready",
+      "phase": "Agent currently: {{phase}}",
+      "waiting": "Messages or tasks are awaiting processing",
+      "unknown": "Runtime phase has not been reported",
+      "submitted": "{{count}} Web conversations are awaiting execution feedback. Sending does not switch or interrupt other work.",
+      "queue": "Pending: {{messages}} message conversations · {{tasks}} tasks · {{incoming}} incoming events",
+      "noRecord": "No related execution record has arrived. Existing state will be checked until records become available."
     }
   },
   "toolView": {

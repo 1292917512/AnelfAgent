@@ -64,12 +64,12 @@ export function genChatId(): string {
   return Math.random().toString(36).slice(2, 10);
 }
 
-/** Per-conversation inactivity timers request authoritative state reconciliation. */
+/** 会话静默时核对历史与执行快照；经过时间不能证明执行已结束。 */
 type WatchdogEntry = { timer: ReturnType<typeof setTimeout>; onTimeout: (chatId: string) => void };
 const _watchdogs = new Map<string, WatchdogEntry>();
-const SEND_TIMEOUT_MS = 120_000;
+const SEND_RECONCILE_MS = 10_000;
 
-/** 清理看门狗：传 chatId 清该会话，不传清全部（SSE 断开等全局收束场景） */
+/** 清理会话核对任务；省略 chatId 时清理全部任务。 */
 export function clearSendWatchdog(chatId?: string) {
   if (chatId === undefined) {
     for (const entry of _watchdogs.values()) clearTimeout(entry.timer);
@@ -88,11 +88,11 @@ export function armSendWatchdog(chatId: string, onTimeout: (chatId: string) => v
   const timer = setTimeout(() => {
     _watchdogs.delete(chatId);
     onTimeout(chatId);
-  }, SEND_TIMEOUT_MS);
+  }, SEND_RECONCILE_MS);
   _watchdogs.set(chatId, { timer, onTimeout });
 }
 
-/** 回合内有输出活动（delta/tool_call/file_diff）时重置该会话的停滞计时 */
+/** 已收到本会话过程时推迟 HTTP 核对，持续流式输出不额外轮询。 */
 export function touchSendWatchdog(chatId: string) {
   const entry = _watchdogs.get(chatId);
   if (!entry) return;
@@ -100,5 +100,5 @@ export function touchSendWatchdog(chatId: string) {
   entry.timer = setTimeout(() => {
     _watchdogs.delete(chatId);
     entry.onTimeout(chatId);
-  }, SEND_TIMEOUT_MS);
+  }, SEND_RECONCILE_MS);
 }

@@ -245,7 +245,7 @@
     "retention": "仅保留最近的内存记录，服务重启后清空",
     "idle": "就绪",
     "reconnecting": "正在重连",
-    "empty": "等待新的思考",
+    "empty": "暂无执行记录",
     "emptyHint": "各频道的思考、工具调用和任务进展会集中呈现在这里。",
     "background": "后台执行",
     "system": "系统",
@@ -416,7 +416,20 @@
       "reconnecting": "正在恢复实时连接",
       "stalled": "暂未收到实时更新",
       "synchronizing": "正在补齐过程记录",
-      "refresh": "重新同步实时过程"
+      "refresh": "重新同步实时过程",
+      "connected": "实时已连接"
+    },
+    "runtime": {
+      "title": "运行状态与待处理消息",
+      "checking": "正在核对运行状态…",
+      "unavailable": "暂时无法核对运行状态，请重新同步",
+      "notReady": "智能体尚未就绪",
+      "phase": "智能体当前：{{phase}}",
+      "waiting": "有消息或任务等待处理",
+      "unknown": "运行阶段尚未返回",
+      "submitted": "{{count}} 个 Web 会话正在等待执行反馈；发送消息不会切换或中断其他执行。",
+      "queue": "待处理：{{messages}} 个消息会话 · {{tasks}} 项任务 · {{incoming}} 条待接入事件",
+      "noRecord": "尚未收到关联执行记录。页面会继续核对已有状态，出现记录后自动展示。"
     }
   },
   "toolView": {

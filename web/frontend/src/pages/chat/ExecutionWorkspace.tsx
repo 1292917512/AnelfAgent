@@ -20,6 +20,7 @@ import { ActivityStageRail } from "./activity/ActivityStageRail";
 import { ActivitySidePanel } from "./activity/ActivitySidePanel";
 import { ActivityExecutionControl } from "./activity/ActivityExecutionControl";
 import { ActivityConnection } from "./activity/ActivityConnection";
+import { ActivityRuntime } from "./activity/ActivityRuntime";
 
 /** 当前执行轮次优先展示；更早的过程只在主动上翻时挂载。 */
 export default function ExecutionWorkspace() {
@@ -100,6 +101,7 @@ function ActivityFeed({ epoch, runs, clearing, onClear }: { epoch: string; runs:
         <Button variant="ghost" size="sm" aria-label={t("activity.clearHistory")} title={t("activity.clearHistoryHint")} disabled={pages.length < 2} loading={clearing} onClick={onClear}><Trash2 size={13} /><span className="activity-control-label">{t("activity.clearHistory")}</span></Button>
       </div>
     </header>
+    <ActivityRuntime />
     {families.length > 1 && <nav className="activity-sessions" aria-label={t("activity.sessions")}>
       <button aria-pressed={!selectedFamily} onClick={() => setFamily(null)}>{t("activity.allSessions")}</button>
       {families.map((item) => { const root = item.runs.find((run) => run.id === item.id) ?? item.runs[0]!; return <button key={item.id} aria-pressed={selectedFamily?.id === item.id} title={root.label} onClick={() => setFamily(item.id)}>{root.source.channel || t("activity.system")} · {root.source.target || root.actor || t(`activity.kinds.${root.kind}`, { defaultValue: root.kind })}{root.source.session && ` · ${root.source.session}`}<span>{item.runs.length}</span></button>; })}

@@ -38,7 +38,6 @@
   },
   "fileLimit": "You can attach up to {{max}} files",
   "fileTooLarge": "File {{name}} exceeds the {{max}}MB size limit",
-  "sendTimeout": "No recent reply or active execution was found. Check the realtime process before sending again.",
   "defaultChat": "Default Chat",
   "newChat": "New Chat",
   "tabs": {

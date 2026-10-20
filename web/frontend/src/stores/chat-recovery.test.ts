@@ -24,6 +24,7 @@ function completedRun(chatId: string, started = 1): ActivityRun {
 
 beforeEach(() => {
   vi.useFakeTimers();
+  vi.spyOn(document, "hidden", "get").mockReturnValue(false);
   sources.length = 0;
   vi.stubGlobal("EventSource", class extends Source { constructor() { super(); sources.push(this); } });
   vi.spyOn(chatApi, "history").mockResolvedValue(response([]));
@@ -101,6 +102,28 @@ it("resynchronizes lost frames without creating another live connection", async 
   sources[0]?.dispatchEvent(new MessageEvent("resync", { data: "{}" }));
   await vi.advanceTimersByTimeAsync(1);
   expect(chatApi.history).toHaveBeenCalledOnce();
+  expect(sources).toHaveLength(1);
+});
+
+it("checks accepted input immediately and keeps waiting beyond two minutes when only heartbeats arrive", async () => {
+  const store = useChatStore.getState();
+  store.startSSE(); sources[0]?.onopen?.();
+  await vi.advanceTimersByTimeAsync(1);
+  vi.mocked(useActivityStore.getState().load).mockClear();
+  vi.mocked(chatApi.history).mockClear();
+  await store.send("Queued behind other work", "User");
+  await vi.advanceTimersByTimeAsync(1);
+  expect(useActivityStore.getState().load).toHaveBeenCalledOnce();
+  expect(chatApi.history).toHaveBeenCalledOnce();
+  store.setInputDraft("A", "Keep next draft");
+  for (let index = 0; index < 13; index++) {
+    sources[0]?.dispatchEvent(new MessageEvent("ping"));
+    await vi.advanceTimersByTimeAsync(10_000);
+  }
+  expect(useChatStore.getState().buckets.A).toMatchObject({ sending: true, inputDraft: "Keep next draft" });
+  expect(useChatStore.getState().buckets.A?.messages).toHaveLength(1);
+  expect(vi.mocked(chatApi.history).mock.calls.length).toBeGreaterThan(10);
+  expect(chatApi.send).toHaveBeenCalledOnce();
   expect(sources).toHaveLength(1);
 });
 

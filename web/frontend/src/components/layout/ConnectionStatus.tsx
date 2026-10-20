@@ -1,13 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { statusApi } from "@/lib/api";
+import { runtimeStatusQuery } from "@/lib/runtime-queries";
 import { cn } from "@/lib/utils";
 
 export function ConnectionStatus() {
   const { t } = useTranslation("common");
   const status = useQuery({
-    queryKey: ["status"], queryFn: () => statusApi.get().then((response) => response.data),
-    refetchInterval: 15_000, retry: false, throwOnError: false,
+    ...runtimeStatusQuery(), refetchInterval: 15_000,
   });
   const label = status.isPending ? t("connecting") : status.isError ? t("serviceUnavailable") : status.data?.ready ? t("serviceReady") : t("notReady");
   return (

@@ -19,7 +19,8 @@ export async function mockApi(page: Page) {
     const responses: Record<string, unknown> = {
       "/auth/check": { required: false, authenticated: true },
       "/config/webui": { branding: { title: "AnelfAgent", version: "0.3.0" } },
-      "/status": { ready: true, uptime_seconds: 3600 },
+      "/status": { ready: true, status: { status: "running", mind_phase: "idle", uptime: 3600, queue_size: 0 } },
+      "/status/thinking": { pending_messages: [], general_tasks: [], pending_analysis_count: 0 },
       "/personas": [{ key: "daily", ...persona }, { key: "research", name: "Research assistant", description: "Research and analysis" }],
       "/personas/active": { active: "daily" },
       "/personas/daily": persona,
