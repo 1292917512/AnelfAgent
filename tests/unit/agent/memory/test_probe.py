@@ -389,6 +389,7 @@ async def test_recall_partial_timeout_harvests_landed_lanes(store, monkeypatch, 
             await asyncio.Event().wait()
 
         client = SimpleNamespace(
+            projection_ready=True, projection_namespace="",
             initialize=AsyncMock(return_value=SimpleNamespace(ready=True)),
             available_datasets=AsyncMock(side_effect=lambda names: names),
             search_type=str, recall=remote,

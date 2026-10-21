@@ -3,29 +3,22 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
-import re
 import time
 import uuid
-from collections import defaultdict
 from typing import Any, Optional
 
 from core.activity import activity_owner, activity_scope, activity_step
 from core.log import log
 
 from ..memory_store import MemoryStore
-from ..provenance import recall_provenance
-from ..store._shared import projection_content_hash
-from ..store.cognee_queue import ENTRY_KIND_GRAPH_NODE
-from .adapters import retryable
 from .client import CogneeClient
 from .config import CogneeConfig
+from .errors import error_text as _error_text
+from .rebuild import CogneeRebuild
 from .storage import cognee_storage_stats
 from .types import CogneeSyncStatus
 from .write_breaker import WriteBreaker
-
-_SAFE_DATASET_RE = re.compile(r"[^a-zA-Z0-9_-]+")
+from .writer import ProjectionWriter
 
 
 class CogneeCoordinator:
@@ -40,6 +33,7 @@ class CogneeCoordinator:
         self.store = store
         self.client = client
         self.config = config.normalized()
+        self.rebuild = CogneeRebuild(store, client)
         self._task: Optional[asyncio.Task[None]] = None
         self._wake = asyncio.Event()
         self._closing = False
@@ -60,6 +54,8 @@ class CogneeCoordinator:
         self._pause_reason = ""
         self.last_compact_at = 0.0
         self.last_compact_summary = ""
+        self.writer = ProjectionWriter(store, client, self.config,
+                                       observe_write=lambda: self._breaker.observe(), after_write=self._maybe_improve)
 
     @property
     def is_running(self) -> bool:
@@ -73,21 +69,18 @@ class CogneeCoordinator:
         )
 
     async def start(self) -> None:
+        self.client.projection_ready = False
         self.store.set_cognee_projection_enabled(
-            self.config.enabled and self.config.sync_enabled,
+            self.config.enabled,
         )
         if not self.config.enabled:
             return
+        await self.rebuild.initialize(self.config)
         availability = await self.client.initialize()
         if availability.ready:
             await self.client.available_datasets([])
         if not availability.ready and not availability.configuration_required:
             self._last_error = availability.reason
-        # 启动时回收上次异常退出遗留的卡死任务（processing → pending）
-        try:
-            await self.store.requeue_stale_cognee_sync(self._stale_after_seconds())
-        except Exception as exc:
-            log(f"Cognee 卡死任务回收失败: {exc}", "DEBUG", tag="思维")
         # 启动即预热存储统计（大库遍历数十秒，后台线程执行不阻塞启动），
         # 保证用户打开数据管理/记忆页时快照已就绪
         cognee_storage_stats.schedule_refresh(self.config.absolute_data_root)
@@ -128,8 +121,12 @@ class CogneeCoordinator:
                 pass  # 取消属正常关闭流程（正常控制流，非异常）
             self._task = None
 
+        async with self._projection_lock:
+            await self.client.close()
+
     async def reconfigure(self, config: CogneeConfig) -> None:
         """接纳已保存配置，在当前投影批次结束后应用最后一次修改。"""
+        self.rebuild.validate_config(config)
         self._pending_config = config.normalized()
         self._configuration_error = ""
         if self._configuration_task is None or self._configuration_task.done():
@@ -157,10 +154,13 @@ class CogneeCoordinator:
 
     async def _apply_configuration(self, config: CogneeConfig) -> None:
         self.config = config.normalized()
+        self.writer.config = self.config
         self.store.set_cognee_projection_enabled(
-            self.config.enabled and self.config.sync_enabled,
+            self.config.enabled,
         )
         self.client.reconfigure(self.config)
+        if self.config.enabled:
+            await self.rebuild.initialize(self.config)
         self._breaker = self._build_breaker()
         self._pause_until_ns = 0
         self._pause_reason = ""
@@ -273,20 +273,46 @@ class CogneeCoordinator:
         self.wake()
         return count
 
+    async def request_rebuild(self) -> dict[str, Any]:
+        """持久化构建请求；不等待耗时的在途批次，完成状态由验收产生。"""
+        state = await self.rebuild.schedule(self.config)
+        self.wake()
+        return {"ok": True, "scheduled": True, "rebuild": state.model_dump()}
+
     async def backfill(self, *, limit: int = 0, dry_run: bool = True) -> dict[str, int | bool]:
         if dry_run:
-            total = await self.store.count()
-            return {"dry_run": True, "eligible": min(total, limit) if limit > 0 else total}
+            counts = await self.store.cognee_inventory_counts()
+            total = counts["memories"] + counts["graph_nodes"]
+            return {"dry_run": True, **counts, "eligible": min(total, limit) if limit > 0 else total}
         count = await self.store.enqueue_cognee_backfill(limit=limit)
         self.wake()
         return {"dry_run": False, "queued": count}
 
-    async def improve(self, dataset_name: str) -> Any:
+    async def improve(self, dataset_name: str, *, review_conflicts: bool = False,
+                      build_global_context_index: bool = True) -> Any:
         """在投影与维护互斥窗口中增强图谱，遵循写盘熔断。"""
         async with self._projection_lock:
             if not self._projection_allowed():
                 raise RuntimeError(self._pause_reason)
-            return await self.client.improve(dataset=dataset_name)
+            return await self._enhance(dataset_name, review_conflicts=review_conflicts,
+                                       build_global_context_index=build_global_context_index)
+
+    async def _build_global_context(self, dataset_name: str) -> Any:
+        return await self._enhance(dataset_name, build_global_context_index=True)
+
+    async def _enhance(self, dataset_name: str, *, build_global_context_index: bool = False,
+                       review_conflicts: bool = False) -> Any:
+        """只增强显式选择的阶段；冲突审查保留原始证据，不自动裁决权威内容。"""
+        result = await self.client.improve(dataset=dataset_name,
+            build_global_context_index=build_global_context_index, review_conflicts=review_conflicts)
+        value = result.model_dump(mode="json") if hasattr(result, "model_dump") else result
+        stages = {s.get("stage"): s for s in value.get("stages", [])} if isinstance(value, dict) else {}
+        requested = [name for name, enabled in (("global_context_index", build_global_context_index),
+                                                ("review_conflicts", review_conflicts)) if enabled]
+        for name in requested:
+            if stages.get(name, {}).get("status") not in {"completed", "already_completed"}:
+                raise RuntimeError(f"Cognee 增强阶段未完成 ({name}): {stages.get(name, value)}")
+        return value
 
     def _projection_allowed(self) -> bool:
         """写盘熔断闸门：暂停期间拒绝批次认领与自动压缩。
@@ -322,20 +348,26 @@ class CogneeCoordinator:
         return not tripped
 
     async def _worker(self) -> None:
+        recovering = True
         while not self._closing:
             try:
-                # 每轮先回收卡死任务（worker 崩溃/取消导致的中断），再认领新批次
-                await self.store.requeue_stale_cognee_sync(self._stale_after_seconds())
+                # 宿主保证单消费者：新 worker 无在途批次，可立即续跑中断任务。
+                await self.store.requeue_stale_cognee_sync(0 if recovering else self._stale_after_seconds())
+                recovering = False
                 # 模型待配置时保留 pending，不消耗条目的重试次数；配置齐后自动恢复。
                 availability = await self.client.initialize()
-                if availability.ready and self._projection_allowed():
-                    batch = await self.store.claim_cognee_sync_batch(
-                        self.config.sync_batch_size,
-                    )
-                    if batch:
-                        await self._process_batch(batch)
-                        continue
-                    await self._maybe_compact()
+                if availability.ready:
+                    async with self._projection_lock:
+                        if self.rebuild.state and self.rebuild.state.rebuild_requested:
+                            await self.rebuild.request(self.config)
+                        await self.rebuild.advance()
+                        if self.rebuild.can_consume and self._projection_allowed():
+                            batch = await self.store.claim_cognee_sync_batch(self.config.sync_batch_size)
+                            if batch:
+                                await self._process_entries(batch)
+                                continue
+                    if self.rebuild.can_consume:
+                        await self._maybe_compact()
                 # 空闲作业是用户显式请求（备份/迁移），不受熔断阻断
                 await self._run_idle_job()
             except asyncio.CancelledError:
@@ -433,217 +465,14 @@ class CogneeCoordinator:
             await self._process_entries(batch)
 
     async def _process_entries(self, batch: list[dict[str, Any]]) -> None:
-        availability = await self.client.initialize()
-        if not availability.ready:
-            for item in batch:
-                await self._fail(item, availability.reason or "Cognee 未就绪")
-            return
-
-        deletes = [item for item in batch if item["operation"] == "delete"]
-        upserts = [item for item in batch if item["operation"] == "upsert"]
-        for item in deletes:
-            await self._process_delete(item)
-
-        memory_upserts: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        graph_upserts: list[dict[str, Any]] = []
-        for item in upserts:
-            if item["entry_kind"] == ENTRY_KIND_GRAPH_NODE:
-                if self.config.project_graph_enabled:
-                    graph_upserts.append(item)
-                else:
-                    await self._skip_disabled(item)
-            elif self.config.project_memories_enabled:
-                memory_upserts[self.dataset_for_payload(item["payload"])].append(item)
-            else:
-                await self._skip_disabled(item)
-        for dataset_name, items in memory_upserts.items():
-            await self._process_upsert_group(dataset_name, items)
-        if graph_upserts:
-            await self._process_graph_upserts(graph_upserts)
-
-    async def _skip_disabled(self, item: dict[str, Any]) -> None:
-        """投影开关关闭的条目直接完成出队（不入 cognee，也不算失败）。"""
-        await self.store.complete_cognee_sync(
-            item["queue_id"], item["entry_id"], entry_kind=item["entry_kind"],
-        )
-
-    async def _process_delete(self, item: dict[str, Any]) -> None:
-        mapping = await self.store.get_cognee_mapping(
-            item["entry_id"], entry_kind=item["entry_kind"],
-        )
-        if not mapping:
-            await self.store.complete_cognee_sync(
-                item["queue_id"], item["entry_id"],
-                entry_kind=item["entry_kind"], delete_mapping=True,
-            )
-            return
-        if not mapping.get("dataset_id") or not mapping.get("data_id"):
-            await self._fail(item, "缺少 Cognee dataset/data ID，无法安全删除")
-            return
-        try:
-            await self.client.delete_data(
-                mapping["dataset_id"],
-                mapping["data_id"],
-                delete_dataset_if_empty=False,
-            )
-            await self.store.complete_cognee_sync(
-                item["queue_id"], item["entry_id"],
-                entry_kind=item["entry_kind"], delete_mapping=True,
-            )
-        except Exception as exc:
-            await self._fail(item, exc)
-
-    async def _process_upsert_group(
-        self,
-        dataset_name: str,
-        items: list[dict[str, Any]],
-    ) -> None:
-        entries = [(item, self._render_memory(item["payload"]),
-                    projection_content_hash(item["payload"])) for item in items]
-        await self._push_projection_group(dataset_name, entries, graph=False)
-
-    @property
-    def relations_dataset(self) -> str:
-        """全局关系投影数据集（自由型节点：topic/person/concept 等公共知识）。"""
-        prefix = _SAFE_DATASET_RE.sub("_", self.config.dataset_prefix)
-        return f"{prefix}_relations"
-
-    def graph_dataset_for_node(self, node: dict[str, Any]) -> str:
-        """节点投影数据集：实体型节点（user/group）入 per-scope 关系数据集，
-        自由型节点入全局。
-
-        实体私人关系网络按 scope 隔离（消除跨 scope 检索稀释）；
-        话题/概念等公共知识保持全局共享——"甲和乙是什么关系"这类
-        跨实体问题正是图谱价值。scope id 派生与记忆数据集一致
-        （user:qq:123 → "qq:123" 的 sha256 前 16 位）。
-        """
-        prefix = _SAFE_DATASET_RE.sub("_", self.config.dataset_prefix)
-        ntype = str(node.get("node_type", ""))
-        key = str(node.get("node_key", ""))
-        if ntype in {"user", "group"} and ":" in key:
-            scope_id = key.split(":", 1)[1]
-            digest = hashlib.sha256(scope_id.encode("utf-8")).hexdigest()[:16]
-            return f"{prefix}_relations_{ntype}_{digest}"
-        return f"{prefix}_relations"
-
-    async def _process_graph_upserts(self, items: list[dict[str, Any]]) -> None:
-        """关系节点投影：渲染最新邻域文档，先删后加到节点所属数据集。
-
-        入队负载仅是快照触发器，文档在消费时从权威库实时渲染，
-        保证投影内容不被入队后的后续变更过期。结构指纹（节点身份 +
-        各边谓词/方向/对端，不含强度与证据）与上次成功同步一致时
-        直接跳过——关系强化与证据刷新不再触发整篇重投影。
-        实体型节点按 scope 分组数据集推送（见 graph_dataset_for_node）。
-        """
-        grouped: dict[str, list[tuple[dict[str, Any], str, str]]] = defaultdict(list)
-        for item in items:
-            projection = await self.store.graph.render_node_projection(item["entry_id"])
-            if projection is None:
-                # 节点已归档/不存在：按删除处理
-                await self._process_delete({**item, "operation": "delete"})
-                continue
-            document, fingerprint = projection
-            mapping = await self.store.get_cognee_mapping(
-                item["entry_id"], entry_kind=item["entry_kind"],
-            )
-            if mapping and str(mapping.get("content_hash") or "") == fingerprint:
-                # 投影已是最新：仅移除队列条目，映射与投影保持原样
-                await self.store.complete_cognee_sync(
-                    item["queue_id"],
-                    item["entry_id"],
-                    entry_kind=item["entry_kind"],
-                )
-                continue
-            node = await self.store.graph.get_node_by_id(item["entry_id"])
-            dataset = self.graph_dataset_for_node(node or {})
-            grouped[dataset].append((item, document, fingerprint))
-        for dataset_name, entries in grouped.items():
-            await self._push_projection_group(dataset_name, entries, graph=True)
-
-    async def _push_projection_group(
-        self,
-        dataset_name: str,
-        entries: list[tuple[dict[str, Any], str, str]],
-        *,
-        graph: bool,
-    ) -> None:
-        """先完成新投影再替换旧映射；稳定文档 ID 使失败重试不新增副本。"""
-        metadata_key = "anelf_graph_node_id" if graph else "anelf_memory_id"
-        label_kind = "graph-node" if graph else "memory"
-        stage = "prepare"
-        started = time.monotonic()
-        try:
-            data_items: list[Any] = []
-            for item, document, _fingerprint in entries:
-                payload = item["payload"]
-                memory_metadata = payload.get("metadata", {})
-                data_items.append(await self.client.make_data_item(
-                    document,
-                    label=f"anelf-{label_kind}-{item['entry_id']}",
-                    dataset_name=dataset_name,
-                    external_metadata={
-                        metadata_key: str(item["entry_id"]),
-                        "memory_type": "graph_relation" if graph else str(payload.get("type", "semantic")),
-                        "source": "graph" if graph else str(payload.get("source", "")),
-                        **({"anelf_attribution": {
-                            "tags": payload.get("tags", []), "timestamp": payload.get("timestamp", 0),
-                            "sensitivity": memory_metadata.get("sensitivity", "normal"),
-                            "provenance": recall_provenance(memory_metadata, source=str(payload.get("source", ""))),
-                        }} if not graph else {}),
-                    },
-                ))
-            self._breaker.observe()
-            stage = "add"
-            ingestion = await self.client.add(
-                data_items, dataset_name=dataset_name, incremental_loading=True,
-            )
-            dataset_id = str(_value(ingestion, "dataset_id", ""))
-            if not dataset_id:
-                raise RuntimeError("Cognee 摄入未返回 dataset_id，保留旧投影")
-            stage = "cognify"
-            await self.client.cognify(datasets=[dataset_name], incremental_loading=True)
-            self._breaker.observe()
-            await self._maybe_improve(dataset_name)
-            stage = "replace_projection"
-            for (item, _document, fingerprint), data_item in zip(entries, data_items, strict=True):
-                data_id = str(_value(data_item, "data_id", ""))
-                if not data_id:
-                    raise RuntimeError("Cognee 投影缺少稳定文档 ID")
-                previous = await self.store.get_cognee_mapping(
-                    item["entry_id"], entry_kind=item["entry_kind"],
-                )
-                if (previous and previous.get("data_id") and previous.get("dataset_id")
-                        and (previous["dataset_id"], previous["data_id"]) != (dataset_id, data_id)):
-                    try:
-                        await self.client.delete_data(
-                            previous["dataset_id"], previous["data_id"],
-                            delete_dataset_if_empty=False,
-                        )
-                    except Exception as exc:
-                        await self._fail(item, exc)
-                        continue
-                await self.store.complete_cognee_sync(
-                    item["queue_id"], item["entry_id"], entry_kind=item["entry_kind"],
-                    dataset_name=dataset_name, dataset_id=dataset_id, data_id=data_id,
-                    content_hash=fingerprint,
-                )
-            self._last_error = ""
-        except Exception as exc:
-            self._last_error = _error_text(exc)
-            log(
-                f"Cognee 同步失败 [stage:{stage}][dataset:{dataset_name}] "
-                f"{len(entries)} 条，耗时 {time.monotonic() - started:.1f}s: {self._last_error}",
-                "WARNING", tag="思维",
-            )
-            for item, _doc, _fingerprint in entries:
-                await self._fail(item, exc)
+        await self.writer.process(batch)
+        self._last_error = self.writer.last_error
 
     async def _maybe_improve(self, dataset_name: str) -> None:
         """按数据集防抖运行图谱增强；增强失败不影响已完成的投影。
 
-        memify 全图增强随数据集增长越来越慢，且 CHUNKS 类召回不依赖它，
-        因此按 improve_interval_seconds 限频（<=0 时同步路径不运行），
-        周期性增强可经 improve_cognee_dataset 工具触发。
+        全局上下文摘要有额外模型成本，且 CHUNKS 类召回不依赖它，
+        按 improve_interval_seconds 限频（<=0 时同步路径不运行）。
         """
         interval = self.config.improve_interval_seconds
         if interval <= 0:
@@ -654,71 +483,10 @@ class CogneeCoordinator:
             return
         self._last_improve_ns[dataset_name] = now_ns
         try:
-            await self.client.improve(dataset=dataset_name)
+            await self._build_global_context(dataset_name)
         except Exception as exc:
             log(
                 f"Cognee 数据集 {dataset_name} 图谱增强失败（不影响投影）: {_error_text(exc)}",
                 "WARNING",
                 tag="思维",
             )
-
-    async def _fail(self, item: dict[str, Any], error: str | Exception) -> None:
-        attempts = int(item.get("attempts", 0))
-        delay = min(300.0, 2.0 ** min(attempts, 8))
-        await self.store.fail_cognee_sync(
-            item["queue_id"],
-            _error_text(error) if isinstance(error, Exception) else error,
-            max_retries=self.config.max_retries if not isinstance(error, Exception) or retryable(error) else 1,
-            retry_delay_seconds=delay,
-        )
-
-    def dataset_for_payload(self, payload: dict[str, Any]) -> str:
-        scope_type = "global"
-        scope_id = ""
-        for tag in payload.get("tags", []):
-            if not isinstance(tag, str) or ":" not in tag:
-                continue
-            key, value = tag.split(":", 1)
-            if key in {"user", "group"} and value:
-                scope_type, scope_id = key, value
-                break
-        if not scope_id:
-            return f"{self.config.dataset_prefix}_global"
-        digest = hashlib.sha256(scope_id.encode("utf-8")).hexdigest()[:16]
-        prefix = _SAFE_DATASET_RE.sub("_", self.config.dataset_prefix)
-        return f"{prefix}_{scope_type}_{digest}"
-
-    @staticmethod
-    def _render_memory(payload: dict[str, Any]) -> str:
-        tags = ", ".join(str(tag) for tag in payload.get("tags", []))
-        metadata = json.dumps(payload.get("metadata", {}), ensure_ascii=False, sort_keys=True)
-        return (
-            f"Memory type: {payload.get('type', 'semantic')}\n"
-            f"Memory ID: {payload.get('memory_id', '')}\n"
-            f"Timestamp: {payload.get('timestamp', 0)}\n"
-            f"Source: {payload.get('source', '')}\n"
-            f"Importance: {payload.get('importance', 0.5)}\n"
-            f"Tags: {tags}\n"
-            f"Metadata: {metadata}\n\n"
-            f"{payload.get('content', '')}"
-        )
-
-
-def _error_text(exc: BaseException) -> str:
-    """生成可见的错误描述；asyncio.TimeoutError 等异常的 str() 为空。"""
-    name = type(exc).__name__
-    cause = getattr(exc, "error_class", None)
-    if cause and hasattr(exc, "error_message"):
-        message = getattr(exc, "error_message", None) or "底层未提供错误详情"
-        dataset = getattr(exc, "dataset_name", None)
-        return f"{name}: {cause}: {message}" + (f"（数据集: {dataset}）" if dataset else "")
-    text = str(exc).strip()
-    if not text:
-        return name
-    return text if text.startswith(f"{name}:") else f"{name}: {text}"
-
-
-def _value(item: Any, key: str, default: Any) -> Any:
-    if isinstance(item, dict):
-        return item.get(key, default)
-    return getattr(item, key, default)

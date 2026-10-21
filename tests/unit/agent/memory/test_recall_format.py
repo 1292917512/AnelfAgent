@@ -4,35 +4,43 @@ from __future__ import annotations
 
 import pytest
 
-from agent.memory.cognee.fusion import parse_memory_projection
+from agent.memory.cognee.fusion import recall_projection
+from agent.memory.cognee.types import CogneeRecallItem
 from agent.memory.recall_format import format_memory_line, format_memory_time
 
 # ==================================================================
 # 投影文档解析（fusion 边界）
 # ==================================================================
 
-def test_parse_memory_projection_strips_header_and_backfills_tags() -> None:
-    doc = (
-        "Memory type: semantic\n"
-        "Source: entity_123\n"
-        "Importance: 0.6\n"
-        "Tags: user:qq:123, topic:火锅\n"
-        "Metadata: {}\n\n"
-        "阿辰喜欢火锅，尤其是麻辣锅"
-    )
-    parsed = parse_memory_projection(doc)
+def test_recall_projection_preserves_text_and_restores_tags() -> None:
+    parsed = recall_projection(CogneeRecallItem(id="chunk:1", content="阿辰喜欢火锅，尤其是麻辣锅",
+        metadata={"anelf_attribution": {"tags": ["user:qq:123", "topic:火锅"]}}))
     assert parsed["snippet"] == "阿辰喜欢火锅，尤其是麻辣锅"
     assert parsed["tags"] == ["user:qq:123", "topic:火锅"]
 
 
-def test_parse_memory_projection_passthrough_non_projection() -> None:
+def test_unknown_projection_keeps_text_and_conservative_privacy() -> None:
     text = "图谱综合回答：阿辰和老王是朋友"
-    assert parse_memory_projection(text) == {"snippet": text}
+    assert recall_projection(CogneeRecallItem(id="graph:1", content=text)) == {"snippet": text, "sensitivity": "private"}
 
 
-def test_parse_memory_projection_malformed_header_falls_back() -> None:
-    text = "Memory type: 只有头无空行分隔的残缺文档"
-    assert parse_memory_projection(text) == {"snippet": text}
+async def test_extension_tags_remain_visible_and_separate_evidence_identity():
+    from agent.memory.memory_types import MemorySearchResult
+    from agent.memory.recall_format import format_recall_line, format_recall_result
+
+    first = MemorySearchResult(id="cognee:1", snippet="相同正文", score=1,
+                               source="cognee_chunk", tags=["project:a", "future:category"])
+    second = first.model_copy(update={"id": "cognee:2", "tags": ["project:b"]})
+    assert first.content_key() != second.content_key()
+    line = await format_recall_line(None, first)
+    assert "project:a" in line and "future:category" in line
+    result = format_recall_result(first)
+    assert "memory_id" not in result and result["evidence_kind"] == "source_chunk"
+
+
+def test_content_that_looks_like_a_header_is_not_reinterpreted() -> None:
+    text = "Memory type: semantic\nTags: unrelated\n\n这是用户原文"
+    assert recall_projection(CogneeRecallItem(id="chunk:1", content=text))["snippet"] == text
 
 
 # ==================================================================
@@ -115,7 +123,7 @@ async def test_batch_attribution_looks_up_each_identity_once(store, monkeypatch,
 
 
 async def test_projection_roundtrip_preserves_attribution_and_privacy(store) -> None:
-    from agent.memory.cognee.coordinator import CogneeCoordinator
+    from agent.memory.cognee.documents import memory_document
     from agent.memory.memory_retriever import MemoryRetriever
     from agent.memory.memory_types import MemoryEntry, MemorySearchResult, MemoryType
     from agent.memory.probe import DeepProbeHub
@@ -128,9 +136,12 @@ async def test_projection_roundtrip_preserves_attribution_and_privacy(store) -> 
     entry = MemoryEntry(id=7, memory_type=MemoryType.EPISODIC, content="暂住朋友家", source="auto_capture",
                         tags=["group:qq:789", "user:qq:123"], metadata=metadata, timestamp=1_700_000_000)
     native = MemorySearchResult.from_entry(entry, .8)
-    document = CogneeCoordinator._render_memory(entry_projection_payload(entry, 7))
+    document = memory_document(entry_projection_payload(entry, 7))
+    assert document.text == entry.content
     projected = MemorySearchResult.model_validate({
-        **parse_memory_projection(document), "id": "chunk:1", "source": "cognee_chunk", "score": .7,
+        **recall_projection(CogneeRecallItem(id="chunk:1", content=document.text,
+            metadata={"anelf_attribution": document.attribution})),
+        "id": "chunk:1", "source": "cognee_chunk", "score": .7,
     })
     assert projected.memory_reference() == "mem:7"
     assert projected.content_key() == native.content_key()
@@ -154,11 +165,11 @@ async def test_unknown_graph_never_borrows_query_identity() -> None:
     assert "[scope:" not in text and "[uid:" not in text
 
 
-@pytest.mark.parametrize("metadata", ["broken", "[]", '{"sensitivity": [], "origins": [null]}'])
-def test_invalid_projection_metadata_does_not_discard_content(metadata: str) -> None:
-    parsed = parse_memory_projection(f"Memory type: semantic\nMetadata: {metadata}\nTimestamp: nan\n\n事实")
+@pytest.mark.parametrize("metadata", ["broken", [], {"sensitivity": [], "origins": [None]}])
+def test_invalid_projection_metadata_does_not_discard_content(metadata) -> None:
+    parsed = recall_projection(CogneeRecallItem(id="chunk:1", content="事实", metadata={"anelf_attribution": metadata}))
     assert parsed["snippet"] == "事实"
-    assert parsed["timestamp"] == 0 and parsed["sensitivity"] == "normal"
+    assert not parsed.get("timestamp") and parsed["sensitivity"] == "private"
 
 
 async def test_origin_subject_and_file_location_are_distinct() -> None:

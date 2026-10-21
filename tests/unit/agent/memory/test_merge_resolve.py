@@ -33,6 +33,29 @@ def _entry(
 
 
 class TestMergeIntoKeep:
+    @pytest.mark.parametrize("changed_side", ["keep", "drop"])
+    async def test_stale_candidate_cannot_overwrite_new_fact(
+        self, store: MemoryStore, changed_side: str,
+    ) -> None:
+        keep_id = await store.add(_entry("同一事实", importance=0.6))
+        drop_id = await store.add(_entry("同一事实", importance=0.4))
+        keep, drop = await store.get(keep_id), await store.get(drop_id)
+        assert keep is not None and drop is not None
+        versions = {keep_id: keep.version, drop_id: drop.version}
+        changed = keep if changed_side == "keep" else drop
+        changed.content = "并发写入的新事实必须保留"
+        await store.update(changed)
+
+        assert await store.merge_into_keep(
+            keep_id, [drop_id], actor="consolidator", expected_versions=versions,
+        ) is None
+        current_keep, current_drop = await store.get(keep_id), await store.get(drop_id)
+        assert current_keep is not None and current_drop is not None
+        assert current_keep.importance > 0 and current_drop.importance > 0
+        assert "merged_into" not in current_drop.metadata
+        actual = current_keep if changed_side == "keep" else current_drop
+        assert actual.content == "并发写入的新事实必须保留"
+
     async def test_update_and_merge_preserve_origins_privacy_and_local_state(self, store: MemoryStore) -> None:
         from agent.memory.dedup import apply_update
         from agent.memory.provenance import note_origin

@@ -17,6 +17,7 @@ from core.log import log
 
 from ..memory_types import MemoryEntry, MemorySearchResult
 from ..memory_utils import cosine_similarity, pack_embedding, unpack_embedding
+from ..tag_query import TagQuery
 from ._shared import (
     MEM_COLUMNS,
     bigram_similarity,
@@ -188,28 +189,29 @@ class SearchEngine:
     # FTS5 全文检索
     # ------------------------------------------------------------------
 
-    async def search_fts(self, query: str, limit: int = 10) -> list[tuple[MemoryEntry, float]]:
+    async def search_fts(self, query: str, limit: int = 10, *, tag_query: TagQuery | None = None) -> list[tuple[MemoryEntry, float]]:
         """FTS5 关键词搜索，返回 (entry, bm25_score) 列表。"""
         db = await self._conn.get_db()
         if not self._conn.fts_available:
-            return await self._search_like(query, limit)
+            return await self._search_like(query, limit, tag_query=tag_query)
 
         fts_query = build_fts_query(query)
         if not fts_query:
             return []
 
         try:
+            tag_sql, tag_params = (tag_query or TagQuery()).sql("m.tags_json")
             fts_select = ", ".join(f"m.{c.strip()}" for c in MEM_COLUMNS.split(","))
             cursor = await db.execute(
                 f"""
                 SELECT {fts_select}, rank
                 FROM memories_fts f
                 JOIN memories m ON m.id = f.rowid
-                WHERE memories_fts MATCH ? AND m.importance > 0
+                WHERE memories_fts MATCH ? AND m.importance > 0 AND ({tag_sql})
                 ORDER BY rank
                 LIMIT ?
                 """,
-                (fts_query, limit),
+                (fts_query, *tag_params, limit),
             )
             rows = await cursor.fetchall()
             results: list[tuple[MemoryEntry, float]] = []
@@ -223,9 +225,9 @@ class SearchEngine:
             return results
         except Exception as exc:
             log(f"FTS 搜索异常，回退 LIKE: {exc}", "DEBUG")
-            return await self._search_like(query, limit)
+            return await self._search_like(query, limit, tag_query=tag_query)
 
-    async def _search_like(self, query: str, limit: int) -> list[tuple[MemoryEntry, float]]:
+    async def _search_like(self, query: str, limit: int, *, tag_query: TagQuery | None = None) -> list[tuple[MemoryEntry, float]]:
         """LIKE 回退搜索：将查询拆成关键词段，用 OR 匹配。"""
         db = await self._conn.get_db()
         keywords = extract_like_keywords(query)
@@ -233,9 +235,10 @@ class SearchEngine:
             return []
         conditions = " OR ".join(r"content LIKE ? ESCAPE '\'" for _ in keywords)
         params: list[Any] = [f"%{escape_like(kw)}%" for kw in keywords]
-        params.append(limit)
+        tag_sql, tag_params = (tag_query or TagQuery()).sql()
+        params.extend([*tag_params, limit])
         cursor = await db.execute(
-            f"SELECT {MEM_COLUMNS} FROM memories WHERE importance > 0 AND ({conditions}) "
+            f"SELECT {MEM_COLUMNS} FROM memories WHERE importance > 0 AND ({conditions}) AND ({tag_sql}) "
             "ORDER BY ts_ns DESC LIMIT ?",
             params,
         )
@@ -251,9 +254,10 @@ class SearchEngine:
         query_vec: list[float],
         limit: int = 10,
         min_score: float = 0.3,
+        *, tag_query: TagQuery | None = None,
     ) -> list[tuple[MemoryEntry, float]]:
         """向量搜索：优先走 sqlite-vec ANN 索引，不可用时分批全表扫描。"""
-        if self._conn.vec_available and self._conn.vec_dims is not None:
+        if not (tag_query and tag_query.active) and self._conn.vec_available and self._conn.vec_dims is not None:
             try:
                 return await self._search_vector_vec(query_vec, limit, min_score)
             except Exception as exc:
@@ -266,7 +270,7 @@ class SearchEngine:
         merged: list[tuple[MemoryEntry, float]] = []
         last_id = 0
         while True:
-            rows, last_id = await self._fetch_vector_batch(last_id, batch_size)
+            rows, last_id = await self._fetch_vector_batch(last_id, batch_size, tag_query=tag_query)
             if not rows:
                 break
             scored = await asyncio.to_thread(
@@ -284,14 +288,15 @@ class SearchEngine:
         return merged[:limit]
 
     async def _fetch_vector_batch(
-        self, last_id: int, batch_size: int,
+        self, last_id: int, batch_size: int, *, tag_query: TagQuery | None = None,
     ) -> tuple[list[Any], int]:
         """按 id 游标取一批带向量的记忆（keyset 分页），返回 (行, 新游标)。"""
         db = await self._conn.get_db()
+        tag_sql, tag_params = (tag_query or TagQuery()).sql()
         cursor = await db.execute(
             f"SELECT {MEM_COLUMNS} FROM memories WHERE embedding_blob IS NOT NULL "
-            "AND importance > 0 AND id > ? ORDER BY id LIMIT ?",
-            (last_id, batch_size),
+            f"AND importance > 0 AND id > ? AND ({tag_sql}) ORDER BY id LIMIT ?",
+            (last_id, *tag_params, batch_size),
         )
         rows = list(await cursor.fetchall())
         new_last = int(rows[-1]["id"]) if rows else last_id
@@ -363,6 +368,7 @@ class SearchEngine:
         limit: int = 10,
         min_score: float = 0.1,
         require_tags: Optional[list[str]] = None,
+        tag_query: TagQuery | None = None,
     ) -> list[tuple[MemoryEntry, float]]:
         """混合搜索：向量 + FTS 两路并行，取并集后统一评分。
 
@@ -371,6 +377,8 @@ class SearchEngine:
         却每次召回都付出一次全表扫描成本）。
         require_tags 为硬过滤：记忆必须包含全部指定标签才进入评分。
         """
+        tag_query = tag_query or TagQuery(all_of=tuple(require_tags or ()))
+        filter_args = {"tag_query": tag_query} if tag_query.active else {}
         pool_size = limit * 5
         t0 = time.monotonic()
 
@@ -378,8 +386,8 @@ class SearchEngine:
             return []
 
         # 两路并行搜索
-        vec_coro = self.search_vector(query_vec, limit=pool_size, min_score=0.05) if query_vec else _empty_vec()
-        fts_coro = self.search_fts(query, limit=pool_size)
+        vec_coro = self.search_vector(query_vec, limit=pool_size, min_score=0.05, **filter_args) if query_vec else _empty_vec()
+        fts_coro = self.search_fts(query, limit=pool_size, **filter_args)
 
         vec_results, fts_results = await asyncio.gather(vec_coro, fts_coro)
 
@@ -429,11 +437,22 @@ class SearchEngine:
                 if eid not in candidates:
                     candidates[eid] = (entry, 0.0, 0.0, 0.0)
 
+        if tag_query.active:
+            db = await self._conn.get_db()
+            tag_sql, tag_params = tag_query.sql()
+            rows = await (await db.execute(
+                f"SELECT {MEM_COLUMNS} FROM memories WHERE importance>0 AND ({tag_sql}) ORDER BY ts_ns DESC LIMIT ?",
+                (*tag_params, pool_size),
+            )).fetchall()
+            for row in rows:
+                entry = row_to_entry(row)
+                candidates.setdefault(entry.id or 0, (entry, 0.0, 0.0, 0.0))
+            candidates = {key: value for key, value in candidates.items() if tag_query.matches(value[0].tags)}
+
         tag_df: Dict[str, int] = {}
         total_docs = 0
         if q_tags:
             tag_df, total_docs = await self.get_tag_df()
-        hard_tags = set(require_tags or [])
 
         w_semantic = _w("memory_search_w_semantic", 0.7)
         w_decay = _w("memory_search_w_decay", 0.3)
@@ -467,8 +486,6 @@ class SearchEngine:
 
         results: list[tuple[MemoryEntry, float]] = []
         for entry, vec_score, fts_score, like_score in candidates.values():
-            if hard_tags and not hard_tags.issubset(entry.tags):
-                continue
             tag_score = idf_tag_score(q_tags, entry.tags, tag_df, total_docs) if q_tags else 0.0
             text_score = max(fts_score, like_score)
             semantic = (
@@ -504,12 +521,14 @@ class SearchEngine:
         limit: int = 10,
         min_score: float = 0.1,
         require_tags: Optional[list[str]] = None,
+        tag_query: TagQuery | None = None,
     ) -> list[MemorySearchResult]:
         """统一搜索：同时检索 memories 表和 chunks 表，合并排序返回。
 
         require_tags 为硬过滤（仅 memories 轨生效；文件 chunk 无标签体系，
         启用硬过滤时不再返回文件结果）。
         """
+        tag_query = tag_query or TagQuery(all_of=tuple(require_tags or ()))
         pool_size = limit * 3
 
         # memories 搜索 + chunks 搜索并行执行
@@ -522,15 +541,15 @@ class SearchEngine:
 
         mem_coro = self.search_hybrid(
             query=query, query_vec=query_vec, query_tags=query_tags,
-            limit=pool_size, min_score=min_score, require_tags=require_tags,
+            limit=pool_size, min_score=min_score, tag_query=tag_query,
         )
         chunk_vec_coro = (
             self._file_index.search_chunks_vector(query_vec, limit=pool_size, min_score=0.05, query=query)
-            if query_vec and not require_tags else _empty_chunk_vec()
+            if query_vec and not tag_query.active else _empty_chunk_vec()
         )
         chunk_fts_coro = (
             self._file_index.search_chunks_fts(query, limit=pool_size)
-            if not require_tags else _empty_chunk_fts()
+            if not tag_query.active else _empty_chunk_fts()
         )
 
         mem_results, chunk_vec_results, chunk_fts_results = await asyncio.gather(

@@ -4,7 +4,7 @@
 1. 遗忘：清理低有效分的非永久记忆（importance × 时间衰减 × 访问强化）
 2. 松弛：长期未访问记忆的 importance 向基线回归（对称化召回强化，防趋同）
 3. 上限：每类记忆超限时归档最低分条目
-4. 合并：向量相似度 > 阈值的高相似记忆自动合并
+4. 合并：向量发现候选，只有原文、标签与元数据完全一致才自动合并
 5. 清理：过期 embedding 缓存
 6. 归档：物理删除超过保留期的归档记忆（防归档表无限增长）
 7. 同步：cognee 队列积压检查与唤醒
@@ -56,7 +56,7 @@ class ConsolidationReport:
             detail = ", ".join(f"{t}:{n}" for t, n in self.limit_removed.items())
             lines.append(f"类型上限清理 {detail}")
         if self.merged_count:
-            lines.append(f"合并 {self.merged_count} 对高相似记忆")
+            lines.append(f"合并 {self.merged_count} 对完全重复记忆")
         if self.cache_cleaned:
             lines.append(f"清理 {self.cache_cleaned} 条过期 embedding 缓存")
         if self.archive_purged:
@@ -153,12 +153,16 @@ class MemoryConsolidator:
             report.errors.append(f"上限清理失败: {exc}")
             log(f"记忆上限清理失败: {exc}", "WARNING", tag="记忆")
 
-        # 4. 高相似记忆自动合并
+        # 4. 完全重复记忆自动合并
         try:
             threshold = get_config_float("memory_merge_similarity", 0.92)
             pairs = await self._store.find_similar_memories(threshold)
             from .evidence import is_protected
             for a, b, sim in pairs:
+                # 向量接近不证明事实等价；自动维护不丢弃不同事实或不同出处。
+                if (a.content != b.content or a.source != b.source
+                        or set(a.tags) != set(b.tags) or a.metadata != b.metadata):
+                    continue
                 # protected（PERMANENT/宪法级）不可作为被合并丢弃的一方
                 if is_protected(a) or is_protected(b):
                     continue
@@ -170,6 +174,7 @@ class MemoryConsolidator:
                 if keep.id is not None and drop.id is not None:
                     if await self._store.merge_into_keep(
                         keep.id, [drop.id], actor="consolidator",
+                        expected_versions={keep.id: keep.version, drop.id: drop.version},
                     ):
                         report.merged_count += 1
                         log(f"记忆合并: #{drop.id} -> #{keep.id} (相似度 {sim:.2f})", "DEBUG", tag="记忆")
@@ -364,7 +369,7 @@ _CONSOLIDATOR_CONFIGS = {
             "step": 0.05,
         },
         "memory_merge_similarity": {
-            "description": "高相似记忆自动合并的相似度阈值",
+            "description": "重复记忆候选的相似度阈值；仅内容、来源、标签和元数据一致时自动合并",
             "default": 0.92,
             "advanced": True,
             "value_type": "range",

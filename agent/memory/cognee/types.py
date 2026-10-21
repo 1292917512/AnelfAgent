@@ -2,15 +2,9 @@
 
 from __future__ import annotations
 
-from enum import Enum
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
-
-
-class CogneeOperation(str, Enum):
-    UPSERT = "upsert"
-    DELETE = "delete"
 
 
 class CogneePipelineError(RuntimeError):
@@ -41,14 +35,6 @@ class CogneeRecallItem(BaseModel):
     raw: Any = None
 
 
-class CogneeSyncItem(BaseModel):
-    queue_id: int
-    memory_id: int
-    operation: CogneeOperation
-    attempts: int = 0
-    payload: dict[str, Any] = Field(default_factory=dict)
-
-
 class CogneeSyncStatus(BaseModel):
     enabled: bool
     running: bool
@@ -64,11 +50,3 @@ class CogneeSyncStatus(BaseModel):
     paused: bool = False
     paused_until: float = 0.0
     pause_reason: str = ""
-
-
-class CogneeCallResult(BaseModel):
-    """任意公共 API 调用的稳定结果包装。"""
-
-    ok: bool
-    value: Any = None
-    error: Optional[str] = None

@@ -67,3 +67,5 @@ class CogneeBackfillRequest(BaseModel):
 
 class CogneeImproveRequest(BaseModel):
     dataset_name: str
+    review_conflicts: bool = False
+    build_global_context_index: bool = True

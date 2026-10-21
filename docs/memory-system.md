@@ -54,9 +54,9 @@ Web 索引面板显示本次同步统计。失败的文件在下一次同步中�
 Web 召回测试的「归属与出处」默认收起，展开后显示材料会话、时间、消息 ID 和完整标签。
 文件保持实际路径与片段行号；归档保留已有出处，已删除墓碑只表示梗概，不冒充完整历史。
 
-Cognee 投影头与文档外部元数据携带出处，分块保留元数据时可恢复身份、时间和私密度；
+Cognee 文档外部元数据携带出处，分块保留元数据时可恢复身份、时间和私密度；
 返回内容缺少这些信息时标注未知。图谱综合明确标为非原话，不按单个引用 ID 当作原始事实。
-不自动重建已有向量或批量重投影，旧记录随正常写入更新。
+投影格式未变时不自动重建已有向量；格式变更须经下述构建状态机验收后启用。
 
 融合与召回账本优先用可确认的原始记忆 ID；内容去重同时核对人物/群、材料会话、事件日期、
 时效与隐私，文件还核对路径和行号。不同归属或相同前文但结论不同的记忆不得互相覆盖。
@@ -160,16 +160,16 @@ SDK 可导入 `RecallPolicy`、`recall_options`、`set_turn_recall_policy`。
 | 召回预算与规划并行 | `memory_retriever` recall 路径 | 检索规划与多路检索**并行**：原查询 lane 先行（复用预计算 query_vec 零 embed），规划慢/超预算只损失多查询增强；总时限经 `asyncio.wait` **非破坏式收尾**——到点只收割已落地 lane，已落地的基础/焦点/计划 lane 照常融合返回；联邦 lane 通过增量快照保留先完成的原生/远端结果，慢通道取消不丢弃已完成事实，全空才回退近期记忆 |
 | 首轮深探 + provider 快照 | `agent/memory/probe.py`（DeepProbeHub + RecallLedger + provider `memory_deep_probe`） | 回复路径（`fire_probe=True`）复用已有规划，Jev 仅依据对话正文判断后在剩余召回预算内并发读取本地关系与 Cognee CHUNKS / GRAPH_COMPLETION。`collect` 返回前收束全部读取，超时保留已完成事实。轮中补充由 mind 协调；provider（priority 34、`memory_probe_inject` 门控）只读内存快照，回复结束清理，不改稳定前缀。 |
 | 召回账本（三键防重复） | `probe.RecallLedger`（记忆键由 `MemorySearchResult.content_key` 定义） | per-reply 三键集合（结果 id / 图谱边 id / 完整片段与归属组合），三条召回通道共用：基底层注入、AI recall 工具返回（tools.py 记账）、首轮深探渲染前查账——一次回复内同一事实只出现一次；`begin_reply` 重置 |
-| cognee 检索面 | `cognee/fusion.py` + `cognee/config.py` | `federated_search`/`search_cognee` 支持 `node_names` → cognee `recall(node_name=...)` 定向检索；`parse_memory_projection` 在边界解析投影文档头（归属标注/上下文加权/联想种子对 cognee 结果同样生效）；深类型（GRAPH_COMPLETION 等）只经首轮探针与 recall 工具（显式）发生，被动召回保持轻量 |
+| cognee 检索面 | `cognee/fusion.py` + `cognee/config.py` | 查询标签与完整 node_key 参与 NodeSet 定向通道；`recall_projection` 只从结构化元数据恢复归属，不把用户正文解析成管理字段。深类型（GRAPH_COMPLETION 等）只经首轮探针与 recall 工具（显式）发生，被动召回保持轻量 |
 | 召回测试面板 | `POST /api/memory/recall-test` + 前端 `pages/memory/RecallTester.tsx` | 与真实召回同管线（规划→多查询共识融合→关系/遗忘层）的无副作用执行：展示检索计划、通道与数据集、按来源分组结果、关系网络、遗忘层、各阶段耗时；不记访问不触发探针 |
 
 ## 关系图谱（agent/memory/graph/）
 
 - **权威存储** `graph/store.py`：graph_nodes/graph_edges，(s,p,o) 唯一 upsert + 别名归一 + 软删 +
   cognee 投影入队；检索命中即计数（access_count/last_accessed_ns）
-- **关系投影 scope 隔离**（`coordinator.graph_dataset_for_node` + `fusion.datasets_for_scope`）：
-  实体型节点（user:/group:）投影入 per-scope 数据集，自由型节点（topic/person/concept…）入全局
-  数据集——实体私人关系网络按 scope 隔离检索，公共知识全局共享
+- **关系投影与标签**：每个构建代际只有记忆、关系两个内容分区。实体节点使用完整 node_key，
+  关系投影带端点标签、来源记忆标签与出处；不按人物或群复制数据集。scope 和 NodeSet 用于
+  归属与检索提示，不是访问控制，披露仍须遵循项目隐私规则。
 - **遗忘与衰减**（consolidator 集成）：边强度向基线 0.5 松弛（访问护盾 ÷(1+ln(access_count))，
   与记忆 importance 松弛同公式）、强度 <0.25 且超 90 天软归档（自动触发 cognee 投影更新）、
   孤立自由型节点超期归档（user/group 会话锚点永不自动归档）；阈值保守（松弛 30 天起/归档 90 天起），
@@ -234,32 +234,141 @@ Cognee 面板保存先校验模型参数和向量空间，再原子写入配置�
 
 ### 已有数据与模型变更
 
-上述召回、融合、输出限制和重试调整都不要求重新生成已有图谱或向量，也不自动回填历史数据。
-投影内容指纹与原 ID 映射继续使用；内容变更才生成新投影。新文档 ID 按数据集、条目身份与内容
-稳定派生，重试可复用；先完成新投影再清理旧投影并更新映射。摄入返回的数据集 ID 与输入文档 ID
-直接回填映射，不再每批读取整个数据集。记忆与关系投影共用此管线；配置切换等待在途投影批次结束，避免一批数据跨卷或跨模型写入。
+原生 SQLite 是内容权威，Cognee 是可再生的图谱与向量索引。模块职责如下：
+
+| 模块 | 契约 |
+|---|---|
+| `projection.py` | 投影格式版本、精确标签归一、完整内容指纹、活跃记录资格；无 SDK 依赖 |
+| `cognee/documents.py` / `projection.py` | 纯文档转换；`graph/store.py` 只读取一致的关系及出处快照 |
+| `tag_query.py` | 跨后端 AND/OR/NOT 与显式层级契约，不自动创造别名 |
+| `store/cognee_queue.py` | 与业务写入同事务的 outbox、原子认领、失败重试和映射 |
+| `store/projection_state.py` | SQLite 快照、分页游标、构建状态、逐项覆盖审计与提交门 |
+| `cognee/rebuild.py` | 旧文档预检、构建代际、后端验收，不另开 worker |
+| `cognee/coordinator.py` | 单 worker 调度、配置切换、维护互斥与生命周期 |
+| `cognee/writer.py` | 已认领批次的摄入、稳定 ID、替换删除与重试；不创建后台任务 |
+| `cognee/ports.py` / `sdk_contract.py` | 最小后端 Protocol 与实际 SDK 签名、并发保护、引擎释放契约 |
+| `cognee/client.py` / `adapters.py` | SDK 输入输出、模型协议、原生引擎资源边界 |
+| `cognee/fusion.py` / `evidence.py` | 多路检索、证据归一、出处和冲突保留、预算内融合 |
+
+每代索引使用 `<namespace>_global` 和 `<namespace>_relations`，所有精确标签写入每个
+DataItem 的 `node_set`，去空白、去重、排序，不合并大小写、别名或不同实体。新增标签前缀不需
+新增数据集或改表；旧内容缺失的标签、发言者和出处不凭空补齐。`filter_tags` 是严格交集，
+`filter_any` 要求至少一个，`filter_not` 排除任一个；显式 `project:a/*` 匹配自身及 `/` 后代，
+不会命中 `project:ab`。原生 FTS/向量先过滤再限量；Cognee 硬过滤只返回有可靠结构化标签的
+分块并复核标签，不混入无出处的图谱综合、文件、关系联想或遗忘层。别名需经既有标签治理
+确认，不根据称呼自动扩张过滤。NodeSet 只是索引，不是 ACL。
+
+文档 ID 按数据集、条目身份、正文和元数据稳定派生。网络写入前持久化目标 ID 到
+`cognee_projection_attempts`，抽取成功后才删除被替代版本并提交映射；失败重试和期间改写可以
+回收未提交副本。记忆更新会同时标脏有来源关联的关系节点，标签、出处和证据变化不会漏同步。
+关闭同步消费仍记录变更；关闭整个 Cognee 则不捕获，重新启用后须显式回填停用期间的内容。
+
+知识抽取输入与管理信息分离：记忆正文逐字保留，ID、类型、时间、来源及完整标签放在
+`external_metadata` / `node_set`，不再把管理文档头送去抽取为实体。关系正文只含节点、关系和
+证据文本，边 ID、来源记忆、出处及边元数据保存在结构化归属中，并参与指纹。召回移除 SDK 的
+NodeSet 结构连接 `belongs_to_set`，保留实际关系；缺少或无效归属的内容保守标为私密。
+
+### 全量构建与恢复
+
+Web「Cognee → 全量构建 / 续跑」和 `POST /api/memory/cognee/rebuild` 共用持久化请求。
+接口只确认请求已保存，最终以状态 `ready` 为准。首次遇到旧格式映射进入 `required`，暂时使用
+原生召回；不会直接把旧数据声明成新格式，也不保留另一套旧运行实现。
+
+1. 预检当前旧数据集，识别上游拆分共享行时保留的 `legacy_id`；旧映射须能回查原文、归档或
+   明确删除记录。映射之外或无法回查的独有文档会阻止重建，先查清或导入；不静默清理。
+2. 对原生 SQLite 做在线完整备份并执行 `quick_check`，再原子切换队列与映射。原始内容表不清空。
+3. 分页重放活跃记忆和未归档关系节点，新代际使用独立 namespace；旧数据集继续保留。
+4. 对照每条当前原始记录核对映射指纹，再核对后端文档 ID、数量、外部元数据指纹、完整 NodeSet
+   和所属代际，并确认每篇文档的 cognify 完成标记。逐项计算在写锁外执行；内容及映射变更
+   由 SQLite 触发器递增审计版本，计算两端及最终提交比较版本。最终事务不全表重扫，
+   验收期间有新写入则先追平队列并重新审计。
+5. 全部通过才恢复 Cognee 召回。中断按持久化游标续跑，单消费者重新启动时立即回收在途任务；
+   验收失败点击续跑会分页重放修复。
+   未知额外文档不会为凑齐数量被删除。投影失败则修正模型/网络问题后重试，未成功前不切换。
+
+全量指「全部可投影的活跃内容」。归档、合并后的原始行、importance=0、计划、墓碑、原始对话、
+文件和便签继续留在所属系统，不把它们复制为活跃记忆，也不删除它们。已经历史物删的正文无法
+靠重建恢复。验收核对文档与索引归属完整性，不能证明 LLM 抽取的每条语义必然正确，部署验收仍须
+用实际业务问题抽查原文、标签和关系；不把总数相等或 API 无异常当作召回质量证明。
+
+构建快照只包含原生记忆 SQLite，**不等于完整回滚备份**。上线前停止写入并备份实际配置目录、
+整个数据卷（包含原生数据库、Cognee data/system、文件/便签）以及代码与锁文件。回滚时停止服务，
+将配套代码、配置、原生库和 Cognee 卷一起恢复；不能单独拿旧映射配新图库。恢复会覆盖备份之后
+的写入，应事先保存这些增量。旧代际占用额外磁盘，确认新索引和备份可用后再单独规划清理。
+
+| 变更 | 是否需要重建 |
+|---|---|
+| 普通依赖升级、检索权重/预算、API key 轮换 | 不因版本号自动重建；须通过 SDK 契约与真实模型门禁 |
+| 新标签前缀、新内容、已有记录标签修正 | 增量投影；不推断旧内容应有的新标签 |
+| 聊天/抽取模型更换 | 旧索引可继续读取；需要统一抽取效果时再选择重建 |
+| 项目投影格式或上游存储格式不兼容 | 明确迁移或构建；项目格式版本独立于依赖版本 |
+| Embedding 模型、端点或维度改变 | 不允许混写，需要隔离的新向量空间和完整迁移 |
 
 数据卷的 `anelf-embedding.json` 仅记录向量空间身份（provider/model/endpoint/dimensions），
 不保存 API key。旧卷首次沿用当前有效模型登记，已有数据原样保留；历史上未记录的模型切换
 无法仅凭向量反推，维护者仍需确保首次接入时所选模型与旧数据一致。后续保存不兼容模型时拒绝
 混写并保留原配置；启动时也检查身份。API key 轮换、聊天模型与召回参数调整无需重建。
-若确需改 embedding，可选独立数据目录保留旧卷；只有用户显式执行整卷清空重建时才删除身份记录，
-沿用原重建入口的重启要求。自动维度探测后记录实际维度，不因由显式维度切回自动而误要求重建。
+已绑定的根目录和前缀禁止在线改写，避免映射指向另一卷。此全量构建按钮在同一向量空间创建新
+代际，不支持跨模型换空间。更换 Embedding 须另行准备完整离线迁移：保留旧卷和原生快照，在隔离
+配置中创建新库，从权威原文导入并核对所有记录、标签及关系后再切换服务；不可删除身份文件
+绕过检查。自动维度探测后记录实际维度，不因由显式维度切回自动而误要求重建。
+
+### Cognee 能力与项目边界
+
+| 能力 | 当前接入方式及限制 |
+|---|---|
+| DataItem、增量 add/cognify、LanceDB、Ladybug | 统一文档和 outbox，稳定 ID、标签、元数据、重试日志及安全构建 |
+| CHUNKS / CHUNKS_LEXICAL / SUMMARIES | 默认 CHUNKS，词法与摘要可显式深检；与本地 FTS/向量按独立通道融合 |
+| GRAPH_COMPLETION / CONTEXT_EXTENSION | 自动深探取关系证据，显式深检可迭代扩展；后者仍可能调用 LLM |
+| only_context、references、conflicts | 只取结构化关系证据，保留引用/冲突提示；不把上游的系统或用户提示模板注入记忆 |
+| NodeSet | 完整标签与 node_key 定向召回，标签增加不扩张数据集数量；不是权限边界 |
+| improve 的全局上下文索引 | 手动或限频构建、逐阶段检查；`recall(depth="overview")` 显式使用新鲜摘要综合回答。增删改立即失效，重启保守退回事实检索，刷新后恢复；普通/后台召回不自动追加摘要生成 |
+| improve 的冲突审查 | Web 与 `improve_cognee_dataset(action="conflicts")` 按数据集审查并保留引用；不自动裁决或覆盖权威原文，冲突回到现有图谱/记忆治理 |
+| provenance、trace | 召回携带引用与冲突，项目出处、活动日志及原生审计为权威；未使用的上游诊断包装不列入业务接口 |
+| session、agent_memory、agents、skills、代码图、MCP、蒸馏/策展 | 上游可选系统，未替换现有会话、技能、任务与图谱治理；需具体需求、权限和质量评估后接入 |
+
+不要为“用满功能”同时开启所有生成式检索或第二套自治治理。新增能力须声明模型输入、调用量与
+缓存影响，且应证明业务问题上的收益。公开 API 的存在不表示对应路径已完成业务验收。
+Cognee 引擎缓存的关闭也由宿主 Lifecycle 托管：停止投影/召回后释放图、向量和关系引擎，等待
+原生资源关闭，不以进程退出强制释放替代正常清理。
+
+验证入口：`uv run pytest tests/unit/agent/memory tests/unit/services/test_memory_cognee.py`；
+设置 `COGNEE_INTEGRATION=1` 运行 `tests/integration/test_cognee_integration.py`，使用配置模型和
+临时数据库验证全量构建、正反标签过滤、关系证据、全局摘要、冲突审查、更新旧事实消失、
+共享实体删除隔离及资源关闭；同文件的真实模型用例检查生产工具 schema 的选择及关键参数。
+LiteLLM 升级另须运行[缓存健康门](context-cache.md#用量与版本变更)；本地测试模型的通过不替代
+部署端全部真实模型的检查。离线测试不能冒充真实服务验收。
+
+
+### AI 工具使用闭环
+
+- `recall`：明确事实默认 shallow；跨人物/项目关联选 deep；主题总览选 overview。
+  `tags` 只加权，硬范围用 filter_tags/filter_any/filter_not。未知标签先 `memory_index`，不猜测旧内容的标签。
+- 工具返回 `retrieval` 区分完整、部分与仅原生结果，报告超时与完成通道；降级空结果不证明事实不存在。
+  overview 只有实际返回摘要通道结果才标记 summary_used；不可用时返回事实及明确的刷新指引。
+- 每条结果包含 evidence_kind、truncated 和可用时的数字 memory_id，供 `get_memory` 回查完整原文、
+  来源和变更史。图谱综合不是原话，排序分不是可信度；冲突信息不会因融合选中原生结果而消失。
+- `list_cognee_datasets` 只返回当前代际及摘要就绪状态；增强动作 summary/conflicts 明确区分。
+  普通事实召回不要求先增强。维护有真实模型成本，失败阶段不得报成功。
+- 写入先查重，修订走 update_memory；Cognee 异步跟进原生事务，不把综合结果重新存为独立证据。
+  自动召回仍与工具、原生关系查询共享去重账本。扩展业务标签有界显示，去重保留不同标签归属。
+
+工具说明属于稳定 schema，发布时变化一次；检索诊断和证据只进入动态工具结果，不注入运行态到稳定前缀。
 
 
 | 机制 | 位置 | 说明 |
 |------|------|------|
-| 投影内容指纹跳过 | `store/_shared.py::projection_content_hash` + `cognee_queue.enqueue_sync` | 防记忆写入风暴打爆磁盘写盘配额。`cognee_entry_map` 的 content_hash（type/content/source/metadata/tags 的 canonical sha256，**刻意不含 importance**——召回强化/松弛回归不再触发重投影）一致 → 不入队；在途 processing 批次持有更新负载时不跳过（防「改 B→回退 A」竞态）；`enqueue_backfill` 走 force=True 保持显式修复语义。graph_node 载荷消费时渲染邻域文档 + **结构指纹**（节点身份 + 各边谓词/方向/对端，不含强度与证据文本）——重复提及的强化/证据刷新不触发整篇重投影 |
+| 投影内容指纹跳过 | `store/_shared.py::projection_content_hash` + `cognee_queue.enqueue_sync` | 完整 SHA256 包含投影版本、type/content/source/metadata/tags/timestamp，不含 importance；一致且无在途任务/未提交写入日志才跳过。显式回填 force=True。关系指纹包含节点、边、证据、来源记忆与归属，不含强度；强度变化不重建，证据或标签变化须重新投影 |
 | cognee 写盘熔断 | `cognee/write_breaker.py` + coordinator `_projection_allowed` | 进程自身磁盘写入速率超阈值（默认 500MB/5min）时暂停投影认领与自动压缩，冷却到期重评、自调节；平台不支持时 fail-open。状态经 CogneeSyncStatus.paused 暴露；`run_in_idle_window` 用户显式作业不受熔断阻断 |
 | ladybug native 监督 | `agent/memory/cognee/ladybug_guard.py`（门闸/循环安全/看门狗/WAL 容错四位一体，`install()` 幂等） | ①**并发门闸**：进程级线程锁串行所有 native 执行（execute+结果消费全程），wait_for 取消协程不提前放锁；②**循环安全拆除**：close/delete_graph 先 `to_thread` 预拆除再调原方法，门闸等待永不落在事件循环线程；③**失控看门狗**：纯线程实现，持有门闸超 `native_watchdog_restart_seconds`（默认 600）经端口请求守护重启（绝不直接退进程）；**刻意不做 native 中止**——ladybug 的 set_query_timeout/interrupt 对卡死扫描不可靠，隔离+重启是唯一安全语义；④**WAL 容错**：`throw_on_wal_replay_failure=False` 打开图库，损坏回放到最后提交点。配置在 cognee.json |
 | LanceDB 物理压缩 | `cognee/storage.py` + coordinator 空闲窗口调度 | 宿主是唯一维护调度者，适配器边界关闭 Cognee 自带的构图收尾压缩，库内无后台清理任务。`compact_lance_tree` 复用上游有界算法，全数据树每轮最多 4 个碎片合并任务和 1000 个历史版本，轮换起点避免表长期得不到维护；仅清理后继版本已超过 `compact_retention_days` 的旧版本，保留最新数据与保留期内快照。worker 排空后按 `compact_interval_seconds`（默认 86400s）自动执行。AI 工具 `compact_cognee_storage` / `POST /memory/cognee/compact` / Web 按钮统一进入 `request_compact()`，关闭自动维护仍可手动请求；两者均服从写盘熔断与投影锁，取消时等待原生写入结束后释放锁。`StorageStatsTracker` 以内存 TTL → 磁盘快照 → 空统计返回，请求路径不遍历大库，代际号防旧遍历回写 |
-| improve 默认禁用 | `cognee/config.py` `improve_interval_seconds`（默认 0） | cognee improve/memify 对全图三元组重新 embedding 且无去重，CHUNKS 类召回不依赖它；同步路径不自动触发，手动 `improve_cognee_dataset` 保留 |
+| improve 默认禁用 | `cognee/config.py` `improve_interval_seconds`（默认 0） | 全局摘要有额外模型成本，CHUNKS 不依赖它；显式增强调用 improve 的 global_context_index 阶段，不默认执行 memify 全图重嵌入 |
 | goal 不投影 cognee | `store/cognee_queue.enqueue_sync`（source=='goal' 拦截）+ `planning/tracker._persist` | 计划状态 JSON 不是知识：updated_at 高频漂移使投影永不稳定；goal upsert 不入队，原生 FTS/向量检索已覆盖召回；`_persist` 比较 updated_at 之外的语义内容，未变不落库 |
 | 投影开关 | cognee.json `project_memories_enabled` / `project_graph_enabled`（默认均 true） | memory 投影与主向量库同源（重复嵌入），graph 投影是原生检索没有的增量，可按需关停 |
 | embedding 用量账本 | `agent/memory/embedding/usage.py` + `GET /status/usage` 的 embedding 段 | 引擎级埋点（查询/批量/多模态）：日级 calls/texts/chars，内存累加 + 防抖落盘。cognee 自带引擎不在此口径 |
 | 批量对齐与缓存 | `embedding/worker._batch_size` + `engine.max_batch_size` + `embed_query_cache_size` | worker 批次取 min(配置, 客户端 embedding_max_batch)，避免 llm_client 内部拆批；查询向量缓存容量/TTL 可配 |
 | 向量索引清理 | `scripts/dedupe_cognee_vector_index.py` | 一次性治理脚本（幂等，应用运行中可执行）：EdgeType/Entity 等索引按 text 精确去重 + 存量 goal 投影退场 |
-| 依赖约束 | `pyproject.toml` + `uv.lock` + `[tool.uv] override-dependencies` | cognee 1.6.4 与 litellm 1.104.0 + onnxruntime 经 override 共存；LanceDB 0.39 与 PyLance 12.0 使用相同 Lance 内核，压缩前检查匹配。Ladybug 0.19.0 沿用 native 监督边界；投影文本显式声明 `literal_text`，避免内容被当成 URL 或本地文件路径 |
+| 依赖约束 | `pyproject.toml` + `uv.lock` | Cognee、LiteLLM 精确锁定，不覆盖 Cognee 的 LiteLLM 约束；onnxruntime override 为宿主音频栈保留，Cognee 不走 fastembed。Lance/PyLance 压缩前检查内核匹配；Ladybug 沿用 native 监督边界；投影显式 `literal_text`，避免正文被当成 URL 或路径 |
 
 ## 遗忘治理
 
@@ -300,6 +409,7 @@ Cognee 面板保存先校验模型参数和向量空间，再原子写入配置�
 | 机制 | 位置 | 说明 |
 |------|------|------|
 | 合并语义统一 | `memory_store.merge_into_keep`（唯一底层） | keep（有效分最高者）原地演进（标签并集/访问累加/max 重要性/可选合成内容，version+1），drop 软标记 importance=0 + `metadata.merged_into` 退出全部召回后入既有归档/物删生命周期。protected/ENTITY 画像/规划条目双向准入（不可作 keep 也不可作 drop） |
+| 自动去重边界 | `consolidator` + `merge_into_keep(expected_versions=...)` | 向量相似仅用于寻找候选；正文、来源、标签和元数据均一致才自动合并。事务内复核所有候选版本，期间有修改则取消合并，保留新事实与不同出处 |
 | mem:ID 分层解析 | `memory_store.resolve` + get/update/forget 工具 | 五态：active（含重定向落地）/ merged（链过深）/ archived（可恢复）/ tombstone（gist + redirect_to）/ missing——被合并的旧 id 沿 `merged_into` 链（限 3 跳防环）解析到存活条目，便签与图谱中的 mem:ID 永不失效；变更类操作遇非活跃条目显式引导（防改僵尸） |
 | 谱系审计 | `memory_audit` 表（`actor` 列）+ `list_audit` | 全变更路径（add/update/delete/archive/merge/restore）带触发方归因（tool:*/auto_capture/consolidator/heartbeat_*/task:*/web/planning/reflection*）；出口：get_memory 附最近 5 条事件、`GET /ltm/{id}/audit`；30 天保留（长期谱系走 metadata merged_from/into） |
 | 条目级语义链接 | memorize `linked_to` 参数 + recall 联想带出 | 「本条纠正/补充/依赖哪条」的显式声明（上限 5，存在性校验）；recall 命中关联方时 related 一跳带出（hop="link" 优先于标签共现）。与标签共现职责切分：具体关系用 linked_to，同主题关联靠标签 |

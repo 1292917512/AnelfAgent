@@ -430,7 +430,7 @@ class DeepProbeHub:
             return
         try:
             from .cognee.config import load_cognee_config
-            from .cognee.fusion import CogneeSearchBatch, datasets_for_scope, search_cognee
+            from .cognee.fusion import CogneeSearchBatch, datasets_for_projection, search_cognee
             from .cognee.runtime import get_cognee_client
             config = load_cognee_config()
             client = get_cognee_client()
@@ -440,9 +440,7 @@ class DeepProbeHub:
         if client is None or not config.enabled or not config.recall_enabled:
             return
         query = plan.queries[0]
-        # node_keys（user:适配器:uid 形态）与记忆实体标签同构：除当前会话
-        # scope 外，把查询提及实体的数据集也纳入路由（与被动召回同一语义）
-        datasets = datasets_for_scope(config, state.scope, plan.node_keys)
+        datasets = datasets_for_projection(config, client.projection_namespace)
         pending: set[str] = set()
         failures: list[str] = []
 
@@ -463,7 +461,7 @@ class DeepProbeHub:
         await search_cognee(
             client, config, query, datasets, 5,
             ["CHUNKS", "GRAPH_COMPLETION"],
-            node_names=plan.node_labels or None, on_batch=consume,
+            node_names=plan.node_keys or None, on_batch=consume,
         )
         if failures:
             raise RuntimeError(f"{len(failures)} 个检索通道失败；{failures[0]}")

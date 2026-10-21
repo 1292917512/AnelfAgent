@@ -141,6 +141,35 @@ class TestReinforcement:
 
 
 class TestSimilarMerge:
+    @pytest.mark.parametrize("difference", ["content", "source", "tags", "metadata", "none"])
+    async def test_automatic_merge_preserves_distinct_facts_and_origins(
+        self, store: MemoryStore, difference: str,
+    ) -> None:
+        from agent.memory.consolidator import MemoryConsolidator
+
+        first = _entry("蓝鸢项目部署在杭州", importance=0.7)
+        first.source = "source-a"
+        first.tags = ["project:蓝鸢"]
+        first.embedding = [1.0, 0.0, 0.0]
+        second = first.model_copy(deep=True)
+        if difference == "content":
+            second.content = "蓝鸢项目部署在南京"
+        elif difference == "source":
+            second.source = "source-b"
+        elif difference == "tags":
+            second.tags = ["project:蓝鸢", "future:extended"]
+        elif difference == "metadata":
+            second.metadata = {"evidence": "another source"}
+        ids = [await store.add(first), await store.add(second)]
+
+        report = await MemoryConsolidator(store).consolidate()
+        assert report.merged_count == (1 if difference == "none" else 0)
+        remaining = [await store.get(entry_id) for entry_id in ids]
+        assert all(entry is not None for entry in remaining)
+        assert sum(entry.importance > 0 for entry in remaining if entry is not None) == (
+            1 if difference == "none" else 2
+        )
+
     async def test_find_and_merge_similar(self, store: MemoryStore) -> None:
         vec_a = [1.0, 0.0, 0.0]
         vec_b = [0.99, 0.01, 0.0]

@@ -118,7 +118,7 @@ class MemorySearchResult(BaseModel):
         if not body:
             return ""
         attribution = {
-            "entities": sorted({t for t in self.tags if t.startswith(("user:", "group:"))}),
+            "tags": sorted(set(self.tags)),
             "scopes": sorted({o.scope for o in origins_from(self.provenance)}),
             "date": self.provenance.get("activity_date", ""),
             "temporal_scope": self.provenance.get("temporal_scope", ""),
@@ -153,7 +153,7 @@ class RetrievalPlan(BaseModel):
     """entities 解析到的图谱节点 key（运行期产物，非 LLM 输出）。"""
 
     node_labels: List[str] = Field(default_factory=list)
-    """对应节点 label（cognee node_name 定向检索入参）。"""
+    """对应节点的人类可读名称；Cognee 定向检索使用完整 node_keys。"""
 
 
 _WHITESPACE_RE = re.compile(r"\s+")

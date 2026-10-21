@@ -262,7 +262,8 @@ class MemoryService:
             tag_list=tags,
             entity_scope=entity_scope,
             limit=limit,
-            deep=depth.strip().lower() == "deep",
+            deep=depth.strip().lower() in {"deep", "overview"},
+            overview=depth.strip().lower() == "overview",
             search_types=search_types,
         )
 
@@ -270,7 +271,7 @@ class MemoryService:
         deep = outcome["deep"]
         return {
             "plan": outcome["plan"].model_dump(),
-            "depth": "deep" if deep else "shallow",
+            "depth": "overview" if depth == "overview" else "deep" if deep else "shallow",
             "cognee": {
                 "enabled": cognee_config.enabled,
                 "recall_enabled": cognee_config.recall_enabled,
@@ -674,6 +675,7 @@ class MemoryService:
         sync = await coordinator.status() if coordinator else None
         return {
             "availability": availability_data,
+            "projection": coordinator.rebuild.state.model_dump() if coordinator and coordinator.rebuild.state else None,
             "resolved": client.resolved_info if client else {},
             "storage": await cognee_storage_stats.get(config.absolute_data_root),
             "sync": sync.model_dump() if sync else {
@@ -702,42 +704,12 @@ class MemoryService:
         return await coordinator.request_compact()
 
     async def rebuild_cognee(self) -> Dict[str, Any]:
-        """清空 cognee 数据并全量重建。
-
-        切换 cognee embedding 模型后必须执行（向量空间不兼容）；
-        重建需重新 cognify（LLM 抽取），成本与耗时较高，应低频手动触发。
-        流程：停同步 worker（避免 prune 与同步写入并发竞态）→ 清空投影
-        队列与 ID 映射（旧计数归零、避免陈旧映射引发伪失败）→ prune →
-        重启 worker → 全量重新入队。
-        """
-        rt = require_runtime()
-        store = rt.memory_store
-        from agent.memory.cognee.runtime import get_cognee_client, get_cognee_coordinator
-        client = get_cognee_client()
+        """保留原始内容与旧数据集，后台构建并验收新代际。"""
+        from agent.memory.cognee.runtime import get_cognee_coordinator
         coordinator = get_cognee_coordinator()
-        if not client or not coordinator or not store:
-            return {"error": "cognee 未初始化"}
-        await coordinator.close()
-        cleared = await store.reset_cognee_projection()
-        # 完全清场：元数据/图/向量/缓存 + 文件存储。
-        # 仅 prune_data 会留下指向已删文件的元数据记录，
-        # 重建 add 时按记录读文件报 FileNotFoundError
-        await client.prune_system(graph=True, vector=True, metadata=True, cache=True)
-        await client.prune_data()
-        # 清场后物理占用归零：使存储统计缓存与磁盘快照失效，
-        # 重启后由协调器启动预热按真实状态重算
-        from agent.memory.cognee.storage import cognee_storage_stats
-        cognee_storage_stats.invalidate(coordinator.config.absolute_data_root)
-        result = await coordinator.backfill(limit=0, dry_run=False)
-        log(f"cognee 重建: 清空队列/映射 {cleared}，重新入队 {result}（需重启生效）", tag="思维")
-        return {
-            "ok": True,
-            "cleared": cleared,
-            "backfill": result,
-            # cognee 引擎单例在进程内持有已删除库的句柄/锁，进程内无法干净重置；
-            # 必须重启进程由 bootstrap 重建引擎后消化回填队列
-            "restart_required": True,
-        }
+        if coordinator is None:
+            raise RuntimeError("Cognee 未初始化")
+        return await coordinator.request_rebuild()
 
     @staticmethod
     def _cognee_config_response(config: Any) -> Dict[str, Any]:
@@ -784,6 +756,7 @@ class MemoryService:
         }).normalized()
         coordinator = get_cognee_coordinator()
         if coordinator:
+            coordinator.rebuild.validate_config(config)
             coordinator.client.validate_configuration(config)
         save_cognee_config(config)
 
@@ -826,12 +799,14 @@ class MemoryService:
         ]
 
     @staticmethod
-    async def improve_cognee(dataset_name: str) -> Any:
+    async def improve_cognee(dataset_name: str, *, review_conflicts: bool = False,
+                             build_global_context_index: bool = True) -> Any:
         from agent.memory.cognee.runtime import get_cognee_coordinator
         coordinator = get_cognee_coordinator()
         if not coordinator:
             return {"error": "Cognee 运行时未初始化"}
-        result = await coordinator.improve(dataset_name)
+        result = await coordinator.improve(dataset_name, review_conflicts=review_conflicts,
+                                           build_global_context_index=build_global_context_index)
         if hasattr(result, "model_dump"):
             return result.model_dump(mode="json")
         return result

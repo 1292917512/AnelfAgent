@@ -6,7 +6,6 @@ search / memory_store 门面共享，避免代码重复。
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import re
@@ -261,24 +260,23 @@ def parse_metadata_json(raw: Any) -> Dict[str, Any]:
 # 参与投影内容指纹的字段：投影文档的直接输入，不含 importance——
 # importance 召回强化/松弛回归高频漂移但与图谱抽取无关，纳入会让
 # 指纹跳过失效（24h 内 211 次此类"更新"曾把写盘配额打爆）
-_PROJECTION_HASH_FIELDS = ("type", "content", "source", "metadata", "tags")
+_PROJECTION_HASH_FIELDS = ("type", "content", "source", "metadata", "tags", "timestamp")
 
 
 def projection_content_hash(payload: Dict[str, Any]) -> str:
-    """计算投影负载的内容指纹（sha256 前 16 位）。
+    """计算投影负载的内容指纹（完整 SHA-256，含契约版本）。
 
     仅覆盖投影文档的稳定输入字段，canonical JSON 保证字典序无关；
     序列化失败返回空串，调用方以空串跳过判重（fail-open 为重投影）。
     """
     try:
-        canonical = json.dumps(
-            {field: payload.get(field) for field in _PROJECTION_HASH_FIELDS},
-            ensure_ascii=False,
-            sort_keys=True,
-        )
+        from ..projection import canonical_tags, projection_hash
+
+        value = {field: payload.get(field) for field in _PROJECTION_HASH_FIELDS}
+        value["tags"] = canonical_tags(value["tags"])
+        return projection_hash(value)
     except (TypeError, ValueError):
         return ""
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
 def build_fts_query(raw: str) -> Optional[str]:

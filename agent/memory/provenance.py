@@ -116,4 +116,8 @@ def visible_provenance(provenance: Mapping[str, Any]) -> dict[str, Any]:
         result["origins"] = origins[-3:]
         result["origin_count"] = len(origins)
     result["attribution"] = "recorded" if origins else "unrecorded"
+    for key in ("conflicts", "references", "source_memory_ids", "graph_node_id", "evidence_kind"):
+        if key in provenance:
+            value = provenance[key]
+            result[key] = value[:5] if isinstance(value, list) else value
     return result

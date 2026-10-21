@@ -8,6 +8,7 @@ token 影响：图谱抽取与向量化随新增记忆量产生调用；待配�
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -113,10 +114,7 @@ class CogneeConfig:
     # 流水线超时需覆盖整批次的 add/cognify/improve：
     # thinking 模型下单批 20 条记忆的图谱抽取约需 15 分钟
     pipeline_timeout_seconds: float = 1800.0
-    # 自动图谱增强（cognee improve/memify）：默认禁用——memify 默认任务
-    # 对全图三元组重新 embedding 且向量索引只追加不去重（EdgeType 索引
-    # 曾堆积 21 万重复行），而 CHUNKS 类召回不依赖它；需要时经
-    # improve_cognee_dataset 工具手动触发
+    # 全局上下文摘要需要额外模型调用，CHUNKS 不依赖它；默认手动维护。
     improve_interval_seconds: float = 0.0
     sync_interval_seconds: float = 5.0
     sync_batch_size: int = 20
@@ -188,7 +186,7 @@ class CogneeConfig:
         self.cognee_weight = max(0.0, float(self.cognee_weight))
         self.rrf_k = max(1, int(self.rrf_k))
         self.recall_pool_multiplier = max(1, int(self.recall_pool_multiplier))
-        self.dataset_prefix = self.dataset_prefix.strip() or "anelf"
+        self.dataset_prefix = re.sub(r"[^a-zA-Z0-9_-]+", "_", self.dataset_prefix.strip()) or "anelf"
         self.search_types = [str(item).strip().upper() for item in self.search_types if str(item).strip()]
         self.deep_search_types = [str(item).strip().upper() for item in self.deep_search_types if str(item).strip()]
         if not isinstance(self.chat, CogneeChatModelConfig):

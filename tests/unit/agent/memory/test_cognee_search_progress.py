@@ -14,6 +14,8 @@ from core.hooks import hook_journal
 
 
 class SearchClient:
+    projection_ready = True
+    projection_namespace = ""
     def __init__(self):
         self.calls = []
         self.pending = 0
@@ -85,6 +87,70 @@ async def test_failed_lane_reports_cause_without_discarding_other_results():
     failure = next(batch for batch in batches if batch.status == "error")
     assert failure.lane == "GRAPH_COMPLETION/scope"
     assert "TimeoutError" in failure.error and failure.elapsed >= 0
+
+
+async def test_explicit_dataset_scope_is_intersected_not_broadened():
+    client = SearchClient()
+    client.projection_namespace = "current"
+    await search_cognee(client, CogneeConfig(), "query", ["current_relations"], 5, ["CHUNKS"])
+    assert [call["datasets"] for call in client.calls] == [["current_relations"]]
+    client.calls.clear()
+    assert await search_cognee(client, CogneeConfig(), "query", ["old_global"], 5, ["CHUNKS"]) == []
+    assert client.calls == []
+
+
+async def test_partial_recall_reports_timeout_without_losing_native_evidence(monkeypatch):
+    from agent.memory.cognee.fusion import RecallDiagnostics, federated_search
+    from agent.memory.memory_types import MemorySearchResult
+
+    monkeypatch.setattr("agent.memory.cognee.fusion.get_config_float", lambda *args: .1)
+    client = SearchClient()
+    diagnostic = RecallDiagnostics()
+
+    async def native():
+        return [MemorySearchResult(id="mem:1", snippet="原生证据", score=1)]
+
+    found = await federated_search(native(), query="query", client=client,
+        config=CogneeConfig(search_types=["CHUNKS", "GRAPH_COMPLETION"]), limit=5, diagnostics=diagnostic)
+    assert "mem:1" in {result.id for result in found}
+    assert diagnostic.result()["status"] == "partial" and diagnostic.timed_out
+    assert diagnostic.native == "complete" and diagnostic.completed_lanes == 2
+    assert client.pending == 0
+
+
+async def test_strict_tags_exclude_unattributed_and_graph_answers(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from agent.memory.tag_query import TagQuery
+
+    client = SearchClient()
+    results = [
+        CogneeRecallItem(id="valid", content="原文", metadata={"anelf_attribution": {"tags": ["future:a/b"]}}),
+        CogneeRecallItem(id="unknown", content="没有出处"),
+        CogneeRecallItem(id="wrong", content="其他项目", metadata={"anelf_attribution": {"tags": ["future:ab"]}}),
+        CogneeRecallItem(id="graph", content="综合答案", source="cognee_graph",
+                         metadata={"anelf_attribution": {"tags": ["future:a/b"]}}),
+    ]
+    recall = AsyncMock(return_value=results)
+    monkeypatch.setattr(client, "recall", recall)
+    found = await search_cognee(client, CogneeConfig(), "query", ["scope"], 5,
+        ["CHUNKS", "GRAPH_COMPLETION"], tag_query=TagQuery(all_of=("future:a/*",)))
+    assert [item.id for item in found] == ["valid"]
+    assert recall.await_count == 1 and recall.call_args.kwargs["query_type"] == "CHUNKS"
+
+
+@pytest.mark.parametrize("fresh", [False, True])
+async def test_overview_uses_only_fresh_global_context(monkeypatch, fresh):
+    from unittest.mock import AsyncMock
+
+    client = SearchClient()
+    monkeypatch.setattr(client, "global_context_ready", lambda dataset: fresh, raising=False)
+    recall = AsyncMock(return_value=[])
+    monkeypatch.setattr(client, "recall", recall)
+    await search_cognee(client, CogneeConfig(), "query", ["scope"], 5, ["GRAPH_COMPLETION"], overview=True)
+    options = recall.call_args.kwargs
+    assert options["only_context"] is not fresh
+    assert bool(options.get("retriever_specific_config", {}).get("include_global_context_index")) is fresh
 
 
 @pytest.mark.parametrize("timeout", [False, True])
@@ -242,6 +308,19 @@ def test_rrf_counts_rank_per_lane_and_duplicate_once():
     assert results[0].score == results[1].score
 
 
+def test_fusion_keeps_conflict_warning_when_native_source_wins():
+    from agent.memory.cognee.fusion import reciprocal_rank_fusion
+    from agent.memory.memory_types import MemorySearchResult
+
+    native = MemorySearchResult(id="mem:7", snippet="原生事实", score=1)
+    chunk = MemorySearchResult(id="cognee:7", snippet="原生事实", score=1, source="cognee_chunk",
+        provenance={"anelf_memory_id": "7", "conflicts": [{"id": "conflict:1"}]})
+    result = reciprocal_rank_fusion([native], [chunk], config=CogneeConfig(), limit=5)
+    assert len(result) == 1 and result[0].source == "memory"
+    assert result[0].provenance["conflicts"] == [{"id": "conflict:1"}]
+    assert native.provenance == {}
+
+
 @pytest.mark.parametrize("source, malformed", [("cognee_chunk", False), ("cognee_graph", False), ("cognee_chunk", True)])
 async def test_chunk_metadata_restores_attribution_without_assigning_it_to_graph(source, malformed):
     from unittest.mock import AsyncMock
@@ -250,9 +329,8 @@ async def test_chunk_metadata_restores_attribution_without_assigning_it_to_graph
 
     client = SearchClient()
     body = "只有正文的文档片段"
-    content = f"Memory type: semantic\nTags: user:qq:1\nMemory ID: 7\n\n{body}" if source == "cognee_graph" else body
     client.recall = AsyncMock(return_value=[CogneeRecallItem(
-        id="chunk:7", content=content, score=.8, source=source,
+        id="chunk:7", content=body, score=.8, source=source,
         metadata={"anelf_memory_id": "7", "anelf_attribution": {
             "tags": 1 if malformed else ["user:qq:1"], "timestamp": 1_700_000_000,
             "sensitivity": "private", "provenance": note_origin("group_qq:2"),

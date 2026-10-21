@@ -46,9 +46,11 @@ from .store._shared import (
 from .store.cognee_queue import ENTRY_KIND_MEMORY, CogneeSyncQueue
 from .store.connection import MemoryConnectionManager, fetch_count
 from .store.file_index import FileIndexStore
+from .store.projection_state import ProjectionStateStore
 from .store.search import SearchEngine
 from .store.tag_intel import ENTITY_PREFIXES
 from .store.tool_errors import ToolErrorTracker
+from .tag_query import TagQuery
 
 
 def default_memory_db_path() -> str:
@@ -102,6 +104,7 @@ class MemoryStore(BaseEntity):
         self._tool_errors = ToolErrorTracker(self._conn)
         self._search = SearchEngine(self._conn, self._files)
         self.graph = GraphStore(self._conn, self._cognee)
+        self.projection_state = ProjectionStateStore(self._conn, self._cognee, self.graph)
         super().__init__()
 
     # ------------------------------------------------------------------
@@ -569,6 +572,10 @@ class MemoryStore(BaseEntity):
     async def enqueue_cognee_backfill(self, *, limit: int = 0) -> int:
         """显式将历史记忆加入投影队列；不会在启动时自动调用。"""
         return await self._cognee.enqueue_backfill(limit=limit)
+
+    async def cognee_inventory_counts(self) -> dict[str, int]:
+        """当前可投影的记忆、关系节点及明确排除的记忆数量。"""
+        return await self._cognee.eligible_counts()
 
     # ------------------------------------------------------------------
     # 访问跟踪（隐式反馈回路）
@@ -1072,6 +1079,7 @@ class MemoryStore(BaseEntity):
         actor: str = "",
         metadata: Optional[Dict[str, Any]] = None,
         extra_tags: Optional[list[str]] = None,
+        expected_versions: Optional[Dict[int, int]] = None,
     ) -> Optional[int]:
         """合并记忆：keep 原地演进，drop 软标记重定向（importance=0 + merged_into）。
 
@@ -1138,6 +1146,12 @@ class MemoryStore(BaseEntity):
 
         db = await self._get_db()
         async with self._tx(db):
+            # 自动维护的候选判断可能早于本次调用，事务内核对整个输入版本。
+            for candidate in [keep, *drops]:
+                row = await (await db.execute("SELECT version FROM memories WHERE id=?", (candidate.id,))).fetchone()
+                expected = (expected_versions or {}).get(candidate.id or 0, candidate.version)
+                if row is None or int(row["version"]) != expected:
+                    return None
             await db.execute(
                 "UPDATE memories SET content=?, importance=?, metadata_json=?, tags_json=?, "
                 "access_count=?, version=version+1"
@@ -1165,7 +1179,7 @@ class MemoryStore(BaseEntity):
                 drop_id = d.id or 0
                 d.metadata["merged_into"] = keep.id
                 await db.execute(
-                    "UPDATE memories SET importance=0, metadata_json=? WHERE id=?",
+                    "UPDATE memories SET importance=0, metadata_json=?, version=version+1 WHERE id=?",
                     (json.dumps(d.metadata, ensure_ascii=False), drop_id),
                 )
                 await self._record_audit(
@@ -1412,11 +1426,12 @@ class MemoryStore(BaseEntity):
         limit: int = 10,
         min_score: float = 0.1,
         require_tags: Optional[list[str]] = None,
+        tag_query: TagQuery | None = None,
     ) -> list[MemorySearchResult]:
         """统一搜索：同时检索 memories 表和 chunks 表，合并排序返回。"""
         return await self._search.search_unified(
             query=query, query_vec=query_vec, query_tags=query_tags,
-            limit=limit, min_score=min_score, require_tags=require_tags,
+            limit=limit, min_score=min_score, require_tags=require_tags, tag_query=tag_query,
         )
 
     async def has_similar_content(self, content: str, min_overlap: float = 0.6,

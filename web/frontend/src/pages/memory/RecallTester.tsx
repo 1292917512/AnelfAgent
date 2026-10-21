@@ -61,7 +61,7 @@ function SourceGroup({ source, items }: { source: RecallTestItem["source"]; item
 export function RecallTester({ preset = "all" }: { preset?: "all" | "cognee" }) {
   const { t } = useTranslation("memory");
   const [query, setQuery] = useState("");
-  const [depth, setDepth] = useState<"shallow" | "deep">("shallow");
+  const [depth, setDepth] = useState<"shallow" | "deep" | "overview">("shallow");
   const [tags, setTags] = useState("");
   const [useCogneeTypes, setUseCogneeTypes] = useState(preset === "cognee");
   const [result, setResult] = useState<RecallTestResult | null>(null);
@@ -103,11 +103,12 @@ export function RecallTester({ preset = "all" }: { preset?: "all" | "cognee" }) 
         <div className="flex flex-wrap items-center gap-2">
           <Select
             value={depth}
-            onChange={(e) => setDepth(e.target.value as "shallow" | "deep")}
+            onChange={(e) => setDepth(e.target.value as "shallow" | "deep" | "overview")}
             className="w-28"
           >
             <option value="shallow">{t("recall.shallow")}</option>
             <option value="deep">{t("recall.deep")}</option>
+            <option value="overview">{t("recall.overview")}</option>
           </Select>
           <Input
             value={tags}

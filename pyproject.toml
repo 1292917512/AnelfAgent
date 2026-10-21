@@ -9,7 +9,7 @@ dependencies = [
     # 精确锁定：litellm 流式 usage 处理对本项目是脆弱契约（1.100 曾对未收录
     # 模型伪造流式 usage），版本变动必须同步运行缓存健康门验证后再放行：
     #   LLM_CACHE_E2E=1 uv run pytest tests/integration/test_llm_cache_hit_e2e.py
-    "litellm==1.104.0",
+    "litellm==1.106.2",
     "aiosqlite>=0.21.0",
     # 声纹向量代数（agent/audio/vectors.py 直接依赖）
     "numpy>=1.26.0",
@@ -40,10 +40,8 @@ dependencies = [
     # 飞书 / Lark
     "lark-oapi>=1.5.0",
     # Cognee 知识图谱记忆后端（默认安装，uv sync 自动拉取）。
-    # cognee 1.5.4+ 声明 litellm<1.97，该上界仅针对 py3.10 上 litellm
-    # 类型构建破坏（BerriAI/litellm#38202），本项目 py3.12 不受影响，
-    # 经下方 override-dependencies 与 litellm 1.104.0 共存。
-    "cognee==1.6.4",
+    # 与主模型调用共用精确锁定的 LiteLLM，升级须通过缓存与投影健康门。
+    "cognee==1.6.5",
     "sqlite-vec>=0.1.9",
     "tiktoken>=0.12.0",
     "jieba>=0.42.1",
@@ -86,13 +84,14 @@ dependencies = [
 ]
 
 [tool.uv]
-# 两处 override 均为绕过 cognee 的矩阵保守钉（本项目实测组合不受其影响）：
-# 1. litellm：cognee 的 <1.97 上界只挡 py3.10 的 litellm 类型构建破坏
-#   （BerriAI/litellm#38202），本项目 py3.12 不在破坏面内；
-# 2. onnxruntime：cognee 的 <=1.23.2 上界是其 fastembed 测试矩阵钉
+# onnxruntime：cognee 的 <=1.23.2 上界是其 fastembed 测试矩阵钉
 #   （fastembed 0.8.0 自身在 py3.12 允许 >=1.17），本项目 cognee 恒走
 #   API 嵌入不经 fastembed 推理，onnxruntime 只服务语音栈。
-override-dependencies = ["litellm==1.104.0", "onnxruntime>=1.30"]
+override-dependencies = ["onnxruntime>=1.30"]
+
+[[tool.uv.index]]
+url = "https://pypi.org/simple"
+default = true
 
 [dependency-groups]
 dev = [
@@ -101,8 +100,7 @@ dev = [
     "pytest-timeout>=2.4.0",
     "pytest-cov>=7.0.0",
     "pytest-xdist>=3.8.0",
-    # CI 用 PyPI 重解析（不用 --locked，uv.lock registry 为镜像源），lint 门禁
-    # 工具钉死 minor 防 CI 解析到新版引入新规则造成"本地绿 CI 红"
+    # CI 使用官方 PyPI 锁文件及 --locked；静态检查工具约束 minor，升级时统一验证。
     "ruff==0.16.*",
     "mypy==2.3.*",
     "import-linter==2.14.*",

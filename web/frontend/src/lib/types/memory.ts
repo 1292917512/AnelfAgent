@@ -97,7 +97,20 @@ export interface CogneeStorageInfo {
   other_bytes: number;
 }
 
+export interface CogneeProjectionState {
+  phase: "required" | "requested" | "scanning" | "building" | "verifying" | "ready" | "failed";
+  rebuild_requested: boolean;
+  namespace: string;
+  previous_namespaces: string[];
+  backup_path: string;
+  counts: Record<string, number>;
+  verified: number;
+  error: string;
+  completed_at: number;
+}
+
 export interface CogneeStatus {
+  projection?: CogneeProjectionState | null;
   availability: {
     installed: boolean;
     enabled: boolean;
@@ -200,7 +213,7 @@ export interface RecallTestForgotten {
 
 export interface RecallTestResult {
   plan: RecallTestPlan;
-  depth: "shallow" | "deep";
+  depth: "shallow" | "deep" | "overview";
   cognee: {
     enabled: boolean;
     recall_enabled: boolean;

@@ -1,24 +1,27 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
-import { RefreshCw, Database, Sparkles, Upload, Shrink } from "lucide-react";
+import { RefreshCw, Upload, Shrink } from "lucide-react";
 import { ProbeStatusCard } from "./ProbeStatusCard";
+import { DatasetMaintenanceCard } from "./DatasetMaintenanceCard";
+import { ProjectionStatusCard } from "./ProjectionStatusCard";
 import { QueryError } from "@/components/common/AsyncState";
 import { Card } from "@/components/common/Card";
 import { StatCard } from "@/components/common/StatCard";
-import { toast } from "@/components/ui";
+import { ConfirmDialog, toast } from "@/components/ui";
 import { ConfigFormPanel } from "@/pages/config/ConfigFormPanel";
 import { type FieldMeta } from "@/pages/config/AppField";
 import { ModelConfigCard, ResolvedModelLine } from "@/pages/memory/cognee/ModelConfigCard";
 import { RecallTester } from "@/pages/memory/RecallTester";
 import { memoryApi } from "@/lib/api";
-import { InlineContributions } from "@/components/extensions/ContributionSlot";
 import { formatSize } from "@/lib/utils";
 import type { ConfigValues } from "@/lib/types";
 
 export function CogneePanel() {
   const { t } = useTranslation("memory");
   const queryClient = useQueryClient();
+  const [confirmation, setConfirmation] = useState<"rebuild" | "backfill" | null>(null);
 
   const { data: status, error: statusError, refetch: refreshStatus } = useQuery({
     queryKey: ["cogneeStatus"],
@@ -26,26 +29,15 @@ export function CogneePanel() {
     refetchInterval: 10000,
     throwOnError: false,
   });
-  const { data: datasets, error: datasetsError, refetch: refreshDatasets } = useQuery({
-    queryKey: ["cogneeDatasets"],
-    queryFn: () => memoryApi.cognee.datasets().then((r) => r.data),
-    enabled: status?.availability.ready === true,
-    throwOnError: false,
-  });
-
-
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["cogneeStatus"] });
     queryClient.invalidateQueries({ queryKey: ["memoryHealth"] });
+    queryClient.invalidateQueries({ queryKey: ["cogneeDatasets"] });
   };
   const retryMutation = useMutation({ mutationFn: () => memoryApi.cognee.retry(), onSuccess: invalidate });
   const backfillMutation = useMutation({ mutationFn: () => memoryApi.cognee.backfill(0, false), onSuccess: invalidate });
   const rebuildMutation = useMutation({
     mutationFn: () => memoryApi.cognee.rebuild(),
-    onSuccess: invalidate,
-  });
-  const improveMutation = useMutation({
-    mutationFn: (name: string) => memoryApi.cognee.improve(name),
     onSuccess: invalidate,
   });
   const compactMutation = useMutation({
@@ -101,10 +93,8 @@ export function CogneePanel() {
         <Link to="/models" className="text-accent hover:underline">{t("cognee.configureModels")}</Link>
         <p className="text-xs text-muted">{t("cognee.usageHint")}</p>
       </div>
-      {rebuildMutation.data?.data.restart_required && <div className="rounded-xl border border-warning/30 bg-warning/10 p-3 space-y-2">
-        <p className="text-sm text-warning">{t("cognee.rebuildRestartConfirm")}</p>
-        <InlineContributions slot="system.restart" componentProps={{}} />
-      </div>}
+      <ProjectionStatusCard state={status?.projection} />
+      {rebuildMutation.error && <QueryError error={rebuildMutation.error} retry={() => rebuildMutation.mutate()} compact />}
       <RecallTester preset="cognee" />
 
       <ProbeStatusCard />
@@ -130,15 +120,16 @@ export function CogneePanel() {
               <Shrink size={14} /> {t("cognee.compact")}
             </button>
             <button
-              onClick={() => { if (window.confirm(t("cognee.backfillConfirm"))) backfillMutation.mutate(); }}
+              onClick={() => setConfirmation("backfill")}
               disabled={backfillMutation.isPending}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all"
             >
               <Upload size={14} /> {t("cognee.backfill")}
             </button>
             <button
-              onClick={() => { if (window.confirm(t("cognee.rebuildConfirm"))) rebuildMutation.mutate(); }}
-              disabled={!availability?.ready || rebuildMutation.isPending}
+              onClick={() => setConfirmation("rebuild")}
+              disabled={!availability?.ready || rebuildMutation.isPending || status?.projection?.rebuild_requested
+                || ["requested", "scanning", "building", "verifying"].includes(status?.projection?.phase ?? "")}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-danger-subtle text-danger hover:bg-[rgba(239,68,68,0.15)] transition-all"
             >
               <RefreshCw size={14} /> {t("cognee.rebuild")}
@@ -211,34 +202,7 @@ export function CogneePanel() {
       <ModelConfigCard kind="chat" />
       <ModelConfigCard kind="embedding" />
 
-      <Card title={t("cognee.datasetsTitle")} subtitle={t("cognee.datasetsSubtitle")}>
-        {datasetsError && <QueryError error={datasetsError} retry={() => void refreshDatasets()} compact />}
-        {datasets && datasets.length > 0 ? (
-          <div className="space-y-2">
-            {datasets.map((ds) => (
-              <div
-                key={ds.id}
-                className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-md bg-elevated border border-border"
-              >
-                <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm">
-                  <Database size={14} className="text-muted" />
-                  <span className="break-all text-heading">{ds.name}</span>
-                  <span className="break-all text-xs text-muted font-mono">{ds.id}</span>
-                </div>
-                <button
-                  onClick={() => improveMutation.mutate(ds.name)}
-                  disabled={!availability?.ready || improveMutation.isPending}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all"
-                >
-                  <Sparkles size={14} /> {t("cognee.improve")}
-                </button>
-              </div>
-            ))}
-          </div>
-        ) : (
-          !datasetsError && <p className="text-sm text-muted">{t("cognee.noDatasets")}</p>
-        )}
-      </Card>
+      <DatasetMaintenanceCard ready={availability?.ready ?? false} namespace={status?.projection?.namespace ?? ""} />
 
       <ConfigFormPanel
         title={t("cognee.generalTitle")}
@@ -249,6 +213,17 @@ export function CogneePanel() {
         saveFn={(values) => memoryApi.cognee.saveConfig(values as Parameters<typeof memoryApi.cognee.saveConfig>[0])}
         extraInvalidateKeys={["cogneeStatus", "memoryHealth"]}
         note={t("cognee.hotApplyNote")}
+      />
+      <ConfirmDialog
+        open={confirmation !== null}
+        title={t(confirmation === "backfill" ? "cognee.backfill" : "cognee.rebuild")}
+        message={t(confirmation === "backfill" ? "cognee.backfillConfirm" : "cognee.rebuildConfirm")}
+        onClose={() => setConfirmation(null)}
+        onConfirm={() => {
+          if (confirmation === "backfill") backfillMutation.mutate();
+          if (confirmation === "rebuild") rebuildMutation.mutate();
+          setConfirmation(null);
+        }}
       />
     </div>
   );

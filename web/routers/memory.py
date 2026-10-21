@@ -75,8 +75,11 @@ async def retry_cognee() -> Dict[str, Any]:
 
 @router.post("/cognee/rebuild")
 async def rebuild_cognee() -> Dict[str, Any]:
-    """清空 cognee 数据并全量重建（切换 cognee embedding 模型后需要）。"""
-    return await _mem_svc.rebuild_cognee()
+    """在新数据集中全量构建，保留旧数据，验收通过后恢复图谱召回。"""
+    try:
+        return await _mem_svc.rebuild_cognee()
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/cognee/compact")
@@ -104,7 +107,8 @@ async def list_cognee_datasets() -> List[Dict[str, Any]]:
 
 @router.post("/cognee/improve")
 async def improve_cognee(req: CogneeImproveRequest) -> Any:
-    return await _mem_svc.improve_cognee(req.dataset_name)
+    return await _mem_svc.improve_cognee(req.dataset_name, review_conflicts=req.review_conflicts,
+                                         build_global_context_index=req.build_global_context_index)
 
 
 @router.get("/ltm/stats")

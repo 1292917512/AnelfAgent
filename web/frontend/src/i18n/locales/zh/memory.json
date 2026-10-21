@@ -150,7 +150,7 @@
     "enabled": "默认启用；模型未配置时等待，基础记忆与原生检索仍可使用",
     "sync_enabled": "将新增、更新和删除异步投影到 Cognee",
     "recall_enabled": "并行查询 Cognee 并与原生结果融合",
-    "dataset_prefix": "用于隔离 global、user 和 group 数据集",
+    "dataset_prefix": "记忆与关系索引的命名前缀；绑定数据后不可在线修改",
     "timeout_seconds": "单次 Cognee API 调用的最大等待时间",
     "sync_batch_size": "每次消费的持久化同步任务数",
     "max_retries": "达到上限后任务进入失败队列，等待手动重试",
@@ -212,10 +212,9 @@
     "synced": "已同步",
     "lastError": "最近错误",
     "backfill": "全量回填",
-    "backfillConfirm": "将全部历史记忆加入 Cognee 同步队列？数据量较大时会持续消耗模型额度。",
-    "rebuild": "清空重建",
-    "rebuildConfirm": "将清空全部 Cognee 数据并重新构建（需重新 LLM 抽取，耗时与额度消耗较大）。切换向量化模型后必须执行，确定继续？",
-    "rebuildRestartConfirm": "清空完成，重建队列已就绪。Cognee 需要重启应用才能开始重建，是否立即重启？",
+    "backfillConfirm": "将全部活跃记忆和关系节点加入当前 Cognee 同步队列？非活跃记录仍保留在原库；此操作会消耗模型额度。",
+    "rebuild": "全量构建 / 续跑",
+    "rebuildConfirm": "将保留原生内容和旧 Cognee 数据集，在新数据集中重建活跃记忆与关系。过程需要模型额度及额外磁盘空间；验收通过前使用原生召回。请先备份完整存储卷，是否开始？",
     "notResolved": "未解析",
     "chatModel": "抽取模型",
     "embeddingModel": "向量化模型",
@@ -256,8 +255,8 @@
     "reasoning_minimal": "极简",
     "reasoning_max": "最大",
     "datasetsTitle": "数据集",
-    "datasetsSubtitle": "Cognee 中的记忆数据集，可手动触发图谱增强",
-    "improve": "图谱增强",
+    "datasetsSubtitle": "当前代际可构建摘要、审查冲突；旧代际保留以供回退。摘要综合仅使用刷新后未发生写入的索引。",
+    "improve": "构建全局摘要",
     "noDatasets": "暂无数据集",
     "generalTitle": "通用配置",
     "generalSubtitle": "投影同步与联邦召回参数",
@@ -285,7 +284,24 @@
     "probeDisabled": "深探已关闭",
     "probeInjectOff": "注入已关闭",
     "probeNoActivity": "暂无触发（检索规划判定需要深检时才会启动——试试问关系类问题，如「XX 和 YY 是什么关系」）",
-    "probeRunning": "深探进行中"
+    "probeRunning": "深探进行中",
+    "projectionTitle": "记忆索引构建",
+    "projectionHint": "逐项验收通过后启用新索引；普通依赖升级与检索调参不触发重建。",
+    "projectionVerified": "验收完成时已核对 {{count}} 篇文档",
+    "projectionInventory": "开始时：活跃记忆 {{memories}} 条，关系节点 {{relations}} 个；{{excluded}} 条非活跃/计划记录留存原库。",
+    "projectionBackup": "原生数据库快照",
+    "projectionRetained": "已保留 {{count}} 代旧数据集",
+    "projectionPhases": {
+      "required": "需要构建新索引，目前使用原生召回",
+      "requested": "请求已保存，等待安全执行窗口",
+      "scanning": "正在分页扫描原始数据",
+      "building": "正在抽取并索引，原生召回可用",
+      "verifying": "正在核对完整性",
+      "ready": "索引可用",
+      "failed": "验收未通过，原始数据仍保留；修复后可续跑"
+    },
+    "reviewConflicts": "审查事实冲突",
+    "enhanceCompleted": "增强已完成；原始证据保持不变"
   },
   "docs": {
     "title": "文档索引",
@@ -337,6 +353,7 @@
     "sourceCogneeGraph": "cognee 图谱",
     "relations": "关系网络",
     "forgotten": "遗忘层（似曾相识）",
-    "empty": "无召回结果（库为空或查询无命中）"
+    "empty": "无召回结果（库为空或查询无命中）",
+    "overview": "摘要综合"
   }
 }

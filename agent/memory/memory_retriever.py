@@ -272,9 +272,8 @@ class MemoryRetriever:
                         client=get_cognee_client(),
                         config=cognee_config,
                         limit=k,
-                        entity_scope=entity_scope,
                         query_tags=mention_tags or None,
-                        node_names=plan.node_labels if targeted else None,
+                        node_names=plan.node_keys if targeted else None,
                         on_results=preserve,
                     )
 
@@ -762,6 +761,7 @@ class MemoryRetriever:
         entity_scope: str = "",
         limit: int = 8,
         deep: bool = False,
+        overview: bool = False,
         search_types: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """召回诊断：与真实召回同管线（规划 → 多查询联邦检索 → 共识融合 →
@@ -772,7 +772,7 @@ class MemoryRetriever:
         """
         import time as _time
 
-        from .cognee.fusion import datasets_for_scope, federated_search
+        from .cognee.fusion import datasets_for_projection, federated_search
         from .cognee.runtime import get_cognee_client
         from .graph import entity_node_keys, format_triple
 
@@ -786,7 +786,8 @@ class MemoryRetriever:
                 cognee_config,
                 search_types=[s.strip().upper() for s in search_types if s.strip()],
             )
-        datasets = datasets_for_scope(cognee_config, entity_scope, tags or None)
+        client = get_cognee_client()
+        datasets = datasets_for_projection(cognee_config, client.projection_namespace if client else "")
 
         # 1) 检索规划（含实体→图谱节点解析）
         t0 = _time.perf_counter()
@@ -810,9 +811,9 @@ class MemoryRetriever:
                     limit=pool_limit,
                 ),
                 query=q, client=get_cognee_client(), config=cognee_config,
-                limit=limit, entity_scope=entity_scope,
-                query_tags=query_tags, deep=deep,
-                node_names=plan.node_labels if targeted else None,
+                limit=limit,
+                query_tags=query_tags, deep=deep, overview=overview,
+                node_names=plan.node_keys if targeted else None,
             )
 
         lanes = await asyncio.gather(*(

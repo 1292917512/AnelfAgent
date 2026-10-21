@@ -25,7 +25,7 @@ export const memoryApi = {
     getConfig: () => api.get<CogneeConfig>("/memory/cognee/config"),
     saveConfig: (data: Partial<CogneeConfig>) => api.put<CogneeConfig>("/memory/cognee/config", data),
     retry: () => api.post("/memory/cognee/retry"),
-    rebuild: () => api.post<{ restart_required?: boolean }>("/memory/cognee/rebuild"),
+    rebuild: () => api.post<{ ok: boolean; scheduled: boolean }>("/memory/cognee/rebuild"),
     compact: () =>
       api.post<{ ok: boolean; scheduled?: boolean; result?: { bytes_reclaimed?: number }; error?: string }>(
         "/memory/cognee/compact",
@@ -34,8 +34,9 @@ export const memoryApi = {
       api.post("/memory/cognee/backfill", { limit, dry_run: dryRun }),
     datasets: () => api.get<CogneeDataset[]>("/memory/cognee/datasets"),
     probeStatus: () => api.get<ProbeStatus>("/memory/probe-status"),
-    improve: (datasetName: string) =>
-      api.post("/memory/cognee/improve", { dataset_name: datasetName }),
+    improve: (datasetName: string, reviewConflicts = false) =>
+      api.post("/memory/cognee/improve", { dataset_name: datasetName,
+        review_conflicts: reviewConflicts, build_global_context_index: !reviewConflicts }),
   },
   stm: {
     list: () => api.get("/memory/stm"),
@@ -65,7 +66,7 @@ export const memoryApi = {
   },
   recallTest: (data: {
     query: string;
-    depth?: "shallow" | "deep";
+    depth?: "shallow" | "deep" | "overview";
     tags?: string[];
     entity_scope?: string;
     limit?: number;

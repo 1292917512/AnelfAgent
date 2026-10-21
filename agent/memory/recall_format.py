@@ -55,6 +55,7 @@ async def humanize_entity_tags(
     """
     display: List[str] = []
     entity_tags: List[str] = []
+    extension_tags: List[str] = []
     for tag in sorted(set(tags)):
         if tag.startswith(ENTITY_PREFIXES):
             entity_tags.append(tag)
@@ -62,7 +63,9 @@ async def humanize_entity_tags(
             value = tag.split(":", 1)[1].strip()
             if value and value not in display:
                 display.append(value)
-        # 内部标签（type: 等）对 AI 无信息量，不注入
+        elif ":" in tag and not tag.startswith(("type:", "main:")):
+            extension_tags.append(tag)
+        # 扩展标签保留原值供模型定向查询；内部路由标签不注入。
     node_map = await load_entity_nodes(graph, entity_tags) if nodes is None else nodes
     # 归属主体排在主题之前（行首先看"是谁的事"，再看话题）
     labels: List[str] = []
@@ -79,7 +82,7 @@ async def humanize_entity_tags(
         label += tag_label(id_key, uid)
         if label not in labels:
             labels.append(label)
-    return labels + display
+    return labels + display + [excerpt(tag, 80) for tag in extension_tags[:4]]
 
 
 def format_memory_time(ts: float) -> str:
@@ -130,6 +133,8 @@ async def format_memory_line(
     prov = provenance or {}
     if source == "cognee_graph":
         tail_parts.append("图谱综合·非原话")
+    if prov.get("conflicts"):
+        tail_parts.append("存在冲突·需核对来源")
     origins = origins_from(prov)
     if origins:
         origin = origins[-1]
@@ -156,7 +161,12 @@ async def format_memory_line(
 
 def format_recall_result(result: MemorySearchResult) -> Dict[str, Any]:
     """手动召回与关联结果共用的紧凑出处契约。"""
+    reference = result.memory_reference()
     return {
+        **({"memory_id": int(reference.split(":", 1)[1])} if reference else {}),
+        "evidence_kind": "graph_synthesis" if result.source == "cognee_graph" else
+                         "source_chunk" if result.source == "cognee_chunk" else result.source,
+        "truncated": len(result.snippet) > 300,
         "id": result.memory_reference() or result.id, "source": result.source,
         "content": excerpt(result.snippet, 300), "type": result.memory_type or "",
         "tags": result.tags, "score": round(result.score, 3),

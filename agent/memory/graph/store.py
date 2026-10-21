@@ -11,7 +11,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import re
@@ -21,6 +20,8 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 import aiosqlite
 
+from ..projection import canonical_tags, graph_document
+from ..provenance import merge_metadata, recall_provenance
 from ..store.cognee_queue import ENTRY_KIND_GRAPH_NODE, CogneeSyncQueue
 from ..store.connection import MemoryConnectionManager
 
@@ -1116,42 +1117,64 @@ class GraphStore:
     # ------------------------------------------------------------------
 
     async def render_node_projection(self, node_id: int) -> Optional[Tuple[str, str]]:
-        """渲染节点邻域文档与结构指纹（cognee 投影单元）；节点不存在或已归档返回 None。
+        projection = await self._projection_document(node_id)
+        return (projection[0], projection[1]) if projection else None
 
-        指纹只覆盖结构内容（节点身份 + 各边的谓词/方向/对端节点），
-        不含强度与证据文本——关系被重复提及时的强化（strength 漂移）
-        与证据刷新不改变指纹，投影因此跳过；仅在邻域结构真实变化
-        （增删边/谓词或对端变化）时重投影，文档中的强度/证据随之刷新。
-        """
+    async def _projection_document(self, node_id: int) -> tuple[str, str, dict[str, Any]] | None:
+        """渲染稳定邻域证据；证据、来源和标签变化触发重投影，强度漂移不触发。"""
         node = await self.get_node_by_id(node_id)
         if not node or node["archived"]:
             return None
         db = await self._conn.get_db()
         edges = await self._edges_for_node_ids(db, [node_id])
-        label = node["label"] or node["node_key"]
-        lines = [f"[关系节点] {label}（{node['node_key']}，类型 {node['node_type']}）"]
-        structure = [f"{node['node_key']}|{node['node_type']}|{label}"]
+        attribution = await self.projection_attribution(node_id, edges=edges)
+        return graph_document(node, edges, attribution)
+
+    async def projection_attribution(
+        self, node_id: int, *, edges: list[Dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """沿实际证据记忆读取来源与最严格私密度，缺失来源不从节点名称推断。"""
+        db = await self._conn.get_db()
+        node = await self.get_node_by_id(node_id)
+        if edges is None:
+            edges = await self._edges_for_node_ids(db, [node_id])
+        tags = [node["node_key"]] if node else []
+        sources: list[dict[str, Any]] = []
+        ids = sorted({int(e["source_memory_id"]) for e in edges if e.get("source_memory_id")})
         for edge in edges:
-            if edge["subject"]["id"] == node_id:
-                target = edge["object"]
-                t_name = f"{target['label']}（{target['node_key']}）" if target["label"] else target["node_key"]
-                arrow = "↔" if edge["symmetric"] else "→"
-                line = f"- {edge['predicate']} {arrow} {t_name}（强度 {edge['strength']:.2f}）"
-                structure.append(f"{edge['predicate']}|{'s' if edge['symmetric'] else 'o'}|{target['node_key']}")
-            else:
-                source = edge["subject"]
-                s_name = f"{source['label']}（{source['node_key']}）" if source["label"] else source["node_key"]
-                arrow = "↔" if edge["symmetric"] else "←"
-                line = f"- {edge['predicate']} {arrow} {s_name}（强度 {edge['strength']:.2f}）"
-                structure.append(f"{edge['predicate']}|{'s' if edge['symmetric'] else 'i'}|{source['node_key']}")
-            if edge["evidence"]:
-                line += f"——{edge['evidence']}"
-            lines.append(line)
-        if len(lines) == 1:
-            lines.append("- （暂无已知关系）")
-        canonical = "\n".join([structure[0], *sorted(structure[1:])])
-        fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
-        return "\n".join(lines), fingerprint
+            tags.extend([edge["subject"]["node_key"], edge["object"]["node_key"]])
+        found: set[int] = set()
+        for start in range(0, len(ids), 200):
+            batch = ids[start:start + 200]
+            placeholders = ",".join("?" for _ in batch)
+            rows = await (await db.execute(
+                f"SELECT id, metadata_json, tags_json FROM memories WHERE id IN ({placeholders}) "
+                f"UNION ALL SELECT id, metadata_json, tags_json FROM memories_archive WHERE id IN ({placeholders})",
+                (*batch, *batch),
+            )).fetchall()
+            for row in rows:
+                found.add(int(row["id"]))
+                metadata = json.loads(row["metadata_json"] or "{}")
+                sources.append(metadata)
+                tags.extend(json.loads(row["tags_json"] or "[]"))
+        merged = merge_metadata({}, *sources)
+        if set(ids) - found:
+            merged = merge_metadata(merged, {"sensitivity": "private"})
+        return {
+            "tags": canonical_tags(tags), "sensitivity": merged.get("sensitivity", "normal"),
+            "provenance": {**recall_provenance(merged, source="graph"),
+                           "source_memory_ids": ids, "graph_node_id": node_id,
+                           "evidence_kind": "relation_projection"},
+            "edges": [{"id": edge["id"], "source_memory_id": edge["source_memory_id"],
+                       "origin": edge["origin"], "metadata": edge["metadata"]}
+                      for edge in sorted(edges, key=lambda e: e["id"])],
+        }
+
+    async def projection_snapshot(self, node_id: int) -> tuple[str, str, dict[str, Any]] | None:
+        """持业务写锁生成文档及出处，避免两个读取之间混入来源变更。"""
+        await self._conn.get_db()
+        async with self._conn.write_lock:
+            return await self._projection_document(node_id)
 
     async def render_node_document(self, node_id: int) -> Optional[str]:
         """渲染节点邻域文档（cognee 投影单元）；节点不存在或已归档返回 None。"""

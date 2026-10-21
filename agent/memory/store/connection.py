@@ -402,6 +402,15 @@ class MemoryConnectionManager:
             );
         """)
         # 既有映射无指纹（空串永不匹配）：首次真实变更重投影一次后自愈
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS cognee_projection_attempts (
+                entry_kind TEXT NOT NULL,
+                entry_id INTEGER NOT NULL,
+                dataset_name TEXT NOT NULL,
+                data_id TEXT NOT NULL,
+                PRIMARY KEY (entry_kind, entry_id, dataset_name, data_id)
+            );
+        """)
         await self._ensure_column(
             db, "cognee_entry_map", "content_hash", "TEXT NOT NULL DEFAULT ''",
         )
@@ -478,6 +487,24 @@ class MemoryConnectionManager:
                 UNIQUE (kind, signature)
             );
         """)
+
+        # 所有权威内容和投影映射变更均递增；审计可在锁外计算，提交时做版本比较。
+        await db.execute("INSERT OR IGNORE INTO schema_meta(key,value) VALUES('projection_revision','0')")
+        revision_columns = {
+            "memories": "type,content,tags_json,importance,ts_ns,source,metadata_json",
+            "memories_archive": "type,content,tags_json,importance,ts_ns,source,metadata_json",
+            "graph_nodes": "node_key,node_type,label,metadata_json,archived",
+            "graph_edges": "subject_id,predicate,object_id,symmetric,evidence,source_memory_id,origin,metadata_json,archived",
+            "cognee_entry_map": "", "cognee_sync_queue": "", "cognee_projection_attempts": "",
+        }
+        for table, columns in revision_columns.items():
+            for operation in ("INSERT", "UPDATE", "DELETE"):
+                event = f"UPDATE OF {columns}" if operation == "UPDATE" and columns else operation
+                await db.execute(
+                    f"CREATE TRIGGER IF NOT EXISTS projection_revision_{table}_{operation} "
+                    f"AFTER {event} ON {table} BEGIN "
+                    "UPDATE schema_meta SET value=CAST(value AS INTEGER)+1 WHERE key='projection_revision'; END"
+                )
 
         await self._init_vec_index(db)
 

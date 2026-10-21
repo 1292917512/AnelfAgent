@@ -18,6 +18,7 @@ import aiosqlite
 
 from core.log import log
 
+from ..projection import memory_is_projectable
 from ._shared import (
     MEM_COLUMNS,
     entry_projection_payload,
@@ -64,21 +65,37 @@ class CogneeSyncQueue:
         """
         if not self._projection_enabled or entry_id <= 0:
             return
+        if entry_kind == ENTRY_KIND_MEMORY:
+            # 来源标签/私密度属于关系文档的一部分，与原始变更同事务入队。
+            rows = await (await db.execute(
+                "SELECT subject_id AS id FROM graph_edges WHERE source_memory_id=? AND archived=0 "
+                "UNION SELECT object_id AS id FROM graph_edges WHERE source_memory_id=? AND archived=0",
+                (entry_id, entry_id),
+            )).fetchall()
+            for row in rows:
+                await self.enqueue_sync(db, int(row["id"]), "upsert", {"node_id": int(row["id"])},
+                                        entry_kind=ENTRY_KIND_GRAPH_NODE)
         if (
             operation == "upsert"
             and entry_kind == ENTRY_KIND_MEMORY
             and payload
-            and payload.get("source") == "goal"
+            and not memory_is_projectable(payload)
         ):
-            # 计划状态 JSON 不是知识：updated_at 高频漂移使投影永不稳定，
-            # 图谱抽取只产出噪音实体；原生 FTS/向量检索已覆盖召回。
-            # 已有旧投影的转为 delete 清理，无投影的仅作废残留条目。
+            # 计划、已失效或已合并条目退出活跃图谱；在途任务也必须后续删除。
             cursor = await db.execute(
                 "SELECT data_id FROM cognee_entry_map WHERE entry_kind=? AND entry_id=?",
                 (entry_kind, entry_id),
             )
             mapping_row = await cursor.fetchone()
-            if not mapping_row or not mapping_row["data_id"]:
+            staged = await (await db.execute(
+                "SELECT 1 FROM cognee_projection_attempts WHERE entry_kind=? AND entry_id=? LIMIT 1",
+                (entry_kind, entry_id),
+            )).fetchone()
+            processing = await (await db.execute(
+                "SELECT 1 FROM cognee_sync_queue WHERE entry_kind=? AND entry_id=? "
+                "AND status='processing' LIMIT 1", (entry_kind, entry_id),
+            )).fetchone()
+            if (not mapping_row or not mapping_row["data_id"]) and processing is None and staged is None:
                 await db.execute(
                     "DELETE FROM cognee_sync_queue "
                     "WHERE entry_kind=? AND entry_id=? AND status IN ('pending', 'failed')",
@@ -101,6 +118,8 @@ class CogneeSyncQueue:
             )
             return
         now_ns = time.time_ns()
+        if force and entry_kind == ENTRY_KIND_GRAPH_NODE:
+            payload = {**(payload or {}), "force": True}
         await db.execute(
             "DELETE FROM cognee_sync_queue "
             "WHERE entry_kind=? AND entry_id=? AND status IN ('pending', 'failed')",
@@ -134,6 +153,11 @@ class CogneeSyncQueue:
         fingerprint = projection_content_hash(payload)
         if not fingerprint:
             return False
+        if await (await db.execute(
+            "SELECT 1 FROM cognee_projection_attempts WHERE entry_kind=? AND entry_id=? LIMIT 1",
+            (ENTRY_KIND_MEMORY, entry_id),
+        )).fetchone():
+            return False
         cursor = await db.execute(
             "SELECT content_hash FROM cognee_entry_map "
             "WHERE entry_kind=? AND entry_id=?",
@@ -153,19 +177,17 @@ class CogneeSyncQueue:
         """领取一批可执行投影任务，避免同进程重复消费。"""
         db = await self._conn.get_db()
         now_ns = time.time_ns()
-        cursor = await db.execute(
-            "SELECT id, entry_kind, entry_id, operation, payload_json, attempts "
-            "FROM cognee_sync_queue "
-            "WHERE status='pending' AND next_retry_ns<=? ORDER BY id LIMIT ?",
-            (now_ns, max(1, limit)),
-        )
-        rows = await cursor.fetchall()
-        if not rows:
-            return []
-        ids = [int(row["id"]) for row in rows]
-        placeholders = ",".join("?" for _ in ids)
         async with self._conn.tx(db):
-            # 状态守卫：并发认领者在 SELECT 后已被认领的行不再重复领取
+            cursor = await db.execute(
+                "SELECT id, entry_kind, entry_id, operation, payload_json, attempts "
+                "FROM cognee_sync_queue WHERE status='pending' AND next_retry_ns<=? "
+                "ORDER BY id LIMIT ?", (now_ns, max(1, limit)),
+            )
+            rows = await cursor.fetchall()
+            if not rows:
+                return []
+            ids = [int(row["id"]) for row in rows]
+            placeholders = ",".join("?" for _ in ids)
             await db.execute(
                 f"UPDATE cognee_sync_queue SET status='processing', updated_ns=? "
                 f"WHERE status='pending' AND id IN ({placeholders})",
@@ -242,6 +264,9 @@ class CogneeSyncQueue:
                         time.time_ns(), content_hash,
                     ),
                 )
+            if delete_mapping or dataset_name:
+                await db.execute("DELETE FROM cognee_projection_attempts WHERE entry_kind=? AND entry_id=?",
+                                 (entry_kind, entry_id))
 
     async def fail(
         self,
@@ -309,6 +334,7 @@ class CogneeSyncQueue:
         async with self._conn.tx(db):
             await db.execute("DELETE FROM cognee_sync_queue")
             await db.execute("DELETE FROM cognee_entry_map")
+            await db.execute("DELETE FROM cognee_projection_attempts")
         return {"queue": queued, "mappings": mapped}
 
     async def retry_failed(self) -> int:
@@ -322,30 +348,49 @@ class CogneeSyncQueue:
         return cursor.rowcount or 0
 
     async def enqueue_backfill(self, *, limit: int = 0) -> int:
-        """显式将历史记忆加入投影队列；不会在启动时自动调用。
-
-        force 绕过内容指纹判重：回填是修复语义（映射可能在 cognee 数据
-        丢失后残留），必须无条件重新投影。
-        """
+        """回填活跃记忆与关系节点；原始归档、计划、合并行不进入活跃索引。"""
         if not self._projection_enabled:
             return 0
+        count = 0
+        for kind in (ENTRY_KIND_MEMORY, ENTRY_KIND_GRAPH_NODE):
+            after = 0
+            while limit <= 0 or count < limit:
+                size = min(100, limit - count) if limit > 0 else 100
+                page = await self.backfill_page(kind, after, size)
+                count += page["queued"]
+                after = page["after"]
+                if page["scanned"] < size:
+                    break
+        return count
+
+    async def backfill_page(self, kind: str, after: int, limit: int = 100) -> dict[str, int]:
+        """按主键分页，读取与入队共用事务，避免旧快照覆盖并发更新。"""
+        if kind not in (ENTRY_KIND_MEMORY, ENTRY_KIND_GRAPH_NODE):
+            raise ValueError("未知投影类型")
+        if not self.enabled:
+            raise RuntimeError("投影变更记录未启用")
         db = await self._conn.get_db()
-        sql = f"SELECT {MEM_COLUMNS} FROM memories ORDER BY id"
-        params: tuple[Any, ...] = ()
-        if limit > 0:
-            sql += " LIMIT ?"
-            params = (limit,)
-        cursor = await db.execute(sql, params)
-        rows = list(await cursor.fetchall())
+        queued = 0
         async with self._conn.tx(db):
+            sql = (f"SELECT {MEM_COLUMNS} FROM memories WHERE id>? ORDER BY id LIMIT ?"
+                   if kind == ENTRY_KIND_MEMORY else
+                   "SELECT id FROM graph_nodes WHERE archived=0 AND id>? ORDER BY id LIMIT ?")
+            rows = list(await (await db.execute(sql, (after, max(1, limit)))).fetchall())
             for row in rows:
-                entry = row_to_entry(row)
-                if entry.id:
-                    await self.enqueue_sync(
-                        db,
-                        entry.id,
-                        "upsert",
-                        entry_projection_payload(entry, entry.id),
-                        force=True,
-                    )
-        return len(rows)
+                after = int(row["id"])
+                payload = (entry_projection_payload(row_to_entry(row), after)
+                           if kind == ENTRY_KIND_MEMORY else {"node_id": after})
+                if kind == ENTRY_KIND_MEMORY and not memory_is_projectable(payload):
+                    continue
+                await self.enqueue_sync(db, after, "upsert", payload, entry_kind=kind, force=True)
+                queued += 1
+        return {"after": after, "scanned": len(rows), "queued": queued}
+
+    async def eligible_counts(self) -> dict[str, int]:
+        """预览与实际回填使用同一资格判定。"""
+        db = await self._conn.get_db()
+        rows = list(await (await db.execute(f"SELECT {MEM_COLUMNS} FROM memories")).fetchall())
+        memories = sum(memory_is_projectable(entry_projection_payload(row_to_entry(r), int(r["id"])))
+                       for r in rows)
+        graph = await fetch_count(db, "SELECT COUNT(*) FROM graph_nodes WHERE archived=0")
+        return {"memories": memories, "graph_nodes": graph, "excluded_memories": len(rows) - memories}

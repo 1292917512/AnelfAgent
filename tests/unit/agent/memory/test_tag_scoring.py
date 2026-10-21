@@ -8,6 +8,36 @@ import pytest
 
 from agent.memory.memory_types import MemoryEntry, MemoryType
 from agent.memory.store._shared import idf_tag_score
+from agent.memory.tag_query import TagQuery
+
+
+@pytest.mark.parametrize("filtering,expected", [
+    (TagQuery(all_of=("future:a/*",), any_of=("role:owner", "role:reader"), none_of=("state:old",)), {"a", "b"}),
+    (TagQuery(all_of=("future:a",)), {"a"}),
+    (TagQuery(any_of=("future:ab", "future:a%")), {"d", "e"}),
+    (TagQuery(none_of=("future:a/*",)), {"d", "e"}),
+])
+async def test_sql_and_backend_tag_filters_share_exact_semantics(store, filtering, expected):
+    entries = {
+        "a": ["future:a", "role:owner"], "b": ["future:a/child", "role:reader"],
+        "c": ["future:a/child", "role:owner", "state:old"], "d": ["future:ab"], "e": ["future:a%"],
+    }
+    for label, tags in entries.items():
+        await store.add(MemoryEntry(content=label, tags=tags, memory_type=MemoryType.SEMANTIC))
+    results = await store.search_unified("", limit=10, tag_query=filtering)
+    assert {result.snippet for result in results} == expected
+    assert {label for label, tags in entries.items() if filtering.matches(tags)} == expected
+
+
+async def test_tag_filter_runs_before_text_and_vector_candidate_limits(store):
+    target = await store.add(MemoryEntry(content="needle", tags=["future:rare"],
+        embedding=[.8, .6], memory_type=MemoryType.SEMANTIC))
+    for i in range(20):
+        await store.add(MemoryEntry(content=f"needle {i}", tags=["future:other"],
+            embedding=[1., 0.], memory_type=MemoryType.SEMANTIC))
+    results = await store._search.search_hybrid("needle", query_vec=[1., 0.], limit=1,
+                                               tag_query=TagQuery(all_of=("future:rare",)))
+    assert [entry.id for entry, score in results] == [target]
 
 # ==================================================================
 # IDF 评分

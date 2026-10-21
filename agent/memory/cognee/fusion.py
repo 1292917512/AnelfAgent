@@ -8,8 +8,6 @@ token 影响：候选融合后按原预算截取，避免重复文档与检索�
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -18,17 +16,16 @@ from typing import Any, Literal, Optional, TypedDict
 
 from pydantic import ValidationError
 
+from core.config import get_config_float
 from core.log import log
 
 from ..memory_types import MemorySearchResult, excerpt
-from ..provenance import recall_provenance
+from ..projection import canonical_tags, projection_dataset
+from ..tag_query import TagQuery
 from .adapters import query_embeddings
-from .client import CogneeClient
 from .config import CogneeConfig
+from .ports import RecallBackend
 from .types import CogneeRecallItem
-
-#: 投影文档头字段（coordinator._render_memory 的输出格式）
-_PROJECTION_HEADER_KEYS = ("Memory type", "Memory ID", "Timestamp", "Source", "Importance", "Tags", "Metadata")
 
 
 @dataclass
@@ -42,6 +39,27 @@ class CogneeSearchBatch:
     error: str = ""
 
 
+@dataclass
+class RecallDiagnostics:
+    """单次检索的覆盖范围，不把超时/降级误报成知识不存在；不存查询或供应商错误。"""
+
+    native: str = "running"
+    cognee: str = "running"
+    completed_lanes: int = 0
+    failed_lanes: int = 0
+    timed_out: bool = False
+    summary_used: bool = False
+
+    def result(self) -> dict[str, Any]:
+        complete = not self.timed_out and not self.failed_lanes and self.native == "complete"
+        status = "complete" if complete and self.cognee == "complete" else "partial"
+        if complete and self.cognee in {"disabled", "index_not_ready", "unavailable", "no_datasets"}:
+            status = "native_only"
+        return {"status": status, "native": self.native, "cognee": self.cognee,
+                "completed_lanes": self.completed_lanes, "failed_lanes": self.failed_lanes,
+                "timed_out": self.timed_out, "summary_used": self.summary_used}
+
+
 class MemoryProjection(TypedDict, total=False):
     """投影文档中实际存在且已验证的记忆字段。"""
 
@@ -53,55 +71,42 @@ class MemoryProjection(TypedDict, total=False):
     sensitivity: str
 
 
-def parse_memory_projection(text: str) -> MemoryProjection:
-    """恢复完整投影的出处和时间；残缺分块与综合回答不推断原始归属。"""
-    if not text.startswith("Memory type:"):
-        return {"snippet": text}
-    head, separator, content = text.partition("\n\n")
-    if not separator or not content.strip():
-        return {"snippet": text}
-    fields: dict[str, str] = {}
-    for line in head.split("\n"):
-        for key in _PROJECTION_HEADER_KEYS:
-            if line.startswith(f"{key}: "):
-                fields[key] = line[len(key) + 2:].strip()
-                break
-    tags = [tag.strip() for tag in fields.get("Tags", "").split(",") if tag.strip()]
+def recall_projection(item: CogneeRecallItem) -> MemoryProjection:
+    """正文保持原样；只从分块的结构化归属恢复来源，图谱综合不冒充原话。"""
+    projection: MemoryProjection = {"snippet": item.content, "sensitivity": "private"}
+    attribution = item.metadata.get("anelf_attribution")
+    if item.source != "cognee_chunk" or not isinstance(attribution, dict):
+        return projection
     try:
-        metadata = json.loads(fields.get("Metadata", "{}"))
-    except (ValueError, TypeError):
-        metadata = {}
-    if not isinstance(metadata, dict):
-        metadata = {}
-    provenance = recall_provenance(metadata, source=fields.get("Source", ""))
-    mid = fields.get("Memory ID", "")
-    if mid.isdigit() and int(mid) > 0:
-        provenance["anelf_memory_id"] = int(mid)
-    try:
-        timestamp = float(fields.get("Timestamp", "0"))
-    except ValueError:
-        timestamp = 0.0
-    if not 0 <= timestamp < 253402300800:
-        timestamp = 0.0
-    return {
-        "snippet": content.strip(), "tags": tags, "provenance": provenance,
-        "timestamp": timestamp, "memory_type": fields.get("Memory type"),
-        "sensitivity": str(metadata.get("sensitivity", "normal"))
-        if metadata.get("sensitivity") in ("private", "secret") else "normal",
-    }
+        restored = MemorySearchResult.model_validate({
+            **attribution, "id": item.id, "snippet": "", "score": 0,
+        })
+    except ValidationError as exc:
+        log(f"Cognee 分块出处字段无效: {type(exc).__name__}", "DEBUG", tag="记忆")
+        return projection
+    projection.update({
+        "tags": restored.tags,
+        "timestamp": restored.timestamp if 0 <= restored.timestamp < 253402300800 else 0,
+        "memory_type": restored.memory_type,
+        "sensitivity": restored.sensitivity if restored.sensitivity in {"normal", "private", "secret"} else "private",
+        "provenance": restored.provenance,
+    })
+    return projection
 
 
 async def federated_search(
     native_search: Awaitable[list[MemorySearchResult]],
     *,
     query: str,
-    client: Optional[CogneeClient],
+    client: Optional[RecallBackend],
     config: CogneeConfig,
     limit: int,
-    entity_scope: str = "",
     query_tags: Optional[list[str]] = None,
     deep: bool = False,
     node_names: Optional[list[str]] = None,
+    tag_query: TagQuery | None = None,
+    overview: bool = False,
+    diagnostics: RecallDiagnostics | None = None,
     on_results: Callable[[list[MemorySearchResult]], None] | None = None,
 ) -> list[MemorySearchResult]:
     """并行搜索原生后端和 Cognee，失败时透明降级。
@@ -111,10 +116,16 @@ async def federated_search(
     node_names 非空时追加定向检索通道（cognee node_name 限定到
     提及实体的事实块，聊天对象明确时精度显著高于泛化检索）。
     """
-    if not config.enabled or not config.recall_enabled or client is None:
-        return (await native_search)[:limit]
+    diagnostics = diagnostics or RecallDiagnostics()
+    if not config.enabled or not config.recall_enabled or client is None or not client.projection_ready:
+        diagnostics.cognee = ("disabled" if not config.enabled or not config.recall_enabled else
+                              "unavailable" if client is None else "index_not_ready")
+        results = await native_search
+        diagnostics.native = "complete"
+        return results[:limit]
 
-    datasets = datasets_for_scope(config, entity_scope, query_tags)
+    datasets = datasets_for_projection(config, client.projection_namespace)
+    node_names = canonical_tags([*(query_tags or []), *(node_names or [])])
     search_types = (config.deep_search_types or config.search_types) if deep else config.search_types
     native: list[MemorySearchResult] = []
     batches: dict[str, list[MemorySearchResult]] = {}
@@ -132,7 +143,12 @@ async def federated_search(
 
     async def read_native() -> None:
         nonlocal native
-        native = await native_search
+        try:
+            native = await native_search
+            diagnostics.native = "complete"
+        except BaseException:
+            diagnostics.native = "incomplete"
+            raise
         publish()
 
     async def consume(batch: CogneeSearchBatch) -> None:
@@ -142,14 +158,18 @@ async def federated_search(
 
     tasks = [asyncio.create_task(read_native()), asyncio.create_task(
         search_cognee(client, config, query, datasets, limit, search_types,
-                      node_names=node_names, on_batch=consume),
+                      node_names=node_names, on_batch=consume, tag_query=tag_query, overview=overview,
+                      diagnostics=diagnostics),
         name="memory.cognee.recall",
     )]
     try:
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        for result in results:
-            if isinstance(result, Exception):
-                log(f"联邦召回通道失败，保留已完成结果: {result}", "DEBUG", tag="思维")
+        budget = get_config_float("memory_probe_timeout_seconds" if deep else "memory_recall_timeout_seconds",
+                                  60.0 if deep else 5.0)
+        done, _pending = await asyncio.wait(tasks, timeout=max(0.1, budget))
+        diagnostics.timed_out = bool(_pending)
+        for task in done:
+            if not task.cancelled() and (error := task.exception()):
+                log(f"联邦召回通道失败，保留已完成结果: {error}", "DEBUG", tag="思维")
         return snapshot()
     finally:
         for task in tasks:
@@ -159,7 +179,7 @@ async def federated_search(
 
 
 async def search_cognee(
-    client: CogneeClient,
+    client: RecallBackend,
     config: CogneeConfig,
     query: str,
     datasets: list[str],
@@ -168,6 +188,9 @@ async def search_cognee(
     *,
     node_names: Optional[list[str]] = None,
     on_batch: Callable[[CogneeSearchBatch], Awaitable[None]] | None = None,
+    tag_query: TagQuery | None = None,
+    overview: bool = False,
+    diagnostics: RecallDiagnostics | None = None,
 ) -> list[MemorySearchResult]:
     """cognee 检索的统一拼装点：类型 × 数据集并行 recall + 定向通道 + 归一化。
 
@@ -175,14 +198,26 @@ async def search_cognee(
     cognee 调用模式只在此处拼装，外层不再各自组 client.recall。
     每条通道完成即可通过 on_batch 消费，慢通道不阻塞已完成结果的呈现。
     """
+    diagnostics = diagnostics or RecallDiagnostics()
+    if not client.projection_ready:
+        diagnostics.cognee = "index_not_ready"
+        return []
+    if client.projection_namespace:
+        allowed = set(datasets_for_projection(config, client.projection_namespace))
+        datasets = [name for name in datasets if name in allowed]
+    strict = tag_query is not None and tag_query.active
+    node_names = [] if strict else canonical_tags(node_names or [])
     availability = await client.initialize()
     if not availability.ready:
+        diagnostics.cognee = "unavailable"
         return []
     datasets = await client.available_datasets(datasets)
     if not datasets:
+        diagnostics.cognee = "no_datasets"
         return []
     pool_size = max(limit, limit * config.recall_pool_multiplier)
     lanes: list[tuple[str, Callable[[], Awaitable[list[CogneeRecallItem]]]]] = []
+    summary_lanes: set[str] = set()
     targeted_type = None
     if node_names:
         try:
@@ -190,19 +225,28 @@ async def search_cognee(
         except (AttributeError, RuntimeError):
             targeted_type = None
     datasets = list(dict.fromkeys(datasets))
-    for search_type_name in dict.fromkeys(search_types or config.search_types):
+    selected_types = ["CHUNKS"] if strict else (search_types or config.search_types)
+    exact_required = [tag for tag in tag_query.all_of if not tag.endswith("/*")] if tag_query else []
+    filters: dict[str, Any] = {"node_name": exact_required, "node_name_filter_operator": "AND"} if exact_required else {}
+    for search_type_name in dict.fromkeys(selected_types):
         try:
             search_type = client.search_type(search_type_name)
         except (AttributeError, RuntimeError):
             continue
         for dataset_name in datasets:
+            use_summary = overview and search_type_name == "GRAPH_COMPLETION" and client.global_context_ready(dataset_name)
+            if use_summary:
+                summary_lanes.add(f"{search_type_name}/{dataset_name}")
+            summary_options = {"retriever_specific_config": {"include_global_context_index": True}} if use_summary else {}
             lanes.append((f"{search_type_name}/{dataset_name}", partial(client.recall,
                 query,
                 query_type=search_type,
+                **filters,
+                **summary_options,
                 datasets=[dataset_name],
                 top_k=pool_size,
                 auto_route=False,
-                only_context=search_type_name not in {"CHUNKS", "CHUNKS_LEXICAL", "SUMMARIES"},
+                only_context=not use_summary and search_type_name not in {"CHUNKS", "CHUNKS_LEXICAL", "SUMMARIES"},
                 include_references=True,
             )))
     # 定向检索通道：node_name 限定到提及实体的事实块（每数据集一次，
@@ -237,6 +281,7 @@ async def search_cognee(
         try:
             items = await call()
         except Exception as exc:
+            diagnostics.failed_lanes += 1
             detail = f"{type(exc).__name__}: {str(exc) or '检索未完成'}"
             elapsed = time.monotonic() - started
             log(f"Cognee 检索通道失败: {lane}, {elapsed:.1f}s, {detail}", "DEBUG", tag="记忆")
@@ -245,23 +290,10 @@ async def search_cognee(
             return []
         results: list[MemorySearchResult] = []
         for item in items:
-            projection = parse_memory_projection(item.content)
-            if item.source == "cognee_graph":
-                projection = {"snippet": projection["snippet"],
-                              "sensitivity": projection.get("sensitivity", "normal")}
-            attribution = item.metadata.get("anelf_attribution")
-            if item.source == "cognee_chunk" and isinstance(attribution, dict):
-                try:
-                    restored = MemorySearchResult.model_validate({
-                        **attribution, "id": item.id, "snippet": "", "score": 0,
-                    })
-                except ValidationError as exc:
-                    log(f"Cognee 分块出处字段无效: {type(exc).__name__}", "DEBUG", tag="记忆")
-                else:
-                    projection.setdefault("tags", restored.tags)
-                    projection.setdefault("timestamp", restored.timestamp)
-                    projection.setdefault("sensitivity", restored.sensitivity)
-                    projection.setdefault("provenance", restored.provenance)
+            projection = recall_projection(item)
+            if strict and (item.source != "cognee_chunk" or "tags" not in projection
+                           or tag_query is None or not tag_query.matches(projection["tags"])):
+                continue
             provenance = {**item.metadata, **projection.pop("provenance", {})}
             provenance.pop("anelf_attribution", None)
             projection["snippet"] = excerpt(str(projection["snippet"]), 700)
@@ -271,6 +303,8 @@ async def search_cognee(
                 "provenance": provenance,
             }))
         elapsed = time.monotonic() - started
+        diagnostics.completed_lanes += 1
+        diagnostics.summary_used |= bool(results) and lane in summary_lanes
         log(f"Cognee 检索通道完成: {lane}, {elapsed:.1f}s, {len(results)} 条", "DEBUG", tag="记忆")
         if on_batch is not None:
             await on_batch(CogneeSearchBatch(lane, "done", elapsed, results))
@@ -280,6 +314,7 @@ async def search_cognee(
         tasks = [asyncio.create_task(consume(lane, call), name=f"cognee.search.{lane}") for lane, call in lanes]
         try:
             batches = await asyncio.gather(*tasks)
+            diagnostics.cognee = "partial" if diagnostics.failed_lanes else "complete"
             return _fuse_ranked_lists(
                 [(batch, 1.0) for batch in batches], config=config,
                 limit=pool_size,
@@ -312,6 +347,7 @@ def _fuse_ranked_lists(
     """逐通道计算秩，同通道重复命中只计一次，来源优先级保留原生证据。"""
     scores: dict[str, float] = {}
     chosen: dict[str, MemorySearchResult] = {}
+    conflicts: dict[str, list[Any]] = {}
     references: dict[str, set[str]] = {}
     for results, _weight in lanes:
         for result in results:
@@ -333,6 +369,12 @@ def _fuse_ranked_lists(
             seen.add(key)
             rank = len(seen)
             scores[key] = scores.get(key, 0.0) + weight / (config.rrf_k + rank)
+            warnings = result.provenance.get("conflicts")
+            if isinstance(warnings, list):
+                merged = conflicts.setdefault(key, [])
+                for warning in warnings:
+                    if warning not in merged and len(merged) < 5:
+                        merged.append(warning)
             current = chosen.get(key)
             if current is None or _source_priority(result.source) > _source_priority(current.source):
                 chosen[key] = result.model_copy(deep=True)
@@ -347,43 +389,19 @@ def _fuse_ranked_lists(
     output: list[MemorySearchResult] = []
     for key, result in fused[:limit]:
         result.score = scores[key] / max_score
+        if key in conflicts:
+            result.provenance["conflicts"] = conflicts[key]
         output.append(result)
     return output
 
 
-def datasets_for_scope(
+def datasets_for_projection(
     config: CogneeConfig,
-    entity_scope: str,
-    query_tags: Optional[list[str]],
+    namespace: str = "",
 ) -> list[str]:
-    """将 Anelf scope 映射为允许访问的 Cognee datasets。
-
-    全局 relations 数据集（自由型节点：topic/person/concept 等公共知识）
-    对所有 scope 开放——跨实体正是图谱价值；实体型节点的投影按 scope
-    拆分数据集（coordinator.graph_dataset_for_node 同源派生），消除
-    跨 scope 检索稀释。
-    """
-    datasets = [f"{config.dataset_prefix}_global", f"{config.dataset_prefix}_relations"]
-    scope_type = ""
-    scope_id = ""
-    if entity_scope and "_" in entity_scope:
-        prefix, value = entity_scope.split("_", 1)
-        if prefix in {"user", "group"} and value:
-            scope_type, scope_id = prefix, value
-    if not scope_id:
-        for tag in query_tags or []:
-            if ":" not in tag:
-                continue
-            prefix, value = tag.split(":", 1)
-            if prefix in {"user", "group"} and value:
-                scope_type, scope_id = prefix, value
-                break
-    if scope_id:
-        digest = hashlib.sha256(scope_id.encode("utf-8")).hexdigest()[:16]
-        datasets.append(f"{config.dataset_prefix}_{scope_type}_{digest}")
-        # 本 scope 的实体关系投影数据集（与 coordinator.graph_dataset_for_node 同构）
-        datasets.append(f"{config.dataset_prefix}_relations_{scope_type}_{digest}")
-    return datasets
+    """返回同一代际的内容分区，供真实检索与诊断共用。"""
+    prefix = namespace or config.dataset_prefix
+    return [projection_dataset(prefix), projection_dataset(prefix, graph=True)]
 
 
 def dedupe_key(result: MemorySearchResult) -> str:

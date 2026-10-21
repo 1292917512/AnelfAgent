@@ -156,6 +156,23 @@ class TestRecallSourceMarking:
 
 
 class TestFilterTags:
+    async def test_boolean_hierarchy_filters_and_verifiable_result_contract(self, bound_store, store):
+        mid = await store.add(_entry("taganchor " + "事实" * 200, ["project:alpha/backend", "role:owner"]))
+        await store.add(_entry("taganchor 旧事实", ["project:alpha/backend", "role:owner", "state:old"]))
+        result = json.loads(await bound_store.recall("taganchor", filter_tags="project:alpha/*",
+            filter_any="role:owner,role:reviewer", filter_not="state:old"))
+        assert result["count"] == 1
+        item = result["results"][0]
+        assert item["memory_id"] == mid and item["truncated"]
+        assert item["evidence_kind"] == "memory"
+        assert result["retrieval"]["native"] == "complete"
+        assert "retrieval_hint" in result
+
+    @pytest.mark.parametrize("arguments", [{"depth": "unknown"}, {"limit": 0}, {"min_score": 2}])
+    async def test_invalid_query_options_are_explicit_errors(self, bound_store, arguments):
+        result = json.loads(await bound_store.recall("query", **arguments))
+        assert "error" in result and "results" not in result
+
     async def test_hard_filter_excludes_mismatched(self, bound_store, store: MemoryStore) -> None:
         await store.add(_entry("catnote 猫的记忆", ["user:1", "topic:猫"]))
         await store.add(_entry("catnote 另一条猫记忆", ["user:2", "topic:猫"]))

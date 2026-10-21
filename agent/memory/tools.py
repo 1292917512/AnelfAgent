@@ -121,7 +121,8 @@ async def set_recall_policy(level: str, tags: str = "", background: bool = True)
 @deferred_tool(
     group="memory", tags=["always"], source="mind.memory", timeout=300.0,
     description="将一条关键信息存入长期记忆（内容简洁精炼；type:permanent 为永久记忆）。"
-    "返回 verdict 落盘裁决，落盘纪律见「记忆体系铁律」。",
+    "先 recall 检查已有事实，修订已有内容用 update_memory；不要把图谱综合重新存为独立证据。"
+    "原生写入立即可查，Cognee 图谱异步跟进。返回 verdict 落盘裁决，落盘纪律见「记忆体系铁律」。",
 )
 async def memorize(
     content: str,
@@ -381,11 +382,14 @@ async def _upsert_permanent(content: str, tag_list: list[str], importance: float
 
 @deferred_tool(
     group="memory", tags=["always"], source="mind.memory",
-    description="在长期记忆中语义搜索，返回最相关的记忆及其联想关联。"
-    "结果带 source 出处（memory=数据库 / file=便签 / cognee_graph|cognee_chunk=知识图谱）"
-    "与归属标注（uid/group 语义及引用纪律见「记忆体系铁律」）；"
-    "返回的 forgotten 字段是已遗忘的记忆（强相关或常规检索无果时附带）："
-    "kind=archived 的可经 restore_memory(id) 恢复，kind=tombstone 的仅剩梗概需重新 memorize。",
+    description="检索长期记忆。每个问题先调用一次 recall，等结果返回后再决定是否补查；内部已融合多个检索通道，勿并行提交同一问题的改写查询。"
+    "depth 三选一：shallow 查明确事实；deep 查人物/项目关系与跨记忆关联；overview 综合主题，包含 deep 并利用有效全局摘要，无需另调 deep。"
+    "tags 只加权；filter_tags/全部、filter_any/任一、filter_not/排除才限定范围，未知标签先用 memory_index 查看。"
+    "原文用 get_memory(memory_id) 回查；图谱综合不是原话，score 是排序而非事实置信度。"
+    "retrieval 为 partial/native_only 时不能把空结果解释为从未记住；有 conflicts 时先核对来源再修订。"
+    "forgotten 中 archived 可 restore_memory，tombstone 只有梗概。",
+    schema_extra={"depth": {"enum": ["shallow", "deep", "overview"]},
+                  "limit": {"minimum": 1, "maximum": 20}, "min_score": {"minimum": 0, "maximum": 1}},
 )
 async def recall(
     query: str,
@@ -394,19 +398,24 @@ async def recall(
     min_score: float = 0.0,
     depth: str = "shallow",
     filter_tags: str = "",
+    filter_any: str = "",
+    filter_not: str = "",
 ) -> str:
     """在长期记忆中语义搜索（同时检索 memories 表和 MD 文件索引）。
 
     Args:
-        query: 搜索查询（自然语言）
+        query: 一次写出完整信息需求（自然语言）；内部扩展检索，不必拆成多条相近查询并行调用
         tags: 可选标签加权，逗号分隔（如 user:123），命中加分但不过滤
         limit: 最大返回数量，默认 5
         min_score: 最低相关度过滤（0-1，相对最高分归一化）。默认 0 不过滤；
             需要精确模式减少噪音时建议 0.5~0.7，只保留高相关记忆
         depth: 召回深度。shallow（默认）快速混合检索；deep 追加知识图谱检索、
-            扩大候选池并做二跳标签联想，覆盖更全但更慢，浅召回找不到时再用
+            扩大候选池并做二跳标签联想，覆盖更全但更慢；overview 使用已刷新的全局摘要综合回答，
+            摘要失效时退回事实检索。一次选择一档，收到结果后再按缺失信息补查。
         filter_tags: 硬过滤标签，逗号分隔。结果必须包含全部指定标签；
-            启用后只返回数据库记忆（文件便签无标签体系）
+            末尾 /* 匹配该标签及 / 分隔的后代；文件便签无标签体系。
+        filter_any: 至少包含其中一个标签，逗号分隔。
+        filter_not: 排除包含任一指定标签的结果，逗号分隔。
     """
     try:
         deps = _deps()
@@ -414,9 +423,16 @@ async def recall(
             return _store_not_ready()
         store = deps.store
 
+        depth = depth.strip().lower()
+        if depth not in {"shallow", "deep", "overview"} or not 1 <= limit <= 20 or not 0 <= min_score <= 1:
+            return tool_error("无效的召回参数", cause=ErrorCause.PARAM, retryable=False,
+                              hint="depth 使用 shallow/deep/overview，limit 为 1–20，min_score 为 0–1")
         tag_list = _normalize_tags(tags) or None
-        hard_tags = _normalize_tags(filter_tags) or None
-        is_deep = depth.strip().lower() == "deep"
+        from .tag_query import TagQuery
+        tag_query = TagQuery(all_of=tuple(_normalize_tags(filter_tags)),
+                             any_of=tuple(_normalize_tags(filter_any)), none_of=tuple(_normalize_tags(filter_not)))
+        hard_tags = tag_query.active
+        is_deep = depth.strip().lower() in {"deep", "overview"}
 
         # 查询提及识别：查询文本中提到的已知实体/话题自动转为标签加权
         mention_tags = await store.extract_query_mentions(query)
@@ -428,26 +444,24 @@ async def recall(
             query_vec = await deps.embedder.embed_query(query)
 
         from .cognee.config import load_cognee_config
-        from .cognee.fusion import federated_search
+        from .cognee.fusion import RecallDiagnostics, federated_search
         from .cognee.runtime import get_cognee_client
         cognee_config = load_cognee_config()
         entity_scope = ""
         for tag in tag_list or []:
             if tag.startswith(ENTITY_PREFIXES):
                 scope_type, scope_id = tag.split(":", 1)
-                entity_scope = f"{scope_type}_{scope_id}"
+                from agent.messages import build_entity_scope
+                adapter, separator, base_id = scope_id.partition(":")
+                entity_scope = build_entity_scope(scope_type, adapter if separator else "",
+                                                  base_id if separator else adapter)
                 break
         pool_multiplier = cognee_config.recall_pool_multiplier * (2 if is_deep else 1)
         # 实体标签 → 图谱节点：邻域查询（relations 字段）与 cognee node_name
         # 定向检索共用——聊天对象明确时定向检索精度远高于泛化语义检索
         node_keys = entity_node_keys(tag_list, entity_scope, adapter=_current_scope_adapter())
-        node_names: list[str] = []
-        if node_keys:
-            try:
-                node_names = await store.graph.labels_for_keys(node_keys)
-            except Exception:
-                node_names = []
         # 遗忘层兜底与主检索并行：归档（可恢复）+ 墓碑（仅痕迹）统一打分
+        diagnostics = RecallDiagnostics()
         results, forgotten = await asyncio.gather(
             federated_search(
                 store.search_unified(
@@ -455,16 +469,18 @@ async def recall(
                     query_vec=query_vec,
                     query_tags=tag_list,
                     limit=limit * pool_multiplier,
-                    require_tags=hard_tags,
+                    tag_query=tag_query,
                 ),
                 query=query,
                 client=get_cognee_client(),
                 config=cognee_config,
                 limit=limit,
-                entity_scope=entity_scope,
+                tag_query=tag_query,
                 query_tags=tag_list,
                 deep=is_deep,
-                node_names=node_names or None,
+                overview=depth == "overview",
+                diagnostics=diagnostics,
+                node_names=list(dict.fromkeys((tag_list or []) + node_keys)) or None,
             ),
             store.search_forgotten(
                 query, query_vec,
@@ -495,19 +511,21 @@ async def recall(
         main_empty = not results
         forgotten_items = [
             item for item in forgotten
-            if item["score"] >= archive_min or (main_empty and item["score"] >= 0.25)
+            if not hard_tags and (item["score"] >= archive_min or (main_empty and item["score"] >= 0.25))
         ]
         forgotten_out = [_format_forgotten_item(item) for item in forgotten_items]
 
         # 关联扩展：沿标签网络联想相关记忆（想到一件事 → 唤起相关的事）
-        if is_deep:
+        if hard_tags:
+            related_items = []
+        elif is_deep:
             related_items = await _recall_associations_deep(results, mem_ids)
         else:
             related_items = await _recall_associations(results, mem_ids)
 
         # 深度召回追加关系网络邻域：查询涉及的实体在图谱中的已知关系
         relations: list[str] = []
-        if is_deep and node_keys:
+        if is_deep and node_keys and not hard_tags:
             from .graph import format_triple
             edges = await store.graph.edges_for_scopes(node_keys, limit=10)
             relations = [format_triple(e) for e in edges]
@@ -518,7 +536,13 @@ async def recall(
 
         return json.dumps({
             "count": len(items),
-            "depth": "deep" if is_deep else "shallow",
+            "depth": depth,
+            "retrieval": diagnostics.result(),
+            **({"retrieval_hint": "本次未覆盖完整图谱，保留已找到的原生证据。索引未就绪/有积压可查看 cognee_status；空结果不代表事实不存在。"}
+               if diagnostics.result()["status"] != "complete" else {}),
+            **({"overview_hint": "本次未使用全局摘要。需要主题综合时，先从 list_cognee_datasets 选择当前数据集，"
+                                  "用 improve_cognee_dataset(action='summary') 刷新后再查询；普通事实查询无需刷新。"}
+               if depth == "overview" and not diagnostics.summary_used else {}),
             "results": items,
             "related": related_items,
             **({"relations": relations} if relations else {}),
@@ -740,7 +764,7 @@ async def get_memory(memory_id: int) -> str:
     """按 ID 获取一条记忆的完整信息。
 
     Args:
-        memory_id: 记忆 ID（从 recall / memory_index / memory_deep_search 结果中获取）
+        memory_id: 数字记忆 ID；recall 的 memory_id 可直接传入，mem:7 对应 7。Cognee 图谱 ID 不能用于此接口。
     """
     try:
         deps = _deps()
@@ -1130,7 +1154,9 @@ async def cognee_status() -> str:
             else {"enabled": False, "running": False, "pending": 0, "failed": 0, "synced": 0}
         )
         return json.dumps(
-            {"availability": availability, "sync": sync},
+            {"availability": availability, "sync": sync,
+             "projection": coordinator.rebuild.state.model_dump(include={"phase", "namespace", "verified", "error"})
+                if coordinator and coordinator.rebuild.state else None},
             ensure_ascii=False,
         )
     except Exception as e:
@@ -1156,7 +1182,7 @@ async def retry_cognee_sync() -> str:
 
 @deferred_tool(
     group="memory", tags=["core"], source="mind.memory",
-    description="列出当前 Cognee 可访问的数据集，仅用于诊断记忆作用域。",
+    description="列出当前代际 Cognee 数据集及 summary_ready。用于选择摘要构建或冲突审查的目标；筛选人物/项目仍用 recall 的标签参数。",
 )
 async def list_cognee_datasets() -> str:
     """列出 Cognee datasets。"""
@@ -1165,14 +1191,16 @@ async def list_cognee_datasets() -> str:
         client = get_cognee_client()
         if not client:
             return _cognee_not_ready()
+        from .cognee.fusion import datasets_for_projection
+        active = set(datasets_for_projection(client.config, client.projection_namespace))
         values = await client.list_datasets()
-        items = [
-            value.model_dump(mode="json")
-            if hasattr(value, "model_dump")
-            else value if isinstance(value, dict)
-            else {"id": str(getattr(value, "id", "")), "name": str(getattr(value, "name", ""))}
-            for value in values
-        ]
+        items = []
+        for value in values:
+            name = str(value.get("name", "") if isinstance(value, dict) else getattr(value, "name", ""))
+            if name in active:
+                dataset_id = str(value.get("id", "") if isinstance(value, dict) else getattr(value, "id", ""))
+                items.append({"id": dataset_id, "name": name, "ready": client.projection_ready,
+                              "summary_ready": client.global_context_ready(name)})
         return json.dumps({"datasets": items, "count": len(items)}, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="列出 Cognee 数据集")
@@ -1180,16 +1208,33 @@ async def list_cognee_datasets() -> str:
 
 @deferred_tool(
     group="memory", tags=["core", "heartbeat"], source="mind.memory",
-    description="显式运行指定 Cognee 数据集的知识图谱增强。仅对已确认存在的数据集使用。",
+    description="对 list_cognee_datasets 返回的当前数据集进行显式增强：summary 刷新主题摘要以供 recall(depth='overview')；"
+    "conflicts 审查相互冲突的事实并保留证据，不自动修改原始记忆。调用模型且可能较慢，普通事实查询无需先运行。",
+    timeout=1800.0,
+    schema_extra={"action": {"enum": ["summary", "conflicts"]}},
 )
-async def improve_cognee_dataset(dataset_name: str) -> str:
-    """增强指定 Cognee 数据集。"""
+async def improve_cognee_dataset(dataset_name: str, action: str = "summary") -> str:
+    """增强当前数据集，结果中的阶段状态表示实际完成情况。
+
+    Args:
+        dataset_name: list_cognee_datasets 返回的当前代际名称，不传旧代际或猜测名称。
+        action: summary 构建摘要；conflicts 审查矛盾，之后结合 recall 与 get_memory 核验来源。
+    """
     try:
         from .cognee.runtime import get_cognee_coordinator
         coordinator = get_cognee_coordinator()
         if not coordinator:
             return _cognee_not_ready()
-        result = await coordinator.improve(dataset_name)
+        if action not in {"summary", "conflicts"}:
+            return tool_error("无效增强动作", cause=ErrorCause.PARAM, retryable=False,
+                              hint="action 使用 summary 或 conflicts")
+        from .cognee.fusion import datasets_for_projection
+        if not coordinator.client.projection_ready or dataset_name not in datasets_for_projection(
+                coordinator.config, coordinator.client.projection_namespace):
+            return tool_error("数据集不是就绪的当前代际", cause=ErrorCause.STATE, retryable=False,
+                              hint="先查看 cognee_status 和 list_cognee_datasets")
+        result = await coordinator.improve(dataset_name, review_conflicts=action == "conflicts",
+                                           build_global_context_index=action == "summary")
         value = result.model_dump(mode="json") if hasattr(result, "model_dump") else result
         return json.dumps({"ok": True, "result": value}, ensure_ascii=False, default=str)
     except Exception as e:

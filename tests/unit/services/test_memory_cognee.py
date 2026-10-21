@@ -54,6 +54,7 @@ async def test_save_validates_before_persisting_or_reconfiguring(monkeypatch, co
     validate = Mock(side_effect=None if compatible else CogneeConfigError("不兼容的向量模型"))
     coordinator = SimpleNamespace(
         client=SimpleNamespace(validate_configuration=validate), reconfigure=AsyncMock(),
+        rebuild=SimpleNamespace(validate_config=Mock()),
     )
     monkeypatch.setattr("agent.memory.cognee.config.load_cognee_config", CogneeConfig)
     monkeypatch.setattr("agent.memory.cognee.config.save_cognee_config", saved)

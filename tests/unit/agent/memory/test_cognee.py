@@ -24,7 +24,7 @@ from agent.memory.cognee.config import (
     load_cognee_config,
 )
 from agent.memory.cognee.coordinator import CogneeCoordinator
-from agent.memory.cognee.fusion import datasets_for_scope, reciprocal_rank_fusion
+from agent.memory.cognee.fusion import datasets_for_projection, reciprocal_rank_fusion
 from agent.memory.cognee.llm_bridge import CogneeConfigError
 from agent.memory.cognee.types import CogneeAvailability
 from agent.memory.memory_store import MemoryStore
@@ -33,6 +33,19 @@ from agent.memory.memory_types import MemoryEntry, MemorySearchResult, MemoryTyp
 # ==================================================================
 # CogneeClient 公共边界
 # ==================================================================
+
+
+@pytest.mark.parametrize("serialized", [False, True])
+def test_chunk_external_metadata_is_restored_from_sdk_storage(serialized: bool) -> None:
+    import json
+
+    from agent.memory.cognee.client import _normalize_recall
+
+    metadata = {"anelf_memory_id": "7", "anelf_attribution": {"tags": ["future:value"], "sensitivity": "private"}}
+    results = _normalize_recall([{"kind": "chunk", "text": "原文", "raw": {
+        "external_metadata": json.dumps(metadata) if serialized else metadata,
+    }}])
+    assert results[0].metadata == metadata
 
 class _FakeConfig:
     def system_root_directory(self, _path: str) -> None:
@@ -214,19 +227,15 @@ def test_wal_recovery_patch_defaults_to_tolerant() -> None:
     assert _FakeAdapterModule.Database is patched
 
 
-def test_client_exposes_documented_public_boundary() -> None:
-    expected = {
-        "remember", "recall", "improve", "forget", "serve", "disconnect",
-        "push", "export", "add", "cognify", "search", "memify", "update",
-        "run_custom_pipeline", "run_migrations", "list_datasets",
-        "discover_datasets", "list_data", "has_data", "get_dataset_status",
-        "empty_dataset", "delete_data", "delete_all", "prune_data",
-        "prune_system", "visualize", "visualize_graph",
-        "get_schema_inventory", "get_memory_provenance_graph",
-        "visualize_memory_provenance", "enable_tracing", "disable_tracing",
-        "get_last_trace", "get_all_traces", "clear_traces",
-    }
-    assert expected.issubset(set(dir(CogneeClient)))
+def test_installed_sdk_supports_host_contract(monkeypatch) -> None:
+    import cognee
+
+    from agent.memory.cognee.sdk_contract import validate_sdk
+
+    validate_sdk(cognee)
+    monkeypatch.setattr(cognee, "recall", lambda query: None)
+    with pytest.raises(RuntimeError, match="recall"):
+        validate_sdk(cognee)
 
 
 @pytest.mark.asyncio
@@ -483,8 +492,13 @@ async def test_reset_cognee_projection_clears_queue_and_mappings(tmp_path) -> No
 class _FakeCogneeClient:
     def __init__(self) -> None:
         self.ready = True
+        self.projection_ready = True
+        self.projection_namespace = ""
         self.items: list[dict] = []
         self.deleted: list[tuple[str, str]] = []
+
+    async def close(self) -> None:
+        self.ready = False
 
     async def initialize(self) -> CogneeAvailability:
         return CogneeAvailability(
@@ -493,9 +507,9 @@ class _FakeCogneeClient:
             reason="" if self.ready else "请配置模型",
         )
 
-    async def make_data_item(self, data: str, *, label: str, external_metadata: dict, dataset_name: str = ""):
+    async def make_data_item(self, data: str, *, label: str, external_metadata: dict, dataset_name: str = "", node_set: list[str] | None = None):
         entry_id = external_metadata.get("anelf_memory_id") or external_metadata["anelf_graph_node_id"]
-        return {"data": data, "label": label, "external_metadata": external_metadata, "data_id": f"data-{entry_id}"}
+        return {"data": data, "label": label, "external_metadata": external_metadata, "data_id": f"data-{entry_id}", "node_set": node_set or []}
 
     async def add(self, data, **kwargs):
         self.items.extend(data)
@@ -506,7 +520,7 @@ class _FakeCogneeClient:
         return None
 
     async def improve(self, **_kwargs):
-        return None
+        return {"stages": [{"stage": "global_context_index", "status": "completed"}]}
 
     async def list_datasets(self):
         return [SimpleNamespace(id="dataset-id", name="anelf_global")]
@@ -559,7 +573,7 @@ async def test_worker_preserves_pending_until_models_are_ready(
     coordinator = CogneeCoordinator(store, client, CogneeConfig(data_root=str(tmp_path)))
     idle = asyncio.Event()
     projected = asyncio.Event()
-    process_batch = coordinator._process_batch
+    process_batch = coordinator._process_entries
 
     async def mark_idle() -> None:
         idle.set()
@@ -571,7 +585,7 @@ async def test_worker_preserves_pending_until_models_are_ready(
     claim = AsyncMock(wraps=store.claim_cognee_sync_batch)
     monkeypatch.setattr(store, "claim_cognee_sync_batch", claim)
     monkeypatch.setattr(coordinator, "_run_idle_job", mark_idle)
-    monkeypatch.setattr(coordinator, "_process_batch", process_and_notify)
+    monkeypatch.setattr(coordinator, "_process_entries", process_and_notify)
     monkeypatch.setattr(coordinator, "_maybe_compact", AsyncMock())
     monkeypatch.setattr("agent.memory.cognee.coordinator.cognee_storage_stats.schedule_refresh", Mock())
     try:
@@ -616,7 +630,8 @@ async def test_coordinator_projects_and_deletes_memory(tmp_path) -> None:
         assert attribution["tags"] == ["topic:deployment"]
         assert attribution["sensitivity"] == "private"
         assert attribution["provenance"]["origins"][0]["scope"] == "user_qq:1"
-        assert f"Memory ID: {memory_id}\n" in client.items[0]["data"]
+        assert client.items[0]["data"] == "projected"
+        assert attribution["provenance"]["anelf_memory_id"] == str(memory_id)
 
         mapping = await store.get_cognee_mapping(memory_id)
         assert mapping is not None
@@ -671,13 +686,8 @@ async def test_coordinator_projects_graph_nodes(tmp_path) -> None:
         )
         await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
 
-        # 实体型节点投影到各自 per-scope 关系数据集（scope 隔离），文档含关系内容
-        digest_1 = hashlib.sha256(b"qq:1").hexdigest()[:16]
-        digest_2 = hashlib.sha256(b"qq:2").hexdigest()[:16]
-        expected = {
-            edge["subject"]["id"]: f"anelf_relations_user_{digest_1}",
-            edge["object"]["id"]: f"anelf_relations_user_{digest_2}",
-        }
+        # 实体身份由完整 NodeSet 表达，所有关系进入同一内容分区。
+        expected = {edge["subject"]["id"]: "anelf_relations", edge["object"]["id"]: "anelf_relations"}
         for node_id, dataset_name in expected.items():
             mapping = await store.get_cognee_mapping(node_id, entry_kind="graph_node")
             assert mapping is not None
@@ -688,7 +698,7 @@ async def test_coordinator_projects_graph_nodes(tmp_path) -> None:
         # 节点归档 → 删除其投影（按 mapping 指向的数据集路由）
         await store.graph.set_node_archived("user:qq:2", True)
         await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
-        assert ("rel-qq-2", f"data-{edge['object']['id']}") in client.deleted
+        assert ("rel-dataset-id", f"data-{edge['object']['id']}") in client.deleted
         assert await store.get_cognee_mapping(
             edge["object"]["id"], entry_kind="graph_node",
         ) is None
@@ -837,7 +847,7 @@ async def test_graph_unchanged_document_skips_reprojection(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_graph_strength_drift_skips_reprojection(tmp_path) -> None:
-    """结构指纹不含强度/证据：关系被重复提及强化时不再整篇重投影。"""
+    """强度变化跳过投影，证据变化必须更新。"""
     store = MemoryStore(str(tmp_path / "memory.sqlite3"))
     store.set_cognee_projection_enabled(True)
     client = _GraphFakeClient()
@@ -849,9 +859,9 @@ async def test_graph_strength_drift_skips_reprojection(tmp_path) -> None:
         await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
         assert len(client.items) == 2
 
-        # 强度强化 + 证据刷新：文档文本变了但邻域结构未变 → 跳过重投影
+        # 仅强度变化不重投影
         await store.graph.add_relation(
-            "user:qq:1", "朋友", "user:qq:2", strength=0.9, evidence="新证据",
+            "user:qq:1", "朋友", "user:qq:2", strength=0.9,
         )
         await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
         assert len(client.items) == 2
@@ -1065,20 +1075,10 @@ async def test_projection_allowed_ignores_disabled_breaker(tmp_path) -> None:
 # RRF 融合与数据集作用域
 # ==================================================================
 
-def test_datasets_for_scope_isolated_and_hashed() -> None:
+def test_datasets_do_not_partition_by_first_tag_or_scope() -> None:
     config = CogneeConfig(dataset_prefix="test")
-
-    first = datasets_for_scope(config, "user_sensitive-id", None)
-    second = datasets_for_scope(config, "user_other-id", None)
-
-    assert first[0] == "test_global"
-    assert first[1] == "test_relations"  # 全局关系数据集（自由型节点）对所有 scope 开放
-    assert len(first) == 4
-    assert "sensitive-id" not in first[2]
-    assert first[2] != second[2]
-    # 实体型节点的 per-scope 关系投影数据集与记忆数据集同构派生
-    assert first[3] == f"test_relations_{first[2].removeprefix('test_')}"
-    assert first[3] != second[3]
+    assert datasets_for_projection(config) == ["test_global", "test_relations"]
+    assert datasets_for_projection(config, "next") == ["next_global", "next_relations"]
 
 
 def test_rrf_deduplicates_projected_native_memory() -> None:
@@ -1239,7 +1239,7 @@ async def test_upstream_compaction_is_owned_by_host(tmp_path, monkeypatch) -> No
 @pytest.mark.parametrize("operation", ["improve", "idle_inline", "idle_queued"])
 async def test_manual_maintenance_cannot_overlap_projection(store, operation) -> None:
     client = _FakeCogneeClient()
-    client.improve = AsyncMock(return_value="done")
+    client.improve = AsyncMock(return_value={"stages": [{"stage": "global_context_index", "status": "completed"}]})
     coordinator = CogneeCoordinator(store, client, CogneeConfig(write_breaker_enabled=False))
     async with coordinator._projection_lock:
         if operation == "improve":
@@ -1442,6 +1442,8 @@ async def test_coordinator_compact_idle_scheduling(tmp_path) -> None:
 # ==================================================================
 
 class _TargetingFakeClient:
+    projection_ready = True
+    projection_namespace = ""
     """定向检索假客户端：记录 recall 调用参数。"""
 
     def __init__(self):
@@ -1474,7 +1476,7 @@ async def test_search_cognee_targeted_lane_uses_node_names() -> None:
     targeted = [c for c in client.calls if c.get("node_name")]
     # 定向通道每数据集一次（不随 search_types 翻倍），node_name 透传 cognee
     assert len(targeted) == 1
-    assert targeted[0]["node_name"] == ["阿辰", "老王"]
+    assert targeted[0]["node_name"] == sorted(["阿辰", "老王"])
     assert targeted[0]["top_k"] == max(5, 5 * config.recall_pool_multiplier)
     # 常规通道不带 node_name
     assert len(client.calls) == 2
@@ -1496,7 +1498,7 @@ async def test_search_cognee_without_node_names_skips_targeted_lane() -> None:
 # ==================================================================
 
 class _ProjectionFakeClient(_TargetingFakeClient):
-    """返回带投影文档头的 chunk，验证边界解析。"""
+    """返回原文与结构化归属，验证边界解析。"""
 
     def __init__(self):
         super().__init__()
@@ -1508,10 +1510,8 @@ class _ProjectionFakeClient(_TargetingFakeClient):
             self._items = [
                 CogneeRecallItem(
                     id="cognee:1",
-                    content=(
-                        "Memory type: semantic\nSource: entity_1\nImportance: 0.6\n"
-                        "Tags: user:qq:1, topic:火锅\nMetadata: {}\n\n阿辰喜欢火锅"
-                    ),
+                    content="阿辰喜欢火锅",
+                    metadata={"anelf_attribution": {"tags": ["user:qq:1", "topic:火锅"]}},
                     score=0.9,
                     source="cognee_chunk",
                     dataset_name="anelf_global",
@@ -1530,7 +1530,7 @@ async def test_search_cognee_parses_projection_and_backfills_tags() -> None:
     )
     assert len(results) == 1
     r = results[0]
-    # 正文剥离头部字段（无 "Memory type:" 噪音），标签回填（归属标注/加权可用）
+    # 正文与管理元数据独立传递，标签回填供归属标注与加权使用。
     assert r.snippet == "阿辰喜欢火锅"
     assert r.tags == ["user:qq:1", "topic:火锅"]
 
@@ -1569,7 +1569,7 @@ async def test_cognify_timeout_keeps_projection_pending_and_retries_same_documen
         dataset_name="anelf_global", error_class="TimeoutError", error_message=None,
     ))
     warning = Mock()
-    monkeypatch.setattr("agent.memory.cognee.coordinator.log", warning)
+    monkeypatch.setattr("agent.memory.cognee.writer.log", warning)
     coordinator = CogneeCoordinator(store, client, CogneeConfig())
     items = await store.claim_cognee_sync_batch(10)
     await coordinator._process_batch(items)
@@ -1711,9 +1711,13 @@ async def test_close_cancels_pending_configuration(store: MemoryStore) -> None:
     async with coordinator._projection_lock:
         await coordinator.reconfigure(CogneeConfig(enabled=False))
         await asyncio.sleep(0)
-        await asyncio.wait_for(coordinator.close(), timeout=0.2)
+        closing = asyncio.create_task(coordinator.close())
+        await asyncio.sleep(0)
+        assert not closing.done()
+    await asyncio.wait_for(closing, timeout=0.2)
     assert not coordinator.configuration_pending
     assert coordinator.config.enabled
+    assert not client.ready
 
 
 async def test_configuration_failure_is_visible_and_recoverable(store: MemoryStore, monkeypatch: pytest.MonkeyPatch) -> None:
