@@ -5,8 +5,8 @@
 核心特性：
 1. **元数据声明**（ChannelMetadata）：让频道自描述，便于 WebUI 与文档生成
 2. **强类型配置**（ChannelConfig + 子类继承）：pydantic 校验，统一注册到 ConfigManager
-3. **统一发送入口**（forward_message）：所有发送动作都走 SendRequest，
-   子类只需实现 1 个抽象方法
+3. **统一发送入口**（forward_message）：基类便捷发送方法构造 SendRequest；
+   使用段分发模板的子类须实现映射所指向的 send_* 方法
 4. **健康探针**（health_check）：看门狗主动检测频道健康状态
 5. **命令扩展钩子**（detect_command / execute_command）：由频道按需接入
 6. **能力 / 信息查询**（get_self_info / get_user_info / get_channel_info）：
@@ -268,9 +268,9 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
         汇总为统一 SendResponse；单段失败不中断后续段。
 
         失败显式化契约（不静默）：
-        - 段类型无映射（本频道未声明支持）或 send_* 返回 success:false，
+        - 段类型无映射、只继承便捷发送方法或 send_* 返回 success:false，
           都记入失败清单，最终在 error 字段逐段列明；
-        - 任一段失败则整体 success=False（调用方据此标记未送达），
+        - 单段抛异常也继续处理后续段；任一段失败则整体 success=False（调用方据此标记未送达），
           已成功段的 message_ids 仍随响应返回。
 
         message_id 收集是尽力而为：部分频道无平台消息 ID（如 webui 的
@@ -284,10 +284,15 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
                 seg_type = seg.type.value
                 method_name = self._SEGMENT_SENDERS.get(seg_type)
                 method = getattr(self, method_name, None) if method_name else None
-                if method is None:
-                    failures.append(f"段类型 {seg_type} 不受支持（本频道无发送映射）")
+                base_method = getattr(BaseChannel, method_name, None) if method_name else None
+                if not callable(method) or getattr(method, "__func__", method) is base_method:
+                    failures.append(f"段类型 {seg_type} 不受支持（本频道无发送实现）")
                     continue
-                result_json = await self._call_segment_sender(method, seg, request, chat_id)
+                try:
+                    result_json = await self._call_segment_sender(method, seg, request, chat_id)
+                except Exception as exc:
+                    failures.append(f"段类型 {seg_type} 发送异常: {exc}")
+                    continue
                 ok, ids, error = self._parse_segment_result(result_json)
                 if not ok:
                     failures.append(f"段类型 {seg_type} 发送失败: {error}")
@@ -370,6 +375,7 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
         silent: bool = False,
         thread_id: Optional[int] = None,
         channel_type: str = "private",
+        session_id: str = "",
         extra: Optional[Dict[str, Any]] = None,
     ) -> SendRequest:
         """构造统一发送请求。"""
@@ -377,6 +383,9 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
             channel_id=chat_id,
             channel_type=ChannelType.GROUP if channel_type == "group" else ChannelType.PRIVATE,
         )
+        request_extra = dict(extra or {})
+        if session_id:
+            request_extra["session_id"] = session_id
         return SendRequest(
             adapter_key=self.channel_id,
             channel=channel,
@@ -385,7 +394,7 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
             parse_mode=parse_mode,
             silent=silent,
             thread_id=thread_id,
-            extra=extra or {},
+            extra=request_extra,
         )
 
     async def send_text(
@@ -474,9 +483,6 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
         )
         resp = await self.forward_message(req)
         return _ok({"message_id": resp.message_id}) if resp.success else _err(resp.error or "失败")
-
-    # 其他 send_* 略（编辑 / 删除 / 转发 / 置顶等保持旧接口，由 channel.py 提供默认实现）
-    # 这些暂时仍走旧 BaseChannel 的默认 _err("不支持 ...")，等 Phase 2 重构各 adapter 时统一接入
 
     # ------------------------------------------------------------------
     # 旧版兼容接口（各频道共用的薄封装，集中在基类维护）

@@ -485,6 +485,43 @@ def _make_started_channel(**cfg_overrides):
 
 
 class TestSendTextPipeline:
+    async def test_unsupported_segment_reports_partial_delivery(self, monkeypatch):
+        from agent.channel.schemas import AdapterChannel, SendRequest, SendSegment
+
+        ch = _make_started_channel()
+
+        async def sent_text(chat_id: str, content: str) -> str:
+            return "mid-text"
+
+        async def stop_typing(chat_id: str) -> None:
+            return None
+
+        monkeypatch.setattr(ch, "_send_text", sent_text)
+        monkeypatch.setattr(ch, "stop_typing", stop_typing)
+        resp = await ch.forward_message(SendRequest(
+            adapter_key="weixin",
+            channel=AdapterChannel(channel_id="user1"),
+            segments=[
+                SendSegment(type="text", content="你好"),
+                SendSegment(type="location", content="坐标"),
+            ],
+        ))
+        assert resp.success is False
+        assert "location" in (resp.error or "")
+        assert resp.message_ids == ["mid-text"]
+
+    async def test_missing_media_path_is_not_delivered(self):
+        from agent.channel.schemas import AdapterChannel, SendRequest, SendSegment
+
+        ch = _make_started_channel()
+        resp = await ch.forward_message(SendRequest(
+            adapter_key="weixin",
+            channel=AdapterChannel(channel_id="user1"),
+            segments=[SendSegment(type="image")],
+        ))
+        assert resp.success is False
+        assert "image" in (resp.error or "")
+
     async def test_send_message_fields(self, monkeypatch):
         from agent.channel.schemas import AdapterChannel, ChannelType, SendRequest, SendSegment
 

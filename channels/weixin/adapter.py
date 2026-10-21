@@ -678,10 +678,12 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
             return SendResponse(success=False, error="微信频道未连接")
         chat_id = request.channel.channel_id
         message_ids: List[str] = []
+        failures: List[str] = []
         try:
             for seg in request.segments:
                 if seg.type == SegmentType.TEXT:
                     if not (seg.content or "").strip():
+                        failures.append("文本段内容为空")
                         continue
                     await self.stop_typing(chat_id)
                     last_id = await self._send_text(chat_id, seg.content)
@@ -695,6 +697,7 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
                 }:
                     path = seg.file_path or seg.content
                     if not path:
+                        failures.append(f"{seg.type.value} 段缺少文件路径")
                         continue
                     await self.stop_typing(chat_id)
                     last_id = await self._send_media(
@@ -704,6 +707,15 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
                         force_file_attachment=(seg.type in {SegmentType.VOICE, SegmentType.AUDIO}),
                     )
                     message_ids.append(last_id)
+                else:
+                    failures.append(f"段类型 {seg.type.value} 不受支持")
+            if failures:
+                return SendResponse(
+                    success=False,
+                    error="；".join(failures),
+                    message_id=message_ids[-1] if message_ids else None,
+                    message_ids=message_ids,
+                )
             return SendResponse(
                 success=True,
                 message_id=message_ids[-1] if message_ids else None,
@@ -711,7 +723,12 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
             )
         except Exception as exc:
             log(f"微信: 发送失败 to={chat_id[:8]}: {exc}", "ERROR", tag="通道")
-            return SendResponse(success=False, error=str(exc))
+            return SendResponse(
+                success=False,
+                error=str(exc),
+                message_id=message_ids[-1] if message_ids else None,
+                message_ids=message_ids,
+            )
 
     # ------------------------------------------------------------------
     # 文本发送（分块 + 重试 + 限频熔断）

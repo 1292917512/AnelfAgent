@@ -65,6 +65,7 @@
   `/api/chat/stream` 或 `callback_url` 投递，长任务不受 `reply_timeout` 约束。
 - **`callback_url`**：携带即把本会话的出站回调注册为该地址（仅 http/https），
   后续回复与主动消息都推送到它；进程重启后需重新注册（或用频道默认回调配置兜底）。
+  显式 `session_id` 的子会话分别登记回调与同步等待；回调负载和 `reply` 帧会携带该字段。
 - 响应 `status`：`ok` / `accepted` / `timeout` / `duplicate` / `error`（`error` 字段带原因）。
 
 ### `POST /api/vision/push` — 外部视觉源推帧
@@ -105,7 +106,8 @@
 | `reply` | 一条完整文本（异步回复、进度消息、通知） |
 | `turn_end` | 一轮结束（`error` 标记） |
 
-30 秒无帧发 `event: ping` 保活。订阅前缀匹配会话：`user_id` 覆盖其全部 `session_id` 会话。
+30 秒无帧发 `event: ping` 保活。订阅前缀匹配会话：`user_id` 覆盖其全部 `session_id` 会话；
+子会话的 `reply` 帧携带 `session_id`，供客户端区分。
 
 ### `GET /health` — 健康探针
 
@@ -124,7 +126,7 @@ AI 侧无需感知 HTTP 细节：它照常回复或 `send_message`，频道按**
 {
   "event": "message",
   "chat_id": "sensor_hub",
-  "message_id": "http-1730000000000",
+  "message_id": "http-4f8a2d94c7b0477cb9b5f4012059d3a1",
   "segments": [
     {"type": "text", "text": "已布防"},
     {"type": "image", "caption": "现场", "path": "/…/x.jpg", "base64": "…", "mime_type": "image/jpeg"}
@@ -133,9 +135,10 @@ AI 侧无需感知 HTTP 细节：它照常回复或 `send_message`，频道按**
 }
 ```
 
-媒体段（image/video/audio/voice/file）只经回调投递：本地文件 ≤ 20MB 时内联 `base64`，
-否则仅给服务端 `path`。两个投递面都不可达时消息丢弃并记 WARNING（审批提示等通知不阻塞）。
-接收方按 `message_id` 去重。
+含媒体段（image/video/audio/voice/file）的消息整体只经回调投递：本地文件 ≤ 20MB 时内联
+`base64`，否则仅给服务端 `path`。无订阅者或回调时返回投递失败；通知调用方可自行决定是否
+忽略失败，不能把未送达的消息记为已发送。
+接收方按 `message_id` 去重；它是不透明标识，不应依赖其字符格式。
 
 ## 给调用方的建议
 

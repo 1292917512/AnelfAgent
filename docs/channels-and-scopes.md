@@ -6,12 +6,21 @@
 ## 频道适配器基础
 
 - 目录自动发现 + 热插拔 `sync_channels`（对账范式，见[架构分册](architecture-reference.md)）
-- 继承 BaseChannel，必需接口：channel_id / display_name / capabilities / start / stop / send_text
+- 继承 BaseChannel，声明 `channel_id` / `display_name` / `capabilities` / `metadata` / `_Configs`；
+  实现 `start` / `stop` / `forward_message` / `get_self_info` / `get_channel_info` /
+  `health_check` 六个抽象方法。`send_text` 是经 `forward_message` 的默认便捷入口，平台可覆盖
 - 频道经类属性 `display_order`（默认 100）自声明排序；`list_adapters` 按 (order, key) 排序
 - 频道工具桥（`agent/channel/tool_bridge.py`）：`@channel_tool` 扫描注册 / 通用能力路由 /
   敏感门控 / 按频道接口开关 channel_tool_states
 - 频道目录应自持有适配器、配置模型、协议、技能、前端与测试；插件负载、运行时数据和源码目录是
   不同对象：更新源码后必须通过该频道的安装/升级入口同步负载，不要把生成的运行时目录当作源码提交
+- 非空 `forward_message` 请求仅在请求段已交给真实接收端后返回 `success=true`；不支持的段、缺失媒体路径、
+  无可用投递端均须显式失败。部分段已送达时保留其 `message_ids`，不能把整条请求记为成功
+- 使用 `_forward_via_segment_map` 时映射的 `send_*` 必须有频道实际实现；只继承基类便捷方法的
+  段类型会显式失败，避免便捷方法再次进入 `forward_message`。单段发送异常不会阻断后续段
+
+CLI 频道使用相同的配置模型与发现机制；`python -m channels.cli` 启用终端交互并关闭 WebUI，
+其他已启用频道仍按配置启动。在普通服务中启用 CLI 只提供终端文本输出，不自动读取标准输入。
 
 QQ 戳一戳保持平台事件类型：群聊由 `user_id` 标识发起者；NapCat 私聊的 `user_id` 是会话好友，
 `sender_id` 才是发起者，`target_id` 是被戳者。事件正文分别标明双方账号和机器人自身，
@@ -30,7 +39,8 @@ http_api 频道是外部系统的双向 HTTP 门户（默认 127.0.0.1:8091，�
 （文本 + images + media base64 落盘为媒体段）、/api/vision/push 与 WS /api/vision/stream
 （视觉单帧/持续推流，与 web 端共用 `push_external_frame`，判变注入由系统内部完成）、
 /api/chat/stream（SSE 帧）；出站按 同步响应 → SSE 订阅 → webhook 回调（请求级 callback_url
-注册优先，http_api_callback_url 兜底）三级级联，媒体段只经回调投递（≤20MB 内联 base64）。
+注册优先，http_api_callback_url 兜底）三级级联，含媒体的消息整体只经回调投递
+（≤20MB 内联 base64）；没有实际接收端时出站返回失败。
 报文契约见 channels/http_api/README.md；频道内会话规则经 reply_policy 注入，完整接入契约
 由 `http_api_portal_help` 频道工具按生效配置实时生成供 AI 自取。
 

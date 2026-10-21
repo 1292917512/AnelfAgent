@@ -29,18 +29,24 @@ _PID_FILE = Path(__file__).resolve().parent / "logs" / "anelf.pid"
 def _setup_faulthandler() -> None:
     """启用故障转储：致命错误自动打印堆栈；运行期可 kill -USR1 <pid> 在线抓全线程栈。"""
     faulthandler.enable()
-    with contextlib.suppress(AttributeError, ValueError, OSError, RuntimeError):
-        faulthandler.register(signal.SIGUSR1, all_threads=True)
+    register = getattr(faulthandler, "register", None)
+    sigusr1 = getattr(signal, "SIGUSR1", None)
+    if register is not None and sigusr1 is not None:
+        with contextlib.suppress(ValueError, OSError, RuntimeError):
+            register(sigusr1, all_threads=True)
 
 
 def create_application(args: argparse.Namespace) -> Application:
     """装配应用：启动步骤注册到 startup 流程，关停前置钩子注入宿主。"""
     app = Application()
+    cli_mode = bool(getattr(args, "cli", False))
 
     @app.startup.node(skip_on_error=False)
     async def init_foundation() -> None:
         """初始化配置中心并开启文件日志。"""
         from core.async_helper import register_shared_executor
+        if cli_mode:
+            os.environ["ANELF_CLI_ENABLED"] = "true"
         register_shared_executor()
         ConfigManager.initialize()
         enable_file_logging()
@@ -90,7 +96,10 @@ def create_application(args: argparse.Namespace) -> Application:
         hooks_path = str(ConfigPaths.HOOKS)
         reload_hooks(hooks_path)
         # 无条件监听：watcher 轮询路径，启动时不存在、运行中新建也能捕获
-        get_config_watcher().watch(hooks_path, lambda p=hooks_path: reload_hooks(p))
+        def on_hooks_changed() -> None:
+            reload_hooks(hooks_path)
+
+        get_config_watcher().watch(hooks_path, on_hooks_changed)
         log(f"用户 hooks 热更新监听已启动: {hooks_path}", tag="Hook")
 
     if not args.no_webui:
@@ -104,6 +113,41 @@ def create_application(args: argparse.Namespace) -> Application:
             Lifecycle.register(
                 "web_server", service,
                 on_start=service.start, cleanup=service.stop,
+            )
+
+    if cli_mode:
+        @app.startup.node(skip_on_error=False, depends_on=["run_bootstrap"])
+        async def register_cli_input() -> None:
+            """把终端输入接入已启动的频道与应用生命周期。"""
+            from channels.cli.adapter import run_cli
+            from core.lifecycle import Lifecycle
+
+            input_task: asyncio.Task[None] | None = None
+
+            def start_cli_input() -> None:
+                nonlocal input_task
+                input_task = asyncio.create_task(run_cli(), name="agent.cli_input")
+
+                def on_cli_done(task: asyncio.Task[None]) -> None:
+                    if task.cancelled():
+                        return
+                    error = task.exception()
+                    if error is not None:
+                        log(f"终端输入已停止: {error}", "ERROR", tag="通道")
+                    Lifecycle.request_shutdown()
+
+                input_task.add_done_callback(on_cli_done)
+
+            async def stop_cli_input() -> None:
+                if input_task is not None:
+                    if not input_task.done():
+                        input_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await input_task
+
+            Lifecycle.register(
+                "cli_input", None,
+                on_start=start_cli_input, cleanup=stop_cli_input,
             )
 
     async def _flush_pending_memory() -> None:
@@ -136,12 +180,13 @@ def create_application(args: argparse.Namespace) -> Application:
     return app
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     """进程级准备：解析参数、设置日志、启用 faulthandler，然后进入异步主流程。"""
     parser = argparse.ArgumentParser(description='AnelfAgent')
     parser.add_argument('--log-level', choices=level_emoji.keys(), default='DEBUG')
     parser.add_argument('--no-webui', action='store_true', help='不启动 WebUI')
-    args = parser.parse_args()
+    parser.add_argument('--cli', action='store_true', help='启用终端交互频道')
+    args = parser.parse_args(argv)
     set_log_level(args.log_level)
     _setup_faulthandler()
 

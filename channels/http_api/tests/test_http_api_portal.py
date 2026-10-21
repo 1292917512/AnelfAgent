@@ -152,9 +152,23 @@ class TestCallbackDelivery:
     def test_session_callback_overrides_default(self, http_capture) -> None:
         ConfigManager.set("http_api_callback_url", "http://default.local/")
         channel = HttpApiChannel()
-        channel._callbacks["u1"] = "http://session.local/"
-        asyncio.run(channel.send_text("u1", "hi"))
+        channel._register_callback("u1", "http://session.local/", "topic-1")
+        asyncio.run(channel.send_text("u1", "hi", session_id="topic-1"))
         assert http_capture[0][0] == "http://session.local/"
+        assert http_capture[0][1]["session_id"] == "topic-1"
+
+    def test_callbacks_follow_subsession(self, http_capture) -> None:
+        channel = HttpApiChannel()
+        channel._register_callback("u1", "http://first.local/", "topic-1")
+        channel._register_callback("u1", "http://second.local/", "topic-2")
+
+        asyncio.run(channel.send_text("u1", "one", session_id="topic-1"))
+        asyncio.run(channel.send_text("u1", "two", session_id="topic-2"))
+
+        assert [item[0] for item in http_capture] == [
+            "http://first.local/", "http://second.local/",
+        ]
+        assert [item[1]["session_id"] for item in http_capture] == ["topic-1", "topic-2"]
 
     def test_callback_bearer_token_header(self, http_capture) -> None:
         ConfigManager.set("http_api_callback_url", "http://hook.local/")
@@ -200,7 +214,7 @@ class TestCallbackDelivery:
         assert seg["base64"] == base64.b64encode(b"\xff\xd8\xff\xd9").decode()
 
     def test_forward_message_media_goes_callback(self, http_capture) -> None:
-        """无 SSE 订阅者时，媒体通知经回调投递且按 fire-and-forget 成功。"""
+        """媒体消息经回调完整投递后才返回成功。"""
         ConfigManager.set("http_api_callback_url", "http://hook.local/")
         channel = HttpApiChannel()
         from agent.channel.schemas import AdapterChannel, SegmentType, SendRequest, SendSegment
@@ -212,8 +226,12 @@ class TestCallbackDelivery:
         resp = asyncio.run(channel.forward_message(request))
         assert resp.success is True
         assert http_capture[0][1]["segments"][0]["type"] == "file"
+        assert resp.message_id == http_capture[0][1]["message_id"]
+        second = asyncio.run(channel.forward_message(request))
+        assert second.message_id == http_capture[1][1]["message_id"]
+        assert second.message_id != resp.message_id
 
-    def test_forward_message_fire_and_forget(self) -> None:
+    def test_forward_message_without_recipient_fails(self) -> None:
         channel = HttpApiChannel()
         from agent.channel.schemas import AdapterChannel, SegmentType, SendRequest, SendSegment
         request = SendRequest(
@@ -221,7 +239,82 @@ class TestCallbackDelivery:
             channel=AdapterChannel(channel_id="u1"),
             segments=[SendSegment(type=SegmentType.TEXT, content="通知")],
         )
-        assert asyncio.run(channel.forward_message(request)).success is True
+        resp = asyncio.run(channel.forward_message(request))
+        assert resp.success is False
+        assert "无 SSE 订阅者或可用回调" in (resp.error or "")
+
+    def test_forward_message_text_reaches_sse_subscriber(self) -> None:
+        from agent.channel.schemas import AdapterChannel, SendRequest, SendSegment
+        from channels.http_api.adapter import _StreamSub
+
+        channel = HttpApiChannel()
+        sub = _StreamSub("user_http_api:u1")
+        channel._stream_subs.append(sub)
+        response = asyncio.run(channel.forward_message(SendRequest(
+            adapter_key="http_api",
+            channel=AdapterChannel(channel_id="u1"),
+            segments=[SendSegment(type="text", content="通知")],
+        )))
+        assert response.success is True
+        assert json.loads(sub.queue.get_nowait()) == {"type": "reply", "content": "通知"}
+
+    def test_forward_message_subsession_reaches_sse_with_session_id(self) -> None:
+        from agent.channel.schemas import AdapterChannel, SendRequest, SendSegment
+        from channels.http_api.adapter import _StreamSub
+
+        channel = HttpApiChannel()
+        sub = _StreamSub("user_http_api:u1")
+        channel._stream_subs.append(sub)
+        response = asyncio.run(channel.forward_message(SendRequest(
+            adapter_key="http_api",
+            channel=AdapterChannel(channel_id="u1"),
+            segments=[SendSegment(type="text", content="进度")],
+            extra={"session_id": "topic-1"},
+        )))
+        assert response.success is True
+        assert json.loads(sub.queue.get_nowait()) == {
+            "type": "reply", "content": "进度", "session_id": "topic-1",
+        }
+
+    def test_forward_message_media_needs_callback_even_with_text_subscriber(self) -> None:
+        from agent.channel.schemas import AdapterChannel, SendRequest, SendSegment
+        from channels.http_api.adapter import _StreamSub
+
+        channel = HttpApiChannel()
+        sub = _StreamSub("user_http_api:u1")
+        channel._stream_subs.append(sub)
+        request = SendRequest(
+            adapter_key="http_api",
+            channel=AdapterChannel(channel_id="u1"),
+            segments=[
+                SendSegment(type="text", content="报告"),
+                SendSegment(type="file", file_path="/tmp/report.pdf"),
+            ],
+        )
+        resp = asyncio.run(channel.forward_message(request))
+        assert resp.success is False
+        assert "媒体消息无可用回调" in (resp.error or "")
+        assert sub.queue.empty()
+
+    @pytest.mark.parametrize(
+        ("segment_type", "expected_error"),
+        [("location", "不受支持"), ("image", "缺少文件路径")],
+    )
+    def test_forward_message_rejects_unrepresentable_segments(
+        self, segment_type: str, expected_error: str, http_capture,
+    ) -> None:
+        from agent.channel.schemas import AdapterChannel, SendRequest, SendSegment
+
+        ConfigManager.set("http_api_callback_url", "http://hook.local/")
+        channel = HttpApiChannel()
+        response = asyncio.run(channel.forward_message(SendRequest(
+            adapter_key="http_api",
+            channel=AdapterChannel(channel_id="u1"),
+            segments=[SendSegment(type=segment_type, content="value")],
+        )))
+        assert response.success is False
+        assert expected_error in (response.error or "")
+        assert not http_capture
 
 
 class TestInboundMedia:
@@ -333,7 +426,7 @@ class TestChatEndpoint:
             }],
         })
         assert resp.status_code == 200 and resp.json()["status"] == "accepted"
-        assert channel._callbacks.get("hub") == "http://hub.local/cb"
+        assert channel._callbacks.get(("hub", "hub")) == "http://hub.local/cb"
         call = fake_agent_app[0]
         assert call["media_segments"] and call["media_segments"][0].type.value == "audio"
         assert call["adapter_key"] == "http_api"
@@ -374,6 +467,17 @@ class TestChatEndpoint:
             resp = client.post("/api/chat", json={
                 "message": "hi", "user_id": uid, "async_mode": True,
                 "message_id": "m-1",
+            })
+            assert resp.json()["status"] == "accepted"
+        assert len(fake_agent_app) == 2
+
+    def test_dedup_namespaced_per_subsession(self, fake_agent_app) -> None:
+        channel = HttpApiChannel()
+        client = _client(channel)
+        for session_id in ("topic-1", "topic-2"):
+            resp = client.post("/api/chat", json={
+                "message": "hi", "user_id": "u1", "session_id": session_id,
+                "async_mode": True, "message_id": "m-1",
             })
             assert resp.json()["status"] == "accepted"
         assert len(fake_agent_app) == 2

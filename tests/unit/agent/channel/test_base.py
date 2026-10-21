@@ -1,6 +1,7 @@
 """BaseChannel v2 抽象基类测试。"""
 
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -108,6 +109,31 @@ async def test_send_text_convenience():
     import json
     data = json.loads(result)
     assert data["success"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "media"),
+    [
+        ("send_photo", "image.png"),
+        ("send_video", "video.mp4"),
+        ("send_audio", "audio.mp3"),
+        ("send_voice", "voice.ogg"),
+        ("send_file", "report.pdf"),
+    ],
+)
+async def test_media_convenience_preserves_session(method: str, media: str):
+    ch = DummyChannel()
+    ch.forward_message = AsyncMock(return_value=SendResponse(success=True, message_id="mid"))
+
+    result = await getattr(ch, method)(
+        "group-1", media, channel_type="group", session_id="topic-1",
+    )
+
+    assert json.loads(result)["success"] is True
+    request = ch.forward_message.await_args.args[0]
+    assert request.channel.channel_type == ChannelType.GROUP
+    assert request.extra["session_id"] == "topic-1"
 
 
 @pytest.mark.asyncio
@@ -225,6 +251,25 @@ class TestSegmentMapFailures:
         assert resp.success is False
         assert "video" in resp.error
         assert resp.message_ids  # 已成功的 text 段 id 仍随响应返回
+
+    async def test_inherited_convenience_sender_does_not_recurse(self):
+        ch = SegmentMapChannel()
+        ch._SEGMENT_SENDERS = {**ch._SEGMENT_SENDERS, "video": "send_video"}
+        resp = await ch.forward_message(_seg_request("video"))
+        assert resp.success is False
+        assert "无发送实现" in (resp.error or "")
+
+    async def test_sender_exception_keeps_processing_later_segments(self):
+        ch = SegmentMapChannel()
+
+        async def failed_photo(chat_id: str, photo: str, **kwargs):
+            raise RuntimeError("平台断连")
+
+        ch.send_photo = failed_photo
+        resp = await ch.forward_message(_seg_request("image", "text"))
+        assert resp.success is False
+        assert "平台断连" in (resp.error or "")
+        assert resp.message_ids == ["mid-正文"]
 
     async def test_send_failure_reported_with_reason(self):
         ch = SegmentMapChannel()

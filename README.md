@@ -71,6 +71,7 @@ start.bat                  # Windows
 ./restart.sh               # 一键后台重启（改配置/更新代码后用）
 Ctrl + C                   # 停止（start.sh 前台运行时）
 uv run python launch.py --no-webui   # 只跑 Agent 内核，不开网页
+uv run python -m channels.cli         # 启用终端交互并关闭 WebUI
 ```
 
 - `start.sh` 自带**崩溃守护**：进程异常崩溃自动拉起，连续崩溃 5 次才停手
@@ -396,7 +397,7 @@ async def get_weather(city: str) -> str:
 
 ### 添加频道
 
-在 `channels/{name}/` 提供：`adapter.py`（继承 `BaseChannel`）+ `config.py`（暴露 `CONFIG_MODEL` pydantic 模型）+ `channel_config.json` + `__init__.py`（导出 `CHANNEL_CLASS`）。
+在 `channels/{name}/` 提供：`adapter.py`（继承 `BaseChannel`）+ `config.py`（暴露 `CONFIG_MODEL` pydantic 模型）+ `__init__.py`。`adapter.py` 可导出 `CHANNEL_CLASS` 以明确频道类；未导出时自动扫描 `BaseChannel` 子类。`channel_config.json` 保存运行时配置值，不属于必需源码。
 
 配置字段只在 `CONFIG_MODEL` 声明，通过 `set_channel_config` 写入；会话标识通过 `build_entity_scope` 构造。频道与实体测试随模块放入 `tests/`，使用唯一测试文件名（如 `test_weather_tools.py`），避免全仓收集时模块重名。
 

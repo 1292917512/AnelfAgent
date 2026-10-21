@@ -4,7 +4,8 @@
 POST /api/vision/push 外部视觉源单帧推送、WS /api/vision/stream 持续推流、
 GET /api/chat/stream 订阅回复流式帧（delta / tool_call / reply / turn_end）。
 出站：同步响应 → SSE 订阅 → webhook 回调（ChatRequest.callback_url 按会话注册，
-config.callback_url 兜底）三级投递级联；媒体经回调以结构化段投递（小文件内联 base64）。
+config.callback_url 兜底）三级投递级联；含媒体的完整消息经回调以结构化段投递
+（小文件内联 base64），无可用接收端返回失败。
 AI 自助：portal_help 工具返回按生效配置实时生成的完整接入契约。
 
 Model Experience:
@@ -51,6 +52,7 @@ from agent.channel.schemas import (
     notification_sender,
 )
 from agent.channel.tool_bridge import channel_tool
+from agent.messages import build_entity_scope
 from core.log import log
 
 from .config import HttpApiConfig
@@ -168,12 +170,12 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
     _Configs = HttpApiConfig
 
     def __init__(self) -> None:
-        self._pending_replies: Dict[str, asyncio.Future[str]] = {}
+        self._pending_replies: Dict[tuple[str, str], asyncio.Future[str]] = {}
         self._server: Optional[Any] = None
         self._server_task: Optional[asyncio.Task[None]] = None
         self._stream_subs: List[_StreamSub] = []
-        # chat_id → 会话级出站回调（请求携带 callback_url 时注册/更新）
-        self._callbacks: Dict[str, str] = {}
+        # (chat_id, session_id) → 会话级出站回调
+        self._callbacks: Dict[tuple[str, str], str] = {}
         # message_id 去重：客户端重试/网络重发不重复入管道（全频道共用去重器）
         self._dedup = MessageDedup()
         super().__init__()
@@ -252,7 +254,8 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
             "outbound": {
                 "cascade": ["同步响应（pending 请求）", "SSE 订阅 reply 帧", "webhook 回调 POST"],
                 "callback_url": cfg.callback_url or "未配置默认回调（请求可带 callback_url 按会话注册）",
-                "payload": "{event, chat_id, message_id, segments, ts}；媒体段 ≤20MB 内联 base64，否则仅 path",
+                "payload": "{event, chat_id, message_id, segments, ts, session_id?}；媒体段 ≤20MB 内联 base64，否则仅 path",
+                "delivery": "含媒体消息整体经回调；无订阅者或可用回调时返回投递失败",
             },
             "limits": {
                 "reply_timeout_s": cfg.reply_timeout,
@@ -379,16 +382,20 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
 
     async def send_text(self, chat_id: str, text: str, **kwargs: Any) -> str:
         """回复 HTTP API 调用方（pending future → SSE 订阅者 → webhook 回调级联）。"""
-        fut = self._pending_replies.pop(chat_id, None)
+        session_id = str(kwargs.get("session_id") or "")
+        fut = self._pending_replies.pop(self._delivery_key(chat_id, session_id), None)
         if fut and not fut.done():
             fut.set_result(text)
             return _ok({"chat_id": chat_id})
         # async 模式：无 pending future 时经 SSE reply 帧投递最终文本
-        if self._deliver_to_subscribers(chat_id, {"type": "reply", "content": text}):
+        payload: Dict[str, Any] = {"type": "reply", "content": text}
+        if session_id and session_id != chat_id:
+            payload["session_id"] = session_id
+        if self._deliver_to_subscribers(chat_id, payload):
             return _ok({"chat_id": chat_id, "delivery": "stream"})
         segments = [SendSegment(type=SegmentType.TEXT, content=text)]
         try:
-            if await self._deliver_callback(chat_id, segments):
+            if await self._deliver_callback(chat_id, segments, session_id=session_id):
                 return _ok({"chat_id": chat_id, "delivery": "callback"})
         except Exception as exc:
             return _err(f"回调投递失败: chat_id={chat_id}: {exc}")
@@ -397,8 +404,8 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
     def _deliver_to_subscribers(self, chat_id: str, payload: Dict[str, Any]) -> bool:
         """向匹配该 chat 的 SSE 订阅者推送一帧，返回是否有订阅者送达。"""
         candidates = (
-            f"user_{self.channel_id}:{chat_id}",
-            f"group_{self.channel_id}:{chat_id}",
+            build_entity_scope("user", self.channel_id, chat_id),
+            build_entity_scope("group", self.channel_id, chat_id),
         )
         data = json.dumps(payload, ensure_ascii=False)
         delivered = False
@@ -415,29 +422,44 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
     # 出站 webhook 回调（AI → 外部系统）
     # ------------------------------------------------------------------
 
-    def _resolve_callback(self, chat_id: str) -> str:
-        """会话级回调优先，频道默认回调兜底。"""
-        return self._callbacks.get(chat_id) or self.config.callback_url
+    @staticmethod
+    def _delivery_key(chat_id: str, session_id: str = "") -> tuple[str, str]:
+        """统一归一化 HTTP 身份与子会话投递键。"""
+        return chat_id, session_id or chat_id
 
-    def _register_callback(self, chat_id: str, url: str) -> None:
+    def _resolve_callback(self, chat_id: str, session_id: str = "") -> str:
+        """会话级回调优先，频道默认回调兜底。"""
+        return (
+            self._callbacks.get(self._delivery_key(chat_id, session_id))
+            or self._callbacks.get(self._delivery_key(chat_id))
+            or self.config.callback_url
+        )
+
+    def _register_callback(self, chat_id: str, url: str, session_id: str = "") -> None:
         """登记会话级回调；表满时淘汰最旧条目（dict 保插入序）。"""
-        self._callbacks.pop(chat_id, None)
+        key = self._delivery_key(chat_id, session_id)
+        self._callbacks.pop(key, None)
         while len(self._callbacks) >= _MAX_CALLBACKS:
             self._callbacks.pop(next(iter(self._callbacks)))
-        self._callbacks[chat_id] = url
+        self._callbacks[key] = url
 
-    async def _deliver_callback(self, chat_id: str, segments: List[SendSegment]) -> bool:
+    async def _deliver_callback(
+        self, chat_id: str, segments: List[SendSegment], *,
+        message_id: str | None = None, session_id: str = "",
+    ) -> bool:
         """把消息段 POST 到 webhook 回调；未配置回调返回 False，投递失败抛错由调用方归因。"""
-        url = self._resolve_callback(chat_id)
+        url = self._resolve_callback(chat_id, session_id)
         if not url:
             return False
         payload: Dict[str, Any] = {
             "event": "message",
             "chat_id": chat_id,
-            "message_id": f"http-{int(time.time() * 1000)}",
+            "message_id": message_id or f"http-{uuid.uuid4().hex}",
             "segments": [await self._serialize_segment(seg) for seg in segments],
             "ts": time.time(),
         }
+        if session_id and session_id != chat_id:
+            payload["session_id"] = session_id
         headers: Dict[str, str] = {}
         if self.config.callback_token:
             headers["authorization"] = f"Bearer {self.config.callback_token}"
@@ -600,9 +622,10 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
                 provided = auth[7:].strip()
         return bool(provided) and hmac.compare_digest(provided, token)
 
-    def _expect_reply(self, reply_key: str) -> asyncio.Future[str]:
+    def _expect_reply(self, chat_id: str, session_id: str = "") -> asyncio.Future[str]:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[str] = loop.create_future()
+        reply_key = self._delivery_key(chat_id, session_id)
         # 同 key 已有挂起请求（同用户并发调用）：立即失败旧 future——
         # 否则旧请求干等超时，且 Agent 回复会错配给新请求
         old = self._pending_replies.get(reply_key)
@@ -642,24 +665,28 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
             if error:
                 return ChatResponse(request_id=req.request_id, status="error", error=error)
             reply_key = req.group_id if req.group_id else req.user_id
+            delivery_key = adapter._delivery_key(reply_key, req.session_id)
             message_id = req.message_id or req.request_id
             kind = MessageKind(req.kind)
             is_notification = kind == MessageKind.NOTIFICATION
             # 去重登记在落盘之前：重试风暴不重复入管道；校验失败的请求不消耗 id。
             # 键按会话命名空间隔离，不同调用方的同号 id 互不误伤
-            if adapter._dedup.is_duplicate(f"{reply_key}:{message_id}"):
+            if adapter._dedup.is_duplicate(json.dumps([*delivery_key, message_id])):
                 return ChatResponse(
                     request_id=req.request_id, status="duplicate",
                     error="消息已受理（重复 message_id），不重复投递",
                 )
             if req.callback_url and not is_notification:
-                adapter._register_callback(reply_key, req.callback_url)
+                adapter._register_callback(reply_key, req.callback_url, req.session_id)
             # 通知不产生对调用方的同步回复（通知中心语义），强制异步受理
-            fut = None if (req.async_mode or is_notification) else adapter._expect_reply(reply_key)
+            fut = None if (req.async_mode or is_notification) else adapter._expect_reply(
+                reply_key, req.session_id,
+            )
             try:
                 segments = await adapter._build_inbound_segments(req)
             except (ValueError, OverflowError) as exc:
-                adapter._pending_replies.pop(reply_key, None)
+                if fut is not None and adapter._pending_replies.get(delivery_key) is fut:
+                    adapter._pending_replies.pop(delivery_key, None)
                 if fut is not None and not fut.done():
                     fut.cancel()
                 return ChatResponse(request_id=req.request_id, status="error", error=str(exc))
@@ -706,12 +733,15 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
             try:
                 reply = await asyncio.wait_for(fut, timeout=timeout)
             except asyncio.TimeoutError:
-                adapter._pending_replies.pop(reply_key, None)
+                if adapter._pending_replies.get(delivery_key) is fut:
+                    adapter._pending_replies.pop(delivery_key, None)
                 return ChatResponse(
                     request_id=req.request_id,
                     status="timeout",
                     error=f"Agent 回复超时（{timeout}s）",
                 )
+            except RuntimeError as exc:
+                return ChatResponse(request_id=req.request_id, status="error", error=str(exc))
 
             return ChatResponse(request_id=req.request_id, reply=reply)
 
@@ -726,7 +756,7 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
                 )
             from sse_starlette.sse import EventSourceResponse
 
-            sub = _StreamSub(f"user_{adapter.channel_id}:{user_id}")
+            sub = _StreamSub(build_entity_scope("user", adapter.channel_id, user_id))
             adapter._stream_subs.append(sub)
 
             async def event_generator():
@@ -820,33 +850,55 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
     # ------------------------------------------------------------------
 
     async def forward_message(self, request: SendRequest) -> SendResponse:
-        """通知/主动消息入口：SSE 订阅者与 webhook 回调双投递面。
+        """向 SSE 订阅者或回调投递完整消息，仅在确认送达时返回成功。
 
-        文本段经 SSE reply 帧推送（机器消费面）；含媒体段或无订阅者时，
-        完整段集 POST 到回调。同步模式的 pending future 由回复路径
-        （send_text）独占——审批提示等通知若解析掉 future，HTTP 调用方会把
-        提示文本当作最终答复，真实回复无处投递。两个投递面都不可达时按
-        fire-and-forget 处理（审批决策在 WebUI 面板进行，不依赖本频道的
-        提示可达性），记 WARNING 留痕。
+        含媒体的请求整体走回调；同步模式的 pending future 由 send_text 独占，
+        避免通知占用最终答复的位置。
         """
         try:
             chat_id = request.channel.channel_id
+            session_id = str(request.extra.get("session_id") or "")
+            media_types = {
+                SegmentType.IMAGE, SegmentType.VIDEO, SegmentType.AUDIO,
+                SegmentType.VOICE, SegmentType.FILE,
+            }
+            for seg in request.segments:
+                if seg.type == SegmentType.TEXT:
+                    continue
+                if seg.type not in media_types:
+                    return SendResponse(success=False, error=f"段类型 {seg.type.value} 不受支持")
+                if not seg.file_path.strip():
+                    return SendResponse(success=False, error=f"{seg.type.value} 段缺少文件路径")
             text_parts = [seg.content for seg in request.segments if seg.type == SegmentType.TEXT]
             full_text = "\n".join(text_parts) if text_parts else ""
             has_media = any(seg.type != SegmentType.TEXT for seg in request.segments)
             if not full_text and not has_media:
                 return SendResponse(success=False, error="空消息")
-            delivered = False
-            if full_text:
-                delivered = self._deliver_to_subscribers(chat_id, {"type": "reply", "content": full_text})
-            if has_media or not delivered:
+            message_id = f"http-{uuid.uuid4().hex}"
+            if has_media:
+                # SSE 只支持文本帧，混合消息须作为整体经回调投递。
                 try:
-                    delivered = await self._deliver_callback(chat_id, request.segments) or delivered
+                    delivered = await self._deliver_callback(
+                        chat_id, request.segments, message_id=message_id, session_id=session_id,
+                    )
                 except Exception as exc:
-                    log(f"http_api 回调投递失败: chat_id={chat_id}: {exc}", "WARNING")
-            if not delivered:
-                log(f"http_api 通知无订阅者且无可用回调，已丢弃: chat_id={chat_id}", "WARNING")
-            return SendResponse(success=True, message_id=f"http-{int(time.time() * 1000)}")
+                    return SendResponse(success=False, error=f"回调投递失败: {exc}")
+                if not delivered:
+                    return SendResponse(success=False, error="媒体消息无可用回调")
+            else:
+                payload: Dict[str, Any] = {"type": "reply", "content": full_text}
+                if session_id and session_id != chat_id:
+                    payload["session_id"] = session_id
+                if not self._deliver_to_subscribers(chat_id, payload):
+                    try:
+                        delivered = await self._deliver_callback(
+                            chat_id, request.segments, message_id=message_id, session_id=session_id,
+                        )
+                    except Exception as exc:
+                        return SendResponse(success=False, error=f"回调投递失败: {exc}")
+                    if not delivered:
+                        return SendResponse(success=False, error="无 SSE 订阅者或可用回调")
+            return SendResponse(success=True, message_id=message_id)
         except Exception as exc:
             return SendResponse(success=False, error=str(exc))
 

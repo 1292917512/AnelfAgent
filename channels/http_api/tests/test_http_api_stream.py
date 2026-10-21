@@ -8,6 +8,8 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
+
 from channels.http_api.adapter import HttpApiChannel, _StreamSub
 
 
@@ -60,6 +62,16 @@ class TestSendTextStreamDelivery:
         assert frame["type"] == "reply"
         assert frame["content"] == "最终答复"
 
+    def test_subsession_reply_frame_names_session(self) -> None:
+        channel = HttpApiChannel()
+        sub = _StreamSub("user_http_api:u1")
+        channel._stream_subs.append(sub)
+        result = json.loads(asyncio.run(channel.send_text("u1", "答复", session_id="topic-1")))
+        assert result["success"] is True
+        assert _frame_json(sub.queue.get_nowait()) == {
+            "type": "reply", "content": "答复", "session_id": "topic-1",
+        }
+
     def test_pending_future_takes_precedence(self) -> None:
         """同步模式优先：future 被 resolve，流订阅者不重复收 reply 帧。"""
         channel = HttpApiChannel()
@@ -72,6 +84,36 @@ class TestSendTextStreamDelivery:
             assert result["success"] is True
             assert await asyncio.wait_for(fut, timeout=1) == "答复"
             assert sub.queue.empty()
+
+        asyncio.run(scenario())
+
+    def test_pending_replies_are_isolated_by_session(self) -> None:
+        channel = HttpApiChannel()
+
+        async def scenario() -> None:
+            first = channel._expect_reply("u1", "topic-1")
+            second = channel._expect_reply("u1", "topic-2")
+            result = json.loads(await channel.send_text("u1", "second", session_id="topic-2"))
+            assert result["success"] is True
+            assert await asyncio.wait_for(second, timeout=1) == "second"
+            assert not first.done()
+            result = json.loads(await channel.send_text("u1", "first", session_id="topic-1"))
+            assert result["success"] is True
+            assert await asyncio.wait_for(first, timeout=1) == "first"
+
+        asyncio.run(scenario())
+
+    def test_new_request_replaces_only_same_session(self) -> None:
+        channel = HttpApiChannel()
+
+        async def scenario() -> None:
+            old = channel._expect_reply("u1", "topic-1")
+            other = channel._expect_reply("u1", "topic-2")
+            new = channel._expect_reply("u1", "topic-1")
+            with pytest.raises(RuntimeError, match="被取代"):
+                await old
+            assert not other.done()
+            assert channel._pending_replies[("u1", "topic-1")] is new
 
         asyncio.run(scenario())
 

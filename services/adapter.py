@@ -64,7 +64,7 @@ class AdapterService:
 
         from agent.channel.manager import list_configured_channels
         for channel_name, enabled in list_configured_channels().items():
-            if channel_name not in seen_keys and channel_name not in ("cli",):
+            if channel_name not in seen_keys:
                 result.append({
                     "key": channel_name,
                     "name": channel_name,

@@ -124,8 +124,10 @@ web/routers → agent/entities/channels（经 services 收口）
 ③ 缓存影响（是否触碰前缀层；动态区则注明不破前缀）。缓存是本项目一等指标，新功能不声明即视为
 未评估
 
-**频道开发**：继承 BaseChannel、6 个必需接口（channel_id / display_name / capabilities / start /
-stop / send_text）；频道目录自持有适配器、配置模型、协议、技能、前端与测试
+**频道开发**：继承 BaseChannel，声明 channel_id / display_name / capabilities / metadata 和
+_Configs；实现 start / stop / forward_message / get_self_info / get_channel_info / health_check
+六个抽象方法。send_text 有基类默认实现，按平台需要覆盖；频道目录自持有适配器、配置模型、
+协议、技能、前端与测试
 
 **前端**：页面超过 300 行拆为子面板目录、统一用 TabBar、i18n 覆盖所有文本、类型进 `lib/types.ts`；
 核心不直接导入具体实体/频道组件（贡献点体系，见 `docs/frontend.md` 与 `docs/ui-contributions.md`）
