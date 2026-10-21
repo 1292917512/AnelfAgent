@@ -411,6 +411,19 @@ class MemoryConnectionManager:
                 PRIMARY KEY (entry_kind, entry_id, dataset_name, data_id)
             );
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS cognee_legacy_documents (
+                dataset_id TEXT NOT NULL,
+                data_id TEXT NOT NULL,
+                snapshot_hash TEXT NOT NULL,
+                entry_kind TEXT NOT NULL,
+                entry_id INTEGER NOT NULL,
+                classification TEXT NOT NULL,
+                document_json TEXT NOT NULL,
+                preserved_ns INTEGER NOT NULL,
+                PRIMARY KEY (dataset_id, data_id, snapshot_hash)
+            );
+        """)
         await self._ensure_column(
             db, "cognee_entry_map", "content_hash", "TEXT NOT NULL DEFAULT ''",
         )

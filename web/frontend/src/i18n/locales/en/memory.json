@@ -290,6 +290,7 @@
     "projectionVerified": "{{count}} documents verified at completion",
     "projectionInventory": "Initial inventory: {{memories}} active memories, {{relations}} relation nodes; {{excluded}} inactive/planning records retained in native storage.",
     "projectionBackup": "Native database snapshot",
+    "projectionLegacyPreserved": "Preserved {{count}} complete legacy projection documents. The new index uses current authoritative memories; historical content remains available in the memory database.",
     "projectionRetained": "{{count}} previous dataset generations retained",
     "projectionPhases": {
       "required": "New index required; using native recall",

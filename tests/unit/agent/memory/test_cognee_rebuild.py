@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -243,6 +244,119 @@ async def test_mapped_document_without_preserved_source_blocks_rebuild(coordinat
     assert coordinator.rebuild.state.phase == "failed"
     assert await store.projection_state.mappings() == mappings
     assert coordinator.client.documents["anelf_global"]
+
+
+def legacy_document(coordinator, mid, text, *, graph=False):
+    """真实文件承载旧文档，预检走生产路径解析及读取边界。"""
+    data_id = str(uuid5(NAMESPACE_URL, text))
+    path = Path(coordinator.config.absolute_data_root) / "data" / f"旧文档-{data_id}.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(text.encode("utf-8"))
+    kind = "graph-node" if graph else "memory"
+    item = {"id": data_id, "label": f"anelf-{kind}-{mid}", "raw_data_location": path.as_uri(),
+            "external_metadata": {"anelf_graph_node_id" if graph else "anelf_memory_id": str(mid)},
+            "node_set": '["future:tag"]'}
+    coordinator.client.documents.setdefault("anelf_legacy", {})[data_id] = item
+    return item
+
+
+def legacy_memory_text(mid, content, *, with_identity=False):
+    identity = f"Memory ID: {mid}\nTimestamp: 123.456\n" if with_identity else ""
+    return f'Memory type: semantic\n{identity}Source: \nImportance: 0.7\nTags: future:tag\nMetadata: {{}}\n\n{content}'
+
+
+async def test_unmapped_history_is_preserved_before_backup_and_retry_is_idempotent(coordinator, store):
+    mid = await store.add(MemoryEntry(content="当前事实", memory_type=MemoryType.SEMANTIC))
+    archived = await store.add(MemoryEntry(content="已归档事实", memory_type=MemoryType.SEMANTIC))
+    await store.archive_memory(archived)
+    await store.graph.add_relation("topic:alpha", "参与", "topic:beta", evidence="当前关系证据")
+    node = await store.graph.get_node("topic:alpha")
+    texts = [legacy_memory_text(mid, "当前事实"), legacy_memory_text(mid, "更新前的独有正文", with_identity=True),
+             legacy_memory_text(archived, "已归档事实"),
+             "[关系节点] 旧显示名（topic:alpha，类型 topic）\n- 参与 → beta（topic:beta）（强度 0.60）——旧证据"]
+    for index, text in enumerate(texts):
+        legacy_document(coordinator, node["id"] if index == 3 else archived if index == 2 else mid,
+                        text, graph=index == 3)
+    old = copy.deepcopy(coordinator.client.documents)
+    # 首次预检在留存后中断，重试不能制造历史副本或清理其他未知内容。
+    coordinator.client.documents["anelf_legacy"]["unknown"] = {"id": "unknown", "text": "外来独有内容"}
+    await coordinator.rebuild.request(coordinator.config)
+    await coordinator.rebuild.advance()
+    assert coordinator.rebuild.state.phase == "failed"
+    assert not coordinator.rebuild.state.backup_path
+    coordinator.client.documents["anelf_legacy"].pop("unknown")
+    await coordinator.rebuild.request(coordinator.config)
+    await settle(coordinator)
+    state = coordinator.rebuild.state
+    assert state.legacy_preserved == 4
+    assert (await store.get(mid)).content == "当前事实"
+    assert (await store.resolve(archived))["status"] == "archived"
+    assert coordinator.client.documents["anelf_legacy"] == old["anelf_legacy"]
+    with sqlite3.connect(state.backup_path) as snapshot:
+        rows = snapshot.execute("SELECT classification,document_json,snapshot_hash FROM cognee_legacy_documents").fetchall()
+    assert len(rows) == 4
+    assert {kind for kind, _, _ in rows} == {"matching_memory", "historical_memory", "historical_graph_node"}
+    assert {json.loads(payload)["text"] for _, payload, _ in rows} == set(texts)
+    for _, payload, digest in rows:
+        document = json.loads(payload)
+        assert hashlib.sha256(payload.encode()).hexdigest() == digest
+        assert hashlib.sha256(document["text"].encode()).hexdigest() == document["text_sha256"]
+    new_texts = [item["text"] for name, items in coordinator.client.documents.items() if name != "anelf_legacy"
+                 for item in items.values()]
+    assert "更新前的独有正文" not in new_texts and "已归档事实" not in new_texts
+
+
+@pytest.mark.parametrize("damage", ["label", "identity", "header_identity", "format", "missing", "outside", "new_version", "write_failure"])
+async def test_unverified_legacy_document_never_resets_mappings(coordinator, store, tmp_path, damage):
+    mid = await store.add(MemoryEntry(content="当前事实", memory_type=MemoryType.SEMANTIC))
+    await coordinator._process_batch(await store.claim_cognee_sync_batch(20))
+    item = legacy_document(coordinator, mid, legacy_memory_text(mid, "旧正文", with_identity=True))
+    db = await store._get_db()
+    if damage == "label":
+        item["label"] = "external-document"
+    elif damage == "identity":
+        item["external_metadata"]["anelf_memory_id"] = str(mid + 1)
+    elif damage in {"format", "missing", "header_identity"}:
+        path = next((Path(coordinator.config.absolute_data_root) / "data").glob("*.txt"))
+        if damage == "missing":
+            path.unlink()
+        else:
+            text = legacy_memory_text(mid + 1, "错误身份", with_identity=True) if damage == "header_identity" else "独有正文，无旧投影包装"
+            path.write_text(text, encoding="utf-8")
+    elif damage == "outside":
+        path = tmp_path / "outside.txt"
+        path.write_text(legacy_memory_text(mid, "越界正文"), encoding="utf-8")
+        item["raw_data_location"] = path.as_uri()
+    elif damage == "new_version":
+        item["external_metadata"]["anelf_projection_version"] = 2
+    else:
+        await db.execute("CREATE TRIGGER fail_preserve BEFORE INSERT ON cognee_legacy_documents "
+                         "BEGIN SELECT RAISE(ABORT, 'storage full'); END")
+        await db.commit()
+    mappings = await store.projection_state.mappings()
+    await coordinator.rebuild.request(coordinator.config)
+    await coordinator.rebuild.advance()
+    assert coordinator.rebuild.state.phase == "failed"
+    assert not coordinator.rebuild.state.backup_path
+    assert await store.projection_state.mappings() == mappings
+    assert (await store.get(mid)).content == "当前事实"
+    assert (await (await db.execute("SELECT COUNT(*) FROM cognee_legacy_documents")).fetchone())[0] == 0
+
+
+async def test_tombstone_uses_original_memory_id_and_does_not_resurrect_it(coordinator, store):
+    db = await store._get_db()
+    await db.execute("INSERT INTO memories_tombstone(id,memory_id,type,gist,purged_at_ns) VALUES(1,42,'semantic','旧梗概',1)")
+    await db.commit()
+    sources = await store.projection_state.preserved_sources()
+    assert ("memory", 42) in sources and ("memory", 1) not in sources
+    text = legacy_memory_text(42, "墓碑以外仍存在于旧投影的完整正文")
+    legacy_document(coordinator, 42, text)
+    await coordinator.rebuild.request(coordinator.config)
+    await settle(coordinator)
+    assert await store.get(42) is None
+    assert coordinator.rebuild.state.legacy_preserved == 1
+    row = await (await db.execute("SELECT document_json FROM cognee_legacy_documents")).fetchone()
+    assert json.loads(row[0])["text"] == text
 
 
 async def test_request_is_durable_without_waiting_for_projection(coordinator, store):

@@ -105,6 +105,7 @@ export interface CogneeProjectionState {
   backup_path: string;
   counts: Record<string, number>;
   verified: number;
+  legacy_preserved?: number;
   error: string;
   completed_at: number;
 }

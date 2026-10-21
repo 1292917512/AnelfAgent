@@ -290,6 +290,7 @@
     "projectionVerified": "验收完成时已核对 {{count}} 篇文档",
     "projectionInventory": "开始时：活跃记忆 {{memories}} 条，关系节点 {{relations}} 个；{{excluded}} 条非活跃/计划记录留存原库。",
     "projectionBackup": "原生数据库快照",
+    "projectionLegacyPreserved": "已完整留存 {{count}} 篇旧投影历史文档；新索引使用当前权威记忆，历史内容可在记忆数据库中查阅",
     "projectionRetained": "已保留 {{count}} 代旧数据集",
     "projectionPhases": {
       "required": "需要构建新索引，目前使用原生召回",

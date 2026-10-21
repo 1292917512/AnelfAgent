@@ -1617,7 +1617,9 @@ def test_existing_embedding_data_adopts_identity_without_rebuilding(tmp_path):
                "embedding_endpoint": "https://example.invalid/v1", "embedding_dimensions": 1024}
     validate_embedding(tmp_path, payload, record=True)
     validate_embedding(tmp_path, {**payload, "embedding_api_key": "rotated"}, record=True)
-    validate_embedding(tmp_path, {**payload, "embedding_dimensions": 0})
+    automatic = {**payload, "embedding_dimensions": 0}
+    assert validate_embedding(tmp_path, automatic)["embedding_dimensions"] == 1024
+    assert automatic["embedding_dimensions"] == 0
     for changes in ({"embedding_model": "other"}, {"embedding_dimensions": 2048}):
         with pytest.raises(CogneeConfigError, match="不兼容"):
             validate_embedding(tmp_path, {**payload, **changes}, record=True)

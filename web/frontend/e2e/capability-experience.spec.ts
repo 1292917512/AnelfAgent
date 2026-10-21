@@ -9,7 +9,7 @@ test("Cognee waits for model setup before loading datasets", async ({ page }, in
   await page.route("**/api/memory/cognee/status", (route) => route.fulfill({ json: {
     availability: { installed: true, enabled: true, ready, configuration_required: !ready, version: "1.6.2", reason: ready ? "" : "Configure chat and embedding models" },
     resolved: {}, sync: { running: true, pending: 2, failed: 0, synced: 0, last_error: "" },
-    projection: { phase, namespace: "anelf_p2_test", verified: 1, counts: {}, previous_namespaces: ["anelf_old"] },
+    projection: { phase, namespace: "anelf_p2_test", verified: 1, legacy_preserved: 26, counts: {}, previous_namespaces: ["anelf_old"] },
   } }));
   await page.route("**/api/memory/probe-status", (route) => route.fulfill({ json: { enabled: true, inject_enabled: true, counters: {}, scopes: [] } }));
   await page.route("**/api/memory/cognee/config", (route) => route.fulfill({ json: {
@@ -32,6 +32,7 @@ test("Cognee waits for model setup before loading datasets", async ({ page }, in
   ready = true;
   await page.reload();
   await expect(page.getByText("anelf_p2_test_global", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Preserved 26 complete legacy projection documents/)).toBeVisible();
   const summary = page.getByRole("button", { name: "Build global summaries", exact: true });
   const conflicts = page.getByRole("button", { name: "Review fact conflicts", exact: true });
   await expect(summary.nth(0)).toBeEnabled();

@@ -88,6 +88,11 @@ async def test_real_projection_rebuild_tagged_recall_update_delete(tmp_path, mon
             metadata={"sensitivity": "private"}))
         shared = await store.add(MemoryEntry(memory_type=MemoryType.SEMANTIC,
             content="林舟也负责白鹭项目。白鹭项目使用Rust语言。", tags=["project:白鹭", "user:test:linzhou"]))
+        legacy_text = (f"Memory type: semantic\nMemory ID: {mid}\nSource: \nImportance: 0.5\n"
+                       "Tags: project:蓝鸢\nMetadata: {}\n\n蓝鸢项目曾计划部署在南京。")
+        orphan = await client.make_data_item(legacy_text, label=f"anelf-memory-{mid}",
+            external_metadata={"anelf_memory_id": str(mid)}, dataset_name="anelf_global")
+        await client.add([orphan], dataset_name="anelf_global", incremental_loading=True)
         await coordinator.rebuild.request(config)
         for _ in range(8):
             await coordinator.rebuild.advance()
@@ -100,9 +105,18 @@ async def test_real_projection_rebuild_tagged_recall_update_delete(tmp_path, mon
             if coordinator.rebuild.state.phase == "ready":
                 break
         assert coordinator.rebuild.state.phase == "ready"
+        assert coordinator.rebuild.state.legacy_preserved == 1
+        db = await store._get_db()
+        saved = await (await db.execute("SELECT document_json FROM cognee_legacy_documents")).fetchone()
+        assert saved is not None and json.loads(saved[0])["text"] == legacy_text
         mapping = await store.get_cognee_mapping(mid)
         assert mapping is not None
         dataset_name = mapping["dataset_name"]
+        # 模拟重新配置/重启后的读取上下文，自动探测维度必须从卷身份恢复。
+        detected = client._embedding_payload["embedding_dimensions"]
+        client.reconfigure(config)
+        assert (await client.initialize()).ready
+        assert client._embedding_payload["embedding_dimensions"] == detected
         results = await client.recall(
             "蓝鸢项目在哪里部署？", query_type=client.search_type("CHUNKS"),
             datasets=[dataset_name], node_name=["future:tag"], top_k=5, auto_route=False,

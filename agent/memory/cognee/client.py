@@ -195,6 +195,7 @@ class CogneeClient:
                         "尚未配置 Embedding 模型，请在 Web 模型管理中添加，"
                         "或在 Cognee 向量化模型配置中指定"
                     )
+                embedding_payload = validate_embedding(Path(config.absolute_data_root), embedding_payload)
                 self._resolved_embedding = summarize_resolved(embedding_payload, kind="embedding")
             except CogneeConfigError:
                 raise
@@ -208,7 +209,6 @@ class CogneeClient:
             if config is not self.config:
                 continue
             root = Path(config.absolute_data_root)
-            validate_embedding(root, embedding_payload)
             root.mkdir(parents=True, exist_ok=True)
             module.config.system_root_directory(str(root / "system"))
             module.config.data_root_directory(str(root / "data"))
@@ -317,7 +317,12 @@ class CogneeClient:
             detected = get_embedding_context_config().embedding_dimensions
             if detected:
                 identity["embedding_dimensions"] = detected
-            validate_embedding(Path(self.config.absolute_data_root), identity, record=True)
+            identity = validate_embedding(Path(self.config.absolute_data_root), identity, record=True)
+            # add 的自动探测发生在 worker 上下文；公开配置也需更新，供其他召回协程使用。
+            if identity != self._embedding_payload and self._module is not None:
+                self._module.config.set_embedding_config(identity)
+                self._embedding_payload = identity
+                self._resolved_embedding = summarize_resolved(identity, kind="embedding")
         return result
 
     async def make_data_item(

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import time
 from pathlib import Path
 from typing import Any, Literal
@@ -36,6 +38,7 @@ class ProjectionState(BaseModel):
     backup_path: str = ""
     counts: dict[str, int] = Field(default_factory=dict)
     verified: int = 0
+    legacy_preserved: int = 0
     error: str = ""
     started_at: float = 0
     completed_at: float = 0
@@ -117,10 +120,54 @@ class ProjectionStateStore:
         db = await self._conn.get_db()
         rows = await (await db.execute(
             "SELECT 'memory' AS kind,id FROM memories UNION SELECT 'memory',id FROM memories_archive "
-            "UNION SELECT 'memory',id FROM memories_tombstone UNION SELECT 'graph_node',id FROM graph_nodes "
+            "UNION SELECT 'memory',memory_id FROM memories_tombstone UNION SELECT 'graph_node',id FROM graph_nodes "
             "UNION SELECT entry_kind,entry_id FROM cognee_sync_queue WHERE operation='delete'"
         )).fetchall()
         return {(str(row[0]), int(row[1])) for row in rows}
+
+    async def legacy_source(self, kind: str, entry_id: int) -> dict[str, Any] | None:
+        """读取原始身份，不沿合并链替换 ID，也不把已归档记录重新激活。"""
+        db = await self._conn.get_db()
+        return await self._legacy_source(db, kind, entry_id)
+
+    @staticmethod
+    async def _legacy_source(db: aiosqlite.Connection, kind: str, entry_id: int) -> dict[str, Any] | None:
+        if kind == "graph_node":
+            row = await (await db.execute(
+                "SELECT node_key,node_type FROM graph_nodes WHERE id=?", (entry_id,),
+            )).fetchone()
+        elif kind == "memory":
+            row = await (await db.execute(
+                "SELECT type,content,'active' AS status FROM memories WHERE id=? "
+                "UNION ALL SELECT type,content,'archived' FROM memories_archive WHERE id=? "
+                "UNION ALL SELECT type,NULL,'tombstone' FROM memories_tombstone WHERE memory_id=? LIMIT 1",
+                (entry_id, entry_id, entry_id),
+            )).fetchone()
+        else:
+            return None
+        return dict(row) if row else None
+
+    async def preserve_legacy_document(
+        self, *, dataset_id: str, data_id: str, kind: str, entry_id: int,
+        classification: str, document: dict[str, Any],
+    ) -> None:
+        """只追加历史原文及元数据；重试幂等，读回校验后才允许切换派生映射。"""
+        payload = json.dumps(document, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        db = await self._conn.get_db()
+        async with self._conn.tx(db):
+            if await self._legacy_source(db, kind, entry_id) is None:
+                raise RuntimeError(f"旧文档的原生来源已消失: {kind}:{entry_id}")
+            await db.execute(
+                "INSERT OR IGNORE INTO cognee_legacy_documents VALUES(?,?,?,?,?,?,?,?)",
+                (dataset_id, data_id, digest, kind, entry_id, classification, payload, time.time_ns()),
+            )
+            row = await (await db.execute(
+                "SELECT document_json FROM cognee_legacy_documents "
+                "WHERE dataset_id=? AND data_id=? AND snapshot_hash=?", (dataset_id, data_id, digest),
+            )).fetchone()
+            if row is None or row[0] != payload:
+                raise RuntimeError(f"旧文档留存校验失败: {data_id}")
 
     async def stage(self, kind: str, entry_id: int, dataset: str, data_id: str) -> None:
         """网络写入前记录稳定目标；异常重试或内容变化后仍能清理未提交副本。"""

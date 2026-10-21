@@ -26,8 +26,8 @@ def embedding_identity(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def validate_embedding(root: Path, payload: dict[str, Any], *, record: bool = False) -> None:
-    """旧数据首次沿用当前配置登记身份；以后变更必须使用独立卷或显式重建。"""
+def validate_embedding(root: Path, payload: dict[str, Any], *, record: bool = False) -> dict[str, Any]:
+    """核验向量空间并补齐已测维度，防止重启后 SDK 默认维度覆盖既有空间。"""
     path = root / _FILENAME
     desired = embedding_identity(payload)
     previous: dict[str, Any] = {}
@@ -53,6 +53,10 @@ def validate_embedding(root: Path, payload: dict[str, Any], *, record: bool = Fa
     if record and (not path.exists() or previous != desired):
         root.mkdir(parents=True, exist_ok=True)
         atomic_write_text(path, json.dumps(desired, ensure_ascii=False, indent=2))
+    resolved = dict(payload)
+    if desired["dimensions"]:
+        resolved["embedding_dimensions"] = desired["dimensions"]
+    return resolved
 
 
 def clear_embedding_identity(root: Path) -> None:

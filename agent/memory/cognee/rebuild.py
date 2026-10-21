@@ -20,6 +20,7 @@ from ..store.projection_state import ProjectionState
 from .config import CogneeConfig
 from .documents import stored_node_tags
 from .ports import ProjectionBackend
+from .preflight import check_legacy_documents
 
 
 def _field(value: Any, key: str, default: Any = None) -> Any:
@@ -118,31 +119,7 @@ class CogneeRebuild:
             return
         try:
             if state.phase == "requested":
-                # 来源不在权威映射中的文档可能包含独有内容，禁止静默丢出检索面。
-                mappings = await self.store.projection_state.mappings()
-                sources = await self.store.projection_state.preserved_sources()
-                known = {(str(r["dataset_id"]), str(r["data_id"])) for r in mappings
-                         if (str(r["entry_kind"]), int(r["entry_id"])) in sources}
-                staged = {(str(r["dataset_name"]), str(r["data_id"]))
-                          for r in await self.store.projection_state.staged()
-                          if (str(r["entry_kind"]), int(r["entry_id"])) in sources}
-                unknown = 0
-                active_prefix = state.previous_namespaces[-1] if state.previous_namespaces else state.base_prefix
-                for dataset in await self.client.list_datasets():
-                    name = str(_field(dataset, "name", ""))
-                    dataset_id = str(_field(dataset, "id", ""))
-                    mapped_dataset = any(str(row["dataset_id"]) == dataset_id for row in mappings)
-                    if not mapped_dataset and not name.startswith(active_prefix + "_"):
-                        continue
-                    for item in await self.client.list_data(dataset_id):
-                        data_id = str(_field(item, "id", ""))
-                        # SDK 会拆分历史跨数据集共享行；legacy_id 是上游迁移保留的身份。
-                        legacy_id = str(_field(item, "legacy_id", ""))
-                        if ((dataset_id, data_id) not in known and (dataset_id, legacy_id) not in known
-                                and (name, data_id) not in staged):
-                            unknown += 1
-                if unknown:
-                    raise RuntimeError(f"发现 {unknown} 个未被原生映射覆盖的旧文档；需先确认或导入其独有内容，旧数据未清理")
+                await check_legacy_documents(self.store.projection_state, self.client, state)
                 backup = backups_root() / "cognee-rebuild" / state.namespace / f"memory-{uuid.uuid4().hex[:12]}.sqlite3"
                 await self.store.projection_state.begin(state, backup)
             if state.phase == "scanning":

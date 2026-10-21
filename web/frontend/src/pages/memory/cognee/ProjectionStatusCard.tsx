@@ -11,6 +11,7 @@ export function ProjectionStatusCard({ state }: { state?: CogneeProjectionState 
       <div className="space-y-2 text-sm text-muted" role="status">
         <p>{t("cognee.projectionHint")}</p>
         {state.completed_at > 0 && <p>{t("cognee.projectionVerified", { count: state.verified })}</p>}
+        {(state.legacy_preserved ?? 0) > 0 && <p>{t("cognee.projectionLegacyPreserved", { count: state.legacy_preserved })}</p>}
         {state.counts.memories !== undefined && <p>{t("cognee.projectionInventory", {
           memories: state.counts.memories, relations: state.counts.graph_nodes,
           excluded: state.counts.excluded_memories,
