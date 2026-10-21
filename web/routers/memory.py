@@ -107,8 +107,11 @@ async def list_cognee_datasets() -> List[Dict[str, Any]]:
 
 @router.post("/cognee/improve")
 async def improve_cognee(req: CogneeImproveRequest) -> Any:
-    return await _mem_svc.improve_cognee(req.dataset_name, review_conflicts=req.review_conflicts,
-                                         build_global_context_index=req.build_global_context_index)
+    try:
+        return await _mem_svc.improve_cognee(req.dataset_name, review_conflicts=req.review_conflicts,
+                                          build_global_context_index=req.build_global_context_index)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.get("/ltm/stats")

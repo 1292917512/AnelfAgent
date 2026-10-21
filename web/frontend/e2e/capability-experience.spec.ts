@@ -4,11 +4,12 @@ import { test, expect } from "./fixtures";
 test("Cognee waits for model setup before loading datasets", async ({ page }, info) => {
   let ready = false;
   let datasetReads = 0;
+  let phase = "ready";
   const enhancements: unknown[] = [];
   await page.route("**/api/memory/cognee/status", (route) => route.fulfill({ json: {
     availability: { installed: true, enabled: true, ready, configuration_required: !ready, version: "1.6.2", reason: ready ? "" : "Configure chat and embedding models" },
     resolved: {}, sync: { running: true, pending: 2, failed: 0, synced: 0, last_error: "" },
-    projection: { phase: "ready", namespace: "anelf_p2_test", verified: 1, counts: {}, previous_namespaces: ["anelf_old"] },
+    projection: { phase, namespace: "anelf_p2_test", verified: 1, counts: {}, previous_namespaces: ["anelf_old"] },
   } }));
   await page.route("**/api/memory/probe-status", (route) => route.fulfill({ json: { enabled: true, inject_enabled: true, counters: {}, scopes: [] } }));
   await page.route("**/api/memory/cognee/config", (route) => route.fulfill({ json: {
@@ -45,6 +46,10 @@ test("Cognee waits for model setup before loading datasets", async ({ page }, in
     { dataset_name: "anelf_p2_test_global", build_global_context_index: false, review_conflicts: true },
   ]);
   await page.screenshot({ path: info.outputPath("cognee-ready.png"), fullPage: true });
+  phase = "building";
+  await page.reload();
+  await expect(summary.nth(0)).toBeDisabled();
+  await expect(conflicts.nth(0)).toBeDisabled();
 });
 import type { CapabilityStatus, ConfigMetaItem } from "../src/lib/types";
 

@@ -202,7 +202,8 @@ export function CogneePanel() {
       <ModelConfigCard kind="chat" />
       <ModelConfigCard kind="embedding" />
 
-      <DatasetMaintenanceCard ready={availability?.ready ?? false} namespace={status?.projection?.namespace ?? ""} />
+      <DatasetMaintenanceCard ready={availability?.ready ?? false}
+        namespace={status?.projection?.phase === "ready" ? status.projection.namespace : ""} />
 
       <ConfigFormPanel
         title={t("cognee.generalTitle")}

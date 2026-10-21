@@ -11,6 +11,7 @@ from core.activity import activity_owner, activity_scope, activity_step
 from core.log import log
 
 from ..memory_store import MemoryStore
+from ..projection import projection_dataset
 from .client import CogneeClient
 from .config import CogneeConfig
 from .errors import error_text as _error_text
@@ -292,6 +293,11 @@ class CogneeCoordinator:
                       build_global_context_index: bool = True) -> Any:
         """在投影与维护互斥窗口中增强图谱，遵循写盘熔断。"""
         async with self._projection_lock:
+            namespace = self.client.projection_namespace or self.config.dataset_prefix
+            if not self.config.enabled or not self.client.projection_ready or dataset_name not in {
+                projection_dataset(namespace), projection_dataset(namespace, graph=True),
+            }:
+                raise ValueError("只能增强已验收的当前代际，请先检查 Cognee 构建状态")
             if not self._projection_allowed():
                 raise RuntimeError(self._pause_reason)
             return await self._enhance(dataset_name, review_conflicts=review_conflicts,

@@ -1243,7 +1243,7 @@ async def test_manual_maintenance_cannot_overlap_projection(store, operation) ->
     coordinator = CogneeCoordinator(store, client, CogneeConfig(write_breaker_enabled=False))
     async with coordinator._projection_lock:
         if operation == "improve":
-            task = asyncio.create_task(coordinator.improve("dataset"))
+            task = asyncio.create_task(coordinator.improve("anelf_global"))
         elif operation == "idle_inline":
             task = asyncio.create_task(coordinator.run_in_idle_window(client.improve()))
         else:
@@ -1254,6 +1254,21 @@ async def test_manual_maintenance_cannot_overlap_projection(store, operation) ->
         client.improve.assert_not_awaited()
     await task
     client.improve.assert_awaited_once()
+
+
+@pytest.mark.parametrize("ready,dataset", [(False, "anelf_global"), (True, "anelf_old_global")])
+async def test_manual_enhancement_rechecks_generation_after_lock(store, ready, dataset):
+    client = _FakeCogneeClient()
+    client.improve = AsyncMock()
+    coordinator = CogneeCoordinator(store, client, CogneeConfig())
+    async with coordinator._projection_lock:
+        task = asyncio.create_task(coordinator.improve(dataset))
+        await asyncio.sleep(0)
+        assert not task.done()
+        client.projection_ready = ready
+    with pytest.raises(ValueError, match="当前代际"):
+        await task
+    client.improve.assert_not_awaited()
 
 
 def test_storage_stats_classifies_components(tmp_path) -> None:
