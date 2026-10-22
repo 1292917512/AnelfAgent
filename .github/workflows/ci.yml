@@ -260,7 +260,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: web/frontend
@@ -288,12 +288,22 @@ jobs:
       - name: Build (tsc + vite)
         run: npm run build
 
+      # 浏览器二进制按 lockfile 中 playwright 版本缓存，避免每次运行都从
+      # CDN 全量下载；偶发慢下载叠加 job 超时会直接掐死 e2e 步骤
+      - name: Cache Playwright browsers
+        if: runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('web/frontend/package-lock.json') }}
+
       - name: Browser setup
         if: runner.os == 'Linux'
         run: npx playwright install --with-deps chromium
 
       - name: Browser regression
         if: runner.os == 'Linux'
+        timeout-minutes: 7
         run: npm run test:e2e
 
       - name: Upload browser diagnostics
