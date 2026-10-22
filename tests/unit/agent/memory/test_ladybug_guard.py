@@ -1,7 +1,7 @@
 """ladybug native 监督（agent.memory.cognee.ladybug_guard）单元测试。
 
 核心不变量：native 执行串行（wait_for 取消的孤儿查询不占锁让位）；
-close/delete_graph 的门闸等待不在事件循环上；失控持有经 restart 阶梯
+close 的门闸等待不在宿主事件循环上；失控持有经 restart 阶梯
 升级且每轮只升级一次；事件循环上的同步拆除有界（超时抛错而非冻结）。
 刻意不做 native 中止（set_query_timeout/interrupt 对卡死扫描不可靠）。
 """
@@ -42,6 +42,7 @@ class _FakeAdapterBase:
         self.drop_thread_ids.append(threading.get_ident())
 
     async def close(self) -> None:
+        await asyncio.to_thread(self.executor.shutdown, True)
         self._drop_native_resources()
         self.closed = True
 
@@ -178,20 +179,58 @@ class TestLoopSafeTeardown:
         release.set()
         await asyncio.wait_for(close_task, timeout=5)
         assert adapter.closed
-        # 首次拆除（预拆除）必须发生在 worker 线程而非事件循环线程
+        # 排空 executor 后的拆除发生在关闭线程。
         assert adapter.drop_thread_ids
         assert adapter.drop_thread_ids[0] != loop_ident
 
-    async def test_delete_graph_waits_off_event_loop(self) -> None:
+    async def test_cancelled_close_waiter_does_not_drop_queued_native_work(self) -> None:
         adapter = _make_adapter_cls()()
         _started, release = _hold_gate(adapter)
+        order = []
+        queued = adapter._submit_to_executor_locked(lambda: order.append("query"))
+        waiter = asyncio.create_task(adapter.close())
+        try:
+            await asyncio.sleep(0.05)
+            waiter.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiter
+            assert not adapter.drop_thread_ids
+            second = asyncio.create_task(adapter.close())
+            await asyncio.sleep(0)
+            assert not second.done()
+            release.set()
+            await asyncio.wait_for(second, 5)
+            assert queued.done() and order == ["query"]
+            assert len(adapter.drop_thread_ids) == 1
+        finally:
+            release.set()
+            await adapter.close()
 
-        delete_task = asyncio.create_task(adapter.delete_graph())
-        await asyncio.sleep(0.2)
-        assert not delete_task.done()
-        release.set()
-        await asyncio.wait_for(delete_task, timeout=5)
-        assert adapter.graph_deleted
+    async def test_failed_native_close_remains_a_failure_on_retry(self) -> None:
+        class Broken(_FakeAdapterBase):
+            def _drop_native_resources(self) -> None:
+                raise OSError("checkpoint failed")
+
+        _apply_guard(Broken, lambda: _config(), watchdog_interval=3600)
+        adapter = Broken()
+        for _ in range(2):
+            with pytest.raises(OSError, match="checkpoint failed"):
+                await adapter.close()
+        assert len(Broken._anel_guard_state.close_results) == 1
+
+    def test_strict_drop_keeps_failed_handle(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+
+        from agent.memory.cognee.ladybug_guard import _strict_drop
+
+        connection, database = Mock(), Mock()
+        connection.close.side_effect = OSError("close failed")
+        adapter = SimpleNamespace(connection=connection, db=database)
+        with pytest.raises(OSError):
+            _strict_drop(adapter)
+        assert adapter.connection is connection and adapter.db is database
+        database.close.assert_not_called()
 
 
 class TestWatchdog:

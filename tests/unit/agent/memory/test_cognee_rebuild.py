@@ -28,6 +28,7 @@ class DocumentBackend(CogneeClient):
     def __init__(self, config: CogneeConfig) -> None:
         super().__init__(config)
         self.documents: dict[str, dict[str, Any]] = {}
+        self.missing_graph: set[str] = set()
 
     async def initialize(self) -> CogneeAvailability:
         return CogneeAvailability(installed=True, enabled=True, ready=True)
@@ -63,6 +64,10 @@ class DocumentBackend(CogneeClient):
 
     def document_processed(self, item: Any, dataset_id: str) -> bool:
         return item.get("processed", True)
+
+    async def verify_graph_documents(self, dataset_id: str, data_ids: list[str]) -> None:
+        if self.missing_graph.intersection(data_ids):
+            raise RuntimeError("实际图谱缺少文档或分块关联")
 
 
 @pytest.fixture
@@ -602,6 +607,76 @@ async def test_request_is_durable_without_waiting_for_projection(coordinator, st
     await settle(restarted_again)
     with pytest.raises(ValueError, match="不匹配"):
         restarted_again.rebuild.validate_config(CogneeConfig(data_root="other-directory"))
+
+
+async def test_fresh_rebuild_survives_restart_and_repairs_missing_graph(coordinator, store):
+    mid = await store.add(MemoryEntry(content="必须保留的唯一事实", memory_type=MemoryType.SEMANTIC))
+    await coordinator.rebuild.request(coordinator.config)
+    await settle(coordinator)
+    old_namespace = coordinator.rebuild.state.namespace
+    old_mapping = await store.get_cognee_mapping(mid)
+    coordinator.client.missing_graph.add(old_mapping["data_id"])
+    with pytest.raises(RuntimeError, match="实际图谱缺少"):
+        await coordinator.rebuild.verify_backend(coordinator.rebuild.state, await store.projection_state.mappings())
+    # 即使 SQL 标记已完成，也不能批准删除旧数据集。
+    coordinator.config.sync_enabled = False
+    coordinator.client.documents["anelf_legacy"] = {}
+    await coordinator.retirement.request("anelf_legacy")
+    await coordinator.retirement._task
+    assert coordinator.retirement.status.stage == "failed"
+    assert "anelf_legacy" in coordinator.client.documents
+    coordinator.rebuild.state.phase = "building"
+    await coordinator.request_rebuild(restart=True)
+    assert not coordinator.config.sync_enabled
+    coordinator.config.sync_enabled = True
+    restarted = CogneeCoordinator(store, coordinator.client, coordinator.config)
+    await restarted.rebuild.initialize(coordinator.config)
+    assert restarted.rebuild.state.rebuild_from_scratch
+    await restarted.rebuild.request(coordinator.config)
+    await settle(restarted)
+    assert restarted.rebuild.state.namespace != old_namespace
+    assert old_namespace in restarted.rebuild.state.previous_namespaces
+    assert not restarted.rebuild.state.rebuild_from_scratch
+    assert (await store.get(mid)).content == "必须保留的唯一事实"
+    assert old_mapping["dataset_id"] in coordinator.client.documents
+
+
+async def test_shutdown_cancels_extraction_and_retries_uncommitted_batch(coordinator, store, monkeypatch):
+    ids = [await store.add(MemoryEntry(content=f"停机保留 {i}", memory_type=MemoryType.SEMANTIC)) for i in range(2)]
+    started, cancelled, finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    original = coordinator.client.cognify
+
+    async def extracting(**kwargs):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(coordinator.client, "cognify", extracting)
+    await coordinator.start()
+    await asyncio.wait_for(started.wait(), 3)
+    coordinator.quiesce()
+    await asyncio.wait_for(coordinator.close(), 3)
+    assert cancelled.is_set()
+    assert (await store.get_cognee_sync_status()) == {"pending": 2, "failed": 0, "synced": 0}
+    for mid in ids:
+        assert await store.get(mid) is not None
+    monkeypatch.setattr(coordinator.client, "cognify", original)
+    restarted = CogneeCoordinator(store, coordinator.client, coordinator.config)
+    process = restarted._process_entries
+
+    async def notify(batch):
+        await process(batch)
+        finished.set()
+
+    monkeypatch.setattr(restarted, "_process_entries", notify)
+    try:
+        await restarted.start()
+        await asyncio.wait_for(finished.wait(), 3)
+        assert (await store.get_cognee_sync_status()) == {"pending": 0, "failed": 0, "synced": 2}
+    finally:
+        await restarted.close()
 
 
 async def test_source_label_change_reprojects_relations_and_claim_is_atomic(coordinator, store):

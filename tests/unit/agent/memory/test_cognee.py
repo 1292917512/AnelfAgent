@@ -561,6 +561,9 @@ class _FakeCogneeClient:
         self.items: list[dict] = []
         self.deleted: list[tuple[str, str]] = []
 
+    def quiesce(self) -> None:
+        self.ready = False
+
     async def close(self) -> None:
         self.ready = False
 

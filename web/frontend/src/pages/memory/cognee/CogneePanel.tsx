@@ -22,7 +22,7 @@ import type { ConfigValues } from "@/lib/types";
 export function CogneePanel() {
   const { t } = useTranslation("memory");
   const queryClient = useQueryClient();
-  const [confirmation, setConfirmation] = useState<"rebuild" | "backfill" | null>(null);
+  const [confirmation, setConfirmation] = useState<"rebuild" | "freshRebuild" | "backfill" | null>(null);
 
   const { data: status, error: statusError, dataUpdatedAt, refetch: refreshStatus } = useQuery({
     queryKey: ["cogneeStatus"],
@@ -38,7 +38,7 @@ export function CogneePanel() {
   const retryMutation = useMutation({ mutationFn: () => memoryApi.cognee.retry(), onSuccess: invalidate });
   const backfillMutation = useMutation({ mutationFn: () => memoryApi.cognee.backfill(0, false), onSuccess: invalidate });
   const rebuildMutation = useMutation({
-    mutationFn: () => memoryApi.cognee.rebuild(),
+    mutationFn: (restart: boolean) => memoryApi.cognee.rebuild(restart),
     onSuccess: invalidate,
   });
   const compactMutation = useMutation({
@@ -96,7 +96,7 @@ export function CogneePanel() {
         <Link to="/models" className="text-accent hover:underline">{t("cognee.configureModels")}</Link>
         <p className="text-xs text-muted">{t("cognee.usageHint")}</p>
       </div>
-      {rebuildMutation.error && <QueryError error={rebuildMutation.error} retry={() => rebuildMutation.mutate()} compact />}
+      {rebuildMutation.error && <QueryError error={rebuildMutation.error} retry={() => rebuildMutation.mutate(rebuildMutation.variables ?? false)} compact />}
       <RecallTester preset="cognee" />
 
       <ProbeStatusCard />
@@ -135,6 +135,13 @@ export function CogneePanel() {
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-danger-subtle text-danger hover:bg-[rgba(239,68,68,0.15)] transition-all"
             >
               <RefreshCw size={14} /> {t("cognee.rebuild")}
+            </button>
+            <button
+              onClick={() => setConfirmation("freshRebuild")}
+              disabled={!availability?.ready || rebuildMutation.isPending || status?.projection?.rebuild_requested || status?.retirement?.running}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-danger-subtle text-danger hover:bg-[rgba(239,68,68,0.15)] transition-all"
+            >
+              <RefreshCw size={14} /> {t("cognee.freshRebuild")}
             </button>
           </div>
         }
@@ -220,12 +227,12 @@ export function CogneePanel() {
       />
       <ConfirmDialog
         open={confirmation !== null}
-        title={t(confirmation === "backfill" ? "cognee.backfill" : "cognee.rebuild")}
-        message={t(confirmation === "backfill" ? "cognee.backfillConfirm" : "cognee.rebuildConfirm")}
+        title={t(`cognee.${confirmation ?? "rebuild"}`)}
+        message={t(`cognee.${confirmation ?? "rebuild"}Confirm`)}
         onClose={() => setConfirmation(null)}
         onConfirm={() => {
           if (confirmation === "backfill") backfillMutation.mutate();
-          if (confirmation === "rebuild") rebuildMutation.mutate();
+          if (confirmation === "rebuild" || confirmation === "freshRebuild") rebuildMutation.mutate(confirmation === "freshRebuild");
           setConfirmation(null);
         }}
       />

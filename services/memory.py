@@ -704,13 +704,13 @@ class MemoryService:
             return {"error": "Cognee 运行时未初始化"}
         return await coordinator.request_compact()
 
-    async def rebuild_cognee(self) -> Dict[str, Any]:
+    async def rebuild_cognee(self, *, restart: bool = False) -> Dict[str, Any]:
         """保留原始内容与旧数据集，后台构建并验收新代际。"""
         from agent.memory.cognee.runtime import get_cognee_coordinator
         coordinator = get_cognee_coordinator()
         if coordinator is None:
             raise RuntimeError("Cognee 未初始化")
-        return await coordinator.request_rebuild()
+        return await coordinator.request_rebuild(restart=restart)
 
     @staticmethod
     def _cognee_config_response(config: Any) -> Dict[str, Any]:

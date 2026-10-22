@@ -9,21 +9,20 @@ cognee 的 LadybugAdapter 按通用嵌入场景设计，在宿主单进程常驻
    只能中止 Python 协程，native 查询仍在线程池中运行；锁由执行线程持有，
    native 真正跑完才释放，孤儿查询与后续查询不会并发使用同一 connection。
    ``_drop_native_resources`` 取同一把锁，拆除句柄前必然等在途执行结束。
-2. **循环安全拆除**：本地模式的 ``close()``/``delete_graph()`` 在调用线程
-   同步拆除资源，发生在事件循环上时门闸等待会冻结整个进程。包装为先把
-   拆除经 ``asyncio.to_thread`` 挪到 worker 线程再调原方法（原方法内部的
-   同步拆除因句柄已置空自然成为空操作）；同步拆除本体在事件循环线程上
-   改为有界获取，超时抛错而非无限冻结。
+2. **关闭监督**：close 在独立线程保留 SDK 的封闭提交、排空 executor、
+   关闭连接顺序；跨循环调用共享同一个关闭结果，取消等待方不取消关闭。
+   delete_graph 保留 SDK 先排空在途查询再拆除的顺序，不提前拆句柄。
+   关闭失败向宿主传播，不能被 SDK 缓存的尽力关闭语义掩盖。
 3. **失控看门狗**：纯线程实现（事件循环冻死也能工作）。持有门闸超
    ``native_watchdog_restart_seconds`` 经晚绑定端口请求守护重启——门闸被
-   永久持有会饿死全部图操作，进程重启是唯一出口。端口未施绑或重启被拒
+   永久持有会阻止全部图操作。端口未施绑或重启被拒
    时降级为 CRITICAL 告警，看门狗自身绝不直接退出进程。
    设计约束：ladybug 的 ``set_query_timeout``/``interrupt`` 中止路径对
    卡死的扫描算子不可靠（中止动作自身会升级为 SIGSEGV），本模块刻意不做
-   native 中止——隔离 + 进程级重启是唯一安全语义。
-4. **WAL 容错**：以 ``throw_on_wal_replay_failure=False`` 打开图库——
-   checkpoint 中途进程被杀时冻结 WAL 尾部的半条记录不再阻塞打开，
-   回放到损坏点前最后一个已提交事务；WAL 完好时行为不变。
+   native 中止。安全关停会等待原生操作退出，卡死时只告警而不自动强杀。
+4. **WAL 容错**：以 ``throw_on_wal_replay_failure=False`` 打开图库，
+   允许库能报告的回放错误恢复到已提交事务。此参数不能防止原生崩溃，
+   损坏 checkpoint 仍需隔离及全量重建。
 
 安装入口 ``install()`` 由 CogneeClient 首次导入 cognee 后调用，幂等；
 补丁点缺失时记日志跳过（cognee 升级符号漂移不演变为静默失效）。
@@ -35,6 +34,8 @@ import asyncio
 import functools
 import threading
 import time
+import weakref
+from concurrent.futures import Future
 from typing import Any, Callable, Optional
 
 from core.latebind import LateBinding
@@ -77,6 +78,9 @@ class _GuardState:
         self.gate = threading.Lock()
         self.hold_lock = threading.Lock()
         self.hold: Optional[_GateHold] = None
+        self.adapters: weakref.WeakSet[Any] = weakref.WeakSet()
+        self.close_results: set[Future[None]] = set()
+        self.teardown_thread = threading.local()
 
     def begin_hold(self, kind: str) -> None:
         with self.hold_lock:
@@ -124,7 +128,7 @@ def _wrap_drop(state: _GuardState, original_drop: Callable[..., Any]) -> Callabl
 
     @functools.wraps(original_drop)
     def gated_drop(self: Any) -> None:
-        if _on_event_loop_thread():
+        if _on_event_loop_thread() and not getattr(state.teardown_thread, "active", False):
             # 事件循环线程永不无限等门闸：预算对齐看门狗 restart 阶梯
             # （此刻进程已在重启路径上），超时抛错而非冻结全局
             budget = state.get_config().native_watchdog_restart_seconds
@@ -149,23 +153,74 @@ def _wrap_drop(state: _GuardState, original_drop: Callable[..., Any]) -> Callabl
     return gated_drop
 
 
-def _wrap_async_teardown(original: Callable[..., Any]) -> Callable[..., Any]:
-    """close/delete_graph 包装：拆除先经 to_thread 离循环，再调原方法。
-
-    原方法内部的同步拆除因句柄已置空成为空操作；门闸等待只发生在
-    worker 线程，失控执行不再传导为事件循环冻结。
-    """
-
+def _wrap_init(state: _GuardState, original: Callable[..., Any]) -> Callable[..., Any]:
     @functools.wraps(original)
-    async def teardown(self: Any, *args: Any, **kwargs: Any) -> Any:
-        await asyncio.to_thread(self._drop_native_resources)
-        return await original(self, *args, **kwargs)
+    def initialize(self: Any, *args: Any, **kwargs: Any) -> None:
+        original(self, *args, **kwargs)
+        with state.hold_lock:
+            state.adapters.add(self)
+    return initialize
 
-    return teardown
+
+def _wrap_close(state: _GuardState, original: Callable[..., Any]) -> Callable[..., Any]:
+    """在独立线程完成 SDK 关闭顺序；跨事件循环复用同一个可核验的关闭结果。"""
+    @functools.wraps(original)
+    async def close(self: Any) -> None:
+        with state.hold_lock:
+            future: Future[None] | None = getattr(self, "_anel_close_future", None)
+            if future is None:
+                future = Future()
+                self._anel_close_future = future
+                state.close_results.add(future)
+
+                def finish(result: Future[None]) -> None:
+                    try:
+                        state.teardown_thread.active = True
+                        # SDK 先封闭 executor 并等待已提交查询，再关闭连接/数据库。
+                        asyncio.run(original(self))
+                    except BaseException as exc:
+                        result.set_exception(exc)
+                    else:
+                        result.set_result(None)
+                        with state.hold_lock:
+                            state.close_results.discard(result)
+
+                threading.Thread(target=finish, args=(future,), name="ladybug-close", daemon=False).start()
+        await asyncio.shield(asyncio.wrap_future(future))
+    return close
+
+
+def _strict_drop(self: Any) -> None:
+    """关闭失败保留句柄并向宿主报告，不能将失败记录成成功关闭。"""
+    if self.connection is not None:
+        self.connection.close()
+        self.connection = None
+    if self.db is not None:
+        self.db.close()
+        self.db = None
+
+
+async def close_all() -> None:
+    """直接核验活跃 Ladybug 适配器关闭；不依赖 SDK 缓存的尽力等待语义。"""
+    from cognee.infrastructure.databases.graph.ladybug.adapter import LadybugAdapter
+
+    state: _GuardState | None = getattr(LadybugAdapter, "_anel_guard_state", None)
+    if state is None:
+        raise RuntimeError("Ladybug 关闭监督未安装，无法确认安全关停")
+    with state.hold_lock:
+        adapters = list(state.adapters)
+    results = await asyncio.gather(*(adapter.close() for adapter in adapters), return_exceptions=True)
+    with state.hold_lock:
+        pending = list(state.close_results)
+    results.extend(await asyncio.gather(*(asyncio.shield(asyncio.wrap_future(future))
+                                          for future in pending), return_exceptions=True))
+    for result in results:
+        if isinstance(result, BaseException):
+            raise RuntimeError(f"Ladybug 数据库未能安全关闭: {result}") from result
 
 
 def _escalate_restart(hold: _GateHold, age_seconds: float) -> None:
-    """restart 阶梯：门闸被失控执行永久持有，进程重启是唯一出口。"""
+    """门闸失控时请求安全关停；不绕过宿主的数据库关闭屏障。"""
     log(
         f"ladybug native {hold.kind} 失控（门闸已持有 {age_seconds:.0f}s），继续持有将饿死全部图操作，请求守护重启",
         "CRITICAL",
@@ -224,22 +279,18 @@ def _apply_guard(
         return False
     state = _GuardState(get_config)
     installed: list[str] = []
-
-    # 补丁点为 cognee 私有实现，类型系统不可见
-    original_submit = getattr(adapter_cls, "_submit_to_executor_locked", None)
-    if callable(original_submit):
-        adapter_cls._submit_to_executor_locked = _wrap_submit(state, original_submit)  # type: ignore[attr-defined]
-        installed.append("_submit_to_executor_locked")
-    original_drop = getattr(adapter_cls, "_drop_native_resources", None)
-    if callable(original_drop):
-        adapter_cls._drop_native_resources = _wrap_drop(state, original_drop)  # type: ignore[attr-defined]
-        installed.append("_drop_native_resources")
-    for name in ("close", "delete_graph"):
+    wrappers = {
+        "__init__": functools.partial(_wrap_init, state),
+        "_submit_to_executor_locked": functools.partial(_wrap_submit, state),
+        "_drop_native_resources": functools.partial(_wrap_drop, state),
+        "close": functools.partial(_wrap_close, state),
+    }
+    for name, wrap in wrappers.items():
         original = getattr(adapter_cls, name, None)
         if callable(original):
-            setattr(adapter_cls, name, _wrap_async_teardown(original))
+            setattr(adapter_cls, name, wrap(original))
             installed.append(name)
-    missing = {"_submit_to_executor_locked", "_drop_native_resources", "close", "delete_graph"} - set(installed)
+    missing = wrappers.keys() - set(installed)
     if missing:
         log(f"ladybug 监督补丁点缺失（对应防护未装）: {sorted(missing)}", "WARNING", tag="记忆")
 
@@ -282,6 +333,8 @@ def install(get_config: Callable[[], CogneeConfig]) -> bool:
         return False
     applied = False
     try:
+        if not getattr(ladybug_adapter.LadybugAdapter, _INSTALLED_ATTR, False):
+            ladybug_adapter.LadybugAdapter._drop_native_resources = _strict_drop
         applied = _apply_guard(ladybug_adapter.LadybugAdapter, get_config)
     except Exception as exc:
         log(f"ladybug native 监督安装失败（不影响主流程）: {exc}", "WARNING", tag="记忆")

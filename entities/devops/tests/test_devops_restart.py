@@ -105,13 +105,24 @@ def test_schedule_restart_arms_watchdog(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_restart_watchdog_forces_exit_42(monkeypatch: pytest.MonkeyPatch):
-    """看门狗到期无条件以重启退出码 42 退出，确保守护脚本接管。"""
+    """数据库关闭后才允许看门狗兜底退出。"""
+    monkeypatch.setattr(service.Lifecycle, "shutdown_blockers", lambda: [])
     monkeypatch.setattr(service.time, "sleep", lambda seconds: None)
     exits: list[int] = []
     monkeypatch.setattr("os._exit", exits.append)
 
     service._restart_watchdog()
     assert exits == [42]
+
+
+def test_restart_watchdog_waits_for_native_database(monkeypatch: pytest.MonkeyPatch):
+    states = iter([["cognee_memory"], ["cognee_memory"], []])
+    monkeypatch.setattr(service.Lifecycle, "shutdown_blockers", lambda: next(states))
+    events = []
+    monkeypatch.setattr(service.time, "sleep", lambda seconds: events.append("wait"))
+    monkeypatch.setattr("os._exit", lambda code: events.append(code))
+    service._restart_watchdog()
+    assert events == ["wait", "wait", "wait", 42]
 
 
 def test_idle_path_arms_watchdog_after_shutdown_request(monkeypatch: pytest.MonkeyPatch):

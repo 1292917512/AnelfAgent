@@ -7,11 +7,11 @@
 
 | 机制 | 位置 | 说明 |
 |------|------|------|
-| 单实例守卫 | `core/instance_guard.py` + restart.sh | 启动写 `logs/anelf.pid`（项目目录天然按检出副本隔离实例身份），PID 文件指向的活进程经 cmdline 校验（本项目 launch.py）判定为残留实例时 SIGTERM→10s 宽限→SIGKILL 清场接管端口，cmdline 不匹配只警告不误杀（防 PID 复用）；僵尸进程经 psutil status 判定视为已死。restart.sh 优先 PID 文件精准终止，pkill 兜底模式收紧到 `$ROOT/.*launch` |
-| 重启看门狗 | `entities/devops/service.py` | restart_app 排定关停后 90s 进程仍存活（优雅关停卡死）→ 无条件 `os._exit(42)` 保底，守护脚本必然接管；等空闲路径在关停请求发出后才布防（防等空闲误触发） |
+| 单实例守卫 | `core/instance_guard.py` + stop.sh / restart.sh | `logs/anelf.pid.lock` 操作系统文件锁防止同一检出双写；存活旧 PID（含升级前实例）拒绝接管，不发终止信号。POSIX 用 `bash stop.sh` 停守护、核实项目归属后向应用发 SIGTERM；默认等 600s，`ANELF_STOP_TIMEOUT_SECONDS` 可调，超时失败但不强杀。restart.sh 只在停止成功后启动；锁文件不手工删除 |
+| 重启看门狗 | `entities/devops/service.py` | 排定关停后 90s 检查，存在 `Lifecycle.shutdown_blockers()` 时每 30s 告警并继续等；只有全部关键资源关闭后才允许 `os._exit(42)` 处理残留非守护线程。等空闲路径在关停请求发出后才布防 |
 | 崩溃守护与通报 | `start.sh`/`start.bat` 守护循环 + `core/crash_report.py` + crash_recovery | 致命信号退出（SIGSEGV 等，退出码 128+n；SIGKILL/SIGTERM 不重启）自动退避重启（5×次数秒，上限 60s），崩溃状态落盘 `logs/crash_state.json`，连续 5 次崩溃停止拉起防崩溃循环（稳定运行 ≥600s 后崩溃重置计数）；重启后 crash_recovery 消费崩溃状态并关联 macOS .ips 生成崩溃上下文——有回复检查点随中断元消息注入对应会话，无检查点经 PushHub 写全局通知并唤醒一轮思维；状态标记 reported 只通报一次。AI 详情查询走 devops `get_crash_report` 工具 / 面板 `/crash-info` |
 | 重启交接闭环 | `entities/devops/service.py`（交接落盘 + wait_idle 重启）+ RestartHandoffWatcher provider | AI 调 restart_app 等可传 `message` 给重启后的自己留言；交接（owner scope / 回复路由 / 留言）落盘 `<data_dir>/restart_handoff.json`（拒绝不写，已排定重复调用仅在留言非空时更新）；`wait_idle=True` 等思维空闲（120s 上限）让当前回复轮自然收尾。bootstrap 末尾 provider 消费交接（读即删只消费一次；超 1h TTL 仅清理不投递），延迟 5s 推送「重启成功 + 留言」并唤醒一轮思维。Web/API 重启路径不写交接、不等待 |
-| 关停总预算 | `core/lifecycle.py::shutdown_all(deadline=)` + `shutdown_budget_seconds`（默认 45s，system/shutdown 组） | 逆序清理按剩余预算裁剪单项上限，耗尽即跳过余下组件记名（二次信号强杀仍是最终兜底）；实例锁释放移到后置钩子，消除双实例窗口 |
+| 关停预算与存储保护 | `core/lifecycle.py` + `core/application.py` | 先同步触发 `on_quiesce` 封闭工作入口，再前置钩子和逆序清理。默认 45s 总预算只裁剪普通组件；`critical_cleanup=True` 的存储即使预算耗尽或外层取消仍等待关闭，失败则保留进程、依赖及实例锁并告警。重复 SIGINT/SIGTERM 不升级强杀；后置解锁只在关键存储全部关闭后执行 |
 | Web 绑定 fail-fast | `web/server.py::WebServerService._serve` | uvicorn 绑定失败不苟活——检测 `server.started` 请求优雅关停，半活实例（Agent 在跑而 WebUI 不可达）不再存活 |
 | 实时引擎入 Lifecycle | bootstrap 注册 `realtime_engine`（cleanup=shutdown_all_sessions） | 进程退出不依赖 WS 断连的隐式清理；每会话有界（5s）收尾 |
 | 子进程看护 | `entities/filesystem/child_guard.py` + shell_background 登记 | 后台 shell（独立进程组）的 owner-death 守卫：pgid 登记 logs/shell_children.json，启动清扫上次实例孤儿（SIGTERM→5s→SIGKILL 整组），关停终止全部在册子进程；裸 create_task 收编（async_helper.spawn 受管） |

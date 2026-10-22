@@ -26,11 +26,15 @@ HookFn = Union[Callable[[], None], Callable[[], Awaitable[None]]]
 # 与 start.sh / start.bat 重启循环约定的退出码：进程以该码退出时由外层脚本重新拉起
 RESTART_EXIT_CODE = 42
 
+
+class ShutdownBlockedError(RuntimeError):
+    """关键资源未能关闭；调用方不得释放实例所有权或自动强制退出。"""
+
 _LIFECYCLE_CONFIGS = {
     "system/shutdown": {
         "shutdown_budget_seconds": {
-            "description": "优雅关停的全局预算（秒）：逆序清理按剩余预算裁剪单项上限，"
-                           "耗尽即跳过余下组件（二次 Ctrl+C 仍可强杀兜底）",
+            "description": "普通组件关停预算（秒）；关键存储不因预算耗尽而中断或跳过，"
+                           "仍等待原生操作和连接关闭",
             "default": 45.0,
             "min": 5.0,
             "max": 300.0,
@@ -51,6 +55,9 @@ class Lifecycle:
     _cleanups: List[tuple[str, CleanupFn]] = []
     _start_hooks: List[tuple[str, HookFn]] = []
     _tick_hooks: List[tuple[str, HookFn]] = []
+    _quiesce_hooks: List[tuple[str, Callable[[], None]]] = []
+    _critical_cleanups: Dict[str, bool] = {}
+    _quiescing: bool = False
     _order: List[str] = []
     _shutdown_requester: Optional[Callable[[], None]] = None
     _requester_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -66,6 +73,9 @@ class Lifecycle:
         cleanup: Optional[CleanupFn] = None,
         on_start: Optional[HookFn] = None,
         on_tick: Optional[HookFn] = None,
+        *,
+        on_quiesce: Optional[Callable[[], None]] = None,
+        critical_cleanup: bool = False,
     ) -> None:
         """注册单例实例，可选附带 cleanup / on_start / on_tick 回调。
 
@@ -77,7 +87,7 @@ class Lifecycle:
             raise RuntimeError(f"组件 {name} 正在运行，必须先停止并注销再替换")
         previous_hooks = {
             attr: [(index, entry) for index, entry in enumerate(getattr(cls, attr)) if entry[0] == name]
-            for attr in ("_cleanups", "_start_hooks", "_tick_hooks")
+            for attr in ("_cleanups", "_start_hooks", "_tick_hooks", "_quiesce_hooks")
         }
         previous_index = cls._order.index(name) if name in cls._order else 0
         def undo() -> None:
@@ -89,6 +99,7 @@ class Lifecycle:
                     for index, entry in entries:
                         getattr(cls, attr).insert(index, entry)
         record_mapping(cls._owners, name)
+        record_mapping(cls._critical_cleanups, name)
         record_undo(undo)
         cls._owners[name] = caller_module()
         cls._instances[name] = instance
@@ -96,10 +107,18 @@ class Lifecycle:
         cls._cleanups = [(n, fn) for n, fn in cls._cleanups if n != name]
         cls._start_hooks = [(n, fn) for n, fn in cls._start_hooks if n != name]
         cls._tick_hooks = [(n, fn) for n, fn in cls._tick_hooks if n != name]
+        cls._quiesce_hooks = [(n, fn) for n, fn in cls._quiesce_hooks if n != name]
+        cls._critical_cleanups.pop(name, None)
         cls._order = [n for n in cls._order if n != name]
         cls._order.append(name)
         if cleanup:
             cls._cleanups.append((name, cleanup))
+            if critical_cleanup:
+                cls._critical_cleanups[name] = True
+        if on_quiesce:
+            cls._quiesce_hooks.append((name, on_quiesce))
+            if cls._quiescing:
+                on_quiesce()
         if on_start:
             cls._start_hooks.append((name, on_start))
         if on_tick:
@@ -157,8 +176,13 @@ class Lifecycle:
         cleanup = next((fn for n, fn in cls._cleanups if n == name), None)
         if cleanup is not None:
             try:
+                quiesce = next((fn for n, fn in cls._quiesce_hooks if n == name), None)
+                if quiesce:
+                    quiesce()
                 if asyncio.iscoroutinefunction(cleanup):
-                    if per_timeout is not None:
+                    if name in cls._critical_cleanups:
+                        await cls._await_critical(name, cleanup)
+                    elif per_timeout is not None:
                         await asyncio.wait_for(cleanup(), timeout=per_timeout)
                     else:
                         await cleanup()
@@ -182,6 +206,8 @@ class Lifecycle:
         cls._cleanups = [(n, fn) for n, fn in cls._cleanups if n != name]
         cls._start_hooks = [(n, fn) for n, fn in cls._start_hooks if n != name]
         cls._tick_hooks = [(n, fn) for n, fn in cls._tick_hooks if n != name]
+        cls._quiesce_hooks = [(n, fn) for n, fn in cls._quiesce_hooks if n != name]
+        cls._critical_cleanups.pop(name, None)
         cls._order = [n for n in cls._order if n != name]
 
     @classmethod
@@ -205,40 +231,85 @@ class Lifecycle:
     ) -> None:
         """逆序执行所有 cleanup 回调，释放资源。
 
-        per_timeout：单个 cleanup 的最大耗时（秒），超时记 ERROR 继续下一个，
-        防止个别组件卡死拖住整个进程退出；None 表示不限时。
-        deadline：全局关停预算的时刻戳（time.monotonic 口径）。给出时单项
-        上限取 min(per_timeout, 剩余预算)；预算耗尽即跳过余下组件并记名——
-        有序关停不因个别组件卡死而无限期拖长（二次信号强杀仍是最终兜底）。
+        per_timeout / deadline 只约束普通组件，预算耗尽后继续寻找关键清理。
+        critical_cleanup 不被超时或外层取消中断；关闭失败阻止后续依赖释放，
+        宿主保留实例所有权和进程，等待人工排查。
         """
+        cls.quiesce_all()
         for name, fn in reversed(cls._cleanups):
+            critical = name in cls._critical_cleanups
             effective = per_timeout
-            if deadline is not None:
+            if deadline is not None and not critical:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    log(f"关停预算耗尽，跳过余下组件清理（当前: {name}）", "ERROR")
-                    break
+                    log(f"关停预算耗尽，跳过普通组件清理: {name}", "ERROR")
+                    continue
                 effective = min(per_timeout, remaining) if per_timeout is not None else remaining
             try:
                 if asyncio.iscoroutinefunction(fn):
-                    if effective is not None:
+                    if critical:
+                        await cls._await_critical(name, fn)
+                    elif effective is not None:
                         await asyncio.wait_for(fn(), timeout=effective)
                     else:
                         await fn()
                 else:
                     fn()
                 log(f"已清理: {name}")
-            except asyncio.TimeoutError:
+                cls._critical_cleanups.pop(name, None)
+            except asyncio.TimeoutError as exc:
+                if critical:
+                    raise ShutdownBlockedError(f"关键资源关闭超时: {name}") from exc
                 log(f"清理超时（{effective:.0f}s）: {name}", "ERROR")
             except Exception as e:
+                if critical:
+                    raise ShutdownBlockedError(f"关键资源关闭失败: {name} - {e}") from e
                 log(f"清理失败: {name} - {e}", "WARNING")
         cls._instances.clear()
         cls._owners.clear()
         cls._cleanups.clear()
         cls._start_hooks.clear()
         cls._tick_hooks.clear()
+        cls._quiesce_hooks.clear()
         cls._order.clear()
         cls._started = False
+
+    @classmethod
+    def quiesce_all(cls) -> None:
+        """关停第一步：同步关闭工作入口，不等待批次完成，不改变持久化配置。"""
+        if cls._quiescing:
+            return
+        cls._quiescing = True
+        for name, fn in reversed(cls._quiesce_hooks):
+            try:
+                fn()
+            except Exception as exc:
+                raise ShutdownBlockedError(f"停止接纳工作失败: {name} - {exc}") from exc
+
+    @classmethod
+    def shutdown_blockers(cls) -> list[str]:
+        """尚未确认关闭的关键资源；供线程看门狗判断是否允许强制退出。"""
+        return list(cls._critical_cleanups)
+
+    @staticmethod
+    async def _await_critical(name: str, fn: CleanupFn) -> None:
+        """保持关键关闭任务存活；取消和普通超时不能中断原生资源回收。"""
+        result = fn()
+        if result is None:
+            return
+        task = asyncio.ensure_future(result)
+        started = time.monotonic()
+        while not task.done():
+            try:
+                await asyncio.wait({task}, timeout=30.0)
+            except asyncio.CancelledError:
+                log(f"继续等待关键资源关闭，不中断写盘: {name}", "WARNING", tag="关停")
+            if not task.done():
+                log(f"等待关键资源关闭: {name}，已等待 {time.monotonic() - started:.0f}s",
+                    "WARNING", tag="关停")
+        if task.cancelled():
+            raise ShutdownBlockedError(f"关键资源关闭任务被取消: {name}")
+        task.result()
 
     @classmethod
     def snapshot(cls) -> List[Dict[str, Any]]:
@@ -267,6 +338,9 @@ class Lifecycle:
         cls._cleanups.clear()
         cls._start_hooks.clear()
         cls._tick_hooks.clear()
+        cls._quiesce_hooks.clear()
+        cls._critical_cleanups.clear()
+        cls._quiescing = False
         cls._order.clear()
         cls._shutdown_requester = None
         cls._requester_loop = None

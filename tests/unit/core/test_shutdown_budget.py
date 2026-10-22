@@ -8,7 +8,7 @@ import time
 import pytest
 
 from core.application import Application
-from core.lifecycle import Lifecycle
+from core.lifecycle import Lifecycle, ShutdownBlockedError
 
 
 @pytest.fixture(autouse=True)
@@ -81,3 +81,52 @@ class TestPostShutdownHooks:
         app.on_post_shutdown("ok", lambda: order.append("ok"))
         await app._shutdown()
         assert order == ["ok"]
+
+
+async def test_critical_cleanup_survives_budget_and_cancellation():
+    started, release = asyncio.Event(), asyncio.Event()
+    events = []
+
+    async def close_database():
+        started.set()
+        await release.wait()
+        events.append("database_closed")
+
+    Lifecycle.register("dependency", None, cleanup=lambda: events.append("dependency_closed"), critical_cleanup=True)
+    Lifecycle.register("database", None, cleanup=close_database, critical_cleanup=True,
+                       on_quiesce=lambda: events.append("quiesce"))
+    task = asyncio.create_task(Lifecycle.shutdown_all(deadline=time.monotonic() - 1))
+    await started.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    assert events == ["quiesce"]
+    assert set(Lifecycle.shutdown_blockers()) == {"database", "dependency"}
+    release.set()
+    await task
+    assert events == ["quiesce", "database_closed", "dependency_closed"]
+    assert not Lifecycle.shutdown_blockers()
+
+
+async def test_critical_failure_preserves_dependencies_and_ownership():
+    events = []
+
+    async def broken():
+        raise OSError("checkpoint close failed")
+
+    Lifecycle.register("source_store", None, cleanup=lambda: events.append("closed"))
+    Lifecycle.register("graph", None, cleanup=broken, critical_cleanup=True)
+    with pytest.raises(ShutdownBlockedError, match="graph"):
+        await Lifecycle.shutdown_all()
+    assert events == []
+    assert Lifecycle.shutdown_blockers() == ["graph"]
+
+
+async def test_quiesce_happens_before_memory_flush():
+    events = []
+    app = Application()
+    Lifecycle.register("sync", None, cleanup=lambda: events.append("close"),
+                       on_quiesce=lambda: events.append("stop_new_work"))
+    app.on_pre_shutdown("flush", lambda: events.append("flush"))
+    await app._shutdown()
+    assert events == ["stop_new_work", "flush", "close"]

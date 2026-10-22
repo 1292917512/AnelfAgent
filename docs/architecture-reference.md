@@ -67,7 +67,9 @@ in-function import 违层），实体里写 `from agent.` 之前先想到 _sdk �
   CRASHED（BaseException）记录后穿透
 - **长驻服务** → `Lifecycle` 唯一宿主：web_server / channels / channel_supervisor / config_watcher /
   mcp_bridge 与全部单例统一 `Lifecycle.register(name, instance, on_start=..., cleanup=...)`。
-  **注册顺序 = 启动顺序（start_all 正序），逆序 = 关停顺序（shutdown_all，per_timeout 单组件限时降级）**，
+  **注册顺序 = 启动顺序（start_all 正序），逆序 = 关停顺序（shutdown_all）**；
+  `on_quiesce` 在关停开始同步封闭工作入口，普通组件可限时降级，`critical_cleanup=True`
+  的存储必须确认关闭，不能被预算跳过或取消；失败时阻止依赖释放和实例解锁，
   注册顺序因此自然获得 drain 语义（web/频道等进水口先停，思考与资源后收）；调用方不得自行编排服务清理顺序
 - **关停前置钩子** → `Application.on_pre_shutdown`（launch 注入：记忆兜底 / 日志静音 / bootstrap
   后台任务取消），在 shutdown_all 之前执行，钩子失败降级为日志

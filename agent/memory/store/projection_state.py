@@ -27,6 +27,7 @@ class ProjectionState(BaseModel):
     version: int = PROJECTION_VERSION
     phase: Literal["required", "requested", "scanning", "building", "verifying", "ready", "failed"] = "required"
     rebuild_requested: bool = False
+    rebuild_from_scratch: bool = False
     root: str = ""
     base_prefix: str = ""
     namespace: str = ""

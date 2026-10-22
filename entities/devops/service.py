@@ -39,7 +39,7 @@ FRONTEND_DIR = PROJECT_ROOT / "web" / "frontend"
 # 延迟触发关闭，确保触发重启的 HTTP 响应/工具结果先行返回
 _SHUTDOWN_DELAY = 1.0
 # 重启看门狗：排定重启后超过该时长进程仍存活（优雅关停卡死），
-# 无条件 os._exit(42) 保底，确保守护脚本必然接管。
+# 仅在关键存储确认关闭后允许 os._exit(42)，避免中断原生写盘。
 # 取值需覆盖正常关停耗时（记忆兜底 30s 上限 + 各组件 per_timeout 清理）
 _RESTART_WATCHDOG_SECONDS = 90.0
 # 前端构建超时（秒）
@@ -86,12 +86,16 @@ def _is_supervised() -> bool:
 
 
 def _restart_watchdog() -> None:
-    """重启保底：优雅关停卡死时直接以退出码 42 退出，交由守护脚本拉起。"""
+    """只在关键存储已关闭时兜底退出；数据库阻塞时持续告警而不强杀。"""
     import os
 
     from core.lifecycle import RESTART_EXIT_CODE
 
     time.sleep(_RESTART_WATCHDOG_SECONDS)
+    while blockers := Lifecycle.shutdown_blockers():
+        log(f"重启仍在等待关键资源关闭: {', '.join(blockers)}；不会强制中断数据库写入",
+            "WARNING", tag="运维")
+        time.sleep(30.0)
     log(
         f"优雅关停超过 {_RESTART_WATCHDOG_SECONDS:.0f}s 未完成，看门狗强制退出（退出码 {RESTART_EXIT_CODE}）",
         "WARNING", tag="运维",

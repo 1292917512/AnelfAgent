@@ -50,6 +50,9 @@ def validate_sdk(module: Any) -> None:
 
 async def close_engines() -> None:
     """宿主唯一客户端停止工作后释放进程缓存；不删除数据库。"""
+    from .ladybug_guard import close_all
+
+    await close_all()
     factories = [getattr(importlib.import_module(module), factory) for module, factory in (
         ("cognee.infrastructure.databases.graph.get_graph_engine", "_create_graph_engine"),
         ("cognee.infrastructure.databases.vector.create_vector_engine", "_create_vector_engine"),

@@ -1,6 +1,32 @@
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect } from "./fixtures";
 
+test("Cognee explicitly starts a fresh generation during an unfinished build", async ({ page }) => {
+  const state = {
+    availability: { installed: true, enabled: true, ready: true },
+    sync: { enabled: true, running: true, pending: 10, synced: 2, failed: 0 },
+    projection: { phase: "building", namespace: "old", rebuild_requested: false, verified: 0,
+      counts: { memories: 12, graph_nodes: 0 }, previous_namespaces: [] },
+  };
+  await page.route("**/api/memory/cognee/status", (route) => route.fulfill({ json: state }));
+  const requests: boolean[] = [];
+  await page.route("**/api/memory/cognee/rebuild?*", (route) => {
+    requests.push(new URL(route.request().url()).searchParams.get("restart") === "true");
+    state.projection.rebuild_requested = true;
+    return route.fulfill({ json: { ok: true, scheduled: true } });
+  });
+  await page.goto("/webui/memory?tab=cognee");
+  await expect(page.getByRole("button", { name: "Build / Resume", exact: true })).toBeDisabled();
+  const fresh = page.getByRole("button", { name: "Start a fresh full rebuild", exact: true });
+  await fresh.click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByText(/Source content, previous datasets and backups are retained/)).toBeVisible();
+  expect(requests).toEqual([]);
+  await dialog.getByRole("button", { name: "Confirm", exact: true }).click();
+  await expect(fresh).toBeDisabled();
+  expect(requests).toEqual([true]);
+});
+
 test("Cognee storage distinguishes generations and confirms protected cleanup", async ({ page }, info) => {
   const state = {
     availability: { installed: true, enabled: true, ready: true, version: "1.6.5" },

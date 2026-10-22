@@ -66,16 +66,18 @@ class CogneeRebuild:
     def can_consume(self) -> bool:
         return self.state is None or self.state.phase in {"ready", "scanning", "building", "verifying"}
 
-    async def request(self, config: CogneeConfig) -> ProjectionState:
+    async def request(self, config: CogneeConfig, *, restart: bool = False) -> ProjectionState:
         await self._validate_request(config)
         state = self.state
         if state is None:
             raise RuntimeError("构建状态尚未初始化")
         state.rebuild_requested = False
-        if state.phase in {"requested", "scanning", "building", "verifying"}:
+        restart = restart or state.rebuild_from_scratch
+        state.rebuild_from_scratch = False
+        if not restart and state.phase in {"requested", "scanning", "building", "verifying"}:
             await self.store.projection_state.save(state)
             return state
-        if state.phase == "failed":
+        if not restart and state.phase == "failed":
             state.error = ""
             # 验收失败不能仅重验同一份坏索引：分页面向权威源重放，保留已写日志和映射。
             state.phase = "scanning" if state.backup_path else "requested"
@@ -86,7 +88,7 @@ class CogneeRebuild:
             state = ProjectionState(
                 root=config.absolute_data_root, base_prefix=config.dataset_prefix,
                 namespace=f"{config.dataset_prefix}_p{PROJECTION_VERSION}_{uuid.uuid4().hex[:12]}",
-                previous_namespaces=[*state.previous_namespaces, state.namespace],
+                previous_namespaces=list(dict.fromkeys([*state.previous_namespaces, state.namespace])),
                 phase="requested", started_at=time.time(),
             )
         self.state = state
@@ -94,18 +96,19 @@ class CogneeRebuild:
         self.bind()
         return state
 
-    async def schedule(self, config: CogneeConfig) -> ProjectionState:
+    async def schedule(self, config: CogneeConfig, *, restart: bool = False) -> ProjectionState:
         """持久化请求后立即返回；worker 在当前批次结束后切换构建代际。"""
         await self._validate_request(config)
         if self.state is None:
             raise RuntimeError("构建状态尚未初始化")
         self.state.rebuild_requested = True
+        self.state.rebuild_from_scratch = self.state.rebuild_from_scratch or restart
         await self.store.projection_state.save(self.state)
         return self.state
 
     async def _validate_request(self, config: CogneeConfig) -> None:
-        if not config.enabled or not config.sync_enabled:
-            raise ValueError("全量构建需要启用 Cognee 与同步消费")
+        if not config.enabled:
+            raise ValueError("全量构建需要启用 Cognee；同步暂停时请求保留至继续同步")
         if not config.project_memories_enabled or not config.project_graph_enabled:
             raise ValueError("全量构建需要同时启用记忆与关系投影")
         if self.state is None:
@@ -157,7 +160,7 @@ class CogneeRebuild:
             await self.store.projection_state.save(state)
 
     async def verify_backend(self, state: ProjectionState, mappings: list[dict[str, Any]]) -> int:
-        """只读核验后端内容、标签和抽取完成标记；供构建验收及旧代际清理复用。"""
+        """核验内容、标签、抽取标记及实际图谱覆盖；构建与清理共用同一验收门。"""
         documents: dict[tuple[str, str], Any] = {}
         for dataset_id in sorted({str(row["dataset_id"]) for row in mappings}):
             for item in await self.client.list_data(dataset_id):
@@ -177,4 +180,8 @@ class CogneeRebuild:
             expected_dataset = projection_dataset(state.namespace, graph=mapping["entry_kind"] == "graph_node")
             if mapping["dataset_name"] != expected_dataset:
                 raise RuntimeError("发现其他构建代际的映射")
+        for dataset_id in sorted({str(row["dataset_id"]) for row in mappings}):
+            await self.client.verify_graph_documents(dataset_id, [
+                str(row["data_id"]) for row in mappings if str(row["dataset_id"]) == dataset_id
+            ])
         return len(documents)

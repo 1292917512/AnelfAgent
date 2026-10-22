@@ -35,6 +35,8 @@ class CogneeClient:
     def __init__(self, config: CogneeConfig) -> None:
         self.config = config.normalized()
         self._module: Optional[Any] = None
+        self._closing = False
+        self._calls: set[asyncio.Future[Any]] = set()
         self._configured = False
         self._import_error = ""
         self._configuration_required = False
@@ -85,7 +87,18 @@ class CogneeClient:
     async def initialize(self) -> CogneeAvailability:
         """串行解析并应用配置，并发调用复用已就绪的客户端。"""
         async with self._initialize_lock:
+            if self._closing:
+                raise RuntimeError("Cognee 客户端正在关闭")
             return await self._initialize()
+
+    def quiesce(self) -> None:
+        """封闭 SDK 调用入口并取消抽取、召回协程，原生关闭由 close 监督。"""
+        if self._closing:
+            return
+        self._closing = True
+        for task in self._calls:
+            if not task.done():
+                task.cancel()
 
     async def close(self) -> None:
         """宿主停止调用后释放 SDK 缓存的引擎，等待数据库线程与文件句柄关闭。
@@ -93,6 +106,8 @@ class CogneeClient:
         Cognee 使用进程级引擎缓存；宿主只装配一个客户端，关闭由生命周期
         在召回与投影工作停止后统一调用。关闭不删除数据或改变投影状态。
         """
+        self.quiesce()
+        await asyncio.gather(*self._calls, return_exceptions=True)
         if self._module is None:
             return
         async with self._initialize_lock:
@@ -229,12 +244,16 @@ class CogneeClient:
         timeout: Optional[float] = None,
         **kwargs: Any,
     ) -> Any:
+        if self._closing:
+            raise RuntimeError("Cognee 客户端正在关闭")
         module = self._module
         if module is None or not self._configured:
             availability = await self.initialize()
             if not availability.ready or self._module is None:
                 raise RuntimeError(availability.reason or "Cognee 未就绪")
             module = self._module
+        if self._closing:
+            raise RuntimeError("Cognee 客户端正在关闭")
         target: Any = module
         for part in dotted_name.split("."):
             target = getattr(target, part)
@@ -242,9 +261,11 @@ class CogneeClient:
         if hasattr(result, "__await__"):
             limit = timeout if timeout is not None else self.config.timeout_seconds
             deadline = asyncio.timeout(limit)
+            task = asyncio.ensure_future(result)
+            self._calls.add(task)
             try:
                 async with deadline:
-                    return await asyncio.ensure_future(result)
+                    return await task
             except TimeoutError as exc:
                 if deadline.expired():
                     raise TimeoutError(f"Cognee 调用 {dotted_name} 总时限已到（{limit:g}s）") from exc
@@ -252,6 +273,8 @@ class CogneeClient:
                 raise TimeoutError(
                     f"Cognee 调用 {dotted_name} 内部步骤超时（未达到 {limit:g}s 总时限）: {detail}"
                 ) from exc
+            finally:
+                self._calls.discard(task)
         return result
 
     # v2 memory-oriented API
@@ -413,6 +436,17 @@ class CogneeClient:
             **kwargs,
         )
 
+
+    async def verify_graph_documents(self, dataset_id: str, data_ids: list[str]) -> None:
+        """逐文档检查实际图库，拒绝仅有元数据完成标记的残缺索引。"""
+        from .graph_validation import verify_graph_documents
+
+        datasets = await self.list_datasets()
+        if not any(str(item.get("id") if isinstance(item, dict) else item.id) == dataset_id
+                   for item in datasets):
+            raise RuntimeError(f"无法访问待验收的数据集: {dataset_id}")
+        await asyncio.wait_for(verify_graph_documents(UUID(dataset_id), data_ids),
+                               timeout=self.config.pipeline_timeout_seconds)
 
     # Maintenance / diagnostics / visualization
 

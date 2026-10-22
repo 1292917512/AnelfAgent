@@ -102,6 +102,7 @@ export interface CogneeStorageInfo {
 export interface CogneeProjectionState {
   phase: "required" | "requested" | "scanning" | "building" | "verifying" | "ready" | "failed";
   rebuild_requested: boolean;
+  rebuild_from_scratch?: boolean;
   namespace: string;
   previous_namespaces: string[];
   backup_path: string;

@@ -273,6 +273,10 @@ NodeSet 结构连接 `belongs_to_set`，保留实际关系；缺少或无效归�
 Web「Cognee → 全量构建 / 续跑」和 `POST /api/memory/cognee/rebuild` 共用持久化请求。
 接口只确认请求已保存，最终以状态 `ready` 为准。首次遇到旧格式映射进入 `required`，暂时使用
 原生召回；不会直接把旧数据声明成新格式，也不保留另一套旧运行实现。
+图库损坏或需完全重新抽取时，选择「重新开始全量构建」（同接口 `?restart=true`）：
+持久化全新代际请求，即使当前处于 building/failed 也不复用原图或完成标记，保留旧代际。
+普通续跑只用于继续当前构建，不能替代受损图库的全量重建。
+同步已暂停时也可保存构建请求；点击「继续同步」后才执行，不暗中启用同步。
 
 1. 预检当前旧数据集，识别上游拆分共享行时保留的 `legacy_id`；旧映射须能回查原文、归档或
    明确删除记录（墓碑用 `memory_id`，不能用墓碑行号）。映射之外的旧文档须同时通过应用标签、
@@ -286,11 +290,12 @@ Web「Cognee → 全量构建 / 续跑」和 `POST /api/memory/cognee/rebuild` �
    `document_json`。历史内容只供审计和人工恢复，不作为当前事实自动进入新索引。
 3. 分页重放活跃记忆和未归档关系节点，新代际使用独立 namespace；旧数据集继续保留。
 4. 对照每条当前原始记录核对映射指纹，再核对后端文档 ID、数量、外部元数据指纹、完整 NodeSet
-   和所属代际，并确认每篇文档的 cognify 完成标记。逐项计算在写锁外执行；内容及映射变更
+   和所属代际，并确认每篇文档的 cognify 完成标记及真实图库的文档节点、DocumentChunk
+   分块和 is_part_of 关联（`graph_validation.py` 隔离 SDK 图格式）。逐项计算在写锁外执行；内容及映射变更
    由 SQLite 触发器递增审计版本，计算两端及最终提交比较版本。最终事务不全表重扫，
    验收期间有新写入则先追平队列并重新审计。
 5. 全部通过才恢复 Cognee 召回。中断按持久化游标续跑，单消费者重新启动时立即回收在途任务；
-   验收失败点击续跑会分页重放修复。
+   处理失败可点击续跑分页重放；图文件损坏或实际节点缺失应重新开始全量构建。
    未知额外文档不会为凑齐数量被删除。投影失败则修正模型/网络问题后重试，未成功前不切换。
 
 Web 构建面板区分原生映射已提交数、排队/处理中数量和 Cognee 流水线报告篇数。扫描分页会使
@@ -308,6 +313,9 @@ Web 构建面板区分原生映射已提交数、排队/处理中数量和 Cogne
 同步开启时正常重启后不需再次点击全量构建；中断批次可能重新抽取并产生额外调用，但原始记录、旧数据集、
 快照与稳定文档 ID 保持。不要同时运行两个进程写同一存储卷；突然断电或文件损坏仍需依赖完整
 存储卷备份恢复，不能把正常重启可续跑等同于任何硬故障下都不会丢失数据。
+关停不等待整个抽取批次：先停止接单、取消上层抽取/召回，再等待已进入原生库的操作结束并关闭
+连接。未提交条目保留在 SQLite outbox，重启立即回收重试，不将取消误记成同步成功。
+若原生操作卡死或关闭报错，日志明确报告等待/失败，保留进程和实例锁，禁止自动超时强杀。
 
 全量指「全部可投影的活跃内容」。归档、合并后的原始行、importance=0、计划、墓碑、原始对话、
 文件和便签继续留在所属系统，不把它们复制为活跃记忆，也不删除它们。已经历史物删的正文无法
@@ -326,13 +334,15 @@ Web 存储明细展示整个 Cognee 目录的图、向量、元数据、原文�
 新代际 `ready` 且同步已暂停、队列排空后，可在 Web 逐个选择旧数据集确认清理。
 `DELETE /api/memory/cognee/datasets/{id}` 只接纳已记录旧代际的目标，后台 `DatasetRetirement`
 与投影/配置/压缩共用互斥锁；请求立即返回，状态在 `cognee/status.retirement` 中查看。
-先审计当前原生映射覆盖，并复用构建验收核对后端文档、内容指纹、标签及抽取标记，
+先审计当前原生映射覆盖，并复用构建验收核对后端文档、内容指纹、标签、抽取标记及实际图谱覆盖，
 再逐篇完整留存旧原文、标签和来源到 `cognee_legacy_documents`，
 完成包含这些归档的原生 SQLite 备份并通过 `quick_check` 后，才调用公开 SDK `datasets.empty_dataset`。
 SDK 负责清理索引和按引用计数释放原文；不得绕过 SDK 按目录名手工删除。当前代际、外部数据集、
 仍被映射引用的数据集，以及无法核实来源/完整原文的目标均拒绝清理。归档或备份失败时不进入删除。
 取消或部分删除失败后归档、备份仍保留，可重新选择剩余旧数据集重试；不自动续跑删除操作。
 清理完成重新统计占用；共享文件和关系数据库空闲页可能不会立即释放磁盘空间。
+该入口只清理 SDK 可识别的旧数据集，不清理 crash-quarantine 故障隔离目录或重建备份；这些文件
+保留作恢复依据，确认业务召回正常并完成独立备份后再按备份维护流程处理。
 
 | 变更 | 是否需要重建 |
 |---|---|
@@ -400,7 +410,7 @@ LiteLLM 升级另须运行[缓存健康门](context-cache.md#用量与版本变�
 |------|------|------|
 | 投影内容指纹跳过 | `store/_shared.py::projection_content_hash` + `cognee_queue.enqueue_sync` | 完整 SHA256 包含投影版本、type/content/source/metadata/tags/timestamp，不含 importance；一致且无在途任务/未提交写入日志才跳过。显式回填 force=True。关系指纹包含节点、边、证据、来源记忆与归属，不含强度；强度变化不重建，证据或标签变化须重新投影 |
 | cognee 写盘熔断 | `cognee/write_breaker.py` + coordinator `_projection_allowed` | 进程自身磁盘写入速率超阈值（默认 500MB/5min）时暂停投影认领与自动压缩，冷却到期重评、自调节；平台不支持时 fail-open。状态经 CogneeSyncStatus.paused 暴露；`run_in_idle_window` 用户显式作业不受熔断阻断 |
-| ladybug native 监督 | `agent/memory/cognee/ladybug_guard.py`（门闸/循环安全/看门狗/WAL 容错四位一体，`install()` 幂等） | ①**并发门闸**：进程级线程锁串行所有 native 执行（execute+结果消费全程），wait_for 取消协程不提前放锁；②**循环安全拆除**：close/delete_graph 先 `to_thread` 预拆除再调原方法，门闸等待永不落在事件循环线程；③**失控看门狗**：纯线程实现，持有门闸超 `native_watchdog_restart_seconds`（默认 600）经端口请求守护重启（绝不直接退进程）；**刻意不做 native 中止**——ladybug 的 set_query_timeout/interrupt 对卡死扫描不可靠，隔离+重启是唯一安全语义；④**WAL 容错**：`throw_on_wal_replay_failure=False` 打开图库，损坏回放到最后提交点。配置在 cognee.json |
+| ladybug native 监督 | `agent/memory/cognee/ladybug_guard.py`，`install()` 幂等 | 进程级门闸串行 native 执行，协程取消不提前放锁。close 在独立关闭线程按 SDK 顺序封闭提交、排空 executor、关闭连接；共享完成结果，不受等待方取消或 SDK 缓存关闭超时影响，异常必须传播。delete_graph 保留 SDK 先排空再拆除顺序。纯线程看门狗可请求关停，但原生操作未结束时不强杀；不调用不可靠的 interrupt。WAL 容错参数只处理库能报告的恢复错误，不能防止原生段错误，损坏 checkpoint 仍需隔离及全量重建 |
 | LanceDB 物理压缩 | `cognee/storage.py` + coordinator 空闲窗口调度 | 宿主是唯一维护调度者，适配器边界关闭 Cognee 自带的构图收尾压缩，库内无后台清理任务。`compact_lance_tree` 复用上游有界算法，全数据树每轮最多 4 个碎片合并任务和 1000 个历史版本，轮换起点避免表长期得不到维护；仅清理后继版本已超过 `compact_retention_days` 的旧版本，保留最新数据与保留期内快照。worker 排空后按 `compact_interval_seconds`（默认 86400s）自动执行。AI 工具 `compact_cognee_storage` / `POST /memory/cognee/compact` / Web 按钮统一进入 `request_compact()`，关闭自动维护仍可手动请求；两者均服从写盘熔断与投影锁，取消时等待原生写入结束后释放锁。`StorageStatsTracker` 以内存 TTL → 磁盘快照 → 空统计返回，请求路径不遍历大库，代际号防旧遍历回写 |
 | improve 默认禁用 | `cognee/config.py` `improve_interval_seconds`（默认 0） | 全局摘要有额外模型成本，CHUNKS 不依赖它；显式增强调用 improve 的 global_context_index 阶段，不默认执行 memify 全图重嵌入 |
 | goal 不投影 cognee | `store/cognee_queue.enqueue_sync`（source=='goal' 拦截）+ `planning/tracker._persist` | 计划状态 JSON 不是知识：updated_at 高频漂移使投影永不稳定；goal upsert 不入队，原生 FTS/向量检索已覆盖召回；`_persist` 比较 updated_at 之外的语义内容，未变不落库 |

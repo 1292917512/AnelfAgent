@@ -5,8 +5,8 @@
 1. 启动：执行 startup FlowMachine（一次性初始化步骤），随后
    ``Lifecycle.start_all()`` 正序拉起所有注册服务的 on_start 钩子
 2. 运行：阻塞等待关停事件（OS 信号 / ``Lifecycle.request_shutdown``）
-3. 关停：前置钩子（记忆兜底 / 日志静音 / 后台任务取消）→
-   ``Lifecycle.shutdown_all()``（全局预算内逆序回收）→ 后置钩子
+3. 关停：停止接纳工作 → 前置钩子（记忆兜底 / 日志静音 / 后台任务取消）→
+   ``Lifecycle.shutdown_all()``（逆序回收，关键存储必须确认关闭）→ 后置钩子
    （实例锁释放——必须等全部服务回收之后，否则释放窗口期新实例
    会撞上仍在退出的旧实例）
 
@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from core.config import get_config_float
 from core.flow import FlowMachine, FlowResult
-from core.lifecycle import HookFn, Lifecycle
+from core.lifecycle import HookFn, Lifecycle, ShutdownBlockedError
 from core.log import log
 
 
@@ -41,7 +41,7 @@ class Application:
     def on_post_shutdown(self, name: str, fn: HookFn) -> None:
         """注册关停后置钩子（Lifecycle.shutdown_all 之后执行）。
 
-        放这里的动作必须"即使组件清理被预算裁剪也安全"——如实例锁释放。
+        仅在全部关键资源确认关闭后执行；用于释放实例所有权等最终动作。
         """
         self._post_shutdown_hooks.append((name, fn))
 
@@ -64,8 +64,17 @@ class Application:
             await self._shutdown()
 
     async def _shutdown(self) -> None:
-        """关停序列：前置钩子（失败降级为日志）→ 全局预算内逆序清理 → 后置钩子。"""
+        """先关闭工作入口；关键存储关闭失败时保留进程和实例所有权。"""
+        try:
+            await self._complete_shutdown()
+        except ShutdownBlockedError as exc:
+            log(f"安全关停被阻止: {exc}；保留实例锁，禁止自动强制退出，请检查日志",
+                "CRITICAL", tag="关停")
+            await asyncio.Event().wait()
+
+    async def _complete_shutdown(self) -> None:
         log("正在关闭...")
+        Lifecycle.quiesce_all()
         for name, fn in self._pre_shutdown_hooks:
             try:
                 result: Any = fn()
@@ -84,7 +93,7 @@ class Application:
                 log(f"关停后置钩子失败: {name} - {type(exc).__name__}: {exc}", "WARNING", tag="关停")
 
     def _arm_signals(self, loop: asyncio.AbstractEventLoop) -> None:
-        """布防 SIGINT/SIGTERM：首次触发优雅关停，二次触发移除处理器走默认强杀。"""
+        """SIGINT/SIGTERM 幂等请求安全关停；重复信号不升级为强杀。"""
         assert self._shutdown_event is not None
         event = self._shutdown_event
 
@@ -97,9 +106,7 @@ class Application:
 
         def _on_signal() -> None:
             if event.is_set():
-                for s in (signal.SIGINT, signal.SIGTERM):
-                    with contextlib.suppress(NotImplementedError, ValueError, RuntimeError):
-                        loop.remove_signal_handler(s)
+                log("正在安全关停，重复信号不会中断数据库关闭", "WARNING", tag="关停")
                 return
             _request_shutdown()
 

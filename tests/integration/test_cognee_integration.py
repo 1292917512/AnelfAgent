@@ -22,6 +22,48 @@ pytestmark = [
 ]
 
 
+async def test_real_ladybug_close_drains_cancelled_query_before_reopen(tmp_path):
+    """真实 native 写入仍在途时取消等待方，关闭必须排空后才能重新打开文件。"""
+    import threading
+
+    from cognee.infrastructure.databases.graph.ladybug.adapter import LadybugAdapter
+
+    from agent.memory.cognee import ladybug_guard
+    from agent.memory.cognee.config import CogneeConfig
+
+    ladybug_guard.install(lambda: CogneeConfig())
+    path = str(tmp_path / "shutdown.lbug")
+    adapter = LadybugAdapter(path, kuzu_num_threads=2, kuzu_buffer_pool_size=64 * 1024 * 1024)
+    started, release = threading.Event(), threading.Event()
+    try:
+        await adapter.query("CREATE NODE TABLE ShutdownProbe(id STRING PRIMARY KEY)")
+
+        def native_write():
+            started.set()
+            assert release.wait(10)
+            adapter.connection.execute("CREATE (:ShutdownProbe {id: 'retained'})")
+
+        query = asyncio.wrap_future(adapter._submit_to_executor_locked(native_write))
+        assert await asyncio.to_thread(started.wait, 5)
+        query.cancel()
+        closing = asyncio.create_task(adapter.close())
+        await asyncio.sleep(0.05)
+        closing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await closing
+        assert adapter.connection is not None
+        release.set()
+        await asyncio.wait_for(adapter.close(), 10)
+    finally:
+        release.set()
+        await adapter.close()
+    reopened = LadybugAdapter(path, kuzu_num_threads=2, kuzu_buffer_pool_size=64 * 1024 * 1024)
+    try:
+        assert await reopened.query("MATCH (n:ShutdownProbe) RETURN n.id") == [("retained",)]
+    finally:
+        await reopened.close()
+
+
 @pytest.mark.parametrize("scenario,expected_tool,expected_arguments", [
     ("查一下发布安排，只查 project:蓝鸢 的记忆，排除 state:old 标签的旧记录。",
      "recall", {"filter_tags": "project:蓝鸢", "filter_not": "state:old"}),
@@ -127,6 +169,31 @@ async def test_real_projection_rebuild_tagged_recall_update_delete(tmp_path, mon
         assert saved is not None and json.loads(saved[0])["text"] == legacy_text
         mapping = await store.get_cognee_mapping(mid)
         assert mapping is not None
+        # 真实图库缺失而 SQL 仍标记完成时，验收和旧数据清理都必须失败。
+        from uuid import UUID
+
+        from cognee.context_global_variables import set_database_global_context_variables
+        from cognee.infrastructure.databases.graph import get_graph_engine
+
+        async with set_database_global_context_variables(UUID(mapping["dataset_id"])):
+            graph_engine = await get_graph_engine()
+            await graph_engine.query("MATCH (n:Node) WHERE n.id = $id DETACH DELETE n", {"id": mapping["data_id"]})
+        with pytest.raises(RuntimeError, match="实际图谱缺少"):
+            await coordinator.rebuild.verify_backend(coordinator.rebuild.state, await store.projection_state.mappings())
+        old_namespace = coordinator.rebuild.state.namespace
+        await coordinator.rebuild.request(config, restart=True)
+        for _ in range(8):
+            await coordinator.rebuild.advance()
+            batch = await store.claim_cognee_sync_batch(10)
+            if batch:
+                await coordinator._process_batch(batch)
+            assert coordinator.rebuild.state.phase != "failed", coordinator.rebuild.state.error
+            if coordinator.rebuild.state.phase == "ready":
+                break
+        assert coordinator.rebuild.state.phase == "ready"
+        assert coordinator.rebuild.state.namespace != old_namespace
+        mapping = await store.get_cognee_mapping(mid)
+        assert mapping is not None and (await store.get(mid)).content.endswith("杭州。")
         dataset_name = mapping["dataset_name"]
         assert (await client.pipeline_progress(mapping["dataset_id"])).status == "DATASET_PROCESSING_COMPLETED"
         # 模拟重新配置/重启后的读取上下文，自动探测维度必须从卷身份恢复。

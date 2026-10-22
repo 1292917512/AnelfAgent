@@ -1,129 +1,115 @@
-"""单实例守卫：PID 文件 + 启动清场，杜绝残留实例占用端口。
-
-问题背景：launch.py 可被启动任意多次（手动启动 / 历史脚本 / 守护循环），
-实例之间互不认识；残留实例持续占用 WebUI 端口，新实例 bind 失败后静默运行，
-用户访问到的永远是老代码（2026-09 实证：8/29 残留进程占位 10 天）。
-
-机制：
-- 启动时写 PID 文件（项目 logs/ 目录，天然按检出副本隔离实例身份）
-- 若 PID 文件指向的活进程 cmdline 属于本项目 launch.py → 判定为残留实例，
-  SIGTERM 优雅终止 → 宽限期后 SIGKILL 强杀，随后接管
-- cmdline 不匹配（PID 复用/外来进程）→ 只警告绝不误杀
-- 关停时释放 PID 文件（仅当文件指向自己）
-"""
+"""单实例所有权与安全停止：操作系统文件锁防双写，存活实例不被自动强杀。"""
 
 from __future__ import annotations
 
 import os
-import signal
 import time
 from pathlib import Path
-from typing import Optional
+
+import psutil
+from filelock import FileLock, Timeout
 
 from core.log import log
 
-# SIGTERM 后的优雅退出宽限（秒），超时升级 SIGKILL
-_TERM_GRACE_SECONDS = 10.0
-_TERM_POLL_INTERVAL = 0.2
-
-# Windows 无 SIGKILL；os.kill 对 SIGTERM 直接走 TerminateProcess，同为强杀语义
-_SIGKILL: signal.Signals = getattr(signal, "SIGKILL", signal.SIGTERM)
-
-_TAG = "实例"
+_locks: dict[Path, FileLock] = {}
 
 
 def _pid_alive(pid: int) -> bool:
-    """进程是否存活（僵尸进程视为已死：不再持有任何资源）。"""
     try:
-        import psutil
-
         return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
-    except Exception as exc:
-        # psutil 拿不到（竞态退出/权限）时退回 kill(pid, 0) 探测
-        import psutil as _psutil  # noqa: F401
-        if isinstance(exc, _psutil.NoSuchProcess):
-            return False
-        if os.name == "nt":
-            return _psutil.pid_exists(pid)
-    try:
-        os.kill(pid, 0)
+    except psutil.NoSuchProcess:
+        return False
+    except psutil.AccessDenied:
         return True
-    except ProcessLookupError:
+
+
+def _read_pid(path: Path) -> int:
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+        return int(raw) if raw.isdecimal() else 0
+    except OSError:
+        return 0
+
+
+def _is_our_instance(process: psutil.Process, project_root: Path, script: str = "launch.py") -> bool:
+    """结合工作目录解析脚本参数，支持相对路径，避免 PID 复用误操作。"""
+    try:
+        cwd = Path(process.cwd())
+        expected = (project_root / script).resolve()
+        return any((cwd / arg).resolve() == expected for arg in process.cmdline()
+                   if Path(arg).name == script)
+    except (psutil.Error, OSError):
         return False
-    except PermissionError:
-        return True  # 活着但属于其他用户
-    except OSError:
-        return False
 
 
-def _is_our_instance(pid: int, project_root: Path) -> bool:
-    """校验目标进程 cmdline 属于本项目的 launch.py（防 PID 复用误杀）。"""
+def acquire_instance(pid_file: Path, project_root: Path) -> None:
+    """独占当前检出的实例锁；旧实例仍存活时拒绝启动并保持其 PID 文件。"""
+    path = pid_file.resolve()
+    if path in _locks:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock = FileLock(str(path) + ".lock", timeout=0)
     try:
-        import psutil
-
-        cmdline = " ".join(psutil.Process(pid).cmdline())
-    except Exception as exc:
-        log(f"读取进程 {pid} 命令行失败: {exc}", "DEBUG", tag=_TAG)
-        return False
-    return "launch.py" in cmdline and str(project_root) in cmdline
-
-
-def _terminate(pid: int) -> bool:
-    """SIGTERM → 宽限 → SIGKILL；返回进程是否已退出。"""
+        lock.acquire()
+    except Timeout as exc:
+        raise RuntimeError("已有实例正在运行或安全关停，请等待退出后再启动") from exc
     try:
-        os.kill(pid, signal.SIGTERM)
-    except OSError:
-        return not _pid_alive(pid)
-    deadline = time.monotonic() + _TERM_GRACE_SECONDS
-    while time.monotonic() < deadline:
-        if not _pid_alive(pid):
-            return True
-        time.sleep(_TERM_POLL_INTERVAL)
-    try:
-        os.kill(pid, _SIGKILL)
-    except OSError:
-        pass
-    time.sleep(0.3)
-    return not _pid_alive(pid)
-
-
-def acquire_instance(pid_file: Path, project_root: Path) -> Optional[int]:
-    """获取实例所有权：清场残留实例并写入自身 PID。
-
-    Returns:
-        被清理的残留实例 PID；无残留返回 None。
-    """
-    killed: Optional[int] = None
-    try:
-        raw = pid_file.read_text(encoding="utf-8").strip() if pid_file.exists() else ""
-        old_pid = int(raw) if raw.isdigit() else 0
-    except OSError:
-        old_pid = 0
-    if old_pid and old_pid != os.getpid() and _pid_alive(old_pid):
-        if _is_our_instance(old_pid, project_root):
-            log(f"检测到残留实例（PID {old_pid}），正在清场以接管端口...", "WARNING", tag=_TAG)
-            if _terminate(old_pid):
-                killed = old_pid
-                log(f"残留实例已终止（PID {old_pid}）", tag=_TAG)
-            else:
-                log(f"残留实例（PID {old_pid}）无法终止，端口可能仍被占用", "ERROR", tag=_TAG)
-        else:
-            log(
-                f"PID 文件指向非本项目进程（PID {old_pid}），忽略（不误杀）",
-                "WARNING", tag=_TAG,
-            )
-    try:
-        pid_file.parent.mkdir(parents=True, exist_ok=True)
-        pid_file.write_text(str(os.getpid()), encoding="utf-8")
-    except OSError as exc:
-        log(f"PID 文件写入失败（实例守卫失效）: {exc}", "WARNING", tag=_TAG)
-    return killed
+        pid = _read_pid(path)
+        if pid and pid != os.getpid() and _pid_alive(pid):
+            # 同时保护升级前尚未使用文件锁的实例；无法核实身份也不覆盖所有权。
+            raise RuntimeError(f"PID {pid} 仍存活，拒绝接管；请先安全停止旧实例")
+        path.write_text(str(os.getpid()), encoding="utf-8")
+        _locks[path] = lock
+    except BaseException:
+        lock.release()
+        raise
 
 
 def release_instance(pid_file: Path) -> None:
-    """释放实例所有权（仅当 PID 文件指向当前进程）。"""
+    """全部关键资源关闭后释放所有权；锁文件本身保留，避免 inode 竞争。"""
+    path = pid_file.resolve()
     try:
-        if pid_file.exists() and pid_file.read_text(encoding="utf-8").strip() == str(os.getpid()):
-            pid_file.unlink()
+        if _read_pid(path) == os.getpid():
+            path.unlink(missing_ok=True)
     except OSError as exc:
-        log(f"PID 文件清理失败（已忽略）: {exc}", "DEBUG", tag=_TAG)
+        log(f"PID 文件清理失败: {exc}", "WARNING", tag="实例")
+    finally:
+        lock = _locks.pop(path, None)
+        if lock is not None:
+            lock.release()
+
+
+def stop_instance(project_root: Path, timeout: float = 600.0) -> None:
+    """POSIX 下停止守护循环，再发 SIGTERM 等待宿主退出；超时保留实例，不强杀。"""
+    if os.name == "nt":
+        raise RuntimeError("Windows 请通过应用关停入口或启动终端 Ctrl+C 安全停止")
+    for filename, script in (("anelf_guardian.pid", "start.sh"), ("anelf.pid", "launch.py")):
+        path = project_root / "logs" / filename
+        pid = _read_pid(path)
+        if not pid or not _pid_alive(pid):
+            continue
+        try:
+            process = psutil.Process(pid)
+            if not _is_our_instance(process, project_root, script):
+                raise RuntimeError(f"无法确认 PID {pid} 的项目归属，停止操作未执行")
+            # 同一 Process 实例保留创建时间，psutil 在发信号时检查 PID 是否已复用。
+            process.terminate()
+            deadline = time.monotonic() + timeout
+            while process.is_running() and process.status() != psutil.STATUS_ZOMBIE:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(f"PID {pid} 仍在安全关停；未强杀、未启动新实例，请检查日志")
+                time.sleep(0.2)
+        except psutil.NoSuchProcess:
+            pass  # 信号与检查间退出属正常关停。
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="安全停止 AnelfAgent，不强杀数据库进程")
+    parser.add_argument("--timeout", type=float, default=600.0)
+    args = parser.parse_args()
+    try:
+        stop_instance(Path(__file__).resolve().parent.parent, max(0.0, args.timeout))
+    except (RuntimeError, psutil.Error) as error:
+        parser.exit(1, f"{error}\n")

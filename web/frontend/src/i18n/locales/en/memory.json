@@ -214,6 +214,8 @@
     "backfill": "Backfill All",
     "backfillConfirm": "Queue all active memories and relation nodes for the current Cognee index? Inactive records remain in native storage. This uses model quota.",
     "rebuild": "Build / Resume",
+    "freshRebuild": "Start a fresh full rebuild",
+    "freshRebuildConfirm": "Create a new graph generation from source memories without reusing the current build progress. Use this after graph damage or to extract everything again. Source content, previous datasets and backups are retained. This uses model quota and extra disk space; old datasets can be retired separately after the new graph passes verification. Start again?",
     "rebuildConfirm": "Keep native content and previous Cognee datasets, and rebuild active memories and relations in new datasets. This uses model quota and extra disk space. Native recall remains available until verification succeeds. Back up the complete storage volume first. Start?",
     "notResolved": "Not resolved",
     "chatModel": "Extraction model",

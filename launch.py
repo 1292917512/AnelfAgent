@@ -53,7 +53,7 @@ def create_application(args: argparse.Namespace) -> Application:
 
     @app.startup.node(skip_on_error=False)
     async def acquire_single_instance() -> None:
-        """单实例守卫：清场残留实例（占用端口的老进程）并写入 PID 文件。"""
+        """获取单实例所有权；仍存活或正在关停的实例不可被接管。"""
         acquire_instance(_PID_FILE, Path(__file__).resolve().parent)
 
     @app.startup.node(skip_on_error=False)
@@ -196,7 +196,7 @@ def main(argv: list[str] | None = None) -> None:
         pass
 
     from core.lifecycle import RESTART_EXIT_CODE, Lifecycle
-    if Lifecycle.restart_requested():
+    if Lifecycle.restart_requested() and not Lifecycle.shutdown_blockers():
         log(f"收到重启请求，以退出码 {RESTART_EXIT_CODE} 退出（由外层启动脚本重新拉起）", tag="重启")
         # 第三方库可能残留非守护线程，SystemExit 会永久阻塞在解释器关闭的 join 上，故直接退出
         sys.stdout.flush()

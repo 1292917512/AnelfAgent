@@ -40,6 +40,7 @@ class CogneeCoordinator:
         self._task: Optional[asyncio.Task[None]] = None
         self._wake = asyncio.Event()
         self._closing = False
+        self._stopping = False
         self._projection_lock = asyncio.Lock()
         self._configuration_task: asyncio.Task[None] | None = None
         self._pending_config: CogneeConfig | None = None
@@ -63,6 +64,7 @@ class CogneeCoordinator:
                                            self.rebuild.verify_backend)
 
     def _retirement_state(self) -> ProjectionState:
+        self._require_open()
         state = self.rebuild.state
         if (self.config.sync_enabled or self.is_running or self.configuration_pending
                 or not state or state.phase != "ready" or state.rebuild_requested):
@@ -113,32 +115,47 @@ class CogneeCoordinator:
         batch_worst_case = 3 * self.config.pipeline_timeout_seconds + 600.0
         return max(configured, batch_worst_case)
 
-    async def close(self) -> None:
+    def quiesce(self) -> None:
+        """立即停止批次和新作业；未提交 outbox 保留到下次启动重试。"""
+        if self._stopping:
+            return
+        self._stopping = True
         self._closing = True
-        await self.retirement.close()
         self._wake.set()
+        self._pending_config = None
+        self.client.quiesce()
+        for task in (self._task, self._configuration_task):
+            if task and not task.done():
+                task.cancel()
+
+    def _require_open(self) -> None:
+        if self._stopping:
+            raise RuntimeError("Cognee 正在安全关停，不再接纳同步或维护任务")
+
+    async def close(self) -> None:
+        self.quiesce()
+        await self.retirement.close()
         if self._configuration_task:
-            self._configuration_task.cancel()
             await asyncio.gather(self._configuration_task, return_exceptions=True)
             self._configuration_task = None
         self._pending_config = None
+        if self._task:
+            await asyncio.gather(self._task, return_exceptions=True)
+            self._task = None
         # 唤醒可能仍在等待空闲窗口作业的调用方，避免关停悬挂
         if self._idle_job is not None:
+            if asyncio.iscoroutine(self._idle_job):
+                self._idle_job.close()
             self._idle_job = asyncio.CancelledError("cognee worker 已关闭")
             self._idle_done.set()
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass  # 取消属正常关闭流程（正常控制流，非异常）
-            self._task = None
-
         async with self._projection_lock:
+            log("Cognee 上层任务已停止，正在等待数据库原生操作结束并关闭连接", tag="关停")
             await self.client.close()
+            log("Cognee 数据库已安全关闭；未提交批次将在下次启动重试", tag="关停")
 
     async def reconfigure(self, config: CogneeConfig) -> None:
         """接纳已保存配置，在当前投影批次结束后应用最后一次修改。"""
+        self._require_open()
         self.rebuild.validate_config(config)
         self._pending_config = config.normalized()
         self._configuration_error = ""
@@ -243,6 +260,7 @@ class CogneeCoordinator:
         （与写入互斥，避免 Lance 提交冲突）；worker 未运行（同步关闭）
         时直接内联执行并返回结果。
         """
+        self._require_open()
         if not self.config.enabled:
             return {"ok": False, "error": "cognee 未启用"}
         if not self._projection_allowed():
@@ -261,10 +279,21 @@ class CogneeCoordinator:
         worker 存活时提交作业并等待其在空闲窗口执行完毕（作业与批次
         串行，投影锁同时隔离手动维护）；worker 未运行时持锁执行。
         """
+        if self._stopping:
+            if asyncio.iscoroutine(job):
+                job.close()
+            self._require_open()
         if not (self._task and not self._task.done()):
-            async with self._projection_lock:
-                return await job
+            try:
+                async with self._projection_lock:
+                    self._require_open()
+                    return await job
+            finally:
+                if asyncio.iscoroutine(job):
+                    job.close()
         if self._idle_job is not None:
+            if asyncio.iscoroutine(job):
+                job.close()
             raise RuntimeError("已有空闲窗口作业排队中")
         self._idle_done.clear()
         self._idle_job = job
@@ -290,19 +319,22 @@ class CogneeCoordinator:
             self._idle_done.set()
 
     async def retry_failed(self) -> int:
+        self._require_open()
         count = await self.store.retry_failed_cognee_sync()
         self.wake()
         return count
 
-    async def request_rebuild(self) -> dict[str, Any]:
+    async def request_rebuild(self, *, restart: bool = False) -> dict[str, Any]:
         """持久化构建请求；不等待耗时的在途批次，完成状态由验收产生。"""
+        self._require_open()
         if self.retirement.status.running:
             raise ValueError("旧数据清理正在执行，请完成后再请求构建")
-        state = await self.rebuild.schedule(self.config)
+        state = await self.rebuild.schedule(self.config, restart=restart)
         self.wake()
         return {"ok": True, "scheduled": True, "rebuild": state.model_dump()}
 
     async def backfill(self, *, limit: int = 0, dry_run: bool = True) -> dict[str, int | bool]:
+        self._require_open()
         if dry_run:
             counts = await self.store.cognee_inventory_counts()
             total = counts["memories"] + counts["graph_nodes"]
@@ -315,6 +347,7 @@ class CogneeCoordinator:
                       build_global_context_index: bool = True) -> Any:
         """在投影与维护互斥窗口中增强图谱，遵循写盘熔断。"""
         async with self._projection_lock:
+            self._require_open()
             namespace = self.client.projection_namespace or self.config.dataset_prefix
             if not self.config.enabled or not self.client.projection_ready or dataset_name not in {
                 projection_dataset(namespace), projection_dataset(namespace, graph=True),
@@ -386,6 +419,8 @@ class CogneeCoordinator:
                 availability = await self.client.initialize()
                 if availability.ready:
                     async with self._projection_lock:
+                        if self._stopping:
+                            break
                         if self.rebuild.state and self.rebuild.state.rebuild_requested:
                             await self.rebuild.request(self.config)
                         await self.rebuild.advance()
@@ -436,6 +471,7 @@ class CogneeCoordinator:
         with activity_owner(kind="maintenance", label="Cognee", owner_id="cognee"):
             async with activity_scope(uuid.uuid4().hex[:8], "") as activity, activity_step("cognee_compact") as step:
                 async with self._projection_lock:
+                    self._require_open()
                     if not self._projection_allowed():
                         step.status, step.detail = "error", self._pause_reason
                         activity.status, activity.error = "failed", self._pause_reason

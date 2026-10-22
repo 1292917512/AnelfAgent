@@ -61,7 +61,7 @@ def create_bootstrap() -> FlowMachine:
             log(f"存储卷恢复标记消费失败（跳过）: {exc}", "ERROR")
 
         data_center = create_data_center()
-        Lifecycle.register("data_center", data_center, cleanup=data_center.sqlite.close)
+        Lifecycle.register("data_center", data_center, cleanup=data_center.sqlite.close, critical_cleanup=True)
         log("DataCenter 已创建")
         return data_center
 
@@ -178,7 +178,7 @@ def create_bootstrap() -> FlowMachine:
         embedder = get_embedder("text")
 
         await store._get_db()
-        Lifecycle.register("memory_store", store, cleanup=store.close)
+        Lifecycle.register("memory_store", store, cleanup=store.close, critical_cleanup=True)
 
         from agent.llm import get_llm_manager
         embed_client = get_llm_manager().get_embedding_client()
@@ -217,12 +217,14 @@ def create_bootstrap() -> FlowMachine:
             get_volume_registry().mark_active("cognee", cognee_config.absolute_data_root)
             cognee_client = CogneeClient(cognee_config)
             cognee_coordinator = CogneeCoordinator(store, cognee_client, cognee_config)
-            await cognee_coordinator.start()
             Lifecycle.register(
                 "cognee_memory",
                 cognee_coordinator,
                 cleanup=cognee_coordinator.close,
+                on_quiesce=cognee_coordinator.quiesce,
+                critical_cleanup=True,
             )
+            await cognee_coordinator.start()
             availability = cognee_client.availability()
             log(
                 f"Cognee: enabled={cognee_config.enabled}, "

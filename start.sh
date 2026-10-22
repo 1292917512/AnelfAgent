@@ -7,8 +7,12 @@ cd "$ROOT" || exit 1
 # 守护循环身份登记：restart.sh 先停守护再停 python（缺此登记时守护无
 # 感知，会在 python 被杀后立刻重新拉起、与新实例竞态互杀）
 mkdir -p "$ROOT/logs"
+if [ -f "$ROOT/logs/anelf_guardian.pid" ] && kill -0 "$(cat "$ROOT/logs/anelf_guardian.pid")" 2>/dev/null; then
+    echo "已有守护进程，先运行 bash stop.sh 安全关闭，或等待退出后再启动。"
+    exit 1
+fi
 echo $$ > "$ROOT/logs/anelf_guardian.pid"
-trap 'rm -f "$ROOT/logs/anelf_guardian.pid"' EXIT
+trap '[ "$(cat "$ROOT/logs/anelf_guardian.pid" 2>/dev/null)" != "$$" ] || rm -f "$ROOT/logs/anelf_guardian.pid"' EXIT
 
 echo ""
 echo "  ┌─────────────────────────────────────┐"

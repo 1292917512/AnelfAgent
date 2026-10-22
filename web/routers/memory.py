@@ -74,10 +74,10 @@ async def retry_cognee() -> Dict[str, Any]:
 
 
 @router.post("/cognee/rebuild")
-async def rebuild_cognee() -> Dict[str, Any]:
+async def rebuild_cognee(restart: bool = False) -> Dict[str, Any]:
     """在新数据集中全量构建，保留旧数据，验收通过后恢复图谱召回。"""
     try:
-        return await _mem_svc.rebuild_cognee()
+        return await _mem_svc.rebuild_cognee(restart=restart)
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 

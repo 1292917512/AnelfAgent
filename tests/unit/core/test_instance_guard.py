@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -13,8 +15,10 @@ from core.instance_guard import acquire_instance, release_instance
 
 
 @pytest.fixture
-def pid_file(tmp_path: Path) -> Path:
-    return tmp_path / "anelf.pid"
+def pid_file(tmp_path: Path) -> Iterator[Path]:
+    path = tmp_path / "anelf.pid"
+    yield path
+    release_instance(path)
 
 
 @pytest.fixture
@@ -58,35 +62,34 @@ class TestAcquire:
         proc = _spawn_sleep()
         try:
             pid_file.write_text(str(proc.pid))
-            assert acquire_instance(pid_file, root) is None
+            with pytest.raises(RuntimeError, match="仍存活"):
+                acquire_instance(pid_file, root)
             assert _alive(proc.pid)  # 未被动过
+            assert pid_file.read_text() == str(proc.pid)
         finally:
             proc.kill()
             proc.wait()
 
-    def test_stale_instance_terminated(self, pid_file, root, monkeypatch):
-        """残留实例（cmdline 校验为本项目）：SIGTERM 优雅终止后接管。"""
-        monkeypatch.setattr("core.instance_guard._is_our_instance",
-                            lambda pid, project_root: True)
+    def test_live_instance_is_not_interrupted(self, pid_file, root):
+        """重复启动不能终止仍可能在写数据库的旧进程。"""
         proc = _spawn_sleep()
-        pid_file.write_text(str(proc.pid))
-        killed = acquire_instance(pid_file, root)
-        assert killed == proc.pid
-        assert proc.wait(timeout=3) is not None  # 已退出（wait 同时收割僵尸）
-        assert pid_file.read_text() == str(os.getpid())
+        try:
+            pid_file.write_text(str(proc.pid))
+            with pytest.raises(RuntimeError, match="仍存活"):
+                acquire_instance(pid_file, root)
+            assert _alive(proc.pid)
+        finally:
+            proc.kill()
+            proc.wait()
 
-    def test_sigterm_ignoring_instance_escalates_to_sigkill(
-            self, pid_file, root, monkeypatch):
-        """无视 SIGTERM 的顽固实例：宽限期后升级 SIGKILL。"""
-        monkeypatch.setattr("core.instance_guard._is_our_instance",
-                            lambda pid, project_root: True)
-        monkeypatch.setattr("core.instance_guard._TERM_GRACE_SECONDS", 0.5)
-        monkeypatch.setattr("core.instance_guard._TERM_POLL_INTERVAL", 0.05)
-        proc = _spawn_sleep(ignore_term=True)
-        pid_file.write_text(str(proc.pid))
-        killed = acquire_instance(pid_file, root)
-        assert killed == proc.pid
-        assert proc.wait(timeout=3) is not None
+    def test_file_lock_blocks_second_process_even_without_pid_file(self, pid_file, root):
+        acquire_instance(pid_file, root)
+        pid_file.unlink()
+        code = ("from pathlib import Path; from core.instance_guard import acquire_instance; "
+                f"acquire_instance(Path({str(pid_file)!r}), Path({str(root)!r}))")
+        result = subprocess.run([sys.executable, "-c", code], capture_output=True, timeout=15)
+        assert result.returncode != 0
+        assert not pid_file.exists()
 
     def test_corrupt_pid_file_recovered(self, pid_file, root):
         pid_file.write_text("not-a-pid")
@@ -104,3 +107,36 @@ class TestRelease:
         pid_file.write_text("123456")
         release_instance(pid_file)
         assert pid_file.exists()  # 指向别人，不动
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows terminate is not a graceful POSIX signal")
+@pytest.mark.parametrize("ignore_term", [False, True])
+def test_stop_uses_sigterm_and_never_escalates(tmp_path, ignore_term):
+    from core.instance_guard import stop_instance
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    script = tmp_path / "launch.py"
+    script.write_text(
+        "import os, signal, time\nfrom pathlib import Path\n"
+        + ("signal.signal(signal.SIGTERM, signal.SIG_IGN)\n" if ignore_term else "")
+        + "Path('logs/anelf.pid').write_text(str(os.getpid()))\ntime.sleep(60)\n",
+    )
+    process = subprocess.Popen([sys.executable, "launch.py"], cwd=tmp_path)
+    try:
+        deadline = time.monotonic() + 5
+        while not (logs / "anelf.pid").exists():
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        if ignore_term:
+            with pytest.raises(RuntimeError, match="未强杀"):
+                stop_instance(tmp_path, timeout=0.1)
+            assert process.poll() is None
+        else:
+            stop_instance(tmp_path, timeout=5)
+            assert process.wait(timeout=3) == -15
+    finally:
+        # 只清理本测试无数据库的睡眠子进程。
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
