@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from typing_extensions import Required, TypedDict
+from typing_extensions import NotRequired, Required, TypedDict
 
 
 class DatasetRecord(TypedDict):
     id: str
     name: str
+    document_count: NotRequired[int]
+    processed_count: NotRequired[int]
 
 
 class DatasetCatalog(TypedDict):

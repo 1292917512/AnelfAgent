@@ -1,5 +1,7 @@
 import { useTranslation } from "react-i18next";
+import { useState } from "react";
 import { Card } from "@/components/common/Card";
+import { Button, Modal } from "@/components/ui";
 import type { CogneeProjectionState, CogneeStatus } from "@/lib/types";
 import { BatchProgress } from "./BatchProgress";
 import { SyncControl } from "./SyncControl";
@@ -12,13 +14,17 @@ export function ProjectionStatusCard({ state, sync, updatedAt, stale, enabled }:
   enabled: boolean;
 }) {
   const { t } = useTranslation("memory");
+  const [open, setOpen] = useState(false);
   if (!state) return null;
   const phase = state.rebuild_requested ? "requested" : state.phase;
   const total = (state.counts.memories ?? 0) + (state.counts.graph_nodes ?? 0);
   const building = ["scanning", "building", "verifying"].includes(state.phase);
   return (
     <Card title={t("cognee.projectionTitle")} subtitle={t(`cognee.projectionPhases.${phase}`)}
-      actions={sync && <SyncControl sync={sync} enabled={enabled} stale={stale} />}>
+      actions={<div className="flex flex-wrap gap-2">
+        <Button variant="ghost" size="sm" onClick={() => setOpen(true)}>{t("cognee.buildDetails")}</Button>
+        {sync && <SyncControl sync={sync} enabled={enabled} stale={stale} />}
+      </div>}>
       <div className="space-y-3 text-sm text-muted">
         <div className="flex flex-wrap justify-between gap-2 text-xs">
           <span>{t("cognee.progress.refreshHint")}</span>
@@ -56,18 +62,23 @@ export function ProjectionStatusCard({ state, sync, updatedAt, stale, enabled }:
         {sync?.configuration_pending && !sync.pause_requested && <p role="status" className="text-accent">{t("cognee.progress.configPending")}</p>}
         {sync?.active && <BatchProgress active={sync.active} stale={stale} />}
         {sync?.last_error && <p role="alert" className="text-danger break-words">{t("cognee.lastError")}: {sync.last_error}</p>}
-        <p>{t("cognee.projectionHint")}</p>
-        {building && <p>{t("cognee.progress.restartHint")}</p>}
         {state.completed_at > 0 && <p>{t("cognee.projectionVerified", { count: state.verified })}</p>}
         {(state.legacy_preserved ?? 0) > 0 && <p>{t("cognee.projectionLegacyPreserved", { count: state.legacy_preserved })}</p>}
-        {state.counts.memories !== undefined && <p>{t("cognee.projectionInventory", {
-          memories: state.counts.memories, relations: state.counts.graph_nodes,
-          excluded: state.counts.excluded_memories,
-        })}</p>}
-        {state.backup_path && <p className="break-all">{t("cognee.projectionBackup")}: {state.backup_path}</p>}
         {state.previous_namespaces.length > 0 && <p>{t("cognee.projectionRetained", { count: state.previous_namespaces.length })}</p>}
         {state.error && <p role="alert" className="text-danger">{state.error}</p>}
       </div>
+      <Modal open={open} onClose={() => setOpen(false)} title={t("cognee.buildDetails")} width="max-w-2xl">
+        <div className="space-y-4 text-sm leading-relaxed text-muted">
+          <p className="break-all font-medium text-heading">{state.namespace}</p>
+          <p>{t("cognee.projectionHint")}</p>
+          {building && <p>{t("cognee.progress.restartHint")}</p>}
+          {state.counts.memories !== undefined && <p>{t("cognee.projectionInventory", {
+            memories: state.counts.memories, relations: state.counts.graph_nodes,
+            excluded: state.counts.excluded_memories,
+          })}</p>}
+          {state.backup_path && <p className="break-all">{t("cognee.projectionBackup")}: {state.backup_path}</p>}
+        </div>
+      </Modal>
     </Card>
   );
 }

@@ -42,7 +42,8 @@ async def test_dataset_http_uses_observation_without_waiting_for_sync(monkeypatc
             read.assert_awaited_once()
 
 
-async def test_retirement_http_returns_task_state_and_rejects_unsafe_targets(monkeypatch):
+@pytest.mark.parametrize("resource", ["datasets", "generations"])
+async def test_retirement_http_returns_task_state_and_rejects_unsafe_targets(monkeypatch, resource):
     from fastapi import FastAPI
     from httpx import ASGITransport, AsyncClient
 
@@ -51,15 +52,15 @@ async def test_retirement_http_returns_task_state_and_rejects_unsafe_targets(mon
 
     request = AsyncMock(return_value=RetirementStatus(running=True, dataset_id="old", stage="checking"))
     monkeypatch.setattr("agent.memory.cognee.runtime.get_cognee_coordinator", lambda: SimpleNamespace(
-        retirement=SimpleNamespace(request=request)))
+        retirement=SimpleNamespace(request=request, request_generation=request)))
     app = FastAPI()
     app.include_router(router)
     async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as http:
-        response = await http.delete("/memory/cognee/datasets/old")
+        response = await http.delete(f"/memory/cognee/{resource}/old")
         assert response.status_code == 200 and response.json()["running"]
         request.assert_awaited_once_with("old")
         request.side_effect = ValueError("current dataset protected")
-        response = await http.delete("/memory/cognee/datasets/current")
+        response = await http.delete(f"/memory/cognee/{resource}/current")
         assert response.status_code == 409 and response.json()["detail"] == "current dataset protected"
 
 

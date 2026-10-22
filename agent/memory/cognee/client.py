@@ -180,8 +180,16 @@ class CogneeClient:
                               error=self._fault or self._import_error)
 
     def _remember_catalog(self, datasets: list[DatasetRecord]) -> None:
-        self._catalog = [row.copy() for row in datasets]
+        previous = {row["id"]: row for row in self._catalog}
+        self._catalog = [{**previous.get(row["id"], row), **row} for row in datasets]
         self._catalog_at = time.time()
+
+    def _remember_manifest(self, manifest: IndexManifest) -> None:
+        """数量来自已提交清单；页面轮询不逐库扫描，也不显示未提交的候选文档。"""
+        self._remember_catalog([DatasetRecord(
+            id=identity, name=row.name, document_count=len(row.documents),
+            processed_count=sum(document.processed for document in row.documents.values()),
+        ) for identity, row in manifest.datasets.items()])
 
     def _inside_transaction(self) -> bool:
         owner = self._transaction.get()
@@ -219,6 +227,9 @@ class CogneeClient:
             try:
                 self._phase = "recovering"
                 await _disk_job(checkpoints.load)
+                manifest = await _disk_job(checkpoints.read_manifest)
+                if manifest is not None:
+                    self._remember_manifest(IndexManifest.model_validate(manifest))
             except BaseException:
                 owner.release()
                 raise
@@ -316,8 +327,7 @@ class CogneeClient:
                 await self._stop(clean=True)
                 checkpoints = self._checkpoints
                 await _disk_job(lambda: checkpoints.commit(candidate.model_dump(mode="json")))
-                self._remember_catalog([DatasetRecord(id=identity, name=row.name)
-                                        for identity, row in candidate.datasets.items()])
+                self._remember_manifest(candidate)
             except BaseException as exc:
                 await self._abort(exc)
                 raise

@@ -159,6 +159,7 @@ async def test_real_model_selects_memory_tools(scenario, expected_tool, expected
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(600)
 async def test_real_projection_rebuild_tagged_recall_update_delete(tmp_path, monkeypatch) -> None:
     """使用本地已配置模型、真实 Cognee 数据库和项目投影链，所有数据写入临时目录。"""
     config = load_cognee_config()
@@ -188,6 +189,9 @@ async def test_real_projection_rebuild_tagged_recall_update_delete(tmp_path, mon
         orphan = await client.make_data_item(legacy_text, label=f"anelf-memory-{mid}",
             external_metadata={"anelf_memory_id": str(mid)}, dataset_name="anelf_global")
         await client.add([orphan], dataset_name="anelf_global", incremental_loading=True)
+        other = await client.make_data_item(legacy_text, label=f"anelf-memory-{mid}",
+            external_metadata={"anelf_memory_id": str(mid)}, dataset_name="anelf_relations")
+        await client.add([other], dataset_name="anelf_relations", incremental_loading=True)
         await coordinator.rebuild.request(config)
         observed_progress = []
         for _ in range(8):
@@ -214,7 +218,7 @@ async def test_real_projection_rebuild_tagged_recall_update_delete(tmp_path, mon
                 break
         assert coordinator.rebuild.state.phase == "ready"
         assert all(p.completed_items is None or p.completed_items >= 0 for p in observed_progress)
-        assert coordinator.rebuild.state.legacy_preserved == 1
+        assert coordinator.rebuild.state.legacy_preserved == 2
         db = await store._get_db()
         saved = await (await db.execute("SELECT document_json FROM cognee_legacy_documents")).fetchone()
         assert saved is not None and json.loads(saved[0])["text"] == legacy_text
@@ -247,14 +251,48 @@ for path in Path(sys.argv[1]).rglob('*.lbug'):
             await coordinator.rebuild.verify_backend(coordinator.rebuild.state, await store.projection_state.mappings())
         old_namespace = coordinator.rebuild.state.namespace
         await coordinator.rebuild.request(config, restart=True)
+        retired_during_build = False
         for _ in range(8):
             await coordinator.rebuild.advance()
-            batch = await store.claim_cognee_sync_batch(10)
+            if coordinator.rebuild.state.phase == "building" and not retired_during_build:
+                before_queue = await store.get_cognee_sync_status()
+                before_mappings = await store.projection_state.mappings()
+                assert before_queue["pending"] and len(before_mappings) == 1
+                config.sync_enabled = coordinator.config.sync_enabled = False
+                delete = client.delete_dataset
+
+                async def fail_after_first_delete(dataset_id):
+                    await delete(dataset_id)
+                    raise RuntimeError("injected generation cleanup interruption")
+
+                # 真实 SDK 已删除第一个数据集后失败，必须整轮回滚，不能只剩半轮。
+                with monkeypatch.context() as patch:
+                    patch.setattr(client, "delete_dataset", fail_after_first_delete)
+                    await coordinator.retirement.request_generation("anelf")
+                    await coordinator.retirement._task
+                assert coordinator.retirement.status.stage == "failed"
+                names = {row["name"] for row in await client.list_datasets()}
+                assert {"anelf_global", "anelf_relations", old_namespace + "_global"} <= names
+                await coordinator.retirement.request_generation("anelf")
+                await coordinator.retirement._task
+                result = coordinator.retirement.status
+                assert result.stage == "completed", result.error
+                assert result.deleted_datasets == result.datasets == 2
+                assert await store.get_cognee_sync_status() == before_queue
+                assert await store.projection_state.mappings() == before_mappings
+                assert coordinator.rebuild.state.phase == "building"
+                names = {row["name"] for row in await client.list_datasets()}
+                assert not {"anelf_global", "anelf_relations"} & names
+                assert old_namespace + "_global" in names
+                retired_during_build = True
+                config.sync_enabled = coordinator.config.sync_enabled = True
+            batch = await store.claim_cognee_sync_batch(1)
             if batch:
                 await coordinator._process_batch(batch)
             assert coordinator.rebuild.state.phase != "failed", coordinator.rebuild.state.error
             if coordinator.rebuild.state.phase == "ready":
                 break
+        assert retired_during_build
         assert coordinator.rebuild.state.phase == "ready"
         assert coordinator.rebuild.state.namespace != old_namespace
         mapping = await store.get_cognee_mapping(mid)
@@ -275,13 +313,8 @@ for path in Path(sys.argv[1]).rglob('*.lbug'):
                                         ["CHUNKS"], node_names=["future:tag"])
         assert any(item.memory_reference() == f"mem:{mid}" and item.sensitivity == "private"
                    and "future:tag" in item.tags for item in projected), projected
-        old_dataset = next(row for row in await client.list_datasets() if row["name"] == "anelf_global")
         config.sync_enabled = coordinator.config.sync_enabled = False
-        await coordinator.retirement.request(str(old_dataset["id"]))
-        await coordinator.retirement._task
-        retired = coordinator.retirement.status
-        assert retired.stage == "completed", retired.error
-        assert all(str(row["id"]) != str(old_dataset["id"]) for row in await client.list_datasets())
+        assert all(row["name"] not in {"anelf_global", "anelf_relations"} for row in await client.list_datasets())
         assert len(await client.list_data(mapping["dataset_id"])) == 2
         # 删除旧代际后仍从当前图谱召回，历史正文仍完整保存在原生库。
         saved = await (await db.execute("SELECT document_json FROM cognee_legacy_documents")).fetchall()

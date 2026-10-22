@@ -788,12 +788,29 @@ class MemoryService:
 
     @staticmethod
     async def list_cognee_datasets() -> Dict[str, Any]:
-        from agent.memory.cognee.runtime import get_cognee_client
+        from agent.memory.cognee.generations import generation_catalog
+        from agent.memory.cognee.runtime import get_cognee_client, get_cognee_coordinator
+        from agent.memory.cognee.storage import cognee_storage_stats
         client = get_cognee_client()
         if not client:
             return {"items": [], "ready": False, "busy": False, "updated_at": 0,
                     "error": "Cognee 运行时未初始化"}
-        return dict(client.dataset_catalog())
+        catalog = client.dataset_catalog()
+        coordinator = get_cognee_coordinator()
+        storage = await cognee_storage_stats.get(client.config.absolute_data_root)
+        return {**catalog, "generations": generation_catalog(
+            catalog, coordinator.rebuild.state if coordinator else None, storage),
+            "storage_computed_at": storage.get("computed_at", 0)}
+
+    @staticmethod
+    async def retire_cognee_generation(namespace: str) -> Dict[str, Any]:
+        from agent.memory.cognee.runtime import get_cognee_coordinator
+
+        coordinator = get_cognee_coordinator()
+        if coordinator is None:
+            raise ValueError("Cognee 运行时未初始化")
+        result = await coordinator.retirement.request_generation(namespace)
+        return result.model_dump()
 
     @staticmethod
     async def retire_cognee_dataset(dataset_id: str) -> Dict[str, Any]:

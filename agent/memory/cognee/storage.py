@@ -296,6 +296,9 @@ class StorageStatsTracker:
                 if isinstance(value, int) and value >= 0:
                     merged[key] = value  # type: ignore[literal-required]
             measured = stats.get("computed_at", raw.get("computed_at"))
+            protection = stats.get("protection_bytes")
+            if isinstance(protection, int) and protection >= 0:
+                merged["protection_bytes"] = protection
             if isinstance(measured, (int, float)) and measured > 0:
                 merged["computed_at"] = measured
             datasets = stats.get("datasets")

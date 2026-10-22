@@ -1,10 +1,13 @@
 import { useTranslation } from "react-i18next";
+import { useState } from "react";
 import { Card } from "@/components/common/Card";
+import { Button, Modal } from "@/components/ui";
 import { formatSize } from "@/lib/utils";
 import type { CogneeStatus } from "@/lib/types";
 
 export function StorageDetailsCard({ status }: { status?: CogneeStatus }) {
   const { t } = useTranslation("memory");
+  const [open, setOpen] = useState(false);
   const storage = status?.storage;
   const retirement = status?.retirement;
   if (!storage) return null;
@@ -13,16 +16,16 @@ export function StorageDetailsCard({ status }: { status?: CogneeStatus }) {
     ["storageMetadata", storage.metadata_bytes], ["storageData", storage.data_bytes], ["storageOther", storage.other_bytes],
     ["storageProtection", storage.protection_bytes ?? 0],
   ] as const;
-  return <Card title={t("cognee.storageDetails")} subtitle={t("cognee.storageScope")}>
-    <p className="mb-3 text-lg font-semibold text-heading">{formatSize(storage.total_bytes)}</p>
+  return <Card title={t("cognee.storageDetails")} subtitle={t("cognee.storageLogical")}
+    actions={<Button variant="ghost" size="sm" onClick={() => setOpen(true)}>{t("cognee.storageHelp")}</Button>}>
+    <p className="mb-3 text-2xl font-semibold tabular-nums text-heading">{formatSize(storage.total_bytes)}</p>
     <div className="space-y-3">
       {status?.sync.publication?.phase && <div className="rounded-lg border border-border p-3 text-sm text-muted space-y-1">
         <p role="status">{t("cognee.publication.title")}: {t(`cognee.publication.${status.sync.publication.phase}`)}</p>
         <p>{t("cognee.publication.commits", { count: status.sync.publication.commits })}</p>
-        <p className="text-xs">{t("cognee.publication.policy")}</p>
         {status.sync.publication.error && <p role="alert" className="text-danger">{status.sync.publication.error}</p>}
       </div>}
-      <p className="text-xs text-muted">{t("cognee.publication.sizeHint")}</p>
+      <div className="grid gap-x-6 gap-y-3 sm:grid-cols-2">
       {categories.map(([label, bytes]) => <div key={label}>
         <div className="mb-1 flex justify-between gap-3 text-sm text-muted">
           <span>{t(`cognee.${label}`)}</span>
@@ -31,16 +34,27 @@ export function StorageDetailsCard({ status }: { status?: CogneeStatus }) {
         <div className="h-1.5 rounded-full bg-elevated"><div className="h-full rounded-full bg-accent"
           style={{ width: `${storage.total_bytes ? bytes / storage.total_bytes * 100 : 0}%` }} /></div>
       </div>)}
+      </div>
       <p className="text-xs text-muted">{storage.computed_at
         ? t("cognee.storageMeasured", { time: new Date(storage.computed_at * 1000).toLocaleString() })
         : t("cognee.storagePending")}</p>
       {retirement?.stage && <div className="rounded-lg border border-border p-3 space-y-2 text-sm text-muted">
         <p className="break-all text-heading">{t("cognee.retirementTarget", { name: retirement.dataset_name })}</p>
+        {retirement.datasets !== undefined && <p>{t("cognee.retirementDatasets", {
+          count: retirement.deleted_datasets ?? 0, total: retirement.datasets,
+        })}</p>}
         <p role="status">{t(`cognee.retirementStages.${retirement.stage}`, { defaultValue: retirement.stage })}
           {` · ${t("cognee.retirementPreserved", { count: retirement.preserved, total: retirement.documents })}`}</p>
-        {retirement.backup_path && <p className="break-all text-xs">{t("cognee.projectionBackup")}: {retirement.backup_path}</p>}
         {retirement.error && <p role="alert" className="text-danger break-words">{retirement.error}</p>}
       </div>}
     </div>
+    <Modal open={open} onClose={() => setOpen(false)} title={t("cognee.storageHelp")} width="max-w-2xl">
+      <div className="space-y-4 text-sm leading-relaxed text-muted">
+        <p>{t("cognee.storageScope")}</p>
+        <p>{t("cognee.publication.sizeHint")}</p>
+        <p>{t("cognee.publication.policy")}</p>
+        {retirement?.backup_path && <p className="break-all">{t("cognee.projectionBackup")}: {retirement.backup_path}</p>}
+      </div>
+    </Modal>
   </Card>;
 }

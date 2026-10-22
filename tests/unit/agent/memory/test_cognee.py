@@ -1365,6 +1365,7 @@ def test_storage_stats_classifies_components(tmp_path) -> None:
     put(f"system/databases/user/{dataset_id}.lbug.wal", 50)
     put("system/databases/user/misc.lock", 5)
     put("system/logs/cognee.log", 7)
+    put(".publication/committed/system/graph.lbug", 400)
 
     stats = compute_storage_stats(tmp_path)
 
@@ -1373,7 +1374,8 @@ def test_storage_stats_classifies_components(tmp_path) -> None:
     assert stats["lance_bytes"] == 1000
     assert stats["graph_bytes"] == 550
     assert stats["other_bytes"] == 12
-    assert stats["total_bytes"] == 1672
+    assert stats["total_bytes"] == 2072
+    assert stats["protection_bytes"] == 400
     assert stats["datasets"] == {dataset_id: {"total_bytes": 1550, "graph_bytes": 550, "lance_bytes": 1000}}
     assert stats["computed_at"] > 0
     from agent.memory.cognee.storage import StorageStatsTracker

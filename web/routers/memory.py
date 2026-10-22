@@ -114,6 +114,15 @@ async def retire_cognee_dataset(dataset_id: str) -> Dict[str, Any]:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+@router.delete("/cognee/generations/{namespace}")
+async def retire_cognee_generation(namespace: str) -> Dict[str, Any]:
+    """清理显式选择的旧轮次；所有成员先完整归档，再原子发布删除结果。"""
+    try:
+        return await _mem_svc.retire_cognee_generation(namespace)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.post("/cognee/improve")
 async def improve_cognee(req: CogneeImproveRequest) -> Any:
     try:

@@ -67,9 +67,15 @@ class CogneeCoordinator:
     def _retirement_state(self) -> ProjectionState:
         self._require_open()
         state = self.rebuild.state
-        if (self.config.sync_enabled or self.is_running or self.configuration_pending
-                or not state or state.phase != "ready" or state.rebuild_requested):
-            raise ValueError("请先完成新索引验收并暂停同步，再清理旧数据集")
+        if self.config.sync_enabled or self.is_running or self.configuration_pending:
+            raise ValueError("请先暂停同步并等待当前批次结束，再清理旧轮次")
+        if not state or state.rebuild_requested:
+            raise ValueError("构建请求尚未稳定，不能清理旧轮次")
+        if state.phase != "ready" and not (
+            state.phase in {"building", "failed"} and state.memory_scanned
+            and state.graph_scanned and state.backup_path
+        ):
+            raise ValueError("请先完成原生内容扫描与备份，再清理旧轮次")
         return state
 
     @property

@@ -289,12 +289,43 @@ async def test_catalog_excludes_uncommitted_changes_and_tracks_successful_public
     except RuntimeError as exc:
         assert fail and str(exc) == "candidate rejected"
     after = client.dataset_catalog()
-    assert after["items"] == (before["items"] if fail else rows)
+    assert after["items"] == (before["items"] if fail else [
+        {**row, "document_count": 0, "processed_count": 0} for row in rows])
     assert not after["busy"]
     after["items"].clear()
     assert client.dataset_catalog()["items"]
     client.reconfigure(CogneeConfig(data_root=str(tmp_path / "another")))
     assert not client.dataset_catalog()["ready"] and not client.dataset_catalog()["items"]
+
+
+def test_generation_inventory_uses_committed_counts_and_keeps_unknowns_unknown(tmp_path):
+    from agent.memory.cognee.generations import generation_catalog
+
+    client = CogneeClient(CogneeConfig(data_root=str(tmp_path)))
+    state = ProjectionState(namespace="anelf_p2_current", previous_namespaces=["anelf", "anelf_p2_old"],
+                            phase="building")
+    manifest = IndexManifest(datasets={
+        "base": DatasetStamp(name="anelf_global", documents={"a": DocumentStamp(identity="a", processed=True)}),
+        "old": DatasetStamp(name="anelf_p2_old_global", documents={"b": DocumentStamp(identity="b")}),
+        "current": DatasetStamp(name="anelf_p2_current_global", documents={"c": DocumentStamp(identity="c", processed=True)}),
+        "outside": DatasetStamp(name="outside_global"),
+    })
+    client._remember_manifest(manifest)
+    # SDK 的轻量目录刷新不丢失已经提交的数量，也不启动逐文档扫描。
+    client._remember_catalog([{"id": identity, "name": row.name} for identity, row in manifest.datasets.items()])
+    storage = {"total_bytes": 100, "data_bytes": 0, "graph_bytes": 40, "lance_bytes": 60,
+               "metadata_bytes": 0, "other_bytes": 0, "computed_at": 1,
+               "datasets": {"old": {"total_bytes": 100, "graph_bytes": 40, "lance_bytes": 60}}}
+    groups = generation_catalog(client.dataset_catalog(), state, storage)
+    assert [row["namespace"] for row in groups] == [state.namespace, "anelf_p2_old", "anelf"]
+    assert [row["document_count"] for row in groups] == [1, 1, 1]
+    assert [row["processed_count"] for row in groups] == [1, 0, 1]
+    assert groups[1]["storage"] == storage["datasets"]["old"]
+    assert groups[0]["storage"] is None and groups[1]["phase"] == "unknown"
+    client._remember_catalog([*client.dataset_catalog()["items"], {"id": "new", "name": "anelf_p2_old_relations"}])
+    unknown = generation_catalog(client.dataset_catalog(), state, storage)[1]
+    assert unknown["document_count"] is None and unknown["storage"] is None
+    assert generation_catalog(client.dataset_catalog(), None, storage) == []
 
 
 async def test_dataset_tool_does_not_wait_for_active_index_write(tmp_path, monkeypatch):

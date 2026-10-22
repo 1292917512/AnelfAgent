@@ -1,20 +1,31 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { useState } from "react";
-import { Database, Sparkles } from "lucide-react";
+import { useEffect, useState } from "react";
 import { Card } from "@/components/common/Card";
 import { QueryError } from "@/components/common/AsyncState";
-import { Button, ConfirmDialog, toast } from "@/components/ui";
+import { Button, Modal, ConfirmDialog, toast } from "@/components/ui";
 import { memoryApi } from "@/lib/api";
 import { formatSize } from "@/lib/utils";
-import type { CogneeDataset, CogneeStatus } from "@/lib/types";
+import type { CogneeGeneration, CogneeStatus } from "@/lib/types";
+import { GenerationCard } from "./GenerationCard";
 
-export function DatasetMaintenanceCard({ ready, namespace, status }: { ready: boolean; namespace: string; status?: CogneeStatus }) {
+function retirementBlocker(status?: CogneeStatus): string {
+  if (!status?.availability.ready) return "unavailable";
+  if (status.retirement?.running) return "running";
+  if (status.sync.enabled || status.sync.running || status.sync.configuration_pending || status.sync.processing) return "pause";
+  const state = status.projection;
+  if (!state || state.rebuild_requested) return "scan";
+  if (state.phase === "ready") return status.sync.pending || status.sync.failed ? "pending" : "";
+  return ["building", "failed"].includes(state.phase) && state.memory_scanned && state.graph_scanned && state.backup_path ? "" : "scan";
+}
+
+export function DatasetMaintenanceCard({ ready, status }: { ready: boolean; status?: CogneeStatus }) {
   const { t } = useTranslation("memory");
   const client = useQueryClient();
-  const [target, setTarget] = useState<CogneeDataset | null>(null);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [target, setTarget] = useState<CogneeGeneration | null>(null);
   const retire = useMutation({
-    mutationFn: (id: string) => memoryApi.cognee.retireDataset(id),
+    mutationFn: (namespace: string) => memoryApi.cognee.retireGeneration(namespace),
     onSuccess: () => { void client.invalidateQueries({ queryKey: ["cogneeStatus"] }); },
   });
   const { data: catalog, error, refetch } = useQuery({
@@ -23,6 +34,12 @@ export function DatasetMaintenanceCard({ ready, namespace, status }: { ready: bo
     refetchInterval: 10000,
     throwOnError: false,
   });
+  const retirementStage = status?.retirement?.stage;
+  useEffect(() => {
+    if (["completed", "failed", "interrupted"].includes(retirementStage ?? "")) {
+      void client.invalidateQueries({ queryKey: ["cogneeDatasets"] });
+    }
+  }, [client, retirementStage]);
   const enhance = useMutation({
     mutationFn: ({ name, review }: { name: string; review: boolean }) => memoryApi.cognee.improve(name, review),
     onSuccess: () => {
@@ -30,62 +47,57 @@ export function DatasetMaintenanceCard({ ready, namespace, status }: { ready: bo
       toast.success(t("cognee.enhanceCompleted"));
     },
   });
+  const blocker = retire.isPending ? "running" : !ready || error || !catalog?.ready || catalog.error || catalog.busy
+    ? "unavailable" : retirementBlocker(status);
+  const generations = catalog?.generations ?? [];
+  const generationBlocker = (generation: CogneeGeneration) => blocker || (
+    status?.projection?.phase !== "ready" && !generations.some(other => !other.current
+      && other.namespace !== generation.namespace && other.datasets.length > 0 && other.document_count !== 0)
+      ? "retain" : "");
+  const owned = new Set(generations.flatMap(generation => generation.datasets.map(dataset => dataset.id)));
+  const external = catalog?.items.filter(dataset => !owned.has(dataset.id)) ?? [];
   return (
-    <Card title={t("cognee.datasetsTitle")} subtitle={t("cognee.datasetsSubtitle")}>
+    <Card title={t("cognee.datasetsTitle")} subtitle={t("cognee.datasetsSubtitle")}
+      actions={<Button variant="ghost" size="sm" onClick={() => setHelpOpen(true)}>{t("cognee.generationHelp")}</Button>}>
       {error && <QueryError error={error} retry={() => void refetch()} compact />}
       {catalog?.error && <p role="alert" className="mb-3 text-sm text-danger">{catalog.error}</p>}
       {catalog?.busy && <p role="status" className="mb-2 text-sm text-accent">{t("cognee.catalogBusy")}</p>}
       {catalog?.updated_at ? <p className="mb-2 text-xs text-muted">{t("cognee.catalogObserved", {
         time: new Date(catalog.updated_at * 1000).toLocaleString(),
       })}</p> : null}
+      {catalog?.storage_computed_at ? <p className="mb-2 text-xs text-muted">{t("cognee.generationStorageObserved", {
+        time: new Date(catalog.storage_computed_at * 1000).toLocaleString(),
+      })}</p> : null}
       {enhance.error && <QueryError error={enhance.error} compact />}
       {retire.error && <QueryError error={retire.error} compact />}
-      <p className="mb-3 text-xs text-muted">{t("cognee.retirementHint")}</p>
-      <div className="space-y-2">
-        {catalog?.items.map((dataset) => {
-          const active = [namespace + "_global", namespace + "_relations"].includes(dataset.name);
-          const state = status?.projection;
-          const prefix = state && [state.namespace, ...state.previous_namespaces].sort((a, b) => b.length - a.length)
-            .find((name) => dataset.name.startsWith(name + "_"));
-          const old = !!prefix && prefix !== state?.namespace;
-          const size = status?.storage?.datasets?.[dataset.id];
-          const canRetire = old && state?.phase === "ready" && !state.rebuild_requested && !status?.sync.enabled
-            && !status?.sync.running && !status?.sync.configuration_pending && !status?.sync.pending && !status?.sync.failed
-            && !status?.retirement?.running;
-          return (
-            <div key={dataset.id} className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-elevated px-3 py-2">
-              <div className="min-w-0 space-y-1 text-sm">
-                <div className="flex min-w-0 items-center gap-2">
-                <Database size={14} className="shrink-0 text-muted" />
-                <span className="break-all text-heading">{dataset.name}</span>
-                </div>
-                <p className="text-xs text-muted">{t(active ? "cognee.datasetCurrent" : old ? "cognee.datasetPrevious" : "cognee.datasetOther")}</p>
-                {size ? <p className="text-xs text-muted">{t("cognee.datasetBytes", {
-                  graph: formatSize(size.graph_bytes), vectors: formatSize(size.lance_bytes), total: formatSize(size.total_bytes),
-                })}</p> : <p className="text-xs text-muted">{t("cognee.datasetBytesUnknown")}</p>}
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {old && <Button size="sm" disabled={!canRetire || retire.isPending} onClick={() => setTarget(dataset)}>
-                  {t("cognee.retireDataset")}
-                </Button>}
-                {[false, true].map((review) => (
-                  <Button key={String(review)} size="sm" disabled={!ready || !active || catalog.busy || enhance.isPending}
-                    onClick={() => enhance.mutate({ name: dataset.name, review })}>
-                    <Sparkles size={14} /> {t(review ? "cognee.reviewConflicts" : "cognee.improve")}
-                  </Button>
-                ))}
-              </div>
-            </div>
-          );
-        })}
-        {!error && !catalog?.error && !catalog?.items.length && <p className="text-sm text-muted">
+      <Modal open={helpOpen} onClose={() => setHelpOpen(false)} title={t("cognee.generationHelp")}>
+        <div className="space-y-4 text-sm leading-relaxed text-muted">
+          <p>{t("cognee.retirementHint")}</p><p>{t("cognee.generationMeasurementHint")}</p>
+        </div>
+      </Modal>
+      <div className="grid gap-3 xl:grid-cols-2">
+        {generations.map(generation => <GenerationCard key={generation.namespace} generation={generation}
+          blocker={generationBlocker(generation)} onRetire={setTarget} onEnhance={(name, review) => enhance.mutate({ name, review })}
+          enhanceDisabled={!ready || status?.projection?.phase !== "ready" || !!catalog?.busy || enhance.isPending} />)}
+        {!!external.length && <details className="text-sm text-muted">
+          <summary className="cursor-pointer">{t("cognee.generationExternal", { count: external.length })}</summary>
+          {external.map(dataset => <p key={dataset.id} className="mt-2 break-all text-xs">{dataset.name}</p>)}
+        </details>}
+        {!error && !catalog?.error && !generations.length && !external.length && <p className="text-sm text-muted">
           {t(catalog?.ready ? "cognee.noDatasets" : "cognee.catalogPending")}
         </p>}
       </div>
-      <ConfirmDialog open={target !== null} title={t("cognee.retireDataset")}
-        message={t("cognee.retirementConfirm", { name: target?.name ?? "" })}
+      <ConfirmDialog danger open={target !== null} title={t("cognee.retireGeneration")}
+        message={t("cognee.retirementGenerationConfirm", {
+          name: target?.namespace ?? "", datasets: target?.datasets.length ?? 0,
+          documents: target?.document_count ?? t("cognee.unknownCount"),
+          size: target?.storage ? formatSize(target.storage.total_bytes) : t("cognee.unknownCount"),
+        })}
         onClose={() => setTarget(null)} onConfirm={() => {
-          if (target) retire.mutate(target.id);
+          if (!target) return;
+          const reason = generationBlocker(target);
+          if (reason) { toast.error(t(`cognee.cleanupBlockers.${reason}`)); return; }
+          retire.mutate(target.namespace);
           setTarget(null);
         }} />
     </Card>

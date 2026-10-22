@@ -143,6 +143,9 @@ export interface CogneeStatus {
     running: boolean;
     dataset_id: string;
     dataset_name: string;
+    namespace?: string;
+    datasets?: number;
+    deleted_datasets?: number;
     stage: string;
     documents: number;
     preserved: number;
@@ -205,11 +208,25 @@ export interface ProbeStatus {
 export interface CogneeDataset {
   id: string;
   name: string;
+  document_count?: number;
+  processed_count?: number;
   [key: string]: unknown;
+}
+
+export interface CogneeGeneration {
+  namespace: string;
+  current: boolean;
+  phase: string;
+  datasets: CogneeDataset[];
+  document_count: number | null;
+  processed_count: number | null;
+  storage: { total_bytes: number; graph_bytes: number; lance_bytes: number } | null;
 }
 
 export interface CogneeDatasetCatalog {
   items: CogneeDataset[];
+  generations?: CogneeGeneration[];
+  storage_computed_at?: number;
   ready: boolean;
   busy: boolean;
   updated_at: number;

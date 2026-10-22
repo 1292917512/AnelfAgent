@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
-import { RefreshCw, Upload, Shrink } from "lucide-react";
+import { RefreshCw, Upload, Shrink, Settings, Search } from "lucide-react";
 import { ProbeStatusCard } from "./ProbeStatusCard";
 import { DatasetMaintenanceCard } from "./DatasetMaintenanceCard";
 import { ProjectionStatusCard } from "./ProjectionStatusCard";
@@ -10,7 +10,7 @@ import { StorageDetailsCard } from "./StorageDetailsCard";
 import { QueryError } from "@/components/common/AsyncState";
 import { Card } from "@/components/common/Card";
 import { StatCard } from "@/components/common/StatCard";
-import { ConfirmDialog, toast } from "@/components/ui";
+import { Button, Modal, ConfirmDialog, toast } from "@/components/ui";
 import { ConfigFormPanel } from "@/pages/config/ConfigFormPanel";
 import { type FieldMeta } from "@/pages/config/AppField";
 import { ModelConfigCard, ResolvedModelLine } from "@/pages/memory/cognee/ModelConfigCard";
@@ -22,6 +22,7 @@ import type { ConfigValues } from "@/lib/types";
 export function CogneePanel() {
   const { t } = useTranslation("memory");
   const queryClient = useQueryClient();
+  const [detail, setDetail] = useState<"models" | "recall" | null>(null);
   const [confirmation, setConfirmation] = useState<"rebuild" | "freshRebuild" | "backfill" | null>(null);
 
   const { data: status, error: statusError, dataUpdatedAt, refetch: refreshStatus } = useQuery({
@@ -89,17 +90,16 @@ export function CogneePanel() {
 
   return (
     <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-muted">{t("cognee.workspaceHint")}</p>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" size="sm" onClick={() => setDetail("recall")}><Search size={14} />{t("cognee.recallDialog")}</Button>
+          <Button variant="secondary" size="sm" onClick={() => setDetail("models")}><Settings size={14} />{t("cognee.configDialog")}</Button>
+        </div>
+      </div>
       <ProjectionStatusCard state={status?.projection} sync={sync} updatedAt={dataUpdatedAt} stale={!!statusError}
         enabled={availability?.enabled ?? false} />
-      <div className="rounded-xl border border-border bg-elevated p-3 space-y-2 text-sm">
-        <p className="text-heading">{t("cognee.setupHint")}</p>
-        <Link to="/models" className="text-accent hover:underline">{t("cognee.configureModels")}</Link>
-        <p className="text-xs text-muted">{t("cognee.usageHint")}</p>
-      </div>
       {rebuildMutation.error && <QueryError error={rebuildMutation.error} retry={() => rebuildMutation.mutate(rebuildMutation.variables ?? false)} compact />}
-      <RecallTester preset="cognee" />
-
-      <ProbeStatusCard />
       <Card
         title={t("cognee.statusTitle")}
         subtitle={availability?.reason || t("cognee.statusSubtitle")}
@@ -169,26 +169,11 @@ export function CogneePanel() {
             value={availability?.configuration_required ? t("cognee.waitingForConfig") : sync?.running ? t("cognee.running") : t("cognee.stopped")}
             variant={sync?.running && availability?.ready ? "ok" : "default"}
           />
-          <StatCard label={t("cognee.synced")} value={String(sync?.synced || 0)} />
-          <StatCard label={t("syncPending")} value={String(sync?.pending || 0)} />
-          <StatCard
-            label={t("syncFailed")}
-            value={String(sync?.failed || 0)}
-            variant={(sync?.failed || 0) > 0 ? "danger" : "default"}
-          />
           <StatCard
             label={t("cognee.storage")}
             value={storage ? formatSize(storage.total_bytes) : "—"}
           />
         </div>
-        {storage && storage.total_bytes > 0 && (
-          <div className="flex flex-wrap gap-x-4 gap-y-1 pb-2 text-[11px] text-muted">
-            <span>{t("cognee.storageLance")}: {formatSize(storage.lance_bytes)}</span>
-            <span>{t("cognee.storageGraph")}: {formatSize(storage.graph_bytes)}</span>
-            <span>{t("cognee.storageMetadata")}: {formatSize(storage.metadata_bytes)}</span>
-            <span>{t("cognee.storageData")}: {formatSize(storage.data_bytes)}</span>
-          </div>
-        )}
         {sync?.last_compact_summary && (
           <div className="pb-2 text-[11px] text-muted">
             {t("cognee.lastCompact")}: {sync.last_compact_summary}
@@ -208,23 +193,35 @@ export function CogneePanel() {
         )}
       </Card>
 
-      <ModelConfigCard kind="chat" />
-      <ModelConfigCard kind="embedding" />
-
       <StorageDetailsCard status={status} />
-      <DatasetMaintenanceCard ready={availability?.ready ?? false}
-        namespace={status?.projection?.phase === "ready" ? status.projection.namespace : ""} status={status} />
+      <DatasetMaintenanceCard ready={!!availability?.ready && !statusError} status={status} />
 
-      <ConfigFormPanel
-        title={t("cognee.generalTitle")}
-        subtitle={t("cognee.generalSubtitle")}
-        fields={generalFields}
-        queryKey="cogneeConfig"
-        fetchFn={() => memoryApi.cognee.getConfig().then((r) => r.data as unknown as ConfigValues)}
-        saveFn={(values) => memoryApi.cognee.saveConfig(values as Parameters<typeof memoryApi.cognee.saveConfig>[0])}
-        extraInvalidateKeys={["cogneeStatus", "memoryHealth"]}
-        note={t("cognee.hotApplyNote")}
-      />
+      <Modal open={detail === "models"} onClose={() => setDetail(null)} title={t("cognee.configDialog")} width="max-w-4xl">
+        <div className="space-y-4">
+          <div className="rounded-xl border border-border bg-elevated p-3 space-y-2 text-sm">
+            <p className="text-heading">{t("cognee.setupHint")}</p>
+            <Link to="/models" className="text-accent hover:underline">{t("cognee.configureModels")}</Link>
+            <p className="text-xs text-muted">{t("cognee.usageHint")}</p>
+          </div>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <ModelConfigCard kind="chat" />
+            <ModelConfigCard kind="embedding" />
+          </div>
+          <ConfigFormPanel
+            title={t("cognee.generalTitle")}
+            subtitle={t("cognee.generalSubtitle")}
+            fields={generalFields}
+            queryKey="cogneeConfig"
+            fetchFn={() => memoryApi.cognee.getConfig().then((r) => r.data as unknown as ConfigValues)}
+            saveFn={(values) => memoryApi.cognee.saveConfig(values as Parameters<typeof memoryApi.cognee.saveConfig>[0])}
+            extraInvalidateKeys={["cogneeStatus", "memoryHealth"]}
+            note={t("cognee.hotApplyNote")}
+          />
+        </div>
+      </Modal>
+      <Modal open={detail === "recall"} onClose={() => setDetail(null)} title={t("cognee.recallDialog")} width="max-w-4xl">
+        <div className="space-y-4"><RecallTester preset="cognee" /><ProbeStatusCard /></div>
+      </Modal>
       <ConfirmDialog
         open={confirmation !== null}
         title={t(`cognee.${confirmation ?? "rebuild"}`)}

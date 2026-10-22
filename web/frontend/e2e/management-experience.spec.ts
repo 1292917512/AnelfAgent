@@ -13,6 +13,7 @@ test("recall provenance is compact and separates subjects from source conversati
   };
   await page.route("**/api/memory/recall-test", (route) => route.fulfill({ json: result }));
   await page.goto("/webui/memory?tab=cognee");
+  await page.getByRole("button", { name: "Recall validation", exact: true }).click();
   await page.getByPlaceholder(/Enter query text to test/).fill("quiet rooms");
   await page.getByRole("button", { name: "Run Test", exact: true }).click();
   await expect(page.getByText("Prefers a quiet room", { exact: true })).toBeVisible();

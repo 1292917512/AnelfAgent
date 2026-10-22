@@ -792,3 +792,86 @@ async def test_audit_does_not_block_writes_and_rejects_changed_revision(coordina
     audit = await audit_task
     assert not audit["consistent"]
     assert not await store.projection_state.finish(coordinator.rebuild.state, audit["expected"], revision=audit["revision"])
+
+
+@pytest.mark.parametrize("block", ["none", "last_old", "empty_old", "referenced", "staged", "unknown", "backup"])
+async def test_generation_cleanup_during_build_preserves_sources_progress_and_retained_round(coordinator, store, monkeypatch, block):
+    mid = await store.add(MemoryEntry(content="权威正文", memory_type=MemoryType.SEMANTIC))
+    legacy_document(coordinator, mid, legacy_memory_text(mid, "旧轮第一份正文"))
+    second = legacy_document(coordinator, mid, legacy_memory_text(mid, "旧轮第二份正文"))
+    coordinator.client.documents["anelf_legacy"].pop(second["id"])
+    coordinator.client.documents["anelf_relations"] = {second["id"]: second}
+    await coordinator.rebuild.request(coordinator.config)
+    await settle(coordinator)
+    state = coordinator.rebuild.state
+    current_name = state.namespace + "_global"
+    current = copy.deepcopy(coordinator.client.documents[current_name])
+    if block != "last_old":
+        state.previous_namespaces.append("anelf_retained")
+        coordinator.client.documents["anelf_retained_global"] = {} if block == "empty_old" else copy.deepcopy(current)
+    state.phase = "building"
+    await store.projection_state.save(state)
+    await store.add(MemoryEntry(content="正在等待本轮同步的新正文", memory_type=MemoryType.SEMANTIC))
+    coordinator.config.sync_enabled = False
+    if block == "referenced":
+        db = await store._get_db()
+        await db.execute("UPDATE cognee_entry_map SET dataset_id='anelf_legacy'")
+        await db.commit()
+    elif block == "staged":
+        await store.projection_state.stage("memory", mid, "anelf_legacy", "uncommitted")
+    elif block == "unknown":
+        coordinator.client.documents["anelf_relations"]["unknown"] = {"id": "unknown"}
+    elif block == "backup":
+        monkeypatch.setattr(store.projection_state, "backup", AsyncMock(side_effect=OSError("disk full")))
+    before_queue = await store.get_cognee_sync_status()
+    before_mappings = await store.projection_state.mappings()
+    before_state = state.model_dump()
+    delete = coordinator.client.delete_dataset
+    calls = []
+
+    async def checked_delete(dataset_id):
+        calls.append(dataset_id)
+        # 整轮所有成员必须在首个删除前完整归档到已校验备份。
+        with sqlite3.connect(coordinator.retirement.status.backup_path) as backup:
+            assert backup.execute("SELECT COUNT(*) FROM cognee_legacy_documents").fetchone()[0] == 2
+        await delete(dataset_id)
+
+    monkeypatch.setattr(coordinator.client, "delete_dataset", checked_delete)
+    for forbidden in (state.namespace, "external"):
+        with pytest.raises(ValueError, match="只能清理"):
+            await coordinator.retirement.request_generation(forbidden)
+    await coordinator.retirement.request_generation("anelf")
+    await coordinator.retirement._task
+    result = coordinator.retirement.status
+    assert coordinator.client.documents[current_name] == current
+    assert await store.get_cognee_sync_status() == before_queue
+    assert await store.projection_state.mappings() == before_mappings
+    assert (await store.get(mid)).content == "权威正文"
+    if block == "none":
+        assert result.stage == "completed", result.error
+        assert result.datasets == result.deleted_datasets == 2
+        assert result.documents == result.preserved == 2
+        assert set(calls) == {"anelf_legacy", "anelf_relations"}
+        assert coordinator.client.documents["anelf_retained_global"] == current
+        expected = {**before_state, "previous_namespaces": ["anelf_retained"]}
+        assert (await store.projection_state.load()).model_dump() == expected
+    else:
+        assert result.stage == "failed" and not calls
+        assert "anelf_legacy" in coordinator.client.documents and "anelf_relations" in coordinator.client.documents
+        assert (await store.projection_state.load()).model_dump() == before_state
+        if block in {"last_old", "empty_old"}:
+            assert "至少保留一轮" in result.error
+
+
+async def test_generation_cleanup_rechecks_generation_after_waiting_for_lock(coordinator, store):
+    mid = await store.add(MemoryEntry(content="保留的原文", memory_type=MemoryType.SEMANTIC))
+    legacy_document(coordinator, mid, legacy_memory_text(mid, "旧原文"))
+    await coordinator.rebuild.request(coordinator.config)
+    await settle(coordinator)
+    coordinator.config.sync_enabled = False
+    async with coordinator._projection_lock:
+        await coordinator.retirement.request_generation("anelf")
+        coordinator.rebuild.state.namespace = "different_current_generation"
+    await coordinator.retirement._task
+    assert "代际已变化" in coordinator.retirement.status.error
+    assert "anelf_legacy" in coordinator.client.documents

@@ -110,48 +110,76 @@ test("Cognee explicitly starts a fresh generation during an unfinished build", a
   expect(requests).toEqual([true]);
 });
 
-test("Cognee storage distinguishes generations and confirms protected cleanup", async ({ page }, info) => {
+test("Cognee generation cleanup preserves a fallback until acceptance and confirms the exact round", async ({ page }, info) => {
+  test.setTimeout(60000);
   const state = {
     availability: { installed: true, enabled: true, ready: true, version: "1.6.5" },
-    sync: { enabled: true, running: true, pending: 0, synced: 2, failed: 0 },
-    projection: { phase: "ready", namespace: "anelf_p2_new", verified: 2, counts: { memories: 2, graph_nodes: 0 },
-      previous_namespaces: ["anelf"], rebuild_requested: false },
+    sync: { enabled: true, running: true, pending: 10, synced: 2, failed: 0 },
+    projection: { phase: "building", namespace: "anelf_p2_new", verified: 0, counts: { memories: 12, graph_nodes: 0 },
+      previous_namespaces: ["anelf", "anelf_p2_old"], rebuild_requested: false, memory_scanned: true, graph_scanned: true, backup_path: "/source-backup.sqlite3" },
     storage: { total_bytes: 4096, graph_bytes: 1024, lance_bytes: 2048, data_bytes: 512, metadata_bytes: 256, other_bytes: 256,
-      computed_at: Date.now() / 1000, datasets: { old: { total_bytes: 1536, graph_bytes: 512, lance_bytes: 1024 } } },
+      computed_at: Date.now() / 1000 },
     retirement: { running: false, stage: "", dataset_name: "", documents: 0, preserved: 0, backup_path: "", error: "" },
   };
-  await page.route("**/api/memory/cognee/status", (route) => route.fulfill({ json: state }));
-  await page.route("**/api/memory/cognee/datasets", (route) => route.fulfill({ json: { ready: true, busy: false, updated_at: 1, error: "", items: [
-    { id: "current", name: "anelf_p2_new_global" }, { id: "old", name: "anelf_global" }, { id: "external", name: "external_global" },
-  ] } }));
+  let generations = [
+    { namespace: "anelf_p2_new", current: true, phase: "building", document_count: 2, processed_count: 2, storage: null,
+      datasets: [{ id: "current", name: "anelf_p2_new_global", document_count: 2 }] },
+    { namespace: "anelf_p2_old", current: false, phase: "unknown", document_count: 26, processed_count: 20,
+      storage: { total_bytes: 1536, graph_bytes: 512, lance_bytes: 1024 },
+      datasets: [{ id: "old", name: "anelf_p2_old_global", document_count: 10 }, { id: "old-rel", name: "anelf_p2_old_relations", document_count: 16 }] },
+    { namespace: "anelf", current: false, phase: "unknown", document_count: 2, processed_count: 2, storage: null,
+      datasets: [{ id: "base", name: "anelf_global", document_count: 2 }] },
+  ];
+  await page.route("**/api/memory/cognee/status", route => route.fulfill({ json: state }));
+  await page.route("**/api/memory/cognee/datasets", route => route.fulfill({ json: { ready: true, busy: false, updated_at: 1, error: "",
+    generations, items: generations.flatMap(g => g.datasets) } }));
   const deleted: string[] = [];
-  await page.route("**/api/memory/cognee/datasets/old", (route) => {
+  await page.route("**/api/memory/cognee/generations/*", route => {
     expect(route.request().method()).toBe("DELETE");
-    deleted.push("old");
-    Object.assign(state.retirement, { running: true, stage: "preserving", dataset_name: "anelf_global", documents: 26, preserved: 12 });
+    deleted.push(new URL(route.request().url()).pathname.split("/").pop() ?? "");
+    Object.assign(state.retirement, { running: true, stage: "preserving", dataset_name: "anelf_p2_old", documents: 26, preserved: 12 });
     return route.fulfill({ json: state.retirement });
   });
   await page.goto("/webui/memory?tab=cognee");
-  const storage = page.locator("section").filter({ has: page.getByRole("heading", { name: "Storage breakdown", exact: true }) });
-  await expect(storage.getByText("1.0 KB · 25.0%")).toBeVisible();
-  await expect(page.getByText("Dedicated indexes 1.5 KB · Graph 512 B · Vectors 1.0 KB")).toBeVisible();
-  const cleanup = page.getByRole("button", { name: "Clean up old data", exact: true });
-  await expect(cleanup).toHaveCount(1);
+  const old = page.getByRole("article", { name: "anelf_p2_old", exact: true });
+  const cleanup = old.getByRole("button", { name: "Clean up this generation", exact: true });
+  await expect(old.getByText("26 confirmed documents · 20 marked extracted · 2 datasets")).toBeVisible();
+  await expect(old.getByText("Dedicated indexes 1.5 KB · Graph 512 B · Vectors 1.0 KB")).toBeVisible();
   await expect(cleanup).toBeDisabled();
   Object.assign(state.sync, { enabled: false, running: false });
   await page.reload();
   await expect(cleanup).toBeEnabled();
-  await cleanup.click();
-  const dialog = page.getByRole("dialog");
-  await expect(dialog.getByText(/Clean up “anelf_global”/)).toBeVisible();
+  await old.getByRole("button", { name: "View generation details" }).click();
+  const detail = page.getByRole("dialog", { name: "View generation details", exact: true });
+  await expect(detail.getByText("anelf_p2_old_relations", { exact: true })).toBeVisible();
+  await expect(detail.getByText(/Historical acceptance status was not recorded/)).toBeVisible();
+  await detail.getByRole("button", { name: "Clean up this generation", exact: true }).click();
+  const confirm = page.getByRole("dialog", { name: "Clean up this generation", exact: true });
+  await expect(confirm.getByText(/Clean up generation “anelf_p2_old”/)).toBeVisible();
+  await expect(confirm.getByText(/2 datasets and 26 confirmed documents/)).toBeVisible();
   expect(deleted).toEqual([]);
-  await dialog.getByRole("button", { name: "Confirm", exact: true }).click();
-  await expect(storage.getByText(/Preserved 12 \/ 26 documents/)).toBeVisible();
-  await expect(cleanup).toBeDisabled();
-  expect(deleted).toEqual(["old"]);
-  await storage.scrollIntoViewIfNeeded();
+  await confirm.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(detail).toBeVisible();
+  expect(deleted).toEqual([]);
+  await detail.getByRole("button", { name: "Clean up this generation", exact: true }).click();
+  await confirm.getByRole("button", { name: "Confirm", exact: true }).click();
+  await expect(detail.getByRole("button", { name: "Clean up this generation", exact: true })).toBeDisabled();
+  await detail.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(page.getByText(/Preserved 12 \/ 26 documents/)).toBeVisible();
+  expect(deleted).toEqual(["anelf_p2_old"]);
+  generations = generations.filter(g => g.namespace !== "anelf_p2_old");
+  state.projection.previous_namespaces = ["anelf"];
+  Object.assign(state.retirement, { running: false, stage: "completed" });
+  await page.reload();
+  const last = page.getByRole("article", { name: "anelf", exact: true });
+  await expect(last.getByRole("button", { name: "Clean up this generation" })).toBeDisabled();
+  await expect(last.getByText(/Keep at least one old generation/)).toBeVisible();
+  Object.assign(state.projection, { phase: "ready", verified: 12 });
+  state.sync.pending = 0;
+  await page.reload();
+  await expect(last.getByRole("button", { name: "Clean up this generation" })).toBeEnabled();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-  await storage.screenshot({ path: info.outputPath("cognee-storage.png") });
+  await page.screenshot({ path: info.outputPath("cognee-generations.png"), fullPage: true });
 });
 
 test("Cognee exposes in-flight progress, retries and stale observations", async ({ page }, info) => {
@@ -182,7 +210,9 @@ test("Cognee exposes in-flight progress, retries and stale observations", async 
   await expect(batch.getByText(/No progress change observed for over 5 minutes/)).toBeVisible();
   await expect(page.getByText(/10 previously failed items remain/)).toBeVisible();
   await expect(page.getByText(/New model\/settings saved; waiting for the current batch/)).toBeVisible();
+  await page.getByRole("button", { name: "Build details", exact: true }).click();
   await expect(page.getByText(/A normal restart resumes the saved queue/)).toBeVisible();
+  await page.getByRole("dialog", { name: "Build details", exact: true }).getByRole("button", { name: "Close", exact: true }).click();
   const saves: unknown[] = [];
   Object.assign(state.sync, { pause_requested: false });
   await page.route("**/api/memory/cognee/config", (route) => {
@@ -238,6 +268,12 @@ test("Cognee catalog distinguishes initial loading and keeps confirmed datasets 
     datasetReads++;
     return route.fulfill({ json: { ready: catalogReady, busy, updated_at: catalogReady ? 1 : 0, error: "",
       items: catalogReady ? [{ id: "dataset-1", name: "anelf_p2_test_global" }, { id: "dataset-old", name: "anelf_old_global" }] : [],
+      generations: catalogReady ? [
+        { namespace: "anelf_p2_test", current: true, phase, document_count: 1, processed_count: 1, storage: null,
+          datasets: [{ id: "dataset-1", name: "anelf_p2_test_global" }] },
+        { namespace: "anelf_old", current: false, phase: "unknown", document_count: null, processed_count: null, storage: null,
+          datasets: [{ id: "dataset-old", name: "anelf_old_global" }] },
+      ] : [],
     } });
   });
   await page.route("**/api/memory/cognee/improve", (route) => {
@@ -252,13 +288,14 @@ test("Cognee catalog distinguishes initial loading and keeps confirmed datasets 
   catalogReady = true;
   ready = true;
   await page.reload();
+  await page.getByRole("article", { name: "anelf_p2_test", exact: true }).getByRole("button", { name: "View generation details" }).click();
   await expect(page.getByText("anelf_p2_test_global", { exact: true })).toBeVisible();
   await expect(page.getByText(/Preserved 26 complete legacy projection documents/)).toBeVisible();
   const summary = page.getByRole("button", { name: "Build global summaries", exact: true });
   const conflicts = page.getByRole("button", { name: "Review fact conflicts", exact: true });
   await expect(summary.nth(0)).toBeEnabled();
-  await expect(summary.nth(1)).toBeDisabled();
-  await expect(conflicts.nth(1)).toBeDisabled();
+  await expect(summary).toHaveCount(1);
+  await expect(conflicts).toHaveCount(1);
   expect(datasetReads).toBe(2);
   await summary.nth(0).click();
   await expect(conflicts.nth(0)).toBeEnabled();
@@ -272,12 +309,14 @@ test("Cognee catalog distinguishes initial loading and keeps confirmed datasets 
   await page.reload();
   await expect(page.getByText(/The index is busy/)).toBeVisible();
   await expect(page.getByText(/Catalog confirmed at/)).toBeVisible();
+  await page.getByRole("article", { name: "anelf_p2_test", exact: true }).getByRole("button", { name: "View generation details" }).click();
   await expect(page.getByText("anelf_p2_test_global", { exact: true })).toBeVisible();
   await expect(summary.nth(0)).toBeDisabled();
   await expect(conflicts.nth(0)).toBeDisabled();
   phase = "building";
   busy = false;
   await page.reload();
+  await page.getByRole("article", { name: "anelf_p2_test", exact: true }).getByRole("button", { name: "View generation details" }).click();
   await expect(summary.nth(0)).toBeDisabled();
 });
 import type { CapabilityStatus, ConfigMetaItem } from "../src/lib/types";
@@ -307,6 +346,7 @@ test("Cognee reasoning edits survive failures and independent saves", async ({ p
   await page.route("**/api/memory/probe-status", (route) => route.fulfill({ json: { enabled: true, inject_enabled: true, counters: {}, scopes: [] } }));
   await page.route("**/api/memory/cognee/datasets", (route) => route.fulfill({ status: 503, json: { detail: "Dataset store temporarily unavailable" } }));
   await page.goto("/webui/memory?tab=cognee");
+  await page.getByRole("button", { name: "Models and configuration", exact: true }).click();
   const chat = page.locator("section").filter({ has: page.getByRole("heading", { name: "Extraction Model", exact: true }) });
   const embedding = page.locator("section").filter({ has: page.getByRole("heading", { name: "Embedding Model", exact: true }) });
   const effort = chat.getByRole("combobox", { name: "Reasoning effort", exact: true });
@@ -320,7 +360,7 @@ test("Cognee reasoning edits survive failures and independent saves", async ({ p
   await chat.getByRole("button", { name: "Save", exact: true }).click();
   await expect(chat.getByRole("button", { name: "Saved", exact: true })).toBeVisible();
   await expect(embedding.getByLabel("Model identifier")).toHaveValue("openai/embedding-test");
-  await expect(page.getByRole("status").filter({ hasText: "Configuration saved" })).toBeVisible();
+  await expect(page.getByText(/Configuration saved.*/).first()).toBeVisible();
   await effort.selectOption("high");
   await embedding.getByRole("button", { name: "Save", exact: true }).click();
   await expect(embedding.getByRole("button", { name: "Saved", exact: true })).toBeVisible();
