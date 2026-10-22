@@ -279,11 +279,11 @@ async def _process(pipeline, rows):
     return await pipeline._process_scope(_FakeSqlite(rows), "user", "qq:123", every_n=5, idle_seconds=0, now=time.time())
 
 
-@pytest.mark.parametrize(("force", "age", "expected"), [
-    (False, 0, 0), (True, 0, 2), (False, 3600, 1), (True, 3600, 2),
+@pytest.mark.parametrize(("age", "expected"), [
+    (0, 0), (3600, 1),
 ])
-async def test_shutdown_capture_bypasses_idle_and_scope_limit(
-    store, sqlite, monkeypatch, force: bool, age: int, expected: int,
+async def test_capture_resumes_persisted_conversations_with_scope_budget(
+    store, sqlite, monkeypatch, age: int, expected: int,
 ) -> None:
     import agent.memory.auto_capture as ac
     from agent.memory.capture_state import CaptureState
@@ -305,7 +305,7 @@ async def test_shutdown_capture_bypasses_idle_and_scope_limit(
             content="记住：每次操作前先核对当前执行目标。",
             ts_ns=int((time.time() - age) * 1e9),
         )
-    await pipeline.run(force=force)
+    await pipeline.run()
     assert llm.await_count == expected
     states = [await pipeline._journal.load(f"user:{scope_id}") for scope_id in ("webui:a", "webui:b")]
     assert sum(state.last_msg_id > 0 for state in states) == expected
@@ -408,11 +408,27 @@ async def test_cancel_after_write_recovers_without_extracting_again(capture, sto
     with pytest.raises(asyncio.CancelledError):
         await _process(pipeline, _rows(1))
     state = await pipeline._journal.load("user:qq:123")
-    assert state.batch.failures == 1 and state.last_msg_id == 0
+    assert state.batch.failures == 0 and state.last_msg_id == 0
     restarted = ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None))
     assert await _process(restarted, _rows(1)) is CaptureOutcome.COMPLETED
     assert len(await store.list_recent(limit=10)) == 1
     assert llm.await_count == 1
+
+
+async def test_repeated_shutdown_never_abandons_pending_capture(capture, monkeypatch):
+    import asyncio
+
+    ac, pipeline = capture
+    llm = AsyncMock(side_effect=asyncio.CancelledError())
+    monkeypatch.setattr(ac, "light_llm", llm)
+    for _ in range(6):
+        with pytest.raises(asyncio.CancelledError):
+            await _process(pipeline, _rows(1))
+        state = await pipeline._journal.load("user:qq:123")
+        assert state.last_msg_id == 0 and state.batch is not None and state.batch.failures == 0
+    llm.side_effect, llm.return_value = None, "[]"
+    assert await _process(pipeline, _rows(1)) is CaptureOutcome.COMPLETED
+    assert (await pipeline._journal.load("user:qq:123")).last_msg_id == 1
 
 
 async def test_duplicate_receipt_survives_checkpoint_failure(capture, store, monkeypatch):

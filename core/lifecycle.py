@@ -246,6 +246,8 @@ class Lifecycle:
                     continue
                 effective = min(per_timeout, remaining) if per_timeout is not None else remaining
             try:
+                started = time.monotonic()
+                log(f"正在清理: {name}", tag="关停")
                 if asyncio.iscoroutinefunction(fn):
                     if critical:
                         await cls._await_critical(name, fn)
@@ -255,7 +257,7 @@ class Lifecycle:
                         await fn()
                 else:
                     fn()
-                log(f"已清理: {name}")
+                log(f"已清理: {name}（{time.monotonic() - started:.2f}s）", tag="关停")
                 cls._critical_cleanups.pop(name, None)
             except asyncio.TimeoutError as exc:
                 if critical:

@@ -152,24 +152,12 @@ def create_application(args: argparse.Namespace) -> Application:
                 on_start=start_cli_input, cleanup=stop_cli_input,
             )
 
-    async def _flush_pending_memory() -> None:
-        """记忆自动捕获兜底：退出前强制提取各会话待定内容（限时 30s）。"""
-        from agent.memory.auto_capture import run_auto_capture
-        from services._runtime import require_runtime
-        try:
-            await asyncio.wait_for(
-                run_auto_capture(require_runtime().mind, force=True), timeout=30.0,
-            )
-        except asyncio.TimeoutError:
-            log("兜底记忆提取超时（30s），未处理内容下次启动续跑（游标已持久化）", "WARNING", tag="关停")
-
     def _silence_shutdown_logs() -> None:
         """屏蔽 uvicorn 关停噪音与事件循环晚期异常回调。"""
         import logging
         logging.getLogger("uvicorn.error").disabled = True
         asyncio.get_running_loop().set_exception_handler(lambda _l, _c: None)
 
-    app.on_pre_shutdown("flush_pending_memory", _flush_pending_memory)
     app.on_pre_shutdown("silence_shutdown_logs", _silence_shutdown_logs)
 
     from agent.runtime.bootstrap import cancel_background_tasks

@@ -1,7 +1,6 @@
 """组合根的启动失败传播与共享资源注册契约。"""
 
 from argparse import Namespace
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -39,17 +38,18 @@ async def test_nested_bootstrap_failure_stops_parent(monkeypatch: pytest.MonkeyP
         Lifecycle.reset()
 
 
-async def test_shutdown_flush_uses_forced_capture(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_shutdown_does_not_start_new_model_extraction(monkeypatch: pytest.MonkeyPatch) -> None:
     import launch
     from agent.memory import auto_capture
 
     run = AsyncMock()
-    monkeypatch.setattr(auto_capture, "_pipeline", lambda: SimpleNamespace(run=run))
-    monkeypatch.setattr("services._runtime.require_runtime", lambda: SimpleNamespace(mind=object()))
+    monkeypatch.setattr(auto_capture, "run_auto_capture", run)
     app = launch.create_application(Namespace(no_webui=True))
-    flush = dict(app._pre_shutdown_hooks)["flush_pending_memory"]
-    await flush()
-    run.assert_awaited_once_with(force=True)
+    for _, hook in app._pre_shutdown_hooks:
+        awaitable = hook()
+        if awaitable is not None:
+            await awaitable
+    run.assert_not_awaited()
 
 
 def test_storage_registration_precedes_consumers() -> None:

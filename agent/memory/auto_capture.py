@@ -10,7 +10,7 @@
 
 提取流程：完整新消息 → LLM 提取并校验 JSON → 逐条语义裁决 → 保存出处与检查点。
 每批最多 12 条，字符预算只在消息之间切分；失败最多尝试 5 次，明确记入审计。
-游标、冻结材料与提取结果按 scope 持久化，重启恢复已保存进度。
+游标、冻结材料与提取结果按 scope 持久化，重启恢复已保存进度；关停取消不消耗失败额度。
 
 发言者归属：消息行渲染时从元数据标签确定性提取身份（称呼[uid:xxx]），
 提取输出的 speaker 字段经批次内真实 uid 集合校验后挂为 user:{adapter}:{uid}
@@ -154,8 +154,8 @@ class AutoCapturePipeline:
             raise RuntimeError("记忆存储未初始化")
         return CaptureJournal(store)
 
-    async def run(self, *, force: bool = False) -> None:
-        """扫描会话；关停强制模式为每个会话消费一个批次，剩余材料下次恢复。"""
+    async def run(self) -> None:
+        """按预算扫描会话；未消费消息及在途批次在后续心跳继续。"""
         if not get_config_bool("memory_auto_capture_enabled", True):
             return
         store = self._memory.memory_store
@@ -171,8 +171,8 @@ class AutoCapturePipeline:
             return
 
         every_n = max(1, get_config_int("memory_auto_capture_every_n", 5))
-        idle_seconds = 0 if force else max(30, get_config_int("memory_auto_capture_idle_seconds", 600))
-        max_scopes = len(scopes) if force else max(1, get_config_int("memory_auto_capture_max_scopes", 5))
+        idle_seconds = max(30, get_config_int("memory_auto_capture_idle_seconds", 600))
+        max_scopes = max(1, get_config_int("memory_auto_capture_max_scopes", 5))
 
         processed = 0
         now = time.time()
@@ -274,7 +274,11 @@ class AutoCapturePipeline:
         metrics.incr("capture.batches")
         try:
             stored = await self._consume_batch(scope_key, state, messages)
-        except (Exception, asyncio.CancelledError) as exc:
+        except asyncio.CancelledError:
+            # 关停不是提取失败；重复重启不能耗尽重试额度或推进消息游标。
+            await journal.save(scope_key, state)
+            raise
+        except Exception as exc:
             batch.failures += 1
             metrics.incr("capture.failed")
             detail = json.dumps({
@@ -287,8 +291,6 @@ class AutoCapturePipeline:
                 self._advance(state, batch)
             await journal.save(scope_key, state, failure=detail)
             log(f"自动捕获失败: {detail}", "WARNING", tag="记忆")
-            if isinstance(exc, asyncio.CancelledError):
-                raise
             return CaptureOutcome.FAILED
         self._advance(state, batch)
         state.warmup_threshold = min(state.warmup_threshold * 2, every_n)
@@ -459,9 +461,9 @@ def _pipeline() -> "AutoCapturePipeline":
     return auto_capture_port.get()
 
 
-async def run_auto_capture(mind: MemoryHost, *, force: bool = False) -> None:
-    """心跳与关停共用入口；强制模式跳过轮数和空闲门槛。"""
-    await _pipeline().run(force=force)
+async def run_auto_capture(mind: MemoryHost) -> None:
+    """心跳入口；按轮数、空闲门槛和会话预算恢复持久化进度。"""
+    await _pipeline().run()
 
 
 async def flush_scope_capture(mind: MemoryHost, scope_key: str) -> bool:

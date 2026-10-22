@@ -109,6 +109,35 @@ class TestRelease:
         assert pid_file.exists()  # 指向别人，不动
 
 
+def test_stop_notifies_host_before_waiting_for_guardian(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from core import instance_guard as guard
+
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "logs/anelf_guardian.pid").write_text("101")
+    (tmp_path / "logs/anelf.pid").write_text("102")
+    events = []
+
+    class Process:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def terminate(self):
+            events.append(self.pid)
+
+        def is_running(self):
+            assert events == [101, 102], "守护等待应用退出，必须先通知两者"
+            return False
+
+    monkeypatch.setattr(guard, "os", SimpleNamespace(name="posix"))
+    monkeypatch.setattr(guard, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(guard, "_is_our_instance", lambda *_args: True)
+    monkeypatch.setattr(guard.psutil, "Process", Process)
+    guard.stop_instance(tmp_path, timeout=1)
+    assert events == [101, 102]
+
+
 @pytest.mark.skipif(os.name == "nt", reason="Windows terminate is not a graceful POSIX signal")
 @pytest.mark.parametrize("ignore_term", [False, True])
 def test_stop_uses_sigterm_and_never_escalates(tmp_path, ignore_term):

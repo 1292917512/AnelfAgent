@@ -5,12 +5,17 @@ from __future__ import annotations
 import asyncio
 import codecs
 import json
+import os
+import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
+import psutil
+
+from core.log import log
 from core.path import project_root
 
 from .diagnostics import WorkerDiagnostics, credential_values
@@ -37,10 +42,10 @@ class CogneeProcess:
         self._commit = commit
         self._diagnostics: WorkerDiagnostics | None = None
         self._stderr_reader: asyncio.Task[None] | None = None
+        self._owns_group = False
+        self._stop_lock = asyncio.Lock()
 
     def sample_writes(self) -> int:
-        import psutil
-
         if self.process and self.process.returncode is None:
             try:
                 self.written_bytes = max(self.written_bytes, psutil.Process(self.process.pid).io_counters().write_bytes)
@@ -55,6 +60,8 @@ class CogneeProcess:
         options: dict[str, Any] = {}
         if sys.platform == "win32":
             options["creationflags"] = subprocess.CREATE_NO_WINDOW
+        else:
+            options["start_new_session"] = True
         self.process = await asyncio.create_subprocess_exec(
             sys.executable, "-u", "-c",
             "import os,sys; channel=os.fdopen(os.dup(1),'w',encoding='utf-8'); "
@@ -63,6 +70,7 @@ class CogneeProcess:
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE, limit=64 * 1024 * 1024, cwd=project_root(), **options,
         )
+        self._owns_group = sys.platform != "win32"
         self._stderr_reader = asyncio.create_task(self._read_stderr(), name="memory.cognee.diagnostics")
         if self._diagnostics:
             self._diagnostics.write(f"worker pid={self.process.pid} commit={self._commit}")
@@ -101,7 +109,7 @@ class CogneeProcess:
                     future.set_exception(CogneePipelineError("worker", response.get("error_class", ""), response["error"]))
                 else:
                     future.set_result(response.get("result"))
-            code = await process.wait()
+            code = await self._wait_exit(process, timeout=10)
             error: Exception = WorkerCrashed(f"Cognee 工作进程退出 (exit_code={code})；未提交批次将恢复后重试")
         except Exception as exc:
             error = WorkerCrashed(f"Cognee 工作进程协议中断 ({type(exc).__name__})")
@@ -138,33 +146,91 @@ class CogneeProcess:
                 future.cancel()
 
     async def stop(self, *, clean: bool = False) -> None:
-        """发布要求原生关闭成功；取消时允许直接终止可丢弃工作区。"""
+        """回收专用进程树；取消不能遗失句柄，退出与管道回收分别有界。"""
+        async with self._stop_lock:
+            await self._stop_owned(clean=clean)
+
+    def _children(self, pid: int) -> list[psutil.Process]:
+        try:
+            return psutil.Process(pid).children(recursive=True)
+        except psutil.NoSuchProcess:
+            return []
+
+    @staticmethod
+    async def _wait_exit(process: asyncio.subprocess.Process, *, timeout: float) -> int:
+        """只等 OS 退出通知；Process.wait 还依赖所有继承的管道关闭。"""
+        async with asyncio.timeout(timeout):
+            while process.returncode is None:
+                await asyncio.sleep(0.02)
+        return process.returncode
+
+    async def _stop_owned(self, *, clean: bool) -> None:
         process = self.process
         if process is None:
             return
+        # 正常关闭前记住辅助进程，避免父进程退出后 Windows 无法再追溯孤儿。
+        children = self._children(process.pid)
         try:
             if clean:
                 await self.call("close", timeout=30)
-                async with asyncio.timeout(10):
-                    code = await process.wait()
+                code = await self._wait_exit(process, timeout=10)
                 if code != 0:
                     raise WorkerCrashed(f"Cognee 关闭失败 (exit_code={code})，候选索引未提交")
         finally:
-            self.sample_writes()
-            if process.returncode is None:
+            cleanup = asyncio.create_task(self._reap(process, children), name="memory.cognee.reap")
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                while not cleanup.done():
+                    try:
+                        await asyncio.shield(cleanup)
+                    except asyncio.CancelledError:
+                        continue
+                cleanup.result()
+                raise
+
+    async def _reap(self, process: asyncio.subprocess.Process, children: list[psutil.Process]) -> None:
+        self.sample_writes()
+        children = list({child.pid: child for child in [*children, *self._children(process.pid)]}.values())
+        log(f"Cognee 回收工作进程 PID={process.pid}，辅助进程 {len(children)} 个", "DEBUG", tag="关停")
+        if self._owns_group and sys.platform != "win32":
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        for child in reversed(children):
+            try:
+                child.kill()  # psutil 验证创建时间，不向复用 PID 发信号。
+            except psutil.NoSuchProcess:
+                pass
+        if process.returncode is None:
+            try:
                 process.kill()
-            await process.wait()
-            if process.stdin:
-                process.stdin.close()
-                try:
-                    await process.stdin.wait_closed()
-                except (BrokenPipeError, ConnectionResetError):
-                    pass
-            if self._reader:
-                await self._reader
-            if self._stderr_reader:
-                await self._stderr_reader
-            if self._diagnostics:
-                self._diagnostics.write(f"worker exit_code={process.returncode}")
-                self._diagnostics.close()
-            self.process = None
+            except ProcessLookupError:
+                pass
+        try:
+            await self._wait_exit(process, timeout=5)
+            if children:
+                _, alive = await asyncio.to_thread(psutil.wait_procs, children, timeout=5)
+                if alive:
+                    raise WorkerCrashed(f"Cognee 辅助进程未退出: {[child.pid for child in alive]}；保留所有权")
+            async with asyncio.timeout(5):
+                if process.stdin:
+                    process.stdin.close()
+                    try:
+                        await process.stdin.wait_closed()
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass
+                readers = [task for task in (self._reader, self._stderr_reader) if task]
+                results = await asyncio.gather(*readers, return_exceptions=True)
+                for result in results:
+                    if isinstance(result, Exception):
+                        log(f"Cognee 管道回收: {type(result).__name__}", "DEBUG", tag="关停")
+                await process.wait()
+        except TimeoutError as exc:
+            raise WorkerCrashed(f"Cognee 进程或管道回收超时: PID={process.pid}, exit_code={process.returncode}；"
+                                "禁止发布或释放索引所有权") from exc
+        if self._diagnostics:
+            self._diagnostics.write(f"worker exit_code={process.returncode}")
+            self._diagnostics.close()
+        self.process = None

@@ -131,6 +131,123 @@ async def test_rpc_detects_real_process_exit_without_terminating_host():
         await rpc.stop()
 
 
+async def test_rpc_reports_exit_while_helper_retains_stderr(tmp_path):
+    import psutil
+
+    pidfile = tmp_path / "helper.pid"
+    rpc = CogneeProcess()
+    rpc.process = await asyncio.create_subprocess_exec(
+        sys.executable, "-u", "-c",
+        "import subprocess,sys,os; from pathlib import Path; "
+        "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'], stdout=subprocess.DEVNULL); "
+        "Path(sys.argv[1]).write_text(str(p.pid)); sys.stdin.readline(); os._exit(138)", str(pidfile),
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    rpc._reader = asyncio.create_task(rpc._read())
+    rpc._stderr_reader = asyncio.create_task(rpc._read_stderr())
+    try:
+        with pytest.raises(WorkerCrashed, match="138"):
+            await rpc.call("list_datasets", timeout=10)
+        assert psutil.Process(int(pidfile.read_text())).is_running()
+    finally:
+        if pidfile.exists():
+            try:
+                psutil.Process(int(pidfile.read_text())).kill()
+            except psutil.NoSuchProcess:
+                pass
+        await rpc.stop()
+
+
+@pytest.mark.parametrize("clean", [False, True])
+async def test_stop_reaps_helper_holding_diagnostic_pipe(tmp_path, clean):
+    import psutil
+
+    pidfile = tmp_path / "helper.pid"
+    script = (
+        "import subprocess,sys,time,json,os; from pathlib import Path; "
+        "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'], stdout=subprocess.DEVNULL); "
+        "Path(sys.argv[1]).write_text(str(p.pid)); "
+        "m=json.loads(sys.stdin.readline()); "
+        "print(json.dumps({'protocol':1,'id':m['id'],'result':None}),flush=True); os._exit(0)"
+    )
+    rpc = CogneeProcess()
+    rpc.process = await asyncio.create_subprocess_exec(
+        sys.executable, "-u", "-c", script, str(pidfile),
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        start_new_session=sys.platform != "win32",
+    )
+    rpc._owns_group = sys.platform != "win32"
+    process = rpc.process
+    rpc._reader = asyncio.create_task(rpc._read())
+    rpc._stderr_reader = asyncio.create_task(rpc._read_stderr())
+    try:
+        async with asyncio.timeout(10):
+            while not pidfile.exists():
+                await asyncio.sleep(0.02)
+        helper = psutil.Process(int(pidfile.read_text()))
+        await asyncio.wait_for(rpc.stop(clean=clean), timeout=15)
+        assert rpc.process is None and process.returncode is not None
+        assert not helper.is_running() or helper.status() == psutil.STATUS_ZOMBIE
+        assert rpc._reader.done() and rpc._stderr_reader.done()
+    finally:
+        if pidfile.exists():
+            try:
+                helper = psutil.Process(int(pidfile.read_text()))
+                for child in [*helper.children(recursive=True), helper]:
+                    child.kill()
+            except psutil.NoSuchProcess:
+                pass
+        await rpc.stop()
+
+
+async def test_cancelled_stop_keeps_handle_until_reaped(monkeypatch):
+    rpc = CogneeProcess()
+    rpc.process = await asyncio.create_subprocess_exec(sys.executable, "-c", "import time; time.sleep(60)")
+    entered, release = asyncio.Event(), asyncio.Event()
+    reap = rpc._reap
+
+    async def delayed(process, children):
+        entered.set()
+        await release.wait()
+        await reap(process, children)
+
+    monkeypatch.setattr(rpc, "_reap", delayed)
+    task = asyncio.create_task(rpc.stop())
+    try:
+        await entered.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done() and rpc.process is not None
+    finally:
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert rpc.process is None
+
+
+async def test_failed_worker_reap_keeps_client_ownership(tmp_path):
+    from filelock import FileLock
+
+    client = CogneeClient(CogneeConfig(data_root=str(tmp_path)))
+    process = AsyncMock()
+    process.stop.side_effect = WorkerCrashed("pipe did not close")
+    client._process = process
+    owner = FileLock(tmp_path / "owner.lock")
+    owner.acquire()
+    client._owner = owner
+    try:
+        with pytest.raises(WorkerCrashed):
+            await client.close()
+        assert client._process is process and owner.is_locked
+        process.stop.side_effect = None
+        process.process = None
+        process.written_bytes = 0
+        await client.close()
+        assert client._process is None and not owner.is_locked
+    finally:
+        owner.release()
+
+
 async def test_cancelled_transaction_does_not_publish(tmp_path, monkeypatch):
     client = CogneeClient(CogneeConfig(data_root=str(tmp_path)))
     checkpoints = IndexCheckpoints(tmp_path)

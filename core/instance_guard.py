@@ -80,9 +80,10 @@ def release_instance(pid_file: Path) -> None:
 
 
 def stop_instance(project_root: Path, timeout: float = 600.0) -> None:
-    """POSIX 下停止守护循环，再发 SIGTERM 等待宿主退出；超时保留实例，不强杀。"""
+    """POSIX 下核实归属后通知守护与宿主退出，共用等待预算；超时不强杀。"""
     if os.name == "nt":
         raise RuntimeError("Windows 请通过应用关停入口或启动终端 Ctrl+C 安全停止")
+    targets: list[psutil.Process] = []
     for filename, script in (("anelf_guardian.pid", "start.sh"), ("anelf.pid", "launch.py")):
         path = project_root / "logs" / filename
         pid = _read_pid(path)
@@ -92,12 +93,25 @@ def stop_instance(project_root: Path, timeout: float = 600.0) -> None:
             process = psutil.Process(pid)
             if not _is_our_instance(process, project_root, script):
                 raise RuntimeError(f"无法确认 PID {pid} 的项目归属，停止操作未执行")
-            # 同一 Process 实例保留创建时间，psutil 在发信号时检查 PID 是否已复用。
+            targets.append(process)
+        except psutil.NoSuchProcess:
+            pass
+    # 先通知守护，再通知应用；守护可能正等待前台应用退出，不能先等守护退出。
+    for process in targets:
+        try:
             process.terminate()
-            deadline = time.monotonic() + timeout
+        except psutil.NoSuchProcess:
+            pass
+    deadline = time.monotonic() + timeout
+    for process in reversed(targets):
+        announced = time.monotonic()
+        try:
             while process.is_running() and process.status() != psutil.STATUS_ZOMBIE:
                 if time.monotonic() >= deadline:
-                    raise RuntimeError(f"PID {pid} 仍在安全关停；未强杀、未启动新实例，请检查日志")
+                    raise RuntimeError(f"PID {process.pid} 仍在安全关停；未强杀、未启动新实例，请检查日志")
+                if time.monotonic() - announced >= 5:
+                    print(f"⏳ 等待 PID {process.pid} 退出；具体清理阶段见 logs/startup.log", flush=True)
+                    announced = time.monotonic()
                 time.sleep(0.2)
         except psutil.NoSuchProcess:
             pass  # 信号与检查间退出属正常关停。

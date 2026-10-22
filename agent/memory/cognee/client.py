@@ -77,6 +77,7 @@ class CogneeClient:
         self._resolved_chat: dict[str, Any] = {}
         self._resolved_embedding: dict[str, Any] = {}
         self._operation_lock = asyncio.Lock()
+        self._stop_lock = asyncio.Lock()
         self._transaction: ContextVar[asyncio.Task[Any] | None] = ContextVar("cognee_index_transaction", default=None)
         self._process: CogneeProcess | None = None
         self._checkpoints: IndexCheckpoints | None = None
@@ -226,12 +227,15 @@ class CogneeClient:
         return self._process
 
     async def _stop(self, *, clean: bool = False) -> None:
-        process, self._process = self._process, None
-        if process:
-            try:
-                await process.stop(clean=clean)
-            finally:
-                self._finished_writes += process.written_bytes
+        async with self._stop_lock:
+            process = self._process
+            if process:
+                try:
+                    await process.stop(clean=clean)
+                finally:
+                    if process.process is None:
+                        self._process = None
+                        self._finished_writes += process.written_bytes
 
     @asynccontextmanager
     async def idle_snapshot(self) -> AsyncIterator[None]:
