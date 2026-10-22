@@ -16,7 +16,6 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from agent.memory.cognee.client import CogneeClient
 from agent.memory.cognee.config import (
     CogneeChatModelConfig,
     CogneeConfig,
@@ -26,9 +25,15 @@ from agent.memory.cognee.config import (
 from agent.memory.cognee.coordinator import CogneeCoordinator
 from agent.memory.cognee.fusion import datasets_for_projection, reciprocal_rank_fusion
 from agent.memory.cognee.llm_bridge import CogneeConfigError
+from agent.memory.cognee.sdk_client import SDKClient
 from agent.memory.cognee.types import CogneeAvailability
 from agent.memory.memory_store import MemoryStore
 from agent.memory.memory_types import MemoryEntry, MemorySearchResult, MemoryType
+from tests.helpers.cognee import FakeIndexTransactions
+
+
+class CogneeClient(FakeIndexTransactions, SDKClient):
+    """直接验证子进程中的 SDK 边界，不启动工作进程。"""
 
 # ==================================================================
 # CogneeClient 公共边界
@@ -103,7 +108,7 @@ async def test_late_progress_response_cannot_leak_into_next_batch():
 def test_chunk_external_metadata_is_restored_from_sdk_storage(serialized: bool) -> None:
     import json
 
-    from agent.memory.cognee.client import _normalize_recall
+    from agent.memory.cognee.sdk_client import _normalize_recall
 
     metadata = {"anelf_memory_id": "7", "anelf_attribution": {"tags": ["future:value"], "sensitivity": "private"}}
     results = _normalize_recall([{"kind": "chunk", "text": "原文", "raw": {
@@ -352,8 +357,8 @@ async def test_client_waits_for_models_then_initializes_without_restart(
     embedding = Mock(return_value=None)
     monkeypatch.setattr(CogneeClient, "installed", property(lambda _self: True))
     monkeypatch.setattr("agent.llm.get_llm_manager", lambda: object())
-    monkeypatch.setattr("agent.memory.cognee.client.resolve_chat_llm_config", chat)
-    monkeypatch.setattr("agent.memory.cognee.client.resolve_embedding_llm_config", embedding)
+    monkeypatch.setattr("agent.memory.cognee.sdk_client.resolve_chat_llm_config", chat)
+    monkeypatch.setattr("agent.memory.cognee.sdk_client.resolve_embedding_llm_config", embedding)
     monkeypatch.setattr(client, "_import_cognee", importer)
 
     availability = await client.initialize()
@@ -553,7 +558,7 @@ async def test_reset_cognee_projection_clears_queue_and_mappings(tmp_path) -> No
 # CogneeCoordinator 投影与删除
 # ==================================================================
 
-class _FakeCogneeClient:
+class _FakeCogneeClient(FakeIndexTransactions):
     def __init__(self) -> None:
         self.ready = True
         self.projection_ready = True
@@ -1467,7 +1472,7 @@ async def test_storage_stats_adopt_wins_over_inflight_refresh(
     assert json.loads((tmp_path / "storage_stats.json").read_text())["stats"]["total_bytes"] == 500
 
 
-class _CompactFakeClient:
+class _CompactFakeClient(FakeIndexTransactions):
     def __init__(self) -> None:
         self.compact_calls: list[float] = []
 
@@ -1743,7 +1748,7 @@ async def test_pipeline_retry_uses_root_cause_instead_of_wrapper_status(monkeypa
 
 
 def test_disabling_cognee_does_not_require_a_valid_embedding(monkeypatch):
-    monkeypatch.setattr("agent.memory.cognee.client.resolve_embedding_llm_config",
+    monkeypatch.setattr("agent.memory.cognee.sdk_client.resolve_embedding_llm_config",
                         Mock(side_effect=AssertionError("disabled configuration does not write vectors")))
     CogneeClient(CogneeConfig()).validate_configuration(CogneeConfig(enabled=False))
 
@@ -1752,7 +1757,7 @@ async def test_projection_ids_are_stable_and_isolated_by_dataset(monkeypatch, tm
     client = CogneeClient(CogneeConfig(data_root=str(tmp_path)))
     client._module = SimpleNamespace()
     client._configured = True
-    monkeypatch.setattr("agent.memory.cognee.client.importlib.import_module",
+    monkeypatch.setattr("agent.memory.cognee.sdk_client.importlib.import_module",
         lambda name: SimpleNamespace(DataItem=lambda data, **kwargs: SimpleNamespace(data=data, **kwargs)))
     async def item(data, dataset):
         return await client.make_data_item(data, label="anelf-memory-1", external_metadata={}, dataset_name=dataset)

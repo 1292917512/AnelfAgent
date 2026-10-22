@@ -76,6 +76,7 @@ class CogneeSyncStatus(BaseModel):
     configuration_pending: bool = False
     configuration_error: str = ""
     last_error: str = ""
+    publication: dict[str, Any] = Field(default_factory=dict)
     last_compact_at: float = 0.0
     last_compact_summary: str = ""
     # 写盘熔断暂停（投影认领与自动压缩暂缓，冷却到期自动恢复）

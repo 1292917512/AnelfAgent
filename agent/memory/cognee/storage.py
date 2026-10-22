@@ -42,6 +42,7 @@ class StorageStatsDict(TypedDict):
     graph_bytes: int
     metadata_bytes: int
     other_bytes: int
+    protection_bytes: NotRequired[int]
     datasets: NotRequired[dict[str, DatasetStorageBytes]]
     computed_at: NotRequired[float]
 
@@ -68,7 +69,9 @@ def compute_storage_stats(root: Path) -> StorageStatsDict:
                 continue
             stats["total_bytes"] += size
             rel = full.relative_to(root).parts
-            if rel[0] == "data":
+            if rel[0] == ".publication":
+                stats["protection_bytes"] = stats.get("protection_bytes", 0) + size
+            elif rel[0] == "data":
                 stats["data_bytes"] += size
             elif len(rel) >= 3 and rel[0] == "system" and rel[1] == "databases":
                 if any(part.endswith(".lance.db") for part in rel):

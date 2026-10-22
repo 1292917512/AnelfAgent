@@ -7,6 +7,7 @@ import copy
 import hashlib
 import json
 import sqlite3
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, Mock
@@ -14,15 +15,16 @@ from uuid import NAMESPACE_URL, uuid5
 
 import pytest
 
-from agent.memory.cognee.client import CogneeClient
 from agent.memory.cognee.config import CogneeConfig
 from agent.memory.cognee.coordinator import CogneeCoordinator
+from agent.memory.cognee.sdk_client import SDKClient
 from agent.memory.cognee.types import CogneeAvailability
 from agent.memory.memory_store import MemoryStore
 from agent.memory.memory_types import MemoryEntry, MemoryType
+from tests.helpers.cognee import FakeIndexTransactions
 
 
-class DocumentBackend(CogneeClient):
+class DocumentBackend(FakeIndexTransactions, SDKClient):
     """只替换远端文档操作；队列、映射、快照和状态机使用生产实现。"""
 
     def __init__(self, config: CogneeConfig) -> None:
@@ -93,6 +95,23 @@ async def settle(coordinator: CogneeCoordinator) -> None:
             return
         assert state is not None and state.phase != "failed", state
     pytest.fail("构建未在有限轮次内收敛")
+
+
+async def test_publication_failure_never_acknowledges_queue_or_replaces_mapping(coordinator, store, monkeypatch):
+    mid = await store.add(MemoryEntry(content="必须保留的权威正文", memory_type=MemoryType.SEMANTIC))
+
+    @asynccontextmanager
+    async def fail_at_publication():
+        yield
+        assert await store.get_cognee_mapping(mid) is None
+        raise OSError("snapshot disk full")
+
+    monkeypatch.setattr(coordinator.client, "write_transaction", fail_at_publication)
+    await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
+    assert await store.get_cognee_mapping(mid) is None
+    assert (await store.get_cognee_sync_status())["pending"] == 1
+    assert (await store.get(mid)).content == "必须保留的权威正文"
+    assert await store.projection_state.staged("memory", mid)
 
 
 async def test_restart_immediately_resumes_freshly_claimed_work(coordinator, store, monkeypatch):

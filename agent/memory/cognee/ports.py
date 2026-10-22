@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import AbstractAsyncContextManager
 from typing import Any, Protocol
 
 from .types import CogneeAvailability, CogneeRecallItem
@@ -16,6 +17,8 @@ class BackendState(Protocol):
 
 class ProjectionBackend(BackendState, Protocol):
     """SDK 输入对象仅在准备、摄入边界透传，队列不持久化 SDK 对象。"""
+
+    def write_transaction(self) -> AbstractAsyncContextManager[None]: ...
 
     async def make_data_item(self, data: str, *, label: str, external_metadata: dict[str, Any],
                              dataset_name: str = "", node_set: list[str] | None = None) -> Any: ...

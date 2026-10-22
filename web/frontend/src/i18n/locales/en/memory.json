@@ -340,7 +340,8 @@
         "add": "Ingesting documents",
         "cognify": "Extracting knowledge and indexing",
         "replace_projection": "Committing mappings",
-        "enhance": "Updating dataset summaries"
+        "enhance": "Updating dataset summaries",
+        "verify": "Verify graph coverage"
       },
       "pipelineStages": {
         "classify_documents": "Classifying documents",
@@ -382,7 +383,20 @@
     "datasetBytes": "Dedicated indexes {{total}} · Graph {{graph}} · Vectors {{vectors}}",
     "datasetBytesUnknown": "No attributable index measurement yet. Shared documents and metadata are not divided among individual datasets.",
     "retireDataset": "Clean up old data",
-    "retirementConfirm": "Clean up “{{name}}”? Complete text, tags and provenance will be archived and the native database backed up before removing this old dataset and its indexes. Current indexes, native memory and backups are retained. Shared files and free database pages may not release disk space immediately."
+    "retirementConfirm": "Clean up “{{name}}”? Complete text, tags and provenance will be archived and the native database backed up before removing this old dataset and its indexes. Current indexes, native memory and backups are retained. Shared files and free database pages may not release disk space immediately.",
+    "publication": {
+      "title": "Index protection",
+      "idle": "Waiting for the next batch",
+      "preparing": "Preparing candidate",
+      "writing": "Writing candidate index",
+      "committing": "Closing, reopening, verifying and committing snapshot",
+      "recovering": "Restoring last commit",
+      "failed": "Fault isolated; retry required",
+      "commits": "{{count}} batches safely committed",
+      "policy": "Native memories are retained. Failed candidate writes restore the last commit before retrying unfinished work. Old graphs and user backups are cleaned manually.",
+      "sizeHint": "Logical file sizes are shown. Filesystems supporting block sharing let snapshots reuse unchanged data, so this total is not exclusive disk usage."
+    },
+    "storageProtection": "Index protection snapshots"
   },
   "docs": {
     "title": "Document Index",

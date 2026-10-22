@@ -80,6 +80,7 @@ class CogneeCoordinator:
         return WriteBreaker(
             self.config.write_breaker_threshold_mb,
             self.config.write_breaker_window_seconds,
+            sampler=self.client.sample_write_bytes,
         )
 
     async def start(self) -> None:
@@ -149,7 +150,7 @@ class CogneeCoordinator:
             self._idle_job = asyncio.CancelledError("cognee worker 已关闭")
             self._idle_done.set()
         async with self._projection_lock:
-            log("Cognee 上层任务已停止，正在等待数据库原生操作结束并关闭连接", tag="关停")
+            log("Cognee 上层任务已停止，正在回收独立索引工作进程", tag="关停")
             await self.client.close()
             log("Cognee 数据库已安全关闭；未提交批次将在下次启动重试", tag="关停")
 
@@ -241,6 +242,7 @@ class CogneeCoordinator:
             retrying=activity["retrying"],
             next_retry_at=activity["next_retry_at"],
             active=active,
+            publication=self.client.publication_status,
             pause_requested=bool(self._pending_config and not (
                 self._pending_config.enabled and self._pending_config.sync_enabled)),
             configuration_pending=self.configuration_pending,
@@ -287,7 +289,8 @@ class CogneeCoordinator:
             try:
                 async with self._projection_lock:
                     self._require_open()
-                    return await job
+                    async with self.client.idle_snapshot():
+                        return await job
             finally:
                 if asyncio.iscoroutine(job):
                     job.close()
@@ -312,7 +315,8 @@ class CogneeCoordinator:
             return
         try:
             async with self._projection_lock:
-                self._idle_job = await job
+                async with self.client.idle_snapshot():
+                    self._idle_job = await job
         except BaseException as exc:
             self._idle_job = exc
         finally:
@@ -320,6 +324,7 @@ class CogneeCoordinator:
 
     async def retry_failed(self) -> int:
         self._require_open()
+        self.client.reset_fault()
         count = await self.store.retry_failed_cognee_sync()
         self.wake()
         return count
@@ -329,6 +334,7 @@ class CogneeCoordinator:
         self._require_open()
         if self.retirement.status.running:
             raise ValueError("旧数据清理正在执行，请完成后再请求构建")
+        self.client.reset_fault()
         state = await self.rebuild.schedule(self.config, restart=restart)
         self.wake()
         return {"ok": True, "scheduled": True, "rebuild": state.model_dump()}

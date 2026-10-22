@@ -1,6 +1,28 @@
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect } from "./fixtures";
 
+test("Cognee isolates a native fault and offers retry before the queue is exhausted", async ({ page }) => {
+  const state = {
+    availability: { installed: true, enabled: true, ready: false, reason: "Native worker stopped" },
+    sync: { enabled: true, running: true, pending: 1, synced: 20, failed: 0,
+      publication: { phase: "failed", error: "Native worker stopped", commits: 4, cloned_bytes: 1024, copied_bytes: 0 } },
+    storage: { total_bytes: 2048, graph_bytes: 512, lance_bytes: 512, data_bytes: 0, metadata_bytes: 0,
+      other_bytes: 0, protection_bytes: 1024 },
+  };
+  await page.route("**/api/memory/cognee/status", (route) => route.fulfill({ json: state }));
+  let retries = 0;
+  await page.route("**/api/memory/cognee/retry", (route) => {
+    retries++;
+    return route.fulfill({ json: { retried: 0 } });
+  });
+  await page.goto("/webui/memory?tab=cognee");
+  await expect(page.getByText("Index protection: Fault isolated; retry required")).toBeVisible();
+  await expect(page.getByText("4 batches safely committed")).toBeVisible();
+  await expect(page.getByText("Index protection snapshots", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Retry Failed", exact: true }).click();
+  expect(retries).toBe(1);
+});
+
 test("Cognee explicitly starts a fresh generation during an unfinished build", async ({ page }) => {
   const state = {
     availability: { installed: true, enabled: true, ready: true },

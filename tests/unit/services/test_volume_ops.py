@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+import tarfile
 import time
 from pathlib import Path
 
@@ -16,6 +17,34 @@ from core.storage_volume import VolumeDescriptor, VolumeKind, VolumeRegistry
 from services import volume_ops as ops
 from services.db_connections import EXPORT_MANIFEST_TABLE, SqlTransferClient, sqlite_affinity
 from services.volume_ops import VolumeOperationError
+
+
+@pytest.mark.parametrize("dirty", [False, True])
+async def test_cognee_archive_deduplicates_clean_snapshot_and_preserves_dirty_recovery(tmp_path, monkeypatch, dirty):
+    from filelock import FileLock
+
+    from agent.memory.cognee.checkpoints import IndexCheckpoints
+
+    monkeypatch.setattr("agent.memory.cognee.runtime.get_cognee_coordinator", lambda: None)
+    root = tmp_path / "cognee"
+    (root / "data").mkdir(parents=True)
+    (root / "data/raw").write_text("committed", encoding="utf-8")
+    checkpoints = IndexCheckpoints(root)
+    checkpoints.load()
+    if dirty:
+        checkpoints.mark_open()
+        (root / "data/raw").write_text("partial", encoding="utf-8")
+    archive = tmp_path / "backup.tgz"
+    with FileLock(str(root / ".publication/owner.lock")):
+        await ops._archive_tree(VolumeKind.COGNEE_TREE, root, archive, {})
+    restored = tmp_path / "restored"
+    with tarfile.open(archive) as bundle:
+        names = bundle.getnames()
+        assert not any(name.endswith(("owner.lock", "worker.lock")) for name in names)
+        assert any(".publication" in name for name in names) is dirty
+        bundle.extractall(restored, filter="data")
+    IndexCheckpoints(restored).load()
+    assert (restored / "data/raw").read_text() == "committed"
 
 
 @pytest.fixture()

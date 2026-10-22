@@ -170,14 +170,28 @@ async def test_real_projection_rebuild_tagged_recall_update_delete(tmp_path, mon
         mapping = await store.get_cognee_mapping(mid)
         assert mapping is not None
         # 真实图库缺失而 SQL 仍标记完成时，验收和旧数据清理都必须失败。
-        from uuid import UUID
+        import subprocess
+        import sys
 
-        from cognee.context_global_variables import set_database_global_context_variables
-        from cognee.infrastructure.databases.graph import get_graph_engine
-
-        async with set_database_global_context_variables(UUID(mapping["dataset_id"])):
-            graph_engine = await get_graph_engine()
-            await graph_engine.query("MATCH (n:Node) WHERE n.id = $id DETACH DELETE n", {"id": mapping["data_id"]})
+        damage = """
+import sys
+from pathlib import Path
+import cognee_db_workers
+from ladybug import Database, Connection
+for path in Path(sys.argv[1]).rglob('*.lbug'):
+    if '.publication' in path.parts:
+        continue
+    db = Database(str(path), buffer_pool_size=64 * 1024**2, max_num_threads=2)
+    connection = Connection(db)
+    connection.execute('MATCH (n:Node) WHERE n.id = $id DETACH DELETE n', {'id': sys.argv[2]})
+    connection.close()
+    db.close()
+"""
+        async with client.idle_snapshot():
+            damaged = await asyncio.to_thread(subprocess.run,
+                [sys.executable, "-c", damage, config.absolute_data_root, mapping["data_id"]],
+                capture_output=True, timeout=30)
+            assert damaged.returncode == 0, damaged.stderr.decode(errors="replace")
         with pytest.raises(RuntimeError, match="实际图谱缺少"):
             await coordinator.rebuild.verify_backend(coordinator.rebuild.state, await store.projection_state.mappings())
         old_namespace = coordinator.rebuild.state.namespace
@@ -210,13 +224,13 @@ async def test_real_projection_rebuild_tagged_recall_update_delete(tmp_path, mon
                                         ["CHUNKS"], node_names=["future:tag"])
         assert any(item.memory_reference() == f"mem:{mid}" and item.sensitivity == "private"
                    and "future:tag" in item.tags for item in projected), projected
-        old_dataset = next(row for row in await client.list_datasets() if row.name == "anelf_global")
+        old_dataset = next(row for row in await client.list_datasets() if row["name"] == "anelf_global")
         config.sync_enabled = coordinator.config.sync_enabled = False
-        await coordinator.retirement.request(str(old_dataset.id))
+        await coordinator.retirement.request(str(old_dataset["id"]))
         await coordinator.retirement._task
         retired = coordinator.retirement.status
         assert retired.stage == "completed", retired.error
-        assert all(str(row.id) != str(old_dataset.id) for row in await client.list_datasets())
+        assert all(str(row["id"]) != str(old_dataset["id"]) for row in await client.list_datasets())
         assert len(await client.list_data(mapping["dataset_id"])) == 2
         # 删除旧代际后仍从当前图谱召回，历史正文仍完整保存在原生库。
         saved = await (await db.execute("SELECT document_json FROM cognee_legacy_documents")).fetchall()

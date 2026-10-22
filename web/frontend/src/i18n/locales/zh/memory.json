@@ -340,7 +340,8 @@
         "add": "摄入文档",
         "cognify": "抽取知识与写入索引",
         "replace_projection": "提交映射",
-        "enhance": "更新数据集摘要"
+        "enhance": "更新数据集摘要",
+        "verify": "核验图谱覆盖"
       },
       "pipelineStages": {
         "classify_documents": "识别文档类型",
@@ -382,7 +383,20 @@
     "datasetBytes": "独立索引 {{total}} · 图 {{graph}} · 向量 {{vectors}}",
     "datasetBytesUnknown": "尚无可归属的独立索引统计；共享原文与元数据不摊分到单个数据集。",
     "retireDataset": "清理旧数据",
-    "retirementConfirm": "清理「{{name}}」？系统将先完整留存其原文、标签和来源，并备份原生数据库，再删除所选旧数据集及其索引。当前索引、原始记忆和备份保留。共享文件及数据库空闲页可能不会立即释放磁盘空间。"
+    "retirementConfirm": "清理「{{name}}」？系统将先完整留存其原文、标签和来源，并备份原生数据库，再删除所选旧数据集及其索引。当前索引、原始记忆和备份保留。共享文件及数据库空闲页可能不会立即释放磁盘空间。",
+    "publication": {
+      "title": "索引保护",
+      "idle": "等待下一批",
+      "preparing": "准备候选区",
+      "writing": "写入候选索引",
+      "committing": "关闭、重新验收并提交快照",
+      "recovering": "恢复上次提交",
+      "failed": "已隔离故障，等待重试",
+      "commits": "已安全提交 {{count}} 个批次",
+      "policy": "原生记忆始终保留。候选写入失败后恢复上次提交，再重试未完成任务；旧图与用户备份仅手动清理。",
+      "sizeHint": "显示逻辑文件大小。支持块共享的文件系统可让恢复快照复用未变数据，因此此合计不等于独占磁盘空间。"
+    },
+    "storageProtection": "索引保护快照"
   },
   "docs": {
     "title": "文档索引",

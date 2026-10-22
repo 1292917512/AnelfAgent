@@ -269,7 +269,7 @@ async def test_query_embedding_single_flight_is_scoped_and_cancellation_safe():
 async def test_chunk_results_keep_individual_identity_and_metadata(monkeypatch, tmp_path):
     from unittest.mock import AsyncMock
 
-    from agent.memory.cognee.client import CogneeClient
+    from agent.memory.cognee.sdk_client import SDKClient as CogneeClient
     from agent.memory.provenance import note_origin
 
     client = CogneeClient(CogneeConfig(data_root=str(tmp_path)))

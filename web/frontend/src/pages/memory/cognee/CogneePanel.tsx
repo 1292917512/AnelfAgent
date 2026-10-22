@@ -105,7 +105,7 @@ export function CogneePanel() {
         subtitle={availability?.reason || t("cognee.statusSubtitle")}
         actions={
           <div className="flex flex-wrap gap-2">
-            {(sync?.failed || 0) > 0 && (
+            {((sync?.failed || 0) > 0 || sync?.publication?.error) && (
               <button
                 onClick={() => retryMutation.mutate()}
                 disabled={retryMutation.isPending}

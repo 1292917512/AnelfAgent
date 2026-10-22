@@ -11,10 +11,18 @@ export function StorageDetailsCard({ status }: { status?: CogneeStatus }) {
   const categories = [
     ["storageGraph", storage.graph_bytes], ["storageLance", storage.lance_bytes],
     ["storageMetadata", storage.metadata_bytes], ["storageData", storage.data_bytes], ["storageOther", storage.other_bytes],
+    ["storageProtection", storage.protection_bytes ?? 0],
   ] as const;
   return <Card title={t("cognee.storageDetails")} subtitle={t("cognee.storageScope")}>
     <p className="mb-3 text-lg font-semibold text-heading">{formatSize(storage.total_bytes)}</p>
     <div className="space-y-3">
+      {status?.sync.publication?.phase && <div className="rounded-lg border border-border p-3 text-sm text-muted space-y-1">
+        <p role="status">{t("cognee.publication.title")}: {t(`cognee.publication.${status.sync.publication.phase}`)}</p>
+        <p>{t("cognee.publication.commits", { count: status.sync.publication.commits })}</p>
+        <p className="text-xs">{t("cognee.publication.policy")}</p>
+        {status.sync.publication.error && <p role="alert" className="text-danger">{status.sync.publication.error}</p>}
+      </div>}
+      <p className="text-xs text-muted">{t("cognee.publication.sizeHint")}</p>
       {categories.map(([label, bytes]) => <div key={label}>
         <div className="mb-1 flex justify-between gap-3 text-sm text-muted">
           <span>{t(`cognee.${label}`)}</span>

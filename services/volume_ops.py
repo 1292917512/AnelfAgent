@@ -439,12 +439,25 @@ async def _archive_tree(
     if not source.is_dir():
         raise VolumeOperationError(f"卷数据目录不存在: {source}", status_code=409)
 
-    members = await asyncio.to_thread(
-        _notes_members if kind is VolumeKind.NOTES_TREE else walk_files, source
-    )
-    state["total"] = len(members)
-
     def _tar() -> int:
+        # 文件清单也必须在静默窗口内生成，避免引用已被下一次发布替换的快照。
+        members = (_notes_members if kind is VolumeKind.NOTES_TREE else walk_files)(source)
+        if kind is VolumeKind.COGNEE_TREE:
+            clean = False
+            journal = source / ".publication" / "state.json"
+            if journal.exists():
+                try:
+                    commit = json.loads(journal.read_text(encoding="utf-8"))
+                    clean = commit.get("version") == 1 and commit.get("dirty") is False
+                except (OSError, ValueError):
+                    log("Cognee 提交记录无法确认，备份保留恢复点", "WARNING")
+            # 干净工作区已是完整提交，不把 COW 恢复点再物化一遍写入压缩包。
+            # 未完成恢复时必须同时保留 dirty 记录和封存快照；进程锁文件无恢复价值。
+            members = [path for path in members if not (
+                path.relative_to(source).parts[0] == ".publication"
+                and (clean or path.name in {"owner.lock", "worker.lock"})
+            )]
+        state["total"] = len(members)
         with tarfile.open(artifact, "w:gz") as tar:
             for index, path in enumerate(members):
                 tar.add(path, arcname=str(path.relative_to(source)))

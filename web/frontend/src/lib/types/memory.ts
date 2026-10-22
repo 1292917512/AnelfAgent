@@ -95,6 +95,7 @@ export interface CogneeStorageInfo {
   graph_bytes: number;
   metadata_bytes: number;
   other_bytes: number;
+  protection_bytes?: number;
   computed_at?: number;
   datasets?: Record<string, { total_bytes: number; graph_bytes: number; lance_bytes: number }>;
 }
@@ -178,6 +179,7 @@ export interface CogneeStatus {
     paused_until?: number;
     pause_reason?: string;
     last_error: string;
+    publication?: { phase: string; error: string; commits: number; cloned_bytes: number; copied_bytes: number };
     configuration_pending?: boolean;
     configuration_error?: string;
     last_compact_at?: number;

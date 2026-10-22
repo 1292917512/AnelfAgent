@@ -91,7 +91,8 @@ class ProjectionWriter:
     async def _process_delete(self, item: dict[str, Any]) -> None:
         self.progress.stage("delete")
         try:
-            await self._delete_superseded(item)
+            async with self.client.write_transaction():
+                await self._delete_superseded(item)
             await self.store.complete_cognee_sync(
                 item["queue_id"], item["entry_id"],
                 entry_kind=item["entry_kind"], delete_mapping=True,
@@ -195,30 +196,32 @@ class ProjectionWriter:
                     raise RuntimeError("Cognee 投影缺少稳定文档 ID")
                 await self.store.projection_state.stage(item["entry_kind"], item["entry_id"], dataset_name, data_id)
             self._observe_write()
-            stage = "add"
-            self.progress.stage(stage, dataset_name=dataset_name, timeout=self.config.pipeline_timeout_seconds)
-            ingestion = await self.client.add(
-                data_items, dataset_name=dataset_name, incremental_loading=True,
-            )
-            dataset_id = str(_value(ingestion, "dataset_id", ""))
-            if not dataset_id:
-                raise RuntimeError("Cognee 摄入未返回 dataset_id，保留旧投影")
-            stage = "cognify"
-            self.progress.stage(stage, dataset_name=dataset_name, dataset_id=dataset_id,
-                                timeout=self.config.pipeline_timeout_seconds)
-            await self.client.cognify(datasets=[dataset_name], incremental_loading=True)
-            self._observe_write()
-            stage = "replace_projection"
-            self.progress.stage(stage, dataset_name=dataset_name)
+            async with self.client.write_transaction():
+                stage = "add"
+                self.progress.stage(stage, dataset_name=dataset_name, timeout=self.config.pipeline_timeout_seconds)
+                ingestion = await self.client.add(
+                    data_items, dataset_name=dataset_name, incremental_loading=True,
+                )
+                dataset_id = str(_value(ingestion, "dataset_id", ""))
+                if not dataset_id:
+                    raise RuntimeError("Cognee 摄入未返回 dataset_id，保留旧投影")
+                stage = "cognify"
+                self.progress.stage(stage, dataset_name=dataset_name, dataset_id=dataset_id,
+                                    timeout=self.config.pipeline_timeout_seconds)
+                await self.client.cognify(datasets=[dataset_name], incremental_loading=True)
+                self._observe_write()
+                stage = "verify"
+                self.progress.stage(stage, dataset_name=dataset_name)
+                await self.client.verify_graph_documents(dataset_id,
+                    [str(_value(data_item, "data_id", "")) for data_item in data_items])
+                for (item, _document), data_item in zip(entries, data_items, strict=True):
+                    data_id = str(_value(data_item, "data_id", ""))
+                    await self._delete_superseded(item, keep=(dataset_name, data_id))
+                stage = "replace_projection"
+                self.progress.stage(stage, dataset_name=dataset_name)
+            # 发布前绝不更新权威映射；发布后中断则稳定 ID 重试，原文及队列仍在。
             for (item, document), data_item in zip(entries, data_items, strict=True):
                 data_id = str(_value(data_item, "data_id", ""))
-                if not data_id:
-                    raise RuntimeError("Cognee 投影缺少稳定文档 ID")
-                try:
-                    await self._delete_superseded(item, keep=(dataset_name, data_id))
-                except Exception as exc:
-                    await self._fail(item, exc)
-                    continue
                 await self.store.complete_cognee_sync(
                     item["queue_id"], item["entry_id"], entry_kind=item["entry_kind"],
                     dataset_name=dataset_name, dataset_id=dataset_id, data_id=data_id,

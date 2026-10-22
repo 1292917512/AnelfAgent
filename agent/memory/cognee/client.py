@@ -1,593 +1,351 @@
-"""Cognee 公共 API 的懒加载门面与宿主配置边界。"""
+"""宿主 Cognee 门面：进程隔离、索引提交与失败恢复。
+
+模型看到什么：沿用既有记忆工具与召回结果，维护窗口退回原生检索。
+token 影响：提交与恢复不调用模型；未提交批次可能重新抽取。
+缓存影响：不改变提示词及稳定前缀。
+"""
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import importlib
-import importlib.util
-import json
-import os
-import time
+import importlib.metadata
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, Optional
-from uuid import NAMESPACE_URL, UUID, uuid5
+from typing import Any, TypeVar
 
-from core.log import log
+from filelock import FileLock
 
-from . import adapters, ladybug_guard
+from .checkpoints import IndexCheckpoints
 from .config import CogneeConfig
 from .embedding_identity import validate_embedding
-from .llm_bridge import (
-    CogneeConfigError,
-    anthropic_env_bridge,
-    resolve_chat_llm_config,
-    resolve_embedding_llm_config,
-    summarize_resolved,
-)
-from .sdk_contract import close_engines, validate_sdk
-from .types import CogneeAvailability, CogneePipelineError, CogneePipelineProgress, CogneeRecallItem
+from .llm_bridge import CogneeConfigError, resolve_chat_llm_config, resolve_embedding_llm_config, summarize_resolved
+from .process import CogneeProcess, WorkerCrashed
+from .sdk_client import SDKClient
+from .types import CogneeAvailability, CogneePipelineProgress, CogneeRecallItem
+from .wire import InputDocument, make_document
+
+T = TypeVar("T")
 
 
-class CogneeClient:
-    """隔离 Cognee 导入、配置和返回类型的异步门面。"""
+async def _disk_job(job: Callable[[], T]) -> T:
+    """取消不释放文件操作互斥；等待复制线程退出，避免恢复与复制互相覆盖。"""
+    task = asyncio.create_task(asyncio.to_thread(job))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+        task.result()
+        raise
+
+
+class CogneeClient(SDKClient):
+    """公共接口保持稳定；SDKClient 仅作为工作进程实现，不在宿主打开数据库。"""
 
     def __init__(self, config: CogneeConfig) -> None:
-        self.config = config.normalized()
-        self._module: Optional[Any] = None
-        self._closing = False
-        self._calls: set[asyncio.Future[Any]] = set()
-        self._configured = False
-        self._import_error = ""
-        self._configuration_required = False
-        self._initialize_lock = asyncio.Lock()
-        self._recall_slots = asyncio.Semaphore(4)
-        self._datasets_lock = asyncio.Lock()
-        self._dataset_names: set[str] = set()
-        self._datasets_until = 0.0
-        self._compact_rotation = 0
-        self._resolved_chat: dict[str, Any] = {}
-        self._resolved_embedding: dict[str, Any] = {}
-        self._embedding_payload: dict[str, Any] = {}
-        self._chat_payload: dict[str, Any] = {}
-        self._summary_datasets: set[str] = set()
-        self.projection_ready = True
-        self.projection_namespace = ""
+        super().__init__(config)
+        self._operation_lock = asyncio.Lock()
+        self._transaction: ContextVar[bool] = ContextVar("cognee_index_transaction", default=False)
+        self._process: CogneeProcess | None = None
+        self._checkpoints: IndexCheckpoints | None = None
+        self._owner: FileLock | None = None
+        self._fault = ""
+        self._phase = "idle"
+        self._revision = 0
+        self._worker_revision = -1
+        self._verifications: list[tuple[str, list[str]]] = []
+        self._finished_writes = 0
+        self._needs_recovery = False
 
-    @property
-    def installed(self) -> bool:
-        try:
-            return importlib.util.find_spec("cognee") is not None
-        except (ImportError, ValueError):
-            return False
-
-    @property
-    def resolved_info(self) -> dict[str, Any]:
-        """已解析的模型配置摘要（脱敏），供状态接口展示。"""
-        return {
-            "chat": self._resolved_chat,
-            "embedding": self._resolved_embedding,
-        }
+    def sample_write_bytes(self) -> int:
+        active = self._process.sample_writes() if self._process else 0
+        return super().sample_write_bytes() + self._finished_writes + active
 
     def reconfigure(self, config: CogneeConfig) -> None:
-        """热更新配置：下次调用时按新配置重新映射模型。
+        super().reconfigure(config)
+        self._revision += 1
+        self.reset_fault()
 
-        重置配置标记后由 initialize 串行重新映射；原生 LLM 适配器按调用读取
-        当前配置，带缓存的 Instructor 与 embedding 引擎使用配置内容作为键。
-        """
-        self.config = config.normalized()
-        self._configured = False
-        self._import_error = ""
-        self._configuration_required = False
-        self._resolved_chat = {}
-        self._resolved_embedding = {}
-        self._datasets_until = 0.0
-        self._summary_datasets.clear()
+    @property
+    def publication_status(self) -> dict[str, Any]:
+        state = self._checkpoints.state if self._checkpoints else {}
+        return {"phase": self._phase, "error": self._fault,
+                "commits": max(0, state.get("commits", 0) - 1),
+                "cloned_bytes": state.get("cloned_bytes", 0), "copied_bytes": state.get("copied_bytes", 0)}
 
-    async def initialize(self) -> CogneeAvailability:
-        """串行解析并应用配置，并发调用复用已就绪的客户端。"""
-        async with self._initialize_lock:
-            if self._closing:
-                raise RuntimeError("Cognee 客户端正在关闭")
-            return await self._initialize()
-
-    def quiesce(self) -> None:
-        """封闭 SDK 调用入口并取消抽取、召回协程，原生关闭由 close 监督。"""
-        if self._closing:
-            return
-        self._closing = True
-        for task in self._calls:
-            if not task.done():
-                task.cancel()
-
-    async def close(self) -> None:
-        """宿主停止调用后释放 SDK 缓存的引擎，等待数据库线程与文件句柄关闭。
-
-        Cognee 使用进程级引擎缓存；宿主只装配一个客户端，关闭由生命周期
-        在召回与投影工作停止后统一调用。关闭不删除数据或改变投影状态。
-        """
-        self.quiesce()
-        await asyncio.gather(*self._calls, return_exceptions=True)
-        if self._module is None:
-            return
-        async with self._initialize_lock:
-            try:
-                await close_engines()
-            finally:
-                self._configured = False
-
-    def validate_configuration(self, config: CogneeConfig) -> None:
-        """保存前检查显式抽取配置和向量空间，不调用模型或打开数据库。"""
-        if not config.enabled:
-            return
-        from agent.llm import get_llm_manager
-        from agent.llm.llm_client import ModelType
-
-        manager = get_llm_manager()
-        if config.chat.source != "auto" or manager.get_all_by_type(ModelType.CHAT):
-            resolve_chat_llm_config(config.chat, manager)
-        payload = resolve_embedding_llm_config(config.embedding, manager)
-        if payload:
-            validate_embedding(Path(config.absolute_data_root), payload)
-
-    async def _initialize(self) -> CogneeAvailability:
-        if not self.config.enabled:
-            return self.availability(reason="未启用")
-        if not self.installed:
-            return self.availability(reason="缺少 cognee 依赖，请在项目目录执行 uv sync")
-        try:
-            await self._configure()
-            self._import_error = ""
-            self._configuration_required = False
-            return self.availability()
-        except CogneeConfigError as exc:
-            self._configured = False
-            self._import_error = str(exc)
-            self._configuration_required = True
-            return self.availability()
-        except Exception as exc:
-            self._configured = False
-            self._import_error = str(exc)
-            self._configuration_required = False
-            log(f"Cognee 初始化失败，保持原记忆后端: {exc}", "WARNING")
-            return self.availability(reason=self._import_error)
-
-    def availability(self, reason: str = "") -> CogneeAvailability:
-        version = str(getattr(self._module, "__version__", "")) if self._module else ""
-        ready = bool(self.config.enabled and self._module is not None and self._configured)
-        return CogneeAvailability(
-            installed=self.installed,
-            enabled=self.config.enabled,
-            ready=ready,
-            configuration_required=self.config.enabled and self._configuration_required,
-            version=version,
-            reason=reason or ("" if ready else self._import_error),
-        )
-
-    def _import_cognee(self) -> Any:
-        if self._module is not None:
-            return self._module
-        # cognee 默认把 graph/vector 引擎放在子进程运行（pydantic-settings 按
-        # 字段名读同名环境变量），每轮流水线都会创建 worker 子进程，父进程的
-        # PIPE/信号量 fd 随运行时间单调泄露直至 EMFILE。宿主为单进程架构，
-        # 改回进程内引擎（setdefault 保留环境变量覆盖）。
-        os.environ.setdefault("GRAPH_DATABASE_SUBPROCESS_ENABLED", "false")
-        os.environ.setdefault("VECTOR_DB_SUBPROCESS_ENABLED", "false")
-        # Cognee 导入时会 dotenv.load_dotenv(override=True)。恢复环境，避免污染宿主进程。
-        original_env = dict(os.environ)
-        try:
-            # 抑制 cognee 的 structlog 喧哗：只输出 WARNING 及以上
-            os.environ.setdefault("LOG_LEVEL", "WARNING")
-            os.environ.setdefault("COGNEE_LOG_FILE", "false")
-            self._module = importlib.import_module("cognee")
-        finally:
-            os.environ.clear()
-            os.environ.update(original_env)
-        # cognee 的 setup_logging() 接管了 stdlib root logger，
-        # 限制其 handler 级别以避免 pipeline 状态持续刷屏
-        _quieten_cognee_logger()
-        try:
-            validate_sdk(self._module)
-            ladybug_guard.install(lambda: self.config)
-            adapters.install()
-        except Exception:
-            self._module = None
-            raise
-        return self._module
+    def reset_fault(self) -> None:
+        """显式重试或新建代际才解开原生崩溃熔断，不自动反复打开坏库。"""
+        self._fault = ""
 
     async def _configure(self) -> None:
-        while self.config.enabled:
-            config = self.config
-            try:
-                from agent.llm import get_llm_manager
+        from agent.llm import get_llm_manager
 
-                manager = get_llm_manager()
-                chat_payload = resolve_chat_llm_config(config.chat, manager)
-                self._resolved_chat = summarize_resolved(chat_payload, kind="chat")
-                embedding_payload = resolve_embedding_llm_config(config.embedding, manager)
-                if embedding_payload is None:
-                    raise CogneeConfigError(
-                        "尚未配置 Embedding 模型，请在 Web 模型管理中添加，"
-                        "或在 Cognee 向量化模型配置中指定"
-                    )
-                embedding_payload = validate_embedding(Path(config.absolute_data_root), embedding_payload)
-                self._resolved_embedding = summarize_resolved(embedding_payload, kind="embedding")
-            except CogneeConfigError:
+        manager = get_llm_manager()
+        chat = resolve_chat_llm_config(self.config.chat, manager)
+        embedding = resolve_embedding_llm_config(self.config.embedding, manager)
+        if not embedding:
+            raise CogneeConfigError("尚未配置 Embedding 模型，请在模型管理中添加")
+        embedding = validate_embedding(Path(self.config.absolute_data_root), embedding)
+        if self._chat_payload != chat or self._embedding_payload != embedding:
+            self._revision += 1
+        self._chat_payload, self._embedding_payload = chat, embedding
+        self._resolved_chat = summarize_resolved(chat, kind="chat")
+        self._resolved_embedding = summarize_resolved(embedding, kind="embedding")
+        self._configured = True
+
+    def availability(self, reason: str = "") -> CogneeAvailability:
+        try:
+            version = importlib.metadata.version("cognee")
+        except importlib.metadata.PackageNotFoundError:
+            version = ""
+        return CogneeAvailability(installed=self.installed, enabled=self.config.enabled,
+            ready=bool(self.config.enabled and self._configured and not self._fault),
+            configuration_required=self._configuration_required, version=version,
+            reason=reason or self._fault or self._import_error)
+
+    async def _worker(self) -> CogneeProcess:
+        if self._closing:
+            raise RuntimeError("Cognee 正在关闭")
+        if self._fault:
+            raise RuntimeError(self._fault)
+        if self._process and self._worker_revision != self._revision:
+            await self._stop(clean=True)
+        root = Path(self.config.absolute_data_root).resolve()
+        if self._checkpoints is None or self._checkpoints.root != root:
+            await self._stop()
+            if self._owner:
+                self._owner.release()
+            self._owner, self._checkpoints = None, None
+            checkpoints = IndexCheckpoints(root)
+            checkpoints.control.mkdir(parents=True, exist_ok=True)
+            owner = FileLock(str(checkpoints.control / "owner.lock"), timeout=0)
+            owner.acquire()
+            try:
+                self._phase = "recovering"
+                await _disk_job(checkpoints.load)
+            except BaseException:
+                owner.release()
                 raise
-            except Exception as exc:
-                raise RuntimeError(f"无法映射 AnelfAgent 模型配置: {exc}") from exc
-
-            if self._configured and self._chat_payload == chat_payload and self._embedding_payload == embedding_payload:
-                return
-            self._configured = False
-            module = await asyncio.to_thread(self._import_cognee)
-            if config is not self.config:
-                continue
-            root = Path(config.absolute_data_root)
-            root.mkdir(parents=True, exist_ok=True)
-            module.config.system_root_directory(str(root / "system"))
-            module.config.data_root_directory(str(root / "data"))
-            anthropic_env_bridge(chat_payload)
-            module.config.set_llm_config(chat_payload)
-            module.config.set_embedding_config(embedding_payload)
-            self._chat_payload = chat_payload
-            self._embedding_payload = embedding_payload
-            if (root / "system").exists():
-                validate_embedding(root, embedding_payload, record=True)
-            self._configured = True
-            return
-
-    async def _call(
-        self,
-        dotted_name: str,
-        *args: Any,
-        timeout: Optional[float] = None,
-        **kwargs: Any,
-    ) -> Any:
-        if self._closing:
-            raise RuntimeError("Cognee 客户端正在关闭")
-        module = self._module
-        if module is None or not self._configured:
-            availability = await self.initialize()
-            if not availability.ready or self._module is None:
-                raise RuntimeError(availability.reason or "Cognee 未就绪")
-            module = self._module
-        if self._closing:
-            raise RuntimeError("Cognee 客户端正在关闭")
-        target: Any = module
-        for part in dotted_name.split("."):
-            target = getattr(target, part)
-        result = target(*args, **kwargs)
-        if hasattr(result, "__await__"):
-            limit = timeout if timeout is not None else self.config.timeout_seconds
-            deadline = asyncio.timeout(limit)
-            task = asyncio.ensure_future(result)
-            self._calls.add(task)
+            self._owner, self._checkpoints = owner, checkpoints
+            self._needs_recovery = False
+        if self._process is None:
+            if self._needs_recovery:
+                await self._recover()
+            await _disk_job(self._checkpoints.mark_open)
+            self._process = CogneeProcess()
             try:
-                async with deadline:
-                    return await task
-            except TimeoutError as exc:
-                if deadline.expired():
-                    raise TimeoutError(f"Cognee 调用 {dotted_name} 总时限已到（{limit:g}s）") from exc
-                detail = str(exc).strip() or "底层未提供错误详情"
-                raise TimeoutError(
-                    f"Cognee 调用 {dotted_name} 内部步骤超时（未达到 {limit:g}s 总时限）: {detail}"
-                ) from exc
-            finally:
-                self._calls.discard(task)
-        return result
+                await self._process.start(self.config.to_dict(), self._chat_payload, self._embedding_payload)
+            except Exception as exc:
+                self._fault = f"Cognee 工作进程初始化失败: {exc}"
+                raise
+            self._worker_revision = self._revision
+        if not self._transaction.get():
+            self._phase = "idle"
+        return self._process
 
-    # v2 memory-oriented API
+    async def _stop(self, *, clean: bool = False) -> None:
+        process, self._process = self._process, None
+        if process:
+            try:
+                await process.stop(clean=clean)
+            finally:
+                self._finished_writes += process.written_bytes
+
+    @asynccontextmanager
+    async def idle_snapshot(self) -> AsyncIterator[None]:
+        """卷备份/迁移的静默窗口，隔离召回并关闭工作进程后再读取文件。"""
+        async with self._operation_lock:
+            await self._stop()
+            if self._checkpoints and self._checkpoints.state.get("dirty"):
+                await self._recover()
+            yield
+
+    async def _recover(self) -> None:
+        self._needs_recovery = True
+        if self._checkpoints is None:
+            return
+        self._phase = "recovering"
+        try:
+            await _disk_job(self._checkpoints.restore)
+        except Exception as exc:
+            self._fault = f"Cognee 恢复尚未完成，禁止打开候选区: {exc}"
+            self._phase = "failed"
+            raise
+        self._needs_recovery = False
+        self._phase = "failed" if self._fault else "idle"
+
+    async def _abort(self, error: BaseException) -> None:
+        self._needs_recovery = True
+        await self._stop()
+        self._summary_datasets.clear()
+        self._datasets_until = 0
+        if isinstance(error, WorkerCrashed):
+            self._fault = str(error) + "；已保留提交快照，请检查后点击重试或重建"
+        if self._checkpoints and not self._closing:
+            await self._recover()
+
+    @asynccontextmanager
+    async def write_transaction(self) -> AsyncIterator[None]:
+        """批次所有派生写入一次发布，调用者仅在退出成功后提交原生同步映射。"""
+        if self._transaction.get():
+            yield
+            return
+        availability = await self.initialize()
+        if not availability.ready:
+            raise RuntimeError(availability.reason or "Cognee 未就绪")
+        async with self._operation_lock:
+            token = self._transaction.set(True)
+            self._verifications = []
+            try:
+                self._phase = "preparing"
+                await self._worker()
+                self._phase = "writing"
+                yield
+                self._phase = "committing"
+                # 同一数据集里已提交的旧文档也必须保留，不能只验收本轮新增文档。
+                expected_by_dataset: dict[str, set[str]] = {}
+                for dataset_id, data_ids in self._verifications:
+                    expected_by_dataset.setdefault(dataset_id, set()).update(data_ids)
+                probe = await self._worker()
+                if expected_by_dataset:
+                    present = {str(row["id"]) for row in await probe.call("list_datasets")}
+                    for dataset_id, expected in expected_by_dataset.items():
+                        if dataset_id not in present and not expected:
+                            continue
+                        rows = await probe.call("list_data", dataset_id)
+                        expected.update(str(row["id"]) for row in rows if self.document_processed(row, dataset_id))
+                        await probe.call("verify_graph_documents", dataset_id, sorted(expected),
+                                         timeout=self.config.pipeline_timeout_seconds)
+                self._verifications = [(key, sorted(value)) for key, value in expected_by_dataset.items() if value]
+                await self._stop(clean=True)
+                # checkpoint/close 也可能破坏图库；重新打开并验收后才发布文件快照。
+                if self._verifications:
+                    probe = await self._worker()
+                    for dataset_id, data_ids in self._verifications:
+                        await probe.call("verify_graph_documents", dataset_id, data_ids,
+                                         timeout=self.config.pipeline_timeout_seconds)
+                    await self._stop(clean=True)
+                assert self._checkpoints is not None
+                await _disk_job(self._checkpoints.commit)
+            except BaseException as exc:
+                await self._abort(exc)
+                raise
+            finally:
+                self._transaction.reset(token)
+                self._phase = "failed" if self._fault else "idle"
+
+    async def _invoke(self, method: str, *args: Any, write: bool = False, **kwargs: Any) -> Any:
+        if write and not self._transaction.get():
+            async with self.write_transaction():
+                return await self._invoke(method, *args, write=True, **kwargs)
+        limit = self.config.pipeline_timeout_seconds if write else self.config.timeout_seconds
+        if self._transaction.get():
+            return await (await self._worker()).call(method, *args, timeout=limit, **kwargs)
+        availability = await self.initialize()
+        if not availability.ready:
+            raise RuntimeError(availability.reason or "Cognee 未就绪")
+        # 批次期间不读正在修改的图库；超时由既有召回层降级到原生结果。
+        async with asyncio.timeout(limit):
+            async with self._operation_lock:
+                try:
+                    return await (await self._worker()).call(method, *args, timeout=limit, **kwargs)
+                except BaseException as exc:
+                    await self._abort(exc)
+                    raise
+
+    def quiesce(self) -> None:
+        super().quiesce()
+
+    async def close(self) -> None:
+        self.quiesce()
+        # 工作区可丢弃，无需等待模型或原生线程。退出后由 dirty 记录驱动恢复。
+        await self._stop()
+        async with self._operation_lock:
+            if self._owner:
+                self._owner.release()
+                self._owner = None
+            self._configured = False
+
+    async def make_data_item(self, data: str, *, label: str, external_metadata: dict[str, Any],
+                             dataset_name: str = "", node_set: list[str] | None = None) -> InputDocument:
+        return make_document(data, label=label, external_metadata=external_metadata,
+                             dataset_name=dataset_name, node_set=node_set)
+
+    async def add(self, data: Any, **kwargs: Any) -> Any:
+        self._summary_datasets.clear()
+        self._datasets_until = 0
+        return await self._invoke("add", data, write=True, **kwargs)
+
+    async def cognify(self, **kwargs: Any) -> Any:
+        return await self._invoke("cognify", write=True, **kwargs)
+
+    async def improve(self, dataset: str = "main_dataset", **kwargs: Any) -> Any:
+        async with self.write_transaction():
+            result = await self._invoke("improve", dataset=dataset, write=True, **kwargs)
+            if any(stage.get("status") in {"failed", "error"} for stage in result.get("stages", [])):
+                raise RuntimeError("Cognee 增强未完成，候选索引未提交")
+            for row in await self.list_datasets():
+                if row["name"] == dataset:
+                    self._verifications.append((str(row["id"]), []))
+        if any(stage.get("stage") == "global_context_index" and stage.get("status") in
+               {"completed", "already_completed"} for stage in result.get("stages", [])):
+            self._summary_datasets.add(dataset)
+        return result
 
     async def recall(self, query_text: str, **kwargs: Any) -> list[CogneeRecallItem]:
         if not self.projection_ready:
             return []
-        async with self._recall_slots:
-            raw = await self._call("recall", query_text, **kwargs)
-        return _normalize_recall(raw)
-
-    async def available_datasets(self, names: list[str]) -> list[str]:
-        """短缓存数据集目录，避开不存在的数据集；目录读取失败不误判为空。"""
-        async with self._datasets_lock:
-            if time.monotonic() >= self._datasets_until:
-                try:
-                    rows = await self.list_datasets()
-                except Exception as exc:
-                    log(f"Cognee 数据集目录读取失败，按原范围检索: {exc}", "DEBUG")
-                    return names
-                self._dataset_names = {
-                    str(row.get("name", "") if isinstance(row, dict) else getattr(row, "name", ""))
-                    for row in rows
-                }
-                self._datasets_until = time.monotonic() + 30
-        return [name for name in names if name in self._dataset_names]
-
-    def global_context_ready(self, dataset: str) -> bool:
-        """只使用当前进程已验收且之后未发生写入的摘要；重启保守退回事实检索。"""
-        return dataset in self._summary_datasets
-
-    async def improve(self, dataset: str = "main_dataset", **kwargs: Any) -> Any:
-        result = await self._call("improve", dataset=dataset,
-                                  timeout=self.config.pipeline_timeout_seconds, **kwargs)
-        value = result.model_dump(mode="json") if hasattr(result, "model_dump") else result
-        stages = value.get("stages", []) if isinstance(value, dict) else []
-        if any(stage.get("stage") == "global_context_index" and stage.get("status") in
-               {"completed", "already_completed"} for stage in stages):
-            self._summary_datasets.add(dataset)
-        return result
-
-    # v1/lower-level public API
-    async def add(self, data: Any, **kwargs: Any) -> Any:
-        self._summary_datasets.clear()
-        result = await self._call(
-            "add",
-            data,
-            timeout=self.config.pipeline_timeout_seconds,
-            **kwargs,
-        )
-        value = result if isinstance(result, dict) else vars(result) if hasattr(result, "__dict__") else {}
-        status = value.get("status", "")
-        if status == "PipelineRunErrored":
-            raise CogneePipelineError(
-                "add", value.get("error_class", "") or "",
-                value.get("error_message", "") or "摄入未完成",
-            )
-        self._datasets_until = 0.0
-        if self._embedding_payload:
-            from cognee.infrastructure.databases.vector.embeddings.config import get_embedding_context_config
-
-            identity = dict(self._embedding_payload)
-            detected = get_embedding_context_config().embedding_dimensions
-            if detected:
-                identity["embedding_dimensions"] = detected
-            identity = validate_embedding(Path(self.config.absolute_data_root), identity, record=True)
-            # add 的自动探测发生在 worker 上下文；公开配置也需更新，供其他召回协程使用。
-            if identity != self._embedding_payload and self._module is not None:
-                self._module.config.set_embedding_config(identity)
-                self._embedding_payload = identity
-                self._resolved_embedding = summarize_resolved(identity, kind="embedding")
-        return result
-
-    async def make_data_item(
-        self,
-        data: str,
-        *,
-        label: str,
-        external_metadata: dict[str, Any],
-        dataset_name: str = "",
-        node_set: list[str] | None = None,
-    ) -> Any:
-        """构造 Cognee 文档化公开输入类型 DataItem。"""
-        if self._module is None or not self._configured:
-            availability = await self.initialize()
-            if not availability.ready:
-                raise RuntimeError(availability.reason or "Cognee 未就绪")
-        data_item_module = importlib.import_module("cognee.tasks.ingestion.data_item")
-        identity = json.dumps(
-            [data, external_metadata, sorted(set(node_set or []))],
-            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
-        )
-        return data_item_module.DataItem(
-            data,
-            literal_text=True,
-            label=label,
-            external_metadata=external_metadata,
-            node_set=sorted(set(node_set or [])),
-            data_id=uuid5(NAMESPACE_URL, f"anelf:{dataset_name}:{label}:{hashlib.sha256(identity.encode()).hexdigest()}"),
-        )
-
-    async def cognify(self, **kwargs: Any) -> Any:
-        return await self._call(
-            "cognify",
-            timeout=self.config.pipeline_timeout_seconds,
-            **kwargs,
-        )
-
-
-    # Dataset namespace
-    async def pipeline_progress(self, dataset_id: str) -> CogneePipelineProgress:
-        """只读公开流水线进度；短超时避免观测接口阻塞管理页面。"""
-        identity = _to_uuid(dataset_id)
-        rows = await self._call("datasets.get_progress", [identity],
-                                pipeline_names=["cognify_pipeline"], timeout=3.0)
-        row = rows.get(str(identity), {})
-        progress = row.get("progress") or {}
-        return CogneePipelineProgress(
-            status=row.get("status", ""),
-            completed_items=progress.get("completed_items"),
-            total_items=progress.get("total_items"),
-            current_stage=progress.get("current_stage") or "",
-        )
+        return [CogneeRecallItem.model_validate(item) for item in await self._invoke("recall", query_text, **kwargs)]
 
     async def list_datasets(self, **kwargs: Any) -> Any:
-        try:
-            return await self._call("datasets.list_datasets", **kwargs)
-        except Exception as exc:
-            if _is_database_not_created(exc):
-                # 重建清场后、进程重启前的中间态：引擎句柄指向已 prune 的
-                # 元数据库，此时数据集确为空，降级返回避免 UI/工具层 500
-                return []
-            raise
-
+        return await self._invoke("list_datasets", **kwargs)
 
     async def list_data(self, dataset_id: Any, **kwargs: Any) -> Any:
-        return await self._call("datasets.list_data", _to_uuid(dataset_id), **kwargs)
-
-    async def delete_dataset(self, dataset_id: str) -> None:
-        """经 SDK 删除指定数据集及其索引，保留仍被其他数据集引用的原文。"""
-        await self._call("datasets.empty_dataset", _to_uuid(dataset_id), timeout=self.config.pipeline_timeout_seconds)
-        self._datasets_until = 0
-
-    def document_processed(self, item: Any, dataset_id: str) -> bool:
-        """逐文档检查抽取完成标记；只有摄入元数据不能证明索引已生成。"""
-        from cognee.modules.pipelines.models.DataItemStatus import is_data_item_completed
-
-        status = item.get("pipeline_status") if isinstance(item, dict) else getattr(item, "pipeline_status", None)
-        return bool(is_data_item_completed(((status or {}).get("cognify_pipeline") or {}).get(dataset_id)))
-
+        return await self._invoke("list_data", dataset_id, **kwargs)
 
     async def delete_data(self, dataset_id: Any, data_id: Any, **kwargs: Any) -> Any:
         self._summary_datasets.clear()
-        self._datasets_until = 0.0
-        return await self._call(
-            "datasets.delete_data",
-            _to_uuid(dataset_id),
-            _to_uuid(data_id),
-            **kwargs,
-        )
+        self._datasets_until = 0
+        async with self.write_transaction():
+            result = await self._invoke("delete_data", dataset_id, data_id, write=True, **kwargs)
+            self._verifications.append((str(dataset_id), []))
+            return result
 
+    async def delete_dataset(self, dataset_id: str) -> None:
+        self._datasets_until = 0
+        await self._invoke("delete_dataset", dataset_id, write=True)
 
     async def verify_graph_documents(self, dataset_id: str, data_ids: list[str]) -> None:
-        """逐文档检查实际图库，拒绝仅有元数据完成标记的残缺索引。"""
-        from .graph_validation import verify_graph_documents
+        await self._invoke("verify_graph_documents", dataset_id, data_ids)
+        if self._transaction.get():
+            self._verifications.append((dataset_id, list(data_ids)))
 
-        datasets = await self.list_datasets()
-        if not any(str(item.get("id") if isinstance(item, dict) else item.id) == dataset_id
-                   for item in datasets):
-            raise RuntimeError(f"无法访问待验收的数据集: {dataset_id}")
-        await asyncio.wait_for(verify_graph_documents(UUID(dataset_id), data_ids),
-                               timeout=self.config.pipeline_timeout_seconds)
-
-    # Maintenance / diagnostics / visualization
-
-
-    async def compact_vector_storage(self, retention_days: float) -> dict[str, Any]:
-        """按单轮预算压缩 LanceDB 向量表并清理过期版本，回收磁盘空间。
-
-        实现见 `storage.compact_lance_tree`；最新版本永远保留，逻辑数据不受影响。
-        须在无并发写入时调用（协调器空闲窗口）。
-        """
-        if not self._configured:
-            availability = await self.initialize()
-            if not availability.ready:
-                raise RuntimeError(availability.reason or "Cognee 未就绪")
-        from .storage import compact_lance_tree
-
-        task = asyncio.create_task(asyncio.to_thread(
-            compact_lance_tree,
-            Path(self.config.absolute_data_root) / "system" / "databases",
-            retention_days,
-            rotation=self._compact_rotation,
-        ), name="memory.cognee.compact")
+    async def compact_vector_storage(self, retention_days: float, *, rotation: int | None = None) -> dict[str, Any]:
+        if rotation is not None:
+            self._compact_rotation = rotation
         try:
-            return await asyncio.shield(task)
-        except asyncio.CancelledError:
-            # 原生写线程不可被协程取消；提交完成前不能释放宿主互斥锁。
-            while not task.done():
-                try:
-                    await asyncio.wait({task})
-                except asyncio.CancelledError:
-                    continue
-            if not task.cancelled():
-                task.exception()
-            raise
+            return await self._invoke("compact_vector_storage", retention_days,
+                                      rotation=self._compact_rotation, write=True)
         finally:
             self._compact_rotation += 1
 
+    async def pipeline_progress(self, dataset_id: str) -> CogneePipelineProgress:
+        # 元数据观测允许与同一工作进程的长抽取并行，不另开图库连接。
+        if self._process is None:
+            return CogneePipelineProgress()
+        value = await self._process.call("pipeline_progress", dataset_id, timeout=4)
+        return CogneePipelineProgress.model_validate(value)
 
-    def search_type(self, name: str) -> Any:
-        if self._module is None:
-            raise RuntimeError("Cognee 未初始化")
-        return getattr(self._module.SearchType, name.upper())
+    def document_processed(self, item: Any, dataset_id: str) -> bool:
+        status = (item.get("pipeline_status") or {}).get("cognify_pipeline", {}).get(dataset_id)
+        if isinstance(status, dict):
+            status = status.get("status")
+        return status == "DATA_ITEM_PROCESSING_COMPLETED"
 
-
-def _to_uuid(value: Any) -> Any:
-    """将字符串形式的 UUID 还原为 UUID 对象。
-
-    cognee 的授权检查把 str 类型 dataset_id 当作数据集「名称」解析，
-    直接传字符串 UUID 会被误判为无权访问（401），因此必须在边界处转换。
-    """
-    if isinstance(value, str):
-        text = value.strip()
-        if text:
-            try:
-                return UUID(text)
-            except ValueError:
-                return value
-    return value
-
-
-def _is_database_not_created(exc: BaseException) -> bool:
-    """识别 cognee 元数据库未初始化（按类名匹配，cognee 为可选依赖不直接 import）。"""
-    return type(exc).__name__ == "DatabaseNotCreatedError"
-
-
-def _quieten_cognee_logger() -> None:
-    """cognee 的 setup_logging() 接管了 stdlib root logger，限制其输出级别。"""
-    import logging as _logging
-
-    root = _logging.getLogger()
-    for handler in root.handlers:
-        if handler.level < _logging.WARNING:
-            handler.setLevel(_logging.WARNING)
-    # cognee 子 logger 也限制
-    _logging.getLogger("cognee").setLevel(_logging.WARNING)
-
-
-def _normalize_recall(raw_results: Any) -> list[CogneeRecallItem]:
-    if raw_results is None:
-        return []
-    values = raw_results if isinstance(raw_results, list) else [raw_results]
-    normalized: list[CogneeRecallItem] = []
-    for index, item in enumerate(values):
-        if hasattr(item, "model_dump"):
-            data = item.model_dump(mode="python")
-        elif isinstance(item, dict):
-            data = dict(item)
-        else:
-            data = {"text": str(item)}
-
-        source_value = str(data.get("source", "graph"))
-        content = (
-            data.get("text")
-            or data.get("content")
-            or data.get("answer")
-            or data.get("context")
-            or data.get("result")
-            or ""
-        )
-        if not isinstance(content, str):
-            content = str(content)
-        if not content.strip():
-            continue
-        metadata = dict(data["metadata"]) if isinstance(data.get("metadata"), dict) else {}
-        raw = data.get("raw")
-        external = raw.get("external_metadata") if isinstance(raw, dict) else None
-        if isinstance(external, str):
-            try:
-                external = json.loads(external)
-            except ValueError:
-                log("Cognee 分块 external_metadata 不是有效 JSON，保留正文并标记未知归属", "DEBUG", tag="记忆")
-                external = None
-        if isinstance(external, dict):
-            metadata.update(external)
-        for field in ("conflicts", "references"):
-            value = data.get(field) or (raw.get(field) if isinstance(raw, dict) else None)
-            if value:
-                metadata[field] = value
-        if data.get("system_prompt"):
-            from .evidence import graph_evidence_text
-
-            content = graph_evidence_text(metadata.get("evidence"))
-            if not content:
-                continue
-        if metadata.get("evidence"):
-            metadata.setdefault("references", metadata["evidence"])
-        raw_id = metadata.get("chunk_id") or data.get("id") or data.get("qa_id") or f"result-{index}"
-        score_value = data.get("score", 0.0)
-        score = float(score_value) if isinstance(score_value, (int, float)) else 0.0
-        normalized.append(
-            CogneeRecallItem(
-                id=f"cognee:{raw_id}",
-                content=content,
-                score=score,
-                source="cognee_chunk"
-                if "chunk" in source_value.lower() or metadata.get("chunk_id") or data.get("kind") == "chunk"
-                else "cognee_graph",
-                dataset_id=str(data.get("dataset_id", "")),
-                dataset_name=str(data.get("dataset_name", "")),
-                metadata=metadata,
-                raw=data,
-            )
-        )
-    return normalized
+    def search_type(self, name: str) -> str:
+        return name.upper()
