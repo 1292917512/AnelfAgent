@@ -6,6 +6,7 @@
 
 Model Experience：召回和联想统一返回出处、时间语义与材料指针；get_memory 可读完整出处。
 每条结果增加短出处字段，不新增模型调用；仅进入工具结果，不触碰稳定前缀。
+数据集目录工具读取最近确认的观测值及忙碌状态，增加几十 token，不调用模型、不改变前缀。
 """
 
 from __future__ import annotations
@@ -1182,7 +1183,8 @@ async def retry_cognee_sync() -> str:
 
 @deferred_tool(
     group="memory", tags=["core"], source="mind.memory",
-    description="列出当前代际 Cognee 数据集及 summary_ready。用于选择摘要构建或冲突审查的目标；筛选人物/项目仍用 recall 的标签参数。",
+    description="读取最近确认的当前代际 Cognee 数据集及 summary_ready，不等待后台同步。"
+    "catalog_ready=false 表示目录尚未初始化，不代表没有数据。用于选择摘要或冲突审查目标；人物/项目筛选用 recall 标签参数。",
 )
 async def list_cognee_datasets() -> str:
     """列出 Cognee datasets。"""
@@ -1193,7 +1195,8 @@ async def list_cognee_datasets() -> str:
             return _cognee_not_ready()
         from .cognee.fusion import datasets_for_projection
         active = set(datasets_for_projection(client.config, client.projection_namespace))
-        values = await client.list_datasets()
+        catalog = client.dataset_catalog()
+        values = catalog["items"]
         items = []
         for value in values:
             name = str(value.get("name", "") if isinstance(value, dict) else getattr(value, "name", ""))
@@ -1201,7 +1204,9 @@ async def list_cognee_datasets() -> str:
                 dataset_id = str(value.get("id", "") if isinstance(value, dict) else getattr(value, "id", ""))
                 items.append({"id": dataset_id, "name": name, "ready": client.projection_ready,
                               "summary_ready": client.global_context_ready(name)})
-        return json.dumps({"datasets": items, "count": len(items)}, ensure_ascii=False)
+        return json.dumps({"datasets": items, "count": len(items), "catalog_ready": catalog["ready"],
+                           "updating": catalog["busy"], "observed_at": catalog["updated_at"],
+                           "warning": catalog["error"]}, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="列出 Cognee 数据集")
 

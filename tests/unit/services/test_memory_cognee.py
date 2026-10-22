@@ -14,6 +14,34 @@ from agent.memory.cognee.llm_bridge import CogneeConfigError
 from services.memory import MemoryService
 
 
+async def test_dataset_http_uses_observation_without_waiting_for_sync(monkeypatch, tmp_path):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from web.routers.memory import router
+
+    client = CogneeClient(CogneeConfig(data_root=str(tmp_path)))
+    read = AsyncMock(return_value=[{"id": "old", "name": "anelf_global"}])
+    monkeypatch.setattr(client, "_invoke", read)
+    monkeypatch.setattr("agent.memory.cognee.runtime.get_cognee_client", lambda: client)
+    app = FastAPI()
+    app.include_router(router)
+    async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as http:
+        before = await http.get("/memory/cognee/datasets")
+        assert not before.json()["ready"] and before.json()["items"] == []
+        read.assert_not_awaited()
+        await client.list_datasets()
+        client._fault = "previous batch failed"
+        async with client._operation_lock:
+            async with asyncio.timeout(5):
+                result = await http.get("/memory/cognee/datasets")
+            assert result.status_code == 200
+            assert result.json()["items"] == [{"id": "old", "name": "anelf_global"}]
+            assert result.json()["busy"] and result.json()["ready"]
+            assert result.json()["updated_at"] > 0 and result.json()["error"] == client._fault
+            read.assert_awaited_once()
+
+
 async def test_retirement_http_returns_task_state_and_rejects_unsafe_targets(monkeypatch):
     from fastapi import FastAPI
     from httpx import ASGITransport, AsyncClient

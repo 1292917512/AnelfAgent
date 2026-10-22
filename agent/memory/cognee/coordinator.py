@@ -215,6 +215,8 @@ class CogneeCoordinator:
         # 立即按新配置做一次初始化，让状态接口即时反馈解析结果
         if self.config.enabled:
             availability = await self.client.initialize()
+            if availability.ready:
+                await self.client.available_datasets([])
             self._configuration_error = "" if availability.ready else availability.reason
             self._last_error = (
                 "" if availability.ready or availability.configuration_required else availability.reason

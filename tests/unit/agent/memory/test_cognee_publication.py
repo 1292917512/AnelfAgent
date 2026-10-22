@@ -140,7 +140,8 @@ async def test_rpc_reports_exit_while_helper_retains_stderr(tmp_path):
         sys.executable, "-u", "-c",
         "import subprocess,sys,os; from pathlib import Path; "
         "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'], stdout=subprocess.DEVNULL); "
-        "Path(sys.argv[1]).write_text(str(p.pid)); sys.stdin.readline(); os._exit(138)", str(pidfile),
+        "ready=Path(sys.argv[1]); pending=ready.with_suffix('.tmp'); "
+        "pending.write_text(str(p.pid)); pending.replace(ready); sys.stdin.readline(); os._exit(138)", str(pidfile),
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
     rpc._reader = asyncio.create_task(rpc._read())
@@ -150,12 +151,14 @@ async def test_rpc_reports_exit_while_helper_retains_stderr(tmp_path):
             await rpc.call("list_datasets", timeout=10)
         assert psutil.Process(int(pidfile.read_text())).is_running()
     finally:
-        if pidfile.exists():
-            try:
-                psutil.Process(int(pidfile.read_text())).kill()
-            except psutil.NoSuchProcess:
-                pass
-        await rpc.stop()
+        try:
+            if pidfile.exists():
+                try:
+                    psutil.Process(int(pidfile.read_text())).kill()
+                except psutil.NoSuchProcess:
+                    pass
+        finally:
+            await rpc.stop()
 
 
 @pytest.mark.parametrize("clean", [False, True])
@@ -166,7 +169,8 @@ async def test_stop_reaps_helper_holding_diagnostic_pipe(tmp_path, clean):
     script = (
         "import subprocess,sys,time,json,os; from pathlib import Path; "
         "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'], stdout=subprocess.DEVNULL); "
-        "Path(sys.argv[1]).write_text(str(p.pid)); "
+        "ready=Path(sys.argv[1]); pending=ready.with_suffix('.tmp'); "
+        "pending.write_text(str(p.pid)); pending.replace(ready); "
         "m=json.loads(sys.stdin.readline()); "
         "print(json.dumps({'protocol':1,'id':m['id'],'result':None}),flush=True); os._exit(0)"
     )
@@ -190,14 +194,16 @@ async def test_stop_reaps_helper_holding_diagnostic_pipe(tmp_path, clean):
         assert not helper.is_running() or helper.status() == psutil.STATUS_ZOMBIE
         assert rpc._reader.done() and rpc._stderr_reader.done()
     finally:
-        if pidfile.exists():
-            try:
-                helper = psutil.Process(int(pidfile.read_text()))
-                for child in [*helper.children(recursive=True), helper]:
-                    child.kill()
-            except psutil.NoSuchProcess:
-                pass
-        await rpc.stop()
+        try:
+            if pidfile.exists():
+                try:
+                    helper = psutil.Process(int(pidfile.read_text()))
+                    for child in [*helper.children(recursive=True), helper]:
+                        child.kill()
+                except psutil.NoSuchProcess:
+                    pass
+        finally:
+            await rpc.stop()
 
 
 async def test_cancelled_stop_keeps_handle_until_reaped(monkeypatch):
@@ -246,6 +252,63 @@ async def test_failed_worker_reap_keeps_client_ownership(tmp_path):
         assert client._process is None and not owner.is_locked
     finally:
         owner.release()
+
+
+@pytest.mark.parametrize("fail", [False, True])
+async def test_catalog_excludes_uncommitted_changes_and_tracks_successful_publication(tmp_path, monkeypatch, fail):
+    client = CogneeClient(CogneeConfig(data_root=str(tmp_path)))
+    checkpoints = IndexCheckpoints(tmp_path)
+    checkpoints.load()
+    client._checkpoints = checkpoints
+    baseline = IndexManifest(datasets={"old": DatasetStamp(name="old")})
+    candidate = IndexManifest(datasets={**baseline.datasets, "new": DatasetStamp(name="new")})
+    rows = [{"id": "old", "name": "old"}]
+
+    async def invoke(method, *_args, **_kwargs):
+        return {"dataset_id": "new"} if method == "add" else rows
+
+    monkeypatch.setattr(client, "_invoke", invoke)
+    monkeypatch.setattr(client, "initialize", AsyncMock(return_value=CogneeAvailability(
+        installed=True, enabled=True, ready=True)))
+    monkeypatch.setattr(client, "_worker", AsyncMock())
+    monkeypatch.setattr(client, "_inspect", AsyncMock(side_effect=[baseline, candidate, candidate]))
+    monkeypatch.setattr(client, "_stop", AsyncMock())
+    assert not client.dataset_catalog()["ready"]
+    await client.list_datasets()
+    before = client.dataset_catalog()
+    try:
+        async with client.write_transaction():
+            await client.add([], dataset_name="new")
+            rows.append({"id": "new", "name": "new"})
+            assert len(await client.list_datasets()) == 2
+            observed = client.dataset_catalog()
+            assert observed["items"] == before["items"] and observed["busy"]
+            if fail:
+                raise RuntimeError("candidate rejected")
+    except RuntimeError as exc:
+        assert fail and str(exc) == "candidate rejected"
+    after = client.dataset_catalog()
+    assert after["items"] == (before["items"] if fail else rows)
+    assert not after["busy"]
+    after["items"].clear()
+    assert client.dataset_catalog()["items"]
+    client.reconfigure(CogneeConfig(data_root=str(tmp_path / "another")))
+    assert not client.dataset_catalog()["ready"] and not client.dataset_catalog()["items"]
+
+
+async def test_dataset_tool_does_not_wait_for_active_index_write(tmp_path, monkeypatch):
+    from agent.memory.tools import list_cognee_datasets
+
+    client = CogneeClient(CogneeConfig(data_root=str(tmp_path)))
+    client.projection_namespace = "anelf"
+    monkeypatch.setattr(client, "_invoke", AsyncMock(return_value=[{"id": "current", "name": "anelf_global"}]))
+    await client.list_datasets()
+    monkeypatch.setattr("agent.memory.cognee.runtime.get_cognee_client", lambda: client)
+    async with client._operation_lock:
+        async with asyncio.timeout(5):
+            result = json.loads(await list_cognee_datasets())
+        assert result["catalog_ready"] and result["updating"]
+        assert result["datasets"][0]["id"] == "current"
 
 
 async def test_cancelled_transaction_does_not_publish(tmp_path, monkeypatch):

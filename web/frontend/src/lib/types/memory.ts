@@ -208,6 +208,14 @@ export interface CogneeDataset {
   [key: string]: unknown;
 }
 
+export interface CogneeDatasetCatalog {
+  items: CogneeDataset[];
+  ready: boolean;
+  busy: boolean;
+  updated_at: number;
+  error: string;
+}
+
 export interface RecallTestPlan {
   queries: string[];
   entities: string[];

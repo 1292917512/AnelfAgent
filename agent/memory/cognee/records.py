@@ -12,6 +12,16 @@ class DatasetRecord(TypedDict):
     name: str
 
 
+class DatasetCatalog(TypedDict):
+    """最近确认的目录视图；ready 表示已有观测，不等同于后端健康。"""
+
+    items: list[DatasetRecord]
+    ready: bool
+    busy: bool
+    updated_at: float
+    error: str
+
+
 class DocumentRecord(TypedDict, total=False):
     id: Required[str]
     label: str | None

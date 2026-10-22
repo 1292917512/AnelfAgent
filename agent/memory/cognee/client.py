@@ -28,7 +28,7 @@ from .llm_bridge import CogneeConfigError, summarize_resolved
 from .manifest import IndexManifest, MutationPlan
 from .model_config import resolve_models, validate_models
 from .process import CogneeProcess, WorkerCrashed
-from .records import DatasetRecord, DocumentRecord, IngestionResult, document_processed
+from .records import DatasetCatalog, DatasetRecord, DocumentRecord, IngestionResult, document_processed
 from .types import CogneeAvailability, CogneePipelineProgress, CogneeRecallItem
 from .wire import InputDocument, make_document
 
@@ -70,6 +70,8 @@ class CogneeClient:
         self._datasets_lock = asyncio.Lock()
         self._dataset_names: set[str] = set()
         self._datasets_until = 0.0
+        self._catalog: list[DatasetRecord] = []
+        self._catalog_at = 0.0
         self._summary_datasets: set[str] = set()
         self._compact_rotation = 0
         self._chat_payload: dict[str, Any] = {}
@@ -97,6 +99,8 @@ class CogneeClient:
         return int(psutil.Process().io_counters().write_bytes) + self._finished_writes + active
 
     def reconfigure(self, config: CogneeConfig) -> None:
+        if self.config.absolute_data_root != config.absolute_data_root:
+            self._catalog, self._catalog_at = [], 0.0
         self.config = config.normalized()
         self._configured = False
         self._import_error = ""
@@ -168,6 +172,16 @@ class CogneeClient:
 
     def global_context_ready(self, dataset: str) -> bool:
         return dataset in self._summary_datasets
+
+    def dataset_catalog(self) -> DatasetCatalog:
+        """只读观测面，不等待索引锁、不启动 SDK；在途写入不发布到目录。"""
+        return DatasetCatalog(items=[row.copy() for row in self._catalog], ready=self._catalog_at > 0,
+                              busy=self._operation_lock.locked(), updated_at=self._catalog_at,
+                              error=self._fault or self._import_error)
+
+    def _remember_catalog(self, datasets: list[DatasetRecord]) -> None:
+        self._catalog = [row.copy() for row in datasets]
+        self._catalog_at = time.time()
 
     def _inside_transaction(self) -> bool:
         owner = self._transaction.get()
@@ -302,6 +316,8 @@ class CogneeClient:
                 await self._stop(clean=True)
                 checkpoints = self._checkpoints
                 await _disk_job(lambda: checkpoints.commit(candidate.model_dump(mode="json")))
+                self._remember_catalog([DatasetRecord(id=identity, name=row.name)
+                                        for identity, row in candidate.datasets.items()])
             except BaseException as exc:
                 await self._abort(exc)
                 raise
@@ -383,7 +399,10 @@ class CogneeClient:
         return [CogneeRecallItem.model_validate(item) for item in await self._invoke("recall", query_text, **kwargs)]
 
     async def list_datasets(self, **kwargs: Any) -> list[DatasetRecord]:
-        return _DATASETS.validate_python(await self._invoke("list_datasets", **kwargs))
+        rows = _DATASETS.validate_python(await self._invoke("list_datasets", **kwargs))
+        if not self._inside_transaction():
+            self._remember_catalog(rows)
+        return rows
 
     async def list_data(self, dataset_id: str, **kwargs: Any) -> list[DocumentRecord]:
         return _DOCUMENTS.validate_python(await self._invoke("list_data", dataset_id, **kwargs))

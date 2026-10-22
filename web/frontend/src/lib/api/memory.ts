@@ -3,7 +3,7 @@
 import { api } from "./client";
 import type {
   CogneeConfig,
-  CogneeDataset,
+  CogneeDatasetCatalog,
   CogneeStatus,
   GoalData,
   GoalStep,
@@ -33,7 +33,7 @@ export const memoryApi = {
       ),
     backfill: (limit = 0, dryRun = true) =>
       api.post("/memory/cognee/backfill", { limit, dry_run: dryRun }),
-    datasets: () => api.get<CogneeDataset[]>("/memory/cognee/datasets"),
+    datasets: () => api.get<CogneeDatasetCatalog>("/memory/cognee/datasets"),
     probeStatus: () => api.get<ProbeStatus>("/memory/probe-status"),
     improve: (datasetName: string, reviewConflicts = false) =>
       api.post("/memory/cognee/improve", { dataset_name: datasetName,

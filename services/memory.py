@@ -787,13 +787,13 @@ class MemoryService:
         return await coordinator.backfill(limit=limit, dry_run=dry_run)
 
     @staticmethod
-    async def list_cognee_datasets() -> List[Dict[str, Any]]:
+    async def list_cognee_datasets() -> Dict[str, Any]:
         from agent.memory.cognee.runtime import get_cognee_client
         client = get_cognee_client()
         if not client:
-            return []
-        datasets = await client.list_datasets()
-        return [dict(item) for item in datasets]
+            return {"items": [], "ready": False, "busy": False, "updated_at": 0,
+                    "error": "Cognee 运行时未初始化"}
+        return dict(client.dataset_catalog())
 
     @staticmethod
     async def retire_cognee_dataset(dataset_id: str) -> Dict[str, Any]:

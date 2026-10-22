@@ -101,7 +101,7 @@ async def get_probe_status() -> Dict[str, Any]:
 
 
 @router.get("/cognee/datasets")
-async def list_cognee_datasets() -> List[Dict[str, Any]]:
+async def list_cognee_datasets() -> Dict[str, Any]:
     return await _mem_svc.list_cognee_datasets()
 
 

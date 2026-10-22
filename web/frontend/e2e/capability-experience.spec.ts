@@ -121,9 +121,9 @@ test("Cognee storage distinguishes generations and confirms protected cleanup", 
     retirement: { running: false, stage: "", dataset_name: "", documents: 0, preserved: 0, backup_path: "", error: "" },
   };
   await page.route("**/api/memory/cognee/status", (route) => route.fulfill({ json: state }));
-  await page.route("**/api/memory/cognee/datasets", (route) => route.fulfill({ json: [
+  await page.route("**/api/memory/cognee/datasets", (route) => route.fulfill({ json: { ready: true, busy: false, updated_at: 1, error: "", items: [
     { id: "current", name: "anelf_p2_new_global" }, { id: "old", name: "anelf_global" }, { id: "external", name: "external_global" },
-  ] }));
+  ] } }));
   const deleted: string[] = [];
   await page.route("**/api/memory/cognee/datasets/old", (route) => {
     expect(route.request().method()).toBe("DELETE");
@@ -216,10 +216,12 @@ test("Cognee exposes in-flight progress, retries and stale observations", async 
   await expect(batch.getByText("Cognee pipeline processed 9 / 10 documents")).toBeVisible();
 });
 
-test("Cognee waits for model setup before loading datasets", async ({ page }, info) => {
+test("Cognee catalog distinguishes initial loading and keeps confirmed datasets visible during writes", async ({ page }, info) => {
   let ready = false;
   let datasetReads = 0;
   let phase = "ready";
+  let catalogReady = false;
+  let busy = false;
   const enhancements: unknown[] = [];
   await page.route("**/api/memory/cognee/status", (route) => route.fulfill({ json: {
     availability: { installed: true, enabled: true, ready, configuration_required: !ready, version: "1.6.2", reason: ready ? "" : "Configure chat and embedding models" },
@@ -234,7 +236,9 @@ test("Cognee waits for model setup before loading datasets", async ({ page }, in
   } }));
   await page.route("**/api/memory/cognee/datasets", (route) => {
     datasetReads++;
-    return route.fulfill({ json: [{ id: "dataset-1", name: "anelf_p2_test_global" }, { id: "dataset-old", name: "anelf_old_global" }] });
+    return route.fulfill({ json: { ready: catalogReady, busy, updated_at: catalogReady ? 1 : 0, error: "",
+      items: catalogReady ? [{ id: "dataset-1", name: "anelf_p2_test_global" }, { id: "dataset-old", name: "anelf_old_global" }] : [],
+    } });
   });
   await page.route("**/api/memory/cognee/improve", (route) => {
     enhancements.push(route.request().postDataJSON());
@@ -243,7 +247,9 @@ test("Cognee waits for model setup before loading datasets", async ({ page }, in
   await page.goto("/webui/memory?tab=cognee");
   await expect(page.getByText("Awaiting configuration", { exact: true })).toHaveCount(2);
   await expect(page.getByRole("button", { name: "Compact Storage", exact: true })).toBeDisabled();
-  expect(datasetReads).toBe(0);
+  await expect(page.getByText(/Waiting for the first catalog observation/)).toBeVisible();
+  expect(datasetReads).toBe(1);
+  catalogReady = true;
   ready = true;
   await page.reload();
   await expect(page.getByText("anelf_p2_test_global", { exact: true })).toBeVisible();
@@ -253,7 +259,7 @@ test("Cognee waits for model setup before loading datasets", async ({ page }, in
   await expect(summary.nth(0)).toBeEnabled();
   await expect(summary.nth(1)).toBeDisabled();
   await expect(conflicts.nth(1)).toBeDisabled();
-  expect(datasetReads).toBe(1);
+  expect(datasetReads).toBe(2);
   await summary.nth(0).click();
   await expect(conflicts.nth(0)).toBeEnabled();
   await conflicts.nth(0).click();
@@ -262,10 +268,17 @@ test("Cognee waits for model setup before loading datasets", async ({ page }, in
     { dataset_name: "anelf_p2_test_global", build_global_context_index: false, review_conflicts: true },
   ]);
   await page.screenshot({ path: info.outputPath("cognee-ready.png"), fullPage: true });
-  phase = "building";
+  busy = true;
   await page.reload();
+  await expect(page.getByText(/The index is busy/)).toBeVisible();
+  await expect(page.getByText(/Catalog confirmed at/)).toBeVisible();
+  await expect(page.getByText("anelf_p2_test_global", { exact: true })).toBeVisible();
   await expect(summary.nth(0)).toBeDisabled();
   await expect(conflicts.nth(0)).toBeDisabled();
+  phase = "building";
+  busy = false;
+  await page.reload();
+  await expect(summary.nth(0)).toBeDisabled();
 });
 import type { CapabilityStatus, ConfigMetaItem } from "../src/lib/types";
 

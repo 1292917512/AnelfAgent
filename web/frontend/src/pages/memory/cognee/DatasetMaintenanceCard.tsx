@@ -17,10 +17,9 @@ export function DatasetMaintenanceCard({ ready, namespace, status }: { ready: bo
     mutationFn: (id: string) => memoryApi.cognee.retireDataset(id),
     onSuccess: () => { void client.invalidateQueries({ queryKey: ["cogneeStatus"] }); },
   });
-  const { data: datasets, error, refetch } = useQuery({
+  const { data: catalog, error, refetch } = useQuery({
     queryKey: ["cogneeDatasets"],
     queryFn: () => memoryApi.cognee.datasets().then((r) => r.data),
-    enabled: ready,
     refetchInterval: 10000,
     throwOnError: false,
   });
@@ -34,11 +33,16 @@ export function DatasetMaintenanceCard({ ready, namespace, status }: { ready: bo
   return (
     <Card title={t("cognee.datasetsTitle")} subtitle={t("cognee.datasetsSubtitle")}>
       {error && <QueryError error={error} retry={() => void refetch()} compact />}
+      {catalog?.error && <p role="alert" className="mb-3 text-sm text-danger">{catalog.error}</p>}
+      {catalog?.busy && <p role="status" className="mb-2 text-sm text-accent">{t("cognee.catalogBusy")}</p>}
+      {catalog?.updated_at ? <p className="mb-2 text-xs text-muted">{t("cognee.catalogObserved", {
+        time: new Date(catalog.updated_at * 1000).toLocaleString(),
+      })}</p> : null}
       {enhance.error && <QueryError error={enhance.error} compact />}
       {retire.error && <QueryError error={retire.error} compact />}
       <p className="mb-3 text-xs text-muted">{t("cognee.retirementHint")}</p>
       <div className="space-y-2">
-        {datasets?.map((dataset) => {
+        {catalog?.items.map((dataset) => {
           const active = [namespace + "_global", namespace + "_relations"].includes(dataset.name);
           const state = status?.projection;
           const prefix = state && [state.namespace, ...state.previous_namespaces].sort((a, b) => b.length - a.length)
@@ -65,7 +69,7 @@ export function DatasetMaintenanceCard({ ready, namespace, status }: { ready: bo
                   {t("cognee.retireDataset")}
                 </Button>}
                 {[false, true].map((review) => (
-                  <Button key={String(review)} size="sm" disabled={!ready || !active || enhance.isPending}
+                  <Button key={String(review)} size="sm" disabled={!ready || !active || catalog.busy || enhance.isPending}
                     onClick={() => enhance.mutate({ name: dataset.name, review })}>
                     <Sparkles size={14} /> {t(review ? "cognee.reviewConflicts" : "cognee.improve")}
                   </Button>
@@ -74,7 +78,9 @@ export function DatasetMaintenanceCard({ ready, namespace, status }: { ready: bo
             </div>
           );
         })}
-        {!error && !datasets?.length && <p className="text-sm text-muted">{t("cognee.noDatasets")}</p>}
+        {!error && !catalog?.error && !catalog?.items.length && <p className="text-sm text-muted">
+          {t(catalog?.ready ? "cognee.noDatasets" : "cognee.catalogPending")}
+        </p>}
       </div>
       <ConfirmDialog open={target !== null} title={t("cognee.retireDataset")}
         message={t("cognee.retirementConfirm", { name: target?.name ?? "" })}
