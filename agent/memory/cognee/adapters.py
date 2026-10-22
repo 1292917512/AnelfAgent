@@ -20,7 +20,8 @@ from tenacity import retry_if_exception, stop_after_attempt
 
 _installed = False
 _llm_slots: WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = WeakKeyDictionary()
-_query_cache: ContextVar[dict[tuple[int, tuple[str, ...]], asyncio.Task[list[list[float]]]] | None] = ContextVar(
+QueryCache = dict[tuple[int, tuple[str, ...]], asyncio.Task[list[list[float]]]]
+_query_cache: ContextVar[QueryCache | None] = ContextVar(
     "cognee_query_embeddings", default=None,
 )
 _PERMANENT_ERRORS = frozenset({
@@ -53,18 +54,24 @@ def retryable(error: BaseException) -> bool:
 
 
 @asynccontextmanager
-async def query_embeddings() -> AsyncIterator[None]:
+async def query_embeddings(shared: QueryCache | None = None) -> AsyncIterator[None]:
     """跨并行数据集共享查询向量，退出时取消并回收仍在途的请求。"""
-    cache: dict[tuple[int, tuple[str, ...]], asyncio.Task[list[list[float]]]] = {}
+    cache: QueryCache = shared if shared is not None else {}
     token = _query_cache.set(cache)
     try:
         yield
     finally:
         _query_cache.reset(token)
-        for task in cache.values():
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(*cache.values(), return_exceptions=True)
+        if shared is None:
+            await close_query_cache(cache)
+
+
+async def close_query_cache(cache: QueryCache) -> None:
+    for task in cache.values():
+        if not task.done():
+            task.cancel()
+    await asyncio.gather(*cache.values(), return_exceptions=True)
+    cache.clear()
 
 
 def _wrap_embed(engine: Any) -> None:

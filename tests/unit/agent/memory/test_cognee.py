@@ -357,8 +357,8 @@ async def test_client_waits_for_models_then_initializes_without_restart(
     embedding = Mock(return_value=None)
     monkeypatch.setattr(CogneeClient, "installed", property(lambda _self: True))
     monkeypatch.setattr("agent.llm.get_llm_manager", lambda: object())
-    monkeypatch.setattr("agent.memory.cognee.sdk_client.resolve_chat_llm_config", chat)
-    monkeypatch.setattr("agent.memory.cognee.sdk_client.resolve_embedding_llm_config", embedding)
+    monkeypatch.setattr("agent.memory.cognee.model_config.resolve_chat_llm_config", chat)
+    monkeypatch.setattr("agent.memory.cognee.model_config.resolve_embedding_llm_config", embedding)
     monkeypatch.setattr(client, "_import_cognee", importer)
 
     availability = await client.initialize()
@@ -1748,7 +1748,7 @@ async def test_pipeline_retry_uses_root_cause_instead_of_wrapper_status(monkeypa
 
 
 def test_disabling_cognee_does_not_require_a_valid_embedding(monkeypatch):
-    monkeypatch.setattr("agent.memory.cognee.sdk_client.resolve_embedding_llm_config",
+    monkeypatch.setattr("agent.memory.cognee.model_config.resolve_embedding_llm_config",
                         Mock(side_effect=AssertionError("disabled configuration does not write vectors")))
     CogneeClient(CogneeConfig()).validate_configuration(CogneeConfig(enabled=False))
 

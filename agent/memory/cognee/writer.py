@@ -22,6 +22,7 @@ from .documents import ProjectionDocument, memory_document
 from .errors import error_text
 from .ports import ProjectionBackend
 from .progress import ProjectionProgress
+from .wire import InputDocument
 
 
 class ProjectionWriter:
@@ -174,7 +175,7 @@ class ProjectionWriter:
         started = time.monotonic()
         self.progress.stage(stage, dataset_name=dataset_name)
         try:
-            data_items: list[Any] = []
+            data_items: list[InputDocument] = []
             for item, document in entries:
                 payload = item["payload"]
                 data_items.append(await self.client.make_data_item(

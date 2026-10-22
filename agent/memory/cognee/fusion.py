@@ -22,9 +22,9 @@ from core.log import log
 from ..memory_types import MemorySearchResult, excerpt
 from ..projection import canonical_tags, projection_dataset
 from ..tag_query import TagQuery
-from .adapters import query_embeddings
 from .config import CogneeConfig
 from .ports import RecallBackend
+from .query_scope import query_scope
 from .types import CogneeRecallItem
 
 
@@ -49,15 +49,17 @@ class RecallDiagnostics:
     failed_lanes: int = 0
     timed_out: bool = False
     summary_used: bool = False
+    tag_filter_limited: bool = False
 
     def result(self) -> dict[str, Any]:
-        complete = not self.timed_out and not self.failed_lanes and self.native == "complete"
+        complete = not self.timed_out and not self.failed_lanes and not self.tag_filter_limited and self.native == "complete"
         status = "complete" if complete and self.cognee == "complete" else "partial"
         if complete and self.cognee in {"disabled", "index_not_ready", "unavailable", "no_datasets"}:
             status = "native_only"
         return {"status": status, "native": self.native, "cognee": self.cognee,
                 "completed_lanes": self.completed_lanes, "failed_lanes": self.failed_lanes,
-                "timed_out": self.timed_out, "summary_used": self.summary_used}
+                "timed_out": self.timed_out, "summary_used": self.summary_used,
+                "tag_filter_limited": self.tag_filter_limited}
 
 
 class MemoryProjection(TypedDict, total=False):
@@ -228,6 +230,9 @@ async def search_cognee(
     selected_types = ["CHUNKS"] if strict else (search_types or config.search_types)
     exact_required = [tag for tag in tag_query.all_of if not tag.endswith("/*")] if tag_query else []
     filters: dict[str, Any] = {"node_name": exact_required, "node_name_filter_operator": "AND"} if exact_required else {}
+    if (strict and not exact_required and tag_query is not None and tag_query.any_of
+            and all(not tag.endswith("/*") for tag in tag_query.any_of)):
+        filters = {"node_name": list(tag_query.any_of), "node_name_filter_operator": "OR"}
     for search_type_name in dict.fromkeys(selected_types):
         try:
             search_type = client.search_type(search_type_name)
@@ -238,8 +243,7 @@ async def search_cognee(
             if use_summary:
                 summary_lanes.add(f"{search_type_name}/{dataset_name}")
             summary_options = {"retriever_specific_config": {"include_global_context_index": True}} if use_summary else {}
-            lanes.append((f"{search_type_name}/{dataset_name}", partial(client.recall,
-                query,
+            options = dict(
                 query_type=search_type,
                 **filters,
                 **summary_options,
@@ -248,7 +252,10 @@ async def search_cognee(
                 auto_route=False,
                 only_context=not use_summary and search_type_name not in {"CHUNKS", "CHUNKS_LEXICAL", "SUMMARIES"},
                 include_references=True,
-            )))
+            )
+            call = (partial(_filtered_recall, client, query, options, tag_query, limit, diagnostics)
+                    if strict else partial(client.recall, query, **options))
+            lanes.append((f"{search_type_name}/{dataset_name}", call))
     # 定向检索通道：node_name 限定到提及实体的事实块（每数据集一次，
     # 不随 search_types 翻倍——定向精度来自节点过滤而非查询类型）
     if targeted_type is not None:
@@ -310,11 +317,11 @@ async def search_cognee(
             await on_batch(CogneeSearchBatch(lane, "done", elapsed, results))
         return results
 
-    async with query_embeddings():
+    async with query_scope():
         tasks = [asyncio.create_task(consume(lane, call), name=f"cognee.search.{lane}") for lane, call in lanes]
         try:
             batches = await asyncio.gather(*tasks)
-            diagnostics.cognee = "partial" if diagnostics.failed_lanes else "complete"
+            diagnostics.cognee = "partial" if diagnostics.failed_lanes or diagnostics.tag_filter_limited else "complete"
             return _fuse_ranked_lists(
                 [(batch, 1.0) for batch in batches], config=config,
                 limit=pool_size,
@@ -324,6 +331,26 @@ async def search_cognee(
                 if not task.done():
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def _filtered_recall(client: RecallBackend, query: str, options: dict[str, Any],
+                           tags: TagQuery | None, limit: int,
+                           diagnostics: RecallDiagnostics) -> list[CogneeRecallItem]:
+    """复杂标签过滤不足时最多扩展两次候选；查询向量在本次 RPC 会话内复用。"""
+    requested = int(options["top_k"])
+    cap = max(requested, min(2048, requested * 4))
+    items: list[CogneeRecallItem] = []
+    for _ in range(3):
+        items = await client.recall(query, **{**options, "top_k": requested})
+        matched = sum(1 for item in items if item.source == "cognee_chunk" and tags is not None
+                      and "tags" in (projection := recall_projection(item)) and tags.matches(projection["tags"]))
+        if matched >= limit or len(items) < requested:
+            return items
+        if requested >= cap:
+            break
+        requested = min(cap, requested * 2)
+    diagnostics.tag_filter_limited = True
+    return items
 
 
 def reciprocal_rank_fusion(

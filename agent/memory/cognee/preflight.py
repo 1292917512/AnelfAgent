@@ -20,6 +20,9 @@ from ..projection import PROJECTION_VERSION
 from ..store.projection_state import ProjectionState, ProjectionStateStore
 from .ports import ProjectionBackend
 
+# 只读归档解析器的已发布格式，不跟随当前投影版本移动。
+_ARCHIVABLE_VERSIONS = frozenset({2})
+
 
 def _field(value: Any, key: str, default: Any = None) -> Any:
     return value.get(key, default) if isinstance(value, dict) else getattr(value, key, default)
@@ -86,8 +89,10 @@ async def preserve_owned_document(
     metadata = _field(item, "external_metadata", {})
     if not isinstance(metadata, dict):
         return False
-    current_format = metadata.get("anelf_projection_version") == PROJECTION_VERSION
-    if "anelf_projection_version" in metadata and not (include_current_format and current_format):
+    version = metadata.get("anelf_projection_version")
+    known_format = type(version) is int and version in _ARCHIVABLE_VERSIONS
+    allowed = known_format and (include_current_format or version != PROJECTION_VERSION)
+    if "anelf_projection_version" in metadata and not allowed:
         return False
     identities = [(kind, metadata[key]) for kind, key in (
         ("memory", "anelf_memory_id"), ("graph_node", "anelf_graph_node_id"),
@@ -109,7 +114,7 @@ async def preserve_owned_document(
         text = await asyncio.to_thread(_read_text, state.root, str(_field(item, "raw_data_location", "")))
     except (OSError, ValueError) as exc:
         raise RuntimeError(f"旧文档 {data_id} 原文无法完整读取: {exc}；映射未重置") from exc
-    body = text if current_format else _legacy_body(text, kind, entry_id, source)
+    body = text if known_format else _legacy_body(text, kind, entry_id, source)
     if body is None:
         return False
     classification = "matching_memory" if kind == "memory" and body == source.get("content") else f"historical_{kind}"

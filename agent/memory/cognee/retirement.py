@@ -8,6 +8,8 @@ token 影响：不调用抽取或生成模型。
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import os
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -104,8 +106,15 @@ class DatasetRetirement:
                         raise ValueError(f"文档 {_field(item, 'id')} 无法确认原生归属，旧数据未清理")
                     self.status.preserved += 1
                 self.status.stage = "backup"
-                backup = backups_root() / "cognee-retirement" / f"memory-{uuid.uuid4().hex}.sqlite3"
-                await self.store.projection_state.backup(backup)
+                identity = hashlib.sha256(state.namespace.encode()).hexdigest()[:24]
+                backup = backups_root() / "cognee-retirement" / f"memory-{identity}.sqlite3"
+                staging = backup.with_name(f".{backup.stem}-{uuid.uuid4().hex}.partial")
+                try:
+                    await self.store.projection_state.backup(staging)
+                    # 同一当前代际的退役归档累计进入这一份完整备份，校验成功后才替换。
+                    os.replace(staging, backup)
+                finally:
+                    staging.unlink(missing_ok=True)
                 self.status.backup_path = str(backup)
                 self.status.stage = "deleting"
                 await self.client.delete_dataset(dataset_id)

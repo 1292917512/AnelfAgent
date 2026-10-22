@@ -793,13 +793,7 @@ class MemoryService:
         if not client:
             return []
         datasets = await client.list_datasets()
-        return [
-            item.model_dump(mode="json")
-            if hasattr(item, "model_dump")
-            else dict(item) if isinstance(item, dict)
-            else {"id": str(getattr(item, "id", "")), "name": str(getattr(item, "name", ""))}
-            for item in datasets
-        ]
+        return [dict(item) for item in datasets]
 
     @staticmethod
     async def retire_cognee_dataset(dataset_id: str) -> Dict[str, Any]:

@@ -1,7 +1,7 @@
 """ladybug native 执行监督：cognee 图后端的进程内适配层。
 
-cognee 的 LadybugAdapter 按通用嵌入场景设计，在宿主单进程常驻架构下
-需要的四层保障由本模块以幂等补丁统一收口：
+cognee 的 LadybugAdapter 在独立 SDK 工作进程内运行，四层保障由本模块
+以幂等补丁统一收口；主服务另由 RPC 和提交快照隔离原生崩溃：
 
 1. **并发门闸**：ladybug/Kuzu 的 pybind connection 非线程安全，
    ``_submit_to_executor_locked`` 提交到线程池的 native 任务（execute + 结果
@@ -14,18 +14,17 @@ cognee 的 LadybugAdapter 按通用嵌入场景设计，在宿主单进程常驻
    delete_graph 保留 SDK 先排空在途查询再拆除的顺序，不提前拆句柄。
    关闭失败向宿主传播，不能被 SDK 缓存的尽力关闭语义掩盖。
 3. **失控看门狗**：纯线程实现（事件循环冻死也能工作）。持有门闸超
-   ``native_watchdog_restart_seconds`` 经晚绑定端口请求守护重启——门闸被
-   永久持有会阻止全部图操作。端口未施绑或重启被拒
+   ``native_watchdog_restart_seconds`` 经晚绑定端口结束候选工作进程——门闸被
+   永久持有会阻止全部图操作。端口未施绑或请求被拒
    时降级为 CRITICAL 告警，看门狗自身绝不直接退出进程。
    设计约束：ladybug 的 ``set_query_timeout``/``interrupt`` 中止路径对
    卡死的扫描算子不可靠（中止动作自身会升级为 SIGSEGV），本模块刻意不做
-   native 中止。安全关停会等待原生操作退出，卡死时只告警而不自动强杀。
+   native 中止。发布前须正常排空；取消批次由外层回收候选进程并恢复快照。
 4. **WAL 容错**：以 ``throw_on_wal_replay_failure=False`` 打开图库，
    允许库能报告的回放错误恢复到已提交事务。此参数不能防止原生崩溃，
    损坏 checkpoint 仍需隔离及全量重建。
 
-安装入口 ``install()`` 由 CogneeClient 首次导入 cognee 后调用，幂等；
-补丁点缺失时记日志跳过（cognee 升级符号漂移不演变为静默失效）。
+安装入口 ``install()`` 由 SDKClient 完成依赖契约检查后调用，幂等。
 """
 
 from __future__ import annotations
@@ -43,7 +42,7 @@ from core.log import log
 
 from .config import CogneeConfig
 
-#: 看门狗的重启请求通道（组合根施绑 entities.devops.service.request_restart）。
+#: 工作进程组合根施绑为结束候选进程，不重启主服务。
 #: 未施绑或施绑 None 时失控升级降级为仅告警——测试与未接线环境绝无进程动作。
 native_restart_port: LateBinding[Optional[Callable[..., dict[str, Any]]]] = LateBinding(
     "memory.cognee.native_restart",

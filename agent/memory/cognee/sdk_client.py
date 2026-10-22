@@ -1,4 +1,4 @@
-"""Cognee 公共 API 的懒加载门面与宿主配置边界。"""
+"""仅在工作进程装配的 Cognee 适配器：SDK 类型、配置和资源释放。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,9 @@ import os
 import time
 from pathlib import Path
 from typing import Any, Optional
-from uuid import NAMESPACE_URL, UUID, uuid5
+from urllib.parse import urlsplit
+from urllib.request import url2pathname
+from uuid import UUID
 
 from core.log import log
 
@@ -21,12 +23,12 @@ from .embedding_identity import validate_embedding
 from .llm_bridge import (
     CogneeConfigError,
     anthropic_env_bridge,
-    resolve_chat_llm_config,
-    resolve_embedding_llm_config,
     summarize_resolved,
 )
+from .model_config import resolve_models, validate_models
 from .sdk_contract import close_engines, validate_sdk
 from .types import CogneeAvailability, CogneePipelineError, CogneePipelineProgress, CogneeRecallItem
+from .wire import InputDocument, make_document
 
 
 class SDKClient:
@@ -123,17 +125,7 @@ class SDKClient:
 
     def validate_configuration(self, config: CogneeConfig) -> None:
         """保存前检查显式抽取配置和向量空间，不调用模型或打开数据库。"""
-        if not config.enabled:
-            return
-        from agent.llm import get_llm_manager
-        from agent.llm.llm_client import ModelType
-
-        manager = get_llm_manager()
-        if config.chat.source != "auto" or manager.get_all_by_type(ModelType.CHAT):
-            resolve_chat_llm_config(config.chat, manager)
-        payload = resolve_embedding_llm_config(config.embedding, manager)
-        if payload:
-            validate_embedding(Path(config.absolute_data_root), payload)
+        validate_models(config)
 
     async def _initialize(self) -> CogneeAvailability:
         if not self.config.enabled:
@@ -172,10 +164,7 @@ class SDKClient:
     def _import_cognee(self) -> Any:
         if self._module is not None:
             return self._module
-        # cognee 默认把 graph/vector 引擎放在子进程运行（pydantic-settings 按
-        # 字段名读同名环境变量），每轮流水线都会创建 worker 子进程，父进程的
-        # PIPE/信号量 fd 随运行时间单调泄露直至 EMFILE。宿主为单进程架构，
-        # 改回进程内引擎（setdefault 保留环境变量覆盖）。
+        # 外层工作进程统一拥有 SDK、图与向量引擎，避免 SDK 再创建未受宿主管理的子进程。
         os.environ.setdefault("GRAPH_DATABASE_SUBPROCESS_ENABLED", "false")
         os.environ.setdefault("VECTOR_DB_SUBPROCESS_ENABLED", "false")
         # Cognee 导入时会 dotenv.load_dotenv(override=True)。恢复环境，避免污染宿主进程。
@@ -203,24 +192,9 @@ class SDKClient:
     async def _configure(self) -> None:
         while self.config.enabled:
             config = self.config
-            try:
-                from agent.llm import get_llm_manager
-
-                manager = get_llm_manager()
-                chat_payload = resolve_chat_llm_config(config.chat, manager)
-                self._resolved_chat = summarize_resolved(chat_payload, kind="chat")
-                embedding_payload = resolve_embedding_llm_config(config.embedding, manager)
-                if embedding_payload is None:
-                    raise CogneeConfigError(
-                        "尚未配置 Embedding 模型，请在 Web 模型管理中添加，"
-                        "或在 Cognee 向量化模型配置中指定"
-                    )
-                embedding_payload = validate_embedding(Path(config.absolute_data_root), embedding_payload)
-                self._resolved_embedding = summarize_resolved(embedding_payload, kind="embedding")
-            except CogneeConfigError:
-                raise
-            except Exception as exc:
-                raise RuntimeError(f"无法映射 AnelfAgent 模型配置: {exc}") from exc
+            chat_payload, embedding_payload = resolve_models(config)
+            self._resolved_chat = summarize_resolved(chat_payload, kind="chat")
+            self._resolved_embedding = summarize_resolved(embedding_payload, kind="embedding")
 
             if self._configured and self._chat_payload == chat_payload and self._embedding_payload == embedding_payload:
                 return
@@ -338,6 +312,16 @@ class SDKClient:
     # v1/lower-level public API
     async def add(self, data: Any, **kwargs: Any) -> Any:
         self._summary_datasets.clear()
+        from cognee.tasks.ingestion.data_item import DataItem
+
+        def sdk_input(item: Any) -> Any:
+            if isinstance(item, InputDocument):
+                return DataItem(item.data, literal_text=item.literal_text, label=item.label,
+                                external_metadata=item.external_metadata, node_set=item.node_set,
+                                data_id=UUID(item.data_id))
+            return item
+
+        data = [sdk_input(item) for item in data] if isinstance(data, list) else sdk_input(data)
         result = await self._call(
             "add",
             data,
@@ -375,25 +359,10 @@ class SDKClient:
         external_metadata: dict[str, Any],
         dataset_name: str = "",
         node_set: list[str] | None = None,
-    ) -> Any:
-        """构造 Cognee 文档化公开输入类型 DataItem。"""
-        if self._module is None or not self._configured:
-            availability = await self.initialize()
-            if not availability.ready:
-                raise RuntimeError(availability.reason or "Cognee 未就绪")
-        data_item_module = importlib.import_module("cognee.tasks.ingestion.data_item")
-        identity = json.dumps(
-            [data, external_metadata, sorted(set(node_set or []))],
-            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
-        )
-        return data_item_module.DataItem(
-            data,
-            literal_text=True,
-            label=label,
-            external_metadata=external_metadata,
-            node_set=sorted(set(node_set or [])),
-            data_id=uuid5(NAMESPACE_URL, f"anelf:{dataset_name}:{label}:{hashlib.sha256(identity.encode()).hexdigest()}"),
-        )
+    ) -> InputDocument:
+        """稳定 ID 由项目文档契约生成，SDK 转换仅发生在 add 边界。"""
+        return make_document(data, label=label, external_metadata=external_metadata,
+                             dataset_name=dataset_name, node_set=node_set)
 
     async def cognify(self, **kwargs: Any) -> Any:
         return await self._call(
@@ -467,6 +436,40 @@ class SDKClient:
         await asyncio.wait_for(verify_graph_documents(UUID(dataset_id), data_ids),
                                timeout=self.config.pipeline_timeout_seconds)
 
+    async def inspect_index(self, graph_datasets: list[str] | None = None) -> dict[str, Any]:
+        """一次 RPC 返回完整内容清单，仅打开当前代际或明确指定的图库。"""
+        from .graph_validation import graph_document_stamps
+        from .manifest import DatasetStamp, DocumentStamp, IndexManifest, document_identity
+        from .wire import encode
+
+        inventory = IndexManifest()
+        digests: dict[str, str] = {}
+        for row in await self.list_datasets():
+            dataset = encode(row)
+            dataset_id, name = str(dataset["id"]), str(dataset["name"])
+            target = DatasetStamp(name=name)
+            for item in await self.list_data(dataset_id):
+                document = encode(item)
+                metadata = document.get("external_metadata") or {}
+                location = str(document.get("raw_data_location") or "")
+                if location not in digests:
+                    digests[location] = await asyncio.to_thread(_source_digest,
+                        Path(self.config.absolute_data_root) / "data", location)
+                target.documents[str(document["id"])] = DocumentStamp(
+                    identity=document_identity(document.get("label") or "", metadata, document.get("node_set")),
+                    content_hash=str(metadata.get("anelf_content_hash", "")),
+                    raw_hash=str(document.get("raw_content_hash") or document.get("content_hash") or ""),
+                    source_digest=digests[location],
+                    processed=self.document_processed(item, dataset_id),
+                )
+            if graph_datasets is None or name in graph_datasets:
+                stamps = await graph_document_stamps(UUID(dataset_id),
+                    [key for key, value in target.documents.items() if value.processed])
+                for key, digest in stamps.items():
+                    target.documents[key].chunks = digest
+            inventory.datasets[dataset_id] = target
+        return inventory.model_dump(mode="json")
+
     # Maintenance / diagnostics / visualization
 
 
@@ -510,6 +513,18 @@ class SDKClient:
         if self._module is None:
             raise RuntimeError("Cognee 未初始化")
         return getattr(self._module.SearchType, name.upper())
+
+
+def _source_digest(root: Path, location: str) -> str:
+    """完整读取受管原文，防止元数据仍在但实际原文丢失或被截断。"""
+    uri = urlsplit(location)
+    if uri.scheme != "file" or uri.netloc not in {"", "localhost"} or uri.query or uri.fragment:
+        raise RuntimeError("索引原文没有可核验的本地位置")
+    path = Path(url2pathname(uri.path)).resolve(strict=True)
+    if not path.is_relative_to(root.resolve()):
+        raise RuntimeError("索引原文越出受管数据目录")
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def _to_uuid(value: Any) -> Any:

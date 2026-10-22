@@ -217,7 +217,7 @@ def create_bootstrap() -> FlowMachine:
 
             cognee_config = load_cognee_config()
             get_volume_registry().mark_active("cognee", cognee_config.absolute_data_root)
-            cognee_client = CogneeClient(cognee_config)
+            cognee_client = CogneeClient(cognee_config, source_mappings=store.projection_state.publication_sources)
             cognee_coordinator = CogneeCoordinator(store, cognee_client, cognee_config)
             Lifecycle.register(
                 "cognee_memory",

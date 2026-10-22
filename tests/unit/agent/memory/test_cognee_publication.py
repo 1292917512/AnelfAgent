@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import copy
 import json
 import os
 import subprocess
@@ -15,8 +17,12 @@ import pytest
 from agent.memory.cognee.checkpoints import IndexCheckpoints
 from agent.memory.cognee.client import CogneeClient
 from agent.memory.cognee.config import CogneeConfig
+from agent.memory.cognee.diagnostics import WorkerDiagnostics
+from agent.memory.cognee.manifest import DatasetStamp, DocumentStamp, IndexManifest, MutationPlan
+from agent.memory.cognee.preflight import preserve_owned_document
 from agent.memory.cognee.process import CogneeProcess, WorkerCrashed
 from agent.memory.cognee.types import CogneeAvailability
+from agent.memory.store.projection_state import ProjectionState
 
 
 def test_restore_all_index_components_without_touching_source(tmp_path):
@@ -135,6 +141,7 @@ async def test_cancelled_transaction_does_not_publish(tmp_path, monkeypatch):
         installed=True, enabled=True, ready=True)))
     worker = AsyncMock()
     monkeypatch.setattr(client, "_worker", worker)
+    monkeypatch.setattr(client, "_inspect", AsyncMock(return_value=IndexManifest()))
     monkeypatch.setattr(client, "_stop", AsyncMock())
     with pytest.raises(asyncio.CancelledError):
         async with client.write_transaction():
@@ -156,11 +163,11 @@ async def test_reopen_failure_prevents_publication_and_latches_fault(tmp_path, m
         installed=True, enabled=True, ready=True)))
     worker = AsyncMock()
     monkeypatch.setattr(client, "_worker", AsyncMock(side_effect=[worker, worker, WorkerCrashed("native crash")]))
+    monkeypatch.setattr(client, "_inspect", AsyncMock(return_value=IndexManifest()))
     monkeypatch.setattr(client, "_stop", AsyncMock())
     with pytest.raises(WorkerCrashed):
         async with client.write_transaction():
             checkpoints.mark_open()
-            client._verifications.append(("dataset", ["document"]))
     assert checkpoints.state["committed"] == before
     assert client.publication_status["error"]
     client.reset_fault()
@@ -176,23 +183,17 @@ async def test_missing_previously_synced_document_rejects_new_batch(tmp_path, mo
     monkeypatch.setattr(client, "initialize", AsyncMock(return_value=CogneeAvailability(
         installed=True, enabled=True, ready=True)))
 
-    async def call(method, *args, **kwargs):
-        if method == "list_datasets":
-            return [{"id": "dataset"}]
-        if method == "list_data":
-            return [{"id": "older", "pipeline_status": {"cognify_pipeline": {
-                "dataset": "DATA_ITEM_PROCESSING_COMPLETED"}}}]
-        if method == "verify_graph_documents" and "older" in args[1]:
-            raise RuntimeError("previously synced document missing")
-        return None
-
     worker = AsyncMock()
-    worker.call.side_effect = call
     monkeypatch.setattr(client, "_worker", AsyncMock(return_value=worker))
     monkeypatch.setattr(client, "_stop", AsyncMock())
-    with pytest.raises(RuntimeError, match="previously synced"):
+    before = IndexManifest(datasets={"dataset": DatasetStamp(name="main", documents={
+        "older": DocumentStamp(identity="old", processed=True, chunks="old-chunks"),
+    })})
+    after = IndexManifest(datasets={"dataset": DatasetStamp(name="main")})
+    monkeypatch.setattr(client, "_inspect", AsyncMock(side_effect=[before, after]))
+    with pytest.raises(RuntimeError, match="未声明变化"):
         async with client.write_transaction():
-            client._verifications.append(("dataset", ["new"]))
+            pass
     assert checkpoints.state["committed"] == previous
 
 
@@ -213,7 +214,7 @@ async def test_failed_restore_blocks_reopening_until_restore_succeeds(tmp_path, 
 
     monkeypatch.setattr(checkpoints, "restore", restore)
     process = AsyncMock()
-    monkeypatch.setattr("agent.memory.cognee.client.CogneeProcess", lambda: process)
+    monkeypatch.setattr("agent.memory.cognee.client.CogneeProcess", lambda **kwargs: process)
     with pytest.raises(OSError):
         await client._abort(RuntimeError("batch failed"))
     with pytest.raises(RuntimeError, match="恢复尚未完成"):
@@ -224,3 +225,233 @@ async def test_failed_restore_blocks_reopening_until_restore_succeeds(tmp_path, 
     assert attempts == 2
     process.start.assert_awaited_once()
     await client.close()
+
+
+def inventory() -> IndexManifest:
+    return IndexManifest(datasets={
+        "old": DatasetStamp(name="anelf_old_global", documents={"old-doc": DocumentStamp(identity="old")}),
+        "current": DatasetStamp(name="anelf_p2_global", documents={"current-doc": DocumentStamp(
+            identity="current", content_hash="source", raw_hash="raw", processed=True, chunks="both-chunks")}),
+    })
+
+
+async def test_published_p2_identity_survives_adapter_refactoring():
+    from agent.memory.cognee.config import CogneeConfig
+    from agent.memory.cognee.sdk_client import SDKClient
+    from agent.memory.cognee.wire import decode, encode, make_document
+
+    options = dict(label="anelf-memory-7", dataset_name="anelf_p2_fixture_global",
+                   external_metadata={"anelf_projection_version": 2, "anelf_memory_id": "7"},
+                   node_set=["project:alpha", "future:tag"])
+    document = make_document("existing p2 memory", **options)
+    assert document.data_id == "fd9c94ea-65d3-564e-a147-82751fa8ed74"
+    assert decode(encode(document)) == document
+    assert await SDKClient(CogneeConfig()).make_data_item("existing p2 memory", **options) == document
+
+
+@pytest.mark.parametrize("damage", ["metadata", "document", "dataset", "chunk", "raw", "source", "status"])
+def test_retirement_cannot_publish_damage_to_retained_dataset(damage):
+    before = inventory()
+    plan = MutationPlan(before)
+    plan.retired.add("old")
+    after = before.model_copy(deep=True)
+    del after.datasets["old"]
+    document = after.datasets["current"].documents["current-doc"]
+    if damage == "metadata":
+        document.identity = "changed-tags"
+    elif damage == "document":
+        after.datasets["current"].documents.clear()
+    elif damage == "dataset":
+        after.datasets.clear()
+    elif damage == "chunk":
+        document.chunks = "only-one-chunk"
+    elif damage == "raw":
+        document.raw_hash = "changed"
+    elif damage == "source":
+        document.source_digest = "truncated-source"
+    else:
+        document.processed = False
+    with pytest.raises(RuntimeError):
+        plan.validate(after)
+
+
+def test_valid_retirement_preserves_current_and_authoritative_reference():
+    before = inventory()
+    plan = MutationPlan(before)
+    plan.retired.add("old")
+    after = before.model_copy(deep=True)
+    del after.datasets["old"]
+    plan.validate(after)
+    mapping = {"entry_kind": "memory", "entry_id": 1, "dataset_id": "current",
+               "data_id": "current-doc", "content_hash": "source"}
+    after.check_sources([mapping])
+    mapping["data_id"] = "missing-from-both-index-and-metadata"
+    with pytest.raises(RuntimeError, match="原生映射"):
+        after.check_sources([mapping])
+
+
+def test_new_document_must_preserve_exact_input_bytes(tmp_path):
+    from agent.memory.cognee.manifest import document_identity
+    from agent.memory.cognee.sdk_client import _source_digest
+    from agent.memory.cognee.wire import make_document
+
+    item = make_document("原文\r\n第二行", label="memory", external_metadata={}, dataset_name="test")
+    plan = MutationPlan(IndexManifest())
+    plan.add("dataset", "test", [item])
+    raw = tmp_path / "text.txt"
+    raw.write_bytes(item.data.encode("utf-8"))
+    stamp = DocumentStamp(identity=document_identity(item.label, {}, []),
+                          source_digest=_source_digest(tmp_path, raw.as_uri()))
+    candidate = IndexManifest(datasets={"dataset": DatasetStamp(name="test", documents={item.data_id: stamp})})
+    plan.validate(candidate)
+    raw.write_bytes(b"truncated")
+    stamp.source_digest = _source_digest(tmp_path, raw.as_uri())
+    with pytest.raises(RuntimeError, match="实际原文"):
+        plan.validate(candidate)
+
+
+async def test_query_vector_is_reused_across_rpc_scopes_and_released():
+    from agent.memory.cognee.adapters import _wrap_embed, close_query_cache, query_embeddings
+
+    class Engine:
+        def __init__(self):
+            self.calls = 0
+
+        async def embed_text(self, text):
+            self.calls += 1
+            return [[0.1, 0.2]]
+
+    engine = Engine()
+    _wrap_embed(engine)
+    shared = {}
+    async with query_embeddings(shared):
+        first = await engine.embed_text(["same query"])
+    async with query_embeddings(shared):
+        second = await engine.embed_text(["same query"])
+    assert first == second and engine.calls == 1
+    await close_query_cache(shared)
+    assert shared == {}
+
+
+async def test_filtered_recall_expands_bounded_candidates():
+    from agent.memory.cognee.fusion import RecallDiagnostics, _filtered_recall
+    from agent.memory.cognee.types import CogneeRecallItem
+    from agent.memory.tag_query import TagQuery
+
+    def item(index, tag):
+        return CogneeRecallItem(id=str(index), content="fact", metadata={"anelf_attribution": {
+            "tags": [tag], "timestamp": 0, "memory_type": "semantic", "sensitivity": "normal"}})
+
+    client = AsyncMock()
+    client.recall.side_effect = [[item(1, "state:old"), item(2, "state:old")],
+                                [item(1, "state:old"), item(2, "state:old"), item(3, "project:future")]]
+    diagnostics = RecallDiagnostics()
+    result = await _filtered_recall(client, "query", {"top_k": 2}, TagQuery(none_of=("state:old",)), 1, diagnostics)
+    assert result[-1].id == "3"
+    assert [call.kwargs["top_k"] for call in client.recall.call_args_list] == [2, 4]
+    assert not diagnostics.tag_filter_limited
+
+
+async def test_filtered_recall_marks_exhausted_budget_instead_of_claiming_no_knowledge():
+    from agent.memory.cognee.fusion import RecallDiagnostics, _filtered_recall
+    from agent.memory.cognee.types import CogneeRecallItem
+    from agent.memory.tag_query import TagQuery
+
+    async def recall(query, **kwargs):
+        return [CogneeRecallItem(id=str(index), content="fact") for index in range(kwargs["top_k"])]
+
+    client = AsyncMock()
+    client.recall.side_effect = recall
+    diagnostics = RecallDiagnostics(native="complete", cognee="complete")
+    await _filtered_recall(client, "query", {"top_k": 2}, TagQuery(all_of=("project:rare/*",)), 1, diagnostics)
+    assert [call.kwargs["top_k"] for call in client.recall.call_args_list] == [2, 4, 8]
+    assert diagnostics.result()["status"] == "partial"
+
+
+def test_old_checkpoint_adopts_proof_without_rewriting_source(tmp_path):
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "old.txt").write_bytes(b"existing source")
+    original = IndexCheckpoints(tmp_path)
+    original.load()
+    state = json.loads((original.control / "state.json").read_text())
+    state.pop("proof_sha256")
+    (original.control / "state.json").write_text(json.dumps(state))
+    adopted = IndexCheckpoints(tmp_path)
+    adopted.load()
+    assert adopted.read_manifest() is None
+    adopted.commit(inventory().model_dump(mode="json"))
+    assert IndexManifest.model_validate(adopted.read_manifest()) == inventory()
+    assert (tmp_path / "data" / "old.txt").read_bytes() == b"existing source"
+
+
+def test_missing_snapshot_file_cannot_overwrite_working_copy(tmp_path):
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "raw.txt").write_bytes(b"baseline")
+    checkpoints = IndexCheckpoints(tmp_path)
+    checkpoints.load()
+    checkpoints.mark_open()
+    (checkpoints.control / checkpoints.state["committed"] / "data" / "raw.txt").unlink()
+    with pytest.raises(RuntimeError, match="文件缺失"):
+        checkpoints.restore()
+    assert (tmp_path / "data" / "raw.txt").read_bytes() == b"baseline"
+
+
+async def test_p2_archives_after_projection_version_upgrade(tmp_path, monkeypatch):
+    root = tmp_path / "cognee"
+    (root / "data").mkdir(parents=True)
+    raw = root / "data" / "p2.txt"
+    raw.write_text("历史完整正文", encoding="utf-8")
+    source = AsyncMock()
+    source.legacy_source.return_value = {"content": "现在的正文"}
+    item = {"id": "old", "label": "anelf-memory-1", "raw_data_location": raw.as_uri(),
+            "external_metadata": {"anelf_projection_version": 2, "anelf_memory_id": "1"}}
+    unchanged = copy.deepcopy(item)
+    monkeypatch.setattr("agent.memory.cognee.preflight.PROJECTION_VERSION", 3)
+    assert await preserve_owned_document(source, ProjectionState(root=str(root)), item, "dataset", "old",
+                                         include_current_format=True)
+    saved = source.preserve_legacy_document.call_args.kwargs["document"]
+    assert saved["text"] == "历史完整正文" and item == unchanged
+    item["external_metadata"]["anelf_projection_version"] = 99
+    assert not await preserve_owned_document(source, ProjectionState(root=str(root)), item, "dataset", "old",
+                                             include_current_format=True)
+
+
+def test_worker_diagnostics_redacts_exact_credentials_and_rotates(tmp_path):
+    secret = "test-provider-credential-without-known-prefix"
+    path = tmp_path / "worker.log"
+    log = WorkerDiagnostics(path, {secret})
+    try:
+        for _ in range(150):
+            log.write("x" * 12000 + secret + " api_key=another-sensitive-value")
+    finally:
+        log.close()
+    files = list(tmp_path.glob("worker.log*"))
+    assert len(files) == 2
+    assert all(file.stat().st_size < 1024**2 + 16384 for file in files)
+    assert all(secret not in file.read_text() and "another-sensitive-value" not in file.read_text() for file in files)
+
+
+def test_host_does_not_inherit_or_import_native_sdk():
+    root = Path(__file__).resolve().parents[4]
+    result = subprocess.run([sys.executable, "-c",
+        "import sys; from agent.memory.cognee.client import CogneeClient; "
+        "assert CogneeClient.__bases__ == (object,); "
+        "assert not any(x in sys.modules for x in ('cognee','ladybug','lancedb')); print('isolated')"],
+        cwd=root, capture_output=True, timeout=20)
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    assert b"isolated" in result.stdout
+
+
+def test_native_imports_stay_inside_worker_adapters():
+    root = Path(__file__).resolve().parents[4]
+    allowed = {"adapters.py", "sdk_client.py", "ladybug_guard.py", "storage.py", "graph_validation.py"}
+    violations = []
+    for directory in ("agent", "services", "scripts"):
+        for path in (root / directory).rglob("*.py"):
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"))):
+                modules = ([node.module or ""] if isinstance(node, ast.ImportFrom) and node.level == 0
+                           else [name.name for name in node.names] if isinstance(node, ast.Import) else [])
+                if any(name.split(".")[0] in {"cognee", "ladybug", "lancedb", "cognee_db_workers"} for name in modules):
+                    if path.parent != root / "agent/memory/cognee" or path.name not in allowed:
+                        violations.append(str(path.relative_to(root)))
+    assert violations == []

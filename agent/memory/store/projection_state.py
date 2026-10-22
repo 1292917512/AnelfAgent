@@ -121,6 +121,15 @@ class ProjectionStateStore:
         db = await self._conn.get_db()
         return [dict(r) for r in await (await db.execute("SELECT * FROM cognee_entry_map")).fetchall()]
 
+    async def publication_sources(self) -> list[dict[str, Any]]:
+        """无在途写入的权威映射用于提交验收；崩溃后未确认批次由稳定 ID 续跑。"""
+        db = await self._conn.get_db()
+        rows = await (await db.execute(
+            "SELECT m.* FROM cognee_entry_map m WHERE NOT EXISTS ("
+            "SELECT 1 FROM cognee_projection_attempts a WHERE a.entry_kind=m.entry_kind AND a.entry_id=m.entry_id)"
+        )).fetchall()
+        return [dict(row) for row in rows]
+
     async def preserved_sources(self) -> set[tuple[str, int]]:
         """映射必须能回到权威内容或明确的删除记录，不能仅凭旧映射认定无损。"""
         db = await self._conn.get_db()

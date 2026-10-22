@@ -16,14 +16,16 @@ from typing import Any, TextIO
 from filelock import FileLock
 
 from .config import CogneeChatModelConfig, CogneeConfig, CogneeEmbeddingModelConfig
+from .process import PROTOCOL_VERSION
 from .wire import decode, encode
 
 METHODS = frozenset({"recall", "add", "cognify", "improve", "list_datasets", "list_data", "delete_data",
-                     "delete_dataset", "verify_graph_documents", "pipeline_progress", "compact_vector_storage"})
+                     "delete_dataset", "verify_graph_documents", "pipeline_progress", "compact_vector_storage",
+                     "inspect_index"})
 
 
 async def serve(output: TextIO) -> None:
-    from .adapters import query_embeddings
+    from .adapters import QueryCache, close_query_cache, query_embeddings
     from .errors import error_text
     from .ladybug_guard import native_restart_port
     from .sdk_client import SDKClient
@@ -32,6 +34,7 @@ async def serve(output: TextIO) -> None:
     lock: FileLock | None = None
     tasks: set[asyncio.Task[None]] = set()
     closing = False
+    query_caches: dict[str, QueryCache] = {}
 
     def abort_native(**_kwargs: Any) -> dict[str, Any]:
         os._exit(70)
@@ -46,13 +49,15 @@ async def serve(output: TextIO) -> None:
             payload["written_bytes"] = psutil.Process().io_counters().write_bytes
         except (AttributeError, psutil.Error):
             pass  # 平台没有写入计数；宿主熔断器会明确停用该指标。
-        output.write(json.dumps({"id": request_id, **payload}, ensure_ascii=False) + "\n")
+        output.write(json.dumps({"protocol": PROTOCOL_VERSION, "id": request_id, **payload}, ensure_ascii=False) + "\n")
         output.flush()
 
     async def execute(message: dict[str, Any]) -> None:
         nonlocal client, lock, closing
         request_id = message["id"]
         try:
+            if message.get("protocol") != PROTOCOL_VERSION:
+                raise ValueError("Cognee RPC 协议版本不匹配")
             method = message["method"]
             if method == "initialize":
                 if client is not None:
@@ -73,13 +78,20 @@ async def serve(output: TextIO) -> None:
                 reply(request_id, result=None)
                 # 原生缓存已排空；不执行第三方库的 atexit 关闭顺序。
                 os._exit(0)
+            elif method == "release_query":
+                await close_query_cache(query_caches.pop(message["args"][0], {}))
+                result = None
             elif method in METHODS and client is not None and not closing:
                 kwargs = decode(message.get("kwargs", {}))
                 if method == "recall":
                     for key in ("query_type", "search_type"):
                         if isinstance(kwargs.get(key), str):
                             kwargs[key] = client.search_type(kwargs[key])
-                async with query_embeddings():
+                scope = message.get("query_scope", "") if method == "recall" else ""
+                if scope and scope not in query_caches and len(query_caches) >= 64:
+                    raise RuntimeError("查询缓存会话数量超过边界")
+                shared = query_caches.setdefault(scope, {}) if scope else None
+                async with query_embeddings(shared):
                     result = await getattr(client, method)(*decode(message.get("args", [])), **kwargs)
             else:
                 raise ValueError("未初始化或不支持的 Cognee 调用")

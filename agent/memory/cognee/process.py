@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import json
 import subprocess
 import sys
+import time
+from pathlib import Path
 from typing import Any
 
 from core.path import project_root
 
+from .diagnostics import WorkerDiagnostics, credential_values
+from .query_scope import current_query
 from .types import CogneePipelineError
 from .wire import encode
+
+PROTOCOL_VERSION = 1
 
 
 class WorkerCrashed(RuntimeError):
@@ -19,13 +26,17 @@ class WorkerCrashed(RuntimeError):
 
 
 class CogneeProcess:
-    def __init__(self) -> None:
+    def __init__(self, *, diagnostic_path: Path | None = None, commit: str = "") -> None:
         self.process: asyncio.subprocess.Process | None = None
         self._pending: dict[int, asyncio.Future[Any]] = {}
         self._reader: asyncio.Task[None] | None = None
         self._sequence = 0
         self._write_lock = asyncio.Lock()
         self.written_bytes = 0
+        self._diagnostic_path = diagnostic_path
+        self._commit = commit
+        self._diagnostics: WorkerDiagnostics | None = None
+        self._stderr_reader: asyncio.Task[None] | None = None
 
     def sample_writes(self) -> int:
         import psutil
@@ -33,11 +44,14 @@ class CogneeProcess:
         if self.process and self.process.returncode is None:
             try:
                 self.written_bytes = max(self.written_bytes, psutil.Process(self.process.pid).io_counters().write_bytes)
-            except psutil.NoSuchProcess:
+            except (AttributeError, psutil.Error):
                 pass
         return self.written_bytes
 
     async def start(self, config: dict[str, Any], chat: dict[str, Any], embedding: dict[str, Any]) -> Any:
+        if self._diagnostic_path is not None:
+            self._diagnostics = WorkerDiagnostics(self._diagnostic_path,
+                credential_values(config) | credential_values(chat) | credential_values(embedding))
         options: dict[str, Any] = {}
         if sys.platform == "win32":
             options["creationflags"] = subprocess.CREATE_NO_WINDOW
@@ -47,10 +61,29 @@ class CogneeProcess:
             "os.dup2(2,1); sys.stdout=sys.stderr; "
             "from agent.memory.cognee.worker import main; main(channel)",
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL, limit=64 * 1024 * 1024, cwd=project_root(), **options,
+            stderr=asyncio.subprocess.PIPE, limit=64 * 1024 * 1024, cwd=project_root(), **options,
         )
+        self._stderr_reader = asyncio.create_task(self._read_stderr(), name="memory.cognee.diagnostics")
+        if self._diagnostics:
+            self._diagnostics.write(f"worker pid={self.process.pid} commit={self._commit}")
         self._reader = asyncio.create_task(self._read(), name="memory.cognee.rpc")
         return await self.call("initialize", config=config, chat=chat, embedding=embedding, timeout=120)
+
+    async def _read_stderr(self) -> None:
+        assert self.process is not None and self.process.stderr is not None
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        pending, oversized = "", False
+        while chunk := await self.process.stderr.read(4096):
+            pending += decoder.decode(chunk)
+            while "\n" in pending:
+                line, pending = pending.split("\n", 1)
+                if self._diagnostics:
+                    self._diagnostics.write("[oversized diagnostic omitted]" if oversized or len(line) > 16384 else line)
+                oversized = False
+            if len(pending) > 16384:
+                pending, oversized = "", True
+        if self._diagnostics and pending:
+            self._diagnostics.write("[oversized diagnostic omitted]" if oversized else pending)
 
     async def _read(self) -> None:
         process = self.process
@@ -58,6 +91,8 @@ class CogneeProcess:
         try:
             while line := await process.stdout.readline():
                 response = json.loads(line)
+                if response.get("protocol") != PROTOCOL_VERSION:
+                    raise RuntimeError("Cognee RPC 协议版本不匹配")
                 self.written_bytes = max(self.written_bytes, response.get("written_bytes", 0))
                 future = self._pending.get(response["id"])
                 if future is None or future.done():
@@ -82,14 +117,22 @@ class CogneeProcess:
         request_id = self._sequence
         future = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
+        started = time.monotonic()
         try:
-            message = json.dumps({"id": request_id, "method": method, "args": encode(args), "kwargs": encode(kwargs)})
-            async with self._write_lock:
-                process.stdin.write((message + "\n").encode())
-                await process.stdin.drain()
+            scope = current_query.get() if method == "recall" else None
+            if scope is not None:
+                scope.releases[id(self)] = lambda: self.call("release_query", scope.identity, timeout=2)
+            message = json.dumps({"protocol": PROTOCOL_VERSION, "id": request_id, "method": method,
+                                  "query_scope": scope.identity if scope else "",
+                                  "args": encode(args), "kwargs": encode(kwargs)})
             async with asyncio.timeout(timeout):
+                async with self._write_lock:
+                    process.stdin.write((message + "\n").encode())
+                    await process.stdin.drain()
                 return await future
         finally:
+            if self._diagnostics and method != "pipeline_progress":
+                self._diagnostics.write(f"rpc id={request_id} method={method} elapsed={time.monotonic() - started:.2f}s")
             self._pending.pop(request_id, None)
             if not future.done():
                 future.cancel()
@@ -107,6 +150,7 @@ class CogneeProcess:
                 if code != 0:
                     raise WorkerCrashed(f"Cognee 关闭失败 (exit_code={code})，候选索引未提交")
         finally:
+            self.sample_writes()
             if process.returncode is None:
                 process.kill()
             await process.wait()
@@ -118,4 +162,9 @@ class CogneeProcess:
                     pass
             if self._reader:
                 await self._reader
+            if self._stderr_reader:
+                await self._stderr_reader
+            if self._diagnostics:
+                self._diagnostics.write(f"worker exit_code={process.returncode}")
+                self._diagnostics.close()
             self.process = None

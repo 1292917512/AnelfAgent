@@ -168,14 +168,16 @@ class CogneeRebuild:
         if len(documents) != len(mappings):
             raise RuntimeError(f"后端文档数与映射不一致: {len(documents)} != {len(mappings)}")
         for mapping in mappings:
-            item = documents.get((str(mapping["dataset_id"]), str(mapping["data_id"])))
-            metadata = _field(item, "external_metadata", {}) or {}
+            document = documents.get((str(mapping["dataset_id"]), str(mapping["data_id"])))
+            if document is None:
+                raise RuntimeError(f"后端文档缺失: {mapping['entry_kind']}:{mapping['entry_id']}")
+            metadata = _field(document, "external_metadata", {}) or {}
             if metadata.get("anelf_content_hash") != mapping["content_hash"]:
                 raise RuntimeError(f"后端文档缺失或指纹不一致: {mapping['entry_kind']}:{mapping['entry_id']}")
-            if not self.client.document_processed(item, str(mapping["dataset_id"])):
+            if not self.client.document_processed(document, str(mapping["dataset_id"])):
                 raise RuntimeError(f"后端文档尚未完成抽取: {mapping['entry_kind']}:{mapping['entry_id']}")
             tags = canonical_tags(metadata.get("anelf_attribution", {}).get("tags", []))
-            if stored_node_tags(_field(item, "node_set", [])) != tags:
+            if stored_node_tags(_field(document, "node_set", [])) != tags:
                 raise RuntimeError(f"后端标签索引不完整: {mapping['entry_kind']}:{mapping['entry_id']}")
             expected_dataset = projection_dataset(state.namespace, graph=mapping["entry_kind"] == "graph_node")
             if mapping["dataset_name"] != expected_dataset:

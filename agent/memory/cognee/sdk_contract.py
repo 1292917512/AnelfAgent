@@ -39,6 +39,21 @@ def validate_sdk(module: Any) -> None:
         "cognee.infrastructure.databases.vector.embeddings.get_embedding_engine": {
             "create_embedding_engine": ("cache_clear", "cache_info", "cache_parameters"),
         },
+        "cognee.infrastructure.databases.vector.lancedb.LanceDBAdapter": {
+            "LanceDBAdapter": ("_compaction_skip_reason",),
+        },
+        "cognee.infrastructure.llm.structured_output_framework.litellm_native.native_adapter": {
+            "NativeLiteLLMAdapter": ("acreate_structured_output",),
+        },
+        "cognee.infrastructure.llm.LLMGateway": {
+            "LLMGateway": ("acreate_structured_output",),
+        },
+        "litellm.completion_extras.litellm_responses_transformation.handler": {
+            "ResponsesToCompletionBridgeHandler": ("acompletion",),
+        },
+        "litellm.completion_extras.litellm_responses_transformation.transformation": {
+            "LiteLLMResponsesTransformationHandler": ("transform_request",),
+        },
     }
     for path, targets in points.items():
         loaded = importlib.import_module(path)
@@ -46,6 +61,10 @@ def validate_sdk(module: Any) -> None:
             target = getattr(loaded, name, None)
             if any(not callable(getattr(target, method, None)) for method in methods):
                 raise RuntimeError(f"Cognee 资源或并发契约变化: {path}.{name}")
+    data_item = importlib.import_module("cognee.tasks.ingestion.data_item").DataItem
+    require_parameters(data_item, {"data", "label", "external_metadata", "data_id", "node_set", "literal_text"}, "DataItem")
+    chunks = importlib.import_module("cognee.modules.retrieval.chunks_retriever").ChunksRetriever
+    require_parameters(chunks, {"top_k", "node_name", "node_name_filter_operator"}, "ChunksRetriever")
 
 
 async def close_engines() -> None:

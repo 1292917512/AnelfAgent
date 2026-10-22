@@ -246,11 +246,12 @@ Cognee 面板保存先校验模型参数和向量空间，再原子写入配置�
 | `cognee/rebuild.py` / `cognee/preflight.py` | 构建代际与后端验收 / 旧文档归属核验和历史留存，不另开 worker |
 | `cognee/coordinator.py` | 单 worker 调度、配置切换、维护互斥与生命周期 |
 | `cognee/writer.py` | 已认领批次的摄入、稳定 ID、替换删除与重试；不创建后台任务 |
-| `cognee/ports.py` / `sdk_contract.py` | 最小后端 Protocol 与实际 SDK 签名、并发保护、引擎释放契约 |
-| `cognee/client.py` / `checkpoints.py` | 宿主事务、进程互斥、关闭后验收、索引快照提交及恢复 |
+| `cognee/ports.py` / `records.py` / `sdk_contract.py` | 最小后端 Protocol、类型化返回记录与 SDK 签名、并发保护、引擎释放契约 |
+| `cognee/client.py` / `manifest.py` / `checkpoints.py` | 宿主事务、独立变更清单、进程互斥、关闭后验收、索引快照提交及恢复 |
 | `cognee/process.py` / `worker.py` / `wire.py` | 子进程生命周期、限定方法的 JSON RPC、输入对象与完整 ORM 列序列化 |
-| `cognee/sdk_client.py` / `adapters.py` | 子进程内 SDK 输入输出、模型协议和原生引擎资源边界 |
-| `cognee/fusion.py` / `evidence.py` | 多路检索、证据归一、出处和冲突保留、预算内融合 |
+| `cognee/model_config.py` / `sdk_client.py` / `adapters.py` | 纯配置解析 / 子进程内 SDK 输入输出、模型协议和原生引擎资源边界 |
+| `cognee/fusion.py` / `evidence.py` / `query_scope.py` | 多路检索、证据归一、预算内融合及跨 RPC 查询向量复用 |
+| `cognee/diagnostics.py` | 有界工作进程日志、凭据脱敏；不记录 RPC 参数 |
 
 每代索引使用 `<namespace>_global` 和 `<namespace>_relations`，所有精确标签写入每个
 DataItem 的 `node_set`，去空白、去重、排序，不合并大小写、别名或不同实体。新增标签前缀不需
@@ -259,6 +260,11 @@ DataItem 的 `node_set`，去空白、去重、排序，不合并大小写、别
 不会命中 `project:ab`。原生 FTS/向量先过滤再限量；Cognee 硬过滤只返回有可靠结构化标签的
 分块并复核标签，不混入无出处的图谱综合、文件、关系联想或遗忘层。别名需经既有标签治理
 确认，不根据称呼自动扩张过滤。NodeSet 只是索引，不是 ACL。
+
+精确 AND/OR 条件优先下推到 NodeSet；复杂层级、排除条件复核后不足时，最多补充两轮候选，
+上限为初始数量的四倍且通常不超过 2048，仍受整体检索超时约束。候选预算用尽时 coverage
+标为 partial，不把未覆盖解释为不存在。一次召回的跨通道、跨 RPC 查询向量只缓存到本次结束，
+由宿主显式释放；不跨用户请求保留查询内容。
 
 文档 ID 按数据集、条目身份、正文和元数据稳定派生。网络写入前持久化目标 ID 到
 `cognee_projection_attempts`，抽取、图谱覆盖核验、关闭后重新打开验收及索引快照提交成功后，
@@ -279,19 +285,34 @@ NodeSet 结构连接 `belongs_to_set`，保留实际关系；缺少或无效归�
 `client.py` 管理事务与宿主生命周期，`process.py` 管理有界 JSON RPC，`worker.py` 在独立
 进程中运行 `sdk_client.py`；Ladybug/Lance 的地址空间不再与主服务共享。原生崩溃使当前调用
 失败并熔断 Cognee 后端，主服务及原生检索继续工作；检查原因后用「重试失败同步」解除熔断。
+宿主门面不继承 SDK 实现，模块导入不加载原生数据库。输入文档 ID 由唯一的纯函数派生，
+版本化 RPC 只传数据；SDK 特有的模型和 ORM 对象在子进程适配边界转换。
 
 `checkpoints.py` 将 Cognee `system`（图、向量、关系元数据）、`data` 和向量身份文件作为
 同一提交单元。SDK 使用原有路径的可丢弃工作区，`.publication` 内封存的恢复点永不交给 SDK
 打开，避免只读操作隐含的建表/统计写入污染恢复点，也不需要改写已存储的文档 URI。
-每次打开 SDK 前持久化 dirty 标记；投影分组完成后先关闭工作进程，再重新打开核验本组真实
-图谱覆盖（包含同一数据集中已完成的旧文档）并关闭，最后复制完整派生状态、原子更新提交记录，
-才确认对应 outbox 条目。
+每次打开 SDK 前持久化 dirty 标记。变更计划以最近发布清单为基准，首次接入才读取旧索引建立
+基线；以原生已确认映射交叉核验，已持久化的在途尝试由幂等重试处理。宿主显式登记新增、替换和
+删除；提交时核对所有数据集与文档清单、标签、正文 SHA-256、完成标记，并检查当前代际已完成
+文档的真实分块覆盖。新增正文须与输入逐字节一致，不仅相信 SDK 元数据。再正常关闭、重新打开
+并核对同一清单，最后复制完整派生状态、原子更新提交记录，才确认对应 outbox 条目。
+整库退役、压缩、增强同样经过上述提交门；不因没有新增文档而跳过。仅打开当前代际及本次写入的
+图库，不为验收强行打开待清理的旧坏图。清单不替代图数据库的全量结构校验或业务召回验收。
 发布后、确认队列前中断会按稳定文档 ID 重试；不会把原生内容或后来新增的队列回退。
 
 候选失败先回收工作进程，再从封存快照恢复全部派生组件。恢复中断后按同一记录重做，恢复完成
 前不启动 SDK。宿主退出不必等模型抽取或 native 查询完成；工作区可丢弃，下次启动先恢复再续跑。
 读取与批次写入互斥，维护窗口内 Cognee 通道可能超时，现有原生召回不受影响。首次接入保留
 现有索引作为基线，不重抽取已有数据；这不能修好升级前已经损坏的文件，旧坏库仍需隔离和新建代际。
+
+恢复点封存文件清单、大小、内容清单及依赖版本，并在提交记录保存清单校验和。恢复前发现缺失、
+大小异常或清单损坏便停止，不覆盖工作区。文件大小校验不是全库位腐败检测；版本记录用于审计，
+普通 SDK 升级不自动重建。旧恢复点在下一次正常提交时补齐清单，不更改投影格式、文档 ID 或向量空间。
+升级 SDK 时运行 `sdk_contract.py` 契约、原生故障恢复测试与真实模型集成验收；投影格式升级另行评估。
+历史归档识别明确支持的格式版本，不以“当前版本”代替可读取历史版本清单。
+
+`.publication/worker.log` 记录 PID、恢复点、RPC 方法耗时及原生退出码，保存脱敏后的 SDK 错误输出；
+最多两个 1 MiB 文件，超长单行省略。排查时结合当前提交与原生崩溃报告，不仅根据 exit_code 猜原因。
 
 APFS 优先 `clonefile`、Linux 优先 reflink，共享未变块；不能使用硬链接充当快照。
 不支持块共享时使用有界复制，单次完整复制预算 2 GiB，并保留磁盘余量；超限拒绝本次写入，
@@ -367,6 +388,8 @@ Web 存储明细展示整个 Cognee 目录的图、向量、元数据、原文�
 先审计当前原生映射覆盖，并复用构建验收核对后端文档、内容指纹、标签、抽取标记及实际图谱覆盖，
 再逐篇完整留存旧原文、标签和来源到 `cognee_legacy_documents`，
 完成包含这些归档的原生 SQLite 备份并通过 `quick_check` 后，才调用公开 SDK `datasets.empty_dataset`。
+同一当前代际复用一份累计退役备份：先完整生成、校验临时文件，再原子替换，避免每退役一个数据集
+额外保留一份完整原生库；原生库内的历史归档继续累计，用户手动备份不受影响。
 SDK 负责清理索引和按引用计数释放原文；不得绕过 SDK 按目录名手工删除。当前代际、外部数据集、
 仍被映射引用的数据集，以及无法核实来源/完整原文的目标均拒绝清理。归档或备份失败时不进入删除。
 取消或部分删除失败后归档、备份仍保留，可重新选择剩余旧数据集重试；不自动续跑删除操作。
@@ -447,7 +470,7 @@ LiteLLM 升级另须运行[缓存健康门](context-cache.md#用量与版本变�
 | 投影开关 | cognee.json `project_memories_enabled` / `project_graph_enabled`（默认均 true） | memory 投影与主向量库同源（重复嵌入），graph 投影是原生检索没有的增量，可按需关停 |
 | embedding 用量账本 | `agent/memory/embedding/usage.py` + `GET /status/usage` 的 embedding 段 | 引擎级埋点（查询/批量/多模态）：日级 calls/texts/chars，内存累加 + 防抖落盘。cognee 自带引擎不在此口径 |
 | 批量对齐与缓存 | `embedding/worker._batch_size` + `engine.max_batch_size` + `embed_query_cache_size` | worker 批次取 min(配置, 客户端 embedding_max_batch)，避免 llm_client 内部拆批；查询向量缓存容量/TTL 可配 |
-| 向量索引清理 | `scripts/dedupe_cognee_vector_index.py` | 一次性治理脚本（幂等，应用运行中可执行）：EdgeType/Entity 等索引按 text 精确去重 + 存量 goal 投影退场 |
+| 派生索引维护边界 | `cognee/client.py` | 删除、压缩和增强统一进入发布事务；禁止维护脚本直接打开 Lance/Ladybug 写入，绕过工作进程锁和恢复点 |
 | 依赖约束 | `pyproject.toml` + `uv.lock` | Cognee、LiteLLM 精确锁定，不覆盖 Cognee 的 LiteLLM 约束；onnxruntime override 为宿主音频栈保留，Cognee 不走 fastembed。Lance/PyLance 压缩前检查内核匹配；Ladybug 沿用 native 监督边界；投影显式 `literal_text`，避免正文被当成 URL 或路径 |
 
 ## 遗忘治理

@@ -118,8 +118,8 @@ async def test_real_projection_rebuild_tagged_recall_update_delete(tmp_path, mon
     config.write_breaker_enabled = False
     monkeypatch.setattr("agent.memory.cognee.rebuild.backups_root", lambda: tmp_path / "backups")
     monkeypatch.setattr("agent.memory.cognee.retirement.backups_root", lambda: tmp_path / "backups")
-    client = CogneeClient(config)
     store = MemoryStore(str(tmp_path / "memory.sqlite3"))
+    client = CogneeClient(config, source_mappings=store.projection_state.publication_sources)
     store.set_cognee_projection_enabled(True)
     coordinator = CogneeCoordinator(store, client, config)
     await coordinator.rebuild.initialize(config)

@@ -7,6 +7,8 @@ SDK 始终使用原目录，快照永不交给数据库引擎打开，因而无�
 from __future__ import annotations
 
 import ctypes
+import hashlib
+import importlib.metadata
 import json
 import os
 import shutil
@@ -23,6 +25,17 @@ from core.log import log
 
 PARTS = ("system", "data", "anelf-embedding.json")
 CONTROL = ".publication"
+
+
+def runtime_versions() -> dict[str, str]:
+    """版本用于审计与升级验收，不把普通依赖升级等同于投影重建。"""
+    versions = {}
+    for name in ("cognee", "litellm", "ladybug", "lancedb", "pylance"):
+        try:
+            versions[name] = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            versions[name] = ""
+    return versions
 
 
 def _sync_directory(path: Path) -> None:
@@ -133,6 +146,7 @@ class IndexCheckpoints:
         else:
             self.state = {"version": 1, "dirty": False, "committed": "", "commits": 0}
             self.commit()
+        self._read_proof(verify_files=True)
         if self.state.get("dirty"):
             self.restore()
         with FileLock(str(self.control / "worker.lock"), timeout=0):
@@ -152,19 +166,47 @@ class IndexCheckpoints:
         self.state["dirty"] = True
         self._save()
 
-    def commit(self) -> None:
+    def _read_proof(self, *, verify_files: bool = False) -> dict[str, Any]:
+        digest = self.state.get("proof_sha256")
+        if not digest:
+            return {}  # 已发布的旧恢复点在下一次正常提交时补齐，不强制重建。
+        root = self.control / self.state["committed"]
+        payload = self._safe(root / "proof.json").read_bytes()
+        if hashlib.sha256(payload).hexdigest() != digest:
+            raise RuntimeError("索引恢复点清单校验失败，停止恢复；工作区和原生内容保留")
+        proof: dict[str, Any] = json.loads(payload)
+        if proof.get("version") != 1 or not isinstance(proof.get("files"), dict):
+            raise RuntimeError("索引恢复点清单格式不受支持")
+        if verify_files:
+            for name, size in proof["files"].items():
+                file = self._safe(root / name)
+                if not file.resolve().is_relative_to(root.resolve()) or not file.is_file() or file.stat().st_size != size:
+                    raise RuntimeError(f"索引恢复点文件缺失或大小变化: {name}；禁止覆盖工作区")
+        return proof
+
+    def read_manifest(self) -> dict[str, Any] | None:
+        return self._read_proof().get("index")
+
+    def commit(self, manifest: dict[str, Any] | None = None) -> None:
         """调用者必须已关闭 SDK 并等待子进程退出；先完整快照，再原子发布。"""
         with FileLock(str(self.control / "worker.lock"), timeout=0):
             name = uuid.uuid4().hex
             target = self.control / name
             try:
                 stats = self._copy(self.root, target)
+                files = {path.relative_to(target).as_posix(): path.stat().st_size
+                         for path in target.rglob("*") if path.is_file()}
+                proof = json.dumps({"version": 1, "files": files, "index": manifest,
+                                    "runtime": runtime_versions()}, ensure_ascii=False, sort_keys=True)
+                atomic_write_text(target / "proof.json", proof)
+                _sync_directory(target)
             except BaseException:
                 self._remove(target)
                 raise
             previous = self.state.get("committed")
             next_state = {**self.state, "committed": name, "dirty": False,
-                          "commits": int(self.state.get("commits", 0)) + 1, **stats}
+                          "commits": int(self.state.get("commits", 0)) + 1,
+                          "proof_sha256": hashlib.sha256(proof.encode("utf-8")).hexdigest(), **stats}
             self._save(next_state)
             self.state = next_state
             # 仅删除自身产生的过期快照；用户备份和旧数据集不在这个目录。
@@ -177,6 +219,7 @@ class IndexCheckpoints:
     def restore(self) -> None:
         """恢复可重入；dirty 只在全部组件完成替换后清除。"""
         with FileLock(str(self.control / "worker.lock"), timeout=5):
+            self._read_proof(verify_files=True)
             source = self.control / self.state["committed"]
             staging = self.control / "restoring"
             self._remove(staging)

@@ -45,7 +45,7 @@ uv run pytest -m integration           # 集成
 
 ## CI（.github/workflows/ci.yml）
 
-模块化三 job：
+按平台与职责拆分的门禁：
 
 - `changes`（原生 shell 归类：push 对 HEAD^、PR 对目标分支基点对比）
 - `lint`（ruff + import-linter + mypy core 三平台必过/全量观察，静态门禁与改动面无关始终全仓）
@@ -54,6 +54,8 @@ uv run pytest -m integration           # 集成
   专属腿；`fail-fast: false` 保留完整失败面）+ `frontend`（lint/build；模块前端 `channels/*/frontend/`、
   实体 `*.tsx` 面板同属前端改动面）
 - `docs`（AGENTS.md ≤500 行门禁——防止工作区指令再膨胀，长期指导迁移到 docs/）
+- `windows-tests`（隔离配置和数据目录的单元与模块回归）
+- `macos-index-recovery`（真实 Ladybug 进程中断、文件系统快照恢复及升级兼容契约；不调用外部模型）
 
 文档类提交全跳过，`workflow_dispatch` 手动触发全量；各 job 均有 timeout-minutes 挂起护栏，覆盖率
 产物按腿上传。本地一键镜像 `scripts/check.sh`（--fast 仅静态门禁 / --skip-fe / --skip-browser /

@@ -57,10 +57,6 @@ def decode(value: Any) -> Any:
         return [decode(item) for item in value]
     if isinstance(value, dict):
         if set(value) == {"__input_document__"}:
-            from cognee.tasks.ingestion.data_item import DataItem
-
-            document = dict(value["__input_document__"])
-            document["data_id"] = UUID(document["data_id"])
-            return DataItem(**document)
+            return InputDocument(**value["__input_document__"])
         return {key: decode(item) for key, item in value.items()}
     return value
