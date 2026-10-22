@@ -1,3 +1,4 @@
+import { useDialogSession } from "@/hooks/useDialogSession";
 import { useTranslation } from "react-i18next";
 import { RotateCcw } from "lucide-react";
 import type { ConfigMetaItem } from "@/lib/types";
@@ -26,14 +27,18 @@ function ValueBlock({ label, value }: { label: string; value: unknown }) {
 
 /** 配置项详情抽屉：完整描述、key、默认/当前值、来源、取值范围与重置。 */
 export function ConfigDetailDrawer({ item, group, onClose }: ConfigDetailDrawerProps) {
+  return item ? <ConfigDetailSession key={item.key} item={item} group={group} onClose={onClose} /> : null;
+}
+
+function ConfigDetailSession({ item, group, onClose }: ConfigDetailDrawerProps & { item: ConfigMetaItem }) {
+  const session = useDialogSession(onClose);
   const { t } = useTranslation("config");
   const { save, saving } = useConfigSave(item?.key ?? "");
 
-  if (!item) return null;
   const isDefault = JSON.stringify(item.value) === JSON.stringify(item.default);
 
   return (
-    <Drawer open onClose={onClose} title={item.description} width="max-w-sm">
+    <Drawer {...session.surfaceProps} onClose={session.close} title={item.description} width="max-w-sm">
       <div className="space-y-4">
         <div className="flex flex-wrap items-center gap-1.5">
           {group && (

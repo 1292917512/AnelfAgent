@@ -106,7 +106,7 @@ export function VolumeCard({ volume, onChanged }: Props) {
         <div className="space-y-1">
           <div className="h-1.5 rounded-full bg-elevated overflow-hidden">
             <div
-              className="h-full bg-accent transition-all"
+              className="h-full bg-accent transition-[width]"
               style={{ width: `${Math.round(progress * 100)}%` }}
             />
           </div>

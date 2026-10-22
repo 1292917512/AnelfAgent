@@ -52,7 +52,7 @@ export function ModelCard({
 
   return (
     <div className={cn(
-      "rounded-md border transition-all",
+      "rounded-md border transition-[color,background-color,border-color,box-shadow,opacity]",
       expanded ? "border-accent2 bg-elevated" : "border-border bg-elevated hover:border-border-strong",
       !model.enabled && "opacity-60",
     )}>

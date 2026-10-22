@@ -262,8 +262,8 @@ body {
 }
 
 @keyframes slide-in-right {
-  from { transform: translateX(100%); }
-  to { transform: translateX(0); }
+  from { opacity: 0; transform: translateX(12px); }
+  to { opacity: 1; transform: translateX(0); }
 }
 
 @keyframes pulse-subtle {
@@ -371,6 +371,7 @@ button, a, input, select, textarea, [role="tab"], [role="option"] {
 }
 .dialog-overlay[data-state="open"] { animation: surface-fade-in var(--duration-normal) var(--ease-out) both; }
 .dialog-overlay[data-state="closed"] { animation: surface-fade-out var(--duration-fast) ease-in both; }
+.dialog-overlay[data-state="closed"] { pointer-events: none; }
 .dialog-surface, .floating-surface { --surface-x: 0px; --surface-y: 6px; --surface-base-y: 0px; }
 .dialog-surface { box-shadow: var(--shadow-lg); }
 .dialog-surface[data-placement="right"] { --surface-x: 24px; --surface-y: 0px; }

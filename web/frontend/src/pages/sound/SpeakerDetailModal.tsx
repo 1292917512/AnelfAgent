@@ -1,3 +1,4 @@
+import { useDialogSession } from "@/hooks/useDialogSession";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -13,6 +14,7 @@ interface SpeakerDetailModalProps {
 
 /** 说话人详情：档案编辑 / 样本池管理 / 近期话语。 */
 export function SpeakerDetailModal({ speakerId, onClose }: SpeakerDetailModalProps) {
+  const session = useDialogSession(onClose);
   const { t } = useTranslation("sound");
   const queryClient = useQueryClient();
   const [name, setName] = useState<string | null>(null);
@@ -85,7 +87,7 @@ export function SpeakerDetailModal({ speakerId, onClose }: SpeakerDetailModalPro
   };
 
   return (
-    <Modal open onClose={onClose} title={speaker?.name || speaker?.speaker_key || "…"} width="max-w-2xl">
+    <Modal {...session.surfaceProps} onClose={session.close} title={speaker?.name || speaker?.speaker_key || "…"} width="max-w-2xl">
       {isLoading || !speaker ? (
         <div className="flex justify-center py-10"><Spinner /></div>
       ) : (

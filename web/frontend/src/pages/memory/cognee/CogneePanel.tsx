@@ -109,7 +109,7 @@ export function CogneePanel() {
               <button
                 onClick={() => retryMutation.mutate()}
                 disabled={retryMutation.isPending}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-[color,background-color,border-color,box-shadow,opacity]"
               >
                 <RefreshCw size={14} /> {t("retryFailedSync")}
               </button>
@@ -117,14 +117,14 @@ export function CogneePanel() {
             <button
               onClick={() => compactMutation.mutate()}
               disabled={!availability?.ready || compactMutation.isPending}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-[color,background-color,border-color,box-shadow,opacity]"
             >
               <Shrink size={14} /> {t("cognee.compact")}
             </button>
             <button
               onClick={() => setConfirmation("backfill")}
               disabled={backfillMutation.isPending}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-[color,background-color,border-color,box-shadow,opacity]"
             >
               <Upload size={14} /> {t("cognee.backfill")}
             </button>
@@ -132,14 +132,14 @@ export function CogneePanel() {
               onClick={() => setConfirmation("rebuild")}
               disabled={!availability?.ready || rebuildMutation.isPending || status?.projection?.rebuild_requested || status?.retirement?.running
                 || ["requested", "scanning", "building", "verifying"].includes(status?.projection?.phase ?? "")}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-danger-subtle text-danger hover:bg-[rgba(239,68,68,0.15)] transition-all"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-danger-subtle text-danger hover:bg-[rgba(239,68,68,0.15)] transition-[color,background-color,border-color,box-shadow,opacity]"
             >
               <RefreshCw size={14} /> {t("cognee.rebuild")}
             </button>
             <button
               onClick={() => setConfirmation("freshRebuild")}
               disabled={!availability?.ready || rebuildMutation.isPending || status?.projection?.rebuild_requested || status?.retirement?.running}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-danger-subtle text-danger hover:bg-[rgba(239,68,68,0.15)] transition-all"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-danger-subtle text-danger hover:bg-[rgba(239,68,68,0.15)] transition-[color,background-color,border-color,box-shadow,opacity]"
             >
               <RefreshCw size={14} /> {t("cognee.freshRebuild")}
             </button>

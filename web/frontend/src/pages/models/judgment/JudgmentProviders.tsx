@@ -1,3 +1,4 @@
+import { useDialogSession } from "@/hooks/useDialogSession";
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -28,10 +29,11 @@ function ModelHealth({ health }: { health?: JudgmentHealth }) {
 }
 
 function ModelTest({ id, onClose }: { id: string; onClose: () => void }) {
+  const session = useDialogSession(onClose);
   const { t } = useTranslation("models");
   const cache = useQueryClient();
   const test = useMutation({ mutationFn: (inference: boolean) => judgmentApi.test(id, inference).then((r) => r.data), onSettled: () => cache.invalidateQueries({ queryKey: ["judgmentCatalog"] }) });
-  return <Modal open onClose={onClose} title={`${t("judgment.testChannel")} · ${id}`} footer={<><Button disabled={test.isPending} onClick={() => test.mutate(true)}><FlaskConical size={14} />{t("judgment.testInference")}</Button><Button variant="primary" loading={test.isPending} onClick={() => test.mutate(false)}>{t("judgment.testChannel")}</Button></>}>
+  return <Modal {...session.surfaceProps} onClose={session.close} title={`${t("judgment.testChannel")} · ${id}`} footer={<><Button disabled={test.isPending} onClick={() => test.mutate(true)}><FlaskConical size={14} />{t("judgment.testInference")}</Button><Button variant="primary" loading={test.isPending} onClick={() => test.mutate(false)}>{t("judgment.testChannel")}</Button></>}>
     <p className="mb-3 text-xs text-muted">{t("judgment.testHint")}</p>
     {test.data && <JudgmentTestResultCard result={test.data} />}
     {test.error && <QueryError compact error={test.error} />}

@@ -1,3 +1,4 @@
+import { useDialogSession } from "@/hooks/useDialogSession";
 import { useTranslation } from "react-i18next";
 import { FlaskConical, Save } from "lucide-react";
 import type { ModelConfig, ProviderConfig } from "@/lib/types";
@@ -9,11 +10,12 @@ import { ModelEditorFields } from "./ModelEditorFields";
 import { ModelTestResult } from "./ModelTestResult";
 
 export function ModelEditorDialog({ provider, model, onClose }: { provider: ProviderConfig; model: ModelConfig; onClose: () => void }) {
+  const session = useDialogSession(onClose);
   const { t } = useTranslation(["models", "common"]);
-  const editor = useModelEditor(provider, model, onClose);
-  const guard = useDiscardChanges(editor.dirty, onClose, editor.busy);
+  const editor = useModelEditor(provider, model, session.close);
+  const guard = useDiscardChanges(editor.dirty, session.close, editor.busy);
   return <>
-    <Modal open onClose={guard.requestClose} dismissible={!editor.busy} width="max-w-3xl"
+    <Modal {...session.surfaceProps} onClose={guard.requestClose} dismissible={!editor.busy} width="max-w-3xl"
       title={<span className="min-w-0">{t("editModel")} <span className="mt-1 block break-all text-xs font-normal text-muted">{model.id}</span></span>}
       footer={<>
         <Button size="sm" disabled={editor.busy} onClick={guard.requestClose}>{t("common:cancel")}</Button>

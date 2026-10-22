@@ -1,3 +1,4 @@
+import { useDialogSession } from "@/hooks/useDialogSession";
 import { useId, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -8,6 +9,7 @@ import { useDiscardChanges } from "@/hooks/useDiscardChanges";
 import { EMPTY_PROVIDER_FIELDS, ProviderFields } from "./ProviderFields";
 
 export function ProviderForm({ onClose }: { onClose: () => void }) {
+  const session = useDialogSession(onClose);
   const { t } = useTranslation(["models", "common"]);
   const client = useQueryClient();
   const id = useId();
@@ -15,11 +17,11 @@ export function ProviderForm({ onClose }: { onClose: () => void }) {
   const [form, setForm] = useState(EMPTY_PROVIDER_FIELDS);
   const add = useMutation({
     mutationFn: () => providersApi.create({ ...form, id: providerId.trim() }),
-    onSuccess: async () => { await client.invalidateQueries({ queryKey: ["providers"] }); onClose(); },
+    onSuccess: async () => { await client.invalidateQueries({ queryKey: ["providers"] }); session.close(); },
   });
-  const guard = useDiscardChanges(!!providerId || JSON.stringify(form) !== JSON.stringify(EMPTY_PROVIDER_FIELDS), onClose, add.isPending);
+  const guard = useDiscardChanges(!!providerId || JSON.stringify(form) !== JSON.stringify(EMPTY_PROVIDER_FIELDS), session.close, add.isPending);
   return <>
-    <Modal open onClose={guard.requestClose} title={t("newProvider")} width="max-w-2xl" dismissible={!add.isPending} footer={<>
+    <Modal {...session.surfaceProps} onClose={guard.requestClose} title={t("newProvider")} width="max-w-2xl" dismissible={!add.isPending} footer={<>
       <Button onClick={guard.requestClose} disabled={add.isPending}>{t("common:cancel")}</Button>
       <Button variant="primary" disabled={!providerId.trim()} loading={add.isPending} onClick={() => add.mutate()}>{t("common:create")}</Button>
     </>}>

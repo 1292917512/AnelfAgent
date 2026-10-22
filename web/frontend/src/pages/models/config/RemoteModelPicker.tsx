@@ -203,7 +203,7 @@ export function RemoteModelPicker({
                 <label
                   key={rm.id}
                   className={cn(
-                    "flex items-center gap-3 px-3 py-2 rounded-md cursor-pointer transition-all",
+                    "flex items-center gap-3 px-3 py-2 rounded-md cursor-pointer transition-[color,background-color,border-color,box-shadow,opacity]",
                     added
                       ? "opacity-50 cursor-default bg-secondary"
                       : selected.has(rm.id)

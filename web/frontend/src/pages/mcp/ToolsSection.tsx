@@ -1,3 +1,4 @@
+import { useDialogSession } from "@/hooks/useDialogSession";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
@@ -17,11 +18,12 @@ export function ToolsSection({ serverName, toolCount }: { serverName: string; to
 }
 
 function ToolsDialog({ serverName, onClose }: { serverName: string; onClose: () => void }) {
+  const session = useDialogSession(onClose);
   const { t } = useTranslation("mcp");
   const [search, setSearch] = useState("");
   const query = useQuery({ queryKey: ["mcpServerTools", serverName], queryFn: () => mcpApi.tools(serverName).then((r) => r.data), staleTime: 30_000, throwOnError: false });
   const tools = (query.data ?? []).filter((tool) => `${tool.name} ${tool.description}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
-  return <Modal open onClose={onClose} title={`${serverName} · ${t("showTools")}`} width="max-w-2xl">
+  return <Modal {...session.surfaceProps} onClose={session.close} title={`${serverName} · ${t("showTools")}`} width="max-w-2xl">
     <div className="space-y-4">
       <div className="relative"><Search size={15} className="absolute left-3 top-3 text-muted" />
         <Input className="pl-9" value={search} onChange={(event) => setSearch(event.target.value)} aria-label={t("searchTools")} placeholder={t("searchTools")} />

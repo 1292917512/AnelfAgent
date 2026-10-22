@@ -1,4 +1,10 @@
-"""模型输出解析、工具事实配对与截断恢复。"""
+"""模型输出解析、工具事实配对与截断恢复。
+
+Model Experience:
+- 模型看到什么：仅含推理载体的 assistant 结果也进入当前执行链。
+- token 影响：这类结果增加对应推理载体的轮内输入。
+- 缓存影响：只追加执行链，不改稳定前缀。
+"""
 
 
 from __future__ import annotations
@@ -199,21 +205,23 @@ def _append_assistant_msg(
         tool_chain: List[Dict],
         result: ChatResult,
         content: str,
+        *,
+        tools_present: bool,
 ) -> None:
     """追加 assistant 消息并保留推理字段（维持多轮思维链连续性）。
 
-    空 content 且无 tool_calls 时不入链：litellm 会对空文本注入占位文本
+    空 content 且无工具或推理载体时不入链：litellm 会对空文本注入占位文本
     常驻历史并被模型复述。content 入链时做孤代理清洗（模型输出是脏字符
     来源之一；发送边界的全量扫描仍是兜底）。
     """
-    if not content and not result.tool_calls:
-        return
     if content:
         from core.sanitizer import clean_surrogates, has_surrogates
         if has_surrogates(content):
             content = clean_surrogates(content)
     assistant_msg = {"role": "assistant", "content": content}
-    preserve_reasoning_fields(assistant_msg, result)
+    preserve_reasoning_fields(assistant_msg, result, tools_present=tools_present)
+    if not content and not result.tool_calls and len(assistant_msg) == 2:
+        return
     tool_chain.append(assistant_msg)
 
 

@@ -1,3 +1,4 @@
+import { useDialogSession } from "@/hooks/useDialogSession";
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -10,6 +11,7 @@ import { useDiscardChanges } from "@/hooks/useDiscardChanges";
 import { ProviderFields, providerFields, type ProviderFieldsValue } from "./ProviderFields";
 
 function ProviderEditor({ provider, onClose }: { provider: ProviderConfig; onClose: () => void }) {
+  const session = useDialogSession(onClose);
   const { t } = useTranslation(["models", "common"]);
   const client = useQueryClient();
   const [initial] = useState(() => providerFields(provider));
@@ -19,14 +21,14 @@ function ProviderEditor({ provider, onClose }: { provider: ProviderConfig; onClo
     mutationFn: (data: UpdateProviderConfig) => providersApi.update(provider.id, data),
     onSuccess: async () => {
       await Promise.all([client.invalidateQueries({ queryKey: ["providers"] }), client.invalidateQueries({ queryKey: ["priorities"] })]);
-      onClose();
+      session.close();
     },
   });
   const test = useMutation({ mutationFn: () => modelsApi.test(draft.base_url, draft.api_key, provider.id, draft.api_type, draft.proxy_mode).then((response) => response.data.result) });
   const busy = save.isPending || test.isPending;
-  const guard = useDiscardChanges(dirty, onClose, busy);
+  const guard = useDiscardChanges(dirty, session.close, busy);
   return <>
-    <Modal open onClose={guard.requestClose} title={t("providerConfig")} width="max-w-2xl" dismissible={!busy} footer={<>
+    <Modal {...session.surfaceProps} onClose={guard.requestClose} title={t("providerConfig")} width="max-w-2xl" dismissible={!busy} footer={<>
       <Button onClick={guard.requestClose} disabled={busy}>{t("common:cancel")}</Button>
       <Button loading={test.isPending} disabled={save.isPending} onClick={() => test.mutate()}><TestTube size={14} />{t("common:test")}</Button>
       <Button variant="primary" loading={save.isPending} disabled={!dirty || test.isPending} onClick={() => save.mutate(draft)}><Save size={14} />{t("common:save")}</Button>

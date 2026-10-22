@@ -81,6 +81,10 @@ class ResponseResult:
             raw=self.raw,
             usage=self.usage.to_usage_info() if self.usage else None,
             model=self.model,
+            responses_output=(
+                list(self.output) if any(item.get("type") == "reasoning" for item in self.output)
+                else None
+            ),
         )
 
 

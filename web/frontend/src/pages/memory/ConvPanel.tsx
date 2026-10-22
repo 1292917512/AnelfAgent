@@ -136,7 +136,7 @@ export function ConvPanel() {
         </div>
       </Card>
       <Card title={t("messageRecord")} className="md:col-span-2 md:flex md:flex-col md:min-h-0" actions={selected ? (
-        <button onClick={() => clearConvMutation.mutate()} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-danger-subtle text-danger hover:bg-[rgba(239,68,68,0.15)] transition-all"><Trash2 size={14} /> {t("clearConversation")}</button>
+        <button onClick={() => clearConvMutation.mutate()} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-danger-subtle text-danger hover:bg-[rgba(239,68,68,0.15)] transition-[color,background-color,border-color,box-shadow,opacity]"><Trash2 size={14} /> {t("clearConversation")}</button>
       ) : undefined}>
         <div className="flex items-center gap-2 mb-2 text-xs text-muted">
           <label className="flex items-center gap-1">

@@ -52,7 +52,7 @@ export function ToolSystemRulesPanel() {
           <div className="flex items-center gap-2">
             <button
               onClick={() => setEditRules((prev) => (prev ? [...prev, ""] : [""]))}
-              className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-md border border-dashed border-border text-muted hover:border-accent hover:text-accent transition-all"
+              className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-md border border-dashed border-border text-muted hover:border-accent hover:text-accent transition-[color,background-color,border-color,box-shadow,opacity]"
             >
               <Plus size={12} /> {t("addRule")}
             </button>
@@ -60,7 +60,7 @@ export function ToolSystemRulesPanel() {
               onClick={handleSave}
               disabled={saveMutation.isPending}
               className={cn(
-                "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-all",
+                "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-[color,background-color,border-color,box-shadow,opacity]",
                 saved
                   ? "bg-ok text-white border border-[var(--ok)]"
                   : "bg-accent text-primary-foreground hover:bg-[var(--accent-hover)]",
@@ -71,7 +71,7 @@ export function ToolSystemRulesPanel() {
             </button>
             <button
               onClick={() => setEditRules(null)}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-[color,background-color,border-color,box-shadow,opacity]"
             >
               <X size={14} /> {t("cancel", { ns: "common" })}
             </button>
@@ -79,7 +79,7 @@ export function ToolSystemRulesPanel() {
         ) : (
           <button
             onClick={handleStartEdit}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-[color,background-color,border-color,box-shadow,opacity]"
           >
             {t("edit", { ns: "common" })}
           </button>

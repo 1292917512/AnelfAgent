@@ -36,7 +36,7 @@ export function ThinkingToolbar(props: Props) {
     <Button size="icon" variant="ghost" aria-pressed={props.autoFollow} title={t("autoFollow")} onClick={props.onToggleAutoFollow}
       className={props.autoFollow ? "bg-accent-subtle text-accent" : ""}><Crosshair size={16} /></Button>
     {props.isMobile ? <Popover.Root><Popover.Trigger asChild><Button size="icon" variant="ghost" aria-label={t("nav:more")}><MoreHorizontal size={18} /></Button></Popover.Trigger>
-      <Popover.Portal><Popover.Content align="end" sideOffset={8} className="z-[110] w-64 rounded-2xl border border-border bg-card p-2 shadow-lg">
+      <Popover.Portal><Popover.Content align="end" sideOffset={8} className="floating-surface z-[110] w-64 rounded-2xl border border-border bg-card p-2 shadow-lg">
         <Popover.Close asChild><button className="menu-action" onClick={props.onShowTools}><Wrench size={16} />{t("toolsPanel")}</button></Popover.Close>
         <Popover.Close asChild><button className="menu-action" onClick={props.onShowProviders}><Database size={16} />{t("contextProviders.title")}</button></Popover.Close>
         <Link to="/context" className="menu-action text-accent"><Database size={16} />{t("contextTab")}</Link>

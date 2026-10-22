@@ -110,7 +110,7 @@ export function StatusPanel() {
         <button
           onClick={() => triggerMut.mutate()}
           disabled={triggerMut.isPending || !isRunning}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-accent text-white hover:opacity-90 disabled:opacity-50 transition-all"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-accent text-white hover:opacity-90 disabled:opacity-50 transition-[color,background-color,border-color,box-shadow,opacity]"
         >
           <Zap size={13} /> {triggerMut.isPending ? t("status.triggering") : t("status.triggerHeartbeat")}
         </button>
@@ -153,7 +153,7 @@ export function StatusPanel() {
                       <div className="flex items-center gap-2 mt-1">
                         <div className="flex-1 h-1.5 rounded-full bg-[var(--border)] overflow-hidden max-w-[200px]">
                           <div
-                            className="h-full rounded-full bg-accent transition-all"
+                            className="h-full rounded-full bg-accent transition-[width]"
                             style={{ width: `${Math.min(100, ((s.beat_count ?? 0) / (s.every_n_beats ?? 10)) * 100)}%` }}
                           />
                         </div>
@@ -218,7 +218,7 @@ export function StatusPanel() {
           <button
             onClick={() => void refreshLog()}
             disabled={logFetching}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-[color,background-color,border-color,box-shadow,opacity]"
           >
             <RefreshCw size={14} /> {t("status.refreshLog")}
           </button>

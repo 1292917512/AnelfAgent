@@ -3,6 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it } from "vitest";
 import { Modal, ConfirmDialog } from "./Modal";
+import { useDialogSession } from "@/hooks/useDialogSession";
 
 function Nested() {
   const [parent, setParent] = useState(false);
@@ -32,4 +33,32 @@ it("cannot dismiss an in-flight confirmation", async () => {
   await user.keyboard("{Escape}");
   expect(closed).toBe(false);
   expect(screen.getByRole("dialog", { name: "Delete" })).toBeTruthy();
+});
+
+function Editor({ onClose }: { onClose: () => void }) {
+  const session = useDialogSession(onClose);
+  const [value, setValue] = useState("");
+  return <Modal {...session.surfaceProps} onClose={session.close} title="Editor">
+    <input aria-label="Draft" value={value} onChange={(event) => setValue(event.target.value)} />
+  </Modal>;
+}
+
+it("ends a mounted dialog session after focus restoration and resets its next draft", async () => {
+  const user = userEvent.setup();
+  const focusAtClose: Element[] = [];
+  function Host() {
+    const [open, setOpen] = useState(false);
+    return <><button onClick={() => setOpen(true)}>Edit</button>{open && <Editor onClose={() => {
+      if (document.activeElement) focusAtClose.push(document.activeElement);
+      setOpen(false);
+    }} />}</>;
+  }
+  render(<Host />);
+  const trigger = screen.getByText("Edit");
+  await user.click(trigger);
+  await user.type(screen.getByLabelText("Draft"), "Unsaved text");
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(focusAtClose).toEqual([trigger]));
+  await user.click(trigger);
+  expect((screen.getByLabelText("Draft") as HTMLInputElement).value).toBe("");
 });

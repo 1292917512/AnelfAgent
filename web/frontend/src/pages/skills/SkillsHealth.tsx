@@ -77,7 +77,7 @@ export function VectorBuildCard() {
       {state === "rebuilding" && progress.total > 0 && (
         <div className="h-1.5 rounded-full bg-bg overflow-hidden">
           <div
-            className="h-full bg-warn transition-all duration-300"
+            className="h-full bg-warn transition-[width] duration-300"
             style={{ width: `${pct}%` }}
           />
         </div>

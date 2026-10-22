@@ -193,13 +193,13 @@ bootstrap 不重复维护这些声明的导入清单。
 | 工具守卫 | `agent/mind/guardrails.py` | 精确失败重复/同工具连续失败/无进展循环检测，动作 warn/block/halt；分级提醒（首次温和、后续附参数预览）；用户插话重置计数 |
 | 错误分类 | `agent/llm/resilience/classifier.py` | LLM 错误分类（rate_limit/context_overflow/auth 等）驱动重试策略 |
 | 自适应重试 | `agent/llm/retry.py` | 指数退避 + 抖动（jittered_backoff） |
-| 上下文压缩 | `agent/context/compressor.py` | 溢出检测（真实 usage 优先）→ 保头保尾 + LLM 摘要 → 压缩反馈注入；摘要调用复用主前缀命中 KV 缓存；被压缩中间段的文件操作经规则提取为 `[已操作文件]` system 消息（单调增长的事实链，上限 30 条/类，不占摘要预算） |
+| 上下文压缩 | `agent/context/compressor.py` | 溢出检测取上一轮真实输入用量与当前消息估算的较大值；估算包括可见推理文本及原生 Responses 加密推理项的启发式体量。触发后保头保尾 + LLM 摘要 → 压缩反馈注入；摘要调用复用主前缀命中 KV 缓存；被压缩中间段的文件操作经规则提取为 `[已操作文件]` system 消息（单调增长的事实链，上限 30 条/类，不占摘要预算） |
 | 结果预算 | `agent/mind/result_budget.py` | 按模型窗口动态截断工具结果（15% 单条 / 30% 整轮） |
 | 会话令牌 | `agent/security/session_token.py` | 一次性令牌标记可信历史，泄露即 SECURITY 停止 |
 | 威胁扫描 | `agent/security/threat_scanner.py` | 注入模式扫描（工具结果标记 / 记忆写入拦截） |
 | 结果脱敏 | `core/sanitizer.py` | API Key/Token/密码自动遮盖（工具结果 + 日志） |
 | 崩溃尾部修复 | `agent/mind/execution/recovery.py` | 回复检查点落盘（`reply_checkpoints` 表），启动扫描崩溃残留注入「上次被中断」元消息；崩溃退出时附带崩溃上下文（macOS .ips 关联） |
-| reasoning 条件回传 | `think_loop.preserve_reasoning_fields` | `reasoning_details` 仅工具轮回传（DeepSeek 官方规则），纯文本轮省 token；`thinking_blocks` 无条件保留 |
+| reasoning 条件回传 | `agent/context/message_schema.py::preserve_reasoning_fields` | 请求带工具时回传 `reasoning_details`，即使当前轮只输出文本；`thinking_blocks` 含签名块无条件保留。Responses 原生推理项连同该响应的输出项在执行链中按原序回放，执行链结束后不入持久会话历史 |
 | 实时消息完整性 | `execution.messages._merge_new_messages` | 每次取数完整并入已提交的新消息，按实际覆盖水位消费待办；内存超窗补读数据库，模型容量沿用压缩及溢出处理，不靠分批执行延迟最新纠正 |
 
 连续三轮工具全错或达到同工具失败阈值时，经 `tools/tool_recovery.py` 评估恢复路径。

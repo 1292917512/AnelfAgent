@@ -58,6 +58,18 @@ i18n/locales/{zh,en}/         # 核心 namespace（zh/en key 一一对应；插�
   消息渲染器，详见 [ui-contributions.md](ui-contributions.md)
 - 插件 API 复用核心 axios 实例（`import { api, apiErrorMessage } from "@/lib/api"`）
 
+## 共享动效与弹层生命周期
+
+页面入口只做短淡入，不对实时刷新和列表逐项重播动画；交互反馈采用统一的时长与缓动令牌。
+卡片、按钮明确声明颜色、边框、阴影与透明度过渡，进度条仅平滑宽度，避免 `transition-all`
+意外动画表单展开、内容尺寸与布局变化。所有动效遵守系统 reduced-motion。
+
+Modal / Drawer 通过 `open` 驱动 Radix Presence；Popover Content 使用 `floating-surface`
+复用方向感知的进入和退出动画，不叠加独立淡入类。关闭态不可接收指针操作。
+按需挂载的编辑/详情会话可使用 `useDialogSession`：校验或未保存确认通过后调用 `close`，
+将 `surfaceProps` 传入主弹层，`onAfterClose` 在退出、焦点恢复后通知宿主卸载并清理草稿。
+该钩子仅用于一次挂载对应一次打开的会话；长期挂载的弹层仍由宿主直接控制 `open`。
+
 ## 工作区对话联动
 
 | 机制 | 位置 | 说明 |

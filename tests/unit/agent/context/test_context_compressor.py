@@ -65,6 +65,27 @@ class TestThreshold:
         msgs = [{"role": "user", "content": "你好世界" * 25}]
         assert ContextCompressor.estimate_tokens(msgs) > 50
 
+    def test_estimate_tokens_includes_visible_reasoning_once(self) -> None:
+        text = "思考步骤" * 1000
+        msg = {"role": "assistant", "content": "答", "reasoning_details": [{"text": text}],
+               "thinking_blocks": [{"type": "thinking", "thinking": text, "signature": "sig"}]}
+        with_both = ContextCompressor.estimate_tokens([msg])
+        with_one = ContextCompressor.estimate_tokens([
+            {key: value for key, value in msg.items() if key != "thinking_blocks"}
+        ])
+        assert with_both == with_one
+        assert with_both > 1000
+
+    def test_estimate_tokens_includes_encrypted_reasoning(self) -> None:
+        msg = {"role": "assistant", "content": "",
+               "responses_output": [{"type": "reasoning", "encrypted_content": "x" * 8000}]}
+        assert ContextCompressor.estimate_tokens([msg]) >= 2000
+
+    def test_estimate_tokens_includes_redacted_thinking(self) -> None:
+        msg = {"role": "assistant", "content": "",
+               "thinking_blocks": [{"type": "redacted_thinking", "data": "x" * 8000}]}
+        assert ContextCompressor.estimate_tokens([msg]) >= 2000
+
     def test_estimate_tokens_fallback(self, monkeypatch) -> None:
         """tiktoken 缺失时回退 chars/4 估算。"""
         import agent.context.compressor as cc
@@ -83,6 +104,12 @@ class TestShouldCompress:
         c = _compressor(10_000, threshold_percent=0.75)
         assert c.should_compress([], last_input_tokens=8_000)
         assert not c.should_compress([], last_input_tokens=5_000)
+
+    def test_new_content_exceeds_previous_usage(self) -> None:
+        c = _compressor(1_000, threshold_percent=0.75)
+        assert c.should_compress(
+            [{"role": "user", "content": "新增内容" * 2000}], last_input_tokens=100,
+        )
 
     def test_estimated_fallback(self) -> None:
         c = _compressor(1_000, threshold_percent=0.75)

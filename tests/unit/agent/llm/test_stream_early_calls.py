@@ -12,6 +12,16 @@ from typing import List
 import agent.llm.response_parsing as rp
 
 
+def test_signature_only_thinking_block_survives_stream() -> None:
+    accumulator = rp._ThinkingAccumulator()
+    accumulator.feed(SimpleNamespace(thinking_blocks=[
+        {"type": "thinking", "thinking": "", "signature": "sig"},
+    ], reasoning_details=None))
+    assert accumulator.thinking_blocks() == [
+        {"type": "thinking", "thinking": "", "signature": "sig"},
+    ]
+
+
 def _frag(idx: int, call_id: str = "", name: str = "", args: str = "") -> SimpleNamespace:
     return SimpleNamespace(
         index=idx, id=call_id,

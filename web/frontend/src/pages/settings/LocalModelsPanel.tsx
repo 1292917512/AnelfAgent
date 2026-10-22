@@ -64,7 +64,7 @@ function ModelRow({ model, busy }: { model: LocalModelAsset; busy: boolean }) {
         <div className="space-y-1">
           <div className="h-1.5 rounded-full bg-border overflow-hidden">
             <div
-              className="h-full bg-primary transition-all"
+              className="h-full bg-primary transition-[width]"
               style={{ width: progress === null ? "100%" : `${progress}%`, opacity: progress === null ? 0.4 : 1 }}
             />
           </div>

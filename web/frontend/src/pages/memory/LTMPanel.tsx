@@ -87,7 +87,7 @@ export function LTMPanel() {
               <Merge size={14} /> {t("mergeSelected")} ({selectedIds.size})
             </button>
           )}
-          <button onClick={() => setShowCreate(!showCreate)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-accent text-primary-foreground hover:bg-[var(--accent-hover)] transition-all"><Plus size={14} /> {t("common:create")}</button>
+          <button onClick={() => setShowCreate(!showCreate)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-accent text-primary-foreground hover:bg-[var(--accent-hover)] transition-[color,background-color,border-color,box-shadow,opacity]"><Plus size={14} /> {t("common:create")}</button>
         </div>
       }>
         {/* Search bar */}
@@ -144,7 +144,7 @@ export function LTMPanel() {
             const tags = (item.tags as string[]) || [];
             const accessCount = Number(item.access_count || 0);
             return (
-              <div key={id} className={cn("p-3 rounded-md border transition-all", isSelected ? "bg-ok-subtle border-[var(--ok)]" : "bg-elevated border-border")}>
+              <div key={id} className={cn("p-3 rounded-md border transition-[color,background-color,border-color,box-shadow,opacity]", isSelected ? "bg-ok-subtle border-[var(--ok)]" : "bg-elevated border-border")}>
                 <div className="flex items-start justify-between gap-2 mb-1">
                   <div className="flex items-center gap-2 flex-wrap">
                     <input type="checkbox" checked={isSelected} onChange={() => toggleSelect(id)} className="rounded" />

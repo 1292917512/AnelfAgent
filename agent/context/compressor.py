@@ -2,8 +2,8 @@
 
 自动检测上下文溢出风险，智能压缩中间轮次，保留关键信息，延长对话寿命：
 
-- 溢出检测：优先使用上轮真实输入占用（口径归一的 total_input_tokens，
-  含缓存读/写），否则本地估算
+- 溢出检测：取上轮真实输入占用（口径归一的 total_input_tokens，含缓存读/写）
+  与当前本地估算的较大值；估算覆盖可见及加密推理载体
   （tiktoken cl100k_base 真实分词，缺失/异常时回退 chars/4）；
   阈值 = (context_length - max_output) × threshold_percent（小窗口退化 0.85）
 - 压缩策略：保头（system 层 + 首轮）保尾（最近 N 条），中间轮次由 LLM 生成结构化摘要
@@ -13,6 +13,11 @@
 - 关键信息保护：未完成任务、用户偏好、关键实体/记忆 ID、重要决定
 - 压缩反馈：注入元消息告知 AI "以下是之前对话的摘要"
 - 压缩后使 Prompt 层缓存失效（volatile 层内容已变化）
+
+Model Experience:
+- 模型看到什么：只在触发压缩时看到既有摘要；推理字段仅参与本地估算。
+- token 影响：新增推理体量可提前触发压缩，减少溢出后的重试。
+- 缓存影响：估算不改前缀；压缩仍按既有机制登记合法断裂。
 """
 from __future__ import annotations
 
@@ -517,6 +522,7 @@ class ContextCompressor:
         多模态块（图片/音频/视频）按字节启发式单独估算（`_estimate_media_block`），
         不再计 0——多图会话此前会被严重低估，压缩触发系统性偏晚。
         相同内容字符串/媒体块的估算结果按进程内缓存复用（思考循环每轮全量估算场景）。
+
         """
         parts: List[str] = []
         media_tokens = 0
@@ -538,6 +544,39 @@ class ContextCompressor:
                     parts.append(json.dumps(tc, ensure_ascii=False))
                 except (TypeError, ValueError):
                     log("estimate_tokens 异常已忽略", "DEBUG")
+            # 同一段思考可能同时出现在两种协议载体；只取较大的文本量。
+            reasoning_variants: List[List[str]] = []
+            details = msg.get("reasoning_details") or []
+            if isinstance(details, list):
+                reasoning_variants.append([
+                    detail["text"] for detail in details
+                    if isinstance(detail, dict) and isinstance(detail.get("text"), str)
+                ])
+                media_tokens += sum(
+                    len(detail["data"]) // _CHARS_PER_TOKEN for detail in details
+                    if isinstance(detail, dict) and detail.get("type") == "reasoning.encrypted"
+                    and isinstance(detail.get("data"), str)
+                )
+            blocks = msg.get("thinking_blocks") or []
+            if isinstance(blocks, list):
+                reasoning_variants.append([
+                    block["thinking"] for block in blocks
+                    if isinstance(block, dict) and isinstance(block.get("thinking"), str)
+                ])
+                media_tokens += sum(
+                    len(block["data"]) // _CHARS_PER_TOKEN for block in blocks
+                    if isinstance(block, dict) and block.get("type") == "redacted_thinking"
+                    and isinstance(block.get("data"), str)
+                )
+            if reasoning_variants:
+                parts.extend(max(reasoning_variants, key=lambda variant: sum(map(len, variant))))
+            output = msg.get("responses_output") or []
+            if isinstance(output, list):
+                for item in output:
+                    if isinstance(item, dict) and item.get("type") == "reasoning":
+                        encrypted = item.get("encrypted_content")
+                        if isinstance(encrypted, str):
+                            media_tokens += len(encrypted) // _CHARS_PER_TOKEN
         total_chars = sum(len(p) for p in parts)
         enc = _get_tiktoken_encoding()
         if enc is not None:
@@ -633,7 +672,7 @@ class ContextCompressor:
         threshold = self.threshold_tokens()
         if threshold <= 0:
             return False
-        tokens = last_input_tokens or self.estimate_tokens(messages)
+        tokens = max(last_input_tokens, self.estimate_tokens(messages))
         return tokens >= threshold
 
     def request_manual(self, scope: str, focus_topic: str = "") -> None:

@@ -10,6 +10,7 @@ from typing import Any, List, Optional
 from unittest.mock import AsyncMock
 
 from agent.config import MindConfig
+from agent.llm.types import ChatResult, ToolCall
 from agent.mind.execution.loop import think_loop
 from agent.mind.execution.state import ThinkMode
 from core.tags import etag_all
@@ -25,31 +26,27 @@ DEFAULT_MIND_CONFIG: dict = {
 }
 
 
-def text_result(text: str) -> SimpleNamespace:
+def text_result(text: str) -> ChatResult:
     """一轮 LLM 响应：纯文本（无工具调用 → 收敛回复）。"""
-    return SimpleNamespace(
-        content=text, tool_calls=[], reasoning_content="",
-        usage=None, raw=None, model="fake",
-    )
+    return ChatResult(content=text, model="fake")
 
 
-def tool_result(text: str, tool_names: List[str], arguments: str = "{}") -> SimpleNamespace:
+def tool_result(text: str, tool_names: List[str], arguments: str = "{}") -> ChatResult:
     """一轮 LLM 响应：发起若干工具调用（共享同一份 arguments）。"""
-    return SimpleNamespace(
+    return ChatResult(
         content=text,
         tool_calls=[
-            SimpleNamespace(
+            ToolCall(
                 id=f"tc_{n}", name=n, arguments=arguments,
-                raw={"id": f"tc_{n}", "type": "function",
-                     "function": {"name": n, "arguments": arguments}},
+                raw=ToolCall.wire_raw(f"tc_{n}", n, arguments),
             )
             for n in tool_names
         ],
-        reasoning_content="", usage=None, raw=None, model="fake",
+        model="fake",
     )
 
 
-def end_reply_result() -> SimpleNamespace:
+def end_reply_result() -> ChatResult:
     """一轮 LLM 响应：end_reply 终止指令。"""
     return tool_result("", ["end_reply"])
 

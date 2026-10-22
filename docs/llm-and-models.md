@@ -118,6 +118,11 @@ audio_bytes = audio.value
 - base_url 以 `/responses`、`/chat/completions` 结尾时 URL 推断优先于配置（`resolved_chat_protocol`）；
   bridge 的唯一正当用途 = 非 openai 系 api_type 的 Responses 暴露
 
+Responses 返回 `reasoning` item 时，当前执行链保留同一响应的全部原生 `output` item，下一轮调用
+按原序回放，再追加工具结果；这样 `function_call` 的 `id` 与 `call_id` 均维持端点原值。流式路径
+从完成事件的 `output` 取终态项，不使用未完成的增量项。普通 chat_completions 请求在 LLM 边界
+剥离该原生字段；执行链完成后也不写入持久会话历史。
+
 ### 思考等级下发
 
 - 下发载体按 api_type 区分（litellm 行为差异）：openai 兼容通道 extra_body 由 SDK 展开进请求体顶层；

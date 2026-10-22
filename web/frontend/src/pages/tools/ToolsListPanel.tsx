@@ -92,7 +92,7 @@ export function ToolsListPanel() {
         <option value="all">{t("statusAll")}</option><option value="enabled">{t("statusEnabled")}</option><option value="disabled">{t("statusDisabled")}</option>
       </select>
       <Popover.Root><Popover.Trigger asChild><Button aria-label={t("filterTags")}><SlidersHorizontal size={16} />{t("filterTags")}{tags.length > 0 && <span>{tags.length}</span>}</Button></Popover.Trigger>
-        <Popover.Portal><Popover.Content align="end" sideOffset={8} className="filter-popover z-[110] w-80 max-w-[calc(100vw-24px)] rounded-xl border border-border bg-card p-3 shadow-lg">
+        <Popover.Portal><Popover.Content align="end" sideOffset={8} className="floating-surface filter-popover z-[110] w-80 max-w-[calc(100vw-24px)] rounded-xl border border-border bg-card p-3 shadow-lg">
           <Input aria-label={t("searchTags")} placeholder={t("searchTags")} value={tagSearch} onChange={(event) => setTagSearch(event.target.value)} />
           {tagQuery.error ? <QueryError compact error={tagQuery.error} retry={() => void tagQuery.refetch()} /> : <div className="mt-3 flex max-h-64 flex-wrap gap-2 overflow-y-auto">
             {(tagQuery.data ?? []).filter((tag: string) => tag.toLocaleLowerCase().includes(tagSearch.toLocaleLowerCase())).map((tag: string) => <button key={tag} aria-pressed={tags.includes(tag)}

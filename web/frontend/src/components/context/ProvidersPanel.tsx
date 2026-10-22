@@ -37,7 +37,7 @@ export function ProvidersPanel() {
         </div>
         <div className="h-2 rounded-full bg-elevated overflow-hidden">
           <div
-            className={cn("h-full rounded-full transition-all duration-500", ratio >= 0.9 ? "bg-danger" : ratio >= 0.7 ? "bg-warn" : "bg-ok")}
+            className={cn("h-full rounded-full transition-[width,background-color] duration-200", ratio >= 0.9 ? "bg-danger" : ratio >= 0.7 ? "bg-warn" : "bg-ok")}
             style={{ width: `${Math.min(ratio * 100, 100)}%` }}
           />
         </div>

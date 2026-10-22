@@ -10,6 +10,7 @@ export interface DialogSurfaceProps {
   className?: string;
   placement?: "center" | "right" | "left" | "top" | "fullscreen";
   dismissible?: boolean;
+  onAfterClose?: () => void;
 }
 
 const PLACEMENT = {
@@ -21,7 +22,7 @@ const PLACEMENT = {
 };
 
 export function DialogSurface({
-  open, onClose, title, children, className, placement = "center", dismissible = true,
+  open, onClose, title, children, className, placement = "center", dismissible = true, onAfterClose,
 }: DialogSurfaceProps) {
   const returnFocus = useRef<HTMLElement | null>(null);
   return (
@@ -39,6 +40,7 @@ export function DialogSurface({
             event.preventDefault();
             if (returnFocus.current?.isConnected) returnFocus.current.focus({ preventScroll: true });
             else document.querySelector<HTMLElement>("main")?.focus({ preventScroll: true });
+            if (!open) onAfterClose?.();
           }}
           onEscapeKeyDown={(event) => {
             // 关闭由焦点所在的弹层处理，避免快速重开时父层的旧监听吞掉 Esc。
@@ -46,8 +48,8 @@ export function DialogSurface({
           }}
           onKeyDown={(event) => {
             if (event.key !== "Escape") return;
-            const menu = event.target instanceof Element && event.target.closest('[role="menu"]');
-            if (menu) return;
+            if (event.target instanceof Element && (event.target.closest('[role="menu"]')
+              || event.target.closest('[role="dialog"]') !== event.currentTarget)) return;
             event.preventDefault();
             event.stopPropagation();
             if (open && dismissible) onClose();

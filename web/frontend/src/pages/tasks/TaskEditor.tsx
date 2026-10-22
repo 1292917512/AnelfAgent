@@ -1,3 +1,4 @@
+import { useDialogSession } from "@/hooks/useDialogSession";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -14,6 +15,7 @@ export function taskIdentity(task: Pick<TaskConfig, "name" | "folder">): string 
 }
 
 export function TaskEditor({ task, onClose }: { task: TaskConfig | null; onClose: () => void }) {
+  const session = useDialogSession(onClose);
   const { t } = useTranslation(["workbench", "common"]);
   const client = useQueryClient();
   const draft = useDraft(task ?? EMPTY_TASK);
@@ -28,12 +30,12 @@ export function TaskEditor({ task, onClose }: { task: TaskConfig | null; onClose
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: ["tasks"] });
       void client.invalidateQueries({ queryKey: ["heartbeatStatus"] });
-      onClose();
+      session.close();
     },
   });
-  const close = () => { if (save.isPending) return; if (draft.dirty) setConfirmClose(true); else onClose(); };
+  const close = () => { if (save.isPending) return; if (draft.dirty) setConfirmClose(true); else session.close(); };
   return <>
-    <Drawer open onClose={close} dismissible={!save.isPending} width="max-w-2xl"
+    <Drawer {...session.surfaceProps} onClose={close} dismissible={!save.isPending} width="max-w-2xl"
       title={task ? t("tasks.editTitle", { name: task.name }) : t("tasks.createTitle")}
       footer={<>
         <Button onClick={close} disabled={save.isPending}>{t("common:cancel")}</Button>
@@ -46,6 +48,6 @@ export function TaskEditor({ task, onClose }: { task: TaskConfig | null; onClose
     </Drawer>
     <ConfirmDialog open={confirmClose} title={t("common:unsavedChanges")} message={t("common:unsavedDescription")}
       confirmText={t("common:discardChanges")} cancelText={t("common:keepEditing")}
-      onClose={() => setConfirmClose(false)} onConfirm={onClose} danger />
+      onClose={() => setConfirmClose(false)} onConfirm={() => { setConfirmClose(false); session.close(); }} danger />
   </>;
 }

@@ -1,3 +1,4 @@
+import { useDialogSession } from "@/hooks/useDialogSession";
 import { useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -12,6 +13,7 @@ import { useDiscardChanges } from "@/hooks/useDiscardChanges";
 interface Props { id?: string; provider?: DecisionProvider; onClose: () => void }
 
 export function JudgmentProviderEditor({ id = "", provider, onClose }: Props) {
+  const session = useDialogSession(onClose);
   const { t } = useTranslation(["models", "common"]);
   const cache = useQueryClient();
   const [providerId, setProviderId] = useState(id);
@@ -27,15 +29,15 @@ export function JudgmentProviderEditor({ id = "", provider, onClose }: Props) {
   const payload: DecisionProvider = { name, base_url: url, api_key: key, use_proxy: useProxy, models: Object.fromEntries(models.map((model) => [model.id.trim(), { name: model.name, model: model.model }])) };
   const save = useMutation({
     mutationFn: () => judgmentApi.saveProvider(providerId.trim(), payload),
-    onSuccess: async () => { await cache.invalidateQueries({ queryKey: ["judgmentCatalog"] }); onClose(); },
+    onSuccess: async () => { await cache.invalidateQueries({ queryKey: ["judgmentCatalog"] }); session.close(); },
   });
   const dirty = providerId !== id || name !== (provider?.name ?? "") || url !== (provider?.base_url ?? "")
     || key !== (provider?.api_key ?? "") || useProxy !== (provider?.use_proxy ?? false)
     || models.length !== Object.keys(provider?.models ?? {}).length
     || models.some((model) => provider?.models[model.id]?.name !== model.name || provider?.models[model.id]?.model !== model.model);
-  const guard = useDiscardChanges(dirty, onClose, save.isPending);
+  const guard = useDiscardChanges(dirty, session.close, save.isPending);
   return <>
-    <Modal open onClose={guard.requestClose} title={t(id ? "judgment.editProvider" : "judgment.addProvider")} width="max-w-2xl" dismissible={!save.isPending} footer={<>
+    <Modal {...session.surfaceProps} onClose={guard.requestClose} title={t(id ? "judgment.editProvider" : "judgment.addProvider")} width="max-w-2xl" dismissible={!save.isPending} footer={<>
       <Button onClick={guard.requestClose} disabled={save.isPending}>{t("common:cancel")}</Button>
       <Button variant="primary" disabled={!valid} loading={save.isPending} onClick={() => save.mutate()}>{t("common:save")}</Button>
     </>}>

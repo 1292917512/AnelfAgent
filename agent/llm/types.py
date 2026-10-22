@@ -271,12 +271,14 @@ class ChatStreamDelta:
     # （流式无 raw 响应体，聚合方据此回填 ChatResult 供历史回传）
     thinking_blocks: Optional[list[dict[str, Any]]] = None
     reasoning_details: Optional[list[dict[str, Any]]] = None
+    responses_output: Optional[list[dict[str, Any]]] = None
 
     @property
     def has_output(self) -> bool:
         """是否包含模型输出；空保活、角色和用量包不算首响应。"""
         return bool(self.content or self.reasoning_content or self.tool_calls
-                    or self.early_tool_calls or self.thinking_blocks or self.reasoning_details)
+                    or self.early_tool_calls or self.thinking_blocks or self.reasoning_details
+                    or self.responses_output)
 
 
 @dataclass(slots=True)
@@ -295,6 +297,7 @@ class ChatResult:
     # preserve_reasoning_fields 双源消费挂到历史消息供下轮回传）
     thinking_blocks: Optional[list[dict[str, Any]]] = None
     reasoning_details: Optional[list[dict[str, Any]]] = None
+    responses_output: Optional[list[dict[str, Any]]] = None
 
 
 @dataclass(slots=True)

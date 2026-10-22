@@ -1,3 +1,4 @@
+import { useDialogSession } from "@/hooks/useDialogSession";
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -12,6 +13,8 @@ export function SkillEditor({ skill, onClose, onSaved }: {
   skill: SkillItem | null; onClose: () => void; onSaved: (name: string) => void;
 }) {
   const { t } = useTranslation("skills");
+  const [savedName, setSavedName] = useState<string | null>(null);
+  const session = useDialogSession(() => { if (savedName !== null) onSaved(savedName); else onClose(); });
   const initial = { name: skill?.name ?? "", description: skill?.description ?? "", content: skill?.content ?? "", triggers: "" };
   const [draft, setDraft] = useState(initial);
   const dirty = Object.keys(initial).some((key) => draft[key as keyof typeof draft] !== initial[key as keyof typeof initial]);
@@ -22,12 +25,12 @@ export function SkillEditor({ skill, onClose, onSaved }: {
         trigger_patterns: draft.triggers.split(",").map((value) => value.trim()).filter(Boolean) })).data.name;
       return skill.name;
     },
-    onSuccess: onSaved,
+    onSuccess: (name) => { setSavedName(name); session.close(); },
   });
-  const guard = useDiscardChanges(dirty, onClose, save.isPending);
+  const guard = useDiscardChanges(dirty, session.close, save.isPending);
   const update = (key: keyof typeof draft, value: string) => setDraft((current) => ({ ...current, [key]: value }));
   return <>
-    <Modal open onClose={guard.requestClose} title={skill ? `${t("edit")} · ${skill.name}` : t("createNew")} width="max-w-3xl" dismissible={!save.isPending}
+    <Modal {...session.surfaceProps} onClose={guard.requestClose} title={skill ? `${t("edit")} · ${skill.name}` : t("createNew")} width="max-w-3xl" dismissible={!save.isPending}
       footer={<><Button onClick={guard.requestClose} disabled={save.isPending}>{t("cancel")}</Button>
         <Button variant="primary" onClick={() => save.mutate()} loading={save.isPending} disabled={!dirty || !draft.name.trim()}>{t("save")}</Button></>}>
       <fieldset disabled={save.isPending} className="space-y-4">

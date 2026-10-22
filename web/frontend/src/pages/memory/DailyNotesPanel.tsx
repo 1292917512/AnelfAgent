@@ -109,7 +109,7 @@ export function DailyNotesPanel() {
                 <button
                   type="button"
                   onClick={(e) => { e.stopPropagation(); setPendingDelete(f.path); }}
-                  className="opacity-0 group-hover:opacity-100 p-1 rounded text-muted hover:text-danger transition-all"
+                  className="opacity-0 group-hover:opacity-100 p-1 rounded text-muted hover:text-danger transition-[color,background-color,border-color,box-shadow,opacity]"
                 >
                   <Trash2 size={13} />
                 </button>

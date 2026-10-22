@@ -85,12 +85,12 @@ export function ConversationWindowRow({ sizeItem, percentItem }: ConversationWin
       <div>
         <div className="flex h-2.5 rounded-full overflow-hidden bg-secondary">
           <div
-            className="bg-accent transition-all"
+            className="bg-accent transition-[width]"
             style={{ width: `${keepPct}%` }}
             title={t("window.keepSeg", { count: keep })}
           />
           <div
-            className="bg-[var(--border-strong)] transition-all"
+            className="bg-[var(--border-strong)] transition-[width]"
             style={{ width: `${100 - keepPct}%` }}
             title={t("window.foldSeg", { count: size })}
           />

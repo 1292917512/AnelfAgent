@@ -116,7 +116,7 @@ export function ModelConfigCard({ kind }: { kind: ModelKind }) {
                 key={s}
                 onClick={() => update({ source: s })}
                 className={cn(
-                  "px-3 py-1.5 text-xs font-medium rounded-md border transition-all",
+                  "px-3 py-1.5 text-xs font-medium rounded-md border transition-[color,background-color,border-color,box-shadow,opacity]",
                   form.source === s
                     ? "bg-accent text-white border-accent"
                     : "bg-elevated text-muted border-border hover:bg-hover",

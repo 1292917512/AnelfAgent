@@ -14,15 +14,16 @@ export interface ModalProps {
   width?: string;
   placement?: "center" | "right" | "left";
   dismissible?: boolean;
+  onAfterClose?: () => void;
 }
 
 export function Modal({
-  open, onClose, title, children, footer, width = "max-w-lg", placement = "center", dismissible = true,
+  open, onClose, title, children, footer, width = "max-w-lg", placement = "center", dismissible = true, onAfterClose,
 }: ModalProps) {
   const { t } = useTranslation("common");
   return (
     <DialogSurface open={open} onClose={onClose} title={title ?? t("dialog")}
-      placement={placement} dismissible={dismissible} className={width}>
+      placement={placement} dismissible={dismissible} className={width} onAfterClose={onAfterClose}>
       <div className="flex items-center gap-3 border-b border-border px-5 py-4 shrink-0">
         <div className="min-w-0 flex-1 text-base font-semibold text-heading">{title}</div>
         <Button variant="ghost" size="icon" onClick={onClose} disabled={!dismissible} aria-label={t("close")}>

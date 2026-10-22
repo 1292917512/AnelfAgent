@@ -50,7 +50,7 @@ export function OverviewPanel() {
       ) : (
         <Card title={t("healthSubtitle")} subtitle={t("totalMemories", { count: health.total_memories || 0 })} actions={
           <button onClick={() => { if (window.confirm(t("rebuildVectorsConfirm"))) rebuildVectorsMutation.mutate(); }} disabled={rebuildVectorsMutation.isPending}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-danger-subtle text-danger hover:bg-[rgba(239,68,68,0.15)] transition-all">
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-danger-subtle text-danger hover:bg-[rgba(239,68,68,0.15)] transition-[color,background-color,border-color,box-shadow,opacity]">
             <RefreshCw size={14} /> {t("rebuildVectors")}
           </button>
         }>
@@ -89,7 +89,7 @@ export function OverviewPanel() {
       <Card title={t("cogneeStatus")} subtitle={cogneeAvailability?.reason || t("cogneeStatusSubtitle")} actions={
         cogneeSync?.failed > 0 ? (
           <button onClick={() => retryCogneeMutation.mutate()}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all">
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-[color,background-color,border-color,box-shadow,opacity]">
             <RefreshCw size={14} /> {t("retryFailedSync")}
           </button>
         ) : undefined
@@ -108,15 +108,15 @@ export function OverviewPanel() {
       <Card title={t("fileIndexTitle")} subtitle={t("fileIndexSubtitle")} actions={
         <div className="flex gap-2">
           <button onClick={() => cleanCacheMutation.mutate()}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all">
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-[color,background-color,border-color,box-shadow,opacity]">
             <Trash2 size={14} /> {t("cleanCache")}
           </button>
           <button onClick={() => resyncMutation.mutate(false)} disabled={resyncMutation.isPending}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all">
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-[color,background-color,border-color,box-shadow,opacity]">
             <RefreshCw size={14} /> {t("incrementalSync")}
           </button>
           <button onClick={() => { if (window.confirm(t("fullRebuildConfirm"))) resyncMutation.mutate(true); }} disabled={resyncMutation.isPending}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-danger-subtle text-danger hover:bg-[rgba(239,68,68,0.15)] transition-all">
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-danger-subtle text-danger hover:bg-[rgba(239,68,68,0.15)] transition-[color,background-color,border-color,box-shadow,opacity]">
             <RefreshCw size={14} /> {t("fullRebuild")}
           </button>
         </div>

@@ -101,7 +101,7 @@ export function GoalsPanel() {
             <option value="all">{t("goalStatusAll")}</option>
           </select>
           <button onClick={() => { setShowCreate(!showCreate); setSelectedGoalId(null); setEditing(false); }}
-            className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-md bg-accent text-primary-foreground hover:bg-[var(--accent-hover)] transition-all">
+            className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-md bg-accent text-primary-foreground hover:bg-[var(--accent-hover)] transition-[color,background-color,border-color,box-shadow,opacity]">
             <Plus size={13} /> {t("common:create")}
           </button>
         </div>
@@ -115,7 +115,7 @@ export function GoalsPanel() {
               <div key={goal.goal_id}
                 onClick={() => { setSelectedGoalId(goal.goal_id); setShowCreate(false); setEditing(false); }}
                 className={cn(
-                  "p-2.5 rounded-md border cursor-pointer transition-all",
+                  "p-2.5 rounded-md border cursor-pointer transition-[color,background-color,border-color,box-shadow,opacity]",
                   selectedGoalId === goal.goal_id ? "border-accent bg-accent-subtle" : "border-border bg-elevated hover:border-border-strong",
                   goal.status === "completed" && !goal.recurring && "opacity-60",
                 )}>
@@ -242,7 +242,7 @@ export function GoalsPanel() {
                   <div className="space-y-1.5">
                     <span className="text-xs font-medium text-heading">{t("stepsLabel")} ({selectedGoal.steps.filter(s => s.status === "completed").length}/{selectedGoal.steps.length})</span>
                     {selectedGoal.steps.map((step, i) => (
-                      <div key={step.index ?? i} className="flex items-center gap-2.5 p-2 rounded-md bg-elevated border border-border cursor-pointer hover:border-border-strong transition-all"
+                      <div key={step.index ?? i} className="flex items-center gap-2.5 p-2 rounded-md bg-elevated border border-border cursor-pointer hover:border-border-strong transition-[color,background-color,border-color,box-shadow,opacity]"
                         onClick={() => cycleStepStatus(selectedGoal, i)}>
                         {stepStatusIcon(step.status)}
                         <span className={cn("flex-1 text-sm", step.status === "completed" || step.status === "skipped" ? "text-muted line-through" : "text-foreground")}>

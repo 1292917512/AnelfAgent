@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from agent.context.message_schema import preserve_reasoning_fields
 from agent.llm.llm_client import LLMClient, LLMClientConfig
 from agent.llm.protocol import ChatProtocol, TransportMode, resolve_chat_protocol
 from agent.llm.responses.client import (
@@ -108,6 +109,39 @@ def test_parse_responses_payload_to_chat_result() -> None:
     assert chat.tool_calls[0].name == "lookup"
     assert chat.usage is not None
     assert chat.usage.total_tokens == 5
+
+
+def test_reasoning_output_replayed_in_native_order() -> None:
+    output = [
+        {"type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "secret"},
+        {"type": "message", "role": "assistant", "content": [
+            {"type": "output_text", "text": "查找中"},
+        ]},
+        {"type": "function_call", "id": "fc_1", "call_id": "c1",
+         "name": "lookup", "arguments": "{}"},
+    ]
+    result = parse_responses_payload({"output": output}).to_chat_result()
+    assistant: dict[str, Any] = {"role": "assistant", "content": result.content,
+                                 "tool_calls": [call.raw for call in result.tool_calls]}
+    preserve_reasoning_fields(assistant, result, tools_present=True)
+    _, payload = messages_to_responses_input([
+        {"role": "user", "content": "查找"}, assistant,
+        {"role": "tool", "tool_call_id": "c1", "content": "结果"},
+    ])
+    assert isinstance(payload, list)
+    assert payload[1:4] == output
+    assert payload[4] == {"type": "function_call_output", "call_id": "c1", "output": "结果"}
+
+
+def test_chat_completions_drops_responses_output() -> None:
+    client = LLMClient(LLMClientConfig(model="gpt-4o", api_type="openai"))
+    kwargs = client._build_kwargs([
+        {"role": "user", "content": "查找"},
+        {"role": "assistant", "content": "", "responses_output": [
+            {"type": "reasoning", "encrypted_content": "secret"},
+        ]},
+    ])
+    assert "responses_output" not in kwargs["messages"][1]
 
 
 def test_terminal_event_validation() -> None:
@@ -647,6 +681,23 @@ async def test_chat_stream_via_responses() -> None:
     assert final.finish_reason == "tool_calls"
     assert final.tool_calls and final.tool_calls[0].name == "lookup"
     assert final.usage is not None and final.usage.total_tokens == 5
+
+
+@pytest.mark.asyncio
+async def test_stream_terminal_carries_reasoning_output() -> None:
+    from agent.llm.responses.types import ResponseStreamEvent
+
+    client = _responses_client()
+    output = [{"type": "reasoning", "id": "rs_1", "encrypted_content": "secret"}]
+
+    async def fake_stream(**kwargs: Any) -> Any:
+        yield ResponseStreamEvent(type="response.completed", data={
+            "response": {"status": "completed", "output": output},
+        })
+
+    client.responses_stream = fake_stream  # type: ignore[method-assign]
+    deltas = [delta async for delta in client.chat_stream([{"role": "user", "content": "hi"}])]
+    assert deltas[-1].responses_output == output
 
 
 @pytest.mark.asyncio

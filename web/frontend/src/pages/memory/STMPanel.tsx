@@ -38,7 +38,7 @@ export function STMPanel() {
           <option value="task">{t("taskFilter")}</option>
           <option value="analysis">{t("analysisFilter")}</option>
         </select>
-        <button onClick={() => clearMutation.mutate()} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-danger-subtle text-danger hover:bg-[rgba(239,68,68,0.15)] transition-all"><Trash2 size={14} /> {t("common:clear")}</button>
+        <button onClick={() => clearMutation.mutate()} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-danger-subtle text-danger hover:bg-[rgba(239,68,68,0.15)] transition-[color,background-color,border-color,box-shadow,opacity]"><Trash2 size={14} /> {t("common:clear")}</button>
       </div>
     }>
       <div className="space-y-2 max-h-96 overflow-y-auto">

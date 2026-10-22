@@ -464,6 +464,7 @@ class ModelInvoker:
         finish_reason = ""
         thinking_blocks: Optional[List[dict]] = None
         reasoning_details: Optional[List[dict]] = None
+        responses_output: Optional[List[dict]] = None
         ttft_ms: Optional[float] = None
         started = time.monotonic()
         stream_iter = runtime.llm.chat_stream(
@@ -534,6 +535,8 @@ class ModelInvoker:
                     thinking_blocks = delta.thinking_blocks
                 if delta.reasoning_details:
                     reasoning_details = delta.reasoning_details
+                if delta.responses_output:
+                    responses_output = delta.responses_output
         finally:
             if abort_task is not None:
                 abort_task.cancel()
@@ -551,6 +554,7 @@ class ModelInvoker:
             ttft_ms=ttft_ms,
             thinking_blocks=thinking_blocks,
             reasoning_details=reasoning_details,
+            responses_output=responses_output,
         )
 
     async def summarize_text(self, prompt: str) -> str:

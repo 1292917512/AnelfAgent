@@ -11,6 +11,11 @@
 
 上下文组装全程保持 dict（litellm 线格式即 dict，零转换成本，提供商差异
 由 litellm 在 API 边界吸收）；ChatMessage 等模型用于构造、校验与测试。
+
+Model Experience:
+- 模型看到什么：带工具请求保留推理详情；签名思考块和 Responses 原生输出项随执行链回传。
+- token 影响：仅有推理载体时增加轮内输入；无工具请求省去 reasoning_details。
+- 缓存影响：仅追加动态执行链，不修改稳定前缀。
 """
 from __future__ import annotations
 
@@ -271,28 +276,26 @@ def is_genuine_user_message(msg: Dict) -> bool:
 
 
 def preserve_reasoning_fields(msg: Dict[str, Any], result: "ChatResult",
-                              tool_turn: bool = False) -> None:
+                              tools_present: bool = False) -> None:
     """从 ChatResult 提取推理字段到 assistant 消息，维持多轮思维链。
 
     litellm 统一返回 OpenAI 格式，按协议覆盖两种载体：
     - reasoning_details：OpenRouter 风格，litellm 请求侧原样回传。
-      **仅 tool_turn=True（工具调用轮）挂载**——DeepSeek 官方 thinking 规则
-      要求工具轮回传、纯文本轮服务端直接忽略，普通轮回传纯属 token 浪费
-      （REFLECT 连续文本轮场景收益最大）
+      请求带工具时回传；不带工具的请求无需传回详情。
     - thinking_blocks：Anthropic 协议 thinking 块（含 signature/redacted），
       litellm 请求侧据此重构 thinking 块（交错思考 + tool_use 场景必需）。
       签名块语义微妙，保持无条件保留（不随本参数收紧，单独评估）
     双源取值：流式聚合字段（thinking_blocks/reasoning_details）优先，
     非流式回退 raw 响应体——两载体行为一致。均以响应实际存在为条件，
     不返回推理字段的模型行为不变。
+
     """
-    if not result.reasoning_content:
-        return
-    rd = result.reasoning_details
-    tb = result.thinking_blocks
-    if (rd is None or tb is None) and result.raw:
+    rd = getattr(result, "reasoning_details", None)
+    tb = getattr(result, "thinking_blocks", None)
+    raw = getattr(result, "raw", None)
+    if (rd is None or tb is None) and raw:
         try:
-            choices = result.raw.get("choices")
+            choices = raw.get("choices")
             if choices and isinstance(choices, list):
                 message = choices[0].get("message", {})
                 if isinstance(message, dict):
@@ -302,7 +305,10 @@ def preserve_reasoning_fields(msg: Dict[str, Any], result: "ChatResult",
                         tb = message.get("thinking_blocks")
         except (IndexError, AttributeError, TypeError):
             pass
-    if tool_turn and rd:
+    if tools_present and rd:
         msg["reasoning_details"] = rd
     if tb:
         msg["thinking_blocks"] = tb
+    output = getattr(result, "responses_output", None)
+    if output:
+        msg["responses_output"] = output

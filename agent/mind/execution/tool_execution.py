@@ -289,7 +289,7 @@ async def execute_tool_calls(
         "content": _strip_think_blocks(result.content or ""),
         "tool_calls": [tc.raw for tc in tool_calls],
     }
-    preserve_reasoning_fields(assistant_msg, result, tool_turn=True)
+    preserve_reasoning_fields(assistant_msg, result, tools_present=True)
 
     # 守卫执行前检查：已知必败/无进展的调用直接返回合成结果，不执行真实工具
     # 模式级禁用工具（内部任务禁外发等）同样在此拦截：schema 保留在数组中

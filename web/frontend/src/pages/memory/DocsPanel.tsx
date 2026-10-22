@@ -60,7 +60,7 @@ export function DocsPanel() {
           type="button"
           onClick={() => inputRef.current?.click()}
           disabled={uploadMutation.isPending}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-accent text-primary-foreground hover:bg-[var(--accent-hover)] transition-all disabled:opacity-50"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-accent text-primary-foreground hover:bg-[var(--accent-hover)] transition-[color,background-color,border-color,box-shadow,opacity] disabled:opacity-50"
         >
           {uploadMutation.isPending ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
           {uploadMutation.isPending ? t("docs.uploading") : t("docs.upload")}
@@ -85,7 +85,7 @@ export function DocsPanel() {
               <button
                 type="button"
                 onClick={() => setPendingDelete(d)}
-                className="opacity-0 group-hover:opacity-100 p-1 rounded text-muted hover:text-danger transition-all shrink-0"
+                className="opacity-0 group-hover:opacity-100 p-1 rounded text-muted hover:text-danger transition-[color,background-color,border-color,box-shadow,opacity] shrink-0"
               >
                 <Trash2 size={13} />
               </button>

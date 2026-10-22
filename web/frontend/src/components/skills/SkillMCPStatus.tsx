@@ -25,10 +25,10 @@ export function SkillMCPBadge({ states, skill }: { states: SkillMCPStatus[]; ski
     <button type="button" className="inline-flex justify-self-start max-w-full items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:bg-secondary" aria-haspopup="dialog" onClick={() => setOpen(true)}>
       <Link2 size={12} className="shrink-0" /><span>{t("mcp.badge", { count: states.length, active })}</span>
     </button>
-    {open && <Modal open onClose={() => setOpen(false)} title={t("mcp.snapshotTitle")} width="max-w-lg">
+    <Modal open={open} onClose={() => setOpen(false)} title={t("mcp.snapshotTitle")} width="max-w-lg">
       <p className="mb-3 text-xs text-muted">{t("mcp.snapshotHint")}</p>
       <div className="space-y-2">{states.map((state) => <div key={state.name} className="rounded-lg border border-border p-3"><p className="mb-1 break-all text-sm font-medium">{state.name}</p><SkillMCPState state={state} /></div>)}</div>
       <Link to={skill ? `/skills?skill=${encodeURIComponent(skill)}` : "/mcp"} className="mt-4 inline-flex items-center gap-1 text-sm text-accent" onClick={() => setOpen(false)}>{t(skill ? "mcp.editSkill" : "mcp.configure")}<ArrowUpRight size={14} /></Link>
-    </Modal>}
+    </Modal>
   </>;
 }

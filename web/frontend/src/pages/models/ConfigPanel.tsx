@@ -74,7 +74,7 @@ export function ConfigPanel() {
             <div
               key={prov.id}
               className={cn(
-                "rounded-md border transition-all bg-card",
+                "rounded-md border transition-[color,background-color,border-color,box-shadow,opacity] bg-card",
                 isOpen ? "border-accent shadow-[0_0_0_2px_var(--bg),0_0_0_4px_var(--ring)]" : "border-border hover:border-border-strong",
               )}
             >

@@ -107,6 +107,14 @@ class TestStreamAggregation:
         assert result.usage.total_tokens == 13
         assert ("你", False) in received and ("想", True) in received
 
+    async def test_native_responses_output_reaches_execution_result(self):
+        output = [{"type": "reasoning", "id": "rs_1", "encrypted_content": "secret"}]
+        mind = _mind_stub(_fake_stream_client([
+            ChatStreamDelta(responses_output=output, finish_reason="stop"),
+        ]))
+        result = await mind.model_invoker.chat_stream_once([], None)
+        assert result.responses_output == output
+
     def test_tool_call_raw_is_wire_format(self):
         """流式 tool_calls 的 raw 必须是完整线格式（think_loop 拼装 assistant 历史依赖）。"""
         tcs = LLMClient._complete_tool_buffers({

@@ -1,4 +1,10 @@
-"""Responses API 客户端封装（基于 litellm.aresponses）。"""
+"""Responses API 客户端封装（基于 litellm.aresponses）。
+
+Model Experience:
+- 模型看到什么：推理模型上一轮原生 output item 按原顺序回放，再接工具结果。
+- token 影响：保留不透明推理状态；同一正文和工具调用不重复发送。
+- 缓存影响：只追加当前执行链，不修改稳定前缀。
+"""
 
 from __future__ import annotations
 
@@ -207,7 +213,9 @@ def _convert_content_parts(content: list[Any], role: str) -> list[dict[str, Any]
 def messages_to_responses_input(
     messages: list[dict[str, Any]],
 ) -> tuple[str, Union[str, list[dict[str, Any]]]]:
-    """将 Chat Completions messages 转为 Responses input/instructions。"""
+    """将聊天消息转为 Responses 输入；原生输出项按原顺序回放。
+
+    """
     instructions_parts: list[str] = []
     input_items: list[dict[str, Any]] = []
 
@@ -253,6 +261,10 @@ def messages_to_responses_input(
                 "call_id": message.get("tool_call_id") or "",
                 "output": output,
             })
+            continue
+
+        if role == "assistant" and isinstance(message.get("responses_output"), list):
+            input_items.extend(message["responses_output"])
             continue
 
         if role == "assistant" and message.get("tool_calls"):

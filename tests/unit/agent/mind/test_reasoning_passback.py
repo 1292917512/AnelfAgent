@@ -1,7 +1,7 @@
 """reasoning 字段条件回传（message_schema.preserve_reasoning_fields）单元测试。
 
-锁定：纯文本轮丢弃 reasoning_details（DeepSeek 官方规则：普通轮服务端忽略）
-但保留 thinking_blocks（Anthropic 签名块语义保守不动）；工具轮两者都保留。
+锁定：带工具请求保留 reasoning_details，即使模型本轮只输出文本；
+无工具请求省去该字段。thinking_blocks 的签名块始终保留。
 双源取值：流式聚合字段优先，非流式回退 raw 响应体。
 """
 
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from agent.context.message_schema import preserve_reasoning_fields
 from agent.llm.types import ChatResult
+from agent.mind.execution.responses import _append_assistant_msg
 
 
 def _result(reasoning: str = "思考过程", details: bool = True, blocks: bool = True) -> ChatResult:
@@ -21,17 +22,22 @@ def _result(reasoning: str = "思考过程", details: bool = True, blocks: bool 
 
 
 class TestConditionalPassback:
-    def test_tool_turn_keeps_both(self) -> None:
+    def test_tools_present_keeps_both(self) -> None:
         msg: dict = {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]}
-        preserve_reasoning_fields(msg, _result(), tool_turn=True)
+        preserve_reasoning_fields(msg, _result(), tools_present=True)
         assert "reasoning_details" in msg
         assert "thinking_blocks" in msg
 
-    def test_plain_turn_drops_reasoning_details(self) -> None:
+    def test_no_tools_drops_reasoning_details(self) -> None:
         msg: dict = {"role": "assistant", "content": "回答"}
-        preserve_reasoning_fields(msg, _result(), tool_turn=False)
-        assert "reasoning_details" not in msg, "纯文本轮 reasoning_details 服务端忽略，回传纯浪费"
+        preserve_reasoning_fields(msg, _result(), tools_present=False)
+        assert "reasoning_details" not in msg
         assert "thinking_blocks" in msg, "Anthropic 签名块保持无条件保留"
+
+    def test_text_turn_with_tools_keeps_details(self) -> None:
+        msg: dict = {"role": "assistant", "content": "继续处理"}
+        preserve_reasoning_fields(msg, _result(), tools_present=True)
+        assert "reasoning_details" in msg
 
     def test_default_is_plain_turn(self) -> None:
         msg: dict = {"role": "assistant", "content": "回答"}
@@ -44,6 +50,23 @@ class TestConditionalPassback:
         preserve_reasoning_fields(
             msg, ChatResult(content="", raw={"choices": [{"message": {}}]}, reasoning_content=""))
         assert msg == {"role": "assistant", "content": "回答"}
+
+    def test_signature_only_block_preserved(self) -> None:
+        msg: dict = {"role": "assistant", "content": ""}
+        result = ChatResult(
+            content="", reasoning_content="",
+            thinking_blocks=[{"type": "thinking", "thinking": "", "signature": "sig"}],
+        )
+        preserve_reasoning_fields(msg, result)
+        assert msg["thinking_blocks"][0]["signature"] == "sig"
+
+    def test_signature_only_output_enters_execution_chain(self) -> None:
+        chain: list[dict] = []
+        result = ChatResult(content="", thinking_blocks=[
+            {"type": "thinking", "thinking": "", "signature": "sig"},
+        ])
+        _append_assistant_msg(chain, result, "", tools_present=True)
+        assert chain[0]["thinking_blocks"][0]["signature"] == "sig"
 
     def test_missing_raw_noop(self) -> None:
         msg: dict = {"role": "assistant", "content": "回答"}
@@ -67,7 +90,7 @@ class TestStreamingAggregatedFields:
             thinking_blocks=[{"type": "thinking", "thinking": "思考过程", "signature": "sig"}],
             reasoning_details=[{"type": "reasoning", "text": "思考过程"}],
         )
-        preserve_reasoning_fields(msg, result, tool_turn=True)
+        preserve_reasoning_fields(msg, result, tools_present=True)
         assert msg["reasoning_details"] == [{"type": "reasoning", "text": "思考过程"}]
         assert msg["thinking_blocks"][0]["signature"] == "sig"
 
@@ -78,6 +101,6 @@ class TestStreamingAggregatedFields:
             thinking_blocks=[{"type": "thinking", "thinking": "思考过程", "signature": "sig"}],
             reasoning_details=[{"type": "reasoning", "text": "思考过程"}],
         )
-        preserve_reasoning_fields(msg, result, tool_turn=False)
+        preserve_reasoning_fields(msg, result, tools_present=False)
         assert "reasoning_details" not in msg
         assert "thinking_blocks" in msg

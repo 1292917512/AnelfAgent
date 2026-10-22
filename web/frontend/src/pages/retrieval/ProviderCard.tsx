@@ -58,9 +58,9 @@ export function RetrievalProviderCard({ provider, onChanged }: { provider: Retri
         </div>}
       </div>
     </details>
-    {configOpen && <Modal open onClose={() => { setConfigOpen(false); test.reset(); onChanged(); }} title={provider.display_name} width="max-w-3xl">
+    <Modal open={configOpen} onClose={() => { setConfigOpen(false); test.reset(); onChanged(); }} title={provider.display_name} width="max-w-3xl">
       <Suspense fallback={<p className="text-sm text-muted">{t("provider.loadingSettings")}</p>}><RegisteredConfigPanel group={provider.config_group} /></Suspense>
-    </Modal>}
+    </Modal>
     {error && <p role="alert" className="mt-3 break-words text-xs text-danger">{apiErrorMessage(error, t("common:requestFailed"))}</p>}
     {test.data && <div role="status" className={`mt-3 rounded-lg border p-3 text-xs ${test.data.ok ? "border-ok/25 bg-ok-subtle" : "border-danger/25 bg-danger-subtle"}`}>
       <div className="flex flex-wrap justify-between gap-2"><span className="font-medium">{test.data.ok ? test.data.summary : t("test.failed")}</span><span className="tabular-nums text-muted">{test.data.latency_ms ?? 0} ms</span></div>

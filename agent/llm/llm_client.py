@@ -476,7 +476,11 @@ class LLMClient(BaseEntity):
         self._ensure_configured()
         params = self._gen_params(options)
         effort = self._resolve_effort(params)
-        adapted = self._adapt_messages(messages)
+        adapted = [
+            {key: value for key, value in message.items() if key != "responses_output"}
+            if "responses_output" in message else message
+            for message in self._adapt_messages(messages)
+        ]
 
         kwargs: Dict[str, Any] = {
             "model": self.config.litellm_model,
@@ -1032,6 +1036,7 @@ class LLMClient(BaseEntity):
                             tool_calls=chat_result.tool_calls,
                             finish_reason=chat_result.finish_reason or "stop",
                             usage=chat_result.usage,
+                            responses_output=chat_result.responses_output,
                         )
                     elif event.type in ("response.failed", "response.error", "error"):
                         result = parse_responses_payload(event.data.get("response") or event.data)

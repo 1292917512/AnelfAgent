@@ -1,4 +1,10 @@
-"""聊天响应解析：litellm 流式增量聚合、tool_calls 缓冲合并与 ChatResult 构建。"""
+"""聊天响应解析：litellm 流式增量聚合、tool_calls 缓冲合并与 ChatResult 构建。
+
+Model Experience:
+- 模型看到什么：完整签名思考块在后续执行轮次原样回传。
+- token 影响：签名本身不提供文本，额外输入由实际载体决定。
+- 缓存影响：仅附加执行链消息，不修改稳定前缀。
+"""
 
 from __future__ import annotations
 
@@ -198,7 +204,7 @@ class _ThinkingAccumulator:
         return item
 
     def _flush_block(self) -> None:
-        if self._text_parts and self._signature:
+        if self._signature:
             self._blocks.append({
                 "type": "thinking",
                 "thinking": "".join(self._text_parts),

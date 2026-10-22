@@ -46,7 +46,7 @@ export function RulesPanel() {
               onClick={() => editDoc !== null && saveMutation.mutate(editDoc)}
               disabled={saveMutation.isPending}
               className={cn(
-                "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-all",
+                "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-[color,background-color,border-color,box-shadow,opacity]",
                 saved
                   ? "bg-ok text-white border border-[var(--ok)]"
                   : "bg-accent text-primary-foreground hover:bg-[var(--accent-hover)]",
@@ -57,7 +57,7 @@ export function RulesPanel() {
             </button>
             <button
               onClick={() => setEditDoc(null)}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-[color,background-color,border-color,box-shadow,opacity]"
             >
               <X size={14} /> {t("cancel", { ns: "common" })}
             </button>
@@ -65,7 +65,7 @@ export function RulesPanel() {
         ) : (
           <button
             onClick={() => setEditDoc(doc)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-[color,background-color,border-color,box-shadow,opacity]"
           >
             {t("edit", { ns: "common" })}
           </button>

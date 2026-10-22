@@ -21,6 +21,7 @@ export function LlmHooksPanel() {
   const { t } = useTranslation("settings");
   const queryClient = useQueryClient();
   const [configGroup, setConfigGroup] = useState("");
+  const [configOpen, setConfigOpen] = useState(false);
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["hooks-llm"],
     queryFn: () => hooksLlmApi.get().then((r) => r.data),
@@ -76,15 +77,15 @@ export function LlmHooksPanel() {
               hook={hook}
               onToggle={(enabled) => toggle.mutate({ name: hook.name, enabled })}
               toggling={toggle.isPending && toggle.variables?.name === hook.name}
-              onConfigure={() => setConfigGroup(hook.config_group)}
+              onConfigure={() => { setConfigGroup(hook.config_group); setConfigOpen(true); }}
             />
           ))}
         </ul>
       )}
       <p className="mt-3 text-[11px] text-muted">{t("llmHooks.hint")}</p>
-      {configGroup && <Modal open onClose={() => { setConfigGroup(""); void refetch(); }} title={t("llmHooks.configure")} width="max-w-2xl">
+      <Modal open={configOpen} onClose={() => { setConfigOpen(false); void refetch(); }} title={t("llmHooks.configure")} width="max-w-2xl">
         <Suspense fallback={<LoadingBlock />}><RegisteredConfigPanel group={configGroup} /></Suspense>
-      </Modal>}
+      </Modal>
     </Card>
   );
 }

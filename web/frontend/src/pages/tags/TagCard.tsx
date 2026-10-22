@@ -1,3 +1,4 @@
+import { useDialogSession } from "@/hooks/useDialogSession";
 import type { TOptions } from "i18next";
 import { ArrowRight, ArrowUpRight, Trash2 } from "lucide-react";
 import { Link } from "react-router-dom";
@@ -43,14 +44,15 @@ export function TagDetailModal({ tag, onClose, onDelete, t }: {
   tag: UnifiedTag; onClose: () => void; onDelete?: () => void; t: TagTranslate;
 }) {
   const description = tag.description || t("routingHint");
-  return <Modal open onClose={onClose} width="max-w-2xl"
+  const session = useDialogSession(onClose);
+  return <Modal {...session.surfaceProps} onClose={session.close} width="max-w-2xl"
     title={<code className="break-all font-mono text-sm">{tagDisplayName(tag, t)}</code>}
     footer={<div className="flex w-full items-center justify-between gap-2">
       <div>{!tag.builtin && onDelete && <Button size="sm" variant="danger" disabled={tag.tool_count > 0}
         aria-label={t("deleteNamed", { name: tag.name })} title={t(tag.tool_count ? "inUse" : "common:delete")} onClick={onDelete}>
         <Trash2 size={14} />{t("common:delete")}
       </Button>}</div>
-      <Button size="sm" variant="secondary" onClick={onClose}>{t("common:close")}</Button>
+      <Button size="sm" variant="secondary" onClick={session.close}>{t("common:close")}</Button>
     </div>}>
     <div className="space-y-5">
       <div className="flex flex-wrap gap-1.5"><TagBadges tag={tag} t={t} /></div>

@@ -161,3 +161,43 @@ test("form sheets stay in view on phones and small tablets", async ({ page, isMo
     return !!bounds && bounds.y >= 0 && bounds.y + bounds.height <= 480;
   }).toBe(true);
 });
+
+test("management dialogs and popovers finish exit motion and respect reduced motion", async ({ page }) => {
+  await page.goto("/webui/tasks");
+  const edit = page.getByRole("button", { name: "Edit", exact: true });
+  await edit.click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toHaveCSS("animation-name", "surface-enter");
+  const closing = await dialog.getByRole("button", { name: "Cancel", exact: true }).evaluate((button) => {
+    (button as HTMLButtonElement).click();
+    return new Promise((resolve) => queueMicrotask(() => {
+      const surface = button.closest('[role="dialog"]');
+      resolve({ connected: surface?.isConnected, state: surface?.getAttribute("data-state"), animation: surface && getComputedStyle(surface).animationName });
+    }));
+  });
+  expect(closing).toEqual({ connected: true, state: "closed", animation: "surface-exit" });
+  await expect(dialog).toHaveCount(0);
+  await expect(edit).toBeFocused();
+  await edit.click();
+  await expect(dialog).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+
+  const appearance = page.getByRole("button", { name: "Appearance & language", exact: true });
+  await appearance.click();
+  const menu = page.locator(".appearance-menu");
+  await expect(menu).toHaveCSS("animation-name", "surface-enter");
+  await page.keyboard.press("Escape");
+  await expect(menu).toHaveCount(0);
+  await expect(appearance).toBeFocused();
+
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await appearance.click();
+  await expect(menu).toHaveCSS("animation-name", "none");
+  await page.keyboard.press("Escape");
+  await edit.click();
+  await expect(dialog).toHaveCSS("animation-name", "none");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(edit).toBeFocused();
+});

@@ -1,3 +1,4 @@
+import { useDialogSession } from "@/hooks/useDialogSession";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -13,6 +14,7 @@ interface Props {
 
 /** 人物档案详情：基本信息编辑 + 样本池缩略图（可删）+ 近期出现事件。 */
 export function PersonDetailModal({ personId, onClose }: Props) {
+  const session = useDialogSession(onClose);
   const { t } = useTranslation("vision");
   const queryClient = useQueryClient();
   const { data, isLoading } = useQuery({
@@ -49,7 +51,7 @@ export function PersonDetailModal({ personId, onClose }: Props) {
 
   if (isLoading || !data) {
     return (
-      <Modal open onClose={onClose} title={t("face.detail.title")}>
+      <Modal {...session.surfaceProps} onClose={session.close} title={t("face.detail.title")}>
         <div className="flex justify-center py-8"><Spinner /></div>
       </Modal>
     );
@@ -58,11 +60,11 @@ export function PersonDetailModal({ personId, onClose }: Props) {
   const { person, samples, recent_events: recentEvents, effective_threshold: effThreshold } = data;
 
   return (
-    <Modal open onClose={onClose} width="max-w-2xl"
+    <Modal {...session.surfaceProps} onClose={session.close} width="max-w-2xl"
       title={`${person.name || person.person_key}`}
       footer={
         <>
-          <Button variant="secondary" onClick={onClose}>{t("common:close")}</Button>
+          <Button variant="secondary" onClick={session.close}>{t("common:close")}</Button>
           <Button loading={saveMut.isPending} onClick={() => saveMut.mutate()}>
             {t("common:save")}
           </Button>

@@ -1,3 +1,4 @@
+import { useDialogSession } from "@/hooks/useDialogSession";
 import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -12,6 +13,7 @@ import { Field, KVEditor } from "./formFields";
 import type { MCPTransport } from "@/lib/types";
 
 export function ServerFormModal({ onClose, editing }: { onClose: () => void; editing: EditingServer | null }) {
+  const session = useDialogSession(onClose);
   const { t } = useTranslation("mcp");
   const client = useQueryClient();
   const id = useId();
@@ -26,9 +28,9 @@ export function ServerFormModal({ onClose, editing }: { onClose: () => void; edi
     void client.invalidateQueries({ queryKey: ["mcpServers"] });
     void client.invalidateQueries({ queryKey: ["mcpConfig"] });
     toast.success(t(editing ? "toast.serverUpdated" : "toast.serverAdded", { name: value.name.trim() }));
-    onClose();
+    session.close();
   }, onError: (failure) => setError(apiErrorMessage(failure, t("toast.requestFailed"))) });
-  const guard = useDiscardChanges(draft.dirty, onClose, save.isPending);
+  const guard = useDiscardChanges(draft.dirty, session.close, save.isPending);
   const submit = () => {
     try { serverPatch(value, editing); setError(""); save.mutate(); }
     catch (failure) { setError(t(failure instanceof Error ? failure.message : "toast.requestFailed")); }
@@ -39,7 +41,7 @@ export function ServerFormModal({ onClose, editing }: { onClose: () => void; edi
     { key: "sse", label: t("form.transportSse"), icon: Radio },
   ];
   return <>
-    <Modal open onClose={guard.requestClose} dismissible={!save.isPending} title={editing ? `${t("editServer")} · ${editing.name}` : t("addServer")} width="max-w-2xl"
+    <Modal {...session.surfaceProps} onClose={guard.requestClose} dismissible={!save.isPending} title={editing ? `${t("editServer")} · ${editing.name}` : t("addServer")} width="max-w-2xl"
       footer={<><Button variant="secondary" size="sm" disabled={save.isPending} onClick={guard.requestClose}>{t("common:cancel")}</Button>
         <Button type="submit" form={id} variant="primary" size="sm" disabled={!draft.dirty} loading={save.isPending}>{t("common:save")}</Button></>}>
       <form id={id} onSubmit={(event) => { event.preventDefault(); submit(); }}>

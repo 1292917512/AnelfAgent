@@ -65,7 +65,7 @@
 .sidebar-link.is-active::before { content: ""; position: absolute; left: 0; top: 12px; bottom: 12px; width: 2px; background: var(--accent); border-radius: 2px; }
 .sidebar-link.is-active .sidebar-icon { opacity: 1; }
 [data-density="compact"] .sidebar-link { min-height: 31px; padding-block: 5px; }
-.page-container { width: 100%; max-width: 1440px; margin-inline: auto; display: flex; flex-direction: column; gap: 24px; }
+.page-container { width: 100%; max-width: 1440px; margin-inline: auto; display: flex; flex-direction: column; gap: 24px; animation: fade-in var(--duration-normal) var(--ease-out); }
 .page-header { padding: 4px 0 8px; }
 .surface-card { min-width: 0; border-radius: 16px; box-shadow: 0 2px 6px rgb(15 23 42 / .025); }
 [data-density="compact"] .page-container { gap: 16px; }

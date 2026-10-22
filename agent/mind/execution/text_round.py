@@ -62,8 +62,7 @@ async def _handle_text_only_round(
         # 空输出：可接受（思考中/无意回复），不注入纠正提示；
         # 连续 2 次空输出安静结束本轮
         state.consecutive_empty_calls += 1
-        if result.reasoning_content:
-            _append_assistant_msg(tool_chain, result, "")
+        _append_assistant_msg(tool_chain, result, "", tools_present=bool(ctx.active_tools))
         execution_steps.append(f"→ 第{state.iteration + 1}轮: 空输出（思考中）")
         log(
             f"空输出，继续循环 (轮次 {state.iteration + 1}, "
@@ -79,7 +78,7 @@ async def _handle_text_only_round(
     elif ctx.mode == ThinkMode.REPLY and should_suppress(raw_text):
         # [SILENT] 精确匹配 / 幻觉沉默旁白：AI 决定不回复，直接结束本轮
         log(f"AI 选择沉默（{raw_text[:30]}），结束本轮", "DEBUG", tag="思维")
-        _append_assistant_msg(tool_chain, result, raw_text)
+        _append_assistant_msg(tool_chain, result, raw_text, tools_present=bool(ctx.active_tools))
         execution_steps.append(f"→ 第{state.iteration + 1}轮: AI 选择沉默，结束")
         return await _finish_round(ctx, state, explicit_end=True)
     else:
@@ -97,7 +96,7 @@ async def _handle_text_only_round(
                     "function": {"name": END_REPLY_TOOL_NAME, "arguments": "{}"},
                 }],
             }
-            preserve_reasoning_fields(assistant_msg, result, tool_turn=True)
+            preserve_reasoning_fields(assistant_msg, result, tools_present=bool(ctx.active_tools))
             tool_chain.append(assistant_msg)
             tool_chain.append({
                 "role": "tool",
@@ -109,7 +108,7 @@ async def _handle_text_only_round(
                 f"→ 第{state.iteration + 1}轮: 文本形态 end_reply，按结束处理"
             )
             return await _finish_round(ctx, state, explicit_end=True)
-        _append_assistant_msg(tool_chain, result, raw_text)
+        _append_assistant_msg(tool_chain, result, raw_text, tools_present=bool(ctx.active_tools))
         ctx.collected_text.append(raw_text)
 
         bg = ctx.background

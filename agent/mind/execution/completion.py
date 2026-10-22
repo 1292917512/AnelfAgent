@@ -45,7 +45,9 @@ async def _handle_summary_round(
             abort_event=ctx.abort_event,
         )
     else:
-        _append_assistant_msg(ctx.tool_chain, result, result.content or "")
+        _append_assistant_msg(
+            ctx.tool_chain, result, result.content or "", tools_present=bool(ctx.active_tools),
+        )
     text = _strip_think_blocks(result.content or "").strip()
     if text:
         ctx.collected_text.append(text)
