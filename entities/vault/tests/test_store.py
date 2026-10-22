@@ -40,6 +40,7 @@ async def test_failed_initialization_closes_connection_and_can_retry(
             await connection.close()
 
 
+@pytest.mark.timeout(30)
 async def test_close_waits_for_inflight_initialization(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -57,11 +58,13 @@ async def test_close_waits_for_inflight_initialization(
     initialization = asyncio.create_task(store.initialize())
     closing: asyncio.Task[None] | None = None
     try:
-        await asyncio.wait_for(schema_started.wait(), timeout=2)
+        await schema_started.wait()
         closing = asyncio.create_task(store.close())
         await asyncio.sleep(0)
+        assert not closing.done(), "关闭必须等待初始化释放连接"
         finish_schema.set()
-        await asyncio.wait_for(asyncio.gather(initialization, closing), timeout=2)
+        # 事件决定并发顺序；整体超时只检测死锁，不约束共享 runner 的磁盘延迟。
+        await asyncio.gather(initialization, closing)
         assert store._db is None
         await store.set_meta("reopened", "yes")
         assert await store.get_meta("reopened") == "yes"
