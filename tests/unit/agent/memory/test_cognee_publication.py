@@ -207,6 +207,55 @@ async def test_stop_reaps_helper_holding_diagnostic_pipe(tmp_path, clean):
             await rpc.stop()
 
 
+async def test_stop_tolerates_recycled_process_group(tmp_path, monkeypatch):
+    import psutil
+
+    pidfile = tmp_path / "helper.pid"
+    script = (
+        "import subprocess,sys,json,os; from pathlib import Path; "
+        "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'], stdout=subprocess.DEVNULL); "
+        "ready=Path(sys.argv[1]); pending=ready.with_suffix('.tmp'); "
+        "pending.write_text(str(p.pid)); pending.replace(ready); "
+        "m=json.loads(sys.stdin.readline()); "
+        "print(json.dumps({'protocol':1,'id':m['id'],'result':None}),flush=True); os._exit(0)"
+    )
+    rpc = CogneeProcess()
+    rpc.process = await asyncio.create_subprocess_exec(
+        sys.executable, "-u", "-c", script, str(pidfile),
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        start_new_session=sys.platform != "win32",
+    )
+    rpc._owns_group = sys.platform != "win32"
+    rpc._reader = asyncio.create_task(rpc._read())
+    rpc._stderr_reader = asyncio.create_task(rpc._read_stderr())
+
+    def foreign_group(pgid, sig):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(os, "killpg", foreign_group)
+    try:
+        async with asyncio.timeout(10):
+            while not pidfile.exists():
+                await asyncio.sleep(0.02)
+        helper = psutil.Process(int(pidfile.read_text()))
+        await asyncio.wait_for(rpc.stop(clean=True), timeout=15)
+        assert rpc.process is None
+        assert not helper.is_running() or helper.status() == psutil.STATUS_ZOMBIE
+        assert rpc._reader.done() and rpc._stderr_reader.done()
+    finally:
+        monkeypatch.undo()
+        try:
+            if pidfile.exists():
+                try:
+                    helper = psutil.Process(int(pidfile.read_text()))
+                    for child in [*helper.children(recursive=True), helper]:
+                        child.kill()
+                except psutil.NoSuchProcess:
+                    pass
+        finally:
+            await rpc.stop()
+
+
 async def test_cancelled_stop_keeps_handle_until_reaped(monkeypatch):
     rpc = CogneeProcess()
     rpc.process = await asyncio.create_subprocess_exec(sys.executable, "-c", "import time; time.sleep(60)")

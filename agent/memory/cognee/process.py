@@ -198,6 +198,9 @@ class CogneeProcess:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+            except PermissionError:
+                # 组号可能已被回收为其他属主的进程组；自身派生进程由逐个 kill 收口
+                log(f"Cognee 进程组 {process.pid} 已不归当前进程所有，跳过组级击杀", "DEBUG", tag="关停")
         for child in reversed(children):
             try:
                 child.kill()  # psutil 验证创建时间，不向复用 PID 发信号。
