@@ -24,18 +24,21 @@ it("marks reconnecting as disconnected, resyncs after reconnect and cancels retr
   sources[0]?.onerror?.();
   expect(connected).toHaveBeenLastCalledWith(false);
   sources[0]?.onopen?.();
-  expect(reconnect).toHaveBeenCalledOnce();
-  sources[0]!.readyState = FakeSource.CLOSED;
-  sources[0]?.onerror?.();
+  expect(reconnect).not.toHaveBeenCalled();
   vi.advanceTimersByTime(5000);
-  expect(sources).toHaveLength(2);
   sources[1]?.onopen?.();
-  expect(reconnect).toHaveBeenCalledTimes(2);
+  expect(reconnect).toHaveBeenCalledOnce();
   sources[1]!.readyState = FakeSource.CLOSED;
   sources[1]?.onerror?.();
+  vi.advanceTimersByTime(5000);
+  expect(sources).toHaveLength(3);
+  sources[2]?.onopen?.();
+  expect(reconnect).toHaveBeenCalledTimes(2);
+  sources[2]!.readyState = FakeSource.CLOSED;
+  sources[2]?.onerror?.();
   stream.stop();
   vi.advanceTimersByTime(5000);
-  expect(sources).toHaveLength(2);
+  expect(sources).toHaveLength(3);
 });
 
 it("ignores late data and parse failures from a closed stream", () => {

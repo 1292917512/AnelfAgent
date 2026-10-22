@@ -36,7 +36,8 @@ export function ActivityInspector({ title, preview, children, trigger, className
       </Popover.Anchor>
       <Popover.Portal>
         <Popover.Content side="top" align="end" sideOffset={8} collisionPadding={16}
-          className="activity-hover-card" aria-label={t("activity.preview", { title })}
+          className="activity-hover-card floating-surface" aria-label={t("activity.preview", { title })}
+          aria-hidden={!hovered || open ? true : undefined}
           onPointerEnter={clearTimer} onPointerLeave={hidePreview}
           onOpenAutoFocus={(event) => event.preventDefault()} onCloseAutoFocus={(event) => event.preventDefault()}>
           <p className="activity-hover-title">{title}</p>
@@ -45,8 +46,8 @@ export function ActivityInspector({ title, preview, children, trigger, className
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>
-    {open && <Modal open onClose={() => setOpenedAt(null)} title={title} width="max-w-3xl">
+    <Modal open={open} onClose={() => setOpenedAt(null)} title={title} width="max-w-3xl">
       <div className="activity-inspection-content">{children}</div>
-    </Modal>}
+    </Modal>
   </>;
 }

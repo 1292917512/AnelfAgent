@@ -1,4 +1,4 @@
-import { Brain, Check, ChevronDown, Loader2, AlertCircle, Bot, ListChecks, ArrowUpRight } from "lucide-react";
+import { Brain, Check, ChevronDown, Loader2, AlertCircle, Bot, ArrowUpRight } from "lucide-react";
 import { memo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { ActivityEntry } from "@/lib/types/activity";
@@ -8,7 +8,7 @@ import { Markdown } from "../render/Markdown";
 import { DiffView } from "../DiffView";
 import { cn } from "@/lib/utils";
 import { ActivityTargets, TaggedText, renderTaggedText } from "./ActivityReferences";
-import { PlanMeta } from "@/components/plan/PlanMeta";
+import { ActivityPlan } from "./ActivityPlan";
 import { ActivityContext } from "./ActivityContext";
 import { ActivityModel } from "./ActivityModel";
 import { ActivityToolResult } from "./ActivityToolResult";
@@ -69,19 +69,18 @@ export const ActivityEntryView = memo(function ActivityEntryView({ entry, though
       <div className={cn("activity-thought-content", !open && "activity-thought-preview")}>{entry.truncated && open && <p className="activity-note">{t("activity.truncated")}</p>}<Markdown content={open ? entry.content : entry.content.slice(0, 500)} renderText={renderTaggedText} live={live} /></div>
     </div>;
   }
-  if (entry.kind === "plan") {
-    const done = entry.steps.filter((step) => step.status === "completed").length;
-    const open = expanded ?? current;
-    return <div className="activity-plan"><button className="activity-entry-toggle" aria-expanded={open} onClick={() => setExpanded(!open)}><ListChecks size={15} className="text-accent" /><span className="min-w-0 flex-1 truncate">{entry.goal}</span><span className="text-xs tabular-nums text-muted">{done}/{entry.steps.length}</span><ChevronDown size={14} className={cn(open && "rotate-180")} /></button>
-      {open && <><ol className="activity-plan-steps">{entry.steps.map((step, index) => <li key={index} data-status={step.status}>{step.status === "completed" ? <Check size={14} /> : step.status === "in_progress" && entry.status === "running" ? <Loader2 size={14} className="animate-spin text-accent" /> : <span className="activity-step-number">{index + 1}</span>}<div><TaggedText content={step.content} />{step.note && <p>{step.note}</p>}</div></li>)}</ol>{(entry.files || entry.risks) && <div className="px-3 pb-3"><PlanMeta plan={{ files: entry.files ?? "", risks: entry.risks ?? "" }} /></div>}</>}
-    </div>;
-  }
+  if (entry.kind === "plan") return <ActivityPlan entry={entry} />;
   if (entry.kind === "delegation") {
     const running = entry.status === "running" || entry.status === "queued";
     const duration = running ? now - entry.ts * 1000 : entry.duration_ms;
-    const open = expanded ?? current;
-    return <div className="activity-delegation"><button className="activity-entry-toggle" aria-expanded={open} onClick={() => setExpanded(!open)}><Bot size={16} className="text-accent" /><span className="min-w-0 flex-1 truncate">{entry.agent || t("activity.kinds.delegation")}</span><span className="text-xs text-muted">{t(`activity.status.${entry.status}`, { defaultValue: entry.status })}{duration != null && ` · ${durationLabel(Math.max(0, duration))}`}</span><ChevronDown size={14} className={cn(open && "rotate-180")} /></button>
-      {open && <div className="activity-delegation-detail"><p><TaggedText content={entry.goal} /></p>{entry.run_id && <button className="activity-run-link" onClick={() => onReveal(entry.run_id!)}><ArrowUpRight size={13} />{t("activity.viewExecution")}</button>}{entry.result && <details><summary>{t("activity.result")}</summary><Markdown content={entry.result} /></details>}</div>}
+    return <div className="activity-delegation"><ActivityInspector title={entry.agent || t("activity.kinds.delegation")} preview={entry.goal} className="activity-tool-trigger" trigger={<>
+      <Bot size={16} className="text-accent" /><span className="min-w-0 flex-1 truncate">{entry.agent || t("activity.kinds.delegation")}</span><span className="text-xs text-muted">{t(`activity.status.${entry.status}`, { defaultValue: entry.status })}{duration != null && ` · ${durationLabel(Math.max(0, duration))}`}</span><ArrowUpRight size={14} className="shrink-0 text-muted" />
+    </>}>
+      <p><TaggedText content={entry.goal} /></p>
+      {entry.run_id && <button className="activity-run-link" onClick={() => onReveal(entry.run_id!)}><ArrowUpRight size={13} />{t("activity.viewExecution")}</button>}
+      {entry.result && <section><h3>{t("activity.result")}</h3><Markdown content={entry.result} /></section>}
+    </ActivityInspector>
+      <p className="activity-compact-preview"><TaggedText content={entry.goal} /></p>
     </div>;
   }
   const duration = entry.status === "running" ? Math.max(0, now - entry.ts * 1000) : entry.duration_ms;

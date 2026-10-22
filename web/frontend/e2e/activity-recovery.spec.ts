@@ -56,9 +56,9 @@ test("busy cross-channel streaming cannot mask a lost child terminal and snapsho
   expect(snapshots).toBe(baseline + 1);
   await page.getByRole("button", { name: "Running subagents", exact: true }).click();
   const children = page.getByRole("dialog", { name: "Running subagents", exact: true });
-  await children.getByRole("button", { name: /^Reviewer Queued/ }).click();
-  await expect(children.getByText("Queued review", { exact: true })).toBeVisible();
   await expect(children.getByText("Worker", { exact: true })).toHaveCount(0);
+  await children.getByRole("button", { name: "View details: Reviewer", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Reviewer", exact: true }).getByText("Queued review", { exact: true })).toBeVisible();
   expect(await page.evaluate(() => Reflect.get(window, "testStreamConnections"))).toBe(connections);
 });
 

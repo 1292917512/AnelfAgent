@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import { test, expect } from "./fixtures";
+import { test, expect, installEventStream } from "./fixtures";
 import type { ActivityRun, ActivitySnapshot } from "../src/lib/types/activity";
 
 function run(id: string, started: number, patch: Partial<ActivityRun> = {}): ActivityRun {
@@ -11,22 +11,13 @@ function run(id: string, started: number, patch: Partial<ActivityRun> = {}): Act
 async function liveFixture(page: Page, initial: ActivityRun[]) {
   let snapshot: ActivitySnapshot = { epoch: "follow", revision: 1, runs: initial };
   await page.route("**/api/workspace/activity", (route) => route.fulfill({ json: snapshot }));
+  await installEventStream(page);
   await page.addInitScript(() => {
-    const Native = window.EventSource;
-    const streams = new Set<EventSource>();
-    window.EventSource = class extends Native {
-      constructor(url: string | URL, options?: EventSourceInit) {
-        super(url, options);
-        if (String(url).endsWith("/api/chat/stream")) streams.add(this);
-      }
-      close() { streams.delete(this); super.close(); }
-    };
-    window.addEventListener("fixture-activity", (event) => {
-      if (event instanceof CustomEvent) for (const stream of streams) stream.dispatchEvent(new MessageEvent(event.detail.run.status === "running" ? "activity" : "activity_end", { data: JSON.stringify(event.detail) }));
-    });
-    window.addEventListener("fixture-activity-delta", (event) => {
-      if (event instanceof CustomEvent) for (const stream of streams) stream.dispatchEvent(new MessageEvent("activity_delta", { data: JSON.stringify(event.detail) }));
-    });
+    for (const [name, event] of [["fixture-activity", "activity"], ["fixture-activity-delta", "activity_delta"]]) {
+      window.addEventListener(name!, (message) => {
+        if (message instanceof CustomEvent) window.dispatchEvent(new CustomEvent("test-activity", { detail: { event, data: message.detail } }));
+      });
+    }
   });
   return async (value: ActivityRun) => {
     const updated = { ...value, revision: snapshot.revision + 1 };

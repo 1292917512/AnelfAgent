@@ -11,6 +11,18 @@ const run = (id: string, revision: number, status = "running"): ActivityRun => (
 beforeEach(() => { vi.clearAllMocks(); useActivityStore.setState({ epoch: "", snapshotRevision: 0, syncedAt: 0, checkedAt: 0, runs: [], loaded: false, loading: false, clearing: false, error: null }); });
 afterEach(() => { vi.useRealTimers(); });
 
+it("retains the entry list for metadata-only revisions and replaces it for content or order changes", () => {
+  const store = useActivityStore.getState();
+  const record = { ...run("a", 1), entries: [{ id: "text", kind: "text" as const, ts: 1, content: "First" }] };
+  store.receive("p", record);
+  const original = useActivityStore.getState().runs[0]!.entries;
+  store.receive("p", { ...record, revision: 2, updated_at: 20, entries: record.entries.map((entry) => ({ ...entry })) });
+  expect(useActivityStore.getState().runs[0]!.entries).toBe(original);
+  store.receive("p", { ...record, revision: 3, entries: [{ ...record.entries[0]!, content: "Changed" }] });
+  expect(useActivityStore.getState().runs[0]!.entries).not.toBe(original);
+  expect(useActivityStore.getState().runs[0]!.entries[0]).toMatchObject({ content: "Changed" });
+});
+
 it("bounds snapshot recovery even while another channel continues streaming", async () => {
   vi.useFakeTimers(); vi.setSystemTime(0);
   const store = useActivityStore.getState();

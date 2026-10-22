@@ -72,7 +72,7 @@ export default function Chat() {
         try { localStorage.removeItem(LAYOUT_KEY + layoutId); } catch { /* 布局存储可选 */ }
         setLayoutRevision((revision) => revision + 1);
       }} />
-      <Group key={`${layoutId}:${layoutRevision}`} orientation="horizontal" className="min-h-0 flex-1" defaultLayout={loadLayout(layoutId)}
+      <Group key={layoutRevision} orientation="horizontal" className="min-h-0 flex-1" defaultLayout={loadLayout(layoutId)}
         onLayoutChanged={(next, meta) => {
           if (meta.isUserInteraction) try { localStorage.setItem(LAYOUT_KEY + layoutId, JSON.stringify(next)); } catch { /* 布局存储可选 */ }
         }}>

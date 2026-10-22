@@ -17,11 +17,13 @@ function retainRuns(runs: ActivityRun[]): ActivityRun[] {
 function reconcileRun(previous: ActivityRun | undefined, incoming: ActivityRun): ActivityRun {
   if (!previous) return incoming;
   const entries = new Map(previous.entries.map((entry) => [entry.id, entry]));
+  const reconciled = incoming.entries.map((entry) => replaceEqualDeep(entries.get(entry.id), entry));
   return {
     ...incoming,
     source: replaceEqualDeep(previous.source, incoming.source),
     skills: replaceEqualDeep(previous.skills, incoming.skills),
-    entries: incoming.entries.map((entry) => replaceEqualDeep(entries.get(entry.id), entry)),
+    entries: reconciled.length === previous.entries.length && reconciled.every((entry, index) => entry === previous.entries[index])
+      ? previous.entries : reconciled,
   };
 }
 

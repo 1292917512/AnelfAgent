@@ -1,9 +1,12 @@
 import { defineConfig, devices } from "@playwright/test";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 export default defineConfig({
   testDir: "../..",
   outputDir: "./test-results",
-  testMatch: ["**/web/frontend/e2e/**/*.spec.{ts,mts}", "**/entities/*/panels/e2e/**/*.spec.{ts,mts}", "**/channels/*/frontend/e2e/**/*.spec.{ts,mts}"],
+  testMatch: ["web/frontend/e2e/**/*.spec.{ts,mts}", "entities/*/panels/e2e/**/*.spec.{ts,mts}", "channels/*/frontend/e2e/**/*.spec.{ts,mts}"]
+    .map((pattern) => path.resolve(fileURLToPath(new URL("../..", import.meta.url)), pattern).replace(/\\/g, "/")),
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,

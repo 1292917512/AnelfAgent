@@ -369,19 +369,26 @@ button, a, input, select, textarea, [role="tab"], [role="option"] {
   transition-duration: var(--duration-fast);
   transition-timing-function: var(--ease-out);
 }
-.dialog-overlay[data-state="open"] { animation: surface-fade-in var(--duration-normal) var(--ease-out); }
-.dialog-overlay[data-state="closed"] { animation: surface-fade-out var(--duration-fast) ease-in; }
-.dialog-surface { --surface-x: 0px; --surface-y: 6px; --surface-base-y: 0px; }
-.dialog-surface[data-placement="right"] { --surface-x: 12px; --surface-y: 0px; }
-.dialog-surface[data-placement="left"] { --surface-x: -12px; --surface-y: 0px; }
-.dialog-surface[data-state="open"] { animation: surface-enter var(--duration-normal) var(--ease-out); }
-.dialog-surface[data-state="closed"] { animation: surface-exit var(--duration-fast) ease-in; }
+.dialog-overlay[data-state="open"] { animation: surface-fade-in var(--duration-normal) var(--ease-out) both; }
+.dialog-overlay[data-state="closed"] { animation: surface-fade-out var(--duration-fast) ease-in both; }
+.dialog-surface, .floating-surface { --surface-x: 0px; --surface-y: 6px; --surface-base-y: 0px; }
+.dialog-surface { box-shadow: var(--shadow-lg); }
+.dialog-surface[data-placement="right"] { --surface-x: 24px; --surface-y: 0px; }
+.dialog-surface[data-placement="left"] { --surface-x: -24px; --surface-y: 0px; }
+.dialog-surface[data-placement="fullscreen"] { --surface-y: 0px; }
+.floating-surface { transform-origin: var(--radix-popover-content-transform-origin); }
+.floating-surface[data-side="top"] { --surface-y: 4px; }
+.floating-surface[data-side="bottom"] { --surface-y: -4px; }
+.floating-surface[data-side="left"] { --surface-x: 4px; --surface-y: 0px; }
+.floating-surface[data-side="right"] { --surface-x: -4px; --surface-y: 0px; }
+.dialog-surface[data-state="open"], .floating-surface[data-state="open"] { animation: surface-enter var(--duration-normal) var(--ease-out) both; }
+.dialog-surface[data-state="closed"], .floating-surface[data-state="closed"] { animation: surface-exit var(--duration-fast) ease-in both; pointer-events: none; }
 @keyframes surface-fade-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes surface-fade-out { from { opacity: 1; } to { opacity: 0; } }
 @keyframes surface-enter { from { opacity: 0; transform: translate(var(--surface-x), calc(var(--surface-base-y) + var(--surface-y))); } to { opacity: 1; transform: translate(0, var(--surface-base-y)); } }
 @keyframes surface-exit { from { opacity: 1; transform: translate(0, var(--surface-base-y)); } to { opacity: 0; transform: translate(var(--surface-x), calc(var(--surface-base-y) + var(--surface-y))); } }
 @media (prefers-reduced-motion: reduce) {
-  .dialog-overlay, .dialog-surface { animation: none !important; }
+  .dialog-overlay, .dialog-surface, .floating-surface { animation: none !important; }
 }
 
 @media (max-width: 767px) { .dialog-surface[data-placement="center"] { --surface-base-y: -100%; } }

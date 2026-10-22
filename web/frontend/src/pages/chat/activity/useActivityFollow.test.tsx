@@ -74,3 +74,30 @@ it("cancels queued alignment for user reading and preserves explicit pause and h
   rerender(<Feed revision="3" />); fireEvent.scroll(feed); act(resize); flush();
   expect(screen.getByText("reading")).toBeTruthy();
 });
+
+it("coalesces reading scrolls and finds the anchor without measuring every row", () => {
+  const saved = vi.fn();
+  function LongFeed() {
+    const { scroll, content, handlers } = useActivityFollow("1", paused, true, { mode: "reading", offset: 0, top: 0 }, saved);
+    return <div ref={scroll} data-testid="long-feed" {...handlers}><div ref={content} data-activity-run="run">
+      {Array.from({ length: 512 }, (_, index) => <div key={index} data-activity-entry={String(index)}>Row</div>)}
+    </div></div>;
+  }
+  const { unmount } = render(<LongFeed />);
+  const feed = screen.getByTestId("long-feed");
+  vi.spyOn(feed, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 3200, 200, 100));
+  let measurements = 0;
+  for (const [index, row] of [...feed.querySelectorAll("[data-activity-entry]")].entries()) {
+    vi.spyOn(row, "getBoundingClientRect").mockImplementation(() => { measurements++; return new DOMRect(0, index * 10, 200, 10); });
+  }
+  for (let index = 0; index < 100; index++) fireEvent.scroll(feed);
+  expect(saved).not.toHaveBeenCalled();
+  expect(frames.size).toBe(1);
+  flush();
+  expect(saved).toHaveBeenCalledOnce();
+  expect(saved).toHaveBeenLastCalledWith({ mode: "reading", runId: "run", entryId: "320", offset: 0, top: 0 });
+  expect(measurements).toBeLessThanOrEqual(11);
+  fireEvent.scroll(feed);
+  unmount();
+  expect(frames.size).toBe(0);
+});

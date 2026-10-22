@@ -5,7 +5,7 @@ import type { ActivitySummaryProps } from "@/lib/ui-contributions";
 import { InlineContributions } from "@/components/extensions/ContributionSlot";
 import { formatElapsedCompact } from "@/lib/format";
 import { useNow } from "@/hooks/useNow";
-import { ActivityEntryView } from "./ActivityEntryView";
+import { ActivityPlanDetails } from "./ActivityPlan";
 import { ActivityInspector } from "./ActivityInspector";
 import { ActivitySourceLabel } from "./ActivityReferences";
 import { activitySummary, type ActivityDelegate } from "./activity-summary";
@@ -58,7 +58,7 @@ export function ActivityRoundSummary({ run, runs, onReveal }: ActivitySummaryPro
         <p className="activity-summary-parent">{title}</p>
         <div className="space-y-4">{summary.plans.map(({ run: owner, entry }) => <section key={`${owner.id}:${entry.id}`}>
           {owner.id !== run.id && <p className="activity-note">{t("activity.belongsTo", { title: owner.actor || owner.label })}</p>}
-          <ActivityEntryView entry={entry} current live={entry.status === "running"} onReveal={onReveal} />
+          <h3>{entry.goal}</h3><ActivityPlanDetails entry={entry} />
         </section>)}</div>
       </ActivityInspector>}
       <InlineContributions slot="activity.summary.actions" componentProps={{ run, runs, onReveal }} />

@@ -61,6 +61,10 @@ test("a silent live stream reports staleness and reconnects without losing the d
   await expect(input).toHaveValue("Preserve during recovery");
   await closeWebChatOverlay(page);
   await expect(page.getByRole("button", { name: "Synchronize live activity", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Synchronize live activity", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => Reflect.get(window, "testStreamConnections"))).toBe(initialConnections + 2);
+  await openWebChat(page);
+  await expect(input).toHaveValue("Preserve during recovery");
 });
 
 test("accepted messages remain visible while global decisions have no execution records", async ({ page }) => {

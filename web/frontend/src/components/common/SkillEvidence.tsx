@@ -22,7 +22,7 @@ export const SkillEvidence = memo(function SkillEvidence({ skills, compact = fal
         <span className="skill-evidence-names">{skills.slice(0, 3).map((skill) => <span key={skill.name} title={skill.description} data-mode={skill.mode}>{skill.name}</span>)}{skills.length > 3 && <span>+{skills.length - 3}</span>}</span>
       </span><ArrowUpRight size={13} className="shrink-0 text-muted" />
     </button>
-    {open && <Modal open title={t("evidence.title")} onClose={() => setOpen(false)} width="max-w-2xl"><p className="skills-caption">{t("evidence.hint")}</p><SkillEvidence skills={skills} onSelect={() => setOpen(false)} /></Modal>}
+    <Modal open={open} title={t("evidence.title")} onClose={() => setOpen(false)} width="max-w-2xl"><p className="skills-caption">{t("evidence.hint")}</p><SkillEvidence skills={skills} onSelect={() => setOpen(false)} /></Modal>
   </>;
   return <div className="skill-evidence" aria-label={t("evidence.title")}>
     {skills.map((skill) => <div key={skill.name} className="space-y-1"><Link to={`/skills?skill=${encodeURIComponent(skill.name)}`} onClick={onSelect}

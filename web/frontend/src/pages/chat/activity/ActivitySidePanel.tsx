@@ -50,7 +50,7 @@ export function ActivitySidePanel({ runs, work }: { runs: ActivityRun[]; work: A
         <Popover.Trigger asChild><button type="button" className="activity-side-trigger" aria-label={label} title={label} data-running={running}>
           <Icon size={16} /><span className="activity-side-label">{label}</span><span className="activity-side-count">{count || ""}</span>
         </button></Popover.Trigger>
-        <Popover.Portal><Popover.Content side="left" align="start" sideOffset={8} collisionPadding={12} className="activity-side-window" aria-label={label}>
+        <Popover.Portal><Popover.Content side="left" align="start" sideOffset={8} collisionPadding={12} className="activity-side-window floating-surface" aria-label={label}>
           <header><h3>{label}</h3><Popover.Close asChild><button type="button" aria-label={t("activity.side.close")}><X size={16} /></button></Popover.Close></header>
           <div className="activity-side-body">
             {id === "recollection" && <p className="activity-note">{t("activity.recollectionHint")}</p>}

@@ -98,14 +98,24 @@ test("live notifications and tool inspections support hover, touch and keyboard"
   const toolDialog = page.getByRole("dialog", { name: "inspect_service", exact: true });
   await expect(toolDialog.getByRole("region", { name: "Result", exact: true })).toContainText("Service is healthy");
   await expect(toolDialog).toContainText("request-review-1");
+  await expect(toolDialog).toHaveCSS("animation-name", "surface-enter");
   const accessibility = await new AxeBuilder({ page }).include('[role="dialog"]').analyze();
   expect(accessibility.violations).toEqual([]);
-  await page.keyboard.press("Escape");
+  const closingState = await toolDialog.getByRole("button", { name: "Close", exact: true }).evaluate((button) => {
+    (button as HTMLButtonElement).click();
+    return new Promise<string | undefined>((resolve) => queueMicrotask(() => resolve(button.closest('[role="dialog"]')?.getAttribute("data-state") ?? undefined)));
+  });
+  expect(closingState).toBe("closed");
   await expect(toolDialog).toHaveCount(0);
   await expect(tool).toBeFocused();
   await page.evaluate(() => { document.documentElement.dataset.theme = "dark"; document.documentElement.classList.add("dark"); });
   await page.screenshot({ path: info.outputPath("notifications-dark.png"), animations: "disabled" });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await tool.click();
+  await expect(toolDialog).toHaveCSS("animation-name", "none");
+  await page.keyboard.press("Escape");
+  await expect(toolDialog).toHaveCount(0);
 });
 
 test("memory tool references open the resolved project file instead of a workspace namesake", async ({ page }) => {
@@ -222,10 +232,16 @@ test("workspace shows the global live process beside actual Web messages", async
   await toolDetails.getByRole("button", { name: "Close", exact: true }).click();
   await expect(parentCard.getByText("Validate settings", { exact: true })).toBeVisible();
   await page.screenshot({ path: info.outputPath("workspace-live-activity.png") });
-  await parentCard.getByRole("button", { name: "View execution", exact: true }).click();
+  await parentCard.getByRole("button", { name: "View details: Reviewer", exact: true }).click();
+  const delegateDetails = page.getByRole("dialog", { name: "Reviewer", exact: true });
+  await delegateDetails.getByRole("button", { name: "View execution", exact: true }).click();
   await expect(inspector.getByText("read_deployment_settings", { exact: true })).toBeVisible();
   await expect(inspector.getByText("Reviewing settings while the main conversation continues.", { exact: true })).toBeVisible();
-  await inspector.getByRole("button", { name: "Close", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await expect(inspector).toHaveCount(0);
+  await expect(delegateDetails).toBeVisible();
+  await expect(delegateDetails.getByRole("button", { name: "View execution", exact: true })).toBeFocused();
+  await delegateDetails.getByRole("button", { name: "Close", exact: true }).click();
   await page.evaluate(() => { document.documentElement.dataset.theme = "dark"; document.documentElement.classList.add("dark"); });
   await page.screenshot({ path: info.outputPath("workspace-live-activity-dark.png"), animations: "disabled" });
   await openWebChat(page);
@@ -344,10 +360,12 @@ test("live bursts follow the tail, preserve reading position and expose reflecti
   await feed.evaluate((element) => { element.scrollTop -= 150; });
   await expect(feed).toHaveAttribute("data-following", "false");
   const reading = await feed.evaluate((element) => element.scrollTop);
+  await feed.evaluate((element) => { element.dataset.mountProbe = "retained"; });
   const viewport = page.viewportSize()!;
   await page.setViewportSize({ ...viewport, width: viewport.width < 960 ? 1200 : 1000 });
   await expect(feed).toHaveAttribute("data-following", "false");
   await page.setViewportSize(viewport);
+  await expect(feed).toHaveAttribute("data-mount-probe", "retained");
   await expect(feed).toHaveAttribute("data-following", "false");
   await expect.poll(async () => Math.abs(await feed.evaluate((element) => element.scrollTop) - reading)).toBeLessThanOrEqual(2);
   for (let index = 0; index < 10; index++) await append(`Burst update ${index}`);

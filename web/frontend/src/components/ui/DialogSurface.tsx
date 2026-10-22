@@ -23,14 +23,12 @@ const PLACEMENT = {
 export function DialogSurface({
   open, onClose, title, children, className, placement = "center", dismissible = true,
 }: DialogSurfaceProps) {
-  const surfaceRef = useRef<HTMLDivElement>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
   return (
     <Dialog.Root open={open} onOpenChange={(next) => { if (!next && dismissible) onClose(); }}>
       <Dialog.Portal>
         <Dialog.Overlay className="dialog-overlay fixed inset-0 z-[100] bg-black/45" />
         <Dialog.Content
-          ref={surfaceRef}
           aria-describedby={undefined}
           data-placement={placement}
           className={cn("dialog-surface fixed z-[100] w-full border border-border bg-card text-foreground shadow-lg outline-none flex flex-col", PLACEMENT[placement], className)}
@@ -43,9 +41,16 @@ export function DialogSurface({
             else document.querySelector<HTMLElement>("main")?.focus({ preventScroll: true });
           }}
           onEscapeKeyDown={(event) => {
-            const owner = event.target instanceof Element ? event.target.closest('[role="dialog"]') : null;
+            // 关闭由焦点所在的弹层处理，避免快速重开时父层的旧监听吞掉 Esc。
+            event.preventDefault();
+          }}
+          onKeyDown={(event) => {
+            if (event.key !== "Escape") return;
             const menu = event.target instanceof Element && event.target.closest('[role="menu"]');
-            if (!dismissible || menu || (owner && owner !== surfaceRef.current)) event.preventDefault();
+            if (menu) return;
+            event.preventDefault();
+            event.stopPropagation();
+            if (open && dismissible) onClose();
           }}
           onPointerDownOutside={(event) => { if (!dismissible) event.preventDefault(); }}
         >

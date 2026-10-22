@@ -201,7 +201,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     activeChatId: initialChatId,
     chats: initialChats,
     streamStatus: "stopped",
-    refreshRealtime: resync,
+    refreshRealtime: () => stream.refresh(),
 
     active: () => {
       const s = get();

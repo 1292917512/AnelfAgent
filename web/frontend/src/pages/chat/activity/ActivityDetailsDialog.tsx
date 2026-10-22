@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { RefreshCw } from "lucide-react";
-import { Modal, LoadingBlock, Button } from "@/components/ui";
+import { LoadingBlock, Button } from "@/components/ui";
 import { QueryError } from "@/components/common/AsyncState";
 import { useActivityStore } from "@/stores/activity-store";
 import { useChatStore } from "@/stores/chat-store";
@@ -10,7 +10,7 @@ import { ActivityExecutionControl } from "./ActivityExecutionControl";
 import { useShallow } from "zustand/react/shallow";
 import { hasActiveWork } from "@/lib/chat-activity";
 
-export default function ActivityDetailsDialog({ ids, onClose, onReveal }: { ids: string[]; onClose: () => void; onReveal: (id: string) => void }) {
+export default function ActivityDetailsDialog({ ids, onReveal }: { ids: string[]; onReveal: (id: string) => void }) {
   const { t } = useTranslation("settings");
   const { t: tc } = useTranslation("common");
   const selected = useActivityStore(useShallow((state) => state.runs.filter((run) => ids.includes(run.id))));
@@ -32,7 +32,7 @@ export default function ActivityDetailsDialog({ ids, onClose, onReveal }: { ids:
     const timer = window.setInterval(() => { if (!document.hidden) void load(); }, 3000);
     return () => window.clearInterval(timer);
   }, [active, connected, load]);
-  return <Modal open onClose={onClose} title={t("hookFlow.executionDetails")} width="max-w-4xl" placement="right">
+  return <>
     <div className="mb-3 flex justify-end"><Button variant="ghost" size="sm" disabled={loading} onClick={() => void load()}><RefreshCw size={14} />{tc("refresh")}</Button></div>
     {error != null && <QueryError compact error={error} retry={() => void load()} />}
     {selected.length === 0 && (pending || loading) && <LoadingBlock />}
@@ -44,5 +44,5 @@ export default function ActivityDetailsDialog({ ids, onClose, onReveal }: { ids:
           onToggle={(id, open) => setExpanded((current) => ({ ...current, [id]: open }))} onReveal={onReveal} />
       </section>)}
     </div>
-  </Modal>;
+  </>;
 }
