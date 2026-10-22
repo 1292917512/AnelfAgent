@@ -6,6 +6,7 @@ import { RefreshCw, Upload, Shrink } from "lucide-react";
 import { ProbeStatusCard } from "./ProbeStatusCard";
 import { DatasetMaintenanceCard } from "./DatasetMaintenanceCard";
 import { ProjectionStatusCard } from "./ProjectionStatusCard";
+import { StorageDetailsCard } from "./StorageDetailsCard";
 import { QueryError } from "@/components/common/AsyncState";
 import { Card } from "@/components/common/Card";
 import { StatCard } from "@/components/common/StatCard";
@@ -23,10 +24,10 @@ export function CogneePanel() {
   const queryClient = useQueryClient();
   const [confirmation, setConfirmation] = useState<"rebuild" | "backfill" | null>(null);
 
-  const { data: status, error: statusError, refetch: refreshStatus } = useQuery({
+  const { data: status, error: statusError, dataUpdatedAt, refetch: refreshStatus } = useQuery({
     queryKey: ["cogneeStatus"],
     queryFn: () => memoryApi.cognee.status().then((r) => r.data),
-    refetchInterval: 10000,
+    refetchInterval: 5000,
     throwOnError: false,
   });
   const invalidate = () => {
@@ -88,12 +89,13 @@ export function CogneePanel() {
 
   return (
     <div className="space-y-4">
+      <ProjectionStatusCard state={status?.projection} sync={sync} updatedAt={dataUpdatedAt} stale={!!statusError}
+        enabled={availability?.enabled ?? false} />
       <div className="rounded-xl border border-border bg-elevated p-3 space-y-2 text-sm">
         <p className="text-heading">{t("cognee.setupHint")}</p>
         <Link to="/models" className="text-accent hover:underline">{t("cognee.configureModels")}</Link>
         <p className="text-xs text-muted">{t("cognee.usageHint")}</p>
       </div>
-      <ProjectionStatusCard state={status?.projection} />
       {rebuildMutation.error && <QueryError error={rebuildMutation.error} retry={() => rebuildMutation.mutate()} compact />}
       <RecallTester preset="cognee" />
 
@@ -128,7 +130,7 @@ export function CogneePanel() {
             </button>
             <button
               onClick={() => setConfirmation("rebuild")}
-              disabled={!availability?.ready || rebuildMutation.isPending || status?.projection?.rebuild_requested
+              disabled={!availability?.ready || rebuildMutation.isPending || status?.projection?.rebuild_requested || status?.retirement?.running
                 || ["requested", "scanning", "building", "verifying"].includes(status?.projection?.phase ?? "")}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-danger-subtle text-danger hover:bg-[rgba(239,68,68,0.15)] transition-all"
             >
@@ -202,8 +204,9 @@ export function CogneePanel() {
       <ModelConfigCard kind="chat" />
       <ModelConfigCard kind="embedding" />
 
+      <StorageDetailsCard status={status} />
       <DatasetMaintenanceCard ready={availability?.ready ?? false}
-        namespace={status?.projection?.phase === "ready" ? status.projection.namespace : ""} />
+        namespace={status?.projection?.phase === "ready" ? status.projection.namespace : ""} status={status} />
 
       <ConfigFormPanel
         title={t("cognee.generalTitle")}

@@ -562,6 +562,10 @@ class MemoryStore(BaseEntity):
     async def get_cognee_sync_status(self) -> Dict[str, int]:
         return await self._cognee.get_status()
 
+    async def get_cognee_sync_activity(self) -> dict[str, Any]:
+        """持久队列的处理中数量、重试与未解决错误。"""
+        return await self._cognee.activity()
+
     async def reset_cognee_projection(self) -> Dict[str, int]:
         """清空 cognee 投影队列与 ID 映射（清空重建 cognee 数据前调用）。"""
         return await self._cognee.reset()

@@ -35,6 +35,70 @@ from agent.memory.memory_types import MemoryEntry, MemorySearchResult, MemoryTyp
 # ==================================================================
 
 
+@pytest.mark.parametrize("progress", [None, {"completed_items": 0, "total_items": 10, "current_stage": None}])
+async def test_public_pipeline_progress_preserves_unknown_and_zero(progress):
+    from uuid import UUID
+
+    identity = "b56459b0-35aa-4cd2-b5a7-a4a070b735ae"
+    read = AsyncMock(return_value={identity: {"status": "DATASET_PROCESSING_STARTED", "progress": progress}})
+    client = CogneeClient(CogneeConfig())
+    client._module = SimpleNamespace(datasets=SimpleNamespace(get_progress=read))
+    client._configured = True
+    result = await client.pipeline_progress(identity)
+    assert result.completed_items == (0 if progress else None)
+    assert result.total_items == (10 if progress else None)
+    read.assert_awaited_once_with([UUID(identity)], pipeline_names=["cognify_pipeline"])
+
+
+async def test_progress_reads_are_cached_and_do_not_fake_activity_or_control_writes():
+    from agent.memory.cognee.progress import ProjectionProgress
+    from agent.memory.cognee.types import CogneePipelineProgress
+
+    monitor = ProjectionProgress()
+    read = AsyncMock(return_value=CogneePipelineProgress(completed_items=9, total_items=10))
+    with monitor.batch([{"attempts": 1}]):
+        monitor.stage("cognify", dataset_id="dataset", timeout=3600)
+        first, second = await asyncio.gather(monitor.snapshot(read), monitor.snapshot(read))
+        assert first.pipeline.completed_items == second.pipeline.completed_items == 9
+        assert first.attempt == 2
+        read.assert_awaited_once()
+        monitor._changed -= 600
+        monitor._read_after = 0
+        same = await monitor.snapshot(read)
+        assert same.last_change_at == first.last_change_at and same.quiet_seconds >= 600
+        read.side_effect = TimeoutError("progress unavailable")
+        monitor._read_after = 0
+        failed = await monitor.snapshot(read)
+        assert "progress unavailable" in failed.progress_error
+        assert failed.pipeline.completed_items == 9  # 保留快照并标记不可用，不伪造零进度。
+        monitor.stage("replace_projection")
+        committed = await monitor.snapshot(read)
+        assert committed.stage == "replace_projection" and committed.pipeline is None
+    assert await monitor.snapshot(read) is None
+
+
+async def test_late_progress_response_cannot_leak_into_next_batch():
+    from agent.memory.cognee.progress import ProjectionProgress
+    from agent.memory.cognee.types import CogneePipelineProgress
+
+    monitor = ProjectionProgress()
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def read(_):
+        entered.set()
+        await release.wait()
+        return CogneePipelineProgress(completed_items=9, total_items=10)
+
+    with monitor.batch([{}]):
+        monitor.stage("cognify", dataset_id="old")
+        request = asyncio.create_task(monitor.snapshot(read))
+        await entered.wait()
+    with monitor.batch([{}, {}]):
+        release.set()
+        result = await request
+        assert result.items == 2 and result.pipeline is None and result.stage == "prepare"
+
+
 @pytest.mark.parametrize("serialized", [False, True])
 def test_chunk_external_metadata_is_restored_from_sdk_storage(serialized: bool) -> None:
     import json
@@ -518,6 +582,11 @@ class _FakeCogneeClient:
 
     async def cognify(self, **_kwargs):
         return None
+
+    async def pipeline_progress(self, _dataset_id):
+        from agent.memory.cognee.types import CogneePipelineProgress
+
+        return CogneePipelineProgress()
 
     async def improve(self, **_kwargs):
         return {"stages": [{"stage": "global_context_index", "status": "completed"}]}
@@ -1282,9 +1351,10 @@ def test_storage_stats_classifies_components(tmp_path) -> None:
 
     put("data/dataset-1/doc.txt", 10)
     put("system/databases/cognee_db", 100)
-    put("system/databases/user/ds.lance.db/T.lance/_versions/1.manifest", 1000)
-    put("system/databases/user/ds.lbug", 500)
-    put("system/databases/user/ds.lbug.wal", 50)
+    dataset_id = "dd069c9e-3361-5b30-adc2-40e9607aba11"
+    put(f"system/databases/user/{dataset_id}.lance.db/T.lance/_versions/1.manifest", 1000)
+    put(f"system/databases/user/{dataset_id}.lbug", 500)
+    put(f"system/databases/user/{dataset_id}.lbug.wal", 50)
     put("system/databases/user/misc.lock", 5)
     put("system/logs/cognee.log", 7)
 
@@ -1296,6 +1366,12 @@ def test_storage_stats_classifies_components(tmp_path) -> None:
     assert stats["graph_bytes"] == 550
     assert stats["other_bytes"] == 12
     assert stats["total_bytes"] == 1672
+    assert stats["datasets"] == {dataset_id: {"total_bytes": 1550, "graph_bytes": 550, "lance_bytes": 1000}}
+    assert stats["computed_at"] > 0
+    from agent.memory.cognee.storage import StorageStatsTracker
+    tracker = StorageStatsTracker()
+    tracker._save_snapshot(str(tmp_path), stats)
+    assert tracker._load_snapshot(str(tmp_path)) == stats
 
 
 @pytest.mark.asyncio
@@ -1597,6 +1673,11 @@ async def test_cognify_timeout_keeps_projection_pending_and_retries_same_documen
     assert "raise_on_error=False" not in coordinator._last_error
     assert "stage:cognify" in warning.call_args.args[0]
     assert "耗时" in warning.call_args.args[0]
+    # 重启之后未解决的超时仍来自持久队列，而不是进程内 last_error。
+    restarted = CogneeCoordinator(store, client, CogneeConfig())
+    recovering = await restarted.status()
+    assert recovering.retrying == 1 and recovering.next_retry_at > time.time()
+    assert recovering.active is None and "TimeoutError" in recovering.last_error
 
     retry_time = time.time_ns() + 2_000_000_000
     monkeypatch.setattr("agent.memory.store.cognee_queue.time.time_ns", lambda: retry_time)

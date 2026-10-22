@@ -21,6 +21,7 @@ from .config import CogneeConfig
 from .documents import ProjectionDocument, memory_document
 from .errors import error_text
 from .ports import ProjectionBackend
+from .progress import ProjectionProgress
 
 
 class ProjectionWriter:
@@ -32,12 +33,19 @@ class ProjectionWriter:
         self._observe_write = observe_write
         self._after_write = after_write
         self.last_error = ""
+        self.progress = ProjectionProgress()
 
     @property
     def memory_dataset(self) -> str:
         return projection_dataset(self.client.projection_namespace or self.config.dataset_prefix)
 
     async def process(self, batch: list[dict[str, Any]]) -> None:
+        if not batch:
+            return
+        with self.progress.batch(batch):
+            await self._process(batch)
+
+    async def _process(self, batch: list[dict[str, Any]]) -> None:
         availability = await self.client.initialize()
         if not availability.ready:
             for item in batch:
@@ -81,6 +89,7 @@ class ProjectionWriter:
         )
 
     async def _process_delete(self, item: dict[str, Any]) -> None:
+        self.progress.stage("delete")
         try:
             await self._delete_superseded(item)
             await self.store.complete_cognee_sync(
@@ -162,6 +171,7 @@ class ProjectionWriter:
         label_kind = "graph-node" if graph else "memory"
         stage = "prepare"
         started = time.monotonic()
+        self.progress.stage(stage, dataset_name=dataset_name)
         try:
             data_items: list[Any] = []
             for item, document in entries:
@@ -186,6 +196,7 @@ class ProjectionWriter:
                 await self.store.projection_state.stage(item["entry_kind"], item["entry_id"], dataset_name, data_id)
             self._observe_write()
             stage = "add"
+            self.progress.stage(stage, dataset_name=dataset_name, timeout=self.config.pipeline_timeout_seconds)
             ingestion = await self.client.add(
                 data_items, dataset_name=dataset_name, incremental_loading=True,
             )
@@ -193,9 +204,12 @@ class ProjectionWriter:
             if not dataset_id:
                 raise RuntimeError("Cognee 摄入未返回 dataset_id，保留旧投影")
             stage = "cognify"
+            self.progress.stage(stage, dataset_name=dataset_name, dataset_id=dataset_id,
+                                timeout=self.config.pipeline_timeout_seconds)
             await self.client.cognify(datasets=[dataset_name], incremental_loading=True)
             self._observe_write()
             stage = "replace_projection"
+            self.progress.stage(stage, dataset_name=dataset_name)
             for (item, document), data_item in zip(entries, data_items, strict=True):
                 data_id = str(_value(data_item, "data_id", ""))
                 if not data_id:
@@ -210,6 +224,7 @@ class ProjectionWriter:
                     dataset_name=dataset_name, dataset_id=dataset_id, data_id=data_id,
                     content_hash=document.fingerprint,
                 )
+            self.progress.stage("enhance", dataset_name=dataset_name, timeout=self.config.pipeline_timeout_seconds)
             await self._after_write(dataset_name)
             self.last_error = ""
         except Exception as exc:

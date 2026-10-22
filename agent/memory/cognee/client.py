@@ -26,7 +26,7 @@ from .llm_bridge import (
     summarize_resolved,
 )
 from .sdk_contract import close_engines, validate_sdk
-from .types import CogneeAvailability, CogneePipelineError, CogneeRecallItem
+from .types import CogneeAvailability, CogneePipelineError, CogneePipelineProgress, CogneeRecallItem
 
 
 class CogneeClient:
@@ -362,6 +362,20 @@ class CogneeClient:
 
 
     # Dataset namespace
+    async def pipeline_progress(self, dataset_id: str) -> CogneePipelineProgress:
+        """只读公开流水线进度；短超时避免观测接口阻塞管理页面。"""
+        identity = _to_uuid(dataset_id)
+        rows = await self._call("datasets.get_progress", [identity],
+                                pipeline_names=["cognify_pipeline"], timeout=3.0)
+        row = rows.get(str(identity), {})
+        progress = row.get("progress") or {}
+        return CogneePipelineProgress(
+            status=row.get("status", ""),
+            completed_items=progress.get("completed_items"),
+            total_items=progress.get("total_items"),
+            current_stage=progress.get("current_stage") or "",
+        )
+
     async def list_datasets(self, **kwargs: Any) -> Any:
         try:
             return await self._call("datasets.list_datasets", **kwargs)
@@ -375,6 +389,11 @@ class CogneeClient:
 
     async def list_data(self, dataset_id: Any, **kwargs: Any) -> Any:
         return await self._call("datasets.list_data", _to_uuid(dataset_id), **kwargs)
+
+    async def delete_dataset(self, dataset_id: str) -> None:
+        """经 SDK 删除指定数据集及其索引，保留仍被其他数据集引用的原文。"""
+        await self._call("datasets.empty_dataset", _to_uuid(dataset_id), timeout=self.config.pipeline_timeout_seconds)
+        self._datasets_until = 0
 
     def document_processed(self, item: Any, dataset_id: str) -> bool:
         """逐文档检查抽取完成标记；只有摄入元数据不能证明索引已生成。"""

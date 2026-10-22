@@ -322,6 +322,25 @@ class CogneeSyncQueue:
             "synced": int(mapped_row["cnt"]) if mapped_row else 0,
         }
 
+    async def activity(self) -> dict[str, Any]:
+        """持久队列的在途、重试与最近未解决错误；进程重启仍可观测。"""
+        db = await self._conn.get_db()
+        row = await (await db.execute(
+            "SELECT COUNT(CASE WHEN status='processing' THEN 1 END) AS processing, "
+            "COUNT(CASE WHEN attempts>0 AND status IN ('pending','processing') THEN 1 END) AS retrying, "
+            "MIN(CASE WHEN status='pending' AND attempts>0 THEN next_retry_ns END) AS next_retry_ns "
+            "FROM cognee_sync_queue"
+        )).fetchone()
+        error = await (await db.execute(
+            "SELECT last_error FROM cognee_sync_queue WHERE last_error<>'' ORDER BY updated_ns DESC LIMIT 1"
+        )).fetchone()
+        return {
+            "processing": int(row["processing"]) if row else 0,
+            "retrying": int(row["retrying"]) if row else 0,
+            "next_retry_at": (int(row["next_retry_ns"] or 0) / 1e9) if row else 0,
+            "last_error": str(error[0]) if error else "",
+        }
+
     async def reset(self) -> Dict[str, int]:
         """清空 cognee 投影队列与 ID 映射（清空重建 cognee 数据前调用）。
 

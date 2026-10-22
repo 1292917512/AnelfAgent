@@ -14,6 +14,27 @@ from agent.memory.cognee.llm_bridge import CogneeConfigError
 from services.memory import MemoryService
 
 
+async def test_retirement_http_returns_task_state_and_rejects_unsafe_targets(monkeypatch):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from agent.memory.cognee.retirement import RetirementStatus
+    from web.routers.memory import router
+
+    request = AsyncMock(return_value=RetirementStatus(running=True, dataset_id="old", stage="checking"))
+    monkeypatch.setattr("agent.memory.cognee.runtime.get_cognee_coordinator", lambda: SimpleNamespace(
+        retirement=SimpleNamespace(request=request)))
+    app = FastAPI()
+    app.include_router(router)
+    async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as http:
+        response = await http.delete("/memory/cognee/datasets/old")
+        assert response.status_code == 200 and response.json()["running"]
+        request.assert_awaited_once_with("old")
+        request.side_effect = ValueError("current dataset protected")
+        response = await http.delete("/memory/cognee/datasets/current")
+        assert response.status_code == 409 and response.json()["detail"] == "current dataset protected"
+
+
 async def test_recall_http_preserves_source_diagnostics_and_bounds_origin_details(monkeypatch):
     from fastapi import FastAPI
     from httpx import ASGITransport, AsyncClient
@@ -69,6 +90,26 @@ async def test_save_validates_before_persisting_or_reconfiguring(monkeypatch, co
             await MemoryService.save_cognee_config({"embedding": {"model": "different"}})
         saved.assert_not_called()
         coordinator.reconfigure.assert_not_awaited()
+
+
+async def test_pause_persists_even_with_invalid_model_but_resume_requires_validation(monkeypatch):
+    saved = Mock()
+    validate = Mock(side_effect=CogneeConfigError("invalid model"))
+    coordinator = SimpleNamespace(
+        client=SimpleNamespace(validate_configuration=validate), reconfigure=AsyncMock(),
+        rebuild=SimpleNamespace(validate_config=Mock()),
+    )
+    monkeypatch.setattr("agent.memory.cognee.config.load_cognee_config", CogneeConfig)
+    monkeypatch.setattr("agent.memory.cognee.config.save_cognee_config", saved)
+    monkeypatch.setattr("agent.memory.cognee.runtime.get_cognee_coordinator", lambda: coordinator)
+    result = await MemoryService.save_cognee_config({"sync_enabled": False})
+    assert not result["sync_enabled"]
+    validate.assert_not_called()
+    coordinator.reconfigure.assert_awaited_once()
+    assert not saved.call_args.args[0].sync_enabled
+    with pytest.raises(CogneeConfigError, match="invalid model"):
+        await MemoryService.save_cognee_config({"sync_enabled": True})
+    assert saved.call_count == 1
 
 
 async def test_http_save_during_projection_returns_and_preserves_latest_config(

@@ -67,8 +67,8 @@ class ProjectionStateStore:
         await db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES(?,?)",
                          (_STATE_KEY, state.model_dump_json()))
 
-    async def begin(self, state: ProjectionState, backup: Path) -> None:
-        """先完整备份权威 SQLite，再原子切换队列/映射；不修改原始内容表。"""
+    async def backup(self, backup: Path) -> None:
+        """完整备份权威 SQLite，包含旧投影历史，并核验快照可读。"""
         db = await self._conn.get_db()
         backup.parent.mkdir(parents=True, exist_ok=True)
         backup.touch(exist_ok=False)
@@ -84,6 +84,11 @@ class ProjectionStateStore:
                 row = await (await target.execute("PRAGMA quick_check")).fetchone()
                 if row is None or row[0] != "ok":
                     raise RuntimeError("原生记忆快照完整性校验失败")
+
+    async def begin(self, state: ProjectionState, backup: Path) -> None:
+        """先完整备份权威 SQLite，再原子切换队列/映射；不修改原始内容表。"""
+        await self.backup(backup)
+        db = await self._conn.get_db()
         next_state = state.model_copy(update={
             "backup_path": str(backup), "phase": "scanning",
             "counts": await self._queue.eligible_counts(),

@@ -24,6 +24,7 @@ export const memoryApi = {
     status: () => api.get<CogneeStatus>("/memory/cognee/status"),
     getConfig: () => api.get<CogneeConfig>("/memory/cognee/config"),
     saveConfig: (data: Partial<CogneeConfig>) => api.put<CogneeConfig>("/memory/cognee/config", data),
+    retireDataset: (id: string) => api.delete(`/memory/cognee/datasets/${encodeURIComponent(id)}`),
     retry: () => api.post("/memory/cognee/retry"),
     rebuild: () => api.post<{ ok: boolean; scheduled: boolean }>("/memory/cognee/rebuild"),
     compact: () =>

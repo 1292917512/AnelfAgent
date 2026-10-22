@@ -151,6 +151,13 @@ class CogneeRebuild:
         if audit["missing_or_stale"] or audit["extra"]:
             raise RuntimeError(f"权威覆盖不一致: {audit}")
         mappings = await self.store.projection_state.mappings()
+        verified = await self.verify_backend(state, mappings)
+        if not await self.store.projection_state.finish(state, verified, revision=audit["revision"]):
+            state.phase = "building"
+            await self.store.projection_state.save(state)
+
+    async def verify_backend(self, state: ProjectionState, mappings: list[dict[str, Any]]) -> int:
+        """只读核验后端内容、标签和抽取完成标记；供构建验收及旧代际清理复用。"""
         documents: dict[tuple[str, str], Any] = {}
         for dataset_id in sorted({str(row["dataset_id"]) for row in mappings}):
             for item in await self.client.list_data(dataset_id):
@@ -170,6 +177,4 @@ class CogneeRebuild:
             expected_dataset = projection_dataset(state.namespace, graph=mapping["entry_kind"] == "graph_node")
             if mapping["dataset_name"] != expected_dataset:
                 raise RuntimeError("发现其他构建代际的映射")
-        if not await self.store.projection_state.finish(state, len(documents), revision=audit["revision"]):
-            state.phase = "building"
-            await self.store.projection_state.save(state)
+        return len(documents)

@@ -1,6 +1,112 @@
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect } from "./fixtures";
 
+test("Cognee storage distinguishes generations and confirms protected cleanup", async ({ page }, info) => {
+  const state = {
+    availability: { installed: true, enabled: true, ready: true, version: "1.6.5" },
+    sync: { enabled: true, running: true, pending: 0, synced: 2, failed: 0 },
+    projection: { phase: "ready", namespace: "anelf_p2_new", verified: 2, counts: { memories: 2, graph_nodes: 0 },
+      previous_namespaces: ["anelf"], rebuild_requested: false },
+    storage: { total_bytes: 4096, graph_bytes: 1024, lance_bytes: 2048, data_bytes: 512, metadata_bytes: 256, other_bytes: 256,
+      computed_at: Date.now() / 1000, datasets: { old: { total_bytes: 1536, graph_bytes: 512, lance_bytes: 1024 } } },
+    retirement: { running: false, stage: "", dataset_name: "", documents: 0, preserved: 0, backup_path: "", error: "" },
+  };
+  await page.route("**/api/memory/cognee/status", (route) => route.fulfill({ json: state }));
+  await page.route("**/api/memory/cognee/datasets", (route) => route.fulfill({ json: [
+    { id: "current", name: "anelf_p2_new_global" }, { id: "old", name: "anelf_global" }, { id: "external", name: "external_global" },
+  ] }));
+  const deleted: string[] = [];
+  await page.route("**/api/memory/cognee/datasets/old", (route) => {
+    expect(route.request().method()).toBe("DELETE");
+    deleted.push("old");
+    Object.assign(state.retirement, { running: true, stage: "preserving", dataset_name: "anelf_global", documents: 26, preserved: 12 });
+    return route.fulfill({ json: state.retirement });
+  });
+  await page.goto("/webui/memory?tab=cognee");
+  const storage = page.locator("section").filter({ has: page.getByRole("heading", { name: "Storage breakdown", exact: true }) });
+  await expect(storage.getByText("1.0 KB · 25.0%")).toBeVisible();
+  await expect(page.getByText("Dedicated indexes 1.5 KB · Graph 512 B · Vectors 1.0 KB")).toBeVisible();
+  const cleanup = page.getByRole("button", { name: "Clean up old data", exact: true });
+  await expect(cleanup).toHaveCount(1);
+  await expect(cleanup).toBeDisabled();
+  Object.assign(state.sync, { enabled: false, running: false });
+  await page.reload();
+  await expect(cleanup).toBeEnabled();
+  await cleanup.click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByText(/Clean up “anelf_global”/)).toBeVisible();
+  expect(deleted).toEqual([]);
+  await dialog.getByRole("button", { name: "Confirm", exact: true }).click();
+  await expect(storage.getByText(/Preserved 12 \/ 26 documents/)).toBeVisible();
+  await expect(cleanup).toBeDisabled();
+  expect(deleted).toEqual(["old"]);
+  await storage.scrollIntoViewIfNeeded();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await storage.screenshot({ path: info.outputPath("cognee-storage.png") });
+});
+
+test("Cognee exposes in-flight progress, retries and stale observations", async ({ page }, info) => {
+  test.setTimeout(60000);
+  const now = Date.now() / 1000;
+  let unavailable = false;
+  const state = {
+    availability: { installed: true, enabled: true, ready: true, version: "1.6.5" },
+    sync: { enabled: true, running: true, pending: 100, processing: 10, synced: 0, failed: 0,
+      retrying: 10, next_retry_at: now + 10, last_error: "Model request timed out", configuration_pending: true,
+      active: { stage: "cognify", items: 10, attempt: 2, dataset_name: "test_global", started_at: now - 600,
+        elapsed_seconds: 600, stage_elapsed_seconds: 590, quiet_seconds: 310, last_change_at: now - 310,
+        timeout_seconds: 3600, progress_checked_at: now, progress_error: "",
+        pipeline: { status: "DATASET_PROCESSING_STARTED", completed_items: 9, total_items: 10, current_stage: "add_data_points" } } },
+    projection: { phase: "scanning", rebuild_requested: false, namespace: "test", verified: 0,
+      counts: { memories: 1825, graph_nodes: 2506, excluded_memories: 118 }, previous_namespaces: ["old"],
+      backup_path: "/data/backups/memory.sqlite3", completed_at: 0, legacy_preserved: 26 },
+  };
+  await page.route("**/api/memory/cognee/status", (route) => unavailable
+    ? route.fulfill({ status: 503, json: { detail: "Status temporarily unavailable" } })
+    : route.fulfill({ json: state }));
+  await page.goto("/webui/memory?tab=cognee");
+  const batch = page.getByTestId("cognee-batch-progress");
+  await expect(page.getByText("Committed 0 / initially expected 4331 documents")).toBeVisible();
+  await expect(page.getByText("Expected rebuild total: 4331 documents")).toBeVisible();
+  await expect(page.getByText("1825 memories + 2506 relationship nodes (inventory at build start)")).toBeVisible();
+  await expect(batch.getByText("Cognee pipeline processed 9 / 10 documents")).toBeVisible();
+  await expect(batch.getByText(/No progress change observed for over 5 minutes/)).toBeVisible();
+  await expect(page.getByText(/10 previously failed items remain/)).toBeVisible();
+  await expect(page.getByText(/New model\/settings saved; waiting for the current batch/)).toBeVisible();
+  await expect(page.getByText(/A normal restart resumes the saved queue/)).toBeVisible();
+  const saves: unknown[] = [];
+  Object.assign(state.sync, { pause_requested: false });
+  await page.route("**/api/memory/cognee/config", (route) => {
+    if (route.request().method() === "PUT") {
+      const update = route.request().postDataJSON();
+      saves.push(update);
+      Object.assign(state.sync, { pause_requested: !update.sync_enabled, configuration_pending: !update.sync_enabled });
+      if (update.sync_enabled) state.sync.enabled = state.sync.running = true;
+      return route.fulfill({ json: { sync_enabled: update.sync_enabled } });
+    }
+    return route.fulfill({ json: { enabled: true, sync_enabled: state.sync.enabled, chat: {}, embedding: {} } });
+  });
+  await page.getByRole("button", { name: "Pause sync", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Finishing current batch…", exact: true })).toBeDisabled();
+  await expect(page.getByText(/Pause requested: finish this batch/)).toBeVisible();
+  expect(saves).toEqual([{ sync_enabled: false }]);
+  Object.assign(state.sync, { enabled: false, running: false, pause_requested: false, configuration_pending: false });
+  await page.reload();
+  await expect(page.getByText(/Sync paused; the queue is preserved/)).toBeVisible();
+  await page.getByRole("button", { name: "Resume sync", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Pause sync", exact: true })).toBeEnabled();
+  expect(saves).toEqual([{ sync_enabled: false }, { sync_enabled: true }]);
+  await batch.scrollIntoViewIfNeeded();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await batch.screenshot({ path: info.outputPath("cognee-progress.png") });
+  state.sync.active.progress_error = "Progress endpoint timeout";
+  await expect(batch.getByText(/Progress read failed/)).toBeVisible({ timeout: 12000 });
+  await expect(batch.getByText("Cognee pipeline processed 9 / 10 documents")).toBeVisible();
+  unavailable = true;
+  await expect(page.getByText(/Status refresh failed. This is the last snapshot/)).toBeVisible({ timeout: 25000 });
+  await expect(batch.getByText("Cognee pipeline processed 9 / 10 documents")).toBeVisible();
+});
+
 test("Cognee waits for model setup before loading datasets", async ({ page }, info) => {
   let ready = false;
   let datasetReads = 0;

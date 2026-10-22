@@ -12,10 +12,12 @@ from core.log import log
 
 from ..memory_store import MemoryStore
 from ..projection import projection_dataset
+from ..store.projection_state import ProjectionState
 from .client import CogneeClient
 from .config import CogneeConfig
 from .errors import error_text as _error_text
 from .rebuild import CogneeRebuild
+from .retirement import DatasetRetirement
 from .storage import cognee_storage_stats
 from .types import CogneeSyncStatus
 from .write_breaker import WriteBreaker
@@ -57,6 +59,15 @@ class CogneeCoordinator:
         self.last_compact_summary = ""
         self.writer = ProjectionWriter(store, client, self.config,
                                        observe_write=lambda: self._breaker.observe(), after_write=self._maybe_improve)
+        self.retirement = DatasetRetirement(store, client, self._projection_lock, self._retirement_state,
+                                           self.rebuild.verify_backend)
+
+    def _retirement_state(self) -> ProjectionState:
+        state = self.rebuild.state
+        if (self.config.sync_enabled or self.is_running or self.configuration_pending
+                or not state or state.phase != "ready" or state.rebuild_requested):
+            raise ValueError("请先完成新索引验收并暂停同步，再清理旧数据集")
+        return state
 
     @property
     def is_running(self) -> bool:
@@ -104,6 +115,7 @@ class CogneeCoordinator:
 
     async def close(self) -> None:
         self._closing = True
+        await self.retirement.close()
         self._wake.set()
         if self._configuration_task:
             self._configuration_task.cancel()
@@ -195,7 +207,9 @@ class CogneeCoordinator:
         self._wake.set()
 
     async def status(self) -> CogneeSyncStatus:
+        active = await self.writer.progress.snapshot(self.client.pipeline_progress)
         counts = await self.store.get_cognee_sync_status()
+        activity = await self.store.get_cognee_sync_activity()
         paused = self._pause_until_ns > time.monotonic_ns()
         paused_until = 0.0
         if paused:
@@ -206,9 +220,15 @@ class CogneeCoordinator:
             pending=counts["pending"],
             failed=counts["failed"],
             synced=counts["synced"],
+            processing=activity["processing"],
+            retrying=activity["retrying"],
+            next_retry_at=activity["next_retry_at"],
+            active=active,
+            pause_requested=bool(self._pending_config and not (
+                self._pending_config.enabled and self._pending_config.sync_enabled)),
             configuration_pending=self.configuration_pending,
             configuration_error=self._configuration_error,
-            last_error=self._last_error,
+            last_error=activity["last_error"] or self._last_error,
             last_compact_at=self.last_compact_at,
             last_compact_summary=self.last_compact_summary,
             paused=paused,
@@ -276,6 +296,8 @@ class CogneeCoordinator:
 
     async def request_rebuild(self) -> dict[str, Any]:
         """持久化构建请求；不等待耗时的在途批次，完成状态由验收产生。"""
+        if self.retirement.status.running:
+            raise ValueError("旧数据清理正在执行，请完成后再请求构建")
         state = await self.rebuild.schedule(self.config)
         self.wake()
         return {"ok": True, "scheduled": True, "rebuild": state.model_dump()}

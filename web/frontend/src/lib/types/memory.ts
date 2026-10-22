@@ -95,6 +95,8 @@ export interface CogneeStorageInfo {
   graph_bytes: number;
   metadata_bytes: number;
   other_bytes: number;
+  computed_at?: number;
+  datasets?: Record<string, { total_bytes: number; graph_bytes: number; lance_bytes: number }>;
 }
 
 export interface CogneeProjectionState {
@@ -108,9 +110,44 @@ export interface CogneeProjectionState {
   legacy_preserved?: number;
   error: string;
   completed_at: number;
+  started_at: number;
+  memory_scanned: boolean;
+  graph_scanned: boolean;
+}
+
+export interface CogneeBatchProgress {
+  stage: string;
+  items: number;
+  attempt: number;
+  dataset_name: string;
+  started_at: number;
+  elapsed_seconds: number;
+  stage_elapsed_seconds: number;
+  quiet_seconds: number;
+  last_change_at: number;
+  timeout_seconds: number;
+  progress_checked_at: number;
+  progress_error: string;
+  pipeline: {
+    status: string;
+    completed_items: number | null;
+    total_items: number | null;
+    current_stage: string;
+  } | null;
 }
 
 export interface CogneeStatus {
+  retirement?: {
+    running: boolean;
+    dataset_id: string;
+    dataset_name: string;
+    stage: string;
+    documents: number;
+    preserved: number;
+    backup_path: string;
+    error: string;
+    completed_at: number;
+  } | null;
   projection?: CogneeProjectionState | null;
   availability: {
     installed: boolean;
@@ -131,6 +168,14 @@ export interface CogneeStatus {
     pending: number;
     failed: number;
     synced: number;
+    processing?: number;
+    retrying?: number;
+    next_retry_at?: number;
+    active?: CogneeBatchProgress | null;
+    pause_requested?: boolean;
+    paused?: boolean;
+    paused_until?: number;
+    pause_reason?: string;
     last_error: string;
     configuration_pending?: boolean;
     configuration_error?: string;

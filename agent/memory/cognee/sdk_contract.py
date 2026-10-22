@@ -21,6 +21,8 @@ def validate_sdk(module: Any) -> None:
     require_parameters(module.cognify, {"datasets", "incremental_loading", "raise_on_error"}, "cognify")
     require_parameters(module.recall, {"query_text", "query_type", "datasets", "retriever_specific_config"}, "recall")
     require_parameters(module.improve, {"dataset", "build_global_context_index", "review_conflicts"}, "improve")
+    require_parameters(module.datasets.get_progress, {"dataset_ids", "pipeline_names"}, "datasets.get_progress")
+    require_parameters(module.datasets.empty_dataset, {"dataset_id"}, "datasets.empty_dataset")
     points: dict[str, dict[str, tuple[str, ...]]] = {
         "cognee.infrastructure.databases.graph.ladybug.adapter": {
             "LadybugAdapter": ("_submit_to_executor_locked", "_drop_native_resources", "close", "delete_graph"),

@@ -676,6 +676,7 @@ class MemoryService:
         return {
             "availability": availability_data,
             "projection": coordinator.rebuild.state.model_dump() if coordinator and coordinator.rebuild.state else None,
+            "retirement": coordinator.retirement.status.model_dump() if coordinator else None,
             "resolved": client.resolved_info if client else {},
             "storage": await cognee_storage_stats.get(config.absolute_data_root),
             "sync": sync.model_dump() if sync else {
@@ -757,7 +758,9 @@ class MemoryService:
         coordinator = get_cognee_coordinator()
         if coordinator:
             coordinator.rebuild.validate_config(config)
-            coordinator.client.validate_configuration(config)
+            # 单独暂停消费不得被失效的模型配置阻止；恢复或其他编辑仍完整校验。
+            if values != {"sync_enabled": False}:
+                coordinator.client.validate_configuration(config)
         save_cognee_config(config)
 
         if coordinator:
@@ -797,6 +800,16 @@ class MemoryService:
             else {"id": str(getattr(item, "id", "")), "name": str(getattr(item, "name", ""))}
             for item in datasets
         ]
+
+    @staticmethod
+    async def retire_cognee_dataset(dataset_id: str) -> Dict[str, Any]:
+        from agent.memory.cognee.runtime import get_cognee_coordinator
+
+        coordinator = get_cognee_coordinator()
+        if coordinator is None:
+            raise ValueError("Cognee 运行时未初始化")
+        result = await coordinator.retirement.request(dataset_id)
+        return result.model_dump()
 
     @staticmethod
     async def improve_cognee(dataset_name: str, *, review_conflicts: bool = False,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 
@@ -74,6 +75,7 @@ async def test_real_projection_rebuild_tagged_recall_update_delete(tmp_path, mon
     config.timeout_seconds, config.pipeline_timeout_seconds = 120, 600
     config.write_breaker_enabled = False
     monkeypatch.setattr("agent.memory.cognee.rebuild.backups_root", lambda: tmp_path / "backups")
+    monkeypatch.setattr("agent.memory.cognee.retirement.backups_root", lambda: tmp_path / "backups")
     client = CogneeClient(config)
     store = MemoryStore(str(tmp_path / "memory.sqlite3"))
     store.set_cognee_projection_enabled(True)
@@ -94,17 +96,31 @@ async def test_real_projection_rebuild_tagged_recall_update_delete(tmp_path, mon
             external_metadata={"anelf_memory_id": str(mid)}, dataset_name="anelf_global")
         await client.add([orphan], dataset_name="anelf_global", incremental_loading=True)
         await coordinator.rebuild.request(config)
+        observed_progress = []
         for _ in range(8):
             await coordinator.rebuild.advance()
             batch = await store.claim_cognee_sync_batch(10)
             if batch:
-                await coordinator._process_batch(batch)
+                task = asyncio.create_task(coordinator._process_batch(batch))
+                try:
+                    while not task.done():
+                        status = await coordinator.status()
+                        if status.active and status.active.pipeline:
+                            assert not status.active.progress_error, status.active.progress_error
+                            observed_progress.append(status.active.pipeline)
+                        await asyncio.wait({task}, timeout=0.2)
+                    await task
+                finally:
+                    if not task.done():
+                        task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
             status = await coordinator.status()
             assert not status.failed and not status.last_error, status.last_error
             assert coordinator.rebuild.state.phase != "failed", coordinator.rebuild.state.error
             if coordinator.rebuild.state.phase == "ready":
                 break
         assert coordinator.rebuild.state.phase == "ready"
+        assert all(p.completed_items is None or p.completed_items >= 0 for p in observed_progress)
         assert coordinator.rebuild.state.legacy_preserved == 1
         db = await store._get_db()
         saved = await (await db.execute("SELECT document_json FROM cognee_legacy_documents")).fetchone()
@@ -112,6 +128,7 @@ async def test_real_projection_rebuild_tagged_recall_update_delete(tmp_path, mon
         mapping = await store.get_cognee_mapping(mid)
         assert mapping is not None
         dataset_name = mapping["dataset_name"]
+        assert (await client.pipeline_progress(mapping["dataset_id"])).status == "DATASET_PROCESSING_COMPLETED"
         # 模拟重新配置/重启后的读取上下文，自动探测维度必须从卷身份恢复。
         detected = client._embedding_payload["embedding_dimensions"]
         client.reconfigure(config)
@@ -126,6 +143,17 @@ async def test_real_projection_rebuild_tagged_recall_update_delete(tmp_path, mon
                                         ["CHUNKS"], node_names=["future:tag"])
         assert any(item.memory_reference() == f"mem:{mid}" and item.sensitivity == "private"
                    and "future:tag" in item.tags for item in projected), projected
+        old_dataset = next(row for row in await client.list_datasets() if row.name == "anelf_global")
+        config.sync_enabled = coordinator.config.sync_enabled = False
+        await coordinator.retirement.request(str(old_dataset.id))
+        await coordinator.retirement._task
+        retired = coordinator.retirement.status
+        assert retired.stage == "completed", retired.error
+        assert all(str(row.id) != str(old_dataset.id) for row in await client.list_datasets())
+        assert len(await client.list_data(mapping["dataset_id"])) == 2
+        # 删除旧代际后仍从当前图谱召回，历史正文仍完整保存在原生库。
+        saved = await (await db.execute("SELECT document_json FROM cognee_legacy_documents")).fetchall()
+        assert all(json.loads(row[0])["text"] == legacy_text for row in saved)
         assert await client.recall("蓝鸢项目", query_type=client.search_type("CHUNKS"),
             datasets=[dataset_name], node_name=["missing:tag"], auto_route=False) == []
         graph = await client.recall("谁负责蓝鸢项目？", query_type=client.search_type("GRAPH_COMPLETION"),

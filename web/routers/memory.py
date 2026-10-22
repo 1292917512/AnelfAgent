@@ -105,6 +105,15 @@ async def list_cognee_datasets() -> List[Dict[str, Any]]:
     return await _mem_svc.list_cognee_datasets()
 
 
+@router.delete("/cognee/datasets/{dataset_id}")
+async def retire_cognee_dataset(dataset_id: str) -> Dict[str, Any]:
+    """显式选择旧数据集，归档、备份并后台清理；当前代际不接受清理。"""
+    try:
+        return await _mem_svc.retire_cognee_dataset(dataset_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.post("/cognee/improve")
 async def improve_cognee(req: CogneeImproveRequest) -> Any:
     try:

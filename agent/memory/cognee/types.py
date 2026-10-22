@@ -35,12 +35,44 @@ class CogneeRecallItem(BaseModel):
     raw: Any = None
 
 
+class CogneePipelineProgress(BaseModel):
+    """SDK 最近一次流水线报告；缺少计数表示尚未报告，不等于零。"""
+
+    status: str = ""
+    completed_items: int | None = Field(default=None, ge=0)
+    total_items: int | None = Field(default=None, ge=0)
+    current_stage: str = ""
+
+
+class CogneeBatchProgress(BaseModel):
+    """当前宿主批次观测，不参与提交、重试或恢复判断。"""
+
+    stage: str
+    items: int
+    attempt: int
+    dataset_name: str = ""
+    started_at: float
+    elapsed_seconds: float = 0
+    stage_elapsed_seconds: float = 0
+    quiet_seconds: float = 0
+    last_change_at: float
+    timeout_seconds: float = 0
+    pipeline: CogneePipelineProgress | None = None
+    progress_checked_at: float = 0
+    progress_error: str = ""
+
+
 class CogneeSyncStatus(BaseModel):
     enabled: bool
     running: bool
     pending: int = 0
     failed: int = 0
     synced: int = 0
+    processing: int = 0
+    retrying: int = 0
+    next_retry_at: float = 0
+    active: CogneeBatchProgress | None = None
+    pause_requested: bool = False
     configuration_pending: bool = False
     configuration_error: str = ""
     last_error: str = ""

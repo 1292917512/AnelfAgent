@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 from urllib.request import url2pathname
 from uuid import UUID
 
+from ..projection import PROJECTION_VERSION
 from ..store.projection_state import ProjectionState, ProjectionStateStore
 from .ports import ProjectionBackend
 
@@ -77,12 +78,16 @@ def _legacy_body(text: str, kind: str, entry_id: int, source: dict[str, Any]) ->
     return body
 
 
-async def _preserve(
+async def preserve_owned_document(
     store: ProjectionStateStore, state: ProjectionState, item: Any,
-    dataset_id: str, dataset_name: str,
+    dataset_id: str, dataset_name: str, *, include_current_format: bool = False,
 ) -> bool:
+    """完整保存可确认原生归属的投影原文；未知格式不会因清理请求而被静默接受。"""
     metadata = _field(item, "external_metadata", {})
-    if not isinstance(metadata, dict) or "anelf_projection_version" in metadata:
+    if not isinstance(metadata, dict):
+        return False
+    current_format = metadata.get("anelf_projection_version") == PROJECTION_VERSION
+    if "anelf_projection_version" in metadata and not (include_current_format and current_format):
         return False
     identities = [(kind, metadata[key]) for kind, key in (
         ("memory", "anelf_memory_id"), ("graph_node", "anelf_graph_node_id"),
@@ -104,7 +109,7 @@ async def _preserve(
         text = await asyncio.to_thread(_read_text, state.root, str(_field(item, "raw_data_location", "")))
     except (OSError, ValueError) as exc:
         raise RuntimeError(f"旧文档 {data_id} 原文无法完整读取: {exc}；映射未重置") from exc
-    body = _legacy_body(text, kind, entry_id, source)
+    body = text if current_format else _legacy_body(text, kind, entry_id, source)
     if body is None:
         return False
     classification = "matching_memory" if kind == "memory" and body == source.get("content") else f"historical_{kind}"
@@ -146,7 +151,7 @@ async def check_legacy_documents(
             legacy_id = _identity(_field(item, "legacy_id"))
             if ((dataset_id, data_id) in known or (dataset_id, legacy_id) in known or (name, data_id) in staged):
                 continue
-            if await _preserve(store, state, item, dataset_id, name):
+            if await preserve_owned_document(store, state, item, dataset_id, name):
                 state.legacy_preserved += 1
             else:
                 unknown.append(f"{dataset_id}/{data_id}")

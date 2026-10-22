@@ -20,12 +20,19 @@ import math
 import os
 import time
 from pathlib import Path
-from typing import Any, Optional, TypedDict
+from typing import Any, NotRequired, Optional, TypedDict
+from uuid import UUID
 
 from core.log import log
 
 STORAGE_STATS_SNAPSHOT_NAME = "storage_stats.json"
 STORAGE_STATS_TTL_SECONDS = 600.0
+
+
+class DatasetStorageBytes(TypedDict):
+    total_bytes: int
+    graph_bytes: int
+    lance_bytes: int
 
 
 class StorageStatsDict(TypedDict):
@@ -35,6 +42,8 @@ class StorageStatsDict(TypedDict):
     graph_bytes: int
     metadata_bytes: int
     other_bytes: int
+    datasets: NotRequired[dict[str, DatasetStorageBytes]]
+    computed_at: NotRequired[float]
 
 
 def _empty_stats() -> StorageStatsDict:
@@ -47,6 +56,7 @@ def _empty_stats() -> StorageStatsDict:
 def compute_storage_stats(root: Path) -> StorageStatsDict:
     """单次遍历统计 cognee 数据目录构成；大库耗时可达数十秒，仅限后台线程调用。"""
     stats = _empty_stats()
+    datasets: dict[str, DatasetStorageBytes] = {}
     if not root.is_dir():
         return stats
     for dirpath, _dirnames, filenames in os.walk(root):
@@ -71,6 +81,23 @@ def compute_storage_stats(root: Path) -> StorageStatsDict:
                     stats["other_bytes"] += size
             else:
                 stats["other_bytes"] += size
+            # 按 SDK 的独立数据集数据库命名归属；原文与关系元数据库可能共享，不摊分。
+            if len(rel) >= 4 and rel[:2] == ("system", "databases"):
+                database = rel[3]
+                kind = "lance_bytes" if database.endswith(".lance.db") else "graph_bytes"
+                if database.endswith((".lance.db", ".lbug", ".lbug.wal")):
+                    try:
+                        identity = str(UUID(database[:36]))
+                    except ValueError:
+                        continue
+                    row = datasets.setdefault(identity, DatasetStorageBytes(total_bytes=0, graph_bytes=0, lance_bytes=0))
+                    row["total_bytes"] += size
+                    if kind == "lance_bytes":
+                        row["lance_bytes"] += size
+                    else:
+                        row["graph_bytes"] += size
+    stats["datasets"] = datasets
+    stats["computed_at"] = time.time()
     return stats
 
 
@@ -265,6 +292,17 @@ class StorageStatsTracker:
                 value = stats.get(key)
                 if isinstance(value, int) and value >= 0:
                     merged[key] = value  # type: ignore[literal-required]
+            measured = stats.get("computed_at", raw.get("computed_at"))
+            if isinstance(measured, (int, float)) and measured > 0:
+                merged["computed_at"] = measured
+            datasets = stats.get("datasets")
+            if isinstance(datasets, dict):
+                merged["datasets"] = {}
+                for identity, row in datasets.items():
+                    if isinstance(row, dict) and all(isinstance(row.get(k), int) and row[k] >= 0
+                                                    for k in ("total_bytes", "graph_bytes", "lance_bytes")):
+                        merged["datasets"][identity] = DatasetStorageBytes(
+                            total_bytes=row["total_bytes"], graph_bytes=row["graph_bytes"], lance_bytes=row["lance_bytes"])
             return merged
         except (OSError, ValueError, AttributeError):
             return None

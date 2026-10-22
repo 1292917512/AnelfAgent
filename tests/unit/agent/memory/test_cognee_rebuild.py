@@ -9,7 +9,7 @@ import json
 import sqlite3
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from uuid import NAMESPACE_URL, uuid5
 
 import pytest
@@ -58,6 +58,9 @@ class DocumentBackend(CogneeClient):
     async def delete_data(self, dataset_id: Any, data_id: Any, **kwargs: Any) -> Any:
         self.documents.get(str(dataset_id), {}).pop(str(data_id), None)
 
+    async def delete_dataset(self, dataset_id: str) -> None:
+        self.documents.pop(dataset_id, None)
+
     def document_processed(self, item: Any, dataset_id: str) -> bool:
         return item.get("processed", True)
 
@@ -65,6 +68,7 @@ class DocumentBackend(CogneeClient):
 @pytest.fixture
 async def coordinator(store: MemoryStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr("agent.memory.cognee.rebuild.backups_root", lambda: tmp_path / "backups")
+    monkeypatch.setattr("agent.memory.cognee.retirement.backups_root", lambda: tmp_path / "backups")
     config = CogneeConfig(data_root=str(tmp_path / "cognee"), write_breaker_enabled=False)
     client = DocumentBackend(config)
     store.set_cognee_projection_enabled(True)
@@ -105,6 +109,121 @@ async def test_restart_immediately_resumes_freshly_claimed_work(coordinator, sto
         assert status["synced"] == 1
     finally:
         await coordinator.close()
+
+
+async def test_pause_finishes_batch_and_survives_restart_until_resume(coordinator, store, monkeypatch, tmp_path):
+    from agent.memory.cognee.config import load_cognee_config
+    from core.path import ConfigPaths
+    from services.memory import MemoryService
+
+    monkeypatch.setattr(ConfigPaths, "COGNEE_CONFIG", str(tmp_path / "cognee.json"))
+    coordinator.config.sync_batch_size = 1
+    ids = [await store.add(MemoryEntry(content=f"暂停续跑 {i}", memory_type=MemoryType.SEMANTIC)) for i in range(2)]
+    entered, release = asyncio.Event(), asyncio.Event()
+    finished = asyncio.Event()
+    original = coordinator.client.cognify
+    calls = []
+
+    async def blocking(**kwargs):
+        calls.append(kwargs)
+        entered.set()
+        await release.wait()
+        return await original(**kwargs)
+
+    monkeypatch.setattr(coordinator.client, "cognify", blocking)
+    monkeypatch.setattr(coordinator.client, "validate_configuration", Mock())
+    monkeypatch.setattr("agent.memory.cognee.runtime.get_cognee_coordinator", lambda: coordinator)
+    from agent.memory.cognee.config import save_cognee_config
+    save_cognee_config(coordinator.config)
+    restarted = None
+    try:
+        await coordinator.start()
+        await asyncio.wait_for(entered.wait(), 3)
+        await MemoryService.save_cognee_config({"sync_enabled": False})
+        assert not load_cognee_config().sync_enabled
+        # 确认配置任务已排在投影锁之后，同时当前抽取仍然运行。
+        await asyncio.sleep(0)
+        assert (await coordinator.status()).pause_requested
+        assert await store.get_cognee_mapping(ids[0]) is None
+        release.set()
+        await asyncio.wait_for(coordinator._configuration_task, 3)
+        assert len(calls) == 1 and not coordinator.is_running
+        assert (await store.get_cognee_sync_status()) == {"pending": 1, "failed": 0, "synced": 1}
+        await coordinator.close()
+
+        restarted = CogneeCoordinator(store, coordinator.client, load_cognee_config())
+        await restarted.start()
+        assert not restarted.is_running and not (await restarted.status()).enabled
+        assert len(calls) == 1
+        process = restarted._process_entries
+
+        async def notify(batch):
+            await process(batch)
+            finished.set()
+
+        monkeypatch.setattr(restarted, "_process_entries", notify)
+        monkeypatch.setattr("agent.memory.cognee.runtime.get_cognee_coordinator", lambda: restarted)
+        await MemoryService.save_cognee_config({"sync_enabled": True})
+        await asyncio.wait_for(finished.wait(), 3)
+        assert len(calls) == 2
+        assert (await store.get_cognee_sync_status()) == {"pending": 0, "failed": 0, "synced": 2}
+        assert load_cognee_config().sync_enabled
+    finally:
+        release.set()
+        await (restarted or coordinator).close()
+
+
+@pytest.mark.parametrize("interruption", ["add", "cognify", "commit"])
+async def test_rebuild_interruption_reopens_sqlite_and_resumes_same_generation(
+    coordinator, store, monkeypatch, interruption,
+):
+    """在摄入、抽取和部分提交时取消；重新打开真实 SQLite 验证不丢源、不复制投影。"""
+    ids = [await store.add(MemoryEntry(content=f"必须保留的原文 {i}", memory_type=MemoryType.SEMANTIC))
+           for i in range(2)]
+    await coordinator.rebuild.request(coordinator.config)
+    await coordinator.rebuild.advance()
+    namespace = coordinator.rebuild.state.namespace
+    backup = coordinator.rebuild.state.backup_path
+    entered = asyncio.Event()
+    target = store if interruption == "commit" else coordinator.client
+    method = "complete_cognee_sync" if interruption == "commit" else interruption
+    original = getattr(target, method)
+
+    async def interrupted(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        entered.set()
+        await asyncio.Event().wait()
+        return result
+
+    monkeypatch.setattr(target, method, interrupted)
+    task = asyncio.create_task(coordinator._process_batch(await store.claim_cognee_sync_batch(10)))
+    await asyncio.wait_for(entered.wait(), 3)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert (await coordinator.status()).active is None
+    monkeypatch.setattr(target, method, original)
+    documents_before = copy.deepcopy(coordinator.client.documents)
+    await store.close()
+    reopened = MemoryStore(store._db_path)
+    reopened.set_cognee_projection_enabled(True)
+    restarted = CogneeCoordinator(reopened, coordinator.client, coordinator.config)
+    try:
+        await restarted.rebuild.initialize(coordinator.config)
+        assert restarted.rebuild.state.namespace == namespace
+        assert restarted.rebuild.state.backup_path == backup and Path(backup).is_file()
+        # 真正重新打开连接时 schema 初始化已经回收 processing；worker 的再次回收幂等。
+        assert (await reopened.get_cognee_sync_status())["pending"] == (1 if interruption == "commit" else 2)
+        assert await reopened.requeue_stale_cognee_sync(0) == 0
+        await settle(restarted)
+        assert restarted.rebuild.state.phase == "ready" and restarted.rebuild.state.verified == 2
+        assert restarted.client.documents == documents_before
+        assert await reopened.projection_state.staged() == []
+        for i, mid in enumerate(ids):
+            assert (await reopened.get(mid)).content == f"必须保留的原文 {i}"
+            assert await reopened.get_cognee_mapping(mid) is not None
+    finally:
+        await reopened.close()
 
 
 @pytest.mark.parametrize("legacy", [False, True])
@@ -263,6 +382,114 @@ def legacy_document(coordinator, mid, text, *, graph=False):
 def legacy_memory_text(mid, content, *, with_identity=False):
     identity = f"Memory ID: {mid}\nTimestamp: 123.456\n" if with_identity else ""
     return f'Memory type: semantic\n{identity}Source: \nImportance: 0.7\nTags: future:tag\nMetadata: {{}}\n\n{content}'
+
+
+@pytest.mark.parametrize("failure", ["none", "coverage", "unknown", "backup", "delete", "partial", "cancel"])
+async def test_retirement_preserves_before_delete_and_retries_without_loss(coordinator, store, monkeypatch, failure):
+    mid = await store.add(MemoryEntry(content="当前权威内容", memory_type=MemoryType.SEMANTIC))
+    text = legacy_memory_text(mid, "旧数据集的独有历史正文")
+    item = legacy_document(coordinator, mid, text)
+    await coordinator.rebuild.request(coordinator.config)
+    await settle(coordinator)
+    coordinator.config.sync_enabled = False
+    current = copy.deepcopy(coordinator.client.documents[coordinator.rebuild.state.namespace + "_global"])
+    backup, delete = store.projection_state.backup, coordinator.client.delete_dataset
+    if failure == "coverage":
+        coordinator.client.documents[coordinator.rebuild.state.namespace + "_global"].clear()
+    elif failure == "unknown":
+        coordinator.client.documents["anelf_legacy"]["unknown"] = {"id": "unknown", "label": "external"}
+    elif failure == "backup":
+        monkeypatch.setattr(store.projection_state, "backup", AsyncMock(side_effect=OSError("disk full")))
+    elif failure == "delete":
+        monkeypatch.setattr(coordinator.client, "delete_dataset", AsyncMock(side_effect=RuntimeError("SDK unavailable")))
+    elif failure == "partial":
+        async def partial_delete(dataset_id):
+            coordinator.client.documents[dataset_id].clear()
+            raise RuntimeError("SDK interrupted after deleting document rows")
+
+        monkeypatch.setattr(coordinator.client, "delete_dataset", partial_delete)
+    elif failure == "cancel":
+        # 取消发生在完整归档和备份之后；SDK 未完成，允许按同一目标重试。
+        entered = asyncio.Event()
+
+        async def wait_delete(_id):
+            entered.set()
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(coordinator.client, "delete_dataset", wait_delete)
+    result = await coordinator.retirement.request("anelf_legacy")
+    assert result.running
+    with pytest.raises(ValueError, match="清理正在执行"):
+        await coordinator.request_rebuild()
+    if failure == "cancel":
+        await asyncio.wait_for(entered.wait(), 3)
+        await coordinator.retirement.close()
+    else:
+        await coordinator.retirement._task
+    status = coordinator.retirement.status
+    if failure != "none":
+        assert status.stage == ("interrupted" if failure == "cancel" else "failed")
+        if failure != "partial":
+            assert coordinator.client.documents["anelf_legacy"][item["id"]] == item
+        coordinator.client.documents["anelf_legacy"].pop("unknown", None)
+        coordinator.client.documents[coordinator.rebuild.state.namespace + "_global"] = copy.deepcopy(current)
+        monkeypatch.setattr(store.projection_state, "backup", backup)
+        monkeypatch.setattr(coordinator.client, "delete_dataset", delete)
+        await coordinator.retirement.request("anelf_legacy")
+        await coordinator.retirement._task
+        status = coordinator.retirement.status
+    assert status.stage == "completed" and not status.running
+    assert "anelf_legacy" not in coordinator.client.documents
+    assert coordinator.client.documents[coordinator.rebuild.state.namespace + "_global"] == current
+    assert (await store.get(mid)).content == "当前权威内容"
+    with sqlite3.connect(status.backup_path) as snapshot:
+        assert snapshot.execute("PRAGMA quick_check").fetchone() == ("ok",)
+        documents = [json.loads(row[0]) for row in snapshot.execute("SELECT document_json FROM cognee_legacy_documents")]
+    # 预检与清理都留存同一文档，内容相同不重复存储。
+    assert len(documents) == 1 and documents[0]["text"] == text
+    assert documents[0]["external_metadata"]["anelf_memory_id"] == str(mid)
+    assert "future:tag" in documents[0]["node_set"]
+    assert (await store.projection_state.load()).previous_namespaces == []
+
+
+async def test_retirement_rejects_active_external_and_unsynced_sources(coordinator, store):
+    mid = await store.add(MemoryEntry(content="权威内容", memory_type=MemoryType.SEMANTIC))
+    legacy_document(coordinator, mid, legacy_memory_text(mid, "旧正文"))
+    await coordinator.rebuild.request(coordinator.config)
+    await settle(coordinator)
+    with pytest.raises(ValueError, match="暂停同步"):
+        await coordinator.retirement.request("anelf_legacy")
+    coordinator.config.sync_enabled = False
+    for name in (coordinator.rebuild.state.namespace + "_global", "external_global", "missing"):
+        with pytest.raises(ValueError, match="只能清理"):
+            await coordinator.retirement.request(name)
+    # 读完目录之后 guard 必须再检查；不能只依赖按钮状态。
+    await store.add(MemoryEntry(content="尚未同步的新内容", memory_type=MemoryType.SEMANTIC))
+    await coordinator.retirement.request("anelf_legacy")
+    await coordinator.retirement._task
+    assert coordinator.retirement.status.stage == "failed"
+    assert "待同步" in coordinator.retirement.status.error
+    assert "anelf_legacy" in coordinator.client.documents
+
+
+async def test_retirement_preserves_current_format_old_generation(coordinator, store):
+    from agent.memory.projection import PROJECTION_VERSION
+
+    mid = await store.add(MemoryEntry(content="原文", memory_type=MemoryType.SEMANTIC))
+    await coordinator.rebuild.request(coordinator.config)
+    await settle(coordinator)
+    # 旧代际也可能由当前投影格式生成；原文与元数据仍须完整归档。
+    item = legacy_document(coordinator, mid, "当前格式的旧修订正文")
+    item["external_metadata"].update(anelf_projection_version=PROJECTION_VERSION, anelf_content_hash="old-hash")
+    coordinator.config.sync_enabled = False
+    await coordinator.retirement.request("anelf_legacy")
+    await coordinator.retirement._task
+    status = coordinator.retirement.status
+    assert status.stage == "completed", status.error
+    with sqlite3.connect(status.backup_path) as snapshot:
+        saved = json.loads(snapshot.execute("SELECT document_json FROM cognee_legacy_documents").fetchone()[0])
+    assert saved["text"] == "当前格式的旧修订正文"
+    assert saved["external_metadata"]["anelf_projection_version"] == PROJECTION_VERSION
 
 
 async def test_unmapped_history_is_preserved_before_backup_and_retry_is_idempotent(coordinator, store):
