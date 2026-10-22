@@ -139,6 +139,33 @@ async def test_strict_tags_exclude_unattributed_and_graph_answers(monkeypatch):
     assert recall.await_count == 1 and recall.call_args.kwargs["query_type"] == "CHUNKS"
 
 
+@pytest.mark.parametrize("required,excluded", [
+    (("topic:WoL",), ()),
+    (("topic:WOL", "topic:WoL"), ()),
+    (("topic:WOL",), ("topic:WoL",)),
+])
+async def test_strict_recall_recovers_nodeset_spelling_collisions(monkeypatch, required, excluded):
+    from unittest.mock import AsyncMock
+
+    from agent.memory.tag_query import TagQuery
+
+    client = SearchClient()
+    candidates = [CogneeRecallItem(id=str(index), content="原文",
+        metadata={"anelf_attribution": {"tags": tags}}) for index, tags in enumerate([
+            ["topic:WOL"], ["topic:WoL"], ["topic:WOL", "topic:WoL"], ["topic:wol"],
+        ])]
+    recall = AsyncMock(side_effect=[[], candidates])
+    monkeypatch.setattr(client, "recall", recall)
+    query = TagQuery(all_of=required, none_of=excluded)
+    found = await search_cognee(client, CogneeConfig(), "query", ["scope"], 5,
+                               ["CHUNKS"], tag_query=query)
+    assert {item.id for item in found} == {item.id for item in candidates
+                                         if query.matches(item.metadata["anelf_attribution"]["tags"])}
+    assert recall.await_count == 2
+    assert recall.call_args_list[0].kwargs["node_name"] == list(required)
+    assert "node_name" not in recall.call_args_list[1].kwargs
+
+
 @pytest.mark.parametrize("fresh", [False, True])
 async def test_overview_uses_only_fresh_global_context(monkeypatch, fresh):
     from unittest.mock import AsyncMock

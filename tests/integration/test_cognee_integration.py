@@ -64,6 +64,57 @@ async def test_real_ladybug_close_drains_cancelled_query_before_reopen(tmp_path)
         await reopened.close()
 
 
+@pytest.mark.timeout(600)
+async def test_real_projection_nodeset_collisions_rebuild_and_exact_recall(tmp_path, monkeypatch):
+    """真实模型、SDK 和索引校验共同覆盖标签合并、构建切换与精确召回。"""
+    from agent.memory.tag_query import TagQuery
+
+    config = load_cognee_config()
+    config.enabled = config.sync_enabled = True
+    config.project_memories_enabled = config.project_graph_enabled = True
+    config.data_root = str(tmp_path / "cognee")
+    config.timeout_seconds, config.pipeline_timeout_seconds = 120, 360
+    config.write_breaker_enabled = False
+    monkeypatch.setattr("agent.memory.cognee.rebuild.backups_root", lambda: tmp_path / "backups")
+    store = MemoryStore(str(tmp_path / "memory.sqlite3"))
+    store.set_cognee_projection_enabled(True)
+    client = CogneeClient(config, source_mappings=store.projection_state.publication_sources)
+    coordinator = CogneeCoordinator(store, client, config)
+    tags = ["topic:WOL", "topic:WoL", "project:two words", "project:two_words", "owner:O'Brien", "owner:OBrien"]
+    try:
+        await coordinator.rebuild.initialize(config)
+        mid = await store.add(MemoryEntry(memory_type=MemoryType.SEMANTIC,
+            content="蓝鸢项目部署在杭州。林舟负责蓝鸢项目的远程唤醒功能。", tags=tags))
+        await coordinator.rebuild.request(config)
+        for _ in range(8):
+            await coordinator.rebuild.advance()
+            batch = await store.claim_cognee_sync_batch(10)
+            if batch:
+                await coordinator._process_batch(batch)
+            status = await coordinator.status()
+            assert not status.last_error and not status.failed, status.last_error
+            assert coordinator.rebuild.state.phase != "failed", coordinator.rebuild.state.error
+            if coordinator.rebuild.state.phase == "ready":
+                break
+        assert coordinator.rebuild.state.phase == "ready"
+        assert coordinator.rebuild.state.verified == 1
+        assert (await store.get(mid)).tags == tags
+        mapping = await store.get_cognee_mapping(mid)
+        rows = await client.list_data(mapping["dataset_id"])
+        assert len(rows) == 1
+        assert set(rows[0]["external_metadata"]["anelf_attribution"]["tags"]) == set(tags)
+        for tag_query in (TagQuery(all_of=("topic:WoL",)), TagQuery(all_of=("topic:WOL", "topic:WoL"))):
+            found = await search_cognee(client, config, "蓝鸢项目部署地点", [mapping["dataset_name"]], 1,
+                                        ["CHUNKS"], tag_query=tag_query)
+            assert any(item.memory_reference() == f"mem:{mid}" and set(item.tags) == set(tags) for item in found)
+        excluded = await search_cognee(client, config, "蓝鸢项目", [mapping["dataset_name"]], 1,
+            ["CHUNKS"], tag_query=TagQuery(all_of=("topic:WOL",), none_of=("topic:WoL",)))
+        assert excluded == []
+    finally:
+        await client.close()
+        await store.close()
+
+
 @pytest.mark.parametrize("scenario,expected_tool,expected_arguments", [
     ("查一下发布安排，只查 project:蓝鸢 的记忆，排除 state:old 标签的旧记录。",
      "recall", {"filter_tags": "project:蓝鸢", "filter_not": "state:old"}),

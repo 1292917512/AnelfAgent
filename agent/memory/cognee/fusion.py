@@ -336,21 +336,28 @@ async def search_cognee(
 async def _filtered_recall(client: RecallBackend, query: str, options: dict[str, Any],
                            tags: TagQuery | None, limit: int,
                            diagnostics: RecallDiagnostics) -> list[CogneeRecallItem]:
-    """复杂标签过滤不足时最多扩展两次候选；查询向量在本次 RPC 会话内复用。"""
+    """标签不足时有界扩展，并撤下可能因 NodeSet 拼写合并而漏召回的预过滤。"""
     requested = int(options["top_k"])
     cap = max(requested, min(2048, requested * 4))
-    items: list[CogneeRecallItem] = []
+    options = dict(options)
+    collected: dict[tuple[str, str], CogneeRecallItem] = {}
     for _ in range(3):
         items = await client.recall(query, **{**options, "top_k": requested})
-        matched = sum(1 for item in items if item.source == "cognee_chunk" and tags is not None
+        for item in items:
+            collected[(item.source, item.id)] = item
+        matched = sum(1 for item in collected.values() if item.source == "cognee_chunk" and tags is not None
                       and "tags" in (projection := recall_projection(item)) and tags.matches(projection["tags"]))
-        if matched >= limit or len(items) < requested:
-            return items
-        if requested >= cap:
+        if matched >= limit:
+            return list(collected.values())
+        if options.pop("node_name", None):
+            options.pop("node_name_filter_operator", None)
+        elif len(items) < requested:
+            return list(collected.values())
+        elif requested >= cap:
             break
         requested = min(cap, requested * 2)
     diagnostics.tag_filter_limited = True
-    return items
+    return list(collected.values())
 
 
 def reciprocal_rank_fusion(

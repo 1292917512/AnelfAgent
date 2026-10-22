@@ -253,15 +253,19 @@ Cognee 面板保存先校验模型参数和向量空间，再原子写入配置�
 | `cognee/fusion.py` / `evidence.py` / `query_scope.py` | 多路检索、证据归一、预算内融合及跨 RPC 查询向量复用 |
 | `cognee/diagnostics.py` | 有界工作进程日志、凭据脱敏；不记录 RPC 参数 |
 
-每代索引使用 `<namespace>_global` 和 `<namespace>_relations`，所有精确标签写入每个
-DataItem 的 `node_set`，去空白、去重、排序，不合并大小写、别名或不同实体。新增标签前缀不需
+每代索引使用 `<namespace>_global` 和 `<namespace>_relations`，完整精确标签保留在权威库与
+`anelf_attribution.tags`，去空白、去重、排序，不合并大小写、别名或不同实体。DataItem 的
+`node_set` 由 Cognee 按其节点身份去重：大小写、ASCII 空格与下划线、单引号可能映射到同一
+NodeSet，保留输入中的首个拼写。`node_sets.py` 集中适配该规则，SDK 初始化核对持久身份，
+提交及全量验收只允许这一明确的索引转换，原始标签和内容指纹仍逐字校验。新增标签前缀不需
 新增数据集或改表；旧内容缺失的标签、发言者和出处不凭空补齐。`filter_tags` 是严格交集，
 `filter_any` 要求至少一个，`filter_not` 排除任一个；显式 `project:a/*` 匹配自身及 `/` 后代，
 不会命中 `project:ab`。原生 FTS/向量先过滤再限量；Cognee 硬过滤只返回有可靠结构化标签的
 分块并复核标签，不混入无出处的图谱综合、文件、关系联想或遗忘层。别名需经既有标签治理
 确认，不根据称呼自动扩张过滤。NodeSet 只是索引，不是 ACL。
 
-精确 AND/OR 条件优先下推到 NodeSet；复杂层级、排除条件复核后不足时，最多补充两轮候选，
+精确 AND/OR 条件优先下推到 NodeSet；结果不足时撤下可能合并拼写的 NodeSet 预过滤，并始终
+按完整来源标签复核 AND/OR/NOT。复杂层级、排除条件复核后不足时，同样最多补充两轮候选，
 上限为初始数量的四倍且通常不超过 2048，仍受整体检索超时约束。候选预算用尽时 coverage
 标为 partial，不把未覆盖解释为不存在。一次召回的跨通道、跨 RPC 查询向量只缓存到本次结束，
 由宿主显式释放；不跨用户请求保留查询内容。

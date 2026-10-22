@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import copy
+import hashlib
 import json
 import os
 import subprocess
@@ -488,6 +489,69 @@ def test_new_document_must_preserve_exact_input_bytes(tmp_path):
     stamp.source_digest = _source_digest(tmp_path, raw.as_uri())
     with pytest.raises(RuntimeError, match="实际原文"):
         plan.validate(candidate)
+
+
+@pytest.mark.parametrize("tags", [
+    ["topic:WOL", "topic:WoL"],
+    ["topic:two words", "topic:two_words"],
+    ["topic:O'Brien", "topic:OBrien"],
+    ["标签:İ", "标签:i\u0307", "标签:ß", "标签:ss"],
+])
+def test_manifest_accepts_sdk_nodeset_identity_but_preserves_exact_metadata(tags):
+    from cognee.tasks.ingestion.ingest_data import _union_node_sets
+
+    from agent.memory.cognee.manifest import document_identity
+    from agent.memory.cognee.wire import make_document
+
+    item = make_document("原文", label="memory", external_metadata={"anelf_attribution": {"tags": tags}},
+                         node_set=tags)
+    plan = MutationPlan(IndexManifest())
+    plan.add("dataset", "test", [item])
+    stored_tags = _union_node_sets(None, item.node_set)
+    metadata = {**item.external_metadata, "node_set": stored_tags}
+    stamp = DocumentStamp(identity=document_identity(item.label, metadata, stored_tags),
+                          source_digest=hashlib.sha256(item.data.encode()).hexdigest())
+    candidate = IndexManifest(datasets={"dataset": DatasetStamp(name="test", documents={item.data_id: stamp})})
+    plan.validate(candidate)
+    # 实际来源标签丢失与物理索引的合法去重不同，仍须拒绝发布。
+    metadata["anelf_attribution"] = {"tags": tags[:1]}
+    stamp.identity = document_identity(item.label, metadata, stored_tags)
+    with pytest.raises(RuntimeError, match="内容或标签"):
+        plan.validate(candidate)
+    stamp.identity = document_identity(item.label, item.external_metadata, [])
+    with pytest.raises(RuntimeError, match="内容或标签"):
+        plan.validate(candidate)
+
+
+@pytest.mark.timeout(180)
+async def test_real_ingestion_publishes_colliding_tags_without_changing_document_identity(tmp_path, monkeypatch):
+    from agent.memory.cognee.config import CogneeChatModelConfig, CogneeEmbeddingModelConfig
+
+    monkeypatch.setattr("agent.llm.get_llm_manager", lambda: None)
+    # 摄入与索引提交不需要模型；仅关闭供应商连通性探测，不替换 SDK 或持久化。
+    monkeypatch.setenv("COGNEE_SKIP_CONNECTION_TEST", "true")
+    config = CogneeConfig(data_root=str(tmp_path / "index"), write_breaker_enabled=False,
+        chat=CogneeChatModelConfig(source="custom", model="gpt-4o", api_key="offline-test",
+                                  endpoint="http://127.0.0.1:1/v1"),
+        embedding=CogneeEmbeddingModelConfig(source="custom", provider="openai", model="text-embedding-3-small",
+                                             api_key="offline-test", endpoint="http://127.0.0.1:1/v1", dimensions=1536))
+    client = CogneeClient(config)
+    tags = ["topic:WOL", "topic:WoL", "topic:two words", "topic:two_words"]
+    metadata = {"anelf_content_hash": "source-hash", "anelf_attribution": {"tags": tags}}
+    item = await client.make_data_item("离线摄入：保留所有标签与原文。", label="memory", external_metadata=metadata,
+                                       node_set=tags, dataset_name="anelf_global")
+    try:
+        result = await client.add([item], dataset_name="anelf_global", incremental_loading=True)
+        rows = await client.list_data(result["dataset_id"])
+        assert len(rows) == 1 and rows[0]["id"] == item.data_id
+        assert rows[0]["external_metadata"]["anelf_attribution"]["tags"] == tags
+        assert json.loads(rows[0]["node_set"]) == ["topic:WOL", "topic:two words"]
+        # 使用同一个稳定 ID 重试，已提交文档及来源不能重复或缩减。
+        await client.add([item], dataset_name="anelf_global", incremental_loading=True)
+        assert len(await client.list_data(result["dataset_id"])) == 1
+        assert client.publication_status["commits"] == 2
+    finally:
+        await client.close()
 
 
 async def test_query_vector_is_reused_across_rpc_scopes_and_released():

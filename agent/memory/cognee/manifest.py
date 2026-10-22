@@ -9,6 +9,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from .documents import stored_node_tags
+from .node_sets import projected_node_tags
 from .wire import InputDocument
 
 
@@ -64,7 +65,8 @@ class MutationPlan:
         target = self.added.setdefault(dataset_id, DatasetStamp(name=name))
         for document in documents:
             target.documents[document.data_id] = DocumentStamp(
-                identity=document_identity(document.label, document.external_metadata, document.node_set),
+                identity=document_identity(document.label, document.external_metadata,
+                                           projected_node_tags(document.node_set)),
                 content_hash=str(document.external_metadata.get("anelf_content_hash", "")),
                 source_digest=hashlib.sha256(document.data.encode("utf-8")).hexdigest(),
             )

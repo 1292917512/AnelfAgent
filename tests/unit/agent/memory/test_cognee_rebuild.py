@@ -362,6 +362,42 @@ async def test_live_write_during_verification_delays_activation(coordinator, sto
     assert "核对期间新事实" in coordinator.client.documents[mapping["dataset_id"]][mapping["data_id"]]["text"]
 
 
+async def test_retry_clears_stale_failure_without_activating_pending_generation(coordinator, store):
+    await store.add(MemoryEntry(content="待重试的原文", memory_type=MemoryType.SEMANTIC))
+    await coordinator.rebuild.request(coordinator.config)
+    await coordinator.rebuild.advance()
+    await coordinator.rebuild.advance()
+    batch = await store.claim_cognee_sync_batch(10)
+    await store.fail_cognee_sync(batch[0]["queue_id"], "验收失败", max_retries=1, retry_delay_seconds=0)
+    await coordinator.rebuild.advance()
+    assert "1 条投影失败" in coordinator.rebuild.state.error
+    namespace = coordinator.rebuild.state.namespace
+    assert await coordinator.retry_failed() == 1
+    await coordinator.rebuild.advance()
+    persisted = await store.projection_state.load()
+    assert persisted.phase == "building" and persisted.error == ""
+    assert persisted.namespace == namespace and not coordinator.client.projection_ready
+    await settle(coordinator)
+    assert coordinator.rebuild.state.phase == "ready"
+    assert coordinator.rebuild.state.namespace == namespace
+
+
+async def test_rebuild_verifies_sdk_collisions_without_losing_source_tags(coordinator, store):
+    tags = ["topic:WOL", "topic:WoL"]
+    mid = await store.add(MemoryEntry(content="完整标签的原文", memory_type=MemoryType.SEMANTIC, tags=tags))
+    await coordinator.rebuild.request(coordinator.config)
+    await coordinator.rebuild.advance()
+    await coordinator.rebuild.advance()
+    await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
+    dataset = next(iter(coordinator.client.documents.values()))
+    item = next(iter(dataset.values()))
+    item["node_set"] = ["topic:WOL"]
+    await coordinator.rebuild.advance()
+    assert coordinator.rebuild.state.phase == "ready"
+    assert item["external_metadata"]["anelf_attribution"]["tags"] == tags
+    assert (await store.get(mid)).tags == tags
+
+
 async def test_unmapped_old_document_blocks_before_reset(coordinator, store):
     await store.add(MemoryEntry(content="原文", memory_type=MemoryType.SEMANTIC))
     await coordinator._process_batch(await store.claim_cognee_sync_batch(20))

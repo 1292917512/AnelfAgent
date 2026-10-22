@@ -19,6 +19,7 @@ from ..projection import PROJECTION_VERSION, canonical_tags, projection_dataset
 from ..store.projection_state import ProjectionState
 from .config import CogneeConfig
 from .documents import stored_node_tags
+from .node_sets import projected_node_tags
 from .ports import ProjectionBackend
 from .preflight import check_legacy_documents
 
@@ -133,6 +134,9 @@ class CogneeRebuild:
                     state.error = f"{status['failed']} 条投影失败，重试成功前不切换"
                     await self.store.projection_state.save(state)
                     return
+                if state.error:
+                    state.error = ""
+                    await self.store.projection_state.save(state)
                 if status["pending"]:
                     return
                 await self._verify(state)
@@ -176,7 +180,7 @@ class CogneeRebuild:
                 raise RuntimeError(f"后端文档缺失或指纹不一致: {mapping['entry_kind']}:{mapping['entry_id']}")
             if not self.client.document_processed(document, str(mapping["dataset_id"])):
                 raise RuntimeError(f"后端文档尚未完成抽取: {mapping['entry_kind']}:{mapping['entry_id']}")
-            tags = canonical_tags(metadata.get("anelf_attribution", {}).get("tags", []))
+            tags = projected_node_tags(canonical_tags(metadata.get("anelf_attribution", {}).get("tags", [])))
             if stored_node_tags(_field(document, "node_set", [])) != tags:
                 raise RuntimeError(f"后端标签索引不完整: {mapping['entry_kind']}:{mapping['entry_id']}")
             expected_dataset = projection_dataset(state.namespace, graph=mapping["entry_kind"] == "graph_node")

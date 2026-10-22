@@ -7,6 +7,8 @@ import importlib
 import inspect
 from typing import Any
 
+from .node_sets import node_set_id
+
 
 def require_parameters(target: Any, names: set[str], label: str) -> None:
     """拒绝静默丢失的调用参数，包括装饰器保留的原始签名。"""
@@ -65,6 +67,10 @@ def validate_sdk(module: Any) -> None:
     require_parameters(data_item, {"data", "label", "external_metadata", "data_id", "node_set", "literal_text"}, "DataItem")
     chunks = importlib.import_module("cognee.modules.retrieval.chunks_retriever").ChunksRetriever
     require_parameters(chunks, {"top_k", "node_name", "node_name_filter_operator"}, "ChunksRetriever")
+    node_set = importlib.import_module("cognee.modules.engine.models.node_set").NodeSet
+    for name in ("topic:WOL", "topic:WoL", "topic:two words", "topic:two_words", "topic:O'Brien", "标签:İß"):
+        if node_set.id_for(name) != node_set_id(name):
+            raise RuntimeError("Cognee NodeSet 身份规则变化，需先更新标签索引适配")
 
 
 async def close_engines() -> None:
