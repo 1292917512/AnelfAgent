@@ -50,15 +50,17 @@ def create_bootstrap() -> FlowMachine:
 
     @machine.node(skip_on_error=False, depends_on=[])
     async def init_storage():
+        from agent.runtime.volumes import ensure_volume_modules
         from agent.storage.data_center import create_data_center
         from agent.storage.volume_restore import consume_pending_restores
         from core.lifecycle import Lifecycle
 
         # 重启落盘的卷恢复交换：任何存储连接打开前完成文件替换
-        try:
-            consume_pending_restores()
-        except Exception as exc:
-            log(f"存储卷恢复标记消费失败（跳过）: {exc}", "ERROR")
+        ensure_volume_modules()
+        restores = consume_pending_restores()
+        failed = [item["volume_id"] for item in restores if not item["ok"]]
+        if failed:
+            raise RuntimeError(f"存储卷恢复失败，拒绝打开可能未完成交换的数据: {', '.join(failed)}")
 
         data_center = create_data_center()
         Lifecycle.register("data_center", data_center, cleanup=data_center.sqlite.close, critical_cleanup=True)

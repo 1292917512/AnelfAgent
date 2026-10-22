@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import io
+import json
 import sqlite3
 import tarfile
+import threading
 import time
 from pathlib import Path
 
@@ -70,6 +73,8 @@ def sandbox(tmp_path, monkeypatch):
         default_path=lambda: str(tmp_path / "notes-root"),
     ))
     monkeypatch.setattr(sv, "_registry", registry)
+    monkeypatch.setattr(ops, "_closing", False)
+    monkeypatch.setattr(ops, "_op_states", {})
     return registry
 
 
@@ -96,7 +101,7 @@ async def _wait_op(volume_id: str, timeout: float = 10.0) -> dict:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         state = ops.operation_status(volume_id)
-        if state["state"] in ("done", "error", "idle"):
+        if state["state"] in ("done", "error", "idle", "cancelled"):
             return state
         await asyncio.sleep(0.05)
     raise AssertionError(f"操作超时: {ops.operation_status(volume_id)}")
@@ -118,7 +123,8 @@ class TestSqliteBackupRestore:
         conn.commit()
         conn.close()
 
-        result = ops.restore_backup("testvol", backups[0]["backup_id"])
+        ops.restore_backup("testvol", backups[0]["backup_id"])
+        result = await _wait_op("testvol")
         assert result["result"]["needs_restart"] is True
         assert "testvol" in (volume_restore.pending_summary() or [])
 
@@ -137,6 +143,7 @@ class TestSqliteBackupRestore:
         (db.parent / "testvol.sqlite3-wal").write_bytes(b"stale")
         (db.parent / "testvol.sqlite3-shm").write_bytes(b"stale")
         ops.restore_backup("testvol", bid)
+        assert (await _wait_op("testvol"))["state"] == "done"
         volume_restore.consume_pending_restores()
         assert not (db.parent / "testvol.sqlite3-wal").exists()
         assert not (db.parent / "testvol.sqlite3-shm").exists()
@@ -208,6 +215,7 @@ class TestNotesTree:
 
         bid = ops.list_backups("testnotes")[0]["backup_id"]
         ops.restore_backup("testnotes", bid)
+        assert (await _wait_op("testnotes"))["state"] == "done"
         volume_restore.consume_pending_restores()
 
         assert (root / "memory.md").read_text(encoding="utf-8") == "v1"
@@ -215,6 +223,9 @@ class TestNotesTree:
         # 覆盖仅限备份涵盖条目：无关目录原样保留，备份未涵盖的新文件保留
         assert (root / "unrelated_dir" / "keep.txt").read_text(encoding="utf-8") == "keep"
         assert (root / "extra.md").exists()
+        previous = list(root.parent.glob(f"{root.name}.pre-restore-*"))
+        assert len(previous) == 1
+        assert (previous[0] / "memory.md").read_text() == "v2"
 
     async def test_cognee_tree_whole_replace(self, sandbox):
         root = Path(sandbox.get("testnotes").default_path())
@@ -233,6 +244,7 @@ class TestNotesTree:
         # 整树替换语义：新增的无关文件也回滚（与便签树的选择性覆盖相反）
         (root / "junk.txt").write_text("junk", encoding="utf-8")
         ops.restore_backup("testcognee", bid)
+        assert (await _wait_op("testcognee"))["state"] == "done"
         volume_restore.consume_pending_restores()
         assert (root / "system" / "db.bin").read_bytes() == b"data"
         assert not (root / "junk.txt").exists()
@@ -338,3 +350,266 @@ class TestRegistryParity:
             assert expected in registry, f"缺少库: {expected}"
         assert registry["agent"]["path"].endswith("agent.sqlite3")
         assert "cognee_db" in registry["cognee"]["path"]
+
+
+async def test_cancel_inside_large_file_cleans_partial_and_keeps_source(sandbox, monkeypatch):
+    root = Path(sandbox.get("testnotes").default_path())
+    root.mkdir()
+    source = root / "memory.md"
+    source.write_bytes(b"memory" * 200000)
+    entered, release = threading.Event(), threading.Event()
+    read = ops.CancellableReader.read
+
+    def blocked_read(reader, size=-1):
+        entered.set()
+        assert release.wait(5)
+        return read(reader, size)
+
+    monkeypatch.setattr(ops.CancellableReader, "read", blocked_read)
+    ops.create_backup("testnotes")
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        assert ops.list_backups("testnotes") == []
+        response = ops.cancel_operation("testnotes")
+        assert response["state"] == "running" and response["cancel_requested"]
+        with pytest.raises(VolumeOperationError):
+            ops.create_backup("testnotes")
+    finally:
+        release.set()
+    assert (await _wait_op("testnotes"))["state"] == "cancelled"
+    assert list(ops._volume_backup_dir("testnotes").iterdir()) == []
+    assert source.read_bytes() == b"memory" * 200000
+    monkeypatch.setattr(ops.CancellableReader, "read", read)
+    ops.create_backup("testnotes")
+    assert (await _wait_op("testnotes"))["state"] == "done"
+
+
+async def test_cancel_waiting_for_cognee_does_not_wait_for_batch(sandbox):
+    from agent.memory.cognee.coordinator import CogneeCoordinator
+    from services.volume_artifacts import OperationCancelled, check_cancel
+
+    coordinator = object.__new__(CogneeCoordinator)
+    coordinator._stopping = False
+    coordinator._task = asyncio.create_task(asyncio.sleep(30))
+    coordinator._idle_job = None
+    coordinator._idle_done = asyncio.Event()
+    coordinator._wake = asyncio.Event()
+    state = {"cancel_requested": False}
+    job = asyncio.sleep(0)
+    waiter = asyncio.create_task(coordinator.run_in_idle_window(job, check_cancel=lambda: check_cancel(state)))
+    await asyncio.sleep(0)
+    state["cancel_requested"] = True
+    try:
+        with pytest.raises(OperationCancelled):
+            await asyncio.wait_for(waiter, 1)
+        assert coordinator._idle_job is None
+        assert job.cr_frame is None
+    finally:
+        coordinator._task.cancel()
+        await asyncio.gather(coordinator._task, return_exceptions=True)
+
+
+async def test_failed_backup_never_prunes_good_copy(sandbox, monkeypatch):
+    _make_sqlite(sandbox.get("testvol").default_path())
+    ops.create_backup("testvol")
+    assert (await _wait_op("testvol"))["state"] == "done"
+    before = ops.list_backups("testvol")
+
+    def broken(*args):
+        raise OSError("disk failure")
+
+    monkeypatch.setattr(ops, "digest", broken)
+    ops.create_backup("testvol")
+    assert (await _wait_op("testvol"))["state"] == "error"
+    assert ops.list_backups("testvol") == before
+    assert len(list(ops._volume_backup_dir("testvol").iterdir())) == 1
+
+
+async def test_restore_rejects_corrupted_content_and_wrong_manifest(sandbox):
+    db = _make_sqlite(sandbox.get("testvol").default_path())
+    ops.create_backup("testvol")
+    await _wait_op("testvol")
+    bid = ops.list_backups("testvol")[0]["backup_id"]
+    info = ops.get_backup("testvol", bid)
+    artifact = Path(info["artifact_path"])
+    raw = bytearray(artifact.read_bytes())
+    raw[-1] ^= 1
+    artifact.write_bytes(raw)
+    ops.restore_backup("testvol", bid)
+    with pytest.raises(VolumeOperationError):
+        ops.delete_backup("testvol", bid)
+    assert (await _wait_op("testvol"))["state"] == "error"
+    assert volume_restore.pending_summary() is None
+    assert not list(ops._staging_dir().iterdir())
+    assert _read_sqlite(db) == [("original",)]
+    info["artifact"] = "../../outside.sqlite3"
+    ops._write_manifest(artifact.parent, info)
+    with pytest.raises(VolumeOperationError):
+        ops.get_backup("testvol", bid)
+    assert ops.list_backups("testvol") == []
+
+
+@pytest.mark.parametrize("name", ["../outside.md", "data/agent.sqlite3", "cognee/system/db"])
+def test_notes_restore_rejects_out_of_scope_members(sandbox, tmp_path, name):
+    archive = tmp_path / "unsafe.tgz"
+    with tarfile.open(archive, "w:gz") as tar:
+        entry = tarfile.TarInfo(name)
+        entry.size = 4
+        tar.addfile(entry, io.BytesIO(b"oops"))
+    with pytest.raises(ValueError):
+        volume_restore._swap_tree(archive, tmp_path / "target", whole_replace=False)
+    assert not (tmp_path / "target").exists()
+
+
+def test_missing_restore_artifact_never_counts_as_success(sandbox, tmp_path):
+    db = _make_sqlite(sandbox.get("testvol").default_path())
+    volume_restore.stage_restore_entry("testvol", VolumeKind.SQLITE, str(tmp_path / "missing"))
+    result = volume_restore.consume_pending_restores()
+    assert result[0]["ok"] is False
+    assert volume_restore.pending_summary() == ["testvol"]
+    assert _read_sqlite(db) == [("original",)]
+
+
+async def test_restore_rechecks_staged_checksum_before_touching_source(sandbox):
+    db = _make_sqlite(sandbox.get("testvol").default_path())
+    ops.create_backup("testvol")
+    await _wait_op("testvol")
+    ops.restore_backup("testvol", ops.list_backups("testvol")[0]["backup_id"])
+    state = await _wait_op("testvol")
+    Path(state["result"]["staged"]).write_bytes(b"broken")
+    assert volume_restore.consume_pending_restores()[0]["ok"] is False
+    assert _read_sqlite(db) == [("original",)]
+
+
+async def test_export_includes_nonpositive_ids_and_without_rowid(tmp_path):
+    from unittest.mock import AsyncMock
+
+    client = AsyncMock()
+    client.insert_sql = lambda *args: "insert"
+    async with aiosqlite.connect(str(tmp_path / "export.sqlite3")) as conn:
+        await conn.execute('CREATE TABLE t (id INTEGER PRIMARY KEY, value TEXT)')
+        await conn.executemany('INSERT INTO t VALUES (?, ?)', [(-1, "minus"), (0, "zero"), (1, "one")])
+        assert await ops._export_table(conn, client, "t", "", True) == 3
+        assert client.executemany_rows.call_args.args[1] == [(-1, "minus"), (0, "zero"), (1, "one")]
+        await conn.execute('CREATE TABLE w (key TEXT PRIMARY KEY) WITHOUT ROWID')
+        await conn.execute("INSERT INTO w VALUES ('key')")
+        assert await ops._export_table(conn, client, "w", "", True) == 1
+
+
+def test_malformed_restore_marker_is_not_silently_ignored(sandbox):
+    marker = volume_restore.pending_marker_path()
+    marker.parent.mkdir(parents=True)
+    marker.write_text(json.dumps({"entries": "broken"}))
+    with pytest.raises(RuntimeError):
+        volume_restore.consume_pending_restores()
+
+
+async def test_sqlite_page_cancellation_and_shutdown_leave_no_backup(sandbox, monkeypatch):
+    db = _make_sqlite(sandbox.get("testvol").default_path())
+    real = ops.online_sqlite_backup
+
+    async def cancel_at_page(src, dest, *, progress):
+        def cancelling(status, remaining, total):
+            ops._quiesce()
+            progress(status, remaining, total)
+        await real(src, dest, progress=cancelling)
+
+    monkeypatch.setattr(ops, "online_sqlite_backup", cancel_at_page)
+    ops.create_backup("testvol")
+    assert (await _wait_op("testvol"))["state"] == "cancelled"
+    await ops._shutdown()
+    assert not ops.has_running_operations()
+    assert list(ops._volume_backup_dir("testvol").iterdir()) == []
+    assert _read_sqlite(db) == [("original",)]
+
+
+async def test_cancel_after_commit_boundary_cannot_undo_backup(sandbox, monkeypatch):
+    _make_sqlite(sandbox.get("testvol").default_path())
+    write = ops._write_manifest
+
+    def publish(path, payload):
+        with pytest.raises(VolumeOperationError, match="提交阶段"):
+            ops.cancel_operation("testvol")
+        write(path, payload)
+
+    monkeypatch.setattr(ops, "_write_manifest", publish)
+    ops.create_backup("testvol")
+    assert (await _wait_op("testvol"))["state"] == "done"
+    assert len(ops.list_backups("testvol")) == 1
+
+
+def test_sqlite_restore_failure_rolls_back_all_original_files(sandbox, tmp_path, monkeypatch):
+    target = Path(sandbox.get("testvol").default_path())
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"damaged original")
+    wal = Path(f"{target}-wal")
+    wal.write_bytes(b"old committed WAL")
+    staged = _make_sqlite(tmp_path / "staged.sqlite3")
+    replace = volume_restore.os.replace
+
+    def fail_candidate(src, dst):
+        if Path(dst) == target:
+            raise OSError("replace failure")
+        return replace(src, dst)
+
+    monkeypatch.setattr(volume_restore.os, "replace", fail_candidate)
+    with pytest.raises(OSError):
+        volume_restore._swap_sqlite(staged, target)
+    assert target.read_bytes() == b"damaged original"
+    assert wal.read_bytes() == b"old committed WAL"
+    assert staged.exists()
+    monkeypatch.setattr(volume_restore.os, "replace", replace)
+    volume_restore._swap_sqlite(staged, target)
+    assert _read_sqlite(target) == [("original",)]
+    assert not wal.exists()
+
+
+def test_notes_restore_failure_rolls_back_previously_installed_members(sandbox, tmp_path, monkeypatch):
+    target = Path(sandbox.get("testnotes").default_path())
+    target.mkdir()
+    for name in ("a.md", "b.md"):
+        (target / name).write_text("old")
+    archive = tmp_path / "notes.tgz"
+    with tarfile.open(archive, "w:gz") as tar:
+        for name in ("a.md", "b.md"):
+            entry = tarfile.TarInfo(name)
+            entry.size = 3
+            tar.addfile(entry, io.BytesIO(b"new"))
+    rename = Path.rename
+
+    def fail_second(path, destination):
+        if ".restore-" in path.parent.name and path.name == "b.md":
+            raise OSError("second rename failed")
+        return rename(path, destination)
+
+    monkeypatch.setattr(Path, "rename", fail_second)
+    with pytest.raises(OSError):
+        volume_restore._swap_tree(archive, target, whole_replace=False)
+    assert (target / "a.md").read_text() == "old"
+    assert (target / "b.md").read_text() == "old"
+    assert archive.exists()
+
+
+async def test_restore_replays_after_marker_write_failure(sandbox, monkeypatch):
+    db = _make_sqlite(sandbox.get("testvol").default_path())
+    ops.create_backup("testvol")
+    await _wait_op("testvol")
+    ops.restore_backup("testvol", ops.list_backups("testvol")[0]["backup_id"])
+    state = await _wait_op("testvol")
+    staged = Path(state["result"]["staged"])
+    write = volume_restore._write_marker_atomic
+    failed = False
+
+    def fail_once(path, payload):
+        nonlocal failed
+        if not failed and not payload["entries"]:
+            failed = True
+            raise OSError("marker disk failure")
+        write(path, payload)
+
+    monkeypatch.setattr(volume_restore, "_write_marker_atomic", fail_once)
+    assert volume_restore.consume_pending_restores()[0]["ok"] is False
+    assert staged.exists() and volume_restore.pending_summary() == ["testvol"]
+    assert volume_restore.consume_pending_restores()[0]["ok"] is True
+    assert not staged.exists() and volume_restore.pending_summary() is None
+    assert _read_sqlite(db) == [("original",)]

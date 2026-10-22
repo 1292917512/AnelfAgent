@@ -104,6 +104,9 @@ export const storageApi = {
 // Volumes（数据管理页 · 存储卷：模块化备份/恢复/迁移/SQL 导出）
 
 export const volumeApi = {
+  cancel: (volumeId: string) => api.post<VolumeOperationState>(
+    `/database/volumes/${encodeURIComponent(volumeId)}/operation/cancel`,
+  ),
   list: () =>
     api.get<{ items: VolumeInfo[]; pending_restore: string | null }>("/database/volumes"),
   operation: (volumeId: string) =>

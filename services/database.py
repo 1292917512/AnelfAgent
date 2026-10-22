@@ -24,10 +24,12 @@ import re
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
+from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Tuple
 
 import aiosqlite
 
+from agent.runtime.volumes import VOLUME_MODULES as VOLUME_MODULES
+from agent.runtime.volumes import ensure_volume_modules as ensure_volume_modules
 from core.log import log
 from core.sqlite_utils import required_row
 from services.db_common import (
@@ -59,45 +61,24 @@ _FRAGMENT_MIN_PAGES = 100  # 小库不报碎片化（无意义）
 # 库注册表（存储卷驱动）
 # ----------------------------------------------------------------------
 
-# 触发各存储模块的卷登记（模块 import 时自注册；已 import 的零开销）
-VOLUME_MODULES = (
-    "agent.storage.sqlite_backend",
-    "agent.memory.memory_store",
-    "agent.memory.notes",
-    "agent.memory.cognee.config",
-    "agent.skills.skill_index",
-    "entities.sticker.store",
-    "agent.audio.store",
-    "entities.share.store",
-)
-
 # 数据库浏览面的固定展示顺序，未知卷按注册序追加
 _DISPLAY_ORDER = (
     "agent", "memory", "stickers", "audio", "skill_vectors", "share", "cognee",
 )
 
 
-def ensure_volume_modules() -> None:
-    """触发各存储模块的卷登记（幂等；供卷管理面在模块未加载时兜底）。"""
-    import importlib
-
-    for name in VOLUME_MODULES:
-        try:
-            importlib.import_module(name)
-        except Exception as exc:
-            log(f"存储卷模块加载失败 {name}: {exc}", "DEBUG", tag="数据库")
-
-
-async def online_sqlite_backup(src: Path, dest: Path) -> None:
+async def online_sqlite_backup(
+    src: Path, dest: Path, *, progress: Callable[[int, int, int], None] | None = None,
+) -> None:
     """SQLite 在线热备份（Backup API，对并发写安全，自包含输出无 -wal/-shm）。
 
     数据库管理 / 卷备份 / 数据目录迁移共用的唯一备份实现。
     """
-    src_conn = await aiosqlite.connect(str(src))
+    src_conn = await aiosqlite.connect(src.resolve().as_uri() + "?mode=ro", uri=True)
     try:
         dest_conn = await aiosqlite.connect(str(dest))
         try:
-            await src_conn.backup(dest_conn)
+            await src_conn.backup(dest_conn, pages=256, progress=progress)
         finally:
             await dest_conn.close()
     finally:
@@ -191,10 +172,17 @@ class DatabaseService:
                     self._connections.pop(db_id, None)
 
             path = self._db_path(db_id)
-            conn = await aiosqlite.connect(path)
+            conn = await self._open_conn(path)
+            self._connections[db_id] = conn
+            return conn
+
+    @staticmethod
+    async def _open_conn(path: str, *, readonly: bool = False) -> aiosqlite.Connection:
+        target = Path(path).resolve().as_uri() + "?mode=ro" if readonly else path
+        conn = await aiosqlite.connect(target, uri=readonly)
+        try:
             conn.row_factory = aiosqlite.Row
-            await conn.execute("PRAGMA busy_timeout=5000;")
-            # sqlite-vec 为连接级扩展，加载后 vec0 虚表才可查询
+            await conn.execute("PRAGMA busy_timeout=5000")
             try:
                 import sqlite_vec
 
@@ -205,8 +193,12 @@ class DatabaseService:
                     await conn.enable_load_extension(False)
             except Exception as exc:
                 log(f"数据库管理: sqlite-vec 加载失败（vec 虚表不可查）: {exc}", "DEBUG", tag="数据库")
-            self._connections[db_id] = conn
+            if readonly:
+                await conn.execute("PRAGMA query_only=ON")
             return conn
+        except BaseException:
+            await conn.close()
+            raise
 
     async def close_all(self) -> None:
         for conn in self._connections.values():
@@ -648,9 +640,12 @@ class DatabaseService:
     async def run_query(self, db_id: str, sql: str) -> Dict[str, Any]:
         if self._is_external(db_id):
             return await (await self._external_adapter(db_id)).run_query(sql)
-        conn = await self._get_conn(db_id)
         safe_sql = self._validate_readonly_sql(sql)
+        # 查询使用独立只读连接，不能通过 WITH 写语句或 PRAGMA 括号语法改动持久化数据。
+        conn = await self._open_conn(self._db_path(db_id), readonly=True)
         started = time.time()
+        deadline = time.monotonic() + _QUERY_TIMEOUT_SECONDS
+        await conn.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
 
         async def _do() -> Tuple[List[str], List[Dict[str, Any]]]:
             cursor = await conn.execute(safe_sql)
@@ -660,25 +655,22 @@ class DatabaseService:
                 {name: serialize_value(r[name], name) for name in col_names} for r in rows
             ]
 
+        task = asyncio.create_task(_do())
         try:
-            # shield：wait_for 的取消无法中断 aiosqlite 工作线程中正在执行的
-            # sqlite 查询；超时后放弃等待（查询仍在后台执行直至完成），并把当前
-            # 连接移出缓存异步关闭回收，后续请求自动重建新连接。
-            columns, rows = await asyncio.wait_for(asyncio.shield(_do()), timeout=_QUERY_TIMEOUT_SECONDS)
+            columns, rows = await asyncio.wait_for(asyncio.shield(task), timeout=_QUERY_TIMEOUT_SECONDS)
         except asyncio.TimeoutError:
-            stale = self._connections.pop(db_id, None)
-            if stale is not None:
-                async def _close_stale() -> None:
-                    try:
-                        await stale.close()
-                    except Exception:
-                        log("_close_stale 异常已忽略", "DEBUG")
-                asyncio.get_running_loop().create_task(_close_stale())
             raise DatabaseError(f"查询超时（{_QUERY_TIMEOUT_SECONDS:.0f}s）", status_code=400) from None
         except DatabaseError:
             raise
         except Exception as exc:
+            if time.monotonic() >= deadline:
+                raise DatabaseError(f"查询超时（{_QUERY_TIMEOUT_SECONDS:.0f}s）", status_code=400) from exc
             raise DatabaseError(f"查询失败: {exc}", status_code=400) from exc
+        finally:
+            if not task.done():
+                await conn.interrupt()
+                await asyncio.gather(task, return_exceptions=True)
+            await conn.close()
         return {
             "columns": columns,
             "rows": rows,

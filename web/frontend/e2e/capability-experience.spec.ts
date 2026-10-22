@@ -1,6 +1,67 @@
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect } from "./fixtures";
 
+test("Volume backup completion refreshes counts and an open backup list; cancellation waits for cleanup", async ({ page }) => {
+  const volume = { volume_id: "memory", name: "Test memory", description: "Authoritative memory",
+    kind: "sqlite", capabilities: ["backup", "restore"], path: "/memory.sqlite3", default_path: "/memory.sqlite3",
+    location_source: "default", assignment: null, active_path: "/memory.sqlite3", needs_restart: false,
+    pending_restore: false, exists: true, size_bytes: 4096, backup_count: 0, last_backup_at: 0 };
+  let operation: Record<string, unknown> = { state: "idle", op: null };
+  let backups: Record<string, unknown>[] = [];
+  await page.route("**/api/database/volumes", route => route.fulfill({ json: { items: [volume], pending_restore: null } }));
+  await page.route("**/api/database/volumes/memory/operation", route => route.fulfill({ json: operation }));
+  await page.route("**/api/database/volumes/memory/backups", route => route.fulfill({ json: { items: backups } }));
+  await page.route("**/api/database/volumes/memory/backup", route => {
+    operation = { op: "backup", state: "running", phase: "sqlite_backup", done: 1, total: 4,
+      started_at: 100 + volume.backup_count, cancellable: true };
+    return route.fulfill({ json: operation });
+  });
+  await page.route("**/api/database/volumes/memory/operation/cancel", route => {
+    operation = { ...operation, cancel_requested: true };
+    return route.fulfill({ json: operation });
+  });
+  await page.goto("/webui/data?tab=volumes");
+  await expect(page.getByText("0 backups", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Backup now", exact: true }).click();
+  await expect(page.getByText(/Backup in progress/)).toBeVisible();
+  await page.getByRole("button", { name: "Backups", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByText(/No backups/)).toBeVisible();
+  volume.backup_count = 1;
+  volume.last_backup_at = 101;
+  backups = [{ backup_id: "20261022-101", created_at: 101, kind: "sqlite", artifact: "volume.sqlite3",
+    size_bytes: 4096, table_count: 1, file_count: 0, consistency: "online_backup", sha256: "abc" }];
+  operation = { ...operation, state: "done", finished_at: 102, cancellable: false };
+  await expect(dialog.getByText("20261022-101", { exact: true })).toBeVisible();
+  await expect(page.getByText(/1 backups/)).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Backup now", exact: true }).click();
+  await page.getByRole("button", { name: "Cancel operation", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Cancelling safely…", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Backup now", exact: true })).toBeDisabled();
+  operation = { ...operation, state: "cancelled", finished_at: 103, cancellable: false };
+  await expect(page.getByText("Operation cancelled. Temporary output removed; source data unchanged.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Backup now", exact: true })).toBeEnabled();
+  await expect(page.getByText(/1 backups/)).toBeVisible();
+});
+
+test("A backup finishing before the first poll still refreshes its count", async ({ page }) => {
+  let count = 0;
+  await page.route("**/api/database/volumes", route => route.fulfill({ json: { items: [{
+    volume_id: "notes", name: "Notes", description: "", kind: "notes_tree", capabilities: ["backup"],
+    path: "/notes", location_source: "default", exists: true, size_bytes: 2, backup_count: count, last_backup_at: 0,
+  }], pending_restore: null } }));
+  const status = () => count ? { op: "backup", state: "done", started_at: 1, finished_at: 2 } : { op: null, state: "idle" };
+  await page.route("**/api/database/volumes/notes/operation", route => route.fulfill({ json: status() }));
+  await page.route("**/api/database/volumes/notes/backup", route => {
+    count = 1;
+    return route.fulfill({ json: status() });
+  });
+  await page.goto("/webui/data?tab=volumes");
+  await page.getByRole("button", { name: "Backup now", exact: true }).click();
+  await expect(page.getByText("1 backups", { exact: true })).toBeVisible();
+});
+
 test("Cognee isolates a native fault and offers retry before the queue is exhausted", async ({ page }) => {
   const state = {
     availability: { installed: true, enabled: true, ready: false, reason: "Native worker stopped" },

@@ -7,7 +7,7 @@ init_storage（最早的存储节点，任何连接打开前）调用
 已关闭，无需写排空机制。
 
 交换语义按卷形态区分：
-- SQLITE：暂存文件就位（现文件留 ``.pre-restore-<ts>.bak``），
+- SQLITE：暂存文件就位（现文件及侧文件留在 ``.pre-restore-*`` 目录），
   并清除旧库遗留的 ``-wal``/``-shm`` 侧文件（防止旧 WAL 回放进新库）
 - COGNEE_TREE：整树替换（解包 → 现树改名保留 → 就位）
 - NOTES_TREE：选择性覆盖（便签树路径即数据根，仅覆盖备份涵盖的
@@ -17,14 +17,16 @@ init_storage（最早的存储节点，任何连接打开前）调用
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
 import tarfile
 import time
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from pathlib import Path, PurePosixPath
+from typing import Any, Callable, Dict, List, Optional
 
+from core.file_utils import atomic_write_text
 from core.log import log
 from core.storage_volume import VolumeKind, get_volume_registry
 
@@ -63,7 +65,7 @@ def pending_marker_path() -> Path:
     return backups_root() / PENDING_RESTORE_MARKER
 
 
-def stage_restore_entry(volume_id: str, kind: VolumeKind, staged_path: str) -> None:
+def stage_restore_entry(volume_id: str, kind: VolumeKind, staged_path: str, *, sha256: str = "") -> None:
     """登记一条待恢复条目（services 侧调用；幂等追加）。"""
     root = backups_root()
     root.mkdir(parents=True, exist_ok=True)
@@ -72,13 +74,16 @@ def stage_restore_entry(volume_id: str, kind: VolumeKind, staged_path: str) -> N
     if marker.is_file():
         try:
             entries = list(json.loads(marker.read_text(encoding="utf-8")).get("entries", []))
-        except (OSError, ValueError):
-            entries = []
+        except (OSError, ValueError) as exc:
+            raise RuntimeError("待恢复标记损坏，拒绝覆盖") from exc
+    if any(entry.get("volume_id") == volume_id for entry in entries):
+        raise RuntimeError(f"卷 {volume_id} 已有待恢复任务")
     entries.append({
         "volume_id": volume_id,
         "kind": kind.value,
         "staged_path": staged_path,
         "requested_at": f"{time.time():.3f}",
+        "sha256": sha256,
     })
     _write_marker_atomic(marker, {"entries": entries})
 
@@ -86,9 +91,7 @@ def stage_restore_entry(volume_id: str, kind: VolumeKind, staged_path: str) -> N
 def _write_marker_atomic(marker: Path, payload: Dict[str, Any]) -> None:
     """tmp 文件 + os.replace 原子写标记（写一半崩溃不会留下损坏 JSON
     导致全部待恢复条目静默蒸发）。"""
-    tmp = marker.with_suffix(marker.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, marker)
+    atomic_write_text(marker, json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 def read_pending_entries() -> List[Dict[str, Any]]:
@@ -97,11 +100,12 @@ def read_pending_entries() -> List[Dict[str, Any]]:
         return []
     try:
         raw = json.loads(marker.read_text(encoding="utf-8"))
-        entries = raw.get("entries", [])
-        return [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
-    except (OSError, ValueError) as exc:
-        log(f"待恢复标记读取失败: {exc}", "ERROR", tag="存储卷")
-        return []
+        entries = raw["entries"]
+        if not isinstance(entries, list) or any(not isinstance(e, dict) for e in entries):
+            raise ValueError("恢复条目格式错误")
+        return entries
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise RuntimeError("待恢复标记无法读取，拒绝跳过恢复") from exc
 
 
 def consume_pending_restores() -> List[Dict[str, Any]]:
@@ -121,18 +125,17 @@ def consume_pending_restores() -> List[Dict[str, Any]]:
         kind_raw = str(entry.get("kind", ""))
         staged_path = str(entry.get("staged_path", ""))
         try:
-            registry.get(volume_id)  # 未知卷（登记缺失）直接判失败
+            descriptor = registry.get(volume_id)
+            if descriptor.kind.value != kind_raw:
+                raise ValueError("待恢复卷形态不符")
             target = Path(registry.resolve_path(volume_id))
             staged = Path(staged_path)
             if not staged.exists():
-                # 交换已完成过但标记更新前崩溃：暂存产物已被 move 走，
-                # 按幂等成功处理（否则该条目永久误报"恢复失败"）
-                if target.exists():
-                    results.append({"volume_id": volume_id, "ok": True,
-                                    "target": str(target), "already": True})
-                    log(f"存储卷恢复幂等跳过（暂存已消费）: {volume_id}", tag="存储卷")
-                    continue
                 raise FileNotFoundError(f"暂存产物不存在: {staged}")
+            if entry.get("sha256"):
+                with staged.open("rb") as stream:
+                    if hashlib.file_digest(stream, "sha256").hexdigest() != entry["sha256"]:
+                        raise ValueError("恢复暂存产物校验和不符")
             if kind_raw == VolumeKind.SQLITE.value:
                 _swap_sqlite(staged, target)
             elif kind_raw == VolumeKind.COGNEE_TREE.value:
@@ -141,6 +144,14 @@ def consume_pending_restores() -> List[Dict[str, Any]]:
                 _swap_tree(staged, target, whole_replace=False)
             else:
                 raise ValueError(f"未知卷形态: {kind_raw}")
+            # 先从持久化标记确认消费，再删除暂存产物；崩溃后允许安全重试。
+            remaining = [item for item in entries if item is not entry]
+            _write_marker_atomic(pending_marker_path(), {"entries": remaining})
+            entries = remaining
+            try:
+                staged.unlink(missing_ok=True)
+            except OSError as exc:
+                log(f"已恢复产物清理失败: {exc}", "WARNING", tag="存储卷")
             results.append({"volume_id": volume_id, "ok": True, "target": str(target)})
             log(
                 f"存储卷恢复完成: {volume_id} -> {target}（原数据保留为 .pre-restore 副本）",
@@ -164,7 +175,7 @@ def consume_pending_restores() -> List[Dict[str, Any]]:
 
 
 def _backup_suffix() -> str:
-    return f".pre-restore-{time.strftime('%Y%m%d-%H%M%S')}"
+    return f".pre-restore-{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns()}"
 
 
 def _prune_pre_restore(target: Path) -> None:
@@ -182,49 +193,132 @@ def _prune_pre_restore(target: Path) -> None:
 
 def _swap_sqlite(staged: Path, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists():
-        target.rename(target.with_name(f"{target.name}{_backup_suffix()}"))
-        _prune_pre_restore(target)
-    # 旧库遗留的 WAL/SHM 侧文件必须清除：SQLite 会把旧 WAL 回放进新库
-    for side in (f"{target}-wal", f"{target}-shm", f"{target}-journal"):
-        Path(side).unlink(missing_ok=True)
-    shutil.move(str(staged), str(target))
+    candidate = target.with_name(f".{target.name}.restore-{time.time_ns()}")
+    # bootstrap 尚未打开连接；原库及 WAL 一并保留，即使旧库损坏也能恢复。
+    # 目标文件在同文件系统内原子替换，跨卷暂存复制失败不会触碰现库。
+    previous = target.with_name(f"{target.name}{_backup_suffix()}")
+    originals = [path for path in (target, Path(f"{target}-wal"), Path(f"{target}-shm"),
+                                   Path(f"{target}-journal")) if path.exists()]
+    backed_up = False
+    try:
+        _durable_copy(staged, candidate)
+        previous.mkdir()
+        for path in originals:
+            _durable_copy(path, previous / path.name)
+        backed_up = True
+        try:
+            for side in (f"{target}-wal", f"{target}-shm", f"{target}-journal"):
+                Path(side).unlink(missing_ok=True)
+            os.replace(candidate, target)
+        except BaseException:
+            for path in originals:
+                _durable_copy(previous / path.name, path)
+            raise
+    finally:
+        candidate.unlink(missing_ok=True)
+        if not backed_up and previous.exists():
+            shutil.rmtree(previous)
+    _prune_pre_restore(target)
 
 
-def _extract_tar(staged: Path) -> Path:
-    """解包 tgz 到暂存兄弟目录，返回解包根（内容相对树根存放）。"""
-    extract_root = staged.with_name(f"{staged.stem}.extracted")
-    if extract_root.exists():
-        shutil.rmtree(extract_root)
-    extract_root.mkdir(parents=True)
+def _durable_copy(source: Path, target: Path) -> None:
+    shutil.copyfile(source, target)
+    with target.open("r+b") as stream:
+        os.fsync(stream.fileno())
+    shutil.copystat(source, target)
+
+
+def validate_archive(
+    staged: Path, *, notes_only: bool = False, check: Callable[[], None] = lambda: None,
+) -> None:
+    """完整读取成员，拒绝路径越界、链接、设备及便签范围外的条目。"""
     with tarfile.open(staged, "r:gz") as tar:
-        tar.extractall(extract_root, filter="data")
+        for member in tar:
+            check()
+            path = PurePosixPath(member.name)
+            if (not path.parts or path.is_absolute() or ".." in path.parts
+                    or "\\" in member.name or ":" in member.name
+                    or not (member.isfile() or member.isdir())):
+                raise ValueError(f"不安全的归档成员: {member.name}")
+            if notes_only and not (
+                path.parts[0] in {"events", "groups", "profile_backups"}
+                or (len(path.parts) == 1 and path.suffix == ".md" and member.isfile())
+            ):
+                raise ValueError(f"归档超出便签卷范围: {member.name}")
+            if member.isfile():
+                stream = tar.extractfile(member)
+                if stream is None:
+                    raise ValueError(f"无法读取归档成员: {member.name}")
+                with stream:
+                    while stream.read(1024 * 1024):
+                        check()
+        # tar 的结束标记可能早于 gzip 尾部，继续读取以验证 CRC/截断。
+        while tar.fileobj.read(1024 * 1024):
+            check()
+
+
+def _extract_tar(staged: Path, *, notes_only: bool = False, root: Path | None = None) -> Path:
+    """解包 tgz 到暂存兄弟目录，返回解包根（内容相对树根存放）。"""
+    validate_archive(staged, notes_only=notes_only)
+    extract_root = root or staged.with_name(f"{staged.stem}.extracted-{time.time_ns()}")
+    extract_root.mkdir(parents=True, exist_ok=False)
+    try:
+        with tarfile.open(staged, "r:gz") as tar:
+            tar.extractall(extract_root, filter="data")
+        for path in extract_root.rglob("*"):
+            if path.is_file():
+                with path.open("rb" if os.name != "nt" else "r+b") as stream:
+                    os.fsync(stream.fileno())
+    except BaseException:
+        shutil.rmtree(extract_root)
+        raise
     return extract_root
 
 
 def _swap_tree(staged: Path, target: Path, *, whole_replace: bool) -> None:
-    extracted = _extract_tar(staged)
+    extracted = _extract_tar(staged, notes_only=not whole_replace,
+                             root=target.with_name(f".{target.name}.restore-{time.time_ns()}"))
     ts = _backup_suffix()
     if whole_replace:
-        if target.exists():
-            target.rename(target.with_name(f"{target.name}{ts}"))
-            _prune_pre_restore(target)
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(extracted), str(target))
-        staged.unlink(missing_ok=True)
+        previous = target.with_name(f"{target.name}{ts}")
+        if target.exists():
+            target.rename(previous)
+        try:
+            extracted.rename(target)
+        except BaseException:
+            if previous.exists() and not target.exists():
+                previous.rename(target)
+            raise
+        finally:
+            if extracted.exists():
+                shutil.rmtree(extracted)
+        _prune_pre_restore(target)
         return
     # 便签树：仅覆盖备份涵盖的条目，数据根其余内容原样保留
     target.mkdir(parents=True, exist_ok=True)
-    for item in sorted(extracted.iterdir()):
-        dest = target / item.name
-        if dest.exists():
+    previous = target.with_name(f"{target.name}{ts}")
+    previous.mkdir()
+    installed: list[Path] = []
+    try:
+        for item in sorted(extracted.iterdir()):
+            dest = target / item.name
+            if dest.exists():
+                dest.rename(previous / item.name)
+            item.rename(dest)
+            installed.append(dest)
+    except BaseException:
+        for dest in reversed(installed):
             if dest.is_dir():
                 shutil.rmtree(dest)
             else:
                 dest.unlink()
-        shutil.move(str(item), str(dest))
-    extracted.rmdir()
-    staged.unlink(missing_ok=True)
+        for old in previous.iterdir():
+            old.rename(target / old.name)
+        raise
+    finally:
+        shutil.rmtree(extracted)
+    _prune_pre_restore(target)
 
 
 def pending_summary() -> Optional[List[str]]:

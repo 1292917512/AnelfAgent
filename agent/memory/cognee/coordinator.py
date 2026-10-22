@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from core.activity import activity_owner, activity_scope, activity_step
 from core.log import log
@@ -52,6 +52,7 @@ class CogneeCoordinator:
         # 空闲窗口作业（run_in_idle_window 提交，worker 在队列排空后执行）
         self._idle_job: Optional[Any] = None
         self._idle_done = asyncio.Event()
+        self._idle_started = False
         # 写盘熔断（暂停投影认领与自动压缩，冷却到期自动恢复）
         self._breaker = self._build_breaker()
         self._pause_until_ns = 0
@@ -274,7 +275,7 @@ class CogneeCoordinator:
         result = await self._run_compact()
         return {"ok": "error" not in result, "scheduled": False, "result": result}
 
-    async def run_in_idle_window(self, job: Any) -> Any:
+    async def run_in_idle_window(self, job: Any, *, check_cancel: Callable[[], None] | None = None) -> Any:
         """在队列排空后的空闲窗口执行 job（协程，与写入互斥）。
 
         供存储卷备份/迁移等需要 cognee 数据树静默期的操作使用：
@@ -299,9 +300,22 @@ class CogneeCoordinator:
                 job.close()
             raise RuntimeError("已有空闲窗口作业排队中")
         self._idle_done.clear()
+        self._idle_started = False
         self._idle_job = job
         self.wake()
-        await self._idle_done.wait()
+        while not self._idle_done.is_set():
+            if check_cancel is not None and not self._idle_started:
+                try:
+                    check_cancel()
+                except Exception:
+                    self._idle_job = None
+                    if asyncio.iscoroutine(job):
+                        job.close()
+                    raise
+            try:
+                await asyncio.wait_for(self._idle_done.wait(), timeout=0.2)
+            except TimeoutError:
+                continue
         result = self._idle_job
         self._idle_job = None
         if isinstance(result, BaseException):
@@ -313,6 +327,7 @@ class CogneeCoordinator:
         job = self._idle_job
         if job is None:
             return
+        self._idle_started = True
         try:
             async with self._projection_lock:
                 async with self.client.idle_snapshot():

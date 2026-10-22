@@ -188,11 +188,32 @@
       "prefix": "Table name prefix (optional, e.g. anelf_)",
       "drop": "Overwrite existing target tables",
       "dropHint": "(snapshot semantics: rebuild and fully overwrite)",
-      "exportHint": "Schema and data are pushed in full to the external database as a backup slot or transfer channel. Derived indexes (FTS/vector) are not transferred and can be imported back anytime.",
-      "importHint": "Only databases produced by this system's export are accepted. Import builds a fresh database and applies after restart; current data is kept as a safety copy.",
+      "exportHint": "Schema and data are pushed in full to the external database as a backup slot or transfer channel. Derived indexes (FTS/vector) are not transferred and can be imported back anytime. This transfers table data, not all indexes, constraints or triggers. Use native volume backups for disaster recovery.",
+      "importHint": "Only databases produced by this system's export are accepted. Import builds a fresh database and applies after restart; current data is kept as a safety copy. This transfers table data, not all indexes, constraints or triggers. Use native volume backups for disaster recovery.",
       "run": "Start transfer",
       "started": "Transfer started",
       "failed": "Transfer failed"
+    },
+    "cancel": "Cancel operation",
+    "cancelling": "Cancelling safely…",
+    "cancelled": "Operation cancelled. Temporary output removed; source data unchanged.",
+    "cancelFailed": "Cancellation failed. Check the current operation status.",
+    "statusFailed": "Unable to read task status. The operation may still be running; do not resubmit.",
+    "backupDone": "Backup completed and integrity verified",
+    "restoreStarted": "Restore preparation started. Restart is required only after validation completes.",
+    "tables": "{{count}} tables",
+    "files": "{{count}} files",
+    "checksummed": "SHA-256 checksum included; checked on restore",
+    "legacyChecksum": "Legacy backup without checksum; structure checked on restore",
+    "download": "Download backup",
+    "phase": {
+      "waiting_idle": "Waiting for a safe index window",
+      "scanning": "Scanning files",
+      "sqlite_backup": "SQLite online snapshot",
+      "tree_archive": "Compressing files",
+      "verifying": "Verifying integrity",
+      "copying": "Staging copy",
+      "publishing": "Publishing verified output"
     }
   }
 }

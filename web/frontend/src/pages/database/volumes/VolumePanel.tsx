@@ -2,7 +2,7 @@ import { useTranslation } from "react-i18next";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { volumeApi } from "@/lib/api";
 import { InlineContributions } from "@/components/extensions/ContributionSlot";
-import { LoadingBlock } from "@/components/ui";
+import { Button, LoadingBlock } from "@/components/ui";
 import { AlertTriangle, Layers } from "lucide-react";
 import { VolumeCard } from "./VolumeCard";
 
@@ -11,7 +11,7 @@ export function VolumePanel() {
   const { t } = useTranslation("data");
   const queryClient = useQueryClient();
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError } = useQuery({
     queryKey: ["dbVolumes"],
     queryFn: () => volumeApi.list().then((r) => r.data),
     refetchInterval: 30000,
@@ -29,7 +29,9 @@ export function VolumePanel() {
       <p className="text-xs text-muted flex items-center gap-1.5">
         <Layers size={13} className="text-accent" />
         {t("volumes.subtitle")}
+        <Button size="sm" variant="secondary" onClick={() => void refresh()}>{t("common:refresh")}</Button>
       </p>
+      {isError && <p role="alert" className="text-xs text-danger">{t("volumes.statusFailed")}</p>}
 
       {pending && (
         <div className="flex items-start justify-between gap-3 rounded-md border border-warning/40 bg-warning/10 p-3 text-xs text-warning">
@@ -41,7 +43,7 @@ export function VolumePanel() {
         </div>
       )}
 
-      {volumes.length === 0 ? (
+      {volumes.length === 0 && !isError ? (
         <p className="text-xs text-muted">{t("volumes.noVolumes")}</p>
       ) : (
         <div className="grid gap-3 xl:grid-cols-2">

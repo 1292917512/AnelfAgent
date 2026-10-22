@@ -107,8 +107,10 @@ def create_application(args: argparse.Namespace) -> Application:
         async def register_web_service() -> None:
             """Web 服务器注册进 Lifecycle（on_start 拉起 / cleanup 关停）。"""
             from core.lifecycle import Lifecycle
+            from services.volume_ops import register_lifecycle
             from web.server import WebServerService
 
+            register_lifecycle()
             service = WebServerService()
             Lifecycle.register(
                 "web_server", service,

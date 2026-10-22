@@ -211,6 +211,7 @@ export interface VolumeInfo {
 }
 
 export interface VolumeBackupInfo {
+  sha256?: string;
   backup_id: string;
   created_at: number;
   kind: string;
@@ -223,7 +224,11 @@ export interface VolumeBackupInfo {
 
 export interface VolumeOperationState {
   op: string | null;
-  state: "idle" | "running" | "done" | "error";
+  state: "idle" | "running" | "done" | "error" | "cancelled";
+  cancellable?: boolean;
+  cancel_requested?: boolean;
+  current_file?: string;
+  unit?: "bytes" | "files" | "pages";
   phase?: string;
   done?: number;
   total?: number;

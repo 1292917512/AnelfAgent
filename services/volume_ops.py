@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import sqlite3
 import tarfile
@@ -28,18 +29,26 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import aiosqlite
 
-from core.file_utils import walk_files
+from core.file_utils import atomic_write_text, walk_files
 from core.log import log
 from core.storage_volume import VolumeCapability, VolumeKind, get_volume_registry
 from services.data_migration import validate_target_dir
 from services.database import ensure_volume_modules, online_sqlite_backup
 from services.db_common import SHADOW_PATTERNS
+from services.volume_artifacts import (
+    CancellableReader,
+    OperationCancelled,
+    check_cancel,
+    copy_artifact,
+    digest,
+    disk_job,
+)
 
 # 备份产物在备份目录内的固定名（manifest.json 同目录）
 _SQLITE_ARTIFACT = "volume.sqlite3"
 _TREE_ARTIFACT = "volume.tar.gz"
 _MANIFEST = "manifest.json"
-# 行流式传输批大小（导出按 rowid 窗口 / 导入按 OFFSET 分页）
+# 行流式传输批大小（导出按游标 / 导入按 OFFSET 分页）
 _BATCH_ROWS = 1000
 
 
@@ -131,14 +140,16 @@ def _cognee_coordinator_alive() -> bool:
     return coordinator is not None and coordinator.is_running
 
 
-async def _cognee_quiescence(job: Callable[[], Any]) -> Any:
+async def _cognee_quiescence(
+    job: Callable[[], Any], check: Callable[[], None] | None = None,
+) -> Any:
     """cognee 数据树操作的静默期：worker 空闲窗口执行（与写入互斥）。"""
     from agent.memory.cognee.runtime import get_cognee_coordinator
 
     coordinator = get_cognee_coordinator()
     if coordinator is None:
         return await job()
-    return await coordinator.run_in_idle_window(job())
+    return await coordinator.run_in_idle_window(job(), check_cancel=check)
 
 
 # ----------------------------------------------------------------------
@@ -146,6 +157,43 @@ async def _cognee_quiescence(job: Callable[[], Any]) -> Any:
 # ----------------------------------------------------------------------
 
 _op_states: Dict[str, Dict[str, Any]] = {}
+_tasks: set[asyncio.Task[None]] = set()
+_closing = False
+
+
+def register_lifecycle() -> None:
+    """在 Web 服务之前登记，关停先停止接单，再排空卷 I/O，最后释放存储。"""
+    from core.lifecycle import Lifecycle
+
+    global _closing
+    _closing = False
+    Lifecycle.register("volume_operations", _tasks, cleanup=_shutdown,
+                       on_quiesce=_quiesce, critical_cleanup=True)
+
+
+def _quiesce() -> None:
+    global _closing
+    _closing = True
+    for state in _op_states.values():
+        if state["state"] == "running" and state.get("cancellable"):
+            state["cancel_requested"] = True
+
+
+async def _shutdown() -> None:
+    _quiesce()
+    if _tasks:
+        await asyncio.gather(*tuple(_tasks))
+
+
+def cancel_operation(volume_id: str) -> Dict[str, Any]:
+    """请求安全取消；清理完成前保持 running，继续持有同卷互斥。"""
+    require_volume(volume_id)
+    state = _op_states.get(volume_id)
+    if state and state["state"] == "running":
+        if not state.get("cancellable"):
+            raise VolumeOperationError("该操作已进入提交阶段或不支持安全取消", status_code=409)
+        state["cancel_requested"] = True
+    return operation_status(volume_id)
 
 
 def has_running_operations() -> bool:
@@ -164,6 +212,9 @@ def _reset_state(volume_id: str, op: str) -> Dict[str, Any]:
         "result": {},
         "started_at": time.time(),
         "finished_at": 0.0,
+        "cancellable": op in {"backup", "restore"},
+        "cancel_requested": False,
+        "unit": "files",
     }
     _op_states[volume_id] = state
     return state
@@ -182,6 +233,8 @@ def operation_status(volume_id: str) -> Dict[str, Any]:
 
 
 def _ensure_idle(volume_id: str) -> None:
+    if _closing:
+        raise VolumeOperationError("服务正在关闭，暂不接受存储操作", status_code=409)
     state = _op_states.get(volume_id)
     if state and state["state"] == "running":
         raise VolumeOperationError(
@@ -217,13 +270,27 @@ def _spawn(volume_id: str, coro_factory: Callable[[Dict[str, Any]], Any]) -> Non
 
     async def _runner() -> None:
         try:
-            result = await coro_factory(state)
+            check_cancel(state)
+            work = asyncio.create_task(coro_factory(state))
+            try:
+                result = await asyncio.shield(work)
+            except asyncio.CancelledError:
+                if state.get("cancellable"):
+                    state["cancel_requested"] = True
+                # 原生备份/文件线程退出后才释放锁与临时目录。
+                result = await work
             state.update({"state": "done", "finished_at": time.time(), "result": result or {}})
+        except (OperationCancelled, asyncio.CancelledError):
+            state.update(state="cancelled", finished_at=time.time())
         except Exception as exc:
             state.update({"state": "error", "finished_at": time.time(), "error": str(exc)})
             log(f"存储卷 {volume_id} {state['op']} 失败: {exc}", "ERROR", tag="存储卷")
+        finally:
+            state["cancellable"] = False
 
-    asyncio.get_running_loop().create_task(_runner(), name=f"services.volume_ops.{volume_id}")
+    task = asyncio.get_running_loop().create_task(_runner(), name=f"services.volume_ops.{volume_id}")
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
 
 
 # ----------------------------------------------------------------------
@@ -247,7 +314,7 @@ async def list_volumes() -> List[Dict[str, Any]]:
         else:
             exists = path.is_dir()
         location = registry.read_location(volume_id)
-        backups = list_backups(volume_id)
+        backups = await asyncio.to_thread(list_backups, volume_id)
         items.append({
             "volume_id": volume_id,
             "name": descriptor.name,
@@ -283,10 +350,15 @@ def list_backups(volume_id: str) -> List[Dict[str, Any]]:
     if not root.is_dir():
         return items
     for entry in sorted(root.iterdir(), reverse=True):
-        if not entry.is_dir():
+        if not entry.is_dir() or entry.is_symlink() or not entry.name.replace("-", "").isdigit():
             continue
         manifest = _read_manifest(entry)
         if manifest is None:
+            continue
+        try:
+            _validate_manifest(volume_id, entry, manifest)
+        except (VolumeOperationError, OSError, ValueError, TypeError, KeyError):
+            log(f"跳过无效卷备份: {entry.name}", "WARNING", tag="存储卷")
             continue
         items.append({
             "backup_id": entry.name,
@@ -297,8 +369,9 @@ def list_backups(volume_id: str) -> List[Dict[str, Any]]:
             "table_count": int(manifest.get("table_count", 0)),
             "file_count": int(manifest.get("file_count", 0)),
             "consistency": manifest.get("consistency", ""),
+            "sha256": manifest.get("sha256", ""),
         })
-    return items
+    return sorted(items, key=lambda item: (item["created_at"], item["backup_id"]), reverse=True)
 
 
 def _read_manifest(backup_dir: Path) -> Optional[Dict[str, Any]]:
@@ -313,9 +386,26 @@ def _read_manifest(backup_dir: Path) -> Optional[Dict[str, Any]]:
 
 
 def _write_manifest(backup_dir: Path, payload: Dict[str, Any]) -> None:
-    (backup_dir / _MANIFEST).write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    atomic_write_text(backup_dir / _MANIFEST, json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def _validate_manifest(volume_id: str, directory: Path, manifest: Dict[str, Any]) -> Path:
+    descriptor = _descriptor(volume_id)
+    expected = _SQLITE_ARTIFACT if descriptor.kind is VolumeKind.SQLITE else _TREE_ARTIFACT
+    if (manifest.get("volume_id") != volume_id or manifest.get("kind") != descriptor.kind.value
+            or manifest.get("artifact") != expected):
+        raise VolumeOperationError("备份清单与存储卷不匹配", status_code=409)
+    root = _volume_backup_dir(volume_id).resolve()
+    artifact = directory / expected
+    if directory.is_symlink() or artifact.is_symlink() or not artifact.resolve().is_relative_to(root):
+        raise VolumeOperationError("备份路径越界", status_code=409)
+    if not artifact.is_file() or artifact.stat().st_size != int(manifest["size_bytes"]):
+        raise VolumeOperationError("备份产物缺失或大小不符", status_code=409)
+    # 摘要字段损坏不能使整个卷清单不可用。
+    float(manifest.get("created_at", 0))
+    int(manifest.get("table_count", 0))
+    int(manifest.get("file_count", 0))
+    return artifact
 
 
 def get_backup(volume_id: str, backup_id: str) -> Dict[str, Any]:
@@ -327,18 +417,22 @@ def get_backup(volume_id: str, backup_id: str) -> Dict[str, Any]:
     manifest = _read_manifest(backup_dir)
     if manifest is None:
         raise VolumeOperationError(f"备份不存在: {backup_id}", status_code=404)
-    artifact = manifest.get("artifact", "")
+    try:
+        artifact = _validate_manifest(volume_id, backup_dir, manifest)
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise VolumeOperationError("备份清单损坏", status_code=409) from exc
     info = dict(manifest)
     info["backup_id"] = backup_id
-    info["artifact_path"] = str(backup_dir / artifact)
+    info["artifact_path"] = str(artifact)
     return info
 
 
 def delete_backup(volume_id: str, backup_id: str) -> None:
     get_backup(volume_id, backup_id)  # 校验存在
+    _ensure_idle(volume_id)
     _ensure_not_pending(volume_id)
     backup_dir = _volume_backup_dir(volume_id) / backup_id
-    shutil.rmtree(backup_dir, ignore_errors=True)
+    shutil.rmtree(backup_dir)
     log(f"存储卷 {volume_id} 备份已删除: {backup_id}", tag="存储卷")
 
 
@@ -366,21 +460,52 @@ async def _run_backup(volume_id: str, state: Dict[str, Any]) -> Dict[str, Any]:
 
     descriptor = _descriptor(volume_id)
     source = _resolved_path(volume_id)
-    # 毫秒后缀防同秒碰撞（备份目录名即备份标识，须保持纯数字+连字符）
-    backup_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{int((time.time() % 1) * 1000):03d}"
-    backup_dir = _volume_backup_dir(volume_id) / backup_id
-    backup_dir.mkdir(parents=True, exist_ok=True)
+    backup_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns()}"
+    final_dir = _volume_backup_dir(volume_id) / backup_id
+    backup_dir = final_dir.with_name(f".{backup_id}.partial")
+    backup_dir.mkdir(parents=True, exist_ok=False)
+    try:
+        manifest = await _build_backup(volume_id, descriptor.kind, source, backup_dir, state)
+        artifact = backup_dir / str(manifest["artifact"])
+        state["phase"] = "verifying"
+        if descriptor.kind is VolumeKind.SQLITE:
+            await disk_job(lambda: _verify_sqlite(artifact, state), state)
+        else:
+            await disk_job(lambda: _verify_tar(artifact, state=state,
+                                              notes_only=descriptor.kind is VolumeKind.NOTES_TREE), state)
+        manifest["sha256"] = await disk_job(lambda: digest(artifact, state), state)
+        check_cancel(state)
+        # 提交窗口不再接受取消；先发布完整产物，再应用保留策略。
+        state.update(cancellable=False, phase="publishing")
+        _write_manifest(backup_dir, manifest)
+        backup_dir.rename(final_dir)
+    finally:
+        if backup_dir.exists():
+            shutil.rmtree(backup_dir)
 
-    if descriptor.kind is VolumeKind.SQLITE:
+    keep = get_config_int("volume_backup_retention", 5)
+    await asyncio.to_thread(_prune_backups, volume_id, keep)
+    log(f"存储卷 {volume_id} 备份完成: {manifest['size_bytes']} bytes（保留策略 {keep}）", tag="存储卷")
+    return {"backup_id": backup_id, "size_bytes": manifest["size_bytes"]}
+
+
+async def _build_backup(
+    volume_id: str, kind: VolumeKind, source: Path, backup_dir: Path, state: Dict[str, Any],
+) -> Dict[str, Any]:
+    def progress(_status: int, remaining: int, total: int) -> None:
+        check_cancel(state)
+        state.update(done=total - remaining, total=total, unit="pages")
+
+    if kind is VolumeKind.SQLITE:
         if not source.is_file():
             raise VolumeOperationError(f"卷数据文件不存在: {source}", status_code=409)
         artifact_path = backup_dir / _SQLITE_ARTIFACT
         state["phase"] = "sqlite_backup"
-        await online_sqlite_backup(source, artifact_path)
+        await online_sqlite_backup(source, artifact_path, progress=progress)
         table_count = await _count_tables(artifact_path)
         manifest = {
             "volume_id": volume_id,
-            "kind": descriptor.kind.value,
+            "kind": kind.value,
             "created_at": time.time(),
             "artifact": _SQLITE_ARTIFACT,
             "size_bytes": artifact_path.stat().st_size,
@@ -391,26 +516,18 @@ async def _run_backup(volume_id: str, state: Dict[str, Any]) -> Dict[str, Any]:
         artifact_path = backup_dir / _TREE_ARTIFACT
         state["phase"] = "tree_archive"
         file_count, consistency = await _archive_tree(
-            descriptor.kind, source, artifact_path, state
+            kind, source, artifact_path, state
         )
         manifest = {
             "volume_id": volume_id,
-            "kind": descriptor.kind.value,
+            "kind": kind.value,
             "created_at": time.time(),
             "artifact": _TREE_ARTIFACT,
             "size_bytes": artifact_path.stat().st_size,
             "file_count": file_count,
             "consistency": consistency,
         }
-    _write_manifest(backup_dir, manifest)
-    keep = get_config_int("volume_backup_retention", 5)
-    _prune_backups(volume_id, keep)
-    log(
-        f"存储卷 {volume_id} 备份完成: {manifest['size_bytes']} bytes"
-        f"（保留策略 {keep}）",
-        tag="存储卷",
-    )
-    return {"backup_id": backup_id, "size_bytes": manifest["size_bytes"]}
+    return manifest
 
 
 async def _count_tables(db_path: Path) -> int:
@@ -440,6 +557,8 @@ async def _archive_tree(
         raise VolumeOperationError(f"卷数据目录不存在: {source}", status_code=409)
 
     def _tar() -> int:
+        check_cancel(state)
+        state["phase"] = "scanning"
         # 文件清单也必须在静默窗口内生成，避免引用已被下一次发布替换的快照。
         members = (_notes_members if kind is VolumeKind.NOTES_TREE else walk_files)(source)
         if kind is VolumeKind.COGNEE_TREE:
@@ -457,18 +576,27 @@ async def _archive_tree(
                 path.relative_to(source).parts[0] == ".publication"
                 and (clean or path.name in {"owner.lock", "worker.lock"})
             )]
-        state["total"] = len(members)
-        with tarfile.open(artifact, "w:gz") as tar:
-            for index, path in enumerate(members):
-                tar.add(path, arcname=str(path.relative_to(source)))
-                state["done"] = index + 1
+        state.update(phase="tree_archive", total=sum(p.stat().st_size for p in members),
+                     done=0, unit="bytes")
+        with tarfile.open(artifact, "w:gz", dereference=True) as tar:
+            for path in members:
+                check_cancel(state)
+                if path.is_symlink() or not path.resolve().is_relative_to(source.resolve()):
+                    raise VolumeOperationError("备份成员包含符号链接或越界路径")
+                state["current_file"] = path.relative_to(source).as_posix()
+                with path.open("rb") as stream:
+                    info = tar.gettarinfo(fileobj=stream, arcname=state["current_file"])
+                    tar.addfile(info, CancellableReader(stream, state))
+        with artifact.open("r+b") as stream:
+            os.fsync(stream.fileno())
         return len(members)
 
     if kind is VolumeKind.COGNEE_TREE:
         quiesced = _cognee_coordinator_alive()
-        count = int(await _cognee_quiescence(lambda: asyncio.to_thread(_tar)))
+        state["phase"] = "waiting_idle"
+        count = int(await _cognee_quiescence(lambda: disk_job(_tar, state), lambda: check_cancel(state)))
         return count, "idle_window" if quiesced else "live"
-    return int(await asyncio.to_thread(_tar)), "live"
+    return int(await disk_job(_tar, state)), "live"
 
 
 # ----------------------------------------------------------------------
@@ -481,54 +609,66 @@ def restore_backup(volume_id: str, backup_id: str) -> Dict[str, Any]:
     _require_capability(volume_id, VolumeCapability.RESTORE)
     _ensure_idle(volume_id)
     _ensure_not_pending(volume_id)
-    descriptor = _descriptor(volume_id)
     info = get_backup(volume_id, backup_id)
+    _reset_state(volume_id, "restore")
+    _spawn(volume_id, lambda state: _run_restore(volume_id, info, state))
+    return operation_status(volume_id)
+
+
+async def _run_restore(volume_id: str, info: Dict[str, Any], state: Dict[str, Any]) -> Dict[str, Any]:
+    descriptor = _descriptor(volume_id)
     artifact = Path(info["artifact_path"])
     if not artifact.is_file():
         raise VolumeOperationError(f"备份产物缺失: {artifact}", status_code=409)
 
     staging = _staging_dir()
     staging.mkdir(parents=True, exist_ok=True)
-    staged = staging / f"{volume_id}-{backup_id}-{artifact.name}"
-    shutil.copy2(artifact, staged)
-
-    if descriptor.kind is VolumeKind.SQLITE:
-        _verify_sqlite(staged)
-    else:
-        _verify_tar(staged)
-
     from agent.storage.volume_restore import stage_restore_entry
-
-    stage_restore_entry(volume_id, descriptor.kind, str(staged))
-    state = _reset_state(volume_id, "restore")
-    state.update({
-        "state": "done",
-        "finished_at": time.time(),
-        "result": {"staged": str(staged), "needs_restart": True},
-    })
-    log(f"存储卷 {volume_id} 恢复已暂存，等待重启落盘: {backup_id}", tag="存储卷")
-    return dict(state)
-
-
-def _verify_sqlite(path: Path) -> None:
-    conn = sqlite3.connect(str(path))
+    staged = staging / f"{volume_id}-{time.time_ns()}-{artifact.name}"
+    committed = False
     try:
+        await disk_job(lambda: copy_artifact(artifact, staged, state), state)
+        checksum = await disk_job(lambda: digest(staged, state), state)
+        if info.get("sha256") and checksum != info["sha256"]:
+            raise VolumeOperationError("备份校验和不符，拒绝恢复", status_code=409)
+        if descriptor.kind is VolumeKind.SQLITE:
+            await disk_job(lambda: _verify_sqlite(staged, state), state)
+        else:
+            await disk_job(lambda: _verify_tar(staged, state=state,
+                                              notes_only=descriptor.kind is VolumeKind.NOTES_TREE), state)
+        check_cancel(state)
+        state.update(cancellable=False, phase="publishing")
+        stage_restore_entry(volume_id, descriptor.kind, str(staged), sha256=checksum)
+        committed = True
+    finally:
+        if not committed:
+            staged.unlink(missing_ok=True)
+    return {"staged": str(staged), "needs_restart": True}
+
+
+def _verify_sqlite(path: Path, state: Dict[str, Any] | None = None) -> None:
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        if state is not None:
+            conn.set_progress_handler(lambda: int(bool(state.get("cancel_requested"))), 1000)
         row = conn.execute("PRAGMA quick_check").fetchone()
         if not row or str(row[0]).lower() != "ok":
             raise VolumeOperationError(f"备份完整性校验失败: {row[0] if row else '无结果'}")
     except sqlite3.DatabaseError as exc:
+        if state is not None:
+            check_cancel(state)
         raise VolumeOperationError(f"备份文件无法读取: {exc}", status_code=409) from exc
     finally:
         conn.close()
 
 
-def _verify_tar(path: Path) -> None:
+def _verify_tar(path: Path, *, state: Dict[str, Any] | None = None, notes_only: bool = False) -> None:
+    from agent.storage.volume_restore import validate_archive
+
     try:
-        with tarfile.open(path, "r:gz") as tar:
-            members = tar.getmembers()
-        if not members:
-            raise VolumeOperationError("备份压缩包为空", status_code=409)
-    except tarfile.TarError as exc:
+        validate_archive(path, notes_only=notes_only,
+                         check=lambda: check_cancel(state) if state is not None else None)
+    except (tarfile.TarError, OSError, ValueError, EOFError) as exc:
         raise VolumeOperationError(f"备份压缩包损坏: {exc}", status_code=409) from exc
 
 
@@ -676,13 +816,16 @@ async def _run_export(
     if not source.is_file():
         raise VolumeOperationError(f"卷数据文件不存在: {source}", status_code=409)
 
-    conn = await aiosqlite.connect(str(source))
+    conn = await aiosqlite.connect(source.resolve().as_uri() + "?mode=ro", uri=True)
     client = SqlTransferClient(get_connection_store().get(connection_id))
     exported: List[str] = []
     total_rows = 0
     try:
         await client.connect()
+        await conn.execute("BEGIN")
         tables = await _exportable_tables(conn)
+        # 先使旧清单失效，导出中断后的半成品不能按旧清单被导入。
+        await client.write_export_manifest(volume_id, table_prefix, [])
         state["total"] = len(tables) + 1  # +1 为清单表
         for index, table in enumerate(tables):
             state["phase"] = f"table:{table}"
@@ -725,28 +868,25 @@ async def _export_table(
     prefix: str,
     drop_existing: bool,
 ) -> int:
-    """单表导出：DDL 翻译建表 + rowid 窗口流式批量写入。"""
+    """单表导出：稳定读事务内按游标流式传输，包含所有 rowid 和 WITHOUT ROWID 表。"""
     columns = await _table_columns(conn, table)
     await client.create_table_from_sqlite(f"{prefix}{table}", columns, drop=drop_existing)
     insert_sql = client.insert_sql(f"{prefix}{table}", [c["name"] for c in columns])
     total = 0
-    last_rowid = 0
+    quoted = table.replace('"', '""')
+    cursor = await conn.execute(f'SELECT * FROM "{quoted}"')
     while True:
-        cursor = await conn.execute(
-            f'SELECT rowid, * FROM "{table}" WHERE rowid > ? ORDER BY rowid LIMIT {_BATCH_ROWS}',
-            (last_rowid,),
-        )
-        rows = list(await cursor.fetchall())
+        rows = list(await cursor.fetchmany(_BATCH_ROWS))
         if not rows:
             break
-        last_rowid = rows[-1][0]
-        await client.executemany_rows(insert_sql, [tuple(r[1:]) for r in rows])
+        await client.executemany_rows(insert_sql, [tuple(r) for r in rows])
         total += len(rows)
     return total
 
 
 async def _table_columns(conn: aiosqlite.Connection, table: str) -> List[Dict[str, Any]]:
-    cursor = await conn.execute(f'PRAGMA table_info("{table}")')
+    quoted = table.replace('"', '""')
+    cursor = await conn.execute(f'PRAGMA table_info("{quoted}")')
     columns = []
     for _cid, name, decl, notnull, default, pk in await cursor.fetchall():
         columns.append({
@@ -781,6 +921,8 @@ async def _run_import(volume_id: str, connection_id: str, state: Dict[str, Any])
     try:
         await client.connect()
         manifest = await client.read_export_manifest()
+        if manifest.get("volume_id") != volume_id:
+            raise VolumeOperationError("导出清单不属于当前存储卷，拒绝导入", status_code=409)
         if not manifest.get("tables"):
             raise VolumeOperationError(
                 "外部库中没有导出清单（仅接受由本系统导出产生的数据库）", status_code=409

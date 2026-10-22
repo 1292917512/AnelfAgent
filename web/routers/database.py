@@ -161,12 +161,17 @@ async def volume_backups(volume_id: str) -> Dict[str, Any]:
     return {"items": volume_ops.list_backups(volume_id)}
 
 
+@router.post("/volumes/{volume_id}/operation/cancel", status_code=202)
+async def cancel_volume_operation(volume_id: str) -> Dict[str, Any]:
+    return volume_ops.cancel_operation(volume_id)
+
+
 @router.post("/volumes/{volume_id}/backup", status_code=202)
 async def create_volume_backup(volume_id: str) -> Dict[str, Any]:
     return volume_ops.create_backup(volume_id)
 
 
-@router.post("/volumes/{volume_id}/backups/{backup_id}/restore")
+@router.post("/volumes/{volume_id}/backups/{backup_id}/restore", status_code=202)
 async def restore_volume_backup(volume_id: str, backup_id: str) -> Dict[str, Any]:
     return volume_ops.restore_backup(volume_id, backup_id)
 

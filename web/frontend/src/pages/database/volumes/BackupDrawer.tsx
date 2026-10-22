@@ -12,16 +12,17 @@ interface Props {
   onClose: () => void;
   volume: VolumeInfo;
   onChanged: () => void;
+  busy: boolean;
 }
 
 /** 备份管理抽屉：清单 + 恢复（重启落盘） / 下载 / 删除 */
-export function BackupDrawer({ open, onClose, volume, onChanged }: Props) {
+export function BackupDrawer({ open, onClose, volume, onChanged, busy }: Props) {
   const { t } = useTranslation("data");
   const queryClient = useQueryClient();
   const [confirm, setConfirm] = useState<VolumeBackupInfo | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<VolumeBackupInfo | null>(null);
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["volumeBackups", volume.volume_id],
     queryFn: () => volumeApi.backups(volume.volume_id).then((r) => r.data),
     enabled: open,
@@ -33,8 +34,9 @@ export function BackupDrawer({ open, onClose, volume, onChanged }: Props) {
 
   const restoreMut = useMutation({
     mutationFn: (backupId: string) => volumeApi.restore(volume.volume_id, backupId),
-    onSuccess: () => {
-      toast.success(t("volumes.backupDrawer.restoreDone"));
+    onSuccess: ({ data }) => {
+      queryClient.setQueryData(["volumeOp", volume.volume_id], data);
+      toast.success(t("volumes.restoreStarted"));
       queryClient.invalidateQueries({ queryKey: ["volumeBackups", volume.volume_id] });
       onChanged();
       setConfirm(null);
@@ -71,31 +73,34 @@ export function BackupDrawer({ open, onClose, volume, onChanged }: Props) {
   return (
     <>
       <Modal open={open} onClose={onClose} title={t("volumes.backupDrawer.title", { name: volume.name })}>
-        <div className="space-y-2 min-w-[420px] max-h-[60vh] overflow-y-auto">
+        <div className="space-y-2 w-full sm:min-w-[420px] max-h-[60vh] overflow-y-auto">
+          {isError && <p role="alert" className="text-xs text-danger">{t("volumes.backupDrawer.failed")}
+            <Button size="sm" onClick={() => void refetch()}>{t("common:retry")}</Button></p>}
           {isLoading && <p className="text-xs text-muted">{t("common:loading")}</p>}
-          {!isLoading && backups.length === 0 && (
+          {!isLoading && !isError && backups.length === 0 && (
             <p className="text-xs text-muted py-4 text-center">{t("volumes.backupDrawer.empty")}</p>
           )}
           {backups.map((backup) => (
             <div
               key={backup.backup_id}
-              className="flex items-center gap-3 rounded border border-border bg-elevated px-3 py-2"
+              className="flex flex-wrap items-center gap-3 rounded border border-border bg-elevated px-3 py-2"
             >
               <div className="min-w-0 flex-1">
                 <p className="text-xs font-mono text-heading">{backup.backup_id}</p>
                 <p className="text-[11px] text-muted">
                   {formatSize(backup.size_bytes)}
-                  {backup.table_count > 0 && ` · ${backup.table_count} tables`}
-                  {backup.file_count > 0 && ` · ${backup.file_count} files`}
+                  {backup.table_count > 0 && ` · ${t("volumes.tables", { count: backup.table_count })}`}
+                  {backup.file_count > 0 && ` · ${t("volumes.files", { count: backup.file_count })}`}
                 </p>
+                <p className="text-[11px] text-muted">{t(backup.sha256 ? "volumes.checksummed" : "volumes.legacyChecksum")}</p>
               </div>
-              <Button size="sm" variant="secondary" onClick={() => setConfirm(backup)}>
+              <Button size="sm" variant="secondary" disabled={busy || restoreMut.isPending || deleteMut.isPending} onClick={() => setConfirm(backup)}>
                 <RotateCcw size={12} /> {t("volumes.backupDrawer.restore")}
               </Button>
-              <Button size="sm" variant="secondary" onClick={() => download(backup)}>
+              <Button size="sm" variant="secondary" aria-label={t("volumes.download")} onClick={() => download(backup)}>
                 <Download size={12} />
               </Button>
-              <Button size="sm" variant="danger" onClick={() => setConfirmDelete(backup)}>
+              <Button size="sm" variant="danger" aria-label={t("volumes.backupDrawer.delete")} disabled={busy || restoreMut.isPending || deleteMut.isPending} onClick={() => setConfirmDelete(backup)}>
                 <Trash2 size={12} />
               </Button>
             </div>

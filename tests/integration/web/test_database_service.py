@@ -55,6 +55,29 @@ async def svc():
     await service.close_all()
 
 
+@pytest.mark.parametrize("sql", [
+    "PRAGMA user_version(123)",
+    "WITH selected AS (SELECT name FROM plain LIMIT 1) DELETE FROM plain WHERE name IN (SELECT name FROM selected) RETURNING name",
+])
+async def test_query_endpoint_cannot_write_through_readonly_syntax(db_path, svc, sql):
+    with pytest.raises(DatabaseError):
+        await svc.run_query("agent", sql)
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM plain").fetchone()[0] == 10
+
+
+async def test_query_timeout_interrupts_without_breaking_crud_connection(db_path, svc, monkeypatch):
+    import services.database as module
+
+    cached = await svc._get_conn("agent")
+    monkeypatch.setattr(module, "_QUERY_TIMEOUT_SECONDS", 0.01)
+    with pytest.raises(DatabaseError, match="查询超时"):
+        await svc.run_query("agent", "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n) SELECT sum(x) FROM n")
+    assert await svc._get_conn("agent") is cached
+    assert (await (await cached.execute("SELECT COUNT(*) FROM plain")).fetchone())[0] == 10
+
+
 # ======================================================================
 # 库 / 表清单
 # ======================================================================

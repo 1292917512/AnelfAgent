@@ -231,14 +231,27 @@ default_path 保持测试隔离）；同族库路径均由 `main_sqlite_path()`�
 
 - 能力按形态派生：SQLITE 全量（备份/恢复/迁移/SQL 导出导入）、cognee 树无 SQL 传输、便签树仅备份/恢复
 - 备份：SQLite 走 Backup API 在线热备（`services.database.online_sqlite_backup` 唯一实现）、树走 tgz；
-  保留数 `volume_backup_retention`（storage/backup 组，默认 5）自动清理
+  在隐藏临时目录生成、结构校验及 SHA-256 校验后原子发布，发布成功才按
+  `volume_backup_retention`（storage/backup 组，默认 5）清理旧备份。失败或取消不覆盖源数据或清理旧备份。
+- 备份/恢复准备支持协作式取消：SQLite 分页、归档/复制分块检查；等待 Cognee 空闲窗口的任务可撤回。
+  取消请求到清理结束期间仍保持卷互斥；发布阶段不再接受取消。`volume_operations` 由 Lifecycle
+  统一关停，先停止接单、取消可撤回任务并等待实际 I/O 退出，再释放存储。
+- 前端按任务终态刷新卷概览和备份清单，极速完成任务也刷新；状态获取失败明确显示，不把请求失败视为任务结束。
 - 恢复与迁移均为「校验 + 拷贝 + 指派/标记 + 重启生效」：恢复写 pending 标记
   （`<data_dir>/backups/volumes/.pending-restore.json`），bootstrap `init_storage` 最早消费（任何连接
-  打开前交换文件；旧库 -wal/-shm 必清除防回放）
-- 外部 SQL 为备份/转移通道：`SqlTransferClient` 做 DDL 方言翻译 + rowid 窗口流式批量传输，导出登记
+  打开前交换文件；旧库 -wal/-shm 必清除防回放）。卷声明由 `agent.runtime.volumes` 统一装配。
+  新备份恢复校验 SHA-256，旧备份仍需结构校验；暂存校验和在启动时再核验。
+  标记损坏、产物缺失或交换失败会阻止打开存储，不按「目标存在」假定成功；暂存产物保留到标记确认消费后。
+- 恢复前副本：SQLite 主文件及 WAL/SHM/journal 一并保留在 `.pre-restore-*` 目录；树归档只接受常规
+  文件/目录，拒绝链接和越界路径；便签归档限根级 Markdown 与 events/groups/profile_backups。
+  目标旁准备候选目录后交换，便签覆盖失败回滚本次已安装条目；旧副本最多保留三份。
+- 外部 SQL 为表数据转移通道，不代替保留索引/约束/触发器的原生卷备份：`SqlTransferClient` 做 DDL
+  方言翻译，导出在稳定读事务中按游标流式传输（支持非正 rowid 和 WITHOUT ROWID 表），导出登记
   清单表 `_anelf_export`、导入仅认清单；派生索引（FTS5/vec0 影子表）不传输，导入后由各存储建表逻辑重建
 - Web 面板：数据管理页「存储卷」Tab，API 前缀 `/database/volumes`；目录遍历/占用统一走
   `core.file_utils.walk_files/directory_size`
+- 数据浏览的 SQL 查询使用独立只读 SQLite 连接；查询超时由 SQLite 进度回调和中断回收，
+  不占用或关闭 CRUD 连接。语句前缀检查仅为输入提示，不承担持久化写入隔离。
 
 ## 工具分组体系
 
