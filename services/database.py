@@ -1,265 +1,58 @@
-"""数据库管理服务 — WebUI「数据管理」页的后端核心。
-
-数据库目录由存储卷的组件声明驱动；SQLite 提供能力受控的浏览与维护，
-受管图/向量组件复用所属模块的观测，不在通用管理层打开原生引擎。
-
-安全约定：
-- 库 ID / 表名 / 列名一律先经 sqlite_master / PRAGMA 白名单校验；
-  标识符双引号包裹，值全部参数化
-- 视图、FTS5/vec0 虚表及影子表只读；影子表默认不出现在表清单
-- run_query 只允许 SELECT/WITH/EXPLAIN/PRAGMA 单语句，自动补 LIMIT
-"""
+"""数据库管理门面：目录、能力检查和适配器路由；不实现引擎 SQL 或业务表规则。"""
 
 from __future__ import annotations
 
-import asyncio
-import json
 import os
-import re
 import time
-from contextlib import asynccontextmanager
-from pathlib import Path
-from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Tuple
-
-import aiosqlite
+from typing import Any
 
 from core.database import DatabaseCapability
 from core.log import log
-from core.sqlite_utils import required_row
 from services.database_catalog import database_registry, require_database
-from services.db_common import (
-    CELL_TEXT_MAX,
-    SHADOW_PATTERNS,
-    DatabaseError,
-    looks_like_embedding_column,
-    serialize_value,
-)
+from services.database_editing import DatabaseRowEditor
+from services.database_sqlite import SqliteDatabaseAdapter
+from services.db_common import DatabaseError
+from services.db_connections import ExternalAdapter, get_connection_store
 
-# ----------------------------------------------------------------------
-# 常量
-# ----------------------------------------------------------------------
-
-_QUERY_MAX_ROWS = 500
-_QUERY_TIMEOUT_SECONDS = 10.0
-
-# 只读查询允许的首关键字
-_QUERY_ALLOWED_KEYWORDS = ("select", "with", "explain", "pragma")
-
-# 维护操作白名单与阈值
-_OPTIMIZE_ACTIONS = ("checkpoint", "vacuum", "analyze")
-_WAL_WARN_BYTES = 32 * 1024 * 1024  # WAL 超过 32MB 建议 checkpoint
-_FRAGMENT_WARN_RATIO = 0.2  # 空闲页占比超过 20% 建议 VACUUM
-_FRAGMENT_MIN_PAGES = 100  # 小库不报碎片化（无意义）
-
-
-# ----------------------------------------------------------------------
-# 库注册表（存储卷驱动）
-# ----------------------------------------------------------------------
-
-async def online_sqlite_backup(
-    src: Path, dest: Path, *, progress: Callable[[int, int, int], None] | None = None,
-) -> None:
-    """SQLite 在线热备份（Backup API，对并发写安全，自包含输出无 -wal/-shm）。
-
-    数据库管理 / 卷备份 / 数据目录迁移共用的唯一备份实现。
-    """
-    src_conn = await aiosqlite.connect(src.resolve().as_uri() + "?mode=ro", uri=True)
-    try:
-        dest_conn = await aiosqlite.connect(str(dest))
-        try:
-            await src_conn.backup(dest_conn, pages=256, progress=progress)
-        finally:
-            await dest_conn.close()
-    finally:
-        await src_conn.close()
-
-
-# ----------------------------------------------------------------------
-# 值序列化（智能展示：blob / 向量 / JSON / 时间戳 / 长文本）
-# ----------------------------------------------------------------------
-
-def _full_value(value: Any, column: str) -> Any:
-    """单行详情用：不截断的序列化。"""
-    if isinstance(value, str) and len(value) > CELL_TEXT_MAX:
-        stripped = value.strip()
-        if stripped.startswith(("{", "[")):
-            try:
-                return {"__type__": "json", "value": json.loads(stripped), "raw": value}
-            except (ValueError, TypeError):
-                log("_full_value 异常已忽略", "DEBUG")
-        return {"__type__": "text", "text": value}
-    return serialize_value(value, column)
-
-
-# ----------------------------------------------------------------------
-# DatabaseService
-# ----------------------------------------------------------------------
 
 class DatabaseService:
-    """数据库目录和 SQLite 操作；连接生命周期由应用统一管理。"""
+    """统一管理入口；组件目录来自卷声明，连接和行编辑由专职对象负责。"""
 
     def __init__(self) -> None:
-        self._connections: Dict[str, aiosqlite.Connection] = {}
-        self._conn_locks: Dict[str, asyncio.Lock] = {}
-
-    # ------------------------------------------------------------------
-    # 连接管理
-    # ------------------------------------------------------------------
-
-    def _db_path(self, db_id: str) -> str:
-        entry = require_database(db_id, DatabaseCapability.BROWSE)
-        path = entry.path
-        if not os.path.isfile(path):
-            raise DatabaseError(f"数据库文件不存在: {path}", status_code=404)
-        return path
-
-    async def _get_conn(self, db_id: str) -> aiosqlite.Connection:
-        require_database(db_id, DatabaseCapability.EDIT)
-        lock = self._conn_locks.setdefault(db_id, asyncio.Lock())
-        async with lock:
-            conn = self._connections.get(db_id)
-            if conn is not None:
-                try:
-                    await conn.execute("SELECT 1")
-                    return conn
-                except Exception:
-                    try:
-                        await conn.close()
-                    except Exception:
-                        log("_get_conn 异常已忽略", "DEBUG")
-                    self._connections.pop(db_id, None)
-
-            path = self._db_path(db_id)
-            conn = await self._open_conn(path)
-            self._connections[db_id] = conn
-            return conn
-
-    @asynccontextmanager
-    async def _read_conn(self, db_id: str) -> AsyncIterator[aiosqlite.Connection]:
-        """受管组件使用短只读连接，避免发布/恢复后仍持有旧数据库句柄。"""
-        entry = require_database(db_id, DatabaseCapability.BROWSE)
-        if DatabaseCapability.EDIT in entry.component.capabilities:
-            yield await self._get_conn(db_id)
-            return
-        conn = await self._open_conn(self._db_path(db_id), readonly=True)
-        try:
-            yield conn
-        finally:
-            await conn.close()
-
-    @staticmethod
-    def _readonly(db_id: str) -> bool:
-        entry = require_database(db_id, DatabaseCapability.BROWSE)
-        return DatabaseCapability.EDIT not in entry.component.capabilities
-
-    @staticmethod
-    async def _open_conn(path: str, *, readonly: bool = False) -> aiosqlite.Connection:
-        target = Path(path).resolve().as_uri() + "?mode=ro" if readonly else path
-        conn = await aiosqlite.connect(target, uri=readonly)
-        try:
-            conn.row_factory = aiosqlite.Row
-            await conn.execute("PRAGMA busy_timeout=5000")
-            try:
-                import sqlite_vec
-
-                await conn.enable_load_extension(True)
-                try:
-                    await conn.load_extension(sqlite_vec.loadable_path())
-                finally:
-                    await conn.enable_load_extension(False)
-            except Exception as exc:
-                log(f"数据库管理: sqlite-vec 加载失败（vec 虚表不可查）: {exc}", "DEBUG", tag="数据库")
-            if readonly:
-                await conn.execute("PRAGMA query_only=ON")
-            return conn
-        except BaseException:
-            await conn.close()
-            raise
+        self._sqlite = SqliteDatabaseAdapter()
+        self._editor = DatabaseRowEditor(self._sqlite)
 
     async def close_all(self) -> None:
-        failed: list[str] = []
-        for db_id, conn in list(self._connections.items()):
-            try:
-                await conn.close()
-            except Exception as exc:
-                failed.append(db_id)
-                log(f"数据库管理连接关闭失败 {db_id}: {exc}", "ERROR", tag="数据库")
-            else:
-                self._connections.pop(db_id, None)
-                self._conn_locks.pop(db_id, None)
-        if failed:
-            raise RuntimeError(f"数据库管理连接尚未关闭: {', '.join(failed)}")
+        await self._sqlite.close_all()
 
-    # ------------------------------------------------------------------
-    # 白名单校验
-    # ------------------------------------------------------------------
+    def _local(self, db_id: str, capability: DatabaseCapability) -> SqliteDatabaseAdapter:
+        if db_id.startswith("ext:"):
+            raise DatabaseError("外部连接为只读数据源，不支持该操作", status_code=403)
+        entry = require_database(db_id, capability)
+        if entry.component.engine != "sqlite":
+            raise DatabaseError(f"该引擎未提供通用数据库操作: {entry.component.engine}", status_code=403)
+        return self._sqlite
 
-    @staticmethod
-    def _is_shadow_table(name: str) -> bool:
-        return any(pat in name for pat in SHADOW_PATTERNS)
+    async def _reader(self, db_id: str) -> SqliteDatabaseAdapter | ExternalAdapter:
+        if db_id.startswith("ext:"):
+            return await get_connection_store().adapter(db_id[len("ext:"):])
+        return self._local(db_id, DatabaseCapability.BROWSE)
 
-    async def _table_meta(self, conn: aiosqlite.Connection, table: str) -> Dict[str, Any]:
-        """校验表存在并返回 {type, readonly, ddl}。"""
-        cursor = await conn.execute(
-            "SELECT name, type, sql FROM sqlite_master WHERE name = ? AND type IN ('table', 'view')",
-            (table,),
-        )
-        row = await cursor.fetchone()
-        if row is None:
-            raise DatabaseError(f"表不存在: {table}", status_code=404)
-        tbl_type = row["type"]
-        ddl = row["sql"] or ""
-        readonly = tbl_type == "view"
-        # FTS5 / vec0 虚表（CREATE VIRTUAL TABLE）不允许直接写
-        if "VIRTUAL TABLE" in ddl.upper():
-            readonly = True
-        if self._is_shadow_table(table):
-            readonly = True
-        return {"type": tbl_type, "readonly": readonly, "ddl": ddl}
-
-    async def _table_columns(self, conn: aiosqlite.Connection, table: str) -> List[Dict[str, Any]]:
-        cursor = await conn.execute(f'PRAGMA table_info("{table}")')
-        rows = await cursor.fetchall()
-        return [
-            {
-                "cid": r["cid"],
-                "name": r["name"],
-                "type": (r["type"] or "").upper(),
-                "notnull": bool(r["notnull"]),
-                "default": r["dflt_value"],
-                "pk": bool(r["pk"]),
-            }
-            for r in rows
-        ]
-
-    @staticmethod
-    def _validate_columns(columns: List[Dict[str, Any]], names: List[str]) -> None:
-        valid = {c["name"] for c in columns}
-        bad = [n for n in names if n not in valid]
-        if bad:
-            raise DatabaseError(f"未知列: {', '.join(bad)}", status_code=400)
-
-    # ------------------------------------------------------------------
-    # 库 / 表清单
-    # ------------------------------------------------------------------
-
-    async def list_databases(self) -> List[Dict[str, Any]]:
-        result: List[Dict[str, Any]] = []
+    async def list_databases(self) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
         for db_id, registered in database_registry().items():
             component = registered.component
             path = registered.path
             browsable = DatabaseCapability.BROWSE in component.capabilities
             exists = os.path.isfile(path) if browsable else None
-            entry: Dict[str, Any] = {
+            entry: dict[str, Any] = {
                 "id": db_id, "name": component.name, "description": component.description,
                 "path": path, "exists": exists, "external": False,
                 "engine": component.engine, "volume_id": registered.volume_id,
                 "managed_by": component.managed_by, "management_url": component.management_url,
                 "capabilities": sorted(cap.value for cap in component.capabilities),
                 "needs_restart": registered.needs_restart,
-                "size_bytes": None,
-                "measured_at": None,
-                "table_count": None,
+                "size_bytes": None, "measured_at": None, "table_count": None,
             }
             try:
                 if exists:
@@ -272,19 +65,11 @@ class DatabaseService:
                     if not browsable and observation.size_bytes is not None:
                         entry["exists"] = observation.size_bytes > 0
                 if exists:
-                    async with self._read_conn(db_id) as conn:
-                        cursor = await conn.execute(
-                            "SELECT COUNT(*) AS c FROM sqlite_master "
-                            "WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%'"
-                        )
-                        row = await cursor.fetchone()
-                        entry["table_count"] = row["c"] if row else 0
+                    entry["table_count"] = await self._local(db_id, DatabaseCapability.BROWSE).table_count(db_id)
             except Exception as exc:
                 entry["error"] = str(exc)
             result.append(entry)
-        # 外部连接（PostgreSQL / MySQL，只读数据源）
         try:
-            from services.db_connections import get_connection_store
             for entry in await get_connection_store().list_source_entries():
                 entry["capabilities"] = [DatabaseCapability.BROWSE.value, DatabaseCapability.QUERY.value]
                 result.append(entry)
@@ -292,502 +77,58 @@ class DatabaseService:
             log(f"外部连接清单获取失败: {exc}", "DEBUG", tag="数据库")
         return result
 
-    @staticmethod
-    def _is_external(db_id: str) -> bool:
-        return db_id.startswith("ext:")
+    async def list_tables(self, db_id: str, include_shadow: bool = False) -> list[dict[str, Any]]:
+        adapter = await self._reader(db_id)
+        if isinstance(adapter, ExternalAdapter):
+            return await adapter.list_tables()
+        return await adapter.list_tables(db_id, include_shadow)
 
-    @staticmethod
-    async def _external_adapter(db_id: str) -> Any:
-        from services.db_connections import get_connection_store
-        return await get_connection_store().adapter(db_id[len("ext:"):])
-
-    async def list_tables(self, db_id: str, include_shadow: bool = False) -> List[Dict[str, Any]]:
-        if self._is_external(db_id):
-            return await (await self._external_adapter(db_id)).list_tables()
-        readonly = self._readonly(db_id)
-        async with self._read_conn(db_id) as conn:
-            cursor = await conn.execute(
-                "SELECT name, type, sql FROM sqlite_master "
-                "WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' ORDER BY name"
-            )
-            tables: List[Dict[str, Any]] = []
-            for row in await cursor.fetchall():
-                name = row["name"]
-                shadow = self._is_shadow_table(name)
-                if shadow and not include_shadow:
-                    continue
-                ddl = row["sql"] or ""
-                virtual = "VIRTUAL TABLE" in ddl.upper()
-                try:
-                    count_cursor = await conn.execute(f'SELECT COUNT(*) AS c FROM "{name}"')
-                    count_row = await count_cursor.fetchone()
-                    row_count = count_row["c"] if count_row else 0
-                except Exception:
-                    row_count = -1
-                columns = await self._table_columns(conn, name)
-                tables.append(
-                    {
-                        "name": name,
-                        "type": row["type"],
-                        "virtual": virtual,
-                        "shadow": shadow,
-                        "readonly": readonly or row["type"] == "view" or virtual or shadow,
-                        "row_count": row_count,
-                        "column_count": len(columns),
-                    }
-                )
-            return tables
-
-    async def table_schema(self, db_id: str, table: str) -> Dict[str, Any]:
-        if self._is_external(db_id):
-            return await (await self._external_adapter(db_id)).table_schema(table)
-        async with self._read_conn(db_id) as conn:
-            meta = await self._table_meta(conn, table)
-            columns = await self._table_columns(conn, table)
-            cursor = await conn.execute(f'PRAGMA index_list("{table}")')
-            indexes = []
-            for idx in await cursor.fetchall():
-                col_cursor = await conn.execute(f'PRAGMA index_info("{idx["name"]}")')
-                idx_cols = [r["name"] for r in await col_cursor.fetchall()]
-                indexes.append(
-                    {"name": idx["name"], "unique": bool(idx["unique"]), "columns": idx_cols}
-                )
-            return {
-                "table": table,
-                "type": meta["type"],
-                "readonly": self._readonly(db_id) or meta["readonly"],
-                "ddl": meta["ddl"],
-                "columns": columns,
-                "indexes": indexes,
-            }
-
-    # ------------------------------------------------------------------
-    # 行浏览
-    # ------------------------------------------------------------------
+    async def table_schema(self, db_id: str, table: str) -> dict[str, Any]:
+        adapter = await self._reader(db_id)
+        if isinstance(adapter, ExternalAdapter):
+            return await adapter.table_schema(table)
+        return await adapter.table_schema(db_id, table)
 
     async def browse_rows(
-        self,
-        db_id: str,
-        table: str,
-        *,
-        page: int = 1,
-        page_size: int = 50,
-        sort: Optional[str] = None,
-        order: str = "asc",
-        filter_col: Optional[str] = None,
-        filter_text: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        if self._is_external(db_id):
-            return await (await self._external_adapter(db_id)).browse_rows(
-                table,
-                page=page,
-                page_size=page_size,
-                sort=sort,
-                order=order,
-                filter_col=filter_col,
-                filter_text=filter_text,
-            )
-        async with self._read_conn(db_id) as conn:
-            meta = await self._table_meta(conn, table)
-            columns = await self._table_columns(conn, table)
-            col_names = [c["name"] for c in columns]
+        self, db_id: str, table: str, *, page: int = 1, page_size: int = 50,
+        sort: str | None = None, order: str = "asc", filter_col: str | None = None,
+        filter_text: str | None = None,
+    ) -> dict[str, Any]:
+        adapter = await self._reader(db_id)
+        if isinstance(adapter, ExternalAdapter):
+            return await adapter.browse_rows(table, page=page, page_size=page_size, sort=sort,
+                                            order=order, filter_col=filter_col, filter_text=filter_text)
+        return await adapter.browse_rows(db_id, table, page=page, page_size=page_size, sort=sort,
+                                        order=order, filter_col=filter_col, filter_text=filter_text)
 
-            where_sql = ""
-            params: List[Any] = []
-            if filter_col and filter_text:
-                self._validate_columns(columns, [filter_col])
-                where_sql = f'WHERE CAST("{filter_col}" AS TEXT) LIKE ?'
-                params.append(f"%{filter_text}%")
+    async def get_row(self, db_id: str, table: str, rowid: int) -> dict[str, Any]:
+        return await self._local(db_id, DatabaseCapability.BROWSE).get_row(db_id, table, rowid)
 
-            order_sql = ""
-            if sort:
-                self._validate_columns(columns, [sort])
-                direction = "DESC" if order.lower() == "desc" else "ASC"
-                order_sql = f'ORDER BY "{sort}" {direction}'
+    async def insert_row(self, db_id: str, table: str, values: dict[str, Any]) -> dict[str, Any]:
+        self._local(db_id, DatabaseCapability.EDIT)
+        return await self._editor.insert_row(db_id, table, values)
 
-            count_cursor = await conn.execute(
-                f'SELECT COUNT(*) AS c FROM "{table}" {where_sql}', params,
-            )
-            total = required_row(await count_cursor.fetchone())["c"]
-
-            page = max(1, page)
-            page_size = max(1, min(page_size, 200))
-            offset = (page - 1) * page_size
-            cursor = await conn.execute(
-                f'SELECT rowid AS __rowid__, * FROM "{table}" {where_sql} {order_sql} LIMIT ? OFFSET ?',
-                (*params, page_size, offset),
-            )
-            rows: List[Dict[str, Any]] = []
-            for r in await cursor.fetchall():
-                rows.append(
-                    {
-                        "__rowid__": r["__rowid__"],
-                        "values": {name: serialize_value(r[name], name) for name in col_names},
-                    }
-                )
-            pages = (total + page_size - 1) // page_size if total else 0
-            return {
-                "items": rows,
-                "columns": columns,
-                "total": total,
-                "page": page,
-                "page_size": page_size,
-                "pages": pages,
-                "readonly": self._readonly(db_id) or meta["readonly"],
-            }
-
-    async def get_row(self, db_id: str, table: str, rowid: int) -> Dict[str, Any]:
-        if self._is_external(db_id):
-            raise DatabaseError("外部连接无 rowid 语义，不支持单行详情", status_code=403)
-        async with self._read_conn(db_id) as conn:
-            await self._table_meta(conn, table)
-            columns = await self._table_columns(conn, table)
-            cursor = await conn.execute(
-                f'SELECT rowid AS __rowid__, * FROM "{table}" WHERE rowid = ?', (rowid,),
-            )
-            r = await cursor.fetchone()
-            if r is None:
-                raise DatabaseError(f"行不存在: rowid={rowid}", status_code=404)
-            return {
-                "__rowid__": r["__rowid__"],
-                "values": {c["name"]: _full_value(r[c["name"]], c["name"]) for c in columns},
-            }
-
-    # ------------------------------------------------------------------
-    # 行编辑（写）
-    # ------------------------------------------------------------------
-
-    async def _require_writable(self, conn: aiosqlite.Connection, table: str) -> List[Dict[str, Any]]:
-        meta = await self._table_meta(conn, table)
-        if meta["readonly"]:
-            raise DatabaseError(f"表 {table} 为只读（视图/虚表/影子表），不支持编辑", status_code=403)
-        return await self._table_columns(conn, table)
-
-    @staticmethod
-    def _content_columns_changed(
-        columns: List[Dict[str, Any]], changed: List[str]
-    ) -> Optional[str]:
-        """被改列中含内容列且表含 embedding 列时，返回 embedding 列名。
-
-        对齐 MemoryStore.update(clear_embedding=True) 与
-        SqliteBackend.update_conversation_message 的语义：
-        内容变更后旧向量失效，置 NULL 等待后台 EmbeddingWorker 重建。
-        """
-        embedding_cols = [c["name"] for c in columns if looks_like_embedding_column(c["name"])]
-        if not embedding_cols:
-            return None
-        content_like = {"content", "text", "description", "personality"}
-        if any(n in content_like for n in changed):
-            return embedding_cols[0]
-        return None
-
-    @staticmethod
-    async def _sync_memories_fts(conn: Any, rowid: int, content: str) -> None:
-        """同步记忆行到 memories_fts（fail-open：失败由启动计数对账兜底）。"""
-        try:
-            from agent.memory.store.tokenizer import tokenize_for_index
-            tokenized = await asyncio.to_thread(tokenize_for_index, content)
-            await conn.execute("DELETE FROM memories_fts WHERE rowid=?", (rowid,))
-            await conn.execute(
-                "INSERT INTO memories_fts(rowid, content) VALUES(?, ?)",
-                (rowid, tokenized),
-            )
-            await conn.commit()
-        except Exception as exc:
-            log(f"memories_fts 同步失败 rowid={rowid}: {exc}", "WARNING", tag="数据库")
-
-    async def insert_row(self, db_id: str, table: str, values: Dict[str, Any]) -> Dict[str, Any]:
-        self._require_local(db_id)
-        require_database(db_id, DatabaseCapability.EDIT)
-        conn = await self._get_conn(db_id)
-        columns = await self._require_writable(conn, table)
-        self._validate_columns(columns, list(values.keys()))
-        if not values:
-            raise DatabaseError("插入数据为空", status_code=400)
-        names = list(values.keys())
-        cols_sql = ", ".join(f'"{n}"' for n in names)
-        placeholders = ", ".join("?" for _ in names)
-        async with self._row_write(db_id, table, conn):
-            cursor = await conn.execute(
-                f'INSERT INTO "{table}" ({cols_sql}) VALUES ({placeholders})',
-                [values[n] for n in names],
-            )
-        log(f"数据库管理: 插入行 {db_id}/{table} rowid={cursor.lastrowid}", "DEBUG", tag="数据库")
-        return {"rowid": cursor.lastrowid}
-
-    async def update_row(self, db_id: str, table: str, rowid: int, values: Dict[str, Any]) -> None:
-        self._require_local(db_id)
-        require_database(db_id, DatabaseCapability.EDIT)
-        conn = await self._get_conn(db_id)
-        columns = await self._require_writable(conn, table)
-        self._validate_columns(columns, list(values.keys()))
-        if not values:
-            raise DatabaseError("更新数据为空", status_code=400)
-
-        assignments = dict(values)
-        # 内容列变更 → 失效对应 embedding（等后台重建，避免语义检索用到过期向量）
-        stale_embedding_col = self._content_columns_changed(columns, list(values.keys()))
-        if stale_embedding_col and stale_embedding_col not in assignments:
-            assignments[stale_embedding_col] = None
-
-        set_sql = ", ".join(f'"{n}" = ?' for n in assignments)
-        memories_content_changed = table == "memories" and "content" in values
-        has_version = any(column["name"] == "version" for column in columns)
-        if table == "memories" and has_version and "version" not in assignments:
-            set_sql += ', "version" = COALESCE("version", 0) + 1'
-        vector_invalidated = (
-            memories_content_changed
-            and stale_embedding_col == "embedding_blob"
-            and assignments.get("embedding_blob") is None
-        )
-        async with self._row_write(db_id, table, conn):
-            cursor = await conn.execute(
-                f'UPDATE "{table}" SET {set_sql} WHERE rowid = ?',
-                (*assignments.values(), rowid),
-            )
-            if vector_invalidated:
-                vec_exists = await conn.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memories_vec'"
-                )
-                if await vec_exists.fetchone():
-                    await conn.execute("DELETE FROM memories_vec WHERE rowid=?", (rowid,))
-        if cursor.rowcount == 0:
-            raise DatabaseError(f"行不存在: rowid={rowid}", status_code=404)
-        # memories 表内容列变更：同步 memories_fts（手动同步表，不随 UPDATE 自动
-        # 更新；行数不变所以启动对账不会自愈，旧关键词会一直可搜）
-        if memories_content_changed:
-            async with self._conn_locks[db_id]:
-                await self._sync_memories_fts(conn, rowid, str(values["content"]))
-            if vector_invalidated:
-                from agent.memory.embedding import wake_embedding_worker
-                wake_embedding_worker()
-        log(f"数据库管理: 更新行 {db_id}/{table} rowid={rowid} 列={list(values.keys())}", "DEBUG", tag="数据库")
+    async def update_row(self, db_id: str, table: str, rowid: int, values: dict[str, Any]) -> None:
+        self._local(db_id, DatabaseCapability.EDIT)
+        await self._editor.update_row(db_id, table, rowid, values)
 
     async def delete_row(self, db_id: str, table: str, rowid: int) -> None:
-        self._require_local(db_id)
-        require_database(db_id, DatabaseCapability.EDIT)
-        conn = await self._get_conn(db_id)
-        await self._require_writable(conn, table)
-        async with self._row_write(db_id, table, conn):
-            cursor = await conn.execute(f'DELETE FROM "{table}" WHERE rowid = ?', (rowid,))
-        if cursor.rowcount == 0:
-            raise DatabaseError(f"行不存在: rowid={rowid}", status_code=404)
-        log(f"数据库管理: 删除行 {db_id}/{table} rowid={rowid}", "DEBUG", tag="数据库")
+        self._local(db_id, DatabaseCapability.EDIT)
+        await self._editor.delete_row(db_id, table, rowid)
 
-    @asynccontextmanager
-    async def _row_write(self, db_id: str, table: str, conn: aiosqlite.Connection) -> AsyncIterator[None]:
-        """提交行编辑；失败或取消时回滚，并使运行时会话窗口重新取数。"""
-        async with self._conn_locks.setdefault(db_id, asyncio.Lock()):
-            try:
-                yield
-                await conn.commit()
-            except BaseException:
-                await conn.rollback()
-                raise
-            finally:
-                self._invalidate_conversation_window(db_id, table)
-
-    def _invalidate_conversation_window(self, db_id: str, table: str) -> None:
-        """数据库编辑与运行时指向同一主库时，失效其会话窗口。"""
-        if db_id != "agent" or table != "conversation_messages":
-            return
-        from services._runtime import get_runtime
-
-        runtime = get_runtime()
-        if runtime is not None:
-            sqlite = runtime.data_center.sqlite
-            if Path(sqlite.db_path).resolve() == Path(self._db_path(db_id)).resolve():
-                sqlite.invalidate_conversation_windows()
-
-    # ------------------------------------------------------------------
-    # 只读 SQL 控制台
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _validate_readonly_sql(sql: str) -> str:
-        text = sql.strip().rstrip(";").strip()
-        if not text:
-            raise DatabaseError("SQL 为空", status_code=400)
-        if ";" in text:
-            raise DatabaseError("只允许单条语句", status_code=400)
-        first = re.match(r"^\s*(?:--[^\n]*\n\s*)*(\w+)", text)
-        keyword = (first.group(1).lower() if first else "")
-        if keyword not in _QUERY_ALLOWED_KEYWORDS:
-            raise DatabaseError(
-                f"只允许只读语句（{', '.join(k.upper() for k in _QUERY_ALLOWED_KEYWORDS)}）",
-                status_code=403,
-            )
-        # PRAGMA 带等号是写操作（如 PRAGMA journal_mode=DELETE）
-        if keyword == "pragma" and "=" in text:
-            raise DatabaseError("只允许只读 PRAGMA（不允许赋值）", status_code=403)
-        # 无 LIMIT 的 SELECT 自动补上限
-        if keyword in ("select", "with") and not re.search(r"\blimit\b", text, re.IGNORECASE):
-            text = f"{text} LIMIT {_QUERY_MAX_ROWS}"
-        return text
-
-    async def run_query(self, db_id: str, sql: str) -> Dict[str, Any]:
-        if self._is_external(db_id):
-            return await (await self._external_adapter(db_id)).run_query(sql)
-        require_database(db_id, DatabaseCapability.QUERY)
-        safe_sql = self._validate_readonly_sql(sql)
-        # 查询使用独立只读连接，不能通过 WITH 写语句或 PRAGMA 括号语法改动持久化数据。
-        conn = await self._open_conn(self._db_path(db_id), readonly=True)
-        started = time.time()
-        deadline = time.monotonic() + _QUERY_TIMEOUT_SECONDS
-        await conn.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
-
-        async def _do() -> Tuple[List[str], List[Dict[str, Any]]]:
-            cursor = await conn.execute(safe_sql)
-            rows = await cursor.fetchmany(_QUERY_MAX_ROWS)
-            col_names = [d[0] for d in cursor.description] if cursor.description else []
-            return col_names, [
-                {name: serialize_value(r[name], name) for name in col_names} for r in rows
-            ]
-
-        task = asyncio.create_task(_do())
-        try:
-            columns, rows = await asyncio.wait_for(asyncio.shield(task), timeout=_QUERY_TIMEOUT_SECONDS)
-        except asyncio.TimeoutError:
-            raise DatabaseError(f"查询超时（{_QUERY_TIMEOUT_SECONDS:.0f}s）", status_code=400) from None
-        except DatabaseError:
-            raise
-        except Exception as exc:
-            if time.monotonic() >= deadline:
-                raise DatabaseError(f"查询超时（{_QUERY_TIMEOUT_SECONDS:.0f}s）", status_code=400) from exc
-            raise DatabaseError(f"查询失败: {exc}", status_code=400) from exc
-        finally:
-            if not task.done():
-                await conn.interrupt()
-                await asyncio.gather(task, return_exceptions=True)
-            await conn.close()
-        return {
-            "columns": columns,
-            "rows": rows,
-            "row_count": len(rows),
-            "elapsed_ms": round((time.time() - started) * 1000, 1),
-            "truncated": len(rows) >= _QUERY_MAX_ROWS,
-        }
-
-    # ------------------------------------------------------------------
-    # 健康概览 / 备份 / 优化（仅本地 SQLite）
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _require_local(db_id: str) -> None:
-        """外部连接（ext:<id>）为只读数据源，不支持维护/写操作。"""
+    async def run_query(self, db_id: str, sql: str) -> dict[str, Any]:
         if db_id.startswith("ext:"):
-            raise DatabaseError("外部连接为只读数据源，不支持该操作", status_code=403)
+            return await (await get_connection_store().adapter(db_id[len("ext:"):])).run_query(sql)
+        return await self._local(db_id, DatabaseCapability.QUERY).run_query(db_id, sql)
 
-    async def database_health(self, db_id: str) -> Dict[str, Any]:
-        """库健康概览：体积 / WAL / 碎片化 / 表规模 / 维护建议。"""
-        self._require_local(db_id)
-        require_database(db_id, DatabaseCapability.HEALTH)
-        conn = await self._get_conn(db_id)
-        path = self._db_path(db_id)
+    async def database_health(self, db_id: str) -> dict[str, Any]:
+        return await self._local(db_id, DatabaseCapability.HEALTH).database_health(db_id)
 
-        size_bytes = os.path.getsize(path)
-        wal_path = f"{path}-wal"
-        wal_bytes = os.path.getsize(wal_path) if os.path.isfile(wal_path) else 0
+    async def backup_database(self, db_id: str) -> dict[str, Any]:
+        return await self._local(db_id, DatabaseCapability.BACKUP).backup_database(db_id)
 
-        page_count = required_row(await (await conn.execute("PRAGMA page_count")).fetchone())[0]
-        freelist_count = required_row(await (await conn.execute("PRAGMA freelist_count")).fetchone())[0]
-        fragmentation = round(freelist_count / page_count, 4) if page_count else 0.0
-
-        tables = await self.list_tables(db_id)
-        top_tables = sorted(
-            (t for t in tables if t["row_count"] >= 0),
-            key=lambda t: t["row_count"],
-            reverse=True,
-        )[:5]
-
-        suggestions: List[Dict[str, Any]] = []
-        if wal_bytes > _WAL_WARN_BYTES:
-            suggestions.append({
-                "id": "wal_oversize", "level": "warn", "action": "checkpoint",
-                "detail": {"wal_bytes": wal_bytes},
-            })
-        if page_count >= _FRAGMENT_MIN_PAGES and fragmentation > _FRAGMENT_WARN_RATIO:
-            suggestions.append({
-                "id": "fragmented", "level": "warn", "action": "vacuum",
-                "detail": {"fragmentation": fragmentation},
-            })
-        suggestions.append({"id": "analyze", "level": "info", "action": "analyze", "detail": {}})
-
-        return {
-            "id": db_id,
-            "size_bytes": size_bytes,
-            "wal_bytes": wal_bytes,
-            "page_count": page_count,
-            "freelist_count": freelist_count,
-            "fragmentation": fragmentation,
-            "top_tables": [
-                {"name": t["name"], "row_count": t["row_count"]} for t in top_tables
-            ],
-            "suggestions": suggestions,
-        }
-
-    async def backup_database(self, db_id: str) -> Dict[str, Any]:
-        """在线热备份（SQLite Backup API，运行中安全）到 <data_dir>/backups/。"""
-        self._require_local(db_id)
-        require_database(db_id, DatabaseCapability.BACKUP)
-        path = self._db_path(db_id)
-        from core.path import ConfigPaths, project_root
-        backup_dir = Path(project_root()) / ConfigPaths.MEMORY_DIR / "backups"
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        filename = f"{db_id}-{time.strftime('%Y%m%d-%H%M%S')}.sqlite3"
-        dest = backup_dir / filename
-
-        started = time.time()
-        src = await aiosqlite.connect(path)
-        try:
-            target = await aiosqlite.connect(str(dest))
-            try:
-                await src.backup(target)
-            finally:
-                await target.close()
-        finally:
-            await src.close()
-
-        size = dest.stat().st_size
-        log(f"数据库管理: 备份 {db_id} -> {dest} ({size} 字节)", tag="数据库")
-        return {
-            "path": str(dest),
-            "filename": filename,
-            "size_bytes": size,
-            "elapsed_ms": round((time.time() - started) * 1000, 1),
-        }
-
-    async def optimize_database(self, db_id: str, actions: List[str]) -> Dict[str, Any]:
-        """执行维护操作（白名单：checkpoint / vacuum / analyze）。"""
-        self._require_local(db_id)
-        require_database(db_id, DatabaseCapability.OPTIMIZE)
-        bad = [a for a in actions if a not in _OPTIMIZE_ACTIONS]
-        if bad:
-            raise DatabaseError(f"未知维护操作: {', '.join(bad)}", status_code=400)
-        if not actions:
-            raise DatabaseError("维护操作为空", status_code=400)
-
-        conn = await self._get_conn(db_id)
-        results: List[Dict[str, Any]] = []
-        for action in actions:
-            started = time.time()
-            entry: Dict[str, Any] = {"action": action}
-            if action == "checkpoint":
-                cursor = await conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                row = await cursor.fetchone()
-                if row:
-                    entry["detail"] = {"busy": row[0], "wal_frames": row[1], "checkpointed": row[2]}
-            elif action == "vacuum":
-                # VACUUM 不能在事务内执行，先提交管理连接上的挂起事务
-                await conn.commit()
-                await conn.execute("VACUUM")
-            elif action == "analyze":
-                await conn.execute("ANALYZE")
-                await conn.commit()
-            entry["elapsed_ms"] = round((time.time() - started) * 1000, 1)
-            results.append(entry)
-            log(f"数据库管理: 优化 {db_id} [{action}] 完成 ({entry['elapsed_ms']}ms)", tag="数据库")
-        return {"actions": results}
+    async def optimize_database(self, db_id: str, actions: list[str]) -> dict[str, Any]:
+        return await self._local(db_id, DatabaseCapability.OPTIMIZE).optimize_database(db_id, actions)
 
 
 _service: DatabaseService | None = None
@@ -804,7 +145,6 @@ def get_database_service() -> DatabaseService:
 def register_lifecycle() -> None:
     """在 Web 服务之前登记，停止接单和排空请求后再关闭管理连接。"""
     from core.lifecycle import Lifecycle
-    from services.db_connections import get_connection_store
 
     service = get_database_service()
     Lifecycle.register("database_management", service, cleanup=service.close_all, critical_cleanup=True)

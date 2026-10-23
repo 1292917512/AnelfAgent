@@ -231,7 +231,7 @@ async def _run_migration(source: Path, target: Path) -> None:
             _state["current_file"] = rel.as_posix()
             dest.parent.mkdir(parents=True, exist_ok=True)
             if src.suffix == ".sqlite3":
-                from services.database import online_sqlite_backup
+                from core.sqlite_utils import online_sqlite_backup
 
                 await online_sqlite_backup(src, dest)
             else:

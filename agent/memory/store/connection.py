@@ -810,15 +810,10 @@ class MemoryConnectionManager:
         """同步单条记忆到 FTS 索引（分词后文本；失败不影响主流程）。"""
         if not self.fts_available or memory_id <= 0:
             return
-        from .tokenizer import tokenize_for_index
+        from .management import sync_memory_fts
 
         try:
-            tokenized = await asyncio.to_thread(tokenize_for_index, content)
-            await db.execute("DELETE FROM memories_fts WHERE rowid=?", (memory_id,))
-            await db.execute(
-                "INSERT INTO memories_fts(rowid, content) VALUES(?, ?)",
-                (memory_id, tokenized),
-            )
+            await sync_memory_fts(db, memory_id, content)
         except Exception as exc:
             # 升级 WARNING：运行期失败会使该记忆永久不可全文检索
             # （启动时计数对账会全量重建兜底）

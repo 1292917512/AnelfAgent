@@ -9,7 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from services.database import DatabaseError, DatabaseService
+from services.database import DatabaseService
+from services.database_sqlite import SqliteDatabaseAdapter
+from services.db_common import DatabaseError
 
 
 @pytest.fixture(autouse=True)
@@ -108,14 +110,14 @@ async def managed_files(isolated_catalog):
 async def test_managed_catalog_uses_observations_and_keeps_one_volume(managed_files, isolated_catalog, svc, monkeypatch):
     root, db = managed_files
     registry, _ = isolated_catalog
-    original = svc._open_conn
+    original = svc._sqlite._open_conn
     opened = []
 
     async def open_sqlite(path, *, readonly=False):
         opened.append((path, readonly))
         return await original(path, readonly=readonly)
 
-    monkeypatch.setattr(svc, "_open_conn", open_sqlite)
+    monkeypatch.setattr(svc._sqlite, "_open_conn", open_sqlite)
     rows = {row["id"]: row for row in await svc.list_databases()}
     assert rows["cognee_graph"]["size_bytes"] == len(b"graph-data")
     assert rows["cognee_vector"]["size_bytes"] == len(b"vector-data")
@@ -129,7 +131,7 @@ async def test_managed_catalog_uses_observations_and_keeps_one_volume(managed_fi
     assert rows["cognee_graph"]["capabilities"] == []
     assert rows["cognee"]["capabilities"] == ["browse", "query"]
     assert opened == [(str(db), True)]
-    assert "cognee" not in svc._connections
+    assert "cognee" not in svc._sqlite._connections
     assert [v.volume_id for v in registry.list()] == ["agent", "memory", "cognee"]
     # 修改指派不让管理端抢先读取新目录或创建引擎。
     registry.mark_active("cognee", str(root))
@@ -174,7 +176,7 @@ async def test_managed_metadata_is_readonly_and_follows_replaced_database(manage
     replacement.replace(db)
     result = await svc.run_query("cognee", "SELECT content FROM documents")
     assert result["rows"] == [{"content": "restored"}]
-    assert "cognee" not in svc._connections
+    assert "cognee" not in svc._sqlite._connections
 
 
 @pytest.mark.parametrize("db_id", ["cognee", "cognee_graph", "cognee_vector"])
@@ -185,7 +187,7 @@ async def test_managed_components_reject_direct_mutation_before_open(managed_fil
     async def unexpected_open(*args, **kwargs):
         pytest.fail("管理写操作不得打开受管数据库")
 
-    monkeypatch.setattr(svc, "_open_conn", unexpected_open)
+    monkeypatch.setattr(svc._sqlite, "_open_conn", unexpected_open)
     for method, args in (
         (svc.insert_row, ("documents", {"content": "bad"})),
         (svc.update_row, ("documents", 1, {"content": "bad"})),
@@ -215,7 +217,7 @@ async def test_management_lifecycle_closes_real_connections_and_retains_failed_h
     from services import database
 
     monkeypatch.setattr(database, "_service", svc)
-    conn = await svc._get_conn("agent")
+    conn = await svc._sqlite.connection("agent")
     close = conn.close
     Lifecycle.reset()
     try:
@@ -228,10 +230,10 @@ async def test_management_lifecycle_closes_real_connections_and_retains_failed_h
         monkeypatch.setattr(conn, "close", AsyncMock(side_effect=RuntimeError("busy")))
         with pytest.raises(ShutdownBlockedError):
             await Lifecycle.shutdown_all()
-        assert svc._connections["agent"] is conn
+        assert svc._sqlite._connections["agent"] is conn
         monkeypatch.setattr(conn, "close", close)
         await Lifecycle.shutdown_all()
-        assert svc._connections == {}
+        assert svc._sqlite._connections == {}
         with pytest.raises(ValueError):
             await conn.execute("SELECT 1")
     finally:
@@ -253,14 +255,84 @@ async def test_query_endpoint_cannot_write_through_readonly_syntax(db_path, svc,
 
 
 async def test_query_timeout_interrupts_without_breaking_crud_connection(db_path, svc, monkeypatch):
-    import services.database as module
+    import services.database_sqlite as module
 
-    cached = await svc._get_conn("agent")
+    cached = await svc._sqlite.connection("agent")
     monkeypatch.setattr(module, "_QUERY_TIMEOUT_SECONDS", 0.01)
     with pytest.raises(DatabaseError, match="查询超时"):
         await svc.run_query("agent", "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n) SELECT sum(x) FROM n")
-    assert await svc._get_conn("agent") is cached
+    assert await svc._sqlite.connection("agent") is cached
     assert (await (await cached.execute("SELECT COUNT(*) FROM plain")).fetchone())[0] == 10
+
+
+@pytest.mark.parametrize("failure", [None, "error", "cancel"])
+async def test_memory_edit_commits_or_rolls_back_all_derived_state(isolated_catalog, svc, monkeypatch, failure):
+    import asyncio
+
+    from agent.memory.store import management
+
+    registry, _ = isolated_catalog
+    path = Path(registry.resolve_path("memory"))
+    path.parent.mkdir(parents=True)
+    with closing(sqlite3.connect(path)) as conn, conn:
+        conn.executescript("""
+            CREATE TABLE memories(id INTEGER PRIMARY KEY, content TEXT, embedding_blob BLOB, version INTEGER);
+            CREATE VIRTUAL TABLE memories_fts USING fts5(content);
+            CREATE TABLE memories_vec(embedding BLOB);
+            INSERT INTO memories VALUES(1, 'original', X'01020304', 7);
+            INSERT INTO memories_fts(rowid, content) VALUES(1, 'original');
+            INSERT INTO memories_vec(rowid, embedding) VALUES(1, X'01020304');
+        """)
+    original = management.sync_memory_fts
+
+    async def fail_after_index_write(*args):
+        await original(*args)
+        if failure == "cancel":
+            raise asyncio.CancelledError
+        raise OSError("index write failed")
+
+    if failure:
+        monkeypatch.setattr(management, "sync_memory_fts", fail_after_index_write)
+        with pytest.raises(asyncio.CancelledError if failure == "cancel" else OSError):
+            await svc.update_row("memory", "memories", 1, {"content": "replacement"})
+    else:
+        await svc.update_row("memory", "memories", 1, {"content": "replacement"})
+    with closing(sqlite3.connect(path)) as conn:
+        row = conn.execute("SELECT content, embedding_blob, version FROM memories").fetchone()
+        assert row == (("original", bytes([1, 2, 3, 4]), 7) if failure else ("replacement", None, 8))
+        assert conn.execute("SELECT COUNT(*) FROM memories_vec").fetchone()[0] == int(bool(failure))
+        word = "original" if failure else "replacement"
+        assert conn.execute("SELECT rowid FROM memories_fts WHERE memories_fts MATCH ?", (word,)).fetchall() == [(1,)]
+        opposite = "replacement" if failure else "original"
+        assert conn.execute("SELECT rowid FROM memories_fts WHERE memories_fts MATCH ?", (opposite,)).fetchall() == []
+
+
+async def test_unrelated_memories_table_does_not_receive_memory_business_rules(db_path, svc):
+    with closing(sqlite3.connect(db_path)) as conn, conn:
+        conn.execute("CREATE TABLE memories(id INTEGER PRIMARY KEY, content TEXT, version INTEGER)")
+        conn.execute("INSERT INTO memories VALUES(1, 'original', 7)")
+    await svc.update_row("agent", "memories", 1, {"content": "replacement"})
+    assert (await svc.get_row("agent", "memories", 1))["values"]["version"] == 7
+
+
+async def test_unknown_browsable_engine_cannot_fall_through_to_sqlite(db_path, isolated_catalog, svc, monkeypatch):
+    from core.database import DatabaseCapability, DatabaseComponent
+    from core.storage_volume import VolumeDescriptor, VolumeKind
+
+    registry, _ = isolated_catalog
+    registry.register(VolumeDescriptor(
+        volume_id="new_engine", name="", description="", kind=VolumeKind.SQLITE,
+        default_path=lambda: db_path,
+        databases=(DatabaseComponent("new_engine", "", "", "custom", capabilities=frozenset({DatabaseCapability.BROWSE})),),
+    ))
+
+    async def must_not_open(*args, **kwargs):
+        pytest.fail("未知引擎不得交给 SQLite 打开")
+
+    monkeypatch.setattr(svc._sqlite, "_open_conn", must_not_open)
+    with pytest.raises(DatabaseError) as exc:
+        await svc.list_tables("new_engine")
+    assert exc.value.status_code == 403
 
 
 # ======================================================================
@@ -428,10 +500,10 @@ class TestRunQuery:
         assert result["elapsed_ms"] >= 0
 
     async def test_auto_limit(self, db_path, svc):
-        safe = DatabaseService._validate_readonly_sql("SELECT * FROM plain")
+        safe = SqliteDatabaseAdapter.validate_readonly_sql("SELECT * FROM plain")
         assert "LIMIT 500" in safe
         # 已有 LIMIT 不重复补
-        safe2 = DatabaseService._validate_readonly_sql("select * from plain limit 5")
+        safe2 = SqliteDatabaseAdapter.validate_readonly_sql("select * from plain limit 5")
         assert safe2.lower().count("limit") == 1
 
     @pytest.mark.parametrize(

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from services.database import DatabaseError
+from services.db_common import DatabaseError
 from services.db_connections import ConnectionStore, DbConnection, _validate_readonly_sql
 
 

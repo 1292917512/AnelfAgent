@@ -267,6 +267,18 @@ Cognee 声明 SQLite 元数据、Ladybug 图和 LanceDB 向量三个组件。图
 数据库管理连接与外部连接池在 Web 服务之前登记到 `Lifecycle`，请求排空后统一关闭；
 SQLite 管理连接关闭失败保留句柄并阻止释放实例所有权，避免遗漏线程或带锁进入恢复流程。
 
+管理执行职责分为 `services.database`（目录与能力路由）、`database_sqlite`（SQLite 连接、
+查询、事务和维护）、`database_editing`（行编辑及业务维护编排）。外部 SQL 继续复用
+`db_connections` 的只读适配器；未接入的引擎明确拒绝 SQL 操作，不按 SQLite 尝试打开。
+记忆版本及全文/向量索引维护归 `agent.memory.store.management`，和正文编辑使用同一事务，
+失败或取消整体回滚；维护操作与行编辑共享连接互斥。数据库管理、卷管理和在线目录迁移复用
+`core.sqlite_utils.online_sqlite_backup`，避免管理入口与迁移入口维护不同的备份实现。
+
+卷的 `observe_size`、`backup_members`、`snapshot` 是所有者声明的运行期策略；Cognee 在
+`agent.memory.cognee.volume` 提供统计缓存、恢复点筛选和协调器静默窗口，通用卷服务只负责
+文件 I/O、校验与操作状态。备份和迁移的成员枚举必须在快照窗口内执行。卷 `kind` 仍是已有
+归档及恢复布局的持久化标识，不承载引擎连接或协调器选择；扩展策略无需改变历史备份格式。
+
 ## 工具分组体系
 
 ### group key 规范

@@ -300,6 +300,7 @@ def _register_volume() -> None:
     from core.storage_volume import VolumeDescriptor, VolumeKind, register_volume
 
     from .databases import DATABASE_COMPONENTS
+    from .volume import backup_members, observe_size, run_snapshot
 
     register_volume(
         VolumeDescriptor(
@@ -311,6 +312,9 @@ def _register_volume() -> None:
             location_reader=_cognee_location_reader,
             location_writer=_cognee_location_writer,
             databases=DATABASE_COMPONENTS,
+            observe_size=observe_size,
+            backup_members=backup_members,
+            snapshot=run_snapshot,
         )
     )
 

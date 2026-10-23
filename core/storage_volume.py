@@ -18,7 +18,7 @@ import threading
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Awaitable, Callable, Dict, List, Optional, Protocol, TypeVar
 
 from core.database import DatabaseCapability, DatabaseComponent
 from core.log import log
@@ -61,6 +61,17 @@ class VolumeLocation:
     path: str = ""
 
 
+_SnapshotT = TypeVar("_SnapshotT")
+
+
+class SnapshotRunner(Protocol):
+    """由卷所有者提供写入互斥，执行一次快照作业并返回一致性级别。"""
+
+    async def __call__(
+        self, job: Callable[[], Awaitable[_SnapshotT]], check: Callable[[], None] | None = None,
+    ) -> tuple[_SnapshotT, str]: ...
+
+
 @dataclass(frozen=True)
 class VolumeDescriptor:
     """存储卷描述符：事实声明，不含任何管理逻辑。"""
@@ -79,6 +90,10 @@ class VolumeDescriptor:
     location_writer: Optional[Callable[[Optional[str]], None]] = None
     capabilities: frozenset[VolumeCapability] = field(default_factory=frozenset)
     databases: tuple[DatabaseComponent, ...] = ()
+    # 所有者提供运行期策略；kind 保留为已有备份/恢复格式标识。
+    observe_size: Callable[[Path], Awaitable[int]] | None = None
+    backup_members: Callable[[Path], List[Path]] | None = None
+    snapshot: SnapshotRunner | None = None
 
     def __post_init__(self) -> None:
         if not self.capabilities:

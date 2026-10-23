@@ -32,9 +32,9 @@ import aiosqlite
 from agent.runtime.volumes import ensure_volume_modules
 from core.file_utils import atomic_write_text, walk_files
 from core.log import log
-from core.storage_volume import VolumeCapability, VolumeKind, get_volume_registry
+from core.sqlite_utils import online_sqlite_backup
+from core.storage_volume import VolumeCapability, VolumeDescriptor, VolumeKind, get_volume_registry
 from services.data_migration import validate_target_dir
-from services.database import online_sqlite_backup
 from services.db_common import SHADOW_PATTERNS
 from services.volume_artifacts import (
     CancellableReader,
@@ -78,7 +78,7 @@ def _staging_dir() -> Path:
     return backups_root() / ".staging"
 
 
-def _descriptor(volume_id: str):
+def _descriptor(volume_id: str) -> VolumeDescriptor:
     registry = get_volume_registry()
     try:
         return registry.get(volume_id)
@@ -126,31 +126,11 @@ async def _volume_size_bytes(volume_id: str, kind: VolumeKind, path: Path) -> in
     """卷占用：cognee 走统计缓存（大库遍历数十秒），便签树只统计卷成员。"""
     if kind is VolumeKind.SQLITE:
         return path.stat().st_size if path.is_file() else 0
-    if kind is VolumeKind.COGNEE_TREE:
-        from agent.memory.cognee.storage import cognee_storage_stats
-
-        stats = await cognee_storage_stats.get(str(path))
-        return int(stats.get("total_bytes", 0))
-    return await asyncio.to_thread(lambda: _members_size(_notes_members(path)))
-
-
-def _cognee_coordinator_alive() -> bool:
-    from agent.memory.cognee.runtime import get_cognee_coordinator
-
-    coordinator = get_cognee_coordinator()
-    return coordinator is not None and coordinator.is_running
-
-
-async def _cognee_quiescence(
-    job: Callable[[], Any], check: Callable[[], None] | None = None,
-) -> Any:
-    """cognee 数据树操作的静默期：worker 空闲窗口执行（与写入互斥）。"""
-    from agent.memory.cognee.runtime import get_cognee_coordinator
-
-    coordinator = get_cognee_coordinator()
-    if coordinator is None:
-        return await job()
-    return await coordinator.run_in_idle_window(job(), check_cancel=check)
+    descriptor = _descriptor(volume_id)
+    if descriptor.observe_size is not None:
+        return await descriptor.observe_size(path)
+    members = _notes_members if kind is VolumeKind.NOTES_TREE else walk_files
+    return await asyncio.to_thread(lambda: _members_size(members(path)))
 
 
 # ----------------------------------------------------------------------
@@ -466,7 +446,7 @@ async def _run_backup(volume_id: str, state: Dict[str, Any]) -> Dict[str, Any]:
     backup_dir = final_dir.with_name(f".{backup_id}.partial")
     backup_dir.mkdir(parents=True, exist_ok=False)
     try:
-        manifest = await _build_backup(volume_id, descriptor.kind, source, backup_dir, state)
+        manifest = await _build_backup(volume_id, descriptor, source, backup_dir, state)
         artifact = backup_dir / str(manifest["artifact"])
         state["phase"] = "verifying"
         if descriptor.kind is VolumeKind.SQLITE:
@@ -491,12 +471,13 @@ async def _run_backup(volume_id: str, state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def _build_backup(
-    volume_id: str, kind: VolumeKind, source: Path, backup_dir: Path, state: Dict[str, Any],
+    volume_id: str, descriptor: VolumeDescriptor, source: Path, backup_dir: Path, state: Dict[str, Any],
 ) -> Dict[str, Any]:
     def progress(_status: int, remaining: int, total: int) -> None:
         check_cancel(state)
         state.update(done=total - remaining, total=total, unit="pages")
 
+    kind = descriptor.kind
     if kind is VolumeKind.SQLITE:
         if not source.is_file():
             raise VolumeOperationError(f"卷数据文件不存在: {source}", status_code=409)
@@ -517,7 +498,7 @@ async def _build_backup(
         artifact_path = backup_dir / _TREE_ARTIFACT
         state["phase"] = "tree_archive"
         file_count, consistency = await _archive_tree(
-            kind, source, artifact_path, state
+            descriptor, source, artifact_path, state
         )
         manifest = {
             "volume_id": volume_id,
@@ -544,7 +525,7 @@ async def _count_tables(db_path: Path) -> int:
 
 
 async def _archive_tree(
-    kind: VolumeKind,
+    descriptor: VolumeDescriptor,
     source: Path,
     artifact: Path,
     state: Dict[str, Any],
@@ -561,22 +542,10 @@ async def _archive_tree(
         check_cancel(state)
         state["phase"] = "scanning"
         # 文件清单也必须在静默窗口内生成，避免引用已被下一次发布替换的快照。
-        members = (_notes_members if kind is VolumeKind.NOTES_TREE else walk_files)(source)
-        if kind is VolumeKind.COGNEE_TREE:
-            clean = False
-            journal = source / ".publication" / "state.json"
-            if journal.exists():
-                try:
-                    commit = json.loads(journal.read_text(encoding="utf-8"))
-                    clean = commit.get("version") == 1 and commit.get("dirty") is False
-                except (OSError, ValueError):
-                    log("Cognee 提交记录无法确认，备份保留恢复点", "WARNING")
-            # 干净工作区已是完整提交，不把 COW 恢复点再物化一遍写入压缩包。
-            # 未完成恢复时必须同时保留 dirty 记录和封存快照；进程锁文件无恢复价值。
-            members = [path for path in members if not (
-                path.relative_to(source).parts[0] == ".publication"
-                and (clean or path.name in {"owner.lock", "worker.lock"})
-            )]
+        select = descriptor.backup_members or (
+            _notes_members if descriptor.kind is VolumeKind.NOTES_TREE else walk_files
+        )
+        members = select(source)
         state.update(phase="tree_archive", total=sum(p.stat().st_size for p in members),
                      done=0, unit="bytes")
         with tarfile.open(artifact, "w:gz", dereference=True) as tar:
@@ -592,11 +561,9 @@ async def _archive_tree(
             os.fsync(stream.fileno())
         return len(members)
 
-    if kind is VolumeKind.COGNEE_TREE:
-        quiesced = _cognee_coordinator_alive()
+    if descriptor.snapshot is not None:
         state["phase"] = "waiting_idle"
-        count = int(await _cognee_quiescence(lambda: disk_job(_tar, state), lambda: check_cancel(state)))
-        return count, "idle_window" if quiesced else "live"
+        return await descriptor.snapshot(lambda: disk_job(_tar, state), lambda: check_cancel(state))
     return int(await disk_job(_tar, state)), "live"
 
 
@@ -735,14 +702,12 @@ async def _run_relocate(volume_id: str, target_dir: Path, state: Dict[str, Any])
     else:
         dest = target_dir / source.name
         state["phase"] = "tree_copy"
-        files = await asyncio.to_thread(
-            _notes_members if descriptor.kind is VolumeKind.NOTES_TREE else walk_files, source,
-        )
-        state["total"] = len(files)
-
-        def _copy() -> None:
+        def _copy() -> List[Path]:
+            # 静默窗口内枚举，避免扫描后发布切换导致成员过期。
+            members = (_notes_members if descriptor.kind is VolumeKind.NOTES_TREE else walk_files)(source)
+            state["total"] = len(members)
             dest.mkdir(parents=True, exist_ok=True)
-            for index, path in enumerate(files):
+            for index, path in enumerate(members):
                 rel = path.relative_to(source)
                 to = dest / rel
                 if not to.resolve().is_relative_to(dest.resolve()):
@@ -750,11 +715,12 @@ async def _run_relocate(volume_id: str, target_dir: Path, state: Dict[str, Any])
                 to.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(path, to)
                 state["done"] = index + 1
+            return members
 
-        if descriptor.kind is VolumeKind.COGNEE_TREE:
-            await _cognee_quiescence(lambda: asyncio.to_thread(_copy))
+        if descriptor.snapshot is not None:
+            files, _ = await descriptor.snapshot(lambda: asyncio.to_thread(_copy))
         else:
-            await asyncio.to_thread(_copy)
+            files = await asyncio.to_thread(_copy)
         if not any(dest.iterdir()):
             raise VolumeOperationError("迁移拷贝校验失败：目标目录为空")
         assignment = str(dest)

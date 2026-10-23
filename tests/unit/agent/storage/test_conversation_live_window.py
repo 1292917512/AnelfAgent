@@ -227,7 +227,7 @@ async def test_database_editor_invalidates_runtime_window(sqlite, monkeypatch):
     from services.database import DatabaseService
 
     service = DatabaseService()
-    monkeypatch.setattr(service, "_db_path", lambda _db_id: sqlite.db_path)
+    monkeypatch.setattr(service._sqlite, "path", lambda _db_id: sqlite.db_path)
     monkeypatch.setattr("services._runtime.get_runtime", lambda: SimpleNamespace(data_center=SimpleNamespace(sqlite=sqlite)))
     try:
         await append(sqlite, "before")
@@ -274,9 +274,9 @@ async def test_cancellation_at_commit_keeps_window_consistent(sqlite, monkeypatc
     await append(sqlite, "before")
     await read(sqlite)
     service = DatabaseService()
-    monkeypatch.setattr(service, "_db_path", lambda _db_id: sqlite.db_path)
+    monkeypatch.setattr(service._sqlite, "path", lambda _db_id: sqlite.db_path)
     monkeypatch.setattr("services._runtime.get_runtime", lambda: SimpleNamespace(data_center=SimpleNamespace(sqlite=sqlite)))
-    db = await service._get_conn("agent") if editor else await sqlite._get_db()
+    db = await service._sqlite.connection("agent") if editor else await sqlite._get_db()
     commit = db.commit
     entered = asyncio.Event()
 

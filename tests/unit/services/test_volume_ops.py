@@ -15,6 +15,7 @@ import aiosqlite
 import pytest
 
 import core.storage_volume as sv
+from agent.memory.cognee.volume import backup_members, observe_size, run_snapshot
 from agent.storage import volume_restore
 from core.storage_volume import VolumeDescriptor, VolumeKind, VolumeRegistry
 from services import volume_ops as ops
@@ -39,7 +40,11 @@ async def test_cognee_archive_deduplicates_clean_snapshot_and_preserves_dirty_re
         (root / "data/raw").write_text("partial", encoding="utf-8")
     archive = tmp_path / "backup.tgz"
     with FileLock(str(root / ".publication/owner.lock")):
-        await ops._archive_tree(VolumeKind.COGNEE_TREE, root, archive, {})
+        await ops._archive_tree(VolumeDescriptor(
+            volume_id="cognee", name="", description="", kind=VolumeKind.COGNEE_TREE,
+            default_path=lambda: str(root), backup_members=backup_members,
+            snapshot=run_snapshot, observe_size=observe_size,
+        ), root, archive, {})
     restored = tmp_path / "restored"
     with tarfile.open(archive) as bundle:
         names = bundle.getnames()
@@ -232,6 +237,7 @@ class TestNotesTree:
         sandbox.register(VolumeDescriptor(
             volume_id="testcognee", name="", description="",
             kind=VolumeKind.COGNEE_TREE, default_path=lambda: str(root),
+            backup_members=backup_members, snapshot=run_snapshot, observe_size=observe_size,
         ))
         root.mkdir(parents=True, exist_ok=True)
         (root / "system").mkdir()
@@ -385,7 +391,7 @@ async def test_cancel_inside_large_file_cleans_partial_and_keeps_source(sandbox,
     assert (await _wait_op("testnotes"))["state"] == "done"
 
 
-async def test_cancel_waiting_for_cognee_does_not_wait_for_batch(sandbox):
+async def test_cancel_waiting_for_cognee_does_not_wait_for_batch(sandbox, monkeypatch):
     from agent.memory.cognee.coordinator import CogneeCoordinator
     from services.volume_artifacts import OperationCancelled, check_cancel
 
@@ -395,9 +401,10 @@ async def test_cancel_waiting_for_cognee_does_not_wait_for_batch(sandbox):
     coordinator._idle_job = None
     coordinator._idle_done = asyncio.Event()
     coordinator._wake = asyncio.Event()
+    monkeypatch.setattr("agent.memory.cognee.runtime.get_cognee_coordinator", lambda: coordinator)
     state = {"cancel_requested": False}
     job = asyncio.sleep(0)
-    waiter = asyncio.create_task(coordinator.run_in_idle_window(job, check_cancel=lambda: check_cancel(state)))
+    waiter = asyncio.create_task(run_snapshot(lambda: job, lambda: check_cancel(state)))
     await asyncio.sleep(0)
     state["cancel_requested"] = True
     try:
@@ -408,6 +415,62 @@ async def test_cancel_waiting_for_cognee_does_not_wait_for_batch(sandbox):
     finally:
         coordinator._task.cancel()
         await asyncio.gather(coordinator._task, return_exceptions=True)
+
+
+async def test_volume_owner_controls_snapshot_members_and_scan_window(sandbox, tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    root = tmp_path / "source"
+    root.mkdir()
+    (root / "old").write_text("old")
+    entered = False
+
+    async def snapshot(job, check=None):
+        nonlocal entered
+        assert not entered
+        entered = True
+        # 模拟等待静默窗口期间发生发布；扫描必须在窗口内看见最新文件。
+        (root / "old").unlink(missing_ok=True)
+        (root / "new").write_text("published")
+        try:
+            if check:
+                check()
+            return await job(), "owner_snapshot"
+        finally:
+            entered = False
+
+    def members(path):
+        assert entered
+        return [path / "new"]
+
+    descriptor = VolumeDescriptor(
+        volume_id="managed_tree", name="", description="", kind=VolumeKind.COGNEE_TREE,
+        default_path=lambda: str(root), snapshot=snapshot, backup_members=members,
+    )
+    sandbox.register(descriptor)
+    ops.create_backup("managed_tree")
+    assert (await _wait_op("managed_tree"))["state"] == "done"
+    backup = ops.get_backup("managed_tree", ops.list_backups("managed_tree")[0]["backup_id"])
+    assert backup["consistency"] == "owner_snapshot"
+    with tarfile.open(backup["artifact_path"]) as bundle:
+        assert bundle.getnames() == ["new"]
+
+    walk = ops.walk_files
+
+    def scan(path):
+        assert entered
+        return walk(path)
+
+    monkeypatch.setattr(ops, "walk_files", scan)
+    # 目标检查使用所有者统计，迁移文件枚举才使用通用遍历。
+    async def observed(_path):
+        return 9
+
+    sandbox.register(replace(descriptor, observe_size=observed))
+    await ops.relocate_volume("managed_tree", str(tmp_path / "moved"))
+    assert (await _wait_op("managed_tree"))["state"] == "done"
+    assert (tmp_path / "moved/source/new").read_text() == "published"
+    assert not (tmp_path / "moved/source/old").exists()
 
 
 async def test_failed_backup_never_prunes_good_copy(sandbox, monkeypatch):
