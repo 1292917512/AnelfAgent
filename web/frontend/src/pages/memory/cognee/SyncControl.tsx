@@ -25,6 +25,6 @@ export function SyncControl({ sync, enabled, stale }: {
       {sync.enabled ? <Pause size={14} /> : <Play size={14} />}
       {t(waiting ? "cognee.progress.pausing" : sync.enabled ? "cognee.progress.pause" : "cognee.progress.resume")}
     </button>
-    {mutation.error && <QueryError error={mutation.error} retry={() => mutation.mutate(!sync.enabled)} compact />}
+    {mutation.error && <QueryError error={mutation.error} compact />}
   </div>;
 }

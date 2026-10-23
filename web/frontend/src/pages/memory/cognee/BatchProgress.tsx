@@ -13,6 +13,7 @@ export function BatchProgress({ active, stale }: { active: CogneeBatchProgress; 
   const completed = pipeline?.completed_items;
   const hasCount = typeof total === "number" && total > 0 && typeof completed === "number";
   const documents = active.documents;
+  const hasFragments = !!documents && documents.fragments > 0;
   const observed = documents && typeof documents.completed === "number";
   const unknown = t("cognee.progress.notObserved");
   return <div className="rounded-lg border border-accent/30 bg-accent/5 p-3 space-y-2" data-testid="cognee-batch-progress">
@@ -20,11 +21,11 @@ export function BatchProgress({ active, stale }: { active: CogneeBatchProgress; 
       <span>{t("cognee.progress.batch", { count: active.items, attempt: active.attempt })}</span>
       <span>{t(`cognee.progress.stages.${active.stage}`, { defaultValue: active.stage })}</span>
     </div>
-    <dl className="grid grid-cols-1 sm:grid-cols-3 gap-3 rounded-lg bg-surface/60 p-3">
+    <dl className={`grid grid-cols-1 ${hasFragments ? "sm:grid-cols-3" : "sm:grid-cols-2"} gap-3 rounded-lg bg-surface/60 p-3`}>
       <div><dt className="text-xs text-muted">{t("cognee.progress.actualDocuments")}</dt>
         <dd className="mt-1 text-xl font-semibold text-heading tabular-nums">{documents ? `${documents.completed ?? "—"} / ${documents.total}` : unknown}</dd></div>
-      <div><dt className="text-xs text-muted">{t("cognee.progress.actualFragments")}</dt>
-        <dd className="mt-1 text-xl font-semibold text-heading tabular-nums">{documents ? `${documents.fragments_completed ?? "—"} / ${documents.fragments}` : unknown}</dd></div>
+      {hasFragments && <div><dt className="text-xs text-muted">{t("cognee.progress.actualFragments")}</dt>
+        <dd className="mt-1 text-xl font-semibold text-heading tabular-nums">{`${documents.fragments_completed ?? "—"} / ${documents.fragments}`}</dd></div>}
       <div><dt className="text-xs text-muted">{t("cognee.progress.lastCompleted")}</dt>
         <dd className="mt-1 font-medium text-heading">{documents?.last_completed_at
           ? new Date(documents.last_completed_at * 1000).toLocaleTimeString() : t("cognee.progress.noCompletion")}</dd>

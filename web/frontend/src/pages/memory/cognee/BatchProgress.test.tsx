@@ -34,6 +34,11 @@ it("does not turn an unavailable observation into zero or a deadlock warning", a
   expect(screen.getByText("22 / 202")).toBeTruthy();
   expect(screen.getByRole("alert").textContent).toContain("database busy");
   expect(screen.queryByText(/No new batch completion marker/)).toBeNull();
+  rerender(<BatchProgress active={{ ...active, documents: { ...documents, total: 2, completed: null,
+    fragments: 0, fragments_completed: null } }} stale={false} />);
+  expect(screen.queryByText("— / 0")).toBeNull();
+  expect(screen.getByText("— / 2")).toBeTruthy();
+  expect(screen.queryByRole("progressbar")).toBeNull();
 });
 
 it("distinguishes extracted documents from safe commit and suppresses stale inactivity warnings", async () => {

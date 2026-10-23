@@ -8,7 +8,6 @@ import { ProjectionStatusCard } from "./ProjectionStatusCard";
 import { StorageDetailsCard } from "./StorageDetailsCard";
 import { QueryError } from "@/components/common/AsyncState";
 import { Card } from "@/components/common/Card";
-import { StatCard } from "@/components/common/StatCard";
 import { Button, Modal, ConfirmDialog, toast } from "@/components/ui";
 import { ResolvedModelLine } from "./ResolvedModelLine";
 import { CogneeSettings } from "./CogneeSettings";
@@ -33,7 +32,7 @@ export function CogneePanel() {
     queryClient.invalidateQueries({ queryKey: ["memoryHealth"] });
     queryClient.invalidateQueries({ queryKey: ["cogneeDatasets"] });
   };
-  const retryMutation = useMutation({ mutationFn: () => memoryApi.cognee.retry(), onSuccess: invalidate });
+  const retryMutation = useMutation({ mutationFn: () => memoryApi.cognee.retry("local"), onSuccess: invalidate });
   const backfillMutation = useMutation({ mutationFn: () => memoryApi.cognee.backfill(0, false), onSuccess: invalidate });
   const rebuildMutation = useMutation({
     mutationFn: (restart: boolean) => memoryApi.cognee.rebuild(restart),
@@ -71,22 +70,14 @@ export function CogneePanel() {
         </div>
       </div>
       <ProjectionStatusCard state={status?.projection} sync={sync} updatedAt={dataUpdatedAt} stale={!!statusError}
-        enabled={availability?.enabled ?? false} />
+        enabled={availability?.enabled ?? false} onRetry={() => retryMutation.mutate()} retrying={retryMutation.isPending} />
+      {retryMutation.error && <QueryError error={retryMutation.error} compact />}
       {rebuildMutation.error && <QueryError error={rebuildMutation.error} retry={() => rebuildMutation.mutate(rebuildMutation.variables ?? false)} compact />}
       <Card
         title={t("cognee.statusTitle")}
         subtitle={availability?.reason || t("cognee.statusSubtitle")}
         actions={
           <div className="flex flex-wrap gap-2">
-            {((sync?.failed || 0) > 0 || sync?.publication?.error) && (
-              <button
-                onClick={() => retryMutation.mutate()}
-                disabled={retryMutation.isPending}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-[color,background-color,border-color,box-shadow,opacity]"
-              >
-                <RefreshCw size={14} /> {t("retryFailedSync")}
-              </button>
-            )}
             <button
               onClick={() => compactMutation.mutate()}
               disabled={!availability?.ready || compactMutation.isPending}
@@ -120,33 +111,16 @@ export function CogneePanel() {
         }
       >
         {statusError && <QueryError error={statusError} retry={() => void refreshStatus()} compact />}
-        {sync?.configuration_pending && (
-          <p role="status" className="mb-3 rounded-lg border border-accent/20 bg-accent/5 p-3 text-sm text-accent">{t("cognee.applyPending")}</p>
-        )}
-        {sync?.configuration_error && (
-          <p role="alert" className="mb-3 rounded-lg border border-danger/30 bg-danger-subtle p-3 text-sm text-danger">{t("cognee.applyFailed")}: {sync.configuration_error}</p>
-        )}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
-          <StatCard
-            label={t("cogneeInstalled")}
-            value={availability?.installed ? (availability.version || t("common:available")) : t("common:unavailable")}
-            variant={availability?.installed ? "ok" : "default"}
-          />
-          <StatCard
-            label={t("cogneeReady")}
-            value={availability?.configuration_required ? t("cognee.waitingForConfig") : availability?.ready ? t("common:available") : t("common:unavailable")}
-            variant={availability?.ready ? "ok" : "default"}
-          />
-          <StatCard
-            label={t("cognee.syncWorker")}
-            value={availability?.configuration_required ? t("cognee.waitingForConfig") : sync?.running ? t("cognee.running") : t("cognee.stopped")}
-            variant={sync?.running && availability?.ready ? "ok" : "default"}
-          />
-          <StatCard
-            label={t("cognee.storage")}
-            value={storage ? formatSize(storage.total_bytes) : "—"}
-          />
-        </div>
+        <dl className="mb-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+          <div><dt className="text-xs text-muted">{t("cogneeInstalled")}</dt>
+            <dd className="mt-1 font-medium text-heading">{availability ? availability.installed ? (availability.version || t("common:available")) : t("common:unavailable") : "—"}</dd></div>
+          <div><dt className="text-xs text-muted">{t("cogneeReady")}</dt>
+            <dd className="mt-1 font-medium text-heading">{availability ? availability.configuration_required ? t("cognee.waitingForConfig") : availability.ready ? t("common:available") : t("common:unavailable") : "—"}</dd></div>
+          <div><dt className="text-xs text-muted">{t("cognee.syncWorker")}</dt>
+            <dd className="mt-1 font-medium text-heading">{sync ? availability?.configuration_required ? t("cognee.waitingForConfig") : sync.running ? t("cognee.running") : t("cognee.stopped") : "—"}</dd></div>
+          <div><dt className="text-xs text-muted">{t("cognee.storage")}</dt>
+            <dd className="mt-1 font-medium text-heading">{storage ? formatSize(storage.total_bytes) : "—"}</dd></div>
+        </dl>
         {sync?.last_compact_summary && (
           <div className="pb-2 text-[11px] text-muted">
             {t("cognee.lastCompact")}: {sync.last_compact_summary}
@@ -159,11 +133,6 @@ export function CogneePanel() {
           <ResolvedModelLine label={t("cognee.chatModel")} info={status?.resolved?.chat} />
           <ResolvedModelLine label={t("cognee.embeddingModel")} info={status?.resolved?.embedding} />
         </div>
-        {sync?.last_error && (
-          <div className="mt-3 p-3 rounded-md bg-danger-subtle border border-danger text-xs text-danger">
-            {t("cognee.lastError")}: {sync.last_error}
-          </div>
-        )}
       </Card>
 
       <StorageDetailsCard status={status} />

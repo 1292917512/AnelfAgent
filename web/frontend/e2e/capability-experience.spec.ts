@@ -110,6 +110,73 @@ test("Cognee explicitly starts a fresh generation during an unfinished build", a
   expect(requests).toEqual([true]);
 });
 
+test("Cognee queue stays visible across index phases, pause, retry and stale status", async ({ page }, info) => {
+  test.setTimeout(60000);
+  let unavailable = false;
+  let rejectRetry = true;
+  const projection = { phase: "ready", namespace: "current", verified: 20, completed_at: 100,
+    counts: { memories: 20, graph_nodes: 0 }, previous_namespaces: [] };
+  const state = {
+    availability: { installed: true, enabled: true, ready: true, version: "1.6.5" },
+    projection: projection as typeof projection | null,
+    sync: { enabled: true, running: true, pending: 12, processing: 2, failed: 3, synced: 20,
+      retrying: 4, configuration_pending: true, last_error: "Model request timed out" },
+  };
+  await page.route("**/api/memory/cognee/status", (route) => unavailable
+    ? route.fulfill({ status: 503, json: { detail: "Status temporarily unavailable" } })
+    : route.fulfill({ json: state }));
+  await page.route("**/api/memory/cognee/retry", (route) => {
+    if (rejectRetry) return route.fulfill({ status: 503, json: { detail: "Retry temporarily unavailable" } });
+    state.sync.pending += state.sync.failed;
+    state.sync.failed = 0;
+    return route.fulfill({ json: { retried: 3 } });
+  });
+  await page.goto("/webui/memory?tab=cognee");
+  const queue = page.getByRole("group", { name: "Sync queue", exact: true });
+  const count = (label: string) => queue.getByText(label, { exact: true }).locator("..").locator("dd").first();
+  for (const phase of ["ready", "building", "verifying", "failed", null]) {
+    state.projection = phase ? { ...projection, phase } : null;
+    await page.reload();
+    await expect(count("Queued")).toHaveText("10");
+    await expect(count("Processing")).toHaveText("2");
+    await expect(count("Sync failed")).toHaveText("3");
+    await expect(count("Synced")).toHaveText("20");
+  }
+  state.projection = projection;
+  state.sync.enabled = false;
+  state.sync.running = false;
+  await page.reload();
+  await expect(page.getByText("Index available; changes still need syncing", { exact: true })).toBeVisible();
+  await expect(count("Queued")).toHaveText("10");
+  await expect(page.getByRole("button", { name: "Resume sync", exact: true })).toBeVisible();
+  await expect(page.getByText(/4 previously failed items remain/)).toBeVisible();
+  await expect(page.getByText(/New model\/settings saved; waiting/)).toHaveCount(1);
+  await expect(page.getByText("Model request timed out", { exact: true })).not.toBeVisible();
+  await page.locator("summary").filter({ hasText: "Last error" }).click();
+  await expect(page.getByText("Model request timed out", { exact: true })).toBeVisible();
+  const retry = page.getByRole("button", { name: "Retry Failed", exact: true });
+  await retry.click();
+  await expect(page.getByText("Retry temporarily unavailable", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Retry", exact: true })).toHaveCount(0);
+  await expect(count("Sync failed")).toHaveText("3");
+  rejectRetry = false;
+  await retry.click();
+  await expect(count("Sync failed")).toHaveText("0");
+  await expect(count("Queued")).toHaveText("13");
+  await expect(count("Synced")).toHaveText("20");
+  expect(await queue.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await page.locator("section").filter({ has: page.getByRole("heading", { name: "Sync and index", exact: true }) })
+    .screenshot({ path: info.outputPath("cognee-sync-queue.png") });
+  state.sync.failed = 1;
+  await expect(retry).toBeVisible({ timeout: 12000 });
+  unavailable = true;
+  await expect(page.getByText(/Status refresh failed. This is the last snapshot/)).toBeVisible({ timeout: 25000 });
+  await expect(count("Queued")).toHaveText("13");
+  await expect(count("Sync failed")).toHaveText("1");
+  await expect(retry).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Resume sync", exact: true })).toBeDisabled();
+});
+
 test("Cognee generation cleanup preserves a fallback until acceptance and confirms the exact round", async ({ page }, info) => {
   test.setTimeout(60000);
   const state = {
@@ -334,9 +401,11 @@ test("Cognee catalog distinguishes initial loading and keeps confirmed datasets 
   catalogReady = true;
   ready = true;
   await page.reload();
+  await page.getByRole("button", { name: "Build details", exact: true }).click();
+  await expect(page.getByText(/Preserved 26 complete legacy projection documents/)).toBeVisible();
+  await page.getByRole("dialog", { name: "Build details", exact: true }).getByRole("button", { name: "Close", exact: true }).click();
   await page.getByRole("article", { name: "anelf_p2_test", exact: true }).getByRole("button", { name: "View generation details" }).click();
   await expect(page.getByText("anelf_p2_test_global", { exact: true })).toBeVisible();
-  await expect(page.getByText(/Preserved 26 complete legacy projection documents/)).toBeVisible();
   const summary = page.getByRole("button", { name: "Build global summaries", exact: true });
   const conflicts = page.getByRole("button", { name: "Review fact conflicts", exact: true });
   await expect(summary.nth(0)).toBeEnabled();

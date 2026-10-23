@@ -27,7 +27,7 @@ export const memoryApi = {
     saveConfig: (data: Partial<CogneeConfig>) => api.put<CogneeConfig>("/memory/cognee/config", data),
     retireDataset: (id: string) => api.delete(`/memory/cognee/datasets/${encodeURIComponent(id)}`),
     retireGeneration: (namespace: string) => api.delete(`/memory/cognee/generations/${encodeURIComponent(namespace)}`),
-    retry: () => api.post("/memory/cognee/retry"),
+    retry: (errorFeedback: "global" | "local" = "global") => api.post("/memory/cognee/retry", null, { errorFeedback }),
     repairCoverage: (namespace: string) => api.post<CogneeCoverageRepairResult>(
       "/memory/cognee/repair-coverage", null, { params: { namespace }, errorFeedback: "local" }),
     rebuild: (restart = false) => api.post<{ ok: boolean; scheduled: boolean }>("/memory/cognee/rebuild", null, { params: { restart } }),
