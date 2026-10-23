@@ -299,15 +299,18 @@ def _cognee_location_writer(path: Optional[str]) -> None:
 def _register_volume() -> None:
     from core.storage_volume import VolumeDescriptor, VolumeKind, register_volume
 
+    from .databases import DATABASE_COMPONENTS
+
     register_volume(
         VolumeDescriptor(
             volume_id="cognee",
-            name="Cognee 关系库",
-            description="Cognee 知识图谱投影（lbug 图/lance 向量/元数据；大小为整个 cognee 数据目录）",
+            name="Cognee",
+            description="知识图谱投影完整数据卷（Ladybug / LanceDB / SQLite / 原文 / 保护快照）",
             kind=VolumeKind.COGNEE_TREE,
             default_path=_default_cognee_data_root,
             location_reader=_cognee_location_reader,
             location_writer=_cognee_location_writer,
+            databases=DATABASE_COMPONENTS,
         )
     )
 

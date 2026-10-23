@@ -46,7 +46,21 @@
     "queryStats": "{{count}} 行 · {{ms}}ms",
     "queryTruncated": "已达行数上限",
     "queryFailed": "查询失败",
-    "truncatedHint": "已截断，点查看按钮看全文"
+    "truncatedHint": "已截断，点查看按钮看全文",
+    "unmeasured": "尚未测量",
+    "managedBy": "由 {{owner}} 管理",
+    "observationFailed": "观测读取失败",
+    "managedDescription": "此组件由 {{owner}} 统一维护。备份、恢复和迁移以完整存储卷为单位；同步、验收和历史清理通过所属模块执行。",
+    "engine": "数据库引擎",
+    "componentSize": "组件逻辑占用",
+    "volume": "所属存储卷",
+    "measuredAt": "占用统计时间",
+    "path": "当前数据位置",
+    "snapshotNote": "占用来自后台统计快照，可能滞后。容量包含各轮次的此类文件，不含原文和保护快照，不代表独占磁盘空间或引擎健康验收。",
+    "pathPending": "位置配置已变更，当前仍显示运行中的位置，重启后生效。",
+    "openManagement": "打开 {{owner}} 管理",
+    "openVolume": "查看所属卷的备份与恢复",
+    "loadFailed": "数据库目录加载失败；已显示的数据可能不是最新。"
   },
   "health": {
     "title": "健康概览",
@@ -214,6 +228,7 @@
       "verifying": "校验完整性",
       "copying": "暂存副本",
       "publishing": "发布已验证产物"
-    }
+    },
+    "showAll": "显示全部存储卷"
   }
 }

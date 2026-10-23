@@ -1,3 +1,4 @@
+import { useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { volumeApi } from "@/lib/api";
@@ -10,6 +11,8 @@ import { VolumeCard } from "./VolumeCard";
 export function VolumePanel() {
   const { t } = useTranslation("data");
   const queryClient = useQueryClient();
+  const [params, setParams] = useSearchParams();
+  const selected = params.get("volume");
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ["dbVolumes"],
@@ -23,6 +26,7 @@ export function VolumePanel() {
 
   const volumes = data?.items ?? [];
   const pending = data?.pending_restore;
+  const visibleVolumes = selected ? volumes.filter((volume) => volume.volume_id === selected) : volumes;
 
   return (
     <div className="space-y-4">
@@ -33,6 +37,9 @@ export function VolumePanel() {
       </p>
       {isError && <p role="alert" className="text-xs text-danger">{t("volumes.statusFailed")}</p>}
 
+      {selected && <Button size="sm" variant="secondary" onClick={() => setParams((current) => {
+        const next = new URLSearchParams(current); next.delete("volume"); return next;
+      })}>{t("volumes.showAll")}</Button>}
       {pending && (
         <div className="flex items-start justify-between gap-3 rounded-md border border-warning/40 bg-warning/10 p-3 text-xs text-warning">
           <span className="flex items-start gap-2">
@@ -43,11 +50,11 @@ export function VolumePanel() {
         </div>
       )}
 
-      {volumes.length === 0 && !isError ? (
+      {visibleVolumes.length === 0 && !isError ? (
         <p className="text-xs text-muted">{t("volumes.noVolumes")}</p>
       ) : (
         <div className="grid gap-3 xl:grid-cols-2">
-          {volumes.map((volume) => (
+          {visibleVolumes.map((volume) => (
             <VolumeCard key={volume.volume_id} volume={volume} onChanged={refresh} />
           ))}
         </div>

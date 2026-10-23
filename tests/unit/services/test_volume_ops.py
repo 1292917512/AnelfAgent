@@ -337,7 +337,8 @@ class TestRegistryParity:
         """
         import importlib
 
-        from services.database import VOLUME_MODULES, _database_registry
+        from agent.runtime.volumes import VOLUME_MODULES
+        from services.database_catalog import database_registry
 
         for name in VOLUME_MODULES:
             module = importlib.import_module(name)
@@ -345,11 +346,11 @@ class TestRegistryParity:
             if register is not None:
                 register()
 
-        registry = _database_registry()
-        for expected in ("agent", "memory", "stickers", "audio", "skill_vectors", "share", "cognee"):
+        registry = database_registry()
+        for expected in ("agent", "memory", "stickers", "audio", "skill_vectors", "share", "cognee", "cognee_graph", "cognee_vector"):
             assert expected in registry, f"缺少库: {expected}"
-        assert registry["agent"]["path"].endswith("agent.sqlite3")
-        assert "cognee_db" in registry["cognee"]["path"]
+        assert registry["agent"].path.endswith("agent.sqlite3")
+        assert "cognee_db" in registry["cognee"].path
 
 
 async def test_cancel_inside_large_file_cleans_partial_and_keeps_source(sandbox, monkeypatch):

@@ -2,14 +2,22 @@
 // 数据库管理（数据管理页 · 数据库 Tab）
 // ======================================================================
 
+export type DbCapability = "browse" | "query" | "edit" | "health" | "backup" | "optimize";
+
 export interface DbInfo {
   id: string;
   name: string;
   description: string;
   path: string;
-  exists: boolean;
-  size_bytes: number;
-  table_count: number;
+  exists: boolean | null;
+  size_bytes: number | null;
+  table_count: number | null;
+  capabilities: DbCapability[];
+  volume_id?: string;
+  managed_by?: string;
+  management_url?: string;
+  measured_at?: number | null;
+  needs_restart?: boolean;
   external?: boolean;
   engine?: string;
   error?: string;

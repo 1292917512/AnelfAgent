@@ -46,7 +46,21 @@
     "queryStats": "{{count}} rows · {{ms}}ms",
     "queryTruncated": "row limit reached",
     "queryFailed": "Query failed",
-    "truncatedHint": "truncated, use view for full text"
+    "truncatedHint": "truncated, use view for full text",
+    "unmeasured": "Not measured",
+    "managedBy": "Managed by {{owner}}",
+    "observationFailed": "Observation unavailable",
+    "managedDescription": "{{owner}} coordinates this component. Back up, restore and relocate the complete storage volume; manage synchronization, validation and history in the owning module.",
+    "engine": "Database engine",
+    "componentSize": "Component logical size",
+    "volume": "Storage volume",
+    "measuredAt": "Storage measured at",
+    "path": "Active data location",
+    "snapshotNote": "Sizes come from background snapshots and may lag. They include this component across generations, excluding source documents and protection snapshots. They do not measure exclusive disk use or certify engine health.",
+    "pathPending": "The configured location has changed. This is the active location until restart.",
+    "openManagement": "Open {{owner}} management",
+    "openVolume": "View volume backup and recovery",
+    "loadFailed": "Database catalog could not be refreshed. Displayed data may be stale."
   },
   "health": {
     "title": "Health",
@@ -214,6 +228,7 @@
       "verifying": "Verifying integrity",
       "copying": "Staging copy",
       "publishing": "Publishing verified output"
-    }
+    },
+    "showAll": "Show all storage volumes"
   }
 }

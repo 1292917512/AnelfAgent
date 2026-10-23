@@ -19,12 +19,12 @@ from services.data_migration import (
     migration_status,
     start_migration,
 )
-from services.database import DatabaseService
+from services.database import get_database_service
 from services.db_connections import get_connection_store
 
 router = APIRouter(prefix="/database", tags=["database"])
 
-_db_svc = DatabaseService()
+_db_svc = get_database_service()
 
 
 class RowValuesRequest(BaseModel):

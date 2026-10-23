@@ -20,6 +20,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
+from core.database import DatabaseCapability, DatabaseComponent
 from core.log import log
 
 
@@ -77,10 +78,16 @@ class VolumeDescriptor:
     location_reader: Optional[Callable[[], Optional[VolumeLocation]]] = None
     location_writer: Optional[Callable[[Optional[str]], None]] = None
     capabilities: frozenset[VolumeCapability] = field(default_factory=frozenset)
+    databases: tuple[DatabaseComponent, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.capabilities:
             object.__setattr__(self, "capabilities", kind_capabilities(self.kind))
+        if not self.databases and self.kind is VolumeKind.SQLITE:
+            object.__setattr__(self, "databases", (DatabaseComponent(
+                database_id=self.volume_id, name=self.name, description=self.description,
+                engine="sqlite", capabilities=frozenset(DatabaseCapability),
+            ),))
 
 
 class VolumeRegistry:

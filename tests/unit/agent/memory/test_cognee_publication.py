@@ -207,6 +207,7 @@ async def test_stop_reaps_helper_holding_diagnostic_pipe(tmp_path, clean):
             await rpc.stop()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups are not available on Windows")
 async def test_stop_tolerates_recycled_process_group(tmp_path, monkeypatch):
     import psutil
 

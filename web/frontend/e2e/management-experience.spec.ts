@@ -2,6 +2,51 @@ import AxeBuilder from "@axe-core/playwright";
 import { test, expect, openWebChat } from "./fixtures";
 import type { ConfigMetaItem, RecallTestResult, ToolItem } from "../src/lib/types";
 
+test("managed databases show separate engines and route recovery to their shared volume", async ({ page }, info) => {
+  let measured = false;
+  const forbiddenRequests: string[] = [];
+  await page.clock.install();
+  await page.route("**/api/database/**", async (route) => {
+    const path = new URL(route.request().url()).pathname.replace("/api/database", "");
+    if (path === "/databases") {
+      await route.fulfill({ json: { items: [
+        { id: "cognee", name: "Cognee SQLite", description: "Metadata", engine: "sqlite", capabilities: ["browse", "query"], size_bytes: 1024, table_count: 1 },
+        { id: "cognee_graph", name: "Ladybug", description: "Graph index", engine: "ladybug", capabilities: [], size_bytes: measured ? 2048 : null, table_count: null },
+        { id: "cognee_vector", name: "LanceDB", description: "Vector index", engine: "lancedb", capabilities: [], size_bytes: 4096, table_count: null },
+      ].map((entry) => ({ path: "/data/cognee/system/databases", exists: true, external: false, volume_id: "cognee",
+        managed_by: "Cognee", management_url: "/memory?tab=cognee", measured_at: measured ? 1700000000 : null, ...entry })) } });
+    } else if (path === "/connections") await route.fulfill({ json: { items: [] } });
+    else if (path === "/cognee/tables") await route.fulfill({ json: { items: [{ name: "documents", readonly: true, type: "table", virtual: false, shadow: false, row_count: 1, column_count: 1 }] } });
+    else if (path === "/cognee/tables/documents/rows") await route.fulfill({ json: {
+      items: [{ __rowid__: 1, values: { content: "Retained source" } }], columns: [{ cid: 0, name: "content", type: "TEXT", notnull: false, default: null, pk: false }],
+      total: 1, page: 1, page_size: 50, pages: 1, readonly: true,
+    } });
+    else {
+      forbiddenRequests.push(path);
+      await route.fulfill({ status: 403, json: { detail: "Unsupported operation" } });
+    }
+  });
+  await page.goto("/webui/data");
+  await page.getByRole("button", { name: /^Ladybug/ }).click();
+  const graph = page.getByRole("region", { name: "Ladybug", exact: true });
+  await expect(graph).toContainText("Not measured");
+  await expect(page.getByRole("tab", { name: "Query" })).toHaveCount(0);
+  await expect(graph.getByRole("link", { name: "Open Cognee management" })).toHaveAttribute("href", "/webui/memory?tab=cognee");
+  await expect(graph.getByRole("link", { name: "View volume backup and recovery" })).toHaveAttribute("href", "/webui/data?tab=volumes&volume=cognee");
+  measured = true;
+  await page.clock.fastForward(31000);
+  await expect(graph).toContainText("2.0 KB");
+  await page.getByRole("button", { name: /^LanceDB/ }).click();
+  await expect(page.getByRole("region", { name: "LanceDB", exact: true })).toContainText("4.0 KB");
+  await page.screenshot({ path: info.outputPath("managed-databases.png") });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.getByRole("button", { name: /^Cognee SQLite/ }).click();
+  await page.getByRole("button", { name: /documents/ }).click();
+  await expect(page.getByText("Retained source", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Insert row" })).toHaveCount(0);
+  expect(forbiddenRequests).toEqual([]);
+});
+
 test("recall provenance is compact and separates subjects from source conversations", async ({ page }, info) => {
   const result: RecallTestResult = {
     plan: { queries: ["quiet rooms"], entities: [], node_keys: [], node_labels: [], deep_needed: false, rationale: "" },

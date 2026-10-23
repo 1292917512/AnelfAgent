@@ -62,8 +62,8 @@ def create_application(args: argparse.Namespace) -> Application:
         from agent.storage.migration import finalize_pending_migration
 
         def assign_volume(volume_id: str, path: str) -> None:
+            from agent.runtime.volumes import ensure_volume_modules
             from core.storage_volume import get_volume_registry
-            from services.database import ensure_volume_modules
             ensure_volume_modules()
             get_volume_registry().write_location(volume_id, path)
 
@@ -107,10 +107,12 @@ def create_application(args: argparse.Namespace) -> Application:
         async def register_web_service() -> None:
             """Web 服务器注册进 Lifecycle（on_start 拉起 / cleanup 关停）。"""
             from core.lifecycle import Lifecycle
-            from services.volume_ops import register_lifecycle
+            from services.database import register_lifecycle as register_database_lifecycle
+            from services.volume_ops import register_lifecycle as register_volume_lifecycle
             from web.server import WebServerService
 
-            register_lifecycle()
+            register_database_lifecycle()
+            register_volume_lifecycle()
             service = WebServerService()
             Lifecycle.register(
                 "web_server", service,

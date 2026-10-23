@@ -7,22 +7,20 @@ import { cn } from "@/lib/utils";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
 import { ConfirmDialog, LoadingBlock, toast } from "@/components/ui";
 import {
-  Database,
   Eye,
   FileCode2,
   HardDrive,
   Lock,
-  Pencil,
   Plus,
   Table2,
   TerminalSquare,
-  Trash2,
 } from "lucide-react";
 import { RowsPanel } from "./RowsPanel";
 import { SchemaPanel } from "./SchemaPanel";
 import { HealthCard } from "./HealthCard";
 import { ConnectionDialog } from "./ConnectionDialog";
-import { formatSize } from "./format";
+import { DatabaseCard } from "./DatabaseCard";
+import { ManagedDatabaseCard } from "./ManagedDatabaseCard";
 
 const QueryPanel = lazy(() => import("./QueryPanel").then((module) => ({ default: module.QueryPanel })));
 
@@ -41,7 +39,7 @@ export function DatabasePanel() {
   });
   const [deleteConnTarget, setDeleteConnTarget] = useState<DbInfo | null>(null);
 
-  const { data: databases, isLoading: dbsLoading } = useQuery({
+  const { data: databases, isLoading: dbsLoading, isError: dbsError, refetch } = useQuery({
     queryKey: ["dbDatabases"],
     queryFn: () => databaseApi.databases().then((r) => r.data.items),
     // cognee 存储统计为后台快照制，首次计算完成前返回空值，轮询兜底自愈
@@ -70,13 +68,13 @@ export function DatabasePanel() {
   const activeDb = dbId ?? localDbs.find((d) => d.exists)?.id ?? null;
   const activeDbInfo = (databases ?? []).find((d) => d.id === activeDb) ?? null;
   const isExternal = activeDbInfo?.external ?? false;
-  // cognee 为 lbug 引擎文件，非 SQLite，无健康概览
-  const showHealth = !!activeDbInfo && !isExternal && activeDbInfo.exists && activeDb !== "cognee";
+  const canBrowse = !!activeDbInfo?.capabilities.includes("browse") && activeDbInfo.exists === true;
+  const showHealth = !!activeDbInfo?.capabilities.includes("health") && activeDbInfo.exists === true;
 
   const { data: tables, isLoading: tablesLoading } = useQuery({
     queryKey: ["dbTables", activeDb, includeShadow],
     queryFn: () => databaseApi.tables(activeDb!, includeShadow).then((r) => r.data.items),
-    enabled: !!activeDb,
+    enabled: canBrowse,
   });
 
   const SUB_TABS: TabItem<SubTab>[] = [
@@ -84,77 +82,24 @@ export function DatabasePanel() {
     { key: "schema", label: t("db.tabSchema"), icon: FileCode2 },
     { key: "query", label: t("db.tabQuery"), icon: TerminalSquare },
   ];
+  const availableTabs = SUB_TABS.filter((tab) => tab.key !== "query" || activeDbInfo?.capabilities.includes("query"));
 
   if (dbsLoading) return <LoadingBlock label={t("common:loading")} />;
 
   const renderDbCard = (d: DbInfo) => {
     const connId = d.external ? d.id.slice(4) : null;
     const connMeta = connId ? connections?.find((c) => c.id === connId) : null;
-    return (
-      <div
-        key={d.id}
-        className={cn(
-          "relative rounded-xl border transition-colors",
-          activeDb === d.id
-            ? "border-accent bg-accent-subtle"
-            : "border-border bg-card hover:border-border-strong",
-          !d.exists && "opacity-50",
-        )}
-      >
-        <button
-          disabled={!d.exists}
-          onClick={() => { setDbId(d.id); setTable(null); }}
-          className="w-full text-left p-3 disabled:cursor-not-allowed"
-        >
-          <div className="flex items-center gap-2">
-            <Database size={15} className={activeDb === d.id ? "text-accent" : "text-muted"} />
-            <span className="text-sm font-medium text-heading">{d.name}</span>
-            {d.exists ? (
-              <span className="ml-auto text-[10px] text-muted font-mono">
-                {d.external ? (d.engine ?? "") : formatSize(d.size_bytes)}
-              </span>
-            ) : (
-              <span className="ml-auto text-[10px] text-muted">
-                {d.external ? t("conn.unreachable") : t("db.notCreated")}
-              </span>
-            )}
-          </div>
-          <p className="text-[11px] text-muted mt-1 leading-snug">{d.description}</p>
-          {d.exists && !d.external && (
-            <p className="text-[10px] text-muted/70 mt-1 font-mono truncate" title={d.path}>
-              {d.table_count} {t("db.tables")} · {d.path.split("/").pop()}
-            </p>
-          )}
-          {d.external && (
-            <p className="text-[10px] text-muted/70 mt-1 font-mono">
-              {d.table_count} {t("db.tables")} · {t("db.readonly")}
-            </p>
-          )}
-        </button>
-        {d.external && connMeta && (
-          <div className="absolute top-2 right-2 flex gap-1">
-            <button
-              onClick={() => setConnDialog({ open: true, conn: connMeta })}
-              className="p-1 rounded text-muted hover:text-accent transition-colors"
-              title={t("common:edit")}
-            >
-              <Pencil size={12} />
-            </button>
-            <button
-              onClick={() => setDeleteConnTarget(d)}
-              className="p-1 rounded text-muted hover:text-danger transition-colors"
-              title={t("common:delete")}
-            >
-              <Trash2 size={12} />
-            </button>
-          </div>
-        )}
-      </div>
-    );
+    return <DatabaseCard key={d.id} database={d} active={activeDb === d.id}
+      onSelect={() => { setDbId(d.id); setTable(null); }}
+      onEdit={connMeta ? () => setConnDialog({ open: true, conn: connMeta }) : undefined}
+      onDelete={connMeta ? () => setDeleteConnTarget(d) : undefined} />;
   };
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-4">
+      {dbsError && <div role="alert" className="lg:col-span-2 text-sm text-danger flex items-center gap-3">
+        {t("db.loadFailed")} <button onClick={() => void refetch()} className="underline">{t("common:retry")}</button>
+      </div>}
       {/* 左栏：库列表 + 表列表 */}
       <div className="space-y-3">
         {/* 本地库 */}
@@ -186,7 +131,7 @@ export function DatabasePanel() {
         </div>
 
         {/* 表列表 */}
-        {activeDb && (
+        {canBrowse && (
           <div className="rounded-xl border border-border bg-card">
             <div className="flex items-center justify-between px-3 py-2 border-b border-border">
               <span className="text-xs font-semibold text-muted uppercase tracking-wider flex items-center gap-1.5">
@@ -241,9 +186,11 @@ export function DatabasePanel() {
           </div>
         ) : (
           <div className="space-y-3">
+            {activeDbInfo?.managed_by && <ManagedDatabaseCard database={activeDbInfo} />}
             {showHealth && <HealthCard db={activeDb} />}
-            <TabBar tabs={SUB_TABS} activeTab={subTab} onChange={setSubTab} />
-            {subTab === "query" ? (
+            {canBrowse ? <>
+            <TabBar tabs={availableTabs} activeTab={subTab} onChange={setSubTab} />
+            {subTab === "query" && activeDbInfo?.capabilities.includes("query") ? (
               <Suspense fallback={<LoadingBlock label={t("common:loading")} />}><QueryPanel key={activeDb} db={activeDb} /></Suspense>
             ) : !table ? (
               <p className="text-sm text-muted text-center py-10">{t("db.selectTable")}</p>
@@ -252,6 +199,7 @@ export function DatabasePanel() {
             ) : (
               <SchemaPanel key={`${activeDb}.${table}`} db={activeDb} table={table} />
             )}
+            </> : !activeDbInfo?.managed_by && <p className="text-sm text-muted text-center py-10">{t("db.notCreated")}</p>}
           </div>
         )}
       </div>

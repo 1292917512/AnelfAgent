@@ -29,11 +29,12 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import aiosqlite
 
+from agent.runtime.volumes import ensure_volume_modules
 from core.file_utils import atomic_write_text, walk_files
 from core.log import log
 from core.storage_volume import VolumeCapability, VolumeKind, get_volume_registry
 from services.data_migration import validate_target_dir
-from services.database import ensure_volume_modules, online_sqlite_backup
+from services.database import online_sqlite_backup
 from services.db_common import SHADOW_PATTERNS
 from services.volume_artifacts import (
     CancellableReader,

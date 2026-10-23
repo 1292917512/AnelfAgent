@@ -38,12 +38,15 @@ async def test_memory_store_default_construction_opens_db(tmp_path):
 
 async def test_entity_stores_default_construction(tmp_path):
     from agent.audio.store import AudioStore
+    from entities.share import store as share_module
     from entities.share.store import ShareStore
     from entities.sticker.store import StickerStore
 
     assert StickerStore()._db_path == str(tmp_path / "agent_stickers.sqlite3")
     assert AudioStore()._db_path == str(tmp_path / "agent_audio.sqlite3")
 
+    # 其他用例可能在隔离注册表内首次导入此模块；显式恢复本用例的声明前提。
+    share_module._register_volume()
     share = ShareStore()
     assert share._db_path == str(tmp_path / "agent_share.sqlite3")
     db = await share._get_db()

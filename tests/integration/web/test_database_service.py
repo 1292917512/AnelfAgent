@@ -4,10 +4,41 @@ from __future__ import annotations
 
 import array
 import sqlite3
+from contextlib import closing
+from pathlib import Path
 
 import pytest
 
 from services.database import DatabaseError, DatabaseService
+
+
+@pytest.fixture(autouse=True)
+async def isolated_catalog(tmp_path, monkeypatch):
+    """管理测试使用真实组件声明和隔离的卷、快照，绝不浏览用户库。"""
+    import asyncio
+
+    import core.storage_volume as volumes
+    from agent.memory.cognee import databases, storage
+    from services.db_connections import ConnectionStore
+
+    registry = volumes.VolumeRegistry(str(tmp_path / "volumes.json"))
+    monkeypatch.setattr(volumes, "_registry", registry)
+    monkeypatch.setattr("services.database_catalog.ensure_volume_modules", lambda: None)
+    monkeypatch.setattr("services.db_connections._store", ConnectionStore(tmp_path / "connections.json"))
+    monkeypatch.setenv("ANELF_BOT_SQLITE_PATH", str(tmp_path / "data/agent.sqlite3"))
+    for name in ("agent", "memory"):
+        registry.register(volumes.VolumeDescriptor(
+            volume_id=name, name=name, description="", kind=volumes.VolumeKind.SQLITE,
+            default_path=lambda name=name: str(tmp_path / f"data/{name}.sqlite3"),
+        ))
+    registry.register(volumes.VolumeDescriptor(
+        volume_id="cognee", name="Cognee", description="", kind=volumes.VolumeKind.COGNEE_TREE,
+        default_path=lambda: str(tmp_path / "cognee"), databases=databases.DATABASE_COMPONENTS,
+    ))
+    tracker = storage.StorageStatsTracker()
+    monkeypatch.setattr(databases, "cognee_storage_stats", tracker)
+    yield registry, tracker
+    await asyncio.gather(*tracker._tasks)
 
 
 @pytest.fixture()
@@ -53,6 +84,160 @@ async def svc():
     service = DatabaseService()
     yield service
     await service.close_all()
+
+
+@pytest.fixture()
+async def managed_files(isolated_catalog):
+    from agent.memory.cognee.storage import compute_storage_stats
+
+    registry, tracker = isolated_catalog
+    root = Path(registry.resolve_path("cognee"))
+    db = root / "system/databases/cognee_db"
+    db.parent.mkdir(parents=True)
+    with closing(sqlite3.connect(db)) as conn, conn:
+        conn.execute("CREATE TABLE documents (content TEXT)")
+        conn.execute("INSERT INTO documents VALUES ('preserve me')")
+    (db.parent / "graph.lbug").write_bytes(b"graph-data")
+    vectors = db.parent / "test.lance.db"
+    vectors.mkdir()
+    (vectors / "vectors").write_bytes(b"vector-data")
+    tracker.adopt(str(root), compute_storage_stats(root))
+    return root, db
+
+
+async def test_managed_catalog_uses_observations_and_keeps_one_volume(managed_files, isolated_catalog, svc, monkeypatch):
+    root, db = managed_files
+    registry, _ = isolated_catalog
+    original = svc._open_conn
+    opened = []
+
+    async def open_sqlite(path, *, readonly=False):
+        opened.append((path, readonly))
+        return await original(path, readonly=readonly)
+
+    monkeypatch.setattr(svc, "_open_conn", open_sqlite)
+    rows = {row["id"]: row for row in await svc.list_databases()}
+    assert rows["cognee_graph"]["size_bytes"] == len(b"graph-data")
+    assert rows["cognee_vector"]["size_bytes"] == len(b"vector-data")
+    assert rows["cognee"]["size_bytes"] == db.stat().st_size
+    for key, engine in (("cognee", "sqlite"), ("cognee_graph", "ladybug"), ("cognee_vector", "lancedb")):
+        assert rows[key]["engine"] == engine
+        assert rows[key]["volume_id"] == "cognee"
+        assert rows[key]["measured_at"] > 0
+        assert rows[key]["managed_by"] == "Cognee"
+    assert rows["cognee_graph"]["table_count"] is None
+    assert rows["cognee_graph"]["capabilities"] == []
+    assert rows["cognee"]["capabilities"] == ["browse", "query"]
+    assert opened == [(str(db), True)]
+    assert "cognee" not in svc._connections
+    assert [v.volume_id for v in registry.list()] == ["agent", "memory", "cognee"]
+    # 修改指派不让管理端抢先读取新目录或创建引擎。
+    registry.mark_active("cognee", str(root))
+    registry.write_location("cognee", str(root.parent / "next"))
+    rows = {row["id"]: row for row in await svc.list_databases()}
+    assert rows["cognee_graph"]["needs_restart"] is True
+    assert rows["cognee_graph"]["path"] == str(root / "system/databases")
+    assert not (root.parent / "next").exists()
+
+
+async def test_managed_unknown_measurement_is_not_zero(isolated_catalog, svc):
+    rows = {row["id"]: row for row in await svc.list_databases()}
+    assert rows["cognee_graph"]["size_bytes"] is None
+    assert rows["cognee_graph"]["exists"] is None
+    assert rows["cognee_vector"]["measured_at"] is None
+
+
+async def test_component_observation_failure_does_not_hide_native_databases(db_path, svc, monkeypatch):
+    from agent.memory.cognee import databases
+
+    async def fail(_root):
+        raise OSError("snapshot unavailable")
+
+    monkeypatch.setattr(databases.cognee_storage_stats, "get", fail)
+    rows = {row["id"]: row for row in await svc.list_databases()}
+    assert rows["agent"]["exists"] is True
+    assert rows["cognee_vector"]["size_bytes"] is None
+    assert rows["cognee_vector"]["error"] == "snapshot unavailable"
+
+
+async def test_managed_metadata_is_readonly_and_follows_replaced_database(managed_files, svc):
+    _, db = managed_files
+    assert (await svc.list_tables("cognee"))[0]["readonly"] is True
+    assert (await svc.table_schema("cognee", "documents"))["readonly"] is True
+    assert (await svc.browse_rows("cognee", "documents"))["readonly"] is True
+    assert (await svc.get_row("cognee", "documents", 1))["values"]["content"] == "preserve me"
+    # 模拟发布/恢复替换；短连接不锁住旧文件，下次查询读取替换后的库。
+    replacement = db.with_suffix(".next")
+    with closing(sqlite3.connect(replacement)) as conn, conn:
+        conn.execute("CREATE TABLE documents (content TEXT)")
+        conn.execute("INSERT INTO documents VALUES ('restored')")
+    replacement.replace(db)
+    result = await svc.run_query("cognee", "SELECT content FROM documents")
+    assert result["rows"] == [{"content": "restored"}]
+    assert "cognee" not in svc._connections
+
+
+@pytest.mark.parametrize("db_id", ["cognee", "cognee_graph", "cognee_vector"])
+async def test_managed_components_reject_direct_mutation_before_open(managed_files, svc, db_id, monkeypatch):
+    root, db = managed_files
+    original = db.read_bytes()
+
+    async def unexpected_open(*args, **kwargs):
+        pytest.fail("管理写操作不得打开受管数据库")
+
+    monkeypatch.setattr(svc, "_open_conn", unexpected_open)
+    for method, args in (
+        (svc.insert_row, ("documents", {"content": "bad"})),
+        (svc.update_row, ("documents", 1, {"content": "bad"})),
+        (svc.delete_row, ("documents", 1)),
+        (svc.database_health, ()),
+        (svc.backup_database, ()),
+        (svc.optimize_database, (["vacuum"],)),
+    ):
+        with pytest.raises(DatabaseError) as error:
+            await method(db_id, *args)
+        assert error.value.status_code == 403
+    if db_id != "cognee":
+        for method, args in ((svc.list_tables, ()), (svc.run_query, ("SELECT 1",)),
+                             (svc.table_schema, ("documents",)), (svc.browse_rows, ("documents",)),
+                             (svc.get_row, ("documents", 1))):
+            with pytest.raises(DatabaseError) as error:
+                await method(db_id, *args)
+            assert error.value.status_code == 403
+    assert db.read_bytes() == original
+    assert (root / "system/databases/graph.lbug").read_bytes() == b"graph-data"
+
+
+async def test_management_lifecycle_closes_real_connections_and_retains_failed_handles(db_path, svc, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from core.lifecycle import Lifecycle, ShutdownBlockedError
+    from services import database
+
+    monkeypatch.setattr(database, "_service", svc)
+    conn = await svc._get_conn("agent")
+    close = conn.close
+    Lifecycle.reset()
+    try:
+        database.register_lifecycle()
+        # Web 最后登记，先停止请求再关闭其持有的管理连接。
+        async def stop_web():
+            assert (await (await conn.execute("SELECT COUNT(*) FROM plain")).fetchone())[0] == 10
+
+        Lifecycle.register("web_server", object(), cleanup=stop_web)
+        monkeypatch.setattr(conn, "close", AsyncMock(side_effect=RuntimeError("busy")))
+        with pytest.raises(ShutdownBlockedError):
+            await Lifecycle.shutdown_all()
+        assert svc._connections["agent"] is conn
+        monkeypatch.setattr(conn, "close", close)
+        await Lifecycle.shutdown_all()
+        assert svc._connections == {}
+        with pytest.raises(ValueError):
+            await conn.execute("SELECT 1")
+    finally:
+        monkeypatch.setattr(conn, "close", close)
+        await svc.close_all()
+        Lifecycle.reset()
 
 
 @pytest.mark.parametrize("sql", [
